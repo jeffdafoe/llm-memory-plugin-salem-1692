@@ -190,13 +190,18 @@ func createOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) Or
 	// row. ZBBS-HOME-394.
 	id := OrderID(entry.ID)
 	o := &Order{
-		ID:          id,
-		State:       OrderStateReady,
-		BuyerID:     entry.BuyerID,
-		SellerID:    entry.SellerID,
-		Item:        entry.ItemKind,
-		Qty:         entry.Qty,
-		Amount:      entry.Amount,
+		ID:       id,
+		State:    OrderStateReady,
+		BuyerID:  entry.BuyerID,
+		SellerID: entry.SellerID,
+		Item:     entry.ItemKind,
+		Qty:      entry.Qty,
+		Amount:   entry.Amount,
+		// LLM-493: carried purely so it reaches pay_ledger.pay_items on the
+		// checkpoint upsert, which is what lets the boot price seed apply the same
+		// barter guard as the live subscriber. Cloned, not aliased — the entry is
+		// still live in w.PayLedger until the reaper takes it.
+		PayItems:    cloneItemKindQtys(entry.PayItems),
 		ConsumerIDs: consumers,
 		LedgerID:    entry.ID,
 		CreatedAt:   at,

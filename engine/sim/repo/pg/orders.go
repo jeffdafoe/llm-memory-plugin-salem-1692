@@ -2,11 +2,40 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
+
+// payItemsJSON encodes a settlement's goods legs for pay_ledger.pay_items
+// (LLM-493). Returns nil — a SQL NULL — for an empty leg set, so NULL keeps one
+// unambiguous meaning ("no goods on this row", i.e. pure coin) rather than
+// splitting into "none recorded" vs "recorded empty"; the seed predicate and the
+// migration's backfill both rely on that.
+//
+// Field names match the shape already written into agent_action_log's
+// payload.pay_items, so the backfill is a direct copy and one decode serves both.
+//
+// A marshal error cannot happen for this shape (two scalar fields), but is
+// returned rather than swallowed: silently writing NULL would make a barter
+// settlement look like a coin sale to the seed, which is the exact defect this
+// column exists to prevent.
+func payItemsJSON(items []sim.ItemKindQty) ([]byte, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	type payItem struct {
+		Item string `json:"item"`
+		Qty  int    `json:"qty"`
+	}
+	out := make([]payItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, payItem{Item: string(it.Kind), Qty: it.Qty})
+	}
+	return json.Marshal(out)
+}
 
 // OrdersRepo reads and writes Order rows against pay_ledger. Each
 // pay_ledger row with state='accepted' AND fulfillment_status IN
@@ -89,12 +118,12 @@ INSERT INTO pay_ledger (
     id, buyer_id, seller_id, item_kind, qty, offered_amount,
     consumer_actor_ids, state, fulfillment_status,
     ready_by, expires_at, created_at, resolved_at, delivered_on,
-    deposit_amount
+    deposit_amount, pay_items
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, 'accepted', $8,
     $9::date, $10, $11, $11, $12,
-    $13
+    $13, $14
 )
 ON CONFLICT (id) DO UPDATE SET
     fulfillment_status = EXCLUDED.fulfillment_status,
@@ -376,6 +405,16 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 			c := o.CreatedAt.UTC()
 			readyBy = time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
 		}
+		// LLM-493: the goods legs ride the INSERT only — pay_items is deliberately
+		// absent from the ON CONFLICT DO UPDATE set above, alongside every other
+		// immutable-post-acceptance field. What was paid cannot change after the
+		// accept, and an Order reloaded from pg does not repopulate PayItems, so
+		// re-asserting it on a later checkpoint would overwrite a correct stored
+		// value with an empty one.
+		payItems, err := payItemsJSON(o.PayItems)
+		if err != nil {
+			return fmt.Errorf("pg orders SaveSnapshot: encode pay_items id=%d: %w", o.ID, err)
+		}
 		if _, err := tx.Exec(ctx, upsertSQL,
 			int64(o.ID),        // $1 id
 			string(o.BuyerID),  // $2 buyer_id
@@ -390,6 +429,7 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 			o.CreatedAt,        // $11 created_at + resolved_at
 			o.DeliveredAt,      // $12 delivered_on
 			o.Deposit,          // $13 deposit_amount (0 = full prepay) — LLM-357
+			payItems,           // $14 pay_items (NULL = pure coin) — LLM-493
 		); err != nil {
 			return fmt.Errorf("pg orders SaveSnapshot: upsert id=%d: %w", o.ID, err)
 		}
@@ -514,11 +554,11 @@ const insertOrderlessSettlementSQL = `
 INSERT INTO pay_ledger (
     id, buyer_id, seller_id, item_kind, qty, offered_amount,
     consumer_actor_ids, consume_now, state, fulfillment_status,
-    ready_by, created_at, resolved_at, delivered_on
+    ready_by, created_at, resolved_at, delivered_on, pay_items
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, 'accepted', 'delivered',
-    $9::date, $10, $11, $11
+    $9::date, $10, $11, $11, $12
 )`
 
 // WriteOrderlessSettlement persists one accepted order-less settlement
@@ -559,6 +599,12 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 	for i, a := range e.ConsumerIDs {
 		consumerIDs[i] = string(a)
 	}
+	// LLM-493: unlike the Order path this writer has the accepted PayLedgerEntry in
+	// hand, so the goods legs come straight off it — no threading needed.
+	payItems, err := payItemsJSON(e.PayItems)
+	if err != nil {
+		return fmt.Errorf("pg orders WriteOrderlessSettlement: encode pay_items ledger %d: %w", e.ID, err)
+	}
 	if _, err := r.pool.Exec(ctx, insertOrderlessSettlementSQL,
 		int64(e.ID),        // $1 id
 		string(e.BuyerID),  // $2 buyer_id
@@ -571,6 +617,7 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 		at,                 // $9 ready_by (DATE-cast)
 		e.CreatedAt,        // $10 created_at
 		at,                 // $11 resolved_at + delivered_on
+		payItems,           // $12 pay_items (NULL = pure coin) — LLM-493
 	); err != nil {
 		return fmt.Errorf("pg orders WriteOrderlessSettlement: ledger %d: %w", e.ID, err)
 	}
@@ -594,22 +641,46 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 // rejected pre-acceptance terminals (declined/withdrawn/expired/
 // failed_*) all have state != 'accepted'.
 //
-// offered_amount > 0 mirrors the runtime subscriber's barter guard
-// (handlePayWithItemResolvedPriceBook in engine/sim/cascade/price_book.go,
-// ZBBS-HOME-393): a pure goods-for-goods barter settles at amount 0 and
-// carries no single coin price to remember — seeding it would poison the
-// book with a "free" reading that renders as "~0 coins" in restock cues.
-// Both ingestion paths (boot seed here, live subscriber there) must agree,
-// or every engine restart re-imports up to PriceBookSeedWindow days of
-// zero-coin barters the subscriber never recorded (LLM-285). A mixed
-// coin+goods accept has offered_amount > 0 (the coin leg) and is KEPT —
-// same accepted tradeoff as the subscriber; this filter matches that
-// behavior exactly, it does not tighten it.
+// offered_amount > 0 AND pay_items IS NULL together mirror the runtime
+// subscriber's barter guard (handlePayWithItemResolvedPriceBook in
+// engine/sim/cascade/price_book.go): a settlement teaches a coin price only when
+// coins were the WHOLE payment.
+//
+//   - offered_amount > 0 drops PURE barter (ZBBS-HOME-393): goods-only settles at
+//     amount 0 and carries no single coin price to remember — seeding it would
+//     poison the book with a "free" reading that renders as "~0 coins" in restock
+//     cues.
+//   - COALESCE(jsonb_array_length(pay_items), 0) = 0 drops MIXED coin+goods
+//     (LLM-493). Such a row has offered_amount > 0 and used to be KEPT, recorded at
+//     its coin leg against the full quantity: live, 5 nails bought for 2 coins PLUS
+//     2 skillets and 2 wheat seeded nails at 0.4 coins each. Worse than the
+//     pure-barter gap — pure barter leaves the key silent, mixed leaves it wrong,
+//     and the wrong rate propagates into every buy anchor and margin verdict
+//     derived from it.
+//
+// Why that expression and not the simpler `pay_items IS NULL`: the subscriber's
+// rule is `len(resolved.PayItems) > 0`, under which an EMPTY slice is pure coin and
+// gets recorded. `IS NULL` would exclude a stored '[]', so the two paths would
+// disagree on exactly the value the NULL-vs-'[]' sentinel choice hinges on
+// (code_review). COALESCE(...)=0 maps NULL and '[]' alike to "no goods", which is
+// len()==0 verbatim. payItemsJSON never writes '[]' — this is defence against a
+// value arriving from anywhere else, not an expected shape.
+//
+// jsonb_array_length RAISES on a non-array, so this predicate is only total
+// because the pay_ledger_pay_items_is_array CHECK constraint (LLM-493 migration)
+// makes a non-array unstorable. Do not drop that constraint without changing this.
+//
+// Both ingestion paths (boot seed here, live subscriber there) must agree, or
+// every engine restart re-imports up to PriceBookSeedWindow days of settlements
+// the subscriber never recorded (LLM-285). The goods leg is dropped, NOT valued:
+// pricing it would be circular and would manufacture certainty the data does not
+// contain (LLM-475 — uncertainty stays silent).
 //
 // Index opportunity: a partial index
 //
 //	(seller_id, item_kind, created_at DESC)
 //	WHERE state = 'accepted' AND item_kind IS NOT NULL AND offered_amount > 0
+//	      AND COALESCE(jsonb_array_length(pay_items), 0) = 0
 //
 // would cover this query's PARTITION BY / ORDER BY exactly. The partial
 // predicate must carry the query's constant filters (all but the
@@ -617,6 +688,15 @@ func (r *OrdersRepo) WriteOrderlessSettlement(ctx context.Context, e *sim.PayLed
 // query and needlessly retain rows the WHERE drops. Not yet
 // added; LoadWorld runs once at boot so seq-scan cost is paid once
 // per restart. Add the index if seed time becomes noticeable.
+//
+// Two caveats if it ever is added (code_review). The barter predicate is an
+// EXPRESSION, not a column test, so this is an expression index —
+// jsonb_array_length is immutable so it is legal in a partial predicate, but the
+// planner still has to evaluate it per row to decide membership, which limits how
+// much a large table actually benefits. Treat the shape above as a starting point
+// and confirm with EXPLAIN rather than assuming it helps; the
+// (seller_id, item_kind, created_at DESC) ordering is the part that is clearly
+// right.
 const loadRecentPricesSQL = `
 SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
        cardinality(consumer_actor_ids), created_at
@@ -632,6 +712,7 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
            AND created_at >= $1
            AND item_kind IS NOT NULL
            AND offered_amount > 0
+           AND COALESCE(jsonb_array_length(pay_items), 0) = 0
        ) t
  WHERE rn <= $2
  ORDER BY seller_id, item_kind, created_at ASC`

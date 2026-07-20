@@ -234,3 +234,76 @@ func TestRegisterPriceBook_PanicsOnNil(t *testing.T) {
 // once with handlePayWithItemResolvedPriceBook, and the subscriber itself
 // is tested directly above. Full event-flow coverage lands when a sim-
 // package integration test exercises the pay-with-item accept path.
+
+// --- LLM-493: a settlement teaches a coin price only when coins were the WHOLE
+// payment ------------------------------------------------------------------
+//
+// The three payment shapes, in one place, because the boundary between them is
+// the whole point of the guard and it moved once already: pure barter was
+// excluded from the start (ZBBS-HOME-393), mixed coin+goods was not, and mixed
+// is the worse case — pure barter leaves the key silent, mixed leaves it WRONG.
+//
+// Live driver: 5 nails bought for 2 coins PLUS 2 skillets and 2 wheat were
+// recorded as 5 nails for 2 coins, seeding nails at 0.4 coins each. The rate
+// then propagates into every buy anchor and margin verdict derived from that key.
+func TestHandlePayWithItemResolvedPriceBook_RecordsOnlyPureCoinSettlements(t *testing.T) {
+	cases := []struct {
+		name     string
+		amount   int
+		payItems []sim.ItemKindQty
+		want     int // observations expected on the key
+	}{
+		{
+			name:   "pure coin is recorded",
+			amount: 6,
+			want:   1,
+		},
+		{
+			name:     "pure barter is skipped — no coin price to remember",
+			amount:   0,
+			payItems: []sim.ItemKindQty{{Kind: "skillet", Qty: 2}},
+			want:     0,
+		},
+		{
+			name:     "mixed coin+goods is skipped — the coin leg is not the price",
+			amount:   2,
+			payItems: []sim.ItemKindQty{{Kind: "skillet", Qty: 2}, {Kind: "wheat", Qty: 2}},
+			want:     0,
+		},
+		{
+			// Defensive: an empty (non-nil) slice carries no goods and must not be
+			// mistaken for barter. len() is the test, not nil-ness.
+			name:     "empty goods slice is still pure coin",
+			amount:   6,
+			payItems: []sim.ItemKindQty{},
+			want:     1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildPriceBookCascadeWorld(t)
+			defer stop()
+
+			invokeOnWorld(t, w, func(world *sim.World) {
+				handlePayWithItemResolvedPriceBook(world, &sim.PayWithItemResolved{
+					LedgerID:       42,
+					BuyerID:        "alice",
+					SellerID:       "bob",
+					ItemKind:       "nail",
+					QtyPerConsumer: 5,
+					ConsumerIDs:    []sim.ActorID{"alice"},
+					Amount:         tc.amount,
+					PayItems:       tc.payItems,
+					TerminalState:  sim.PayTerminalStateAccepted,
+					At:             time.Now().UTC(),
+				})
+			})
+
+			history := readPriceBook(t, w, sim.PriceBookKey{SellerID: "bob", Item: "nail"})
+			if len(history) != tc.want {
+				t.Fatalf("observations = %d, want %d (amount=%d payItems=%d)",
+					len(history), tc.want, tc.amount, len(tc.payItems))
+			}
+		})
+	}
+}
