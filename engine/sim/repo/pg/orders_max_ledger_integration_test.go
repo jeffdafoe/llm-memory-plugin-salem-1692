@@ -40,7 +40,7 @@ func TestOrdersRepo_Integration_MaxPaidActionLogLedgerID(t *testing.T) {
 			     (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
 			 VALUES ($1, $2, 'engine', $3, $4::jsonb, 'ok', 'Moses', NULL,
 			         CASE WHEN ($4::jsonb->>'ledger_id') ~ '^[0-9]+$'
-			               AND length($4::jsonb->>'ledger_id') <= 18
+			               AND ($4::jsonb->>'ledger_id')::numeric <= 9223372036854775807
 			              THEN ($4::jsonb->>'ledger_id')::bigint END)`,
 			actorID, now, actionType, payload,
 		); err != nil {

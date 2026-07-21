@@ -48,13 +48,23 @@ const actionLogWriteTimeout = 5 * time.Second
 // insertActionLogSQL appends one audit row. id is BIGSERIAL (DB-assigned);
 // result is always 'ok' (v2 logs committed actions only); error is left NULL;
 // huddle_id is NULL for outdoor / pre-huddle actions. payload is cast from a
-// JSON text param to jsonb in SQL so the bind value is a plain string. ledger_id
-// ($8) is the typed mirror of payload.ledger_id (LLM-494): NULL for rows that
-// carry none, else the same integer the payload holds.
+// JSON text param to jsonb in SQL so the bind value is a plain string.
+//
+// ledger_id is the typed mirror of payload.ledger_id (LLM-494), computed in SQL
+// from the very jsonb this row stores, using the SAME guard as the migration
+// backfill — so the column equals the payload extraction by construction, with
+// no Go-side type/range gap to drift through. NULL when the payload carries no
+// numeric ledger_id; the regex fences the casts off a non-numeric value, and the
+// overflow-safe numeric comparison NULLs a value too large for bigint (rather
+// than wrapping or erroring). The CASE (not a WHERE) protects the ::bigint cast:
+// its arms evaluate in order, so ::bigint is reached only for an in-range value.
 const insertActionLogSQL = `
 INSERT INTO agent_action_log
     (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
-VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7, $8)`
+VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7,
+        CASE WHEN ($5::jsonb->>'ledger_id') ~ '^[0-9]+$'
+              AND ($5::jsonb->>'ledger_id')::numeric <= 9223372036854775807
+             THEN ($5::jsonb->>'ledger_id')::bigint END)`
 
 // ActionLogRepo is the durable sim.ActionLogSink. Construct with
 // NewActionLogRepo, install on the World via SetActionLogSink, and run its
@@ -147,49 +157,19 @@ func (r *ActionLogRepo) writeOne(row sim.DurableActionLogRow) {
 		huddle = string(row.HuddleID)
 	}
 
-	// ledger_id ($8) mirrors payload.ledger_id as a typed column (LLM-494): NULL
-	// when the row carries none, else the same integer the payload holds. Read
-	// from the same map that was just marshaled, so the column and the jsonb copy
-	// cannot disagree.
-	var ledgerID any
-	if id, ok := payloadLedgerID(row.Payload); ok {
-		ledgerID = id
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), actionLogWriteTimeout)
 	defer cancel()
+	// ledger_id is derived in SQL from $5 (the payload) — see insertActionLogSQL.
 	if _, err := r.pool.Exec(ctx, insertActionLogSQL,
 		string(row.ActorID),    // $1 actor_id (uuid)
 		row.OccurredAt,         // $2 occurred_at
 		row.Source,             // $3 source
 		string(row.ActionType), // $4 action_type
-		string(payload),        // $5 payload (::jsonb in SQL)
+		string(payload),        // $5 payload (::jsonb in SQL; also the ledger_id source)
 		row.SpeakerName,        // $6 speaker_name
 		huddle,                 // $7 huddle_id (uuid or NULL)
-		ledgerID,               // $8 ledger_id (bigint or NULL)
 	); err != nil {
 		log.Printf("pg action_log: insert actor %q action %q: %v", row.ActorID, row.ActionType, err)
-	}
-}
-
-// payloadLedgerID returns the row's ledger_id as an int64 for the typed
-// ledger_id column, or ok=false when the payload carries no numeric one (→ SQL
-// NULL). The engine builds these payloads with sim.LedgerID values; the other
-// integer cases are defensive against a caller that stores a plain int/uint. An
-// absent or non-integer value maps to NULL, matching the migration backfill's
-// regex guard so the column and the payload extraction agree on every row.
-func payloadLedgerID(payload map[string]any) (int64, bool) {
-	switch n := payload["ledger_id"].(type) {
-	case sim.LedgerID:
-		return int64(n), true
-	case uint64:
-		return int64(n), true
-	case int64:
-		return n, true
-	case int:
-		return int64(n), true
-	default:
-		return 0, false
 	}
 }
 
@@ -467,7 +447,11 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 	}
 	if filter.LedgerID != 0 {
 		// ledger_id is a typed bigint column (LLM-494): a genuine numeric compare,
-		// not the former text match on payload->>'ledger_id'.
+		// not the former text match on payload->>'ledger_id'. LedgerID is a uint64;
+		// a value above bigint's range cannot exist in the column, so the int64
+		// conversion (defined two's-complement wrap) yields a value no row carries
+		// and the filter correctly returns nothing. Real ids come from a sequence
+		// and are nowhere near that bound.
 		add(" AND ledger_id = $%d", int64(filter.LedgerID))
 	}
 	args = append(args, limit)

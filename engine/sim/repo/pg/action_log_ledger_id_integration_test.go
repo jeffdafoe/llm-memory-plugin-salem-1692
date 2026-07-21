@@ -68,7 +68,17 @@ func TestActionLog_Integration_LedgerIDBackfillMatchesExtraction(t *testing.T) {
 		{"non-paid numeric", "offered", `{"ledger_id":205,"item":"nail","qty":5}`, i64(205)},
 		{"no ledger_id key", "paid", `{"recipient":"B","for":"a night's lodging"}`, nil},
 		{"non-numeric ledger_id", "paid", `{"recipient":"C","ledger_id":"not-a-number"}`, nil},
-		// 33 digits: length > 18 so the CASE skips the ::bigint cast — the value
+		// A valid 19-digit id at bigint's max — the old ::bigint reader accepted
+		// it, so the numeric-range guard must too (a length cap would have dropped
+		// it, regressing the floor).
+		{"max bigint (19 digits)", "paid", `{"recipient":"E","ledger_id":9223372036854775807}`, i64(9223372036854775807)},
+		// A digits-only value with leading zeros that normalizes to a small id —
+		// ::numeric ignores the zeros, so it backfills to 42 (a length cap would
+		// have dropped it as "20 chars").
+		{"leading zeros", "paid", `{"recipient":"F","ledger_id":"00000000000000000042"}`, i64(42)},
+		// Just past bigint's max: the numeric compare rejects it → NULL, no abort.
+		{"bigint max + 1", "paid", `{"recipient":"G","ledger_id":9223372036854775808}`, nil},
+		// 33 digits: far past range — the CASE skips the ::bigint cast, the value
 		// lands NULL and the migration does NOT abort with an overflow error.
 		{"oversized ledger_id", "paid", `{"recipient":"D","ledger_id":"999999999999999999999999999999999"}`, nil},
 	}
@@ -118,7 +128,7 @@ func TestActionLog_Integration_LedgerIDBackfillMatchesExtraction(t *testing.T) {
 		`SELECT count(*) FROM agent_action_log
 		  WHERE ledger_id IS DISTINCT FROM
 		        CASE WHEN payload->>'ledger_id' ~ '^[0-9]+$'
-		              AND length(payload->>'ledger_id') <= 18
+		              AND (payload->>'ledger_id')::numeric <= 9223372036854775807
 		             THEN (payload->>'ledger_id')::bigint END`,
 	).Scan(&mismatches); err != nil {
 		t.Fatalf("mismatch count: %v", err)
@@ -156,7 +166,7 @@ func TestLoadSettlements_Integration_NumericLedgerFilter(t *testing.T) {
 			     (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
 			 VALUES ($1, $2, 'agent', 'paid', $3::jsonb, 'ok', $4, NULL,
 			         CASE WHEN ($3::jsonb->>'ledger_id') ~ '^[0-9]+$'
-			               AND length($3::jsonb->>'ledger_id') <= 18
+			               AND ($3::jsonb->>'ledger_id')::numeric <= 9223372036854775807
 			              THEN ($3::jsonb->>'ledger_id')::bigint END)`,
 			actorID, now, payload, speaker,
 		); err != nil {

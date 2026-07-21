@@ -143,39 +143,58 @@ func TestActionLogRepo_Integration_NullHuddle(t *testing.T) {
 }
 
 // TestActionLogRepo_Integration_LedgerIDColumn confirms the write path mirrors a
-// payload's ledger_id into the typed column (LLM-494). A paid row built with a
-// sim.LedgerID — the production type the cascade writes — must land the same
-// integer in the column, so the boot allocator-floor query and the settlements
-// filter read it without re-extracting from the jsonb.
+// payload's ledger_id into the typed column (LLM-494). The column is derived in
+// SQL from the same payload the row stores (insertActionLogSQL), so a paid row
+// built with a sim.LedgerID — the production type the cascade writes — lands that
+// integer in the column, and a value beyond bigint's range lands NULL rather than
+// wrapping to a different (negative) number.
 func TestActionLogRepo_Integration_LedgerIDColumn(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	const actorID = "33333333-3333-3333-3333-333333333333"
-	if _, err := f.Pool.Exec(ctx,
-		`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, $2, 0, 0)`,
-		actorID, "Ezekiel",
-	); err != nil {
-		t.Fatalf("seed actor: %v", err)
-	}
-
 	r := NewActionLogRepo(f.Pool)
-	r.writeOne(sim.DurableActionLogRow{
-		ActorID:     actorID,
-		OccurredAt:  time.Now().UTC(),
-		ActionType:  sim.ActionTypePaid,
-		Payload:     map[string]any{"recipient": "John Ellis", "amount": 3, "ledger_id": sim.LedgerID(477)},
-		SpeakerName: "Ezekiel",
-		Source:      "agent",
-	})
+	i64 := func(v int64) *int64 { return &v }
 
-	var ledger *int64
-	if err := f.Pool.QueryRow(ctx,
-		`SELECT ledger_id FROM agent_action_log WHERE actor_id = $1`, actorID,
-	).Scan(&ledger); err != nil {
-		t.Fatalf("select back: %v", err)
+	cases := []struct {
+		name    string
+		actorID string
+		ledger  sim.LedgerID
+		want    *int64 // nil = NULL column
+	}{
+		{"normal id", "33333333-3333-3333-3333-333333333333", sim.LedgerID(477), i64(477)},
+		// A uint64 past bigint's range: the SQL guard NULLs it rather than wrapping
+		// to a negative column value — the write path cannot store what bigint can't
+		// hold, and never mis-mirrors the payload as a different number.
+		{"beyond bigint range", "44444444-4444-4444-4444-444444444444", sim.LedgerID(18446744073709551615), nil},
 	}
-	if ledger == nil || *ledger != 477 {
-		t.Errorf("ledger_id = %v, want 477", ledger)
+
+	for _, c := range cases {
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, $2, 0, 0)`,
+			c.actorID, "Ezekiel ("+c.name+")", // display_name is unique
+		); err != nil {
+			t.Fatalf("%s: seed actor: %v", c.name, err)
+		}
+		r.writeOne(sim.DurableActionLogRow{
+			ActorID:     sim.ActorID(c.actorID),
+			OccurredAt:  time.Now().UTC(),
+			ActionType:  sim.ActionTypePaid,
+			Payload:     map[string]any{"recipient": "John Ellis", "amount": 3, "ledger_id": c.ledger},
+			SpeakerName: "Ezekiel",
+			Source:      "agent",
+		})
+
+		var got *int64
+		if err := f.Pool.QueryRow(ctx,
+			`SELECT ledger_id FROM agent_action_log WHERE actor_id = $1`, c.actorID,
+		).Scan(&got); err != nil {
+			t.Fatalf("%s: select back: %v", c.name, err)
+		}
+		switch {
+		case c.want == nil && got != nil:
+			t.Errorf("%s: ledger_id = %d, want NULL", c.name, *got)
+		case c.want != nil && (got == nil || *got != *c.want):
+			t.Errorf("%s: ledger_id = %v, want %d", c.name, got, *c.want)
+		}
 	}
 }
