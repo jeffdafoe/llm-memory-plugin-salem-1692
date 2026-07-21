@@ -338,7 +338,9 @@ func TestSolicitWork_CommandRejectsSubFloorDuration(t *testing.T) {
 		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
 	})
 	defer stop()
-	now := time.Now().UTC()
+	// Fixed in-shift timestamp so the test can't interact with any time-of-day
+	// validation/scheduling in SolicitWork (avoids the prior close-window flake).
+	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
 
 	// 120 was the old 2h floor; 239 is one minute under the new 4h floor.
 	for _, dur := range []int{120, 239} {
