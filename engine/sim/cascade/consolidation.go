@@ -131,8 +131,10 @@ func runOneSweep(ctx context.Context, w *sim.World, client llm.Client) {
 }
 
 // consolidateOne issues the LLM call for one candidate and applies
-// the result — or, on a "nothing notable" reply, prunes the pair
-// (LLM-426). Errors at every step log + return; no partial writes.
+// the result. A no-update sentinel reply ("nothing notable" /
+// "nothing new") retains the prior summary when one exists (LLM-497)
+// and prunes the pair when there is none (LLM-426). Errors at every
+// step log + return; no partial writes.
 func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.ConsolidationCandidate) {
 	prompt := buildConsolidationPrompt(c)
 	req := llm.Request{
@@ -167,11 +169,36 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 			c.ActorID, c.PeerID, len(reply.ToolCalls))
 		return
 	}
-	if isNothingNotable(newSummary) {
-		// The actor formed no dealing-relevant judgment about the peer. Prune
-		// the pair rather than store filler prose (LLM-426). An empty/garbage
-		// reply, by contrast, was already handled above (reject-and-retry) so
-		// a real summary is never wiped by a bad turn.
+	if isNoUpdateSentinel(newSummary) {
+		if prior := strings.TrimSpace(c.PriorSummary); prior != "" {
+			// The batch taught nothing new about a peer the actor has already
+			// judged. Retain the established summary rather than prune it —
+			// pre-LLM-497, a quiet pleasantries-only day deleted the whole
+			// edge, and the rebuild-from-scratch that followed is where
+			// misreads took root. Re-applying the prior text IS the no-update
+			// write: it consumes the facts prefix, keeps SummaryText, and
+			// stamps LastConsolidatedAt, under the same stale-snapshot race
+			// contract as a normal apply.
+			retainAt := time.Now()
+			if _, err := w.SendContext(ctx, sim.ApplyConsolidation(c.ActorID, c.PeerID, prior, c.Facts, retainAt)); err != nil {
+				if ctx.Err() == nil {
+					if errors.Is(err, sim.ErrStaleConsolidationSnapshot) {
+						log.Printf("cascade/consolidation: snapshot stale for %s→%s on retain (FIFO race during LLM call); next sweep will retry",
+							c.ActorID, c.PeerID)
+					} else {
+						log.Printf("cascade/consolidation: retain for %s→%s failed: %v",
+							c.ActorID, c.PeerID, err)
+					}
+				}
+				return
+			}
+			log.Printf("cascade/consolidation: %s→%s nothing new — prior summary retained", c.ActorName, c.PeerName)
+			return
+		}
+		// No prior judgment and none formed from this batch. Prune the pair
+		// rather than store filler prose (LLM-426). An empty/garbage reply,
+		// by contrast, was already handled above (reject-and-retry) so a
+		// real summary is never wiped by a bad turn.
 		clearAt := time.Now()
 		if _, err := w.SendContext(ctx, sim.ClearConsolidation(c.ActorID, c.PeerID, c.Facts, clearAt)); err != nil {
 			if ctx.Err() == nil {
@@ -209,16 +236,20 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 		c.ActorName, c.PeerName, len(c.Facts), len(newSummary))
 }
 
-// isNothingNotable reports whether a consolidation reply is the sentinel the
-// prompt asks for when the actor has formed no dealing-relevant judgment about
-// the peer. Matched case/punctuation-insensitively, tolerating a short
-// elaboration ("nothing notable to report") — but a reply that hides a real
-// judgment behind the phrase ("nothing notable except he pays late") is treated
-// as a summary, NOT a prune, so the judgment isn't lost.
-func isNothingNotable(reply string) bool {
+// isNoUpdateSentinel reports whether a consolidation reply is a no-update
+// sentinel: "nothing notable" (the no-prior-summary prompt, LLM-426) or
+// "nothing new" (the prior-summary prompt, LLM-497). Both are accepted
+// regardless of which prompt variant ran — weak models are sloppy about
+// echoing the exact phrase — and the caller decides retain-vs-prune from
+// PriorSummary, not from which sentinel matched. Matched case/punctuation-
+// insensitively, tolerating a short elaboration ("nothing notable to
+// report") — but a reply that hides a real judgment behind the phrase
+// ("nothing notable except he pays late") is treated as a summary, NOT a
+// sentinel, so the judgment isn't lost.
+func isNoUpdateSentinel(reply string) bool {
 	n := strings.ToLower(strings.TrimSpace(reply))
 	n = strings.Trim(n, " \t\n.!\"'")
-	if !strings.HasPrefix(n, "nothing notable") {
+	if !strings.HasPrefix(n, "nothing notable") && !strings.HasPrefix(n, "nothing new") {
 		return false
 	}
 	for _, caveat := range []string{"except", "but ", "however", "aside", "other than", "save "} {
@@ -330,7 +361,19 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 	if len(ledger) > 0 {
 		b.WriteString(" The ledger is the true record of your dealings: every payment, wage, and delivery it lists actually happened, each one in addition to the others — where what was said disagrees with what the ledger records, trust the ledger.")
 	}
-	b.WriteString(" Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.")
+	// The sentinel phrasing tracks what the mechanism does with it (LLM-497).
+	// With a prior reflection, the sentinel means "no update — keep what I
+	// already think", so the prompt asks "did these dealings change your
+	// view?" and offers "nothing new". Without one, the sentinel means "no
+	// judgment formed — don't store filler" (LLM-426), so the prompt keeps
+	// the original "nothing notable". Pre-LLM-497 both cases used "nothing
+	// notable", and the model's correct "this batch taught me nothing" on a
+	// quiet day was misread as "this relationship holds no judgment".
+	if strings.TrimSpace(c.PriorSummary) != "" {
+		b.WriteString(" Judge the person, not the pleasantries. Your reply replaces your prior reflection, so carry forward whatever still holds. If these dealings change nothing about your prior reflection, reply with exactly: nothing new\nGive just the sentence or two (or \"nothing new\") — no preamble or sign-off.")
+	} else {
+		b.WriteString(" Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.")
+	}
 	return b.String()
 }
 
