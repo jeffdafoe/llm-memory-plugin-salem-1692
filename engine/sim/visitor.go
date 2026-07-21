@@ -1445,9 +1445,16 @@ func bindBuyErrand(w *World, r *rand.Rand) (*TradeErrand, bool) {
 	return &TradeErrand{Direction: TradeDirectionBuy, Good: pick.good, Counterparty: pick.structure}, true
 }
 
+// ProvisionerArchetype labels a buyer whose errand good is food (LLM-503): a
+// traveler buying journeycake or cheese is provisioning for the road, not
+// journeying to fetch a snack — "journeycake-buyer" misread the stop as the
+// trip's purpose. Non-food buyers keep the grounded "<good>-buyer" persona.
+const ProvisionerArchetype = "provisioner"
+
 // visitorMerchantLabel derives a merchant's archetype label from its errand (LLM-455): a
 // buyer is "<good>-buyer" (cheese -> "cheese-buyer"), grounded in the real good so the persona
-// can never name an untradeable trade; a seller keeps the established "factor" persona (he
+// can never name an untradeable trade — except a FOOD good, where the persona is
+// "provisioner" (LLM-503); a seller keeps the established "factor" persona (he
 // deals with the distributor, already grounded). Uses the good's singular display noun.
 func visitorMerchantLabel(w *World, trade *TradeErrand) string {
 	if trade == nil {
@@ -1458,6 +1465,9 @@ func visitorMerchantLabel(w *World, trade *TradeErrand) string {
 	}
 	noun := string(trade.Good)
 	if def := w.ItemKinds[trade.Good]; def != nil {
+		if kindSatisfiesHunger(def) {
+			return ProvisionerArchetype
+		}
 		noun = def.Singular()
 	}
 	return noun + "-buyer"

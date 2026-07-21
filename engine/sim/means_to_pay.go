@@ -42,6 +42,23 @@ func KindBarterable(def *ItemKindDef) bool {
 	return !def.HasCapability("service") && !def.EatHereOnly()
 }
 
+// kindSatisfiesHunger reports whether the kind is food — it carries a hunger
+// entry in Satisfies. Used by the visitor persona derivation (LLM-503): a
+// traveler whose buy errand binds a food good is a "provisioner" stocking for
+// the road, not a "<good>-buyer". Nil def → false (an uncataloged kind can't
+// claim to feed anyone).
+func kindSatisfiesHunger(def *ItemKindDef) bool {
+	if def == nil {
+		return false
+	}
+	for _, s := range def.Satisfies {
+		if s.Attribute == "hunger" {
+			return true
+		}
+	}
+	return false
+}
+
 // HoldsBarterableGoodsExcept reports whether an inventory carries anything that could
 // go up in a pay_with_item bundle, ignoring `except`. A held ItemKind with a positive
 // quantity counts when its catalog class is tradeable at all (KindBarterable — not a
