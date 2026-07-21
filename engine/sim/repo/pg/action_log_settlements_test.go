@@ -65,7 +65,7 @@ func TestLoadSettlements_ParsesEnrichedAndLegacyRows(t *testing.T) {
 	}
 }
 
-// Every filter binds, in order: actor, since, until, ledger (decimal text), limit.
+// Every filter binds, in order: actor, since, until, ledger (numeric column), limit.
 func TestLoadSettlements_AppliesAllFilters(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -76,8 +76,8 @@ func TestLoadSettlements_AppliesAllFilters(t *testing.T) {
 
 	since := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
 	until := since.Add(time.Hour)
-	mock.ExpectQuery(`actor_id = \$1.*occurred_at >= \$2.*occurred_at < \$3.*ledger_id' = \$4.*LIMIT \$5`).
-		WithArgs("ez", since, until, "332", 5).
+	mock.ExpectQuery(`actor_id = \$1.*occurred_at >= \$2.*occurred_at < \$3.*ledger_id = \$4.*LIMIT \$5`).
+		WithArgs("ez", since, until, int64(332), 5).
 		WillReturnRows(pgxmock.NewRows(settlementColumns()))
 
 	if _, err := repo.LoadSettlements(context.Background(), sim.SettlementFilter{

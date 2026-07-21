@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -49,10 +50,29 @@ const actionLogWriteTimeout = 5 * time.Second
 // result is always 'ok' (v2 logs committed actions only); error is left NULL;
 // huddle_id is NULL for outdoor / pre-huddle actions. payload is cast from a
 // JSON text param to jsonb in SQL so the bind value is a plain string.
+//
+// ledger_id is the typed mirror of payload.ledger_id (LLM-494), computed in SQL
+// from the very jsonb this row stores, using the SAME guard as the migration
+// backfill — so the column equals the payload extraction with no Go-side type or
+// range gap to drift through. agent_action_log is append-only (this sink only
+// INSERTs; nothing updates payload), so a row's column stays correct for life —
+// there is no payload-mutation path that could desync it. The guard is bounded:
+// the anchored, length-limited regex admits only a canonical decimal of at most
+// 19 digits, so the ::bigint cast is never reached for an out-of-range or
+// arbitrarily long string (no unbounded numeric parse), and the 19-digit arm
+// range-checks against bigint's max lexicographically before casting. Anything
+// else — absent, non-numeric, or > bigint — lands NULL.
 const insertActionLogSQL = `
 INSERT INTO agent_action_log
-    (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id)
-VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7)`
+    (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
+VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7,
+        CASE
+            WHEN ($5::jsonb->>'ledger_id') ~ '^[0-9]{1,18}$'
+                THEN ($5::jsonb->>'ledger_id')::bigint
+            WHEN ($5::jsonb->>'ledger_id') ~ '^[0-9]{19}$'
+             AND ($5::jsonb->>'ledger_id') <= '9223372036854775807'
+                THEN ($5::jsonb->>'ledger_id')::bigint
+        END)`
 
 // ActionLogRepo is the durable sim.ActionLogSink. Construct with
 // NewActionLogRepo, install on the World via SetActionLogSink, and run its
@@ -147,12 +167,13 @@ func (r *ActionLogRepo) writeOne(row sim.DurableActionLogRow) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), actionLogWriteTimeout)
 	defer cancel()
+	// ledger_id is derived in SQL from $5 (the payload) — see insertActionLogSQL.
 	if _, err := r.pool.Exec(ctx, insertActionLogSQL,
 		string(row.ActorID),    // $1 actor_id (uuid)
 		row.OccurredAt,         // $2 occurred_at
 		row.Source,             // $3 source
 		string(row.ActionType), // $4 action_type
-		string(payload),        // $5 payload (::jsonb in SQL)
+		string(payload),        // $5 payload (::jsonb in SQL; also the ledger_id source)
 		row.SpeakerName,        // $6 speaker_name
 		huddle,                 // $7 huddle_id (uuid or NULL)
 	); err != nil {
@@ -433,9 +454,15 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 		add(" AND occurred_at < $%d", filter.Until)
 	}
 	if filter.LedgerID != 0 {
-		// ledger_id is a JSON number in the payload; ->> yields its text form, so
-		// match against the decimal string of the filter id.
-		add(" AND payload->>'ledger_id' = $%d", fmt.Sprintf("%d", uint64(filter.LedgerID)))
+		// ledger_id is a typed bigint column (LLM-494): a genuine numeric compare,
+		// not the former text match on payload->>'ledger_id'. LedgerID is a uint64;
+		// a value above bigint's range cannot exist in the column, so no settlement
+		// can match — return empty rather than bind a wrapped negative value. Real
+		// ids come from a sequence and are nowhere near that bound.
+		if filter.LedgerID > math.MaxInt64 {
+			return []sim.SettlementRow{}, nil
+		}
+		add(" AND ledger_id = $%d", int64(filter.LedgerID))
 	}
 	args = append(args, limit)
 	q += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
