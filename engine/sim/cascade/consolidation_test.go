@@ -510,6 +510,28 @@ func TestBuildConsolidationPrompt_LedgerAuthority(t *testing.T) {
 	}
 }
 
+// TestBuildConsolidationPrompt_KindlessFactIsLedger pins the classification
+// boundary for a zero-value Kind (legacy/hand-seeded rows — every v2 write
+// path stamps a typed kind): it lands in the ledger group, matching
+// relHasDealingFact's non-speech-is-dealing default.
+func TestBuildConsolidationPrompt_KindlessFactIsLedger(t *testing.T) {
+	c := sim.ConsolidationCandidate{
+		ActorName: "Hannah",
+		PeerName:  "Wendy",
+		Facts: []sim.SalientFact{
+			{Kind: sim.InteractionSpoke, Text: "Good evening, Wendy."},
+			{Text: "Wendy settled her tab."},
+		},
+	}
+	prompt := buildConsolidationPrompt(c)
+
+	ledgerIdx := strings.Index(prompt, "What the ledger records of your dealings, oldest first:")
+	factIdx := strings.Index(prompt, "- Wendy settled her tab.")
+	if ledgerIdx < 0 || factIdx < ledgerIdx {
+		t.Errorf("kindless fact not in ledger group (header=%d, fact=%d)\n--- prompt ---\n%s", ledgerIdx, factIdx, prompt)
+	}
+}
+
 // TestBuildConsolidationPrompt_SpeechOnlyOmitsLedger — a pure-social fact
 // batch (the common case) renders no ledger header and no ledger-authority
 // instruction, so speech-only reflections aren't told to trust a ledger

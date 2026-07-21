@@ -295,6 +295,11 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 			continue
 		}
 		seen[line] = struct{}{}
+		// Spoke/Heard are the only speech kinds; everything else — including
+		// a zero-value Kind from a legacy or hand-seeded row — lands in the
+		// ledger group, matching relHasDealingFact's non-speech-is-dealing
+		// default. Every v2 write path stamps a typed kind, so kindless facts
+		// don't occur in engine-authored trails.
 		if f.Kind == sim.InteractionSpoke || f.Kind == sim.InteractionHeard {
 			said = append(said, line)
 		} else {
