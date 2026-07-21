@@ -459,7 +459,7 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 		// a value above bigint's range cannot exist in the column, so no settlement
 		// can match — return empty rather than bind a wrapped negative value. Real
 		// ids come from a sequence and are nowhere near that bound.
-		if uint64(filter.LedgerID) > math.MaxInt64 {
+		if filter.LedgerID > math.MaxInt64 {
 			return []sim.SettlementRow{}, nil
 		}
 		add(" AND ledger_id = $%d", int64(filter.LedgerID))
