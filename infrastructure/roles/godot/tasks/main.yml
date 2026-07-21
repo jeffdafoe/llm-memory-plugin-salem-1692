@@ -38,7 +38,9 @@
     - "/tmp/Godot_v{{ godot_version }}-stable_linux.x86_64"
 
 # Export templates — needed for HTML5 export
-# The .tpz is ~1.2GB so we download only once and skip if already present
+# The .tpz is ~1.2GB so we download only once and skip if already present.
+# Staged in /var/tmp, NOT /tmp: /tmp is a ~1GB tmpfs on the VPS, too small to
+# ever hold the archive (LLM-505).
 
 - name: Create export templates directory
   file:
@@ -54,14 +56,14 @@
 - name: Download export templates
   get_url:
     url: "https://github.com/godotengine/godot/releases/download/{{ godot_version }}-stable/Godot_v{{ godot_version }}-stable_export_templates.tpz"
-    dest: /tmp/godot_templates.tpz
+    dest: /var/tmp/godot_templates.tpz
     mode: "0644"
     timeout: 300
   when: not web_template.stat.exists
 
 - name: Extract web export templates
   shell: |
-    cd /tmp
+    cd /var/tmp
     unzip -o godot_templates.tpz 'templates/web*' 'templates/version.txt'
     mv templates/web* "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/"
     mv templates/version.txt "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/"
@@ -70,5 +72,5 @@
 
 - name: Clean up templates download
   file:
-    path: /tmp/godot_templates.tpz
+    path: /var/tmp/godot_templates.tpz
     state: absent
