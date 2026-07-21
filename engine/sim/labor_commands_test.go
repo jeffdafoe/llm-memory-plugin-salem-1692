@@ -326,6 +326,39 @@ func TestSolicitWork_RejectsBadTerms(t *testing.T) {
 	}
 }
 
+// TestSolicitWork_CommandRejectsSubFloorDuration pins the duration floor at the
+// COMMAND layer specifically. The floor is enforced twice — the handler decoder
+// (labor_handlers.go, covered by the decode test) and this command validation
+// (labor_commands.go) — so the direct command API can't drift into accepting the
+// old 2h floor after LLM-500 raised it to 4h. A sub-floor solicit is refused and
+// mints no ledger row.
+func TestSolicitWork_CommandRejectsSubFloorDuration(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	now := time.Now().UTC()
+
+	// 120 was the old 2h floor; 239 is one minute under the new 4h floor.
+	for _, dur := range []int{120, 239} {
+		if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, dur, now)); err == nil {
+			t.Errorf("duration %d: want rejection (below the 240 floor), got nil", dur)
+		}
+	}
+	// Neither rejected solicit minted anything.
+	if n := len(readLaborLedger(t, w)); n != 0 {
+		t.Fatalf("ledger holds %d offers after sub-floor solicits, want 0 (a rejected solicit mints nothing)", n)
+	}
+	// The floor is exactly 240: the first in-band value is accepted and mints one row.
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err != nil {
+		t.Fatalf("duration 240 (the floor) should be accepted: %v", err)
+	}
+	if n := len(readLaborLedger(t, w)); n != 1 {
+		t.Errorf("ledger holds %d offers, want 1 (only the accepted 240 offer)", n)
+	}
+}
+
 // TestSolicitWork_RejectsHousemate — the LLM-145 co-resident gate: a worker
 // can't bill someone who shares its home structure (the Walkers all live at the
 // Walker Residence). Defense-in-depth behind the CanSolicitWork affordance.
