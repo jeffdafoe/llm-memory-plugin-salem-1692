@@ -253,6 +253,20 @@ func isNothingNotable(reply string) bool {
 // every tick two NPCs are co-present, so a shorter coherent impression is
 // the bigger per-tick input-token lever (and reads more like a scene than a
 // dossier). Takes effect as the daily sweep rewrites each pair's summary.
+//
+// Ledger authority (LLM-499): speech facts and engine-recorded
+// transactional facts render in separate groups — talk under "What was
+// said between you", everything else under "What the ledger records of
+// your dealings" — and, when ledger lines are present, the closing
+// instruction tells the model the ledger lines are the true record and
+// that each one happened in addition to the others. Observed live: a
+// weak model anchored on a follow-up "paid me 5 coins" line and wrote a
+// durable underpay-distrust fact about an employer whose full labor
+// settle ("earned 1 milk and 12 coins") sat in the same undifferentiated
+// list. The speech/non-speech split mirrors relHasDealingFact's binary:
+// spoke/heard are the only non-dealing kinds; every other kind is
+// engine-authored record. Each group stays oldest-first; only
+// cross-group interleaving is given up.
 func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s. This is not a scene — you are reflecting privately on your acquaintance with %s. There are no tools available for this turn; respond with prose only.\n\n",
@@ -264,7 +278,7 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 	} else {
 		fmt.Fprintf(&b, "You haven't formed a reflection on %s before now.\n\n", c.PeerName)
 	}
-	b.WriteString("Recent interactions, oldest first:\n")
+	var said, ledger []string
 	seen := make(map[string]struct{}, len(c.Facts))
 	for _, f := range c.Facts {
 		line := renderConsolidationFactLine(f, c.PeerName)
@@ -275,16 +289,48 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 		// WORK-233 collapses the same utterance repeated by presence-ghost
 		// backfill — but "I said: X" and "<peer> said: X" are distinct facts
 		// that must both survive, so the key has to include attribution.
+		// The map spans both groups; speech renders quoted and ledger lines
+		// plain, so identical text can't collide across them.
 		if _, ok := seen[line]; ok {
 			continue
 		}
 		seen[line] = struct{}{}
-		b.WriteString("- ")
-		b.WriteString(line)
-		b.WriteString("\n")
+		// Spoke/Heard are the only speech kinds; everything else — including
+		// a zero-value Kind from a legacy or hand-seeded row — lands in the
+		// ledger group, matching relHasDealingFact's non-speech-is-dealing
+		// default. Every v2 write path stamps a typed kind, so kindless facts
+		// don't occur in engine-authored trails.
+		if f.Kind == sim.InteractionSpoke || f.Kind == sim.InteractionHeard {
+			said = append(said, line)
+		} else {
+			ledger = append(ledger, line)
+		}
 	}
-	fmt.Fprintf(&b, "\nFrom these dealings, write one or two sentences on what you have learned about %s that would matter the next time you deal with them — how they trade or work, whether they keep their word and pay what they owe, whether they can be trusted or relied upon. Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.",
+	if len(said) > 0 {
+		b.WriteString("What was said between you, oldest first:\n")
+		for _, line := range said {
+			b.WriteString("- ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if len(ledger) > 0 {
+		if len(said) > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("What the ledger records of your dealings, oldest first:\n")
+		for _, line := range ledger {
+			b.WriteString("- ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	fmt.Fprintf(&b, "\nFrom these dealings, write one or two sentences on what you have learned about %s that would matter the next time you deal with them — how they trade or work, whether they keep their word and pay what they owe, whether they can be trusted or relied upon.",
 		c.PeerName)
+	if len(ledger) > 0 {
+		b.WriteString(" The ledger is the true record of your dealings: every payment, wage, and delivery it lists actually happened, each one in addition to the others — where what was said disagrees with what the ledger records, trust the ledger.")
+	}
+	b.WriteString(" Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.")
 	return b.String()
 }
 

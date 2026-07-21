@@ -369,7 +369,7 @@ func TestBuildConsolidationPrompt_StructureAndDedup(t *testing.T) {
 		"There are no tools available for this turn",
 		"Your prior reflection on them:",
 		"She's been around lately.",
-		"Recent interactions, oldest first:",
+		"What the ledger records of your dealings, oldest first:",
 		"- Good evening, Wendy.",
 		"- She ordered ale.",
 		"one or two sentences",
@@ -448,6 +448,115 @@ func TestBuildConsolidationPrompt_AttributesSpeaker(t *testing.T) {
 	}
 	if got := strings.Count(prompt, `- Jefferey said: "I have bread available."`); got != 1 {
 		t.Errorf("'Jefferey said: \"I have bread available.\"' occurs %d times, want 1", got)
+	}
+
+	// Grouping (LLM-499): speech renders under the said header, the
+	// transactional fact under the ledger header, said section first.
+	saidIdx := strings.Index(prompt, "What was said between you, oldest first:")
+	ledgerIdx := strings.Index(prompt, "What the ledger records of your dealings, oldest first:")
+	if saidIdx < 0 || ledgerIdx < 0 {
+		t.Fatalf("prompt missing a group header (said=%d, ledger=%d)\n--- prompt ---\n%s", saidIdx, ledgerIdx, prompt)
+	}
+	if saidIdx > ledgerIdx {
+		t.Errorf("said section renders after ledger section\n--- prompt ---\n%s", prompt)
+	}
+	paidIdx := strings.Index(prompt, "- Jefferey paid me 5 coins for bread.")
+	if paidIdx < ledgerIdx {
+		t.Errorf("transactional fact renders outside the ledger section\n--- prompt ---\n%s", prompt)
+	}
+}
+
+// TestBuildConsolidationPrompt_LedgerAuthority pins the LLM-499 fix for the
+// live wage-story inversion: a full labor settle ("earned 1 milk and 12
+// coins") and a smaller follow-up pay ("paid me 5 coins") sat in one
+// undifferentiated list with the surrounding speech, and the model anchored
+// on the last pay line — writing a durable distrust fact about an employer
+// who overpaid. The ledger lines must render in their own group, oldest
+// first, and the closing instruction must grant them authority over talk
+// and state that each happened in addition to the others.
+func TestBuildConsolidationPrompt_LedgerAuthority(t *testing.T) {
+	c := sim.ConsolidationCandidate{
+		ActorName: "Abraham Warren",
+		PeerName:  "Elizabeth Ellis",
+		Facts: []sim.SalientFact{
+			{Kind: sim.InteractionHeard, Text: "Twelve coins and a mug of milk for four hours' work turning the compost heap."},
+			{Kind: sim.InteractionWorked, Text: "I worked for Elizabeth Ellis and earned 1 milk and 12 coins for about 4 hours of work."},
+			{Kind: sim.InteractionPaidBy, Text: "Elizabeth Ellis paid me 5 coins for day's wages."},
+		},
+	}
+	prompt := buildConsolidationPrompt(c)
+
+	for _, must := range []string{
+		"What was said between you, oldest first:",
+		`- Elizabeth Ellis said: "Twelve coins and a mug of milk for four hours' work turning the compost heap."`,
+		"What the ledger records of your dealings, oldest first:",
+		"- I worked for Elizabeth Ellis and earned 1 milk and 12 coins for about 4 hours of work.",
+		"- Elizabeth Ellis paid me 5 coins for day's wages.",
+		"The ledger is the true record of your dealings",
+		"each one in addition to the others",
+		"trust the ledger",
+	} {
+		if !strings.Contains(prompt, must) {
+			t.Errorf("prompt missing %q\n--- prompt ---\n%s", must, prompt)
+		}
+	}
+
+	// The ledger group keeps chronology: the settle line renders before the
+	// follow-up pay line.
+	settleIdx := strings.Index(prompt, "- I worked for Elizabeth Ellis")
+	payIdx := strings.Index(prompt, "- Elizabeth Ellis paid me 5 coins")
+	if settleIdx < 0 || payIdx < 0 || settleIdx > payIdx {
+		t.Errorf("ledger lines out of order (settle=%d, pay=%d)\n--- prompt ---\n%s", settleIdx, payIdx, prompt)
+	}
+}
+
+// TestBuildConsolidationPrompt_KindlessFactIsLedger pins the classification
+// boundary for a zero-value Kind (legacy/hand-seeded rows — every v2 write
+// path stamps a typed kind): it lands in the ledger group, matching
+// relHasDealingFact's non-speech-is-dealing default.
+func TestBuildConsolidationPrompt_KindlessFactIsLedger(t *testing.T) {
+	c := sim.ConsolidationCandidate{
+		ActorName: "Hannah",
+		PeerName:  "Wendy",
+		Facts: []sim.SalientFact{
+			{Kind: sim.InteractionSpoke, Text: "Good evening, Wendy."},
+			{Text: "Wendy settled her tab."},
+		},
+	}
+	prompt := buildConsolidationPrompt(c)
+
+	ledgerIdx := strings.Index(prompt, "What the ledger records of your dealings, oldest first:")
+	factIdx := strings.Index(prompt, "- Wendy settled her tab.")
+	if ledgerIdx < 0 || factIdx < ledgerIdx {
+		t.Errorf("kindless fact not in ledger group (header=%d, fact=%d)\n--- prompt ---\n%s", ledgerIdx, factIdx, prompt)
+	}
+}
+
+// TestBuildConsolidationPrompt_SpeechOnlyOmitsLedger — a pure-social fact
+// batch (the common case) renders no ledger header and no ledger-authority
+// instruction, so speech-only reflections aren't told to trust a ledger
+// that lists nothing.
+func TestBuildConsolidationPrompt_SpeechOnlyOmitsLedger(t *testing.T) {
+	c := sim.ConsolidationCandidate{
+		ActorName: "Hannah",
+		PeerName:  "Wendy",
+		Facts: []sim.SalientFact{
+			{Kind: sim.InteractionSpoke, Text: "Good evening, Wendy."},
+			{Kind: sim.InteractionHeard, Text: "Good evening, Hannah."},
+		},
+	}
+	prompt := buildConsolidationPrompt(c)
+
+	if !strings.Contains(prompt, "What was said between you, oldest first:") {
+		t.Errorf("prompt missing said header\n--- prompt ---\n%s", prompt)
+	}
+	for _, mustNot := range []string{
+		"What the ledger records of your dealings",
+		"trust the ledger",
+	} {
+		if strings.Contains(prompt, mustNot) {
+			t.Errorf("speech-only prompt contains %q\n--- prompt ---\n%s", mustNot, prompt)
+		}
 	}
 }
 
