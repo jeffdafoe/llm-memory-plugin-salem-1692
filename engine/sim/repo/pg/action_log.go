@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -52,19 +53,26 @@ const actionLogWriteTimeout = 5 * time.Second
 //
 // ledger_id is the typed mirror of payload.ledger_id (LLM-494), computed in SQL
 // from the very jsonb this row stores, using the SAME guard as the migration
-// backfill — so the column equals the payload extraction by construction, with
-// no Go-side type/range gap to drift through. NULL when the payload carries no
-// numeric ledger_id; the regex fences the casts off a non-numeric value, and the
-// overflow-safe numeric comparison NULLs a value too large for bigint (rather
-// than wrapping or erroring). The CASE (not a WHERE) protects the ::bigint cast:
-// its arms evaluate in order, so ::bigint is reached only for an in-range value.
+// backfill — so the column equals the payload extraction with no Go-side type or
+// range gap to drift through. agent_action_log is append-only (this sink only
+// INSERTs; nothing updates payload), so a row's column stays correct for life —
+// there is no payload-mutation path that could desync it. The guard is bounded:
+// the anchored, length-limited regex admits only a canonical decimal of at most
+// 19 digits, so the ::bigint cast is never reached for an out-of-range or
+// arbitrarily long string (no unbounded numeric parse), and the 19-digit arm
+// range-checks against bigint's max lexicographically before casting. Anything
+// else — absent, non-numeric, or > bigint — lands NULL.
 const insertActionLogSQL = `
 INSERT INTO agent_action_log
     (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
 VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7,
-        CASE WHEN ($5::jsonb->>'ledger_id') ~ '^[0-9]+$'
-              AND ($5::jsonb->>'ledger_id')::numeric <= 9223372036854775807
-             THEN ($5::jsonb->>'ledger_id')::bigint END)`
+        CASE
+            WHEN ($5::jsonb->>'ledger_id') ~ '^[0-9]{1,18}$'
+                THEN ($5::jsonb->>'ledger_id')::bigint
+            WHEN ($5::jsonb->>'ledger_id') ~ '^[0-9]{19}$'
+             AND ($5::jsonb->>'ledger_id') <= '9223372036854775807'
+                THEN ($5::jsonb->>'ledger_id')::bigint
+        END)`
 
 // ActionLogRepo is the durable sim.ActionLogSink. Construct with
 // NewActionLogRepo, install on the World via SetActionLogSink, and run its
@@ -448,10 +456,12 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 	if filter.LedgerID != 0 {
 		// ledger_id is a typed bigint column (LLM-494): a genuine numeric compare,
 		// not the former text match on payload->>'ledger_id'. LedgerID is a uint64;
-		// a value above bigint's range cannot exist in the column, so the int64
-		// conversion (defined two's-complement wrap) yields a value no row carries
-		// and the filter correctly returns nothing. Real ids come from a sequence
-		// and are nowhere near that bound.
+		// a value above bigint's range cannot exist in the column, so no settlement
+		// can match — return empty rather than bind a wrapped negative value. Real
+		// ids come from a sequence and are nowhere near that bound.
+		if uint64(filter.LedgerID) > math.MaxInt64 {
+			return []sim.SettlementRow{}, nil
+		}
 		add(" AND ledger_id = $%d", int64(filter.LedgerID))
 	}
 	args = append(args, limit)

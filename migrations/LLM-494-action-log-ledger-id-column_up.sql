@@ -28,24 +28,27 @@
 -- join (LLM-283's durable-mirror goal). The readers stay action_type='paid'
 -- scoped; the broader column costs them nothing.
 --
--- THE CASTS NEED A CASE, NOT A WHERE. Postgres does not guarantee a WHERE
--- predicate is evaluated before a SET-list expression, so a cast in the SET can
--- be reached for a row the WHERE would exclude (LLM-493, code_review). Two casts
--- need protecting: ::numeric RAISES on a non-numeric string, and ::bigint RAISES
--- on a value beyond bigint's range. Both therefore live inside a CASE, whose arms
--- evaluate in order with short-circuit: the regex runs first (so ::numeric only
--- ever sees a digits-only string), then the range check (so ::bigint only ever
--- sees an in-range value). ::numeric is arbitrary-precision and never overflows,
--- so comparing it to bigint's max is a cast-safe range test that admits ANY value
--- bigint can hold — a valid 19-digit id or a leading-zero form included — and
--- NULLs only one it cannot.
+-- THE CAST NEEDS A CASE, NOT A WHERE. Postgres does not guarantee a WHERE
+-- predicate is evaluated before a SET-list expression, so a ::bigint cast in the
+-- SET can be reached for a row the WHERE would exclude and RAISE on an
+-- out-of-range value — aborting the migration (LLM-493, code_review). The cast
+-- therefore lives inside a CASE, whose arms evaluate in order with short-circuit:
+-- the anchored, length-bounded regex runs first, so ::bigint is reached only for
+-- a canonical decimal already known to fit. This is bounded work — the regex
+-- rejects an out-of-range or arbitrarily long string outright, with no
+-- arbitrary-precision numeric parse (matching the old ::bigint reader, which
+-- likewise failed fast). The <= 18-digit arm always fits bigint; the 19-digit arm
+-- range-checks lexicographically against bigint's max (equal length, so string
+-- order equals numeric order) before casting.
 --
--- This preserves the old reader's semantics for every representable id. A blanket
--- length cap would have silently dropped valid 19-digit and long leading-zero
--- values that the old `(...)::bigint` accepted, regressing the allocator floor.
--- A digits-only value ABOVE bigint's range — on which the old unguarded boot
--- query would have RAISED and wedged boot — lands NULL here instead: strictly
--- safer, and it cannot lower the floor for any id the old reader could represent.
+-- This preserves the old reader's semantics for every id it could represent. A
+-- value <= bigint max backfills to the same number the old (...)::bigint produced
+-- — including a valid 19-digit id, which a blanket length cap would have dropped,
+-- regressing the floor. A digits-only value ABOVE bigint's range, on which the old
+-- unguarded boot query would have RAISED and wedged boot, lands NULL here instead:
+-- strictly safer, and it cannot lower the floor for any representable id. ledger_id
+-- is engine-written as a canonical JSON number, so a leading-zero or 20+ digit
+-- form does not occur; such a value maps to NULL like any malformed one.
 --
 -- PARTIAL INDEX scoped to the two paid readers. Both the boot max() and the
 -- settlements filter are action_type='paid'. A partial index on (ledger_id)
@@ -67,20 +70,23 @@ ALTER TABLE agent_action_log
     ADD COLUMN IF NOT EXISTS ledger_id bigint;
 
 -- Backfill the typed column from the payload for every row that carries a
--- numeric ledger_id, using the SAME guarded extraction the write path uses
--- (insertActionLogSQL) so the column matches on every row. The CASE guards both
--- casts (see header); the WHERE regex — a total function, safe in any evaluation
--- order — limits the rewrite to digits-only rows and makes a re-run a no-op
--- (their ledger_id is already set). An oversized digits-only row is touched but
--- its CASE yields NULL, so it simply stays NULL.
+-- ledger_id bigint can hold, using the SAME guarded extraction the write path
+-- uses (insertActionLogSQL) so the column matches on every row. The CASE guards
+-- the cast (see header); the WHERE regex — a total function, safe in any
+-- evaluation order — limits the rewrite to plausibly-in-range rows (<= 19 digits)
+-- and makes a re-run a no-op (their ledger_id is already set). A 19-digit row
+-- above bigint's max is touched but its CASE yields NULL; for an append-only
+-- table it then stays NULL.
 UPDATE agent_action_log
    SET ledger_id = CASE
-           WHEN payload->>'ledger_id' ~ '^[0-9]+$'
-            AND (payload->>'ledger_id')::numeric <= 9223372036854775807
-           THEN (payload->>'ledger_id')::bigint
+           WHEN payload->>'ledger_id' ~ '^[0-9]{1,18}$'
+               THEN (payload->>'ledger_id')::bigint
+           WHEN payload->>'ledger_id' ~ '^[0-9]{19}$'
+            AND payload->>'ledger_id' <= '9223372036854775807'
+               THEN (payload->>'ledger_id')::bigint
        END
  WHERE ledger_id IS NULL
-   AND payload->>'ledger_id' ~ '^[0-9]+$';
+   AND payload->>'ledger_id' ~ '^[0-9]{1,19}$';
 
 -- Partial index tailored to the two paid-scoped readers (boot max + settlements
 -- filter). Non-paid haggle rows carry a ledger_id in the column but are not

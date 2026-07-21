@@ -72,10 +72,9 @@ func TestActionLog_Integration_LedgerIDBackfillMatchesExtraction(t *testing.T) {
 		// it, so the numeric-range guard must too (a length cap would have dropped
 		// it, regressing the floor).
 		{"max bigint (19 digits)", "paid", `{"recipient":"E","ledger_id":9223372036854775807}`, i64(9223372036854775807)},
-		// A digits-only value with leading zeros that normalizes to a small id —
-		// ::numeric ignores the zeros, so it backfills to 42 (a length cap would
-		// have dropped it as "20 chars").
-		{"leading zeros", "paid", `{"recipient":"F","ledger_id":"00000000000000000042"}`, i64(42)},
+		// A short digits-only value with leading zeros — ::bigint normalizes the
+		// zeros, so it backfills to 42.
+		{"leading zeros", "paid", `{"recipient":"F","ledger_id":"0042"}`, i64(42)},
 		// Just past bigint's max: the numeric compare rejects it → NULL, no abort.
 		{"bigint max + 1", "paid", `{"recipient":"G","ledger_id":9223372036854775808}`, nil},
 		// 33 digits: far past range — the CASE skips the ::bigint cast, the value
@@ -127,9 +126,13 @@ func TestActionLog_Integration_LedgerIDBackfillMatchesExtraction(t *testing.T) {
 	if err := f.Pool.QueryRow(ctx,
 		`SELECT count(*) FROM agent_action_log
 		  WHERE ledger_id IS DISTINCT FROM
-		        CASE WHEN payload->>'ledger_id' ~ '^[0-9]+$'
-		              AND (payload->>'ledger_id')::numeric <= 9223372036854775807
-		             THEN (payload->>'ledger_id')::bigint END`,
+		        CASE
+		            WHEN payload->>'ledger_id' ~ '^[0-9]{1,18}$'
+		                THEN (payload->>'ledger_id')::bigint
+		            WHEN payload->>'ledger_id' ~ '^[0-9]{19}$'
+		             AND payload->>'ledger_id' <= '9223372036854775807'
+		                THEN (payload->>'ledger_id')::bigint
+		        END`,
 	).Scan(&mismatches); err != nil {
 		t.Fatalf("mismatch count: %v", err)
 	}
@@ -156,36 +159,33 @@ func TestLoadSettlements_Integration_NumericLedgerFilter(t *testing.T) {
 		t.Fatalf("seed actor: %v", err)
 	}
 
+	r := NewActionLogRepo(f.Pool)
 	now := time.Now().UTC()
-	// Populate the ledger_id column the same way the write path does (CASE mirror
-	// of payload.ledger_id). speaker_name distinguishes the rows on read-back.
-	insert := func(speaker, payload string) {
+	// Rows go in through the real write path, so the column is derived by the
+	// production insert guard. speaker_name distinguishes the rows on read-back.
+	write := func(speaker string, payload map[string]any) {
 		t.Helper()
-		if _, err := f.Pool.Exec(ctx,
-			`INSERT INTO agent_action_log
-			     (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
-			 VALUES ($1, $2, 'agent', 'paid', $3::jsonb, 'ok', $4, NULL,
-			         CASE WHEN ($3::jsonb->>'ledger_id') ~ '^[0-9]+$'
-			               AND ($3::jsonb->>'ledger_id')::numeric <= 9223372036854775807
-			              THEN ($3::jsonb->>'ledger_id')::bigint END)`,
-			actorID, now, payload, speaker,
-		); err != nil {
-			t.Fatalf("insert %s: %v", speaker, err)
-		}
+		r.writeOne(sim.DurableActionLogRow{
+			ActorID:     actorID,
+			OccurredAt:  now,
+			ActionType:  sim.ActionTypePaid,
+			Payload:     payload,
+			SpeakerName: speaker,
+			Source:      "agent",
+		})
 	}
 
-	insert("Seller-A", `{"recipient":"Seller-A","amount":3,"for":"1 bread","ledger_id":42}`)
-	// Divergence row: ledger_id stored as the string "042" — the text compare on
-	// '42' would miss it; the numeric column (42) matches. Its payload fails the
-	// uint64 decode in fillSettlementPayload (a string, not a number), so the row
-	// degrades to bare columns — but it is still RETURNED, matched on the column,
-	// which is the whole point.
-	insert("Seller-B", `{"recipient":"Seller-B","amount":5,"for":"1 ale","ledger_id":"042"}`)
+	write("Seller-A", map[string]any{"recipient": "Seller-A", "amount": 3, "for": "1 bread", "ledger_id": sim.LedgerID(42)})
+	// Divergence row: ledger_id stored as the string "042" — the old text compare
+	// on '42' would miss it; the insert guard derives its column to 42, so the
+	// numeric filter matches. Its payload fails the uint64 decode in
+	// fillSettlementPayload (a string, not a number), so the row degrades to bare
+	// columns — but it is still RETURNED, matched on the column, which is the point.
+	write("Seller-B", map[string]any{"recipient": "Seller-B", "amount": 5, "for": "1 ale", "ledger_id": "042"})
 	// Control: a different id that must NOT match a filter for 42.
-	insert("Seller-C", `{"recipient":"Seller-C","amount":2,"for":"1 stew","ledger_id":99}`)
+	write("Seller-C", map[string]any{"recipient": "Seller-C", "amount": 2, "for": "1 stew", "ledger_id": sim.LedgerID(99)})
 
-	repo := NewActionLogRepo(f.Pool)
-	got, err := repo.LoadSettlements(ctx, sim.SettlementFilter{LedgerID: 42}, 10)
+	got, err := r.LoadSettlements(ctx, sim.SettlementFilter{LedgerID: 42}, 10)
 	if err != nil {
 		t.Fatalf("LoadSettlements: %v", err)
 	}
