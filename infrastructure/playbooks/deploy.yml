@@ -9,6 +9,14 @@
     - name: Load secrets
       include_tasks: ../tasks/load-secrets.yml
 
+  # Apply the pinned Godot on every deploy (LLM-505). The role is version-guarded:
+  # when the installed binary already matches godot_version it runs a single
+  # --version check and skips the download/install, so routine deploys pay nothing.
+  # Without this, a godot_version bump only ever landed via setup.yml and the prod
+  # export silently kept building with the old engine (4.6.2 until 2026-07-21).
+  roles:
+    - role: ../roles/godot
+
   tasks:
     - name: Display deployment info
       debug:
