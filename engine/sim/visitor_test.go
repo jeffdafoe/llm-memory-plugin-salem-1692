@@ -301,17 +301,18 @@ func TestTickVisitorCascade_Spawns(t *testing.T) {
 	}
 }
 
-// TestTickVisitorCascade_EcoPausesSpawn verifies eco mode (LLM-313) withholds
-// the spawn roll while no player presence is fresh — visitors exist to be
-// seen — and that a fresh presence stamp restores spawning on the next tick.
-func TestTickVisitorCascade_EcoPausesSpawn(t *testing.T) {
+// TestTickVisitorCascade_SpawnsUnwatched pins the LLM-502 eco exemption:
+// the visitor cascade spawns (and paces) with eco mode armed and NO player
+// presence. Travelers stay until next daybreak (LLM-373), so an unwatched
+// spawn is still in the village when a player logs in later — the LLM-313
+// "exists to be seen" pause starved the village of visitors entirely.
+func TestTickVisitorCascade_SpawnsUnwatched(t *testing.T) {
 	vw := newVisitorWorld()
 	vw.seedTavern(t)
 	w, cancel := vw.load(t)
 	defer cancel()
 
-	// Guaranteed roll, eco armed, no PC → the eco gate is the only thing
-	// standing between this tick and a spawn.
+	// Guaranteed roll, eco armed, no PC → a spawn must happen anyway.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.VisitorSpawnChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 2
@@ -327,26 +328,8 @@ func TestTickVisitorCascade_EcoPausesSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TickVisitorCascade: %v", err)
 	}
-	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 0 {
-		t.Errorf("spawned = %d while unwatched, want 0", tm.Spawned)
-	}
-
-	// A watching PC lifts the pause on the very next tick. Both stamps: LLM-466
-	// made audience mean a live socket AND a human behind it, so presence alone
-	// no longer constitutes a watcher.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		stamp := now
-		world.Actors["pc"] = &sim.Actor{ID: "pc", Kind: sim.KindPC, LastPCSeenAt: &stamp, LastPCActivityAt: &stamp}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("seed PC: %v", err)
-	}
-	res, err = w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: now, Rand: r}))
-	if err != nil {
-		t.Fatalf("TickVisitorCascade (watched): %v", err)
-	}
 	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
-		t.Errorf("spawned = %d with a watching player, want 1", tm.Spawned)
+		t.Errorf("spawned = %d while unwatched with eco armed, want 1", tm.Spawned)
 	}
 }
 

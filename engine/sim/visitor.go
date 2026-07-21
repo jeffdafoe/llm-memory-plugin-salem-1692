@@ -390,16 +390,18 @@ func TickVisitorCascade(inputs VisitorTickInputs) Command {
 			t := VisitorCascadeTelemetry{}
 			dispatchVisitorDespawn(w, inputs, &t)
 			dispatchVisitorCleanup(w, inputs, &t)
-			// Eco mode (LLM-313): visitors exist to be seen — pause pacing and
-			// SPAWNING while unwatched. Despawn/cleanup above keep running so existing
-			// visitors age out normally; pacing resumes (and spawning resumes) on the
-			// first tick after a player's presence stamp is fresh again. Pacing before
-			// spawn so a freshly-spawned visitor (still walking in from the road) isn't
-			// paced on its spawn tick.
-			if !ecoModeEngaged(w, inputs.Now) {
-				dispatchVisitorPacing(w, inputs, &t)
-				dispatchVisitorSpawn(w, inputs, &t)
-			}
+			// Deliberately NOT eco-gated (LLM-502, reversing the LLM-313 pause):
+			// a traveler stays until next daybreak (LLM-373), so one spawned
+			// unwatched is still in the village — lodged at the inn — when a
+			// player logs in later. Gating starved the village of visitors
+			// entirely (spawn rolls only happened during the rare watched
+			// minutes), and gating pacing alone would strand an unwatched
+			// arrival mid-arc: never making rounds, never flipping to lodging
+			// at dusk. Cost is bounded by VisitorMaxConcurrent and the spawn
+			// permille. Pacing before spawn so a freshly-spawned visitor
+			// (still walking in from the road) isn't paced on its spawn tick.
+			dispatchVisitorPacing(w, inputs, &t)
+			dispatchVisitorSpawn(w, inputs, &t)
 			return t, nil
 		},
 	}
