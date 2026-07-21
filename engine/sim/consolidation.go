@@ -206,8 +206,8 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 					// (spoke/heard-only) pair can only answer "nothing notable", and
 					// that prunes/re-creates the row into an LLM-call churn loop. A pair
 					// with a SummaryText stays eligible so an established relationship
-					// keeps being re-judged (and can prune naturally) if its dealings
-					// dry up.
+					// keeps being re-judged if its dealings dry up (a no-update reply
+					// retains the summary rather than pruning it — LLM-497).
 					if rel.SummaryText == "" && !relHasDealingFact(rel) {
 						continue
 					}
@@ -371,8 +371,12 @@ func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotFact
 // ClearConsolidation returns a Command for the "nothing notable" outcome
 // (LLM-426): the actor has formed no dealing-relevant judgment about the peer,
 // so the consolidated summary is cleared and the pair is PRUNED rather than
-// storing filler prose. Same snapshot race-safety contract as
-// ApplyConsolidation — the snapshot's prefix must still equal the live slice.
+// storing filler prose. The cascade routes here only when the candidate
+// carried NO prior summary — a no-update reply on an established pair
+// retains the summary via ApplyConsolidation instead (LLM-497), so an
+// accumulated judgment is never one quiet day away from deletion. Same
+// snapshot race-safety contract as ApplyConsolidation — the snapshot's
+// prefix must still equal the live slice.
 //
 //   - Match, nothing left after pruning the consolidated facts → DELETE the
 //     relationship row entirely, so the relationship graph keeps only edges

@@ -374,11 +374,17 @@ func TestBuildConsolidationPrompt_StructureAndDedup(t *testing.T) {
 		"- She ordered ale.",
 		"one or two sentences",
 		"the next time you deal with them",
-		"reply with exactly: nothing notable",
+		"reply with exactly: nothing new",
 	} {
 		if !strings.Contains(prompt, must) {
 			t.Errorf("prompt missing %q\n--- prompt ---\n%s", must, prompt)
 		}
+	}
+
+	// With a prior reflection the sentinel is "nothing new" (LLM-497) — the
+	// original "nothing notable" belongs to the no-prior variant only.
+	if strings.Contains(prompt, "nothing notable") {
+		t.Errorf("prior-summary prompt should not offer the 'nothing notable' sentinel\n--- prompt ---\n%s", prompt)
 	}
 
 	// Dedup: "Good evening, Wendy." appears once.
@@ -401,6 +407,14 @@ func TestBuildConsolidationPrompt_NoPriorSummary(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Your prior reflection on them:") {
 		t.Errorf("prompt should not include prior-reflection header when prior is empty\n--- prompt ---\n%s", prompt)
+	}
+	// No prior reflection → the LLM-426 "nothing notable" sentinel, not the
+	// prior-summary "nothing new" variant (LLM-497).
+	if !strings.Contains(prompt, "reply with exactly: nothing notable") {
+		t.Errorf("no-prior prompt missing the 'nothing notable' sentinel\n--- prompt ---\n%s", prompt)
+	}
+	if strings.Contains(prompt, "nothing new") {
+		t.Errorf("no-prior prompt should not offer the 'nothing new' sentinel\n--- prompt ---\n%s", prompt)
 	}
 }
 
@@ -769,10 +783,11 @@ func TestRunOneSweep_ErrorIsClassified(t *testing.T) {
 	}
 }
 
-// TestRunOneSweep_NothingNotablePrunes verifies the LLM-426 outcome: a reply of
-// the "nothing notable" sentinel drops the relationship row entirely rather
-// than storing filler prose, so the graph keeps only edges that carry a
-// judgment.
+// TestRunOneSweep_NothingNotablePrunes verifies the LLM-426 outcome: on a pair
+// with NO prior summary, a reply of the "nothing notable" sentinel drops the
+// relationship row entirely rather than storing filler prose, so the graph
+// keeps only edges that carry a judgment. (With a prior summary the same reply
+// retains instead — LLM-497, pinned below.)
 func TestRunOneSweep_NothingNotablePrunes(t *testing.T) {
 	w, stop := buildConsolidationHandlerWorld(t)
 	defer stop()
@@ -793,10 +808,10 @@ func TestRunOneSweep_NothingNotablePrunes(t *testing.T) {
 	}
 }
 
-// TestIsNothingNotable pins the sentinel matcher: the phrase (with punctuation /
-// casing / a short elaboration) prunes, but a real judgment hiding behind the
-// phrase does not.
-func TestIsNothingNotable(t *testing.T) {
+// TestIsNoUpdateSentinel pins the sentinel matcher: either phrase (with
+// punctuation / casing / a short elaboration) is a no-update sentinel, but a
+// real judgment hiding behind the phrase is not, so it isn't lost.
+func TestIsNoUpdateSentinel(t *testing.T) {
 	cases := []struct {
 		in   string
 		want bool
@@ -807,14 +822,94 @@ func TestIsNothingNotable(t *testing.T) {
 		{`"Nothing notable"`, true},
 		{"Nothing notable to report.", true},
 		{"Nothing notable about them.", true},
+		{"nothing new", true},
+		{"Nothing new.", true},
+		{`"Nothing new"`, true},
+		{"Nothing new to report.", true},
 		{"Nothing notable except that he pays late.", false},
 		{"Nothing notable, but he drives a hard bargain.", false},
+		{"Nothing new, but she shorted me on the milk.", false},
+		{"Nothing new except she now pays late.", false},
+		// Punctuation continuations hide a real judgment behind the phrase —
+		// code_review round 1: the caveat-word list alone missed these.
+		{"nothing new: she pays late", false},
+		{"Nothing new — she pays late.", false},
+		{"Nothing new, she pays late.", false},
+		{"nothing new but she pays late", false},
+		{"Nothing notable; he shorted me on the nails.", false},
+		// A newline or tab continuation starts a new sentence that can carry
+		// a judgment — the grammar accepts literal spaces only (round 2).
+		{"Nothing new\nShe pays late", false},
+		{"nothing notable\the shorted me", false},
+		{"nothing new to report\nshe pays late", false},
+		// Prefix must end at a word boundary.
+		{"nothing newsworthy happened", false},
 		{"He pays what he promises and trades fair.", false},
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := isNothingNotable(c.in); got != c.want {
-			t.Errorf("isNothingNotable(%q) = %v, want %v", c.in, got, c.want)
+		if got := isNoUpdateSentinel(c.in); got != c.want {
+			t.Errorf("isNoUpdateSentinel(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// TestRunOneSweep_NoUpdateSentinelRetainsPriorSummary pins the LLM-497 fix: a
+// no-update sentinel reply on a pair with an established summary RETAINS the
+// summary — consuming the fact batch and re-stamping LastConsolidatedAt —
+// instead of pruning the edge. Pre-fix, one pleasantries-only day deleted the
+// accumulated judgment, and the rebuild-from-scratch that followed is where
+// misreads took root (the live Abraham→Elizabeth betrayal-narrative incident).
+// Both sentinel phrasings retain: the prior-summary prompt asks for "nothing
+// new", but a sloppy model may echo "nothing notable" — retain-vs-prune is
+// decided by PriorSummary, not by which phrase came back.
+func TestRunOneSweep_NoUpdateSentinelRetainsPriorSummary(t *testing.T) {
+	for _, reply := range []string{"Nothing new.", "Nothing notable."} {
+		t.Run(reply, func(t *testing.T) {
+			w, stop := buildConsolidationHandlerWorld(t)
+			defer stop()
+			at := time.Now().UTC()
+			drivePastFirstMinFacts(t, w, "ezekiel", at)
+
+			const prior = "Elizabeth pays what she agrees without quibbling."
+			// Install an established summary with a floor-overdue stamp so the
+			// pair selects via the daily-floor branch — the live incident's
+			// shape (an established judgment plus a quiet day's batch).
+			stale := at.Add(-sim.ConsolidationFloor - time.Hour)
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				rel := world.Actors["hannah"].Relationships["ezekiel"]
+				rel.SummaryText = prior
+				rel.LastConsolidatedAt = &stale
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("seed prior summary: %v", err)
+			}
+
+			client := llm.NewFakeClient(llm.ScriptedTurn{
+				Response: llm.Response{Content: "  " + reply + "  "},
+			})
+			runOneSweep(context.Background(), w, client)
+
+			if got := client.CallCount(); got != 1 {
+				t.Fatalf("LLM call count = %d, want 1", got)
+			}
+			snap := w.Published()
+			rel, ok := snap.Actors["hannah"].Relationships["ezekiel"]
+			if !ok {
+				t.Fatal("relationship row pruned on a no-update reply despite an established summary")
+			}
+			if rel.SummaryText != prior {
+				t.Errorf("SummaryText = %q, want prior summary retained: %q", rel.SummaryText, prior)
+			}
+			if len(rel.SalientFacts) != 0 {
+				t.Errorf("SalientFacts len = %d, want 0 (batch consumed)", len(rel.SalientFacts))
+			}
+			if rel.LastConsolidatedAt == nil {
+				t.Fatal("LastConsolidatedAt = nil, want re-stamped")
+			}
+			if !rel.LastConsolidatedAt.After(stale) {
+				t.Errorf("LastConsolidatedAt = %v, want re-stamped after the stale %v", rel.LastConsolidatedAt, stale)
+			}
+		})
 	}
 }
