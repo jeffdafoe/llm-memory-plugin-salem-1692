@@ -14,11 +14,19 @@ import (
 // affordances, identity, the "Since you got here" baseline, pay-offers, and the
 // act-now coda to EphemeralText; .Text is now just the "since your last turn"
 // events. Tests that assert on a moved section use this.
+// combinedPrompt joins the three streams into the single prompt the model
+// effectively sees, stable first — mirroring its system-zone placement
+// (LLM-501) and the harness's fullPerceptionPrompt.
 func combinedPrompt(r RenderedPrompt) string {
-	if r.EphemeralText == "" {
-		return r.Text
+	parts := make([]string, 0, 3)
+	if r.StableText != "" {
+		parts = append(parts, r.StableText)
 	}
-	return r.Text + "\n\n" + r.EphemeralText
+	parts = append(parts, r.Text)
+	if r.EphemeralText != "" {
+		parts = append(parts, r.EphemeralText)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func speechWarrant(eventID sim.EventID, scene sim.SceneID, speaker sim.ActorID, excerpt string) sim.WarrantMeta {

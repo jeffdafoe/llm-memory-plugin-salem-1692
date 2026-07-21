@@ -10,15 +10,14 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 )
 
-// harness_continuation_ephemeral_test.go — LLM-468. A tick is an agentic
-// multi-call loop, and the ephemeral body is attached to the current turn only
-// (never persisted into history), so every round re-ships it in full — including
-// the shared-VA soul prose, which is static per actor and averaged 4.4KB across
-// 1,747 measured calls in 24h. Round 0 gets the full body; continuations get the
-// same body minus that prose.
+// harness_continuation_ephemeral_test.go — LLM-501 (supersedes the LLM-468
+// round-index soul trim these tests used to pin). The shared-VA soul rides
+// Request.StableContext on EVERY round — the adapter routes it to the
+// provider-cached system zone — and the volatile Request.EphemeralContext
+// never carries it on any round.
 //
-// Asserted through the per-round Request.EphemeralContext the FakeClient
-// records, the same instrument harness_selfstate_refresh_test.go uses.
+// Asserted through the per-round Request the FakeClient records, the same
+// instrument harness_selfstate_refresh_test.go uses.
 
 const continuationSoulProse = "I keep the forge and I do not suffer idle talk while the iron is hot."
 
@@ -38,11 +37,10 @@ func seedAliceSoul(t *testing.T, w *sim.World) {
 	}
 }
 
-func TestHarness_ContinuationRoundDropsSoulProse(t *testing.T) {
+func TestHarness_SoulRidesStableContextEveryRound(t *testing.T) {
 	r := NewRegistry()
 	// A non-terminal commit that mutates nothing, so the LLM-88 self-state
-	// refresh does NOT fire — this test must prove the round-index swap on its
-	// own, not ride a re-render.
+	// refresh does NOT fire — this proves the steady-state routing on its own.
 	touchFn := func(_ HandlerInput) (sim.Command, error) {
 		return sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}, nil
 	}
@@ -75,33 +73,38 @@ func TestHarness_ContinuationRoundDropsSoulProse(t *testing.T) {
 	if len(reqs) != 2 {
 		t.Fatalf("requests: got %d, want 2 (touch round, done round)", len(reqs))
 	}
-	if !strings.Contains(reqs[0].EphemeralContext, continuationSoulProse) {
-		t.Errorf("round 1 must carry the soul prose — it is the identity framing the model deliberates from, got:\n%s", reqs[0].EphemeralContext)
+	for i, req := range reqs {
+		// The soul reaches the model every round — via the cached stable zone.
+		if !strings.Contains(req.StableContext, continuationSoulProse) {
+			t.Errorf("round %d StableContext must carry the soul prose, got:\n%s", i+1, req.StableContext)
+		}
+		if !strings.Contains(req.StableContext, "You are Alice Smith.") {
+			t.Errorf("round %d StableContext must carry the self-name line (LLM-432), got:\n%s", i+1, req.StableContext)
+		}
+		// ...and never via the volatile per-tick body, where it would re-bill
+		// cold on every call (the LLM-501 point).
+		if strings.Contains(req.EphemeralContext, continuationSoulProse) || strings.Contains(req.EphemeralContext, "## Who you are") {
+			t.Errorf("round %d EphemeralContext must NOT carry the identity section, got:\n%s", i+1, req.EphemeralContext)
+		}
+		if !strings.Contains(req.EphemeralContext, "## You") {
+			t.Errorf("round %d must still carry the self-state block, got:\n%s", i+1, req.EphemeralContext)
+		}
 	}
-	if strings.Contains(reqs[1].EphemeralContext, continuationSoulProse) {
-		t.Errorf("round 2 (continuation) must NOT re-ship the soul prose, got:\n%s", reqs[1].EphemeralContext)
+	// No round-index variance: both rounds send the same bodies.
+	if reqs[0].EphemeralContext != reqs[1].EphemeralContext {
+		t.Errorf("rounds must send identical ephemeral bodies when self-state did not change")
 	}
-	// The name line survives so the model can still tell it is being addressed
-	// (LLM-432), and the round-2 body must still be a real perception body — not
-	// emptied by an off-by-one in the slice.
-	if !strings.Contains(reqs[1].EphemeralContext, "You are Alice Smith.") {
-		t.Errorf("round 2 must keep the self-name line, got:\n%s", reqs[1].EphemeralContext)
-	}
-	if !strings.Contains(reqs[1].EphemeralContext, "## You") {
-		t.Errorf("round 2 must still carry the self-state block, got:\n%s", reqs[1].EphemeralContext)
-	}
-	if len(reqs[1].EphemeralContext) >= len(reqs[0].EphemeralContext) {
-		t.Errorf("round 2 body (%d bytes) must be shorter than round 1 (%d bytes)",
-			len(reqs[1].EphemeralContext), len(reqs[0].EphemeralContext))
+	if reqs[0].StableContext != reqs[1].StableContext {
+		t.Errorf("rounds must send identical stable bodies")
 	}
 }
 
-// The two mechanisms compose: the LLM-88 self-state refresh re-renders mid-tick
-// when a commit moves the actor's own coins/needs/inventory, and it must refresh
-// BOTH bodies. If it updated only the full one, a refreshed continuation round
-// would fall back to a stale body — or worse, re-acquire the soul prose the
-// round-index selection had just dropped (code_review).
-func TestHarness_SelfStateRefreshKeepsContinuationLean(t *testing.T) {
+// The LLM-88 self-state refresh re-renders the ephemeral body mid-tick when a
+// commit moves the actor's own coins/needs/inventory. The stable body must
+// pass through the refresh untouched — nothing in it is self-state, and a
+// refreshed round re-acquiring different stable bytes would break the very
+// prefix stability the stream exists for.
+func TestHarness_SelfStateRefreshLeavesStableContextAlone(t *testing.T) {
 	r := NewRegistry()
 	// A non-terminal commit that eats one bread on the world goroutine — the
 	// own-state change the LLM-88 refresh keys on.
@@ -152,15 +155,16 @@ func TestHarness_SelfStateRefreshKeepsContinuationLean(t *testing.T) {
 	if strings.Contains(reqs[1].EphemeralContext, "bread (x3)") {
 		t.Errorf("round 2 must not carry the stale 'bread (x3)', got:\n%s", reqs[1].EphemeralContext)
 	}
-	// ...and it stayed lean: a refreshed continuation must not re-acquire the soul.
+	// The identity never leaks into the refreshed ephemeral body...
 	if strings.Contains(reqs[1].EphemeralContext, continuationSoulProse) {
-		t.Errorf("a REFRESHED continuation round must still omit the soul prose, got:\n%s", reqs[1].EphemeralContext)
+		t.Errorf("a refreshed round must not carry the soul in its ephemeral body, got:\n%s", reqs[1].EphemeralContext)
 	}
-	if !strings.Contains(reqs[1].EphemeralContext, "You are Alice Smith.") {
-		t.Errorf("a refreshed continuation round must still keep the self-name line, got:\n%s", reqs[1].EphemeralContext)
+	// ...and the stable body is byte-identical across the refresh.
+	if reqs[0].StableContext != reqs[1].StableContext {
+		t.Errorf("StableContext must be byte-identical across a self-state refresh\nround1:\n%s\nround2:\n%s",
+			reqs[0].StableContext, reqs[1].StableContext)
 	}
-	// Round 1 is unaffected by either mechanism.
-	if !strings.Contains(reqs[0].EphemeralContext, continuationSoulProse) {
-		t.Errorf("round 1 must still carry the soul prose, got:\n%s", reqs[0].EphemeralContext)
+	if !strings.Contains(reqs[1].StableContext, continuationSoulProse) {
+		t.Errorf("round 2 StableContext must still carry the soul, got:\n%s", reqs[1].StableContext)
 	}
 }

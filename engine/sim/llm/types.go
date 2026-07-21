@@ -77,6 +77,17 @@ type Request struct {
 	// carries the current options.
 	EphemeralContext string
 
+	// StableContext, when set, is the per-actor DAILY-stable identity context
+	// (the "## Who you are" soul prose) the adapter appends to the provider-
+	// CACHED zone — memory-api puts it in the system prompt — instead of the
+	// volatile user turn, so it stops re-billing cold on every call (LLM-501).
+	// Like EphemeralContext it is never persisted and is re-sent on every
+	// iteration; unlike EphemeralContext its bytes change at most daily (the
+	// nightly soul synthesis), which is what makes the provider prefix cache
+	// hold. Adapters that don't support it ignore it. (memory-api: maps to
+	// /chat/send stable_context.)
+	StableContext string
+
 	// SimActorID / SimActorName identify the in-world actor this call is made
 	// ON BEHALF OF. A shared switchboard VA (salem-vendor / salem-visitor)
 	// backs MANY in-world actors under one agent name, so the logged call row's
