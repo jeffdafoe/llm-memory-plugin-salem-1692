@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -241,19 +242,45 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 // "nothing new" (the prior-summary prompt, LLM-497). Both are accepted
 // regardless of which prompt variant ran — weak models are sloppy about
 // echoing the exact phrase — and the caller decides retain-vs-prune from
-// PriorSummary, not from which sentinel matched. Matched case/punctuation-
-// insensitively, tolerating a short elaboration ("nothing notable to
-// report") — but a reply that hides a real judgment behind the phrase
-// ("nothing notable except he pays late") is treated as a summary, NOT a
-// sentinel, so the judgment isn't lost.
+// PriorSummary, not from which sentinel matched.
+//
+// Matched case/punctuation-insensitively, tolerating a short bare-word
+// elaboration ("nothing notable to report"). A reply that hides a real
+// judgment behind the phrase — a caveat conjunction ("nothing notable
+// except he pays late") or ANY punctuation continuation ("nothing new:
+// she pays late", "nothing new — she pays late") — is treated as a
+// summary, NOT a sentinel. Misclassifying in that direction stores a
+// slightly filler summary; misclassifying the other way destroys or
+// freezes a judgment, so ambiguity resolves to not-a-sentinel.
 func isNoUpdateSentinel(reply string) bool {
 	n := strings.ToLower(strings.TrimSpace(reply))
 	n = strings.Trim(n, " \t\n.!\"'")
-	if !strings.HasPrefix(n, "nothing notable") && !strings.HasPrefix(n, "nothing new") {
+	var rest string
+	switch {
+	case strings.HasPrefix(n, "nothing notable"):
+		rest = n[len("nothing notable"):]
+	case strings.HasPrefix(n, "nothing new"):
+		rest = n[len("nothing new"):]
+	default:
+		return false
+	}
+	if rest == "" {
+		return true
+	}
+	// The continuation must start at a word boundary ("nothing newsworthy
+	// happened" is not the sentinel)...
+	if rest[0] != ' ' {
+		return false
+	}
+	// ...and contain only bare words — any punctuation rune introduces a
+	// clause that can carry a real judgment.
+	if strings.IndexFunc(rest, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsSpace(r)
+	}) >= 0 {
 		return false
 	}
 	for _, caveat := range []string{"except", "but ", "however", "aside", "other than", "save "} {
-		if strings.Contains(n, caveat) {
+		if strings.Contains(rest, caveat) {
 			return false
 		}
 	}

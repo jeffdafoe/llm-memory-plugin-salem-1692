@@ -830,6 +830,15 @@ func TestIsNoUpdateSentinel(t *testing.T) {
 		{"Nothing notable, but he drives a hard bargain.", false},
 		{"Nothing new, but she shorted me on the milk.", false},
 		{"Nothing new except she now pays late.", false},
+		// Punctuation continuations hide a real judgment behind the phrase —
+		// code_review round 1: the caveat-word list alone missed these.
+		{"nothing new: she pays late", false},
+		{"Nothing new — she pays late.", false},
+		{"Nothing new, she pays late.", false},
+		{"nothing new but she pays late", false},
+		{"Nothing notable; he shorted me on the nails.", false},
+		// Prefix must end at a word boundary.
+		{"nothing newsworthy happened", false},
 		{"He pays what he promises and trades fair.", false},
 		{"", false},
 	}
