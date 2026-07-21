@@ -90,20 +90,24 @@ func handleLaborOfferReceivedWarrants(w *sim.World, evt sim.Event) {
 	}
 }
 
-// RegisterLaborHandlers wires the labor event subscriber(s) into the world.
+// RegisterLaborHandlers wires the labor event subscribers into the world:
+// the LLM-187 offer wake (handleLaborOfferReceivedWarrants) and the LLM-498
+// settle beat (handleLaborSettledWarrants, labor_settle_reactor.go).
 // Separate from RegisterLaborFamily (which registers the solicit_work /
 // accept_work / decline_work TOOLS in the command registry) — this registers
-// the world-event SUBSCRIBER, the same split as RegisterPayWithItemHandlers vs
+// the world-event SUBSCRIBERS, the same split as RegisterPayWithItemHandlers vs
 // the pay command registration. Must run on the world goroutine — call before
 // World.Run or from inside a Command.Fn.
 //
-// Idempotency: registering twice would invoke the subscriber twice per event,
-// but tryStampWarrant's source-aware dedup catches the duplicate —
-// (WarrantKindLaborOffer, LaborID) is the key, identical both times, so the
-// second stamp is dropped at the open-cycle dedup gate.
+// Idempotency: registering twice would invoke each subscriber twice per event,
+// but tryStampWarrant's source-aware dedup catches the duplicates —
+// (WarrantKindLaborOffer, LaborID) and (WarrantKindLaborSettled, LaborID) are
+// the keys, identical both times, so the second stamp is dropped at the
+// open-cycle dedup gate.
 func RegisterLaborHandlers(w *sim.World) {
 	if w == nil {
 		panic("handlers: RegisterLaborHandlers requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handleLaborOfferReceivedWarrants))
+	w.Subscribe(sim.SubscriberFunc(handleLaborSettledWarrants))
 }

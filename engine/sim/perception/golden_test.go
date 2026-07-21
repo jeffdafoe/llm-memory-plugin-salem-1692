@@ -2844,6 +2844,26 @@ var perceptionScenarios = []perceptionScenario{
 		build: laboringWorkerEmployerAway,
 	},
 	{
+		name: "worker_labor_settled_beat",
+		summary: "LLM-498 worker side of the mid-shift settle beat: Abraham Warren's four-hour job for Elizabeth Ellis just " +
+			"settled at the completion sweep — 12 coins and 1 milk transferred in full, mid-shift, so the LLM-190 shop-closed " +
+			"close-out did NOT fire — and the LaborResolved(Completed) subscriber woke him with the pre-rendered narration. The " +
+			"golden pins the 'Your work for Elizabeth Ellis is done — you've been paid 1 milk and 12 coins, as agreed.' warrant " +
+			"line (renderNarrationWarrantLine's WarrantKindLaborSettled path). Before LLM-498 this settle was invisible: the " +
+			"live trace has Abraham, already paid, asking to 'settle up with you for the day'.",
+		build: workerLaborSettledBeat,
+	},
+	{
+		name: "employer_labor_settled_beat",
+		summary: "LLM-498 employer side of the same settle, the double-pay guard: Elizabeth Ellis's perception previously " +
+			"carried ONLY the worker's settle-up line, so she reasonably paid a second wage for the settled job (live " +
+			"2026-07-19: pay-5 on top of the transferred 12-coins-and-milk reward — a 40% overpay, unbounded on a larger job). " +
+			"The golden pins her own settle warrant line 'Abraham Warren's work for you is done — you've paid 1 milk and 12 " +
+			"coins for it, as agreed.' so the tick that reads the worker's settle-up request also reads the wage as already " +
+			"squared.",
+		build: employerLaborSettledBeat,
+	},
+	{
 		name: "destitute_keeper_blocked_suppliers_named_with_reasons",
 		summary: "LLM-216 as amended by LLM-406: a DESTITUTE general-store keeper — 0 coins AND an empty pack — whose " +
 			"bought-in carrots and milk are both empty stands alone at his store on shift. His carrot supplier (James " +
@@ -11676,6 +11696,114 @@ func employerWithWorkerOnJob() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, johnID, nil
+}
+
+// laborSettledBeatSnapshot is the shared LLM-498 fixture: the instant AFTER the
+// completion sweep settled Abraham Warren's four-hour job for Elizabeth Ellis
+// mid-shift — 12 coins and 1 milk transferred in full, the worker freed to
+// idle, the offer terminal Completed in the ledger (not yet reaped) — with the
+// two still huddled at Ellis Farm, exactly the live 2026-07-19 trace moment
+// where Abraham asked to "settle up" for a wage he had already been paid. Each
+// subject carries its own side's LaborSettledWarrantReason with the narration
+// pre-rendered through the REAL builders (LaborSettledWorkerNarration /
+// LaborSettledEmployerNarration), so the goldens stay in lockstep with the
+// production phrasing. The reward deliberately carries both legs (coins + an
+// in-kind milk) to pin formatPayment's two-part phrase in the beat.
+func laborSettledBeatSnapshot(subjectIsWorker bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		elizabethID = sim.ActorID("elizabeth")
+		abrahamID   = sim.ActorID("abraham")
+		farm        = sim.StructureID("farm")
+		huddle      = sim.HuddleID("h1")
+	)
+	published := time.Date(2026, 7, 19, 15, 35, 0, 0, time.UTC)
+	acceptedAt := published.Add(-4 * time.Hour)
+	workingUntil := published
+	resolvedAt := published
+	rewardItems := []sim.ItemKindQty{{Kind: "milk", Qty: 1}}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: farm,
+		CurrentHuddleID:   huddle,
+		Coins:             38,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Abraham Warren": {}},
+	}
+	abraham := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Abraham Warren",
+		Role:              "laborer",
+		State:             sim.StateIdle, // settleCompletedLabor freed him before the event emitted
+		InsideStructureID: farm,
+		CurrentHuddleID:   huddle,
+		Coins:             12,
+		Inventory:         map[sim.ItemKind]int{"milk": 1},
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Elizabeth Ellis": {}},
+	}
+	kinds := foodDrinkCatalog()
+	kinds["milk"] = &sim.ItemKindDef{Name: "milk", DisplayLabel: "milk", Category: sim.ItemCategoryDrink,
+		Capabilities: []string{"portable"}, Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 4}}}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth, abrahamID: abraham},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "Ellis Farm"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{elizabethID: {}, abrahamID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID:           1,
+				WorkerID:     abrahamID,
+				EmployerID:   elizabethID,
+				Reward:       12,
+				RewardItems:  rewardItems,
+				DurationMin:  240,
+				State:        sim.LaborStateCompleted,
+				HuddleID:     huddle,
+				AcceptedAt:   &acceptedAt,
+				WorkingUntil: &workingUntil,
+				ResolvedAt:   &resolvedAt,
+			},
+		},
+		ItemKinds: kinds,
+	}
+	if subjectIsWorker {
+		warrants := []sim.WarrantMeta{{
+			TriggerActorID: elizabethID,
+			Reason: sim.LaborSettledWarrantReason{
+				LaborID:       1,
+				Counterparty:  elizabethID,
+				NarrationText: sim.LaborSettledWorkerNarration("Elizabeth Ellis", 12, rewardItems),
+			},
+			SourceEventID: 1,
+		}}
+		return snap, abrahamID, warrants
+	}
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: abrahamID,
+		Reason: sim.LaborSettledWarrantReason{
+			LaborID:       1,
+			Counterparty:  abrahamID,
+			NarrationText: sim.LaborSettledEmployerNarration("Abraham Warren", 12, rewardItems),
+		},
+		SourceEventID: 1,
+	}}
+	return snap, elizabethID, warrants
+}
+
+func workerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return laborSettledBeatSnapshot(true)
+}
+
+func employerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return laborSettledBeatSnapshot(false)
 }
 
 // laboringWorkerAddressedByEmployer is the LLM-230 worker-side fixture: Silence
