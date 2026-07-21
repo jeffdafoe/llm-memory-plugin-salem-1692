@@ -128,9 +128,9 @@ var solicitWorkSchema = json.RawMessage(`{
         "reward_items": ` + laborRewardItemsSchemaFragment + `,
         "duration_minutes": {
             "type": "integer",
-            "minimum": 120,
+            "minimum": 240,
             "maximum": 480,
-            "description": "How long the job takes, in minutes. Pick a full stretch of work: 120 (2 hours), 240 (4 hours), 360 (6 hours), or 480 (8 hours). You are occupied for this whole time once they accept, and you cannot work past the employer's closing time."
+            "description": "How long the job takes, in minutes. Pick a full stretch of work: 240 (4 hours), 360 (6 hours), or 480 (8 hours). You are occupied for this whole time once they accept, and you cannot work past the employer's closing time."
         }
     },
     "required": ["employer", "reward", "duration_minutes"],
@@ -302,9 +302,9 @@ var offerWorkSchema = json.RawMessage(`{
         "reward_items": ` + laborWageItemsSchemaFragment + `,
         "duration_minutes": {
             "type": "integer",
-            "minimum": 120,
+            "minimum": 240,
             "maximum": 480,
-            "description": "How long the job takes, in minutes. Pick a full stretch of work: 120 (2 hours), 240 (4 hours), 360 (6 hours), or 480 (8 hours). They are occupied for this whole time once they accept, and no one works past your closing time."
+            "description": "How long the job takes, in minutes. Pick a full stretch of work: 240 (4 hours), 360 (6 hours), or 480 (8 hours). They are occupied for this whole time once they accept, and no one works past your closing time."
         },
         "say": {
             "type": "string",

@@ -200,7 +200,7 @@ func TestSolicitWork_MintsPendingOffer(t *testing.T) {
 	events := captureLaborEvents(t, w)
 
 	now := time.Now().UTC()
-	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now))
+	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -223,8 +223,8 @@ func TestSolicitWork_MintsPendingOffer(t *testing.T) {
 	if o.WorkerID != "ezekiel" || o.EmployerID != "josiah" {
 		t.Errorf("offer parties = %q/%q, want ezekiel/josiah", o.WorkerID, o.EmployerID)
 	}
-	if o.Reward != 10 || o.DurationMin != 120 {
-		t.Errorf("offer terms reward=%d dur=%d, want 10/120", o.Reward, o.DurationMin)
+	if o.Reward != 10 || o.DurationMin != 240 {
+		t.Errorf("offer terms reward=%d dur=%d, want 10/240", o.Reward, o.DurationMin)
 	}
 	if o.State != sim.LaborStatePending {
 		t.Errorf("offer State = %q, want pending", o.State)
@@ -254,7 +254,7 @@ func TestSolicitWork_RejectsNonWorker(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err == nil {
 		t.Fatal("SolicitWork by non-worker: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 0 {
@@ -270,7 +270,7 @@ func TestSolicitWork_RejectsUnknownEmployer(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Nobody", 10, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Nobody", 10, nil, 240, now)); err == nil {
 		t.Fatal("SolicitWork naming absent employer: want error, got nil")
 	}
 }
@@ -283,10 +283,10 @@ func TestSolicitWork_RejectsDuplicatePending(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err != nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err != nil {
 		t.Fatalf("first SolicitWork: %v", err)
 	}
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 8, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 8, nil, 240, now)); err == nil {
 		t.Fatal("second SolicitWork to same employer: want duplicate error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 1 {
@@ -302,7 +302,7 @@ func TestSolicitWork_RejectsWhenNotHuddled(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err == nil {
 		t.Fatal("SolicitWork while not huddled: want error, got nil")
 	}
 }
@@ -315,7 +315,7 @@ func TestSolicitWork_RejectsBadTerms(t *testing.T) {
 	defer stop()
 	now := time.Now().UTC()
 
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 0, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 0, nil, 240, now)); err == nil {
 		t.Error("reward 0: want error, got nil")
 	}
 	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 0, now)); err == nil {
@@ -323,6 +323,41 @@ func TestSolicitWork_RejectsBadTerms(t *testing.T) {
 	}
 	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 9999, now)); err == nil {
 		t.Error("duration over cap: want error, got nil")
+	}
+}
+
+// TestSolicitWork_CommandRejectsSubFloorDuration pins the duration floor at the
+// COMMAND layer specifically. The floor is enforced twice — the handler decoder
+// (labor_handlers.go, covered by the decode test) and this command validation
+// (labor_commands.go) — so the direct command API can't drift into accepting the
+// old 2h floor after LLM-500 raised it to 4h. A sub-floor solicit is refused and
+// mints no ledger row.
+func TestSolicitWork_CommandRejectsSubFloorDuration(t *testing.T) {
+	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
+		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
+		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	// Fixed in-shift timestamp so the test can't interact with any time-of-day
+	// validation/scheduling in SolicitWork (avoids the prior close-window flake).
+	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
+
+	// 120 was the old 2h floor; 239 is one minute under the new 4h floor.
+	for _, dur := range []int{120, 239} {
+		if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, dur, now)); err == nil {
+			t.Errorf("duration %d: want rejection (below the 240 floor), got nil", dur)
+		}
+	}
+	// Neither rejected solicit minted anything.
+	if n := len(readLaborLedger(t, w)); n != 0 {
+		t.Fatalf("ledger holds %d offers after sub-floor solicits, want 0 (a rejected solicit mints nothing)", n)
+	}
+	// The floor is exactly 240: the first in-band value is accepted and mints one row.
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err != nil {
+		t.Fatalf("duration 240 (the floor) should be accepted: %v", err)
+	}
+	if n := len(readLaborLedger(t, w)); n != 1 {
+		t.Errorf("ledger holds %d offers, want 1 (only the accepted 240 offer)", n)
 	}
 }
 
@@ -337,7 +372,7 @@ func TestSolicitWork_RejectsHousemate(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("silence", "Patience", 10, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("silence", "Patience", 10, nil, 240, now)); err == nil {
 		t.Fatal("SolicitWork against a housemate: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 0 {
@@ -355,7 +390,7 @@ func TestSolicitWork_RejectsCoworker(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err == nil {
 		t.Fatal("SolicitWork against a co-worker: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 0 {
@@ -374,7 +409,7 @@ func TestSolicitWork_AllowsUnrelatedDespiteAnchors(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err != nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err != nil {
 		t.Fatalf("SolicitWork against an unrelated employer: %v", err)
 	}
 	if n := len(readLaborLedger(t, w)); n != 1 {
@@ -825,7 +860,7 @@ func TestLaborLifecycle_EndToEndConservesCoins(t *testing.T) {
 	defer stop()
 
 	now := time.Now().UTC()
-	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now))
+	res, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -843,7 +878,7 @@ func TestLaborLifecycle_EndToEndConservesCoins(t *testing.T) {
 	}
 
 	// Advance past the window and sweep.
-	after := now.Add(121 * time.Minute)
+	after := now.Add(241 * time.Minute)
 	if _, err := w.Send(sim.EvaluateLaborLedgerSweep(after)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -875,10 +910,10 @@ func TestSolicitWork_RejectsSecondPendingDifferentEmployer(t *testing.T) {
 	})
 	defer stop()
 	now := time.Now().UTC()
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 120, now)); err != nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 10, nil, 240, now)); err != nil {
 		t.Fatalf("first SolicitWork: %v", err)
 	}
-	if _, err := w.Send(sim.SolicitWork("ezekiel", "John", 8, nil, 120, now)); err == nil {
+	if _, err := w.Send(sim.SolicitWork("ezekiel", "John", 8, nil, 240, now)); err == nil {
 		t.Fatal("second SolicitWork to a different employer: want error, got nil")
 	}
 	if n := len(readLaborLedger(t, w)); n != 1 {

@@ -192,15 +192,21 @@ const (
 	LaborEnRouteWaitDefault = 30 * time.Minute
 
 	// MinLaborDurationMinutes / MaxLaborDurationMinutes clamp the
-	// model-proposed work duration to the 2h–8h band (LLM-190). The 2h floor
-	// stops the weak model lowballing to a near-instant job it then spends the
-	// rest of the conversation talking about; the 8h ceiling is the longest a
-	// full work day runs. A job is bounded in practice by the employer's
-	// closing time, not this ceiling: AcceptWork clamps WorkingUntil to a
-	// keeper-employer's shift end, and the establishment close-up settles any
-	// still-running job when the shop shuts (so an 8h offer taken late in the
-	// day ends when the shop closes, not 8h later).
-	MinLaborDurationMinutes = 120
+	// model-proposed work duration to the 4h–8h band (LLM-190; floor raised
+	// from 2h to 4h in LLM-500). The floor serves two purposes: it stops the
+	// weak model lowballing to a near-instant job it then spends the rest of
+	// the conversation talking about, and it caps how many hire cycles a worker
+	// runs per shift — each cycle (negotiation huddle, en-route arrival beat,
+	// completion conversation) is the LLM spend, not the quiet laboring itself,
+	// so a 4h floor roughly halves hire-cycle overhead versus 2h. The 8h
+	// ceiling is the longest a full work day runs. A job is bounded in practice
+	// by the employer's closing time, not this ceiling: AcceptWork clamps
+	// WorkingUntil to a keeper-employer's shift end, and the establishment
+	// close-up settles any still-running job when the shop shuts (so an 8h
+	// offer taken late in the day ends when the shop closes, not 8h later — and
+	// likewise a 4h offer struck late ends at close, below this floor by
+	// design; the floor governs the OFFER, the clamp governs the actual window).
+	MinLaborDurationMinutes = 240
 	MaxLaborDurationMinutes = 480
 
 	// MaxLaborReward caps the reward coins (matches MaxPayWithItemAmount).

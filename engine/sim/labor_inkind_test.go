@@ -68,13 +68,13 @@ func TestSolicitWork_EatHereOnlyReward_Rejected(t *testing.T) {
 
 	now := time.Now().UTC()
 	_, err := w.Send(sim.SolicitWork("anne", "Hannah", 0,
-		[]sim.PayItemInput{{Item: "stew", Qty: 1}}, 120, now))
+		[]sim.PayItemInput{{Item: "stew", Qty: 1}}, 240, now))
 	if err == nil || !strings.Contains(err.Error(), "eaten where it's served") {
 		t.Fatalf("want eat-here wage rejection, got %v", err)
 	}
 
 	if _, err := w.Send(sim.SolicitWork("anne", "Hannah", 0,
-		[]sim.PayItemInput{{Item: "bread", Qty: 1}}, 120, now)); err != nil {
+		[]sim.PayItemInput{{Item: "bread", Qty: 1}}, 240, now)); err != nil {
 		t.Fatalf("portable food must still work as a wage, got %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestSolicitWork_InKindReward_MintsOfferWithItems(t *testing.T) {
 
 	now := time.Now().UTC()
 	res, err := w.Send(sim.SolicitWork("anne", "Hannah", 2,
-		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 120, now))
+		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 240, now))
 	if err != nil {
 		t.Fatalf("SolicitWork with reward_items: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSolicitWork_ItemsOnlyReward_ZeroCoinsAllowed(t *testing.T) {
 
 	now := time.Now().UTC()
 	res, err := w.Send(sim.SolicitWork("anne", "Hannah", 0,
-		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 120, now))
+		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 240, now))
 	if err != nil {
 		t.Fatalf("SolicitWork with items-only reward: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSolicitWork_NegativeReward_Rejects(t *testing.T) {
 
 	now := time.Now().UTC()
 	if _, err := w.Send(sim.SolicitWork("anne", "Hannah", -1,
-		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 120, now)); err == nil {
+		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 240, now)); err == nil {
 		t.Fatal("negative reward: want error, got nil")
 	}
 }
@@ -166,7 +166,7 @@ func TestSolicitWork_EmployerLacksItems_AutoDeclines(t *testing.T) {
 
 	now := time.Now().UTC()
 	res, err := w.Send(sim.SolicitWork("anne", "Hannah", 2,
-		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 120, now))
+		[]sim.PayItemInput{{Item: "porridge", Qty: 1}}, 240, now))
 	if err != nil {
 		t.Fatalf("SolicitWork: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestAcceptWork_EmployerDroppedItems_FailsUnavailable(t *testing.T) {
 	seedLaborOffer(t, w, sim.LaborOffer{
 		ID: 1, WorkerID: "anne", EmployerID: "hannah",
 		Reward: 2, RewardItems: []sim.ItemKindQty{{Kind: "porridge", Qty: 1}},
-		DurationMin: 120, State: sim.LaborStatePending,
+		DurationMin: 240, State: sim.LaborStatePending,
 		HuddleID: "h1", SceneID: "sc1",
 		CreatedAt: now, ExpiresAt: now.Add(3 * time.Minute),
 	})

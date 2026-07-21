@@ -153,7 +153,7 @@ func TestAcceptWork_SecondJobBlockedWhileEnRoute(t *testing.T) {
 	}
 
 	// Ezekiel is now EnRoute to Josiah's store. Any fresh solicit is refused.
-	_, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 5, nil, 120, now))
+	_, err := w.Send(sim.SolicitWork("ezekiel", "Josiah", 5, nil, 240, now))
 	if err == nil {
 		t.Fatalf("SolicitWork while en_route: got nil error, want rejection")
 	}
