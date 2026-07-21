@@ -72,8 +72,8 @@ func TestHarness_SolicitWork_RejectsRefireAfterFailure(t *testing.T) {
 	defer cancel()
 
 	client := llm.NewFakeClient(
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "solicit_work", `{"employer":"Patience Walker","reward":5,"duration_minutes":120}`)}}},
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "solicit_work", `{"employer":"Patience Walker","reward":10,"duration_minutes":120}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "solicit_work", `{"employer":"Patience Walker","reward":5,"duration_minutes":240}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "solicit_work", `{"employer":"Patience Walker","reward":10,"duration_minutes":240}`)}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
 	)
 	h, log := newSolicitRefireHarness(t, client)
@@ -113,7 +113,7 @@ func TestHarness_SolicitWork_AllowsOtherActionAfterFailure(t *testing.T) {
 	defer cancel()
 
 	client := llm.NewFakeClient(
-		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "solicit_work", `{"employer":"Patience Walker","reward":5,"duration_minutes":120}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "solicit_work", `{"employer":"Patience Walker","reward":5,"duration_minutes":240}`)}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "speak", `{"text":"Then I'll seek work elsewhere."}`)}}},
 		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
 	)
