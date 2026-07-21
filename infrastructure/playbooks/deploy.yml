@@ -148,7 +148,7 @@
 
     - name: Determine pending migrations to dry-run
       set_fact:
-        dryrun_pending: "{{ dryrun_migration_files.files | sort(attribute='path') | rejectattr('path', 'search', '(' + (dryrun_applied.stdout_lines | map('regex_escape') | join('|')) + ')') | list if (dryrun_applied.stdout_lines | default([])) | length > 0 else (dryrun_migration_files.files | default([])) | sort(attribute='path') }}"
+        dryrun_pending: "{{ dryrun_migration_files.files | sort(attribute='path') | rejectattr('path', 'search', '/(' + (dryrun_applied.stdout_lines | map('regex_escape') | join('|')) + ')_up[.]sql$') | list if (dryrun_applied.stdout_lines | default([])) | length > 0 else (dryrun_migration_files.files | default([])) | sort(attribute='path') }}"
       when:
         - run_migrations | default(false) | bool
         - (engine_was_running | default({})).rc | default(1) == 0
@@ -376,9 +376,14 @@
       set_fact:
         applied_list: "{{ applied_migrations.stdout_lines | default([]) }}"
 
+    # Keep files whose applied name is NOT already recorded. The match is anchored
+    # (`/<name>_up.sql` at end of path) so it is an EXACT basename comparison, not a
+    # substring one: without the anchors an applied `001-add-user` would also match
+    # — and silently skip — `001-add-user-index` (LLM-496). `[.]` is a literal dot,
+    # written as a class to avoid backslash-escaping through YAML/Jinja.
     - name: Determine pending migrations
       set_fact:
-        pending_migrations: "{{ migration_files.files | sort(attribute='path') | rejectattr('path', 'search', '(' + (applied_list | map('regex_escape') | join('|')) + ')') | list if applied_list | length > 0 else migration_files.files | sort(attribute='path') }}"
+        pending_migrations: "{{ migration_files.files | sort(attribute='path') | rejectattr('path', 'search', '/(' + (applied_list | map('regex_escape') | join('|')) + ')_up[.]sql$') | list if applied_list | length > 0 else migration_files.files | sort(attribute='path') }}"
 
     - name: Display migration status
       debug:
