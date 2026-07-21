@@ -45,10 +45,17 @@
         recurse: yes
       when: repo_root != project_root
 
-    # Go engine build
+    # Go engine build. Built to salem.new, a STAGING name — NOT engine/salem,
+    # which is what the unit's ExecStart runs. The new binary is promoted into
+    # place ("Install the new engine binary") only after every migration has
+    # applied for real, below. So a failed migration aborts the play with the OLD
+    # binary still installed, and starting the service gives a consistent
+    # old-code/old-schema state rather than the LLM-493 split state (new binary,
+    # un-migrated schema: the village came up price-blind and every checkpoint
+    # failed on a missing column). LLM-495.
     - name: Build Go engine
       shell: |
-        cd {{ project_root }}/engine && go build -o salem ./sim/cmd/engine
+        cd {{ project_root }}/engine && go build -o salem.new ./sim/cmd/engine
       environment:
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
@@ -104,6 +111,89 @@
       failed_when: false
       changed_when: false
       when: salem_engine_unit.stat.exists
+
+    # --- Pre-stop migration dry run (LLM-495) ---------------------------------
+    # Dry-run every pending migration against the LIVE database, BEFORE the engine
+    # stop below, so a migration whose guard RAISEs (or errors any other way) fails
+    # the deploy HERE — while the village is still serving — instead of after the
+    # stop, which is what left the LLM-493 deploy with the engine down, the schema
+    # un-migrated, and the new binary already installed.
+    #
+    # This block is READ-ONLY and self-contained. It runs ONLY when the engine is
+    # actually running (the same guard the stop uses), which means it never writes
+    # to a live database and never needs the fresh-machine baseline path:
+    # migrations_applied is guaranteed to exist because the engine could not have
+    # started without its schema. The authoritative planning + apply below are
+    # left exactly as they were and still run on the quiesced database after the
+    # stop. The pending-list logic here MIRRORS "Determine pending migrations"
+    # below and must be kept in sync with it; because no migration is recorded
+    # between here and there, the two computations yield the same list.
+    - name: Find all SQL migrations (dry run)
+      find:
+        paths: "{{ project_root }}/migrations"
+        patterns: "*_up.sql"
+      register: dryrun_migration_files
+      when:
+        - run_migrations | default(false) | bool
+        - (engine_was_running | default({})).rc | default(1) == 0
+
+    - name: Check which migrations have been applied (dry run)
+      shell: |
+        sudo -u postgres psql -d {{ database_name }} -t -A -c "SELECT migration_name FROM migrations_applied;"
+      register: dryrun_applied
+      changed_when: false
+      when:
+        - run_migrations | default(false) | bool
+        - (engine_was_running | default({})).rc | default(1) == 0
+
+    - name: Determine pending migrations to dry-run
+      set_fact:
+        dryrun_pending: "{{ dryrun_migration_files.files | sort(attribute='path') | rejectattr('path', 'search', '(' + (dryrun_applied.stdout_lines | map('regex_escape') | join('|')) + ')') | list if (dryrun_applied.stdout_lines | default([])) | length > 0 else (dryrun_migration_files.files | default([])) | sort(attribute='path') }}"
+      when:
+        - run_migrations | default(false) | bool
+        - (engine_was_running | default({})).rc | default(1) == 0
+
+    # Each migration file is a single BEGIN;/COMMIT; transaction with the
+    # terminators alone on their lines (asserted per-file below). Swapping the
+    # terminating COMMIT for ROLLBACK runs the REAL migration — DDL, backfill,
+    # RAISE guards, constraints — inside a transaction that is then discarded.
+    # Postgres has transactional DDL, so ALTER TABLE / ADD CONSTRAINT and
+    # CREATE TEMP TABLE ... ON COMMIT DROP all roll back cleanly, and every RAISE
+    # fires exactly as it would for the real apply.
+    #
+    # The per-file BEGIN/COMMIT assertion is load-bearing: without a single COMMIT
+    # line to swap, the "dry" run would COMMIT for real against the live database.
+    # So a file that does not fit the shape FAILS the deploy rather than running —
+    # the ticket's "a non-transactional migration needs an explicit opt-out"
+    # caveat, enforced fail-closed. CREATE INDEX CONCURRENTLY / VACUUM cannot live
+    # inside a BEGIN/COMMIT file, so such a migration trips this guard and a human
+    # decides how to handle it.
+    #
+    # lock_timeout/statement_timeout bound the blast radius: the dry run takes the
+    # same locks the real migration would, and a large backfill UPDATE would hold
+    # row locks against the live engine's writes. Capping them means the dry run
+    # fails fast instead of ever wedging production. NOTE: nextval does NOT roll
+    # back, so a future migration using a sequence would burn ids on each dry run.
+    - name: Dry-run pending migrations against the live database
+      shell: |
+        migration="{{ item.path }}"
+        begins=$(grep -c '^BEGIN;$' "$migration")
+        commits=$(grep -c '^COMMIT;$' "$migration")
+        if [ "$begins" != "1" ] || [ "$commits" != "1" ]; then
+            echo "cannot safely dry-run $(basename "$migration"): not a single BEGIN;/COMMIT; transaction (found $begins BEGIN line(s), $commits COMMIT line(s)). A non-transactional migration needs an explicit opt-out here before it can deploy." >&2
+            exit 1
+        fi
+        sed 's/^COMMIT;$/ROLLBACK;/' "$migration" \
+          | sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 \
+              -c "SET lock_timeout = '5s'; SET statement_timeout = '60s';" -f -
+      loop: "{{ dryrun_pending | default([]) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: false
+      when:
+        - run_migrations | default(false) | bool
+        - (engine_was_running | default({})).rc | default(1) == 0
+    # --- end pre-stop migration dry run ---------------------------------------
 
     # Journal CURSOR (not a timestamp) for this stop attempt, so every check below
     # reads only THIS shutdown's lines. journalctl --since has one-second
@@ -308,10 +398,24 @@
         label: "{{ item.path | basename }}"
       when: run_migrations | default(false) | bool
 
+    # Promote the freshly-built binary into place NOW — only after every migration
+    # has applied for real. The build wrote engine/salem.new (staging); this moves
+    # it onto engine/salem, which ExecStart runs. mv on the same filesystem is an
+    # atomic rename, so there is no window where salem is half-written, and it
+    # fails loudly if salem.new is somehow missing rather than promoting nothing.
+    # The only task that syncs engine/ (with delete) runs far above, before the
+    # build, so nothing can remove the staged binary between build and this move.
+    # A failed migration aborts the play before this task, leaving the OLD binary
+    # in place for a clean old-code/old-schema abort instead of the LLM-493 split
+    # state. Unconditional (not gated on run_migrations): a run that skips
+    # migrations must still install the code it just built.
+    - name: Install the new engine binary (staged during build, promoted after migrations)
+      command: mv "{{ project_root }}/engine/salem.new" "{{ project_root }}/engine/salem"
+
     # Bring the engine back up immediately after migrations. The new binary was
-    # built above and the schema is now migrated, so it boots clean. This block
-    # sits here rather than at the end of the play to cap engine downtime at the
-    # stop-checkpoint + migration window; nothing below (client tileset copy,
+    # installed just above and the schema is now migrated, so it boots clean. This
+    # block sits here rather than at the end of the play to cap engine downtime at
+    # the stop-checkpoint + migration window; nothing below (client tileset copy,
     # Godot export, nginx) needs the engine down. A failed migration aborts the
     # play before this task, so the engine deliberately stays down until the
     # migration is fixed and the deploy re-run, rather than booting onto a
