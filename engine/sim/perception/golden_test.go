@@ -2864,6 +2864,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: employerLaborSettledBeat,
 	},
 	{
+		name: "worker_labor_settled_closeout_both_signals",
+		summary: "LLM-498 x LLM-190 combination: a job that ran up to the employer's closing time settles with BOTH worker-" +
+			"side signals in one tick — the keeper's spoken close-out (an observed social event, the LLM-190 Spoke riding the " +
+			"speech reactor) and the worker's own labor_settled warrant (the authoritative payment state). Deliberately " +
+			"redundant (code_review round 1): the golden pins both lines rendering together in a single '## Since your last " +
+			"turn' block — one wake, not two — so neither signal silently swallows the other and the pairing's prompt cost " +
+			"stays visible in the diff.",
+		build: workerLaborSettledCloseoutBothSignals,
+	},
+	{
 		name: "destitute_keeper_blocked_suppliers_named_with_reasons",
 		summary: "LLM-216 as amended by LLM-406: a DESTITUTE general-store keeper — 0 coins AND an empty pack — whose " +
 			"bought-in carrots and milk are both empty stands alone at his store on shift. His carrot supplier (James " +
@@ -11804,6 +11814,28 @@ func workerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 
 func employerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return laborSettledBeatSnapshot(false)
+}
+
+// workerLaborSettledCloseoutBothSignals is the shop-closed variant: the same
+// settle, but the job ran up to closing time so the LLM-190 close-out Spoke
+// ALSO fired — the worker's tick carries the keeper's spoken line (an
+// NPC-speech warrant, as the speech reactor would stamp it) alongside its own
+// labor_settled warrant. The excerpt mirrors laborCloseoutLine's phrasing with
+// this job's formatPayment output; it is fixture-authored (the sim keeps that
+// composer unexported), so a wording change there shows up as a fixture edit,
+// not a silent drift.
+func workerLaborSettledCloseoutBothSignals() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, abrahamID, warrants := laborSettledBeatSnapshot(true)
+	warrants = append(warrants, sim.WarrantMeta{
+		TriggerActorID: "elizabeth",
+		Reason: sim.NPCSpeechWarrantReason{
+			SpeechID: 2,
+			Speaker:  "elizabeth",
+			Excerpt:  "That's the shop shut for the day — your work's done, and well done. Here's your 1 milk and 12 coins, with my thanks.",
+		},
+		SourceEventID: 2,
+	})
+	return snap, abrahamID, warrants
 }
 
 // laboringWorkerAddressedByEmployer is the LLM-230 worker-side fixture: Silence

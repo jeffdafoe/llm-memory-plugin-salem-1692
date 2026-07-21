@@ -116,6 +116,24 @@ func TestSubscriber_LaborSettled_UnpaidCompletionStampsNothing(t *testing.T) {
 	defer stop()
 	seedAndSweepWorkingOffer(t, w, "anne", "prudence", 5, 1)
 
+	// Prove the sweep actually took the stiffed-completion path (the employer's
+	// empty purse resolved the finished job unpaid) before asserting the absence
+	// of the warrant — otherwise a future eligibility change could leave the
+	// offer un-swept and this test would pass without exercising the path.
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		offer := world.LaborLedger[1]
+		if offer == nil {
+			return sim.LaborLedgerState(""), nil
+		}
+		return offer.State, nil
+	}})
+	if err != nil {
+		t.Fatalf("read offer state: %v", err)
+	}
+	if got := res.(sim.LaborLedgerState); got != sim.LaborStateFailedUnavailable {
+		t.Fatalf("offer state after sweep = %q, want %q (the stiffed-completion path)", got, sim.LaborStateFailedUnavailable)
+	}
+
 	for _, id := range []sim.ActorID{"anne", "prudence"} {
 		if got := countByKind(readWarrants(t, w, id), sim.WarrantKindLaborSettled); got != 0 {
 			t.Errorf("%s: labor-settled warrants = %d, want 0 on an unpaid completion", id, got)
