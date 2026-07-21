@@ -67,11 +67,12 @@ func TestActionLogRepo_Integration_RoundTrip(t *testing.T) {
 		gotSource  string
 		gotSpeaker string
 		gotHuddle  *string
+		gotLedger  *int64
 	)
 	if err := f.Pool.QueryRow(ctx,
-		`SELECT action_type, payload, result, source, speaker_name, huddle_id
+		`SELECT action_type, payload, result, source, speaker_name, huddle_id, ledger_id
 		   FROM agent_action_log WHERE actor_id = $1`, actorID,
-	).Scan(&gotType, &payloadRaw, &gotResult, &gotSource, &gotSpeaker, &gotHuddle); err != nil {
+	).Scan(&gotType, &payloadRaw, &gotResult, &gotSource, &gotSpeaker, &gotHuddle, &gotLedger); err != nil {
 		t.Fatalf("select back: %v", err)
 	}
 
@@ -89,6 +90,11 @@ func TestActionLogRepo_Integration_RoundTrip(t *testing.T) {
 	}
 	if gotHuddle == nil || *gotHuddle != huddleID {
 		t.Errorf("huddle_id = %v, want %q", gotHuddle, huddleID)
+	}
+	// A spoke row carries no ledger_id, so the universal-mirror column stays NULL
+	// (LLM-494).
+	if gotLedger != nil {
+		t.Errorf("ledger_id = %d, want NULL (a spoke row carries no ledger_id)", *gotLedger)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
@@ -133,5 +139,43 @@ func TestActionLogRepo_Integration_NullHuddle(t *testing.T) {
 	}
 	if huddle != nil {
 		t.Errorf("huddle_id = %q, want NULL", *huddle)
+	}
+}
+
+// TestActionLogRepo_Integration_LedgerIDColumn confirms the write path mirrors a
+// payload's ledger_id into the typed column (LLM-494). A paid row built with a
+// sim.LedgerID — the production type the cascade writes — must land the same
+// integer in the column, so the boot allocator-floor query and the settlements
+// filter read it without re-extracting from the jsonb.
+func TestActionLogRepo_Integration_LedgerIDColumn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const actorID = "33333333-3333-3333-3333-333333333333"
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, $2, 0, 0)`,
+		actorID, "Ezekiel",
+	); err != nil {
+		t.Fatalf("seed actor: %v", err)
+	}
+
+	r := NewActionLogRepo(f.Pool)
+	r.writeOne(sim.DurableActionLogRow{
+		ActorID:     actorID,
+		OccurredAt:  time.Now().UTC(),
+		ActionType:  sim.ActionTypePaid,
+		Payload:     map[string]any{"recipient": "John Ellis", "amount": 3, "ledger_id": sim.LedgerID(477)},
+		SpeakerName: "Ezekiel",
+		Source:      "agent",
+	})
+
+	var ledger *int64
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT ledger_id FROM agent_action_log WHERE actor_id = $1`, actorID,
+	).Scan(&ledger); err != nil {
+		t.Fatalf("select back: %v", err)
+	}
+	if ledger == nil || *ledger != 477 {
+		t.Errorf("ledger_id = %v, want 477", ledger)
 	}
 }

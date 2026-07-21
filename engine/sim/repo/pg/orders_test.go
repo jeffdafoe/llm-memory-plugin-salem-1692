@@ -59,7 +59,7 @@ func TestOrdersRepo_MaxLedgerID(t *testing.T) {
 // this) so a restart can't re-mint one and corrupt the audit join.
 func TestOrdersRepo_MaxPaidActionLogLedgerID(t *testing.T) {
 	mock, repo := newMockPool(t)
-	mock.ExpectQuery(`SELECT COALESCE\(max\(\(payload->>'ledger_id'\)::bigint\), 0\) FROM agent_action_log WHERE action_type = 'paid' AND payload->>'ledger_id' ~ '\^\[0-9\]\+\$'`).
+	mock.ExpectQuery(`SELECT COALESCE\(max\(ledger_id\), 0\) FROM agent_action_log WHERE action_type = 'paid' AND ledger_id IS NOT NULL`).
 		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(int64(497)))
 	got, err := repo.MaxPaidActionLogLedgerID(context.Background())
 	if err != nil {

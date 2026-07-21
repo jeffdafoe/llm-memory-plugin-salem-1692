@@ -496,21 +496,23 @@ func (r *OrdersRepo) MaxLedgerID(ctx context.Context) (int64, error) {
 	return maxID, nil
 }
 
-// maxPaidActionLogLedgerIDSQL reads the largest ledger_id carried by any
-// `paid` agent_action_log payload (0 when none). consume_now settlements
-// before LLM-246 minted a LedgerID but wrote no pay_ledger row, so this is
-// the only durable trace of the ids they consumed — the allocator floor must
-// include it or a restart re-mints them (LLM-245). Since LLM-246 the
-// accept-time write-through persists those ids to pay_ledger too, so
-// MaxLedgerID covers new mints and this floor is belt-and-braces for the
-// historical rows. Rows whose payload lacks ledger_id (e.g. the
-// engine-charged lodger-rebook paid rows) drop out via the `~ '^[0-9]+$'`
-// guard; COALESCE floors the empty case to 0. The regex guard also fences the
-// `::bigint` cast off from any malformed/non-numeric audit payload — the audit
-// log is a floor source, not authoritative state, so one bad historical row
-// must not wedge engine boot (code_review, LLM-245). Runs once at load, so the
-// action_type filter scanning the audit table unindexed is a non-issue.
-const maxPaidActionLogLedgerIDSQL = `SELECT COALESCE(max((payload->>'ledger_id')::bigint), 0) FROM agent_action_log WHERE action_type = 'paid' AND payload->>'ledger_id' ~ '^[0-9]+$'`
+// maxPaidActionLogLedgerIDSQL reads the largest ledger_id on any `paid`
+// agent_action_log row (0 when none). consume_now settlements before LLM-246
+// minted a LedgerID but wrote no pay_ledger row, so this log is the only durable
+// trace of the ids they consumed — the allocator floor must include it or a
+// restart re-mints them (LLM-245). Since LLM-246 the accept-time write-through
+// persists those ids to pay_ledger too, so MaxLedgerID covers new mints and this
+// floor is belt-and-braces for the historical rows.
+//
+// LLM-494 promoted ledger_id to a typed bigint column with a partial index on
+// (ledger_id) WHERE action_type='paid' AND ledger_id IS NOT NULL, so this is now
+// a backward index scan (LIMIT 1), not the former full scan + per-row regex+cast.
+// The `IS NOT NULL` is explicit so the predicate matches the partial index. Rows
+// with no ledger_id (e.g. the engine-charged lodger-rebook paid rows) have a NULL
+// column and drop out; COALESCE floors the empty case to 0. The write and
+// backfill paths skip a malformed / oversized value (it lands NULL), preserving
+// the old property that one bad audit row cannot raise the floor or wedge boot.
+const maxPaidActionLogLedgerIDSQL = `SELECT COALESCE(max(ledger_id), 0) FROM agent_action_log WHERE action_type = 'paid' AND ledger_id IS NOT NULL`
 
 // MaxPaidActionLogLedgerID reports the largest ledger_id on any paid
 // action-log row (0 when none). See the OrdersRepo interface doc: FinalizeLoad

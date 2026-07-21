@@ -48,11 +48,13 @@ const actionLogWriteTimeout = 5 * time.Second
 // insertActionLogSQL appends one audit row. id is BIGSERIAL (DB-assigned);
 // result is always 'ok' (v2 logs committed actions only); error is left NULL;
 // huddle_id is NULL for outdoor / pre-huddle actions. payload is cast from a
-// JSON text param to jsonb in SQL so the bind value is a plain string.
+// JSON text param to jsonb in SQL so the bind value is a plain string. ledger_id
+// ($8) is the typed mirror of payload.ledger_id (LLM-494): NULL for rows that
+// carry none, else the same integer the payload holds.
 const insertActionLogSQL = `
 INSERT INTO agent_action_log
-    (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id)
-VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7)`
+    (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id, ledger_id)
+VALUES ($1, $2, $3, $4, $5::jsonb, 'ok', $6, $7, $8)`
 
 // ActionLogRepo is the durable sim.ActionLogSink. Construct with
 // NewActionLogRepo, install on the World via SetActionLogSink, and run its
@@ -145,6 +147,15 @@ func (r *ActionLogRepo) writeOne(row sim.DurableActionLogRow) {
 		huddle = string(row.HuddleID)
 	}
 
+	// ledger_id ($8) mirrors payload.ledger_id as a typed column (LLM-494): NULL
+	// when the row carries none, else the same integer the payload holds. Read
+	// from the same map that was just marshaled, so the column and the jsonb copy
+	// cannot disagree.
+	var ledgerID any
+	if id, ok := payloadLedgerID(row.Payload); ok {
+		ledgerID = id
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), actionLogWriteTimeout)
 	defer cancel()
 	if _, err := r.pool.Exec(ctx, insertActionLogSQL,
@@ -155,8 +166,30 @@ func (r *ActionLogRepo) writeOne(row sim.DurableActionLogRow) {
 		string(payload),        // $5 payload (::jsonb in SQL)
 		row.SpeakerName,        // $6 speaker_name
 		huddle,                 // $7 huddle_id (uuid or NULL)
+		ledgerID,               // $8 ledger_id (bigint or NULL)
 	); err != nil {
 		log.Printf("pg action_log: insert actor %q action %q: %v", row.ActorID, row.ActionType, err)
+	}
+}
+
+// payloadLedgerID returns the row's ledger_id as an int64 for the typed
+// ledger_id column, or ok=false when the payload carries no numeric one (→ SQL
+// NULL). The engine builds these payloads with sim.LedgerID values; the other
+// integer cases are defensive against a caller that stores a plain int/uint. An
+// absent or non-integer value maps to NULL, matching the migration backfill's
+// regex guard so the column and the payload extraction agree on every row.
+func payloadLedgerID(payload map[string]any) (int64, bool) {
+	switch n := payload["ledger_id"].(type) {
+	case sim.LedgerID:
+		return int64(n), true
+	case uint64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
 	}
 }
 
@@ -433,9 +466,9 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 		add(" AND occurred_at < $%d", filter.Until)
 	}
 	if filter.LedgerID != 0 {
-		// ledger_id is a JSON number in the payload; ->> yields its text form, so
-		// match against the decimal string of the filter id.
-		add(" AND payload->>'ledger_id' = $%d", fmt.Sprintf("%d", uint64(filter.LedgerID)))
+		// ledger_id is a typed bigint column (LLM-494): a genuine numeric compare,
+		// not the former text match on payload->>'ledger_id'.
+		add(" AND ledger_id = $%d", int64(filter.LedgerID))
 	}
 	args = append(args, limit)
 	q += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
