@@ -64,6 +64,7 @@
 - name: Extract web export templates
   shell: |
     cd /var/tmp
+    rm -rf templates
     unzip -o godot_templates.tpz 'templates/web*' 'templates/version.txt'
     mv templates/web* "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/"
     mv templates/version.txt "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/"
