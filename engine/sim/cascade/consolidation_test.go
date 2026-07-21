@@ -837,6 +837,11 @@ func TestIsNoUpdateSentinel(t *testing.T) {
 		{"Nothing new, she pays late.", false},
 		{"nothing new but she pays late", false},
 		{"Nothing notable; he shorted me on the nails.", false},
+		// A newline or tab continuation starts a new sentence that can carry
+		// a judgment — the grammar accepts literal spaces only (round 2).
+		{"Nothing new\nShe pays late", false},
+		{"nothing notable\the shorted me", false},
+		{"nothing new to report\nshe pays late", false},
 		// Prefix must end at a word boundary.
 		{"nothing newsworthy happened", false},
 		{"He pays what he promises and trades fair.", false},

@@ -244,11 +244,11 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 // echoing the exact phrase — and the caller decides retain-vs-prune from
 // PriorSummary, not from which sentinel matched.
 //
-// Matched case/punctuation-insensitively, tolerating a short bare-word
-// elaboration ("nothing notable to report"). A reply that hides a real
-// judgment behind the phrase — a caveat conjunction ("nothing notable
-// except he pays late") or ANY punctuation continuation ("nothing new:
-// she pays late", "nothing new — she pays late") — is treated as a
+// Matched case-insensitively with terminal punctuation trimmed, tolerating
+// a short bare-word elaboration ("nothing notable to report"). A reply that
+// hides a real judgment behind the phrase — a caveat conjunction ("nothing
+// notable except he pays late") or any punctuation continuation ("nothing
+// new: she pays late", "nothing new — she pays late") — is treated as a
 // summary, NOT a sentinel. Misclassifying in that direction stores a
 // slightly filler summary; misclassifying the other way destroys or
 // freezes a judgment, so ambiguity resolves to not-a-sentinel.
@@ -267,15 +267,17 @@ func isNoUpdateSentinel(reply string) bool {
 	if rest == "" {
 		return true
 	}
-	// The continuation must start at a word boundary ("nothing newsworthy
-	// happened" is not the sentinel)...
+	// The continuation grammar is deliberately strict: one literal space at
+	// the word boundary, then bare space-separated words ("to report",
+	// "about them"). Any other rune — punctuation, newline, tab — introduces
+	// a clause or a new sentence that can carry a real judgment, so it
+	// rejects. ("nothing newsworthy happened" also fails here: no space at
+	// the boundary.)
 	if rest[0] != ' ' {
 		return false
 	}
-	// ...and contain only bare words — any punctuation rune introduces a
-	// clause that can carry a real judgment.
 	if strings.IndexFunc(rest, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsSpace(r)
+		return !unicode.IsLetter(r) && r != ' '
 	}) >= 0 {
 		return false
 	}
