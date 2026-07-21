@@ -273,12 +273,42 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 		}
 		worker.Inventory[ri.Kind] += ri.Qty
 	}
+	// finalizeLaborTerminal emits LaborResolved(Completed); its
+	// handlers/labor_settle_reactor.go subscriber stamps the LLM-498 settle
+	// warrant on BOTH parties, so neither perceives the paid job as still owed
+	// (before it, a mid-shift settle was invisible to both sides and the
+	// employer would pay a second time on the worker's "shall I settle up?").
 	finalizeLaborTerminal(w, offer, LaborTerminalStateCompleted, true, now)
 	// LLM-190: if the job ran up to the keeper's closing time (the employer is an
-	// establishment keeper now off shift), the keeper announces the close-out —
-	// "we're shut, your work's done, here's your pay." A job that finished
-	// mid-shift completes silently.
+	// establishment keeper now off shift), the keeper ALSO announces the close-out
+	// aloud — "we're shut, your work's done, here's your pay" — the social beat on
+	// top of the settle warrant's self-perception line.
 	announceLaborCloseoutIfShopClosed(w, employer, worker, formatPayment(offer.Reward, offer.RewardItems), now)
+}
+
+// LaborSettledWorkerNarration composes the worker-side settle beat for a paid
+// labor completion (LLM-498): the wage arrived, named counterparty and exact
+// quantities verbatim (formatPayment), so the worker's next turn reads the job
+// as squared instead of role-playing being owed. Pre-rendered at the
+// LaborResolved subscriber — the ProductionCompletionNarration posture.
+// Pronoun-free on purpose: the engine doesn't know the employer's pronouns.
+func LaborSettledWorkerNarration(employerName string, reward int, rewardItems []ItemKindQty) string {
+	if employerName == "" {
+		employerName = "your employer"
+	}
+	return fmt.Sprintf("Your work for %s is done — you've been paid %s, as agreed.",
+		employerName, formatPayment(reward, rewardItems))
+}
+
+// LaborSettledEmployerNarration is the employer-side twin: the wage has left
+// their purse, so their next turn sees the payment already made — closing the
+// double-pay loop (the live Elizabeth Ellis pay-again) at its source.
+func LaborSettledEmployerNarration(workerName string, reward int, rewardItems []ItemKindQty) string {
+	if workerName == "" {
+		workerName = "Your hired worker"
+	}
+	return fmt.Sprintf("%s's work for you is done — you've paid %s for it, as agreed.",
+		workerName, formatPayment(reward, rewardItems))
 }
 
 // rehydrateLaborContractsOnLoad loads the durable accepted-contract mirror

@@ -3675,6 +3675,12 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// LLM-319: a production cycle landed its batch — pre-rendered at the
 		// subscriber, same narration-line path as the source-activity beat.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
+	case sim.LaborSettledWarrantReason:
+		// LLM-498: a finished job's wage transferred at the completion sweep —
+		// pre-rendered per side at the subscriber (worker: wage received;
+		// employer: wage paid), so neither party's next turn treats the settled
+		// job as still owed. Same narration-line path as the production beat.
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.Counterparty), maxTextBytes)
 	case sim.StallRepairWarrantReason:
 		// LLM-118 (generalized LLM-247): the business just wore through the repair
 		// threshold. At the business the "## Your business" cue carries the nail

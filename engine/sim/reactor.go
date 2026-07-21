@@ -86,6 +86,7 @@ const (
 	WarrantKindHearthLow          WarrantKind = "hearth_low"           // a storm is running and the owner's hearth fire is out/low — wake them to stoke it (LLM-412)
 	WarrantKindHearthStokeHired   WarrantKind = "hearth_stoke_hired"   // a hired worker started on-post during a storm at an employer whose hearth wants stoking — wake them, piercing the laboring shelve-gate (LLM-412)
 	WarrantKindUnfinishedIntent   WarrantKind = "unfinished_intent"    // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
+	WarrantKindLaborSettled       WarrantKind = "labor_settled"        // a finished job's wage transferred at the completion sweep — both parties perceive the payment as squared (LLM-498)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -406,6 +407,33 @@ type LaborOfferWarrantReason struct {
 func (LaborOfferWarrantReason) isWarrantReason()             {}
 func (LaborOfferWarrantReason) Kind() WarrantKind            { return WarrantKindLaborOffer }
 func (r LaborOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LaborID) }
+
+// LaborSettledWarrantReason surfaces a PAID labor completion to each party's
+// next perception (LLM-498). settleCompletedLabor transfers the reward at the
+// completion sweep — mid-shift, with neither party's turn in flight — and the
+// salient facts it writes feed the consolidation layer, not the next turn's
+// perception, so before this warrant the settle was invisible to both sides:
+// the worker would role-play still being owed ("shall I settle up with you?")
+// and the employer, whose perception carried ONLY that line, would reasonably
+// pay AGAIN (live 2026-07-19, Ellis Farm: a second pay-5 on top of a settled
+// 12-coins-and-milk wage). The LaborResolved(Completed) subscriber
+// (handlers/labor_settle_reactor.go) stamps this on BOTH parties with the
+// narration pre-rendered per side — the ProductionDone posture — so each
+// party's next tick reads the wage as already squared.
+//
+// Counterparty is the OTHER party (the employer on the worker's stamp and
+// vice versa) — the render fallback name if the narration is somehow empty.
+// DedupDiscriminator is uint64(LaborID): one settle beat per job per actor,
+// restart-stable like the LaborOffer twin above.
+type LaborSettledWarrantReason struct {
+	LaborID       LaborID
+	Counterparty  ActorID
+	NarrationText string
+}
+
+func (LaborSettledWarrantReason) isWarrantReason()             {}
+func (LaborSettledWarrantReason) Kind() WarrantKind            { return WarrantKindLaborSettled }
+func (r LaborSettledWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LaborID) }
 
 // PayResolvedWarrantReason captures the buyer-side resolution of a
 // pay-with-item offer. Phase 3 PR S4 step 7 — the pay-resolved
