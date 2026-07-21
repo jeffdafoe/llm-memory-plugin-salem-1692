@@ -644,12 +644,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// when a commit moves the actor's own needs/coins/goods, so a stale eat/drink
 	// affordance can't prime a re-fire on a later round.
 	ephemeralText := rendered.EphemeralText
-	// continuationEphemeralText is what rounds AFTER the first send instead
-	// (LLM-468): the same body minus the static "## Who you are" soul prose, which
-	// the ephemeral protocol would otherwise re-ship in full on every round of
-	// every tick. Kept in lockstep with ephemeralText through the LLM-88 refresh
-	// below so a self-state change moves both.
-	continuationEphemeralText := rendered.ContinuationEphemeralText
+	// stableText is the daily-stable identity body (the "## Who you are" soul)
+	// sent as Request.StableContext on every round — the adapter routes it to
+	// the provider-cached system zone, so re-sending it costs warm-cache prices
+	// (LLM-501; this retires LLM-468's rounds-after-the-first soul strip). Not
+	// touched by the LLM-88 refresh below: nothing in it is self-state.
+	stableText := rendered.StableText
 	// lastSelf is the self-state the current ephemeral body reflects. The LLM-88
 	// refresh re-renders only when a commit actually moved needs/coins/goods vs
 	// this — not on a no-op commit. Seeded with the tick-open snapshot (actor
@@ -683,22 +683,14 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			return result
 		}
 
-		// Round 0 gets the full ephemeral body; every continuation gets the
-		// compact one (LLM-468). The identity prose it drops is deliberation
-		// framing the model has already used to produce the action sitting in
-		// this transcript.
-		roundEphemeral := ephemeralText
-		if round > 0 {
-			roundEphemeral = continuationEphemeralText
-		}
-
 		resp, err := h.client.Complete(ctx, llm.Request{
 			Model:            model,
 			SceneID:          sceneID,
 			ConversationID:   conversationID,
 			Messages:         transcript,
 			Tools:            tools,
-			EphemeralContext: roundEphemeral,
+			EphemeralContext: ephemeralText,
+			StableContext:    stableText,
 			SimActorID:       simActorID,
 			SimActorName:     simActorName,
 		})
@@ -1112,7 +1104,6 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 						h.renderConfig,
 					)
 					ephemeralText = refreshed.EphemeralText
-					continuationEphemeralText = refreshed.ContinuationEphemeralText
 					lastSelf = outcome.postSelfState
 				}
 			} else {
@@ -2493,16 +2484,23 @@ func conversationIDForChat(actor *sim.ActorSnapshot, p perception.Payload) strin
 	return conversationIDFromPayload(p)
 }
 
-// fullPerceptionPrompt joins the durable turn and the ephemeral current-tick
-// context into the single prompt the model effectively saw, for the umbilical
-// debug surface (ZBBS-WORK-364). The two travel separately on the wire (durable
-// = persisted message; ephemeral = /chat/send ephemeral_context attached to the
-// current turn), but the operator wants to read the whole perception.
+// fullPerceptionPrompt joins the stable identity block, the durable turn, and
+// the ephemeral current-tick context into the single prompt the model
+// effectively saw, for the umbilical debug surface (ZBBS-WORK-364). The three
+// travel separately on the wire (stable = /chat/send stable_context in the
+// system zone; durable = persisted message; ephemeral = ephemeral_context
+// attached to the current turn), but the operator wants to read the whole
+// perception. Stable leads, mirroring its system-prompt placement (LLM-501).
 func fullPerceptionPrompt(r perception.RenderedPrompt) string {
-	if r.EphemeralText == "" {
-		return r.Text
+	parts := make([]string, 0, 3)
+	if r.StableText != "" {
+		parts = append(parts, r.StableText)
 	}
-	return r.Text + "\n\n" + r.EphemeralText
+	parts = append(parts, r.Text)
+	if r.EphemeralText != "" {
+		parts = append(parts, r.EphemeralText)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // failBeforeRender stages a "couldn't even render perception" exit:

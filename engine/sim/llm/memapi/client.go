@@ -138,6 +138,10 @@ type chatRequest struct {
 	// the API attaches to the current turn but never persists. Sent on every
 	// Complete; absent on persist-only calls (no perception).
 	EphemeralContext string `json:"ephemeral_context,omitempty"`
+	// StableContext (LLM-501): per-actor daily-stable identity context the API
+	// appends to the provider-cached system prompt instead of the volatile
+	// user turn. Never persisted, same gate as ephemeral_context.
+	StableContext string `json:"stable_context,omitempty"`
 	// SimActorID / SimActorName identify the in-world actor this turn is made on
 	// behalf of, so memory-api can attribute a shared-VA (salem-vendor) turn to a
 	// specific character instead of only the switchboard agent. Omitted when the
@@ -222,6 +226,7 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		SceneID:          req.SceneID,
 		ConversationID:   req.ConversationID,
 		EphemeralContext: req.EphemeralContext,
+		StableContext:    req.StableContext,
 		SimActorID:       req.SimActorID,
 		SimActorName:     req.SimActorName,
 		Wait:             true,
