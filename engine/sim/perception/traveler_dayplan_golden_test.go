@@ -304,6 +304,26 @@ func travelerSeekingBedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 	return snap, peddlerID, nil
 }
 
+// TestRoundsSettledNoClockStaysSocial — on an unusable dawn/dusk clock the settled
+// wind-down renders its social variant and the nightfall line is suppressed entirely
+// (LLM-508): a bedtime claim needs a clock to stand on, and MinutesToDusk's zero
+// value must not read as dusk.
+func TestRoundsSettledNoClockStaysSocial(t *testing.T) {
+	var b strings.Builder
+	renderTravelerRounds(&b, &TravelerRoundsView{
+		Errand: &RoundsErrand{Buy: true, GoodLabel: "nail", Settled: true},
+	})
+	out := b.String()
+	for _, phrase := range []string{"supper and a bed", "see about a bed", "light has all but gone"} {
+		if strings.Contains(out, phrase) {
+			t.Errorf("no-clock settled rounds rendered bedtime copy %q:\n%s", phrase, out)
+		}
+	}
+	if !strings.Contains(out, "the rest of the day is yours") {
+		t.Errorf("no-clock settled rounds missing the social wind-down lead:\n%s", out)
+	}
+}
+
 // TestGoldensNoDaylightBedContradiction — a prompt that says there is plenty of
 // light left must not, anywhere, press toward supper and a bed (LLM-508): the
 // settled wind-down and the nightfall line key on the same roundsBedPressureMins
