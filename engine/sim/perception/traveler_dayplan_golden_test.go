@@ -39,24 +39,27 @@ func init() {
 		},
 		perceptionScenario{
 			name: "traveler_errand_settled_winds_down",
-			summary: "LLM-455: a nail-buyer whose purchase has settled — his errand is done. '## Your rounds' turns " +
-				"to the wind-down (his business is done, the tavern's the place now for supper and a bed) instead of " +
-				"pressing his rounds — the legible 'business concluded' state that kills the loop.",
+			summary: "LLM-455/508: a nail-buyer whose purchase has settled, with the light going — his errand is " +
+				"done and it is late enough for bed. '## Your rounds' turns to the wind-down (his business is done, " +
+				"the tavern's the place now for supper and a bed) instead of pressing his rounds — the legible " +
+				"'business concluded' state that kills the loop.",
 			build: travelerErrandSettledScenario,
 		},
 		perceptionScenario{
 			name: "traveler_errand_settled_midday",
-			summary: "LLM-507: the same settled nail-buyer, but at midday — hours of daylight left. The nightfall " +
-				"line renders the social-circuit variant (visit the other businesses) instead of 'for your trade', " +
-				"which would contradict the wind-down's 'your business is done' in the same section.",
+			summary: "LLM-507/508: the same settled nail-buyer, but at midday — hours of daylight left. The settled " +
+				"lead gives him the day for social calls instead of pitching supper-and-bed (which had him announcing " +
+				"goodnight all afternoon), and the nightfall line renders the social-circuit variant (visit the other " +
+				"businesses) instead of 'for your trade' — neither line may contradict 'your business is done'.",
 			build: travelerErrandSettledMiddayScenario,
 		},
 	)
 }
 
 // travelerErrandSettledMiddayScenario is the settled wind-down scenario with the clock
-// pulled back to midday, so minutes-to-dusk lands in roundsNightfallLine's
-// plenty-of-daylight tier — the one whose copy forks on the trading flag (LLM-507).
+// pulled back to midday, so minutes-to-dusk lands above the bed-pressure boundary: the
+// settled lead renders its rest-of-the-day social variant (LLM-508) and the nightfall
+// line its social-circuit variant (LLM-507).
 func travelerErrandSettledMiddayScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, id, warrants := travelerErrandSettledScenario()
 	midday := 780 // 13:00 — five hours to dusk (1080), but his trade is behind him
@@ -70,7 +73,7 @@ func travelerErrandSettledScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		smithID = sim.ActorID("ezekiel")
 		smithy  = sim.StructureID("smithy")
 	)
-	now := 990 // 16:30 — the afternoon wearing on, but his trade is behind him
+	now := 1050 // 17:30 — half an hour to dusk (1080): the light going, bed-pressure time (LLM-508)
 	buyer := &sim.ActorSnapshot{
 		Kind:        sim.KindNPCShared,
 		DisplayName: "Elias Drum the nail-buyer",
@@ -299,6 +302,52 @@ func travelerSeekingBedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		},
 	}
 	return snap, peddlerID, nil
+}
+
+// TestRoundsSettledNoClockStaysSocial — on an unusable dawn/dusk clock the settled
+// wind-down renders its social variant and the nightfall line is suppressed entirely
+// (LLM-508): a bedtime claim needs a clock to stand on, and MinutesToDusk's zero
+// value must not read as dusk.
+func TestRoundsSettledNoClockStaysSocial(t *testing.T) {
+	var b strings.Builder
+	renderTravelerRounds(&b, &TravelerRoundsView{
+		Errand: &RoundsErrand{Buy: true, GoodLabel: "nail", Settled: true},
+	})
+	out := b.String()
+	for _, phrase := range []string{"supper and a bed", "see about a bed", "light has all but gone"} {
+		if strings.Contains(out, phrase) {
+			t.Errorf("no-clock settled rounds rendered bedtime copy %q:\n%s", phrase, out)
+		}
+	}
+	if !strings.Contains(out, "the rest of the day is yours") {
+		t.Errorf("no-clock settled rounds missing the social wind-down lead:\n%s", out)
+	}
+}
+
+// TestGoldensNoDaylightBedContradiction — a prompt that says there is plenty of
+// light left must not, anywhere, press toward supper and a bed (LLM-508): the
+// settled wind-down and the nightfall line key on the same roundsBedPressureMins
+// boundary precisely so this pair can never co-occur. Cross-scenario invariant
+// over the whole matrix; the positive cases are pinned by the settled goldens.
+func TestGoldensNoDaylightBedContradiction(t *testing.T) {
+	daylight := []string{"plenty of daylight left", "plenty of light left"}
+	bed := []string{"supper and a bed", "see about a bed"}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			for _, d := range daylight {
+				if !strings.Contains(out, d) {
+					continue
+				}
+				for _, b := range bed {
+					if strings.Contains(out, b) {
+						t.Errorf("scenario %q: prompt claims %q yet presses %q — the daylight and bed-pressure copy contradict (LLM-508)", sc.name, d, b)
+					}
+				}
+			}
+		})
+	}
 }
 
 // TestGoldensRoundsCueOnlyForTraveler — the "## On your rounds" section may render

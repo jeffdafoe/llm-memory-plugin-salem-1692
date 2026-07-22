@@ -208,7 +208,11 @@ func renderTravelerRounds(b *strings.Builder, v *TravelerRoundsView) {
 	}
 	b.WriteString("## Your rounds\n")
 	if v.Errand != nil {
-		renderRoundsErrand(b, v.Errand)
+		// Bed pressure starts when the light is going (LLM-508) — same boundary as
+		// roundsNightfallLine's see-about-a-bed tier, so the settled lead and the
+		// nightfall line can never argue about whether it's bedtime. On an unusable
+		// clock the lead stays social: a bedtime claim needs a clock to stand on.
+		renderRoundsErrand(b, v.Errand, v.HasClock && v.MinutesToDusk <= roundsBedPressureMins)
 	} else {
 		b.WriteString("You're only passing through this town. Look in on whom you please to show your face and share what news you carry from the road — you've no trade to press here.\n")
 	}
@@ -241,16 +245,23 @@ func renderTravelerRounds(b *strings.Builder, v *TravelerRoundsView) {
 // renderRoundsErrand writes the merchant's one-trade anchor: the wind-down when his business
 // is settled, the trade-here instruction when he stands with his counterparty (the only place
 // his commerce tools are cued), or the make-for-it steer with a bearing when he is not there
-// yet (LLM-455).
-func renderRoundsErrand(b *strings.Builder, e *RoundsErrand) {
+// yet (LLM-455). bedTime tiers the settled wind-down (LLM-508): a merchant who settles early
+// in the day gets the rest of the day for social calls, and the supper-and-bed pitch only
+// once the light is going — before that, an all-afternoon bed lead had him announcing
+// goodnight for hours in the middle of the day.
+func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 	keeper := sanitizeInline(e.KeeperName)
 	shop := sanitizeInline(e.ShopLabel)
 	good := sanitizeInline(e.GoodLabel)
 	switch {
-	case e.Settled && e.Buy:
+	case e.Settled && e.Buy && bedTime:
 		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n", good)
-	case e.Settled:
+	case e.Settled && e.Buy:
+		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the rest of the day is yours to look in on the other shops and pass the news.\n", good)
+	case e.Settled && bedTime:
 		b.WriteString("Your goods are sold and your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n")
+	case e.Settled:
+		b.WriteString("Your goods are sold and your business in this village is done; the rest of the day is yours to look in on the other shops and pass the news.\n")
 	case e.AtShop && e.Buy:
 		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. Buy the %s you're after: call pay_with_item with seller \"%s\", item \"%s\", the quantity you want, consume_now false, coins in amount, and your words in say.\n",
 			keeper, shop, good, keeper, sanitizeInline(e.GoodKind))
@@ -289,6 +300,12 @@ func roundsDistPhrase(steps int, dir string) string {
 	}
 }
 
+// roundsBedPressureMins is the minutes-to-dusk boundary where the rounds surface starts
+// pressing toward a bed: roundsNightfallLine's see-about-a-bed tier and the settled
+// wind-down's supper-and-bed lead (LLM-508) both key on it, so the two lines in the same
+// section can never contradict each other about whether it's bedtime.
+const roundsBedPressureMins = 60
+
 // roundsNightfallLine is the escalating pressure toward seeking a bed, keyed on minutes
 // to dusk. Its wording lets the model decide when to break off trading. trading is false
 // for a settled merchant or a passer-through — the plenty-of-daylight tier then points at
@@ -298,7 +315,7 @@ func roundsNightfallLine(minsToDusk int, trading bool) string {
 	switch {
 	case minsToDusk <= 0:
 		return "The light has all but gone — best see about a bed for the night before long.\n"
-	case minsToDusk <= 60:
+	case minsToDusk <= roundsBedPressureMins:
 		return "The light is going fast now; you'll want to see about a bed before it's dark.\n"
 	case minsToDusk <= 180:
 		return "The afternoon is wearing on and the light is starting to lengthen.\n"
