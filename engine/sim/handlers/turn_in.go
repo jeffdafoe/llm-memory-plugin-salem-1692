@@ -28,7 +28,8 @@ import (
 // TurnInArgs is the decoded shape of the turn_in tool's arguments.
 //
 //   - say: OPTIONAL, maxLength MaxTurnInSayChars. The goodnight, spoken to any
-//     companions as the actor rises to go; omitted to retire quietly.
+//     companions as the actor rises to go; omitted to retire quietly. An
+//     over-cap say is truncated, never rejected — see truncateTurnInSay.
 type TurnInArgs struct {
 	Say string `json:"say"`
 }
@@ -78,11 +79,30 @@ func DecodeTurnInArgs(raw json.RawMessage) (any, error) {
 		}
 		return nil, fmt.Errorf("turn_in: malformed trailing data: %w", err)
 	}
-	if n := utf8.RuneCountInString(args.Say); n > MaxTurnInSayChars {
-		return nil, modelSafef(
-			"turn_in: say exceeds %d-character cap (got %d characters)", MaxTurnInSayChars, n)
+	if utf8.RuneCountInString(args.Say) > MaxTurnInSayChars {
+		args.Say = truncateTurnInSay(args.Say)
 	}
 	return args, nil
+}
+
+// truncateTurnInSay bounds an over-cap goodnight to MaxTurnInSayChars runes,
+// trimming back to the last word boundary inside the kept text (hard rune cut
+// if it is one unbroken word) and dropping any dangling punctuation.
+//
+// Truncation, NOT rejection (LLM-506) — the one cap in this package that must
+// not bounce the call. Everywhere else an over-cap arg is safely re-promptable;
+// here the say is garnish on a world-state act, and sim.TurnIn already speaks
+// it best-effort for exactly this reason ("a refused utterance must not strand
+// the actor awake mid-goodnight"). Rejecting did strand them: the model's
+// observed recovery was to shorten the farewell and deliver it via speak —
+// terminal, tick over, actor still up — reconstructing the Long Goodnight loop
+// this verb shipped to end.
+func truncateTurnInSay(say string) string {
+	cut := string([]rune(say)[:MaxTurnInSayChars])
+	if i := strings.LastIndexByte(cut, ' '); i > 0 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " \t,;:—–-")
 }
 
 // HandleTurnIn is the CommitFn for the turn_in tool. Pure builder — does NOT touch
