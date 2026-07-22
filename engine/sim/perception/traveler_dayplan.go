@@ -229,7 +229,11 @@ func renderTravelerRounds(b *strings.Builder, v *TravelerRoundsView) {
 		b.WriteString(".\n")
 	}
 	if v.HasClock {
-		b.WriteString(roundsNightfallLine(v.MinutesToDusk))
+		// Trading only while an errand is open: a settled merchant has been told his
+		// business is done, and a passer-through has none — for both, the daylight line
+		// speaks to the social circuit instead (LLM-507).
+		trading := v.Errand != nil && !v.Errand.Settled
+		b.WriteString(roundsNightfallLine(v.MinutesToDusk, trading))
 	}
 	b.WriteString("\n")
 }
@@ -286,8 +290,11 @@ func roundsDistPhrase(steps int, dir string) string {
 }
 
 // roundsNightfallLine is the escalating pressure toward seeking a bed, keyed on minutes
-// to dusk. Its wording lets the model decide when to break off trading.
-func roundsNightfallLine(minsToDusk int) string {
+// to dusk. Its wording lets the model decide when to break off trading. trading is false
+// for a settled merchant or a passer-through — the plenty-of-daylight tier then points at
+// the social circuit rather than contradicting the "your business is done" / "no trade to
+// press" lead in the same section (LLM-507); the lower tiers are trade-neutral already.
+func roundsNightfallLine(minsToDusk int, trading bool) string {
 	switch {
 	case minsToDusk <= 0:
 		return "The light has all but gone — best see about a bed for the night before long.\n"
@@ -295,8 +302,10 @@ func roundsNightfallLine(minsToDusk int) string {
 		return "The light is going fast now; you'll want to see about a bed before it's dark.\n"
 	case minsToDusk <= 180:
 		return "The afternoon is wearing on and the light is starting to lengthen.\n"
-	default:
+	case trading:
 		return "There's plenty of daylight left for your trade.\n"
+	default:
+		return "There's still plenty of light left for you to visit the other businesses in the village.\n"
 	}
 }
 

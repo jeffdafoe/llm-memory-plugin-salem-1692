@@ -44,7 +44,24 @@ func init() {
 				"pressing his rounds — the legible 'business concluded' state that kills the loop.",
 			build: travelerErrandSettledScenario,
 		},
+		perceptionScenario{
+			name: "traveler_errand_settled_midday",
+			summary: "LLM-507: the same settled nail-buyer, but at midday — hours of daylight left. The nightfall " +
+				"line renders the social-circuit variant (visit the other businesses) instead of 'for your trade', " +
+				"which would contradict the wind-down's 'your business is done' in the same section.",
+			build: travelerErrandSettledMiddayScenario,
+		},
 	)
+}
+
+// travelerErrandSettledMiddayScenario is the settled wind-down scenario with the clock
+// pulled back to midday, so minutes-to-dusk lands in roundsNightfallLine's
+// plenty-of-daylight tier — the one whose copy forks on the trading flag (LLM-507).
+func travelerErrandSettledMiddayScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id, warrants := travelerErrandSettledScenario()
+	midday := 780 // 13:00 — five hours to dusk (1080), but his trade is behind him
+	snap.LocalMinuteOfDay = &midday
+	return snap, id, warrants
 }
 
 func travelerErrandSettledScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
