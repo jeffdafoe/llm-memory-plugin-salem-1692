@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,6 +222,54 @@ func TestHarness_TurnInBedsTheActorAndPartsTheHuddle(t *testing.T) {
 	if s.peerLeft {
 		t.Error("bess received the generic huddle_peer_left warrant for a bed-down — the sleep " +
 			"classification did not replace it")
+	}
+}
+
+// TestHarness_TurnInOverCapSay_StillBedsTheActor is the LLM-506 regression: a
+// goodnight past MaxTurnInSayChars is truncated at decode and the bed-down
+// proceeds — one round, terminal, actor asleep. Under the old rejection, this
+// exact shape (Silas Withrow's 260-char farewell, first night of LLM-447 live)
+// bounced as malformed_args and the model re-delivered the goodnight via speak,
+// leaving the actor up — the Long Goodnight loop, re-entered through the verb's
+// own argument validation.
+func TestHarness_TurnInOverCapSay_StillBedsTheActor(t *testing.T) {
+	longSay := strings.TrimSpace(strings.Repeat("Goodnight to you both, and God keep you safe through the night. ", 5)) // 319 runes
+	rawArgs, err := json.Marshal(map[string]string{"say": longSay})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	client := llm.NewFakeClient(
+		callTurn("c1", "turn_in", string(rawArgs)),
+		doneTurn("d1"), // must NOT be consumed — the truncated call is still terminal
+	)
+	f := newIntegrationFixture(t, newTurnInRegistry(t), client)
+	defer f.stop()
+
+	seedEveningHousehold(t, f.world)
+	now := turnInTestNow()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+	rec := f.waitForTerminalTelemetry(t)
+	if rec.Kind != "completed" {
+		t.Fatalf("tick did not complete cleanly: kind=%q detail=%v", rec.Kind, rec.Detail)
+	}
+	if got := rec.Detail["terminal_status"]; got != "success" {
+		t.Errorf("terminal_status: got %q, want \"success\" — an over-cap say is truncated, not a rejection", got)
+	}
+	if n := len(client.Requests()); n != 1 {
+		t.Errorf("LLM rounds: got %d, want 1 — the over-cap say must not bounce the call into a second round", n)
+	}
+	asleep, err := f.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["alice"].SleepingUntil != nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect world: %v", err)
+	}
+	if !asleep.(bool) {
+		t.Error("alice is not bedded after an over-cap turn_in — the goodnight's length stranded her awake, " +
+			"which is the exact live failure LLM-506 fixes")
 	}
 }
 
