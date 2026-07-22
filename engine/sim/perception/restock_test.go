@@ -1609,3 +1609,22 @@ func TestObservedSupplierBuyRate_ScopedToListedSellers(t *testing.T) {
 		t.Fatalf("empty suppliers should yield ok=false")
 	}
 }
+
+// TestRenderWalkToVendorsNamesOnlyCoPresentVendor pins that the LLM-504 keeper
+// name attaches to exactly the bullet whose vendor carries CoPresentKeeper — a
+// two-vendor list must never smear the co-present representative's name onto a
+// vendor whose keeper is off-scene (code_review). Also pins the segment order:
+// name before the destination token, so the "(destination: <id>)" grammar the
+// model echoes into move_to is unchanged.
+func TestRenderWalkToVendorsNamesOnlyCoPresentVendor(t *testing.T) {
+	var b strings.Builder
+	renderWalkToVendors(&b, []RestockVendor{
+		{StructureLabel: "Blacksmith", StructureID: "blacksmith", CoPresentKeeper: "Ezekiel Crane"},
+		{StructureLabel: "General Store", StructureID: "general_store"},
+	})
+	want := "  - buy from Blacksmith (Ezekiel Crane) (destination: blacksmith)\n" +
+		"  - buy from General Store (destination: general_store)\n"
+	if b.String() != want {
+		t.Errorf("walk-to bullets:\n%s\nwant:\n%s", b.String(), want)
+	}
+}

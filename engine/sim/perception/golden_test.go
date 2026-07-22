@@ -2134,6 +2134,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerAtWornStallWithNailSupplier,
 	},
 	{
+		name: "owner_at_worn_stall_nail_keeper_copresent",
+		summary: "LLM-504 (the live 2026-07-21 John Ellis case): a tavernkeeper stands at his own worn tavern, one nail " +
+			"short of a mend, while the nail supplier's keeper — Ezekiel, whose workplace is the off-scene Blacksmith — is " +
+			"standing IN the tavern with him. The golden pins the co-present-keeper name on the walk-to bullet: 'buy from " +
+			"Blacksmith (Ezekiel Crane) (destination: blacksmith)'. The name links shop to person so the model asks the man " +
+			"in front of it instead of walking to his shut smithy; deliberately NO new imperative and no change to the duty " +
+			"steer, which still renders its step-out form. Its foil is owner_at_worn_stall_with_nail_supplier (Ezekiel far " +
+			"away → the same bullet, name-free).",
+		build: ownerAtWornStallNailKeeperCoPresent,
+	},
+	{
 		name: "owner_off_post_at_smith_short_nails",
 		summary: "LLM-277 (the live 2026-07-04 failure): Elizabeth Ellis, owner of the worn Ellis Farm with 0 nails, has " +
 			"walked OFF her farm and shares the smith's huddle with Ezekiel (21 nails, the nail producer). The golden pins " +
@@ -6052,6 +6063,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 	ownWornBusiness := map[string]bool{
 		"owner_at_worn_stall":                               true,
 		"owner_at_worn_stall_with_nail_supplier":            true, // LLM-274: owner short of nails WITH a resolvable supplier
+		"owner_at_worn_stall_nail_keeper_copresent":         true, // LLM-504: supplier's keeper standing with the buyer — the named-bullet arm
 		"owner_at_degraded_stall":                           true,
 		"owner_at_degraded_stall_produce_blocked":           true, // LLM-446: the legacy pct-0 full-block arm
 		"degraded_smith_short_of_own_nails":                 true, // LLM-446: the sole-nail-producer live-bug fixture
@@ -7454,6 +7466,105 @@ func ownerAtWornStallWithNailSupplier() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		},
 	}
 	return snap, "elizabeth", nil
+}
+
+// ownerAtWornStallNailKeeperCoPresent is the LLM-504 fixture, modeled on the live
+// 2026-07-21 John Ellis case (virtual_agent_calls 110823): the tavernkeeper stands
+// inside his own worn tavern (at post), one nail short of the five a mend takes,
+// while Ezekiel — the nail-producing smith whose WORKPLACE is the off-scene
+// Blacksmith — is standing inside the tavern with him. findItemVendors still
+// resolves the Blacksmith as the walk-to destination (structural vendorship rides
+// WorkStructureID, not the seller's position), but the representative seller is in
+// the buyer's conversational scope, so the bullet carries his name: "buy from
+// Blacksmith (Ezekiel Crane) (destination: blacksmith)". Before LLM-504 the bullet
+// was name-free and the cue marched John toward the empty smithy while its keeper
+// drank at his bar.
+func ownerAtWornStallNailKeeperCoPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	tavernPos := sim.WorldPos{X: 640, Y: 640}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		Pos:               tavernPos.Tile(),
+		InsideStructureID: "ellis_tavern",
+		WorkStructureID:   "ellis_tavern", // at his post — the duty steer renders its LLM-491 step-out form
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 4}, // one short of the 5 a repair takes (the live shortfall)
+		// Ezekiel is within earshot (the world-side audience set) and acquainted, so
+		// "## Around you" names him — the premise the walk-to name links against.
+		ColocatedAudienceIDs: []sim.ActorID{"ezekiel"},
+		Acquaintances:        map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               tavernPos.Tile(),
+		InsideStructureID: "ellis_tavern", // in the buyer's structure scope — the co-presence that names him
+		WorkStructureID:   "blacksmith",
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"nail": 21},
+		// The smith PRODUCES nails — the LLM-252 supplier-of-record gate names only
+		// producers/foragers (or the distributor), not a holder of past-bought stock.
+		RestockPolicy: producePolicy("nail", 40),
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{"john": john, "ezekiel": ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"ellis_tavern": plainStructure("ellis_tavern", "Ellis Tavern"),
+			"blacksmith":   plainStructure("blacksmith", "Blacksmith"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"ellis_tavern": {
+				ID:            "ellis_tavern",
+				DisplayName:   "Ellis Tavern",
+				Pos:           tavernPos,
+				OwnerActorID:  "john",
+				Tags:          []string{sim.TagBusiness},
+				Wear:          450,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, "john", nil
+}
+
+// TestStallRepairWalkToNamesCoPresentKeeper is the LLM-504 semantic assertion the
+// byte-pinned goldens carry implicitly: the walk-to nail bullet names the supplier's
+// keeper IFF that keeper is co-present with the buyer. Runs the two fixture arms
+// end-to-end (Build → Render) so it exercises the real findItemVendors co-presence
+// check, not a hand-built view, and stays green through unrelated golden churn.
+func TestStallRepairWalkToNamesCoPresentKeeper(t *testing.T) {
+	snap, actorID, warrants := ownerAtWornStallNailKeeperCoPresent()
+	out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+	if !strings.Contains(out, "buy from Blacksmith (Ezekiel Crane) (destination: blacksmith)") {
+		t.Errorf("co-present arm: the walk-to bullet must name the co-present keeper (LLM-504), got:\n%s", out)
+	}
+
+	snap, actorID, warrants = ownerAtWornStallWithNailSupplier()
+	out = combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+	if !strings.Contains(out, "buy from Blacksmith (destination: blacksmith)") {
+		t.Errorf("absent arm: the walk-to bullet must still render, name-free, when the keeper is off-scene, got:\n%s", out)
+	}
+	if strings.Contains(out, "(Ezekiel Crane)") {
+		t.Errorf("absent arm: an off-scene keeper must NOT be named on the walk-to bullet (LLM-504), got:\n%s", out)
+	}
 }
 
 // ellisFarmWorn is the shared LLM-277 fixture spine: Elizabeth Ellis owns the worn

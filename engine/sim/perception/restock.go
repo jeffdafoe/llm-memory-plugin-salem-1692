@@ -275,6 +275,21 @@ type RestockVendor struct {
 	// its pack. Set only on the walk-to list; the co-present imperative already names
 	// all three payment forms (coins, pay_items, or both).
 	Barter bool
+
+	// CoPresentKeeper is VendorID's display name when that seller is co-present
+	// with the buyer right now — sharing the buyer's huddle, or standing (by
+	// literal InsideStructureID) in the buyer's conversational structure scope:
+	// the same two-way test coPresentSellerForItem applies. "" when absent.
+	// LLM-504: the walk-to bullet then reads "buy from Blacksmith (Ezekiel
+	// Crane) (destination: …)" — linking shop to person, so a model that already
+	// sees the keeper in "## Around you" can ask the man in front of it instead
+	// of walking to his shut premises (the live John Ellis case: the repair
+	// cue's walk-to steer sent him toward Ezekiel's empty smithy while Ezekiel
+	// drank at his bar). The name is the whole mechanism — no imperative, no
+	// phrasing branch. Cues with a co-present-buy arm (restock, repair-buy)
+	// suppress the walk-to list when a seller is co-present, so this mostly
+	// surfaces on the at-business repair cue, which deliberately has no such arm.
+	CoPresentKeeper string
 }
 
 // restockBlockReason is why a supplier that sells a low item is not a destination
@@ -803,6 +818,10 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	// keeper down to his last few carrots cannot buy carrots by offering carrots
 	// (LLM-406). Same predicate the warrant reads (sim.buyerCanTransact).
 	hasGoods := sim.HoldsBarterableGoodsExcept(snap.ItemKinds, buyerSnap.Inventory, itemKind)
+	// LLM-504: buyer-side co-presence anchors, for naming a keeper who is standing
+	// with the buyer on that keeper's walk-to bullet (CoPresentKeeper). Same
+	// huddle-or-scope pair coPresentSellerForItem resolves through.
+	sc := buyerCoPresenceScope(snap, buyerSnap)
 	out := make([]RestockVendor, 0, len(best))
 	var blocked []RestockBlockedSupplier
 	for structureID, p := range best {
@@ -841,10 +860,18 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockNoMeans})
 			continue
 		}
+		// LLM-504: is the representative seller standing with the buyer right now?
+		// Same predicate the buy-here imperative uses (sellerCoPresent), so the name
+		// only appears when a pay_with_item to this seller would resolve here.
+		coPresent := ""
+		if seller := snap.Actors[p.vendorID]; seller != nil && seller.DisplayName != "" && sc.sellerCoPresent(seller) {
+			coPresent = seller.DisplayName
+		}
 		out = append(out, RestockVendor{
-			StructureLabel: label,
-			StructureID:    structureID,
-			VendorID:       p.vendorID, // the representative whose CostText below is shown (LLM-295)
+			StructureLabel:  label,
+			StructureID:     structureID,
+			CoPresentKeeper: coPresent,
+			VendorID:        p.vendorID, // the representative whose CostText below is shown (LLM-295)
 			// Empty fallback when no price is on record (was "ask the supplier",
 			// which invited the reseller to SPEAK a price question instead of
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
@@ -891,6 +918,39 @@ func conversationalScopeStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) sim.
 	return ""
 }
 
+// coPresenceScope is the buyer-side pair of anchors a seller is tested against
+// for co-presence: the buyer's current huddle, and the buyer's loiter-aware
+// conversational structure scope. Extracted (LLM-504 code_review) so the two
+// consumers — coPresentSellerForItem's buy-here imperative and findItemVendors'
+// CoPresentKeeper name — share one predicate and can't drift. The seller side is
+// tested by literal InsideStructureID, NOT loiter-aware, for the reason
+// coPresentSellerForItem documents: the pay bootstrap huddles co-located actors
+// by InsideStructureID, so a seller merely loitering at the buyer's stall must
+// not read as co-present.
+type coPresenceScope struct {
+	huddle sim.HuddleID
+	scope  sim.StructureID
+}
+
+func buyerCoPresenceScope(snap *sim.Snapshot, buyerSnap *sim.ActorSnapshot) coPresenceScope {
+	return coPresenceScope{
+		huddle: buyerSnap.CurrentHuddleID,
+		scope:  conversationalScopeStructure(snap, buyerSnap),
+	}
+}
+
+// sellerCoPresent reports whether a pay_with_item to this seller would resolve
+// for the buyer this very tick: they share the buyer's huddle, or the seller
+// stands (literal InsideStructureID) in the buyer's conversational scope.
+func (sc coPresenceScope) sellerCoPresent(seller *sim.ActorSnapshot) bool {
+	if seller == nil {
+		return false
+	}
+	sharesHuddle := sc.huddle != "" && seller.CurrentHuddleID == sc.huddle
+	sharesScope := sc.scope != "" && seller.InsideStructureID == sc.scope
+	return sharesHuddle || sharesScope
+}
+
 // coPresentSellerForItem returns the display name of a seller holding itemKind
 // who is co-present with the reseller RIGHT NOW — i.e. a pay_with_item(seller: …)
 // for this item resolves this very tick. Co-presence is the exact precondition
@@ -920,9 +980,8 @@ func conversationalScopeStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) sim.
 // can check for a standing offer to this exact seller (hasPendingOfferTo, LLM-64).
 // ZBBS-HOME-388.
 func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) (string, sim.ActorID) {
-	huddle := buyerSnap.CurrentHuddleID
-	buyerScope := conversationalScopeStructure(snap, buyerSnap)
-	if huddle == "" && buyerScope == "" {
+	sc := buyerCoPresenceScope(snap, buyerSnap)
+	if sc.huddle == "" && sc.scope == "" {
 		return "", "" // neither conversing nor standing in a shop scope — no one to pay here
 	}
 	var bestID sim.ActorID
@@ -942,9 +1001,7 @@ func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *
 		// the two ways withHuddleBootstrap lets the pay call resolve a seller this
 		// tick. Seller scope is its literal InsideStructureID (see the doc comment),
 		// the buyer's is loiter-aware.
-		sharesHuddle := huddle != "" && seller.CurrentHuddleID == huddle
-		sharesScope := buyerScope != "" && seller.InsideStructureID == buyerScope
-		if !sharesHuddle && !sharesScope {
+		if !sc.sellerCoPresent(seller) {
 			return
 		}
 		if bestID == "" || o.VendorID < bestID {
@@ -1357,6 +1414,13 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 	for _, vd := range vendors {
 		b.WriteString("  - buy from ")
 		b.WriteString(sanitizeInline(vd.StructureLabel))
+		// LLM-504: name the keeper when they are standing with the buyer right now,
+		// linking shop to person — the model already sees the name in "## Around
+		// you", and the link is what lets it ask the man instead of walking to his
+		// empty premises. A name, not an imperative.
+		if vd.CoPresentKeeper != "" {
+			fmt.Fprintf(b, " (%s)", sanitizeInline(vd.CoPresentKeeper))
+		}
 		if vd.StructureID != "" {
 			fmt.Fprintf(b, " (destination: %s)", vd.StructureID)
 		}
