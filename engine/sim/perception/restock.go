@@ -275,6 +275,21 @@ type RestockVendor struct {
 	// its pack. Set only on the walk-to list; the co-present imperative already names
 	// all three payment forms (coins, pay_items, or both).
 	Barter bool
+
+	// CoPresentKeeper is VendorID's display name when that seller is co-present
+	// with the buyer right now — sharing the buyer's huddle, or standing (by
+	// literal InsideStructureID) in the buyer's conversational structure scope:
+	// the same two-way test coPresentSellerForItem applies. "" when absent.
+	// LLM-504: the walk-to bullet then reads "buy from Blacksmith (Ezekiel
+	// Crane) (destination: …)" — linking shop to person, so a model that already
+	// sees the keeper in "## Around you" can ask the man in front of it instead
+	// of walking to his shut premises (the live John Ellis case: the repair
+	// cue's walk-to steer sent him toward Ezekiel's empty smithy while Ezekiel
+	// drank at his bar). The name is the whole mechanism — no imperative, no
+	// phrasing branch. Cues with a co-present-buy arm (restock, repair-buy)
+	// suppress the walk-to list when a seller is co-present, so this mostly
+	// surfaces on the at-business repair cue, which deliberately has no such arm.
+	CoPresentKeeper string
 }
 
 // restockBlockReason is why a supplier that sells a low item is not a destination
@@ -803,6 +818,11 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	// keeper down to his last few carrots cannot buy carrots by offering carrots
 	// (LLM-406). Same predicate the warrant reads (sim.buyerCanTransact).
 	hasGoods := sim.HoldsBarterableGoodsExcept(snap.ItemKinds, buyerSnap.Inventory, itemKind)
+	// LLM-504: buyer-side co-presence anchors, for naming a keeper who is standing
+	// with the buyer on that keeper's walk-to bullet (CoPresentKeeper). Same
+	// huddle-or-scope pair coPresentSellerForItem resolves through.
+	huddle := buyerSnap.CurrentHuddleID
+	buyerScope := conversationalScopeStructure(snap, buyerSnap)
 	out := make([]RestockVendor, 0, len(best))
 	var blocked []RestockBlockedSupplier
 	for structureID, p := range best {
@@ -841,10 +861,23 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockNoMeans})
 			continue
 		}
+		// LLM-504: is the representative seller standing with the buyer right now?
+		// Seller tested by literal InsideStructureID against the buyer's loiter-aware
+		// scope (or a shared huddle) — the coPresentSellerForItem rule, so the name
+		// only appears when a pay_with_item to this seller would resolve here.
+		coPresent := ""
+		if seller := snap.Actors[p.vendorID]; seller != nil && seller.DisplayName != "" {
+			sharesHuddle := huddle != "" && seller.CurrentHuddleID == huddle
+			sharesScope := buyerScope != "" && seller.InsideStructureID == buyerScope
+			if sharesHuddle || sharesScope {
+				coPresent = seller.DisplayName
+			}
+		}
 		out = append(out, RestockVendor{
-			StructureLabel: label,
-			StructureID:    structureID,
-			VendorID:       p.vendorID, // the representative whose CostText below is shown (LLM-295)
+			StructureLabel:  label,
+			StructureID:     structureID,
+			CoPresentKeeper: coPresent,
+			VendorID:        p.vendorID, // the representative whose CostText below is shown (LLM-295)
 			// Empty fallback when no price is on record (was "ask the supplier",
 			// which invited the reseller to SPEAK a price question instead of
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
@@ -1357,6 +1390,13 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 	for _, vd := range vendors {
 		b.WriteString("  - buy from ")
 		b.WriteString(sanitizeInline(vd.StructureLabel))
+		// LLM-504: name the keeper when they are standing with the buyer right now,
+		// linking shop to person — the model already sees the name in "## Around
+		// you", and the link is what lets it ask the man instead of walking to his
+		// empty premises. A name, not an imperative.
+		if vd.CoPresentKeeper != "" {
+			fmt.Fprintf(b, " (%s)", sanitizeInline(vd.CoPresentKeeper))
+		}
 		if vd.StructureID != "" {
 			fmt.Fprintf(b, " (destination: %s)", vd.StructureID)
 		}

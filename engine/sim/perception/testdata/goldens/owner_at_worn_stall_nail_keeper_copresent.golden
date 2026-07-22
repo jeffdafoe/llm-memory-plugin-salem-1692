@@ -1,0 +1,22 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 30.
+You are carrying: nail (x4).
+
+## Around you
+You are inside the Ellis Tavern, your workplace. Ezekiel Crane is here with you.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post (you close at 6 in the evening), but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.
+
+## Your business
+Your Ellis Tavern is showing hard use and needs mending. Mending takes 5 nails and you have 4 — buy them, then come back here and repair. Use move_to to reach a supplier, then pay_with_item once you arrive:
+  - buy from Blacksmith (Ezekiel Crane) (destination: blacksmith)
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
