@@ -6,10 +6,10 @@
 
 ## You
 Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.
-You are carrying: cheese (x2), milk (x4).
+You are carrying: iron (x1), skillet (x2).
 
 ## Around you
-You are inside the Ellis Farm, your workplace, with no one else here to hear you speak.
+You are inside the Blacksmith, your workplace, with no one else here to hear you speak.
 It is morning in the village.
 
 You're at your workplace.
@@ -17,9 +17,8 @@ You're at your workplace.
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
 
 ## Your trade
-Your stock of cheese is running low, and none sold this past week. A batch — 1 more — takes about 4 hours, and you have everything you need.
-You have no meat on hand, and none sold this past week. A batch — 1 more — takes about 6 hours, and you have everything you need.
-You have a fair stock of milk, and none sold this past week. A batch — 1 more — takes about 2 hours, and you have everything you need.
+You have no shovel on hand, and none sold this past week. A batch — 1 more — takes about 4 hours, and you have everything you need.
+You have a fair stock of skillet, and none sold this past week. A batch — 1 more — takes about 3 hours, and you have the makings.
 Start a batch with produce, or see to other things.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

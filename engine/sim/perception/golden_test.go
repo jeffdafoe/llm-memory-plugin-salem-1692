@@ -174,6 +174,34 @@ func TestGoldensSelfNameIffSharedVillager(t *testing.T) {
 	}
 }
 
+// TestGoldensTradeSceneAffordanceAlwaysStatesReadiness is the LLM-509 cross-scenario
+// invariant: every "## Your trade" batch-affordance line must close with a readiness
+// beat — "and you have the makings." for an inputs recipe, "and you have everything you
+// need." for a no-input (origin) recipe — and never render bare with only the time.
+// The bare no-input branch was the silence a weak model filled with its real-world
+// prior, confabulating an iron requirement (and a supplier and a debt) for a pure-labor
+// craft (Ezekiel Crane, 2026-07-23). Runs over the whole matrix so no future cue change
+// can reintroduce a batch offer that states how long it takes but not whether the
+// producer has what it needs.
+func TestGoldensTradeSceneAffordanceAlwaysStatesReadiness(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			for _, line := range strings.Split(renderScenario(sc), "\n") {
+				// Only the tradeGoodScene affordance clause carries this exact shape.
+				if !strings.Contains(line, "A batch — ") || !strings.Contains(line, "takes about ") {
+					continue
+				}
+				if strings.Contains(line, ", and you have the makings.") ||
+					strings.Contains(line, ", and you have everything you need.") {
+					continue
+				}
+				t.Errorf("scenario %q: trade-scene batch affordance renders with no readiness beat (bare no-input branch reintroduced, LLM-509):\n  %s", sc.name, line)
+			}
+		})
+	}
+}
+
 // TestGoldensReturnerContinuityIffRepeatVisit is the LLM-372 cross-scenario
 // invariant: the returner continuity block (the visit clause that opens it)
 // renders IFF the subject is a returning traveler on a repeat visit
@@ -1722,6 +1750,17 @@ var perceptionScenarios = []perceptionScenario{
 			"'thoughts turn to your trade' wake warrant. Skillet at cap reads 'stores are full' with NO affordance (a batch " +
 			"can't start); empty nail gets the plain batch offer. Pairs with smith_batch_in_flight (mid-batch -> cue gone).",
 		build: smithChoosingAtForge,
+	},
+	{
+		name: "smith_no_input_readiness_beat",
+		summary: "LLM-509: a producer (Ezekiel the blacksmith) idle at his forge on shift, offered BOTH a no-input " +
+			"(origin) good and an inputs good in one '## Your trade' scene, so the golden contrasts the two affordance " +
+			"branches side by side. The no-input shovel — the live case (2026-07-23: shown only 'takes about 4 hours', " +
+			"his model invented an iron requirement, a supplier, and a debt to source it) — closes on the readiness beat " +
+			"'and you have everything you need.', while the inputs skillet (forged from iron he holds) keeps the unchanged " +
+			"'and you have the makings.'. Both craftable, so both list; shovel sorts first (equal zero sell-through, then " +
+			"noun ascending), leading with the origin beat. Matrix guard: TestGoldensTradeSceneAffordanceAlwaysStatesReadiness.",
+		build: smithNoInputReadinessBeat,
 	},
 	{
 		name: "smith_batch_in_flight",
@@ -9448,6 +9487,65 @@ func smithChoosingAtForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
 			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, WholesalePrice: 5, RetailPrice: 10},
 			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: ezekielID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1},
+	}
+	return snap, ezekielID, warrants
+}
+
+// smithNoInputReadinessBeat is the LLM-509 pin: Ezekiel idle at his forge with nothing
+// in the works, offered a no-input (origin) good AND an inputs good in the same "## Your
+// trade" scene so one golden contrasts the two affordance branches. shovel is pure labor
+// (1 per 4h — no inputs, the live case), so it closes on "and you have everything you
+// need"; skillet is forged from the iron he holds, so it keeps the unchanged "and you
+// have the makings". Both are craftable (a batch fits under cap and the skillet's iron is
+// on hand), so both list — the readiness beat can never render falsely because
+// buildForgeChoice drops any input-short good first (LLM-324). shovel sorts before skillet
+// (equal zero sell-through, then noun ascending), so the origin beat leads. Byte-stable:
+// on shift, idle, empty PriceBook/RecentProduce.
+func smithNoInputReadinessBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		forge     = sim.StructureID("blacksmith")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	published := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		// One batch of iron on hand covers the skillet input, so both goods are
+		// craftable and both list (LLM-324 drops an input-short good before render).
+		Inventory: map[sim.ItemKind]int{"skillet": 2, "iron": 1},
+		// ProductionItem empty — nothing in the works, the idle production-choice state (LLM-319).
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "shovel", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge: plainStructure(forge, "Blacksmith"),
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			// shovel: pure labor, no inputs — the origin recipe the readiness beat covers.
+			"shovel": {OutputItem: "shovel", OutputQty: 1, RateQty: 1, RatePerHours: 4, WholesalePrice: 3, RetailPrice: 6},
+			// skillet: forged from iron — an inputs recipe, the "and you have the makings" branch.
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 3, Inputs: []sim.RecipeInput{{Item: "iron", Qty: 1}}, WholesalePrice: 5, RetailPrice: 10},
 		},
 	}
 	warrants := []sim.WarrantMeta{

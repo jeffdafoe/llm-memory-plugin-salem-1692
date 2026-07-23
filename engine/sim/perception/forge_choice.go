@@ -252,14 +252,18 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 		s.WriteString(", and none sold this past week.")
 	}
 
-	// The affordance: what another batch takes. The inputs are on hand by
-	// construction (LLM-324 drops input-short goods), so an inputs recipe notes the
-	// makings are ready and an origin recipe (no inputs) reads plain.
+	// The affordance: what another batch takes, closed with a readiness beat on BOTH
+	// branches so the scene never leaves "do I have what I need?" open for the model
+	// to answer from its real-world prior — the LLM-509 confabulation (a blacksmith,
+	// shown only the time for a pure-labor recipe, invented an iron requirement, a
+	// supplier, and a debt to source it). Inputs are on hand by construction (LLM-324
+	// drops input-short goods), so an inputs recipe reassures the makings are ready
+	// and an origin recipe (no inputs) asserts everything needed is already at hand.
 	work := it.WorkPhrase
 	if it.HasInputs {
 		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ", and you have the makings.")
 	} else {
-		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ".")
+		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ", and you have everything you need.")
 	}
 	return s.String()
 }
