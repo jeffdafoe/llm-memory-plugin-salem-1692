@@ -165,17 +165,17 @@ func TestBuildRestocking_OneDecline_NoBlock(t *testing.T) {
 	}
 }
 
-func TestBuildRestocking_StaleDeclines_NoBlock(t *testing.T) {
+func TestBuildRestocking_AgedDeclines_StillTermsBlock(t *testing.T) {
 	snap, actorID, _ := resellerCoPresentSageStandoff()
-	// Push the two declines outside recentlyResolvedOfferWindow — a stale standoff must not keep
-	// suppressing the buy after the negotiation has aged out of what the cue reads.
-	stale := snap.PublishedAt.Add(-1 * time.Hour)
+	// Age the two declines well past recentlyResolvedOfferWindow. The standoff latches for the
+	// huddle's lifetime (LLM-510) — only a fresh huddle resets the counter.
+	aged := snap.PublishedAt.Add(-1 * time.Hour)
 	for _, e := range snap.PayLedger {
-		e.ResolvedAt = stale
+		e.ResolvedAt = aged
 	}
 	it := sageItem(t, buildRestocking(snap, actorID, snap.Actors[actorID]))
-	if it.Block != copresentBuyOK {
-		t.Errorf("Block = %v, want copresentBuyOK (declines are older than the recency window)", it.Block)
+	if it.Block != copresentBuyBlockedTerms {
+		t.Errorf("Block = %v, want copresentBuyBlockedTerms (the standoff latches for the huddle's lifetime)", it.Block)
 	}
 }
 

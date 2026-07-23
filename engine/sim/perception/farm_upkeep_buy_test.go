@@ -183,20 +183,20 @@ func TestBuildFarmUpkeep_InsufficientFunds_FailFastCoinBlock(t *testing.T) {
 	}
 }
 
-func TestBuildFarmUpkeep_StaleDeclines_NoBlock(t *testing.T) {
+func TestBuildFarmUpkeep_AgedDeclines_StillTermsBlock(t *testing.T) {
 	snap, actorID, _ := farmOwnerStandoffDeclinedShovels()
-	// Push the two declines outside recentlyResolvedOfferWindow — a stale standoff must not
-	// keep suppressing the buy.
-	stale := snap.PublishedAt.Add(-1 * time.Hour)
+	// Age the two declines well past recentlyResolvedOfferWindow. The standoff latches for
+	// the huddle's lifetime (LLM-510) — only a fresh huddle resets the counter.
+	aged := snap.PublishedAt.Add(-1 * time.Hour)
 	for _, e := range snap.PayLedger {
-		e.ResolvedAt = stale
+		e.ResolvedAt = aged
 	}
 	v := buildFarmUpkeep(snap, actorID, snap.Actors[actorID])
 	if v == nil {
 		t.Fatal("expected a farm-upkeep errand")
 	}
-	if v.Block != copresentBuyOK {
-		t.Errorf("Block = %v, want copresentBuyOK (declines are older than the recency window)", v.Block)
+	if v.Block != copresentBuyBlockedTerms {
+		t.Errorf("Block = %v, want copresentBuyBlockedTerms (the standoff latches for the huddle's lifetime)", v.Block)
 	}
 }
 
