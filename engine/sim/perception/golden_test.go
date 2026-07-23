@@ -184,6 +184,11 @@ func TestGoldensSelfNameIffSharedVillager(t *testing.T) {
 // can reintroduce a batch offer that states how long it takes but not whether the
 // producer has what it needs.
 func TestGoldensTradeSceneAffordanceAlwaysStatesReadiness(t *testing.T) {
+	// Accumulated across the (sequential, non-parallel) subtests: how many trade
+	// affordance lines the invariant actually inspected matrix-wide. Guarded > 0
+	// below so a cue-wording change that stopped matching "A batch — " can't turn
+	// the whole invariant vacuous while still passing green (code_review).
+	matrixChecked := 0
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -192,13 +197,19 @@ func TestGoldensTradeSceneAffordanceAlwaysStatesReadiness(t *testing.T) {
 				if !strings.Contains(line, "A batch — ") || !strings.Contains(line, "takes about ") {
 					continue
 				}
-				if strings.Contains(line, ", and you have the makings.") ||
-					strings.Contains(line, ", and you have everything you need.") {
-					continue
+				matrixChecked++
+				// The affordance is the last thing tradeGoodScene writes, so the line must
+				// END with a readiness clause — HasSuffix, not Contains, so a clause buried
+				// mid-line can't satisfy it and the bare "…takes about X." can't slip through.
+				if !strings.HasSuffix(line, ", and you have the makings.") &&
+					!strings.HasSuffix(line, ", and you have everything you need.") {
+					t.Errorf("scenario %q: trade-scene batch affordance renders with no readiness beat (bare no-input branch reintroduced, LLM-509):\n  %s", sc.name, line)
 				}
-				t.Errorf("scenario %q: trade-scene batch affordance renders with no readiness beat (bare no-input branch reintroduced, LLM-509):\n  %s", sc.name, line)
 			}
 		})
+	}
+	if matrixChecked == 0 {
+		t.Error("no scenario rendered a '## Your trade' batch affordance line — the readiness-beat invariant is vacuous (LLM-509)")
 	}
 }
 
