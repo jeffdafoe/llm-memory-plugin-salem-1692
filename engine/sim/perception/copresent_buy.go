@@ -96,7 +96,8 @@ func coPresentBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle 
 		}
 		switch e.State {
 		case sim.PayLedgerStateFailedInsufficientFunds:
-			if snap.PublishedAt.Sub(e.ResolvedAt) <= recentlyResolvedOfferWindow {
+			// Bounded on both sides — a malformed future ResolvedAt must not read as recent.
+			if age := snap.PublishedAt.Sub(e.ResolvedAt); age >= 0 && age <= recentlyResolvedOfferWindow {
 				return copresentBuyBlockedCoin
 			}
 		case sim.PayLedgerStateDeclined,

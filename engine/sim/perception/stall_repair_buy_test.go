@@ -202,6 +202,25 @@ func TestBuildStallRepairBuy_StaleInsufficientFunds_NoCoinBlock(t *testing.T) {
 	}
 }
 
+func TestBuildStallRepairBuy_StaleFundsPlusAgedDeclines_TermsBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// A stale insufficient-funds entry falls through WITHOUT counting as a decline, while
+	// the two aged declines still latch the terms standoff — the mixed-state interaction
+	// between the window-gated coin arm and the lifetime decline arm.
+	aged := snap.PublishedAt.Add(-20 * time.Minute)
+	for _, e := range snap.PayLedger {
+		e.ResolvedAt = aged
+	}
+	snap.PayLedger[3] = &sim.PayLedgerEntry{ID: 3, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateFailedInsufficientFunds, HuddleID: "smith_huddle", ResolvedAt: aged}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != copresentBuyBlockedTerms {
+		t.Errorf("Block = %v, want copresentBuyBlockedTerms (aged declines latch; the stale funds fail neither coin-blocks nor counts)", v.Block)
+	}
+}
+
 func TestBuildStallRepairBuy_DeclinesInOtherHuddle_Ignored(t *testing.T) {
 	snap, actorID, _ := ownerStandoffDeclinedNails()
 	// Re-stamp the declines under a different huddle — they don't scope this negotiation.
