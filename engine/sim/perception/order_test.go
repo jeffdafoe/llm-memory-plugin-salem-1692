@@ -201,12 +201,18 @@ func TestRenderPendingDeliveriesToMe_HappyPath(t *testing.T) {
 	for _, must := range []string{
 		"## Orders you're waiting on",
 		"#7:",
-		"stew",
-		"from Hannah",
+		"Hannah owes you 1 stew",
 		"expires in",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("missing %q\n--- output ---\n%s", must, out)
+		}
+	}
+	// LLM-512: the buyer is owed the goods — the line must never read as the
+	// buyer owing the seller. Guard the exact shapes the weak model flipped.
+	for _, mustNot := range []string{"stew from Hannah", "you owe"} {
+		if strings.Contains(out, mustNot) {
+			t.Errorf("waiting-on line reads as buyer-owes-seller: contains %q\n--- output ---\n%s", mustNot, out)
 		}
 	}
 }

@@ -4135,6 +4135,37 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 		return descriptorLabel(seller.DisplayName, seller.Role, acquainted)
 	}
 
+	// LLM-512: a ledger whose accept minted an Order still at Ready means the
+	// goods have NOT been handed over yet — the seller holds them until
+	// deliver_order. The settled-offers line must not claim "it's in your pack now"
+	// for these (false, and it contradicts the same prompt's "## Orders you're
+	// waiting on" section, which seeds a false-possession memory). Scan snap.Orders
+	// once, keyed by the originating ledger, for orders the subject is waiting on.
+	//
+	// Contract this relies on: Ready is the sole pre-delivery Order state (order.go
+	// — deliver_order flips it to the terminal Delivered), so a non-Ready order has
+	// already been handed over (or expired) and correctly leaves the flag unset.
+	// LedgerID(0) is the reserved unset sentinel (pay_ledger.go); a real
+	// ledger-minted order carries LedgerID >= 1 and a PayLedger entry's own ID is
+	// likewise >= 1, so a ledger-less order (LedgerID 0) can never pair with a
+	// settled entry — skip it rather than seed a spurious pendingByLedger[0].
+	pendingByLedger := map[sim.LedgerID]bool{}
+	for _, o := range snap.Orders {
+		if o == nil || o.State != sim.OrderStateReady || o.LedgerID == 0 {
+			continue
+		}
+		waiting := o.BuyerID == subject
+		for _, cid := range o.ConsumerIDs {
+			if cid == subject {
+				waiting = true
+				break
+			}
+		}
+		if waiting {
+			pendingByLedger[o.LedgerID] = true
+		}
+	}
+
 	views := make([]ResolvedOfferView, 0, len(ids))
 	for _, id := range ids {
 		e := snap.PayLedger[id]
@@ -4174,6 +4205,7 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 			PayItems:        e.PayItems,
 			Accepted:        accepted,
 			ConsumeNow:      e.ConsumeNow,
+			DeliveryPending: accepted && pendingByLedger[e.ID],
 			KeptUnits:       e.KeptUnits,
 			SellerStock:     sellerStock,
 			SellerStocks:    sellerStocks,

@@ -95,6 +95,78 @@ func TestBuildRecentlyResolvedOffersFromMe_FailedSurfacesAsClosed(t *testing.T) 
 	}
 }
 
+// LLM-512: an accepted !ConsumeNow take-home whose order is still Ready (the
+// seller hasn't called deliver_order) is DeliveryPending — the goods are not yet
+// in the buyer's pack. Once the order is Delivered (or gone), the flag clears and
+// the render returns to "it's in your pack now". Linkage is the Order.LedgerID
+// back-reference, matched to the settled entry's own id.
+func TestBuildRecentlyResolvedOffersFromMe_DeliveryPending(t *testing.T) {
+	now := time.Now().UTC()
+	snap := resolvedSnap(now, map[sim.LedgerID]*sim.PayLedgerEntry{
+		300: resolvedEntry(300, "prudence", "elizabeth", "shovel", 1, 8, sim.PayLedgerStateAccepted, false, now.Add(-1*time.Minute)),
+	})
+	readyOrder := func() map[sim.OrderID]*sim.Order {
+		return map[sim.OrderID]*sim.Order{
+			300: {ID: 300, State: sim.OrderStateReady, BuyerID: "prudence", SellerID: "elizabeth", Item: "shovel", Qty: 1, LedgerID: 300, ConsumerIDs: []sim.ActorID{"prudence"}},
+		}
+	}
+
+	snap.Orders = readyOrder()
+	v := buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || !v[0].Accepted || !v[0].DeliveryPending {
+		t.Fatalf("Ready order linked by ledger: view = %+v, want accepted + DeliveryPending", v)
+	}
+
+	// Delivered → no longer pending; the render must keep "in your pack now".
+	snap.Orders = readyOrder()
+	snap.Orders[300].State = sim.OrderStateDelivered
+	v = buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || !v[0].Accepted || v[0].DeliveryPending {
+		t.Fatalf("delivered order: view = %+v, want accepted + NOT DeliveryPending", v)
+	}
+
+	// No order at all (consume_now, or an order already pruned) → not pending.
+	snap.Orders = nil
+	v = buildRecentlyResolvedOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(v) != 1 || v[0].DeliveryPending {
+		t.Fatalf("no order: view = %+v, want NOT DeliveryPending", v)
+	}
+}
+
+// LLM-512: render the three accepted shapes. DeliveryPending → "not in your pack
+// yet" (never possession/done); a delivered take-home → "it's in your pack now";
+// a consume_now eat-here → "you had it right away" (covered alongside in
+// TestRenderRecentlyResolvedOffersFromMe_AcceptedAndClosed).
+func TestRenderRecentlyResolvedOffersFromMe_DeliveryPending(t *testing.T) {
+	var b strings.Builder
+	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
+		{LedgerID: 300, SellerName: "Ezekiel Crane", Item: "shovel", Qty: 1, Amount: 8, Accepted: true, DeliveryPending: true},
+	})
+	out := b.String()
+	for _, want := range []string{
+		"Ezekiel Crane accepted your offer", "it's not in your pack yet",
+		"will hand it over when it's ready", "don't offer for it again", "offer id 300",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pending-delivery line missing %q; got:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"in your pack now", "That deal is done"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("pending-delivery line must not assert possession/done (%q); got:\n%s", bad, out)
+		}
+	}
+
+	// A non-pending accepted take-home still reads "in your pack now".
+	b.Reset()
+	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
+		{LedgerID: 300, SellerName: "Ezekiel Crane", Item: "shovel", Qty: 1, Amount: 8, Accepted: true, DeliveryPending: false},
+	})
+	if out := b.String(); !strings.Contains(out, "it's in your pack now") {
+		t.Errorf("delivered take-home must still read 'in your pack now'; got:\n%s", out)
+	}
+}
+
 func TestBuildRecentlyResolvedOffersFromMe_NilAndEmpty(t *testing.T) {
 	if got := buildRecentlyResolvedOffersFromMe(nil, "prudence", nil); got != nil {
 		t.Errorf("nil snap: got %v, want nil", got)

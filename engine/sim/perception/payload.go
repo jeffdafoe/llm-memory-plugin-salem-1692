@@ -926,6 +926,16 @@ type ResolvedOfferView struct {
 	ConsumeNow bool
 	KeptUnits  int
 
+	// DeliveryPending is true when this accepted offer minted an Order the seller
+	// has NOT delivered yet (LLM-512): the goods are still in the seller's hands,
+	// not the buyer's pack. The render must then say "not in your pack yet — the
+	// seller will hand it over when it's ready" rather than "it's in your pack now.
+	// That deal is done", which is false for an undelivered commission and
+	// contradicts the same prompt's "## Orders you're waiting on" line. Always
+	// false for a ConsumeNow offer (no Order is minted) and for a CLOSED
+	// (non-accepted) view.
+	DeliveryPending bool
+
 	// SellerStock is the seller's current on-hand of Item; SellerStocks says the
 	// shortfall reason may be named for this view (the asked kind is a real good,
 	// not a service). Populated only for a CLOSED (non-accepted) view, so the
