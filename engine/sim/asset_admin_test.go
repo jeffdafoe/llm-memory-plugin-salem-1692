@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -182,5 +183,162 @@ func TestSetAssetStandOffset_SetAndClear(t *testing.T) {
 	a = assetFromWorld(t, w, "bldg")
 	if a.StandOffsetX != nil || a.StandOffsetY != nil {
 		t.Errorf("catalog stand = (%v,%v), want cleared", a.StandOffsetX, a.StandOffsetY)
+	}
+}
+
+// assetStateTags reads a named state's tags off the live catalog through the command
+// channel, copying the slice on the world goroutine so the test holds nothing
+// aliasing live world state. Returns nil for an unknown asset/state.
+func assetStateTags(t *testing.T, w *sim.World, id sim.AssetID, state string) []string {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Assets[id]
+		if a == nil {
+			return []string(nil), nil
+		}
+		st := a.FindState(state)
+		if st == nil {
+			return []string(nil), nil
+		}
+		return append([]string{}, st.Tags...), nil
+	}})
+	if err != nil {
+		t.Fatalf("read state tags: %v", err)
+	}
+	return res.([]string)
+}
+
+func TestSetAssetVisibleWhenInside_SetFlipAndEvent(t *testing.T) {
+	w, cap := buildAssetWorld(t)
+
+	res, err := w.Send(sim.SetAssetVisibleWhenInside("bldg", true))
+	if err != nil {
+		t.Fatalf("set visible-when-inside: %v", err)
+	}
+	out, ok := res.(sim.AssetVisibleWhenInsideResult)
+	if !ok || out.ID != "bldg" || !out.VisibleWhenInside {
+		t.Fatalf("result = %#v, want bldg true", res)
+	}
+	if a := assetFromWorld(t, w, "bldg"); !a.VisibleWhenInside {
+		t.Error("catalog visible_when_inside = false, want true")
+	}
+
+	var found *sim.AssetVisibleWhenInsideChanged
+	for _, e := range cap.snapshot() {
+		if ve, ok := e.(*sim.AssetVisibleWhenInsideChanged); ok {
+			found = ve
+		}
+	}
+	if found == nil || found.AssetID != "bldg" || !found.VisibleWhenInside {
+		t.Fatalf("event = %+v, want bldg true", found)
+	}
+
+	// Flip back off.
+	if _, err := w.Send(sim.SetAssetVisibleWhenInside("bldg", false)); err != nil {
+		t.Fatalf("flip off: %v", err)
+	}
+	if a := assetFromWorld(t, w, "bldg"); a.VisibleWhenInside {
+		t.Error("catalog visible_when_inside = true, want false after flip")
+	}
+}
+
+func TestSetAssetVisibleWhenInside_NotFound(t *testing.T) {
+	w, _ := buildAssetWorld(t)
+	if _, err := w.Send(sim.SetAssetVisibleWhenInside("ghost", true)); !errors.Is(err, sim.ErrAssetNotFound) {
+		t.Fatalf("err = %v, want ErrAssetNotFound", err)
+	}
+}
+
+func TestAddAssetStateTag_SortedIdempotentAndEmits(t *testing.T) {
+	w, cap := buildAssetWorld(t)
+
+	if _, err := w.Send(sim.AddAssetStateTag("bldg", "default", "occupied")); err != nil {
+		t.Fatalf("add occupied: %v", err)
+	}
+	res, err := w.Send(sim.AddAssetStateTag("bldg", "default", "day-active"))
+	if err != nil {
+		t.Fatalf("add day-active: %v", err)
+	}
+	out, ok := res.(sim.AssetStateTagsResult)
+	if !ok || out.ID != "bldg" || out.State != "default" {
+		t.Fatalf("result = %#v, want bldg/default", res)
+	}
+	// Result and catalog both carry the full set, sorted.
+	if got := strings.Join(out.Tags, ","); got != "day-active,occupied" {
+		t.Errorf("result tags = %q, want \"day-active,occupied\"", got)
+	}
+	if got := strings.Join(assetStateTags(t, w, "bldg", "default"), ","); got != "day-active,occupied" {
+		t.Errorf("catalog tags = %q, want \"day-active,occupied\"", got)
+	}
+
+	// Idempotent: re-adding a present tag does not duplicate it.
+	if _, err := w.Send(sim.AddAssetStateTag("bldg", "default", "occupied")); err != nil {
+		t.Fatalf("re-add occupied: %v", err)
+	}
+	if got := strings.Join(assetStateTags(t, w, "bldg", "default"), ","); got != "day-active,occupied" {
+		t.Errorf("catalog tags after re-add = %q, want no duplicate", got)
+	}
+
+	// The latest event carries a non-nil full set (marshals as [] not null).
+	var found *sim.AssetStateTagsChanged
+	for _, e := range cap.snapshot() {
+		if te, ok := e.(*sim.AssetStateTagsChanged); ok {
+			found = te
+		}
+	}
+	if found == nil || found.AssetID != "bldg" || found.State != "default" {
+		t.Fatalf("event = %+v, want bldg/default", found)
+	}
+	if found.Tags == nil {
+		t.Error("event tags nil, want non-nil")
+	}
+}
+
+func TestAddAssetStateTag_NotFound(t *testing.T) {
+	w, _ := buildAssetWorld(t)
+	if _, err := w.Send(sim.AddAssetStateTag("ghost", "default", "occupied")); !errors.Is(err, sim.ErrAssetNotFound) {
+		t.Fatalf("unknown asset err = %v, want ErrAssetNotFound", err)
+	}
+	if _, err := w.Send(sim.AddAssetStateTag("bldg", "nope", "occupied")); !errors.Is(err, sim.ErrAssetStateNotFound) {
+		t.Fatalf("unknown state err = %v, want ErrAssetStateNotFound", err)
+	}
+}
+
+func TestRemoveAssetStateTag_RemovesAndNoOpWhenAbsent(t *testing.T) {
+	w, _ := buildAssetWorld(t)
+	for _, tag := range []string{"occupied", "day-active"} {
+		if _, err := w.Send(sim.AddAssetStateTag("bldg", "default", tag)); err != nil {
+			t.Fatalf("seed add %s: %v", tag, err)
+		}
+	}
+
+	res, err := w.Send(sim.RemoveAssetStateTag("bldg", "default", "day-active"))
+	if err != nil {
+		t.Fatalf("remove day-active: %v", err)
+	}
+	if got := strings.Join(res.(sim.AssetStateTagsResult).Tags, ","); got != "occupied" {
+		t.Errorf("result tags = %q, want \"occupied\"", got)
+	}
+	if got := strings.Join(assetStateTags(t, w, "bldg", "default"), ","); got != "occupied" {
+		t.Errorf("catalog tags = %q, want \"occupied\"", got)
+	}
+
+	// Removing an absent tag succeeds and leaves the set unchanged.
+	res, err = w.Send(sim.RemoveAssetStateTag("bldg", "default", "night-active"))
+	if err != nil {
+		t.Fatalf("remove absent: %v", err)
+	}
+	if got := strings.Join(res.(sim.AssetStateTagsResult).Tags, ","); got != "occupied" {
+		t.Errorf("tags after removing absent = %q, want \"occupied\"", got)
+	}
+}
+
+func TestRemoveAssetStateTag_NotFound(t *testing.T) {
+	w, _ := buildAssetWorld(t)
+	if _, err := w.Send(sim.RemoveAssetStateTag("ghost", "default", "occupied")); !errors.Is(err, sim.ErrAssetNotFound) {
+		t.Fatalf("unknown asset err = %v, want ErrAssetNotFound", err)
+	}
+	if _, err := w.Send(sim.RemoveAssetStateTag("bldg", "nope", "occupied")); !errors.Is(err, sim.ErrAssetStateNotFound) {
+		t.Fatalf("unknown state err = %v, want ErrAssetStateNotFound", err)
 	}
 }

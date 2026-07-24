@@ -32,6 +32,20 @@ type stubAssetWriter struct {
 	standID    sim.AssetID
 	standX     *int
 	standY     *int
+
+	visCalls int
+	visID    sim.AssetID
+	visValue bool
+
+	addTagCalls int
+	addTagID    sim.AssetID
+	addTagState string
+	addTagTag   string
+
+	rmTagCalls int
+	rmTagID    sim.AssetID
+	rmTagState string
+	rmTagTag   string
 }
 
 func (s *stubAssetWriter) UpdateAssetDoorOffset(_ context.Context, id sim.AssetID, x, y *int) error {
@@ -50,6 +64,52 @@ func (s *stubAssetWriter) UpdateAssetStandOffset(_ context.Context, id sim.Asset
 	s.standCalls++
 	s.standID, s.standX, s.standY = id, x, y
 	return s.failErr
+}
+
+func (s *stubAssetWriter) UpdateAssetVisibleWhenInside(_ context.Context, id sim.AssetID, visible bool) error {
+	s.visCalls++
+	s.visID, s.visValue = id, visible
+	return s.failErr
+}
+
+func (s *stubAssetWriter) AddAssetStateTag(_ context.Context, id sim.AssetID, state, tag string) error {
+	s.addTagCalls++
+	s.addTagID, s.addTagState, s.addTagTag = id, state, tag
+	return s.failErr
+}
+
+func (s *stubAssetWriter) RemoveAssetStateTag(_ context.Context, id sim.AssetID, state, tag string) error {
+	s.rmTagCalls++
+	s.rmTagID, s.rmTagState, s.rmTagTag = id, state, tag
+	return s.failErr
+}
+
+// doReq issues an authenticated request (Bearer testToken) with an arbitrary method
+// — the state-tag routes are POST/DELETE, not PATCH — and returns the recorder.
+func doReq(t *testing.T, srv *Server, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// assetVisibleWhenInside reads the live flag off World.Assets through the command
+// channel so a test can assert the in-memory catalog was mutated.
+func assetVisibleWhenInside(t *testing.T, w *sim.World, id sim.AssetID) bool {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Assets[id]
+		if a == nil {
+			return false, nil
+		}
+		return a.VisibleWhenInside, nil
+	}})
+	if err != nil {
+		t.Fatalf("read visible_when_inside: %v", err)
+	}
+	return res.(bool)
 }
 
 // patch issues an authenticated PATCH (Bearer testToken) and returns the
@@ -371,5 +431,180 @@ func TestTranslateEvent_AssetStandOffsetChanged(t *testing.T) {
 	}
 	if d.AssetID != "asset-x" || d.X == nil || *d.X != 0 || d.Y == nil || *d.Y != -1 {
 		t.Errorf("stand payload = %+v, want asset-x (0,-1)", d)
+	}
+}
+
+// --- visible-when-inside (LLM-516) ----------------------------------------
+
+func TestHandleAssetSetVisibleWhenInside_Accepted(t *testing.T) {
+	w, srv, writer := newAssetServer(t)
+
+	rec := doReq(t, srv, http.MethodPatch, "/api/assets/asset-x/visible-when-inside", `{"visible_when_inside":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res assetVisibleWhenInsideResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.AssetID != "asset-x" || !res.VisibleWhenInside {
+		t.Errorf("response = %+v, want asset-x true", res)
+	}
+	if writer.visCalls != 1 || writer.visID != "asset-x" || !writer.visValue {
+		t.Errorf("writer vis call = {n:%d id:%s v:%v}, want 1 asset-x true", writer.visCalls, writer.visID, writer.visValue)
+	}
+	if !assetVisibleWhenInside(t, w, "asset-x") {
+		t.Error("in-memory visible_when_inside = false, want true")
+	}
+}
+
+// A missing field must be a 400, not a silent persist of false.
+func TestHandleAssetSetVisibleWhenInside_MissingFieldRejected(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+	rec := doReq(t, srv, http.MethodPatch, "/api/assets/asset-x/visible-when-inside", `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.visCalls != 0 {
+		t.Errorf("writer called %d times on a missing field, want 0", writer.visCalls)
+	}
+}
+
+func TestHandleAssetSetVisibleWhenInside_NotFound(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+	rec := doReq(t, srv, http.MethodPatch, "/api/assets/ghost/visible-when-inside", `{"visible_when_inside":true}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.visCalls != 0 {
+		t.Errorf("writer called %d times for an unknown asset, want 0", writer.visCalls)
+	}
+}
+
+// --- asset-state tags (LLM-517) -------------------------------------------
+
+func TestHandleAssetAddStateTag_Accepted(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+
+	rec := doReq(t, srv, http.MethodPost, "/api/assets/asset-x/states/unlit/tags", `{"tag":"day-active"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res assetStateTagsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.AssetID != "asset-x" || res.State != "unlit" || len(res.Tags) != 1 || res.Tags[0] != "day-active" {
+		t.Errorf("response = %+v, want asset-x/unlit [day-active]", res)
+	}
+	if writer.addTagCalls != 1 || writer.addTagID != "asset-x" || writer.addTagState != "unlit" || writer.addTagTag != "day-active" {
+		t.Errorf("writer add call = {n:%d id:%s state:%s tag:%s}, want 1 asset-x unlit day-active", writer.addTagCalls, writer.addTagID, writer.addTagState, writer.addTagTag)
+	}
+}
+
+func TestHandleAssetAddStateTag_UnknownTagRejected(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+	rec := doReq(t, srv, http.MethodPost, "/api/assets/asset-x/states/unlit/tags", `{"tag":"bogus"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.addTagCalls != 0 {
+		t.Errorf("writer called %d times on an unknown tag, want 0", writer.addTagCalls)
+	}
+}
+
+func TestHandleAssetAddStateTag_MissingTagRejected(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+	rec := doReq(t, srv, http.MethodPost, "/api/assets/asset-x/states/unlit/tags", `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.addTagCalls != 0 {
+		t.Errorf("writer called %d times on a missing tag, want 0", writer.addTagCalls)
+	}
+}
+
+func TestHandleAssetAddStateTag_StateNotFound(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+	rec := doReq(t, srv, http.MethodPost, "/api/assets/asset-x/states/ghoststate/tags", `{"tag":"day-active"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.addTagCalls != 0 {
+		t.Errorf("writer called %d times for an unknown state, want 0", writer.addTagCalls)
+	}
+}
+
+func TestHandleAssetRemoveStateTag_Accepted(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+
+	// The seeded "lit" state carries "night-active"; remove it.
+	rec := doReq(t, srv, http.MethodDelete, "/api/assets/asset-x/states/lit/tags/night-active", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res assetStateTagsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.State != "lit" || len(res.Tags) != 0 {
+		t.Errorf("response = %+v, want lit with empty tags", res)
+	}
+	if writer.rmTagCalls != 1 || writer.rmTagID != "asset-x" || writer.rmTagState != "lit" || writer.rmTagTag != "night-active" {
+		t.Errorf("writer remove call = {n:%d id:%s state:%s tag:%s}, want 1 asset-x lit night-active", writer.rmTagCalls, writer.rmTagID, writer.rmTagState, writer.rmTagTag)
+	}
+}
+
+func TestHandleAssetRemoveStateTag_StateNotFound(t *testing.T) {
+	_, srv, writer := newAssetServer(t)
+	rec := doReq(t, srv, http.MethodDelete, "/api/assets/asset-x/states/ghoststate/tags/night-active", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.rmTagCalls != 0 {
+		t.Errorf("writer called %d times for an unknown state, want 0", writer.rmTagCalls)
+	}
+}
+
+func TestTranslateEvent_AssetVisibleWhenInsideChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.AssetVisibleWhenInsideChanged{AssetID: "asset-x", VisibleWhenInside: true})
+	if !ok {
+		t.Fatal("AssetVisibleWhenInsideChanged should translate")
+	}
+	if frame.Type != "asset_visible_when_inside_updated" {
+		t.Fatalf("type = %q, want asset_visible_when_inside_updated", frame.Type)
+	}
+	d, isType := frame.Data.(assetVisibleWhenInsideUpdatedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want assetVisibleWhenInsideUpdatedWireDTO", frame.Data)
+	}
+	if d.AssetID != "asset-x" || !d.VisibleWhenInside {
+		t.Errorf("payload = %+v, want asset-x true", d)
+	}
+}
+
+func TestTranslateEvent_AssetStateTagsChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.AssetStateTagsChanged{AssetID: "asset-x", State: "lit", Tags: []string{"day-active", "occupied"}})
+	if !ok {
+		t.Fatal("AssetStateTagsChanged should translate")
+	}
+	if frame.Type != "asset_state_tags_updated" {
+		t.Fatalf("type = %q, want asset_state_tags_updated", frame.Type)
+	}
+	d, isType := frame.Data.(assetStateTagsUpdatedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want assetStateTagsUpdatedWireDTO", frame.Data)
+	}
+	if d.AssetID != "asset-x" || d.State != "lit" || strings.Join(d.Tags, ",") != "day-active,occupied" {
+		t.Errorf("payload = %+v, want asset-x/lit [day-active occupied]", d)
+	}
+	// An empty tag set must marshal as [] (not null) so the client replaces its copy.
+	empty, _ := TranslateEvent(&sim.AssetStateTagsChanged{AssetID: "asset-x", State: "lit", Tags: []string{}})
+	b, err := json.Marshal(empty.Data)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if !strings.Contains(string(b), `"tags":[]`) {
+		t.Errorf("empty tags JSON = %s, want \"tags\":[]", b)
 	}
 }

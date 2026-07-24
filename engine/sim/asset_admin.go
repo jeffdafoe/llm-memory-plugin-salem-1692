@@ -2,6 +2,7 @@ package sim
 
 import (
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -46,6 +47,11 @@ var (
 	ErrInvalidDoorOffset  = errors.New("door offset requires both x and y, or neither")
 	ErrInvalidStandOffset = errors.New("stand offset requires both x and y, or neither")
 )
+
+// ErrAssetStateNotFound is returned by the asset-state-tag commands when the asset
+// exists but has no state with the given name. The handler maps it to 404 (asset id
+// and state name are both URL path segments).
+var ErrAssetStateNotFound = errors.New("asset state not found")
 
 // AssetDoorOffsetResult / AssetFootprintResult / AssetStandOffsetResult carry the
 // post-mutation values back to the handler so it can do the durable pg write and
@@ -153,4 +159,119 @@ func SetAssetStandOffset(id AssetID, x, y *int) Command {
 			return AssetStandOffsetResult{ID: id, X: copyIntPtr(a.StandOffsetX), Y: copyIntPtr(a.StandOffsetY)}, nil
 		},
 	}
+}
+
+// AssetVisibleWhenInsideResult carries the post-mutation flag back to the handler
+// for the durable pg write and the HTTP response.
+type AssetVisibleWhenInsideResult struct {
+	ID                AssetID
+	VisibleWhenInside bool
+}
+
+// AssetStateTagsResult carries the affected asset id, state name, and the full
+// post-mutation tag set (sorted, never nil) back to the handler — the durable write
+// keys on (id, state) and the response/WS frame echo the resulting set.
+type AssetStateTagsResult struct {
+	ID    AssetID
+	State string
+	Tags  []string
+}
+
+// SetAssetVisibleWhenInside sets the per-asset "keep the villager sprite visible
+// while inside a structure of this asset" flag in the live catalog (LLM-516) and
+// emits AssetVisibleWhenInsideChanged. Returns ErrAssetNotFound for an unknown id.
+func SetAssetVisibleWhenInside(id AssetID, visible bool) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a, ok := w.Assets[id]
+			if !ok || a == nil {
+				return nil, ErrAssetNotFound
+			}
+			a.VisibleWhenInside = visible
+			w.emit(&AssetVisibleWhenInsideChanged{
+				AssetID:           id,
+				VisibleWhenInside: visible,
+				At:                time.Now().UTC(),
+			})
+			return AssetVisibleWhenInsideResult{ID: id, VisibleWhenInside: visible}, nil
+		},
+	}
+}
+
+// AddAssetStateTag adds tag to the named state's tag set in the live catalog
+// (LLM-517), idempotent — a tag already present is a no-op — and emits
+// AssetStateTagsChanged with the full post-mutation set. Returns ErrAssetNotFound
+// for an unknown asset, ErrAssetStateNotFound when the asset has no state with that
+// name. Tag-vocabulary validation is the handler's job (the allowed-tag set lives in
+// the http layer). The stored slice is kept sorted so the live catalog matches the
+// order a reload rebuilds from asset_state_tag.
+func AddAssetStateTag(id AssetID, state, tag string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			st, err := findAssetState(w, id, state)
+			if err != nil {
+				return nil, err
+			}
+			if !st.HasTag(tag) {
+				st.Tags = append(st.Tags, tag)
+				sort.Strings(st.Tags)
+			}
+			return emitStateTags(w, id, state, st), nil
+		},
+	}
+}
+
+// RemoveAssetStateTag removes tag from the named state's tag set in the live catalog
+// (LLM-517), a no-op when the pair is absent, and emits AssetStateTagsChanged with
+// the full post-mutation set. Returns ErrAssetNotFound / ErrAssetStateNotFound like
+// AddAssetStateTag. Remove does NOT validate tag against the vocabulary — a tag since
+// dropped from the allowlist must still be removable.
+func RemoveAssetStateTag(id AssetID, state, tag string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			st, err := findAssetState(w, id, state)
+			if err != nil {
+				return nil, err
+			}
+			if st.HasTag(tag) {
+				kept := make([]string, 0, len(st.Tags))
+				for _, t := range st.Tags {
+					if t != tag {
+						kept = append(kept, t)
+					}
+				}
+				st.Tags = kept
+			}
+			return emitStateTags(w, id, state, st), nil
+		},
+	}
+}
+
+// findAssetState resolves the asset + named state, returning the shared error
+// sentinels the two state-tag commands map to 404s.
+func findAssetState(w *World, id AssetID, state string) (*AssetState, error) {
+	a, ok := w.Assets[id]
+	if !ok || a == nil {
+		return nil, ErrAssetNotFound
+	}
+	st := a.FindState(state)
+	if st == nil {
+		return nil, ErrAssetStateNotFound
+	}
+	return st, nil
+}
+
+// emitStateTags emits AssetStateTagsChanged and builds the command result, each
+// with its own non-nil copy of the post-mutation tag set (independent copies so the
+// hub's async marshal can never observe a slice a later edit mutates, matching the
+// pointer-copy discipline the geometry commands use). A non-nil empty slice marshals
+// as [] not null.
+func emitStateTags(w *World, id AssetID, state string, st *AssetState) AssetStateTagsResult {
+	w.emit(&AssetStateTagsChanged{
+		AssetID: id,
+		State:   state,
+		Tags:    append([]string{}, st.Tags...),
+		At:      time.Now().UTC(),
+	})
+	return AssetStateTagsResult{ID: id, State: state, Tags: append([]string{}, st.Tags...)}
 }
