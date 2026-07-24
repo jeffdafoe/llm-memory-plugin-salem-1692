@@ -2537,12 +2537,13 @@ func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView, now time.Time
 	}
 	b.WriteString("## Orders you're waiting on\n")
 	for _, o := range orders {
-		itemDesc := string(o.Item)
-		if o.Qty > 1 {
-			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
-		}
 		seller := sanitizeInline(o.SellerName)
-		fmt.Fprintf(b, "- #%d: %s from %s", uint64(o.ID), itemDesc, seller)
+		// "<seller> owes you <n> <item>" states the direction explicitly. The
+		// prior "<item> from <seller>" left "from" as the only direction cue, and
+		// the weak model flipped it — memorizing the buyer as the debtor who owes
+		// the seller the goods (LLM-512). "owes you" is unflippable. The count is
+		// always shown so the singular reads naturally ("owes you 1 shovel").
+		fmt.Fprintf(b, "- #%d: %s owes you %d %s", uint64(o.ID), seller, o.Qty, o.Item)
 		// Partial-payment commission (LLM-357): the balance the buyer still owes
 		// and must bring to collect.
 		b.WriteString(balanceClause(o, true))
@@ -2567,13 +2568,11 @@ func renderOverdueOrders(b *strings.Builder, orders []OrderView) {
 	}
 	b.WriteString("## Overdue — paid but not delivered\n")
 	for _, o := range orders {
-		itemDesc := string(o.Item)
-		if o.Qty > 1 {
-			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
-		}
 		seller := sanitizeInline(o.SellerName)
-		fmt.Fprintf(b, "- #%d: %s from %s — was due %s, still not delivered\n",
-			uint64(o.ID), itemDesc, seller, o.ReadyBy.Format("Mon Jan 2"))
+		// Same explicit "<seller> owes you" direction as renderOrdersWaitingOn
+		// (LLM-512) — the buyer is owed the goods, never the debtor.
+		fmt.Fprintf(b, "- #%d: %s owes you %d %s — was due %s, still not delivered\n",
+			uint64(o.ID), seller, o.Qty, o.Item, o.ReadyBy.Format("Mon Jan 2"))
 	}
 	b.WriteString("\n")
 }
@@ -3348,6 +3347,17 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 		}
 		if o.Accepted {
 			payment := formatOfferPayment(o.Amount, o.PayItems)
+			if o.DeliveryPending {
+				// LLM-512: the accept minted an order the seller hasn't delivered
+				// yet — the goods are still in the seller's hands, not the buyer's
+				// pack. "it's in your pack now. That deal is done" is false here and
+				// contradicts the "## Orders you're waiting on" line in the same
+				// prompt. State delivery-pending; keep the don't-re-offer guard
+				// (the buyer has already ordered it, just not received it).
+				fmt.Fprintf(b, "%d. %s accepted your offer — you paid %s for %d %s; it's not in your pack yet, %s will hand it over when it's ready. You've already ordered it, so don't offer for it again (offer id %d).\n",
+					i+1, seller, payment, o.Qty, item, seller, o.LedgerID)
+				continue
+			}
 			gotIt := "it's in your pack now"
 			if o.ConsumeNow {
 				gotIt = "you had it right away"
