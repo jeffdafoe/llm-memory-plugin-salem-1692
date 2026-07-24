@@ -33,9 +33,12 @@ const selectSettingSQL = `SELECT value FROM setting WHERE key = $1`
 // listAgentizedActorsSQL enumerates actors backed by an llm-memory agent. The
 // daily push builds a day-note per agentized actor; un-agentized actors
 // (decorative NPCs) have no namespace to write into and are excluded. Matches
-// v1's query (sim_conversation_push.go pushSimDay).
+// v1's query (sim_conversation_push.go pushSimDay), plus display_name and
+// login_username so AgentizedActors can derive each actor's memory-partition
+// slug prefix (LLM-515). COALESCE so a NULL login_username scans into a plain
+// string.
 const listAgentizedActorsSQL = `
-SELECT id, llm_memory_agent
+SELECT id, llm_memory_agent, COALESCE(display_name, ''), COALESCE(login_username, '')
   FROM actor
  WHERE llm_memory_agent IS NOT NULL
    AND llm_memory_agent <> ''`
@@ -84,11 +87,22 @@ func (s *SimPushStore) AgentizedActors(ctx context.Context) ([]sim.AgentActor, e
 
 	actors := []sim.AgentActor{}
 	for rows.Next() {
-		var id, agent string
-		if err := rows.Scan(&id, &agent); err != nil {
+		var id, agent, displayName, loginUsername string
+		if err := rows.Scan(&id, &agent, &displayName, &loginUsername); err != nil {
 			return nil, fmt.Errorf("pg sim_push: scan agentized actor: %w", err)
 		}
-		actors = append(actors, sim.AgentActor{ID: sim.ActorID(id), Agent: agent})
+		// Derive the memory-partition slug prefix through the SAME function recall
+		// and memorize use (sim.MemoryPartition, keyed on the classified actor kind),
+		// so a shared villager's day note lands under the exact prefix its recall
+		// searches and can't drift from it. "" for a dedicated VA.
+		kind := sim.ClassifyActorKind(loginUsername, agent)
+		slugPrefix, _ := sim.MemoryPartition(kind, displayName)
+		actors = append(actors, sim.AgentActor{
+			ID:          sim.ActorID(id),
+			Agent:       agent,
+			SlugPrefix:  slugPrefix,
+			DisplayName: displayName,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg sim_push: iterate agentized actors: %w", err)

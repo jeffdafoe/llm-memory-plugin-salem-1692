@@ -47,12 +47,14 @@ type Store interface {
 	DayEvents(ctx context.Context, actorID sim.ActorID, dayStart, dayEnd time.Time) ([]sim.SimDayEvent, error)
 }
 
-// Poster ships one (agent, day, events) batch to llm-memory-api.
-// Implementations MUST treat "agent is not dream_mode=sim" and "agent unknown"
+// Poster ships one (agent, day, events) batch to llm-memory-api, with the
+// actor's memory-partition slug prefix + display name so a shared-VA villager's
+// note lands under its own subtree (empty prefix for a dedicated VA — LLM-515).
+// Implementations MUST treat "agent is not a sim dream_mode" and "agent unknown"
 // as non-fatal (return nil): the engine pushes for every agentized actor and
 // the API filters, so those responses are expected, not errors.
 type Poster interface {
-	PostDay(ctx context.Context, agent, day string, events []sim.SimDayEvent) error
+	PostDay(ctx context.Context, agent, slugPrefix, actorName, day string, events []sim.SimDayEvent) error
 }
 
 // Dispatcher runs the daily push loop. Construct with NewDispatcher and run
@@ -219,7 +221,7 @@ func (d *Dispatcher) pushDay(ctx context.Context, day string) error {
 			hadFailure = true
 			continue
 		}
-		switch err := d.poster.PostDay(ctx, a.Agent, day, events); {
+		switch err := d.poster.PostDay(ctx, a.Agent, a.SlugPrefix, a.DisplayName, day, events); {
 		case errors.Is(err, errSkippedNonSim):
 			skippedNonSim++
 		case errors.Is(err, errSkippedUnknown):

@@ -29,13 +29,16 @@ func insertActorWithAgent(t *testing.T, ctx context.Context, pool Pool, id, name
 }
 
 // TestSimPushStore_AgentizedActors: only actors with a non-empty
-// llm_memory_agent are returned (NULL and empty-string agents excluded).
+// llm_memory_agent are returned (NULL and empty-string agents excluded), and
+// each carries the memory-partition slug prefix derived the same way recall does
+// — empty for a dedicated VA, "<slug>/" for a shared-VA villager (LLM-515).
 func TestSimPushStore_AgentizedActors(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	s := NewSimPushStore(f.Pool)
 
 	insertActorWithAgent(t, ctx, f.Pool, "11111111-1111-1111-1111-111111111111", "Ezekiel", "salem-ezekiel")
+	insertActorWithAgent(t, ctx, f.Pool, "44444444-4444-4444-4444-444444444444", "Constance Scott", "salem-vendor")
 	insertActorWithAgent(t, ctx, f.Pool, "22222222-2222-2222-2222-222222222222", "EmptyAgent", "")  // excluded by <> ''
 	insertActorWithAgent(t, ctx, f.Pool, "33333333-3333-3333-3333-333333333333", "Decoration", nil) // excluded by IS NOT NULL
 
@@ -43,11 +46,21 @@ func TestSimPushStore_AgentizedActors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentizedActors: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("got %d agentized actors, want 1 (NULL + empty agent excluded): %+v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("got %d agentized actors, want 2 (NULL + empty agent excluded): %+v", len(got), got)
 	}
-	if got[0].Agent != "salem-ezekiel" || got[0].ID != sim.ActorID("11111111-1111-1111-1111-111111111111") {
-		t.Errorf("got[0] = %+v, want id=1111… agent=salem-ezekiel", got[0])
+	byAgent := map[string]sim.AgentActor{}
+	for _, a := range got {
+		byAgent[a.Agent] = a
+	}
+	// A dedicated VA owns its whole namespace, so no slug prefix.
+	if ez := byAgent["salem-ezekiel"]; ez.SlugPrefix != "" || ez.DisplayName != "Ezekiel" ||
+		ez.ID != sim.ActorID("11111111-1111-1111-1111-111111111111") {
+		t.Errorf("salem-ezekiel = %+v, want id=1111… prefix=\"\" name=Ezekiel", ez)
+	}
+	// A shared-VA villager is sectioned under a slug prefix derived from its name.
+	if cs := byAgent["salem-vendor"]; cs.SlugPrefix != "constance-scott/" || cs.DisplayName != "Constance Scott" {
+		t.Errorf("salem-vendor = %+v, want prefix=constance-scott/ name=Constance Scott", cs)
 	}
 }
 
