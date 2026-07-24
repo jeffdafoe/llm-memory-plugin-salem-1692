@@ -6570,6 +6570,7 @@ func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
 		"farm_owner_standoff_declined_shovels":        true, // LLM-299: co-present, negotiation dead-ended — softened cue still renders
 		"farm_owner_conserving_owes_upkeep":           true, // LLM-299: farm-owning keeper in conserve mode — softened cue still renders
 		"farm_owner_off_post_owes_upkeep_no_supplier": true, // LLM-277: owes shovels, no reachable supplier — generic cue still renders
+		"farm_owner_owes_upkeep_order_in_flight":      true, // LLM-518: owes shovels but they're on order — facts-only cue still renders
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc

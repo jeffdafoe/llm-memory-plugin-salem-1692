@@ -27,6 +27,17 @@ type FarmUpkeepView struct {
 	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
 	ShovelVendors []RestockVendor // where to buy the shovels (LLM-274); the move_to destination(s)
 
+	// OnOrder is the total shovels already owed to this owner across their open
+	// (Ready) incoming orders — shovels ordered and awaiting hand-over. LLM-518:
+	// when > 0 the shortfall is already covered in flight, so the cue states the
+	// scene (owed / carried / on order) and renders no buy imperative or vendor/
+	// co-present steer — she has already ordered them. buildFarmUpkeep returns such
+	// a view with ShovelVendors and CoPresentSeller empty, so it carries no errand
+	// (hasFarmUpkeepErrand / HasWalkToSupplier both stay false) and the return-to-
+	// post steer brings her back to the farm to wait instead of re-pulling her to
+	// the smith every tick (the Elizabeth Ellis farm↔blacksmith loop, 2026-07-24).
+	OnOrder int
+
 	// CoPresentSeller is a shovel seller sharing the owner's huddle right now, so a
 	// pay_with_item resolves this very tick; "" when none. PendingOffer is true when
 	// a still-pending shovel offer already stands with that seller. Both mirror the
@@ -69,6 +80,21 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if owed <= held {
 		return nil // nothing owed beyond what they already carry
 	}
+	// LLM-518: shovels already on order (accepted, awaiting hand-over) cover the
+	// shortfall in flight. When any are on order, state the scene and stop — no buy
+	// imperative, no vendor/co-present steer to a purchase she has already made.
+	// Returning here with ShovelVendors + CoPresentSeller empty is deliberate: it
+	// makes the view carry no errand, so the return-to-post duty steer fires and
+	// walks her back to the farm to wait rather than the upkeep cue re-pulling her
+	// to the smith every tick. Any open order is the whole gate.
+	if onOrder := openIncomingOrderQty(snap, actorID, sim.ShovelItemKind); onOrder > 0 {
+		return &FarmUpkeepView{
+			ShovelsOwed:  owed,
+			ShovelsHeld:  held,
+			ShovelsShort: owed - held,
+			OnOrder:      onOrder,
+		}
+	}
 	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.ShovelItemKind)
 	// LLM-274: resolve the shovel supplier(s) so the cue names a move_to destination
 	// instead of the dead-end "the blacksmith". Same restock-directory path the
@@ -99,6 +125,30 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	return view
 }
 
+// openIncomingOrderQty totals the quantity of `item` the buyer is owed across all of
+// their open (Ready) incoming orders — goods ordered and awaiting hand-over. Pure over
+// the snapshot; mirrors the buyer-side scan in buildPendingOrderViews. LLM-518:
+// buildFarmUpkeep nets this against the physical shortfall so the upkeep cue stops
+// goading a purchase that's already in flight. No overflow saturation (unlike the
+// seller-side outstandingReadyOrderQty stock gate): this only picks a render branch, so
+// a corrupt count can at worst mis-word a cue, never re-open an over-sell path.
+func openIncomingOrderQty(snap *sim.Snapshot, buyer sim.ActorID, item sim.ItemKind) int {
+	if snap == nil {
+		return 0
+	}
+	total := 0
+	for _, o := range snap.Orders {
+		if o == nil || o.State != sim.OrderStateReady {
+			continue
+		}
+		if o.BuyerID != buyer || o.Item != item || o.Qty <= 0 {
+			continue
+		}
+		total += o.Qty
+	}
+	return total
+}
+
 // renderFarmUpkeep writes the "## Farm upkeep" section. Content-gated: a nil view
 // writes nothing. Symmetrical awareness — states the worn-tools problem AND the way
 // out (buy shovels from the blacksmith) in one place, and names the shortfall so the
@@ -121,6 +171,19 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 	}
 	b.WriteString("## Farm upkeep\n")
 	b.WriteString("The season's work has worn your farm tools. ")
+	// LLM-518: shovels already on order cover the shortfall in flight. State the
+	// scene — owed / carried / on order — and stop. No buy imperative and no vendor/
+	// co-present steer: she has already ordered them, and nagging a second purchase
+	// she can't complete is what drove the farm↔blacksmith oscillation. The scene is
+	// the argument; the model reads "on order" and waits.
+	if v.OnOrder > 0 {
+		if v.ShovelsHeld > 0 {
+			fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry %d, with %d more on order from the blacksmith.\n", v.ShovelsOwed, v.ShovelsHeld, v.OnOrder)
+		} else {
+			fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry none, with %d on order from the blacksmith.\n", v.ShovelsOwed, v.OnOrder)
+		}
+		return
+	}
 	if v.ShovelsHeld > 0 {
 		fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry %d. ", v.ShovelsOwed, v.ShovelsHeld)
 	}
