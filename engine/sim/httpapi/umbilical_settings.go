@@ -133,8 +133,8 @@ type UmbilicalSettingsDTO struct {
 	// every field above these are NOT checkpoint-persisted: they load once via
 	// parseIntSetting at boot (repo/pg/environment.go) and change only by editing
 	// the env config and restarting — so this read is the ONLY console window onto
-	// them (eco mode pauses spawning while unwatched, so live visitor count can't
-	// reveal the rate either). Reported as EFFECTIVE values: each mirrors the exact
+	// them (a live visitor-count snapshot can't reveal the rate either — spawning
+	// is capped at visitor_max_concurrent). Reported as EFFECTIVE values: each mirrors the exact
 	// clamp its dispatcher applies to world.Settings at spawn/return time, so the
 	// figure shown is what the next visitor would actually use — not the raw stored
 	// value. NOTE the clamps are NOT uniformly "0 → Default": the purse and
