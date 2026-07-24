@@ -589,6 +589,23 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			X:       e.X,
 			Y:       e.Y,
 		}}, true
+	case *sim.AssetVisibleWhenInsideChanged:
+		// LLM-516: an admin toggled the per-asset visible-when-inside flag. The
+		// client's _on_asset_visible_when_inside_updated patches the catalog and
+		// flips any currently-inside NPC of this asset's structures on/off.
+		return WireFrame{Type: "asset_visible_when_inside_updated", Data: assetVisibleWhenInsideUpdatedWireDTO{
+			AssetID:           string(e.AssetID),
+			VisibleWhenInside: e.VisibleWhenInside,
+		}}, true
+	case *sim.AssetStateTagsChanged:
+		// LLM-517: an admin added/removed a tag on one of the asset's states. tags is
+		// the full post-mutation set; the client replaces its catalog copy for that
+		// state (event_client.gd _on asset_state_tags_updated → Catalog).
+		return WireFrame{Type: "asset_state_tags_updated", Data: assetStateTagsUpdatedWireDTO{
+			AssetID: string(e.AssetID),
+			State:   e.State,
+			Tags:    e.Tags,
+		}}, true
 	default:
 		return WireFrame{}, false
 	}
@@ -973,6 +990,23 @@ type assetStandUpdatedWireDTO struct {
 	AssetID string `json:"asset_id"`
 	X       *int   `json:"x"`
 	Y       *int   `json:"y"`
+}
+
+// assetVisibleWhenInsideUpdatedWireDTO — the asset_visible_when_inside_updated frame
+// (LLM-516): the asset and its new flag. The client keys the flag into its catalog
+// so future inside-flips render correctly.
+type assetVisibleWhenInsideUpdatedWireDTO struct {
+	AssetID           string `json:"asset_id"`
+	VisibleWhenInside bool   `json:"visible_when_inside"`
+}
+
+// assetStateTagsUpdatedWireDTO — the asset_state_tags_updated frame (LLM-517): the
+// full post-mutation tag set for one asset state. tags is always present (possibly
+// empty []), never null, so the client replaces its copy unconditionally.
+type assetStateTagsUpdatedWireDTO struct {
+	AssetID string   `json:"asset_id"`
+	State   string   `json:"state"`
+	Tags    []string `json:"tags"`
 }
 
 // payOfferWireDTO is the pay_offer payload — a buyer (PC or NPC) has

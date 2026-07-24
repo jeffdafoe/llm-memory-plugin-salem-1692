@@ -356,6 +356,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/assets/{id}/door", s.requireAuth(s.handleAssetSetDoor))
 	mux.HandleFunc("PATCH /api/assets/{id}/footprint", s.requireAuth(s.handleAssetSetFootprint))
 	mux.HandleFunc("PATCH /api/assets/{id}/stand", s.requireAuth(s.handleAssetSetStand))
+	// Asset render-flag + state-tag editor writes (LLM-516/517), same admin gate and
+	// injected-writer path as the geometry trio above. visible-when-inside backs the
+	// editor's dropdown; the states/{state}/tags pair backs the asset-popup tag chips.
+	mux.HandleFunc("PATCH /api/assets/{id}/visible-when-inside", s.requireAuth(s.handleAssetSetVisibleWhenInside))
+	mux.HandleFunc("POST /api/assets/{id}/states/{state}/tags", s.requireAuth(s.handleAssetAddStateTag))
+	mux.HandleFunc("DELETE /api/assets/{id}/states/{state}/tags/{tag}", s.requireAuth(s.handleAssetRemoveStateTag))
 	// Client-reported error feed (clientlog.go). Authed write; records browser-
 	// runtime failures the engine/nginx can't see into a pull-only ring surfaced
 	// via the umbilical. Untrusted — kept separate from the server-observed ring.

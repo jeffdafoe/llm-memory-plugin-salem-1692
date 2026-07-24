@@ -584,6 +584,34 @@ type AssetStandOffsetChanged struct {
 
 func (AssetStandOffsetChanged) isSimEvent() {}
 
+// AssetVisibleWhenInsideChanged — an admin toggled the per-asset "keep the villager
+// sprite visible while inside" rendering flag in the editor (LLM-516). Carries the
+// full post-mutation value. Frame: asset_visible_when_inside_updated; the client
+// patches its catalog copy and flips any currently-inside NPC of this asset's
+// structures on/off.
+type AssetVisibleWhenInsideChanged struct {
+	EventBase
+	AssetID           AssetID
+	VisibleWhenInside bool
+	At                time.Time
+}
+
+func (AssetVisibleWhenInsideChanged) isSimEvent() {}
+
+// AssetStateTagsChanged — an admin added or removed a tag on one of an asset's
+// states in the editor (LLM-517). Tags is the full post-mutation set (sorted, never
+// nil), not a delta. Frame: asset_state_tags_updated; the client replaces its
+// catalog copy of that state's tags.
+type AssetStateTagsChanged struct {
+	EventBase
+	AssetID AssetID
+	State   string
+	Tags    []string
+	At      time.Time
+}
+
+func (AssetStateTagsChanged) isSimEvent() {}
+
 // NPC editor write events (ZBBS-HOME-309). Each is emitted by the matching
 // SetActor* / {Add,Remove}ActorAttribute command in actor_admin.go ONLY on an
 // actual change, and the httpapi hub translates it to the npc_* WS frame the

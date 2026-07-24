@@ -430,6 +430,25 @@ UPDATE asset
 const updateAssetStandSQL = `
 UPDATE asset SET stand_offset_x = $2, stand_offset_y = $3 WHERE id = $1`
 
+const updateAssetVisibleWhenInsideSQL = `
+UPDATE asset SET visible_when_inside = $2 WHERE id = $1`
+
+// The asset-state tag mutations resolve state_id from (asset_id, state name) in a
+// subquery so the caller passes the stable pair the editor holds, not the SERIAL PK.
+// Add is idempotent via ON CONFLICT on the (state_id, tag) primary key; remove is a
+// no-op when the pair is absent. Both match zero rows for an unknown asset/state,
+// which the caller has already validated in the in-memory command (parity with the
+// geometry writes) — so neither treats zero rows affected as an error.
+const addAssetStateTagSQL = `
+INSERT INTO asset_state_tag (state_id, tag)
+SELECT s.id, $3 FROM asset_state s WHERE s.asset_id = $1 AND s.state = $2
+ON CONFLICT (state_id, tag) DO NOTHING`
+
+const removeAssetStateTagSQL = `
+DELETE FROM asset_state_tag
+ WHERE tag = $3
+   AND state_id IN (SELECT id FROM asset_state WHERE asset_id = $1 AND state = $2)`
+
 // UpdateAssetDoorOffset persists the per-asset door tile offset. x/y are nil to
 // clear the door (the columns are nullable). Returns sim.ErrAssetNotFound when
 // no asset row has id.
@@ -469,6 +488,40 @@ func (r *AssetsRepo) UpdateAssetStandOffset(ctx context.Context, id sim.AssetID,
 	}
 	if tag.RowsAffected() == 0 {
 		return sim.ErrAssetNotFound
+	}
+	return nil
+}
+
+// UpdateAssetVisibleWhenInside persists the per-asset visible-when-inside render flag
+// (LLM-516). Returns sim.ErrAssetNotFound when no asset row has id.
+func (r *AssetsRepo) UpdateAssetVisibleWhenInside(ctx context.Context, id sim.AssetID, visible bool) error {
+	tag, err := r.pool.Exec(ctx, updateAssetVisibleWhenInsideSQL, string(id), visible)
+	if err != nil {
+		return fmt.Errorf("pg assets UpdateAssetVisibleWhenInside: exec: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return sim.ErrAssetNotFound
+	}
+	return nil
+}
+
+// AddAssetStateTag persists one tag on the named asset state (LLM-517), idempotent
+// via the (state_id, tag) primary key. state_id is resolved from (id, state) in the
+// statement. The in-memory command has already validated the asset + state and the
+// handler the tag vocabulary, so a zero-row result (unknown asset/state, or an
+// already-present tag) is not an error here — parity with the geometry writes.
+func (r *AssetsRepo) AddAssetStateTag(ctx context.Context, id sim.AssetID, state, tag string) error {
+	if _, err := r.pool.Exec(ctx, addAssetStateTagSQL, string(id), state, tag); err != nil {
+		return fmt.Errorf("pg assets AddAssetStateTag: exec: %w", err)
+	}
+	return nil
+}
+
+// RemoveAssetStateTag deletes one tag from the named asset state (LLM-517). A no-op
+// when the pair is absent (the client's tag set still converges via the broadcast).
+func (r *AssetsRepo) RemoveAssetStateTag(ctx context.Context, id sim.AssetID, state, tag string) error {
+	if _, err := r.pool.Exec(ctx, removeAssetStateTagSQL, string(id), state, tag); err != nil {
+		return fmt.Errorf("pg assets RemoveAssetStateTag: exec: %w", err)
 	}
 	return nil
 }

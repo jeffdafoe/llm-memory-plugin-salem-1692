@@ -10,12 +10,18 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// asset_write_handlers.go — the asset-geometry editor write routes (LLM-263):
-// PATCH /api/assets/{id}/door | /footprint | /stand. The Godot editor's
-// draggable door / footprint / stand markers PATCH these on release
-// (client/scripts/editor.gd); before this the v2 engine registered no handler,
-// so the pins never persisted (the editor drew them optimistically off its local
-// catalog and looked like it worked).
+// asset_write_handlers.go — the asset editor write routes:
+//   PATCH  /api/assets/{id}/door | /footprint | /stand      (geometry, LLM-263)
+//   PATCH  /api/assets/{id}/visible-when-inside              (render flag, LLM-516)
+//   POST   /api/assets/{id}/states/{state}/tags             (state tags, LLM-517)
+//   DELETE /api/assets/{id}/states/{state}/tags/{tag}       (state tags, LLM-517)
+// The Godot editor's draggable door / footprint / stand markers, the "visible when
+// inside" dropdown (client/scripts/main.gd) and the asset popup's state-tag chips
+// (client/scripts/asset_popup.gd) hit these. All four share one failure history:
+// they existed in the v1 monolith, were removed with it (5560aafa), and the client
+// kept calling them optimistically off its local catalog — so the edit looked like
+// it worked but never persisted. LLM-263 reimplemented the geometry trio for v2;
+// LLM-516/517 finish the set.
 //
 // These are player-ADMIN editor writes (not operator/umbilical): gated by
 // requireAuth (valid salem session) at registration, then adminCommand (the
@@ -38,14 +44,17 @@ import (
 // the next engine restart. Loud, rare (a pg outage mid-drag), recoverable by
 // re-dragging.
 
-// AssetGeometryWriter is the durable half of the asset-geometry writes, injected
-// by cmd/engine (Server.SetAssetGeometryWriter) so httpapi doesn't import the pg
-// package. nil on a mem-backed deploy → the routes answer 503. pg.AssetsRepo
-// satisfies it.
+// AssetGeometryWriter is the durable half of the asset editor writes (geometry, the
+// visible-when-inside flag, and per-state tags), injected by cmd/engine
+// (Server.SetAssetGeometryWriter) so httpapi doesn't import the pg package. nil on a
+// mem-backed deploy → the routes answer 503. pg.AssetsRepo satisfies it.
 type AssetGeometryWriter interface {
 	UpdateAssetDoorOffset(ctx context.Context, id sim.AssetID, x, y *int) error
 	UpdateAssetFootprint(ctx context.Context, id sim.AssetID, left, right, top, bottom int) error
 	UpdateAssetStandOffset(ctx context.Context, id sim.AssetID, x, y *int) error
+	UpdateAssetVisibleWhenInside(ctx context.Context, id sim.AssetID, visible bool) error
+	AddAssetStateTag(ctx context.Context, id sim.AssetID, state, tag string) error
+	RemoveAssetStateTag(ctx context.Context, id sim.AssetID, state, tag string) error
 }
 
 // assetOffsetRequest is the PATCH /door and /stand body: a tile offset pair from
@@ -102,7 +111,7 @@ func writeAssetWriteError(w http.ResponseWriter, err error) {
 		return
 	case errors.Is(err, errAdminForbidden):
 		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, sim.ErrAssetNotFound):
+	case errors.Is(err, sim.ErrAssetNotFound), errors.Is(err, sim.ErrAssetStateNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, sim.ErrInvalidDoorOffset),
 		errors.Is(err, sim.ErrInvalidStandOffset),
@@ -273,4 +282,155 @@ func (s *Server) handleAssetSetStand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, assetStandResponse{AssetID: string(out.ID), X: out.X, Y: out.Y})
+}
+
+// assetVisibleWhenInsideRequest is the PATCH /visible-when-inside body. Pointer so a
+// MISSING field is a 400 rather than silently persisting false — the flag is a
+// deliberate toggle, not a defaultable zero value.
+type assetVisibleWhenInsideRequest struct {
+	VisibleWhenInside *bool `json:"visible_when_inside"`
+}
+
+type assetVisibleWhenInsideResponse struct {
+	AssetID           string `json:"asset_id"`
+	VisibleWhenInside bool   `json:"visible_when_inside"`
+}
+
+// handleAssetSetVisibleWhenInside (LLM-516) toggles the per-asset visible-when-inside
+// render flag: apply in the live catalog (emits the WS frame), then persist. Same
+// apply-then-persist posture as the geometry handlers above.
+func (s *Server) handleAssetSetVisibleWhenInside(w http.ResponseWriter, r *http.Request) {
+	username, id, ok := s.assetWriteAuth(w, r)
+	if !ok {
+		return
+	}
+	var req assetVisibleWhenInsideRequest
+	if !decodeAdminBody(w, r, &req) {
+		return
+	}
+	if req.VisibleWhenInside == nil {
+		writeError(w, http.StatusBadRequest, "visible_when_inside is required")
+		return
+	}
+	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
+		return sim.SetAssetVisibleWhenInside(sim.AssetID(id), *req.VisibleWhenInside).Fn(world)
+	}))
+	if err != nil {
+		writeAssetWriteError(w, err)
+		return
+	}
+	out, ok := res.(sim.AssetVisibleWhenInsideResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-visible-when-inside result")
+		return
+	}
+	if err := s.assetGeometryWriter.UpdateAssetVisibleWhenInside(r.Context(), out.ID, out.VisibleWhenInside); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Printf("asset visible-when-inside write: id=%s applied live but durable write failed: %v", out.ID, err)
+		writeError(w, http.StatusInternalServerError, "visible-when-inside applied live but durable write failed; reverts on restart")
+		return
+	}
+	writeJSON(w, assetVisibleWhenInsideResponse{AssetID: string(out.ID), VisibleWhenInside: out.VisibleWhenInside})
+}
+
+// assetStateTagRequest is the POST /states/{state}/tags body. Pointer so a MISSING
+// tag is a 400; the tag is checked against the allowed-tag vocabulary before the
+// command runs (add only — see the DELETE handler).
+type assetStateTagRequest struct {
+	Tag *string `json:"tag"`
+}
+
+type assetStateTagsResponse struct {
+	AssetID string   `json:"asset_id"`
+	State   string   `json:"state"`
+	Tags    []string `json:"tags"`
+}
+
+// handleAssetAddStateTag (LLM-517) adds one tag to an asset state: validate the tag
+// against allowedStateTags, apply in the live catalog (emits asset_state_tags_updated
+// with the full new set), then persist. The command returns ErrAssetStateNotFound
+// (→ 404) when the asset has no such state.
+func (s *Server) handleAssetAddStateTag(w http.ResponseWriter, r *http.Request) {
+	username, id, ok := s.assetWriteAuth(w, r)
+	if !ok {
+		return
+	}
+	state := r.PathValue("state")
+	if state == "" {
+		writeError(w, http.StatusBadRequest, "state is required")
+		return
+	}
+	var req assetStateTagRequest
+	if !decodeAdminBody(w, r, &req) {
+		return
+	}
+	if req.Tag == nil || *req.Tag == "" {
+		writeError(w, http.StatusBadRequest, "tag is required")
+		return
+	}
+	// Vocabulary gate — only known state tags (catalog_tags.go) may be authored.
+	if !allowedStateTags[*req.Tag] {
+		writeError(w, http.StatusBadRequest, "unknown state tag")
+		return
+	}
+	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
+		return sim.AddAssetStateTag(sim.AssetID(id), state, *req.Tag).Fn(world)
+	}))
+	if err != nil {
+		writeAssetWriteError(w, err)
+		return
+	}
+	out, ok := res.(sim.AssetStateTagsResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected add-state-tag result")
+		return
+	}
+	if err := s.assetGeometryWriter.AddAssetStateTag(r.Context(), out.ID, out.State, *req.Tag); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Printf("asset state-tag add: id=%s state=%s applied live but durable write failed: %v", out.ID, out.State, err)
+		writeError(w, http.StatusInternalServerError, "state tag applied live but durable write failed; reverts on restart")
+		return
+	}
+	writeJSON(w, assetStateTagsResponse{AssetID: string(out.ID), State: out.State, Tags: out.Tags})
+}
+
+// handleAssetRemoveStateTag (LLM-517) removes one tag from an asset state. The tag is
+// a URL path segment. No vocabulary check — a tag since dropped from the allowlist
+// must still be removable. No-op (still 200 + broadcast) when the pair is absent.
+func (s *Server) handleAssetRemoveStateTag(w http.ResponseWriter, r *http.Request) {
+	username, id, ok := s.assetWriteAuth(w, r)
+	if !ok {
+		return
+	}
+	state := r.PathValue("state")
+	tag := r.PathValue("tag")
+	if state == "" || tag == "" {
+		writeError(w, http.StatusBadRequest, "state and tag are required")
+		return
+	}
+	res, err := s.world.SendContext(r.Context(), adminCommand(username, func(world *sim.World) (any, error) {
+		return sim.RemoveAssetStateTag(sim.AssetID(id), state, tag).Fn(world)
+	}))
+	if err != nil {
+		writeAssetWriteError(w, err)
+		return
+	}
+	out, ok := res.(sim.AssetStateTagsResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected remove-state-tag result")
+		return
+	}
+	if err := s.assetGeometryWriter.RemoveAssetStateTag(r.Context(), out.ID, out.State, tag); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Printf("asset state-tag remove: id=%s state=%s applied live but durable write failed: %v", out.ID, out.State, err)
+		writeError(w, http.StatusInternalServerError, "state tag applied live but durable write failed; reverts on restart")
+		return
+	}
+	writeJSON(w, assetStateTagsResponse{AssetID: string(out.ID), State: out.State, Tags: out.Tags})
 }
