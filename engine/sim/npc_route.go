@@ -247,11 +247,20 @@ type NPCRoute struct {
 	// armed. Held so a superseded / abandoned / completed route can STOP its
 	// pending timer (clearActiveRoute / stopDwellTimer) instead of leaking a live
 	// timer that fires at shutdown or, worse, could advance a replacement route
-	// occupying the same StopIdx. The stopIdx guard in the timer callback is kept
-	// as belt-and-suspenders. Cascade arms it (armConstableDwellTimer); the
+	// occupying the same StopIdx. Cascade arms it (armConstableDwellTimer); the
 	// substrate stops it on every route-clear path. World-goroutine-only; never
 	// persisted.
 	DwellTimer *time.Timer
+	// Gen is a monotonically-increasing identity token stamped at StartNPCRoute
+	// install (from World.routeInstallSeq). It disambiguates two routes of the SAME
+	// actor at the SAME StopIdx — the case stopIdx alone cannot: a dwell timer that
+	// ALREADY FIRED and queued its advance command before its route was superseded
+	// would otherwise run against the replacement (same actor, same StopIdx 0) and
+	// wrongly advance it. constableAdvanceAfterDwell captures the Gen at arm time and
+	// requires the current active route to still match it (LLM-514 fix A). Stopping
+	// the timer handles the not-yet-fired case; the Gen check handles the
+	// already-queued case. World-goroutine-only; never persisted.
+	Gen uint64
 }
 
 // stopDwellTimer stops and clears any pending dwell timer on the route (nil-safe on
@@ -387,6 +396,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				}, nil
 			}
 
+			w.routeInstallSeq++
 			route := &NPCRoute{
 				NPCID:           actorID,
 				Label:           label,
@@ -394,6 +404,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				StopIdx:         0,
 				Phase:           RoutePhaseActive,
 				HomeDestination: cloneMoveDestination(homeDest),
+				Gen:             w.routeInstallSeq,
 			}
 			if w.ActiveRoutes == nil {
 				w.ActiveRoutes = map[ActorID]*NPCRoute{}
@@ -751,7 +762,7 @@ func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
 // MUST be called from inside a Command.Fn — routeStopWalkTarget reads
 // w.VillageObjects / w.Assets to resolve each candidate's loiter pin.
 func buildRouteStops(w *World, grid *WalkGrid, actor *Actor, candidates []RouteCandidate, now time.Time) []RouteStop {
-	if len(candidates) == 0 {
+	if actor == nil || len(candidates) == 0 {
 		return nil
 	}
 	remaining := make([]RouteCandidate, len(candidates))
@@ -805,22 +816,28 @@ func buildRouteStops(w *World, grid *WalkGrid, actor *Actor, candidates []RouteC
 // path from cursor (nil = unreachable this cycle — the caller skips it). MUST be
 // called from inside a Command.Fn (reads world state via its resolvers).
 func resolveRouteStop(w *World, grid *WalkGrid, cursor GridPoint, c RouteCandidate, actor *Actor, now time.Time) (RouteStop, GridPoint, []GridPoint) {
-	if sid, enters := routeStopEntersStructure(w, actor, c.ObjectID, now); c.Enter && enters {
-		if door, ok := structureEntryTile(w, sid); ok {
-			doorPt := GridPoint{X: door.X, Y: door.Y}
-			// The door tile is the sole walkable footprint tile (buildWalkGrid
-			// carves a corridor to it); a StructureEnter finishes there. Only take
-			// the enter branch when it's actually reachable from the cursor —
-			// otherwise fall through to the loiter fallback so the stop is still
-			// visited (stand outside) rather than dropped.
-			if grid.CanWalk(doorPt.X, doorPt.Y) {
-				if path := FindPath(grid, cursor, doorPt); path != nil {
-					return RouteStop{
-						ObjectID:         c.ObjectID,
-						WalkTo:           Position{X: doorPt.X, Y: doorPt.Y},
-						NewState:         c.NewState,
-						EnterStructureID: sid,
-					}, doorPt, path
+	// Gate on c.Enter FIRST (fix B): the enter classifier (routeStopEntersStructure →
+	// moveToCanEnter) is evaluated ONLY for a candidate that opts in, so the
+	// tile-based routes (lamplighter / washerwoman / town_crier) never touch the
+	// entry gate at all — truly inert for them, not just filtered after the fact.
+	if c.Enter {
+		if sid, enters := routeStopEntersStructure(w, actor, c.ObjectID, now); enters {
+			if door, ok := structureEntryTile(w, sid); ok {
+				doorPt := GridPoint{X: door.X, Y: door.Y}
+				// The door tile is the sole walkable footprint tile (buildWalkGrid
+				// carves a corridor to it); a StructureEnter finishes there. Only take
+				// the enter branch when it's actually reachable from the cursor —
+				// otherwise fall through to the loiter fallback so the stop is still
+				// visited (stand outside) rather than dropped.
+				if grid.CanWalk(doorPt.X, doorPt.Y) {
+					if path := FindPath(grid, cursor, doorPt); path != nil {
+						return RouteStop{
+							ObjectID:         c.ObjectID,
+							WalkTo:           Position{X: doorPt.X, Y: doorPt.Y},
+							NewState:         c.NewState,
+							EnterStructureID: sid,
+						}, doorPt, path
+					}
 				}
 			}
 		}

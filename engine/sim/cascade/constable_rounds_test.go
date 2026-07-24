@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -48,6 +49,13 @@ func buildConstableCascadeWorld(t *testing.T, extraConstables ...sim.ActorID) *s
 			DoorOffsetX: intp(0), DoorOffsetY: intp(2),
 			States: []sim.AssetState{{ID: 1, State: "default"}},
 		},
+		// "barn" is a DOORLESS structure asset (no door offsets) — a structure-backed
+		// placement the constable can never step INTO, so it must resolve to a loiter
+		// stop (test E).
+		"barn": {
+			ID: "barn", Category: "structure", DefaultState: "default",
+			States: []sim.AssetState{{ID: 1, State: "default"}},
+		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		// Anchor tiles (WorldPos.Tile = Pad + world/32): meeting_house {70,132},
@@ -55,11 +63,15 @@ func buildConstableCascadeWorld(t *testing.T, extraConstables ...sim.ActorID) *s
 		"meeting_house": {ID: "meeting_house", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 640}},
 		"store":         {ID: "store", AssetID: "house", Pos: sim.WorldPos{X: 640, Y: 320}, Tags: []string{sim.TagBusiness}},
 		"tavern":        {ID: "tavern", AssetID: "house", Pos: sim.WorldPos{X: 960, Y: 320}, Tags: []string{sim.TagBusiness}},
+		// A doorless structure at {70,142} — deliberately NOT tagged TagBusiness so it
+		// is out of the rounds circuit, but available for the enter-gate door test.
+		"farm": {ID: "farm", AssetID: "barn", Pos: sim.WorldPos{X: 320, Y: 960}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"meeting_house": {ID: "meeting_house", DisplayName: "Meeting House"},
 		"store":         {ID: "store", DisplayName: "General Store"},
 		"tavern":        {ID: "tavern", DisplayName: "Tavern"},
+		"farm":          {ID: "farm", DisplayName: "Ellis Farm"},
 	})
 	actorSeed := map[sim.ActorID]*sim.Actor{
 		"gideon": {
@@ -216,7 +228,8 @@ func TestConstableDwellAndNoInterrupt(t *testing.T) {
 		a := world.Actors["gideon"]
 		a.CurrentHuddleID = "h1"
 		world.Huddles["h1"] = &sim.Huddle{ID: "h1", Members: map[sim.ActorID]struct{}{"gideon": {}, "keeper": {}}}
-		if _, err := constableAdvanceAfterDwell("gideon", 0).Fn(world); err != nil {
+		gen := world.ActiveRoutes["gideon"].Gen
+		if _, err := constableAdvanceAfterDwell("gideon", gen, 0).Fn(world); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -237,7 +250,8 @@ func TestConstableDwellAndNoInterrupt(t *testing.T) {
 		a := world.Actors["gideon"]
 		a.CurrentHuddleID = ""
 		delete(world.Huddles, "h1")
-		if _, err := constableAdvanceAfterDwell("gideon", 0).Fn(world); err != nil {
+		gen := world.ActiveRoutes["gideon"].Gen
+		if _, err := constableAdvanceAfterDwell("gideon", gen, 0).Fn(world); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -479,5 +493,107 @@ func TestRouteStopEnterOptIn(t *testing.T) {
 	}
 	if s := stopFor(true); s.EnterStructureID != "store" {
 		t.Errorf("Enter=true over a door-backed structure: EnterStructureID=%q, want store", s.EnterStructureID)
+	}
+}
+
+// TestRouteStopEnterOptIn_DoorlessLoiters: fix E — opting into entering a DOORLESS
+// structure still resolves to a loiter stop, because the entry gate (moveToCanEnter's
+// door check) rejects it. Equivalent to the old assetHasDoor gate on this path.
+func TestRouteStopEnterOptIn_DoorlessLoiters(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		delete(world.ActiveRoutes, "gideon")
+		cand := []sim.RouteCandidate{{ObjectID: "farm", Enter: true, WorldX: 320, WorldY: 960}}
+		dest := sim.NewPositionDestination(world.Actors["gideon"].Pos)
+		if _, err := sim.StartNPCRoute("gideon", "test", dest, cand, time.Now()).Fn(world); err != nil {
+			return nil, err
+		}
+		r := world.ActiveRoutes["gideon"]
+		if r == nil || len(r.Stops) == 0 {
+			return sim.RouteStop{}, nil
+		}
+		return r.Stops[0], nil
+	}})
+	if err != nil {
+		t.Fatalf("start route: %v", err)
+	}
+	if s := res.(sim.RouteStop); s.EnterStructureID != "" {
+		t.Errorf("Enter=true over a DOORLESS structure became an enter stop (%q) — the door gate must force a loiter stop", s.EnterStructureID)
+	}
+}
+
+// TestTileRouteBuildersNeverEnter: fix F — the tile-based route builders
+// (lamplighter / washerwoman / town_crier) never set RouteCandidate.Enter, so their
+// stops are byte-for-byte unchanged even for a candidate that IS a door-backed
+// structure (belt to resolveRouteStop's c.Enter gate). Uses the real builders on the
+// standard route world.
+func TestTileRouteBuildersNeverEnter(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		rng := rand.New(rand.NewSource(1))
+		var all []sim.RouteCandidate
+		all = append(all, buildLaundryCandidates(world, true, rng)...)
+		all = append(all, buildNoticeboardCandidates(world, rng)...)
+		all = append(all, buildLamplighterCandidates(world, sim.TagDayActive)...)
+		return all, nil
+	}})
+	if err != nil {
+		t.Fatalf("build candidates: %v", err)
+	}
+	cands := res.([]sim.RouteCandidate)
+	if len(cands) == 0 {
+		t.Fatal("no tile-route candidates built — test would be vacuous")
+	}
+	for _, c := range cands {
+		if c.Enter {
+			t.Errorf("a tile-route builder set Enter=true on candidate %q — the schedule routes must never opt into entering", c.ObjectID)
+		}
+	}
+}
+
+// TestConstableStaleDwellCallbackAfterSupersede: fix A (the real race) — a dwell
+// callback that ALREADY FIRED and queued its command before its route was superseded
+// must NOT advance the replacement route, even though both sit at StopIdx 0. The
+// generation token is what distinguishes them; stopping the timer only covers the
+// not-yet-fired case.
+func TestConstableStaleDwellCallbackAfterSupersede(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// Route A + arrival: arms A's dwell timer carrying A's Gen at StopIdx 0.
+		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
+			return nil, err
+		}
+		routeA := world.ActiveRoutes["gideon"]
+		genA := routeA.Gen
+		sid := routeA.Stops[0].EnterStructureID
+		world.Actors["gideon"].InsideStructureID = sid
+		handleActorArrivedAdvanceRoute(context.Background(), world,
+			&sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}, llm.NewFakeClient())
+		// Supersede with route B (fresh Gen, also at StopIdx 0).
+		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
+			return nil, err
+		}
+		// Simulate the callback A's timer had ALREADY QUEUED before the supersede:
+		// invoke the advance carrying A's now-stale Gen. It must no-op against route B.
+		if _, err := constableAdvanceAfterDwell("gideon", genA, 0).Fn(world); err != nil {
+			return nil, err
+		}
+		return world.ActiveRoutes["gideon"].StopIdx, nil
+	}})
+	if err != nil {
+		t.Fatalf("scenario: %v", err)
+	}
+	if res.(int) != 0 {
+		t.Errorf("route B StopIdx = %d, want 0 — a stale dwell callback from the superseded route advanced the replacement (generation guard failed)", res.(int))
 	}
 }

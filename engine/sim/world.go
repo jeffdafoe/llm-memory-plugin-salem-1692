@@ -1128,6 +1128,15 @@ type World struct {
 	// correctness failure.
 	ActiveRoutes map[ActorID]*NPCRoute
 
+	// routeInstallSeq is a monotonically-increasing counter stamped onto each
+	// NPCRoute.Gen at StartNPCRoute install (LLM-514 fix A). It gives every route
+	// install a distinct identity so a dwell-timer callback that already fired
+	// before its route was superseded can detect the supersede even when the
+	// replacement occupies the same StopIdx. World-goroutine-only (only StartNPCRoute
+	// touches it); never persisted — a fresh process restarts the sequence, which is
+	// fine because it only needs to distinguish routes within one process lifetime.
+	routeInstallSeq uint64
+
 	// RouteBoundaryStamps records, per route attribute slug (washerwoman /
 	// town_crier), the schedule-window boundary last acted on by the
 	// route-schedule trigger (ZBBS-HOME-446) — the edge re-fire guard. Keyed by

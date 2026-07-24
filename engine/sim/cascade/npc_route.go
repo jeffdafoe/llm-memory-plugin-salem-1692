@@ -334,6 +334,7 @@ func armConstableDwellTimer(w *sim.World, actorID sim.ActorID, stopIdx int) {
 	if route == nil {
 		return
 	}
+	gen := route.Gen // capture the route's identity token (fix A)
 	dwell := sim.EffectiveConstableRoundsDwell(w)
 	// The world goroutine is executing THIS call, and the callback only takes
 	// effect through SendContext (which the world goroutine must service), so the
@@ -343,7 +344,7 @@ func armConstableDwellTimer(w *sim.World, actorID sim.ActorID, stopIdx int) {
 		if ctx.Err() != nil {
 			return // shutdown raced the dwell
 		}
-		if _, err := w.SendContext(ctx, constableAdvanceAfterDwell(actorID, stopIdx)); err != nil && ctx.Err() == nil {
+		if _, err := w.SendContext(ctx, constableAdvanceAfterDwell(actorID, gen, stopIdx)); err != nil && ctx.Err() == nil {
 			log.Printf("cascade/npc_route: constable dwell advance (actor %q): %v", actorID, err)
 		}
 	})
@@ -353,19 +354,29 @@ func armConstableDwellTimer(w *sim.World, actorID sim.ActorID, stopIdx int) {
 // goroutine: advance the constable to his next rounds stop — UNLESS he is mid-
 // conversation (in an active huddle), in which case defer another dwell interval
 // rather than yanking him out (design option (ii), LLM-514). He moves on once the
-// dwell elapses AND he is not huddling. stopIdx guards a stale/superseded beat: a
-// route that already advanced past this stop (or a fresh route that replaced it)
-// no-ops.
-func constableAdvanceAfterDwell(actorID sim.ActorID, stopIdx int) sim.Command {
+// dwell elapses AND he is not huddling.
+//
+// The route must still match the arm-time identity: the SAME actor, the SAME route
+// install (gen), and the SAME stop (stopIdx). gen is the load-bearing guard for the
+// already-fired-then-superseded race (fix A): stopping the timer only cancels a
+// callback that has NOT yet fired, but a callback that fired and queued its
+// SendContext BEFORE the supersede would otherwise run against the replacement route
+// (same actor, same StopIdx 0). A fresh install carries a new Gen, so the stale
+// callback no-ops.
+func constableAdvanceAfterDwell(actorID sim.ActorID, gen uint64, stopIdx int) sim.Command {
 	return sim.Command{
 		Fn: func(w *sim.World) (any, error) {
 			route, ok := w.ActiveRoutes[actorID]
 			if !ok || route == nil || route.Label != sim.AttrConstable {
 				return nil, nil // route gone or superseded
 			}
-			if route.Phase != sim.RoutePhaseActive || route.StopIdx != stopIdx {
-				return nil, nil // already advanced past this stop
+			if route.Gen != gen || route.Phase != sim.RoutePhaseActive || route.StopIdx != stopIdx {
+				return nil, nil // superseded (different install) or already advanced
 			}
+			// The timer that queued this callback has fired and is spent — drop the
+			// stale pointer (fix C). The huddle branch re-arms a fresh one below; the
+			// advance branch leaves it nil until the next stop's arrival re-arms.
+			route.DwellTimer = nil
 			actor := w.Actors[actorID]
 			if actor == nil {
 				return nil, nil
