@@ -158,6 +158,42 @@ func StartProductionCycle(id ActorID, itemName, say string, hasNewNews bool) Com
 				}
 				used = append(used, inputCountPhrase(w, in.Item, in.Qty))
 			}
+			// Speed boosters (LLM-511): an elective, START-committed rate cut. If the
+			// actor holds Qty of a speed input, consume it here — like a required
+			// input, delete-on-zero, no refund — and shorten this cycle's base-rate
+			// work by the rate factor (rate_pct 200 halves it). Committed at start
+			// because the speedup spans the whole cycle: pairing the spend with the
+			// shortened clock at one instant is the only point where consume and
+			// benefit are atomic. The shortened RemainingSeconds is what persists, so
+			// the speedup survives a restart with no extra checkpoint state, and
+			// produceRateScalePct (labor / cold / degraded) still scales the countdown
+			// per tick — so iron composes multiplicatively with a hired helper for
+			// free. Holding none leaves the duration at base rate: never a gate (the
+			// liveness rule, same as BoostInput). Multiple held speed inputs compound.
+			for _, si := range recipe.SpeedInputs {
+				if si.Qty <= 0 || si.RatePct <= 100 {
+					continue
+				}
+				if a.Inventory[si.Item] < si.Qty {
+					continue
+				}
+				a.Inventory[si.Item] -= si.Qty
+				if a.Inventory[si.Item] <= 0 {
+					delete(a.Inventory, si.Item)
+				}
+				used = append(used, inputCountPhrase(w, si.Item, si.Qty))
+				// Shorten the cycle by the rate factor, round-half-up, floored at 1s.
+				// Computed via quotient/remainder so the intermediate never forms
+				// duration*100 — which could overflow int64 for a pathologically large
+				// base duration, independent of the RatePct cap (code_review). With
+				// rate as the divisor, (duration/rate)*100 <= duration (in range) and
+				// (duration%rate)*100 < rate*100 is tiny, so every term stays bounded.
+				rate := int64(si.RatePct)
+				duration = (duration/rate)*100 + (duration%rate*100+rate/2)/rate
+				if duration < 1 {
+					duration = 1
+				}
+			}
 			batchQty := recipeBatchQty(recipe)
 			now := time.Now().UTC()
 			a.ProductionActivity = &ProductionActivity{
