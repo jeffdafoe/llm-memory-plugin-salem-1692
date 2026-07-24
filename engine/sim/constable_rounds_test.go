@@ -14,10 +14,10 @@ import (
 // his post and on an all-day shift, plus the maps ConstableRoundsDue reads.
 func constableWorld(a *Actor) *World {
 	return &World{
-		Actors:              map[ActorID]*Actor{a.ID: a},
-		ActiveRoutes:        map[ActorID]*NPCRoute{},
-		RouteBoundaryStamps: map[string]time.Time{},
-		Settings:            WorldSettings{Location: time.UTC},
+		Actors:                map[ActorID]*Actor{a.ID: a},
+		ActiveRoutes:          map[ActorID]*NPCRoute{},
+		ConstableRoundsStamps: map[ActorID]time.Time{},
+		Settings:              WorldSettings{Location: time.UTC},
 	}
 }
 
@@ -98,7 +98,7 @@ func TestConstableRoundsDue_Gates(t *testing.T) {
 		a := constableAtPost("gideon")
 		w := constableWorld(a)
 		// Just fired this instant: the current beat is consumed, so not due again.
-		w.RouteBoundaryStamps[AttrConstable] = now
+		w.ConstableRoundsStamps[a.ID] = now
 		if ConstableRoundsDue(w, a, interval, now) {
 			t.Error("a stamp at now consumes the current beat — not due")
 		}
@@ -108,7 +108,7 @@ func TestConstableRoundsDue_Gates(t *testing.T) {
 		a := constableAtPost("gideon")
 		w := constableWorld(a)
 		// Last rounds a full interval-plus ago: a fresh beat has passed.
-		w.RouteBoundaryStamps[AttrConstable] = now.Add(-3 * time.Hour)
+		w.ConstableRoundsStamps[a.ID] = now.Add(-3 * time.Hour)
 		if !ConstableRoundsDue(w, a, interval, now) {
 			t.Error("a beat has elapsed since the stamp — should be due")
 		}
@@ -116,9 +116,9 @@ func TestConstableRoundsDue_Gates(t *testing.T) {
 }
 
 // TestConstableRoundsOffsetDesync proves the per-carrier phase offset keeps two
-// constables from firing rounds on the same beat: on one carrier's exact beat,
-// with the shared stamp one nanosecond behind it, that carrier is due and the
-// other is not.
+// constables from firing rounds on the same beat, AND that the PER-ACTOR stamp means
+// neither suppresses the other: given identical last-rounds times, on carrier A's
+// exact beat A is due and B is not; and stamping A leaves B's dueness untouched.
 func TestConstableRoundsOffsetDesync(t *testing.T) {
 	const interval = 2 * time.Hour
 	offA := constableRoundsOffset("gideon", interval)
@@ -131,7 +131,7 @@ func TestConstableRoundsOffsetDesync(t *testing.T) {
 	}
 
 	base := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
-	// A's exact beat instant, and a shared stamp one ns behind it.
+	// A's exact beat instant, and an (identical) per-actor stamp one ns behind it.
 	instA := mostRecentRoundsInstant(base, interval, offA)
 	now := instA
 	stamp := instA.Add(-time.Nanosecond)
@@ -139,16 +139,23 @@ func TestConstableRoundsOffsetDesync(t *testing.T) {
 	a := constableAtPost("gideon")
 	b := constableAtPost("silas")
 	w := &World{
-		Actors:              map[ActorID]*Actor{a.ID: a, b.ID: b},
-		ActiveRoutes:        map[ActorID]*NPCRoute{},
-		RouteBoundaryStamps: map[string]time.Time{AttrConstable: stamp},
-		Settings:            WorldSettings{Location: time.UTC},
+		Actors:                map[ActorID]*Actor{a.ID: a, b.ID: b},
+		ActiveRoutes:          map[ActorID]*NPCRoute{},
+		ConstableRoundsStamps: map[ActorID]time.Time{a.ID: stamp, b.ID: stamp},
+		Settings:              WorldSettings{Location: time.UTC},
 	}
 	if !ConstableRoundsDue(w, a, interval, now) {
 		t.Error("carrier A should be due on its own beat")
 	}
 	if ConstableRoundsDue(w, b, interval, now) {
 		t.Error("carrier B should NOT be due on A's beat — the phase offset desyncs them")
+	}
+	// A fires and stamps itself. Because the stamp is per-actor, B's dueness must be
+	// exactly what it was — A cannot suppress B.
+	bDueBefore := ConstableRoundsDue(w, b, interval, now)
+	StampConstableRounds(w, a.ID, now)
+	if ConstableRoundsDue(w, b, interval, now) != bDueBefore {
+		t.Error("stamping carrier A changed carrier B's dueness — per-actor stamps must not cross-suppress")
 	}
 }
 
@@ -175,16 +182,46 @@ func enterLoiterWorld() *World {
 
 func TestRouteStopEntersStructure(t *testing.T) {
 	w := enterLoiterWorld()
+	actor := &Actor{ID: "gideon"}
+	now := time.Now()
 
-	if sid, enters := routeStopEntersStructure(w, "tavern"); !enters || sid != "tavern" {
-		t.Errorf("door-backed structure should enter: got (%q, %v), want (tavern, true)", sid, enters)
+	if sid, enters := routeStopEntersStructure(w, actor, "tavern", now); !enters || sid != "tavern" {
+		t.Errorf("door-backed open structure should enter: got (%q, %v), want (tavern, true)", sid, enters)
 	}
-	if _, enters := routeStopEntersStructure(w, "farm"); enters {
+	if _, enters := routeStopEntersStructure(w, actor, "farm", now); enters {
 		t.Error("doorless structure should loiter, not enter")
 	}
-	if _, enters := routeStopEntersStructure(w, "stall"); enters {
+	if _, enters := routeStopEntersStructure(w, actor, "stall", now); enters {
 		t.Error("bare non-structure prop should loiter, not enter")
 	}
+}
+
+// TestRouteStopEntersStructure_EntryGate is the LLM-514 fix #8 coverage: the
+// enter-vs-loiter rule reuses the live entry gate (moveToCanEnter), so the
+// constable stands OUTSIDE a business he can't enter right now — a lodge locked for
+// the night because its keeper is abed (John Ellis's tavern before he's up). An
+// open lodge admits him.
+func TestRouteStopEntersStructure_EntryGate(t *testing.T) {
+	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
+	constable := &Actor{ID: "gideon"} // not a member of the tavern
+
+	t.Run("open_lodge_enters", func(t *testing.T) {
+		k := closeupKeeper("john")
+		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, k)
+		placeInside(w, "tavern", "john") // keeper present & awake → not locked
+		if sid, enters := routeStopEntersStructure(w, constable, "tavern", now); !enters || sid != "tavern" {
+			t.Errorf("open lodge should admit the constable: got (%q, %v)", sid, enters)
+		}
+	})
+
+	t.Run("locked_lodge_loiters", func(t *testing.T) {
+		k := closeupKeeper("john")
+		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, k)
+		abedInStaffRoom(w, k) // keeper abed → lodgeLocked → owner-only
+		if _, enters := routeStopEntersStructure(w, constable, "tavern", now); enters {
+			t.Error("a lodge locked for the night must NOT admit a non-member constable — he loiters at the door")
+		}
+	})
 }
 
 func TestRouteStopArrivedAndDestination(t *testing.T) {

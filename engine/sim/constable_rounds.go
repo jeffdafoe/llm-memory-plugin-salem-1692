@@ -50,10 +50,10 @@ func EffectiveConstableRoundsDwell(w *World) time.Duration {
 //     deterministic phase offset (constableRoundsOffset) so two carriers never
 //     fire on the same tick. Rounds are "due" at wall-clock instants
 //     k*interval + offset(actorID); the most recent such instant at-or-before now
-//     fires when it is AFTER the stored last-rounds stamp
-//     (w.RouteBoundaryStamps[AttrConstable]). A missing stamp fires immediately —
-//     the boot catch-up (the stamp is in-memory and restart-lossy on purpose, the
-//     same posture as RouteBoundaryStamps for the other routes).
+//     fires when it is AFTER this actor's stored last-rounds stamp
+//     (w.ConstableRoundsStamps[a.ID] — PER ACTOR, so one carrier can't suppress
+//     another's beat). A missing stamp fires immediately — the boot catch-up (the
+//     stamp is in-memory and restart-lossy on purpose).
 //
 // interval <= 0 disables rounds (the off-switch). Pure read of world + actor
 // state; the caller (runConstableRounds) dispatches + stamps. MUST be called from
@@ -72,10 +72,21 @@ func ConstableRoundsDue(w *World, a *Actor, interval time.Duration, now time.Tim
 		return false
 	}
 	instant := mostRecentRoundsInstant(now, interval, constableRoundsOffset(a.ID, interval))
-	if last, has := w.RouteBoundaryStamps[AttrConstable]; has && !last.Before(instant) {
+	if last, has := w.ConstableRoundsStamps[a.ID]; has && !last.Before(instant) {
 		return false
 	}
 	return true
+}
+
+// StampConstableRounds records that actor a dispatched rounds at t, so
+// ConstableRoundsDue won't re-fire the same beat for that carrier. Lazy-allocates
+// the map. Per-actor by design (see World.ConstableRoundsStamps). MUST be called
+// from inside a Command.Fn (mutates world state).
+func StampConstableRounds(w *World, actorID ActorID, t time.Time) {
+	if w.ConstableRoundsStamps == nil {
+		w.ConstableRoundsStamps = map[ActorID]time.Time{}
+	}
+	w.ConstableRoundsStamps[actorID] = t
 }
 
 // constableRoundsOffset returns a per-actor phase offset in [0, interval) seeded

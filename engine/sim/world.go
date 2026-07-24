@@ -1141,6 +1141,16 @@ type World struct {
 	// directional candidate builders make that catch-up idempotent.
 	RouteBoundaryStamps map[string]time.Time
 
+	// ConstableRoundsStamps records, PER constable actor, the wall-clock time its
+	// last rounds tour was dispatched (LLM-514). Keyed by ActorID — NOT by the
+	// attribute slug like RouteBoundaryStamps — because the constable fires on a
+	// per-carrier JITTERED interval: a shared slug key would let one carrier's stamp
+	// suppress another's due beat, collapsing the desync the phase offset exists to
+	// provide. ConstableRoundsDue reads it; runConstableRounds stamps it per carrier.
+	// nil-readable as empty (lazy-allocated on first stamp). World-goroutine-only;
+	// restart-loss is desirable — same boot-catch-up posture as RouteBoundaryStamps.
+	ConstableRoundsStamps map[ActorID]time.Time
+
 	// NoticeboardContent stores per-board authored prose — what the
 	// town crier reads on arrival, what NPCs loitering at the board
 	// will perceive once that read path ports. Keyed by VillageObjectID

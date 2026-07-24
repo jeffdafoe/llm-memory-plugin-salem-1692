@@ -160,9 +160,18 @@ var (
 // builder; making it exported would leak walk-grid construction into
 // the public surface).
 var (
-	BuildWalkGridForTest   = buildWalkGrid
-	BuildRouteStopsForTest = buildRouteStops
+	BuildWalkGridForTest = buildWalkGrid
 )
+
+// BuildRouteStopsForTest wraps buildRouteStops with the pre-actor-threading
+// (startX, startY) signature the existing route tests use (LLM-514 threaded an
+// actor + now through for the enter-vs-loiter entry gate). It builds a throwaway
+// actor at that start tile and passes a zero time — none of those tests' candidates
+// opt into entering, so the entry gate is never consulted. New enter-aware tests
+// drive the real StartNPCRoute path instead.
+func BuildRouteStopsForTest(w *World, grid *WalkGrid, startX, startY int, cands []RouteCandidate) []RouteStop {
+	return buildRouteStops(w, grid, &Actor{Pos: TilePos{X: startX, Y: startY}}, cands, time.Time{})
+}
 
 // Phase 3 Group A visitor cascade primitives — exposed so sim_test can
 // drive the substrate-side helpers (extractSurname, pickVisitorDestination

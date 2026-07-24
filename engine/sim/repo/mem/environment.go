@@ -42,6 +42,10 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			LodgingCheckOutHour:        11,
 			LodgingBedtimeHour:         sim.DefaultLodgingBedtimeHour,
 			ShiftLatenessWindowMinutes: sim.DefaultShiftLatenessWindowMinutes,
+			// Constable rounds (LLM-514) — mirror the pg parse fallbacks so a
+			// mem-backed world runs the constable's rounds like prod.
+			ConstableRoundsInterval: sim.DefaultConstableRoundsInterval,
+			ConstableRoundsDwell:    sim.DefaultConstableRoundsDwell,
 			// Cold exposure + hearth (LLM-412) — mirror the pg parse fallbacks so a
 			// mem-backed world feels the weather like prod does.
 			ColdStormOutdoorsPerMinuteX100:     sim.DefaultColdStormOutdoorsPerMinuteX100,

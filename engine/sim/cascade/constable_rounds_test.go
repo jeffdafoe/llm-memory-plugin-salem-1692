@@ -34,9 +34,11 @@ func TestBuildConstableRoundsCandidates(t *testing.T) {
 
 // buildConstableCascadeWorld stands up a walkable world with a Meeting House post
 // and two door-backed businesses (store, tavern) tagged TagBusiness, plus a
-// constable NPC carrying AttrConstable. Businesses are structure-backed with doors,
-// so the rounds route ENTERS them (LLM-514).
-func buildConstableCascadeWorld(t *testing.T) *sim.World {
+// constable NPC (gideon) carrying AttrConstable. Businesses are structure-backed
+// with doors, so the rounds route ENTERS them (LLM-514). Any extra ids passed are
+// seeded as additional constables at the same post + all-day shift, for the
+// multiple-carriers coverage.
+func buildConstableCascadeWorld(t *testing.T, extraConstables ...sim.ActorID) *sim.World {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(allGrassTerrain())
@@ -59,7 +61,7 @@ func buildConstableCascadeWorld(t *testing.T) *sim.World {
 		"store":         {ID: "store", DisplayName: "General Store"},
 		"tavern":        {ID: "tavern", DisplayName: "Tavern"},
 	})
-	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+	actorSeed := map[sim.ActorID]*sim.Actor{
 		"gideon": {
 			ID:                "gideon",
 			DisplayName:       "Gideon Marsh",
@@ -71,7 +73,21 @@ func buildConstableCascadeWorld(t *testing.T) *sim.World {
 			ScheduleEndMin:    intp(1440),
 			Attributes:        map[string][]byte{sim.AttrConstable: {}},
 		},
-	})
+	}
+	for _, id := range extraConstables {
+		actorSeed[id] = &sim.Actor{
+			ID:                id,
+			DisplayName:       string(id),
+			Kind:              sim.KindNPCStateful,
+			Pos:               sim.TilePos{X: sim.PadX + 12, Y: sim.PadY + 10},
+			WorkStructureID:   "meeting_house",
+			InsideStructureID: "meeting_house",
+			ScheduleStartMin:  intp(0),
+			ScheduleEndMin:    intp(1440),
+			Attributes:        map[string][]byte{sim.AttrConstable: {}},
+		}
+	}
+	handles.Actors.Seed(actorSeed)
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("LoadWorld: %v", err)
@@ -253,4 +269,215 @@ func assertRoute(t *testing.T, w *sim.World, check func(*sim.NPCRoute)) {
 		t.Fatal("no active route")
 	}
 	check(route)
+}
+
+// constableHasRoute reports whether id has an active route (read on the world goroutine).
+func constableHasRoute(t *testing.T, w *sim.World, id sim.ActorID) bool {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.ActiveRoutes[id] != nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("read route %q: %v", id, err)
+	}
+	return res.(bool)
+}
+
+// TestMultipleConstablesIndependentRounds: fix #1 — every constable carrier walks
+// its own rounds, and the PER-ACTOR stamp means one carrier's tour can't suppress
+// another's due beat.
+func TestMultipleConstablesIndependentRounds(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+
+	t.Run("both_due_both_dispatch", func(t *testing.T) {
+		w := buildConstableCascadeWorld(t, "silas")
+		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+		cancel := runRouteCascadeWorld(t, w)
+		defer cancel()
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			runConstableRounds(world, now)
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("run rounds: %v", err)
+		}
+		for _, id := range []sim.ActorID{"gideon", "silas"} {
+			if !constableHasRoute(t, w, id) {
+				t.Errorf("%s should have an active rounds route (both carriers due at boot)", id)
+			}
+		}
+	})
+
+	t.Run("one_stamped_does_not_suppress_other", func(t *testing.T) {
+		w := buildConstableCascadeWorld(t, "silas")
+		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+		cancel := runRouteCascadeWorld(t, w)
+		defer cancel()
+		// Gideon just did his rounds (per-actor stamp at now → not due); Silas is
+		// unstamped (boot catch-up → due). Gideon's stamp must not touch Silas.
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			sim.StampConstableRounds(world, "gideon", now)
+			runConstableRounds(world, now)
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("run rounds: %v", err)
+		}
+		if constableHasRoute(t, w, "gideon") {
+			t.Error("gideon just stamped — should NOT be due, no route")
+		}
+		if !constableHasRoute(t, w, "silas") {
+			t.Error("silas is unstamped — gideon's per-actor stamp must not suppress him")
+		}
+	})
+}
+
+// TestForceRouteConstableOffPostOffShift: fix #4 — a forced constable tour
+// deliberately bypasses the at-post/on-shift eligibility ConstableRoundsDue gates,
+// dispatching from wherever he is.
+func TestForceRouteConstableOffPostOffShift(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	// Put Gideon OFF his post and OFF shift — the autonomous driver would refuse.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["gideon"]
+		a.InsideStructureID = "tavern" // not at his post
+		s, e := 0, 1                   // 00:00–00:01 shift → off at any normal hour
+		a.ScheduleStartMin, a.ScheduleEndMin = &s, &e
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("set off-post/off-shift: %v", err)
+	}
+	res, err := w.Send(ForceRouteCommand(sim.AttrConstable, false))
+	if err != nil {
+		t.Fatalf("force: %v", err)
+	}
+	if res.(sim.StartNPCRouteResult).Stops == 0 {
+		t.Fatal("forced rounds off-post/off-shift built 0 stops — the operator force must bypass eligibility")
+	}
+}
+
+// TestConstableDwellTimerAdvancesAsync: fix #6 — drive the dwell through the REAL
+// timer callback (no direct Fn call). Arrival arms the timer; after the dwell it
+// advances the route on the world goroutine on its own.
+func TestConstableDwellTimerAdvancesAsync(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	w.Settings.ConstableRoundsDwell = 30 * time.Millisecond // shrink so the timer fires fast
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	if _, err := w.Send(ForceRouteCommand(sim.AttrConstable, false)); err != nil {
+		t.Fatalf("force route: %v", err)
+	}
+	// Place him inside the first stop and fire arrival — this arms the REAL dwell timer.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["gideon"]
+		sid := route.Stops[0].EnterStructureID
+		world.Actors["gideon"].InsideStructureID = sid
+		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}
+		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("arrival: %v", err)
+	}
+	// Without calling the advance ourselves, the timer must fire on the world
+	// goroutine and move him on (StopIdx advances, or the whole tour completes).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			r := world.ActiveRoutes["gideon"]
+			if r == nil {
+				return 1, nil // route completed — the timer drove it all the way home
+			}
+			return r.StopIdx, nil
+		}})
+		if err != nil {
+			t.Fatalf("poll: %v", err)
+		}
+		if res.(int) > 0 {
+			return // advanced by the timer callback — success
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dwell timer never advanced the route within 3s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestConstableSupersedeStopsDwellTimer: fix #6 — a superseded route's stale dwell
+// timer must not advance the replacement route (which occupies the same StopIdx).
+// The timer-stop on supersede is what prevents it; the stopIdx guard alone would
+// not, since both routes sit at StopIdx 0.
+func TestConstableSupersedeStopsDwellTimer(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	w.Settings.ConstableRoundsDwell = 40 * time.Millisecond
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	// Route A: force, arrive at stop 0 (arms A's dwell timer), then IMMEDIATELY
+	// supersede with route B — all synchronous on the world goroutine, so A's timer
+	// is stopped before it can fire.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
+			return nil, err
+		}
+		sid := world.ActiveRoutes["gideon"].Stops[0].EnterStructureID
+		world.Actors["gideon"].InsideStructureID = sid
+		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}
+		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
+		// Supersede with route B (fresh, also at StopIdx 0).
+		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Well past the dwell: if A's stale timer were still live it would have fired and
+	// wrongly advanced route B off StopIdx 0.
+	time.Sleep(150 * time.Millisecond)
+	assertRoute(t, w, func(r *sim.NPCRoute) {
+		if r.StopIdx != 0 {
+			t.Errorf("StopIdx = %d, want 0 — a superseded route's stale dwell timer advanced the replacement", r.StopIdx)
+		}
+	})
+}
+
+// TestRouteStopEnterOptIn: fix #2 regression — entering is OPT-IN. A tile-based
+// route's candidate (Enter=false) over a door-backed business stays a loiter stop;
+// the constable's builder (Enter=true) enters.
+func TestRouteStopEnterOptIn(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	stopFor := func(enter bool) sim.RouteStop {
+		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			delete(world.ActiveRoutes, "gideon")
+			cand := []sim.RouteCandidate{{ObjectID: "store", Enter: enter, WorldX: 640, WorldY: 320}}
+			dest := sim.NewPositionDestination(world.Actors["gideon"].Pos)
+			if _, err := sim.StartNPCRoute("gideon", "test", dest, cand, time.Now()).Fn(world); err != nil {
+				return nil, err
+			}
+			r := world.ActiveRoutes["gideon"]
+			if r == nil || len(r.Stops) == 0 {
+				return sim.RouteStop{}, nil
+			}
+			return r.Stops[0], nil
+		}})
+		if err != nil {
+			t.Fatalf("start route (enter=%v): %v", enter, err)
+		}
+		return res.(sim.RouteStop)
+	}
+
+	if s := stopFor(false); s.EnterStructureID != "" {
+		t.Errorf("Enter=false over a door-backed structure became an enter stop (%q) — entering must be opt-in", s.EnterStructureID)
+	}
+	if s := stopFor(true); s.EnterStructureID != "store" {
+		t.Errorf("Enter=true over a door-backed structure: EnterStructureID=%q, want store", s.EnterStructureID)
+	}
 }
