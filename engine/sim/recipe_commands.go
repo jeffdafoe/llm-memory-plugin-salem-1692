@@ -87,6 +87,35 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 		canonicalStates = append(canonicalStates, BoostState{State: bs.State, BonusQty: bs.BonusQty})
 	}
 	r.BoostState = canonicalStates
+	// Speed boosters (LLM-511): same catalog check + numeric validation posture as
+	// the boost inputs above, plus rate_pct must be a real speedup (> 100) and no
+	// duplicate item. The required-input overlap guard matters here for the same
+	// reason it does for boost inputs — an item that is both required and a speed
+	// booster would be consumed twice (once at the required-input consume, once at
+	// the speed consume, both at start) with ambiguous semantics.
+	canonicalSpeeds := make([]SpeedInput, 0, len(r.SpeedInputs))
+	seenSpeeds := make(map[ItemKind]bool, len(r.SpeedInputs))
+	for _, si := range r.SpeedInputs {
+		k, ok := resolveItemKind(w, string(si.Item))
+		if !ok {
+			return ItemRecipe{}, fmt.Errorf("%w: speed input %q", ErrUnknownItemKind, si.Item)
+		}
+		if required[k] {
+			return ItemRecipe{}, fmt.Errorf("speed input %q is already a required input", k)
+		}
+		if seenSpeeds[k] {
+			return ItemRecipe{}, fmt.Errorf("speed input %q listed more than once", k)
+		}
+		if si.Qty <= 0 {
+			return ItemRecipe{}, fmt.Errorf("speed input %q qty must be positive (got %d)", k, si.Qty)
+		}
+		if si.RatePct <= 100 {
+			return ItemRecipe{}, fmt.Errorf("speed input %q rate_pct must exceed 100 to speed the work (got %d)", k, si.RatePct)
+		}
+		seenSpeeds[k] = true
+		canonicalSpeeds = append(canonicalSpeeds, SpeedInput{Item: k, Qty: si.Qty, RatePct: si.RatePct})
+	}
+	r.SpeedInputs = canonicalSpeeds
 	return r, nil
 }
 

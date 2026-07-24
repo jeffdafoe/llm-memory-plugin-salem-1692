@@ -158,6 +158,37 @@ func StartProductionCycle(id ActorID, itemName, say string, hasNewNews bool) Com
 				}
 				used = append(used, inputCountPhrase(w, in.Item, in.Qty))
 			}
+			// Speed boosters (LLM-511): an elective, START-committed rate cut. If the
+			// actor holds Qty of a speed input, consume it here — like a required
+			// input, delete-on-zero, no refund — and shorten this cycle's base-rate
+			// work by the rate factor (rate_pct 200 halves it). Committed at start
+			// because the speedup spans the whole cycle: pairing the spend with the
+			// shortened clock at one instant is the only point where consume and
+			// benefit are atomic. The shortened RemainingSeconds is what persists, so
+			// the speedup survives a restart with no extra checkpoint state, and
+			// produceRateScalePct (labor / cold / degraded) still scales the countdown
+			// per tick — so iron composes multiplicatively with a hired helper for
+			// free. Holding none leaves the duration at base rate: never a gate (the
+			// liveness rule, same as BoostInput). Multiple held speed inputs compound.
+			for _, si := range recipe.SpeedInputs {
+				if si.Qty <= 0 || si.RatePct <= 100 {
+					continue
+				}
+				if a.Inventory[si.Item] < si.Qty {
+					continue
+				}
+				a.Inventory[si.Item] -= si.Qty
+				if a.Inventory[si.Item] <= 0 {
+					delete(a.Inventory, si.Item)
+				}
+				used = append(used, inputCountPhrase(w, si.Item, si.Qty))
+				// Round-half-up like CycleDurationSeconds, floored at 1s so an extreme
+				// rate_pct can never zero the cycle into an instant landing.
+				duration = (duration*100 + int64(si.RatePct)/2) / int64(si.RatePct)
+				if duration < 1 {
+					duration = 1
+				}
+			}
 			batchQty := recipeBatchQty(recipe)
 			now := time.Now().UTC()
 			a.ProductionActivity = &ProductionActivity{

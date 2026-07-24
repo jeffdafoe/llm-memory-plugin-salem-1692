@@ -36,6 +36,22 @@ import (
 type ProductionInputsView struct {
 	Items  []ProductionInputView
 	Boosts []ProductionBoostView // optional-booster lines (LLM-248)
+	Speeds []ProductionSpeedView // speed-booster lines (LLM-511)
+}
+
+// ProductionSpeedView is one low OPTIONAL speed booster (LLM-511): an item the
+// actor buys, that a recipe the actor produces consumes at START to make the
+// batch quicker (rate-side sibling of ProductionBoostView), currently below its
+// reorder threshold. Like a boost booster there is no runway — production
+// continues without it — so the line motivates the buy with the forgone speed.
+type ProductionSpeedView struct {
+	SpeedLabel string       // display label of the speed booster ("bar iron")
+	SpeedKind  sim.ItemKind // sort-key parity with the label
+
+	OutputLabel string       // display label of the good it speeds ("shovels")
+	OutputKind  sim.ItemKind // tie-break sort key
+
+	CurrentQty int // on-hand quantity of the speed booster
 }
 
 // ProductionBoostView is one low OPTIONAL booster (LLM-248): an item the actor
@@ -141,6 +157,7 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
 	var items []ProductionInputView
 	var boosts []ProductionBoostView
+	var speeds []ProductionSpeedView
 	for _, pe := range actorSnap.RestockPolicy.ProduceEntries() {
 		recipe := snap.Recipes[pe.Item]
 		if recipe == nil || recipe.OutputQty <= 0 {
@@ -174,6 +191,35 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 				OutputLabel: itemDisplayLabel(snap, pe.Item),
 				OutputKind:  pe.Item,
 				BonusQty:    bi.BonusQty,
+			})
+		}
+		// Speed boosters (LLM-511): identical elective gate to the boost boosters
+		// above — a low, buyable speed input motivates a buy with the forgone speed,
+		// no runway (production continues at base rate without it).
+		for _, si := range recipe.SpeedInputs {
+			if si.Qty <= 0 || si.RatePct <= 100 {
+				continue
+			}
+			cap, isBuy := buyCaps[si.Item]
+			if !isBuy {
+				continue
+			}
+			current := actorSnap.Inventory[si.Item]
+			if current < 0 {
+				current = 0
+			}
+			if !sim.RestockReorderThresholdMet(current, cap, pct, 0) {
+				continue // elective — cap fraction only, no batch floor
+			}
+			if !itemHasActionableBuyPath(snap, actorID, actorSnap, si.Item) {
+				continue // no vendor — Restocking omits it (LLM-216), so the speed motivation stays silent too
+			}
+			speeds = append(speeds, ProductionSpeedView{
+				SpeedLabel:  itemDisplayLabel(snap, si.Item),
+				SpeedKind:   si.Item,
+				OutputLabel: itemDisplayLabel(snap, pe.Item),
+				OutputKind:  pe.Item,
+				CurrentQty:  current,
 			})
 		}
 		for _, in := range recipe.Inputs {
@@ -228,7 +274,7 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 			})
 		}
 	}
-	if len(items) == 0 && len(boosts) == 0 {
+	if len(items) == 0 && len(boosts) == 0 && len(speeds) == 0 {
 		return nil
 	}
 	// Deterministic order: by output good, then input, then the underlying kinds as
@@ -257,7 +303,19 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 		}
 		return boosts[i].BoostKind < boosts[j].BoostKind
 	})
-	return &ProductionInputsView{Items: items, Boosts: boosts}
+	sort.Slice(speeds, func(i, j int) bool {
+		if speeds[i].OutputLabel != speeds[j].OutputLabel {
+			return speeds[i].OutputLabel < speeds[j].OutputLabel
+		}
+		if speeds[i].OutputKind != speeds[j].OutputKind {
+			return speeds[i].OutputKind < speeds[j].OutputKind
+		}
+		if speeds[i].SpeedLabel != speeds[j].SpeedLabel {
+			return speeds[i].SpeedLabel < speeds[j].SpeedLabel
+		}
+		return speeds[i].SpeedKind < speeds[j].SpeedKind
+	})
+	return &ProductionInputsView{Items: items, Boosts: boosts, Speeds: speeds}
 }
 
 // renderProductionInputs writes the "## Keeping up production" section. Content-
@@ -267,7 +325,7 @@ func buildProductionInputs(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 // It deliberately carries no supplier, structure_id, or pay_with_item — the
 // adjacent "## Restocking" section carries the buy (LLM-64 split).
 func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
-	if v == nil || (len(v.Items) == 0 && len(v.Boosts) == 0) {
+	if v == nil || (len(v.Items) == 0 && len(v.Boosts) == 0 && len(v.Speeds) == 0) {
 		return
 	}
 	b.WriteString("## Keeping up production\n")
@@ -289,6 +347,16 @@ func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
 	for _, bo := range v.Boosts {
 		fmt.Fprintf(b, "- A measure of %s in each batch of %s adds %d extra to the yield — %d on hand, and you're running low.\n",
 			sanitizeInline(bo.BoostLabel), sanitizeInline(bo.OutputLabel), bo.BonusQty, bo.CurrentQty)
+	}
+	// Speed booster lines (LLM-511): like the boost lines, elective and runway-free
+	// — the motivation is the forgone quickness, not a stall. Same no-supplier /
+	// no-mechanics discipline (LLM-64 split); the adjacent "## Restocking" line
+	// carries the where/how. The exact rate stays out of the scene (scenes, not
+	// stats): "quick work" carries the felt speed, the tool result carries the
+	// precise "ready in about N".
+	for _, sp := range v.Speeds {
+		fmt.Fprintf(b, "- With %s in hand, a batch of %s is quick work — you shape what you have rather than start from scratch — %d on hand, and you're running low.\n",
+			sanitizeInline(sp.SpeedLabel), sanitizeInline(sp.OutputLabel), sp.CurrentQty)
 	}
 	b.WriteString("\n")
 }

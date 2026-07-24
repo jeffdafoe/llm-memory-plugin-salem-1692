@@ -119,6 +119,69 @@ func TestResolveRecipe_BoostInputs(t *testing.T) {
 	}
 }
 
+// ResolveRecipe speed-input coverage (LLM-511): canonicalization, the
+// required/optional overlap guard, the no-duplicate guard, positive qty, and the
+// rate_pct > 100 speedup floor — the same reject-what-the-DB-rejects posture as
+// the boost inputs, so a non-HTTP SetRecipe caller can't install a speed booster
+// the DB would refuse and the produce tick would silently skip.
+func TestResolveRecipe_SpeedInputs(t *testing.T) {
+	w, stop := buildRecipeTestWorld(t)
+	defer stop()
+
+	// Happy path: label-cased speed input canonicalizes to its catalog key.
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.ResolveRecipe(world, sim.ItemRecipe{
+			OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+			SpeedInputs: []sim.SpeedInput{{Item: "Milk", Qty: 1, RatePct: 200}},
+		})
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := res.(sim.ItemRecipe)
+	if len(got.SpeedInputs) != 1 || got.SpeedInputs[0].Item != "milk" {
+		t.Fatalf("canonicalized speeds = %+v, want milk key", got.SpeedInputs)
+	}
+
+	cases := []struct {
+		name  string
+		speed sim.SpeedInput
+		input []sim.RecipeInput
+	}{
+		{"unknown item", sim.SpeedInput{Item: "unobtanium", Qty: 1, RatePct: 200}, nil},
+		{"zero qty", sim.SpeedInput{Item: "milk", Qty: 0, RatePct: 200}, nil},
+		{"rate_pct at 100 (no speedup)", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: 100}, nil},
+		{"rate_pct below 100 (a slowdown)", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: 50}, nil},
+		{"overlaps required input", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: 200},
+			[]sim.RecipeInput{{Item: "milk", Qty: 3}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				return sim.ResolveRecipe(world, sim.ItemRecipe{
+					OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+					Inputs:      tc.input,
+					SpeedInputs: []sim.SpeedInput{tc.speed},
+				})
+			}})
+			if err == nil {
+				t.Errorf("%s: ResolveRecipe accepted an invalid speed input", tc.name)
+			}
+		})
+	}
+
+	// Duplicate item across two speed entries is rejected.
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.ResolveRecipe(world, sim.ItemRecipe{
+			OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+			SpeedInputs: []sim.SpeedInput{{Item: "milk", Qty: 1, RatePct: 200}, {Item: "milk", Qty: 1, RatePct: 300}},
+		})
+	}})
+	if err == nil {
+		t.Errorf("ResolveRecipe accepted a duplicate speed input item")
+	}
+}
+
 func TestSetRecipe_InstallsIntoCatalog(t *testing.T) {
 	w, stop := buildRecipeTestWorld(t)
 	defer stop()

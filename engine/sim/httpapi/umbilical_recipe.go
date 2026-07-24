@@ -54,6 +54,15 @@ type umbilicalRecipeBoostState struct {
 	BonusQty int    `json:"bonus_qty"`
 }
 
+// umbilicalRecipeSpeedInput is one optional speed booster on the wire (LLM-511):
+// per cycle, Qty of Item consumed at START to run the cycle at RatePct scale
+// (200 = half the time). Rate-side sibling of umbilicalRecipeBoostInput.
+type umbilicalRecipeSpeedInput struct {
+	Item    string `json:"item"`
+	Qty     int    `json:"qty"`
+	RatePct int    `json:"rate_pct"`
+}
+
 // umbilicalRecipeSetRequest is the POST /api/village/umbilical/recipe/set body:
 // upsert one recipe. cap-free; an existing output_item is updated in place.
 type umbilicalRecipeSetRequest struct {
@@ -64,6 +73,7 @@ type umbilicalRecipeSetRequest struct {
 	Inputs         []umbilicalRecipeInput      `json:"inputs"`
 	BoostInputs    []umbilicalRecipeBoostInput `json:"boost_inputs"`
 	BoostState     []umbilicalRecipeBoostState `json:"boost_state"`
+	SpeedInputs    []umbilicalRecipeSpeedInput `json:"speed_inputs"`
 	WholesalePrice int                         `json:"wholesale_price"`
 	RetailPrice    int                         `json:"retail_price"`
 }
@@ -78,6 +88,7 @@ type umbilicalRecipeResponse struct {
 	Inputs         []umbilicalRecipeInput      `json:"inputs"`
 	BoostInputs    []umbilicalRecipeBoostInput `json:"boost_inputs"`
 	BoostState     []umbilicalRecipeBoostState `json:"boost_state"`
+	SpeedInputs    []umbilicalRecipeSpeedInput `json:"speed_inputs"`
 	WholesalePrice int                         `json:"wholesale_price"`
 	RetailPrice    int                         `json:"retail_price"`
 }
@@ -160,13 +171,33 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		seenStates[sim.RecipeBoostState(bs.State)] = true
 		boostState = append(boostState, sim.BoostState{State: sim.RecipeBoostState(bs.State), BonusQty: bs.BonusQty})
 	}
+	speedInputs := make([]sim.SpeedInput, 0, len(req.SpeedInputs))
+	for _, si := range req.SpeedInputs {
+		if si.Item == "" {
+			writeError(w, http.StatusBadRequest, "speed input item is required")
+			return
+		}
+		if si.Qty < 1 {
+			writeError(w, http.StatusBadRequest, "speed input qty must be >= 1")
+			return
+		}
+		// rate_pct <= 100 would slow or freeze the work rather than speed it — a
+		// malformed speedup, so a 400 (client-correctable) rather than the 422
+		// ResolveRecipe returns for an unresolvable item. ResolveRecipe re-checks it,
+		// keeping the three validation layers saying the same thing.
+		if si.RatePct <= 100 {
+			writeError(w, http.StatusBadRequest, "speed input rate_pct must be > 100 (a speedup)")
+			return
+		}
+		speedInputs = append(speedInputs, sim.SpeedInput{Item: sim.ItemKind(si.Item), Qty: si.Qty, RatePct: si.RatePct})
+	}
 	if s.recipeWriter == nil {
 		writeError(w, http.StatusServiceUnavailable, "recipe editing is not wired on this deploy")
 		return
 	}
 
 	auditUmbilical(user.Username, "recipe.set",
-		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d boosts=%d states=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs), len(boostInputs), len(boostState)))
+		fmt.Sprintf("output=%s output_qty=%d rate=%d/%dh inputs=%d boosts=%d states=%d speeds=%d", req.OutputItem, req.OutputQty, req.RateQty, req.RatePerHours, len(inputs), len(boostInputs), len(boostState), len(speedInputs)))
 
 	requested := sim.ItemRecipe{
 		OutputItem:     sim.ItemKind(req.OutputItem),
@@ -176,6 +207,7 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 		Inputs:         inputs,
 		BoostInputs:    boostInputs,
 		BoostState:     boostState,
+		SpeedInputs:    speedInputs,
 		WholesalePrice: req.WholesalePrice,
 		RetailPrice:    req.RetailPrice,
 	}
@@ -235,6 +267,7 @@ func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
 		Inputs:         make([]umbilicalRecipeInput, 0, len(r.Inputs)),
 		BoostInputs:    make([]umbilicalRecipeBoostInput, 0, len(r.BoostInputs)),
 		BoostState:     make([]umbilicalRecipeBoostState, 0, len(r.BoostState)),
+		SpeedInputs:    make([]umbilicalRecipeSpeedInput, 0, len(r.SpeedInputs)),
 		WholesalePrice: r.WholesalePrice,
 		RetailPrice:    r.RetailPrice,
 	}
@@ -246,6 +279,9 @@ func recipeResponse(r sim.ItemRecipe) umbilicalRecipeResponse {
 	}
 	for _, bs := range r.BoostState {
 		out.BoostState = append(out.BoostState, umbilicalRecipeBoostState{State: string(bs.State), BonusQty: bs.BonusQty})
+	}
+	for _, si := range r.SpeedInputs {
+		out.SpeedInputs = append(out.SpeedInputs, umbilicalRecipeSpeedInput{Item: string(si.Item), Qty: si.Qty, RatePct: si.RatePct})
 	}
 	return out
 }

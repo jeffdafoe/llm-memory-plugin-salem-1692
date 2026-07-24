@@ -15,6 +15,7 @@ type ItemRecipe struct {
 	Inputs         []RecipeInput
 	BoostInputs    []BoostInput // optional per-execution yield boosters (LLM-248)
 	BoostState     []BoostState // optional per-execution yield boosters keyed on world state (LLM-474)
+	SpeedInputs    []SpeedInput // optional speed boosters — item cuts the cycle time, consumed at start (LLM-511)
 	WholesalePrice int          // producer → merchant
 	RetailPrice    int          // merchant → customer
 }
@@ -77,6 +78,33 @@ func ValidRecipeBoostState(s RecipeBoostState) bool {
 type BoostState struct {
 	State    RecipeBoostState `json:"state"`
 	BonusQty int              `json:"bonus_qty"`
+}
+
+// SpeedInput is one OPTIONAL speed booster for a recipe (LLM-511) — the
+// rate-side sibling of BoostInput. Where a BoostInput adds output at landing,
+// a SpeedInput cuts the TIME to make the batch: a producer holding Qty of Item
+// when a cycle STARTS consumes it and the cycle runs at RatePct scale (200 =
+// 2x rate = half the wall time). The iron→shovel case: a bar in hand means you
+// shape an existing bar instead of forging from scrap, so the work goes quick.
+//
+// Committed at START, not landing (unlike BoostInput). A rate effect spans the
+// whole cycle, so binding the spend to the one instant where it is already
+// atomic — the start, where required inputs are also consumed — pairs the cost
+// with the benefit cleanly: no mid-cycle "sped for free / charged for nothing"
+// split, and no second consumption event at landing. The speedup rides the
+// already-checkpointed ProductionActivity.RemainingSeconds (shortened at start),
+// so it survives a restart with no extra persisted state.
+//
+// Elective like BoostInput: holding none leaves the cycle at base rate — never
+// a gate (the absorbing-state / liveness rule). RatePct must exceed 100 (a real
+// speedup); it composes multiplicatively with produceRateScalePct (the LLM-224
+// labor boost, the cold/degraded saps), so iron plus a hired helper runs faster
+// still. JSON tags match the item_recipe.speed_inputs JSONB wire shape
+// ([{"item","qty","rate_pct"}, ...]).
+type SpeedInput struct {
+	Item    ItemKind `json:"item"`
+	Qty     int      `json:"qty"`
+	RatePct int      `json:"rate_pct"`
 }
 
 // RestockSource enumerates the supply modes a restock entry can use.

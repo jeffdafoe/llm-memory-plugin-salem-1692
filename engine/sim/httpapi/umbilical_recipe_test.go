@@ -125,6 +125,38 @@ func TestUmbilicalRecipeSet_BoostInputsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUmbilicalRecipeSet_SpeedInputsRoundTrip covers the LLM-511 speed-booster
+// wire shape: speed_inputs accepted on set, canonicalized, passed to the writer,
+// echoed in the response, and visible in the live catalog.
+func TestUmbilicalRecipeSet_SpeedInputsRoundTrip(t *testing.T) {
+	fake := &fakeRecipeWriter{}
+	srv, h := recipeServer(t, fake)
+
+	rec := postReq(t, h, "/api/village/umbilical/recipe/set", "tok",
+		`{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":4,"inputs":[],"speed_inputs":[{"item":"Milk","qty":1,"rate_pct":200}],"wholesale_price":6,"retail_price":12}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalRecipeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// "Milk" canonicalized to the catalog key.
+	if len(out.SpeedInputs) != 1 || out.SpeedInputs[0].Item != "milk" || out.SpeedInputs[0].Qty != 1 || out.SpeedInputs[0].RatePct != 200 {
+		t.Fatalf("response speed_inputs = %+v, want [{milk 1 200}]", out.SpeedInputs)
+	}
+	if len(fake.last.SpeedInputs) != 1 || fake.last.SpeedInputs[0].Item != "milk" || fake.last.SpeedInputs[0].RatePct != 200 {
+		t.Fatalf("writer speed_inputs = %+v", fake.last.SpeedInputs)
+	}
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		r := world.Recipes["cheese"]
+		return r != nil && len(r.SpeedInputs) == 1 && r.SpeedInputs[0].RatePct == 200, nil
+	}})
+	if ok, _ := res.(bool); !ok {
+		t.Error("world.Recipes cheese missing the speed input after set")
+	}
+}
+
 func TestUmbilicalRecipeSet_Validation(t *testing.T) {
 	_, h := recipeServer(t, &fakeRecipeWriter{})
 	cases := []struct{ name, body string }{
@@ -137,6 +169,10 @@ func TestUmbilicalRecipeSet_Validation(t *testing.T) {
 		{"boost qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"milk","qty":0,"bonus_qty":1}]}`},
 		{"boost bonus_qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"milk","qty":1,"bonus_qty":0}]}`},
 		{"boost missing item", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"qty":1,"bonus_qty":1}]}`},
+		{"speed qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":0,"rate_pct":200}]}`},
+		{"speed rate_pct at 100", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":1,"rate_pct":100}]}`},
+		{"speed rate_pct below 100", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":1,"rate_pct":50}]}`},
+		{"speed missing item", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"qty":1,"rate_pct":200}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,6 +191,8 @@ func TestUmbilicalRecipeSet_UnknownItems(t *testing.T) {
 		{"unknown input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"unobtanium","qty":1}]}`},
 		{"unknown boost input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"unobtanium","qty":1,"bonus_qty":1}]}`},
 		{"boost duplicates required input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"milk","qty":3}],"boost_inputs":[{"item":"milk","qty":1,"bonus_qty":1}]}`},
+		{"unknown speed input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"unobtanium","qty":1,"rate_pct":200}]}`},
+		{"speed duplicates required input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"milk","qty":3}],"speed_inputs":[{"item":"milk","qty":1,"rate_pct":200}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
