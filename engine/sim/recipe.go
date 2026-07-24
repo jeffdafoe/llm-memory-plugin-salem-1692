@@ -108,12 +108,13 @@ type SpeedInput struct {
 }
 
 // MaxSpeedInputRatePct is the sane upper bound on a speed input's RatePct,
-// enforced at every write path (code_review, LLM-511). Two reasons: an unbounded
-// RatePct is a footgun — a huge value divides the cycle down to the 1s floor, an
-// almost-instant batch out of one malformed number — and it keeps the start-time
-// duration arithmetic (duration*100/RatePct) safely inside int64. 1000 is 10x
-// rate (a tenth of the wall time), already well past any real design; a good that
-// wants to be made faster than that should lower its base rate, not push this.
+// enforced at every write path (code_review, LLM-511). An unbounded RatePct is a
+// footgun: a huge value divides the cycle down to the 1s floor, an almost-instant
+// batch out of one malformed number. 1000 is 10x rate (a tenth of the wall time),
+// already well past any real design; a good that wants to be made faster than
+// that should lower its base rate, not push this. (Overflow of the start-time
+// shortening is handled by the quotient/remainder form in StartProductionCycle,
+// not by this cap.)
 const MaxSpeedInputRatePct = 1000
 
 // RestockSource enumerates the supply modes a restock entry can use.

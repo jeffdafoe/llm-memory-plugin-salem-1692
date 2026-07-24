@@ -182,9 +182,14 @@ func StartProductionCycle(id ActorID, itemName, say string, hasNewNews bool) Com
 					delete(a.Inventory, si.Item)
 				}
 				used = append(used, inputCountPhrase(w, si.Item, si.Qty))
-				// Round-half-up like CycleDurationSeconds, floored at 1s so an extreme
-				// rate_pct can never zero the cycle into an instant landing.
-				duration = (duration*100 + int64(si.RatePct)/2) / int64(si.RatePct)
+				// Shorten the cycle by the rate factor, round-half-up, floored at 1s.
+				// Computed via quotient/remainder so the intermediate never forms
+				// duration*100 — which could overflow int64 for a pathologically large
+				// base duration, independent of the RatePct cap (code_review). With
+				// rate as the divisor, (duration/rate)*100 <= duration (in range) and
+				// (duration%rate)*100 < rate*100 is tiny, so every term stays bounded.
+				rate := int64(si.RatePct)
+				duration = (duration/rate)*100 + (duration%rate*100+rate/2)/rate
 				if duration < 1 {
 					duration = 1
 				}
