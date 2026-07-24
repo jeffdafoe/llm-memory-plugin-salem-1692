@@ -75,7 +75,13 @@ const httpShutdownTimeout = 5 * time.Second
 type runtime struct {
 	World     *sim.World
 	LLMClient llm.Client
-	Save      sim.CheckpointFunc
+	// VABudgetHealth records which VAs the LLM boundary is currently refusing for
+	// cost-budget exhaustion (LLM-513). The memapi client feeds it at the Complete
+	// boundary (memapi.WithBudgetObserver) and run wires it to the umbilical server
+	// (SetVABudgetHealth) so a budget-capped NPC brain raises a live alarm. Nil in
+	// the headless lifecycle test → the alarm never fires.
+	VABudgetHealth *sim.VABudgetHealth
+	Save           sim.CheckpointFunc
 	TickSink  sim.TickTelemetrySink
 	HTTPAddr  string
 	Auth      httpapi.Authenticator
@@ -263,13 +269,21 @@ func main() {
 		simpush.NewHTTPPoster(llmMemoryURL, engineKey),
 	)
 
+	// vaBudgetHealth records which VAs the LLM boundary is currently refusing for
+	// cost-budget exhaustion (LLM-513). The memapi client feeds it at the Complete
+	// boundary via WithBudgetObserver, and the umbilical server reads it to raise
+	// the budget alarm (SetVABudgetHealth below) — the same recorder on both ends,
+	// like checkpointHealth.
+	vaBudgetHealth := &sim.VABudgetHealth{}
+
 	// LLM-156: one memapi client, shared by the runtime's LLMClient slot and the
 	// startup per-agent rate-limit query (installAgentRateLimits below).
-	llmClient := memapi.NewClient(llmMemoryURL, engineKey)
+	llmClient := memapi.NewClient(llmMemoryURL, engineKey, memapi.WithBudgetObserver(vaBudgetHealth))
 
 	rt := runtime{
-		World:     world,
-		LLMClient: llmClient,
+		World:          world,
+		LLMClient:      llmClient,
+		VABudgetHealth: vaBudgetHealth,
 		Save: func(ctx context.Context, cp *sim.CheckpointSnapshot) error {
 			return pg.SaveWorld(ctx, repo, cp)
 		},
@@ -678,6 +692,7 @@ func run(rt runtime, stop stopSignals) error {
 				server.SetSettlementStore(rt.ActionLog) // LLM-105: durable settlements audit read
 			}
 			server.SetCheckpointHealth(checkpointHealth)
+			server.SetVABudgetHealth(rt.VABudgetHealth) // LLM-513: budget-exhaustion alarm feed
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
 				server.SetRouteForcer(cascade.ForceRouteCommand) // backs /umbilical/route (force a crier/washerwoman tour on demand)

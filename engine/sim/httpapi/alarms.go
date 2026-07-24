@@ -87,6 +87,16 @@ const alarmKindTickerStale = "ticker_stale"
 // ticker_stale floor of two minutes.
 const alarmKindWorldCommandStalled = "world_command_stalled"
 
+// alarmKindVABudgetExceeded fires when one or more virtual agents the engine
+// drives have exhausted their configured cost budget, so memory-api is refusing
+// every call to them (HTTP 402) and the NPCs they drive can no longer think
+// (LLM-513). It reads sim.VABudgetHealth, which the memapi client feeds at the
+// Complete boundary. It earns a place in a registry this severe because a
+// budget-capped brain is as village-fatal as broken durability: the world keeps
+// ticking but the affected characters go dark until an operator raises the
+// budget or the rolling window resets.
+const alarmKindVABudgetExceeded = "va_budget_exceeded"
+
 // worldCommandTimeoutStreakThreshold is how many CONSECUTIVE probe timeouts raise
 // the alarm.
 //
@@ -107,6 +117,13 @@ const worldCommandTimeoutStreakThreshold = 2
 // body the operator reads while trying to diagnose it. The count always tells the
 // true scale; /umbilical/ticker-health carries the full per-ticker detail.
 const tickerStaleNamesInDetail = 8
+
+// vaBudgetNamesInDetail caps how many capped VA slugs the budget alarm's prose
+// lists before summarising the remainder, so a config mistake that zeroes many
+// agents' budgets at once cannot paste a wall of slugs into every umbilical
+// response body. The count always reports the true scale; /umbilical/alarms
+// carries the full set.
+const vaBudgetNamesInDetail = 8
 
 // checkpointFailureStreakThreshold is how many CONSECUTIVE failed checkpoints
 // raise the alarm. Deliberately small: the checkpoint cadence is ~60s, so 3 is
@@ -162,6 +179,9 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 		out = append(out, a)
 	}
 	if a, ok := checkpointClampAlarm(health); ok {
+		out = append(out, a)
+	}
+	if a, ok := vaBudgetAlarm(s.vaBudgetHealth.Snapshot(), now); ok {
 		out = append(out, a)
 	}
 	// Nil-guarded: unlike the health recorders, s.world is a bare pointer whose
@@ -524,6 +544,55 @@ func checkpointClampAlarm(h sim.CheckpointHealthSnapshot) (Alarm, bool) {
 		Kind:        alarmKindCheckpointClamped,
 		Since:       h.LastSuccessAt,
 		Consecutive: h.LastClampCount,
+		Detail:      detail,
+	}, true
+}
+
+// vaBudgetAlarm classifies a VABudgetHealthSnapshot: it fires whenever at least
+// one virtual agent the engine drives is currently refused for cost-budget
+// exhaustion (LLM-513).
+//
+// Threshold of one, like checkpoint_clamped and unlike checkpoint_failure's
+// three. A budget refusal is not a transient blip that self-heals on a retry:
+// once a VA is over its rolling daily/monthly limit, EVERY call is refused until
+// the window resets or an operator raises the limit, so there is no benign
+// version to wait out — the first refusal is already the whole condition.
+//
+// It reads the live capped set, which the memapi client clears on a VA's next
+// successful call, so the alarm self-clears with no ack and no restart. Since is
+// the earliest cap start across the capped VAs (when the incident began), held
+// stable across reads per this file's stability rule; the snapshot's slug list
+// is sorted, so the prose is byte-stable too.
+func vaBudgetAlarm(h sim.VABudgetHealthSnapshot, now time.Time) (Alarm, bool) {
+	if len(h.Capped) == 0 {
+		return Alarm{}, false
+	}
+	since := h.Capped[0].Since
+	names := make([]string, len(h.Capped))
+	for i, e := range h.Capped {
+		names[i] = e.Agent
+		if !e.Since.IsZero() && (since.IsZero() || e.Since.Before(since)) {
+			since = e.Since
+		}
+	}
+	listed := names
+	suffix := ""
+	if len(names) > vaBudgetNamesInDetail {
+		listed = names[:vaBudgetNamesInDetail]
+		suffix = ", and " + strconv.Itoa(len(names)-vaBudgetNamesInDetail) + " more"
+	}
+	detail := "A VA COST BUDGET IS EXHAUSTED: " + strconv.Itoa(len(names)) +
+		" virtual agent(s) — " + strings.Join(listed, ", ") + suffix +
+		" — are refused at the memory-api boundary (HTTP 402), so the NPCs they drive cannot think"
+	if !since.IsZero() {
+		detail += " (dark for " + humanizeSince(now.Sub(since)) + ")"
+	}
+	detail += ". Raise the agent's daily/monthly budget or wait for the rolling budget window to reset."
+	return Alarm{
+		Kind:        alarmKindVABudgetExceeded,
+		Since:       since,
+		Consecutive: len(h.Capped),
+		LastError:   h.Capped[0].Detail,
 		Detail:      detail,
 	}, true
 }

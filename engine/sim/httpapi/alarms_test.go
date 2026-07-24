@@ -305,6 +305,98 @@ func TestEvaluateAlarms_NilRecorderIsSilent(t *testing.T) {
 	}
 }
 
+// The budget alarm fires on the FIRST cap (threshold one, not a streak) and
+// names the capped VA so an operator sees which brain went dark (LLM-513).
+func TestVABudgetAlarm_FiresOnFirstCapAndNamesTheVA(t *testing.T) {
+	now := time.Date(2026, 7, 24, 17, 0, 0, 0, time.UTC)
+	since := now.Add(-9 * time.Minute)
+	got, firing := vaBudgetAlarm(sim.VABudgetHealthSnapshot{
+		Capped: []sim.VABudgetEntry{
+			{Agent: "zbbs-ezekiel-crane", Since: since, Detail: "Daily cost limit exceeded ($1.20 / $1.00)"},
+		},
+	}, now)
+	if !firing {
+		t.Fatal("a single capped VA must fire the alarm")
+	}
+	if got.Kind != alarmKindVABudgetExceeded {
+		t.Errorf("Kind = %q, want %q", got.Kind, alarmKindVABudgetExceeded)
+	}
+	if got.Consecutive != 1 {
+		t.Errorf("Consecutive (capped count) = %d, want 1", got.Consecutive)
+	}
+	if !got.Since.Equal(since) {
+		t.Errorf("Since = %v, want the cap start %v", got.Since, since)
+	}
+	if !strings.Contains(got.Detail, "zbbs-ezekiel-crane") {
+		t.Errorf("Detail must name the capped VA, got %q", got.Detail)
+	}
+	if !strings.Contains(got.LastError, "Daily cost limit exceeded") {
+		t.Errorf("LastError must carry the refusal reason, got %q", got.LastError)
+	}
+}
+
+func TestVABudgetAlarm_SilentWhenNoneCapped(t *testing.T) {
+	if _, firing := vaBudgetAlarm(sim.VABudgetHealthSnapshot{}, time.Now()); firing {
+		t.Error("no capped VAs must not fire the alarm")
+	}
+}
+
+// Since is the earliest cap across all capped VAs (when the incident began),
+// not merely the first slug's — so it must scan past Capped[0].
+func TestVABudgetAlarm_SinceIsEarliestAndListsAllNames(t *testing.T) {
+	now := time.Date(2026, 7, 24, 17, 0, 0, 0, time.UTC)
+	earliest := now.Add(-30 * time.Minute)
+	// Snapshot order is slug-sorted, so salem-generic (capped LATER) precedes
+	// zbbs-ezekiel-crane (capped EARLIER) — the earliest since is the second entry.
+	got, firing := vaBudgetAlarm(sim.VABudgetHealthSnapshot{
+		Capped: []sim.VABudgetEntry{
+			{Agent: "salem-generic", Since: now.Add(-2 * time.Minute), Detail: "Monthly cost limit exceeded"},
+			{Agent: "zbbs-ezekiel-crane", Since: earliest, Detail: "Daily cost limit exceeded"},
+		},
+	}, now)
+	if !firing {
+		t.Fatal("expected the alarm to fire with two capped VAs")
+	}
+	if got.Consecutive != 2 {
+		t.Errorf("Consecutive (capped count) = %d, want 2", got.Consecutive)
+	}
+	if !got.Since.Equal(earliest) {
+		t.Errorf("Since = %v, want the earliest cap %v", got.Since, earliest)
+	}
+	if !strings.Contains(got.Detail, "salem-generic") || !strings.Contains(got.Detail, "zbbs-ezekiel-crane") {
+		t.Errorf("Detail must list both capped VAs, got %q", got.Detail)
+	}
+}
+
+// End-to-end through evaluateAlarms + the wired recorder: a capped VA surfaces
+// the alarm on the same path checkpoint failures ride.
+func TestEvaluateAlarms_IncludesVABudgetWhenCapped(t *testing.T) {
+	now := time.Date(2026, 7, 24, 17, 0, 0, 0, time.UTC)
+	vh := &sim.VABudgetHealth{}
+	vh.RecordBudgetExceeded("zbbs-ezekiel-crane", now.Add(-time.Minute), "Daily cost limit exceeded")
+	s := &Server{}
+	s.SetVABudgetHealth(vh)
+
+	fires := func() bool {
+		for _, a := range s.evaluateAlarms(now) {
+			if a.Kind == alarmKindVABudgetExceeded {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !fires() {
+		t.Fatal("evaluateAlarms did not include the va_budget_exceeded alarm")
+	}
+	// Clearing the cap self-heals the alarm with no ack (a success that started
+	// after the refusal was recorded).
+	vh.RecordBudgetOK("zbbs-ezekiel-crane", now)
+	if fires() {
+		t.Error("alarm should self-clear once the VA's cap is cleared")
+	}
+}
+
 func TestInjectAlarms(t *testing.T) {
 	encoded := []byte(`[{"kind":"checkpoint_failure"}]`)
 	cases := []struct {
