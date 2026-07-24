@@ -151,15 +151,46 @@ func TestGoldensBuyerOrderNeverReadsAsBuyerOwes(t *testing.T) {
 				continue
 			}
 			sawLine = true
-			if !strings.Contains(l, "owes you") {
+			// Scope the direction check to the line head (before the first " — "
+			// clause separator), so a partial-payment balanceClause or the expiry
+			// tail can't false-trip the forbidden shapes (code_review, LLM-512).
+			head := l
+			if i := strings.Index(l, " — "); i >= 0 {
+				head = l[:i]
+			}
+			if !strings.Contains(head, "owes you") {
 				t.Errorf("scenario %q: buyer order line lacks the explicit \"owes you\" direction: %q", sc.name, l)
 			}
-			if strings.Contains(l, "you owe") {
+			if strings.Contains(head, " from ") || strings.Contains(head, "you owe") {
 				t.Errorf("scenario %q: buyer order line reads as the buyer owing the seller: %q", sc.name, l)
 			}
 		}
 	}
 	if !sawLine {
 		t.Fatal("no scenario renders a buyer order line — the LLM-512 direction invariant is vacuous")
+	}
+}
+
+// TestBuyerAwaitingUndeliveredOrderScenario is the focused counterpart to the
+// cross-scenario invariant: it asserts the buyer_awaiting_undelivered_order
+// scenario actually renders BOTH corrected lines (waiting-on + settled) and none
+// of the flipped/false phrasings — so a regression fails here diagnostically, not
+// just as a golden-diff.
+func TestBuyerAwaitingUndeliveredOrderScenario(t *testing.T) {
+	out := renderScenario(perceptionScenario{name: "buyer_awaiting_undelivered_order", build: buyerAwaitingUndeliveredOrder})
+	for _, want := range []string{
+		"## Orders you're waiting on",
+		"Ezekiel Crane owes you 1 shovel",
+		"## Recently settled offers",
+		"it's not in your pack yet, Ezekiel Crane will hand it over when it's ready",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("scenario missing %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"shovel from Ezekiel", "it's in your pack now"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("scenario still contains the flipped/false phrasing %q:\n%s", bad, out)
+		}
 	}
 }

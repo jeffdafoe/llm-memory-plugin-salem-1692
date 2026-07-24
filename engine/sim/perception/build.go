@@ -4141,6 +4141,14 @@ func buildRecentlyResolvedOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, 
 	// for these (false, and it contradicts the same prompt's "## Orders you're
 	// waiting on" section, which seeds a false-possession memory). Scan snap.Orders
 	// once, keyed by the originating ledger, for orders the subject is waiting on.
+	//
+	// Contract this relies on: Ready is the sole pre-delivery Order state (order.go
+	// — deliver_order flips it to the terminal Delivered), so a non-Ready order has
+	// already been handed over (or expired) and correctly leaves the flag unset.
+	// LedgerID(0) is the reserved unset sentinel (pay_ledger.go); a real
+	// ledger-minted order carries LedgerID >= 1 and a PayLedger entry's own ID is
+	// likewise >= 1, so a ledger-less order (LedgerID 0) can never pair with a
+	// settled entry — skip it rather than seed a spurious pendingByLedger[0].
 	pendingByLedger := map[sim.LedgerID]bool{}
 	for _, o := range snap.Orders {
 		if o == nil || o.State != sim.OrderStateReady || o.LedgerID == 0 {
