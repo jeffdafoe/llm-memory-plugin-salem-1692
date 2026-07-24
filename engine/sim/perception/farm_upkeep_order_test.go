@@ -178,6 +178,95 @@ func TestBuildFarmUpkeep_OrderInFlight_FactsOnly(t *testing.T) {
 	}
 }
 
+// TestFarmUpkeep_OnOrder_FactsOnlyRegardlessOfCoverage pins the LLM-518 policy
+// (Jeff's call): ANY open shovel order makes the cue facts-only — no buy imperative,
+// no destination — whether or not the order covers the full shortfall. The rendered
+// line always shows owed / carried / on-order, so a partly-covered shortfall stays
+// legible (the model reads the remainder). This is the deliberate alternative to a
+// net-shortfall gate (code_review LLM-518): a purchase can't be usefully advertised
+// for a good already on order from its sole producer, and re-advertising it every tick
+// is what produced the oscillation. The order count in the line is the true on-order
+// quantity, even when it exceeds the shortfall.
+func TestFarmUpkeep_OnOrder_FactsOnlyRegardlessOfCoverage(t *testing.T) {
+	cases := []struct {
+		name        string
+		coins, held int
+		orderQty    int
+		wantOwed    int
+		wantLine    string
+	}{
+		{"full_cover_live_shape", 72, 1, 2, 2, "Upkeep calls for 2 shovels and you carry 1, with 2 more on order from the blacksmith."},
+		{"partial_cover_still_short", 95, 1, 1, 3, "Upkeep calls for 3 shovels and you carry 1, with 1 more on order from the blacksmith."},
+		{"full_cover_held_none", 95, 0, 3, 3, "Upkeep calls for 3 shovels and you carry none, with 3 on order from the blacksmith."},
+		{"partial_cover_held_none", 95, 0, 1, 3, "Upkeep calls for 3 shovels and you carry none, with 1 on order from the blacksmith."},
+		{"order_exceeds_shortfall", 72, 1, 5, 2, "Upkeep calls for 2 shovels and you carry 1, with 5 more on order from the blacksmith."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			snap, actorID, _ := farmUpkeepSnapshot(c.coins, c.held, 30, 20)
+			snap.Orders = map[sim.OrderID]*sim.Order{
+				1: {
+					ID: 1, State: sim.OrderStateReady,
+					BuyerID: actorID, SellerID: sim.ActorID("ezekiel"),
+					Item: sim.ShovelItemKind, Qty: c.orderQty,
+					ConsumerIDs: []sim.ActorID{actorID},
+				},
+			}
+			v := buildFarmUpkeep(snap, actorID, snap.Actors[actorID])
+			if v == nil {
+				t.Fatalf("expected a farm-upkeep cue (owed %d, held %d, order %d)", c.wantOwed, c.held, c.orderQty)
+			}
+			if v.OnOrder != c.orderQty {
+				t.Errorf("OnOrder = %d, want %d (the true on-order count, not clamped to the shortfall)", v.OnOrder, c.orderQty)
+			}
+			if v.ShovelsOwed != c.wantOwed {
+				t.Errorf("ShovelsOwed = %d, want %d", v.ShovelsOwed, c.wantOwed)
+			}
+			out := renderUpkeep(v)
+			if !strings.Contains(out, c.wantLine) {
+				t.Errorf("cue line mismatch.\n got: %q\nwant substring: %q", out, c.wantLine)
+			}
+			for _, bad := range []string{"Buy ", "(destination:"} {
+				if strings.Contains(out, bad) {
+					t.Errorf("on-order cue must be facts-only regardless of coverage, but carries %q:\n%s", bad, out)
+				}
+			}
+		})
+	}
+}
+
+// TestFarmUpkeep_OrderFromOtherBuyer_DoesNotSuppress guards the BuyerID scoping: an
+// order someone ELSE placed (even for shovels) must not suppress this owner's upkeep
+// buy cue. openIncomingOrderQty counts only orders where the owner is the buyer.
+func TestFarmUpkeep_OrderFromOtherBuyer_DoesNotSuppress(t *testing.T) {
+	snap, actorID, _ := farmUpkeepSnapshot(72, 1, 30, 20) // owed 2, held 1, short 1
+	snap.Orders = map[sim.OrderID]*sim.Order{
+		1: {
+			ID: 1, State: sim.OrderStateReady,
+			BuyerID: sim.ActorID("someone_else"), SellerID: sim.ActorID("ezekiel"),
+			Item: sim.ShovelItemKind, Qty: 5,
+			ConsumerIDs: []sim.ActorID{sim.ActorID("someone_else")},
+		},
+	}
+	v := buildFarmUpkeep(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected the upkeep cue to still render — the order belongs to another buyer")
+	}
+	if v.OnOrder != 0 {
+		t.Errorf("OnOrder = %d, want 0 (another buyer's order must not count)", v.OnOrder)
+	}
+	// With no order of her own, the ordinary buy steer must return (generic fallback
+	// here — no supplier seeded, so "Buy … from the blacksmith"), NOT the facts-only
+	// on-order line.
+	out := renderUpkeep(v)
+	if !strings.Contains(out, "Buy ") {
+		t.Errorf("expected the ordinary buy cue when the owner has no order of her own:\n%s", out)
+	}
+	if strings.Contains(out, "on order") {
+		t.Errorf("another buyer's order must not flip the cue to the on-order line:\n%s", out)
+	}
+}
+
 // TestGoldensFarmUpkeepOnOrderNoBuyGoad is the LLM-518 cross-scenario invariant:
 // whenever the "## Farm upkeep" cue renders AND the actor has an open incoming shovel
 // order, the section must carry no buy imperative ("Buy ") and no walk-to destination
