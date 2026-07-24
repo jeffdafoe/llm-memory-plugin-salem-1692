@@ -27,6 +27,7 @@ type Server struct {
 	prompts          *promptlog.RingSink
 	chat             *chatlog.RingSink
 	checkpointHealth *sim.CheckpointHealth
+	vaBudgetHealth   *sim.VABudgetHealth
 	controlEnabled   bool
 	errorLog         *errorRing
 	clientLog        *clientErrorRing
@@ -216,6 +217,16 @@ func (s *Server) SetSettlementStore(store SettlementStore) {
 // SetTelemetry — call before Handler, never concurrently with serving.
 func (s *Server) SetCheckpointHealth(h *sim.CheckpointHealth) {
 	s.checkpointHealth = h
+}
+
+// SetVABudgetHealth attaches the VA cost-budget health recorder so the umbilical
+// alarm evaluator can raise the budget-exhaustion alarm (LLM-513). Optional:
+// when nil, evaluateAlarms simply never fires that kind (VABudgetHealth methods
+// are nil-safe). cmd/engine wires the same recorder the memapi client feeds
+// through memapi.WithBudgetObserver. Same wiring-time-only contract as
+// SetCheckpointHealth — call before Handler, never concurrently with serving.
+func (s *Server) SetVABudgetHealth(h *sim.VABudgetHealth) {
+	s.vaBudgetHealth = h
 }
 
 // SetControlEnabled arms the world-MUTATING umbilical control routes

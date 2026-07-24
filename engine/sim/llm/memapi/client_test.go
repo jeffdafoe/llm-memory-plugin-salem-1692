@@ -495,6 +495,119 @@ func TestComplete_ParseFailIsMalformed(t *testing.T) {
 	}
 }
 
+// fakeBudgetObserver records the BudgetObserver callbacks for assertions.
+// Guarded because Complete may be driven from concurrent goroutines under -race.
+type fakeBudgetObserver struct {
+	mu       sync.Mutex
+	exceeded []string
+	details  []string
+	ok       []string
+}
+
+func (f *fakeBudgetObserver) RecordBudgetExceeded(agent string, _ time.Time, detail string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exceeded = append(f.exceeded, agent)
+	f.details = append(f.details, detail)
+}
+
+func (f *fakeBudgetObserver) RecordBudgetOK(agent string, _ time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ok = append(f.ok, agent)
+}
+
+func (f *fakeBudgetObserver) exceededAgents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.exceeded...)
+}
+
+func (f *fakeBudgetObserver) capturedDetails() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.details...)
+}
+
+func (f *fakeBudgetObserver) okAgents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.ok...)
+}
+
+func TestComplete_402IsBudgetExceeded(t *testing.T) {
+	// memory-api refuses a VA whose cost budget is exhausted with 402
+	// (LLM-513). It gets its own class, distinct from the generic 4xx
+	// malformed, so a budget-capped brain isn't misread as model garbage.
+	ts := newTestServer(t)
+	ts.pushResponse(serverResponse{status: 402, body: `{"error":{"code":"OVER_BUDGET","message":"Daily cost limit exceeded ($1.2000 / $1.00)"}}`})
+	c := newTestClient(t, ts)
+
+	_, err := c.Complete(context.Background(), llm.Request{
+		Model:    "zbbs-ezekiel-crane",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}},
+	})
+	var typed *llm.Error
+	if !errors.As(err, &typed) || typed.Class != llm.ErrorBudgetExceeded {
+		t.Errorf("got %v (%T), want BudgetExceeded", err, err)
+	}
+}
+
+func TestComplete_BudgetObserverCapsThenClears(t *testing.T) {
+	// The observer is notified with the VA slug on a 402 refusal and cleared
+	// on that same VA's next success — the set/clear the umbilical budget
+	// alarm rides (LLM-513).
+	ts := newTestServer(t)
+	ts.pushResponse(serverResponse{status: 402, body: `{"error":{"code":"OVER_BUDGET","message":"Daily cost limit exceeded"}}`})
+	ts.pushResponse(okReply("hello"))
+	obs := &fakeBudgetObserver{}
+	c := newTestClient(t, ts, WithBudgetObserver(obs))
+
+	req := llm.Request{Model: "zbbs-ezekiel-crane", Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}}}
+
+	if _, err := c.Complete(context.Background(), req); err == nil {
+		t.Fatal("expected budget error on first call")
+	}
+	if got := obs.exceededAgents(); len(got) != 1 || got[0] != "zbbs-ezekiel-crane" {
+		t.Errorf("RecordBudgetExceeded agents = %v, want [zbbs-ezekiel-crane]", got)
+	}
+	if got := obs.capturedDetails(); len(got) != 1 || !strings.Contains(got[0], "Daily cost limit exceeded") {
+		t.Errorf("detail = %v, want it to carry the 402 reason", got)
+	}
+	if got := obs.okAgents(); len(got) != 0 {
+		t.Errorf("RecordBudgetOK should not fire on a refusal, got %v", got)
+	}
+
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("second call should succeed: %v", err)
+	}
+	if got := obs.okAgents(); len(got) != 1 || got[0] != "zbbs-ezekiel-crane" {
+		t.Errorf("RecordBudgetOK agents = %v, want [zbbs-ezekiel-crane]", got)
+	}
+}
+
+func TestComplete_BudgetObserverIgnoresNonBudgetErrors(t *testing.T) {
+	// A non-402 failure (here a 500 transport error) must neither cap nor
+	// clear a VA — it says nothing about the budget gate (LLM-513).
+	ts := newTestServer(t)
+	ts.pushResponse(serverResponse{status: 500, body: `{"error":{"code":"BOOM"}}`})
+	obs := &fakeBudgetObserver{}
+	c := newTestClient(t, ts, WithBudgetObserver(obs))
+
+	if _, err := c.Complete(context.Background(), llm.Request{
+		Model:    "zbbs-ezekiel-crane",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}},
+	}); err == nil {
+		t.Fatal("expected transport error")
+	}
+	if got := obs.exceededAgents(); len(got) != 0 {
+		t.Errorf("RecordBudgetExceeded should not fire on a 500, got %v", got)
+	}
+	if got := obs.okAgents(); len(got) != 0 {
+		t.Errorf("RecordBudgetOK should not fire on a 500, got %v", got)
+	}
+}
+
 func TestComplete_MissingReplyIsMalformed(t *testing.T) {
 	ts := newTestServer(t)
 	ts.pushResponse(serverResponse{status: 200, body: `{"from_agent":"x","to_agents":["y"]}`}) // no reply field

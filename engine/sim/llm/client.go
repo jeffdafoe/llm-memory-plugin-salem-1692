@@ -90,6 +90,15 @@ const (
 	// masquerading as model-output failures in tick telemetry (the
 	// misattribution behind reactor-liveness finding #13).
 	ErrorRateLimited
+
+	// ErrorBudgetExceeded — the memory-api boundary rejected the call with
+	// HTTP 402 because the target VA has exhausted its configured daily or
+	// monthly cost budget (LLM-513). Like ErrorRateLimited the model never
+	// ran, so the distinct class keeps a budget-capped NPC brain from
+	// masquerading as a malformed model response — and it is the signal the
+	// engine feeds into its live budget-exhaustion alarm (VABudgetHealth),
+	// which surfaces on the umbilical exactly like a checkpoint failure.
+	ErrorBudgetExceeded
 )
 
 // String renders the class as a stable lowercase label — used in
@@ -109,6 +118,8 @@ func (c ErrorClass) String() string {
 		return "provider_refusal"
 	case ErrorRateLimited:
 		return "rate_limited"
+	case ErrorBudgetExceeded:
+		return "budget_exceeded"
 	default:
 		return "unknown"
 	}

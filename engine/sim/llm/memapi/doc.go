@@ -56,6 +56,8 @@
 //	ctx.Err()               → llm.ErrorContextCancelled
 //	429                     → llm.ErrorRateLimited (VA in rate-limit
 //	                          cooldown at the memory-api boundary)
+//	402                     → llm.ErrorBudgetExceeded (VA's daily/monthly
+//	                          cost budget is exhausted; feeds the alarm)
 //	other 4xx               → llm.ErrorMalformed (caller-side bug)
 //	parse fail / missing    → llm.ErrorMalformed
 //	reply field

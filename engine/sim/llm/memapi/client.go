@@ -43,10 +43,43 @@ type Client struct {
 	httpClientSupplied bool
 
 	persistBackoffs []time.Duration
+
+	// budgetObserver, when set, is notified whenever a Complete is refused for
+	// VA budget exhaustion (llm.ErrorBudgetExceeded) or subsequently succeeds,
+	// so the engine can surface a live budget alarm (LLM-513). Optional — a nil
+	// observer disables the hook and Complete behaves exactly as before.
+	budgetObserver BudgetObserver
 }
 
 // Option configures a Client at construction time.
 type Option func(*Client)
+
+// BudgetObserver is notified by Complete of the target VA's cost-budget state at
+// the memory-api boundary: RecordBudgetExceeded when a call is refused with
+// llm.ErrorBudgetExceeded (HTTP 402), RecordBudgetOK when a later call to that
+// same VA succeeds. The engine wires its sim.VABudgetHealth recorder here so a
+// budget-exhausted NPC brain raises a live umbilical alarm exactly like a
+// checkpoint failure (LLM-513). agent is the VA slug (req.Model / to_agents).
+// Implementations must be safe for concurrent use — Complete runs on many tick
+// goroutines at once.
+type BudgetObserver interface {
+	RecordBudgetExceeded(agent string, now time.Time, detail string)
+	// RecordBudgetOK is passed the START time of the successful call so the
+	// observer can reject a stale in-flight success that would otherwise clear a
+	// cap a newer concurrent request just recorded (Complete runs concurrently).
+	RecordBudgetOK(agent string, callStart time.Time)
+}
+
+// WithBudgetObserver attaches a BudgetObserver notified of per-VA budget
+// refusals and recoveries at the Complete boundary. Pass nothing to leave the
+// hook disabled (the default); a nil observer is ignored.
+func WithBudgetObserver(obs BudgetObserver) Option {
+	return func(c *Client) {
+		if obs != nil {
+			c.budgetObserver = obs
+		}
+	}
+}
 
 // WithHTTPClient replaces the default http.Client (90s timeout). Mainly
 // for tests that need to swap in a server-side fixture's transport.
@@ -203,6 +236,10 @@ func (e *statusError) Error() string {
 // rule), POSTs to /v1/chat/send with wait=true, and maps the response
 // into llm.Response.
 func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	// Stamp the call's start before any I/O: on success it is handed to the
+	// budget observer so a stale in-flight success cannot clear a cap a newer
+	// concurrent request recorded while this one was in flight (LLM-513).
+	callStart := time.Now()
 	if req.Model == "" {
 		return llm.Response{}, &llm.Error{
 			Class:   llm.ErrorMalformed,
@@ -241,10 +278,30 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 
 	respBytes, err := c.post(ctx, "/v1/chat/send", body)
 	if err != nil {
-		return llm.Response{}, toLLMError(err)
+		llmErr := toLLMError(err)
+		// Budget-exhaustion alarm feed (LLM-513): a 402 refusal caps this VA.
+		// Any OTHER error leaves the cap state untouched — it says nothing
+		// about the budget gate (a 429 cooldown is checked before it upstream,
+		// and a transport error never reached it), so it must neither set nor
+		// clear the cap.
+		if c.budgetObserver != nil {
+			var e *llm.Error
+			if errors.As(llmErr, &e) && e.Class == llm.ErrorBudgetExceeded {
+				c.budgetObserver.RecordBudgetExceeded(req.Model, time.Now(), e.Message)
+			}
+		}
+		return llm.Response{}, llmErr
 	}
 
-	return parseChatResponse(respBytes)
+	// A clean reply means the budget gate passed, so clear any prior cap on this
+	// VA — that is what lets the alarm self-heal once the rolling window resets
+	// or the limit is raised (LLM-513). A malformed 200 does not clear (parse
+	// error below), which is conservative: only a definite success un-caps.
+	resp, err := parseChatResponse(respBytes)
+	if err == nil && c.budgetObserver != nil {
+		c.budgetObserver.RecordBudgetOK(req.Model, callStart)
+	}
+	return resp, err
 }
 
 // --- PersistToolResults ---------------------------------------------------
@@ -881,6 +938,13 @@ func toLLMError(err error) error {
 			// model output — classify honestly so telemetry doesn't
 			// book cooldown windows as malformed.
 			class = llm.ErrorRateLimited
+		} else if se.status == 402 {
+			// memory-api rejects calls to a VA that has exhausted its
+			// configured daily/monthly cost budget with 402 (LLM-513).
+			// Like the 429 cooldown the model never ran, so it earns its
+			// own class instead of the generic 4xx malformed — and it is
+			// what drives the engine's budget-exhaustion alarm.
+			class = llm.ErrorBudgetExceeded
 		} else if se.status >= 400 && se.status < 500 {
 			class = llm.ErrorMalformed
 		}
