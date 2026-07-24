@@ -566,6 +566,94 @@ func TestHandleAssetRemoveStateTag_StateNotFound(t *testing.T) {
 	}
 }
 
+// --- shared-guard coverage for the new routes (nil writer / non-admin / durable
+// failure), mirroring the geometry-route tests. The 503 tests confirm the nil-writer
+// guard in assetWriteAuth short-circuits BEFORE SendContext, so no panic and no live
+// mutation — the same guarantee the door route makes.
+
+func TestHandleAssetSetVisibleWhenInside_WriterUnwired(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{}) // SetAssetGeometryWriter deliberately not called
+
+	rec := doReq(t, srv, http.MethodPatch, "/api/assets/asset-x/visible-when-inside", `{"visible_when_inside":true}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	if assetVisibleWhenInside(t, w, "asset-x") {
+		t.Error("visible_when_inside mutated despite an unwired writer, want unchanged")
+	}
+}
+
+func TestHandleAssetAddStateTag_WriterUnwired(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := doReq(t, srv, http.MethodPost, "/api/assets/asset-x/states/unlit/tags", `{"tag":"day-active"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAssetRemoveStateTag_WriterUnwired(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := doReq(t, srv, http.MethodDelete, "/api/assets/asset-x/states/lit/tags/night-active", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAssetSetVisibleWhenInside_Forbidden(t *testing.T) {
+	w := seededWorld(t) // no admin actor seeded
+	srv := NewServer(w, okAuth{})
+	writer := &stubAssetWriter{}
+	srv.SetAssetGeometryWriter(writer)
+
+	rec := doReq(t, srv, http.MethodPatch, "/api/assets/asset-x/visible-when-inside", `{"visible_when_inside":true}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.visCalls != 0 {
+		t.Errorf("writer called %d times for a non-admin, want 0", writer.visCalls)
+	}
+}
+
+func TestHandleAssetAddStateTag_Forbidden(t *testing.T) {
+	w := seededWorld(t)
+	srv := NewServer(w, okAuth{})
+	writer := &stubAssetWriter{}
+	srv.SetAssetGeometryWriter(writer)
+
+	rec := doReq(t, srv, http.MethodPost, "/api/assets/asset-x/states/unlit/tags", `{"tag":"day-active"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.addTagCalls != 0 {
+		t.Errorf("writer called %d times for a non-admin, want 0", writer.addTagCalls)
+	}
+}
+
+// The in-memory apply + broadcast land, then the durable write fails → 500. The live
+// catalog is ahead of the DB (reverts on restart); the handler says so.
+func TestHandleAssetSetVisibleWhenInside_DurableFailure(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+	srv.SetAssetGeometryWriter(&stubAssetWriter{failErr: errors.New("pg down")})
+
+	rec := doReq(t, srv, http.MethodPatch, "/api/assets/asset-x/visible-when-inside", `{"visible_when_inside":true}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if !assetVisibleWhenInside(t, w, "asset-x") {
+		t.Error("visible_when_inside = false, want true applied-live before the durable failure")
+	}
+}
+
 func TestTranslateEvent_AssetVisibleWhenInsideChanged(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.AssetVisibleWhenInsideChanged{AssetID: "asset-x", VisibleWhenInside: true})
 	if !ok {
