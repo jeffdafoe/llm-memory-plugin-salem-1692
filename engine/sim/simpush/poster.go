@@ -45,11 +45,16 @@ type pushEvent struct {
 	Speaker string         `json:"speaker,omitempty"`
 }
 
-// pushBody is the /v1/sim/conversation-day request envelope.
+// pushBody is the /v1/sim/conversation-day request envelope. SlugPrefix + Actor
+// carry a shared-VA villager's memory partition + display name (LLM-515); both
+// omitempty so a dedicated VA's body is unchanged (empty prefix, and the API
+// ignores actor for dedicated agents).
 type pushBody struct {
-	Agent  string      `json:"agent"`
-	Day    string      `json:"day"`
-	Events []pushEvent `json:"events"`
+	Agent      string      `json:"agent"`
+	SlugPrefix string      `json:"slug_prefix,omitempty"`
+	Actor      string      `json:"actor,omitempty"`
+	Day        string      `json:"day"`
+	Events     []pushEvent `json:"events"`
 }
 
 // HTTPPoster POSTs day batches to llm-memory-api. Construct with NewHTTPPoster.
@@ -76,22 +81,27 @@ func NewHTTPPoster(baseURL, apiKey string) *HTTPPoster {
 	}
 }
 
-// PostDay marshals and POSTs one (agent, day, events) batch.
+// PostDay marshals and POSTs one (agent, slugPrefix, actorName, day, events)
+// batch.
 //
-// 400 (agent not dream_mode=sim) and 404 (agent unknown to the API) are
-// contract-expected, non-fatal outcomes — the engine pushes for every agentized
-// actor and the API filters — so they are returned as the errSkippedNonSim /
-// errSkippedUnknown sentinels rather than logged here. The dispatcher recognizes
+// 400 (agent not in a sim dream_mode, or a shared-VA 'sim-shared' push whose
+// actor has no slugifiable memory partition to key a per-actor note under) and
+// 404 (agent unknown to the API) are contract-expected, non-fatal outcomes — the
+// engine pushes for every agentized actor and the API filters — so they are
+// returned as the errSkippedNonSim / errSkippedUnknown sentinels rather than
+// logged here. The dispatcher recognizes
 // them and folds them into a single per-day summary instead of one line per
 // actor (a backlog boot would otherwise emit one alarming "api 400" line per
 // non-dreaming actor for every caught-up day). Other non-2xx and transport
 // failures are real errors, so the dispatcher leaves the day's cursor un-stamped
 // and retries. Ported from v1's postSimDay.
-func (p *HTTPPoster) PostDay(ctx context.Context, agent, day string, events []sim.SimDayEvent) error {
+func (p *HTTPPoster) PostDay(ctx context.Context, agent, slugPrefix, actorName, day string, events []sim.SimDayEvent) error {
 	body, err := json.Marshal(pushBody{
-		Agent:  agent,
-		Day:    day,
-		Events: toWireEvents(events),
+		Agent:      agent,
+		SlugPrefix: slugPrefix,
+		Actor:      actorName,
+		Day:        day,
+		Events:     toWireEvents(events),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

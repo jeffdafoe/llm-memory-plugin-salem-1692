@@ -61,7 +61,8 @@ func TestPostDay_Success(t *testing.T) {
 		Payload: map[string]any{"recipient": "Bob", "amount": float64(3)},
 		Speaker: "Ezekiel",
 	}}
-	if err := p.PostDay(context.Background(), "salem-ezekiel", "2026-06-03", events); err != nil {
+	// A shared-VA push carries the villager's slug prefix + display name.
+	if err := p.PostDay(context.Background(), "salem-vendor", "ezekiel-crane/", "Ezekiel Crane", "2026-06-03", events); err != nil {
 		t.Fatalf("PostDay: %v", err)
 	}
 
@@ -76,9 +77,11 @@ func TestPostDay_Success(t *testing.T) {
 	}
 
 	var body struct {
-		Agent  string `json:"agent"`
-		Day    string `json:"day"`
-		Events []struct {
+		Agent      string `json:"agent"`
+		SlugPrefix string `json:"slug_prefix"`
+		Actor      string `json:"actor"`
+		Day        string `json:"day"`
+		Events     []struct {
 			At      time.Time      `json:"at"`
 			Kind    string         `json:"kind"`
 			Payload map[string]any `json:"payload"`
@@ -88,8 +91,11 @@ func TestPostDay_Success(t *testing.T) {
 	if err := json.Unmarshal(cap.body, &body); err != nil {
 		t.Fatalf("decode body: %v (raw=%s)", err, cap.body)
 	}
-	if body.Agent != "salem-ezekiel" || body.Day != "2026-06-03" {
-		t.Errorf("envelope = {agent:%q day:%q}, want salem-ezekiel/2026-06-03", body.Agent, body.Day)
+	if body.Agent != "salem-vendor" || body.Day != "2026-06-03" {
+		t.Errorf("envelope = {agent:%q day:%q}, want salem-vendor/2026-06-03", body.Agent, body.Day)
+	}
+	if body.SlugPrefix != "ezekiel-crane/" || body.Actor != "Ezekiel Crane" {
+		t.Errorf("shared fields = {slug_prefix:%q actor:%q}, want ezekiel-crane//Ezekiel Crane", body.SlugPrefix, body.Actor)
 	}
 	if len(body.Events) != 1 {
 		t.Fatalf("events len = %d, want 1", len(body.Events))
@@ -106,11 +112,16 @@ func TestPostDay_EmptyEventsIsArray(t *testing.T) {
 	cap := &capture{}
 	p := posterServer(t, http.StatusOK, cap)
 
-	if err := p.PostDay(context.Background(), "salem-john", "2026-06-03", nil); err != nil {
+	if err := p.PostDay(context.Background(), "salem-john", "", "", "2026-06-03", nil); err != nil {
 		t.Fatalf("PostDay: %v", err)
 	}
 	if !bytes.Contains(cap.body, []byte(`"events":[]`)) {
 		t.Errorf("body = %s, want events serialized as []", cap.body)
+	}
+	// A dedicated VA pushes an empty prefix + actor; omitempty keeps both out of
+	// the body so a dedicated-VA push is byte-unchanged from before LLM-515.
+	if bytes.Contains(cap.body, []byte("slug_prefix")) || bytes.Contains(cap.body, []byte(`"actor"`)) {
+		t.Errorf("body = %s, want slug_prefix/actor omitted for an empty-prefix push", cap.body)
 	}
 }
 
@@ -128,7 +139,7 @@ func TestPostDay_NonFatalStatuses(t *testing.T) {
 	for _, tc := range cases {
 		cap := &capture{}
 		p := posterServer(t, tc.status, cap)
-		if err := p.PostDay(context.Background(), "salem-x", "2026-06-03", nil); !errors.Is(err, tc.want) {
+		if err := p.PostDay(context.Background(), "salem-x", "", "", "2026-06-03", nil); !errors.Is(err, tc.want) {
 			t.Errorf("status %d: PostDay returned %v, want %v", tc.status, err, tc.want)
 		}
 	}
@@ -139,7 +150,7 @@ func TestPostDay_NonFatalStatuses(t *testing.T) {
 func TestPostDay_FatalStatus(t *testing.T) {
 	cap := &capture{}
 	p := posterServer(t, http.StatusInternalServerError, cap)
-	if err := p.PostDay(context.Background(), "salem-x", "2026-06-03", nil); err == nil {
+	if err := p.PostDay(context.Background(), "salem-x", "", "", "2026-06-03", nil); err == nil {
 		t.Error("PostDay on 500 = nil, want an error")
 	}
 }

@@ -54,9 +54,11 @@ func (f *fakeStore) DayEvents(_ context.Context, actorID sim.ActorID, _, _ time.
 }
 
 type postCall struct {
-	agent  string
-	day    string
-	events []sim.SimDayEvent
+	agent      string
+	slugPrefix string
+	actorName  string
+	day        string
+	events     []sim.SimDayEvent
 }
 
 type fakePoster struct {
@@ -64,8 +66,8 @@ type fakePoster struct {
 	errFor map[string]error // per-agent error, keyed by agent slug
 }
 
-func (f *fakePoster) PostDay(_ context.Context, agent, day string, events []sim.SimDayEvent) error {
-	f.calls = append(f.calls, postCall{agent: agent, day: day, events: events})
+func (f *fakePoster) PostDay(_ context.Context, agent, slugPrefix, actorName, day string, events []sim.SimDayEvent) error {
+	f.calls = append(f.calls, postCall{agent: agent, slugPrefix: slugPrefix, actorName: actorName, day: day, events: events})
 	return f.errFor[agent]
 }
 
@@ -141,6 +143,35 @@ func TestDispatch_CatchUp(t *testing.T) {
 				t.Errorf("salem-ezekiel %s events = %+v, want the seeded event", c.day, c.events)
 			}
 		}
+	}
+}
+
+// TestDispatch_ForwardsSlugPrefixAndActor: a shared-VA villager's slug prefix and
+// display name (as AgentizedActors derives them) reach the poster so the API can
+// land the note under that villager's subtree; a dedicated VA forwards an empty
+// prefix.
+func TestDispatch_ForwardsSlugPrefixAndActor(t *testing.T) {
+	shared := sim.ActorID("act-shared")
+	dedicated := sim.ActorID("act-dedicated")
+	store := &fakeStore{
+		cursor: "2026-06-02", // one-day gap → push yesterday (06-03) only
+		actors: []sim.AgentActor{
+			{ID: shared, Agent: "salem-vendor", SlugPrefix: "constance-scott/", DisplayName: "Constance Scott"},
+			{ID: dedicated, Agent: "zbbs-josiah-thorne", SlugPrefix: "", DisplayName: "Josiah Thorne"},
+		},
+	}
+	poster := &fakePoster{}
+	newDispatcher(store, poster).dispatchOnce(context.Background())
+
+	byAgent := map[string]postCall{}
+	for _, c := range poster.calls {
+		byAgent[c.agent] = c
+	}
+	if got := byAgent["salem-vendor"]; got.slugPrefix != "constance-scott/" || got.actorName != "Constance Scott" {
+		t.Errorf("shared push = {slug:%q actor:%q}, want constance-scott//Constance Scott", got.slugPrefix, got.actorName)
+	}
+	if got := byAgent["zbbs-josiah-thorne"]; got.slugPrefix != "" {
+		t.Errorf("dedicated push slug = %q, want empty", got.slugPrefix)
 	}
 }
 

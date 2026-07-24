@@ -349,6 +349,19 @@ type SettlementFilter struct {
 type AgentActor struct {
 	ID    ActorID
 	Agent string
+
+	// SlugPrefix is the actor's memory-partition prefix inside its llm-memory
+	// namespace (see MemoryPartition): "" for a dedicated VA whose whole namespace
+	// is its memory, "<slug>/" for a shared-VA villager sectioned inside a pooled
+	// namespace. The daily push sends it so the API lands a shared villager's
+	// conversation-day note under that villager's own subtree — the same prefix
+	// recall searches — instead of collapsing the pool into one note (LLM-515).
+	SlugPrefix string
+
+	// DisplayName is the actor's display name, sent alongside SlugPrefix so the API
+	// can label a shared villager's distilled note with the villager rather than the
+	// pooled agent slug. Ignored by the API for a dedicated VA.
+	DisplayName string
 }
 
 // ActionLogSink durably persists committed action-log rows to the
