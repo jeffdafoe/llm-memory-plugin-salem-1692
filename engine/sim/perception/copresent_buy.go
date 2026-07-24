@@ -65,16 +65,22 @@ func classifyCoPresentBuy(snap *sim.Snapshot, buyer sim.ActorID, buyerSnap *sim.
 	}
 }
 
-// coPresentBuyStandoff classifies how the buyer's recent offers of kind to the co-present
+// coPresentBuyStandoff classifies how the buyer's offers of kind to the co-present
 // seller have dead-ended in this huddle: copresentBuyBlockedCoin when the purse couldn't
-// cover one (a single failed_insufficient_funds is definitive), copresentBuyBlockedTerms
+// cover one recently (a single failed_insufficient_funds is definitive), copresentBuyBlockedTerms
 // when the seller has declined / couldn't fill at least copresentStandoffDeclineThreshold
 // offers, or copresentBuyOK when neither. Mirrors hasPendingOfferTo's ledger walk (buyer,
-// seller, item, huddle) but keys on the negative terminal states, and — like the buyer's
-// own "## Recently settled offers" view (buildRecentlyResolvedOffersFromMe) — counts only
-// offers resolved within recentlyResolvedOfferWindow of snap.PublishedAt, so a stale decline
-// from earlier (terminal entries linger up to the 1h reap window) can't keep suppressing the
-// buy after coins or stock have since recovered. An empty huddle disables the scan —
+// seller, item, huddle) but keys on the negative terminal states. Decline counting takes the
+// huddle's WHOLE lifetime — no recency filter. It used to count only declines resolved within
+// recentlyResolvedOfferWindow (3 min), but re-offers are paced by the staleness wake backoff at
+// multi-minute gaps, so consecutive declines aged out of the window before a second could join
+// them and the standoff could trip only transiently, never latch — the live Elizabeth↔Ezekiel
+// nail loop ran 13 declines in 53 minutes through it (LLM-510). The huddle scope is the
+// staleness bound: a fresh conversation starts a fresh counter, and mid-huddle stock recovery
+// self-corrects at that boundary too (the soften's own "come back later" exit). The coin arm
+// keeps the recency window — a purse can genuinely recover within minutes (a completed sale,
+// a labor payout), and merchantConserve already covers ongoing poverty, so only a RECENT
+// insufficient-funds fail reads as a coin block. An empty huddle disables the scan —
 // co-presence with no shared huddle can't scope "this negotiation".
 func coPresentBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle sim.HuddleID, kind sim.ItemKind) copresentBuyBlock {
 	if seller == "" || huddle == "" {
@@ -85,12 +91,15 @@ func coPresentBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle 
 		if e == nil || e.BuyerID != buyer || e.SellerID != seller || e.ItemKind != kind || e.HuddleID != huddle {
 			continue
 		}
-		if e.ResolvedAt.IsZero() || snap.PublishedAt.Sub(e.ResolvedAt) > recentlyResolvedOfferWindow {
-			continue // stale or mid-construction — count only offers the buyer still sees as recently settled
+		if e.ResolvedAt.IsZero() {
+			continue // mid-construction — a terminal state without its resolve stamp yet
 		}
 		switch e.State {
 		case sim.PayLedgerStateFailedInsufficientFunds:
-			return copresentBuyBlockedCoin
+			// Bounded on both sides — a malformed future ResolvedAt must not read as recent.
+			if age := snap.PublishedAt.Sub(e.ResolvedAt); age >= 0 && age <= recentlyResolvedOfferWindow {
+				return copresentBuyBlockedCoin
+			}
 		case sim.PayLedgerStateDeclined,
 			sim.PayLedgerStateFailedInsufficientStock,
 			sim.PayLedgerStateFailedInsufficientGoods:

@@ -446,7 +446,8 @@ func TestGoldensStandingOfferWithinOnHand(t *testing.T) {
 // TestGoldensNoCoPresentBuyGoadAfterTwoDeclines is the LLM-308 cross-scenario invariant, spanning
 // ALL co-present-buy cue families (restock, stall-repair nails, farm-upkeep shovels): whenever the
 // subject has declined an item at least copresentStandoffDeclineThreshold times to a STILL-CO-PRESENT
-// seller in its CURRENT huddle within the recency window, no rendered line may goad "Buy it now" for
+// seller in its CURRENT huddle — at any point in the huddle's lifetime (LLM-510: the decline counter
+// latches; only a fresh huddle resets it) — no rendered line may goad "Buy it now" for
 // THAT (seller, item) pair. The scoping is seller-AND-item because coPresentBuyStandoff itself is
 // seller-scoped: the same item can be legitimately goaded from a DIFFERENT co-present seller the
 // subject has NOT stonewalled. So the assertion fires only when a "Buy it now" line carries both the
@@ -479,8 +480,8 @@ func TestGoldensNoCoPresentBuyGoadAfterTwoDeclines(t *testing.T) {
 			if e == nil || e.BuyerID != actorID || e.HuddleID != a.CurrentHuddleID {
 				continue
 			}
-			if e.ResolvedAt.IsZero() || snap.PublishedAt.Sub(e.ResolvedAt) > recentlyResolvedOfferWindow {
-				continue // stale or mid-construction — outside the window the cue reads
+			if e.ResolvedAt.IsZero() {
+				continue // mid-construction — the cue skips these too (LLM-510: no recency filter on declines)
 			}
 			switch e.State {
 			case sim.PayLedgerStateDeclined,
@@ -2251,6 +2252,15 @@ var perceptionScenarios = []perceptionScenario{
 			"'Buy it now' for a hold-off rather than goading a third offer into the same no. Foil of " +
 			"owner_off_post_at_smith_short_nails (same co-present setup, no prior offers → the buy imperative still stands).",
 		build: ownerStandoffDeclinedNails,
+	},
+	{
+		name: "owner_standoff_aged_declines_nails",
+		summary: "LLM-510 latch arm (the live Elizabeth↔Ezekiel nail loop): the owner_standoff_declined_nails setup " +
+			"with both declines aged 20 minutes — well past recentlyResolvedOfferWindow — while the huddle runs on. " +
+			"The standoff latches for the negotiation's lifetime: the hold-off still renders instead of the 'Buy it " +
+			"now' goad. Before the fix the 3-minute recency filter read these as stale, the counter fell back below " +
+			"threshold, and the goad returned between wake-backoff-paced re-offers (13 declines in 53 minutes live).",
+		build: ownerStandoffAgedDeclinesNails,
 	},
 	{
 		name: "owner_short_nails_seller_low_stock",
@@ -7954,6 +7964,23 @@ func ownerStandoffDeclinedNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, Amount: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
 		2: {ID: 2, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, Qty: 5, Amount: 3, State: sim.PayLedgerStateDeclined, HuddleID: "smith_huddle", ResolvedAt: resolved},
+	}
+	return snap, actorID, warrants
+}
+
+// ownerStandoffAgedDeclinesNails is the LLM-510 latch arm: the ownerStandoffDeclinedNails
+// setup with both declines aged well past recentlyResolvedOfferWindow while the huddle runs
+// on. The decline counter takes the huddle's whole lifetime, so the standoff still reads
+// blocked-terms; before the fix the recency filter dropped these as stale and the "Buy it
+// now" goad returned between wake-backoff-paced re-offers (the live 13-decline nail loop).
+// The "## Recently settled offers" view keeps its own 3-minute window, so that section
+// drops out here — matching live, where only the freshest decline shows there while the
+// standoff still holds.
+func ownerStandoffAgedDeclinesNails() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := ownerStandoffDeclinedNails()
+	aged := snap.PublishedAt.Add(-20 * time.Minute)
+	for _, e := range snap.PayLedger {
+		e.ResolvedAt = aged
 	}
 	return snap, actorID, warrants
 }

@@ -1,0 +1,18 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 3.
+
+## Around you
+You are inside the Blacksmith, with no one else here to hear you speak.
+It is morning in the village.
+
+You keep your trade at the Ellis Farm (destination: ellis_farm) — you can head back there whenever you wish.
+
+## Nails to mend your business
+Your Ellis Farm is worn and needs mending, but you carry only 0 of the 5 nails a repair takes. Ezekiel Crane is here with you, but your offers for nails aren't finding a deal right now — hold off and come back later rather than pressing them into a no.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

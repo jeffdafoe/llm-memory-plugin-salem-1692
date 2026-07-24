@@ -166,20 +166,58 @@ func TestBuildStallRepairBuy_InsufficientFunds_FailFastCoinBlock(t *testing.T) {
 	}
 }
 
-func TestBuildStallRepairBuy_StaleDeclines_NoBlock(t *testing.T) {
+func TestBuildStallRepairBuy_AgedDeclines_StillTermsBlock(t *testing.T) {
 	snap, actorID, _ := ownerStandoffDeclinedNails()
-	// Push the two declines outside recentlyResolvedOfferWindow — a stale standoff (terminal
-	// entries linger up to the 1h reap window) must not keep suppressing the buy.
-	stale := snap.PublishedAt.Add(-1 * time.Hour)
+	// Age the two declines well past recentlyResolvedOfferWindow. The standoff latches for the
+	// huddle's lifetime (LLM-510) — the old recency filter let consecutive declines age out
+	// between wake-backoff-paced re-offers, so the goad returned and the live nail loop ran
+	// 13 declines in 53 minutes. Only a fresh huddle resets the counter.
+	aged := snap.PublishedAt.Add(-1 * time.Hour)
 	for _, e := range snap.PayLedger {
-		e.ResolvedAt = stale
+		e.ResolvedAt = aged
+	}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != copresentBuyBlockedTerms {
+		t.Errorf("Block = %v, want copresentBuyBlockedTerms (the standoff latches for the huddle's lifetime)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_StaleInsufficientFunds_NoCoinBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// An insufficient-funds fail KEEPS the recency window (unlike declines): a purse can
+	// genuinely recover within minutes, and merchantConserve covers ongoing poverty, so a
+	// stale fail must not read as a coin block — nor count toward the terms standoff.
+	snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+		1: {ID: 1, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateFailedInsufficientFunds, HuddleID: "smith_huddle", ResolvedAt: snap.PublishedAt.Add(-20 * time.Minute)},
 	}
 	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
 	if v == nil {
 		t.Fatal("expected a nail-buy errand")
 	}
 	if v.Block != copresentBuyOK {
-		t.Errorf("Block = %v, want copresentBuyOK (declines are older than the recency window)", v.Block)
+		t.Errorf("Block = %v, want copresentBuyOK (the insufficient-funds fail is outside the recency window)", v.Block)
+	}
+}
+
+func TestBuildStallRepairBuy_StaleFundsPlusAgedDeclines_TermsBlock(t *testing.T) {
+	snap, actorID, _ := ownerStandoffDeclinedNails()
+	// A stale insufficient-funds entry falls through WITHOUT counting as a decline, while
+	// the two aged declines still latch the terms standoff — the mixed-state interaction
+	// between the window-gated coin arm and the lifetime decline arm.
+	aged := snap.PublishedAt.Add(-20 * time.Minute)
+	for _, e := range snap.PayLedger {
+		e.ResolvedAt = aged
+	}
+	snap.PayLedger[3] = &sim.PayLedgerEntry{ID: 3, BuyerID: actorID, SellerID: "ezekiel", ItemKind: sim.NailItemKind, State: sim.PayLedgerStateFailedInsufficientFunds, HuddleID: "smith_huddle", ResolvedAt: aged}
+	v := buildStallRepairBuy(snap, actorID, snap.Actors[actorID])
+	if v == nil {
+		t.Fatal("expected a nail-buy errand")
+	}
+	if v.Block != copresentBuyBlockedTerms {
+		t.Errorf("Block = %v, want copresentBuyBlockedTerms (aged declines latch; the stale funds fail neither coin-blocks nor counts)", v.Block)
 	}
 }
 
