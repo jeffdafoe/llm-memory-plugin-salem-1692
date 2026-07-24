@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -26,6 +27,18 @@ type FarmUpkeepView struct {
 	ShovelsHeld   int             // shovels the owner currently carries
 	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
 	ShovelVendors []RestockVendor // where to buy the shovels (LLM-274); the move_to destination(s)
+
+	// OnOrder is the total shovels already owed to this owner across their open
+	// (Ready) incoming orders — shovels ordered and awaiting hand-over. LLM-518:
+	// when > 0 a shovel purchase is already in flight, so the cue states the scene
+	// (owed / carried / on order) and renders no buy imperative or vendor/co-present
+	// steer — even when the order only PARTLY covers the shortfall (the line shows the
+	// remainder; deliberate, Jeff). buildFarmUpkeep returns such a view with
+	// ShovelVendors and CoPresentSeller empty, so it carries no errand
+	// (hasFarmUpkeepErrand / HasWalkToSupplier both stay false) and the return-to-post
+	// steer brings her back to the farm to wait instead of re-pulling her to the smith
+	// every tick (the Elizabeth Ellis farm↔blacksmith loop, 2026-07-24).
+	OnOrder int
 
 	// CoPresentSeller is a shovel seller sharing the owner's huddle right now, so a
 	// pay_with_item resolves this very tick; "" when none. PendingOffer is true when
@@ -69,6 +82,27 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	if owed <= held {
 		return nil // nothing owed beyond what they already carry
 	}
+	// LLM-518: ANY open shovel order (accepted, awaiting hand-over) means a purchase
+	// is already in flight from the smith — the sole shovel producer, the farm→smith
+	// upkeep conduit. Re-advertising a buy every tick while she waited is what fought
+	// the return-to-post steer and ping-ponged her farm↔blacksmith. So on any order,
+	// state the scene and stop — deliberately even when the order only PARTLY covers
+	// the shortfall (Jeff's call): the rendered line shows owed / carried / on-order,
+	// so the model can read any remainder and decide, rather than being handed an
+	// imperative it can't complete. The gate is order-presence, not order-covers-
+	// shortfall. Returning with ShovelVendors + CoPresentSeller empty is load-bearing:
+	// the view then carries no errand (hasFarmUpkeepErrand / HasWalkToSupplier stay
+	// false), so the return-to-post steer walks her back to the farm to wait. If the
+	// smith never delivers, the order eventually leaves Ready (expiry sweep) and drops
+	// out of this count — the buy cue re-arms on its own, the built-in fallback.
+	if onOrder := openIncomingOrderQty(snap, actorID, sim.ShovelItemKind); onOrder > 0 {
+		return &FarmUpkeepView{
+			ShovelsOwed:  owed,
+			ShovelsHeld:  held,
+			ShovelsShort: owed - held,
+			OnOrder:      onOrder,
+		}
+	}
 	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.ShovelItemKind)
 	// LLM-274: resolve the shovel supplier(s) so the cue names a move_to destination
 	// instead of the dead-end "the blacksmith". Same restock-directory path the
@@ -99,6 +133,35 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	return view
 }
 
+// openIncomingOrderQty totals the quantity of `item` the buyer is owed across all of
+// their open (Ready) incoming orders — goods ordered and awaiting hand-over. Pure over
+// the snapshot; mirrors the buyer-side scan in buildPendingOrderViews. LLM-518: the
+// farm-upkeep cue calls this for shovel (a smith-only good) to know whether a purchase
+// is already in flight. Scoped to BuyerID == buyer: the upkeep obligation is the farm
+// owner's own, so an order someone else placed must not suppress her cue. Saturates to
+// MaxInt on overflow rather than letting a malformed snapshot wrap the sum negative — a
+// negative total would read as "nothing on order" and wrongly re-arm the buy cue (the
+// one failure mode a plain += would introduce; code_review LLM-518).
+func openIncomingOrderQty(snap *sim.Snapshot, buyer sim.ActorID, item sim.ItemKind) int {
+	if snap == nil {
+		return 0
+	}
+	total := 0
+	for _, o := range snap.Orders {
+		if o == nil || o.State != sim.OrderStateReady {
+			continue
+		}
+		if o.BuyerID != buyer || o.Item != item || o.Qty <= 0 {
+			continue
+		}
+		if total > math.MaxInt-o.Qty {
+			return math.MaxInt
+		}
+		total += o.Qty
+	}
+	return total
+}
+
 // renderFarmUpkeep writes the "## Farm upkeep" section. Content-gated: a nil view
 // writes nothing. Symmetrical awareness — states the worn-tools problem AND the way
 // out (buy shovels from the blacksmith) in one place, and names the shortfall so the
@@ -121,6 +184,21 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 	}
 	b.WriteString("## Farm upkeep\n")
 	b.WriteString("The season's work has worn your farm tools. ")
+	// LLM-518: a shovel purchase is already in flight. State the scene — owed /
+	// carried / on order — and stop. No buy imperative and no vendor/co-present steer:
+	// nagging a second purchase she can't complete is what drove the farm↔blacksmith
+	// oscillation. The owed/carried/on-order counts are all shown, so a partly-covered
+	// shortfall stays legible (the model can read the remainder) without an imperative.
+	// "from the blacksmith" is accurate because shovel is a smith-produced good
+	// (LLM-200), the farm→smith upkeep conduit.
+	if v.OnOrder > 0 {
+		if v.ShovelsHeld > 0 {
+			fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry %d, with %d more on order from the blacksmith.\n", v.ShovelsOwed, v.ShovelsHeld, v.OnOrder)
+		} else {
+			fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry none, with %d on order from the blacksmith.\n", v.ShovelsOwed, v.OnOrder)
+		}
+		return
+	}
 	if v.ShovelsHeld > 0 {
 		fmt.Fprintf(b, "Upkeep calls for %d shovels and you carry %d. ", v.ShovelsOwed, v.ShovelsHeld)
 	}
