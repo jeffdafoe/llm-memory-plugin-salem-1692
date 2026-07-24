@@ -131,10 +131,12 @@ var EvictNonTenantsAtClose = evictNonTenantsAtClose
 // is the public Command (tests drive ticks through it directly); the
 // rest are command-only internals exposed for focused unit tests.
 var (
-	ArrivedAtDestination                     = arrivedAtDestination
-	ClassifyTileBlocker                      = classifyTileBlocker
-	AdvanceActorLocomotion                   = advanceActorLocomotion
-	ActorInActiveHuddle                      = actorInActiveHuddle
+	ArrivedAtDestination   = arrivedAtDestination
+	ClassifyTileBlocker    = classifyTileBlocker
+	AdvanceActorLocomotion = advanceActorLocomotion
+	// ActorInActiveHuddle is now a real exported func (locomotion_ticker.go, LLM-514
+	// needs it in production for the constable dwell), so it is no longer aliased
+	// here — tests call the exported func directly.
 	UpdateInsideStructureIDFromTileOwnership = updateInsideStructureIDFromTileOwnership
 	SetActorInsideStructure                  = setActorInsideStructure
 	ArmNextLocomotionTick                    = armNextLocomotionTick

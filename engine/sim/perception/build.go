@@ -885,10 +885,28 @@ func buildActorView(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		ActiveDwellCredits:     buildActiveDwellCredits(snap, a),
 		InFlightMove:           buildInFlightMove(snap, a),
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
+		Rounds:                 buildRounds(snap, a),
 		Inventory:              buildInventoryView(snap, a),
 		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
 		InFlightProduction:     buildInFlightProduction(snap, actorID, a),
 		Cold:                   buildColdSelf(snap, a),
+	}
+}
+
+// buildRounds projects the subject's in-flight constable rounds route (LLM-514)
+// into a render-ready view, or nil when the actor isn't walking his rounds. Gated
+// on RouteLabel == AttrConstable — stamped only on the actor who OWNS the route
+// (world.go republish) — so the cue is self-only by construction: an onlooker's
+// snapshot is a different actor whose route fields are empty. AtBusiness resolves
+// the arrived-at stop's display name the same way move / dwell labels do
+// (resolveDwellPinLabel), and is empty while he is walking between stops (the
+// republish stamps RouteStopObjectID only once he has arrived).
+func buildRounds(snap *sim.Snapshot, a *sim.ActorSnapshot) *RoundsView {
+	if a.RouteLabel != sim.AttrConstable {
+		return nil
+	}
+	return &RoundsView{
+		AtBusiness: resolveDwellPinLabel(snap, a.RouteStopObjectID),
 	}
 }
 
@@ -2202,6 +2220,15 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	// shouldSkipNoop holds the noop gate open on SummonsForYou in this
 	// steer's place, so the suppression cannot skip-lock the target.
 	if summonsActive(snap, a) {
+		return nil
+	}
+	// LLM-514: a constable mid-rounds is owned by the rounds cue — the single
+	// movement voice while the tour runs. shiftDutyTarget already suppresses his
+	// stand-at-post duty warrant while the route is active (w.ActiveRoutes), so the
+	// perception steer must yield too, or it would argue "return to your post"
+	// against the rounds he is deliberately walking. He returns to post on his own
+	// when the tour ends and the route clears.
+	if a.RouteLabel == sim.AttrConstable {
 		return nil
 	}
 	nowMin := *snap.LocalMinuteOfDay

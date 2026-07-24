@@ -981,6 +981,20 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// also cover the resting/walking macro-states, so the bare state line only
 	// fires when nothing else already conveys what the actor is doing.
 	activity := false
+	// The constable's rounds tour (LLM-514) is the dominant self-state voice while
+	// it runs: a diegetic "you are walking your rounds" line that keeps any tick
+	// during the tour in character, plus "you stand before the <business>" once he
+	// has arrived at a stop. It suppresses the plain in-flight-move line below so
+	// the two don't both narrate his movement.
+	if a.Rounds != nil {
+		if a.Rounds.AtBusiness != "" {
+			fmt.Fprintf(b, "You are walking your rounds through the village. You stand before the %s.\n",
+				sanitizeInline(a.Rounds.AtBusiness))
+		} else {
+			b.WriteString("You are walking your rounds through the village.\n")
+		}
+		activity = true
+	}
 	// A timed source activity (eat/drink/harvest in flight, LLM-69) leads — it is
 	// the most occupied state, and the reactor now lets high-value interrupts tick
 	// the actor mid-window, so this standing line is what tells it to hold rather
@@ -993,7 +1007,9 @@ func renderActor(b *strings.Builder, a ActorView) {
 		fmt.Fprintf(b, "You are %s.\n", renderActiveDwellCredit(c))
 		activity = true
 	}
-	if a.InFlightMove != nil {
+	// The rounds line above already narrates the constable's movement, so skip the
+	// plain in-flight-move line while a tour runs (single movement voice).
+	if a.InFlightMove != nil && a.Rounds == nil {
 		fmt.Fprintf(b, "You are %s.\n", renderInFlightMove(*a.InFlightMove))
 		activity = true
 	}

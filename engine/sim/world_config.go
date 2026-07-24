@@ -568,3 +568,51 @@ func SetMerchantCoinFloor(floor *int) Command {
 		},
 	}
 }
+
+// ErrInvalidConstableRoundsSetting is returned by SetConstableRoundsSettings when
+// no knob is supplied or a value is out of range (must be >= 0 seconds and within
+// int) — → 400 at the umbilical route.
+var ErrInvalidConstableRoundsSetting = errors.New("invalid constable rounds setting")
+
+// ConstableRoundsSettingsResult echoes the post-change constable rounds knobs in
+// wire units (seconds). DwellSeconds reports the EFFECTIVE dwell (a stored 0
+// resolves to the default), matching the read side.
+type ConstableRoundsSettingsResult struct {
+	IntervalSeconds int
+	DwellSeconds    int
+}
+
+// SetConstableRoundsSettings returns a Command that live-tunes the constable
+// rounds cadence (LLM-514): how often he leaves his post to walk the businesses,
+// and how long he pauses at each. Both fields optional (nil = leave unchanged) but
+// at least one must be supplied; each must be >= 0 seconds. IntervalSeconds == 0
+// is the explicit OFF-switch (ConstableRoundsDue treats interval <= 0 as
+// "rounds disabled"); DwellSeconds == 0 resolves to the default at read
+// (EffectiveConstableRoundsDwell), since a zero pause would defeat the
+// pause-and-engage design. Takes effect on the next schedule tick / arrival AND
+// persists on the next checkpoint via MutableWorldSettings, so a live change
+// survives restart.
+func SetConstableRoundsSettings(intervalSeconds, dwellSeconds *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if intervalSeconds == nil && dwellSeconds == nil {
+				return nil, ErrInvalidConstableRoundsSetting
+			}
+			for _, v := range []*int{intervalSeconds, dwellSeconds} {
+				if v != nil && (*v < 0 || *v > math.MaxInt32) {
+					return nil, ErrInvalidConstableRoundsSetting
+				}
+			}
+			if intervalSeconds != nil {
+				w.Settings.ConstableRoundsInterval = time.Duration(*intervalSeconds) * time.Second
+			}
+			if dwellSeconds != nil {
+				w.Settings.ConstableRoundsDwell = time.Duration(*dwellSeconds) * time.Second
+			}
+			return ConstableRoundsSettingsResult{
+				IntervalSeconds: int(w.Settings.ConstableRoundsInterval / time.Second),
+				DwellSeconds:    int(EffectiveConstableRoundsDwell(w) / time.Second),
+			}, nil
+		},
+	}
+}

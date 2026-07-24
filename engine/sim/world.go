@@ -104,6 +104,21 @@ type WorldSettings struct {
 	// shift-start, whichever comes first. Default 12.
 	NPCSleepMaxDurationHours int
 
+	// Constable rounds (LLM-514). ConstableRoundsInterval is how often the
+	// on-shift constable (AttrConstable) leaves his post to walk a circuit of
+	// every business, paused ConstableRoundsDwell at each so the reactor can
+	// engage him in character. The interval is a wall-clock cadence (not a
+	// schedule boundary) carrying a per-carrier deterministic phase offset —
+	// see ConstableRoundsDue. ConstableRoundsInterval <= 0 disables rounds
+	// entirely (the per-feature off-switch posture, like StallWearPerCoin==0);
+	// ConstableRoundsDwell <= 0 falls back to the default at read
+	// (EffectiveConstableRoundsDwell) since a zero dwell would defeat the
+	// pause-and-engage design. Settings keys: constable_rounds_interval_seconds,
+	// constable_rounds_dwell_seconds. Live-tunable via the umbilical, persisted
+	// on the checkpoint. Defaults: 2h interval, 45s dwell.
+	ConstableRoundsInterval time.Duration
+	ConstableRoundsDwell    time.Duration
+
 	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
 	// applied to every eligible actor. NeedThresholds carries the per-need
 	// "red" boundary; TirednessCriticalThreshold is the absolute (not pct)
@@ -2349,6 +2364,22 @@ func (w *World) republish() {
 			if act.Kind == SourceActivityRefresh {
 				if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 					sa.SourceActivityAttribute = primaryRefreshNeed(obj)
+				}
+			}
+		}
+		// In-flight constable rounds route (LLM-514): project the route label (so
+		// perception renders "you are walking your rounds" on any tick during the
+		// tour) and, only once he has arrived at the current business stop, that
+		// stop's object (so the cue adds "you stand before the <business>" at a stop
+		// but not mid-walk). Stamped here, not in snapshotActor, because ActiveRoutes
+		// lives on *World. Constable-only for now — the other routes surface their
+		// effect through the object states they flip, not through route membership.
+		if r := w.ActiveRoutes[a.ID]; r != nil && r.Label == AttrConstable {
+			sa.RouteLabel = r.Label
+			if r.Phase == RoutePhaseActive && r.StopIdx < len(r.Stops) {
+				stop := r.Stops[r.StopIdx]
+				if RouteStopArrived(a, stop) {
+					sa.RouteStopObjectID = stop.ObjectID
 				}
 			}
 		}

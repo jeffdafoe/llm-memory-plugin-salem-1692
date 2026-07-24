@@ -128,6 +128,14 @@ type UmbilicalSettingsDTO struct {
 	// actually using.
 	EcoAudienceIdleSeconds int `json:"eco_audience_idle_seconds"`
 
+	// Constable rounds (LLM-514) — the knobs settings/constable-rounds writes,
+	// persisted like the huddle_loop_* group. interval == 0 is the OFF-switch
+	// (rounds disabled), reported RAW so a 0 reads as "off" not a fall-through to a
+	// default; dwell is reported as the EFFECTIVE value (a stored 0 resolves to the
+	// 45s default), since a zero pause is defaulted rather than treated as off.
+	ConstableRoundsIntervalSeconds int `json:"constable_rounds_interval_seconds"`
+	ConstableRoundsDwellSeconds    int `json:"constable_rounds_dwell_seconds"`
+
 	// Visitor cascade (LLM-437) — the knobs driving the transient-visitor tier
 	// (engine/sim/visitor.go + cascade/visitor.go + the LLM-410 factor). Unlike
 	// every field above these are NOT checkpoint-persisted: they load once via
@@ -276,6 +284,8 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			EcoAudienceActive:                     audience,
 			EcoAudienceIdleSeconds:                int(sim.PCAudienceIdleAfter(world) / time.Second),
 			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
+			ConstableRoundsIntervalSeconds:        int(world.Settings.ConstableRoundsInterval / time.Second),
+			ConstableRoundsDwellSeconds:           int(sim.EffectiveConstableRoundsDwell(world) / time.Second),
 			VisitorSpawnChancePermille:            world.Settings.VisitorSpawnChancePermille,
 			VisitorMaxConcurrent:                  visitorMax,
 			VisitorTickIntervalSeconds:            int(visitorTick / time.Second),

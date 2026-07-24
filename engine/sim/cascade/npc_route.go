@@ -152,6 +152,10 @@ func RouteScheduleTick(now time.Time, rng *rand.Rand) sim.Command {
 			runScheduledRoute(w, sim.AttrTownCrier, now, func(w *sim.World, _ bool) []sim.RouteCandidate {
 				return buildNoticeboardCandidates(w, rng)
 			})
+			// The constable fires on a fixed INTERVAL, not a schedule-window boundary
+			// (LLM-514) — but the once-a-minute schedule ticker is the right cadence to
+			// check the interval, so it rides here alongside the boundary-driven routes.
+			runConstableRounds(w, now)
 			return nil, nil
 		},
 	}
@@ -212,6 +216,141 @@ func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(
 	sim.StampRouteBoundary(w, attrSlug, boundary)
 }
 
+// runConstableRounds is the interval-driven constable rounds driver (LLM-514).
+// Unlike runScheduledRoute (schedule-window boundary), the constable fires on a
+// fixed wall-clock INTERVAL: find the carrier, ask the substrate whether a tour is
+// due right now (ConstableRoundsDue — at-post + on-shift + not-routing + the
+// jittered interval elapsed), build the business candidates, and start the route
+// with the RETURN destination set to his post (the Meeting House) rather than home,
+// since he is on shift.
+//
+// Stamping discipline mirrors runScheduledRoute: a successful StartNPCRoute —
+// including the zero-candidate no-op — stamps the last-rounds time so the interval
+// gate won't re-fire until the next beat; a dispatch ERROR leaves it unstamped so
+// the tour retries next tick. We stamp `now` (>= the interval beat that triggered),
+// which consumes exactly this beat — the next beat is a full interval out.
+func runConstableRounds(w *sim.World, now time.Time) {
+	actor := findActorWithAttribute(w, sim.AttrConstable)
+	if actor == nil {
+		return
+	}
+	if !sim.ConstableRoundsDue(w, actor, w.Settings.ConstableRoundsInterval, now) {
+		return
+	}
+	candidates := buildConstableRoundsCandidates(w)
+	res, err := sim.StartNPCRoute(actor.ID, sim.AttrConstable, constableReturnDestination(actor), candidates, now).Fn(w)
+	if err != nil {
+		log.Printf("cascade/npc_route: constable rounds dispatch (actor %q): %v", actor.ID, err)
+		return
+	}
+	started, _ := res.(sim.StartNPCRouteResult)
+	log.Printf("cascade/npc_route: constable rounds fired (actor %q) — %d candidate(s), %d stop(s), replaced=%v",
+		actor.ID, len(candidates), started.Stops, started.Replaced)
+	sim.StampRouteBoundary(w, sim.AttrConstable, now)
+}
+
+// buildConstableRoundsCandidates collects every business the constable visits on
+// his rounds: each village_object carrying TagBusiness (LLM-514). NewState is left
+// empty — the rounds route flips no object state (it advances via
+// AdvanceNPCRouteSkipFlip); businesses are visited for presence, not to mutate
+// them. Sorted by ObjectID so the circuit is deterministic before buildRouteStops
+// lays out the nearest-neighbor walk.
+func buildConstableRoundsCandidates(w *sim.World) []sim.RouteCandidate {
+	var out []sim.RouteCandidate
+	for id, obj := range w.VillageObjects {
+		if obj == nil || !obj.HasTag(sim.TagBusiness) {
+			continue
+		}
+		out = append(out, sim.RouteCandidate{
+			ObjectID: id,
+			WorldX:   obj.Pos.X, WorldY: obj.Pos.Y,
+		})
+	}
+	return sortCandidatesByID(out)
+}
+
+// constableReturnDestination is the constable's rounds RETURN target: his post (the
+// Meeting House, WorkStructureID) — he is on shift, so he goes back to his post, NOT
+// home (homeDestinationFor, which the schedule-driven routes use). Falls back to
+// homeDestinationFor only for a misconfigured constable with no work structure.
+func constableReturnDestination(actor *sim.Actor) sim.MoveDestination {
+	if actor.WorkStructureID != "" {
+		return sim.NewStructureEnterDestination(actor.WorkStructureID)
+	}
+	return homeDestinationFor(actor)
+}
+
+// beginConstableDwell arms the per-stop dwell for the constable's CURRENT stop and
+// marks the route dwelling so a duplicate ActorArrived for the same stop doesn't
+// schedule a second dwell timer (the constable analogue of the crier's Authoring
+// guard, LLM-514). MUST be called on the world goroutine (mutates route.Dwelling,
+// reads the dwell setting).
+func beginConstableDwell(w *sim.World, actorID sim.ActorID) {
+	route := w.ActiveRoutes[actorID]
+	if route == nil {
+		return
+	}
+	route.Dwelling = true
+	armConstableDwellTimer(w, actorID, route.StopIdx)
+}
+
+// armConstableDwellTimer schedules the deferred rounds advance one dwell-duration
+// out, marshaled back onto the world goroutine via SendContext + the world's
+// LifecycleContext (shutdown-guarded) — the same AfterFunc pattern the town crier's
+// timed notice beats use (voiceCrierNotices). stopIdx pins the beat to the stop it
+// was armed for, so a stale timer (the route already advanced or was superseded)
+// no-ops. MUST be called on the world goroutine (reads the dwell setting).
+func armConstableDwellTimer(w *sim.World, actorID sim.ActorID, stopIdx int) {
+	dwell := sim.EffectiveConstableRoundsDwell(w)
+	time.AfterFunc(dwell, func() {
+		ctx := w.LifecycleContext()
+		if ctx.Err() != nil {
+			return // shutdown raced the dwell
+		}
+		if _, err := w.SendContext(ctx, constableAdvanceAfterDwell(actorID, stopIdx)); err != nil && ctx.Err() == nil {
+			log.Printf("cascade/npc_route: constable dwell advance (actor %q): %v", actorID, err)
+		}
+	})
+}
+
+// constableAdvanceAfterDwell is the command the dwell timer runs on the world
+// goroutine: advance the constable to his next rounds stop — UNLESS he is mid-
+// conversation (in an active huddle), in which case defer another dwell interval
+// rather than yanking him out (design option (ii), LLM-514). He moves on once the
+// dwell elapses AND he is not huddling. stopIdx guards a stale/superseded beat: a
+// route that already advanced past this stop (or a fresh route that replaced it)
+// no-ops.
+func constableAdvanceAfterDwell(actorID sim.ActorID, stopIdx int) sim.Command {
+	return sim.Command{
+		Fn: func(w *sim.World) (any, error) {
+			route, ok := w.ActiveRoutes[actorID]
+			if !ok || route == nil || route.Label != sim.AttrConstable {
+				return nil, nil // route gone or superseded
+			}
+			if route.Phase != sim.RoutePhaseActive || route.StopIdx != stopIdx {
+				return nil, nil // already advanced past this stop
+			}
+			actor := w.Actors[actorID]
+			if actor == nil {
+				return nil, nil
+			}
+			// Mid-conversation: don't drag him out of a huddle — re-arm the dwell and
+			// re-check after another interval. Dwelling stays true throughout, so a
+			// stray arrival is still ignored.
+			if sim.ActorInActiveHuddle(w, actor) {
+				armConstableDwellTimer(w, actorID, stopIdx)
+				return nil, nil
+			}
+			route.Dwelling = false
+			// Businesses carry no route state to flip — skip-flip, like the crier.
+			if _, err := sim.AdvanceNPCRouteSkipFlip(actorID).Fn(w); err != nil {
+				log.Printf("cascade/npc_route: constable advance (actor %q): %v", actorID, err)
+			}
+			return nil, nil
+		},
+	}
+}
+
 // ForceRouteCommand returns a Command that dispatches a schedule-driven NPC
 // route (town_crier / washerwoman) IMMEDIATELY, bypassing the schedule-window
 // boundary gate runScheduledRoute honors. It is the operator lever behind the
@@ -236,11 +375,11 @@ func ForceRouteCommand(attrSlug string, start bool) sim.Command {
 		Fn: func(w *sim.World) (any, error) {
 			// Validate the attr BEFORE the carrier lookup so the error is
 			// deterministic regardless of world contents — an unsupported attr
-			// must report "not schedule-driven", not "no actor carries…".
+			// must report "not a forceable route", not "no actor carries…".
 			switch attrSlug {
-			case sim.AttrTownCrier, sim.AttrWasherwoman:
+			case sim.AttrTownCrier, sim.AttrWasherwoman, sim.AttrConstable:
 			default:
-				return nil, fmt.Errorf("%q is not a schedule-driven route attribute", attrSlug)
+				return nil, fmt.Errorf("%q is not a forceable route attribute", attrSlug)
 			}
 			actor := findActorWithAttribute(w, attrSlug)
 			if actor == nil {
@@ -249,13 +388,19 @@ func ForceRouteCommand(attrSlug string, start bool) sim.Command {
 			now := time.Now().UTC()
 			rng := rand.New(rand.NewSource(now.UnixNano()))
 			var candidates []sim.RouteCandidate
+			// The constable returns to his post (on shift), the schedule-driven
+			// routes go home; homeDest picks per attr.
+			homeDest := homeDestinationFor(actor)
 			switch attrSlug {
 			case sim.AttrTownCrier:
 				candidates = buildNoticeboardCandidates(w, rng)
 			case sim.AttrWasherwoman:
 				candidates = buildLaundryCandidates(w, start, rng)
+			case sim.AttrConstable:
+				candidates = buildConstableRoundsCandidates(w)
+				homeDest = constableReturnDestination(actor)
 			}
-			res, err := sim.StartNPCRoute(actor.ID, attrSlug, homeDestinationFor(actor), candidates, now).Fn(w)
+			res, err := sim.StartNPCRoute(actor.ID, attrSlug, homeDest, candidates, now).Fn(w)
 			if err != nil {
 				return nil, err
 			}
@@ -359,7 +504,37 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 		return
 	}
 
-	// Non-crier routes (lamplighter / washerwoman) flip the stop inline.
+	// Constable rounds branch (LLM-514): on arrival at a business stop, DWELL
+	// instead of advancing immediately — the pause is what lets the reactor tick
+	// him in character at a populated stop (keeper present → he engages). The dwell
+	// timer advances him later (or re-defers while he is mid-conversation).
+	if route.Label == sim.AttrConstable &&
+		route.Phase == sim.RoutePhaseActive &&
+		route.StopIdx < len(route.Stops) {
+		if route.Dwelling {
+			// A dwell is already running for this stop — ignore the duplicate
+			// arrival so we don't arm a second timer (mirrors the crier's Authoring
+			// guard).
+			return
+		}
+		actor := w.Actors[arrived.ActorID]
+		stop := route.Stops[route.StopIdx]
+		if actor != nil && sim.RouteStopArrived(actor, stop) {
+			beginConstableDwell(w, arrived.ActorID)
+			return
+		}
+		// Stale arrival — run the route's re-walk/abandon machinery (businesses have
+		// no state to flip, so skip-flip).
+		if _, err := sim.AdvanceNPCRouteSkipFlip(arrived.ActorID).Fn(w); err != nil {
+			log.Printf("cascade/npc_route: constable stale advance (actor %q event %d): %v",
+				arrived.ActorID, arrived.EventID(), err)
+		}
+		return
+	}
+
+	// Non-crier routes (lamplighter / washerwoman) flip the stop inline. The
+	// constable's RETURN-home arrival also lands here (Phase != Active), where
+	// AdvanceNPCRoute's returning branch simply clears the route.
 	cmd := sim.AdvanceNPCRoute(arrived.ActorID)
 	if _, err := cmd.Fn(w); err != nil {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",

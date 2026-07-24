@@ -796,9 +796,10 @@ func (s *Server) handleUmbilicalSetPosition(w http.ResponseWriter, r *http.Reque
 }
 
 // umbilicalRouteRequest is the POST /api/village/umbilical/route body: which
-// schedule-driven route to force NOW. Attr is the carrier attribute
-// (town_crier | washerwoman). Start picks the washerwoman's direction (true =
-// take washing out, false = bring it in); ignored for the crier.
+// route to force NOW. Attr is the carrier attribute
+// (town_crier | washerwoman | constable). Start picks the washerwoman's direction
+// (true = take washing out, false = bring it in); ignored for the crier and the
+// constable.
 type umbilicalRouteRequest struct {
 	Attr  string `json:"attr"`
 	Start bool   `json:"start,omitempty"`
@@ -836,8 +837,8 @@ func (s *Server) handleUmbilicalRoute(w http.ResponseWriter, r *http.Request) {
 	if !decodeUmbilicalBody(w, r, &req) {
 		return
 	}
-	if req.Attr != sim.AttrTownCrier && req.Attr != sim.AttrWasherwoman {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("attr must be %q or %q", sim.AttrTownCrier, sim.AttrWasherwoman))
+	if req.Attr != sim.AttrTownCrier && req.Attr != sim.AttrWasherwoman && req.Attr != sim.AttrConstable {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("attr must be %q, %q or %q", sim.AttrTownCrier, sim.AttrWasherwoman, sim.AttrConstable))
 		return
 	}
 	if s.routeForcer == nil {

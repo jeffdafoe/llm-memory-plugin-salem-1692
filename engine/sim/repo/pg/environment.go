@@ -205,6 +205,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.ShiftLatenessWindowMinutes = parseIntSetting(values, "shift_lateness_window_minutes", sim.DefaultShiftLatenessWindowMinutes)
 	s.NPCSleepMaxDurationHours = parseIntSetting(values, "npc_sleep_max_duration_hours", sim.DefaultNPCSleepMaxDurationHours)
 
+	// Constable rounds (LLM-514). Seeded to the defaults so GET /settings reports a
+	// concrete value and the checkpoint round-trips a number; a persisted 0 interval
+	// survives as "rounds disabled" (parseDurationSetting honors a present 0).
+	s.ConstableRoundsInterval = parseDurationSetting(values, "constable_rounds_interval_seconds", sim.DefaultConstableRoundsInterval)
+	s.ConstableRoundsDwell = parseDurationSetting(values, "constable_rounds_dwell_seconds", sim.DefaultConstableRoundsDwell)
+
 	s.NeedsTickAmount = parseIntSetting(values, "attribute_tick_amount", sim.DefaultNeedsTickAmount)
 	s.NeedThresholds = loadNeedThresholds(values)
 	s.TirednessCriticalThreshold = parseIntSetting(values, "tiredness_critical_threshold",
@@ -695,6 +701,10 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
 		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
 		{"eco_audience_idle_seconds", strconv.Itoa(ms.EcoAudienceIdleSeconds)},
+		// Constable rounds knobs (LLM-514) — live-tuned via the umbilical, persisted
+		// here; the load path parses both via parseDurationSetting (0 interval = off).
+		{"constable_rounds_interval_seconds", strconv.Itoa(ms.ConstableRoundsIntervalSeconds)},
+		{"constable_rounds_dwell_seconds", strconv.Itoa(ms.ConstableRoundsDwellSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

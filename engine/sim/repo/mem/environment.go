@@ -120,5 +120,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms si
 	r.settings.SeekWorkCoinCeiling = ms.SeekWorkCoinCeiling
 	r.settings.SeekWorkNeedYieldMargin = ms.SeekWorkNeedYieldMargin
 	r.settings.LaborProduceBoostPct = ms.LaborProduceBoostPct
+	// Constable rounds (LLM-514) — seconds ints in the snapshot, Durations on the
+	// live settings.
+	r.settings.ConstableRoundsInterval = time.Duration(ms.ConstableRoundsIntervalSeconds) * time.Second
+	r.settings.ConstableRoundsDwell = time.Duration(ms.ConstableRoundsDwellSeconds) * time.Second
 	return nil
 }

@@ -78,6 +78,18 @@ const (
 	// board's authored prose aloud on arrival, then flips the board so
 	// fresh prose is authored for the next visit.
 	AttrTownCrier = "town_crier"
+
+	// AttrConstable — a stateful watch-keeper (Gideon Marsh) who walks a
+	// circuit of every business in the village on a fixed INTERVAL rather
+	// than a schedule-window boundary (LLM-514). Unlike the three above his
+	// route ENTERS each door-backed business (the tavern, the store) and
+	// DWELLS there so the reactor can tick him in character, then returns to
+	// his post (the Meeting House) — not home. A marker attribute; the live
+	// actor gets it added out-of-band, the code only recognizes it. The
+	// interval + per-stop dwell are w.Settings tunables; the cadence carries
+	// a per-carrier deterministic phase offset (ConstableRoundsDue) so two
+	// carriers never fire on the same tick.
+	AttrConstable = "constable"
 )
 
 // Tag slugs the route dispatcher narrows candidates by.
@@ -112,10 +124,72 @@ const maxStaleRouteRetries = 3
 // typically the adjacent walkable tile next to the object's anchor.
 // NewState is the AssetState.State the object's CurrentState flips to
 // on arrival.
+//
+// EnterStructureID (LLM-514) opts the stop into ENTERING a structure
+// rather than standing at a loiter tile: when set, the actor walks into
+// that structure's interior (a StructureEnter move) and arrival is keyed
+// on Actor.InsideStructureID == EnterStructureID instead of Pos == WalkTo.
+// It is the reusable "enter vs. loiter" primitive — ANY route may set it
+// per stop. Empty (the default) keeps the original tile-based behavior, so
+// the lamplighter / washerwoman / town_crier routes are unchanged (their
+// candidates are doorless objects, never structure-backed businesses).
+// WalkTo is still populated for an enter stop — the door tile — so the
+// nearest-neighbor layout and cursor bookkeeping in buildRouteStops stay
+// tile-based; only arrival detection and dispatch branch on this field.
 type RouteStop struct {
-	ObjectID VillageObjectID
-	WalkTo   Position
-	NewState string
+	ObjectID         VillageObjectID
+	WalkTo           Position
+	NewState         string
+	EnterStructureID StructureID
+}
+
+// RouteStopArrived reports whether actor a has arrived at stop: standing
+// inside the target structure for an ENTER stop (EnterStructureID set), or
+// standing on the WalkTo tile for a loiter/tile stop. The two arrival
+// signals differ because a StructureEnter move finishes when the locomotion
+// ticker flips InsideStructureID (the actor is on the door tile, inside the
+// footprint), whereas a Position move finishes on the exact tile. Shared by
+// the substrate's stale-arrival guard (advanceActiveRoute) and the cascade
+// arrival handler so both agree on "at the stop".
+func RouteStopArrived(a *Actor, stop RouteStop) bool {
+	if stop.EnterStructureID != "" {
+		return a.InsideStructureID == stop.EnterStructureID
+	}
+	return a.Pos.X == stop.WalkTo.X && a.Pos.Y == stop.WalkTo.Y
+}
+
+// routeStopDestination builds the MoveDestination that dispatches a walk to
+// stop: a StructureEnter into EnterStructureID for an enter stop, else a
+// Position walk to WalkTo. Shared by StartNPCRoute's first walk and
+// advanceActiveRoute's next-stop / stale re-walk dispatch so every dispatch
+// site agrees on enter-vs-tile.
+func routeStopDestination(stop RouteStop) MoveDestination {
+	if stop.EnterStructureID != "" {
+		return NewStructureEnterDestination(stop.EnterStructureID)
+	}
+	return NewPositionDestination(stop.WalkTo)
+}
+
+// routeStopEntersStructure is the reusable enter-vs-loiter RULE (LLM-514):
+// a route visits objID by ENTERING it when the placement is structure-backed
+// (its id also names a Structure under the shared-identity bridge) AND its
+// asset declares a door (assetHasDoor). Doorless / open placements (market
+// stalls, farms, the mill) and bare props (lamps, boards, laundry lines) are
+// NOT entered — the caller stands at their loiter pin instead. Returns the
+// StructureID to enter and ok=true only for the enter case.
+//
+// MUST be called from inside a Command.Fn (reads w.Structures / w.VillageObjects
+// / w.Assets).
+func routeStopEntersStructure(w *World, objID VillageObjectID) (StructureID, bool) {
+	sid := StructureID(objID)
+	if _, isStructure := w.Structures[sid]; !isStructure {
+		return "", false
+	}
+	_, asset, ok := villageObjectForStructure(w, sid)
+	if !ok || !assetHasDoor(asset) {
+		return "", false
+	}
+	return sid, true
 }
 
 // NPCRoute is the in-flight per-NPC route state. Stored in
@@ -153,6 +227,13 @@ type NPCRoute struct {
 	// when the author callback completes. Set/read/cleared only on the world
 	// goroutine; in-memory only, never persisted.
 	Authoring bool
+	// Dwelling is set true while the constable is PAUSED at the current stop —
+	// the per-stop dwell window between arrival and moving on (LLM-514). It
+	// guards against a duplicate ActorArrived scheduling a second dwell timer
+	// for the same stop (the constable analogue of Authoring). Cleared when the
+	// dwell elapses and the route advances. Set/read/cleared only on the world
+	// goroutine; in-memory only, never persisted.
+	Dwelling bool
 }
 
 // RouteCandidate is one input to StartNPCRoute's route builder: an
@@ -270,9 +351,10 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 			// world-goroutine transaction — no SendContext round-trip.
 			// LeaveHuddleFirst: true so a route-starting NPC who
 			// happens to be huddling somewhere cleanly leaves the
-			// huddle (HuddleLeft fires as a side-effect).
+			// huddle (HuddleLeft fires as a side-effect). routeStopDestination
+			// picks StructureEnter vs Position per the stop's kind (LLM-514).
 			first := stops[0]
-			moveCmd := MoveActor(actorID, NewPositionDestination(first.WalkTo), true, now)
+			moveCmd := MoveActor(actorID, routeStopDestination(first), true, now)
 			if _, err := moveCmd.Fn(w); err != nil {
 				// Movement rejected (no path to first stop). Clear the
 				// route — better to report 0 stops than leave the
@@ -416,12 +498,15 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 	// Locomotion contract dependency: this guard assumes
-	// actor.Pos already reflects the arrival tile when
-	// ActorArrived's subscribers run. The locomotion ticker's
+	// actor.Pos / actor.InsideStructureID already reflect the arrival
+	// state when ActorArrived's subscribers run. The locomotion ticker's
 	// finishArrival commits actor.Pos in advanceActorLocomotion
-	// (one tile per tick) BEFORE emitting ActorArrived. Reversing
-	// that ordering would make valid arrivals look stale.
-	if actor.Pos.X != stop.WalkTo.X || actor.Pos.Y != stop.WalkTo.Y {
+	// (one tile per tick) and reconciles InsideStructureID BEFORE emitting
+	// ActorArrived. Reversing that ordering would make valid arrivals look
+	// stale. RouteStopArrived branches on stop kind: Pos == WalkTo for a
+	// loiter/tile stop (byte-for-byte the prior check), InsideStructureID ==
+	// EnterStructureID for an enter stop (LLM-514).
+	if !RouteStopArrived(actor, stop) {
 		// Stale arrival: this ActorArrived was for some other destination — an
 		// external MoveActor (admin force-move, a competing producer's nudge)
 		// superseded the route's walk between dispatch and arrival, so the actor
@@ -450,7 +535,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		// is handled by abandoning the route in the cascade rather than re-walking
 		// here — see handleActorMoveStoppedAdvanceRoute.)
 		route.StaleRetries++
-		reWalk := MoveActor(route.NPCID, NewPositionDestination(stop.WalkTo), false, time.Now())
+		reWalk := MoveActor(route.NPCID, routeStopDestination(stop), false, time.Now())
 		if _, err := reWalk.Fn(w); err != nil {
 			log.Printf("sim/npc_route: %q stale arrival; re-walk dispatch to stop %d failed: %v — clearing route",
 				route.NPCID, route.StopIdx, err)
@@ -485,9 +570,10 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	route.StopIdx++
 
 	if route.StopIdx < len(route.Stops) {
-		// More stops — dispatch next walk.
+		// More stops — dispatch next walk (StructureEnter or Position per
+		// the stop's kind, LLM-514).
 		next := route.Stops[route.StopIdx]
-		moveCmd := MoveActor(route.NPCID, NewPositionDestination(next.WalkTo), false, time.Now())
+		moveCmd := MoveActor(route.NPCID, routeStopDestination(next), false, time.Now())
 		if _, err := moveCmd.Fn(w); err != nil {
 			log.Printf("sim/npc_route: %q dispatch next walk failed: %v — clearing route",
 				route.NPCID, err)
@@ -572,11 +658,11 @@ func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
 // buildRouteStops lays out an ordered nearest-neighbor walk over the
 // candidates from (startX, startY). At each step:
 //
-//   - For every remaining candidate, resolve the tile the actor stands on
-//     to visit it (routeStopWalkTarget) and the path length to it from
-//     the cursor.
-//   - Pick the candidate with the shortest path; record its stand tile as
-//     the RouteStop's WalkTo; advance the cursor.
+//   - For every remaining candidate, resolve how the route visits it
+//     (resolveRouteStop — enter the structure vs. stand at its loiter tile)
+//     and the path length to that goal tile from the cursor.
+//   - Pick the candidate with the shortest path; append its resolved
+//     RouteStop; advance the cursor to that goal tile.
 //   - Unreachable candidates are skipped (no path → that candidate
 //     can't be visited this cycle).
 //
@@ -612,32 +698,72 @@ func buildRouteStops(w *World, grid *WalkGrid, startX, startY int, candidates []
 	stops := make([]RouteStop, 0, len(remaining))
 	for len(remaining) > 0 {
 		bestIdx := -1
-		bestWalkTo := GridPoint{}
+		var bestStop RouteStop
+		bestGoal := GridPoint{}
 		bestLen := -1
 		for i, c := range remaining {
-			walkTo, path := routeStopWalkTarget(w, grid, cursor, c)
+			stop, goal, path := resolveRouteStop(w, grid, cursor, c)
 			if path == nil {
 				continue
 			}
 			if bestLen < 0 || len(path) < bestLen {
 				bestIdx = i
-				bestWalkTo = walkTo
+				bestStop = stop
+				bestGoal = goal
 				bestLen = len(path)
 			}
 		}
 		if bestIdx < 0 {
 			break // nothing else reachable
 		}
-		chosen := remaining[bestIdx]
-		stops = append(stops, RouteStop{
-			ObjectID: chosen.ObjectID,
-			WalkTo:   Position{X: bestWalkTo.X, Y: bestWalkTo.Y},
-			NewState: chosen.NewState,
-		})
-		cursor = bestWalkTo
+		stops = append(stops, bestStop)
+		cursor = bestGoal
 		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
 	}
 	return stops
+}
+
+// resolveRouteStop builds the RouteStop for candidate c from cursor, applying
+// the reusable enter-vs-loiter rule (LLM-514):
+//
+//   - c is a door-backed structure (routeStopEntersStructure) whose door tile
+//     is reachable → an ENTER stop: EnterStructureID set, goal = the door tile
+//     (the interior tile a StructureEnter finishes on). WalkTo carries the door
+//     tile too, for cursor/layout bookkeeping.
+//   - otherwise (doorless/open placement, bare prop, or an unreachable door) →
+//     a loiter/tile stop via routeStopWalkTarget: WalkTo = the loiter pin or an
+//     adjacent walkable tile, exactly the prior behavior.
+//
+// Returns the RouteStop, the goal tile (path costing + cursor advance), and the
+// path from cursor (nil = unreachable this cycle — the caller skips it). MUST be
+// called from inside a Command.Fn (reads world state via its resolvers).
+func resolveRouteStop(w *World, grid *WalkGrid, cursor GridPoint, c RouteCandidate) (RouteStop, GridPoint, []GridPoint) {
+	if sid, enters := routeStopEntersStructure(w, c.ObjectID); enters {
+		if door, ok := structureEntryTile(w, sid); ok {
+			doorPt := GridPoint{X: door.X, Y: door.Y}
+			// The door tile is the sole walkable footprint tile (buildWalkGrid
+			// carves a corridor to it); a StructureEnter finishes there. Only take
+			// the enter branch when it's actually reachable from the cursor —
+			// otherwise fall through to the loiter fallback so the stop is still
+			// visited (stand outside) rather than dropped.
+			if grid.CanWalk(doorPt.X, doorPt.Y) {
+				if path := FindPath(grid, cursor, doorPt); path != nil {
+					return RouteStop{
+						ObjectID:         c.ObjectID,
+						WalkTo:           Position{X: doorPt.X, Y: doorPt.Y},
+						NewState:         c.NewState,
+						EnterStructureID: sid,
+					}, doorPt, path
+				}
+			}
+		}
+	}
+	walkTo, path := routeStopWalkTarget(w, grid, cursor, c)
+	return RouteStop{
+		ObjectID: c.ObjectID,
+		WalkTo:   Position{X: walkTo.X, Y: walkTo.Y},
+		NewState: c.NewState,
+	}, walkTo, path
 }
 
 // routeStopWalkTarget resolves the tile an actor stands on to visit a
