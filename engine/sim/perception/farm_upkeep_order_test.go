@@ -267,6 +267,29 @@ func TestFarmUpkeep_OrderFromOtherBuyer_DoesNotSuppress(t *testing.T) {
 	}
 }
 
+// TestFarmUpkeep_IgnoresNonPositiveOrderQty makes the openIncomingOrderQty guard
+// explicit (code_review LLM-518): a malformed order with Qty <= 0 is skipped before
+// the saturation math, so it can neither reduce the total nor make the MaxInt-o.Qty
+// overflow guard itself overflow. Such rows contribute nothing and the cue falls
+// through to the ordinary buy steer rather than rendering a phantom "on order".
+func TestFarmUpkeep_IgnoresNonPositiveOrderQty(t *testing.T) {
+	snap, actorID, _ := farmUpkeepSnapshot(72, 1, 30, 20) // owed 2, held 1
+	snap.Orders = map[sim.OrderID]*sim.Order{
+		1: {ID: 1, State: sim.OrderStateReady, BuyerID: actorID, SellerID: sim.ActorID("ezekiel"), Item: sim.ShovelItemKind, Qty: 0, ConsumerIDs: []sim.ActorID{actorID}},
+		2: {ID: 2, State: sim.OrderStateReady, BuyerID: actorID, SellerID: sim.ActorID("ezekiel"), Item: sim.ShovelItemKind, Qty: -3, ConsumerIDs: []sim.ActorID{actorID}},
+	}
+	if got := openIncomingOrderQty(snap, actorID, sim.ShovelItemKind); got != 0 {
+		t.Errorf("openIncomingOrderQty = %d, want 0 (non-positive quantities must be ignored)", got)
+	}
+	v := buildFarmUpkeep(snap, actorID, snap.Actors[actorID])
+	if v == nil || v.OnOrder != 0 {
+		t.Fatalf("expected the ordinary cue with OnOrder 0; got %+v", v)
+	}
+	if strings.Contains(renderUpkeep(v), "on order") {
+		t.Errorf("a non-positive-qty order must not render the on-order line:\n%s", renderUpkeep(v))
+	}
+}
+
 // TestGoldensFarmUpkeepOnOrderNoBuyGoad is the LLM-518 cross-scenario invariant:
 // whenever the "## Farm upkeep" cue renders AND the actor has an open incoming shovel
 // order, the section must carry no buy imperative ("Buy ") and no walk-to destination
