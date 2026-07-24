@@ -1709,6 +1709,19 @@ type ActorSnapshot struct {
 	SourceActivityObjectID  VillageObjectID
 	SourceActivityAttribute NeedKey
 
+	// RouteLabel / RouteStopObjectID are the read-path projection of an in-flight
+	// scheduled NPC route the actor is walking (LLM-514) — today only the constable
+	// rounds route surfaces them, so perception can render a diegetic "you are
+	// walking your rounds" self-state cue that keeps any reactor tick during the
+	// tour in character. RouteLabel is the NPCRoute.Label (== AttrConstable);
+	// RouteStopObjectID is the current stop's business, set ONLY once he has
+	// arrived at it (RouteStopArrived) so the cue can add "you stand before the
+	// <business>" at a stop while omitting it mid-walk. Both empty when the actor
+	// is not on a rounds route. Projected each republish from w.ActiveRoutes (NOT
+	// checkpointed), the same per-publish posture as SourceActivity*.
+	RouteLabel        string
+	RouteStopObjectID VillageObjectID
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

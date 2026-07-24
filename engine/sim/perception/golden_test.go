@@ -1353,6 +1353,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperAloneAtPostOnShift,
 	},
 	{
+		name: "constable_walking_rounds_at_store",
+		summary: "LLM-514: the constable (Gideon Marsh) mid-rounds, having stepped inside the General Store on " +
+			"his circuit of the village's businesses. The golden pins the diegetic rounds self-state cue — " +
+			"'You are walking your rounds through the village. You stand before the General Store.' — that keeps " +
+			"any reactor tick during the tour in character (a suspicious constable), and that the go-to-post duty " +
+			"steer yields to it while the route runs.",
+		build: constableWalkingRoundsAtStore,
+	},
+	{
 		name: "storm_weather_over_keeper_at_post",
 		summary: "LLM-364: the keeper_alone_at_post_onshift fixture with a storm overhead " +
 			"(Environment.Weather = storm). The golden pins the deterministic felt rain line — " +
@@ -12538,6 +12547,52 @@ func keeperAloneAtPostOnShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 		},
 	}
 	return snap, josiahID, warrants
+}
+
+// constableWalkingRoundsAtStore is the LLM-514 rounds-cue scenario: the constable
+// Gideon Marsh mid-rounds, having stepped inside the General Store on his circuit
+// of the businesses. The route projection (RouteLabel == constable,
+// RouteStopObjectID == the store) is what the republish stamps from w.ActiveRoutes
+// once he has arrived at a stop; the golden pins the diegetic "you are walking your
+// rounds … you stand before the General Store" self-state cue and that the routine
+// go-to-post duty steer yields to it.
+func constableWalkingRoundsAtStore() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		gideonID = sim.ActorID("gideon")
+		store    = sim.StructureID("general_store")
+		post     = sim.StructureID("meeting_house")
+		home     = sim.StructureID("marsh_residence")
+	)
+	start, end := 0, 1440 // on the watch all day
+	now := 780            // 13:00 — mid-afternoon, on shift
+	gideon := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Gideon Marsh",
+		Role:              "constable",
+		State:             sim.StateIdle,
+		WorkStructureID:   post,
+		InsideStructureID: store, // stepped inside the store on his rounds
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Needs:             map[sim.NeedKey]int{},
+		// LLM-514: mid-rounds, arrived at the store — the read-path projection the
+		// republish stamps from w.ActiveRoutes (RouteStopObjectID set only once he
+		// has arrived at the stop).
+		RouteLabel:        sim.AttrConstable,
+		RouteStopObjectID: sim.VillageObjectID(store),
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{gideonID: gideon},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			post:  plainStructure(post, "Meeting House"),
+			home:  plainStructure(home, "Marsh Residence"),
+		},
+	}
+	return snap, gideonID, nil
 }
 
 // visitorArrivesAtKeepersWorkplace reproduces the LLM-284 host-role inversion:

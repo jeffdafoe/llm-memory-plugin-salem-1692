@@ -65,3 +65,51 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 		t.Errorf("labor produce boost = %d, want 75 (LLM-224 round-trip)", settings.LaborProduceBoostPct)
 	}
 }
+
+// TestSaveMutableSettings_ConstableRounds pins that the LLM-514 constable rounds
+// knobs are APPLIED back into WorldSettings on restore (SaveMutableSettings ->
+// Load), covering the interval=0 off-switch (stays 0) and the dwell=0 case (stays 0
+// raw, but EffectiveConstableRoundsDwell resolves it to the 45s default). This is
+// the restore half of the round-trip — the save half rides BuildCheckpointSnapshot.
+func TestSaveMutableSettings_ConstableRounds(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("concrete_values_round_trip", func(t *testing.T) {
+		repo := mem.NewEnvironmentRepo()
+		ms := sim.MutableWorldSettings{ConstableRoundsIntervalSeconds: 7200, ConstableRoundsDwellSeconds: 45}
+		if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
+			t.Fatalf("SaveMutableSettings: %v", err)
+		}
+		_, _, settings, err := repo.Load(ctx)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if settings.ConstableRoundsInterval != 2*time.Hour {
+			t.Errorf("interval = %v, want 2h", settings.ConstableRoundsInterval)
+		}
+		if settings.ConstableRoundsDwell != 45*time.Second {
+			t.Errorf("dwell = %v, want 45s", settings.ConstableRoundsDwell)
+		}
+	})
+
+	t.Run("interval_off_and_dwell_default", func(t *testing.T) {
+		repo := mem.NewEnvironmentRepo()
+		ms := sim.MutableWorldSettings{ConstableRoundsIntervalSeconds: 0, ConstableRoundsDwellSeconds: 0}
+		if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
+			t.Fatalf("SaveMutableSettings: %v", err)
+		}
+		_, _, settings, err := repo.Load(ctx)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if settings.ConstableRoundsInterval != 0 {
+			t.Errorf("interval = %v, want 0 (off-switch preserved on restore)", settings.ConstableRoundsInterval)
+		}
+		if settings.ConstableRoundsDwell != 0 {
+			t.Errorf("dwell raw = %v, want 0 (stored), default applied only at read", settings.ConstableRoundsDwell)
+		}
+		if got := sim.EffectiveConstableRoundsDwell(&sim.World{Settings: settings}); got != sim.DefaultConstableRoundsDwell {
+			t.Errorf("effective dwell = %v, want default %v", got, sim.DefaultConstableRoundsDwell)
+		}
+	})
+}

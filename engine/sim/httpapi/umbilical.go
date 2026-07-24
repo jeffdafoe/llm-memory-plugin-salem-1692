@@ -482,7 +482,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/grant", "Give or claw back coins/items to/from any actor. Body: {actor_id, coins?, items?}.", true, s.handleUmbilicalGrant},
 		{http.MethodPost, umbilicalBasePath + "/set-needs", "Set an actor's needs to ABSOLUTE values [0..24]. Body: {actor_id} or {all:true}, plus {needs:{\"hunger\":20,\"tiredness\":0}} (unlisted needs untouched). Omit needs to set every need to 0 (back-to-0 shortcut). Setting tiredness to 0 also clears the actor's rest window.", true, s.handleUmbilicalSetNeeds},
 		{http.MethodPost, umbilicalBasePath + "/set-position", "Teleport an actor to a walkable TILE coordinate (the units /actors reports). Cancels any in-flight walk, reconciles inside-structure attribution, and removes the actor from a huddle it was displaced away from. Unwalkable/out-of-bounds targets are refused. Body: {actor_id, x, y}.", true, s.handleUmbilicalSetPosition},
-		{http.MethodPost, umbilicalBasePath + "/route", "Force a schedule-driven NPC route (town crier / washerwoman) to dispatch NOW, bypassing the schedule-window gate — reproduce a crier tour on demand instead of waiting for a boundary or restart. Does NOT consume the real schedule boundary. Body: {attr, start?}.", true, s.handleUmbilicalRoute},
+		{http.MethodPost, umbilicalBasePath + "/route", "Force an NPC route (town_crier / washerwoman / constable) to dispatch NOW, bypassing the schedule-window (crier/washerwoman) or interval (constable) gate — reproduce a crier tour or a constable rounds tour on demand instead of waiting for a boundary or restart. Does NOT consume the real schedule boundary / rounds stamp. Body: {attr, start?}.", true, s.handleUmbilicalRoute},
 		{http.MethodPost, umbilicalBasePath + "/worker/provision", "Mint a sprite-only DECORATIVE into a live Worker: assign a backing VA (default salem-vendor), grant the `worker` attribute, and reclassify its Kind in memory so it comes online and takes solicit_work jobs WITHOUT a restart (the checkpoint persists the link+attribute for the next reload). Refuses an already-live NPC (409). An unscheduled worker is then day-active on the world dawn/dusk window automatically (LLM-137). Body: {actor_id, agent?}.", true, s.handleUmbilicalProvisionWorker},
 		{http.MethodPost, umbilicalBasePath + "/worker/retire", "Retire an actor from Worker duty (inverse of worker/provision): remove the `worker` attribute so the seek-work backstop + solicit_work no longer engage it — live, no restart (removing an attribute doesn't change Kind, so no reclassify and no race). With {to_decorative:true} it ALSO unlinks the VA, reclassifies to decorative, and resets reactor state so the actor goes fully inert (zero LLM cost; re-provision to bring it back). Body: {actor_id, to_decorative?}.", true, s.handleUmbilicalRetireWorker},
 
@@ -515,6 +515,11 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// Farm upkeep wealth tax (LLM-215) — live-tune the per-farm shovel levy
 		// without a restart; applied in memory and persisted on the next checkpoint.
 		{http.MethodPost, umbilicalBasePath + "/farm-upkeep/set", "Live-tune the farm wealth-tax knobs (LLM-215) without a restart. Both fields optional (at least one required), non-negative ints; farm_upkeep_coins_per_shovel=0 disables the feature. Body: {farm_upkeep_floor?, farm_upkeep_coins_per_shovel?}.", true, s.handleUmbilicalFarmUpkeepSet},
+
+		// Constable rounds (LLM-514) — live-tune how often the constable walks his
+		// rounds and how long he pauses at each business; applied in memory and
+		// persisted on the next checkpoint.
+		{http.MethodPost, umbilicalBasePath + "/constable-rounds/set", "Live-tune the constable rounds cadence (LLM-514) without a restart. Both fields optional (at least one required), non-negative seconds; interval_seconds=0 disables rounds, dwell_seconds=0 resolves to the 45s default. Body: {interval_seconds?, dwell_seconds?}.", true, s.handleUmbilicalConstableRoundsSet},
 
 		// Item definition (LLM-200) — live create/edit of one item_kind row (the
 		// definition: label, category, sort order, capabilities, counting nouns,

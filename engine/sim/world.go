@@ -104,6 +104,21 @@ type WorldSettings struct {
 	// shift-start, whichever comes first. Default 12.
 	NPCSleepMaxDurationHours int
 
+	// Constable rounds (LLM-514). ConstableRoundsInterval is how often the
+	// on-shift constable (AttrConstable) leaves his post to walk a circuit of
+	// every business, paused ConstableRoundsDwell at each so the reactor can
+	// engage him in character. The interval is a wall-clock cadence (not a
+	// schedule boundary) carrying a per-carrier deterministic phase offset —
+	// see ConstableRoundsDue. ConstableRoundsInterval <= 0 disables rounds
+	// entirely (the per-feature off-switch posture, like StallWearPerCoin==0);
+	// ConstableRoundsDwell <= 0 falls back to the default at read
+	// (EffectiveConstableRoundsDwell) since a zero dwell would defeat the
+	// pause-and-engage design. Settings keys: constable_rounds_interval_seconds,
+	// constable_rounds_dwell_seconds. Live-tunable via the umbilical, persisted
+	// on the checkpoint. Defaults: 2h interval, 45s dwell.
+	ConstableRoundsInterval time.Duration
+	ConstableRoundsDwell    time.Duration
+
 	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
 	// applied to every eligible actor. NeedThresholds carries the per-need
 	// "red" boundary; TirednessCriticalThreshold is the absolute (not pct)
@@ -1113,6 +1128,15 @@ type World struct {
 	// correctness failure.
 	ActiveRoutes map[ActorID]*NPCRoute
 
+	// routeInstallSeq is a monotonically-increasing counter stamped onto each
+	// NPCRoute.Gen at StartNPCRoute install (LLM-514 fix A). It gives every route
+	// install a distinct identity so a dwell-timer callback that already fired
+	// before its route was superseded can detect the supersede even when the
+	// replacement occupies the same StopIdx. World-goroutine-only (only StartNPCRoute
+	// touches it); never persisted — a fresh process restarts the sequence, which is
+	// fine because it only needs to distinguish routes within one process lifetime.
+	routeInstallSeq uint64
+
 	// RouteBoundaryStamps records, per route attribute slug (washerwoman /
 	// town_crier), the schedule-window boundary last acted on by the
 	// route-schedule trigger (ZBBS-HOME-446) — the edge re-fire guard. Keyed by
@@ -1125,6 +1149,16 @@ type World struct {
 	// laundry/boards in the right state for the current time of day. The
 	// directional candidate builders make that catch-up idempotent.
 	RouteBoundaryStamps map[string]time.Time
+
+	// ConstableRoundsStamps records, PER constable actor, the wall-clock time its
+	// last rounds tour was dispatched (LLM-514). Keyed by ActorID — NOT by the
+	// attribute slug like RouteBoundaryStamps — because the constable fires on a
+	// per-carrier JITTERED interval: a shared slug key would let one carrier's stamp
+	// suppress another's due beat, collapsing the desync the phase offset exists to
+	// provide. ConstableRoundsDue reads it; runConstableRounds stamps it per carrier.
+	// nil-readable as empty (lazy-allocated on first stamp). World-goroutine-only;
+	// restart-loss is desirable — same boot-catch-up posture as RouteBoundaryStamps.
+	ConstableRoundsStamps map[ActorID]time.Time
 
 	// NoticeboardContent stores per-board authored prose — what the
 	// town crier reads on arrival, what NPCs loitering at the board
@@ -2349,6 +2383,22 @@ func (w *World) republish() {
 			if act.Kind == SourceActivityRefresh {
 				if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 					sa.SourceActivityAttribute = primaryRefreshNeed(obj)
+				}
+			}
+		}
+		// In-flight constable rounds route (LLM-514): project the route label (so
+		// perception renders "you are walking your rounds" on any tick during the
+		// tour) and, only once he has arrived at the current business stop, that
+		// stop's object (so the cue adds "you stand before the <business>" at a stop
+		// but not mid-walk). Stamped here, not in snapshotActor, because ActiveRoutes
+		// lives on *World. Constable-only for now — the other routes surface their
+		// effect through the object states they flip, not through route membership.
+		if r := w.ActiveRoutes[a.ID]; r != nil && r.Label == AttrConstable {
+			sa.RouteLabel = r.Label
+			if r.Phase == RoutePhaseActive && r.StopIdx < len(r.Stops) {
+				stop := r.Stops[r.StopIdx]
+				if RouteStopArrived(a, stop) {
+					sa.RouteStopObjectID = stop.ObjectID
 				}
 			}
 		}

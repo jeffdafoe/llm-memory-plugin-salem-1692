@@ -949,6 +949,14 @@ func actorInActiveHuddle(w *World, actor *Actor) bool {
 	return ok && h.ConcludedAt == nil
 }
 
+// ActorInActiveHuddle is the exported form of actorInActiveHuddle, for cascade
+// callers that must not yank an actor out of a live conversation — the constable
+// rounds dwell (LLM-514) defers its advance while the constable is mid-huddle.
+// MUST be called from inside a Command.Fn (reads w.Huddles).
+func ActorInActiveHuddle(w *World, actor *Actor) bool {
+	return actorInActiveHuddle(w, actor)
+}
+
 // structureForActorTile returns the structure whose footprint contains the
 // actor's current tile, or "" when the tile is outside every footprint. It is the
 // inside-attribution that updateInsideStructureIDFromTileOwnership and the

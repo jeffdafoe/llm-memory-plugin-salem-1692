@@ -1311,6 +1311,15 @@ type ActorView struct {
 	// ActiveDwellCredits. LLM-69.
 	InFlightSourceActivity *InFlightSourceActivityView
 
+	// Rounds is the constable's in-flight rounds tour (LLM-514), nil when he is
+	// not walking his rounds. Rendered as a diegetic "You are walking your rounds
+	// through the village." self-state line so any reactor tick during the tour is
+	// in character (a suspicious constable), and — once he has arrived at a stop —
+	// "You stand before the <business>." It is the sole movement voice while a tour
+	// runs (renderActor suppresses the plain InFlightMove line), so the two don't
+	// both speak.
+	Rounds *RoundsView
+
 	// Inventory is the actor's carried goods — the STANDING "what you're
 	// carrying" readout (ZBBS-HOME-361), restored after the v2 rewrite dropped
 	// v1's inventory line and left NPCs blind to their own pockets (a hungry
@@ -1381,6 +1390,14 @@ type InventoryItem struct {
 type InFlightMoveView struct {
 	Kind             sim.MoveDestinationKind
 	DestinationLabel string
+}
+
+// RoundsView is the perception-side projection of the constable's in-flight rounds
+// tour (LLM-514). AtBusiness is the display name of the business he has arrived at
+// (the current stop), empty while he is walking between stops — so the render adds
+// "You stand before the <business>." at a stop but not on the way there.
+type RoundsView struct {
+	AtBusiness string
 }
 
 // InFlightSourceActivityView is the perception-side projection of the subject's

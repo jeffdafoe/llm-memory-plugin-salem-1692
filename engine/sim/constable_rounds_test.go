@@ -1,0 +1,256 @@
+package sim
+
+import (
+	"testing"
+	"time"
+)
+
+// constable_rounds_test.go — LLM-514. Unit coverage for the constable rounds
+// interval decision (ConstableRoundsDue + per-carrier jitter) and the reusable
+// enter-vs-loiter route-stop primitive (routeStopEntersStructure / RouteStopArrived
+// / routeStopDestination).
+
+// constableWorld builds a minimal world with a single constable actor settled at
+// his post and on an all-day shift, plus the maps ConstableRoundsDue reads.
+func constableWorld(a *Actor) *World {
+	return &World{
+		Actors:                map[ActorID]*Actor{a.ID: a},
+		ActiveRoutes:          map[ActorID]*NPCRoute{},
+		ConstableRoundsStamps: map[ActorID]time.Time{},
+		Settings:              WorldSettings{Location: time.UTC},
+	}
+}
+
+// constableAtPost builds a constable NPC settled at his post (InsideStructureID ==
+// WorkStructureID) with an all-day shift window so on-shift is trivially true.
+func constableAtPost(id ActorID) *Actor {
+	return &Actor{
+		ID:                id,
+		Kind:              KindNPCStateful,
+		WorkStructureID:   "meeting_house",
+		InsideStructureID: "meeting_house",
+		ScheduleStartMin:  intptr(0),
+		ScheduleEndMin:    intptr(1440), // all-day: minuteInShiftWindow(0,1440,*) is always on shift
+	}
+}
+
+func TestConstableRoundsDue_Gates(t *testing.T) {
+	const interval = 2 * time.Hour
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+
+	// Baseline: at post, on shift, not routing, no stamp — the boot catch-up fires.
+	t.Run("at_post_on_shift_no_stamp_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		if !ConstableRoundsDue(w, a, interval, now) {
+			t.Error("expected due (at post, on shift, not routing, no stamp)")
+		}
+	})
+
+	t.Run("interval_disabled_not_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		if ConstableRoundsDue(w, a, 0, now) {
+			t.Error("interval <= 0 must disable rounds")
+		}
+	})
+
+	t.Run("not_at_post_not_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		a.InsideStructureID = "tavern" // out on the town, not settled at his post
+		w := constableWorld(a)
+		if ConstableRoundsDue(w, a, interval, now) {
+			t.Error("rounds must start from the post, not mid-walk")
+		}
+	})
+
+	t.Run("no_work_structure_not_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		a.WorkStructureID = ""
+		a.InsideStructureID = "" // matches empty work id, but no post means no rounds
+		w := constableWorld(a)
+		if ConstableRoundsDue(w, a, interval, now) {
+			t.Error("a workless constable has no post to leave")
+		}
+	})
+
+	t.Run("off_shift_not_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		// A morning-only shift; noon is off shift.
+		a.ScheduleStartMin = intptr(0)
+		a.ScheduleEndMin = intptr(600) // 00:00–10:00
+		w := constableWorld(a)
+		if ConstableRoundsDue(w, a, interval, now) {
+			t.Error("off-shift constable must not walk rounds")
+		}
+	})
+
+	t.Run("already_routing_not_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseActive}
+		if ConstableRoundsDue(w, a, interval, now) {
+			t.Error("must not re-trigger while a route is already in flight")
+		}
+	})
+
+	t.Run("interval_not_elapsed_not_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		// Just fired this instant: the current beat is consumed, so not due again.
+		w.ConstableRoundsStamps[a.ID] = now
+		if ConstableRoundsDue(w, a, interval, now) {
+			t.Error("a stamp at now consumes the current beat — not due")
+		}
+	})
+
+	t.Run("interval_elapsed_due", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		// Last rounds a full interval-plus ago: a fresh beat has passed.
+		w.ConstableRoundsStamps[a.ID] = now.Add(-3 * time.Hour)
+		if !ConstableRoundsDue(w, a, interval, now) {
+			t.Error("a beat has elapsed since the stamp — should be due")
+		}
+	})
+}
+
+// TestConstableRoundsOffsetDesync proves the per-carrier phase offset keeps two
+// constables from firing rounds on the same beat, AND that the PER-ACTOR stamp means
+// neither suppresses the other: given identical last-rounds times, on carrier A's
+// exact beat A is due and B is not; and stamping A leaves B's dueness untouched.
+func TestConstableRoundsOffsetDesync(t *testing.T) {
+	const interval = 2 * time.Hour
+	offA := constableRoundsOffset("gideon", interval)
+	offB := constableRoundsOffset("silas", interval)
+	if offA < 0 || offA >= interval || offB < 0 || offB >= interval {
+		t.Fatalf("offsets out of [0,interval): offA=%v offB=%v", offA, offB)
+	}
+	if offA == offB {
+		t.Fatalf("offsets collided (offA==offB==%v) — pick different test ids", offA)
+	}
+
+	base := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	// A's exact beat instant, and an (identical) per-actor stamp one ns behind it.
+	instA := mostRecentRoundsInstant(base, interval, offA)
+	now := instA
+	stamp := instA.Add(-time.Nanosecond)
+
+	a := constableAtPost("gideon")
+	b := constableAtPost("silas")
+	w := &World{
+		Actors:                map[ActorID]*Actor{a.ID: a, b.ID: b},
+		ActiveRoutes:          map[ActorID]*NPCRoute{},
+		ConstableRoundsStamps: map[ActorID]time.Time{a.ID: stamp, b.ID: stamp},
+		Settings:              WorldSettings{Location: time.UTC},
+	}
+	if !ConstableRoundsDue(w, a, interval, now) {
+		t.Error("carrier A should be due on its own beat")
+	}
+	if ConstableRoundsDue(w, b, interval, now) {
+		t.Error("carrier B should NOT be due on A's beat — the phase offset desyncs them")
+	}
+	// A fires and stamps itself. Because the stamp is per-actor, B's dueness must be
+	// exactly what it was — A cannot suppress B.
+	bDueBefore := ConstableRoundsDue(w, b, interval, now)
+	StampConstableRounds(w, a.ID, now)
+	if ConstableRoundsDue(w, b, interval, now) != bDueBefore {
+		t.Error("stamping carrier A changed carrier B's dueness — per-actor stamps must not cross-suppress")
+	}
+}
+
+// enterLoiterWorld builds a world with a door-backed business structure (enter), a
+// doorless business structure (loiter), and a bare non-structure prop (loiter).
+func enterLoiterWorld() *World {
+	return &World{
+		Structures: map[StructureID]*Structure{
+			"tavern": {ID: "tavern"},
+			"farm":   {ID: "farm"},
+		},
+		VillageObjects: map[VillageObjectID]*VillageObject{
+			"tavern": {ID: "tavern", AssetID: "tavern_asset"},
+			"farm":   {ID: "farm", AssetID: "farm_asset"},
+			"stall":  {ID: "stall", AssetID: "stall_asset"}, // no Structure entry — a bare prop
+		},
+		Assets: map[AssetID]*Asset{
+			"tavern_asset": {ID: "tavern_asset", DoorOffsetX: intptr(0), DoorOffsetY: intptr(2)},
+			"farm_asset":   {ID: "farm_asset"}, // doorless structure (an open farm placement)
+			"stall_asset":  {ID: "stall_asset"},
+		},
+	}
+}
+
+func TestRouteStopEntersStructure(t *testing.T) {
+	w := enterLoiterWorld()
+	actor := &Actor{ID: "gideon"}
+	now := time.Now()
+
+	if sid, enters := routeStopEntersStructure(w, actor, "tavern", now); !enters || sid != "tavern" {
+		t.Errorf("door-backed open structure should enter: got (%q, %v), want (tavern, true)", sid, enters)
+	}
+	if _, enters := routeStopEntersStructure(w, actor, "farm", now); enters {
+		t.Error("doorless structure should loiter, not enter")
+	}
+	if _, enters := routeStopEntersStructure(w, actor, "stall", now); enters {
+		t.Error("bare non-structure prop should loiter, not enter")
+	}
+}
+
+// TestRouteStopEntersStructure_EntryGate is the LLM-514 fix #8 coverage: the
+// enter-vs-loiter rule reuses the live entry gate (moveToCanEnter), so the
+// constable stands OUTSIDE a business he can't enter right now — a lodge locked for
+// the night because its keeper is abed (John Ellis's tavern before he's up). An
+// open lodge admits him.
+func TestRouteStopEntersStructure_EntryGate(t *testing.T) {
+	now := time.Date(2026, 6, 24, 4, 0, 0, 0, time.UTC)
+	constable := &Actor{ID: "gideon"} // not a member of the tavern
+
+	t.Run("open_lodge_enters", func(t *testing.T) {
+		k := closeupKeeper("john")
+		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, k)
+		placeInside(w, "tavern", "john") // keeper present & awake → not locked
+		if sid, enters := routeStopEntersStructure(w, constable, "tavern", now); !enters || sid != "tavern" {
+			t.Errorf("open lodge should admit the constable: got (%q, %v)", sid, enters)
+		}
+	})
+
+	t.Run("locked_lodge_loiters", func(t *testing.T) {
+		k := closeupKeeper("john")
+		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, k)
+		abedInStaffRoom(w, k) // keeper abed → lodgeLocked → owner-only
+		if _, enters := routeStopEntersStructure(w, constable, "tavern", now); enters {
+			t.Error("a lodge locked for the night must NOT admit a non-member constable — he loiters at the door")
+		}
+	})
+}
+
+func TestRouteStopArrivedAndDestination(t *testing.T) {
+	enterStop := RouteStop{ObjectID: "tavern", WalkTo: Position{X: 5, Y: 5}, EnterStructureID: "tavern"}
+	loiterStop := RouteStop{ObjectID: "stall", WalkTo: Position{X: 7, Y: 7}}
+
+	// Arrival detection branches on stop kind.
+	inside := &Actor{InsideStructureID: "tavern", Pos: TilePos{X: 99, Y: 99}}
+	if !RouteStopArrived(inside, enterStop) {
+		t.Error("enter stop: inside the structure counts as arrived regardless of Pos")
+	}
+	if RouteStopArrived(inside, loiterStop) {
+		t.Error("loiter stop: Pos != WalkTo must not count as arrived")
+	}
+	atTile := &Actor{Pos: TilePos{X: 7, Y: 7}}
+	if !RouteStopArrived(atTile, loiterStop) {
+		t.Error("loiter stop: standing on WalkTo is arrived")
+	}
+	if RouteStopArrived(atTile, enterStop) {
+		t.Error("enter stop: not inside the structure is not arrived")
+	}
+
+	// Dispatch destination branches on stop kind.
+	ed := routeStopDestination(enterStop)
+	if ed.Kind != MoveDestinationStructureEnter || ed.StructureID == nil || *ed.StructureID != "tavern" {
+		t.Errorf("enter stop destination = %+v, want StructureEnter(tavern)", ed)
+	}
+	ld := routeStopDestination(loiterStop)
+	if ld.Kind != MoveDestinationPosition || ld.Position == nil || *ld.Position != (Position{X: 7, Y: 7}) {
+		t.Errorf("loiter stop destination = %+v, want Position(7,7)", ld)
+	}
+}

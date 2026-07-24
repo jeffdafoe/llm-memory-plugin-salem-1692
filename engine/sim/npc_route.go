@@ -78,6 +78,18 @@ const (
 	// board's authored prose aloud on arrival, then flips the board so
 	// fresh prose is authored for the next visit.
 	AttrTownCrier = "town_crier"
+
+	// AttrConstable — a stateful watch-keeper (Gideon Marsh) who walks a
+	// circuit of every business in the village on a fixed INTERVAL rather
+	// than a schedule-window boundary (LLM-514). Unlike the three above his
+	// route ENTERS each door-backed business (the tavern, the store) and
+	// DWELLS there so the reactor can tick him in character, then returns to
+	// his post (the Meeting House) — not home. A marker attribute; the live
+	// actor gets it added out-of-band, the code only recognizes it. The
+	// interval + per-stop dwell are w.Settings tunables; the cadence carries
+	// a per-carrier deterministic phase offset (ConstableRoundsDue) so two
+	// carriers never fire on the same tick.
+	AttrConstable = "constable"
 )
 
 // Tag slugs the route dispatcher narrows candidates by.
@@ -112,10 +124,81 @@ const maxStaleRouteRetries = 3
 // typically the adjacent walkable tile next to the object's anchor.
 // NewState is the AssetState.State the object's CurrentState flips to
 // on arrival.
+//
+// EnterStructureID (LLM-514) opts the stop into ENTERING a structure
+// rather than standing at a loiter tile: when set, the actor walks into
+// that structure's interior (a StructureEnter move) and arrival is keyed
+// on Actor.InsideStructureID == EnterStructureID instead of Pos == WalkTo.
+// It is the reusable "enter vs. loiter" primitive — ANY route may set it
+// per stop. Empty (the default) keeps the original tile-based behavior, so
+// the lamplighter / washerwoman / town_crier routes are unchanged (their
+// candidates are doorless objects, never structure-backed businesses).
+// WalkTo is still populated for an enter stop — the door tile — so the
+// nearest-neighbor layout and cursor bookkeeping in buildRouteStops stay
+// tile-based; only arrival detection and dispatch branch on this field.
 type RouteStop struct {
-	ObjectID VillageObjectID
-	WalkTo   Position
-	NewState string
+	ObjectID         VillageObjectID
+	WalkTo           Position
+	NewState         string
+	EnterStructureID StructureID
+}
+
+// RouteStopArrived reports whether actor a has arrived at stop: standing
+// inside the target structure for an ENTER stop (EnterStructureID set), or
+// standing on the WalkTo tile for a loiter/tile stop. The two arrival
+// signals differ because a StructureEnter move finishes when the locomotion
+// ticker flips InsideStructureID (the actor is on the door tile, inside the
+// footprint), whereas a Position move finishes on the exact tile. Shared by
+// the substrate's stale-arrival guard (advanceActiveRoute) and the cascade
+// arrival handler so both agree on "at the stop".
+func RouteStopArrived(a *Actor, stop RouteStop) bool {
+	if a == nil {
+		return false
+	}
+	if stop.EnterStructureID != "" {
+		return a.InsideStructureID == stop.EnterStructureID
+	}
+	return a.Pos.X == stop.WalkTo.X && a.Pos.Y == stop.WalkTo.Y
+}
+
+// routeStopDestination builds the MoveDestination that dispatches a walk to
+// stop: a StructureEnter into EnterStructureID for an enter stop, else a
+// Position walk to WalkTo. Shared by StartNPCRoute's first walk and
+// advanceActiveRoute's next-stop / stale re-walk dispatch so every dispatch
+// site agrees on enter-vs-tile.
+func routeStopDestination(stop RouteStop) MoveDestination {
+	if stop.EnterStructureID != "" {
+		return NewStructureEnterDestination(stop.EnterStructureID)
+	}
+	return NewPositionDestination(stop.WalkTo)
+}
+
+// routeStopEntersStructure is the reusable enter-vs-loiter RULE (LLM-514): a route
+// visits objID by ENTERING it when the placement is structure-backed (its id also
+// names a Structure under the shared-identity bridge) AND actor can actually enter
+// it right now. Doorless / open placements (market stalls, farms, the mill), bare
+// props (lamps, boards, laundry lines), and structures the actor may NOT enter at
+// `now` all fall through — the caller stands at the loiter pin instead. Returns the
+// StructureID to enter and ok=true only for the enter case.
+//
+// The "can enter now" check reuses moveToCanEnter — the SAME gate MoveActor's
+// StructureEnter validation and the PC move-to derivation use (effectiveEntryPolicy
+// + membership + door). This is what keeps the constable OUT of a closed or locked
+// business: a lodge whose keeper is abed reads owner-only (lodgeLocked), and a
+// non-member constable resolves to a loiter stop at the door rather than an enter
+// (LLM-514 fix #8 — John Ellis's tavern before he opens at 3pm). Never reimplement
+// the rule here, or the rounds gate drifts from the movement gate.
+//
+// MUST be called from inside a Command.Fn (reads world maps).
+func routeStopEntersStructure(w *World, actor *Actor, objID VillageObjectID, now time.Time) (StructureID, bool) {
+	sid := StructureID(objID)
+	if _, isStructure := w.Structures[sid]; !isStructure {
+		return "", false
+	}
+	if !moveToCanEnter(w, actor, sid, now) {
+		return "", false
+	}
+	return sid, true
 }
 
 // NPCRoute is the in-flight per-NPC route state. Stored in
@@ -153,6 +236,59 @@ type NPCRoute struct {
 	// when the author callback completes. Set/read/cleared only on the world
 	// goroutine; in-memory only, never persisted.
 	Authoring bool
+	// Dwelling is set true while the constable is PAUSED at the current stop —
+	// the per-stop dwell window between arrival and moving on (LLM-514). It
+	// guards against a duplicate ActorArrived scheduling a second dwell timer
+	// for the same stop (the constable analogue of Authoring). Cleared when the
+	// dwell elapses and the route advances. Set/read/cleared only on the world
+	// goroutine; in-memory only, never persisted.
+	Dwelling bool
+	// DwellTimer is the live per-stop dwell timer (LLM-514), or nil when none is
+	// armed. Held so a superseded / abandoned / completed route can STOP its
+	// pending timer (clearActiveRoute / stopDwellTimer) instead of leaking a live
+	// timer that fires at shutdown or, worse, could advance a replacement route
+	// occupying the same StopIdx. Cascade arms it (armConstableDwellTimer); the
+	// substrate stops it on every route-clear path. World-goroutine-only; never
+	// persisted.
+	DwellTimer *time.Timer
+	// Gen is a monotonically-increasing identity token stamped at StartNPCRoute
+	// install (from World.routeInstallSeq). It disambiguates two routes of the SAME
+	// actor at the SAME StopIdx — the case stopIdx alone cannot: a dwell timer that
+	// ALREADY FIRED and queued its advance command before its route was superseded
+	// would otherwise run against the replacement (same actor, same StopIdx 0) and
+	// wrongly advance it. constableAdvanceAfterDwell captures the Gen at arm time and
+	// requires the current active route to still match it (LLM-514 fix A). Stopping
+	// the timer handles the not-yet-fired case; the Gen check handles the
+	// already-queued case. World-goroutine-only; never persisted.
+	Gen uint64
+}
+
+// stopDwellTimer stops and clears any pending dwell timer on the route (nil-safe on
+// both the route and the timer). Called from every path that clears/replaces a
+// route so no live timer survives it. time.Timer.Stop is safe to call after the
+// timer has already fired (returns false), so this never races the callback.
+func (r *NPCRoute) stopDwellTimer() {
+	if r == nil || r.DwellTimer == nil {
+		return
+	}
+	r.DwellTimer.Stop()
+	r.DwellTimer = nil
+}
+
+// clearActiveRoute removes an actor's active route AND stops any pending dwell
+// timer, so a superseded / abandoned / completed route leaves no live timer behind
+// (LLM-514). Use this everywhere in place of a bare delete(w.ActiveRoutes, id).
+// MUST be called from inside a Command.Fn.
+func clearActiveRoute(w *World, actorID ActorID) {
+	w.ActiveRoutes[actorID].stopDwellTimer()
+	delete(w.ActiveRoutes, actorID)
+}
+
+// ClearActiveRoute is the exported form of clearActiveRoute, for the cascade
+// abandon path (handleActorMoveStoppedAdvanceRoute) which must also stop the dwell
+// timer, not just delete the map entry. MUST be called from inside a Command.Fn.
+func ClearActiveRoute(w *World, actorID ActorID) {
+	clearActiveRoute(w, actorID)
 }
 
 // RouteCandidate is one input to StartNPCRoute's route builder: an
@@ -165,11 +301,18 @@ type NPCRoute struct {
 // WorldX / WorldY are the village_object's pixel-coord anchor —
 // converted to tile coords internally via WorldToTile (PadX/PadY
 // offsets included).
+//
+// Enter (LLM-514) opts THIS candidate into entering its backing structure when it
+// is a door-backed structure (routeStopEntersStructure). It is OPT-IN, defaulting
+// false: the lamplighter / washerwoman / town_crier builders never set it, so their
+// candidates keep the tile/loiter behavior byte-for-byte even if a candidate object
+// happens to be structure-backed. Only buildConstableRoundsCandidates sets it true.
 type RouteCandidate struct {
 	ObjectID VillageObjectID
 	NewState string
 	WorldX   float64
 	WorldY   float64
+	Enter    bool
 }
 
 // StartNPCRouteResult is the typed reply from StartNPCRoute. Carries
@@ -225,7 +368,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 			if err != nil {
 				return StartNPCRouteResult{}, fmt.Errorf("build walk grid: %w", err)
 			}
-			stops := buildRouteStops(w, grid, actor.Pos.X, actor.Pos.Y, candidates)
+			stops := buildRouteStops(w, grid, actor, candidates, now)
 
 			// Whether or not we have any stops, an in-flight prior route
 			// is superseded. The supersede signal is the route start
@@ -240,9 +383,10 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 			if len(stops) == 0 {
 				// Nothing reachable. Clear any prior route (the new
 				// trigger supersedes it) but don't install an empty
-				// route or dispatch a MoveActor.
+				// route or dispatch a MoveActor. clearActiveRoute also
+				// stops the prior route's dwell timer (LLM-514).
 				if replaced {
-					delete(w.ActiveRoutes, actorID)
+					clearActiveRoute(w, actorID)
 				}
 				return StartNPCRouteResult{
 					NPCID:    actorID,
@@ -252,6 +396,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				}, nil
 			}
 
+			w.routeInstallSeq++
 			route := &NPCRoute{
 				NPCID:           actorID,
 				Label:           label,
@@ -259,10 +404,15 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				StopIdx:         0,
 				Phase:           RoutePhaseActive,
 				HomeDestination: cloneMoveDestination(homeDest),
+				Gen:             w.routeInstallSeq,
 			}
 			if w.ActiveRoutes == nil {
 				w.ActiveRoutes = map[ActorID]*NPCRoute{}
 			}
+			// Supersede: stop any prior route's pending dwell timer before replacing
+			// it, so a stale constable dwell timer can't advance the new route
+			// occupying the same StopIdx (LLM-514).
+			w.ActiveRoutes[actorID].stopDwellTimer()
 			w.ActiveRoutes[actorID] = route
 
 			// Dispatch the first walk. Inline call to MoveActor's Fn so
@@ -270,9 +420,10 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 			// world-goroutine transaction — no SendContext round-trip.
 			// LeaveHuddleFirst: true so a route-starting NPC who
 			// happens to be huddling somewhere cleanly leaves the
-			// huddle (HuddleLeft fires as a side-effect).
+			// huddle (HuddleLeft fires as a side-effect). routeStopDestination
+			// picks StructureEnter vs Position per the stop's kind (LLM-514).
 			first := stops[0]
-			moveCmd := MoveActor(actorID, NewPositionDestination(first.WalkTo), true, now)
+			moveCmd := MoveActor(actorID, routeStopDestination(first), true, now)
 			if _, err := moveCmd.Fn(w); err != nil {
 				// Movement rejected (no path to first stop). Clear the
 				// route — better to report 0 stops than leave the
@@ -281,7 +432,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				// observe Replaced=true on a supersede-then-fail (the
 				// prior route IS gone; reporting Replaced=false would
 				// be wrong).
-				delete(w.ActiveRoutes, actorID)
+				clearActiveRoute(w, actorID)
 				return StartNPCRouteResult{
 					NPCID:    actorID,
 					Label:    label,
@@ -377,7 +528,7 @@ func advanceNPCRoute(actorID ActorID, flip bool) Command {
 			default:
 				log.Printf("sim/npc_route: %q route in unknown phase %q — clearing",
 					actorID, route.Phase)
-				delete(w.ActiveRoutes, actorID)
+				clearActiveRoute(w, actorID)
 				return AdvanceNPCRouteResult{NPCID: actorID, Reason: "no_route"}, nil
 			}
 		},
@@ -403,7 +554,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		// phase. Clear and return.
 		log.Printf("sim/npc_route: %q active route StopIdx=%d >= len(Stops)=%d — clearing",
 			route.NPCID, route.StopIdx, len(route.Stops))
-		delete(w.ActiveRoutes, route.NPCID)
+		clearActiveRoute(w, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 
@@ -412,16 +563,19 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	actor, ok := w.Actors[route.NPCID]
 	if !ok {
 		// Actor gone — clear the route.
-		delete(w.ActiveRoutes, route.NPCID)
+		clearActiveRoute(w, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 	// Locomotion contract dependency: this guard assumes
-	// actor.Pos already reflects the arrival tile when
-	// ActorArrived's subscribers run. The locomotion ticker's
+	// actor.Pos / actor.InsideStructureID already reflect the arrival
+	// state when ActorArrived's subscribers run. The locomotion ticker's
 	// finishArrival commits actor.Pos in advanceActorLocomotion
-	// (one tile per tick) BEFORE emitting ActorArrived. Reversing
-	// that ordering would make valid arrivals look stale.
-	if actor.Pos.X != stop.WalkTo.X || actor.Pos.Y != stop.WalkTo.Y {
+	// (one tile per tick) and reconciles InsideStructureID BEFORE emitting
+	// ActorArrived. Reversing that ordering would make valid arrivals look
+	// stale. RouteStopArrived branches on stop kind: Pos == WalkTo for a
+	// loiter/tile stop (byte-for-byte the prior check), InsideStructureID ==
+	// EnterStructureID for an enter stop (LLM-514).
+	if !RouteStopArrived(actor, stop) {
 		// Stale arrival: this ActorArrived was for some other destination — an
 		// external MoveActor (admin force-move, a competing producer's nudge)
 		// superseded the route's walk between dispatch and arrival, so the actor
@@ -439,7 +593,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		if route.StaleRetries >= maxStaleRouteRetries {
 			log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — abandoning route after %d retries",
 				route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y, maxStaleRouteRetries)
-			delete(w.ActiveRoutes, route.NPCID)
+			clearActiveRoute(w, route.NPCID)
 			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_abandoned"}, nil
 		}
 		// Re-walk to the current stop. Setting a fresh MoveIntent here is safe
@@ -450,11 +604,11 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		// is handled by abandoning the route in the cascade rather than re-walking
 		// here — see handleActorMoveStoppedAdvanceRoute.)
 		route.StaleRetries++
-		reWalk := MoveActor(route.NPCID, NewPositionDestination(stop.WalkTo), false, time.Now())
+		reWalk := MoveActor(route.NPCID, routeStopDestination(stop), false, time.Now())
 		if _, err := reWalk.Fn(w); err != nil {
 			log.Printf("sim/npc_route: %q stale arrival; re-walk dispatch to stop %d failed: %v — clearing route",
 				route.NPCID, route.StopIdx, err)
-			delete(w.ActiveRoutes, route.NPCID)
+			clearActiveRoute(w, route.NPCID)
 			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 		}
 		log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — re-walking to stop (retry %d/%d)",
@@ -485,13 +639,14 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	route.StopIdx++
 
 	if route.StopIdx < len(route.Stops) {
-		// More stops — dispatch next walk.
+		// More stops — dispatch next walk (StructureEnter or Position per
+		// the stop's kind, LLM-514).
 		next := route.Stops[route.StopIdx]
-		moveCmd := MoveActor(route.NPCID, NewPositionDestination(next.WalkTo), false, time.Now())
+		moveCmd := MoveActor(route.NPCID, routeStopDestination(next), false, time.Now())
 		if _, err := moveCmd.Fn(w); err != nil {
 			log.Printf("sim/npc_route: %q dispatch next walk failed: %v — clearing route",
 				route.NPCID, err)
-			delete(w.ActiveRoutes, route.NPCID)
+			clearActiveRoute(w, route.NPCID)
 			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 		}
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stop_advanced"}, nil
@@ -505,7 +660,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		// last stop; next phase / rotation boundary re-triggers.
 		log.Printf("sim/npc_route: %q dispatch home walk failed: %v — clearing route",
 			route.NPCID, err)
-		delete(w.ActiveRoutes, route.NPCID)
+		clearActiveRoute(w, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 	return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "returning_home"}, nil
@@ -518,7 +673,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 // the home position (for Position destinations); we just clear the
 // route.
 func advanceReturningRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
-	delete(w.ActiveRoutes, route.NPCID)
+	clearActiveRoute(w, route.NPCID)
 	return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "arrived_home"}, nil
 }
 
@@ -572,11 +727,11 @@ func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
 // buildRouteStops lays out an ordered nearest-neighbor walk over the
 // candidates from (startX, startY). At each step:
 //
-//   - For every remaining candidate, resolve the tile the actor stands on
-//     to visit it (routeStopWalkTarget) and the path length to it from
-//     the cursor.
-//   - Pick the candidate with the shortest path; record its stand tile as
-//     the RouteStop's WalkTo; advance the cursor.
+//   - For every remaining candidate, resolve how the route visits it
+//     (resolveRouteStop — enter the structure vs. stand at its loiter tile)
+//     and the path length to that goal tile from the cursor.
+//   - Pick the candidate with the shortest path; append its resolved
+//     RouteStop; advance the cursor to that goal tile.
 //   - Unreachable candidates are skipped (no path → that candidate
 //     can't be visited this cycle).
 //
@@ -599,45 +754,100 @@ func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
 // ObjectID before calling if they want deterministic tie-breaking
 // across runs.
 //
+// actor + now are threaded through to resolveRouteStop / routeStopEntersStructure
+// so an ENTER stop is chosen only for a structure this actor could enter at `now`
+// (the live entry gate, LLM-514 fix #8); they are inert for the tile-based routes,
+// whose candidates never opt into entering.
+//
 // MUST be called from inside a Command.Fn — routeStopWalkTarget reads
 // w.VillageObjects / w.Assets to resolve each candidate's loiter pin.
-func buildRouteStops(w *World, grid *WalkGrid, startX, startY int, candidates []RouteCandidate) []RouteStop {
-	if len(candidates) == 0 {
+func buildRouteStops(w *World, grid *WalkGrid, actor *Actor, candidates []RouteCandidate, now time.Time) []RouteStop {
+	if actor == nil || len(candidates) == 0 {
 		return nil
 	}
 	remaining := make([]RouteCandidate, len(candidates))
 	copy(remaining, candidates)
 
-	cursor := GridPoint{X: startX, Y: startY}
+	cursor := GridPoint{X: actor.Pos.X, Y: actor.Pos.Y}
 	stops := make([]RouteStop, 0, len(remaining))
 	for len(remaining) > 0 {
 		bestIdx := -1
-		bestWalkTo := GridPoint{}
+		var bestStop RouteStop
+		bestGoal := GridPoint{}
 		bestLen := -1
 		for i, c := range remaining {
-			walkTo, path := routeStopWalkTarget(w, grid, cursor, c)
+			stop, goal, path := resolveRouteStop(w, grid, cursor, c, actor, now)
 			if path == nil {
 				continue
 			}
 			if bestLen < 0 || len(path) < bestLen {
 				bestIdx = i
-				bestWalkTo = walkTo
+				bestStop = stop
+				bestGoal = goal
 				bestLen = len(path)
 			}
 		}
 		if bestIdx < 0 {
 			break // nothing else reachable
 		}
-		chosen := remaining[bestIdx]
-		stops = append(stops, RouteStop{
-			ObjectID: chosen.ObjectID,
-			WalkTo:   Position{X: bestWalkTo.X, Y: bestWalkTo.Y},
-			NewState: chosen.NewState,
-		})
-		cursor = bestWalkTo
+		stops = append(stops, bestStop)
+		cursor = bestGoal
 		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
 	}
 	return stops
+}
+
+// resolveRouteStop builds the RouteStop for candidate c from cursor, applying
+// the reusable enter-vs-loiter rule (LLM-514):
+//
+//   - c OPTS IN (c.Enter) AND is a door-backed structure (routeStopEntersStructure)
+//     whose door tile is reachable → an ENTER stop: EnterStructureID set, goal =
+//     the door tile (the interior tile a StructureEnter finishes on). WalkTo
+//     carries the door tile too, for cursor/layout bookkeeping.
+//   - otherwise (candidate didn't opt in, doorless/open placement, bare prop, or
+//     an unreachable door) → a loiter/tile stop via routeStopWalkTarget: WalkTo =
+//     the loiter pin or an adjacent walkable tile, exactly the prior behavior.
+//
+// The c.Enter gate makes entering OPT-IN: a candidate from the tile-based routes
+// (lamplighter / washerwoman / town_crier) that happens to be structure-backed
+// still yields a loiter stop, keeping those routes byte-for-byte unchanged.
+//
+// Returns the RouteStop, the goal tile (path costing + cursor advance), and the
+// path from cursor (nil = unreachable this cycle — the caller skips it). MUST be
+// called from inside a Command.Fn (reads world state via its resolvers).
+func resolveRouteStop(w *World, grid *WalkGrid, cursor GridPoint, c RouteCandidate, actor *Actor, now time.Time) (RouteStop, GridPoint, []GridPoint) {
+	// Gate on c.Enter FIRST (fix B): the enter classifier (routeStopEntersStructure →
+	// moveToCanEnter) is evaluated ONLY for a candidate that opts in, so the
+	// tile-based routes (lamplighter / washerwoman / town_crier) never touch the
+	// entry gate at all — truly inert for them, not just filtered after the fact.
+	if c.Enter {
+		if sid, enters := routeStopEntersStructure(w, actor, c.ObjectID, now); enters {
+			if door, ok := structureEntryTile(w, sid); ok {
+				doorPt := GridPoint{X: door.X, Y: door.Y}
+				// The door tile is the sole walkable footprint tile (buildWalkGrid
+				// carves a corridor to it); a StructureEnter finishes there. Only take
+				// the enter branch when it's actually reachable from the cursor —
+				// otherwise fall through to the loiter fallback so the stop is still
+				// visited (stand outside) rather than dropped.
+				if grid.CanWalk(doorPt.X, doorPt.Y) {
+					if path := FindPath(grid, cursor, doorPt); path != nil {
+						return RouteStop{
+							ObjectID:         c.ObjectID,
+							WalkTo:           Position{X: doorPt.X, Y: doorPt.Y},
+							NewState:         c.NewState,
+							EnterStructureID: sid,
+						}, doorPt, path
+					}
+				}
+			}
+		}
+	}
+	walkTo, path := routeStopWalkTarget(w, grid, cursor, c)
+	return RouteStop{
+		ObjectID: c.ObjectID,
+		WalkTo:   Position{X: walkTo.X, Y: walkTo.Y},
+		NewState: c.NewState,
+	}, walkTo, path
 }
 
 // routeStopWalkTarget resolves the tile an actor stands on to visit a
