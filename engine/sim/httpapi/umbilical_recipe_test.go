@@ -172,6 +172,7 @@ func TestUmbilicalRecipeSet_Validation(t *testing.T) {
 		{"speed qty zero", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":0,"rate_pct":200}]}`},
 		{"speed rate_pct at 100", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":1,"rate_pct":100}]}`},
 		{"speed rate_pct below 100", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":1,"rate_pct":50}]}`},
+		{"speed rate_pct above the max", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"milk","qty":1,"rate_pct":1001}]}`},
 		{"speed missing item", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"qty":1,"rate_pct":200}]}`},
 	}
 	for _, tc := range cases {
@@ -193,6 +194,7 @@ func TestUmbilicalRecipeSet_UnknownItems(t *testing.T) {
 		{"boost duplicates required input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"milk","qty":3}],"boost_inputs":[{"item":"milk","qty":1,"bonus_qty":1}]}`},
 		{"unknown speed input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"speed_inputs":[{"item":"unobtanium","qty":1,"rate_pct":200}]}`},
 		{"speed duplicates required input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"inputs":[{"item":"milk","qty":3}],"speed_inputs":[{"item":"milk","qty":1,"rate_pct":200}]}`},
+		{"speed duplicates boost input", `{"output_item":"cheese","output_qty":1,"rate_qty":1,"rate_per_hours":1,"boost_inputs":[{"item":"milk","qty":1,"bonus_qty":2}],"speed_inputs":[{"item":"milk","qty":1,"rate_pct":200}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -88,11 +88,16 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 	}
 	r.BoostState = canonicalStates
 	// Speed boosters (LLM-511): same catalog check + numeric validation posture as
-	// the boost inputs above, plus rate_pct must be a real speedup (> 100) and no
-	// duplicate item. The required-input overlap guard matters here for the same
-	// reason it does for boost inputs — an item that is both required and a speed
-	// booster would be consumed twice (once at the required-input consume, once at
-	// the speed consume, both at start) with ambiguous semantics.
+	// the boost inputs above, plus rate_pct must be a real speedup in the
+	// [101, MaxSpeedInputRatePct] band and no duplicate item. Overlap is rejected
+	// against BOTH required inputs and boost inputs — one optional role per item.
+	// A required overlap would double-consume at start; a boost overlap would
+	// charge the same item at start (speed) AND at landing (boost), an easy
+	// misconfiguration with no design use (code_review, LLM-511).
+	boosted := make(map[ItemKind]bool, len(canonicalBoosts))
+	for _, bi := range canonicalBoosts {
+		boosted[bi.Item] = true
+	}
 	canonicalSpeeds := make([]SpeedInput, 0, len(r.SpeedInputs))
 	seenSpeeds := make(map[ItemKind]bool, len(r.SpeedInputs))
 	for _, si := range r.SpeedInputs {
@@ -103,14 +108,17 @@ func ResolveRecipe(w *World, r ItemRecipe) (ItemRecipe, error) {
 		if required[k] {
 			return ItemRecipe{}, fmt.Errorf("speed input %q is already a required input", k)
 		}
+		if boosted[k] {
+			return ItemRecipe{}, fmt.Errorf("speed input %q is already a boost input", k)
+		}
 		if seenSpeeds[k] {
 			return ItemRecipe{}, fmt.Errorf("speed input %q listed more than once", k)
 		}
 		if si.Qty <= 0 {
 			return ItemRecipe{}, fmt.Errorf("speed input %q qty must be positive (got %d)", k, si.Qty)
 		}
-		if si.RatePct <= 100 {
-			return ItemRecipe{}, fmt.Errorf("speed input %q rate_pct must exceed 100 to speed the work (got %d)", k, si.RatePct)
+		if si.RatePct <= 100 || si.RatePct > MaxSpeedInputRatePct {
+			return ItemRecipe{}, fmt.Errorf("speed input %q rate_pct must be between 101 and %d (got %d)", k, MaxSpeedInputRatePct, si.RatePct)
 		}
 		seenSpeeds[k] = true
 		canonicalSpeeds = append(canonicalSpeeds, SpeedInput{Item: k, Qty: si.Qty, RatePct: si.RatePct})

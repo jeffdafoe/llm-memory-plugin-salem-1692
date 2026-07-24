@@ -23,10 +23,10 @@ func init() {
 			name: "smith_speeds_shovel_low_iron_vendor_stocked",
 			summary: "LLM-511: an Ezekiel-shaped smith at his forge, shovel recipe carrying the iron SPEED input " +
 				"(1 bar per cycle -> half the forge time), iron a hand-authored buy entry at 0 on hand, and the " +
-				"distributor's store stocked with bars. Pins the speed motivate-line ('a batch of Shovel is quick " +
-				"work — you shape what you have rather than start from scratch') alongside the iron '## Restocking' buy line (the " +
-				"LLM-64 split: motivate here, where/how there), with NO rate number in the scene. Cross-scenario " +
-				"guard: TestGoldensSpeedLineOnlyForSpeedBoostedRecipes.",
+				"distributor's store stocked with bars. Pins the speed motivate-line ('A measure of bar iron makes " +
+				"each batch of Shovel quick work — shaped from what you have rather than made from scratch') alongside " +
+				"the iron '## Restocking' buy line (the LLM-64 split: motivate here, where/how there), with NO rate " +
+				"number in the scene. Cross-scenario guard: TestGoldensSpeedLineOnlyForSpeedBoostedRecipes.",
 			build: smithSpeedsShovelLowIron,
 		},
 	)

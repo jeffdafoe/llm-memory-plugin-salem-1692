@@ -152,6 +152,7 @@ func TestResolveRecipe_SpeedInputs(t *testing.T) {
 		{"zero qty", sim.SpeedInput{Item: "milk", Qty: 0, RatePct: 200}, nil},
 		{"rate_pct at 100 (no speedup)", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: 100}, nil},
 		{"rate_pct below 100 (a slowdown)", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: 50}, nil},
+		{"rate_pct above the max", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: sim.MaxSpeedInputRatePct + 1}, nil},
 		{"overlaps required input", sim.SpeedInput{Item: "milk", Qty: 1, RatePct: 200},
 			[]sim.RecipeInput{{Item: "milk", Qty: 3}}},
 	}
@@ -179,6 +180,19 @@ func TestResolveRecipe_SpeedInputs(t *testing.T) {
 	}})
 	if err == nil {
 		t.Errorf("ResolveRecipe accepted a duplicate speed input item")
+	}
+
+	// An item can't be BOTH a boost input and a speed input — one optional role per
+	// item, so the double-charge (landing for boost, start for speed) is rejected.
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.ResolveRecipe(world, sim.ItemRecipe{
+			OutputItem: "cheese", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+			BoostInputs: []sim.BoostInput{{Item: "milk", Qty: 1, BonusQty: 2}},
+			SpeedInputs: []sim.SpeedInput{{Item: "milk", Qty: 1, RatePct: 200}},
+		})
+	}})
+	if err == nil {
+		t.Errorf("ResolveRecipe accepted an item that is both a boost input and a speed input")
 	}
 }
 

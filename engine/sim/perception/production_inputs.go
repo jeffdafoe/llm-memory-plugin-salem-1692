@@ -355,7 +355,12 @@ func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
 	// stats): "quick work" carries the felt speed, the tool result carries the
 	// precise "ready in about N".
 	for _, sp := range v.Speeds {
-		fmt.Fprintf(b, "- With %s in hand, a batch of %s is quick work — you shape what you have rather than start from scratch — %d on hand, and you're running low.\n",
+		// Parallels the boost line above: state what the input DOES (makes the batch
+		// quick), then the on-hand count — never "with X in hand" beside "0 on hand",
+		// which reads as a contradiction (code_review). The exact rate stays out of
+		// the scene (scenes, not stats); the tool result carries the precise "ready
+		// in about N".
+		fmt.Fprintf(b, "- A measure of %s makes each batch of %s quick work — shaped from what you have rather than made from scratch — %d on hand, and you're running low.\n",
 			sanitizeInline(sp.SpeedLabel), sanitizeInline(sp.OutputLabel), sp.CurrentQty)
 	}
 	b.WriteString("\n")

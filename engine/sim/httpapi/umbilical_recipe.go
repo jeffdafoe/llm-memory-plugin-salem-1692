@@ -181,12 +181,14 @@ func (s *Server) handleUmbilicalRecipeSet(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, "speed input qty must be >= 1")
 			return
 		}
-		// rate_pct <= 100 would slow or freeze the work rather than speed it — a
-		// malformed speedup, so a 400 (client-correctable) rather than the 422
-		// ResolveRecipe returns for an unresolvable item. ResolveRecipe re-checks it,
+		// rate_pct must land in the speedup band (101..MaxSpeedInputRatePct): <= 100
+		// would slow or freeze the work, and an unbounded value divides the cycle to
+		// the 1s floor (an almost-instant batch) and risks overflowing the start-time
+		// duration math. A 400 (client-correctable) rather than the 422 ResolveRecipe
+		// returns for an unresolvable item; ResolveRecipe re-checks the band too,
 		// keeping the three validation layers saying the same thing.
-		if si.RatePct <= 100 {
-			writeError(w, http.StatusBadRequest, "speed input rate_pct must be > 100 (a speedup)")
+		if si.RatePct <= 100 || si.RatePct > sim.MaxSpeedInputRatePct {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("speed input rate_pct must be between 101 and %d", sim.MaxSpeedInputRatePct))
 			return
 		}
 		speedInputs = append(speedInputs, sim.SpeedInput{Item: sim.ItemKind(si.Item), Qty: si.Qty, RatePct: si.RatePct})

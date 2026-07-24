@@ -86,7 +86,7 @@ func (r *RecipesRepo) LoadAll(ctx context.Context) (map[sim.ItemKind]*sim.ItemRe
 		if err := validateRecipeBoostState(rec.OutputItem, rec.BoostState); err != nil {
 			return nil, fmt.Errorf("pg recipes LoadAll: %w", err)
 		}
-		if err := validateRecipeSpeedInputs(rec.OutputItem, rec.Inputs, rec.SpeedInputs); err != nil {
+		if err := validateRecipeSpeedInputs(rec.OutputItem, rec.Inputs, rec.BoostInputs, rec.SpeedInputs); err != nil {
 			return nil, fmt.Errorf("pg recipes LoadAll: %w", err)
 		}
 		// Loud duplicate detection (consistent with the other loaded-map
@@ -142,7 +142,7 @@ func (r *RecipesRepo) UpsertRecipe(ctx context.Context, rec sim.ItemRecipe) erro
 	if err := validateRecipeBoostState(rec.OutputItem, rec.BoostState); err != nil {
 		return fmt.Errorf("pg recipes UpsertRecipe: %w", err)
 	}
-	if err := validateRecipeSpeedInputs(rec.OutputItem, rec.Inputs, rec.SpeedInputs); err != nil {
+	if err := validateRecipeSpeedInputs(rec.OutputItem, rec.Inputs, rec.BoostInputs, rec.SpeedInputs); err != nil {
 		return fmt.Errorf("pg recipes UpsertRecipe: %w", err)
 	}
 	inputs := rec.Inputs
@@ -238,15 +238,20 @@ func validateRecipeBoostInputs(output sim.ItemKind, inputs []sim.RecipeInput, bo
 }
 
 // validateRecipeSpeedInputs is the speed_inputs mirror of validateRecipeBoostInputs
-// (LLM-511): non-empty item, positive qty, a rate_pct that actually speeds the
-// work (> 100), no duplicate item, and the same required-input overlap guard —
-// an item that is both required and a speed booster would be consumed twice at
-// start with ambiguous semantics. Same belt-and-suspenders posture against
+// (LLM-511): non-empty item, positive qty, a rate_pct in the speedup band
+// (101..sim.MaxSpeedInputRatePct), no duplicate item, and the overlap guard
+// against BOTH required inputs and boost inputs — one optional role per item (a
+// required overlap double-consumes at start; a boost overlap charges the same
+// item at start and at landing). Same belt-and-suspenders posture against
 // hand-edited JSONB: the DB enforces only the array shape.
-func validateRecipeSpeedInputs(output sim.ItemKind, inputs []sim.RecipeInput, speeds []sim.SpeedInput) error {
+func validateRecipeSpeedInputs(output sim.ItemKind, inputs []sim.RecipeInput, boosts []sim.BoostInput, speeds []sim.SpeedInput) error {
 	required := make(map[sim.ItemKind]bool, len(inputs))
 	for _, in := range inputs {
 		required[in.Item] = true
+	}
+	boosted := make(map[sim.ItemKind]bool, len(boosts))
+	for _, bi := range boosts {
+		boosted[bi.Item] = true
 	}
 	seen := make(map[sim.ItemKind]bool, len(speeds))
 	for i, si := range speeds {
@@ -256,11 +261,14 @@ func validateRecipeSpeedInputs(output sim.ItemKind, inputs []sim.RecipeInput, sp
 		if si.Qty <= 0 {
 			return fmt.Errorf("recipe %q speed_input[%d] qty must be positive (got %d)", output, i, si.Qty)
 		}
-		if si.RatePct <= 100 {
-			return fmt.Errorf("recipe %q speed_input[%d] rate_pct must exceed 100 (got %d)", output, i, si.RatePct)
+		if si.RatePct <= 100 || si.RatePct > sim.MaxSpeedInputRatePct {
+			return fmt.Errorf("recipe %q speed_input[%d] rate_pct must be between 101 and %d (got %d)", output, i, sim.MaxSpeedInputRatePct, si.RatePct)
 		}
 		if required[si.Item] {
 			return fmt.Errorf("recipe %q speed_input[%d] %q is already a required input", output, i, si.Item)
+		}
+		if boosted[si.Item] {
+			return fmt.Errorf("recipe %q speed_input[%d] %q is already a boost input", output, i, si.Item)
 		}
 		if seen[si.Item] {
 			return fmt.Errorf("recipe %q speed_input[%d] %q listed more than once", output, i, si.Item)
