@@ -2399,6 +2399,9 @@ func (w *World) republish() {
 				stop := r.Stops[r.StopIdx]
 				if RouteStopArrived(a, stop) {
 					sa.RouteStopObjectID = stop.ObjectID
+					// Stops still ahead AFTER this one, so the cue can say the round
+					// continues (LLM-524). 0 at the final stop.
+					sa.RouteStopsAhead = len(r.Stops) - r.StopIdx - 1
 				}
 			}
 		}

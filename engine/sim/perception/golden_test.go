@@ -1362,6 +1362,14 @@ var perceptionScenarios = []perceptionScenario{
 		build: constableWalkingRoundsAtStore,
 	},
 	{
+		name: "constable_at_last_rounds_stop",
+		summary: "LLM-524 boundary: the constable at the FINAL stop of his rounds circuit " +
+			"(RouteStopsAhead == 0). Pins that the 'more places on your round still lie ahead' " +
+			"continuation line is OMITTED — the line names what remains, and at the last stop " +
+			"nothing does. The mid-circuit twin (constable_walking_rounds_at_store) pins its presence.",
+		build: constableAtLastRoundsStop,
+	},
+	{
 		name: "storm_weather_over_keeper_at_post",
 		summary: "LLM-364: the keeper_alone_at_post_onshift fixture with a storm overhead " +
 			"(Environment.Weather = storm). The golden pins the deterministic felt rain line — " +
@@ -12581,6 +12589,51 @@ func constableWalkingRoundsAtStore() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		// has arrived at the stop).
 		RouteLabel:        sim.AttrConstable,
 		RouteStopObjectID: sim.VillageObjectID(store),
+		// LLM-524: five businesses still ahead on the circuit, so the cue carries the
+		// round forward instead of leaving a quiet stop reading as a dead end.
+		RouteStopsAhead: 5,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{gideonID: gideon},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			post:  plainStructure(post, "Meeting House"),
+			home:  plainStructure(home, "Marsh Residence"),
+		},
+	}
+	return snap, gideonID, nil
+}
+
+// constableAtLastRoundsStop is the LLM-524 boundary twin of
+// constableWalkingRoundsAtStore: the constable standing at the FINAL stop of his
+// circuit (RouteStopsAhead == 0). The golden pins that the "more places on your
+// round still lie ahead" continuation line is OMITTED here — there is nothing left
+// to name, and inventing a phantom remainder would push him past a finished round.
+func constableAtLastRoundsStop() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		gideonID = sim.ActorID("gideon")
+		store    = sim.StructureID("general_store")
+		post     = sim.StructureID("meeting_house")
+		home     = sim.StructureID("marsh_residence")
+	)
+	start, end := 0, 1440
+	now := 780
+	gideon := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Gideon Marsh",
+		Role:              "constable",
+		State:             sim.StateIdle,
+		WorkStructureID:   post,
+		InsideStructureID: store,
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Needs:             map[sim.NeedKey]int{},
+		RouteLabel:        sim.AttrConstable,
+		RouteStopObjectID: sim.VillageObjectID(store),
+		RouteStopsAhead:   0, // last stop — the continuation line must not appear
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,

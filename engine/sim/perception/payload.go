@@ -1398,6 +1398,13 @@ type InFlightMoveView struct {
 // "You stand before the <business>." at a stop but not on the way there.
 type RoundsView struct {
 	AtBusiness string
+
+	// StopsAhead is how many businesses remain on the circuit after the one he is
+	// standing at, so the cue can carry the round forward ("Seven more places on
+	// your round still lie ahead of you") — an empty stop is then a waypoint, not a
+	// dead end (LLM-524). Meaningful only with AtBusiness set; 0 at the final stop,
+	// where the line is omitted.
+	StopsAhead int
 }
 
 // InFlightSourceActivityView is the perception-side projection of the subject's
