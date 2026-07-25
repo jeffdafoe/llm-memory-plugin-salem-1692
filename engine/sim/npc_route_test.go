@@ -48,6 +48,11 @@ func buildRouteTestWorld(t *testing.T) (*sim.World, func()) {
 		"home":   {ID: "home", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}},
 		"lamp-A": {ID: "lamp-A", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 640, Y: 320}},
 		"lamp-B": {ID: "lamp-B", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 960, Y: 320}},
+		// Third target, used only by threeLampCandidates so a test can distinguish
+		// "the immediate next stop" from "a stop further along" (LLM-530). Routes are
+		// built from the candidates passed in, so seeding it changes no existing
+		// two-stop expectation.
+		"lamp-C": {ID: "lamp-C", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 1280, Y: 320}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"home": {ID: "home", DisplayName: "Home"},
@@ -81,6 +86,16 @@ func sampleLampCandidates() []sim.RouteCandidate {
 	return []sim.RouteCandidate{
 		{ObjectID: "lamp-A", NewState: "unlit", WorldX: 640, WorldY: 320},
 		{ObjectID: "lamp-B", NewState: "unlit", WorldX: 960, WorldY: 320},
+	}
+}
+
+// threeLampCandidates is the three-stop fixture: enough stops for a test to place
+// the actor on a stop that is NOT the immediate next one (LLM-530).
+func threeLampCandidates() []sim.RouteCandidate {
+	return []sim.RouteCandidate{
+		{ObjectID: "lamp-A", NewState: "unlit", WorldX: 640, WorldY: 320},
+		{ObjectID: "lamp-B", NewState: "unlit", WorldX: 960, WorldY: 320},
+		{ObjectID: "lamp-C", NewState: "unlit", WorldX: 1280, WorldY: 320},
 	}
 }
 
@@ -673,5 +688,111 @@ func teleportToCurrentStop(t *testing.T, w *sim.World, id sim.ActorID) {
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("teleportToCurrentStop: %v", err)
+	}
+}
+
+// TestAdvanceNPCRoute_ConstableWalkingOnwardContinuesRound is the LLM-530 engine
+// half. The rounds cue now NAMES the next business, because move_to is how this NPC
+// says "I am finished with this place" — so he will walk there himself. Arriving at
+// a stop still AHEAD on the circuit is staying on the round, not leaving it: the
+// route adopts that stop and carries on, rather than treating the move as volition
+// and ending the tour (which would make naming the next stop worth exactly one
+// extra visit). Contrast TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition,
+// where he lands somewhere NOT on the circuit and the tour does end.
+func TestAdvanceNPCRoute_ConstableWalkingOnwardContinuesRound(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Assert the exact fixture shape the expectations below depend on: with exactly
+	// 2 stops, the one he walks to IS the last, so the round finishes it and returns.
+	if n := stopCountOf(t, w, "lamp"); n != 2 {
+		t.Fatalf("fixture must have exactly 2 stops for these expectations, got %d", n)
+	}
+
+	// He is en route to stop 0 but walks himself to stop 1 instead — the business the
+	// cue named. Clear MoveIntent as finishArrival does before emitting ActorArrived.
+	var next sim.Position
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		next = route.Stops[1].WalkTo
+		a := world.Actors["lamp"]
+		a.Pos = next
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("place actor at stop 1: %v", err)
+	}
+
+	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("AdvanceNPCRoute: %v", err)
+	}
+	r := res.(sim.AdvanceNPCRouteResult)
+	// The crux: he is NOT treated as having left the round.
+	if r.Reason == "yielded_to_volition" {
+		t.Fatalf("walking on to a stop still on the circuit ended the tour (Reason=%q)", r.Reason)
+	}
+	// This fixture has exactly 2 stops, so the one he walked to IS the last: stop 1
+	// counts as visited and the route transitions to its return leg. With a longer
+	// circuit the same path returns "stop_advanced" and walks him to the next stop.
+	if r.Reason != "returning_home" {
+		t.Errorf("Reason = %q, want returning_home (stop 1 is the last of 2, so the round finishes it and heads back)", r.Reason)
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("route cleared after he walked on to a stop still on the circuit")
+	}
+	if route.Phase != sim.RoutePhaseReturning {
+		t.Errorf("Phase = %q, want %q", route.Phase, sim.RoutePhaseReturning)
+	}
+	// He must not be dragged backwards to stop 0, which he had never reached.
+	if route.StopIdx == 0 {
+		t.Error("StopIdx still 0 — the stop he walked to was not adopted")
+	}
+}
+
+// TestAdvanceNPCRoute_ConstableArrivalBeyondNextStopStillYields pins the LLM-530
+// scan's deliberate narrowness: adoption covers the IMMEDIATE next stop only,
+// because the cue names exactly one place. An arrival at a stop further along is
+// NOT adopted — it would jump the cursor over an intervening stop, skipping its
+// visit and dwell (and, for any future yielding carrier whose stops flip state,
+// its flip). Such an arrival falls through to the ordinary volition yield.
+func TestAdvanceNPCRoute_ConstableArrivalBeyondNextStopStillYields(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if n := stopCountOf(t, w, "lamp"); n != 3 {
+		t.Fatalf("fixture must have exactly 3 stops to test a non-adjacent stop, got %d", n)
+	}
+
+	// Stand him on stop 2 — a real stop on his circuit, but TWO ahead of the cursor
+	// at stop 0, so adopting it would jump over stop 1 and skip its visit entirely.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		a := world.Actors["lamp"]
+		a.Pos = route.Stops[2].WalkTo
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("place actor on stop 2: %v", err)
+	}
+
+	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("AdvanceNPCRoute: %v", err)
+	}
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "yielded_to_volition" {
+		t.Errorf("Reason = %q, want yielded_to_volition (an arrival that is not the next stop is leaving the round)", r.Reason)
+	}
+	if route := activeRouteOf(t, w, "lamp"); route != nil {
+		t.Errorf("route not cleared after an off-circuit arrival: %+v", route)
 	}
 }

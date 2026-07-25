@@ -2402,6 +2402,11 @@ func (w *World) republish() {
 					// Stops still ahead AFTER this one, so the cue can say the round
 					// continues (LLM-524). 0 at the final stop.
 					sa.RouteStopsAhead = len(r.Stops) - r.StopIdx - 1
+					// The next stop's object, so the cue can NAME where he goes next
+					// (LLM-530). Empty at the final stop.
+					if r.StopIdx+1 < len(r.Stops) {
+						sa.RouteNextStopObjectID = r.Stops[r.StopIdx+1].ObjectID
+					}
 				}
 			}
 		}

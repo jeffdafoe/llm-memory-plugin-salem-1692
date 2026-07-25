@@ -996,7 +996,7 @@ func renderActor(b *strings.Builder, a ActorView) {
 			// closed door. Naming what still lies ahead makes the stop a waypoint.
 			// Deliberately NOT an imperative ("go on to the next"): the scene is the
 			// argument. Omitted at the final stop, where nothing remains to name.
-			if line := renderRoundsStopsAhead(a.Rounds.StopsAhead); line != "" {
+			if line := renderRoundsStopsAhead(a.Rounds.StopsAhead, a.Rounds.NextBusiness); line != "" {
 				b.WriteString(line)
 			}
 		} else {
@@ -2256,32 +2256,34 @@ func AgoPhrase(at, now time.Time) string {
 // where there is nothing left to name. Spelled as a word, in the round's own
 // register — the count is scene, not statistic.
 //
-// The trailing clause states that the walking is ALREADY happening (LLM-529). The
-// count alone told him the round continued but not how to continue it: live, he
-// reasoned "I'll continue my rounds — no use standing idle where there's no one to
-// speak with" and then issued move_to "the Meeting House", because a count is not a
-// destination token and his own post was the only place the prompt named. Worse, he
-// need not move at all — the route already dispatches the walk to the next stop —
-// and ANY move_to trips the LLM-520 volition yield, ending the tour. So his attempt
-// to obey the round is what killed it. Saying his feet carry him on turns "continue
-// the round" into done() rather than a move.
-//
-// Deliberately does NOT name the next stop, though that would also supply a token:
-// naming it invites a move_to toward it, which trips the same yield just as surely.
-// The truthful line is that he needn't move — the route owns his feet until he
-// chooses otherwise.
-func renderRoundsStopsAhead(n int) string {
-	const carriedOnward = "; your feet will carry you on when you are done here.\n"
-	switch {
-	case n <= 0:
+// It NAMES the next stop (LLM-530), which is the whole point: move_to is how this
+// NPC says "I am finished with this place", so the round has to give him somewhere
+// to say it about. It previously did not, and his own post was the only place the
+// prompt named — so every tour ended there, three times over, each with him stating
+// he meant to carry on ("I'll continue my rounds", "nothing more for me here").
+// An earlier attempt to talk him out of moving at all ("your feet will carry you
+// on") failed twice over: it never actually said that something else was doing the
+// walking, and it asked him to end his turn at the exact moment his own conclusion
+// was that he was done here. Naming the next business works WITH that instinct
+// instead of against it; advanceActiveRoute treats a walk to a stop still on the
+// circuit as staying on the round, not leaving it.
+func renderRoundsStopsAhead(n int, next string) string {
+	if n <= 0 {
 		return ""
-	case n == 1:
-		return "One more place on your round still lies ahead of you" + carriedOnward
-	default:
-		word := countWord(n)
-		return fmt.Sprintf("%s more places on your round still lie ahead of you%s",
-			strings.ToUpper(word[:1])+word[1:], carriedOnward)
 	}
+	var b strings.Builder
+	if n == 1 {
+		b.WriteString("One more place on your round still lies ahead of you.")
+	} else {
+		word := countWord(n)
+		fmt.Fprintf(&b, "%s more places on your round still lie ahead of you.",
+			strings.ToUpper(word[:1])+word[1:])
+	}
+	if next != "" {
+		fmt.Fprintf(&b, " The next is the %s.", sanitizeInline(next))
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // countWord spells out the small counts the AgoPhrase prose buckets produce

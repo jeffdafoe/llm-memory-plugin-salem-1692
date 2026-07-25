@@ -587,6 +587,36 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	// stale. RouteStopArrived branches on stop kind: Pos == WalkTo for a
 	// loiter/tile stop (byte-for-byte the prior check), InsideStructureID ==
 	// EnterStructureID for an enter stop (LLM-514).
+	// He may have walked ONWARD on the circuit rather than off it (LLM-530): the cue
+	// names the next business, and move_to is how this NPC says "I am finished with
+	// this place". Arriving at the NEXT stop is staying on the round, not leaving it —
+	// so adopt it and let the clean-visit path below run. Without this, naming the
+	// next stop would buy exactly one extra visit before the yield ended the tour.
+	//
+	// Only the IMMEDIATE next stop, deliberately. The cue names exactly one place, so
+	// that is the only stop he can be walking onward TO; scanning further ahead would
+	// be generality the affordance doesn't offer, and it would let the cursor jump
+	// over intervening stops — silently skipping their visit/dwell and, for any future
+	// yielding carrier whose stops flip village_object state, their flip. Keeping it
+	// to +1 means no stop is ever passed over unvisited.
+	//
+	// Stateful carriers only — a decorative carrier never self-moves, so for it an
+	// off-stop arrival is always an external bump to be undone, not a choice.
+	//
+	// This runs from the ActorArrived emit, so the actor demonstrably just completed a
+	// move to where he stands; position equality here is backed by a real arrival, not
+	// a coincidence of standing still. (An admin force-move onto the next stop also
+	// arrives there, and adopting it is the right outcome — he is at a stop on the
+	// circuit either way.)
+	if !RouteStopArrived(actor, stop) && routeYieldsToVolition(route) && route.StopIdx+1 < len(route.Stops) {
+		if next := route.Stops[route.StopIdx+1]; RouteStopArrived(actor, next) {
+			log.Printf("sim/npc_route: %q walked on to stop %d of its own accord (was heading to stop %d) — continuing the round",
+				route.NPCID, route.StopIdx+1, route.StopIdx)
+			route.StopIdx++
+			route.StaleRetries = 0
+			stop = next
+		}
+	}
 	if !RouteStopArrived(actor, stop) {
 		// A stateful carrier that arrived somewhere other than the stop walked
 		// himself off on his OWN volition — his LLM reactor issued the move_to.
@@ -608,7 +638,8 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		// arrival and also ends the tour. That is intended — for a stateful NPC
 		// there is nothing to recover to (his model drives him next), and the tour
 		// simply re-triggers at the next interval beat. We deliberately do not try
-		// to tell his own move_to apart from an external nudge here.
+		// to tell his own move_to apart from an external nudge here. (A walk ONWARD
+		// to a stop still on the circuit is handled above and never reaches here.)
 		if routeYieldsToVolition(route) {
 			log.Printf("sim/npc_route: %q walked off its route to (%d,%d) on its own (expected stop %d at (%d,%d)) — yielding to volition, ending tour",
 				route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)

@@ -12568,6 +12568,7 @@ func constableWalkingRoundsAtStore() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 	const (
 		gideonID = sim.ActorID("gideon")
 		store    = sim.StructureID("general_store")
+		smithy   = sim.StructureID("blacksmith")
 		post     = sim.StructureID("meeting_house")
 		home     = sim.StructureID("marsh_residence")
 	)
@@ -12592,15 +12593,19 @@ func constableWalkingRoundsAtStore() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		// LLM-524: five businesses still ahead on the circuit, so the cue carries the
 		// round forward instead of leaving a quiet stop reading as a dead end.
 		RouteStopsAhead: 5,
+		// LLM-530: and the next one is NAMED — move_to is how he says "I am finished
+		// with this place", so the round must give him somewhere to say it about.
+		RouteNextStopObjectID: sim.VillageObjectID(smithy),
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,
 		NeedThresholds:   sim.NeedThresholds{},
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{gideonID: gideon},
 		Structures: map[sim.StructureID]*sim.Structure{
-			store: plainStructure(store, "General Store"),
-			post:  plainStructure(post, "Meeting House"),
-			home:  plainStructure(home, "Marsh Residence"),
+			store:  plainStructure(store, "General Store"),
+			smithy: plainStructure(smithy, "Blacksmith"),
+			post:   plainStructure(post, "Meeting House"),
+			home:   plainStructure(home, "Marsh Residence"),
 		},
 	}
 	return snap, gideonID, nil
