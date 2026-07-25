@@ -2255,16 +2255,32 @@ func AgoPhrase(at, now time.Time) string {
 // ahead of the stop he is standing at (LLM-524), or "" at the final stop (n <= 0),
 // where there is nothing left to name. Spelled as a word, in the round's own
 // register — the count is scene, not statistic.
+//
+// The trailing clause states that the walking is ALREADY happening (LLM-529). The
+// count alone told him the round continued but not how to continue it: live, he
+// reasoned "I'll continue my rounds — no use standing idle where there's no one to
+// speak with" and then issued move_to "the Meeting House", because a count is not a
+// destination token and his own post was the only place the prompt named. Worse, he
+// need not move at all — the route already dispatches the walk to the next stop —
+// and ANY move_to trips the LLM-520 volition yield, ending the tour. So his attempt
+// to obey the round is what killed it. Saying his feet carry him on turns "continue
+// the round" into done() rather than a move.
+//
+// Deliberately does NOT name the next stop, though that would also supply a token:
+// naming it invites a move_to toward it, which trips the same yield just as surely.
+// The truthful line is that he needn't move — the route owns his feet until he
+// chooses otherwise.
 func renderRoundsStopsAhead(n int) string {
+	const carriedOnward = "; your feet will carry you on when you are done here.\n"
 	switch {
 	case n <= 0:
 		return ""
 	case n == 1:
-		return "One more place on your round still lies ahead of you.\n"
+		return "One more place on your round still lies ahead of you" + carriedOnward
 	default:
 		word := countWord(n)
-		return fmt.Sprintf("%s more places on your round still lie ahead of you.\n",
-			strings.ToUpper(word[:1])+word[1:])
+		return fmt.Sprintf("%s more places on your round still lie ahead of you%s",
+			strings.ToUpper(word[:1])+word[1:], carriedOnward)
 	}
 }
 

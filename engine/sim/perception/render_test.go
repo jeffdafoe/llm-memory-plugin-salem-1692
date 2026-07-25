@@ -1105,11 +1105,18 @@ func TestRenderNarrativeState_SanitizesAndGates(t *testing.T) {
 	})
 }
 
-// TestRenderRoundsStopsAhead covers the LLM-524 continuation line's three shapes:
-// omitted at the final stop (nothing left to name), singular, and the spelled-out
-// plural. The line exists so a QUIET stop reads as a waypoint rather than a dead
-// end — live, the constable found a shut, empty farm at stop 0, concluded the round
-// was pointless and walked back to his post, ending the tour at the first closed door.
+// TestRenderRoundsStopsAhead covers the continuation line's three shapes: omitted
+// at the final stop (nothing left to name), singular, and the spelled-out plural.
+// The line exists so a QUIET stop reads as a waypoint rather than a dead end
+// (LLM-524) — live, the constable found a shut, empty farm at stop 0, concluded the
+// round was pointless and walked back to his post.
+//
+// The "your feet will carry you on" clause (LLM-529) is load-bearing, not flavour:
+// with the count alone he understood the round continued but not how to continue
+// it, so he said "I'll continue my rounds" and issued move_to "the Meeting House" —
+// a count is not a destination token, and his post was the only place named. Since
+// any move_to trips the LLM-520 yield, his attempt to obey the round ended it. The
+// clause tells him the walking is already happening, so continuing means done().
 func TestRenderRoundsStopsAhead(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1118,9 +1125,9 @@ func TestRenderRoundsStopsAhead(t *testing.T) {
 	}{
 		{"final stop omits the line", 0, ""},
 		{"negative is defensive, omits", -1, ""},
-		{"singular reads as one place", 1, "One more place on your round still lies ahead of you.\n"},
-		{"plural spells the count", 2, "Two more places on your round still lie ahead of you.\n"},
-		{"seven, the full-circuit case", 7, "Seven more places on your round still lie ahead of you.\n"},
+		{"singular reads as one place", 1, "One more place on your round still lies ahead of you; your feet will carry you on when you are done here.\n"},
+		{"plural spells the count", 2, "Two more places on your round still lie ahead of you; your feet will carry you on when you are done here.\n"},
+		{"seven, the full-circuit case", 7, "Seven more places on your round still lie ahead of you; your feet will carry you on when you are done here.\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

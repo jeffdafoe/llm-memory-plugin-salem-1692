@@ -226,8 +226,14 @@ func TestConstableOnRounds_KeepsRoundsCueWithoutAnchorInvitation(t *testing.T) {
 	if !strings.Contains(got, "You are walking your rounds through the village.") {
 		t.Errorf("rounds cue missing from an off-anchor rounds tick:\n%s", got)
 	}
-	if !strings.Contains(got, "more places on your round still lie ahead of you.") {
+	if !strings.Contains(got, "more places on your round still lie ahead of you") {
 		t.Errorf("rounds continuation line missing (LLM-524):\n%s", got)
+	}
+	// LLM-529: and it must say the walking is already happening — without this he
+	// reads "continue the round" as an action and issues move_to, which trips the
+	// LLM-520 yield and ends the tour.
+	if !strings.Contains(got, "your feet will carry you on when you are done here") {
+		t.Errorf("rounds cue does not say the round carries him onward (LLM-529):\n%s", got)
 	}
 	// ...without a standing licence to abandon it.
 	if strings.Contains(got, "whenever you wish") || strings.Contains(got, "head to either") {
