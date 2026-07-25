@@ -32,11 +32,12 @@ const ClosedBusinessMemoryTTL = 4 * time.Hour
 // "At a business" = the arrival resolved to a structure that is someone's
 // workplace (has >=1 worker), reached either by entering it (FinalStructureID)
 // or by standing at its loiter slot (a StructureVisit to an owner-only shop,
-// where FinalStructureID is empty — the John Ellis path). "Keeper present" = at
-// least one AWAKE worker of that structure is at it right now (inside it, or
-// loitering at it); an asleep keeper does not count — innkeepers sleep at the
-// inn, so an abed inn reads shut — but a keeper briefly on break (StateResting)
-// still counts as open (the business is open, just quiet). LLM-126.
+// where FinalStructureID is empty — the John Ellis path). "Tended" = someone is
+// minding the place — its own AWAKE keeper, or a hired hand working a live job
+// for that keeper (businessTendedAt); an asleep keeper does not count —
+// innkeepers sleep at the inn, so an abed inn reads shut — but a keeper briefly
+// on break (StateResting) still counts as open (the business is open, just
+// quiet). LLM-126.
 func handleClosedBusinessOnArrival(w *World, evt Event) {
 	arr, ok := evt.(*ActorArrived)
 	if !ok {
@@ -52,7 +53,7 @@ func handleClosedBusinessOnArrival(w *World, evt Event) {
 		return
 	}
 
-	if keeperPresentAt(w, structureID) {
+	if businessTendedAt(w, structureID) {
 		// Found it attended — clear any stale "shut" memory for this business.
 		a.Observed.Clear(ObservedStateKey{StructureID: structureID, Condition: ObservedClosed})
 		return
@@ -187,12 +188,101 @@ func workerTendsStructure(objects map[VillageObjectID]*VillageObject, assets map
 	if state == StateSleeping {
 		return false // abed ⇒ not tending, though bedded down AT the inn (LLM-126)
 	}
+	return actorPostureAtStructure(objects, assets, insideStructureID, pos, structureID)
+}
+
+// actorPostureAtStructure reports whether an actor at (insideStructureID, pos) is
+// physically AT structureID — inside its interior, or standing at its loiter pin.
+// The position half of workerTendsStructure, split out so the hired-hand arm of
+// businessTendedAt applies the identical "is he actually here" rule to someone
+// who does not work here (LLM-527). Pure over its map inputs, like its caller.
+func actorPostureAtStructure(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset,
+	insideStructureID StructureID, pos TilePos, structureID StructureID) bool {
 	if insideStructureID == structureID {
 		return true
 	}
-	if objID, ok := ResolveLoiteringObject(objects, assets, pos, LoiterAttributionTiles); ok &&
-		StructureID(objID) == structureID {
+	objID, ok := ResolveLoiteringObject(objects, assets, pos, LoiterAttributionTiles)
+	return ok && StructureID(objID) == structureID
+}
+
+// businessTendedAt reports whether ANYONE is minding structureID right now: its
+// own keeper (keeperPresentAt), or a hired hand working a live job for that
+// keeper and physically at the place (LLM-527).
+//
+// This is the PRESENCE question — "is this place alive, is there a person here"
+// — and it is deliberately distinct from keeperPresentAt, which answers the
+// AUTHORITY question: is someone here who can sell to me or take me on. A hired
+// hand carries no such authority (he owns none of the stock and hires nobody),
+// so the two must not be merged: the shut-business memory, the shut dead-end
+// cue, the cross-threshold conversational scope, and the "already at, and it's
+// shut" move reply all want presence, while the visitor trade-errand binding and
+// the no-hiring memory still want the keeper.
+//
+// The bug it fixes: Abraham Warren, a free laborer with no workplace of his own,
+// worked the Ellis Farm through the afternoon while Elizabeth was across the
+// village. keeperPresentAt scans only actors whose WorkStructureID IS the farm,
+// so it found nobody — and the constable standing at the farm on his rounds was
+// told the place was shut and that there was no one there to hear him speak,
+// with a man plainly at work in front of him.
+//
+// Only LaborStateWorking counts. An EnRoute hand is still walking to the job (or
+// waiting at the door for the owner), which is not tending — workerHiredAt takes
+// the looser reading because it gates ENTRY, a different question. The hand must
+// also be awake and at the place; a job does not hold once he wanders off, the
+// same rule workerTendsStructure applies to a keeper who drifts away.
+//
+// Ledger-driven rather than actor-driven: live jobs are few, so scanning them
+// beats a second full pass over w.Actors. MUST run on the world goroutine.
+func businessTendedAt(w *World, structureID StructureID) bool {
+	if keeperPresentAt(w, structureID) {
 		return true
+	}
+	for _, o := range w.LaborLedger {
+		if o == nil || o.State != LaborStateWorking {
+			continue
+		}
+		employer := w.Actors[o.EmployerID]
+		if employer == nil || employer.WorkStructureID != structureID {
+			continue
+		}
+		worker := w.Actors[o.WorkerID]
+		if worker == nil || worker.State == StateSleeping {
+			continue
+		}
+		if actorPostureAtStructure(w.VillageObjects, w.Assets, worker.InsideStructureID, worker.Pos, structureID) {
+			return true
+		}
+	}
+	return false
+}
+
+// businessTendedInSnapshot is businessTendedAt over a published Snapshot — the
+// read-path counterpart backing LoiterScopeConversableInSnapshot, so the PC's
+// cross-threshold conversational scope and the engine-side huddle scope agree on
+// whether a place with a hired hand in it is open. Same rule as the live-world
+// twin; a nil snapshot fails closed (unknown ⇒ not tended).
+func businessTendedInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, structureID StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	if keeperPresentInSnapshot(snap, assets, structureID) {
+		return true
+	}
+	for _, o := range snap.LaborLedger {
+		if o == nil || o.State != LaborStateWorking {
+			continue
+		}
+		employer := snap.Actors[o.EmployerID]
+		if employer == nil || employer.WorkStructureID != structureID {
+			continue
+		}
+		worker := snap.Actors[o.WorkerID]
+		if worker == nil || worker.State == StateSleeping {
+			continue
+		}
+		if actorPostureAtStructure(snap.VillageObjects, assets, worker.InsideStructureID, worker.Pos, structureID) {
+			return true
+		}
 	}
 	return false
 }

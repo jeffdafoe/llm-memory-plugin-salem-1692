@@ -98,14 +98,15 @@ func moveToLabel(spokenAs, fallback string) string {
 // model used, and when the place is a keeperless BUSINESS say it is shut so a
 // socially-lured NPC standing at a closed shop learns the dead end instead of
 // re-walking there. The shut predicate mirrors perception's isShutBusiness
-// (build.go) exactly: someone works it (structureHasWorker), no awake worker is
-// tending it (keeperPresentAt), AND it is not the actor's OWN workplace — you
-// don't tell a keeper their own post is shut (guards the abed-innkeeper edge;
-// it also keeps a move_to("work") that lands on the actor's own post from
-// reading "your work is shut"). structureHasWorker / keeperPresentAt are the
-// same world-goroutine checks the closed-business arrival memory uses.
+// (build.go) exactly: someone works it (structureHasWorker), no one is tending it
+// (businessTendedAt — its keeper OR a hired hand on a live job there, LLM-527),
+// AND it is not the actor's OWN workplace — you don't tell a keeper their own post
+// is shut (guards the abed-innkeeper edge; it also keeps a move_to("work") that
+// lands on the actor's own post from reading "your work is shut").
+// structureHasWorker / businessTendedAt are the same world-goroutine checks the
+// closed-business arrival memory uses.
 func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string) string {
-	if structureHasWorker(w, structureID) && !keeperPresentAt(w, structureID) && a.WorkStructureID != structureID {
+	if structureHasWorker(w, structureID) && !businessTendedAt(w, structureID) && a.WorkStructureID != structureID {
 		return fmt.Sprintf(
 			"you are already at %q, and it is shut just now — no one is tending it, so there's nothing to do here.", label)
 	}

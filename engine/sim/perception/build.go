@@ -3030,19 +3030,19 @@ func objectLoiterPin(vobj *sim.VillageObject) sim.TilePos {
 }
 
 // isShutBusiness reports whether stID is a business the actor is standing at
-// that no keeper is tending — the live, situated dead-end the at-location cue
+// that nobody is tending — the live, situated dead-end the at-location cue
 // surfaces (LLM-154). It mirrors the sim-side capture gate (validBusiness
-// composed with !keeperPresentAt, closed_business.go) but reads the snapshot: a
+// composed with !businessTendedAt, closed_business.go) but reads the snapshot: a
 // business is a structure someone works (snapshotStructureHasWorker), the
 // actor's OWN workplace is excluded (you don't read your own shop as shut — you
-// are its keeper), and "tended" means an awake worker of it is present
-// (snapshotKeeperPresent). False for an empty id, a residence (no workers), or
+// are its keeper), and "tended" means somebody is minding it
+// (snapshotBusinessTended). False for an empty id, a residence (no workers), or
 // an attended business.
 func isShutBusiness(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.StructureID) bool {
 	if snap == nil || a == nil || stID == "" || stID == a.WorkStructureID {
 		return false
 	}
-	return snapshotStructureHasWorker(snap, stID) && !snapshotKeeperPresent(snap, stID)
+	return snapshotStructureHasWorker(snap, stID) && !snapshotBusinessTended(snap, stID)
 }
 
 // snapshotStructureHasWorker reports whether any actor in the snapshot has stID
@@ -3076,6 +3076,46 @@ func snapshotKeeperPresent(snap *sim.Snapshot, stID sim.StructureID) bool {
 			continue
 		}
 		if actorAtStructure(snap, w, stID) {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotBusinessTended reports whether ANYONE is minding stID — its own keeper
+// (snapshotKeeperPresent), or a hired hand working a live job for that keeper and
+// still at the place. The perception-snapshot mirror of sim.businessTendedAt
+// (LLM-527); the two must agree or the rendered "is shut" line and the engine's
+// own shut-business memory contradict each other on the same tick.
+//
+// The bug it fixes: a free laborer has no workplace of his own, so the
+// keeper-only scan looked straight past a man at work in the farmyard and told a
+// constable standing in front of him that the farm was shut and deserted — while
+// the client rendered the same stall open, with him visibly in it.
+//
+// Only LaborStateWorking counts (an EnRoute hand is still on his way), and he
+// must be awake and physically at the place — the same gates the keeper arm
+// applies to a keeper who has drifted off.
+func snapshotBusinessTended(snap *sim.Snapshot, stID sim.StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	if snapshotKeeperPresent(snap, stID) {
+		return true
+	}
+	for _, o := range snap.LaborLedger {
+		if o == nil || o.State != sim.LaborStateWorking {
+			continue
+		}
+		employer := snap.Actors[o.EmployerID]
+		if employer == nil || employer.WorkStructureID != stID {
+			continue
+		}
+		worker := snap.Actors[o.WorkerID]
+		if worker == nil || worker.State == sim.StateSleeping {
+			continue
+		}
+		if actorAtStructure(snap, worker, stID) {
 			return true
 		}
 	}

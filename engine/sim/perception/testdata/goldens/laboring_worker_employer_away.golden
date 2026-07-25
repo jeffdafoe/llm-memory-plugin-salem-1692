@@ -13,6 +13,5 @@ Coins in your purse: 0 — you have no coins to spend, so you cannot pay for any
 You are in the middle of a job for John Ellis, but they have left the Tavern and gone to the General Store. If they want you along, follow after them with move_to; otherwise carry on with the work. You are paid when the job is done.
 ## Around you
 You are inside the Tavern, with no one else here to hear you speak.
-The Tavern is shut — no one is tending it.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
