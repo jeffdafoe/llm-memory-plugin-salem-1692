@@ -1643,7 +1643,19 @@ func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim
 			// it in-place and keep home as the reachable anchor (LLM-214).
 			fmt.Fprintf(b, "You're at your workplace. Your home is at %s (destination: %s) — you can head home whenever you wish.\n\n", home, v.HomeID)
 		default:
-			fmt.Fprintf(b, "You keep your trade at %s (destination: %s), and your home is at %s (destination: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
+			// Away from both: state the two anchors and stop. The old "— you can head
+			// to either whenever you wish" tail was an open invitation to leave
+			// whatever the actor is in the middle of, and it fired on EVERY tick away
+			// from home and post. Live (LLM-528), it pulled the constable off his
+			// rounds: he finished a real beat at the Ellis Farm — questioned the
+			// keeper, paid her toward the nails she needed — said "I'll be about my
+			// rounds", and then walked to the Meeting House anyway. The same
+			// invitation was already found harmful at-post (the Prudence shop↔house
+			// oscillation, see the atPost branch above, which reworded rather than
+			// removed it). Both structure_ids stay — they are the load-bearing move_to
+			// tokens (HOME-349); only the standing invitation goes. Where an actor
+			// SHOULD head somewhere, a duty steer or errand cue says so with a reason.
+			fmt.Fprintf(b, "You keep your trade at %s (destination: %s), and your home is at %s (destination: %s).\n\n", work, v.WorkID, home, v.HomeID)
 		}
 	case v.WorkID != "":
 		if insideWork {

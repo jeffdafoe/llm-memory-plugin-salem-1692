@@ -12,6 +12,6 @@ You are walking your rounds through the village. You stand before the General St
 You are inside the General Store, with no one else here to hear you speak.
 It is midday.
 
-You keep your trade at the Meeting House (destination: meeting_house), and your home is at the Marsh Residence (destination: marsh_residence) — you can head to either whenever you wish.
+You keep your trade at the Meeting House (destination: meeting_house), and your home is at the Marsh Residence (destination: marsh_residence).
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
