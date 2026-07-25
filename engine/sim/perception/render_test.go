@@ -1111,28 +1111,31 @@ func TestRenderNarrativeState_SanitizesAndGates(t *testing.T) {
 // (LLM-524) — live, the constable found a shut, empty farm at stop 0, concluded the
 // round was pointless and walked back to his post.
 //
-// The "your feet will carry you on" clause (LLM-529) is load-bearing, not flavour:
-// with the count alone he understood the round continued but not how to continue
-// it, so he said "I'll continue my rounds" and issued move_to "the Meeting House" —
-// a count is not a destination token, and his post was the only place named. Since
-// any move_to trips the LLM-520 yield, his attempt to obey the round ended it. The
-// clause tells him the walking is already happening, so continuing means done().
+// NAMING the next stop (LLM-530) is the load-bearing part, not the count: move_to
+// is how this NPC says "I am finished with this place", so the round must give him
+// somewhere to say it about. It didn't, and his own post was the only place the
+// prompt named — so three tours running he announced he meant to carry on and
+// walked home. The name must appear verbatim; it is a move_to destination token.
 func TestRenderRoundsStopsAhead(t *testing.T) {
 	cases := []struct {
 		name string
 		n    int
+		next string
 		want string
 	}{
-		{"final stop omits the line", 0, ""},
-		{"negative is defensive, omits", -1, ""},
-		{"singular reads as one place", 1, "One more place on your round still lies ahead of you; your feet will carry you on when you are done here.\n"},
-		{"plural spells the count", 2, "Two more places on your round still lie ahead of you; your feet will carry you on when you are done here.\n"},
-		{"seven, the full-circuit case", 7, "Seven more places on your round still lie ahead of you; your feet will carry you on when you are done here.\n"},
+		{"final stop omits the line", 0, "", ""},
+		{"negative is defensive, omits", -1, "", ""},
+		{"singular names the last one", 1, "Blacksmith", "One more place on your round still lies ahead of you. The next is the Blacksmith.\n"},
+		{"plural spells the count and names the next", 2, "Tavern", "Two more places on your round still lie ahead of you. The next is the Tavern.\n"},
+		{"seven, the full-circuit case", 7, "Ellis Farm", "Seven more places on your round still lie ahead of you. The next is the Ellis Farm.\n"},
+		// Defensive: an unresolvable next-stop label drops the sentence rather than
+		// naming "the " — a phantom destination is worse than none.
+		{"unnamed next stop drops the sentence", 3, "", "Three more places on your round still lie ahead of you.\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := renderRoundsStopsAhead(tc.n); got != tc.want {
-				t.Errorf("renderRoundsStopsAhead(%d) = %q, want %q", tc.n, got, tc.want)
+			if got := renderRoundsStopsAhead(tc.n, tc.next); got != tc.want {
+				t.Errorf("renderRoundsStopsAhead(%d, %q) = %q, want %q", tc.n, tc.next, got, tc.want)
 			}
 		})
 	}

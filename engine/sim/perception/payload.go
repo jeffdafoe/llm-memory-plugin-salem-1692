@@ -1405,6 +1405,12 @@ type RoundsView struct {
 	// dead end (LLM-524). Meaningful only with AtBusiness set; 0 at the final stop,
 	// where the line is omitted.
 	StopsAhead int
+
+	// NextBusiness is the display name of the next stop on the circuit, empty at the
+	// final stop. Named verbatim in the cue (LLM-530) so it is a usable move_to
+	// destination: "I am finished here" needs somewhere to resolve to, and his own
+	// post was previously the only place the prompt named.
+	NextBusiness string
 }
 
 // InFlightSourceActivityView is the perception-side projection of the subject's

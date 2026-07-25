@@ -1732,6 +1732,14 @@ type ActorSnapshot struct {
 	// first quiet shop.
 	RouteStopsAhead int
 
+	// RouteNextStopObjectID is the NEXT stop on the circuit after the one the actor
+	// is standing at — set alongside RouteStopObjectID, empty at the final stop. The
+	// rounds cue NAMES it (LLM-530) so "I am finished here" has somewhere to resolve
+	// to. Without a name, the only destination the prompt offered was his own post,
+	// so every tour ended there: move_to is how he says "done with this place", and
+	// he could only say it about home.
+	RouteNextStopObjectID VillageObjectID
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

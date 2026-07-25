@@ -906,8 +906,9 @@ func buildRounds(snap *sim.Snapshot, a *sim.ActorSnapshot) *RoundsView {
 		return nil
 	}
 	return &RoundsView{
-		AtBusiness: resolveDwellPinLabel(snap, a.RouteStopObjectID),
-		StopsAhead: a.RouteStopsAhead,
+		AtBusiness:   resolveDwellPinLabel(snap, a.RouteStopObjectID),
+		StopsAhead:   a.RouteStopsAhead,
+		NextBusiness: resolveDwellPinLabel(snap, a.RouteNextStopObjectID),
 	}
 }
 
