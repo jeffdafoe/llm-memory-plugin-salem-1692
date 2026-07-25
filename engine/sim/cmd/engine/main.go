@@ -82,10 +82,10 @@ type runtime struct {
 	// the headless lifecycle test → the alarm never fires.
 	VABudgetHealth *sim.VABudgetHealth
 	Save           sim.CheckpointFunc
-	TickSink  sim.TickTelemetrySink
-	HTTPAddr  string
-	Auth      httpapi.Authenticator
-	Umbilical *telemetry.RingSink
+	TickSink       sim.TickTelemetrySink
+	HTTPAddr       string
+	Auth           httpapi.Authenticator
+	Umbilical      *telemetry.RingSink
 	// UmbilicalControl arms the world-mutating umbilical control routes. Only
 	// meaningful when Umbilical is non-nil; run wires it via SetControlEnabled.
 	UmbilicalControl bool

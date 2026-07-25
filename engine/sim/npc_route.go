@@ -119,6 +119,18 @@ const (
 // visit (see advanceActiveRoute).
 const maxStaleRouteRetries = 3
 
+// routeYieldsToVolition reports whether a route belongs to a STATEFUL carrier —
+// one whose own LLM reactor issues move_to — rather than a decorative carrier
+// (lamplighter / washerwoman / town_crier) that never self-moves. For a stateful
+// carrier an off-stop arrival is the actor's OWN volition (he walked off to do
+// something else), not the external bump the stale-arrival re-walk was built to
+// undo. Re-walking him back would fight his model over his feet, so such a route
+// ENDS on a stale arrival instead of re-walking (LLM-520). The constable is the
+// only stateful carrier today; extend this predicate when another appears.
+func routeYieldsToVolition(route *NPCRoute) bool {
+	return route != nil && route.Label == AttrConstable
+}
+
 // RouteStop is one object the route visits with a pre-decided target
 // state. WalkTo is the grid-tile destination the actor moves to —
 // typically the adjacent walkable tile next to the object's anchor.
@@ -460,7 +472,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 // returned-home vs no-route-found.
 type AdvanceNPCRouteResult struct {
 	NPCID  ActorID
-	Reason string // "stop_advanced" | "returning_home" | "arrived_home" | "no_route" | "stale_stop" | "stale_retry" | "stale_abandoned"
+	Reason string // "stop_advanced" | "returning_home" | "arrived_home" | "no_route" | "stale_stop" | "stale_retry" | "stale_abandoned" | "yielded_to_volition"
 }
 
 // AdvanceNPCRoute returns a Command that advances the named actor's
@@ -576,6 +588,41 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	// loiter/tile stop (byte-for-byte the prior check), InsideStructureID ==
 	// EnterStructureID for an enter stop (LLM-514).
 	if !RouteStopArrived(actor, stop) {
+		// A stateful carrier that arrived somewhere other than the stop walked
+		// himself off on his OWN volition — his LLM reactor issued the move_to.
+		// Re-walking him back (the branch below) would fight his model over his
+		// feet: the route drags him to the stop while his next turn walks him
+		// away again, until the retry cap abandons mid-oscillation (LLM-520 — the
+		// Gideon-at-Ellis-Farm tug-of-war, where a good in-character beat ended
+		// with his model heading for the Tavern and the route yanking him back).
+		// Respect the volition: END the tour here. clearActiveRoute frees him
+		// (re-enabling his shift-duty producer, which the in-flight route was
+		// suppressing, so on-shift he heads back to post; off-shift he's free for
+		// his evening), and the next interval beat starts a fresh tour once he is
+		// settled at his post again. The re-walk stays for the DECORATIVE carriers
+		// it was built for — they never self-move, so their only off-stop cause is
+		// a genuine external bump that should be undone.
+		//
+		// This is a POLICY, not volition-detection: an external bump of a stateful
+		// carrier (an admin force-move mid-rounds) produces the same off-stop
+		// arrival and also ends the tour. That is intended — for a stateful NPC
+		// there is nothing to recover to (his model drives him next), and the tour
+		// simply re-triggers at the next interval beat. We deliberately do not try
+		// to tell his own move_to apart from an external nudge here.
+		if routeYieldsToVolition(route) {
+			log.Printf("sim/npc_route: %q walked off its route to (%d,%d) on its own (expected stop %d at (%d,%d)) — yielding to volition, ending tour",
+				route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
+			// Clearing by actor ID clears exactly the route whose movement just
+			// completed — no cross-generation clear. This runs synchronously inside
+			// w.emit(ActorArrived) on the single world goroutine (emit dispatches
+			// subscribers inline — world.go), so no route-install command can
+			// interpose between the arrival and here; and a superseded route's walk
+			// never reaches finishArrival (single MoveIntent, silent supersede — see
+			// commands_move.go), so a replaced route can't deliver a stale arrival.
+			// Same reasoning as the stale_abandoned clear below.
+			clearActiveRoute(w, route.NPCID)
+			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "yielded_to_volition"}, nil
+		}
 		// Stale arrival: this ActorArrived was for some other destination — an
 		// external MoveActor (admin force-move, a competing producer's nudge)
 		// superseded the route's walk between dispatch and arrival, so the actor
