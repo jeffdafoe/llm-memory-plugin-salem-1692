@@ -63,7 +63,7 @@ func TestVABudgetHealth_SetClearSnapshot(t *testing.T) {
 func TestVABudgetHealth_StaleSuccessDoesNotClearNewerCap(t *testing.T) {
 	var h sim.VABudgetHealth
 	t0 := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
-	callStart := t0                    // a Complete that began before the budget ran out
+	callStart := t0                      // a Complete that began before the budget ran out
 	refusalAt := t0.Add(5 * time.Second) // a newer request records the cap afterward
 
 	h.RecordBudgetExceeded("zbbs-ezekiel-crane", refusalAt, "Daily cost limit exceeded")
@@ -90,7 +90,7 @@ func TestVABudgetHealth_SuccessBeforeLatestRefusalDoesNotClear(t *testing.T) {
 	var h sim.VABudgetHealth
 	t0 := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	firstRefusal := t0
-	successStart := t0.Add(10 * time.Second) // began after the first refusal...
+	successStart := t0.Add(10 * time.Second)  // began after the first refusal...
 	secondRefusal := t0.Add(20 * time.Second) // ...but a second refusal lands before it records
 
 	h.RecordBudgetExceeded("zbbs-ezekiel-crane", firstRefusal, "Daily cost limit exceeded")
