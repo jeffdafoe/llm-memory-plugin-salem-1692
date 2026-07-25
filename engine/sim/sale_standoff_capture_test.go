@@ -345,6 +345,58 @@ func TestSaleStandoff_CountIsScopedToBuyerSellerItem(t *testing.T) {
 	})
 }
 
+// A prior entry stamped AFTER the resolving event has not happened yet from that
+// event's point of view — counting it would trip the standoff before the buyer had
+// really been turned down twice. Reachable through replay, a command carrying a
+// supplied timestamp, or clock skew.
+func TestSaleStandoff_FutureDatedPriorEntryDoesNotCount(t *testing.T) {
+	w := ssWorld()
+	buyer := ssPair(w)
+	now := time.Now()
+	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(time.Hour))
+	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
+
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
+
+	if buyer.Observed.Len() != 0 {
+		t.Fatalf("an entry resolved after this event has not happened yet and must not count, got %v", buyer.Observed)
+	}
+}
+
+// An entry resolved at exactly the event's own instant is not in the future — the
+// boundary is inclusive, so two terminals landing on the same command timestamp still
+// reach the threshold.
+func TestSaleStandoff_PriorEntryAtSameInstantCounts(t *testing.T) {
+	w := ssWorld()
+	buyer := ssPair(w)
+	now := time.Now()
+	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
+	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
+
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
+
+	if _, ok := buyer.Observed.At(ssKey); !ok {
+		t.Fatalf("an entry at the event's own instant is not future-dated and must count, got %v", buyer.Observed)
+	}
+}
+
+// A zero event time disables the future guard rather than rejecting every prior entry
+// against a zero clock — silently never recording would be a worse failure than the
+// skew the guard exists for.
+func TestSaleStandoff_ZeroEventTimeDoesNotDisableTheCount(t *testing.T) {
+	w := ssWorld()
+	buyer := ssPair(w)
+	now := time.Now()
+	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
+	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
+
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, time.Time{}))
+
+	if _, ok := buyer.Observed.At(ssKey); !ok {
+		t.Fatalf("a zero event time must not disable the standoff count, got %v", buyer.Observed)
+	}
+}
+
 // A pending offer is not a dead end — it has no answer yet.
 func TestSaleStandoff_PendingEntriesDoNotCount(t *testing.T) {
 	w := ssWorld()

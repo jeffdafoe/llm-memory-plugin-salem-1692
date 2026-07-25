@@ -145,6 +145,17 @@ func saleStandoffReached(w *World, res *PayWithItemResolved) bool {
 		if e.ResolvedAt.IsZero() {
 			continue // still pending, or mid-construction without its resolve stamp
 		}
+		// A prior entry resolved AFTER this event did not happen yet from this
+		// event's point of view, and counting it would trip the standoff before the
+		// buyer had actually been turned down twice (code_review LLM-525). The two
+		// stamps share a basis — resolvePayTerminal writes entry.ResolvedAt and the
+		// event's At from the same command timestamp — so the comparison is sound.
+		// Skipped when the event carries no time at all: rejecting every prior entry
+		// as "future" against a zero clock would silently disable the count, a worse
+		// failure than the skew this guards against.
+		if !res.At.IsZero() && e.ResolvedAt.After(res.At) {
+			continue
+		}
 		if SaleStandoffLedgerState(e.State) {
 			count++
 		}
