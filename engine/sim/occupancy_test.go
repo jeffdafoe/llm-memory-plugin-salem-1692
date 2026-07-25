@@ -603,6 +603,62 @@ func TestOccupancy_LoadConvergesStaleBusinessState(t *testing.T) {
 	}
 }
 
+// TestOccupancy_LoadConvergeDoesNotEmit pins the OTHER half of the load
+// contract: convergence must write the corrected state WITHOUT emitting
+// VillageObjectStateChanged. object_state_changed tells a client to re-render one
+// object, and at load there is no client to tell — FinalizeLoad's republish
+// carries the converged state in the initial snapshot instead. Routing the load
+// path back through refreshStructureOccupancyState would still produce the right
+// state and so would slip past TestOccupancy_LoadConvergesStaleBusinessState; this
+// is the test that would catch it.
+//
+// The subscriber is attached BEFORE FinalizeLoad on purpose. That is not the
+// production order (pg.LoadWorld runs long before the events hub subscribes), and
+// the point is that the load path must not DEPEND on the production order — with a
+// listener present, it still must not emit.
+func TestOccupancy_LoadConvergeDoesNotEmit(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w := sim.NewWorld(repo)
+	loiterX, loiterY := stallLoiterOffsetX, stallLoiterOffsetY
+	w.Assets = map[sim.AssetID]*sim.Asset{"stall-a": stallAsset("stall-a")}
+	// Checkpointed "occupied" with its keeper parked far from her post, so
+	// convergence has a REAL change to make (occupied -> unoccupied). A no-op
+	// starting state would not distinguish direct assignment from the emitting
+	// wrapper, since the wrapper returns early when nothing changes.
+	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+		"stall": {
+			ID: "stall", AssetID: "stall-a", DisplayName: "Stall",
+			CurrentState: "occupied", Pos: stallPos,
+			LoiterOffsetX: &loiterX, LoiterOffsetY: &loiterY,
+		},
+	}
+	w.Structures = map[sim.StructureID]*sim.Structure{"stall": {ID: "stall", DisplayName: "Stall"}}
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		"keeper": {
+			ID: "keeper", DisplayName: "Keeper", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, WorkStructureID: "stall",
+			Pos: sim.TilePos{X: 10, Y: 10},
+		},
+	}
+
+	cap := &objEventCapture{}
+	w.Subscribe(cap)
+
+	if err := w.FinalizeLoad(context.Background()); err != nil {
+		t.Fatalf("FinalizeLoad: %v", err)
+	}
+
+	if got := w.Published().VillageObjects["stall"].CurrentState; got != "unoccupied" {
+		t.Fatalf("after load: stall = %q, want unoccupied — convergence did not run, so the no-emit assertion below proves nothing", got)
+	}
+	for _, evt := range cap.snapshot() {
+		if sc, ok := evt.(*sim.VillageObjectStateChanged); ok && sc.ObjectID == "stall" {
+			t.Errorf("load convergence emitted VillageObjectStateChanged (%s->%s); the load path must assign CurrentState directly, not go through refreshStructureOccupancyState",
+				sc.FromState, sc.ToState)
+		}
+	}
+}
+
 // TestOccupancy_NonTrackedAssetNoOp: a structure whose asset has no
 // occupied/unoccupied states is not occupancy-tracked — arrivals don't flip it
 // and emit no VillageObjectStateChanged for it.
