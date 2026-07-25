@@ -353,11 +353,15 @@ func TestOccupancy_StallKeeperAtPostReadsOpen(t *testing.T) {
 	}
 }
 
-// TestOccupancy_StallKeeperAsleepAtPostReadsShut: tendedness is gated on being
-// awake, so a keeper dozing at her own post shuts the stall — and the bed-down
-// hook has to sweep for it, since an outdoor sleeper's InsideStructureID is ""
-// and the per-structure refresh there never fires.
-func TestOccupancy_StallKeeperAsleepAtPostReadsShut(t *testing.T) {
+// TestOccupancy_StallTendedPredicateExcludesSleeper: tendedness is gated on being
+// awake, so a keeper dozing at her own post reads as not minding the stall.
+//
+// PREDICATE ONLY — it mutates State and calls the sweep directly. It deliberately
+// does NOT cover the executeNPCSleep / wakeNPC hooks: those are guards for a state
+// no caller can produce (both bed-down callers gate on npcSleepArmFor, which
+// classifies how an actor may sleep in the structure it is currently INSIDE), so
+// there is no integration path to drive them through.
+func TestOccupancy_StallTendedPredicateExcludesSleeper(t *testing.T) {
 	w, _ := buildOccupancyWorld(t)
 	_, pin, _ := stallTiles()
 

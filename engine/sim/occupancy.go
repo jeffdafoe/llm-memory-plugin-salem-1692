@@ -34,11 +34,14 @@ package sim
 //     night-only structures, whose flag can change on the day↔night boundary
 //     with no actor moving;
 //   - per locomotion tick that moved anyone, per teleport, on a workplace
-//     reassignment, on a labor settle, on bed-down / wake, and once at load —
+//     reassignment, on a labor settle, and on bed-down / wake —
 //     refreshActivePresenceOccupancyStates sweeps every non-night-only tracked
 //     structure, because the tended flag turns on inputs the inside-structure
 //     chokepoint cannot see (see that function for the full list and why each
-//     call site is there).
+//     call site is there);
+//   - once at load — convergeActivePresenceOccupancyOnLoad, the same derivation
+//     written without an emit (the art is stored, so a checkpoint can restore a
+//     state the world no longer justifies).
 //
 // A real flip emits VillageObjectStateChanged → object_state_changed, so the
 // client re-renders the new state.
@@ -61,28 +64,45 @@ const (
 //
 // MUST be called from inside a Command.Fn (reads/writes world maps, emits).
 func refreshStructureOccupancyState(w *World, structureID StructureID) {
-	obj, ok := w.VillageObjects[VillageObjectID(structureID)]
-	if !ok {
+	obj, target, ok := occupancyTargetState(w, structureID)
+	if !ok || obj.CurrentState == target {
 		return
 	}
+	setVillageObjectStateInline(w, obj, target)
+}
+
+// occupancyTargetState computes the state structureID's placement object SHOULD be
+// in and returns it alongside the object, WITHOUT writing or emitting anything.
+// ok=false when the structure has no placement object, its asset is missing from
+// the catalog, or the asset isn't occupancy-tracked (it must carry BOTH an
+// 'occupied'- and an 'unoccupied'-tagged state — otherwise there's no defined pair
+// to toggle between, so the structure simply doesn't participate).
+//
+// Split out so the runtime refresh (which emits, because a live flip has to reach
+// the client) and the load-time converge (which must not emit at all) derive the
+// target through ONE code path — the derivation is the thing that must not be
+// duplicated.
+//
+// MUST be called from inside a Command.Fn, or before World.Run on the load path.
+func occupancyTargetState(w *World, structureID StructureID) (*VillageObject, string, bool) {
+	obj, ok := w.VillageObjects[VillageObjectID(structureID)]
+	if !ok || obj == nil {
+		return nil, "", false
+	}
 	asset, ok := w.Assets[obj.AssetID]
-	if !ok {
-		return
+	if !ok || asset == nil {
+		return nil, "", false
 	}
 	occupiedState := asset.StateForTag(TagOccupied)
 	unoccupiedState := asset.StateForTag(TagUnoccupied)
 	if occupiedState == nil || unoccupiedState == nil {
-		return // not occupancy-tracked
+		return nil, "", false // not occupancy-tracked
 	}
-
 	target := unoccupiedState.State
 	if structureReadsOccupied(w, structureID, asset) {
 		target = occupiedState.State
 	}
-	if obj.CurrentState == target {
-		return
-	}
-	setVillageObjectStateInline(w, obj, target)
+	return obj, target, true
 }
 
 // structureReadsOccupied answers the occupied question for one structure under
@@ -198,22 +218,67 @@ func refreshNightOnlyOccupancyStates(w *World) {
 //     stand still, so movement can't be relied on.
 //   - executeNPCSleep / wakeNPC — guards; see the note at those call sites, which
 //     explains why no caller reaches them with an outdoor sleeper today.
-//   - FinalizeLoad — the art is derived but stored, so a checkpointed state that no
-//     longer matches the world converges before the first publish.
+//
+// The load path does NOT call this — it uses convergeActivePresenceOccupancyOnLoad,
+// which writes the same targets without emitting.
 //
 // MUST be called from inside a Command.Fn.
 func refreshActivePresenceOccupancyStates(w *World) {
 	for objID, obj := range w.VillageObjects {
-		if obj == nil {
-			continue
-		}
-		asset, ok := w.Assets[obj.AssetID]
-		if !ok || asset == nil || asset.OccupiedNightOnly {
-			continue
-		}
-		if asset.StateForTag(TagOccupied) == nil || asset.StateForTag(TagUnoccupied) == nil {
+		if !activePresenceTracked(w, obj) {
 			continue
 		}
 		refreshStructureOccupancyState(w, StructureID(objID))
+	}
+}
+
+// activePresenceTracked reports whether obj participates in the non-night-only
+// ("active presence") half of the occupancy catalog: its asset is known, is not
+// night-only, and carries both occupancy tags. The shared membership test for the
+// runtime sweep and the load-time converge, so the two can't drift on which
+// objects they cover.
+//
+// MUST be called from inside a Command.Fn, or before World.Run on the load path.
+func activePresenceTracked(w *World, obj *VillageObject) bool {
+	if obj == nil {
+		return false
+	}
+	asset, ok := w.Assets[obj.AssetID]
+	if !ok || asset == nil || asset.OccupiedNightOnly {
+		return false
+	}
+	return asset.StateForTag(TagOccupied) != nil && asset.StateForTag(TagUnoccupied) != nil
+}
+
+// convergeActivePresenceOccupancyOnLoad is the load-path twin of
+// refreshActivePresenceOccupancyStates: same membership, same derived target, but it
+// ASSIGNS CurrentState directly instead of going through setVillageObjectStateInline.
+//
+// Occupancy art is derived, yet stored on the village object and restored verbatim
+// from the checkpoint — so a village that went down with a keeper at her stall came
+// back up showing it open with nobody there (observed live on the James Farm,
+// 2026-07-25). The phase-boundary sweep only covers night-only assets, so nothing
+// else converges these.
+//
+// It does not emit, deliberately. A VillageObjectStateChanged tells the client to
+// re-render one object; at load there is no client to tell, and FinalizeLoad's
+// republish immediately afterward carries the converged state in the initial
+// snapshot every client reads on connect. Emitting would also make correctness rest
+// on WHEN subscribers happen to be registered relative to the loader — an implicit
+// lifecycle assumption that a later refactor could quietly break. Not emitting
+// removes the question instead of documenting an answer to it.
+//
+// MUST be called before World.Run (from FinalizeLoad), where the world goroutine
+// does not exist yet and this is the only writer.
+func convergeActivePresenceOccupancyOnLoad(w *World) {
+	for objID, obj := range w.VillageObjects {
+		if !activePresenceTracked(w, obj) {
+			continue
+		}
+		_, target, ok := occupancyTargetState(w, StructureID(objID))
+		if !ok {
+			continue
+		}
+		obj.CurrentState = target
 	}
 }
