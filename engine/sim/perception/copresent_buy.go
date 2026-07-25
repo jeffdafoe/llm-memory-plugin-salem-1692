@@ -37,7 +37,13 @@ const (
 // stuck (LLM-297). One decline is ordinary haggling; a second means the terms aren't
 // going to meet. An engine-hard insufficient-funds rejection short-circuits to a coin
 // block on the first occurrence — an empty purse won't clear by re-offering the same coins.
-const copresentStandoffDeclineThreshold = 2
+//
+// Aliased to the sim-side constant rather than restated (LLM-525): the same count
+// stamps the buyer's ObservedSaleStandoff memory, which is what carries the hold-off
+// past the end of the conversation. If the two ever drifted apart, the buyer would be
+// told to come back later while still holding a directory entry sending her straight
+// back — the exact oscillation the memory exists to stop.
+const copresentStandoffDeclineThreshold = sim.SaleStandoffDeclineThreshold
 
 // classifyCoPresentBuy resolves, for a seller of kind sharing the buyer's huddle, the
 // seller's live stock of that item and whether the buy is worth goading. Shared by the
@@ -100,10 +106,14 @@ func coPresentBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle 
 			if age := snap.PublishedAt.Sub(e.ResolvedAt); age >= 0 && age <= recentlyResolvedOfferWindow {
 				return copresentBuyBlockedCoin
 			}
-		case sim.PayLedgerStateDeclined,
-			sim.PayLedgerStateFailedInsufficientStock,
-			sim.PayLedgerStateFailedInsufficientGoods:
-			declines++
+		default:
+			// The dead-end terminals, via the shared sim predicate (LLM-525): the same
+			// count stamps the buyer's ObservedSaleStandoff memory, which is what carries
+			// this hold-off past the end of the conversation. Two parallel switches would
+			// let the rendered soften and the remembered standoff drift apart.
+			if sim.SaleStandoffLedgerState(e.State) {
+				declines++
+			}
 		}
 	}
 	if declines >= copresentStandoffDeclineThreshold {

@@ -59,6 +59,15 @@ const (
 	// worker, so this drops the business from the seek-work directory ONLY, on a
 	// shorter TTL since a break ends soon.
 	ObservedNoHiring
+	// ObservedSaleStandoff — offered for an item at a shop and the negotiation
+	// dead-ended (LLM-525). Per-item like ObservedOutOfStock: the key carries the
+	// ItemKind alongside the seller's WORKPLACE. Distinct from ObservedOutOfStock
+	// (the shelves were empty — a fact about stock) — a standoff is about the DEAL
+	// not closing, and stamps only once the buyer has been turned down
+	// SaleStandoffDeclineThreshold times in one conversation. Perception drops that
+	// (structure, item) from the buy directory for the TTL, so the buyer stops
+	// walking back to a counter that just told her no.
+	ObservedSaleStandoff
 	// ObservedHelpedByWorker — an employer's memory that a specific worker
 	// COMPLETED A PAID job for them (LLM-228). PERSON-keyed (the only such
 	// condition): the key carries the worker's PeerID with StructureID/ItemKind
@@ -75,7 +84,8 @@ const (
 // perception ignores it (the read-time decay applied by Active). Each arm reads
 // the named const kept next to that fact's capture code, so a TTL stays
 // documented where the fact is stamped (closed_business.go / out_of_stock.go /
-// declined_work.go / no_hiring.go / helped_by_worker.go). An unknown condition
+// declined_work.go / no_hiring.go / sale_standoff.go / helped_by_worker.go). An
+// unknown condition
 // returns 0 → Active false (safe default).
 func (c ObservedCondition) ttl() time.Duration {
 	switch c {
@@ -87,6 +97,8 @@ func (c ObservedCondition) ttl() time.Duration {
 		return DeclinedWorkMemoryTTL
 	case ObservedNoHiring:
 		return NoHiringMemoryTTL
+	case ObservedSaleStandoff:
+		return SaleStandoffMemoryTTL
 	case ObservedHelpedByWorker:
 		return HelpedByWorkerMemoryTTL
 	}

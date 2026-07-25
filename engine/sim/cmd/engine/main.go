@@ -548,6 +548,7 @@ func run(rt runtime, stop stopSignals) error {
 	sim.RegisterClosedBusinessSubscriber(rt.World)        // ZBBS-HOME-353: remember a business found shut on arrival
 	sim.RegisterOutOfStockSubscriber(rt.World)            // ZBBS-HOME-363: remember a vendor-item found out of stock on a failed buy
 	sim.RegisterDeclinedWorkSubscriber(rt.World)          // LLM-198: remember an employer that declined a labor offer; drop it from the worker's seek-work directory for 12h
+	sim.RegisterSaleStandoffSubscriber(rt.World)          // LLM-525: remember a buy negotiation that dead-ended; drop that (shop, item) from the buy directory for 4h
 	sim.RegisterNoHiringSubscriber(rt.World)              // LLM-210: remember a business whose keeper was on break (present but not hireable); drop it from the seek-work directory
 	sim.RegisterHelpedByWorkerSubscriber(rt.World)        // LLM-228: employer remembers a worker who completed a paid job; recall it at the decision section when they solicit again (36h)
 	sim.RegisterKnownPlaceSubscriber(rt.World)            // LLM-77: remember a place's affordance on gather/purchase (durable world-memory)

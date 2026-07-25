@@ -475,6 +475,33 @@ func businessRememberedOutOfStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapsh
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, ItemKind: itemKind, Condition: sim.ObservedOutOfStock}, snap.PublishedAt)
 }
 
+// businessRememberedSaleStandoff reports whether the subject has a live
+// experiential memory (LLM-525, within its TTL of the snapshot clock) that its
+// offers for itemKind at structureID dead-ended — turned down enough times in one
+// conversation to trip the co-present standoff. The per-(structure,item) sibling of
+// businessRememberedShut: stamped once the standoff latches and self-cleared on a
+// later accepted buy by the PayWithItemResolved subscriber (sim/sale_standoff.go),
+// TTL decay applied by Observed.Active at read time.
+//
+// Unlike the out-of-stock memory this one DROPS the supplier from the buy directory
+// rather than annotating it (findItemVendors). The annotate-vs-drop question was
+// settled by LLM-216: an annotated dead end still reads as a destination to a weak
+// model, which then tours it. Here the touring IS the bug — the "hold off and come
+// back later" soften has no effect if the directory re-issues the destination one
+// step down the road.
+func businessRememberedSaleStandoff(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID, itemKind sim.ItemKind) bool {
+	if snap == nil || actorSnap == nil {
+		return false
+	}
+	// Same in-flight-destination guard as businessRememberedShut (LLM-366 /
+	// ZBBS-HOME-405): a mid-walk re-tick must not read the memory and steer the
+	// actor off the shop it just chose to walk to. Arrival re-opens the question.
+	if walkingToStructure(actorSnap, structureID) {
+		return false
+	}
+	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, ItemKind: itemKind, Condition: sim.ObservedSaleStandoff}, snap.PublishedAt)
+}
+
 // walkingToStructure reports whether the actor's in-flight move targets
 // structureID (an enter or a visit). It is the narrow HOME-405 guard for the
 // remembered-shut / remembered-out-of-stock avoidance reads (LLM-366): an NPC

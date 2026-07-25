@@ -305,6 +305,12 @@ const (
 	// no goods at all to put up in trade. The genuine payment dead-end: nothing to pay
 	// with, in any form the seller could accept.
 	restockBlockNoMeans
+	// restockBlockStandoff — the buyer's offers for this item at this supplier
+	// dead-ended in a recent conversation (businessRememberedSaleStandoff, the
+	// TTL-decayed experiential memory, LLM-525). Like restockBlockShut it is a
+	// remembered outcome, not a live status, and the supplier returns as a
+	// destination when the memory lapses.
+	restockBlockStandoff
 )
 
 // RestockBlockedSupplier is a supplier of a low item that the buyer cannot transact
@@ -835,6 +841,19 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		// the retry the annotation aimed for without the wasted trips in between.
 		if businessRememberedShut(snap, buyerSnap, structureID) {
 			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockShut})
+			continue
+		}
+		// LLM-525: the buyer's offers for this item here dead-ended in a recent
+		// conversation. Dropped for the same reason the remembered-shut supplier is:
+		// a destination that will not produce a deal is a trip wasted, and the weak
+		// model walks any destination it is handed. This is what makes the co-present
+		// "hold off and come back later" soften stick — without it the directory
+		// re-issues this very supplier on the next tick, one step down the road, and
+		// the owner turns around (the Elizabeth Ellis farm<->blacksmith oscillation).
+		// Experiential and TTL-decayed, so the supplier returns once the memory lapses
+		// and the buyer tries again later, which is what "later" was supposed to mean.
+		if businessRememberedSaleStandoff(snap, buyerSnap, structureID, itemKind) {
+			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockStandoff})
 			continue
 		}
 		// The LLM-406 means-to-pay gate (see the doc comment): coin that covers the
@@ -1461,12 +1480,16 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 	fmt.Fprintf(b, "- You have %d %s on hand, and no way to restock just now.\n",
 		it.CurrentQty, sanitizeInline(it.ItemLabel))
-	noMeans, shut := false, false
+	noMeans, shut, standoff := false, false, false
 	for _, bl := range it.Blocked {
 		switch bl.Reason {
 		case restockBlockNoMeans:
 			noMeans = true
 			fmt.Fprintf(b, "  - %s sells %s, but you have neither the coin for it nor a single good to put up in trade.\n",
+				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
+		case restockBlockStandoff:
+			standoff = true
+			fmt.Fprintf(b, "  - %s sells %s, but you pressed them for it not long ago and could not come to terms.\n",
 				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
 		default:
 			shut = true
@@ -1474,13 +1497,23 @@ func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
 		}
 	}
+	// The coda is keyed to the reason so each blocked supplier gets its own way out.
+	// Only reached when at least one of noMeans/shut applies; a standoff-only block
+	// falls through to its own resolution below, and a mixed block gets both (the
+	// same both-resolutions rule the shut/no-means pair already follows).
 	switch {
 	case noMeans && shut:
 		b.WriteString("  Keep your shop and take what trade comes to you — once you have coin or goods to trade with you can restock, and the shut one is worth looking in on another day.\n")
 	case noMeans:
 		b.WriteString("  Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.\n")
-	default:
+	case shut:
 		b.WriteString("  Look in again another day — a keeper will be tending it sooner or later.\n")
+	}
+	if standoff {
+		// LLM-525: the deal, not the shop, is what failed — so the way out is time,
+		// not coin or a keeper returning. Says to let it rest, which is exactly what
+		// the co-present soften asked for and what the directory drop now enforces.
+		b.WriteString("  Let that one rest and ask again later in the day — a hard no this morning may soften once they have more to spare.\n")
 	}
 }
 
