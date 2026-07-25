@@ -318,9 +318,14 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 		// is still for sale (the eachVendorOffer qty>0 gate drops him once sold empty).
 		fmt.Fprintf(b, "The %s here is too worn to restock — its keeper can sell what's on hand, but can't refill the shelves or make more until it's mended.\n", name)
 	case v.Degraded:
-		// LLM-446 (the positive-pct twin): the keeper still works, slowly — a
-		// co-present buyer should expect long waits, not a dead shop.
-		fmt.Fprintf(b, "The %s here is badly worn — its keeper can sell what's on hand and still works, though the disrepair makes everything slow, and the shelves can't be restocked until it's mended.\n", name)
+		// A bare atmosphere fact for the onlooker (LLM-524). The mechanical tail this
+		// carried (LLM-446: the keeper still sells and works, slowly) read as a stat
+		// pile in a line that is only scenery to a passer-by — and it contradicted the
+		// co-located "is shut — no one is tending it" dead-end line when the keeper was
+		// away, telling the constable in one breath that the farm was shut and that its
+		// keeper was still working. The keeper's OWN cue (renderStallRepair) still
+		// carries the sell/restock mechanics for the actor who can act on them.
+		fmt.Fprintf(b, "The %s here is badly worn.\n", name)
 	default:
 		fmt.Fprintf(b, "The %s here looks worn and run-down from hard use.\n", name)
 	}

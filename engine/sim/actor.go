@@ -1722,6 +1722,16 @@ type ActorSnapshot struct {
 	RouteLabel        string
 	RouteStopObjectID VillageObjectID
 
+	// RouteStopsAhead is how many stops still lie ahead AFTER the one the actor is
+	// standing at — set only alongside RouteStopObjectID (i.e. only once arrived),
+	// 0 at the final stop. It lets the rounds cue carry the circuit forward
+	// ("Seven more places on your round still lie ahead of you"), so an EMPTY stop
+	// reads as a waypoint rather than a dead end (LLM-524). Without it the model
+	// sees only "you stand before the <shut, empty business>" and reasonably
+	// concludes the round is pointless and returns to post, ending the tour at the
+	// first quiet shop.
+	RouteStopsAhead int
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

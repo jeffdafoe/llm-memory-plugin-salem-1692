@@ -990,6 +990,15 @@ func renderActor(b *strings.Builder, a ActorView) {
 		if a.Rounds.AtBusiness != "" {
 			fmt.Fprintf(b, "You are walking your rounds through the village. You stand before the %s.\n",
 				sanitizeInline(a.Rounds.AtBusiness))
+			// Carry the circuit forward (LLM-524). A quiet stop otherwise reads as a
+			// dead end — the model finds a shut, empty shop, concludes the round is
+			// pointless and walks back to its post, ending the tour at the first
+			// closed door. Naming what still lies ahead makes the stop a waypoint.
+			// Deliberately NOT an imperative ("go on to the next"): the scene is the
+			// argument. Omitted at the final stop, where nothing remains to name.
+			if line := renderRoundsStopsAhead(a.Rounds.StopsAhead); line != "" {
+				b.WriteString(line)
+			}
 		} else {
 			b.WriteString("You are walking your rounds through the village.\n")
 		}
@@ -2227,6 +2236,23 @@ func AgoPhrase(at, now time.Time) string {
 		return countWord(int(d/(30*day))) + " months ago"
 	default:
 		return "over a year ago"
+	}
+}
+
+// renderRoundsStopsAhead voices how much of the constable's circuit still lies
+// ahead of the stop he is standing at (LLM-524), or "" at the final stop (n <= 0),
+// where there is nothing left to name. Spelled as a word, in the round's own
+// register — the count is scene, not statistic.
+func renderRoundsStopsAhead(n int) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n == 1:
+		return "One more place on your round still lies ahead of you.\n"
+	default:
+		word := countWord(n)
+		return fmt.Sprintf("%s more places on your round still lie ahead of you.\n",
+			strings.ToUpper(word[:1])+word[1:])
 	}
 }
 

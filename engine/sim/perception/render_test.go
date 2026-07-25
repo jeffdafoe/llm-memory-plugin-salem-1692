@@ -1104,3 +1104,51 @@ func TestRenderNarrativeState_SanitizesAndGates(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderRoundsStopsAhead covers the LLM-524 continuation line's three shapes:
+// omitted at the final stop (nothing left to name), singular, and the spelled-out
+// plural. The line exists so a QUIET stop reads as a waypoint rather than a dead
+// end — live, the constable found a shut, empty farm at stop 0, concluded the round
+// was pointless and walked back to his post, ending the tour at the first closed door.
+func TestRenderRoundsStopsAhead(t *testing.T) {
+	cases := []struct {
+		name string
+		n    int
+		want string
+	}{
+		{"final stop omits the line", 0, ""},
+		{"negative is defensive, omits", -1, ""},
+		{"singular reads as one place", 1, "One more place on your round still lies ahead of you.\n"},
+		{"plural spells the count", 2, "Two more places on your round still lie ahead of you.\n"},
+		{"seven, the full-circuit case", 7, "Seven more places on your round still lie ahead of you.\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := renderRoundsStopsAhead(tc.n); got != tc.want {
+				t.Errorf("renderRoundsStopsAhead(%d) = %q, want %q", tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderActor_RoundsContinuationGatedOnArrival locks the LLM-524 gating
+// contract at the render layer: the continuation line rides on ARRIVAL at a stop,
+// never on the count alone. RouteStopsAhead is 0 both while walking and at the
+// final stop, so a future caller that populated the count without an arrival (or
+// left a synthetic one behind) must not surface a phantom remainder mid-walk —
+// only "You are walking your rounds through the village." should render.
+func TestRenderActor_RoundsContinuationGatedOnArrival(t *testing.T) {
+	var b strings.Builder
+	renderActor(&b, ActorView{Rounds: &RoundsView{AtBusiness: "", StopsAhead: 5}})
+	got := b.String()
+
+	if !strings.Contains(got, "You are walking your rounds through the village.") {
+		t.Errorf("mid-walk rounds line missing:\n%s", got)
+	}
+	if strings.Contains(got, "lie ahead") || strings.Contains(got, "lies ahead") {
+		t.Errorf("continuation line rendered without an arrival (AtBusiness empty):\n%s", got)
+	}
+	if strings.Contains(got, "You stand before") {
+		t.Errorf("at-stop line rendered without an arrival:\n%s", got)
+	}
+}
