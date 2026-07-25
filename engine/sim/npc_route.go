@@ -108,6 +108,20 @@ type RoutePhase string
 const (
 	RoutePhaseActive    RoutePhase = "active"
 	RoutePhaseReturning RoutePhase = "returning"
+
+	// RoutePhaseSuspended — the carrier stepped away of his own accord (a thirst,
+	// a conversation, an errand) and the round is PAUSED at its current stop rather
+	// than thrown away (LLM-531). A need interrupts a round; it does not cancel it.
+	// The engine dispatches no walk while suspended and never pulls him back: the
+	// perception cue keeps telling him what is left and where he broke off, and he
+	// resumes by walking there himself, which the arrival path adopts.
+	//
+	// A suspended route is NOT "in flight" — see NPCRoute.InFlight. Everything that
+	// suppresses ordinary behaviour during a round (shift duty, the idle backstop,
+	// arrival encounters, the rounds-due gate) must keep working while he is off
+	// seeing to himself, or a suspended round would strand him the way a parked
+	// route used to.
+	RoutePhaseSuspended RoutePhase = "suspended"
 )
 
 // maxStaleRouteRetries bounds how many times a single stop is re-walked after a
@@ -273,6 +287,25 @@ type NPCRoute struct {
 	// the timer handles the not-yet-fired case; the Gen check handles the
 	// already-queued case. World-goroutine-only; never persisted.
 	Gen uint64
+}
+
+// InFlight reports whether the route is actively carrying the actor — i.e. the
+// engine has a walk out for it and the actor's ordinary behaviour should stay
+// suppressed. False for a nil route and for a SUSPENDED one (LLM-531): while
+// suspended the actor is his own man, so shift duty, the idle backstop and arrival
+// encounters must all behave exactly as if he had no route at all. Every "is this
+// actor on a route?" test outside the route machinery itself goes through this
+// (or RouteInFlight), so adding a phase can't silently strand an actor in a state
+// that some caller still reads as "busy".
+func (r *NPCRoute) InFlight() bool {
+	return r != nil && r.Phase != RoutePhaseSuspended
+}
+
+// RouteInFlight reports whether actorID has an in-flight (non-suspended) route.
+// The world-level form of NPCRoute.InFlight, for callers holding only the world.
+// MUST be called from inside a Command.Fn (reads world maps).
+func RouteInFlight(w *World, actorID ActorID) bool {
+	return w.ActiveRoutes[actorID].InFlight()
 }
 
 // stopDwellTimer stops and clears any pending dwell timer on the route (nil-safe on
@@ -537,6 +570,8 @@ func advanceNPCRoute(actorID ActorID, flip bool) Command {
 				return advanceActiveRoute(w, route, flip)
 			case RoutePhaseReturning:
 				return advanceReturningRoute(w, route)
+			case RoutePhaseSuspended:
+				return resumeSuspendedRoute(w, route, flip)
 			default:
 				log.Printf("sim/npc_route: %q route in unknown phase %q — clearing",
 					actorID, route.Phase)
@@ -641,18 +676,38 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		// to tell his own move_to apart from an external nudge here. (A walk ONWARD
 		// to a stop still on the circuit is handled above and never reaches here.)
 		if routeYieldsToVolition(route) {
-			log.Printf("sim/npc_route: %q walked off its route to (%d,%d) on its own (expected stop %d at (%d,%d)) — yielding to volition, ending tour",
-				route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
-			// Clearing by actor ID clears exactly the route whose movement just
-			// completed — no cross-generation clear. This runs synchronously inside
-			// w.emit(ActorArrived) on the single world goroutine (emit dispatches
-			// subscribers inline — world.go), so no route-install command can
-			// interpose between the arrival and here; and a superseded route's walk
-			// never reaches finishArrival (single MoveIntent, silent supersede — see
-			// commands_move.go), so a replaced route can't deliver a stale arrival.
-			// Same reasoning as the stale_abandoned clear below.
-			clearActiveRoute(w, route.NPCID)
-			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "yielded_to_volition"}, nil
+			log.Printf("sim/npc_route: %q stepped away from its route to (%d,%d) on its own (expected stop %d at (%d,%d)) — suspending the round at stop %d",
+				route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y, route.StopIdx)
+			// SUSPEND, don't discard (LLM-531). A need interrupts a round; it does not
+			// cancel it. Live, he told Goodman James "my rounds call me onward, and
+			// I've a thirst I can satisfy at the well on the way", drank, and then had
+			// nothing left telling him a round was under way — so he went back to his
+			// post with six doors unvisited. Keeping the route (cursor intact, no walk
+			// dispatched) lets the cue go on naming what remains and where he broke
+			// off; he resumes by walking there, which the adoption path above takes.
+			//
+			// The dwell timer is stopped: nothing should fire on his behalf while the
+			// round is paused. A suspended route reports InFlight() == false, so shift
+			// duty, the idle backstop and arrival encounters all resume normal service
+			// — he is genuinely free, not parked in a half-busy state. The next rounds
+			// interval supersedes a suspended route outright, which bounds how long
+			// one can linger to a single interval.
+			route.Phase = RoutePhaseSuspended
+			route.StaleRetries = 0
+			route.stopDwellTimer()
+			route.Dwelling = false
+			// Burn a fresh generation on suspension. Stopping the timer only cancels a
+			// callback that has NOT yet fired; one that fired and queued its
+			// SendContext before we got here still runs later. The Phase check alone
+			// does not save us, because RESUMING restores exactly the state that
+			// callback expects (same Gen, same StopIdx, Phase active again) — it would
+			// then sail through every guard and advance the round a stop early, out of
+			// nowhere, some minutes after he picked it up. A new Gen invalidates any
+			// such in-flight callback permanently: this suspension begins a new epoch
+			// of the same route.
+			w.routeInstallSeq++
+			route.Gen = w.routeInstallSeq
+			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "suspended"}, nil
 		}
 		// Stale arrival: this ActorArrived was for some other destination — an
 		// external MoveActor (admin force-move, a competing producer's nudge)
@@ -742,6 +797,38 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 	return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "returning_home"}, nil
+}
+
+// resumeSuspendedRoute is AdvanceNPCRoute's suspended-phase body (LLM-531): the
+// round is paused and the engine has no walk out, but the actor keeps arriving
+// places of his own accord. When he arrives at the stop he BROKE OFF at, he has
+// come back to his round — go active and let the ordinary clean-visit path carry
+// him on from there.
+//
+// Only that one stop, deliberately. It is the single place the suspended cue names
+// ("you broke off at the Ellis Farm"), so it is the only one he can be deliberately
+// returning TO; accepting a later stop as well would be generality the cue never
+// offered, and it would count the broken-off stop as visited without ever running
+// its visit — the same skipped-side-effect trap that narrowed LLM-530's adoption to
+// the immediate next stop.
+//
+// Any other arrival leaves him suspended, silently: he is off seeing to himself and
+// nothing should nag or drag him. The round waits, and the next rounds interval
+// supersedes it if he never comes back — or the off-shift sweep drops it when his
+// watch ends (ClearSuspendedRoundIfOffShift).
+func resumeSuspendedRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteResult, error) {
+	actor, ok := w.Actors[route.NPCID]
+	if !ok || route.StopIdx >= len(route.Stops) {
+		clearActiveRoute(w, route.NPCID)
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "no_route"}, nil
+	}
+	if !RouteStopArrived(actor, route.Stops[route.StopIdx]) {
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "still_suspended"}, nil
+	}
+	log.Printf("sim/npc_route: %q returned to its round at stop %d — resuming", route.NPCID, route.StopIdx)
+	route.Phase = RoutePhaseActive
+	route.StaleRetries = 0
+	return advanceActiveRoute(w, route, flip)
 }
 
 // advanceReturningRoute is AdvanceNPCRoute's returning-phase body. The

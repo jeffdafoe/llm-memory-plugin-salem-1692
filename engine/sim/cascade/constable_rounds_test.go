@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -595,5 +596,68 @@ func TestConstableStaleDwellCallbackAfterSupersede(t *testing.T) {
 	}
 	if res.(int) != 0 {
 		t.Errorf("route B StopIdx = %d, want 0 — a stale dwell callback from the superseded route advanced the replacement (generation guard failed)", res.(int))
+	}
+}
+
+// TestConstableSuspendedArrivalUsesSkipFlip pins the defect the LLM-531 audit found:
+// handleActorArrivedAdvanceRoute's constable branch requires Phase == Active, so a
+// RESUMING constable fell through to the generic tail — sim.AdvanceNPCRoute with
+// flip=true — while every other constable path deliberately uses SkipFlip. His stops
+// are businesses whose village_object state his round has no business flipping, so
+// the fall-through would have stamped them with a state the round never intended.
+//
+// Drives the real sequence through the cascade handler: arrive at stop 0, step away
+// (suspending the round), then walk back to the stop he broke off at. The round must
+// resume AND every business stop must keep the state it started with.
+func TestConstableSuspendedArrivalUsesSkipFlip(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
+			return nil, err
+		}
+		route := world.ActiveRoutes["gideon"]
+		before := map[sim.VillageObjectID]string{}
+		for _, s := range route.Stops {
+			before[s.ObjectID] = world.VillageObjects[s.ObjectID].CurrentState
+		}
+		breakOff := route.Stops[route.StopIdx]
+
+		// He steps away: an arrival at neither the current stop nor the next one.
+		a := world.Actors["gideon"]
+		a.InsideStructureID = ""
+		a.Pos = sim.Position{X: sim.PadX + 60, Y: sim.PadY + 60}
+		a.MoveIntent = nil
+		handleActorArrivedAdvanceRoute(context.Background(), world,
+			&sim.ActorArrived{ActorID: "gideon", At: time.Now()}, llm.NewFakeClient())
+		if got := world.ActiveRoutes["gideon"]; got == nil || got.Phase != sim.RoutePhaseSuspended {
+			return nil, fmt.Errorf("round did not suspend: %+v", got)
+		}
+
+		// He comes back to the stop he broke off at — this is the resuming arrival.
+		if breakOff.EnterStructureID != "" {
+			a.InsideStructureID = breakOff.EnterStructureID
+		} else {
+			a.Pos = breakOff.WalkTo
+		}
+		a.MoveIntent = nil
+		handleActorArrivedAdvanceRoute(context.Background(), world,
+			&sim.ActorArrived{ActorID: "gideon", FinalStructureID: breakOff.EnterStructureID, At: time.Now()}, llm.NewFakeClient())
+
+		if got := world.ActiveRoutes["gideon"]; got == nil || got.Phase == sim.RoutePhaseSuspended {
+			return nil, fmt.Errorf("round did not resume on returning to the break-off stop: %+v", got)
+		}
+		// The crux: no business object was flipped by the resume.
+		for id, was := range before {
+			if now := world.VillageObjects[id].CurrentState; now != was {
+				return nil, fmt.Errorf("business %q state changed %q -> %q on resume — the generic flip path ran", id, was, now)
+			}
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("suspended-arrival skip-flip: %v", err)
 	}
 }

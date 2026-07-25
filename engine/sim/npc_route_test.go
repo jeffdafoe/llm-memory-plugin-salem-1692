@@ -390,12 +390,24 @@ func TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition(t *testing.T) {
 		t.Fatalf("AdvanceNPCRoute: %v", err)
 	}
 	r := res.(sim.AdvanceNPCRouteResult)
-	if r.Reason != "yielded_to_volition" {
-		t.Errorf("Reason = %q, want yielded_to_volition", r.Reason)
+	if r.Reason != "suspended" {
+		t.Errorf("Reason = %q, want suspended", r.Reason)
 	}
-	// The tour ended — the route is cleared, not parked and not retrying.
-	if route := activeRouteOf(t, w, "lamp"); route != nil {
-		t.Errorf("ActiveRoutes[lamp] not cleared after yield: %+v", route)
+	// The round is PAUSED, not discarded (LLM-531): the cursor survives so the cue
+	// can name where he broke off and he can pick it up again.
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("ActiveRoutes[lamp] cleared — the part-walked round was thrown away")
+	}
+	if route.Phase != sim.RoutePhaseSuspended {
+		t.Errorf("Phase = %q, want %q", route.Phase, sim.RoutePhaseSuspended)
+	}
+	if route.StopIdx != 0 {
+		t.Errorf("StopIdx = %d, want 0 (he broke off before reaching stop 0)", route.StopIdx)
+	}
+	// A suspended round must not read as "busy" to the rest of the engine.
+	if route.InFlight() {
+		t.Error("a suspended route reports InFlight() — shift duty and the backstop would stay suppressed")
 	}
 	// The crux: NO re-walk was dispatched — he is not dragged back to the stop.
 	if mi := moveIntentOf(t, w, "lamp"); mi != nil {
@@ -789,10 +801,173 @@ func TestAdvanceNPCRoute_ConstableArrivalBeyondNextStopStillYields(t *testing.T)
 	if err != nil {
 		t.Fatalf("AdvanceNPCRoute: %v", err)
 	}
-	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "yielded_to_volition" {
-		t.Errorf("Reason = %q, want yielded_to_volition (an arrival that is not the next stop is leaving the round)", r.Reason)
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "suspended" {
+		t.Errorf("Reason = %q, want suspended (an arrival that is not the next stop is stepping away, which pauses the round)", r.Reason)
 	}
-	if route := activeRouteOf(t, w, "lamp"); route != nil {
-		t.Errorf("route not cleared after an off-circuit arrival: %+v", route)
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("route discarded rather than suspended")
+	}
+	if route.Phase != sim.RoutePhaseSuspended {
+		t.Errorf("Phase = %q, want %q", route.Phase, sim.RoutePhaseSuspended)
+	}
+	// The crux for this case: the cursor did NOT jump to stop 2.
+	if route.StopIdx != 0 {
+		t.Errorf("StopIdx = %d, want 0 — the cursor must not jump over stop 1", route.StopIdx)
+	}
+}
+
+// TestAdvanceNPCRoute_SuspendedRoundResumesWhenHeWalksBack is the other half of
+// LLM-531: a need interrupts a round, it does not cancel it. He steps away (the
+// well, a conversation), the round waits with its cursor intact, and when he walks
+// back to the stop he broke off at, it picks up from there — no engine coercion,
+// no re-walk. Live, the round used to be discarded at the moment he stepped away,
+// so after a drink nothing told him six doors were still unwalked.
+func TestAdvanceNPCRoute_SuspendedRoundResumesWhenHeWalksBack(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// He steps away: arrives somewhere that is no stop of his at all.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		a.Pos = sim.Position{X: sim.PadX + 40, Y: sim.PadY + 40}
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("step away: %v", err)
+	}
+	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("advance (step away): %v", err)
+	}
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "suspended" {
+		t.Fatalf("Reason = %q, want suspended", r.Reason)
+	}
+
+	// While suspended, a further arrival elsewhere leaves the round waiting rather
+	// than nagging or clearing it — he is off seeing to himself.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		a.Pos = sim.Position{X: sim.PadX + 41, Y: sim.PadY + 41}
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("wander: %v", err)
+	}
+	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("advance (wander): %v", err)
+	}
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "still_suspended" {
+		t.Errorf("Reason = %q, want still_suspended", r.Reason)
+	}
+	if route := activeRouteOf(t, w, "lamp"); route == nil || route.Phase != sim.RoutePhaseSuspended {
+		t.Fatalf("round not still waiting: %+v", route)
+	}
+
+	// He walks back to the stop he broke off at — the one the cue names.
+	var resumeStopID sim.VillageObjectID
+	var resumeIdx int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		resumeIdx = route.StopIdx
+		resumeStopID = route.Stops[resumeIdx].ObjectID
+		a := world.Actors["lamp"]
+		a.Pos = route.Stops[resumeIdx].WalkTo
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("walk back: %v", err)
+	}
+	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("advance (resume): %v", err)
+	}
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "stop_advanced" {
+		t.Errorf("Reason = %q, want stop_advanced (the round picks up from where he broke off)", r.Reason)
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("route gone after resume")
+	}
+	if route.Phase != sim.RoutePhaseActive {
+		t.Errorf("Phase = %q, want %q after resuming", route.Phase, sim.RoutePhaseActive)
+	}
+	if !route.InFlight() {
+		t.Error("resumed route still reports InFlight() == false")
+	}
+	// And the engine is carrying him again — a walk to the next stop is dispatched.
+	if mi := moveIntentOf(t, w, "lamp"); mi == nil {
+		t.Error("no walk dispatched after resume — the round is not carrying him")
+	}
+	// Resuming hands to the ordinary clean-visit path, so the stop he came back to is
+	// genuinely VISITED, not merely counted: its object flips and the cursor advances
+	// past it. Asserting the side effects (code_review) rather than just the reason
+	// string — a resume that skipped them would look identical from the outside.
+	if got := w.Published().VillageObjects[resumeStopID].CurrentState; got != "unlit" {
+		t.Errorf("stop object %q state = %q, want unlit — resuming did not perform the visit", resumeStopID, got)
+	}
+	if route.StopIdx <= resumeIdx {
+		t.Errorf("StopIdx = %d, want > %d — the resumed stop was not counted as visited", route.StopIdx, resumeIdx)
+	}
+}
+
+// TestAdvanceNPCRoute_SuspendBurnsDwellGeneration covers the race code_review found
+// in LLM-531: stopping the dwell timer only cancels a callback that has not yet
+// fired, and one already queued through SendContext still runs later. The Phase
+// check alone does not save the round, because RESUMING restores exactly the state
+// that callback expects — same StopIdx, Phase active again — so without a new
+// generation it would sail through every guard and advance the round a stop early,
+// minutes after he picked it up. Suspension therefore burns a fresh Gen, which
+// invalidates any in-flight callback permanently.
+func TestAdvanceNPCRoute_SuspendBurnsDwellGeneration(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	genAtArm := activeRouteOf(t, w, "lamp").Gen
+
+	// He steps away — the round suspends.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		a.Pos = sim.Position{X: sim.PadX + 40, Y: sim.PadY + 40}
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("step away: %v", err)
+	}
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	genSuspended := activeRouteOf(t, w, "lamp").Gen
+	if genSuspended == genAtArm {
+		t.Fatalf("Gen unchanged across suspension (%d) — a dwell callback queued before "+
+			"the pause would still match after resuming and advance the round spuriously", genSuspended)
+	}
+
+	// He comes back and the round resumes: the generation must NOT revert to the one
+	// any pre-suspension callback captured.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		a := world.Actors["lamp"]
+		a.Pos = route.Stops[route.StopIdx].WalkTo
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("walk back: %v", err)
+	}
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if route := activeRouteOf(t, w, "lamp"); route != nil && route.Gen == genAtArm {
+		t.Error("resumed route reverted to the pre-suspension Gen — a stale dwell callback would match again")
 	}
 }

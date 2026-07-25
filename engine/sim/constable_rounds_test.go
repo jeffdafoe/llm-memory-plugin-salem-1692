@@ -254,3 +254,82 @@ func TestRouteStopArrivedAndDestination(t *testing.T) {
 		t.Errorf("loiter stop destination = %+v, want Position(7,7)", ld)
 	}
 }
+
+// TestClearSuspendedRoundIfOffShift covers the bound on the duty exemption a
+// SUSPENDED round carries (LLM-531). While a round sits part-walked, shiftDuty
+// leaves the constable alone so he can choose to pick it up rather than be marched
+// back to his post the moment he finishes his drink. That exemption must not follow
+// him into the night: once his watch is over the part-walked round is dropped, so
+// he goes home like anyone else and tomorrow starts a fresh circuit.
+func TestClearSuspendedRoundIfOffShift(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC) // noon
+
+	t.Run("on shift keeps the paused round waiting", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseSuspended}
+		if ClearSuspendedRoundIfOffShift(w, a, now) {
+			t.Error("cleared a paused round while still on shift — he loses the chance to resume")
+		}
+		if w.ActiveRoutes[a.ID] == nil {
+			t.Error("round dropped while on shift")
+		}
+	})
+
+	t.Run("off shift drops the paused round", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		// A morning-only watch, so noon is off shift.
+		a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600)
+		w := constableWorld(a)
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseSuspended}
+		if !ClearSuspendedRoundIfOffShift(w, a, now) {
+			t.Fatal("did not drop a paused round after the watch ended")
+		}
+		if w.ActiveRoutes[a.ID] != nil {
+			t.Error("route still present after the off-shift drop — the duty exemption would persist overnight")
+		}
+	})
+
+	t.Run("an in-flight round is left to the route machinery", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600) // off shift at noon
+		w := constableWorld(a)
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseActive}
+		if ClearSuspendedRoundIfOffShift(w, a, now) {
+			t.Error("swept an ACTIVE route — in-flight rounds clear through their own paths")
+		}
+	})
+}
+
+// TestClearSuspendedRoundIfOffShift_FiresWithoutARoundsDueEvent is the invariant
+// code_review asked to make explicit: the off-shift sweep is what bounds the duty
+// exemption a SUSPENDED round carries, so it must not depend on a rounds beat
+// happening to land. runConstableRounds calls the sweep BEFORE ConstableRoundsDue
+// and runs off RouteScheduleTick, an unconditional per-minute ticker
+// (RouteScheduleTickerInterval = time.Minute) — so crossing shift end drops the
+// round on the next minute even though no round is due anywhere near that moment.
+//
+// This pins the two halves together: at the crossing instant rounds are NOT due
+// (the stamp is fresh), and the sweep still clears.
+func TestClearSuspendedRoundIfOffShift_FiresWithoutARoundsDueEvent(t *testing.T) {
+	const interval = 2 * time.Hour
+	a := constableAtPost("gideon")
+	a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600) // watch ends at 10:00
+	w := constableWorld(a)
+
+	justAfterShiftEnd := time.Date(2026, 6, 12, 10, 1, 0, 0, time.UTC)
+	w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseSuspended}
+	// A fresh stamp, so no rounds beat is due at this instant.
+	StampConstableRounds(w, a.ID, justAfterShiftEnd.Add(-time.Minute))
+
+	if ConstableRoundsDue(w, a, interval, justAfterShiftEnd) {
+		t.Fatal("fixture invalid: a round is due, so this would not prove the sweep runs independently")
+	}
+	if !ClearSuspendedRoundIfOffShift(w, a, justAfterShiftEnd) {
+		t.Fatal("part-walked round survived the end of the watch with no rounds beat to clear it — " +
+			"the duty exemption would persist overnight and leave him standing where he stopped")
+	}
+	if w.ActiveRoutes[a.ID] != nil {
+		t.Error("route still present after the sweep")
+	}
+}

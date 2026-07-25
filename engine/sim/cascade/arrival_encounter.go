@@ -63,7 +63,9 @@ func outdoorEncounterExcludesActor(w *sim.World, a *sim.Actor, now time.Time, st
 	if a.State == sim.StateSleeping || a.State == sim.StateResting {
 		return true
 	}
-	if _, onRoute := w.ActiveRoutes[a.ID]; onRoute {
+	// In-flight only (LLM-531): while his round is suspended he is available for an
+	// ordinary encounter — being paused mid-round is not being busy.
+	if sim.RouteInFlight(w, a.ID) {
 		return true
 	}
 	// LLM-375: an actor at an OPEN worked structure's loiter pin belongs to the

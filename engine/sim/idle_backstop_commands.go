@@ -110,7 +110,9 @@ func actorStrandedInOpen(w *World, a *Actor, now time.Time) bool {
 	if a.InsideStructureID != "" || a.MoveIntent != nil {
 		return false
 	}
-	if w.ActiveRoutes != nil && w.ActiveRoutes[a.ID] != nil {
+	// In-flight only (LLM-531): a suspended round leaves him standing about like any
+	// other idle actor, so the stranded-in-the-open backstop must still cover him.
+	if RouteInFlight(w, a.ID) {
 		return false
 	}
 	if actorInActiveHuddle(w, a) {

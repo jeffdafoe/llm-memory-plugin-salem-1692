@@ -68,13 +68,40 @@ func ConstableRoundsDue(w *World, a *Actor, interval time.Duration, now time.Tim
 	if !actorOnShift(w, a, localMinuteOfDay(w, now)) {
 		return false
 	}
-	if w.ActiveRoutes[a.ID] != nil {
+	// Only an IN-FLIGHT round blocks a fresh one. A suspended round (LLM-531) is
+	// superseded by the next beat — which is also what bounds how long one can sit
+	// paused: at most a single interval, after which he starts a fresh circuit
+	// rather than carrying yesterday's half-walked one around.
+	if RouteInFlight(w, a.ID) {
 		return false
 	}
 	instant := mostRecentRoundsInstant(now, interval, constableRoundsOffset(a.ID, interval))
 	if last, has := w.ConstableRoundsStamps[a.ID]; has && !last.Before(instant) {
 		return false
 	}
+	return true
+}
+
+// ClearSuspendedRoundIfOffShift drops a SUSPENDED rounds route once its carrier is
+// off shift, returning whether it cleared one (LLM-531). This is what bounds the
+// duty exemption a suspended round carries: while it sits part-walked, shiftDuty
+// leaves him alone so he can choose to resume, and without this sweep that
+// exemption would follow him into the night and leave him standing wherever he
+// broke off instead of walking home. Only suspended rounds — an in-flight one is
+// the route machinery's own business and clears through its normal paths.
+// MUST be called from inside a Command.Fn (reads + mutates world state).
+func ClearSuspendedRoundIfOffShift(w *World, a *Actor, now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	route := w.ActiveRoutes[a.ID]
+	if route == nil || route.Phase != RoutePhaseSuspended {
+		return false
+	}
+	if actorOnShift(w, a, localMinuteOfDay(w, now)) {
+		return false
+	}
+	clearActiveRoute(w, a.ID)
 	return true
 }
 
