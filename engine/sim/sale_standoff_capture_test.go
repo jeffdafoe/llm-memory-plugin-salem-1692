@@ -26,8 +26,8 @@ func ssEntry(w *World, id LedgerID, buyer, seller ActorID, item ItemKind, huddle
 	}
 }
 
-func ssResolved(id LedgerID, buyer, seller ActorID, item ItemKind, state PayTerminalState, at time.Time) *PayWithItemResolved {
-	return &PayWithItemResolved{LedgerID: id, BuyerID: buyer, SellerID: seller, ItemKind: item, TerminalState: state, At: at}
+func ssResolved(id LedgerID, buyer, seller ActorID, item ItemKind, huddle HuddleID, state PayTerminalState, at time.Time) *PayWithItemResolved {
+	return &PayWithItemResolved{LedgerID: id, BuyerID: buyer, SellerID: seller, ItemKind: item, HuddleID: huddle, TerminalState: state, At: at}
 }
 
 // ssPair sets up the live shape: Elizabeth buying nails from Ezekiel, who keeps the
@@ -47,7 +47,7 @@ func TestSaleStandoff_FirstDeclineDoesNotRecord(t *testing.T) {
 	now := time.Now()
 	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(1, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(1, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	// One no is ordinary haggling — she may press once more (LLM-297). Recording here
 	// would drop the shop from her directory after a single refusal.
@@ -63,7 +63,7 @@ func TestSaleStandoff_SecondDeclineRecords(t *testing.T) {
 	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-9*time.Minute))
 	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	at, ok := buyer.Observed.At(ssKey)
 	if !ok {
@@ -85,7 +85,7 @@ func TestSaleStandoff_AgedDeclinesInSameHuddleStillCount(t *testing.T) {
 	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-53*time.Minute))
 	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	if _, ok := buyer.Observed.At(ssKey); !ok {
 		t.Fatalf("declines spaced across the conversation must still reach the threshold, got %v", buyer.Observed)
@@ -103,17 +103,19 @@ func TestSaleStandoff_DeclinesInOtherHuddleDoNotCount(t *testing.T) {
 	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-earlier", PayLedgerStateDeclined, now.Add(-time.Hour))
 	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	if buyer.Observed.Len() != 0 {
 		t.Fatalf("declines from a prior conversation must not count toward this one's standoff, got %v", buyer.Observed)
 	}
 }
 
-// The resolving entry counts whether or not its own state write has landed by the time
-// the subscriber runs, and is never double-counted. Both orderings must give the same
-// answer or the memory would stamp a decline early or late depending on subscriber
-// order — a genuinely order-dependent bug.
+// The resolving entry counts whether or not its own terminal-state write has landed by
+// the time the subscriber runs, and is never double-counted. Both orderings must give
+// the same answer or the memory would stamp a decline early or late depending on
+// subscriber order — a genuinely order-dependent bug. (The third ordering, the entry
+// not being in the ledger at all, is covered by
+// TestSaleStandoff_ResolvingEntryAbsentFromLedgerStillCounts.)
 func TestSaleStandoff_ResolvingEntryCountedExactlyOnce(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
@@ -131,7 +133,7 @@ func TestSaleStandoff_ResolvingEntryCountedExactlyOnce(t *testing.T) {
 			ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 			ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", tc.state, tc.resolve)
 
-			handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+			handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 			if _, ok := buyer.Observed.At(ssKey); !ok {
 				t.Fatalf("the resolving entry must count toward the threshold regardless of write order, got %v", buyer.Observed)
@@ -142,7 +144,7 @@ func TestSaleStandoff_ResolvingEntryCountedExactlyOnce(t *testing.T) {
 	w := ssWorld()
 	buyer := ssPair(w)
 	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
-	handleSaleStandoffOnResolved(w, ssResolved(1, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(1, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 	if buyer.Observed.Len() != 0 {
 		t.Fatalf("the resolving entry must not be counted twice (once from the ledger, once by hand), got %v", buyer.Observed)
 	}
@@ -172,7 +174,7 @@ func TestSaleStandoff_NonStandoffTerminalsDoNotCount(t *testing.T) {
 			ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 			ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", tc.ledger, now)
 
-			handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", tc.event, now))
+			handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", tc.event, now))
 
 			if buyer.Observed.Len() != 0 {
 				t.Fatalf("%s must not count as a dead end, got %v", tc.name, buyer.Observed)
@@ -200,7 +202,7 @@ func TestSaleStandoff_StockAndGoodsFailuresCount(t *testing.T) {
 			ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 			ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", tc.ledger, now)
 
-			handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", tc.event, now))
+			handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", tc.event, now))
 
 			if _, ok := buyer.Observed.At(ssKey); !ok {
 				t.Fatalf("%s must count toward the standoff, got %v", tc.name, buyer.Observed)
@@ -218,7 +220,7 @@ func TestSaleStandoff_AcceptedBuyClearsMemory(t *testing.T) {
 	w.Actors["elizabeth"] = buyer
 	w.Actors["ezekiel"] = &Actor{ID: "ezekiel", Kind: KindNPCStateful, WorkStructureID: "blacksmith"}
 
-	handleSaleStandoffOnResolved(w, ssResolved(9, "elizabeth", "ezekiel", "nail", PayTerminalStateAccepted, now))
+	handleSaleStandoffOnResolved(w, ssResolved(9, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateAccepted, now))
 
 	// They dealt after all — keeping the shop out of her directory would be a memory
 	// contradicted by the coins that just changed hands.
@@ -238,7 +240,7 @@ func TestSaleStandoff_SkipsCoPresentPeerSeller(t *testing.T) {
 	ssEntry(w, 1, "elizabeth", "nathaniel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 	ssEntry(w, 2, "elizabeth", "nathaniel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "nathaniel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "nathaniel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	if buyer.Observed.Len() != 0 {
 		t.Fatalf("a workplace-less peer seller has no destination to avoid, got %v", buyer.Observed)
@@ -255,38 +257,64 @@ func TestSaleStandoff_SkipsNonAgentBuyer(t *testing.T) {
 	ssEntry(w, 1, "player", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 	ssEntry(w, 2, "player", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(2, "player", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(2, "player", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	if buyer.Observed.Len() != 0 {
 		t.Fatalf("a PC buyer carries no observed-state memory, got %v", buyer.Observed)
 	}
 }
 
-// A decline whose ledger entry has already been reaped, or that carries no huddle,
-// leaves nothing to scope the count to — the same disabled-scan posture perception
-// takes on an empty huddle, rather than treating an unscopeable decline as a standoff.
-func TestSaleStandoff_UnscopeableDeclineDoesNotRecord(t *testing.T) {
+// The count is scoped by the EVENT's huddle, so a resolving entry that is not in the
+// ledger at all — reaped, or the subscriber running before the insert — still reaches
+// the threshold off the conversation's prior entries. This is the guarantee the
+// original ledger-lookup version claimed but did not hold (code_review LLM-525):
+// there it discarded the event and silently recorded nothing.
+func TestSaleStandoff_ResolvingEntryAbsentFromLedgerStillCounts(t *testing.T) {
+	w := ssWorld()
+	buyer := ssPair(w)
 	now := time.Now()
-	t.Run("entry_reaped", func(t *testing.T) {
-		w := ssWorld()
-		buyer := ssPair(w)
-		ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
-		// Entry 2 never lands in the ledger (reaped, or the event outlived it).
-		handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
-		if buyer.Observed.Len() != 0 {
-			t.Fatalf("a decline with no ledger entry cannot be scoped to a conversation, got %v", buyer.Observed)
-		}
-	})
-	t.Run("no_huddle", func(t *testing.T) {
-		w := ssWorld()
-		buyer := ssPair(w)
-		ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "", PayLedgerStateDeclined, now.Add(-5*time.Minute))
-		ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "", PayLedgerStateDeclined, now)
-		handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
-		if buyer.Observed.Len() != 0 {
-			t.Fatalf("a huddle-less decline cannot be scoped to a conversation, got %v", buyer.Observed)
-		}
-	})
+	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
+	// Entry 2 never lands in the ledger.
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
+
+	if _, ok := buyer.Observed.At(ssKey); !ok {
+		t.Fatalf("the standoff must not depend on the resolving entry being present in the ledger, got %v", buyer.Observed)
+	}
+}
+
+// An event carrying no huddle leaves nothing to scope the count to — the same
+// disabled-scan posture perception takes on an empty huddle, rather than treating an
+// unscopeable decline as a standoff.
+func TestSaleStandoff_HuddlelessEventDoesNotRecord(t *testing.T) {
+	w := ssWorld()
+	buyer := ssPair(w)
+	now := time.Now()
+	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "", PayLedgerStateDeclined, now.Add(-5*time.Minute))
+	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "", PayLedgerStateDeclined, now)
+
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "", PayTerminalStateDeclined, now))
+
+	if buyer.Observed.Len() != 0 {
+		t.Fatalf("a huddle-less decline cannot be scoped to a conversation, got %v", buyer.Observed)
+	}
+}
+
+// The count follows the EVENT's huddle, not the resolving ledger entry's — they are
+// the same in production (every emitter stamps the event from the entry), and pinning
+// it here documents which one is authoritative if they ever disagree.
+func TestSaleStandoff_CountFollowsEventHuddle(t *testing.T) {
+	w := ssWorld()
+	buyer := ssPair(w)
+	now := time.Now()
+	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
+	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
+
+	// The event names a different conversation, so entry 1 is out of scope.
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-other", PayTerminalStateDeclined, now))
+
+	if buyer.Observed.Len() != 0 {
+		t.Fatalf("prior entries from another conversation must not count, got %v", buyer.Observed)
+	}
 }
 
 // The count is scoped to (buyer, seller, item): another buyer's quarrel with the same
@@ -300,7 +328,7 @@ func TestSaleStandoff_CountIsScopedToBuyerSellerItem(t *testing.T) {
 		w.Actors["josiah"] = &Actor{ID: "josiah", Kind: KindNPCStateful}
 		ssEntry(w, 1, "josiah", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 		ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
-		handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+		handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 		if buyer.Observed.Len() != 0 {
 			t.Fatalf("another buyer's decline must not count toward this buyer's standoff, got %v", buyer.Observed)
 		}
@@ -310,7 +338,7 @@ func TestSaleStandoff_CountIsScopedToBuyerSellerItem(t *testing.T) {
 		buyer := ssPair(w)
 		ssEntry(w, 1, "elizabeth", "ezekiel", "shovel", "hud-a", PayLedgerStateDeclined, now.Add(-5*time.Minute))
 		ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
-		handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+		handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 		if buyer.Observed.Len() != 0 {
 			t.Fatalf("a decline over a different good must not count toward this one, got %v", buyer.Observed)
 		}
@@ -325,7 +353,7 @@ func TestSaleStandoff_PendingEntriesDoNotCount(t *testing.T) {
 	ssEntry(w, 1, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStatePending, time.Time{})
 	ssEntry(w, 2, "elizabeth", "ezekiel", "nail", "hud-a", PayLedgerStateDeclined, now)
 
-	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", PayTerminalStateDeclined, now))
+	handleSaleStandoffOnResolved(w, ssResolved(2, "elizabeth", "ezekiel", "nail", "hud-a", PayTerminalStateDeclined, now))
 
 	if buyer.Observed.Len() != 0 {
 		t.Fatalf("an unanswered offer is not a dead end, got %v", buyer.Observed)

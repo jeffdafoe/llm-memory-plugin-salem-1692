@@ -206,6 +206,136 @@ func TestGoldensSaleStandoffSupplierNeverADestination(t *testing.T) {
 	}
 }
 
+// TestSaleStandoff_EveryBuySteerConsumerHonoursTheDrop covers the blast radius
+// (code_review LLM-525): findItemVendors feeds several cues, and the invariant above
+// only proves the directory primitive drops the supplier — not that each consumer
+// actually stops naming a destination. Each case takes that cue's own existing golden
+// fixture, resolves the supplier the cue would send the subject to, stamps a standoff
+// on it, and asserts the destination is gone from the rendered prompt. The
+// no-standoff render is asserted to carry it first, so a fixture that stopped
+// exercising its cue would fail loudly rather than pass vacuously.
+func TestSaleStandoff_EveryBuySteerConsumerHonoursTheDrop(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
+		item  sim.ItemKind
+	}{
+		{"stall_repair_nails", ownerOffPostShortNailsWalking, sim.NailItemKind},
+		{"farm_upkeep_shovels", farmOwnerOwesUpkeepWithShovelSupplier, sim.ShovelItemKind},
+		{"hearth_firewood", keeperLowHearthShortWoodWithSupplier, sim.FirewoodItemKind},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// Baseline: the cue names the supplier as a move_to destination.
+			snap, actorID, warrants := tc.build()
+			vendors, _ := findItemVendors(snap, actorID, snap.Actors[actorID], tc.item)
+			if len(vendors) == 0 {
+				t.Fatalf("fixture no longer resolves a %q supplier — this case can't prove anything", tc.item)
+			}
+			before := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+			for _, v := range vendors {
+				if !strings.Contains(before, "(destination: "+string(v.StructureID)+")") {
+					t.Fatalf("baseline prompt does not name %s as a destination — the fixture no longer exercises this cue:\n%s", v.StructureID, before)
+				}
+			}
+
+			// Same fixture, with the subject remembering a standoff at each supplier.
+			snap, actorID, warrants = tc.build()
+			subject := snap.Actors[actorID]
+			if snap.PublishedAt.IsZero() {
+				snap.PublishedAt = time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
+			}
+			stamps := map[sim.ObservedStateKey]time.Time{}
+			for _, v := range vendors {
+				stamps[sim.ObservedStateKey{StructureID: v.StructureID, ItemKind: tc.item, Condition: sim.ObservedSaleStandoff}] = snap.PublishedAt.Add(-30 * time.Minute)
+			}
+			subject.Observed = sim.NewObservedStates(stamps)
+
+			after := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+			for _, v := range vendors {
+				if strings.Contains(after, "(destination: "+string(v.StructureID)+")") {
+					t.Errorf("cue still sends the subject to %s for %q despite a remembered standoff there (LLM-525):\n%s", v.StructureID, tc.item, after)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderBlockedItem_StandoffProse covers the render half of the new blocked reason
+// (code_review LLM-525): the standoff sub-bullet and its own resolution, alone and
+// mixed with each other reason, so no combination emits a contradictory coda or drops
+// a supplier's way out. The pre-existing shut/no-means rows are included to pin that
+// their prose is unchanged.
+func TestRenderBlockedItem_StandoffProse(t *testing.T) {
+	const (
+		standoffBullet = "The Blacksmith sells nails, but you pressed them for it not long ago and could not come to terms."
+		shutBullet     = "Thorne's General Store sells nails, but you called there and found it shut."
+		noMeansBullet  = "Ellis Farm sells nails, but you have neither the coin for it nor a single good to put up in trade."
+		standoffCoda   = "Let that one rest and ask again later in the day"
+		shutCoda       = "Look in again another day"
+		noMeansCoda    = "Keep your shop and take what trade comes to you"
+	)
+	blocked := func(reasons ...restockBlockReason) []RestockBlockedSupplier {
+		out := make([]RestockBlockedSupplier, 0, len(reasons))
+		for _, r := range reasons {
+			label := "The Blacksmith"
+			switch r {
+			case restockBlockShut:
+				label = "Thorne's General Store"
+			case restockBlockNoMeans:
+				label = "Ellis Farm"
+			}
+			out = append(out, RestockBlockedSupplier{StructureLabel: label, Reason: r})
+		}
+		return out
+	}
+	cases := []struct {
+		name    string
+		blocked []RestockBlockedSupplier
+		want    []string
+		absent  []string
+	}{
+		{"standoff_only", blocked(restockBlockStandoff),
+			[]string{standoffBullet, standoffCoda}, []string{shutCoda, noMeansCoda}},
+		{"shut_only", blocked(restockBlockShut),
+			[]string{shutBullet, shutCoda}, []string{standoffCoda, noMeansCoda}},
+		{"no_means_only", blocked(restockBlockNoMeans),
+			[]string{noMeansBullet, noMeansCoda}, []string{standoffCoda, shutCoda}},
+		{"standoff_and_shut", blocked(restockBlockStandoff, restockBlockShut),
+			[]string{standoffBullet, shutBullet, standoffCoda, shutCoda}, []string{noMeansCoda}},
+		{"standoff_and_no_means", blocked(restockBlockStandoff, restockBlockNoMeans),
+			[]string{standoffBullet, noMeansBullet, standoffCoda, noMeansCoda}, []string{shutCoda}},
+		{"all_three", blocked(restockBlockStandoff, restockBlockShut, restockBlockNoMeans),
+			[]string{standoffBullet, shutBullet, noMeansBullet, standoffCoda,
+				"once you have coin or goods to trade with you can restock, and the shut one is worth looking in on another day"}, nil},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			renderBlockedItem(&b, RestockItemView{CurrentQty: 0, ItemLabel: "nails", Blocked: tc.blocked})
+			out := b.String()
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("blocked-item prose missing %q:\n%s", want, out)
+				}
+			}
+			for _, bad := range tc.absent {
+				if strings.Contains(out, bad) {
+					t.Errorf("blocked-item prose carries an inapplicable resolution %q:\n%s", bad, out)
+				}
+			}
+			// Every blocked item must end with SOME way out — a bare want with no
+			// resolution is the vacuum the weak model fills by inventing an errand
+			// (LLM-298).
+			if !strings.Contains(out, standoffCoda) && !strings.Contains(out, shutCoda) && !strings.Contains(out, noMeansCoda) {
+				t.Errorf("blocked-item prose leaves the want dangling with no resolution:\n%s", out)
+			}
+		})
+	}
+}
+
 // sortedStructureIDs / sortedItemKinds give the invariant a deterministic sweep over a
 // fixture's places and goods. Item candidates come from the kind catalog AND every
 // actor's inventory, because plenty of fixtures carry goods without declaring an

@@ -117,17 +117,21 @@ func handleSaleStandoffOnResolved(w *World, evt Event) {
 // lifetime with no recency filter (LLM-510: re-offers are paced minutes apart, so a
 // rolling window can never latch).
 //
-// The resolving entry is counted from the ledger when it is there and added by hand
-// when it is not, so the answer does not depend on whether the subscriber runs
-// before or after the entry's own state write. Entries are matched by ledger ID to
-// keep that from double-counting.
+// The conversation comes from the EVENT's own HuddleID, not from a ledger lookup on
+// res.LedgerID. Every emitter stamps it (from entry.HuddleID on the slow-path
+// terminals, from the buyer's current huddle on the fast-path accept), so the count
+// does not depend on the resolving entry still being present in the ledger, nor on
+// whether the subscriber runs before or after that entry's own state write — an
+// ordering this function must not assume (code_review LLM-525). Prior entries are
+// still read from the ledger, which is where the conversation's history lives; the
+// resolving entry is excluded by ledger ID and added by hand, so it counts exactly
+// once whether or not its own terminal state has landed.
 //
-// An entry that is gone from the ledger (reaped) or carries no huddle yields false:
-// with no conversation to scope the count to there is nothing to call a standoff,
-// which is the same disabled-scan posture perception takes on an empty huddle.
+// A resolved event carrying no huddle yields false: with no conversation to scope the
+// count to there is nothing to call a standoff, the same disabled-scan posture
+// perception takes on an empty huddle.
 func saleStandoffReached(w *World, res *PayWithItemResolved) bool {
-	entry := w.PayLedger[res.LedgerID]
-	if entry == nil || entry.HuddleID == "" {
+	if res.HuddleID == "" {
 		return false
 	}
 	count := 0
@@ -135,23 +139,27 @@ func saleStandoffReached(w *World, res *PayWithItemResolved) bool {
 		if e == nil || e.ID == res.LedgerID {
 			continue // the resolving entry is added below, however its own write landed
 		}
-		if e.BuyerID != res.BuyerID || e.SellerID != res.SellerID || e.ItemKind != res.ItemKind || e.HuddleID != entry.HuddleID {
+		if e.BuyerID != res.BuyerID || e.SellerID != res.SellerID || e.ItemKind != res.ItemKind || e.HuddleID != res.HuddleID {
 			continue
 		}
 		if e.ResolvedAt.IsZero() {
 			continue // still pending, or mid-construction without its resolve stamp
 		}
-		if saleStandoffLedgerState(e.State) {
+		if SaleStandoffLedgerState(e.State) {
 			count++
 		}
 	}
 	return count+1 >= SaleStandoffDeclineThreshold
 }
 
-// saleStandoffLedgerState is saleStandoffTerminal over the ledger's own state enum
-// — the two enums are parallel but distinct types, and the ledger is what a prior
-// entry carries.
-func saleStandoffLedgerState(state PayLedgerState) bool {
+// SaleStandoffLedgerState is saleStandoffTerminal over the ledger's own state enum —
+// the two enums are parallel but distinct types, and the ledger is what a prior entry
+// carries. Exported because perception's coPresentBuyStandoff counts the same
+// terminals off the same ledger: sharing this predicate is what keeps the rendered
+// co-present hold-off and the remembered standoff tripping on exactly the same
+// events. Two parallel switches saying they mirror each other is precisely the drift
+// this replaces (code_review LLM-525).
+func SaleStandoffLedgerState(state PayLedgerState) bool {
 	switch state {
 	case PayLedgerStateDeclined,
 		PayLedgerStateFailedInsufficientStock,

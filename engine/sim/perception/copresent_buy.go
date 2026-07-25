@@ -106,10 +106,14 @@ func coPresentBuyStandoff(snap *sim.Snapshot, buyer, seller sim.ActorID, huddle 
 			if age := snap.PublishedAt.Sub(e.ResolvedAt); age >= 0 && age <= recentlyResolvedOfferWindow {
 				return copresentBuyBlockedCoin
 			}
-		case sim.PayLedgerStateDeclined,
-			sim.PayLedgerStateFailedInsufficientStock,
-			sim.PayLedgerStateFailedInsufficientGoods:
-			declines++
+		default:
+			// The dead-end terminals, via the shared sim predicate (LLM-525): the same
+			// count stamps the buyer's ObservedSaleStandoff memory, which is what carries
+			// this hold-off past the end of the conversation. Two parallel switches would
+			// let the rendered soften and the remembered standoff drift apart.
+			if sim.SaleStandoffLedgerState(e.State) {
+				declines++
+			}
 		}
 	}
 	if declines >= copresentStandoffDeclineThreshold {
