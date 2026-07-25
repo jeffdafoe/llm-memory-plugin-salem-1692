@@ -111,6 +111,99 @@ func TestBusinessTendedAt_HandHiredElsewhereDoesNotTend(t *testing.T) {
 	}
 }
 
+// A hand at the loiter PIN rather than inside the interior tends it just the
+// same — the position test is actorPostureAtStructure, which accepts either, so
+// a doorless market stall (whose staff pin IS the post) is covered.
+func TestBusinessTendedAt_HandAtLoiterPinTends(t *testing.T) {
+	w, pin := tendedTestWorld()
+	hiredHandAtFarm(w)
+	w.Actors["abraham"].InsideStructureID = ""
+	w.Actors["abraham"].Pos = pin
+
+	if !businessTendedAt(w, "farm") {
+		t.Error("hand at the loiter pin: businessTendedAt = false, want true")
+	}
+}
+
+// snapshotOfTendedWorld projects the live fixture into the published-Snapshot
+// shape businessTendedInSnapshot reads, so the two mirrors can be compared on
+// identical inputs.
+func snapshotOfTendedWorld(w *World) (*Snapshot, map[AssetID]*Asset) {
+	snap := &Snapshot{
+		Actors:         make(map[ActorID]*ActorSnapshot, len(w.Actors)),
+		Structures:     w.Structures,
+		VillageObjects: w.VillageObjects,
+		LaborLedger:    w.LaborLedger,
+	}
+	for id, a := range w.Actors {
+		snap.Actors[id] = &ActorSnapshot{
+			Kind:              a.Kind,
+			State:             a.State,
+			Pos:               a.Pos,
+			InsideStructureID: a.InsideStructureID,
+			WorkStructureID:   a.WorkStructureID,
+		}
+	}
+	return snap, w.Assets
+}
+
+// TestBusinessTendedInSnapshot_MatchesLiveWorld pins the read-path mirror against
+// the live one across the whole matrix. The two back different surfaces — the
+// engine's huddle scope vs. the PC's cross-threshold audience scope in httpapi —
+// and a drift between them means a player and an NPC standing at the same door
+// disagree about whether anyone is there.
+func TestBusinessTendedInSnapshot_MatchesLiveWorld(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(w *World, pin TilePos)
+		want  bool
+	}{
+		{"hand at work inside", func(w *World, pin TilePos) {}, true},
+		{"hand at the loiter pin", func(w *World, pin TilePos) {
+			w.Actors["abraham"].InsideStructureID = ""
+			w.Actors["abraham"].Pos = pin
+		}, true},
+		{"keeper back at her post", func(w *World, pin TilePos) {
+			delete(w.LaborLedger, 1)
+			w.Actors["elizabeth"].InsideStructureID = "farm"
+		}, true},
+		{"en-route hand", func(w *World, pin TilePos) {
+			w.LaborLedger[1].State = LaborStateEnRoute
+		}, false},
+		{"wandered hand", func(w *World, pin TilePos) {
+			w.Actors["abraham"].InsideStructureID = ""
+			w.Actors["abraham"].Pos = TilePos{X: 90, Y: 90}
+		}, false},
+		{"sleeping hand", func(w *World, pin TilePos) {
+			w.Actors["abraham"].State = StateSleeping
+		}, false},
+		// The hand is at the farm, but his job is for a keeper of somewhere else —
+		// he is passing the time here, not minding the place.
+		{"hand's job is for another keeper", func(w *World, pin TilePos) {
+			w.Actors["john"] = &Actor{ID: "john", Kind: KindNPCStateful, WorkStructureID: "tavern"}
+			w.LaborLedger[1].EmployerID = "john"
+		}, false},
+		{"nobody at all", func(w *World, pin TilePos) {
+			delete(w.LaborLedger, 1)
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, pin := tendedTestWorld()
+			hiredHandAtFarm(w)
+			tc.setup(w, pin)
+
+			if got := businessTendedAt(w, "farm"); got != tc.want {
+				t.Errorf("businessTendedAt = %v, want %v", got, tc.want)
+			}
+			snap, assets := snapshotOfTendedWorld(w)
+			if got := businessTendedInSnapshot(snap, assets, "farm"); got != tc.want {
+				t.Errorf("businessTendedInSnapshot = %v, want %v (must mirror the live world)", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestColocatedAudienceIDs_HiredHandOpensCrossThreshold is the LLM-527 scene
 // itself: the constable stands at the farm's loiter pin — his rounds stop — while
 // a hired hand works inside and the farm's own keeper is across the village.

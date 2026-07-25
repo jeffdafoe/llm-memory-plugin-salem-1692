@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"testing"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -106,4 +107,68 @@ func constableAtFarmWorkedByHiredHand() (*sim.Snapshot, sim.ActorID, []sim.Warra
 		},
 	}
 	return snap, constableID, nil
+}
+
+// TestSnapshotBusinessTended pins the perception mirror of sim.businessTendedAt
+// directly rather than only through the golden. The three copies of the rule
+// (live world, published snapshot, this one) resolve position slightly
+// differently — this one measures to objectLoiterPin, the sim pair to
+// ResolveLoiteringObject — so a shared fixture is not enough to keep them
+// honest; each needs its own matrix. A drift here is what makes the rendered
+// "is shut" line contradict the engine's own shut-business memory on the same
+// tick, which is the LLM-526 half of this bug.
+func TestSnapshotBusinessTended(t *testing.T) {
+	const farm = sim.StructureID("ellis_farm")
+	cases := []struct {
+		name  string
+		setup func(snap *sim.Snapshot)
+		want  bool
+	}{
+		{"hand at work inside", func(snap *sim.Snapshot) {}, true},
+		{"hand at the loiter pin", func(snap *sim.Snapshot) {
+			snap.Actors["abraham"].InsideStructureID = ""
+			snap.Actors["abraham"].Pos = snap.VillageObjects[sim.VillageObjectID(farm)].Pos.Tile()
+		}, true},
+		{"keeper back at her post", func(snap *sim.Snapshot) {
+			delete(snap.LaborLedger, 1)
+			snap.Actors["elizabeth"].InsideStructureID = farm
+		}, true},
+		{"en-route hand", func(snap *sim.Snapshot) {
+			snap.LaborLedger[1].State = sim.LaborStateEnRoute
+		}, false},
+		{"wandered hand", func(snap *sim.Snapshot) {
+			snap.Actors["abraham"].InsideStructureID = ""
+			snap.Actors["abraham"].Pos = sim.TilePos{X: 90, Y: 90}
+		}, false},
+		{"sleeping hand", func(snap *sim.Snapshot) {
+			snap.Actors["abraham"].State = sim.StateSleeping
+		}, false},
+		// The hand is at the farm, but his job is for a keeper of somewhere else —
+		// he is passing the time here, not minding the place. Elizabeth stays the
+		// farm's keeper (so it is still a business) and stays away (so it is shut).
+		{"hand's job is for another keeper", func(snap *sim.Snapshot) {
+			snap.Actors["john"] = &sim.ActorSnapshot{
+				Kind: sim.KindNPCStateful, DisplayName: "John Ellis",
+				State: sim.StateIdle, WorkStructureID: "tavern",
+			}
+			snap.LaborLedger[1].EmployerID = "john"
+		}, false},
+		{"nobody at all", func(snap *sim.Snapshot) {
+			delete(snap.LaborLedger, 1)
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap, constableID, _ := constableAtFarmWorkedByHiredHand()
+			tc.setup(snap)
+
+			if got := snapshotBusinessTended(snap, farm); got != tc.want {
+				t.Errorf("snapshotBusinessTended = %v, want %v", got, tc.want)
+			}
+			// The shut cue is the inverse for an onlooker who doesn't work there.
+			if got := isShutBusiness(snap, snap.Actors[constableID], farm); got == tc.want {
+				t.Errorf("isShutBusiness = %v, want %v (the inverse of tended)", got, !tc.want)
+			}
+		})
+	}
 }

@@ -231,6 +231,20 @@ func actorPostureAtStructure(objects map[VillageObjectID]*VillageObject, assets 
 // also be awake and at the place; a job does not hold once he wanders off, the
 // same rule workerTendsStructure applies to a keeper who drifts away.
 //
+// A Working row cannot go stale enough to hold a place open on its own: the labor
+// sweep runs every LaborLedgerSweepCadenceDefault (60s) and settles any Working
+// offer past its WorkingUntil (labor_settle.go), so the widest window is one
+// cadence — and the position test still has to pass throughout it.
+//
+// "The employer works here" (WorkStructureID) is what identifies the keeper whose
+// hand this is, the same rule keeperPresentAt, hireableKeeperPresentAt and
+// snapshotKeeperPresent already use to decide who keeps a place — so the arms
+// can't drift on it. It is deliberately NOT narrowed to BusinessownerState: the
+// constable keeps the Meeting House without that attribute, and a hand he hired
+// would then stop counting. Nor does the looser reading chain any authority — a
+// hand hired by a second worker at the same place is still a person physically
+// minding it, which is the whole of what this predicate claims.
+//
 // Ledger-driven rather than actor-driven: live jobs are few, so scanning them
 // beats a second full pass over w.Actors. MUST run on the world goroutine.
 func businessTendedAt(w *World, structureID StructureID) bool {
