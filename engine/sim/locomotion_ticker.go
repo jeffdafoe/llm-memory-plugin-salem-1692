@@ -255,7 +255,7 @@ func EvaluateLocomotion(now time.Time) Command {
 			// setActorInsideStructure recompute (LLM-534). Sweeping here rather
 			// than per step coalesces the whole tick into one pass, and the
 			// no-movers early return above means an idle village pays nothing.
-			refreshBusinessOccupancyStates(w)
+			refreshActivePresenceOccupancyStates(w)
 			return nil, nil
 		},
 	}
@@ -989,6 +989,14 @@ func structureForActorTile(w *World, actor *Actor) StructureID {
 // MUST be called from inside a Command.Fn.
 func updateInsideStructureIDFromTileOwnership(w *World, actor *Actor) {
 	setActorInsideStructure(w, actor, structureForActorTile(w, actor))
+	// A teleport between two OUTDOOR tiles leaves InsideStructureID unchanged, so
+	// the call above early-returns and no occupancy refresh fires — yet an operator
+	// dropping a keeper onto (or off) her stall's loiter pin has changed exactly
+	// what the tended predicate reads (LLM-534). The locomotion tick's sweep can't
+	// cover it: a teleported actor has no MoveIntent, so the tick takes its
+	// no-movers early return. Sweeping here rather than at the one caller keeps any
+	// future non-walk position flip covered by construction.
+	refreshActivePresenceOccupancyStates(w)
 }
 
 // reconcileInsideAndNarrateDeparture is the locomotion-path inside-state

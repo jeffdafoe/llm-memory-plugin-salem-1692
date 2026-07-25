@@ -33,10 +33,12 @@ package sim
 //   - per phase transition — ApplyPhaseTransition (world_phase.go) sweeps the
 //     night-only structures, whose flag can change on the day↔night boundary
 //     with no actor moving;
-//   - per locomotion tick that moved anyone, on bed-down / wake, on a labor
-//     settle, and once at load — refreshBusinessOccupancyStates sweeps the
-//     business structures, whose tended flag turns on inputs the
-//     inside-structure chokepoint cannot see (see that function).
+//   - per locomotion tick that moved anyone, per teleport, on a workplace
+//     reassignment, on a labor settle, on bed-down / wake, and once at load —
+//     refreshActivePresenceOccupancyStates sweeps every non-night-only tracked
+//     structure, because the tended flag turns on inputs the inside-structure
+//     chokepoint cannot see (see that function for the full list and why each
+//     call site is there).
 //
 // A real flip emits VillageObjectStateChanged → object_state_changed, so the
 // client re-renders the new state.
@@ -152,35 +154,55 @@ func refreshNightOnlyOccupancyStates(w *World) {
 	}
 }
 
-// refreshBusinessOccupancyStates recomputes occupancy for every occupancy-tracked
-// business structure — the ones reading through businessTendedAt rather than
-// headcount (LLM-534).
+// refreshActivePresenceOccupancyStates recomputes occupancy for every
+// occupancy-tracked structure that is NOT night-only — the twin of
+// refreshNightOnlyOccupancyStates, covering the other half of the catalog
+// (LLM-534). Businesses among them read through businessTendedAt; the rest read by
+// headcount. The sweep does not care which: it re-derives each structure and
+// structureReadsOccupied decides.
 //
-// They need their own sweep because tendedness turns on inputs the
-// setActorInsideStructure chokepoint cannot see:
+// Deliberately NOT filtered to businesses. Filtering on structureHasWorker looks
+// like an obvious cheap win and is a bug: a structure that just STOPPED being a
+// business (its last worker reassigned) is precisely the one whose art is now
+// wrong, and a business-filtered sweep cannot see it. Sweeping the whole
+// non-night-only set is what makes "both ends of a change" true without any caller
+// naming either end.
 //
-//   - The keeper's POSITION now matters while she is outdoors, at her loiter pin.
-//     An outdoor→outdoor step never changes InsideStructureID, so it never reaches
-//     that chokepoint — walking up to an interior-less stall, or away from one,
-//     is invisible to it.
-//   - The keeper's WAKE state matters, and the sleep hooks refresh
-//     a.InsideStructureID, which is "" for a keeper bedded down outdoors.
+// The sweep exists because tendedness turns on inputs the setActorInsideStructure
+// chokepoint cannot see:
+//
+//   - The keeper's POSITION matters while she is outdoors, at her loiter pin. An
+//     outdoor→outdoor step never changes InsideStructureID, so it never reaches
+//     that chokepoint — walking up to an interior-less stall, or away from one, is
+//     invisible to it.
+//   - WHO KEEPS the place matters: SetActorWorkStructure can make a structure a
+//     business or stop it being one, with no one moving.
 //   - A hired hand's LaborStateWorking transitions matter, and the ledger is not
 //     the actor index.
+//   - The keeper's WAKE state matters, and the sleep hooks refresh
+//     a.InsideStructureID, which is "" for a keeper bedded down outdoors.
 //
-// Sweeping is preferred over a trigger per input: a missed trigger leaves a stall
-// showing the wrong art until something unrelated moves, and the set swept here is
-// the handful of objects whose asset carries both occupancy tags AND has a worker
-// — the asset-tag test runs first precisely so the per-actor structureHasWorker
-// scan only runs for those.
+// Sweeping beats a trigger per input: a missed trigger leaves a stall showing the
+// wrong art until something unrelated moves. Cost is the asset-tag test over
+// w.VillageObjects, then a re-derive for the handful that carry both tags.
 //
-// Call sites are the ones that can change any of the three inputs: the locomotion
-// tick (only when it actually moved someone), bed-down / wake, a labor settle, and
-// once at load so a checkpointed state that no longer matches the world converges
-// before the first publish.
+// Call sites, each the point where one of those inputs can change:
+//
+//   - EvaluateLocomotion, after the mover loop — every walk, coalesced to one pass
+//     per tick. Its no-movers early return means an idle village pays nothing.
+//   - updateInsideStructureIDFromTileOwnership — the non-walk position flip
+//     (teleport / operator set-position). A teleported actor has no MoveIntent, so
+//     the locomotion tick would take that early return and never sweep.
+//   - setActorStructure — the engine's only WorkStructureID write.
+//   - EvaluateLaborLedgerSweep, on a completed job — a hand can stop working and
+//     stand still, so movement can't be relied on.
+//   - executeNPCSleep / wakeNPC — guards; see the note at those call sites, which
+//     explains why no caller reaches them with an outdoor sleeper today.
+//   - FinalizeLoad — the art is derived but stored, so a checkpointed state that no
+//     longer matches the world converges before the first publish.
 //
 // MUST be called from inside a Command.Fn.
-func refreshBusinessOccupancyStates(w *World) {
+func refreshActivePresenceOccupancyStates(w *World) {
 	for objID, obj := range w.VillageObjects {
 		if obj == nil {
 			continue
@@ -192,10 +214,6 @@ func refreshBusinessOccupancyStates(w *World) {
 		if asset.StateForTag(TagOccupied) == nil || asset.StateForTag(TagUnoccupied) == nil {
 			continue
 		}
-		structureID := StructureID(objID)
-		if !structureHasWorker(w, structureID) {
-			continue
-		}
-		refreshStructureOccupancyState(w, structureID)
+		refreshStructureOccupancyState(w, StructureID(objID))
 	}
 }

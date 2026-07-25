@@ -302,7 +302,7 @@ func seedKeeperAtPin(t *testing.T, w *sim.World, id sim.ActorID, structureID sim
 func sweepBusinessOccupancy(t *testing.T, w *sim.World) {
 	t.Helper()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		sim.RefreshBusinessOccupancyStates(world)
+		sim.RefreshActivePresenceOccupancyStates(world)
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("sweepBusinessOccupancy: %v", err)
@@ -418,6 +418,114 @@ func TestOccupancy_LocomotionTickSweepsBusinesses(t *testing.T) {
 	}
 }
 
+// TestOccupancy_TeleportSweepsBusinesses: an operator set-position between two
+// OUTDOOR tiles leaves InsideStructureID unchanged, so the index chokepoint
+// early-returns, and the teleported actor has no MoveIntent so the locomotion tick
+// takes its no-movers path. The non-walk reconcile has to sweep or dropping a
+// keeper on her post leaves the stall shut.
+func TestOccupancy_TeleportSweepsBusinesses(t *testing.T) {
+	w, _ := buildOccupancyWorld(t)
+	_, pin, _ := stallTiles()
+
+	// Keeper parked well away from her stall, then teleported onto her post.
+	seedKeeperAtPin(t, w, "keeper", "stall", sim.TilePos{X: pin.X + 20, Y: pin.Y + 20})
+	sweepBusinessOccupancy(t, w)
+	if got := objState(w, "stall"); got != "unoccupied" {
+		t.Fatalf("keeper away: stall = %q, want unoccupied", got)
+	}
+
+	if _, err := w.Send(sim.SetActorPosition("keeper", pin, time.Now())); err != nil {
+		t.Fatalf("SetActorPosition: %v", err)
+	}
+	if got := objState(w, "stall"); got != "occupied" {
+		t.Fatalf("after teleport onto her post, stall = %q, want occupied — the teleport did not sweep", got)
+	}
+}
+
+// TestOccupancy_WorkStructureChangeSweepsBusinesses: whether a structure is a
+// business at all is decided by who works there, and reassigning a workplace moves
+// both ends with nobody stepping anywhere. The stall is only occupancy-read as a
+// business while it has a worker — retiring its keeper drops it back to headcount,
+// which with an empty footprint means shut.
+func TestOccupancy_WorkStructureChangeSweepsBusinesses(t *testing.T) {
+	w, _ := buildOccupancyWorld(t)
+	_, pin, _ := stallTiles()
+
+	// A stateful NPC standing on the pin but NOT yet working the stall: no worker,
+	// so the stall is not a business and headcount (zero, the pin is outside the
+	// footprint) keeps it shut.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := &sim.Actor{
+			ID: "keeper", DisplayName: "Keeper", Kind: sim.KindNPCStateful,
+			State: sim.StateIdle, Pos: pin,
+		}
+		world.Actors["keeper"] = a
+		sim.SetActorInsideStructure(world, a, "")
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed keeper: %v", err)
+	}
+	if got := objState(w, "stall"); got != "unoccupied" {
+		t.Fatalf("no worker yet: stall = %q, want unoccupied", got)
+	}
+
+	// Take the stall on as her workplace → it becomes a business she is tending.
+	if _, err := w.Send(sim.SetActorWorkStructure("keeper", "stall")); err != nil {
+		t.Fatalf("SetActorWorkStructure(stall): %v", err)
+	}
+	if got := objState(w, "stall"); got != "occupied" {
+		t.Fatalf("after taking the stall on, stall = %q, want occupied — the assignment did not sweep", got)
+	}
+
+	// Give it up again → no worker, back to headcount, shut.
+	if _, err := w.Send(sim.SetActorWorkStructure("keeper", "")); err != nil {
+		t.Fatalf("SetActorWorkStructure(none): %v", err)
+	}
+	if got := objState(w, "stall"); got != "unoccupied" {
+		t.Fatalf("after giving up the stall, stall = %q, want unoccupied", got)
+	}
+}
+
+// TestOccupancy_LaborSettleShutsStall drives the labor hook for real: a hired hand
+// working the stall keeps it open while its owner is away (the LLM-527 presence
+// rule), and the settle that ends his job shuts it — with him still standing
+// there, so no movement follows to sweep it.
+func TestOccupancy_LaborSettleShutsStall(t *testing.T) {
+	w, _ := buildOccupancyWorld(t)
+	_, pin, _ := stallTiles()
+
+	// Owner far from her stall; hired hand at its pin on a live job for her.
+	seedKeeperAtPin(t, w, "owner", "stall", sim.TilePos{X: pin.X + 25, Y: pin.Y + 25})
+	workingUntil := time.Now().Add(-time.Minute) // window already elapsed
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		hand := &sim.Actor{
+			ID: "hand", DisplayName: "Hand", Kind: sim.KindNPCShared,
+			State: sim.StateLaboring, Pos: pin,
+		}
+		world.Actors["hand"] = hand
+		sim.SetActorInsideStructure(world, hand, "")
+		world.LaborLedger[1] = &sim.LaborOffer{
+			ID: 1, WorkerID: "hand", EmployerID: "owner",
+			Reward: 5, DurationMin: 30, State: sim.LaborStateWorking,
+			WorkingUntil: &workingUntil,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed hand + job: %v", err)
+	}
+	sweepBusinessOccupancy(t, w)
+	if got := objState(w, "stall"); got != "occupied" {
+		t.Fatalf("hired hand at work, owner away: stall = %q, want occupied", got)
+	}
+
+	if _, err := w.Send(sim.EvaluateLaborLedgerSweep(time.Now())); err != nil {
+		t.Fatalf("EvaluateLaborLedgerSweep: %v", err)
+	}
+	if got := objState(w, "stall"); got != "unoccupied" {
+		t.Fatalf("after the job settled, stall = %q, want unoccupied — the settle did not sweep", got)
+	}
+}
+
 // TestOccupancy_NightOnlyBusinessKeepsHeadcount is the guard on the scope of the
 // LLM-534 change: the Tavern's asset is night-only, where occupied means GUESTS
 // ARE LODGING, not "the keeper is in". Giving it the tended predicate would light
@@ -459,7 +567,7 @@ func TestOccupancy_NightOnlyBusinessKeepsHeadcount(t *testing.T) {
 // STORED on the village object and restored verbatim from the checkpoint, so a
 // village that went down with a keeper at her stall came back up showing it open
 // with nobody there (observed live on the James Farm). FinalizeLoad sweeps the
-// business structures before the first publish.
+// non-night-only tracked structures before the first publish.
 func TestOccupancy_LoadConvergesStaleBusinessState(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"stall-a": stallAsset("stall-a")})

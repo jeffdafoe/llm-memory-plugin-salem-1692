@@ -238,6 +238,13 @@ func setActorStructure(id ActorID, structureID string, home bool) Command {
 			} else {
 				a.WorkStructureID = newVal
 				w.emit(&NPCWorkStructureChanged{ActorID: id, StructureID: trimmed, At: time.Now().UTC()})
+				// This is the only write to WorkStructureID in the engine, and it moves
+				// BOTH ends: the structure just abandoned may no longer be a business at
+				// all (structureHasWorker), and the one just taken on may newly be one —
+				// each flipping which occupancy semantics its art reads (LLM-534). Neither
+				// end needs the actor to move afterward, so nothing else would sweep it.
+				// The sweep covers every business, so one call gets both ends.
+				refreshActivePresenceOccupancyStates(w)
 			}
 			return ActorStructureResult{ID: id, StructureID: trimmed}, nil
 		},

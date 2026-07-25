@@ -430,10 +430,17 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 			evictLoiterMembersOnClose(w, a.InsideStructureID, now)
 		}
 	}
-	// A keeper who beds down at her OUTDOOR post has InsideStructureID == "", so
-	// the refresh above never runs for the business she just stopped tending
-	// (LLM-534). The sweep covers it either way.
-	refreshBusinessOccupancyStates(w)
+	// Tendedness is gated on being awake, and the refresh above only covers the
+	// structure the sleeper is INSIDE — so a keeper bedding down at her outdoor post
+	// (InsideStructureID == "") would leave her stall showing open (LLM-534).
+	//
+	// A GUARD, not a live path: both callers gate on npcSleepArmFor, which
+	// classifies how an actor may bed down *in the structure it is currently
+	// inside*, so nothing today beds an outdoor actor. Kept because the cost is one
+	// pass over a handful of objects on a once-a-night transition, and the failure
+	// it prevents is silent and visible to players. Don't read it as evidence that
+	// outdoor sleep is reachable.
+	refreshActivePresenceOccupancyStates(w)
 	return true
 }
 
@@ -524,9 +531,10 @@ func wakeNPC(w *World, a *Actor) {
 	if a.InsideStructureID != "" {
 		refreshStructureOccupancyState(w, a.InsideStructureID)
 	}
-	// Twin of the bed-down sweep: a keeper waking at her outdoor post is tending
-	// again, and InsideStructureID is "" there (LLM-534).
-	refreshBusinessOccupancyStates(w)
+	// Twin of the bed-down sweep, and a guard for the same reason: a keeper waking
+	// at her outdoor post is tending again, and InsideStructureID is "" there
+	// (LLM-534). Unreachable while bed-down requires being inside a structure.
+	refreshActivePresenceOccupancyStates(w)
 }
 
 // handleAutoSleepOnArrival beds an NPC that arrives at its home off-shift. The

@@ -189,7 +189,7 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 			// he may well stand still afterward, so movement can't be relied on
 			// to sweep it.
 			if len(completed) > 0 {
-				refreshBusinessOccupancyStates(w)
+				refreshActivePresenceOccupancyStates(w)
 			}
 			return nil, nil
 		},

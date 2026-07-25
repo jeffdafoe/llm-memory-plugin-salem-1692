@@ -1976,7 +1976,14 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// inside its footprint). The night-only sweep runs at phase boundaries and
 	// does not cover these, so converge them once here, before the first
 	// publish carries the stale state to the client (LLM-534).
-	refreshBusinessOccupancyStates(w)
+	//
+	// A flip emits VillageObjectStateChanged. That is the same posture
+	// restartExpirePendingOrders above takes: subscribers haven't registered at
+	// load time, so the emit is effectively a no-op on the bus while the state
+	// mutation stays consistent with mid-run semantics. FinalizeLoad also runs
+	// before World.Run, so the "world goroutine only" contract holds trivially —
+	// there is no other goroutine yet.
+	refreshActivePresenceOccupancyStates(w)
 
 	w.republish()
 	return nil
