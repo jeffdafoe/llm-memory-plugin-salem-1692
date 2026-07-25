@@ -2,6 +2,7 @@ package sim
 
 import (
 	"testing"
+	"time"
 )
 
 // business_tended_test.go — LLM-527. businessTendedAt answers "is anyone minding
@@ -108,6 +109,64 @@ func TestBusinessTendedAt_HandHiredElsewhereDoesNotTend(t *testing.T) {
 
 	if businessTendedAt(w, "farm") {
 		t.Error("hand hired by another keeper: businessTendedAt = true, want false")
+	}
+}
+
+// TestBusinessTendedAt_PresenceWithoutAuthority is the split itself, pinned in
+// the shape code_review asked for: the hand's employer is a SECOND worker at the
+// farm rather than its proprietor, and she is away. Presence holds — a man is in
+// the farmyard doing the farm's work — while authority does not, so the visitor
+// trade binding and the no-hiring memory (both still on keeperPresentAt) see
+// nobody to trade with or be hired by. If a later change ever lets one of these
+// answer the other's question, this fails.
+func TestBusinessTendedAt_PresenceWithoutAuthority(t *testing.T) {
+	w, _ := tendedTestWorld()
+	hiredHandAtFarm(w)
+	// A hired dairymaid who works the farm but keeps nothing — not the proprietor.
+	w.Actors["mercy"] = &Actor{ID: "mercy", Kind: KindNPCShared, WorkStructureID: "farm",
+		Pos: TilePos{X: 70, Y: 70}} // away, like Elizabeth
+	w.LaborLedger[1].EmployerID = "mercy"
+
+	if !businessTendedAt(w, "farm") {
+		t.Error("hand hired by a non-proprietor worker: businessTendedAt = false, want true — he is still in the farmyard")
+	}
+	if keeperPresentAt(w, "farm") {
+		t.Error("keeperPresentAt = true, want false — nobody with a keeper's authority is here")
+	}
+	snap, assets := snapshotOfTendedWorld(w)
+	if !businessTendedInSnapshot(snap, assets, "farm") {
+		t.Error("snapshot mirror disagrees with the live world on presence")
+	}
+	if keeperPresentInSnapshot(snap, assets, "farm") {
+		t.Error("snapshot mirror disagrees with the live world on authority")
+	}
+}
+
+// TestBusinessTendedAt_ExpiredOfferBeforeSweepStillTends pins deliberate
+// behaviour, not an oversight. Between a job's WorkingUntil and the labor sweep
+// that settles it (up to one 60s cadence) the ledger row is stale, and
+// businessTendedAt still reports the farm tended.
+//
+// That is the right answer, because this predicate is about the PERSON, not the
+// contract: a hand whose hours ran out sixty seconds ago is still standing in
+// the farmyard, and telling an onlooker the place is shut and deserted is the
+// exact falsehood LLM-527 exists to remove. Rejecting WorkingUntil <= now here
+// would restore it for that window. The contract's validity is the authority
+// question, and authority is keeperPresentAt's job.
+func TestBusinessTendedAt_ExpiredOfferBeforeSweepStillTends(t *testing.T) {
+	w, _ := tendedTestWorld()
+	hiredHandAtFarm(w)
+	expired := audienceNow().Add(-time.Minute) // past WorkingUntil; the sweep has not run yet
+	w.LaborLedger[1].WorkingUntil = &expired
+
+	if !businessTendedAt(w, "farm") {
+		t.Error("expired offer, hand still at the post: businessTendedAt = false, want true — he has not moved")
+	}
+	// He stops holding it open the moment he actually leaves, expired or not.
+	w.Actors["abraham"].InsideStructureID = ""
+	w.Actors["abraham"].Pos = TilePos{X: 90, Y: 90}
+	if businessTendedAt(w, "farm") {
+		t.Error("expired offer, hand gone home: businessTendedAt = true, want false")
 	}
 }
 
