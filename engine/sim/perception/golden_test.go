@@ -2932,6 +2932,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: laboringWorkerEmployerAway,
 	},
 	{
+		name: "constable_at_farm_worked_by_hired_hand",
+		summary: "LLM-527: the constable stops at the Ellis Farm on his rounds while Abraham Warren — a free laborer with no " +
+			"workplace of his own — works it and Elizabeth is across the village. The shut cue and the co-presence line both " +
+			"keyed on KEEPER presence, so his prompt read 'with no one else here to hear you speak' and 'the Ellis Farm is shut " +
+			"— no one is tending it' with a man visibly at work in front of him: the most interesting thing a round can turn up, " +
+			"hidden. The golden pins the repaired scene — no shut clause, and Abraham named in '## Around you' as busy on " +
+			"Elizabeth's work. The scope rule that puts him in the audience is asserted world-side in " +
+			"sim/business_tended_test.go.",
+		build: constableAtFarmWorkedByHiredHand,
+	},
+	{
 		name: "worker_labor_settled_beat",
 		summary: "LLM-498 worker side of the mid-shift settle beat: Abraham Warren's four-hour job for Elizabeth Ellis just " +
 			"settled at the completion sweep — 12 coins and 1 milk transferred in full, mid-shift, so the LLM-190 shop-closed " +

@@ -202,28 +202,34 @@ func InOpenLoiterStructureScope(w *World, a *Actor) bool {
 // bare named prop — a well, a shade tree, anything with no Structure entry — has
 // no interior and no open/closed state, so its loiter scope always holds: it is
 // only a location label, and nobody is ever "inside" it to be reached across a
-// wall. A STRUCTURE must be OPEN (a keeper present and awake, keeperPresentAt) for
-// its threshold to carry conversation; a shut shop blocks the cross-threshold
-// scope. Live-world twin of LoiterScopeConversableInSnapshot — the two must gate a
-// shut shop identically or the huddle WRITE scope and the talk-roster READ scope
-// drift.
+// wall. A STRUCTURE must be OPEN for its threshold to carry conversation; a shut
+// shop blocks the cross-threshold scope. Live-world twin of
+// LoiterScopeConversableInSnapshot — the two must gate a shut shop identically or
+// the huddle WRITE scope and the talk-roster READ scope drift.
+//
+// "Open" here is businessTendedAt, not keeperPresentAt (LLM-527): what carries
+// conversation across a threshold is a PERSON on the other side of it, and a
+// hired hand working the place is as audible as its owner. The narrower keeper
+// test left a constable at a farm worked by a hired laborer scoped to open ground
+// with an empty audience — told there was no one to hear him with a man at work
+// in front of him.
 func loiterScopeConversable(w *World, sid StructureID) bool {
 	if w.Structures[sid] == nil {
 		return true
 	}
-	return keeperPresentAt(w, sid)
+	return businessTendedAt(w, sid)
 }
 
 // LoiterScopeConversableInSnapshot is loiterScopeConversable over a published
 // Snapshot — the read-path (httpapi pcAudienceStructure) twin. assets is the
-// reference catalog keeperPresentInSnapshot needs (the snapshot doesn't carry it
+// reference catalog businessTendedInSnapshot needs (the snapshot doesn't carry it
 // inline). A nil snapshot or non-structure resolved object keeps the loiter scope
 // (nothing to gate); a real structure must be open.
 func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset, sid StructureID) bool {
 	if snap == nil || snap.Structures[sid] == nil {
 		return true
 	}
-	return keeperPresentInSnapshot(snap, assets, sid)
+	return businessTendedInSnapshot(snap, assets, sid)
 }
 
 // evictLoiterMembersOnClose is the teardown twin of the LLM-359 formation gate
@@ -244,15 +250,19 @@ func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset,
 // the huddle if the eviction empties it and handles the degenerate
 // lone-resting-member case.
 //
-// A fast no-op when the shop is still open (keeperPresentAt — another keeper still
-// on post), the structure has no active huddle, or no member is cross-threshold.
-// Call AFTER the presence-ending mutation is applied (in executeNPCSleep, after
-// State is set to StateSleeping) so keeperPresentAt reads the post-close state.
+// A fast no-op when the shop is still open (businessTendedAt — another keeper
+// still on post, or a hired hand still working the place), the structure has no
+// active huddle, or no member is cross-threshold. Call AFTER the presence-ending
+// mutation is applied (in executeNPCSleep, after State is set to StateSleeping)
+// so the tended check reads the post-close state. It mirrors loiterScopeConversable
+// exactly (LLM-527): whatever lets a loiterer JOIN across the threshold must also
+// be what keeps him there, or a keeper bedding down would evict someone still
+// legitimately talking to the hired hand who is awake at the same shop.
 // MUST run on the world goroutine.
 //
 // The CALLER must invoke this only for a genuine shop-close — the sleeper being a
 // worker of the structure it beds down in (WorkStructureID == InsideStructureID),
-// the one actor whose bed-down can flip keeperPresentAt. keeperPresentAt is
+// the one actor whose bed-down can flip the place to untended. businessTendedAt is
 // trivially false for a never-keeper-gated structure (a private home answering a
 // knock), so calling this on any keeperless structure would wrongly evict a
 // legitimate cross-threshold visitor.
@@ -262,7 +272,7 @@ func LoiterScopeConversableInSnapshot(snap *Snapshot, assets map[AssetID]*Asset,
 // one is left inside for a stranded loiterer to reach through the wall — that path
 // is deliberately not hooked here.
 func evictLoiterMembersOnClose(w *World, structureID StructureID, now time.Time) {
-	if structureID == "" || keeperPresentAt(w, structureID) {
+	if structureID == "" || businessTendedAt(w, structureID) {
 		return
 	}
 	huddleID, ok := findActiveHuddleAt(w, structureID)

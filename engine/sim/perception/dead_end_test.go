@@ -134,19 +134,21 @@ func TestFindLoiterStructure_EffectivePin(t *testing.T) {
 
 // TestShutBusinessCueOnlyWhenUntended is the LLM-154 cross-scenario invariant: the
 // at-location "is shut — no one is tending it" clause appears in EXACTLY the scenarios
-// where the actor stands at a business no awake keeper is tending, and never at an
-// attended one. The live, situated complement of the ObservedClosed memory invariant
+// where the actor stands at a business NOBODY is tending, and never at an attended
+// one. The live, situated complement of the ObservedClosed memory invariant
 // (TestExperientialShutCueOnlyWhenRemembered). The matrix must exercise both branches
 // for the check to mean anything.
+//
+// "Tending" widened in LLM-527 from the keeper alone to anyone minding the place,
+// which moved two scenarios off this list. "laboring_worker_employer_away" is
+// Silence at work inside the Tavern with John gone to the General Store: the old
+// rule told the very woman working it that it was shut and no one was tending it.
+// "constable_at_farm_worked_by_hired_hand" is the onlooker half of the same shape.
 func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 	const marker = "is shut — no one is tending it"
 	untended := map[string]bool{
 		"customer_at_shut_business_loitering": true,
 		"customer_at_shut_business_inside":    true,
-		// LLM-268: the worker is inside the Tavern while its keeper (John) has
-		// walked off to the General Store — genuinely untended, so the shut cue
-		// correctly fires alongside the accompany cue.
-		"laboring_worker_employer_away": true,
 		// LLM-463: turned away at the Tavern door with John abed. The live cue and
 		// the remembered dead-end line must BOTH be present — the pairing is the
 		// point of the scenario, since the live cue alone is what the village had
