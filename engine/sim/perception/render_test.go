@@ -1162,3 +1162,36 @@ func TestRenderActor_RoundsContinuationGatedOnArrival(t *testing.T) {
 		t.Errorf("at-stop line rendered without an arrival:\n%s", got)
 	}
 }
+
+// TestRenderActor_SuspendedRoundRemindsHimWhereHeBrokeOff covers the LLM-531 cue.
+// He stepped away for a drink; the round waits. His perception must still say a
+// round is under way, name where he broke off (a move_to token, so picking it up is
+// actionable) and how much is left — and must NOT claim he is walking his rounds
+// right now, because he is standing at a well. Live, this moment used to carry
+// nothing at all: the round had been discarded, so after drinking he went back to
+// his post with six doors unvisited.
+func TestRenderActor_SuspendedRoundRemindsHimWhereHeBrokeOff(t *testing.T) {
+	var b strings.Builder
+	renderActor(&b, ActorView{Rounds: &RoundsView{
+		AtBusiness: "Ellis Farm",
+		StopsAhead: 6,
+		Suspended:  true,
+	}})
+	got := b.String()
+
+	if !strings.Contains(got, "You have left your rounds part-walked; you broke off at the Ellis Farm.") {
+		t.Errorf("suspended cue missing the place he broke off:\n%s", got)
+	}
+	if !strings.Contains(got, "Six more places on your round still lie ahead of you.") {
+		t.Errorf("suspended cue missing what is left:\n%s", got)
+	}
+	// He is NOT mid-round right now — that line would contradict where he stands.
+	if strings.Contains(got, "You are walking your rounds") {
+		t.Errorf("suspended round still claims he is walking it:\n%s", got)
+	}
+	// And it must not name a NEXT stop: while paused the actionable place is the one
+	// he broke off at, not the one after it.
+	if strings.Contains(got, "The next is the") {
+		t.Errorf("suspended cue names a next stop, which is not where he picks up:\n%s", got)
+	}
+}

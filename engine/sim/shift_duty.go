@@ -335,6 +335,15 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	// shows it doing the round. ActiveRoutes[a.ID] is non-nil only while a route
 	// is in flight (StartNPCRoute installs it, AdvanceNPCRoute clears it on the
 	// home leg); the nil-map read is safe.
+	// A SUSPENDED round also suppresses the duty (LLM-531), deliberately: while a
+	// round sits part-walked, the go-to-post producer would march him back to the
+	// Meeting House the moment he finished his drink, and he would never get the
+	// chance to pick the round up. His duty right now IS the unfinished round.
+	//
+	// That exemption is bounded, which is what keeps it from becoming the old
+	// parked-route strand: runConstableRounds clears a suspended round as soon as
+	// its carrier goes off shift (so he goes home at dusk like anyone else), and the
+	// next rounds interval supersedes one outright.
 	if w.ActiveRoutes[a.ID] != nil {
 		return "", false, false
 	}

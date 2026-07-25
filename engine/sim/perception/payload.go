@@ -1411,6 +1411,12 @@ type RoundsView struct {
 	// destination: "I am finished here" needs somewhere to resolve to, and his own
 	// post was previously the only place the prompt named.
 	NextBusiness string
+
+	// Suspended marks the round as PAUSED — he stepped away of his own accord
+	// (LLM-531). AtBusiness then names where he BROKE OFF rather than where he is
+	// standing, and the cue reminds him the round is still under way and names the
+	// place to pick it up. Nothing pushes him back; walking there is his choice.
+	Suspended bool
 }
 
 // InFlightSourceActivityView is the perception-side projection of the subject's

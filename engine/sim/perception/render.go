@@ -986,7 +986,28 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// during the tour in character, plus "you stand before the <business>" once he
 	// has arrived at a stop. It suppresses the plain in-flight-move line below so
 	// the two don't both narrate his movement.
-	if a.Rounds != nil {
+	if a.Rounds != nil && a.Rounds.Suspended {
+		// The round is paused because he stepped away himself (LLM-531). Say plainly
+		// that it is still under way and name where to pick it up — the name is a
+		// move_to token, the same reason the next-stop name is named. No imperative
+		// and no nagging: he stepped away for a reason of his own, and going back is
+		// his to choose. Live, the round used to be discarded at this moment, so
+		// after a drink at the well nothing told him six doors were still unwalked
+		// and he simply returned to his post.
+		if a.Rounds.AtBusiness != "" {
+			fmt.Fprintf(b, "You have left your rounds part-walked; you broke off at the %s.\n",
+				sanitizeInline(a.Rounds.AtBusiness))
+		} else {
+			b.WriteString("You have left your rounds part-walked.\n")
+		}
+		if a.Rounds.StopsAhead > 0 {
+			if line := renderRoundsStopsAhead(a.Rounds.StopsAhead, ""); line != "" {
+				b.WriteString(line)
+			}
+		}
+		activity = true
+	}
+	if a.Rounds != nil && !a.Rounds.Suspended {
 		if a.Rounds.AtBusiness != "" {
 			fmt.Fprintf(b, "You are walking your rounds through the village. You stand before the %s.\n",
 				sanitizeInline(a.Rounds.AtBusiness))
@@ -1017,8 +1038,11 @@ func renderActor(b *strings.Builder, a ActorView) {
 		activity = true
 	}
 	// The rounds line above already narrates the constable's movement, so skip the
-	// plain in-flight-move line while a tour runs (single movement voice).
-	if a.InFlightMove != nil && a.Rounds == nil {
+	// plain in-flight-move line while a tour runs (single movement voice). While the
+	// round is SUSPENDED the movement is his OWN — walking to the well, not walking
+	// the round — so it narrates normally (LLM-531); suppressing it there would
+	// leave a moving actor with no line saying where he is headed.
+	if a.InFlightMove != nil && (a.Rounds == nil || a.Rounds.Suspended) {
 		fmt.Fprintf(b, "You are %s.\n", renderInFlightMove(*a.InFlightMove))
 		activity = true
 	}

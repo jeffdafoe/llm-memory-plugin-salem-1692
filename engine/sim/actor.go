@@ -1740,6 +1740,13 @@ type ActorSnapshot struct {
 	// he could only say it about home.
 	RouteNextStopObjectID VillageObjectID
 
+	// RouteSuspended marks a round PAUSED because the carrier stepped away of his
+	// own accord (LLM-531). RouteStopObjectID then names the stop he broke off at
+	// (not one he is standing at) and RouteStopsAhead what is left, so the cue can
+	// remind him a round is still under way and where to pick it up. He is otherwise
+	// treated as having no route at all — see NPCRoute.InFlight.
+	RouteSuspended bool
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

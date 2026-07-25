@@ -2395,6 +2395,16 @@ func (w *World) republish() {
 		// effect through the object states they flip, not through route membership.
 		if r := w.ActiveRoutes[a.ID]; r != nil && r.Label == AttrConstable {
 			sa.RouteLabel = r.Label
+			// A SUSPENDED round still surfaces (LLM-531) — that is the whole point:
+			// while he is off drinking or talking, the cue keeps naming what is left
+			// and where he broke off, so he can choose to pick it up again. The
+			// remaining count and the stop to return to are projected without any
+			// "arrived" requirement, since by definition he is elsewhere.
+			if r.Phase == RoutePhaseSuspended && r.StopIdx < len(r.Stops) {
+				sa.RouteSuspended = true
+				sa.RouteStopObjectID = r.Stops[r.StopIdx].ObjectID
+				sa.RouteStopsAhead = len(r.Stops) - r.StopIdx - 1
+			}
 			if r.Phase == RoutePhaseActive && r.StopIdx < len(r.Stops) {
 				stop := r.Stops[r.StopIdx]
 				if RouteStopArrived(a, stop) {
