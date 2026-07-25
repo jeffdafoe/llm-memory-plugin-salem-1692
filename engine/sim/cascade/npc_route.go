@@ -585,14 +585,25 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 	if route.Label == sim.AttrConstable &&
 		route.Phase == sim.RoutePhaseActive &&
 		route.StopIdx < len(route.Stops) {
-		if route.Dwelling {
-			// A dwell is already running for this stop — ignore the duplicate
-			// arrival so we don't arm a second timer (mirrors the crier's Authoring
-			// guard).
-			return
-		}
 		actor := w.Actors[arrived.ActorID]
 		stop := route.Stops[route.StopIdx]
+		if route.Dwelling && actor != nil && sim.RouteStopArrived(actor, stop) {
+			// A dwell is already running for THIS stop and he is still standing at
+			// it — a duplicate arrival for the same place. Ignore it so we don't arm
+			// a second timer (mirrors the crier's Authoring guard).
+			//
+			// Deliberately NOT a bare `if route.Dwelling` (LLM-530 live failure): the
+			// dwell is exactly when the cue names the next business and invites him to
+			// walk on, so an arrival somewhere ELSE mid-dwell is the intended
+			// walked-onward case — and the bare guard swallowed it before
+			// advanceActiveRoute could adopt the stop. Live 15:53 he walked from the
+			// Ellis Farm to the James Farm as the cue asked, the arrival was dropped
+			// here, and the route still read "expected stop 0" two minutes later with
+			// his cue collapsed to a bare "you are walking your rounds" — no place, no
+			// count, nowhere to go. Falling through lets the adopt (or the suspend)
+			// run; beginConstableDwell re-arms cleanly for whichever stop he lands on.
+			return
+		}
 		if actor != nil && sim.RouteStopArrived(actor, stop) {
 			beginConstableDwell(w, arrived.ActorID)
 			return

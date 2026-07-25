@@ -187,6 +187,39 @@ func RouteStopArrived(a *Actor, stop RouteStop) bool {
 	return a.Pos.X == stop.WalkTo.X && a.Pos.Y == stop.WalkTo.Y
 }
 
+// RouteStopReachedOnFoot is the tolerant twin of RouteStopArrived, for arrivals
+// the ROUTE did not dispatch — a stateful carrier who walked himself to a stop
+// because the cue named it (the LLM-530 walk-onward) or because he is coming back
+// to a round he broke off (the LLM-531 resume).
+//
+// The strict form is exact tile equality with WalkTo, which is right for the
+// route's OWN walks: routeStopDestination dispatches a Position destination
+// straight at that tile, so the actor lands on it. But the carrier's own
+// move_to("the James Farm") resolves to a StructureVisit, and pickVisitorSlot
+// parks him on one of the eight king's-move slots AROUND the loiter pin, taking
+// the pin itself only when all eight are blocked. So the two can essentially
+// never match, and every check written against the strict form silently failed
+// for the exact path it was built to serve — live 15:53 on 2026-07-25 he walked
+// from the Ellis Farm to the James Farm precisely as the cue asked, and the route
+// still read "expected stop 0" two minutes later.
+//
+// LoiterAttributionTiles is the tolerance because it IS the pin's own footprint:
+// the pin tile plus its eight visitor slots, the exact inverse of pickVisitorSlot
+// and the same radius every other "is he at this place" check in the engine uses.
+// Standing in a visitor slot at a business is standing at that business.
+//
+// Enter stops are unchanged — InsideStructureID is already an exact, slot-free
+// signal, however he came to be inside.
+func RouteStopReachedOnFoot(a *Actor, stop RouteStop) bool {
+	if a == nil {
+		return false
+	}
+	if stop.EnterStructureID != "" {
+		return a.InsideStructureID == stop.EnterStructureID
+	}
+	return a.Pos.Chebyshev(stop.WalkTo) <= LoiterAttributionTiles
+}
+
 // routeStopDestination builds the MoveDestination that dispatches a walk to
 // stop: a StructureEnter into EnterStructureID for an enter stop, else a
 // Position walk to WalkTo. Shared by StartNPCRoute's first walk and
@@ -643,16 +676,20 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	// a coincidence of standing still. (An admin force-move onto the next stop also
 	// arrives there, and adopting it is the right outcome — he is at a stop on the
 	// circuit either way.)
-	if !RouteStopArrived(actor, stop) && routeYieldsToVolition(route) && route.StopIdx+1 < len(route.Stops) {
-		if next := route.Stops[route.StopIdx+1]; RouteStopArrived(actor, next) {
+	// He walked himself here, so judge it with the tolerant predicate: his own
+	// move_to lands him in a visitor slot beside the pin, never on it.
+	atStop := RouteStopArrived(actor, stop)
+	if !atStop && routeYieldsToVolition(route) && route.StopIdx+1 < len(route.Stops) {
+		if next := route.Stops[route.StopIdx+1]; RouteStopReachedOnFoot(actor, next) {
 			log.Printf("sim/npc_route: %q walked on to stop %d of its own accord (was heading to stop %d) — continuing the round",
 				route.NPCID, route.StopIdx+1, route.StopIdx)
 			route.StopIdx++
 			route.StaleRetries = 0
 			stop = next
+			atStop = true
 		}
 	}
-	if !RouteStopArrived(actor, stop) {
+	if !atStop {
 		// A stateful carrier that arrived somewhere other than the stop walked
 		// himself off on his OWN volition — his LLM reactor issued the move_to.
 		// Re-walking him back (the branch below) would fight his model over his
@@ -822,7 +859,9 @@ func resumeSuspendedRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRoute
 		clearActiveRoute(w, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "no_route"}, nil
 	}
-	if !RouteStopArrived(actor, route.Stops[route.StopIdx]) {
+	// Tolerant predicate: he comes back to the round on his own feet, so his
+	// move_to parks him in a visitor slot beside the pin rather than on it.
+	if !RouteStopReachedOnFoot(actor, route.Stops[route.StopIdx]) {
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "still_suspended"}, nil
 	}
 	log.Printf("sim/npc_route: %q returned to its round at stop %d — resuming", route.NPCID, route.StopIdx)

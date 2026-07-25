@@ -971,3 +971,110 @@ func TestAdvanceNPCRoute_SuspendBurnsDwellGeneration(t *testing.T) {
 		t.Error("resumed route reverted to the pre-suspension Gen — a stale dwell callback would match again")
 	}
 }
+
+// visitorSlotBeside returns the tile a StructureVisit walk actually parks an actor
+// on: a king's-move slot NEXT TO the loiter pin, not the pin itself. pickVisitorSlot
+// only falls back to the pin when all eight slots are blocked, so this — not exact
+// pin equality — is where a carrier who walked himself somewhere ends up.
+func visitorSlotBeside(pin sim.Position) sim.Position {
+	return sim.Position{X: pin.X + 1, Y: pin.Y}
+}
+
+// TestAdvanceNPCRoute_WalkedOnwardFromAVisitorSlotContinuesRound is the live half
+// of LLM-530 that its original test could not catch: it teleported the actor onto
+// route.Stops[1].WalkTo exactly, which is the one place his own locomotion will not
+// put him. A carrier walking to a business by name gets a StructureVisit, and
+// pickVisitorSlot parks him BESIDE the pin — so the adopt's exact-equality check
+// could never fire in production.
+//
+// Live evidence (2026-07-25 15:53): the cue said "The next is the James Farm", he
+// walked there as asked, and the route still logged "expected stop 0 at (41,44)"
+// two minutes later — his rounds cue collapsed to a bare "you are walking your
+// rounds" with no place, no count and nowhere to go, and the tour died.
+func TestAdvanceNPCRoute_WalkedOnwardFromAVisitorSlotContinuesRound(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if n := stopCountOf(t, w, "lamp"); n != 2 {
+		t.Fatalf("fixture must have exactly 2 stops for these expectations, got %d", n)
+	}
+
+	// He walks himself to stop 1 by name and lands in a visitor slot beside its pin.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		a := world.Actors["lamp"]
+		a.Pos = visitorSlotBeside(route.Stops[1].WalkTo)
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("place actor beside stop 1: %v", err)
+	}
+
+	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("AdvanceNPCRoute: %v", err)
+	}
+	r := res.(sim.AdvanceNPCRouteResult)
+	if r.Reason == "yielded_to_volition" || r.Reason == "suspended" {
+		t.Fatalf("standing in stop 1's visitor slot ended the round (Reason=%q) — "+
+			"the adopt must tolerate the slot his own move_to actually puts him in", r.Reason)
+	}
+	if r.Reason != "returning_home" {
+		t.Errorf("Reason = %q, want returning_home (stop 1 is the last of 2)", r.Reason)
+	}
+}
+
+// TestResumeSuspendedRoute_FromAVisitorSlot is the same geometry on LLM-531's
+// resume path. He breaks off for a drink, walks back to the stop he left, and lands
+// beside its pin — exactly as he left it. Resuming on exact pin equality would mean
+// a suspended round could essentially never be picked back up, so suspend-instead-
+// of-discard would ship and still leave him going home with the round unwalked.
+func TestResumeSuspendedRoute_FromAVisitorSlot(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Step away from the round entirely (the well) — that suspends it.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		a.Pos = sim.Position{X: 900, Y: 900}
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("step away: %v", err)
+	}
+	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("AdvanceNPCRoute (suspend): %v", err)
+	}
+	if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "suspended" {
+		t.Fatalf("stepping off the round: Reason = %q, want suspended", reason)
+	}
+
+	// He comes back to the stop he broke off at — into a visitor slot beside the pin.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		a := world.Actors["lamp"]
+		a.Pos = visitorSlotBeside(route.Stops[route.StopIdx].WalkTo)
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("walk back: %v", err)
+	}
+	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("AdvanceNPCRoute (resume): %v", err)
+	}
+	if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason == "still_suspended" {
+		t.Fatal("walking back into the stop's visitor slot did not resume the round — " +
+			"resume must tolerate the slot his own move_to puts him in")
+	}
+}
