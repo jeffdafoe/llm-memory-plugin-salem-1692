@@ -249,6 +249,13 @@ func EvaluateLocomotion(now time.Time) Command {
 				}
 				advanceActorLocomotion(w, actor, grid, now)
 			}
+			// A business's occupied art follows its keeper's position, and she
+			// tends an interior-less stall from an OUTDOOR loiter pin — a step
+			// that never changes InsideStructureID and so never reaches the
+			// setActorInsideStructure recompute (LLM-534). Sweeping here rather
+			// than per step coalesces the whole tick into one pass, and the
+			// no-movers early return above means an idle village pays nothing.
+			refreshBusinessOccupancyStates(w)
 			return nil, nil
 		},
 	}

@@ -143,6 +143,11 @@ var (
 	FireScheduledLocomotionTick              = fireScheduledLocomotionTick
 )
 
+// LLM-534 business-occupancy sweep — exposed so the occupancy suite can assert
+// the tended predicate itself without routing every case through a locomotion
+// tick (the tick's own wiring gets its own test).
+var RefreshBusinessOccupancyStates = refreshBusinessOccupancyStates
+
 // World-rotation substrate primitives — exposed so sim_test can drive
 // the determineRotationFlips helper + ticker check primitives without
 // those internals being part of the public sim package surface.

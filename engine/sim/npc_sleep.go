@@ -430,6 +430,10 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 			evictLoiterMembersOnClose(w, a.InsideStructureID, now)
 		}
 	}
+	// A keeper who beds down at her OUTDOOR post has InsideStructureID == "", so
+	// the refresh above never runs for the business she just stopped tending
+	// (LLM-534). The sweep covers it either way.
+	refreshBusinessOccupancyStates(w)
 	return true
 }
 
@@ -520,6 +524,9 @@ func wakeNPC(w *World, a *Actor) {
 	if a.InsideStructureID != "" {
 		refreshStructureOccupancyState(w, a.InsideStructureID)
 	}
+	// Twin of the bed-down sweep: a keeper waking at her outdoor post is tending
+	// again, and InsideStructureID is "" there (LLM-534).
+	refreshBusinessOccupancyStates(w)
 }
 
 // handleAutoSleepOnArrival beds an NPC that arrives at its home off-shift. The

@@ -182,6 +182,15 @@ func EvaluateLaborLedgerSweep(now time.Time) Command {
 				settleCompletedLabor(w, o, now)
 			}
 			reapTerminalLaborOffers(w, now)
+			// A settled job means a hired hand stopped tending his employer's
+			// place, which can close a business whose owner is elsewhere
+			// (LLM-534). Only the Working→Completed flip can change that — an
+			// expired Pending or EnRoute offer never had the hand at work — and
+			// he may well stand still afterward, so movement can't be relied on
+			// to sweep it.
+			if len(completed) > 0 {
+				refreshBusinessOccupancyStates(w)
+			}
 			return nil, nil
 		},
 	}

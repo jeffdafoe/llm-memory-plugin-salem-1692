@@ -1969,6 +1969,15 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 		w.SeedPriceBook(seedRecords)
 	}
 
+	// A business's occupied art is derived, but it is STORED on the village
+	// object and restored verbatim from the checkpoint — so a village that
+	// went down with a keeper at her stall comes back up showing it open with
+	// nobody there (observed 2026-07-25: James Farm read open with no actor
+	// inside its footprint). The night-only sweep runs at phase boundaries and
+	// does not cover these, so converge them once here, before the first
+	// publish carries the stale state to the client (LLM-534).
+	refreshBusinessOccupancyStates(w)
+
 	w.republish()
 	return nil
 }
