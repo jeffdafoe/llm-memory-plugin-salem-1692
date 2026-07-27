@@ -573,7 +573,9 @@ func terminalStatusAddresses(s TickTerminalStatus) bool {
 // stimulus and simply ran out of rounds, which is the same standing as a
 // success tick that chose not to reply. If a future path ever sets
 // budget-forced without an LLM round, move it to the default branch
-// (code_review). TestTerminalStatusAnsweredContract pins the membership.
+// (code_review). TestTerminalStatusAnsweredContract pins this predicate's
+// membership; handlers.TestHarness_BudgetForcedAlwaysFollowsAnLLMRound pins
+// the harness invariant the membership rests on.
 func terminalStatusAnswered(s TickTerminalStatus) bool {
 	switch s {
 	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced:

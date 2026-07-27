@@ -442,7 +442,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// whose warrant this attempt never consumed, because they landed between
 	// the emit and the snapshot this perception was built from. Collected here,
 	// after Render, so a tick that never built a prompt reports none.
-	result.DischargedSourceKeys = perception.CollectDischargedSourceKeys(payload)
+	result.DischargedSourceKeys = perception.CollectDischargedSourceKeys(payload, rendered.DroppedWarrants)
 
 	// --- transcript init ---
 	// PR 3d ships single-user-message perception. A separate system

@@ -368,8 +368,9 @@ func TestBuildRecentConversation_RecentDedupedDoesNotLeakOlder(t *testing.T) {
 	}
 	// The whole most-recent window (u3..u7) is already surfaced this tick, so it
 	// de-dups out. The older tail (u0..u2) is outside the window and must stay hidden.
-	heardNow := map[sim.ActorID]map[string]bool{
-		"hannah": {"u3": true, "u4": true, "u5": true, "u6": true, "u7": true},
+	support := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	heardNow := map[sim.ActorID]map[string]sim.WarrantSourceKey{
+		"hannah": {"u3": support, "u4": support, "u5": support, "u6": support, "u7": support},
 	}
 	got, _ := buildRecentConversation(snap, "ezekiel", subject, heardNow)
 	if len(got) != 0 {

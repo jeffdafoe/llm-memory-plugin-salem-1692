@@ -3638,7 +3638,7 @@ func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) [
 // backfills with genuinely-older context instead of a duplicate. Done here (not
 // in Render) per the package contract: Build decides content, Render is content-
 // agnostic.
-func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string]bool) []RelationshipPeerView {
+func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string]sim.WarrantSourceKey) []RelationshipPeerView {
 	if a.Kind != sim.KindNPCShared || len(a.Relationships) == 0 || len(members) == 0 {
 		return nil
 	}
@@ -3652,7 +3652,7 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow m
 		if dups := heardNow[m.ID]; len(dups) > 0 {
 			kept := make([]sim.SalientFact, 0, len(facts))
 			for _, f := range facts {
-				if f.Kind == sim.InteractionHeard && dups[f.Text] {
+				if _, heard := dups[f.Text]; f.Kind == sim.InteractionHeard && heard {
 					continue // already in "## Since your last turn" this tick
 				}
 				kept = append(kept, f)
@@ -3774,7 +3774,7 @@ const maxRenderedConversationLines = 5
 // still pending can collide with a consumed warrant's excerpt and vanish from
 // this section. Without the conveyance record that pending warrant would fire a
 // second reply to a line the model has already seen.
-func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]bool) ([]UtteranceView, []ConveyedSpeechRef) {
+func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]sim.WarrantSourceKey) ([]UtteranceView, []ConveyedSpeechRef) {
 	huddleID := actorSnap.CurrentHuddleID
 	if huddleID == "" {
 		return nil, nil
@@ -3799,8 +3799,7 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 	var conveyed []ConveyedSpeechRef
 	for i, u := range utts {
 		inWindow := i >= windowStart
-		dups := heardNow[u.SpeakerID]
-		alreadyHeard := dups != nil && dups[recentConversationDedupKey(u.Text)]
+		viaWarrant, alreadyHeard := heardNow[u.SpeakerID][recentConversationDedupKey(u.Text)]
 
 		// LLM-542 conveyance. The subject's own lines are excluded: an actor
 		// never warrants itself for its own speech, so there is nothing to
@@ -3815,7 +3814,17 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 			if sp := snap.Actors[u.SpeakerID]; sp != nil && sp.Kind == sim.KindPC {
 				speakerIsPC = true
 			}
-			conveyed = append(conveyed, ConveyedSpeechRef{SpeechID: u.SpeechID, SpeakerIsPC: speakerIsPC})
+			ref := ConveyedSpeechRef{SpeechID: u.SpeechID, SpeakerIsPC: speakerIsPC}
+			// A de-duped line is carried ONLY by the warrant render — this
+			// section drops it precisely because the warrant is showing the
+			// text. That is conditional on the warrant surviving the prompt
+			// caps, and Build runs BEFORE Render, so the dependency is
+			// recorded here and settled after (code_review). A line that
+			// renders in this section in its own right depends on nothing.
+			if alreadyHeard {
+				ref.ViaWarrant = viaWarrant
+			}
+			conveyed = append(conveyed, ref)
 		}
 
 		if !inWindow || alreadyHeard {
@@ -3961,27 +3970,27 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 //
 // Returns nil when the batch carries no speech (the common non-conversational
 // tick).
-func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string]bool {
-	var bySpeaker map[sim.ActorID]map[string]bool
-	add := func(speaker sim.ActorID, excerpt string) {
+func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string]sim.WarrantSourceKey {
+	var bySpeaker map[sim.ActorID]map[string]sim.WarrantSourceKey
+	add := func(speaker sim.ActorID, excerpt string, key sim.WarrantSourceKey) {
 		if speaker == "" || excerpt == "" {
 			return
 		}
 		if bySpeaker == nil {
-			bySpeaker = make(map[sim.ActorID]map[string]bool)
+			bySpeaker = make(map[sim.ActorID]map[string]sim.WarrantSourceKey)
 		}
 		if bySpeaker[speaker] == nil {
-			bySpeaker[speaker] = make(map[string]bool)
+			bySpeaker[speaker] = make(map[string]sim.WarrantSourceKey)
 		}
-		bySpeaker[speaker][excerpt] = true
-		bySpeaker[speaker][recentConversationDedupKey(excerpt)] = true
+		bySpeaker[speaker][excerpt] = key
+		bySpeaker[speaker][recentConversationDedupKey(excerpt)] = key
 	}
 	for _, w := range warrants {
 		switch r := w.Reason.(type) {
 		case sim.PCSpeechWarrantReason:
-			add(r.Speaker, r.Excerpt)
+			add(r.Speaker, r.Excerpt, sim.WarrantSourceKey{Kind: sim.WarrantKindPCSpoke, Discriminator: uint64(r.SpeechID)})
 		case sim.NPCSpeechWarrantReason:
-			add(r.Speaker, r.Excerpt)
+			add(r.Speaker, r.Excerpt, sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: uint64(r.SpeechID)})
 		}
 	}
 	return bySpeaker

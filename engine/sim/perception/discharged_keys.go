@@ -41,12 +41,35 @@ import (
 // under "## Since your last turn", and a warrant it stamped must be
 // discharged all the same. build.go owns that distinction.
 //
+// droppedWarrants is Render's DroppedWarrants — the consumed warrants that did
+// not fit under MaxWarrants / MaxSectionBytes. It settles the conditional half
+// of conveyance: a line that reached the prompt ONLY through another warrant's
+// render did not reach it at all if that warrant was dropped, so it is still
+// owed (code_review). Build cannot know this — it runs before Render.
+//
 // Returns nil when the tick conveyed no dischargeable stimulus.
-func CollectDischargedSourceKeys(p Payload) []sim.WarrantSourceKey {
+func CollectDischargedSourceKeys(p Payload, droppedWarrants []sim.WarrantMeta) []sim.WarrantSourceKey {
+	var dropped map[sim.WarrantSourceKey]struct{}
+	if len(droppedWarrants) > 0 {
+		dropped = make(map[sim.WarrantSourceKey]struct{}, len(droppedWarrants))
+		for _, m := range droppedWarrants {
+			switch r := m.Reason.(type) {
+			case sim.PCSpeechWarrantReason:
+				dropped[sim.WarrantSourceKey{Kind: sim.WarrantKindPCSpoke, Discriminator: uint64(r.SpeechID)}] = struct{}{}
+			case sim.NPCSpeechWarrantReason:
+				dropped[sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: uint64(r.SpeechID)}] = struct{}{}
+			}
+		}
+	}
 	set := map[sim.WarrantSourceKey]struct{}{}
 	for _, ref := range p.ConveyedSpeech {
 		if ref.SpeechID == 0 {
 			continue
+		}
+		if ref.ViaWarrant.Discriminator != 0 {
+			if _, gone := dropped[ref.ViaWarrant]; gone {
+				continue // the only thing carrying this text never rendered
+			}
 		}
 		kind := sim.WarrantKindNPCSpoke
 		if ref.SpeakerIsPC {

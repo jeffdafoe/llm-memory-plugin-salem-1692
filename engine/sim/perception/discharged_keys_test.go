@@ -24,7 +24,7 @@ func TestCollectDischargedSourceKeys(t *testing.T) {
 		},
 	}
 
-	got := CollectDischargedSourceKeys(p)
+	got := CollectDischargedSourceKeys(p, nil)
 	want := []sim.WarrantSourceKey{
 		{Kind: sim.WarrantKindNPCSpoke, Discriminator: 41},
 		{Kind: sim.WarrantKindPCSpoke, Discriminator: 42},
@@ -47,7 +47,7 @@ func TestCollectDischargedSourceKeys_NothingToDischarge(t *testing.T) {
 		}},
 	}
 	for name, p := range cases {
-		if got := CollectDischargedSourceKeys(p); got != nil {
+		if got := CollectDischargedSourceKeys(p, nil); got != nil {
 			t.Errorf("%s: CollectDischargedSourceKeys() = %+v, want nil", name, got)
 		}
 	}
@@ -104,7 +104,8 @@ func TestBuildRecentConversation_ConveysDedupedAndCappedLines(t *testing.T) {
 			"elizabeth": {Kind: sim.KindNPCShared},
 		},
 	}
-	heardNow := map[sim.ActorID]map[string]bool{"elizabeth": {"already heard": true}}
+	support := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	heardNow := map[sim.ActorID]map[string]sim.WarrantSourceKey{"elizabeth": {"already heard": support}}
 
 	views, conveyed := buildRecentConversation(snap, me, &sim.ActorSnapshot{CurrentHuddleID: "h1"}, heardNow)
 
@@ -137,5 +138,64 @@ func TestBuildRecentConversation_ConveysDedupedAndCappedLines(t *testing.T) {
 	}
 	if got[20] {
 		t.Error("the subject's own line was reported as conveyed")
+	}
+}
+
+// TestBuildRecentConversation_DedupedLinesRecordTheirSupportingWarrant: a line
+// dropped by the de-dup reached the prompt ONLY through the warrant whose
+// excerpt matched it, so the conveyance record must name that warrant. Build
+// runs before Render and cannot know whether the warrant survives the prompt
+// caps — CollectDischargedSourceKeys settles it (code_review).
+func TestBuildRecentConversation_DedupedLinesRecordTheirSupportingWarrant(t *testing.T) {
+	const me = sim.ActorID("gideon")
+	support := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	ring := []sim.Utterance{
+		{SpeakerID: "elizabeth", SpeakerName: "Elizabeth", Text: "already heard", SpeechID: 21},
+		{SpeakerID: "elizabeth", SpeakerName: "Elizabeth", Text: "a fresh line", SpeechID: 22},
+	}
+	snap := &sim.Snapshot{
+		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", RecentUtterances: ring}},
+		Actors:  map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": {Kind: sim.KindNPCShared}},
+	}
+	heardNow := map[sim.ActorID]map[string]sim.WarrantSourceKey{"elizabeth": {"already heard": support}}
+
+	_, conveyed := buildRecentConversation(snap, me, &sim.ActorSnapshot{CurrentHuddleID: "h1"}, heardNow)
+
+	byID := map[sim.SpeechID]ConveyedSpeechRef{}
+	for _, c := range conveyed {
+		byID[c.SpeechID] = c
+	}
+	if got := byID[21].ViaWarrant; got != support {
+		t.Errorf("de-duped line ViaWarrant = %+v, want %+v — its only carrier", got, support)
+	}
+	if got := byID[22].ViaWarrant; got != (sim.WarrantSourceKey{}) {
+		t.Errorf("line rendered in its own right has ViaWarrant %+v, want zero", got)
+	}
+}
+
+// TestCollectDischargedSourceKeys_DroppedWarrantUncarriesItsLine: the prompt
+// caps (MaxWarrants / MaxSectionBytes) can drop a consumed warrant AFTER Build
+// decided a ring line was de-duped against it. Then the text reached the prompt
+// through neither heading, so the line is still owed and must not be
+// discharged. The dropped warrant itself carries forward as usual.
+func TestCollectDischargedSourceKeys_DroppedWarrantUncarriesItsLine(t *testing.T) {
+	support := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	p := Payload{ConveyedSpeech: []ConveyedSpeechRef{
+		{SpeechID: 21, ViaWarrant: support}, // carried only by the warrant below
+		{SpeechID: 22},                      // rendered in its own right
+	}}
+	droppedSupport := []sim.WarrantMeta{{
+		Reason: sim.NPCSpeechWarrantReason{SpeechID: 900, Speaker: "elizabeth", Excerpt: "already heard"},
+	}}
+
+	got := CollectDischargedSourceKeys(p, droppedSupport)
+	want := []sim.WarrantSourceKey{{Kind: sim.WarrantKindNPCSpoke, Discriminator: 22}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("with its carrier dropped: got %+v, want %+v", got, want)
+	}
+
+	// Control: the same payload with the warrant surviving discharges both.
+	if got := CollectDischargedSourceKeys(p, nil); len(got) != 2 {
+		t.Errorf("with its carrier rendered: got %+v, want both keys", got)
 	}
 }
