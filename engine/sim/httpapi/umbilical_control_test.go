@@ -569,13 +569,28 @@ func TestUmbilicalNudge_DeclinedAtANonDeliberatingActor(t *testing.T) {
 		t.Error("stamped=true for a PC nudge — the funnel declined it, nothing was stamped")
 	}
 
+	// Both halves: no open cycle AND no warrant retained without one. Checking
+	// only WarrantedSince would pass on a warrant banked outside a cycle
+	// (code_review).
 	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.Actors["bram"].WarrantedSince != nil, nil
+		a := world.Actors["bram"]
+		return [2]int{boolAsInt(a.WarrantedSince != nil), len(a.Warrants)}, nil
 	}})
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
-	if warranted, _ := res.(bool); warranted {
-		t.Error("bram (a PC) holds a warrant after the nudge")
+	state, _ := res.([2]int)
+	if state[0] != 0 {
+		t.Error("bram (a PC) has an open warrant cycle after the nudge")
 	}
+	if state[1] != 0 {
+		t.Errorf("bram (a PC) holds %d warrants after the nudge, want 0", state[1])
+	}
+}
+
+func boolAsInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

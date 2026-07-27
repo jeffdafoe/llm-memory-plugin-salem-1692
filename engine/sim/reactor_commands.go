@@ -14,10 +14,15 @@ import (
 //
 // It used to report "a fresh cycle was opened", computed BEFORE the stamp, so a
 // declined stamp on an unwarranted actor still read true. Its one consumer is
-// the umbilical nudge endpoint, where the operator's actual question is "did my
-// nudge produce a tick" — and there the old value said yes to a nudge at a PC
-// that stamped nothing. Fresh-vs-append is not a distinction any caller has
-// ever needed: both produce a deliberation.
+// the umbilical nudge endpoint, where the operator's actual question is whether
+// the warrant took — and there the old value said yes to a nudge at a PC that
+// stamped nothing. Fresh-vs-append is not a distinction any caller has ever
+// needed; recorded-vs-declined is.
+//
+// Recorded is not a promise of a tick. An append lands on a cycle that may
+// already be in flight, and every emit-time gate (pacing floor, rate cap,
+// throttle, admission) still applies afterwards. The field reports what the
+// funnel did with the warrant, nothing downstream of it (code_review).
 type StampWarrantResult struct {
 	Stamped bool // true when the funnel recorded the warrant, false when it declined
 }

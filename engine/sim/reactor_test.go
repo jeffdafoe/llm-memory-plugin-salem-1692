@@ -1469,6 +1469,75 @@ func TestStampWarrant_ErrorsOnNilReason(t *testing.T) {
 	}
 }
 
+// StampWarrantResult.Stamped reports what the FUNNEL did with the warrant —
+// recorded (fresh cycle or append) versus declined — not whether the actor was
+// unwarranted beforehand, and not a promise that a tick follows (LLM-542). The
+// two tests below pin the halves the umbilical nudge endpoint reports on;
+// TestUmbilicalNudge_DeclinedAtANonDeliberatingActor covers the agent-kind
+// decline that motivated the change.
+
+// TestStampWarrant_AcceptedAppendReportsStamped: the semantic that changed. An
+// append to an already-open cycle is an ACCEPTED stamp and must read true; the
+// old implementation reported false for it, having asked "was the actor
+// unwarranted" instead (code_review).
+func TestStampWarrant_AcceptedAppendReportsStamped(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	first := sim.WarrantMeta{Reason: sim.NPCSpeechWarrantReason{SpeechID: 55, Speaker: "bob", Excerpt: "one"}}
+	second := sim.WarrantMeta{Reason: sim.NPCSpeechWarrantReason{SpeechID: 56, Speaker: "bob", Excerpt: "two"}}
+
+	res, err := w.Send(sim.StampWarrant("alice", first, now))
+	if err != nil {
+		t.Fatalf("StampWarrant (fresh): %v", err)
+	}
+	if !res.(sim.StampWarrantResult).Stamped {
+		t.Fatal("fresh stamp reported Stamped=false")
+	}
+
+	res, err = w.Send(sim.StampWarrant("alice", second, now))
+	if err != nil {
+		t.Fatalf("StampWarrant (append): %v", err)
+	}
+	if !res.(sim.StampWarrantResult).Stamped {
+		t.Error("accepted append reported Stamped=false — it was recorded")
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if len(a.Warrants) != 2 {
+			t.Errorf("Warrants len = %d, want 2 (both recorded)", len(a.Warrants))
+		}
+	})
+}
+
+// TestStampWarrant_SourceDedupDeclineReportsNotStamped: the other half of the
+// contract the doc now promises — a stamp the source-dedup paths reject reads
+// false, and adds nothing to the cycle.
+func TestStampWarrant_SourceDedupDeclineReportsNotStamped(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	meta := sim.WarrantMeta{Reason: sim.NPCSpeechWarrantReason{SpeechID: 55, Speaker: "bob", Excerpt: "one"}}
+	if _, err := w.Send(sim.StampWarrant("alice", meta, now)); err != nil {
+		t.Fatalf("StampWarrant (fresh): %v", err)
+	}
+
+	// Same (Kind, SpeechID) — the open-cycle dedup path rejects it.
+	res, err := w.Send(sim.StampWarrant("alice", meta, now))
+	if err != nil {
+		t.Fatalf("StampWarrant (duplicate): %v", err)
+	}
+	if res.(sim.StampWarrantResult).Stamped {
+		t.Error("a source-dedup rejection reported Stamped=true")
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if len(a.Warrants) != 1 {
+			t.Errorf("Warrants len = %d, want 1 (the duplicate was declined)", len(a.Warrants))
+		}
+	})
+}
+
 // TestHuddleCommands_StampWarrantsWithExpectedKinds: existing PR 1
 // callsites in huddle_commands.go now route through tryStampWarrant
 // with kind-specific WarrantMeta. Verifies the wiring.
