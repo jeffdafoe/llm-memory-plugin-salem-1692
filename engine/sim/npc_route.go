@@ -220,6 +220,32 @@ func RouteStopReachedOnFoot(a *Actor, stop RouteStop) bool {
 	return a.Pos.Chebyshev(stop.WalkTo) <= LoiterAttributionTiles
 }
 
+// RouteStopReached is the single "is this carrier at this stop?" test, for every
+// site that asks the question. It picks the predicate by CARRIER rather than by
+// call site: a decorative carrier never self-moves, so only the route's own walk
+// can have put it anywhere and exact tile equality is right; a stateful carrier
+// arrives places under his own steam, where move_to resolves to a StructureVisit
+// and pickVisitorSlot parks him BESIDE the pin.
+//
+// Having ONE of these is the fix (LLM-543). LLM-531 introduced the tolerant form
+// and applied it at two sites — the resume gate and the walk-onward adopt — while
+// advanceActiveRoute's own atStop, the cascade's two dwell checks and the snapshot
+// projection that feeds the cue all stayed strict. So the resume gate admitted him
+// on the tolerant test and handed straight into a strict one he could not pass:
+// live on 2026-07-27 the constable resumed and re-suspended at the same stop on
+// every wake for hours, his cursor frozen at stop 0 of 8 while he walked half the
+// circuit under his own steam and was credited for none of it.
+//
+// Tolerant is a strict SUPERSET — the route's own walk aims a Position destination
+// straight at WalkTo, so an engine-dispatched arrival satisfies both forms. Widening
+// a site therefore never loses an arrival the strict form used to catch.
+func RouteStopReached(route *NPCRoute, a *Actor, stop RouteStop) bool {
+	if routeYieldsToVolition(route) {
+		return RouteStopReachedOnFoot(a, stop)
+	}
+	return RouteStopArrived(a, stop)
+}
+
 // routeStopDestination builds the MoveDestination that dispatches a walk to
 // stop: a StructureEnter into EnterStructureID for an enter stop, else a
 // Position walk to WalkTo. Shared by StartNPCRoute's first walk and
@@ -677,8 +703,10 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	// arrives there, and adopting it is the right outcome — he is at a stop on the
 	// circuit either way.)
 	// He walked himself here, so judge it with the tolerant predicate: his own
-	// move_to lands him in a visitor slot beside the pin, never on it.
-	atStop := RouteStopArrived(actor, stop)
+	// move_to lands him in a visitor slot beside the pin, never on it. RouteStopReached
+	// is the SAME call the resume gate makes (LLM-543) — when these two disagreed, a
+	// resume was admitted here and immediately re-suspended, forever.
+	atStop := RouteStopReached(route, actor, stop)
 	if !atStop && routeYieldsToVolition(route) && route.StopIdx+1 < len(route.Stops) {
 		if next := route.Stops[route.StopIdx+1]; RouteStopReachedOnFoot(actor, next) {
 			log.Printf("sim/npc_route: %q walked on to stop %d of its own accord (was heading to stop %d) — continuing the round",
@@ -860,8 +888,11 @@ func resumeSuspendedRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRoute
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "no_route"}, nil
 	}
 	// Tolerant predicate: he comes back to the round on his own feet, so his
-	// move_to parks him in a visitor slot beside the pin rather than on it.
-	if !RouteStopReachedOnFoot(actor, route.Stops[route.StopIdx]) {
+	// move_to parks him in a visitor slot beside the pin rather than on it. Deliberately
+	// the SAME RouteStopReached call advanceActiveRoute makes below — this gate hands
+	// straight into that one, and when the two used different predicates every resume
+	// was admitted here and re-suspended there on the same tick (LLM-543).
+	if !RouteStopReached(route, actor, route.Stops[route.StopIdx]) {
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "still_suspended"}, nil
 	}
 	log.Printf("sim/npc_route: %q returned to its round at stop %d — resuming", route.NPCID, route.StopIdx)

@@ -2418,7 +2418,12 @@ func (w *World) republish() {
 			}
 			if r.Phase == RoutePhaseActive && r.StopIdx < len(r.Stops) {
 				stop := r.Stops[r.StopIdx]
-				if RouteStopArrived(a, stop) {
+				// Tolerant for a stateful carrier (LLM-543) — this is what the CUE reads.
+				// Strict here meant that at any stop he reached on his own feet the cue
+				// lost the place, the count and the next name all at once, collapsing to a
+				// bare "you are walking your rounds": no business to speak of, nowhere to
+				// go, nothing to say the round continued.
+				if RouteStopReached(r, a, stop) {
 					sa.RouteStopObjectID = stop.ObjectID
 					// Stops still ahead AFTER this one, so the cue can say the round
 					// continues (LLM-524). 0 at the final stop.
