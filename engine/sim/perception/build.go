@@ -3980,12 +3980,29 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string][]sim.WarrantSourceKey {
 	var bySpeaker map[sim.ActorID]map[string][]sim.WarrantSourceKey
 	addKey := func(speaker sim.ActorID, index string, key sim.WarrantSourceKey) {
-		for _, existing := range bySpeaker[speaker][index] {
-			if existing == key {
-				return
-			}
+		// The index key is always recorded — its PRESENCE is what drives the
+		// de-dup, and that must not depend on the carrier being usable.
+		carriers, seen := bySpeaker[speaker][index]
+		if !seen {
+			carriers = []sim.WarrantSourceKey{}
 		}
-		bySpeaker[speaker][index] = append(bySpeaker[speaker][index], key)
+		// A zero discriminator is WarrantSourceKey's "not event-sourced"
+		// sentinel: such a key bypasses dedup entirely and can never be
+		// pruned, so it is not a usable carrier and must not be stored as one
+		// (code_review). The line then reads as unconditionally conveyed, which
+		// is the right default — the excerpt renders regardless of its
+		// SpeechID. Unreachable from the emit path (EventIDs start at 1), but
+		// this is where the invariant belongs.
+		if key.Discriminator != 0 {
+			for _, existing := range carriers {
+				if existing == key {
+					bySpeaker[speaker][index] = carriers
+					return
+				}
+			}
+			carriers = append(carriers, key)
+		}
+		bySpeaker[speaker][index] = carriers
 	}
 	add := func(speaker sim.ActorID, excerpt string, key sim.WarrantSourceKey) {
 		if speaker == "" || excerpt == "" {

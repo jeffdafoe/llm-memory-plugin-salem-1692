@@ -276,3 +276,63 @@ func TestCollectDischargedSourceKeys_AnySurvivingCarrierIsEnough(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectDischargedSourceKeys_ZeroCarrierIsNotACarrier: a zero
+// discriminator is WarrantSourceKey's "not event-sourced" sentinel — it can
+// neither be pruned nor meaningfully sit in the dropped set, so it is not a
+// carrier. A ref holding only such entries must behave exactly like one holding
+// none: unconditionally conveyed (code_review).
+//
+// Unreachable from the emit path (EventIDs start at 1), but ConveyedSpeech is a
+// public payload field and this pins the contract.
+func TestCollectDischargedSourceKeys_ZeroCarrierIsNotACarrier(t *testing.T) {
+	real := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	zero := sim.WarrantSourceKey{}
+	line := []sim.WarrantSourceKey{{Kind: sim.WarrantKindNPCSpoke, Discriminator: 21}}
+	droppedReal := []sim.WarrantMeta{{Reason: sim.NPCSpeechWarrantReason{
+		SpeechID: 900, Speaker: "elizabeth", Excerpt: "already heard",
+	}}}
+	// A malformed dropped warrant contributes a zero key to the dropped set —
+	// it must not suppress anything.
+	droppedZero := []sim.WarrantMeta{{Reason: sim.NPCSpeechWarrantReason{
+		SpeechID: 0, Speaker: "elizabeth", Excerpt: "already heard",
+	}}}
+
+	cases := []struct {
+		name     string
+		carriers []sim.WarrantSourceKey
+		dropped  []sim.WarrantMeta
+		want     []sim.WarrantSourceKey
+	}{
+		{"zero carrier only, nothing dropped", []sim.WarrantSourceKey{zero}, nil, line},
+		{"zero carrier only, a zero key in dropped", []sim.WarrantSourceKey{zero}, droppedZero, line},
+		{"zero carrier beside a surviving real one", []sim.WarrantSourceKey{zero, real}, nil, line},
+		{"zero carrier beside a dropped real one", []sim.WarrantSourceKey{zero, real}, droppedReal, nil},
+		{"no carriers at all", nil, droppedReal, line},
+	}
+	for _, tc := range cases {
+		p := Payload{ConveyedSpeech: []ConveyedSpeechRef{{SpeechID: 21, ViaWarrants: tc.carriers}}}
+		if got := CollectDischargedSourceKeys(p, tc.dropped); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCurrentHeardExcerpts_MalformedWarrantStillDeDupsButCarriesNothing: the
+// de-dup turns on the index key being PRESENT, which must not depend on the
+// warrant having a usable source key. A SpeechID-0 speech warrant still hides
+// its line from "## Recent conversation here" (its excerpt renders under the
+// other heading regardless), and the line is then unconditionally conveyed
+// because there is no carrier whose survival to check.
+func TestCurrentHeardExcerpts_MalformedWarrantStillDeDupsButCarriesNothing(t *testing.T) {
+	heardNow := currentHeardExcerpts([]sim.WarrantMeta{
+		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 0, Speaker: "elizabeth", Excerpt: "already heard"}},
+	})
+	carriers, present := heardNow["elizabeth"]["already heard"]
+	if !present {
+		t.Fatal("index key absent — a malformed warrant must still de-dup its line")
+	}
+	if len(carriers) != 0 {
+		t.Errorf("carriers = %+v, want none — a zero key is not a carrier", carriers)
+	}
+}

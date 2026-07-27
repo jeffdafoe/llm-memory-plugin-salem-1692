@@ -98,11 +98,23 @@ func CollectDischargedSourceKeys(p Payload, droppedWarrants []sim.WarrantMeta) [
 // supporting warrants survived the prompt caps. One is enough: the carriers all
 // hold the same text, so a single surviving render put that text in front of
 // the model.
+//
+// Zero-discriminator entries are not carriers and are skipped — that value is
+// WarrantSourceKey's "not event-sourced" sentinel, so it can neither be pruned
+// nor meaningfully appear in the dropped set. currentHeardExcerpts already
+// refuses to store one; this re-states it because ConveyedSpeech is a public
+// payload field a hand-built caller can populate. A list with no usable carrier
+// reads as unconditionally conveyed, matching the empty-list case (code_review).
 func anyCarrierRendered(carriers []sim.WarrantSourceKey, dropped map[sim.WarrantSourceKey]struct{}) bool {
+	usable := false
 	for _, key := range carriers {
+		if key.Discriminator == 0 {
+			continue
+		}
+		usable = true
 		if _, gone := dropped[key]; !gone {
 			return true
 		}
 	}
-	return false
+	return !usable
 }
