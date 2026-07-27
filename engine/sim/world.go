@@ -2414,7 +2414,12 @@ func (w *World) republish() {
 			if r.Phase == RoutePhaseSuspended && r.StopIdx < len(r.Stops) {
 				sa.RouteSuspended = true
 				sa.RouteStopObjectID = r.Stops[r.StopIdx].ObjectID
-				sa.RouteStopsAhead = len(r.Stops) - r.StopIdx - 1
+				// What he still OWES, not what sits after the cursor (LLM-543). While
+				// suspended he walks his own order, so places he called at himself are
+				// behind him in fact but ahead of the cursor — and the count was the
+				// loudest wrong voice in the prompt, telling him seven places remained
+				// while he stood in the seventh.
+				sa.RouteStopsAhead = r.unvisitedExcluding(r.StopIdx)
 			}
 			if r.Phase == RoutePhaseActive && r.StopIdx < len(r.Stops) {
 				stop := r.Stops[r.StopIdx]
@@ -2425,13 +2430,17 @@ func (w *World) republish() {
 				// go, nothing to say the round continued.
 				if RouteStopReached(r, a, stop) {
 					sa.RouteStopObjectID = stop.ObjectID
-					// Stops still ahead AFTER this one, so the cue can say the round
-					// continues (LLM-524). 0 at the final stop.
-					sa.RouteStopsAhead = len(r.Stops) - r.StopIdx - 1
+					// Places he still OWES a visit, not counting the one he stands at, so
+					// the cue can say the round continues (LLM-524). 0 when this is the
+					// last one left. Counted from the visited set rather than the cursor
+					// (LLM-543) so a shop he called at himself is not offered twice.
+					sa.RouteStopsAhead = r.unvisitedExcluding(r.StopIdx)
 					// The next stop's object, so the cue can NAME where he goes next
-					// (LLM-530). Empty at the final stop.
-					if r.StopIdx+1 < len(r.Stops) {
-						sa.RouteNextStopObjectID = r.Stops[r.StopIdx+1].ObjectID
+					// (LLM-530) — the next place he still owes, which is exactly where the
+					// route will walk him and what the adopt will recognise if he goes
+					// there himself. Empty when nothing is left.
+					if nextIdx, ok := r.nextUnvisitedFrom(r.StopIdx); ok {
+						sa.RouteNextStopObjectID = r.Stops[nextIdx].ObjectID
 					}
 				}
 			}
