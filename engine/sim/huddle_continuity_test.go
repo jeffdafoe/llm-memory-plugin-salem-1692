@@ -61,7 +61,7 @@ func appendUtterance(t *testing.T, w *sim.World, id sim.HuddleID, speaker sim.Ac
 		if !ok || h == nil {
 			t.Fatalf("huddle %q not found when appending utterance", id)
 		}
-		h.AppendUtterance(speaker, string(speaker), text, at)
+		h.AppendUtterance(speaker, string(speaker), text, at, 0)
 		return nil, nil
 	}})
 }

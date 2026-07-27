@@ -415,7 +415,7 @@ func TestHandleHuddleLeft_ModelSpokeRecently_SuppressesFarewell(t *testing.T) {
 		world.Huddles["h1"].AppendUtterance(
 			"hannah", "Hannah",
 			"Safe travels to you, Constable. I'll be here if you need me.",
-			now.Add(-30*time.Second),
+			now.Add(-30*time.Second), 0,
 		)
 	})
 
@@ -443,7 +443,7 @@ func TestHandleHuddleLeft_KeeperSilent_StillFiresFarewell(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		world.Huddles["h1"].AppendUtterance(
-			"jefferey", "Jefferey", "Good day to you.", now.Add(-20*time.Second))
+			"jefferey", "Jefferey", "Good day to you.", now.Add(-20*time.Second), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))
@@ -474,7 +474,7 @@ func TestHandleHuddleLeft_ModelSpokeLongAgo_FiresFarewell(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-30*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		world.Huddles["h1"].AppendUtterance(
-			"hannah", "Hannah", "Two coins and it's yours.", now.Add(-10*time.Minute))
+			"hannah", "Hannah", "Two coins and it's yours.", now.Add(-10*time.Minute), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))
@@ -503,7 +503,7 @@ func TestHandleHuddleLeft_EngineLineDoesNotSuppressFarewell(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		world.Huddles["h1"].AppendEngineUtterance(
-			"hannah", "Hannah", "There you are, Jefferey — enjoy.", now.Add(-10*time.Second))
+			"hannah", "Hannah", "There you are, Jefferey — enjoy.", now.Add(-10*time.Second), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))
@@ -536,7 +536,7 @@ func TestHandleHuddleLeft_UnrelatedKeeperSpeech_AlsoSuppresses(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		world.Huddles["h1"].AppendUtterance(
-			"hannah", "Hannah", "Two coins for the room, and a penny for the ale.", now.Add(-90*time.Second))
+			"hannah", "Hannah", "Two coins for the room, and a penny for the ale.", now.Add(-90*time.Second), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))
@@ -564,7 +564,7 @@ func TestHandleHuddleLeft_LeaverSpeechDoesNotSuppress(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		world.Huddles["h1"].AppendUtterance(
-			"jefferey", "Jefferey", "I'll be on my way, then.", now.Add(-5*time.Second))
+			"jefferey", "Jefferey", "I'll be on my way, then.", now.Add(-5*time.Second), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))
@@ -597,7 +597,7 @@ func TestHandleHuddleLeft_SuppressionIsPerKeeper(t *testing.T) {
 		}
 		world.Huddles["h1"].Members["bram"] = struct{}{}
 		world.Huddles["h1"].AppendUtterance(
-			"hannah", "Hannah", "Safe travels to you.", now.Add(-15*time.Second))
+			"hannah", "Hannah", "Safe travels to you.", now.Add(-15*time.Second), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))
@@ -635,9 +635,9 @@ func TestHandleHuddleLeft_EvictedGoodbye_FiresFarewell(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		h := world.Huddles["h1"]
-		h.AppendUtterance("hannah", "Hannah", "Safe travels to you.", now.Add(-60*time.Second))
+		h.AppendUtterance("hannah", "Hannah", "Safe travels to you.", now.Add(-60*time.Second), 0)
 		for i := 0; i < sim.MaxRecentUtterancesPerHuddle; i++ {
-			h.AppendUtterance("jefferey", "Jefferey", "and another thing", now.Add(-30*time.Second))
+			h.AppendUtterance("jefferey", "Jefferey", "and another thing", now.Add(-30*time.Second), 0)
 		}
 	})
 
@@ -665,7 +665,7 @@ func TestHandleHuddleLeft_StaleHuddleID_FiresFarewell(t *testing.T) {
 	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
 	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
 		world.Huddles["h1"].AppendUtterance(
-			"hannah", "Hannah", "Safe travels to you.", now.Add(-15*time.Second))
+			"hannah", "Hannah", "Safe travels to you.", now.Add(-15*time.Second), 0)
 	})
 
 	r := rand.New(rand.NewSource(1))

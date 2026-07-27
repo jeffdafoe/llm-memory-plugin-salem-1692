@@ -423,3 +423,67 @@ func TestRegisterSpeechHandlers_NilWorldPanics(t *testing.T) {
 	}()
 	handlers.RegisterSpeechHandlers(nil)
 }
+
+// --- TestSpeechReactor_RingUtteranceCarriesTheWarrantSpeechID ---------
+// LLM-542's load-bearing seam. The discharge matches a rendered utterance
+// against a pending warrant by (kind, SpeechID), so the id the huddle ring
+// records for a line and the id the warrant carries for that same line have
+// to be the SAME event. They are minted at two different callsites in the
+// same command — the ring append reads it back off the emitted event, the
+// subscriber reads it off the event it is handed — and nothing else would
+// notice if they drifted: the discharge would simply stop matching and the
+// double-reply would come back silently.
+func TestSpeechReactor_RingUtteranceCarriesTheWarrantSpeechID(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
+		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	// The ring lives on the Huddle, which this world seeds only as a back-ref
+	// on the actors — create the huddle itself so SpeakTo records into it.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Huddles["h1"] = &sim.Huddle{
+			ID:      "h1",
+			Members: map[sim.ActorID]struct{}{"hannah": {}, "bob": {}},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed huddle: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("hannah", "Have a good day.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	bobWarrants := peekWarrants(t, w, "bob")
+	if len(bobWarrants) != 1 {
+		t.Fatalf("bob warrants = %d, want 1", len(bobWarrants))
+	}
+	reason, ok := bobWarrants[0].Reason.(sim.NPCSpeechWarrantReason)
+	if !ok {
+		t.Fatalf("warrant Reason = %T, want NPCSpeechWarrantReason", bobWarrants[0].Reason)
+	}
+
+	utts, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		h := world.Huddles["h1"]
+		if h == nil {
+			return []sim.Utterance(nil), nil
+		}
+		return append([]sim.Utterance(nil), h.RecentUtterances...), nil
+	}})
+	if err != nil {
+		t.Fatalf("read huddle ring: %v", err)
+	}
+	ring := utts.([]sim.Utterance)
+	if len(ring) != 1 {
+		t.Fatalf("ring len = %d, want 1", len(ring))
+	}
+	if ring[0].SpeechID == 0 {
+		t.Fatal("ring utterance carries no SpeechID — the discharge would never match it")
+	}
+	if ring[0].SpeechID != reason.SpeechID {
+		t.Errorf("ring SpeechID = %d, warrant SpeechID = %d — must be the same Spoke event",
+			ring[0].SpeechID, reason.SpeechID)
+	}
+}

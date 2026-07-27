@@ -306,7 +306,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// absent-subject twin of Relationships. Built off Surroundings so present
 	// peers can be filtered (no gossiping to someone's face).
 	p.VillageWord = buildVillageWord(actorSnap, p.Surroundings, snap.PublishedAt)
-	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
+	p.RecentConversation, p.ConveyedSpeech = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.StandingQuotesFromMe = buildStandingQuotesFromMe(snap, actorID, actorSnap)
@@ -3638,7 +3638,7 @@ func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) [
 // backfills with genuinely-older context instead of a duplicate. Done here (not
 // in Render) per the package contract: Build decides content, Render is content-
 // agnostic.
-func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string]bool) []RelationshipPeerView {
+func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string][]sim.WarrantSourceKey) []RelationshipPeerView {
 	if a.Kind != sim.KindNPCShared || len(a.Relationships) == 0 || len(members) == 0 {
 		return nil
 	}
@@ -3652,7 +3652,7 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow m
 		if dups := heardNow[m.ID]; len(dups) > 0 {
 			kept := make([]sim.SalientFact, 0, len(facts))
 			for _, f := range facts {
-				if f.Kind == sim.InteractionHeard && dups[f.Text] {
+				if _, heard := dups[f.Text]; f.Kind == sim.InteractionHeard && heard {
 					continue // already in "## Since your last turn" this tick
 				}
 				kept = append(kept, f)
@@ -3755,28 +3755,80 @@ const maxRenderedConversationLines = 5
 // dropped so the live turn isn't shown twice — the same de-dup buildRelationships
 // applies to heard facts (ZBBS-WORK-374). Returns nil when the subject has no
 // huddle or nothing survives the de-dup.
-func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]bool) []UtteranceView {
+//
+// The second return is the LLM-542 conveyance record. The rule it implements:
+// a ring line is CONVEYED iff its text reached the prompt — which is a wider
+// question than whether it rendered here.
+//
+//	inside the window, not de-duped — rendered here. Conveyed.
+//	inside the window, de-duped      — not rendered, but the de-dup fires
+//	                                   precisely BECAUSE the text is already in
+//	                                   "## Since your last turn". Conveyed.
+//	outside the window, de-duped     — same: the text is in the prompt under the
+//	                                   other heading, just not through this
+//	                                   section. Conveyed (code_review).
+//	outside the window, not de-duped — nothing carried it. NOT conveyed; a
+//	                                   warrant it stamped is still owed.
+//
+// The de-dup matches on speaker + TEXT, not on id, so a line whose warrant is
+// still pending can collide with a consumed warrant's excerpt and vanish from
+// this section. Without the conveyance record that pending warrant would fire a
+// second reply to a line the model has already seen.
+func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string][]sim.WarrantSourceKey) ([]UtteranceView, []ConveyedSpeechRef) {
 	huddleID := actorSnap.CurrentHuddleID
 	if huddleID == "" {
-		return nil
+		return nil, nil
 	}
 	h := snap.Huddles[huddleID]
 	if h == nil || len(h.RecentUtterances) == 0 {
-		return nil
+		return nil, nil
 	}
 	// LLM-322: consider only the most recent lines of the ring, THEN drop any
 	// already shown this tick in "## Since your last turn". The ring is
 	// oldest-first, so slice the tail before de-duping — capping AFTER the de-dup
 	// would let an older ring line leak in when the newest lines de-dup out (they
 	// shrink `out` below the cap, so the tail slice never triggers).
+	// The whole ring is walked, but only the tail window renders — conveyance
+	// reaches further back than the section does (see the doc comment).
 	utts := h.RecentUtterances
+	windowStart := 0
 	if len(utts) > maxRenderedConversationLines {
-		utts = utts[len(utts)-maxRenderedConversationLines:]
+		windowStart = len(utts) - maxRenderedConversationLines
 	}
-	out := make([]UtteranceView, 0, len(utts))
-	for _, u := range utts {
-		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
-			continue // already rendered in "## Since your last turn" this tick
+	out := make([]UtteranceView, 0, len(utts)-windowStart)
+	var conveyed []ConveyedSpeechRef
+	for i, u := range utts {
+		inWindow := i >= windowStart
+		viaWarrants, alreadyHeard := heardNow[u.SpeakerID][recentConversationDedupKey(u.Text)]
+
+		// LLM-542 conveyance. The subject's own lines are excluded: an actor
+		// never warrants itself for its own speech, so there is nothing to
+		// discharge. A zero SpeechID (recorded outside the emit path) has no
+		// event to key on.
+		if (inWindow || alreadyHeard) && u.SpeakerID != actorID && u.SpeechID != 0 {
+			// Speaker kind decides which speech warrant kind this line stamped
+			// on its listeners. An unknown speaker (gone from the snapshot)
+			// falls back to NPC — the same fail-closed default the speech
+			// reactor takes for an unattributable utterance.
+			speakerIsPC := false
+			if sp := snap.Actors[u.SpeakerID]; sp != nil && sp.Kind == sim.KindPC {
+				speakerIsPC = true
+			}
+			ref := ConveyedSpeechRef{SpeechID: u.SpeechID, SpeakerIsPC: speakerIsPC}
+			// A de-duped line is carried ONLY by the warrant render — this
+			// section drops it precisely because the warrant is showing the
+			// text. That is conditional on the warrant surviving the prompt
+			// caps, and Build runs BEFORE Render, so the dependency is
+			// recorded here and settled after (code_review). A line that
+			// renders in this section in its own right depends on nothing.
+			if alreadyHeard {
+				ref.ViaWarrants = viaWarrants
+			}
+			conveyed = append(conveyed, ref)
+		}
+
+		if !inWindow || alreadyHeard {
+			continue // outside the section, or already shown under "## Since your last turn"
 		}
 		out = append(out, UtteranceView{
 			SpeakerName: u.SpeakerName,
@@ -3786,9 +3838,9 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 		})
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, conveyed
 	}
-	return out
+	return out, conveyed
 }
 
 // selfActionTrailWindow bounds how far back the "## What you've recently done"
@@ -3918,27 +3970,63 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 //
 // Returns nil when the batch carries no speech (the common non-conversational
 // tick).
-func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string]bool {
-	var bySpeaker map[sim.ActorID]map[string]bool
-	add := func(speaker sim.ActorID, excerpt string) {
+// The value is a LIST of source keys, not one (LLM-542, code_review). Several
+// speech warrants in a batch can land on the same index key — identical short
+// lines, or distinct long ones sharing a prefix, since the dedup key is a
+// truncation. Keeping only the last would make the de-dup's conveyance claim
+// depend on warrant order, and a dropped carrier could shadow a rendered one.
+// The rule the discharge needs is "ANY surviving carrier is enough", which
+// takes the whole set.
+func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string][]sim.WarrantSourceKey {
+	var bySpeaker map[sim.ActorID]map[string][]sim.WarrantSourceKey
+	addKey := func(speaker sim.ActorID, index string, key sim.WarrantSourceKey) {
+		// The index key is always recorded — its PRESENCE is what drives the
+		// de-dup, and that must not depend on the carrier being usable.
+		carriers, seen := bySpeaker[speaker][index]
+		if !seen {
+			carriers = []sim.WarrantSourceKey{}
+		}
+		// A zero discriminator is WarrantSourceKey's "not event-sourced"
+		// sentinel. It bypasses SOURCE-AWARE dedup — tryStampWarrant's three
+		// key-matched paths and this file's carrier accounting — but NOT the
+		// index-based speech de-dup above, which is why the key is recorded
+		// either way. So it is not a usable carrier and must not be stored as
+		// one (code_review). The line then reads as unconditionally conveyed,
+		// which is the right default: the excerpt renders regardless of its
+		// SpeechID. Unreachable from the emit path (EventIDs start at 1), but
+		// this is where the invariant belongs.
+		if key.Discriminator != 0 {
+			for _, existing := range carriers {
+				if existing == key {
+					bySpeaker[speaker][index] = carriers
+					return
+				}
+			}
+			carriers = append(carriers, key)
+		}
+		bySpeaker[speaker][index] = carriers
+	}
+	add := func(speaker sim.ActorID, excerpt string, key sim.WarrantSourceKey) {
 		if speaker == "" || excerpt == "" {
 			return
 		}
 		if bySpeaker == nil {
-			bySpeaker = make(map[sim.ActorID]map[string]bool)
+			bySpeaker = make(map[sim.ActorID]map[string][]sim.WarrantSourceKey)
 		}
 		if bySpeaker[speaker] == nil {
-			bySpeaker[speaker] = make(map[string]bool)
+			bySpeaker[speaker] = make(map[string][]sim.WarrantSourceKey)
 		}
-		bySpeaker[speaker][excerpt] = true
-		bySpeaker[speaker][recentConversationDedupKey(excerpt)] = true
+		addKey(speaker, excerpt, key)
+		// For a short utterance the two index keys coincide; addKey's identity
+		// check keeps the list from carrying the same carrier twice.
+		addKey(speaker, recentConversationDedupKey(excerpt), key)
 	}
 	for _, w := range warrants {
 		switch r := w.Reason.(type) {
 		case sim.PCSpeechWarrantReason:
-			add(r.Speaker, r.Excerpt)
+			add(r.Speaker, r.Excerpt, sim.WarrantSourceKey{Kind: sim.WarrantKindPCSpoke, Discriminator: uint64(r.SpeechID)})
 		case sim.NPCSpeechWarrantReason:
-			add(r.Speaker, r.Excerpt)
+			add(r.Speaker, r.Excerpt, sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: uint64(r.SpeechID)})
 		}
 	}
 	return bySpeaker

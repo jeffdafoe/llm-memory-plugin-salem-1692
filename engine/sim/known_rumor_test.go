@@ -246,8 +246,8 @@ func TestPropagateRumorOnSpeakActiveConversantsOnly(t *testing.T) {
 	h := &Huddle{Members: map[ActorID]struct{}{
 		speaker.ID: {}, active.ID: {}, silent.ID: {},
 	}}
-	h.AppendUtterance(active.ID, "John", "good morrow", now.Add(-time.Minute))
-	h.AppendUtterance(speaker.ID, "Hannah", "and to you", now)
+	h.AppendUtterance(active.ID, "John", "good morrow", now.Add(-time.Minute), 0)
+	h.AppendUtterance(speaker.ID, "Hannah", "and to you", now, 0)
 
 	propagateRumorOnSpeak(w, h, speaker.ID, now)
 

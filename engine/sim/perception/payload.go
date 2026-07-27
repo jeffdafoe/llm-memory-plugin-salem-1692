@@ -239,6 +239,12 @@ type Payload struct {
 	// no huddle. The subject's own lines carry IsSelf for "You said" rendering.
 	RecentConversation []UtteranceView
 
+	// ConveyedSpeech identifies the spoken lines this tick's prompt put in
+	// front of the subject (LLM-542) — the discharge signal, never rendered.
+	// Populated alongside RecentConversation because both read the same ring;
+	// see ConveyedSpeechRef for why the two lists differ.
+	ConveyedSpeech []ConveyedSpeechRef
+
 	// SelfActions is the subject's own recent committed-action trail, most-
 	// recent-first — the "## What you've recently done" section (LLM-217).
 	// Sourced from snap.ActionLog filtered to the subject, window- and
@@ -1225,6 +1231,42 @@ type UtteranceView struct {
 	Text        string
 	IsSelf      bool
 	At          time.Time
+}
+
+// ConveyedSpeechRef identifies one spoken line this tick's prompt put in front
+// of the subject (LLM-542). Never rendered — it exists so the completion path
+// can discharge the speech warrant that line stamped, instead of letting it
+// fire a second reply to a line already answered.
+//
+// "Conveyed" is deliberately wider than "rendered in ## Recent conversation
+// here". The rule is: the line's TEXT reached the prompt, by either heading.
+// A ring line the heardNow de-dup drops is dropped BECAUSE its text is already
+// under "## Since your last turn", so it counts — including one sitting past
+// the maxRenderedConversationLines window, which this section would never have
+// shown. A line past the window that nothing else carried does not count; a
+// warrant it stamped is still owed. buildRecentConversation owns the rule.
+//
+// SpeakerIsPC selects which of the two speech warrant kinds the line stamped
+// (pc_spoke vs npc_spoke); the discharge key needs both halves.
+//
+// ViaWarrants is non-empty when the line reached the prompt ONLY through
+// another warrant's render — the de-dup case. Build runs before Render, so at
+// Build time that is a conditional claim: a warrant can still be dropped by
+// MaxWarrants / MaxSectionBytes, and if every carrier is dropped the text
+// reached the prompt through neither heading. CollectDischargedSourceKeys
+// settles it against the actual dropped set; ANY surviving carrier suffices.
+//
+// A list rather than one key because several warrants in a batch can match the
+// same line — identical short utterances, or distinct long ones sharing the
+// truncated dedup prefix. With one key the claim would turn on warrant order,
+// and a dropped carrier could mask a rendered one (code_review).
+//
+// Empty means unconditional: the line rendered in "## Recent conversation here"
+// in its own right.
+type ConveyedSpeechRef struct {
+	SpeechID    sim.SpeechID
+	SpeakerIsPC bool
+	ViaWarrants []sim.WarrantSourceKey
 }
 
 // SelfActionView is one line in the "## What you've recently done" section

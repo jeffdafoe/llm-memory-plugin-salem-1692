@@ -21,7 +21,7 @@ func TestHuddle_AppendUtterance_CapAndOrder(t *testing.T) {
 	base := time.Now()
 	total := sim.MaxRecentUtterancesPerHuddle + 3
 	for i := 0; i < total; i++ {
-		h.AppendUtterance(sim.ActorID("ann"), "Ann", utteranceLine(i), base.Add(time.Duration(i)*time.Second))
+		h.AppendUtterance(sim.ActorID("ann"), "Ann", utteranceLine(i), base.Add(time.Duration(i)*time.Second), 0)
 	}
 	if len(h.RecentUtterances) != sim.MaxRecentUtterancesPerHuddle {
 		t.Fatalf("ring length: got %d, want %d (capped)", len(h.RecentUtterances), sim.MaxRecentUtterancesPerHuddle)
@@ -38,7 +38,7 @@ func TestHuddle_AppendUtterance_CapAndOrder(t *testing.T) {
 // Empty text is ignored (defensive; the speak command already rejects it).
 func TestHuddle_AppendUtterance_IgnoresEmpty(t *testing.T) {
 	h := &sim.Huddle{ID: "h1"}
-	h.AppendUtterance("ann", "Ann", "", time.Now())
+	h.AppendUtterance("ann", "Ann", "", time.Now(), 0)
 	if len(h.RecentUtterances) != 0 {
 		t.Errorf("empty text should not be recorded, got %d entries", len(h.RecentUtterances))
 	}
@@ -52,8 +52,8 @@ func TestHuddle_LastModelUtteranceAtBy_SkipsEngineAuthored(t *testing.T) {
 	h := &sim.Huddle{ID: "h1"}
 	base := time.Now().UTC()
 	modelAt := base.Add(1 * time.Second)
-	h.AppendUtterance("ann", "Ann", "and to you", modelAt)
-	h.AppendEngineUtterance("ann", "Ann", "Until next time, Bram.", base.Add(2*time.Second))
+	h.AppendUtterance("ann", "Ann", "and to you", modelAt, 0)
+	h.AppendEngineUtterance("ann", "Ann", "Until next time, Bram.", base.Add(2*time.Second), 0)
 
 	if got := h.LastModelUtteranceAtBy("ann"); !got.Equal(modelAt) {
 		t.Errorf("LastModelUtteranceAtBy = %v, want the model line at %v", got, modelAt)
@@ -73,7 +73,7 @@ func TestHuddle_LastModelUtteranceAtBy_SkipsEngineAuthored(t *testing.T) {
 // A speaker with nothing but engine lines in the ring has never chosen to speak.
 func TestHuddle_LastModelUtteranceAtBy_EngineOnlyIsZero(t *testing.T) {
 	h := &sim.Huddle{ID: "h1"}
-	h.AppendEngineUtterance("ann", "Ann", "Greetings, Bram.", time.Now().UTC())
+	h.AppendEngineUtterance("ann", "Ann", "Greetings, Bram.", time.Now().UTC(), 0)
 	if got := h.LastModelUtteranceAtBy("ann"); !got.IsZero() {
 		t.Errorf("LastModelUtteranceAtBy = %v, want zero (engine lines only)", got)
 	}
@@ -83,9 +83,9 @@ func TestHuddle_LastModelUtteranceAtBy_EngineOnlyIsZero(t *testing.T) {
 // later world-goroutine append.
 func TestCloneHuddle_IsolatesRecentUtterances(t *testing.T) {
 	h := &sim.Huddle{ID: "h1"}
-	h.AppendUtterance("ann", "Ann", "first", time.Now())
+	h.AppendUtterance("ann", "Ann", "first", time.Now(), 0)
 	clone := sim.CloneHuddle(h)
-	h.AppendUtterance("ann", "Ann", "second", time.Now())
+	h.AppendUtterance("ann", "Ann", "second", time.Now(), 0)
 	if len(clone.RecentUtterances) != 1 || clone.RecentUtterances[0].Text != "first" {
 		t.Errorf("clone must be isolated from later appends, got %+v", clone.RecentUtterances)
 	}

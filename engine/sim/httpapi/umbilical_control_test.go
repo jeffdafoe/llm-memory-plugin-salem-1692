@@ -548,3 +548,46 @@ func TestUmbilicalSetPosition_Validation(t *testing.T) {
 		t.Errorf("hannah moved to %v by a rejected set-position", pos)
 	}
 }
+
+// TestUmbilicalNudge_DeclinedAtANonDeliberatingActor: nudging a PC stamps
+// nothing — tryStampWarrant's agent-kind gate rejects it — and the response must
+// say so. Stamped used to be computed BEFORE the stamp ("did this actor have an
+// open cycle"), so this reported true while no warrant existed, telling an
+// operator their nudge had landed when it had not (LLM-542).
+func TestUmbilicalNudge_DeclinedAtANonDeliberatingActor(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	rec := postReq(t, h, "/api/village/umbilical/nudge", "tok", `{"actor_id":"bram"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("nudge = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalNudgeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Stamped {
+		t.Error("stamped=true for a PC nudge — the funnel declined it, nothing was stamped")
+	}
+
+	// Both halves: no open cycle AND no warrant retained without one. Checking
+	// only WarrantedSince would pass on a warrant banked outside a cycle
+	// (code_review).
+	type warrantState struct {
+		hasCycle bool
+		count    int
+	}
+	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["bram"]
+		return warrantState{hasCycle: a.WarrantedSince != nil, count: len(a.Warrants)}, nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	state, _ := res.(warrantState)
+	if state.hasCycle {
+		t.Error("bram (a PC) has an open warrant cycle after the nudge")
+	}
+	if state.count != 0 {
+		t.Errorf("bram (a PC) holds %d warrants after the nudge, want 0", state.count)
+	}
+}
