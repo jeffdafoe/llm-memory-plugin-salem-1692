@@ -59,8 +59,11 @@ func TestCollectDischargedSourceKeys_NothingToDischarge(t *testing.T) {
 //   - a line the heardNow de-dup drops is NOT rendered here but IS conveyed —
 //     its text is in the prompt under "## Since your last turn", so a warrant
 //     it stamped has been answered;
-//   - a line cut by the maxRenderedConversationLines cap is neither rendered
-//     nor conveyed — nothing carried it, so its warrant is still owed;
+//   - a line PAST the maxRenderedConversationLines window is conveyed too when
+//     the de-dup covers it — the window bounds what this section shows, not
+//     what the prompt contains;
+//   - a line past the window that nothing else carried is neither rendered nor
+//     conveyed — its warrant is still owed;
 //   - the subject's own lines are never conveyed (an actor does not warrant
 //     itself for its own speech).
 func TestBuildRecentConversation_ConveysDedupedAndCappedLines(t *testing.T) {
@@ -68,13 +71,17 @@ func TestBuildRecentConversation_ConveysDedupedAndCappedLines(t *testing.T) {
 	base := sim.Utterance{SpeakerID: "elizabeth", SpeakerName: "Elizabeth"}
 
 	ring := make([]sim.Utterance, 0, 8)
-	// Two lines beyond the render cap of 5 — dropped entirely.
-	for i := 0; i < 2; i++ {
-		u := base
-		u.Text = "old chatter"
-		u.SpeechID = sim.SpeechID(10 + i)
-		ring = append(ring, u)
-	}
+	// Two lines beyond the render cap of 5. The first is covered by heardNow —
+	// its text IS in the prompt under the other heading, so it must be
+	// conveyed even though this section would never show it (code_review).
+	// The second is carried by nothing and must not be conveyed.
+	oldHeard := base
+	oldHeard.Text = "already heard"
+	oldHeard.SpeechID = 10
+	oldSilent := base
+	oldSilent.Text = "old chatter"
+	oldSilent.SpeechID = 11
+	ring = append(ring, oldHeard, oldSilent)
 	// Five that survive the cap: one self line, one de-duped by heardNow, three plain.
 	self := sim.Utterance{SpeakerID: me, SpeakerName: "Gideon", Text: "Good day.", SpeechID: 20}
 	deduped := base
@@ -115,15 +122,18 @@ func TestBuildRecentConversation_ConveysDedupedAndCappedLines(t *testing.T) {
 		got[c.SpeechID] = true
 	}
 	if !got[21] {
-		t.Error("de-duped line not conveyed — its warrant would fire a second reply")
+		t.Error("de-duped line inside the window not conveyed — its warrant would fire a second reply")
+	}
+	if !got[10] {
+		t.Error("de-duped line PAST the window not conveyed — its text is in the prompt under the other heading")
 	}
 	for _, id := range []sim.SpeechID{30, 31, 32} {
 		if !got[id] {
 			t.Errorf("rendered line %d not conveyed", id)
 		}
 	}
-	if got[10] || got[11] {
-		t.Error("a line cut by the render cap was reported as conveyed — it was never shown")
+	if got[11] {
+		t.Error("a line past the window that nothing carried was reported as conveyed — it was never shown")
 	}
 	if got[20] {
 		t.Error("the subject's own line was reported as conveyed")

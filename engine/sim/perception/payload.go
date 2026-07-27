@@ -1239,9 +1239,12 @@ type UtteranceView struct {
 // fire a second reply to a line already answered.
 //
 // "Conveyed" is deliberately wider than "rendered in ## Recent conversation
-// here": a ring line the heardNow de-dup drops is dropped BECAUSE its text is
-// already in the prompt under "## Since your last turn", so it counts. A line
-// cut by the maxRenderedConversationLines cap does not — nothing carried it.
+// here". The rule is: the line's TEXT reached the prompt, by either heading.
+// A ring line the heardNow de-dup drops is dropped BECAUSE its text is already
+// under "## Since your last turn", so it counts — including one sitting past
+// the maxRenderedConversationLines window, which this section would never have
+// shown. A line past the window that nothing else carried does not count; a
+// warrant it stamped is still owed. buildRecentConversation owns the rule.
 //
 // SpeakerIsPC selects which of the two speech warrant kinds the line stamped
 // (pc_spoke vs npc_spoke); the discharge key needs both halves.

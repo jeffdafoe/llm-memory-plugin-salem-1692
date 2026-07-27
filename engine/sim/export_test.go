@@ -46,6 +46,7 @@ var (
 	ReopenWarrants             = reopenWarrants
 	ApplyTerminalWarrantPolicy = applyTerminalWarrantPolicy
 	TerminalStatusAddresses    = terminalStatusAddresses
+	TerminalStatusAnswered     = terminalStatusAnswered
 
 	// NewRootedCommand exposes the internal cross-boundary root hook so
 	// tests can exercise its validation (rejects root == 0 / root >

@@ -252,3 +252,47 @@ func TestDischarge_UnrelatedWarrantKindsSurvive(t *testing.T) {
 		}
 	})
 }
+
+// TestTerminalStatusAnsweredContract pins the discharge gate's membership
+// against the addressed-key table it deliberately diverges from, so a new
+// terminal status cannot be added to one without a decision about the other
+// (code_review).
+//
+// The two divergences are the whole point:
+//
+//	failed-after-render ADDRESSES but did not ANSWER — the prompt was built,
+//	  then the LLM call failed. Discharging would destroy a live, post-emit
+//	  warrant and lose the reply.
+//	skipped ADDRESSES but never rendered a prompt — the noop-skip gate returns
+//	  before Render, so it carries no discharge keys at all.
+//
+// budget-forced is on the answered side: both harness assignment sites are
+// reached only after at least one LLM round completed against this prompt.
+func TestTerminalStatusAnsweredContract(t *testing.T) {
+	cases := []struct {
+		status    sim.TickTerminalStatus
+		addresses bool
+		answered  bool
+	}{
+		{sim.TickStatusSuccess, true, true},
+		{sim.TickStatusDone, true, true},
+		{sim.TickStatusBudgetForced, true, true},
+		{sim.TickStatusFailedAfterRender, true, false},
+		{sim.TickStatusSkipped, true, false},
+		{sim.TickStatusFailedBeforeRender, false, false},
+		{sim.TickStatusShutdown, false, false},
+		{sim.TickStatusStale, false, false},
+		{sim.TickStatusUnknown, false, false},
+	}
+	for _, c := range cases {
+		if got := sim.TerminalStatusAddresses(c.status); got != c.addresses {
+			t.Errorf("TerminalStatusAddresses(%v) = %v, want %v", c.status, got, c.addresses)
+		}
+		if got := sim.TerminalStatusAnswered(c.status); got != c.answered {
+			t.Errorf("TerminalStatusAnswered(%v) = %v, want %v", c.status, got, c.answered)
+		}
+		if c.answered && !c.addresses {
+			t.Errorf("status %v answers but does not address — answered must stay a subset", c.status)
+		}
+	}
+}

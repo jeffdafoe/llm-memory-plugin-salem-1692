@@ -3756,13 +3756,24 @@ const maxRenderedConversationLines = 5
 // applies to heard facts (ZBBS-WORK-374). Returns nil when the subject has no
 // huddle or nothing survives the de-dup.
 //
-// The second return is the LLM-542 conveyance record — every ring line this
-// tick's prompt put in front of the subject, whether it rendered here or was
-// dropped into "## Since your last turn". A dropped line is still CONVEYED (the
-// de-dup drops it precisely because its text is already in the prompt), so it
-// must be dischargeable, or a warrant stamped by a line whose text collided
-// with a consumed one would fire a second reply. Lines cut by the
-// maxRenderedConversationLines cap are NOT conveyed and are deliberately absent.
+// The second return is the LLM-542 conveyance record. The rule it implements:
+// a ring line is CONVEYED iff its text reached the prompt — which is a wider
+// question than whether it rendered here.
+//
+//	inside the window, not de-duped — rendered here. Conveyed.
+//	inside the window, de-duped      — not rendered, but the de-dup fires
+//	                                   precisely BECAUSE the text is already in
+//	                                   "## Since your last turn". Conveyed.
+//	outside the window, de-duped     — same: the text is in the prompt under the
+//	                                   other heading, just not through this
+//	                                   section. Conveyed (code_review).
+//	outside the window, not de-duped — nothing carried it. NOT conveyed; a
+//	                                   warrant it stamped is still owed.
+//
+// The de-dup matches on speaker + TEXT, not on id, so a line whose warrant is
+// still pending can collide with a consumed warrant's excerpt and vanish from
+// this section. Without the conveyance record that pending warrant would fire a
+// second reply to a line the model has already seen.
 func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]bool) ([]UtteranceView, []ConveyedSpeechRef) {
 	huddleID := actorSnap.CurrentHuddleID
 	if huddleID == "" {
@@ -3777,19 +3788,25 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 	// oldest-first, so slice the tail before de-duping — capping AFTER the de-dup
 	// would let an older ring line leak in when the newest lines de-dup out (they
 	// shrink `out` below the cap, so the tail slice never triggers).
+	// The whole ring is walked, but only the tail window renders — conveyance
+	// reaches further back than the section does (see the doc comment).
 	utts := h.RecentUtterances
+	windowStart := 0
 	if len(utts) > maxRenderedConversationLines {
-		utts = utts[len(utts)-maxRenderedConversationLines:]
+		windowStart = len(utts) - maxRenderedConversationLines
 	}
-	out := make([]UtteranceView, 0, len(utts))
+	out := make([]UtteranceView, 0, len(utts)-windowStart)
 	var conveyed []ConveyedSpeechRef
-	for _, u := range utts {
-		// LLM-542: record the line as conveyed BEFORE the de-dup continue —
-		// a de-duped line is in the prompt, just under the other heading. The
-		// subject's own lines are excluded: an actor never warrants itself for
-		// its own speech, so there is nothing to discharge. A zero SpeechID
-		// (recorded outside the emit path) has no event to key on.
-		if u.SpeakerID != actorID && u.SpeechID != 0 {
+	for i, u := range utts {
+		inWindow := i >= windowStart
+		dups := heardNow[u.SpeakerID]
+		alreadyHeard := dups != nil && dups[recentConversationDedupKey(u.Text)]
+
+		// LLM-542 conveyance. The subject's own lines are excluded: an actor
+		// never warrants itself for its own speech, so there is nothing to
+		// discharge. A zero SpeechID (recorded outside the emit path) has no
+		// event to key on.
+		if (inWindow || alreadyHeard) && u.SpeakerID != actorID && u.SpeechID != 0 {
 			// Speaker kind decides which speech warrant kind this line stamped
 			// on its listeners. An unknown speaker (gone from the snapshot)
 			// falls back to NPC — the same fail-closed default the speech
@@ -3800,8 +3817,9 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 			}
 			conveyed = append(conveyed, ConveyedSpeechRef{SpeechID: u.SpeechID, SpeakerIsPC: speakerIsPC})
 		}
-		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
-			continue // already rendered in "## Since your last turn" this tick
+
+		if !inWindow || alreadyHeard {
+			continue // outside the section, or already shown under "## Since your last turn"
 		}
 		out = append(out, UtteranceView{
 			SpeakerName: u.SpeakerName,

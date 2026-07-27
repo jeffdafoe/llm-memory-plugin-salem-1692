@@ -564,6 +564,16 @@ func terminalStatusAddresses(s TickTerminalStatus) bool {
 //	skipped addresses but never rendered a prompt at all — the noop-skip gate
 //	  returns before Render, so it carries no discharge keys anyway. Excluded
 //	  here so the predicate states the intent rather than relying on that.
+//
+// budget-forced IS included, and that is a claim about the harness worth
+// stating: both of its assignment sites (handlers/harness.go, the
+// actionRounds>=iterationBudget branch and the hard-ceiling return after the
+// round loop) are reached only AFTER at least one LLM round completed against
+// this prompt. It is exhaustion, not failure — the model deliberated on the
+// stimulus and simply ran out of rounds, which is the same standing as a
+// success tick that chose not to reply. If a future path ever sets
+// budget-forced without an LLM round, move it to the default branch
+// (code_review). TestTerminalStatusAnsweredContract pins the membership.
 func terminalStatusAnswered(s TickTerminalStatus) bool {
 	switch s {
 	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced:
