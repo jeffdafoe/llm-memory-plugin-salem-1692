@@ -288,8 +288,9 @@ func handleHuddleLeftBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand) {
 		// said. Unlike the greet gate above, this is conditional rather than a
 		// blanket LLMAgent skip: a customer who walks out without a word
 		// produces no model line, and that silent departure is exactly the beat
-		// the engine farewell exists for.
-		if sim.BusinessownerModelSpeechRecent(w, left.HuddleID, peerID, left.At) {
+		// the engine farewell exists for. keeper.ID, not left.ActorID — the
+		// question is whether the KEEPER spoke, never the leaver.
+		if sim.BusinessownerModelSpeechRecent(w, left.HuddleID, keeper.ID, left.At) {
 			continue
 		}
 		// Recipient set: RemainingMembers minus this keeper. Leaver is

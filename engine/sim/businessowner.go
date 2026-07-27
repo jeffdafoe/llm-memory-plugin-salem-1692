@@ -397,9 +397,22 @@ func businessownerEngineSpeechRecent(w *World, actorID ActorID, now time.Time) b
 // real goodbye we fail to recognize, so we speak over it) is the failure this
 // gate exists to stop.
 //
-// Unknown huddle or empty huddleID reads as no-recent-speech, so the caller
-// emits — the pre-LLM-535 behavior, which is the right way for a suppression
-// gate to fail.
+// This IS a heuristic, and it is deliberately biased. It suppresses on ANY
+// recent model line, so a keeper who quoted a price two minutes ago and then
+// watched a silent customer walk out loses a farewell it would have got before
+// LLM-535. That is the accepted cost: the regression is a missing pleasantry,
+// while the defect it buys off is the keeper visibly saying goodbye twice — and
+// in the reserved voice, rudely, over a goodbye it already said warmly. A
+// narrower signal was considered and rejected: "the keeper had the last word"
+// re-admits the original defect whenever the customer answers the goodbye
+// ("aye, and to you") before walking off, which is a common shape.
+//
+// Every non-answer reads as no-recent-speech, so the caller emits — the
+// pre-LLM-535 behavior, which is the right way for a suppression gate to fail.
+// That covers an unknown or empty huddle, a keeper who has not spoken, a
+// goodbye that has aged out of the ring, and a `last` in the future of `now`
+// (event ordering or a hand-built timestamp): a negative age would otherwise
+// read as "0 seconds ago" and pin the gate open until wall-clock caught up.
 //
 // MUST be called from inside a Command.Fn or from a subscriber dispatched from
 // emit (both run on the world goroutine).
@@ -415,7 +428,11 @@ func BusinessownerModelSpeechRecent(w *World, huddleID HuddleID, actorID ActorID
 	if last.IsZero() {
 		return false
 	}
-	return now.Sub(last) < businessownerModelFarewellWindow
+	age := now.Sub(last)
+	if age < 0 {
+		return false
+	}
+	return age < businessownerModelFarewellWindow
 }
 
 // BusinessownerSpeechArgs bundles the inputs to EmitBusinessownerSpeech
