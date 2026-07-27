@@ -3987,10 +3987,12 @@ func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string
 			carriers = []sim.WarrantSourceKey{}
 		}
 		// A zero discriminator is WarrantSourceKey's "not event-sourced"
-		// sentinel: such a key bypasses dedup entirely and can never be
-		// pruned, so it is not a usable carrier and must not be stored as one
-		// (code_review). The line then reads as unconditionally conveyed, which
-		// is the right default — the excerpt renders regardless of its
+		// sentinel. It bypasses SOURCE-AWARE dedup — tryStampWarrant's three
+		// key-matched paths and this file's carrier accounting — but NOT the
+		// index-based speech de-dup above, which is why the key is recorded
+		// either way. So it is not a usable carrier and must not be stored as
+		// one (code_review). The line then reads as unconditionally conveyed,
+		// which is the right default: the excerpt renders regardless of its
 		// SpeechID. Unreachable from the emit path (EventIDs start at 1), but
 		// this is where the invariant belongs.
 		if key.Discriminator != 0 {

@@ -318,13 +318,13 @@ func TestCollectDischargedSourceKeys_ZeroCarrierIsNotACarrier(t *testing.T) {
 	}
 }
 
-// TestCurrentHeardExcerpts_MalformedWarrantStillDeDupsButCarriesNothing: the
+// TestCurrentHeardExcerpts_ZeroKeyDeDupsWithoutBecomingACarrier: the
 // de-dup turns on the index key being PRESENT, which must not depend on the
 // warrant having a usable source key. A SpeechID-0 speech warrant still hides
 // its line from "## Recent conversation here" (its excerpt renders under the
 // other heading regardless), and the line is then unconditionally conveyed
 // because there is no carrier whose survival to check.
-func TestCurrentHeardExcerpts_MalformedWarrantStillDeDupsButCarriesNothing(t *testing.T) {
+func TestCurrentHeardExcerpts_ZeroKeyDeDupsWithoutBecomingACarrier(t *testing.T) {
 	heardNow := currentHeardExcerpts([]sim.WarrantMeta{
 		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 0, Speaker: "elizabeth", Excerpt: "already heard"}},
 	})
@@ -334,5 +334,20 @@ func TestCurrentHeardExcerpts_MalformedWarrantStillDeDupsButCarriesNothing(t *te
 	}
 	if len(carriers) != 0 {
 		t.Errorf("carriers = %+v, want none — a zero key is not a carrier", carriers)
+	}
+
+	// Mixed batch: the same speaker and excerpt, one malformed and one real.
+	// The index stays de-duplicated and the real carrier is kept — the zero
+	// key must neither displace it nor be stored beside it (code_review).
+	mixed := currentHeardExcerpts([]sim.WarrantMeta{
+		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 0, Speaker: "elizabeth", Excerpt: "already heard"}},
+		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 901, Speaker: "elizabeth", Excerpt: "already heard"}},
+	})
+	if got := len(mixed["elizabeth"]); got != 1 {
+		t.Errorf("index entries = %d, want 1 — the two warrants share an excerpt", got)
+	}
+	want := []sim.WarrantSourceKey{{Kind: sim.WarrantKindNPCSpoke, Discriminator: 901}}
+	if got := mixed["elizabeth"]["already heard"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("carriers = %+v, want %+v — only the real key", got, want)
 	}
 }
