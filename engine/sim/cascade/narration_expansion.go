@@ -195,6 +195,12 @@ func buildNarrationExpansionPrompt(c sim.NarrationExpansionContext) string {
 
 	b.WriteString("Voice: period-appropriate colonial New England — neither archaic-stiff nor modern-casual. Match the tone and length range of the existing lines.\n\n")
 
+	// LLM-535: without this, "match the tone" was read as "match the terseness"
+	// and the reserved-farewell pool drifted one beat sideways — from seeing a
+	// customer out to ordering them out. Matching register is the constraint the
+	// prompt was missing; matching voice alone doesn't carry it.
+	b.WriteString("Every line must still perform the moment described above, and must fit the same social register as the existing lines. Brevity, warmth, or formality may vary within that register; the moment itself may not. Do not write a line that would land as a different beat — a dismissal, a command, a complaint, or a greeting where a farewell belongs.\n\n")
+
 	b.WriteString("Existing lines (write nothing that repeats or near-duplicates any of these):\n")
 	for i, p := range c.Phrases {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, p)

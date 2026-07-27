@@ -235,7 +235,8 @@ func handleOrderDeliveredBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand
 
 // handleHuddleLeftBusinessowner fires farewell lines when a non-keeper
 // leaves a huddle a keeper remains in. Symmetric to greet — same gate
-// stack against the RemainingMembers slice.
+// stack against the RemainingMembers slice, plus the LLM-535 gate on the
+// keeper's own recent model speech.
 //
 // Late-attribution note: by the time HuddleLeft fires, the leaver has
 // been removed from the huddle's member set. The Spoke recipient set
@@ -278,6 +279,17 @@ func handleHuddleLeftBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand) {
 			continue
 		}
 		if keeper.State == sim.StateSleeping || keeper.State == sim.StateResting {
+			continue
+		}
+		// LLM-535: stand down when the keeper's own model already spoke into
+		// this conversation. Observed live — a constable announced his
+		// departure, four keepers each answered in character, and each then got
+		// an engine farewell seconds later on top of the goodbye it had just
+		// said. Unlike the greet gate above, this is conditional rather than a
+		// blanket LLMAgent skip: a customer who walks out without a word
+		// produces no model line, and that silent departure is exactly the beat
+		// the engine farewell exists for.
+		if sim.BusinessownerModelSpeechRecent(w, left.HuddleID, peerID, left.At) {
 			continue
 		}
 		// Recipient set: RemainingMembers minus this keeper. Leaver is

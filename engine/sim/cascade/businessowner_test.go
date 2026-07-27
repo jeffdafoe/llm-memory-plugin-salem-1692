@@ -378,6 +378,146 @@ func TestHandleHuddleLeft_LeaverIsBusinessowner_Skips(t *testing.T) {
 	}
 }
 
+// seedBusinessownerHuddle installs huddle h1 (keeper + customer) on the world
+// so the LLM-535 farewell gate has a recent-conversation ring to read. The
+// cascade fixture seeds actors and structures only, so w.Huddles["h1"] is
+// otherwise nil — which the gate reads as "no model speech" and lets the
+// farewell through. Returns nothing; call before the HuddleLeft invoke.
+func seedBusinessownerHuddle(t *testing.T, w *sim.World, startedAt time.Time) {
+	t.Helper()
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		world.Huddles["h1"] = &sim.Huddle{
+			ID:          "h1",
+			StructureID: "tavern",
+			Members: map[sim.ActorID]struct{}{
+				"hannah":   {},
+				"jefferey": {},
+			},
+			StartedAt: startedAt,
+		}
+	})
+}
+
+// TestHandleHuddleLeft_ModelSpokeRecently_SuppressesFarewell — LLM-535. The
+// keeper's own model said goodbye; the engine must not add a second one.
+//
+// This is the live case verbatim: the constable announced his departure, the
+// keeper answered in character, the constable walked off, and the engine spoke
+// a farewell on top of the goodbye the keeper had already said.
+func TestHandleHuddleLeft_ModelSpokeRecently_SuppressesFarewell(t *testing.T) {
+	w, cleanup := buildBusinessownerCascadeWorld(t)
+	defer cleanup()
+	getSpokes := observeSpokes(t, w)
+
+	now := time.Now().UTC()
+	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		world.Huddles["h1"].AppendUtterance(
+			"hannah", "Hannah",
+			"Safe travels to you, Constable. I'll be here if you need me.",
+			now.Add(-30*time.Second),
+		)
+	})
+
+	r := rand.New(rand.NewSource(1))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		handleHuddleLeftBusinessowner(world, &sim.HuddleLeft{
+			ActorID: "jefferey", HuddleID: "h1", StructureID: "tavern",
+			RemainingMembers: []sim.ActorID{"hannah"}, At: now,
+		}, r)
+	})
+	if got := getSpokes(); len(got) != 0 {
+		t.Errorf("got %d Spoke events, want 0 (keeper's model already said goodbye): %+v", len(got), got)
+	}
+}
+
+// TestHandleHuddleLeft_KeeperSilent_StillFiresFarewell — LLM-535 no-regression.
+// A customer who leaves without the keeper having said a word is the beat the
+// engine farewell exists for. The ring holds the customer's line only.
+func TestHandleHuddleLeft_KeeperSilent_StillFiresFarewell(t *testing.T) {
+	w, cleanup := buildBusinessownerCascadeWorld(t)
+	defer cleanup()
+	getSpokes := observeSpokes(t, w)
+
+	now := time.Now().UTC()
+	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		world.Huddles["h1"].AppendUtterance(
+			"jefferey", "Jefferey", "Good day to you.", now.Add(-20*time.Second))
+	})
+
+	r := rand.New(rand.NewSource(1))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		handleHuddleLeftBusinessowner(world, &sim.HuddleLeft{
+			ActorID: "jefferey", HuddleID: "h1", StructureID: "tavern",
+			RemainingMembers: []sim.ActorID{"hannah"}, At: now,
+		}, r)
+	})
+	spokes := getSpokes()
+	if len(spokes) != 1 {
+		t.Fatalf("got %d Spoke events, want 1 (silent keeper still bids farewell)", len(spokes))
+	}
+	if spokes[0].SpeakerID != "hannah" {
+		t.Errorf("speaker = %q, want hannah", spokes[0].SpeakerID)
+	}
+}
+
+// TestHandleHuddleLeft_ModelSpokeLongAgo_FiresFarewell — LLM-535 window edge.
+// The keeper spoke, but far enough back that the conversation had lapsed into
+// silence before the customer left. That departure gets its own farewell.
+func TestHandleHuddleLeft_ModelSpokeLongAgo_FiresFarewell(t *testing.T) {
+	w, cleanup := buildBusinessownerCascadeWorld(t)
+	defer cleanup()
+	getSpokes := observeSpokes(t, w)
+
+	now := time.Now().UTC()
+	seedBusinessownerHuddle(t, w, now.Add(-30*time.Minute))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		world.Huddles["h1"].AppendUtterance(
+			"hannah", "Hannah", "Two coins and it's yours.", now.Add(-10*time.Minute))
+	})
+
+	r := rand.New(rand.NewSource(1))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		handleHuddleLeftBusinessowner(world, &sim.HuddleLeft{
+			ActorID: "jefferey", HuddleID: "h1", StructureID: "tavern",
+			RemainingMembers: []sim.ActorID{"hannah"}, At: now,
+		}, r)
+	})
+	if got := getSpokes(); len(got) != 1 {
+		t.Fatalf("got %d Spoke events, want 1 (keeper's line is outside the window)", len(got))
+	}
+}
+
+// TestHandleHuddleLeft_EngineLineDoesNotSuppressFarewell — LLM-535. The gate
+// asks whether the keeper CHOSE to speak, so the engine's own hospitality lines
+// must not satisfy it. The live shape is a handover ("There you go") seconds
+// before the customer walks out: that is not the keeper saying goodbye, and
+// suppressing on it would delete the farewell beat for every transaction.
+func TestHandleHuddleLeft_EngineLineDoesNotSuppressFarewell(t *testing.T) {
+	w, cleanup := buildBusinessownerCascadeWorld(t)
+	defer cleanup()
+	getSpokes := observeSpokes(t, w)
+
+	now := time.Now().UTC()
+	seedBusinessownerHuddle(t, w, now.Add(-10*time.Minute))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		world.Huddles["h1"].AppendEngineUtterance(
+			"hannah", "Hannah", "There you are, Jefferey — enjoy.", now.Add(-10*time.Second))
+	})
+
+	r := rand.New(rand.NewSource(1))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		handleHuddleLeftBusinessowner(world, &sim.HuddleLeft{
+			ActorID: "jefferey", HuddleID: "h1", StructureID: "tavern",
+			RemainingMembers: []sim.ActorID{"hannah"}, At: now,
+		}, r)
+	})
+	if got := getSpokes(); len(got) != 1 {
+		t.Fatalf("got %d Spoke events, want 1 (an engine line is not the keeper choosing to speak)", len(got))
+	}
+}
+
 // TestBuildBusinessownerRecipients covers the slice helper's branches:
 // dedup, exclude, extra, empty.
 func TestBuildBusinessownerRecipients(t *testing.T) {
