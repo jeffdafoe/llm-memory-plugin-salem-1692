@@ -77,6 +77,11 @@ type RoundsErrand struct {
 	// Settled — the errand trade is done (or proven impossible for the day); the cue turns to
 	// winding him down to the tavern instead of pressing his rounds.
 	Settled bool
+	// PackGoods names what he still carries, as count-aware nouns ("journeycakes",
+	// "wedge of cheese"), for the settled-BUY provisions line (LLM-544). Empty for
+	// every other case — see travelerPackGoods for why a BUY errand is the only one
+	// whose pack can be called his own.
+	PackGoods []string
 }
 
 // RoundsShop is one still-open shop on the traveler's rounds: its name and a bearing
@@ -139,6 +144,9 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 				e.HasBearing = e.Direction != ""
 			}
 		}
+		if e.Buy && e.Settled {
+			e.PackGoods = travelerPackGoods(snap, actorSnap)
+		}
 		view.Errand = e
 	}
 
@@ -196,6 +204,40 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		view.MinutesToDusk = snap.DuskMinute - *snap.LocalMinuteOfDay
 	}
 	return view
+}
+
+// travelerPackGoods names the goods a settled BUY-errand traveler still carries, as
+// count-aware nouns for the provisions line (LLM-544). A buyer spawns with an EMPTY
+// pack (seedBuyerPack, unlike the factor's seedFactorPack), so everything in it was
+// come by HERE — bought on his errand, or given him over a threshold. That is what
+// makes "your own, not stock to sell" a statement of fact rather than a hopeful one,
+// and it is why the line is scoped to a buy errand: a factor's pack IS trade stock.
+// Services are skipped — a night's stay is a granted room, never a thing in a pack.
+//
+// Sorted by the RENDERED noun, so the order reads alphabetically to the model rather
+// than following internal kind keys. The cost is that a catalog label edit reorders the
+// list and churns the goldens — which is what a golden is for.
+func travelerPackGoods(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []string {
+	if snap == nil || actorSnap == nil {
+		return nil
+	}
+	var goods []string
+	for kind, qty := range actorSnap.Inventory {
+		if qty <= 0 {
+			continue
+		}
+		def := snap.ItemKinds[kind]
+		if def != nil && def.HasCapability("service") {
+			continue // HasCapability derefs; CountNoun below is nil-safe on its own
+		}
+		noun := def.CountNoun(qty)
+		if noun == "" {
+			noun = string(kind) // unlabeled / discovery-minted kind — the raw key still reads
+		}
+		goods = append(goods, noun)
+	}
+	sort.Strings(goods)
+	return goods
 }
 
 // renderTravelerRounds writes the "## Your rounds" surface — a scene (his one piece of
@@ -274,6 +316,25 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 	default:
 		fmt.Fprintf(b, "You came to deal with the keeper of %s, %s — that is your business here, so make for it. %s\n",
 			shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
+	}
+	// LLM-544: say what the goods still in his pack ARE. The settled lead above tells
+	// him his errand is done and leaves the pack unexplained — a persona, an inventory
+	// line, and no stated purpose for the goods. Live, Brother Ashford filled that
+	// vacuum with the real-world prior for a man carrying goods shop to shop and spent
+	// the afternoon hawking the journeycakes he had bought here as road food ("two
+	// coins a piece, good for the road"). Naming what the goods are removes the motive,
+	// which is why this states a fact and does not forbid the pitch — the scene is the
+	// argument. Scoped to a settled BUY errand: a factor's pack is genuinely trade
+	// stock and must go on reading as stock.
+	//
+	// "come by here", not "bought here": the empty-spawn-pack invariant establishes
+	// only that the goods were acquired in the village, not HOW — a gift over a
+	// threshold is as likely as a purchase (Elizabeth Ellis handed Ashford a wedge of
+	// cheese and a sack of flour the same afternoon). The claim has to be one the
+	// data actually supports, or the line is one more thing in the prompt the model
+	// can catch out (code_review).
+	if e.Settled && e.Buy && len(e.PackGoods) > 0 {
+		fmt.Fprintf(b, "What you carry — %s — is your own, come by here and bound home with you, not stock to sell.\n", joinNames(e.PackGoods))
 	}
 }
 
