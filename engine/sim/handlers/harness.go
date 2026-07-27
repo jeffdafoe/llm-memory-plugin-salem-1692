@@ -438,6 +438,11 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	if len(rendered.DroppedWarrants) > 0 {
 		result.UnaddressedWarrants = copyWarrants(rendered.DroppedWarrants)
 	}
+	// LLM-542: the mirror of the above — stimuli the prompt DID contain but
+	// whose warrant this attempt never consumed, because they landed between
+	// the emit and the snapshot this perception was built from. Collected here,
+	// after Render, so a tick that never built a prompt reports none.
+	result.DischargedSourceKeys = perception.CollectDischargedSourceKeys(payload)
 
 	// --- transcript init ---
 	// PR 3d ships single-user-message perception. A separate system

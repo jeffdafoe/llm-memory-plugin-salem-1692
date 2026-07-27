@@ -272,7 +272,11 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 			// goroutine. PCBystanderIDs is the overhearing wire audience
 			// (ZBBS-HOME-437) — co-present PCs outside the huddle whose talk
 			// panel should still show this line; engine subscribers ignore it.
-			w.emit(&Spoke{
+			//
+			// Held in a variable rather than emitted as a literal: emit stamps
+			// EventID onto the event, and the ring append below carries that id
+			// as the utterance's SpeechID (LLM-542).
+			spoke := &Spoke{
 				SpeakerID:      speakerID,
 				HuddleID:       huddleID,
 				RecipientIDs:   peerIDs,
@@ -281,7 +285,8 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 				Text:           text,
 				At:             at,
 				Mentions:       filterSpeakMentions(w, actor, mentions),
-			})
+			}
+			w.emit(spoke)
 
 			// ZBBS-HOME-412: record the utterance in the huddle's transient
 			// recent-conversation ring so every co-present NPC — stateful included,
@@ -299,7 +304,7 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 					// silently append to a huddle the speaker already left
 					// (code_review, ZBBS-HOME-412).
 					if _, member := h.Members[speakerID]; member {
-						h.AppendUtterance(speakerID, actor.DisplayName, text, at)
+						h.AppendUtterance(speakerID, actor.DisplayName, text, at, SpeechID(spoke.EventID()))
 						// ZBBS-HOME-417: a spoken line is the primary "this
 						// conversation is alive" signal — reset the silence
 						// sweep's dormancy clock.

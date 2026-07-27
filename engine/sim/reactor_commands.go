@@ -257,6 +257,19 @@ type TickResult struct {
 	// includes `speak` or terminal-class `done` (re-ticking to re-say is the
 	// LLM-184 storm this must not reintroduce).
 	SkippedIntentTools []string
+
+	// DischargedSourceKeys are the warrant source keys whose stimulus this
+	// tick's PROMPT contained but whose warrant the tick never consumed
+	// (LLM-542). The batch is fixed at emit; perception is built later off a
+	// newer snapshot, so a line spoken in between is both rendered here AND
+	// pending as a fresh warrant cycle — which would fire a second reply to
+	// the same utterance. CompleteReactorTick prunes those warrants from the
+	// open cycle and records the keys as recently-consumed.
+	//
+	// Populated by perception.CollectDischargedSourceKeys after Render, so a
+	// tick that never rendered (noop-skip, failed-before-render) reports none.
+	// Speech-only today — see that collector for why.
+	DischargedSourceKeys []WarrantSourceKey
 }
 
 // CompleteReactorTick returns a Command that records the completion of an
@@ -408,6 +421,72 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 		}
 		rememberConsumedSourceKey(actor, key, now)
 	}
+
+	// Discharge-at-render (LLM-542): stimuli the prompt CONTAINED but whose
+	// warrant this attempt never consumed. Carried-forward keys are excluded
+	// for the same reason as above — a warrant the render dropped was not
+	// shown, so it is owed, not discharged.
+	dischargeRenderedStimuli(actor, result.DischargedSourceKeys, carried, now)
+}
+
+// dischargeRenderedStimuli resolves the source keys whose stimulus the tick's
+// prompt rendered without consuming their warrant (LLM-542).
+//
+// Both halves are load-bearing, and the ORDER of discovery matters:
+//
+//   - Pruning the OPEN CYCLE is what actually fixes the live bug. The stimulus
+//     arrived after the emit, so by completion time its warrant is already
+//     stamped and a fresh cycle is armed. recentlyConsumed is read only inside
+//     tryStampWarrant, so on its own it would suppress a stamp that has
+//     already happened — i.e. nothing. The cycle is cleared outright when
+//     nothing survives the prune, matching retainForcedWarrants' shape.
+//   - Recording them as recently-consumed covers the mirror ordering — a
+//     stimulus rendered from the snapshot whose warrant stamp lands after this
+//     completion — and keeps the discharge notion inside the existing
+//     WarrantSourceKey machinery rather than beside it.
+//
+// A surviving warrant keeps the cycle's WarrantedSince / WarrantDueAt: it is a
+// genuinely new stimulus (a SECOND line spoken after the snapshot read), and
+// re-anchoring would delay the answer it is owed.
+//
+// Gated by the caller on terminalStatusAddresses, so the same policy table
+// governs this as the addressed-key move. That includes failed-after-render:
+// the prompt was built and the stimulus was in it, which is exactly the
+// existing rule for the consumed batch on that status. If a rendered-but-
+// unanswered turn ever needs the stimulus back, this is the line to change —
+// not the collector.
+func dischargeRenderedStimuli(a *Actor, keys []WarrantSourceKey, carried map[WarrantSourceKey]struct{}, now time.Time) {
+	if len(keys) == 0 {
+		return
+	}
+	discharged := make(map[WarrantSourceKey]struct{}, len(keys))
+	for _, key := range keys {
+		if _, isCarried := carried[key]; isCarried {
+			continue
+		}
+		discharged[key] = struct{}{}
+		rememberConsumedSourceKey(a, key, now)
+	}
+	if len(discharged) == 0 || a.WarrantedSince == nil {
+		return
+	}
+	kept := make([]WarrantMeta, 0, len(a.Warrants))
+	for _, wm := range a.Warrants {
+		if wm.eventSourced() {
+			if _, hit := discharged[wm.sourceKey()]; hit {
+				continue
+			}
+		}
+		kept = append(kept, wm)
+	}
+	if len(kept) == len(a.Warrants) {
+		return
+	}
+	if len(kept) == 0 {
+		clearWarrant(a)
+		return
+	}
+	a.Warrants = kept
 }
 
 // dissolveSoloHuddleAfterTick leaves+concludes the actor's current huddle when

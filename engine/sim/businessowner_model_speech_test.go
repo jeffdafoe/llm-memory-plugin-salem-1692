@@ -35,7 +35,7 @@ func TestBusinessownerModelSpeechRecent_WindowBoundary(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := modelSpeechWorld(t, "h1")
-			w.Huddles["h1"].AppendUtterance("keeper", "Keeper", "safe travels", now.Add(-tc.age))
+			w.Huddles["h1"].AppendUtterance("keeper", "Keeper", "safe travels", now.Add(-tc.age), 0)
 			if got := BusinessownerModelSpeechRecent(w, "h1", "keeper", now); got != tc.want {
 				t.Errorf("age %v: got %v, want %v", tc.age, got, tc.want)
 			}
@@ -50,7 +50,7 @@ func TestBusinessownerModelSpeechRecent_WindowBoundary(t *testing.T) {
 func TestBusinessownerModelSpeechRecent_FutureUtteranceDoesNotSuppress(t *testing.T) {
 	now := time.Now().UTC()
 	w := modelSpeechWorld(t, "h1")
-	w.Huddles["h1"].AppendUtterance("keeper", "Keeper", "safe travels", now.Add(time.Hour))
+	w.Huddles["h1"].AppendUtterance("keeper", "Keeper", "safe travels", now.Add(time.Hour), 0)
 
 	if BusinessownerModelSpeechRecent(w, "h1", "keeper", now) {
 		t.Error("a future-stamped utterance suppressed the farewell; the gate must fail open")
@@ -60,7 +60,7 @@ func TestBusinessownerModelSpeechRecent_FutureUtteranceDoesNotSuppress(t *testin
 func TestBusinessownerModelSpeechRecent_MissingInputsFailOpen(t *testing.T) {
 	now := time.Now().UTC()
 	w := modelSpeechWorld(t, "h1")
-	w.Huddles["h1"].AppendUtterance("keeper", "Keeper", "safe travels", now)
+	w.Huddles["h1"].AppendUtterance("keeper", "Keeper", "safe travels", now, 0)
 
 	cases := []struct {
 		name     string
@@ -88,7 +88,7 @@ func TestBusinessownerModelSpeechRecent_MissingInputsFailOpen(t *testing.T) {
 func TestBusinessownerModelSpeechRecent_IgnoresEngineAuthored(t *testing.T) {
 	now := time.Now().UTC()
 	w := modelSpeechWorld(t, "h1")
-	w.Huddles["h1"].AppendEngineUtterance("keeper", "Keeper", "There you are — enjoy.", now)
+	w.Huddles["h1"].AppendEngineUtterance("keeper", "Keeper", "There you are — enjoy.", now, 0)
 
 	if BusinessownerModelSpeechRecent(w, "h1", "keeper", now) {
 		t.Error("an engine hospitality line satisfied the gate; only model speech should")

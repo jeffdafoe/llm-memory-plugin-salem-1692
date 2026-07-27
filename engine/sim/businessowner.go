@@ -558,13 +558,18 @@ func EmitBusinessownerSpeech(args BusinessownerSpeechArgs) Command {
 			if recipients == nil {
 				recipients = []ActorID{}
 			}
-			w.emit(&Spoke{
+			// Held rather than emitted as a literal so the ring append below
+			// can carry the stamped EventID as the utterance's SpeechID
+			// (LLM-542) — an engine line warrants its listeners exactly like a
+			// model line, so it must be dischargeable the same way.
+			spoke := &Spoke{
 				SpeakerID:    args.SpeakerID,
 				HuddleID:     args.HuddleID,
 				RecipientIDs: recipients,
 				Text:         text,
 				At:           args.Now,
-			})
+			}
+			w.emit(spoke)
 			// ZBBS-HOME-461: record the engine line in the keeper's huddle
 			// recent-conversation ring so the keeper's model sees what it
 			// "already said" on its next tick. AppendUtterance otherwise runs
@@ -590,7 +595,7 @@ func EmitBusinessownerSpeech(args BusinessownerSpeechArgs) Command {
 			// engine farewell that follows it.
 			if h := w.Huddles[args.HuddleID]; h != nil {
 				if _, isMember := h.Members[args.SpeakerID]; isMember {
-					h.AppendEngineUtterance(args.SpeakerID, args.SpeakerName, text, args.Now)
+					h.AppendEngineUtterance(args.SpeakerID, args.SpeakerName, text, args.Now, SpeechID(spoke.EventID()))
 				}
 			}
 			if args.CooldownMinutes > 0 {

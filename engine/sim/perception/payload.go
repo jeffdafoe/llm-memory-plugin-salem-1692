@@ -1220,11 +1220,20 @@ type VillageRumorView struct {
 // rapid-fire churn from a normally paced exchange — without it, three
 // "I'll head home now" lines minutes apart and three seconds apart read
 // identically, and the anti-repeat instruction has no tempo to work with.
+// SpeechID is the id of the Spoke event behind the line (LLM-542). It is not
+// rendered — it exists so the harness can report which utterances this tick's
+// prompt actually contained, letting the completion path discharge the speech
+// warrants those utterances stamped. Zero for a line recorded outside the emit
+// path; CollectDischargedSourceKeys skips those.
+// SpeakerIsPC selects which of the two speech warrant kinds that id would have
+// stamped (pc_spoke vs npc_spoke) — the discharge key needs both halves.
 type UtteranceView struct {
 	SpeakerName string
 	Text        string
 	IsSelf      bool
 	At          time.Time
+	SpeechID    sim.SpeechID
+	SpeakerIsPC bool
 }
 
 // SelfActionView is one line in the "## What you've recently done" section

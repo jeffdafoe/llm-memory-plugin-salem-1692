@@ -138,12 +138,21 @@ type Huddle struct {
 // place that record exists. LLM-535's farewell suppression is the first such
 // reader; before it, engine-vs-model was inferable only from the fact that
 // {customer} interpolates the full display name.
+//
+// SpeechID is the id of the Spoke event this line came from — the same id the
+// speech reactor copies into PCSpeechWarrantReason / NPCSpeechWarrantReason
+// (LLM-542). It is what lets a completing tick say "my prompt contained THIS
+// utterance", so the warrant that utterance stamped on the reader can be
+// discharged instead of firing a second reply to a line already answered.
+// Zero for a line recorded outside the emit path (tests, defensive callers);
+// the discharge collector skips those.
 type Utterance struct {
 	SpeakerID      ActorID
 	SpeakerName    string
 	Text           string
 	At             time.Time
 	EngineAuthored bool
+	SpeechID       SpeechID
 }
 
 // MaxRecentUtterancesPerHuddle caps the recent-conversation ring. Small on
@@ -249,8 +258,10 @@ func CloneHuddle(h *Huddle) *Huddle {
 // spoken turn burned an LLM call, and spend-without-progress is exactly what
 // the counter measures. A PC line increments here and is reset to zero at the
 // speak site (the PC branch runs after this call).
-func (h *Huddle) AppendUtterance(speakerID ActorID, speakerName, text string, at time.Time) {
-	h.appendUtterance(speakerID, speakerName, text, at, false)
+// speechID is the Spoke event's id (LLM-542) — pass 0 only where no Spoke
+// event backs the line.
+func (h *Huddle) AppendUtterance(speakerID ActorID, speakerName, text string, at time.Time, speechID SpeechID) {
+	h.appendUtterance(speakerID, speakerName, text, at, false, speechID)
 }
 
 // AppendEngineUtterance records an engine-authored line — one the engine wrote
@@ -261,11 +272,11 @@ func (h *Huddle) AppendUtterance(speakerID ActorID, speakerName, text string, at
 //
 // Separate method rather than a bool parameter on AppendUtterance: the model
 // path has seven callers and none of them should have to say "not engine".
-func (h *Huddle) AppendEngineUtterance(speakerID ActorID, speakerName, text string, at time.Time) {
-	h.appendUtterance(speakerID, speakerName, text, at, true)
+func (h *Huddle) AppendEngineUtterance(speakerID ActorID, speakerName, text string, at time.Time, speechID SpeechID) {
+	h.appendUtterance(speakerID, speakerName, text, at, true, speechID)
 }
 
-func (h *Huddle) appendUtterance(speakerID ActorID, speakerName, text string, at time.Time, engineAuthored bool) {
+func (h *Huddle) appendUtterance(speakerID ActorID, speakerName, text string, at time.Time, engineAuthored bool, speechID SpeechID) {
 	if h == nil || text == "" {
 		return
 	}
@@ -276,6 +287,7 @@ func (h *Huddle) appendUtterance(speakerID ActorID, speakerName, text string, at
 		Text:           text,
 		At:             at,
 		EngineAuthored: engineAuthored,
+		SpeechID:       speechID,
 	})
 	if len(h.RecentUtterances) > MaxRecentUtterancesPerHuddle {
 		// Re-home into a fresh slice so the dropped head isn't pinned by the

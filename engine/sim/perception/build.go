@@ -3778,11 +3778,21 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
 			continue // already rendered in "## Since your last turn" this tick
 		}
+		// Speaker kind decides which speech warrant kind this line stamped on
+		// its listeners (LLM-542). An unknown speaker (gone from the snapshot)
+		// falls back to NPC — the same fail-closed default the speech reactor
+		// itself takes for an unattributable utterance.
+		speakerIsPC := false
+		if sp := snap.Actors[u.SpeakerID]; sp != nil && sp.Kind == sim.KindPC {
+			speakerIsPC = true
+		}
 		out = append(out, UtteranceView{
 			SpeakerName: u.SpeakerName,
 			Text:        u.Text,
 			IsSelf:      u.SpeakerID == actorID,
 			At:          u.At,
+			SpeechID:    u.SpeechID,
+			SpeakerIsPC: speakerIsPC,
 		})
 	}
 	if len(out) == 0 {
