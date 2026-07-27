@@ -1416,6 +1416,110 @@ func TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop(t *testin
 	}
 }
 
+// TestSuspendedRound_ReachedStopResolutionOrder covers the rest of the ordering rule
+// in reachedStopIndex (code_review, LLM-543). The break-off preference has its own
+// test above; these are the two cases that keep the original silent failure from
+// coming back — a VISITED neighbour answering for a stop he still owes, so the owed
+// one is never recorded and the count never falls.
+func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
+	// suspendAtStopZero starts a three-stop round and suspends it at stop 0, then runs
+	// mutate to arrange the geometry the case needs.
+	suspendAtStopZero := func(t *testing.T, mutate func(route *sim.NPCRoute, a *sim.Actor)) (*sim.World, func()) {
+		t.Helper()
+		w, cancel := buildRouteTestWorld(t)
+		homeDest := sim.NewStructureEnterDestination("home")
+		if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
+			cancel()
+			t.Fatalf("start: %v", err)
+		}
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["lamp"]
+			a.Pos = sim.Position{X: 900, Y: 900}
+			a.MoveIntent = nil
+			return nil, nil
+		}}); err != nil {
+			cancel()
+			t.Fatalf("step away: %v", err)
+		}
+		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+			cancel()
+			t.Fatalf("suspend: %v", err)
+		}
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			mutate(world.ActiveRoutes["lamp"], world.Actors["lamp"])
+			world.Actors["lamp"].MoveIntent = nil
+			return nil, nil
+		}}); err != nil {
+			cancel()
+			t.Fatalf("arrange: %v", err)
+		}
+		return w, cancel
+	}
+
+	t.Run("an unvisited later stop is credited when the break-off stop does not match", func(t *testing.T) {
+		w, cancel := suspendAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
+			a.Pos = visitorSlotBeside(route.Stops[2].WalkTo)
+		})
+		defer cancel()
+		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+		route := activeRouteOf(t, w, "lamp")
+		if route == nil || !route.Visited[2] {
+			t.Fatal("the stop he called at was not credited")
+		}
+		if route.Phase != sim.RoutePhaseSuspended {
+			t.Errorf("Phase = %q, want suspended — only the break-off stop resumes the round", route.Phase)
+		}
+	})
+
+	t.Run("an unvisited stop wins over a visited one sharing its ground", func(t *testing.T) {
+		w, cancel := suspendAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
+			// Stop 1 is already walked and sits on the same ground as stop 2, which is
+			// not. Plain first-match would hand the arrival to stop 1 and stop 2 would
+			// never be recorded — the count would never reach zero and the round would
+			// never end.
+			route.Visited[1] = true
+			route.Stops[1].WalkTo = route.Stops[2].WalkTo
+			a.Pos = visitorSlotBeside(route.Stops[2].WalkTo)
+		})
+		defer cancel()
+		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+		route := activeRouteOf(t, w, "lamp")
+		if route == nil {
+			t.Fatal("route gone")
+		}
+		if !route.Visited[2] {
+			t.Error("stop 2 not credited — the visited neighbour answered for it, which is " +
+				"exactly the shadowing failure this ordering exists to prevent")
+		}
+	})
+
+	t.Run("an arrival where every match is already walked records nothing", func(t *testing.T) {
+		w, cancel := suspendAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
+			route.Visited[2] = true
+			a.Pos = visitorSlotBeside(route.Stops[2].WalkTo)
+		})
+		defer cancel()
+		res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+		if err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+		if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "still_suspended" {
+			t.Errorf("Reason = %q, want still_suspended", reason)
+		}
+		route := activeRouteOf(t, w, "lamp")
+		if route == nil || route.StopIdx != 0 {
+			t.Fatalf("cursor moved on a re-visit: %+v", route)
+		}
+		if route.Visited[0] || route.Visited[1] {
+			t.Error("a second call at a place he had already walked credited some OTHER stop")
+		}
+	})
+}
+
 // TestRoundCompletes_WhenEveryStopIsWalkedOutOfOrder pins the property the whole
 // visited set exists to give: a round ENDS. Jeff's "never finishes" was the cursor
 // unable to move, but a half-fixed version — crediting stops without letting the
