@@ -46,6 +46,15 @@ func init() {
 			build: travelerErrandSettledScenario,
 		},
 		perceptionScenario{
+			name: "traveler_settled_pack_is_provisions",
+			summary: "LLM-544: a settled provisioner mid-afternoon carrying the journeycakes he bought here plus " +
+				"cheese and flour given him at a farm. '## Your rounds' names the pack as his own — come by here and " +
+				"bound home with him, not stock to sell — so the model has a stated purpose for the goods instead of " +
+				"writing itself a travelling-salesman motive and hawking its own road food. The mixed pack is the " +
+				"point: 'come by' covers a gift as well as a purchase, which 'bought' would not.",
+			build: travelerSettledPackScenario,
+		},
+		perceptionScenario{
 			name: "traveler_errand_settled_midday",
 			summary: "LLM-507/508: the same settled nail-buyer, but at midday — hours of daylight left. The settled " +
 				"lead gives him the day for social calls instead of pitching supper-and-bed (which had him announcing " +
@@ -65,6 +74,59 @@ func travelerErrandSettledMiddayScenario() (*sim.Snapshot, sim.ActorID, []sim.Wa
 	midday := 780 // 13:00 — five hours to dusk (1080), but his trade is behind him
 	snap.LocalMinuteOfDay = &midday
 	return snap, id, warrants
+}
+
+// travelerSettledPackScenario reproduces the live 2026-07-27 shape (LLM-544): Brother
+// Ashford, a settled buy-errand provisioner, mid-afternoon with hours of light left and
+// a MIXED pack — the journeycakes his errand bought plus the cheese and flour Elizabeth
+// Ellis handed him at her farm. The multi-item join and the count-aware nouns are what
+// this pins; the single-good case rides the two nail-buyer settled goldens. A real
+// ItemKinds catalog is supplied so the nouns render as authored phrases rather than raw
+// keys, and nights_stay is present to pin that a service never lands in the pack line.
+func travelerSettledPackScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		buyerID = sim.ActorID("vstr-e10f3a91")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 900 // 15:00 — three hours to dusk (1080), well clear of bed pressure
+	buyer := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Brother Ashford the provisioner",
+		State:       sim.StateIdle,
+		Pos:         sim.TilePos{X: 40, Y: 44},
+		Coins:       75,
+		// nights_stay rides here deliberately: a booked room is a grant, not a carried
+		// good, so the provisions line must skip it (see travelerPackGoods).
+		Inventory: map[sim.ItemKind]int{"journeycake": 4, "cheese": 1, "flour": 1, "nights_stay": 1},
+		Needs:     map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "provisioner",
+			Origin:            "Salem Town",
+			Disposition:       "weary",
+			Phase:             sim.VisitorPhaseMakingRounds,
+			VisitedBusinesses: []sim.StructureID{tavern},
+			Trade:             &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "journeycake", Counterparty: tavern, Settled: true},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       360,
+		DuskMinute:       1080,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{buyerID: buyer},
+		Structures:       map[sim.StructureID]*sim.Structure{tavern: plainStructure(tavern, "Tavern")},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(tavern): {ID: sim.VillageObjectID(tavern), Pos: sim.WorldPos{X: 320, Y: 352}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"journeycake": {Name: "journeycake", DisplayLabel: "Journeycake", DisplayLabelSingular: "journeycake", DisplayLabelPlural: "journeycakes"},
+			"cheese":      {Name: "cheese", DisplayLabel: "Cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese"},
+			"flour":       {Name: "flour", DisplayLabel: "Flour", DisplayLabelSingular: "sack of flour", DisplayLabelPlural: "sacks of flour"},
+			"nights_stay": {Name: "nights_stay", DisplayLabel: "Night's Stay", DisplayLabelSingular: "night's stay", Capabilities: []string{"service"}},
+		},
+	}
+	return snap, buyerID, nil
 }
 
 func travelerErrandSettledScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -347,6 +409,91 @@ func TestGoldensNoDaylightBedContradiction(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGoldensProvisionsLineOnlyForSettledBuyer — the pack-is-your-own line (LLM-544)
+// may render ONLY for a traveler on a SETTLED BUY errand. The claim rests on a buyer
+// spawning empty-packed, so everything he carries was come by here; a factor's pack is
+// imported trade stock and calling it "not stock to sell" would be false, and would
+// undercut the two-way deal his own cue is pressing. Cross-scenario matrix guard — the
+// positive cases are pinned by the settled goldens.
+func TestGoldensProvisionsLineOnlyForSettledBuyer(t *testing.T) {
+	const marker = "is your own, come by here"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			if !strings.Contains(renderScenario(sc), marker) {
+				return
+			}
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.VisitorState == nil || a.VisitorState.Trade == nil {
+				t.Fatalf("scenario %q: provisions line rendered for a subject carrying no merchant errand (LLM-544)", sc.name)
+			}
+			if trade := a.VisitorState.Trade; trade.Direction != sim.TradeDirectionBuy || !trade.Settled {
+				t.Errorf("scenario %q: provisions line rendered for a %s errand (settled=%v) — it is scoped to a settled BUY (LLM-544)",
+					sc.name, trade.Direction, trade.Settled)
+			}
+		})
+	}
+}
+
+// TestRoundsProvisionsLineScopedToSettledBuy — the two negative cases asserted DIRECTLY
+// rather than only through the matrix guard, which passes vacuously if the covering
+// scenario is ever dropped from perceptionScenarios (code_review). A factor carries real
+// imported stock to sell, and an unsettled buyer is still mid-errand; neither may be told
+// his pack is his own.
+func TestRoundsProvisionsLineScopedToSettledBuy(t *testing.T) {
+	const marker = "is your own, come by here"
+	cases := []struct {
+		name   string
+		errand *RoundsErrand
+	}{
+		{"settled factor", &RoundsErrand{Buy: false, Settled: true, PackGoods: []string{"coats"}}},
+		{"unsettled buyer", &RoundsErrand{Buy: true, Settled: false, GoodLabel: "nail", ShopLabel: "Smithy", PackGoods: []string{"nails"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			renderTravelerRounds(&b, &TravelerRoundsView{Errand: tc.errand})
+			if strings.Contains(b.String(), marker) {
+				t.Errorf("provisions line rendered for a %s — it is scoped to a settled BUY errand (LLM-544):\n%s", tc.name, b.String())
+			}
+		})
+	}
+}
+
+// TestRoundsProvisionsLineUncataloguedKind — an inventory kind with NO catalog row at
+// all falls back to its raw key rather than panicking or vanishing. This pins a
+// cross-package contract travelerPackGoods leans on: sim.ItemKindDef.CountNoun is
+// nil-receiver-safe (it only calls Singular/Plural, both of which check d == nil), so
+// the def != nil guard is needed for HasCapability and not for CountNoun. If a later
+// edit in sim makes CountNoun dereference its receiver, this test fails here instead of
+// panicking in a live prompt build (code_review).
+func TestRoundsProvisionsLineUncataloguedKind(t *testing.T) {
+	snap, actorID, _ := travelerSettledPackScenario()
+	snap.Actors[actorID].Inventory["dried_fish"] = 2 // deliberately absent from snap.ItemKinds
+	view := buildTravelerRounds(snap, snap.Actors[actorID], nil)
+	if view == nil || view.Errand == nil {
+		t.Fatalf("expected a rounds view with an errand, got %+v", view)
+	}
+	if got, want := strings.Join(view.Errand.PackGoods, "|"), "dried_fish|journeycakes|sack of flour|wedge of cheese"; got != want {
+		t.Errorf("pack goods = %q, want %q (an uncatalogued kind falls back to its raw key)", got, want)
+	}
+}
+
+// TestRoundsProvisionsLineSkipsServices — a service in the pack (a booked night's stay)
+// is a granted room, not a carried good, so it never appears in the provisions list
+// (LLM-544). Unit-level because the golden pins only the assembled prose.
+func TestRoundsProvisionsLineSkipsServices(t *testing.T) {
+	snap, actorID, _ := travelerSettledPackScenario()
+	view := buildTravelerRounds(snap, snap.Actors[actorID], nil)
+	if view == nil || view.Errand == nil {
+		t.Fatalf("expected a rounds view with an errand, got %+v", view)
+	}
+	if got, want := strings.Join(view.Errand.PackGoods, "|"), "journeycakes|sack of flour|wedge of cheese"; got != want {
+		t.Errorf("pack goods = %q, want %q (a service must be skipped, the rest count-aware and sorted)", got, want)
 	}
 }
 
