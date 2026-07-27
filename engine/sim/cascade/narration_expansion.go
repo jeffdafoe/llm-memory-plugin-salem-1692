@@ -48,9 +48,13 @@ import (
 // knows the VA it asked, not the provider model behind it.
 const narrationExpansionLLMModel = "salem-generic"
 
-// narrationExpansionTriggerBuffer sizes the nudge channel. There are 9
-// pools and a pool can't re-nudge while in flight, so 16 means the
-// non-blocking send in narrationDraw effectively never drops.
+// narrationExpansionTriggerBuffer sizes the nudge channel. A pool can't
+// re-nudge while in flight, so the buffer only has to hold one entry per
+// pool for the non-blocking send in narrationDraw to never drop; 16 is
+// comfortably above the registry's size. (It read "there are 9 pools"
+// until LLM-538 — the count had been wrong since the establishment-closing
+// pool landed in LLM-129, which is why the number is gone rather than
+// corrected: nothing here needs to assert one.)
 const narrationExpansionTriggerBuffer = 16
 
 // RegisterNarrationExpansion installs the trigger channel on the world

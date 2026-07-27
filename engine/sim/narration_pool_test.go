@@ -267,6 +267,201 @@ func TestFetchNarrationExpansionContext(t *testing.T) {
 	}
 }
 
+// TestFetchNarrationPools covers the operator read (LLM-538): every pool, the
+// seed/extra split, the meta, and the transient counters.
+func TestFetchNarrationPools(t *testing.T) {
+	w := narrationTestWorld()
+
+	// Give one pool a distinguishable runtime state: two expansions and a draw
+	// counter mid-cycle, with an attempt in flight.
+	retire := w.NarrationPools[NarrationKeyNPCRetire]
+	retire.Extra = append(retire.Extra, "Goodnight, and God keep you.", "I'll to my rest now.")
+	retire.Draws = 4
+	retire.InFlight = true
+
+	res, err := FetchNarrationPools("").Fn(w)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	views := res.([]NarrationPoolView)
+	if len(views) != len(w.NarrationPools) {
+		t.Fatalf("views = %d, want %d (every pool)", len(views), len(w.NarrationPools))
+	}
+	for i := 1; i < len(views); i++ {
+		if views[i-1].Key >= views[i].Key {
+			t.Fatalf("not sorted by key: %q before %q", views[i-1].Key, views[i].Key)
+		}
+	}
+
+	var got NarrationPoolView
+	for _, v := range views {
+		if v.Key == NarrationKeyNPCRetire {
+			got = v
+		}
+	}
+	if got.Key == "" {
+		t.Fatalf("%q missing from the view set", NarrationKeyNPCRetire)
+	}
+	if len(got.Seed) != len(retireLines) || len(got.Extra) != 2 {
+		t.Errorf("seed/extra = %d/%d, want %d/2 — the split is the point of the view",
+			len(got.Seed), len(got.Extra), len(retireLines))
+	}
+	if got.Draws != 4 || !got.InFlight {
+		t.Errorf("draws/in_flight = %d/%v, want 4/true", got.Draws, got.InFlight)
+	}
+	if got.Description == "" || got.CustomerToken {
+		t.Errorf("meta = %q/%v, want a description and no {customer} for the retire pool",
+			got.Description, got.CustomerToken)
+	}
+	// Phrases() must agree with the live pool's own merge — the operator read and
+	// the draw sites cannot be allowed to show different orders.
+	live := retire.Phrases()
+	merged := got.Phrases()
+	if len(merged) != len(live) {
+		t.Fatalf("merged = %d lines, live pool = %d", len(merged), len(live))
+	}
+	for i := range live {
+		if merged[i] != live[i] {
+			t.Fatalf("merge order differs at %d: view %q, pool %q", i, merged[i], live[i])
+		}
+	}
+
+	// A businessowner pool carries the token flag, so the flag is per-pool meta
+	// rather than a constant.
+	for _, v := range views {
+		if v.Key == BusinessownerNarrationKey("flamboyant", BusinessownerTriggerGreet) && !v.CustomerToken {
+			t.Error("businessowner pool reads customer_token=false")
+		}
+	}
+}
+
+// TestFetchNarrationPools_NoAliasing pins that a view can outlive the world
+// goroutine: the whole reason the command copies rather than handing back the
+// registry's slices is that the HTTP goroutine marshals the result AFTER
+// SendContext returns, concurrently with the next draw or expansion apply.
+func TestFetchNarrationPools_NoAliasing(t *testing.T) {
+	w := narrationTestWorld()
+	p := w.NarrationPools[NarrationKeyNPCRetire]
+	appendNarrationPhrases(p, []string{"an expansion present at read time"})
+
+	res, err := FetchNarrationPools(NarrationKeyNPCRetire).Fn(w)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	view := res.([]NarrationPoolView)[0]
+	before := len(view.Extra)
+
+	// Simulate the writer running after the read returned: a new expansion lands,
+	// and both existing backing arrays are overwritten in place. An in-place
+	// element write is the sharper test of the two — a length change could be
+	// missed by a copy that shared the backing array (code_review).
+	appendNarrationPhrases(p, []string{"a line generated after the read"})
+	p.Seed[0] = "MUTATED SEED"
+	p.Extra[0] = "MUTATED EXTRA"
+
+	if len(view.Extra) != before {
+		t.Errorf("view.Extra grew to %d after a post-read append — it aliases the pool", len(view.Extra))
+	}
+	if view.Seed[0] == "MUTATED SEED" {
+		t.Error("view.Seed shares a backing array with the pool's seed slice")
+	}
+	if view.Extra[0] == "MUTATED EXTRA" {
+		t.Error("view.Extra shares a backing array with the pool's extra slice")
+	}
+}
+
+// TestFetchNarrationPools_KeyFilter: the filter narrows to one pool and is
+// case-insensitive (the /recipes + /items posture), and an unknown key is an
+// EMPTY result rather than an error — "no such pool" is a legitimate empty
+// answer to "show me this pool", and the handler turns an error into a 422.
+func TestFetchNarrationPools_KeyFilter(t *testing.T) {
+	w := narrationTestWorld()
+
+	for _, key := range []string{NarrationKeyNPCRetire, strings.ToUpper(NarrationKeyNPCRetire)} {
+		res, err := FetchNarrationPools(key).Fn(w)
+		if err != nil {
+			t.Fatalf("fetch %q: %v", key, err)
+		}
+		views := res.([]NarrationPoolView)
+		if len(views) != 1 || views[0].Key != NarrationKeyNPCRetire {
+			t.Fatalf("key=%q returned %+v, want just the retire pool", key, views)
+		}
+	}
+
+	res, err := FetchNarrationPools("no-such-pool").Fn(w)
+	if err != nil {
+		t.Fatalf("unknown key errored: %v", err)
+	}
+	if views := res.([]NarrationPoolView); len(views) != 0 {
+		t.Errorf("unknown key returned %d views, want an empty result", len(views))
+	}
+}
+
+// TestFetchNarrationPools_DoesNotCountADraw: the read must not advance the draw
+// counter. If it did, an operator watching a pool would push it over its own
+// expansion threshold — the observation would cause the thing being observed.
+func TestFetchNarrationPools_DoesNotCountADraw(t *testing.T) {
+	w := narrationTestWorld()
+	trigger := make(chan string, 4)
+	w.SetNarrationExpansionTrigger(trigger)
+
+	p := w.NarrationPools[NarrationKeyNPCRetire]
+	p.Draws = NarrationExpansionCycleFactor*len(p.Seed) - 1 // one draw short of the nudge
+
+	for i := 0; i < 5; i++ {
+		if _, err := FetchNarrationPools("").Fn(w); err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+	}
+	if p.Draws != NarrationExpansionCycleFactor*len(p.Seed)-1 {
+		t.Errorf("Draws = %d after 5 reads, want it untouched", p.Draws)
+	}
+	select {
+	case key := <-trigger:
+		t.Fatalf("a read nudged the expansion cascade for %q", key)
+	default:
+	}
+}
+
+// TestNarrationPoolView_SharedWithExpansionFetch pins the shared lookup: the
+// operator read and the expansion prompt must be built from the same merge and
+// the same meta, so what /umbilical/narration shows for a pool IS what the next
+// expansion will be generated against. Two code paths reading the registry
+// independently is exactly how the two would drift.
+func TestNarrationPoolView_SharedWithExpansionFetch(t *testing.T) {
+	w := narrationTestWorld()
+	key := BusinessownerNarrationKey("reserved", BusinessownerTriggerFarewell)
+	w.NarrationPools[key].Extra = append(w.NarrationPools[key].Extra, "Fare you well, {customer}.")
+
+	readRes, err := FetchNarrationPools(key).Fn(w)
+	if err != nil {
+		t.Fatalf("fetch pools: %v", err)
+	}
+	view := readRes.([]NarrationPoolView)[0]
+
+	fetchRes, err := FetchNarrationExpansionContext(key).Fn(w)
+	if err != nil {
+		t.Fatalf("fetch expansion context: %v", err)
+	}
+	nctx := fetchRes.(NarrationExpansionContext)
+
+	if view.Description != nctx.Description {
+		t.Errorf("description differs:\n  read      %q\n  expansion %q", view.Description, nctx.Description)
+	}
+	if view.CustomerToken != nctx.CustomerToken {
+		t.Errorf("customer_token differs: read %v, expansion %v", view.CustomerToken, nctx.CustomerToken)
+	}
+	merged := view.Phrases()
+	if len(merged) != len(nctx.Phrases) {
+		t.Fatalf("line count differs: read %d, expansion %d", len(merged), len(nctx.Phrases))
+	}
+	for i := range merged {
+		if merged[i] != nctx.Phrases[i] {
+			t.Fatalf("line %d differs:\n  read      %q\n  expansion %q", i, merged[i], nctx.Phrases[i])
+		}
+	}
+}
+
 func TestValidateNarrationPhrase(t *testing.T) {
 	long := strings.Repeat("a", NarrationMaxPhraseRunes+1)
 	cases := []struct {

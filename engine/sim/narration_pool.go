@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 )
 
@@ -92,9 +93,17 @@ type NarrationPool struct {
 // Phrases returns the merged seed+extra pool as a fresh slice. Draw sites
 // index into it; the expansion flow snapshots it into the LLM prompt.
 func (p *NarrationPool) Phrases() []string {
-	out := make([]string, 0, len(p.Seed)+len(p.Extra))
-	out = append(out, p.Seed...)
-	out = append(out, p.Extra...)
+	return mergeNarrationPhrases(p.Seed, p.Extra)
+}
+
+// mergeNarrationPhrases is the one definition of a pool's draw order: seed
+// lines first, then expansions, in a fresh slice. Shared by the live pool and
+// by NarrationPoolView so the operator read can never show a merge the draw
+// sites and the expansion prompt don't actually see.
+func mergeNarrationPhrases(seed, extra []string) []string {
+	out := make([]string, 0, len(seed)+len(extra))
+	out = append(out, seed...)
+	out = append(out, extra...)
 	return out
 }
 
@@ -316,6 +325,77 @@ func (w *World) MergeNarrationExpansions(rows map[string][]string) {
 	}
 }
 
+// NarrationPoolView is one registry pool copied out as plain values: the
+// lines, the meta that steers expansion, and the transient draw bookkeeping.
+// Nothing in it aliases the registry, so a caller may hold one after leaving
+// the world goroutine.
+//
+// Keeping Seed and Extra APART is the point of the type. Everything that
+// consumes a pool at runtime sees the merge (Phrases), and in the merge there
+// is no way to tell an engine-authored line from a generated one — which is
+// the first question asked of a pool whose lines have drifted out of register.
+type NarrationPoolView struct {
+	Key           string
+	Description   string
+	CustomerToken bool
+	Seed          []string
+	Extra         []string
+	Draws         int
+	InFlight      bool
+}
+
+// Phrases returns the view's lines in draw order — identical in content and
+// order to what NarrationPool.Phrases yields for the live pool.
+func (v NarrationPoolView) Phrases() []string {
+	return mergeNarrationPhrases(v.Seed, v.Extra)
+}
+
+// narrationPoolView copies one live pool into a view. MUST be called from the
+// world goroutine (it reads *NarrationPool, which the draw and expansion-apply
+// paths mutate there); the slices are fresh, so the result escapes safely. A
+// key with no meta entry degrades to an empty description rather than
+// panicking — the init guard makes that unreachable for a registry key.
+func narrationPoolView(key string, p *NarrationPool) NarrationPoolView {
+	meta := narrationPoolMetas[key]
+	return NarrationPoolView{
+		Key:           key,
+		Description:   meta.Description,
+		CustomerToken: meta.CustomerToken,
+		Seed:          append([]string(nil), p.Seed...),
+		Extra:         append([]string(nil), p.Extra...),
+		Draws:         p.Draws,
+		InFlight:      p.InFlight,
+	}
+}
+
+// FetchNarrationPools snapshots the registry for the operator read
+// (GET /umbilical/narration). key filters to one pool, matched
+// case-insensitively against the registry key; an unknown key yields an EMPTY
+// slice, not an error — "no such pool" is a legitimate empty answer to "show
+// me this pool". Sorted by key.
+//
+// Pure read: it does NOT count a draw. narrationDraw is the only thing that
+// advances the counter, so an operator watching a pool can't push it over its
+// own expansion threshold by looking at it.
+func FetchNarrationPools(key string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			out := make([]NarrationPoolView, 0, len(w.NarrationPools))
+			for k, p := range w.NarrationPools {
+				if p == nil {
+					continue
+				}
+				if key != "" && !strings.EqualFold(k, key) {
+					continue
+				}
+				out = append(out, narrationPoolView(k, p))
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+			return out, nil
+		},
+	}
+}
+
 // NarrationExpansionContext is the world-state snapshot one expansion
 // LLM call works from. Wanted is how many new lines to ask for —
 // truncated near the cap, and 0 when the pool reached cap between the
@@ -331,6 +411,10 @@ type NarrationExpansionContext struct {
 // FetchNarrationExpansionContext snapshots a pool for the expansion
 // cascade. Errors only on caller-bug shapes (unknown key — the nudge
 // channel only ever carries registry keys, so this means wiring drift).
+//
+// Goes through narrationPoolView so the merge and the meta lookup are the
+// same ones the operator read serves: what /umbilical/narration shows for a
+// pool is by construction what the next expansion prompt will be built from.
 func FetchNarrationExpansionContext(key string) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -338,8 +422,8 @@ func FetchNarrationExpansionContext(key string) Command {
 			if p == nil {
 				return NarrationExpansionContext{}, fmt.Errorf("FetchNarrationExpansionContext: unknown pool %q", key)
 			}
-			meta := narrationPoolMetas[key]
-			merged := p.Phrases()
+			view := narrationPoolView(key, p)
+			merged := view.Phrases()
 			wanted := NarrationExpansionBatchSize
 			if room := NarrationPoolMaxPhrases - len(merged); room < wanted {
 				wanted = room
@@ -350,8 +434,8 @@ func FetchNarrationExpansionContext(key string) Command {
 			return NarrationExpansionContext{
 				Key:           key,
 				Phrases:       merged,
-				Description:   meta.Description,
-				CustomerToken: meta.CustomerToken,
+				Description:   view.Description,
+				CustomerToken: view.CustomerToken,
 				Wanted:        wanted,
 			}, nil
 		},
