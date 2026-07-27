@@ -2825,6 +2825,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: undirectedReaskSolePeerScenario,
 	},
 	{
+		name: "paced_worker_owes_answer_to_questioner",
+		summary: "The live LLM-536 case: Constable Marsh asked Silence Walker — a hired worker inside a live labor " +
+			"window — a direct question, and she is only now drawing the tick her 3m reply cadence held back. His edge is " +
+			"107s old: past the 60s WORK-370 window, so before LLM-536 the obligation had already stopped rendering by the " +
+			"time she could speak, and the turn she eventually got went to an unrelated topic while he waited. Her " +
+			"ReplyPacingWindow widens her own await window to 240s, so the golden pins 'Constable Marsh is waiting for " +
+			"your reply.' surviving to the moment she can answer. A regression that dropped the widening would hand a " +
+			"laboring worker a turn with nothing marking the question as owed — the tick restored, the question still lost.",
+		build: pacedWorkerOwesAnswerToQuestioner,
+	},
+	{
 		name: "hungry_actor_holding_raw_meat",
 		summary: "A hungry shopkeeper (Josiah Thorne) at his post carries raw Meat — a stew INGREDIENT (food-category but " +
 			"eases no need raw) — alongside edible Cheese (the live LLM-166 case: he fired consume{Meat} 22 times). The golden " +
@@ -9292,6 +9303,74 @@ func undirectedReaskSolePeerScenario() (*sim.Snapshot, sim.ActorID, []sim.Warran
 		},
 	}
 	return snap, johnID, nil
+}
+
+// pacedWorkerOwesAnswerToQuestioner is the LLM-536 fixture, built from the live
+// trace: Constable Marsh asked Silence Walker — a hired worker inside a live
+// labor window — a direct question about the shut Tavern, and she is only now
+// drawing the tick her 3m reply cadence held back. The edge is stamped 107s ago:
+// PAST the 60s WORK-370 window, so before LLM-536 the owed-reply line was gone
+// by the time she could speak, and she spent the turn on an unrelated topic
+// (window mending) while the constable waited. Her ReplyPacingWindow widens her
+// own await window to 240s, so the golden pins "Constable Marsh is waiting for
+// your reply." surviving to the moment she can answer.
+//
+// A regression that dropped the widening would leave a laboring worker holding a
+// turn with no obligation attached — the tick restored, the question still lost.
+// Fixed PublishedAt, utterances stamped relative to it, no orders → byte-stable.
+func pacedWorkerOwesAnswerToQuestioner() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		silenceID = sim.ActorID("silence")
+		marshID   = sim.ActorID("marsh")
+		huddleID  = sim.HuddleID("inn_huddle")
+	)
+	now := 12*60 + 30 // 12:30 — midday, no sleep cue competes
+	published := time.Date(2026, 7, 27, 12, 29, 54, 0, time.UTC)
+	silence := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Silence Walker",
+		Role:            "villager",
+		State:           sim.StateLaboring,
+		CurrentHuddleID: huddleID,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{},
+		// The pacing that shelved her ticks — and now keeps the question owed
+		// across the wait it imposed.
+		ReplyPacingWindow: 3 * time.Minute,
+	}
+	marsh := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Constable Marsh",
+		Role:            "villager",
+		State:           sim.StateIdle,
+		CurrentHuddleID: huddleID,
+		Coins:           5,
+		Needs:           map[sim.NeedKey]int{},
+		// Stamped when he asked, 107s before this tick.
+		AwaitingReplyFrom: map[sim.ActorID]time.Time{silenceID: published.Add(-107 * time.Second)},
+	}
+	utter := func(spk sim.ActorID, name, text string, agoSec int) sim.Utterance {
+		return sim.Utterance{SpeakerID: spk, SpeakerName: name, Text: text, At: published.Add(-time.Duration(agoSec) * time.Second)}
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:         published,
+		LocalMinuteOfDay:    &now,
+		NeedThresholds:      sim.NeedThresholds{},
+		Assets:              emptyAssetSet,
+		NPCAwaitReplyWindow: 60 * time.Second,
+		Actors:              map[sim.ActorID]*sim.ActorSnapshot{silenceID: silence, marshID: marsh},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {
+				ID:      huddleID,
+				Members: map[sim.ActorID]struct{}{silenceID: {}, marshID: {}},
+				RecentUtterances: []sim.Utterance{
+					utter(marshID, "Constable Marsh", "Silence — walk with me a moment, if you've a minute.", 130),
+					utter(marshID, "Constable Marsh", "You said you were at the Tavern yesterday mending floors and windows. Did John Ellis seem himself to you?", 107),
+				},
+			},
+		},
+	}
+	return snap, silenceID, nil
 }
 
 // hungryLooperAtFoodlessHome is the LLM-176 fixture: the Walker sisters loop in a

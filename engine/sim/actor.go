@@ -1642,6 +1642,24 @@ type ActorSnapshot struct {
 	// snapshot copy is the read-path view.
 	AwaitingReplyFrom map[ActorID]time.Time
 
+	// ReplyPacingWindow is how long this actor's replies to NPC speech are
+	// currently paced by — the resolved LaborReplyCadence while it is mid-job or
+	// mid-bake, 0 otherwise (replyPacedCadence). Perception's buildTurnState adds
+	// it to the await-reply liveness window whenever THIS actor is the addressee,
+	// in both directions: "they are waiting for your reply" survives on a paced
+	// worker long enough for it to actually get its turn, and "you spoke to them,
+	// wait" survives on the speaker so it waits out the pacing instead of
+	// re-pitching into it. The 60s default window is shorter than the 180s
+	// cadence, so without this widening an owed reply stops rendering ~2 minutes
+	// before the paced worker can speak (LLM-536).
+	//
+	// A per-publish read projection computed world-side (replyPacedCadence needs
+	// WorldSettings, which snapshotActor has no access to) — NOT checkpointed,
+	// recomputed each republish, the same posture as ColocatedAudienceIDs below.
+	// The hard re-pitch gate in SpeakTo widens by the same value read off live
+	// state, so the rendered line and the reject agree.
+	ReplyPacingWindow time.Duration
+
 	// ColocatedAudienceIDs are the conversational actors an UNHUDDLED actor would
 	// reach if it spoke from its current position — the non-mutating read mirror
 	// of the audience the speak path assembles (EnsureColocatedHuddle forms/joins

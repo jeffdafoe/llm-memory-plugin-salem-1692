@@ -2340,6 +2340,11 @@ func (w *World) republish() {
 		// (not in snapshotActor, a *World-less free function) — buildReturnerSnapshot
 		// reads World.RecurringVisitors and needs the wall-clock now for recency.
 		sa.Returner = buildReturnerSnapshot(w, a, now)
+		// LLM-536: project how long this actor's NPC-speech replies are paced by,
+		// so perception's turn-line can hold an owed-reply edge live across the
+		// wait the pacing imposes. Computed here rather than in snapshotActor for
+		// the same reason as Returner above — it needs WorldSettings.
+		sa.ReplyPacingWindow = replyPacedCadence(a, now, w.Settings)
 		// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
 		// unhuddled conversational NPC would reach if it spoke now, so perception's
 		// "## Around you" line and the speak no-audience gate share one scope rule

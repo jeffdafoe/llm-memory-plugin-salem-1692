@@ -914,27 +914,42 @@ func TestTerminalStatusAddresses(t *testing.T) {
 
 // ---- LLM-230: laboring reply cadence at the evaluator level ------------
 
-// TestEvaluateReactors_LaboringSpeechWarrantStaleEvictedMidCadence proves the
-// cost claim end-to-end (LLM-230 review): while a laboring worker is INSIDE her
-// reply cadence, a shelved NPC-speech warrant is EVICTED once its cycle ages past
-// MaxWarrantAge (90s) — not deferred alive — because the evaluator checks
-// warrantCycleStale before the unavailable-backoff push. Then, once the cadence
-// has elapsed, a FRESH NPC-speech warrant makes her eligible and emits, so the
-// reply lands on the current utterance rather than a stale one.
-func TestEvaluateReactors_LaboringSpeechWarrantStaleEvictedMidCadence(t *testing.T) {
+// TestEvaluateReactors_LaboringSpeechWarrantDeferredToCadenceBoundary is the
+// inverted successor of the LLM-230-era
+// TestEvaluateReactors_LaboringSpeechWarrantStaleEvictedMidCadence, which pinned
+// the opposite assertion: that a shelved NPC-speech warrant on a laboring worker
+// is EVICTED once its cycle ages past MaxWarrantAge (90s). That eviction was
+// deliberate, on the reasoning that she should answer the next FRESH utterance
+// after the window rather than a stale one — but MaxWarrantAge (90s) is SHORTER
+// than LaborReplyCadence (180s), so the warrant always died before the cadence
+// could open, and every utterance directed at a laboring worker in the first 90s
+// of each window was discarded. When the utterance was a direct QUESTION there
+// was no next fresh utterance to answer: the asker had nothing left to do but
+// wait, so nothing re-stamped either party and the conversation deadlocked
+// (LLM-536 — a live constable interview produced 22 minutes of village-wide
+// silence, and the question was never answered).
+//
+// Now the warrant is DEFERRED to the moment the cadence opens instead. The
+// suppression LLM-230 wanted is unchanged — she still does not speak inside the
+// window, and still replies at most once per cadence — but the obligation is
+// postponed rather than destroyed.
+func TestEvaluateReactors_LaboringSpeechWarrantDeferredToCadenceBoundary(t *testing.T) {
 	w, cancel, _ := buildPR3aWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
+	lastTick := now.Add(-150 * time.Second)
+	boundary := lastTick.Add(3 * time.Minute)
 
 	// Laboring, last tick 150s ago (inside the 3m cadence → shelved), NPC-speech
-	// warrant whose cycle started 100s ago (past the 90s MaxWarrantAge → stale).
+	// warrant whose cycle started 100s ago (past the 90s MaxWarrantAge → would
+	// have been evicted before LLM-536).
 	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["alice"]
 		a.State = sim.StateLaboring
 		until := now.Add(2 * time.Hour)
 		a.LaboringUntil = &until
 		a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
-		a.RecentReactorTicks.Push(now.Add(-150 * time.Second))
+		a.RecentReactorTicks.Push(lastTick)
 		since := now.Add(-100 * time.Second)
 		due := now.Add(-1 * time.Second)
 		a.WarrantedSince = &since
@@ -949,24 +964,419 @@ func TestEvaluateReactors_LaboringSpeechWarrantStaleEvictedMidCadence(t *testing
 		t.Errorf("within-cadence laboring speech: want no emit; got %d", len(*emitted))
 	}
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
-		if a.WarrantedSince != nil {
-			t.Error("stale NPC-speech warrant should be EVICTED mid-cadence (aged past MaxWarrantAge), not deferred alive")
+		if a.WarrantedSince == nil {
+			t.Fatal("stale NPC-speech warrant should be DEFERRED to the cadence boundary, not evicted — the question is postponed, not destroyed")
+		}
+		if a.WarrantDueAt == nil || !a.WarrantDueAt.Equal(boundary) {
+			t.Errorf("WarrantDueAt = %v, want the cadence boundary %v", a.WarrantDueAt, boundary)
 		}
 	})
 
-	// Cadence now elapsed (last tick 4m ago) + a fresh NPC-speech warrant: she
-	// becomes eligible and emits.
+	// At the boundary the cadence has elapsed, so the SAME warrant — no fresh
+	// utterance needed, which is the whole point — makes her eligible and emits.
+	_, _ = w.Send(sim.EvaluateReactors(boundary))
+	if len(*emitted) != 1 {
+		t.Fatalf("at the cadence boundary: want 1 emit of the deferred warrant; got %d", len(*emitted))
+	}
+	if kinds := (*emitted)[0].Warrants; len(kinds) != 1 || kinds[0].Reason.Kind() != sim.WarrantKindNPCSpoke {
+		t.Errorf("emitted warrants = %v, want the original NPC-speech warrant", kinds)
+	}
+}
+
+// TestEvaluateReactors_LaboringSpeechWarrantStillPacedAfterDeferral covers the
+// LLM-230 babble suppression the LLM-536 deferral must not regress: answering at
+// the boundary re-anchors the cadence, so the NEXT utterance is deferred again
+// rather than answered per-line. The worker replies once per cadence, as before —
+// deferral changes WHEN a warrant is honored, never HOW OFTEN.
+func TestEvaluateReactors_LaboringSpeechWarrantStillPacedAfterDeferral(t *testing.T) {
+	w, cancel, _ := buildPR3aWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Laboring, just ticked (fresh cadence window), and a peer speaks 1s later.
 	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["alice"]
+		a.State = sim.StateLaboring
+		until := now.Add(2 * time.Hour)
+		a.LaboringUntil = &until
 		a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
-		a.RecentReactorTicks.Push(now.Add(-4 * time.Minute))
+		a.RecentReactorTicks.Push(now)
 		return nil, nil
 	}})
+	emitted := subscribeReactorTicks(t, w)
+
+	at := now.Add(time.Second)
 	seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
 		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
-	}, now)
+	}, at)
+	_, _ = w.Send(sim.EvaluateReactors(at))
+	if len(*emitted) != 0 {
+		t.Errorf("speech 1s into the cadence: want no emit (the pacing holds); got %d", len(*emitted))
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantDueAt == nil || !a.WarrantDueAt.Equal(now.Add(3*time.Minute)) {
+			t.Errorf("WarrantDueAt = %v, want the cadence boundary %v", a.WarrantDueAt, now.Add(3*time.Minute))
+		}
+	})
+
+	// A second and third utterance inside the same window add nothing: still no
+	// emit, still the same boundary. This is the per-line babble LLM-230 killed.
+	for i, gap := range []time.Duration{30 * time.Second, 60 * time.Second} {
+		at := now.Add(gap)
+		seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
+			{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
+		}, at)
+		_, _ = w.Send(sim.EvaluateReactors(at))
+		if len(*emitted) != 0 {
+			t.Errorf("utterance %d inside the cadence: want no emit; got %d", i+2, len(*emitted))
+		}
+	}
+}
+
+// TestEvaluateReactors_BakerSpeechWarrantDeferredToCadenceBoundary is the
+// source-activity sibling of the laboring case above. A baker mid-bake is
+// shelved by the same LaborReplyCadence (bakeReplyDue, LLM-454) against the same
+// 90s MaxWarrantAge, so a housemate's question was lost the same way (LLM-536).
+func TestEvaluateReactors_BakerSpeechWarrantDeferredToCadenceBoundary(t *testing.T) {
+	w, cancel, _ := buildPR3aWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	lastTick := now.Add(-150 * time.Second)
+	boundary := lastTick.Add(3 * time.Minute)
+
+	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.SourceActivity = &sim.SourceActivity{
+			Kind:      sim.SourceActivityBake,
+			StartedAt: now.Add(-10 * time.Minute),
+			Until:     now.Add(time.Hour),
+		}
+		a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
+		a.RecentReactorTicks.Push(lastTick)
+		since := now.Add(-100 * time.Second)
+		due := now.Add(-1 * time.Second)
+		a.WarrantedSince = &since
+		a.WarrantDueAt = &due
+		a.Warrants = []sim.WarrantMeta{{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}}}
+		return nil, nil
+	}})
+	emitted := subscribeReactorTicks(t, w)
+
 	_, _ = w.Send(sim.EvaluateReactors(now))
+	if len(*emitted) != 0 {
+		t.Errorf("within-cadence bake speech: want no emit; got %d", len(*emitted))
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince == nil {
+			t.Fatal("stale NPC-speech warrant on a baker should be DEFERRED to the cadence boundary, not evicted")
+		}
+		if a.WarrantDueAt == nil || !a.WarrantDueAt.Equal(boundary) {
+			t.Errorf("WarrantDueAt = %v, want the cadence boundary %v", a.WarrantDueAt, boundary)
+		}
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(boundary))
 	if len(*emitted) != 1 {
-		t.Errorf("post-cadence fresh speech: want 1 emit; got %d", len(*emitted))
+		t.Errorf("at the cadence boundary: want 1 emit of the deferred warrant; got %d", len(*emitted))
+	}
+}
+
+// TestEvaluateReactors_ShelvedNonPacedStaleCyclesStillEvicted is the
+// ZBBS-WORK-361 regression guard for the LLM-536 deferral. The deferral is
+// scoped to an actor that is BUSY on a cadence and holds an obligation to
+// answer; every other shelve keeps the flat MaxWarrantAge eviction, so a
+// dormant actor still wakes to current state rather than to a transcript of
+// everything it slept through.
+//
+// The resting-while-laboring row is the one that would be easy to get wrong: the
+// laboring branch shelves before the break branch is ever reached, so without an
+// explicit rest guard in replyPacedCadence a rester with a live LaboringUntil
+// would look reply-paced and hold its pile across the whole break.
+func TestEvaluateReactors_ShelvedNonPacedStaleCyclesStillEvicted(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name  string
+		setup func(a *sim.Actor)
+	}{
+		{
+			name: "sleeper holding a speech warrant",
+			setup: func(a *sim.Actor) {
+				a.State = sim.StateSleeping
+				until := now.Add(6 * time.Hour)
+				a.SleepingUntil = &until
+			},
+		},
+		{
+			name: "rester holding a speech warrant",
+			setup: func(a *sim.Actor) {
+				a.State = sim.StateResting
+				until := now.Add(20 * time.Minute)
+				a.BreakUntil = &until
+			},
+		},
+		{
+			name: "rester with a live labor window",
+			setup: func(a *sim.Actor) {
+				a.State = sim.StateResting
+				breakUntil := now.Add(20 * time.Minute)
+				a.BreakUntil = &breakUntil
+				laboringUntil := now.Add(2 * time.Hour)
+				a.LaboringUntil = &laboringUntil
+			},
+		},
+		{
+			name: "laboring worker with no speech warrant",
+			setup: func(a *sim.Actor) {
+				a.State = sim.StateLaboring
+				until := now.Add(2 * time.Hour)
+				a.LaboringUntil = &until
+				a.Warrants = []sim.WarrantMeta{{Reason: sim.BasicWarrantReason{K: sim.WarrantKindArrived}}}
+			},
+		},
+		{
+			// The bake shelve runs on SourceActivity EXISTING, but pacing runs on
+			// the window being LIVE — so in the ~1s gap after Until elapses and
+			// before the completion sweep clears it she is shelved and not paced,
+			// and the ordinary eviction applies (code_review).
+			name: "baker whose bake window has elapsed",
+			setup: func(a *sim.Actor) {
+				a.SourceActivity = &sim.SourceActivity{
+					Kind:      sim.SourceActivityBake,
+					StartedAt: now.Add(-time.Hour),
+					Until:     now.Add(-time.Second),
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, cancel, _ := buildPR3aWorld(t)
+			defer cancel()
+			_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				a := world.Actors["alice"]
+				a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
+				a.RecentReactorTicks.Push(now.Add(-150 * time.Second))
+				since := now.Add(-100 * time.Second)
+				due := now.Add(-1 * time.Second)
+				a.WarrantedSince = &since
+				a.WarrantDueAt = &due
+				a.Warrants = []sim.WarrantMeta{{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}}}
+				tc.setup(a)
+				return nil, nil
+			}})
+			emitted := subscribeReactorTicks(t, w)
+
+			_, _ = w.Send(sim.EvaluateReactors(now))
+			if len(*emitted) != 0 {
+				t.Errorf("shelved actor: want no emit; got %d", len(*emitted))
+			}
+			inspectActor(t, w, "alice", func(a *sim.Actor) {
+				if a.WarrantedSince != nil {
+					t.Error("stale cycle on a non-reply-paced shelved actor should still be EVICTED at MaxWarrantAge (ZBBS-WORK-361)")
+				}
+			})
+		})
+	}
+}
+
+// TestEvaluateReactors_ShelvedForcedWarrantSurvivesUnchanged pins that the
+// LLM-536 deferral did not shadow the retainForcedWarrants path it was inserted
+// above: a stale cycle on a shelved actor is still pruned down to its operator
+// warrant rather than dropped whole.
+func TestEvaluateReactors_ShelvedForcedWarrantSurvivesUnchanged(t *testing.T) {
+	w, cancel, _ := buildPR3aWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.State = sim.StateSleeping
+		until := now.Add(6 * time.Hour)
+		a.SleepingUntil = &until
+		since := now.Add(-100 * time.Second)
+		due := now.Add(-1 * time.Second)
+		a.WarrantedSince = &since
+		a.WarrantDueAt = &due
+		a.Warrants = []sim.WarrantMeta{
+			{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
+			{Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}, Force: true},
+		}
+		return nil, nil
+	}})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if len(a.Warrants) != 1 {
+			t.Fatalf("Warrants = %d, want the cycle pruned to its 1 Force warrant", len(a.Warrants))
+		}
+		if !a.Warrants[0].Force {
+			t.Error("surviving warrant should be the Force one (operator nudges outlive a shelve)")
+		}
+	})
+}
+
+// TestEvaluateReactors_PacedWorkerOperatorNudgeNotDeferred covers the
+// interaction code_review asked to see proved rather than assumed: what the new
+// defer branch, which sits ABOVE the stale/Force handling, does to a REPLY-PACED
+// actor that also holds a Force warrant.
+//
+// Both arms keep the operator signal prompt. An operator nudge (Admin/Impulse)
+// pierces the labor shelve outright, so the actor is eligible and the defer
+// branch is never reached — she ticks now, inside the cadence. A Force warrant
+// of some other kind does not pierce the shelve, and replyCadenceDeferUntil
+// refuses to defer any cycle holding one, so it falls through to
+// retainForcedWarrants and fires on the next scan rather than waiting out a full
+// cadence.
+func TestEvaluateReactors_PacedWorkerOperatorNudgeNotDeferred(t *testing.T) {
+	t.Run("operator nudge pierces the shelve and emits", func(t *testing.T) {
+		w, cancel, _ := buildPR3aWorld(t)
+		defer cancel()
+		now := time.Now().UTC()
+
+		_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateLaboring
+			until := now.Add(2 * time.Hour)
+			a.LaboringUntil = &until
+			a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
+			a.RecentReactorTicks.Push(now.Add(-30 * time.Second))
+			since := now.Add(-100 * time.Second)
+			due := now.Add(-1 * time.Second)
+			a.WarrantedSince = &since
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}, Force: true},
+			}
+			return nil, nil
+		}})
+		emitted := subscribeReactorTicks(t, w)
+
+		_, _ = w.Send(sim.EvaluateReactors(now))
+		if len(*emitted) != 1 {
+			t.Errorf("operator nudge on a laboring worker: want 1 emit now, not a deferral to the cadence boundary; got %d", len(*emitted))
+		}
+	})
+
+	t.Run("non-operator Force warrant keeps the retainForcedWarrants path", func(t *testing.T) {
+		w, cancel, _ := buildPR3aWorld(t)
+		defer cancel()
+		now := time.Now().UTC()
+
+		_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateLaboring
+			until := now.Add(2 * time.Hour)
+			a.LaboringUntil = &until
+			a.RecentReactorTicks = sim.NewRingBuffer[time.Time](8)
+			a.RecentReactorTicks.Push(now.Add(-30 * time.Second))
+			since := now.Add(-100 * time.Second)
+			due := now.Add(-1 * time.Second)
+			a.WarrantedSince = &since
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindPaid}, Force: true},
+			}
+			return nil, nil
+		}})
+		emitted := subscribeReactorTicks(t, w)
+
+		_, _ = w.Send(sim.EvaluateReactors(now))
+		if len(*emitted) != 0 {
+			t.Errorf("non-operator Force warrant does not pierce the labor shelve: want no emit; got %d", len(*emitted))
+		}
+		inspectActor(t, w, "alice", func(a *sim.Actor) {
+			if len(a.Warrants) != 1 || !a.Warrants[0].Force {
+				t.Fatalf("Warrants = %v, want the cycle pruned to its 1 Force warrant (not deferred whole)", a.Warrants)
+			}
+			if a.WarrantDueAt == nil || a.WarrantDueAt.After(now.Add(time.Minute)) {
+				t.Errorf("WarrantDueAt = %v, want a prompt re-anchor near %v — a Force warrant must not wait out a cadence", a.WarrantDueAt, now)
+			}
+		})
+	})
+}
+
+// TestRepublish_ReplyPacingWindowProjection covers the LLM-536 snapshot
+// projection end-to-end through the real republish path, rather than off a
+// hand-built ActorSnapshot: perception widens its await-reply windows by
+// whatever this field carries, so a value that outlives the work would keep an
+// answered-and-done conversation pinned open (code_review).
+func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(a *sim.Actor, now time.Time)
+		want  time.Duration
+	}{
+		{
+			name: "mid-job worker is paced",
+			setup: func(a *sim.Actor, now time.Time) {
+				a.State = sim.StateLaboring
+				until := now.Add(2 * time.Hour)
+				a.LaboringUntil = &until
+			},
+			want: 3 * time.Minute,
+		},
+		{
+			name: "mid-bake actor is paced",
+			setup: func(a *sim.Actor, now time.Time) {
+				a.SourceActivity = &sim.SourceActivity{
+					Kind:      sim.SourceActivityBake,
+					StartedAt: now.Add(-30 * time.Minute),
+					Until:     now.Add(30 * time.Minute),
+				}
+			},
+			want: 3 * time.Minute,
+		},
+		{
+			name: "elapsed bake is not paced",
+			setup: func(a *sim.Actor, now time.Time) {
+				a.SourceActivity = &sim.SourceActivity{
+					Kind:      sim.SourceActivityBake,
+					StartedAt: now.Add(-time.Hour),
+					Until:     now.Add(-time.Second),
+				}
+			},
+			want: 0,
+		},
+		{
+			name: "elapsed labor window is not paced",
+			setup: func(a *sim.Actor, now time.Time) {
+				a.State = sim.StateLaboring
+				until := now.Add(-time.Second)
+				a.LaboringUntil = &until
+			},
+			want: 0,
+		},
+		{
+			name:  "idle actor is not paced",
+			setup: func(a *sim.Actor, now time.Time) {},
+			want:  0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, cancel, _ := buildPR3aWorld(t)
+			defer cancel()
+			now := time.Now().UTC()
+
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				tc.setup(world.Actors["alice"], now)
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			snap := w.Published()
+			if snap == nil {
+				t.Fatal("Published() returned nil")
+			}
+			alice := snap.Actors["alice"]
+			if alice == nil {
+				t.Fatal("alice missing from the published snapshot")
+			}
+			if alice.ReplyPacingWindow != tc.want {
+				t.Errorf("ReplyPacingWindow = %v, want %v", alice.ReplyPacingWindow, tc.want)
+			}
+		})
 	}
 }

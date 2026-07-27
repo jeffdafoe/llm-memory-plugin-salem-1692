@@ -1481,6 +1481,128 @@ func bakeReplyDue(a *Actor, now time.Time, s WorldSettings) bool {
 		laborReplyCadenceElapsed(a, now, s.laborReplyCadence())
 }
 
+// replyPacedCadence reports the cadence an actor's replies to NPC speech are
+// currently PACED by, or 0 when they are not paced at all. Non-zero exactly for
+// the two busy states that shelve the tick but still let NPC speech through on a
+// timer — a live labor job (npcReplyDue, LLM-230) and an evening bake
+// (bakeReplyDue, LLM-454). Both run off LaborReplyCadence, so one value covers
+// both.
+//
+// A sleeper or a rester is deliberately NOT reply-paced. Every consumer below
+// reads a non-zero cadence as "this actor owes an answer and will get to it",
+// which is true of someone mid-job and false of someone dormant — a sleeper's
+// silence promises nothing, and ZBBS-WORK-361's eviction is the right treatment
+// for what piles up against it.
+//
+// Three consumers share this one definition so the wake, the hard gate, and the
+// rendered line cannot drift apart (LLM-536):
+//
+//   - replyCadenceDeferUntil (below) — the evaluator defers a cadence-blocked
+//     speech warrant to the moment the cadence opens instead of aging it out.
+//   - SpeakTo's re-pitch backstop (speak_commands.go) and the perception
+//     turn-line (perception.buildTurnState, via ActorSnapshot.ReplyPacingWindow)
+//     — both widen the await-reply liveness window by this cadence, so the
+//     obligation to answer outlives the wait the pacing imposes.
+//
+// Without the third of those the first is pointless: the worker draws her tick
+// at the cadence boundary with nothing left marking the question as owed, and
+// spends it on an unrelated topic (the live LLM-536 trace — Silence Walker
+// ticked 22 minutes after the constable's question and talked about window
+// mending).
+func replyPacedCadence(a *Actor, now time.Time, s WorldSettings) time.Duration {
+	cadence, _, _ := replyPacedWindow(a, now, s)
+	return cadence
+}
+
+// replyPacedWindow is replyPacedCadence's full form: the cadence, plus the end
+// of the busy window imposing it, plus whether the actor is paced at all. One
+// helper resolves both halves so the cadence and the window it belongs to cannot
+// be read off different branches (code_review) — a stale LaboringUntil left set
+// alongside a live bake would otherwise pair the bake's cadence with the labor
+// job's deadline.
+//
+// Both busy states are tested on their LIVE window. The labor job uses
+// LaboringUntil; the bake uses BusyAtSource, the same Until-based predicate the
+// rest of the source-activity code reads. Note this is deliberately NARROWER
+// than the tick-shelve in actorCanReactNow, which shelves on SourceActivity
+// existing at all so the ~1s gap between Until elapsing and the completion sweep
+// clearing the window cannot leak a tick. Pacing is a claim that an answer is
+// still coming, so it should expire with the work rather than with the
+// bookkeeping: in that ~1s gap the actor falls back to ordinary eviction, and
+// once the sweep lands it is eligible and ticks anyway.
+func replyPacedWindow(a *Actor, now time.Time, s WorldSettings) (time.Duration, time.Time, bool) {
+	if a == nil {
+		return 0, time.Time{}, false
+	}
+	if a.State == StateSleeping || (a.SleepingUntil != nil && a.SleepingUntil.After(now)) {
+		return 0, time.Time{}, false
+	}
+	if a.State == StateResting || (a.BreakUntil != nil && a.BreakUntil.After(now)) {
+		return 0, time.Time{}, false
+	}
+	if a.LaboringUntil != nil && a.LaboringUntil.After(now) {
+		return s.laborReplyCadence(), *a.LaboringUntil, true
+	}
+	if a.BusyAtSource(now) && a.SourceActivity.Kind == SourceActivityBake {
+		return s.laborReplyCadence(), a.SourceActivity.Until, true
+	}
+	return 0, time.Time{}, false
+}
+
+// replyCadenceDeferUntil reports the moment a reply-paced actor holding an
+// unanswered NPC-speech warrant becomes eligible to answer it — the deferral
+// target that replaces the stale-eviction for this one case (LLM-536).
+//
+// The evaluator's eviction (reactor_commands.go) treats every shelved actor
+// alike, but they are not alike. An actor shelved INDEFINITELY (asleep, on a
+// break with no interrupting warrant) should wake to current state rather than
+// to a transcript of everything it slept through — evict. An actor shelved until
+// a KNOWN moment it will certainly reach has no staleness to guard against: the
+// engine can name the instant it becomes eligible, so dropping the warrant
+// before then is a guaranteed loss, not a guard. MaxWarrantAge (90s) is shorter
+// than LaborReplyCadence (180s), so before this the loss was not an edge case:
+// every utterance directed at a laboring worker inside the first 90s of each
+// 180s window was discarded — half of all wall-clock time.
+//
+// Returns ok=false unless ALL hold, so the deferral can only ever apply to the
+// case it was built for:
+//
+//   - the actor is reply-paced (replyPacedWindow above),
+//   - it holds an NPC-speech warrant — a pile of arrivals / idle stamps has no
+//     obligation attached and keeps aging out exactly as before,
+//   - it holds NO Force warrant. An operator nudge pierces the labor shelve
+//     outright (hasOperatorNudgeWarrant, so such an actor is eligible and never
+//     reaches here), and a hypothetical non-operator Force warrant must keep the
+//     ZBBS-WORK-361 treatment it already has — retainForcedWarrants re-anchors it
+//     to fire promptly, and deferring it up to a full cadence instead would make
+//     an operator signal slower (code_review),
+//   - and the cadence has NOT yet opened. If it has, the shelve is something
+//     else and this is not the blocker to defer against.
+//
+// The target is clamped to the end of the busy window itself when that comes
+// first: the shelve lifts there anyway, and holding the cycle past it would add
+// latency for no reason. The clamp only applies while that end is still in the
+// future, so the returned instant is always after now — a target in the past
+// would re-enter the evaluator on the next 250ms scan and spin.
+func replyCadenceDeferUntil(a *Actor, now time.Time, s WorldSettings) (time.Time, bool) {
+	cadence, end, paced := replyPacedWindow(a, now, s)
+	if !paced || !hasNPCSpeechWarrant(a.Warrants) || hasForcedWarrant(a.Warrants) {
+		return time.Time{}, false
+	}
+	last, ok := lastReactorTickAt(a)
+	if !ok {
+		return time.Time{}, false
+	}
+	opens := last.Add(cadence)
+	if !opens.After(now) {
+		return time.Time{}, false
+	}
+	if end.After(now) && end.Before(opens) {
+		opens = end
+	}
+	return opens, true
+}
+
 // recordReactorTick appends now to the actor's RecentReactorTicks ring,
 // allocating the buffer lazily. Capacity is sized to comfortably exceed
 // the per-minute cap so the rate-gate's window-count stays exact.
