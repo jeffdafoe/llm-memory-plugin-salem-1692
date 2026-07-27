@@ -595,7 +595,7 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 		route.StopIdx < len(route.Stops) {
 		actor := w.Actors[arrived.ActorID]
 		stop := route.Stops[route.StopIdx]
-		if route.Dwelling && actor != nil && sim.RouteStopArrived(actor, stop) {
+		if route.Dwelling && actor != nil && sim.RouteStopReached(route, actor, stop) {
 			// A dwell is already running for THIS stop and he is still standing at
 			// it — a duplicate arrival for the same place. Ignore it so we don't arm
 			// a second timer (mirrors the crier's Authoring guard).
@@ -612,7 +612,12 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 			// run; beginConstableDwell re-arms cleanly for whichever stop he lands on.
 			return
 		}
-		if actor != nil && sim.RouteStopArrived(actor, stop) {
+		// Tolerant for him, like every other stop check (LLM-543): he reaches a stop on
+		// his own feet as often as the route walks him there, and his move_to parks him
+		// beside the pin. Strict here cost him the DWELL at any stop he came to himself —
+		// the arrival fell through to the stale/adopt path, which credits the stop and
+		// dispatches the next walk at once, so he turned on his heel without a word.
+		if actor != nil && sim.RouteStopReached(route, actor, stop) {
 			beginConstableDwell(w, arrived.ActorID)
 			return
 		}

@@ -220,6 +220,32 @@ func RouteStopReachedOnFoot(a *Actor, stop RouteStop) bool {
 	return a.Pos.Chebyshev(stop.WalkTo) <= LoiterAttributionTiles
 }
 
+// RouteStopReached is the single "is this carrier at this stop?" test, for every
+// site that asks the question. It picks the predicate by CARRIER rather than by
+// call site: a decorative carrier never self-moves, so only the route's own walk
+// can have put it anywhere and exact tile equality is right; a stateful carrier
+// arrives places under his own steam, where move_to resolves to a StructureVisit
+// and pickVisitorSlot parks him BESIDE the pin.
+//
+// Having ONE of these is the fix (LLM-543). LLM-531 introduced the tolerant form
+// and applied it at two sites — the resume gate and the walk-onward adopt — while
+// advanceActiveRoute's own atStop, the cascade's two dwell checks and the snapshot
+// projection that feeds the cue all stayed strict. So the resume gate admitted him
+// on the tolerant test and handed straight into a strict one he could not pass:
+// live on 2026-07-27 the constable resumed and re-suspended at the same stop on
+// every wake for hours, his cursor frozen at stop 0 of 8 while he walked half the
+// circuit under his own steam and was credited for none of it.
+//
+// Tolerant is a strict SUPERSET — the route's own walk aims a Position destination
+// straight at WalkTo, so an engine-dispatched arrival satisfies both forms. Widening
+// a site therefore never loses an arrival the strict form used to catch.
+func RouteStopReached(route *NPCRoute, a *Actor, stop RouteStop) bool {
+	if routeYieldsToVolition(route) {
+		return RouteStopReachedOnFoot(a, stop)
+	}
+	return RouteStopArrived(a, stop)
+}
+
 // routeStopDestination builds the MoveDestination that dispatches a walk to
 // stop: a StructureEnter into EnterStructureID for an enter stop, else a
 // Position walk to WalkTo. Shared by StartNPCRoute's first walk and
@@ -310,6 +336,20 @@ type NPCRoute struct {
 	// substrate stops it on every route-clear path. World-goroutine-only; never
 	// persisted.
 	DwellTimer *time.Timer
+	// Visited marks, per stop index, whether he has actually CALLED AT that place on
+	// this round — however he got there. Parallel to Stops.
+	//
+	// A cursor alone models a circuit as a sequence, but a constable walking his own
+	// rounds does set coverage: he picks his own order, and the engine's job is to
+	// know what is left (LLM-543). Live, he walked the General Store, the Blacksmith
+	// and the Inn under his own steam inside twenty minutes and the round recorded
+	// none of it, so the cue went on telling him seven places lay ahead while he stood
+	// in the seventh. StopIdx now names the next place he still OWES a visit, and this
+	// is the record of what he no longer does.
+	//
+	// In-memory only, like StaleRetries and Dwelling: routes are transient and
+	// re-triggered at the next interval beat, so a restart simply starts a fresh round.
+	Visited []bool
 	// Gen is a monotonically-increasing identity token stamped at StartNPCRoute
 	// install (from World.routeInstallSeq). It disambiguates two routes of the SAME
 	// actor at the SAME StopIdx — the case stopIdx alone cannot: a dwell timer that
@@ -339,6 +379,122 @@ func (r *NPCRoute) InFlight() bool {
 // MUST be called from inside a Command.Fn (reads world maps).
 func RouteInFlight(w *World, actorID ActorID) bool {
 	return w.ActiveRoutes[actorID].InFlight()
+}
+
+// markVisited records that the carrier called at stop idx. Tolerant of a nil/short
+// Visited slice so a route built by an older path (or a test fixture) degrades to
+// the pure-cursor behaviour rather than panicking.
+func (r *NPCRoute) markVisited(idx int) {
+	if r == nil || idx < 0 || idx >= len(r.Visited) {
+		return
+	}
+	r.Visited[idx] = true
+}
+
+// hasVisited reports whether stop idx has already been called at.
+func (r *NPCRoute) hasVisited(idx int) bool {
+	return r != nil && idx >= 0 && idx < len(r.Visited) && r.Visited[idx]
+}
+
+// tracksVisits reports whether the route carries a usable per-stop visit record.
+// StartNPCRoute allocates one for every route it installs; a route assembled by
+// hand (a test fixture, or some future call site) may not have.
+//
+// Every helper below degrades to the plain cursor walk when this is false, rather
+// than treating "no record" as "nothing visited". That distinction is load-bearing:
+// nextUnvisitedFrom's wrap terminates only because each advance marks a stop, so
+// with no record to mark, a wrapping search would hand back the stop it started
+// from and walk the carrier into it forever. A hand-built one-stop crier route did
+// exactly that.
+func (r *NPCRoute) tracksVisits() bool {
+	return r != nil && len(r.Visited) == len(r.Stops)
+}
+
+// nextUnvisitedFrom returns the next stop the carrier still owes a visit, searching
+// forward from idx and then WRAPPING to the start. ok=false means the circuit is
+// walked out and the route is done.
+//
+// The wrap is load-bearing, not tidiness. A stop can be left behind the cursor
+// unvisited: the LLM-530 adopt moves the cursor onward when he walks to the next
+// business himself, and the place he turned away from stays unwalked. Searching only
+// forward would leave it unreachable — the count would sit at one for the rest of the
+// day and the round could never finish, which is the same "never finishes" complaint
+// one layer along. Forward-first keeps the nearest-neighbour ordering the route was
+// laid out in; the wrap only picks up what he skipped.
+//
+// Terminates: every advance marks a stop visited, so at most len(Stops) of them.
+func (r *NPCRoute) nextUnvisitedFrom(idx int) (int, bool) {
+	if r == nil || len(r.Stops) == 0 {
+		return 0, false
+	}
+	if !r.tracksVisits() {
+		return idx + 1, idx+1 < len(r.Stops)
+	}
+	for offset := 1; offset <= len(r.Stops); offset++ {
+		candidate := (idx + offset) % len(r.Stops)
+		if !r.hasVisited(candidate) {
+			return candidate, true
+		}
+	}
+	return 0, false
+}
+
+// unvisitedExcluding counts the stops he still owes a visit, NOT counting the one at
+// idx — the place he is standing at, or the one a suspended round says he broke off
+// at. That is what the cue means by "more places on your round still lie ahead of
+// you": the stop he is at is the subject of its own sentence, so counting it again
+// would say one more place than there is.
+func (r *NPCRoute) unvisitedExcluding(idx int) int {
+	if r == nil {
+		return 0
+	}
+	if !r.tracksVisits() {
+		if n := len(r.Stops) - idx - 1; n > 0 {
+			return n
+		}
+		return 0
+	}
+	n := 0
+	for i := range r.Stops {
+		if i != idx && !r.hasVisited(i) {
+			n++
+		}
+	}
+	return n
+}
+
+// reachedStopIndex returns the index of the circuit stop the actor is standing at,
+// or ok=false when he is at none of them. Used while a round is SUSPENDED to credit
+// a place he called at of his own accord — the engine sent him nowhere, but he was
+// demonstrably there (this runs from an ActorArrived, so a completed move ended
+// here; it is never a walk-past).
+//
+// Resolution order matters when two stops' tolerant regions overlap (two businesses
+// close enough to share a doorstep). Plain first-match would let a neighbouring pin
+// answer for the one he actually walked to — and worse, if the earlier match happened
+// to BE the cursor it would resume the round from somewhere he never went.
+//
+//  1. The break-off stop wins outright. It is the one place the suspended cue names,
+//     so it is the only one he can be deliberately returning to, and an ambiguous
+//     position should resolve to the resume rather than to a neighbour.
+//  2. Otherwise the first UNVISITED match. A stop already recorded has nothing to
+//     add, and preferring it would let a visited neighbour keep answering for a stop
+//     he still owes — which would never then be recorded.
+//
+// Matching only visited stops reports none: the visit is already on the books.
+func (r *NPCRoute) reachedStopIndex(a *Actor) (int, bool) {
+	if r == nil || a == nil {
+		return 0, false
+	}
+	if r.StopIdx >= 0 && r.StopIdx < len(r.Stops) && RouteStopReached(r, a, r.Stops[r.StopIdx]) {
+		return r.StopIdx, true
+	}
+	for i, stop := range r.Stops {
+		if !r.hasVisited(i) && RouteStopReached(r, a, stop) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // stopDwellTimer stops and clears any pending dwell timer on the route (nil-safe on
@@ -480,6 +636,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				Label:           label,
 				Stops:           stops,
 				StopIdx:         0,
+				Visited:         make([]bool, len(stops)),
 				Phase:           RoutePhaseActive,
 				HomeDestination: cloneMoveDestination(homeDest),
 				Gen:             w.routeInstallSeq,
@@ -677,13 +834,19 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	// arrives there, and adopting it is the right outcome — he is at a stop on the
 	// circuit either way.)
 	// He walked himself here, so judge it with the tolerant predicate: his own
-	// move_to lands him in a visitor slot beside the pin, never on it.
-	atStop := RouteStopArrived(actor, stop)
-	if !atStop && routeYieldsToVolition(route) && route.StopIdx+1 < len(route.Stops) {
-		if next := route.Stops[route.StopIdx+1]; RouteStopReachedOnFoot(actor, next) {
+	// move_to lands him in a visitor slot beside the pin, never on it. RouteStopReached
+	// is the SAME call the resume gate makes (LLM-543) — when these two disagreed, a
+	// resume was admitted here and immediately re-suspended, forever.
+	atStop := RouteStopReached(route, actor, stop)
+	if nextIdx, hasNext := route.nextUnvisitedFrom(route.StopIdx); !atStop && routeYieldsToVolition(route) && hasNext {
+		// The stop the CUE named, which is the next one he still owes a visit — not
+		// blindly StopIdx+1 (LLM-543). If the adopt and the cue can name different
+		// places, walking exactly where he was told lands somewhere the round does not
+		// recognise, which is this whole class of bug over again.
+		if next := route.Stops[nextIdx]; RouteStopReachedOnFoot(actor, next) {
 			log.Printf("sim/npc_route: %q walked on to stop %d of its own accord (was heading to stop %d) — continuing the round",
-				route.NPCID, route.StopIdx+1, route.StopIdx)
-			route.StopIdx++
+				route.NPCID, nextIdx, route.StopIdx)
+			route.StopIdx = nextIdx
 			route.StaleRetries = 0
 			stop = next
 			atStop = true
@@ -804,14 +967,18 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	}
 
 	// Clean visit — clear the per-stop stale budget so the next stop starts
-	// fresh.
+	// fresh, and record that this place is walked.
 	route.StaleRetries = 0
-	route.StopIdx++
+	route.markVisited(route.StopIdx)
 
-	if route.StopIdx < len(route.Stops) {
-		// More stops — dispatch next walk (StructureEnter or Position per
-		// the stop's kind, LLM-514).
-		next := route.Stops[route.StopIdx]
+	if nextIdx, ok := route.nextUnvisitedFrom(route.StopIdx); ok {
+		// More places still owed a visit — dispatch next walk (StructureEnter or
+		// Position per the stop's kind, LLM-514). The cursor moves to the next
+		// UNVISITED stop rather than simply incrementing, so a shop he already called
+		// at himself is not walked twice while another is never walked at all
+		// (LLM-543).
+		route.StopIdx = nextIdx
+		next := route.Stops[nextIdx]
 		moveCmd := MoveActor(route.NPCID, routeStopDestination(next), false, time.Now())
 		if _, err := moveCmd.Fn(w); err != nil {
 			log.Printf("sim/npc_route: %q dispatch next walk failed: %v — clearing route",
@@ -842,26 +1009,54 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 // come back to his round — go active and let the ordinary clean-visit path carry
 // him on from there.
 //
-// Only that one stop, deliberately. It is the single place the suspended cue names
-// ("you broke off at the Ellis Farm"), so it is the only one he can be deliberately
-// returning TO; accepting a later stop as well would be generality the cue never
-// offered, and it would count the broken-off stop as visited without ever running
-// its visit — the same skipped-side-effect trap that narrowed LLM-530's adoption to
-// the immediate next stop.
+// Only that one stop RESUMES, deliberately. It is the single place the suspended cue
+// names ("you broke off at the Ellis Farm"), so it is the only one he can be
+// deliberately returning TO; treating a later stop as a resume would be generality
+// the cue never offered, and it would count the broken-off stop as visited without
+// ever running its visit — the same skipped-side-effect trap that narrowed LLM-530's
+// adoption to the immediate next stop.
 //
-// Any other arrival leaves him suspended, silently: he is off seeing to himself and
-// nothing should nag or drag him. The round waits, and the next rounds interval
-// supersedes it if he never comes back — or the off-shift sweep drops it when his
-// watch ends (ClearSuspendedRoundIfOffShift).
+// Arriving at a DIFFERENT stop on the circuit does not resume the round, but it is
+// RECORDED (LLM-543): the cursor is what the engine will walk him to next, the
+// visited set is where he has actually been, and while suspended those two come
+// apart because he is choosing his own order. Recording it costs him nothing — he is
+// not dragged back and not nagged — and it is what stops the cue offering him a shop
+// he called at ten minutes ago.
+//
+// Any arrival that is at no stop at all leaves him suspended, silently: he is off
+// seeing to himself. The round waits, and the next rounds interval supersedes it if
+// he never comes back — or the off-shift sweep drops it when his watch ends
+// (ClearSuspendedRoundIfOffShift).
 func resumeSuspendedRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteResult, error) {
 	actor, ok := w.Actors[route.NPCID]
 	if !ok || route.StopIdx >= len(route.Stops) {
 		clearActiveRoute(w, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "no_route"}, nil
 	}
-	// Tolerant predicate: he comes back to the round on his own feet, so his
-	// move_to parks him in a visitor slot beside the pin rather than on it.
-	if !RouteStopReachedOnFoot(actor, route.Stops[route.StopIdx]) {
+	// Which circuit stop is he standing at, if any? Tolerant predicate: he comes back
+	// to the round on his own feet, so his move_to parks him in a visitor slot beside
+	// the pin rather than on it. Deliberately the SAME RouteStopReached call
+	// advanceActiveRoute makes below — this gate hands straight into that one, and when
+	// the two used different predicates every resume was admitted here and re-suspended
+	// there on the same tick (LLM-543).
+	reachedIdx, atSomeStop := route.reachedStopIndex(actor)
+	if !atSomeStop {
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "still_suspended"}, nil
+	}
+	if reachedIdx != route.StopIdx {
+		// A DIFFERENT stop on his circuit. He is off seeing to himself and the round
+		// stays paused — nothing should nag or drag him — but he was demonstrably here,
+		// so the round records it (LLM-543). Previously this arrival was dropped without
+		// trace: live, he called at the General Store, the Blacksmith and the Inn inside
+		// twenty minutes, saying as he went that he meant to walk his rounds, and the
+		// engine credited none of it. The cue then went on offering him seven places
+		// while he stood in the seventh, so he re-derived the same plan and set off for
+		// somewhere he had just been.
+		route.markVisited(reachedIdx)
+		// Counted the same way the cue counts, so the log and the prompt never tell an
+		// operator two different stories about how much of the round is left.
+		log.Printf("sim/npc_route: %q called at stop %d of its own accord while the round waits (broke off at stop %d, %d other place(s) still owed)",
+			route.NPCID, reachedIdx, route.StopIdx, route.unvisitedExcluding(route.StopIdx))
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "still_suspended"}, nil
 	}
 	log.Printf("sim/npc_route: %q returned to its round at stop %d — resuming", route.NPCID, route.StopIdx)
