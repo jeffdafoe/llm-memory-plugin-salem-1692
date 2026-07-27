@@ -324,20 +324,88 @@ func TestLodgerTurnInSurvivesTheSleepSweep(t *testing.T) {
 
 	// The other half: the fix must not strand him. A voluntary bed-down still ends
 	// at dawn, and by the WINDOW rather than the 12h cap — 19:30 + 12h is 07:30,
-	// half an hour past the dawn this asserts.
-	t.Run("still wakes at dawn, not the cap", func(t *testing.T) {
+	// half an hour past the dawn this asserts. The 06:59 probe locks the window's
+	// half-open close: the last minute of the night is still night.
+	t.Run("sleeps to dawn and no further, by the window not the cap", func(t *testing.T) {
 		at := time.Date(2026, 5, 22, 19, 30, 0, 0, time.UTC)
+		preDawn := time.Date(2026, 5, 23, 6, 59, 0, 0, time.UTC)
 		dawn := time.Date(2026, 5, 23, 7, 0, 0, 0, time.UTC)
 		a := lodgerNPC("l", at.Add(72*time.Hour))
 		w := beddedAt(t, a, at)
 		if a.SleepingUntil == nil || !a.SleepingUntil.After(dawn) {
 			t.Fatalf("sleep cap = %v; this subcase needs a cap PAST dawn or it proves nothing", a.SleepingUntil)
 		}
+		if _, err := WakeExpiredNPCSleepers(preDawn).Fn(w); err != nil {
+			t.Fatalf("wake sweep: %v", err)
+		}
+		if a.SleepingUntil == nil {
+			t.Fatal("lodger woke at 06:59; want still asleep — the night window closes AT dawn, exclusive")
+		}
 		if _, err := WakeExpiredNPCSleepers(dawn).Fn(w); err != nil {
 			t.Fatalf("wake sweep: %v", err)
 		}
 		if a.SleepingUntil != nil {
 			t.Error("lodger who turned in the evening before did NOT wake at dawn; want woken when the night window closes")
+		}
+	})
+
+	// Blast radius. The widened window is lodger-scoped, so a sleeper holding no
+	// lodging grant must keep the cap-only wake through the same band — the change
+	// may not hold anything else asleep. (The dawn-side half of this is covered by
+	// TestLodgerWakeAtDawn.)
+	t.Run("non-lodger sleeper in the same band stays cap-only", func(t *testing.T) {
+		at := time.Date(2026, 5, 22, 19, 30, 0, 0, time.UTC)
+		nonLodger := func() (*World, *Actor) {
+			a := npc("x", KindNPCStateful)
+			a.HomeStructureID = ""
+			a.InsideStructureID = "inn"
+			a.RoomAccess = nil // standing in the inn, renting nothing
+			return lodgerSleepWorld(a), a
+		}
+
+		w, live := nonLodger()
+		capAhead := at.Add(6 * time.Hour)
+		live.SleepingUntil = &capAhead
+		if _, err := WakeExpiredNPCSleepers(at).Fn(w); err != nil {
+			t.Fatalf("wake sweep: %v", err)
+		}
+		if live.SleepingUntil == nil {
+			t.Error("non-lodger sleeper inside its cap was woken at 19:30; want still asleep")
+		}
+
+		w, expired := nonLodger()
+		capPassed := at.Add(-time.Minute)
+		expired.SleepingUntil = &capPassed
+		if _, err := WakeExpiredNPCSleepers(at).Fn(w); err != nil {
+			t.Fatalf("wake sweep: %v", err)
+		}
+		if expired.SleepingUntil != nil {
+			t.Error("non-lodger sleeper past its cap was NOT woken at 19:30; the cap must still govern " +
+				"a sleeper the lodger window has no claim on")
+		}
+	})
+
+	// The (inWindow, ok) contract. On a clock with no usable boundary the two gates
+	// need OPPOSITE-looking answers that are both conservative: turn_in refuses, and
+	// the wake does not fire. Folded into a single bool the wake would read !false
+	// and evict every lodger in the village on the next sweep.
+	t.Run("unusable dawn/dusk refuses the bed and does not evict the sleeper", func(t *testing.T) {
+		at := time.Date(2026, 5, 22, 19, 30, 0, 0, time.UTC)
+		a := lodgerNPC("l", at.Add(72*time.Hour))
+		w := lodgerSleepWorld(a)
+		w.Settings.DawnTime = "half past the hanging"
+		if npcMayTurnIn(w, a, at) {
+			t.Error("npcMayTurnIn = true with no usable dawn; want false — an unbounded night is not a night")
+		}
+		// Bedded directly: how he got there is not what this asserts, only that an
+		// unusable window does not throw an already-sleeping lodger out of bed.
+		capAhead := at.Add(6 * time.Hour)
+		a.SleepingUntil = &capAhead
+		if _, err := WakeExpiredNPCSleepers(at.Add(time.Minute)).Fn(w); err != nil {
+			t.Fatalf("wake sweep: %v", err)
+		}
+		if a.SleepingUntil == nil {
+			t.Error("lodger was woken on an unusable clock; want left asleep to his cap")
 		}
 	})
 }

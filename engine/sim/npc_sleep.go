@@ -312,11 +312,14 @@ func npcInNightWindowFrom(w *World, windowStart int, now time.Time) bool {
 // an unusable clock: turn_in refuses, and the wake does not fire. Collapsed into
 // one bool the wake would silently invert — !false reads as "wake him".
 func inVoluntaryNightWindow(w *World, now time.Time) (inWindow, ok bool) {
-	_, dusk, dawnDuskOK := worldDawnDuskMinutes(w)
+	dawn, dusk, dawnDuskOK := worldDawnDuskMinutes(w)
 	if !dawnDuskOK {
 		return false, false
 	}
-	return npcInNightWindowFrom(w, dusk, now), true
+	// Both endpoints come from the one worldDawnDuskMinutes read rather than
+	// delegating the close to npcInNightWindowFrom, which would re-parse DawnTime a
+	// second time off the same settings — one window, resolved once.
+	return minuteInShiftWindow(dusk, dawn, localMinuteOfDay(w, now)), true
 }
 
 // npcMayTurnIn reports whether agent NPC a may VOLUNTARILY bed down right now —
