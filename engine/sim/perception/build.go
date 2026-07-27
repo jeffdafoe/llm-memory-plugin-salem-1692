@@ -306,7 +306,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// absent-subject twin of Relationships. Built off Surroundings so present
 	// peers can be filtered (no gossiping to someone's face).
 	p.VillageWord = buildVillageWord(actorSnap, p.Surroundings, snap.PublishedAt)
-	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
+	p.RecentConversation, p.ConveyedSpeech = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.StandingQuotesFromMe = buildStandingQuotesFromMe(snap, actorID, actorSnap)
@@ -3755,14 +3755,22 @@ const maxRenderedConversationLines = 5
 // dropped so the live turn isn't shown twice — the same de-dup buildRelationships
 // applies to heard facts (ZBBS-WORK-374). Returns nil when the subject has no
 // huddle or nothing survives the de-dup.
-func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]bool) []UtteranceView {
+//
+// The second return is the LLM-542 conveyance record — every ring line this
+// tick's prompt put in front of the subject, whether it rendered here or was
+// dropped into "## Since your last turn". A dropped line is still CONVEYED (the
+// de-dup drops it precisely because its text is already in the prompt), so it
+// must be dischargeable, or a warrant stamped by a line whose text collided
+// with a consumed one would fire a second reply. Lines cut by the
+// maxRenderedConversationLines cap are NOT conveyed and are deliberately absent.
+func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]bool) ([]UtteranceView, []ConveyedSpeechRef) {
 	huddleID := actorSnap.CurrentHuddleID
 	if huddleID == "" {
-		return nil
+		return nil, nil
 	}
 	h := snap.Huddles[huddleID]
 	if h == nil || len(h.RecentUtterances) == 0 {
-		return nil
+		return nil, nil
 	}
 	// LLM-322: consider only the most recent lines of the ring, THEN drop any
 	// already shown this tick in "## Since your last turn". The ring is
@@ -3774,31 +3782,38 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 		utts = utts[len(utts)-maxRenderedConversationLines:]
 	}
 	out := make([]UtteranceView, 0, len(utts))
+	var conveyed []ConveyedSpeechRef
 	for _, u := range utts {
+		// LLM-542: record the line as conveyed BEFORE the de-dup continue —
+		// a de-duped line is in the prompt, just under the other heading. The
+		// subject's own lines are excluded: an actor never warrants itself for
+		// its own speech, so there is nothing to discharge. A zero SpeechID
+		// (recorded outside the emit path) has no event to key on.
+		if u.SpeakerID != actorID && u.SpeechID != 0 {
+			// Speaker kind decides which speech warrant kind this line stamped
+			// on its listeners. An unknown speaker (gone from the snapshot)
+			// falls back to NPC — the same fail-closed default the speech
+			// reactor takes for an unattributable utterance.
+			speakerIsPC := false
+			if sp := snap.Actors[u.SpeakerID]; sp != nil && sp.Kind == sim.KindPC {
+				speakerIsPC = true
+			}
+			conveyed = append(conveyed, ConveyedSpeechRef{SpeechID: u.SpeechID, SpeakerIsPC: speakerIsPC})
+		}
 		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
 			continue // already rendered in "## Since your last turn" this tick
-		}
-		// Speaker kind decides which speech warrant kind this line stamped on
-		// its listeners (LLM-542). An unknown speaker (gone from the snapshot)
-		// falls back to NPC — the same fail-closed default the speech reactor
-		// itself takes for an unattributable utterance.
-		speakerIsPC := false
-		if sp := snap.Actors[u.SpeakerID]; sp != nil && sp.Kind == sim.KindPC {
-			speakerIsPC = true
 		}
 		out = append(out, UtteranceView{
 			SpeakerName: u.SpeakerName,
 			Text:        u.Text,
 			IsSelf:      u.SpeakerID == actorID,
 			At:          u.At,
-			SpeechID:    u.SpeechID,
-			SpeakerIsPC: speakerIsPC,
 		})
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, conveyed
 	}
-	return out
+	return out, conveyed
 }
 
 // selfActionTrailWindow bounds how far back the "## What you've recently done"

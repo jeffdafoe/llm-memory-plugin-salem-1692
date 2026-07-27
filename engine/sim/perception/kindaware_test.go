@@ -333,7 +333,7 @@ func TestBuildRecentConversation_CapsToMostRecentLines(t *testing.T) {
 		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", RecentUtterances: utts}},
 	}
 
-	got := buildRecentConversation(snap, "ezekiel", subject, nil)
+	got, _ := buildRecentConversation(snap, "ezekiel", subject, nil)
 	if len(got) != maxRenderedConversationLines {
 		t.Fatalf("len = %d, want %d (capped)", len(got), maxRenderedConversationLines)
 	}
@@ -371,7 +371,7 @@ func TestBuildRecentConversation_RecentDedupedDoesNotLeakOlder(t *testing.T) {
 	heardNow := map[sim.ActorID]map[string]bool{
 		"hannah": {"u3": true, "u4": true, "u5": true, "u6": true, "u7": true},
 	}
-	got := buildRecentConversation(snap, "ezekiel", subject, heardNow)
+	got, _ := buildRecentConversation(snap, "ezekiel", subject, heardNow)
 	if len(got) != 0 {
 		t.Fatalf("expected no lines (recent window fully de-duped, older must not leak), got %d: %+v", len(got), got)
 	}

@@ -160,27 +160,39 @@ func TestDischarge_NewUtteranceDuringTickStillWarrants(t *testing.T) {
 	})
 }
 
-// TestDischarge_NonAddressingStatusDischargesNothing: a turn that never
-// perceived the stimulus owes it. failed-before-render is the status the
-// harness also uses for an LLM failure on iteration 0, so this is the path
-// that keeps a rendered-but-never-answered line alive.
-func TestDischarge_NonAddressingStatusDischargesNothing(t *testing.T) {
-	w, cancel, _ := buildPR3aWorld(t)
-	defer cancel()
-	now := time.Now().UTC()
+// TestDischarge_UnansweredStatusesDischargeNothing: discharge is gated on the
+// model having actually produced a turn, which is STRICTER than the
+// terminalStatusAddresses table governing the consumed-batch move (code_review).
+//
+// failed-after-render is the case that forces the distinction: it addresses —
+// the prompt was built and the stimulus was in it — but the LLM call then
+// failed, so nobody replied. Pruning there would destroy a live, post-emit
+// warrant and lose the reply outright. failed-before-render never perceived
+// the stimulus at all, and skipped never rendered a prompt.
+func TestDischarge_UnansweredStatusesDischargeNothing(t *testing.T) {
+	for _, status := range []sim.TickTerminalStatus{
+		sim.TickStatusFailedAfterRender,
+		sim.TickStatusFailedBeforeRender,
+		sim.TickStatusSkipped,
+		sim.TickStatusShutdown,
+	} {
+		w, cancel, _ := buildPR3aWorld(t)
+		now := time.Now().UTC()
 
-	arrangeInFlightWithOpenCycle(t, w, nil, []sim.WarrantMeta{speechWarrant(77)}, now)
-	completeWithDischarge(t, w, sim.TickStatusFailedBeforeRender,
-		[]sim.WarrantSourceKey{speechKey(77)}, now)
+		arrangeInFlightWithOpenCycle(t, w, nil, []sim.WarrantMeta{speechWarrant(77)}, now)
+		completeWithDischarge(t, w, status, []sim.WarrantSourceKey{speechKey(77)}, now)
 
-	inspectActor(t, w, "alice", func(a *sim.Actor) {
-		if len(a.Warrants) != 1 {
-			t.Errorf("Warrants len = %d, want 1 — a non-addressing status discharges nothing", len(a.Warrants))
-		}
-		if _, ok := sim.ActorRecentlyConsumedSourceKeys(a)[speechKey(77)]; ok {
-			t.Error("non-addressing status still recorded a discharged key")
-		}
-	})
+		inspectActor(t, w, "alice", func(a *sim.Actor) {
+			if len(a.Warrants) != 1 {
+				t.Errorf("status %v: Warrants len = %d, want 1 — an unanswered turn discharges nothing",
+					status, len(a.Warrants))
+			}
+			if _, ok := sim.ActorRecentlyConsumedSourceKeys(a)[speechKey(77)]; ok {
+				t.Errorf("status %v: an unanswered turn recorded a discharged key", status)
+			}
+		})
+		cancel()
+	}
 }
 
 // TestDischarge_CarriedForwardWarrantIsNotDischarged: a warrant the render

@@ -426,7 +426,7 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 	// warrant this attempt never consumed. Carried-forward keys are excluded
 	// for the same reason as above — a warrant the render dropped was not
 	// shown, so it is owed, not discharged.
-	dischargeRenderedStimuli(actor, result.DischargedSourceKeys, carried, now)
+	dischargeRenderedStimuli(actor, result.DischargedSourceKeys, carried, result.TerminalStatus, now)
 }
 
 // dischargeRenderedStimuli resolves the source keys whose stimulus the tick's
@@ -449,14 +449,17 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 // genuinely new stimulus (a SECOND line spoken after the snapshot read), and
 // re-anchoring would delay the answer it is owed.
 //
-// Gated by the caller on terminalStatusAddresses, so the same policy table
-// governs this as the addressed-key move. That includes failed-after-render:
-// the prompt was built and the stimulus was in it, which is exactly the
-// existing rule for the consumed batch on that status. If a rendered-but-
-// unanswered turn ever needs the stimulus back, this is the line to change —
-// not the collector.
-func dischargeRenderedStimuli(a *Actor, keys []WarrantSourceKey, carried map[WarrantSourceKey]struct{}, now time.Time) {
-	if len(keys) == 0 {
+// Gated on terminalStatusAnswered, which is STRICTER than the
+// terminalStatusAddresses table governing the consumed-batch move. The two
+// are not the same question. "Addressed" licenses forgetting a warrant this
+// attempt already CONSUMED — the attempt owned it, and on failed-after-render
+// the carry-forward set decides what comes back. Discharge destroys a
+// DIFFERENT, post-emit warrant that no attempt ever claimed, on the strength
+// of the model having answered it. A turn whose LLM call failed after the
+// prompt rendered answered nothing, so it discharges nothing and the reply
+// stays owed (code_review).
+func dischargeRenderedStimuli(a *Actor, keys []WarrantSourceKey, carried map[WarrantSourceKey]struct{}, status TickTerminalStatus, now time.Time) {
+	if len(keys) == 0 || !terminalStatusAnswered(status) {
 		return
 	}
 	discharged := make(map[WarrantSourceKey]struct{}, len(keys))
@@ -541,6 +544,29 @@ func dissolveSoloHuddleAfterTick(w *World, actor *Actor, now time.Time) {
 func terminalStatusAddresses(s TickTerminalStatus) bool {
 	switch s {
 	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced, TickStatusFailedAfterRender, TickStatusSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+// terminalStatusAnswered reports whether the model actually produced a turn
+// off this attempt's prompt — the precondition for DISCHARGING a stimulus the
+// prompt conveyed but the attempt never consumed a warrant for (LLM-542).
+//
+// Strictly narrower than terminalStatusAddresses, and deliberately so:
+//
+//	failed-after-render addresses but does not answer. The prompt was built
+//	  and the stimulus was in it, but the LLM call then failed — nobody
+//	  replied. Discharging would prune a live, post-emit warrant and lose the
+//	  reply outright, which is the LLM-536 failure mode (an obligation
+//	  destroyed rather than deferred) pointed the other way.
+//	skipped addresses but never rendered a prompt at all — the noop-skip gate
+//	  returns before Render, so it carries no discharge keys anyway. Excluded
+//	  here so the predicate states the intent rather than relying on that.
+func terminalStatusAnswered(s TickTerminalStatus) bool {
+	switch s {
+	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced:
 		return true
 	default:
 		return false

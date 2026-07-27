@@ -239,6 +239,12 @@ type Payload struct {
 	// no huddle. The subject's own lines carry IsSelf for "You said" rendering.
 	RecentConversation []UtteranceView
 
+	// ConveyedSpeech identifies the spoken lines this tick's prompt put in
+	// front of the subject (LLM-542) — the discharge signal, never rendered.
+	// Populated alongside RecentConversation because both read the same ring;
+	// see ConveyedSpeechRef for why the two lists differ.
+	ConveyedSpeech []ConveyedSpeechRef
+
 	// SelfActions is the subject's own recent committed-action trail, most-
 	// recent-first — the "## What you've recently done" section (LLM-217).
 	// Sourced from snap.ActionLog filtered to the subject, window- and
@@ -1220,18 +1226,26 @@ type VillageRumorView struct {
 // rapid-fire churn from a normally paced exchange — without it, three
 // "I'll head home now" lines minutes apart and three seconds apart read
 // identically, and the anti-repeat instruction has no tempo to work with.
-// SpeechID is the id of the Spoke event behind the line (LLM-542). It is not
-// rendered — it exists so the harness can report which utterances this tick's
-// prompt actually contained, letting the completion path discharge the speech
-// warrants those utterances stamped. Zero for a line recorded outside the emit
-// path; CollectDischargedSourceKeys skips those.
-// SpeakerIsPC selects which of the two speech warrant kinds that id would have
-// stamped (pc_spoke vs npc_spoke) — the discharge key needs both halves.
 type UtteranceView struct {
 	SpeakerName string
 	Text        string
 	IsSelf      bool
 	At          time.Time
+}
+
+// ConveyedSpeechRef identifies one spoken line this tick's prompt put in front
+// of the subject (LLM-542). Never rendered — it exists so the completion path
+// can discharge the speech warrant that line stamped, instead of letting it
+// fire a second reply to a line already answered.
+//
+// "Conveyed" is deliberately wider than "rendered in ## Recent conversation
+// here": a ring line the heardNow de-dup drops is dropped BECAUSE its text is
+// already in the prompt under "## Since your last turn", so it counts. A line
+// cut by the maxRenderedConversationLines cap does not — nothing carried it.
+//
+// SpeakerIsPC selects which of the two speech warrant kinds the line stamped
+// (pc_spoke vs npc_spoke); the discharge key needs both halves.
+type ConveyedSpeechRef struct {
 	SpeechID    sim.SpeechID
 	SpeakerIsPC bool
 }

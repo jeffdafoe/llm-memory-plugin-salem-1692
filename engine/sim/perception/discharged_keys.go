@@ -32,27 +32,27 @@ import (
 // is deliberately generic so that lands as a new branch here, not a re-plumb.
 
 // CollectDischargedSourceKeys returns the deduped, deterministically-ordered
-// warrant source keys whose stimulus this Payload rendered. Pure over the
+// warrant source keys whose stimulus this Payload conveyed. Pure over the
 // Payload — the harness calls it off the world goroutine, after Render, and
 // carries the result on TickResult.
 //
-// Only the subject's own lines are skipped: an actor never warrants itself for
-// its own speech, so a self line has no warrant to discharge. Lines with a zero
-// SpeechID (recorded outside the emit path) are skipped too — there is no event
-// behind them to key on.
+// Reads Payload.ConveyedSpeech, NOT Payload.RecentConversation: a line the
+// heardNow de-dup dropped from the rendered section is still in the prompt
+// under "## Since your last turn", and a warrant it stamped must be
+// discharged all the same. build.go owns that distinction.
 //
-// Returns nil when the tick rendered no dischargeable stimulus.
+// Returns nil when the tick conveyed no dischargeable stimulus.
 func CollectDischargedSourceKeys(p Payload) []sim.WarrantSourceKey {
 	set := map[sim.WarrantSourceKey]struct{}{}
-	for _, u := range p.RecentConversation {
-		if u.IsSelf || u.SpeechID == 0 {
+	for _, ref := range p.ConveyedSpeech {
+		if ref.SpeechID == 0 {
 			continue
 		}
 		kind := sim.WarrantKindNPCSpoke
-		if u.SpeakerIsPC {
+		if ref.SpeakerIsPC {
 			kind = sim.WarrantKindPCSpoke
 		}
-		set[sim.WarrantSourceKey{Kind: kind, Discriminator: uint64(u.SpeechID)}] = struct{}{}
+		set[sim.WarrantSourceKey{Kind: kind, Discriminator: uint64(ref.SpeechID)}] = struct{}{}
 	}
 	if len(set) == 0 {
 		return nil
