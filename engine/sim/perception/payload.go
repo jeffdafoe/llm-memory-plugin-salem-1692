@@ -1249,17 +1249,24 @@ type UtteranceView struct {
 // SpeakerIsPC selects which of the two speech warrant kinds the line stamped
 // (pc_spoke vs npc_spoke); the discharge key needs both halves.
 //
-// ViaWarrant is set when the line reached the prompt ONLY through another
-// warrant's render — the de-dup case. Build runs before Render, so at Build
-// time that is a conditional claim: the warrant can still be dropped by
-// MaxWarrants / MaxSectionBytes, and then the text reached the prompt through
-// neither heading. CollectDischargedSourceKeys settles it against the actual
-// dropped set. Zero value means unconditional (the line rendered in
-// "## Recent conversation here" in its own right).
+// ViaWarrants is non-empty when the line reached the prompt ONLY through
+// another warrant's render — the de-dup case. Build runs before Render, so at
+// Build time that is a conditional claim: a warrant can still be dropped by
+// MaxWarrants / MaxSectionBytes, and if every carrier is dropped the text
+// reached the prompt through neither heading. CollectDischargedSourceKeys
+// settles it against the actual dropped set; ANY surviving carrier suffices.
+//
+// A list rather than one key because several warrants in a batch can match the
+// same line — identical short utterances, or distinct long ones sharing the
+// truncated dedup prefix. With one key the claim would turn on warrant order,
+// and a dropped carrier could mask a rendered one (code_review).
+//
+// Empty means unconditional: the line rendered in "## Recent conversation here"
+// in its own right.
 type ConveyedSpeechRef struct {
 	SpeechID    sim.SpeechID
 	SpeakerIsPC bool
-	ViaWarrant  sim.WarrantSourceKey
+	ViaWarrants []sim.WarrantSourceKey
 }
 
 // SelfActionView is one line in the "## What you've recently done" section

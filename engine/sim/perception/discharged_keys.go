@@ -43,9 +43,10 @@ import (
 //
 // droppedWarrants is Render's DroppedWarrants — the consumed warrants that did
 // not fit under MaxWarrants / MaxSectionBytes. It settles the conditional half
-// of conveyance: a line that reached the prompt ONLY through another warrant's
-// render did not reach it at all if that warrant was dropped, so it is still
-// owed (code_review). Build cannot know this — it runs before Render.
+// of conveyance: a line that reached the prompt ONLY through other warrants'
+// renders did not reach it at all if EVERY one of those carriers was dropped,
+// so it is still owed (code_review). One survivor is enough — the text was in
+// the prompt. Build cannot know this; it runs before Render.
 //
 // Returns nil when the tick conveyed no dischargeable stimulus.
 func CollectDischargedSourceKeys(p Payload, droppedWarrants []sim.WarrantMeta) []sim.WarrantSourceKey {
@@ -66,10 +67,8 @@ func CollectDischargedSourceKeys(p Payload, droppedWarrants []sim.WarrantMeta) [
 		if ref.SpeechID == 0 {
 			continue
 		}
-		if ref.ViaWarrant.Discriminator != 0 {
-			if _, gone := dropped[ref.ViaWarrant]; gone {
-				continue // the only thing carrying this text never rendered
-			}
+		if len(ref.ViaWarrants) > 0 && !anyCarrierRendered(ref.ViaWarrants, dropped) {
+			continue // every carrier of this text was dropped from the prompt
 		}
 		kind := sim.WarrantKindNPCSpoke
 		if ref.SpeakerIsPC {
@@ -93,4 +92,17 @@ func CollectDischargedSourceKeys(p Payload, droppedWarrants []sim.WarrantMeta) [
 		return out[i].Kind < out[j].Kind
 	})
 	return out
+}
+
+// anyCarrierRendered reports whether at least one of a de-duped line's
+// supporting warrants survived the prompt caps. One is enough: the carriers all
+// hold the same text, so a single surviving render put that text in front of
+// the model.
+func anyCarrierRendered(carriers []sim.WarrantSourceKey, dropped map[sim.WarrantSourceKey]struct{}) bool {
+	for _, key := range carriers {
+		if _, gone := dropped[key]; !gone {
+			return true
+		}
+	}
+	return false
 }

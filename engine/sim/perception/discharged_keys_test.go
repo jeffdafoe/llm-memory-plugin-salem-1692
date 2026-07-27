@@ -105,7 +105,7 @@ func TestBuildRecentConversation_ConveysDedupedAndCappedLines(t *testing.T) {
 		},
 	}
 	support := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
-	heardNow := map[sim.ActorID]map[string]sim.WarrantSourceKey{"elizabeth": {"already heard": support}}
+	heardNow := map[sim.ActorID]map[string][]sim.WarrantSourceKey{"elizabeth": {"already heard": {support}}}
 
 	views, conveyed := buildRecentConversation(snap, me, &sim.ActorSnapshot{CurrentHuddleID: "h1"}, heardNow)
 
@@ -157,7 +157,7 @@ func TestBuildRecentConversation_DedupedLinesRecordTheirSupportingWarrant(t *tes
 		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", RecentUtterances: ring}},
 		Actors:  map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": {Kind: sim.KindNPCShared}},
 	}
-	heardNow := map[sim.ActorID]map[string]sim.WarrantSourceKey{"elizabeth": {"already heard": support}}
+	heardNow := map[sim.ActorID]map[string][]sim.WarrantSourceKey{"elizabeth": {"already heard": {support}}}
 
 	_, conveyed := buildRecentConversation(snap, me, &sim.ActorSnapshot{CurrentHuddleID: "h1"}, heardNow)
 
@@ -165,11 +165,11 @@ func TestBuildRecentConversation_DedupedLinesRecordTheirSupportingWarrant(t *tes
 	for _, c := range conveyed {
 		byID[c.SpeechID] = c
 	}
-	if got := byID[21].ViaWarrant; got != support {
-		t.Errorf("de-duped line ViaWarrant = %+v, want %+v — its only carrier", got, support)
+	if got := byID[21].ViaWarrants; len(got) != 1 || got[0] != support {
+		t.Errorf("de-duped line ViaWarrants = %+v, want [%+v] — its only carrier", got, support)
 	}
-	if got := byID[22].ViaWarrant; got != (sim.WarrantSourceKey{}) {
-		t.Errorf("line rendered in its own right has ViaWarrant %+v, want zero", got)
+	if got := byID[22].ViaWarrants; len(got) != 0 {
+		t.Errorf("line rendered in its own right has ViaWarrants %+v, want none", got)
 	}
 }
 
@@ -181,8 +181,8 @@ func TestBuildRecentConversation_DedupedLinesRecordTheirSupportingWarrant(t *tes
 func TestCollectDischargedSourceKeys_DroppedWarrantUncarriesItsLine(t *testing.T) {
 	support := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
 	p := Payload{ConveyedSpeech: []ConveyedSpeechRef{
-		{SpeechID: 21, ViaWarrant: support}, // carried only by the warrant below
-		{SpeechID: 22},                      // rendered in its own right
+		{SpeechID: 21, ViaWarrants: []sim.WarrantSourceKey{support}}, // carried only by the warrant below
+		{SpeechID: 22}, // rendered in its own right
 	}}
 	droppedSupport := []sim.WarrantMeta{{
 		Reason: sim.NPCSpeechWarrantReason{SpeechID: 900, Speaker: "elizabeth", Excerpt: "already heard"},
@@ -197,5 +197,82 @@ func TestCollectDischargedSourceKeys_DroppedWarrantUncarriesItsLine(t *testing.T
 	// Control: the same payload with the warrant surviving discharges both.
 	if got := CollectDischargedSourceKeys(p, nil); len(got) != 2 {
 		t.Errorf("with its carrier rendered: got %+v, want both keys", got)
+	}
+}
+
+// TestBuildRecentConversation_KeepsEveryCarrierForASharedDedupKey: several
+// speech warrants in one batch can index to the same dedup key — identical
+// short lines, or distinct long ones sharing the truncated prefix. All of them
+// must be recorded. Keeping only the last would make the conveyance claim turn
+// on warrant ORDER, and a dropped carrier could mask a rendered one
+// (code_review).
+func TestBuildRecentConversation_KeepsEveryCarrierForASharedDedupKey(t *testing.T) {
+	const me = sim.ActorID("gideon")
+	first := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	second := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 901}
+
+	// Two warrants, same speaker, same excerpt — the shape currentHeardExcerpts
+	// has to survive. Built through the real helper, not hand-assembled, so the
+	// last-write-wins bug would reappear here.
+	heardNow := currentHeardExcerpts([]sim.WarrantMeta{
+		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 900, Speaker: "elizabeth", Excerpt: "already heard"}},
+		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 901, Speaker: "elizabeth", Excerpt: "already heard"}},
+	})
+
+	snap := &sim.Snapshot{
+		Huddles: map[sim.HuddleID]*sim.Huddle{"h1": {ID: "h1", RecentUtterances: []sim.Utterance{
+			{SpeakerID: "elizabeth", SpeakerName: "Elizabeth", Text: "already heard", SpeechID: 21},
+		}}},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"elizabeth": {Kind: sim.KindNPCShared}},
+	}
+
+	_, conveyed := buildRecentConversation(snap, me, &sim.ActorSnapshot{CurrentHuddleID: "h1"}, heardNow)
+	if len(conveyed) != 1 {
+		t.Fatalf("conveyed len = %d, want 1", len(conveyed))
+	}
+	got := map[sim.WarrantSourceKey]bool{}
+	for _, k := range conveyed[0].ViaWarrants {
+		if got[k] {
+			t.Errorf("carrier %+v recorded twice", k)
+		}
+		got[k] = true
+	}
+	if !got[first] || !got[second] {
+		t.Errorf("ViaWarrants = %+v, want both carriers %+v and %+v",
+			conveyed[0].ViaWarrants, first, second)
+	}
+}
+
+// TestCollectDischargedSourceKeys_AnySurvivingCarrierIsEnough: with several
+// carriers for one line, the line discharges as long as ONE of them rendered —
+// the text was in front of the model either way. It stays pending only when
+// every carrier was dropped.
+func TestCollectDischargedSourceKeys_AnySurvivingCarrierIsEnough(t *testing.T) {
+	first := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 900}
+	second := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 901}
+	p := Payload{ConveyedSpeech: []ConveyedSpeechRef{
+		{SpeechID: 21, ViaWarrants: []sim.WarrantSourceKey{first, second}},
+	}}
+	warrant := func(id sim.SpeechID) sim.WarrantMeta {
+		return sim.WarrantMeta{Reason: sim.NPCSpeechWarrantReason{
+			SpeechID: id, Speaker: "elizabeth", Excerpt: "already heard",
+		}}
+	}
+	line := []sim.WarrantSourceKey{{Kind: sim.WarrantKindNPCSpoke, Discriminator: 21}}
+
+	cases := []struct {
+		name    string
+		dropped []sim.WarrantMeta
+		want    []sim.WarrantSourceKey
+	}{
+		{"first carrier dropped, second rendered", []sim.WarrantMeta{warrant(900)}, line},
+		{"second carrier dropped, first rendered", []sim.WarrantMeta{warrant(901)}, line},
+		{"both carriers dropped", []sim.WarrantMeta{warrant(900), warrant(901)}, nil},
+		{"neither dropped", nil, line},
+	}
+	for _, tc := range cases {
+		if got := CollectDischargedSourceKeys(p, tc.dropped); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
+		}
 	}
 }

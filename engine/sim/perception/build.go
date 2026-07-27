@@ -3638,7 +3638,7 @@ func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) [
 // backfills with genuinely-older context instead of a duplicate. Done here (not
 // in Render) per the package contract: Build decides content, Render is content-
 // agnostic.
-func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string]sim.WarrantSourceKey) []RelationshipPeerView {
+func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string][]sim.WarrantSourceKey) []RelationshipPeerView {
 	if a.Kind != sim.KindNPCShared || len(a.Relationships) == 0 || len(members) == 0 {
 		return nil
 	}
@@ -3774,7 +3774,7 @@ const maxRenderedConversationLines = 5
 // still pending can collide with a consumed warrant's excerpt and vanish from
 // this section. Without the conveyance record that pending warrant would fire a
 // second reply to a line the model has already seen.
-func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]sim.WarrantSourceKey) ([]UtteranceView, []ConveyedSpeechRef) {
+func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string][]sim.WarrantSourceKey) ([]UtteranceView, []ConveyedSpeechRef) {
 	huddleID := actorSnap.CurrentHuddleID
 	if huddleID == "" {
 		return nil, nil
@@ -3799,7 +3799,7 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 	var conveyed []ConveyedSpeechRef
 	for i, u := range utts {
 		inWindow := i >= windowStart
-		viaWarrant, alreadyHeard := heardNow[u.SpeakerID][recentConversationDedupKey(u.Text)]
+		viaWarrants, alreadyHeard := heardNow[u.SpeakerID][recentConversationDedupKey(u.Text)]
 
 		// LLM-542 conveyance. The subject's own lines are excluded: an actor
 		// never warrants itself for its own speech, so there is nothing to
@@ -3822,7 +3822,7 @@ func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap 
 			// recorded here and settled after (code_review). A line that
 			// renders in this section in its own right depends on nothing.
 			if alreadyHeard {
-				ref.ViaWarrant = viaWarrant
+				ref.ViaWarrants = viaWarrants
 			}
 			conveyed = append(conveyed, ref)
 		}
@@ -3970,20 +3970,37 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 //
 // Returns nil when the batch carries no speech (the common non-conversational
 // tick).
-func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string]sim.WarrantSourceKey {
-	var bySpeaker map[sim.ActorID]map[string]sim.WarrantSourceKey
+// The value is a LIST of source keys, not one (LLM-542, code_review). Several
+// speech warrants in a batch can land on the same index key — identical short
+// lines, or distinct long ones sharing a prefix, since the dedup key is a
+// truncation. Keeping only the last would make the de-dup's conveyance claim
+// depend on warrant order, and a dropped carrier could shadow a rendered one.
+// The rule the discharge needs is "ANY surviving carrier is enough", which
+// takes the whole set.
+func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string][]sim.WarrantSourceKey {
+	var bySpeaker map[sim.ActorID]map[string][]sim.WarrantSourceKey
+	addKey := func(speaker sim.ActorID, index string, key sim.WarrantSourceKey) {
+		for _, existing := range bySpeaker[speaker][index] {
+			if existing == key {
+				return
+			}
+		}
+		bySpeaker[speaker][index] = append(bySpeaker[speaker][index], key)
+	}
 	add := func(speaker sim.ActorID, excerpt string, key sim.WarrantSourceKey) {
 		if speaker == "" || excerpt == "" {
 			return
 		}
 		if bySpeaker == nil {
-			bySpeaker = make(map[sim.ActorID]map[string]sim.WarrantSourceKey)
+			bySpeaker = make(map[sim.ActorID]map[string][]sim.WarrantSourceKey)
 		}
 		if bySpeaker[speaker] == nil {
-			bySpeaker[speaker] = make(map[string]sim.WarrantSourceKey)
+			bySpeaker[speaker] = make(map[string][]sim.WarrantSourceKey)
 		}
-		bySpeaker[speaker][excerpt] = key
-		bySpeaker[speaker][recentConversationDedupKey(excerpt)] = key
+		addKey(speaker, excerpt, key)
+		// For a short utterance the two index keys coincide; addKey's identity
+		// check keeps the list from carrying the same carrier twice.
+		addKey(speaker, recentConversationDedupKey(excerpt), key)
 	}
 	for _, w := range warrants {
 		switch r := w.Reason.(type) {
