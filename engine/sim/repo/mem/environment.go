@@ -46,6 +46,7 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			// mem-backed world runs the constable's rounds like prod.
 			ConstableRoundsInterval: sim.DefaultConstableRoundsInterval,
 			ConstableRoundsDwell:    sim.DefaultConstableRoundsDwell,
+			ConstableRoundsQuiet:    sim.DefaultConstableRoundsQuiet,
 			// Cold exposure + hearth (LLM-412) — mirror the pg parse fallbacks so a
 			// mem-backed world feels the weather like prod does.
 			ColdStormOutdoorsPerMinuteX100:     sim.DefaultColdStormOutdoorsPerMinuteX100,
@@ -128,5 +129,6 @@ func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms si
 	// live settings.
 	r.settings.ConstableRoundsInterval = time.Duration(ms.ConstableRoundsIntervalSeconds) * time.Second
 	r.settings.ConstableRoundsDwell = time.Duration(ms.ConstableRoundsDwellSeconds) * time.Second
+	r.settings.ConstableRoundsQuiet = time.Duration(ms.ConstableRoundsQuietSeconds) * time.Second
 	return nil
 }

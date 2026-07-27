@@ -941,20 +941,21 @@ func emitMoveStopped(w *World, actor *Actor, dest MoveDestination, reason MoveSt
 // StartOutdoorHuddle participant gate to avoid acting on an actor who is
 // mid-conversation. (The locomotion ticker no longer consults it — the
 // old bilateral pause was removed in ZBBS-HOME-340.)
+//
+// This is a LIFECYCLE test, and its callers want it that way: they defer an
+// action they can take again on any later tick, so holding for the huddle's full
+// life costs nothing. It is the WRONG test for anything that must run once the
+// TALKING stops — a huddle stays open for HuddleSilenceTimeout (2h) after its
+// last word, so "not concluded" reads true across long silences. A caller asking
+// "is this conversation still going" wants HuddleIsLive, or a purpose-built
+// predicate over it (ConstableStopStillTalking); gating the constable's rounds
+// advance on this one parked him at every stop (LLM-537).
 func actorInActiveHuddle(w *World, actor *Actor) bool {
 	if actor.CurrentHuddleID == "" {
 		return false
 	}
 	h, ok := w.Huddles[actor.CurrentHuddleID]
 	return ok && h.ConcludedAt == nil
-}
-
-// ActorInActiveHuddle is the exported form of actorInActiveHuddle, for cascade
-// callers that must not yank an actor out of a live conversation — the constable
-// rounds dwell (LLM-514) defers its advance while the constable is mid-huddle.
-// MUST be called from inside a Command.Fn (reads w.Huddles).
-func ActorInActiveHuddle(w *World, actor *Actor) bool {
-	return actorInActiveHuddle(w, actor)
 }
 
 // structureForActorTile returns the structure whose footprint contains the
