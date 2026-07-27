@@ -332,19 +332,30 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	// un-suppressed, the once-a-minute go-home nudge supersedes the route's walk
 	// to a far stop — stranding that stop (never lit) and, for a homed route NPC,
 	// marching it into its (sprite-hiding) house mid-round so the client never
-	// shows it doing the round. ActiveRoutes[a.ID] is non-nil only while a route
-	// is in flight (StartNPCRoute installs it, AdvanceNPCRoute clears it on the
-	// home leg); the nil-map read is safe.
-	// A SUSPENDED round also suppresses the duty (LLM-531), deliberately: while a
-	// round sits part-walked, the go-to-post producer would march him back to the
-	// Meeting House the moment he finished his drink, and he would never get the
-	// chance to pick the round up. His duty right now IS the unfinished round.
+	// shows it doing the round. RouteInFlight is false for a missing route (the
+	// nil-map read is safe) and for a SUSPENDED one.
 	//
-	// That exemption is bounded, which is what keeps it from becoming the old
-	// parked-route strand: runConstableRounds clears a suspended round as soon as
-	// its carrier goes off shift (so he goes home at dusk like anyone else), and the
-	// next rounds interval supersedes one outright.
-	if w.ActiveRoutes[a.ID] != nil {
+	// A SUSPENDED round deliberately does NOT suppress the duty (LLM-540), which
+	// reverses LLM-531 on this one predicate. LLM-531 suppressed it here so the
+	// producer could not "march him back to the Meeting House the moment he
+	// finished his drink" — but this producer cannot march a stateful carrier
+	// anywhere. It stamps a WARRANT for an agent (only decoratives are walked
+	// mechanically, and a decorative never suspends: the volition yield runs on
+	// the stateful branch only). The line that would actually argue him back to
+	// post is the perception duty steer, and that already yields for the whole
+	// suspended round on its own — buildDutySteer returns nil for any constable
+	// RouteLabel, which World.republish projects while suspended too. So the
+	// suppression here was a second copy of a protection perception already
+	// provides, and it took his only recurring wake source with it: with the
+	// steer silent and no warrant stamped, the resume cue that names where he
+	// broke off was never rendered, and he stood still until the 30-minute idle
+	// backstop (live, 2026-07-27: Gideon at the Blacksmith, 9m24s without a tick).
+	//
+	// Waking him is not nagging him. The warrant runs a tick, the tick renders
+	// "you broke off at the Ellis Farm; six more places lie ahead" and no
+	// go-to-post line, and he chooses. Repeats decay — shift_duty is an ambient
+	// kind, so an unchanged situation is rate-limited by the stale-wake ledger.
+	if RouteInFlight(w, a.ID) {
 		return "", false, false
 	}
 

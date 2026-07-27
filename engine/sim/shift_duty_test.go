@@ -210,6 +210,143 @@ func TestShiftDutyTarget_SuppressedDuringActiveRoute(t *testing.T) {
 	}
 }
 
+// TestShiftDutyTarget_NotSuppressedDuringSuspendedRound: a SUSPENDED round does
+// NOT exempt its carrier from the duty (LLM-540). The exemption is for a route
+// that is carrying him; a suspended one is not, and while it sat exempt he had no
+// recurring wake source at all — the level-triggered duty warrant is the only
+// thing that ticks an idle off-post NPC, so the resume cue that names where he
+// broke off was never rendered and he stood still until the 30-minute idle
+// backstop (live 2026-07-27: Gideon at the Blacksmith, 9m24s without a tick).
+//
+// This does not reinstate the march LLM-531 removed: for an agent the producer
+// stamps a warrant, never a walk, and the perception duty steer stays silent for
+// the whole suspended round on its own (buildDutySteer yields for any constable
+// RouteLabel). The warrant wakes him; nothing tells him to go to post.
+func TestShiftDutyTarget_NotSuppressedDuringSuspendedRound(t *testing.T) {
+	// On shift (10:00), off post, mid-round — the live shape.
+	a := shiftNPC("gideon", KindNPCStateful, "meeting_house", "home", "")
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	w := sleepTestWorld(a)
+	w.ActiveRoutes = map[ActorID]*NPCRoute{
+		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseActive},
+	}
+
+	// Precondition: the ACTIVE round still exempts him — LLM-531's real case.
+	if _, _, ok := shiftDutyTarget(w, a, 600, time.Now()); ok {
+		t.Fatal("precondition: an active round must still suppress the go-to-post duty")
+	}
+
+	w.ActiveRoutes["gideon"].Phase = RoutePhaseSuspended
+	target, toWork, ok := shiftDutyTarget(w, a, 600, time.Now())
+	if !ok || target != "meeting_house" || !toWork {
+		t.Errorf("suspended round: got (%q,%v,%v), want (meeting_house,true,true) — he has no other wake source",
+			target, toWork, ok)
+	}
+}
+
+// TestShiftTick_SuspendedRoundWakesButDoesNotWalk is the producer-level twin of
+// TestShiftDutyTarget_NotSuppressedDuringSuspendedRound, through the real dispatch
+// rather than the pure target read. It is what actually establishes LLM-540's safety
+// claim: restoring this duty gives a suspended carrier a WAKE and nothing more.
+// Asserting it here rather than inferring it from the shape of shiftDutyTarget means
+// a future change that walked him would be caught even if the target read still
+// looked right.
+//
+// Three things at once: the warrant is stamped and carries his post, no walk is
+// dispatched (MoveIntent stays nil — the mechanical branch is decoratives-only), and
+// the round is left exactly as it was for him to resume.
+func TestShiftTick_SuspendedRoundWakesButDoesNotWalk(t *testing.T) {
+	a := shiftNPC("gideon", KindNPCStateful, "meeting_house", "home", "")
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	w := sleepTestWorld(a)
+	w.ActiveRoutes = map[ActorID]*NPCRoute{
+		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseSuspended, StopIdx: 2},
+	}
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC) // on shift, off post
+
+	if _, err := ShiftTick(now).Fn(w); err != nil {
+		t.Fatalf("ShiftTick: %v", err)
+	}
+	if a.WarrantedSince == nil || !hasWarrantKind(a, WarrantKindShiftDuty) {
+		t.Fatalf("suspended carrier got no shift_duty warrant — nothing else wakes him; kinds = %v", warrantKinds(a))
+	}
+	// The crux: a wake, not a march. Only decoratives are walked mechanically, and a
+	// decorative can never be suspended (the volition yield is the stateful branch).
+	if a.MoveIntent != nil {
+		t.Errorf("ShiftTick dispatched a walk for a suspended carrier — that is the march LLM-531 removed: %+v", a.MoveIntent)
+	}
+	// And his round is untouched, so the wake he gets is one where resuming is still
+	// on the table.
+	route := w.ActiveRoutes["gideon"]
+	if route == nil || route.Phase != RoutePhaseSuspended || route.StopIdx != 2 {
+		t.Errorf("ShiftTick disturbed the suspended round: %+v", route)
+	}
+
+	// The active-route case still gets nothing, through the same dispatch.
+	b := shiftNPC("hollis", KindNPCStateful, "meeting_house", "home", "")
+	b.ScheduleStartMin = intptr(420)
+	b.ScheduleEndMin = intptr(960)
+	w.Actors["hollis"] = b
+	w.ActiveRoutes["hollis"] = &NPCRoute{NPCID: "hollis", Label: AttrConstable, Phase: RoutePhaseActive}
+	if _, err := ShiftTick(now).Fn(w); err != nil {
+		t.Fatalf("ShiftTick: %v", err)
+	}
+	if hasWarrantKind(b, WarrantKindShiftDuty) {
+		t.Errorf("a carrier mid-round got a go-to-post warrant; kinds = %v", warrantKinds(b))
+	}
+	if b.MoveIntent != nil {
+		t.Errorf("ShiftTick walked a carrier mid-round: %+v", b.MoveIntent)
+	}
+}
+
+// TestShiftTick_SuspendedRoundWakesDecayWhenNothingChanges is the cost bound on the
+// wake LLM-540 restores. A carrier standing still with a paused round is the exact
+// shape the producer re-stamps every minute forever, so the claim "this is affordable"
+// rests on the LLM-233 stale-wake ledger treating it as a decayed ambient cycle rather
+// than a full-rate one. Asserted against the warrants ShiftTick actually stamps, not
+// against the kind constant in isolation — a warrant that arrived alongside a salient
+// one would pass at full rate, and this is what shows it does not.
+func TestShiftTick_SuspendedRoundWakesDecayWhenNothingChanges(t *testing.T) {
+	a := shiftNPC("gideon", KindNPCStateful, "meeting_house", "home", "")
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	w := sleepTestWorld(a)
+	w.Settings.StaleWakeDecayBase = time.Minute
+	w.ActiveRoutes = map[ActorID]*NPCRoute{
+		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseSuspended},
+	}
+	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+
+	if _, err := ShiftTick(now).Fn(w); err != nil {
+		t.Fatalf("ShiftTick: %v", err)
+	}
+	if !warrantCycleAllAmbient(a.Warrants) {
+		t.Fatalf("the suspended-round wake is not an all-ambient cycle, so the decay never applies to it; kinds = %v", warrantKinds(a))
+	}
+
+	// First wake of the day: no ledger entry, so it passes at full rate — he must not
+	// be made to wait for the tick that offers him the round back.
+	fp := actorSituationFingerprint(w, a, now)
+	if _, stale := staleWakeDeferUntil(w.Settings, a, fp, now); stale {
+		t.Error("the first suspended-round wake was deferred; it must pass at full rate")
+	}
+	recordStaleWake(a, a.Warrants, fp, now)
+
+	// He declines and stands exactly where he was. The situation is unchanged, so the
+	// next minute's re-stamp is deferred rather than paid for.
+	if _, stale := staleWakeDeferUntil(w.Settings, a, fp, now.Add(time.Minute-time.Second)); !stale {
+		t.Error("an unchanged suspended-round wake repeated at full rate — the decay is not engaging")
+	}
+
+	// And any real change lifts it immediately: a decayed wake must never be what
+	// stops him reacting to something new.
+	if _, stale := staleWakeDeferUntil(w.Settings, a, fp+1, now.Add(time.Second)); stale {
+		t.Error("a changed situation stayed deferred; the decay must yield to real news")
+	}
+}
+
 func TestShiftDutyTarget_NoDutyWhenWhereItBelongs(t *testing.T) {
 	w := sleepTestWorld()
 	// On shift, already at work → no duty.

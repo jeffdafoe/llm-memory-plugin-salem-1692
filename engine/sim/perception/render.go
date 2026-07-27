@@ -1706,6 +1706,15 @@ func anchorPlace(label, fallback string) string {
 	return sim.WithDefiniteArticle(sanitizeInline(label))
 }
 
+// dutySteerToPostMarker is the distinguishing clause of the to-work steer's line,
+// pulled out of the format string so a test can assert on the steer's PRESENCE or
+// ABSENCE without copying its wording (LLM-540 — TestGoldensNoDutySteerWhileOnRounds
+// pins that a constable mid-round is never argued back to his post, which is what
+// lets shift duty keep waking him during a suspended round). Naming it here means a
+// reword either keeps this clause, and the test still matches, or changes it here,
+// and the test follows — rather than going quietly vacuous against a stale literal.
+const dutySteerToPostMarker = "you are away from your post"
+
 // renderDutySteer writes the standing return-to-post cue (ZBBS-HOME-352) — the
 // single voice for shift duty (the engine's ShiftDutyWarrant line is filtered
 // out in Render). It carries the destination's structure_id inline — the
@@ -1784,7 +1793,7 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		return
 	}
 	if v.ToWork {
-		fmt.Fprintf(b, "It is your working hours, yet you are away from your post — make your way to %s (destination: %s) now.\n\n",
+		fmt.Fprintf(b, "It is your working hours, yet "+dutySteerToPostMarker+" — make your way to %s (destination: %s) now.\n\n",
 			anchorPlace(v.TargetLabel, "your workplace"), v.TargetID)
 		return
 	}
