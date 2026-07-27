@@ -265,6 +265,65 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 	}
 }
 
+// TestGoldensNoDutySteerWhileOnRounds is the LLM-540 cross-scenario invariant:
+// whenever the subject carries a constable route — ACTIVE or SUSPENDED — the
+// rendered prompt must never argue him back to his post. The round is the single
+// movement voice while it stands; a "make your way to the Meeting House" line beside
+// "you broke off at the Ellis Farm" is two orders in one prompt, and a weak model
+// takes the imperative.
+//
+// This is the property LLM-540 leans on. It restores the shift-duty WARRANT while a
+// round is suspended — the wake without which he has no recurring tick at all — on
+// the strength of the steer staying silent on its own (buildDutySteer yields for any
+// constable RouteLabel). If a later change makes the steer render during a round,
+// that restored warrant becomes the march LLM-531 removed, and this catches it
+// matrix-wide rather than in the one fixture that happens to pin it.
+//
+// The marker is renderDutySteer's own production constant, not a copy of its
+// wording — a reword that keeps the clause leaves the test matching, and one that
+// changes it changes the constant too, so the invariant can't go quietly vacuous
+// against a stale literal (the same reasoning as TestGoldensRainLineIffStorm
+// computing through weatherProse).
+func TestGoldensNoDutySteerWhileOnRounds(t *testing.T) {
+	// Applicability is decided OUT here, not inside the subtest, so the vacuity
+	// counter is not written from subtest bodies — that stays correct if these are
+	// ever given t.Parallel().
+	var onRounds []perceptionScenario
+	for _, sc := range perceptionScenarios {
+		snap, actorID, _ := sc.build()
+		if a := snap.Actors[actorID]; a != nil && a.RouteLabel == sim.AttrConstable {
+			onRounds = append(onRounds, sc)
+		}
+	}
+	// Guard against the invariant going vacuous if the constable fixtures are ever
+	// renamed or dropped: with no rounds scenario in the matrix it would pass green
+	// while testing nothing.
+	if len(onRounds) == 0 {
+		t.Fatal("no scenario put the subject on a constable round — the no-duty-steer invariant is vacuous (LLM-540)")
+	}
+	for _, sc := range onRounds {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			if out := renderScenario(sc); strings.Contains(out, dutySteerToPostMarker) {
+				t.Errorf("scenario %q: subject is on his rounds but the prompt still steers him back to post (%q) — the round is the single movement voice while it stands (LLM-540)", sc.name, dutySteerToPostMarker)
+			}
+		})
+	}
+}
+
+// TestDutySteerToPostMarkerMatchesRender is the anchor for the invariant above: it
+// pins that renderDutySteer's to-work arm actually emits dutySteerToPostMarker. The
+// invariant asserts an ABSENCE, so on its own it would pass for the wrong reason if
+// the marker ever stopped appearing in the real line — this is the positive control
+// that fails instead.
+func TestDutySteerToPostMarkerMatchesRender(t *testing.T) {
+	var b strings.Builder
+	renderDutySteer(&b, &DutySteerView{ToWork: true, TargetID: "shop", TargetLabel: "General Store"})
+	if got := b.String(); !strings.Contains(got, dutySteerToPostMarker) {
+		t.Errorf("the to-work duty steer no longer contains %q, so the LLM-540 absence invariant matches nothing:\n%s", dutySteerToPostMarker, got)
+	}
+}
+
 // TestGoldensWarrantTextCompleteOrMarked is the cross-scenario invariant behind
 // LLM-396 and LLM-400: an untrusted free-text payload carried on a warrant — the
 // words someone said, the note attached to a payment — reaches the reader's prompt
@@ -1368,6 +1427,16 @@ var perceptionScenarios = []perceptionScenario{
 			"continuation line is OMITTED — the line names what remains, and at the last stop " +
 			"nothing does. The mid-circuit twin (constable_walking_rounds_at_store) pins its presence.",
 		build: constableAtLastRoundsStop,
+	},
+	{
+		name: "constable_round_suspended_off_post",
+		summary: "LLM-540: the constable idle at the Blacksmith with his round SUSPENDED behind him — he " +
+			"stepped off the circuit himself and has finished whatever pulled him away. Pins the pairing " +
+			"that makes the fix safe: the resume cue names where he broke off (Ellis Farm) and what is " +
+			"left, AND the go-to-post duty steer is absent. The tick exists at all because a suspended " +
+			"round no longer suppresses his shift-duty warrant; before that he had no recurring wake " +
+			"source and stood still until the 30-minute idle backstop. Waking him is not marching him.",
+		build: constableRoundSuspendedOffPost,
 	},
 	{
 		name: "storm_weather_over_keeper_at_post",
@@ -12741,6 +12810,72 @@ func constableAtLastRoundsStop() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 		},
 	}
 	return snap, gideonID, nil
+}
+
+// constableRoundSuspendedOffPost is the LLM-540 scenario: the constable stepped
+// off his circuit of his own accord, finished whatever pulled him away, and is now
+// standing idle at the Blacksmith with the round paused behind him. The wake that
+// gets him this tick is his ordinary go-to-post duty warrant, which a suspended
+// round no longer suppresses — before LLM-540 it did, and with the duty steer also
+// silent he had no recurring wake source at all: the resume cue that names where he
+// broke off was never rendered and he stood still until the 30-minute idle backstop
+// (live 2026-07-27, Gideon at the Blacksmith, 9m24s without a tick).
+//
+// The golden pins the pairing that makes the fix safe. The suspended cue names the
+// break-off point and what remains, AND the go-to-post steer is absent — waking him
+// is not the same as marching him back, which is the LLM-531 property that must not
+// regress. The steer's absence is not incidental to this fixture: buildDutySteer
+// yields for any constable RouteLabel, which is why the warrant can be restored
+// without the cue coming back with it.
+func constableRoundSuspendedOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		gideonID = sim.ActorID("gideon")
+		smithy   = sim.StructureID("blacksmith")
+		farm     = sim.StructureID("ellis_farm")
+		post     = sim.StructureID("meeting_house")
+		home     = sim.StructureID("marsh_residence")
+	)
+	start, end := 0, 1440 // on the watch all day
+	now := 780            // 13:00 — on shift, so the to-work duty stands
+	gideon := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Gideon Marsh",
+		Role:              "constable",
+		State:             sim.StateIdle,
+		WorkStructureID:   post,
+		InsideStructureID: smithy, // off post, where his own errand took him
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Needs:             map[sim.NeedKey]int{},
+		// The republish projects these for a SUSPENDED round with no arrival
+		// requirement — by definition he is somewhere other than the stop.
+		RouteLabel:        sim.AttrConstable,
+		RouteSuspended:    true,
+		RouteStopObjectID: sim.VillageObjectID(farm), // where he broke off
+		RouteStopsAhead:   6,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{gideonID: gideon},
+		Structures: map[sim.StructureID]*sim.Structure{
+			smithy: plainStructure(smithy, "Blacksmith"),
+			farm:   plainStructure(farm, "Ellis Farm"),
+			post:   plainStructure(post, "Meeting House"),
+			home:   plainStructure(home, "Marsh Residence"),
+		},
+	}
+	// The restored wake (LLM-540). It carries no line of its own — Render filters
+	// the shift-duty warrant text, leaving the DutySteer as its only voice, and that
+	// steer yields to the round.
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: gideonID,
+			Reason:         sim.ShiftDutyWarrantReason{ToWork: true, TargetStructureID: post},
+		},
+	}
+	return snap, gideonID, warrants
 }
 
 // visitorArrivesAtKeepersWorkplace reproduces the LLM-284 host-role inversion:
