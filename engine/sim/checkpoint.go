@@ -132,12 +132,14 @@ type MutableWorldSettings struct {
 	// verification run) survives restart.
 	EcoAudienceIdleSeconds int
 
-	// Constable rounds knobs (LLM-514) — the interval between rounds tours and the
-	// per-stop dwell, live-tunable via the umbilical, persisted here each
-	// checkpoint so a live change survives restart. Stored in seconds to match the
-	// constable_rounds_*_seconds setting keys. IntervalSeconds == 0 disables rounds.
+	// Constable rounds knobs (LLM-514, quiet added LLM-537) — the interval between
+	// rounds tours, the per-stop dwell, and the stop quiet-window, live-tunable via
+	// the umbilical, persisted here each checkpoint so a live change survives
+	// restart. Stored in seconds to match the constable_rounds_*_seconds setting
+	// keys. IntervalSeconds == 0 disables rounds.
 	ConstableRoundsIntervalSeconds int
 	ConstableRoundsDwellSeconds    int
+	ConstableRoundsQuietSeconds    int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -201,6 +203,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			EcoAudienceIdleSeconds:            int(PCAudienceIdleAfter(w) / time.Second),
 			ConstableRoundsIntervalSeconds:    int(w.Settings.ConstableRoundsInterval / time.Second),
 			ConstableRoundsDwellSeconds:       int(w.Settings.ConstableRoundsDwell / time.Second),
+			ConstableRoundsQuietSeconds:       int(w.Settings.ConstableRoundsQuiet / time.Second),
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

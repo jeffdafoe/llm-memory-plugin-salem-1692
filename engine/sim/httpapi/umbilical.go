@@ -519,7 +519,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// Constable rounds (LLM-514) — live-tune how often the constable walks his
 		// rounds and how long he pauses at each business; applied in memory and
 		// persisted on the next checkpoint.
-		{http.MethodPost, umbilicalBasePath + "/constable-rounds/set", "Live-tune the constable rounds cadence (LLM-514) without a restart. Both fields optional (at least one required), non-negative seconds; interval_seconds=0 disables rounds, dwell_seconds=0 resolves to the 45s default. Body: {interval_seconds?, dwell_seconds?}.", true, s.handleUmbilicalConstableRoundsSet},
+		{http.MethodPost, umbilicalBasePath + "/constable-rounds/set", "Live-tune the constable rounds cadence (LLM-514) without a restart. All fields optional (at least one required), non-negative seconds; interval_seconds=0 disables rounds, dwell_seconds=0 resolves to the 45s default, quiet_seconds=0 resolves to the 90s default. quiet_seconds (LLM-537) is how long the stop's conversation must have gone SILENT before he walks on — a liveness window over the huddle's last activity, not its 2h lifecycle, which used to park him at the stop for as long as the huddle stayed open. Body: {interval_seconds?, dwell_seconds?, quiet_seconds?}.", true, s.handleUmbilicalConstableRoundsSet},
 
 		// Item definition (LLM-200) — live create/edit of one item_kind row (the
 		// definition: label, category, sort order, capabilities, counting nouns,

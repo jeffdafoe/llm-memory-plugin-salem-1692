@@ -210,6 +210,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// survives as "rounds disabled" (parseDurationSetting honors a present 0).
 	s.ConstableRoundsInterval = parseDurationSetting(values, "constable_rounds_interval_seconds", sim.DefaultConstableRoundsInterval)
 	s.ConstableRoundsDwell = parseDurationSetting(values, "constable_rounds_dwell_seconds", sim.DefaultConstableRoundsDwell)
+	s.ConstableRoundsQuiet = parseDurationSetting(values, "constable_rounds_quiet_seconds", sim.DefaultConstableRoundsQuiet)
 
 	s.NeedsTickAmount = parseIntSetting(values, "attribute_tick_amount", sim.DefaultNeedsTickAmount)
 	s.NeedThresholds = loadNeedThresholds(values)
@@ -701,10 +702,12 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
 		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
 		{"eco_audience_idle_seconds", strconv.Itoa(ms.EcoAudienceIdleSeconds)},
-		// Constable rounds knobs (LLM-514) — live-tuned via the umbilical, persisted
-		// here; the load path parses both via parseDurationSetting (0 interval = off).
+		// Constable rounds knobs (LLM-514, quiet added LLM-537) — live-tuned via the
+		// umbilical, persisted here; the load path parses all three via
+		// parseDurationSetting (0 interval = off).
 		{"constable_rounds_interval_seconds", strconv.Itoa(ms.ConstableRoundsIntervalSeconds)},
 		{"constable_rounds_dwell_seconds", strconv.Itoa(ms.ConstableRoundsDwellSeconds)},
+		{"constable_rounds_quiet_seconds", strconv.Itoa(ms.ConstableRoundsQuietSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

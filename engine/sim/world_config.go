@@ -575,30 +575,34 @@ func SetMerchantCoinFloor(floor *int) Command {
 var ErrInvalidConstableRoundsSetting = errors.New("invalid constable rounds setting")
 
 // ConstableRoundsSettingsResult echoes the post-change constable rounds knobs in
-// wire units (seconds). DwellSeconds reports the EFFECTIVE dwell (a stored 0
-// resolves to the default), matching the read side.
+// wire units (seconds). DwellSeconds and QuietSeconds report the EFFECTIVE values
+// (a stored 0 resolves to the default), matching the read side.
 type ConstableRoundsSettingsResult struct {
 	IntervalSeconds int
 	DwellSeconds    int
+	QuietSeconds    int
 }
 
 // SetConstableRoundsSettings returns a Command that live-tunes the constable
-// rounds cadence (LLM-514): how often he leaves his post to walk the businesses,
-// and how long he pauses at each. Both fields optional (nil = leave unchanged) but
-// at least one must be supplied; each must be >= 0 seconds. IntervalSeconds == 0
-// is the explicit OFF-switch (ConstableRoundsDue treats interval <= 0 as
-// "rounds disabled"); DwellSeconds == 0 resolves to the default at read
-// (EffectiveConstableRoundsDwell), since a zero pause would defeat the
-// pause-and-engage design. Takes effect on the next schedule tick / arrival AND
-// persists on the next checkpoint via MutableWorldSettings, so a live change
-// survives restart.
-func SetConstableRoundsSettings(intervalSeconds, dwellSeconds *int) Command {
+// rounds cadence (LLM-514; quiet added LLM-537): how often he leaves his post to
+// walk the businesses, how long he pauses at each, and how long a stop's
+// conversation must have been silent before he walks on. All fields optional
+// (nil = leave unchanged) but at least one must be supplied; each must be >= 0
+// seconds. IntervalSeconds == 0 is the explicit OFF-switch (ConstableRoundsDue
+// treats interval <= 0 as "rounds disabled"); DwellSeconds == 0 and
+// QuietSeconds == 0 resolve to their defaults at read
+// (EffectiveConstableRoundsDwell / EffectiveConstableRoundsQuiet) — a zero pause
+// would defeat the pause-and-engage design, and a zero quiet-window would walk him
+// out the instant a line landed. Takes effect on the next schedule tick / dwell
+// re-check AND persists on the next checkpoint via MutableWorldSettings, so a live
+// change survives restart.
+func SetConstableRoundsSettings(intervalSeconds, dwellSeconds, quietSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if intervalSeconds == nil && dwellSeconds == nil {
+			if intervalSeconds == nil && dwellSeconds == nil && quietSeconds == nil {
 				return nil, ErrInvalidConstableRoundsSetting
 			}
-			for _, v := range []*int{intervalSeconds, dwellSeconds} {
+			for _, v := range []*int{intervalSeconds, dwellSeconds, quietSeconds} {
 				if v != nil && (*v < 0 || *v > math.MaxInt32) {
 					return nil, ErrInvalidConstableRoundsSetting
 				}
@@ -609,9 +613,13 @@ func SetConstableRoundsSettings(intervalSeconds, dwellSeconds *int) Command {
 			if dwellSeconds != nil {
 				w.Settings.ConstableRoundsDwell = time.Duration(*dwellSeconds) * time.Second
 			}
+			if quietSeconds != nil {
+				w.Settings.ConstableRoundsQuiet = time.Duration(*quietSeconds) * time.Second
+			}
 			return ConstableRoundsSettingsResult{
 				IntervalSeconds: int(w.Settings.ConstableRoundsInterval / time.Second),
 				DwellSeconds:    int(EffectiveConstableRoundsDwell(w) / time.Second),
+				QuietSeconds:    int(EffectiveConstableRoundsQuiet(w) / time.Second),
 			}, nil
 		},
 	}

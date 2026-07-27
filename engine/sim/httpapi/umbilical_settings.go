@@ -128,13 +128,16 @@ type UmbilicalSettingsDTO struct {
 	// actually using.
 	EcoAudienceIdleSeconds int `json:"eco_audience_idle_seconds"`
 
-	// Constable rounds (LLM-514) — the knobs settings/constable-rounds writes,
-	// persisted like the huddle_loop_* group. interval == 0 is the OFF-switch
-	// (rounds disabled), reported RAW so a 0 reads as "off" not a fall-through to a
-	// default; dwell is reported as the EFFECTIVE value (a stored 0 resolves to the
-	// 45s default), since a zero pause is defaulted rather than treated as off.
+	// Constable rounds (LLM-514; quiet added LLM-537) — the knobs
+	// settings/constable-rounds writes, persisted like the huddle_loop_* group.
+	// interval == 0 is the OFF-switch (rounds disabled), reported RAW so a 0 reads
+	// as "off" not a fall-through to a default; dwell and quiet are reported as
+	// EFFECTIVE values (a stored 0 resolves to the 45s / 90s defaults), since
+	// neither zero is an off-switch. quiet is how long a stop's conversation must
+	// have been silent before the rounds advance stops deferring.
 	ConstableRoundsIntervalSeconds int `json:"constable_rounds_interval_seconds"`
 	ConstableRoundsDwellSeconds    int `json:"constable_rounds_dwell_seconds"`
+	ConstableRoundsQuietSeconds    int `json:"constable_rounds_quiet_seconds"`
 
 	// Visitor cascade (LLM-437) — the knobs driving the transient-visitor tier
 	// (engine/sim/visitor.go + cascade/visitor.go + the LLM-410 factor). Unlike
@@ -286,6 +289,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
 			ConstableRoundsIntervalSeconds:        int(world.Settings.ConstableRoundsInterval / time.Second),
 			ConstableRoundsDwellSeconds:           int(sim.EffectiveConstableRoundsDwell(world) / time.Second),
+			ConstableRoundsQuietSeconds:           int(sim.EffectiveConstableRoundsQuiet(world) / time.Second),
 			VisitorSpawnChancePermille:            world.Settings.VisitorSpawnChancePermille,
 			VisitorMaxConcurrent:                  visitorMax,
 			VisitorTickIntervalSeconds:            int(visitorTick / time.Second),

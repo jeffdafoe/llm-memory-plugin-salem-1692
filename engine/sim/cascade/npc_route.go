@@ -392,7 +392,15 @@ func constableAdvanceAfterDwell(actorID sim.ActorID, gen uint64, stopIdx int) si
 			// Mid-conversation: don't drag him out of a huddle — re-arm the dwell and
 			// re-check after another interval. Dwelling stays true throughout, so a
 			// stray arrival is still ignored.
-			if sim.ActorInActiveHuddle(w, actor) {
+			//
+			// The test is LIVENESS, not lifecycle (LLM-537). The original predicate
+			// here was ActorInActiveHuddle, i.e. "the huddle has not concluded" — but
+			// a huddle deliberately stays open for HuddleSilenceTimeout (2h) after its
+			// last word, so a stop whose conversation had plainly ended kept deferring
+			// on every re-check. A keeper who correctly said nothing was enough to
+			// hold him: silence is what ends a conversation, and silence was what the
+			// old predicate could not see.
+			if sim.ConstableStopStillTalking(w, actor, time.Now().UTC(), sim.EffectiveConstableRoundsQuiet(w)) {
 				armConstableDwellTimer(w, actorID, stopIdx)
 				return nil, nil
 			}

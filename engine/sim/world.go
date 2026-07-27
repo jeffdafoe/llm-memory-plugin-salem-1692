@@ -113,11 +113,17 @@ type WorldSettings struct {
 	// entirely (the per-feature off-switch posture, like StallWearPerCoin==0);
 	// ConstableRoundsDwell <= 0 falls back to the default at read
 	// (EffectiveConstableRoundsDwell) since a zero dwell would defeat the
-	// pause-and-engage design. Settings keys: constable_rounds_interval_seconds,
-	// constable_rounds_dwell_seconds. Live-tunable via the umbilical, persisted
-	// on the checkpoint. Defaults: 2h interval, 45s dwell.
+	// pause-and-engage design. ConstableRoundsQuiet is how long the stop's
+	// conversation must have been silent before the dwell driver walks him on
+	// (LLM-537) — a liveness window over the huddle's last activity, NOT its
+	// lifecycle flag, which stays open for 2h and parked him at the stop. It too
+	// falls back to its default at read (EffectiveConstableRoundsQuiet). Settings
+	// keys: constable_rounds_interval_seconds, constable_rounds_dwell_seconds,
+	// constable_rounds_quiet_seconds. Live-tunable via the umbilical, persisted
+	// on the checkpoint. Defaults: 2h interval, 45s dwell, 90s quiet.
 	ConstableRoundsInterval time.Duration
 	ConstableRoundsDwell    time.Duration
+	ConstableRoundsQuiet    time.Duration
 
 	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
 	// applied to every eligible actor. NeedThresholds carries the per-need

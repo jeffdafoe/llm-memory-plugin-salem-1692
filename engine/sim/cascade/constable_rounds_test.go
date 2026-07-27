@@ -461,6 +461,146 @@ func TestConstableSupersedeStopsDwellTimer(t *testing.T) {
 	})
 }
 
+// dwellAtStopInHuddle stands the constable at his first rounds stop mid-dwell, puts
+// him in huddle "h1" with the given stamps, then runs ONE dwell advance and returns
+// the resulting StopIdx (or -1 when the route is gone). Everything runs on the world
+// goroutine in a single command, so the real dwell timer armed by arrival (the 45s
+// default here) can never race the advance under test.
+//
+// mutate customizes the huddle before the advance — the differences between the
+// LLM-537 cases are entirely in LastActivityAt / LastPCUtteranceAt.
+func dwellAtStopInHuddle(t *testing.T, w *sim.World, mutate func(*sim.Huddle)) int {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
+			return nil, err
+		}
+		sid := world.ActiveRoutes["gideon"].Stops[0].EnterStructureID
+		actor := world.Actors["gideon"]
+		actor.InsideStructureID = sid
+		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}
+		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
+
+		h := &sim.Huddle{
+			ID:          "h1",
+			Members:     map[sim.ActorID]struct{}{"gideon": {}, "keeper": {}},
+			StructureID: sid,
+			StartedAt:   time.Now().Add(-10 * time.Minute),
+		}
+		mutate(h)
+		world.Huddles["h1"] = h
+		actor.CurrentHuddleID = "h1"
+
+		gen := world.ActiveRoutes["gideon"].Gen
+		if _, err := constableAdvanceAfterDwell("gideon", gen, 0).Fn(world); err != nil {
+			return nil, err
+		}
+		if r := world.ActiveRoutes["gideon"]; r != nil {
+			return r.StopIdx, nil
+		}
+		return -1, nil
+	}})
+	if err != nil {
+		t.Fatalf("dwell advance: %v", err)
+	}
+	return res.(int)
+}
+
+// TestConstableAdvancesWhenStopGoesQuiet is the LLM-537 regression. The live case:
+// the constable and Ezekiel Crane traded goodbyes at the Blacksmith, Ezekiel ticked
+// three seconds later and correctly said nothing, and the constable then stood in
+// the smithy for 9+ minutes. The huddle was UNCONCLUDED the whole time — it stays
+// open for HuddleSilenceTimeout (2h) so a returning patron resumes the conversation
+// — so the old lifecycle predicate deferred the advance on every re-check. A keeper
+// who correctly stays silent was, on its own, enough to hold him at the stop.
+//
+// The sub-tests are the four states the predicate has to tell apart. The
+// deferring ones are the LLM-514 intent that must not regress.
+func TestConstableAdvancesWhenStopGoesQuiet(t *testing.T) {
+	// Well past the 90s default quiet window, and nowhere near the 2h lifecycle
+	// timeout — the whole gap the old predicate could not see.
+	const gone = 5 * time.Minute
+
+	t.Run("quiet_conversation_advances", func(t *testing.T) {
+		w := buildConstableCascadeWorld(t)
+		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+		cancel := runRouteCascadeWorld(t, w)
+		defer cancel()
+		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
+			h.LastActivityAt = time.Now().Add(-gone)
+		})
+		if got == 0 {
+			t.Error("StopIdx still 0 — a stop whose conversation went silent must not hold him; the huddle stays unconcluded for 2h")
+		}
+	})
+
+	t.Run("mid_exchange_still_defers", func(t *testing.T) {
+		w := buildConstableCascadeWorld(t)
+		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+		cancel := runRouteCascadeWorld(t, w)
+		defer cancel()
+		// A partner replying inside the window — NPCs answer at tick speed, well
+		// under the 60s DefaultNPCAwaitReplyWindow the 90s default is sized against.
+		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
+			h.LastActivityAt = time.Now().Add(-10 * time.Second)
+		})
+		if got != 0 {
+			t.Errorf("StopIdx = %d, want 0 — must not yank him out of a conversation still in progress (LLM-514)", got)
+		}
+	})
+
+	t.Run("player_attended_defers_though_quiet", func(t *testing.T) {
+		w := buildConstableCascadeWorld(t)
+		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+		cancel := runRouteCascadeWorld(t, w)
+		defer cancel()
+		// A human reads and types: DefaultPCAwaitReplyWindow is 5 minutes against an
+		// NPC's 60s, so a window sized for NPC turn-taking would walk him off
+		// mid-sentence on a player. Same huddlePCAttended test the loop sweep uses.
+		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
+			h.LastActivityAt = time.Now().Add(-gone)
+			h.LastPCUtteranceAt = time.Now().Add(-time.Minute)
+		})
+		if got != 0 {
+			t.Errorf("StopIdx = %d, want 0 — a player is still in this conversation", got)
+		}
+	})
+
+	t.Run("player_wandered_off_advances", func(t *testing.T) {
+		w := buildConstableCascadeWorld(t)
+		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+		cancel := runRouteCascadeWorld(t, w)
+		defer cancel()
+		// Past huddlePCAttentionWindow (3m): a parked-and-silent player must not
+		// shield the stop forever, or the constable never finishes a round again.
+		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
+			h.LastActivityAt = time.Now().Add(-gone)
+			h.LastPCUtteranceAt = time.Now().Add(-10 * time.Minute)
+		})
+		if got == 0 {
+			t.Error("StopIdx still 0 — a player who stopped talking long ago must not park him at the stop")
+		}
+	})
+}
+
+// TestConstableQuietWindowTunable: the live knob reaches the dwell driver. The same
+// silence that advances him under the 90s default keeps deferring when the operator
+// widens the window — proof the setting is read at the decision, not baked in.
+func TestConstableQuietWindowTunable(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	w.Settings.ConstableRoundsQuiet = time.Hour
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
+		h.LastActivityAt = time.Now().Add(-5 * time.Minute)
+	})
+	if got != 0 {
+		t.Errorf("StopIdx = %d, want 0 — 5m of silence is inside a 1h quiet window", got)
+	}
+}
+
 // TestRouteStopEnterOptIn: fix #2 regression — entering is OPT-IN. A tile-based
 // route's candidate (Enter=false) over a door-backed business stays a loiter stop;
 // the constable's builder (Enter=true) enters.
