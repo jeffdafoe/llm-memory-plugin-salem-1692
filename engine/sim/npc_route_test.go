@@ -1363,6 +1363,59 @@ func TestSuspendedRound_CreditsAStopHeCallsAtHimself(t *testing.T) {
 	}
 }
 
+// TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop pins the
+// resolution order in reachedStopIndex (code_review, LLM-543). Two stops whose
+// tolerant regions overlap — businesses close enough to share a doorstep — must not
+// let a neighbouring pin answer for the one he actually walked to. The break-off stop
+// wins outright, because it is the only place the suspended cue names and therefore
+// the only one he can be deliberately returning to; plain first-match would resume the
+// round from a stop he never visited whenever the neighbour sorted earlier.
+func TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Suspend at stop 0, then force stop 2's pin to overlap stop 0's so both match.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		a.Pos = sim.Position{X: 900, Y: 900}
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("step away: %v", err)
+	}
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		route.Stops[2].WalkTo = route.Stops[0].WalkTo
+		a := world.Actors["lamp"]
+		a.Pos = visitorSlotBeside(route.Stops[0].WalkTo)
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("overlap the pins: %v", err)
+	}
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("route gone")
+	}
+	if route.Phase == sim.RoutePhaseSuspended {
+		t.Fatal("standing at the break-off stop did not resume the round — an overlapping " +
+			"neighbour answered for it")
+	}
+	if route.Visited[2] {
+		t.Error("credited stop 2 for an arrival at stop 0's pin — the break-off stop must win")
+	}
+}
+
 // TestRoundCompletes_WhenEveryStopIsWalkedOutOfOrder pins the property the whole
 // visited set exists to give: a round ENDS. Jeff's "never finishes" was the cursor
 // unable to move, but a half-fixed version — crediting stops without letting the

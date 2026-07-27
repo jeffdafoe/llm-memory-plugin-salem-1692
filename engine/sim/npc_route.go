@@ -469,14 +469,28 @@ func (r *NPCRoute) unvisitedExcluding(idx int) int {
 // demonstrably there (this runs from an ActorArrived, so a completed move ended
 // here; it is never a walk-past).
 //
-// First match wins. Two stops within LoiterAttributionTiles of each other would mean
-// two businesses sharing a doorstep, and crediting either is right.
+// Resolution order matters when two stops' tolerant regions overlap (two businesses
+// close enough to share a doorstep). Plain first-match would let a neighbouring pin
+// answer for the one he actually walked to — and worse, if the earlier match happened
+// to BE the cursor it would resume the round from somewhere he never went.
+//
+//  1. The break-off stop wins outright. It is the one place the suspended cue names,
+//     so it is the only one he can be deliberately returning to, and an ambiguous
+//     position should resolve to the resume rather than to a neighbour.
+//  2. Otherwise the first UNVISITED match. A stop already recorded has nothing to
+//     add, and preferring it would let a visited neighbour keep answering for a stop
+//     he still owes — which would never then be recorded.
+//
+// Matching only visited stops reports none: the visit is already on the books.
 func (r *NPCRoute) reachedStopIndex(a *Actor) (int, bool) {
 	if r == nil || a == nil {
 		return 0, false
 	}
+	if r.StopIdx >= 0 && r.StopIdx < len(r.Stops) && RouteStopReached(r, a, r.Stops[r.StopIdx]) {
+		return r.StopIdx, true
+	}
 	for i, stop := range r.Stops {
-		if RouteStopReached(r, a, stop) {
+		if !r.hasVisited(i) && RouteStopReached(r, a, stop) {
 			return i, true
 		}
 	}
@@ -1039,8 +1053,10 @@ func resumeSuspendedRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRoute
 		// while he stood in the seventh, so he re-derived the same plan and set off for
 		// somewhere he had just been.
 		route.markVisited(reachedIdx)
-		log.Printf("sim/npc_route: %q called at stop %d of its own accord while the round waits — recorded, %d still owed",
-			route.NPCID, reachedIdx, route.unvisitedExcluding(-1))
+		// Counted the same way the cue counts, so the log and the prompt never tell an
+		// operator two different stories about how much of the round is left.
+		log.Printf("sim/npc_route: %q called at stop %d of its own accord while the round waits (broke off at stop %d, %d other place(s) still owed)",
+			route.NPCID, reachedIdx, route.StopIdx, route.unvisitedExcluding(route.StopIdx))
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "still_suspended"}, nil
 	}
 	log.Printf("sim/npc_route: %q returned to its round at stop %d — resuming", route.NPCID, route.StopIdx)
