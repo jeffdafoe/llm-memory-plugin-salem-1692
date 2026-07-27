@@ -58,11 +58,16 @@ const DefaultLodgingBedtimeHour = 22
 // exists to break. In-world minutes, measured from the night window's open.
 const lodgerRetireGraceMinutes = 45
 
-// lodgerNightWindow returns the [start, end) minute-of-day window during which a
-// lodger is bedded at the inn it rents: [LodgingBedtimeHour, DawnTime). It wraps
-// past midnight (bedtime > dawn), which minuteInShiftWindow handles. A lodger
-// beds while inside this window and wakes when it closes at dawn — one window
-// drives both gates, so they can never thrash at the boundary.
+// lodgerNightWindow returns the [start, end) minute-of-day window during which
+// the ENGINE beds a lodger at the inn it rents: [LodgingBedtimeHour, DawnTime).
+// It wraps past midnight (bedtime > dawn), which minuteInShiftWindow handles.
+//
+// This is the auto-bed's window only. The WAKE is bounded by the wider
+// inVoluntaryNightWindow ([dusk, dawn)), because turn_in can bed a lodger from
+// dusk and a wake read off this narrower window swept him straight back out of
+// bed (LLM-541). The two share their close at dawn, so the bed and wake gates
+// still cannot thrash at the boundary — the wake simply outlasts the earlier of
+// the two ways into bed.
 //
 // Deliberately NOT effectiveShiftWindow: a lodger's bedtime is a civil night
 // hour, not its work-shift end. effectiveShiftWindow returns a scheduled actor's
@@ -284,6 +289,39 @@ func npcInNightWindowFrom(w *World, windowStart int, now time.Time) bool {
 	return minuteInShiftWindow(windowStart, dawnH*60+dawnM, localMinuteOfDay(w, now))
 }
 
+// inVoluntaryNightWindow reports whether now falls in the VOLUNTARY night window
+// [dusk, dawn) — the window a turn_in beds an actor in, widened from the
+// auto-bed's civil bedtime hour (LLM-447).
+//
+// It is the ONE derivation of that window on the world side, shared by the two
+// gates that must agree on it: npcMayTurnIn (may this actor put itself to bed?)
+// and the lodger arm of WakeExpiredNPCSleepers (has this lodger's night ended?).
+// They were separate derivations and drifted — the bed gate opened at dusk while
+// the wake still closed on the narrower [LodgingBedtimeHour, dawn), so a lodger
+// who turned in at 19:30 was swept back awake inside the minute and spent the
+// whole evening bidding the same goodnight over and over (LLM-541). One
+// derivation makes a future widening impossible to apply to only one of them.
+//
+// The cue's copy of this window lives in perception (buildTurnInChoice) and
+// cannot share this helper — it is pure over the Snapshot and sim cannot import
+// perception. That seam has its own guard instead: TestTurnInCueMatchesSubstrate-
+// AcrossTheMatrix walks both predicates over one fixture matrix.
+//
+// ok=false when dawn/dusk don't parse. It is returned SEPARATELY rather than
+// folded into a single false so each caller keeps its own conservative posture on
+// an unusable clock: turn_in refuses, and the wake does not fire. Collapsed into
+// one bool the wake would silently invert — !false reads as "wake him".
+func inVoluntaryNightWindow(w *World, now time.Time) (inWindow, ok bool) {
+	dawn, dusk, dawnDuskOK := worldDawnDuskMinutes(w)
+	if !dawnDuskOK {
+		return false, false
+	}
+	// Both endpoints come from the one worldDawnDuskMinutes read rather than
+	// delegating the close to npcInNightWindowFrom, which would re-parse DawnTime a
+	// second time off the same settings — one window, resolved once.
+	return minuteInShiftWindow(dusk, dawn, localMinuteOfDay(w, now)), true
+}
+
 // npcMayTurnIn reports whether agent NPC a may VOLUNTARILY bed down right now —
 // the gate for the turn_in tool and, in lockstep, its perception cue (LLM-447).
 //
@@ -327,11 +365,8 @@ func npcMayTurnIn(w *World, a *Actor, now time.Time) bool {
 	if actorOnShift(w, a, localMinuteOfDay(w, now)) {
 		return false
 	}
-	_, dusk, ok := worldDawnDuskMinutes(w)
-	if !ok {
-		return false
-	}
-	return npcInNightWindowFrom(w, dusk, now)
+	inWindow, ok := inVoluntaryNightWindow(w, now)
+	return ok && inWindow
 }
 
 // npcSleepRoomAt resolves the private room an auto-sleeping NPC beds into when it
@@ -748,17 +783,27 @@ func WakeExpiredNPCSleepers(now time.Time) Command {
 				// start), symmetric with the dawn/dusk bedding gate, instead of
 				// being stranded to the 12h cap (LLM-137). An actor sleeping
 				// somewhere that is NOT its home but where it holds an active ledger
-				// grant (actorIsLodgerAt) wakes when the lodger night window closes
-				// at dawn — the same window it was bedded by. The discriminator is
-				// the RELATIONSHIP (not-at-home + lodger), not "no HomeStructureID":
-				// a homed NPC lodging elsewhere is bedded by the lodger rule, so it
-				// must wake by it too. Any other sleeper (debug tooling, a future
-				// HOME-300 shade-tree rester, a backfill) keeps the default cap-only
-				// wake, so the wake condition never outruns the bed condition.
+				// grant (actorIsLodgerAt) wakes when the night ends at dawn. The
+				// discriminator is the RELATIONSHIP (not-at-home + lodger), not "no
+				// HomeStructureID": a homed NPC lodging elsewhere is bedded by the
+				// lodger rule, so it must wake by it too. Any other sleeper (debug
+				// tooling, a future HOME-300 shade-tree rester, a backfill) keeps the
+				// default cap-only wake, so the wake condition never outruns the bed
+				// condition.
+				//
+				// The lodger's night is bounded by inVoluntaryNightWindow ([dusk,
+				// dawn)), NOT by lodgerNightWindow ([LodgingBedtimeHour, dawn)) — a
+				// lodger can reach a bed by two routes and the wake has to outlast the
+				// EARLIER of them. The auto-bed opens at the civil bedtime hour, but
+				// turn_in (LLM-447) opens at dusk, and reading only the narrower
+				// window here woke a lodger who had turned in at 19:30 on the next
+				// sweep, roughly three hours before the wake was meant to fire
+				// (LLM-541). Dawn — the close both windows share — is unchanged, so a
+				// lodger bedded by either route still wakes at the same moment.
 				wake := actorOnShift(w, a, nowMinute)
 				if a.HomeStructureID != a.InsideStructureID && actorIsLodgerAt(w, a, a.InsideStructureID, now) {
-					start, end, ok := lodgerNightWindow(w)
-					wake = ok && !minuteInShiftWindow(start, end, nowMinute)
+					inWindow, ok := inVoluntaryNightWindow(w, now)
+					wake = ok && !inWindow
 				}
 				if !wake {
 					continue
