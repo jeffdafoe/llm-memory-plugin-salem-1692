@@ -133,8 +133,12 @@ var narrationPoolMetas = map[string]narrationPoolMeta{
 		Description:   "A terse, reserved shopkeeper hands a customer the goods they just bought.",
 		CustomerToken: true,
 	},
+	// LLM-535: this read "…in as few words as possible", and the expansions
+	// collapsed past terse into dismissive ("Off with you, now.", "That will
+	// do."). Brevity is the flavor, but it is not the goal — the goal is a
+	// leave-taking, and the wording now says so.
 	"businessowner_reserved_farewell": {
-		Description:   "A terse, reserved shopkeeper sees a customer out, in as few words as possible.",
+		Description:   "A terse, reserved shopkeeper sees a customer out: brief and plain-spoken, but courteous. A real leave-taking, never a dismissal or an order to be gone.",
 		CustomerToken: true,
 	},
 	LodgingReasonCheckout: {

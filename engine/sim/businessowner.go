@@ -139,6 +139,21 @@ const (
 	// triggers a follow-up event (e.g. a peer reaction) that re-warrants
 	// the keeper on the same conversational moment.
 	businessownerEngineSpeechSuppressionTTL = 5 * time.Second
+
+	// businessownerModelFarewellWindow is how recently the keeper's own model
+	// must have spoken into the huddle for the engine farewell to stand down
+	// (LLM-535). See BusinessownerModelSpeechRecent.
+	//
+	// 2 minutes is sized off the live case that produced the ticket: a
+	// constable's round where four keepers each said goodbye in character and
+	// then got an engine coda 6-46s later. The engine line fires on HuddleLeft,
+	// which lands when the customer physically walks off the structure — so the
+	// gap being measured is "keeper's goodbye → customer actually gone," and a
+	// slow departure stretches it. 60s (DefaultNPCAwaitReplyWindow) would have
+	// covered all four observed cases but leaves only 14s of margin on the
+	// worst one; 2 minutes doubles that without reaching the length of a lull
+	// where a fresh engine farewell would genuinely be the right beat.
+	businessownerModelFarewellWindow = 2 * time.Minute
 )
 
 // businessownerPhrases — per-flavor, per-trigger phrase pools. Plain Go
@@ -200,8 +215,14 @@ var businessownerPhrases = map[string]map[BusinessownerTrigger][]string{
 			"Until next time, {customer}.",
 			"Mind yourself.",
 			"Safe to you.",
-			"Go on, then.",
-			"{customer}. Mm.",
+			// LLM-535: "Go on, then." and "{customer}. Mm." sat here and read as
+			// the keeper shooing the customer out. They are also the few-shot
+			// examples the narration expansion imitates, and the expanded pool
+			// duly drifted to "Off with you, now." and "That will do." Reserved
+			// means terse, not rude — these two keep the brevity without the
+			// brush-off.
+			"Fare you well.",
+			"Keep well, {customer}.",
 		},
 	},
 }
@@ -360,6 +381,60 @@ func businessownerEngineSpeechRecent(w *World, actorID ActorID, now time.Time) b
 	return now.Sub(stamp) < businessownerEngineSpeechSuppressionTTL
 }
 
+// BusinessownerModelSpeechRecent reports whether actorID's own model spoke into
+// huddleID within businessownerModelFarewellWindow of now. Engine-authored
+// hospitality lines don't count — see Huddle.LastModelUtteranceAtBy.
+//
+// The farewell cascade consults this before emitting (LLM-535). The engine
+// farewell covers a keeper that says nothing when a customer leaves; when the
+// keeper's model already spoke into that conversation, the engine line lands as
+// a redundant coda on a goodbye that was already said, and in the reserved
+// voice it lands as a curt one.
+//
+// Deliberately NOT goodbye-detection: the check is "did the keeper participate,"
+// not "did the keeper say a farewell." Inspecting the text for goodbye-ness
+// would be a guess about model prose, and the failure it would introduce (a
+// real goodbye we fail to recognize, so we speak over it) is the failure this
+// gate exists to stop.
+//
+// This IS a heuristic, and it is deliberately biased. It suppresses on ANY
+// recent model line, so a keeper who quoted a price two minutes ago and then
+// watched a silent customer walk out loses a farewell it would have got before
+// LLM-535. That is the accepted cost: the regression is a missing pleasantry,
+// while the defect it buys off is the keeper visibly saying goodbye twice — and
+// in the reserved voice, rudely, over a goodbye it already said warmly. A
+// narrower signal was considered and rejected: "the keeper had the last word"
+// re-admits the original defect whenever the customer answers the goodbye
+// ("aye, and to you") before walking off, which is a common shape.
+//
+// Every non-answer reads as no-recent-speech, so the caller emits — the
+// pre-LLM-535 behavior, which is the right way for a suppression gate to fail.
+// That covers an unknown or empty huddle, a keeper who has not spoken, a
+// goodbye that has aged out of the ring, and a `last` in the future of `now`
+// (event ordering or a hand-built timestamp): a negative age would otherwise
+// read as "0 seconds ago" and pin the gate open until wall-clock caught up.
+//
+// MUST be called from inside a Command.Fn or from a subscriber dispatched from
+// emit (both run on the world goroutine).
+func BusinessownerModelSpeechRecent(w *World, huddleID HuddleID, actorID ActorID, now time.Time) bool {
+	if w == nil || huddleID == "" {
+		return false
+	}
+	h := w.Huddles[huddleID]
+	if h == nil {
+		return false
+	}
+	last := h.LastModelUtteranceAtBy(actorID)
+	if last.IsZero() {
+		return false
+	}
+	age := now.Sub(last)
+	if age < 0 {
+		return false
+	}
+	return age < businessownerModelFarewellWindow
+}
+
 // BusinessownerSpeechArgs bundles the inputs to EmitBusinessownerSpeech
 // so the Command signature stays readable. All fields required except
 // RecipientIDs, which may be empty for the "no peer to address" edge case
@@ -507,9 +582,15 @@ func EmitBusinessownerSpeech(args BusinessownerSpeechArgs) Command {
 			// keeper's CurrentHuddleID, farewell via the huddle the keeper
 			// REMAINS in after the customer leaves — so the guard passes for
 			// them and fails closed for anything anomalous.
+			//
+			// LLM-535: recorded via AppendEngineUtterance so the line carries
+			// Utterance.EngineAuthored. The model must still see it (that's the
+			// ZBBS-HOME-461 point), but it must not count as the keeper having
+			// chosen to speak — otherwise an engine handover would suppress the
+			// engine farewell that follows it.
 			if h := w.Huddles[args.HuddleID]; h != nil {
 				if _, isMember := h.Members[args.SpeakerID]; isMember {
-					h.AppendUtterance(args.SpeakerID, args.SpeakerName, text, args.Now)
+					h.AppendEngineUtterance(args.SpeakerID, args.SpeakerName, text, args.Now)
 				}
 			}
 			if args.CooldownMinutes > 0 {

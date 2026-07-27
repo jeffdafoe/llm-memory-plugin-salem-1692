@@ -44,6 +44,41 @@ func TestHuddle_AppendUtterance_IgnoresEmpty(t *testing.T) {
 	}
 }
 
+// LLM-535: AppendEngineUtterance marks the line, AppendUtterance does not, and
+// LastModelUtteranceAtBy reads past the engine lines to the speaker's own last
+// word. The interleaving matters — an engine line AFTER a model line must not
+// move the answer forward, which is the case the farewell gate turns on.
+func TestHuddle_LastModelUtteranceAtBy_SkipsEngineAuthored(t *testing.T) {
+	h := &sim.Huddle{ID: "h1"}
+	base := time.Now().UTC()
+	modelAt := base.Add(1 * time.Second)
+	h.AppendUtterance("ann", "Ann", "and to you", modelAt)
+	h.AppendEngineUtterance("ann", "Ann", "Until next time, Bram.", base.Add(2*time.Second))
+
+	if got := h.LastModelUtteranceAtBy("ann"); !got.Equal(modelAt) {
+		t.Errorf("LastModelUtteranceAtBy = %v, want the model line at %v", got, modelAt)
+	}
+	// The unfiltered helper still sees the newest line whoever wrote it.
+	if got, want := h.LastUtteranceAtBy("ann"), base.Add(2*time.Second); !got.Equal(want) {
+		t.Errorf("LastUtteranceAtBy = %v, want %v", got, want)
+	}
+	if !h.RecentUtterances[1].EngineAuthored {
+		t.Error("AppendEngineUtterance did not set EngineAuthored")
+	}
+	if h.RecentUtterances[0].EngineAuthored {
+		t.Error("AppendUtterance must not set EngineAuthored")
+	}
+}
+
+// A speaker with nothing but engine lines in the ring has never chosen to speak.
+func TestHuddle_LastModelUtteranceAtBy_EngineOnlyIsZero(t *testing.T) {
+	h := &sim.Huddle{ID: "h1"}
+	h.AppendEngineUtterance("ann", "Ann", "Greetings, Bram.", time.Now().UTC())
+	if got := h.LastModelUtteranceAtBy("ann"); !got.IsZero() {
+		t.Errorf("LastModelUtteranceAtBy = %v, want zero (engine lines only)", got)
+	}
+}
+
 // CloneHuddle deep-copies the ring so a published snapshot can't be mutated by a
 // later world-goroutine append.
 func TestCloneHuddle_IsolatesRecentUtterances(t *testing.T) {

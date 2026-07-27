@@ -245,6 +245,30 @@ func TestParseNarrationExpansionReply_FenceTolerance(t *testing.T) {
 	}
 }
 
+// TestBuildNarrationExpansionPrompt_CarriesRegisterConstraint — LLM-535. The
+// reserved-farewell pool drifted from seeing a customer out to ordering them
+// out, and nothing in the prompt forbade it: "match the tone and length range"
+// was read as "match the terseness". The register clause is the only thing
+// standing between a weak model and the next beat-shift, so pin its presence.
+func TestBuildNarrationExpansionPrompt_CarriesRegisterConstraint(t *testing.T) {
+	prompt := buildNarrationExpansionPrompt(sim.NarrationExpansionContext{
+		Key:           "businessowner_reserved_farewell",
+		Description:   "A terse, reserved shopkeeper sees a customer out.",
+		Phrases:       []string{"Mind yourself."},
+		CustomerToken: true,
+		Wanted:        3,
+	})
+	for _, want := range []string{
+		"must still perform the moment described above",
+		"same social register",
+		"a different beat",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expansion prompt lost its register constraint; missing %q\n---\n%s", want, prompt)
+		}
+	}
+}
+
 func TestStripCodeFence(t *testing.T) {
 	cases := []struct {
 		name, in, want string

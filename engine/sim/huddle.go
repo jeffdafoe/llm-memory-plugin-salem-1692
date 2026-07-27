@@ -130,11 +130,20 @@ type Huddle struct {
 // Speech only — pay/deliver/order events are not conversation and are not
 // recorded here. SpeakerName is denormalized at write time so the perception
 // render needs no actor lookup.
+// EngineAuthored marks a line the engine wrote for the speaker (today: the
+// businessowner hospitality beats) rather than one the speaker's model chose to
+// say. Both kinds belong in the ring — the model must see an engine line to
+// avoid repeating it (ZBBS-HOME-461) — but a reader asking "did this actor
+// actually decide to speak" needs to tell them apart, and the ring is the only
+// place that record exists. LLM-535's farewell suppression is the first such
+// reader; before it, engine-vs-model was inferable only from the fact that
+// {customer} interpolates the full display name.
 type Utterance struct {
-	SpeakerID   ActorID
-	SpeakerName string
-	Text        string
-	At          time.Time
+	SpeakerID      ActorID
+	SpeakerName    string
+	Text           string
+	At             time.Time
+	EngineAuthored bool
 }
 
 // MaxRecentUtterancesPerHuddle caps the recent-conversation ring. Small on
@@ -241,15 +250,32 @@ func CloneHuddle(h *Huddle) *Huddle {
 // the counter measures. A PC line increments here and is reset to zero at the
 // speak site (the PC branch runs after this call).
 func (h *Huddle) AppendUtterance(speakerID ActorID, speakerName, text string, at time.Time) {
+	h.appendUtterance(speakerID, speakerName, text, at, false)
+}
+
+// AppendEngineUtterance records an engine-authored line — one the engine wrote
+// for the speaker rather than one the speaker's model produced. Identical to
+// AppendUtterance in every other respect (ring trim, TurnsSinceProgress); the
+// only difference is Utterance.EngineAuthored, which LastModelUtteranceAtBy
+// filters on.
+//
+// Separate method rather than a bool parameter on AppendUtterance: the model
+// path has seven callers and none of them should have to say "not engine".
+func (h *Huddle) AppendEngineUtterance(speakerID ActorID, speakerName, text string, at time.Time) {
+	h.appendUtterance(speakerID, speakerName, text, at, true)
+}
+
+func (h *Huddle) appendUtterance(speakerID ActorID, speakerName, text string, at time.Time, engineAuthored bool) {
 	if h == nil || text == "" {
 		return
 	}
 	h.TurnsSinceProgress++
 	h.RecentUtterances = append(h.RecentUtterances, Utterance{
-		SpeakerID:   speakerID,
-		SpeakerName: speakerName,
-		Text:        text,
-		At:          at,
+		SpeakerID:      speakerID,
+		SpeakerName:    speakerName,
+		Text:           text,
+		At:             at,
+		EngineAuthored: engineAuthored,
 	})
 	if len(h.RecentUtterances) > MaxRecentUtterancesPerHuddle {
 		// Re-home into a fresh slice so the dropped head isn't pinned by the
@@ -275,6 +301,33 @@ func (h *Huddle) LastUtteranceAtBy(id ActorID) time.Time {
 	var last time.Time
 	for _, u := range h.RecentUtterances {
 		if u.SpeakerID == id {
+			last = u.At
+		}
+	}
+	return last
+}
+
+// LastModelUtteranceAtBy is LastUtteranceAtBy restricted to lines the speaker's
+// own model produced — engine-authored lines (AppendEngineUtterance) are
+// skipped. It answers "did this actor choose to speak here," which is a
+// different question from "was this actor's name on a line here."
+//
+// LLM-535 consumes it to suppress the engine farewell when the keeper's model
+// already closed the conversation itself. The engine hospitality beats exist to
+// cover a keeper that says nothing; an engine line stacked on top of a
+// model-authored goodbye reads as the keeper saying goodbye twice.
+//
+// Ring-bounded, so a keeper's goodbye can age out of the last
+// MaxRecentUtterancesPerHuddle lines in a busy room and read here as zero. That
+// fails toward emitting the engine line — the behavior that already exists —
+// which is the safe direction for a suppression gate.
+func (h *Huddle) LastModelUtteranceAtBy(id ActorID) time.Time {
+	if h == nil {
+		return time.Time{}
+	}
+	var last time.Time
+	for _, u := range h.RecentUtterances {
+		if u.SpeakerID == id && !u.EngineAuthored {
 			last = u.At
 		}
 	}

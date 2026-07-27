@@ -261,6 +261,12 @@ func TestEmitBusinessownerSpeech_RecordsUtterance(t *testing.T) {
 		if ring[0].SpeakerID != "keeper" {
 			t.Errorf("utterance speaker = %q, want keeper", ring[0].SpeakerID)
 		}
+		// LLM-535: the model must see the line, but it must not read as the
+		// keeper having chosen to speak — the farewell gate turns on that
+		// distinction.
+		if !ring[0].EngineAuthored {
+			t.Error("engine hospitality line landed in the ring unmarked (EngineAuthored false)")
+		}
 		// The model must see the SAME line the world emitted — pin the ring text
 		// to the emitted (post-render, post-truncation) Spoke.Text exactly.
 		if ring[0].Text != spokes[0].Text {
