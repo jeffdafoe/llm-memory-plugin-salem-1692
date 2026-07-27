@@ -7,11 +7,19 @@ import (
 	"time"
 )
 
-// StampWarrantResult is what StampWarrant returns. Stamped is true when
-// the call started a fresh warrant cycle (actor wasn't warranted before);
-// false when it appended to an existing cycle.
+// StampWarrantResult is what StampWarrant returns. Stamped is tryStampWarrant's
+// own verdict: true when the funnel RECORDED the warrant — either opening a
+// fresh cycle or appending to an open one — false when it declined (an
+// agent-less actor kind, or a source-dedup hit).
+//
+// It used to report "a fresh cycle was opened", computed BEFORE the stamp, so a
+// declined stamp on an unwarranted actor still read true. Its one consumer is
+// the umbilical nudge endpoint, where the operator's actual question is "did my
+// nudge produce a tick" — and there the old value said yes to a nudge at a PC
+// that stamped nothing. Fresh-vs-append is not a distinction any caller has
+// ever needed: both produce a deliberation.
 type StampWarrantResult struct {
-	Stamped bool // true on fresh cycle, false on append-to-existing
+	Stamped bool // true when the funnel recorded the warrant, false when it declined
 }
 
 // StampWarrant returns a Command that funnels a warrant stamp through
@@ -31,9 +39,7 @@ func StampWarrant(actorID ActorID, meta WarrantMeta, now time.Time) Command {
 			if !ok {
 				return StampWarrantResult{}, fmt.Errorf("actor %q not found", actorID)
 			}
-			fresh := actor.WarrantedSince == nil
-			tryStampWarrant(w, actor, meta, now)
-			return StampWarrantResult{Stamped: fresh}, nil
+			return StampWarrantResult{Stamped: tryStampWarrant(w, actor, meta, now)}, nil
 		},
 	}
 }

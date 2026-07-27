@@ -548,3 +548,34 @@ func TestUmbilicalSetPosition_Validation(t *testing.T) {
 		t.Errorf("hannah moved to %v by a rejected set-position", pos)
 	}
 }
+
+// TestUmbilicalNudge_DeclinedAtANonDeliberatingActor: nudging a PC stamps
+// nothing — tryStampWarrant's agent-kind gate rejects it — and the response must
+// say so. Stamped used to be computed BEFORE the stamp ("did this actor have an
+// open cycle"), so this reported true while no warrant existed, telling an
+// operator their nudge had landed when it had not (LLM-542).
+func TestUmbilicalNudge_DeclinedAtANonDeliberatingActor(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	rec := postReq(t, h, "/api/village/umbilical/nudge", "tok", `{"actor_id":"bram"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("nudge = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalNudgeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Stamped {
+		t.Error("stamped=true for a PC nudge — the funnel declined it, nothing was stamped")
+	}
+
+	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["bram"].WarrantedSince != nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if warranted, _ := res.(bool); warranted {
+		t.Error("bram (a PC) holds a warrant after the nudge")
+	}
+}

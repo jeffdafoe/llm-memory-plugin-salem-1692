@@ -82,10 +82,12 @@ type umbilicalNudgeRequest struct {
 	Message string `json:"message,omitempty"`
 }
 
-// umbilicalNudgeResponse echoes the target, whether the stamp opened a fresh
-// warrant cycle (false = appended to one already in flight), and whether an
-// operator directive was attached (so the caller can confirm the directive path
-// fired rather than silently falling back to a bare nudge on a mistyped field).
+// umbilicalNudgeResponse echoes the target, whether the warrant was RECORDED
+// (false = the funnel declined it, e.g. an actor that does not deliberate — an
+// accepted append to a cycle already in flight reads true, since it produces a
+// tick just the same), and whether an operator directive was attached (so the
+// caller can confirm the directive path fired rather than silently falling back
+// to a bare nudge on a mistyped field).
 type umbilicalNudgeResponse struct {
 	ActorID   string `json:"actor_id"`
 	Stamped   bool   `json:"stamped"`
@@ -97,10 +99,11 @@ type umbilicalNudgeResponse struct {
 // message it stamps a bare WarrantKindAdmin warrant; with a message it stamps an
 // AdminDirectiveWarrantReason (WarrantKindImpulse) so the directive surfaces in
 // the forced tick's perception as an in-world felt impulse. Force is set either
-// way. The directive is inert on actors that do not deliberate (PCs, decorative
-// NPCs) — same as a bare nudge: the warrant is stamped but never rendered into a
-// deliberation prompt. 400 missing actor_id; 422 when the actor is unknown (the
-// command rejects it); 200 with the stamp result.
+// way. A nudge at an actor that does not deliberate (a PC, a decorative NPC) is
+// DECLINED, not merely inert — tryStampWarrant's agent-kind gate rejects it and
+// no warrant exists afterwards; the response reports stamped=false so the
+// operator can tell that from a nudge that landed. 400 missing actor_id; 422
+// when the actor is unknown (the command rejects it); 200 with the stamp result.
 func (s *Server) handleUmbilicalNudge(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	if user == nil {

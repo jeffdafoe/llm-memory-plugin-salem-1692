@@ -119,12 +119,13 @@ func TestDischarge_ReStampOfADischargedSpeechIsRejected(t *testing.T) {
 	arrangeInFlightWithOpenCycle(t, w, nil, nil, now)
 	completeWithDischarge(t, w, sim.TickStatusSuccess, []sim.WarrantSourceKey{speechKey(77)}, now)
 
-	if _, err := w.Send(sim.StampWarrant("alice", speechWarrant(77), now)); err != nil {
+	res, err := w.Send(sim.StampWarrant("alice", speechWarrant(77), now))
+	if err != nil {
 		t.Fatalf("StampWarrant: %v", err)
 	}
-	// Asserted on actor state, not StampWarrantResult.Stamped — that field
-	// reports "the actor had no open cycle when we were called", which is
-	// true whether or not the stamp itself was accepted.
+	if res.(sim.StampWarrantResult).Stamped {
+		t.Error("StampWarrant reported the discharged re-stamp as recorded")
+	}
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
 		if a.WarrantedSince != nil || len(a.Warrants) != 0 {
 			t.Errorf("a re-stamp of the discharged speech opened a cycle: warrants=%d", len(a.Warrants))
