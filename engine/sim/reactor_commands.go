@@ -570,6 +570,27 @@ func EvaluateReactors(now time.Time) Command {
 					// warrant is forced would re-protect exactly the stale pile
 					// we're dropping (code_review). The freshest signals re-stamp
 					// a new cycle while the actor stays shelved.
+					//
+					// EXCEPT a cycle whose ONLY blocker is the actor's own reply
+					// cadence (LLM-536): a laboring worker or a baker holding an
+					// NPC-speech warrant is shelved until a moment the engine can
+					// name, and will certainly reach. Defer to that moment instead
+					// of aging the warrant out against a 90s horizon shorter than
+					// the 180s shelve — the posture the evaluator already takes
+					// everywhere else (AdmissionBackoff, the not-yet-stale push
+					// below). Without this the question is destroyed rather than
+					// postponed, and since neither party can then produce the
+					// "next fresh utterance" the LLM-230 design waits for, the
+					// conversation deadlocks outright (the live constable
+					// interview, 2026-07-27: 22 minutes of village-wide silence).
+					// Scoped tightly by replyCadenceDeferUntil — a sleeper, a
+					// rester, a pile carrying no speech warrant, and any cycle
+					// holding a Force warrant all keep the ZBBS-WORK-361 handling
+					// below unchanged.
+					if until, ok := replyCadenceDeferUntil(actor, now, w.Settings); ok {
+						actor.WarrantDueAt = &until
+						continue
+					}
 					if warrantCycleStale(actor, now, w.Settings) {
 						if hasForcedWarrant(actor.Warrants) {
 							retainForcedWarrants(actor, now, w.Settings)

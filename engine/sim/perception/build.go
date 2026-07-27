@@ -1532,7 +1532,15 @@ func buildTurnState(snap *sim.Snapshot, actorID sim.ActorID, subj *sim.ActorSnap
 		return ts
 	}
 	now := snap.PublishedAt
-	subjWindow := awaitWindowForKind(snap, subj.Kind)
+	// Both windows are widened by the ADDRESSEE's reply pacing (LLM-536,
+	// sim.ActorSnapshot.ReplyPacingWindow): a mid-job or mid-bake actor answers
+	// NPC speech on a cadence, so an edge pointed at one has not lapsed merely
+	// because the plain 60s window ran out — the addressee has not had its turn
+	// yet. Un-widened, the "they are waiting for your reply" line expires ~2
+	// minutes before a laboring worker can speak, and she draws her tick with
+	// nothing marking the question as owed. Zero for everyone else, so this is a
+	// no-op outside the two paced states.
+	subjWindow := awaitWindowForKind(snap, subj.Kind) + subj.ReplyPacingWindow
 	for _, m := range members {
 		peer := snap.Actors[m.ID]
 		if peer == nil {
@@ -1540,12 +1548,13 @@ func buildTurnState(snap *sim.Snapshot, actorID sim.ActorID, subj *sim.ActorSnap
 		}
 		label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
 		// Subject addressed this peer and awaits their reply — the addressee is
-		// the peer, so the window is keyed on the peer's kind.
-		if awaitEdgeLive(subj.AwaitingReplyFrom, m.ID, now, awaitWindowForKind(snap, peer.Kind)) {
+		// the peer, so the window is keyed on the peer's kind and pacing.
+		if awaitEdgeLive(subj.AwaitingReplyFrom, m.ID, now, awaitWindowForKind(snap, peer.Kind)+peer.ReplyPacingWindow) {
 			ts.AwaitingReplyFrom = append(ts.AwaitingReplyFrom, label)
 		}
 		// This peer addressed the subject and awaits the subject's reply — the
-		// addressee is the subject, so the window is keyed on the subject's kind.
+		// addressee is the subject, so the window is keyed on the subject's kind
+		// and pacing.
 		if awaitEdgeLive(peer.AwaitingReplyFrom, actorID, now, subjWindow) {
 			ts.OwedReplyTo = append(ts.OwedReplyTo, label)
 		}

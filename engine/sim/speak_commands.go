@@ -218,7 +218,14 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 			// pre-speak turn-state.
 			if actor.Kind != KindPC && !hasNewNews && addressedID != "" {
 				if addressee := w.Actors[addressedID]; addressee != nil {
-					window := w.awaitReplyWindow(addressee.Kind)
+					// Widened by the addressee's reply pacing (LLM-536): a mid-job
+					// or mid-bake addressee answers on a cadence longer than the
+					// 60s window, so without this the speaker is released to
+					// re-pitch while the first ask is still legitimately pending —
+					// and the perception turn-line, which widens the same way,
+					// would be telling him to wait. Keeping the gate and the line
+					// on one value is the point of sharing replyPacedCadence.
+					window := w.awaitReplyWindow(addressee.Kind) + replyPacedCadence(addressee, at, w.Settings)
 					if actor.hasLiveAwaitEdge(addressedID, at, window) {
 						name := addressee.DisplayName
 						if name == "" {

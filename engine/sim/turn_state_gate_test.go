@@ -179,3 +179,43 @@ func TestTurnStateGate_WholeHuddleNotGated(t *testing.T) {
 		t.Errorf("a whole-huddle utterance must not be gated, got: %v", err)
 	}
 }
+
+// TestTurnStateGate_PacedAddresseeWidensWindow — LLM-536. A mid-job addressee
+// answers NPC speech on the 3m LaborReplyCadence, so the gate widens its window
+// by that cadence: the asker stays held for the whole wait the pacing imposes
+// rather than being released to re-pitch at 60s into a worker who is about to
+// answer him. The perception turn-line widens by the same value off the
+// published snapshot, so the rendered "wait" and this reject agree.
+func TestTurnStateGate_PacedAddresseeWidensWindow(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	// Ezekiel takes a job — his replies are now paced.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["ezekiel"]
+		a.State = sim.StateLaboring
+		until := gateBase.Add(2 * time.Hour)
+		a.LaboringUntil = &until
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed laboring addressee: %v", err)
+	}
+
+	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", nil, true, gateBase)); err != nil {
+		t.Fatalf("first speak: %v", err)
+	}
+	// 2m in — past the plain 60s window, inside the widened 240s one. Without the
+	// widening this re-pitch would land while his reply is still legitimately
+	// pending.
+	if _, err := w.Send(sim.SpeakTo("hannah", "Bread?", "Ezekiel", nil, false, gateBase.Add(2*time.Minute))); err == nil {
+		t.Error("a re-pitch inside the addressee's reply pacing should still be gated")
+	}
+	// Past the widened window → lapsed → allowed. The pacing buys him one
+	// cadence, not immunity.
+	if _, err := w.Send(sim.SpeakTo("hannah", "Bread, perhaps?", "Ezekiel", nil, false, gateBase.Add(5*time.Minute))); err != nil {
+		t.Errorf("after the widened window lapses, the re-initiation should be allowed, got: %v", err)
+	}
+}
