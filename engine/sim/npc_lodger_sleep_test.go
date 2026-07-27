@@ -259,6 +259,89 @@ func TestLodgerWakeAtDawn(t *testing.T) {
 	})
 }
 
+// TestLodgerTurnInSurvivesTheSleepSweep is the LLM-541 regression: a lodger who
+// ends his own evening stays in bed.
+//
+// turn_in beds a lodger from dusk (npcMayTurnIn, LLM-447) but the wake was read
+// off the narrower auto-bed window [LodgingBedtimeHour, dawn), so every voluntary
+// bed-down before 22:00 was undone by the next once-a-minute sweep. Live shape:
+// Roger Standish, lodging at the Tavern on 2026-07-26, called turn_in 28 times
+// across 2h52m — one futile goodnight per 5-minute visitor pacing beat — and
+// only stayed down once the clock reached the hour the wake happened to agree
+// with.
+//
+// lodgerSleepWorld: dawn 07:00, dusk 19:00, lodger bedtime 22:00. Every hour
+// below sits in the [dusk, bedtime) band where the two windows disagreed.
+func TestLodgerTurnInSurvivesTheSleepSweep(t *testing.T) {
+	beddedAt := func(t *testing.T, a *Actor, at time.Time) *World {
+		t.Helper()
+		w := lodgerSleepWorld(a)
+		// The tool gate must open here, or the bed is unreachable and the sweep is
+		// not what this test is measuring.
+		if !npcMayTurnIn(w, a, at) {
+			t.Fatalf("npcMayTurnIn = false at %s; want true — turn_in's window opens at dusk", at.Format("15:04"))
+		}
+		if !executeNPCSleep(w, a, at) {
+			t.Fatalf("executeNPCSleep refused to bed the lodger at %s", at.Format("15:04"))
+		}
+		return w
+	}
+
+	for _, at := range []time.Time{
+		time.Date(2026, 5, 22, 19, 0, 0, 0, time.UTC),  // dusk exactly — the window's open
+		time.Date(2026, 5, 22, 19, 30, 0, 0, time.UTC), // the live shape
+		time.Date(2026, 5, 22, 21, 0, 0, 0, time.UTC),  // an hour short of the auto-bed hour
+	} {
+		t.Run("turned in at "+at.Format("15:04"), func(t *testing.T) {
+			a := lodgerNPC("l", at.Add(72*time.Hour))
+			w := beddedAt(t, a, at)
+			// The sweep runs once a minute; before the fix it woke him on this pass.
+			if _, err := WakeExpiredNPCSleepers(at.Add(time.Minute)).Fn(w); err != nil {
+				t.Fatalf("wake sweep: %v", err)
+			}
+			if a.SleepingUntil == nil {
+				t.Errorf("lodger who turned in at %s was woken by the next sleep sweep; want still asleep — "+
+					"the wake window must not outrun the bed window turn_in opens", at.Format("15:04"))
+			}
+		})
+	}
+
+	// Not visitor-specific: the wake branch keys on the RELATIONSHIP (away from
+	// home + holding a grant), so a homed villager boarding at the inn takes the
+	// identical path.
+	t.Run("homed NPC lodging away from home", func(t *testing.T) {
+		at := time.Date(2026, 5, 22, 19, 30, 0, 0, time.UTC)
+		a := lodgerNPC("l", at.Add(72*time.Hour))
+		a.HomeStructureID = "cottage" // has a home, but is not in it
+		w := beddedAt(t, a, at)
+		if _, err := WakeExpiredNPCSleepers(at.Add(time.Minute)).Fn(w); err != nil {
+			t.Fatalf("wake sweep: %v", err)
+		}
+		if a.SleepingUntil == nil {
+			t.Error("homed NPC lodging at the inn was woken after turning in at 19:30; want still asleep")
+		}
+	})
+
+	// The other half: the fix must not strand him. A voluntary bed-down still ends
+	// at dawn, and by the WINDOW rather than the 12h cap — 19:30 + 12h is 07:30,
+	// half an hour past the dawn this asserts.
+	t.Run("still wakes at dawn, not the cap", func(t *testing.T) {
+		at := time.Date(2026, 5, 22, 19, 30, 0, 0, time.UTC)
+		dawn := time.Date(2026, 5, 23, 7, 0, 0, 0, time.UTC)
+		a := lodgerNPC("l", at.Add(72*time.Hour))
+		w := beddedAt(t, a, at)
+		if a.SleepingUntil == nil || !a.SleepingUntil.After(dawn) {
+			t.Fatalf("sleep cap = %v; this subcase needs a cap PAST dawn or it proves nothing", a.SleepingUntil)
+		}
+		if _, err := WakeExpiredNPCSleepers(dawn).Fn(w); err != nil {
+			t.Fatalf("wake sweep: %v", err)
+		}
+		if a.SleepingUntil != nil {
+			t.Error("lodger who turned in the evening before did NOT wake at dawn; want woken when the night window closes")
+		}
+	})
+}
+
 // withActiveHuddle attaches an active (un-concluded) huddle to the named actors
 // so actorInActiveHuddle reads true — the "mid-conversation" condition the
 // deliberate-retire backstop holds for (LLM-36). Populates both Huddles and

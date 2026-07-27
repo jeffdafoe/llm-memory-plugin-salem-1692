@@ -30,6 +30,13 @@ import (
 // bed-down is executeNPCSleep, and waking stays entirely on WakeExpiredNPCSleepers.
 // The deterministic backstops are untouched — turn_in only opens a voluntary
 // window earlier.
+//
+// That last clause carried an assumption — that widening the bed window needed
+// no wake-side change. It did. A bed reachable at dusk, against a wake still
+// bounded by the 22:00 auto-bed hour, meant every voluntary bed-down before 22:00
+// was swept away within the minute (LLM-541). Both gates now read one window,
+// inVoluntaryNightWindow. Widening a way into bed is not free — whatever ends the
+// sleep has to be widened with it.
 
 // TurnIn is the commit for the turn_in tool: the actor bids any companions
 // goodnight and goes to bed. Terminal-on-success — the tick ends here, because
