@@ -63,6 +63,17 @@ func init() {
 			build: travelerRoundsMeetingHouseScenario,
 		},
 		perceptionScenario{
+			name: "traveler_factor_shipment_delivered",
+			summary: "LLM-553: a wholesale factor whose iron shipment has gone into the village, still standing " +
+				"with the distributor keeper mid-afternoon. His SELL errand has settled — which no sell errand " +
+				"could do before, so '## Your rounds' pressed the trade-here steer at this one keeper all day " +
+				"while commerce confinement made every other stop talk-only, and he walked back to this counter " +
+				"over and over. Pins the settled-SELLER wind-down, written in LLM-507 and never rendered until " +
+				"now: his business is done and the day is his for social calls, even though cloth and charms " +
+				"remain in the bale.",
+			build: travelerFactorShipmentDeliveredScenario,
+		},
+		perceptionScenario{
 			name: "traveler_errand_settled_midday",
 			summary: "LLM-507/508: the same settled nail-buyer, but at midday — hours of daylight left. The settled " +
 				"lead gives him the day for social calls instead of pitching supper-and-bed (which had him announcing " +
@@ -655,5 +666,118 @@ func TestRoundsOpenShopsGatedOnBusinessTag(t *testing.T) {
 	out = combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
 	if !strings.Contains(out, "Meeting House") {
 		t.Errorf("tagging the same structure TagBusiness did not bring it back into the open-shops line, so the exclusion above is not the tag gate — check the fixture's keeper before trusting it:\n%s", out)
+	}
+}
+
+// travelerFactorShipmentDeliveredScenario reproduces the live 2026-07-28 shape (LLM-553):
+// Daniel Holcomb, a wholesale factor whose iron shipment has gone into the village, standing
+// mid-afternoon with the distributor keeper he came to deal with. His errand is a SELL, and it
+// has settled — which until LLM-553 was unreachable, because only a BUY errand could ever set
+// Settled. So "## Your rounds" spent the whole daylight visit rendering the trade-here steer at
+// this same keeper while commerce confinement made every other stop talk-only, and he walked
+// back to this counter over and over.
+//
+// What this pins is the settled-SELLER wind-down prose, written in LLM-507 and never once
+// rendered in production or in a golden until now. Note the pack he still carries: cloth and
+// charms are the secondary bale, and the settled line must NOT claim those are sold — the
+// errand is the iron headline, and the wind-down speaks to the day being his, not the pack
+// being bare. He stays co-present with the keeper deliberately: the wind-down has to hold even
+// standing at the counter, since that is exactly where the loop kept putting him.
+func travelerFactorShipmentDeliveredScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		factorID     = sim.ActorID("vstr-3bcaba3e")
+		keeperID     = sim.ActorID("josiah")
+		generalStore = sim.StructureID("general_store")
+	)
+	now := 900 // 15:00 — three hours of daylight left (dusk 1080), well clear of bed pressure
+	factor := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Daniel Holcomb the factor",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 94, Y: 126},
+		InsideStructureID: generalStore,
+		CurrentHuddleID:   "h1",
+		Coins:             180,
+		// The bale as the live factor carried it once his iron and salt had gone: the
+		// clothing line largely unmoved, one bar of iron left of the ten he brought.
+		Inventory: map[sim.ItemKind]int{
+			"iron": 1, "salt": 1, "breeches": 2, "gown": 3, "silver_locket": 2, "whalebone_charm": 3,
+		},
+		Needs: map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "factor",
+			Origin:            "Boston",
+			Disposition:       "curious",
+			Phase:             sim.VisitorPhaseMakingRounds,
+			VisitedBusinesses: []sim.StructureID{generalStore},
+			Trade: &sim.TradeErrand{
+				Direction:    sim.TradeDirectionSell,
+				Good:         "iron",
+				Counterparty: generalStore,
+				Settled:      true,
+				ShipmentQty:  10,
+			},
+		},
+	}
+	keeper := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Josiah Thorne",
+		Role:               "merchant",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 93, Y: 126},
+		WorkStructureID:    generalStore,
+		InsideStructureID:  generalStore,
+		CurrentHuddleID:    "h1",
+		Coins:              110,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{Flavor: "merchant"},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       360,
+		DuskMinute:       1080,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{factorID: factor, keeperID: keeper},
+		Structures:       map[sim.StructureID]*sim.Structure{generalStore: plainStructure(generalStore, "General Store")},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(generalStore): {ID: sim.VillageObjectID(generalStore), Pos: sim.WorldPos{X: 752, Y: 1008}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {Members: map[sim.ActorID]struct{}{factorID: {}, keeperID: {}}},
+		},
+	}
+	return snap, factorID, nil
+}
+
+// TestGoldensSettledErrandNeverPressesTheTrade — LLM-553 cross-scenario invariant. A merchant
+// whose errand has settled must never also be told to go and deal: "your business here is done"
+// and the trade-here instruction are contradictory in the same breath, and the trade-here line
+// is the one that carries a destination, so a scene holding both keeps walking him back to the
+// counter he has already finished with. That is the loop this ticket closes, stated as a
+// property rather than pinned to the one factor scenario that surfaced it.
+//
+// Direction-agnostic on purpose: it held for buyers by construction before LLM-553 (only a buy
+// errand could settle), and this is what stops a future settle path from reintroducing the loop
+// for either kind.
+func TestGoldensSettledErrandNeverPressesTheTrade(t *testing.T) {
+	const tradeHere = "the one keeper you came to deal with"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			actor := snap.Actors[actorID]
+			if actor == nil || actor.VisitorState == nil || actor.VisitorState.Trade == nil {
+				return
+			}
+			if !actor.VisitorState.Trade.Settled {
+				return
+			}
+			if strings.Contains(renderScenario(sc), tradeHere) {
+				t.Errorf("scenario %q: errand is settled, yet the prompt still presses %q — "+
+					"a merchant told his business is done must not also be steered to trade at his counterparty",
+					sc.name, tradeHere)
+			}
+		})
 	}
 }

@@ -841,6 +841,11 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			purseMax = purseMin
 		}
 		pack, purse = seedFactorPack(r, units, ironUnits, saltUnits, purseMin, purseMax)
+		// Stamp the shipment he arrived with, so the sell-side settle has a baseline to
+		// measure drawdown against (LLM-553). Read off the seeded pack rather than the
+		// units knob: seedFactorPack jitters the count, and the errand Good is the bale's
+		// headline kind, so the pack is the one place the true arrival quantity exists.
+		trade.ShipmentQty = pack[trade.Good]
 	case trade != nil && trade.Direction == TradeDirectionBuy:
 		pack, purse = seedBuyerPack(r)
 	default:
@@ -1109,6 +1114,21 @@ func dispatchVisitorPacing(w *World, inputs VisitorTickInputs, t *VisitorCascade
 		// cue to the wind-down. A seller (factor) has an open-ended two-way deal and winds down
 		// on the dusk phase flip instead.
 		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionBuy && !tr.Settled && actor.Inventory[tr.Good] > 0 {
+			tr.Settled = true
+		}
+		// Settle a SELL errand once the shipment he came to deliver is substantially
+		// landed (LLM-553). The mirror of the buy check above: a buyer settles on HOLDING
+		// the good he came for, a seller on having PARTED with the one he came to move.
+		//
+		// Before this, no sell errand could ever settle — the comment above said a factor
+		// "winds down on the dusk phase flip instead", but `## Your rounds` renders its
+		// trade steer off `!Settled`, so for the whole daylight visit the one cue carrying
+		// a destination named his counterparty, and commerce confinement meant that was
+		// also the only place he could transact. He bid the keeper farewell, found every
+		// other stop talk-only, and came back — for hours. The settled-seller wind-down
+		// prose has existed since LLM-507 and was unreachable; this is what reaches it.
+		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionSell && !tr.Settled &&
+			sellErrandDelivered(tr.Delivered, tr.ShipmentQty) {
 			tr.Settled = true
 		}
 		// Dusk: turn from the daytime rounds to the evening. Only the phase flips — the
@@ -1546,6 +1566,38 @@ const (
 	// because salt feeds several kitchens rather than one forge; tunable.
 	DefaultVisitorFactorSaltUnits = 12
 )
+
+// sellErrandRemainderDivisor sets how much of his shipment a seller may leave undelivered and
+// still count as done: a 1/N share of what he arrived with. A quarter is deliberately generous —
+// a factor's iron and salt are SHIPMENT-sized (10 and 12 by default) precisely so one rare visit
+// bridges the forge's and the kitchens' burn between calls, and the last bar or two routinely
+// goes unsold because nobody needs it that afternoon. Holding out for the whole bale would leave
+// him looping over a remainder no one wants, which is the defect.
+const sellErrandRemainderDivisor = 4
+
+// sellErrandDelivered reports whether a seller has landed enough of his shipment to call the
+// errand done: delivered at least all but a 1/sellErrandRemainderDivisor share of what he
+// arrived with.
+//
+// It reads TradeErrand.Delivered — a monotonic count taken at transferItem — NOT current
+// holdings. Holdings cannot answer the question: the factor's deal is two-way, so a man who
+// sold all ten bars and bought three back holds the same three as a man who sold seven and
+// bought nothing, and only one of them is done.
+//
+// shipmentQty <= 0 means the arrival quantity was never stamped (a visitor checkpointed before
+// LLM-553, or an errand good the pack never carried). There is no baseline to measure against,
+// so the errand does not settle here and the visit winds down at the dusk phase flip exactly as
+// it did before — no worse than the old behavior, and never a spuriously early settle. Not
+// estimated from the pack knob: seedFactorPack jitters the count, so the knob is the wrong
+// number and would put the target out of reach or trip it instantly.
+//
+// Subtraction, not multiplication, so a corrupt persisted quantity cannot overflow the compare.
+func sellErrandDelivered(delivered, shipmentQty int) bool {
+	if shipmentQty <= 0 || delivered <= 0 {
+		return false
+	}
+	return delivered >= shipmentQty-shipmentQty/sellErrandRemainderDivisor
+}
 
 // factorWareKinds are the goods a wholesale factor spawns carrying to SELL into the
 // village (LLM-410) — the imported clothing + charm catalog added in slice 2. Drawn from

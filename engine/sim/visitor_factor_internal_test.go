@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"math/rand"
 	"testing"
 )
@@ -182,5 +183,282 @@ func TestPickDistributorArrival(t *testing.T) {
 	}
 	if fid, _, fok := pickArrivalDestination(w, sellErrand); !fok || fid != "tavern" {
 		t.Errorf("merchant arrival with unbacked counterparty = (%q, %v), want tavern fallback", fid, fok)
+	}
+}
+
+// TestSellErrandDelivered — LLM-553. A seller's errand is done once he has HANDED OVER all but
+// a quarter of the shipment he arrived with. The predicate reads a monotonic delivered count,
+// not current holdings, because his deal is two-way: holdings cannot separate a man who never
+// sold from one who sold everything and bought some back. The no-baseline rows are the
+// backward-compatibility path — a visitor checkpointed before these fields existed has nothing
+// to measure against and must not settle here at all, leaving him the dusk wind-down he had
+// before rather than a spuriously early one.
+func TestSellErrandDelivered(t *testing.T) {
+	cases := []struct {
+		name        string
+		delivered   int
+		shipmentQty int
+		want        bool
+	}{
+		{"nothing handed over", 0, 10, false},
+		{"half the bale is not done", 5, 10, false},
+		{"one short of the target", 7, 10, false},
+		{"exactly the target — all but a quarter of ten", 8, 10, true},
+		{"the live case — nine of ten bars landed", 9, 10, true},
+		{"the whole shipment", 10, 10, true},
+		{"sold everything then bought three back still counts", 10, 10, true},
+		{"a small shipment settles on its whole", 1, 1, true},
+		{"no baseline, nothing delivered", 0, 0, false},
+		{"no baseline, plenty delivered", 20, 0, false},
+		{"negative baseline is treated as no baseline", 9, -5, false},
+		{"negative delivered never settles", -3, 10, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sellErrandDelivered(tc.delivered, tc.shipmentQty); got != tc.want {
+				t.Errorf("sellErrandDelivered(delivered=%d, shipment=%d) = %v, want %v",
+					tc.delivered, tc.shipmentQty, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTransferItemCreditsSellerShipment — the accounting half of LLM-553, and the reason the
+// settle reads a counter rather than an inventory. A factor sells his whole ten-bar shipment and
+// then buys three bars back off the keeper's shelf (the two-way deal working as designed, and
+// exactly what the live factor did when he swapped a locket for iron). His holdings end at 3 —
+// indistinguishable from a man who sold seven and bought nothing — but Delivered stands at 10,
+// so only the honest measure settles him.
+func TestTransferItemCreditsSellerShipment(t *testing.T) {
+	const (
+		iron  = ItemKind("iron")
+		store = StructureID("general_store")
+	)
+	errand := &TradeErrand{Direction: TradeDirectionSell, Good: iron, Counterparty: store, ShipmentQty: 10}
+	factor := &Actor{
+		ID: "vstr-1", Kind: KindNPCShared,
+		Inventory:    map[ItemKind]int{iron: 10},
+		VisitorState: &VisitorState{Trade: errand},
+	}
+	keeper := &Actor{ID: "josiah", Kind: KindNPCStateful, WorkStructureID: store, Inventory: map[ItemKind]int{}}
+
+	if err := transferItem(nil, factor, keeper, iron, 10); err != nil {
+		t.Fatalf("factor sells his bale: %v", err)
+	}
+	if errand.Delivered != 10 {
+		t.Fatalf("Delivered = %d after handing the whole shipment to the counterparty, want 10", errand.Delivered)
+	}
+	// He buys three back. The inbound leg must NOT decrement the credit.
+	if err := transferItem(nil, keeper, factor, iron, 3); err != nil {
+		t.Fatalf("factor buys iron back: %v", err)
+	}
+	if errand.Delivered != 10 {
+		t.Errorf("Delivered = %d after buying stock back, want it unchanged at 10 — a purchase must not un-deliver a sale", errand.Delivered)
+	}
+	if factor.Inventory[iron] != 3 {
+		t.Fatalf("factor holds %d iron, want 3 (the test's whole point is that holdings are ambiguous here)", factor.Inventory[iron])
+	}
+	if !sellErrandDelivered(errand.Delivered, errand.ShipmentQty) {
+		t.Error("a factor who landed his whole shipment is not settled once he buys a few bars back")
+	}
+}
+
+// TestTransferItemIgnoresNonSellers — the credit is scoped: a buy-errand merchant, a
+// passer-through and a resident must never accrue Delivered, and a seller parting with some
+// OTHER good than his errand headline must not either.
+func TestTransferItemIgnoresNonSellers(t *testing.T) {
+	const (
+		iron  = ItemKind("iron")
+		store = StructureID("general_store")
+	)
+	keeper := &Actor{ID: "josiah", Kind: KindNPCStateful, WorkStructureID: store, Inventory: map[ItemKind]int{}}
+
+	buyErrand := &TradeErrand{Direction: TradeDirectionBuy, Good: iron, Counterparty: store}
+	buyer := &Actor{
+		ID: "vstr-2", Kind: KindNPCShared,
+		Inventory:    map[ItemKind]int{iron: 4},
+		VisitorState: &VisitorState{Trade: buyErrand},
+	}
+	if err := transferItem(nil, buyer, keeper, iron, 2); err != nil {
+		t.Fatalf("buyer transfer: %v", err)
+	}
+	if buyErrand.Delivered != 0 {
+		t.Errorf("a BUY errand accrued Delivered = %d, want 0", buyErrand.Delivered)
+	}
+
+	sellErrand := &TradeErrand{Direction: TradeDirectionSell, Good: iron, Counterparty: store, ShipmentQty: 10}
+	seller := &Actor{
+		ID: "vstr-3", Kind: KindNPCShared,
+		Inventory:    map[ItemKind]int{iron: 10, "cloak": 2},
+		VisitorState: &VisitorState{Trade: sellErrand},
+	}
+	if err := transferItem(nil, seller, keeper, "cloak", 2); err != nil {
+		t.Fatalf("seller transfer of a non-errand good: %v", err)
+	}
+	if sellErrand.Delivered != 0 {
+		t.Errorf("parting with a secondary-bale good accrued Delivered = %d, want 0 — the errand is the headline import", sellErrand.Delivered)
+	}
+
+	resident := &Actor{ID: "anne", Kind: KindNPCShared, Inventory: map[ItemKind]int{iron: 3}}
+	if err := transferItem(nil, resident, keeper, iron, 1); err != nil {
+		t.Fatalf("resident transfer: %v", err)
+	}
+	if sellErrandCredit(resident, keeper, iron) != nil {
+		t.Error("a resident with no VisitorState resolved a creditable sell errand")
+	}
+}
+
+// TestTransferItemCreditsOnlyTheCounterparty — a SELL errand is completed by DELIVERING to the
+// business he came to deal with, not by getting rid of stock. Without this the counter would
+// mean "disposed of enough goods": a factor could hand his iron to any passing villager, or
+// give it away (the give path is ungated by design), and settle an errand having sold nothing.
+// Commerce confinement makes that unlikely, not impossible, and an accounting field must not
+// rest on another subsystem's gate holding.
+func TestTransferItemCreditsOnlyTheCounterparty(t *testing.T) {
+	const (
+		iron  = ItemKind("iron")
+		store = StructureID("general_store")
+		forge = StructureID("smithy")
+	)
+	newFactor := func() (*Actor, *TradeErrand) {
+		errand := &TradeErrand{Direction: TradeDirectionSell, Good: iron, Counterparty: store, ShipmentQty: 10}
+		return &Actor{
+			ID: "vstr-1", Kind: KindNPCShared,
+			Inventory:    map[ItemKind]int{iron: 10},
+			VisitorState: &VisitorState{Trade: errand},
+		}, errand
+	}
+
+	t.Run("a passing villager credits nothing", func(t *testing.T) {
+		factor, errand := newFactor()
+		bystander := &Actor{ID: "anne", Kind: KindNPCShared, Inventory: map[ItemKind]int{}}
+		if err := transferItem(nil, factor, bystander, iron, 10); err != nil {
+			t.Fatalf("transfer: %v", err)
+		}
+		if errand.Delivered != 0 {
+			t.Errorf("Delivered = %d after handing the shipment to a bystander, want 0 — that is disposal, not delivery", errand.Delivered)
+		}
+		if sellErrandDelivered(errand.Delivered, errand.ShipmentQty) {
+			t.Error("the errand settled without the shipment ever reaching the counterparty")
+		}
+	})
+
+	t.Run("a keeper of some other business credits nothing", func(t *testing.T) {
+		factor, errand := newFactor()
+		smith := &Actor{ID: "ezekiel", Kind: KindNPCStateful, WorkStructureID: forge, Inventory: map[ItemKind]int{}}
+		if err := transferItem(nil, factor, smith, iron, 10); err != nil {
+			t.Fatalf("transfer: %v", err)
+		}
+		if errand.Delivered != 0 {
+			t.Errorf("Delivered = %d after selling to a different business, want 0", errand.Delivered)
+		}
+	})
+
+	t.Run("a hired hand at the counterparty credits in full", func(t *testing.T) {
+		factor, errand := newFactor()
+		hand := &Actor{ID: "hand", Kind: KindNPCShared, WorkStructureID: store, Inventory: map[ItemKind]int{}}
+		if err := transferItem(nil, factor, hand, iron, 10); err != nil {
+			t.Fatalf("transfer: %v", err)
+		}
+		if errand.Delivered != 10 {
+			t.Errorf("Delivered = %d when the hand minding the counter took the shipment, want 10 — it reached the business", errand.Delivered)
+		}
+	})
+
+	t.Run("an errand with no counterparty credits nothing", func(t *testing.T) {
+		factor, errand := newFactor()
+		errand.Counterparty = ""
+		anyone := &Actor{ID: "x", Kind: KindNPCStateful, Inventory: map[ItemKind]int{}}
+		if err := transferItem(nil, factor, anyone, iron, 10); err != nil {
+			t.Fatalf("transfer: %v", err)
+		}
+		if errand.Delivered != 0 {
+			t.Errorf("Delivered = %d for an errand with no counterparty, want 0 — an empty StructureID must not match an actor with no workplace", errand.Delivered)
+		}
+	})
+}
+
+// TestTransferItemDeliveredSaturates — a corrupt persisted count must not wrap. A wrapped
+// counter goes NEGATIVE, which sellErrandDelivered reads as "delivered nothing", silently
+// restoring the very loop this ticket closes on the one visitor whose data was bad.
+func TestTransferItemDeliveredSaturates(t *testing.T) {
+	const (
+		iron  = ItemKind("iron")
+		store = StructureID("general_store")
+	)
+	errand := &TradeErrand{
+		Direction: TradeDirectionSell, Good: iron, Counterparty: store,
+		ShipmentQty: 10, Delivered: math.MaxInt - 1,
+	}
+	factor := &Actor{
+		ID: "vstr-1", Kind: KindNPCShared,
+		Inventory:    map[ItemKind]int{iron: 5},
+		VisitorState: &VisitorState{Trade: errand},
+	}
+	keeper := &Actor{ID: "josiah", Kind: KindNPCStateful, WorkStructureID: store, Inventory: map[ItemKind]int{}}
+
+	if err := transferItem(nil, factor, keeper, iron, 5); err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	if errand.Delivered != math.MaxInt {
+		t.Errorf("Delivered = %d, want saturation at MaxInt", errand.Delivered)
+	}
+	if errand.Delivered < 0 {
+		t.Fatal("Delivered wrapped negative — the errand would read as undelivered forever")
+	}
+}
+
+// TestTransferItemRejectsNonPositiveQty — the monotonic guarantee leans on this: the credit
+// runs after the quantity check, so a negative transfer can never decrement Delivered.
+func TestTransferItemRejectsNonPositiveQty(t *testing.T) {
+	const (
+		iron  = ItemKind("iron")
+		store = StructureID("general_store")
+	)
+	errand := &TradeErrand{Direction: TradeDirectionSell, Good: iron, Counterparty: store, ShipmentQty: 10, Delivered: 4}
+	factor := &Actor{
+		ID: "vstr-1", Kind: KindNPCShared,
+		Inventory:    map[ItemKind]int{iron: 10},
+		VisitorState: &VisitorState{Trade: errand},
+	}
+	keeper := &Actor{ID: "josiah", Kind: KindNPCStateful, WorkStructureID: store, Inventory: map[ItemKind]int{}}
+
+	for _, qty := range []int{0, -5} {
+		if err := transferItem(nil, factor, keeper, iron, qty); err == nil {
+			t.Errorf("transferItem accepted qty=%d, want an error", qty)
+		}
+		if errand.Delivered != 4 {
+			t.Fatalf("Delivered = %d after a rejected qty=%d transfer, want it untouched at 4", errand.Delivered, qty)
+		}
+	}
+}
+
+// TestSeedFactorPackStampsShipmentBaseline — the spawn-side half of LLM-553: whatever
+// seedFactorPack actually put in the bale for the errand good is the baseline the settle
+// measures against, and a spawn stamps it from the PACK rather than the units knob. The knob is
+// the wrong number because the seed jitters the count by up to two — a baseline taken from the
+// setting would either put the target out of reach or trip it early.
+func TestSeedFactorPackStampsShipmentBaseline(t *testing.T) {
+	const ironUnits = 10
+	r := rand.New(rand.NewSource(7))
+	pack, _ := seedFactorPack(r, 2, ironUnits, 12, 100, 200)
+	shipment := pack[factorIronKind]
+	if shipment < ironUnits || shipment > ironUnits+2 {
+		t.Fatalf("seeded iron = %d, want the shipment quantity plus jitter (%d..%d)", shipment, ironUnits, ironUnits+2)
+	}
+	// The errand good for a sell errand IS the iron headline, so `shipment` is what a spawn
+	// stamps onto TradeErrand.ShipmentQty.
+	if sellErrandDelivered(0, shipment) {
+		t.Error("a factor who has handed over nothing counts as delivered")
+	}
+	if !sellErrandDelivered(shipment, shipment) {
+		t.Error("a factor who handed over his whole bale does not count as delivered")
+	}
+	// The jitter is exactly why the knob cannot stand in for the pack: had the seed rolled
+	// above the knob, a target computed from ironUnits would be reachable before the bale
+	// actually moved.
+	if shipment > ironUnits && sellErrandDelivered(ironUnits-ironUnits/sellErrandRemainderDivisor, shipment) != (ironUnits-ironUnits/sellErrandRemainderDivisor >= shipment-shipment/sellErrandRemainderDivisor) {
+		t.Error("target computed from the knob disagrees with the target computed from the seeded pack")
 	}
 }
