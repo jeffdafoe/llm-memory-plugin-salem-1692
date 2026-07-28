@@ -460,6 +460,7 @@ func isAmbientWarrantKind(k WarrantKind) bool {
 	case WarrantKindIdleBackstop,
 		WarrantKindStranded,
 		WarrantKindShiftDuty,
+		WarrantKindConstableRounds,
 		WarrantKindRestock,
 		WarrantKindDwellTickApplied,
 		WarrantKindDwellEnded:

@@ -29,6 +29,92 @@ const (
 	DefaultConstableRoundsInterval = 2 * time.Hour
 )
 
+// ConstableRoundsWarrantReason is the wake stamped for a beat carrier standing
+// still with a round still owed (LLM-549). It is a WAKE, never a march: it runs a
+// tick whose prompt already carries what he owes and where to go next, and he
+// chooses. Nothing here moves him.
+//
+// It exists because a beat dispatches no walk, so removing the dispatch removed
+// the thing that used to start a round. On-shift AT his post is the hole: shift
+// duty stamps nothing for an actor already at work (buildShiftDutyTarget's switch
+// has no at-work arm) and the idle backstop only covers actors OUTDOORS. Between
+// them a constable stood in the Meeting House with eight doors unwalked and no
+// recurring wake at all — live, twelve minutes without a tick.
+//
+// Zero-sourced (a standing obligation is not an event) with a zero
+// DedupDiscriminator, the ShiftDutyWarrantReason shape. There is nothing to
+// discriminate: at most one round is owed at a time, so a second stamp under the
+// same conditions IS the same wake.
+type ConstableRoundsWarrantReason struct{}
+
+func (ConstableRoundsWarrantReason) isWarrantReason()           {}
+func (ConstableRoundsWarrantReason) Kind() WarrantKind          { return WarrantKindConstableRounds }
+func (ConstableRoundsWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// BeatNeedsAWake reports whether a beat carrier should be woken to get on with a
+// round he still owes. Pure read; the caller stamps.
+//
+// True only when ALL hold:
+//
+//   - He is carrying a BEAT. A dispatched route walks its carrier, so it needs no
+//     nudge, and a carrier with no route owes nothing.
+//   - He is STANDING STILL (MoveIntent == nil). A man already walking is on his way
+//     — waking him mid-leg is the nag this design exists to avoid, and his arrival
+//     will tick him anyway (finishArrival stamps on every arrival).
+//   - He is NOT in a live conversation. Interrupting one to say "you have rounds to
+//     walk" is exactly the intrusion the dwell removal was meant to end. LIVENESS,
+//     not lifecycle — a huddle stays open 2h after its last word, so the lifecycle
+//     test would gag the wake for the rest of the afternoon over a conversation
+//     that ended before noon (the LLM-537 lesson, one layer over).
+//
+// **No off-shift check, deliberately, and the ordering is load-bearing.**
+// ClearBeatRouteIfOffShift runs FIRST in runConstableRounds' loop, so a beat that
+// still exists when this is asked belongs to a carrier on shift. Adding a second
+// on-shift test here would be a copy of that sweep's job and would drift from it.
+//
+// **No pace interval, deliberately.** The repeat rate is the stale-wake ledger's
+// (LLM-233): WarrantKindConstableRounds is ambient, so an unchanged situation
+// decays 1m → 2m → … → 30m while any real change — crucially his LOCATION, which
+// the fingerprint hashes — resets it to full rate. That is strictly better than a
+// fixed quiet window here, which could not tell "frozen at his post" from "walking
+// his round" and would delay the first nudge by its own length, which is the very
+// latency this fixes.
+func BeatNeedsAWake(w *World, a *Actor, now time.Time) bool {
+	if a == nil || a.MoveIntent != nil {
+		return false
+	}
+	route := w.ActiveRoutes[a.ID]
+	if route == nil || route.Phase != RoutePhaseBeat {
+		return false
+	}
+	return !actorInLiveHuddle(w, a, now)
+}
+
+// actorInLiveHuddle reports whether the actor's conversation has said anything
+// recently — the liveness question, over HuddleLiveWindow. Deliberately NOT
+// actorInActiveHuddle, which asks whether the huddle has CONCLUDED and reads true
+// across the full 2h silence timeout.
+//
+// Borrowing the shared window IS right here, and was wrong for the constable's old
+// dwell, for a reason worth stating: the two gates fail in opposite directions. The
+// dwell needed its own window because erring LONG parked him at every stop for
+// minutes after both parties said goodbye — the LLM-537 defect. This gate only
+// defers a NUDGE, so erring long costs at most a few extra minutes before one wake
+// on a 4h round, while erring short interrupts a live conversation. Long is the safe
+// error here, which is exactly what a generous shared window gives. It is also the
+// same question the noop-skip preflight asks of this window — "is anyone actually
+// talking" — rather than a pace the constable owns.
+func actorInLiveHuddle(w *World, a *Actor, now time.Time) bool {
+	if a == nil || a.CurrentHuddleID == "" {
+		return false
+	}
+	h, ok := w.Huddles[a.CurrentHuddleID]
+	if !ok || h.ConcludedAt != nil {
+		return false
+	}
+	return HuddleIsLive(h, now, EffectiveHuddleLiveWindow(w.Settings))
+}
+
 // ConstableRoundsDue reports whether the constable actor a should start a rounds
 // tour as of now. True only when ALL hold:
 //
@@ -95,6 +181,30 @@ func ClearBeatRouteIfOffShift(w *World, a *Actor, now time.Time) bool {
 	}
 	clearActiveRoute(w, a.ID)
 	return true
+}
+
+// StampConstableRoundsWake returns a Command that stamps the beat wake for actorID,
+// reporting whether a warrant was actually recorded. The stamp goes through
+// tryStampWarrant like every other producer, so it inherits the agent-kind gate (a
+// decorative or a PC is never warranted), the per-actor WarrantedSince dedup, and
+// the stale-wake decay that paces repeats.
+//
+// A Command rather than a bare helper because tryStampWarrant is unexported and the
+// caller is the cascade package. MUST be run on the world goroutine.
+func StampConstableRoundsWake(actorID ActorID, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			actor := w.Actors[actorID]
+			if actor == nil {
+				return false, nil
+			}
+			return tryStampWarrant(w, actor, WarrantMeta{
+				TriggerActorID: actorID,
+				Force:          false,
+				Reason:         ConstableRoundsWarrantReason{},
+			}, now), nil
+		},
+	}
 }
 
 // StampConstableRounds records that actor a dispatched rounds at t, so

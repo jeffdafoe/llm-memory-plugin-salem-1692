@@ -261,6 +261,90 @@ func TestForceRouteConstableOffPostOffShift(t *testing.T) {
 	}
 }
 
+// TestConstableRoundsTick_WakesACarrierStoodStillWithARoundOwed is the end-to-end
+// half of LLM-549, driving the real once-a-minute tick rather than the predicate.
+//
+// The live shape: the beat is installed, he is on-shift standing INSIDE his post,
+// and nothing else in the engine will wake him — shift duty has no at-work arm and
+// the idle backstop only covers actors outdoors. Before this wake he stood in the
+// Meeting House for twelve minutes with eight doors unwalked and warrant_count 0.
+func TestConstableRoundsTick_WakesACarrierStoodStillWithARoundOwed(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	// Install the beat, then clear the warrant the install path may have left, so
+	// what the tick does is unambiguous.
+	if _, err := w.Send(ForceRouteCommand(sim.AttrConstable, false)); err != nil {
+		t.Fatalf("force beat: %v", err)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["gideon"]
+		a.MoveIntent = nil
+		a.Warrants = nil
+		a.WarrantedSince = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("clear warrants: %v", err)
+	}
+
+	if _, err := w.Send(RouteScheduleTick(time.Now().UTC(), nil)); err != nil {
+		t.Fatalf("schedule tick: %v", err)
+	}
+
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return len(world.Actors["gideon"].Warrants), nil
+	}})
+	if err != nil {
+		t.Fatalf("read warrants: %v", err)
+	}
+	if res.(int) == 0 {
+		t.Fatal("the schedule tick stamped no wake for a carrier stood still with a round owed — " +
+			"nothing else starts a beat, so he stands at his post until something unrelated ticks him")
+	}
+}
+
+// TestConstableRoundsTick_LeavesAWalkingCarrierAlone: the wake must be a nudge for a
+// man who has stopped, never a nag at one already on his way. His arrival will tick
+// him regardless (finishArrival stamps on every arrival), so a stamp here would buy
+// nothing and cost an LLM turn mid-leg.
+func TestConstableRoundsTick_LeavesAWalkingCarrierAlone(t *testing.T) {
+	w := buildConstableCascadeWorld(t)
+	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	if _, err := w.Send(ForceRouteCommand(sim.AttrConstable, false)); err != nil {
+		t.Fatalf("force beat: %v", err)
+	}
+	// He is walking somewhere of his own accord, and carries no warrant.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["gideon"]
+		a.Warrants = nil
+		a.WarrantedSince = nil
+		a.MoveIntent = &sim.MoveIntent{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("set walking: %v", err)
+	}
+
+	if _, err := w.Send(RouteScheduleTick(time.Now().UTC(), nil)); err != nil {
+		t.Fatalf("schedule tick: %v", err)
+	}
+
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return len(world.Actors["gideon"].Warrants), nil
+	}})
+	if err != nil {
+		t.Fatalf("read warrants: %v", err)
+	}
+	if res.(int) != 0 {
+		t.Errorf("stamped %d warrant(s) on a carrier mid-walk — the wake is for a man who has "+
+			"stopped, not one already on his way", res.(int))
+	}
+}
+
 // TestRouteStopEnterOptIn: fix #2 regression — entering is OPT-IN. A tile-based
 // route's candidate (Enter=false) over a door-backed business stays a loiter stop;
 // the constable's builder (Enter=true) enters.

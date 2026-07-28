@@ -339,12 +339,12 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// (ZBBS-HOME-339). Secondary-scene warrants still render in the flat
 	// "since your last turn" list; only the machine telemetry block is gone.
 
-	// Shift-duty warrants drive the wake tick but are NOT rendered — the standing
-	// DutySteer cue (renderDutySteer, above) is the single voice for
-	// return-to-post (ZBBS-HOME-352). Filtering here also keeps them out of the
-	// cap / carry-forward budget; consuming them unrendered is fine since their
-	// job is to wake the actor, which the tick already did.
-	warrants := nonShiftDutyWarrants(p.Warrants)
+	// Some warrants drive the wake tick but are NOT rendered, because a standing
+	// cue above is already the single voice for the thing they woke him about.
+	// Filtering here also keeps them out of the cap / carry-forward budget;
+	// consuming them unrendered is fine since their job is to wake the actor,
+	// which the tick already did.
+	warrants := nonStandingCueWarrants(p.Warrants)
 	if len(payOffers) > 0 {
 		warrants = nonPayOfferWarrants(warrants)
 	}
@@ -2852,16 +2852,30 @@ func nonPayOfferWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 	return out
 }
 
-// nonShiftDutyWarrants returns the consumed batch with shift-duty warrants
-// removed. The shift/duty producer's warrant still drives the wake tick, but its
-// line is not rendered — the standing DutySteer cue (renderDutySteer) is the
-// single voice for return-to-post (ZBBS-HOME-352). Dropping them here also keeps
-// them out of the warrant-section cap / carry-forward budget; consuming them
-// unrendered is correct since their purpose (waking the actor) is already done.
-func nonShiftDutyWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
+// nonStandingCueWarrants returns the consumed batch with the warrants removed whose
+// subject a STANDING CUE already voices. They still drive the wake tick; their own
+// line is not rendered, because rendering it would say the same thing twice in one
+// prompt and the cue says it better.
+//
+//   - Shift duty → the DutySteer cue (renderDutySteer) is the single voice for
+//     return-to-post (ZBBS-HOME-352).
+//   - Constable rounds → the rounds cue is the single voice for what he owes and
+//     where to go next (LLM-549). Without this the prompt would carry the scene
+//     ("Six more places on your round still lie ahead of you. The next is the Ellis
+//     Farm.") and then the generic fallback line naming the raw warrant kind
+//     underneath it — a stat beside the scene it duplicates.
+//
+// Dropping them here also keeps them out of the warrant-section cap / carry-forward
+// budget; consuming them unrendered is correct since their purpose (waking the
+// actor) is already done.
+//
+// Only add a kind here when a cue genuinely carries its content. A wake with no
+// voice anywhere is a tick the model cannot account for.
+func nonStandingCueWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 	out := make([]sim.WarrantMeta, 0, len(warrants))
 	for _, w := range warrants {
-		if _, ok := w.Reason.(sim.ShiftDutyWarrantReason); ok {
+		switch w.Reason.(type) {
+		case sim.ShiftDutyWarrantReason, sim.ConstableRoundsWarrantReason:
 			continue
 		}
 		out = append(out, w)
