@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
@@ -468,6 +469,74 @@ func TestSpeak_ContactLedgerCreditsEveryHuddlePeer(t *testing.T) {
 	if tier, _ := snap.ContactTierFor("addressed", "silent", now); tier != sim.ContactTierNone {
 		t.Errorf("peer→peer tier = %v, want ContactTierNone — a contact is with the SPEAKER, "+
 			"not among every pair co-present", tier)
+	}
+}
+
+// TestSpeak_ContactLedgerReachesPerception is the end-to-end seam: a REAL Speak
+// commit, then perception built off the PUBLISHED snapshot, asserting the
+// rendered sentence.
+//
+// Everything else about this feature is tested on one side of the republish or
+// the other — ledger writes against the world, tiers and prose against
+// hand-built snapshot fixtures. Both sets stay green if the publish step drops
+// ContactLedger or either window, and the village goes quiet with nothing
+// failing. This is the test that notices. (code_review, LLM-547.)
+func TestSpeak_ContactLedgerReachesPerception(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "s", displayName: "Gideon Marsh", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "p", displayName: "Prudence Ward", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	// The listener must KNOW the speaker by name, or the contact line is
+	// withheld along with the name (an unacquainted peer renders as "a stranger",
+	// and this line cannot say "a stranger" — it must carry the verbatim
+	// DisplayName resolveAddressee matches on).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["p"].Acquaintances = map[string]sim.Acquaintance{"Gideon Marsh": {}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed acquaintance: %v", err)
+	}
+
+	now := time.Now().UTC()
+	// buildSpeakTestWorld stamps CurrentHuddleID on the actors but mints no
+	// Huddle: Speak reaches its peers through actorsByHuddle, which needs only
+	// the actor field. Perception reads snap.Huddles, so the huddle has to exist
+	// for the two to be co-present in a built scene — which is the entire point
+	// of this test.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Huddles["h1"] = &sim.Huddle{
+			ID:             "h1",
+			Members:        map[sim.ActorID]struct{}{"s": {}, "p": {}},
+			StartedAt:      now,
+			LastActivityAt: now,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed huddle: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("s", "Goodwife Ward, good day to you.", now)); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	snap := w.Published()
+	// The windows must survive publish too — perception cannot reach back into
+	// live World.Settings, so a dropped window silently collapses every pair to
+	// ContactTierNone.
+	if snap.ContactRecallHorizon <= 0 || snap.ContactBrakeWindow <= 0 {
+		t.Fatalf("published windows = brake %v, horizon %v — both must ride the snapshot",
+			snap.ContactBrakeWindow, snap.ContactRecallHorizon)
+	}
+
+	got := perception.Render(perception.Build(snap, "p", nil), perception.DefaultRenderConfig())
+	// EphemeralText carries "## Around you" — the contact line is per-tick
+	// decision support, not durable history the adapter replays. The listener is
+	// on no round, so the phrasing is the bare time form rather than "this round".
+	const want = "You had your word with Gideon Marsh a short while ago."
+	if !strings.Contains(got.EphemeralText, want) {
+		t.Errorf("the listener's prompt does not carry the contact line.\nwant substring: %q\ngot:\n%s", want, got.EphemeralText)
 	}
 }
 

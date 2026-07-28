@@ -62,6 +62,21 @@ type CheckpointSnapshot struct {
 	// for a sweep to reclaim. Flattened at build time so the durable write
 	// walks a stable, deterministic slice.
 	ContactPairs []ContactPair
+	// ContactStaleBefore is the recall-horizon cutoff at checkpoint time.
+	// SaveSnapshot deletes actor_contact rows with no timestamp at or after it.
+	//
+	// This is the table's ONLY deletion path, and it is not optional bookkeeping.
+	// A transient visitor gets a FRESH ActorID every visit (vstr-<8hex>, deleted
+	// at cleanup) and this ledger covers visitors deliberately, so without a
+	// delete the pair count grows monotonically for the life of the world — the
+	// live actor count bounds how many pairs are ACTIVE, not how many have ever
+	// existed. One predicate DELETE, not a generation-marker sweep: nothing has
+	// to be marked, and the rows it removes are dead by the same horizon rule the
+	// loader already applies.
+	//
+	// Zero when the world has no clock established (hand-built test worlds), in
+	// which case the delete is skipped rather than run against a zero cutoff.
+	ContactStaleBefore time.Time
 }
 
 // MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
@@ -235,6 +250,9 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 	// every trail slice, so the durable write off the world goroutine can never
 	// walk a slice a later Speak is appending to.
 	cp.ContactPairs = FlattenContactLedger(w.ContactLedger)
+	if !w.Environment.Now.IsZero() {
+		cp.ContactStaleBefore = w.Environment.Now.Add(-w.ContactRecallHorizon())
+	}
 	for id, a := range w.Actors {
 		cp.Actors[id] = CloneActor(a)
 	}

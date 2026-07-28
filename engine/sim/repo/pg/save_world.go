@@ -152,17 +152,19 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 			return fmt.Errorf("pg SaveWorld: RecurringVisitors.SaveSnapshot: %w", err)
 		}
 	}
-	// LLM-547: the per-pair conversational recency trail. Upsert-only like
-	// RecurringVisitors — a pair that stops being written ages past the recall
-	// horizon and is dropped at the next load, so there is nothing to sweep. No
-	// cross-aggregate FK (both ids are soft refs, deliberately, so a departed
+	// LLM-547: the per-pair conversational recency trail. Upsert plus a single
+	// horizon-predicate DELETE — NOT a generation-marker sweep (nothing is
+	// marked), but not upsert-only either: visitor ActorIDs are ephemeral, so
+	// without the delete the pair count grows for the life of the world rather
+	// than being bounded by the live actor count. No cross-aggregate FK (both ids
+	// are soft refs, deliberately, so a departed
 	// visitor's row can age out rather than block its actor delete), which makes
 	// ordering relative to the other aggregates free. Nil-guarded to match the
 	// load side: a partially-wired repo treats the tier as absent rather than
 	// panicking, and a repo that never wired it also never loaded a trail, so cp
 	// is empty and the guard cannot drop real state.
 	if repo.Contacts != nil {
-		if err := repo.Contacts.SaveSnapshot(ctx, tx, cp.ContactPairs); err != nil {
+		if err := repo.Contacts.SaveSnapshot(ctx, tx, cp.ContactPairs, cp.ContactStaleBefore); err != nil {
 			return fmt.Errorf("pg SaveWorld: Contacts.SaveSnapshot: %w", err)
 		}
 	}

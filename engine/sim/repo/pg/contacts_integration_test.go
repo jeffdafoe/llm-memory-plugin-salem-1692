@@ -180,6 +180,93 @@ func TestIntegration_Contact_UpsertReplacesTrail(t *testing.T) {
 	}
 }
 
+// TestIntegration_Contact_StaleRowsAreDeleted — the table's only reclamation
+// path, and the reason it is not optional.
+//
+// "Bounded by actor pairs" is false over the life of a world: a transient
+// visitor gets a FRESH vstr-<8hex> ActorID every visit and this ledger covers
+// visitors on purpose, so the set of pairs that have EVER existed grows without
+// limit even though the live actor count does not. Load-time pruning drops those
+// from memory but never from Postgres, so without this DELETE both the table and
+// the full scan every boot does over it would grow forever. (code_review,
+// LLM-547 — the original design shipped without it on a wrong bound.)
+func TestIntegration_Contact_StaleRowsAreDeleted(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	// A departed traveller's pair, written back when it was still LIVE — the
+	// world clock is set to that moment, so the checkpoint's own delete (same Tx
+	// as the upsert) leaves it alone.
+	seed := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
+		"gideon": {"vstr-0000abcd": {now.Add(-20 * time.Hour)}},
+	})
+	seed.Environment.Now = now.Add(-20 * time.Hour)
+	if err := SaveWorld(ctx, repo, seed.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (seed): %v", err)
+	}
+	if pairs, err := repo.Contacts.LoadAll(ctx); err != nil || len(pairs) != 1 {
+		t.Fatalf("seed row not written: pairs=%d err=%v", len(pairs), err)
+	}
+
+	// A later checkpoint in which that pair has aged out of memory entirely — the
+	// state after a restart pruned it at load. The upsert alone would leave the
+	// row untouched forever, because it only ever writes what memory holds.
+	later := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
+		"gideon": {"prudence": {now.Add(-10 * time.Minute)}},
+	})
+	later.Environment.Now = now
+	if err := SaveWorld(ctx, repo, later.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (later): %v", err)
+	}
+
+	pairs, err := repo.Contacts.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("Contacts.LoadAll: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("stored %d pair(s), want 1 — the aged traveller row must be deleted, not merely "+
+			"ignored at load, or the table grows for the life of the world", len(pairs))
+	}
+	if pairs[0].PeerID != "prudence" {
+		t.Errorf("surviving pair = %s→%s, want gideon→prudence", pairs[0].SubjectID, pairs[0].PeerID)
+	}
+}
+
+// TestIntegration_Contact_DeleteSparesLivePairs — the delete must not be able to
+// take a pair that is still inside the horizon.
+//
+// The predicate reads max(unnest(contact_at)) rather than indexing the last
+// element, precisely so a stored array in an unexpected order cannot cause a
+// live row to be deleted. A partly-aged trail — one old contact, one recent —
+// is the case that would fail under a naive "first element" or "last element"
+// read.
+func TestIntegration_Contact_DeleteSparesLivePairs(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	w := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
+		// Newest FIRST, so a last-element read would judge this pair on its
+		// oldest contact and wrongly delete it.
+		"gideon": {"prudence": {now.Add(-5 * time.Minute), now.Add(-30 * time.Hour)}},
+	})
+	w.Environment.Now = now
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld: %v", err)
+	}
+
+	pairs, err := repo.Contacts.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("Contacts.LoadAll: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("stored %d pair(s), want 1 — a pair with ANY contact inside the horizon is live", len(pairs))
+	}
+}
+
 // TestIntegration_Contact_SurvivesPeerDeparture — the orphan-ref posture, and the
 // reason there is deliberately no foreign key on either id.
 //

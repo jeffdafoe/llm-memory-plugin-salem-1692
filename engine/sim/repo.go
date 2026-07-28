@@ -246,7 +246,14 @@ type RecurringVisitorsRepo interface {
 // day, and a purely in-memory trail would leave the continuity tier empty).
 type ContactsRepo interface {
 	LoadAll(ctx context.Context) ([]ContactPair, error)
-	SaveSnapshot(ctx context.Context, tx Tx, pairs []ContactPair) error
+	// SaveSnapshot upserts `pairs` and deletes rows with no timestamp at or after
+	// `staleBefore`. A zero staleBefore skips the delete (no clock established).
+	//
+	// The delete is the table's only reclamation path and is NOT a generation
+	// sweep: visitor ActorIDs are ephemeral, so pairs accumulate for the life of
+	// the world unless dead ones are removed by the same horizon rule the loader
+	// applies.
+	SaveSnapshot(ctx context.Context, tx Tx, pairs []ContactPair, staleBefore time.Time) error
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment

@@ -67,6 +67,15 @@ const MaxContactsPerPair = 8
 // inside a single circuit always trips the brake.
 const DefaultContactBrakeWindow = 2 * time.Hour
 
+// ContactFutureSkewTolerance is how far ahead of the load clock a persisted
+// contact may be stamped and still be believed. Beyond it the entry is treated
+// as a bad value and dropped at rehydrate.
+//
+// Only applied on the way IN from the database. The write path has no second
+// clock to validate against — `at` IS the engine's tick time — so there is
+// nothing to compare it with that would not itself be a determinism hazard.
+const ContactFutureSkewTolerance = 5 * time.Minute
+
 // DefaultContactRecallHorizon is how far back a contact is remembered at all.
 // Past it the pair reads as strangers again and the record is dropped. Eight
 // hours is about a working day in the village: it comfortably covers "earlier
@@ -118,12 +127,31 @@ func (w *World) RecordContact(subjectID, peerID ActorID, at time.Time) {
 		byPeer[peerID] = rec
 	}
 	rec.At = append(rec.At, at)
-	rec.prune(at.Add(-w.ContactRecallHorizon()))
+	// Restore chronological order before pruning. `at` is the caller's clock, not
+	// this function's, so an out-of-order append is possible — a replayed command,
+	// a delayed tick, an operator-injected time. Both prune steps below select by
+	// POSITION (drop a prefix, keep a suffix), so on an unsorted trail the horizon
+	// scan would stop early and leave an aged entry behind, and the cap would
+	// discard the newest contacts instead of the oldest. Sorting first makes both
+	// correct by construction rather than by an assumption about callers.
+	//
+	// Free in practice: the trail is capped at MaxContactsPerPair, and the common
+	// case is an append that is already in order, which sort.SliceStable walks
+	// once.
+	if len(rec.At) > 1 && rec.At[len(rec.At)-1].Before(rec.At[len(rec.At)-2]) {
+		sort.SliceStable(rec.At, func(i, j int) bool { return rec.At[i].Before(rec.At[j]) })
+	}
+	// Measure the horizon from the NEWEST entry in the trail, not from `at`.
+	// They are the same for an in-order write, but for a late-arriving older one
+	// `at` is not "now" — using it would push the cutoff backwards and let
+	// entries the trail had already outlived survive. The newest contact known is
+	// the best estimate of the present this function has.
+	rec.prune(rec.At[len(rec.At)-1].Add(-w.ContactRecallHorizon()))
 }
 
-// prune drops entries older than `cutoff` and enforces the per-pair cap,
-// keeping the most recent. The trail is append-ordered, so a linear scan for
-// the first survivor is enough — no sort needed on the hot path.
+// prune drops entries older than `cutoff` and enforces the per-pair cap, keeping
+// the most recent. Requires a chronologically ordered trail — every caller
+// establishes that first (RecordContact sorts, RehydrateContactLedger sorts).
 func (r *ContactRecord) prune(cutoff time.Time) {
 	first := 0
 	for first < len(r.At) && r.At[first].Before(cutoff) {
@@ -355,6 +383,14 @@ func RehydrateContactLedger(pairs []ContactPair, now time.Time, horizon time.Dur
 		horizon = DefaultContactRecallHorizon
 	}
 	cutoff := now.Add(-horizon)
+	// Anything stamped meaningfully in the future is a bad value, not a contact:
+	// only a clock correction between boots or an out-of-band edit can produce
+	// one, and it would otherwise sit in the brake tier until `future + horizon`,
+	// telling an actor it had already spoken with someone it had not. The trail is
+	// prompt-facing, so the loader validates rather than trusting the database.
+	// The tolerance absorbs ordinary skew across a restart without discarding a
+	// contact recorded moments before shutdown.
+	future := now.Add(ContactFutureSkewTolerance)
 	out := make(map[ActorID]map[ActorID]*ContactRecord)
 	for _, p := range pairs {
 		if p.SubjectID == "" || p.PeerID == "" || p.SubjectID == p.PeerID {
@@ -362,7 +398,7 @@ func RehydrateContactLedger(pairs []ContactPair, now time.Time, horizon time.Dur
 		}
 		kept := make([]time.Time, 0, len(p.At))
 		for _, t := range p.At {
-			if t.Before(cutoff) {
+			if t.Before(cutoff) || t.After(future) {
 				continue
 			}
 			kept = append(kept, t)

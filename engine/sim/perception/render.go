@@ -1494,6 +1494,21 @@ func contactRecencyLines(s SurroundingsView) []string {
 			if m.ContactTier == sim.ContactTierNone || m.DisplayName == "" {
 				continue
 			}
+			// An unacquainted peer is named "a stranger" / "the blacksmith" by
+			// descriptorLabel everywhere else in this section. This line CANNOT
+			// follow that gating — it must carry the verbatim DisplayName or the
+			// model's reply degrades silently (see the register note above) — so
+			// when the name is withheld the whole fact is withheld with it.
+			//
+			// Otherwise the scene contradicts itself in adjacent lines: "You are
+			// outdoors, with a stranger. You had your word with Gideon Marsh a
+			// short while ago." That leaks a name the acquaintance gate exists to
+			// withhold, and asks the model to reconcile two descriptions of one
+			// person. Losing the fact is the cheaper failure — a nameless "you
+			// spoke with someone earlier" argues nothing.
+			if !m.Acquainted {
+				continue
+			}
 			if _, dup := seen[m.ID]; dup {
 				continue
 			}

@@ -25,11 +25,18 @@
 -- trail is soft conversational memory, not coin or stock, and a missing entry
 -- degrades to "no line rendered" rather than to an inconsistency.
 --
--- Persistence posture is RecurringVisitors', not the visitor mirror's: a plain
--- upsert with NO generation-marker delete-stale sweep. A pair that stops being
--- written simply ages past the recall horizon and is dropped at the next load
--- (RehydrateContactLedger), so there is nothing for a sweep to reclaim and no
--- safety cron to justify.
+-- Persistence posture: a per-row upsert plus ONE horizon-predicate DELETE, both
+-- inside the checkpoint Tx. Not a generation-marker sweep — nothing is marked,
+-- and the delete removes only rows already dead by the same recall-horizon rule
+-- the loader applies when it rehydrates (RehydrateContactLedger).
+--
+-- The delete is NOT optional bookkeeping. It is tempting to call this table
+-- bounded by the actor count and skip reclamation, and that is wrong: a
+-- transient visitor gets a FRESH vstr-<8hex> actor id every visit and this
+-- ledger covers visitors on purpose, so the set of pairs that have ever existed
+-- grows without limit even though the set of live actors does not. Load-time
+-- pruning drops those from memory but never from here, which would leave both
+-- the table and the full scan every boot does over it growing forever.
 --
 -- Engine-checkpointed standalone aggregate → deploy stop -> migrate -> start.
 -- IF NOT EXISTS / guarded so a re-run (or a future re-baseline that folds this

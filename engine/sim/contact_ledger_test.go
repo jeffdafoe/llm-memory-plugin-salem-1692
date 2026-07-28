@@ -268,6 +268,86 @@ func TestRehydrateContactLedgerKeepsMostRecentUnderCap(t *testing.T) {
 	}
 }
 
+// An out-of-order append must not defeat pruning or the cap. `at` is the
+// caller's clock, not RecordContact's — a replayed command or a delayed tick can
+// land an older timestamp after a newer one — and both prune steps select by
+// POSITION, so an unsorted trail would strand aged entries and evict the newest.
+// (code_review, LLM-547.)
+func TestRecordContactToleratesOutOfOrderWrites(t *testing.T) {
+	w := &World{}
+	base := time.Date(2026, 7, 27, 19, 0, 0, 0, time.UTC)
+
+	// A fresh contact, THEN one from a day earlier. Position-based pruning on an
+	// unsorted trail would keep the day-old entry (the scan stops at the first
+	// non-old element, which is now at index 0).
+	w.RecordContact("gideon", "prudence", base)
+	w.RecordContact("gideon", "prudence", base.Add(-24*time.Hour))
+
+	rec := w.contactRecord("gideon", "prudence")
+	if len(rec.At) != 1 {
+		t.Fatalf("trail = %v, want only the in-horizon entry — an out-of-order append must still prune", rec.At)
+	}
+	if !rec.At[0].Equal(base) {
+		t.Errorf("surviving entry = %v, want %v", rec.At[0], base)
+	}
+
+	// The cap must also evict the OLDEST, not whatever sits at the front of an
+	// unsorted slice. Write newest-first so an unsorted cap would keep the wrong end.
+	w2 := &World{}
+	for i := 0; i < MaxContactsPerPair*2; i++ {
+		w2.RecordContact("a", "b", base.Add(-time.Duration(i)*time.Minute))
+	}
+	got := w2.contactRecord("a", "b").At
+	if len(got) != MaxContactsPerPair {
+		t.Fatalf("trail length = %d, want %d", len(got), MaxContactsPerPair)
+	}
+	if !got[len(got)-1].Equal(base) {
+		t.Errorf("newest kept = %v, want %v — the cap must keep the most recent contacts", got[len(got)-1], base)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Before(got[i-1]) {
+			t.Fatalf("trail is not chronologically ordered at index %d: %v", i, got)
+		}
+	}
+}
+
+// A persisted timestamp meaningfully in the FUTURE is a bad value, not a
+// contact: only a clock correction between boots or an out-of-band edit produces
+// one, and it would otherwise hold the pair in the brake tier until
+// `future + horizon`, telling an actor it had already spoken with someone it had
+// not. The trail is prompt-facing, so the loader validates rather than trusting
+// the database. (code_review, LLM-547.)
+func TestRehydrateContactLedgerDropsFutureStamps(t *testing.T) {
+	now := time.Date(2026, 7, 27, 19, 0, 0, 0, time.UTC)
+	pairs := []ContactPair{
+		{SubjectID: "gideon", PeerID: "prudence", At: []time.Time{
+			now.Add(-30 * time.Minute), // good
+			now.Add(48 * time.Hour),    // impossible
+		}},
+		{SubjectID: "gideon", PeerID: "josiah", At: []time.Time{
+			now.Add(24 * time.Hour), // nothing else to fall back on
+		}},
+	}
+	got := RehydrateContactLedger(pairs, now, DefaultContactRecallHorizon)
+
+	rec := got["gideon"]["prudence"]
+	if rec == nil || len(rec.At) != 1 || !rec.At[0].Equal(now.Add(-30*time.Minute)) {
+		t.Errorf("trail = %+v, want only the real contact — a future stamp must be dropped", rec)
+	}
+	if _, ok := got["gideon"]["josiah"]; ok {
+		t.Error("a pair whose only stamp is in the future must be dropped entirely")
+	}
+
+	// Ordinary skew across a restart is absorbed rather than discarded — a
+	// contact recorded moments before shutdown is real.
+	within := RehydrateContactLedger([]ContactPair{
+		{SubjectID: "a", PeerID: "b", At: []time.Time{now.Add(ContactFutureSkewTolerance / 2)}},
+	}, now, DefaultContactRecallHorizon)
+	if _, ok := within["a"]["b"]; !ok {
+		t.Error("a stamp inside the skew tolerance must survive rehydrate")
+	}
+}
+
 // The tunables fall back to their defaults when unset, so a world built without
 // the environment loader — every unit test, and any partially-seeded fixture —
 // still tiers sensibly rather than treating every window as zero.

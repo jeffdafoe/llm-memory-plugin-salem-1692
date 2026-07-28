@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -378,29 +379,48 @@ func TestGoldensContactLineUsesVerbatimDisplayName(t *testing.T) {
 			p := Build(snap, actorID, warrants)
 			// Rebuild the expectation from the payload: every member carrying a
 			// tier is a member whose verbatim name must appear in some line.
-			var want []string
+			type tiered struct {
+				tier sim.ContactTier
+				name string
+			}
+			var want []tiered
 			for _, group := range [][]HuddleMember{p.Surroundings.HuddleMembers, p.Surroundings.CoPresent} {
 				for _, m := range group {
-					if m.ContactTier != sim.ContactTierNone && m.DisplayName != "" {
-						want = append(want, sanitizeInline(m.DisplayName))
+					// Acquainted is part of the expectation, not an exception to
+					// it: an unacquainted peer is rendered "a stranger" elsewhere
+					// in this section, and this line cannot follow that gating
+					// because it MUST carry the verbatim name. So the fact is
+					// withheld along with the name, and such a member is owed no
+					// line at all.
+					if m.ContactTier != sim.ContactTierNone && m.DisplayName != "" && m.Acquainted {
+						want = append(want, tiered{m.ContactTier, sanitizeInline(m.DisplayName)})
 					}
 				}
 			}
 			if len(want) == 0 {
 				return
 			}
-			lines := contactRecencyLines(p.Surroundings)
-			// The render caps the block, so only assert on names that survived the
-			// cap — a capped-out peer legitimately has no line.
+			// The render caps the block, so only names that SURVIVE the cap are
+			// owed a line. Select them with production's own ordering — loudest
+			// tier first, then name — rather than by collection order: the two
+			// coincide only while no scenario carries more facts than the cap, so
+			// taking a prefix of the payload order would quietly assert the wrong
+			// names the moment one does (code_review, LLM-547).
+			sort.SliceStable(want, func(i, j int) bool {
+				if want[i].tier != want[j].tier {
+					return want[i].tier > want[j].tier
+				}
+				return want[i].name < want[j].name
+			})
 			if len(want) > maxRenderedContactLines {
 				want = want[:maxRenderedContactLines]
 			}
-			joined := strings.Join(lines, "\n")
-			for _, name := range want {
-				if !strings.Contains(joined, name) {
+			joined := strings.Join(contactRecencyLines(p.Surroundings), "\n")
+			for _, w := range want {
+				if !strings.Contains(joined, w.name) {
 					t.Errorf("scenario %q: no contact line carries the verbatim DisplayName %q — an "+
 						"honorific or shortened form resolves to nobody in resolveAddressee and "+
-						"silently degrades the reply to the whole huddle (LLM-547)", sc.name, name)
+						"silently degrades the reply to the whole huddle (LLM-547)", sc.name, w.name)
 				}
 			}
 		})
@@ -1664,6 +1684,22 @@ var perceptionScenarios = []perceptionScenario{
 		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 			snap, actorID, warrants := constableAtAVillagersDoor()
 			return withContacts(snap, actorID, "josiah", 15*time.Minute), actorID, warrants
+		},
+	},
+	{
+		name: "constable_spoke_with_a_stranger_he_cannot_name",
+		summary: "LLM-547 acquaintance gate: a brake-window-recent trail with a peer the constable does " +
+			"NOT know by name. Renders nothing, and is byte-identical to constable_at_a_villagers_door " +
+			"apart from the company line calling her a stranger. The line cannot follow the usual " +
+			"descriptorLabel gating — it must carry the verbatim DisplayName or the model's reply " +
+			"silently degrades to the whole huddle — so when the name is withheld the fact goes with " +
+			"it. The alternative is a scene contradicting itself one line apart: 'You are outdoors, " +
+			"with a stranger. You had your word with Prudence Ward a short while ago.' Found by the " +
+			"end-to-end Speak→perception test, not by inspection.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			snap.Actors[actorID].Acquaintances = nil
+			return withContacts(snap, actorID, "prudence", 40*time.Minute), actorID, warrants
 		},
 	},
 	{

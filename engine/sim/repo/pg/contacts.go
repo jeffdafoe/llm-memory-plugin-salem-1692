@@ -48,6 +48,26 @@ VALUES ($1, $2, $3)
 ON CONFLICT (actor_id, peer_id) DO UPDATE SET
     contact_at = EXCLUDED.contact_at`
 
+// deleteStaleContactsSQL removes pairs whose whole trail has aged past the
+// recall horizon — the table's only reclamation path.
+//
+// It exists because "bounded by actor pairs" is FALSE over time: a transient
+// visitor gets a fresh vstr-<8hex> ActorID every visit and this ledger covers
+// visitors on purpose, so the set of pairs that have EVER existed grows without
+// limit even though the set of live actors does not. Load-time pruning drops
+// those from memory but never from Postgres, which would leave the table (and
+// the full scan every boot does over it) growing forever.
+//
+// max(unnest) rather than indexing the last element: the trail is written
+// ordered, but a stored array is data from outside this process and a wrong
+// order here would delete live rows rather than merely render oddly. An empty
+// or NULL array has no max, so `< $1` is NULL and the row is left alone — those
+// are never written (SaveSnapshot skips empty trails) and are not this
+// statement's business to clean up.
+const deleteStaleContactsSQL = `
+DELETE FROM actor_contact
+ WHERE (SELECT max(t) FROM unnest(contact_at) AS t) < $1`
+
 // advisoryLockContactsSQL serializes concurrent checkpoint writers on this
 // table, matching the recurring_visitor posture. Transaction-scoped, so it is
 // released with the Tx whether it commits or rolls back.
@@ -89,21 +109,26 @@ func (r *ContactsRepo) LoadAll(ctx context.Context) ([]sim.ContactPair, error) {
 	return out, nil
 }
 
-// SaveSnapshot upserts the flattened in-memory ledger inside the checkpoint Tx.
+// SaveSnapshot upserts the flattened in-memory ledger inside the checkpoint Tx,
+// then deletes pairs whose whole trail has aged past `staleBefore`.
 //
-// No delete-stale sweep, per the posture above. One consequence worth stating:
-// a pair whose trail has aged out of memory keeps its stale row until the next
-// boot drops it. Harmless — nothing but the boot load reads this table, and the
-// boot load applies the horizon.
+// The delete runs AFTER the upserts and in the same Tx, so a pair refreshed by
+// this very checkpoint is judged on its new trail rather than its old one.
+//
+// It is not a generation-marker sweep — nothing is marked, and it removes only
+// rows already dead by the horizon rule the loader applies. Skipped on a zero
+// cutoff (no clock established), which is the honest reading of "I don't know
+// what time it is": deleting nothing is always safe, deleting against a zero
+// cutoff would be too, but skipping keeps the intent legible.
 //
 // Substrate-boundary validation rejects an empty or self-referential pair so an
 // upstream bug surfaces on the failing checkpoint rather than silently
 // persisting a row the CHECK constraints would reject anyway.
-func (r *ContactsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, pairs []sim.ContactPair) error {
+func (r *ContactsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, pairs []sim.ContactPair, staleBefore time.Time) error {
 	if tx == nil {
 		return fmt.Errorf("pg contacts SaveSnapshot: nil tx")
 	}
-	if len(pairs) == 0 {
+	if len(pairs) == 0 && staleBefore.IsZero() {
 		return nil
 	}
 	if _, err := tx.Exec(ctx, advisoryLockContactsSQL); err != nil {
@@ -126,6 +151,11 @@ func (r *ContactsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, pairs []sim.
 			p.At,                // $3 contact_at
 		); err != nil {
 			return fmt.Errorf("pg contacts SaveSnapshot: upsert %s→%s: %w", p.SubjectID, p.PeerID, err)
+		}
+	}
+	if !staleBefore.IsZero() {
+		if _, err := tx.Exec(ctx, deleteStaleContactsSQL, staleBefore); err != nil {
+			return fmt.Errorf("pg contacts SaveSnapshot: delete stale before %s: %w", staleBefore, err)
 		}
 	}
 	return nil
