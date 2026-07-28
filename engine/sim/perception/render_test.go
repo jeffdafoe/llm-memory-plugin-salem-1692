@@ -1141,6 +1141,67 @@ func TestRenderRoundsStopsAhead(t *testing.T) {
 	}
 }
 
+// TestNonStandingCueWarrants covers the filter that keeps a wake's own line out of
+// "Since your last turn" when a standing cue already voices it (LLM-549).
+//
+// The risk code_review raised is real and worth pinning: the filter drops a warrant
+// on the promise that a cue carries its content, so a combination where the warrant
+// is present and the cue is NOT would consume the only actionable reason and render
+// a prompt the model cannot account for. That combination is unreachable by
+// construction — the wake is stamped only while a beat exists, and the rounds cue
+// renders from the same route — but the filter cannot see that, so the coupling is
+// recorded here rather than left as an assumption.
+func TestNonStandingCueWarrants(t *testing.T) {
+	other := sim.WarrantMeta{Reason: sim.IdleBackstopWarrantReason{}}
+
+	t.Run("drops the wakes a standing cue speaks for", func(t *testing.T) {
+		got := nonStandingCueWarrants([]sim.WarrantMeta{
+			{Reason: sim.ShiftDutyWarrantReason{ToWork: true}},
+			{Reason: sim.ConstableRoundsWarrantReason{}},
+			other,
+		})
+		if len(got) != 1 {
+			t.Fatalf("kept %d warrants, want 1 (only the unrelated one)", len(got))
+		}
+		if _, ok := got[0].Reason.(sim.IdleBackstopWarrantReason); !ok {
+			t.Errorf("kept %T, want the unrelated IdleBackstopWarrantReason", got[0].Reason)
+		}
+	})
+
+	t.Run("keeps everything else", func(t *testing.T) {
+		in := []sim.WarrantMeta{
+			{Reason: sim.IdleBackstopWarrantReason{}},
+			{Reason: sim.StrandedWarrantReason{}},
+			{Reason: sim.RestockWarrantReason{}},
+		}
+		if got := nonStandingCueWarrants(in); len(got) != len(in) {
+			t.Errorf("kept %d of %d — the filter is dropping kinds no cue speaks for", len(got), len(in))
+		}
+	})
+
+	// The documented coupling, made visible. A beat wake with NO rounds cue leaves
+	// the prompt with nothing to act on: the warrant is consumed unrendered and the
+	// cue that was supposed to carry it is absent. Nothing in the engine produces
+	// this pairing — the wake requires a beat and the cue renders from that same
+	// route — and this test exists so that if someone ever decouples them, the cost
+	// is written down where they will find it.
+	t.Run("a filtered wake with no cue leaves the turn empty", func(t *testing.T) {
+		var b strings.Builder
+		renderActor(&b, ActorView{Rounds: nil})
+		if strings.Contains(b.String(), "your rounds") {
+			t.Fatal("fixture invalid: the rounds cue rendered without a RoundsView")
+		}
+		survivors := nonStandingCueWarrants([]sim.WarrantMeta{{Reason: sim.ConstableRoundsWarrantReason{}}})
+		if len(survivors) != 0 {
+			t.Fatalf("the beat wake survived the filter (%d) — it must not render its raw kind", len(survivors))
+		}
+		// Both halves are now on the record: with no RoundsView the cue says nothing,
+		// and the filter has eaten the wake. The turn carries no reason at all. This
+		// is the cost of decoupling them, and it is why the wake is stamped only
+		// while a beat exists.
+	})
+}
+
 // TestRenderActor_RoundsSpeaksTheSameWhereverHeStands locks the LLM-548 contract:
 // what he owes and where to go next are told to him wherever he is, and only the
 // "you stand before" clause turns on actually being somewhere.

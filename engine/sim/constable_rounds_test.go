@@ -134,6 +134,82 @@ func TestBeatNeedsAWake(t *testing.T) {
 			t.Error("nudged a carrier with no round owed")
 		}
 	})
+
+	// The predicate enforces on-shift itself rather than inheriting it from the
+	// driver's ordering (code_review). In runConstableRounds a beat is swept away
+	// before this is asked, so the case is unreachable there — but the function is
+	// exported and its name promises a complete answer, and a future producer
+	// calling it directly must not be able to stamp a wake that drags a constable
+	// out of his evening over a stale route the sweep has not reached.
+	t.Run("off shift with a stale beat", func(t *testing.T) {
+		w, a := beatWorld(func(_ *World, a *Actor) {
+			a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600) // watch ends 10:00
+		})
+		if BeatNeedsAWake(w, a, now) { // now is noon
+			t.Error("woke an off-shift carrier over a stale beat — his watch is over")
+		}
+	})
+}
+
+// TestBeatWakeDecaysForAStationaryCarrier demonstrates rather than asserts the
+// pacing claim (code_review). "The stale-wake ledger paces it" is only true if the
+// situation fingerprint cannot churn under a man who is genuinely stuck — otherwise
+// every driver pass looks like a fresh situation, resets the streak, and buys a real
+// LLM turn every minute.
+//
+// It holds because of what actorSituationFingerprint hashes and what the gates
+// exclude. Every conversation-derived component — huddle id, members, newest foreign
+// utterance, last PC utterance — is nested inside `if a.CurrentHuddleID != ""`, and
+// the loudest of them changes only when somebody speaks. Somebody speaking is exactly
+// what makes the huddle live again, which turns BeatNeedsAWake off. The gate and the
+// fingerprint move together.
+//
+// This pins the residue: a stationary, unhuddled carrier with nothing happening keeps
+// one fingerprint across repeated passes, so the ledger's decay engages.
+func TestBeatWakeDecaysForAStationaryCarrier(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	a := constableAtPost("gideon")
+	a.Coins = 5
+	a.Inventory = map[ItemKind]int{"bread": 1}
+	w := constableWorld(a)
+	w.Huddles = map[HuddleID]*Huddle{}
+
+	base := actorSituationFingerprint(w, a, now)
+
+	// A minute later, nothing having happened, the situation must read IDENTICAL —
+	// that sameness is the whole basis of the decay.
+	if got := actorSituationFingerprint(w, a, now.Add(time.Minute)); got != base {
+		t.Error("a stationary carrier's fingerprint changed with the passage of time alone — " +
+			"the ledger would reset every pass and wake him every minute")
+	}
+
+	// The things that DO change it are discrete events, each worth a constable's
+	// attention, and none of which recur on their own.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Actor)
+	}{
+		{"he walked somewhere", func(a *Actor) { a.Pos.X += 3 }},
+		{"he stepped inside somewhere else", func(a *Actor) { a.InsideStructureID = "tavern" }},
+		{"he was paid", func(a *Actor) { a.Coins = 9 }},
+		{"his pack changed", func(a *Actor) { a.Inventory["bread"] = 2 }},
+		{"he changed what he was doing", func(a *Actor) { a.State = StateResting }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clone := *a
+			clone.Inventory = map[ItemKind]int{}
+			for k, v := range a.Inventory {
+				clone.Inventory[k] = v
+			}
+			tc.mutate(&clone)
+			w2 := constableWorld(&clone)
+			w2.Huddles = map[HuddleID]*Huddle{}
+			if actorSituationFingerprint(w2, &clone, now) == base {
+				t.Error("this change did not read as a new situation — the wake would go on " +
+					"decaying through something the constable ought to look up at")
+			}
+		})
+	}
 }
 
 // TestBeatWakeIsAmbient pins the pacing knob (LLM-549). The repeat rate is NOT a

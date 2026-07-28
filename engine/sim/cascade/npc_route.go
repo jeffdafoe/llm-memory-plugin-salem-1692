@@ -248,9 +248,10 @@ func runConstableRounds(w *sim.World, now time.Time) {
 		// (that one only covers actors outdoors), and he stood in the Meeting House
 		// for twelve minutes with eight doors unwalked.
 		//
-		// This runs AFTER the off-shift sweep above and that ordering is load-bearing
-		// — a beat still present here belongs to a carrier on shift, which is why
-		// BeatNeedsAWake needs no on-shift test of its own.
+		// Inside the per-carrier loop, so every constable is nudged on his own beat —
+		// findActorsWithAttribute returns them all, and the stamp is per actor like
+		// the rounds stamp itself (ConstableRoundsStamps). One carrier standing still
+		// cannot starve another's wake.
 		//
 		// It runs BEFORE the due-check's `continue` so an owed round is nudged on
 		// every pass, not only on the interval beat that created it. Repeats are

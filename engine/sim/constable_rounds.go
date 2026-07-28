@@ -58,19 +58,23 @@ func (ConstableRoundsWarrantReason) DedupDiscriminator() uint64 { return 0 }
 //
 //   - He is carrying a BEAT. A dispatched route walks its carrier, so it needs no
 //     nudge, and a carrier with no route owes nothing.
+//
 //   - He is STANDING STILL (MoveIntent == nil). A man already walking is on his way
 //     — waking him mid-leg is the nag this design exists to avoid, and his arrival
 //     will tick him anyway (finishArrival stamps on every arrival).
+//
 //   - He is NOT in a live conversation. Interrupting one to say "you have rounds to
 //     walk" is exactly the intrusion the dwell removal was meant to end. LIVENESS,
 //     not lifecycle — a huddle stays open 2h after its last word, so the lifecycle
 //     test would gag the wake for the rest of the afternoon over a conversation
 //     that ended before noon (the LLM-537 lesson, one layer over).
 //
-// **No off-shift check, deliberately, and the ordering is load-bearing.**
-// ClearBeatRouteIfOffShift runs FIRST in runConstableRounds' loop, so a beat that
-// still exists when this is asked belongs to a carrier on shift. Adding a second
-// on-shift test here would be a copy of that sweep's job and would drift from it.
+//   - He is ON SHIFT. In practice runConstableRounds' loop clears an off-shift beat
+//     before asking, so this is belt-and-braces there — but the predicate is
+//     exported and its name promises a complete answer, so it enforces the
+//     invariant rather than inheriting it from one caller's ordering. A future
+//     producer calling this directly must not be able to stamp an off-shift wake
+//     against a beat the sweep has not reached yet (code_review).
 //
 // **No pace interval, deliberately.** The repeat rate is the stale-wake ledger's
 // (LLM-233): WarrantKindConstableRounds is ambient, so an unchanged situation
@@ -79,12 +83,27 @@ func (ConstableRoundsWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // fixed quiet window here, which could not tell "frozen at his post" from "walking
 // his round" and would delay the first nudge by its own length, which is the very
 // latency this fixes.
+//
+// The gates above are what make that safe, and it is worth spelling out why, since
+// "the ledger paces it" is only true if the fingerprint cannot churn under a man
+// who is genuinely stuck. Read actorSituationFingerprint: EVERY conversation-derived
+// component — huddle id, member set, newest foreign utterance, last PC utterance —
+// is nested inside `if a.CurrentHuddleID != ""`, and the loudest of them can only
+// change when somebody speaks. But somebody speaking is precisely what makes the
+// huddle LIVE again, which turns this predicate off. The gate and the fingerprint
+// move together. What is left — position, inside-structure, macro-state, coins,
+// inventory, on-shift — cannot churn under a stationary actor except via a discrete
+// event (a transaction, a state change, the shift boundary), each of which is
+// legitimately worth a constable's attention and none of which recurs every minute.
 func BeatNeedsAWake(w *World, a *Actor, now time.Time) bool {
 	if a == nil || a.MoveIntent != nil {
 		return false
 	}
 	route := w.ActiveRoutes[a.ID]
 	if route == nil || route.Phase != RoutePhaseBeat {
+		return false
+	}
+	if !actorOnShift(w, a, localMinuteOfDay(w, now)) {
 		return false
 	}
 	return !actorInLiveHuddle(w, a, now)
