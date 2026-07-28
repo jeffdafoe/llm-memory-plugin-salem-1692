@@ -295,7 +295,7 @@ func TestIntegration_Contact_FutureOnlyRowsAreDeleted(t *testing.T) {
 	future := now.Add(72 * time.Hour)
 	seed := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
 		"gideon": {
-			"ghost":    {future},                    // nothing but a bad value
+			"ghost":    {future},                     // nothing but a bad value
 			"prudence": {now.Add(-10 * time.Minute)}, // a real contact
 		},
 	})
