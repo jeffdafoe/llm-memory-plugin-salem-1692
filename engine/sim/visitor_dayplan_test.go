@@ -569,9 +569,12 @@ func TestSellErrandSettlesOnDelivery(t *testing.T) {
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 			world.Actors[keeperID] = &sim.Actor{
 				ID: keeperID, DisplayName: "Josiah Thorne", Kind: sim.KindNPCStateful,
-				Pos:       sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
-				Needs:     sim.SeedVisitorNeedsForTest(),
-				Inventory: map[sim.ItemKind]int{},
+				// He must WORK at the errand counterparty: delivery is credited only when
+				// the shipment reaches that business, not merely when it leaves the factor.
+				WorkStructureID: "tavern",
+				Pos:             sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+				Needs:           sim.SeedVisitorNeedsForTest(),
+				Inventory:       map[sim.ItemKind]int{},
 			}
 			world.Actors[factorID] = &sim.Actor{
 				ID:          factorID,

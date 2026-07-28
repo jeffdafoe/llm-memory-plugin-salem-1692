@@ -88,26 +88,45 @@ func transferItem(_ *World, from, to *Actor, kind ItemKind, qty int) error {
 		to.Inventory = make(map[ItemKind]int)
 	}
 	to.Inventory[kind] += qty
-	// Credit a selling traveler's shipment as it goes out (LLM-553). This is the one place
-	// goods change hands, so it is the one place that can distinguish stock he never sold
-	// from stock he sold and bought back — the distinction his errand settles on. Monotonic
-	// by construction: a later purchase is an inbound transfer and lands on the other side
-	// of this function.
-	if tr := sellErrandFor(from); tr != nil && tr.Good == kind {
-		tr.Delivered += qty
+	// Credit a selling traveler's shipment as it reaches his errand counterparty (LLM-553).
+	// This is the one place goods change hands, so it is the one place that can distinguish
+	// stock he never sold from stock he sold and bought back — the distinction his errand
+	// settles on. Monotonic by construction: a later purchase is an inbound transfer and
+	// lands on the other side of this function, and qty is rejected above unless positive.
+	if tr := sellErrandCredit(from, to, kind); tr != nil {
+		// Saturate rather than wrap. A wrapped counter would go NEGATIVE and read as
+		// "delivered nothing", silently restoring the loop this fixes on a visitor whose
+		// persisted count was corrupt.
+		if tr.Delivered > math.MaxInt-qty {
+			tr.Delivered = math.MaxInt
+		} else {
+			tr.Delivered += qty
+		}
 	}
 	return nil
 }
 
-// sellErrandFor returns the actor's SELL errand, or nil if it has none — a resident, a
-// passer-through, or a buy-errand merchant. Narrow helper so transferItem states its intent
-// in one line rather than unpacking three levels of optional state inline.
-func sellErrandFor(a *Actor) *TradeErrand {
-	if a == nil || a.VisitorState == nil {
+// sellErrandCredit returns the SELL errand this transfer should credit, or nil.
+//
+// Three conditions, all required: `from` is a merchant visitor on a sell errand, the good is
+// that errand's headline import, and `to` works at the errand's counterparty business. The
+// last is the one that keeps the counter meaning "he completed his errand" rather than merely
+// "he got rid of the stuff" — without it a factor could hand his iron to any passing villager,
+// or `give` it away (which is ungated by design), and settle a SELL errand having sold nothing.
+// Commerce confinement makes that unlikely rather than impossible, and an accounting field
+// should not rest on another subsystem's gate holding.
+//
+// Keyed on WorkStructureID rather than actor identity so a hired hand minding the counter
+// credits the same as the keeper — the shipment reached the business either way.
+func sellErrandCredit(from, to *Actor, kind ItemKind) *TradeErrand {
+	if from == nil || to == nil || from.VisitorState == nil {
 		return nil
 	}
-	tr := a.VisitorState.Trade
-	if tr == nil || tr.Direction != TradeDirectionSell {
+	tr := from.VisitorState.Trade
+	if tr == nil || tr.Direction != TradeDirectionSell || tr.Good != kind {
+		return nil
+	}
+	if tr.Counterparty == "" || to.WorkStructureID != tr.Counterparty {
 		return nil
 	}
 	return tr
