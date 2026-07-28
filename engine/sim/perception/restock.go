@@ -311,6 +311,12 @@ const (
 	// remembered outcome, not a live status, and the supplier returns as a
 	// destination when the memory lapses.
 	restockBlockStandoff
+	// restockBlockSoldToThem — the buyer SOLD this very item to this supplier's
+	// keeper a short while ago (peerRememberedSoldTo, the TTL-decayed experiential
+	// memory, LLM-555). Buying it straight back off the person you sold it to is
+	// the churn round trip, not a restock. Like its siblings it is a remembered
+	// outcome, and the supplier returns as a destination when the memory lapses.
+	restockBlockSoldToThem
 )
 
 // RestockBlockedSupplier is a supplier of a low item that the buyer cannot transact
@@ -854,6 +860,21 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		// and the buyer tries again later, which is what "later" was supposed to mean.
 		if businessRememberedSaleStandoff(snap, buyerSnap, structureID, itemKind) {
 			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockStandoff})
+			continue
+		}
+		// LLM-555: the buyer sold this very item to this supplier's keeper within
+		// the last few hours. Walking back to buy it off him again is the churn
+		// round trip the reverse-pay gate now refuses, so the directory must stop
+		// naming the destination too — a cue that proposes a trip the substrate
+		// will reject is the shape LLM-223 already warns about, and the weak model
+		// walks any destination it is handed.
+		//
+		// Keyed on the REPRESENTATIVE vendor at this structure — the one the cue
+		// names and the buyer would deal with. A second keeper at the same shop
+		// whom the buyer never sold to is suppressed along with him; the shop is
+		// the unit the directory works in, and the memory lapses in hours.
+		if peerRememberedSoldTo(snap, buyerSnap, p.vendorID, itemKind) {
+			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockSoldToThem})
 			continue
 		}
 		// The LLM-406 means-to-pay gate (see the doc comment): coin that covers the
@@ -1480,7 +1501,7 @@ func renderWalkToVendors(b *strings.Builder, vendors []RestockVendor) {
 func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 	fmt.Fprintf(b, "- You have %d %s on hand, and no way to restock just now.\n",
 		it.CurrentQty, sanitizeInline(it.ItemLabel))
-	noMeans, shut, standoff := false, false, false
+	noMeans, shut, standoff, soldToThem := false, false, false, false
 	for _, bl := range it.Blocked {
 		switch bl.Reason {
 		case restockBlockNoMeans:
@@ -1490,6 +1511,10 @@ func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 		case restockBlockStandoff:
 			standoff = true
 			fmt.Fprintf(b, "  - %s sells %s, but you pressed them for it not long ago and could not come to terms.\n",
+				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
+		case restockBlockSoldToThem:
+			soldToThem = true
+			fmt.Fprintf(b, "  - %s sells %s, but that is where your own went — you sold it to them yourself a few hours past.\n",
 				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
 		default:
 			shut = true
@@ -1514,6 +1539,13 @@ func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 		// not coin or a keeper returning. Says to let it rest, which is exactly what
 		// the co-present soften asked for and what the directory drop now enforces.
 		b.WriteString("  Let that one rest and ask again later in the day — a hard no this morning may soften once they have more to spare.\n")
+	}
+	if soldToThem {
+		// LLM-555: neither time-of-day nor coin is the way out here, and the way out
+		// is emphatically NOT to go and buy it back — that is the round trip itself.
+		// So the resolution points at the other suppliers, or at making more, and
+		// leaves the sale standing as the settled thing it is.
+		b.WriteString("  Let it go — what you sold is theirs now. Look to another supplier, or to your own making, before you go buying it back.\n")
 	}
 }
 

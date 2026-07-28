@@ -502,6 +502,27 @@ func businessRememberedSaleStandoff(snap *sim.Snapshot, actorSnap *sim.ActorSnap
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, ItemKind: itemKind, Condition: sim.ObservedSaleStandoff}, snap.PublishedAt)
 }
 
+// peerRememberedSoldTo reports whether the subject has a live experiential memory
+// (LLM-555, within its TTL of the snapshot clock) of selling itemKind to peerID.
+// The person-keyed sibling of businessRememberedSaleStandoff, and the perception
+// half of the same question sim.ActorRecentlySoldTo asks on the live world — the
+// reverse-pay gate refuses the offer, this drops the partner from the buy
+// directory so the cue never proposes it. Stamped on the seller at accept by the
+// PayWithItemResolved subscriber (sim/trade_reversal.go), TTL decay applied by
+// Observed.Active at read time.
+//
+// No walkingToStructure guard, unlike its place-keyed siblings. That guard exists
+// so a mid-walk re-tick cannot steer an actor off the shop it just chose to walk
+// to, on the reasoning that arrival re-observes the truth. Nothing is re-observed
+// here: whether you sold this person this good an hour ago is settled, and it
+// reads the same on arrival as it did on departure.
+func peerRememberedSoldTo(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, peerID sim.ActorID, itemKind sim.ItemKind) bool {
+	if snap == nil || actorSnap == nil || peerID == "" || itemKind == "" {
+		return false
+	}
+	return actorSnap.Observed.Active(sim.ObservedStateKey{PeerID: peerID, ItemKind: itemKind, Condition: sim.ObservedSoldToPeer}, snap.PublishedAt)
+}
+
 // walkingToStructure reports whether the actor's in-flight move targets
 // structureID (an enter or a visit). It is the narrow HOME-405 guard for the
 // remembered-shut / remembered-out-of-stock avoidance reads (LLM-366): an NPC
