@@ -85,13 +85,21 @@ func TestTradeReversalIgnoresNonSales(t *testing.T) {
 	// carries its goods in PayItems with an empty ItemKind, so stamping one would
 	// write a backwards memory under an empty key — which, being empty-keyed, is
 	// not merely useless but would read as a memory about no item at all.
-	t.Run("gift is not a sale", func(t *testing.T) {
+	//
+	// The ledger is deliberately EMPTY here. The discriminator rides the event, so
+	// the exclusion cannot depend on the resolving entry still being present or on
+	// subscriber ordering against its writes — the LLM-525 trap for this family,
+	// and the failure this test would catch if someone reintroduced a lookup
+	// (code_review).
+	t.Run("gift is not a sale, with no ledger entry to consult", func(t *testing.T) {
 		w, seller, buyer := tradeReversalWorld(t)
-		w.PayLedger[2] = &PayLedgerEntry{ID: 2, IsGift: true, BuyerID: buyer.ID, SellerID: seller.ID}
 		handleTradeReversalOnResolved(w, &PayWithItemResolved{
-			LedgerID: 2, BuyerID: buyer.ID, SellerID: seller.ID,
+			LedgerID: 2, BuyerID: buyer.ID, SellerID: seller.ID, IsGift: true,
 			ItemKind: "firewood", TerminalState: PayTerminalStateAccepted, At: at,
 		})
+		if len(w.PayLedger) != 0 {
+			t.Fatal("fixture must keep the ledger empty — that is the point of the case")
+		}
 		if ActorRecentlySoldTo(seller, buyer.ID, "firewood", at) {
 			t.Error("give is ungated by design (LLM-544); handing someone goods is not a sale a later purchase reverses")
 		}

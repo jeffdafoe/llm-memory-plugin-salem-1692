@@ -236,6 +236,17 @@ type PayWithItemResolved struct {
 	// expire, fail). ZBBS-WORK-420.
 	BuyerTookQuote bool
 
+	// IsGift mirrors the resolving entry's IsGift (LLM-138) so a subscriber can
+	// tell a sale from a one-way gift without reading the ledger back. Carried on
+	// the event rather than looked up for the reason LLM-525 documents for this
+	// subscriber family: a resolved event must not depend on the resolving entry
+	// still being present, nor on whether the subscriber runs before or after that
+	// entry's own writes. It matters because a gift INVERTS the roles — BuyerID is
+	// the giver, SellerID the recipient — and carries its goods in PayItems under
+	// an empty ItemKind, so a subscriber that mistook one for a sale would record
+	// a backwards fact. LLM-555.
+	IsGift bool
+
 	SceneID  SceneID
 	HuddleID HuddleID
 	At       time.Time

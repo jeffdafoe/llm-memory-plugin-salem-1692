@@ -808,6 +808,15 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	type pick struct {
 		vendorID  sim.ActorID
 		structure *sim.Structure
+		// soldTo marks a representative the buyer remembers selling this item to
+		// (LLM-555). Carried on the pick rather than tested after the fact so a shop
+		// is judged by the keeper who would actually take the offer: a CLEAN keeper
+		// outranks a sold-to one, and the structure is dropped only when every
+		// candidate there is someone she sold to — which is exactly when the pay
+		// gate would refuse all of them too. Testing only the lowest-ActorID
+		// representative would hide a shop whose other keeper the gate permits,
+		// leaving cue and substrate disagreeing (code_review).
+		soldTo bool
 	}
 	best := map[sim.StructureID]pick{}
 	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
@@ -817,10 +826,16 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		if !isRestockSupplierOf(snap, o.VendorID, itemKind) {
 			return // LLM-252: only first-hand suppliers (or the distributor), never a reseller's retail stock
 		}
-		if cur, ok := best[o.StructureID]; ok && cur.vendorID <= o.VendorID {
-			return // keep the lowest VendorID at this structure
+		soldTo := peerRememberedSoldTo(snap, buyerSnap, o.VendorID, itemKind)
+		if cur, ok := best[o.StructureID]; ok {
+			if !cur.soldTo && soldTo {
+				return // a keeper she has no such history with outranks one she does
+			}
+			if cur.soldTo == soldTo && cur.vendorID <= o.VendorID {
+				return // within a class, keep the lowest VendorID at this structure
+			}
 		}
-		best[o.StructureID] = pick{vendorID: o.VendorID, structure: o.Structure}
+		best[o.StructureID] = pick{vendorID: o.VendorID, structure: o.Structure, soldTo: soldTo}
 	})
 	if len(best) == 0 {
 		return nil, nil
@@ -869,11 +884,11 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		// will reject is the shape LLM-223 already warns about, and the weak model
 		// walks any destination it is handed.
 		//
-		// Keyed on the REPRESENTATIVE vendor at this structure — the one the cue
-		// names and the buyer would deal with. A second keeper at the same shop
-		// whom the buyer never sold to is suppressed along with him; the shop is
-		// the unit the directory works in, and the memory lapses in hours.
-		if peerRememberedSoldTo(snap, buyerSnap, p.vendorID, itemKind) {
+		// p.soldTo is true only when EVERY qualifying keeper at this structure is
+		// someone she sold this item to (see the pick struct): a clean keeper wins
+		// the representative slot, so a shop keeps its place in the directory
+		// whenever there is anyone there the pay gate would still let her buy from.
+		if p.soldTo {
 			blocked = append(blocked, RestockBlockedSupplier{StructureLabel: label, Reason: restockBlockSoldToThem})
 			continue
 		}

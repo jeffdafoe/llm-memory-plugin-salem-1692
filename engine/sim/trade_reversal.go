@@ -57,17 +57,17 @@ const SoldToPeerMemoryTTL = 3 * time.Hour
 // in PayItems with an empty ItemKind, so stamping one would write a backwards
 // memory under an empty key. `give` is ungated in both directions by design
 // (LLM-544), and handing someone a wheel of cheese is not a sale that a later
-// purchase reverses.
+// purchase reverses. The discriminator is read off the EVENT, never looked up in
+// the ledger: the LLM-525 rule for this subscriber family is that a resolved
+// event must not depend on the resolving entry still being present, nor on
+// whether the subscriber runs before or after that entry's own writes.
 //
 // A no-op for non-agent sellers: a PC carries its own continuity through the
 // player, and a decorative actor never takes a turn, so neither has an Observed
 // store worth writing.
 func handleTradeReversalOnResolved(w *World, evt Event) {
 	res, ok := evt.(*PayWithItemResolved)
-	if !ok || res.TerminalState != PayTerminalStateAccepted {
-		return
-	}
-	if entry := w.PayLedger[res.LedgerID]; entry != nil && entry.IsGift {
+	if !ok || res.TerminalState != PayTerminalStateAccepted || res.IsGift {
 		return
 	}
 	seller := w.Actors[res.SellerID]

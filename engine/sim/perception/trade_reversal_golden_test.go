@@ -256,3 +256,116 @@ func TestPeerRememberedSoldToIsDirectionalAndItemScoped(t *testing.T) {
 		t.Error("the memory must lapse at SoldToPeerMemoryTTL")
 	}
 }
+
+// TestSoldToDropPrefersAKeeperSheNeverSoldTo covers the multi-keeper shop
+// (code_review). The directory collapses a structure to ONE representative, so
+// judging the shop by whichever keeper happens to sort lowest would hide a shop
+// whose other keeper the pay gate would happily let her buy from — cue and
+// substrate disagreeing. A clean keeper wins the slot; the shop is dropped only
+// when everyone there is someone she sold to.
+//
+// amos sorts before josiah, so he takes the representative slot on the plain
+// lowest-ActorID rule. Making HIM the sold-to one is what makes the test able to
+// fail.
+func TestSoldToDropPrefersAKeeperSheNeverSoldTo(t *testing.T) {
+	build := func(soldToBoth bool) (*sim.Snapshot, sim.ActorID) {
+		snap, actorID, _ := keeperRestockDropsSupplierSheSoldTo()
+		delete(snap.Actors, sim.ActorID("martha")) // the store is her only shop now
+		delete(snap.Structures, sim.StructureID("marthas_copse"))
+
+		store := sim.StructureID("general_store")
+		amos := &sim.ActorSnapshot{
+			Kind:            sim.KindNPCStateful,
+			DisplayName:     "Amos Pike",
+			State:           sim.StateIdle,
+			Pos:             sim.TilePos{X: 401, Y: 400},
+			WorkStructureID: store,
+			Inventory:       map[sim.ItemKind]int{"firewood": 30},
+			RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+				{Item: "firewood", Source: sim.RestockSourceBuy, Max: 40},
+			}},
+		}
+		snap.Actors["amos"] = amos
+
+		hannah := snap.Actors[actorID]
+		seen := map[sim.ObservedStateKey]time.Time{
+			{PeerID: "amos", ItemKind: "firewood", Condition: sim.ObservedSoldToPeer}: snap.PublishedAt.Add(-time.Hour),
+		}
+		if soldToBoth {
+			seen[sim.ObservedStateKey{PeerID: "josiah", ItemKind: "firewood", Condition: sim.ObservedSoldToPeer}] = snap.PublishedAt.Add(-time.Hour)
+		}
+		hannah.Observed = sim.NewObservedStates(seen)
+		return snap, actorID
+	}
+
+	t.Run("one clean keeper keeps the shop in the directory", func(t *testing.T) {
+		snap, actorID := build(false)
+		vendors, blocked := findItemVendors(snap, actorID, snap.Actors[actorID], "firewood")
+		if len(vendors) != 1 {
+			t.Fatalf("vendors = %d, want 1: a shop with a keeper she never sold to stays a destination (blocked=%+v)", len(vendors), blocked)
+		}
+		if vendors[0].StructureLabel != "General Store" {
+			t.Errorf("vendor = %q, want the General Store", vendors[0].StructureLabel)
+		}
+	})
+
+	t.Run("every keeper sold to drops the shop", func(t *testing.T) {
+		snap, actorID := build(true)
+		vendors, blocked := findItemVendors(snap, actorID, snap.Actors[actorID], "firewood")
+		if len(vendors) != 0 {
+			t.Fatalf("vendors = %d, want 0 when she sold firewood to everyone there", len(vendors))
+		}
+		if len(blocked) != 1 || blocked[0].Reason != restockBlockSoldToThem {
+			t.Errorf("blocked = %+v, want one sold-to block naming the shop", blocked)
+		}
+	})
+}
+
+// TestRenderBlockedItemCodasCombine pins that adding a fourth block reason did not
+// disturb the coda selection (code_review). Each reason carries its own way out,
+// and a supplier blocked one way must not silently lose the resolution belonging
+// to a supplier blocked another — the both-resolutions rule the shut/no-means pair
+// already follows.
+func TestRenderBlockedItemCodasCombine(t *testing.T) {
+	const (
+		soldToCoda   = "what you sold is theirs now"
+		standoffCoda = "Let that one rest"
+		shutCoda     = "Look in again another day"
+		meansCoda    = "Keep your shop and take what trade comes to you"
+	)
+	cases := []struct {
+		name    string
+		reasons []restockBlockReason
+		want    []string
+		absent  []string
+	}{
+		{"sold_to_only", []restockBlockReason{restockBlockSoldToThem}, []string{soldToCoda}, []string{shutCoda, meansCoda, standoffCoda}},
+		{"sold_to_and_shut", []restockBlockReason{restockBlockSoldToThem, restockBlockShut}, []string{soldToCoda, shutCoda}, nil},
+		{"sold_to_and_no_means", []restockBlockReason{restockBlockSoldToThem, restockBlockNoMeans}, []string{soldToCoda, meansCoda}, nil},
+		{"sold_to_and_standoff", []restockBlockReason{restockBlockSoldToThem, restockBlockStandoff}, []string{soldToCoda, standoffCoda}, nil},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			it := RestockItemView{ItemLabel: "firewood", CurrentQty: 2, Cap: 12}
+			for i, r := range tc.reasons {
+				it.Blocked = append(it.Blocked, RestockBlockedSupplier{
+					StructureLabel: []string{"General Store", "Martha's Copse"}[i], Reason: r,
+				})
+			}
+			var b strings.Builder
+			renderBlockedItem(&b, it)
+			out := b.String()
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing coda %q in:\n%s", want, out)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(out, absent) {
+					t.Errorf("unexpected coda %q in:\n%s", absent, out)
+				}
+			}
+		})
+	}
+}
