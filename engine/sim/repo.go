@@ -26,6 +26,7 @@ type Repository struct {
 	LaborContracts       LaborContractsRepo
 	Visitors             VisitorsRepo
 	RecurringVisitors    RecurringVisitorsRepo
+	Contacts             ContactsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
@@ -231,6 +232,28 @@ type VisitorsRepo interface {
 type RecurringVisitorsRepo interface {
 	LoadAll(ctx context.Context) (map[RecurringVisitorID]*RecurringVisitor, error)
 	SaveSnapshot(ctx context.Context, tx Tx, recurring map[RecurringVisitorID]*RecurringVisitor) error
+}
+
+// ContactsRepo loads + checkpoints the per-pair conversational recency trail
+// (LLM-547) — who each actor has already had its word with, and how lately.
+//
+// Same posture as RecurringVisitorsRepo and for the same reason: SaveSnapshot is
+// a plain upsert with NO delete-stale sweep, because a pair that stops being
+// written ages past the recall horizon and is dropped at the next LoadAll rather
+// than needing to be reclaimed. Written inside the SaveWorld Tx from
+// cp.ContactPairs; loaded into World.ContactLedger at FinalizeLoad so a restart
+// resumes the trail (the LLM-546 requirement — Salem deploys several times a
+// day, and a purely in-memory trail would leave the continuity tier empty).
+type ContactsRepo interface {
+	LoadAll(ctx context.Context) ([]ContactPair, error)
+	// SaveSnapshot upserts `pairs` and deletes rows with no timestamp inside
+	// [staleBefore, validUntil]. Either bound unset skips the delete.
+	//
+	// The delete is the table's only reclamation path and is NOT a generation
+	// sweep: visitor ActorIDs are ephemeral, so pairs accumulate for the life of
+	// the world unless dead ones are removed by the same horizon rule the loader
+	// applies.
+	SaveSnapshot(ctx context.Context, tx Tx, pairs []ContactPair, staleBefore, validUntil time.Time) error
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment

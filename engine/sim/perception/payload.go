@@ -1566,6 +1566,13 @@ type DwellCreditView struct {
 type SurroundingsView struct {
 	InsideStructureID sim.StructureID
 
+	// OnRound is true while the subject is carrying a rounds circuit. Used only
+	// to choose between "this round" and a bare time phrase in the LLM-547
+	// contact lines — the round itself is rendered from RoundsView, not here.
+	// Shares actorOnRound with the rounds cue so the two can never disagree
+	// about whether a round is under way.
+	OnRound bool
+
 	// StructureName is the structure's DisplayName, or empty when the
 	// actor is outdoors or the structure is absent from the snapshot.
 	StructureName string
@@ -1984,6 +1991,22 @@ type HuddleMember struct {
 	// annotation ("mending the market stall"). Set only alongside SourceActivityBusy;
 	// empty falls back to a place-less phrase in render. LLM-440.
 	SourceActivityLabel string
+
+	// ContactTier is what the observer's own history with this member says
+	// (LLM-547) — silent when they have not spoken inside the recall horizon,
+	// continuity when they have but not lately, and one of two brake tiers when
+	// they have spoken recently. Derived world-side from the contact ledger so
+	// render only selects phrasing.
+	//
+	// Unlike every other annotation on this struct it is OBSERVER-RELATIVE: two
+	// actors looking at the same third party see different tiers, because the
+	// fact is about the pair rather than about the member.
+	ContactTier sim.ContactTier
+
+	// ContactRecentCount is how many times they have spoken inside the brake
+	// window, carried so the weighted line can say "twice" without re-deriving a
+	// count that could drift from the tier. Zero below the brake tiers.
+	ContactRecentCount int
 }
 
 // AnchorsView carries the actor's own home and work structures as standing

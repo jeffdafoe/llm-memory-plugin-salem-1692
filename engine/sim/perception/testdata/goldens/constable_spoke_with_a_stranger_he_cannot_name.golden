@@ -1,0 +1,18 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.
+You are walking your rounds through the village. You stand before the PW Apothecary.
+One more place on your round still lies ahead of you. The next is the Inn.
+
+## Around you
+You are outdoors. the apothecary is here with you.
+Evening settles over the village.
+
+You keep your trade at the Meeting House (destination: meeting_house), and your home is at the Marsh Residence (destination: marsh_residence).
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

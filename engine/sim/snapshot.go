@@ -48,6 +48,18 @@ type Snapshot struct {
 	// authoritative state lives here). Phase 3 PR S4.
 	PayLedger map[LedgerID]*PayLedgerEntry
 
+	// ContactLedger is the published snapshot of World.ContactLedger — the
+	// per-pair conversational recency trail (LLM-547), deep-cloned via
+	// CloneContactLedger. Perception reads it to tell an actor who it has
+	// already had its word with.
+	//
+	// The two windows ride alongside it because the tier derivation is a pure
+	// function of the trail plus these, and perception must not reach back into
+	// live World.Settings off the snapshot.
+	ContactLedger        map[ActorID]map[ActorID]*ContactRecord
+	ContactBrakeWindow   time.Duration
+	ContactRecallHorizon time.Duration
+
 	// LaborLedger is the published snapshot of World.LaborLedger — every
 	// labor offer in the world (pending, working, and terminal), deep-cloned
 	// via CloneLaborOffer so snapshot readers can't reach back into world

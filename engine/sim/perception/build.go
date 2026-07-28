@@ -908,7 +908,7 @@ func buildActorView(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 // (resolveDwellPinLabel), and is empty while he is walking between stops (the
 // republish stamps RouteStopObjectID only once he has arrived).
 func buildRounds(snap *sim.Snapshot, a *sim.ActorSnapshot) *RoundsView {
-	if a.RouteLabel != sim.AttrConstable {
+	if !actorOnRound(a) {
 		return nil
 	}
 	return &RoundsView{
@@ -916,6 +916,19 @@ func buildRounds(snap *sim.Snapshot, a *sim.ActorSnapshot) *RoundsView {
 		StopsAhead:   a.RouteStopsAhead,
 		NextBusiness: resolveDwellPinLabel(snap, a.RouteNextStopObjectID),
 	}
+}
+
+// actorOnRound reports whether the subject is carrying a rounds circuit right
+// now. RouteLabel is stamped only on the actor who OWNS the route (world.go
+// republish), so this is self-only by construction — an onlooker's snapshot is a
+// different actor whose route fields are empty.
+//
+// Extracted so the rounds cue and the LLM-547 contact line ask the same
+// question of the same field rather than each testing RouteLabel themselves.
+// The contact line needs it to choose between "this round" and a bare time
+// phrase, and the two must never disagree about whether a round is under way.
+func actorOnRound(a *sim.ActorSnapshot) bool {
+	return a != nil && a.RouteLabel == sim.AttrConstable
 }
 
 // buildInFlightProduction projects the subject's in-progress production cycle
@@ -1267,6 +1280,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		Atmosphere:        snap.Environment.Atmosphere,
 		Weather:           snap.Environment.Weather,
 		LocalMinuteOfDay:  snap.LocalMinuteOfDay,
+		OnRound:           actorOnRound(a),
 	}
 	if item, source, ok := findGatherableCue(snap, actorID, a); ok {
 		s.GatherableItem = item
@@ -1379,6 +1393,18 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 		m.DisplayName = peer.DisplayName
 		m.Role = peer.Role
 		m.SolicitTie = laborTieFor(subj, peer)
+		// LLM-547: what the subject's own history with this member says. Attached
+		// HERE, in the one builder both the huddle roster and the co-presence line
+		// share, so the fact cannot appear for a peer in one section and go missing
+		// for the same peer in the other.
+		//
+		// Observer-relative, unlike every other annotation below: the lookup is
+		// keyed (subject → member), so two actors looking at the same third party
+		// legitimately get different tiers. Reading it off the co-present builder
+		// also gives the co-presence guard for free — a pair with a rich history
+		// renders nothing at all unless the peer is actually in the scene, because
+		// this function only ever runs for someone who is.
+		m.ContactTier, m.ContactRecentCount = snap.ContactTierFor(subjectID, memberID, snap.PublishedAt)
 		// LLM-231: a peer fulfilling a hired job is dropped from the seller
 		// offer/quote cue (m.Laboring, set for every observer — even the employer
 		// shouldn't pitch a sale to their own mid-job worker) and rendered as busy

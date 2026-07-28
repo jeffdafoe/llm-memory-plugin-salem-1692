@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -315,6 +316,167 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 			hasRain := strings.Contains(renderScenario(sc), weatherStormProse)
 			if wantRain != hasRain {
 				t.Errorf("scenario %q: storm=%v but rain line present=%v — the felt rain line must render iff a storm is overhead (LLM-364)", sc.name, wantRain, hasRain)
+			}
+		})
+	}
+}
+
+// TestGoldensContactLineIffCoPresentPeer is the LLM-547 cross-scenario invariant
+// on the co-presence gate: a contact line may name ONLY someone actually in the
+// scene.
+//
+// The property matters more than the six goldens that pin the tiers. The ledger
+// is a per-pair record with no notion of place, so the one thing standing
+// between it and a roll-call of everyone the subject has ever spoken to — re-sent
+// every tick, prompt-bloating and legibility-destroying — is that the tier is
+// attached in resolveCoPresentMember, which runs only for a present peer. That
+// is a structural guarantee rather than a check, and structural guarantees are
+// exactly the ones a later refactor breaks silently.
+//
+// Computed through contactRecencyLines, production's own function, rather than
+// by restating its wording — a reword leaves the invariant matching, and a
+// change to which peers it draws from is caught. Same reasoning as
+// TestGoldensRainLineIffStorm computing through weatherProse.
+func TestGoldensContactLineIffCoPresentPeer(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			lines := contactRecencyLines(p.Surroundings)
+			if len(lines) == 0 {
+				return
+			}
+			// Every name the block can legitimately mention: the people in the
+			// scene, by the same DisplayName render uses.
+			present := make(map[string]struct{})
+			for _, group := range [][]HuddleMember{p.Surroundings.HuddleMembers, p.Surroundings.CoPresent} {
+				for _, m := range group {
+					present[sanitizeInline(m.DisplayName)] = struct{}{}
+				}
+			}
+			for _, line := range lines {
+				named := false
+				for name := range present {
+					if name != "" && strings.Contains(line, name) {
+						named = true
+						break
+					}
+				}
+				if !named {
+					t.Errorf("scenario %q: contact line %q names nobody who is in the scene — "+
+						"the fact may only be told about a co-present peer (LLM-547)", sc.name, line)
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensContactLineNamesPeopleNotPlaces is the LLM-547 register invariant,
+// and it guards the constraint most likely to be "improved" back into a defect.
+//
+// LLM-530 names the round's NEXT stop verbatim precisely BECAUSE it has to work
+// as a move_to token. The reasoning inverts for history: naming shops already
+// walked hands the model fresh, attractive destinations — which is the behaviour
+// this ticket exists to stop. People for what is done, places for what remains.
+//
+// Structure DISPLAY NAMES are the failure mode, not structure ids: a well-meant
+// "you had your word with Prudence Ward at the PW Apothecary" reads natural and
+// is exactly wrong. So the check sweeps every structure in the scenario.
+func TestGoldensContactLineNamesPeopleNotPlaces(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			lines := contactRecencyLines(p.Surroundings)
+			if len(lines) == 0 {
+				return
+			}
+			for _, line := range lines {
+				for id, st := range snap.Structures {
+					if st == nil || st.DisplayName == "" {
+						continue
+					}
+					if strings.Contains(line, st.DisplayName) {
+						t.Errorf("scenario %q: contact line %q names the place %q — a history line "+
+							"must name people only; naming a walked stop hands the model a fresh "+
+							"destination, which is the behaviour LLM-547 fixes", sc.name, line, st.DisplayName)
+					}
+					if strings.Contains(line, string(id)) {
+						t.Errorf("scenario %q: contact line %q carries the structure id %q — a "+
+							"history line is never a move_to affordance (LLM-547)", sc.name, line, id)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensContactLineUsesVerbatimDisplayName is the LLM-547 register
+// invariant on the NAME, and it guards a silent failure rather than an ugly one.
+//
+// resolveAddressee (sim/speak_commands.go) matches a peer by full display name
+// or first name only, case-insensitively. An honorific — "Mistress Ward", where
+// "Ward" is the surname — matches NOTHING, so the model's reply silently
+// degrades from addressing her to addressing the whole huddle, and no error is
+// ever raised. Period flavour therefore lives in the construction around the
+// name ("had your word with"), never in the name itself.
+//
+// Asserting the verbatim name is PRESENT is the check that survives rewording:
+// a future line that dresses the name up would drop the exact token and fail
+// here, while any rephrasing that keeps the name intact passes.
+func TestGoldensContactLineUsesVerbatimDisplayName(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			// Rebuild the expectation from the payload: every member carrying a
+			// tier is a member whose verbatim name must appear in some line.
+			type tiered struct {
+				tier sim.ContactTier
+				name string
+			}
+			var want []tiered
+			for _, group := range [][]HuddleMember{p.Surroundings.HuddleMembers, p.Surroundings.CoPresent} {
+				for _, m := range group {
+					// Acquainted is part of the expectation, not an exception to
+					// it: an unacquainted peer is rendered "a stranger" elsewhere
+					// in this section, and this line cannot follow that gating
+					// because it MUST carry the verbatim name. So the fact is
+					// withheld along with the name, and such a member is owed no
+					// line at all.
+					if m.ContactTier != sim.ContactTierNone && m.DisplayName != "" && m.Acquainted {
+						want = append(want, tiered{m.ContactTier, sanitizeInline(m.DisplayName)})
+					}
+				}
+			}
+			if len(want) == 0 {
+				return
+			}
+			// The render caps the block, so only names that SURVIVE the cap are
+			// owed a line. Select them with production's own ordering — loudest
+			// tier first, then name — rather than by collection order: the two
+			// coincide only while no scenario carries more facts than the cap, so
+			// taking a prefix of the payload order would quietly assert the wrong
+			// names the moment one does (code_review, LLM-547).
+			sort.SliceStable(want, func(i, j int) bool {
+				if want[i].tier != want[j].tier {
+					return want[i].tier > want[j].tier
+				}
+				return want[i].name < want[j].name
+			})
+			if len(want) > maxRenderedContactLines {
+				want = want[:maxRenderedContactLines]
+			}
+			joined := strings.Join(contactRecencyLines(p.Surroundings), "\n")
+			for _, w := range want {
+				if !strings.Contains(joined, w.name) {
+					t.Errorf("scenario %q: no contact line carries the verbatim DisplayName %q — an "+
+						"honorific or shortened form resolves to nobody in resolveAddressee and "+
+						"silently degrades the reply to the whole huddle (LLM-547)", sc.name, w.name)
+				}
 			}
 		})
 	}
@@ -1507,6 +1669,93 @@ var perceptionScenarios = []perceptionScenario{
 			"last turn\" rather than printing the raw kind under the scene it duplicates, and no go-to-post " +
 			"steer appears even though he is standing in his post.",
 		build: constableWokenAtHisPostWithARoundOwed,
+	},
+	{
+		name: "constable_at_a_villagers_door",
+		summary: "LLM-547 base: the constable mid-round at the Apothecary with Prudence Ward within " +
+			"earshot and NO history between them inside the recall horizon. Pins the silent tier — " +
+			"a pair who have not spoken get no line at all, so the fact costs nothing in the common " +
+			"case. Every other LLM-547 golden is this fixture plus a contact trail, so their diffs " +
+			"against this one are exactly the sentence each tier renders.",
+		build: constableAtAVillagersDoor,
+	},
+	{
+		name: "constable_already_called_on_her_this_round",
+		summary: "LLM-547 quiet brake: one call on Ward 40 minutes ago, inside the 2h brake window. " +
+			"The scene says he has already had his word with her THIS ROUND — the phrasing is round-" +
+			"aware because he is carrying a circuit. This is the line whose absence let him re-open " +
+			"with 'Goodwife Ward, good afternoon to you' at 20:44, 21:09 and 21:19 as though each " +
+			"were the first. No imperative: it states the fact and leaves the conclusion to him.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			return withContacts(snap, actorID, "prudence", 40*time.Minute), actorID, warrants
+		},
+	},
+	{
+		name: "constable_called_on_her_twice_this_round",
+		summary: "LLM-547 weighted brake: two calls inside the brake window (75 and 20 minutes back). " +
+			"The line adds the count AND the peer's state — there was little left unsaid by the end " +
+			"of it — which is the half that makes it an argument rather than a tally. Ward's actual " +
+			"rebuke ('Three times is thrice too many') landed on the THIRD approach; this tier exists " +
+			"so he feels it before she has to deliver it. Pronoun-free by construction: actors carry " +
+			"no gender field, so the ticket's 'she has said her piece' would have been a guess " +
+			"rendered as fact.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			return withContacts(snap, actorID, "prudence", 75*time.Minute, 20*time.Minute), actorID, warrants
+		},
+	},
+	{
+		name: "constable_had_his_word_with_her_earlier_today",
+		summary: "LLM-547 continuity: one call 5 hours back — past the 2h brake, inside the 8h recall " +
+			"horizon. The SAME record now does the opposite rhetorical job: not 'hold off' but 'you " +
+			"have history, build on it'. The tier ladder extends in both directions rather than " +
+			"decaying to silence, which is why one mechanism covers both the constable's repeat and " +
+			"LLM-546's innkeeper greeting a player she served that afternoon as a stranger.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			return withContacts(snap, actorID, "prudence", 5*time.Hour), actorID, warrants
+		},
+	},
+	{
+		name: "constable_last_spoke_with_her_beyond_recall",
+		summary: "LLM-547 horizon: one call 10 hours back, past the 8h recall horizon. Renders nothing " +
+			"— they read as strangers again, which is the truth at that distance. Byte-identical to " +
+			"constable_at_a_villagers_door: pins that the horizon actually drops the fact rather than " +
+			"quietly degrading it to the continuity line.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			return withContacts(snap, actorID, "prudence", 10*time.Hour), actorID, warrants
+		},
+	},
+	{
+		name: "constable_carries_history_for_someone_not_here",
+		summary: "LLM-547 co-presence gate: a fresh, brake-window-recent trail with Josiah Thorne, who " +
+			"is NOT in the scene. Renders nothing about him. The guard is structural rather than a " +
+			"check — the tier is attached in resolveCoPresentMember, which only ever runs for someone " +
+			"actually present — but it is pinned here because the failure it prevents (a roll-call of " +
+			"everyone the constable has ever spoken to, re-sent every tick) would be both a prompt-" +
+			"bloat and a legibility regression.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			return withContacts(snap, actorID, "josiah", 15*time.Minute), actorID, warrants
+		},
+	},
+	{
+		name: "constable_spoke_with_a_stranger_he_cannot_name",
+		summary: "LLM-547 acquaintance gate: a brake-window-recent trail with a peer the constable does " +
+			"NOT know by name. Renders nothing, and is byte-identical to constable_at_a_villagers_door " +
+			"apart from the company line calling her a stranger. The line cannot follow the usual " +
+			"descriptorLabel gating — it must carry the verbatim DisplayName or the model's reply " +
+			"silently degrades to the whole huddle — so when the name is withheld the fact goes with " +
+			"it. The alternative is a scene contradicting itself one line apart: 'You are outdoors, " +
+			"with a stranger. You had your word with Prudence Ward a short while ago.' Found by the " +
+			"end-to-end Speak→perception test, not by inspection.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := constableAtAVillagersDoor()
+			snap.Actors[actorID].Acquaintances = nil
+			return withContacts(snap, actorID, "prudence", 40*time.Minute), actorID, warrants
+		},
 	},
 	{
 		name: "storm_weather_over_keeper_at_post",
@@ -13031,6 +13280,112 @@ func constableRoundOwedOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 		},
 	}
 	return snap, gideonID, warrants
+}
+
+// constableAtAVillagersDoor is the LLM-547 base fixture: the constable mid-round,
+// standing outdoors at the Apothecary with Prudence Ward within earshot and
+// acquainted. Deliberately the SAME shape as the live case the ticket was filed
+// on — he called on Ward three times in one circuit and she was the one who
+// noticed ("Three times is thrice too many").
+//
+// The contact ledger is left EMPTY here. Every LLM-547 scenario is this fixture
+// plus a ledger, so each golden's diff against constable_at_a_villagers_door is
+// exactly the line the tier under test renders (or, for the two silent tiers,
+// nothing at all — which is the assertion).
+//
+// PublishedAt is set explicitly, unlike most fixtures: the contact tiers are
+// windowed against it, so a zero clock would make every entry unimaginably old
+// and silently collapse the whole feature to ContactTierNone.
+func constableAtAVillagersDoor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		gideonID    = sim.ActorID("gideon")
+		prudenceID  = sim.ActorID("prudence")
+		apothecary  = sim.StructureID("pw_apothecary")
+		inn         = sim.StructureID("inn")
+		post        = sim.StructureID("meeting_house")
+		home        = sim.StructureID("marsh_residence")
+	)
+	start, end := 0, 1440 // on the watch all day
+	now := 1140           // 19:00 — late in the circuit, as the live case was
+	published := time.Date(2026, 7, 27, 19, 0, 0, 0, time.UTC)
+
+	gideon := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Gideon Marsh",
+		Role:             "constable",
+		State:            sim.StateIdle,
+		WorkStructureID:  post,
+		HomeStructureID:  home,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Needs:            map[sim.NeedKey]int{},
+		// Outdoors and arrived at the Apothecary stop, one short of finishing —
+		// the shape of the live 21:19 read. The rounds cue names where he stands
+		// from RouteStopObjectID; the location line stays a plain "outdoors"
+		// because the loiter-pin name is derived from village-object geometry this
+		// fixture has no reason to carry.
+		RouteLabel:            sim.AttrConstable,
+		RouteStopObjectID:     sim.VillageObjectID(apothecary),
+		RouteNextStopObjectID: sim.VillageObjectID(inn),
+		RouteStopsAhead:       1,
+		// Ward is within earshot and known by name. Acquaintance matters for the
+		// register invariant: the line must render her VERBATIM DisplayName, which
+		// is also the token resolveAddressee matches on.
+		ColocatedAudienceIDs: []sim.ActorID{prudenceID},
+		Acquaintances:        map[string]sim.Acquaintance{"Prudence Ward": {}},
+	}
+	prudence := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Prudence Ward",
+		Role:             "apothecary",
+		State:            sim.StateIdle,
+		WorkStructureID:  apothecary,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Needs:            map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			gideonID:   gideon,
+			prudenceID: prudence,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			apothecary: plainStructure(apothecary, "PW Apothecary"),
+			inn:        plainStructure(inn, "Inn"),
+			post:       plainStructure(post, "Meeting House"),
+			home:       plainStructure(home, "Marsh Residence"),
+		},
+		ContactBrakeWindow:   sim.DefaultContactBrakeWindow,
+		ContactRecallHorizon: sim.DefaultContactRecallHorizon,
+	}
+	return snap, gideonID, nil
+}
+
+// withContacts stamps a contact trail for one ordered pair onto a fixture,
+// expressed as ages BEFORE the snapshot clock so a scenario reads in the same
+// units the tiers are defined in ("90 minutes ago", not an absolute timestamp).
+//
+// Writes only the subject→peer direction. Production writes both, but perception
+// reads exactly one, and pinning the direction the read uses keeps a scenario
+// from passing on the strength of the wrong row.
+func withContacts(snap *sim.Snapshot, subjectID, peerID sim.ActorID, ages ...time.Duration) *sim.Snapshot {
+	if snap.ContactLedger == nil {
+		snap.ContactLedger = make(map[sim.ActorID]map[sim.ActorID]*sim.ContactRecord)
+	}
+	byPeer, ok := snap.ContactLedger[subjectID]
+	if !ok {
+		byPeer = make(map[sim.ActorID]*sim.ContactRecord)
+		snap.ContactLedger[subjectID] = byPeer
+	}
+	at := make([]time.Time, 0, len(ages))
+	for _, age := range ages {
+		at = append(at, snap.PublishedAt.Add(-age))
+	}
+	byPeer[peerID] = &sim.ContactRecord{At: at}
+	return snap
 }
 
 // constableWokenAtHisPostWithARoundOwed is the LLM-549 scenario, and it is the exact

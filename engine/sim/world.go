@@ -468,6 +468,18 @@ type WorldSettings struct {
 	ActionLogRetention     time.Duration
 	ActionLogSweepInterval time.Duration
 
+	// Per-pair conversational recency tunables (engine/sim/contact_ledger.go).
+	// Both fall back to their Default* constants when zero.
+	//
+	//   - ContactBrakeWindow: how recently a conversation must have happened
+	//     for the scene to read "you have already had your word with them"
+	//     rather than offering it as history to build on. Default 2h.
+	//   - ContactRecallHorizon: how far back a conversation is remembered at
+	//     all; past it the pair reads as strangers and the row is dropped at
+	//     load. Default 8h.
+	ContactBrakeWindow   time.Duration
+	ContactRecallHorizon time.Duration
+
 	// Visitor cascade tunables (engine/sim/visitor.go +
 	// engine/sim/cascade/visitor.go). All fall back to *Default constants
 	// in engine/sim/visitor.go when zero, so tests that bypass the
@@ -1033,6 +1045,20 @@ type World struct {
 	// clean: no coins are ever held (the reward only moves at completion), so a
 	// lost offer is just a deal that didn't happen. See labor_ledger.go.
 	LaborLedger map[LaborID]*LaborOffer
+
+	// ContactLedger is the per-pair conversational recency trail (LLM-547),
+	// keyed subject → peer → the times they were in a conversation together.
+	// Written on the Speak commit path for every huddle peer in both
+	// directions; read by perception to tell an actor who it has already had
+	// its word with. Covers EVERY actor kind — PCs and visitors included —
+	// which is why it is separate from actor.Relationships (shared-VA only,
+	// visitors skipped) rather than an extension of it.
+	//
+	// Durable, like RecurringVisitors and unlike PayLedger / LaborLedger:
+	// checkpointed and rehydrated at boot, pruned to the recall horizon at load
+	// rather than by a sweep. See contact_ledger.go for why restart-loss was
+	// rejected (LLM-546).
+	ContactLedger map[ActorID]map[ActorID]*ContactRecord
 
 	// RecurringVisitors is the durable set of memorable returners (LLM-372) —
 	// promoted travelers who dealt with a player and come back across the seasons.
@@ -1783,6 +1809,14 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	if err := w.rehydrateRecurringVisitorsOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate recurring visitors: %w", err)
 	}
+	// LLM-547: load the per-pair conversational recency trail. Order-free with
+	// respect to the other aggregates — the trail holds no references it needs
+	// resolved, and a row naming an actor that no longer exists is harmless
+	// (every read is keyed by a co-present peer, and a departed actor is never
+	// co-present). Placed after visitors only for readability.
+	if err := w.rehydrateContactLedgerOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate contact ledger: %w", err)
+	}
 	// LLM-259: rehydrate the accepted (en_route/working) labor contracts from
 	// their durable mirror into World.LaborLedger BEFORE the stranded-laboring
 	// reconcile below. A worker whose working contract loaded then holds a live
@@ -2279,6 +2313,9 @@ func (w *World) republish() {
 		PayLedger:                     make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
 		LaborLedger:                   make(map[LaborID]*LaborOffer, len(w.LaborLedger)),
 		ActionLog:                     CloneActionLog(w.ActionLog),
+		ContactLedger:                 CloneContactLedger(w.ContactLedger),
+		ContactBrakeWindow:            w.ContactBrakeWindow(),
+		ContactRecallHorizon:          w.ContactRecallHorizon(),
 		NoticeboardContent:            make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
 		PriceBook:                     ClonePriceBook(w.PriceBook),
 		Environment:                   w.Environment,

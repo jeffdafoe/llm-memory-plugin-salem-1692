@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
@@ -374,6 +375,168 @@ func TestSpeak_KindNPCSharedGate_Matrix(t *testing.T) {
 				t.Errorf("peer side wrote = %v, want %v", peerSideWrote, tc.peerWrites)
 			}
 		})
+	}
+}
+
+// TestSpeak_ContactLedgerIgnoresTheRelationshipKindGate is the LLM-547 mirror of
+// TestSpeak_KindNPCSharedGate_Matrix above, and the two are meant to be read
+// together: the SAME four kind pairings that make the relationship write drop out
+// must ALL credit the contact ledger, in both directions.
+//
+// This is the ticket's load-bearing design decision, so it gets a test rather
+// than a comment. RecordInteraction is gated to KindNPCShared because a stateful
+// NPC gets its per-peer continuity from its own VA's memory — correct for what
+// that gate does, and exactly wrong here. The constable who prompted this ticket
+// and the innkeeper who prompted LLM-546 are BOTH stateful; under the
+// relationship gate neither would have been told anything. Widening that gate
+// would have dragged salient facts and nightly consolidation onto stateful NPCs,
+// so the ledger is a separate pass over the same peer set instead.
+//
+// If someone later "tidies" the two loops in sim.Speak into one, this fails for
+// three of the four pairings.
+func TestSpeak_ContactLedgerIgnoresTheRelationshipKindGate(t *testing.T) {
+	kinds := []struct {
+		name        string
+		speakerKind sim.ActorKind
+		peerKind    sim.ActorKind
+	}{
+		{"shared_shared", sim.KindNPCShared, sim.KindNPCShared},
+		{"shared_stateful", sim.KindNPCShared, sim.KindNPCStateful},
+		{"stateful_shared", sim.KindNPCStateful, sim.KindNPCShared},
+		{"stateful_stateful", sim.KindNPCStateful, sim.KindNPCStateful},
+	}
+	for _, tc := range kinds {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildSpeakTestWorld(t,
+				actorSpec{id: "s", displayName: "Speaker", kind: tc.speakerKind, huddleID: "h1"},
+				actorSpec{id: "p", displayName: "Peer", kind: tc.peerKind, huddleID: "h1"},
+			)
+			defer stop()
+
+			now := time.Now().UTC()
+			if _, err := w.Send(sim.Speak("s", "test", now)); err != nil {
+				t.Fatalf("Speak: %v", err)
+			}
+			snap := w.Published()
+			// Both directions: having your word with someone means being in the
+			// conversation, not being named in it. The listener has as much reason
+			// not to re-open the subject as the speaker does.
+			if tier, _ := snap.ContactTierFor("s", "p", now); tier != sim.ContactTierBrakeQuiet {
+				t.Errorf("speaker→peer tier = %v, want ContactTierBrakeQuiet — the contact ledger must "+
+					"credit every kind pairing, unlike the relationship write", tier)
+			}
+			if tier, _ := snap.ContactTierFor("p", "s", now); tier != sim.ContactTierBrakeQuiet {
+				t.Errorf("peer→speaker tier = %v, want ContactTierBrakeQuiet", tier)
+			}
+		})
+	}
+}
+
+// TestSpeak_ContactLedgerCreditsEveryHuddlePeer — one utterance credits the whole
+// huddle, not only the resolved addressee.
+//
+// The live case is the argument: Ward addressed the constable and he addressed
+// her, and either should count as having had their word. Crediting only the
+// addressee would leave a silent participant looking un-spoken-to, and the
+// constable would re-open with them as though newly met.
+func TestSpeak_ContactLedgerCreditsEveryHuddlePeer(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "s", displayName: "Speaker", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "addressed", displayName: "Prudence Ward", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "silent", displayName: "Josiah Thorne", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	now := time.Now().UTC()
+	// Addressed explicitly, so the addressee resolves to one peer while the other
+	// says nothing at all.
+	if _, err := w.Send(sim.SpeakTo("s", "Prudence Ward, good day to you.", "addressed", nil, true, now)); err != nil {
+		t.Fatalf("SpeakTo: %v", err)
+	}
+
+	snap := w.Published()
+	for _, peerID := range []sim.ActorID{"addressed", "silent"} {
+		if tier, _ := snap.ContactTierFor("s", peerID, now); tier != sim.ContactTierBrakeQuiet {
+			t.Errorf("speaker→%s tier = %v, want ContactTierBrakeQuiet — every huddle peer is credited, "+
+				"not only the resolved addressee", peerID, tier)
+		}
+		if tier, _ := snap.ContactTierFor(peerID, "s", now); tier != sim.ContactTierBrakeQuiet {
+			t.Errorf("%s→speaker tier = %v, want ContactTierBrakeQuiet", peerID, tier)
+		}
+	}
+	// The two peers did not speak to EACH OTHER — only the speaker did. A pass
+	// that credited the huddle as a clique rather than per-pair would fail here.
+	if tier, _ := snap.ContactTierFor("addressed", "silent", now); tier != sim.ContactTierNone {
+		t.Errorf("peer→peer tier = %v, want ContactTierNone — a contact is with the SPEAKER, "+
+			"not among every pair co-present", tier)
+	}
+}
+
+// TestSpeak_ContactLedgerReachesPerception is the end-to-end seam: a REAL Speak
+// commit, then perception built off the PUBLISHED snapshot, asserting the
+// rendered sentence.
+//
+// Everything else about this feature is tested on one side of the republish or
+// the other — ledger writes against the world, tiers and prose against
+// hand-built snapshot fixtures. Both sets stay green if the publish step drops
+// ContactLedger or either window, and the village goes quiet with nothing
+// failing. This is the test that notices. (code_review, LLM-547.)
+func TestSpeak_ContactLedgerReachesPerception(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "s", displayName: "Gideon Marsh", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "p", displayName: "Prudence Ward", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	// The listener must KNOW the speaker by name, or the contact line is
+	// withheld along with the name (an unacquainted peer renders as "a stranger",
+	// and this line cannot say "a stranger" — it must carry the verbatim
+	// DisplayName resolveAddressee matches on).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["p"].Acquaintances = map[string]sim.Acquaintance{"Gideon Marsh": {}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed acquaintance: %v", err)
+	}
+
+	now := time.Now().UTC()
+	// buildSpeakTestWorld stamps CurrentHuddleID on the actors but mints no
+	// Huddle: Speak reaches its peers through actorsByHuddle, which needs only
+	// the actor field. Perception reads snap.Huddles, so the huddle has to exist
+	// for the two to be co-present in a built scene — which is the entire point
+	// of this test.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Huddles["h1"] = &sim.Huddle{
+			ID:             "h1",
+			Members:        map[sim.ActorID]struct{}{"s": {}, "p": {}},
+			StartedAt:      now,
+			LastActivityAt: now,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed huddle: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("s", "Goodwife Ward, good day to you.", now)); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	snap := w.Published()
+	// The windows must survive publish too — perception cannot reach back into
+	// live World.Settings, so a dropped window silently collapses every pair to
+	// ContactTierNone.
+	if snap.ContactRecallHorizon <= 0 || snap.ContactBrakeWindow <= 0 {
+		t.Fatalf("published windows = brake %v, horizon %v — both must ride the snapshot",
+			snap.ContactBrakeWindow, snap.ContactRecallHorizon)
+	}
+
+	got := perception.Render(perception.Build(snap, "p", nil), perception.DefaultRenderConfig())
+	// EphemeralText carries "## Around you" — the contact line is per-tick
+	// decision support, not durable history the adapter replays. The listener is
+	// on no round, so the phrasing is the bare time form rather than "this round".
+	const want = "You had your word with Gideon Marsh a short while ago."
+	if !strings.Contains(got.EphemeralText, want) {
+		t.Errorf("the listener's prompt does not carry the contact line.\nwant substring: %q\ngot:\n%s", want, got.EphemeralText)
 	}
 }
 

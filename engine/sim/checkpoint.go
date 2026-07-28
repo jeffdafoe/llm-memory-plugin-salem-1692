@@ -54,6 +54,57 @@ type CheckpointSnapshot struct {
 	// upserted (NO sweep) by SaveWorld so a memorable traveler's identity + per-PC
 	// familiarity + next_return_at survive restart and fire a return days out.
 	RecurringVisitors map[RecurringVisitorID]*RecurringVisitor
+	// ContactPairs — the per-pair conversational recency trail (LLM-547),
+	// flattened to ordered-pair rows and upserted into actor_contact by
+	// SaveWorld. Like RecurringVisitors this is a plain upsert with NO
+	// generation-marker sweep: a pair that stops being written simply ages past
+	// the recall horizon and is dropped at the next load, so there is nothing
+	// for a sweep to reclaim. Flattened at build time so the durable write
+	// walks a stable, deterministic slice.
+	ContactPairs []ContactPair
+	// ContactRecallHorizon is the world's configured horizon, carried so the
+	// reclamation window can be derived without reaching back into live Settings.
+	ContactRecallHorizon time.Duration
+	// ContactStaleBefore / ContactValidUntil bound the window a timestamp must
+	// fall inside to keep its row alive. SaveSnapshot deletes any actor_contact
+	// row with NO timestamp in [ContactStaleBefore, ContactValidUntil].
+	//
+	// This is the table's ONLY deletion path, and it is not optional
+	// bookkeeping. A transient visitor gets a FRESH ActorID every visit
+	// (vstr-<8hex>, deleted at cleanup) and this ledger covers visitors
+	// deliberately, so without a delete the pair count grows monotonically for
+	// the life of the world — the live actor count bounds how many pairs are
+	// ACTIVE, not how many have ever existed.
+	//
+	// The UPPER bound exists because the lower one alone is not enough. A row
+	// holding a future timestamp — an out-of-band edit, a clock correction —
+	// has its maximum in the future forever, so a "max < cutoff" predicate can
+	// never reach it, while the loader drops that value on the way in. The row
+	// would then be invisible to the engine and immortal in Postgres,
+	// re-creating the unbounded growth this delete exists to prevent. Bounding
+	// both ends makes the sweep agree with RehydrateContactLedger about what
+	// counts as a real contact, which is the property that actually matters.
+	//
+	// Both zero means no window is established (a caller that built a snapshot
+	// without going through CheckpointNow), and the writer skips the delete
+	// rather than guessing.
+	ContactStaleBefore time.Time
+	ContactValidUntil  time.Time
+}
+
+// StampContactWindow sets the contact-trail reclamation window from a wall-clock
+// reading. Called by CheckpointNow off the world goroutine — the snapshot build
+// itself must not read the clock.
+//
+// A zero horizon (a snapshot built before the field existed, or a hand-built
+// one) leaves the window unset rather than defaulting, so the delete is skipped
+// instead of running against a horizon nobody chose.
+func (cp *CheckpointSnapshot) StampContactWindow(now time.Time) {
+	if cp == nil || cp.ContactRecallHorizon <= 0 || now.IsZero() {
+		return
+	}
+	cp.ContactStaleBefore = now.Add(-cp.ContactRecallHorizon)
+	cp.ContactValidUntil = now.Add(ContactFutureSkewTolerance)
 }
 
 // MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
@@ -223,6 +274,13 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			cp.RecurringVisitors[id] = cloneRecurringVisitor(rv)
 		}
 	}
+	// LLM-547: flatten the per-pair contact ledger. FlattenContactLedger copies
+	// every trail slice, so the durable write off the world goroutine can never
+	// walk a slice a later Speak is appending to.
+	cp.ContactPairs = FlattenContactLedger(w.ContactLedger)
+	// The horizon only — the window itself is stamped by CheckpointNow, which is
+	// off the world goroutine and may read the clock.
+	cp.ContactRecallHorizon = w.ContactRecallHorizon()
 	for id, a := range w.Actors {
 		cp.Actors[id] = CloneActor(a)
 	}
@@ -489,6 +547,22 @@ func CheckpointNow(ctx context.Context, w *World, save CheckpointFunc) (*ClampRe
 	if !ok {
 		return empty, fmt.Errorf("checkpoint snapshot command returned %T, want *CheckpointSnapshot", res)
 	}
+	// LLM-547: stamp the contact-trail reclamation window. Done HERE, off the
+	// world goroutine, for the same reason the clamp is: this is the one path
+	// from a live world to a durable one, so the periodic loop and the shutdown
+	// checkpoint cannot diverge.
+	//
+	// It reads the wall clock, which is why it is not in BuildCheckpointSnapshot
+	// — that runs on the world goroutine, where the engine takes its time as a
+	// parameter rather than reading it. There is no world-side clock to use
+	// instead: Environment.Now is documented restart-lossy and is in fact never
+	// advanced by anything, so a cutoff derived from it would be the zero time
+	// and the reclamation would silently never run.
+	//
+	// A caller invoking SaveWorld directly (integration tests) stamps these
+	// itself; both zero means "no window established", and the writer skips the
+	// delete rather than guessing.
+	cp.StampContactWindow(time.Now().UTC())
 	clamps := cp.ClampToPersistable()
 	return clamps, save(ctx, cp)
 }
