@@ -348,6 +348,68 @@ func TestRehydrateContactLedgerDropsFutureStamps(t *testing.T) {
 	}
 }
 
+// The deliberate trust boundary, made explicit rather than left in comments: an
+// in-process future timestamp is ACCEPTED on write (RecordContact validates
+// nothing — the caller owns clock validity), and the persistence layer is what
+// eventually removes it. (code_review, LLM-547 round 3.)
+//
+// This pins both halves. If someone later adds a write-path guard, the first
+// assertion fails and they are made to think about whether they have a clock to
+// check against — the answer today being no, since Environment.Now is never
+// advanced.
+func TestRecordContactAcceptsFutureStampsAndPersistenceReclaimsThem(t *testing.T) {
+	w := &World{}
+	now := time.Date(2026, 7, 27, 19, 0, 0, 0, time.UTC)
+	future := now.Add(72 * time.Hour)
+
+	// Accepted in-process, no error, no clamp.
+	w.RecordContact("gideon", "ghost", future)
+	if rec := w.contactRecord("gideon", "ghost"); rec == nil || len(rec.At) != 1 || !rec.At[0].Equal(future) {
+		t.Fatalf("in-process future stamp = %+v, want it accepted verbatim", rec)
+	}
+
+	// The checkpoint's window is what judges it: outside [staleBefore,
+	// validUntil] at both ends, so the row is reclaimed rather than living
+	// forever behind a max-based predicate.
+	cp := &CheckpointSnapshot{
+		ContactPairs:         FlattenContactLedger(w.ContactLedger),
+		ContactRecallHorizon: DefaultContactRecallHorizon,
+	}
+	cp.StampContactWindow(now)
+	if cp.ContactStaleBefore.IsZero() || cp.ContactValidUntil.IsZero() {
+		t.Fatal("StampContactWindow left the window unset")
+	}
+	if !future.After(cp.ContactValidUntil) {
+		t.Errorf("future stamp %v is inside the valid window (ends %v) — the test proves nothing",
+			future, cp.ContactValidUntil)
+	}
+
+	// And the loader refuses it on the way back in, so the two agree.
+	restored := RehydrateContactLedger(cp.ContactPairs, now, DefaultContactRecallHorizon)
+	if _, ok := restored["gideon"]["ghost"]; ok {
+		t.Error("a future-only pair must not rehydrate")
+	}
+}
+
+// StampContactWindow must not invent a horizon. A snapshot carrying none has not
+// asked for reclamation, and defaulting would delete rows on a rule nobody chose.
+func TestStampContactWindowRequiresAHorizon(t *testing.T) {
+	cp := &CheckpointSnapshot{}
+	cp.StampContactWindow(time.Now())
+	if !cp.ContactStaleBefore.IsZero() || !cp.ContactValidUntil.IsZero() {
+		t.Errorf("window = [%v, %v], want unset when the snapshot carries no horizon",
+			cp.ContactStaleBefore, cp.ContactValidUntil)
+	}
+
+	// A zero clock is equally "I don't know", and must not stamp either.
+	cp2 := &CheckpointSnapshot{ContactRecallHorizon: DefaultContactRecallHorizon}
+	cp2.StampContactWindow(time.Time{})
+	if !cp2.ContactStaleBefore.IsZero() || !cp2.ContactValidUntil.IsZero() {
+		t.Errorf("window = [%v, %v], want unset when the clock is zero",
+			cp2.ContactStaleBefore, cp2.ContactValidUntil)
+	}
+}
+
 // The tunables fall back to their defaults when unset, so a world built without
 // the environment loader — every unit test, and any partially-seeded fixture —
 // still tiers sensibly rather than treating every window as zero.
