@@ -242,6 +242,25 @@ func runConstableRounds(w *sim.World, now time.Time) {
 		if sim.ClearBeatRouteIfOffShift(w, actor, now) {
 			log.Printf("cascade/npc_route: constable %q went off shift with a part-walked round — dropping it", actor.ID)
 		}
+		// Wake a carrier standing still with a round still owed (LLM-549). A beat
+		// dispatches no walk, so nothing else starts one: on-shift AT his post he
+		// gets no shift duty (that switch has no at-work arm) and no idle backstop
+		// (that one only covers actors outdoors), and he stood in the Meeting House
+		// for twelve minutes with eight doors unwalked.
+		//
+		// Inside the per-carrier loop, so every constable is nudged on his own beat —
+		// findActorsWithAttribute returns them all, and the stamp is per actor like
+		// the rounds stamp itself (ConstableRoundsStamps). One carrier standing still
+		// cannot starve another's wake.
+		//
+		// It runs BEFORE the due-check's `continue` so an owed round is nudged on
+		// every pass, not only on the interval beat that created it. Repeats are
+		// paced by the stale-wake ledger (the kind is ambient), not by this cadence.
+		if sim.BeatNeedsAWake(w, actor, now) {
+			if _, err := sim.StampConstableRoundsWake(actor.ID, now).Fn(w); err != nil {
+				log.Printf("cascade/npc_route: constable rounds wake (actor %q): %v", actor.ID, err)
+			}
+		}
 		if !sim.ConstableRoundsDue(w, actor, w.Settings.ConstableRoundsInterval, now) {
 			continue
 		}

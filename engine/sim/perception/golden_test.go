@@ -1442,6 +1442,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: constableRoundOwedOffPost,
 	},
 	{
+		name: "constable_woken_at_his_post_with_a_round_owed",
+		summary: "LLM-549: the constable on-shift INSIDE his post with a fresh eight-stop round owed and " +
+			"nothing walked. This is the one situation with no other wake source — shift duty has no " +
+			"at-work arm and the idle backstop only covers actors outdoors — so before the beat wake " +
+			"existed this prompt was never built and he stood in the Meeting House for twelve minutes. " +
+			"Pins that the wake arrives carrying its own argument and nothing else: the rounds cue names " +
+			"the count and the first place he owes, the wake's own warrant is filtered out of \"Since your " +
+			"last turn\" rather than printing the raw kind under the scene it duplicates, and no go-to-post " +
+			"steer appears even though he is standing in his post.",
+		build: constableWokenAtHisPostWithARoundOwed,
+	},
+	{
 		name: "storm_weather_over_keeper_at_post",
 		summary: "LLM-364: the keeper_alone_at_post_onshift fixture with a storm overhead " +
 			"(Environment.Weather = storm). The golden pins the deterministic felt rain line — " +
@@ -12886,6 +12898,65 @@ func constableRoundOwedOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 			TriggerActorID: gideonID,
 			Reason:         sim.ShiftDutyWarrantReason{ToWork: true, TargetStructureID: post},
 		},
+	}
+	return snap, gideonID, warrants
+}
+
+// constableWokenAtHisPostWithARoundOwed is the LLM-549 scenario, and it is the exact
+// live shape the ticket was filed on: the beat is installed, he is on-shift standing
+// INSIDE his post, and the only thing that will ever get him going is his own wake.
+//
+// Shift duty stamps nothing for an actor already at work and the idle backstop only
+// covers actors outdoors, so before LLM-549 this prompt was never built at all — he
+// stood in the Meeting House for twelve minutes with eight doors unwalked and
+// warrant_count 0.
+//
+// What the golden pins is that the wake arrives CARRYING ITS OWN ARGUMENT and nothing
+// else. The rounds cue names what he owes and where to go next; the wake's warrant is
+// filtered out of "Since your last turn" (nonStandingCueWarrants) so the prompt does
+// not also print the raw warrant kind under the scene it duplicates — a stat beside
+// its own prose. And no go-to-post steer appears, though he could hardly be closer to
+// his post: buildDutySteer yields for any constable RouteLabel, which is what lets the
+// wake exist without becoming a march.
+func constableWokenAtHisPostWithARoundOwed() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		gideonID = sim.ActorID("gideon")
+		store    = sim.StructureID("general_store")
+		post     = sim.StructureID("meeting_house")
+		home     = sim.StructureID("marsh_residence")
+	)
+	start, end := 0, 1440
+	now := 540 // 09:00 — on shift, just after a fresh round came due
+	gideon := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Gideon Marsh",
+		Role:              "constable",
+		State:             sim.StateIdle,
+		WorkStructureID:   post,
+		InsideStructureID: post, // AT his post — the hole no other producer covers
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Needs:             map[sim.NeedKey]int{},
+		// A fresh circuit: nothing walked, so the full count and the first place he
+		// owes are projected with no arrival requirement. RouteStopObjectID is empty
+		// — the Meeting House is his post, not a stop on the round.
+		RouteLabel:            sim.AttrConstable,
+		RouteNextStopObjectID: sim.VillageObjectID(store),
+		RouteStopsAhead:       8,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{gideonID: gideon},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			post:  plainStructure(post, "Meeting House"),
+			home:  plainStructure(home, "Marsh Residence"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: gideonID, Reason: sim.ConstableRoundsWarrantReason{}},
 	}
 	return snap, gideonID, warrants
 }

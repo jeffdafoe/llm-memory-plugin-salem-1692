@@ -35,6 +35,203 @@ func constableAtPost(id ActorID) *Actor {
 	}
 }
 
+// TestBeatNeedsAWake covers the gate on the beat wake (LLM-549). A beat dispatches
+// no walk, so nothing else starts a round: on-shift AT his post he gets no shift
+// duty (that switch has no at-work arm) and no idle backstop (that one only covers
+// actors outdoors). This wake is the only thing that gets him going, and it must be
+// a nudge rather than a nag — silent for a man already walking, and silent for a man
+// mid-conversation.
+func TestBeatNeedsAWake(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+
+	beatWorld := func(mutate func(*World, *Actor)) (*World, *Actor) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		w.ActiveRoutes[a.ID] = &NPCRoute{
+			NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseBeat,
+			Stops:   []RouteStop{{ObjectID: "store"}, {ObjectID: "tavern"}},
+			Visited: []bool{false, false},
+		}
+		w.Huddles = map[HuddleID]*Huddle{}
+		if mutate != nil {
+			mutate(w, a)
+		}
+		return w, a
+	}
+
+	// The live case: standing at his post with a round owed and nothing else to
+	// wake him. Twelve minutes of this is what LLM-549 was filed on.
+	t.Run("standing still with a round owed", func(t *testing.T) {
+		w, a := beatWorld(nil)
+		if !BeatNeedsAWake(w, a, now) {
+			t.Error("no wake for a carrier stood still with a round owed — nothing else will start it")
+		}
+	})
+
+	// He is already on his way. Waking him mid-leg is the nag this design exists to
+	// avoid, and his arrival stamps a decision warrant anyway.
+	t.Run("already walking", func(t *testing.T) {
+		w, a := beatWorld(func(_ *World, a *Actor) {
+			a.MoveIntent = &MoveIntent{}
+		})
+		if BeatNeedsAWake(w, a, now) {
+			t.Error("woke a carrier who is already walking — that is a nag, not a nudge")
+		}
+	})
+
+	// Interrupting a live conversation to say "you have rounds to walk" is exactly
+	// the intrusion the dwell removal was meant to end.
+	t.Run("mid-conversation", func(t *testing.T) {
+		w, a := beatWorld(func(w *World, a *Actor) {
+			a.CurrentHuddleID = "h1"
+			w.Huddles["h1"] = &Huddle{
+				ID:             "h1",
+				Members:        map[ActorID]struct{}{a.ID: {}},
+				StartedAt:      now.Add(-10 * time.Minute),
+				LastActivityAt: now.Add(-30 * time.Second),
+			}
+		})
+		if BeatNeedsAWake(w, a, now) {
+			t.Error("woke a carrier mid-conversation")
+		}
+	})
+
+	// LIVENESS, not lifecycle. A huddle stays open for the full silence timeout
+	// after its last word, so a lifecycle test would gag the wake for the rest of
+	// the afternoon over a conversation that ended before noon.
+	t.Run("conversation long over but the huddle is still open", func(t *testing.T) {
+		w, a := beatWorld(func(w *World, a *Actor) {
+			a.CurrentHuddleID = "h1"
+			w.Huddles["h1"] = &Huddle{
+				ID:             "h1",
+				Members:        map[ActorID]struct{}{a.ID: {}},
+				StartedAt:      now.Add(-2 * time.Hour),
+				LastActivityAt: now.Add(-90 * time.Minute),
+			}
+		})
+		if !BeatNeedsAWake(w, a, now) {
+			t.Error("an unconcluded but long-silent huddle suppressed the wake — that is the " +
+				"lifecycle test, and it would hold him for the huddle's full 2h life")
+		}
+	})
+
+	// A dispatched route walks its own carrier; it needs no nudge and must not get one.
+	t.Run("a dispatched route is not nudged", func(t *testing.T) {
+		w, a := beatWorld(func(w *World, a *Actor) {
+			w.ActiveRoutes[a.ID].Phase = RoutePhaseActive
+			w.ActiveRoutes[a.ID].Label = AttrTownCrier
+		})
+		if BeatNeedsAWake(w, a, now) {
+			t.Error("nudged a dispatched route's carrier — the engine is already walking him")
+		}
+	})
+
+	t.Run("no route at all owes nothing", func(t *testing.T) {
+		w, a := beatWorld(func(w *World, a *Actor) {
+			delete(w.ActiveRoutes, a.ID)
+		})
+		if BeatNeedsAWake(w, a, now) {
+			t.Error("nudged a carrier with no round owed")
+		}
+	})
+
+	// The predicate enforces on-shift itself rather than inheriting it from the
+	// driver's ordering (code_review). In runConstableRounds a beat is swept away
+	// before this is asked, so the case is unreachable there — but the function is
+	// exported and its name promises a complete answer, and a future producer
+	// calling it directly must not be able to stamp a wake that drags a constable
+	// out of his evening over a stale route the sweep has not reached.
+	t.Run("off shift with a stale beat", func(t *testing.T) {
+		w, a := beatWorld(func(_ *World, a *Actor) {
+			a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600) // watch ends 10:00
+		})
+		if BeatNeedsAWake(w, a, now) { // now is noon
+			t.Error("woke an off-shift carrier over a stale beat — his watch is over")
+		}
+	})
+}
+
+// TestBeatWakeDecaysForAStationaryCarrier demonstrates rather than asserts the
+// pacing claim (code_review). "The stale-wake ledger paces it" is only true if the
+// situation fingerprint cannot churn under a man who is genuinely stuck — otherwise
+// every driver pass looks like a fresh situation, resets the streak, and buys a real
+// LLM turn every minute.
+//
+// It holds because of what actorSituationFingerprint hashes and what the gates
+// exclude. Every conversation-derived component — huddle id, members, newest foreign
+// utterance, last PC utterance — is nested inside `if a.CurrentHuddleID != ""`, and
+// the loudest of them changes only when somebody speaks. Somebody speaking is exactly
+// what makes the huddle live again, which turns BeatNeedsAWake off. The gate and the
+// fingerprint move together.
+//
+// This pins the residue: a stationary, unhuddled carrier with nothing happening keeps
+// one fingerprint across repeated passes, so the ledger's decay engages.
+func TestBeatWakeDecaysForAStationaryCarrier(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	a := constableAtPost("gideon")
+	a.Coins = 5
+	a.Inventory = map[ItemKind]int{"bread": 1}
+	w := constableWorld(a)
+	w.Huddles = map[HuddleID]*Huddle{}
+
+	base := actorSituationFingerprint(w, a, now)
+
+	// A minute later, nothing having happened, the situation must read IDENTICAL —
+	// that sameness is the whole basis of the decay.
+	if got := actorSituationFingerprint(w, a, now.Add(time.Minute)); got != base {
+		t.Error("a stationary carrier's fingerprint changed with the passage of time alone — " +
+			"the ledger would reset every pass and wake him every minute")
+	}
+
+	// The things that DO change it are discrete events, each worth a constable's
+	// attention, and none of which recur on their own.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Actor)
+	}{
+		{"he walked somewhere", func(a *Actor) { a.Pos.X += 3 }},
+		{"he stepped inside somewhere else", func(a *Actor) { a.InsideStructureID = "tavern" }},
+		{"he was paid", func(a *Actor) { a.Coins = 9 }},
+		{"his pack changed", func(a *Actor) { a.Inventory["bread"] = 2 }},
+		{"he changed what he was doing", func(a *Actor) { a.State = StateResting }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clone := *a
+			clone.Inventory = map[ItemKind]int{}
+			for k, v := range a.Inventory {
+				clone.Inventory[k] = v
+			}
+			tc.mutate(&clone)
+			w2 := constableWorld(&clone)
+			w2.Huddles = map[HuddleID]*Huddle{}
+			if actorSituationFingerprint(w2, &clone, now) == base {
+				t.Error("this change did not read as a new situation — the wake would go on " +
+					"decaying through something the constable ought to look up at")
+			}
+		})
+	}
+}
+
+// TestBeatWakeIsAmbient pins the pacing knob (LLM-549). The repeat rate is NOT a
+// bespoke interval and NOT the 4h rounds interval — it is the LLM-233 stale-wake
+// ledger, which only paces AMBIENT kinds. Drop the kind out of that set and the
+// wake fires at the driver's full once-a-minute cadence forever, against a man
+// standing still, which is a real LLM turn every minute.
+func TestBeatWakeIsAmbient(t *testing.T) {
+	if !isAmbientWarrantKind(WarrantKindConstableRounds) {
+		t.Error("the beat wake is not ambient — the stale-wake ledger will not pace it, " +
+			"and the once-a-minute driver would then wake a stationary carrier every minute")
+	}
+	// The reason is condition-driven with nothing to discriminate: at most one round
+	// is owed at a time, so a second stamp under the same conditions IS the same wake.
+	if got := (ConstableRoundsWarrantReason{}).DedupDiscriminator(); got != 0 {
+		t.Errorf("DedupDiscriminator = %d, want 0", got)
+	}
+	if got := (ConstableRoundsWarrantReason{}).Kind(); got != WarrantKindConstableRounds {
+		t.Errorf("Kind = %q, want %q", got, WarrantKindConstableRounds)
+	}
+}
+
 func TestConstableRoundsDue_Gates(t *testing.T) {
 	const interval = 2 * time.Hour
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)

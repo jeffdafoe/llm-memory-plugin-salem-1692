@@ -72,6 +72,7 @@ const (
 	WarrantKindImpulse            WarrantKind = "impulse"              // operator-injected in-world felt impulse (umbilical directive nudge)
 	WarrantKindSeekWork           WarrantKind = "seek_work"            // engine-authored felt impulse: a broke worker should go earn (LLM-141)
 	WarrantKindStranded           WarrantKind = "stranded"             // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
+	WarrantKindConstableRounds    WarrantKind = "constable_rounds"     // a beat carrier is standing still with a round still owed — wake him to get on with it (LLM-549)
 	WarrantKindServeHandover      WarrantKind = "serve_handover"       // a buyer instantly took the seller's posted quote — wake the seller to hand over with a word (ZBBS-WORK-423)
 	WarrantKindProductionChoice   WarrantKind = "production_choice"    // producer idle at its post with nothing in the works — wake it to decide whether to make more (LLM-116, all producers since LLM-319)
 	WarrantKindProductionDone     WarrantKind = "production_done"      // a production cycle landed its batch — completion beat + the wake to decide about the next one (LLM-319)
