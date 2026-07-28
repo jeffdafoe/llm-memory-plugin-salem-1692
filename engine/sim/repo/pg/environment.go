@@ -209,8 +209,6 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// concrete value and the checkpoint round-trips a number; a persisted 0 interval
 	// survives as "rounds disabled" (parseDurationSetting honors a present 0).
 	s.ConstableRoundsInterval = parseDurationSetting(values, "constable_rounds_interval_seconds", sim.DefaultConstableRoundsInterval)
-	s.ConstableRoundsDwell = parseDurationSetting(values, "constable_rounds_dwell_seconds", sim.DefaultConstableRoundsDwell)
-	s.ConstableRoundsQuiet = parseDurationSetting(values, "constable_rounds_quiet_seconds", sim.DefaultConstableRoundsQuiet)
 
 	s.NeedsTickAmount = parseIntSetting(values, "attribute_tick_amount", sim.DefaultNeedsTickAmount)
 	s.NeedThresholds = loadNeedThresholds(values)
@@ -706,8 +704,6 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		// umbilical, persisted here; the load path parses all three via
 		// parseDurationSetting (0 interval = off).
 		{"constable_rounds_interval_seconds", strconv.Itoa(ms.ConstableRoundsIntervalSeconds)},
-		{"constable_rounds_dwell_seconds", strconv.Itoa(ms.ConstableRoundsDwellSeconds)},
-		{"constable_rounds_quiet_seconds", strconv.Itoa(ms.ConstableRoundsQuietSeconds)},
 	}
 	for _, row := range rows {
 		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {

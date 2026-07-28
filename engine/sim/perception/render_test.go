@@ -1141,57 +1141,72 @@ func TestRenderRoundsStopsAhead(t *testing.T) {
 	}
 }
 
-// TestRenderActor_RoundsContinuationGatedOnArrival locks the LLM-524 gating
-// contract at the render layer: the continuation line rides on ARRIVAL at a stop,
-// never on the count alone. RouteStopsAhead is 0 both while walking and at the
-// final stop, so a future caller that populated the count without an arrival (or
-// left a synthetic one behind) must not surface a phantom remainder mid-walk —
-// only "You are walking your rounds through the village." should render.
-func TestRenderActor_RoundsContinuationGatedOnArrival(t *testing.T) {
-	var b strings.Builder
-	renderActor(&b, ActorView{Rounds: &RoundsView{AtBusiness: "", StopsAhead: 5}})
-	got := b.String()
+// TestRenderActor_RoundsSpeaksTheSameWhereverHeStands locks the LLM-548 contract:
+// what he owes and where to go next are told to him wherever he is, and only the
+// "you stand before" clause turns on actually being somewhere.
+//
+// The continuation line used to be gated on arrival, which made sense while the
+// engine walked him between stops — mid-walk he was already on his way and had
+// nothing to decide. It stopped making sense the moment every leg became his own
+// choice: a man at the well with six doors unwalked is exactly who needs the count,
+// and gating it left him the bare "You are walking your rounds through the village."
+// with no place, no number and nowhere named to go.
+func TestRenderActor_RoundsSpeaksTheSameWhereverHeStands(t *testing.T) {
+	t.Run("away from every stop", func(t *testing.T) {
+		var b strings.Builder
+		renderActor(&b, ActorView{Rounds: &RoundsView{
+			AtBusiness:   "",
+			StopsAhead:   6,
+			NextBusiness: "Ellis Farm",
+		}})
+		got := b.String()
 
-	if !strings.Contains(got, "You are walking your rounds through the village.") {
-		t.Errorf("mid-walk rounds line missing:\n%s", got)
-	}
-	if strings.Contains(got, "lie ahead") || strings.Contains(got, "lies ahead") {
-		t.Errorf("continuation line rendered without an arrival (AtBusiness empty):\n%s", got)
-	}
-	if strings.Contains(got, "You stand before") {
-		t.Errorf("at-stop line rendered without an arrival:\n%s", got)
-	}
-}
+		if !strings.Contains(got, "You are walking your rounds through the village.") {
+			t.Errorf("rounds line missing:\n%s", got)
+		}
+		if !strings.Contains(got, "Six more places on your round still lie ahead of you.") {
+			t.Errorf("what he still owes is not told to him while he is away from the stops:\n%s", got)
+		}
+		// The name is the move_to token — without it "I am finished here" has nowhere
+		// to resolve to but his own post, which is how every tour used to end.
+		if !strings.Contains(got, "The next is the Ellis Farm.") {
+			t.Errorf("next stop not named:\n%s", got)
+		}
+		// He is not at a stop, so nothing may claim he stands before one.
+		if strings.Contains(got, "You stand before") {
+			t.Errorf("at-stop line rendered with no stop under his feet:\n%s", got)
+		}
+	})
 
-// TestRenderActor_SuspendedRoundRemindsHimWhereHeBrokeOff covers the LLM-531 cue.
-// He stepped away for a drink; the round waits. His perception must still say a
-// round is under way, name where he broke off (a move_to token, so picking it up is
-// actionable) and how much is left — and must NOT claim he is walking his rounds
-// right now, because he is standing at a well. Live, this moment used to carry
-// nothing at all: the round had been discarded, so after drinking he went back to
-// his post with six doors unvisited.
-func TestRenderActor_SuspendedRoundRemindsHimWhereHeBrokeOff(t *testing.T) {
-	var b strings.Builder
-	renderActor(&b, ActorView{Rounds: &RoundsView{
-		AtBusiness: "Ellis Farm",
-		StopsAhead: 6,
-		Suspended:  true,
-	}})
-	got := b.String()
+	t.Run("standing at a stop", func(t *testing.T) {
+		var b strings.Builder
+		renderActor(&b, ActorView{Rounds: &RoundsView{
+			AtBusiness:   "General Store",
+			StopsAhead:   6,
+			NextBusiness: "Ellis Farm",
+		}})
+		got := b.String()
 
-	if !strings.Contains(got, "You have left your rounds part-walked; you broke off at the Ellis Farm.") {
-		t.Errorf("suspended cue missing the place he broke off:\n%s", got)
-	}
-	if !strings.Contains(got, "Six more places on your round still lie ahead of you.") {
-		t.Errorf("suspended cue missing what is left:\n%s", got)
-	}
-	// He is NOT mid-round right now — that line would contradict where he stands.
-	if strings.Contains(got, "You are walking your rounds") {
-		t.Errorf("suspended round still claims he is walking it:\n%s", got)
-	}
-	// And it must not name a NEXT stop: while paused the actionable place is the one
-	// he broke off at, not the one after it.
-	if strings.Contains(got, "The next is the") {
-		t.Errorf("suspended cue names a next stop, which is not where he picks up:\n%s", got)
-	}
+		if !strings.Contains(got, "You are walking your rounds through the village. You stand before the General Store.") {
+			t.Errorf("at-stop line missing:\n%s", got)
+		}
+		if !strings.Contains(got, "Six more places on your round still lie ahead of you. The next is the Ellis Farm.") {
+			t.Errorf("continuation missing at a stop:\n%s", got)
+		}
+	})
+
+	// Nothing left to name: the line is dropped entirely rather than saying "no more
+	// places", which would read as a report he has to answer for.
+	t.Run("last place on the round", func(t *testing.T) {
+		var b strings.Builder
+		renderActor(&b, ActorView{Rounds: &RoundsView{AtBusiness: "General Store"}})
+		got := b.String()
+
+		if !strings.Contains(got, "You stand before the General Store.") {
+			t.Errorf("at-stop line missing:\n%s", got)
+		}
+		if strings.Contains(got, "lie ahead") || strings.Contains(got, "lies ahead") {
+			t.Errorf("continuation rendered with nothing left to walk:\n%s", got)
+		}
+	})
 }

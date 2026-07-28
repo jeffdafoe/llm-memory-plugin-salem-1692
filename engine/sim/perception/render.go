@@ -986,42 +986,27 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// during the tour in character, plus "you stand before the <business>" once he
 	// has arrived at a stop. It suppresses the plain in-flight-move line below so
 	// the two don't both narrate his movement.
-	if a.Rounds != nil && a.Rounds.Suspended {
-		// The round is paused because he stepped away himself (LLM-531). Say plainly
-		// that it is still under way and name where to pick it up — the name is a
-		// move_to token, the same reason the next-stop name is named. No imperative
-		// and no nagging: he stepped away for a reason of his own, and going back is
-		// his to choose. Live, the round used to be discarded at this moment, so
-		// after a drink at the well nothing told him six doors were still unwalked
-		// and he simply returned to his post.
-		if a.Rounds.AtBusiness != "" {
-			fmt.Fprintf(b, "You have left your rounds part-walked; you broke off at the %s.\n",
-				sanitizeInline(a.Rounds.AtBusiness))
-		} else {
-			b.WriteString("You have left your rounds part-walked.\n")
-		}
-		if a.Rounds.StopsAhead > 0 {
-			if line := renderRoundsStopsAhead(a.Rounds.StopsAhead, ""); line != "" {
-				b.WriteString(line)
-			}
-		}
-		activity = true
-	}
-	if a.Rounds != nil && !a.Rounds.Suspended {
+	if a.Rounds != nil {
+		// One voice for the round, wherever he is (LLM-548). The engine no longer
+		// walks him between stops, so there is no procession to be interrupted and no
+		// paused state to announce: he owes these places today, and the line says so
+		// whether he is on a doorstep or off at the well. The old split spoke of the
+		// round as "left part-walked" whenever he stepped away, which read as a lapse
+		// to answer for rather than a morning's work still to do.
 		if a.Rounds.AtBusiness != "" {
 			fmt.Fprintf(b, "You are walking your rounds through the village. You stand before the %s.\n",
 				sanitizeInline(a.Rounds.AtBusiness))
-			// Carry the circuit forward (LLM-524). A quiet stop otherwise reads as a
-			// dead end — the model finds a shut, empty shop, concludes the round is
-			// pointless and walks back to its post, ending the tour at the first
-			// closed door. Naming what still lies ahead makes the stop a waypoint.
-			// Deliberately NOT an imperative ("go on to the next"): the scene is the
-			// argument. Omitted at the final stop, where nothing remains to name.
-			if line := renderRoundsStopsAhead(a.Rounds.StopsAhead, a.Rounds.NextBusiness); line != "" {
-				b.WriteString(line)
-			}
 		} else {
 			b.WriteString("You are walking your rounds through the village.\n")
+		}
+		// Carry the circuit forward (LLM-524). A quiet stop otherwise reads as a dead
+		// end — the model finds a shut, empty shop, concludes the round is pointless
+		// and walks back to its post, ending the tour at the first closed door.
+		// Naming what still lies ahead makes the stop a waypoint. Deliberately NOT an
+		// imperative ("go on to the next"): the scene is the argument, and where he
+		// goes next is his to choose. Omitted when nothing is left to name.
+		if line := renderRoundsStopsAhead(a.Rounds.StopsAhead, a.Rounds.NextBusiness); line != "" {
+			b.WriteString(line)
 		}
 		activity = true
 	}
@@ -1037,12 +1022,12 @@ func renderActor(b *strings.Builder, a ActorView) {
 		fmt.Fprintf(b, "You are %s.\n", renderActiveDwellCredit(c))
 		activity = true
 	}
-	// The rounds line above already narrates the constable's movement, so skip the
-	// plain in-flight-move line while a tour runs (single movement voice). While the
-	// round is SUSPENDED the movement is his OWN — walking to the well, not walking
-	// the round — so it narrates normally (LLM-531); suppressing it there would
-	// leave a moving actor with no line saying where he is headed.
-	if a.InFlightMove != nil && (a.Rounds == nil || a.Rounds.Suspended) {
+	// No longer suppressed during a round (LLM-548). The rounds line used to narrate
+	// the engine's own walking, and two movement voices in one prompt contradicted
+	// each other; now nothing dispatches him, so every leg he walks is his own and
+	// this line is the only thing that says where he is headed. The rounds line
+	// states what he owes, this one what he is doing about it.
+	if a.InFlightMove != nil {
 		fmt.Fprintf(b, "You are %s.\n", renderInFlightMove(*a.InFlightMove))
 		activity = true
 	}
@@ -1710,7 +1695,7 @@ func anchorPlace(label, fallback string) string {
 // pulled out of the format string so a test can assert on the steer's PRESENCE or
 // ABSENCE without copying its wording (LLM-540 — TestGoldensNoDutySteerWhileOnRounds
 // pins that a constable mid-round is never argued back to his post, which is what
-// lets shift duty keep waking him during a suspended round). Naming it here means a
+// lets shift duty keep waking him throughout a round he still owes). Naming it here means a
 // reword either keeps this clause, and the test still matches, or changes it here,
 // and the test follows — rather than going quietly vacuous against a stale literal.
 const dutySteerToPostMarker = "you are away from your post"

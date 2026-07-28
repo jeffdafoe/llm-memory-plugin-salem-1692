@@ -104,26 +104,19 @@ type WorldSettings struct {
 	// shift-start, whichever comes first. Default 12.
 	NPCSleepMaxDurationHours int
 
-	// Constable rounds (LLM-514). ConstableRoundsInterval is how often the
-	// on-shift constable (AttrConstable) leaves his post to walk a circuit of
-	// every business, paused ConstableRoundsDwell at each so the reactor can
-	// engage him in character. The interval is a wall-clock cadence (not a
-	// schedule boundary) carrying a per-carrier deterministic phase offset —
-	// see ConstableRoundsDue. ConstableRoundsInterval <= 0 disables rounds
-	// entirely (the per-feature off-switch posture, like StallWearPerCoin==0);
-	// ConstableRoundsDwell <= 0 falls back to the default at read
-	// (EffectiveConstableRoundsDwell) since a zero dwell would defeat the
-	// pause-and-engage design. ConstableRoundsQuiet is how long the stop's
-	// conversation must have been silent before the dwell driver walks him on
-	// (LLM-537) — a liveness window over the huddle's last activity, NOT its
-	// lifecycle flag, which stays open for 2h and parked him at the stop. It too
-	// falls back to its default at read (EffectiveConstableRoundsQuiet). Settings
-	// keys: constable_rounds_interval_seconds, constable_rounds_dwell_seconds,
-	// constable_rounds_quiet_seconds. Live-tunable via the umbilical, persisted
-	// on the checkpoint. Defaults: 2h interval, 45s dwell, 90s quiet.
+	// Constable rounds (LLM-514). How often the on-shift constable (AttrConstable)
+	// leaves his post to walk a circuit of every business. A wall-clock cadence (not
+	// a schedule boundary) carrying a per-carrier deterministic phase offset — see
+	// ConstableRoundsDue. <= 0 disables rounds entirely (the per-feature off-switch
+	// posture, like StallWearPerCoin==0). Settings key:
+	// constable_rounds_interval_seconds. Live-tunable via the umbilical, persisted on
+	// the checkpoint. Default 2h.
+	//
+	// The pace of the round is no longer the engine's to set (LLM-548): he walks
+	// himself and stays where the conversation keeps him, so the old per-stop dwell
+	// and quiet-window knobs are gone. This interval — how often a round is OWED —
+	// is the only rounds tunable left.
 	ConstableRoundsInterval time.Duration
-	ConstableRoundsDwell    time.Duration
-	ConstableRoundsQuiet    time.Duration
 
 	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
 	// applied to every eligible actor. NeedThresholds carries the per-need
@@ -2406,43 +2399,37 @@ func (w *World) republish() {
 		// effect through the object states they flip, not through route membership.
 		if r := w.ActiveRoutes[a.ID]; r != nil && r.Label == AttrConstable {
 			sa.RouteLabel = r.Label
-			// A SUSPENDED round still surfaces (LLM-531) — that is the whole point:
-			// while he is off drinking or talking, the cue keeps naming what is left
-			// and where he broke off, so he can choose to pick it up again. The
-			// remaining count and the stop to return to are projected without any
-			// "arrived" requirement, since by definition he is elsewhere.
-			if r.Phase == RoutePhaseSuspended && r.StopIdx < len(r.Stops) {
-				sa.RouteSuspended = true
-				sa.RouteStopObjectID = r.Stops[r.StopIdx].ObjectID
-				// What he still OWES, not what sits after the cursor (LLM-543). While
-				// suspended he walks his own order, so places he called at himself are
-				// behind him in fact but ahead of the cursor — and the count was the
-				// loudest wrong voice in the prompt, telling him seven places remained
-				// while he stood in the seventh.
-				sa.RouteStopsAhead = r.unvisitedExcluding(r.StopIdx)
+			// What he still OWES and where to go next are projected UNCONDITIONALLY —
+			// no arrival requirement (LLM-548). The cue's job is to keep a standing
+			// obligation legible wherever he happens to be, and nothing else tells
+			// him a round is under way; a man at the well needs the count and the
+			// next name every bit as much as a man on a doorstep. Gating these on
+			// arrival is what used to collapse the cue to a bare "you are walking
+			// your rounds" — no place, no count, nowhere to go — at exactly the
+			// moments he most needed telling.
+			// Where he is STANDING, which is the one part that does need him to have
+			// arrived — it is what lets the cue say "you stand before the smithy".
+			// Tolerant, because he reaches stops on his own feet and move_to parks
+			// him beside the pin rather than on it.
+			//
+			// It also anchors the count and the next name. Both are measured from
+			// where he IS when he is at a stop, and from the cursor otherwise. The
+			// stop under his feet must not be counted among the places still ahead of
+			// him — that is the "seven places lie ahead" line read by a man standing
+			// in the seventh — and it must not be offered as the next one either.
+			// Anchoring on the cursor alone would do both for the moment between his
+			// arriving somewhere and the beat crediting it.
+			anchor := r.StopIdx
+			if idx, atStop := r.stopIndexAt(a); atStop {
+				anchor = idx
+				sa.RouteStopObjectID = r.Stops[idx].ObjectID
 			}
-			if r.Phase == RoutePhaseActive && r.StopIdx < len(r.Stops) {
-				stop := r.Stops[r.StopIdx]
-				// Tolerant for a stateful carrier (LLM-543) — this is what the CUE reads.
-				// Strict here meant that at any stop he reached on his own feet the cue
-				// lost the place, the count and the next name all at once, collapsing to a
-				// bare "you are walking your rounds": no business to speak of, nowhere to
-				// go, nothing to say the round continued.
-				if RouteStopReached(r, a, stop) {
-					sa.RouteStopObjectID = stop.ObjectID
-					// Places he still OWES a visit, not counting the one he stands at, so
-					// the cue can say the round continues (LLM-524). 0 when this is the
-					// last one left. Counted from the visited set rather than the cursor
-					// (LLM-543) so a shop he called at himself is not offered twice.
-					sa.RouteStopsAhead = r.unvisitedExcluding(r.StopIdx)
-					// The next stop's object, so the cue can NAME where he goes next
-					// (LLM-530) — the next place he still owes, which is exactly where the
-					// route will walk him and what the adopt will recognise if he goes
-					// there himself. Empty when nothing is left.
-					if nextIdx, ok := r.nextUnvisitedFrom(r.StopIdx); ok {
-						sa.RouteNextStopObjectID = r.Stops[nextIdx].ObjectID
-					}
-				}
+			sa.RouteStopsAhead = r.unvisitedExcluding(anchor)
+			if nextIdx, ok := r.nextUnvisitedFrom(anchor); ok {
+				// The move_to token. The next place he still owes, computed the SAME
+				// way the beat advancer moves its cursor, so the cue and the record
+				// can never name different places (LLM-543).
+				sa.RouteNextStopObjectID = r.Stops[nextIdx].ObjectID
 			}
 		}
 		// Per-tick conversational-loop flag (LLM-169): when this actor's huddle is

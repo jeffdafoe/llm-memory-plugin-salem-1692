@@ -86,12 +86,27 @@ func TestConstableRoundsDue_Gates(t *testing.T) {
 		}
 	})
 
-	t.Run("already_routing_not_due", func(t *testing.T) {
+	t.Run("dispatched_route_blocks_a_fresh_one", func(t *testing.T) {
 		a := constableAtPost("gideon")
 		w := constableWorld(a)
-		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseActive}
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrTownCrier, Phase: RoutePhaseActive}
 		if ConstableRoundsDue(w, a, interval, now) {
-			t.Error("must not re-trigger while a route is already in flight")
+			t.Error("must not re-trigger while a walk is in flight for an existing route")
+		}
+	})
+
+	// A beat does NOT block, and that is deliberate (LLM-548): the next interval
+	// supersedes a part-walked round outright, which is what bounds how long one can
+	// sit part-walked to a single interval. He starts a fresh circuit rather than
+	// carrying yesterday's around. In practice it cannot supersede him mid-round,
+	// because being due also requires him settled back at his post — which a man
+	// still walking his beat is not.
+	t.Run("a_part_walked_beat_is_superseded_not_blocked", func(t *testing.T) {
+		a := constableAtPost("gideon")
+		w := constableWorld(a)
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseBeat}
+		if !ConstableRoundsDue(w, a, interval, now) {
+			t.Error("a part-walked beat blocked the next round — it would outlive its interval")
 		}
 	})
 
@@ -256,53 +271,60 @@ func TestRouteStopArrivedAndDestination(t *testing.T) {
 	}
 }
 
-// TestClearSuspendedRoundIfOffShift covers the bound on the duty exemption a
-// SUSPENDED round carries (LLM-531). While a round sits part-walked, shiftDuty
-// leaves the constable alone so he can choose to pick it up rather than be marched
-// back to his post the moment he finishes his drink. That exemption must not follow
-// him into the night: once his watch is over the part-walked round is dropped, so
-// he goes home like anyone else and tomorrow starts a fresh circuit.
-func TestClearSuspendedRoundIfOffShift(t *testing.T) {
+// TestClearBeatRouteIfOffShift covers the bound on the duty exemption a beat
+// carries (LLM-531). While a round is owed, buildDutySteer leaves the constable
+// alone so he can choose where to go next rather than be marched back to his post
+// the moment he finishes his drink. That exemption must not follow him into the
+// night: once his watch is over the part-walked round is dropped, so he goes home
+// like anyone else and tomorrow starts a fresh circuit.
+func TestClearBeatRouteIfOffShift(t *testing.T) {
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC) // noon
 
-	t.Run("on shift keeps the paused round waiting", func(t *testing.T) {
+	t.Run("on shift keeps the part-walked round", func(t *testing.T) {
 		a := constableAtPost("gideon")
 		w := constableWorld(a)
-		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseSuspended}
-		if ClearSuspendedRoundIfOffShift(w, a, now) {
-			t.Error("cleared a paused round while still on shift — he loses the chance to resume")
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseBeat}
+		if ClearBeatRouteIfOffShift(w, a, now) {
+			t.Error("cleared a round while still on shift — he loses the chance to finish it")
 		}
 		if w.ActiveRoutes[a.ID] == nil {
 			t.Error("round dropped while on shift")
 		}
 	})
 
-	t.Run("off shift drops the paused round", func(t *testing.T) {
+	t.Run("off shift drops the part-walked round", func(t *testing.T) {
 		a := constableAtPost("gideon")
 		// A morning-only watch, so noon is off shift.
 		a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600)
 		w := constableWorld(a)
-		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseSuspended}
-		if !ClearSuspendedRoundIfOffShift(w, a, now) {
-			t.Fatal("did not drop a paused round after the watch ended")
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseBeat}
+		if !ClearBeatRouteIfOffShift(w, a, now) {
+			t.Fatal("did not drop a part-walked round after the watch ended")
 		}
 		if w.ActiveRoutes[a.ID] != nil {
 			t.Error("route still present after the off-shift drop — the duty exemption would persist overnight")
 		}
 	})
 
-	t.Run("an in-flight round is left to the route machinery", func(t *testing.T) {
-		a := constableAtPost("gideon")
+	// The sweep is scoped to beats. A decorative carrier's route is dispatched
+	// machinery with its own completion and abandon paths; sweeping it out from
+	// under a walk in flight would strand the actor mid-leg with no arrival handler
+	// left to tidy up.
+	t.Run("a decorative route is left to the route machinery", func(t *testing.T) {
+		a := constableAtPost("grace")
 		a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600) // off shift at noon
 		w := constableWorld(a)
-		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseActive}
-		if ClearSuspendedRoundIfOffShift(w, a, now) {
-			t.Error("swept an ACTIVE route — in-flight rounds clear through their own paths")
+		w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrTownCrier, Phase: RoutePhaseActive}
+		if ClearBeatRouteIfOffShift(w, a, now) {
+			t.Error("swept a dispatched route — those clear through their own paths")
+		}
+		if w.ActiveRoutes[a.ID] == nil {
+			t.Error("decorative route dropped by the beat sweep")
 		}
 	})
 }
 
-// TestClearSuspendedRoundIfOffShift_FiresWithoutARoundsDueEvent is the invariant
+// TestClearBeatRouteIfOffShift_FiresWithoutARoundsDueEvent is the invariant
 // code_review asked to make explicit: the off-shift sweep is what bounds the duty
 // exemption a SUSPENDED round carries, so it must not depend on a rounds beat
 // happening to land. runConstableRounds calls the sweep BEFORE ConstableRoundsDue
@@ -312,213 +334,25 @@ func TestClearSuspendedRoundIfOffShift(t *testing.T) {
 //
 // This pins the two halves together: at the crossing instant rounds are NOT due
 // (the stamp is fresh), and the sweep still clears.
-func TestClearSuspendedRoundIfOffShift_FiresWithoutARoundsDueEvent(t *testing.T) {
+func TestClearBeatRouteIfOffShift_FiresWithoutARoundsDueEvent(t *testing.T) {
 	const interval = 2 * time.Hour
 	a := constableAtPost("gideon")
 	a.ScheduleStartMin, a.ScheduleEndMin = intptr(0), intptr(600) // watch ends at 10:00
 	w := constableWorld(a)
 
 	justAfterShiftEnd := time.Date(2026, 6, 12, 10, 1, 0, 0, time.UTC)
-	w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseSuspended}
+	w.ActiveRoutes[a.ID] = &NPCRoute{NPCID: a.ID, Label: AttrConstable, Phase: RoutePhaseBeat}
 	// A fresh stamp, so no rounds beat is due at this instant.
 	StampConstableRounds(w, a.ID, justAfterShiftEnd.Add(-time.Minute))
 
 	if ConstableRoundsDue(w, a, interval, justAfterShiftEnd) {
 		t.Fatal("fixture invalid: a round is due, so this would not prove the sweep runs independently")
 	}
-	if !ClearSuspendedRoundIfOffShift(w, a, justAfterShiftEnd) {
+	if !ClearBeatRouteIfOffShift(w, a, justAfterShiftEnd) {
 		t.Fatal("part-walked round survived the end of the watch with no rounds beat to clear it — " +
 			"the duty exemption would persist overnight and leave him standing where he stopped")
 	}
 	if w.ActiveRoutes[a.ID] != nil {
 		t.Error("route still present after the sweep")
-	}
-}
-
-// --- LLM-537: the dwell driver's defer-or-advance predicate ---
-//
-// These drive `now` and `quiet` as arguments instead of reading the wall clock, so
-// the window edges are exact. The cascade-side tests
-// (cascade/constable_rounds_test.go) cover the same decision end-to-end through the
-// real route + dwell machinery; these pin the boundaries an integration test cannot
-// hit deterministically.
-
-// constableStopWorld builds the minimal world the predicate reads: one constable in
-// one huddle, silent since `lastActivity`. mutate customizes the huddle first.
-func constableStopWorld(lastActivity time.Time, mutate func(*Huddle)) (*World, *Actor) {
-	h := &Huddle{
-		ID:             "h1",
-		Members:        map[ActorID]struct{}{"gideon": {}, "keeper": {}},
-		StartedAt:      lastActivity.Add(-time.Hour),
-		LastActivityAt: lastActivity,
-	}
-	if mutate != nil {
-		mutate(h)
-	}
-	actor := &Actor{ID: "gideon", CurrentHuddleID: "h1"}
-	w := &World{
-		Actors:  map[ActorID]*Actor{"gideon": actor},
-		Huddles: map[HuddleID]*Huddle{"h1": h},
-	}
-	return w, actor
-}
-
-// TestConstableStopStillTalkingQuietBoundary pins the exact edge of the quiet
-// window. HuddleIsLive is inclusive (now.Sub(last) <= window), so silence of exactly
-// one window still defers and a nanosecond more advances. Worth pinning: the whole
-// defect was a predicate that never stopped deferring, and an off-by-one here is
-// that bug in miniature.
-func TestConstableStopStillTalkingQuietBoundary(t *testing.T) {
-	const quiet = 90 * time.Second
-	now := time.Date(2026, 7, 27, 13, 30, 0, 0, time.UTC)
-
-	cases := []struct {
-		name    string
-		silence time.Duration
-		want    bool
-	}{
-		{"one_second_inside", quiet - time.Second, true},
-		{"exactly_at_window", quiet, true},
-		{"one_nanosecond_past", quiet + time.Nanosecond, false},
-		{"one_second_past", quiet + time.Second, false},
-		{"long_gone", 5 * time.Minute, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w, actor := constableStopWorld(now.Add(-tc.silence), nil)
-			if got := ConstableStopStillTalking(w, actor, now, quiet); got != tc.want {
-				t.Errorf("silence %v against a %v window: still talking = %v, want %v", tc.silence, quiet, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestConstableStopStillTalkingPlayerArm pins the player grace period. It keys on a
-// player's last UTTERANCE, not on PC membership, because a parked and silent player
-// at a hub would otherwise hold the constable at that stop indefinitely. So this is
-// a recent-speech grace period, NOT evidence that the player is at this moment
-// reading or composing: a player quiet past huddlePCAttentionWindow does lose the
-// arm, deliberately, and the constable walks on.
-func TestConstableStopStillTalkingPlayerArm(t *testing.T) {
-	const quiet = 90 * time.Second
-	now := time.Date(2026, 7, 27, 13, 30, 0, 0, time.UTC)
-	// Silent well past the NPC-sized quiet window, so only the player arm can defer.
-	silentSince := now.Add(-10 * time.Minute)
-
-	cases := []struct {
-		name    string
-		pcAgo   time.Duration
-		want    bool
-		because string
-	}{
-		{"just_spoke", time.Second, true, "a player is mid-conversation"},
-		{"inside_grace", huddlePCAttentionWindow - time.Second, true, "still inside the player grace period"},
-		{"at_grace_boundary", huddlePCAttentionWindow, false, "the grace period is exclusive (age < window)"},
-		{"wandered_off", 10 * time.Minute, false, "a long-silent player must not park him at the stop"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w, actor := constableStopWorld(silentSince, func(h *Huddle) {
-				h.LastPCUtteranceAt = now.Add(-tc.pcAgo)
-			})
-			if got := ConstableStopStillTalking(w, actor, now, quiet); got != tc.want {
-				t.Errorf("player spoke %v ago: still talking = %v, want %v (%s)", tc.pcAgo, got, tc.want, tc.because)
-			}
-		})
-	}
-}
-
-// TestConstableStopStillTalkingNotInAConversation covers every way the predicate
-// must answer "nothing is holding him" — including the one a lifecycle test gets
-// wrong in the other direction: a CONCLUDED huddle never defers, not even with a
-// player utterance seconds old. Once a huddle has concluded there is nothing left
-// to be dragged out of.
-func TestConstableStopStillTalkingNotInAConversation(t *testing.T) {
-	const quiet = 90 * time.Second
-	now := time.Date(2026, 7, 27, 13, 30, 0, 0, time.UTC)
-	concluded := now.Add(-time.Minute)
-
-	t.Run("nil_actor", func(t *testing.T) {
-		w, _ := constableStopWorld(now, nil)
-		if ConstableStopStillTalking(w, nil, now, quiet) {
-			t.Error("a nil actor is not in a conversation")
-		}
-	})
-
-	t.Run("no_huddle_id", func(t *testing.T) {
-		w, actor := constableStopWorld(now, nil)
-		actor.CurrentHuddleID = ""
-		if ConstableStopStillTalking(w, actor, now, quiet) {
-			t.Error("an actor with no huddle is not in a conversation")
-		}
-	})
-
-	t.Run("huddle_id_dangles", func(t *testing.T) {
-		// A back-reference to a huddle no longer in the map (boot clear, conclusion
-		// sweep). Must read "not talking" rather than panic.
-		w, actor := constableStopWorld(now, nil)
-		delete(w.Huddles, "h1")
-		if ConstableStopStillTalking(w, actor, now, quiet) {
-			t.Error("a dangling CurrentHuddleID is not a conversation")
-		}
-	})
-
-	t.Run("concluded_though_recent", func(t *testing.T) {
-		w, actor := constableStopWorld(now, func(h *Huddle) { h.ConcludedAt = &concluded })
-		if ConstableStopStillTalking(w, actor, now, quiet) {
-			t.Error("a concluded huddle must not defer, however recent its last word")
-		}
-	})
-
-	t.Run("concluded_though_player_attended", func(t *testing.T) {
-		w, actor := constableStopWorld(now, func(h *Huddle) {
-			h.ConcludedAt = &concluded
-			h.LastPCUtteranceAt = now.Add(-time.Second)
-		})
-		if ConstableStopStillTalking(w, actor, now, quiet) {
-			t.Error("the player arm must not resurrect a concluded huddle")
-		}
-	})
-}
-
-// TestConstableStopStillTalkingUnstampedHuddle documents the deliberate fallback for
-// a huddle carrying NEITHER stamp (a hand-built snapshot, or a creation site that
-// forgot to stamp): HuddleIsLive reads it live, so the constable defers. That is the
-// safe error — a false "live" costs one more dwell re-check, while a false "quiet"
-// would walk him out of a real conversation. Asserted directly rather than left
-// riding on an incidental integration-test fixture.
-func TestConstableStopStillTalkingUnstampedHuddle(t *testing.T) {
-	now := time.Date(2026, 7, 27, 13, 30, 0, 0, time.UTC)
-	w, actor := constableStopWorld(now, func(h *Huddle) {
-		h.StartedAt = time.Time{}
-		h.LastActivityAt = time.Time{}
-	})
-	if !ConstableStopStillTalking(w, actor, now, 90*time.Second) {
-		t.Error("an unstamped huddle must read as still talking — deferring is the safe direction")
-	}
-}
-
-// TestEffectiveConstableRoundsQuiet pins the lazy-default posture: a non-positive
-// stored value resolves to the default rather than acting as an off-switch. Zero
-// must NOT mean "no quiet window" — that would advance him the instant a line
-// landed, the mid-exchange yank the deferral exists to prevent. The feature's
-// off-switch is ConstableRoundsInterval <= 0.
-func TestEffectiveConstableRoundsQuiet(t *testing.T) {
-	cases := []struct {
-		name   string
-		stored time.Duration
-		want   time.Duration
-	}{
-		{"unset_defaults", 0, DefaultConstableRoundsQuiet},
-		{"negative_defaults", -time.Second, DefaultConstableRoundsQuiet},
-		{"set_wins", 3 * time.Minute, 3 * time.Minute},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := &World{Settings: WorldSettings{ConstableRoundsQuiet: tc.stored}}
-			if got := EffectiveConstableRoundsQuiet(w); got != tc.want {
-				t.Errorf("stored %v: effective = %v, want %v", tc.stored, got, tc.want)
-			}
-		})
 	}
 }

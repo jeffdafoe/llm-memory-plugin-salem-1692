@@ -70,6 +70,13 @@ type UmbilicalNPCRouteStopDTO struct {
 	// carries it while the route is walking its itinerary; none do once the cursor
 	// has run past the end (phase "returning").
 	Current bool `json:"current"`
+	// Visited reports that the carrier has actually CALLED AT this place on this
+	// round, however he came to be there (LLM-548). For a beat route this is the
+	// progress state — the cursor only hints at what the cue names next, so reading
+	// StopIdx alone tells an operator almost nothing about how far along he is.
+	// Always false for a decorative route, which visits its stops in cursor order
+	// and never records them.
+	Visited bool `json:"visited"`
 }
 
 // UmbilicalNPCRouteDTO is one active route on the wire.
@@ -79,18 +86,22 @@ type UmbilicalNPCRouteDTO struct {
 	// Label is the route behavior: town_crier / washerwoman / lamplighter /
 	// constable.
 	Label string `json:"label"`
-	// Phase is the route lifecycle: "active" (walking the itinerary),
-	// "returning" (past the last stop, heading home/to post), or "suspended"
-	// (part-walked and paused — the carrier is his own man again, so shift duty
-	// and the idle backstop treat him as routeless; LLM-531).
+	// Phase is the route lifecycle: "active" (a dispatched route walking its
+	// itinerary), "returning" (past the last stop, heading home/to post), or "beat"
+	// (a volition carrier's circuit, which dispatches nothing — the engine holds
+	// what he owes and he takes himself there; LLM-548). A beat is never "in
+	// flight", so shift duty, the idle backstop and arrival encounters all treat
+	// its carrier as routeless.
 	Phase string `json:"phase"`
 	// Gen is the route's install identity token, stamped from World.routeInstallSeq
-	// at each StartNPCRoute. It disambiguates two routes of the same actor at the
-	// same StopIdx, which is what the dwell callback validates against — so when a
-	// timer misfire is suspected, this is the number to compare across two reads.
+	// at each StartNPCRoute. It disambiguates two routes of the same actor, which
+	// StopIdx cannot — a fresh round starts on the same cursor the last one did — so
+	// this is the number to compare across two reads to tell "still the same round"
+	// from "he has been re-dispatched since".
 	Gen uint64 `json:"gen"`
 	// StopIdx is the cursor into Stops. It can equal StopCount once the itinerary
-	// is done and the carrier is returning.
+	// is done and the carrier is returning. For a BEAT it is only a hint about what
+	// the cue names next, not progress — read UnvisitedCount for that.
 	StopIdx   int `json:"stop_idx"`
 	StopCount int `json:"stop_count"`
 	// ArrivedAtCurrentStop is the ROUTE'S OWN dispatch condition for the cursor's
@@ -113,24 +124,12 @@ type UmbilicalNPCRouteDTO struct {
 	// reached=true / arrived=false, and any route logic written against the strict
 	// form silently fails for exactly the path it was built to serve.
 	ReachedCurrentStopOnFoot bool `json:"reached_current_stop_on_foot"`
-	// Dwelling marks the constable PAUSED at his current stop — the per-stop dwell
-	// window between arrival and moving on.
-	Dwelling bool `json:"dwelling"`
-	// DwellTimerPresent reports that route.DwellTimer is non-nil. Read alongside
-	// Dwelling it is the field that separates "paused on a dwell, working as
-	// designed" from "parked with nothing scheduled to move him" — the ambiguity
-	// that made LLM-537 diagnosable only by inference. The timer is a *time.Timer
-	// and cannot be marshalled, so presence is reported as a bool.
-	//
-	// PRESENCE, NOT LIVENESS — deliberately named for what it measures. A fired
-	// timer leaves its pointer behind until the advance command clears it, and there
-	// are two windows where that shows here as true with nothing actually counting
-	// down: between the timer firing and the world goroutine running the queued
-	// advance, and (unbounded) when that advance early-returns on its
-	// actor/Gen/Phase/StopIdx guard, which returns before nilling the pointer. A
-	// false NEGATIVE is not possible, so `false` is the trustworthy direction: it
-	// means no dwell is scheduled for this stop, full stop.
-	DwellTimerPresent bool `json:"dwell_timer_present"`
+	// UnvisitedCount is how many stops are still owed a visit — the number the
+	// perception cue speaks to the carrier ("six more places lie ahead"). Read it
+	// against StopCount to see a beat's real progress; the cursor cannot give you
+	// that, because a beat carrier walks his circuit in whatever order he likes and
+	// the cursor only tracks what to name next (LLM-548).
+	UnvisitedCount int `json:"unvisited_count"`
 	// Authoring is the town crier's analogue of Dwelling: an off-world noticeboard
 	// author call is in flight for the current stop.
 	Authoring bool `json:"authoring"`
@@ -206,17 +205,16 @@ func (s *Server) handleUmbilicalNPCRoutes(w http.ResponseWriter, r *http.Request
 func umbilicalNPCRouteDTO(world *sim.World, id sim.ActorID, route *sim.NPCRoute) UmbilicalNPCRouteDTO {
 	actor := world.Actors[id]
 	dto := UmbilicalNPCRouteDTO{
-		NPCID:             string(id),
-		Label:             route.Label,
-		Phase:             string(route.Phase),
-		Gen:               route.Gen,
-		StopIdx:           route.StopIdx,
-		StopCount:         len(route.Stops),
-		Dwelling:          route.Dwelling,
-		DwellTimerPresent: route.DwellTimer != nil,
-		Authoring:         route.Authoring,
-		StaleRetries:      route.StaleRetries,
-		Stops:             make([]UmbilicalNPCRouteStopDTO, 0, len(route.Stops)),
+		NPCID:          string(id),
+		Label:          route.Label,
+		Phase:          string(route.Phase),
+		Gen:            route.Gen,
+		StopIdx:        route.StopIdx,
+		StopCount:      len(route.Stops),
+		UnvisitedCount: sim.RouteUnvisitedCount(route),
+		Authoring:      route.Authoring,
+		StaleRetries:   route.StaleRetries,
+		Stops:          make([]UmbilicalNPCRouteStopDTO, 0, len(route.Stops)),
 	}
 	if actor != nil {
 		dto.NPCName = actor.DisplayName
@@ -230,6 +228,7 @@ func umbilicalNPCRouteDTO(world *sim.World, id sim.ActorID, route *sim.NPCRoute)
 			NewState:         stop.NewState,
 			EnterStructureID: string(stop.EnterStructureID),
 			Current:          current,
+			Visited:          sim.RouteStopVisited(route, i),
 		})
 		if current && actor != nil {
 			dto.ArrivedAtCurrentStop = sim.RouteStopArrived(actor, stop)

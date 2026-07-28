@@ -348,20 +348,57 @@ func TestAdvanceNPCRoute_StaleArrivalAbandonsAfterRetries(t *testing.T) {
 	}
 }
 
-// TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition: a STATEFUL carrier
-// (the constable) that finishes a move somewhere other than the stop walked
-// himself off on his OWN volition — his LLM reactor issued the move_to. Unlike a
-// decorative carrier (TestAdvanceNPCRoute_StaleArrivalReWalks, where the
-// lamplighter is re-walked back), the route must NOT drag him back: it ends the
-// tour ("yielded_to_volition"), clears the route, and dispatches NO re-walk. This
-// is the LLM-520 fix — the constable no longer fights his own feet (the
-// Gideon-at-Ellis-Farm oscillation). The route is labeled AttrConstable because
-// advanceActiveRoute keys the yield on the route's Label (routeYieldsToVolition),
-// independent of the carrier actor's own attributes. The off-stop arrival here is
-// cause-agnostic: this same path fires whether his own move_to walked him off or
-// an admin force-moved him — both end the tour by design (the yield is a policy,
-// not volition-detection).
-func TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition(t *testing.T) {
+// TestBeatRoute_StartsWithoutDispatchingAWalk is the difference between a beat and
+// every other route, and the reason the whole class of bug this replaced cannot
+// recur (LLM-548): a walk that is never dispatched is a walk that can never be
+// refused. The old round died the first time a dispatch was rejected because he was
+// standing in a conversation that had gone quiet, and it was rejected at the second
+// stop of eight.
+//
+// The first leg is deliberately included in "dispatches nothing". It is the one
+// place the engine could plausibly still start him off, and the worst place for it:
+// a round begins at his post, so a walk with LeaveHuddleFirst set would drag him out
+// of whatever conversation he was having in order to send him on his rounds.
+func TestBeatRoute_StartsWithoutDispatchingAWalk(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	res, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if started := res.(sim.StartNPCRouteResult); started.Stops == 0 {
+		t.Fatal("beat installed no stops — the circuit is what the cue reads from")
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("ActiveRoutes[lamp] empty — the beat must be installed even though nothing is dispatched")
+	}
+	if route.Phase != sim.RoutePhaseBeat {
+		t.Errorf("Phase = %q, want %q", route.Phase, sim.RoutePhaseBeat)
+	}
+	if mi := moveIntentOf(t, w, "lamp"); mi != nil {
+		t.Errorf("beat start dispatched a walk: %+v — he takes himself where the cue names", mi)
+	}
+	// A beat is never "busy". This is what keeps shift duty waking him, the idle
+	// backstop live, and — the load-bearing one — lets an ordinary arrival encounter
+	// form when he turns up at a shop, which is how the conversations at his stops
+	// happen at all.
+	if route.InFlight() {
+		t.Error("a beat route reports InFlight() — duty, the backstop and arrival encounters would stay suppressed")
+	}
+}
+
+// TestBeatRoute_ArrivalElsewhereIsANoOp: he has gone to see to something of his own
+// — a thirst, an errand, a suspicion. That is his to do. The round simply waits,
+// with nothing dragged back and nothing thrown away, and the cue goes on naming what
+// is left whenever he next reads it.
+//
+// The predecessor of this behaviour ended the tour outright on an off-stop arrival,
+// which is how a constable who stopped for a drink at the well came back to find six
+// doors unwalked and no reason left to walk them.
+func TestBeatRoute_ArrivalElsewhereIsANoOp(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
@@ -371,9 +408,10 @@ func TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition(t *testing.T) {
 	}
 	firstStopID := firstStopObjectID(t, w, "lamp")
 	beforeState := w.Published().VillageObjects[firstStopID].CurrentState
+	before := activeRouteOf(t, w, "lamp")
+	beforeIdx, beforeGen := before.StopIdx, before.Gen
 
-	// Model the real arrival that reaches advanceActiveRoute's stale branch: the
-	// actor's own move_to already completed at a tile that is NOT the stop, and
+	// His own move_to completed at a tile that is no stop on the circuit;
 	// finishArrival cleared MoveIntent before emitting ActorArrived. The seed tile
 	// (PadX+10, PadY+10) is a proven non-stop tile (see the re-walk test above).
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -389,53 +427,44 @@ func TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdvanceNPCRoute: %v", err)
 	}
-	r := res.(sim.AdvanceNPCRouteResult)
-	if r.Reason != "suspended" {
-		t.Errorf("Reason = %q, want suspended", r.Reason)
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "beat_elsewhere" {
+		t.Errorf("Reason = %q, want beat_elsewhere", r.Reason)
 	}
-	// The round is PAUSED, not discarded (LLM-531): the cursor survives so the cue
-	// can name where he broke off and he can pick it up again.
 	route := activeRouteOf(t, w, "lamp")
 	if route == nil {
 		t.Fatal("ActiveRoutes[lamp] cleared — the part-walked round was thrown away")
 	}
-	if route.Phase != sim.RoutePhaseSuspended {
-		t.Errorf("Phase = %q, want %q", route.Phase, sim.RoutePhaseSuspended)
+	if route.StopIdx != beforeIdx || route.Gen != beforeGen {
+		t.Errorf("cursor/gen moved on an off-circuit arrival: %d/%d → %d/%d",
+			beforeIdx, beforeGen, route.StopIdx, route.Gen)
 	}
-	if route.StopIdx != 0 {
-		t.Errorf("StopIdx = %d, want 0 (he broke off before reaching stop 0)", route.StopIdx)
-	}
-	// A suspended round must not read as "busy" to the rest of the engine.
-	if route.InFlight() {
-		t.Error("a suspended route reports InFlight() — shift duty and the backstop would stay suppressed")
-	}
-	// The crux: NO re-walk was dispatched — he is not dragged back to the stop.
+	// The crux: no re-walk. He is not dragged back to the stop.
 	if mi := moveIntentOf(t, w, "lamp"); mi != nil {
-		t.Errorf("MoveIntent stamped after yield — route re-walked instead of yielding: %+v", mi)
+		t.Errorf("MoveIntent stamped on an off-circuit arrival — the beat re-walked him: %+v", mi)
 	}
-	// Yield returns before the per-stop flip, so the object is untouched.
 	if afterState := w.Published().VillageObjects[firstStopID].CurrentState; afterState != beforeState {
-		t.Errorf("yielded route flipped object: %q → %q", beforeState, afterState)
+		t.Errorf("beat flipped an object: %q → %q — a beat visits, it does not mutate", beforeState, afterState)
 	}
 }
 
 // TestAdvanceNPCRoute_SupersededRouteWalkCannotArrive documents the invariant
-// that makes the LLM-520 yield's clear-by-actor-ID safe against a stale arrival
-// from a replaced route (the code_review concern): a route install ALWAYS
-// dispatches a walk that overwrites the actor's single MoveIntent, and the
+// that makes clear-by-actor-ID safe against a stale arrival from a replaced route
+// (the code_review concern): a DISPATCHED route install always dispatches a walk that overwrites the actor's single MoveIntent, and the
 // superseded walk dies silently — no ActorArrived (commands_move.go: "the old
 // attempt dies silently"). The locomotion ticker only ever emits an arrival for
 // the actor's CURRENT MoveIntent (locomotion_ticker.go finishArrival), so a
 // stale arrival generated by route N can never be delivered against its
 // replacement N+1: N's walk was discarded and never reaches finishArrival.
-// Replacing a constable route and checking the walk's AttemptID + the route Gen
-// both changed proves the old walk is dead.
+// Replacing a dispatched route and checking the walk's AttemptID + the route Gen
+// both changed proves the old walk is dead. A BEAT route dispatches no walk at all
+// (LLM-548), so it has no stale walk to worry about and this invariant is about the
+// decorative carriers that still have one.
 func TestAdvanceNPCRoute_SupersededRouteWalkCannotArrive(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
 	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrTownCrier, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
 		t.Fatalf("first start: %v", err)
 	}
 	first := moveIntentOf(t, w, "lamp")
@@ -449,8 +478,8 @@ func TestAdvanceNPCRoute_SupersededRouteWalkCannotArrive(t *testing.T) {
 	}
 	firstGen := firstRoute.Gen
 
-	// Supersede with a fresh constable route (an operator force-tour, say).
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+	// Supersede with a fresh crier route (an operator force-tour, say).
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrTownCrier, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
 		t.Fatalf("supersede start: %v", err)
 	}
 	second := moveIntentOf(t, w, "lamp")
@@ -463,8 +492,8 @@ func TestAdvanceNPCRoute_SupersededRouteWalkCannotArrive(t *testing.T) {
 	if second.AttemptID == firstAttempt {
 		t.Errorf("MoveIntent AttemptID unchanged after supersede (%d) — old walk still live", second.AttemptID)
 	}
-	// The replacement carries a fresh generation, so even the async dwell-timer
-	// path (Gen-guarded) rejects a stale callback from the first install.
+	// The replacement carries a fresh generation, so an operator comparing two reads
+	// can tell a re-install from the same route continuing.
 	if g := activeRouteOf(t, w, "lamp").Gen; g == firstGen {
 		t.Errorf("replacement route Gen unchanged (%d) — supersede did not re-install", g)
 	}
@@ -703,509 +732,197 @@ func teleportToCurrentStop(t *testing.T, w *sim.World, id sim.ActorID) {
 	}
 }
 
-// TestAdvanceNPCRoute_ConstableWalkingOnwardContinuesRound is the LLM-530 engine
-// half. The rounds cue now NAMES the next business, because move_to is how this NPC
-// says "I am finished with this place" — so he will walk there himself. Arriving at
-// a stop still AHEAD on the circuit is staying on the round, not leaving it: the
-// route adopts that stop and carries on, rather than treating the move as volition
-// and ending the tour (which would make naming the next stop worth exactly one
-// extra visit). Contrast TestAdvanceNPCRoute_ConstableStaleArrivalYieldsToVolition,
-// where he lands somewhere NOT on the circuit and the tour does end.
-func TestAdvanceNPCRoute_ConstableWalkingOnwardContinuesRound(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
+// standAtStop puts the actor exactly on stop idx's WalkTo tile and clears his
+// MoveIntent — the state finishArrival leaves behind when a move he issued himself
+// completes there. A beat is driven entirely by arrivals, so this is how every beat
+// test says "he took himself to this place".
+func standAtStop(t *testing.T, w *sim.World, id sim.ActorID, idx int) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes[id]
+		if route == nil || idx >= len(route.Stops) {
+			t.Fatalf("standAtStop: no route or stop %d out of range", idx)
+		}
+		a := world.Actors[id]
+		a.Pos.X, a.Pos.Y = route.Stops[idx].WalkTo.X, route.Stops[idx].WalkTo.Y
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("standAtStop: %v", err)
+	}
+}
 
+// visitorSlotBeside returns a tile one king's move off the loiter pin — where
+// pickVisitorSlot actually parks an actor who walked himself to a place. The pin
+// itself is taken only when all eight slots are blocked, so this, not the pin, is
+// where a beat carrier stands at essentially every stop he calls at.
+func visitorSlotBeside(pin sim.TilePos) sim.TilePos {
+	return sim.TilePos{X: pin.X + 1, Y: pin.Y}
+}
+
+// startBeat installs a beat over the given candidates and returns nothing — the
+// route is read back through activeRouteOf. Nothing is dispatched, so the actor
+// stays wherever the fixture left him.
+func startBeat(t *testing.T, w *sim.World, id sim.ActorID, cands []sim.RouteCandidate) {
+	t.Helper()
 	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	// Assert the exact fixture shape the expectations below depend on: with exactly
-	// 2 stops, the one he walks to IS the last, so the round finishes it and returns.
-	if n := stopCountOf(t, w, "lamp"); n != 2 {
-		t.Fatalf("fixture must have exactly 2 stops for these expectations, got %d", n)
-	}
-
-	// He is en route to stop 0 but walks himself to stop 1 instead — the business the
-	// cue named. Clear MoveIntent as finishArrival does before emitting ActorArrived.
-	var next sim.Position
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		next = route.Stops[1].WalkTo
-		a := world.Actors["lamp"]
-		a.Pos = next
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("place actor at stop 1: %v", err)
-	}
-
-	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("AdvanceNPCRoute: %v", err)
-	}
-	r := res.(sim.AdvanceNPCRouteResult)
-	// The crux: he is NOT treated as having left the round.
-	if r.Reason == "yielded_to_volition" {
-		t.Fatalf("walking on to a stop still on the circuit ended the tour (Reason=%q)", r.Reason)
-	}
-	// Stop 1 is credited. Stop 0 is NOT — he walked past it and never called there —
-	// so the round still owes it and goes back for it (LLM-543). This is a deliberate
-	// change from LLM-530, which marched him home and quietly dropped the place he had
-	// skipped. A round that abandons stops cannot report honestly on itself: the count
-	// in the cue is the number of places he still owes, so any stop the round is
-	// unwilling to walk him to has to be either visited or a lie. Coverage is what a
-	// constable's round IS.
-	//
-	// The apparent doubling-back is an artifact of a two-stop fixture. nextUnvisitedFrom
-	// searches FORWARD first and only wraps, so on his real eight-stop circuit a skipped
-	// farm is picked up at the END of the round, not by turning him round on the spot.
-	if r.Reason != "stop_advanced" {
-		t.Errorf("Reason = %q, want stop_advanced (stop 0 is still owed a visit)", r.Reason)
-	}
-	route := activeRouteOf(t, w, "lamp")
-	if route == nil {
-		t.Fatal("route cleared after he walked on to a stop still on the circuit")
-	}
-	if route.Phase != sim.RoutePhaseActive {
-		t.Errorf("Phase = %q, want %q — one place is still unwalked", route.Phase, sim.RoutePhaseActive)
-	}
-	if route.StopIdx != 0 {
-		t.Errorf("StopIdx = %d, want 0 — the stop he walked past is the one still owed", route.StopIdx)
-	}
-	if !route.Visited[1] {
-		t.Error("stop 1 not recorded as visited — he walked there himself and was credited for the round, so the record must say so")
-	}
-	if route.Visited[0] {
-		t.Error("stop 0 recorded as visited — he never called there, he walked past it")
-	}
-
-	// And calling at the one he owed finishes the round.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = world.ActiveRoutes["lamp"].Stops[0].WalkTo
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("walk to the owed stop: %v", err)
-	}
-	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("AdvanceNPCRoute (last owed stop): %v", err)
-	}
-	if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "returning_home" {
-		t.Errorf("Reason = %q, want returning_home — every stop is walked, the round is done", reason)
+	if _, err := w.Send(sim.StartNPCRoute(id, sim.AttrConstable, homeDest, cands, time.Now().UTC())); err != nil {
+		t.Fatalf("start beat: %v", err)
 	}
 }
 
-// TestAdvanceNPCRoute_ConstableArrivalBeyondNextStopStillYields pins the LLM-530
-// scan's deliberate narrowness: adoption covers the IMMEDIATE next stop only,
-// because the cue names exactly one place. An arrival at a stop further along is
-// NOT adopted — it would jump the cursor over an intervening stop, skipping its
-// visit and dwell (and, for any future yielding carrier whose stops flip state,
-// its flip). Such an arrival falls through to the ordinary volition yield.
-func TestAdvanceNPCRoute_ConstableArrivalBeyondNextStopStillYields(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
-
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if n := stopCountOf(t, w, "lamp"); n != 3 {
-		t.Fatalf("fixture must have exactly 3 stops to test a non-adjacent stop, got %d", n)
-	}
-
-	// Stand him on stop 2 — a real stop on his circuit, but TWO ahead of the cursor
-	// at stop 0, so adopting it would jump over stop 1 and skip its visit entirely.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = route.Stops[2].WalkTo
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("place actor on stop 2: %v", err)
-	}
-
-	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("AdvanceNPCRoute: %v", err)
-	}
-	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "suspended" {
-		t.Errorf("Reason = %q, want suspended (an arrival that is not the next stop is stepping away, which pauses the round)", r.Reason)
-	}
-	route := activeRouteOf(t, w, "lamp")
-	if route == nil {
-		t.Fatal("route discarded rather than suspended")
-	}
-	if route.Phase != sim.RoutePhaseSuspended {
-		t.Errorf("Phase = %q, want %q", route.Phase, sim.RoutePhaseSuspended)
-	}
-	// The crux for this case: the cursor did NOT jump to stop 2.
-	if route.StopIdx != 0 {
-		t.Errorf("StopIdx = %d, want 0 — the cursor must not jump over stop 1", route.StopIdx)
-	}
-}
-
-// TestAdvanceNPCRoute_SuspendedRoundResumesWhenHeWalksBack is the other half of
-// LLM-531: a need interrupts a round, it does not cancel it. He steps away (the
-// well, a conversation), the round waits with its cursor intact, and when he walks
-// back to the stop he broke off at, it picks up from there — no engine coercion,
-// no re-walk. Live, the round used to be discarded at the moment he stepped away,
-// so after a drink nothing told him six doors were still unwalked.
-func TestAdvanceNPCRoute_SuspendedRoundResumesWhenHeWalksBack(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
-
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	// He steps away: arrives somewhere that is no stop of his at all.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: sim.PadX + 40, Y: sim.PadY + 40}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
-	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("advance (step away): %v", err)
-	}
-	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "suspended" {
-		t.Fatalf("Reason = %q, want suspended", r.Reason)
-	}
-
-	// While suspended, a further arrival elsewhere leaves the round waiting rather
-	// than nagging or clearing it — he is off seeing to himself.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: sim.PadX + 41, Y: sim.PadY + 41}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("wander: %v", err)
-	}
-	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("advance (wander): %v", err)
-	}
-	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "still_suspended" {
-		t.Errorf("Reason = %q, want still_suspended", r.Reason)
-	}
-	if route := activeRouteOf(t, w, "lamp"); route == nil || route.Phase != sim.RoutePhaseSuspended {
-		t.Fatalf("round not still waiting: %+v", route)
-	}
-
-	// He walks back to the stop he broke off at — the one the cue names.
-	var resumeStopID sim.VillageObjectID
-	var resumeIdx int
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		resumeIdx = route.StopIdx
-		resumeStopID = route.Stops[resumeIdx].ObjectID
-		a := world.Actors["lamp"]
-		a.Pos = route.Stops[resumeIdx].WalkTo
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("walk back: %v", err)
-	}
-	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("advance (resume): %v", err)
-	}
-	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "stop_advanced" {
-		t.Errorf("Reason = %q, want stop_advanced (the round picks up from where he broke off)", r.Reason)
-	}
-	route := activeRouteOf(t, w, "lamp")
-	if route == nil {
-		t.Fatal("route gone after resume")
-	}
-	if route.Phase != sim.RoutePhaseActive {
-		t.Errorf("Phase = %q, want %q after resuming", route.Phase, sim.RoutePhaseActive)
-	}
-	if !route.InFlight() {
-		t.Error("resumed route still reports InFlight() == false")
-	}
-	// And the engine is carrying him again — a walk to the next stop is dispatched.
-	if mi := moveIntentOf(t, w, "lamp"); mi == nil {
-		t.Error("no walk dispatched after resume — the round is not carrying him")
-	}
-	// Resuming hands to the ordinary clean-visit path, so the stop he came back to is
-	// genuinely VISITED, not merely counted: its object flips and the cursor advances
-	// past it. Asserting the side effects (code_review) rather than just the reason
-	// string — a resume that skipped them would look identical from the outside.
-	if got := w.Published().VillageObjects[resumeStopID].CurrentState; got != "unlit" {
-		t.Errorf("stop object %q state = %q, want unlit — resuming did not perform the visit", resumeStopID, got)
-	}
-	if route.StopIdx <= resumeIdx {
-		t.Errorf("StopIdx = %d, want > %d — the resumed stop was not counted as visited", route.StopIdx, resumeIdx)
-	}
-}
-
-// TestAdvanceNPCRoute_SuspendBurnsDwellGeneration covers the race code_review found
-// in LLM-531: stopping the dwell timer only cancels a callback that has not yet
-// fired, and one already queued through SendContext still runs later. The Phase
-// check alone does not save the round, because RESUMING restores exactly the state
-// that callback expects — same StopIdx, Phase active again — so without a new
-// generation it would sail through every guard and advance the round a stop early,
-// minutes after he picked it up. Suspension therefore burns a fresh Gen, which
-// invalidates any in-flight callback permanently.
-func TestAdvanceNPCRoute_SuspendBurnsDwellGeneration(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
-
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	genAtArm := activeRouteOf(t, w, "lamp").Gen
-
-	// He steps away — the round suspends.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: sim.PadX + 40, Y: sim.PadY + 40}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("suspend: %v", err)
-	}
-	genSuspended := activeRouteOf(t, w, "lamp").Gen
-	if genSuspended == genAtArm {
-		t.Fatalf("Gen unchanged across suspension (%d) — a dwell callback queued before "+
-			"the pause would still match after resuming and advance the round spuriously", genSuspended)
-	}
-
-	// He comes back and the round resumes: the generation must NOT revert to the one
-	// any pre-suspension callback captured.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = route.Stops[route.StopIdx].WalkTo
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("walk back: %v", err)
-	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	if route := activeRouteOf(t, w, "lamp"); route != nil && route.Gen == genAtArm {
-		t.Error("resumed route reverted to the pre-suspension Gen — a stale dwell callback would match again")
-	}
-}
-
-// visitorSlotBeside returns the tile a StructureVisit walk actually parks an actor
-// on: a king's-move slot NEXT TO the loiter pin, not the pin itself. pickVisitorSlot
-// only falls back to the pin when all eight slots are blocked, so this — not exact
-// pin equality — is where a carrier who walked himself somewhere ends up.
-func visitorSlotBeside(pin sim.Position) sim.Position {
-	return sim.Position{X: pin.X + 1, Y: pin.Y}
-}
-
-// TestAdvanceNPCRoute_WalkedOnwardFromAVisitorSlotContinuesRound is the live half
-// of LLM-530 that its original test could not catch: it teleported the actor onto
-// route.Stops[1].WalkTo exactly, which is the one place his own locomotion will not
-// put him. A carrier walking to a business by name gets a StructureVisit, and
-// pickVisitorSlot parks him BESIDE the pin — so the adopt's exact-equality check
-// could never fire in production.
+// TestBeatRoute_CreditsWhicheverStopHeCallsAt is the model in one test (LLM-548):
+// a round is COVERAGE, not a sequence. He calls at stop 2 while the cursor sits on
+// 0, and the round records it — because he was demonstrably there, and a round that
+// cannot see that goes on offering him a shop he is standing in.
 //
-// Live evidence (2026-07-25 15:53): the cue said "The next is the James Farm", he
-// walked there as asked, and the route still logged "expected stop 0 at (41,44)"
-// two minutes later — his rounds cue collapsed to a bare "you are walking your
-// rounds" with no place, no count and nowhere to go, and the tour died.
-func TestAdvanceNPCRoute_WalkedOnwardFromAVisitorSlotContinuesRound(t *testing.T) {
+// The predecessor credited only the stop the engine had walked him to, so a
+// constable who called at the General Store, the Blacksmith and the Inn inside
+// twenty minutes was credited with none of them, re-derived the same plan on his
+// next wake, and set off for somewhere he had just been.
+func TestBeatRoute_CreditsWhicheverStopHeCallsAt(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if n := stopCountOf(t, w, "lamp"); n != 2 {
-		t.Fatalf("fixture must have exactly 2 stops for these expectations, got %d", n)
+	startBeat(t, w, "lamp", threeLampCandidates())
+	if idx := activeRouteOf(t, w, "lamp").StopIdx; idx != 0 {
+		t.Fatalf("fixture: cursor starts at %d, want 0", idx)
 	}
 
-	// He walks himself to stop 1 by name and lands in a visitor slot beside its pin.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[1].WalkTo)
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("place actor beside stop 1: %v", err)
-	}
-
+	standAtStop(t, w, "lamp", 2)
 	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
 	if err != nil {
 		t.Fatalf("AdvanceNPCRoute: %v", err)
 	}
-	r := res.(sim.AdvanceNPCRouteResult)
-	if r.Reason == "yielded_to_volition" || r.Reason == "suspended" {
-		t.Fatalf("standing in stop 1's visitor slot ended the round (Reason=%q) — "+
-			"the adopt must tolerate the slot his own move_to actually puts him in", r.Reason)
+	if r := res.(sim.AdvanceNPCRouteResult); r.Reason != "beat_stop_called" {
+		t.Errorf("Reason = %q, want beat_stop_called", r.Reason)
 	}
-	// stop_advanced, not returning_home: stop 0 is still owed (he walked past it), so
-	// the round carries on rather than dropping it — see the coverage note on
-	// TestAdvanceNPCRoute_ConstableWalkingOnwardContinuesRound (LLM-543).
-	if r.Reason != "stop_advanced" {
-		t.Errorf("Reason = %q, want stop_advanced", r.Reason)
-	}
-}
-
-// TestResumeSuspendedRoute_FromAVisitorSlot is the same geometry on LLM-531's
-// resume path. He breaks off for a drink, walks back to the stop he left, and lands
-// beside its pin — exactly as he left it. Resuming on exact pin equality would mean
-// a suspended round could essentially never be picked back up, so suspend-instead-
-// of-discard would ship and still leave him going home with the round unwalked.
-func TestResumeSuspendedRoute_FromAVisitorSlot(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
-
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	// Step away from the round entirely (the well) — that suspends it.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: 900, Y: 900}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
-	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("AdvanceNPCRoute (suspend): %v", err)
-	}
-	if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "suspended" {
-		t.Fatalf("stepping off the round: Reason = %q, want suspended", reason)
-	}
-
-	// He comes back to the stop he broke off at — into a visitor slot beside the pin.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[route.StopIdx].WalkTo)
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("walk back: %v", err)
-	}
-	res, err = w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("AdvanceNPCRoute (resume): %v", err)
-	}
-	reason := res.(sim.AdvanceNPCRouteResult).Reason
-	if reason == "still_suspended" {
-		t.Fatal("walking back into the stop's visitor slot did not resume the round — " +
-			"resume must tolerate the slot his own move_to puts him in")
-	}
-	// The original assertion stopped at "not still_suspended", and that is exactly the
-	// hole LLM-543 came through: the resume gate DID admit him, advanceActiveRoute then
-	// rejected the same position on the strict predicate, and the round re-suspended on
-	// the very same call — returning "suspended", which is not "still_suspended" and so
-	// sailed past. A negative assertion on one string is not a test that the round moved.
-	if reason == "suspended" {
-		t.Fatal("the round resumed and re-suspended on the same call — the resume gate and " +
-			"advanceActiveRoute must judge his position by the same predicate")
-	}
-	if reason != "stop_advanced" {
-		t.Errorf("Reason = %q, want stop_advanced", reason)
-	}
-	if route := activeRouteOf(t, w, "lamp"); route == nil || route.Phase != sim.RoutePhaseActive {
-		t.Fatalf("round not active after resuming: %+v", route)
-	}
-}
-
-// TestResumeSuspendedRoute_FromAVisitorSlotAdvancesTheCursor is the live shape of
-// LLM-543: the cursor, not just the phase. Jeff saw it as "he takes forever making
-// his rounds / never finishes / keeps going to the same places over and over / and
-// forgetting he was just there" — one cause behind all four. His route read stop 0
-// of 8 across four generations and two binaries while he walked half the circuit
-// himself, because every resume was undone by the strict check one frame later.
-//
-// Asserting the CURSOR and the generation is the point. A round that resumes and
-// re-suspends looks fine by phase alone a moment later (it is suspended, as it was),
-// and the identical cue renders again on the next wake, which is what made this
-// invisible for two days.
-func TestResumeSuspendedRoute_FromAVisitorSlotAdvancesTheCursor(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
-
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	// He breaks off for a thirst at the well — the round suspends where it stands.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: 900, Y: 900}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("suspend: %v", err)
-	}
-	var brokeOffAt int
-	var genSuspended uint64
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		brokeOffAt, genSuspended = route.StopIdx, route.Gen
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("read cursor: %v", err)
-	}
-
-	// He walks back to the stop the cue names, landing beside its pin as his own
-	// locomotion always leaves him.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[route.StopIdx].WalkTo)
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("walk back: %v", err)
-	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-
 	route := activeRouteOf(t, w, "lamp")
 	if route == nil {
-		t.Fatal("route gone after resuming")
+		t.Fatal("beat cleared — two stops are still owed")
 	}
-	if route.Phase == sim.RoutePhaseSuspended {
-		t.Fatalf("the round re-suspended on the tick it resumed (stop %d) — this is the "+
-			"loop Gideon was stuck in: resume, reject, suspend, burn a generation, repeat",
-			route.StopIdx)
+	if !sim.RouteStopVisited(route, 2) {
+		t.Error("stop 2 not credited — he stood on it and the round did not notice")
 	}
-	if route.StopIdx <= brokeOffAt {
-		t.Errorf("StopIdx = %d, want > %d — the stop he walked back to was not credited",
-			route.StopIdx, brokeOffAt)
+	if sim.RouteStopVisited(route, 0) || sim.RouteStopVisited(route, 1) {
+		t.Error("an uncalled stop was credited")
 	}
-	// A re-suspension burns a fresh generation. Live, that increment was the tell:
-	// gen 4, 5 then 6 all sitting on stop 0 of 8.
-	if route.Gen != genSuspended {
-		t.Errorf("Gen moved %d -> %d across the resume — a fresh generation means it "+
-			"suspended again", genSuspended, route.Gen)
+	if got := sim.RouteUnvisitedCount(route); got != 2 {
+		t.Errorf("unvisited = %d, want 2", got)
 	}
-	if mi := moveIntentOf(t, w, "lamp"); mi == nil {
-		t.Error("no walk dispatched after resuming — the engine is not carrying him onward")
+	// The cursor must point at something still OWED, or the cue names a place he
+	// has already been and sends him back to it.
+	if sim.RouteStopVisited(route, route.StopIdx) {
+		t.Errorf("cursor is on stop %d, which is already visited", route.StopIdx)
+	}
+	// Still nothing dispatched: crediting a stop is bookkeeping, not a marching order.
+	if mi := moveIntentOf(t, w, "lamp"); mi != nil {
+		t.Errorf("beat dispatched a walk on crediting a stop: %+v", mi)
+	}
+}
+
+// TestBeatRoute_CreditsAStopReachedOnFootFromAVisitorSlot: his own move_to resolves
+// to a StructureVisit and pickVisitorSlot parks him in one of the eight slots AROUND
+// the loiter pin, taking the pin itself only when all eight are blocked. So the
+// strict pin-equality test essentially never matches the path it exists to serve.
+//
+// This is the LLM-543 predicate, and it is doubly load-bearing under a beat: EVERY
+// arrival is now one he made himself, so a strict test here would credit nothing at
+// all and the round could never finish.
+func TestBeatRoute_CreditsAStopReachedOnFootFromAVisitorSlot(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	startBeat(t, w, "lamp", sampleLampCandidates())
+
+	// One tile off the pin — a visitor slot, where his own walk actually lands him.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		stop := route.Stops[0]
+		a := world.Actors["lamp"]
+		a.Pos = sim.TilePos{X: stop.WalkTo.X + 1, Y: stop.WalkTo.Y}
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("park beside the pin: %v", err)
+	}
+
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("AdvanceNPCRoute: %v", err)
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("beat cleared — a stop is still owed")
+	}
+	if !sim.RouteStopVisited(route, 0) {
+		t.Error("standing in a visitor slot beside the pin did not credit the stop — " +
+			"a beat carrier arrives this way every single time, so nothing would ever be credited")
+	}
+}
+
+// TestBeatRoute_CompletesWhenEveryStopIsCalledAtOutOfOrder: the round ends when the
+// circuit is COVERED, in whatever order he walked it, and ending means the route is
+// gone. Clearing it is what un-suppresses the shift-duty steer, and that is what
+// sends him back to his post — no home walk is dispatched, because the same duty
+// machinery that governs every other on-shift NPC does it.
+//
+// The wrap in nextUnvisitedFrom is what makes this terminate: he takes the last stop
+// second, leaving an earlier one unwalked and BEHIND the cursor, and a forward-only
+// search would strand it — the count would sit at one for the rest of the day.
+func TestBeatRoute_CompletesWhenEveryStopIsCalledAtOutOfOrder(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	startBeat(t, w, "lamp", threeLampCandidates())
+
+	// Deliberately out of order, ending on one BEHIND the cursor.
+	for _, idx := range []int{2, 0, 1} {
+		if activeRouteOf(t, w, "lamp") == nil {
+			t.Fatalf("beat cleared before stop %d — the circuit was not covered", idx)
+		}
+		standAtStop(t, w, "lamp", idx)
+		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+			t.Fatalf("advance at stop %d: %v", idx, err)
+		}
+	}
+	if route := activeRouteOf(t, w, "lamp"); route != nil {
+		t.Errorf("beat still installed after every stop was called at: unvisited=%d — "+
+			"the duty steer stays suppressed and he never goes back to his post",
+			sim.RouteUnvisitedCount(route))
+	}
+	// Completion dispatches nothing either. He walks home under the duty steer.
+	if mi := moveIntentOf(t, w, "lamp"); mi != nil {
+		t.Errorf("beat completion dispatched a home walk: %+v", mi)
+	}
+}
+
+// TestBeatRoute_ArrivingTwiceAtTheSameStopIsHarmless: a duplicate ActorArrived for a
+// place already on the books must not double-count or disturb the cursor. The old
+// dispatched round needed an explicit guard flag for this (a second arrival would
+// arm a second dwell timer); a beat needs none, because crediting is idempotent —
+// which is the point of recording coverage rather than counting steps.
+func TestBeatRoute_ArrivingTwiceAtTheSameStopIsHarmless(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	startBeat(t, w, "lamp", threeLampCandidates())
+	standAtStop(t, w, "lamp", 1)
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("first arrival: %v", err)
+	}
+	afterFirst := activeRouteOf(t, w, "lamp")
+	idxAfterFirst, unvisitedAfterFirst := afterFirst.StopIdx, sim.RouteUnvisitedCount(afterFirst)
+
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("duplicate arrival: %v", err)
+	}
+	after := activeRouteOf(t, w, "lamp")
+	if after == nil {
+		t.Fatal("beat cleared by a duplicate arrival")
+	}
+	if after.StopIdx != idxAfterFirst || sim.RouteUnvisitedCount(after) != unvisitedAfterFirst {
+		t.Errorf("duplicate arrival moved the round: cursor %d→%d, unvisited %d→%d",
+			idxAfterFirst, after.StopIdx, unvisitedAfterFirst, sim.RouteUnvisitedCount(after))
 	}
 }
 
@@ -1263,114 +980,82 @@ func TestSnapshotProjection_ConstableInAVisitorSlotStillHasHisRoundsCue(t *testi
 	}
 }
 
-// TestSuspendedRound_CreditsAStopHeCallsAtHimself is the Layer 2 half of LLM-543:
-// the round waits while he sees to himself, but it WATCHES. Live, he called at the
-// General Store, the Blacksmith and the Inn inside twenty minutes — saying as he went
-// that he meant to walk his rounds — and every one of those arrivals was dropped
-// without trace, so the cue went on offering him seven places while he stood in the
-// seventh and he set off for somewhere he had just been.
+// TestSnapshotProjection_CountAndNextAnchorOnWhereHeStands covers the seam a beat
+// opens that a dispatched round did not (LLM-548).
 //
-// Calling at another stop must NOT resume the round (only the break-off stop does
-// that — it is the one place the cue names), but it must be recorded.
-func TestSuspendedRound_CreditsAStopHeCallsAtHimself(t *testing.T) {
+// A beat credits a stop the INSTANT he arrives, so from then until he leaves he is
+// standing on a stop that is already on the books and the cursor has moved on to
+// somewhere else. Anchoring the count and the next name on the cursor at that
+// moment would count the ground under his feet among the places still ahead of him
+// — "seven places lie ahead" read by a man standing in the seventh, which is the
+// exact sentence that used to send him back somewhere he had just been — and would
+// offer that same place as the one to go to next.
+//
+// Both are therefore measured from where he IS whenever he is at a stop. The
+// dispatched round never had to face this: it credited a stop on DEPARTURE, so the
+// cursor and his feet agreed for the whole of every visit.
+func TestSnapshotProjection_CountAndNextAnchorOnWhereHeStands(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	startBeat(t, w, "lamp", threeLampCandidates())
 
-	// He breaks off at stop 0 for a thirst at the well.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: 900, Y: 900}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
+	// He calls at stop 1 himself. The beat credits it and moves the cursor away.
+	standAtStop(t, w, "lamp", 1)
 	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("suspend: %v", err)
-	}
-
-	// Of his own accord he calls at stop 2 — not the stop he broke off at.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[2].WalkTo)
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("call at stop 2: %v", err)
-	}
-	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "still_suspended" {
-		t.Errorf("Reason = %q, want still_suspended — calling at another shop is not "+
-			"returning to the round, and nothing should drag him back", reason)
-	}
-	route := activeRouteOf(t, w, "lamp")
-	if route == nil || route.Phase != sim.RoutePhaseSuspended {
-		t.Fatalf("round no longer waiting: %+v", route)
-	}
-	if !route.Visited[2] {
-		t.Fatal("the stop he called at was not recorded — this is the discarded visit " +
-			"that had the cue offering him a shop he had just walked out of")
-	}
-	if route.StopIdx != 0 {
-		t.Errorf("StopIdx = %d, want 0 — recording a visit must not move the cursor off "+
-			"the stop the cue tells him he broke off at", route.StopIdx)
-	}
 
-	// The suspended cue must now offer ONE remaining place, not two: stop 1. (Stop 0 is
-	// where he broke off — the cue names it in its own sentence and does not count it.)
-	snap := w.Published().Actors["lamp"]
-	if snap == nil {
-		t.Fatal("no published snapshot")
-	}
-	if !snap.RouteSuspended {
-		t.Fatal("snapshot does not show the round suspended")
-	}
-	if snap.RouteStopsAhead != 1 {
-		t.Errorf("RouteStopsAhead = %d, want 1 — the count is what he still OWES, and "+
-			"counting a shop he just called at is what sent him back to it", snap.RouteStopsAhead)
-	}
-
-	// Coming back to the break-off stop resumes, and the round skips the stop he
-	// already walked rather than marching him through it a second time.
+	var here, cursorStop sim.VillageObjectID
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[route.StopIdx].WalkTo)
-		a.MoveIntent = nil
+		if route == nil {
+			t.Fatal("beat cleared with two stops still owed")
+		}
+		if !sim.RouteStopVisited(route, 1) {
+			t.Fatal("fixture: stop 1 was not credited")
+		}
+		if route.StopIdx == 1 {
+			t.Fatal("fixture: cursor did not move off the credited stop")
+		}
+		here = route.Stops[1].ObjectID
+		cursorStop = route.Stops[route.StopIdx].ObjectID
 		return nil, nil
 	}}); err != nil {
-		t.Fatalf("walk back: %v", err)
+		t.Fatalf("read route: %v", err)
 	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("resume: %v", err)
+
+	snap := w.Published().Actors["lamp"]
+	if snap == nil {
+		t.Fatal("no published snapshot for the constable")
 	}
-	route = activeRouteOf(t, w, "lamp")
-	if route == nil {
-		t.Fatal("route gone after resuming")
+	if snap.RouteStopObjectID != here {
+		t.Errorf("RouteStopObjectID = %q, want %q — he is still standing there, and the cue "+
+			"cannot say 'you stand before' anywhere once the visit is on the books",
+			snap.RouteStopObjectID, here)
 	}
-	if route.StopIdx != 1 {
-		t.Errorf("StopIdx = %d, want 1 — stop 2 is walked, so the only place still owed "+
-			"is stop 1", route.StopIdx)
+	// Two stops are unwalked, and neither is the one he is standing on.
+	if snap.RouteStopsAhead != 2 {
+		t.Errorf("RouteStopsAhead = %d, want 2", snap.RouteStopsAhead)
+	}
+	if snap.RouteNextStopObjectID == here {
+		t.Errorf("RouteNextStopObjectID names %q, the place he is standing in — "+
+			"that is the cue sending him where he already is", here)
+	}
+	if snap.RouteNextStopObjectID != cursorStop {
+		t.Errorf("RouteNextStopObjectID = %q, want %q — the cue and the beat's own cursor "+
+			"must never name different places", snap.RouteNextStopObjectID, cursorStop)
 	}
 }
 
-// TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop pins the
-// resolution order in reachedStopIndex (code_review, LLM-543). Two stops whose
-// tolerant regions overlap — businesses close enough to share a doorstep — must not
-// let a neighbouring pin answer for the one he actually walked to. The break-off stop
-// wins outright, because it is the only place the suspended cue names and therefore
-// the only one he can be deliberately returning to; plain first-match would resume the
-// round from a stop he never visited whenever the neighbour sorted earlier.
-func TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop(t *testing.T) {
+// TestBeatRoute_OverlappingStopRegionsResolveToTheCursor pins the resolution order
+// in reachedStopIndex (code_review, LLM-543). Two stops whose tolerant regions
+// overlap — businesses close enough to share a doorstep — must not let a
+// neighbouring pin answer for the one he actually walked to. The cursor wins
+// outright, because it is the place the cue named as next and therefore the one he
+// most likely set out for; plain first-match would credit a stop he never went to
+// while leaving the one he did go to still owed.
+func TestBeatRoute_OverlappingStopRegionsResolveToTheCursor(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
@@ -1378,18 +1063,8 @@ func TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop(t *testin
 	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	// Suspend at stop 0, then force stop 2's pin to overlap stop 0's so both match.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: 900, Y: 900}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("suspend: %v", err)
-	}
+	// Force stop 2's pin onto stop 0's so both match where he stands, then put him
+	// in a visitor slot beside the shared pin. The cursor is on stop 0.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		route := world.ActiveRoutes["lamp"]
 		route.Stops[2].WalkTo = route.Stops[0].WalkTo
@@ -1407,43 +1082,29 @@ func TestSuspendedRound_OverlappingStopRegionsResolveToTheBreakOffStop(t *testin
 	if route == nil {
 		t.Fatal("route gone")
 	}
-	if route.Phase == sim.RoutePhaseSuspended {
-		t.Fatal("standing at the break-off stop did not resume the round — an overlapping " +
-			"neighbour answered for it")
+	if !sim.RouteStopVisited(route, 0) {
+		t.Error("the cursor's stop was not credited — an overlapping neighbour answered for it")
 	}
-	if route.Visited[2] {
-		t.Error("credited stop 2 for an arrival at stop 0's pin — the break-off stop must win")
+	if sim.RouteStopVisited(route, 2) {
+		t.Error("credited stop 2 for an arrival at stop 0's pin — the cursor must win")
 	}
 }
 
-// TestSuspendedRound_ReachedStopResolutionOrder covers the rest of the ordering rule
-// in reachedStopIndex (code_review, LLM-543). The break-off preference has its own
+// TestBeatRoute_ReachedStopResolutionOrder covers the rest of the ordering rule
+// in reachedStopIndex (code_review, LLM-543). The cursor preference has its own
 // test above; these are the two cases that keep the original silent failure from
 // coming back — a VISITED neighbour answering for a stop he still owes, so the owed
 // one is never recorded and the count never falls.
-func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
-	// suspendAtStopZero starts a three-stop round and suspends it at stop 0, then runs
-	// mutate to arrange the geometry the case needs.
-	suspendAtStopZero := func(t *testing.T, mutate func(route *sim.NPCRoute, a *sim.Actor)) (*sim.World, func()) {
+func TestBeatRoute_ReachedStopResolutionOrder(t *testing.T) {
+	// beatAtStopZero starts a three-stop beat (cursor on stop 0), then runs
+	// mutate to arrange the geometry the case needs. The cursor sits on stop 0.
+	beatAtStopZero := func(t *testing.T, mutate func(route *sim.NPCRoute, a *sim.Actor)) (*sim.World, func()) {
 		t.Helper()
 		w, cancel := buildRouteTestWorld(t)
 		homeDest := sim.NewStructureEnterDestination("home")
 		if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
 			cancel()
 			t.Fatalf("start: %v", err)
-		}
-		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			a := world.Actors["lamp"]
-			a.Pos = sim.Position{X: 900, Y: 900}
-			a.MoveIntent = nil
-			return nil, nil
-		}}); err != nil {
-			cancel()
-			t.Fatalf("step away: %v", err)
-		}
-		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-			cancel()
-			t.Fatalf("suspend: %v", err)
 		}
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 			mutate(world.ActiveRoutes["lamp"], world.Actors["lamp"])
@@ -1456,8 +1117,8 @@ func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
 		return w, cancel
 	}
 
-	t.Run("an unvisited later stop is credited when the break-off stop does not match", func(t *testing.T) {
-		w, cancel := suspendAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
+	t.Run("an unvisited later stop is credited when the cursor stop does not match", func(t *testing.T) {
+		w, cancel := beatAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
 			a.Pos = visitorSlotBeside(route.Stops[2].WalkTo)
 		})
 		defer cancel()
@@ -1468,13 +1129,10 @@ func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
 		if route == nil || !route.Visited[2] {
 			t.Fatal("the stop he called at was not credited")
 		}
-		if route.Phase != sim.RoutePhaseSuspended {
-			t.Errorf("Phase = %q, want suspended — only the break-off stop resumes the round", route.Phase)
-		}
 	})
 
 	t.Run("an unvisited stop wins over a visited one sharing its ground", func(t *testing.T) {
-		w, cancel := suspendAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
+		w, cancel := beatAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
 			// Stop 1 is already walked and sits on the same ground as stop 2, which is
 			// not. Plain first-match would hand the arrival to stop 1 and stop 2 would
 			// never be recorded — the count would never reach zero and the round would
@@ -1498,7 +1156,7 @@ func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
 	})
 
 	t.Run("an arrival where every match is already walked records nothing", func(t *testing.T) {
-		w, cancel := suspendAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
+		w, cancel := beatAtStopZero(t, func(route *sim.NPCRoute, a *sim.Actor) {
 			route.Visited[2] = true
 			a.Pos = visitorSlotBeside(route.Stops[2].WalkTo)
 		})
@@ -1507,8 +1165,8 @@ func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("advance: %v", err)
 		}
-		if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "still_suspended" {
-			t.Errorf("Reason = %q, want still_suspended", reason)
+		if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "beat_elsewhere" {
+			t.Errorf("Reason = %q, want beat_elsewhere — every match is already on the books", reason)
 		}
 		route := activeRouteOf(t, w, "lamp")
 		if route == nil || route.StopIdx != 0 {
@@ -1525,67 +1183,6 @@ func TestSuspendedRound_ReachedStopResolutionOrder(t *testing.T) {
 // unable to move, but a half-fixed version — crediting stops without letting the
 // cursor reach the ones he skipped — finishes no better, it just relocates the stall
 // to whichever place he happened to walk past.
-func TestRoundCompletes_WhenEveryStopIsWalkedOutOfOrder(t *testing.T) {
-	w, cancel := buildRouteTestWorld(t)
-	defer cancel()
-
-	homeDest := sim.NewStructureEnterDestination("home")
-	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrConstable, homeDest, threeLampCandidates(), time.Now().UTC())); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	// Suspend, then walk the circuit backwards on his own feet: 2, then 1, then 0.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["lamp"]
-		a.Pos = sim.Position{X: 900, Y: 900}
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("step away: %v", err)
-	}
-	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-		t.Fatalf("suspend: %v", err)
-	}
-	for _, idx := range []int{2, 1} {
-		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			route := world.ActiveRoutes["lamp"]
-			a := world.Actors["lamp"]
-			a.Pos = visitorSlotBeside(route.Stops[idx].WalkTo)
-			a.MoveIntent = nil
-			return nil, nil
-		}}); err != nil {
-			t.Fatalf("call at stop %d: %v", idx, err)
-		}
-		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
-			t.Fatalf("advance at stop %d: %v", idx, err)
-		}
-	}
-	// Finally back to the one he broke off at — the last place he owes.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["lamp"]
-		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[route.StopIdx].WalkTo)
-		a.MoveIntent = nil
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("walk back: %v", err)
-	}
-	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
-	if err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	if reason := res.(sim.AdvanceNPCRouteResult).Reason; reason != "returning_home" {
-		t.Errorf("Reason = %q, want returning_home — he has now called at all three "+
-			"places, so the round is walked and he goes back to his post", reason)
-	}
-	if route := activeRouteOf(t, w, "lamp"); route == nil || route.Phase != sim.RoutePhaseReturning {
-		t.Errorf("round did not finish after every stop was walked: %+v", route)
-	}
-}
-
-// TestRouteStopReached_DecorativeCarrierStaysStrict pins the half of LLM-543 that
-// must NOT change. The tolerance exists for a carrier who walks himself places; a
-// lamplighter or washerwoman only ever goes where the route sends her, so an
-// off-stop arrival is a genuine external bump and must still run the stale
 // re-walk/abandon machinery rather than being waved through as "close enough".
 func TestRouteStopReached_DecorativeCarrierStaysStrict(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)

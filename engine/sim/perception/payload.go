@@ -1434,31 +1434,30 @@ type InFlightMoveView struct {
 	DestinationLabel string
 }
 
-// RoundsView is the perception-side projection of the constable's in-flight rounds
-// tour (LLM-514). AtBusiness is the display name of the business he has arrived at
-// (the current stop), empty while he is walking between stops — so the render adds
-// "You stand before the <business>." at a stop but not on the way there.
+// RoundsView is the perception-side projection of a round the constable owes
+// (LLM-514). AtBusiness is the display name of the business he is STANDING at,
+// empty when he is anywhere else — so the render adds "You stand before the
+// <business>." at a stop and leaves it off between them.
+//
+// The view has no paused/walking distinction (LLM-548). A round is a standing
+// obligation, not a procession he can be in the middle of: he owes these places
+// today, and whether he is on a doorstep or at the well, what he needs told is the
+// same — how many are left and which one is next.
 type RoundsView struct {
 	AtBusiness string
 
-	// StopsAhead is how many businesses remain on the circuit after the one he is
-	// standing at, so the cue can carry the round forward ("Seven more places on
+	// StopsAhead is how many businesses he still OWES a visit, counted from the
+	// visited record rather than the cursor (LLM-543) so a shop he called at himself
+	// is never offered twice. It carries the round forward ("Seven more places on
 	// your round still lie ahead of you") — an empty stop is then a waypoint, not a
-	// dead end (LLM-524). Meaningful only with AtBusiness set; 0 at the final stop,
-	// where the line is omitted.
+	// dead end (LLM-524). 0 on the last one, where the line is omitted.
 	StopsAhead int
 
-	// NextBusiness is the display name of the next stop on the circuit, empty at the
-	// final stop. Named verbatim in the cue (LLM-530) so it is a usable move_to
+	// NextBusiness is the display name of the next stop he owes, empty when nothing
+	// is left. Named verbatim in the cue (LLM-530) so it is a usable move_to
 	// destination: "I am finished here" needs somewhere to resolve to, and his own
 	// post was previously the only place the prompt named.
 	NextBusiness string
-
-	// Suspended marks the round as PAUSED — he stepped away of his own accord
-	// (LLM-531). AtBusiness then names where he BROKE OFF rather than where he is
-	// standing, and the cue reminds him the round is still under way and names the
-	// place to pick it up. Nothing pushes him back; walking there is his choice.
-	Suspended bool
 }
 
 // InFlightSourceActivityView is the perception-side projection of the subject's

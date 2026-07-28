@@ -138,8 +138,6 @@ type MutableWorldSettings struct {
 	// restart. Stored in seconds to match the constable_rounds_*_seconds setting
 	// keys. IntervalSeconds == 0 disables rounds.
 	ConstableRoundsIntervalSeconds int
-	ConstableRoundsDwellSeconds    int
-	ConstableRoundsQuietSeconds    int
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -202,8 +200,6 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			EcoEconomyGapSeconds:              int(w.Settings.EcoEconomyGap / time.Second),
 			EcoAudienceIdleSeconds:            int(PCAudienceIdleAfter(w) / time.Second),
 			ConstableRoundsIntervalSeconds:    int(w.Settings.ConstableRoundsInterval / time.Second),
-			ConstableRoundsDwellSeconds:       int(w.Settings.ConstableRoundsDwell / time.Second),
-			ConstableRoundsQuietSeconds:       int(w.Settings.ConstableRoundsQuiet / time.Second),
 		},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so

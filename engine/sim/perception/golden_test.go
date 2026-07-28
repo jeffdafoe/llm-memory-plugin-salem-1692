@@ -1429,14 +1429,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: constableAtLastRoundsStop,
 	},
 	{
-		name: "constable_round_suspended_off_post",
-		summary: "LLM-540: the constable idle at the Blacksmith with his round SUSPENDED behind him — he " +
-			"stepped off the circuit himself and has finished whatever pulled him away. Pins the pairing " +
-			"that makes the fix safe: the resume cue names where he broke off (Ellis Farm) and what is " +
-			"left, AND the go-to-post duty steer is absent. The tick exists at all because a suspended " +
-			"round no longer suppresses his shift-duty warrant; before that he had no recurring wake " +
-			"source and stood still until the 30-minute idle backstop. Waking him is not marching him.",
-		build: constableRoundSuspendedOffPost,
+		name: "constable_round_owed_off_post",
+		summary: "LLM-540/548: the constable idle at the Blacksmith with a round still owed — he stepped " +
+			"off the circuit himself and has finished whatever pulled him away. Pins the pairing that " +
+			"makes the wake safe: the cue names what is left and the next place to walk to (Ellis Farm), " +
+			"AND the go-to-post duty steer is absent, so the prompt never carries two orders at once. " +
+			"The tick exists at all because a part-walked round no longer suppresses his shift-duty " +
+			"warrant; before that he had no recurring wake source and stood still until the 30-minute " +
+			"idle backstop. Waking him is not marching him. Under LLM-548 the count and the next name " +
+			"are told to him with no arrival requirement — a man away from every stop is exactly who " +
+			"needs them — and nothing claims he stands before anywhere, because he does not.",
+		build: constableRoundOwedOffPost,
 	},
 	{
 		name: "storm_weather_over_keeper_at_post",
@@ -12812,22 +12815,28 @@ func constableAtLastRoundsStop() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 	return snap, gideonID, nil
 }
 
-// constableRoundSuspendedOffPost is the LLM-540 scenario: the constable stepped
-// off his circuit of his own accord, finished whatever pulled him away, and is now
-// standing idle at the Blacksmith with the round paused behind him. The wake that
-// gets him this tick is his ordinary go-to-post duty warrant, which a suspended
-// round no longer suppresses — before LLM-540 it did, and with the duty steer also
-// silent he had no recurring wake source at all: the resume cue that names where he
-// broke off was never rendered and he stood still until the 30-minute idle backstop
-// (live 2026-07-27, Gideon at the Blacksmith, 9m24s without a tick).
+// constableRoundOwedOffPost is the LLM-540 scenario: the constable stepped off his
+// circuit of his own accord, finished whatever pulled him away, and is now standing
+// idle at the Blacksmith with a round still owed. The wake that gets him this tick
+// is his ordinary go-to-post duty warrant, which a part-walked round no longer
+// suppresses — before LLM-540 it did, and with the duty steer also silent he had no
+// recurring wake source at all: the cue naming what he still owed was never
+// rendered and he stood still until the 30-minute idle backstop (live 2026-07-27,
+// Gideon at the Blacksmith, 9m24s without a tick).
 //
-// The golden pins the pairing that makes the fix safe. The suspended cue names the
-// break-off point and what remains, AND the go-to-post steer is absent — waking him
-// is not the same as marching him back, which is the LLM-531 property that must not
-// regress. The steer's absence is not incidental to this fixture: buildDutySteer
-// yields for any constable RouteLabel, which is why the warrant can be restored
-// without the cue coming back with it.
-func constableRoundSuspendedOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// The golden pins the pairing that makes the wake safe. The cue names what remains
+// and where to go next, AND the go-to-post steer is absent — waking him is not the
+// same as marching him back, which is the LLM-531 property that must not regress.
+// The steer's absence is not incidental to this fixture: buildDutySteer yields for
+// any constable RouteLabel, which is why the warrant can be restored without the
+// cue coming back with it.
+//
+// Under LLM-548 this is the ORDINARY shape of a round rather than a paused one.
+// There is no suspended state any more: the engine never dispatched him anywhere,
+// so stepping off the circuit is not a departure from anything, and the cue reads
+// the same here as it does on a doorstep — bar the "you stand before" clause, which
+// needs a stop under his feet.
+func constableRoundOwedOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		gideonID = sim.ActorID("gideon")
 		smithy   = sim.StructureID("blacksmith")
@@ -12848,12 +12857,15 @@ func constableRoundSuspendedOffPost() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		ScheduleStartMin:  &start,
 		ScheduleEndMin:    &end,
 		Needs:             map[sim.NeedKey]int{},
-		// The republish projects these for a SUSPENDED round with no arrival
-		// requirement — by definition he is somewhere other than the stop.
-		RouteLabel:        sim.AttrConstable,
-		RouteSuspended:    true,
-		RouteStopObjectID: sim.VillageObjectID(farm), // where he broke off
-		RouteStopsAhead:   6,
+		// The republish projects the count and the next place with NO arrival
+		// requirement (LLM-548) — a round is a standing obligation, and a man away
+		// from every stop needs telling what he owes every bit as much as one on a
+		// doorstep. RouteStopObjectID is deliberately EMPTY: he is standing in the
+		// smithy, which is not a stop on this circuit, so nothing can say "you stand
+		// before" anywhere.
+		RouteLabel:            sim.AttrConstable,
+		RouteNextStopObjectID: sim.VillageObjectID(farm),
+		RouteStopsAhead:       6,
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,

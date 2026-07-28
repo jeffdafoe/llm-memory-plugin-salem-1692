@@ -333,28 +333,27 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	// to a far stop — stranding that stop (never lit) and, for a homed route NPC,
 	// marching it into its (sprite-hiding) house mid-round so the client never
 	// shows it doing the round. RouteInFlight is false for a missing route (the
-	// nil-map read is safe) and for a SUSPENDED one.
+	// nil-map read is safe) and for a BEAT, which dispatches no walk at all.
 	//
-	// A SUSPENDED round deliberately does NOT suppress the duty (LLM-540), which
-	// reverses LLM-531 on this one predicate. LLM-531 suppressed it here so the
-	// producer could not "march him back to the Meeting House the moment he
-	// finished his drink" — but this producer cannot march a stateful carrier
-	// anywhere. It stamps a WARRANT for an agent (only decoratives are walked
-	// mechanically, and a decorative never suspends: the volition yield runs on
-	// the stateful branch only). The line that would actually argue him back to
-	// post is the perception duty steer, and that already yields for the whole
-	// suspended round on its own — buildDutySteer returns nil for any constable
-	// RouteLabel, which World.republish projects while suspended too. So the
-	// suppression here was a second copy of a protection perception already
-	// provides, and it took his only recurring wake source with it: with the
-	// steer silent and no warrant stamped, the resume cue that names where he
-	// broke off was never rendered, and he stood still until the 30-minute idle
-	// backstop (live, 2026-07-27: Gideon at the Blacksmith, 9m24s without a tick).
+	// A BEAT deliberately does NOT suppress the duty (LLM-540), which reverses
+	// LLM-531 on this one predicate. LLM-531 suppressed it here so the producer
+	// could not "march him back to the Meeting House the moment he finished his
+	// drink" — but this producer cannot march a volition carrier anywhere. It
+	// stamps a WARRANT for an agent (only decoratives are walked mechanically, and
+	// a decorative never carries a beat). The line that would actually argue him
+	// back to post is the perception duty steer, and that already yields for the
+	// whole round on its own — buildDutySteer returns nil for any constable
+	// RouteLabel, which World.republish projects throughout. So the suppression
+	// here was a second copy of a protection perception already provides, and it
+	// took his only recurring wake source with it: with the steer silent and no
+	// warrant stamped, the cue naming what he still owed was never rendered, and he
+	// stood still until the 30-minute idle backstop (live, 2026-07-27: Gideon at
+	// the Blacksmith, 9m24s without a tick).
 	//
 	// Waking him is not nagging him. The warrant runs a tick, the tick renders
-	// "you broke off at the Ellis Farm; six more places lie ahead" and no
-	// go-to-post line, and he chooses. Repeats decay — shift_duty is an ambient
-	// kind, so an unchanged situation is rate-limited by the stale-wake ledger.
+	// "six more places lie ahead; the next is the Ellis Farm" and no go-to-post
+	// line, and he chooses. Repeats decay — shift_duty is an ambient kind, so an
+	// unchanged situation is rate-limited by the stale-wake ledger.
 	if RouteInFlight(w, a.ID) {
 		return "", false, false
 	}
