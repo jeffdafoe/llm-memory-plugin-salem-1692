@@ -1179,7 +1179,7 @@ func visitorPaceElapsed(w *World, a *Actor, now time.Time) bool {
 //
 // structureID is the arrival's DestStructureID (set for a walk INTO a shop and for a
 // doorstep/knock at its visitor slot alike). Records only during his daytime rounds,
-// only a non-inn structure, and only when that structure's keeper is actually present —
+// only a non-inn BUSINESS, and only when that structure's keeper is actually present —
 // the same at-post signal the arrival huddle uses, so a walk past a shut shop or a stop
 // at the inn is not counted. Idempotent (appendUniqueStructure dedupes). MUST run on the
 // world goroutine.
@@ -1207,6 +1207,13 @@ func RecordVisitorArrival(actorID ActorID, structureID StructureID) Command {
 			// This is the SAME scope the trade huddle forms in, so "visited" means "was
 			// here and could trade", never a shop he never reached.
 			if conversationalScopeStructure(w, actor) != structureID {
+				return nil, nil
+			}
+			// A round is a call on a place of BUSINESS. keeperPresentAt below only asks
+			// whether someone whose workplace this is stands here awake, which the
+			// constable at his Meeting House post satisfies — so without this the meeting
+			// house entered his called-at list and kept rendering there (LLM-554).
+			if !structureIsBusiness(w, structureID) {
 				return nil, nil
 			}
 			if structureIsLodging(w, structureID) {
@@ -1247,6 +1254,18 @@ func structureIsLodging(w *World, sid StructureID) bool {
 		return false
 	}
 	return vobj.HasTag("lodging")
+}
+
+// structureIsBusiness reports whether a structure is a place of business (its backing
+// VillageObject carries TagBusiness) — the same predicate namedVillageDestinations and
+// the constable's rounds circuit resolve a business by, and the world-side twin of
+// perception.structureSnapIsBusiness. A residence, and the meeting house, are not.
+func structureIsBusiness(w *World, sid StructureID) bool {
+	vobj, ok := villageObjectForStructureOnly(w, sid)
+	if !ok || vobj == nil {
+		return false
+	}
+	return vobj.HasTag(TagBusiness)
 }
 
 // appendUniqueStructure appends id to s only if not already present — the visited-

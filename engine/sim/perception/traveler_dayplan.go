@@ -171,8 +171,9 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		}
 	}
 
-	// Open shops as talk-only social calls: keeper tending now (the twin of the recording
-	// gate), unvisited, not the inn, not his errand counterparty, not where he stands.
+	// Open shops as talk-only social calls: a business with its keeper tending now (the
+	// twin of the recording gate), unvisited, not the inn, not his errand counterparty,
+	// not where he stands.
 	for id, vobj := range snap.VillageObjects {
 		stID := sim.StructureID(id)
 		if vobj == nil || stID == atShopID || stID == counterparty || visitedSet[stID] {
@@ -180,6 +181,13 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		}
 		st, ok := snap.Structures[stID]
 		if !ok || st == nil {
+			continue
+		}
+		// TagBusiness first: snapshotKeeperPresent only asks whether someone whose
+		// workplace this is stands here awake, which the constable at his Meeting House
+		// post satisfies — and a traveler sent to pass the news at a meeting house
+		// apologized for the intrusion himself (LLM-554).
+		if !structureSnapIsBusiness(snap, stID) {
 			continue
 		}
 		if structureSnapIsLodging(snap, stID) || !snapshotKeeperPresent(snap, stID) {
@@ -503,6 +511,18 @@ func structureSnapIsLodging(snap *sim.Snapshot, sid sim.StructureID) bool {
 	}
 	vobj := snap.VillageObjects[sim.VillageObjectID(sid)]
 	return vobj != nil && vobj.HasTag("lodging")
+}
+
+// structureSnapIsBusiness reports whether a structure is a place of business (its
+// backing VillageObject carries sim.TagBusiness) over the published snapshot — the
+// snapshot-side twin of sim.structureIsBusiness, and the same predicate move_to's
+// destination hint and the seek-work directory resolve a business by.
+func structureSnapIsBusiness(snap *sim.Snapshot, sid sim.StructureID) bool {
+	if snap == nil {
+		return false
+	}
+	vobj := snap.VillageObjects[sim.VillageObjectID(sid)]
+	return vobj != nil && vobj.HasTag(sim.TagBusiness)
 }
 
 // ErrandVisitView is the keeper-facing "## A trader's come to deal" cue (LLM-455, generalizing

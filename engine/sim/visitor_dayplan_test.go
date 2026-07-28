@@ -213,6 +213,7 @@ func (vw *visitorWorld) seedBusiness(t *testing.T, id sim.StructureID, name stri
 	vw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		sim.VillageObjectID(id): {
 			ID: sim.VillageObjectID(id), AssetID: assetID, Pos: pos, EntryPolicy: sim.EntryPolicyOpen,
+			Tags: []string{sim.TagBusiness},
 		},
 	})
 	vw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
@@ -376,6 +377,91 @@ func TestRecordVisitorArrival(t *testing.T) {
 			t.Fatalf("visited=%v, want none (evening — lodging, not rounds)", visitedOf(got))
 		}
 	})
+}
+
+// seedPost seeds a NON-business structure with somebody stationed in it — the Meeting
+// House and its constable (LLM-554). Everything the recording gate's keeper check looks
+// at is identical to seedBusiness: an actor whose WorkStructureID is this structure,
+// awake, standing inside it. The two differences are the ones that matter — the object
+// carries no TagBusiness, and the man at his post keeps no shop, so no
+// BusinessownerState.
+func (vw *visitorWorld) seedPost(t *testing.T, id sim.StructureID, name string, pos sim.WorldPos) {
+	t.Helper()
+	assetID := sim.AssetID(string(id) + "-asset")
+	vw.handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		assetID: {ID: assetID, Category: "structure", DoorOffsetX: intpV(1), DoorOffsetY: intpV(2)},
+	})
+	vw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(id): {
+			ID: sim.VillageObjectID(id), AssetID: assetID, Pos: pos, EntryPolicy: sim.EntryPolicyOpen,
+			Tags: []string{"meeting-house"},
+		},
+	})
+	vw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+		id: {ID: id, DisplayName: name},
+	})
+	constableID := sim.ActorID("constable-" + string(id))
+	vw.handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		constableID: {
+			ID:                constableID,
+			DisplayName:       "Constable Gideon Marsh",
+			Kind:              sim.KindNPCStateful,
+			State:             sim.StateIdle,
+			WorkStructureID:   id,
+			InsideStructureID: id,
+			Pos:               pos.Tile(),
+			Needs:             map[sim.NeedKey]int{},
+			Inventory:         map[sim.ItemKind]int{},
+		},
+	})
+}
+
+// TestRecordVisitorArrivalSkipsNonBusiness — LLM-554: a round is a call on a place of
+// BUSINESS. The constable standing his post satisfies every gate the recording side had
+// (on rounds, not lodging, someone whose workplace this is awake and here), so a factor
+// who walked into the Meeting House had it written into his called-at list and it kept
+// rendering back at him for the rest of his stay.
+//
+// Both halves run against ONE world, so the smithy arm is the control: if it stopped
+// recording too, the tag gate is not what excluded the meeting house.
+func TestRecordVisitorArrivalSkipsNonBusiness(t *testing.T) {
+	loc := et(t)
+	const (
+		smithy       sim.StructureID = "smithy"
+		meetingHouse sim.StructureID = "meeting_house"
+	)
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	vw.seedBusiness(t, smithy, "Blacksmith", sim.WorldPos{X: 288, Y: 320})
+	vw.seedPost(t, meetingHouse, "Meeting House", sim.WorldPos{X: 352, Y: 320})
+	w, cancel := vw.load(t)
+	defer cancel()
+	seedDayPlanSettings(t, w, loc)
+	tickCircuit(t, w, time.Date(2026, 7, 12, 15, 0, 0, 0, loc))
+	id := firstVisitorID(t, w)
+	if id == "" {
+		t.Fatal("no visitor spawned")
+	}
+
+	// He walks into the meeting house and passes the time of day with the constable.
+	setVisitorState(t, w, func(a *sim.Actor) { a.InsideStructureID = meetingHouse })
+	if _, err := w.Send(sim.RecordVisitorArrival(id, meetingHouse)); err != nil {
+		t.Fatalf("record meeting house: %v", err)
+	}
+	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+		t.Fatalf("visited=%v, want none — a meeting house is not a business he called at (LLM-554)", visitedOf(got))
+	}
+
+	// Control: the smithy differs by its business tag (and a keeper who keeps shop), and
+	// must still record.
+	setVisitorState(t, w, func(a *sim.Actor) { a.InsideStructureID = smithy })
+	if _, err := w.Send(sim.RecordVisitorArrival(id, smithy)); err != nil {
+		t.Fatalf("record smithy: %v", err)
+	}
+	got := firstVisitor(t, w)
+	if got == nil || len(visitedOf(got)) != 1 || visitedOf(got)[0] != smithy {
+		t.Fatalf("visited=%v, want [smithy] — the control arm must still record, or the gate above proves nothing", visitedOf(got))
+	}
 }
 
 func visitedOf(a *sim.ActorSnapshot) []sim.StructureID {

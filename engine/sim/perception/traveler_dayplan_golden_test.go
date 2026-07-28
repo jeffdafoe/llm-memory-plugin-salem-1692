@@ -55,6 +55,14 @@ func init() {
 			build: travelerSettledPackScenario,
 		},
 		perceptionScenario{
+			name: "traveler_rounds_skip_meeting_house",
+			summary: "LLM-554: a factor between legs of his rounds, with the constable at his post in the Meeting " +
+				"House and the weaver at hers. '## Your rounds' offers the Weaver's alone — a meeting house is not a " +
+				"place of business, however plainly somebody is working in it, and the live factor sent to pass the " +
+				"news at one apologized for the intrusion himself.",
+			build: travelerRoundsMeetingHouseScenario,
+		},
+		perceptionScenario{
 			name: "traveler_errand_settled_midday",
 			summary: "LLM-507/508: the same settled nail-buyer, but at midday — hours of daylight left. The settled " +
 				"lead gives him the day for social calls instead of pitching supper-and-bed (which had him announcing " +
@@ -117,7 +125,7 @@ func travelerSettledPackScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{buyerID: buyer},
 		Structures:       map[sim.StructureID]*sim.Structure{tavern: plainStructure(tavern, "Tavern")},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
-			sim.VillageObjectID(tavern): {ID: sim.VillageObjectID(tavern), Pos: sim.WorldPos{X: 320, Y: 352}},
+			sim.VillageObjectID(tavern): {ID: sim.VillageObjectID(tavern), Pos: sim.WorldPos{X: 320, Y: 352}, Tags: []string{sim.TagBusiness}},
 		},
 		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 			"journeycake": {Name: "journeycake", DisplayLabel: "Journeycake", DisplayLabelSingular: "journeycake", DisplayLabelPlural: "journeycakes"},
@@ -173,10 +181,91 @@ func travelerErrandSettledScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{buyerID: buyer, smithID: smith},
 		Structures:       map[sim.StructureID]*sim.Structure{smithy: plainStructure(smithy, "Smithy")},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
-			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}},
+			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}, Tags: []string{sim.TagBusiness}},
 		},
 	}
 	return snap, buyerID, nil
+}
+
+// travelerRoundsMeetingHouseScenario reproduces the live 2026-07-28 shape (LLM-554):
+// Daniel Holcomb the factor between legs of his rounds, the constable standing his post
+// inside the Meeting House. The constable is the shape that broke it — a keeper-like
+// actor whose WorkStructureID is a structure with no TagBusiness on its object — so he
+// is built with no BusinessownerState, exactly as the live constable has none. The
+// weaver stands beside him in the fixture on purpose: without a genuine open shop the
+// OpenShops line would vanish entirely and the golden could not tell "the meeting house
+// was excluded" from "the line never rendered".
+func travelerRoundsMeetingHouseScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		factorID     = sim.ActorID("vstr-3bcaba3e")
+		constableID  = sim.ActorID("gideon")
+		weaverID     = sim.ActorID("goodwife-mary")
+		store        = sim.StructureID("general_store")
+		meetingHouse = sim.StructureID("meeting_house")
+		weaver       = sim.StructureID("weaver")
+	)
+	now := 960 // 16:00 — the afternoon wearing on (dusk 18:00), his rounds still open
+	factor := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Daniel Holcomb the factor",
+		State:       sim.StateIdle,
+		Pos:         sim.TilePos{X: 80, Y: 120}, // out in the open, no shop, no huddle
+		Coins:       203,
+		Inventory:   map[sim.ItemKind]int{"iron": 1},
+		Needs:       map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "factor",
+			Origin:      "Boston",
+			Disposition: "warm",
+			Phase:       sim.VisitorPhaseMakingRounds,
+			Trade:       &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "iron", Counterparty: store},
+		},
+	}
+	// At his post, awake, on shift — everything snapshotKeeperPresent asks for. What he
+	// is NOT is a shopkeeper, and the Meeting House is not a shop.
+	constable := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Constable Gideon Marsh",
+		Role:              "constable",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 80, Y: 112},
+		WorkStructureID:   meetingHouse,
+		InsideStructureID: meetingHouse,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	weav := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Goodwife Mary",
+		Role:               "weaver",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 95, Y: 120},
+		WorkStructureID:    weaver,
+		InsideStructureID:  weaver,
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{Flavor: "weaver"},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       360,
+		DuskMinute:       1080,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			factorID: factor, constableID: constable, weaverID: weav,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store:        plainStructure(store, "General Store"),
+			meetingHouse: plainStructure(meetingHouse, "Meeting House"),
+			weaver:       plainStructure(weaver, "Weaver's"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store):  {ID: sim.VillageObjectID(store), Pos: sim.WorldPos{X: 320, Y: 320}, Tags: []string{sim.TagBusiness, sim.TagDistributor}},
+			sim.VillageObjectID(weaver): {ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}, Tags: []string{sim.TagBusiness}},
+			// The live Meeting House object carries "meeting-house" and nothing else.
+			sim.VillageObjectID(meetingHouse): {ID: sim.VillageObjectID(meetingHouse), Pos: sim.WorldPos{X: 640, Y: 0}, Tags: []string{"meeting-house"}},
+		},
+	}
+	return snap, factorID, nil
 }
 
 func travelerBetweenLegsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
@@ -248,8 +337,8 @@ func travelerBetweenLegsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			// WorldPos.Tile() adds PadX=60/PadY=112: smithy → tile {80,112} (due north,
 			// ~8 tiles), weaver → tile {95,120} (east, ~15 tiles).
-			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}},
-			sim.VillageObjectID(weaver): {ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}},
+			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}, Tags: []string{sim.TagBusiness}},
+			sim.VillageObjectID(weaver): {ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}, Tags: []string{sim.TagBusiness}},
 		},
 	}
 	return snap, peddlerID, nil
@@ -356,7 +445,7 @@ func travelerSeekingBedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 			sim.VillageObjectID(inn): {
 				ID:   sim.VillageObjectID(inn),
 				Pos:  sim.WorldPos{X: 320, Y: 320},
-				Tags: []string{sim.VisitorTagTavern, "lodging"},
+				Tags: []string{sim.VisitorTagTavern, "lodging", sim.TagBusiness},
 			},
 		},
 		Huddles: map[sim.HuddleID]*sim.Huddle{
@@ -538,5 +627,33 @@ func TestGoldensSeekBedCueTravelerOnlyAndNamesTool(t *testing.T) {
 				t.Errorf("scenario %q: %q rendered without naming pay_with_item / nights_stay — the booking cue must name its tool (LLM-373)", sc.name, marker)
 			}
 		})
+	}
+}
+
+// TestRoundsOpenShopsGatedOnBusinessTag pins the LLM-554 discriminator itself, which
+// the golden alone cannot: a golden with the Meeting House absent reads the same
+// whether the tag gate excluded it or the fixture never offered it. So this renders
+// the scenario twice — once as live (the Meeting House object carries "meeting-house"
+// and nothing else), once with TagBusiness added to that same object and NOTHING else
+// changed. The constable, his post and his shift are identical across both; only the
+// tag moves, and the line must follow it.
+func TestRoundsOpenShopsGatedOnBusinessTag(t *testing.T) {
+	const shops = "Others keeping shop this hour"
+
+	snap, actorID, warrants := travelerRoundsMeetingHouseScenario()
+	out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+	if !strings.Contains(out, shops) {
+		t.Fatalf("open-shops line missing entirely — the fixture must offer the Weaver's, or this test proves nothing:\n%s", out)
+	}
+	if strings.Contains(out, "Meeting House") {
+		t.Errorf("the Meeting House was offered as a shop keeping shop; a meeting house is not a place of business (LLM-554):\n%s", out)
+	}
+
+	snap, actorID, warrants = travelerRoundsMeetingHouseScenario()
+	mh := snap.VillageObjects["meeting_house"]
+	mh.Tags = append(mh.Tags, sim.TagBusiness)
+	out = combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+	if !strings.Contains(out, "Meeting House") {
+		t.Errorf("tagging the same structure TagBusiness did not bring it back into the open-shops line, so the exclusion above is not the tag gate — check the fixture's keeper before trusting it:\n%s", out)
 	}
 }
