@@ -445,7 +445,7 @@ func PayWithItem(
 				return nil, fmt.Errorf(
 					"you're the one selling %s to %s here — you don't buy it back. %s",
 					kind, seller.DisplayName,
-					reversePaySettleSteer(w, buyerID, sellerID, kind),
+					reversePaySettleSteer(w, buyerID, sellerID, kind, buyer.CurrentHuddleID, at),
 				)
 			}
 
@@ -2052,14 +2052,32 @@ func activeTargetedQuoteOffers(
 // posted a quote yet — so the fallback states the situation and names the move
 // that opens the buy path (get the offer posted) rather than misdirecting her
 // to a tool she cannot use.
-func reversePaySettleSteer(w *World, caller, counterparty ActorID, kind ItemKind) string {
+// The entry must be one accept_pay could actually settle: pending, not past its
+// own ExpiresAt (the aging sweep flips a lapsed offer to expired, so between the
+// deadline and the sweep the map still reads pending), and raised in THIS
+// conversation. Naming a stale or far-off offer id would hand the model an
+// accept_pay that rejects — the same cue-versus-gate mismatch in miniature.
+func reversePaySettleSteer(
+	w *World,
+	caller, counterparty ActorID,
+	kind ItemKind,
+	huddleID HuddleID,
+	at time.Time,
+) string {
 	for _, e := range w.PayLedger {
 		if e == nil || e.State != PayLedgerStatePending {
 			continue
 		}
-		if e.SellerID == caller && e.BuyerID == counterparty && e.ItemKind == kind {
-			return fmt.Sprintf("Their offer is waiting on you — settle it with accept_pay, offer id %d.", e.ID)
+		if e.SellerID != caller || e.BuyerID != counterparty || e.ItemKind != kind {
+			continue
 		}
+		if huddleID == "" || e.HuddleID != huddleID {
+			continue
+		}
+		if !e.ExpiresAt.IsZero() && !at.Before(e.ExpiresAt) {
+			continue
+		}
+		return fmt.Sprintf("Their offer is waiting on you — settle it with accept_pay, offer id %d.", e.ID)
 	}
 	return "Wait for them to pay you. If you mean to buy this from them instead, they must post the offer first — ask them for it, then take it with pay_with_item."
 }

@@ -146,10 +146,14 @@ func TestGoldensTargetedQuoteIsVisibleToItsTarget(t *testing.T) {
 				return
 			}
 			var out string
-			for id, q := range snap.Quotes {
+			// Keyed on q.ID, not the map key — the builder and renderer both use
+			// the quote's own id, so the assertion must check the identifier that
+			// actually reaches the prompt.
+			for _, q := range snap.Quotes {
 				if q == nil || q.State != sim.SceneQuoteStateActive || q.TargetBuyer != actorID {
 					continue
 				}
+				id := q.ID
 				if subject.HomeStructureID != "" && quoteGrantsLodging(snap, q.Lines) {
 					continue // homed subject, lodging quote — suppressed on purpose
 				}

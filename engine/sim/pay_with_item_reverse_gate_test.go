@@ -318,6 +318,54 @@ func TestPayWithItem_ReverseSaleGate(t *testing.T) {
 		}
 	})
 
+	// A quote the seller can no longer cover is NOT evidence of settled
+	// direction. This is load-bearing on reconcileQuoteCoverage (LLM-409), which
+	// runs once per command on the world goroutine before republish and flips any
+	// uncoverable lot to terminal shortfall — so an Active quote in the live map
+	// is coverable as of the last command boundary, with no sweep latency. The
+	// escape reads State, and that is sufficient BECAUSE of the reconcile; this
+	// test pins the coupling so a change to either end surfaces here.
+	t.Run("uncoverable_counter_quote_does_not_unblock", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 220, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		seedQuote(t, w, sim.SceneQuote{
+			ID: 31, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+			State: sim.SceneQuoteStateShortfall, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+		})
+		_, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), wantSteer) {
+			t.Fatalf("err = %v, want a lot the seller can't cover NOT to lift the gate", err)
+		}
+	})
+
+	// An expired quote is likewise no evidence — the escape and the fast path
+	// must agree on the deadline or the gate opens onto a call that then rejects.
+	t.Run("expired_counter_quote_does_not_unblock", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 221, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		seedQuote(t, w, sim.SceneQuote{
+			ID: 32, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+			State: sim.SceneQuoteStateActive, CreatedAt: at.Add(-time.Hour),
+			ExpiresAt: at.Add(-time.Second), // lapsed; the sweep hasn't run yet
+		})
+		_, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), wantSteer) {
+			t.Fatalf("err = %v, want an expired quote NOT to lift the gate", err)
+		}
+	})
+
 	t.Run("public_counter_quote_does_not_unblock", func(t *testing.T) {
 		w, stop, at := buildReverseGateWorld(t)
 		defer stop()
