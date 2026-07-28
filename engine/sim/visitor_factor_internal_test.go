@@ -184,3 +184,55 @@ func TestPickDistributorArrival(t *testing.T) {
 		t.Errorf("merchant arrival with unbacked counterparty = (%q, %v), want tavern fallback", fid, fok)
 	}
 }
+
+// TestSellErrandDelivered — LLM-553. A seller's errand is done once the shipment he arrived
+// with is substantially landed, not once his pack is bare. The unknown-baseline row is the
+// backward-compatibility path: a visitor checkpointed before ShipmentQty existed decodes to 0
+// and must degrade to the strict holds-none test rather than settling on arrival.
+func TestSellErrandDelivered(t *testing.T) {
+	cases := []struct {
+		name          string
+		held          int
+		shipmentQty   int
+		wantDelivered bool
+	}{
+		{"whole shipment still on him", 10, 10, false},
+		{"half sold is not done", 5, 10, false},
+		{"exactly the allowed remainder", 2, 8, true},
+		{"a bar over the remainder", 3, 8, false},
+		{"the live case — 1 left of a 10-bar shipment", 1, 10, true},
+		{"sold out entirely", 0, 10, true},
+		{"unknown baseline, still carrying", 3, 0, false},
+		{"unknown baseline, sold out", 0, 0, true},
+		{"negative baseline is treated as unknown", 1, -5, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sellErrandDelivered(tc.held, tc.shipmentQty); got != tc.wantDelivered {
+				t.Errorf("sellErrandDelivered(held=%d, shipment=%d) = %v, want %v",
+					tc.held, tc.shipmentQty, got, tc.wantDelivered)
+			}
+		})
+	}
+}
+
+// TestSeedFactorPackStampsShipmentBaseline — the spawn-side half of LLM-553: whatever
+// seedFactorPack actually put in the bale for the errand good is what the settle measures
+// against. Reads the pack rather than the units knob because the seed jitters the count, so a
+// baseline taken from the setting would be wrong by up to two bars and could never be reached.
+func TestSeedFactorPackStampsShipmentBaseline(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	pack, _ := seedFactorPack(r, 2, 10, 12, 100, 200)
+	if got := pack[factorIronKind]; got < 10 || got > 12 {
+		t.Fatalf("seeded iron = %d, want the shipment quantity plus jitter (10..12)", got)
+	}
+	// The errand good for a sell errand IS the iron headline, so this is the quantity a
+	// spawn stamps onto TradeErrand.ShipmentQty.
+	if !sellErrandDelivered(0, pack[factorIronKind]) {
+		t.Error("a factor who sold every bar is not counted as delivered")
+	}
+	if sellErrandDelivered(pack[factorIronKind], pack[factorIronKind]) {
+		t.Error("a factor who has sold nothing is counted as delivered")
+	}
+}

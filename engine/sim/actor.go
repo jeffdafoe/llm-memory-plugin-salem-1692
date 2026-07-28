@@ -503,6 +503,15 @@ type TradeErrand struct {
 	// the legible "business concluded" state that winds the traveler down to the tavern
 	// instead of looping his rounds forever.
 	Settled bool
+	// ShipmentQty is how much of Good a SELLER arrived carrying — the size of the
+	// shipment he came to deliver, stamped at spawn. It is the baseline the sell-side
+	// settle measures drawdown against; a buyer leaves it 0 (he arrives empty-packed and
+	// settles on holding the good instead). Needed because a plain "holds none of it"
+	// test is defeated by the two-way deal: a factor who has sold his whole bale and then
+	// bought a single bar back off the keeper's shelf still holds one, and would never
+	// settle. A pre-LLM-553 row rehydrates with 0, which degrades to that plain
+	// holds-none test rather than failing — the visit still ends at dusk as before.
+	ShipmentQty int
 }
 
 // Archetype / Origin / Disposition come from per-spawn random pools in

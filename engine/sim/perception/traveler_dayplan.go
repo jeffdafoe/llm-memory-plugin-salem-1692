@@ -308,10 +308,15 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n", good)
 	case e.Settled && e.Buy:
 		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the rest of the day is yours to look in on the other shops and pass the news.\n", good)
+	// The seller's settled lead names the SHIPMENT, not his pack (LLM-553). The errand is the
+	// headline import he came to land; the cloth and charms beside it are a secondary bale that
+	// routinely goes home with him. The original wording, "Your goods are sold", rendered
+	// directly beneath the "You are carrying:" line and contradicted it — a scene arguing with
+	// itself in adjacent lines, which a weak model resolves by picking one at random.
 	case e.Settled && bedTime:
-		b.WriteString("Your goods are sold and your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n")
+		fmt.Fprintf(b, "The %s you brought is into the village and your business here is done; the tavern's the place now, for your supper and a bed before the road.\n", good)
 	case e.Settled:
-		b.WriteString("Your goods are sold and your business in this village is done; the rest of the day is yours to look in on the other shops and pass the news.\n")
+		fmt.Fprintf(b, "The %s you brought is into the village and your business here is done; the rest of the day is yours to look in on the other shops and pass the news.\n", good)
 	case e.AtShop && e.Buy:
 		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. Buy the %s you're after: call pay_with_item with seller \"%s\", item \"%s\", the quantity you want, consume_now false, coins in amount, and your words in say.\n",
 			keeper, shop, good, keeper, sanitizeInline(e.GoodKind))

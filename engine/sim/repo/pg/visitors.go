@@ -122,6 +122,11 @@ type tradeErrandJSON struct {
 	Good         string `json:"good"`
 	Counterparty string `json:"counterparty"`
 	Settled      bool   `json:"settled,omitempty"`
+	// ShipmentQty is the seller's arrival quantity of Good, the baseline the sell-side
+	// settle measures against (LLM-553). omitempty, so a buyer's errand (which leaves it 0)
+	// keeps the document it had before, and a row written before this field existed decodes
+	// to 0 — which sellErrandDelivered reads as "arrival quantity unknown".
+	ShipmentQty int `json:"shipment_qty,omitempty"`
 }
 
 // visitorGrantJSON is the on-disk element shape for a persisted RoomAccess grant.
@@ -154,6 +159,7 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 			Good:         string(vs.Trade.Good),
 			Counterparty: string(vs.Trade.Counterparty),
 			Settled:      vs.Trade.Settled,
+			ShipmentQty:  vs.Trade.ShipmentQty,
 		}
 	}
 	for _, sid := range vs.VisitedBusinesses {
@@ -209,11 +215,19 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 		// than a merchant with an errand the rest of the engine reads inconsistently.
 		dir := sim.TradeDirection(plan.Trade.Direction)
 		if dir.Valid() && plan.Trade.Good != "" && plan.Trade.Counterparty != "" {
+			// A negative shipment quantity is nonsense the settle arithmetic should never
+			// see; clamp to 0, which reads as "arrival quantity unknown" and degrades to
+			// the strict holds-none settle rather than settling him on arrival.
+			shipmentQty := plan.Trade.ShipmentQty
+			if shipmentQty < 0 {
+				shipmentQty = 0
+			}
 			lv.VisitorState.Trade = &sim.TradeErrand{
 				Direction:    dir,
 				Good:         sim.ItemKind(plan.Trade.Good),
 				Counterparty: sim.StructureID(plan.Trade.Counterparty),
 				Settled:      plan.Trade.Settled,
+				ShipmentQty:  shipmentQty,
 			}
 		}
 	}

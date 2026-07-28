@@ -520,3 +520,102 @@ func TestVisitorCircuit_DuskTurnsToLodging(t *testing.T) {
 		t.Errorf("evening phase = %q, want lodging", got.VisitorState.Phase)
 	}
 }
+
+// TestSellErrandSettlesOnDelivery — LLM-553, the end-to-end guard. A factor whose shipment
+// is landed has his errand settled by the pacing tick, which is what turns "## Your rounds"
+// from the trade-here steer to the wind-down. Before this, `Settled` was reachable only for a
+// BUY errand, so a factor was steered back at his counterparty from arrival to dusk while
+// commerce confinement made every other stop talk-only — he bid the keeper farewell and came
+// straight back, for hours.
+//
+// The negative half matters as much: a factor with his bale still on him must NOT settle, or
+// the wind-down fires on arrival and he never trades at all.
+func TestSellErrandSettlesOnDelivery(t *testing.T) {
+	seedFactor := func(t *testing.T, w *sim.World, held, shipmentQty int) sim.ActorID {
+		t.Helper()
+		const id = sim.ActorID("vstr-deadbeef")
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors[id] = &sim.Actor{
+				ID:          id,
+				DisplayName: "Daniel Holcomb the factor",
+				Kind:        sim.KindNPCShared,
+				LLMAgent:    sim.VisitorAgentName,
+				Pos:         sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 4},
+				Needs:       sim.SeedVisitorNeedsForTest(),
+				Inventory:   map[sim.ItemKind]int{"iron": held},
+				VisitorState: &sim.VisitorState{
+					Archetype: "factor",
+					Phase:     sim.VisitorPhaseMakingRounds,
+					ExpiresAt: time.Now().Add(6 * time.Hour),
+					Trade: &sim.TradeErrand{
+						Direction:    sim.TradeDirectionSell,
+						Good:         "iron",
+						Counterparty: "tavern",
+						ShipmentQty:  shipmentQty,
+					},
+				},
+			}
+			sim.RebuildIndicesForTest(world)
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed factor: %v", err)
+		}
+		return id
+	}
+
+	settledAfterTick := func(t *testing.T, held, shipmentQty int) bool {
+		t.Helper()
+		loc := et(t)
+		vw := newVisitorWorld()
+		vw.seedTavern(t)
+		vw.seedVisitorSprites(t)
+		w, cancel := vw.load(t)
+		defer cancel()
+		seedDayPlanSettings(t, w, loc)
+		// Spawning is off for this test — the seeded factor is the subject, and a second
+		// visitor would make firstVisitor ambiguous.
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Settings.VisitorSpawnChancePermille = 0
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("disable spawn: %v", err)
+		}
+		id := seedFactor(t, w, held, shipmentQty)
+
+		// Midday in the village day seeded above, so the dusk phase flip cannot be what
+		// ends his rounds — the settle has to come from the delivery check itself.
+		noon := time.Date(2026, 7, 15, 16, 0, 0, 0, time.UTC) // 12:00 America/New_York
+		if _, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{
+			Now: noon, Rand: rand.New(rand.NewSource(3)),
+		})); err != nil {
+			t.Fatalf("TickVisitorCascade: %v", err)
+		}
+		var settled bool
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			actor := world.Actors[id]
+			if actor == nil || actor.VisitorState == nil || actor.VisitorState.Trade == nil {
+				t.Fatal("seeded factor lost his errand")
+				return nil, nil
+			}
+			if actor.VisitorState.Phase == sim.VisitorPhaseLodging {
+				t.Fatal("the factor flipped to lodging — the dusk path ran, so this test proves nothing")
+			}
+			settled = actor.VisitorState.Trade.Settled
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("read errand: %v", err)
+		}
+		return settled
+	}
+
+	t.Run("shipment delivered settles the errand", func(t *testing.T) {
+		if !settledAfterTick(t, 1, 10) {
+			t.Error("a factor down to his last bar of a ten-bar shipment is still unsettled — the rounds cue keeps steering him back to his counterparty all afternoon")
+		}
+	})
+	t.Run("a full bale does not settle", func(t *testing.T) {
+		if settledAfterTick(t, 10, 10) {
+			t.Error("a factor who has sold nothing settled — the wind-down would fire on arrival and he would never trade")
+		}
+	})
+}
