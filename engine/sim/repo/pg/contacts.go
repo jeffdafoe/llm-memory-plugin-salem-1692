@@ -12,11 +12,10 @@ import (
 // recency trail (LLM-547): who each actor has already had its word with, and
 // how lately.
 //
-// Same posture as RecurringVisitorsRepo, not the visitor mirror's: SaveSnapshot
-// is a plain per-row UPSERT with NO generation-marker delete-stale sweep. A pair
-// that stops being written is not stale data to reclaim — it simply ages past
-// the recall horizon and is dropped by RehydrateContactLedger at the next boot.
-// That is the whole reason the trail can be stored as an array in one row.
+// SaveSnapshot is a per-row UPSERT followed by ONE predicate DELETE. Not a
+// generation-marker sweep — nothing is marked — but not upsert-only either: see
+// deleteStaleContactsSQL for why the table would otherwise grow for the life of
+// the world.
 //
 // Written inside the caller's checkpoint Tx so the trail can never split from
 // the actors it references across a crash. There is no cross-aggregate FK
@@ -48,8 +47,8 @@ VALUES ($1, $2, $3)
 ON CONFLICT (actor_id, peer_id) DO UPDATE SET
     contact_at = EXCLUDED.contact_at`
 
-// deleteStaleContactsSQL removes pairs whose whole trail has aged past the
-// recall horizon — the table's only reclamation path.
+// deleteStaleContactsSQL removes pairs with no usable contact left — the
+// table's only reclamation path.
 //
 // It exists because "bounded by actor pairs" is FALSE over time: a transient
 // visitor gets a fresh vstr-<8hex> ActorID every visit and this ledger covers
@@ -58,15 +57,31 @@ ON CONFLICT (actor_id, peer_id) DO UPDATE SET
 // those from memory but never from Postgres, which would leave the table (and
 // the full scan every boot does over it) growing forever.
 //
-// max(unnest) rather than indexing the last element: the trail is written
-// ordered, but a stored array is data from outside this process and a wrong
-// order here would delete live rows rather than merely render oddly. An empty
-// or NULL array has no max, so `< $1` is NULL and the row is left alone — those
-// are never written (SaveSnapshot skips empty trails) and are not this
-// statement's business to clean up.
+// The predicate is "no timestamp inside the valid window", NOT "the newest
+// timestamp is old". Those differ in exactly the cases that matter:
+//
+//   - A row whose max is in the FUTURE — an out-of-band edit, a clock
+//     correction — can never satisfy `max < cutoff`, so it would live forever
+//     while the loader silently drops that value on the way in. Invisible to
+//     the engine, immortal in Postgres, and the unbounded growth this statement
+//     exists to prevent comes straight back through bad data.
+//   - An empty or NULL array has no max at all, so `max < cutoff` is NULL and
+//     the row is never matched. NOT EXISTS deletes it.
+//
+// Bounding both ends makes the sweep agree with RehydrateContactLedger about
+// what counts as a real contact, which is the property worth having: anything
+// the loader would refuse to rehydrate is something this statement should
+// remove.
+//
+// Set-based rather than indexing an element: the trail is written ordered, but
+// a stored array is data from outside this process, and a wrong order there
+// would delete LIVE rows rather than merely render oddly.
 const deleteStaleContactsSQL = `
 DELETE FROM actor_contact
- WHERE (SELECT max(t) FROM unnest(contact_at) AS t) < $1`
+ WHERE NOT EXISTS (
+       SELECT 1 FROM unnest(contact_at) AS t
+        WHERE t >= $1 AND t <= $2
+ )`
 
 // advisoryLockContactsSQL serializes concurrent checkpoint writers on this
 // table, matching the recurring_visitor posture. Transaction-scoped, so it is
@@ -110,21 +125,21 @@ func (r *ContactsRepo) LoadAll(ctx context.Context) ([]sim.ContactPair, error) {
 }
 
 // SaveSnapshot upserts the flattened in-memory ledger inside the checkpoint Tx,
-// then deletes pairs whose whole trail has aged past `staleBefore`.
+// then deletes pairs with no timestamp inside [staleBefore, validUntil].
 //
 // The delete runs AFTER the upserts and in the same Tx, so a pair refreshed by
 // this very checkpoint is judged on its new trail rather than its old one.
 //
 // It is not a generation-marker sweep — nothing is marked, and it removes only
-// rows already dead by the horizon rule the loader applies. Skipped on a zero
-// cutoff (no clock established), which is the honest reading of "I don't know
-// what time it is": deleting nothing is always safe, deleting against a zero
-// cutoff would be too, but skipping keeps the intent legible.
+// rows the loader would itself refuse to rehydrate. Skipped when either bound is
+// unset (no window established, i.e. a snapshot that did not come through
+// CheckpointNow): "I don't know what time it is" should delete nothing rather
+// than guess.
 //
 // Substrate-boundary validation rejects an empty or self-referential pair so an
 // upstream bug surfaces on the failing checkpoint rather than silently
 // persisting a row the CHECK constraints would reject anyway.
-func (r *ContactsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, pairs []sim.ContactPair, staleBefore time.Time) error {
+func (r *ContactsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, pairs []sim.ContactPair, staleBefore, validUntil time.Time) error {
 	if tx == nil {
 		return fmt.Errorf("pg contacts SaveSnapshot: nil tx")
 	}
@@ -153,9 +168,9 @@ func (r *ContactsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, pairs []sim.
 			return fmt.Errorf("pg contacts SaveSnapshot: upsert %s→%s: %w", p.SubjectID, p.PeerID, err)
 		}
 	}
-	if !staleBefore.IsZero() {
-		if _, err := tx.Exec(ctx, deleteStaleContactsSQL, staleBefore); err != nil {
-			return fmt.Errorf("pg contacts SaveSnapshot: delete stale before %s: %w", staleBefore, err)
+	if !staleBefore.IsZero() && !validUntil.IsZero() {
+		if _, err := tx.Exec(ctx, deleteStaleContactsSQL, staleBefore, validUntil); err != nil {
+			return fmt.Errorf("pg contacts SaveSnapshot: delete outside [%s, %s]: %w", staleBefore, validUntil, err)
 		}
 	}
 	return nil

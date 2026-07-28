@@ -109,6 +109,25 @@ func (w *World) ContactRecallHorizon() time.Duration {
 // Self-pairs and empty ids are dropped rather than erroring — this runs after
 // the utterance has already emitted, so there is nothing useful a caller could
 // do with an error and nothing worth aborting.
+//
+// CLOCK CONTRACT: `at` is trusted as the engine's tick time, and the CALLER owns
+// its validity. Nothing here validates it, deliberately:
+//
+//   - Comparing against the wall clock would mean a time.Now() read inside a
+//     world command, which the engine avoids throughout — commands take their
+//     time as a parameter so behaviour is reproducible.
+//   - There is no world-side clock to compare against either. WorldEnvironment.Now
+//     is documented restart-lossy and is in fact never advanced by anything, so
+//     a guard keyed on it would be inert at best and, if it ever did hold a
+//     stale boot value, would reject every legitimate contact.
+//
+// The consequence is bounded and one-directional: a future-stamped `at` becomes
+// the trail's newest entry and so acts as "now" for pruning, holding otherwise-
+// aged contacts alive longer than intended. That errs toward an actor believing
+// it has already spoken with someone — the quiet direction. Values arriving
+// from OUTSIDE the process are a different matter and are validated:
+// RehydrateContactLedger drops anything beyond ContactFutureSkewTolerance, and
+// the checkpoint's reclamation window deletes rows left with nothing valid.
 func (w *World) RecordContact(subjectID, peerID ActorID, at time.Time) {
 	if subjectID == "" || peerID == "" || subjectID == peerID {
 		return
@@ -127,9 +146,9 @@ func (w *World) RecordContact(subjectID, peerID ActorID, at time.Time) {
 		byPeer[peerID] = rec
 	}
 	rec.At = append(rec.At, at)
-	// Restore chronological order before pruning. `at` is the caller's clock, not
-	// this function's, so an out-of-order append is possible — a replayed command,
-	// a delayed tick, an operator-injected time. Both prune steps below select by
+	// Restore chronological order before pruning. `at` is the caller's clock (see
+	// the contract above), so an out-of-order append is possible even though the
+	// production caller is in order. Both prune steps below select by
 	// POSITION (drop a prefix, keep a suffix), so on an unsorted trail the horizon
 	// scan would stop early and leave an aged entry behind, and the cap would
 	// discard the newest contacts instead of the oldest. Sorting first makes both

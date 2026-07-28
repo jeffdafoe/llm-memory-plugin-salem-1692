@@ -164,7 +164,7 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	// panicking, and a repo that never wired it also never loaded a trail, so cp
 	// is empty and the guard cannot drop real state.
 	if repo.Contacts != nil {
-		if err := repo.Contacts.SaveSnapshot(ctx, tx, cp.ContactPairs, cp.ContactStaleBefore); err != nil {
+		if err := repo.Contacts.SaveSnapshot(ctx, tx, cp.ContactPairs, cp.ContactStaleBefore, cp.ContactValidUntil); err != nil {
 			return fmt.Errorf("pg SaveWorld: Contacts.SaveSnapshot: %w", err)
 		}
 	}

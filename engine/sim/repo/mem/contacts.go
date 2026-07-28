@@ -32,38 +32,37 @@ func (r *ContactsRepo) LoadAll(_ context.Context) ([]sim.ContactPair, error) {
 }
 
 // SaveSnapshot mirrors the pg tier: upsert what memory holds, then drop pairs
-// whose whole trail is older than staleBefore. Because this fake REPLACES its
-// contents wholesale, the delete only shows up for a pair that memory still
-// holds but whose trail has aged — which is exactly the case worth keeping
-// faithful, since it is the one a merge-shaped implementation would get wrong.
-func (r *ContactsRepo) SaveSnapshot(_ context.Context, _ sim.Tx, pairs []sim.ContactPair, staleBefore time.Time) error {
+// with no timestamp inside [staleBefore, validUntil].
+//
+// The window predicate is copied faithfully rather than simplified to "is it
+// old", because the two differ precisely where the pg version had a bug: a row
+// whose only timestamps are in the FUTURE is dead but is not old, and a
+// max-based test can never reach it.
+func (r *ContactsRepo) SaveSnapshot(_ context.Context, _ sim.Tx, pairs []sim.ContactPair, staleBefore, validUntil time.Time) error {
+	windowed := !staleBefore.IsZero() && !validUntil.IsZero()
 	kept := make([]sim.ContactPair, 0, len(pairs))
 	for _, p := range pairs {
 		if p.SubjectID == "" || p.PeerID == "" || p.SubjectID == p.PeerID || len(p.At) == 0 {
 			continue
 		}
-		if !staleBefore.IsZero() && !newestContact(p.At).Before(staleBefore) {
-			kept = append(kept, p)
+		if windowed && !hasContactInWindow(p.At, staleBefore, validUntil) {
 			continue
 		}
-		if staleBefore.IsZero() {
-			kept = append(kept, p)
-		}
+		kept = append(kept, p)
 	}
 	r.pairs = cloneContactPairs(kept)
 	return nil
 }
 
-// newestContact returns the latest timestamp in a trail without assuming order,
-// matching the pg tier's max(unnest(...)).
-func newestContact(at []time.Time) time.Time {
-	var newest time.Time
+// hasContactInWindow reports whether any timestamp falls inside the inclusive
+// window, matching the pg tier's NOT EXISTS predicate.
+func hasContactInWindow(at []time.Time, from, to time.Time) bool {
 	for _, t := range at {
-		if t.After(newest) {
-			newest = t
+		if !t.Before(from) && !t.After(to) {
+			return true
 		}
 	}
-	return newest
+	return false
 }
 
 // cloneContactPairs deep-copies the trail slices so Seed / LoadAll /

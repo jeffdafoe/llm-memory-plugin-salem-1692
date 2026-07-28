@@ -38,6 +38,17 @@ func contactWorld(repo sim.Repository, trails map[sim.ActorID]map[sim.ActorID][]
 	return w
 }
 
+// stampWindow builds a checkpoint snapshot and stamps its reclamation window
+// from the given clock — what CheckpointNow does in production. Tests that call
+// SaveWorld directly bypass that path, so they set the window explicitly; one
+// that does NOT call this gets a zero window and no delete, which is the
+// documented behaviour for a snapshot built outside CheckpointNow.
+func stampWindow(w *sim.World, now time.Time) *sim.CheckpointSnapshot {
+	cp := w.BuildCheckpointSnapshot()
+	cp.StampContactWindow(now)
+	return cp
+}
+
 // TestIntegration_Contact_RoundTrip — DoD 7. A pair written before a checkpoint
 // is present after a reload AND still tiers correctly, which is the assertion
 // that matters: a trail that round-trips as bytes but lands outside its window
@@ -202,8 +213,7 @@ func TestIntegration_Contact_StaleRowsAreDeleted(t *testing.T) {
 	seed := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
 		"gideon": {"vstr-0000abcd": {now.Add(-20 * time.Hour)}},
 	})
-	seed.Environment.Now = now.Add(-20 * time.Hour)
-	if err := SaveWorld(ctx, repo, seed.BuildCheckpointSnapshot()); err != nil {
+	if err := SaveWorld(ctx, repo, stampWindow(seed, now.Add(-20*time.Hour))); err != nil {
 		t.Fatalf("SaveWorld (seed): %v", err)
 	}
 	if pairs, err := repo.Contacts.LoadAll(ctx); err != nil || len(pairs) != 1 {
@@ -216,8 +226,7 @@ func TestIntegration_Contact_StaleRowsAreDeleted(t *testing.T) {
 	later := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
 		"gideon": {"prudence": {now.Add(-10 * time.Minute)}},
 	})
-	later.Environment.Now = now
-	if err := SaveWorld(ctx, repo, later.BuildCheckpointSnapshot()); err != nil {
+	if err := SaveWorld(ctx, repo, stampWindow(later, now)); err != nil {
 		t.Fatalf("SaveWorld (later): %v", err)
 	}
 
@@ -253,8 +262,7 @@ func TestIntegration_Contact_DeleteSparesLivePairs(t *testing.T) {
 		// oldest contact and wrongly delete it.
 		"gideon": {"prudence": {now.Add(-5 * time.Minute), now.Add(-30 * time.Hour)}},
 	})
-	w.Environment.Now = now
-	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+	if err := SaveWorld(ctx, repo, stampWindow(w, now)); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 
@@ -264,6 +272,62 @@ func TestIntegration_Contact_DeleteSparesLivePairs(t *testing.T) {
 	}
 	if len(pairs) != 1 {
 		t.Fatalf("stored %d pair(s), want 1 — a pair with ANY contact inside the horizon is live", len(pairs))
+	}
+}
+
+// TestIntegration_Contact_FutureOnlyRowsAreDeleted — the immortal-row case, and
+// the reason the sweep bounds BOTH ends of the window.
+//
+// A row whose timestamps are all in the future cannot satisfy "the newest entry
+// is old": its maximum is ahead of any cutoff, forever. Meanwhile
+// RehydrateContactLedger drops those values on the way in, so the row is
+// invisible to the engine and immortal in Postgres — bad data alone would
+// re-create the unbounded growth the delete exists to prevent. (code_review,
+// LLM-547 round 2.)
+func TestIntegration_Contact_FutureOnlyRowsAreDeleted(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	// Seeded with a clock far enough ahead that these look ordinary at write
+	// time — this is the shape a clock correction between boots leaves behind.
+	future := now.Add(72 * time.Hour)
+	seed := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
+		"gideon": {
+			"ghost":    {future},                    // nothing but a bad value
+			"prudence": {now.Add(-10 * time.Minute)}, // a real contact
+		},
+	})
+	// Seeded with NO window, so this checkpoint only writes and reclaims nothing.
+	// How the bad row got there is not the point — that a later, correct-clock
+	// checkpoint removes it is.
+	if err := SaveWorld(ctx, repo, seed.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (seed): %v", err)
+	}
+	if pairs, err := repo.Contacts.LoadAll(ctx); err != nil || len(pairs) != 2 {
+		t.Fatalf("seed rows not written: pairs=%d err=%v", len(pairs), err)
+	}
+
+	// A later checkpoint at the CORRECTED clock. The bad row is now outside the
+	// valid window at both ends and must go.
+	later := contactWorld(repo, map[sim.ActorID]map[sim.ActorID][]time.Time{
+		"gideon": {"prudence": {now.Add(-5 * time.Minute)}},
+	})
+	if err := SaveWorld(ctx, repo, stampWindow(later, now)); err != nil {
+		t.Fatalf("SaveWorld (later): %v", err)
+	}
+
+	pairs, err := repo.Contacts.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("Contacts.LoadAll: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("stored %d pair(s), want 1 — a future-only row must be deleted; a max-based "+
+			"predicate can never reach it and the loader hides it, so it would live forever", len(pairs))
+	}
+	if pairs[0].PeerID != "prudence" {
+		t.Errorf("surviving pair = %s→%s, want gideon→prudence", pairs[0].SubjectID, pairs[0].PeerID)
 	}
 }
 
