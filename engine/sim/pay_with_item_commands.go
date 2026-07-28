@@ -445,7 +445,7 @@ func PayWithItem(
 				return nil, fmt.Errorf(
 					"you're the one selling %s to %s here — you don't buy it back. %s",
 					kind, seller.DisplayName,
-					reversePaySettleSteer(w, buyerID, sellerID, kind, buyer.CurrentHuddleID, at),
+					reversePaySettleSteer(w, buyerID, sellerID, kind, buyer.CurrentHuddleID, sceneID, at),
 				)
 			}
 
@@ -2055,13 +2055,17 @@ func activeTargetedQuoteOffers(
 // The entry must be one accept_pay could actually settle: pending, not past its
 // own ExpiresAt (the aging sweep flips a lapsed offer to expired, so between the
 // deadline and the sweep the map still reads pending), and raised in THIS
-// conversation. Naming a stale or far-off offer id would hand the model an
-// accept_pay that rejects — the same cue-versus-gate mismatch in miniature.
+// conversation — both the huddle and the scene it is anchored to. Huddle alone
+// is not quite enough: a scene can conclude while its huddle lives on, so an
+// entry from a prior scene could otherwise match on huddle id. Naming a stale or
+// far-off offer id would hand the model an accept_pay that rejects — the same
+// cue-versus-gate mismatch this gate's own steer exists to avoid.
 func reversePaySettleSteer(
 	w *World,
 	caller, counterparty ActorID,
 	kind ItemKind,
 	huddleID HuddleID,
+	sceneID SceneID,
 	at time.Time,
 ) string {
 	for _, e := range w.PayLedger {
@@ -2071,7 +2075,7 @@ func reversePaySettleSteer(
 		if e.SellerID != caller || e.BuyerID != counterparty || e.ItemKind != kind {
 			continue
 		}
-		if huddleID == "" || e.HuddleID != huddleID {
+		if huddleID == "" || e.HuddleID != huddleID || e.SceneID != sceneID {
 			continue
 		}
 		if !e.ExpiresAt.IsZero() && !at.Before(e.ExpiresAt) {

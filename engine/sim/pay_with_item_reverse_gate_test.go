@@ -412,6 +412,53 @@ func TestPayWithItem_ReverseSaleGate(t *testing.T) {
 			}
 		})
 
+		// A scene can conclude while its huddle lives on, so an entry matching on
+		// huddle id alone may belong to a conversation that has since moved on.
+		t.Run("pending_offer_from_another_scene_not_named", func(t *testing.T) {
+			w, stop, at := buildReverseGateWorld(t)
+			defer stop()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 206, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 5,
+				Amount: 10, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 207, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 1,
+				Amount: 4, State: sim.PayLedgerStatePending, CreatedAt: at,
+				SceneID: "sc-old", HuddleID: "h1", ExpiresAt: at.Add(3 * time.Minute),
+			})
+			_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+			if err == nil {
+				t.Fatal("expected the reverse-pay rejection")
+			}
+			if strings.Contains(err.Error(), "offer id 207") {
+				t.Errorf("steer named an offer from a concluded scene: %v", err)
+			}
+		})
+
+		t.Run("expired_pending_offer_not_named", func(t *testing.T) {
+			w, stop, at := buildReverseGateWorld(t)
+			defer stop()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 208, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 5,
+				Amount: 10, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			// Lapsed but not yet swept — the map still reads pending.
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 209, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 1,
+				Amount: 4, State: sim.PayLedgerStatePending, CreatedAt: at.Add(-time.Hour),
+				SceneID: "sc1", HuddleID: "h1", ExpiresAt: at.Add(-time.Second),
+			})
+			_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+			if err == nil {
+				t.Fatal("expected the reverse-pay rejection")
+			}
+			if strings.Contains(err.Error(), "offer id 209") {
+				t.Errorf("steer named a lapsed offer: %v", err)
+			}
+		})
+
 		t.Run("offer_pending", func(t *testing.T) {
 			w, stop, at := buildReverseGateWorld(t)
 			defer stop()
