@@ -449,6 +449,39 @@ func PayWithItem(
 				)
 			}
 
+			// LLM-555: the same fact as the gate above, remembered past the end of
+			// the conversation that produced it. That gate's arm 2 scopes to the
+			// CURRENT huddle and walks ledger entries reaped an hour after they
+			// resolve, so it cannot see a sale made in an earlier conversation —
+			// and every reversal in the live ledger crossed a huddle boundary (55
+			// of 55 since 2026-05-06), which is to say the gate above never once
+			// fired on the churn it is shaped for. Live 2026-07-28: iron went
+			// factor -> Josiah at 19:53, back Josiah -> factor at 20:50, and Josiah
+			// was buying it off him again at 21:32.
+			//
+			// A SEPARATE gate rather than a third arm because the steer differs.
+			// reversePaySettleSteer opens "Wait for them to pay you", which is
+			// sound mid-negotiation and actively misleading about a sale made an
+			// hour ago in another room — there is no payment coming to wait for.
+			// Both messages end on the same escape route, which is the one the
+			// quote check below actually honours.
+			//
+			// It carries LLM-551's escape hatch for the reason LLM-551 exists: a
+			// reverse-pay gate with no way out poisons a legitimate sale in the
+			// other direction, and this memory outlives a huddle by design, so
+			// without the hatch it would poison one for three hours rather than
+			// for one conversation. A seller who posts the caller a targeted quote
+			// for this kind is settling direction in the caller's favour — that is
+			// the counterparty saying "I do mean to sell you this", which is
+			// exactly what the steer tells the caller to go and ask for.
+			if ActorRecentlySoldTo(buyer, sellerID, kind, at) &&
+				!activeTargetedQuoteOffers(w, sellerID, buyerID, kind, sceneID, at) {
+				return nil, fmt.Errorf(
+					"you sold %s to %s a short while ago — you don't buy your own goods straight back. If they mean to sell it on to you, they must post the offer first.",
+					kind, seller.DisplayName,
+				)
+			}
+
 			// LLM-291: a wholesale producer must not fire the buyer verb for
 			// its OWN produce. Live hud-9b23…: Moses (James Farm, wholesaler),
 			// pressed to answer a customer who wanted his carrots, named the
@@ -1279,6 +1312,7 @@ func runPayWithItemFastPath(
 		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
 		BuyerTookQuote: true, // ZBBS-WORK-420: this IS the instant quote-take path
+		IsGift:         entry.IsGift,
 		SceneID:        sceneID,
 		HuddleID:       buyer.CurrentHuddleID,
 		At:             at,
@@ -1644,6 +1678,7 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		Amount:         entry.Amount,
 		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
+		IsGift:         entry.IsGift,
 		SceneID:        entry.SceneID,
 		HuddleID:       entry.HuddleID,
 		At:             at,
@@ -2632,6 +2667,7 @@ func finalizePayLedgerTerminal(
 		Amount:         entry.Amount,
 		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: barter goods snapshot (mirrors entry; only Accepted drives the audit row)
 		TerminalState:  terminal,
+		IsGift:         entry.IsGift,
 		Message:        message,
 		SceneID:        entry.SceneID,
 		HuddleID:       entry.HuddleID,

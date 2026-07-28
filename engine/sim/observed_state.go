@@ -68,6 +68,17 @@ const (
 	// (structure, item) from the buy directory for the TTL, so the buyer stops
 	// walking back to a counter that just told her no.
 	ObservedSaleStandoff
+	// ObservedSoldToPeer — sold an item to a specific person a short while ago
+	// (LLM-555). PERSON-keyed like ObservedHelpedByWorker, and additionally
+	// per-item: the key carries the buyer's PeerID and the ItemKind, with
+	// StructureID empty. Lives on the SELLER's store and is DIRECTIONAL — it
+	// answers "did I sell this to them", so it suppresses only the reverse leg
+	// (buying that same good back off that same person) and never a repeat sale
+	// or a buy from anyone else. Perception drops that partner from the buy
+	// directory for the TTL and the reverse-pay role-gate refuses the offer, so
+	// two actors stop churning one good back and forth across successive
+	// conversations.
+	ObservedSoldToPeer
 	// ObservedHelpedByWorker — an employer's memory that a specific worker
 	// COMPLETED A PAID job for them (LLM-228). PERSON-keyed (the only such
 	// condition): the key carries the worker's PeerID with StructureID/ItemKind
@@ -99,6 +110,8 @@ func (c ObservedCondition) ttl() time.Duration {
 		return NoHiringMemoryTTL
 	case ObservedSaleStandoff:
 		return SaleStandoffMemoryTTL
+	case ObservedSoldToPeer:
+		return SoldToPeerMemoryTTL
 	case ObservedHelpedByWorker:
 		return HelpedByWorkerMemoryTTL
 	}
@@ -109,15 +122,18 @@ func (c ObservedCondition) ttl() time.Duration {
 // condition observed, and — for per-item conditions like ObservedOutOfStock —
 // the item (empty for whole-structure conditions like ObservedClosed). The
 // structure is the buy-menu / move_to handle (a vendor's WORKPLACE), matching
-// what the cue names and the actor walks to. One condition is instead about a
+// what the cue names and the actor walks to. Two conditions are instead about a
 // PERSON: ObservedHelpedByWorker carries the worker's PeerID (structure/item
-// empty) — an employer's memory of who helped them. All fields are comparable,
+// empty) — an employer's memory of who helped them — and ObservedSoldToPeer
+// carries the buyer's PeerID alongside the ItemKind (structure empty), a
+// seller's memory of what they just sold that person. All fields are comparable,
 // so the key is usable as a map key.
 type ObservedStateKey struct {
 	StructureID StructureID
 	ItemKind    ItemKind
-	// PeerID scopes a person-keyed condition (ObservedHelpedByWorker) to the
-	// remembered actor. Empty for the place-keyed conditions.
+	// PeerID scopes a person-keyed condition (ObservedHelpedByWorker,
+	// ObservedSoldToPeer) to the remembered actor. Empty for the place-keyed
+	// conditions.
 	PeerID    ActorID
 	Condition ObservedCondition
 }
