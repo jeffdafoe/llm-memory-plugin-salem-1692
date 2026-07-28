@@ -2420,7 +2420,7 @@ func (w *World) republish() {
 			// Anchoring on the cursor alone would do both for the moment between his
 			// arriving somewhere and the beat crediting it.
 			anchor := r.StopIdx
-			if idx, atStop := r.stopIndexAt(a); atStop {
+			if idx, atStop := r.stopIndexAt(w, a); atStop {
 				anchor = idx
 				sa.RouteStopObjectID = r.Stops[idx].ObjectID
 			}

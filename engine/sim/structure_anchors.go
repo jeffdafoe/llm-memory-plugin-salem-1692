@@ -201,6 +201,65 @@ func ActorAtWorkpost(objects map[VillageObjectID]*VillageObject, assets map[Asse
 	return pos.Chebyshev(computeLoiterTile(vobj, asset)) <= LoiterAttributionTiles
 }
 
+// ActorAtObjectPin reports whether an actor standing at pos is AT the village
+// object objID — within LoiterAttributionTiles of that object's OWN loiter pin
+// (computeLoiterTile: per-instance override, else door offset, else footprint
+// fallback). Object-keyed and direct: it asks about the one place named, and no
+// neighbour can answer for it.
+//
+// Use this whenever you know WHICH place you mean. Reach for ResolveLoiteringObject
+// only for the inverse question — "which place is he at?" — where nothing is named
+// and the nearest candidate wins. Answering a known-place question with the
+// nearest-scan lets a closer neighbour shadow the place actually asked about.
+//
+// The distinction that makes this necessary (LLM-550): a caller holding a place id
+// may also hold a TILE it associates with that place — a pathing goal, a cached
+// destination — and comparing against that tile is not the same question. Route
+// stops carry a WalkTo chosen for being *walkable*, which sits off the object's
+// anchor whenever the anchor itself is not; a constable stood squarely at the PW
+// Apothecary read as 2 tiles from the route's tile and his round could never
+// finish. The object's own pin is the only tile that means "this place".
+//
+// Pure over its map inputs so the live world and the published snapshot share one
+// definition — the ResolveLoiteringObject / ActorAtWorkpost dual-caller pattern.
+//
+// Deliberately says nothing about interiors. A door-backed building is entered,
+// and whether standing at its door counts is the CALLER's question, not this
+// one's — see the note on ActorAtWorkpost, which answers no for a workpost, and
+// actorPostureAtStructure, which answers yes for mere presence. Those two
+// genuinely differ and are not reconciled here.
+func ActorAtObjectPin(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, pos TilePos, objID VillageObjectID) bool {
+	pin, ok := ObjectLoiterPin(objects, assets, objID)
+	return ok && pos.Chebyshev(pin) <= LoiterAttributionTiles
+}
+
+// ObjectLoiterPin returns the tile that IS the place, for village object objID —
+// the one tile that means "here" for anything standing about outside it, and the
+// centre pickVisitorSlot rings when parking an arrival. ok=false when the object or
+// its asset is missing.
+//
+// Exported because a place's own tile is a value worth reading, not an implementation
+// detail (LLM-550). It is what the umbilical stop DTO ships beside `walk_to`, and the
+// gap between those two numbers is what made a live bug legible: a route's WalkTo is
+// merely a walkable tile NEAR the object, and when the two differ by more than
+// LoiterAttributionTiles anything comparing against WalkTo stops recognising the
+// place. Being able to read both side by side turns that from an inference into a
+// glance.
+func ObjectLoiterPin(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, objID VillageObjectID) (Position, bool) {
+	if objID == "" {
+		return Position{}, false
+	}
+	vobj, ok := objects[objID]
+	if !ok || vobj == nil {
+		return Position{}, false
+	}
+	asset, ok := assets[vobj.AssetID]
+	if !ok || asset == nil {
+		return Position{}, false
+	}
+	return computeLoiterTile(vobj, asset), true
+}
+
 // effectiveObjectLoiterTile resolves the loiter pin for a bare village object
 // by its VillageObjectID — the object-keyed sibling of effectiveLoiterTile. A
 // bare named prop (a well, a shade tree) has no Structure entry, so it resolves
