@@ -54,6 +54,14 @@ type CheckpointSnapshot struct {
 	// upserted (NO sweep) by SaveWorld so a memorable traveler's identity + per-PC
 	// familiarity + next_return_at survive restart and fire a return days out.
 	RecurringVisitors map[RecurringVisitorID]*RecurringVisitor
+	// ContactPairs — the per-pair conversational recency trail (LLM-547),
+	// flattened to ordered-pair rows and upserted into actor_contact by
+	// SaveWorld. Like RecurringVisitors this is a plain upsert with NO
+	// generation-marker sweep: a pair that stops being written simply ages past
+	// the recall horizon and is dropped at the next load, so there is nothing
+	// for a sweep to reclaim. Flattened at build time so the durable write
+	// walks a stable, deterministic slice.
+	ContactPairs []ContactPair
 }
 
 // MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
@@ -223,6 +231,10 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			cp.RecurringVisitors[id] = cloneRecurringVisitor(rv)
 		}
 	}
+	// LLM-547: flatten the per-pair contact ledger. FlattenContactLedger copies
+	// every trail slice, so the durable write off the world goroutine can never
+	// walk a slice a later Speak is appending to.
+	cp.ContactPairs = FlattenContactLedger(w.ContactLedger)
 	for id, a := range w.Actors {
 		cp.Actors[id] = CloneActor(a)
 	}

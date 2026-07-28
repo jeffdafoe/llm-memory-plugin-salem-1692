@@ -352,6 +352,23 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 				}
 			}
 
+			// LLM-547: credit the per-pair contact ledger for every huddle peer,
+			// both directions. Deliberately NOT inside the RecordInteraction loop
+			// above despite the identical iteration: that command's kind gate
+			// (shared-VA only, visitors skipped both sides) is exactly what this
+			// ledger must not inherit — the constable and the innkeeper who
+			// prompted this are both stateful, and a transient visitor working a
+			// circuit of shops is a named target too. Same peer set, different
+			// audience, so a separate pass rather than a widened gate.
+			//
+			// Every peer in the huddle is credited, not just the resolved
+			// addressee: having your word with someone means being in the
+			// conversation, not being named in it.
+			for _, peerID := range peerIDs {
+				w.RecordContact(speakerID, peerID, at)
+				w.RecordContact(peerID, speakerID, at)
+			}
+
 			// ZBBS-WORK-370 turn-state edges. The speaker now awaits a reply
 			// from its resolved addressee (no-op when it addressed the whole
 			// huddle, addressedID == ""), AND its utterance satisfies any peer

@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -1445,6 +1446,133 @@ func capitalizeFirst(s string) string {
 	return string(r)
 }
 
+// maxRenderedContactLines caps how many contact-recency facts render in one
+// scene. A crowded room where the subject has spoken with everyone would
+// otherwise add a line per person to a section that is re-sent every tick. Three
+// is enough to carry the case the cue exists for — the constable working a room
+// he has already worked — without the block becoming a list.
+//
+// The cap keeps the LOUDEST tiers: a brake outranks continuity, because a brake
+// is a reason not to repeat yourself and continuity is only an invitation. What
+// is dropped is therefore always the least consequential fact present.
+const maxRenderedContactLines = 3
+
+// contactRecencyLines renders the subject's conversational history with the
+// people in the scene (LLM-547), most consequential first.
+//
+// Register, all four constraints from the ticket:
+//   - The peer's VERBATIM DisplayName, never an honorific. resolveAddressee
+//     matches a peer by full display name or first name only, so "Mistress Ward"
+//     resolves to nobody and the utterance silently degrades to addressing the
+//     whole huddle. Period flavour lives in "had your word with", not the name.
+//   - No place is ever named. The rounds cue names the NEXT stop verbatim
+//     because it must work as a move_to token; that reasoning inverts here —
+//     naming shops already walked hands the model fresh destinations, which is
+//     the behaviour being fixed. People for what is done, places for what remains.
+//   - No imperative. The scene is the argument; the model draws the conclusion.
+//   - No absorbing state. These are scene facts only. Nothing here suppresses a
+//     verb or gates speech: calling on someone again hours later is legitimate
+//     and stays available at every tier.
+//
+// Deliberately pronoun-free. The ticket's example line read "she has said her
+// piece", but actors carry no gender or pronoun field — deriving one from a name
+// would be a guess rendered as fact into a prompt, so the weighted tier carries
+// the peer's state through the clause instead.
+func contactRecencyLines(s SurroundingsView) []string {
+	type fact struct {
+		tier  sim.ContactTier
+		count int
+		name  string
+	}
+	var facts []fact
+	seen := make(map[sim.ActorID]struct{})
+	// Huddle peers first, then merely co-present. A member cannot appear in both
+	// (the huddle roster and the co-presence line are disjoint sets), but the
+	// guard keeps a future overlap from double-rendering the same person.
+	for _, group := range [][]HuddleMember{s.HuddleMembers, s.CoPresent} {
+		for _, m := range group {
+			if m.ContactTier == sim.ContactTierNone || m.DisplayName == "" {
+				continue
+			}
+			if _, dup := seen[m.ID]; dup {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			facts = append(facts, fact{tier: m.ContactTier, count: m.ContactRecentCount, name: m.DisplayName})
+		}
+	}
+	if len(facts) == 0 {
+		return nil
+	}
+	// Loudest tier first, then by name so a tie is stable run to run.
+	sort.SliceStable(facts, func(i, j int) bool {
+		if facts[i].tier != facts[j].tier {
+			return facts[i].tier > facts[j].tier
+		}
+		return facts[i].name < facts[j].name
+	})
+	if len(facts) > maxRenderedContactLines {
+		facts = facts[:maxRenderedContactLines]
+	}
+	out := make([]string, 0, len(facts))
+	for _, f := range facts {
+		if line := contactRecencyLine(f.tier, f.count, f.name, s.OnRound); line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// contactRecencyLine maps one tier to its sentence.
+//
+// "this round" only when a round is actually under way; otherwise a bare time
+// phrase, so an actor with no circuit is never told about a round it does not
+// have.
+func contactRecencyLine(tier sim.ContactTier, count int, name string, onRound bool) string {
+	name = sanitizeInline(name)
+	if name == "" {
+		return ""
+	}
+	switch tier {
+	case sim.ContactTierContinuity:
+		// Not lately — history to build on rather than a reason to hold off.
+		return fmt.Sprintf("You had your word with %s earlier today.", name)
+	case sim.ContactTierBrakeQuiet:
+		if onRound {
+			return fmt.Sprintf("You have already had your word with %s this round.", name)
+		}
+		return fmt.Sprintf("You had your word with %s a short while ago.", name)
+	case sim.ContactTierBrakeWeighted:
+		// The tier that carries the PEER's state, not only the subject's history:
+		// there is nothing left to draw out of them. Ward's rebuke landed on the
+		// third approach; the scene should let him feel it before she delivers it.
+		when := "in this short while"
+		if onRound {
+			when = "already this round"
+		}
+		return fmt.Sprintf("You have had your word with %s %s %s — there was little left unsaid by the end of it.",
+			name, contactTimesPhrase(count), when)
+	default:
+		return ""
+	}
+}
+
+// contactTimesPhrase words a repeat count. Caps out at "several times" rather
+// than counting indefinitely — past a few the exact number stops carrying
+// meaning, and a raw tally would read as a stat in a scene.
+func contactTimesPhrase(count int) string {
+	switch {
+	case count <= 2:
+		return "twice"
+	case count == 3:
+		return "three times"
+	case count == 4:
+		return "four times"
+	default:
+		return "several times"
+	}
+}
+
 func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	b.WriteString("## Around you\n")
 
@@ -1542,6 +1670,15 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		// to a solo task or moves to find company rather than speaking to an empty
 		// room. Echoes the speak gate's wording ("no one here to hear you").
 		fmt.Fprintf(b, "You are %s, with no one else here to hear you speak.\n", location)
+	}
+
+	// LLM-547: what the subject's own history with the people here says. Placed
+	// directly under the company line so each fact sits with the person it is
+	// about, and branch-independent for the same reason deadEndClause is — the
+	// history holds whether they are huddled or merely co-present.
+	for _, line := range contactRecencyLines(s) {
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 
 	// LLM-154: a live dead-end at the actor's current location, stated plainly on

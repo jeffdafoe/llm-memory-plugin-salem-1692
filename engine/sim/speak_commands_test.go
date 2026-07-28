@@ -377,6 +377,100 @@ func TestSpeak_KindNPCSharedGate_Matrix(t *testing.T) {
 	}
 }
 
+// TestSpeak_ContactLedgerIgnoresTheRelationshipKindGate is the LLM-547 mirror of
+// TestSpeak_KindNPCSharedGate_Matrix above, and the two are meant to be read
+// together: the SAME four kind pairings that make the relationship write drop out
+// must ALL credit the contact ledger, in both directions.
+//
+// This is the ticket's load-bearing design decision, so it gets a test rather
+// than a comment. RecordInteraction is gated to KindNPCShared because a stateful
+// NPC gets its per-peer continuity from its own VA's memory — correct for what
+// that gate does, and exactly wrong here. The constable who prompted this ticket
+// and the innkeeper who prompted LLM-546 are BOTH stateful; under the
+// relationship gate neither would have been told anything. Widening that gate
+// would have dragged salient facts and nightly consolidation onto stateful NPCs,
+// so the ledger is a separate pass over the same peer set instead.
+//
+// If someone later "tidies" the two loops in sim.Speak into one, this fails for
+// three of the four pairings.
+func TestSpeak_ContactLedgerIgnoresTheRelationshipKindGate(t *testing.T) {
+	kinds := []struct {
+		name        string
+		speakerKind sim.ActorKind
+		peerKind    sim.ActorKind
+	}{
+		{"shared_shared", sim.KindNPCShared, sim.KindNPCShared},
+		{"shared_stateful", sim.KindNPCShared, sim.KindNPCStateful},
+		{"stateful_shared", sim.KindNPCStateful, sim.KindNPCShared},
+		{"stateful_stateful", sim.KindNPCStateful, sim.KindNPCStateful},
+	}
+	for _, tc := range kinds {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildSpeakTestWorld(t,
+				actorSpec{id: "s", displayName: "Speaker", kind: tc.speakerKind, huddleID: "h1"},
+				actorSpec{id: "p", displayName: "Peer", kind: tc.peerKind, huddleID: "h1"},
+			)
+			defer stop()
+
+			now := time.Now().UTC()
+			if _, err := w.Send(sim.Speak("s", "test", now)); err != nil {
+				t.Fatalf("Speak: %v", err)
+			}
+			snap := w.Published()
+			// Both directions: having your word with someone means being in the
+			// conversation, not being named in it. The listener has as much reason
+			// not to re-open the subject as the speaker does.
+			if tier, _ := snap.ContactTierFor("s", "p", now); tier != sim.ContactTierBrakeQuiet {
+				t.Errorf("speaker→peer tier = %v, want ContactTierBrakeQuiet — the contact ledger must "+
+					"credit every kind pairing, unlike the relationship write", tier)
+			}
+			if tier, _ := snap.ContactTierFor("p", "s", now); tier != sim.ContactTierBrakeQuiet {
+				t.Errorf("peer→speaker tier = %v, want ContactTierBrakeQuiet", tier)
+			}
+		})
+	}
+}
+
+// TestSpeak_ContactLedgerCreditsEveryHuddlePeer — one utterance credits the whole
+// huddle, not only the resolved addressee.
+//
+// The live case is the argument: Ward addressed the constable and he addressed
+// her, and either should count as having had their word. Crediting only the
+// addressee would leave a silent participant looking un-spoken-to, and the
+// constable would re-open with them as though newly met.
+func TestSpeak_ContactLedgerCreditsEveryHuddlePeer(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "s", displayName: "Speaker", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "addressed", displayName: "Prudence Ward", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "silent", displayName: "Josiah Thorne", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	now := time.Now().UTC()
+	// Addressed explicitly, so the addressee resolves to one peer while the other
+	// says nothing at all.
+	if _, err := w.Send(sim.SpeakTo("s", "Prudence Ward, good day to you.", "addressed", nil, true, now)); err != nil {
+		t.Fatalf("SpeakTo: %v", err)
+	}
+
+	snap := w.Published()
+	for _, peerID := range []sim.ActorID{"addressed", "silent"} {
+		if tier, _ := snap.ContactTierFor("s", peerID, now); tier != sim.ContactTierBrakeQuiet {
+			t.Errorf("speaker→%s tier = %v, want ContactTierBrakeQuiet — every huddle peer is credited, "+
+				"not only the resolved addressee", peerID, tier)
+		}
+		if tier, _ := snap.ContactTierFor(peerID, "s", now); tier != sim.ContactTierBrakeQuiet {
+			t.Errorf("%s→speaker tier = %v, want ContactTierBrakeQuiet", peerID, tier)
+		}
+	}
+	// The two peers did not speak to EACH OTHER — only the speaker did. A pass
+	// that credited the huddle as a clique rather than per-pair would fail here.
+	if tier, _ := snap.ContactTierFor("addressed", "silent", now); tier != sim.ContactTierNone {
+		t.Errorf("peer→peer tier = %v, want ContactTierNone — a contact is with the SPEAKER, "+
+			"not among every pair co-present", tier)
+	}
+}
+
 // --- TestSpeak_WalkInFlight_Rejected: actor.MoveIntent != nil rejects.
 // The error message should mention "walking" so the model can read it.
 func TestSpeak_WalkInFlight_Rejected(t *testing.T) {

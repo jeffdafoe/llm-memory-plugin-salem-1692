@@ -49,6 +49,7 @@ func NewRepository(pool Pool) sim.Repository {
 		LaborContracts:       &LaborContractsRepo{pool: pool},
 		Visitors:             &VisitorsRepo{pool: pool},
 		RecurringVisitors:    &RecurringVisitorsRepo{pool: pool},
+		Contacts:             &ContactsRepo{pool: pool},
 		ActionLog:            notImplActionLog{},
 		TickTelemetry:        notImplTickTelemetry{},
 		Begin: func(ctx context.Context) (sim.Tx, error) {
