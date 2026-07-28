@@ -122,12 +122,17 @@ type tradeErrandJSON struct {
 	Good         string `json:"good"`
 	Counterparty string `json:"counterparty"`
 	Settled      bool   `json:"settled,omitempty"`
-	// ShipmentQty is the seller's arrival quantity of Good and Delivered is how much of it
-	// he has handed over so far — the baseline and the running total the sell-side settle
-	// compares (LLM-553). Both omitempty, so a buyer's errand (which leaves them 0) keeps
-	// the document it had before, and a row written before these fields existed decodes to
-	// 0/0 — which sellErrandDelivered reads as "no baseline", leaving that visitor to wind
-	// down at dusk as it did before.
+	// ShipmentQty is the seller's arrival quantity of Good; Delivered is how much of it has
+	// reached the errand COUNTERPARTY business specifically — not a general count of what
+	// left his pack, since a transfer elsewhere (a bystander, another keeper, an ungated
+	// `give`) credits nothing. Together they are the baseline and running total the
+	// sell-side settle compares (LLM-553); see TradeErrand.Delivered for the full scope
+	// rule before reusing either.
+	//
+	// Both omitempty, so a buyer's errand (which leaves them 0) keeps the document it had
+	// before, and a row written before these fields existed decodes to 0/0 — which
+	// sellErrandDelivered reads as "no baseline", leaving that visitor to wind down at dusk
+	// as it did before.
 	ShipmentQty int `json:"shipment_qty,omitempty"`
 	Delivered   int `json:"delivered,omitempty"`
 }

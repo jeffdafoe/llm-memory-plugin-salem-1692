@@ -507,20 +507,24 @@ type TradeErrand struct {
 	// he came to deliver, stamped at spawn. The target Delivered is measured against; a
 	// buyer leaves it 0 (he arrives empty-packed and settles on holding the good instead).
 	ShipmentQty int
-	// Delivered is how much of Good this SELLER has handed to anyone, accumulated at the
-	// one goods-transfer choke point (transferItem) and never decremented.
+	// Delivered is how much of Good this SELLER has handed specifically to the errand
+	// Counterparty business — NOT a general count of what has left his pack. It is
+	// accumulated at the one goods-transfer choke point (transferItem, via
+	// sellErrandCredit) and never decremented.
+	//
+	// Read the scope literally before reusing this field: a transfer of the errand good to
+	// a bystander, to a different keeper, or as an ungated `give` credits NOTHING. That is
+	// the point — a SELL errand is completed by delivering to the business he came to deal
+	// with, and a counter that also counted disposal would settle a factor who gave his
+	// iron away having sold none of it. It is not a global transfer ledger and must not be
+	// used as one.
 	//
 	// It exists because current holdings cannot tell "never sold it" from "sold it and
 	// bought some back", and the factor's errand is a TWO-WAY deal — he sells his bale and
 	// buys the village's surplus in the same breath. A factor who moved all ten bars and
 	// then took three back off the keeper's shelf holds three either way, so any test on
 	// Inventory[Good] either fails to settle him or settles a man who has sold nothing.
-	// A monotonic count of what actually changed hands is the honest measure.
-	//
-	// Not restricted to the counterparty: commerce confinement (TradeErrandSteer) already
-	// pins a merchant's trade goods to that one keeper, so an outbound transfer of the
-	// errand good has nowhere else to go. A `give` is ungated by design and would also
-	// count — correctly, since he has still parted with the shipment.
+	// A monotonic count of what reached the counterparty is the honest measure.
 	Delivered int
 }
 
