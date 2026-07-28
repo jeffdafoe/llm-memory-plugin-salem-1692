@@ -236,12 +236,101 @@ func TestRouteStopReached_WalkToIsNotThePlace(t *testing.T) {
 	}
 }
 
-// TestRouteStopReached_DispatchArmStillAnswers: the location arm is an ADDITION, not
-// a replacement. A carrier standing exactly on WalkTo is at the stop by construction
-// — the route sent him there — even when the object resolves to no pin at all
-// (an unnamed prop, a dangling asset). Decorative routes over lamps and laundry
-// depend on this, and a location-only test would break every one of them.
-func TestRouteStopReached_DispatchArmStillAnswers(t *testing.T) {
+// TestRouteStopReached_BeatIgnoresTheRoutesPathingTile is the code_review finding on
+// LLM-550's first draft, kept as a regression.
+//
+// The draft accepted the dispatch arm for a beat too, reasoning it was a harmless
+// superset. It is not. A beat dispatches no walk at any point, so there is no
+// dispatched arrival to lose — and WalkTo is just an ordinary walkable tile beside a
+// business. Nothing in the predicate can tell "the route put him there" (it never
+// does) from a teleport, an admin force-move, a competing movement producer, or the
+// carrier wandering across it on his way somewhere else. Crediting on it would mean
+// marking a stop called-at while the man is two tiles from the stall, which is the
+// same class of wrong answer the whole ticket exists to remove.
+func TestRouteStopReached_BeatIgnoresTheRoutesPathingTile(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	startBeat(t, w, "lamp", sampleLampCandidates())
+
+	var onWalkToAwayFromPin, atPin bool
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		pin, ok := sim.ObjectLoiterPin(world.VillageObjects, world.Assets, route.Stops[0].ObjectID)
+		if !ok {
+			t.Fatal("fixture: no pin")
+		}
+		// The live shape: the route's tile sits outside the pin's ring.
+		route.Stops[0].WalkTo = sim.Position{X: pin.X + 3, Y: pin.Y + 3}
+		a := world.Actors["lamp"]
+
+		a.Pos = route.Stops[0].WalkTo
+		onWalkToAwayFromPin = sim.RouteStopReached(world, route, a, route.Stops[0])
+
+		a.Pos = pin
+		atPin = sim.RouteStopReached(world, route, a, route.Stops[0])
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("arrange: %v", err)
+	}
+
+	if onWalkToAwayFromPin {
+		t.Error("a beat credited a stop for standing on the route's pathing tile, three tiles from " +
+			"the place — the beat dispatched no walk, so that tile is evidence of nothing")
+	}
+	if !atPin {
+		t.Error("a beat did not credit a stop for standing at the place itself")
+	}
+}
+
+// TestRouteStopReached_BeatNotAdoptedByALaterStopsPathingTile: the scan in
+// reachedStopIndex walks every unvisited stop, so a carrier who is teleported onto
+// some LATER stop's WalkTo must not have that stop adopted either. Same reasoning as
+// above, exercised through the path that actually credits.
+func TestRouteStopReached_BeatNotAdoptedByALaterStopsPathingTile(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	startBeat(t, w, "lamp", threeLampCandidates())
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		pin, ok := sim.ObjectLoiterPin(world.VillageObjects, world.Assets, route.Stops[2].ObjectID)
+		if !ok {
+			t.Fatal("fixture: no pin")
+		}
+		// Stop 2's pathing tile, well off its pin. He is dropped there by something
+		// that is not the route — the route never walks a beat anywhere.
+		route.Stops[2].WalkTo = sim.Position{X: pin.X + 4, Y: pin.Y + 4}
+		a := world.Actors["lamp"]
+		a.Pos = route.Stops[2].WalkTo
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("arrange: %v", err)
+	}
+
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("beat cleared — nothing should have been credited")
+	}
+	for i := range route.Stops {
+		if sim.RouteStopVisited(route, i) {
+			t.Errorf("stop %d credited for a position that is no stop's place — the later-stop scan "+
+				"adopted a pathing tile", i)
+		}
+	}
+}
+
+// TestRouteStopReached_DecorativeStillAnswersOnItsDispatchedTile keeps the other half
+// honest. A decorative carrier has no location arm at all, so its ONLY signal is
+// standing on the tile the route walked it to — including for stops whose object
+// cannot resolve a pin (an unnamed prop, a dangling asset), which is most of what
+// lamplighter and washerwoman routes visit.
+func TestRouteStopReached_DecorativeStillAnswersOnItsDispatchedTile(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
@@ -254,8 +343,7 @@ func TestRouteStopReached_DispatchArmStillAnswers(t *testing.T) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		route := world.ActiveRoutes["lamp"]
 		stop := route.Stops[0]
-		// Point the stop at an object that cannot resolve, so ONLY the dispatch arm
-		// can possibly answer.
+		// An object that cannot resolve a pin: only the dispatch arm can answer.
 		route.Stops[0].ObjectID = "no-such-object"
 		a := world.Actors["lamp"]
 
@@ -270,11 +358,11 @@ func TestRouteStopReached_DispatchArmStillAnswers(t *testing.T) {
 	}
 
 	if !onWalkTo {
-		t.Error("standing on WalkTo does not count as arrived — the route dispatched him to that " +
-			"exact tile, and decorative routes over unnamed props have no other signal")
+		t.Error("a decorative carrier standing on its dispatched tile did not read as arrived — " +
+			"routes over unnamed props have no other signal")
 	}
 	if offWalkTo {
-		t.Error("standing well off WalkTo counts as arrived for an unresolvable object")
+		t.Error("a decorative carrier well off its dispatched tile read as arrived")
 	}
 }
 
@@ -340,8 +428,11 @@ func TestRouteStopReached_EnterStopsAnswerOnInterior(t *testing.T) {
 		if !ok {
 			t.Fatal("fixture: no pin")
 		}
-		// Make it an ENTER stop for a structure the actor is not standing in.
+		// Make it an ENTER stop for a structure the actor is not standing in, and put
+		// its pathing tile somewhere else again — so "at the pin is false" cannot pass
+		// on fixture geometry that happens to make every tile disagree (code_review).
 		route.Stops[0].EnterStructureID = "home"
+		route.Stops[0].WalkTo = sim.Position{X: pin.X + 5, Y: pin.Y + 5}
 		a := world.Actors["lamp"]
 
 		a.Pos = pin

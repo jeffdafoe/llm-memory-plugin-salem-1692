@@ -230,13 +230,25 @@ func ActorAtRouteStopPlace(objects map[VillageObjectID]*VillageObject, assets ma
 // apply depends on what could have put the carrier where he stands:
 //
 //   - A DECORATIVE carrier never self-moves. The route's own walk is the only thing
-//     that can have brought it anywhere, so dispatch completion is the complete
-//     answer and asking a location question could only mask a genuine external bump
-//     that the stale-arrival re-walk exists to undo. Unchanged, byte for byte.
-//   - A BEAT carrier walks himself. Dispatch completion is nearly meaningless for
-//     him — the beat dispatches nothing at all — so the location question is the
-//     real one. The dispatch arm is kept as a superset so a beat can never lose an
-//     arrival a decorative route would have caught.
+//     that can have brought it anywhere, so dispatch completion IS the answer — and
+//     a location test would mask the external bump the stale-arrival re-walk exists
+//     to undo. Unchanged, byte for byte.
+//   - A BEAT carrier is asked the location question, and ONLY that.
+//
+// **A beat must not accept the dispatch arm, even as a fallback** (code_review). It
+// is tempting to keep it as a superset "so nothing is lost", but a beat dispatches no
+// walk at any point, so there is no dispatched arrival to lose — that safety argument
+// belongs to the decorative case and does not carry over. What it would add instead
+// is a way to credit a stop the carrier is not at: WalkTo is an ordinary walkable
+// tile beside a business, and nothing here can tell "the route put him there" (it
+// never does) from a teleport, an admin force-move, a competing movement producer, or
+// simply wandering across it. Where WalkTo lies inside the pin's ring the arm is
+// redundant; where it lies outside, it credits a tile that is NOT the place — the
+// very error this function was rewritten to stop making.
+//
+// A nil world means a beat cannot answer its question, so it answers no. Crediting on
+// the dispatch arm instead would be that unsafe inference, taken at exactly the
+// moment there is least information.
 //
 // **Why the location arm is not more tile arithmetic.** It used to be: a tolerance
 // of LoiterAttributionTiles around `stop.WalkTo`. That reads as the pin's own
@@ -253,13 +265,13 @@ func ActorAtRouteStopPlace(objects map[VillageObjectID]*VillageObject, assets ma
 // object's OWN loiter pin, so no caller's cached tile can drift from what the place
 // actually is.
 func RouteStopReached(w *World, route *NPCRoute, a *Actor, stop RouteStop) bool {
-	if RouteStopArrived(a, stop) {
-		return true
-	}
-	if !routeIsBeat(route) || w == nil {
+	if route == nil || a == nil {
 		return false
 	}
-	return ActorAtRouteStopPlace(w.VillageObjects, w.Assets, a, stop)
+	if routeIsBeat(route) {
+		return w != nil && ActorAtRouteStopPlace(w.VillageObjects, w.Assets, a, stop)
+	}
+	return RouteStopArrived(a, stop)
 }
 
 // routeStopDestination builds the MoveDestination that dispatches a walk to
