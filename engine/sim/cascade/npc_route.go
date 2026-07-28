@@ -234,12 +234,12 @@ func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(
 // which consumes exactly this beat — the next beat is a full interval out.
 func runConstableRounds(w *sim.World, now time.Time) {
 	for _, actor := range findActorsWithAttribute(w, sim.AttrConstable) {
-		// Drop a round left part-walked once its carrier is off shift (LLM-531). A
-		// suspended round exempts him from his stand-at-post duty so he gets the
-		// chance to pick it up — that exemption must not survive into the evening, or
-		// he would linger wherever he stopped instead of going home. His watch is
-		// over; tomorrow's round starts fresh rather than resuming yesterday's.
-		if sim.ClearSuspendedRoundIfOffShift(w, actor, now) {
+		// Drop a round left part-walked once its carrier is off shift (LLM-531). An
+		// owed round exempts him from his stand-at-post duty so he can choose where
+		// to go next — that exemption must not survive into the evening, or he would
+		// linger wherever he finished instead of going home. His watch is over;
+		// tomorrow's round starts fresh rather than resuming yesterday's.
+		if sim.ClearBeatRouteIfOffShift(w, actor, now) {
 			log.Printf("cascade/npc_route: constable %q went off shift with a part-walked round — dropping it", actor.ID)
 		}
 		if !sim.ConstableRoundsDue(w, actor, w.Settings.ConstableRoundsInterval, now) {
@@ -312,106 +312,6 @@ func constableReturnDestination(actor *sim.Actor) sim.MoveDestination {
 		return sim.NewStructureEnterDestination(actor.WorkStructureID)
 	}
 	return homeDestinationFor(actor)
-}
-
-// beginConstableDwell arms the per-stop dwell for the constable's CURRENT stop and
-// marks the route dwelling so a duplicate ActorArrived for the same stop doesn't
-// schedule a second dwell timer (the constable analogue of the crier's Authoring
-// guard, LLM-514). MUST be called on the world goroutine (mutates route.Dwelling,
-// reads the dwell setting).
-func beginConstableDwell(w *sim.World, actorID sim.ActorID) {
-	route := w.ActiveRoutes[actorID]
-	if route == nil {
-		return
-	}
-	route.Dwelling = true
-	armConstableDwellTimer(w, actorID, route.StopIdx)
-}
-
-// armConstableDwellTimer schedules the deferred rounds advance one dwell-duration
-// out, marshaled back onto the world goroutine via SendContext + the world's
-// LifecycleContext (shutdown-guarded) — the same AfterFunc pattern the town crier's
-// timed notice beats use (voiceCrierNotices). The returned *time.Timer is stored on
-// the route (NPCRoute.DwellTimer) so a superseded / abandoned / completed route can
-// STOP it (clearActiveRoute), rather than leaking a live timer that fires at
-// shutdown or advances a replacement route. stopIdx additionally pins the beat to
-// the stop it was armed for — belt-and-suspenders behind the timer stop. MUST be
-// called on the world goroutine (reads the dwell setting, mutates the route).
-func armConstableDwellTimer(w *sim.World, actorID sim.ActorID, stopIdx int) {
-	route := w.ActiveRoutes[actorID]
-	if route == nil {
-		return
-	}
-	gen := route.Gen // capture the route's identity token (fix A)
-	dwell := sim.EffectiveConstableRoundsDwell(w)
-	// The world goroutine is executing THIS call, and the callback only takes
-	// effect through SendContext (which the world goroutine must service), so the
-	// timer can never fire before this assignment lands.
-	route.DwellTimer = time.AfterFunc(dwell, func() {
-		ctx := w.LifecycleContext()
-		if ctx.Err() != nil {
-			return // shutdown raced the dwell
-		}
-		if _, err := w.SendContext(ctx, constableAdvanceAfterDwell(actorID, gen, stopIdx)); err != nil && ctx.Err() == nil {
-			log.Printf("cascade/npc_route: constable dwell advance (actor %q): %v", actorID, err)
-		}
-	})
-}
-
-// constableAdvanceAfterDwell is the command the dwell timer runs on the world
-// goroutine: advance the constable to his next rounds stop — UNLESS he is mid-
-// conversation (in an active huddle), in which case defer another dwell interval
-// rather than yanking him out (design option (ii), LLM-514). He moves on once the
-// dwell elapses AND he is not huddling.
-//
-// The route must still match the arm-time identity: the SAME actor, the SAME route
-// install (gen), and the SAME stop (stopIdx). gen is the load-bearing guard for the
-// already-fired-then-superseded race (fix A): stopping the timer only cancels a
-// callback that has NOT yet fired, but a callback that fired and queued its
-// SendContext BEFORE the supersede would otherwise run against the replacement route
-// (same actor, same StopIdx 0). A fresh install carries a new Gen, so the stale
-// callback no-ops.
-func constableAdvanceAfterDwell(actorID sim.ActorID, gen uint64, stopIdx int) sim.Command {
-	return sim.Command{
-		Fn: func(w *sim.World) (any, error) {
-			route, ok := w.ActiveRoutes[actorID]
-			if !ok || route == nil || route.Label != sim.AttrConstable {
-				return nil, nil // route gone or superseded
-			}
-			if route.Gen != gen || route.Phase != sim.RoutePhaseActive || route.StopIdx != stopIdx {
-				return nil, nil // superseded (different install) or already advanced
-			}
-			// The timer that queued this callback has fired and is spent — drop the
-			// stale pointer (fix C). The huddle branch re-arms a fresh one below; the
-			// advance branch leaves it nil until the next stop's arrival re-arms.
-			route.DwellTimer = nil
-			actor := w.Actors[actorID]
-			if actor == nil {
-				return nil, nil
-			}
-			// Mid-conversation: don't drag him out of a huddle — re-arm the dwell and
-			// re-check after another interval. Dwelling stays true throughout, so a
-			// stray arrival is still ignored.
-			//
-			// The test is LIVENESS, not lifecycle (LLM-537). The original predicate
-			// here was ActorInActiveHuddle, i.e. "the huddle has not concluded" — but
-			// a huddle deliberately stays open for HuddleSilenceTimeout (2h) after its
-			// last word, so a stop whose conversation had plainly ended kept deferring
-			// on every re-check. A keeper who correctly said nothing was enough to
-			// hold him: silence is what ends a conversation, and silence was what the
-			// old predicate could not see.
-			if sim.ConstableStopStillTalking(w, actor, time.Now().UTC(), sim.EffectiveConstableRoundsQuiet(w)) {
-				armConstableDwellTimer(w, actorID, stopIdx)
-				return nil, nil
-			}
-			route.Dwelling = false
-			// Businesses carry no route state to flip — skip-flip, like the crier.
-			if _, err := sim.AdvanceNPCRouteSkipFlip(actorID).Fn(w); err != nil {
-				log.Printf("cascade/npc_route: constable advance (actor %q): %v", actorID, err)
-			}
-			return nil, nil
-		},
-	}
 }
 
 // ForceRouteCommand returns a Command that dispatches an NPC route
@@ -573,66 +473,24 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 		return
 	}
 
-	// Constable rounds branch (LLM-514): on arrival at a business stop, DWELL
-	// instead of advancing immediately — the pause is what lets the reactor tick
-	// him in character at a populated stop (keeper present → he engages). The dwell
-	// timer advances him later (or re-defers while he is mid-conversation).
-	// A SUSPENDED round is still the constable's (LLM-531): he is arriving places of
-	// his own accord, and arriving back at the stop he broke off at resumes it. Route
-	// it through the SAME skip-flip advance the rest of his round uses — falling
-	// through to the generic handler below would advance a resuming constable with
-	// flip=true and stamp business objects with a state his round never flips.
-	if route.Label == sim.AttrConstable && route.Phase == sim.RoutePhaseSuspended {
+	// Beat branch (LLM-548): every arrival by a volition carrier goes to the beat
+	// advancer, which credits the stop if he is standing at one and does nothing at
+	// all if he isn't. No position test here and no dwell to arm — where he is, is
+	// the advancer's whole question, and there is no such thing as a stale arrival
+	// for a carrier the engine never dispatched.
+	//
+	// Skip-flip: businesses carry no route state to flip, and the generic handler
+	// below would advance him with flip=true and stamp them with a state his beat
+	// never sets.
+	if route.Phase == sim.RoutePhaseBeat {
 		if _, err := sim.AdvanceNPCRouteSkipFlip(arrived.ActorID).Fn(w); err != nil {
-			log.Printf("cascade/npc_route: constable suspended advance (actor %q event %d): %v",
+			log.Printf("cascade/npc_route: beat advance (actor %q event %d): %v",
 				arrived.ActorID, arrived.EventID(), err)
 		}
 		return
 	}
 
-	if route.Label == sim.AttrConstable &&
-		route.Phase == sim.RoutePhaseActive &&
-		route.StopIdx < len(route.Stops) {
-		actor := w.Actors[arrived.ActorID]
-		stop := route.Stops[route.StopIdx]
-		if route.Dwelling && actor != nil && sim.RouteStopReached(route, actor, stop) {
-			// A dwell is already running for THIS stop and he is still standing at
-			// it — a duplicate arrival for the same place. Ignore it so we don't arm
-			// a second timer (mirrors the crier's Authoring guard).
-			//
-			// Deliberately NOT a bare `if route.Dwelling` (LLM-530 live failure): the
-			// dwell is exactly when the cue names the next business and invites him to
-			// walk on, so an arrival somewhere ELSE mid-dwell is the intended
-			// walked-onward case — and the bare guard swallowed it before
-			// advanceActiveRoute could adopt the stop. Live 15:53 he walked from the
-			// Ellis Farm to the James Farm as the cue asked, the arrival was dropped
-			// here, and the route still read "expected stop 0" two minutes later with
-			// his cue collapsed to a bare "you are walking your rounds" — no place, no
-			// count, nowhere to go. Falling through lets the adopt (or the suspend)
-			// run; beginConstableDwell re-arms cleanly for whichever stop he lands on.
-			return
-		}
-		// Tolerant for him, like every other stop check (LLM-543): he reaches a stop on
-		// his own feet as often as the route walks him there, and his move_to parks him
-		// beside the pin. Strict here cost him the DWELL at any stop he came to himself —
-		// the arrival fell through to the stale/adopt path, which credits the stop and
-		// dispatches the next walk at once, so he turned on his heel without a word.
-		if actor != nil && sim.RouteStopReached(route, actor, stop) {
-			beginConstableDwell(w, arrived.ActorID)
-			return
-		}
-		// Stale arrival — run the route's re-walk/abandon machinery (businesses have
-		// no state to flip, so skip-flip).
-		if _, err := sim.AdvanceNPCRouteSkipFlip(arrived.ActorID).Fn(w); err != nil {
-			log.Printf("cascade/npc_route: constable stale advance (actor %q event %d): %v",
-				arrived.ActorID, arrived.EventID(), err)
-		}
-		return
-	}
-
-	// Non-crier routes (lamplighter / washerwoman) flip the stop inline. The
-	// constable's RETURN-home arrival also lands here (Phase != Active), where
-	// AdvanceNPCRoute's returning branch simply clears the route.
+	// Non-crier routes (lamplighter / washerwoman) flip the stop inline.
 	cmd := sim.AdvanceNPCRoute(arrived.ActorID)
 	if _, err := cmd.Fn(w); err != nil {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",
@@ -750,17 +608,15 @@ func handleActorMoveStoppedAdvanceRoute(w *sim.World, evt sim.Event) {
 	if !has || route == nil {
 		return
 	}
-	// A SUSPENDED round has no walk of its own in flight (LLM-531), so a failed move
-	// is the actor's own — his errand was blocked, not the round's. Abandoning the
-	// round for that would discard a paused circuit over something unrelated to it,
-	// and the "a routed actor's route must always eventually clear" invariant this
-	// abandon protects is already satisfied: a suspended route is superseded by the
-	// next rounds interval regardless.
+	// A BEAT has no walk of its own in flight (LLM-531/548) — it dispatches none at
+	// all — so a failed move is the actor's own: his errand was blocked, not the
+	// round's. Abandoning the round for that would throw away a circuit he still
+	// owes over something unrelated to it, and the "a routed actor's route must
+	// always eventually clear" invariant this abandon protects is already satisfied:
+	// a beat is superseded by the next rounds interval and swept at end of watch.
 	if !route.InFlight() {
 		return
 	}
-	// ClearActiveRoute (not a bare delete) so an abandoned constable route also
-	// stops its pending dwell timer (LLM-514).
 	sim.ClearActiveRoute(w, stopped.ActorID)
 	log.Printf("cascade/npc_route: %q route walk stopped (%s) — abandoning route",
 		stopped.ActorID, stopped.Reason)

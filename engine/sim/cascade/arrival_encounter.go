@@ -63,8 +63,10 @@ func outdoorEncounterExcludesActor(w *sim.World, a *sim.Actor, now time.Time, st
 	if a.State == sim.StateSleeping || a.State == sim.StateResting {
 		return true
 	}
-	// In-flight only (LLM-531): while his round is suspended he is available for an
-	// ordinary encounter — being paused mid-round is not being busy.
+	// In-flight only (LLM-531): a BEAT is never in flight (LLM-548), so a carrier who
+	// owes a round is available for an ordinary encounter throughout it. That is what
+	// makes his stops conversational at all — the engine no longer holds him anywhere,
+	// so this is the mechanism that puts him in a huddle when he turns up at a shop.
 	if sim.RouteInFlight(w, a.ID) {
 		return true
 	}

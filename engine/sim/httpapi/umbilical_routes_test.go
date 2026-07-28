@@ -53,13 +53,12 @@ func seedNPCRoutes(t *testing.T, w *sim.World) {
 		homePost := sim.NewStructureEnterDestination("meeting_house")
 		world.ActiveRoutes["gideon"] = &sim.NPCRoute{
 			NPCID: "gideon", Label: sim.AttrConstable,
-			Phase: sim.RoutePhaseActive, Gen: 7, StopIdx: 1,
+			Phase: sim.RoutePhaseBeat, Gen: 7, StopIdx: 1,
 			Stops: []sim.RouteStop{
 				{ObjectID: "store", WalkTo: sim.Position{X: 10, Y: 11}, EnterStructureID: "store"},
 				{ObjectID: "blacksmith", WalkTo: sim.Position{X: 20, Y: 21}, EnterStructureID: "blacksmith"},
 			},
-			Dwelling:        true,
-			DwellTimer:      pendingTimer(t),
+			Visited:         []bool{true, false},
 			StaleRetries:    2,
 			HomeDestination: homePost,
 		}
@@ -110,15 +109,12 @@ func TestUmbilical_NPCRoutes(t *testing.T) {
 	// The LLM-537 shape: arrived at the current stop, dwelling, timer ARMED.
 	// All three together are what separate "working as designed" from "stuck".
 	g := out.Routes[0]
-	if g.NPCName != "Gideon Marsh" || g.Label != sim.AttrConstable || g.Phase != string(sim.RoutePhaseActive) {
-		t.Errorf("gideon name/label/phase = %q/%q/%q, want Gideon Marsh/constable/active", g.NPCName, g.Label, g.Phase)
+	if g.NPCName != "Gideon Marsh" || g.Label != sim.AttrConstable || g.Phase != string(sim.RoutePhaseBeat) {
+		t.Errorf("gideon name/label/phase = %q/%q/%q, want Gideon Marsh/constable/beat", g.NPCName, g.Label, g.Phase)
 	}
 	if g.Gen != 7 || g.StopIdx != 1 || g.StopCount != 2 || g.StaleRetries != 2 {
 		t.Errorf("gideon gen/stop_idx/stop_count/stale_retries = %d/%d/%d/%d, want 7/1/2/2",
 			g.Gen, g.StopIdx, g.StopCount, g.StaleRetries)
-	}
-	if !g.Dwelling || !g.DwellTimerPresent {
-		t.Errorf("gideon dwelling/dwell_timer_present = %v/%v, want true/true", g.Dwelling, g.DwellTimerPresent)
 	}
 	// An enter stop: both arrival tests agree, since InsideStructureID is exact
 	// either way. They can only diverge on a loiter stop (see the sub-test below).
@@ -136,6 +132,14 @@ func TestUmbilical_NPCRoutes(t *testing.T) {
 	if g.Stops[0].Current || !g.Stops[1].Current {
 		t.Errorf("gideon current flags = %v/%v, want false/true (cursor is stop 1)", g.Stops[0].Current, g.Stops[1].Current)
 	}
+	// The beat's real progress read: one of two stops called at. StopIdx alone
+	// cannot say this — a beat carrier walks his circuit in his own order.
+	if g.UnvisitedCount != 1 {
+		t.Errorf("gideon unvisited_count = %d, want 1 (the store is called at, the blacksmith is not)", g.UnvisitedCount)
+	}
+	if !g.Stops[0].Visited || g.Stops[1].Visited {
+		t.Errorf("gideon stop visited flags = %v/%v, want true/false", g.Stops[0].Visited, g.Stops[1].Visited)
+	}
 	if g.Stops[1].ObjectID != "blacksmith" || g.Stops[1].EnterStructureID != "blacksmith" {
 		t.Errorf("gideon stop 1 = %+v, want the blacksmith as an ENTER stop", g.Stops[1])
 	}
@@ -151,11 +155,17 @@ func TestUmbilical_NPCRoutes(t *testing.T) {
 		t.Error("gideon home dest carries a position — a structure_enter destination has none")
 	}
 
-	// The crier: walking (not arrived, not dwelling, no timer) but authoring.
+	// The crier: still walking (not arrived) but authoring.
 	c := out.Routes[1]
-	if c.ArrivedAtCurrentStop || c.ReachedCurrentStopOnFoot || c.Dwelling || c.DwellTimerPresent {
-		t.Errorf("grace arrived/reached/dwelling/timer = %v/%v/%v/%v, want all false — she is still walking",
-			c.ArrivedAtCurrentStop, c.ReachedCurrentStopOnFoot, c.Dwelling, c.DwellTimerPresent)
+	if c.ArrivedAtCurrentStop || c.ReachedCurrentStopOnFoot {
+		t.Errorf("grace arrived/reached = %v/%v, want false/false — she is still walking",
+			c.ArrivedAtCurrentStop, c.ReachedCurrentStopOnFoot)
+	}
+	// A decorative route keeps no visited record, so every stop reports unvisited
+	// and the count is simply the stop count. Not a bug — she walks her itinerary in
+	// cursor order and StopIdx IS her progress.
+	if c.Stops[0].Visited {
+		t.Error("grace stop visited = true — a decorative route records no visits")
 	}
 	if !c.Authoring {
 		t.Error("grace authoring = false — an author call is in flight for her stop")
@@ -221,41 +231,36 @@ func TestUmbilical_NPCRoutesActorFilter(t *testing.T) {
 	}
 }
 
-// TestUmbilical_NPCRoutesSpentTimerReadsPresent pins the field's exact contract, so
-// nobody later reads dwell_timer_present as liveness.
+// TestUmbilical_NPCRoutesBeatProgressIsCoverageNotCursor pins the read a beat
+// investigation actually needs (LLM-548).
 //
-// A *time.Timer that has already fired stays non-nil until the advance command
-// clears it, and the advance early-returns on its actor/Gen/Phase/StopIdx guard
-// BEFORE nilling — so a spent pointer can sit on a live route indefinitely, not just
-// for the moment a queued callback is in flight. The endpoint reports PRESENCE and
-// says so; this test is the record of that decision.
-//
-// The alternative — a world-owned timer-state token invalidated when the callback is
-// accepted — was rejected: it adds mutable simulation state for the benefit of a
-// diagnostic read, and the false direction is already trustworthy (nil genuinely
-// means nothing is scheduled), which is the direction a stall investigation needs.
-func TestUmbilical_NPCRoutesSpentTimerReadsPresent(t *testing.T) {
+// A beat carrier walks his circuit in whatever order he chooses, so StopIdx is not
+// progress — it only says which place the cue will name next. Here he has called at
+// stops 0, 2 and 3 while the cursor sits on 1, and an operator reading the cursor
+// alone would put him one stop into a four-stop round when he is three-quarters
+// done. unvisited_count and the per-stop visited flags are what answer the question.
+func TestUmbilical_NPCRoutesBeatProgressIsCoverageNotCursor(t *testing.T) {
 	w := seededWorld(t)
 	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["gideon"] = &sim.Actor{ID: "gideon", DisplayName: "Gideon Marsh"}
 		if world.ActiveRoutes == nil {
 			world.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
 		}
-		// A timer with a zero duration: it has fired by the time the request runs,
-		// leaving exactly the spent-but-non-nil pointer the real early-return path
-		// leaves behind.
-		spent := time.NewTimer(0)
-		<-spent.C
 		world.ActiveRoutes["gideon"] = &sim.NPCRoute{
-			NPCID: "gideon", Label: sim.AttrConstable, Phase: sim.RoutePhaseActive,
-			Stops:      []sim.RouteStop{{ObjectID: "store", WalkTo: sim.Position{X: 1, Y: 2}}},
-			Dwelling:   true,
-			DwellTimer: spent,
+			NPCID: "gideon", Label: sim.AttrConstable, Phase: sim.RoutePhaseBeat,
+			StopIdx: 1,
+			Stops: []sim.RouteStop{
+				{ObjectID: "store", WalkTo: sim.Position{X: 1, Y: 2}},
+				{ObjectID: "farm", WalkTo: sim.Position{X: 3, Y: 4}},
+				{ObjectID: "inn", WalkTo: sim.Position{X: 5, Y: 6}},
+				{ObjectID: "smithy", WalkTo: sim.Position{X: 7, Y: 8}},
+			},
+			Visited: []bool{true, false, true, true},
 		}
 		return nil, nil
 	}})
 	if err != nil {
-		t.Fatalf("seed spent timer: %v", err)
+		t.Fatalf("seed beat route: %v", err)
 	}
 	srv := NewServer(w, permAuth{operatorPerms})
 	srv.SetTelemetry(telemetry.New(4))
@@ -271,9 +276,21 @@ func TestUmbilical_NPCRoutesSpentTimerReadsPresent(t *testing.T) {
 	if len(out.Routes) != 1 {
 		t.Fatalf("routes = %d, want 1", len(out.Routes))
 	}
-	if !out.Routes[0].DwellTimerPresent {
-		t.Error("a fired-but-not-yet-cleared timer must read PRESENT — the field is pointer presence, " +
-			"not liveness, and the DTO contract says so")
+	r := out.Routes[0]
+	if r.Phase != string(sim.RoutePhaseBeat) {
+		t.Errorf("phase = %q, want beat", r.Phase)
+	}
+	if r.UnvisitedCount != 1 {
+		t.Errorf("unvisited_count = %d, want 1 — only the farm is still owed", r.UnvisitedCount)
+	}
+	// The cursor reads 1 while three of four stops are walked. That gap IS the point.
+	if r.StopIdx != 1 || r.StopCount != 4 {
+		t.Errorf("stop_idx/stop_count = %d/%d, want 1/4", r.StopIdx, r.StopCount)
+	}
+	for i, want := range []bool{true, false, true, true} {
+		if r.Stops[i].Visited != want {
+			t.Errorf("stop %d visited = %v, want %v", i, r.Stops[i].Visited, want)
+		}
 	}
 }
 

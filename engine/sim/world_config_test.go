@@ -134,18 +134,14 @@ func TestBuildCheckpointSnapshot_CarriesMutableSettings(t *testing.T) {
 }
 
 // TestBuildCheckpointSnapshot_CarriesConstableRounds pins that the LLM-514
-// constable-rounds knobs ride the checkpoint in seconds, including the interval=0
-// off-switch (carried as 0, NOT defaulted on the save side).
+// constable-rounds interval rides the checkpoint in seconds, including the
+// interval=0 off-switch (carried as 0, NOT defaulted on the save side).
 func TestBuildCheckpointSnapshot_CarriesConstableRounds(t *testing.T) {
 	w := newConfigWorld(t)
 	w.Settings.ConstableRoundsInterval = 2 * time.Hour
-	w.Settings.ConstableRoundsDwell = 45 * time.Second
 	cp := w.BuildCheckpointSnapshot()
 	if cp.MutableSettings.ConstableRoundsIntervalSeconds != 7200 {
 		t.Errorf("interval seconds = %d, want 7200", cp.MutableSettings.ConstableRoundsIntervalSeconds)
-	}
-	if cp.MutableSettings.ConstableRoundsDwellSeconds != 45 {
-		t.Errorf("dwell seconds = %d, want 45", cp.MutableSettings.ConstableRoundsDwellSeconds)
 	}
 	// Off-switch: interval 0 carries as 0 (defaulting is a read-time concern, not save).
 	w.Settings.ConstableRoundsInterval = 0

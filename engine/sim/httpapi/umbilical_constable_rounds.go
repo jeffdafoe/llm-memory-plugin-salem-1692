@@ -8,31 +8,26 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// umbilical_constable_rounds.go — LLM-514 (quiet_seconds added LLM-537). Live-tune
-// the constable rounds cadence on the running engine without a restart: how often
-// the constable (Gideon Marsh) leaves his post to walk the businesses, how long he
-// pauses at each, and how long a stop's conversation must have gone silent before
-// he walks on. The change applies on the next schedule tick / dwell re-check and
-// persists on the next checkpoint via MutableWorldSettings. The read side is GET
-// /api/village/umbilical/settings (constable_rounds_*_seconds).
+// umbilical_constable_rounds.go — LLM-514. Live-tune how often the constable
+// (Gideon Marsh) owes a fresh round of the businesses, without a restart. The
+// change applies on the next schedule tick and persists on the next checkpoint via
+// MutableWorldSettings. The read side is GET /api/village/umbilical/settings
+// (constable_rounds_interval_seconds).
+//
+// The dwell_seconds / quiet_seconds knobs are gone (LLM-548). They paced an engine
+// that walked him stop to stop; a beat dispatches nothing, so how long he stays
+// anywhere is settled by the conversation rather than by a timer.
 
 // umbilicalConstableRoundsRequest is the body of
-// POST /api/village/umbilical/constable-rounds/set. All fields optional (a nil
-// pointer leaves that knob unchanged); at least one must be supplied, and a
-// supplied value must be >= 0 seconds. interval_seconds == 0 disables rounds;
-// dwell_seconds == 0 and quiet_seconds == 0 resolve to their defaults at read.
+// POST /api/village/umbilical/constable-rounds/set. interval_seconds is required
+// and must be >= 0; 0 disables rounds.
 type umbilicalConstableRoundsRequest struct {
 	IntervalSeconds *int `json:"interval_seconds"`
-	DwellSeconds    *int `json:"dwell_seconds"`
-	QuietSeconds    *int `json:"quiet_seconds"`
 }
 
-// umbilicalConstableRoundsResponse echoes the post-change knobs (dwell and quiet
-// are the EFFECTIVE values — a stored 0 reports the default).
+// umbilicalConstableRoundsResponse echoes the post-change knob.
 type umbilicalConstableRoundsResponse struct {
 	IntervalSeconds int `json:"interval_seconds"`
-	DwellSeconds    int `json:"dwell_seconds"`
-	QuietSeconds    int `json:"quiet_seconds"`
 }
 
 // handleUmbilicalConstableRoundsSet applies a live constable-rounds knob change.
@@ -49,13 +44,13 @@ func (s *Server) handleUmbilicalConstableRoundsSet(w http.ResponseWriter, r *htt
 	}
 	auditUmbilical(user.Username, "constable-rounds.set", "")
 
-	res, err := s.world.SendContext(r.Context(), sim.SetConstableRoundsSettings(req.IntervalSeconds, req.DwellSeconds, req.QuietSeconds))
+	res, err := s.world.SendContext(r.Context(), sim.SetConstableRoundsSettings(req.IntervalSeconds))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
 		if errors.Is(err, sim.ErrInvalidConstableRoundsSetting) {
-			writeError(w, http.StatusBadRequest, "provide at least one of interval_seconds / dwell_seconds / quiet_seconds as a non-negative integer (interval_seconds 0 disables rounds)")
+			writeError(w, http.StatusBadRequest, "provide interval_seconds as a non-negative integer (0 disables rounds)")
 			return
 		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
@@ -66,9 +61,5 @@ func (s *Server) handleUmbilicalConstableRoundsSet(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusInternalServerError, "unexpected constable-rounds result")
 		return
 	}
-	writeJSON(w, umbilicalConstableRoundsResponse{
-		IntervalSeconds: out.IntervalSeconds,
-		DwellSeconds:    out.DwellSeconds,
-		QuietSeconds:    out.QuietSeconds,
-	})
+	writeJSON(w, umbilicalConstableRoundsResponse{IntervalSeconds: out.IntervalSeconds})
 }

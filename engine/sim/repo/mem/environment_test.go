@@ -77,13 +77,9 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 func TestSaveMutableSettings_ConstableRounds(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("concrete_values_round_trip", func(t *testing.T) {
+	t.Run("concrete_value_round_trips", func(t *testing.T) {
 		repo := mem.NewEnvironmentRepo()
-		ms := sim.MutableWorldSettings{
-			ConstableRoundsIntervalSeconds: 7200,
-			ConstableRoundsDwellSeconds:    45,
-			ConstableRoundsQuietSeconds:    120,
-		}
+		ms := sim.MutableWorldSettings{ConstableRoundsIntervalSeconds: 7200}
 		if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 			t.Fatalf("SaveMutableSettings: %v", err)
 		}
@@ -94,21 +90,14 @@ func TestSaveMutableSettings_ConstableRounds(t *testing.T) {
 		if settings.ConstableRoundsInterval != 2*time.Hour {
 			t.Errorf("interval = %v, want 2h", settings.ConstableRoundsInterval)
 		}
-		if settings.ConstableRoundsDwell != 45*time.Second {
-			t.Errorf("dwell = %v, want 45s", settings.ConstableRoundsDwell)
-		}
-		if settings.ConstableRoundsQuiet != 2*time.Minute {
-			t.Errorf("quiet = %v, want 2m", settings.ConstableRoundsQuiet)
-		}
 	})
 
-	t.Run("interval_off_and_dwell_quiet_default", func(t *testing.T) {
+	// 0 is the feature's off-switch, so it must survive the round-trip AS 0.
+	// Persisting a resolved default here would silently convert "rounds are off"
+	// into "rounds run at whatever today's default is".
+	t.Run("interval_off_survives_restore", func(t *testing.T) {
 		repo := mem.NewEnvironmentRepo()
-		ms := sim.MutableWorldSettings{
-			ConstableRoundsIntervalSeconds: 0,
-			ConstableRoundsDwellSeconds:    0,
-			ConstableRoundsQuietSeconds:    0,
-		}
+		ms := sim.MutableWorldSettings{ConstableRoundsIntervalSeconds: 0}
 		if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 			t.Fatalf("SaveMutableSettings: %v", err)
 		}
@@ -118,19 +107,6 @@ func TestSaveMutableSettings_ConstableRounds(t *testing.T) {
 		}
 		if settings.ConstableRoundsInterval != 0 {
 			t.Errorf("interval = %v, want 0 (off-switch preserved on restore)", settings.ConstableRoundsInterval)
-		}
-		if settings.ConstableRoundsDwell != 0 {
-			t.Errorf("dwell raw = %v, want 0 (stored), default applied only at read", settings.ConstableRoundsDwell)
-		}
-		if settings.ConstableRoundsQuiet != 0 {
-			t.Errorf("quiet raw = %v, want 0 (stored), default applied only at read", settings.ConstableRoundsQuiet)
-		}
-		w := &sim.World{Settings: settings}
-		if got := sim.EffectiveConstableRoundsDwell(w); got != sim.DefaultConstableRoundsDwell {
-			t.Errorf("effective dwell = %v, want default %v", got, sim.DefaultConstableRoundsDwell)
-		}
-		if got := sim.EffectiveConstableRoundsQuiet(w); got != sim.DefaultConstableRoundsQuiet {
-			t.Errorf("effective quiet = %v, want default %v", got, sim.DefaultConstableRoundsQuiet)
 		}
 	})
 }

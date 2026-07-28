@@ -237,7 +237,7 @@ func TestShiftDutyTarget_NotSuppressedDuringSuspendedRound(t *testing.T) {
 		t.Fatal("precondition: an active round must still suppress the go-to-post duty")
 	}
 
-	w.ActiveRoutes["gideon"].Phase = RoutePhaseSuspended
+	w.ActiveRoutes["gideon"].Phase = RoutePhaseBeat
 	target, toWork, ok := shiftDutyTarget(w, a, 600, time.Now())
 	if !ok || target != "meeting_house" || !toWork {
 		t.Errorf("suspended round: got (%q,%v,%v), want (meeting_house,true,true) — he has no other wake source",
@@ -262,7 +262,7 @@ func TestShiftTick_SuspendedRoundWakesButDoesNotWalk(t *testing.T) {
 	a.ScheduleEndMin = intptr(960)
 	w := sleepTestWorld(a)
 	w.ActiveRoutes = map[ActorID]*NPCRoute{
-		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseSuspended, StopIdx: 2},
+		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseBeat, StopIdx: 2},
 	}
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC) // on shift, off post
 
@@ -280,7 +280,7 @@ func TestShiftTick_SuspendedRoundWakesButDoesNotWalk(t *testing.T) {
 	// And his round is untouched, so the wake he gets is one where resuming is still
 	// on the table.
 	route := w.ActiveRoutes["gideon"]
-	if route == nil || route.Phase != RoutePhaseSuspended || route.StopIdx != 2 {
+	if route == nil || route.Phase != RoutePhaseBeat || route.StopIdx != 2 {
 		t.Errorf("ShiftTick disturbed the suspended round: %+v", route)
 	}
 
@@ -315,7 +315,7 @@ func TestShiftTick_SuspendedRoundWakesDecayWhenNothingChanges(t *testing.T) {
 	w := sleepTestWorld(a)
 	w.Settings.StaleWakeDecayBase = time.Minute
 	w.ActiveRoutes = map[ActorID]*NPCRoute{
-		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseSuspended},
+		"gideon": {NPCID: "gideon", Label: AttrConstable, Phase: RoutePhaseBeat},
 	}
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
 

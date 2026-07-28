@@ -174,119 +174,7 @@ func TestForceRouteConstableErrors(t *testing.T) {
 	}
 }
 
-// TestConstableDwellAndNoInterrupt: on arrival at a business the constable DWELLS
-// (does not advance immediately); the deferred advance moves him on once the dwell
-// elapses AND he is not mid-conversation; a huddle defers the advance.
-func TestConstableDwellAndNoInterrupt(t *testing.T) {
-	w := buildConstableCascadeWorld(t)
-	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-	cancel := runRouteCascadeWorld(t, w)
-	defer cancel()
-
-	// Start the rounds route, then place the constable inside the FIRST stop's
-	// business so arrival detection (InsideStructureID) fires for an enter stop.
-	if _, err := w.Send(ForceRouteCommand(sim.AttrConstable, false)); err != nil {
-		t.Fatalf("force route: %v", err)
-	}
-	firstStop, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["gideon"]
-		if route == nil || len(route.Stops) == 0 {
-			return sim.StructureID(""), nil
-		}
-		sid := route.Stops[0].EnterStructureID
-		// Put him inside the first business, as if he had walked in.
-		a := world.Actors["gideon"]
-		a.InsideStructureID = sid
-		return sid, nil
-	}})
-	if err != nil {
-		t.Fatalf("place at first stop: %v", err)
-	}
-	stopSID := firstStop.(sim.StructureID)
-	if stopSID == "" {
-		t.Fatal("no first stop to dwell at")
-	}
-
-	// Arrival at the stop DWELLS — Dwelling set, StopIdx unchanged (no immediate advance).
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: stopSID, At: time.Now()}
-		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("arrival: %v", err)
-	}
-	assertRoute(t, w, func(r *sim.NPCRoute) {
-		if !r.Dwelling {
-			t.Error("arrival should begin a dwell (Dwelling=true)")
-		}
-		if r.StopIdx != 0 {
-			t.Errorf("StopIdx = %d, want 0 (must not advance on arrival — it dwells)", r.StopIdx)
-		}
-	})
-
-	// While mid-conversation, the dwell advance DEFERS: StopIdx unchanged, still dwelling.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["gideon"]
-		a.CurrentHuddleID = "h1"
-		world.Huddles["h1"] = &sim.Huddle{ID: "h1", Members: map[sim.ActorID]struct{}{"gideon": {}, "keeper": {}}}
-		gen := world.ActiveRoutes["gideon"].Gen
-		if _, err := constableAdvanceAfterDwell("gideon", gen, 0).Fn(world); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("dwell advance (huddling): %v", err)
-	}
-	assertRoute(t, w, func(r *sim.NPCRoute) {
-		if r.StopIdx != 0 {
-			t.Errorf("StopIdx = %d, want 0 — must not yank him out of a conversation", r.StopIdx)
-		}
-		if !r.Dwelling {
-			t.Error("still dwelling while the huddle stands")
-		}
-	})
-
-	// Conversation ends → the dwell advance moves him on to the next stop.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["gideon"]
-		a.CurrentHuddleID = ""
-		delete(world.Huddles, "h1")
-		gen := world.ActiveRoutes["gideon"].Gen
-		if _, err := constableAdvanceAfterDwell("gideon", gen, 0).Fn(world); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("dwell advance (idle): %v", err)
-	}
-	assertRoute(t, w, func(r *sim.NPCRoute) {
-		if r.StopIdx == 0 {
-			t.Error("StopIdx still 0 — should have advanced once the conversation ended")
-		}
-		if r.Dwelling {
-			t.Error("Dwelling should clear on advance")
-		}
-	})
-}
-
-// assertRoute reads the constable's active route on the world goroutine and runs
-// check against it. Fatals when no route is installed.
-func assertRoute(t *testing.T, w *sim.World, check func(*sim.NPCRoute)) {
-	t.Helper()
-	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.ActiveRoutes["gideon"], nil
-	}})
-	if err != nil {
-		t.Fatalf("read route: %v", err)
-	}
-	route, ok := res.(*sim.NPCRoute)
-	if !ok || route == nil {
-		t.Fatal("no active route")
-	}
-	check(route)
-}
-
-// constableHasRoute reports whether id has an active route (read on the world goroutine).
+// constableHasRoute reports whether the actor has a route installed at all.
 func constableHasRoute(t *testing.T, w *sim.World, id sim.ActorID) bool {
 	t.Helper()
 	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -370,234 +258,6 @@ func TestForceRouteConstableOffPostOffShift(t *testing.T) {
 	}
 	if res.(sim.StartNPCRouteResult).Stops == 0 {
 		t.Fatal("forced rounds off-post/off-shift built 0 stops — the operator force must bypass eligibility")
-	}
-}
-
-// TestConstableDwellTimerAdvancesAsync: fix #6 — drive the dwell through the REAL
-// timer callback (no direct Fn call). Arrival arms the timer; after the dwell it
-// advances the route on the world goroutine on its own.
-func TestConstableDwellTimerAdvancesAsync(t *testing.T) {
-	w := buildConstableCascadeWorld(t)
-	w.Settings.ConstableRoundsDwell = 30 * time.Millisecond // shrink so the timer fires fast
-	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-	cancel := runRouteCascadeWorld(t, w)
-	defer cancel()
-
-	if _, err := w.Send(ForceRouteCommand(sim.AttrConstable, false)); err != nil {
-		t.Fatalf("force route: %v", err)
-	}
-	// Place him inside the first stop and fire arrival — this arms the REAL dwell timer.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		route := world.ActiveRoutes["gideon"]
-		sid := route.Stops[0].EnterStructureID
-		world.Actors["gideon"].InsideStructureID = sid
-		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}
-		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("arrival: %v", err)
-	}
-	// Without calling the advance ourselves, the timer must fire on the world
-	// goroutine and move him on (StopIdx advances, or the whole tour completes).
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			r := world.ActiveRoutes["gideon"]
-			if r == nil {
-				return 1, nil // route completed — the timer drove it all the way home
-			}
-			return r.StopIdx, nil
-		}})
-		if err != nil {
-			t.Fatalf("poll: %v", err)
-		}
-		if res.(int) > 0 {
-			return // advanced by the timer callback — success
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("dwell timer never advanced the route within 3s")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// TestConstableSupersedeStopsDwellTimer: fix #6 — a superseded route's stale dwell
-// timer must not advance the replacement route (which occupies the same StopIdx).
-// The timer-stop on supersede is what prevents it; the stopIdx guard alone would
-// not, since both routes sit at StopIdx 0.
-func TestConstableSupersedeStopsDwellTimer(t *testing.T) {
-	w := buildConstableCascadeWorld(t)
-	w.Settings.ConstableRoundsDwell = 40 * time.Millisecond
-	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-	cancel := runRouteCascadeWorld(t, w)
-	defer cancel()
-
-	// Route A: force, arrive at stop 0 (arms A's dwell timer), then IMMEDIATELY
-	// supersede with route B — all synchronous on the world goroutine, so A's timer
-	// is stopped before it can fire.
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
-			return nil, err
-		}
-		sid := world.ActiveRoutes["gideon"].Stops[0].EnterStructureID
-		world.Actors["gideon"].InsideStructureID = sid
-		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}
-		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
-		// Supersede with route B (fresh, also at StopIdx 0).
-		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	// Well past the dwell: if A's stale timer were still live it would have fired and
-	// wrongly advanced route B off StopIdx 0.
-	time.Sleep(150 * time.Millisecond)
-	assertRoute(t, w, func(r *sim.NPCRoute) {
-		if r.StopIdx != 0 {
-			t.Errorf("StopIdx = %d, want 0 — a superseded route's stale dwell timer advanced the replacement", r.StopIdx)
-		}
-	})
-}
-
-// dwellAtStopInHuddle stands the constable at his first rounds stop mid-dwell, puts
-// him in huddle "h1" with the given stamps, then runs ONE dwell advance and returns
-// the resulting StopIdx (or -1 when the route is gone). Everything runs on the world
-// goroutine in a single command, so the real dwell timer armed by arrival (the 45s
-// default here) can never race the advance under test.
-//
-// mutate customizes the huddle before the advance — the differences between the
-// LLM-537 cases are entirely in LastActivityAt / LastPCUtteranceAt.
-func dwellAtStopInHuddle(t *testing.T, w *sim.World, mutate func(*sim.Huddle)) int {
-	t.Helper()
-	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
-			return nil, err
-		}
-		sid := world.ActiveRoutes["gideon"].Stops[0].EnterStructureID
-		actor := world.Actors["gideon"]
-		actor.InsideStructureID = sid
-		evt := &sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}
-		handleActorArrivedAdvanceRoute(context.Background(), world, evt, llm.NewFakeClient())
-
-		h := &sim.Huddle{
-			ID:          "h1",
-			Members:     map[sim.ActorID]struct{}{"gideon": {}, "keeper": {}},
-			StructureID: sid,
-			StartedAt:   time.Now().Add(-10 * time.Minute),
-		}
-		mutate(h)
-		world.Huddles["h1"] = h
-		actor.CurrentHuddleID = "h1"
-
-		gen := world.ActiveRoutes["gideon"].Gen
-		if _, err := constableAdvanceAfterDwell("gideon", gen, 0).Fn(world); err != nil {
-			return nil, err
-		}
-		if r := world.ActiveRoutes["gideon"]; r != nil {
-			return r.StopIdx, nil
-		}
-		return -1, nil
-	}})
-	if err != nil {
-		t.Fatalf("dwell advance: %v", err)
-	}
-	return res.(int)
-}
-
-// TestConstableAdvancesWhenStopGoesQuiet is the LLM-537 regression. The live case:
-// the constable and Ezekiel Crane traded goodbyes at the Blacksmith, Ezekiel ticked
-// three seconds later and correctly said nothing, and the constable then stood in
-// the smithy for 9+ minutes. The huddle was UNCONCLUDED the whole time — it stays
-// open for HuddleSilenceTimeout (2h) so a returning patron resumes the conversation
-// — so the old lifecycle predicate deferred the advance on every re-check. A keeper
-// who correctly stays silent was, on its own, enough to hold him at the stop.
-//
-// The sub-tests are the four states the predicate has to tell apart. The
-// deferring ones are the LLM-514 intent that must not regress.
-func TestConstableAdvancesWhenStopGoesQuiet(t *testing.T) {
-	// Well past the 90s default quiet window, and nowhere near the 2h lifecycle
-	// timeout — the whole gap the old predicate could not see.
-	const gone = 5 * time.Minute
-
-	t.Run("quiet_conversation_advances", func(t *testing.T) {
-		w := buildConstableCascadeWorld(t)
-		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-		cancel := runRouteCascadeWorld(t, w)
-		defer cancel()
-		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
-			h.LastActivityAt = time.Now().Add(-gone)
-		})
-		if got == 0 {
-			t.Error("StopIdx still 0 — a stop whose conversation went silent must not hold him; the huddle stays unconcluded for 2h")
-		}
-	})
-
-	t.Run("mid_exchange_still_defers", func(t *testing.T) {
-		w := buildConstableCascadeWorld(t)
-		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-		cancel := runRouteCascadeWorld(t, w)
-		defer cancel()
-		// A partner replying inside the window — NPCs answer at tick speed, well
-		// under the 60s DefaultNPCAwaitReplyWindow the 90s default is sized against.
-		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
-			h.LastActivityAt = time.Now().Add(-10 * time.Second)
-		})
-		if got != 0 {
-			t.Errorf("StopIdx = %d, want 0 — must not yank him out of a conversation still in progress (LLM-514)", got)
-		}
-	})
-
-	t.Run("player_attended_defers_though_quiet", func(t *testing.T) {
-		w := buildConstableCascadeWorld(t)
-		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-		cancel := runRouteCascadeWorld(t, w)
-		defer cancel()
-		// A human reads and types: DefaultPCAwaitReplyWindow is 5 minutes against an
-		// NPC's 60s, so a window sized for NPC turn-taking would walk him off
-		// mid-sentence on a player. Same huddlePCAttended test the loop sweep uses.
-		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
-			h.LastActivityAt = time.Now().Add(-gone)
-			h.LastPCUtteranceAt = time.Now().Add(-time.Minute)
-		})
-		if got != 0 {
-			t.Errorf("StopIdx = %d, want 0 — a player is still in this conversation", got)
-		}
-	})
-
-	t.Run("player_wandered_off_advances", func(t *testing.T) {
-		w := buildConstableCascadeWorld(t)
-		RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-		cancel := runRouteCascadeWorld(t, w)
-		defer cancel()
-		// Past huddlePCAttentionWindow (3m): a parked-and-silent player must not
-		// shield the stop forever, or the constable never finishes a round again.
-		got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
-			h.LastActivityAt = time.Now().Add(-gone)
-			h.LastPCUtteranceAt = time.Now().Add(-10 * time.Minute)
-		})
-		if got == 0 {
-			t.Error("StopIdx still 0 — a player who stopped talking long ago must not park him at the stop")
-		}
-	})
-}
-
-// TestConstableQuietWindowTunable: the live knob reaches the dwell driver. The same
-// silence that advances him under the 90s default keeps deferring when the operator
-// widens the window — proof the setting is read at the decision, not baked in.
-func TestConstableQuietWindowTunable(t *testing.T) {
-	w := buildConstableCascadeWorld(t)
-	w.Settings.ConstableRoundsQuiet = time.Hour
-	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-	cancel := runRouteCascadeWorld(t, w)
-	defer cancel()
-
-	got := dwellAtStopInHuddle(t, w, func(h *sim.Huddle) {
-		h.LastActivityAt = time.Now().Add(-5 * time.Minute)
-	})
-	if got != 0 {
-		t.Errorf("StopIdx = %d, want 0 — 5m of silence is inside a 1h quiet window", got)
 	}
 }
 
@@ -698,58 +358,19 @@ func TestTileRouteBuildersNeverEnter(t *testing.T) {
 	}
 }
 
-// TestConstableStaleDwellCallbackAfterSupersede: fix A (the real race) — a dwell
-// callback that ALREADY FIRED and queued its command before its route was superseded
-// must NOT advance the replacement route, even though both sit at StopIdx 0. The
-// generation token is what distinguishes them; stopping the timer only covers the
-// not-yet-fired case.
-func TestConstableStaleDwellCallbackAfterSupersede(t *testing.T) {
-	w := buildConstableCascadeWorld(t)
-	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
-	cancel := runRouteCascadeWorld(t, w)
-	defer cancel()
-
-	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		// Route A + arrival: arms A's dwell timer carrying A's Gen at StopIdx 0.
-		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
-			return nil, err
-		}
-		routeA := world.ActiveRoutes["gideon"]
-		genA := routeA.Gen
-		sid := routeA.Stops[0].EnterStructureID
-		world.Actors["gideon"].InsideStructureID = sid
-		handleActorArrivedAdvanceRoute(context.Background(), world,
-			&sim.ActorArrived{ActorID: "gideon", FinalStructureID: sid, At: time.Now()}, llm.NewFakeClient())
-		// Supersede with route B (fresh Gen, also at StopIdx 0).
-		if _, err := ForceRouteCommand(sim.AttrConstable, false).Fn(world); err != nil {
-			return nil, err
-		}
-		// Simulate the callback A's timer had ALREADY QUEUED before the supersede:
-		// invoke the advance carrying A's now-stale Gen. It must no-op against route B.
-		if _, err := constableAdvanceAfterDwell("gideon", genA, 0).Fn(world); err != nil {
-			return nil, err
-		}
-		return world.ActiveRoutes["gideon"].StopIdx, nil
-	}})
-	if err != nil {
-		t.Fatalf("scenario: %v", err)
-	}
-	if res.(int) != 0 {
-		t.Errorf("route B StopIdx = %d, want 0 — a stale dwell callback from the superseded route advanced the replacement (generation guard failed)", res.(int))
-	}
-}
-
-// TestConstableSuspendedArrivalUsesSkipFlip pins the defect the LLM-531 audit found:
-// handleActorArrivedAdvanceRoute's constable branch requires Phase == Active, so a
-// RESUMING constable fell through to the generic tail — sim.AdvanceNPCRoute with
-// flip=true — while every other constable path deliberately uses SkipFlip. His stops
+// TestConstableBeatArrivalUsesSkipFlip pins the defect the LLM-531 audit found, in
+// its LLM-548 form: a beat arrival must go through the skip-flip advance and never
+// fall through to the generic tail (sim.AdvanceNPCRoute with flip=true). His stops
 // are businesses whose village_object state his round has no business flipping, so
-// the fall-through would have stamped them with a state the round never intended.
+// the fall-through would stamp them with a state the round never intended.
 //
-// Drives the real sequence through the cascade handler: arrive at stop 0, step away
-// (suspending the round), then walk back to the stop he broke off at. The round must
-// resume AND every business stop must keep the state it started with.
-func TestConstableSuspendedArrivalUsesSkipFlip(t *testing.T) {
+// The old shape had three constable arrival branches with different phase
+// preconditions, and the one that lacked a branch fell through. There is one branch
+// now, keyed on the phase alone, which is why this can be pinned with a single walk.
+//
+// Drives the real sequence through the cascade handler: call at a stop, step away,
+// call at another stop. Every business keeps the state it started with throughout.
+func TestConstableBeatArrivalUsesSkipFlip(t *testing.T) {
 	w := buildConstableCascadeWorld(t)
 	RegisterNPCRoutes(context.Background(), w, llm.NewFakeClient())
 	cancel := runRouteCascadeWorld(t, w)
@@ -760,44 +381,57 @@ func TestConstableSuspendedArrivalUsesSkipFlip(t *testing.T) {
 			return nil, err
 		}
 		route := world.ActiveRoutes["gideon"]
+		if route.Phase != sim.RoutePhaseBeat {
+			return nil, fmt.Errorf("force-dispatched round is %q, want beat", route.Phase)
+		}
 		before := map[sim.VillageObjectID]string{}
 		for _, s := range route.Stops {
 			before[s.ObjectID] = world.VillageObjects[s.ObjectID].CurrentState
 		}
-		breakOff := route.Stops[route.StopIdx]
+		arriveAt := func(stop sim.RouteStop) {
+			a := world.Actors["gideon"]
+			a.InsideStructureID = stop.EnterStructureID
+			if stop.EnterStructureID == "" {
+				a.Pos = stop.WalkTo
+			}
+			a.MoveIntent = nil
+			handleActorArrivedAdvanceRoute(context.Background(), world,
+				&sim.ActorArrived{ActorID: "gideon", FinalStructureID: stop.EnterStructureID, At: time.Now()}, llm.NewFakeClient())
+		}
 
-		// He steps away: an arrival at neither the current stop nor the next one.
+		first := route.Stops[0]
+		arriveAt(first)
+		if got := world.ActiveRoutes["gideon"]; got == nil || !sim.RouteStopVisited(got, 0) {
+			return nil, fmt.Errorf("stop 0 not credited on arrival: %+v", got)
+		}
+
+		// He steps away to see to something of his own — no stop at all.
 		a := world.Actors["gideon"]
 		a.InsideStructureID = ""
 		a.Pos = sim.Position{X: sim.PadX + 60, Y: sim.PadY + 60}
 		a.MoveIntent = nil
 		handleActorArrivedAdvanceRoute(context.Background(), world,
 			&sim.ActorArrived{ActorID: "gideon", At: time.Now()}, llm.NewFakeClient())
-		if got := world.ActiveRoutes["gideon"]; got == nil || got.Phase != sim.RoutePhaseSuspended {
-			return nil, fmt.Errorf("round did not suspend: %+v", got)
+		if got := world.ActiveRoutes["gideon"]; got == nil {
+			return nil, fmt.Errorf("beat dropped when he stepped off it")
 		}
 
-		// He comes back to the stop he broke off at — this is the resuming arrival.
-		if breakOff.EnterStructureID != "" {
-			a.InsideStructureID = breakOff.EnterStructureID
-		} else {
-			a.Pos = breakOff.WalkTo
+		// And calls at a different stop of his own accord.
+		if len(route.Stops) > 1 {
+			arriveAt(route.Stops[1])
+			if got := world.ActiveRoutes["gideon"]; got != nil && !sim.RouteStopVisited(got, 1) {
+				return nil, fmt.Errorf("stop 1 not credited when he called at it himself")
+			}
 		}
-		a.MoveIntent = nil
-		handleActorArrivedAdvanceRoute(context.Background(), world,
-			&sim.ActorArrived{ActorID: "gideon", FinalStructureID: breakOff.EnterStructureID, At: time.Now()}, llm.NewFakeClient())
 
-		if got := world.ActiveRoutes["gideon"]; got == nil || got.Phase == sim.RoutePhaseSuspended {
-			return nil, fmt.Errorf("round did not resume on returning to the break-off stop: %+v", got)
-		}
-		// The crux: no business object was flipped by the resume.
+		// The crux: no business object was flipped anywhere along the way.
 		for id, was := range before {
 			if now := world.VillageObjects[id].CurrentState; now != was {
-				return nil, fmt.Errorf("business %q state changed %q -> %q on resume — the generic flip path ran", id, was, now)
+				return nil, fmt.Errorf("business %q state changed %q -> %q — the generic flip path ran", id, was, now)
 			}
 		}
 		return nil, nil
 	}}); err != nil {
-		t.Fatalf("suspended-arrival skip-flip: %v", err)
+		t.Fatalf("beat-arrival skip-flip: %v", err)
 	}
 }

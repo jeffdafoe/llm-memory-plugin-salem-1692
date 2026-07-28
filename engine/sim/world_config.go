@@ -574,52 +574,33 @@ func SetMerchantCoinFloor(floor *int) Command {
 // int) — → 400 at the umbilical route.
 var ErrInvalidConstableRoundsSetting = errors.New("invalid constable rounds setting")
 
-// ConstableRoundsSettingsResult echoes the post-change constable rounds knobs in
-// wire units (seconds). DwellSeconds and QuietSeconds report the EFFECTIVE values
-// (a stored 0 resolves to the default), matching the read side.
+// ConstableRoundsSettingsResult echoes the post-change constable rounds knob in
+// wire units (seconds).
 type ConstableRoundsSettingsResult struct {
 	IntervalSeconds int
-	DwellSeconds    int
-	QuietSeconds    int
 }
 
-// SetConstableRoundsSettings returns a Command that live-tunes the constable
-// rounds cadence (LLM-514; quiet added LLM-537): how often he leaves his post to
-// walk the businesses, how long he pauses at each, and how long a stop's
-// conversation must have been silent before he walks on. All fields optional
-// (nil = leave unchanged) but at least one must be supplied; each must be >= 0
-// seconds. IntervalSeconds == 0 is the explicit OFF-switch (ConstableRoundsDue
-// treats interval <= 0 as "rounds disabled"); DwellSeconds == 0 and
-// QuietSeconds == 0 resolve to their defaults at read
-// (EffectiveConstableRoundsDwell / EffectiveConstableRoundsQuiet) — a zero pause
-// would defeat the pause-and-engage design, and a zero quiet-window would walk him
-// out the instant a line landed. Takes effect on the next schedule tick / dwell
-// re-check AND persists on the next checkpoint via MutableWorldSettings, so a live
-// change survives restart.
-func SetConstableRoundsSettings(intervalSeconds, dwellSeconds, quietSeconds *int) Command {
+// SetConstableRoundsSettings returns a Command that live-tunes how often the
+// constable owes a fresh round (LLM-514). Required and must be >= 0 seconds;
+// 0 is the explicit OFF-switch (ConstableRoundsDue treats interval <= 0 as "rounds
+// disabled"). Takes effect on the next schedule tick AND persists on the next
+// checkpoint via MutableWorldSettings, so a live change survives restart.
+//
+// The per-stop dwell and quiet-window knobs are gone with the dwell (LLM-548) —
+// nothing dispatches him between stops, so the engine has no pace to tune. How long
+// he stays somewhere is now settled by the conversation he is having.
+func SetConstableRoundsSettings(intervalSeconds *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if intervalSeconds == nil && dwellSeconds == nil && quietSeconds == nil {
+			if intervalSeconds == nil {
 				return nil, ErrInvalidConstableRoundsSetting
 			}
-			for _, v := range []*int{intervalSeconds, dwellSeconds, quietSeconds} {
-				if v != nil && (*v < 0 || *v > math.MaxInt32) {
-					return nil, ErrInvalidConstableRoundsSetting
-				}
+			if *intervalSeconds < 0 || *intervalSeconds > math.MaxInt32 {
+				return nil, ErrInvalidConstableRoundsSetting
 			}
-			if intervalSeconds != nil {
-				w.Settings.ConstableRoundsInterval = time.Duration(*intervalSeconds) * time.Second
-			}
-			if dwellSeconds != nil {
-				w.Settings.ConstableRoundsDwell = time.Duration(*dwellSeconds) * time.Second
-			}
-			if quietSeconds != nil {
-				w.Settings.ConstableRoundsQuiet = time.Duration(*quietSeconds) * time.Second
-			}
+			w.Settings.ConstableRoundsInterval = time.Duration(*intervalSeconds) * time.Second
 			return ConstableRoundsSettingsResult{
 				IntervalSeconds: int(w.Settings.ConstableRoundsInterval / time.Second),
-				DwellSeconds:    int(EffectiveConstableRoundsDwell(w) / time.Second),
-				QuietSeconds:    int(EffectiveConstableRoundsQuiet(w) / time.Second),
 			}, nil
 		},
 	}

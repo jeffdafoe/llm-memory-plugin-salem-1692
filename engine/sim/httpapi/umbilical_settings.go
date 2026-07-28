@@ -136,8 +136,6 @@ type UmbilicalSettingsDTO struct {
 	// neither zero is an off-switch. quiet is how long a stop's conversation must
 	// have been silent before the rounds advance stops deferring.
 	ConstableRoundsIntervalSeconds int `json:"constable_rounds_interval_seconds"`
-	ConstableRoundsDwellSeconds    int `json:"constable_rounds_dwell_seconds"`
-	ConstableRoundsQuietSeconds    int `json:"constable_rounds_quiet_seconds"`
 
 	// Visitor cascade (LLM-437) — the knobs driving the transient-visitor tier
 	// (engine/sim/visitor.go + cascade/visitor.go + the LLM-410 factor). Unlike
@@ -288,8 +286,6 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			EcoAudienceIdleSeconds:                int(sim.PCAudienceIdleAfter(world) / time.Second),
 			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
 			ConstableRoundsIntervalSeconds:        int(world.Settings.ConstableRoundsInterval / time.Second),
-			ConstableRoundsDwellSeconds:           int(sim.EffectiveConstableRoundsDwell(world) / time.Second),
-			ConstableRoundsQuietSeconds:           int(sim.EffectiveConstableRoundsQuiet(world) / time.Second),
 			VisitorSpawnChancePermille:            world.Settings.VisitorSpawnChancePermille,
 			VisitorMaxConcurrent:                  visitorMax,
 			VisitorTickIntervalSeconds:            int(visitorTick / time.Second),
