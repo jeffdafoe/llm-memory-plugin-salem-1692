@@ -185,14 +185,16 @@ type RouteStop struct {
 	EnterStructureID StructureID
 }
 
-// RouteStopArrived reports whether actor a has arrived at stop: standing
-// inside the target structure for an ENTER stop (EnterStructureID set), or
-// standing on the WalkTo tile for a loiter/tile stop. The two arrival
-// signals differ because a StructureEnter move finishes when the locomotion
-// ticker flips InsideStructureID (the actor is on the door tile, inside the
-// footprint), whereas a Position move finishes on the exact tile. Shared by
-// the substrate's stale-arrival guard (advanceActiveRoute) and the cascade
-// arrival handler so both agree on "at the stop".
+// RouteStopArrived reports whether the ROUTE'S OWN dispatched walk to stop has
+// completed: the actor stands inside the target structure for an ENTER stop, or on
+// the WalkTo tile for a loiter/tile stop. The two signals differ because a
+// StructureEnter move finishes when the locomotion ticker flips InsideStructureID,
+// whereas a Position move finishes on the exact tile it aimed at.
+//
+// This is a DISPATCH-COMPLETION question, not a location question. WalkTo is where
+// the route sent him — `buildRouteStops` picks a *walkable* tile near the object,
+// which is not the object's own pin whenever the pin's tile cannot be stood on. So
+// "he is on WalkTo" means "the walk I issued finished", and nothing more.
 func RouteStopArrived(a *Actor, stop RouteStop) bool {
 	if a == nil {
 		return false
@@ -203,62 +205,61 @@ func RouteStopArrived(a *Actor, stop RouteStop) bool {
 	return a.Pos.X == stop.WalkTo.X && a.Pos.Y == stop.WalkTo.Y
 }
 
-// RouteStopReachedOnFoot is the tolerant twin of RouteStopArrived, for arrivals
-// the ROUTE did not dispatch — a stateful carrier who walked himself to a stop
-// because the cue named it (the LLM-530 walk-onward) or because he is coming back
-// to a round he broke off (the LLM-531 resume).
+// ActorAtRouteStopPlace reports whether the actor is AT the stop's place, however he
+// came to be there — inside the structure for an enter stop, at the object's own
+// loiter pin for a loiter stop. The location question, asked of the shared
+// object-keyed predicate (LLM-550).
 //
-// The strict form is exact tile equality with WalkTo, which is right for the
-// route's OWN walks: routeStopDestination dispatches a Position destination
-// straight at that tile, so the actor lands on it. But the carrier's own
-// move_to("the James Farm") resolves to a StructureVisit, and pickVisitorSlot
-// parks him on one of the eight king's-move slots AROUND the loiter pin, taking
-// the pin itself only when all eight are blocked. So the two can essentially
-// never match, and every check written against the strict form silently failed
-// for the exact path it was built to serve — live 15:53 on 2026-07-25 he walked
-// from the Ellis Farm to the James Farm precisely as the cue asked, and the route
-// still read "expected stop 0" two minutes later.
-//
-// LoiterAttributionTiles is the tolerance because it IS the pin's own footprint:
-// the pin tile plus its eight visitor slots, the exact inverse of pickVisitorSlot
-// and the same radius every other "is he at this place" check in the engine uses.
-// Standing in a visitor slot at a business is standing at that business.
-//
-// Enter stops are unchanged — InsideStructureID is already an exact, slot-free
-// signal, however he came to be inside.
-func RouteStopReachedOnFoot(a *Actor, stop RouteStop) bool {
+// The stop itself declares which posture counts, rather than this re-deriving it
+// from the asset. `resolveRouteStop` already made that judgement at build time via
+// moveToCanEnter: an open, enterable business became an ENTER stop, and a closed or
+// locked one was downgraded to a loiter stop precisely so the carrier stands at its
+// door instead. Re-deciding here could contradict the stop he was actually sent to.
+func ActorAtRouteStopPlace(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, a *Actor, stop RouteStop) bool {
 	if a == nil {
 		return false
 	}
 	if stop.EnterStructureID != "" {
 		return a.InsideStructureID == stop.EnterStructureID
 	}
-	return a.Pos.Chebyshev(stop.WalkTo) <= LoiterAttributionTiles
+	return ActorAtObjectPin(objects, assets, a.Pos, stop.ObjectID)
 }
 
 // RouteStopReached is the single "is this carrier at this stop?" test, for every
-// site that asks the question. It picks the predicate by CARRIER rather than by
-// call site: a decorative carrier never self-moves, so only the route's own walk
-// can have put it anywhere and exact tile equality is right; a stateful carrier
-// arrives places under his own steam, where move_to resolves to a StructureVisit
-// and pickVisitorSlot parks him BESIDE the pin.
+// site that asks the question. Two independent sufficient conditions, and which
+// apply depends on what could have put the carrier where he stands:
 //
-// Having ONE of these is the fix (LLM-543). LLM-531 introduced the tolerant form
-// and applied it at only some of the sites that ask the question, leaving others on
-// the strict form. One gate then admitted him on the tolerant test and handed
-// straight into a strict one he could not pass: live on 2026-07-27 the constable was
-// accepted and rejected at the same stop on every wake for hours, his cursor frozen
-// at stop 0 of 8 while he walked half the circuit under his own steam and was
-// credited for none of it.
+//   - A DECORATIVE carrier never self-moves. The route's own walk is the only thing
+//     that can have brought it anywhere, so dispatch completion is the complete
+//     answer and asking a location question could only mask a genuine external bump
+//     that the stale-arrival re-walk exists to undo. Unchanged, byte for byte.
+//   - A BEAT carrier walks himself. Dispatch completion is nearly meaningless for
+//     him — the beat dispatches nothing at all — so the location question is the
+//     real one. The dispatch arm is kept as a superset so a beat can never lose an
+//     arrival a decorative route would have caught.
 //
-// Tolerant is a strict SUPERSET — the route's own walk aims a Position destination
-// straight at WalkTo, so an engine-dispatched arrival satisfies both forms. Widening
-// a site therefore never loses an arrival the strict form used to catch.
-func RouteStopReached(route *NPCRoute, a *Actor, stop RouteStop) bool {
-	if routeIsBeat(route) {
-		return RouteStopReachedOnFoot(a, stop)
+// **Why the location arm is not more tile arithmetic.** It used to be: a tolerance
+// of LoiterAttributionTiles around `stop.WalkTo`. That reads as the pin's own
+// footprint but is not — WalkTo is the route's *pathing goal*, displaced from the
+// object's anchor whenever the anchor is unwalkable, while the carrier's own
+// move_to parks him via pickVisitorSlot around the ANCHOR. Live on 2026-07-28 those
+// were 2 tiles apart at the PW Apothecary: the constable called there three times,
+// held a full conversation each visit, was credited none of them, and walked the
+// village without stopping for half an hour because the round could never finish.
+// Every other stop on that circuit had a pin within a tile of its anchor and
+// credited fine, which is exactly why it took a live case to surface.
+//
+// The fix is to ask the place, not the tile. ActorAtObjectPin measures from the
+// object's OWN loiter pin, so no caller's cached tile can drift from what the place
+// actually is.
+func RouteStopReached(w *World, route *NPCRoute, a *Actor, stop RouteStop) bool {
+	if RouteStopArrived(a, stop) {
+		return true
 	}
-	return RouteStopArrived(a, stop)
+	if !routeIsBeat(route) || w == nil {
+		return false
+	}
+	return ActorAtRouteStopPlace(w.VillageObjects, w.Assets, a, stop)
 }
 
 // routeStopDestination builds the MoveDestination that dispatches a walk to
@@ -499,17 +500,17 @@ func (r *NPCRoute) unvisitedExcluding(idx int) int {
 // circuit could complete on stops he never walked. Making the guard explicit costs a
 // bounds-checked bool and removes the need to hold the invariant in mind here
 // (code_review, LLM-548).
-func (r *NPCRoute) reachedStopIndex(a *Actor) (int, bool) {
+func (r *NPCRoute) reachedStopIndex(w *World, a *Actor) (int, bool) {
 	if r == nil || a == nil {
 		return 0, false
 	}
 	if r.StopIdx >= 0 && r.StopIdx < len(r.Stops) &&
 		!r.hasVisited(r.StopIdx) &&
-		RouteStopReached(r, a, r.Stops[r.StopIdx]) {
+		RouteStopReached(w, r, a, r.Stops[r.StopIdx]) {
 		return r.StopIdx, true
 	}
 	for i, stop := range r.Stops {
-		if !r.hasVisited(i) && RouteStopReached(r, a, stop) {
+		if !r.hasVisited(i) && RouteStopReached(w, r, a, stop) {
 			return i, true
 		}
 	}
@@ -528,12 +529,12 @@ func (r *NPCRoute) reachedStopIndex(a *Actor) (int, bool) {
 //
 // First match wins. Two stops whose tolerant regions overlap are near enough to
 // share a doorstep, so either name describes where he is standing.
-func (r *NPCRoute) stopIndexAt(a *Actor) (int, bool) {
+func (r *NPCRoute) stopIndexAt(w *World, a *Actor) (int, bool) {
 	if r == nil || a == nil {
 		return 0, false
 	}
 	for i, stop := range r.Stops {
-		if RouteStopReached(r, a, stop) {
+		if RouteStopReached(w, r, a, stop) {
 			return i, true
 		}
 	}
@@ -876,7 +877,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 	// off-stop arrival is always an external bump to be undone. (A volition carrier
 	// never reaches here — his arrivals go to advanceBeatRoute, which has no notion
 	// of being in the wrong place.)
-	atStop := RouteStopReached(route, actor, stop)
+	atStop := RouteStopReached(w, route, actor, stop)
 	if !atStop {
 		// Stale arrival: this ActorArrived was for some other destination — an
 		// external MoveActor (admin force-move, a competing producer's nudge)
@@ -999,7 +1000,7 @@ func advanceBeatRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) 
 		clearActiveRoute(w, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "no_route"}, nil
 	}
-	reachedIdx, atSomeStop := route.reachedStopIndex(actor)
+	reachedIdx, atSomeStop := route.reachedStopIndex(w, actor)
 	if !atSomeStop {
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "beat_elsewhere"}, nil
 	}

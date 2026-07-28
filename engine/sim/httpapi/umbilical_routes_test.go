@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -294,25 +295,41 @@ func TestUmbilical_NPCRoutesBeatProgressIsCoverageNotCursor(t *testing.T) {
 	}
 }
 
-// TestUmbilical_NPCRoutesStrictVsTolerantArrival pins why both arrival fields exist.
-// On a LOITER stop the route's own strict test is exact tile equality, but a carrier
-// who walked himself there lands in a visitor slot AROUND the loiter pin — so he is
-// plainly at the stop and reads arrived=false. The tolerant twin reads true, and the
-// two disagreeing is the diagnostic (LLM-530, LLM-531 were both that gap).
+// TestUmbilical_NPCRoutesStrictVsTolerantArrival pins why both arrival fields exist,
+// and that they answer DIFFERENT questions (LLM-550).
+//
+// `arrived_at_current_stop` is dispatch completion — is he on the tile the route
+// walked him to. `reached_current_stop_on_foot` is location — is he at the place,
+// measured from the object's OWN pin. A carrier who walked himself there is parked in
+// a visitor slot ringing the pin, so he reads arrived=false / reached=true, and the
+// two disagreeing is the diagnostic (LLM-530, LLM-531 and LLM-550 were all that gap).
+//
+// The fixture deliberately puts WalkTo somewhere the pin is NOT — which is the live
+// shape, since buildRouteStops picks a walkable tile that sits off the pin whenever
+// the pin's own tile cannot be stood on. Before LLM-550 the location field was also
+// measured from WalkTo, so this arrangement made it read false for a carrier standing
+// squarely at the stall.
 func TestUmbilical_NPCRoutesStrictVsTolerantArrival(t *testing.T) {
 	w := seededWorld(t)
-	pin := sim.Position{X: 30, Y: 30}
+	var pin sim.Position
 	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// obj1 is a real seeded object, so it HAS a pin to resolve.
+		p, ok := sim.ObjectLoiterPin(world.VillageObjects, world.Assets, "obj1")
+		if !ok {
+			return nil, fmt.Errorf("fixture: obj1 has no resolvable loiter pin")
+		}
+		pin = p
 		world.Actors["grace"] = &sim.Actor{
 			ID: "grace", DisplayName: "Grace Edwards",
-			Pos: sim.TilePos{X: pin.X + 1, Y: pin.Y}, // one tile off the pin: a visitor slot
+			Pos: sim.TilePos{X: pin.X + 1, Y: pin.Y}, // a visitor slot beside the pin
 		}
 		if world.ActiveRoutes == nil {
 			world.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
 		}
 		world.ActiveRoutes["grace"] = &sim.NPCRoute{
-			NPCID: "grace", Label: sim.AttrTownCrier, Phase: sim.RoutePhaseActive,
-			Stops: []sim.RouteStop{{ObjectID: "board_north", WalkTo: pin}}, // loiter stop
+			NPCID: "grace", Label: sim.AttrTownCrier, Phase: sim.RoutePhaseBeat,
+			// WalkTo well away from the pin — the route's pathing tile is not the place.
+			Stops: []sim.RouteStop{{ObjectID: "obj1", WalkTo: sim.Position{X: pin.X + 9, Y: pin.Y + 9}}},
 		}
 		return nil, nil
 	}})
@@ -335,11 +352,21 @@ func TestUmbilical_NPCRoutesStrictVsTolerantArrival(t *testing.T) {
 	}
 	r := out.Routes[0]
 	if r.ArrivedAtCurrentStop {
-		t.Error("arrived_at_current_stop = true one tile off the pin — the strict test is exact tile equality")
+		t.Error("arrived_at_current_stop = true away from WalkTo — the dispatch test is exact tile equality")
 	}
 	if !r.ReachedCurrentStopOnFoot {
-		t.Error("reached_current_stop_on_foot = false in a visitor slot beside the pin — " +
-			"the tolerant test is what 'standing at this place' means everywhere else in the engine")
+		t.Error("reached_current_stop_on_foot = false in a visitor slot beside the object's own pin — " +
+			"this is what 'standing at this place' means everywhere else in the engine, and measuring " +
+			"it from the route's pathing tile instead is what stranded a live round (LLM-550)")
+	}
+	// The pin ships alongside WalkTo so an operator can see them come apart at a
+	// glance rather than deriving it from village_object coordinates.
+	if r.Stops[0].LoiterPinX == nil || r.Stops[0].LoiterPinY == nil {
+		t.Fatal("loiter_pin_x/y absent for a resolvable object — the gap against walk_to is the diagnostic")
+	}
+	if *r.Stops[0].LoiterPinX != pin.X || *r.Stops[0].LoiterPinY != pin.Y {
+		t.Errorf("loiter_pin = (%d,%d), want (%d,%d)",
+			*r.Stops[0].LoiterPinX, *r.Stops[0].LoiterPinY, pin.X, pin.Y)
 	}
 }
 

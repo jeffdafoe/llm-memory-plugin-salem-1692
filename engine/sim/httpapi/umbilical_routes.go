@@ -56,10 +56,24 @@ import (
 // carrier standing outside a shop he normally enters is expected, not a bug.
 type UmbilicalNPCRouteStopDTO struct {
 	ObjectID string `json:"object_id"`
-	// WalkToX / WalkToY is the stop's target tile — the same tile space
-	// /agent reports move_target_tile_x/y in, so the two reads correlate.
+	// WalkToX / WalkToY is the stop's PATHING GOAL — the walkable tile the route
+	// walks a carrier to. Same tile space as /agent's move_target_tile_x/y, so the
+	// two reads correlate.
 	WalkToX int `json:"walk_to_x"`
 	WalkToY int `json:"walk_to_y"`
+	// LoiterPinX / LoiterPinY is the object's OWN pin — the tile that means "this
+	// place" — omitted when the object or its asset is missing. It is NOT the same
+	// as WalkTo and the gap between them is diagnostic (LLM-550).
+	//
+	// buildRouteStops picks WalkTo for being walkable, so it sits off the pin
+	// whenever the pin's tile cannot be stood on, while a carrier walking himself
+	// there is parked around the PIN. Live at the PW Apothecary those were 2 tiles
+	// apart: the constable stood squarely at the stall, every credit test measured
+	// from WalkTo, and his round could never finish. Any stop whose two tiles differ
+	// by more than LoiterAttributionTiles (1) is one where the route's tile and the
+	// place have come apart — read them side by side before theorising.
+	LoiterPinX *int `json:"loiter_pin_x,omitempty"`
+	LoiterPinY *int `json:"loiter_pin_y,omitempty"`
 	// NewState is the object state this stop flips the placement to on arrival
 	// (the lamplighter lighting a lamp, the washerwoman hanging laundry). Empty
 	// for stops that only visit — the constable changes nothing.
@@ -114,10 +128,11 @@ type UmbilicalNPCRouteDTO struct {
 	// there — his own move_to resolves to a visitor slot AROUND the loiter pin, so
 	// he is visibly at the stop and not on its tile.
 	ArrivedAtCurrentStop bool `json:"arrived_at_current_stop"`
-	// ReachedCurrentStopOnFoot is the tolerant twin (sim.RouteStopReachedOnFoot):
-	// the same test for an enter stop, but within LoiterAttributionTiles of the pin
-	// for a loiter stop — "standing at this place" as every other co-location check
-	// in the engine means it.
+	// ReachedCurrentStopOnFoot is the LOCATION answer (sim.ActorAtRouteStopPlace):
+	// the same test for an enter stop, but for a loiter stop, whether he is at the
+	// OBJECT'S OWN loiter pin — "standing at this place" as every other co-location
+	// check in the engine means it, and measured from the place rather than from the
+	// tile the route chose to path to (LLM-550).
 	//
 	// The two disagreeing is itself the signal, and has been a real bug shape twice
 	// (LLM-530, LLM-531): a carrier who walked himself to the named stop reads
@@ -230,9 +245,14 @@ func umbilicalNPCRouteDTO(world *sim.World, id sim.ActorID, route *sim.NPCRoute)
 			Current:          current,
 			Visited:          sim.RouteStopVisited(route, i),
 		})
+		if pin, ok := sim.ObjectLoiterPin(world.VillageObjects, world.Assets, stop.ObjectID); ok {
+			px, py := pin.X, pin.Y
+			last := &dto.Stops[len(dto.Stops)-1]
+			last.LoiterPinX, last.LoiterPinY = &px, &py
+		}
 		if current && actor != nil {
 			dto.ArrivedAtCurrentStop = sim.RouteStopArrived(actor, stop)
-			dto.ReachedCurrentStopOnFoot = sim.RouteStopReachedOnFoot(actor, stop)
+			dto.ReachedCurrentStopOnFoot = sim.ActorAtRouteStopPlace(world.VillageObjects, world.Assets, actor, stop)
 		}
 	}
 	fillRouteHomeDestination(&dto, route.HomeDestination)

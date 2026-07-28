@@ -1189,9 +1189,17 @@ func TestBeatRoute_VisitedCursorDoesNotShadowAnUnvisitedNeighbour(t *testing.T) 
 		// unvisited one.
 		route.Visited[0] = true
 		route.StopIdx = 0
-		route.Stops[1].WalkTo = route.Stops[0].WalkTo
+		// Overlap the OBJECTS, not their WalkTo tiles: crediting resolves through each
+		// object's own loiter pin now (LLM-550), so two stops share ground only when
+		// their objects do. Moving stop 1's placement onto stop 0's is the real-world
+		// shape of two businesses close enough to share a doorstep.
+		world.VillageObjects[route.Stops[1].ObjectID].Pos = world.VillageObjects[route.Stops[0].ObjectID].Pos
+		pin, ok := sim.ObjectLoiterPin(world.VillageObjects, world.Assets, route.Stops[0].ObjectID)
+		if !ok {
+			t.Fatal("fixture: stop 0 has no resolvable loiter pin")
+		}
 		a := world.Actors["lamp"]
-		a.Pos = visitorSlotBeside(route.Stops[0].WalkTo)
+		a.Pos = visitorSlotBeside(pin)
 		a.MoveIntent = nil
 		return nil, nil
 	}}); err != nil {
