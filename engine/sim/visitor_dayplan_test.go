@@ -462,6 +462,24 @@ func TestRecordVisitorArrivalSkipsNonBusiness(t *testing.T) {
 	if got == nil || len(visitedOf(got)) != 1 || visitedOf(got)[0] != smithy {
 		t.Fatalf("visited=%v, want [smithy] — the control arm must still record, or the gate above proves nothing", visitedOf(got))
 	}
+
+	// Inverse: tag that same meeting house a business and nothing else changes — same
+	// constable, same post, same arrival — and it records. The tag is the discriminator,
+	// not anything about the man standing in it (code_review).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		vobj := world.VillageObjects[sim.VillageObjectID(meetingHouse)]
+		vobj.Tags = append(vobj.Tags, sim.TagBusiness)
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	setVisitorState(t, w, func(a *sim.Actor) { a.InsideStructureID = meetingHouse })
+	if _, err := w.Send(sim.RecordVisitorArrival(id, meetingHouse)); err != nil {
+		t.Fatalf("record tagged meeting house: %v", err)
+	}
+	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 2 {
+		t.Fatalf("visited=%v, want smithy AND the now-tagged meeting house — the exclusion above is not the tag gate", visitedOf(got))
+	}
 }
 
 func visitedOf(a *sim.ActorSnapshot) []sim.StructureID {
