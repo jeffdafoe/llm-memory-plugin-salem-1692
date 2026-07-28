@@ -1090,6 +1090,79 @@ func TestBeatRoute_OverlappingStopRegionsResolveToTheCursor(t *testing.T) {
 	}
 }
 
+// TestBeatRoute_MalformedVisitedStillTerminates pins the degradation path
+// (code_review, LLM-548). A beat's TERMINATION argument rests on the visited
+// record: nextUnvisitedFrom wraps, and the wrap only ever runs out because each
+// credit marks a stop. So the question a reviewer will ask is what happens when the
+// record and the stop list disagree — which StartNPCRoute never produces, but a
+// deserialized or hand-built route could.
+//
+// The answer is `tracksVisits()` (len(Visited) == len(Stops)), which every helper
+// checks and which degrades them to the plain in-order cursor walk: nextUnvisitedFrom
+// returns idx+1 and reports done past the end. The round still ends, and it ends with
+// the route CLEARED rather than parked — which is the property that matters, since a
+// route that never clears is a carrier the duty steer never reclaims.
+//
+// Both directions are covered because they degrade differently. markVisited and
+// hasVisited are bounds-checked against len(Visited) INDEPENDENTLY of tracksVisits,
+// so an overlong slice still answers hasVisited for real stops while the walk helpers
+// are in plain-cursor mode. That mix can cost a credit; it cannot cost termination.
+func TestBeatRoute_MalformedVisitedStillTerminates(t *testing.T) {
+	cases := []struct {
+		name    string
+		visited func(stops int) []bool
+	}{
+		{"short slice", func(int) []bool { return []bool{false} }},
+		{"overlong slice, one stop pre-marked", func(n int) []bool {
+			v := make([]bool, n+1)
+			v[0] = true
+			return v
+		}},
+		{"nil slice", func(int) []bool { return nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, cancel := buildRouteTestWorld(t)
+			defer cancel()
+
+			startBeat(t, w, "lamp", threeLampCandidates())
+			var stopCount int
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				route := world.ActiveRoutes["lamp"]
+				stopCount = len(route.Stops)
+				route.Visited = tc.visited(stopCount)
+				route.StopIdx = 0
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("arrange: %v", err)
+			}
+
+			// Walk the circuit in order, generously bounded. The bound is the
+			// regression guard: a route that cannot finish shows up as the loop
+			// running out rather than as a hung test.
+			cleared := false
+			for i := 0; i < stopCount*4; i++ {
+				if activeRouteOf(t, w, "lamp") == nil {
+					cleared = true
+					break
+				}
+				standAtStop(t, w, "lamp", i%stopCount)
+				if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+					t.Fatalf("advance %d: %v", i, err)
+				}
+			}
+			if !cleared && activeRouteOf(t, w, "lamp") != nil {
+				t.Error("beat never cleared with a malformed visited record — the carrier is " +
+					"left owing a round forever and the duty steer never takes him back to post")
+			}
+			// Nothing was dispatched on the way out, malformed record or not.
+			if mi := moveIntentOf(t, w, "lamp"); mi != nil {
+				t.Errorf("beat dispatched a walk: %+v", mi)
+			}
+		})
+	}
+}
+
 // TestBeatRoute_VisitedCursorDoesNotShadowAnUnvisitedNeighbour is the guard on the
 // cursor preference in reachedStopIndex (code_review, LLM-548).
 //
