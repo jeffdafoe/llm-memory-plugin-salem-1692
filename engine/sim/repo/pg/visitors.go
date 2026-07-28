@@ -122,11 +122,14 @@ type tradeErrandJSON struct {
 	Good         string `json:"good"`
 	Counterparty string `json:"counterparty"`
 	Settled      bool   `json:"settled,omitempty"`
-	// ShipmentQty is the seller's arrival quantity of Good, the baseline the sell-side
-	// settle measures against (LLM-553). omitempty, so a buyer's errand (which leaves it 0)
-	// keeps the document it had before, and a row written before this field existed decodes
-	// to 0 — which sellErrandDelivered reads as "arrival quantity unknown".
+	// ShipmentQty is the seller's arrival quantity of Good and Delivered is how much of it
+	// he has handed over so far — the baseline and the running total the sell-side settle
+	// compares (LLM-553). Both omitempty, so a buyer's errand (which leaves them 0) keeps
+	// the document it had before, and a row written before these fields existed decodes to
+	// 0/0 — which sellErrandDelivered reads as "no baseline", leaving that visitor to wind
+	// down at dusk as it did before.
 	ShipmentQty int `json:"shipment_qty,omitempty"`
+	Delivered   int `json:"delivered,omitempty"`
 }
 
 // visitorGrantJSON is the on-disk element shape for a persisted RoomAccess grant.
@@ -160,6 +163,7 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 			Counterparty: string(vs.Trade.Counterparty),
 			Settled:      vs.Trade.Settled,
 			ShipmentQty:  vs.Trade.ShipmentQty,
+			Delivered:    vs.Trade.Delivered,
 		}
 	}
 	for _, sid := range vs.VisitedBusinesses {
@@ -215,12 +219,17 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 		// than a merchant with an errand the rest of the engine reads inconsistently.
 		dir := sim.TradeDirection(plan.Trade.Direction)
 		if dir.Valid() && plan.Trade.Good != "" && plan.Trade.Counterparty != "" {
-			// A negative shipment quantity is nonsense the settle arithmetic should never
-			// see; clamp to 0, which reads as "arrival quantity unknown" and degrades to
-			// the strict holds-none settle rather than settling him on arrival.
+			// Negative quantities are nonsense the settle arithmetic should never see
+			// (only reachable from an out-of-band edit); clamp both to 0, which reads as
+			// "no baseline" and leaves the traveler to the dusk wind-down rather than
+			// settling him on arrival.
 			shipmentQty := plan.Trade.ShipmentQty
 			if shipmentQty < 0 {
 				shipmentQty = 0
+			}
+			delivered := plan.Trade.Delivered
+			if delivered < 0 {
+				delivered = 0
 			}
 			lv.VisitorState.Trade = &sim.TradeErrand{
 				Direction:    dir,
@@ -228,6 +237,7 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 				Counterparty: sim.StructureID(plan.Trade.Counterparty),
 				Settled:      plan.Trade.Settled,
 				ShipmentQty:  shipmentQty,
+				Delivered:    delivered,
 			}
 		}
 	}

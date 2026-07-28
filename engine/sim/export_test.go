@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // export_test.go re-exports unexported, command-only world helpers under
 // their pre-cleanup names so the external `sim_test` package can keep
@@ -302,6 +305,25 @@ func QuoteSeqForTest(w *World) uint64 { return w.quoteSeq }
 // secondary indices after a direct map mutation (used when a test
 // seeds a huddle via raw map write rather than through JoinHuddle).
 func RebuildIndicesForTest(w *World) { w.rebuildIndices() }
+
+// TransferItemForTest exposes the goods-transfer primitive as a Command so sim_test can move
+// stock between two actors through the REAL path rather than writing their inventory maps.
+// Added for LLM-553, whose sell-errand accounting is credited inside transferItem — a test that
+// seeded the counter directly would assert nothing about the mechanism it is guarding.
+func TransferItemForTest(from, to ActorID, kind ItemKind, qty int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			src, dst := w.Actors[from], w.Actors[to]
+			if src == nil {
+				return nil, fmt.Errorf("TransferItemForTest: actor %q not found", from)
+			}
+			if dst == nil {
+				return nil, fmt.Errorf("TransferItemForTest: actor %q not found", to)
+			}
+			return nil, transferItem(w, src, dst, kind, qty)
+		},
+	}
+}
 
 // RestartExpireScannedQuotesForTest exposes the LoadWorld-time
 // expired-scan helper. PR S3 substrate test only.

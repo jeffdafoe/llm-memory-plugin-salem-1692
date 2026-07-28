@@ -521,49 +521,34 @@ func TestVisitorCircuit_DuskTurnsToLodging(t *testing.T) {
 	}
 }
 
-// TestSellErrandSettlesOnDelivery — LLM-553, the end-to-end guard. A factor whose shipment
-// is landed has his errand settled by the pacing tick, which is what turns "## Your rounds"
+// TestSellErrandSettlesOnDelivery — LLM-553, the end-to-end guard. A factor who has handed his
+// shipment over has his errand settled by the pacing tick, which is what turns "## Your rounds"
 // from the trade-here steer to the wind-down. Before this, `Settled` was reachable only for a
 // BUY errand, so a factor was steered back at his counterparty from arrival to dusk while
 // commerce confinement made every other stop talk-only — he bid the keeper farewell and came
 // straight back, for hours.
 //
-// The negative half matters as much: a factor with his bale still on him must NOT settle, or
-// the wind-down fires on arrival and he never trades at all.
+// Delivery is driven through the REAL goods-transfer path rather than by setting the counter,
+// so the test covers the accounting and the settle together. The three cases are the ones that
+// distinguish the honest measure from the naive one:
+//
+//   - sold the bale                  -> settles
+//   - sold nothing                   -> must NOT settle (else the wind-down fires on arrival
+//     and he never trades at all)
+//   - sold the bale, bought some back -> settles anyway; this is the case a test on current
+//     holdings gets wrong, and it is what the live factor actually did when he swapped a
+//     locket for a bar of iron
 func TestSellErrandSettlesOnDelivery(t *testing.T) {
-	seedFactor := func(t *testing.T, w *sim.World, held, shipmentQty int) sim.ActorID {
-		t.Helper()
-		const id = sim.ActorID("vstr-deadbeef")
-		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			world.Actors[id] = &sim.Actor{
-				ID:          id,
-				DisplayName: "Daniel Holcomb the factor",
-				Kind:        sim.KindNPCShared,
-				LLMAgent:    sim.VisitorAgentName,
-				Pos:         sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 4},
-				Needs:       sim.SeedVisitorNeedsForTest(),
-				Inventory:   map[sim.ItemKind]int{"iron": held},
-				VisitorState: &sim.VisitorState{
-					Archetype: "factor",
-					Phase:     sim.VisitorPhaseMakingRounds,
-					ExpiresAt: time.Now().Add(6 * time.Hour),
-					Trade: &sim.TradeErrand{
-						Direction:    sim.TradeDirectionSell,
-						Good:         "iron",
-						Counterparty: "tavern",
-						ShipmentQty:  shipmentQty,
-					},
-				},
-			}
-			sim.RebuildIndicesForTest(world)
-			return nil, nil
-		}}); err != nil {
-			t.Fatalf("seed factor: %v", err)
-		}
-		return id
-	}
+	const (
+		factorID = sim.ActorID("vstr-deadbeef")
+		keeperID = sim.ActorID("josiah")
+		iron     = sim.ItemKind("iron")
+		shipment = 10
+	)
 
-	settledAfterTick := func(t *testing.T, held, shipmentQty int) bool {
+	// settledAfterSelling seeds a factor carrying the whole shipment, moves `sold` bars to the
+	// keeper and `boughtBack` bars back, then runs one pacing tick and reports the errand.
+	settledAfterSelling := func(t *testing.T, sold, boughtBack int) bool {
 		t.Helper()
 		loc := et(t)
 		vw := newVisitorWorld()
@@ -572,27 +557,71 @@ func TestSellErrandSettlesOnDelivery(t *testing.T) {
 		w, cancel := vw.load(t)
 		defer cancel()
 		seedDayPlanSettings(t, w, loc)
-		// Spawning is off for this test — the seeded factor is the subject, and a second
-		// visitor would make firstVisitor ambiguous.
+		// Spawning off — the seeded factor is the subject, and a second visitor would make
+		// the assertions ambiguous.
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 			world.Settings.VisitorSpawnChancePermille = 0
 			return nil, nil
 		}}); err != nil {
 			t.Fatalf("disable spawn: %v", err)
 		}
-		id := seedFactor(t, w, held, shipmentQty)
 
-		// Midday in the village day seeded above, so the dusk phase flip cannot be what
-		// ends his rounds — the settle has to come from the delivery check itself.
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors[keeperID] = &sim.Actor{
+				ID: keeperID, DisplayName: "Josiah Thorne", Kind: sim.KindNPCStateful,
+				Pos:       sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+				Needs:     sim.SeedVisitorNeedsForTest(),
+				Inventory: map[sim.ItemKind]int{},
+			}
+			world.Actors[factorID] = &sim.Actor{
+				ID:          factorID,
+				DisplayName: "Daniel Holcomb the factor",
+				Kind:        sim.KindNPCShared,
+				LLMAgent:    sim.VisitorAgentName,
+				Pos:         sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 4},
+				Needs:       sim.SeedVisitorNeedsForTest(),
+				Inventory:   map[sim.ItemKind]int{iron: shipment},
+				VisitorState: &sim.VisitorState{
+					Archetype: "factor",
+					Phase:     sim.VisitorPhaseMakingRounds,
+					ExpiresAt: time.Now().Add(6 * time.Hour),
+					Trade: &sim.TradeErrand{
+						Direction:    sim.TradeDirectionSell,
+						Good:         iron,
+						Counterparty: "tavern",
+						ShipmentQty:  shipment,
+					},
+				},
+			}
+			sim.RebuildIndicesForTest(world)
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed actors: %v", err)
+		}
+
+		if sold > 0 {
+			if _, err := w.Send(sim.TransferItemForTest(factorID, keeperID, iron, sold)); err != nil {
+				t.Fatalf("factor sells %d iron: %v", sold, err)
+			}
+		}
+		if boughtBack > 0 {
+			if _, err := w.Send(sim.TransferItemForTest(keeperID, factorID, iron, boughtBack)); err != nil {
+				t.Fatalf("factor buys %d iron back: %v", boughtBack, err)
+			}
+		}
+
+		// Midday in the village day seeded above, so the dusk phase flip cannot be what ends
+		// his rounds — the settle has to come from the delivery accounting itself.
 		noon := time.Date(2026, 7, 15, 16, 0, 0, 0, time.UTC) // 12:00 America/New_York
 		if _, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{
 			Now: noon, Rand: rand.New(rand.NewSource(3)),
 		})); err != nil {
 			t.Fatalf("TickVisitorCascade: %v", err)
 		}
+
 		var settled bool
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			actor := world.Actors[id]
+			actor := world.Actors[factorID]
 			if actor == nil || actor.VisitorState == nil || actor.VisitorState.Trade == nil {
 				t.Fatal("seeded factor lost his errand")
 				return nil, nil
@@ -609,13 +638,18 @@ func TestSellErrandSettlesOnDelivery(t *testing.T) {
 	}
 
 	t.Run("shipment delivered settles the errand", func(t *testing.T) {
-		if !settledAfterTick(t, 1, 10) {
-			t.Error("a factor down to his last bar of a ten-bar shipment is still unsettled — the rounds cue keeps steering him back to his counterparty all afternoon")
+		if !settledAfterSelling(t, shipment, 0) {
+			t.Error("a factor who handed over his whole shipment is still unsettled — the rounds cue keeps steering him back to his counterparty all afternoon")
 		}
 	})
 	t.Run("a full bale does not settle", func(t *testing.T) {
-		if settledAfterTick(t, 10, 10) {
+		if settledAfterSelling(t, 0, 0) {
 			t.Error("a factor who has sold nothing settled — the wind-down would fire on arrival and he would never trade")
+		}
+	})
+	t.Run("buying stock back does not un-deliver the shipment", func(t *testing.T) {
+		if !settledAfterSelling(t, shipment, 3) {
+			t.Error("a factor who landed his bale and then bought three bars back is unsettled — current holdings cannot tell him from a man who sold seven, which is why the errand counts what it delivered")
 		}
 	})
 }

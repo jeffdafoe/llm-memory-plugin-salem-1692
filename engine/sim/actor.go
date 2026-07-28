@@ -503,15 +503,25 @@ type TradeErrand struct {
 	// the legible "business concluded" state that winds the traveler down to the tavern
 	// instead of looping his rounds forever.
 	Settled bool
-	// ShipmentQty is how much of Good a SELLER arrived carrying — the size of the
-	// shipment he came to deliver, stamped at spawn. It is the baseline the sell-side
-	// settle measures drawdown against; a buyer leaves it 0 (he arrives empty-packed and
-	// settles on holding the good instead). Needed because a plain "holds none of it"
-	// test is defeated by the two-way deal: a factor who has sold his whole bale and then
-	// bought a single bar back off the keeper's shelf still holds one, and would never
-	// settle. A pre-LLM-553 row rehydrates with 0, which degrades to that plain
-	// holds-none test rather than failing — the visit still ends at dusk as before.
+	// ShipmentQty is how much of Good a SELLER arrived carrying — the size of the shipment
+	// he came to deliver, stamped at spawn. The target Delivered is measured against; a
+	// buyer leaves it 0 (he arrives empty-packed and settles on holding the good instead).
 	ShipmentQty int
+	// Delivered is how much of Good this SELLER has handed to anyone, accumulated at the
+	// one goods-transfer choke point (transferItem) and never decremented.
+	//
+	// It exists because current holdings cannot tell "never sold it" from "sold it and
+	// bought some back", and the factor's errand is a TWO-WAY deal — he sells his bale and
+	// buys the village's surplus in the same breath. A factor who moved all ten bars and
+	// then took three back off the keeper's shelf holds three either way, so any test on
+	// Inventory[Good] either fails to settle him or settles a man who has sold nothing.
+	// A monotonic count of what actually changed hands is the honest measure.
+	//
+	// Not restricted to the counterparty: commerce confinement (TradeErrandSteer) already
+	// pins a merchant's trade goods to that one keeper, so an outbound transfer of the
+	// errand good has nowhere else to go. A `give` is ungated by design and would also
+	// count — correctly, since he has still parted with the shipment.
+	Delivered int
 }
 
 // Archetype / Origin / Disposition come from per-spawn random pools in

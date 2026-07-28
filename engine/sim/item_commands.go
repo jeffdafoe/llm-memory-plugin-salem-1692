@@ -88,7 +88,29 @@ func transferItem(_ *World, from, to *Actor, kind ItemKind, qty int) error {
 		to.Inventory = make(map[ItemKind]int)
 	}
 	to.Inventory[kind] += qty
+	// Credit a selling traveler's shipment as it goes out (LLM-553). This is the one place
+	// goods change hands, so it is the one place that can distinguish stock he never sold
+	// from stock he sold and bought back — the distinction his errand settles on. Monotonic
+	// by construction: a later purchase is an inbound transfer and lands on the other side
+	// of this function.
+	if tr := sellErrandFor(from); tr != nil && tr.Good == kind {
+		tr.Delivered += qty
+	}
 	return nil
+}
+
+// sellErrandFor returns the actor's SELL errand, or nil if it has none — a resident, a
+// passer-through, or a buy-errand merchant. Narrow helper so transferItem states its intent
+// in one line rather than unpacking three levels of optional state inline.
+func sellErrandFor(a *Actor) *TradeErrand {
+	if a == nil || a.VisitorState == nil {
+		return nil
+	}
+	tr := a.VisitorState.Trade
+	if tr == nil || tr.Direction != TradeDirectionSell {
+		return nil
+	}
+	return tr
 }
 
 // resolveItemKind looks up the canonical ItemKind for a free-text name from

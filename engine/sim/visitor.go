@@ -1128,7 +1128,7 @@ func dispatchVisitorPacing(w *World, inputs VisitorTickInputs, t *VisitorCascade
 		// other stop talk-only, and came back — for hours. The settled-seller wind-down
 		// prose has existed since LLM-507 and was unreachable; this is what reaches it.
 		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionSell && !tr.Settled &&
-			sellErrandDelivered(actor.Inventory[tr.Good], tr.ShipmentQty) {
+			sellErrandDelivered(tr.Delivered, tr.ShipmentQty) {
 			tr.Settled = true
 		}
 		// Dusk: turn from the daytime rounds to the evening. Only the phase flips — the
@@ -1567,24 +1567,36 @@ const (
 	DefaultVisitorFactorSaltUnits = 12
 )
 
-// sellErrandRemainderDivisor sets how much of his shipment a seller may still carry and
-// still count as done: at most a 1/N share of what he arrived with. A quarter is deliberately
-// generous — a factor's iron and salt are SHIPMENT-sized (10 and 12 by default) precisely so
-// one rare visit bridges the forge's and the kitchens' burn between calls, and the last bar or
-// two routinely stays unsold because nobody needs it that afternoon. Waiting for the pack to
-// empty would leave him looping over a remainder no one wants, which is the defect.
+// sellErrandRemainderDivisor sets how much of his shipment a seller may leave undelivered and
+// still count as done: a 1/N share of what he arrived with. A quarter is deliberately generous —
+// a factor's iron and salt are SHIPMENT-sized (10 and 12 by default) precisely so one rare visit
+// bridges the forge's and the kitchens' burn between calls, and the last bar or two routinely
+// goes unsold because nobody needs it that afternoon. Holding out for the whole bale would leave
+// him looping over a remainder no one wants, which is the defect.
 const sellErrandRemainderDivisor = 4
 
 // sellErrandDelivered reports whether a seller has landed enough of his shipment to call the
-// errand done — at most a 1/sellErrandRemainderDivisor share of the arrival quantity still on
-// him. shipmentQty <= 0 means the arrival quantity is unknown (a visitor row written before
-// LLM-553 stamped it, or an errand good the pack never carried), and falls back to the strict
-// "none of it left" test: a weaker settle, never a spuriously early one.
-func sellErrandDelivered(held, shipmentQty int) bool {
-	if shipmentQty <= 0 {
-		return held <= 0
+// errand done: delivered at least all but a 1/sellErrandRemainderDivisor share of what he
+// arrived with.
+//
+// It reads TradeErrand.Delivered — a monotonic count taken at transferItem — NOT current
+// holdings. Holdings cannot answer the question: the factor's deal is two-way, so a man who
+// sold all ten bars and bought three back holds the same three as a man who sold seven and
+// bought nothing, and only one of them is done.
+//
+// shipmentQty <= 0 means the arrival quantity was never stamped (a visitor checkpointed before
+// LLM-553, or an errand good the pack never carried). There is no baseline to measure against,
+// so the errand does not settle here and the visit winds down at the dusk phase flip exactly as
+// it did before — no worse than the old behavior, and never a spuriously early settle. Not
+// estimated from the pack knob: seedFactorPack jitters the count, so the knob is the wrong
+// number and would put the target out of reach or trip it instantly.
+//
+// Subtraction, not multiplication, so a corrupt persisted quantity cannot overflow the compare.
+func sellErrandDelivered(delivered, shipmentQty int) bool {
+	if shipmentQty <= 0 || delivered <= 0 {
+		return false
 	}
-	return held*sellErrandRemainderDivisor <= shipmentQty
+	return delivered >= shipmentQty-shipmentQty/sellErrandRemainderDivisor
 }
 
 // factorWareKinds are the goods a wholesale factor spawns carrying to SELL into the
