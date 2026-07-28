@@ -84,7 +84,7 @@ func distributorKeeper(pos sim.TilePos, huddle sim.HuddleID) *sim.ActorSnapshot 
 // distributorObjects returns the General Store village-object (distributor-tagged) + structure.
 func distributorObjects() (map[sim.VillageObjectID]*sim.VillageObject, map[sim.StructureID]*sim.Structure) {
 	return map[sim.VillageObjectID]*sim.VillageObject{
-			"general_store": {ID: "general_store", Pos: sim.WorldPos{X: 320, Y: 320}, Tags: []string{sim.TagDistributor}},
+			"general_store": {ID: "general_store", Pos: sim.WorldPos{X: 320, Y: 320}, Tags: []string{sim.TagBusiness, sim.TagDistributor}},
 		},
 		map[sim.StructureID]*sim.Structure{
 			"general_store": plainStructure("general_store", "The General Store"),
@@ -135,7 +135,7 @@ func factorSeeksDistributorScenario() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		BusinessownerState: &sim.BusinessownerState{Flavor: "weaver"},
 	}
 	vobjs, structs := distributorObjects()
-	vobjs[sim.VillageObjectID(weaver)] = &sim.VillageObject{ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}}
+	vobjs[sim.VillageObjectID(weaver)] = &sim.VillageObject{ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}, Tags: []string{sim.TagBusiness}}
 	structs[weaver] = plainStructure(weaver, "Weaver's")
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay: &now,
