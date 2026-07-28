@@ -180,3 +180,86 @@ func TestRender_SellerStandingQuoteSection(t *testing.T) {
 		t.Errorf("seller standing-quote cue missing from full prompt\n%s", out)
 	}
 }
+
+// --- LLM-551: the buyer-side twin, "## Offers made to you" ---------------
+
+// The buyer of a targeted quote sees it, with the quote_id pay_with_item needs.
+// The seller of that same quote does NOT see it in this section — it is his, and
+// he already has "## Offers you've put out".
+func TestBuildStandingQuotesToMe_TargetedOnly(t *testing.T) {
+	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: activeQuote(1, "john", "jefferey", "bread", 2, 4),
+		2: activeQuote(2, "john", "", "bread", 2, 4), // public — an ad to the room
+	})
+	views := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1 (the targeted quote only)", len(views))
+	}
+	if views[0].QuoteID != 1 {
+		t.Errorf("QuoteID = %d, want 1", views[0].QuoteID)
+	}
+	// Jefferey isn't acquainted with John in the fixture, so the seller reads as
+	// a role descriptor rather than a name — the same gating the seller side uses.
+	if views[0].SellerName == "" {
+		t.Error("SellerName empty — the buyer must be told who is offering")
+	}
+	if len(buildStandingQuotesToMe(snap, "john", snap.Actors["john"], nil, nil)) != 0 {
+		t.Error("the seller sees his own quote in the buyer-side section")
+	}
+}
+
+// A quote announced by THIS tick's warrant is left to the warrant line — the
+// section exists for every LATER tick, once that one-shot is spent.
+func TestBuildStandingQuotesToMe_SkipsQuoteAnnouncedThisTick(t *testing.T) {
+	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: activeQuote(1, "john", "jefferey", "bread", 2, 4),
+	})
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: "john",
+		Reason: sim.SceneQuoteTargetedWarrantReason{
+			QuoteID: 1, SellerID: "john",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 2}}, Amount: 4,
+		},
+		SourceEventID: 1,
+	}}
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, warrants); len(got) != 0 {
+		t.Errorf("views = %d, want 0 — the warrant line already carries this quote", len(got))
+	}
+	// Same quote, next tick: the warrant is spent and the section takes over.
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 1 {
+		t.Errorf("views = %d, want 1 once the warrant is spent — this is the defect", len(got))
+	}
+}
+
+// A homed subject is spared a lodging quote she structurally can't take
+// (LLM-182/208); a homeless one still gets it.
+func TestBuildStandingQuotesToMe_HomedLodgingSuppressed(t *testing.T) {
+	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: activeQuote(1, "john", "jefferey", "nights_stay", 1, 4),
+	})
+	snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+		"nights_stay": {Name: "nights_stay", Capabilities: []string{"lodging"}},
+	}
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 1 {
+		t.Fatalf("homeless seeker views = %d, want 1", len(got))
+	}
+	homed := *snap.Actors["jefferey"]
+	homed.HomeStructureID = "ward_residence"
+	if got := buildStandingQuotesToMe(snap, "jefferey", &homed, nil, nil); len(got) != 0 {
+		t.Errorf("views = %d, want 0 — a homed subject can't take a room", len(got))
+	}
+}
+
+// End-to-end: the buyer's full prompt carries the section and the take token.
+func TestRender_BuyerStandingQuoteSection(t *testing.T) {
+	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		7: activeQuote(7, "john", "jefferey", "bread", 2, 4),
+	})
+	out := combinedPrompt(Render(Build(snap, "jefferey", nil), DefaultRenderConfig()))
+	if !strings.Contains(out, "## Offers made to you") {
+		t.Errorf("buyer standing-quote section missing from full prompt\n%s", out)
+	}
+	if !strings.Contains(out, "quote_id 7") {
+		t.Errorf("take-instruction lacks the quote_id — the buyer can only cross the quote without it\n%s", out)
+	}
+}

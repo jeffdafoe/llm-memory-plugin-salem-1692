@@ -310,6 +310,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.StandingQuotesFromMe = buildStandingQuotesFromMe(snap, actorID, actorSnap)
+	// LLM-551: the buyer-side twin, built right after its seller-side mirror.
+	// Reads p.EatHereKinds (set above) for the carry-out disposition and
+	// p.Warrants (finalized above, after the stale-offer and homed-lodging
+	// filters) so a quote announced by THIS tick's warrant isn't also stood up
+	// in the section — the warrant line already carries it, verbatim.
+	p.StandingQuotesToMe = buildStandingQuotesToMe(snap, actorID, actorSnap, p.EatHereKinds, p.Warrants)
 	p.UncoverableOffersFromMe = buildRecentlyShortfallQuotesFromMe(snap, actorID, actorSnap)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
@@ -4694,6 +4700,121 @@ func buildRecentlyShortfallQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID,
 		})
 	}
 	return views
+}
+
+// buildStandingQuotesToMe collects the active scene-quotes ADDRESSED TO the
+// subject and projects each to a StandingQuoteToMeView for the buyer-side
+// "## Offers made to you" section (LLM-551). The mirror of
+// buildStandingQuotesFromMe, filtering on TargetBuyer rather than SellerID.
+//
+// Targeted only — a public quote (empty TargetBuyer) is an advertisement to the
+// room, not an offer in this subject's name, and standing one in every
+// bystander's prompt would pin passers-by to a stall they never approached.
+// The seller is excluded implicitly: a quote's TargetBuyer is never its own
+// SellerID (scene_quote rejects self-targeting), so no self-offer can surface.
+//
+// A lodging quote to a subject who already has a home is dropped — she cannot
+// take the room (the buyer-side pay_with_item guard rejects it, LLM-182), so
+// standing the offer would dangle a doomed nightly negotiation (LLM-208). Same
+// per-viewer rule filterHomedLodgingQuoteWarrants applies to the warrant path;
+// a homeless seeker still sees it.
+//
+// A quote announced by THIS tick's warrant batch is skipped: renderWarrantLine
+// already states its terms and take-instruction, and standing a second copy in
+// the section below would say the same thing twice in one prompt. The section is
+// what the buyer sees on every LATER tick, once that one-shot warrant is spent —
+// which is the whole defect. Keyed on QuoteID off SceneQuoteTargetedWarrantReason.
+//
+// LLM-171 redundancy (the buyer makes this good itself / is at cap) is applied
+// at RENDER, not here, exactly as it is for the warrant line — the view carries
+// the facts and render decides whether to withhold the take.
+//
+// Nil-safe; returns nil for none so render content-gates cheaply. Ordering: by
+// QuoteID ascending, deterministic.
+func buildStandingQuotesToMe(
+	snap *sim.Snapshot,
+	subject sim.ActorID,
+	subjectSnap *sim.ActorSnapshot,
+	eatHereKinds map[sim.ItemKind]bool,
+	warrants []sim.WarrantMeta,
+) []StandingQuoteToMeView {
+	if snap == nil || len(snap.Quotes) == 0 {
+		return nil
+	}
+	announcedThisTick := make(map[sim.QuoteID]bool, len(warrants))
+	for _, w := range warrants {
+		if r, ok := w.Reason.(sim.SceneQuoteTargetedWarrantReason); ok {
+			announcedThisTick[r.QuoteID] = true
+		}
+	}
+	homed := subjectSnap != nil && subjectSnap.HomeStructureID != ""
+	var ids []sim.QuoteID
+	for id, q := range snap.Quotes {
+		if q == nil || q.State != sim.SceneQuoteStateActive {
+			continue
+		}
+		if q.TargetBuyer != subject {
+			continue
+		}
+		if announcedThisTick[q.ID] {
+			continue
+		}
+		if homed && quoteGrantsLodging(snap, q.Lines) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	views := make([]StandingQuoteToMeView, 0, len(ids))
+	for _, id := range ids {
+		q := snap.Quotes[id]
+		sellerName := ""
+		if seller := snap.Actors[q.SellerID]; seller != nil {
+			acquainted := false
+			if subjectSnap != nil && seller.DisplayName != "" {
+				_, acquainted = subjectSnap.Acquaintances[seller.DisplayName]
+			}
+			sellerName = descriptorLabel(seller.DisplayName, seller.Role, acquainted)
+		} else {
+			// A seller who has left the snapshot (rare) falls back to the same
+			// generic token the seller-side view uses, rather than leaking a raw
+			// actor id into the prompt.
+			sellerName = "someone"
+		}
+		// A bundle is eat-here if ANY line is non-portable — the whole bundle was
+		// clamped at quote creation (LLM-101), same rule the warrant path applies.
+		eatHere := false
+		for _, ln := range q.Lines {
+			if eatHereKinds[ln.ItemKind] {
+				eatHere = true
+				break
+			}
+		}
+		views = append(views, StandingQuoteToMeView{
+			QuoteID:    q.ID,
+			SellerName: sellerName,
+			Lines:      q.Lines,
+			Amount:     q.Amount,
+			EatHere:    eatHere,
+		})
+	}
+	return views
+}
+
+// quoteGrantsLodging reports whether any line of a quote is a lodging good —
+// the bundle-aware form of itemGrantsLodging, matching how
+// filterHomedLodgingQuoteWarrants tests a warrant's lines.
+func quoteGrantsLodging(snap *sim.Snapshot, lines []sim.QuoteLine) bool {
+	for _, ln := range lines {
+		if itemGrantsLodging(snap, ln.ItemKind) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPayOffersForMe scans snap.PayLedger for the still-pending offers staked

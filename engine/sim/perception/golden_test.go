@@ -115,6 +115,57 @@ func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	}
 }
 
+// TestGoldensTargetedQuoteIsVisibleToItsTarget is the LLM-551 cross-scenario
+// invariant: whenever an ACTIVE scene-quote names the subject as its target
+// buyer, the rendered prompt must account for it — either actionably (its
+// quote_id, the token pay_with_item needs to TAKE it) or with an explicit
+// decline steer (LLM-171, when every quoted good is one she makes herself or
+// already holds at cap). What it may never be is silently absent.
+//
+// That silence was the defect. A targeted quote warrants its buyer exactly once,
+// and a buyer who spends that tick answering aloud — speak is terminal, so this
+// is the ordinary case — saw nothing of the offer ever again. Patience Walker
+// spent 22 minutes and ~20 rejected pay_with_item calls trying to buy flour that
+// was already set out for her, while the seller's prompt showed it standing
+// throughout. Stated as a matrix invariant rather than a single golden because
+// the failure is an ABSENCE: any future scenario that puts a quote in front of a
+// buyer must keep it reachable, and an absence is exactly what a per-scenario
+// golden diff is worst at catching.
+//
+// Carve-out: a lodging quote to a subject who already has a home is DELIBERATELY
+// suppressed (LLM-182/208) — she structurally cannot take the room, so the offer
+// is dropped rather than dangled. That is the one situation where invisible is
+// correct.
+func TestGoldensTargetedQuoteIsVisibleToItsTarget(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			subject := snap.Actors[actorID]
+			if subject == nil {
+				return
+			}
+			var out string
+			for id, q := range snap.Quotes {
+				if q == nil || q.State != sim.SceneQuoteStateActive || q.TargetBuyer != actorID {
+					continue
+				}
+				if subject.HomeStructureID != "" && quoteGrantsLodging(snap, q.Lines) {
+					continue // homed subject, lodging quote — suppressed on purpose
+				}
+				if out == "" {
+					out = renderScenario(sc)
+				}
+				takeToken := "quote_id " + strconv.FormatUint(uint64(id), 10)
+				declined := strings.Contains(out, "there's no reason to buy")
+				if !strings.Contains(out, takeToken) && !declined {
+					t.Errorf("scenario %q: quote %d is active and addressed to the subject, but the prompt carries neither %q (the token pay_with_item needs to take it) nor a decline steer — the buyer cannot act on an offer she cannot see (LLM-551)", sc.name, id, takeToken)
+				}
+			}
+		})
+	}
+}
+
 // TestGoldensTravelerPrefaceIffSubjectIsTraveler is the LLM-370 cross-scenario
 // invariant: the self-identity preface (its unique "making your way through Salem"
 // phrase) renders in a scenario's prompt IFF the SUBJECT is a transient traveler
@@ -2120,6 +2171,18 @@ var perceptionScenarios = []perceptionScenario{
 			"take now names the concrete 'item \"stew\", qty 1, and amount 4' so there is nothing to misbind. Only golden " +
 			"exercising the single-line coin-quote actionable take (see TestCoinQuoteTakeNamesConcreteTerms).",
 		build: buyerOfferedQuoteTakeNamesTerms,
+	},
+	{
+		name: "buyer_sees_standing_quote_after_warrant_spent",
+		summary: "LLM-551: Patience Walker stands at Josiah Thorne's counter with 12 coins and no flour. His targeted " +
+			"4-flour/12-coin quote is ACTIVE, but its warrant was consumed turns ago — warrants is nil here, which is the " +
+			"whole point. Before this, a targeted quote reached its buyer exactly once, on the tick it was posted; a buyer " +
+			"who spent that tick answering aloud (speak is terminal, so this is the common case) never saw the offer again " +
+			"and lost the quote_id with it. The live cost: 22 minutes and ~20 rejected pay_with_item calls while the " +
+			"seller's own prompt showed the offer standing the whole time. The golden pins that '## Offers made to you' " +
+			"names the seller, the terms, and the quote_id take-instruction on a tick with no warrant at all. Buyer-side " +
+			"twin of seller_with_taken_quote_at_post.",
+		build: buyerSeesStandingQuoteAfterWarrantSpent,
 	},
 	{
 		name: "dairy_choosing_at_farm",
@@ -5073,6 +5136,70 @@ func sellerWithTakenQuoteAtPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		Structures:       map[sim.StructureID]*sim.Structure{apothecary: plainStructure(apothecary, "PW Apothecary")},
 	}
 	return snap, prudenceID, nil
+}
+
+// buyerSeesStandingQuoteAfterWarrantSpent is the LLM-551 buyer-side fixture, cut
+// from the live General Store deadlock of 2026-07-28. Patience Walker is the
+// SUBJECT — the buyer — and Josiah Thorne's 4-flour quote in her name is active.
+//
+// The load-bearing detail is what is ABSENT: warrants is nil. The quote's
+// one-shot SceneQuoteTargetedWarrant fired turns ago and was consumed, which
+// live is the ordinary case (a buyer who answers the offer aloud spends her tick
+// on a terminal speak). Every later tick she perceived nothing about an offer
+// that was hers to take, so her pay_with_item calls went out bare — no quote_id —
+// and crossed the quote instead of taking it. The golden proves the section
+// stands the offer up on exactly such a tick.
+//
+// She holds 0 flour and 28 coins, as she did live.
+func buyerSeesStandingQuoteAfterWarrantSpent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID   = sim.ActorID("patience")
+		josiahID     = sim.ActorID("josiah")
+		generalStore = sim.StructureID("general_store")
+		huddle       = sim.HuddleID("h1")
+	)
+	now := 916 // 15:16, the hour the live scene ran
+	standing := &sim.SceneQuote{
+		ID: 5, SellerID: josiahID, TargetBuyer: patienceID,
+		Lines: []sim.QuoteLine{{ItemKind: "flour", Qty: 4}}, Amount: 12,
+		State: sim.SceneQuoteStateActive,
+	}
+	patience := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Patience Walker",
+		Role:              "goodwife",
+		State:             sim.StateIdle,
+		InsideStructureID: generalStore,
+		CurrentHuddleID:   huddle,
+		Coins:             28,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: generalStore,
+		WorkStructureID:   generalStore,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"flour": 9},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{patienceID: patience, josiahID: josiah},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{5: standing},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{patienceID: {}, josiahID: {}}},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{generalStore: plainStructure(generalStore, "General Store")},
+	}
+	return snap, patienceID, nil
 }
 
 // sellerWithShortfallLotAtPost builds the LLM-409 fixture: Josiah Thorne, a

@@ -297,6 +297,11 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// spent the goods out from under, just flipped to shortfall. Sits right after
 	// so "still standing" and "fell through" read as a pair.
 	renderUncoverableOffersFromMe(&ephemeral, p.UncoverableOffersFromMe)
+	// LLM-551: the buyer-side twin of the standing-quotes cue above — offers
+	// posted in THIS subject's name that are still hers to take. Sits with the
+	// seller pair so the three read as one ledger of open quotes: what I've put
+	// out, what fell through, what has been put to me.
+	renderStandingQuotesToMe(&ephemeral, p.StandingQuotesToMe, buyRedundancy)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
@@ -3392,6 +3397,60 @@ func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView) 
 	b.WriteString("Bide for an answer; an offer listed above already stands — do not post it again.\n")
 }
 
+// renderStandingQuotesToMe renders the buyer-side "## Offers made to you"
+// section — scene-quotes another actor has posted in the subject's name that are
+// still hers to take (LLM-551). The actionable twin of
+// renderStandingQuotesFromMe: that section exists so a seller doesn't re-post,
+// this one so a buyer can still ACT on an offer whose warrant has long since
+// been consumed.
+//
+// Every line carries the quote_id take-instruction (quoteTakeInstruction, shared
+// with the warrant line). That is the point of the section — a buyer who spoke
+// on the tick the quote arrived kept the memory of the deal in the conversation
+// but lost the id, and a bare pay_with_item crosses the quote rather than taking
+// it (ZBBS-HOME-424).
+//
+// redundancy (LLM-171) is honoured per quote exactly as on the warrant line: a
+// quote whose every line is a good the buyer makes herself or already holds at
+// cap loses its take and gets a decline steer instead, so a mis-pitched standing
+// offer can't drive a buy-back of her own ware or an over-cap purchase.
+//
+// Uncapped, like both offer twins: every open offer must stay visible, and the
+// count is bounded by how many sellers have addressed this buyer.
+func renderStandingQuotesToMe(
+	b *strings.Builder,
+	quotes []StandingQuoteToMeView,
+	buyRedundancy func(sim.ItemKind) (produced, atCap bool),
+) {
+	if len(quotes) == 0 {
+		return
+	}
+	b.WriteString("## Offers made to you\n")
+	for i, q := range quotes {
+		items := formatQuoteLines(q.Lines)
+		if items == "" {
+			items = "item"
+		}
+		unit := "coins"
+		if q.Amount == 1 {
+			unit = "coin"
+		}
+		disposition := ""
+		if q.EatHere {
+			disposition = ", to eat here (it can't be carried away)"
+		}
+		take := quoteTakeInstruction(q.QuoteID, q.Lines, q.Amount)
+		switch buyQuoteRedundancyReason(q.Lines, buyRedundancy) {
+		case "produced":
+			take = " But these are wares you make yourself — there's no reason to buy them. Decline and tend to your own work."
+		case "atcap":
+			take = " But you already hold all of these you can carry — there's no reason to buy more. Decline and move on."
+		}
+		fmt.Fprintf(b, "%d. %s has %s set out for you at %d %s%s — it still stands.%s\n",
+			i+1, sanitizeInline(q.SellerName), items, q.Amount, unit, disposition, take)
+	}
+}
+
 // renderUncoverableOffersFromMe renders the flat "## An offer you couldn't keep"
 // beat — a sell lot the subject posted and then spent the goods out from under,
 // which the coverage reconcile just flipped to shortfall (built by
@@ -4098,19 +4157,7 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	// livelocks re-announcing the same deal (Nathaniel Cole ↔ John Ellis, porridge
 	// quote open ~13m, 2026-07-17). Folding the utterance into pay's say is the one
 	// move that both speaks and settles.
-	var take string
-	switch {
-	case len(r.Lines) > 1:
-		take = fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", r.QuoteID, r.Amount)
-	case len(r.Lines) == 1:
-		take = fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", r.QuoteID, string(r.Lines[0].ItemKind), r.Lines[0].Qty, r.Amount, string(r.Lines[0].ItemKind))
-	default:
-		// Defensive (code_review): a quote with zero lines shouldn't reach here —
-		// sell/scene_quote require ≥1 item — but the single-item arm indexes
-		// r.Lines[0], so guard the empty case instead of risking a panic on
-		// malformed/legacy warrant data. Bare coin take, no item to name.
-		take = fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the stated amount — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", r.QuoteID)
-	}
+	take := quoteTakeInstruction(r.QuoteID, r.Lines, r.Amount)
 	// LLM-171: the buyer makes or is at cap on every quoted good — withhold the
 	// take entirely and steer them to decline, so a mis-pitched quote can't drive
 	// a buy-back of their own ware or an over-cap purchase.
@@ -4128,6 +4175,32 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 		offers = "offers"
 	}
 	return fmt.Sprintf("%d. %s %s %s for %d %s%s.%s\n", n, seller, offers, items, r.Amount, unit, disposition, take)
+}
+
+// quoteTakeInstruction builds the "here is how you take it" sentence appended to
+// a quote the buyer can act on — the quote_id-bearing pay_with_item call, the
+// anti-speak-first guard, and (single-item only) the barter fallback. Leading
+// space included; the caller concatenates it onto its own line.
+//
+// Extracted from renderQuoteWarrantLine (LLM-551) so the one-shot warrant line
+// and the standing "## Offers made to you" section emit the SAME instruction.
+// They must not drift: the quote_id is the whole reason either line exists
+// (ZBBS-HOME-424 — without it the buyer answers a standing quote with a bare
+// pay_with_item and mints a crossing offer that deadlocks against the quote),
+// and a second copy of this text is a second place for it to go missing.
+func quoteTakeInstruction(quoteID sim.QuoteID, lines []sim.QuoteLine, amount int) string {
+	switch {
+	case len(lines) > 1:
+		return fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", quoteID, amount)
+	case len(lines) == 1:
+		return fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", quoteID, string(lines[0].ItemKind), lines[0].Qty, amount, string(lines[0].ItemKind))
+	default:
+		// Defensive (code_review): a quote with zero lines shouldn't reach here —
+		// sell/scene_quote require ≥1 item — but the single-item arm indexes
+		// lines[0], so guard the empty case instead of risking a panic on
+		// malformed/legacy warrant data. Bare coin take, no item to name.
+		return fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the stated amount — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", quoteID)
+	}
 }
 
 // formatQuoteLines renders a quote's item lines as a readable phrase:

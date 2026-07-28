@@ -321,6 +321,31 @@ type Payload struct {
 	// out. Ordering: by QuoteID ascending for determinism.
 	StandingQuotesFromMe []StandingQuoteView
 
+	// StandingQuotesToMe lists the still-active scene-quotes addressed TO the
+	// subject — offers-to-sell another actor posted naming her as the buyer,
+	// which she takes with pay_with_item + quote_id. Drives the "## Offers made
+	// to you" section (renderStandingQuotesToMe). The buyer-side twin of
+	// StandingQuotesFromMe, and it exists for the same reason that view does
+	// (LLM-45): a quote warrants its target ONCE, so before LLM-551 the buyer's
+	// only sight of an offer was the tick it was posted. A buyer who spent that
+	// tick answering aloud — speak is terminal, so this is the common case —
+	// never saw the quote again and lost the quote_id with it, leaving a bare
+	// pay_with_item that crosses the quote instead of taking it. Live: Patience
+	// Walker spoke her acceptance, then spent 22 minutes and ~20 rejected calls
+	// trying to buy flour that was already set out for her, while the seller's
+	// own prompt showed the offer standing the whole time.
+	//
+	// Sourced from snap.Quotes (active quotes where TargetBuyer == subject);
+	// NOT a warrant — that is the defect. TARGETED only: a public quote is an
+	// advertisement to the room, and standing one in every bystander's prompt
+	// every tick would pin passers-by to a stall (the same reason hasOfferedQuote
+	// is targeted-only). Lodging quotes to an already-homed subject are dropped,
+	// mirroring filterHomedLodgingQuoteWarrants — she cannot take the room, so
+	// standing the offer would dangle a doomed negotiation (LLM-182/208). nil
+	// (render content-gates) when nothing is addressed to her. Ordering: by
+	// QuoteID ascending for determinism.
+	StandingQuotesToMe []StandingQuoteToMeView
+
 	// UncoverableOffersFromMe lists the subject's OWN sell lots that JUST fell
 	// through because the subject spent/ate/paid the quoted goods away out from
 	// under his own offer — lots the pre-publish coverage reconcile
@@ -893,6 +918,26 @@ type StandingQuoteView struct {
 	// common single-item quote, multi for a bundle.
 	Lines  []sim.QuoteLine
 	Amount int
+}
+
+// StandingQuoteToMeView is the buyer-side projection of one active scene-quote
+// addressed to the subject (LLM-551) — the twin of StandingQuoteView. Unlike
+// that view, whose job is suppression (don't re-post), this one is ACTIONABLE:
+// it carries the QuoteID because the render's whole purpose is to keep the
+// quote_id in front of the buyer for as long as the offer stands.
+//
+// SellerName is the acquaintance-gated label (descriptorLabel). EatHere marks a
+// bundle clamped to eat-here at creation (any non-portable line, LLM-101), so
+// the buyer doesn't plan a carry-out the clamp would rewrite. Item kinds are
+// sanitized inline at render time.
+type StandingQuoteToMeView struct {
+	QuoteID    sim.QuoteID
+	SellerName string
+	// Lines are the offer's item lines — single-element for the common
+	// single-item quote, multi for a bundle taken whole.
+	Lines   []sim.QuoteLine
+	Amount  int
+	EatHere bool
 }
 
 // UncoverableOfferView is one of the subject's OWN sell lots that JUST fell
