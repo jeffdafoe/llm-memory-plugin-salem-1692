@@ -495,6 +495,111 @@ func TestTickVisitorCascade_CleanupRemovesAndEmits(t *testing.T) {
 	}
 }
 
+// TestTickVisitorCascade_SpawnEmitsNPCCreated pins LLM-552: a spawning visitor
+// announces himself on the event bus, and does so BEFORE his walk-in.
+//
+// The client only learns of an actor created after page load via the npc_created
+// frame; _on_npc_walking and _on_npc_arrived both drop frames for an id they do
+// not already hold. Emitting nothing (the pre-LLM-552 behavior) therefore left
+// the traveler invisible for his entire stay on every client that was connected
+// when he arrived — the failure Jeff saw as Josiah conversing with no one. The
+// ordering assertion is the load-bearing half: frames broadcast in emission
+// order, so a create emitted after the ActorMoveStarted would still lose the
+// walk.
+func TestTickVisitorCascade_SpawnEmitsNPCCreated(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	vw.seedVisitorSprites(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMaxConcurrent = 2
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	// Record the event ORDER, not just the events — the create must precede the
+	// walk it enables.
+	var created *sim.NPCCreated
+	var createdIndex, moveIndex = -1, -1
+	var seen int
+	w.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+		switch e := evt.(type) {
+		case *sim.NPCCreated:
+			if created == nil {
+				created = e
+				createdIndex = seen
+			}
+		case *sim.ActorMoveStarted:
+			if moveIndex < 0 {
+				moveIndex = seen
+			}
+		}
+		seen++
+	}))
+
+	r := rand.New(rand.NewSource(42))
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{
+		Now: visitorSpawnDaytime, Rand: r,
+	}))
+	if err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
+		t.Fatalf("spawned = %d, want 1", tm.Spawned)
+	}
+	if created == nil {
+		t.Fatal("NPCCreated not emitted for a spawned visitor — clients connected at spawn never render him")
+	}
+	if created.Kind != sim.KindNPCShared {
+		t.Errorf("event Kind = %v, want KindNPCShared", created.Kind)
+	}
+	if created.LLMAgent != sim.VisitorAgentName {
+		t.Errorf("event LLMAgent = %q, want %q", created.LLMAgent, sim.VisitorAgentName)
+	}
+	if created.DisplayName == "" {
+		t.Error("event DisplayName is empty")
+	}
+	// The sprite pointer is what spares the hub a catalog round-trip; without it
+	// the client's add_npc_from_broadcast bails on the null sprite and the actor
+	// is never placed.
+	if created.Sprite == nil {
+		t.Error("event Sprite is nil — the client drops an npc_created frame with no sprite")
+	}
+	if created.At.IsZero() {
+		t.Error("event At not stamped")
+	}
+
+	// The spawned actor and the event must agree on identity and start tile.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		actor := world.Actors[created.ActorID]
+		if actor == nil {
+			t.Errorf("event ActorID %q is not in World.Actors", created.ActorID)
+			return nil, nil
+		}
+		if actor.VisitorState == nil {
+			t.Errorf("event ActorID %q is not a visitor", created.ActorID)
+		}
+		if created.Sprite != nil && actor.SpriteID != created.Sprite.ID {
+			t.Errorf("event Sprite.ID = %q, actor SpriteID = %q", created.Sprite.ID, actor.SpriteID)
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("actor cross-check: %v", err)
+	}
+
+	if moveIndex < 0 {
+		t.Fatal("no ActorMoveStarted — the walk-in never issued, so the ordering is untested")
+	}
+	if createdIndex >= moveIndex {
+		t.Errorf("NPCCreated emitted at %d, not strictly before ActorMoveStarted at %d — the client drops the walk for an unknown id",
+			createdIndex, moveIndex)
+	}
+}
+
 // --- Cross-cascade skips ---------------------------------------------------
 
 // TestRecordInteraction_SkipsVisitor verifies the visitor skip in

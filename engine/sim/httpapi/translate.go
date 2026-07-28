@@ -258,15 +258,19 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		}}, true
 	case *sim.NPCCreated:
 		// Reuse AgentDTO so the frame is byte-identical to a per-NPC entry from
-		// the /api/village/agents load the client already renders. A fresh NPC
-		// has no editor metadata yet (agent/schedule/anchors/attributes all
-		// zero), so only the render fields are populated; the sprite is resolved
-		// from the *Sprite the event carried (no catalog lookup needed here).
+		// the /api/village/agents load the client already renders. A fresh actor
+		// has no editor metadata yet (schedule/anchors/attributes all zero), so
+		// only the render fields plus the backing VA slug are populated; the
+		// sprite is resolved from the *Sprite the event carried (no catalog
+		// lookup needed here). LLMAgent is omitempty, so an admin-created NPC
+		// (no VA linked yet) omits the key exactly as before, while a visitor
+		// carries salem-visitor the way his /agents entry does.
 		return WireFrame{Type: "npc_created", Data: AgentDTO{
 			ID:          string(e.ActorID),
 			DisplayName: e.DisplayName,
 			Kind:        actorKindString(e.Kind),
 			State:       string(sim.StateIdle),
+			LLMAgent:    e.LLMAgent,
 			X:           e.X,
 			Y:           e.Y,
 			Facing:      normalizeFacing(e.Facing),

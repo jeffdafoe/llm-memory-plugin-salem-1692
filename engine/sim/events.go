@@ -756,19 +756,27 @@ type NPCSpriteChanged struct {
 
 func (NPCSpriteChanged) isSimEvent() {}
 
-// NPCCreated is emitted by CreateNPC when a new villager is materialized. It
-// carries the full render identity inline — including the resolved *Sprite (a
+// NPCCreated is emitted when a new actor is materialized into World.Actors —
+// CreateNPC (admin) and dispatchVisitorSpawn (a traveler arriving off the road).
+// It carries the full render identity inline — including the resolved *Sprite (a
 // pointer into the immutable, lock-free sprite catalog, safe to read after the
 // world goroutine moves on) — so the httpapi hub can build a complete
 // npc_created frame (an AgentDTO) without a sprite-catalog round-trip, matching
 // the per-NPC shape the initial /api/village/agents load delivers. Editor
-// metadata (agent link, schedule, social, anchors, attributes) is all unset at
-// creation, so the frame carries only the render fields. Frame: npc_created.
+// metadata (schedule, social, anchors, attributes) is unset at creation, so the
+// frame carries only the render fields plus the backing VA slug. Frame:
+// npc_created.
+//
+// LLMAgent is the backing virtual-agent slug: "" for an admin-created NPC (the
+// editor links one afterwards) and VisitorAgentName for a visitor, which the
+// /api/village/agents load also reports — so a client that learns the actor from
+// this frame holds the same metadata as one that page-loaded it.
 type NPCCreated struct {
 	EventBase
 	ActorID     ActorID
 	DisplayName string
 	Kind        ActorKind
+	LLMAgent    string
 	X           int
 	Y           int
 	Facing      string

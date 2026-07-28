@@ -122,14 +122,17 @@ func TestVisitorSpawn_SkippedAtNight(t *testing.T) {
 	}
 }
 
-// seedVisitorSprites seeds one npc_sprite per distinct name referenced by
-// VisitorArchetypeSprite, keyed by a synthetic id — mirroring the live catalog
-// (id = uuid, Name = display name) so visitorSpriteID resolves whatever archetype
-// the spawn rolls. Call before load().
+// seedVisitorSprites seeds one npc_sprite per distinct name a visitor may render
+// with, keyed by a synthetic id — mirroring the live catalog (id = uuid, Name =
+// display name) so visitorSpriteID resolves whatever the spawn rolls. Sourced
+// from VisitorSpriteCatalogNames, which covers the merchant (factor + buyer)
+// sheets as well as the passer-through archetypes: seeding only the archetype map
+// left a merchant roll resolving no sprite, which a sprite assertion would read as
+// a spawn bug rather than an under-seeded fixture. Call before load().
 func (vw *visitorWorld) seedVisitorSprites(t *testing.T) {
 	t.Helper()
 	sprites := map[sim.SpriteID]*sim.Sprite{}
-	for _, name := range sim.VisitorArchetypeSprite {
+	for _, name := range sim.VisitorSpriteCatalogNames() {
 		id := sim.SpriteID("sprite-" + name) // unique per name; stands in for the uuid PK
 		sprites[id] = &sim.Sprite{ID: id, Name: name}
 	}
