@@ -222,6 +222,268 @@ func TestPayWithItem_ReverseSaleGate(t *testing.T) {
 		}
 	})
 
+	// LLM-551 — the live Patience Walker deadlock. She sold Josiah Thorne flour
+	// early in a huddle, he later posted her a targeted flour quote, and every
+	// one of her ~20 exactly-matching pay_with_item calls was refused by arm 2
+	// because the huddle was still the same one. Roles here: Anne is the buyer
+	// who sold first, Prudence the keeper who then offers.
+	t.Run("counter_directional_quote_unblocks_after_own_sale", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		// Anne sold Prudence bread earlier in THIS huddle — arm 2 evidence.
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 200, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		// Prudence now offers Anne bread — direction settled by the substrate.
+		seedQuote(t, w, sim.SceneQuote{
+			ID: 20, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+			State: sim.SceneQuoteStateActive, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+		})
+		// A bare offer, exactly as the live model sent it — no quote_id, because
+		// the warrant carrying it was consumed turns ago.
+		res, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err != nil {
+			t.Fatalf("buyer taking a standing quote after her own earlier sale was gated: %v", err)
+		}
+		if !res.(sim.PayWithItemResult).FastPath {
+			t.Error("expected the standing quote to be auto-matched and settled")
+		}
+		if got := readQuoteState(t, w, 20); got != sim.SceneQuoteStateTaken {
+			t.Errorf("quote state = %q, want taken", got)
+		}
+	})
+
+	// The escape is DELIBERATELY item-scoped rather than term-matched. Once the
+	// counterparty has posted this buyer a quote for this good, direction is
+	// settled between them and the role-gate has nothing left to protect; the
+	// terms are a negotiation, and a mismatched ask simply mints an ordinary
+	// pending offer the seller may accept, decline or counter. Term-matching the
+	// escape would re-open the bug at one remove: Josiah quotes four sacks,
+	// Patience decides she wants two, and she is gated out of her own purchase
+	// again. Pinned so a later reader doesn't "tighten" it back into the defect.
+	t.Run("counter_quote_escape_is_item_scoped_not_term_matched", func(t *testing.T) {
+		for _, c := range []struct {
+			name         string
+			qty, amount  int
+			wantFastPath bool
+		}{
+			{"exact terms settle at once", 1, 4, true},
+			{"fewer than quoted mints an offer", 1, 3, false},
+			{"more than quoted mints an offer", 3, 12, false},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				w, stop, at := buildReverseGateWorld(t)
+				defer stop()
+				seedLedgerEntry(t, w, sim.PayLedgerEntry{
+					ID: 210, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+					Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+					SceneID: "sc1", HuddleID: "h1",
+				})
+				seedQuote(t, w, sim.SceneQuote{
+					ID: 30, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+					Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+					State: sim.SceneQuoteStateActive, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+				})
+				res, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", c.qty, c.amount, false, nil, nil, 0, 0, "", at))
+				if err != nil {
+					t.Fatalf("err = %v, want the buy to proceed (the gate has nothing to protect here)", err)
+				}
+				got := res.(sim.PayWithItemResult)
+				if got.FastPath != c.wantFastPath {
+					t.Errorf("FastPath = %v, want %v", got.FastPath, c.wantFastPath)
+				}
+				if !c.wantFastPath && got.State != sim.PayLedgerStatePending {
+					t.Errorf("state = %q, want pending — a mismatched ask is a negotiation, not a refusal", got.State)
+				}
+			})
+		}
+	})
+
+	t.Run("own_sale_still_blocks_without_counter_quote", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		// Same accepted sale, but the counterparty has posted NOTHING. The
+		// LLM-189 protection must survive the LLM-551 escape.
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 201, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		_, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), wantSteer) {
+			t.Fatalf("err = %v, want the reverse-pay steer to still fire", err)
+		}
+	})
+
+	// A quote the seller can no longer cover is NOT evidence of settled
+	// direction. This is load-bearing on reconcileQuoteCoverage (LLM-409), which
+	// runs once per command on the world goroutine before republish and flips any
+	// uncoverable lot to terminal shortfall — so an Active quote in the live map
+	// is coverable as of the last command boundary, with no sweep latency. The
+	// escape reads State, and that is sufficient BECAUSE of the reconcile; this
+	// test pins the coupling so a change to either end surfaces here.
+	t.Run("uncoverable_counter_quote_does_not_unblock", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 220, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		seedQuote(t, w, sim.SceneQuote{
+			ID: 31, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+			State: sim.SceneQuoteStateShortfall, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+		})
+		_, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), wantSteer) {
+			t.Fatalf("err = %v, want a lot the seller can't cover NOT to lift the gate", err)
+		}
+	})
+
+	// An expired quote is likewise no evidence — the escape and the fast path
+	// must agree on the deadline or the gate opens onto a call that then rejects.
+	t.Run("expired_counter_quote_does_not_unblock", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 221, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		seedQuote(t, w, sim.SceneQuote{
+			ID: 32, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+			State: sim.SceneQuoteStateActive, CreatedAt: at.Add(-time.Hour),
+			ExpiresAt: at.Add(-time.Second), // lapsed; the sweep hasn't run yet
+		})
+		_, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), wantSteer) {
+			t.Fatalf("err = %v, want an expired quote NOT to lift the gate", err)
+		}
+	})
+
+	t.Run("public_counter_quote_does_not_unblock", func(t *testing.T) {
+		w, stop, at := buildReverseGateWorld(t)
+		defer stop()
+		seedLedgerEntry(t, w, sim.PayLedgerEntry{
+			ID: 202, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+			Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+			SceneID: "sc1", HuddleID: "h1",
+		})
+		// An untargeted advertisement to the room is not direction settled
+		// between these two — the escape requires a quote in the caller's name.
+		seedQuote(t, w, sim.SceneQuote{
+			ID: 21, SceneID: "sc1", SellerID: "prudence",
+			Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+			State: sim.SceneQuoteStateActive, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+		})
+		_, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+		if err == nil || !strings.Contains(err.Error(), wantSteer) {
+			t.Fatalf("err = %v, want a public quote NOT to lift the gate", err)
+		}
+	})
+
+	// LLM-551: the rejection's second sentence must name a verb the reader can
+	// actually use. accept_pay answers a buyer's pay offer, so it belongs in the
+	// text only when such an offer is genuinely pending — the live steer named it
+	// unconditionally and sent a would-be buyer after a tool she never called.
+	t.Run("steer_names_accept_pay_only_when_an_offer_is_pending", func(t *testing.T) {
+		t.Run("no_pending_offer", func(t *testing.T) {
+			w, stop, at := buildReverseGateWorld(t)
+			defer stop()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 203, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 5,
+				Amount: 10, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+			if err == nil {
+				t.Fatal("expected the reverse-pay rejection")
+			}
+			if strings.Contains(err.Error(), "accept_pay") {
+				t.Errorf("steer names accept_pay with no offer to accept: %v", err)
+			}
+			if !strings.Contains(err.Error(), "they must post the offer first") {
+				t.Errorf("steer does not point at the buy path: %v", err)
+			}
+		})
+
+		// A scene can conclude while its huddle lives on, so an entry matching on
+		// huddle id alone may belong to a conversation that has since moved on.
+		t.Run("pending_offer_from_another_scene_not_named", func(t *testing.T) {
+			w, stop, at := buildReverseGateWorld(t)
+			defer stop()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 206, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 5,
+				Amount: 10, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 207, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 1,
+				Amount: 4, State: sim.PayLedgerStatePending, CreatedAt: at,
+				SceneID: "sc-old", HuddleID: "h1", ExpiresAt: at.Add(3 * time.Minute),
+			})
+			_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+			if err == nil {
+				t.Fatal("expected the reverse-pay rejection")
+			}
+			if strings.Contains(err.Error(), "offer id 207") {
+				t.Errorf("steer named an offer from a concluded scene: %v", err)
+			}
+		})
+
+		t.Run("expired_pending_offer_not_named", func(t *testing.T) {
+			w, stop, at := buildReverseGateWorld(t)
+			defer stop()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 208, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 5,
+				Amount: 10, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			// Lapsed but not yet swept — the map still reads pending.
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 209, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 1,
+				Amount: 4, State: sim.PayLedgerStatePending, CreatedAt: at.Add(-time.Hour),
+				SceneID: "sc1", HuddleID: "h1", ExpiresAt: at.Add(-time.Second),
+			})
+			_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+			if err == nil {
+				t.Fatal("expected the reverse-pay rejection")
+			}
+			if strings.Contains(err.Error(), "offer id 209") {
+				t.Errorf("steer named a lapsed offer: %v", err)
+			}
+		})
+
+		t.Run("offer_pending", func(t *testing.T) {
+			w, stop, at := buildReverseGateWorld(t)
+			defer stop()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 204, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 5,
+				Amount: 10, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			// Anne has a live pay offer awaiting Prudence's decision — here
+			// accept_pay IS the move, and the id it needs must ride along.
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 205, BuyerID: "anne", SellerID: "prudence", ItemKind: "bread", Qty: 1,
+				Amount: 4, State: sim.PayLedgerStatePending, CreatedAt: at,
+				SceneID: "sc1", HuddleID: "h1", ExpiresAt: at.Add(3 * time.Minute),
+			})
+			_, err := w.Send(sim.PayWithItem("prudence", "Anne", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
+			if err == nil {
+				t.Fatal("expected the reverse-pay rejection")
+			}
+			if !strings.Contains(err.Error(), "accept_pay, offer id 205") {
+				t.Errorf("steer should name accept_pay + the pending offer id: %v", err)
+			}
+		})
+	})
+
 	t.Run("normal_buy_direction_unaffected", func(t *testing.T) {
 		w, stop, at := buildReverseGateWorld(t)
 		defer stop()

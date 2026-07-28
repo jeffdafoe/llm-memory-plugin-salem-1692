@@ -427,10 +427,25 @@ func PayWithItem(
 			// at dispatch — the substrate stays authoritative; closing the
 			// taken quote (runPayWithItemFastPath) thins the perception cue
 			// that lured the model here, and this is the hard backstop.
-			if callerSellsItemTo(w, buyerID, sellerID, kind, sceneID, buyer.CurrentHuddleID, at) {
+			//
+			// LLM-551: the gate stands aside when the named seller holds an
+			// ACTIVE quote for this kind targeted at the caller. That quote is
+			// the substrate settling direction in the caller's favour — she is
+			// taking an offer the seller genuinely posted, which is the exact
+			// opposite of a phantom reverse offer, and the only tool that takes
+			// it is this one. Without the escape a completed sale poisoned the
+			// reverse trade for the LIFE of the huddle: arm 2 matches a terminal
+			// `accepted` entry with no recency bound, and a huddle stays open
+			// hours past its last word (LLM-537). Live: Patience Walker sold
+			// Josiah Thorne 3 flour at 18:54, he posted her a 4-flour quote at
+			// 19:11, and her ~20 exactly-matching pay_with_item calls were all
+			// refused until she gave up and went home.
+			if callerSellsItemTo(w, buyerID, sellerID, kind, sceneID, buyer.CurrentHuddleID, at) &&
+				!activeTargetedQuoteOffers(w, sellerID, buyerID, kind, sceneID, at) {
 				return nil, fmt.Errorf(
-					"you're the one selling %s to %s here — you don't buy it back. Wait for them to pay you, or use accept_pay to settle their offer.",
+					"you're the one selling %s to %s here — you don't buy it back. %s",
 					kind, seller.DisplayName,
+					reversePaySettleSteer(w, buyerID, sellerID, kind, buyer.CurrentHuddleID, sceneID, at),
 				)
 			}
 
@@ -1959,27 +1974,9 @@ func callerSellsItemTo(
 	at time.Time,
 ) bool {
 	// Arm 1: an active sell quote from caller TARGETED at counterparty,
-	// offering this item in this scene. (counterparty is always a resolved,
-	// non-empty actor, so this also excludes public quotes where TargetBuyer
-	// is empty.)
-	for _, q := range w.Quotes {
-		if q == nil || q.State != SceneQuoteStateActive {
-			continue
-		}
-		if q.SellerID != caller || q.SceneID != sceneID {
-			continue
-		}
-		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
-			continue
-		}
-		if q.TargetBuyer != counterparty {
-			continue
-		}
-		for _, line := range q.Lines {
-			if line.ItemKind == kind {
-				return true
-			}
-		}
+	// offering this item in this scene.
+	if activeTargetedQuoteOffers(w, caller, counterparty, kind, sceneID, at) {
+		return true
 	}
 	// Arm 2: an accepted sale of this item from caller to counterparty in the
 	// current huddle.
@@ -1995,6 +1992,98 @@ func callerSellsItemTo(
 		}
 	}
 	return false
+}
+
+// activeTargetedQuoteOffers reports whether `seller` holds an ACTIVE, unexpired
+// scene-quote in `sceneID`, addressed specifically to `buyer`, that offers
+// `kind` on any of its bundle lines. Extracted from callerSellsItemTo's arm 1
+// (LLM-551) so the reverse-pay gate and its counter-directional escape ask the
+// same question of the same map rather than each rolling its own scan — the two
+// readings must never disagree about whether a quote stands.
+//
+// A PUBLIC quote (empty TargetBuyer) never matches: `buyer` is always a
+// resolved, non-empty actor, and a quote addressed to the room ties no specific
+// counterparty to the sale. That asymmetry is load-bearing in BOTH callers —
+// as gate evidence it must not block a reseller who advertises `kind` to the
+// room while restocking it from a co-present supplier; as escape evidence it
+// must not let a passer-by treat a public advertisement as direction settled
+// between the two of them.
+func activeTargetedQuoteOffers(
+	w *World,
+	seller, buyer ActorID,
+	kind ItemKind,
+	sceneID SceneID,
+	at time.Time,
+) bool {
+	for _, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive {
+			continue
+		}
+		if q.SellerID != seller || q.SceneID != sceneID {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
+			continue
+		}
+		if q.TargetBuyer != buyer {
+			continue
+		}
+		for _, line := range q.Lines {
+			if line.ItemKind == kind {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reversePaySettleSteer builds the second sentence of the reverse-pay
+// rejection: what the caller should do INSTEAD of the buyer verb. It names
+// accept_pay only when there is genuinely an offer to accept — a pending
+// pay-ledger entry from the counterparty for this good — and carries its
+// ledger id, since accept_pay needs one.
+//
+// LLM-551: the old text named accept_pay unconditionally. That verb is
+// seller-side (it answers a buyer's pay offer), so a caller who reached this
+// gate while actually trying to BUY was handed a verb that could not apply to
+// her: Patience Walker never once called it across 22 minutes of retries. With
+// the counter-directional escape in place the common buy case no longer lands
+// here at all, but the residual remains — a would-be buyer whose seller has not
+// posted a quote yet — so the fallback states the situation and names the move
+// that opens the buy path (get the offer posted) rather than misdirecting her
+// to a tool she cannot use.
+// The entry must be one accept_pay could actually settle: pending, not past its
+// own ExpiresAt (the aging sweep flips a lapsed offer to expired, so between the
+// deadline and the sweep the map still reads pending), and raised in THIS
+// conversation — both the huddle and the scene it is anchored to. Huddle alone
+// is not quite enough: a scene can conclude while its huddle lives on, so an
+// entry from a prior scene could otherwise match on huddle id. Naming a stale or
+// far-off offer id would hand the model an accept_pay that rejects — the same
+// cue-versus-gate mismatch this gate's own steer exists to avoid.
+func reversePaySettleSteer(
+	w *World,
+	caller, counterparty ActorID,
+	kind ItemKind,
+	huddleID HuddleID,
+	sceneID SceneID,
+	at time.Time,
+) string {
+	for _, e := range w.PayLedger {
+		if e == nil || e.State != PayLedgerStatePending {
+			continue
+		}
+		if e.SellerID != caller || e.BuyerID != counterparty || e.ItemKind != kind {
+			continue
+		}
+		if huddleID == "" || e.HuddleID != huddleID || e.SceneID != sceneID {
+			continue
+		}
+		if !e.ExpiresAt.IsZero() && !at.Before(e.ExpiresAt) {
+			continue
+		}
+		return fmt.Sprintf("Their offer is waiting on you — settle it with accept_pay, offer id %d.", e.ID)
+	}
+	return "Wait for them to pay you. If you mean to buy this from them instead, they must post the offer first — ask them for it, then take it with pay_with_item."
 }
 
 // counterpartyCanSupply reports whether `seller` (the actor a buyer named) could
