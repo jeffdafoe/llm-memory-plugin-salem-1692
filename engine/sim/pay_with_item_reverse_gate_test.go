@@ -256,6 +256,52 @@ func TestPayWithItem_ReverseSaleGate(t *testing.T) {
 		}
 	})
 
+	// The escape is DELIBERATELY item-scoped rather than term-matched. Once the
+	// counterparty has posted this buyer a quote for this good, direction is
+	// settled between them and the role-gate has nothing left to protect; the
+	// terms are a negotiation, and a mismatched ask simply mints an ordinary
+	// pending offer the seller may accept, decline or counter. Term-matching the
+	// escape would re-open the bug at one remove: Josiah quotes four sacks,
+	// Patience decides she wants two, and she is gated out of her own purchase
+	// again. Pinned so a later reader doesn't "tighten" it back into the defect.
+	t.Run("counter_quote_escape_is_item_scoped_not_term_matched", func(t *testing.T) {
+		for _, c := range []struct {
+			name         string
+			qty, amount  int
+			wantFastPath bool
+		}{
+			{"exact terms settle at once", 1, 4, true},
+			{"fewer than quoted mints an offer", 1, 3, false},
+			{"more than quoted mints an offer", 3, 12, false},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				w, stop, at := buildReverseGateWorld(t)
+				defer stop()
+				seedLedgerEntry(t, w, sim.PayLedgerEntry{
+					ID: 210, BuyerID: "prudence", SellerID: "anne", ItemKind: "bread", Qty: 3,
+					Amount: 7, State: sim.PayLedgerStateAccepted, CreatedAt: at, ResolvedAt: at,
+					SceneID: "sc1", HuddleID: "h1",
+				})
+				seedQuote(t, w, sim.SceneQuote{
+					ID: 30, SceneID: "sc1", SellerID: "prudence", TargetBuyer: "anne",
+					Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4,
+					State: sim.SceneQuoteStateActive, CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+				})
+				res, err := w.Send(sim.PayWithItem("anne", "Prudence", "bread", c.qty, c.amount, false, nil, nil, 0, 0, "", at))
+				if err != nil {
+					t.Fatalf("err = %v, want the buy to proceed (the gate has nothing to protect here)", err)
+				}
+				got := res.(sim.PayWithItemResult)
+				if got.FastPath != c.wantFastPath {
+					t.Errorf("FastPath = %v, want %v", got.FastPath, c.wantFastPath)
+				}
+				if !c.wantFastPath && got.State != sim.PayLedgerStatePending {
+					t.Errorf("state = %q, want pending — a mismatched ask is a negotiation, not a refusal", got.State)
+				}
+			})
+		}
+	})
+
 	t.Run("own_sale_still_blocks_without_counter_quote", func(t *testing.T) {
 		w, stop, at := buildReverseGateWorld(t)
 		defer stop()

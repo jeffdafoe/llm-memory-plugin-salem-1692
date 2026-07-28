@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -183,11 +184,26 @@ func TestRender_SellerStandingQuoteSection(t *testing.T) {
 
 // --- LLM-551: the buyer-side twin, "## Offers made to you" ---------------
 
+// buyerQuoteSnap is quoteSnap with the two actors in a shared huddle. The
+// buyer-side section is ACTIONABLE — its lines end in a pay_with_item call — and
+// pay_with_item resolves its seller among the caller's huddle peers, so every
+// buyer-side fixture must put them in conversation or the offer isn't takeable.
+func buyerQuoteSnap(quotes map[sim.QuoteID]*sim.SceneQuote) *sim.Snapshot {
+	snap := quoteSnap(quotes)
+	const huddle = sim.HuddleID("h1")
+	snap.Actors["john"].CurrentHuddleID = huddle
+	snap.Actors["jefferey"].CurrentHuddleID = huddle
+	snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+		huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{"john": {}, "jefferey": {}}},
+	}
+	return snap
+}
+
 // The buyer of a targeted quote sees it, with the quote_id pay_with_item needs.
 // The seller of that same quote does NOT see it in this section — it is his, and
 // he already has "## Offers you've put out".
 func TestBuildStandingQuotesToMe_TargetedOnly(t *testing.T) {
-	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{
 		1: activeQuote(1, "john", "jefferey", "bread", 2, 4),
 		2: activeQuote(2, "john", "", "bread", 2, 4), // public — an ad to the room
 	})
@@ -211,7 +227,7 @@ func TestBuildStandingQuotesToMe_TargetedOnly(t *testing.T) {
 // A quote announced by THIS tick's warrant is left to the warrant line — the
 // section exists for every LATER tick, once that one-shot is spent.
 func TestBuildStandingQuotesToMe_SkipsQuoteAnnouncedThisTick(t *testing.T) {
-	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{
 		1: activeQuote(1, "john", "jefferey", "bread", 2, 4),
 	})
 	warrants := []sim.WarrantMeta{{
@@ -231,10 +247,63 @@ func TestBuildStandingQuotesToMe_SkipsQuoteAnnouncedThisTick(t *testing.T) {
 	}
 }
 
+// An unswept expired quote still reads Active in the map. Rendering it would
+// hand the buyer a take-instruction the fast path then refuses — a cue at war
+// with its gate, which is the whole bug class this ticket is about.
+func TestBuildStandingQuotesToMe_ExpiredQuoteExcluded(t *testing.T) {
+	now := time.Date(2026, 7, 28, 19, 16, 0, 0, time.UTC)
+	q := activeQuote(1, "john", "jefferey", "bread", 2, 4)
+	q.ExpiresAt = now.Add(-time.Second) // lapsed; the sweep hasn't run yet
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{1: q})
+	snap.PublishedAt = now
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 0 {
+		t.Errorf("views = %d, want 0 — an expired quote is not takeable", len(got))
+	}
+	q.ExpiresAt = now.Add(time.Minute) // still live
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 1 {
+		t.Errorf("views = %d, want 1 for an unexpired quote", len(got))
+	}
+}
+
+// A quote whose seller is not in the buyer's conversation is not takeable:
+// pay_with_item resolves the seller among huddle peers and rejects otherwise.
+func TestBuildStandingQuotesToMe_RequiresSellerCoPresence(t *testing.T) {
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: activeQuote(1, "john", "jefferey", "bread", 2, 4),
+	})
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 1 {
+		t.Fatalf("co-present seller views = %d, want 1", len(got))
+	}
+	// John wanders off to another conversation — the offer may still be on his
+	// books, but she cannot pay him from here.
+	snap.Actors["john"].CurrentHuddleID = "h2"
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 0 {
+		t.Errorf("views = %d, want 0 — the seller is in another conversation", len(got))
+	}
+	// And a buyer in no conversation at all can take nothing.
+	snap.Actors["john"].CurrentHuddleID = "h1"
+	alone := *snap.Actors["jefferey"]
+	alone.CurrentHuddleID = ""
+	if got := buildStandingQuotesToMe(snap, "jefferey", &alone, nil, nil); len(got) != 0 {
+		t.Errorf("views = %d, want 0 — the buyer is in no conversation", len(got))
+	}
+}
+
+// A self-targeted quote cannot arise from scene_quote, which rejects it; the
+// builder excludes it anyway rather than resting on another component's checks.
+func TestBuildStandingQuotesToMe_SelfTargetedExcluded(t *testing.T) {
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+		1: activeQuote(1, "jefferey", "jefferey", "bread", 2, 4),
+	})
+	if got := buildStandingQuotesToMe(snap, "jefferey", snap.Actors["jefferey"], nil, nil); len(got) != 0 {
+		t.Errorf("views = %d, want 0 — nobody is offered his own wares", len(got))
+	}
+}
+
 // A homed subject is spared a lodging quote she structurally can't take
 // (LLM-182/208); a homeless one still gets it.
 func TestBuildStandingQuotesToMe_HomedLodgingSuppressed(t *testing.T) {
-	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{
 		1: activeQuote(1, "john", "jefferey", "nights_stay", 1, 4),
 	})
 	snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
@@ -252,7 +321,7 @@ func TestBuildStandingQuotesToMe_HomedLodgingSuppressed(t *testing.T) {
 
 // End-to-end: the buyer's full prompt carries the section and the take token.
 func TestRender_BuyerStandingQuoteSection(t *testing.T) {
-	snap := quoteSnap(map[sim.QuoteID]*sim.SceneQuote{
+	snap := buyerQuoteSnap(map[sim.QuoteID]*sim.SceneQuote{
 		7: activeQuote(7, "john", "jefferey", "bread", 2, 4),
 	})
 	out := combinedPrompt(Render(Build(snap, "jefferey", nil), DefaultRenderConfig()))

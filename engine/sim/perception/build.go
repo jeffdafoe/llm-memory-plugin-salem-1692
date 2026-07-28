@@ -4707,11 +4707,29 @@ func buildRecentlyShortfallQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID,
 // "## Offers made to you" section (LLM-551). The mirror of
 // buildStandingQuotesFromMe, filtering on TargetBuyer rather than SellerID.
 //
-// Targeted only — a public quote (empty TargetBuyer) is an advertisement to the
-// room, not an offer in this subject's name, and standing one in every
-// bystander's prompt would pin passers-by to a stall they never approached.
-// The seller is excluded implicitly: a quote's TargetBuyer is never its own
-// SellerID (scene_quote rejects self-targeting), so no self-offer can surface.
+// Every filter here answers ONE question: can the subject actually take this
+// offer on this tick? The section's lines end in "call pay_with_item with
+// quote_id N", so anything it lists and the buy path would refuse is a fresh
+// instance of the very defect this ticket fixes — a cue at war with its gate.
+// Hence:
+//
+//   - TARGETED only. A public quote (empty TargetBuyer) is an advertisement to
+//     the room, not an offer in this subject's name, and standing one in every
+//     bystander's prompt would pin passers-by to a stall they never approached.
+//   - NOT EXPIRED. State alone is not enough: RunSceneQuoteSweep flips a lapsed
+//     quote to expired, so between its ExpiresAt and the next sweep the map
+//     still reads Active. activeTargetedQuoteOffers (the dispatch-side scan)
+//     checks the deadline, so without the same check here perception would hand
+//     out a take-instruction for a quote the fast path then refuses.
+//   - SELLER CO-PRESENT, in this subject's own huddle. pay_with_item resolves
+//     its seller against huddle peers and rejects with "no one named X in this
+//     conversation" otherwise. A quote's scene can span several huddles, so
+//     scene membership is too weak a test for an ACTIONABLE line: the buyer must
+//     be able to reach the seller now.
+//   - NOT THE SUBJECT'S OWN. scene_quote rejects self-targeting, so this cannot
+//     arise from the command path; checked anyway rather than resting the
+//     section's correctness on another component's validation holding for
+//     malformed or legacy rows.
 //
 // A lodging quote to a subject who already has a home is dropped — she cannot
 // take the room (the buyer-side pay_with_item guard rejects it, LLM-182), so
@@ -4730,7 +4748,9 @@ func buildRecentlyShortfallQuotesFromMe(snap *sim.Snapshot, subject sim.ActorID,
 // the facts and render decides whether to withhold the take.
 //
 // Nil-safe; returns nil for none so render content-gates cheaply. Ordering: by
-// QuoteID ascending, deterministic.
+// the quote's own ID ascending, deterministic — collected from SceneQuote.ID
+// rather than the map key so a key/ID divergence in malformed data cannot order
+// the list by one identifier and render another.
 func buildStandingQuotesToMe(
 	snap *sim.Snapshot,
 	subject sim.ActorID,
@@ -4738,7 +4758,7 @@ func buildStandingQuotesToMe(
 	eatHereKinds map[sim.ItemKind]bool,
 	warrants []sim.WarrantMeta,
 ) []StandingQuoteToMeView {
-	if snap == nil || len(snap.Quotes) == 0 {
+	if snap == nil || len(snap.Quotes) == 0 || subjectSnap == nil {
 		return nil
 	}
 	announcedThisTick := make(map[sim.QuoteID]bool, len(warrants))
@@ -4747,13 +4767,25 @@ func buildStandingQuotesToMe(
 			announcedThisTick[r.QuoteID] = true
 		}
 	}
-	homed := subjectSnap != nil && subjectSnap.HomeStructureID != ""
-	var ids []sim.QuoteID
-	for id, q := range snap.Quotes {
+	homed := subjectSnap.HomeStructureID != ""
+	// The buyer must be in a conversation at all: pay_with_item resolves its
+	// seller among the peers of the caller's current huddle.
+	huddle := subjectSnap.CurrentHuddleID
+	if huddle == "" {
+		return nil
+	}
+	var eligible []*sim.SceneQuote
+	for _, q := range snap.Quotes {
 		if q == nil || q.State != sim.SceneQuoteStateActive {
 			continue
 		}
-		if q.TargetBuyer != subject {
+		if q.TargetBuyer != subject || q.SellerID == subject {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !snap.PublishedAt.Before(q.ExpiresAt) {
+			continue
+		}
+		if seller := snap.Actors[q.SellerID]; seller == nil || seller.CurrentHuddleID != huddle {
 			continue
 		}
 		if announcedThisTick[q.ID] {
@@ -4762,16 +4794,15 @@ func buildStandingQuotesToMe(
 		if homed && quoteGrantsLodging(snap, q.Lines) {
 			continue
 		}
-		ids = append(ids, id)
+		eligible = append(eligible, q)
 	}
-	if len(ids) == 0 {
+	if len(eligible) == 0 {
 		return nil
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	sort.Slice(eligible, func(i, j int) bool { return eligible[i].ID < eligible[j].ID })
 
-	views := make([]StandingQuoteToMeView, 0, len(ids))
-	for _, id := range ids {
-		q := snap.Quotes[id]
+	views := make([]StandingQuoteToMeView, 0, len(eligible))
+	for _, q := range eligible {
 		sellerName := ""
 		if seller := snap.Actors[q.SellerID]; seller != nil {
 			acquainted := false
