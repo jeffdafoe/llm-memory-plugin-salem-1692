@@ -13298,12 +13298,12 @@ func constableRoundOwedOffPost() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
 // and silently collapse the whole feature to ContactTierNone.
 func constableAtAVillagersDoor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
-		gideonID    = sim.ActorID("gideon")
-		prudenceID  = sim.ActorID("prudence")
-		apothecary  = sim.StructureID("pw_apothecary")
-		inn         = sim.StructureID("inn")
-		post        = sim.StructureID("meeting_house")
-		home        = sim.StructureID("marsh_residence")
+		gideonID   = sim.ActorID("gideon")
+		prudenceID = sim.ActorID("prudence")
+		apothecary = sim.StructureID("pw_apothecary")
+		inn        = sim.StructureID("inn")
+		post       = sim.StructureID("meeting_house")
+		home       = sim.StructureID("marsh_residence")
 	)
 	start, end := 0, 1440 // on the watch all day
 	now := 1140           // 19:00 — late in the circuit, as the live case was

@@ -890,6 +890,38 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	w.Actors[id] = visitor
 	w.outdoorActors[id] = struct{}{}
 
+	// Tell every connected client the traveler exists, BEFORE the walk-in below is
+	// issued (LLM-552). add_npc_from_broadcast is the only path that puts an actor
+	// into the client's placed_npcs after page load, and both _on_npc_walking and
+	// _on_npc_arrived drop frames for an id they don't hold — so without this frame
+	// a client connected at spawn time never renders the visitor at all, for his
+	// whole stay, while the villagers he huddles with talk to nobody. Reusing
+	// NPCCreated mirrors the despawn side, which reuses ActorDeparted -> npc_deleted;
+	// the client handler is id-idempotent, so a client that already has him from a
+	// page load ignores it.
+	//
+	// Ordering is load-bearing: the npc_walking from issueVisitorWalk is dropped
+	// unless the create precedes it on the wire. It does — the chain is order-
+	// preserving end to end: emit calls subscribers synchronously on the world
+	// goroutine, Hub.Handle sends onto the one broadcast channel from that same
+	// goroutine, and Hub.Run drains it in a single goroutine onto each client's
+	// FIFO send channel. The one way the create is lost is a full broadcast buffer,
+	// which drops frames of every type alike and is accounted in ws.frames_dropped.
+	// A spriteless visitor (sprite lookup missed above) emits a nil Sprite, which
+	// marshals to no sprite key and the client skips — matching the "ships
+	// spriteless" outcome already logged, not a new failure.
+	w.emit(&NPCCreated{
+		ActorID:     id,
+		DisplayName: displayName,
+		Kind:        KindNPCShared,
+		LLMAgent:    VisitorAgentName,
+		X:           edgeTile.X,
+		Y:           edgeTile.Y,
+		Facing:      visitor.Facing,
+		Sprite:      w.Sprites[spriteID],
+		At:          inputs.Now.UTC(),
+	})
+
 	// The spawn is committed — now record the returner's arrival (bump visit count,
 	// clear next_return_at) on the durable row it came back as (LLM-372).
 	if dueReturner != nil {

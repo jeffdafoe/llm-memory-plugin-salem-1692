@@ -1127,3 +1127,70 @@ func TestTranslateEvent_ActorRepairNarrated(t *testing.T) {
 		t.Errorf("room_event payload = %+v, want %+v", d, want)
 	}
 }
+
+// TestTranslateEvent_NPCCreatedVisitor covers the LLM-552 addition: a visitor's
+// npc_created frame carries his backing VA slug, so a client that learns him from
+// the broadcast holds the same llm_memory_agent his /api/village/agents entry
+// reports. The tooltip branches NPC-vs-PC on exactly that meta.
+func TestTranslateEvent_NPCCreatedVisitor(t *testing.T) {
+	sprite := &sim.Sprite{
+		ID: "44444444-5555-6666-7777-888888888888", Name: "Merchant A (v00)",
+		Sheet: "/tilesets/mana-seed/npc/merchant_A_v00.png", FrameWidth: 32, FrameHeight: 32,
+	}
+	frame, ok := TranslateEvent(&sim.NPCCreated{
+		ActorID:     "vstr-3bcaba3e",
+		DisplayName: "Daniel Holcomb the factor",
+		Kind:        sim.KindNPCShared,
+		LLMAgent:    sim.VisitorAgentName,
+		X:           84,
+		Y:           133,
+		Facing:      "south",
+		Sprite:      sprite,
+		At:          time.Now(),
+	})
+	if !ok {
+		t.Fatal("NPCCreated should translate")
+	}
+	if frame.Type != "npc_created" {
+		t.Fatalf("type = %q, want npc_created", frame.Type)
+	}
+	d, isType := frame.Data.(AgentDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want AgentDTO", frame.Data)
+	}
+	if d.ID != "vstr-3bcaba3e" || d.Kind != "npc_shared" || d.LLMAgent != sim.VisitorAgentName {
+		t.Errorf("identity fields = %+v", d)
+	}
+	if d.X != 84 || d.Y != 133 || d.Facing != "south" {
+		t.Errorf("placement fields = %+v", d)
+	}
+	if d.Sprite == nil || d.Sprite.Sheet != sprite.Sheet {
+		t.Errorf("sprite = %+v, want the inlined sheet %q", d.Sprite, sprite.Sheet)
+	}
+}
+
+// TestTranslateEvent_NPCCreatedAdminOmitsAgent pins that the LLM-552 field is
+// additive: an admin-created NPC has no VA linked yet, and llm_memory_agent is
+// omitempty, so its frame marshals exactly as it did before.
+func TestTranslateEvent_NPCCreatedAdminOmitsAgent(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.NPCCreated{
+		ActorID:     "new-villager",
+		DisplayName: "Villager",
+		Kind:        sim.KindNPCStateful,
+		X:           10,
+		Y:           12,
+		Facing:      "south",
+		Sprite:      &sim.Sprite{ID: "s1", Name: "Chef (v03)", Sheet: "/x.png"},
+		At:          time.Now(),
+	})
+	if !ok {
+		t.Fatal("NPCCreated should translate")
+	}
+	b, err := json.Marshal(frame.Data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(b, []byte("llm_memory_agent")) {
+		t.Errorf("admin npc_created frame carries llm_memory_agent: %s", b)
+	}
+}
