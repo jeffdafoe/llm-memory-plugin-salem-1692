@@ -478,19 +478,34 @@ func (r *NPCRoute) unvisitedExcluding(idx int) int {
 // close enough to share a doorstep). Plain first-match would let a neighbouring pin
 // answer for the one he actually walked to.
 //
-//  1. The cursor wins outright. It is the stop the cue named as next, so it is the
-//     one he is most likely to have set out for, and an ambiguous position should
-//     resolve to the place he was told about rather than to a neighbour.
+//  1. The cursor wins, PROVIDED it is still unvisited. It is the stop the cue named
+//     as next, so it is the one he is most likely to have set out for, and an
+//     ambiguous position should resolve to the place he was told about rather than
+//     to a neighbour.
 //  2. Otherwise the first UNVISITED match. A stop already recorded has nothing to
 //     add, and preferring it would let a visited neighbour keep answering for a stop
 //     he still owes — which would never then be recorded.
 //
 // Matching only visited stops reports none: the visit is already on the books.
+//
+// The unvisited condition on the cursor is a GUARD, not a live case. advanceBeatRoute
+// only ever moves the cursor via nextUnvisitedFrom, and StartNPCRoute installs it at
+// 0 with nothing visited, so a beat's cursor is unvisited by construction. But that
+// invariant lives in a different function from this one, and if it ever broke, an
+// unguarded cursor preference would answer with an already-recorded stop while an
+// unvisited neighbour sharing its ground went on being owed: the credit would no-op,
+// the cursor would step to the neighbour, and a second arrival at the SAME position
+// would then credit it without the actor having moved at all. With enough overlap a
+// circuit could complete on stops he never walked. Making the guard explicit costs a
+// bounds-checked bool and removes the need to hold the invariant in mind here
+// (code_review, LLM-548).
 func (r *NPCRoute) reachedStopIndex(a *Actor) (int, bool) {
 	if r == nil || a == nil {
 		return 0, false
 	}
-	if r.StopIdx >= 0 && r.StopIdx < len(r.Stops) && RouteStopReached(r, a, r.Stops[r.StopIdx]) {
+	if r.StopIdx >= 0 && r.StopIdx < len(r.Stops) &&
+		!r.hasVisited(r.StopIdx) &&
+		RouteStopReached(r, a, r.Stops[r.StopIdx]) {
 		return r.StopIdx, true
 	}
 	for i, stop := range r.Stops {

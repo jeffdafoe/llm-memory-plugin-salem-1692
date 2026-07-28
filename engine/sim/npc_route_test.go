@@ -1090,6 +1090,59 @@ func TestBeatRoute_OverlappingStopRegionsResolveToTheCursor(t *testing.T) {
 	}
 }
 
+// TestBeatRoute_VisitedCursorDoesNotShadowAnUnvisitedNeighbour is the guard on the
+// cursor preference in reachedStopIndex (code_review, LLM-548).
+//
+// A beat's cursor is unvisited by construction — advanceBeatRoute only ever moves it
+// via nextUnvisitedFrom — so this is a hand-built route, not a state the engine
+// reaches. It is tested because the invariant lives in a different function from the
+// one that leans on it, and the failure it would cause is quiet and bad: an
+// already-recorded cursor answering for an arrival credits nothing, steps the cursor
+// onto the unvisited neighbour sharing its ground, and a SECOND arrival at the same
+// position then credits that neighbour with no movement at all. With enough overlap a
+// circuit completes on stops he never walked.
+//
+// Here stop 0 is visited, the cursor sits on it, and stop 1 shares its ground and is
+// still owed. The arrival must credit stop 1.
+func TestBeatRoute_VisitedCursorDoesNotShadowAnUnvisitedNeighbour(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	startBeat(t, w, "lamp", threeLampCandidates())
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		// The malformed state: cursor on a stop already on the books, overlapping an
+		// unvisited one.
+		route.Visited[0] = true
+		route.StopIdx = 0
+		route.Stops[1].WalkTo = route.Stops[0].WalkTo
+		a := world.Actors["lamp"]
+		a.Pos = visitorSlotBeside(route.Stops[0].WalkTo)
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("arrange: %v", err)
+	}
+
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil {
+		t.Fatal("beat cleared with a stop still owed")
+	}
+	if !sim.RouteStopVisited(route, 1) {
+		t.Error("the unvisited stop sharing the cursor's ground was not credited — a stop " +
+			"already on the books answered for it, and it goes on being owed while he stands in it")
+	}
+	// And the round must not have crept forward on a stop nobody walked: stop 2 is
+	// somewhere else entirely.
+	if sim.RouteStopVisited(route, 2) {
+		t.Error("credited a stop the actor was nowhere near")
+	}
+}
+
 // TestBeatRoute_ReachedStopResolutionOrder covers the rest of the ordering rule
 // in reachedStopIndex (code_review, LLM-543). The cursor preference has its own
 // test above; these are the two cases that keep the original silent failure from
