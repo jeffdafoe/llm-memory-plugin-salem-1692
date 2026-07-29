@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // town_rate.go — LLM-557. The constable's income: every owned business owes him a
 // coin a day, collected when he calls there on his rounds.
@@ -74,21 +77,38 @@ func IsRateableBusiness(obj *VillageObject) bool {
 
 // RateableBusinessOf returns the rateable business owned by ownerID, or nil when
 // they own none. Takes the object map so it serves both the live World
-// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects). First match
-// wins, following the one-business-per-owner data convention shared with
-// OwnedWearableStall and OwnedFarm.
+// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects).
+//
+// Picks the LOWEST VillageObjectID rather than the map-iteration first, so the result
+// is deterministic even if the one-business-per-owner data convention (shared with
+// OwnedWearableStall / OwnedFarm) is ever broken by a live re-tag or a bad seed.
+//
+// Determinism is load-bearing HERE in a way it is not for its siblings, and this is
+// the difference worth understanding before touching it. Stall wear and farm upkeep
+// only ever ACCRUE against the object they resolve, so a wobble picks a different
+// object to wear down and nothing contradicts itself. The town rate also SETTLES: the
+// perception cue names a business to the keeper and settleTownRate decrements one when
+// he pays. Resolved independently under map order, those two can disagree — the cue
+// says the General Store owes three coins, the payment clears the arrears on his other
+// shop, and the cue then repeats itself forever with the coin already handed over.
+// Same reasoning as WearableStallToMend's lowest-LaborID tie-break, which exists
+// because the cue, the repair and the sweep must all resolve the same stall.
 func RateableBusinessOf(objects map[VillageObjectID]*VillageObject, ownerID ActorID) *VillageObject {
 	if ownerID == "" {
 		return nil
 	}
+	var best *VillageObject
 	for _, obj := range objects {
 		// nil-safe: also runs over hand-built perception/test maps where a stray
 		// nil entry must not panic the world (the OwnedHearth / OwnedFarm guard).
-		if obj != nil && obj.OwnerActorID == ownerID && IsRateableBusiness(obj) {
-			return obj
+		if obj == nil || obj.OwnerActorID != ownerID || !IsRateableBusiness(obj) {
+			continue
+		}
+		if best == nil || obj.ID < best.ID {
+			best = obj
 		}
 	}
-	return nil
+	return best
 }
 
 // ActorIsConstable reports whether a carries the constable attribute — the
@@ -113,11 +133,20 @@ func ActorIsConstable(a *Actor) bool {
 // there. A non-positive maxOwed means uncapped. An existing balance already at or
 // above the cap is clamped DOWN to it, so lowering the knob live takes effect on
 // the next assessment instead of stranding balances above the new ceiling.
+//
+// The addition SATURATES rather than wrapping. Each knob is bounded at MaxInt32 by
+// the setter, but maxOwed==0 is uncapped, so a village left running uncapped for long
+// enough would eventually overflow — and a wrapped negative balance is the worst
+// possible failure here, because it reads as "nothing owed" everywhere (the cue goes
+// silent, settleTownRate returns early) and the levy dies quietly with no error.
 func TownRateAccrual(owed, perDay, maxOwed int) int {
 	if perDay <= 0 {
 		return owed
 	}
-	next := owed + perDay
+	next := math.MaxInt
+	if owed <= math.MaxInt-perDay {
+		next = owed + perDay
+	}
 	if maxOwed > 0 && next > maxOwed {
 		return maxOwed
 	}

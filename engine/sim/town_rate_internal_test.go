@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -29,6 +30,13 @@ func TestTownRateAccrual(t *testing.T) {
 		// Lowering the cap live clamps DOWN on the next assessment rather than
 		// stranding a balance above the new ceiling.
 		{"balance above a lowered cap clamps down", 8, 1, 3, 3},
+		// code_review: uncapped accrual must SATURATE, never wrap. A wrapped
+		// negative balance is the worst failure available here — it reads as
+		// "nothing owed" everywhere (the cue goes silent, settleTownRate returns
+		// early) and the levy dies quietly with no error.
+		{"uncapped saturates instead of wrapping", math.MaxInt, 1, 0, math.MaxInt},
+		{"uncapped saturates from just below the ceiling", math.MaxInt - 1, 5, 0, math.MaxInt},
+		{"saturation still respects a cap", math.MaxInt, 1, 3, 3},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -203,6 +211,43 @@ func TestIsRateableBusiness(t *testing.T) {
 	}
 	if IsRateableBusiness(nil) {
 		t.Error("nil must not be rateable")
+	}
+}
+
+// code_review: an owner with two rateable businesses must resolve to the SAME one
+// every time. The cue names a business and settleTownRate decrements one; if map
+// order picked them independently the cue could name the store while the payment
+// cleared the arrears on the smithy, leaving the cue repeating itself forever with
+// the coin already handed over. Run repeatedly, since map iteration is randomized per
+// range and a single pass would pass by luck.
+func TestRateableBusinessOf_DeterministicWithMultipleBusinesses(t *testing.T) {
+	objects := map[VillageObjectID]*VillageObject{
+		"zzz_smithy": {ID: "zzz_smithy", OwnerActorID: "josiah", Tags: []string{TagBusiness}, RateOwed: 3},
+		"aaa_store":  {ID: "aaa_store", OwnerActorID: "josiah", Tags: []string{TagBusiness}, RateOwed: 1},
+		"mmm_mill":   {ID: "mmm_mill", OwnerActorID: "josiah", Tags: []string{TagBusiness}, RateOwed: 2},
+		"other":      {ID: "other", OwnerActorID: "hannah", Tags: []string{TagBusiness}},
+	}
+	for i := 0; i < 200; i++ {
+		got := RateableBusinessOf(objects, "josiah")
+		if got == nil {
+			t.Fatal("RateableBusinessOf returned nil for an owner with three businesses")
+		}
+		if got.ID != "aaa_store" {
+			t.Fatalf("RateableBusinessOf = %q on iteration %d, want the lowest id aaa_store — "+
+				"map order must not decide which debt the cue names and the settle clears", got.ID, i)
+		}
+	}
+}
+
+func TestRateableBusinessOf_NoneOwned(t *testing.T) {
+	objects := map[VillageObjectID]*VillageObject{
+		"store": {ID: "store", OwnerActorID: "hannah", Tags: []string{TagBusiness}},
+	}
+	if got := RateableBusinessOf(objects, "josiah"); got != nil {
+		t.Errorf("RateableBusinessOf = %v, want nil for an owner with no business", got)
+	}
+	if got := RateableBusinessOf(objects, ""); got != nil {
+		t.Errorf("RateableBusinessOf(\"\") = %v, want nil", got)
 	}
 }
 

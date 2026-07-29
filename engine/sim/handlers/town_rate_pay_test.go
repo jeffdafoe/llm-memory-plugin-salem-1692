@@ -127,10 +127,23 @@ func TestPay_PartialSettlesTownRatePartly(t *testing.T) {
 	}
 }
 
-// The settle keys on WHO is paid, not on what the payment is called — the constable
-// sells nothing, so any coin he takes from a keeper is the rate. This pins that a
-// payment whose for-text says nothing about the rate still settles it, which is what
-// lets the mechanism survive whatever prose the model writes.
+// The settle keys on WHO is paid, not on what the payment is called: a bare coin
+// payment from a keeper to the constable settles the rate whatever prose the model
+// attaches to it.
+//
+// This is a deliberate tradeoff, not an oversight, and it is deliberately OVER-broad
+// (code_review raised it). A keeper making the constable an unprompted gift — which
+// villagers really do through bare pay — clears his arrears as a side effect. That
+// runs in the safe direction: the constable ends up holding at least the rate, and
+// nothing is minted or destroyed. The alternative, requiring a structured marker on
+// the pay call, inverts the failure into the one that kills the feature — the model
+// omits the marker, the payment does not settle, the cue nags forever and the
+// constable stays broke, which is the exact state this ticket exists to fix.
+//
+// Note what does NOT reach here: buying goods from the constable goes through the
+// pay_with_item / quote flow, which is untouched. Only bare coin payments settle.
+// The sibling levy has the same property — any shovel purchase satisfies farm upkeep,
+// whatever the owner bought it for.
 func TestPay_SettlesTownRateRegardlessOfForText(t *testing.T) {
 	w, stop := buildTownRatePayWorld(t, 2)
 	defer stop()
