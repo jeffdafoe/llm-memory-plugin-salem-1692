@@ -529,6 +529,41 @@ func TestAutoBedIdleLodgerPCs(t *testing.T) {
 		}
 	})
 
+	t.Run("watching lodger with fresh activity stamp is not bedded (LLM-568)", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.LastPCInputAt = &idleEnough // no deliberate act in over 15 min...
+		watching := now.Add(-time.Minute)
+		a.LastPCActivityAt = &watching // ...but the activity reporter says a human is watching
+		w := pcSleepWorld(a)
+		AutoBedIdleLodgerPCs(now).Fn(w)
+		if a.SleepingUntil != nil {
+			t.Error("a lodger with a fresh LLM-470 activity stamp is watching, not idle — must not be auto-bedded")
+		}
+	})
+
+	t.Run("activity exactly at the cutoff counts as fresh — not bedded (LLM-568)", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.LastPCInputAt = &idleEnough
+		exact := now.Add(-DefaultPCIdleSleepMinutes * time.Minute) // == idleCutoff
+		a.LastPCActivityAt = &exact
+		w := pcSleepWorld(a)
+		AutoBedIdleLodgerPCs(now).Fn(w)
+		if a.SleepingUntil != nil {
+			t.Error("activity at exactly the cutoff is fresh (symmetric with the input gate's strict older-than) — must not bed")
+		}
+	})
+
+	t.Run("stale activity stamp still beds the AFK lodger (LLM-568)", func(t *testing.T) {
+		a := lodgerPC("p", future)
+		a.LastPCInputAt = &idleEnough
+		a.LastPCActivityAt = &idleEnough // reporter posts stopped when the player left
+		w := pcSleepWorld(a)
+		AutoBedIdleLodgerPCs(now).Fn(w)
+		if a.SleepingUntil == nil {
+			t.Error("a lodger whose activity stamp is as stale as its input is genuinely AFK — should still bed")
+		}
+	})
+
 	t.Run("not tired enough is not bedded", func(t *testing.T) {
 		a := lodgerPC("p", future)
 		a.LastPCInputAt = &idleEnough

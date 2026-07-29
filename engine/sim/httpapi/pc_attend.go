@@ -17,7 +17,9 @@ import (
 // prompt must be answerable by a player who wants to keep WATCHING, not playing
 // — routing the ack through /pc/move would make "I'm still here" cost a walk
 // across the village. It stamps the activity cursor only; it is not an in-world
-// act, so it leaves LastPCInputAt (and with it the idle-auto-bed timer) alone.
+// act, so it leaves LastPCInputAt alone. The activity cursor is read by both
+// audience mechanisms: the eco-mode candle sweep AND (LLM-568) the idle-auto-bed
+// gate, so a watching player is neither asked to prove presence nor bedded.
 //
 // The client does not dismiss its own overlay on the 200: the world emits
 // PCIdlePromptCleared, translate.go turns it into the pc_idle_prompt_cleared
