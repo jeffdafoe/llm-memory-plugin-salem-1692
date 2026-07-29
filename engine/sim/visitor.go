@@ -1288,6 +1288,18 @@ func recordVisitorRumorShared(w *World, h *Huddle, speakerID ActorID) {
 			// live actor, but a stale id must not become a stamp — read-side company
 			// is snapshot-filtered, so a junk stamp would render nothing, yet it
 			// still eats cap space and persists.
+			//
+			// Membership in World.Actors IS the complete liveness definition here:
+			// deletion (visitor cleanup) is the only way an actor stops existing,
+			// and there is no live-but-departed state that keeps a huddle seat —
+			// the huddle invariant (Members[a] iff Actor[a].CurrentHuddleID == h.ID)
+			// evicts leavers at the moment they leave. No further presence check
+			// belongs on this side: the condition being recorded is "was an active
+			// conversant in THIS conversation", which the utterance ring below
+			// establishes — a peer who spoke here and later dozes off or walks away
+			// was still given the word. Present-company filtering is the READ
+			// side's job (travelerRumorSharedWith), where "who is in the scene NOW"
+			// is actually the question.
 			continue
 		}
 		if h.LastUtteranceAtBy(id).IsZero() {
