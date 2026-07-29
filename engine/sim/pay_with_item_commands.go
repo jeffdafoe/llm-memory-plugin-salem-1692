@@ -409,8 +409,13 @@ func PayWithItem(
 				if isLaborToken(itemName) {
 					return nil, errors.New(laborTradeSteerMsg)
 				}
+				// LLM-561: teach the shape, not just the fault. The live failure
+				// was item "bundle" — a buyer trying to put a multi-good purchase
+				// into the one-kind item slot. Name the one-item-per-offer rule
+				// and both legitimate routes, so the model's next move is a real
+				// one instead of an improvised bare pay.
 				return nil, fmt.Errorf(
-					"unknown item kind %q — check the items available in this world before offering.",
+					"unknown item kind %q — an offer carries one kind of good, named as it appears in this world; take a posted bundle whole with its quote_id, or make one offer per good.",
 					itemName,
 				)
 			}

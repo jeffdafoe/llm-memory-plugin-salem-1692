@@ -437,6 +437,13 @@ func TestPayWithItem_SlowPath_UnknownItem(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown item kind") {
 		t.Fatalf("want unknown-item error, got %v", err)
 	}
+	// LLM-561: the error teaches the one-kind-per-offer rule and both real
+	// routes (bundle whole by quote_id, or one offer per good) — the live
+	// failure was item "bundle", and the bare rejection left the model to
+	// improvise a 35-coin payment against a 3-coin salt.
+	if !strings.Contains(err.Error(), "one kind of good") || !strings.Contains(err.Error(), "one offer per good") {
+		t.Fatalf("unknown-item error should state the one-item-per-offer rule, got %v", err)
+	}
 }
 
 func TestPayWithItem_SlowPath_TooManyConsumers(t *testing.T) {

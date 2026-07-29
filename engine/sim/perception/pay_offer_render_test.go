@@ -303,6 +303,15 @@ func TestRender_QuoteWarrantLine_BundleNoBarterAlt(t *testing.T) {
 	if strings.Contains(out, "offer_trade") {
 		t.Errorf("bundle quote line should not advertise offer_trade (no single want_item)\n%s", out)
 	}
+	// LLM-561: the bundle arm names the counter path — a free-form
+	// pay_with_item without the quote_id, one kind of good per offer — so a
+	// buyer who wants part of the bundle, or other terms, isn't at a dead end.
+	if !strings.Contains(out, "no quote_id") || !strings.Contains(out, "accept or counter") {
+		t.Errorf("bundle quote line missing the LLM-561 counter-path escape (free-form offer, no quote_id)\n%s", out)
+	}
+	if !strings.Contains(out, "one kind of good") {
+		t.Errorf("bundle quote line missing the one-kind-per-offer rule\n%s", out)
+	}
 }
 
 // TestRender_QuoteWarrantLine_Overheard (ZBBS-HOME-431): a public quote that

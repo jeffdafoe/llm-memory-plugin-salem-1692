@@ -2426,6 +2426,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: buyerOfferedQuoteTakeNamesTerms,
 	},
 	{
+		name: "buyer_offered_bundle_quote_counter_path",
+		summary: "LLM-561: John Ellis posts a targeted multi-line BUNDLE quote (iron 1, salt 1, 2 breeches — 50 coins) at " +
+			"Ezekiel Crane, who already holds 10 iron — the live shape: a buyer who wants part of a bundle, not the whole. " +
+			"The golden pins that the bundle take-instruction now names a way out — take the whole bundle by quote_id, OR " +
+			"make a free-form pay_with_item offer (no quote_id, one kind of good per offer) the seller can accept or " +
+			"counter. Before LLM-561 the arm ended at 'it settles at once': a dead-ended buyer improvised (item \"bundle\", " +
+			"then a prose haggle settled as 35 coins against a 3-coin salt, ~3% of the village money supply destroyed). " +
+			"The escape deliberately steers to coin offers, not offer_trade (a bundle has no single want_item — LLM-136).",
+		build: buyerOfferedBundleQuoteCounterPath,
+	},
+	{
 		name: "buyer_sees_standing_quote_after_warrant_spent",
 		summary: "LLM-551: Patience Walker stands at Josiah Thorne's counter with 12 coins and no flour. His targeted " +
 			"4-flour/12-coin quote is ACTIVE, but its warrant was consumed turns ago — warrants is nil here, which is the " +
@@ -12143,6 +12154,94 @@ func buyerOfferedQuoteTakeNamesTerms() (*sim.Snapshot, sim.ActorID, []sim.Warran
 				QuoteID: 1, SellerID: johnID,
 				Lines:  []sim.QuoteLine{{ItemKind: "stew", Qty: 1}},
 				Amount: 4,
+			},
+			SourceEventID: 1,
+		},
+	}
+	return snap, ezekielID, warrants
+}
+
+// buyerOfferedBundleQuoteCounterPath is the LLM-561 buyer side: a targeted
+// MULTI-LINE bundle quote (iron, salt, 2 breeches — 50 coins for the lot)
+// posted at a buyer who already holds 10 iron — the live 2026-07-28 shape
+// (factor Daniel Holcomb's five-good bundle at Josiah Thorne, who wanted four
+// of the five). The bundle take-instruction previously offered exactly one
+// move — take all of it at the asked price — and a buyer wanting a subset was
+// at a dead end; the golden pins that the take now also names the counter
+// path: a free-form pay_with_item, no quote_id, one kind of good per offer,
+// which the seller answers via accept/counter. Bundle twin of
+// buyer_offered_quote_take_names_terms (the single-line arm's escape hatch).
+func buyerOfferedBundleQuoteCounterPath() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		johnID    = sim.ActorID("john")
+		forge     = sim.StructureID("blacksmith")
+		tavern    = sim.StructureID("tavern")
+		huddle    = sim.HuddleID("h1")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 1140             // 19:00 — off shift, visiting the tavern
+	published := time.Date(2026, 7, 29, 19, 0, 0, 0, time.UTC)
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		WorkStructureID:   forge,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             79,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"iron": 10},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddle,
+		Coins:             267,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge:  plainStructure(forge, "Blacksmith"),
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, johnID: {}}},
+		},
+	}
+	// John's targeted bundle quote at Ezekiel. Iron is a good Ezekiel neither
+	// produces nor caps, so the redundancy steer stays out of the way (one
+	// genuinely wanted line is enough — buyQuoteRedundancyReason) and the
+	// normal bundle take renders, escape clause included.
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: johnID,
+			Reason: sim.SceneQuoteTargetedWarrantReason{
+				QuoteID: 9, SellerID: johnID,
+				Lines: []sim.QuoteLine{
+					{ItemKind: "iron", Qty: 1},
+					{ItemKind: "salt", Qty: 1},
+					{ItemKind: "breeches", Qty: 2},
+				},
+				Amount: 50,
 			},
 			SourceEventID: 1,
 		},
