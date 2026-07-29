@@ -418,6 +418,25 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// it to walk away from.
 	if len(p.SeekWorkPlaces) > 0 {
 		p.BakeChoice = nil
+		// LLM-562: the suppression must reach the scene, not just the affordance.
+		// With BakeChoice nilled, a housemate's "(at the hearth, baking just now)"
+		// annotation is the strongest bread line left in the prompt, and a seek-work
+		// worker walking in on a household bake reads it and narrates joining — nine
+		// home-arrival ticks of "let's get a batch in" against a toolset offering
+		// only move_to (Patience Walker, live 2026-07-29, 179 calls in a day). Strip
+		// the bake annotation from THIS observer's co-present view; the housemate
+		// stays present and greetable, and any observer not under seek-work still
+		// reads them as baking. The other kinds (repair/stoke/gather) stand — they
+		// don't invite joining, so they set no trap. CoPresent is the only view that
+		// renders busyActivityPhrase (renderHuddleMember carries no busy annotation),
+		// so this is the whole surface.
+		for i := range p.Surroundings.CoPresent {
+			if m := &p.Surroundings.CoPresent[i]; m.SourceActivityKind == sim.SourceActivityBake {
+				m.SourceActivityBusy = false
+				m.SourceActivityKind = ""
+				m.SourceActivityLabel = ""
+			}
+		}
 	}
 	// LLM-345: inside a leisure venue, on the evening, the walk-away work-errand cues
 	// yield to the room. Each of these tells the agent to LEAVE and go buy or gather
