@@ -257,3 +257,105 @@ func TestHandleSolicitedWorkActionLog_EmployerInitiatedLogsOfferedWork(t *testin
 		t.Errorf("offered_work payload = %+v, want {worker:Hannah amount:4 duration_min:240 labor_id:12} with no employer key", p)
 	}
 }
+
+// --- TestHandleSolicitedWorkActionLog_EmptyInitiatedByStaysWorkerSide ---
+// LLM-564 regression (code_review): the employer-side branch keys on
+// InitiatedBy == EmployerID, and a bare equality would also match an event with
+// BOTH fields empty ("" == ""), flipping a legacy/malformed event to the
+// employer shape with an empty actor id. Empty InitiatedBy must keep the
+// worker-side legacy attribution — including when EmployerID is empty too.
+func TestHandleSolicitedWorkActionLog_EmptyInitiatedByStaysWorkerSide(t *testing.T) {
+	cases := []struct {
+		name       string
+		employerID sim.ActorID
+	}{
+		{"empty InitiatedBy, real employer", "bob"},
+		{"empty InitiatedBy, empty employer", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildActionLogCascadeWorld(t)
+			defer stop()
+
+			invokeOnWorld(t, w, func(world *sim.World) {
+				handleSolicitedWorkActionLog(world, &sim.LaborOfferReceived{
+					LaborID:     13,
+					WorkerID:    "hannah",
+					EmployerID:  tc.employerID,
+					InitiatedBy: "", // the legacy shape — pre-LLM-346 events carry no initiator
+					Reward:      4,
+					DurationMin: 240,
+					HuddleID:    "h1",
+					At:          time.Now().UTC(),
+				})
+			})
+
+			got := readActionLog(t, w)
+			if len(got) != 1 {
+				t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+			}
+			e := got[0]
+			if e.ActorID != "hannah" {
+				t.Errorf("ActorID = %q, want hannah (worker) — empty InitiatedBy must stay worker-side", e.ActorID)
+			}
+			if e.ActionType != sim.ActionTypeSolicitedWork {
+				t.Errorf("ActionType = %q, want %q — empty InitiatedBy must stay worker-side", e.ActionType, sim.ActionTypeSolicitedWork)
+			}
+		})
+	}
+}
+
+// --- TestHandleSolicitedWorkActionLog_EmployerInitiatedInKindReward ---
+// LLM-564 (code_review): the reward-items leg is appended AFTER the attribution
+// branch, so an employer-initiated in-kind offer is the shape most likely to
+// regress — the goods must ride the offered_work durable payload alongside the
+// "worker" counterparty key.
+func TestHandleSolicitedWorkActionLog_EmployerInitiatedInKindReward(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleSolicitedWorkActionLog(world, &sim.LaborOfferReceived{
+			LaborID:     14,
+			WorkerID:    "hannah",
+			EmployerID:  "bob",
+			InitiatedBy: "bob",
+			Reward:      0,
+			RewardItems: []sim.ItemKindQty{{Kind: "porridge", Qty: 2}},
+			DurationMin: 240,
+			HuddleID:    "h1",
+			At:          time.Now().UTC(),
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+	}
+	if rows[0].ActorID != "bob" || rows[0].ActionType != sim.ActionTypeOfferedWork {
+		t.Fatalf("header = %+v, want employer-attributed offered_work", rows[0])
+	}
+	raw, err := json.Marshal(rows[0].Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var p struct {
+		Worker      string `json:"worker"`
+		RewardItems []struct {
+			Item string `json:"item"`
+			Qty  int    `json:"qty"`
+		} `json:"reward_items"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Worker != "Hannah" {
+		t.Errorf("payload worker = %q, want Hannah", p.Worker)
+	}
+	if len(p.RewardItems) != 1 || p.RewardItems[0].Item != "porridge" || p.RewardItems[0].Qty != 2 {
+		t.Errorf("payload reward_items = %+v, want [{porridge 2}]", p.RewardItems)
+	}
+}

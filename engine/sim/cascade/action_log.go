@@ -912,7 +912,10 @@ func handleSolicitedWorkActionLog(w *sim.World, evt sim.Event) {
 	actorID := received.WorkerID
 	counterpartyID := received.EmployerID
 	counterpartyKey := "employer"
-	if received.InitiatedBy == received.EmployerID {
+	// Both non-empty checks are load-bearing (code_review): a legacy or
+	// malformed event with InitiatedBy AND EmployerID both empty would satisfy
+	// a bare equality ("" == "") and mis-attribute to the employer side.
+	if received.InitiatedBy != "" && received.EmployerID != "" && received.InitiatedBy == received.EmployerID {
 		actionType = sim.ActionTypeOfferedWork
 		actorID = received.EmployerID
 		counterpartyID = received.WorkerID

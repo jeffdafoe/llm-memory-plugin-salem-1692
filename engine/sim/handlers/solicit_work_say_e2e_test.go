@@ -147,3 +147,60 @@ func TestSolicitWork_AutoDeclineSpeaksNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestSolicitWork_BarterBranchSpeaksNothing pins the say leg against LLM-243 —
+// the OTHER non-pending success path (code_review): an employer who can't cover
+// the coin ask but holds tradeable goods resolves BarterPossible, minting no
+// offer and waking no one. The say must stay unspoken there too; the harness
+// steer tells the worker to re-solicit in kind, and the re-ask carries its own
+// words.
+func TestSolicitWork_BarterBranchSpeaksNothing(t *testing.T) {
+	w, stop := buildApothecaryWorld(t)
+	defer stop()
+
+	// Coin-poor but goods-holding: employerCanHireInKind true → barter branch.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		p := world.Actors["prudence"]
+		p.Coins = 0
+		p.Inventory = map[sim.ItemKind]int{"coca_tea": 5}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("reshape prudence: %v", err)
+	}
+
+	cmd, err := HandleSolicitWork(HandlerInput{
+		ActorID: "lewis", AttemptID: "tk-1",
+		Args: SolicitWorkArgs{
+			Employer:        "Prudence Ward",
+			Reward:          4,
+			DurationMinutes: 240,
+			Say:             "Four coins for the afternoon, if you'll have me.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleSolicitWork: %v", err)
+	}
+	res, err := w.Send(cmd)
+	if err != nil {
+		t.Fatalf("solicit_work rejected: %v", err)
+	}
+	placed, ok := res.(sim.LaborSolicitResult)
+	if !ok {
+		t.Fatalf("result = %T, want sim.LaborSolicitResult", res)
+	}
+	if placed.State != sim.LaborStateBarterPossible {
+		t.Fatalf("state = %q, want barter_possible (LLM-243)", placed.State)
+	}
+	if placed.Announced {
+		t.Error("Announced = true on the barter branch — no offer exists for the words to announce")
+	}
+
+	snap := w.Published()
+	for _, h := range snap.Huddles {
+		for _, u := range h.RecentUtterances {
+			if u.SpeakerID == "lewis" {
+				t.Errorf("lewis spoke %q on the barter branch — the room must stay silent", u.Text)
+			}
+		}
+	}
+}

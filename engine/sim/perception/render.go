@@ -3392,13 +3392,21 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool, employers []sim.
 		return
 	}
 	const askShape = "name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; do NOT ask with speak first — speaking ends your turn and no offer is ever made.\n"
-	if len(employers) == 0 {
-		b.WriteString("You take work for pay. If someone here outside your own household or trade could use a hand and you want the pay, make the offer with solicit_work — " + askShape)
-		return
-	}
+	// Only REAL names reach the named branch. buildSolicitableEmployers already
+	// restricts the slice to acquaintances, but the render must not trust that
+	// alone: a resolver returning "" or its "someone" fallback here would put a
+	// target string in the cue that solicit_work must refuse (code_review). Any
+	// such entry is dropped, and a slice that empties falls through to the
+	// unnamed wording.
 	names := make([]string, 0, len(employers))
 	for _, id := range employers {
-		names = append(names, nameOf(id))
+		if n := nameOf(id); n != "" && n != "someone" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		b.WriteString("You take work for pay. If someone here outside your own household or trade could use a hand and you want the pay, make the offer with solicit_work — " + askShape)
+		return
 	}
 	fmt.Fprintf(b, "%s might have work that wants doing, and you take work for pay. If you want the coin, make the offer with solicit_work — %s",
 		joinNames(names), askShape)
