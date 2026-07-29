@@ -586,6 +586,21 @@ type VisitorState struct {
 	//     these back so a stateless shared VA "remembers" where it has been and routes
 	//     onward instead of repeating a shop.
 	VisitedBusinesses []StructureID
+
+	// PayloadSharedWith is the people-half of the same memory (LLM-545): the
+	// actors the traveler has already passed his carried word to. Stamped on the
+	// Speak commit path (recordVisitorRumorShared) for every ACTIVE conversant in
+	// the huddle — a peer who has themselves spoken — mirroring how the rumor
+	// layer moves its token through conversation rather than co-presence, and
+	// without reading the utterance: a real two-way exchange while carrying a
+	// payload is taken as the word having been given. The identity preface reads
+	// it back per co-present peer (TravelerSelfView.RumorSharedWith) so a
+	// traveler who returns to someone stops reopening a matter already spent
+	// between them. Visit-scoped like the Payload itself — no TTL, no decay —
+	// and persisted in the visitor.plan jsonb so the constant deploys don't
+	// resurrect the word as unspent mid-visit (the LLM-547 lesson: three deploys
+	// sat inside one innkeeper's afternoon).
+	PayloadSharedWith []ActorID
 }
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
@@ -659,8 +674,9 @@ type LoadedVisitor struct {
 
 // cloneVisitorState deep-copies a VisitorState pointer. The scalar fields
 // (string / time.Time / VisitorPhase) copy by value with the struct copy; the
-// VisitedBusinesses slice (LLM-373) and the Trade errand pointer (LLM-455) are
-// deep-copied so a snapshot never aliases the world's mutable rounds/errand state.
+// VisitedBusinesses (LLM-373) and PayloadSharedWith (LLM-545) slices and the
+// Trade errand pointer (LLM-455) are deep-copied so a snapshot never aliases
+// the world's mutable rounds/errand/shared-word state.
 func cloneVisitorState(src *VisitorState) *VisitorState {
 	if src == nil {
 		return nil
@@ -668,6 +684,9 @@ func cloneVisitorState(src *VisitorState) *VisitorState {
 	cp := *src
 	if src.VisitedBusinesses != nil {
 		cp.VisitedBusinesses = append([]StructureID(nil), src.VisitedBusinesses...)
+	}
+	if src.PayloadSharedWith != nil {
+		cp.PayloadSharedWith = append([]ActorID(nil), src.PayloadSharedWith...)
 	}
 	if src.Trade != nil {
 		trade := *src.Trade

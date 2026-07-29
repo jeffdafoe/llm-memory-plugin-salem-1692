@@ -1892,6 +1892,16 @@ type TravelerSelfView struct {
 	// no rumor-worthy beat was on hand at spawn; the preface drops the "Word
 	// reached you …" line entirely in that case.
 	Rumor string
+	// RumorSharedWith names the CO-PRESENT peers the traveler has already passed
+	// the word to (VisitorState.PayloadSharedWith ∩ present company, LLM-545),
+	// sorted. Someone he told elsewhere and who is not in the scene never
+	// renders — the fact only matters face to face. RumorSpentWithAllPresent is
+	// true when present company is non-empty and EVERY member has had the word;
+	// the preface then reframes the rumor as a matter already spent rather than
+	// fresh news, which is what stops a returning traveler reopening it. Both
+	// zero-valued whenever Rumor is empty.
+	RumorSharedWith          []string
+	RumorSpentWithAllPresent bool
 
 	// Returner continuity (LLM-372). Non-zero only for a returning traveler on a
 	// repeat visit (ActorSnapshot.Returner set, VisitCount >= 2). VisitCount tiers

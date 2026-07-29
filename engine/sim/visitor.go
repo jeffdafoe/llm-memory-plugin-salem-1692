@@ -1248,6 +1248,51 @@ func RecordVisitorArrival(actorID ActorID, structureID StructureID) Command {
 	}
 }
 
+// recordVisitorRumorShared marks the traveler's carried word (VisitorState.Payload)
+// as given to the huddle's other ACTIVE conversants — peers who have themselves
+// spoken (LLM-545). Called from the Speak commit path beside propagateRumorOnSpeak,
+// and deliberately the same shape: the token moves through actual conversation, not
+// mere co-presence, and the utterance is never read. A real two-way exchange while
+// carrying a payload is taken as the word having been passed — the stateless VA
+// reliably works its one piece of road-news into any genuine exchange, and the
+// failure the memory exists to stop (reopening a matter the listener already
+// answered — Brother Ashford re-raising the Josiah Thorne rumour on Hannah Boggs
+// half an hour after she set him straight) costs far more than the mild one this
+// approximation risks (a word left ungiven to someone he only traded pleasantries
+// with). Idempotent per peer; visit-scoped like the Payload itself. MUST run on the
+// world goroutine.
+func recordVisitorRumorShared(w *World, h *Huddle, speakerID ActorID) {
+	if w == nil || h == nil {
+		return
+	}
+	speaker := w.Actors[speakerID]
+	if speaker == nil || speaker.VisitorState == nil || speaker.VisitorState.Payload == "" {
+		return
+	}
+	vs := speaker.VisitorState
+	for id := range h.Members {
+		if id == speakerID {
+			continue
+		}
+		if h.LastUtteranceAtBy(id).IsZero() {
+			continue // silent bystander — the word lands through conversation
+		}
+		vs.PayloadSharedWith = appendUniqueActor(vs.PayloadSharedWith, id)
+	}
+}
+
+// appendUniqueActor appends id to ids unless already present — the ActorID twin of
+// appendUniqueStructure. The sets it maintains are tiny (bounded by the actors a
+// one-day visitor actually converses with), so a linear scan is fine.
+func appendUniqueActor(ids []ActorID, id ActorID) []ActorID {
+	for _, existing := range ids {
+		if existing == id {
+			return ids
+		}
+	}
+	return append(ids, id)
+}
+
 // issueVisitorWalk walks a freshly-spawned visitor in from the road toward the village
 // anchor, entering the interior when entry policy allows and falling back to a loiter
 // slot outside otherwise (StructureEnter → StructureVisit). A fresh spawn is in no

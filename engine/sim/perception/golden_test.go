@@ -194,6 +194,42 @@ func TestGoldensTravelerPrefaceIffSubjectIsTraveler(t *testing.T) {
 	}
 }
 
+// TestGoldensRumorSharedClauseMatchesPresentCompany is the LLM-545
+// cross-scenario invariant, computed through the production builder rather than
+// restated wording: for every scenario whose subject carries a rumor payload,
+// the preface's shared-word clause ("you have already passed" in either tier)
+// renders IFF travelerRumorSharedWith finds a stamped peer in present company,
+// and every name it renders belongs to a co-present actor. Guards the
+// co-presence rule matrix-wide — a stamp for someone elsewhere must never
+// surface a name, and a stamped co-present peer must never be silently dropped.
+func TestGoldensRumorSharedClauseMatchesPresentCompany(t *testing.T) {
+	const clauseMarker = "you have already passed"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			rendered := renderScenario(sc)
+			hasClause := strings.Contains(strings.ToLower(rendered), clauseMarker)
+			if a == nil || a.VisitorState == nil || a.VisitorState.Payload == "" {
+				if hasClause {
+					t.Errorf("scenario %q: shared-word clause rendered for a subject with no rumor payload", sc.name)
+				}
+				return
+			}
+			names, _ := travelerRumorSharedWith(snap, actorID, a)
+			if want := len(names) > 0; want != hasClause {
+				t.Errorf("scenario %q: production builder finds %d co-present shared peers but clause present=%v — the shared-word clause must render iff a stamped peer is in the scene (LLM-545)", sc.name, len(names), hasClause)
+			}
+			for _, n := range names {
+				if !strings.Contains(rendered, n) {
+					t.Errorf("scenario %q: co-present shared peer %q missing from the rendered clause", sc.name, n)
+				}
+			}
+		})
+	}
+}
+
 // TestGoldensSelfNameIffSharedVillager is the LLM-432 cross-scenario
 // invariant: the "You are <name>." self-name line renders IFF the subject is
 // a shared-VA villager (KindNPCShared, not a traveler) with a display name.
@@ -1842,6 +1878,32 @@ var perceptionScenarios = []perceptionScenario{
 			"payload rides the same self-preface stream as the persona (renderTravelerPreface); an empty payload drops the " +
 			"clause (the no-rumor case is the LLM-370 traveler_self_identity_preface golden).",
 		build: travelerSelfIdentityPrefaceWithRumor,
+	},
+	{
+		name: "traveler_rumor_spent_with_present_company",
+		summary: "LLM-545: the rumor-carrying traveler is back in a huddle with the one person he has already passed " +
+			"the word to (VisitorState.PayloadSharedWith, stamped on the Speak commit path when she answered him). The " +
+			"golden pins the preface's SPENT reframing — 'The word you picked up on the road — that … — you have already " +
+			"passed to Hannah Boggs, and heard what they had to say; that matter is spent between you.' — replacing the " +
+			"fresh 'Word reached you …' framing that made Brother Ashford reopen the Josiah Thorne rumour on Hannah Boggs " +
+			"half an hour after she set him straight (the live specimen this ticket was filed on).",
+		build: travelerRumorSpentWithPresentCompany,
+	},
+	{
+		name: "traveler_rumor_already_told_one_of_company",
+		summary: "LLM-545 mixed company: one peer has had the word (Hannah Boggs), one has not (Goodman Stark). The " +
+			"golden pins the fresh 'Word reached you …' line SURVIVING — there is a new listener — plus the annotation " +
+			"'You have already passed that word to Hannah Boggs.', so the model carries the news to the newcomer without " +
+			"re-opening it on the one who already answered it.",
+		build: travelerRumorAlreadyToldOneOfCompany,
+	},
+	{
+		name: "traveler_rumor_told_someone_not_here",
+		summary: "LLM-545 co-presence guard: the traveler has passed his word to Hannah Boggs, but present company is " +
+			"Goodman Stark alone — Hannah is elsewhere in the snapshot. The golden pins the PLAIN fresh rumor line with " +
+			"no mention of Hannah: the shared-word memory matters face to face only (the LLM-547 posture), and naming an " +
+			"absent listener would hand the model a person to go find instead of news to trade here.",
+		build: travelerRumorToldSomeoneNotHere,
 	},
 	{
 		name: "traveler_observed_by_villager",
@@ -13732,6 +13794,214 @@ func travelerSelfIdentityPrefaceWithRumor() (*sim.Snapshot, sim.ActorID, []sim.W
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias},
 		Structures: map[sim.StructureID]*sim.Structure{
 			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
+}
+
+// travelerRumorSpentWithPresentCompany is the LLM-545 fixture: the same
+// rumor-carrying traveler, back in a huddle with the one person he has already
+// passed the word to (VisitorState.PayloadSharedWith carries her id — stamped by
+// recordVisitorRumorShared when she answered him earlier). The golden pins the
+// preface's SPENT reframing — "The word you picked up on the road — that … — you
+// have already passed to Hannah Boggs, and heard what they had to say; that
+// matter is spent between you." — in place of the fresh "Word reached you …"
+// line, which is what stopped Brother Ashford reopening the Josiah Thorne rumour
+// on Hannah half an hour after she set him straight.
+func travelerRumorSpentWithPresentCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID  = sim.ActorID("vstr-elias")
+		hannahID = sim.ActorID("hannah")
+		tavern   = sim.StructureID("tavern")
+		huddleID = sim.HuddleID("h1")
+	)
+	now := 540 // 09:00 — morning
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Hannah Boggs": {}},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "peddler",
+			Origin:            "Boston",
+			Disposition:       "weary",
+			Payload:           "Ezekiel Crane turned out a plow for the Hale farm",
+			PayloadSharedWith: []sim.ActorID{hannahID},
+		},
+	}
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias, hannahID: hannah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{eliasID: {}, hannahID: {}}},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
+}
+
+// travelerRumorAlreadyToldOneOfCompany is the LLM-545 mixed-company fixture: the
+// traveler stands with one peer who has had the word (Hannah Boggs) and one who
+// has not (Goodman Stark). The golden pins the fresh "Word reached you …" line
+// SURVIVING — there is a new listener — followed by the annotation naming who has
+// already heard it ("You have already passed that word to Hannah Boggs."), so
+// the model carries the news to the newcomer without re-opening it on Hannah.
+func travelerRumorAlreadyToldOneOfCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID  = sim.ActorID("vstr-elias")
+		hannahID = sim.ActorID("hannah")
+		starkID  = sim.ActorID("stark")
+		tavern   = sim.StructureID("tavern")
+		huddleID = sim.HuddleID("h1")
+	)
+	now := 540
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Hannah Boggs": {}, "Goodman Stark": {}},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "peddler",
+			Origin:            "Boston",
+			Disposition:       "weary",
+			Payload:           "Ezekiel Crane turned out a plow for the Hale farm",
+			PayloadSharedWith: []sim.ActorID{hannahID},
+		},
+	}
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	stark := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Goodman Stark",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias, hannahID: hannah, starkID: stark},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{eliasID: {}, hannahID: {}, starkID: {}}},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: eliasID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, eliasID, warrants
+}
+
+// travelerRumorToldSomeoneNotHere is the LLM-545 co-presence-guard fixture: the
+// traveler has passed his word to Hannah Boggs, but present company is Goodman
+// Stark alone — Hannah exists in the snapshot yet is NOT in the scene. The
+// golden pins the plain fresh "Word reached you …" line with NO mention of
+// Hannah: the shared-word memory matters face to face only (the LLM-547
+// posture), and naming an absent listener would hand the model a person to go
+// find instead of news to trade here.
+func travelerRumorToldSomeoneNotHere() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		eliasID  = sim.ActorID("vstr-elias")
+		hannahID = sim.ActorID("hannah")
+		starkID  = sim.ActorID("stark")
+		tavern   = sim.StructureID("tavern")
+		inn      = sim.StructureID("inn")
+		huddleID = sim.HuddleID("h1")
+	)
+	now := 540
+	elias := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elias Drum the peddler",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Goodman Stark": {}},
+		VisitorState: &sim.VisitorState{
+			Archetype:         "peddler",
+			Origin:            "Boston",
+			Disposition:       "weary",
+			Payload:           "Ezekiel Crane turned out a plow for the Hale farm",
+			PayloadSharedWith: []sim.ActorID{hannahID},
+		},
+	}
+	stark := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Goodman Stark",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: inn, // elsewhere — must not be named in the preface
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{eliasID: elias, hannahID: hannah, starkID: stark},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+			inn:    plainStructure(inn, "Inn"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{eliasID: {}, starkID: {}}},
 		},
 	}
 	warrants := []sim.WarrantMeta{

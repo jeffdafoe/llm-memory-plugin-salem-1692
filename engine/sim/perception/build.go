@@ -148,7 +148,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// LLM-370: when the perceiving actor is itself a transient traveler, carry its
 	// persona so Render can open the message with the self-identity preface. Read
 	// off the VisitorState the substrate mirrors onto the snapshot.
-	p.SelfTraveler = buildTravelerSelf(actorSnap)
+	p.SelfTraveler = buildTravelerSelf(snap, actorID, actorSnap)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.WarrantPlaceKeepers = buildWarrantPlaceKeepers(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
@@ -1802,7 +1802,7 @@ func descriptorLabel(displayName, role string, acquainted bool) string {
 
 // buildTravelerSelf projects the subject's own VisitorState into the self-identity
 // preface view (LLM-370), or nil when the subject is not a transient traveler.
-func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
+func buildTravelerSelf(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) *TravelerSelfView {
 	if a == nil || a.VisitorState == nil {
 		return nil
 	}
@@ -1812,6 +1812,9 @@ func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
 		Origin:      a.VisitorState.Origin,
 		Disposition: a.VisitorState.Disposition,
 		Rumor:       a.VisitorState.Payload,
+	}
+	if v.Rumor != "" {
+		v.RumorSharedWith, v.RumorSpentWithAllPresent = travelerRumorSharedWith(snap, actorID, a)
 	}
 	// LLM-372: a returner on a repeat visit carries continuity — how many times
 	// they've passed through, and the players they remember (most-recent first).
@@ -1824,6 +1827,54 @@ func buildTravelerSelf(a *sim.ActorSnapshot) *TravelerSelfView {
 		}
 	}
 	return v
+}
+
+// travelerRumorSharedWith intersects the traveler's shared-word memory
+// (VisitorState.PayloadSharedWith, stamped on the Speak commit path — LLM-545)
+// with present company, returning the display names of the co-present peers who
+// have already had the word (sorted) and whether that covers EVERYONE present.
+// Present company is the same set every other face-to-face cue reads: the
+// huddle's members when huddled, else the co-located audience (which already
+// excludes sleepers — someone who cannot hear fresh news is not a fresh
+// listener). A peer told elsewhere and absent from the scene contributes
+// nothing: the memory only matters face to face, mirroring the LLM-547 contact
+// line's co-presence guard. allPresent is false for empty company — alone, the
+// word is simply carried, not spent.
+func travelerRumorSharedWith(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) (names []string, allPresent bool) {
+	if snap == nil || len(a.VisitorState.PayloadSharedWith) == 0 {
+		return nil, false
+	}
+	shared := make(map[sim.ActorID]bool, len(a.VisitorState.PayloadSharedWith))
+	for _, id := range a.VisitorState.PayloadSharedWith {
+		shared[id] = true
+	}
+	var company []sim.ActorID
+	if a.CurrentHuddleID != "" {
+		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
+			for id := range h.Members {
+				if id != actorID {
+					company = append(company, id)
+				}
+			}
+		}
+	} else {
+		company = a.ColocatedAudienceIDs
+	}
+	if len(company) == 0 {
+		return nil, false
+	}
+	allPresent = true
+	for _, id := range company {
+		if !shared[id] {
+			allPresent = false
+			continue
+		}
+		if peer := snap.Actors[id]; peer != nil && peer.DisplayName != "" {
+			names = append(names, peer.DisplayName)
+		}
+	}
+	sort.Strings(names)
+	return names, allPresent && len(names) > 0
 }
 
 // travelerPersonaName recovers the bare persona name from a visitor's composed

@@ -27,6 +27,8 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		},
 		VisitorState: &sim.VisitorState{
 			VisitedBusinesses: []sim.StructureID{"str-a", "str-b"},
+			// LLM-545 shared-word memory rides the plan jsonb.
+			PayloadSharedWith: []sim.ActorID{"hannah", "john"},
 			// LLM-455 merchant errand rides the plan jsonb.
 			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "cheese", Counterparty: "str-a", Settled: true},
 		},
@@ -44,6 +46,10 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	if len(lv.VisitorState.VisitedBusinesses) != 2 ||
 		lv.VisitorState.VisitedBusinesses[0] != "str-a" || lv.VisitorState.VisitedBusinesses[1] != "str-b" {
 		t.Errorf("VisitedBusinesses = %v; want [str-a str-b]", lv.VisitorState.VisitedBusinesses)
+	}
+	if len(lv.VisitorState.PayloadSharedWith) != 2 ||
+		lv.VisitorState.PayloadSharedWith[0] != "hannah" || lv.VisitorState.PayloadSharedWith[1] != "john" {
+		t.Errorf("PayloadSharedWith = %v; want [hannah john]", lv.VisitorState.PayloadSharedWith)
 	}
 	if lv.Coins != 42 {
 		t.Errorf("Coins = %d; want 42", lv.Coins)

@@ -95,6 +95,11 @@ const advisoryLockSQLV = `SELECT pg_advisory_xact_lock(hashtext('visitor_snapsho
 type visitorPlanJSON struct {
 	// Rounds — VisitorState.VisitedBusinesses (the keeper-businesses he has called at).
 	VisitedBusinesses []string `json:"visited_businesses,omitempty"`
+	// The people the traveler has passed his carried word to (LLM-545) —
+	// VisitorState.PayloadSharedWith. Persisted for the same reason the payload
+	// column itself is: a mid-visit deploy must not resurrect the word as unspent,
+	// or the traveler reopens a matter his listener already answered.
+	PayloadSharedWith []string `json:"payload_shared_with,omitempty"`
 	// Trade — the merchant visitor's bound errand (LLM-455), generalizing the LLM-410
 	// DistributorOnly flag. nil for a passer-through. Rides the plan jsonb (no dedicated
 	// column) so a mid-visit redeploy resumes the traveler on the same errand rather than as
@@ -174,6 +179,9 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 	for _, sid := range vs.VisitedBusinesses {
 		plan.VisitedBusinesses = append(plan.VisitedBusinesses, string(sid))
 	}
+	for _, aid := range vs.PayloadSharedWith {
+		plan.PayloadSharedWith = append(plan.PayloadSharedWith, string(aid))
+	}
 	if len(a.Inventory) > 0 {
 		plan.Inventory = make(map[string]int, len(a.Inventory))
 		for kind, qty := range a.Inventory {
@@ -215,6 +223,9 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 	}
 	for _, s := range plan.VisitedBusinesses {
 		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
+	}
+	for _, s := range plan.PayloadSharedWith {
+		lv.VisitorState.PayloadSharedWith = append(lv.VisitorState.PayloadSharedWith, sim.ActorID(s))
 	}
 	if plan.Trade != nil {
 		// Validate the persisted errand against the Go-owned allowlist before rebuilding it
