@@ -5413,6 +5413,11 @@ type SeekWorkPlace struct {
 	Name      string
 	Distance  string // qualitativeDistance phrase, e.g. "a short walk"
 	Direction string // 8-point compass bearing; empty when coincident
+	// Visited marks a business the worker called at recently (a live
+	// ObservedSeekWorkVisited memory, LLM-563). Rendered as a "you called there
+	// not long ago" aside, and the ordering ranks these after untried businesses.
+	Visited   bool
+	visitedAt time.Time // stamp time of the visited memory; orders visited entries least-recent first
 	sortKey   float64
 	sourceID  sim.VillageObjectID // tie-break for the representative; never rendered
 }
@@ -5436,6 +5441,11 @@ type SeekWorkPlace struct {
 // back to a refusal. A business whose keeper the worker last found on break
 // (earned ObservedNoHiring memory) is dropped the same way (LLM-210) — a resting
 // keeper is "open" but cannot take on a worker, so routing back there just loops.
+// A business the worker merely CALLED AT recently (earned ObservedSeekWorkVisited
+// memory, 2h TTL — LLM-563) is NOT dropped but ranked after every untried one,
+// least-recently-visited first: "I was just there" is far weaker evidence than a
+// refusal, and dropping on it would empty the directory after one tour of town
+// while the seek-work impulse kept nagging with no destination to offer.
 // De-duped by name, keeping the nearest representative.
 func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []SeekWorkPlace {
 	if snap == nil || actorSnap == nil {
@@ -5465,6 +5475,7 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		if label == "" {
 			continue
 		}
+		visitedAt, visited := workerRememberedVisited(snap, actorSnap, structureID)
 		objTile := obj.Pos.Tile()
 		tx := float64(objTile.X)
 		ty := float64(objTile.Y)
@@ -5475,6 +5486,8 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 			Name:      label,
 			Distance:  qualitativeDistance(distTiles),
 			Direction: cardinalDirection(ax, ay, tx, ty),
+			Visited:   visited,
+			visitedAt: visitedAt,
 			sortKey:   distTiles,
 			sourceID:  obj.ID,
 		}
@@ -5499,9 +5512,19 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 	for _, p := range best {
 		places = append(places, p)
 	}
-	// Nearest first; ties broken by name for a deterministic order (map iteration
-	// is unordered). Mirrors the eat/drink free-source ordering.
+	// Untried businesses first, nearest-first among them; a business the worker
+	// called at recently (a live visited memory, LLM-563) sorts after every
+	// untried one, least-recently-visited first, so the directory converges on
+	// doors not yet knocked instead of the one just left. Ties broken by
+	// distance then name for a deterministic order (map iteration is unordered);
+	// the untried half mirrors the eat/drink free-source ordering.
 	sort.Slice(places, func(i, j int) bool {
+		if places[i].Visited != places[j].Visited {
+			return !places[i].Visited
+		}
+		if places[i].Visited && !places[i].visitedAt.Equal(places[j].visitedAt) {
+			return places[i].visitedAt.Before(places[j].visitedAt)
+		}
 		if places[i].sortKey != places[j].sortKey {
 			return places[i].sortKey < places[j].sortKey
 		}
@@ -5542,6 +5565,30 @@ func workerRememberedNoHiring(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, 
 		return false
 	}
 	return actorSnap.Observed.Active(sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedNoHiring}, snap.PublishedAt)
+}
+
+// workerRememberedVisited reports whether the subject has an earned experiential
+// memory (LLM-563) of having called at structureID looking for work, still within
+// its TTL of the snapshot clock — and, when it does, the time of that visit.
+// Unlike its three DROP siblings above, buildSeekWorkPlaces uses this only for
+// ORDERING: a visited business ranks after every untried one (least-recently-
+// visited first) so the directory converges on doors not yet knocked, without
+// ever emptying — a visit where nothing happened is far weaker evidence than a
+// refusal. The memory is stamped by the visited arrival subscriber
+// (sim/seek_work_visited.go); the TTL decay is applied by Observed.Active at read
+// time so the business regains its normal nearest-first standing without a
+// world-goroutine sweep. False when the subject has no such memory, the snapshot
+// has no clock baseline, or the memory has expired.
+func workerRememberedVisited(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) (time.Time, bool) {
+	if snap == nil || actorSnap == nil {
+		return time.Time{}, false
+	}
+	key := sim.ObservedStateKey{StructureID: structureID, Condition: sim.ObservedSeekWorkVisited}
+	if !actorSnap.Observed.Active(key, snap.PublishedAt) {
+		return time.Time{}, false
+	}
+	visitedAt, _ := actorSnap.Observed.At(key)
+	return visitedAt, true
 }
 
 // subjectIsComfortable reports whether the subject worker holds enough coin to stop

@@ -3466,6 +3466,10 @@ func renderOfferWorkAffordance(b *strings.Builder, workers []sim.ActorID, nameOf
 // a bullet carrying its qualitative distance + direction (LLM-155), matching the
 // eat/drink cue's "a fair walk south" phrasing so the worker favours a near, open
 // shop. Names only: each is a structure navigable by move_to-by-name (LLM-142).
+// A business the worker called at recently (Visited, LLM-563) — ranked after the
+// untried ones by Build — carries a terse "you called there not long ago" aside,
+// so the ordering reads as a reason rather than an arbitrary shuffle and the
+// model favours a door not yet knocked.
 func renderSeekWorkPlaces(b *strings.Builder, places []SeekWorkPlace) {
 	if len(places) == 0 {
 		return
@@ -3479,6 +3483,9 @@ func renderSeekWorkPlaces(b *strings.Builder, places []SeekWorkPlace) {
 			if p.Direction != "" {
 				fmt.Fprintf(b, " %s", p.Direction)
 			}
+		}
+		if p.Visited {
+			b.WriteString(" — you called there not long ago")
 		}
 		b.WriteString("\n")
 	}

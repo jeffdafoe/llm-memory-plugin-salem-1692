@@ -3260,6 +3260,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerSeeksWorkSkipsNoHiringBusiness,
 	},
 	{
+		name: "worker_seeks_work_ranks_visited_business_last",
+		summary: "The LLM-563 companion to the three seek-work DROP scenarios: the same workless idle worker (Patience " +
+			"Walker), but she CALLED at the nearest business (the General Store) half an hour ago and nothing came of it — an " +
+			"earned ObservedSeekWorkVisited memory within its 2h TTL, stamped on ANY qualifying arrival rather than a rejection " +
+			"event, which is what the shut/declined/no-hiring memories all require and the live loop never produced (the " +
+			"General Store four times in twelve minutes, 21 trips in three hours with nothing learned). The golden pins the " +
+			"deprioritise treatment: the store stays a REAL destination (never dropped — dropping would empty the directory " +
+			"after one tour while the seek-work impulse kept nagging with no target) but lists LAST, behind the farther untried " +
+			"Blacksmith, carrying the terse 'you called there not long ago' aside so the ordering reads as a reason. A " +
+			"regression that stopped consulting the visited memory would restore nearest-first and put the just-left store " +
+			"back on top — the exact live loop.",
+		build: workerSeeksWorkRanksVisitedBusinessLast,
+	},
+	{
 		name: "red_tired_worker_no_seek_work",
 		summary: "The LLM-210 case: a WORKLESS worker (Lewis Walker) idle at home holding a few coins (15, below the seek-work " +
 			"ceiling → not comfortable) but at RED tiredness (20 >= the default red-line 16). A pressing need outranks job-" +
@@ -16278,6 +16292,56 @@ func workerSeeksWorkSkipsNoHiringBusiness() (*sim.Snapshot, sim.ActorID, []sim.W
 	return snap, lewisID, nil
 }
 
+// workerSeeksWorkRanksVisitedBusinessLast is the LLM-563 case: a workless idle
+// worker (Patience Walker) at home, with the NEAREST business (the General Store)
+// carrying a fresh visited memory — she called there half an hour ago and nothing
+// came of it. The directory must list the farther, untried Blacksmith FIRST and
+// the store LAST with the "you called there not long ago" aside: never dropped,
+// just outranked, so the go-coda always has a target and the rotation converges
+// on doors not yet knocked.
+func workerSeeksWorkRanksVisitedBusinessLast() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		patienceID = sim.ActorID("patience")
+		residence  = sim.StructureID("walker_residence")
+		store      = sim.StructureID("general_store")
+		blacksmith = sim.StructureID("blacksmith")
+	)
+	now := 540 // 09:00 — daytime
+	published := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	patience := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Patience Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Pos:               sim.WorldToTile(0, 0),
+		Coins:             11, // the live case: under the seek-work ceiling (25)
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: store, Condition: sim.ObservedSeekWorkVisited}: published.Add(-30 * time.Minute),
+		}),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{patienceID: patience},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence:  plainStructure(residence, "Walker Residence"),
+			store:      plainStructure(store, "General Store"),
+			blacksmith: plainStructure(blacksmith, "Blacksmith"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// The visited store is NEARER than the untried blacksmith, so plain
+			// nearest-first would put it on top — the ordering under test.
+			sim.VillageObjectID(store):      {ID: sim.VillageObjectID(store), Pos: sim.WorldPos{X: 160, Y: 0}, Tags: []string{"business", "shop"}},
+			sim.VillageObjectID(blacksmith): {ID: sim.VillageObjectID(blacksmith), Pos: sim.WorldPos{X: 0, Y: 480}, Tags: []string{"business", "shop"}},
+		},
+	}
+	return snap, patienceID, nil
+}
+
 // redTiredWorkerNoSeekWork is the LLM-210 case: a WORKLESS worker (Lewis Walker) idle at
 // home holding a few coins (15, below the seek-work ceiling → not comfortable) but at RED
 // tiredness (20 >= the default red-line 16). A red need outranks job-hunting, so both
@@ -16330,6 +16394,9 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		"worker_with_coin_no_employer_seeks_work":     true,
 		"worker_seeks_work_after_employer_declines":   true,
 		"worker_seeks_work_skips_no_hiring_business":  true,
+		// LLM-563: a visited business is deprioritised, never dropped — the
+		// directory stays populated, so the go-coda renders here too.
+		"worker_seeks_work_ranks_visited_business_last": true,
 		// LLM-459: a workless below-ceiling worker settled at home with the household
 		// bake going. It belongs here — the seek-work half is exactly what SHOULD
 		// survive; the point of the scenario is that the bake invitation does not

@@ -551,6 +551,7 @@ func run(rt runtime, stop stopSignals) error {
 	sim.RegisterSaleStandoffSubscriber(rt.World)          // LLM-525: remember a buy negotiation that dead-ended; drop that (shop, item) from the buy directory for 4h
 	sim.RegisterTradeReversalSubscriber(rt.World)         // LLM-555: remember selling an item to someone; refuse buying that good back off them for 3h
 	sim.RegisterNoHiringSubscriber(rt.World)              // LLM-210: remember a business whose keeper was on break (present but not hireable); drop it from the seek-work directory
+	sim.RegisterSeekWorkVisitedSubscriber(rt.World)       // LLM-563: remember a business called at while job-hunting; rank it after untried ones in the seek-work directory for 2h
 	sim.RegisterHelpedByWorkerSubscriber(rt.World)        // LLM-228: employer remembers a worker who completed a paid job; recall it at the decision section when they solicit again (36h)
 	sim.RegisterKnownPlaceSubscriber(rt.World)            // LLM-77: remember a place's affordance on gather/purchase (durable world-memory)
 	sim.RegisterGatherTargetSubscriber(rt.World)          // LLM-93: remember the bush an NPC walked to, so gather prefers it over the nearest
