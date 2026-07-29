@@ -26,11 +26,14 @@
 //
 // pay_ledger columns v2 leaves NULL / default:
 //
-//	huddle_id, scene_id, quoted_unit_amount, message, counter_amount,
+//	scene_id, quoted_unit_amount, message, counter_amount,
 //	parent_id, depth (=0), consume_now (=false)
 //
-// v1 readers already tolerate NULL huddle_id (pre-MEM-121 rows) so
-// the partial population is compatible.
+// scene_id has been unwritten since 2026-05-13 and is kept only for the
+// 99 historical rows that carry one; it is NOT a query path for new work.
+// LLM-556 dropped its always-NULL neighbour huddle_id — to ask whether a
+// settlement happened inside a given conversation, join pay_ledger.id to
+// agent_action_log.ledger_id and read agent_action_log.huddle_id.
 //
 // # Schema dependencies
 //
