@@ -70,6 +70,38 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	}
 }
 
+// TestVisitorPlanPayloadSharedWithSanitized — the LLM-545 decode posture for
+// out-of-band plan data: duplicates and blank ids are dropped on the way in (the
+// engine-side writer keeps the set unique, so they can only come from an edited
+// row), a JSON null field decodes to an empty set, and a structurally corrupt
+// array (non-string element) fails the whole plan apply like any other corrupt
+// plan. Unknown-but-well-formed actor ids are RETAINED — perception intersects
+// against the live snapshot before rendering, so they stay harmless.
+func TestVisitorPlanPayloadSharedWithSanitized(t *testing.T) {
+	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	raw := []byte(`{"payload_shared_with":["hannah","","hannah","john","hannah"]}`)
+	if err := applyVisitorPlan(raw, lv); err != nil {
+		t.Fatalf("applyVisitorPlan: %v", err)
+	}
+	got := lv.VisitorState.PayloadSharedWith
+	if len(got) != 2 || got[0] != "hannah" || got[1] != "john" {
+		t.Errorf("PayloadSharedWith = %v; want deduped [hannah john] with blanks dropped", got)
+	}
+
+	lv2 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(`{"payload_shared_with":null}`), lv2); err != nil {
+		t.Fatalf("applyVisitorPlan(null field): %v", err)
+	}
+	if lv2.VisitorState.PayloadSharedWith != nil {
+		t.Errorf("null field decoded to %v; want empty", lv2.VisitorState.PayloadSharedWith)
+	}
+
+	lv3 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(`{"payload_shared_with":[42]}`), lv3); err == nil {
+		t.Error("non-string array element must fail the plan apply like any corrupt plan")
+	}
+}
+
 // TestVisitorPlanEmpty — an absent / empty plan (an old-engine row, or a
 // freshly-spawned visitor before its first checkpoint) applies as a clean no-op,
 // leaving the LoadedVisitor at its zero plan.

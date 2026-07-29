@@ -1840,6 +1840,12 @@ func buildTravelerSelf(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 // nothing: the memory only matters face to face, mirroring the LLM-547 contact
 // line's co-presence guard. allPresent is false for empty company — alone, the
 // word is simply carried, not spent.
+//
+// Company keeps only ids the snapshot can actually resolve — a stale huddle
+// member with no actor behind it must neither count toward "everyone here has
+// heard it" nor block it. Away-routed PCs (stale presence, still huddle
+// members) are deliberately KEPT: physically in the scene, an untold one keeps
+// the fresh framing, which fails on the safe side.
 func travelerRumorSharedWith(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) (names []string, allPresent bool) {
 	if snap == nil || len(a.VisitorState.PayloadSharedWith) == 0 {
 		return nil, false
@@ -1849,16 +1855,21 @@ func travelerRumorSharedWith(snap *sim.Snapshot, actorID sim.ActorID, a *sim.Act
 		shared[id] = true
 	}
 	var company []sim.ActorID
+	appendPresent := func(id sim.ActorID) {
+		if id != actorID && snap.Actors[id] != nil {
+			company = append(company, id)
+		}
+	}
 	if a.CurrentHuddleID != "" {
 		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
 			for id := range h.Members {
-				if id != actorID {
-					company = append(company, id)
-				}
+				appendPresent(id)
 			}
 		}
 	} else {
-		company = a.ColocatedAudienceIDs
+		for _, id := range a.ColocatedAudienceIDs {
+			appendPresent(id)
+		}
 	}
 	if len(company) == 0 {
 		return nil, false
@@ -1869,8 +1880,8 @@ func travelerRumorSharedWith(snap *sim.Snapshot, actorID sim.ActorID, a *sim.Act
 			allPresent = false
 			continue
 		}
-		if peer := snap.Actors[id]; peer != nil && peer.DisplayName != "" {
-			names = append(names, peer.DisplayName)
+		if name := snap.Actors[id].DisplayName; name != "" {
+			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
