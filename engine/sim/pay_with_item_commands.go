@@ -2227,6 +2227,18 @@ func findAutoMatchQuote(
 // Liveness/visibility predicates mirror findAutoMatchQuote; among several
 // standing bundles the newest (highest ID) wins, deterministically.
 func activeBundleQuoteFrom(w *World, buyer *Actor, sellerID ActorID, sceneID SceneID, at time.Time) *SceneQuote {
+	// Defensive (code_review): the only call site resolves sellerID against
+	// the buyer's huddle peers BEFORE item resolution, so seller co-presence
+	// is already guaranteed when this runs — an absent seller rejects
+	// upstream as "no one named … in this conversation" and never reaches
+	// the unknown-item error. Checked here anyway, mirroring the fast path's
+	// shared-huddle predicate, so the helper stays honest for any future
+	// caller: a quote whose seller has left the buyer's huddle must not be
+	// taught as takeable.
+	seller, ok := w.Actors[sellerID]
+	if !ok || buyer.CurrentHuddleID == "" || seller.CurrentHuddleID != buyer.CurrentHuddleID {
+		return nil
+	}
 	var best *SceneQuote
 	for _, q := range w.Quotes {
 		if q == nil || q.State != SceneQuoteStateActive || len(q.Lines) < 2 {
