@@ -94,6 +94,25 @@ func TestBuildSeekWorkPlaces_DedupNilAndNoneTagged(t *testing.T) {
 		}
 	}
 
+	// The same determinism holds on the LLM-563 Visited axis: when equal-distance
+	// same-name duplicates DIFFER in visited status, the lowest-id representative
+	// still wins regardless of which one carries the memory — the kept entry's
+	// Visited flag (and thus its rank + aside) can't flip with map iteration order.
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tie.PublishedAt = now
+	visitedActor := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "store_b", Condition: sim.ObservedSeekWorkVisited}: now.Add(-10 * time.Minute),
+		}),
+	}
+	for i := 0; i < 8; i++ {
+		got := buildSeekWorkPlaces(tie, visitedActor)
+		if len(got) != 1 || got[0].Direction != "east" || got[0].Visited {
+			t.Fatalf("visited-status tie not deterministic: got %+v, want one entry, direction east, Visited=false (lowest id store_a)", got)
+		}
+	}
+
 	if got := buildSeekWorkPlaces(nil, actor); got != nil {
 		t.Errorf("nil snapshot: want nil, got %+v", got)
 	}
