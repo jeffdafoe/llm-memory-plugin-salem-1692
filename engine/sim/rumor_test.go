@@ -112,6 +112,12 @@ func TestSnapshotActorCarriesRumorPayload(t *testing.T) {
 	if snap.VisitorState.Payload != rumor {
 		t.Errorf("snapshot Payload = %q; want the rumor carried through to perception", snap.VisitorState.Payload)
 	}
+	// LLM-566: the vocation sentence derives from Archetype at perception-build
+	// time, so the archetype surviving the clone is what keeps a live traveler
+	// preachy/musical/surgical — same refactor risk as Payload above.
+	if snap.VisitorState.Archetype != "peddler" {
+		t.Errorf("snapshot Archetype = %q; want it carried through — perception derives the vocation line from it", snap.VisitorState.Archetype)
+	}
 }
 
 // TestSnapshotActorCarriesPayloadSharedWith is the LLM-545 sibling of the test
