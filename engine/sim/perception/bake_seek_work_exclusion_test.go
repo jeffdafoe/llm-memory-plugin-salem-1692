@@ -99,9 +99,13 @@ func TestNoSeekWorkPromptDepictsHousemateBake(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			out := renderScenario(sc)
-			// "baking just now" is busyActivityPhrase's bake arm without pinning
-			// the hearth prose around it.
-			hasAnnotation := strings.Contains(out, "baking just now")
+			// "baking just now" is busyActivityPhrase's bake arm without pinning the
+			// hearth prose around it — matched inside "## Around you" only (the one
+			// section the annotation renders in), so a future cue or coda that merely
+			// MENTIONS baking can't trip a false positive (code_review). The go-coda
+			// has no section of its own, so it stays a whole-prompt match, same as
+			// TestNoPromptOffersBakeAndSeekWorkTogether below.
+			hasAnnotation := strings.Contains(aroundYouSection(out), "baking just now")
 			hasSeekWork := strings.Contains(out, "No one here can hire you")
 			if hasAnnotation {
 				sawAnnotation++
