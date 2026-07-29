@@ -141,6 +141,22 @@ func TestCloneVisitorState_Trade(t *testing.T) {
 	}
 }
 
+// TestCloneVisitorState_PayloadSharedWith guards the same deep-copy contract for
+// the shared-word memory (LLM-545): a snapshot that aliased the slice would let a
+// world-side stamp appear mid-publish, or a snapshot append mutate the world.
+func TestCloneVisitorState_PayloadSharedWith(t *testing.T) {
+	src := &VisitorState{Payload: "word", PayloadSharedWith: []ActorID{"hannah"}}
+	cp := cloneVisitorState(src)
+	if len(cp.PayloadSharedWith) != 1 || cp.PayloadSharedWith[0] != "hannah" {
+		t.Fatalf("cloneVisitorState garbled PayloadSharedWith: %+v", cp.PayloadSharedWith)
+	}
+	cp.PayloadSharedWith[0] = "changed"
+	cp.PayloadSharedWith = append(cp.PayloadSharedWith, "extra")
+	if src.PayloadSharedWith[0] != "hannah" || len(src.PayloadSharedWith) != 1 {
+		t.Error("cloneVisitorState aliased PayloadSharedWith instead of deep-copying")
+	}
+}
+
 // TestPickDistributorArrival — the factor targets the distributor-tagged structure (smallest ID
 // on a tie); an ordinary traveler targets the tavern; a factor in a village with no distributor
 // falls back to the tavern anchor.

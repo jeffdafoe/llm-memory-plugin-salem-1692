@@ -1,6 +1,8 @@
 package pg
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -27,6 +29,8 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		},
 		VisitorState: &sim.VisitorState{
 			VisitedBusinesses: []sim.StructureID{"str-a", "str-b"},
+			// LLM-545 shared-word memory rides the plan jsonb.
+			PayloadSharedWith: []sim.ActorID{"hannah", "john"},
 			// LLM-455 merchant errand rides the plan jsonb.
 			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "cheese", Counterparty: "str-a", Settled: true},
 		},
@@ -45,6 +49,10 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 		lv.VisitorState.VisitedBusinesses[0] != "str-a" || lv.VisitorState.VisitedBusinesses[1] != "str-b" {
 		t.Errorf("VisitedBusinesses = %v; want [str-a str-b]", lv.VisitorState.VisitedBusinesses)
 	}
+	if len(lv.VisitorState.PayloadSharedWith) != 2 ||
+		lv.VisitorState.PayloadSharedWith[0] != "hannah" || lv.VisitorState.PayloadSharedWith[1] != "john" {
+		t.Errorf("PayloadSharedWith = %v; want [hannah john]", lv.VisitorState.PayloadSharedWith)
+	}
 	if lv.Coins != 42 {
 		t.Errorf("Coins = %d; want 42", lv.Coins)
 	}
@@ -61,6 +69,70 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	g := lv.RoomAccess[sim.RoomAccessKey{RoomID: 5, Source: sim.AccessSourceLedger}]
 	if g == nil || g.LedgerID != 12 || !g.Active || g.ExpiresAt == nil || !g.ExpiresAt.Equal(roomExpiry) {
 		t.Errorf("restored grant = %+v; want active ledger grant ledger=12 expiry=%v", g, roomExpiry)
+	}
+}
+
+// TestVisitorPlanPayloadSharedWithSanitized — the LLM-545 decode posture for
+// out-of-band plan data: duplicates and blank ids are dropped on the way in (the
+// engine-side writer keeps the set unique, so they can only come from an edited
+// row), a JSON null field decodes to an empty set, and a structurally corrupt
+// array (non-string element) fails the whole plan apply like any other corrupt
+// plan. Unknown-but-well-formed actor ids are RETAINED — perception intersects
+// against the live snapshot before rendering, so they stay harmless.
+func TestVisitorPlanPayloadSharedWithSanitized(t *testing.T) {
+	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	raw := []byte(`{"payload_shared_with":["hannah","","hannah","john","hannah"]}`)
+	if err := applyVisitorPlan(raw, lv); err != nil {
+		t.Fatalf("applyVisitorPlan: %v", err)
+	}
+	got := lv.VisitorState.PayloadSharedWith
+	if len(got) != 2 || got[0] != "hannah" || got[1] != "john" {
+		t.Errorf("PayloadSharedWith = %v; want deduped [hannah john] with blanks dropped", got)
+	}
+
+	lv2 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(`{"payload_shared_with":null}`), lv2); err != nil {
+		t.Fatalf("applyVisitorPlan(null field): %v", err)
+	}
+	if lv2.VisitorState.PayloadSharedWith != nil {
+		t.Errorf("null field decoded to %v; want empty", lv2.VisitorState.PayloadSharedWith)
+	}
+
+	lv3 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(`{"payload_shared_with":[42]}`), lv3); err == nil {
+		t.Error("non-string array element must fail the plan apply like any corrupt plan")
+	}
+
+	// An oversized array (only reachable from an edited/corrupt row — the writer
+	// caps at sim.MaxPayloadSharedWith) is truncated at the cap, not rejected:
+	// the rest of the plan is independently valid. Blanks and duplicates are
+	// interleaved so the ordering is pinned: dedup/drop first, THEN cap — junk
+	// entries never consume cap slots, and the retained set is the first cap
+	// distinct ids in stored order.
+	big, err := json.Marshal(struct {
+		IDs []string `json:"payload_shared_with"`
+	}{IDs: func() []string {
+		var ids []string
+		for i := 0; i < sim.MaxPayloadSharedWith+10; i++ {
+			ids = append(ids, fmt.Sprintf("actor-%03d", i), "", fmt.Sprintf("actor-%03d", i))
+		}
+		return ids
+	}()})
+	if err != nil {
+		t.Fatalf("marshal oversized plan: %v", err)
+	}
+	lv4 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan(big, lv4); err != nil {
+		t.Fatalf("applyVisitorPlan(oversized): %v", err)
+	}
+	kept := lv4.VisitorState.PayloadSharedWith
+	if len(kept) != sim.MaxPayloadSharedWith {
+		t.Fatalf("oversized array retained %d ids; want truncation at the cap (%d)", len(kept), sim.MaxPayloadSharedWith)
+	}
+	for i, id := range kept {
+		if want := sim.ActorID(fmt.Sprintf("actor-%03d", i)); id != want {
+			t.Fatalf("kept[%d] = %q; want %q — dedup/blank-drop must run before the cap, preserving first-seen order", i, id, want)
+		}
 	}
 }
 

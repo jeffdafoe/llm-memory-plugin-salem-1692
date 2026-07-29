@@ -461,8 +461,24 @@ func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
 	// the road — so the stateless salem-visitor VA has something true to trade in
 	// conversation rather than empty small-talk. Dropped when empty (no
 	// rumor-worthy beat was on hand at spawn).
+	//
+	// LLM-545 tiers the clause by present company. Once everyone in the scene has
+	// already had the word from him (and answered — the stamp requires an active
+	// conversant), the fresh-news framing is what made a returning traveler reopen
+	// a matter his listener had settled, so the clause reframes as spent instead.
+	// Mixed company keeps the fresh line (there is a new listener) and names who
+	// has heard it already. Someone told elsewhere and not in the scene is never
+	// mentioned — the memory matters face to face.
 	if rumor := sanitizeInline(v.Rumor); rumor != "" {
-		fmt.Fprintf(b, " Word reached you on the road that %s.", rumor)
+		if v.RumorSpentWithAllPresent {
+			fmt.Fprintf(b, " The word you picked up on the road — that %s — you have already passed to %s, and heard what they had to say; that matter is spent between you.",
+				rumor, joinNames(v.RumorSharedWith))
+		} else {
+			fmt.Fprintf(b, " Word reached you on the road that %s.", rumor)
+			if len(v.RumorSharedWith) > 0 {
+				fmt.Fprintf(b, " You have already passed that word to %s.", joinNames(v.RumorSharedWith))
+			}
+		}
 	}
 
 	// Returner continuity (LLM-372): a traveler who has walked this road before —

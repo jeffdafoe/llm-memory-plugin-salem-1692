@@ -316,6 +316,11 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 						// nothing. Words aren't inspected; the token moves, not
 						// the utterance.
 						propagateRumorOnSpeak(w, h, speakerID, at)
+						// LLM-545: a traveler's carried word is spent on the
+						// peers it actually conversed with — same active-only
+						// gate as the rumor hop above, so the identity preface
+						// can stop him reopening a matter already answered.
+						recordVisitorRumorShared(w, h, speakerID)
 						// LLM-185: a player's own line marks the huddle as
 						// player-attended, exempting it from the loop sweep + the
 						// ConversationLooping steer for huddlePCAttentionWindow so an
