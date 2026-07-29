@@ -144,6 +144,32 @@ func TestMoveTo_LodgingKeywords(t *testing.T) {
 		}
 	})
 
+	t.Run("stale earliest grant does not shadow a later valid one", func(t *testing.T) {
+		w, cancel, _ := buildMoveTestWorld(t)
+		defer cancel()
+		seedLodger(t, w, noon.Add(48*time.Hour))
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			// A second, EARLIER-expiring active grant whose room resolves nowhere
+			// (no structure carries room 99). Selection must skip it up front, not
+			// pick it and then bail to the home fallback.
+			exp := noon.Add(1 * time.Hour)
+			a := world.Actors["walker"]
+			a.RoomAccess[sim.RoomAccessKey{RoomID: 99, Source: sim.AccessSourceLedger}] = &sim.RoomAccess{
+				RoomID: 99, Source: sim.AccessSourceLedger, LedgerID: 8, ExpiresAt: &exp, Active: true,
+			}
+			a.HomeStructureID = "gazebo"
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed stale grant: %v", err)
+		}
+		if _, err := w.Send(sim.MoveToStructureByName("walker", "my room", nil, sim.RememberedPlaces{}, noon)); err != nil {
+			t.Fatalf("move_to(my room): %v", err)
+		}
+		if _, sid := destKindOf(t, w, "walker"); sid != "inn" {
+			t.Errorf("'my room' resolved to %q, want inn (the later VALID grant, not home)", sid)
+		}
+	})
+
 	t.Run("neither grant nor home: retryable steer, not a no-op", func(t *testing.T) {
 		w, cancel, _ := buildMoveTestWorld(t)
 		defer cancel()

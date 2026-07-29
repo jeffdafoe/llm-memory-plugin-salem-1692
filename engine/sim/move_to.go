@@ -350,33 +350,35 @@ func lodgingKeywordTarget(w *World, a *Actor, name string, now time.Time) (Struc
 // soonest-expiring active lodging grant — the same selection perception's
 // lodging cue and turn_in's lodger arm make — or ok=false when the actor rents
 // nothing. A grant whose room no longer resolves to a live structure is
-// skipped. Ties on expiry break by lower RoomID for a deterministic result
-// (RoomAccess is a map; a lodger normally holds one grant per structure
-// anyway). MUST be called from inside a Command.Fn (findRoom reads
-// w.Structures).
+// skipped BEFORE the expiry comparison, so a stale earliest-expiring grant
+// can't shadow a later valid one (code_review). Ties on expiry break by lower
+// RoomID for a deterministic result (RoomAccess is a map; a lodger normally
+// holds one grant per structure anyway). MUST be called from inside a
+// Command.Fn (findRoom reads w.Structures).
 func lodgingStructureFor(w *World, a *Actor, now time.Time) (StructureID, bool) {
 	var best *RoomAccess
+	bestStructure := StructureID("")
 	for _, ra := range a.RoomAccess {
 		if !IsActiveLedgerGrant(ra, now) {
+			continue
+		}
+		room := findRoom(w, ra.RoomID)
+		if room == nil {
+			continue
+		}
+		if _, ok := w.Structures[room.StructureID]; !ok {
 			continue
 		}
 		// IsActiveLedgerGrant guarantees ExpiresAt is non-nil.
 		if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) ||
 			(ra.ExpiresAt.Equal(*best.ExpiresAt) && ra.RoomID < best.RoomID) {
-			best = ra
+			best, bestStructure = ra, room.StructureID
 		}
 	}
 	if best == nil {
 		return "", false
 	}
-	room := findRoom(w, best.RoomID)
-	if room == nil {
-		return "", false
-	}
-	if _, ok := w.Structures[room.StructureID]; !ok {
-		return "", false
-	}
-	return room.StructureID, true
+	return bestStructure, true
 }
 
 // moveToLodgingLabeled walks the actor to the structure its lodging keyword
