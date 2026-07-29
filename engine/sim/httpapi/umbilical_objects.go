@@ -28,6 +28,22 @@ import (
 //                plus any overlay objects attached to it (AttachedTo == that id).
 // An unmatched filter yields an empty list (the /sell-through optional-filter
 // posture), not a 404.
+//
+// LLM-559 widened it from a PLACEMENT roster to a STATE roster: it also carries
+// the mutable per-object runtime counters (wear, rate_owed, hearth_lit_until).
+// Those had no live read at all, only the checkpointed `zbbs` DB — which lags by
+// up to ~60s and so contradicts the standing rule that live Salem state is read
+// off the umbilical. It left the operator tuning blind in one direction:
+// /stall-wear/set and /town-rate/set change the thresholds live and /settings
+// reports them, but the accrued value being compared against them was invisible.
+//
+// `available_quantity` is NOT among them, though the ticket floated it. The
+// gameplay stock is the per-row ObjectRefresh.AvailableQuantity (what
+// gather_commands decrements and object_gather_read serves on hover), and that
+// is ALREADY here inside refresh_policy. The object-level
+// VillageObject.AvailableQuantity is a vestigial column — the pg repo loads and
+// saves it and nothing else in the engine touches it — so putting it on the wire
+// would publish a number that never moves next to one that does.
 
 // UmbilicalObjectPositionDTO carries both the world-pixel anchor (the space the
 // object/move control route writes) and the resolved tile (the space actor reads
@@ -54,6 +70,15 @@ type UmbilicalObjectLoiterOffsetDTO struct {
 // out); tags is always present (empty slice for none); refresh_policy reuses the
 // adminObjectRefreshRow wire shape the set-refresh route accepts and echoes, so
 // the read and write surfaces can't drift.
+//
+// The last three fields are the mutable RUNTIME COUNTERS (LLM-559) — the numbers
+// the engine accrues against an object over a day, as opposed to the placement
+// and configuration above them. They are RAW, deliberately: no derived
+// `degraded` / `needs_repair` / `hearth_lit` booleans (Jeff, 2026-07-29). Every
+// term those judgments need is already on the wire — owner_actor_id + tags give
+// IsWearableStall / IsRateableBusiness, and /settings reports the thresholds —
+// so a second copy of the rule would only be somewhere for it to drift from
+// sim.StallDegraded, which stays the single answer to the degrade question.
 type UmbilicalObjectDTO struct {
 	ID              string                          `json:"id"`
 	AssetID         string                          `json:"asset_id"`
@@ -67,6 +92,26 @@ type UmbilicalObjectDTO struct {
 	RefreshPolicy   []adminObjectRefreshRow         `json:"refresh_policy,omitempty"`
 	AttachedTo      string                          `json:"attached_to,omitempty"`
 	StructureBacked bool                            `json:"structure_backed"`
+
+	// Wear is accrued maintenance demand on an owned business (LLM-118/247);
+	// compare against stall_wear_repair_threshold / _degrade_threshold on
+	// /settings. Omitted at 0 — which is both "never traded since its last
+	// repair" and "not a wearable business at all"; owner_actor_id + a
+	// `business` tag distinguish them.
+	Wear int `json:"wear,omitempty"`
+
+	// RateOwed is unpaid town-rate arrears on an owned business (LLM-557),
+	// capped at town_rate_max_owed. Omitted at 0 (paid up, or not rateable).
+	RateOwed int `json:"rate_owed,omitempty"`
+
+	// HearthLitUntil is when a TagHearth object's fire burns out (LLM-412) —
+	// a future instant while lit, past once it has gone out by the clock (there
+	// is no burn-down sweep). Pointer + omitempty so a NEVER-lit hearth renders
+	// as an absent field rather than the Go zero date, the /pay-ledger
+	// convention. Unlike the two counters above, this is omitted on unset only,
+	// never on value: a past timestamp is kept, because a dead fire and a hearth
+	// nobody has ever stoked are different answers to an operator.
+	HearthLitUntil *time.Time `json:"hearth_lit_until,omitempty"`
 }
 
 // UmbilicalObjectsDTO is the GET /api/village/umbilical/objects response. Objects
@@ -162,6 +207,9 @@ func umbilicalObjectsFromSnapshot(snap *sim.Snapshot, filter objectsFilter) Umbi
 			Tags:            append([]string{}, o.Tags...),
 			AttachedTo:      string(o.AttachedTo),
 			StructureBacked: backed,
+			Wear:            o.Wear,
+			RateOwed:        o.RateOwed,
+			HearthLitUntil:  ptrTimeIfSet(o.HearthLitUntil),
 		}
 		if o.LoiterOffsetX != nil || o.LoiterOffsetY != nil {
 			dto.LoiterOffset = &UmbilicalObjectLoiterOffsetDTO{
