@@ -240,6 +240,23 @@ func TestGoldensTravelerVocationMatchesArchetype(t *testing.T) {
 			t.Errorf("passer-through archetype %q: vocation line does not survive renderTravelerPreface (LLM-566)", archetype)
 		}
 	}
+
+	// The explicit non-pool contract, independent of scenario inventory: a
+	// merchant-derived label and an unknown archetype both project an empty
+	// Vocation through the production builder.
+	for _, archetype := range []string{"peddler", "tinker nobody registered"} {
+		a := &sim.ActorSnapshot{
+			DisplayName:  "Test Traveler the " + archetype,
+			VisitorState: &sim.VisitorState{Archetype: archetype},
+		}
+		v := buildTravelerSelf(&sim.Snapshot{}, "vstr-test", a)
+		if v == nil {
+			t.Fatalf("archetype %q: buildTravelerSelf returned nil for a traveler subject", archetype)
+		}
+		if v.Vocation != "" {
+			t.Errorf("archetype %q is outside the passer-through pool but buildTravelerSelf set Vocation %q (LLM-566)", archetype, v.Vocation)
+		}
+	}
 }
 
 // TestGoldensRumorSharedClauseMatchesPresentCompany is the LLM-545
@@ -13971,8 +13988,10 @@ func travelerSelfIdentityPreface() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 // archetype is IN the passer-through pool, so the identity preface carries the
 // archetype's vocation sentence (sim.VisitorVocation) after the origin/manner
 // clause. Master Whitcombe the circuit preacher, in from Beverly and wry — the
-// live scene that motivated the ticket. The peddler fixtures (an archetype
-// outside the pool) pin the no-vocation arm.
+// live scene that motivated the ticket. He also carries a rumor payload, so the
+// golden pins the full clause order: identity → origin/manner → vocation →
+// rumor. The peddler fixtures (an archetype outside the pool) pin the
+// no-vocation arm.
 func travelerSelfIdentityPrefaceVocation() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		whitcombeID = sim.ActorID("vstr-whitcombe")
@@ -13990,6 +14009,7 @@ func travelerSelfIdentityPrefaceVocation() (*sim.Snapshot, sim.ActorID, []sim.Wa
 			Archetype:   "circuit preacher",
 			Origin:      "Beverly",
 			Disposition: "wry",
+			Payload:     "Elizabeth Ellis turned out three times the meat for Josiah Thorne",
 		},
 	}
 	snap := &sim.Snapshot{
