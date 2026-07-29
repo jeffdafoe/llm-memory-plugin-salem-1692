@@ -443,6 +443,56 @@ func SetFarmUpkeepSettings(floor, coinsPerShovel *int) Command {
 	}
 }
 
+// ErrInvalidTownRateSetting is returned by SetTownRateSettings when no knob is
+// provided or a value is out of range (must be >= 0) — → 400 at the umbilical route.
+var ErrInvalidTownRateSetting = errors.New("invalid town rate setting")
+
+// TownRateSettingsResult echoes the post-change town-rate knobs.
+type TownRateSettingsResult struct {
+	TownRateCoinsPerDay int
+	TownRateMaxOwed     int
+}
+
+// SetTownRateSettings returns a Command that live-tunes the LLM-557 town-rate knobs.
+// Each is independently optional (nil = leave that knob unchanged); at least one must
+// be present. Both must be >= 0: TownRateCoinsPerDay==0 stops further accrual (the
+// off-switch, mirroring FarmUpkeepCoinsPerShovel==0) without forgiving outstanding
+// arrears, and TownRateMaxOwed==0 means uncapped. Takes effect immediately — the
+// daily assessment reads w.Settings live — AND persists on the next checkpoint via
+// MutableWorldSettings, so a live change survives restart.
+//
+// Lowering the cap does NOT retroactively clamp balances already above it; the next
+// daily assessment does that (see TownRateAccrual), so the change lands within a day
+// rather than rewriting arrears out from under a keeper mid-conversation.
+func SetTownRateSettings(coinsPerDay, maxOwed *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			hasOne := false
+			for _, p := range []*int{coinsPerDay, maxOwed} {
+				if p != nil {
+					hasOne = true
+					if *p < 0 || *p > math.MaxInt32 {
+						return nil, ErrInvalidTownRateSetting
+					}
+				}
+			}
+			if !hasOne {
+				return nil, ErrInvalidTownRateSetting
+			}
+			if coinsPerDay != nil {
+				w.Settings.TownRateCoinsPerDay = *coinsPerDay
+			}
+			if maxOwed != nil {
+				w.Settings.TownRateMaxOwed = *maxOwed
+			}
+			return TownRateSettingsResult{
+				TownRateCoinsPerDay: w.Settings.TownRateCoinsPerDay,
+				TownRateMaxOwed:     w.Settings.TownRateMaxOwed,
+			}, nil
+		},
+	}
+}
+
 // ErrInvalidEcoModeSetting is returned by SetEcoMode when no field is supplied
 // or a gap is out of range (must be >= 0 seconds and strictly below the live
 // warrant stale horizon — a gap at/above MaxWarrantAge would park cycles past

@@ -687,6 +687,13 @@ type Payload struct {
 	// the buy happens at the blacksmith. LLM-215.
 	FarmUpkeep *FarmUpkeepView
 
+	// TownRate surfaces the constable's levy to whichever side is reading it: to a
+	// keeper, what his business owes and the constable standing with him; to the
+	// constable, which co-present keepers are behind. nil unless the two are
+	// co-present with something owing. Co-location-gated — the coin is handed over
+	// where they stand, so off-scene the cue has nothing to offer. LLM-557.
+	TownRate *TownRateView
+
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low
 	// `forage` RestockEntry, the on-hand/cap, the ripe count across the actor's

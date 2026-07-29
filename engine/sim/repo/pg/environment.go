@@ -230,6 +230,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.FarmUpkeepFloor = parseIntSetting(values, "farm_upkeep_floor", sim.DefaultFarmUpkeepFloor)
 	s.FarmUpkeepCoinsPerShovel = parseIntSetting(values, "farm_upkeep_coins_per_shovel", sim.DefaultFarmUpkeepCoinsPerShovel)
 
+	// Town rate (LLM-557).
+	s.TownRateCoinsPerDay = parseIntSetting(values, "town_rate_coins_per_day", sim.DefaultTownRateCoinsPerDay)
+	s.TownRateMaxOwed = parseIntSetting(values, "town_rate_max_owed", sim.DefaultTownRateMaxOwed)
+
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
 	// rate would FLIP recovery into accrual, `return -setting` going positive; a
@@ -672,6 +676,9 @@ func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms
 		// Farm upkeep wealth-tax knobs (LLM-215) — live-tuned via the umbilical, persisted here.
 		{"farm_upkeep_floor", strconv.Itoa(ms.FarmUpkeepFloor)},
 		{"farm_upkeep_coins_per_shovel", strconv.Itoa(ms.FarmUpkeepCoinsPerShovel)},
+		// Town rate knobs (LLM-557) — live-tuned via the umbilical, persisted here.
+		{"town_rate_coins_per_day", strconv.Itoa(ms.TownRateCoinsPerDay)},
+		{"town_rate_max_owed", strconv.Itoa(ms.TownRateMaxOwed)},
 		// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in
 		// LLM-183) — live-tuned, persisted here. Stored in seconds; the load path
 		// parses huddle_loop_timeout_seconds / huddle_loop_sweep_cadence_seconds via

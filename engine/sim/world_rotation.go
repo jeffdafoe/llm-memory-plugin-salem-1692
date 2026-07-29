@@ -536,4 +536,15 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: farm upkeep: %v", err)
 		}
 	}
+	// Town rate (LLM-557): once per game-day, add the day's coin to what each owned
+	// business owes the constable. Bound to the daily boundary crossing HERE, beside
+	// the farm-upkeep levy and for the same reasons — the umbilical force-rotate
+	// (which calls ApplyDailyRotation directly for state flips) must never levy the
+	// rate, and keying to the durable boundary inherits the once-per-day +
+	// restart-idempotent guarantee. Moves no coin; a no-op when disabled.
+	if _, err := w.SendContext(ctx, ApplyTownRate(boundary)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: town rate: %v", err)
+		}
+	}
 }
