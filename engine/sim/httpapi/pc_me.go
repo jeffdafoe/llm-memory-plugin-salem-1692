@@ -818,6 +818,16 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		default:
 			return name, name + " offers to work for coin.", "act", true
 		}
+	case sim.ActionTypeOfferedWork:
+		// LLM-564: the employer-side mint, attributed to the employer.
+		switch {
+		case e.Amount > 0 && e.CounterpartyName != "":
+			return name, name + " offers " + e.CounterpartyName + " a job for " + formatCoins(e.Amount) + ".", "act", true
+		case e.CounterpartyName != "":
+			return name, name + " offers " + e.CounterpartyName + " a job.", "act", true
+		default:
+			return name, name + " offers someone a job for pay.", "act", true
+		}
 	case sim.ActionTypeHired:
 		// LLM-213: the employer took the worker on at the agreed reward.
 		switch {

@@ -281,7 +281,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
 	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, nameOf)
-	renderLaborAffordance(&ephemeral, p.CanSolicitWork)
+	renderLaborAffordance(&ephemeral, p.CanSolicitWork, p.SolicitableEmployers, nameOf)
 	// LLM-346: the hiring-side twin of the affordance above. Sits immediately after
 	// it so the two mints of the labor market read as one pair — offer your labor,
 	// or ask for someone else's.
@@ -2611,6 +2611,16 @@ func selfActionLine(a SelfActionView) string {
 		default:
 			return "You offered to work for coin"
 		}
+	case sim.ActionTypeOfferedWork:
+		// LLM-564: the employer-side mint, written from the employer's seat.
+		switch {
+		case a.Amount > 0 && a.CounterpartyName != "":
+			return "You asked " + sanitizeInline(a.CounterpartyName) + " to work for you for " + coins(a.Amount)
+		case a.CounterpartyName != "":
+			return "You asked " + sanitizeInline(a.CounterpartyName) + " to work for you"
+		default:
+			return "You offered someone work for pay"
+		}
 	case sim.ActionTypeHired:
 		switch {
 		case a.Amount > 0 && a.CounterpartyName != "":
@@ -3380,11 +3390,42 @@ func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutV
 // renderLaborAffordance renders the free-worker option cue (LLM-26): the
 // subject takes work for pay and has someone here to offer it to. Content-gated
 // on CanSolicitWork, the same signal that gates the solicit_work tool.
-func renderLaborAffordance(b *strings.Builder, canSolicit bool) {
+//
+// LLM-564 rewrote it from the old standing conditional ("You take work for pay.
+// If someone here... has a task") to a grounded ask that NAMES the acquainted
+// employers in the room — the register renderOfferWorkAffordance already uses,
+// arriving on the worker side for the same measured reason: the unnamed cue
+// converted 26 of 1,427 renders in a week, and the one hire it produced came
+// from the employer's tool answering a bare speak-ask. Both wordings warn off
+// the terminal speak (the ask rides solicit_work's own `say` now), because a
+// worker who voices the offer first never reaches the tool.
+//
+// employers may be empty under a true canSolicit — every solicitable peer a
+// stranger the cue must not name (solicit_work resolves by exact display name;
+// see buildSolicitableEmployers) — and falls back to the unnamed wording.
+func renderLaborAffordance(b *strings.Builder, canSolicit bool, employers []sim.ActorID, nameOf func(sim.ActorID) string) {
 	if !canSolicit {
 		return
 	}
-	b.WriteString("You take work for pay. If someone here outside your own household or trade has a task you could do and you want the pay, offer your labor with solicit_work — name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long the job will take.\n")
+	const askShape = "name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; do NOT ask with speak first — speaking ends your turn and no offer is ever made.\n"
+	// Only REAL names reach the named branch. buildSolicitableEmployers already
+	// restricts the slice to acquaintances, but the render must not trust that
+	// alone: a resolver returning "" or its "someone" fallback here would put a
+	// target string in the cue that solicit_work must refuse (code_review). Any
+	// such entry is dropped, and a slice that empties falls through to the
+	// unnamed wording.
+	names := make([]string, 0, len(employers))
+	for _, id := range employers {
+		if n := nameOf(id); n != "" && n != "someone" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		b.WriteString("You take work for pay. If someone here outside your own household or trade could use a hand and you want the pay, make the offer with solicit_work — " + askShape)
+		return
+	}
+	fmt.Fprintf(b, "%s might have work that wants doing, and you take work for pay. If you want the coin, make the offer with solicit_work — %s",
+		joinNames(names), askShape)
 }
 
 // renderOfferWorkAffordance renders the hiring-side option cue (LLM-346): people

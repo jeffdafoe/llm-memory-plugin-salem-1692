@@ -824,7 +824,7 @@ func TestGoldensSeekWorkSurvivesEveningUntilTavern(t *testing.T) {
 		if a == nil || !subjectIsWorker(a) || !inEveningWindow(snap, a) {
 			continue
 		}
-		solicits := strings.Contains(renderScenario(sc), "offer your labor with solicit_work")
+		solicits := strings.Contains(renderScenario(sc), "make the offer with solicit_work")
 		if tookEveningLeisure(snap, a) {
 			if solicits {
 				t.Errorf("scenario %q: the worker has taken the evening at the tavern, so the solicit affordance must yield (LLM-353)", sc.name)

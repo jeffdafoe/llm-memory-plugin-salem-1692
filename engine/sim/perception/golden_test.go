@@ -1054,7 +1054,7 @@ func TestGoldensEnRouteWorkerNotOfferedNewWork(t *testing.T) {
 				return // subject isn't relocating to a job — invariant N/A here
 			}
 			out := renderScenario(sc)
-			if strings.Contains(out, "offer your labor with solicit_work") {
+			if strings.Contains(out, "make the offer with solicit_work") {
 				t.Errorf("scenario %q: subject is relocating to an accepted job but the prompt still offers the solicit affordance (LLM-229)", sc.name)
 			}
 			if strings.Contains(out, "head to one of the town's businesses") {
@@ -2081,7 +2081,7 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "LLM-353: two homed day-shift workers (Ezekiel + Lewis, different homes and trades) off-shift at 20:30, together " +
 			"at the Village Commons — neither at home nor the tavern — with a tavern placed and the subject flush (10 coins). The " +
 			"re-key keys the solicit-work suppression on tookEveningLeisure (gone to the pub), not on affluence: this worker is " +
-			"still in the road, so he is STILL offered the solicit-work affordance ('offer your labor with solicit_work') even " +
+			"still in the road, so he is STILL offered the solicit-work affordance ('make the offer with solicit_work') even " +
 			"though he could afford a drink. The golden pins the evening invitation PRESENT (he is homed in the window) AND the " +
 			"solicit affordance PRESENT — a man still in the road might be job-hunting. This is the DoD invariant: an off-shift " +
 			"worker who has not taken the evening still sees the seek-work cues, so the re-key can't silently regress into the " +
@@ -3213,6 +3213,18 @@ var perceptionScenarios = []perceptionScenario{
 			"employer (dropping it from the solicitable audience for its empty purse) would re-suppress the affordance and bring " +
 			"back the dead-end. Matrix-wide guard: TestGoldensCoinPoorEmployerStaysSolicitable.",
 		build: workerSolicitsGoodsRichCoinPoorEmployer,
+	},
+	{
+		name: "worker_solicits_unacquainted_employer_unnamed_cue",
+		summary: "LLM-564's fallback branch: the same workless worker / solicitable stranger pair as " +
+			"worker_solicits_goods_rich_coin_poor_employer, but the SUBJECT does not know the employer by name (empty " +
+			"Acquaintances). The solicit gate carries no acquaintance clause, so the affordance + tool stay offered — but the cue " +
+			"must NOT name her: solicit_work resolves its employer by exact display name, and an unacquainted peer renders as a " +
+			"descriptor, so a named cue would hand the model a target the tool must refuse (buildSolicitableEmployers). The " +
+			"golden pins the UNNAMED wording ('You take work for pay. If someone here…') with the say/speak-first warning intact, " +
+			"and — with TestGoldensSolicitCueNeverNamesSomeone — that the named branch's 'someone might have work' descriptor " +
+			"leak can never render.",
+		build: workerSolicitsUnacquaintedEmployerUnnamedCue,
 	},
 	{
 		name: "worker_seeks_work_skips_no_hiring_business",
@@ -16118,6 +16130,36 @@ func workerSolicitsGoodsRichCoinPoorEmployer() (*sim.Snapshot, sim.ActorID, []si
 		},
 	}
 	return snap, silenceID, nil
+}
+
+// workerSolicitsUnacquaintedEmployerUnnamedCue is LLM-564's fallback-branch
+// scenario: workerSolicitsGoodsRichCoinPoorEmployer with the subject's
+// Acquaintances emptied, so Prudence stays solicitable (the gate carries no
+// acquaintance clause) but must not be named by the cue.
+func workerSolicitsUnacquaintedEmployerUnnamedCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, silenceID, warrants := workerSolicitsGoodsRichCoinPoorEmployer()
+	snap.Actors[silenceID].Acquaintances = nil
+	return snap, silenceID, warrants
+}
+
+// TestGoldensSolicitCueNeverNamesSomeone is the LLM-564 corpus invariant: the
+// solicit cue's NAMED branch must never render with nameOf's "someone" fallback
+// in the employer slot ("someone might have work that wants doing…"). That
+// wording can only appear when buildSolicitableEmployers admitted an actor that
+// buildWarrantActorNames could not resolve — the two disagreeing about
+// acquaintance — and it hands the model a target string solicit_work must
+// refuse. The unnamed branch is the correct rendering for that situation.
+func TestGoldensSolicitCueNeverNamesSomeone(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			if strings.Contains(renderScenario(sc), "someone might have work that wants doing") {
+				t.Errorf("scenario %q: the solicit cue rendered its named branch with the %q fallback — "+
+					"buildSolicitableEmployers admitted an actor buildWarrantActorNames could not name (LLM-564)",
+					sc.name, "someone")
+			}
+		})
+	}
 }
 
 // workerSeeksWorkSkipsNoHiringBusiness is the LLM-210 companion to

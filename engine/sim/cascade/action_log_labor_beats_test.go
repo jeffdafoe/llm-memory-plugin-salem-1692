@@ -184,3 +184,211 @@ func TestHandleLaborBeats_EmitDurableRows(t *testing.T) {
 		t.Errorf("hired payload = %+v, want {worker:Hannah amount:4 duration_min:240 labor_id:11}", h)
 	}
 }
+
+// --- TestHandleSolicitedWorkActionLog_EmployerInitiatedLogsOfferedWork ---
+// LLM-564: an EMPLOYER-initiated offer (offer_work) must log as `offered_work`
+// attributed to the employer, not as `solicited_work` attributed to the worker.
+// Before the InitiatedBy branch, Hannah Boggs' live offer_work to Patience
+// Walker logged as Patience having solicited — a wrong answer that looks right
+// in any "who is asking for work" query. Feed row and durable mirror both flip:
+// actor = employer, counterparty = worker, payload key "worker".
+func TestHandleSolicitedWorkActionLog_EmployerInitiatedLogsOfferedWork(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleSolicitedWorkActionLog(world, &sim.LaborOfferReceived{
+			LaborID:     12,
+			WorkerID:    "hannah",
+			EmployerID:  "bob",
+			InitiatedBy: "bob",
+			Reward:      4,
+			DurationMin: 240,
+			HuddleID:    "h1",
+			At:          at,
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	e := got[0]
+	if e.ActorID != "bob" {
+		t.Errorf("ActorID = %q, want bob (the employer minted this offer)", e.ActorID)
+	}
+	if e.ActionType != sim.ActionTypeOfferedWork {
+		t.Errorf("ActionType = %q, want %q", e.ActionType, sim.ActionTypeOfferedWork)
+	}
+	if e.CounterpartyName != "Hannah" {
+		t.Errorf("CounterpartyName = %q, want Hannah (worker)", e.CounterpartyName)
+	}
+	if e.Amount != 4 {
+		t.Errorf("Amount = %d, want 4 (reward)", e.Amount)
+	}
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+	}
+	if rows[0].ActorID != "bob" || rows[0].ActionType != sim.ActionTypeOfferedWork ||
+		rows[0].SpeakerName != "Bob" || rows[0].HuddleID != "h1" {
+		t.Errorf("offered_work durable header = %+v", rows[0])
+	}
+	raw, err := json.Marshal(rows[0].Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var p struct {
+		Worker      string `json:"worker"`
+		Employer    string `json:"employer"`
+		Amount      int    `json:"amount"`
+		DurationMin int    `json:"duration_min"`
+		LaborID     uint64 `json:"labor_id"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Worker != "Hannah" || p.Employer != "" || p.Amount != 4 || p.DurationMin != 240 || p.LaborID != 12 {
+		t.Errorf("offered_work payload = %+v, want {worker:Hannah amount:4 duration_min:240 labor_id:12} with no employer key", p)
+	}
+}
+
+// --- TestHandleSolicitedWorkActionLog_EmptyInitiatedByStaysWorkerSide ---
+// LLM-564 regression (code_review): the employer-side branch keys on
+// InitiatedBy == EmployerID, and a bare equality would also match an event with
+// BOTH fields empty ("" == ""), flipping a legacy/malformed event to the
+// employer shape with an empty actor id. Empty InitiatedBy must keep the
+// worker-side legacy attribution — including when EmployerID is empty too.
+func TestHandleSolicitedWorkActionLog_EmptyInitiatedByStaysWorkerSide(t *testing.T) {
+	cases := []struct {
+		name       string
+		employerID sim.ActorID
+		// The legacy payload contract: counterparty under "employer", resolved
+		// by actorDisplayName — which falls back to the raw id string, so an
+		// empty EmployerID yields "".
+		wantEmployer string
+	}{
+		{"empty InitiatedBy, real employer", "bob", "Bob"},
+		{"empty InitiatedBy, empty employer", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildActionLogCascadeWorld(t)
+			defer stop()
+
+			rec := &recordingActionLogSink{}
+			invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
+
+			invokeOnWorld(t, w, func(world *sim.World) {
+				handleSolicitedWorkActionLog(world, &sim.LaborOfferReceived{
+					LaborID:     13,
+					WorkerID:    "hannah",
+					EmployerID:  tc.employerID,
+					InitiatedBy: "", // the legacy shape — pre-LLM-346 events carry no initiator
+					Reward:      4,
+					DurationMin: 240,
+					HuddleID:    "h1",
+					At:          time.Now().UTC(),
+				})
+			})
+
+			got := readActionLog(t, w)
+			if len(got) != 1 {
+				t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+			}
+			e := got[0]
+			if e.ActorID != "hannah" {
+				t.Errorf("ActorID = %q, want hannah (worker) — empty InitiatedBy must stay worker-side", e.ActorID)
+			}
+			if e.ActionType != sim.ActionTypeSolicitedWork {
+				t.Errorf("ActionType = %q, want %q — empty InitiatedBy must stay worker-side", e.ActionType, sim.ActionTypeSolicitedWork)
+			}
+
+			// The durable payload must keep the legacy counterparty SHAPE too —
+			// a regression that stayed worker-side in the header but emitted an
+			// employer-keyed-as-"worker" payload would otherwise pass (code_review).
+			rows := rec.snapshot()
+			if len(rows) != 1 {
+				t.Fatalf("recorded %d durable rows, want 1", len(rows))
+			}
+			emp, hasEmployer := rows[0].Payload["employer"]
+			if !hasEmployer {
+				t.Error(`durable payload missing the legacy "employer" key`)
+			} else if emp != tc.wantEmployer {
+				t.Errorf(`payload["employer"] = %v, want %q`, emp, tc.wantEmployer)
+			}
+			if _, hasWorker := rows[0].Payload["worker"]; hasWorker {
+				t.Error(`durable payload carries a "worker" key — that is the employer-side offered_work shape`)
+			}
+		})
+	}
+}
+
+// --- TestHandleSolicitedWorkActionLog_EmployerInitiatedInKindReward ---
+// LLM-564 (code_review): the reward-items leg is appended AFTER the attribution
+// branch, so an employer-initiated in-kind offer is the shape most likely to
+// regress — the goods must ride the offered_work durable payload alongside the
+// "worker" counterparty key.
+func TestHandleSolicitedWorkActionLog_EmployerInitiatedInKindReward(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleSolicitedWorkActionLog(world, &sim.LaborOfferReceived{
+			LaborID:     14,
+			WorkerID:    "hannah",
+			EmployerID:  "bob",
+			InitiatedBy: "bob",
+			Reward:      0,
+			RewardItems: []sim.ItemKindQty{{Kind: "porridge", Qty: 2}},
+			DurationMin: 240,
+			HuddleID:    "h1",
+			At:          time.Now().UTC(),
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+	}
+	if rows[0].ActorID != "bob" || rows[0].ActionType != sim.ActionTypeOfferedWork {
+		t.Fatalf("header = %+v, want employer-attributed offered_work", rows[0])
+	}
+	raw, err := json.Marshal(rows[0].Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var p struct {
+		Worker      string `json:"worker"`
+		RewardItems []struct {
+			Item string `json:"item"`
+			Qty  int    `json:"qty"`
+		} `json:"reward_items"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Worker != "Hannah" {
+		t.Errorf("payload worker = %q, want Hannah", p.Worker)
+	}
+	if len(p.RewardItems) != 1 || p.RewardItems[0].Item != "porridge" || p.RewardItems[0].Qty != 2 {
+		t.Errorf("payload reward_items = %+v, want [{porridge 2}]", p.RewardItems)
+	}
+	// The key SHAPE is the contract, not just the decoded values: the employer
+	// side keys its counterparty as "worker" and must not carry the worker-side
+	// "employer" key (code_review — the struct decode alone can't see a stray key).
+	if _, hasWorkerKey := rows[0].Payload["worker"]; !hasWorkerKey {
+		t.Error(`offered_work payload missing the "worker" counterparty key`)
+	}
+	if _, hasEmployerKey := rows[0].Payload["employer"]; hasEmployerKey {
+		t.Error(`offered_work payload carries the worker-side "employer" key`)
+	}
+}

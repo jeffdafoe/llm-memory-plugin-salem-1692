@@ -21,12 +21,13 @@ package handlers
 // (solicit_work x6 to the round budget, observed live) — mirrors gather
 // (LLM-175) and move_to.
 //
-// A worker announcing BEFORE offering no longer works: LLM-180 was written when
+// A worker announcing BEFORE offering does not work: LLM-180 was written when
 // speak was non-terminal, and LLM-321 made speak end the tick too, so a worker who
-// speaks first never reaches solicit_work. No cue instructs that order
-// (renderLaborAffordance names only the tool), so there is no live failure — but
-// nothing prevents one either, and the fix if it appears is offer_work's: fold the
-// utterance into the tool.
+// speaks first never reaches solicit_work. That failure DID appear live (LLM-564:
+// 1,427 cue renders against 26 calls in a week; the one landed job arrived via the
+// employer's offer_work answering a bare speak-ask), and the fix is offer_work's,
+// as predicted here: the utterance is folded into the tool (`say`), and the cue +
+// description warn off the speak-first order.
 func RegisterSolicitWork(r *Registry) error {
 	return r.RegisterCommit(
 		"solicit_work",

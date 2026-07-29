@@ -63,6 +63,15 @@ type LaborSolicitResult struct {
 	ID           LaborID
 	State        LaborLedgerState
 	EmployerName string
+
+	// Announced is true when the worker's `say` line went out alongside the
+	// offer (LLM-564, mirroring LaborOfferResult). False when no line was
+	// passed, when the offer resolved on a non-pending path (the LLM-193
+	// auto-decline and LLM-243 barter branches never speak — the employer is
+	// deliberately not woken), or when SpeakTo refused it — in which case
+	// SayRefused carries its reason. The offer's fate stands either way.
+	Announced  bool
+	SayRefused string
 }
 
 // LaborAcceptResult is AcceptWork's value on EVERY non-error path. On a

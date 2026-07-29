@@ -1896,6 +1896,12 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if r, ok := cmdResult.(sim.LaborSolicitResult); ok {
 			switch r.State {
 			case sim.LaborStatePending:
+				// When a `say` rode along it has already gone out; when SpeakTo
+				// refused it, the offer still stands and the refusal reason is
+				// surfaced rather than guessed at (mirrors offer_work below). LLM-564.
+				if r.SayRefused != "" {
+					return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn. Your words did not carry: %s", r.EmployerName, r.SayRefused)
+				}
 				return fmt.Sprintf("[ok] Your offer of labor to %s is on the table — they will answer on their turn.", r.EmployerName)
 			case sim.LaborStateDeclined:
 				// LLM-193: the offer was auto-declined at mint because the employer
