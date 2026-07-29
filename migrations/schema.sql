@@ -833,7 +833,6 @@ CREATE SEQUENCE public.object_refresh_snapshot_gen_seq
 
 CREATE TABLE public.pay_ledger (
     id bigint NOT NULL,
-    huddle_id text,
     scene_id uuid,
     buyer_id text NOT NULL,
     seller_id text NOT NULL,
