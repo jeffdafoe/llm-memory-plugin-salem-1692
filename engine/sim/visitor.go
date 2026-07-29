@@ -1248,6 +1248,15 @@ func RecordVisitorArrival(actorID ActorID, structureID StructureID) Command {
 	}
 }
 
+// MaxPayloadSharedWith caps the shared-word memory (LLM-545). The engine-side
+// writer is naturally bounded by the actors a one-day visitor actually converses
+// with (village population ~25), so the cap exists for the PERSISTENCE boundary:
+// visitor.plan is jsonb, and an edited/corrupt row must not be able to grow an
+// unbounded slice that every checkpoint re-encodes and perception re-intersects.
+// Enforced at both ends — the stamp stops appending at the cap, and the plan
+// decoder truncates to it.
+const MaxPayloadSharedWith = 64
+
 // recordVisitorRumorShared marks the traveler's carried word (VisitorState.Payload)
 // as given to the huddle's other ACTIVE conversants — peers who have themselves
 // spoken (LLM-545). Called from the Speak commit path beside propagateRumorOnSpeak,
@@ -1276,6 +1285,9 @@ func recordVisitorRumorShared(w *World, h *Huddle, speakerID ActorID) {
 		}
 		if h.LastUtteranceAtBy(id).IsZero() {
 			continue // silent bystander — the word lands through conversation
+		}
+		if len(vs.PayloadSharedWith) >= MaxPayloadSharedWith {
+			return // cap reached — the memory is full, not a queue to rotate
 		}
 		vs.PayloadSharedWith = appendUniqueActor(vs.PayloadSharedWith, id)
 	}

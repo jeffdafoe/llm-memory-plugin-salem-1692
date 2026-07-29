@@ -224,15 +224,22 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 	for _, s := range plan.VisitedBusinesses {
 		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
 	}
-	// Dedup + drop empties on the way in (code_review): the engine-side writer
-	// (recordVisitorRumorShared) already keeps the set unique, so a duplicate or
-	// blank here is out-of-band plan data — the same trust posture the Trade
-	// validation above takes. An unknown actor id stays harmless downstream
-	// (perception intersects against the live snapshot before rendering).
+	// Dedup + drop empties + truncate at the cap on the way in (code_review):
+	// the engine-side writer (recordVisitorRumorShared) already keeps the set
+	// unique and under sim.MaxPayloadSharedWith, so a duplicate, blank, or
+	// oversized array here is out-of-band plan data — the same trust posture the
+	// Trade validation above takes. Truncate rather than reject: the rest of the
+	// plan (pack, purse, booked room) is independently valid, and a partial
+	// memory only risks a re-told rumour, not an inconsistency. An unknown actor
+	// id stays harmless downstream (perception intersects against the live
+	// snapshot before rendering).
 	seenShared := make(map[string]bool, len(plan.PayloadSharedWith))
 	for _, s := range plan.PayloadSharedWith {
 		if s == "" || seenShared[s] {
 			continue
+		}
+		if len(lv.VisitorState.PayloadSharedWith) >= sim.MaxPayloadSharedWith {
+			break
 		}
 		seenShared[s] = true
 		lv.VisitorState.PayloadSharedWith = append(lv.VisitorState.PayloadSharedWith, sim.ActorID(s))

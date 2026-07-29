@@ -98,6 +98,54 @@ func TestVisitorRumorSharedThroughRealSpeak(t *testing.T) {
 	}
 }
 
+// TestVisitorRumorSharedReachesPublishedSnapshot covers the live actor →
+// Published() boundary (code_review): the stamp written by a real SpeakTo must
+// be readable off the production published snapshot — where perception's
+// travelerRumorSharedWith actually reads it — and the published copy must be
+// INDEPENDENT of the live world, so a later world-side write cannot appear in a
+// snapshot already handed to a perception build.
+func TestVisitorRumorSharedReachesPublishedSnapshot(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
+		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+
+	seedVisitorStateForTest(t, w, "vstr-ashford", &sim.VisitorState{
+		Archetype: "provisioner",
+		Payload:   "Josiah Thorne turned out meat for the inn",
+	})
+
+	base := time.Now().UTC()
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good evening, stranger.", "", nil, true, base)); err != nil {
+		t.Fatalf("hannah speak: %v", err)
+	}
+	if _, err := w.Send(sim.SpeakTo("vstr-ashford", "A word on the road gave me pause, Hannah.", "", nil, true, base.Add(time.Second))); err != nil {
+		t.Fatalf("ashford speak: %v", err)
+	}
+
+	snap := w.Published()
+	vs := snap.Actors["vstr-ashford"].VisitorState
+	if vs == nil {
+		t.Fatal("published snapshot dropped VisitorState")
+	}
+	if len(vs.PayloadSharedWith) != 1 || vs.PayloadSharedWith[0] != "hannah" {
+		t.Fatalf("published PayloadSharedWith = %v, want [hannah]", vs.PayloadSharedWith)
+	}
+
+	// Independence: an in-place world-side write must not show through the
+	// snapshot captured above (an append could reallocate and mask aliasing).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["vstr-ashford"].VisitorState.PayloadSharedWith[0] = "overwritten"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("world-side overwrite: %v", err)
+	}
+	if vs.PayloadSharedWith[0] != "hannah" {
+		t.Error("world-side write reached a previously published snapshot — the slice is aliased, not deep-copied")
+	}
+}
+
 // TestVisitorRumorSharedRequiresPayload: a traveler with no carried word stamps
 // nothing — there is no matter to spend.
 func TestVisitorRumorSharedRequiresPayload(t *testing.T) {

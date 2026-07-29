@@ -1,6 +1,8 @@
 package pg
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -99,6 +101,29 @@ func TestVisitorPlanPayloadSharedWithSanitized(t *testing.T) {
 	lv3 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
 	if err := applyVisitorPlan([]byte(`{"payload_shared_with":[42]}`), lv3); err == nil {
 		t.Error("non-string array element must fail the plan apply like any corrupt plan")
+	}
+
+	// An oversized array (only reachable from an edited/corrupt row — the writer
+	// caps at sim.MaxPayloadSharedWith) is truncated at the cap, not rejected:
+	// the rest of the plan is independently valid.
+	big, err := json.Marshal(struct {
+		IDs []string `json:"payload_shared_with"`
+	}{IDs: func() []string {
+		ids := make([]string, sim.MaxPayloadSharedWith+10)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("actor-%03d", i)
+		}
+		return ids
+	}()})
+	if err != nil {
+		t.Fatalf("marshal oversized plan: %v", err)
+	}
+	lv4 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan(big, lv4); err != nil {
+		t.Fatalf("applyVisitorPlan(oversized): %v", err)
+	}
+	if got := len(lv4.VisitorState.PayloadSharedWith); got != sim.MaxPayloadSharedWith {
+		t.Errorf("oversized array retained %d ids; want truncation at the cap (%d)", got, sim.MaxPayloadSharedWith)
 	}
 }
 
