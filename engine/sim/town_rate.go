@@ -219,12 +219,32 @@ func ApplyTownRate(now time.Time) Command {
 // same inline placement accrueStallWear takes on the sale path — so the obligation
 // and the coin change together and no reconciliation sweep is needed.
 //
-// ANY coin the keeper pays a constable settles the rate, rather than the engine
-// trying to recognise a rate payment by its for-text. Matching model-authored prose
-// would be the fragile way to ask the question, and the robust one is available:
-// the constable has nothing to sell, so a keeper handing him coins can only be
-// paying the rate. An overpayment settles the debt and no more (floored at zero);
-// the surplus is simply a gift, which is his to give.
+// # The settlement policy, stated as an invariant
+//
+// ANY bare coin payment from a business owner to a constable is applied to that
+// business's town-rate arrears, whatever the payment was for.
+//
+// This is a deliberate product decision and it is deliberately OVER-broad; it is
+// stated here rather than left implicit because it changes what an existing generic
+// payment operation means (code_review, LLM-557). Consequences, all intended:
+//
+//   - A gift, a loan, a wage, or a repayment from a keeper to a constable clears
+//     that keeper's arrears as a side effect. Villagers really do make unprompted
+//     bare-coin gifts, so this is a live path, not a theoretical one.
+//   - A payment made for one purpose can therefore discharge a different liability.
+//   - Nothing is minted or destroyed either way: the constable ends up holding at
+//     least what the rate asked for.
+//
+// Why not a structured purpose on the pay call: the settlement would then depend on
+// the model emitting a marker correctly, and a model that omits it leaves the levy
+// unsettled, the cue nagging forever, and the constable broke — which is the exact
+// state this mechanism exists to fix. Over-broad settling costs bookkeeping fidelity;
+// under-broad settling costs the mechanism. Given that trade, the loose direction is
+// the safe one.
+//
+// What does NOT reach here: buying goods from a constable settles through
+// pay_with_item / the quote flow, which is untouched. Only bare coin payments settle
+// the rate.
 //
 // No-op unless the payer owns a business that owes something and the payee is a
 // constable. Nil-safe on both actors.

@@ -183,3 +183,64 @@ func TestPay_OverpaymentFloorsTownRateAtZero(t *testing.T) {
 		t.Errorf("RateOwed = %d after overpaying, want 0", got)
 	}
 }
+
+// TestPay_AnyBarePaymentPurposeSettlesTownRate pins the settlement POLICY as an
+// explicit, intended invariant rather than leaving it as an implicit assumption
+// (code_review asked for this to be made explicit, LLM-557):
+//
+//	any bare coin payment from a business owner to a constable is applied to that
+//	business's town-rate arrears, whatever the payment was for.
+//
+// It is deliberately over-broad. A gift, a loan, a wage or a repayment all clear the
+// keeper's arrears as a side effect, so a payment made for one purpose can discharge
+// a different liability. That is accepted: nothing is minted or destroyed, the
+// constable ends up holding at least the rate, and the alternative — gating on a
+// model-emitted purpose marker — fails in the direction that kills the mechanism
+// (marker omitted → nothing settles → the constable stays broke while the cue nags).
+//
+// If this policy is ever narrowed, these are the cases that change behaviour.
+func TestPay_AnyBarePaymentPurposeSettlesTownRate(t *testing.T) {
+	purposes := []struct {
+		name    string
+		forText string
+	}{
+		{"an outright gift", "a kindness, with my thanks"},
+		{"a wage for work done", "your wages for the week's watch"},
+		{"a loan repayment", "the coin I borrowed off you"},
+		{"no stated purpose at all", ""},
+		{"something plainly unrelated", "the widow's relief fund"},
+	}
+	for _, p := range purposes {
+		t.Run(p.name, func(t *testing.T) {
+			w, stop := buildTownRatePayWorld(t, 2)
+			defer stop()
+
+			if _, err := w.Send(sim.Pay("josiah", "Constable Gideon Marsh", 2, p.forText, time.Now().UTC())); err != nil {
+				t.Fatalf("Pay: %v", err)
+			}
+			if got := peekRateOwed(t, w, "general_store"); got != 0 {
+				t.Errorf("RateOwed = %d after a bare payment for %q, want 0 — "+
+					"the policy applies ANY bare coin payment to arrears", got, p.forText)
+			}
+		})
+	}
+}
+
+// The other half of the invariant: the policy is scoped to payments a business owner
+// makes to a CONSTABLE. It must not generalise to the constable paying someone, which
+// would be the mirror-image accounting error.
+func TestPay_ConstablePayingAKeeperDoesNotTouchArrears(t *testing.T) {
+	w, stop := buildTownRatePayWorld(t, 3)
+	defer stop()
+
+	// Give the constable something to spend, then have him buy from the keeper.
+	if _, err := w.Send(sim.Pay("hannah", "Constable Gideon Marsh", 5, "a gift", time.Now().UTC())); err != nil {
+		t.Fatalf("seed Pay: %v", err)
+	}
+	if _, err := w.Send(sim.Pay("gideon", "Josiah Thorne", 2, "a wedge of cheese", time.Now().UTC())); err != nil {
+		t.Fatalf("Pay: %v", err)
+	}
+	if got := peekRateOwed(t, w, "general_store"); got != 3 {
+		t.Errorf("RateOwed = %d after the CONSTABLE paid the keeper, want 3 (untouched)", got)
+	}
+}
