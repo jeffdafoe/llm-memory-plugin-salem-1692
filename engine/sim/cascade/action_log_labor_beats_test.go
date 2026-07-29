@@ -268,14 +268,21 @@ func TestHandleSolicitedWorkActionLog_EmptyInitiatedByStaysWorkerSide(t *testing
 	cases := []struct {
 		name       string
 		employerID sim.ActorID
+		// The legacy payload contract: counterparty under "employer", resolved
+		// by actorDisplayName — which falls back to the raw id string, so an
+		// empty EmployerID yields "".
+		wantEmployer string
 	}{
-		{"empty InitiatedBy, real employer", "bob"},
-		{"empty InitiatedBy, empty employer", ""},
+		{"empty InitiatedBy, real employer", "bob", "Bob"},
+		{"empty InitiatedBy, empty employer", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, stop := buildActionLogCascadeWorld(t)
 			defer stop()
+
+			rec := &recordingActionLogSink{}
+			invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
 
 			invokeOnWorld(t, w, func(world *sim.World) {
 				handleSolicitedWorkActionLog(world, &sim.LaborOfferReceived{
@@ -300,6 +307,23 @@ func TestHandleSolicitedWorkActionLog_EmptyInitiatedByStaysWorkerSide(t *testing
 			}
 			if e.ActionType != sim.ActionTypeSolicitedWork {
 				t.Errorf("ActionType = %q, want %q — empty InitiatedBy must stay worker-side", e.ActionType, sim.ActionTypeSolicitedWork)
+			}
+
+			// The durable payload must keep the legacy counterparty SHAPE too —
+			// a regression that stayed worker-side in the header but emitted an
+			// employer-keyed-as-"worker" payload would otherwise pass (code_review).
+			rows := rec.snapshot()
+			if len(rows) != 1 {
+				t.Fatalf("recorded %d durable rows, want 1", len(rows))
+			}
+			emp, hasEmployer := rows[0].Payload["employer"]
+			if !hasEmployer {
+				t.Error(`durable payload missing the legacy "employer" key`)
+			} else if emp != tc.wantEmployer {
+				t.Errorf(`payload["employer"] = %v, want %q`, emp, tc.wantEmployer)
+			}
+			if _, hasWorker := rows[0].Payload["worker"]; hasWorker {
+				t.Error(`durable payload carries a "worker" key — that is the employer-side offered_work shape`)
 			}
 		})
 	}
@@ -357,5 +381,14 @@ func TestHandleSolicitedWorkActionLog_EmployerInitiatedInKindReward(t *testing.T
 	}
 	if len(p.RewardItems) != 1 || p.RewardItems[0].Item != "porridge" || p.RewardItems[0].Qty != 2 {
 		t.Errorf("payload reward_items = %+v, want [{porridge 2}]", p.RewardItems)
+	}
+	// The key SHAPE is the contract, not just the decoded values: the employer
+	// side keys its counterparty as "worker" and must not carry the worker-side
+	// "employer" key (code_review — the struct decode alone can't see a stray key).
+	if _, hasWorkerKey := rows[0].Payload["worker"]; !hasWorkerKey {
+		t.Error(`offered_work payload missing the "worker" counterparty key`)
+	}
+	if _, hasEmployerKey := rows[0].Payload["employer"]; hasEmployerKey {
+		t.Error(`offered_work payload carries the worker-side "employer" key`)
 	}
 }
