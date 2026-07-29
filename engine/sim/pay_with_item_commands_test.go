@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -436,6 +437,48 @@ func TestPayWithItem_SlowPath_UnknownItem(t *testing.T) {
 	_, err := w.Send(sim.PayWithItem("alice", "Bob", "fizzbuzz", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "unknown item kind") {
 		t.Fatalf("want unknown-item error, got %v", err)
+	}
+	// LLM-561: the error states the one-kind-per-offer rule generically, but
+	// with no bundle standing it stays free of quote/bundle teaching — that
+	// guidance would be noise for an ordinary typo (code_review).
+	if !strings.Contains(err.Error(), "one kind of good") {
+		t.Fatalf("unknown-item error should state the one-kind-per-offer rule, got %v", err)
+	}
+	if strings.Contains(err.Error(), "quote_id") || strings.Contains(err.Error(), "bundle") {
+		t.Fatalf("unknown-item error should not teach bundles when none is standing, got %v", err)
+	}
+}
+
+// TestPayWithItem_SlowPath_UnknownItem_BundleStanding (LLM-561): when the named
+// seller has a live multi-line quote visible to the buyer, the unknown-item
+// error teaches the two real routes with the CONCRETE quote_id — the live
+// failure was a buyer answering a five-good bundle with item "bundle", and the
+// bare rejection left it to improvise a 35-coin payment against a 3-coin salt.
+func TestPayWithItem_SlowPath_UnknownItem_BundleStanding(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 2, "bread": 3}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	res, err := w.Send(sim.SceneQuoteCreate("bob",
+		[]sim.QuoteLineInput{{ItemName: "stew", Qty: 1}, {ItemName: "bread", Qty: 2}},
+		9, true, "", nil, at))
+	if err != nil {
+		t.Fatalf("SceneQuoteCreate (bundle): %v", err)
+	}
+	quoteID := res.(sim.SceneQuoteCreateResult).QuoteID
+
+	_, err = w.Send(sim.PayWithItem("alice", "Bob", "bundle", 1, 40, false, nil, nil, 0, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "unknown item kind") {
+		t.Fatalf("want unknown-item error, got %v", err)
+	}
+	wantID := fmt.Sprintf("quote_id %d", quoteID)
+	if !strings.Contains(err.Error(), wantID) || !strings.Contains(err.Error(), "amount 9") {
+		t.Fatalf("bundle-standing unknown-item error should name the concrete take (%s, amount 9), got %v", wantID, err)
+	}
+	if !strings.Contains(err.Error(), "one good at a time") {
+		t.Fatalf("bundle-standing unknown-item error should name the per-good counter path, got %v", err)
 	}
 }
 

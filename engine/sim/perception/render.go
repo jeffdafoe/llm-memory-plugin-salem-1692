@@ -4360,7 +4360,17 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 func quoteTakeInstruction(quoteID sim.QuoteID, lines []sim.QuoteLine, amount int) string {
 	switch {
 	case len(lines) > 1:
-		return fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid.", quoteID, amount)
+		// LLM-561: the bundle arm needs its own way out. Before this it ended at
+		// "settles at once" — no counter, no partial take, no alternative named —
+		// and a buyer who wanted four of five goods was at a dead end (the live
+		// cost: pay_with_item with item "bundle", then a prose haggle settled as
+		// 35 coins on a 3-coin salt). The escape decomposes: a free-form
+		// pay_with_item (no quote_id) carries one item kind, the seller answers
+		// via accept_pay/counter_pay/decline_pay, so any subset at any price is a
+		// series of single-good offers. Deliberately NOT offer_trade — a bundle
+		// has no single want_item to name (LLM-136), and coin offers are the
+		// path the seller-side machinery already settles.
+		return fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. If you want only part of the bundle, or at another price, don't use that quote_id — make your own offer instead: call pay_with_item with no quote_id, naming the one good you want, its qty, and your coins, one good at a time; they can accept or counter.", quoteID, amount)
 	case len(lines) == 1:
 		return fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", quoteID, string(lines[0].ItemKind), lines[0].Qty, amount, string(lines[0].ItemKind))
 	default:
