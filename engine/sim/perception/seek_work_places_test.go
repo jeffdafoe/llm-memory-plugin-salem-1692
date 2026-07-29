@@ -182,6 +182,99 @@ func TestBuildSeekWorkPlaces_DropsDeclinedEmployer(t *testing.T) {
 	}
 }
 
+// TestBuildSeekWorkPlaces_RanksVisitedLast proves the LLM-563 treatment: a
+// business the worker called at recently (a live ObservedSeekWorkVisited memory)
+// is NOT dropped — it stays a real destination — but ranks after every untried
+// business regardless of distance, carrying Visited for the render aside. Among
+// several visited businesses the least-recently-visited sorts first, so the
+// directory is a rotation over doors not yet knocked, then oldest calls. A stamp
+// older than the 2h TTL has decayed: normal nearest-first standing returns.
+func TestBuildSeekWorkPlaces_RanksVisitedLast(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Structures: map[sim.StructureID]*sim.Structure{
+			"store": {DisplayName: "General Store"},
+			"inn":   {DisplayName: "Inn"},
+			"smy":   {DisplayName: "Blacksmith"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"store": {ID: "store", Pos: sim.WorldPos{X: 32, Y: 0}, Tags: []string{"business"}}, // 1 tile E — nearest
+			"inn":   {ID: "inn", Pos: sim.WorldPos{X: 96, Y: 0}, Tags: []string{"business"}},   // 3 tiles E
+			"smy":   {ID: "smy", Pos: sim.WorldPos{X: 320, Y: 0}, Tags: []string{"business"}},  // 10 tiles E — farthest
+		},
+	}
+
+	// The nearest business (General Store) was visited 10 minutes ago, the Inn 30
+	// minutes ago; the far Blacksmith is untried. Want: Blacksmith first (untried
+	// outranks visited, whatever the distance), then Inn (older call), then the
+	// General Store (freshest call) — the exact inversion of the live loop, where
+	// the just-left nearest store sat on top of the list.
+	actor := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "store", Condition: sim.ObservedSeekWorkVisited}: now.Add(-10 * time.Minute),
+			{StructureID: "inn", Condition: sim.ObservedSeekWorkVisited}:   now.Add(-30 * time.Minute),
+		}),
+	}
+	got := buildSeekWorkPlaces(snap, actor)
+	wantNames := []string{"Blacksmith", "Inn", "General Store"}
+	if len(got) != len(wantNames) {
+		t.Fatalf("buildSeekWorkPlaces len = %d, want %d (%+v)", len(got), len(wantNames), got)
+	}
+	for i, name := range wantNames {
+		if got[i].Name != name {
+			t.Errorf("entry %d = %q, want %q (full: %+v)", i, got[i].Name, name, got)
+		}
+	}
+	if got[0].Visited || !got[1].Visited || !got[2].Visited {
+		t.Errorf("Visited flags = [%v %v %v], want [false true true]", got[0].Visited, got[1].Visited, got[2].Visited)
+	}
+
+	// The same stamps aged past the 2h TTL have decayed — nearest-first returns
+	// and no entry carries the aside.
+	stale := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "store", Condition: sim.ObservedSeekWorkVisited}: now.Add(-sim.SeekWorkVisitedMemoryTTL - time.Minute),
+			{StructureID: "inn", Condition: sim.ObservedSeekWorkVisited}:   now.Add(-sim.SeekWorkVisitedMemoryTTL - time.Hour),
+		}),
+	}
+	got = buildSeekWorkPlaces(snap, stale)
+	if len(got) != 3 || got[0].Name != "General Store" || got[0].Visited || got[1].Visited || got[2].Visited {
+		t.Errorf("decayed visited stamps must restore nearest-first with no Visited flags, got %+v", got)
+	}
+}
+
+// TestBuildSeekWorkPlaces_FutureVisitedMemoryIgnored pins the clock-skew guard for
+// the new condition: a visited stamp in the FUTURE relative to the snapshot clock
+// must not read as fresh (Observed.Active's age >= 0 guard, shared with the
+// sibling conditions) — the business keeps its normal standing.
+func TestBuildSeekWorkPlaces_FutureVisitedMemoryIgnored(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Structures: map[sim.StructureID]*sim.Structure{
+			"store": {DisplayName: "General Store"},
+			"smy":   {DisplayName: "Blacksmith"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"store": {ID: "store", Pos: sim.WorldPos{X: 32, Y: 0}, Tags: []string{"business"}},
+			"smy":   {ID: "smy", Pos: sim.WorldPos{X: 320, Y: 0}, Tags: []string{"business"}},
+		},
+	}
+	actor := &sim.ActorSnapshot{
+		Pos: sim.WorldToTile(0, 0),
+		Observed: sim.NewObservedStates(map[sim.ObservedStateKey]time.Time{
+			{StructureID: "store", Condition: sim.ObservedSeekWorkVisited}: now.Add(time.Hour),
+		}),
+	}
+	got := buildSeekWorkPlaces(snap, actor)
+	if len(got) != 2 || got[0].Name != "General Store" || got[0].Visited {
+		t.Fatalf("future visited memory must not demote the business: got %+v", got)
+	}
+}
+
 // TestBuildSeekWorkPlaces_FutureDeclinedWorkMemoryIgnored guards the clock-skew
 // case: a decline observation stamped in the FUTURE relative to the snapshot clock
 // must not read as "fresh forever" and suppress the business. Observed.Active's
@@ -290,6 +383,18 @@ func TestRenderSeekWorkPlaces(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderSeekWorkPlaces missing %q\n%s", want, out)
 		}
+	}
+
+	// A visited entry (LLM-563) carries the terse aside after its distance, so the
+	// last-place ranking reads as a reason; untried entries stay clean.
+	var visited strings.Builder
+	renderSeekWorkPlaces(&visited, []SeekWorkPlace{
+		{Name: "Blacksmith", Distance: "a short walk", Direction: "east"},
+		{Name: "General Store", Distance: "right nearby", Direction: "east", Visited: true},
+	})
+	if got := visited.String(); !strings.Contains(got, "- General Store — right nearby east — you called there not long ago\n") ||
+		!strings.Contains(got, "- Blacksmith — a short walk east\n") {
+		t.Errorf("visited aside missing or leaked onto the untried entry:\n%s", got)
 	}
 
 	// A place with no distance (coincident / unresolved) renders the bare name.

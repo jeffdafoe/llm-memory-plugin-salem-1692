@@ -79,6 +79,17 @@ const (
 	// two actors stop churning one good back and forth across successive
 	// conversations.
 	ObservedSoldToPeer
+	// ObservedSeekWorkVisited — called at a business looking for work (LLM-563).
+	// Whole-structure (empty ItemKind), keyed by the business the seek-work
+	// directory names, stamped on ANY qualifying arrival by a workless worker —
+	// no rejection required, which is what separates it from its three seek-work
+	// siblings (Closed / DeclinedWork / NoHiring all need a rejection event, so a
+	// visit where nothing happened taught the directory nothing and the same
+	// door could be walked to forever). Far weaker evidence than those, so
+	// perception does NOT drop the business: buildSeekWorkPlaces ranks visited
+	// businesses after untried ones (least-recently-visited first) until the
+	// memory decays.
+	ObservedSeekWorkVisited
 	// ObservedHelpedByWorker — an employer's memory that a specific worker
 	// COMPLETED A PAID job for them (LLM-228). PERSON-keyed (the only such
 	// condition): the key carries the worker's PeerID with StructureID/ItemKind
@@ -95,8 +106,8 @@ const (
 // perception ignores it (the read-time decay applied by Active). Each arm reads
 // the named const kept next to that fact's capture code, so a TTL stays
 // documented where the fact is stamped (closed_business.go / out_of_stock.go /
-// declined_work.go / no_hiring.go / sale_standoff.go / helped_by_worker.go). An
-// unknown condition
+// declined_work.go / no_hiring.go / sale_standoff.go / seek_work_visited.go /
+// helped_by_worker.go). An unknown condition
 // returns 0 → Active false (safe default).
 func (c ObservedCondition) ttl() time.Duration {
 	switch c {
@@ -112,6 +123,8 @@ func (c ObservedCondition) ttl() time.Duration {
 		return SaleStandoffMemoryTTL
 	case ObservedSoldToPeer:
 		return SoldToPeerMemoryTTL
+	case ObservedSeekWorkVisited:
+		return SeekWorkVisitedMemoryTTL
 	case ObservedHelpedByWorker:
 		return HelpedByWorkerMemoryTTL
 	}
