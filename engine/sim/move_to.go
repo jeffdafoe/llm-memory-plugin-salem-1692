@@ -187,6 +187,18 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 				}
 				return moveToStructureLabeled(actorID, id, target, now).Fn(w)
 			}
+			// LLM-569: lodging keywords ("my room", "my bed", …) — the way a lodger
+			// names the bed it rents. The lodging cue itself teaches the phrasing
+			// ("Your room at Tavern is paid"), so a lodger reaching for it must not be
+			// told the place doesn't exist. Same fallback posture as the anchor
+			// keywords above: a real place name wins first, the keyword fires only
+			// when nothing else matched.
+			if id, matched, err := lodgingKeywordTarget(w, a, target, now); matched {
+				if err != nil {
+					return MoveActorResult{}, err
+				}
+				return moveToLodgingLabeled(actorID, id, target, now).Fn(w)
+			}
 			// LLM-317: "the kitchen" is a confabulated interior room — weak models
 			// routinely try to walk to it (the LLM-176 "food in the kitchen"
 			// hallucination) though it names no navigable place. Indulge the fiction
@@ -285,6 +297,127 @@ func liveAnchor(w *World, id StructureID, label string) (StructureID, bool, erro
 		return "", true, fmt.Errorf("your %s is no longer somewhere you can walk to", label)
 	}
 	return id, true, nil
+}
+
+// lodgingKeywordTarget resolves a lodging KEYWORD — the way an actor names the
+// bed it sleeps in ("my room", "my bed", "my room at the Tavern") rather than
+// the building's proper name — to the structure that bed is actually in
+// (LLM-569). Article-stripped and case-insensitive like anchorKeywordTarget,
+// and it runs under the same fallback posture: AFTER real structure/object
+// name resolution, so a place actually named "My Room" wins the name.
+//
+// An " at <place>" suffix is tolerated and IGNORED — "my room at the Tavern"
+// resolves wherever the grant actually is, because the grant, not the spoken
+// place, is the truth (a model that misremembers where it lodges still walks
+// to its real bed).
+//
+// Resolution is grant-first: the structure holding the actor's active lodging
+// grant (lodgingStructureFor), else its own home — a homed resident's "my
+// room"/"my bed" is its house (liveAnchor, same steer shapes as home/work).
+// Neither → a plain retryable steer, NOT a TerminalNoOpError (nothing there to
+// no-op against). Return contract matches anchorKeywordTarget.
+//
+// The live trigger: a visitor lodged at the Tavern called move_to("my room")
+// 14 times in one evening; every call got the LLM-306 "no place called" error
+// — whose steer lists OTHER structures — and he spent ~90 minutes wandering
+// out of and back into the building his paid room was in.
+//
+// MUST be called from inside a Command.Fn (reads the live actor + world).
+// Unexported.
+func lodgingKeywordTarget(w *World, a *Actor, name string, now time.Time) (StructureID, bool, error) {
+	if a == nil {
+		return "", false, nil
+	}
+	phrase := strings.ToLower(stripLeadingArticle(strings.TrimSpace(name)))
+	if i := strings.Index(phrase, " at "); i >= 0 {
+		phrase = strings.TrimSpace(phrase[:i])
+	}
+	switch phrase {
+	case "my room", "my bed", "my lodging", "my lodgings", "my chamber", "my quarters":
+	default:
+		return "", false, nil
+	}
+	if id, ok := lodgingStructureFor(w, a, now); ok {
+		return id, true, nil
+	}
+	if a.HomeStructureID != "" {
+		return liveAnchor(w, a.HomeStructureID, "home")
+	}
+	return "", true, fmt.Errorf("you have no room of your own to go to — no bed here is rented to you")
+}
+
+// lodgingStructureFor returns the structure holding the room of the actor's
+// soonest-expiring active lodging grant — the same selection perception's
+// lodging cue and turn_in's lodger arm make — or ok=false when the actor rents
+// nothing. A grant whose room no longer resolves to a live structure is
+// skipped. Ties on expiry break by lower RoomID for a deterministic result
+// (RoomAccess is a map; a lodger normally holds one grant per structure
+// anyway). MUST be called from inside a Command.Fn (findRoom reads
+// w.Structures).
+func lodgingStructureFor(w *World, a *Actor, now time.Time) (StructureID, bool) {
+	var best *RoomAccess
+	for _, ra := range a.RoomAccess {
+		if !IsActiveLedgerGrant(ra, now) {
+			continue
+		}
+		// IsActiveLedgerGrant guarantees ExpiresAt is non-nil.
+		if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) ||
+			(ra.ExpiresAt.Equal(*best.ExpiresAt) && ra.RoomID < best.RoomID) {
+			best = ra
+		}
+	}
+	if best == nil {
+		return "", false
+	}
+	room := findRoom(w, best.RoomID)
+	if room == nil {
+		return "", false
+	}
+	if _, ok := w.Structures[room.StructureID]; !ok {
+		return "", false
+	}
+	return room.StructureID, true
+}
+
+// moveToLodgingLabeled walks the actor to the structure its lodging keyword
+// resolved to. One difference from the plain structure dispatch: already being
+// under that roof answers with the room-aware no-op instead of the generic
+// "already at" — rooms are not walk targets (InsideRoomID is stamped only at
+// bed-down), so there is nowhere further to walk, and the generic line would
+// leave the model's real want (its bed) unanswered. The resolved id is a live
+// structure (both resolvers validated it), so the re-dispatch can't re-enter
+// the keyword branches.
+func moveToLodgingLabeled(actorID ActorID, structureID StructureID, spokenAs string, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a, ok := w.Actors[actorID]
+			if !ok {
+				return MoveActorResult{}, fmt.Errorf("moveToLodgingLabeled: actor %q not in world", actorID)
+			}
+			if a.InsideStructureID == structureID {
+				return MoveActorResult{}, TerminalNoOpError{Msg: lodgingAlreadyHereMsg(w, a, structureID, now)}
+			}
+			return moveToStructureLabeled(actorID, structureID, spokenAs, now).Fn(w)
+		},
+	}
+}
+
+// lodgingAlreadyHereMsg answers a lodging-keyword move when the actor already
+// stands under the roof its bed is in. The line points at turn_in exactly when
+// the substrate would accept the call (npcMayTurnIn — the turn_in tool's own
+// gate, so this steer and the tool can't drift), and otherwise borrows
+// turnInRefusal's own words for why not yet — one vocabulary for "when may I
+// sleep", not two. MUST be called from inside a Command.Fn.
+func lodgingAlreadyHereMsg(w *World, a *Actor, structureID StructureID, now time.Time) string {
+	label := string(structureID)
+	if st := w.Structures[structureID]; st != nil && strings.TrimSpace(st.DisplayName) != "" {
+		label = st.DisplayName
+	}
+	if npcMayTurnIn(w, a, now) {
+		return fmt.Sprintf(
+			"your room at %q is just here — when you are ready to sleep, call turn_in to say your goodnight and take yourself off to it.", label)
+	}
+	return fmt.Sprintf("your room at %q waits under this roof; %s", label, turnInRefusal(w, a, now))
 }
 
 // stripLeadingArticle removes a single leading article ("the"/"a"/"an") from a
@@ -720,6 +853,15 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 						return MoveActorResult{}, err
 					}
 					return moveToStructureLabeled(actorID, id, spokenAs, now).Fn(w)
+				}
+				// LLM-569: a lodging keyword ("my room") can ride the structure_id
+				// field the same way — resolve it before the bare-object fallthrough,
+				// mirroring the name path.
+				if id, matched, err := lodgingKeywordTarget(w, a, string(structureID), now); matched {
+					if err != nil {
+						return MoveActorResult{}, err
+					}
+					return moveToLodgingLabeled(actorID, id, spokenAs, now).Fn(w)
 				}
 				// Not a structure — it may be a bare placement the actor saw in a cue,
 				// whose id rides the same structure_id field: a need-easing refresh
