@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -160,42 +159,86 @@ func TestUmbilicalObjectsFromSnapshot(t *testing.T) {
 	}
 }
 
+// marshalledObjects round-trips the roster through JSON and returns the per-object
+// key maps — so an assertion can ask what the WIRE carries rather than what the Go
+// struct holds. Decoding into map[string]any (rather than substring-matching the
+// body) is what makes key absence provable: a display_name or asset_id containing
+// the word "wear" would satisfy a strings.Contains check.
+func marshalledObjects(t *testing.T, dto UmbilicalObjectsDTO) []map[string]any {
+	t.Helper()
+	body, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded struct {
+		Objects []map[string]any `json:"objects"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	return decoded.Objects
+}
+
 // TestUmbilicalObjectsCountersOmitEmpty pins the WIRE shape of the LLM-559
-// counters, which the struct-level assertions above cannot see: a roster of
-// ordinary placements (no business, no hearth — most of the village) must not
-// carry wear / rate_owed / hearth_lit_until keys at all. hearth_lit_until is the
-// fragile one — a value time.Time would serialize the Go zero date "0001-01-01"
-// on every object in the village, because omitempty does not consider a struct
-// empty; only the *time.Time keeps it absent.
+// counters, which the struct-level assertions above cannot see, in BOTH
+// directions: absent on the ordinary placements that have no counters (most of
+// the village is neither a business nor a hearth), present with their values on
+// the ones that do. hearth_lit_until is the fragile half — a value time.Time
+// would serialize the Go zero date "0001-01-01" onto every object in the
+// village, because omitempty does not consider a struct empty; only the
+// *time.Time keeps it absent.
 func TestUmbilicalObjectsCountersOmitEmpty(t *testing.T) {
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	counterKeys := []string{"wear", "rate_owed", "hearth_lit_until"}
+
+	// A plain placement: no owner, no business tag, no hearth, no fire.
 	snap := &sim.Snapshot{
-		PublishedAt: time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC),
+		PublishedAt: published,
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"well": {ID: "well", AssetID: "asset_well", Pos: sim.WorldPos{X: 128, Y: 128}},
 		},
 	}
-
-	body, err := json.Marshal(umbilicalObjectsFromSnapshot(snap, objectsFilter{}))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	for _, key := range []string{"wear", "rate_owed", "hearth_lit_until"} {
-		if strings.Contains(string(body), key) {
-			t.Errorf("counter-free object emitted %q: %s", key, body)
+	well := marshalledObjects(t, umbilicalObjectsFromSnapshot(snap, objectsFilter{}))[0]
+	for _, key := range counterKeys {
+		if _, present := well[key]; present {
+			t.Errorf("counter-free object carries %q = %v, want the key absent", key, well[key])
 		}
 	}
 
-	// ...and a hearth that IS lit emits the timestamp, so the absence above is
-	// omitempty doing its job rather than the field being dropped outright.
-	snap.VillageObjects["hearth"] = &sim.VillageObject{
-		ID: "hearth", AssetID: "asset_hearth", Tags: []string{sim.TagHearth},
-		HearthLitUntil: snap.PublishedAt.Add(time.Hour),
+	// A worn, indebted, lit business carries all three — so the absences above
+	// are omitempty working, not the fields being dropped outright.
+	snap.VillageObjects["store"] = &sim.VillageObject{
+		ID: "store", AssetID: "asset_store", OwnerActorID: "josiah",
+		Tags:           []string{sim.TagBusiness, sim.TagHearth},
+		Wear:           37,
+		RateOwed:       2,
+		HearthLitUntil: published.Add(time.Hour),
 	}
-	body, err = json.Marshal(umbilicalObjectsFromSnapshot(snap, objectsFilter{id: "hearth"}))
-	if err != nil {
-		t.Fatalf("marshal lit: %v", err)
+	store := marshalledObjects(t, umbilicalObjectsFromSnapshot(snap, objectsFilter{id: "store"}))[0]
+	for _, key := range counterKeys {
+		if _, present := store[key]; !present {
+			t.Errorf("store missing %q on the wire: %+v", key, store)
+		}
 	}
-	if !strings.Contains(string(body), `"hearth_lit_until":"2026-06-25T13:00:00Z"`) {
-		t.Errorf("lit hearth missing its timestamp: %s", body)
+	// JSON numbers decode as float64.
+	if store["wear"] != float64(37) || store["rate_owed"] != float64(2) {
+		t.Errorf("store wire counters = wear %v / rate_owed %v, want 37 / 2", store["wear"], store["rate_owed"])
+	}
+	if store["hearth_lit_until"] != "2026-06-25T13:00:00Z" {
+		t.Errorf("store hearth_lit_until = %v, want 2026-06-25T13:00:00Z", store["hearth_lit_until"])
+	}
+
+	// A fire that has already gone out still serializes: hearth_lit_until is
+	// omitted only when UNSET, not when past. This is the distinction the route
+	// descriptor spells out, and the reason "omitted at zero" would be wrong for
+	// it — a stale timestamp is exactly what tells an operator the fire is dead
+	// rather than never lit.
+	snap.VillageObjects["cold"] = &sim.VillageObject{
+		ID: "cold", AssetID: "asset_hearth", Tags: []string{sim.TagHearth},
+		HearthLitUntil: published.Add(-2 * time.Hour),
+	}
+	cold := marshalledObjects(t, umbilicalObjectsFromSnapshot(snap, objectsFilter{id: "cold"}))[0]
+	if cold["hearth_lit_until"] != "2026-06-25T10:00:00Z" {
+		t.Errorf("burnt-out hearth = %v, want the past timestamp kept", cold["hearth_lit_until"])
 	}
 }

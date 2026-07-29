@@ -106,8 +106,11 @@ type UmbilicalObjectDTO struct {
 
 	// HearthLitUntil is when a TagHearth object's fire burns out (LLM-412) —
 	// a future instant while lit, past once it has gone out by the clock (there
-	// is no burn-down sweep). Pointer + omitempty so an unlit hearth renders as
-	// an absent field rather than the Go zero date, the /pay-ledger convention.
+	// is no burn-down sweep). Pointer + omitempty so a NEVER-lit hearth renders
+	// as an absent field rather than the Go zero date, the /pay-ledger
+	// convention. Unlike the two counters above, this is omitted on unset only,
+	// never on value: a past timestamp is kept, because a dead fire and a hearth
+	// nobody has ever stoked are different answers to an operator.
 	HearthLitUntil *time.Time `json:"hearth_lit_until,omitempty"`
 }
 
