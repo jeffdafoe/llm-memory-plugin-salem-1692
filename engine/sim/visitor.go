@@ -1283,6 +1283,13 @@ func recordVisitorRumorShared(w *World, h *Huddle, speakerID ActorID) {
 		if id == speakerID {
 			continue
 		}
+		if w.Actors[id] == nil {
+			// Belt-and-braces (code_review): by the huddle invariant a member is a
+			// live actor, but a stale id must not become a stamp — read-side company
+			// is snapshot-filtered, so a junk stamp would render nothing, yet it
+			// still eats cap space and persists.
+			continue
+		}
 		if h.LastUtteranceAtBy(id).IsZero() {
 			continue // silent bystander — the word lands through conversation
 		}

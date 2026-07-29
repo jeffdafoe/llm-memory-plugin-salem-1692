@@ -105,13 +105,16 @@ func TestVisitorPlanPayloadSharedWithSanitized(t *testing.T) {
 
 	// An oversized array (only reachable from an edited/corrupt row — the writer
 	// caps at sim.MaxPayloadSharedWith) is truncated at the cap, not rejected:
-	// the rest of the plan is independently valid.
+	// the rest of the plan is independently valid. Blanks and duplicates are
+	// interleaved so the ordering is pinned: dedup/drop first, THEN cap — junk
+	// entries never consume cap slots, and the retained set is the first cap
+	// distinct ids in stored order.
 	big, err := json.Marshal(struct {
 		IDs []string `json:"payload_shared_with"`
 	}{IDs: func() []string {
-		ids := make([]string, sim.MaxPayloadSharedWith+10)
-		for i := range ids {
-			ids[i] = fmt.Sprintf("actor-%03d", i)
+		var ids []string
+		for i := 0; i < sim.MaxPayloadSharedWith+10; i++ {
+			ids = append(ids, fmt.Sprintf("actor-%03d", i), "", fmt.Sprintf("actor-%03d", i))
 		}
 		return ids
 	}()})
@@ -122,8 +125,14 @@ func TestVisitorPlanPayloadSharedWithSanitized(t *testing.T) {
 	if err := applyVisitorPlan(big, lv4); err != nil {
 		t.Fatalf("applyVisitorPlan(oversized): %v", err)
 	}
-	if got := len(lv4.VisitorState.PayloadSharedWith); got != sim.MaxPayloadSharedWith {
-		t.Errorf("oversized array retained %d ids; want truncation at the cap (%d)", got, sim.MaxPayloadSharedWith)
+	kept := lv4.VisitorState.PayloadSharedWith
+	if len(kept) != sim.MaxPayloadSharedWith {
+		t.Fatalf("oversized array retained %d ids; want truncation at the cap (%d)", len(kept), sim.MaxPayloadSharedWith)
+	}
+	for i, id := range kept {
+		if want := sim.ActorID(fmt.Sprintf("actor-%03d", i)); id != want {
+			t.Fatalf("kept[%d] = %q; want %q — dedup/blank-drop must run before the cap, preserving first-seen order", i, id, want)
+		}
 	}
 }
 

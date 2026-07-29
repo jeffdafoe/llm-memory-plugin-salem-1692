@@ -146,6 +146,91 @@ func TestVisitorRumorSharedReachesPublishedSnapshot(t *testing.T) {
 	}
 }
 
+// TestVisitorRumorSharedRejectedSpeakStampsNothing: the stamp lives AFTER the
+// speak gates and the utterance commit, so a rejected SpeakTo must leave the
+// memory untouched. The failing speak here is the WORK-370 directed re-ask gate
+// (live unanswered edge to the addressee, hasNewNews=false) — chosen because by
+// then Mary is an ACTIVE conversant the hook WOULD stamp if it ran, so the
+// assertion is probative, not vacuous.
+func TestVisitorRumorSharedRejectedSpeakStampsNothing(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
+		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
+		{id: "mary", displayName: "Mary", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+
+	seedVisitorStateForTest(t, w, "vstr-ashford", &sim.VisitorState{
+		Archetype: "provisioner",
+		Payload:   "Josiah Thorne turned out meat for the inn",
+	})
+
+	base := time.Now().UTC()
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good evening, stranger.", "", nil, true, base)); err != nil {
+		t.Fatalf("hannah speak: %v", err)
+	}
+	// The traveler addresses Hannah directly (hasNewNews=false) — commits, stamps
+	// Hannah, and opens an unanswered edge to her.
+	if _, err := w.Send(sim.SpeakTo("vstr-ashford", "A word on the road gave me pause.", "Hannah Boggs", nil, false, base.Add(time.Second))); err != nil {
+		t.Fatalf("ashford first speak: %v", err)
+	}
+	if got := visitorSharedWithForTest(t, w, "vstr-ashford"); len(got) != 1 || got[0] != "hannah" {
+		t.Fatalf("PayloadSharedWith after committed speak = %v, want [hannah]", got)
+	}
+	// Mary joins the conversation — now an active, UNSTAMPED conversant.
+	if _, err := w.Send(sim.SpeakTo("mary", "What word was that?", "", nil, true, base.Add(2*time.Second))); err != nil {
+		t.Fatalf("mary speak: %v", err)
+	}
+	// The traveler re-addresses Hannah while she still owes him an answer, on a
+	// tick with no new news — the WORK-370 gate must reject this speak.
+	if _, err := w.Send(sim.SpeakTo("vstr-ashford", "As I was saying of the road.", "Hannah Boggs", nil, false, base.Add(3*time.Second))); err == nil {
+		t.Fatal("re-ask speak unexpectedly committed — fixture no longer exercises a rejected speak")
+	}
+	// The rejected speak stamped no one: Mary stays untold.
+	if got := visitorSharedWithForTest(t, w, "vstr-ashford"); len(got) != 1 || got[0] != "hannah" {
+		t.Fatalf("PayloadSharedWith after rejected speak = %v, want unchanged [hannah]", got)
+	}
+}
+
+// TestVisitorRumorSharedSkipsStaleHuddleMember: a huddle member id with NO live
+// actor behind it (only reachable through an invariant breach or a mid-tick
+// deletion) must never become a stamp, even with an utterance timestamp in the
+// ring — junk stamps eat cap space and persist in the plan jsonb.
+func TestVisitorRumorSharedSkipsStaleHuddleMember(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
+		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+
+	seedVisitorStateForTest(t, w, "vstr-ashford", &sim.VisitorState{
+		Archetype: "provisioner",
+		Payload:   "Josiah Thorne turned out meat for the inn",
+	})
+
+	base := time.Now().UTC()
+	// Forge the breach: a member id in the huddle, with an utterance in the ring,
+	// and no entry in World.Actors.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		h := world.Huddles["h1"]
+		h.Members["ghost"] = struct{}{}
+		h.AppendUtterance("ghost", "Ghost", "boo", base, sim.SpeechID(999))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("forge stale member: %v", err)
+	}
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good evening.", "", nil, true, base.Add(time.Second))); err != nil {
+		t.Fatalf("hannah speak: %v", err)
+	}
+	if _, err := w.Send(sim.SpeakTo("vstr-ashford", "A word on the road gave me pause.", "", nil, true, base.Add(2*time.Second))); err != nil {
+		t.Fatalf("ashford speak: %v", err)
+	}
+	got := visitorSharedWithForTest(t, w, "vstr-ashford")
+	if len(got) != 1 || got[0] != "hannah" {
+		t.Fatalf("PayloadSharedWith = %v, want [hannah] only — the actor-less huddle member must not be stamped", got)
+	}
+}
+
 // TestVisitorRumorSharedRequiresPayload: a traveler with no carried word stamps
 // nothing — there is no matter to spend.
 func TestVisitorRumorSharedRequiresPayload(t *testing.T) {
