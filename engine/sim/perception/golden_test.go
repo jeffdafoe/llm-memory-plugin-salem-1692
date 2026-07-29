@@ -3148,6 +3148,28 @@ var perceptionScenarios = []perceptionScenario{
 		build: comfortableHomebodyBakes,
 	},
 	{
+		name: "seeking_worker_home_scene_hides_housemate_bake",
+		summary: "LLM-562: the seek-work-engaged Walker of seeking_worker_at_home_gets_no_bake_cue with a housemate " +
+			"co-present MID the bake — the shape the LLM-459 fixture never carried (its bake was active only as a flag, " +
+			"nobody in the room doing it). LLM-459's suppression was affordance-deep, not scene-deep: the cue and tool " +
+			"dropped, but the housemate still rendered '(at the hearth, baking just now)' beside the subject's own flour, " +
+			"and the model read the scene — live 2026-07-29 Patience Walker narrated joining the bread on nine straight " +
+			"home-arrival ticks under a coda offering only move_to, 179 LLM calls in a day. The golden pins the housemate " +
+			"named and greetable with NO bake annotation while the seek-work directory + go-coda render as before. A " +
+			"regression that re-scopes the strip to the affordance alone flips TestNoSeekWorkPromptDepictsHousemateBake.",
+		build: seekingWorkerHomeSceneHidesHousemateBake,
+	},
+	{
+		name: "comfortable_homebody_sees_housemate_bake",
+		summary: "LLM-562 (positive half): identical to seeking_worker_home_scene_hides_housemate_bake except the purse — " +
+			"40 coins is at/above the seek-work ceiling, so no directory engages and the housemate's bake annotation (and " +
+			"the join-in cue) render normally. Flipping only coins across the ceiling toggles the annotation, proving the " +
+			"suppression keys on the seek-work directive itself. Also the vacuity floor for " +
+			"TestNoSeekWorkPromptDepictsHousemateBake: without a scenario rendering the annotation, that invariant would " +
+			"pass having checked nothing.",
+		build: comfortableHomebodySeesHousemateBake,
+	},
+	{
 		name: "homebody_mid_bake",
 		summary: "LLM-464: the comfortable_homebody_bakes homebody one step later — at the hearth with her bake window " +
 			"live. Pins the mid-activity triage coda, whose completion horizon reads 'by dusk' for a bake instead of the " +
@@ -15838,6 +15860,52 @@ func comfortableHomebodyBakes() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	return snap, actorID, warrants
 }
 
+// seekingWorkerHomeSceneHidesHousemateBake is the LLM-562 live case: the same
+// seek-work-engaged Walker as seekingWorkerAtHomeGetsNoBakeCue, but with a housemate
+// co-present MID the bake — the shape LLM-459's fixture never carried, because its
+// household bake was active only as a flag (HomeBakesActive), with nobody in the room
+// doing it. Live 2026-07-29 that difference was the whole bug: Patience Walker's bake
+// cue and tool were correctly stripped, but Lewis rendered as "(at the hearth, baking
+// just now)" beside her flour inventory, and she narrated joining the bread on nine
+// straight home-arrival ticks under a coda that only offered move_to — 179 LLM calls
+// in a day, the village's highest. The golden pins the housemate PRESENT and named
+// (greetable, addressable) with no bake annotation; the seek-work directory and
+// go-coda render as before.
+func seekingWorkerHomeSceneHidesHousemateBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := seekingWorkerAtHomeGetsNoBakeCue()
+	const lewisID = sim.ActorID("lewis")
+	residence := snap.Actors[actorID].HomeStructureID
+	snap.Actors[actorID].ColocatedAudienceIDs = []sim.ActorID{lewisID}
+	snap.Actors[actorID].Acquaintances = map[string]sim.Acquaintance{"Lewis Walker": {}}
+	snap.Actors[lewisID] = &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		// Mid the household bake; the home structure id is the source-activity
+		// object (shared under the WORK-342 id bridge).
+		SourceActivityKind:     sim.SourceActivityBake,
+		SourceActivityObjectID: sim.VillageObjectID(residence),
+	}
+	return snap, actorID, warrants
+}
+
+// comfortableHomebodySeesHousemateBake is the positive half of the LLM-562 pair:
+// identical to seekingWorkerHomeSceneHidesHousemateBake except the purse — 40 coins
+// is at/above the seek-work ceiling, so no directory engages and the bake annotation
+// (and the join-in cue) render normally. Flipping only coins across the ceiling
+// toggles the annotation, proving the suppression keys on the seek-work directive and
+// not some other fixture difference. Also the vacuity floor for
+// TestNoSeekWorkPromptDepictsHousemateBake: without a scenario that renders the
+// annotation, that invariant would pass having checked nothing.
+func comfortableHomebodySeesHousemateBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := seekingWorkerHomeSceneHidesHousemateBake()
+	snap.Actors[actorID].DisplayName = "Anne Walker"
+	snap.Actors[actorID].Coins = 40 // at/above the default ceiling → comfortable, no seek-work
+	return snap, actorID, warrants
+}
+
 // homebodyMidBake is the LLM-464 case: the SAME comfortable homebody as
 // comfortableHomebodyBakes, but already at the hearth with her bake window live, so
 // the golden pins the mid-activity triage coda instead of the invitation (the bake
@@ -16267,6 +16335,11 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		// survive; the point of the scenario is that the bake invitation does not
 		// render beside it (TestNoPromptOffersBakeAndSeekWorkTogether).
 		"seeking_worker_at_home_gets_no_bake_cue": true,
+		// LLM-562: the same seek-work-engaged worker with a housemate co-present
+		// mid-bake. The go-coda SHOULD survive — the scenario's point is that the
+		// housemate's bake annotation does not render beside it
+		// (TestNoSeekWorkPromptDepictsHousemateBake).
+		"seeking_worker_home_scene_hides_housemate_bake": true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]
