@@ -202,6 +202,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// verb — the decision section names the offer and the answer tools.
 		!subjectHasLaborOfferToAnswer(snap, actorID) &&
 		hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings)
+	// LLM-564: the acquainted subset of that audience, so the solicit cue can name
+	// who to ask. Presentation only — the gate above is untouched, and an empty
+	// slice under a true CanSolicitWork just renders the unnamed fallback wording.
+	if p.CanSolicitWork {
+		p.SolicitableEmployers = buildSolicitableEmployers(snap, actorID, actorSnap, p.Surroundings)
+	}
 	// LLM-346: the hiring-side affordance. A non-empty slice both renders the
 	// offer_work cue (renderOfferWorkAffordance) and gates the offer_work tool, so
 	// the two cannot drift. Built after Surroundings so the audience is populated,
@@ -210,7 +216,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// Resolved last among the name-bearing views, because HireableWorkers is the
 	// newest of them and the offer_work cue must render real names — a "someone
 	// takes work for pay" line names a target offer_work cannot resolve.
-	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.LaborEnRoute, p.PendingLaborOfferOut, p.HireableWorkers)
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe, p.LaborOffersForMe, p.WorkersForMe, p.Laboring, p.LaborEnRoute, p.PendingLaborOfferOut, p.HireableWorkers, p.SolicitableEmployers)
 	// LLM-160: the businesses directory is a STANDING cue for a workless idle
 	// worker with no employer present — not a rare warrant-gated one. Pre-fix it
 	// rode only the paced seek-work warrant tick (LLM-152, ~7% of ticks), so on the
@@ -2086,7 +2092,7 @@ func customerProducedGoods(snap *sim.Snapshot, customer sim.ActorID, goods []Off
 // UUID into the "## Since your last turn" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
-func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, laborEnRoute *LaborEnRouteView, pendingLaborOut *PendingLaborOfferOutView, hireableWorkers []sim.ActorID) map[sim.ActorID]string {
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason, laborOffers []LaborOfferView, workersForMe []WorkerForMeView, laboring *LaboringView, laborEnRoute *LaborEnRouteView, pendingLaborOut *PendingLaborOfferOutView, hireableWorkers []sim.ActorID, solicitableEmployers []sim.ActorID) map[sim.ActorID]string {
 	var names map[sim.ActorID]string
 	add := func(id sim.ActorID) {
 		if id == "" || id == subjectID {
@@ -2185,6 +2191,12 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 	// to "someone." isHireableWorker already restricted the set to acquaintances,
 	// so each resolves to a real DisplayName here.
 	for _, id := range hireableWorkers {
+		add(id)
+	}
+	// The solicit cue's named employers (LLM-564) — same contract as the
+	// hireable workers above: buildSolicitableEmployers already restricted the
+	// set to acquaintances, so each resolves to a real DisplayName here.
+	for _, id := range solicitableEmployers {
 		add(id)
 	}
 	if pendingLaborOut != nil {
@@ -3906,6 +3918,7 @@ var selfActionTrailTypes = map[sim.ActionType]bool{
 	sim.ActionTypeTookBreak:     true,
 	sim.ActionTypeLabored:       true,
 	sim.ActionTypeSolicitedWork: true,
+	sim.ActionTypeOfferedWork:   true,
 	sim.ActionTypeHired:         true,
 }
 
@@ -5497,6 +5510,52 @@ func hasSolicitableAudience(snap *sim.Snapshot, subjectID sim.ActorID, subject *
 		}
 	}
 	return false
+}
+
+// buildSolicitableEmployers lists the co-present actors the subject could offer
+// its labor to right now AND knows by name — the worker-side naming mirror of
+// buildHireableWorkers (LLM-564). The solicit cue names these people so the ask
+// is grounded in the room ("Hannah Boggs might have work that wants doing")
+// rather than a standing conditional the model must first invent a counterfactual
+// for — measured live, the unnamed cue converted 26 of 1,427 renders in a week.
+//
+// This slice is PRESENTATION ONLY: the solicit gate stays CanSolicitWork, which
+// accepts an unacquainted audience too (isSolicitableEmployer carries no
+// acquaintance clause — a worker can bid a stranger it has spoken with). The
+// acquaintance filter here exists for isHireableWorker's reason: solicit_work
+// resolves its employer by exact display name, and an unacquainted peer renders
+// as a descriptor ("the shopkeeper"), so naming them would hand the model a
+// target the tool must then refuse. When every solicitable peer is a stranger
+// the cue falls back to its unnamed wording; the tool stays advertised either way.
+func buildSolicitableEmployers(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, surr SurroundingsView) []sim.ActorID {
+	if snap == nil || subject == nil {
+		return nil
+	}
+	seen := make(map[sim.ActorID]struct{})
+	var out []sim.ActorID
+	for _, group := range [][]HuddleMember{surr.HuddleMembers, surr.CoPresent} {
+		for _, m := range group {
+			if _, dup := seen[m.ID]; dup {
+				continue
+			}
+			if !isSolicitableEmployer(snap, subjectID, subject, m.ID) {
+				continue
+			}
+			other := snap.Actors[m.ID]
+			if other == nil || other.DisplayName == "" {
+				continue
+			}
+			if _, acquainted := subject.Acquaintances[other.DisplayName]; !acquainted {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			out = append(out, m.ID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return snap.Actors[out[i]].DisplayName < snap.Actors[out[j]].DisplayName
+	})
+	return out
 }
 
 // isSolicitableEmployer reports whether candidate (by id) is a co-present actor

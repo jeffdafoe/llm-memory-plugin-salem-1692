@@ -127,6 +127,17 @@ const (
 	// the Completed terminal. No coins move at solicit.
 	ActionTypeSolicitedWork ActionType = "solicited_work"
 
+	// ActionTypeOfferedWork — an employer's committed offer_work that minted a
+	// live pending offer (LLM-564). ActorID is the EMPLOYER (the offer is
+	// theirs), the worker is the counterparty, Amount is the wage offered.
+	// Before this type existed both mints logged as ActionTypeSolicitedWork
+	// attributed to the worker, so an employer-initiated hire read in the log
+	// as the worker having asked — which sent the LLM-564 investigation down
+	// the wrong path and would have done the same to anyone counting who asks
+	// for work. Same single-row posture as solicited_work: the pair share the
+	// offer's HuddleID, so one row reaches both for narrative pickup.
+	ActionTypeOfferedWork ActionType = "offered_work"
+
 	// ActionTypeHired — an employer's committed accept_work (LLM-213). ActorID is
 	// the EMPLOYER (the hire is theirs); CounterpartyName is the worker taken on;
 	// Amount is the agreed reward; HuddleID is the offer's huddle. Event-sourced

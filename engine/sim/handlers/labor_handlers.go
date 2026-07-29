@@ -108,6 +108,13 @@ type SolicitWorkArgs struct {
 	Reward          int         `json:"reward"`
 	RewardItems     payItemList `json:"reward_items"`
 	DurationMinutes int         `json:"duration_minutes"`
+	// Say is the worker's spoken ask, delivered as the offer is posted (LLM-564).
+	// The same fold offer_work got in LLM-346, arriving on the worker side for the
+	// same reason: solicit_work and speak both end the tick, so a worker who asks
+	// aloud first never reaches the tool — observed live as a 1.8% call rate against
+	// 1,427 cue renders, with the one landed job arriving via the employer's
+	// offer_work instead. Optional — a silent offer is legal, if a little blunt.
+	Say string `json:"say"`
 }
 
 var solicitWorkSchema = json.RawMessage(`{
@@ -131,6 +138,11 @@ var solicitWorkSchema = json.RawMessage(`{
             "minimum": 240,
             "maximum": 480,
             "description": "How long the job takes, in minutes. Pick a full stretch of work: 240 (4 hours), 360 (6 hours), or 480 (8 hours). You are occupied for this whole time once they accept, and you cannot work past the employer's closing time."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you offer, in your own voice (e.g. 'I could see to the pots and the water barrels — four coins for the afternoon, if you'll have me.'). Spoken to the employer you named. Optional: omit to make the offer without a word."
         }
     },
     "required": ["employer", "reward", "duration_minutes"],
@@ -138,7 +150,9 @@ var solicitWorkSchema = json.RawMessage(`{
 }`)
 
 const solicitWorkDescription = "Offer to do a job for another villager in your current conversation, for pay. " +
+	"This is the transactional surface — speech that mentions wanting work is just talk, this is what they can actually answer. " +
 	"You set who you'll work for (employer), the pay you want — coins (reward), goods they hold (reward_items, e.g. a meal), or both — and how long it takes (duration_minutes — a real stretch of work: 2, 4, 6, or 8 hours). " +
+	"Ask them aloud in the same breath by passing `say` — do NOT ask with the speak tool and then call this, because speaking ends your turn and the offer would never be made. " +
 	"This creates a pending offer they must accept or decline. " +
 	"On accept you're paid when the work finishes — the coins and any goods are handed over together then — and you're occupied with the job the whole time; you get on with it rather than standing about talking. " +
 	"If the pay you agreed out loud includes food or goods, name them in reward_items so the bargain is real. " +
@@ -201,6 +215,18 @@ func DecodeSolicitWorkArgs(raw json.RawMessage) (any, error) {
 	if args.DurationMinutes > sim.MaxLaborDurationMinutes {
 		return nil, modelSafef("solicit_work: duration_minutes exceeds maximum (got %d, max %d)", args.DurationMinutes, sim.MaxLaborDurationMinutes)
 	}
+	// say shares speak's rune cap — it lands on the same utterance path, so a line
+	// speak would refuse must not sneak in through solicit_work (mirrors offer_work).
+	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
+		return nil, modelSafef(
+			"solicit_work: say exceeds %d-character cap (got %d characters)",
+			MaxSpeakTextChars, n,
+		)
+	}
+	// Same utterance path ⇒ same mojibake guard as speak (LLM-235).
+	if err := checkUtteranceText("solicit_work", "say", args.Say); err != nil {
+		return nil, err
+	}
 	return args, nil
 }
 
@@ -209,6 +235,15 @@ func DecodeSolicitWorkArgs(raw json.RawMessage) (any, error) {
 // sim.SolicitWork Command wrapped in the co-presence huddle bootstrap (so a
 // worker who walked up to the employer can offer on arrival without a
 // separate prior speak — same as pay_with_item).
+//
+// When a `say` line rides along, the offer is minted FIRST and the words follow
+// (HandleOfferWork's ordering, for its reason): if the offer is refused — the
+// named employer isn't here, the worker already has a bid out — nothing has been
+// said, and she never asks aloud for work the offer can't carry. The speak is
+// best-effort in the other direction: SpeakTo keeps gates SolicitWork does not,
+// and a placed bid must not be lost to a conversational-discipline rule — so the
+// offer stands, Announced stays false, and SpeakTo's reason rides back on the
+// result.
 func HandleSolicitWork(in HandlerInput) (sim.Command, error) {
 	args, ok := in.Args.(SolicitWorkArgs)
 	if !ok {
@@ -227,16 +262,50 @@ func HandleSolicitWork(in HandlerInput) (sim.Command, error) {
 	if err != nil {
 		return sim.Command{}, err
 	}
+	// The spoken line is prose, so it takes speak's permissive control-char scan
+	// (\n \r \t allowed) rather than the strict identifier scan the name field uses.
+	say := strings.TrimSpace(args.Say)
+	if say != "" {
+		if i := indexInvalidControlChar(say); i >= 0 {
+			return sim.Command{}, modelSafef(
+				"solicit_work: say contains a disallowed control character at byte offset %d "+
+					"(only \\n, \\r, \\t allowed)", i)
+		}
+	}
+
+	// Captured outside the closure — the harness may reuse `in` across iterations
+	// (same rationale as HandleSpeak / HandleOfferWork).
+	actorID := in.ActorID
+	hasNewNews := in.HasNewNews
 
 	now := time.Now().UTC()
-	return withHuddleBootstrap(in.ActorID, now, sim.SolicitWork(
-		in.ActorID,
-		employer,
-		args.Reward,
-		rewardItems,
-		args.DurationMinutes,
-		now,
-	)), nil
+	solicit := sim.SolicitWork(actorID, employer, args.Reward, rewardItems, args.DurationMinutes, now)
+	if say == "" {
+		return withHuddleBootstrap(actorID, now, solicit), nil
+	}
+
+	return withHuddleBootstrap(actorID, now, sim.Command{Fn: func(w *sim.World) (any, error) {
+		res, err := solicit.Fn(w)
+		if err != nil {
+			return nil, err
+		}
+		placed, ok := res.(sim.LaborSolicitResult)
+		// The say goes out ONLY on the live-pending path. The LLM-193 auto-decline
+		// and LLM-243 barter branches deliberately never wake the employer — a
+		// SpeakTo here would wake them through the speech event and undo exactly
+		// that — and neither leaves a live offer for the words to announce.
+		if !ok || placed.State != sim.LaborStatePending {
+			return res, nil
+		}
+		// The offer names one employer, so the ask is spoken to them.
+		if _, serr := sim.SpeakTo(actorID, say, employer, nil, hasNewNews, now).Fn(w); serr != nil {
+			log.Printf("sim/handlers: solicit_work placed offer %d but its say was refused: %v", placed.ID, serr)
+			placed.SayRefused = serr.Error()
+			return placed, nil
+		}
+		placed.Announced = true
+		return placed, nil
+	}}), nil
 }
 
 // ====================================================================

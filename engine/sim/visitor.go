@@ -619,6 +619,11 @@ func renderRumorClause(w *World, e ActionLogEntry) string {
 			return name + " went looking to work for " + e.CounterpartyName
 		}
 		return name + " was about looking for work"
+	case ActionTypeOfferedWork:
+		if e.CounterpartyName == "" {
+			return ""
+		}
+		return name + " offered " + e.CounterpartyName + " a piece of work"
 	case ActionTypeGathered:
 		if e.Text == "" {
 			return ""

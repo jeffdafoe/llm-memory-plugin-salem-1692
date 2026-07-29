@@ -543,6 +543,15 @@ type Payload struct {
 	// (discussion-109). LLM-26.
 	CanSolicitWork bool
 
+	// SolicitableEmployers are the acquainted members of that audience, in
+	// display-name order — the people the solicit cue names so the ask is
+	// grounded in the room (LLM-564). Presentation only: CanSolicitWork remains
+	// the cue/tool gate, and this slice may be empty under a true
+	// CanSolicitWork (every solicitable peer a stranger), in which case the cue
+	// renders its unnamed fallback wording. Populated only when CanSolicitWork
+	// is true.
+	SolicitableEmployers []sim.ActorID
+
 	// HireableWorkers are the co-present actors the subject could take on for an
 	// odd job right now: AttrWorker carriers in the subject's audience who share
 	// neither its household nor its workplace, hold no live job or unanswered

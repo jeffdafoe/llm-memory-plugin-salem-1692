@@ -902,28 +902,45 @@ func handleSolicitedWorkActionLog(w *sim.World, evt sim.Event) {
 	if !ok {
 		return
 	}
+	// LLM-564: the row belongs to whoever MINTED the offer. Before this branch
+	// both mints logged as solicited_work attributed to the worker, so an
+	// employer's offer_work read in the log as the worker having asked — a wrong
+	// answer that looks right in any "who is asking for work" query. The event's
+	// InitiatedBy (LLM-346, the same field Responder() reads) says whose act it
+	// was; attribute the row to them, with the other party as counterparty.
+	actionType := sim.ActionTypeSolicitedWork
+	actorID := received.WorkerID
+	counterpartyID := received.EmployerID
+	counterpartyKey := "employer"
+	if received.InitiatedBy == received.EmployerID {
+		actionType = sim.ActionTypeOfferedWork
+		actorID = received.EmployerID
+		counterpartyID = received.WorkerID
+		counterpartyKey = "worker"
+	}
 	entry := sim.ActionLogEntry{
-		ActorID:          received.WorkerID,
+		ActorID:          actorID,
 		OccurredAt:       received.At,
-		ActionType:       sim.ActionTypeSolicitedWork,
+		ActionType:       actionType,
 		HuddleID:         received.HuddleID,
-		CounterpartyName: actorDisplayNameOrEmpty(w, received.EmployerID),
+		CounterpartyName: actorDisplayNameOrEmpty(w, counterpartyID),
 		Amount:           received.Reward,
 	}
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
-		log.Printf("cascade/action_log: append solicited_work (worker %q labor %d event %d): %v",
-			received.WorkerID, received.LaborID, received.EventID(), err)
+		log.Printf("cascade/action_log: append %s (actor %q labor %d event %d): %v",
+			actionType, actorID, received.LaborID, received.EventID(), err)
 		return
 	}
-	// Durable mirror (ZBBS-WORK-376): the worker offered the employer a
-	// DurationMin job for the reward. employer + amount + duration_min give the
-	// dream distiller the full arrangement; labor_id joins the row to its offer.
-	display, source := actorDisplayAndSource(w, received.WorkerID)
+	// Durable mirror (ZBBS-WORK-376): the minting party offered the other a
+	// DurationMin job for the reward. counterparty + amount + duration_min give
+	// the dream distiller the full arrangement; labor_id joins the row to its
+	// offer.
+	display, source := actorDisplayAndSource(w, actorID)
 	payload := map[string]any{
-		"employer":     actorDisplayName(w, received.EmployerID),
-		"amount":       received.Reward,
-		"duration_min": received.DurationMin,
-		"labor_id":     uint64(received.LaborID),
+		counterpartyKey: actorDisplayName(w, counterpartyID),
+		"amount":        received.Reward,
+		"duration_min":  received.DurationMin,
+		"labor_id":      uint64(received.LaborID),
 	}
 	// LLM-225: the in-kind reward leg, omitted for a coins-only ask so the
 	// pre-existing row shape is unchanged.
@@ -931,9 +948,9 @@ func handleSolicitedWorkActionLog(w *sim.World, evt sim.Event) {
 		payload["reward_items"] = goods
 	}
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
-		ActorID:     received.WorkerID,
+		ActorID:     actorID,
 		OccurredAt:  received.At,
-		ActionType:  sim.ActionTypeSolicitedWork,
+		ActionType:  actionType,
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    received.HuddleID,
