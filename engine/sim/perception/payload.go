@@ -1896,6 +1896,11 @@ type TravelerSelfView struct {
 	Archetype   string
 	Origin      string
 	Disposition string
+	// Vocation is the archetype's one-sentence calling (sim.VisitorVocation,
+	// LLM-566), rendered after the origin/manner clause — what a circuit preacher
+	// DOES rather than just the label. Empty for merchant-derived labels and
+	// unknown archetypes; the preface drops the sentence.
+	Vocation string
 	// Rumor is the grounded clause the traveler carries (VisitorState.Payload,
 	// LLM-371) — "Ezekiel Crane turned out a plow for the Hale farm". Empty when
 	// no rumor-worthy beat was on hand at spawn; the preface drops the "Word

@@ -1836,6 +1836,7 @@ func buildTravelerSelf(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		Archetype:   a.VisitorState.Archetype,
 		Origin:      a.VisitorState.Origin,
 		Disposition: a.VisitorState.Disposition,
+		Vocation:    sim.VisitorVocation(a.VisitorState.Archetype),
 		Rumor:       a.VisitorState.Payload,
 	}
 	if v.Rumor != "" {
