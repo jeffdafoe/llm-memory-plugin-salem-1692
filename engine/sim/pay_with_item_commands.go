@@ -410,12 +410,21 @@ func PayWithItem(
 					return nil, errors.New(laborTradeSteerMsg)
 				}
 				// LLM-561: teach the shape, not just the fault. The live failure
-				// was item "bundle" — a buyer trying to put a multi-good purchase
-				// into the one-kind item slot. Name the one-item-per-offer rule
-				// and both legitimate routes, so the model's next move is a real
-				// one instead of an improvised bare pay.
+				// was item "bundle" — a buyer answering a multi-line quote by
+				// putting the whole purchase into the one-kind item slot. When
+				// the named seller actually has a bundle standing here, name both
+				// real routes (that quote_id whole, or one good at a time) with
+				// the concrete quote_id; an ordinary misnamed good keeps the
+				// short error — bundle teaching is noise for a typo, and this
+				// site also serves offer_trade's want_item (code_review).
+				if bq := activeBundleQuoteFrom(w, buyer, sellerID, sceneID, at); bq != nil {
+					return nil, fmt.Errorf(
+						"unknown item kind %q — an offer carries one kind of good. %s's bundle is taken whole: call pay_with_item with quote_id %d and amount %d; or offer for one good at a time, with no quote_id.",
+						itemName, seller.DisplayName, bq.ID, bq.Amount,
+					)
+				}
 				return nil, fmt.Errorf(
-					"unknown item kind %q — an offer carries one kind of good, named as it appears in this world; take a posted bundle whole with its quote_id, or make one offer per good.",
+					"unknown item kind %q — an offer carries one kind of good, named as it appears in this world; check the items available before offering.",
 					itemName,
 				)
 			}
@@ -2208,6 +2217,35 @@ func findAutoMatchQuote(
 		return 0
 	}
 	return best.ID
+}
+
+// activeBundleQuoteFrom returns the seller's live MULTI-LINE quote visible to
+// this buyer in this scene, if any — the context that turns the unknown-item
+// reject into a bundle-teaching one (LLM-561: a buyer answering a bundle put
+// the whole purchase into the one-kind item slot as item "bundle"; the bare
+// reject left it to improvise a 35-coin payment against a 3-coin salt).
+// Liveness/visibility predicates mirror findAutoMatchQuote; among several
+// standing bundles the newest (highest ID) wins, deterministically.
+func activeBundleQuoteFrom(w *World, buyer *Actor, sellerID ActorID, sceneID SceneID, at time.Time) *SceneQuote {
+	var best *SceneQuote
+	for _, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive || len(q.Lines) < 2 {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
+			continue
+		}
+		if q.SellerID != sellerID || q.SceneID != sceneID {
+			continue
+		}
+		if q.TargetBuyer != "" && q.TargetBuyer != buyer.ID {
+			continue
+		}
+		if best == nil || q.ID > best.ID {
+			best = q
+		}
+	}
+	return best
 }
 
 // withdrawCrossingOffers resolves the buyer's OWN still-pending offers that

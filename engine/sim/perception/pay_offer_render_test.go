@@ -303,14 +303,25 @@ func TestRender_QuoteWarrantLine_BundleNoBarterAlt(t *testing.T) {
 	if strings.Contains(out, "offer_trade") {
 		t.Errorf("bundle quote line should not advertise offer_trade (no single want_item)\n%s", out)
 	}
+	// LLM-561: the whole-bundle take keeps its concrete quoted terms — the
+	// counter path is an addition, never a replacement of the atomic take.
+	if !strings.Contains(out, "To take the whole bundle, call pay_with_item with quote_id 7 and amount 9") {
+		t.Errorf("bundle quote line lost the concrete whole-bundle take\n%s", out)
+	}
 	// LLM-561: the bundle arm names the counter path — a free-form
-	// pay_with_item without the quote_id, one kind of good per offer — so a
-	// buyer who wants part of the bundle, or other terms, isn't at a dead end.
+	// pay_with_item without the quote_id, one good at a time — so a buyer who
+	// wants part of the bundle, or other terms, isn't at a dead end. The
+	// escape must read as a CONDITIONAL alternative ("If you want only
+	// part…"), not a second action on top of the take (every pay_with_item
+	// call is terminal — a cue instructing two calls can never be obeyed).
+	if !strings.Contains(out, "If you want only part of the bundle") {
+		t.Errorf("bundle quote line's counter path lost its conditional framing\n%s", out)
+	}
 	if !strings.Contains(out, "no quote_id") || !strings.Contains(out, "accept or counter") {
 		t.Errorf("bundle quote line missing the LLM-561 counter-path escape (free-form offer, no quote_id)\n%s", out)
 	}
-	if !strings.Contains(out, "one kind of good") {
-		t.Errorf("bundle quote line missing the one-kind-per-offer rule\n%s", out)
+	if !strings.Contains(out, "one good at a time") {
+		t.Errorf("bundle quote line missing the one-good-at-a-time pacing\n%s", out)
 	}
 }
 
