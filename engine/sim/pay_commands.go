@@ -275,6 +275,12 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			buyer.Coins -= amount
 			seller.Coins += amount
 
+			// LLM-557: coin a keeper hands a constable settles his town rate.
+			// Inline here, the same placement accrueStallWear takes on the sale
+			// path, so the debt and the coin move together. A no-op for every
+			// other pay in the village.
+			settleTownRate(w, buyer, seller, amount)
+
 			// Emit the Paid event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world
 			// goroutine.

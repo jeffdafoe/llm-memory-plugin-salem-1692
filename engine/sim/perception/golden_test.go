@@ -3757,6 +3757,141 @@ var perceptionScenarios = []perceptionScenario{
 			"this ticket and keeps exactly today's yield.",
 		build: cookAtHearthlessKitchen,
 	},
+	{
+		name: "keeper_owes_town_rate_constable_present",
+		summary: "LLM-557 paying side: Josiah Thorne keeps the General Store, owes one day's town rate, and the constable " +
+			"is standing in the shop with him. The golden pins the '## Town rate' cue naming Gideon Marsh verbatim (he is " +
+			"the pay recipient argument) and the exact coin, in the quiet single-day tier — a passing courtesy, not a " +
+			"demand. Foil of keeper_owes_town_rate_arrears (several days owing → the arrears tier).",
+		build: keeperOwesTownRateConstablePresent,
+	},
+	{
+		name: "keeper_owes_town_rate_arrears",
+		summary: "LLM-557 arrears tier: the same keeper and constable, but three days of rate have run on (the cap). The " +
+			"golden pins the line escalating from the day's courtesy to something the keeper should feel behind on, while " +
+			"still naming the constable and the exact amount the pay call needs. The tiering is the felt-needs register " +
+			"applied to a debt.",
+		build: keeperOwesTownRateArrears,
+	},
+	{
+		name: "constable_collects_town_rate_at_stop",
+		summary: "LLM-557 collecting side: the constable himself, called in at the General Store on his rounds, with a " +
+			"keeper in arrears in front of him. The golden pins the collector's line naming who is behind and by how " +
+			"much — and pins what is deliberately ABSENT: no imperative and no tool. The coin is the keeper's to hand " +
+			"over, so the constable has nothing to call; an imperative here would also risk instructing a second " +
+			"terminal verb alongside speak.",
+		build: constableCollectsTownRateAtStop,
+	},
+	{
+		name: "keeper_owes_town_rate_no_constable",
+		summary: "LLM-557 co-location negative arm: the same keeper, the same debt, but no constable anywhere near him. " +
+			"The golden pins TOTAL SILENCE on the rate. Unlike the farm-upkeep cue — whose obligation sends the owner on " +
+			"an errand to the smith and so rides every tick — a keeper owes nothing but a coin handed over when the man " +
+			"is in front of him. Off-scene the cue would be pure nagging with nothing to act on.",
+		build: keeperOwesTownRateNoConstable,
+	},
+}
+
+// townRateSnapshot builds the shared LLM-557 fixture: Josiah Thorne keeping the
+// General Store with `owed` coins of town rate outstanding, and Gideon Marsh the
+// constable placed according to `constablePresent`. Returned as (snapshot, keeperID,
+// constableID) so each scenario can point the render at whichever side it pins.
+func townRateSnapshot(owed int, constablePresent bool) (*sim.Snapshot, sim.ActorID, sim.ActorID) {
+	const (
+		keeperID    = sim.ActorID("josiah")
+		constableID = sim.ActorID("gideon")
+	)
+	zero := 0
+	start, end := 480, 1080
+	now := 600
+	huddle := sim.HuddleID("store_huddle")
+	storePos := sim.WorldPos{X: 1500, Y: 1500}.Tile()
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               storePos,
+		InsideStructureID: "general_store",
+		WorkStructureID:   "general_store",
+		CurrentHuddleID:   huddle,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             21,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Constable Gideon Marsh": {}},
+	}
+	gideon := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Constable Gideon Marsh",
+		Role:             "constable",
+		State:            sim.StateIdle,
+		Pos:              storePos,
+		WorkStructureID:  "meeting_house",
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            0,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{},
+		AttributeSlugs:   []string{sim.AttrConstable},
+		Acquaintances:    map[string]sim.Acquaintance{"Josiah Thorne": {}},
+	}
+	if constablePresent {
+		gideon.InsideStructureID = "general_store"
+		gideon.CurrentHuddleID = huddle
+	} else {
+		// Off at his post across the village — nothing to collect and nothing to pay.
+		gideon.InsideStructureID = "meeting_house"
+		gideon.Pos = sim.WorldPos{X: 100, Y: 100}.Tile()
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{keeperID: josiah, constableID: gideon},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"general_store": plainStructure("general_store", "General Store"),
+			"meeting_house": plainStructure("meeting_house", "Meeting House"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"general_store": {
+				ID:            "general_store",
+				DisplayName:   "General Store",
+				Pos:           sim.WorldPos{X: 1500, Y: 1500},
+				OwnerActorID:  keeperID,
+				Tags:          []string{sim.TagBusiness},
+				RateOwed:      owed,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, keeperID, constableID
+}
+
+// keeperOwesTownRateConstablePresent — the single-day courtesy tier, keeper's side.
+func keeperOwesTownRateConstablePresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, keeperID, _ := townRateSnapshot(1, true)
+	return snap, keeperID, nil
+}
+
+// keeperOwesTownRateArrears — three days run on (the default cap), keeper's side.
+func keeperOwesTownRateArrears() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, keeperID, _ := townRateSnapshot(sim.DefaultTownRateMaxOwed, true)
+	return snap, keeperID, nil
+}
+
+// constableCollectsTownRateAtStop — the collector's side, keeper in arrears present.
+func constableCollectsTownRateAtStop() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, _, constableID := townRateSnapshot(sim.DefaultTownRateMaxOwed, true)
+	return snap, constableID, nil
+}
+
+// keeperOwesTownRateNoConstable — the co-location negative arm: debt, no collector.
+func keeperOwesTownRateNoConstable() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, keeperID, _ := townRateSnapshot(sim.DefaultTownRateMaxOwed, false)
+	return snap, keeperID, nil
 }
 
 // producerDerivedInputDemand is the LLM-260 derived-demand fixture: Hannah-shaped

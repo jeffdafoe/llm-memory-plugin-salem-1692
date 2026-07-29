@@ -133,6 +133,11 @@ type MutableWorldSettings struct {
 	FarmUpkeepFloor          int
 	FarmUpkeepCoinsPerShovel int
 
+	// Town rate knobs (LLM-557) — live-tunable via the umbilical, persisted here
+	// each checkpoint so a live change survives restart.
+	TownRateCoinsPerDay int
+	TownRateMaxOwed     int
+
 	// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in LLM-183)
 	// — live-tunable, persisted here each checkpoint so a live change survives
 	// restart. HuddleLoopTimeoutSeconds is the master enable (0 = sweep off). Stored
@@ -237,6 +242,8 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			StallDegradedProducePct:           w.Settings.StallDegradedProducePct,
 			FarmUpkeepFloor:                   w.Settings.FarmUpkeepFloor,
 			FarmUpkeepCoinsPerShovel:          w.Settings.FarmUpkeepCoinsPerShovel,
+			TownRateCoinsPerDay:               w.Settings.TownRateCoinsPerDay,
+			TownRateMaxOwed:                   w.Settings.TownRateMaxOwed,
 			HuddleLoopTimeoutSeconds:          int(w.Settings.HuddleLoopTimeout / time.Second),
 			HuddleLoopRepeatPercent:           w.Settings.HuddleLoopRepeatPercent,
 			HuddleLoopSweepCadenceSeconds:     int(w.Settings.HuddleLoopSweepCadence / time.Second),

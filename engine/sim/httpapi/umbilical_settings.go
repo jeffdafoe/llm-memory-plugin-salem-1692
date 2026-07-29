@@ -83,6 +83,16 @@ type UmbilicalSettingsDTO struct {
 	FarmUpkeepFloor          int `json:"farm_upkeep_floor"`
 	FarmUpkeepCoinsPerShovel int `json:"farm_upkeep_coins_per_shovel"`
 
+	// TownRateCoinsPerDay / TownRateMaxOwed (LLM-557) are the constable's levy knobs
+	// the town-rate/set route writes: every owned business owes TownRateCoinsPerDay
+	// per game-day, capped at TownRateMaxOwed in arrears. Persisted (checkpoint
+	// writes them back), so they survive restart. Reported RAW:
+	// TownRateCoinsPerDay == 0 means accrual is off, and must read as 0 here rather
+	// than as a resolved default. TownRateMaxOwed == 0 means uncapped. The GET half
+	// of no-blind-tuning symmetry.
+	TownRateCoinsPerDay int `json:"town_rate_coins_per_day"`
+	TownRateMaxOwed     int `json:"town_rate_max_owed"`
+
 	// LaborProduceBoostPct (LLM-224) is the per-worker produce-rate boost a laboring
 	// worker adds at their employer's establishment (settings/labor-produce-boost
 	// writes it). Persisted (checkpoint writes it back), so it survives restart.
@@ -271,6 +281,8 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			SeekWorkNeedYieldMargin:               world.Settings.SeekWorkNeedYieldMargin,
 			FarmUpkeepFloor:                       world.Settings.FarmUpkeepFloor,
 			FarmUpkeepCoinsPerShovel:              world.Settings.FarmUpkeepCoinsPerShovel,
+			TownRateCoinsPerDay:                   world.Settings.TownRateCoinsPerDay,
+			TownRateMaxOwed:                       world.Settings.TownRateMaxOwed,
 			LaborProduceBoostPct:                  world.Settings.LaborProduceBoostPct,
 			MerchantCoinFloor:                     world.Settings.MerchantCoinFloor,
 			StallWearPerCoin:                      world.Settings.StallWearPerCoin,

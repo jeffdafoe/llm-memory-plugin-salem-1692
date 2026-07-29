@@ -93,6 +93,16 @@ type VillageObject struct {
 	// isn't a wearable business (see IsWearableStall / TagBusiness scope).
 	Wear int
 
+	// RateOwed is the coin this owned business owes the constable in town rate
+	// (LLM-557), accrued a day at a time by the daily assessment and drawn down
+	// when the owner pays a constable. Durable (checkpointed) for the same reason
+	// HearthLitUntil is: the village restarts many times a day for deploys, and an
+	// in-memory balance would reset before a day's levy could ever be collected.
+	// Capped at TownRateMaxOwed so a keeper the constable cannot catch on shift
+	// never accrues a shock bill. Zero for every object that isn't a rateable
+	// business (see IsRateableBusiness).
+	RateOwed int
+
 	// HearthLitUntil is when this structure's hearth fire burns out (LLM-412).
 	// Meaningful only on an object tagged TagHearth (a structure-backed object
 	// whose building has a fireplace); zero = the fire is out. Stoking (the

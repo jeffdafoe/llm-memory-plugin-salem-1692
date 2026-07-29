@@ -117,20 +117,21 @@ func TestVillageObjectsRepo_LoadAll_HappyPath(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
-		"hearth_lit_until",
+		"hearth_lit_until", "rate_owed",
 	}).
-		// Top-level placement, owned, with loiter offsets, tags, worn.
+		// Top-level placement, owned, with loiter offsets, tags, worn, and two days
+		// of town rate outstanding (LLM-557).
 		AddRow(uuidObj1, sp(uuidAssetWell), "default", 640.0, 320.0, sp("admin"),
 			sp("Old Well"), "closed", &ownerStr, (*string)(nil),
-			&loiterX, &loiterY, 10, []string{"vendor", "well"}, 120, (*time.Time)(nil)).
+			&loiterX, &loiterY, 10, []string{"vendor", "well"}, 120, (*time.Time)(nil), 2).
 		// Top-level placement, unowned, no loiter, empty tags.
 		AddRow(uuidObj2, sp(uuidAssetBench), "variant-1", 1000.0, 500.0, sp(""),
 			sp(""), "open", (*string)(nil), (*string)(nil),
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil)).
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil), 0).
 		// Overlay attached to obj-1, owner-only, no tags.
 		AddRow(uuidObj3, sp(uuidAssetLamp), "lit", 645.0, 325.0, sp("admin"),
 			sp("Lamp"), "owner-only", &ownerStr, &parentRef,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil))
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil), 0)
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(rows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(emptyRefreshRows())
@@ -170,6 +171,13 @@ func TestVillageObjectsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if o1.Wear != 120 {
 		t.Errorf("o1.Wear = %d, want 120", o1.Wear)
+	}
+	// LLM-557: town-rate arrears round-trip off the row rather than defaulting to 0.
+	if o1.RateOwed != 2 {
+		t.Errorf("o1.RateOwed = %d, want 2", o1.RateOwed)
+	}
+	if o2 := got[sim.VillageObjectID(uuidObj2)]; o2 != nil && o2.RateOwed != 0 {
+		t.Errorf("o2.RateOwed = %d, want 0", o2.RateOwed)
 	}
 	if o1.Refreshes != nil {
 		t.Errorf("o1.Refreshes = %v, want nil (this test's fixture has no refresh rows)", o1.Refreshes)
@@ -211,7 +219,7 @@ func TestVillageObjectsRepo_LoadAll_Empty(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
-		"hearth_lit_until",
+		"hearth_lit_until", "rate_owed",
 	})
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(rows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(emptyRefreshRows())
@@ -251,7 +259,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 640.0, 320.0, "admin",
 			"Old Well", "closed", "alice", nil,
-			(*int)(nil), (*int)(nil), 0, []string{"vendor"}, 120, nil, int64(5),
+			(*int)(nil), (*int)(nil), 0, []string{"vendor"}, 120, nil, 0, int64(5),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -259,7 +267,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		WithArgs(
 			uuidObj2, uuidAssetBench, "variant-1", 1000.0, 500.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(5),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(5),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -441,7 +449,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OrphanCheckViolation(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(3),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(3),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -479,7 +487,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OwnerNullVsValue(t *testing.T) {
 		WithArgs(
 			uuidOverlay, uuidAssetLamp, "lit", 100.0, 100.0, "",
 			"", "open", "alice", uuidObj1,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(2),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(2),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -519,14 +527,14 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
-		"hearth_lit_until",
+		"hearth_lit_until", "rate_owed",
 	}).
 		AddRow(uuidObj1, sp(uuidAssetWell), "default", 640.0, 320.0, sp(""),
 			sp("Well"), "open", (*string)(nil), (*string)(nil),
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil)).
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil), 0).
 		AddRow(uuidObj2, sp(uuidAssetBench), "default", 0.0, 0.0, sp(""),
 			sp("Shaded Oak"), "open", (*string)(nil), (*string)(nil),
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil))
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil), 0)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 
 	// obj1: well with finite-supply continuous regen on thirst.
@@ -645,10 +653,10 @@ func TestVillageObjectsRepo_LoadAll_RefreshOrphanSkipped(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
-		"hearth_lit_until",
+		"hearth_lit_until", "rate_owed",
 	}).AddRow(uuidObj1, sp(uuidAssetWell), "default", 0.0, 0.0, sp(""),
 		sp("Well"), "open", (*string)(nil), (*string)(nil),
-		(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil))
+		(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil), 0)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 
 	// Two refresh rows: one for the real parent, one orphan.
@@ -695,10 +703,10 @@ func TestVillageObjectsRepo_LoadAll_RefreshQueryError(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags", "wear",
-		"hearth_lit_until",
+		"hearth_lit_until", "rate_owed",
 	}).AddRow(uuidObj1, sp(uuidAssetWell), "default", 0.0, 0.0, sp(""),
 		sp(""), "open", (*string)(nil), (*string)(nil),
-		(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil))
+		(*int)(nil), (*int)(nil), 0, []string{}, 0, (*time.Time)(nil), 0)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).
 		WillReturnError(errors.New("conn closed"))
@@ -726,7 +734,7 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(9),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(9),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -830,7 +838,7 @@ func TestVillageObjectsRepo_SaveSnapshot_NilRefreshSkipped(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(4),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(4),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
@@ -870,7 +878,7 @@ func TestVillageObjectsRepo_SaveSnapshot_RefreshNextvalError(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(1),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(1),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
@@ -901,7 +909,7 @@ func TestVillageObjectsRepo_SaveSnapshot_RefreshUpsertError(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(1),
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(1),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).

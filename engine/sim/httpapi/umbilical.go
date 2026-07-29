@@ -517,6 +517,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// Farm upkeep wealth tax (LLM-215) — live-tune the per-farm shovel levy
 		// without a restart; applied in memory and persisted on the next checkpoint.
 		{http.MethodPost, umbilicalBasePath + "/farm-upkeep/set", "Live-tune the farm wealth-tax knobs (LLM-215) without a restart. Both fields optional (at least one required), non-negative ints; farm_upkeep_coins_per_shovel=0 disables the feature. Body: {farm_upkeep_floor?, farm_upkeep_coins_per_shovel?}.", true, s.handleUmbilicalFarmUpkeepSet},
+		{http.MethodPost, umbilicalBasePath + "/town-rate/set", "Live-tune the constable's town rate (LLM-557) without a restart. Both fields optional (at least one required), non-negative ints; town_rate_coins_per_day=0 stops further accrual (the off-switch) WITHOUT forgiving outstanding arrears, town_rate_max_owed=0 means uncapped. Body: {town_rate_coins_per_day?, town_rate_max_owed?}.", true, s.handleUmbilicalTownRateSet},
 
 		// Constable rounds (LLM-514) — live-tune how often the constable walks his
 		// rounds and how long he pauses at each business; applied in memory and
