@@ -194,6 +194,71 @@ func TestGoldensTravelerPrefaceIffSubjectIsTraveler(t *testing.T) {
 	}
 }
 
+// TestGoldensTravelerVocationMatchesArchetype is the LLM-566 invariant, two
+// halves. Matrix half: every scenario whose subject is a traveler carries the
+// archetype's vocation sentence IFF sim.VisitorVocation knows the archetype —
+// a pool traveler must state its calling, and an archetype outside the pool
+// (merchant-derived labels like "peddler") must not grow one. Pool half: every
+// passer-through archetype (keyed off the exported sprite map, which init()
+// proves congruent with the pool) has a non-empty vocation that renders through
+// the production preface builder — so adding a pool archetype without a
+// vocation line fails here even before the sim init() panic is ever exercised
+// by a test binary that imports it.
+func TestGoldensTravelerVocationMatchesArchetype(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.VisitorState == nil || a.VisitorState.Archetype == "" {
+				return
+			}
+			rendered := renderScenario(sc)
+			if vocation := sim.VisitorVocation(a.VisitorState.Archetype); vocation != "" {
+				if !strings.Contains(rendered, vocation) {
+					t.Errorf("scenario %q: traveler archetype %q has a vocation line but the prompt does not carry it (LLM-566)", sc.name, a.VisitorState.Archetype)
+				}
+				return
+			}
+			for archetype := range sim.VisitorArchetypeSprite {
+				if voc := sim.VisitorVocation(archetype); voc != "" && strings.Contains(rendered, voc) {
+					t.Errorf("scenario %q: traveler archetype %q is outside the passer-through pool but the prompt carries the %q vocation line (LLM-566)", sc.name, a.VisitorState.Archetype, archetype)
+				}
+			}
+		})
+	}
+
+	for archetype := range sim.VisitorArchetypeSprite {
+		vocation := sim.VisitorVocation(archetype)
+		if vocation == "" {
+			t.Errorf("passer-through archetype %q has no vocation line (LLM-566)", archetype)
+			continue
+		}
+		var b strings.Builder
+		renderTravelerPreface(&b, &TravelerSelfView{Name: "Test Traveler", Archetype: archetype, Vocation: vocation})
+		if !strings.Contains(b.String(), vocation) {
+			t.Errorf("passer-through archetype %q: vocation line does not survive renderTravelerPreface (LLM-566)", archetype)
+		}
+	}
+
+	// The explicit non-pool contract, independent of scenario inventory: a
+	// merchant-derived label and an unknown archetype both project an empty
+	// Vocation through the production builder.
+	for _, archetype := range []string{"peddler", "tinker nobody registered"} {
+		a := &sim.ActorSnapshot{
+			DisplayName:  "Test Traveler the " + archetype,
+			VisitorState: &sim.VisitorState{Archetype: archetype},
+		}
+		v := buildTravelerSelf(&sim.Snapshot{}, "vstr-test", a)
+		if v == nil {
+			t.Fatalf("archetype %q: buildTravelerSelf returned nil for a traveler subject", archetype)
+		}
+		if v.Vocation != "" {
+			t.Errorf("archetype %q is outside the passer-through pool but buildTravelerSelf set Vocation %q (LLM-566)", archetype, v.Vocation)
+		}
+	}
+}
+
 // TestGoldensRumorSharedClauseMatchesPresentCompany is the LLM-545
 // cross-scenario invariant, computed through the production builder rather than
 // restated wording: for every scenario whose subject carries a rumor payload,
@@ -1868,6 +1933,17 @@ var perceptionScenarios = []perceptionScenario{
 			"its system prompt) speaks in-character as this specific traveler. Before LLM-370 perception never read " +
 			"VisitorState and a traveler was rendered as a generic stranger with no persona at all.",
 		build: travelerSelfIdentityPreface,
+	},
+	{
+		name: "traveler_self_identity_preface_vocation",
+		summary: "LLM-566: a POOL-archetype traveler (Master Whitcombe the circuit preacher, in from Beverly, wry) " +
+			"perceives its own turn in the Tavern. The golden pins the vocation sentence the preface now carries after " +
+			"the origin/manner clause — what a circuit preacher DOES (blessings, souls, scripture at a hearth or the " +
+			"meeting house) — so the model plays the calling instead of a generic news-carrier wearing the label. The " +
+			"live case: Whitcombe toured six businesses as a genial gossip whose whole clergy was 'the Lord willing.' " +
+			"The peddler goldens above pin the other arm — an archetype OUTSIDE the passer-through pool (merchant-derived " +
+			"labels) gets no vocation sentence.",
+		build: travelerSelfIdentityPrefaceVocation,
 	},
 	{
 		name: "traveler_self_identity_preface_with_rumor",
@@ -13906,6 +13982,52 @@ func travelerSelfIdentityPreface() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		},
 	}
 	return snap, eliasID, warrants
+}
+
+// travelerSelfIdentityPrefaceVocation is the LLM-566 fixture: a traveler whose
+// archetype is IN the passer-through pool, so the identity preface carries the
+// archetype's vocation sentence (sim.VisitorVocation) after the origin/manner
+// clause. Master Whitcombe the circuit preacher, in from Beverly and wry — the
+// live scene that motivated the ticket. He also carries a rumor payload, so the
+// golden pins the full clause order: identity → origin/manner → vocation →
+// rumor. The peddler fixtures (an archetype outside the pool) pin the
+// no-vocation arm.
+func travelerSelfIdentityPrefaceVocation() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		whitcombeID = sim.ActorID("vstr-whitcombe")
+		tavern      = sim.StructureID("tavern")
+	)
+	now := 540 // 09:00 — morning
+	whitcombe := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Master Whitcombe the circuit preacher",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             8,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "circuit preacher",
+			Origin:      "Beverly",
+			Disposition: "wry",
+			Payload:     "Elizabeth Ellis turned out three times the meat for Josiah Thorne",
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{whitcombeID: whitcombe},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: whitcombeID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, whitcombeID, warrants
 }
 
 // travelerSelfIdentityPrefaceWithRumor is the LLM-371 fixture: the same traveler

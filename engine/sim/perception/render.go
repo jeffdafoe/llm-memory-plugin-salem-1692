@@ -456,6 +456,14 @@ func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
 		fmt.Fprintf(b, " Your manner today is %s.", disposition)
 	}
 
+	// The archetype's vocation sentence (LLM-566): what this calling DOES, so the
+	// model plays a preacher/musician/surgeon rather than a generic news-carrier
+	// wearing the label. Empty for merchant-derived labels and unknown archetypes.
+	if vocation := sanitizeInline(v.Vocation); vocation != "" {
+		b.WriteString(" ")
+		b.WriteString(vocation)
+	}
+
 	// The grounded rumor the traveler carries (LLM-371). One real recent village
 	// beat, selected at spawn from the action log and framed as word picked up on
 	// the road — so the stateless salem-visitor VA has something true to trade in

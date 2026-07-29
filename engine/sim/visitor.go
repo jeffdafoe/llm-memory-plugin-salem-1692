@@ -237,6 +237,30 @@ var passerThroughSprite = map[string]string{
 // VisitorSpriteCatalogNames.
 var VisitorArchetypeSprite = passerThroughSprite
 
+// passerThroughVocation gives each passer-through archetype its one-sentence vocation —
+// what the calling DOES, spoken into the traveler's identity preface (LLM-566). Before
+// this the bare two-word label was the only vocational signal on the wire, so every
+// passer-through toured as the same genial news-carrier under a different name (the live
+// case: a circuit preacher whose whole clergy was "the Lord willing" squeezed from the
+// label). Diegetic prose, not an instruction — the sentence describes who the traveler
+// is and the model draws the behavior. Merchants get NO entry: their label is derived
+// from the bound errand (visitorMerchantLabel) and the errand cue already carries their
+// purpose. The init() below enforces every pool entry has a vocation.
+var passerThroughVocation = map[string]string{
+	"messenger":          "The news is your trade: you carry letters and word for pay, deliver them brisk and exact, and are back on the road as soon as they are passed.",
+	"itinerant musician": "You live by your fiddle and your voice — wherever folk gather you look for a corner and an audience, and offer a tune for a meal or a coin.",
+	"circuit preacher":   "You carry the Word as well as the news: you bless households, ask after souls, and would not leave a village without a bit of scripture spoken at a hearth or the meeting house.",
+	"traveling scholar":  "You travel for learning's sake, hungry for books, letters, and learned talk — you ask more questions than you answer and set down what you hear.",
+	"wandering surgeon":  "You mend folk for your bread: you ask after ailments and injuries wherever you call, and offer what remedy your kit and learning allow.",
+}
+
+// VisitorVocation returns the archetype's vocation sentence for the identity preface,
+// or "" for an archetype without one (merchant-derived labels, unknowns) — the preface
+// drops the sentence on empty.
+func VisitorVocation(archetype string) string {
+	return passerThroughVocation[archetype]
+}
+
 // FactorSpriteName is the sprite a wholesale factor (a sell errand) renders with — a
 // well-to-do merchant (LLM-410/455).
 const FactorSpriteName = "Merchant A (v00)"
@@ -253,6 +277,9 @@ func init() {
 	for _, archetype := range passerThroughArchetypePool {
 		if _, ok := passerThroughSprite[archetype]; !ok {
 			panic("sim/visitor: passer-through archetype " + archetype + " has no sprite mapping in passerThroughSprite")
+		}
+		if _, ok := passerThroughVocation[archetype]; !ok {
+			panic("sim/visitor: passer-through archetype " + archetype + " has no vocation line in passerThroughVocation")
 		}
 	}
 }
