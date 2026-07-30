@@ -122,3 +122,55 @@ func TestCoinRecordsRepo_Integration_MissingAmountDoesNotFailTheScan(t *testing.
 		t.Fatalf("got %+v, want one row with an empty amount", rows)
 	}
 }
+
+// A visitor-authored payment reaches agent_action_log with a BLANKED actor_id since
+// LLM-573 — the row is kept for the dream pipeline, but the column FKs to actor(id)
+// and a visitor lives in the separate visitor table, so it carries no payer.
+//
+// The seed must skip it. An unattributed payment cannot be keyed to a pair, and
+// admitting it would either error the scan or invent an attribution. This is the SQL
+// half of the coupling perception's traveler gate rests on; the cascade half is
+// cascade.TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable.
+func TestCoinRecordsRepo_Integration_SkipsUnattributedVisitorRows(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const residentID = "11111111-1111-1111-1111-111111111111"
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, 'Hannah Boggs', 0, 0)`,
+		residentID,
+	); err != nil {
+		t.Fatalf("seed actor: %v", err)
+	}
+	base := time.Now().UTC().Truncate(time.Microsecond)
+
+	// The visitor's payment, as LLM-573 now writes it: real row, NULL actor_id, and
+	// the author preserved only as a display name.
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+		 VALUES (NULL, $1, 'agent', 'paid', $2::jsonb, 'ok', 'Elias Drum the peddler')`,
+		base.Add(-2*time.Hour),
+		`{"recipient": "Hannah Boggs", "recipient_actor_id": "`+residentID+`", "amount": 3}`,
+	); err != nil {
+		t.Fatalf("insert visitor row: %v", err)
+	}
+	// Positive control from the same window.
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+		 VALUES ($1, $2, 'agent', 'paid', '{"recipient": "Bob", "amount": 2}'::jsonb, 'ok', 'Hannah Boggs')`,
+		residentID, base.Add(-time.Hour),
+	); err != nil {
+		t.Fatalf("insert resident row: %v", err)
+	}
+
+	rows, err := NewCoinRecordsRepo(f.Pool).LoadPaymentsSince(ctx, base.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("LoadPaymentsSince: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d row(s), want only the attributed one: %+v", len(rows), rows)
+	}
+	if string(rows[0].PayerID) != residentID {
+		t.Errorf("PayerID = %q, want the resident — the visitor row must not be seeded", rows[0].PayerID)
+	}
+}
