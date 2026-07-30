@@ -984,6 +984,26 @@ func renderActor(b *strings.Builder, a ActorView) {
 				fmt.Fprintf(b, "%s (x%d)", sanitizeInline(noun), it.Qty)
 			}
 		}
+		// LLM-574: a settled buy-errand traveler's pack is his own provisions, and the
+		// claim rides HERE rather than in his rounds cue. LLM-544 first wrote it into
+		// "## Your rounds", a whole section and a conversation away from this line —
+		// and Tobias Hewes the nail-buyer, carrying both, spent his afternoon offering
+		// the nails he had just bought from the smith to everyone he called on. For
+		// every other actor in the village this line IS the sellable-stock readout, so
+		// the correction belongs on it. "goods", not "what you carry": a booked room
+		// can ride the inventory as a nights_stay, and a granted room is not bound home
+		// with anyone.
+		//
+		// The wording is LLM-544's and is kept deliberately: it states a FACT and does
+		// not forbid the pitch, because the scene is the argument. "come by here", not
+		// "bought here" — the empty-spawn-pack invariant establishes only that the goods
+		// were acquired in the village, not HOW, and a gift over a threshold is as likely
+		// as a purchase (Elizabeth Ellis handed Brother Ashford a wedge of cheese and a
+		// sack of flour the same afternoon). The claim has to be one the data actually
+		// supports, or it is one more thing in the prompt the model can catch out.
+		if a.PackBoundHome {
+			b.WriteString(" — what goods you carry are your own, come by here and bound home with you, not stock to sell")
+		}
 		b.WriteString(".\n")
 	}
 	// Standing in-progress batch (LLM-319): the producer's current work,

@@ -1435,6 +1435,12 @@ type ActorView struct {
 	// build time; empty (render omits the line) when carrying nothing.
 	Inventory []InventoryItem
 
+	// PackBoundHome marks the carried goods as a settled buy-errand traveler's own
+	// provisions rather than stock (LLM-574) — rendered as a coda on the inventory
+	// line itself, because that line is where the temptation to sell them lives. See
+	// travelerPackBoundHome for what makes the claim true; false for everyone else.
+	PackBoundHome bool
+
 	// HoursAwake is whole hours since the actor woke at its shift-start, used to
 	// anchor the tiredness line ("you've been awake for X hours") so the model
 	// weighs rest against real elapsed time, not a bare adjective (LLM-85).
