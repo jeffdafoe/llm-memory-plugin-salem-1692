@@ -1675,7 +1675,16 @@ func (w *World) AppendActionLogDurable(row DurableActionLogRow) {
 	// ephemeral — the `visitor` row is stale-deleted at the checkpoint following
 	// departure — so persisting it would leave a reference that resolves to
 	// nothing within the day, while the display name stays meaningful for life.
-	if a := w.Actors[row.ActorID]; a != nil && a.VisitorState != nil {
+	//
+	// The id-shape arm is not redundant with the VisitorState lookup: an emit
+	// site that appends AFTER cleanup removed the visitor from w.Actors gets a
+	// nil actor and would send the raw "vstr-" id to a uuid column, resuming the
+	// LLM-379 error flood — and now losing the row, which is the whole defect.
+	// IsVisitorActorID exists for exactly this "the in-memory actor is gone, the
+	// id is the only signal" case, and matches the full ^vstr-[0-9a-f]{8}$ mint
+	// shape, so a merely prefix-shaped out-of-band id still fails loudly at the
+	// insert rather than being silently swallowed as a NULL-author row.
+	if a := w.Actors[row.ActorID]; (a != nil && a.VisitorState != nil) || IsVisitorActorID(row.ActorID) {
 		row.ActorID = ""
 	}
 	_ = sink.Append(w.LifecycleContext(), row)

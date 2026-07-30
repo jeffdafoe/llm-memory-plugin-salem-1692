@@ -1080,6 +1080,59 @@ func TestSubscribers_PersistTransientVisitorsWithNullActor(t *testing.T) {
 	}
 }
 
+// --- TestSubscribers_BlankVisitorActorAfterCleanupRemovedHim ------
+// The blanking cannot rest on the w.Actors lookup alone. An emit site that
+// appends a durable row AFTER visitor cleanup deleted the actor gets nil back
+// and would hand the raw "vstr-" id to a uuid column — resuming the LLM-379
+// error flood, and now losing the row, which is the defect LLM-573 exists to
+// fix. sim.IsVisitorActorID is the id-shape fallback for exactly the "in-memory
+// actor is gone, the id is the only signal" case.
+func TestSubscribers_BlankVisitorActorAfterCleanupRemovedHim(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	const visitorID sim.ActorID = "vstr-0000abcd"
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+		// No w.Actors entry at all — the state cleanup leaves behind.
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.AppendActionLogDurable(sim.DurableActionLogRow{
+			ActorID:     visitorID,
+			OccurredAt:  at,
+			ActionType:  sim.ActionTypeSpoke,
+			Payload:     map[string]any{"text": "Fare you well."},
+			SpeakerName: string(visitorID), // actorDisplayAndSource's unknown-actor fallback
+			HuddleID:    "h1",
+			Source:      "agent",
+		})
+		// An unknown id that is NOT a well-formed visitor id must stay loud: it
+		// is a caller bug, and swallowing it as a NULL-author row would hide it.
+		world.AppendActionLogDurable(sim.DurableActionLogRow{
+			ActorID:     "vstr-not-a-visitor",
+			OccurredAt:  at,
+			ActionType:  sim.ActionTypeSpoke,
+			Payload:     map[string]any{"text": "?"},
+			SpeakerName: "vstr-not-a-visitor",
+			Source:      "agent",
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d durable rows, want 2", len(rows))
+	}
+	if rows[0].ActorID != "" {
+		t.Errorf("departed visitor's actor_id = %q, want \"\" — the id shape must blank it once w.Actors no longer has him", rows[0].ActorID)
+	}
+	if rows[1].ActorID != "vstr-not-a-visitor" {
+		t.Errorf("malformed id = %q, want it passed through unblanked so the insert fails loudly", rows[1].ActorID)
+	}
+}
+
 // --- TestHandleRepairingActionLog_NamesBusinessAndIgnoresOtherKinds ---
 // LLM-354: a repair start appends a row naming the business being mended, and
 // the harvest/refresh starts that share SourceActivityStarted append nothing —
