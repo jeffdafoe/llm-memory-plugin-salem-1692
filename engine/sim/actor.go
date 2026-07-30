@@ -15,9 +15,10 @@ type ActorID string
 // login username is a separate column, not its id).
 var persistedActorIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// IsPersistedActorID reports whether id could name a row in the uuid-keyed
-// `actor` table — i.e. whether it can legally appear in a uuid column that FKs
-// to it, such as agent_action_log.actor_id.
+// IsPersistedActorID reports whether id is BINDABLE against a uuid column that
+// FKs to the `actor` table, such as agent_action_log.actor_id. It is a check on
+// shape alone — it says nothing about whether such an actor exists, and a
+// well-formed id naming nobody is a legitimate empty match.
 //
 // It exists for the read side of that column. Binding a non-uuid string against
 // it is not an empty match but a query ERROR ("invalid input syntax for type
@@ -26,6 +27,10 @@ var persistedActorIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[
 // wanted "none". The rough complement of IsVisitorActorID, but stated positively
 // and about the column rather than the population, because that is the question
 // a query filter is actually asking.
+//
+// Case-insensitive, and indifferent to uuid version/variant bits: Postgres
+// accepts both as uuid input, so constraining further would reject values the
+// column would have taken.
 func IsPersistedActorID(id ActorID) bool {
 	return persistedActorIDPattern.MatchString(string(id))
 }

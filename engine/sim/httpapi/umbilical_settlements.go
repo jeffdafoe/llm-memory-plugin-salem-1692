@@ -93,10 +93,11 @@ func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Reque
 		switch {
 		case sim.IsVisitorActorID(actor):
 			// A real actor id in this world, but never one this column holds: a
-			// transient visitor's rows carry actor_id NULL (LLM-573). Name the way
-			// through rather than just refusing.
+			// transient visitor's rows carry actor_id NULL (LLM-573). Name a
+			// workflow this route actually supports — since/until narrow the window
+			// and buyer_name rides every row — rather than a filter it does not have.
 			writeError(w, http.StatusBadRequest,
-				"actor filters resident settlements only; a visitor's rows carry no actor id — find them by buyer_name")
+				"actor filters resident settlements only; a visitor's rows carry no actor id — narrow with since/until and read buyer_name off the rows")
 			return
 		case !sim.IsPersistedActorID(actor):
 			writeError(w, http.StatusBadRequest, "actor must be an actor uuid")
