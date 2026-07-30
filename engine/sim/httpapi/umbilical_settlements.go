@@ -69,9 +69,10 @@ type UmbilicalSettlementsDTO struct {
 }
 
 // handleUmbilicalSettlements serves durable accepted settlements, most-recent first.
-// Optional query params: actor (buyer id), since / until (RFC3339, occurred_at
-// window [since, until)), ledger (a ledger id; matches post-LLM-105 rows only),
-// limit (same parse + cap as /actions). 400 on an unparseable since/until/ledger;
+// Optional query params: actor (buyer id — a resident's actor uuid), since / until
+// (RFC3339, occurred_at window [since, until)), ledger (a ledger id; matches
+// post-LLM-105 rows only), limit (same parse + cap as /actions). 400 on an
+// unparseable since/until/ledger or an actor that is not a resident's uuid;
 // 503 when no store is wired. Over-fetches one row past the cap to set has_more
 // without a COUNT, then trims — the same trick /transcript uses.
 func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +81,29 @@ func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	q := r.URL.Query()
-	filter := sim.SettlementFilter{ActorID: sim.ActorID(q.Get("actor"))}
+	filter := sim.SettlementFilter{}
+	if raw := q.Get("actor"); raw != "" {
+		// actor_id is a uuid column, so a non-uuid filter value is a query error
+		// rather than an empty match. Both bad shapes are refused here instead of
+		// answering with an empty list, because "no settlements" and "this filter
+		// cannot see the settlements you mean" read identically to an operator and
+		// only one of them is true — the same reason a zero `ledger` is rejected
+		// below rather than silently widening the query.
+		actor := sim.ActorID(raw)
+		switch {
+		case sim.IsVisitorActorID(actor):
+			// A real actor id in this world, but never one this column holds: a
+			// transient visitor's rows carry actor_id NULL (LLM-573). Name the way
+			// through rather than just refusing.
+			writeError(w, http.StatusBadRequest,
+				"actor filters resident settlements only; a visitor's rows carry no actor id — find them by buyer_name")
+			return
+		case !sim.IsPersistedActorID(actor):
+			writeError(w, http.StatusBadRequest, "actor must be an actor uuid")
+			return
+		}
+		filter.ActorID = actor
+	}
 	if raw := q.Get("since"); raw != "" {
 		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {

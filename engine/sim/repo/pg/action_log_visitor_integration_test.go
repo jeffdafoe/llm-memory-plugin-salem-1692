@@ -177,4 +177,18 @@ func TestLoadSettlements_Integration_NullActorBuyer(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].BuyerID != hannah {
 		t.Errorf("filtered = %+v, want only Hannah's settlement", filtered)
 	}
+
+	// An id the uuid column cannot hold is empty, not an error. Binding it would
+	// raise "invalid input syntax for type uuid" — a 500 on the route above and a
+	// failed read for any direct caller. Real pg is the only place that distinction
+	// shows up, which is why this arm lives here rather than in the pgxmock tests.
+	for _, bad := range []sim.ActorID{"vstr-fb50246e", "ez"} {
+		empty, err := NewActionLogRepo(f.Pool).LoadSettlements(ctx, sim.SettlementFilter{ActorID: bad}, 10)
+		if err != nil {
+			t.Errorf("LoadSettlements(actor=%q) errored instead of matching nothing: %v", bad, err)
+		}
+		if len(empty) != 0 {
+			t.Errorf("LoadSettlements(actor=%q) = %+v, want empty", bad, empty)
+		}
+	}
 }

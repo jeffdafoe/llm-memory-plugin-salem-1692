@@ -1,12 +1,34 @@
 package sim
 
 import (
+	"regexp"
 	"strings"
 	"time"
 )
 
 // ActorID identifies an actor uniquely within the world.
 type ActorID string
+
+// persistedActorIDPattern is the shape of an id in the uuid-keyed `actor`
+// table: canonical 8-4-4-4-12 hex, case-insensitive. Both populations that
+// reach that table carry it — NPCs and PCs alike are minted as uuids (a PC's
+// login username is a separate column, not its id).
+var persistedActorIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// IsPersistedActorID reports whether id could name a row in the uuid-keyed
+// `actor` table — i.e. whether it can legally appear in a uuid column that FKs
+// to it, such as agent_action_log.actor_id.
+//
+// It exists for the read side of that column. Binding a non-uuid string against
+// it is not an empty match but a query ERROR ("invalid input syntax for type
+// uuid"), so a caller filtering by a transient visitor's "vstr-" id — a real
+// actor id in this world, just never one this column holds — got a 500 where it
+// wanted "none". The rough complement of IsVisitorActorID, but stated positively
+// and about the column rather than the population, because that is the question
+// a query filter is actually asking.
+func IsPersistedActorID(id ActorID) bool {
+	return persistedActorIDPattern.MatchString(string(id))
+}
 
 // ActorKind discriminates the four populations: stateful NPCs (own VA with
 // memory), shared-VA NPCs (salem-vendor / salem-visitor backed), human PCs,

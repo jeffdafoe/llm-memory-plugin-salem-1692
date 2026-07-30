@@ -469,6 +469,15 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 		q += fmt.Sprintf(clause, len(args))
 	}
 	if filter.ActorID != "" {
+		// actor_id is a uuid column. Binding a non-uuid string against it is not
+		// an empty match but a query ERROR ("invalid input syntax for type uuid"),
+		// so an id that cannot appear there — a transient visitor's "vstr-" id,
+		// whose rows carry actor_id NULL (LLM-573) — returns empty rather than
+		// failing the read. Same posture as the out-of-range LedgerID below: a
+		// value the column cannot hold matches nothing, so say so.
+		if !sim.IsPersistedActorID(filter.ActorID) {
+			return []sim.SettlementRow{}, nil
+		}
 		add(" AND actor_id = $%d", string(filter.ActorID))
 	}
 	if !filter.Since.IsZero() {
