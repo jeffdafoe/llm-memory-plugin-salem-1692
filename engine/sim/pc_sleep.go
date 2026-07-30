@@ -349,11 +349,26 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 // AutoBedIdleLodgerPCs beds any lodger PC that has gone idle in its paid
 // bedroom — the passive sleep entry that is the primary way a player sleeps
 // (v1 autoBedIdleLodgers). A PC qualifies when it is: awake, has a stamped
-// LastPCInputAt older than DefaultPCIdleSleepMinutes, has tiredness at or above
+// LastPCInputAt older than DefaultPCIdleSleepMinutes, has no fresh
+// LastPCActivityAt within that same window (LLM-568 — a human demonstrably
+// watching is not idle), has tiredness at or above
 // DefaultPCIdleSleepMinTiredness (a fresh PC isn't knocked out), and passes
 // pcCanSleepHere (in a private room of its current structure with an active
 // ledger grant). executePCSleep emits PCSleepStarted, which drives the client's
 // sleep overlay + Wake button.
+//
+// Watching counts (LLM-568). The sweep's "idle" used to mean only "no
+// deliberate in-world act", so a lodger who sat WATCHING the village — panning
+// the map, reading the talk panel — was knocked out mid-watch every 15 minutes
+// once tiredness crossed the red line (which for a real player it permanently
+// has). LLM-470 already built the signal this gate needs: the client's
+// activity reporter turns local-only input into /pc/attend posts, stamping
+// LastPCActivityAt. Consulting it here reunites the two "is a human there"
+// mechanisms. Polarity is unchanged for the AFK case: a player who walks away
+// stops generating reporter posts, the activity stamp goes stale past the same
+// 15-minute cutoff, and the sweep beds them exactly as before. Nil activity
+// (never stamped this session) also falls through to bed — same
+// nil-means-away posture as PCActivityStale.
 //
 // Grant-based gate (LLM-14): a lodger holds a private-room grant but is bedded
 // into the room only at this sweep (or /pc/sleep), so pcCanSleepHere keys off
@@ -371,6 +386,9 @@ func AutoBedIdleLodgerPCs(now time.Time) Command {
 				}
 				if a.LastPCInputAt == nil || !a.LastPCInputAt.Before(idleCutoff) {
 					continue // never acted, or acted too recently to be idle
+				}
+				if a.LastPCActivityAt != nil && !a.LastPCActivityAt.Before(idleCutoff) {
+					continue // a human is watching (LLM-470 activity stamp) — don't yank control
 				}
 				if a.Needs["tiredness"] < DefaultPCIdleSleepMinTiredness {
 					continue // not tired enough to be knocked out
