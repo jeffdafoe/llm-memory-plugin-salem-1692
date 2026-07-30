@@ -32,18 +32,25 @@ func seedActorForLog(t *testing.T, ctx context.Context, pool Pool, id, name stri
 
 // insertAgentActionRow writes one agent_action_log row directly, so a test can
 // control occurred_at / huddle_id / result precisely (the async sink always
-// stamps result='ok' and a live timestamp). Empty huddle → SQL NULL.
+// stamps result='ok' and a live timestamp). Empty huddle → SQL NULL. Empty
+// actorID likewise → SQL NULL, which is how a transient visitor's beat is
+// stored (LLM-573): the uuid column has a FK to actor(id) that a "vstr-" id
+// could never satisfy.
 func insertAgentActionRow(t *testing.T, ctx context.Context, pool Pool, actorID, actionType, speaker, huddle, payloadJSON string, occurredAt time.Time, result string) {
 	t.Helper()
 	var h any
 	if huddle != "" {
 		h = huddle
 	}
+	var a any
+	if actorID != "" {
+		a = actorID
+	}
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO agent_action_log
 		    (actor_id, occurred_at, source, action_type, payload, result, speaker_name, huddle_id)
 		 VALUES ($1, $2, 'agent', $3, $4::jsonb, $5, $6, $7)`,
-		actorID, occurredAt, actionType, payloadJSON, result, speaker, h,
+		a, occurredAt, actionType, payloadJSON, result, speaker, h,
 	); err != nil {
 		t.Fatalf("insert %s row for %s: %v", actionType, speaker, err)
 	}
