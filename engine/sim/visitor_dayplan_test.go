@@ -561,11 +561,15 @@ func TestVisitorPacingRecordsCallAfterKeeperReturns(t *testing.T) {
 	}
 }
 
-// TestVisitorPacingSkipsCallWhileWalking — LLM-575: passing THROUGH a shop on the way
+// TestVisitorPacingDefersCallWhileWalking — LLM-575: passing THROUGH a shop on the way
 // somewhere else is not calling at it. The re-check is a re-sample of an arrival, not a
 // new "anywhere he happens to be" rule, so a traveler with a walk in flight is left to
 // the arrival path that owns the moment he comes to rest.
-func TestVisitorPacingSkipsCallWhileWalking(t *testing.T) {
+//
+// Both halves matter. The skip must DEFER, not drop: finishArrival clears MoveIntent, so
+// a traveler who stops where he stands must be recorded on the next pass rather than
+// waiting on an arrival event that has already been and gone (code_review).
+func TestVisitorPacingDefersCallWhileWalking(t *testing.T) {
 	loc := et(t)
 	day := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
 	const smithy sim.StructureID = "smithy"
@@ -593,6 +597,15 @@ func TestVisitorPacingSkipsCallWhileWalking(t *testing.T) {
 	tickCircuit(t, w, day.Add(time.Minute))
 	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
 		t.Fatalf("visited=%v, want none — he is walking through, not calling in", visitedOf(got))
+	}
+
+	// He thinks better of the tavern and stops where he is; finishArrival would have
+	// cleared the intent the same way. The stop was deferred, not lost.
+	setVisitorState(t, w, func(a *sim.Actor) { a.MoveIntent = nil })
+	tickCircuit(t, w, day.Add(2*time.Minute))
+	got := firstVisitor(t, w)
+	if got == nil || len(visitedOf(got)) != 1 || visitedOf(got)[0] != smithy {
+		t.Fatalf("visited=%v, want [smithy] — the mid-walk skip must defer the call, not drop it", visitedOf(got))
 	}
 }
 

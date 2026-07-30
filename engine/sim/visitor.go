@@ -1308,12 +1308,26 @@ func RecordVisitorArrival(actorID ActorID, structureID StructureID) Command {
 // see at all — a keeper waking at his own shop, a scope that resolved late.
 //
 // Skipped mid-walk: passing THROUGH a shop on the way somewhere else is not calling at
-// it, and the arrival path already owns the moment he comes to rest.
+// it, and the arrival path already owns the moment he comes to rest. The skip DEFERS,
+// never drops — finishArrival clears the intent, so the next pass sees him standing
+// still and records then.
+//
+// "Standing still in a keeper-business's conversational scope" IS the call, deliberately
+// — a traveler idling at the counter after a failed haggle has called there as surely as
+// one who greeted the keeper on the doorstep, and the arrival path would have recorded
+// him had he walked in a minute later. The equivalence is the point, not a heuristic.
+//
+// The Command never returns an error (its Fn's every exit is nil), so there is nothing
+// to handle here; the cascade subscriber discards it the same way.
 func recordVisitorCallInPlace(w *World, actor *Actor) {
 	if actor.MoveIntent != nil {
 		return
 	}
-	_, _ = RecordVisitorArrival(actor.ID, conversationalScopeStructure(w, actor)).Fn(w)
+	structureID := conversationalScopeStructure(w, actor)
+	if structureID == "" {
+		return // out on open ground — nowhere to have called
+	}
+	_, _ = RecordVisitorArrival(actor.ID, structureID).Fn(w)
 }
 
 // MaxPayloadSharedWith caps the shared-word memory (LLM-545). The engine-side

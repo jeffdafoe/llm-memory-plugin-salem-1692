@@ -723,7 +723,12 @@ func TestGoldensPackClaimRidesTheInventoryLine(t *testing.T) {
 // traveler he had never been where he did his business. That is the shape of the live
 // defect: he told the apothecary he had got his nails at the General Store because the
 // smithy was missing from this line. Matrix-wide, so it holds for any traveler scenario.
+//
+// Distinct display names are a fixture requirement, not an assumption about the village:
+// two shops sharing a name would make a substring hit ambiguous, and the goldens name
+// them apart.
 func TestGoldensVisitedListNamesEveryRecordedStop(t *testing.T) {
+	const visitedLinePrefix = "So far you've called at "
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -732,15 +737,29 @@ func TestGoldensVisitedListNamesEveryRecordedStop(t *testing.T) {
 			if a == nil || a.VisitorState == nil || len(a.VisitorState.VisitedBusinesses) == 0 {
 				return
 			}
-			out := renderScenario(sc)
+			// Against the visited LINE, not the whole prompt: a counterparty's display
+			// name also appears in the errand steer and in "You're with <keeper> at
+			// <shop>", so a whole-prompt search would pass on exactly the scenario this
+			// exists to guard (code_review).
+			var visitedLine string
+			for _, line := range strings.Split(renderScenario(sc), "\n") {
+				if strings.HasPrefix(line, visitedLinePrefix) {
+					visitedLine = line
+					break
+				}
+			}
+			if visitedLine == "" {
+				t.Fatalf("scenario %q: %d stop(s) recorded but no %q line rendered at all (LLM-575)",
+					sc.name, len(a.VisitorState.VisitedBusinesses), visitedLinePrefix)
+			}
 			for _, sid := range a.VisitorState.VisitedBusinesses {
 				st := snap.Structures[sid]
 				if st == nil || st.DisplayName == "" {
 					continue
 				}
-				if !strings.Contains(out, st.DisplayName) {
-					t.Errorf("scenario %q: %q was recorded as a stop he called at but is named nowhere in his prompt (LLM-575):\n%s",
-						sc.name, st.DisplayName, out)
+				if !strings.Contains(visitedLine, st.DisplayName) {
+					t.Errorf("scenario %q: %q was recorded as a stop he called at but is missing from his visited line (LLM-575):\n%s",
+						sc.name, st.DisplayName, visitedLine)
 				}
 			}
 		})
