@@ -482,6 +482,120 @@ func TestRecordVisitorArrivalSkipsNonBusiness(t *testing.T) {
 	}
 }
 
+// TestVisitorPacingRecordsCallAfterKeeperReturns — LLM-575: the call is recorded
+// whichever of the two parties got there last. The arrival event samples "is a keeper
+// tending here" at a moment the OTHER man chooses: Tobias Hewes the nail-buyer walked
+// into the Blacksmith on 2026-07-30 while Ezekiel Crane was at the wood pile, bought
+// nine nails off him half a minute later, and was told for the next half hour that he
+// had called at the General Store, the apothecary and Ellis Farm but never the smithy —
+// so he told the apothecary he had got his nails at the General Store. The pacing pass
+// re-reads the world, so the stop lands on the next tick instead of never.
+//
+// The keeper-away arm is the control: if it recorded, the re-check below would prove
+// nothing about ordering.
+func TestVisitorPacingRecordsCallAfterKeeperReturns(t *testing.T) {
+	loc := et(t)
+	day := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
+	const smithy sim.StructureID = "smithy"
+	smithyPos := sim.WorldPos{X: 288, Y: 320}
+
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	vw.seedBusiness(t, smithy, "Blacksmith", smithyPos)
+	w, cancel := vw.load(t)
+	defer cancel()
+	seedDayPlanSettings(t, w, loc)
+	tickCircuit(t, w, day) // spawn
+	id := firstVisitorID(t, w)
+	if id == "" {
+		t.Fatal("no visitor spawned")
+	}
+
+	// The keeper steps out to his wood pile.
+	moveKeeper := func(t *testing.T, inside sim.StructureID, pos sim.TilePos) {
+		t.Helper()
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			for _, a := range world.Actors {
+				if a.WorkStructureID == smithy {
+					a.InsideStructureID = inside
+					a.Pos = pos
+				}
+			}
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("move keeper: %v", err)
+		}
+	}
+	moveKeeper(t, "", sim.TilePos{X: sim.PadX + 1, Y: sim.PadY + 1})
+
+	// He walks in and comes to rest at the forge while the smith is away. The arrival
+	// fires and finds nobody to call on.
+	setVisitorState(t, w, func(a *sim.Actor) {
+		a.InsideStructureID = smithy
+		a.MoveIntent = nil
+	})
+	if _, err := w.Send(sim.RecordVisitorArrival(id, smithy)); err != nil {
+		t.Fatalf("record arrival: %v", err)
+	}
+	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+		t.Fatalf("visited=%v, want none — the smith is away, so there was nobody to call on", visitedOf(got))
+	}
+
+	// The smith comes back. Nothing fires for the TRAVELER — no second arrival of his own
+	// — which is exactly why the stop used to be lost for good.
+	moveKeeper(t, smithy, smithyPos.Tile())
+	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+		t.Fatalf("visited=%v, want still none — the keeper's own return records nothing", visitedOf(got))
+	}
+
+	tickCircuit(t, w, day.Add(time.Minute))
+	got := firstVisitor(t, w)
+	if got == nil || len(visitedOf(got)) != 1 || visitedOf(got)[0] != smithy {
+		t.Fatalf("visited=%v, want [smithy] — the pacing pass must count the stop he is standing in", visitedOf(got))
+	}
+
+	// Idempotent: standing there for a second tick does not double-count him.
+	tickCircuit(t, w, day.Add(2*time.Minute))
+	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 1 {
+		t.Fatalf("visited=%v, want [smithy] once — re-sampling must not append a duplicate", visitedOf(got))
+	}
+}
+
+// TestVisitorPacingSkipsCallWhileWalking — LLM-575: passing THROUGH a shop on the way
+// somewhere else is not calling at it. The re-check is a re-sample of an arrival, not a
+// new "anywhere he happens to be" rule, so a traveler with a walk in flight is left to
+// the arrival path that owns the moment he comes to rest.
+func TestVisitorPacingSkipsCallWhileWalking(t *testing.T) {
+	loc := et(t)
+	day := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
+	const smithy sim.StructureID = "smithy"
+	smithyPos := sim.WorldPos{X: 288, Y: 320}
+
+	vw := newVisitorWorld()
+	tavern := vw.seedTavern(t)
+	vw.seedBusiness(t, smithy, "Blacksmith", smithyPos)
+	w, cancel := vw.load(t)
+	defer cancel()
+	seedDayPlanSettings(t, w, loc)
+	tickCircuit(t, w, day) // spawn — and the engine's one walk, to the tavern anchor
+	if id := firstVisitorID(t, w); id == "" {
+		t.Fatal("no visitor spawned")
+	}
+
+	// Mid-stride across the smithy's floor, still bound for the tavern.
+	setVisitorState(t, w, func(a *sim.Actor) {
+		a.InsideStructureID = smithy
+		if a.MoveIntent == nil {
+			t.Fatalf("visitor has no walk in flight; the spawn walk to %q is what this test rides on", tavern)
+		}
+	})
+
+	tickCircuit(t, w, day.Add(time.Minute))
+	if got := firstVisitor(t, w); got == nil || len(visitedOf(got)) != 0 {
+		t.Fatalf("visited=%v, want none — he is walking through, not calling in", visitedOf(got))
+	}
+}
+
 func visitedOf(a *sim.ActorSnapshot) []sim.StructureID {
 	if a == nil || a.VisitorState == nil {
 		return nil

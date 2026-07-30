@@ -1174,6 +1174,10 @@ func dispatchVisitorPacing(w *World, inputs VisitorTickInputs, t *VisitorCascade
 		if vs.Phase == VisitorPhaseArriving || vs.Phase == VisitorPhasePresent {
 			vs.Phase = VisitorPhaseMakingRounds
 		}
+		// Where he stands, counted as a call if there is a keeper to call on (LLM-575).
+		// A live-state re-check, the same shape as the errand settles above — and for the
+		// same reason: the arrival event alone samples at a moment the OTHER party chooses.
+		recordVisitorCallInPlace(w, actor)
 		// Pace a STATIONARY traveler. The arrival warrant covers the just-moved case;
 		// this covers the gaps. Leave him be while walking (a move in flight), asleep or
 		// resting (sacrosanct), already warranted (a beat is pending), or mid-tick. Then,
@@ -1224,10 +1228,12 @@ func visitorPaceElapsed(w *World, a *Actor, now time.Time) bool {
 
 // RecordVisitorArrival marks a keeper-business as one the traveler has actually called
 // at, on a genuine co-present arrival (LLM-379). Wired to ActorArrived via
-// cascade/visitor_arrival.go, it is the ONLY writer of VisitorState.VisitedBusinesses
-// now that the engine no longer chooses his stops — "visited" is a fact about where he
-// went and found someone to trade with, never a target the engine picked. The rounds
-// cue renders these back so he routes onward instead of repeating a shop.
+// cascade/visitor_arrival.go, and re-sampled from the pacing pass by
+// recordVisitorCallInPlace (LLM-575), it is the ONLY writer of
+// VisitorState.VisitedBusinesses now that the engine no longer chooses his stops —
+// "visited" is a fact about where he went and found someone to trade with, never a
+// target the engine picked. The rounds cue renders these back so he routes onward
+// instead of repeating a shop.
 //
 // structureID is the arrival's DestStructureID (set for a walk INTO a shop and for a
 // doorstep/knock at its visitor slot alike). Records only during his daytime rounds,
@@ -1278,6 +1284,36 @@ func RecordVisitorArrival(actorID ActorID, structureID StructureID) Command {
 			return nil, nil
 		},
 	}
+}
+
+// recordVisitorCallInPlace re-samples RecordVisitorArrival's predicate against where the
+// traveler is standing NOW, so a call is recorded whichever of the two parties arrived
+// last (LLM-575). Called from the visitor pacing pass; MUST run on the world goroutine.
+//
+// The predicate — "he is at a keeper-business whose keeper is tending it" — is a fact
+// about a MOMENT, but until this it was sampled at exactly one: his own ActorArrived. A
+// keeper who happens to be off the premises as the traveler walks in loses the stop for
+// good, because his returning a few seconds later fires no arrival event for the
+// TRAVELER and nothing re-reads the world. That is not a corner: Tobias Hewes the
+// nail-buyer walked into the Blacksmith on 2026-07-30 while Ezekiel Crane was thirty
+// seconds away at the wood pile, bought nine nails off him at 19:04, and spent the next
+// half hour being told he had called at the General Store, the apothecary and Ellis Farm
+// but never the smithy — so he told the apothecary he had got his nails at the General
+// Store. It self-healed only when he wandered back to the smithy at 19:32.
+//
+// Sampling here instead of adding a keeper-arrival subscriber keeps ONE predicate: the
+// Command already validates everything against live actor state and is idempotent
+// (appendUniqueStructure), so a re-check costs a map walk and can only ever record what
+// a correctly-timed arrival would have. It also covers orderings an arrival event cannot
+// see at all — a keeper waking at his own shop, a scope that resolved late.
+//
+// Skipped mid-walk: passing THROUGH a shop on the way somewhere else is not calling at
+// it, and the arrival path already owns the moment he comes to rest.
+func recordVisitorCallInPlace(w *World, actor *Actor) {
+	if actor.MoveIntent != nil {
+		return
+	}
+	_, _ = RecordVisitorArrival(actor.ID, conversationalScopeStructure(w, actor)).Fn(w)
 }
 
 // MaxPayloadSharedWith caps the shared-word memory (LLM-545). The engine-side

@@ -62,7 +62,8 @@ func init() {
 				"holds the ERRAND good and the persona is named for it, so 'a nail-buyer with nine nails' read as a " +
 				"travelling salesman and he offered them to everyone he called on. Pins all three halves of the " +
 				"answer — the preface says what a nail-buyer does with what he buys, the inventory line carries the " +
-				"bound-home coda where the goods actually are, and the settled lead counts them as nine.",
+				"bound-home coda where the goods actually are, and the settled lead counts them as nine. The " +
+				"visited line names the smithy he bought them at as well as the farm he called at after (LLM-575).",
 			build: travelerSettledErrandGoodScenario,
 		},
 		perceptionScenario{
@@ -191,11 +192,12 @@ func travelerSettledErrandGoodScenario() (*sim.Snapshot, sim.ActorID, []sim.Warr
 			Origin:      "Lynn",
 			Disposition: "reserved",
 			Phase:       sim.VisitorPhaseMakingRounds,
-			// The farm, not the smithy: live, a visitor's errand counterparty is never
-			// recorded as a stop he called at (LLM-575). Listing the smithy here would
-			// bake the fix for that into this golden and quietly assert behaviour prod
-			// does not have.
-			VisitedBusinesses: []sim.StructureID{farm},
+			// The smithy FIRST, then the farm — the order he called at them. The
+			// counterparty belongs in this list like any other stop (LLM-575); live it
+			// was missing, because the smith was at his wood pile when Tobias walked in
+			// and the arrival found nobody to call on. He then told the apothecary he
+			// had got his nails at the General Store, which is what the list named.
+			VisitedBusinesses: []sim.StructureID{smithy, farm},
 			Trade:             &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "nail", Counterparty: smithy, Settled: true},
 		},
 	}
@@ -707,6 +709,38 @@ func TestGoldensPackClaimRidesTheInventoryLine(t *testing.T) {
 			for _, line := range strings.Split(renderScenario(sc), "\n") {
 				if strings.Contains(line, marker) && !strings.HasPrefix(line, "You are carrying: ") {
 					t.Errorf("scenario %q: the bound-home claim rendered off the carrying line (LLM-574):\n%s", sc.name, line)
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensVisitedListNamesEveryRecordedStop — every business the engine recorded as a
+// stop is named back to him, the errand counterparty included (LLM-575). The render
+// filters the counterparty out of the OPEN-shops list three lines away, and rightly so —
+// it is offered as the must-hit stop instead of a talk-only social call — but the two
+// lists answer different questions, and a filter that grew to cover both would tell a
+// traveler he had never been where he did his business. That is the shape of the live
+// defect: he told the apothecary he had got his nails at the General Store because the
+// smithy was missing from this line. Matrix-wide, so it holds for any traveler scenario.
+func TestGoldensVisitedListNamesEveryRecordedStop(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.VisitorState == nil || len(a.VisitorState.VisitedBusinesses) == 0 {
+				return
+			}
+			out := renderScenario(sc)
+			for _, sid := range a.VisitorState.VisitedBusinesses {
+				st := snap.Structures[sid]
+				if st == nil || st.DisplayName == "" {
+					continue
+				}
+				if !strings.Contains(out, st.DisplayName) {
+					t.Errorf("scenario %q: %q was recorded as a stop he called at but is named nowhere in his prompt (LLM-575):\n%s",
+						sc.name, st.DisplayName, out)
 				}
 			}
 		})
