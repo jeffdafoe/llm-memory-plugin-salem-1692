@@ -14,6 +14,9 @@ Coins in your purse: 28.
 You are inside the General Store, with Josiah Thorne.
 The afternoon wears on.
 
+## Coin between you and those here, this past week
+- No coin has passed between you and Josiah Thorne.
+
 ## Offers made to you
 1. Josiah Thorne has 4 flour set out for you at 12 coins — it still stands. To take this coin quote, call pay_with_item with quote_id 5, item "flour", qty 4, and amount 12 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item "flour"; they can accept or counter.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

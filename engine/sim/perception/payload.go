@@ -698,10 +698,19 @@ type Payload struct {
 
 	// TownRate surfaces the constable's levy to whichever side is reading it: to a
 	// keeper, what his business owes and the constable standing with him; to the
-	// constable, which co-present keepers are behind. nil unless the two are
-	// co-present with something owing. Co-location-gated — the coin is handed over
-	// where they stand, so off-scene the cue has nothing to offer. LLM-557.
+	// constable, that the rate runs toward him and which co-present keepers are
+	// behind. nil unless the two are co-present. Co-location-gated — the coin is
+	// handed over where they stand, so off-scene the cue has nothing to offer.
+	// LLM-557, widened to the settled case by LLM-572.
 	TownRate *TownRateView
+
+	// CoinDealings is what coin has actually passed between the subject and each
+	// co-present acquaintance inside the recall window — the record against which a
+	// money claim made in this scene can be checked (LLM-572). Empty when nobody
+	// present is an acquaintance. Populated for EVERY actor kind, unlike
+	// Relationships: the trigger case was a stateful NPC, whose Relationships are
+	// nil, refunding five coins on a debt that never existed.
+	CoinDealings []CoinDealingsPeerView
 
 	// Forage surfaces a grower-seller's own forage-to-sell bushes when their
 	// harvested stock of an item is low (< RestockReorderPct of cap) — each low

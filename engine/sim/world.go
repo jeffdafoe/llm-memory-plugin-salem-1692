@@ -492,6 +492,11 @@ type WorldSettings struct {
 	ContactBrakeWindow   time.Duration
 	ContactRecallHorizon time.Duration
 
+	// CoinRecordWindow is how far back coin between a pair is remembered for the
+	// "## Coin between you" cue (engine/sim/coin_record.go, LLM-572). Falls back
+	// to DefaultCoinRecordWindow (7 days) when zero.
+	CoinRecordWindow time.Duration
+
 	// Visitor cascade tunables (engine/sim/visitor.go +
 	// engine/sim/cascade/visitor.go). All fall back to *Default constants
 	// in engine/sim/visitor.go when zero, so tests that bypass the
@@ -1071,6 +1076,17 @@ type World struct {
 	// rather than by a sweep. See contact_ledger.go for why restart-loss was
 	// rejected (LLM-546).
 	ContactLedger map[ActorID]map[ActorID]*ContactRecord
+
+	// CoinRecord is the per-pair coin tally (LLM-572), keyed subject → peer →
+	// what each has handed the other inside CoinRecordWindow. Written from the
+	// cascade action-log subscribers on every settled payment; read by perception
+	// so a money claim can be checked against the record in the scene where it is
+	// made. Covers every actor kind, like ContactLedger and for the same reason.
+	//
+	// Neither checkpointed nor restart-lossy: it is SEEDED AT BOOT from the
+	// durable agent_action_log rows the engine already writes, so it survives a
+	// restart without a table of its own. See coin_record.go.
+	CoinRecord map[ActorID]map[ActorID]*CoinPairRecord
 
 	// RecurringVisitors is the durable set of memorable returners (LLM-372) —
 	// promoted travelers who dealt with a player and come back across the seasons.
@@ -1829,6 +1845,14 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	if err := w.rehydrateContactLedgerOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate contact ledger: %w", err)
 	}
+	// LLM-572: seed the per-pair coin tally from the durable action log. This one
+	// IS order-dependent — it resolves each historical row's recipient against
+	// w.Actors by display name, so the actor aggregate has to be loaded first.
+	// FinalizeLoad runs after LoadWorld has populated it, which is why the seed
+	// lives here rather than in the loader.
+	if err := w.rehydrateCoinRecordOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: seed coin record: %w", err)
+	}
 	// LLM-259: rehydrate the accepted (en_route/working) labor contracts from
 	// their durable mirror into World.LaborLedger BEFORE the stranded-laboring
 	// reconcile below. A worker whose working contract loaded then holds a live
@@ -2328,6 +2352,8 @@ func (w *World) republish() {
 		ContactLedger:                 CloneContactLedger(w.ContactLedger),
 		ContactBrakeWindow:            w.ContactBrakeWindow(),
 		ContactRecallHorizon:          w.ContactRecallHorizon(),
+		CoinRecord:                    CloneCoinRecord(w.CoinRecord),
+		CoinRecordWindow:              w.CoinRecordWindow(),
 		NoticeboardContent:            make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
 		PriceBook:                     ClonePriceBook(w.PriceBook),
 		Environment:                   w.Environment,

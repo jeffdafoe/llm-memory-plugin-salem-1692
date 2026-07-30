@@ -28,8 +28,8 @@ import (
 // The two sides are mutually exclusive in practice (the constable keeps no shop, so
 // he never owes), which is why one view serves both rather than two parallel cues.
 
-// TownRateView is the town-rate cue. Non-nil only when a keeper who owes and a
-// constable are co-present — from whichever side is reading it.
+// TownRateView is the town-rate cue. Non-nil when a keeper and a constable are
+// co-present — from whichever side is reading it.
 type TownRateView struct {
 	// Owed and ConstableName are the KEEPER's side: what his business owes in
 	// arrears, and the constable standing with him. Owed is 0 on the collector's
@@ -41,10 +41,21 @@ type TownRateView struct {
 	// rate is levied on rather than speaking of an abstract debt.
 	BusinessName string
 
-	// Debtors is the CONSTABLE's side: every co-present keeper currently behind on
-	// the rate, sorted by name so the line is stable across snapshots. Empty on the
-	// keeper's side.
+	// Collector marks this as the CONSTABLE's side. It is the render's dispatch,
+	// not len(Debtors): since LLM-572 the collecting side renders with an empty
+	// Debtors list too, and without an explicit flag that view would fall through
+	// to the keeper's branch and tell the constable he owes a rate he collects.
+	Collector bool
+
+	// Debtors is every co-present keeper currently behind on the rate, sorted by
+	// name so the line is stable across snapshots. Collector side only.
 	Debtors []TownRateDebtor
+
+	// PaidUpBusinesses names the co-present keepers' businesses that owe nothing,
+	// sorted. Collector side only, and read only when Debtors is empty — when
+	// somebody is behind, the debtor sentences already carry the direction of the
+	// levy and naming the settled shops as well would only pad the scene.
+	PaidUpBusinesses []string
 }
 
 // TownRateDebtor is one keeper the constable could collect from right now.
@@ -105,14 +116,25 @@ func buildTownRateKeeper(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim
 	}
 }
 
-// buildTownRateCollector builds the collecting side: the constable, with co-present
-// keepers who are behind on the rate.
+// buildTownRateCollector builds the collecting side: the constable, with the
+// co-present keepers who are behind on the rate and those who are square.
+//
+// LLM-572 widened the gate from "a co-present keeper OWES" to "a co-present keeper
+// is rateable at all". The old gate meant the levy appeared in the constable's scene
+// ONLY while somebody was in arrears, so the direction of the rate — that it runs
+// toward him — was invisible for most of his rounds. Live consequence, 2026-07-30
+// 19:03:43 UTC: three minutes after refunding Moses James, Gideon Marsh paid John
+// Ellis a coin "for" a `Town rate — Tavern day's fee`. The constable paid the town
+// rate to a tavern keeper. Nothing settled (settleTownRate requires the PAYEE be a
+// constable); a coin simply ran backwards. His scene had never once told him which
+// way the levy flows, because the Tavern was square at the time.
 func buildTownRateCollector(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *TownRateView {
 	sc := buyerCoPresenceScope(snap, actorSnap)
 	if sc.huddle == "" && sc.scope == "" {
 		return nil
 	}
 	var debtors []TownRateDebtor
+	var paidUp []string
 	for id, other := range snap.Actors {
 		if other == nil || id == actorID || other.DisplayName == "" {
 			continue
@@ -121,7 +143,11 @@ func buildTownRateCollector(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 			continue
 		}
 		business := sim.RateableBusinessOf(snap.VillageObjects, id)
-		if business == nil || business.RateOwed <= 0 {
+		if business == nil {
+			continue // not a keeper — no rate is levied on them either way
+		}
+		if business.RateOwed <= 0 {
+			paidUp = append(paidUp, business.DisplayName)
 			continue
 		}
 		debtors = append(debtors, TownRateDebtor{
@@ -130,13 +156,14 @@ func buildTownRateCollector(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 			Owed:         business.RateOwed,
 		})
 	}
-	if len(debtors) == 0 {
-		return nil
+	if len(debtors) == 0 && len(paidUp) == 0 {
+		return nil // no keeper in front of him; the levy is not part of this scene
 	}
 	// Stable order regardless of map iteration — the same reason the vendor scans
 	// tie-break deterministically.
 	sort.Slice(debtors, func(i, j int) bool { return debtors[i].KeeperName < debtors[j].KeeperName })
-	return &TownRateView{Debtors: debtors}
+	sort.Strings(paidUp)
+	return &TownRateView{Collector: true, Debtors: debtors, PaidUpBusinesses: paidUp}
 }
 
 // isConstableSnapshot reports whether an actor snapshot carries the constable
@@ -176,7 +203,7 @@ func renderTownRate(b *strings.Builder, v *TownRateView) {
 		return
 	}
 	b.WriteString("## Town rate\n")
-	if len(v.Debtors) > 0 {
+	if v.Collector {
 		renderTownRateCollector(b, v)
 		return
 	}
@@ -204,14 +231,27 @@ func renderTownRateKeeper(b *strings.Builder, v *TownRateView) {
 // no tool: the constable has nothing to call — the coin is the keeper's to hand over
 // — so the line states who is behind and leaves the asking to him. An imperative
 // here would also risk instructing a second terminal verb alongside speak.
+//
+// The opening sentence is the load-bearing one and it renders on EVERY collector
+// view, arrears or none (LLM-572). It is the only place the constable is ever told
+// which way the levy runs, and the settled case — a keeper in front of him owing
+// nothing — is the one that used to render no section at all.
 func renderTownRateCollector(b *strings.Builder, v *TownRateView) {
-	parts := make([]string, 0, len(v.Debtors))
+	b.WriteString("The town rate keeps you, and it falls to you to collect it.")
+	if len(v.Debtors) == 0 {
+		// Everyone here is square. Say so plainly and close the door on the rate
+		// being asked for again in this scene — the constable reading "it falls to
+		// you to collect it" with no debtor named would otherwise be left to guess
+		// whether something is owing.
+		fmt.Fprintf(b, " The rate on the %s is paid up — nothing is owing you here.\n", joinNames(v.PaidUpBusinesses))
+		return
+	}
 	for _, d := range v.Debtors {
 		if d.Owed > 1 {
-			parts = append(parts, fmt.Sprintf("%s has let the rate on the %s run on — %s behind.", d.KeeperName, d.BusinessName, coinsOwedPhrase(d.Owed)))
+			fmt.Fprintf(b, " %s has let the rate on the %s run on — %s behind.", d.KeeperName, d.BusinessName, coinsOwedPhrase(d.Owed))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s owes the day's rate on the %s — %s.", d.KeeperName, d.BusinessName, coinsOwedPhrase(d.Owed)))
+		fmt.Fprintf(b, " %s owes the day's rate on the %s — %s.", d.KeeperName, d.BusinessName, coinsOwedPhrase(d.Owed))
 	}
-	fmt.Fprintf(b, "The town rate keeps you, and it falls to you to collect it. %s\n", strings.Join(parts, " "))
+	b.WriteString("\n")
 }

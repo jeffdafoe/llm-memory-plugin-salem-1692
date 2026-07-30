@@ -10,6 +10,9 @@ Coins in your purse: 0 — you have no coins to spend, so you cannot pay for any
 ## Around you
 You are inside the Village Commons, with Lewis Walker.
 
+## Coin between you and those here, this past week
+- No coin has passed between you and Lewis Walker.
+
 ## Work offers awaiting your decision
 1. Lewis Walker offers to do a job for you for 5 coins — about 1 hour of work (offer id 1)
 You only have 0 coins, so you cannot pay for this — call decline_work (offer id 1), telling them in say that you have not enough coin to take them on.

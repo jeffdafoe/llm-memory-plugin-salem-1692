@@ -1143,3 +1143,71 @@ func TestHandleRepairingActionLog_EmitsDurableRow(t *testing.T) {
 		t.Errorf("vanished business should omit payload[business], got %v", rows[1].Payload)
 	}
 }
+
+// --- TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotDurable ---
+// LLM-572. Pins the asymmetry the coin record's traveler gate depends on.
+//
+// A visitor's payment credits the IN-MEMORY tally (RecordCoinPaid covers every
+// actor kind) but writes NO durable row, because AppendActionLogDurable discards
+// rows whose acting actor carries a VisitorState (LLM-379/382 — actor_id is a uuid
+// column and a "vstr-" id cannot satisfy it). The coin record is seeded from those
+// rows at boot, so a traveler pair is complete within one boot and empty after the
+// next restart — and Salem deploys several times a day.
+//
+// That is why perception excludes travelers from "## Coin between you and those
+// here" on BOTH sides: a cue that says "no coin has passed between you" only until
+// the next deploy is worse than one that stays quiet. If visitor persistence ever
+// changes, this test goes red and the render gate should be revisited rather than
+// silently left hiding valid records.
+func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotDurable(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	const visitorID sim.ActorID = "vstr-0000abcd"
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+		world.Actors[visitorID] = &sim.Actor{
+			ID:              visitorID,
+			DisplayName:     "Elias Drum the peddler",
+			Kind:            sim.KindNPCShared,
+			State:           sim.StateIdle,
+			CurrentHuddleID: "h1",
+			RecentActions:   sim.NewRingBuffer[sim.Action](4),
+			VisitorState:    &sim.VisitorState{Archetype: "peddler", Phase: sim.VisitorPhaseMakingRounds},
+		}
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePaidActionLog(world, &sim.Paid{BuyerID: visitorID, SellerID: "hannah", Amount: 3, ForText: "ale", At: at})
+		// Positive control: a resident-to-resident payment persists AND tallies.
+		handlePaidActionLog(world, &sim.Paid{BuyerID: "hannah", SellerID: "bob", Amount: 2, ForText: "firewood", At: at})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1 — the visitor's payment must not persist: %+v", len(rows), rows)
+	}
+	if rows[0].ActorID != "hannah" {
+		t.Errorf("durable row = %+v, want the resident payment", rows[0])
+	}
+	// Every future seed keys on this, so the resident row must carry the recipient id.
+	if rows[0].Payload["recipient_actor_id"] != "bob" {
+		t.Errorf("durable payload = %+v, want recipient_actor_id \"bob\"", rows[0].Payload)
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		// The visitor's payment IS in memory — the gate is durable-only.
+		if d := snap.CoinDealingsFor("hannah", visitorID, at); d.ReceivedCount != 1 || d.ReceivedTotal != 3 {
+			t.Errorf("visitor payment not tallied in memory: %+v", d)
+		}
+		if d := snap.CoinDealingsFor("hannah", "bob", at); d.PaidCount != 1 || d.PaidTotal != 2 {
+			t.Errorf("resident payment not tallied: %+v", d)
+		}
+	})
+}

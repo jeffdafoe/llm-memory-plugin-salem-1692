@@ -248,20 +248,35 @@ func ApplyTownRate(now time.Time) Command {
 //
 // No-op unless the payer owns a business that owes something and the payee is a
 // constable. Nil-safe on both actors.
-func settleTownRate(w *World, payer, payee *Actor, amount int) {
+//
+// Returns how much of `amount` went to arrears and the business it was levied on —
+// the two facts the caller needs to say what the payment WAS (LLM-572). Before this
+// the settlement was silent, so the pay path could only describe the coin the way it
+// describes every other coin: "I paid Constable Gideon Marsh 1 coin for Day's rate
+// on the James Farm." A payment with a stated purpose and no delivery against it is
+// indistinguishable from an order placed and never filled, and consolidation drew
+// exactly that conclusion — Moses James came to believe the constable took his coin
+// and gave nothing back, and was refunded five coins on the strength of it. Nothing
+// downstream could tell a tax from a purchase because nothing upstream said which
+// it was. This function is the only place in the engine that knows, so it says so.
+//
+// (0, nil) when nothing settled — the ordinary case for every pay in the village.
+func settleTownRate(w *World, payer, payee *Actor, amount int) (int, *VillageObject) {
 	if w == nil || payer == nil || payee == nil || amount <= 0 {
-		return
+		return 0, nil
 	}
 	if !ActorIsConstable(payee) {
-		return
+		return 0, nil
 	}
 	business := RateableBusinessOf(w.VillageObjects, payer.ID)
 	if business == nil || business.RateOwed <= 0 {
-		return
+		return 0, nil
 	}
 	if amount >= business.RateOwed {
+		settled := business.RateOwed
 		business.RateOwed = 0
-		return
+		return settled, business
 	}
 	business.RateOwed -= amount
+	return amount, business
 }

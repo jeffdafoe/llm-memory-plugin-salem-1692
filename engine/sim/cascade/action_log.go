@@ -188,10 +188,20 @@ func handlePaidActionLog(w *sim.World, evt sim.Event) {
 	payload := map[string]any{
 		"recipient": actorDisplayName(w, paid.SellerID),
 		"amount":    paid.Amount,
+		// LLM-572: the recipient's id alongside its name. The coin-record boot seed
+		// reads these rows back and has to key them by actor; a display name is all
+		// that was ever stored, so historical rows resolve by an exact-name lookup
+		// that must refuse an ambiguous match. Stamping the id makes every future
+		// seed exact.
+		"recipient_actor_id": string(paid.SellerID),
 	}
 	if paid.ForText != "" {
 		payload["for"] = paid.ForText
 	}
+	// LLM-572: credit the in-memory coin tally from the same place, and under the
+	// same conditions, as the durable row it is seeded from. Keeping the two writes
+	// together is what guarantees the live tally and a post-restart seed agree.
+	w.RecordCoinPaid(paid.BuyerID, paid.SellerID, paid.Amount, paid.At)
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     paid.BuyerID,
 		OccurredAt:  paid.At,
@@ -268,7 +278,12 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 		"recipient": actorDisplayName(w, resolved.SellerID),
 		"amount":    resolved.Amount,
 		"for":       forText,
+		// LLM-572: see handlePaidActionLog — the coin-record seed keys on this.
+		"recipient_actor_id": string(resolved.SellerID),
 	}
+	// LLM-572: credit the coin tally. Amount is 0 on a pure barter, which
+	// RecordCoinPaid drops — no coin passed, and this is a record of coin.
+	w.RecordCoinPaid(resolved.BuyerID, resolved.SellerID, resolved.Amount, resolved.At)
 	// LLM-105: record the FULL settlement terms so the durable audit trail can tell a
 	// paid sale from a barter from a zero-value give-away. `amount` alone is ambiguous
 	// — a 0-coin barter and a 0-coin free gift both read amount:0; only the goods leg

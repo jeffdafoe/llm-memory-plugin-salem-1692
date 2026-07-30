@@ -308,6 +308,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.VendorTradeSlow = p.AtOwnBusinessOperating && keeperTradeSlow(snap, actorID, actorSnap)
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
+	// LLM-572: the record behind the impression. Built right beside Relationships
+	// because it is that section's counterpart — judgment there, counted coin here —
+	// but unlike it this covers every actor kind, the stateful NPC included.
+	p.CoinDealings = buildCoinDealings(snap, actorID, actorSnap, p.Surroundings.HuddleMembers, snap.PublishedAt)
 	// LLM-387: gossip the subject carries about people NOT in the scene, the
 	// absent-subject twin of Relationships. Built off Surroundings so present
 	// peers can be filtered (no gossiping to someone's face).

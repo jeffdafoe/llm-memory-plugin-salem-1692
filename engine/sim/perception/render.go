@@ -256,6 +256,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderEveningLeisure(&ephemeral, p.EveningLeisure)
 	renderBakeChoice(&ephemeral, p.BakeChoice)
 	renderRelationships(&ephemeral, p.Relationships)
+	// LLM-572: the counted record, immediately after the impression distilled from
+	// it. The adjacency IS the fix — a money claim and the ground truth about that
+	// money have to be readable in one breath, or the more confident account wins.
+	renderCoinDealings(&ephemeral, p.CoinDealings)
 	// LLM-387: gossip the actor carries about people NOT in the scene — the
 	// word-of-mouth layer's read surface. Sits beside "what you remember of those
 	// here" (its co-present twin) but is about the ABSENT, and is framed as
