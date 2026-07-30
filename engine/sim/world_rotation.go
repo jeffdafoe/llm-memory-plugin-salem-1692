@@ -547,4 +547,14 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: town rate: %v", err)
 		}
 	}
+	// Coin record (LLM-572): drop pairs whose payments have all aged out of the
+	// recall window. Reclamation only — it changes nothing an actor can perceive,
+	// since reads already apply the window. Bound here beside the levies because
+	// the daily boundary is a convenient once-a-day seam, not because the sweep is
+	// day-sensitive: it is idempotent and safe to run at any cadence.
+	if _, err := w.SendContext(ctx, SweepCoinRecord(boundary)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: coin record sweep: %v", err)
+		}
+	}
 }

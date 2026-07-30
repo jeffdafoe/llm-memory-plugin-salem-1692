@@ -15,5 +15,8 @@ You keep your trade at the Blacksmith (destination: blacksmith), and your home i
 
 Your day's work is done, and the tavern is open of an evening — you might make your way to the Tavern (destination: tavern) for company, pass a quiet evening at the Crane Cottage (destination: crane_cottage), or turn in for the night, as you please.
 
+## Coin between you and those here, this past week
+- No coin has passed between you and Lewis Walker.
+
 Lewis Walker might have work that wants doing, and you take work for pay. If you want the coin, make the offer with solicit_work — name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; do NOT ask with speak first — speaking ends your turn and no offer is ever made.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -60,6 +60,15 @@ type Snapshot struct {
 	ContactBrakeWindow   time.Duration
 	ContactRecallHorizon time.Duration
 
+	// CoinRecord is the published snapshot of World.CoinRecord — the per-pair
+	// coin tally (LLM-572), deep-cloned via CloneCoinRecord. Perception reads it
+	// so an actor answering a money claim can see what actually passed between
+	// them. The window rides alongside for the reason the contact windows do:
+	// CoinDealingsFor is a pure function of the record plus the window, and
+	// perception must not reach back into live World.Settings.
+	CoinRecord       map[ActorID]map[ActorID]*CoinPairRecord
+	CoinRecordWindow time.Duration
+
 	// LaborLedger is the published snapshot of World.LaborLedger — every
 	// labor offer in the world (pending, working, and terminal), deep-cloned
 	// via CloneLaborOffer so snapshot readers can't reach back into world

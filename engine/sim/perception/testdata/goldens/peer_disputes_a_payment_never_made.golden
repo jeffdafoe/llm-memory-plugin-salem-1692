@@ -5,15 +5,15 @@
 
 
 ## You
-Coins in your purse: 12.
+Coins in your purse: 6.
 
 ## Around you
-You are inside the Tavern, with John Ellis.
+You are inside the James Farm, with Moses James.
 Evening settles over the village.
 
-Your home is at the Ward Residence (destination: ward_residence) — you can head back there whenever you wish.
-
 ## Coin between you and those here, this past week
-- No coin has passed between you and John Ellis.
+- Moses James has paid you a coin twice, and nothing has gone back the other way.
 
+## Town rate
+The town rate keeps you, and it falls to you to collect it. The rate on the James Farm is paid up — nothing is owing you here.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

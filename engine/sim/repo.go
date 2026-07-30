@@ -27,6 +27,7 @@ type Repository struct {
 	Visitors             VisitorsRepo
 	RecurringVisitors    RecurringVisitorsRepo
 	Contacts             ContactsRepo
+	CoinRecords          CoinRecordsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
@@ -254,6 +255,24 @@ type ContactsRepo interface {
 	// the world unless dead ones are removed by the same horizon rule the loader
 	// applies.
 	SaveSnapshot(ctx context.Context, tx Tx, pairs []ContactPair, staleBefore, validUntil time.Time) error
+}
+
+// CoinRecordsRepo seeds the per-pair coin tally (LLM-572) at boot.
+//
+// READ-ONLY, and the only repo here that is. There is no coin_record table and
+// nothing to checkpoint: the tally is derived from the `paid` rows the engine
+// already writes to agent_action_log, so the durable half of the mechanism is a
+// table that exists for another purpose entirely. Precedent for reading the audit
+// log back at load time is OrdersRepo.MaxPaidActionLogLedgerID, which floors the
+// ledger-id allocator from the same table.
+type CoinRecordsRepo interface {
+	// LoadPaymentsSince returns every settled `paid` row at or after `since`,
+	// oldest-first. The recipient is returned UNRESOLVED — its stamped actor id
+	// when present and its display name otherwise — because resolving a name to
+	// an actor is a predicate, and predicates belong in Go rather than in the
+	// query (a name shared by two actors identifies neither, and the caller has
+	// to be able to refuse rather than pick).
+	LoadPaymentsSince(ctx context.Context, since time.Time) ([]CoinPaymentRow, error)
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment
