@@ -369,7 +369,7 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	// (it is home). Homeless / lodger NPCs (no HomeStructureID) are never "at home"
 	// here and so are never staggered, which is correct — they aren't part of the
 	// dawn clump.
-	atHome := a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID
+	atHome := actorIsAtHome(a)
 
 	switch {
 	case onShift && a.WorkStructureID != "" && !atWork:

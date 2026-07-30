@@ -59,6 +59,7 @@ type SeekWorkBackstopTelemetry struct {
 	SkippedTickInFlight  int // mid-tick
 	SkippedBackoff       int // still inside its backoff window
 	SkippedEco           int // a comfortable idler's at-ease impulse withheld while unwatched (LLM-352 audience-gate)
+	SkippedAtHome        int // a comfortable idler's at-ease impulse withheld because it is already home (LLM-571)
 	SkippedStampDeclined int // tryStampWarrant funnel declined (unreachable today)
 }
 
@@ -158,6 +159,23 @@ func EvaluateSeekWorkBackstop(now time.Time) Command {
 				} else if workerIsComfortable(w, a) {
 					if ecoModeEngaged(w, now) {
 						t.SkippedEco++
+						continue
+					}
+					// LLM-571: withheld while she is already home. The leisure line
+					// names places to go ("pass a while with the neighbors, look in at
+					// the tavern"), which at home walks her out of her own house to
+					// come straight back — observed as up to 13 round trips a day,
+					// 72-131 seconds at the destination, doing nothing there. Being
+					// idle indoors at home already reads as ordinary villager life, so
+					// the freeze LLM-352 exists to prevent is not in play.
+					//
+					// continue, NOT a fallthrough: `reason` still holds its
+					// SeekWorkWarrantReason default here, and handing a comfortable
+					// worker the go-earn nudge is the lie LLM-352 was written to avoid.
+					// Backoff is deliberately left unadvanced, as on the eco-skip
+					// above, so the cue resumes on the first sweep after she steps out.
+					if actorIsAtHome(a) {
+						t.SkippedAtHome++
 						continue
 					}
 					reason = AtEaseWarrantReason{}

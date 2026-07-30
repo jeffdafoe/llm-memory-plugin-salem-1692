@@ -147,6 +147,7 @@ func TestSeekWorkBackstop_StampsWorklessWorkerWithCoins(t *testing.T) {
 // (a few coins, under the ceiling → still seeks work).
 func TestSeekWorkBackstop_ComfortableWorkerTakesEase(t *testing.T) {
 	a := homedWorker("w")
+	a.InsideStructureID = ""             // out in the village — at home it is withheld instead (LLM-571)
 	a.Coins = SeekWorkCoinCeilingDefault // 25 — at the ceiling → comfortable
 	w := workerShiftWorld(a)             // eco off (watched) → the cosmetic at-ease impulse fires
 	tm := evalSeekWork(t, w, seekNoon)
@@ -593,5 +594,73 @@ func TestSeekWorkBackstop_ClearsBackoffWhenGainsWorkplace(t *testing.T) {
 	}
 	if a.SeekWorkNextWarrantAt != nil || a.SeekWorkBackoffLevel != 0 {
 		t.Errorf("backoff not cleared on ineligibility: next=%v level=%d", a.SeekWorkNextWarrantAt, a.SeekWorkBackoffLevel)
+	}
+}
+
+// TestSeekWorkBackstop_AtEaseWithheldAtHome (LLM-571): the at-ease impulse is withheld
+// while the comfortable worker is already inside its own home. The leisure line it would
+// carry names places to GO ("pass a while with the neighbors, look in at the tavern"),
+// which at home walks the NPC out of its own house to come straight back — Constance
+// Scott ran that loop up to 13 times a day, 72-131 seconds at the destination doing
+// nothing. Idling indoors at home already reads as ordinary village life, so the freeze
+// LLM-352 exists to prevent is not in play. The at-home sibling of AtEaseWithheldWhileUnwatched.
+func TestSeekWorkBackstop_AtEaseWithheldAtHome(t *testing.T) {
+	a := homedWorker("w") // fixture is inside home1, its own home
+	a.Coins = SeekWorkCoinCeilingDefault
+	w := workerShiftWorld(a) // eco off (watched) — so only the at-home gate can withhold
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 0 || tm.SkippedAtHome != 1 {
+		t.Errorf("Stamped=%d SkippedAtHome=%d, want 0/1 (at-ease withheld at home); telemetry=%+v", tm.Stamped, tm.SkippedAtHome, tm)
+	}
+	// The critical arm: `reason` still holds its SeekWorkWarrantReason default at the
+	// at-home branch, so a fallthrough instead of a continue would hand a comfortable
+	// worker the go-earn nudge LLM-352 calls a lie. Pin that it gets NO warrant at all.
+	if hasSeekWorkWarrant(a) {
+		t.Errorf("at-home comfortable worker got a seek_work warrant; want none at all; kinds=%v", warrantKinds(a))
+	}
+	if hasAtEaseWarrant(a) {
+		t.Errorf("at-home comfortable worker got an at_ease warrant; want withheld; kinds=%v", warrantKinds(a))
+	}
+	if a.WarrantedSince != nil {
+		t.Error("at-home comfortable worker warranted; want withheld")
+	}
+	if a.SeekWorkNextWarrantAt != nil {
+		t.Error("at-home skip advanced the backoff timer; want untouched so the cue resumes promptly once it steps out")
+	}
+}
+
+// TestSeekWorkBackstop_BrokeWorkerNotHomeGated (LLM-571): seek-work is economy
+// housekeeping, not cosmetic liveness — a below-ceiling worker is nudged to earn even
+// while sitting at home, so the at-home gate added for at-ease must not leak onto the
+// seek-work arm. The at-home twin of BrokeWorkerNotEcoGated.
+func TestSeekWorkBackstop_BrokeWorkerNotHomeGated(t *testing.T) {
+	a := homedWorker("w") // 0 coins → below ceiling, and inside its own home
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.SkippedAtHome != 0 {
+		t.Errorf("Stamped=%d SkippedAtHome=%d, want 1/0 (broke worker seeks work even at home); telemetry=%+v", tm.Stamped, tm.SkippedAtHome, tm)
+	}
+	if !hasSeekWorkWarrant(a) {
+		t.Errorf("broke worker at home did not get seek_work; kinds=%v", warrantKinds(a))
+	}
+}
+
+// TestSeekWorkBackstop_HomelessComfortableWorkerTakesEase (LLM-571): an actor with NO
+// home is never "at home", so the gate must not silently swallow the impulse for the
+// homeless. Ezekiel Crane is homeless by design, and a HomeStructureID=="" actor whose
+// InsideStructureID is also "" would compare equal without the non-empty guard in
+// actorIsAtHome — which would strand exactly the NPCs that most need the liveness.
+func TestSeekWorkBackstop_HomelessComfortableWorkerTakesEase(t *testing.T) {
+	a := homedWorker("w")
+	a.HomeStructureID = ""   // homeless
+	a.InsideStructureID = "" // and outdoors — both empty, the trap case
+	a.Coins = SeekWorkCoinCeilingDefault
+	w := workerShiftWorld(a)
+	tm := evalSeekWork(t, w, seekNoon)
+	if tm.Stamped != 1 || tm.AtEase != 1 || tm.SkippedAtHome != 0 {
+		t.Errorf("Stamped=%d AtEase=%d SkippedAtHome=%d, want 1/1/0 (homeless worker is never 'at home'); telemetry=%+v", tm.Stamped, tm.AtEase, tm.SkippedAtHome, tm)
+	}
+	if !hasAtEaseWarrant(a) {
+		t.Errorf("homeless comfortable worker did not get an at_ease warrant; kinds=%v", warrantKinds(a))
 	}
 }
