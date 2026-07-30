@@ -637,6 +637,62 @@ func TestGoldensProvisionsLineOnlyForSettledBuyer(t *testing.T) {
 	}
 }
 
+// TestBuyerVocationCatalogFallbacks — the buyer vocation sentence is built on the
+// errand good's PLURAL ("You buy nails … carry them home"), so a good with no catalog
+// phrase must drop the sentence rather than render "You buy nail". The uncatalogued
+// case also pins a cross-package contract this leans on: sim.ItemKindDef.Plural is
+// nil-receiver-safe (it checks d == nil before anything else), so the map miss returns
+// an empty string instead of panicking. If a later edit in sim makes Plural dereference
+// its receiver, this test fails here instead of panicking in a live prompt build
+// (code_review). A SELLER never gets the sentence at all — his calling IS to sell what
+// he carries.
+func TestBuyerVocationCatalogFallbacks(t *testing.T) {
+	catalog := map[sim.ItemKind]*sim.ItemKindDef{
+		"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
+	}
+	cases := []struct {
+		name  string
+		kinds map[sim.ItemKind]*sim.ItemKindDef
+		good  sim.ItemKind
+		dir   sim.TradeDirection
+		orign string
+		want  string
+	}{
+		{"catalogued buyer", catalog, "nail", sim.TradeDirectionBuy, "Lynn",
+			"You buy nails in villages like this one and carry them home to Lynn, where your trade is."},
+		{"catalogued buyer, no origin", catalog, "nail", sim.TradeDirectionBuy, "",
+			"You buy nails in villages like this one and carry them home, where your trade is."},
+		{"uncatalogued good", catalog, "dried_fish", sim.TradeDirectionBuy, "Lynn", ""},
+		{"empty catalog", nil, "nail", sim.TradeDirectionBuy, "Lynn", ""},
+		{"seller", catalog, "nail", sim.TradeDirectionSell, "Boston", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := &sim.Snapshot{ItemKinds: tc.kinds}
+			vs := &sim.VisitorState{
+				Origin: tc.orign,
+				Trade:  &sim.TradeErrand{Direction: tc.dir, Good: tc.good},
+			}
+			if got := travelerBuyerVocation(snap, vs); got != tc.want {
+				t.Errorf("vocation = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuyerVocationNoErrand — a passer-through carries no trade errand at all, and the
+// preface's own vocation map already speaks for him. nil VisitorState / nil Trade must
+// return empty rather than panic, since buildTravelerSelf calls this for every traveler.
+func TestBuyerVocationNoErrand(t *testing.T) {
+	snap := &sim.Snapshot{}
+	if got := travelerBuyerVocation(snap, nil); got != "" {
+		t.Errorf("nil visitor state: vocation = %q, want empty", got)
+	}
+	if got := travelerBuyerVocation(snap, &sim.VisitorState{Archetype: "messenger"}); got != "" {
+		t.Errorf("errandless traveler: vocation = %q, want empty", got)
+	}
+}
+
 // TestGoldensPackClaimRidesTheInventoryLine — wherever the bound-home claim renders, it
 // renders ON the carrying line (LLM-574). That adjacency IS the fix: LLM-544's wording
 // was already in the live nail-buyer's prompt, a section and a conversation away from
