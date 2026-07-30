@@ -919,6 +919,7 @@ func buildActorView(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
 		Rounds:                 buildRounds(snap, a),
 		Inventory:              buildInventoryView(snap, a),
+		PackBoundHome:          travelerPackBoundHome(snap, a),
 		HoursAwake:             computeHoursAwake(snap.LocalMinuteOfDay, a.ScheduleStartMin, a.ScheduleEndMin),
 		InFlightProduction:     buildInFlightProduction(snap, actorID, a),
 		Cold:                   buildColdSelf(snap, a),
@@ -1839,6 +1840,9 @@ func buildTravelerSelf(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		Vocation:    sim.VisitorVocation(a.VisitorState.Archetype),
 		Rumor:       a.VisitorState.Payload,
 	}
+	if v.Vocation == "" {
+		v.Vocation = travelerBuyerVocation(snap, a.VisitorState)
+	}
 	if v.Rumor != "" {
 		v.RumorSharedWith, v.RumorSpentWithAllPresent = travelerRumorSharedWith(snap, actorID, a)
 	}
@@ -1853,6 +1857,36 @@ func buildTravelerSelf(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		}
 	}
 	return v
+}
+
+// travelerBuyerVocation is the merchant BUYER's vocation sentence (LLM-574), the arm
+// sim.VisitorVocation leaves empty: its map covers the passer-through archetypes, and a
+// merchant's label is minted from his errand instead (visitorMerchantLabel).
+//
+// "nail-buyer" names a trade and says nothing about what that trade DOES, so the model
+// filled it in with the nearest real-world prior — a man going shop to shop with a bag
+// of nails is selling them. Naming where the goods are bound gives the label its other
+// half. Buyers only: a factor's calling IS to sell what he carries, and his errand cue
+// already says so.
+func travelerBuyerVocation(snap *sim.Snapshot, vs *sim.VisitorState) string {
+	if snap == nil || vs == nil || vs.Trade == nil || vs.Trade.Direction != sim.TradeDirectionBuy {
+		return ""
+	}
+	// The plural is what the sentence is built on ("You buy nails … carry them home"), so
+	// an errand good with no catalog phrase drops the sentence rather than rendering "You
+	// buy nail". Every live errand good is bound from a catalogued kind at spawn; this is
+	// the same drop-on-empty posture VisitorVocation takes for an unknown archetype.
+	// ItemKindDef.Plural is nil-receiver-safe, so an absent catalog row lands on the
+	// same empty string as an unlabeled one.
+	def := snap.ItemKinds[vs.Trade.Good]
+	good := def.Plural()
+	if good == "" {
+		return ""
+	}
+	if vs.Origin != "" {
+		return fmt.Sprintf("You buy %s in villages like this one and carry them home to %s, where your trade is.", good, vs.Origin)
+	}
+	return fmt.Sprintf("You buy %s in villages like this one and carry them home, where your trade is.", good)
 }
 
 // travelerRumorSharedWith intersects the traveler's shared-word memory

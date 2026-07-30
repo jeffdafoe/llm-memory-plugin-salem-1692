@@ -48,11 +48,22 @@ func init() {
 		perceptionScenario{
 			name: "traveler_settled_pack_is_provisions",
 			summary: "LLM-544: a settled provisioner mid-afternoon carrying the journeycakes he bought here plus " +
-				"cheese and flour given him at a farm. '## Your rounds' names the pack as his own — come by here and " +
+				"cheese and flour given him at a farm. The carrying line names the pack as his own — come by here and " +
 				"bound home with him, not stock to sell — so the model has a stated purpose for the goods instead of " +
 				"writing itself a travelling-salesman motive and hawking its own road food. The mixed pack is the " +
-				"point: 'come by' covers a gift as well as a purchase, which 'bought' would not.",
+				"point: 'come by' covers a gift as well as a purchase, which 'bought' would not. The booked room in " +
+				"the same pack is what the coda's 'goods' excludes (LLM-574).",
 			build: travelerSettledPackScenario,
+		},
+		perceptionScenario{
+			name: "traveler_settled_pack_is_errand_good",
+			summary: "LLM-574: the live 2026-07-30 shape — Tobias Hewes the nail-buyer, his nine nails bought from " +
+				"the smith, calling at a farm that is NOT his counterparty. The case LLM-544 did not cover: the pack " +
+				"holds the ERRAND good and the persona is named for it, so 'a nail-buyer with nine nails' read as a " +
+				"travelling salesman and he offered them to everyone he called on. Pins all three halves of the " +
+				"answer — the preface says what a nail-buyer does with what he buys, the inventory line carries the " +
+				"bound-home coda where the goods actually are, and the settled lead counts them as nine.",
+			build: travelerSettledErrandGoodScenario,
 		},
 		perceptionScenario{
 			name: "traveler_rounds_skip_meeting_house",
@@ -101,7 +112,8 @@ func travelerErrandSettledMiddayScenario() (*sim.Snapshot, sim.ActorID, []sim.Wa
 // Ellis handed him at her farm. The multi-item join and the count-aware nouns are what
 // this pins; the single-good case rides the two nail-buyer settled goldens. A real
 // ItemKinds catalog is supplied so the nouns render as authored phrases rather than raw
-// keys, and nights_stay is present to pin that a service never lands in the pack line.
+// keys, and nights_stay is present to pin that a booked room never turns the coda into a
+// claim about a granted room.
 func travelerSettledPackScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		buyerID = sim.ActorID("vstr-e10f3a91")
@@ -115,7 +127,7 @@ func travelerSettledPackScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		Pos:         sim.TilePos{X: 40, Y: 44},
 		Coins:       75,
 		// nights_stay rides here deliberately: a booked room is a grant, not a carried
-		// good, so the provisions line must skip it (see travelerPackGoods).
+		// good (see travelerPackBoundHome).
 		Inventory: map[sim.ItemKind]int{"journeycake": 4, "cheese": 1, "flour": 1, "nights_stay": 1},
 		Needs:     map[sim.NeedKey]int{},
 		VisitorState: &sim.VisitorState{
@@ -143,6 +155,83 @@ func travelerSettledPackScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 			"cheese":      {Name: "cheese", DisplayLabel: "Cheese", DisplayLabelSingular: "wedge of cheese", DisplayLabelPlural: "wedges of cheese"},
 			"flour":       {Name: "flour", DisplayLabel: "Flour", DisplayLabelSingular: "sack of flour", DisplayLabelPlural: "sacks of flour"},
 			"nights_stay": {Name: "nights_stay", DisplayLabel: "Night's Stay", DisplayLabelSingular: "night's stay", Capabilities: []string{"service"}},
+		},
+	}
+	return snap, buyerID, nil
+}
+
+// travelerSettledErrandGoodScenario reproduces the live 2026-07-30 shape (LLM-574):
+// Tobias Hewes, a nail-buyer out of Lynn, nine nails bought from Ezekiel Crane at the
+// Blacksmith and stowed, mid-afternoon with light left, standing at Ellis Farm with the
+// farm's keeper — a shop that is NOT his errand counterparty, where his commerce tools
+// are stripped and every word he can say about the nails is talk. He hawked them anyway.
+//
+// Deliberately distinct from travelerSettledPackScenario: there the pack is road food
+// bought incidentally and the persona ("provisioner") is not named for it. Here the pack
+// IS the errand good and the label is minted from it, which is the combination that
+// beat the LLM-544 line.
+func travelerSettledErrandGoodScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		buyerID  = sim.ActorID("vstr-fb50246e")
+		keeperID = sim.ActorID("elizabeth")
+		smithy   = sim.StructureID("blacksmith")
+		farm     = sim.StructureID("ellis_farm")
+	)
+	now := 900 // 15:00 — three hours to dusk (1080), well clear of bed pressure
+	buyer := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Tobias Hewes the nail-buyer",
+		State:       sim.StateIdle,
+		Pos:         sim.TilePos{X: 96, Y: 120},
+		Coins:       54,
+		Inventory:   map[sim.ItemKind]int{"nail": 9},
+		Needs:       map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			Archetype:   "nail-buyer",
+			Origin:      "Lynn",
+			Disposition: "reserved",
+			Phase:       sim.VisitorPhaseMakingRounds,
+			// The farm, not the smithy: live, a visitor's errand counterparty is never
+			// recorded as a stop he called at (LLM-575). Listing the smithy here would
+			// bake the fix for that into this golden and quietly assert behaviour prod
+			// does not have.
+			VisitedBusinesses: []sim.StructureID{farm},
+			Trade:             &sim.TradeErrand{Direction: sim.TradeDirectionBuy, Good: "nail", Counterparty: smithy, Settled: true},
+		},
+	}
+	keeper := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Elizabeth Ellis",
+		Role:               "farmer",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 96, Y: 118},
+		WorkStructureID:    farm,
+		InsideStructureID:  farm,
+		CurrentHuddleID:    "h1",
+		Needs:              map[sim.NeedKey]int{},
+		BusinessownerState: &sim.BusinessownerState{Flavor: "farmer"},
+	}
+	buyer.CurrentHuddleID = "h1"
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		DawnMinute:       360,
+		DuskMinute:       1080,
+		DawnDuskMinuteOK: true,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{buyerID: buyer, keeperID: keeper},
+		Structures: map[sim.StructureID]*sim.Structure{
+			smithy: plainStructure(smithy, "Blacksmith"),
+			farm:   plainStructure(farm, "Ellis Farm"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}, Tags: []string{sim.TagBusiness}},
+			sim.VillageObjectID(farm):   {ID: sim.VillageObjectID(farm), Pos: sim.WorldPos{X: 768, Y: 944}, Tags: []string{sim.TagBusiness}},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {Members: map[sim.ActorID]struct{}{buyerID: {}, keeperID: {}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
 		},
 	}
 	return snap, buyerID, nil
@@ -193,6 +282,9 @@ func travelerErrandSettledScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		Structures:       map[sim.StructureID]*sim.Structure{smithy: plainStructure(smithy, "Smithy")},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}, Tags: []string{sim.TagBusiness}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
 		},
 	}
 	return snap, buyerID, nil
@@ -351,6 +443,9 @@ func travelerBetweenLegsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 			sim.VillageObjectID(smithy): {ID: sim.VillageObjectID(smithy), Pos: sim.WorldPos{X: 640, Y: 0}, Tags: []string{sim.TagBusiness}},
 			sim.VillageObjectID(weaver): {ID: sim.VillageObjectID(weaver), Pos: sim.WorldPos{X: 1120, Y: 256}, Tags: []string{sim.TagBusiness}},
 		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
+		},
 	}
 	return snap, peddlerID, nil
 }
@@ -400,6 +495,9 @@ func travelerMakingRoundsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 		Structures:       map[sim.StructureID]*sim.Structure{blacksmith: plainStructure(blacksmith, "Blacksmith")},
 		Huddles: map[sim.HuddleID]*sim.Huddle{
 			"h1": {Members: map[sim.ActorID]struct{}{peddlerID: {}, smithID: {}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
 		},
 	}
 	return snap, peddlerID, nil
@@ -512,14 +610,14 @@ func TestGoldensNoDaylightBedContradiction(t *testing.T) {
 	}
 }
 
-// TestGoldensProvisionsLineOnlyForSettledBuyer — the pack-is-your-own line (LLM-544)
-// may render ONLY for a traveler on a SETTLED BUY errand. The claim rests on a buyer
-// spawning empty-packed, so everything he carries was come by here; a factor's pack is
-// imported trade stock and calling it "not stock to sell" would be false, and would
-// undercut the two-way deal his own cue is pressing. Cross-scenario matrix guard — the
-// positive cases are pinned by the settled goldens.
+// TestGoldensProvisionsLineOnlyForSettledBuyer — the pack-is-your-own claim (LLM-544,
+// moved onto the inventory line by LLM-574) may render ONLY for a traveler on a SETTLED
+// BUY errand. It rests on a buyer spawning empty-packed, so everything he carries was
+// come by here; a factor's pack is imported trade stock and calling it "not stock to
+// sell" would be false, and would undercut the two-way deal his own cue is pressing.
+// Cross-scenario matrix guard — the positive cases are pinned by the settled goldens.
 func TestGoldensProvisionsLineOnlyForSettledBuyer(t *testing.T) {
-	const marker = "is your own, come by here"
+	const marker = "your own, come by here"
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -539,61 +637,174 @@ func TestGoldensProvisionsLineOnlyForSettledBuyer(t *testing.T) {
 	}
 }
 
-// TestRoundsProvisionsLineScopedToSettledBuy — the two negative cases asserted DIRECTLY
-// rather than only through the matrix guard, which passes vacuously if the covering
-// scenario is ever dropped from perceptionScenarios (code_review). A factor carries real
-// imported stock to sell, and an unsettled buyer is still mid-errand; neither may be told
-// his pack is his own.
-func TestRoundsProvisionsLineScopedToSettledBuy(t *testing.T) {
-	const marker = "is your own, come by here"
+// TestBuyerVocationCatalogFallbacks — the buyer vocation sentence is built on the
+// errand good's PLURAL ("You buy nails … carry them home"), so a good with no catalog
+// phrase must drop the sentence rather than render "You buy nail". The uncatalogued
+// case also pins a cross-package contract this leans on: sim.ItemKindDef.Plural is
+// nil-receiver-safe (it checks d == nil before anything else), so the map miss returns
+// an empty string instead of panicking. If a later edit in sim makes Plural dereference
+// its receiver, this test fails here instead of panicking in a live prompt build
+// (code_review). A SELLER never gets the sentence at all — his calling IS to sell what
+// he carries.
+func TestBuyerVocationCatalogFallbacks(t *testing.T) {
+	catalog := map[sim.ItemKind]*sim.ItemKindDef{
+		"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
+	}
 	cases := []struct {
-		name   string
-		errand *RoundsErrand
+		name  string
+		kinds map[sim.ItemKind]*sim.ItemKindDef
+		good  sim.ItemKind
+		dir   sim.TradeDirection
+		orign string
+		want  string
 	}{
-		{"settled factor", &RoundsErrand{Buy: false, Settled: true, PackGoods: []string{"coats"}}},
-		{"unsettled buyer", &RoundsErrand{Buy: true, Settled: false, GoodLabel: "nail", ShopLabel: "Smithy", PackGoods: []string{"nails"}}},
+		{"catalogued buyer", catalog, "nail", sim.TradeDirectionBuy, "Lynn",
+			"You buy nails in villages like this one and carry them home to Lynn, where your trade is."},
+		{"catalogued buyer, no origin", catalog, "nail", sim.TradeDirectionBuy, "",
+			"You buy nails in villages like this one and carry them home, where your trade is."},
+		{"uncatalogued good", catalog, "dried_fish", sim.TradeDirectionBuy, "Lynn", ""},
+		{"empty catalog", nil, "nail", sim.TradeDirectionBuy, "Lynn", ""},
+		{"seller", catalog, "nail", sim.TradeDirectionSell, "Boston", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var b strings.Builder
-			renderTravelerRounds(&b, &TravelerRoundsView{Errand: tc.errand})
-			if strings.Contains(b.String(), marker) {
-				t.Errorf("provisions line rendered for a %s — it is scoped to a settled BUY errand (LLM-544):\n%s", tc.name, b.String())
+			snap := &sim.Snapshot{ItemKinds: tc.kinds}
+			vs := &sim.VisitorState{
+				Origin: tc.orign,
+				Trade:  &sim.TradeErrand{Direction: tc.dir, Good: tc.good},
+			}
+			if got := travelerBuyerVocation(snap, vs); got != tc.want {
+				t.Errorf("vocation = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestRoundsProvisionsLineUncataloguedKind — an inventory kind with NO catalog row at
-// all falls back to its raw key rather than panicking or vanishing. This pins a
-// cross-package contract travelerPackGoods leans on: sim.ItemKindDef.CountNoun is
-// nil-receiver-safe (it only calls Singular/Plural, both of which check d == nil), so
-// the def != nil guard is needed for HasCapability and not for CountNoun. If a later
-// edit in sim makes CountNoun dereference its receiver, this test fails here instead of
-// panicking in a live prompt build (code_review).
-func TestRoundsProvisionsLineUncataloguedKind(t *testing.T) {
-	snap, actorID, _ := travelerSettledPackScenario()
-	snap.Actors[actorID].Inventory["dried_fish"] = 2 // deliberately absent from snap.ItemKinds
-	view := buildTravelerRounds(snap, snap.Actors[actorID], nil)
-	if view == nil || view.Errand == nil {
-		t.Fatalf("expected a rounds view with an errand, got %+v", view)
+// TestBuyerVocationNoErrand — a passer-through carries no trade errand at all, and the
+// preface's own vocation map already speaks for him. nil VisitorState / nil Trade must
+// return empty rather than panic, since buildTravelerSelf calls this for every traveler.
+func TestBuyerVocationNoErrand(t *testing.T) {
+	snap := &sim.Snapshot{}
+	if got := travelerBuyerVocation(snap, nil); got != "" {
+		t.Errorf("nil visitor state: vocation = %q, want empty", got)
 	}
-	if got, want := strings.Join(view.Errand.PackGoods, "|"), "dried_fish|journeycakes|sack of flour|wedge of cheese"; got != want {
-		t.Errorf("pack goods = %q, want %q (an uncatalogued kind falls back to its raw key)", got, want)
+	if got := travelerBuyerVocation(snap, &sim.VisitorState{Archetype: "messenger"}); got != "" {
+		t.Errorf("errandless traveler: vocation = %q, want empty", got)
 	}
 }
 
-// TestRoundsProvisionsLineSkipsServices — a service in the pack (a booked night's stay)
-// is a granted room, not a carried good, so it never appears in the provisions list
-// (LLM-544). Unit-level because the golden pins only the assembled prose.
-func TestRoundsProvisionsLineSkipsServices(t *testing.T) {
-	snap, actorID, _ := travelerSettledPackScenario()
-	view := buildTravelerRounds(snap, snap.Actors[actorID], nil)
-	if view == nil || view.Errand == nil {
-		t.Fatalf("expected a rounds view with an errand, got %+v", view)
+// TestGoldensPackClaimRidesTheInventoryLine — wherever the bound-home claim renders, it
+// renders ON the carrying line (LLM-574). That adjacency IS the fix: LLM-544's wording
+// was already in the live nail-buyer's prompt, a section and a conversation away from
+// the inventory readout, and it lost to the readout — which for every other actor in the
+// village is the sellable-stock line. A later edit that moves the claim back into its own
+// paragraph would restore the defect while every other assertion here still passed.
+func TestGoldensPackClaimRidesTheInventoryLine(t *testing.T) {
+	const marker = "your own, come by here"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			for _, line := range strings.Split(renderScenario(sc), "\n") {
+				if strings.Contains(line, marker) && !strings.HasPrefix(line, "You are carrying: ") {
+					t.Errorf("scenario %q: the bound-home claim rendered off the carrying line (LLM-574):\n%s", sc.name, line)
+				}
+			}
+		})
 	}
-	if got, want := strings.Join(view.Errand.PackGoods, "|"), "journeycakes|sack of flour|wedge of cheese"; got != want {
-		t.Errorf("pack goods = %q, want %q (a service must be skipped, the rest count-aware and sorted)", got, want)
+}
+
+// TestPackBoundHomeScopedToSettledBuy — the negative cases asserted DIRECTLY rather
+// than only through the matrix guard, which passes vacuously if the covering scenario
+// is ever dropped from perceptionScenarios (code_review). A factor carries real imported
+// stock to sell, and an unsettled buyer is still mid-errand; neither may be told his
+// pack is his own. The subject is a settled buyer in every case, mutated one field at a
+// time, so a failure names the field that carried it.
+func TestPackBoundHomeScopedToSettledBuy(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*sim.TradeErrand)
+	}{
+		{"settled seller", func(t *sim.TradeErrand) { t.Direction = sim.TradeDirectionSell }},
+		{"unsettled buyer", func(t *sim.TradeErrand) { t.Settled = false }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t2 *testing.T) {
+			snap, actorID, _ := travelerSettledPackScenario()
+			a := snap.Actors[actorID]
+			tc.mutate(a.VisitorState.Trade)
+			if travelerPackBoundHome(snap, a) {
+				t2.Errorf("pack read as bound home for a %s — the claim is scoped to a settled BUY errand (LLM-574)", tc.name)
+			}
+		})
+	}
+}
+
+// TestPackBoundHomeNonTraveler — a resident keeper's stock is never his provisions,
+// however full his pack. The gate reads VisitorState, so this pins that a nil one
+// (every persistent NPC and PC) returns false rather than panicking.
+func TestPackBoundHomeNonTraveler(t *testing.T) {
+	snap, actorID, _ := travelerSettledPackScenario()
+	a := snap.Actors[actorID]
+	a.VisitorState = nil
+	if travelerPackBoundHome(snap, a) {
+		t.Error("pack read as bound home for a non-traveler subject (LLM-574)")
+	}
+}
+
+// TestPackBoundHomeUncataloguedKind — an inventory kind with NO catalog row at all still
+// counts as a carried good. This pins the nil-def path through the service check: only
+// HasCapability needs the def != nil guard, and an unknown kind must not be silently
+// treated as a service (which would suppress the coda for a pack that holds real goods).
+func TestPackBoundHomeUncataloguedKind(t *testing.T) {
+	snap, actorID, _ := travelerSettledPackScenario()
+	a := snap.Actors[actorID]
+	a.Inventory = map[sim.ItemKind]int{"dried_fish": 2} // deliberately absent from snap.ItemKinds
+	if !travelerPackBoundHome(snap, a) {
+		t.Error("an uncatalogued carried kind must still read as a good bound home (LLM-574)")
+	}
+}
+
+// TestPackBoundHomeServicesOnly — a service in the pack (a booked night's stay) is a
+// granted room, not a carried good. A pack holding NOTHING else carries no coda, since
+// there is no good for the claim to be about; a pack holding a service beside real goods
+// still does. Unit-level because the golden pins only the assembled prose.
+func TestPackBoundHomeServicesOnly(t *testing.T) {
+	snap, actorID, _ := travelerSettledPackScenario()
+	a := snap.Actors[actorID]
+	if !travelerPackBoundHome(snap, a) {
+		t.Fatal("the scenario pack (goods plus a nights_stay) must read as bound home (LLM-574)")
+	}
+	a.Inventory = map[sim.ItemKind]int{"nights_stay": 1}
+	if travelerPackBoundHome(snap, a) {
+		t.Error("a pack holding only a booked room must carry no bound-home coda (LLM-574)")
+	}
+}
+
+// TestSettledBuyLeadAgreesWithPackCount — nine nails are announced as "the nails are
+// bought", one as "the nail is bought" (LLM-574). The live nail-buyer's lead said "the
+// nail is bought" over a pack of nine, two sections below an inventory line reading
+// "nails (x9)". Falls back to the abstract singular when the good has left his pack.
+func TestSettledBuyLeadAgreesWithPackCount(t *testing.T) {
+	cases := []struct {
+		qty  int
+		want string
+	}{
+		{9, "the nails are bought"},
+		{1, "the nail is bought"},
+		{0, "the nail is bought"}, // given away / eaten — no pack noun to speak of
+	}
+	for _, tc := range cases {
+		snap, actorID, _ := travelerErrandSettledScenario()
+		a := snap.Actors[actorID]
+		a.Inventory = map[sim.ItemKind]int{"nail": tc.qty}
+		snap.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+			"nail": {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails"},
+		}
+		var b strings.Builder
+		renderTravelerRounds(&b, buildTravelerRounds(snap, a, nil))
+		if !strings.Contains(b.String(), tc.want) {
+			t.Errorf("pack of %d: settled lead missing %q:\n%s", tc.qty, tc.want, b.String())
+		}
 	}
 }
 

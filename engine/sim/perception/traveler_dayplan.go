@@ -62,6 +62,14 @@ type RoundsErrand struct {
 	// GoodLabel is its display noun for the prose ("fresh cheese" -> here just the singular).
 	GoodKind  string
 	GoodLabel string
+	// PackGoodNoun is the errand good as he now CARRIES it — the count-aware noun over
+	// the quantity in his pack ("nails" for nine, "nail" for one), with PackGoodPlural
+	// carrying the verb agreement for the settled lead (LLM-574). Set only on a settled
+	// buy errand; every other branch speaks of the good in the abstract and uses
+	// GoodLabel. Nine nails announced as "the nail is bought" understates the pack
+	// against the inventory line two sections above it.
+	PackGoodNoun   string
+	PackGoodPlural bool
 	// KeeperName is the counterparty keeper's display name — the pay_with_item seller arg
 	// when co-present; "" when the keeper is not in the huddle.
 	KeeperName string
@@ -77,11 +85,6 @@ type RoundsErrand struct {
 	// Settled — the errand trade is done (or proven impossible for the day); the cue turns to
 	// winding him down to the tavern instead of pressing his rounds.
 	Settled bool
-	// PackGoods names what he still carries, as count-aware nouns ("journeycakes",
-	// "wedge of cheese"), for the settled-BUY provisions line (LLM-544). Empty for
-	// every other case — see travelerPackGoods for why a BUY errand is the only one
-	// whose pack can be called his own.
-	PackGoods []string
 }
 
 // RoundsShop is one still-open shop on the traveler's rounds: its name and a bearing
@@ -145,7 +148,12 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 			}
 		}
 		if e.Buy && e.Settled {
-			e.PackGoods = travelerPackGoods(snap, actorSnap)
+			if qty := actorSnap.Inventory[vs.Trade.Good]; qty > 0 {
+				if def := snap.ItemKinds[vs.Trade.Good]; def != nil {
+					e.PackGoodNoun = def.CountNoun(qty)
+				}
+				e.PackGoodPlural = qty > 1
+			}
 		}
 		view.Errand = e
 	}
@@ -214,38 +222,38 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 	return view
 }
 
-// travelerPackGoods names the goods a settled BUY-errand traveler still carries, as
-// count-aware nouns for the provisions line (LLM-544). A buyer spawns with an EMPTY
-// pack (seedBuyerPack, unlike the factor's seedFactorPack), so everything in it was
-// come by HERE — bought on his errand, or given him over a threshold. That is what
-// makes "your own, not stock to sell" a statement of fact rather than a hopeful one,
-// and it is why the line is scoped to a buy errand: a factor's pack IS trade stock.
-// Services are skipped — a night's stay is a granted room, never a thing in a pack.
+// travelerPackBoundHome reports whether the subject's carried goods are a settled
+// BUY-errand traveler's own provisions — the gate on the inventory-line coda that
+// says so (LLM-574, moved here from the LLM-544 rounds line).
 //
-// Sorted by the RENDERED noun, so the order reads alphabetically to the model rather
-// than following internal kind keys. The cost is that a catalog label edit reorders the
-// list and churns the goldens — which is what a golden is for.
-func travelerPackGoods(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []string {
-	if snap == nil || actorSnap == nil {
-		return nil
+// A buyer spawns with an EMPTY pack (seedBuyerPack, unlike the factor's
+// seedFactorPack), so everything in it was come by HERE — bought on his errand, or
+// given him over a threshold. That is what makes "your own, not stock to sell" a
+// statement of fact rather than a hopeful one, and it is why the claim is scoped to a
+// buy errand: a factor's pack IS trade stock, and telling him otherwise would undercut
+// the two-way deal his own cue is pressing.
+//
+// Requires at least one non-service good: a lodger whose whole pack is the nights_stay
+// he booked carries nothing bound anywhere, and a coda over a bare room grant would be
+// a claim about nothing.
+func travelerPackBoundHome(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
+	if snap == nil || actorSnap == nil || actorSnap.VisitorState == nil {
+		return false
 	}
-	var goods []string
+	trade := actorSnap.VisitorState.Trade
+	if trade == nil || trade.Direction != sim.TradeDirectionBuy || !trade.Settled {
+		return false
+	}
 	for kind, qty := range actorSnap.Inventory {
 		if qty <= 0 {
 			continue
 		}
-		def := snap.ItemKinds[kind]
-		if def != nil && def.HasCapability("service") {
-			continue // HasCapability derefs; CountNoun below is nil-safe on its own
+		if def := snap.ItemKinds[kind]; def != nil && def.HasCapability("service") {
+			continue
 		}
-		noun := def.CountNoun(qty)
-		if noun == "" {
-			noun = string(kind) // unlabeled / discovery-minted kind — the raw key still reads
-		}
-		goods = append(goods, noun)
+		return true
 	}
-	sort.Strings(goods)
-	return goods
+	return false
 }
 
 // renderTravelerRounds writes the "## Your rounds" surface — a scene (his one piece of
@@ -305,9 +313,9 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 	good := sanitizeInline(e.GoodLabel)
 	switch {
 	case e.Settled && e.Buy && bedTime:
-		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n", good)
+		fmt.Fprintf(b, "You have what you came for — %s and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n", boughtClause(e, good))
 	case e.Settled && e.Buy:
-		fmt.Fprintf(b, "You have what you came for — the %s is bought and stowed in your pack. Your business in this village is done; the rest of the day is yours to look in on the other shops and pass the news.\n", good)
+		fmt.Fprintf(b, "You have what you came for — %s and stowed in your pack. Your business in this village is done; the rest of the day is yours to look in on the other shops and pass the news.\n", boughtClause(e, good))
 	// The seller's settled lead names the SHIPMENT, not his pack, and hedges it with "most"
 	// (LLM-553). The errand is the headline import he came to land; the cloth and charms beside
 	// it are a secondary bale that routinely goes home with him. The original wording, "Your
@@ -332,25 +340,20 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 		fmt.Fprintf(b, "You came to deal with the keeper of %s, %s — that is your business here, so make for it. %s\n",
 			shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
 	}
-	// LLM-544: say what the goods still in his pack ARE. The settled lead above tells
-	// him his errand is done and leaves the pack unexplained — a persona, an inventory
-	// line, and no stated purpose for the goods. Live, Brother Ashford filled that
-	// vacuum with the real-world prior for a man carrying goods shop to shop and spent
-	// the afternoon hawking the journeycakes he had bought here as road food ("two
-	// coins a piece, good for the road"). Naming what the goods are removes the motive,
-	// which is why this states a fact and does not forbid the pitch — the scene is the
-	// argument. Scoped to a settled BUY errand: a factor's pack is genuinely trade
-	// stock and must go on reading as stock.
-	//
-	// "come by here", not "bought here": the empty-spawn-pack invariant establishes
-	// only that the goods were acquired in the village, not HOW — a gift over a
-	// threshold is as likely as a purchase (Elizabeth Ellis handed Ashford a wedge of
-	// cheese and a sack of flour the same afternoon). The claim has to be one the
-	// data actually supports, or the line is one more thing in the prompt the model
-	// can catch out (code_review).
-	if e.Settled && e.Buy && len(e.PackGoods) > 0 {
-		fmt.Fprintf(b, "What you carry — %s — is your own, come by here and bound home with you, not stock to sell.\n", joinNames(e.PackGoods))
+}
+
+// boughtClause renders the settled buyer's purchase as he now holds it — "the nails
+// are bought" over a pack of nine, "the nail is bought" over one (LLM-574). Falls back
+// to the abstract singular label when the good is no longer in his pack at all (given
+// away, eaten, or an unlabeled discovery kind), which is the pre-LLM-574 wording.
+func boughtClause(e *RoundsErrand, good string) string {
+	if e.PackGoodNoun == "" {
+		return "the " + good + " is bought"
 	}
+	if e.PackGoodPlural {
+		return "the " + sanitizeInline(e.PackGoodNoun) + " are bought"
+	}
+	return "the " + sanitizeInline(e.PackGoodNoun) + " is bought"
 }
 
 // otherShopsAside is the one-line reminder that the other shops are for news, not trade —
