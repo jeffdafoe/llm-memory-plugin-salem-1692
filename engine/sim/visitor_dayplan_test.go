@@ -566,9 +566,10 @@ func TestVisitorPacingRecordsCallAfterKeeperReturns(t *testing.T) {
 // new "anywhere he happens to be" rule, so a traveler with a walk in flight is left to
 // the arrival path that owns the moment he comes to rest.
 //
-// Both halves matter. The skip must DEFER, not drop: finishArrival clears MoveIntent, so
-// a traveler who stops where he stands must be recorded on the next pass rather than
-// waiting on an arrival event that has already been and gone (code_review).
+// Both halves matter. The skip must DEFER, not drop: a traveler who stops where he
+// stands has to be recorded on the next pass rather than left waiting on an arrival
+// event that has already been and gone (code_review). The second half clears the intent
+// directly — it pins the deferred re-check, NOT that finishArrival is what clears it.
 func TestVisitorPacingDefersCallWhileWalking(t *testing.T) {
 	loc := et(t)
 	day := time.Date(2026, 7, 12, 15, 0, 0, 0, loc)
@@ -599,8 +600,8 @@ func TestVisitorPacingDefersCallWhileWalking(t *testing.T) {
 		t.Fatalf("visited=%v, want none — he is walking through, not calling in", visitedOf(got))
 	}
 
-	// He thinks better of the tavern and stops where he is; finishArrival would have
-	// cleared the intent the same way. The stop was deferred, not lost.
+	// He thinks better of the tavern and stops where he is. The stop was deferred, not
+	// lost.
 	setVisitorState(t, w, func(a *sim.Actor) { a.MoveIntent = nil })
 	tickCircuit(t, w, day.Add(2*time.Minute))
 	got := firstVisitor(t, w)
