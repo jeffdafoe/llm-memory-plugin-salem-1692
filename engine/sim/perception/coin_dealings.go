@@ -47,15 +47,20 @@ type CoinDealingsPeerView struct {
 // the stateful NPC the relationship section leaves out.
 //
 // TRAVELERS ARE EXCLUDED, on both sides, and this is a correctness gate rather than
-// a cost one. A visitor's own payments never reach agent_action_log — the durable
-// sink discards visitor rows at the AppendActionLogDurable chokepoint, because
-// actor_id carries an FK to actor(id) (LLM-379) — so after any restart a traveler
-// pair reads as "no coin has passed between you" when coin certainly did. Within a
-// single boot the live tally is complete for them, but a cue that is truthful only
-// until the next deploy is worse than one that stays quiet, and Salem deploys
-// several times a day. Their ids are minted fresh per visit anyway, so a persistent
-// pair record was never going to mean much. If LLM-379's chokepoint is ever fixed,
-// this gate is the thing to revisit.
+// a cost one. A visitor's own payments reach agent_action_log with a BLANKED
+// actor_id — the column FKs to actor(id) and a visitor lives in a separate table, so
+// LLM-573 keeps the row for the dream pipeline but strips the id — and the coin
+// record's boot seed cannot key an unattributed row to a pair. So after any restart
+// a traveler pair reads "no coin has passed between you" when coin certainly did.
+// Within a single boot the live tally is complete for them, but a cue that is
+// truthful only until the next deploy is worse than one that stays quiet, and Salem
+// deploys several times a day. Their ids are minted fresh per visit anyway, so a
+// persistent pair record was never going to mean much.
+//
+// The gate is coupled to that id-blanking, and the coupling is pinned by
+// cascade.TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable. If
+// visitor beats ever become attributable to a stable id, that test goes red and this
+// gate is the thing to revisit.
 //
 // Capped at maxRenderedRelationshipPeers for the reason the relationship section is
 // (LLM-322): the section is re-sent every tick, so a crowded huddle must not be

@@ -68,9 +68,11 @@ import (
 //   - resident pays a visitor: the row drops, but the visitor is gone and a
 //     transient actor id is minted fresh on the next visit, so that pair is never
 //     read again.
-//   - visitor pays a resident: no row exists to drop. Visitor rows never reach
-//     agent_action_log at all — AppendActionLogDurable discards them at the
-//     chokepoint, because actor_id carries an FK to actor(id) (LLM-379).
+//   - visitor pays a resident: the row exists but names no payer. LLM-573 stopped
+//     discarding visitor-authored rows and now BLANKS their actor_id instead (the
+//     column FKs to actor(id) and a visitor lives in a separate table), so the row
+//     persists for the dream pipeline while carrying no id to key a pair on. The
+//     seed's `actor_id IS NOT NULL` filter skips it.
 //
 // Both cases collapse to the same rule, which the render enforces rather than
 // assumes: a pair is only read when both sides are resident actors the engine can
@@ -161,11 +163,11 @@ func (w *World) CoinRecordWindow() time.Duration {
 //     This is the restart-lossy class the GUIDELINES permit — the coin itself moved
 //     in the Pay command and is checkpointed, so persistent state stays consistent;
 //     what degrades is a recollection.
-//   - AppendActionLogDurable DROPS rows whose actor is a visitor (LLM-379), so a
-//     visitor's payment credits the tally and is never durable. That one is closed
-//     rather than accepted: perception excludes travelers on both sides precisely
-//     because their durable record is incomplete, so no pair that renders is
-//     affected.
+//   - a visitor's payment credits the tally but reaches the durable log with a
+//     BLANKED actor id (LLM-573), so the seed cannot key it to a pair. That one is
+//     closed rather than accepted: perception excludes travelers on both sides
+//     precisely because their durable record cannot be attributed, so no pair that
+//     renders is affected.
 //
 // Zero and negative amounts are dropped — a barter settles for 0 coin and writes a
 // `paid` row, but no coin passed and this is a record of coin. Self-pairs and empty

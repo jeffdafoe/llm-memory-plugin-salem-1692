@@ -1224,22 +1224,28 @@ func TestHandleRepairingActionLog_EmitsDurableRow(t *testing.T) {
 	}
 }
 
-// --- TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotDurable ---
-// LLM-572. Pins the asymmetry the coin record's traveler gate depends on.
+// --- TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable ---
+// LLM-572, reconciled with LLM-573. Pins the asymmetry the coin record's traveler
+// gate depends on.
 //
-// A visitor's payment credits the IN-MEMORY tally (RecordCoinPaid covers every
-// actor kind) but writes NO durable row, because AppendActionLogDurable discards
-// rows whose acting actor carries a VisitorState (LLM-379/382 — actor_id is a uuid
-// column and a "vstr-" id cannot satisfy it). The coin record is seeded from those
-// rows at boot, so a traveler pair is complete within one boot and empty after the
-// next restart — and Salem deploys several times a day.
+// A visitor's payment credits the IN-MEMORY tally (RecordCoinPaid covers every actor
+// kind) and DOES reach the durable log — LLM-573 stopped discarding visitor-authored
+// rows — but it arrives with a BLANKED actor_id, because the column FKs to actor(id)
+// and a visitor lives in the separate visitor table. The row survives for the dream
+// pipeline while carrying no id to key a pair on, and the coin record's boot seed
+// filters on `actor_id IS NOT NULL`. So a traveler pair is complete within one boot
+// and empty after the next restart — and Salem deploys several times a day.
 //
 // That is why perception excludes travelers from "## Coin between you and those
 // here" on BOTH sides: a cue that says "no coin has passed between you" only until
-// the next deploy is worse than one that stays quiet. If visitor persistence ever
-// changes, this test goes red and the render gate should be revisited rather than
-// silently left hiding valid records.
-func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotDurable(t *testing.T) {
+// the next deploy is worse than one that stays quiet.
+//
+// The gate is coupled to the id-blanking, not to the row being absent. If visitor
+// beats ever become attributable to a stable id, this test goes red and the render
+// gate should be revisited rather than silently left hiding valid records. (Its
+// earlier form asserted the row was DROPPED, which LLM-573 made false within the
+// hour — the coupling is worth pinning precisely because it moves.)
+func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
 	defer stop()
 
@@ -1266,15 +1272,23 @@ func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotDurable(t *testing.T) 
 	})
 
 	rows := rec.snapshot()
-	if len(rows) != 1 {
-		t.Fatalf("recorded %d durable rows, want 1 — the visitor's payment must not persist: %+v", len(rows), rows)
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d durable rows, want 2 — LLM-573 keeps the visitor's row: %+v", len(rows), rows)
 	}
-	if rows[0].ActorID != "hannah" {
-		t.Errorf("durable row = %+v, want the resident payment", rows[0])
+	// The visitor's row persists with NO payer id, which is what makes it invisible
+	// to the coin-record seed: an unattributed payment cannot be keyed to a pair.
+	if rows[0].ActorID != "" {
+		t.Errorf("visitor row = %+v, want a blanked ActorID", rows[0])
+	}
+	if rows[0].SpeakerName != "Elias Drum the peddler" {
+		t.Errorf("visitor row lost its author name: %+v", rows[0])
+	}
+	if rows[1].ActorID != "hannah" {
+		t.Errorf("durable row = %+v, want the resident payment", rows[1])
 	}
 	// Every future seed keys on this, so the resident row must carry the recipient id.
-	if rows[0].Payload["recipient_actor_id"] != "bob" {
-		t.Errorf("durable payload = %+v, want recipient_actor_id \"bob\"", rows[0].Payload)
+	if rows[1].Payload["recipient_actor_id"] != "bob" {
+		t.Errorf("durable payload = %+v, want recipient_actor_id \"bob\"", rows[1].Payload)
 	}
 
 	invokeOnWorld(t, w, func(world *sim.World) {
@@ -1282,7 +1296,7 @@ func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotDurable(t *testing.T) 
 			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
 			CoinRecordWindow: world.CoinRecordWindow(),
 		}
-		// The visitor's payment IS in memory — the gate is durable-only.
+		// The visitor's payment IS in memory — only the durable attribution is lost.
 		if d := snap.CoinDealingsFor("hannah", visitorID, at); d.ReceivedCount != 1 || d.ReceivedTotal != 3 {
 			t.Errorf("visitor payment not tallied in memory: %+v", d)
 		}
