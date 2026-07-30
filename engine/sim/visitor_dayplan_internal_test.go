@@ -196,3 +196,33 @@ func TestSeedVisitorPack(t *testing.T) {
 		}
 	}
 }
+
+// A passer-through has no Trade errand, so his only counterparty is the keeper he lodges
+// with — every shop stop is talk-only. Anything factor-owned in his pack therefore tours
+// the village unbuyable and leaves with him (LLM-567), so re-adding iron (or salt, or a
+// future import) to visitorWareKinds must fail here rather than silently reopen the side
+// door.
+//
+// The pool assertion is the load-bearing one: seedVisitorPack draws straight from
+// visitorWareKinds today, so it alone is sufficient. The seed loop is deliberate
+// redundancy against a future seedVisitorPack that derives or substitutes a kind instead
+// of indexing the pool — it asserts the output, not the input.
+func TestVisitorWareKindsExcludeFactorImports(t *testing.T) {
+	factorOwned := map[ItemKind]bool{}
+	for _, k := range factorImportKinds {
+		factorOwned[k] = true
+	}
+	for _, k := range visitorWareKinds {
+		if factorOwned[k] {
+			t.Errorf("visitorWareKinds contains factor-owned import %q; imports enter only via a sell errand", k)
+		}
+	}
+	for seed := int64(0); seed < 50; seed++ {
+		pack, _ := seedVisitorPack(rand.New(rand.NewSource(seed)))
+		for kind := range pack {
+			if factorOwned[kind] {
+				t.Errorf("seed %d: passer-through pack carries factor-owned import %q", seed, kind)
+			}
+		}
+	}
+}

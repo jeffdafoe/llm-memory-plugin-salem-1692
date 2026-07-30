@@ -1473,12 +1473,25 @@ func nextDaybreak(w *World, now time.Time) time.Time {
 // varied pack reads as a peddler's stock and, with the purse, pays for a room
 // (LLM-353). Generic, not archetype-specific — per-archetype packs are a later
 // refinement.
-var visitorWareKinds = []ItemKind{"cheese", "ale", "iron", "bread"}
+//
+// Every kind here must be one the keeper he lodges with would plausibly want. A
+// passer-through has no Trade errand, so visitorCommerceStripped leaves him pay/offer/
+// quote tools ONLY when co-present with a tavern/inn keeper — every shop stop is
+// talk-only. Nothing mechanically rejects a kind at that barter (pay_with_item resolves
+// any seeded kind); the constraint is that the ONLY counterparty who can transact with
+// him is a victualler, so a good no victualler wants has no exit at all. A factor-owned
+// import in this pool would therefore tour the village on display and leave with him,
+// unbuyable by the very actors who demand it (LLM-567) — factorImportKinds names those
+// and TestVisitorWareKindsExcludeFactorImports keeps them out.
+var visitorWareKinds = []ItemKind{"cheese", "ale", "bread"}
 
 // seedVisitorPack returns the pack (inventory) and purse (coins) a freshly-spawned
 // traveler carries: two distinct wares (a few units each) plus a modest purse. The
 // coins guarantee it can cover a room (default 4/night); the wares give the
 // barter-first payment its flavor and stock the circuit's trade talk. r is non-nil.
+// Requires len(visitorWareKinds) >= 2 — two DISTINCT wares is the contract, and the
+// distinct-index pick panics on r.Intn(0) below rather than silently returning one
+// ware if the pool is ever cut to a single kind.
 func seedVisitorPack(r *rand.Rand) (map[ItemKind]int, int) {
 	pack := map[ItemKind]int{}
 	i := r.Intn(len(visitorWareKinds))
@@ -1725,6 +1738,16 @@ const factorIronKind = ItemKind("iron")
 // the same reason as iron: salt is consumed batch-by-batch across the kitchens,
 // so the rare visit must bring a sack, not a per-kind pinch.
 const factorSaltKind = ItemKind("salt")
+
+// factorImportKinds names the strategic imports whose SUPPLY is deliberately owned by the
+// wholesale factor errand, where the operator tuning levers live (visitor_sell_weight_permille,
+// visitor_factor_iron_units / _salt_units). It is a policy list, not a runtime gate: no
+// production path consults it — its one consumer is the guard test that keeps these kinds out
+// of the generic passer-through pool, whose packs would put an import on display that the
+// actors demanding it cannot buy (LLM-567). Spawn is the path it covers, and it is the only
+// one that needs covering: the pack switch in dispatchVisitorSpawn is exhaustive on errand
+// direction, so a no-errand visitor can only ever draw from visitorWareKinds.
+var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind}
 
 // seedFactorPack returns the pack (clothing/charm goods to sell, plus iron and
 // salt shipments — LLM-442/LLM-444) and purse (a heavier coin float than an
