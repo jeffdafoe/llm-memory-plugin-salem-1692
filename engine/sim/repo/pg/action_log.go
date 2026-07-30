@@ -48,8 +48,10 @@ const actionLogWriteTimeout = 5 * time.Second
 
 // insertActionLogSQL appends one audit row. id is BIGSERIAL (DB-assigned);
 // result is always 'ok' (v2 logs committed actions only); error is left NULL;
-// huddle_id is NULL for outdoor / pre-huddle actions. payload is cast from a
-// JSON text param to jsonb in SQL so the bind value is a plain string.
+// huddle_id is NULL for outdoor / pre-huddle actions; actor_id is NULL when the
+// author is outside the actor aggregate (a transient visitor — LLM-573), in
+// which case speaker_name is the only identity the row carries. payload is cast
+// from a JSON text param to jsonb in SQL so the bind value is a plain string.
 //
 // ledger_id is the typed mirror of payload.ledger_id (LLM-494), computed in SQL
 // from the very jsonb this row stores, using the SAME guard as the migration
@@ -165,11 +167,21 @@ func (r *ActionLogRepo) writeOne(row sim.DurableActionLogRow) {
 		huddle = string(row.HuddleID)
 	}
 
+	// actor_id is a nullable uuid with a FK to actor(id). An empty ActorID means
+	// the beat's author is not in the actor aggregate — a transient visitor, whose
+	// id World.AppendActionLogDurable blanks (LLM-573) — so it must go in as SQL
+	// NULL: "" is not a uuid and would fail the type cast the way the raw "vstr-"
+	// id did. speaker_name carries who it was.
+	var actor any
+	if row.ActorID != "" {
+		actor = string(row.ActorID)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), actionLogWriteTimeout)
 	defer cancel()
 	// ledger_id is derived in SQL from $5 (the payload) — see insertActionLogSQL.
 	if _, err := r.pool.Exec(ctx, insertActionLogSQL,
-		string(row.ActorID),    // $1 actor_id (uuid)
+		actor,                  // $1 actor_id (uuid or NULL)
 		row.OccurredAt,         // $2 occurred_at
 		row.Source,             // $3 source
 		string(row.ActionType), // $4 action_type
@@ -270,6 +282,18 @@ SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
 //
 // The cross-actor predicate then includes another actor's `spoke` row when its
 // occurred_at falls inside any such interval for the same huddle.
+//
+// NULL-actor rows (LLM-573): a transient visitor's beats persist with actor_id
+// NULL, since a "vstr-" id cannot satisfy the column's FK to actor(id). They
+// never match the `al.actor_id = $1` leg — NULL equals nothing — so a visitor
+// has no day of its own, which is right: it is gone by nightfall and no push
+// ever asks for one. They DO reach a resident's day through the cross-actor leg,
+// which keys on action_type + huddle_id, so the resident's transcript carries
+// the visitor's half of the conversation rather than reading as a monologue.
+// That leg is `spoke`-only, so a visitor's `paid` row is durable (and visible on
+// /transcript and /settlements) without entering anyone's day note — the same
+// treatment a resident buyer's `paid` row gets, and the seller's own `delivered`
+// row already carries the amount.
 //
 // NULL-huddle invariant: the durable sink stamps huddle_id from the originating
 // event's huddle (cascade/action_log.go) — spoke from spoke.HuddleID; paid /
@@ -445,6 +469,15 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 		q += fmt.Sprintf(clause, len(args))
 	}
 	if filter.ActorID != "" {
+		// actor_id is a uuid column. Binding a non-uuid string against it is not
+		// an empty match but a query ERROR ("invalid input syntax for type uuid"),
+		// so an id that cannot appear there — a transient visitor's "vstr-" id,
+		// whose rows carry actor_id NULL (LLM-573) — returns empty rather than
+		// failing the read. Same posture as the out-of-range LedgerID below: a
+		// value the column cannot hold matches nothing, so say so.
+		if !sim.IsPersistedActorID(filter.ActorID) {
+			return []sim.SettlementRow{}, nil
+		}
 		add(" AND actor_id = $%d", string(filter.ActorID))
 	}
 	if !filter.Since.IsZero() {
@@ -477,7 +510,7 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 	for rows.Next() {
 		var (
 			occurredAt time.Time
-			actorID    string
+			actorID    sql.NullString // NULL when the buyer is a transient visitor (LLM-573)
 			speaker    string
 			payloadRaw []byte
 			huddle     sql.NullString // huddle_id is nullable (outdoor / pre-huddle)
@@ -487,11 +520,14 @@ func (r *ActionLogRepo) LoadSettlements(ctx context.Context, filter sim.Settleme
 		}
 		row := sim.SettlementRow{
 			OccurredAt: occurredAt,
-			BuyerID:    sim.ActorID(actorID),
-			BuyerName:  speaker,
-			HuddleID:   huddle.String, // "" when NULL (Valid == false)
+			// "" when NULL. A visitor buyer has no actor row to point at, so the
+			// settlement is identified by BuyerName — which is why speaker_name is
+			// NOT NULL and denormalized onto every row.
+			BuyerID:   sim.ActorID(actorID.String),
+			BuyerName: speaker,
+			HuddleID:  huddle.String, // "" when NULL (Valid == false)
 		}
-		fillSettlementPayload(payloadRaw, &row, actorID)
+		fillSettlementPayload(payloadRaw, &row, actorID.String)
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {

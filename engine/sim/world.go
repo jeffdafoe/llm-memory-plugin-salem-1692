@@ -1658,13 +1658,34 @@ func (w *World) AppendActionLogDurable(row DurableActionLogRow) {
 	}
 	// Visitors are transient and live OUTSIDE the actor aggregate — their rows are
 	// in the separate `visitor` table, firewalled out of ActorsRepo (LLM-369). The
-	// durable audit sink's actor_id carries a FK to actor(id), so a visitor id can
-	// never satisfy it; every insert errored on the writer goroutine (LLM-379).
-	// Drop them here at the single chokepoint the ~17 emit sites funnel through,
-	// rather than flood the log with FK violations. A visitor's behaviour stays
-	// traceable via the engine journal (walked/spoke/etc.).
-	if a := w.Actors[row.ActorID]; a != nil && a.VisitorState != nil {
-		return
+	// durable audit sink's actor_id is a uuid with a FK to actor(id), so a "vstr-"
+	// id can never satisfy it; every insert errored on the writer goroutine, which
+	// LLM-379 stopped by dropping the row outright here.
+	//
+	// Dropping cost too much (LLM-573): agent_action_log is the SOLE input to the
+	// day note feeding the nightly dream pipeline, so a stateful NPC who traded
+	// with a visitor kept his own half of the scene and lost the visitor's — a
+	// one-sided transcript where he answers questions nobody asked. The row is
+	// kept now and its ActorID blanked instead, which the sink writes as SQL NULL:
+	// no FK to violate, speaker_name still carries the display name, and the
+	// overheard-speech leg of loadDayEventsSQL keys on huddle_id rather than
+	// actor_id, so the visitor's speech reaches the co-present actor's day note.
+	//
+	// Blanking rather than storing the visitor id is deliberate: a "vstr-" id is
+	// ephemeral — the `visitor` row is stale-deleted at the checkpoint following
+	// departure — so persisting it would leave a reference that resolves to
+	// nothing within the day, while the display name stays meaningful for life.
+	//
+	// The id-shape arm is not redundant with the VisitorState lookup: an emit
+	// site that appends AFTER cleanup removed the visitor from w.Actors gets a
+	// nil actor and would send the raw "vstr-" id to a uuid column, resuming the
+	// LLM-379 error flood — and now losing the row, which is the whole defect.
+	// IsVisitorActorID exists for exactly this "the in-memory actor is gone, the
+	// id is the only signal" case, and matches the full ^vstr-[0-9a-f]{8}$ mint
+	// shape, so a merely prefix-shaped out-of-band id still fails loudly at the
+	// insert rather than being silently swallowed as a NULL-author row.
+	if a := w.Actors[row.ActorID]; (a != nil && a.VisitorState != nil) || IsVisitorActorID(row.ActorID) {
+		row.ActorID = ""
 	}
 	_ = sink.Append(w.LifecycleContext(), row)
 }

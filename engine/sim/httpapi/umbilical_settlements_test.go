@@ -94,17 +94,19 @@ func TestUmbilicalSettlements_MapsRowsAndFlags(t *testing.T) {
 }
 
 // TestUmbilicalSettlements_ParsesFilters: actor/since/until/ledger reach the store;
-// the over-fetch is limit+1.
+// the over-fetch is limit+1. The actor is a real uuid because that is the only
+// shape the uuid column can hold — see the bad-actor test below.
 func TestUmbilicalSettlements_ParsesFilters(t *testing.T) {
+	const ezekiel = "11111111-1111-1111-1111-111111111111"
 	store := &fakeSettlementStore{}
 	h := settlementsServer(t, store)
-	rec := req(t, h, "/api/village/umbilical/settlements?actor=ez&since=2026-06-25T00:00:00Z&until=2026-06-25T01:00:00Z&ledger=332&limit=10", "tok")
+	rec := req(t, h, "/api/village/umbilical/settlements?actor="+ezekiel+"&since=2026-06-25T00:00:00Z&until=2026-06-25T01:00:00Z&ledger=332&limit=10", "tok")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settlements = %d, want 200", rec.Code)
 	}
 	f := store.gotFilter
-	if string(f.ActorID) != "ez" || uint64(f.LedgerID) != 332 {
-		t.Errorf("filter actor/ledger = %q/%d, want ez/332", f.ActorID, f.LedgerID)
+	if string(f.ActorID) != ezekiel || uint64(f.LedgerID) != 332 {
+		t.Errorf("filter actor/ledger = %q/%d, want %s/332", f.ActorID, f.LedgerID, ezekiel)
 	}
 	if f.Since.IsZero() || f.Until.IsZero() || !f.Until.After(f.Since) {
 		t.Errorf("filter since/until = %v/%v, want a valid window", f.Since, f.Until)
@@ -118,6 +120,33 @@ func TestUmbilicalSettlements_ParsesFilters(t *testing.T) {
 // before the store is touched.
 func TestUmbilicalSettlements_BadFilters(t *testing.T) {
 	for _, q := range []string{"since=nope", "until=nope", "ledger=abc", "ledger=-1", "ledger=0"} {
+		store := &fakeSettlementStore{}
+		h := settlementsServer(t, store)
+		rec := req(t, h, "/api/village/umbilical/settlements?"+q, "tok")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("settlements?%s = %d, want 400", q, rec.Code)
+		}
+		if store.gotLimit != 0 {
+			t.Errorf("settlements?%s touched the store (limit=%d)", q, store.gotLimit)
+		}
+	}
+}
+
+// TestUmbilicalSettlements_BadActorFilter: an actor that cannot appear in the uuid
+// column is a 400 before the store is touched, not a 500 from the query and not a
+// misleading empty list.
+//
+// The visitor arm is the reachable one: an operator reads a "vstr-" id off the
+// in-memory /actions feed — where it is the real key — and carries it here. His
+// settlements DO exist; they simply carry actor_id NULL (LLM-573), so answering
+// "returned: 0" would read as "the traveler bought nothing," which is a different
+// and false statement. The message names buyer_name as the way through.
+func TestUmbilicalSettlements_BadActorFilter(t *testing.T) {
+	for _, q := range []string{
+		"actor=vstr-fb50246e",      // a real actor id, but never one this column holds
+		"actor=ez",                 // not a uuid at all
+		"actor=vstr-not-a-visitor", // prefix-shaped but not a well-formed visitor id
+	} {
 		store := &fakeSettlementStore{}
 		h := settlementsServer(t, store)
 		rec := req(t, h, "/api/village/umbilical/settlements?"+q, "tok")

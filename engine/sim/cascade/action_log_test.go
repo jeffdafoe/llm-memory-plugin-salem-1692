@@ -988,18 +988,20 @@ func TestSubscribers_EmitDurableRows(t *testing.T) {
 	}
 }
 
-// --- TestSubscribers_ExcludeTransientVisitorsFromDurableSink -------
-// LLM-382: a transient visitor's committed actions must never reach the durable
-// agent_action_log sink. A visitor's actor_id is a "vstr-" string, but the audit
-// table's actor_id is a uuid column — every visitor row errored on the sink's
-// writer goroutine with "invalid input syntax for type uuid" (SQLSTATE 22P02).
-// Live, this was a per-minute flood of `walked` rows as travelers made their
-// rounds. AppendActionLogDurable drops rows whose acting actor carries a
-// VisitorState, at the single chokepoint the ~17 emit sites funnel through. The
-// gate is DURABLE-ONLY: the visitor stays in the in-memory ring (which feeds
-// rumors / atmosphere / the talk-panel backload), so travelers remain fully
-// present in-world — only the pg persistence is skipped.
-func TestSubscribers_ExcludeTransientVisitorsFromDurableSink(t *testing.T) {
+// --- TestSubscribers_PersistTransientVisitorsWithNullActor ---------
+// LLM-382 then LLM-573. A visitor's actor id is a "vstr-" string, but the audit
+// table's actor_id is a uuid with a FK to actor(id) — every visitor row errored
+// on the sink's writer goroutine with "invalid input syntax for type uuid"
+// (SQLSTATE 22P02), a per-minute flood of `walked` rows as travelers made their
+// rounds. LLM-382 stopped it by dropping the rows at the single chokepoint the
+// ~17 emit sites funnel through.
+//
+// LLM-573 keeps them instead, with the id blanked — the sink writes "" as SQL
+// NULL, so there is no FK to violate and speaker_name still says who acted.
+// Dropping had cost the visitor's entire side of every scene out of the
+// co-present NPC's durable day note, which is the sole input to his nightly
+// dream. The in-memory ring was never gated and still isn't.
+func TestSubscribers_PersistTransientVisitorsWithNullActor(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
 	defer stop()
 
@@ -1022,34 +1024,112 @@ func TestSubscribers_ExcludeTransientVisitorsFromDurableSink(t *testing.T) {
 
 	at := time.Now().UTC()
 	invokeOnWorld(t, w, func(world *sim.World) {
-		// The exact live failure: a visitor arrival → durable `walked` row.
+		// The row shape that used to error: a visitor arrival → durable `walked`.
 		handleActorArrivedActionLog(world, &sim.ActorArrived{ActorID: visitorID, FinalStructureID: "tavern", At: at})
-		// A second action type through the same chokepoint, so the test pins the
-		// gate as actor-based rather than walked-specific.
+		// Speech is the row the day note actually needs — it reaches a co-present
+		// NPC through the huddle leg of loadDayEventsSQL, which never looks at
+		// actor_id. A second action type also pins the blanking as actor-based
+		// rather than walked-specific.
 		handleSpokeActionLog(world, &sim.Spoke{SpeakerID: visitorID, HuddleID: "h1", Text: "Wares from Boston!", At: at})
-		// Positive control: a persistent NPC's arrival DOES persist.
+		// The money leg, the one the trigger scene lost outright.
+		handlePaidActionLog(world, &sim.Paid{BuyerID: visitorID, SellerID: "hannah", Amount: 27, ForText: "9x nail", At: at})
+		// Positive control: a persistent NPC's row keeps its real actor id.
 		handleActorArrivedActionLog(world, &sim.ActorArrived{ActorID: "hannah", FinalStructureID: "tavern", At: at})
 	})
 
-	// Durable sink: only the NPC's row lands; both visitor rows are dropped.
 	rows := rec.snapshot()
-	if len(rows) != 1 {
-		t.Fatalf("recorded %d durable rows, want 1 (both visitor rows must be excluded): %+v", len(rows), rows)
-	}
-	if rows[0].ActorID != "hannah" || rows[0].ActionType != sim.ActionTypeWalked {
-		t.Errorf("durable row = %+v; want hannah's walked row", rows[0])
+	if len(rows) != 4 {
+		t.Fatalf("recorded %d durable rows, want 4 (three visitor rows + the NPC control): %+v", len(rows), rows)
 	}
 
-	// In-memory ring: the visitor's actions ARE present — the gate is durable-only,
-	// so travelers still feed rumors / atmosphere / the talk panel.
+	// The three visitor rows persist, each with a blanked actor id and the
+	// visitor's display name intact — the only identity a NULL-actor row carries.
+	for i, want := range []sim.ActionType{sim.ActionTypeWalked, sim.ActionTypeSpoke, sim.ActionTypePaid} {
+		if rows[i].ActionType != want {
+			t.Errorf("row %d action_type = %q, want %q", i, rows[i].ActionType, want)
+		}
+		if rows[i].ActorID != "" {
+			t.Errorf("row %d actor_id = %q, want \"\" (blanked so the sink writes SQL NULL)", i, rows[i].ActorID)
+		}
+		if rows[i].SpeakerName != "Elias Drum the peddler" {
+			t.Errorf("row %d speaker_name = %q, want the visitor's display name", i, rows[i].SpeakerName)
+		}
+	}
+	// The spoke row keeps its huddle: that is what carries it into the co-present
+	// NPC's day note, and a blanked actor id must not disturb it.
+	if rows[1].HuddleID != "h1" {
+		t.Errorf("visitor spoke row huddle = %q, want h1", rows[1].HuddleID)
+	}
+
+	// Positive control: a resident's row is untouched.
+	if rows[3].ActorID != "hannah" || rows[3].ActionType != sim.ActionTypeWalked {
+		t.Errorf("durable row 3 = %+v; want hannah's walked row with her real actor id", rows[3])
+	}
+
+	// In-memory ring: unchanged by any of this — the visitor's own id is still
+	// what the ring (rumors / atmosphere / talk-panel backload, and the umbilical
+	// /actions?actor= filter) keys on.
 	var visitorRing int
 	for _, e := range readActionLog(t, w) {
 		if e.ActorID == visitorID {
 			visitorRing++
 		}
 	}
-	if visitorRing != 2 {
-		t.Errorf("in-memory ring holds %d visitor rows, want 2 (walked + spoke); the durable gate must not touch the ring", visitorRing)
+	if visitorRing != 3 {
+		t.Errorf("in-memory ring holds %d visitor rows, want 3 (walked + spoke + paid); blanking is durable-only", visitorRing)
+	}
+}
+
+// --- TestSubscribers_BlankVisitorActorAfterCleanupRemovedHim ------
+// The blanking cannot rest on the w.Actors lookup alone. An emit site that
+// appends a durable row AFTER visitor cleanup deleted the actor gets nil back
+// and would hand the raw "vstr-" id to a uuid column — resuming the LLM-379
+// error flood, and now losing the row, which is the defect LLM-573 exists to
+// fix. sim.IsVisitorActorID is the id-shape fallback for exactly the "in-memory
+// actor is gone, the id is the only signal" case.
+func TestSubscribers_BlankVisitorActorAfterCleanupRemovedHim(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	const visitorID sim.ActorID = "vstr-0000abcd"
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+		// No w.Actors entry at all — the state cleanup leaves behind.
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.AppendActionLogDurable(sim.DurableActionLogRow{
+			ActorID:     visitorID,
+			OccurredAt:  at,
+			ActionType:  sim.ActionTypeSpoke,
+			Payload:     map[string]any{"text": "Fare you well."},
+			SpeakerName: string(visitorID), // actorDisplayAndSource's unknown-actor fallback
+			HuddleID:    "h1",
+			Source:      "agent",
+		})
+		// An unknown id that is NOT a well-formed visitor id must stay loud: it
+		// is a caller bug, and swallowing it as a NULL-author row would hide it.
+		world.AppendActionLogDurable(sim.DurableActionLogRow{
+			ActorID:     "vstr-not-a-visitor",
+			OccurredAt:  at,
+			ActionType:  sim.ActionTypeSpoke,
+			Payload:     map[string]any{"text": "?"},
+			SpeakerName: "vstr-not-a-visitor",
+			Source:      "agent",
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d durable rows, want 2", len(rows))
+	}
+	if rows[0].ActorID != "" {
+		t.Errorf("departed visitor's actor_id = %q, want \"\" — the id shape must blank it once w.Actors no longer has him", rows[0].ActorID)
+	}
+	if rows[1].ActorID != "vstr-not-a-visitor" {
+		t.Errorf("malformed id = %q, want it passed through unblanked so the insert fails loudly", rows[1].ActorID)
 	}
 }
 

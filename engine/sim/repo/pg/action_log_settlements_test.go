@@ -74,14 +74,18 @@ func TestLoadSettlements_AppliesAllFilters(t *testing.T) {
 	t.Cleanup(mock.Close)
 	repo := NewActionLogRepo(mock)
 
+	// The actor must be a real uuid: actor_id is a uuid column, so LoadSettlements
+	// short-circuits an id that could never appear there rather than binding it
+	// (LLM-573) — see TestLoadSettlements_UnbindableActorMatchesNothing.
+	const ezekiel = "11111111-1111-1111-1111-111111111111"
 	since := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
 	until := since.Add(time.Hour)
 	mock.ExpectQuery(`actor_id = \$1.*occurred_at >= \$2.*occurred_at < \$3.*ledger_id = \$4.*LIMIT \$5`).
-		WithArgs("ez", since, until, int64(332), 5).
+		WithArgs(ezekiel, since, until, int64(332), 5).
 		WillReturnRows(pgxmock.NewRows(settlementColumns()))
 
 	if _, err := repo.LoadSettlements(context.Background(), sim.SettlementFilter{
-		ActorID:  "ez",
+		ActorID:  ezekiel,
 		Since:    since,
 		Until:    until,
 		LedgerID: 332,
@@ -90,5 +94,31 @@ func TestLoadSettlements_AppliesAllFilters(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestLoadSettlements_UnbindableActorMatchesNothing: an actor id the uuid column
+// cannot hold returns empty WITHOUT issuing a query. pgxmock is the right layer
+// for this half — with no ExpectQuery registered, any query at all fails the
+// test, which is precisely the assertion (the integration test proves the other
+// half, that binding such a value against real pg would error rather than match
+// nothing).
+func TestLoadSettlements_UnbindableActorMatchesNothing(t *testing.T) {
+	for _, bad := range []sim.ActorID{"vstr-fb50246e", "ez", "vstr-not-a-visitor"} {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("NewPool: %v", err)
+		}
+		got, err := NewActionLogRepo(mock).LoadSettlements(context.Background(), sim.SettlementFilter{ActorID: bad}, 5)
+		if err != nil {
+			t.Errorf("LoadSettlements(actor=%q): %v", bad, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("LoadSettlements(actor=%q) = %+v, want empty", bad, got)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("actor=%q: %v", bad, err)
+		}
+		mock.Close()
 	}
 }
