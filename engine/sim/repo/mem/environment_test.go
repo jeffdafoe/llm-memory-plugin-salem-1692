@@ -18,22 +18,26 @@ func TestSaveMutableSettings_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repo := mem.NewEnvironmentRepo()
 
-	ms := sim.MutableWorldSettings{
-		ZoomMinAdmin:                  0.3,
-		ZoomMinRegular:                0.6,
-		AgentTicksPaused:              true,
-		StallWearPerCoin:              2,
-		StallWearRepairThreshold:      300,
-		StallWearDegradeThreshold:     900,
-		StallNailsPerRepair:           7,
-		StallRepairDurationSeconds:    120,
-		HuddleLoopTimeoutSeconds:      90,
-		HuddleLoopRepeatPercent:       70,
-		HuddleLoopSweepCadenceSeconds: 20,
-		SeekWorkCoinCeiling:           33,
-		SeekWorkNeedYieldMargin:       9,
-		LaborProduceBoostPct:          75,
-	}
+	// LLM-577: the snapshot carries key→stored-string rows from the settings
+	// registry instead of named fields. Same round-trip property — the values
+	// written here must come back out of Load as live WorldSettings, with the
+	// *_seconds keys landing as Durations.
+	ms := sim.MutableWorldSettings{Rows: map[string]string{
+		"world_zoom_min_admin":              "0.3",
+		"world_zoom_min_regular":            "0.6",
+		"agent_ticks_paused":                "true",
+		"stall_wear_per_coin":               "2",
+		"stall_wear_repair_threshold":       "300",
+		"stall_wear_degrade_threshold":      "900",
+		"stall_nails_per_repair":            "7",
+		"stall_repair_duration_seconds":     "120",
+		"huddle_loop_timeout_seconds":       "90",
+		"huddle_loop_repeat_percent":        "70",
+		"huddle_loop_sweep_cadence_seconds": "20",
+		"seek_work_coin_ceiling":            "33",
+		"seek_work_need_yield_margin":       "9",
+		"labor_produce_boost_pct":           "75",
+	}}
 	if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 		t.Fatalf("SaveMutableSettings: %v", err)
 	}
@@ -79,7 +83,7 @@ func TestSaveMutableSettings_ConstableRounds(t *testing.T) {
 
 	t.Run("concrete_value_round_trips", func(t *testing.T) {
 		repo := mem.NewEnvironmentRepo()
-		ms := sim.MutableWorldSettings{ConstableRoundsIntervalSeconds: 7200}
+		ms := sim.MutableWorldSettings{Rows: map[string]string{"constable_rounds_interval_seconds": "7200"}}
 		if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 			t.Fatalf("SaveMutableSettings: %v", err)
 		}
@@ -97,7 +101,7 @@ func TestSaveMutableSettings_ConstableRounds(t *testing.T) {
 	// into "rounds run at whatever today's default is".
 	t.Run("interval_off_survives_restore", func(t *testing.T) {
 		repo := mem.NewEnvironmentRepo()
-		ms := sim.MutableWorldSettings{ConstableRoundsIntervalSeconds: 0}
+		ms := sim.MutableWorldSettings{Rows: map[string]string{"constable_rounds_interval_seconds": "0"}}
 		if err := repo.SaveMutableSettings(ctx, nil, ms); err != nil {
 			t.Fatalf("SaveMutableSettings: %v", err)
 		}

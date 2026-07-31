@@ -107,93 +107,32 @@ func (cp *CheckpointSnapshot) StampContactWindow(now time.Time) {
 	cp.ContactValidUntil = now.Add(ContactFutureSkewTolerance)
 }
 
-// MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
-// config write routes mutate (ZBBS-WORK-363) — the ONLY settings the checkpoint
-// persists. The full settings table holds ~20 operator-tuned-out-of-band keys
-// that are load-once by design; writing the whole map back at every checkpoint
-// would clobber any direct DB edit with the startup-loaded value. So the
-// checkpoint carries (and SaveWorld upserts) only this explicitly-listed subset.
-// Value type — plain-copied into the CheckpointSnapshot, no clone needed.
+// MutableWorldSettings is the settings payload the checkpoint persists back to
+// the setting kv table.
+//
+// It used to be a hand-listed struct of ~28 named fields, mirrored by hand in
+// three more places (the pg writer's row literal, the mem repo's field-by-field
+// apply, and the umbilical read DTO). Those lists drifted — the mem mirror was
+// missing the eco and merchant knobs outright — and a newly-tunable setting
+// only became durable if someone remembered to widen all of them. LLM-577
+// replaces the list with Rows, projected from the sim settings registry, so a
+// registered setting is persisted by construction.
+//
+// Rows is key -> stored-string in exactly the encoding the loader parses:
+// scalar ints for duration keys (unit from the key suffix), "true"/"false" for
+// bools, minimal round-trippable floats.
+//
+// NOTE Rows carries RAW field values. The old builder persisted
+// eco_audience_idle_seconds as the RESOLVED value (PCAudienceIdleAfter turns a
+// stored 0 into the default); it now round-trips the 0 unchanged. Harmless —
+// the loader seeds the default and PCAudienceIdleAfter still resolves 0 at read
+// time, so the effective horizon is the same either way — but the stored row
+// now reflects what is actually in memory rather than a derived figure.
+//
+// Value type: the map is freshly built per snapshot and never mutated after,
+// so the plain copy into CheckpointSnapshot needs no clone.
 type MutableWorldSettings struct {
-	ZoomMinAdmin     float64
-	ZoomMinRegular   float64
-	AgentTicksPaused bool
-
-	// Stall wear knobs (LLM-118) — live-tunable via the umbilical, persisted here
-	// each checkpoint so a live change survives restart.
-	StallWearPerCoin           int
-	StallWearRepairThreshold   int
-	StallWearDegradeThreshold  int
-	StallNailsPerRepair        int
-	StallRepairDurationSeconds int
-	StallDegradedProducePct    int
-
-	// Farm upkeep wealth-tax knobs (LLM-215) — live-tunable via the umbilical,
-	// persisted here each checkpoint so a live change survives restart.
-	FarmUpkeepFloor          int
-	FarmUpkeepCoinsPerShovel int
-
-	// Town rate knobs (LLM-557) — live-tunable via the umbilical, persisted here
-	// each checkpoint so a live change survives restart.
-	TownRateCoinsPerDay int
-	TownRateMaxOwed     int
-
-	// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in LLM-183)
-	// — live-tunable, persisted here each checkpoint so a live change survives
-	// restart. HuddleLoopTimeoutSeconds is the master enable (0 = sweep off). Stored
-	// in seconds to match the huddle_loop_*_seconds setting keys.
-	// HuddleLoopMaxTurns is the LLM-333 endurance arm's no-progress turn budget
-	// (0 = default, HuddleLoopMaxTurnsDefault).
-	// HuddleConversationWindDownSeconds is the LLM-397 lingering arm's clock
-	// (0 = default, HuddleConversationWindDownDefault).
-	HuddleLoopTimeoutSeconds          int
-	HuddleLoopRepeatPercent           int
-	HuddleLoopSweepCadenceSeconds     int
-	HuddleLoopMaxTurns                int
-	HuddleConversationWindDownSeconds int
-
-	// SeekWorkCoinCeiling (LLM-194) — the coin balance at/above which a workless
-	// worker stops seeking/soliciting work. Live-tunable via the umbilical, persisted
-	// here each checkpoint so a live change survives restart.
-	SeekWorkCoinCeiling int
-
-	// SeekWorkNeedYieldMargin (LLM-276) — the upper-felt band width below each need's
-	// red-line in which a resolvable-need worker is redirected to eat instead of seeking
-	// work. Live-tunable via the umbilical, persisted here each checkpoint so a live
-	// change survives restart.
-	SeekWorkNeedYieldMargin int
-
-	// LaborProduceBoostPct (LLM-224) — the per-worker produce-rate boost a laboring
-	// worker adds at their employer's establishment. Live-tunable via the umbilical,
-	// persisted here each checkpoint so a live change survives restart.
-	LaborProduceBoostPct int
-
-	// MerchantCoinFloor (LLM-294) — the working-capital floor below which a stock-rich
-	// keeper is steered to conserve coin. Live-tunable via the umbilical, persisted
-	// here each checkpoint so a live change survives restart. 0 = feature off.
-	MerchantCoinFloor int
-
-	// Eco mode knobs (LLM-313) — throttle LLM deliberation cadence while no player
-	// is present. Live-tunable via the umbilical, persisted here each checkpoint so
-	// a live change survives restart. Gaps stored in seconds to match the
-	// eco_*_gap_seconds setting keys. Eco paces; it does not end conversations —
-	// the LLM-334 arc moved to HuddleConversationWindDownSeconds (LLM-397).
-	EcoEnabled           bool
-	EcoSocialGapSeconds  int
-	EcoEconomyGapSeconds int
-
-	// EcoAudienceIdleSeconds is the LLM-466 idle horizon: how long a connected
-	// client may go with no player input before it stops counting as an audience.
-	// Persisted alongside the gaps so a live tune (typically shortening it for a
-	// verification run) survives restart.
-	EcoAudienceIdleSeconds int
-
-	// Constable rounds knobs (LLM-514, quiet added LLM-537) — the interval between
-	// rounds tours, the per-stop dwell, and the stop quiet-window, live-tunable via
-	// the umbilical, persisted here each checkpoint so a live change survives
-	// restart. Stored in seconds to match the constable_rounds_*_seconds setting
-	// keys. IntervalSeconds == 0 disables rounds.
-	ConstableRoundsIntervalSeconds int
+	Rows map[string]string
 }
 
 // DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
@@ -221,44 +160,16 @@ type DiscoveredKind struct {
 // WorldEnvironment and Phase are value types — a plain assignment copies them.
 func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 	cp := &CheckpointSnapshot{
-		Actors:         make(map[ActorID]*Actor, len(w.Actors)),
-		Structures:     make(map[StructureID]*Structure, len(w.Structures)),
-		Huddles:        make(map[HuddleID]*Huddle, len(w.Huddles)),
-		Scenes:         make(map[SceneID]*Scene, len(w.Scenes)),
-		Orders:         make(map[OrderID]*Order, len(w.Orders)),
-		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
-		LaborContracts: make(map[LaborID]*LaborOffer),
-		Environment:    w.Environment,
-		Phase:          w.Phase,
-		MutableSettings: MutableWorldSettings{
-			ZoomMinAdmin:                      w.Settings.ZoomMinAdmin,
-			ZoomMinRegular:                    w.Settings.ZoomMinRegular,
-			AgentTicksPaused:                  w.Settings.AgentTicksPaused,
-			StallWearPerCoin:                  w.Settings.StallWearPerCoin,
-			StallWearRepairThreshold:          w.Settings.StallWearRepairThreshold,
-			StallWearDegradeThreshold:         w.Settings.StallWearDegradeThreshold,
-			StallNailsPerRepair:               w.Settings.StallNailsPerRepair,
-			StallRepairDurationSeconds:        w.Settings.StallRepairDurationSeconds,
-			StallDegradedProducePct:           w.Settings.StallDegradedProducePct,
-			FarmUpkeepFloor:                   w.Settings.FarmUpkeepFloor,
-			FarmUpkeepCoinsPerShovel:          w.Settings.FarmUpkeepCoinsPerShovel,
-			TownRateCoinsPerDay:               w.Settings.TownRateCoinsPerDay,
-			TownRateMaxOwed:                   w.Settings.TownRateMaxOwed,
-			HuddleLoopTimeoutSeconds:          int(w.Settings.HuddleLoopTimeout / time.Second),
-			HuddleLoopRepeatPercent:           w.Settings.HuddleLoopRepeatPercent,
-			HuddleLoopSweepCadenceSeconds:     int(w.Settings.HuddleLoopSweepCadence / time.Second),
-			HuddleLoopMaxTurns:                w.Settings.HuddleLoopMaxTurns,
-			HuddleConversationWindDownSeconds: int(w.Settings.HuddleConversationWindDown / time.Second),
-			SeekWorkCoinCeiling:               w.Settings.SeekWorkCoinCeiling,
-			SeekWorkNeedYieldMargin:           w.Settings.SeekWorkNeedYieldMargin,
-			LaborProduceBoostPct:              w.Settings.LaborProduceBoostPct,
-			MerchantCoinFloor:                 w.Settings.MerchantCoinFloor,
-			EcoEnabled:                        w.Settings.EcoEnabled,
-			EcoSocialGapSeconds:               int(w.Settings.EcoSocialGap / time.Second),
-			EcoEconomyGapSeconds:              int(w.Settings.EcoEconomyGap / time.Second),
-			EcoAudienceIdleSeconds:            int(PCAudienceIdleAfter(w) / time.Second),
-			ConstableRoundsIntervalSeconds:    int(w.Settings.ConstableRoundsInterval / time.Second),
-		},
+		Actors:          make(map[ActorID]*Actor, len(w.Actors)),
+		Structures:      make(map[StructureID]*Structure, len(w.Structures)),
+		Huddles:         make(map[HuddleID]*Huddle, len(w.Huddles)),
+		Scenes:          make(map[SceneID]*Scene, len(w.Scenes)),
+		Orders:          make(map[OrderID]*Order, len(w.Orders)),
+		VillageObjects:  make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		LaborContracts:  make(map[LaborID]*LaborOffer),
+		Environment:     w.Environment,
+		Phase:           w.Phase,
+		MutableSettings: MutableWorldSettings{Rows: PersistableSettingRows(&w.Settings)},
 	}
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so
 	// the checkpoint persists them. Authored kinds (food/drink/material/craft)

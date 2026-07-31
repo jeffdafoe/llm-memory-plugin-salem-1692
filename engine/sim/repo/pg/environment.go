@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -589,19 +590,13 @@ func parseDurationSetting(values map[string]string, key string, def time.Duratio
 // suffix. Suffix-driven so adding a new duration setting doesn't
 // require any change here as long as the key name follows the
 // convention.
+// Delegates to sim.DurationUnitForKey (LLM-577) so the loader and the settings
+// registry can never disagree about what a stored "60" means for a given key —
+// the registry formats duration values back out using the same suffix rule, and
+// two copies of it would round-trip a checkpoint through the wrong unit if they
+// ever diverged.
 func durationUnitForKey(key string) (time.Duration, bool) {
-	switch {
-	case strings.HasSuffix(key, "_ms"):
-		return time.Millisecond, true
-	case strings.HasSuffix(key, "_seconds"):
-		return time.Second, true
-	case strings.HasSuffix(key, "_minutes"):
-		return time.Minute, true
-	case strings.HasSuffix(key, "_hours"):
-		return time.Hour, true
-	default:
-		return 0, false
-	}
+	return sim.DurationUnitForKey(key)
 }
 
 // SaveSnapshot writes the world_state singleton inside the caller's
@@ -650,71 +645,34 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 	return nil
 }
 
-// SaveMutableSettings upserts the runtime-tunable settings the admin config
-// write routes own (ZBBS-WORK-363) into the setting kv table, inside the
-// checkpoint Tx. ONLY these keys are written — the rest of the setting
-// table is load-once, operator-tuned out of band, so a full settings replace
-// would clobber a direct DB edit with the startup-loaded value. Values are
-// stored as strings (the load path parses them via parseFloatSetting /
-// parseBoolSetting / parseIntSetting), so they're formatted to match: floats
-// with the minimal round-trippable form, bool as "true"/"false", ints decimal.
+// SaveMutableSettings upserts the persistable settings carried by the
+// checkpoint into the setting kv table, inside the checkpoint Tx.
+//
+// The row set is projected from the sim settings registry
+// (sim.PersistableSettingRows) rather than listed here, which is what closes
+// the LLM-577 drift: before, this literal, the checkpoint struct, and the
+// umbilical DTO were three independent lists, and a knob live-tuned through a
+// route that nobody had added here silently reverted on the next restart.
+//
+// This is still NOT a full settings replace — only registered keys are written,
+// so an unregistered row in the table is left alone. Values arrive pre-formatted
+// in the encoding the load path parses (parseIntSetting / parseBoolSetting /
+// parseFloatSetting / parseDurationSetting), because the registry formats them
+// with the same conventions it parses.
+//
+// Keys are written in sorted order so a checkpoint's statement sequence is
+// deterministic — map iteration order would otherwise vary run to run, which
+// makes a failing upsert harder to reproduce and the Tx's lock acquisition
+// order unstable.
 func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms sim.MutableWorldSettings) error {
-	rows := [...]struct {
-		key string
-		val string
-	}{
-		{"world_zoom_min_admin", strconv.FormatFloat(ms.ZoomMinAdmin, 'f', -1, 64)},
-		{"world_zoom_min_regular", strconv.FormatFloat(ms.ZoomMinRegular, 'f', -1, 64)},
-		{"agent_ticks_paused", strconv.FormatBool(ms.AgentTicksPaused)},
-		// Stall wear knobs (LLM-118) — live-tuned via the umbilical, persisted here.
-		{"stall_wear_per_coin", strconv.Itoa(ms.StallWearPerCoin)},
-		{"stall_wear_repair_threshold", strconv.Itoa(ms.StallWearRepairThreshold)},
-		{"stall_wear_degrade_threshold", strconv.Itoa(ms.StallWearDegradeThreshold)},
-		{"stall_nails_per_repair", strconv.Itoa(ms.StallNailsPerRepair)},
-		{"stall_repair_duration_seconds", strconv.Itoa(ms.StallRepairDurationSeconds)},
-		{"stall_degraded_produce_pct", strconv.Itoa(ms.StallDegradedProducePct)},
-		// Farm upkeep wealth-tax knobs (LLM-215) — live-tuned via the umbilical, persisted here.
-		{"farm_upkeep_floor", strconv.Itoa(ms.FarmUpkeepFloor)},
-		{"farm_upkeep_coins_per_shovel", strconv.Itoa(ms.FarmUpkeepCoinsPerShovel)},
-		// Town rate knobs (LLM-557) — live-tuned via the umbilical, persisted here.
-		{"town_rate_coins_per_day", strconv.Itoa(ms.TownRateCoinsPerDay)},
-		{"town_rate_max_owed", strconv.Itoa(ms.TownRateMaxOwed)},
-		// Huddle loop-sweep knobs (LLM-159; enabled/tuned via the umbilical in
-		// LLM-183) — live-tuned, persisted here. Stored in seconds; the load path
-		// parses huddle_loop_timeout_seconds / huddle_loop_sweep_cadence_seconds via
-		// parseDurationSetting and huddle_loop_repeat_percent via parseIntSetting.
-		{"huddle_loop_timeout_seconds", strconv.Itoa(ms.HuddleLoopTimeoutSeconds)},
-		{"huddle_loop_repeat_percent", strconv.Itoa(ms.HuddleLoopRepeatPercent)},
-		{"huddle_loop_sweep_cadence_seconds", strconv.Itoa(ms.HuddleLoopSweepCadenceSeconds)},
-		{"huddle_loop_max_turns", strconv.Itoa(ms.HuddleLoopMaxTurns)},
-		{"huddle_conversation_wind_down_seconds", strconv.Itoa(ms.HuddleConversationWindDownSeconds)},
-		// Seek-work coin ceiling (LLM-194) — live-tuned via the umbilical, persisted
-		// here; the load path parses seek_work_coin_ceiling via parseIntSetting.
-		{"seek_work_coin_ceiling", strconv.Itoa(ms.SeekWorkCoinCeiling)},
-		// Seek-work→eat redirect margin (LLM-276) — live-tuned via the umbilical,
-		// persisted here; the load path parses seek_work_need_yield_margin via parseIntSetting.
-		{"seek_work_need_yield_margin", strconv.Itoa(ms.SeekWorkNeedYieldMargin)},
-		// Labor produce boost (LLM-224) — live-tuned via the umbilical, persisted
-		// here; the load path parses labor_produce_boost_pct via parseIntSetting.
-		{"labor_produce_boost_pct", strconv.Itoa(ms.LaborProduceBoostPct)},
-		// Merchant working-capital floor (LLM-294) — live-tuned via the umbilical,
-		// persisted here; the load path parses merchant_coin_floor via parseIntSetting.
-		{"merchant_coin_floor", strconv.Itoa(ms.MerchantCoinFloor)},
-		// Eco mode knobs (LLM-313) — live-tuned via the umbilical, persisted here.
-		// Gaps stored in seconds; the load path parses eco_enabled via
-		// parseBoolSetting and the gaps via parseDurationSetting.
-		{"eco_enabled", strconv.FormatBool(ms.EcoEnabled)},
-		{"eco_social_gap_seconds", strconv.Itoa(ms.EcoSocialGapSeconds)},
-		{"eco_economy_gap_seconds", strconv.Itoa(ms.EcoEconomyGapSeconds)},
-		{"eco_audience_idle_seconds", strconv.Itoa(ms.EcoAudienceIdleSeconds)},
-		// Constable rounds knobs (LLM-514, quiet added LLM-537) — live-tuned via the
-		// umbilical, persisted here; the load path parses all three via
-		// parseDurationSetting (0 interval = off).
-		{"constable_rounds_interval_seconds", strconv.Itoa(ms.ConstableRoundsIntervalSeconds)},
+	keys := make([]string, 0, len(ms.Rows))
+	for k := range ms.Rows {
+		keys = append(keys, k)
 	}
-	for _, row := range rows {
-		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {
-			return fmt.Errorf("pg environment SaveMutableSettings: upsert %s: %w", row.key, err)
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, err := tx.Exec(ctx, upsertSettingSQL, key, ms.Rows[key]); err != nil {
+			return fmt.Errorf("pg environment SaveMutableSettings: upsert %s: %w", key, err)
 		}
 	}
 	return nil

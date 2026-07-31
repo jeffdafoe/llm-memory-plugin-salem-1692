@@ -19,8 +19,16 @@ import (
 // live, operator-tunable world settings.
 //
 // need_thresholds maps each configured need to its current red-line (the value
-// settings/need-threshold writes). These are EPHEMERAL — those keys are not
-// persisted by SaveWorld, so they reset to the env-configured defaults on restart.
+// settings/need-threshold writes).
+//
+// These used to be EPHEMERAL — the checkpoint's hand-listed row set omitted the
+// *_red_threshold keys, so a tuned threshold silently reverted to the
+// env-configured default on the next restart. As of LLM-577 the checkpoint's
+// rows are projected from the sim settings registry, which registers every need
+// threshold, so a live tune now PERSISTS like the rest of the surface. That is
+// a deliberate behaviour change: a knob that quietly undoes itself on a restart
+// is a worse default than one that sticks, and salem restarts often enough that
+// the old behaviour mostly presented as "the threshold I set isn't working".
 //
 // The huddle_loop_* fields are the loop-sweep knobs settings/huddle-loop writes.
 // huddle_loop_enabled is timeout > 0 — the master enable for both the sweep and
@@ -189,6 +197,35 @@ type UmbilicalSettingsDTO struct {
 	// misconfiguration keeps showing here across the village's frequent restarts
 	// until an operator fixes the setting row.
 	SettingWarnings []sim.SettingWarning `json:"setting_warnings"`
+
+	// All is every setting key the engine loads, projected from the sim
+	// settings registry as stored-string values (LLM-577) — the complete read
+	// side that the typed fields above only ever partially covered.
+	//
+	// The typed fields are NOT redundant with this and are not going away: many
+	// of them report the EFFECTIVE value, replicating the clamp its consumer
+	// applies (a stored 0 resolving to a default, a return-max clamping up to
+	// its companion min), which is what an operator needs to predict behaviour.
+	// All reports the RAW stored value for every key, which is what an operator
+	// needs to know what is actually configured. Where a key appears in both and
+	// the two differ, that difference IS the clamp — worth reading, not a bug.
+	//
+	// Keyed by setting key so a caller can look one up without knowing which
+	// typed field, if any, carries it.
+	All map[string]string `json:"all"`
+
+	// AllMeta is per-key metadata for the write side: value kind, when a write
+	// takes effect, and whether it survives a restart. Same key set as All. See
+	// umbilicalSettingSetResponse for what takes_effect's three values mean —
+	// in particular that "unaudited" is a real answer, not a placeholder.
+	AllMeta map[string]umbilicalSettingMeta `json:"all_meta"`
+}
+
+// umbilicalSettingMeta is the per-key write-side metadata carried by AllMeta.
+type umbilicalSettingMeta struct {
+	Kind        string `json:"kind"`
+	TakesEffect string `json:"takes_effect"`
+	Persisted   bool   `json:"persisted"`
 }
 
 // handleUmbilicalSettings serves the current live-tunable world settings. Read on
@@ -313,9 +350,19 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			VisitorSellWeightPermille:             world.Settings.VisitorSellWeightPermille,
 			VisitorPasserThroughChancePermille:    world.Settings.VisitorPasserThroughChancePermille,
 			SettingWarnings:                       settingWarnings,
+			All:                                   sim.ReadAllSettings(&world.Settings),
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v
+		}
+		specs := sim.SettingSpecs()
+		dto.AllMeta = make(map[string]umbilicalSettingMeta, len(specs))
+		for _, spec := range specs {
+			dto.AllMeta[spec.Key] = umbilicalSettingMeta{
+				Kind:        string(spec.Kind),
+				TakesEffect: string(spec.Effect),
+				Persisted:   spec.Persist,
+			}
 		}
 		return dto, nil
 	}})

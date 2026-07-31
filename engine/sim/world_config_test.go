@@ -117,19 +117,24 @@ func TestBuildCheckpointSnapshot_CarriesMutableSettings(t *testing.T) {
 	w.Settings.HuddleLoopRepeatPercent = 65
 	w.Settings.HuddleLoopSweepCadence = 25 * time.Second
 
+	// LLM-577: the snapshot now carries key→stored-string rows projected from
+	// the settings registry rather than named fields. The properties pinned are
+	// unchanged — the zoom/pause values ride, and the huddle-loop durations are
+	// encoded in SECONDS (the unit the *_seconds keys imply and the load path
+	// parses back).
 	cp := w.BuildCheckpointSnapshot()
-	if cp.MutableSettings.ZoomMinAdmin != 0.11 ||
-		cp.MutableSettings.ZoomMinRegular != 0.22 ||
-		!cp.MutableSettings.AgentTicksPaused {
-		t.Errorf("MutableSettings = %+v, want 0.11/0.22/true", cp.MutableSettings)
+	wantRows := map[string]string{
+		"world_zoom_min_admin":              "0.11",
+		"world_zoom_min_regular":            "0.22",
+		"agent_ticks_paused":                "true",
+		"huddle_loop_timeout_seconds":       "75",
+		"huddle_loop_repeat_percent":        "65",
+		"huddle_loop_sweep_cadence_seconds": "25",
 	}
-	if cp.MutableSettings.HuddleLoopTimeoutSeconds != 75 ||
-		cp.MutableSettings.HuddleLoopRepeatPercent != 65 ||
-		cp.MutableSettings.HuddleLoopSweepCadenceSeconds != 25 {
-		t.Errorf("MutableSettings huddle-loop = %d/%d/%d, want 75/65/25",
-			cp.MutableSettings.HuddleLoopTimeoutSeconds,
-			cp.MutableSettings.HuddleLoopRepeatPercent,
-			cp.MutableSettings.HuddleLoopSweepCadenceSeconds)
+	for key, want := range wantRows {
+		if got := cp.MutableSettings.Rows[key]; got != want {
+			t.Errorf("MutableSettings.Rows[%q] = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -139,14 +144,15 @@ func TestBuildCheckpointSnapshot_CarriesMutableSettings(t *testing.T) {
 func TestBuildCheckpointSnapshot_CarriesConstableRounds(t *testing.T) {
 	w := newConfigWorld(t)
 	w.Settings.ConstableRoundsInterval = 2 * time.Hour
+	const key = "constable_rounds_interval_seconds"
 	cp := w.BuildCheckpointSnapshot()
-	if cp.MutableSettings.ConstableRoundsIntervalSeconds != 7200 {
-		t.Errorf("interval seconds = %d, want 7200", cp.MutableSettings.ConstableRoundsIntervalSeconds)
+	if got := cp.MutableSettings.Rows[key]; got != "7200" {
+		t.Errorf("interval seconds = %q, want \"7200\"", got)
 	}
 	// Off-switch: interval 0 carries as 0 (defaulting is a read-time concern, not save).
 	w.Settings.ConstableRoundsInterval = 0
-	if cp := w.BuildCheckpointSnapshot(); cp.MutableSettings.ConstableRoundsIntervalSeconds != 0 {
-		t.Errorf("interval-off seconds = %d, want 0", cp.MutableSettings.ConstableRoundsIntervalSeconds)
+	if cp := w.BuildCheckpointSnapshot(); cp.MutableSettings.Rows[key] != "0" {
+		t.Errorf("interval-off seconds = %q, want \"0\"", cp.MutableSettings.Rows[key])
 	}
 }
 
