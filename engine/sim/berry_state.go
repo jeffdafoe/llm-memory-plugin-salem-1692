@@ -103,14 +103,19 @@ func refreshObjectBerryState(w *World, obj *VillageObject, now time.Time) {
 // rows — and it is chosen INDEPENDENTLY of which rows happen to hold stock, or a
 // multi-row source would switch stage clocks as its rows empty and refill.
 //
-// Which one is settled by the lowest (GatherItem, Attribute), not by slice
-// position: the pg loader selects object_refresh with no ORDER BY and builds the
-// slice "as encountered" (repo/pg/village_objects.go), so position is not stable
-// across restarts. That pair is unique per object under the table's two indexes
-// — object_refresh_object_attribute_key and object_refresh_yield_key — so it is
-// a total order. Moot for a crop, which carries exactly one gatherable row, but
-// a bush can carry a need-bearing row that is ALSO gatherable (the raspberry
-// bushes do), so the multi-row case is real (code_review).
+// Which one is settled by the lowest (GatherItem, Attribute) — see
+// refreshOrderKey — rather than by slice position. That pair is unique per object
+// under the table's two indexes (object_refresh_object_attribute_key and
+// object_refresh_yield_key), so it is a total order. Moot for a crop, which
+// carries exactly one gatherable row, but a bush can carry a need-bearing row
+// that is ALSO gatherable (the raspberry bushes do), so the multi-row case is
+// real (code_review).
+//
+// The pg loader now returns rows in this same order (loadAllSQLOR ORDER BY), so
+// the two agree and position would in fact work. Selecting by key anyway keeps
+// this correct for slices the loader did not build — the in-memory repo, test
+// fixtures, anything constructing an object directly — so the rule lives with
+// the code that depends on it rather than in a query it cannot see.
 func gatherableSupply(obj *VillageObject) (row *ObjectRefresh, hasStock bool) {
 	for _, r := range obj.Refreshes {
 		if r == nil || !r.IsFinite() || !r.IsGatherable() {
