@@ -1090,16 +1090,16 @@ func sync_phase_from_world(phase: String, last_transition_iso: String, now_iso: 
     _apply_phase_pos(lerpf(1.0 - target, target, progress))
     _tween_phase_to(target, PHASE_TRANSITION_DURATION)
 
-## RFC3339 → unix seconds, or 0.0 for missing/unparseable input. Godot's
-## parser assumes UTC regardless of suffix (verified empirically against 4.x:
-## bare, "Z", fractional-"Z" and "+02:00" forms all parse to the same UTC
-## instant — numeric offsets are IGNORED, never honored, and garbage returns
-## 0) so it never consults the client's local timezone. Both inputs here are
-## Go-marshaled UTC ("…Z") fields of the same DTO, and the caller only uses
-## their difference. Anything unparseable fails closed to 0.0 and the caller
-## snaps to the pole.
+## RFC3339 → unix seconds, or 0.0 for missing/unparseable input. The server
+## contract is Go-marshaled UTC instants ("…Z"), so an explicit trailing Z is
+## REQUIRED — bare timestamps and numeric offsets fail closed rather than
+## being implicitly accepted (Godot's parser would read either as UTC anyway,
+## verified empirically against 4.x — offsets are IGNORED, never honored —
+## but silently accepting them would make malformed server data
+## indistinguishable from valid UTC; code_review round 2). Garbage parses to
+## 0; the caller snaps to the pole on any 0.0.
 func _iso_to_unix(iso: String) -> float:
-    if iso.length() < 19:
+    if iso.length() < 19 or not iso.ends_with("Z"):
         return 0.0
     return float(Time.get_unix_time_from_datetime_string(iso))
 

@@ -248,3 +248,71 @@ func TestRunPhaseTicker_ImmediateBootCheckCorrectsStalePhase(t *testing.T) {
 	t.Fatalf("boot check did not correct phase to %q within 2s; still %q",
 		expected, w.Published().Phase)
 }
+
+// TestLastPhaseFlipAt_BootInitFromDurableStamp pins the LLM-578 boot
+// compromise: LastPhaseFlipAt (the real-flip stamp the public DTO serves as
+// last_transition_at) is NOT persisted — LoadWorld reconstructs it from the
+// durable LastTransitionAt, the ticker's From==To-inclusive dedupe stamp.
+// After "real flip → redundant force → shutdown → reload", the reloaded stamp
+// therefore equals the redundant force's apply time, not the earlier real
+// flip. Documented, accepted drift (code_review round 2): the phase itself is
+// correct either way, so the worst client outcome is re-running a sunset
+// toward the CORRECT pole up to an hour late — versus a schema migration to
+// persist a second timestamp. If that trade ever changes, this test is the
+// contract to update.
+func TestLastPhaseFlipAt_BootInitFromDurableStamp(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w1, err := sim.LoadWorld(ctx, repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	go w1.Run(ctx)
+
+	// Real flip (mem repo boots PhaseDay), then a redundant force to the same
+	// phase — the dedupe stamp advances, the flip stamp must not.
+	if _, err := w1.Send(sim.ApplyPhaseTransition(sim.PhaseNight, true)); err != nil {
+		t.Fatalf("real flip: %v", err)
+	}
+	if _, err := w1.Send(sim.ApplyPhaseTransition(sim.PhaseNight, true)); err != nil {
+		t.Fatalf("redundant force: %v", err)
+	}
+
+	// Persist as the shutdown checkpoint would, then reload on the same repo.
+	var savedEnv sim.WorldEnvironment
+	var savedPhase sim.Phase
+	if _, err := w1.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		savedEnv = world.Environment
+		savedPhase = world.Phase
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if savedEnv.LastPhaseFlipAt.After(savedEnv.LastTransitionAt) {
+		t.Fatalf("flip stamp %v after dedupe stamp %v — redundant force did not advance dedupe",
+			savedEnv.LastPhaseFlipAt, savedEnv.LastTransitionAt)
+	}
+	if err := repo.Environment.SaveSnapshot(ctx, nil, savedEnv, savedPhase); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	w2, err := sim.LoadWorld(ctx, repo)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if w2.Phase != sim.PhaseNight {
+		t.Fatalf("reloaded phase = %q, want night", w2.Phase)
+	}
+	// The documented boot boundary: the reconstructed flip stamp equals the
+	// durable dedupe stamp (the redundant force's apply time), and is never
+	// zero after any transition has been applied.
+	if w2.Environment.LastPhaseFlipAt.IsZero() {
+		t.Fatal("reloaded LastPhaseFlipAt is zero — boot-init missing")
+	}
+	if !w2.Environment.LastPhaseFlipAt.Equal(savedEnv.LastTransitionAt) {
+		t.Errorf("reloaded flip stamp = %v, want the durable dedupe stamp %v",
+			w2.Environment.LastPhaseFlipAt, savedEnv.LastTransitionAt)
+	}
+}
