@@ -512,7 +512,7 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 	}
 	// Eating in place may have drained a finite bush — recompute its
 	// berries/bare visual so a picked-clean bush goes bare.
-	refreshObjectBerryState(w, obj)
+	refreshObjectBerryState(w, obj, now)
 	// LLM-56: push the PC's updated needs to its HUD immediately (the hub turns
 	// this into a pc_needs_changed WS frame), so each bite ticks the bar down in
 	// real time instead of waiting for the next ~10s /pc/me poll — smooth
@@ -665,8 +665,11 @@ func regenObjectRefresh(w *World, now time.Time) int {
 		// Regrowth may have restocked a bush from empty — recompute its
 		// berries/bare visual so berries reappear once supply is back. Run for
 		// every object each tick: cheap (a no-op unless the asset is berry-tagged)
-		// and it self-heals any visual that drifted from its supply.
-		refreshObjectBerryState(w, obj)
+		// and it self-heals any visual that drifted from its supply. This sweep is
+		// also what walks a staged crop (LLM-576) through its immature stages —
+		// those are dated off the regrow clock, not off a supply change, so they
+		// need a recompute on a tick rather than on an event.
+		refreshObjectBerryState(w, obj, now)
 	}
 	return touched
 }
