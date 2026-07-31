@@ -26,22 +26,27 @@ func TestRegistryDurationsSurviveTheLoader(t *testing.T) {
 		live       time.Duration
 		wantStored string
 		read       func(sim.WorldSettings) time.Duration
+		write      func(*sim.WorldSettings, time.Duration)
 	}{
 		{
 			key: "admission_backoff_ms", live: 250 * time.Millisecond, wantStored: "250",
-			read: func(s sim.WorldSettings) time.Duration { return s.AdmissionBackoff },
+			read:  func(s sim.WorldSettings) time.Duration { return s.AdmissionBackoff },
+			write: func(s *sim.WorldSettings, d time.Duration) { s.AdmissionBackoff = d },
 		},
 		{
 			key: "eco_social_gap_seconds", live: 45 * time.Second, wantStored: "45",
-			read: func(s sim.WorldSettings) time.Duration { return s.EcoSocialGap },
+			read:  func(s sim.WorldSettings) time.Duration { return s.EcoSocialGap },
+			write: func(s *sim.WorldSettings, d time.Duration) { s.EcoSocialGap = d },
 		},
 		{
 			key: "storm_interval_minutes", live: 3 * time.Hour, wantStored: "180",
-			read: func(s sim.WorldSettings) time.Duration { return s.StormInterval },
+			read:  func(s sim.WorldSettings) time.Duration { return s.StormInterval },
+			write: func(s *sim.WorldSettings, d time.Duration) { s.StormInterval = d },
 		},
 		{
 			key: "action_log_retention_hours", live: 48 * time.Hour, wantStored: "48",
-			read: func(s sim.WorldSettings) time.Duration { return s.ActionLogRetention },
+			read:  func(s sim.WorldSettings) time.Duration { return s.ActionLogRetention },
+			write: func(s *sim.WorldSettings, d time.Duration) { s.ActionLogRetention = d },
 		},
 	}
 
@@ -52,17 +57,32 @@ func TestRegistryDurationsSurviveTheLoader(t *testing.T) {
 				t.Fatalf("%q is not registered", tc.key)
 			}
 
-			// Registry formats the live duration into a stored scalar.
+			// Start from a LIVE duration written straight onto the field — the
+			// direction the checkpoint actually runs. Going through Apply first
+			// would only re-prove that Apply and Read agree with each other,
+			// which is what the sim-side test already covers and is exactly the
+			// pair that cannot detect a unit mismatch.
 			ws := sim.WorldSettings{}
-			if err := spec.Apply(&ws, tc.wantStored); err != nil {
+			tc.write(&ws, tc.live)
+			if got := spec.Read(&ws); got != tc.wantStored {
+				t.Fatalf("registry formatted %v as %q, want %q — the spec's field is measured in a different unit than its key advertises",
+					tc.live, got, tc.wantStored)
+			}
+
+			// And through the real persistence projection, since that (not
+			// Read alone) is what lands in the setting table.
+			if got := sim.PersistableSettingRows(&ws)[tc.key]; got != tc.wantStored {
+				t.Fatalf("checkpoint would persist %s=%q, want %q", tc.key, got, tc.wantStored)
+			}
+
+			// The reverse leg: the stored scalar parses back to the same live
+			// duration.
+			back := sim.WorldSettings{}
+			if err := spec.Apply(&back, tc.wantStored); err != nil {
 				t.Fatalf("Apply(%q): %v", tc.wantStored, err)
 			}
-			if got := tc.read(ws); got != tc.live {
-				t.Fatalf("registry stored %q as %v, want %v — the spec's field is measured in a different unit than its key advertises",
-					tc.wantStored, got, tc.live)
-			}
-			if got := spec.Read(&ws); got != tc.wantStored {
-				t.Fatalf("Read = %q, want %q", got, tc.wantStored)
+			if got := tc.read(back); got != tc.live {
+				t.Fatalf("Apply(%q) produced %v, want %v", tc.wantStored, got, tc.live)
 			}
 
 			// The loader must reconstruct the same duration from that scalar.
