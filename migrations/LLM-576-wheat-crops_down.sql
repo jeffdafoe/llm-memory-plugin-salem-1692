@@ -29,18 +29,20 @@ DELETE FROM tileset_pack
  WHERE id = 'mana-seed-crops'
    AND NOT EXISTS (SELECT 1 FROM asset WHERE pack_id = 'mana-seed-crops');
 
--- Restore the origin-producer rate the _up zeroed (3/hr, from the 2026-07-02 seed).
-UPDATE item_recipe SET rate_qty = 3, updated_at = now() WHERE output_item = 'wheat';
-
--- And put Moses back on produce.
+-- item_recipe needs no restoring: the _up never touched it. Wheat's recipe stayed
+-- intact and dormant throughout — the produce path is gated on Moses's restock
+-- entry, so putting that entry back is the entire rollback.
+--
+-- COALESCE for the same empty-array reason as the _up.
 UPDATE actor_attribute
-   SET params = jsonb_set(params, '{restock}', (
+   SET params = jsonb_set(params, '{restock}', COALESCE((
            SELECT jsonb_agg(
                       CASE WHEN e->>'item' = 'wheat'
                            THEN jsonb_set(e, '{source}', '"produce"')
                            ELSE e END
                       ORDER BY ord)
-             FROM jsonb_array_elements(params->'restock') WITH ORDINALITY AS t(e, ord)))
+             FROM jsonb_array_elements(params->'restock') WITH ORDINALITY AS t(e, ord)
+       ), '[]'::jsonb))
  WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78'  -- Moses James
    AND slug = 'farmer'
    AND jsonb_typeof(params->'restock') = 'array';

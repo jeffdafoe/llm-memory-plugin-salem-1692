@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,13 +94,16 @@ func refreshObjectBerryState(w *World, obj *VillageObject, now time.Time) {
 }
 
 // gatherableSupply reports whether obj has pickable stock, and returns the row
-// that governs it. Stock is narrower than "any finite row" on purpose — a source
-// with a second, non-gatherable finite supply (e.g. sap) must not falsely read as
-// ripe. IsFinite guarantees AvailableQuantity != nil, so the deref is safe.
+// whose regrow clock dates the crop stage. Stock is narrower than "any finite
+// row" on purpose — a source with a second, non-gatherable finite supply (e.g.
+// sap) must not falsely read as ripe.
 //
-// The returned row is the first finite gatherable one, stocked or not: the crop
-// stage needs its regrow clock precisely when it is EMPTY, so this cannot return
-// only stocked rows.
+// The row is ALWAYS the first finite gatherable one, stocked or not. Two reasons:
+// the crop stage needs a clock precisely when the plant is EMPTY, so this cannot
+// return only stocked rows; and the choice must not depend on which rows happen
+// to hold stock, or a multi-row source would switch stage clocks as its rows
+// empty and refill (code_review). So the scan does not short-circuit — the
+// predicates are independent.
 func gatherableSupply(obj *VillageObject) (row *ObjectRefresh, hasStock bool) {
 	for _, r := range obj.Refreshes {
 		if r == nil || !r.IsFinite() || !r.IsGatherable() {
@@ -108,11 +112,12 @@ func gatherableSupply(obj *VillageObject) (row *ObjectRefresh, hasStock bool) {
 		if row == nil {
 			row = r
 		}
-		if *r.AvailableQuantity > 0 {
-			return r, true
+		// Defensive deref rather than leaning on IsFinite's contract alone.
+		if r.AvailableQuantity != nil && *r.AvailableQuantity > 0 {
+			hasStock = true
 		}
 	}
-	return row, false
+	return row, hasStock
 }
 
 // growthState pairs a crop stage's ordinal with the state name that renders it.
@@ -182,15 +187,38 @@ func cropStageState(asset *Asset, row *ObjectRefresh, hasStock bool, now time.Ti
 	if row == nil || row.LastRefreshAt == nil || row.RefreshPeriodHours == nil || *row.RefreshPeriodHours <= 0 {
 		return immature[0].state
 	}
-	period := time.Duration(*row.RefreshPeriodHours) * time.Hour
-	elapsed := now.Sub(*row.LastRefreshAt)
-	if elapsed < 0 {
-		elapsed = 0 // clock skew / a future anchor: treat as just cut
+	// Bound the hours BEFORE converting: time.Duration is int64 nanoseconds, so
+	// anything past ~292 years wraps the multiply — and it can wrap onto a
+	// plausible POSITIVE value, which a post-hoc period <= 0 check would miss.
+	hours := *row.RefreshPeriodHours
+	if int64(hours) > int64(math.MaxInt64/int64(time.Hour)) {
+		return immature[0].state
 	}
-	// Integer arithmetic on the ratio, so a long-overdue plant (elapsed past the
-	// period, e.g. regen hasn't run yet after an outage) clamps to the last
-	// immature stage instead of indexing past the slice.
-	idx := int(elapsed * time.Duration(len(immature)) / period)
+	period := time.Duration(hours) * time.Hour
+	if period <= 0 {
+		return immature[0].state
+	}
+	elapsed := now.Sub(*row.LastRefreshAt)
+	if elapsed <= 0 {
+		return immature[0].state // clock skew / a future anchor: treat as just cut
+	}
+	// Overdue (regen has not run since the period elapsed — an outage, or a row
+	// whose anchor predates the engine) holds at the last immature stage.
+	// Returning here ALSO keeps the index arithmetic below overflow-free: it
+	// bounds elapsed by period before any division.
+	if elapsed >= period {
+		return immature[len(immature)-1].state
+	}
+	// Divide the period into stage-width slices and count how many have passed,
+	// rather than scaling elapsed by the stage count. `elapsed * len(immature)`
+	// would overflow int64 for a stale enough anchor (a 1970 anchor overflows at
+	// six immature stages), and the wrap goes NEGATIVE — which the upper clamp
+	// alone would not catch, so it would index off the front of the slice.
+	stageWidth := period / time.Duration(len(immature))
+	if stageWidth <= 0 {
+		return immature[0].state // more stages than the period has nanoseconds
+	}
+	idx := int(elapsed / stageWidth)
 	if idx >= len(immature) {
 		idx = len(immature) - 1
 	}

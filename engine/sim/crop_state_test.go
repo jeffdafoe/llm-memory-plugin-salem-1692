@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,14 +18,19 @@ import (
 // immature stages, so these tests drive it with an explicit clock rather than
 // waiting on the one-minute ticker.
 
-// cropPeriodHours is the growth period these tests use. Four immature stages
-// over 120h puts a stage boundary every 30h, which is what the stage-walk test
-// steps across.
+// cropPeriodHours is the SHIPPED growth period (LLM-576 migration). Five
+// immature stages over 120h puts a boundary every 24h — one visible change per
+// day — which is what the stage-walk test steps across.
 const cropPeriodHours = 120
 
-// buildCropWorld seeds a five-stage wheat asset and one plant carrying a finite
-// gatherable wheat row, plus an actor on the plant's loiter pin. available is
-// the starting stock, currentState the seeded visual, lastRefresh the regrow
+// cropRipeState is the shipped ripe stage. Six states, not five: the migration
+// uses the sheet's seed-scatter cell as a just-cut visual ahead of the artist's
+// five growth frames, so the artist's ripe frame lands on growth-6.
+const cropRipeState = "growth-6"
+
+// buildCropWorld seeds the shipped six-state wheat asset and one plant carrying a
+// finite gatherable wheat row, plus an actor on the plant's loiter pin. available
+// is the starting stock, currentState the seeded visual, lastRefresh the regrow
 // anchor (nil = never harvested).
 func buildCropWorld(t *testing.T, available int, currentState string, lastRefresh *time.Time) (*sim.World, context.CancelFunc) {
 	t.Helper()
@@ -36,13 +42,16 @@ func buildCropWorld(t *testing.T, available int, currentState string, lastRefres
 		"crop-wheat": {
 			ID:           "crop-wheat",
 			Name:         "Wheat",
-			DefaultState: "growth-5",
+			DefaultState: cropRipeState,
 			States: []sim.AssetState{
 				// Deliberately NOT in stage order — growthStates sorts by the tag's
 				// trailing integer, and authoring order must not decide ripeness.
+				// growth-6 sits mid-slice here on purpose: a naive "last state wins"
+				// would pick growth-2 as ripe.
 				{State: "growth-3", Tags: []string{"growth-3"}},
-				{State: "growth-5", Tags: []string{"growth-5"}},
+				{State: "growth-6", Tags: []string{"growth-6"}},
 				{State: "growth-1", Tags: []string{"growth-1"}},
+				{State: "growth-5", Tags: []string{"growth-5"}},
 				{State: "growth-4", Tags: []string{"growth-4"}},
 				{State: "growth-2", Tags: []string{"growth-2"}},
 			},
@@ -111,8 +120,66 @@ func TestCropStockedPlantRendersRipe(t *testing.T) {
 	defer cancel()
 
 	sweep(t, w, time.Now().UTC())
-	if got := plantState(t, w); got != "growth-5" {
-		t.Errorf("stocked plant state = %q, want growth-5", got)
+	if got := plantState(t, w); got != cropRipeState {
+		t.Errorf("stocked plant state = %q, want %s", got, cropRipeState)
+	}
+}
+
+// TestCropPlacedThroughTheEditorPathLandsRipe drives the ACTUAL placement path —
+// CreateVillageObject copying the asset_refresh_default template — rather than
+// seeding the object by hand.
+//
+// This is the mechanism the whole "no ripeness gate" design rests on. An unripe
+// crop is unharvestable only because periodic regen leaves available_quantity at
+// 0 until the period elapses; the one thing that can put stock on a plant is this
+// placement seed, and it must seed FULL. If it ever seeded empty (or partial),
+// plants would drop in green and Jeff's field would be unharvestable for five
+// days after planting, so pin both the copied row and the derived visual here
+// (code_review).
+func TestCropPlacedThroughTheEditorPathLandsRipe(t *testing.T) {
+	w, cancel := buildCropWorld(t, 3, cropRipeState, nil)
+	defer cancel()
+
+	// Attach the shipped template to the catalog asset, then place a new plant the
+	// way the editor does.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Assets["crop-wheat"].RefreshDefaults = []*sim.ObjectRefresh{{
+			Amount: 0, GatherItem: "wheat",
+			// Deliberately seeded EMPTY in the template: normalizeDefaultSupply must
+			// bring it up to max, which is what makes a placed plant genuinely ripe
+			// rather than merely drawn ripe by default_state.
+			AvailableQuantity:  ip(0),
+			MaxQuantity:        ip(3),
+			RefreshMode:        sim.RefreshModePeriodic,
+			RefreshPeriodHours: ip(cropPeriodHours),
+		}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("attach refresh defaults: %v", err)
+	}
+
+	res, err := w.Send(sim.CreateVillageObject("crop-wheat", 320, 640, "", "tester"))
+	if err != nil {
+		t.Fatalf("place plant: %v", err)
+	}
+	id := res.(sim.CreateObjectResult).Object.ID
+
+	got, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		obj := world.VillageObjects[id]
+		if len(obj.Refreshes) != 1 {
+			return nil, fmt.Errorf("seeded refreshes = %d, want 1", len(obj.Refreshes))
+		}
+		r := obj.Refreshes[0]
+		if r.AvailableQuantity == nil || *r.AvailableQuantity != 3 {
+			return nil, fmt.Errorf("seeded stock = %v, want 3 (a placed plant must land full)", r.AvailableQuantity)
+		}
+		return obj.CurrentState, nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect placed plant: %v", err)
+	}
+	if got.(string) != cropRipeState {
+		t.Errorf("placed plant state = %q, want %s", got, cropRipeState)
 	}
 }
 
@@ -122,7 +189,7 @@ func TestCropStockedPlantRendersRipe(t *testing.T) {
 // whole point.
 func TestCropHarvestGoesToFirstStage(t *testing.T) {
 	at := time.Now().UTC()
-	w, cancel := buildCropWorld(t, 3, "growth-5", nil)
+	w, cancel := buildCropWorld(t, 3, cropRipeState, nil)
 	defer cancel()
 
 	placeAtObjectPin(t, w, "farmer", "wheat-plant")
@@ -135,7 +202,9 @@ func TestCropHarvestGoesToFirstStage(t *testing.T) {
 }
 
 // TestCropWalksStagesAcrossThePeriod: a spent plant advances one immature stage
-// per period/(N-1). Four immature stages over 120h => a boundary every 30h.
+// per period/(N-1). These are the SHIPPED numbers — five immature stages over
+// 120h, so a boundary every 24h: exactly one visible change per day, which is
+// the whole reason the stages exist.
 func TestCropWalksStagesAcrossThePeriod(t *testing.T) {
 	cut := time.Now().UTC()
 	w, cancel := buildCropWorld(t, 0, "growth-1", &cut)
@@ -146,12 +215,13 @@ func TestCropWalksStagesAcrossThePeriod(t *testing.T) {
 		want       string
 	}{
 		{0, "growth-1"},
-		{29, "growth-1"},
-		{30, "growth-2"},
-		{59, "growth-2"},
-		{60, "growth-3"},
-		{90, "growth-4"},
-		{119, "growth-4"},
+		{23, "growth-1"},
+		{24, "growth-2"},
+		{47, "growth-2"},
+		{48, "growth-3"},
+		{72, "growth-4"},
+		{96, "growth-5"},
+		{119, "growth-5"},
 	} {
 		sweep(t, w, cut.Add(time.Duration(tc.afterHours)*time.Hour))
 		if got := plantState(t, w); got != tc.want {
@@ -169,8 +239,8 @@ func TestCropRipensWhenSupplyReturns(t *testing.T) {
 	defer cancel()
 
 	sweep(t, w, cut.Add(cropPeriodHours*time.Hour))
-	if got := plantState(t, w); got != "growth-5" {
-		t.Errorf("after a full period, plant state = %q, want growth-5", got)
+	if got := plantState(t, w); got != cropRipeState {
+		t.Errorf("after a full period, plant state = %q, want %s", got, cropRipeState)
 	}
 	stock, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return *world.VillageObjects["wheat-plant"].Refreshes[0].AvailableQuantity, nil
@@ -217,10 +287,16 @@ func TestCropStageSelectionEdges(t *testing.T) {
 		{"stock wins regardless of clock", clocked(ip(100), &cut), true, cut, "growth-3"},
 		{"overdue clamps to last immature", clocked(ip(100), &cut), false, cut.Add(1000 * time.Hour), "growth-2"},
 		{"exactly at period clamps too", clocked(ip(100), &cut), false, cut.Add(100 * time.Hour), "growth-2"},
+		// A stale enough anchor makes `elapsed * len(immature)` wrap int64
+		// NEGATIVE, which an upper-bound clamp alone would not catch — it would
+		// index off the FRONT of the slice and panic. The elapsed >= period
+		// early return is what keeps this arithmetic bounded.
+		{"1970 anchor does not wrap negative", clocked(ip(100), timePtr(time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC))), false, cut, "growth-2"},
+		{"absurd period does not overflow the duration", clocked(ip(1<<30), &cut), false, cut.Add(time.Hour), "growth-1"},
 		{"no regrow clock reads just cut", clocked(nil, &cut), false, cut.Add(50 * time.Hour), "growth-1"},
 		{"no anchor reads just cut", clocked(ip(100), nil), false, cut.Add(50 * time.Hour), "growth-1"},
 		{"nil row reads just cut", nil, false, cut, "growth-1"},
-		{"future anchor reads just cut", clocked(ip(100), timePtr(cut.Add(10 * time.Hour))), false, cut, "growth-1"},
+		{"future anchor reads just cut", clocked(ip(100), timePtr(cut.Add(10*time.Hour))), false, cut, "growth-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := sim.CropStageState(asset, tc.row, tc.hasStock, tc.now); got != tc.want {

@@ -7,7 +7,8 @@
 --      which one renders.
 --   2. The policy: an asset_refresh_default row (LLM-363), so every plant the
 --      editor drops lands with a full, working gatherable row instead of inert.
---   3. The economy: wheat stops being manufactured and starts being harvested.
+--   3. The economy: wheat stops being manufactured and starts being harvested,
+--      via Moses's restock entry alone (item_recipe is left untouched).
 --
 -- WHY SIX STATES FOR A FIVE-STAGE SHEET: the Mana Seed row is [icon, seedbag,
 -- seeds, stage1..stage5, sign icon, map sign]. We use the SEEDS cell as the
@@ -102,37 +103,58 @@ VALUES (
 -- 3. Wheat: produced -> foraged
 -- ---------------------------------------------------------------------------
 
--- rate_qty 0 makes wheat unmakeable (StartProductionCycle requires a positive
--- rate). NOT a row delete: wheat's wholesale_price/retail_price live on this row
--- and are read by perception/trade_value.go and perception/restock.go. Wheat is
--- still actively bought and sold, so deleting the row would strip the price off a
--- traded good.
-UPDATE item_recipe SET rate_qty = 0, updated_at = now() WHERE output_item = 'wheat';
-
--- Moses's restock entry flips produce -> forage, so the forage cue points him at
--- his own field. Without this he would be cued to restock an item he can no
--- longer make. Rebuilt element-wise so his carrots entry is untouched.
+-- THE RESTOCK ENTRY IS THE WHOLE SWITCH — item_recipe is deliberately untouched.
+--
+-- StartProductionCycle checks produceEntry(actor, kind) BEFORE makeableRecipe, and
+-- every other produce surface (the perception cues, derived demand, the
+-- distributor, merchant capital, forge choice) iterates RestockPolicy.ProduceEntries().
+-- Moses is the only actor with a produce entry for wheat, so flipping his entry to
+-- forage removes wheat from the produce path entirely. The recipe row then sits
+-- dormant, which is what we want: wheat's wholesale_price/retail_price live on it
+-- and are read by perception/trade_value.go and perception/restock.go for a good
+-- that is still actively bought and sold.
+--
+-- An earlier draft zeroed rate_qty to make wheat "unmakeable". That would have
+-- FAILED — item_recipe carries CHECK (rate_qty > 0). It also passed the
+-- integration suite, because a schema-only database has no item_recipe rows for
+-- the UPDATE to match, so the constraint was never evaluated. Left recorded here
+-- so nobody re-derives the idea.
 DO $$
 DECLARE n int;
 BEGIN
+    -- Rebuilt element-wise so Moses's carrots entry is untouched. COALESCE because
+    -- jsonb_agg over an EMPTY array returns SQL NULL, and jsonb_set with a NULL
+    -- replacement yields NULL for the whole params document (code_review).
     UPDATE actor_attribute
-       SET params = jsonb_set(params, '{restock}', (
+       SET params = jsonb_set(params, '{restock}', COALESCE((
                SELECT jsonb_agg(
                           CASE WHEN e->>'item' = 'wheat'
                                THEN jsonb_set(e, '{source}', '"forage"')
                                ELSE e END
                           ORDER BY ord)
-                 FROM jsonb_array_elements(params->'restock') WITH ORDINALITY AS t(e, ord)))
+                 FROM jsonb_array_elements(params->'restock') WITH ORDINALITY AS t(e, ord)
+           ), '[]'::jsonb))
      WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78'  -- Moses James
        AND slug = 'farmer'
        AND jsonb_typeof(params->'restock') = 'array';
     GET DIAGNOSTICS n = ROW_COUNT;
     -- 0 rows is the unseeded case (fresh schema-only DB / integration harness) —
-    -- fine. But if Moses exists without his farmer row, wheat would have no
-    -- source at all once the recipe is dead; fail loud rather than starve the
-    -- mill silently.
+    -- fine. But if Moses exists without his farmer row, fail loud rather than
+    -- leave the field unworked.
     IF n = 0 AND EXISTS (SELECT 1 FROM actor WHERE id = '019da6ae-3376-73fc-8872-1cbb3ada1c78') THEN
         RAISE EXCEPTION 'LLM-576: Moses James exists but his farmer actor_attribute row was not found';
+    END IF;
+    -- Assert the OUTCOME, not just that a row was touched: the UPDATE reports one
+    -- affected row even when the array held no wheat entry to flip, which would
+    -- silently leave wheat on produce (code_review).
+    IF EXISTS (
+        SELECT 1 FROM actor_attribute
+         WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
+           AND NOT EXISTS (
+               SELECT 1 FROM jsonb_array_elements(params->'restock') e
+                WHERE e->>'item' = 'wheat' AND e->>'source' = 'forage')
+    ) THEN
+        RAISE EXCEPTION 'LLM-576: Moses James has no forage restock entry for wheat after the flip';
     END IF;
 END $$;
 
