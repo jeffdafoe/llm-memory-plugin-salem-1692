@@ -98,18 +98,25 @@ func refreshObjectBerryState(w *World, obj *VillageObject, now time.Time) {
 // row" on purpose — a source with a second, non-gatherable finite supply (e.g.
 // sap) must not falsely read as ripe.
 //
-// The row is ALWAYS the first finite gatherable one, stocked or not. Two reasons:
-// the crop stage needs a clock precisely when the plant is EMPTY, so this cannot
-// return only stocked rows; and the choice must not depend on which rows happen
-// to hold stock, or a multi-row source would switch stage clocks as its rows
-// empty and refill (code_review). So the scan does not short-circuit — the
-// predicates are independent.
+// The row is a finite gatherable one, stocked or not — the crop stage needs a
+// clock precisely when the plant is EMPTY, so this cannot return only stocked
+// rows — and it is chosen INDEPENDENTLY of which rows happen to hold stock, or a
+// multi-row source would switch stage clocks as its rows empty and refill.
+//
+// Which one is settled by the lowest (GatherItem, Attribute), not by slice
+// position: the pg loader selects object_refresh with no ORDER BY and builds the
+// slice "as encountered" (repo/pg/village_objects.go), so position is not stable
+// across restarts. That pair is unique per object under the table's two indexes
+// — object_refresh_object_attribute_key and object_refresh_yield_key — so it is
+// a total order. Moot for a crop, which carries exactly one gatherable row, but
+// a bush can carry a need-bearing row that is ALSO gatherable (the raspberry
+// bushes do), so the multi-row case is real (code_review).
 func gatherableSupply(obj *VillageObject) (row *ObjectRefresh, hasStock bool) {
 	for _, r := range obj.Refreshes {
 		if r == nil || !r.IsFinite() || !r.IsGatherable() {
 			continue
 		}
-		if row == nil {
+		if row == nil || refreshOrderKey(r) < refreshOrderKey(row) {
 			row = r
 		}
 		// Defensive deref rather than leaning on IsFinite's contract alone.
@@ -118,6 +125,13 @@ func gatherableSupply(obj *VillageObject) (row *ObjectRefresh, hasStock bool) {
 		}
 	}
 	return row, hasStock
+}
+
+// refreshOrderKey is the stable sort key for a refresh row within one object:
+// gather item then attribute, NUL-joined so the pair can't alias a single
+// concatenated string ("ab"+"c" vs "a"+"bc").
+func refreshOrderKey(r *ObjectRefresh) string {
+	return string(r.GatherItem) + "\x00" + string(r.Attribute)
 }
 
 // growthState pairs a crop stage's ordinal with the state name that renders it.

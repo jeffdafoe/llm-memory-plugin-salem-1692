@@ -306,6 +306,84 @@ func TestCropStageSelectionEdges(t *testing.T) {
 	}
 }
 
+// TestCropTruncatedStageWidthStaysInRange pins the upper clamp, which is NOT
+// dead code (code_review).
+//
+// stageWidth is period/N with integer truncation, so the last sliver of the
+// period past N*stageWidth yields idx == N — one past the end. It needs the
+// period's NANOSECONDS to not divide by N: an hour is 2^13 * 3^2 * 5^11, so it
+// divides by 2/3/4/6/8/9 but NOT by 7. With a 1h period and 7 immature stages
+// the truncated width is 514285714285ns with remainder 5, and at elapsed =
+// period-1 the raw index is exactly 7. Without the clamp that panics.
+func TestCropTruncatedStageWidthStaysInRange(t *testing.T) {
+	states := make([]sim.AssetState, 0, 8)
+	for i := 1; i <= 8; i++ { // 8 states => 7 immature + 1 ripe
+		tag := fmt.Sprintf("growth-%d", i)
+		states = append(states, sim.AssetState{State: tag, Tags: []string{tag}})
+	}
+	asset := &sim.Asset{States: states}
+	cut := time.Now().UTC()
+	row := &sim.ObjectRefresh{
+		AvailableQuantity: ip(0), MaxQuantity: ip(3),
+		RefreshMode: sim.RefreshModePeriodic, RefreshPeriodHours: ip(1),
+		LastRefreshAt: &cut, GatherItem: "wheat",
+	}
+	// One nanosecond short of the period — the largest elapsed the
+	// elapsed >= period early return still lets through to the arithmetic.
+	got := sim.CropStageState(asset, row, false, cut.Add(time.Hour-1))
+	if got != "growth-7" {
+		t.Errorf("CropStageState at period-1ns = %q, want growth-7 (last immature stage)", got)
+	}
+}
+
+// TestCropRowChoiceIgnoresSliceOrderAndStock: the stage clock must come from the
+// same row whatever order the loader happened to build the slice in, and whatever
+// which rows hold stock. The pg loader selects object_refresh with no ORDER BY,
+// so slice position is not stable across restarts (code_review).
+func TestCropRowChoiceIgnoresSliceOrderAndStock(t *testing.T) {
+	cut := time.Now().UTC()
+	stale := cut.Add(-100 * time.Hour)
+
+	// Two gatherable rows. 'apples' sorts before 'wheat', so it owns the clock;
+	// its anchor is fresh, while wheat's is old enough to read a later stage.
+	apples := func() *sim.ObjectRefresh {
+		return &sim.ObjectRefresh{
+			AvailableQuantity: ip(0), MaxQuantity: ip(3), RefreshMode: sim.RefreshModePeriodic,
+			RefreshPeriodHours: ip(cropPeriodHours), LastRefreshAt: &cut, GatherItem: "apples",
+		}
+	}
+	wheat := func() *sim.ObjectRefresh {
+		return &sim.ObjectRefresh{
+			AvailableQuantity: ip(0), MaxQuantity: ip(3), RefreshMode: sim.RefreshModePeriodic,
+			RefreshPeriodHours: ip(cropPeriodHours), LastRefreshAt: &stale, GatherItem: "wheat",
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		rows []*sim.ObjectRefresh
+	}{
+		{"apples first", []*sim.ObjectRefresh{apples(), wheat()}},
+		{"wheat first", []*sim.ObjectRefresh{wheat(), apples()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, cancel := buildCropWorld(t, 0, "growth-1", &cut)
+			defer cancel()
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				world.VillageObjects["wheat-plant"].Refreshes = tc.rows
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("set rows: %v", err)
+			}
+			sweep(t, w, cut)
+			// apples' anchor is `cut`, so zero elapsed — just cut.
+			if got := plantState(t, w); got != "growth-1" {
+				t.Errorf("plant state = %q, want growth-1 (the clock must come from the apples row in both orders)", got)
+			}
+		})
+	}
+}
+
 // TestCropSingleStageAssetAlwaysRendersIt: a crop authored with one growth tag
 // has no immature vocabulary, so it renders that lone variant spent or not
 // rather than returning empty and leaving the visual wherever it was.
