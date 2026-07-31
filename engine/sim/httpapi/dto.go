@@ -44,8 +44,9 @@ type WorldStateDTO struct {
 	Now        time.Time `json:"now"`
 	Weather    string    `json:"weather"`
 	Atmosphere string    `json:"atmosphere"`
-	// LastTransitionAt is the wall-clock instant of the most recent day↔night
-	// transition (UTC). The client positions its sunset/sunrise color curve
+	// LastTransitionAt is the wall-clock instant of the most recent REAL
+	// day↔night flip (UTC) — Environment.LastPhaseFlipAt, not the ticker's
+	// From==To-inclusive dedupe stamp. The client positions its sunset/sunrise color curve
 	// from elapsed = Now − LastTransitionAt on load/resync, so a reconnecting
 	// client lands mid-transition instead of snapping to the pole (LLM-578).
 	// Pointer + omitempty: omitted only when NO transition has ever happened

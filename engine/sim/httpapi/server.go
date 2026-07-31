@@ -556,8 +556,10 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 	}
 	// Omit-on-unset-only: a fresh world that has never transitioned sends no
 	// last_transition_at, and the client falls back to snapping the pole color.
-	if !s.Environment.LastTransitionAt.IsZero() {
-		at := s.Environment.LastTransitionAt.UTC()
+	// Sourced from the REAL-flip stamp, not the ticker's dedupe stamp, so an
+	// idempotent force-phase can't re-baseline the client's sunset curve.
+	if !s.Environment.LastPhaseFlipAt.IsZero() {
+		at := s.Environment.LastPhaseFlipAt.UTC()
 		dto.LastTransitionAt = &at
 	}
 	// Dawn/dusk ride only when both boundaries parsed at publish — mirrors the

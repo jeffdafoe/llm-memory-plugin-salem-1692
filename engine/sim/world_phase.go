@@ -223,6 +223,16 @@ func ApplyPhaseTransition(newPhase Phase, forced bool) Command {
 			from := w.Phase
 
 			w.Phase = newPhase
+			// A REAL flip additionally stamps LastPhaseFlipAt — the instant
+			// the current phase began, served to clients as the public DTO's
+			// last_transition_at. An idempotent re-apply (From == To) must
+			// not touch it, or a client resyncing right after a redundant
+			// force would read "the phase just started", position its sunset
+			// curve at the opposite pole, and animate a phantom transition
+			// (LLM-578 code_review).
+			if from != newPhase {
+				w.Environment.LastPhaseFlipAt = now
+			}
 			// LastTransitionAt is the WALL-CLOCK instant the transition
 			// command applied — not the scheduled boundary time. Two
 			// implications:

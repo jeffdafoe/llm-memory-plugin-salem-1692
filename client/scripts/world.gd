@@ -1082,7 +1082,7 @@ func sync_phase_from_world(phase: String, last_transition_iso: String, now_iso: 
     var target := 1.0 if phase == "night" else 0.0
     var last_unix := _iso_to_unix(last_transition_iso)
     var now_unix := _iso_to_unix(now_iso)
-    if last_unix <= 0.0 or now_unix < last_unix:
+    if last_unix <= 0.0 or now_unix <= 0.0 or now_unix < last_unix:
         _apply_phase_pos(target)
         return
     var progress := clampf((now_unix - last_unix) / PHASE_TRANSITION_DURATION, 0.0, 1.0)
@@ -1090,14 +1090,18 @@ func sync_phase_from_world(phase: String, last_transition_iso: String, now_iso: 
     _apply_phase_pos(lerpf(1.0 - target, target, progress))
     _tween_phase_to(target, PHASE_TRANSITION_DURATION)
 
-## RFC3339 → unix seconds. Godot's parser rejects fractional seconds (the
-## DTO's `now` is RFC3339Nano), so truncate to whole seconds — sub-second
-## precision is meaningless against a 60-minute curve. Returns 0.0 on
-## missing/short input.
+## RFC3339 → unix seconds, or 0.0 for missing/unparseable input. Godot's
+## parser assumes UTC regardless of suffix (verified empirically against 4.x:
+## bare, "Z", fractional-"Z" and "+02:00" forms all parse to the same UTC
+## instant — numeric offsets are IGNORED, never honored, and garbage returns
+## 0) so it never consults the client's local timezone. Both inputs here are
+## Go-marshaled UTC ("…Z") fields of the same DTO, and the caller only uses
+## their difference. Anything unparseable fails closed to 0.0 and the caller
+## snaps to the pole.
 func _iso_to_unix(iso: String) -> float:
     if iso.length() < 19:
         return 0.0
-    return float(Time.get_unix_time_from_datetime_string(iso.substr(0, 19)))
+    return float(Time.get_unix_time_from_datetime_string(iso))
 
 ## Apply a world weather change (LLM-117). "storm" raises the storm FX overlay
 ## (rain + darkening + lightning); anything else ("clear") tweens it back out.
