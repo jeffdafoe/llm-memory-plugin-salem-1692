@@ -272,11 +272,18 @@ func TestRehydrateCoinRecordOnLoad_ScopesQueryToWindow(t *testing.T) {
 	w := newCoinWorld(48 * time.Hour)
 	stub := &stubCoinRecordsRepo{}
 	w.repo.CoinRecords = stub
-	before := time.Now()
 	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if gap := before.Sub(stub.since); gap < 48*time.Hour || gap > 49*time.Hour {
+	// Measure from AFTER the call, not before it. rehydrateCoinRecordOnLoad takes
+	// its own time.Now() and subtracts the window, so that instant is strictly
+	// later than any clock read before the call — measuring from before gives
+	// 48h minus the elapsed time, i.e. always a hair UNDER the window, and the
+	// lower bound can never hold. It survived local runs because Windows' coarse
+	// clock often returns the same instant twice; Linux CI has nanosecond
+	// resolution and failed every run (LLM-572, main red since 9a8d9c01).
+	after := time.Now()
+	if gap := after.Sub(stub.since); gap < 48*time.Hour || gap > 49*time.Hour {
 		t.Errorf("queried since %v (%v before now), want ~48h", stub.since, gap)
 	}
 }
