@@ -193,8 +193,20 @@ const advisoryLockSQLVO = `SELECT pg_advisory_xact_lock(hashtext('village_object
 
 // loadAllSQLOR selects every object_refresh row across all parents.
 // Group-by-object_id happens in Go after the query (LoadAll stitches
-// the slice into each parent's Refreshes field). No ORDER BY — the
-// in-memory slice is built as encountered.
+// the slice into each parent's Refreshes field, in row order).
+//
+// ORDERED so a parent's Refreshes slice is byte-identical across restarts
+// (LLM-576). Without it Postgres may hand back rows in any order, and anything
+// that reads a row BY POSITION — sim.gatherableSupply picks the row that dates a
+// crop's growth stage — could silently pick a different one after a restart, on
+// any object carrying more than one gatherable row. (A bush can: the raspberry
+// bushes hold a need-bearing row that is also gatherable.)
+//
+// COALESCE, not a bare ORDER BY, because the sort must agree with the Go-side
+// key. attribute and gather_item are nullable and scan into "" below, while
+// Postgres sorts NULLs LAST by default — so an unguarded ORDER BY would put a
+// yield-only row after the named ones while Go's empty string sorts it first.
+// Keep this in step with sim.refreshOrderKey.
 //
 // snapshot_gen is not selected — same posture as the parent table:
 // gen is pure sync bookkeeping, no in-memory representation.
@@ -204,7 +216,8 @@ SELECT
     max_quantity, available_quantity,
     refresh_mode, refresh_period_hours, last_refresh_at,
     dwell_amount, dwell_period_minutes, gather_item
-FROM object_refresh`
+FROM object_refresh
+ORDER BY object_id, COALESCE(gather_item, ''), COALESCE(attribute, '')`
 
 // upsertNeedSQLOR / upsertYieldSQLOR each write one object_refresh row. LLM-264
 // moved the row's PK to a surrogate id (so attribute could go nullable) and gave

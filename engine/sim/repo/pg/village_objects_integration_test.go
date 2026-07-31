@@ -878,3 +878,84 @@ func TestIntegration_VillageObjects_LoadAllNullRequiredColumn(t *testing.T) {
 		t.Errorf("error should name the row id and column, got: %v", err)
 	}
 }
+
+// TestIntegration_VillageObjects_RefreshLoadOrderIsDeterministic pins the
+// loadAllSQLOR ORDER BY (LLM-576).
+//
+// Without it Postgres may return object_refresh rows in any order, and the
+// Refreshes slice is stitched in row order — so anything reading a row BY
+// POSITION could pick a different one after a restart on any object with more
+// than one gatherable row. The order must also match sim.refreshOrderKey
+// (gather_item then attribute, NULL treated as ""), which is why the query
+// COALESCEs rather than relying on the default NULLS LAST.
+//
+// Rows are saved in reverse of the expected order so a passing result cannot be
+// insertion order leaking through, and the load is repeated because a single
+// unordered read can coincidentally come back sorted.
+func TestIntegration_VillageObjects_RefreshLoadOrderIsDeterministic(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := voRepo(f)
+
+	max5, avail5 := 5, 5
+	yield := func(item sim.ItemKind) *sim.ObjectRefresh {
+		return &sim.ObjectRefresh{
+			Amount: 0, GatherItem: item, MaxQuantity: &max5, AvailableQuantity: &avail5,
+			RefreshMode: sim.RefreshModeContinuous,
+		}
+	}
+	// object_refresh.attribute FKs refresh_attribute(name); the schema-only
+	// baseline carries no rows, so seed the one this fixture uses.
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO refresh_attribute (name, display_label) VALUES ('thirst', 'Thirst')`); err != nil {
+		t.Fatalf("seed refresh_attribute: %v", err)
+	}
+	// A need-bearing row that is ALSO gatherable — the raspberry-bush shape, and
+	// the case that makes NULL-vs-named ordering matter.
+	needAndYield := &sim.ObjectRefresh{
+		Attribute: "thirst", Amount: -8, GatherItem: "water",
+		MaxQuantity: &max5, AvailableQuantity: &avail5, RefreshMode: sim.RefreshModeContinuous,
+	}
+	src := map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(uuidObj1): {
+			ID:           sim.VillageObjectID(uuidObj1),
+			AssetID:      sim.AssetID(uuidAssetWell),
+			CurrentState: "default",
+			EntryPolicy:  sim.EntryPolicyOpen,
+			Refreshes: []*sim.ObjectRefresh{
+				yield("water"), needAndYield, yield("milk"), yield("apples"),
+			},
+		},
+	}
+	if err := saveSnapshotVO(t, f, repo, src); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	// gather_item then attribute, both NULL-as-empty: apples, milk, water(""),
+	// water("thirst").
+	want := []struct {
+		item sim.ItemKind
+		attr sim.NeedKey
+	}{
+		{"apples", ""}, {"milk", ""}, {"water", ""}, {"water", "thirst"},
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		got, err := repo.LoadAll(ctx)
+		if err != nil {
+			t.Fatalf("LoadAll (attempt %d): %v", attempt, err)
+		}
+		obj := got[sim.VillageObjectID(uuidObj1)]
+		if obj == nil || len(obj.Refreshes) != len(want) {
+			t.Fatalf("attempt %d: Refreshes = %+v, want %d rows", attempt, obj, len(want))
+		}
+		for i, w := range want {
+			r := obj.Refreshes[i]
+			if r.GatherItem != w.item || r.Attribute != w.attr {
+				t.Errorf("attempt %d: Refreshes[%d] = (%q, %q), want (%q, %q)",
+					attempt, i, r.GatherItem, r.Attribute, w.item, w.attr)
+			}
+		}
+	}
+
+}

@@ -168,7 +168,7 @@ func applyGatherMint(w *World, actor *Actor, objID VillageObjectID, obj *Village
 		drawDownStock(row, actual, at)
 		// Picking may have emptied a finite bush — recompute its
 		// berries/bare visual so it goes bare.
-		refreshObjectBerryState(w, obj)
+		refreshObjectBerryState(w, obj, at)
 	}
 	if actor.Inventory == nil {
 		actor.Inventory = make(map[ItemKind]int)
