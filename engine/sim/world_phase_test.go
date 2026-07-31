@@ -255,11 +255,11 @@ func TestRunPhaseTicker_ImmediateBootCheckCorrectsStalePhase(t *testing.T) {
 // durable LastTransitionAt, the ticker's From==To-inclusive dedupe stamp.
 // After "real flip → redundant force → shutdown → reload", the reloaded stamp
 // therefore equals the redundant force's apply time, not the earlier real
-// flip. Documented, accepted drift (code_review round 2): the phase itself is
-// correct either way, so the worst client outcome is re-running a sunset
-// toward the CORRECT pole up to an hour late — versus a schema migration to
-// persist a second timestamp. If that trade ever changes, this test is the
-// contract to update.
+// flip. Documented, accepted drift (code_review rounds 2-3; trade accepted by
+// Jeff 2026-07-31): the phase itself is correct either way, so the worst
+// client outcome is re-running a sunset toward the CORRECT pole up to an hour
+// late — versus a schema migration to persist a second timestamp. If that
+// trade ever changes, this test is the contract to update.
 func TestLastPhaseFlipAt_BootInitFromDurableStamp(t *testing.T) {
 	repo, _ := mem.NewRepository()
 	ctx, cancel := context.WithCancel(context.Background())
