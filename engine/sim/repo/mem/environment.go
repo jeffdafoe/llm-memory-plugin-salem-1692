@@ -2,6 +2,7 @@ package mem
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -101,32 +102,24 @@ func (r *EnvironmentRepo) SaveSnapshot(_ context.Context, _ sim.Tx, env sim.Worl
 	return nil
 }
 
+// SaveMutableSettings applies the checkpoint's persistable rows back onto the
+// in-memory settings, so a mem-backed save -> load round-trip matches prod.
+//
+// This used to be a field-by-field mirror of the pg writer's row literal, and
+// had drifted: the eco knobs, the merchant coin floor, huddle max-turns and the
+// conversation wind-down were all persisted by pg and silently dropped here, so
+// a mem-backed round-trip disagreed with production. Applying the registry rows
+// removes the mirror entirely — whatever pg would write is what lands here.
+//
+// A malformed row is a programming error (the rows were formatted by the same
+// registry that parses them), so it surfaces as an error rather than being
+// skipped: a checkpoint that cannot round-trip its own encoding should fail
+// loudly in tests, not persist half the settings.
 func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms sim.MutableWorldSettings) error {
-	r.settings.ZoomMinAdmin = ms.ZoomMinAdmin
-	r.settings.ZoomMinRegular = ms.ZoomMinRegular
-	r.settings.AgentTicksPaused = ms.AgentTicksPaused
-	// Mirror the pg writeback so a mem-backed save→load round-trip matches prod:
-	// the FULL mutable subset, not just zoom/pause. Stall wear (LLM-118) was
-	// missing here; huddle-loop (LLM-183) added alongside. The *_seconds fields are
-	// held as Durations in WorldSettings, so convert back from the snapshot's ints.
-	r.settings.StallWearPerCoin = ms.StallWearPerCoin
-	r.settings.StallWearRepairThreshold = ms.StallWearRepairThreshold
-	r.settings.StallWearDegradeThreshold = ms.StallWearDegradeThreshold
-	r.settings.StallNailsPerRepair = ms.StallNailsPerRepair
-	r.settings.StallRepairDurationSeconds = ms.StallRepairDurationSeconds
-	r.settings.StallDegradedProducePct = ms.StallDegradedProducePct
-	r.settings.FarmUpkeepFloor = ms.FarmUpkeepFloor
-	r.settings.FarmUpkeepCoinsPerShovel = ms.FarmUpkeepCoinsPerShovel
-	r.settings.TownRateCoinsPerDay = ms.TownRateCoinsPerDay
-	r.settings.TownRateMaxOwed = ms.TownRateMaxOwed
-	r.settings.HuddleLoopTimeout = time.Duration(ms.HuddleLoopTimeoutSeconds) * time.Second
-	r.settings.HuddleLoopRepeatPercent = ms.HuddleLoopRepeatPercent
-	r.settings.HuddleLoopSweepCadence = time.Duration(ms.HuddleLoopSweepCadenceSeconds) * time.Second
-	r.settings.SeekWorkCoinCeiling = ms.SeekWorkCoinCeiling
-	r.settings.SeekWorkNeedYieldMargin = ms.SeekWorkNeedYieldMargin
-	r.settings.LaborProduceBoostPct = ms.LaborProduceBoostPct
-	// Constable rounds (LLM-514) — seconds ints in the snapshot, Durations on the
-	// live settings.
-	r.settings.ConstableRoundsInterval = time.Duration(ms.ConstableRoundsIntervalSeconds) * time.Second
+	for key, raw := range ms.Rows {
+		if _, err := sim.ApplySetting(&r.settings, key, raw); err != nil {
+			return fmt.Errorf("mem environment SaveMutableSettings: %w", err)
+		}
+	}
 	return nil
 }
