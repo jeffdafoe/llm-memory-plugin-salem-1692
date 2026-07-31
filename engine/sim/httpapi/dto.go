@@ -44,6 +44,22 @@ type WorldStateDTO struct {
 	Now        time.Time `json:"now"`
 	Weather    string    `json:"weather"`
 	Atmosphere string    `json:"atmosphere"`
+	// LastTransitionAt is the wall-clock instant of the most recent day↔night
+	// transition (UTC). The client positions its sunset/sunrise color curve
+	// from elapsed = Now − LastTransitionAt on load/resync, so a reconnecting
+	// client lands mid-transition instead of snapping to the pole (LLM-578).
+	// Pointer + omitempty: omitted only when NO transition has ever happened
+	// (fresh world) — same omit-on-unset-only posture as the umbilical's
+	// hearth_lit_until (LLM-559); a value time.Time would stamp the 0001-01-01
+	// zero instant instead of omitting.
+	LastTransitionAt *time.Time `json:"last_transition_at,omitempty"`
+	// DawnTime / DuskTime are the configured "HH:MM" phase boundaries (in the
+	// village timezone). The client has read these keys off this DTO since the
+	// editor-panel schedule prepopulation shipped, but the fields never existed
+	// — it silently fell back to defaults (LLM-578 adjacent gap). Omitted when
+	// the boundaries didn't parse at snapshot publish (DawnDuskMinuteOK false).
+	DawnTime string `json:"dawn_time,omitempty"`
+	DuskTime string `json:"dusk_time,omitempty"`
 	// Camera zoom floors (min zoom-out) — different for admins vs regular
 	// users. Every client reads its floor from here; the admin config panel
 	// reads+writes them via GET/POST /api/village/config + /admin/zoom-settings.

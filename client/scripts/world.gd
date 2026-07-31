@@ -55,9 +55,26 @@ const GOLDEN_COLOR := Color(0.788, 0.753, 0.663, 1.0)  # #C9C0A9 — weak low su
 const DUSK_COLOR := Color(0.561, 0.510, 0.463, 1.0)    # #8F8276 — smoky brown-grey, color draining (no salmon)
 const BLUE_HOUR_COLOR := Color(0.314, 0.365, 0.408, 1.0)  # #505D68 — cold slate, not fantasy violet
 const NIGHT_COLOR := Color(0.184, 0.227, 0.271, 1.0)   # #2F3A45 — cold damp dark, still navigable unlit (#202A35 is the darker dramatic option)
-const PHASE_TRANSITION_DURATION := 3600.0  # 60 minutes — chained tween through golden/dusk/blue-hour stops, mid-latitude sunset pace
+const PHASE_TRANSITION_DURATION := 3600.0  # 60 minutes end-to-end, mid-latitude sunset pace
+
+# The one canonical sunset curve (LLM-578). Position 0.0 = full day, 1.0 = full
+# night; the stops are evenly spaced along it. Every phase change tweens the
+# scalar _phase_pos along this curve toward its target pole — never a hardcoded
+# stop list per direction. That makes phase events direction-safe: a "day" event
+# arriving while already bright is a near-no-op, instead of the old day-chain
+# marching a bright screen DOWN through blue-hour first.
+const PHASE_CURVE: Array[Color] = [DAY_COLOR, GOLDEN_COLOR, DUSK_COLOR, BLUE_HOUR_COLOR, NIGHT_COLOR]
+
+# An operator force-phase (config panel / umbilical, forced=true on the WS
+# frame) renders fast — the whole remaining curve in seconds — so the button
+# visibly responds. Scheduled dawn/dusk keeps PHASE_TRANSITION_DURATION.
+const FORCED_PHASE_TWEEN_DURATION := 8.0
 
 var _phase_tween: Tween = null
+# Where we are on PHASE_CURVE right now (0.0 day .. 1.0 night). The tween
+# animates this scalar (via _apply_phase_pos), not the color directly, so the
+# current position is always known and a new phase event can start from it.
+var _phase_pos: float = 0.0
 
 # Layer baseline — terrain renders at z=0 (default), ground overlays sit at
 # asset.z_index = 1 (bridges, future road decals), everything else (objects,
@@ -999,34 +1016,88 @@ func restore_unsaved_terrain(payload: Dictionary) -> void:
 func reload_terrain() -> void:
     _load_terrain()
 
-## Apply a world phase change. Chains a tween through atmospheric stops
-## (golden hour → dusk → blue hour → night, or the reverse) so darken/brighten
-## reads like a real sunset/sunrise rather than a flat fade. Pass tween=false
-## for the initial load so the scene doesn't briefly flash the wrong color.
-##
-## A force-phase admin command mid-transition kills the in-flight tween so the
-## new direction starts cleanly from the current color rather than fighting the
-## previous chain.
-func set_phase(phase: String, tween: bool = true) -> void:
+## Apply a world phase change (LLM-578 rework). Tweens the scalar curve
+## position from wherever it is now toward the target pole, with duration
+## proportional to the remaining distance — so the full day↔night sweep takes
+## the whole PHASE_TRANSITION_DURATION, a mid-transition reversal takes only
+## its share, and a duplicate/no-op event (From == To re-emits) moves nothing.
+## Pass tween=false to snap (tests / explicit hard-set); forced=true is the
+## operator force-phase, which sweeps in seconds instead of an hour so the
+## config-panel buttons visibly respond.
+func set_phase(phase: String, tween: bool = true, forced: bool = false) -> void:
     current_phase = phase
     if canvas_modulate == null:
         return
-    if _phase_tween != null and _phase_tween.is_valid():
-        _phase_tween.kill()
-        _phase_tween = null
-    var stops: Array[Color]
-    if phase == "night":
-        stops = [GOLDEN_COLOR, DUSK_COLOR, BLUE_HOUR_COLOR, NIGHT_COLOR]
-    else:
-        stops = [BLUE_HOUR_COLOR, DUSK_COLOR, GOLDEN_COLOR, DAY_COLOR]
+    _kill_phase_tween()
+    var target := 1.0 if phase == "night" else 0.0
     if not tween:
-        canvas_modulate.color = stops[stops.size() - 1]
+        _apply_phase_pos(target)
+        return
+    _tween_phase_to(target, FORCED_PHASE_TWEEN_DURATION if forced else PHASE_TRANSITION_DURATION)
+
+## Start the position tween toward a pole. full_duration is the whole-curve
+## time; the actual tween runs the remaining fraction of it.
+func _tween_phase_to(target: float, full_duration: float) -> void:
+    var distance := absf(target - _phase_pos)
+    if distance < 0.001:
+        _apply_phase_pos(target)
         return
     var t := create_tween()
-    var segment := PHASE_TRANSITION_DURATION / float(stops.size())
-    for c in stops:
-        t.tween_property(canvas_modulate, "color", c, segment)
+    t.tween_method(_apply_phase_pos, _phase_pos, target, full_duration * distance)
     _phase_tween = t
+
+func _kill_phase_tween() -> void:
+    if _phase_tween != null and _phase_tween.is_valid():
+        _phase_tween.kill()
+    _phase_tween = null
+
+## Tween/set target: record the curve position and paint the sampled color.
+func _apply_phase_pos(pos: float) -> void:
+    _phase_pos = clampf(pos, 0.0, 1.0)
+    if canvas_modulate != null:
+        canvas_modulate.color = _sample_phase_curve(_phase_pos)
+
+## Piecewise-linear sample of PHASE_CURVE at pos ∈ [0, 1].
+func _sample_phase_curve(pos: float) -> Color:
+    var segments := PHASE_CURVE.size() - 1
+    var scaled := clampf(pos, 0.0, 1.0) * float(segments)
+    var i := int(scaled)
+    if i >= segments:
+        return PHASE_CURVE[segments]
+    return PHASE_CURVE[i].lerp(PHASE_CURVE[i + 1], scaled - float(i))
+
+## Position the curve from server truth on load/resync (LLM-578). The server's
+## phase is binary, but the world DTO carries when the transition happened —
+## so instead of snapping to the pole (the old "nightfall in 2 seconds" on
+## every deploy/reconnect/tab-back after dusk), land at the elapsed point on
+## the curve and tween the remainder in step with clients that watched the
+## whole sunset. Both timestamps are server clocks, so client skew is moot.
+## Falls back to the pole snap when last_transition_at is absent (fresh world)
+## or unparseable — the pre-LLM-578 behavior.
+func sync_phase_from_world(phase: String, last_transition_iso: String, now_iso: String) -> void:
+    current_phase = phase
+    if canvas_modulate == null:
+        return
+    _kill_phase_tween()
+    var target := 1.0 if phase == "night" else 0.0
+    var last_unix := _iso_to_unix(last_transition_iso)
+    var now_unix := _iso_to_unix(now_iso)
+    if last_unix <= 0.0 or now_unix < last_unix:
+        _apply_phase_pos(target)
+        return
+    var progress := clampf((now_unix - last_unix) / PHASE_TRANSITION_DURATION, 0.0, 1.0)
+    # The transition runs FROM the opposite pole TOWARD target.
+    _apply_phase_pos(lerpf(1.0 - target, target, progress))
+    _tween_phase_to(target, PHASE_TRANSITION_DURATION)
+
+## RFC3339 → unix seconds. Godot's parser rejects fractional seconds (the
+## DTO's `now` is RFC3339Nano), so truncate to whole seconds — sub-second
+## precision is meaningless against a 60-minute curve. Returns 0.0 on
+## missing/short input.
+func _iso_to_unix(iso: String) -> float:
+    if iso.length() < 19:
+        return 0.0
+    return float(Time.get_unix_time_from_datetime_string(iso.substr(0, 19)))
 
 ## Apply a world weather change (LLM-117). "storm" raises the storm FX overlay
 ## (rain + darkening + lightning); anything else ("clear") tweens it back out.
@@ -1066,7 +1137,9 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     if not VillageApi.check_contract_version(int(json.get("contract_version", -1))):
         return
     var phase: String = json.get("phase", "day")
-    set_phase(phase, false)  # instant — no tween on first load
+    # Position along the sunset curve from server truth instead of snapping to
+    # the pole — runs on first load AND on every WS-reconnect resync (LLM-578).
+    sync_phase_from_world(phase, str(json.get("last_transition_at", "")), str(json.get("now", "")))
 
     # Weather (LLM-117) rides the same DTO + load path as phase, so a client
     # connecting or reconnecting mid-storm renders the storm instead of clear.

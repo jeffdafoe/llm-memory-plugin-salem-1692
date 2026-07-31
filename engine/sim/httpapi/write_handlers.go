@@ -578,7 +578,7 @@ func (s *Server) handleAdminPhase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
-		return sim.ApplyPhaseTransition(phase).Fn(world)
+		return sim.ApplyPhaseTransition(phase, true).Fn(world)
 	}))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

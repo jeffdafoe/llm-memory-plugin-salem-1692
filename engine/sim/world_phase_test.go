@@ -126,7 +126,7 @@ func TestApplyPhaseTransition(t *testing.T) {
 
 	// Transition to night.
 	before := time.Now().UTC()
-	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight))
+	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false))
 	if err != nil {
 		t.Fatalf("apply transition: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestApplyPhaseTransitionRejectsInvalid(t *testing.T) {
 	defer cancel()
 	go w.Run(ctx)
 
-	_, err = w.Send(sim.ApplyPhaseTransition(sim.Phase("twilight")))
+	_, err = w.Send(sim.ApplyPhaseTransition(sim.Phase("twilight"), false))
 	if err == nil {
 		t.Fatal("expected error for invalid phase, got nil")
 	}

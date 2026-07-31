@@ -608,7 +608,7 @@ func TestRegisterAtmosphere_RefreshesOnPhaseFlip(t *testing.T) {
 
 	// Flip the phase. ApplyPhaseTransition emits PhaseApplied unconditionally;
 	// the world default phase is day, so this is a real day→night flip.
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false)); err != nil {
 		t.Fatalf("apply phase transition: %v", err)
 	}
 

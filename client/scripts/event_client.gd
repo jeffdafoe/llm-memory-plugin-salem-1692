@@ -656,7 +656,10 @@ func _on_world_phase_changed(data: Dictionary) -> void:
     if world == null:
         return
     var phase: String = data.get("phase", "day")
-    world.set_phase(phase, true)
+    # forced marks an operator force-phase (LLM-578) — rendered as a short
+    # sweep so the config-panel buttons visibly respond; scheduled dawn/dusk
+    # transitions keep the hour-long sunset pace.
+    world.set_phase(phase, true, data.get("forced", false))
 
 ## Server says the world weather changed (LLM-117). Raises / clears the storm
 ## FX overlay via world.set_weather (which delegates to the storm CanvasLayer).
