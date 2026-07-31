@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -77,9 +78,29 @@ type SettingSpec struct {
 	Kind   SettingKind
 	Effect SettingEffect
 	// Persist marks a key the checkpoint writes back to the setting table, so a
-	// live change survives a restart. False for a key the operator is expected
-	// to own out of band in the DB — nothing is in that category today, but the
-	// flag keeps the option open without another hand-maintained list.
+	// live change survives a restart.
+	//
+	// OWNERSHIP POLICY — every registered key is Persist:true today, and that
+	// is a deliberate change of ownership, not just drift cleanup. Before
+	// LLM-577 the checkpoint wrote 28 keys and the rest of the setting table was
+	// operator-owned: you could edit a row directly and the engine would leave
+	// it alone. Now the engine owns every REGISTERED key and will overwrite a
+	// direct edit to one at the next checkpoint.
+	//
+	// That is the coherent counterpart to making them all writable through the
+	// umbilical: a knob you can set live has to survive a restart, or the API
+	// lies. It also costs little that was real — an edit made against a running
+	// engine never took effect anyway, since the value is only read at boot and
+	// the checkpoint would beat the restart to it. Stop → edit → start still
+	// works exactly as before, because Load reads the table before any
+	// checkpoint runs.
+	//
+	// An UNREGISTERED row is still untouched (SaveMutableSettings writes only
+	// what the registry projects, never a full replace) — pinned by
+	// TestSaveMutableSettings_LeavesUnregisteredRowsAlone.
+	//
+	// The flag stays on SettingSpec so a genuinely operator-owned key can be
+	// marked Persist:false later without reintroducing a hand-maintained list.
 	Persist bool
 
 	get func(*WorldSettings) string
@@ -117,6 +138,23 @@ func DurationUnitForKey(key string) (time.Duration, bool) {
 // whichever WorldSettings it is handed, which is what lets the same spec serve
 // a read of the live world and a write into it.
 
+// intSetting is a whole-number setting that must not be negative.
+//
+// Every int setting in the table is a count, a percentage, a permille, a
+// threshold, a coin amount, or an hour/minute of day — none of which has a
+// meaningful negative value. Enforcing that here is not merely tidiness: for
+// the keys the loader reads through clampNonNegSetting (the cold_* rates), a
+// negative accepted live would sit in memory as -5 and come back from the next
+// restart as 0, because the loader clamps it. That live-vs-stored divergence is
+// invisible from the API — the read-back shows the value you wrote, and only a
+// restart reveals it never really took. Rejecting at the door removes the whole
+// class.
+//
+// Where the loader does NOT clamp, this leaves the API stricter than the
+// loader: a hand-edited negative row still boots. That asymmetry is the safe
+// direction (a refusal is visible; a silent divergence is not), and the loader
+// keeps its permissive-with-fallback posture on purpose, so a bad row can never
+// stop the always-live village from booting.
 func intSetting(key string, effect SettingEffect, field func(*WorldSettings) *int) SettingSpec {
 	return SettingSpec{
 		Key: key, Kind: SettingKindInt, Effect: effect, Persist: true,
@@ -125,6 +163,9 @@ func intSetting(key string, effect SettingEffect, field func(*WorldSettings) *in
 			n, err := strconv.Atoi(strings.TrimSpace(raw))
 			if err != nil {
 				return fmt.Errorf("%s must be a whole number, got %q", key, raw)
+			}
+			if n < 0 {
+				return fmt.Errorf("%s must be 0 or greater, got %q", key, raw)
 			}
 			*field(ws) = n
 			return nil
@@ -186,6 +227,14 @@ func boolSetting(key string, effect SettingEffect, field func(*WorldSettings) *b
 	}
 }
 
+// floatSetting is a decimal setting that must be finite and non-negative.
+//
+// strconv.ParseFloat accepts "NaN", "Inf" and "-Inf" by design, and FormatFloat
+// round-trips them straight back into the setting table. A NaN is the worst of
+// the three: every comparison against it is false, so a zoom floor of NaN would
+// silently disable the clamp it exists to enforce rather than failing visibly,
+// and the poisoned value would then persist. Both float settings today are zoom
+// floors, for which negative is equally meaningless.
 func floatSetting(key string, effect SettingEffect, field func(*WorldSettings) *float64) SettingSpec {
 	return SettingSpec{
 		Key: key, Kind: SettingKindFloat, Effect: effect, Persist: true,
@@ -194,6 +243,12 @@ func floatSetting(key string, effect SettingEffect, field func(*WorldSettings) *
 			f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 			if err != nil {
 				return fmt.Errorf("%s must be a number, got %q", key, raw)
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return fmt.Errorf("%s must be a finite number, got %q", key, raw)
+			}
+			if f < 0 {
+				return fmt.Errorf("%s must be 0 or greater, got %q", key, raw)
 			}
 			*field(ws) = f
 			return nil

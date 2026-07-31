@@ -100,6 +100,23 @@ func TestSettingRegistryRejectsBadValues(t *testing.T) {
 		{"seek_work_coin_ceiling", "lots", "whole number"},
 		{"eco_enabled", "yes-please", "true or false"},
 		{"world_zoom_min_admin", "big", "must be a number"},
+		// Non-finite floats: ParseFloat accepts all three by design and
+		// FormatFloat would persist them. NaN is the dangerous one — every
+		// comparison against it is false, so a NaN zoom floor disables the
+		// clamp it exists to enforce instead of failing visibly.
+		{"world_zoom_min_admin", "NaN", "finite number"},
+		{"world_zoom_min_admin", "Inf", "finite number"},
+		{"world_zoom_min_admin", "-Inf", "finite number"},
+		{"world_zoom_min_regular", "-0.5", "0 or greater"},
+		// The clamp class: the loader reads these through clampNonNegSetting, so
+		// a negative accepted live would read back as written and resolve to 0
+		// on the next restart.
+		{"cold_night_multiplier_x100", "-1", "0 or greater"},
+		{"cold_warm_recovery_per_minute_x100", "-250", "0 or greater"},
+		// Counts, permilles and thresholds: negative is meaningless.
+		{"visitor_spawn_chance_permille", "-5", "0 or greater"},
+		{"tick_worker_count", "-2", "0 or greater"},
+		{"hunger_red_threshold", "-1", "0 or greater"},
 		{"world_dusk_time", "   ", "cannot be empty"},
 		{"world_timezone", "Mars/Olympus_Mons", "not a known timezone"},
 		// Negative durations would produce tight loops or immediate expiry, the

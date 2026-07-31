@@ -157,9 +157,13 @@ func buildSettingRegistry() []SettingSpec {
 
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute
-		// rate lookup. NOTE the loader ALSO clamps a stored negative to 0 and
-		// records a SettingWarning; a live write here is validated the same way
-		// by the umbilical route (non-negative), so the two paths agree.
+		// rate lookup.
+		//
+		// These are the keys the loader reads through clampNonNegSetting: a
+		// stored negative boots as 0 with a SettingWarning attached. That makes
+		// them the reason intSetting refuses a negative outright — accepting one
+		// live would leave memory holding -5 while the next restart resolves the
+		// same key to 0, a divergence the API cannot show you.
 		intSetting("cold_storm_outdoors_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.ColdStormOutdoorsPerMinuteX100 }),
 		intSetting("cold_storm_indoors_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.ColdStormIndoorsPerMinuteX100 }),
 		intSetting("cold_warm_garment_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.ColdWarmGarmentPerMinuteX100 }),
@@ -338,6 +342,12 @@ func needThresholdSetting(n Need) SettingSpec {
 			v, err := strconv.Atoi(strings.TrimSpace(raw))
 			if err != nil {
 				return fmt.Errorf("%s must be a whole number, got %q", key, raw)
+			}
+			// Same non-negative floor intSetting applies: a need's red-line is a
+			// point on a 0..NeedMax scale, and a negative one would put every
+			// actor permanently past it.
+			if v < 0 {
+				return fmt.Errorf("%s must be 0 or greater, got %q", key, raw)
 			}
 			if ws.NeedThresholds == nil {
 				ws.NeedThresholds = make(NeedThresholds, len(Needs))

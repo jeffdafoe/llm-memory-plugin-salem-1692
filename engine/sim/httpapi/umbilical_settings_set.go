@@ -55,8 +55,16 @@ type umbilicalSettingSetResponse struct {
 	Kind        string `json:"kind"`
 	Value       string `json:"value"`
 	TakesEffect string `json:"takes_effect"`
-	// Persisted reports whether the next checkpoint writes this key back to the
-	// setting table — i.e. whether the change survives a restart.
+	// Persisted reports whether this key is one the checkpoint writes back to
+	// the setting table — i.e. whether the change is meant to survive a restart.
+	//
+	// It is EVENTUAL, not confirmed. The 200 means the value is in live memory;
+	// durability lands on the next checkpoint (default 60s). A checkpoint that
+	// then fails does not retract this response — GET /umbilical/checkpoint-health
+	// is where broken durability shows up (consecutive_failures, last_error), and
+	// a failing checkpointer also raises the durability alarm stamped onto every
+	// umbilical response. So: 200 here plus a healthy checkpoint means the change
+	// will survive; 200 alone does not.
 	Persisted bool `json:"persisted"`
 }
 
