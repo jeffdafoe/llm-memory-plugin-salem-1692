@@ -1770,9 +1770,6 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Environment = env
-	// Boot-init the non-persisted real-flip stamp from the durable apply
-	// stamp — see the LastPhaseFlipAt field doc for why they differ.
-	w.Environment.LastPhaseFlipAt = env.LastTransitionAt
 	w.Phase = phase
 	w.Settings = settings
 
@@ -1848,6 +1845,14 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 // since rebuildIndices reads actor.CurrentHuddleID).
 func (w *World) FinalizeLoad(ctx context.Context) error {
 	normalizeOutdoorSceneRadius(&w.Settings)
+
+	// Boot-init the non-persisted real-flip stamp from the durable apply
+	// stamp (LLM-578) — see the LastPhaseFlipAt field doc for why they
+	// differ. Lives HERE, not in either LoadWorld, because sim.LoadWorld
+	// and pg.LoadWorld are parallel orchestrators and only this finalize
+	// step is shared — the first cut patched only sim.LoadWorld and
+	// production (pg) booted with a zero stamp, verified live.
+	w.Environment.LastPhaseFlipAt = w.Environment.LastTransitionAt
 
 	w.rebuildIndices()
 	// LLM-369: rehydrate in-flight visitors from their durable mirror into
