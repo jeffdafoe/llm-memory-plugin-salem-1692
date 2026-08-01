@@ -32,6 +32,31 @@ type Sprite struct {
 	PackID      *string
 	Pack        *TilesetPack
 	Animations  []SpriteAnimation
+
+	// Behaviors are engine-behavior slugs carried by the SPRITE (npc_sprite.
+	// behaviors jsonb, LLM-579): placing an actor with the sprite is the whole
+	// authoring flow for the behavior — no per-actor attribute grant. Today the
+	// only slug is BehaviorWaterfowl (autonomous swim/shore wander for
+	// decorative actors).
+	Behaviors []string
+}
+
+// BehaviorWaterfowl marks a sprite whose decorative actors are driven by the
+// waterfowl wander (LLM-579): swim the connected water region they were
+// dropped into, with occasional shore excursions.
+const BehaviorWaterfowl = "waterfowl"
+
+// HasBehavior reports whether the sprite carries the given behavior slug.
+func (s *Sprite) HasBehavior(slug string) bool {
+	if s == nil {
+		return false
+	}
+	for _, b := range s.Behaviors {
+		if b == slug {
+			return true
+		}
+	}
+	return false
 }
 
 // SpriteAnimation is one (direction, animation) mapping into a sprite sheet.

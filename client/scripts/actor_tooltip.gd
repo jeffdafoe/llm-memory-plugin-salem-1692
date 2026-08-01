@@ -284,7 +284,9 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
             continue
         var sprite_node: Node2D = null
         for child in container.get_children():
-            if child is AnimatedSprite2D or child is Sprite2D:
+            # Skip a waterfowl's ground decal (LLM-579) — hit-test the duck,
+            # not the ripple beneath it.
+            if (child is AnimatedSprite2D or child is Sprite2D) and child.name != "GroundDecal":
                 sprite_node = child
                 break
         if sprite_node == null:

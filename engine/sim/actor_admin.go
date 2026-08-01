@@ -176,6 +176,18 @@ func SetActorAgentLink(id ActorID, agent string) Command {
 				return ActorAgentResult{ID: id, LLMAgent: trimmed}, nil
 			}
 			a.LLMAgent = trimmed
+			// Live Kind reclassify for the one provably safe case (LLM-579,
+			// same proof as ProvisionWorker): a KindDecorative actor has never
+			// ticked, so no in-flight reaction can race the flip. This keeps
+			// the editor's place-then-link flow bringing an NPC online without
+			// a restart now that CreateNPC births agentless actors as
+			// decorative. Every other transition (relink, unlink) still waits
+			// for the next DB load — relinking a TICKING actor's Kind live
+			// could let a reaction dispatched outside this command apply
+			// against the new link (see ErrActorNotProvisionable).
+			if a.Kind == KindDecorative && trimmed != "" {
+				a.Kind = ClassifyActorKind(a.LoginUsername, trimmed)
+			}
 			w.emit(&NPCAgentChanged{ActorID: id, LLMAgent: trimmed, At: time.Now().UTC()})
 			return ActorAgentResult{ID: id, LLMAgent: trimmed}, nil
 		},

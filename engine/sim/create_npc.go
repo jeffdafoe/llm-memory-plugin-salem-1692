@@ -17,7 +17,15 @@ import (
 //   - agent link, schedule, social, home/work anchors, and attributes all start
 //     UNSET — assigning them is a separate admin action via the SetActor* edit
 //     routes, exactly as v1 ("behavior and llm_memory_agent stay null at
-//     creation").
+//     creation");
+//   - Kind is DERIVED, not hardcoded (LLM-579): an agentless creation is
+//     KindDecorative, exactly what ClassifyActorKind reconstructs on the next
+//     DB load. It used to be born KindNPCStateful, which made a freshly placed
+//     sprite-only villager conversational (pulled into huddles, rendered in NPC
+//     prompts as a person) until a restart reclassified it — and would have made
+//     a freshly placed duck a huddle participant. SetActorAgentLink flips a
+//     decorative live when an agent is linked, so the editor's place-then-link
+//     flow still brings the NPC online without a restart.
 //
 // Emits NPCCreated carrying the resolved *Sprite so the httpapi hub can inline
 // the render data into the npc_created frame (the client's add_npc_from_broadcast
@@ -65,7 +73,7 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 			actor := &Actor{
 				ID:          id,
 				DisplayName: name,
-				Kind:        KindNPCStateful,
+				Kind:        ClassifyActorKind("", ""),
 				SpriteID:    SpriteID(spriteID),
 				Facing:      "south",
 				Pos:         tile,
@@ -79,7 +87,7 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 			w.emit(&NPCCreated{
 				ActorID:     id,
 				DisplayName: name,
-				Kind:        KindNPCStateful,
+				Kind:        actor.Kind,
 				X:           tile.X,
 				Y:           tile.Y,
 				Facing:      "south",

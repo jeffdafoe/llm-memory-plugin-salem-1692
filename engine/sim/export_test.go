@@ -16,6 +16,11 @@ import (
 // caller, that's a signal you should be issuing a Command instead.
 var (
 	BuildWalkGrid               = buildWalkGrid
+	BuildWaterfowlWalkGrid      = buildWaterfowlWalkGrid
+	ActorIsWaterfowl            = actorIsWaterfowl
+	WaterfowlRegion             = waterfowlRegion
+	WaterfowlShore              = waterfowlShore
+	EvaluateWaterfowl           = evaluateWaterfowl
 	MaxDwellMinutes             = maxDwellMinutes
 	CommonRoomForStructure      = commonRoomForStructure
 	CanEnterRoom                = canEnterRoom

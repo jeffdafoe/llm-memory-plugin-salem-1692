@@ -211,6 +211,10 @@ func EvaluateLocomotion(now time.Time) Command {
 			if err != nil {
 				return nil, fmt.Errorf("locomotion tick: build walk grid: %w", err)
 			}
+			// Waterfowl movers path on their own grid (water opened,
+			// LLM-579) — built lazily, once per tick, only when a duck is
+			// actually moving.
+			var waterfowlGrid *WalkGrid
 			for _, id := range movers {
 				actor := w.Actors[id]
 				// Re-fetch and re-check: movers was snapshotted at the top
@@ -247,7 +251,17 @@ func EvaluateLocomotion(now time.Time) Command {
 						continue
 					}
 				}
-				advanceActorLocomotion(w, actor, grid, now)
+				actorGrid := grid
+				if actorIsWaterfowl(w, actor) {
+					if waterfowlGrid == nil {
+						waterfowlGrid, err = buildWaterfowlWalkGrid(w)
+						if err != nil {
+							return nil, fmt.Errorf("locomotion tick: build waterfowl walk grid: %w", err)
+						}
+					}
+					actorGrid = waterfowlGrid
+				}
+				advanceActorLocomotion(w, actor, actorGrid, now)
 			}
 			return nil, nil
 		},

@@ -171,7 +171,9 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			// Step 4 — path existence. resolvePathTarget turns the
 			// destination into a concrete goal tile; FindPath confirms the
 			// actor can actually reach it from where they stand now.
-			grid, err := buildWalkGrid(w)
+			// Per-actor grid: a waterfowl paths on the water-opened grid
+			// (LLM-579), everyone else on the shared one.
+			grid, err := walkGridForActor(w, actor)
 			if err != nil {
 				return MoveActorResult{}, fmt.Errorf("build walk grid: %w", err)
 			}

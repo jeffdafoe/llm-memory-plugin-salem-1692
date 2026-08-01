@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -41,7 +42,7 @@ SELECT id, name, url
 // unreachable in valid data (the attach guard below is defensive only — see
 // LoadAll's orphan note).
 const loadAllSpritesSQL = `
-SELECT id::text, name, sheet, frame_width, frame_height, pack_id
+SELECT id::text, name, sheet, frame_width, frame_height, pack_id, behaviors
   FROM npc_sprite
  ORDER BY name`
 
@@ -122,14 +123,21 @@ func (r *SpritesRepo) loadSprites(ctx context.Context, packs map[string]*sim.Til
 	sprites := make(map[sim.SpriteID]*sim.Sprite)
 	for rows.Next() {
 		var (
-			id string
-			s  sim.Sprite
+			id            string
+			s             sim.Sprite
+			behaviorsJSON []byte
 		)
-		if err := rows.Scan(&id, &s.Name, &s.Sheet, &s.FrameWidth, &s.FrameHeight, &s.PackID); err != nil {
+		if err := rows.Scan(&id, &s.Name, &s.Sheet, &s.FrameWidth, &s.FrameHeight, &s.PackID, &behaviorsJSON); err != nil {
 			return nil, fmt.Errorf("pg sprites LoadAll: npc_sprite scan: %w", err)
 		}
 		s.ID = sim.SpriteID(id)
 		s.Animations = []sim.SpriteAnimation{}
+		// behaviors is jsonb NOT NULL DEFAULT '[]' — a scan always yields
+		// bytes. Reject malformed content loudly rather than silently
+		// stripping a behavior the migration authored.
+		if err := json.Unmarshal(behaviorsJSON, &s.Behaviors); err != nil {
+			return nil, fmt.Errorf("pg sprites LoadAll: npc_sprite %s behaviors: %w", id, err)
+		}
 		if s.PackID != nil {
 			if pack, ok := packs[*s.PackID]; ok {
 				s.Pack = pack
