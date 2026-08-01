@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -168,7 +169,7 @@ func TestWaterfowlRegionAndShore(t *testing.T) {
 			if b == sim.TerrainShallowWater || b == sim.TerrainDeepWater {
 				t.Errorf("shore tile (%d,%d) is water", p.X, p.Y)
 			}
-			// Within two 4-steps of the pond rectangle.
+			// Within WaterfowlShoreBandRings 4-steps of the pond rectangle.
 			dx, dy := 0, 0
 			if p.X < pondMinX {
 				dx = pondMinX - p.X
@@ -180,12 +181,120 @@ func TestWaterfowlRegionAndShore(t *testing.T) {
 			} else if p.Y > pondMaxY {
 				dy = p.Y - pondMaxY
 			}
-			if dx+dy > 2 {
-				t.Errorf("shore tile (%d,%d) is %d steps from the pond, want <= 2", p.X, p.Y, dx+dy)
+			if dx+dy > sim.WaterfowlShoreBandRings {
+				t.Errorf("shore tile (%d,%d) is %d steps from the pond, want <= %d",
+					p.X, p.Y, dx+dy, sim.WaterfowlShoreBandRings)
 			}
+		}
+
+		// The band must actually REACH the configured range on open grass —
+		// otherwise widening the constant would be a no-op the bound check
+		// above could never catch (it only ever asserts an upper limit).
+		maxStep := 0
+		for _, p := range shore {
+			dx, dy := 0, 0
+			if p.X < pondMinX {
+				dx = pondMinX - p.X
+			} else if p.X > pondMaxX {
+				dx = p.X - pondMaxX
+			}
+			if p.Y < pondMinY {
+				dy = pondMinY - p.Y
+			} else if p.Y > pondMaxY {
+				dy = p.Y - pondMaxY
+			}
+			if dx+dy > maxStep {
+				maxStep = dx + dy
+			}
+		}
+		if maxStep != sim.WaterfowlShoreBandRings {
+			t.Errorf("furthest shore tile is %d steps out, want %d — the band is not reaching its configured range",
+				maxStep, sim.WaterfowlShoreBandRings)
 		}
 		return nil, nil
 	})
+}
+
+// TestWaterfowlShoreBandStopsAtWalls — LLM-585. The band is grown ring by ring
+// as a walkable BFS out from the bank, not as "every tile within N of the
+// water". The difference only shows up once the band is wide enough to reach
+// an obstacle: a duck must not potter to the far side of a wall that happens
+// to stand within WaterfowlShoreBandRings of the pond.
+func TestWaterfowlShoreBandStopsAtWalls(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makePondTerrain())
+	seedDuckSprite(handles)
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"wall": {ID: "wall", IsObstacle: true},
+	})
+	// A wall two tiles west of the pond, running from well above its top edge
+	// to well below its bottom one, so the band cannot round the ends within
+	// its ring budget. Terrain cannot express this: no LAND terrain is
+	// impassable (TerrainCost's default is walkable), and water is walkable to
+	// a duck by design — only obstacle stamping blocks one.
+	wallX := pondMinX - 2
+	objects := map[sim.VillageObjectID]*sim.VillageObject{}
+	for y := pondMinY - sim.WaterfowlShoreBandRings - 2; y <= pondMaxY+sim.WaterfowlShoreBandRings+2; y++ {
+		coord := sim.TileToWorld(sim.GridPoint{X: wallX, Y: y})
+		id := sim.VillageObjectID(fmt.Sprintf("wall-%d", y))
+		objects[id] = &sim.VillageObject{ID: id, AssetID: "wall", Pos: sim.WorldPos{X: coord.X, Y: coord.Y}}
+	}
+	handles.VillageObjects.Seed(objects)
+	const duckID sim.ActorID = "duck-actor-0001"
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		duckID: {
+			ID: duckID, DisplayName: "Duck",
+			Kind:     sim.KindDecorative,
+			SpriteID: duckSpriteID,
+			Pos:      sim.Position{X: pondMinX + 2, Y: pondMinY + 2},
+			Facing:   "south",
+		},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+
+	type shoreResult struct {
+		size     int
+		beyond   []sim.GridPoint
+		reachedX bool
+	}
+	res := runOn(t, w, func(world *sim.World) (any, error) {
+		duck := world.Actors[duckID]
+		region := sim.WaterfowlRegion(world, duck)
+		shore := sim.WaterfowlShore(world, region)
+		out := shoreResult{size: len(shore)}
+		for _, p := range shore {
+			if p.X < wallX {
+				out.beyond = append(out.beyond, p)
+			}
+			if p.X == wallX+1 {
+				// The tile immediately in front of the wall, proving the band
+				// grew far enough west to be stopped BY the wall rather than
+				// falling short of it.
+				out.reachedX = true
+			}
+		}
+		return out, nil
+	}).(shoreResult)
+
+	if res.size == 0 {
+		t.Fatal("shore band empty")
+	}
+	if !res.reachedX {
+		t.Fatalf("band never reached the tile in front of the wall (x=%d) — the test proves nothing about blocking", wallX+1)
+	}
+	for _, p := range res.beyond {
+		t.Errorf("shore tile (%d,%d) is beyond the wall at x=%d — the band crossed an unwalkable tile", p.X, p.Y, wallX)
+	}
 }
 
 // TestWaterfowlDecisionDispatchesMove — the decision pass dwells first,
@@ -226,8 +335,9 @@ func TestWaterfowlDecisionDispatchesMove(t *testing.T) {
 		} else if p.Y > pondMaxY {
 			dy = p.Y - pondMaxY
 		}
-		if dx+dy > 2 {
-			t.Errorf("move target (%d,%d) is %d steps outside the pond", p.X, p.Y, dx+dy)
+		if dx+dy > sim.WaterfowlShoreBandRings {
+			t.Errorf("move target (%d,%d) is %d steps outside the pond, want <= %d",
+				p.X, p.Y, dx+dy, sim.WaterfowlShoreBandRings)
 		}
 		return nil, nil
 	})
