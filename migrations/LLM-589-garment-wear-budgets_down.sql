@@ -27,4 +27,31 @@ UPDATE public.item_kind AS k
        ) AS v(name, wear_minutes)
  WHERE k.name = v.name;
 
+-- Same completeness guard the up migration carries, with the down values. An
+-- UPDATE matching nothing is a success in Postgres, so without this a
+-- partially-populated catalog would roll back "successfully" while leaving
+-- garment kinds missing or still on the new budgets. The up migration now
+-- requires all five rows; a rollback that quietly restored fewer would leave
+-- the catalog in a state neither migration describes.
+DO $$
+DECLARE
+    wrong INTEGER;
+BEGIN
+    SELECT count(*) INTO wrong
+      FROM (VALUES
+                ('shift',    360),
+                ('breeches', 480),
+                ('gown',     480),
+                ('cloak',    600),
+                ('coat',     600)
+           ) AS v(name, wear_minutes)
+      LEFT JOIN public.item_kind k ON k.name = v.name
+     WHERE k.name IS NULL
+        OR k.wear_minutes <> v.wear_minutes;
+
+    IF wrong > 0 THEN
+        RAISE EXCEPTION 'LLM-589 down: % garment kind(s) missing from item_kind or not restored to the LLM-422 wear budget', wrong;
+    END IF;
+END $$;
+
 COMMIT;
