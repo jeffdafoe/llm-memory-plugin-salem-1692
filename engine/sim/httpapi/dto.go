@@ -179,6 +179,10 @@ type AgentSpriteDTO struct {
 	// keys render decisions on them — a "waterfowl" sprite gets the ground
 	// decal (ripple on water / shadow on land) and the swim animation family.
 	Behaviors []string `json:"behaviors,omitempty"`
+	// RenderScale is the client draw scale for this sprite (LLM-580):
+	// villagers 2.0, ducks 1.0. Omitted when zero (a test-seeded sprite);
+	// the client falls back to its default.
+	RenderScale float64 `json:"render_scale,omitempty"`
 }
 
 // ObjectDTO is one placed village object in the GET /api/village/objects
@@ -350,7 +354,8 @@ type SpriteDTO struct {
 	FrameHeight int                  `json:"frame_height"`
 	Pack        *TilesetPackDTO      `json:"pack,omitempty"`
 	Animations  []SpriteAnimationDTO `json:"animations"`
-	Behaviors   []string             `json:"behaviors,omitempty"` // engine-behavior slugs (LLM-579), e.g. "waterfowl"
+	Behaviors   []string             `json:"behaviors,omitempty"`    // engine-behavior slugs (LLM-579), e.g. "waterfowl"
+	RenderScale float64              `json:"render_scale,omitempty"` // client draw scale (LLM-580): villagers 2.0, ducks 1.0
 }
 
 // SpriteAnimationDTO is one (direction, animation) row mapping into a sprite

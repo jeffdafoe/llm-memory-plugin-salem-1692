@@ -39,6 +39,13 @@ type Sprite struct {
 	// only slug is BehaviorWaterfowl (autonomous swim/shore wander for
 	// decorative actors).
 	Behaviors []string
+
+	// RenderScale is the client-side draw scale for this sprite (npc_sprite.
+	// render_scale, LLM-580). The engine never reads it — it rides the catalog
+	// so the client can size a duck (1.0) differently from a villager (2.0)
+	// without hardcoding species. NOT NULL DEFAULT 2.0 in the schema; the
+	// client guards <= 0 back to its default for test-seeded zero values.
+	RenderScale float64
 }
 
 // BehaviorWaterfowl marks a sprite whose decorative actors are driven by the

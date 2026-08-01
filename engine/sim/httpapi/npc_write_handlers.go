@@ -69,6 +69,10 @@ func writeActorAdminError(w http.ResponseWriter, err error) {
 		errors.Is(err, sim.ErrInvalidAgentLink),
 		errors.Is(err, sim.ErrInvalidSchedule):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, sim.ErrDisplayNameTaken):
+		// Uniqueness conflict, not malformed input — the editor shows the
+		// message and the admin picks another name (LLM-580).
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, sim.ErrUnknownAttribute), errors.Is(err, sim.ErrUnknownItemKind),
 		errors.Is(err, sim.ErrStructureNotHabitable):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())

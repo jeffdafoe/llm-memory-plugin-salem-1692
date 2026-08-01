@@ -37,8 +37,8 @@ func TestIntegration_Sprites_LoadAllHappyPath(t *testing.T) {
 		t.Fatalf("seed tileset_pack: %v", err)
 	}
 	if _, err := f.Pool.Exec(ctx, `
-		INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, pack_id)
-		VALUES ($1, 'Woman A v00', 'npc/woman_A_v00.png', 64, 64, 'mana-seed')`, spriteUUIDFull); err != nil {
+		INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale)
+		VALUES ($1, 'Woman A v00', 'npc/woman_A_v00.png', 64, 64, 'mana-seed', '["waterfowl"]', 1.0)`, spriteUUIDFull); err != nil {
 		t.Fatalf("seed npc_sprite: %v", err)
 	}
 	// Insert south/walk before south/idle to prove the ORDER BY re-sorts
@@ -76,6 +76,13 @@ func TestIntegration_Sprites_LoadAllHappyPath(t *testing.T) {
 	}
 	if s.Pack.Name != "Mana Seed" || s.Pack.URL == nil || *s.Pack.URL != "http://example/mana-seed.png" {
 		t.Errorf("pack fields: %+v", s.Pack)
+	}
+	// LLM-579/580: the behavior slugs and render scale round-trip.
+	if len(s.Behaviors) != 1 || s.Behaviors[0] != sim.BehaviorWaterfowl {
+		t.Errorf("Behaviors = %v, want [waterfowl]", s.Behaviors)
+	}
+	if s.RenderScale != 1.0 {
+		t.Errorf("RenderScale = %v, want 1.0", s.RenderScale)
 	}
 
 	// Deterministic order: (south, idle) before (south, walk).
@@ -121,5 +128,13 @@ func TestIntegration_Sprites_NullablesAndNoPack(t *testing.T) {
 	}
 	if s.Animations == nil || len(s.Animations) != 0 {
 		t.Errorf("no-animation sprite should have empty (non-nil) Animations, got %#v", s.Animations)
+	}
+	// Schema defaults for the LLM-579/580 columns: behaviors '[]' (empty,
+	// non-nil after unmarshal), render_scale 2.0.
+	if s.Behaviors == nil || len(s.Behaviors) != 0 {
+		t.Errorf("default behaviors should be empty non-nil, got %#v", s.Behaviors)
+	}
+	if s.RenderScale != 2.0 {
+		t.Errorf("default RenderScale = %v, want 2.0", s.RenderScale)
 	}
 }

@@ -746,7 +746,9 @@ func _on_npc_walking(data: Dictionary) -> void:
     var walk := {
         "start_pos": origin,
         "path": waypoints,
-        "speed": VillageApi.walk_speed_px_per_s(),
+        # Waterfowl lerp at half speed to match the engine's every-2nd-tick
+        # advance (LLM-580 — see world.npc_walk_speed_factor's lockstep note).
+        "speed": VillageApi.walk_speed_px_per_s() * world.npc_walk_speed_factor(container),
         "started_at_s": Time.get_ticks_msec() / 1000.0,
         "attempt_id": int(data.get("attempt_id", 0)),
     }

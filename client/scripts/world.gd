@@ -409,8 +409,9 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D)
     new_sprite.name = "CharacterSprite"
     new_sprite.sprite_frames = sprite_frames
     new_sprite.centered = false
-    new_sprite.scale = Vector2(2, 2)
-    new_sprite.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+    var swap_scale: float = _sprite_render_scale(sprite_data)
+    new_sprite.scale = Vector2(swap_scale, swap_scale)
+    new_sprite.position = Vector2(-fw * swap_scale * 0.5, -fh * swap_scale * 0.9)
 
     # Replay the same animation if the new sheet has it; otherwise fall back
     # to facing_idle or the first available animation. Avoids a frozen sprite.
@@ -834,9 +835,12 @@ func _render_npc(npc: Dictionary) -> void:
     anim_sprite.name = "CharacterSprite"
     anim_sprite.sprite_frames = sprite_frames
     anim_sprite.centered = false
-    anim_sprite.scale = Vector2(2, 2)
+    # Per-sprite draw scale (LLM-580): villagers 2.0, ducks 1.0 — from the
+    # sprite catalog, so species sizing is data, not client special-casing.
+    var draw_scale: float = _sprite_render_scale(sprite_data)
+    anim_sprite.scale = Vector2(draw_scale, draw_scale)
     # Anchor the sprite so its feet sit at the container's position.
-    anim_sprite.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+    anim_sprite.position = Vector2(-fw * draw_scale * 0.5, -fh * draw_scale * 0.9)
     container.add_child(anim_sprite)
 
     # Waterfowl (LLM-579): behaviors ride the sprite payload; a waterfowl
@@ -903,6 +907,21 @@ func _npc_is_waterfowl(container: Node2D) -> bool:
     var behaviors = container.get_meta("behaviors", [])
     return behaviors is Array and behaviors.has("waterfowl")
 
+## Per-sprite draw scale from the sprite payload (LLM-580). Guards absent /
+## zero (a sprite minted before the migration, or a test fixture) back to the
+## historical 2x default.
+func _sprite_render_scale(sprite_data: Dictionary) -> float:
+    var s: float = float(sprite_data.get("render_scale", 2.0))
+    return s if s > 0.0 else 2.0
+
+## Interpolation speed factor for this NPC's walk legs (LLM-580). Waterfowl
+## advance every WaterfowlStepDivisor-th engine locomotion tick, so the client
+## lerps them at the matching 1/2 of walk_speed_px_per_s — the two sides MUST
+## stay in lockstep (engine/sim/waterfowl.go WaterfowlStepDivisor), the same
+## contract shape as LOCOMOTION_TICK_SECONDS. Everyone else is 1.0.
+func npc_walk_speed_factor(container: Node2D) -> float:
+    return 0.5 if _npc_is_waterfowl(container) else 1.0
+
 ## Terrain type under a world-pixel position — shallow (5) or deep (6) water
 ## means a waterfowl floats there. Same map_data the terrain renderer draws.
 func _is_water_at(world_pos: Vector2) -> bool:
@@ -961,10 +980,11 @@ func _ensure_ground_decal(container: Node2D, sprite_data: Dictionary, sheet: Tex
     decal.name = "GroundDecal"
     decal.sprite_frames = frames
     decal.centered = false
-    decal.scale = Vector2(2, 2)
+    var decal_scale: float = _sprite_render_scale(sprite_data)
+    decal.scale = Vector2(decal_scale, decal_scale)
     # Same anchor as the character sprite — the decal art occupies the same
     # cell space as the duck pose it sits under.
-    decal.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+    decal.position = Vector2(-fw * decal_scale * 0.5, -fh * decal_scale * 0.9)
     decal.z_index = -1
     container.add_child(decal)
     _update_ground_decal(container, _is_water_at(container.position))

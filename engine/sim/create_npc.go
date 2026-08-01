@@ -46,7 +46,8 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			name = strings.TrimSpace(name)
-			if name == "" {
+			explicit := name != ""
+			if !explicit {
 				name = "Villager"
 			}
 			// Validate the (post-default) name the same way SetActorDisplayName
@@ -54,6 +55,25 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 			// that the edit route would reject.
 			if utf8.RuneCountInString(name) > MaxActorDisplayNameLen || containsControlChar(name) {
 				return nil, ErrInvalidDisplayName
+			}
+			// Uniqueness at the door (LLM-580): actor.display_name is UNIQUE
+			// in the schema, and an in-memory duplicate doesn't fail here — it
+			// fails the next CHECKPOINT, breaking durability villagewide (two
+			// editor placements both defaulting to "Villager" did exactly
+			// that). An explicit duplicate is refused; the blank-name default
+			// dedupes itself ("Villager 2", "Villager 3", …) so quick
+			// placement stays one click.
+			if displayNameInUse(w, name) {
+				if explicit {
+					return nil, ErrDisplayNameTaken
+				}
+				base := name
+				for n := 2; ; n++ {
+					name = fmt.Sprintf("%s %d", base, n)
+					if !displayNameInUse(w, name) {
+						break
+					}
+				}
 			}
 			spriteID = strings.TrimSpace(spriteID)
 			if spriteID == "" {
