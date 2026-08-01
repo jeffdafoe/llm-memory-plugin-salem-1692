@@ -461,6 +461,14 @@ func TestWaterfowlWandersOutOfAHuddle(t *testing.T) {
 			// decision rather than a leftover intent from an earlier movement.
 			intentAtSetup: world.Actors[duckID].MoveIntent != nil,
 		}
+		// Same reasoning for the peer's speech: compare before against after,
+		// so the assertion measures what the LEAVE caused rather than whatever
+		// the peer's utterance stamp happened to hold already.
+		peerSpokeBefore := time.Time{}
+		if h := world.Huddles[huddleID]; h != nil {
+			peerSpokeBefore = h.LastUtteranceAtBy(peerID)
+		}
+
 		// First pass stamps the dwell; the second is past it and must decide.
 		sim.EvaluateWaterfowl(world, now)
 		sim.EvaluateWaterfowl(world, now.Add(13*time.Second))
@@ -472,7 +480,7 @@ func TestWaterfowlWandersOutOfAHuddle(t *testing.T) {
 		// huddle is not concluded and is still readable). Nothing should have
 		// made the peer speak on the way out.
 		if h := world.Huddles[huddleID]; h != nil {
-			out.peerSpoke = !h.LastUtteranceAtBy(peerID).IsZero()
+			out.peerSpoke = !h.LastUtteranceAtBy(peerID).Equal(peerSpokeBefore)
 		}
 		return out, nil
 	}).(wanderResult)
