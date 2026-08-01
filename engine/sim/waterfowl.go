@@ -47,6 +47,24 @@ const (
 	// WaterfowlSearchRadius bounds the BFS for "nearest water tile" when a
 	// duck is ashore (or was placed on land). Beyond this the duck is
 	// considered parked away from any water and left idle.
+	//
+	// MUST stay >= WaterfowlShoreBandRings, enforced at compile time by
+	// waterfowlBandFitsSearchRadius below. The band is where the wander SENDS
+	// a duck ashore; this radius is how it FINDS its way back. If the band
+	// could reach past this radius, a duck that pottered to the outer edge
+	// would look "parked away from any water" on its next decision and idle
+	// there forever — an inland strand, the same shape of freeze as LLM-582.
+	//
+	// The two are measured in DIFFERENT metrics, and the direction of the
+	// difference is what makes the bound sound: the band is grown as a
+	// WALKABLE BFS (obstacles block it), while nearestWaterTile's BFS below
+	// checks only bounds and water — it passes straight through walls, so it
+	// is effectively a Manhattan-radius search. Walkable distance is always
+	// >= Manhattan distance, so a tile within N walkable steps of water is
+	// within N Manhattan steps of it, and this search finds water from
+	// anywhere in the band with room to spare. An obstacle course that
+	// lengthens the walking route cannot defeat it, because the search does
+	// not walk.
 	WaterfowlSearchRadius = 8
 
 	// WaterfowlSwimRange caps how far (Chebyshev, in tiles) a single swim
@@ -58,9 +76,22 @@ const (
 	// on-water duck starts a shore excursion.
 	WaterfowlShoreChance = 200
 
+	// WaterfowlShoreBandRings is how many walkable steps inland the shore
+	// band reaches — the duck's on-land range. Bounded by
+	// WaterfowlSearchRadius; see the note there before changing it.
+	WaterfowlShoreBandRings = 5
+
+	// waterfowlBandFitsSearchRadius fails the BUILD if the shore band could
+	// reach past the nearest-water search, which would strand a duck at the
+	// band's outer edge. An untyped-uint constant cannot be negative, so the
+	// subtraction is the assertion. Cheaper than trusting a comment.
+	waterfowlBandFitsSearchRadius = uint(WaterfowlSearchRadius - WaterfowlShoreBandRings)
+
 	// WaterfowlMaxAshoreMoves caps consecutive land potters before the
-	// duck is sent back to the water.
-	WaterfowlMaxAshoreMoves = 3
+	// duck is sent back to the water. Scaled with the band: with fewer legs
+	// than rings a duck is herded back before it has used the outer band at
+	// all, so the range would widen on paper and not in the village.
+	WaterfowlMaxAshoreMoves = 5
 
 	// WaterfowlStepDivisor slows waterfowl locomotion: a waterfowl mover
 	// advances on every Nth locomotion tick (LLM-580 — full villager pace
@@ -406,11 +437,21 @@ func nearestWaterTile(w *World, pos Position) (GridPoint, bool) {
 	return GridPoint{}, false
 }
 
-// waterfowlShore returns the shore band of a water region: non-water
-// tiles within two 4-steps of the region that are walkable on the
-// waterfowl grid (so a bank tile inside a building footprint is never a
-// potter target). This is "adjacent to the lake" — the duck's on-land
-// range.
+// waterfowlShore returns the shore band of a water region: non-water tiles
+// within WaterfowlShoreBandRings 4-steps of the region that are walkable on
+// the waterfowl grid (so a bank tile inside a building footprint is never a
+// potter target). This is the duck's on-land range.
+//
+// The band is grown one ring at a time by BFS out from the water, each ring
+// seeded from the previous ring's tiles. Growing it this way — rather than
+// taking every tile within N of the region — means the range is measured in
+// WALKABLE steps from the bank: a duck cannot appear on the far side of a
+// wall that happens to sit within N tiles of the pond, because the frontier
+// never crosses the unwalkable tile.
+//
+// Every ring accumulates into ONE set, so a tile reachable from several
+// neighbors lands once. Duplicates would silently weight pickWaterfowlTarget's
+// uniform draw toward the most-connected tiles (code_review, LLM-579).
 //
 // MUST be called from inside a Command.Fn.
 func waterfowlShore(w *World, region []GridPoint) []GridPoint {
@@ -422,32 +463,30 @@ func waterfowlShore(w *World, region []GridPoint) []GridPoint {
 	for _, p := range region {
 		inRegion[p] = true
 	}
-	band := map[GridPoint]bool{}
-	// Ring 1: land tiles adjacent to water.
-	for _, p := range region {
-		for _, d := range [4]GridPoint{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
-			n := GridPoint{X: p.X + d.X, Y: p.Y + d.Y}
-			if inRegion[n] || isWaterTile(w, n.X, n.Y) || !grid.CanWalk(n.X, n.Y) {
-				continue
+
+	shoreSet := map[GridPoint]bool{}
+	// The current ring's tiles — the frontier the next ring grows from. Ring 1
+	// is seeded from the water region itself.
+	frontier := region
+	for ring := 0; ring < WaterfowlShoreBandRings; ring++ {
+		next := make([]GridPoint, 0, len(frontier)*2)
+		for _, p := range frontier {
+			for _, d := range [4]GridPoint{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
+				n := GridPoint{X: p.X + d.X, Y: p.Y + d.Y}
+				if shoreSet[n] || inRegion[n] || isWaterTile(w, n.X, n.Y) || !grid.CanWalk(n.X, n.Y) {
+					continue
+				}
+				shoreSet[n] = true
+				next = append(next, n)
 			}
-			band[n] = true
 		}
-	}
-	// Ring 2: one more step out from ring 1. Collected in the same set so a
-	// tile reachable from several ring-1 neighbors lands ONCE — duplicates
-	// would silently weight pickWaterfowlTarget's uniform draw toward the
-	// most-connected tiles (code_review).
-	shoreSet := make(map[GridPoint]bool, len(band)*2)
-	for p := range band {
-		shoreSet[p] = true
-		for _, d := range [4]GridPoint{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
-			n := GridPoint{X: p.X + d.X, Y: p.Y + d.Y}
-			if band[n] || inRegion[n] || isWaterTile(w, n.X, n.Y) || !grid.CanWalk(n.X, n.Y) {
-				continue
-			}
-			shoreSet[n] = true
+		if len(next) == 0 {
+			// The band is walled in — no point growing further rings.
+			break
 		}
+		frontier = next
 	}
+
 	shore := make([]GridPoint, 0, len(shoreSet))
 	for p := range shoreSet {
 		shore = append(shore, p)
