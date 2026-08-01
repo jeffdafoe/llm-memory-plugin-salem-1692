@@ -15,7 +15,7 @@ DELETE FROM public.npc_sprite WHERE pack_id = 'mana-seed-livestock';
 DELETE FROM public.tileset_pack WHERE id = 'mana-seed-livestock';
 
 ALTER TABLE public.npc_sprite_animation
-    DROP CONSTRAINT npc_sprite_animation_animation_check;
+    DROP CONSTRAINT IF EXISTS npc_sprite_animation_animation_check;
 ALTER TABLE public.npc_sprite_animation
     ADD CONSTRAINT npc_sprite_animation_animation_check
     CHECK (((animation)::text = ANY ((ARRAY[

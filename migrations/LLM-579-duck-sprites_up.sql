@@ -39,7 +39,7 @@ ALTER TABLE public.npc_sprite
     ADD COLUMN IF NOT EXISTS behaviors jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 ALTER TABLE public.npc_sprite_animation
-    DROP CONSTRAINT npc_sprite_animation_animation_check;
+    DROP CONSTRAINT IF EXISTS npc_sprite_animation_animation_check;
 ALTER TABLE public.npc_sprite_animation
     ADD CONSTRAINT npc_sprite_animation_animation_check
     CHECK (((animation)::text = ANY ((ARRAY[
