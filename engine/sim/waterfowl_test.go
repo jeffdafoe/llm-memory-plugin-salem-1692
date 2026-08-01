@@ -421,8 +421,14 @@ func TestWaterfowlWandersOutOfAHuddle(t *testing.T) {
 		t.Fatalf("LoadWorld: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.Run(ctx)
+	// Wait for the world goroutine to actually exit rather than just cancelling
+	// it, so this test can't leak a goroutine into the ones that follow.
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
 
 	now := time.Now()
 	// StartOutdoorHuddle does not itself gate on Kind — that gate lives in the
@@ -442,28 +448,48 @@ func TestWaterfowlWandersOutOfAHuddle(t *testing.T) {
 	// worth avoiding on a test whose whole subject is a freeze.
 	type wanderResult struct {
 		huddledAtSetup bool
-		moved          bool
+		intentAtSetup  bool
+		movedAfter     bool
 		stillHuddled   sim.HuddleID
+		peerSpoke      bool
 	}
 	res := runOn(t, w, func(world *sim.World) (any, error) {
-		out := wanderResult{huddledAtSetup: world.Actors[duckID].CurrentHuddleID != ""}
+		huddleID := world.Actors[duckID].CurrentHuddleID
+		out := wanderResult{
+			huddledAtSetup: huddleID != "",
+			// Captured so movedAfter below is unambiguously the work of THIS
+			// decision rather than a leftover intent from an earlier movement.
+			intentAtSetup: world.Actors[duckID].MoveIntent != nil,
+		}
 		// First pass stamps the dwell; the second is past it and must decide.
 		sim.EvaluateWaterfowl(world, now)
 		sim.EvaluateWaterfowl(world, now.Add(13*time.Second))
 
 		duck := world.Actors[duckID]
-		out.moved = duck.MoveIntent != nil
+		out.movedAfter = duck.MoveIntent != nil
 		out.stillHuddled = duck.CurrentHuddleID
+		// The duck's departure emits HuddleLeft (the peer remains, so the
+		// huddle is not concluded and is still readable). Nothing should have
+		// made the peer speak on the way out.
+		if h := world.Huddles[huddleID]; h != nil {
+			out.peerSpoke = !h.LastUtteranceAtBy(peerID).IsZero()
+		}
 		return out, nil
 	}).(wanderResult)
 
 	if !res.huddledAtSetup {
 		t.Fatal("setup: duck should be huddled before the wander runs")
 	}
-	if !res.moved {
+	if res.intentAtSetup {
+		t.Fatal("setup: duck should hold no MoveIntent before the wander runs, or the move assertion below proves nothing")
+	}
+	if !res.movedAfter {
 		t.Error("a huddled duck must still dispatch a wander leg — it froze until the 2h silence sweep before LLM-582")
 	}
 	if res.stillHuddled != "" {
 		t.Errorf("the wander should have left the huddle; duck still in %q", res.stillHuddled)
+	}
+	if res.peerSpoke {
+		t.Error("a decorative leaving a huddle must not make its peer speak")
 	}
 }
