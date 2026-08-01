@@ -284,4 +284,57 @@ func TestDisplayNameUniquenessDrivenActors(t *testing.T) {
 	if _, err := w.Send(sim.SetActorAgentLink(impostor, "zbbs-impostor")); !errors.Is(err, sim.ErrDisplayNameTaken) {
 		t.Errorf("promoting a decorative onto an in-use driven name err = %v, want ErrDisplayNameTaken", err)
 	}
+
+	// The gate reads the persisted columns, not Kind, so it holds for a PC too
+	// — a login is the other half of the constraint's OR.
+	if _, err := w.Send(sim.CreatePC("player-1", "Wendy", string(duckSpriteID), now)); err != nil {
+		t.Fatalf("create PC: %v", err)
+	}
+	if !sim.ActorIsDriven(actorOf(t, w, ezekiel)) {
+		t.Error("an agent-linked actor must read as driven")
+	}
+	pcs := actorsNamed(t, w, "Wendy")
+	if len(pcs) != 1 || !sim.ActorIsDriven(pcs[0]) {
+		t.Fatalf("expected exactly one driven PC named Wendy, got %d", len(pcs))
+	}
+	// A decorative may still take the PC's name (outside the predicate)...
+	res2, err := w.Send(sim.CreateNPC("Wendy", string(duckSpriteID), sim.WorldPos{X: 400, Y: 100}, now))
+	if err != nil {
+		t.Fatalf("decorative taking a PC's name should be allowed: %v", err)
+	}
+	// ...but promoting THAT one is refused, proving the gate covers the login
+	// arm of the predicate and not just the agent arm.
+	if _, err := w.Send(sim.SetActorAgentLink(res2.(sim.CreateNPCResult).ActorID, "zbbs-wendy-impostor")); !errors.Is(err, sim.ErrDisplayNameTaken) {
+		t.Errorf("promoting a decorative onto an in-use PC name err = %v, want ErrDisplayNameTaken", err)
+	}
+}
+
+// actorOf reads one actor off the world goroutine.
+func actorOf(t *testing.T, w *sim.World, id sim.ActorID) *sim.Actor {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors[id], nil
+	}})
+	if err != nil {
+		t.Fatalf("read actor %s: %v", id, err)
+	}
+	return res.(*sim.Actor)
+}
+
+// actorsNamed collects every actor carrying the given display name.
+func actorsNamed(t *testing.T, w *sim.World, name string) []*sim.Actor {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		var out []*sim.Actor
+		for _, a := range world.Actors {
+			if a != nil && a.DisplayName == name {
+				out = append(out, a)
+			}
+		}
+		return out, nil
+	}})
+	if err != nil {
+		t.Fatalf("scan actors named %q: %v", name, err)
+	}
+	return res.([]*sim.Actor)
 }

@@ -150,9 +150,11 @@ func coldRatePerMinuteX100(w *World, a *Actor, now time.Time) int {
 }
 
 // coldEligible mirrors the needs-tick eligibility filter: agent-backed or
-// login-backed actors feel the weather; decoratives are scenery.
+// login-backed actors feel the weather; decoratives are scenery. Same question
+// as ActorIsDriven, so it delegates rather than keeping a second copy of the
+// test that could drift from it.
 func coldEligible(a *Actor) bool {
-	return a.LLMAgent != "" || a.LoginUsername != ""
+	return ActorIsDriven(a)
 }
 
 // AdjustCold returns a Command that applies elapsedMinutes of cold exposure

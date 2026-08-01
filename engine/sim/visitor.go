@@ -1886,13 +1886,14 @@ func loadActorSurnames(w *World) map[string]bool {
 // huddle peers rather than the world — a decorative cannot enter any of those
 // candidate sets, so a shared name is unambiguous everywhere it is read.
 //
-// This MUST stay a mirror of the actor_display_name_excl database constraint,
-// whose predicate is the same "driven" test spelled in columns
-// (llm_memory_agent IS NOT NULL OR login_username IS NOT NULL). If the two
-// drift, the stricter one silently wins and the looser one is dead code.
+// This MUST stay a mirror of the actor_display_name_excl database constraint.
+// It uses ActorIsDriven — the same two persisted columns the constraint's
+// predicate names — rather than testing Kind, so the two cannot drift even if
+// some future path sets llm_memory_agent or login_username without
+// recomputing Kind.
 func displayNameInUse(w *World, name string) bool {
 	for _, a := range w.Actors {
-		if a != nil && a.Kind != KindDecorative && a.DisplayName == name {
+		if ActorIsDriven(a) && a.DisplayName == name {
 			return true
 		}
 	}
