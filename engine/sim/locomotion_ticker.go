@@ -253,6 +253,12 @@ func EvaluateLocomotion(now time.Time) Command {
 				}
 				actorGrid := grid
 				if actorIsWaterfowl(w, actor) {
+					// Slow walk (LLM-580): a duck advances every
+					// WaterfowlStepDivisor-th tick. The client interpolates
+					// waterfowl at the matching fraction of walk speed.
+					if !waterfowlShouldStep(w, id) {
+						continue
+					}
 					if waterfowlGrid == nil {
 						waterfowlGrid, err = buildWaterfowlWalkGrid(w)
 						if err != nil {

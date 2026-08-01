@@ -130,11 +130,20 @@ func validMinuteOfDay(m int) bool {
 	return m >= 0 && m <= 1439
 }
 
+// ErrDisplayNameTaken is returned when a create or rename would give an actor
+// a display name another live actor already holds. actor.display_name is
+// UNIQUE in the schema; an in-memory duplicate doesn't fail at the mutating
+// command — it fails the next CHECKPOINT (SQLSTATE 23505), breaking durability
+// for the whole village until someone is renamed. Refused at the door instead
+// (LLM-580; → 409 at the HTTP layer).
+var ErrDisplayNameTaken = errors.New("display name already in use by another actor")
+
 // SetActorDisplayName sets an NPC's display name. The name is trimmed and must be
 // non-empty (an NPC has no catalog-name fallback — unlike a village object — so a
-// blank name is rejected), within MaxActorDisplayNameLen, and free of control
-// characters (else ErrInvalidDisplayName). Emits NPCDisplayNameChanged only on an
-// actual change.
+// blank name is rejected), within MaxActorDisplayNameLen, free of control
+// characters (else ErrInvalidDisplayName), and not held by another live actor
+// (else ErrDisplayNameTaken). Emits NPCDisplayNameChanged only on an actual
+// change.
 func SetActorDisplayName(id ActorID, name string) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -148,6 +157,16 @@ func SetActorDisplayName(id ActorID, name string) Command {
 			}
 			if a.DisplayName == trimmed {
 				return ActorDisplayNameResult{ID: id, DisplayName: trimmed}, nil
+			}
+			// Refuse an in-use name at the door (LLM-580). actor.display_name
+			// carries a UNIQUE constraint, and an in-memory duplicate doesn't
+			// fail HERE — it fails the next CHECKPOINT, killing durability for
+			// the whole village until an operator renames someone (the two-
+			// "Villager" duck incident, 2026-08-01). displayNameInUse is the
+			// same predicate visitor spawn dedupes with; self-collision is
+			// impossible — the a.DisplayName == trimmed no-op returned above.
+			if displayNameInUse(w, trimmed) {
+				return nil, ErrDisplayNameTaken
 			}
 			a.DisplayName = trimmed
 			w.emit(&NPCDisplayNameChanged{ActorID: id, DisplayName: trimmed, At: time.Now().UTC()})

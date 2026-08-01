@@ -61,6 +61,14 @@ const (
 	// WaterfowlMaxAshoreMoves caps consecutive land potters before the
 	// duck is sent back to the water.
 	WaterfowlMaxAshoreMoves = 3
+
+	// WaterfowlStepDivisor slows waterfowl locomotion: a waterfowl mover
+	// advances on every Nth locomotion tick (LLM-580 — full villager pace
+	// read frantic on a gliding duck). The client's interpolation speed for
+	// waterfowl containers MUST stay in lockstep at 1/N of the normal walk
+	// speed (client/scripts/world.gd npc_walk_speed_factor) — the same
+	// two-sided cadence contract as LOCOMOTION_TICK_SECONDS.
+	WaterfowlStepDivisor = 2
 )
 
 // waterfowlTickerState carries the coalescing flag for the waterfowl
@@ -82,6 +90,10 @@ type waterfowlState struct {
 	// AshoreMoves counts consecutive land legs, so a pottering duck is
 	// herded back into the water at WaterfowlMaxAshoreMoves.
 	AshoreMoves int
+
+	// stepBeat counts locomotion ticks for the WaterfowlStepDivisor slow-walk:
+	// the duck advances only when stepBeat wraps to 0.
+	stepBeat int
 
 	// noWaterLoggedAt de-spams the "no water near duck" log line: a duck
 	// parked away from water hits that branch every decision forever.
@@ -113,6 +125,45 @@ func walkGridForActor(w *World, a *Actor) (*WalkGrid, error) {
 		return buildWaterfowlWalkGrid(w)
 	}
 	return buildWalkGrid(w)
+}
+
+// waterfowlShouldStep implements the WaterfowlStepDivisor slow-walk: called
+// once per locomotion tick for a MOVING waterfowl, it advances the per-duck
+// beat counter and reports whether this tick is a stepping one. The counter
+// lives on the wander state so it needs no Actor field; a duck moving before
+// its first wander decision (admin MoveActor) lazily creates the state.
+//
+// MUST be called from inside a Command.Fn.
+func waterfowlShouldStep(w *World, id ActorID) bool {
+	st := ensureWaterfowlState(w, id)
+	st.stepBeat = (st.stepBeat + 1) % WaterfowlStepDivisor
+	return st.stepBeat == 0
+}
+
+// waterfowlResetStepBeat re-arms the slow-walk beat so the NEXT locomotion
+// tick is a stepping one. MoveActor calls this for every accepted waterfowl
+// movement (fresh or supersede), making a new walk's first-step timing
+// deterministic — without it the first tick stepped or skipped depending on
+// where the previous walk's beat happened to end, and the client (which
+// starts its half-speed lerp at walk start) drew a nondeterministic lead.
+//
+// MUST be called from inside a Command.Fn.
+func waterfowlResetStepBeat(w *World, id ActorID) {
+	ensureWaterfowlState(w, id).stepBeat = WaterfowlStepDivisor - 1
+}
+
+// ensureWaterfowlState returns (lazily creating) the per-duck wander state.
+// MUST be called from inside a Command.Fn.
+func ensureWaterfowlState(w *World, id ActorID) *waterfowlState {
+	if w.waterfowl == nil {
+		w.waterfowl = make(map[ActorID]*waterfowlState)
+	}
+	st := w.waterfowl[id]
+	if st == nil {
+		st = &waterfowlState{}
+		w.waterfowl[id] = st
+	}
+	return st
 }
 
 // isWaterTile reports whether the terrain byte at (x, y) is water.
