@@ -14,6 +14,32 @@ UPDATE public.npc_sprite
    SET render_scale = 1.0
  WHERE pack_id = 'mana-seed-livestock';
 
+-- Dedupe any existing duplicate display names BEFORE re-adding the
+-- constraint. The live prod DB has two "Villager" rows (the 2026-08-01
+-- incident's ducks, persisted after the constraint was operator-dropped to
+-- restore checkpointing), and ADD CONSTRAINT fails on pre-existing
+-- duplicates. Later rows (by id) get a " N" suffix, matching the spelling
+-- CreateNPC's new self-dedupe mints; the CASE guards the pathological
+-- "Villager 2 already exists" case with an id fragment, and the base is
+-- clipped so the suffixed name stays inside varchar(100).
+WITH ranked AS (
+    SELECT id, display_name,
+           row_number() OVER (PARTITION BY display_name ORDER BY id) AS rn
+      FROM public.actor
+)
+UPDATE public.actor a
+   SET display_name = left(a.display_name, 90) || ' ' ||
+       CASE WHEN EXISTS (
+                SELECT 1 FROM public.actor x
+                 WHERE x.display_name = left(a.display_name, 90) || ' ' || r.rn::text
+            )
+            THEN r.rn::text || '-' || left(a.id::text, 4)
+            ELSE r.rn::text
+       END
+  FROM ranked r
+ WHERE a.id = r.id
+   AND r.rn > 1;
+
 -- Defer the display-name uniqueness check to COMMIT. The checkpoint upserts
 -- the live actor set BEFORE deleting stale rows (SaveSnapshot: upsert loop,
 -- then DELETE WHERE snapshot_gen < gen, one transaction) — so with an
