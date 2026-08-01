@@ -166,26 +166,41 @@ func TestDisplayNameUniqueness(t *testing.T) {
 		}
 	}
 
-	// An explicit duplicate is refused outright.
-	if _, err := mkNPC("Villager 2", 300); !errors.Is(err, sim.ErrDisplayNameTaken) {
-		t.Errorf("explicit duplicate create err = %v, want ErrDisplayNameTaken", err)
+	// LLM-586: an editor placement is born decorative, and decoratives are
+	// exempt from the uniqueness rule, so an explicit duplicate is ACCEPTED.
+	dupID, err := mkNPC("Villager 2", 300)
+	if err != nil {
+		t.Fatalf("explicit duplicate create for a decorative should be allowed: %v", err)
+	}
+	if got := nameOf(dupID); got != "Villager 2" {
+		t.Errorf("explicit duplicate name = %q, want %q — it must not be silently deduped", got, "Villager 2")
 	}
 
-	// Rename onto an in-use name is refused; rename to a fresh name works;
-	// renaming an actor to its own current name stays a no-op success.
-	if _, err := w.Send(sim.SetActorDisplayName(ids[1], "Villager")); !errors.Is(err, sim.ErrDisplayNameTaken) {
-		t.Errorf("rename onto in-use name err = %v, want ErrDisplayNameTaken", err)
+	// The headline case: several ducks all called "Duck".
+	var duckIDs []sim.ActorID
+	for i := 0; i < 3; i++ {
+		id, err := mkNPC("Duck", float64(600+32*i))
+		if err != nil {
+			t.Fatalf("duck #%d named Duck: %v", i, err)
+		}
+		duckIDs = append(duckIDs, id)
 	}
-	if _, err := w.Send(sim.SetActorDisplayName(ids[1], "Drake")); err != nil {
-		t.Errorf("rename to fresh name: %v", err)
+	for i, id := range duckIDs {
+		if got := nameOf(id); got != "Duck" {
+			t.Errorf("duck #%d = %q, want %q", i, got, "Duck")
+		}
 	}
-	if _, err := w.Send(sim.SetActorDisplayName(ids[1], "Drake")); err != nil {
+
+	// Renaming a decorative onto an in-use name is likewise allowed, and
+	// renaming to its own current name stays a no-op success.
+	if _, err := w.Send(sim.SetActorDisplayName(ids[1], "Villager")); err != nil {
+		t.Errorf("renaming a decorative onto an in-use name should be allowed: %v", err)
+	}
+	if _, err := w.Send(sim.SetActorDisplayName(ids[1], "Villager")); err != nil {
 		t.Errorf("self-rename no-op: %v", err)
 	}
 
-	// A cap-length explicit name still creates once and refuses its
-	// duplicate cleanly. (The dedupe suffix only ever applies to the short
-	// "Villager" default, so it cannot push a name past the cap.)
+	// A cap-length explicit name creates twice without complaint now.
 	long := ""
 	for i := 0; i < sim.MaxActorDisplayNameLen-2; i++ {
 		long += "x"
@@ -193,7 +208,176 @@ func TestDisplayNameUniqueness(t *testing.T) {
 	if _, err := mkNPC(long, 400); err != nil {
 		t.Fatalf("cap-adjacent create: %v", err)
 	}
-	if _, err := mkNPC(long, 432); !errors.Is(err, sim.ErrDisplayNameTaken) {
-		t.Errorf("cap-adjacent duplicate err = %v, want ErrDisplayNameTaken", err)
+	if _, err := mkNPC(long, 432); err != nil {
+		t.Errorf("cap-adjacent duplicate for a decorative should be allowed: %v", err)
 	}
+}
+
+// TestDisplayNameUniquenessDrivenActors — the exemption is decorative-ONLY.
+// An actor with an agent behind it can still speak, be paid and be remembered
+// (npc_acquaintance is keyed by NAME), so a duplicate there is the original
+// checkpoint-killing bug and must still be refused. This is the control that
+// stops the LLM-586 exemption from having quietly disabled the rule outright.
+func TestDisplayNameUniquenessDrivenActors(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	seedDuckSprite(handles)
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+
+	now := time.Now()
+	mkDriven := func(name, agent string, x float64) sim.ActorID {
+		t.Helper()
+		res, err := w.Send(sim.CreateNPC(name, string(duckSpriteID), sim.WorldPos{X: x, Y: 100}, now))
+		if err != nil {
+			t.Fatalf("create %q: %v", name, err)
+		}
+		id := res.(sim.CreateNPCResult).ActorID
+		// Linking an agent reclassifies decorative -> stateful live, which is
+		// what takes the actor OUT of the exemption.
+		if _, err := w.Send(sim.SetActorAgentLink(id, agent)); err != nil {
+			t.Fatalf("link %q: %v", name, err)
+		}
+		return id
+	}
+
+	josiah := mkDriven("Josiah Thorne", "zbbs-josiah-thorne", 100)
+	ezekiel := mkDriven("Ezekiel Crane", "zbbs-ezekiel-crane", 200)
+
+	kindOf := func(id sim.ActorID) sim.ActorKind {
+		res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			return world.Actors[id].Kind, nil
+		}})
+		return res.(sim.ActorKind)
+	}
+	if got := kindOf(josiah); got == sim.KindDecorative {
+		t.Fatalf("setup: linked actor is still decorative (%v) — the refusals below would prove nothing", got)
+	}
+
+	// Renaming one driven actor onto another's name is still refused.
+	if _, err := w.Send(sim.SetActorDisplayName(ezekiel, "Josiah Thorne")); !errors.Is(err, sim.ErrDisplayNameTaken) {
+		t.Errorf("driven rename onto an in-use driven name err = %v, want ErrDisplayNameTaken", err)
+	}
+
+	// A DECORATIVE may take a driven actor's name: the constraint's predicate
+	// covers only driven rows, so the decorative row is outside the index.
+	// Asserted so the in-memory gate and the database predicate cannot drift —
+	// if this ever needs to be forbidden, the constraint must change too.
+	res, err := w.Send(sim.CreateNPC("Josiah Thorne", string(duckSpriteID), sim.WorldPos{X: 300, Y: 100}, now))
+	if err != nil {
+		t.Fatalf("decorative taking a driven actor's name should be allowed (mirrors the DB predicate): %v", err)
+	}
+	impostor := res.(sim.CreateNPCResult).ActorID
+
+	// ...but PROMOTING that decorative would create the forbidden state, so
+	// the link must be refused rather than silently producing two driven
+	// "Josiah Thorne"s — the exact row pair the constraint rejects at COMMIT.
+	if _, err := w.Send(sim.SetActorAgentLink(impostor, "zbbs-impostor")); !errors.Is(err, sim.ErrDisplayNameTaken) {
+		t.Errorf("promoting a decorative onto an in-use driven name err = %v, want ErrDisplayNameTaken", err)
+	}
+
+	// The gate reads the persisted columns, not Kind, so it holds for a PC too
+	// — a login is the other half of the constraint's OR.
+	if _, err := w.Send(sim.CreatePC("player-1", "Wendy", string(duckSpriteID), now)); err != nil {
+		t.Fatalf("create PC: %v", err)
+	}
+	if !sim.ActorIsDriven(actorOf(t, w, ezekiel)) {
+		t.Error("an agent-linked actor must read as driven")
+	}
+	pcs := actorsNamed(t, w, "Wendy")
+	if len(pcs) != 1 || !sim.ActorIsDriven(pcs[0]) {
+		t.Fatalf("expected exactly one driven PC named Wendy, got %d", len(pcs))
+	}
+	// A decorative may still take the PC's name (outside the predicate)...
+	res2, err := w.Send(sim.CreateNPC("Wendy", string(duckSpriteID), sim.WorldPos{X: 400, Y: 100}, now))
+	if err != nil {
+		t.Fatalf("decorative taking a PC's name should be allowed: %v", err)
+	}
+	// ...but promoting THAT one is refused, proving the gate covers the login
+	// arm of the predicate and not just the agent arm.
+	if _, err := w.Send(sim.SetActorAgentLink(res2.(sim.CreateNPCResult).ActorID, "zbbs-wendy-impostor")); !errors.Is(err, sim.ErrDisplayNameTaken) {
+		t.Errorf("promoting a decorative onto an in-use PC name err = %v, want ErrDisplayNameTaken", err)
+	}
+}
+
+// TestActorIsDrivenMatchesPersistedNullness — ActorIsDriven must agree with
+// what the write path persists, since it is the in-memory mirror of the
+// actor_display_name_excl predicate (SQL: IS NOT NULL). nilOnEmpty maps ONLY
+// the exact empty string to NULL, so a whitespace-only value persists as NOT
+// NULL and is driven. Trimming here would call that actor decorative and let
+// the display-name gate wave through a duplicate the deferred constraint then
+// rejects at COMMIT — a wedged checkpoint rather than a returned error.
+func TestActorIsDrivenMatchesPersistedNullness(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		agent      string
+		login      string
+		wantDriven bool
+	}{
+		{"both empty (decorative)", "", "", false},
+		{"agent set", "zbbs-josiah", "", true},
+		{"login set", "", "player-1", true},
+		// The cases that motivate the bare != "": these persist NOT NULL.
+		{"whitespace agent persists non-null", " ", "", true},
+		{"tab agent persists non-null", "\t", "", true},
+		{"whitespace login persists non-null", "", "  ", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &sim.Actor{LLMAgent: tc.agent, LoginUsername: tc.login}
+			if got := sim.ActorIsDriven(a); got != tc.wantDriven {
+				t.Errorf("ActorIsDriven(agent=%q login=%q) = %v, want %v",
+					tc.agent, tc.login, got, tc.wantDriven)
+			}
+			// The invariant being pinned: driven-ness must equal "the write
+			// path would store a NOT NULL value for at least one column".
+			persistsNonNull := tc.agent != "" || tc.login != ""
+			if got := sim.ActorIsDriven(a); got != persistsNonNull {
+				t.Errorf("ActorIsDriven = %v but the columns persist non-null = %v — "+
+					"the in-memory gate and the SQL predicate have diverged",
+					got, persistsNonNull)
+			}
+		})
+	}
+	if sim.ActorIsDriven(nil) {
+		t.Error("ActorIsDriven(nil) must be false")
+	}
+}
+
+// actorOf reads one actor off the world goroutine.
+func actorOf(t *testing.T, w *sim.World, id sim.ActorID) *sim.Actor {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors[id], nil
+	}})
+	if err != nil {
+		t.Fatalf("read actor %s: %v", id, err)
+	}
+	return res.(*sim.Actor)
+}
+
+// actorsNamed collects every actor carrying the given display name.
+func actorsNamed(t *testing.T, w *sim.World, name string) []*sim.Actor {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		var out []*sim.Actor
+		for _, a := range world.Actors {
+			if a != nil && a.DisplayName == name {
+				out = append(out, a)
+			}
+		}
+		return out, nil
+	}})
+	if err != nil {
+		t.Fatalf("scan actors named %q: %v", name, err)
+	}
+	return res.([]*sim.Actor)
 }

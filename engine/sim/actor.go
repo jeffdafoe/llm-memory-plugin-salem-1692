@@ -103,6 +103,39 @@ func ClassifyActorKind(loginUsername, llmAgent string) ActorKind {
 	return KindDecorative
 }
 
+// ActorIsDriven reports whether something drives this actor — an LLM agent or
+// a human login — as opposed to it being sprite-only scenery. It is the
+// complement of KindDecorative, expressed in the two PERSISTED COLUMNS rather
+// than the derived Kind.
+//
+// Reading the columns is deliberate, not incidental (LLM-586). This predicate
+// is the in-memory mirror of the actor_display_name_excl constraint, whose SQL
+// is character-for-character the same test:
+//
+//	WHERE (llm_memory_agent IS NOT NULL OR login_username IS NOT NULL)
+//
+// Going through Kind instead would make the two equivalent only so long as
+// Kind is recomputed synchronously on every write to either column — a
+// standing invariant to maintain, and one whose breach would silently let a
+// row into the database predicate without passing the in-memory gate. Off the
+// columns there is no invariant to keep.
+//
+// The comparison is a bare != "" and MUST NOT trim. The write path's
+// nilOnEmpty maps only the exact empty string to SQL NULL, so a whitespace-only
+// value like " " persists as NOT NULL and is DRIVEN to the constraint. Trimming
+// here would call that same actor decorative, and the in-memory gate would then
+// wave through a duplicate that the deferred constraint rejects at COMMIT —
+// which is a wedged checkpoint, not a returned error. Non-NULL is exactly
+// `!= ""` on this side; keep the two spelled the same way.
+//
+// This deliberately diverges from ClassifyActorKind, which DOES trim: a " "
+// agent is scenery as far as ticking is concerned but occupies a name as far
+// as the database is concerned. Erring toward "driven" is the safe direction —
+// it over-enforces uniqueness rather than under-enforcing it.
+func ActorIsDriven(a *Actor) bool {
+	return a != nil && (a.LLMAgent != "" || a.LoginUsername != "")
+}
+
 // MemoryPartition is the SINGLE source of truth for where an actor's private
 // memory lives inside its llm-memory namespace (LLM-356). It returns the slug
 // prefix that scopes that actor's memory and whether the actor has memory at
