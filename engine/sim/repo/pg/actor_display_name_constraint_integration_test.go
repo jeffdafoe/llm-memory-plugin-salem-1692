@@ -115,6 +115,45 @@ func TestIntegration_ActorDisplayName_DecorativeMayTakeADrivenName(t *testing.T)
 	}
 }
 
+// TestIntegration_ActorDisplayName_WhitespaceDriverIsNotNull — the database
+// half of the ActorIsDriven whitespace contract. nilOnEmpty maps ONLY "" to
+// NULL, so a whitespace-only agent persists NOT NULL and the row is inside the
+// constraint's predicate. If ActorIsDriven trimmed, the in-memory gate would
+// call this actor decorative and allow a duplicate that the deferred
+// constraint then rejects at COMMIT — a wedged checkpoint, not an error the
+// operator sees. Pinned at the boundary so the Go-side unit test cannot be
+// right about the wrong thing.
+func TestIntegration_ActorDisplayName_WhitespaceDriverIsNotNull(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	// A whitespace-only agent, exactly as nilOnEmpty would pass it through.
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO actor (id, display_name, current_x, current_y, llm_memory_agent)
+		 VALUES ($1, 'Josiah Thorne', 0, 0, ' ')`, dnActorA); err != nil {
+		t.Fatalf("seed whitespace-agent actor: %v", err)
+	}
+
+	var isNull bool
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT llm_memory_agent IS NULL FROM actor WHERE id = $1`, dnActorA).Scan(&isNull); err != nil {
+		t.Fatalf("nullness probe: %v", err)
+	}
+	if isNull {
+		t.Fatal("setup: a whitespace agent stored as NULL — the premise of this test is gone")
+	}
+
+	// Being NOT NULL, the row is in the predicate: a second driven actor with
+	// the same name must be rejected.
+	err := insertActor(t, f, dnActorB, "Josiah Thorne", "agent")
+	if err == nil {
+		t.Fatal("a whitespace-agent row must occupy the name; the duplicate was accepted")
+	}
+	if !strings.Contains(err.Error(), "actor_display_name_excl") {
+		t.Errorf("error = %v, want a violation naming actor_display_name_excl", err)
+	}
+}
+
 // TestIntegration_ActorDisplayName_CheckpointOrdering — the reason the
 // constraint must be DEFERRABLE, replayed as the checkpoint performs it:
 // upsert the live actor set FIRST, delete stale rows SECOND, one transaction.

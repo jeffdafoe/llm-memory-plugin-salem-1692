@@ -309,6 +309,49 @@ func TestDisplayNameUniquenessDrivenActors(t *testing.T) {
 	}
 }
 
+// TestActorIsDrivenMatchesPersistedNullness — ActorIsDriven must agree with
+// what the write path persists, since it is the in-memory mirror of the
+// actor_display_name_excl predicate (SQL: IS NOT NULL). nilOnEmpty maps ONLY
+// the exact empty string to NULL, so a whitespace-only value persists as NOT
+// NULL and is driven. Trimming here would call that actor decorative and let
+// the display-name gate wave through a duplicate the deferred constraint then
+// rejects at COMMIT — a wedged checkpoint rather than a returned error.
+func TestActorIsDrivenMatchesPersistedNullness(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		agent      string
+		login      string
+		wantDriven bool
+	}{
+		{"both empty (decorative)", "", "", false},
+		{"agent set", "zbbs-josiah", "", true},
+		{"login set", "", "player-1", true},
+		// The cases that motivate the bare != "": these persist NOT NULL.
+		{"whitespace agent persists non-null", " ", "", true},
+		{"tab agent persists non-null", "\t", "", true},
+		{"whitespace login persists non-null", "", "  ", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &sim.Actor{LLMAgent: tc.agent, LoginUsername: tc.login}
+			if got := sim.ActorIsDriven(a); got != tc.wantDriven {
+				t.Errorf("ActorIsDriven(agent=%q login=%q) = %v, want %v",
+					tc.agent, tc.login, got, tc.wantDriven)
+			}
+			// The invariant being pinned: driven-ness must equal "the write
+			// path would store a NOT NULL value for at least one column".
+			persistsNonNull := tc.agent != "" || tc.login != ""
+			if got := sim.ActorIsDriven(a); got != persistsNonNull {
+				t.Errorf("ActorIsDriven = %v but the columns persist non-null = %v — "+
+					"the in-memory gate and the SQL predicate have diverged",
+					got, persistsNonNull)
+			}
+		})
+	}
+	if sim.ActorIsDriven(nil) {
+		t.Error("ActorIsDriven(nil) must be false")
+	}
+}
+
 // actorOf reads one actor off the world goroutine.
 func actorOf(t *testing.T, w *sim.World, id sim.ActorID) *sim.Actor {
 	t.Helper()
