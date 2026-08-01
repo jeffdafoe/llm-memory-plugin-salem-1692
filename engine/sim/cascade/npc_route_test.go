@@ -171,7 +171,7 @@ func TestLamplighterDispatchesOnPhaseApplied(t *testing.T) {
 	// Night transition: lamp-A/B carved out of the bulk pass; the
 	// lamplighter cascade subscriber dispatches a route to flip
 	// them back to "lit".
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false)); err != nil {
 		t.Fatalf("night transition: %v", err)
 	}
 	if !hasActiveRoute(t, w) {
@@ -192,7 +192,7 @@ func TestLamplighterNoActor(t *testing.T) {
 	cancel := runRouteCascadeWorld(t, w)
 	defer cancel()
 
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false)); err != nil {
 		t.Fatalf("transition: %v", err)
 	}
 	if hasActiveRoute(t, w) {
@@ -612,7 +612,7 @@ func TestArrivalAdvancesRoute(t *testing.T) {
 	cancel := runRouteCascadeWorld(t, w)
 	defer cancel()
 
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay, false)); err != nil {
 		t.Fatalf("transition: %v", err)
 	}
 	if !hasActiveRoute(t, w) {

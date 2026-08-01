@@ -311,6 +311,12 @@ type PhaseApplied struct {
 	To              Phase
 	Gen             uint64
 	ObjectsAffected int
+	// Forced marks an operator-initiated transition (admin force-phase /
+	// umbilical) as opposed to the scheduled dawn/dusk ticker. The client
+	// renders forced transitions with a short tween so the config-panel
+	// buttons visibly respond, while scheduled ones keep the slow
+	// sunset/sunrise pace (LLM-578).
+	Forced bool
 }
 
 func (PhaseApplied) isSimEvent() {}

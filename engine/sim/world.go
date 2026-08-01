@@ -29,7 +29,8 @@ type WorldEnvironment struct {
 	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go. Restart-lossy by design — cosmetic prose, fresh fire after restart is acceptable.
 	LastWeatherChangeAt     time.Time // last weather transition (UTC); see engine/sim/weather.go. Restart-lossy by design — the storm sweep boots to clear and reseeds this (SeedWeatherClear), so it is NOT persisted.
 	StormDueAt              time.Time // earliest the next automatic storm may start (UTC); armed by the storm sweep (engine/sim/cascade/storm.go), zero = unarmed. Separate from LastWeatherChangeAt because the sweep re-arms it while the village is empty, and LastWeatherChangeAt also feeds WeatherChangedSinceAtmosphere. Transient — not persisted.
-	LastTransitionAt        time.Time // last day↔night transition (UTC). Durable — persisted in world_state.last_transition_at.
+	LastTransitionAt        time.Time // last day↔night transition APPLY (UTC), real flip or idempotent re-apply — the phase ticker's boundary-dedupe stamp. Durable — persisted in world_state.last_transition_at.
+	LastPhaseFlipAt         time.Time // last REAL day↔night flip (From != To, UTC). Feeds the public world DTO's last_transition_at, which the client reads as "when the current phase began" to position its sunset curve — a redundant force-phase must NOT re-baseline that or a resyncing client jumps toward the opposite pole (LLM-578 code_review). NOT persisted: boot-initialized from LastTransitionAt in LoadWorld, which is the real flip instant in every case except a redundant force with no flip after it before shutdown.
 	LastRotationAt          time.Time // last daily asset rotation (UTC). Durable — persisted in world_state.last_rotation_at.
 	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
 }
@@ -1769,6 +1770,9 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Environment = env
+	// Boot-init the non-persisted real-flip stamp from the durable apply
+	// stamp — see the LastPhaseFlipAt field doc for why they differ.
+	w.Environment.LastPhaseFlipAt = env.LastTransitionAt
 	w.Phase = phase
 	w.Settings = settings
 

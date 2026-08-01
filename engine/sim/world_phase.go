@@ -181,6 +181,11 @@ type PendingFlip struct {
 
 // ApplyPhaseTransition returns a Command that moves the world to newPhase,
 // stamps LastTransitionAt, bumps PhaseFlipGen, and schedules per-object
+// state flips. forced marks an operator-initiated transition (admin /
+// umbilical force-phase) — it rides the PhaseApplied event so the client
+// can render a fast tween instead of the hour-long scheduled pace; the
+// sim-side behavior is identical either way (LLM-578).
+//
 // state flips for every village_object whose asset has a state tagged with
 // the target phase's tag. Idempotent on already-applied flips (the
 // SetVillageObjectState command skips when current_state already matches).
@@ -208,7 +213,7 @@ type PendingFlip struct {
 //
 // OCCUPANCY REFRESH for night-only structures (legacy
 // refreshNightOnlyOccupancyStates) is stubbed pending the occupancy port.
-func ApplyPhaseTransition(newPhase Phase) Command {
+func ApplyPhaseTransition(newPhase Phase, forced bool) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			if newPhase != PhaseDay && newPhase != PhaseNight {
@@ -218,6 +223,16 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			from := w.Phase
 
 			w.Phase = newPhase
+			// A REAL flip additionally stamps LastPhaseFlipAt — the instant
+			// the current phase began, served to clients as the public DTO's
+			// last_transition_at. An idempotent re-apply (From == To) must
+			// not touch it, or a client resyncing right after a redundant
+			// force would read "the phase just started", position its sunset
+			// curve at the opposite pole, and animate a phantom transition
+			// (LLM-578 code_review).
+			if from != newPhase {
+				w.Environment.LastPhaseFlipAt = now
+			}
 			// LastTransitionAt is the WALL-CLOCK instant the transition
 			// command applied — not the scheduled boundary time. Two
 			// implications:
@@ -277,6 +292,7 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 				To:              newPhase,
 				Gen:             gen,
 				ObjectsAffected: len(flips),
+				Forced:          forced,
 			})
 
 			log.Printf("sim/world_phase: transitioned %s -> %s at %s (gen %d, %d flips scheduled)",
@@ -533,7 +549,7 @@ func checkAndTransition(ctx context.Context, w *World) {
 		return
 	}
 
-	if _, err := w.SendContext(ctx, ApplyPhaseTransition(targetPhase)); err != nil {
+	if _, err := w.SendContext(ctx, ApplyPhaseTransition(targetPhase, false)); err != nil {
 		if ctx.Err() == nil {
 			log.Printf("sim/world_phase: transition to %s failed: %v", targetPhase, err)
 		}

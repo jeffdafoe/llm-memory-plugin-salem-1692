@@ -182,6 +182,85 @@ func TestHandleWorld(t *testing.T) {
 	if dto.Atmosphere != "a hush over the square" {
 		t.Errorf("atmosphere = %q", dto.Atmosphere)
 	}
+	// Omit-on-unset-only (LLM-578): the seeded world never transitioned, so
+	// last_transition_at must be ABSENT — not the 0001-01-01 zero instant.
+	if dto.LastTransitionAt != nil {
+		t.Errorf("last_transition_at = %v, want omitted on a never-transitioned world", dto.LastTransitionAt)
+	}
+}
+
+// TestHandleWorld_TransitionAndBoundaries: last_transition_at rides the public
+// world DTO once a transition has happened, alongside the configured dawn/dusk
+// "HH:MM" boundaries — the fields the client's phase-curve positioning and the
+// editor schedule prepopulation read (LLM-578).
+func TestHandleWorld_TransitionAndBoundaries(t *testing.T) {
+	w := seededWorld(t)
+	at := time.Date(2026, 7, 31, 23, 29, 16, 0, time.UTC)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Environment.LastPhaseFlipAt = at
+		world.Settings.DawnTime = "07:00"
+		world.Settings.DuskTime = "19:00"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed transition: %v", err)
+	}
+
+	srv := NewServer(w, okAuth{})
+	rec := get(t, srv, "/api/village/world")
+	var dto WorldStateDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.LastTransitionAt == nil || !dto.LastTransitionAt.Equal(at) {
+		t.Errorf("last_transition_at = %v, want %v", dto.LastTransitionAt, at)
+	}
+	if dto.DawnTime != "07:00" || dto.DuskTime != "19:00" {
+		t.Errorf("dawn/dusk = %q/%q, want 07:00/19:00", dto.DawnTime, dto.DuskTime)
+	}
+}
+
+// TestHandleWorld_RedundantForceKeepsFlipStamp: an idempotent force-phase to
+// the CURRENT phase advances the ticker's dedupe stamp but must NOT move the
+// DTO's last_transition_at — otherwise a client resyncing right after reads
+// "the phase just started", positions its sunset curve at the opposite pole,
+// and animates a phantom transition (LLM-578 code_review finding).
+func TestHandleWorld_RedundantForceKeepsFlipStamp(t *testing.T) {
+	w := seededWorld(t) // seeded phase: night
+	srv := NewServer(w, okAuth{})
+
+	// Real flip: night -> day.
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay, true)); err != nil {
+		t.Fatalf("real flip: %v", err)
+	}
+	var first WorldStateDTO
+	if err := json.Unmarshal(get(t, srv, "/api/village/world").Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if first.LastTransitionAt == nil {
+		t.Fatal("last_transition_at absent after a real flip")
+	}
+
+	// Redundant force: day -> day.
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay, true)); err != nil {
+		t.Fatalf("redundant force: %v", err)
+	}
+	var second WorldStateDTO
+	if err := json.Unmarshal(get(t, srv, "/api/village/world").Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if second.LastTransitionAt == nil || !second.LastTransitionAt.Equal(*first.LastTransitionAt) {
+		t.Errorf("last_transition_at moved on a redundant force: %v -> %v", first.LastTransitionAt, second.LastTransitionAt)
+	}
+	// The dedupe stamp DID advance (or at minimum did not regress) — the
+	// scheduler still needs it to consider the boundary processed.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if world.Environment.LastTransitionAt.Before(world.Environment.LastPhaseFlipAt) {
+			t.Error("dedupe stamp regressed behind the flip stamp")
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
 }
 
 func TestHandleAgentDrivers(t *testing.T) {

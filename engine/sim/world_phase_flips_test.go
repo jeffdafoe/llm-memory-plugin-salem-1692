@@ -280,7 +280,7 @@ func TestApplyPhaseTransitionFiresFlips(t *testing.T) {
 	// Transition night → day. lamp-A flips "lit" → "unlit". torch
 	// also flips (no lamplighter actor → no carve-out). lamp-B is
 	// already at "unlit" (its day-state target).
-	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay))
+	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay, false))
 	if err != nil {
 		t.Fatalf("transition: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestApplyPhaseTransitionFiresFlips_LamplighterCarveOut(t *testing.T) {
 		t.Fatalf("seed lamplighter: %v", err)
 	}
 
-	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay))
+	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay, false))
 	if err != nil {
 		t.Fatalf("transition: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestApplyPhaseTransitionRedundantAlignsStragglers(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight))
+	res, _ := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false))
 	tr := res.(sim.PhaseTransitionResult)
 	if tr.From != sim.PhaseNight || tr.To != sim.PhaseNight {
 		t.Errorf("redundant transition: From=%q To=%q, want both night", tr.From, tr.To)

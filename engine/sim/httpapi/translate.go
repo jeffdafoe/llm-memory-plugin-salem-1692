@@ -172,7 +172,8 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{}, false
 	case *sim.PhaseApplied:
 		return WireFrame{Type: "world_phase_changed", Data: phaseChangedWireDTO{
-			Phase: string(e.To),
+			Phase:  string(e.To),
+			Forced: e.Forced,
 		}}, true
 	case *sim.WeatherChanged:
 		return WireFrame{Type: "weather_changed", Data: weatherChangedWireDTO{
@@ -727,6 +728,11 @@ type spokeWireDTO struct {
 // frames, so this carries only the scalar phase.
 type phaseChangedWireDTO struct {
 	Phase string `json:"phase"`
+	// Forced marks an operator force-phase (admin panel / umbilical). The
+	// client renders it with a short tween so the button visibly responds;
+	// scheduled dawn/dusk transitions (forced absent/false) keep the
+	// hour-long sunset pace (LLM-578). Additive — old clients ignore it.
+	Forced bool `json:"forced,omitempty"`
 }
 
 // weatherChangedWireDTO is the weather_changed payload — the storm boundary

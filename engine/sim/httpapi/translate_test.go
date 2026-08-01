@@ -466,6 +466,23 @@ func TestTranslateEvent_PhaseApplied(t *testing.T) {
 	if d.Phase != "night" {
 		t.Errorf("phase = %q, want night", d.Phase)
 	}
+	if d.Forced {
+		t.Error("scheduled transition should not carry forced")
+	}
+}
+
+// TestTranslateEvent_PhaseAppliedForced: an operator force-phase rides the
+// frame as forced=true so the client can answer with a short tween instead of
+// the hour-long sunset pace (LLM-578).
+func TestTranslateEvent_PhaseAppliedForced(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.PhaseApplied{From: sim.PhaseDay, To: sim.PhaseNight, Forced: true})
+	if !ok {
+		t.Fatal("forced PhaseApplied should translate")
+	}
+	d := frame.Data.(phaseChangedWireDTO)
+	if !d.Forced {
+		t.Error("forced transition should carry forced=true")
+	}
 }
 
 // TestTranslateEvent_PhaseAppliedIdempotent: an admin force-phase to the current

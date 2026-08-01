@@ -190,7 +190,7 @@ func (s *Server) handleUmbilicalPhase(w http.ResponseWriter, r *http.Request) {
 
 	auditUmbilical(user.Username, "phase", "to="+req.Phase)
 
-	res, err := s.world.SendContext(r.Context(), sim.ApplyPhaseTransition(phase))
+	res, err := s.world.SendContext(r.Context(), sim.ApplyPhaseTransition(phase, true))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return

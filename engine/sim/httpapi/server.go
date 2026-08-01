@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -541,7 +542,7 @@ func (s *Server) handleRefreshAttributes(w http.ResponseWriter, _ *http.Request)
 
 // worldStateFromSnapshot maps the snapshot's world-level state to the wire DTO.
 func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
-	return WorldStateDTO{
+	dto := WorldStateDTO{
 		ContractVersion: ContractVersion,
 		Phase:           string(s.Phase),
 		Tick:            s.AtTick,
@@ -553,6 +554,22 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 		ZoomMinAdmin:   s.ZoomMinAdmin,
 		ZoomMinRegular: s.ZoomMinRegular,
 	}
+	// Omit-on-unset-only: a fresh world that has never transitioned sends no
+	// last_transition_at, and the client falls back to snapping the pole color.
+	// Sourced from the REAL-flip stamp, not the ticker's dedupe stamp, so an
+	// idempotent force-phase can't re-baseline the client's sunset curve.
+	if !s.Environment.LastPhaseFlipAt.IsZero() {
+		at := s.Environment.LastPhaseFlipAt.UTC()
+		dto.LastTransitionAt = &at
+	}
+	// Dawn/dusk ride only when both boundaries parsed at publish — mirrors the
+	// DawnDuskMinuteOK guard perception uses, so a half-parsed config can't
+	// serve one real bound and one 00:00.
+	if s.DawnDuskMinuteOK {
+		dto.DawnTime = fmt.Sprintf("%02d:%02d", s.DawnMinute/60, s.DawnMinute%60)
+		dto.DuskTime = fmt.Sprintf("%02d:%02d", s.DuskMinute/60, s.DuskMinute%60)
+	}
+	return dto
 }
 
 // agentsFromSnapshot maps every actor to an AgentDTO, sorted by ID so the

@@ -145,14 +145,14 @@ func TestOccupancy_InnNightOnly(t *testing.T) {
 		t.Fatalf("guest inside by day, inn = %q, want unoccupied (night-only)", got)
 	}
 
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false)); err != nil {
 		t.Fatalf("transition night: %v", err)
 	}
 	if got := objState(w, "inn"); got != "occupied" {
 		t.Fatalf("after dusk, inn = %q, want occupied", got)
 	}
 
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay, false)); err != nil {
 		t.Fatalf("transition day: %v", err)
 	}
 	if got := objState(w, "inn"); got != "unoccupied" {
@@ -183,7 +183,7 @@ func TestOccupancy_RestingExcludedNonNightOnly(t *testing.T) {
 
 	// Inn (night-only): a sleeping guest DOES count. Lit at night.
 	seedActorInside(t, w, "guest", "inn", nil, &future)
-	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight, false)); err != nil {
 		t.Fatalf("transition night: %v", err)
 	}
 	if got := objState(w, "inn"); got != "occupied" {
