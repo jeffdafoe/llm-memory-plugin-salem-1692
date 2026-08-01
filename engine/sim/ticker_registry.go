@@ -62,6 +62,7 @@ func RegisterCoreTickers(w *World) {
 	// idle. (AfterFunc was chosen for coalescing and for re-reading the cadence
 	// from settings on each re-arm, not because the beat is event-driven.)
 	w.RegisterTicker("reactor", effectiveReactorEvaluatorCadence(w.Settings))
+	w.RegisterTicker("waterfowl", WaterfowlTickInterval)
 	w.RegisterTicker("order_sweep", effectiveOrderSweepCadence(w.Settings))
 	w.RegisterTicker("pay_ledger_sweep", effectivePayLedgerSweepCadence(w.Settings))
 	w.RegisterTicker("labor_ledger_sweep", effectiveLaborLedgerSweepCadence())

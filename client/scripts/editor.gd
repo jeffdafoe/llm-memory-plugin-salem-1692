@@ -679,10 +679,12 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
 
     return best_node
 
-## Find the sprite or animated sprite child of an object container.
+## Find the sprite or animated sprite child of an object or NPC container.
+## Skips a waterfowl's "GroundDecal" (LLM-579) — the decal sits first in the
+## child list but is never the node selection/hit-testing should measure.
 func _get_sprite_child(node: Node2D) -> Node2D:
     for child in node.get_children():
-        if child is Sprite2D or child is AnimatedSprite2D:
+        if (child is Sprite2D or child is AnimatedSprite2D) and child.name != "GroundDecal":
             return child
     return null
 

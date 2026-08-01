@@ -79,6 +79,18 @@ func TerrainCost(b byte) uint8 {
 	}
 }
 
+// waterfowlTerrainCost is TerrainCost with water opened up (LLM-579): a
+// waterfowl swims at road cost while every land cost stays identical, so
+// on-shore pottering paths exactly like a villager's walk. Obstacle /
+// passage / door stamping is shared with the standard grid — a building
+// footprint blocks a duck the same as anyone.
+func waterfowlTerrainCost(b byte) uint8 {
+	if b == TerrainShallowWater || b == TerrainDeepWater {
+		return 1
+	}
+	return TerrainCost(b)
+}
+
 // buildWalkGrid constructs a WalkGrid from the current world state:
 // terrain bytes + asset-stamped obstacles/passages + door corridor
 // carve-outs.
@@ -93,6 +105,21 @@ func TerrainCost(b byte) uint8 {
 // misuse from future HTTP handlers; the discipline that callers MUST be
 // inside a Command.Fn lives only in this doc-comment. Keep it internal.
 func buildWalkGrid(w *World) (*WalkGrid, error) {
+	return buildWalkGridWithTerrainCost(w, TerrainCost)
+}
+
+// buildWaterfowlWalkGrid is buildWalkGrid with water opened for waterfowl
+// (LLM-579). Everything except the terrain base costs — obstacle stamping,
+// overhang surcharge, passages, door carve-outs — is identical, so the two
+// grids can never disagree about structures.
+func buildWaterfowlWalkGrid(w *World) (*WalkGrid, error) {
+	return buildWalkGridWithTerrainCost(w, waterfowlTerrainCost)
+}
+
+// buildWalkGridWithTerrainCost is the shared grid assembly, parameterized on
+// the terrain-byte cost function. Same contract as buildWalkGrid (MUST be
+// called from inside a Command.Fn).
+func buildWalkGridWithTerrainCost(w *World, terrainCost func(byte) uint8) (*WalkGrid, error) {
 	if w.Terrain == nil {
 		return nil, fmt.Errorf("terrain not loaded")
 	}
@@ -103,7 +130,7 @@ func buildWalkGrid(w *World) (*WalkGrid, error) {
 
 	g := &WalkGrid{cost: make([]uint8, MapW*MapH)}
 	for i, b := range w.Terrain.Data {
-		g.cost[i] = TerrainCost(b)
+		g.cost[i] = terrainCost(b)
 	}
 
 	// Two-pass stamping: obstacles first, then passages (so a bridge

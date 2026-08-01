@@ -1370,6 +1370,7 @@ type World struct {
 	Speech             *SpeechHelper
 	reactorEval        reactorEvaluatorState
 	locomotionTick     locomotionTickerState
+	waterfowlTick      waterfowlTickerState
 	sceneQuoteSweep    sceneQuoteSweepState
 	payLedgerSweep     payLedgerSweepState
 	laborLedgerSweep   laborLedgerSweepState
@@ -1377,6 +1378,12 @@ type World struct {
 	huddleSilenceSweep huddleSilenceSweepState
 	huddleLoopSweep    huddleLoopSweepState
 	ecoConcludeSweep   ecoConcludeSweepState
+
+	// waterfowl is the per-duck transient wander state (LLM-579). Lazily
+	// created by the waterfowl ticker; never checkpointed or snapshotted —
+	// restart-lossy by design (the checkpointed actor position is the
+	// re-seed anchor). World-goroutine-only.
+	waterfowl map[ActorID]*waterfowlState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first

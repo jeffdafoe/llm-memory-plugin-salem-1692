@@ -66,7 +66,10 @@ func SetActorPosition(actorID ActorID, target Position, now time.Time) Command {
 				return nil, ErrActorNotFound
 			}
 
-			grid, err := buildWalkGrid(w)
+			// Per-actor grid (LLM-579): a waterfowl may be teleported onto
+			// water — its walkable surface — while everyone else keeps the
+			// land-only rule this guard exists for.
+			grid, err := walkGridForActor(w, actor)
 			if err != nil {
 				return nil, fmt.Errorf("build walk grid: %w", err)
 			}

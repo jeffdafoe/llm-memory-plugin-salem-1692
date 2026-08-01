@@ -401,14 +401,12 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D)
     # mid-walk seamlessly. Default to facing meta (or south) if no anim.
     var facing: String = str(container.get_meta("facing", "south"))
     var current_anim: String = ""
-    var existing_sprite: AnimatedSprite2D = null
-    for child in container.get_children():
-        if child is AnimatedSprite2D:
-            existing_sprite = child
-            current_anim = child.animation
-            break
+    var existing_sprite: AnimatedSprite2D = _npc_sprite(container)
+    if existing_sprite != null:
+        current_anim = existing_sprite.animation
 
     var new_sprite := AnimatedSprite2D.new()
+    new_sprite.name = "CharacterSprite"
     new_sprite.sprite_frames = sprite_frames
     new_sprite.centered = false
     new_sprite.scale = Vector2(2, 2)
@@ -431,11 +429,25 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D)
         new_sprite.play(play_name)
 
     if existing_sprite != null:
+        # Rename before the deferred free so the incoming sprite can take the
+        # "CharacterSprite" name this frame (Godot auto-renames on collision).
+        existing_sprite.name = "RetiredCharacterSprite"
         existing_sprite.queue_free()
     container.add_child(new_sprite)
 
     container.set_meta("sprite_id", sprite_data.get("id", ""))
     container.set_meta("sprite_name", sprite_data.get("name", ""))
+    # Waterfowl (LLM-579): the swap can cross the waterfowl boundary in either
+    # direction — refresh the behaviors meta and add/remove the ground decal,
+    # then re-land the surface state preserving the in-flight kind (a duck
+    # swapped mid-walk keeps walking; on water that resolves to swim).
+    var behaviors = sprite_data.get("behaviors", [])
+    container.set_meta("behaviors", behaviors if behaviors is Array else [])
+    _ensure_ground_decal(container, sprite_data, sheet)
+    var kind := "idle"
+    if current_anim.ends_with("_walk") or current_anim.ends_with("_swim"):
+        kind = "walk"
+    play_npc_animation(container, facing, kind)
     npc_metadata_changed.emit(npc_id)
 
 ## Build a SpriteFrames from a sprite catalog entry. Shared by initial NPC
@@ -819,6 +831,7 @@ func _render_npc(npc: Dictionary) -> void:
     container.z_index = OBJECT_Z
 
     var anim_sprite := AnimatedSprite2D.new()
+    anim_sprite.name = "CharacterSprite"
     anim_sprite.sprite_frames = sprite_frames
     anim_sprite.centered = false
     anim_sprite.scale = Vector2(2, 2)
@@ -826,9 +839,18 @@ func _render_npc(npc: Dictionary) -> void:
     anim_sprite.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
     container.add_child(anim_sprite)
 
+    # Waterfowl (LLM-579): behaviors ride the sprite payload; a waterfowl
+    # gets the ground decal (ripple on water / shadow on land) beneath it.
+    var behaviors = sprite_data.get("behaviors", [])
+    container.set_meta("behaviors", behaviors if behaviors is Array else [])
+    _ensure_ground_decal(container, sprite_data, sheet)
+
     var idle_name := facing + "_idle"
     if sprite_frames.has_animation(idle_name):
         anim_sprite.play(idle_name)
+    # Land the correct initial surface state (a duck loaded mid-lake must
+    # float + ripple from frame one, not stand).
+    play_npc_animation(container, facing, "idle")
 
     objects_node.add_child(container)
     placed_npcs[npc_id] = container
@@ -853,15 +875,108 @@ func facing_from_vec(v: Vector2) -> String:
     return "south" if v.y > 0 else "north"
 
 ## Play (direction + "_" + kind) on an NPC's sprite. No-op if the container
-## is missing an AnimatedSprite2D child or the animation doesn't exist.
+## is missing a character sprite or the animation doesn't exist.
+##
+## Waterfowl (LLM-579): a duck standing on water floats — both "idle" and
+## "walk" resolve to the single-frame "swim" pose — and the ground decal flips
+## between ripple (water) and shadow (land) here, so every path that changes
+## an NPC's animation keeps the decal in step.
 func play_npc_animation(container: Node2D, facing: String, kind: String) -> void:
-    for child in container.get_children():
-        if child is AnimatedSprite2D:
-            var anim_name := facing + "_" + kind
-            if child.sprite_frames != null and child.sprite_frames.has_animation(anim_name):
-                if child.animation != anim_name:
-                    child.play(anim_name)
-            return
+    var sprite := _npc_sprite(container)
+    if sprite == null:
+        return
+    if _npc_is_waterfowl(container):
+        var on_water := _is_water_at(container.position)
+        if on_water:
+            kind = "swim"
+        container.set_meta("on_water", on_water)
+        _update_ground_decal(container, on_water)
+    var anim_name := facing + "_" + kind
+    if sprite.sprite_frames != null and sprite.sprite_frames.has_animation(anim_name):
+        if sprite.animation != anim_name:
+            sprite.play(anim_name)
+
+## Whether the sprite this container renders carries the waterfowl behavior
+## (LLM-579). Behaviors arrive on the sprite payload and are stashed as meta
+## at render/swap time.
+func _npc_is_waterfowl(container: Node2D) -> bool:
+    var behaviors = container.get_meta("behaviors", [])
+    return behaviors is Array and behaviors.has("waterfowl")
+
+## Terrain type under a world-pixel position — shallow (5) or deep (6) water
+## means a waterfowl floats there. Same map_data the terrain renderer draws.
+func _is_water_at(world_pos: Vector2) -> bool:
+    if map_data.is_empty():
+        return false
+    var ax: int = int(floor(world_pos.x / VillageApi.tile_size)) + pad_x
+    var ay: int = int(floor(world_pos.y / VillageApi.tile_size)) + pad_y
+    if ax < 0 or ax >= map_width or ay < 0 or ay >= map_height:
+        return false
+    var terrain: int = map_data[ay][ax]
+    return terrain == 5 or terrain == 6
+
+# Ground-decal cell coordinates in the derived duck sheet (see
+# llm-memory-village-tiles tools/extend-duck-sheets.ps1 — the layout contract
+# lives there): two ripple frames at row 4 cols 3-4, the shadow at row 4
+# col 5. Variant-independent (every plumage carries identical decal art).
+const _DECAL_RIPPLE_FRAMES := [Rect2(96, 128, 32, 32), Rect2(128, 128, 32, 32)]
+const _DECAL_SHADOW_FRAME := Rect2(160, 128, 32, 32)
+
+## Build (or rebuild) the ground decal under a waterfowl container; remove it
+## when the sprite isn't a waterfowl (a live sprite swap duck -> villager).
+## The decal is a sibling AnimatedSprite2D named "GroundDecal" at z_index -1,
+## so it draws beneath the character at ground level; every sprite lookup in
+## the client skips it by name.
+func _ensure_ground_decal(container: Node2D, sprite_data: Dictionary, sheet: Texture2D) -> void:
+    var existing = container.get_node_or_null("GroundDecal")
+    if not _npc_is_waterfowl(container):
+        if existing != null:
+            existing.queue_free()
+        # Erase the surface state, not just gate it: a stale on_water could
+        # otherwise survive a duck -> villager -> duck round trip (code_review).
+        if container.has_meta("on_water"):
+            container.remove_meta("on_water")
+        return
+    if existing != null:
+        existing.queue_free()
+    var fw: int = int(sprite_data.get("frame_width", 32))
+    var fh: int = int(sprite_data.get("frame_height", 32))
+    var frames := SpriteFrames.new()
+    frames.add_animation("ripple")
+    frames.set_animation_speed("ripple", 2.0)
+    frames.set_animation_loop("ripple", true)
+    for rect in _DECAL_RIPPLE_FRAMES:
+        var atlas := AtlasTexture.new()
+        atlas.atlas = sheet
+        atlas.region = rect
+        frames.add_frame("ripple", atlas)
+    frames.add_animation("shadow")
+    frames.set_animation_speed("shadow", 1.0)
+    var shadow_atlas := AtlasTexture.new()
+    shadow_atlas.atlas = sheet
+    shadow_atlas.region = _DECAL_SHADOW_FRAME
+    frames.add_frame("shadow", shadow_atlas)
+
+    var decal := AnimatedSprite2D.new()
+    decal.name = "GroundDecal"
+    decal.sprite_frames = frames
+    decal.centered = false
+    decal.scale = Vector2(2, 2)
+    # Same anchor as the character sprite — the decal art occupies the same
+    # cell space as the duck pose it sits under.
+    decal.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+    decal.z_index = -1
+    container.add_child(decal)
+    _update_ground_decal(container, _is_water_at(container.position))
+
+## Flip the decal between ripple and shadow. No-op without a decal child.
+func _update_ground_decal(container: Node2D, on_water: bool) -> void:
+    var decal = container.get_node_or_null("GroundDecal")
+    if not (decal is AnimatedSprite2D):
+        return
+    var want := "ripple" if on_water else "shadow"
+    if decal.animation != want:
+        decal.play(want)
 
 ## Each frame, tick any NPC whose "walking" meta is set. Walks along the path
 ## stored at walk_start time and interpolates position; swaps facing when the
@@ -892,6 +1007,10 @@ func _tick_npc_walk(container: Node2D) -> void:
             var new_facing: String = facing_from_vec(wp - prev)
             if container.get_meta("facing", "") != new_facing:
                 container.set_meta("facing", new_facing)
+                play_npc_animation(container, new_facing, "walk")
+            elif _npc_is_waterfowl(container) and bool(container.get_meta("on_water", false)) != _is_water_at(container.position):
+                # Crossed the shoreline mid-leg without turning — swap
+                # walk <-> swim (and the decal) even though facing held.
                 play_npc_animation(container, new_facing, "walk")
             return
         remaining -= leg_dist
@@ -2627,11 +2746,17 @@ func _zzz_marker_position(spr: AnimatedSprite2D) -> Vector2:
                 half_w = tex.get_width() * spr.scale.x * 0.5
     return spr.position + Vector2(half_w - 12.0, -16.0)
 
-## The AnimatedSprite2D child of an NPC container, or null — the same child
-## play_npc_animation walks to drive animations.
+## The character AnimatedSprite2D of an NPC container, or null — the same child
+## play_npc_animation drives. Since LLM-579 an NPC container can hold a SECOND
+## AnimatedSprite2D (the "GroundDecal" ripple/shadow under a waterfowl), so the
+## character sprite is found by its node name, with a decal-skipping type scan
+## as fallback for any container built before the name was stamped.
 func _npc_sprite(container: Node2D) -> AnimatedSprite2D:
+    var named = container.get_node_or_null("CharacterSprite")
+    if named is AnimatedSprite2D:
+        return named
     for child in container.get_children():
-        if child is AnimatedSprite2D:
+        if child is AnimatedSprite2D and child.name != "GroundDecal":
             return child
     return null
 

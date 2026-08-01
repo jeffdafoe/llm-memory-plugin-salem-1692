@@ -175,6 +175,10 @@ type AgentSpriteDTO struct {
 	FrameWidth  int                  `json:"frame_width"`
 	FrameHeight int                  `json:"frame_height"`
 	Animations  []SpriteAnimationDTO `json:"animations"`
+	// Behaviors are the sprite's engine-behavior slugs (LLM-579). The client
+	// keys render decisions on them — a "waterfowl" sprite gets the ground
+	// decal (ripple on water / shadow on land) and the swim animation family.
+	Behaviors []string `json:"behaviors,omitempty"`
 }
 
 // ObjectDTO is one placed village object in the GET /api/village/objects
@@ -346,6 +350,7 @@ type SpriteDTO struct {
 	FrameHeight int                  `json:"frame_height"`
 	Pack        *TilesetPackDTO      `json:"pack,omitempty"`
 	Animations  []SpriteAnimationDTO `json:"animations"`
+	Behaviors   []string             `json:"behaviors,omitempty"` // engine-behavior slugs (LLM-579), e.g. "waterfowl"
 }
 
 // SpriteAnimationDTO is one (direction, animation) row mapping into a sprite
