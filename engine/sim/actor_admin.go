@@ -158,14 +158,20 @@ func SetActorDisplayName(id ActorID, name string) Command {
 			if a.DisplayName == trimmed {
 				return ActorDisplayNameResult{ID: id, DisplayName: trimmed}, nil
 			}
-			// Refuse an in-use name at the door (LLM-580). actor.display_name
-			// carries a UNIQUE constraint, and an in-memory duplicate doesn't
+			// Refuse an in-use name at the door (LLM-580). A duplicate doesn't
 			// fail HERE — it fails the next CHECKPOINT, killing durability for
 			// the whole village until an operator renames someone (the two-
-			// "Villager" duck incident, 2026-08-01). displayNameInUse is the
-			// same predicate visitor spawn dedupes with; self-collision is
+			// "Villager" duck incident, 2026-08-01). Self-collision is
 			// impossible — the a.DisplayName == trimmed no-op returned above.
-			if displayNameInUse(w, trimmed) {
+			//
+			// Skipped entirely for a decorative subject (LLM-586): the
+			// actor_display_name_excl constraint's predicate covers only
+			// driven rows, so a decorative row is outside the index and may
+			// take any name — several ducks all called "Duck" is the point.
+			// This gate and that predicate MUST stay mirrors; an extra
+			// in-memory-only restriction here would be exactly the drift that
+			// makes one of the two dead code.
+			if a.Kind != KindDecorative && displayNameInUse(w, trimmed) {
 				return nil, ErrDisplayNameTaken
 			}
 			a.DisplayName = trimmed
@@ -193,6 +199,20 @@ func SetActorAgentLink(id ActorID, agent string) Command {
 			}
 			if a.LLMAgent == trimmed {
 				return ActorAgentResult{ID: id, LLMAgent: trimmed}, nil
+			}
+			// LLM-586: linking an agent PROMOTES a decorative into the driven
+			// set, which is exactly the population actor_display_name_excl
+			// covers — the row moves INTO the constraint's predicate. A
+			// decorative is allowed to share a name (several ducks called
+			// "Duck", or a duck named after a villager), so the promotion is
+			// where that freedom has to be paid for: without this gate,
+			// linking a same-named decorative would mint two DRIVEN rows
+			// sharing a display_name, which commits fine in memory and then
+			// fails the next checkpoint — the LLM-580 durability bug, reached
+			// by a new path. Refuse at the door instead, as create and rename
+			// already do.
+			if a.Kind == KindDecorative && trimmed != "" && displayNameInUse(w, a.DisplayName) {
+				return nil, ErrDisplayNameTaken
 			}
 			a.LLMAgent = trimmed
 			// Live Kind reclassify for the one provably safe case (LLM-579,

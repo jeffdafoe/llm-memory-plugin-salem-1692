@@ -39,7 +39,9 @@ type CreateNPCResult struct {
 	ActorID ActorID
 }
 
-// CreateNPC materializes a new KindNPCStateful actor. pos is the placement point
+// CreateNPC materializes a new KindDecorative actor — an editor placement is
+// agentless, and ClassifyActorKind("", "") is what reload reconstructs, so it
+// is born decorative and SetActorAgentLink promotes it. pos is the placement point
 // in world-pixel space (what the editor's click resolves to); it's converted to
 // the actor's tile via WorldPos.Tile(). now is the creation clock.
 func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
@@ -56,21 +58,33 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 			if utf8.RuneCountInString(name) > MaxActorDisplayNameLen || containsControlChar(name) {
 				return nil, ErrInvalidDisplayName
 			}
-			// Uniqueness at the door (LLM-580): actor.display_name is UNIQUE
-			// in the schema, and an in-memory duplicate doesn't fail here — it
-			// fails the next CHECKPOINT, breaking durability villagewide (two
-			// editor placements both defaulting to "Villager" did exactly
-			// that). An explicit duplicate is refused; the blank-name default
-			// dedupes itself ("Villager 2", "Villager 3", …) so quick
-			// placement stays one click.
-			if displayNameInUse(w, name) {
-				if explicit {
-					return nil, ErrDisplayNameTaken
-				}
+			// Uniqueness at the door (LLM-580): a duplicate doesn't fail HERE,
+			// it fails the next CHECKPOINT, breaking durability villagewide
+			// (two editor placements both defaulting to "Villager" did exactly
+			// that).
+			//
+			// An editor placement is always born decorative
+			// (ClassifyActorKind("", "") below), and the database constraint
+			// no longer covers decorative rows (LLM-586), so an EXPLICIT name
+			// is never refused here — several ducks may all be called "Duck".
+			// displayNameInUse skips decoratives, so this only ever fires for
+			// a collision with a driven actor, which the constraint also
+			// permits for a decorative row; the explicit path is therefore
+			// unconditional.
+			//
+			// The blank-name default still dedupes ("Villager 2", "Villager
+			// 3", …) against EVERY actor, decoratives included. That is
+			// deliberately stricter than the constraint: it is not a
+			// correctness gate but an editor-legibility one, so three
+			// unnamed placements stay tellable apart in the NPC list instead
+			// of being three identical "Villager" rows. Renaming them all to
+			// the same thing afterwards is allowed — that is the point of
+			// LLM-586.
+			if !explicit && displayNameInUseAny(w, name) {
 				base := name
 				for n := 2; ; n++ {
 					name = fmt.Sprintf("%s %d", base, n)
-					if !displayNameInUse(w, name) {
+					if !displayNameInUseAny(w, name) {
 						break
 					}
 				}

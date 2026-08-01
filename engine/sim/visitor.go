@@ -1875,10 +1875,38 @@ func loadActorSurnames(w *World) map[string]bool {
 	return out
 }
 
-// displayNameInUse reports whether any existing actor in the world has
-// the supplied display_name. Linear in actor count — fine at Salem
-// scale (a few dozen actors). v1 ran the same check via a SELECT.
+// displayNameInUse reports whether any existing DRIVEN actor in the world has
+// the supplied display_name. Linear in actor count — fine at Salem scale (a
+// few dozen actors). v1 ran the same check via a SELECT.
+//
+// KindDecorative actors are skipped (LLM-586): several ducks may all be called
+// "Duck". A decorative is sprite-only and never ticked, so it is never a
+// huddle member, and every name-to-actor resolution in the engine (speak's
+// `to`, the vocative fallback, pay / pay_with_item targets, PC quotes) scans
+// huddle peers rather than the world — a decorative cannot enter any of those
+// candidate sets, so a shared name is unambiguous everywhere it is read.
+//
+// This MUST stay a mirror of the actor_display_name_excl database constraint,
+// whose predicate is the same "driven" test spelled in columns
+// (llm_memory_agent IS NOT NULL OR login_username IS NOT NULL). If the two
+// drift, the stricter one silently wins and the looser one is dead code.
 func displayNameInUse(w *World, name string) bool {
+	for _, a := range w.Actors {
+		if a != nil && a.Kind != KindDecorative && a.DisplayName == name {
+			return true
+		}
+	}
+	return false
+}
+
+// displayNameInUseAny is displayNameInUse without the decorative exemption —
+// "is this string spoken for by ANY actor". Used only by CreateNPC's
+// blank-name self-dedupe, which is an editor-legibility nicety rather than a
+// correctness gate: unnamed placements get distinct defaults so they stay
+// tellable apart in the NPC list. Do NOT use it to gate a rename; that is what
+// displayNameInUse is for, and it is the one that mirrors the database
+// constraint.
+func displayNameInUseAny(w *World, name string) bool {
 	for _, a := range w.Actors {
 		if a != nil && a.DisplayName == name {
 			return true
