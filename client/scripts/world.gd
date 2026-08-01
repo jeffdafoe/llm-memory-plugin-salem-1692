@@ -932,6 +932,10 @@ func _ensure_ground_decal(container: Node2D, sprite_data: Dictionary, sheet: Tex
     if not _npc_is_waterfowl(container):
         if existing != null:
             existing.queue_free()
+        # Erase the surface state, not just gate it: a stale on_water could
+        # otherwise survive a duck -> villager -> duck round trip (code_review).
+        if container.has_meta("on_water"):
+            container.remove_meta("on_water")
         return
     if existing != null:
         existing.queue_free()
