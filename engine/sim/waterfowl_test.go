@@ -295,6 +295,32 @@ func TestWaterfowlShoreBandStopsAtWalls(t *testing.T) {
 	for _, p := range res.beyond {
 		t.Errorf("shore tile (%d,%d) is beyond the wall at x=%d — the band crossed an unwalkable tile", p.X, p.Y, wallX)
 	}
+
+	// Round trip: a duck standing on ANY band tile must still find its way
+	// back to water. This is the freeze condition the band/search-radius
+	// coupling exists to prevent — waterfowlRegion returning empty is exactly
+	// "parked away from any water", which idles the duck permanently.
+	//
+	// Run against the obstacle fixture on purpose: the band is grown in
+	// WALKABLE steps while nearestWaterTile's BFS ignores walkability, so an
+	// obstacle course is where the two metrics diverge most.
+	stranded := runOn(t, w, func(world *sim.World) (any, error) {
+		duck := world.Actors[duckID]
+		region := sim.WaterfowlRegion(world, duck)
+		shore := sim.WaterfowlShore(world, region)
+		var out []sim.GridPoint
+		for _, p := range shore {
+			duck.Pos = sim.Position{X: p.X, Y: p.Y}
+			if len(sim.WaterfowlRegion(world, duck)) == 0 {
+				out = append(out, p)
+			}
+		}
+		return out, nil
+	}).([]sim.GridPoint)
+
+	for _, p := range stranded {
+		t.Errorf("a duck on shore tile (%d,%d) finds no water within WaterfowlSearchRadius — it would strand there", p.X, p.Y)
+	}
 }
 
 // TestWaterfowlDecisionDispatchesMove — the decision pass dwells first,

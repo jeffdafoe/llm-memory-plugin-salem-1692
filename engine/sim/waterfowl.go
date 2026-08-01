@@ -48,12 +48,23 @@ const (
 	// duck is ashore (or was placed on land). Beyond this the duck is
 	// considered parked away from any water and left idle.
 	//
-	// MUST stay comfortably above WaterfowlShoreBandRings. The band is where
-	// the wander SENDS a duck ashore; this radius is how it FINDS its way back.
-	// If the band could reach past this radius, a duck that pottered to the
-	// outer edge would look "parked away from any water" on its next decision
-	// and idle there forever — an inland strand, the same shape of freeze as
-	// LLM-582. Raise the two together or not at all.
+	// MUST stay >= WaterfowlShoreBandRings, enforced at compile time by
+	// waterfowlBandFitsSearchRadius below. The band is where the wander SENDS
+	// a duck ashore; this radius is how it FINDS its way back. If the band
+	// could reach past this radius, a duck that pottered to the outer edge
+	// would look "parked away from any water" on its next decision and idle
+	// there forever — an inland strand, the same shape of freeze as LLM-582.
+	//
+	// The two are measured in DIFFERENT metrics, and the direction of the
+	// difference is what makes the bound sound: the band is grown as a
+	// WALKABLE BFS (obstacles block it), while nearestWaterTile's BFS below
+	// checks only bounds and water — it passes straight through walls, so it
+	// is effectively a Manhattan-radius search. Walkable distance is always
+	// >= Manhattan distance, so a tile within N walkable steps of water is
+	// within N Manhattan steps of it, and this search finds water from
+	// anywhere in the band with room to spare. An obstacle course that
+	// lengthens the walking route cannot defeat it, because the search does
+	// not walk.
 	WaterfowlSearchRadius = 8
 
 	// WaterfowlSwimRange caps how far (Chebyshev, in tiles) a single swim
@@ -69,6 +80,12 @@ const (
 	// band reaches — the duck's on-land range. Bounded by
 	// WaterfowlSearchRadius; see the note there before changing it.
 	WaterfowlShoreBandRings = 5
+
+	// waterfowlBandFitsSearchRadius fails the BUILD if the shore band could
+	// reach past the nearest-water search, which would strand a duck at the
+	// band's outer edge. An untyped-uint constant cannot be negative, so the
+	// subtraction is the assertion. Cheaper than trusting a comment.
+	waterfowlBandFitsSearchRadius = uint(WaterfowlSearchRadius - WaterfowlShoreBandRings)
 
 	// WaterfowlMaxAshoreMoves caps consecutive land potters before the
 	// duck is sent back to the water. Scaled with the band: with fewer legs
