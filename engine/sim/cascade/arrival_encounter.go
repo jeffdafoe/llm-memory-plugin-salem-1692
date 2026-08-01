@@ -63,6 +63,18 @@ func outdoorEncounterExcludesActor(w *sim.World, a *sim.Actor, now time.Time, st
 	if a.State == sim.StateSleeping || a.State == sim.StateResting {
 		return true
 	}
+	// LLM-582: a decorative actor is sprite-only and never ticked, so it can
+	// never speak and nothing it does stamps huddle activity. Putting one in a
+	// huddle therefore mints a conversation that no member can advance and that
+	// only the 2h silence sweep can end — and because MoveActor refuses to move
+	// a huddled actor without LeaveHuddleFirst, a huddle is also a movement
+	// freeze. Two ducks that came ashore beside each other pinned one another
+	// this way for hours. Gating on Kind rather than a behavior slug keeps this
+	// general: every sprite-only actor, present and future, is excluded, and any
+	// villager stopping beside one no longer freezes it either.
+	if a.Kind == sim.KindDecorative {
+		return true
+	}
 	// In-flight only (LLM-531): a BEAT is never in flight (LLM-548), so a carrier who
 	// owes a round is available for an ordinary encounter throughout it. That is what
 	// makes his stops conversational at all — the engine no longer holds him anywhere,

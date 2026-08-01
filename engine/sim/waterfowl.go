@@ -329,7 +329,15 @@ func decideWaterfowlMove(w *World, a *Actor, st *waterfowlState, now time.Time) 
 
 	pos := Position{X: target.X, Y: target.Y}
 	dest := MoveDestination{Kind: MoveDestinationPosition, Position: &pos}
-	if _, err := MoveActor(a.ID, dest, false, now).Fn(w); err != nil {
+	// leaveHuddleFirst is true (LLM-582): MoveActor rejects a move for an actor
+	// in an active huddle unless it is set, and that rejection lands on the
+	// silent error path below — so a duck that somehow ends up in a huddle would
+	// otherwise stop wandering until the 2h silence sweep freed it, logging
+	// nothing. LLM-582 also stops decorative actors being drawn into outdoor
+	// encounters at all; this is the belt-and-braces half, covering any OTHER
+	// huddle path that reaches a duck. A duck has nothing to say, so leaving is
+	// always the right resolution.
+	if _, err := MoveActor(a.ID, dest, true, now).Fn(w); err != nil {
 		// Unreachable pick (transient blocker, occupied tile) — the next
 		// decision draws fresh. Not worth logging: this is expected churn.
 		return
