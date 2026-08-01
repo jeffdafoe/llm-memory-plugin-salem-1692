@@ -374,17 +374,24 @@ func waterfowlShore(w *World, region []GridPoint) []GridPoint {
 			band[n] = true
 		}
 	}
-	// Ring 2: one more step out from ring 1.
-	var shore []GridPoint
+	// Ring 2: one more step out from ring 1. Collected in the same set so a
+	// tile reachable from several ring-1 neighbors lands ONCE — duplicates
+	// would silently weight pickWaterfowlTarget's uniform draw toward the
+	// most-connected tiles (code_review).
+	shoreSet := make(map[GridPoint]bool, len(band)*2)
 	for p := range band {
-		shore = append(shore, p)
+		shoreSet[p] = true
 		for _, d := range [4]GridPoint{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
 			n := GridPoint{X: p.X + d.X, Y: p.Y + d.Y}
 			if band[n] || inRegion[n] || isWaterTile(w, n.X, n.Y) || !grid.CanWalk(n.X, n.Y) {
 				continue
 			}
-			shore = append(shore, n)
+			shoreSet[n] = true
 		}
+	}
+	shore := make([]GridPoint, 0, len(shoreSet))
+	for p := range shoreSet {
+		shore = append(shore, p)
 	}
 	return shore
 }

@@ -154,6 +154,15 @@ func TestWaterfowlRegionAndShore(t *testing.T) {
 		if len(shore) == 0 {
 			t.Fatal("shore band empty for an open-grass pond")
 		}
+		// No duplicates — a repeated tile would weight the uniform target
+		// draw toward the most-connected shore tiles.
+		seen := make(map[sim.GridPoint]bool, len(shore))
+		for _, p := range shore {
+			if seen[p] {
+				t.Errorf("shore tile (%d,%d) appears more than once", p.X, p.Y)
+			}
+			seen[p] = true
+		}
 		for _, p := range shore {
 			b := world.Terrain.Data[p.Y*sim.MapW+p.X]
 			if b == sim.TerrainShallowWater || b == sim.TerrainDeepWater {
