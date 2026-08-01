@@ -135,6 +135,26 @@ func walkGridForActor(w *World, a *Actor) (*WalkGrid, error) {
 //
 // MUST be called from inside a Command.Fn.
 func waterfowlShouldStep(w *World, id ActorID) bool {
+	st := ensureWaterfowlState(w, id)
+	st.stepBeat = (st.stepBeat + 1) % WaterfowlStepDivisor
+	return st.stepBeat == 0
+}
+
+// waterfowlResetStepBeat re-arms the slow-walk beat so the NEXT locomotion
+// tick is a stepping one. MoveActor calls this for every accepted waterfowl
+// movement (fresh or supersede), making a new walk's first-step timing
+// deterministic — without it the first tick stepped or skipped depending on
+// where the previous walk's beat happened to end, and the client (which
+// starts its half-speed lerp at walk start) drew a nondeterministic lead.
+//
+// MUST be called from inside a Command.Fn.
+func waterfowlResetStepBeat(w *World, id ActorID) {
+	ensureWaterfowlState(w, id).stepBeat = WaterfowlStepDivisor - 1
+}
+
+// ensureWaterfowlState returns (lazily creating) the per-duck wander state.
+// MUST be called from inside a Command.Fn.
+func ensureWaterfowlState(w *World, id ActorID) *waterfowlState {
 	if w.waterfowl == nil {
 		w.waterfowl = make(map[ActorID]*waterfowlState)
 	}
@@ -143,8 +163,7 @@ func waterfowlShouldStep(w *World, id ActorID) bool {
 		st = &waterfowlState{}
 		w.waterfowl[id] = st
 	}
-	st.stepBeat = (st.stepBeat + 1) % WaterfowlStepDivisor
-	return st.stepBeat == 0
+	return st
 }
 
 // isWaterTile reports whether the terrain byte at (x, y) is water.

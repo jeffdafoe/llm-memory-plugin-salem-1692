@@ -83,6 +83,43 @@ func TestWaterfowlHalfSpeedLocomotion(t *testing.T) {
 	if steps[1] != 4 {
 		t.Errorf("villager advanced %d tiles over 4 ticks, want 4", steps[1])
 	}
+
+	// Supersede mid-walk: the beat re-arms on every accepted MoveActor, so
+	// the FIRST tick after a new destination always steps — deterministic
+	// cadence regardless of where the previous walk's beat ended.
+	posBefore, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["duck-speed"].Pos, nil
+	}})
+	if err != nil {
+		t.Fatalf("read pos: %v", err)
+	}
+	westDest := sim.Position{X: pondMinX, Y: pondMinY + 2}
+	if _, err := w.Send(sim.MoveActor("duck-speed",
+		sim.MoveDestination{Kind: sim.MoveDestinationPosition, Position: &westDest}, false, now)); err != nil {
+		t.Fatalf("supersede MoveActor: %v", err)
+	}
+	if _, err := w.Send(sim.EvaluateLocomotion(now.Add(10 * time.Second))); err != nil {
+		t.Fatalf("post-supersede tick: %v", err)
+	}
+	res, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["duck-speed"].Pos, nil
+	}})
+	if err != nil {
+		t.Fatalf("read pos: %v", err)
+	}
+	from := posBefore.(sim.Position)
+	to := res.(sim.Position)
+	moved := absInt(to.X-from.X) + absInt(to.Y-from.Y)
+	if moved != 1 {
+		t.Errorf("first tick after supersede moved %d tiles, want exactly 1 (beat re-armed)", moved)
+	}
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // TestDisplayNameUniqueness — the checkpoint-killing duplicate is refused at

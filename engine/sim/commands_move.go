@@ -267,6 +267,13 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				AttemptID:     attemptID,
 				BestRemaining: -1, // unset — first tick stamps the real distance
 			}
+			// A waterfowl's slow-walk beat re-arms per accepted movement
+			// (fresh or supersede) so the first locomotion tick after this
+			// always steps — deterministic cadence for the client's matching
+			// half-speed lerp (LLM-580).
+			if actorIsWaterfowl(w, actor) {
+				waterfowlResetStepBeat(w, actor.ID)
+			}
 
 			// Step 8 - announce the walk to the client read surface. Carries
 			// the full cost-weighted tile path (computed as the step-4
