@@ -994,7 +994,7 @@ var restockMarginVerdictLabels = []string{
 	"— highly profitable on coin.",
 	"— nicely profitable on coin.",
 	"— slightly profitable on coin.",
-	"— breakeven on coin.",
+	"— breakeven on coin; you need to buy lower or sell for more.",
 	"— losing on coin; you need to buy lower or sell for more.",
 }
 

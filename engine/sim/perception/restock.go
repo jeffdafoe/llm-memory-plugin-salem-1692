@@ -1126,6 +1126,14 @@ const (
 	marginSlightlyProfitable
 	marginBreakEven
 	marginLosing
+
+	// marginTierSentinel is not a tier — it bounds the enum so a test can walk
+	// every value and require each to declare whether its verdict carries a
+	// corrective (LLM-591). Breakeven was the one tier that reported a state and
+	// asked for nothing, and a hand-listed test would have let a sixth tier repeat
+	// that silently. Keep it LAST: a tier added above it is automatically in
+	// scope, one added below it is invisible.
+	marginTierSentinel
 )
 
 // Profit-band cutoffs, as a multiple of the buy rate. Graded by RATIO, not by the
@@ -1354,7 +1362,30 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — slightly profitable on coin.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginBreakEven:
-			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — breakeven on coin.",
+			// LLM-591: breakeven carries the SAME corrective as losing, and for the
+			// same reason — it was the one tier that reported a state and asked for
+			// nothing. Three tiers praise, losing corrects, and breakeven stated two
+			// identical numbers and stopped. Meanwhile the keeper's standing trade
+			// rule is a FLOOR ("never sell a thing for less than it cost you"), which
+			// selling AT cost satisfies completely, so nothing in the whole prompt
+			// ever asked for a markup. Josiah sat on exact equality across carrots,
+			// flour, cheese, wheat and nails — ~1,200 coins of fortnightly turnover
+			// for 85 of margin — doing precisely what he was told.
+			//
+			// Deliberately the identical clause rather than a softer one: this tier
+			// is exact equality (restockMarginTierOf), not a near-miss band, so the
+			// price is as wrong here as it is one coin below. Reusing the wording
+			// also keeps the uniform shape the whole switch is built on — same
+			// sentence, only the verdict label varies.
+			//
+			// It steers the PRICE and says nothing about the good's worth, which is
+			// the line this block must not cross: an unscoped verdict once talked
+			// this same keeper out of the input leg of a working trade (wheat, 61%
+			// barter by volume, swapped ~1:1 for flour he resold at double — declined
+			// eight ticks running while quoting the cue back at it). "Buy lower or
+			// sell for more" is answerable from the coin book alone; "this earns you
+			// nothing" is not.
+			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — breakeven on coin; you need to buy lower or sell for more.",
 				coinsPhrase(it.BuyAnchorUnit), coinsPhrase(it.ResaleUnit))
 		case marginLosing:
 			fmt.Fprintf(b, " You are buying at about %s and selling at about %s — losing on coin; you need to buy lower or sell for more.",
