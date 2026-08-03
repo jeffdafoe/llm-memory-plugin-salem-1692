@@ -22,7 +22,7 @@ import (
 // world's life.
 //
 // SCOPE — this cue owns WORKING garments, the cold self-line keeps OUTERWEAR.
-// sim.IsWorkGarment splits them on the `warms` capability, so shift/breeches/gown
+// sim.IsWorkGarment splits them on the `warms` capability, so linens/woolens/homespun
 // belong here and coat/cloak stay with cold. The split is derived from the
 // catalog rather than a kind list, so a garment added later joins the right cue
 // on its own. Nothing about who may wear what is modelled: an actor needs SOME
@@ -44,7 +44,7 @@ type WorkClothesView struct {
 	// which case the cue still states the scene and simply names no destination.
 	Item sim.ItemKind
 
-	// ItemLabel is Item's PLURAL counting noun ("pairs of breeches"), resolved at
+	// ItemLabel is Item's PLURAL counting noun ("sets of woolens"), resolved at
 	// build time so render stays pure over the view like every other renderer here.
 	//
 	// The plural counting noun rather than DisplayLabel: the catalog's display
@@ -54,7 +54,7 @@ type WorkClothesView struct {
 	// a scene. ItemSingular carries the qty-1 form for the same reason.
 	ItemLabel string
 
-	// ItemSingular is Item's singular counting noun ("pair of breeches"), used
+	// ItemSingular is Item's singular counting noun ("set of woolens"), used
 	// where the cue names the one garment being bought.
 	ItemSingular string
 
@@ -76,7 +76,7 @@ type WorkClothesView struct {
 // exactly the set whose garments actually wear, so the cue can never address
 // someone the wear sweep does not touch. Trade-errand visitors and the
 // distributor are excluded there because their held garments are stock rather
-// than clothing; without that the distributor would be told to buy the shifts
+// than clothing; without that the distributor would be told to buy the linens
 // already on his own shelf.
 //
 // This started as a hand-copy of sim.actorWearsGarments and got the visitor arm
@@ -123,14 +123,21 @@ func buildWorkClothes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	// iterating the catalog rather than naming a kind keeps it honest about what
 	// can actually be bought today.
 	//
-	// The like-for-like pass exists because the engine models no sex and the
-	// catalog does. Without it the cue simply takes the first purchasable kind, and
-	// with the LLM-592 seed that is a GOWN — the distributor stocks gowns and
-	// shifts and no breeches — so Constable Gideon Marsh, threadbare in shift and
-	// breeches, would be told a fresh gown would set him right. Preferring what he
-	// already wears resolves it without modelling anything: he owns a shift, the
-	// shop sells shifts, the cue says shift. Nothing here reads a sex; it reads a
-	// wardrobe.
+	// The like-for-like pass exists because a wearer should replace what he has
+	// worn out, not whatever happens to sort first. Without it the cue takes the
+	// first purchasable kind outright, so whichever garment the distributor happens
+	// to stock is what every worker in the village is sent for, regardless of what
+	// they own.
+	//
+	// It was added for a sharper reason that LLM-596 has since retired: the catalog
+	// then named its garments shift, breeches and gown, which are gendered, while
+	// the engine models no sex. With the LLM-592 seed the first purchasable kind
+	// was a GOWN, so Constable Gideon Marsh — threadbare in a shift and breeches —
+	// would have been told a fresh gown would set him right. Preferring what he
+	// already wore fixed that without teaching the engine a sex to reason about.
+	// The names are unisex layers now (linens, woolens, homespun) so that
+	// particular embarrassment cannot recur, but the preference is still the right
+	// behaviour on its own merits and stays.
 	//
 	// The fallback still matters and is not a formality: an actor in the NONE tier
 	// owns no working garment to match against, so like-for-like has nothing to say
@@ -230,7 +237,7 @@ func renderWorkClothes(b *strings.Builder, v *WorkClothesView) {
 	// Name the garment before the destination. Without it the model arrives at the
 	// shop holding a want and no item to put in pay_with_item — the farm-upkeep cue
 	// names its shovels for the same reason. The article-less singular reads as
-	// prose ("a fresh pair of breeches"), which the title-case catalog label
+	// prose ("a fresh set of woolens"), which the title-case catalog label
 	// ("Breeches") does not.
 	fmt.Fprintf(b, "A fresh %s would set you right. Use move_to to reach a seller, then pay_with_item once you arrive:\n", sanitizeInline(v.ItemSingular))
 	renderWalkToVendors(b, v.Vendors)
