@@ -44,9 +44,19 @@ type WorkClothesView struct {
 	// which case the cue still states the scene and simply names no destination.
 	Item sim.ItemKind
 
-	// ItemLabel is Item's catalog display label, resolved at build time so render
-	// stays pure over the view like every other renderer in this package.
+	// ItemLabel is Item's PLURAL counting noun ("pairs of breeches"), resolved at
+	// build time so render stays pure over the view like every other renderer here.
+	//
+	// The plural counting noun rather than DisplayLabel: the catalog's display
+	// labels are title-case proper names for an operator's item list ("Breeches",
+	// "Shovel"), and dropping one mid-sentence renders "sells Breeches". The
+	// counting nouns are the in-world prose forms (LLM-113) and are what belongs in
+	// a scene. ItemSingular carries the qty-1 form for the same reason.
 	ItemLabel string
+
+	// ItemSingular is Item's singular counting noun ("pair of breeches"), used
+	// where the cue names the one garment being bought.
+	ItemSingular string
 
 	// Vendors are the workplaces selling Item — the move_to destination(s).
 	Vendors []RestockVendor
@@ -122,7 +132,8 @@ func buildWorkClothes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			continue
 		}
 		view.Item = kind
-		view.ItemLabel = itemDisplayLabel(snap, kind)
+		view.ItemLabel = snap.ItemKinds[kind].Plural()
+		view.ItemSingular = snap.ItemKinds[kind].Singular()
 		view.Vendors = vendors
 		break
 	}
@@ -197,6 +208,11 @@ func renderWorkClothes(b *strings.Builder, v *WorkClothesView) {
 		}
 		return
 	}
-	fmt.Fprintf(b, "Use move_to to reach a seller, then pay_with_item once you arrive:\n")
+	// Name the garment before the destination. Without it the model arrives at the
+	// shop holding a want and no item to put in pay_with_item — the farm-upkeep cue
+	// names its shovels for the same reason. The article-less singular reads as
+	// prose ("a fresh pair of breeches"), which the title-case catalog label
+	// ("Breeches") does not.
+	fmt.Fprintf(b, "A fresh %s would set you right. Use move_to to reach a seller, then pay_with_item once you arrive:\n", sanitizeInline(v.ItemSingular))
 	renderWalkToVendors(b, v.Vendors)
 }
