@@ -12,16 +12,17 @@ import (
 // retention cutoff. Both run on the world goroutine.
 
 // actionLogIgnoresActor reports whether the action log should drop a row for
-// this actor. True for waterfowl, whose movement is ambient scenery motion
-// rather than a doing worth recording (LLM-593). The pond ducks wander every
-// few seconds: 15,672 "walked" rows a day into a log the rest of the village
-// fills at ~1,000/day, drowning the admin Village tab that renders it.
+// this actor. True for ambient scenery, whose movement is not a doing worth
+// recording (LLM-593). The pond ducks wander every few seconds: 15,672
+// "walked" rows a day into a log the rest of the village fills at ~1,000/day,
+// drowning the admin Village tab that renders it.
 //
 // Gated here at the write funnel rather than in the one subscriber that
-// tripped over it. Waterfowl reach the log only through locomotion
+// tripped over it. Scenery reaches the log only through locomotion
 // (ActorArrived / ActorLeftStructure), and the arrival subscriber was the
-// second site to miss them after the LLM-582 huddle gate; a funnel gate means
-// the next subscriber to observe movement cannot reopen it.
+// second site to miss it after the LLM-582 huddle gate; a funnel gate means
+// the next subscriber to observe movement cannot reopen it, and a new animal
+// needs no change here at all — tagging its sprite is enough.
 //
 // NOT gated on KindDecorative, which is the wider population and would be
 // wrong. The lamplighter, washerwoman and town crier are all decorative
@@ -30,8 +31,7 @@ import (
 // written thousands of announcement rows. Their doings belong in the log:
 // agent_action_log is the sole input to the day note behind the nightly
 // dream pipeline, so dropping them would silently amputate that history.
-// actorIsWaterfowl is the canonical "ambient motion" predicate and already
-// carries its own Kind gate.
+// BehaviorAmbient documents the distinction in full.
 //
 // An unresolvable ActorID is NOT ignored: tests append under synthetic ids,
 // and a visitor's row is deliberately kept with its id blanked (see
@@ -50,12 +50,12 @@ import (
 // onto their own unresolved-id policy so identity resolution stops carrying
 // the semantics) buys nothing against a case production does not produce.
 //
-// MUST be called from inside a Command.Fn — actorIsWaterfowl reads w.Sprites.
+// MUST be called from inside a Command.Fn — actorIsAmbient reads w.Sprites.
 // Not a new constraint on AppendActionLogDurable's exported surface: it
 // already read w.Actors on this line's behalf, so every caller was required
 // to be on the world goroutine before this gate existed.
 func actionLogIgnoresActor(w *World, id ActorID) bool {
-	return actorIsWaterfowl(w, w.Actors[id])
+	return actorIsAmbient(w, w.Actors[id])
 }
 
 // AppendActionLogEntry returns a Command that appends entry to

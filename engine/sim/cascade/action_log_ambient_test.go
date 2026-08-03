@@ -30,9 +30,9 @@ const (
 	villagerSprite sim.SpriteID = "sprite-villager"
 )
 
-// seedWaterfowl adds a duck — a decorative actor whose sprite carries the
+// seedAmbient adds a duck — a decorative actor whose sprite carries the
 // waterfowl behavior — to a running test world.
-func seedWaterfowl(t *testing.T, w *sim.World, id sim.ActorID, name string) {
+func seedAmbient(t *testing.T, w *sim.World, id sim.ActorID, name string) {
 	t.Helper()
 	invokeOnWorld(t, w, func(world *sim.World) {
 		if world.Sprites == nil {
@@ -41,7 +41,7 @@ func seedWaterfowl(t *testing.T, w *sim.World, id sim.ActorID, name string) {
 		world.Sprites[duckSpriteID] = &sim.Sprite{
 			ID:        duckSpriteID,
 			Name:      "Duck (mallard)",
-			Behaviors: []string{sim.BehaviorWaterfowl},
+			Behaviors: []string{sim.BehaviorWaterfowl, sim.BehaviorAmbient},
 		}
 		world.Actors[id] = &sim.Actor{
 			ID:          id,
@@ -83,17 +83,17 @@ func seedDecorativeCarrier(t *testing.T, w *sim.World, id sim.ActorID, name stri
 	})
 }
 
-// --- TestHandleActorArrivedActionLog_WaterfowlDropped ----------------
+// --- TestHandleActorArrivedActionLog_AmbientDropped ----------------
 // A duck's arrival writes neither an in-memory row nor a durable one, while
 // the very next arrival by a real NPC still lands in both. The paired
 // assertion is what distinguishes "waterfowl are gated" from "the log broke".
-func TestHandleActorArrivedActionLog_WaterfowlDropped(t *testing.T) {
+func TestHandleActorArrivedActionLog_AmbientDropped(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
 	defer stop()
 
 	rec := &recordingActionLogSink{}
 	invokeOnWorld(t, w, func(world *sim.World) { world.SetActionLogSink(rec) })
-	seedWaterfowl(t, w, "duck", "Duck")
+	seedAmbient(t, w, "duck", "Duck")
 
 	at := time.Now().UTC()
 	invokeOnWorld(t, w, func(world *sim.World) {
@@ -161,15 +161,15 @@ func TestActionLog_DecorativeCarrierStillLogged(t *testing.T) {
 	}
 }
 
-// --- TestHandleActorLeftStructureActionLog_WaterfowlDropped ----------
+// --- TestHandleActorLeftStructureActionLog_AmbientDropped ----------
 // The departure twin. A duck that walks out of a structure footprint is the
 // other locomotion path into the log, and the central funnel gate covers it
 // without the subscriber knowing anything about waterfowl.
-func TestHandleActorLeftStructureActionLog_WaterfowlDropped(t *testing.T) {
+func TestHandleActorLeftStructureActionLog_AmbientDropped(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
 	defer stop()
 
-	seedWaterfowl(t, w, "duck", "Duck")
+	seedAmbient(t, w, "duck", "Duck")
 
 	invokeOnWorld(t, w, func(world *sim.World) {
 		handleActorLeftStructureActionLog(world, &sim.ActorLeftStructure{

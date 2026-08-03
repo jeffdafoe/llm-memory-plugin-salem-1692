@@ -515,7 +515,7 @@ func TestFetchAtmosphereContext_DigestEmptyActionLog(t *testing.T) {
 	}
 }
 
-// TestFetchAtmosphereContext_ExcludesWaterfowl: LLM-593. A duck belongs
+// TestFetchAtmosphereContext_ExcludesAmbient: LLM-593. A duck belongs
 // in neither half of the atmosphere prompt. The roster names who is
 // about, so eight identically-named ducks read to the model as eight
 // residents standing outdoors; the digest counts what people did, and
@@ -525,18 +525,18 @@ func TestFetchAtmosphereContext_DigestEmptyActionLog(t *testing.T) {
 // The town crier is seeded alongside them and must SURVIVE both halves.
 // She is decorative exactly as the ducks are — the engine walks her
 // because she has no LLM volition — so a filter written against Kind
-// rather than the waterfowl behavior would quietly drop a villager who
+// rather than the ambient behavior would quietly drop a villager who
 // tours and speaks all day.
 //
-// The digest arm is defence in depth — the append funnel keeps waterfowl
+// The digest arm is defence in depth — the append funnel keeps ambient
 // rows out of ActionLog now — so the log is seeded here directly to prove
 // the filter holds for a log carried across the fix.
-func TestFetchAtmosphereContext_ExcludesWaterfowl(t *testing.T) {
+func TestFetchAtmosphereContext_ExcludesAmbient(t *testing.T) {
 	w := newAtmosphereTestWorld(t)
 	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
 	w.Environment.LastAtmosphereRefreshAt = priorAt
 	w.Sprites = map[SpriteID]*Sprite{
-		"sprite-duck": {ID: "sprite-duck", Behaviors: []string{BehaviorWaterfowl}},
+		"sprite-duck": {ID: "sprite-duck", Behaviors: []string{BehaviorWaterfowl, BehaviorAmbient}},
 	}
 	w.Actors["duck"] = &Actor{ID: "duck", DisplayName: "Duck", Kind: KindDecorative, SpriteID: "sprite-duck"}
 	w.Actors["drake"] = &Actor{ID: "drake", DisplayName: "Duck", Kind: KindDecorative, SpriteID: "sprite-duck"}
@@ -557,7 +557,7 @@ func TestFetchAtmosphereContext_ExcludesWaterfowl(t *testing.T) {
 		digested[e.ActorID] = true
 	}
 	if digested["duck"] || digested["drake"] {
-		t.Errorf("ActivityDigest = %v, want no waterfowl", ctx.ActivityDigest)
+		t.Errorf("ActivityDigest = %v, want no ambient scenery", ctx.ActivityDigest)
 	}
 	if !digested["crier"] {
 		t.Errorf("ActivityDigest = %v, want the town crier kept — she is decorative but not scenery", ctx.ActivityDigest)

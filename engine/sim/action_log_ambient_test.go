@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// action_log_waterfowl_test.go — LLM-593 substrate coverage for the two
+// action_log_ambient_test.go — LLM-593 substrate coverage for the two
 // append funnels, exercised directly rather than through cascade wiring.
-// The cascade-level tests live in cascade/action_log_decorative_test.go.
+// The cascade-level tests live in cascade/action_log_ambient_test.go.
 
-// waterfowlLogWorld builds a minimal world holding a duck (decorative +
-// waterfowl sprite), a decorative route carrier with an ordinary sprite, and
-// an ordinary NPC.
-func waterfowlLogWorld() *World {
+// ambientLogWorld builds a minimal world holding a duck, a hen with no
+// movement slug, a decorative route carrier with an ordinary sprite, and an
+// ordinary NPC.
+func ambientLogWorld() *World {
 	w := &World{
 		Actors:            make(map[ActorID]*Actor),
 		Structures:        make(map[StructureID]*Structure),
@@ -21,11 +21,19 @@ func waterfowlLogWorld() *World {
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
 		outdoorActors:     make(map[ActorID]struct{}),
 		Sprites: map[SpriteID]*Sprite{
-			"sprite-duck": {ID: "sprite-duck", Behaviors: []string{BehaviorWaterfowl}},
+			// A duck: how it moves, and what it counts as.
+			"sprite-duck": {ID: "sprite-duck", Behaviors: []string{BehaviorWaterfowl, BehaviorAmbient}},
+			// A future farm animal: tagged scenery, with no movement slug yet.
+			// This is the case the whole design is for — it must be gated
+			// without the engine learning anything about hens.
+			"sprite-hen": {ID: "sprite-hen", Behaviors: []string{BehaviorAmbient}},
+			// A decorative route carrier's sprite: ordinary, no behaviors.
+			"sprite-villager": {ID: "sprite-villager", Behaviors: []string{}},
 		},
 	}
 	w.Actors["duck"] = &Actor{ID: "duck", DisplayName: "Duck", Kind: KindDecorative, SpriteID: "sprite-duck"}
-	w.Actors["crier"] = &Actor{ID: "crier", DisplayName: "Grace Edwards", Kind: KindDecorative}
+	w.Actors["hen"] = &Actor{ID: "hen", DisplayName: "Hen", Kind: KindDecorative, SpriteID: "sprite-hen"}
+	w.Actors["crier"] = &Actor{ID: "crier", DisplayName: "Grace Edwards", Kind: KindDecorative, SpriteID: "sprite-villager"}
 	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
 	return w
 }
@@ -38,18 +46,26 @@ func durableRow(id ActorID) DurableActionLogRow {
 	}
 }
 
-// TestAppendActionLogDurable_WaterfowlDropped exercises the durable funnel on
+// TestAppendActionLogDurable_AmbientDropped exercises the durable funnel on
 // its own. The cascade tests reach it through a subscriber; this one proves
 // the gate lives in AppendActionLogDurable itself, so a future caller that
 // writes a durable row without touching the in-memory log is still covered.
-func TestAppendActionLogDurable_WaterfowlDropped(t *testing.T) {
-	w := waterfowlLogWorld()
+func TestAppendActionLogDurable_AmbientDropped(t *testing.T) {
+	w := ambientLogWorld()
 	sink := &recordingActionLogSink{}
 	w.SetActionLogSink(sink)
 
 	w.AppendActionLogDurable(durableRow("duck"))
 	if len(sink.rows) != 0 {
 		t.Fatalf("durable rows = %d, want 0 for a duck (got %+v)", len(sink.rows), sink.rows)
+	}
+
+	// The hen carries BehaviorAmbient and no movement slug — a stand-in for
+	// the farm animals still to come. Gating it proves the tag, not the
+	// species, is what the funnel reads.
+	w.AppendActionLogDurable(durableRow("hen"))
+	if len(sink.rows) != 0 {
+		t.Fatalf("durable rows = %d, want 0 for a hen — a new animal must need no code (got %+v)", len(sink.rows), sink.rows)
 	}
 
 	w.AppendActionLogDurable(durableRow("crier"))
@@ -63,10 +79,10 @@ func TestAppendActionLogDurable_WaterfowlDropped(t *testing.T) {
 // with LLM-573. A visitor's durable row is deliberately KEPT after the
 // visitor is gone, with ActorID blanked to NULL so it has no FK to violate —
 // that row is what stops a stateful NPC's day note becoming a one-sided
-// transcript. The waterfowl gate must not resurrect the drop LLM-573 undid,
+// transcript. The ambient gate must not resurrect the drop LLM-573 undid,
 // which is why it keys on a resolved duck rather than on a failed lookup.
 func TestAppendActionLogDurable_VisitorRowKeptAndBlanked(t *testing.T) {
-	w := waterfowlLogWorld()
+	w := ambientLogWorld()
 	sink := &recordingActionLogSink{}
 	w.SetActionLogSink(sink)
 
@@ -85,7 +101,7 @@ func TestAppendActionLogDurable_VisitorRowKeptAndBlanked(t *testing.T) {
 	}
 }
 
-// TestAppendActionLogEntry_RemovedWaterfowlIsAResolvedMiss documents the
+// TestAppendActionLogEntry_RemovedAmbientIsAResolvedMiss documents the
 // ordering invariant that makes a registry of departed decorative ids
 // unnecessary. World.emit dispatches subscribers SYNCHRONOUSLY and inline on
 // the world goroutine, so the append for a duck's ActorArrived completes
@@ -93,9 +109,10 @@ func TestAppendActionLogDurable_VisitorRowKeptAndBlanked(t *testing.T) {
 // test covers only the residual case an operator can force: appending for an
 // id already deleted from w.Actors. That row survives, deliberately, because
 // the alternative (treating an unresolvable id as scenery) would drop the
-// visitor rows above. The cost is bounded at one row per deleted duck.
-func TestAppendActionLogEntry_RemovedWaterfowlIsAResolvedMiss(t *testing.T) {
-	w := waterfowlLogWorld()
+// visitor rows above. The cost is one row per such append — see
+// actionLogIgnoresActor for why that is accepted rather than closed.
+func TestAppendActionLogEntry_RemovedAmbientIsAResolvedMiss(t *testing.T) {
+	w := ambientLogWorld()
 	delete(w.Actors, "duck")
 
 	if _, err := AppendActionLogEntry(ActionLogEntry{
