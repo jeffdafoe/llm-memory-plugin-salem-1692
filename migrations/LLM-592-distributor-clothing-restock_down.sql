@@ -10,11 +10,32 @@
 -- jsonb equality is key-order insensitive, so the comparison holds however the
 -- blob was serialized.
 --
--- Known limitation, stated rather than hidden: if a policy somehow carries a
--- DUPLICATE of one of these exact objects, both copies go. That is unreachable
--- through the _up (which appends a kind only when no line for it exists) and
--- harmless if it ever happened — the restock rebuild takes first-listed on item
--- ties, so a duplicate was inert anyway.
+-- KNOWN LIMITATION — exact-value matching bounds the blast radius, it does not
+-- establish PROVENANCE (code_review). An entry that already existed with exactly
+-- this migration's value is indistinguishable from one this migration appended,
+-- so the down removes it too. Reproduced deliberately rather than assumed: seed a
+-- policy with all five lines at 6/6/6/4/4, run the up (correctly a no-op, every
+-- kind already present), run the down, and all five are gone.
+--
+-- Not fixed, as a judged trade rather than an oversight. The two ways to fix it
+-- both cost more than the bug:
+--
+--   * a provenance marker field on each inserted object would sit in the stored
+--     policy of a live actor forever, visible to every operator who ever reads it,
+--     to make a revert path exact;
+--   * a bookkeeping table means new schema for a seed migration.
+--
+-- Against that: the distributor holds ZERO garment lines today, so the collision
+-- needs someone to author this migration's exact caps in the window before the
+-- next deploy; and the loss only materializes on a deliberate revert, where the
+-- entry is one umbilical edit away from being restored. A documented revert-path
+-- caveat is the cheaper side of that trade. If clothing caps ever become
+-- operator-tuned in practice, revisit — the calculus changes.
+--
+-- The same reasoning covers a DUPLICATE of one of these objects: both copies go.
+-- That one is unreachable through the _up (which appends a kind only when no line
+-- for it exists) and inert regardless, since the restock rebuild takes
+-- first-listed on item ties.
 --
 -- Rebuilding the array by filtering is the only safe shape here: a positional
 -- splice would break the moment an operator edits the policy through the
