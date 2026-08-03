@@ -464,3 +464,83 @@ func TestResolveWorkGarmentTierFreshUnits(t *testing.T) {
 		t.Errorf("breeches with 50 of 480 minutes left: tier = %d, want Threadbare", got)
 	}
 }
+
+// TestRepublishCarriesTheGarmentWearAudienceFacts closes the gap
+// TestSnapshotWearsGarmentsParity leaves open (code_review): that test pairs a
+// live Actor with a hand-written ActorSnapshot, so it proves the two predicates
+// agree on the same facts but not that the PUBLISHER actually puts those facts
+// on the snapshot. SnapshotWearsGarments reads four of them, and two —
+// ProductionItem and SourceActivityKind — are projected in republish() rather
+// than carried straight across by snapshotActor. If either stopped being
+// populated, the shared predicate would quietly read "not working" and the
+// working-clothes cue would go silent for producers and foragers with nothing
+// failing.
+//
+// The third actor is the BusyAtSource boundary the snapshot deliberately reads
+// differently from the live sweep: an EXPIRED activity window publishes no
+// SourceActivityKind, so perception sees not-engaged while actorWearsGarments
+// still counts it. Pinned as expected divergence, not parity, so a future reader
+// finds it stated rather than discovering it as a bug.
+func TestRepublishCarriesTheGarmentWearAudienceFacts(t *testing.T) {
+	now := time.Now()
+	w := &World{}
+	w.Actors = map[ActorID]*Actor{
+		"baker": {
+			ID:                 "baker",
+			State:              StateIdle,
+			ProductionActivity: &ProductionActivity{Item: "bread", BatchQty: 10, RemainingSeconds: 600},
+		},
+		"forager": {
+			ID:    "forager",
+			State: StateIdle,
+			SourceActivity: &SourceActivity{Kind: SourceActivityHarvest, ObjectID: "bush",
+				Until: now.Add(5 * time.Minute)},
+		},
+		"lapsed": {
+			ID:    "lapsed",
+			State: StateIdle,
+			SourceActivity: &SourceActivity{Kind: SourceActivityHarvest, ObjectID: "bush",
+				Until: now.Add(-5 * time.Minute)}, // window closed, sweep hasn't cleared it yet
+		},
+	}
+	w.republish()
+	snap := w.Published()
+	if snap == nil {
+		t.Fatal("republish published nothing")
+	}
+
+	baker := snap.Actors["baker"]
+	if baker == nil || baker.ProductionItem != "bread" {
+		t.Fatalf("published baker = %+v, want ProductionItem bread — the working-clothes cue "+
+			"reads this field to know a producer is at work", baker)
+	}
+	forager := snap.Actors["forager"]
+	if forager == nil || forager.SourceActivityKind != SourceActivityHarvest {
+		t.Fatalf("published forager = %+v, want SourceActivityKind harvest", forager)
+	}
+
+	// Both must land in the audience through the published facts alone.
+	for _, id := range []ActorID{"baker", "forager"} {
+		if !SnapshotWearsGarments(w.VillageObjects, snap.Actors[id]) {
+			t.Errorf("%s is not in the garment-wear audience as PUBLISHED, though "+
+				"actorWearsGarments counts them live", id)
+		}
+		if !actorWearsGarments(w, w.Actors[id]) {
+			t.Errorf("%s should wear garments live (fixture check)", id)
+		}
+	}
+
+	// The documented one-sweep-wide divergence, asserted in both directions.
+	lapsed := snap.Actors["lapsed"]
+	if lapsed == nil || lapsed.SourceActivityKind != "" {
+		t.Errorf("an expired activity window should publish no SourceActivityKind, got %+v", lapsed)
+	}
+	if SnapshotWearsGarments(w.VillageObjects, lapsed) {
+		t.Errorf("perception should read an expired window as not-engaged")
+	}
+	if !actorWearsGarments(w, w.Actors["lapsed"]) {
+		t.Errorf("the live sweep still counts an expired-but-unswept window — if this " +
+			"changed, the divergence documented on SnapshotWearsGarments is gone and the " +
+			"comment should go with it")
+	}
+}
