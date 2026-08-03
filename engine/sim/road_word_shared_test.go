@@ -7,7 +7,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// visitor_rumor_shared_test.go — LLM-545: the traveler's carried word
+// road_word_shared_test.go — LLM-545: the traveler's carried word
 // (VisitorState.Payload) is marked as given to the peers he actually conversed
 // with, on the real SpeakTo path. Mirrors rumor_integration_test.go's seam
 // coverage: the hook placement inside the live-huddle branch, and the
@@ -42,12 +42,12 @@ func seedVisitorStateForTest(t *testing.T, w *sim.World, id sim.ActorID, vs *sim
 	}
 }
 
-// TestVisitorRumorSharedThroughRealSpeak drives real SpeakTo calls: a traveler
+// TestRoadWordSharedThroughRealSpeak drives real SpeakTo calls: a traveler
 // carrying a payload speaks in a huddle where one peer has spoken (active
 // conversant) and one has not. The active peer is stamped as having had the
 // word; the silent bystander is not; a repeat speak does not duplicate the
 // stamp.
-func TestVisitorRumorSharedThroughRealSpeak(t *testing.T) {
+func TestRoadWordSharedThroughRealSpeak(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
 		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -66,7 +66,7 @@ func TestVisitorRumorSharedThroughRealSpeak(t *testing.T) {
 	if _, err := w.Send(sim.SpeakTo("hannah", "Good evening, stranger.", "", nil, true, base)); err != nil {
 		t.Fatalf("hannah speak: %v", err)
 	}
-	// The traveler speaks → recordVisitorRumorShared fires.
+	// The traveler speaks → recordRoadWordShared fires.
 	if _, err := w.Send(sim.SpeakTo("vstr-ashford", "A word on the road gave me pause, Hannah.", "", nil, true, base.Add(time.Second))); err != nil {
 		t.Fatalf("ashford speak: %v", err)
 	}
@@ -98,13 +98,13 @@ func TestVisitorRumorSharedThroughRealSpeak(t *testing.T) {
 	}
 }
 
-// TestVisitorRumorSharedReachesPublishedSnapshot covers the live actor →
+// TestRoadWordSharedReachesPublishedSnapshot covers the live actor →
 // Published() boundary (code_review): the stamp written by a real SpeakTo must
 // be readable off the production published snapshot — where perception's
-// travelerRumorSharedWith actually reads it — and the published copy must be
+// roadWordSharedWith actually reads it — and the published copy must be
 // INDEPENDENT of the live world, so a later world-side write cannot appear in a
 // snapshot already handed to a perception build.
-func TestVisitorRumorSharedReachesPublishedSnapshot(t *testing.T) {
+func TestRoadWordSharedReachesPublishedSnapshot(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
 		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -146,13 +146,13 @@ func TestVisitorRumorSharedReachesPublishedSnapshot(t *testing.T) {
 	}
 }
 
-// TestVisitorRumorSharedRejectedSpeakStampsNothing: the stamp lives AFTER the
+// TestRoadWordSharedRejectedSpeakStampsNothing: the stamp lives AFTER the
 // speak gates and the utterance commit, so a rejected SpeakTo must leave the
 // memory untouched. The failing speak here is the WORK-370 directed re-ask gate
 // (live unanswered edge to the addressee, hasNewNews=false) — chosen because by
 // then Mary is an ACTIVE conversant the hook WOULD stamp if it ran, so the
 // assertion is probative, not vacuous.
-func TestVisitorRumorSharedRejectedSpeakStampsNothing(t *testing.T) {
+func TestRoadWordSharedRejectedSpeakStampsNothing(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
 		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -192,11 +192,11 @@ func TestVisitorRumorSharedRejectedSpeakStampsNothing(t *testing.T) {
 	}
 }
 
-// TestVisitorRumorSharedSkipsStaleHuddleMember: a huddle member id with NO live
+// TestRoadWordSharedSkipsStaleHuddleMember: a huddle member id with NO live
 // actor behind it (only reachable through an invariant breach or a mid-tick
 // deletion) must never become a stamp, even with an utterance timestamp in the
 // ring — junk stamps eat cap space and persist in the plan jsonb.
-func TestVisitorRumorSharedSkipsStaleHuddleMember(t *testing.T) {
+func TestRoadWordSharedSkipsStaleHuddleMember(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "vstr-ashford", displayName: "Brother Ashford the provisioner", kind: sim.KindNPCShared, huddleID: "h1"},
 		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -231,9 +231,9 @@ func TestVisitorRumorSharedSkipsStaleHuddleMember(t *testing.T) {
 	}
 }
 
-// TestVisitorRumorSharedRequiresPayload: a traveler with no carried word stamps
+// TestRoadWordSharedRequiresPayload: a traveler with no carried word stamps
 // nothing — there is no matter to spend.
-func TestVisitorRumorSharedRequiresPayload(t *testing.T) {
+func TestRoadWordSharedRequiresPayload(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "vstr-elias", displayName: "Elias Drum the peddler", kind: sim.KindNPCShared, huddleID: "h1"},
 		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -254,10 +254,10 @@ func TestVisitorRumorSharedRequiresPayload(t *testing.T) {
 	}
 }
 
-// TestVisitorRumorSharedNonVisitorSpeakerNoop: a resident speaker never gains
+// TestRoadWordSharedNonVisitorSpeakerNoop: a resident speaker never gains
 // the memory — the stamp is scoped to a traveler carrying a payload, and the
 // hook must tolerate every ordinary speaker without effect.
-func TestVisitorRumorSharedNonVisitorSpeakerNoop(t *testing.T) {
+func TestRoadWordSharedNonVisitorSpeakerNoop(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "hannah", displayName: "Hannah Boggs", kind: sim.KindNPCShared, huddleID: "h1"},
 		{id: "john", displayName: "John Ellis", kind: sim.KindNPCShared, huddleID: "h1"},

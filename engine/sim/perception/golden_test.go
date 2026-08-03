@@ -259,15 +259,15 @@ func TestGoldensTravelerVocationMatchesArchetype(t *testing.T) {
 	}
 }
 
-// TestGoldensRumorSharedClauseMatchesPresentCompany is the LLM-545
+// TestGoldensRoadWordSharedClauseMatchesPresentCompany is the LLM-545
 // cross-scenario invariant, computed through the production builder rather than
-// restated wording: for every scenario whose subject carries a rumor payload,
+// restated wording: for every scenario whose subject carries a road-word payload,
 // the preface's shared-word clause ("you have already passed" in either tier)
-// renders IFF travelerRumorSharedWith finds a stamped peer in present company,
+// renders IFF roadWordSharedWith finds a stamped peer in present company,
 // and every name it renders belongs to a co-present actor. Guards the
 // co-presence rule matrix-wide — a stamp for someone elsewhere must never
 // surface a name, and a stamped co-present peer must never be silently dropped.
-func TestGoldensRumorSharedClauseMatchesPresentCompany(t *testing.T) {
+func TestGoldensRoadWordSharedClauseMatchesPresentCompany(t *testing.T) {
 	const clauseMarker = "you have already passed"
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -282,7 +282,7 @@ func TestGoldensRumorSharedClauseMatchesPresentCompany(t *testing.T) {
 				}
 				return
 			}
-			names, _ := travelerRumorSharedWith(snap, actorID, a)
+			names, _ := roadWordSharedWith(snap, actorID, a)
 			if want := len(names) > 0; want != hasClause {
 				t.Errorf("scenario %q: production builder finds %d co-present shared peers but clause present=%v — the shared-word clause must render iff a stamped peer is in the scene (LLM-545)", sc.name, len(names), hasClause)
 			}
@@ -1953,7 +1953,7 @@ var perceptionScenarios = []perceptionScenario{
 			"salem-visitor VA has one true, checkable thing to trade in conversation instead of empty small-talk. The " +
 			"payload rides the same self-preface stream as the persona (renderTravelerPreface); an empty payload drops the " +
 			"clause (the no-rumor case is the LLM-370 traveler_self_identity_preface golden).",
-		build: travelerSelfIdentityPrefaceWithRumor,
+		build: travelerSelfIdentityPrefaceWithRoadWord,
 	},
 	{
 		name: "traveler_rumor_spent_with_present_company",
@@ -14070,14 +14070,14 @@ func travelerSelfIdentityPrefaceVocation() (*sim.Snapshot, sim.ActorID, []sim.Wa
 	return snap, whitcombeID, warrants
 }
 
-// travelerSelfIdentityPrefaceWithRumor is the LLM-371 fixture: the same traveler
-// as travelerSelfIdentityPreface, but now carrying a grounded rumor on
+// travelerSelfIdentityPrefaceWithRoadWord is the LLM-371 fixture: the same traveler
+// as travelerSelfIdentityPreface, but now carrying a grounded road word on
 // VisitorState.Payload. The golden pins the extra preface clause ("Word reached
 // you on the road that …") that renderTravelerPreface appends after the persona,
 // so the stateless salem-visitor VA has one true thing to trade. The clause is
-// dropped entirely on an empty Payload — that no-rumor case is the LLM-370
+// dropped entirely on an empty Payload — that no-road-word case is the LLM-370
 // travelerSelfIdentityPreface golden, so the two goldens together pin both arms.
-func travelerSelfIdentityPrefaceWithRumor() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+func travelerSelfIdentityPrefaceWithRoadWord() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		eliasID = sim.ActorID("vstr-elias")
 		tavern  = sim.StructureID("tavern")
@@ -14118,7 +14118,7 @@ func travelerSelfIdentityPrefaceWithRumor() (*sim.Snapshot, sim.ActorID, []sim.W
 // travelerRumorSpentWithPresentCompany is the LLM-545 fixture: the same
 // rumor-carrying traveler, back in a huddle with the one person he has already
 // passed the word to (VisitorState.PayloadSharedWith carries her id — stamped by
-// recordVisitorRumorShared when she answered him earlier). The golden pins the
+// recordRoadWordShared when she answered him earlier). The golden pins the
 // preface's SPENT reframing — "The word you picked up on the road — that … — you
 // have already passed to Hannah Boggs, and heard what they had to say; that
 // matter is spent between you." — in place of the fresh "Word reached you …"
