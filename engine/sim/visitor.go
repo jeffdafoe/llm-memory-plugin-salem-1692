@@ -1775,7 +1775,7 @@ func sellErrandDelivered(delivered, shipmentQty int) bool {
 // the seeded item_kind rows so the distributor values them for the two-way trade; the
 // warms garments (coat/cloak) are what close the cold-relief loop. Which kinds exist is
 // itself operator-tunable via item/set; the per-visit quantity is visitor_factor_pack_units.
-var factorWareKinds = []ItemKind{"coat", "cloak", "gown", "breeches", "shift", "silver_locket", "whalebone_charm"}
+var factorWareKinds = []ItemKind{"coat", "cloak", "homespun", "woolens", "linens", "silver_locket", "whalebone_charm"}
 
 // factorIronKind is the imported smith's input the factor carries in SHIPMENT
 // quantity (LLM-442) — seeded via ironUnits, not the per-kind unitsPerKind, so
