@@ -49,35 +49,66 @@
 
 BEGIN;
 
+-- The pair, item-specific. The first cut matched on `worn_minutes_left IN (9720,
+-- 12960)` without tying the value to the KIND, which was wrong twice over
+-- (code_review): a shift holding 12960 would have matched and been driven to the
+-- breeches target, and — the one that actually mattered — if only ONE row were
+-- still at its seeded value the migration would have updated just that one.
+--
+-- A partial pair is worse than doing nothing. ResolveWorkGarmentTier takes the
+-- BEST tier across kinds, so a threadbare breeches beside a sound shift grades
+-- SOUND and the cue stays silent: the migration would have reported success
+-- having achieved exactly nothing. Hence all-or-nothing below.
+CREATE TEMP TABLE llm592_ezekiel_pair (item_kind text, seeded int, target int) ON COMMIT DROP;
+INSERT INTO llm592_ezekiel_pair (item_kind, seeded, target) VALUES
+    ('shift',     9720, 1188),   -- 11% of the 10800 budget (threadbare below 2160)
+    ('breeches', 12960, 1584);   -- 11% of the 14400 budget (threadbare below 2880)
+
 DO $$
 DECLARE
     ezekiel constant uuid := '019da6f9-1b4c-7dda-bb6b-3248cdafb2c4';  -- Ezekiel Crane
-    n int;
+    eligible int;
+    landed int;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM actor WHERE id = ezekiel) THEN
         -- Fresh schema-only database (the integration harness) — nothing to do.
         RETURN;
     END IF;
 
-    UPDATE actor_inventory
-       SET worn_minutes_left = CASE item_kind
-                                   WHEN 'shift'    THEN 1188   -- 11% of 10800
-                                   WHEN 'breeches' THEN 1584   -- 11% of 14400
-                               END
-     WHERE actor_id = ezekiel
-       AND item_kind IN ('shift', 'breeches')
-       -- Only from the values the seed wrote. If the engine has already worn them
-       -- past this, leave them: they are lower than what we would set anyway.
-       AND worn_minutes_left IN (9720, 12960);
+    -- Both rows must still be at their seeded values before either moves.
+    SELECT count(*) INTO eligible
+      FROM actor_inventory ai
+      JOIN llm592_ezekiel_pair p ON p.item_kind = ai.item_kind
+     WHERE ai.actor_id = ezekiel
+       AND ai.worn_minutes_left = p.seeded;
 
-    GET DIAGNOSTICS n = ROW_COUNT;
+    IF eligible <> 2 THEN
+        -- The engine has worn one or both since the seed, or the rows are gone.
+        -- Not fatal: the point of this migration is observability, and a smith who
+        -- wore his own clothes down is the outcome it was faking. Say so rather
+        -- than failing a deploy, and change NOTHING — a half-applied pair would
+        -- leave him grading sound with the cue silent.
+        RAISE NOTICE 'LLM-592: Ezekiel''s garments are not both at their seeded values (% of 2 eligible) — left as they are', eligible;
+        RETURN;
+    END IF;
 
-    -- 0 rows means the seed rows are gone or already moved on. Not fatal — the
-    -- point of this migration is observability, and a smith who has worn his
-    -- clothes down on his own is the outcome it was faking. Say so in the log
-    -- rather than failing a deploy over it.
-    IF n = 0 THEN
-        RAISE NOTICE 'LLM-592: Ezekiel''s garments were not at their seeded values — left as they are';
+    UPDATE actor_inventory ai
+       SET worn_minutes_left = p.target
+      FROM llm592_ezekiel_pair p
+     WHERE ai.actor_id = ezekiel
+       AND ai.item_kind = p.item_kind
+       AND ai.worn_minutes_left = p.seeded;
+
+    -- Assert the intended end state per kind, not merely a row count: the count
+    -- cannot tell you the right value landed on the right garment.
+    SELECT count(*) INTO landed
+      FROM actor_inventory ai
+      JOIN llm592_ezekiel_pair p ON p.item_kind = ai.item_kind
+     WHERE ai.actor_id = ezekiel
+       AND ai.worn_minutes_left = p.target;
+
+    IF landed <> 2 THEN
+        RAISE EXCEPTION 'LLM-592: Ezekiel''s garments did not land on their targets (% of 2)', landed;
     END IF;
 END $$;
 
