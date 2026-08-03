@@ -514,3 +514,63 @@ func TestFetchAtmosphereContext_DigestEmptyActionLog(t *testing.T) {
 		t.Errorf("ActivityDigest = %v, want nil on empty action log", ctx.ActivityDigest)
 	}
 }
+
+// TestFetchAtmosphereContext_ExcludesAmbient: LLM-593. A duck belongs
+// in neither half of the atmosphere prompt. The roster names who is
+// about, so eight identically-named ducks read to the model as eight
+// residents standing outdoors; the digest counts what people did, and
+// duck wander legs outnumbered every real villager action by better than
+// ten to one.
+//
+// The town crier is seeded alongside them and must SURVIVE both halves.
+// She is decorative exactly as the ducks are — the engine walks her
+// because she has no LLM volition — so a filter written against Kind
+// rather than the ambient behavior would quietly drop a villager who
+// tours and speaks all day.
+//
+// The digest arm is defence in depth — the append funnel keeps ambient
+// rows out of ActionLog now — so the log is seeded here directly to prove
+// the filter holds for a log carried across the fix.
+func TestFetchAtmosphereContext_ExcludesAmbient(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Sprites = map[SpriteID]*Sprite{
+		"sprite-duck": {ID: "sprite-duck", Behaviors: []string{BehaviorWaterfowl, BehaviorAmbient}},
+	}
+	w.Actors["duck"] = &Actor{ID: "duck", DisplayName: "Duck", Kind: KindDecorative, SpriteID: "sprite-duck"}
+	w.Actors["drake"] = &Actor{ID: "drake", DisplayName: "Duck", Kind: KindDecorative, SpriteID: "sprite-duck"}
+	w.Actors["crier"] = &Actor{ID: "crier", DisplayName: "Grace Edwards", Kind: KindDecorative}
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "duck", OccurredAt: priorAt.Add(1 * time.Minute), ActionType: ActionTypeWalked},
+		{ActorID: "drake", OccurredAt: priorAt.Add(2 * time.Minute), ActionType: ActionTypeWalked},
+		{ActorID: "crier", OccurredAt: priorAt.Add(10 * time.Minute), ActionType: ActionTypeSpoke},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(20 * time.Minute), ActionType: ActionTypeSpoke},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+
+	digested := map[ActorID]bool{}
+	for _, e := range ctx.ActivityDigest {
+		digested[e.ActorID] = true
+	}
+	if digested["duck"] || digested["drake"] {
+		t.Errorf("ActivityDigest = %v, want no ambient scenery", ctx.ActivityDigest)
+	}
+	if !digested["crier"] {
+		t.Errorf("ActivityDigest = %v, want the town crier kept — she is decorative but not scenery", ctx.ActivityDigest)
+	}
+	if !digested["hannah"] {
+		t.Errorf("ActivityDigest = %v, want hannah kept", ctx.ActivityDigest)
+	}
+
+	if len(ctx.Roster) != 1 {
+		t.Fatalf("Roster len = %d, want 1 outdoor bucket", len(ctx.Roster))
+	}
+	names := ctx.Roster[0].DisplayNames
+	if len(names) != 2 || names[0] != "Grace Edwards" || names[1] != "Hannah" {
+		t.Errorf("Roster names = %v, want [Grace Edwards Hannah] — ducks are scenery, the crier is not", names)
+	}
+}

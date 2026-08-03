@@ -146,6 +146,22 @@ func actorIsWaterfowl(w *World, a *Actor) bool {
 	return w.Sprites[a.SpriteID].HasBehavior(BehaviorWaterfowl)
 }
 
+// actorIsAmbient reports whether a is village scenery — an actor that moves
+// but whose doings are not part of the village record (LLM-593). See
+// BehaviorAmbient for why this is a separate question from ActorKind.
+//
+// The Kind gate mirrors actorIsWaterfowl's, for the same reason: a PC or agent
+// NPC wearing an animal sprite is driven by a player or an LLM, and its
+// actions are real village history whatever it looks like.
+//
+// MUST be called from inside a Command.Fn (reads w.Sprites).
+func actorIsAmbient(w *World, a *Actor) bool {
+	if a == nil || a.Kind != KindDecorative {
+		return false
+	}
+	return w.Sprites[a.SpriteID].HasBehavior(BehaviorAmbient)
+}
+
 // walkGridForActor returns the walk grid this actor paths on: the
 // waterfowl grid for waterfowl, the shared grid for everyone else. The
 // two-value shape mirrors buildWalkGrid.

@@ -1680,6 +1680,13 @@ func (w *World) AppendActionLogDurable(row DurableActionLogRow) {
 	if sink == nil {
 		return
 	}
+	// Waterfowl never reach the durable table either (LLM-593) — the same
+	// gate the in-memory funnel applies, repeated because a subscriber calls
+	// the two independently and a silent in-memory skip would otherwise still
+	// let the row through to PG.
+	if actionLogIgnoresActor(w, row.ActorID) {
+		return
+	}
 	// Visitors are transient and live OUTSIDE the actor aggregate — their rows are
 	// in the separate `visitor` table, firewalled out of ActorsRepo (LLM-369). The
 	// durable audit sink's actor_id is a uuid with a FK to actor(id), so a "vstr-"

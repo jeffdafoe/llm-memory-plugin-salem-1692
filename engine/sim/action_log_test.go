@@ -16,9 +16,11 @@ import (
 // is deterministic; subscriber wiring + the goroutine sweep have their
 // own tests in engine/sim/cascade/action_log_test.go.
 
-// buildActionLogWorld stands up an empty world (no seeded actors needed
-// — AppendActionLogEntry doesn't dereference World.Actors today), runs
-// it, and returns ready-to-test handles.
+// buildActionLogWorld stands up an empty world, runs it, and returns
+// ready-to-test handles. No seeded actors: AppendActionLogEntry does look
+// the actor up — for the conversational scope stamp, and for the decorative
+// gate (LLM-593) — but both degrade to their zero/false case on a miss, so
+// an unseeded id exercises the append path unimpeded.
 func buildActionLogWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, _ := mem.NewRepository()

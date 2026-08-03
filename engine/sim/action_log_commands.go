@@ -11,6 +11,53 @@ import (
 // event subscribers; CompactActionLog drops entries older than the
 // retention cutoff. Both run on the world goroutine.
 
+// actionLogIgnoresActor reports whether the action log should drop a row for
+// this actor. True for ambient scenery, whose movement is not a doing worth
+// recording (LLM-593). The pond ducks wander every few seconds: 15,672
+// "walked" rows a day into a log the rest of the village fills at ~1,000/day,
+// drowning the admin Village tab that renders it.
+//
+// Gated here at the write funnel rather than in the one subscriber that
+// tripped over it. Scenery reaches the log only through locomotion
+// (ActorArrived / ActorLeftStructure), and the arrival subscriber was the
+// second site to miss it after the LLM-582 huddle gate; a funnel gate means
+// the next subscriber to observe movement cannot reopen it, and a new animal
+// needs no change here at all — tagging its sprite is enough.
+//
+// NOT gated on KindDecorative, which is the wider population and would be
+// wrong. The lamplighter, washerwoman and town crier are all decorative
+// carriers (see routeIsBeat) — the engine walks them because they have no
+// LLM volition, but they tour and they speak, and the town crier alone has
+// written thousands of announcement rows. Their doings belong in the log:
+// agent_action_log is the sole input to the day note behind the nightly
+// dream pipeline, so dropping them would silently amputate that history.
+// BehaviorAmbient documents the distinction in full.
+//
+// An unresolvable ActorID is NOT ignored: tests append under synthetic ids,
+// and a visitor's row is deliberately kept with its id blanked (see
+// AppendActionLogDurable and LLM-573). That asymmetry is why this keys on a
+// RESOLVED duck rather than on a failed lookup — reading a miss as scenery
+// would re-drop the very rows LLM-573 restored.
+//
+// The lookup needs no registry of departed decoratives to be sound: World.emit
+// dispatches subscribers synchronously and inline on the world goroutine, so
+// the append for a duck's ActorArrived completes inside the same command that
+// emitted it and no removal can interleave. What remains is any append made
+// for an id ALREADY deleted from w.Actors — one surviving row per such append,
+// not one per deleted duck, since nothing stops a caller repeating it. That is
+// accepted rather than closed: a deleted duck emits no further locomotion, so
+// in practice the count is zero, and the alternative (splitting movement rows
+// onto their own unresolved-id policy so identity resolution stops carrying
+// the semantics) buys nothing against a case production does not produce.
+//
+// MUST be called from inside a Command.Fn — actorIsAmbient reads w.Sprites.
+// Not a new constraint on AppendActionLogDurable's exported surface: it
+// already read w.Actors on this line's behalf, so every caller was required
+// to be on the world goroutine before this gate existed.
+func actionLogIgnoresActor(w *World, id ActorID) bool {
+	return actorIsAmbient(w, w.Actors[id])
+}
+
 // AppendActionLogEntry returns a Command that appends entry to
 // World.ActionLog. Used by event subscribers (cascade.RegisterActionLog
 // wires Spoke / Paid / ItemConsumed / OrderDelivered / ActorArrived).
@@ -22,6 +69,7 @@ import (
 //   - ActorID empty → error (caller bug; surfaces in the subscriber's
 //     log line so we don't silently drop a row).
 //   - OccurredAt zero → error (same).
+//   - waterfowl → dropped silently (LLM-593, see actionLogIgnoresActor).
 //   - Text rune-truncated at the boundary so the substrate can't
 //     accumulate oversized rows even if a subscriber forgot to
 //     truncate: MaxSpokenActionLogTextLen for spoken lines (kept full
@@ -41,6 +89,9 @@ func AppendActionLogEntry(entry ActionLogEntry) Command {
 			}
 			if entry.OccurredAt.IsZero() {
 				return nil, fmt.Errorf("sim.AppendActionLogEntry: zero OccurredAt")
+			}
+			if actionLogIgnoresActor(w, entry.ActorID) {
+				return nil, nil
 			}
 			// Spoken lines keep the full utterance for the player-facing
 			// talk-panel backload; every other type stays at the tighter
