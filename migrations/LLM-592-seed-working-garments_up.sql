@@ -61,9 +61,14 @@
 
 BEGIN;
 
-INSERT INTO actor_inventory (actor_id, item_kind, quantity, worn_minutes_left)
-SELECT v.actor_id::uuid, v.item_kind, 1, v.worn_minutes_left
-  FROM (VALUES
+-- The seed, named once and read by both the INSERT and the assertion, so the two
+-- can never disagree about who was supposed to get clothes. ON COMMIT DROP rolls
+-- back cleanly under the deploy's dry run, which swaps the terminating COMMIT for
+-- ROLLBACK.
+CREATE TEMP TABLE llm592_seed (actor_id text, item_kind text, worn_minutes_left int) ON COMMIT DROP;
+
+INSERT INTO llm592_seed (actor_id, item_kind, worn_minutes_left)
+SELECT * FROM (VALUES
     -- keepers and businessowners: well found, late to need replacing
     ('019da6f9-1b4c-7dda-bb6b-3248cdafb2c4', 'shift',     9720),  -- Ezekiel Crane
     ('019da6f9-1b4c-7dda-bb6b-3248cdafb2c4', 'breeches', 12960),
@@ -99,28 +104,41 @@ SELECT v.actor_id::uuid, v.item_kind, 1, v.worn_minutes_left
     ('4561da54-eb08-46c8-8f05-ddc0aadaebff', 'breeches',  1728),
     ('019da6b7-a853-79fb-91eb-645e5d9915c1', 'shift',     1080),  -- Joseph Scott
     ('019da6b7-a853-79fb-91eb-645e5d9915c1', 'breeches',  1440)   -- (kept at 302 — pre-existing)
-  ) AS v(actor_id, item_kind, worn_minutes_left)
- WHERE EXISTS (SELECT 1 FROM actor a WHERE a.id = v.actor_id::uuid)
+  ) AS v(actor_id, item_kind, worn_minutes_left);
+
+INSERT INTO actor_inventory (actor_id, item_kind, quantity, worn_minutes_left)
+SELECT s.actor_id::uuid, s.item_kind, 1, s.worn_minutes_left
+  FROM llm592_seed s
+ WHERE EXISTS (SELECT 1 FROM actor a WHERE a.id = s.actor_id::uuid)
 ON CONFLICT (actor_id, item_kind) DO NOTHING;
 
 -- Completeness assertion, mirroring LLM-422's own guard and LLM-589's. A silent
 -- partial seed is the dangerous failure here: the cue would speak for whoever was
--- missed and nobody would know the seed was the reason. Skipped entirely on a
--- fresh schema-only database (the integration harness), where no actor rows exist.
+-- missed and nobody would know the seed was the reason.
+--
+-- Asserted over the INTENDED SET — the actors named in the seed above — rather
+-- than over "every agent-backed actor except Josiah by display name", which the
+-- first cut did (code_review). That derived set was wrong in both directions: it
+-- leaned on a display name for the exclusion, and it would have failed a future
+-- deploy for any NEW agent-backed NPC this migration was never written to cover.
+-- Reading the seed table means Josiah and the PCs are out of scope by simply not
+-- being in it, with no exception clause to keep true.
+--
+-- Actors in the seed that do not exist are skipped, not failed: that is the
+-- fresh schema-only database (the integration harness), where the whole seed is
+-- correctly a no-op.
 DO $$
 DECLARE missing text;
 BEGIN
-    IF EXISTS (SELECT 1 FROM actor WHERE id = '019da6f9-1b4c-7dda-bb6b-3248cdafb2c4') THEN
-        SELECT string_agg(a.display_name, ', ' ORDER BY a.display_name) INTO missing
-          FROM actor a
-         WHERE a.llm_memory_agent IS NOT NULL
-           AND a.display_name <> 'Josiah Thorne'
-           AND NOT EXISTS (
-               SELECT 1 FROM actor_inventory i
-                WHERE i.actor_id = a.id AND i.item_kind IN ('shift', 'breeches', 'gown'));
-        IF missing IS NOT NULL THEN
-            RAISE EXCEPTION 'LLM-592: agent-backed actors left with no working garment: %', missing;
-        END IF;
+    SELECT string_agg(DISTINCT a.display_name, ', ' ORDER BY a.display_name) INTO missing
+      FROM llm592_seed s
+      JOIN actor a ON a.id = s.actor_id::uuid
+     WHERE NOT EXISTS (
+           SELECT 1 FROM actor_inventory i
+            WHERE i.actor_id = a.id
+              AND i.item_kind IN ('shift', 'breeches', 'gown'));
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'LLM-592: seeded actors left with no working garment: %', missing;
     END IF;
 END $$;
 
