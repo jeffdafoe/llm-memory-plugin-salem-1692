@@ -72,26 +72,22 @@ type WorkClothesView struct {
 	Block           copresentBuyBlock
 }
 
-// snapActorWearsGarments mirrors sim.actorWearsGarments over the snapshot: the
-// audience is exactly the set whose garments actually wear, so the cue can never
-// nag someone the wear sweep does not touch. Trade-errand visitors and the
+// snapActorWearsGarments defers to sim.SnapshotWearsGarments — the audience is
+// exactly the set whose garments actually wear, so the cue can never address
+// someone the wear sweep does not touch. Trade-errand visitors and the
 // distributor are excluded there because their held garments are stock rather
-// than clothing, and that exclusion has to hold here too — otherwise the
-// distributor would be told to buy the coats already on his own shelf.
+// than clothing; without that the distributor would be told to buy the shifts
+// already on his own shelf.
+//
+// This started as a hand-copy of sim.actorWearsGarments and got the visitor arm
+// wrong — it dropped EVERY visitor, where the sweep exempts only a visitor with a
+// bound trade errand, so a plain passer-through wore his clothes out in silence.
+// Hence the shared predicate rather than a second spelling of it (code_review).
 //
 // Gating on the working posture (rather than rendering to anyone, always) is
 // deliberate: you notice a worn-through sleeve at the work, not over supper.
-func snapActorWearsGarments(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) bool {
-	if a == nil {
-		return false
-	}
-	if a.VisitorState != nil || sim.ActorIsDistributor(snap.VillageObjects, a.WorkStructureID) {
-		return false
-	}
-	return a.State == sim.StateWorking ||
-		a.State == sim.StateLaboring ||
-		a.ProductionItem != "" ||
-		a.SourceActivityKind != ""
+func snapActorWearsGarments(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	return sim.SnapshotWearsGarments(snap.VillageObjects, a)
 }
 
 // workGarmentKinds returns the catalog's working-garment kinds in a stable
@@ -112,7 +108,7 @@ func workGarmentKinds(snap *sim.Snapshot) []sim.ItemKind {
 // buildWorkClothes returns the working-clothes cue, or nil. Pure over the
 // snapshot.
 func buildWorkClothes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *WorkClothesView {
-	if snap == nil || actorSnap == nil || !snapActorWearsGarments(snap, actorID, actorSnap) {
+	if snap == nil || actorSnap == nil || !snapActorWearsGarments(snap, actorSnap) {
 		return nil
 	}
 	tier := sim.ResolveWorkGarmentTier(snap.ItemKinds, actorSnap.Inventory, actorSnap.GarmentWear, snap.GarmentThreadbareFractionX100)

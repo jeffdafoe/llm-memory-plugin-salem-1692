@@ -309,3 +309,158 @@ func TestColdRatePerMinuteX100_ThreadbareGarment(t *testing.T) {
 		t.Errorf("no coat outdoors = %d, want %d", got, DefaultColdStormOutdoorsPerMinuteX100)
 	}
 }
+
+// TestSnapshotWearsGarmentsParity is the LLM-589 guard on the two views of the
+// garment-wear audience: the live *Actor the sweep walks, and the *ActorSnapshot
+// the perception layer reads to decide who hears the working-clothes cue. Both
+// now route through wearsGarments, and this pins that they agree case by case —
+// a cue that addresses anyone the sweep doesn't touch is telling an actor his
+// clothes are going when they are not.
+//
+// The pairing is hand-built (snapshotActor fills most of ActorSnapshot, but the
+// source-activity projection happens later in the publish loop, gated on
+// BusyAtSource), so this test is parity over the FIELD MAPPING, not proof that
+// the publisher fills those fields. The value is the audience arms: any edit to
+// one predicate that the other doesn't follow lands here.
+//
+// The plain-visitor row is the one that caught a real bug: the first cut of the
+// perception mirror dropped every visitor, where the sweep exempts only a
+// visitor carrying a bound trade errand. A passer-through wears his clothes like
+// anyone else and is owed the cue like anyone else.
+func TestSnapshotWearsGarmentsParity(t *testing.T) {
+	w := &World{
+		VillageObjects: map[VillageObjectID]*VillageObject{
+			"store": {ID: "store", Tags: []string{TagDistributor}},
+		},
+	}
+	sellErrand := &TradeErrand{Direction: TradeDirectionSell, Counterparty: "store"}
+
+	cases := []struct {
+		name  string
+		actor *Actor
+		snap  *ActorSnapshot
+		want  bool
+	}{
+		{
+			name:  "on-shift keeper",
+			actor: &Actor{State: StateWorking},
+			snap:  &ActorSnapshot{State: StateWorking},
+			want:  true,
+		},
+		{
+			name:  "hired laborer",
+			actor: &Actor{State: StateLaboring},
+			snap:  &ActorSnapshot{State: StateLaboring},
+			want:  true,
+		},
+		{
+			name:  "mid production cycle",
+			actor: &Actor{State: StateIdle, ProductionActivity: &ProductionActivity{Item: "bread"}},
+			snap:  &ActorSnapshot{State: StateIdle, ProductionItem: "bread"},
+			want:  true,
+		},
+		{
+			name:  "mid source activity",
+			actor: &Actor{State: StateIdle, SourceActivity: &SourceActivity{Kind: SourceActivityHarvest}},
+			snap:  &ActorSnapshot{State: StateIdle, SourceActivityKind: SourceActivityHarvest},
+			want:  true,
+		},
+		{
+			name:  "idle",
+			actor: &Actor{State: StateIdle},
+			snap:  &ActorSnapshot{State: StateIdle},
+			want:  false,
+		},
+		{
+			name:  "commuting",
+			actor: &Actor{State: StateWalking},
+			snap:  &ActorSnapshot{State: StateWalking},
+			want:  false,
+		},
+		{
+			name:  "sleeping",
+			actor: &Actor{State: StateSleeping},
+			snap:  &ActorSnapshot{State: StateSleeping},
+			want:  false,
+		},
+		{
+			name:  "worker at a non-distributor workplace",
+			actor: &Actor{State: StateWorking, WorkStructureID: "farm"},
+			snap:  &ActorSnapshot{State: StateWorking, WorkStructureID: "farm"},
+			want:  true,
+		},
+		{
+			// His coats are sale stock, not clothing — and the cue must not steer
+			// him to buy the shifts already on his own shelf.
+			name:  "distributor on shift at his own store",
+			actor: &Actor{State: StateWorking, WorkStructureID: "store"},
+			snap:  &ActorSnapshot{State: StateWorking, WorkStructureID: "store"},
+			want:  false,
+		},
+		{
+			name:  "merchant visitor carrying a trade errand",
+			actor: &Actor{State: StateWorking, VisitorState: &VisitorState{Trade: sellErrand}},
+			snap:  &ActorSnapshot{State: StateWorking, VisitorState: &VisitorState{Trade: sellErrand}},
+			want:  false,
+		},
+		{
+			// A passer-through with no errand carries no trade stock, so his
+			// clothes are just clothes — he wears them and he hears the cue.
+			name:  "plain visitor with no trade errand",
+			actor: &Actor{State: StateWorking, VisitorState: &VisitorState{}},
+			snap:  &ActorSnapshot{State: StateWorking, VisitorState: &VisitorState{}},
+			want:  true,
+		},
+	}
+
+	for _, c := range cases {
+		live := actorWearsGarments(w, c.actor)
+		snapped := SnapshotWearsGarments(w.VillageObjects, c.snap)
+		if live != c.want {
+			t.Errorf("%s: actorWearsGarments = %v, want %v", c.name, live, c.want)
+		}
+		if snapped != live {
+			t.Errorf("%s: SnapshotWearsGarments = %v but actorWearsGarments = %v — the "+
+				"wear sweep and the working-clothes cue disagree about this actor", c.name, snapped, live)
+		}
+	}
+
+	if SnapshotWearsGarments(w.VillageObjects, nil) {
+		t.Errorf("nil snapshot should not wear garments")
+	}
+}
+
+// TestResolveWorkGarmentTierFreshUnits pins the missing-wear-entry convention on
+// the working-garment resolver (code_review raised it as a suspected inversion):
+// no entry in GarmentWear means a FRESH unit at full budget, never a spent one.
+// The convention lives in garmentUnitThreadbare, which clamps a remaining of 0
+// (and any remaining above budget, the operator-retuned-live case) back up to the
+// full budget before comparing. applyGarmentWear relies on the same reading — it
+// deletes the entry rather than writing budget when a unit is taken up fresh, so
+// "absent" is the normal state of a garment nobody has worked in yet.
+func TestResolveWorkGarmentTierFreshUnits(t *testing.T) {
+	kinds := garmentTestCatalog() // breeches: 480 minutes, no warms → a working garment
+	const frac = 20
+
+	// A single fresh working garment with a nil wear map — the state every
+	// newly-bought garment is in.
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, nil, frac); got != WarmGarmentSound {
+		t.Errorf("fresh breeches, nil wear map: tier = %d, want Sound", got)
+	}
+	// Same, with the map present but carrying no entry for this kind.
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, map[ItemKind]int{}, frac); got != WarmGarmentSound {
+		t.Errorf("fresh breeches, empty wear map: tier = %d, want Sound", got)
+	}
+	// A partially populated map: the coat's entry must not be read as the
+	// breeches' wear (and the coat, carrying warms, is not this cue's business).
+	partial := map[ItemKind]int{"coat": 30}
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1, "coat": 1}, partial, frac); got != WarmGarmentSound {
+		t.Errorf("fresh breeches beside a threadbare coat: tier = %d, want Sound", got)
+	}
+	// And the positive control, so the two rows above can't pass by the resolver
+	// simply never returning anything but Sound.
+	worn := map[ItemKind]int{"breeches": 50} // 50 of 480 left — inside the last 20%
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, worn, frac); got != WarmGarmentThreadbare {
+		t.Errorf("breeches with 50 of 480 minutes left: tier = %d, want Threadbare", got)
+	}
+}

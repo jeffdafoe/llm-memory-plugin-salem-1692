@@ -265,13 +265,57 @@ func actorWearsGarments(w *World, a *Actor) bool {
 	if a == nil {
 		return false
 	}
-	if ActorHasTradeErrand(a) || ActorIsDistributor(w.VillageObjects, a.WorkStructureID) {
+	return wearsGarments(
+		ActorHasTradeErrand(a),
+		ActorIsDistributor(w.VillageObjects, a.WorkStructureID),
+		a.State,
+		a.ProductionActivity != nil,
+		a.SourceActivity != nil,
+	)
+}
+
+// wearsGarments is the ONE definition of the garment-wear audience, stated over
+// plain facts so the two views of an actor share it rather than each spelling it
+// out: the live *Actor the wear sweep walks, and the *ActorSnapshot the
+// perception layer reads (SnapshotWearsGarments). The cue that tells an actor his
+// clothes are going must speak to exactly the set whose clothes are actually
+// going, and two hand-copied predicates drift the first time either is edited.
+func wearsGarments(hasTradeErrand, isDistributor bool, state ActorState, producing, inSourceActivity bool) bool {
+	if hasTradeErrand || isDistributor {
 		return false
 	}
-	return a.State == StateWorking ||
-		a.State == StateLaboring ||
-		a.ProductionActivity != nil ||
-		a.SourceActivity != nil
+	return state == StateWorking ||
+		state == StateLaboring ||
+		producing ||
+		inSourceActivity
+}
+
+// SnapshotWearsGarments is actorWearsGarments over a published snapshot — the
+// same audience, resolved from the fields Snapshot carries. Exported for the
+// perception layer (LLM-589), which renders the working-clothes cue and must not
+// address anyone the sweep doesn't touch.
+//
+// Two known-narrow reads of the live predicate, both deliberate:
+//
+//   - The trade-errand exemption keys on VisitorState.Trade, NOT on being a
+//     visitor at all. A passer-through with no errand wears his coat like anyone
+//     else (see ActorHasTradeErrand) and is owed the cue like anyone else.
+//   - Snapshot.SourceActivityKind is gated world-side on BusyAtSource, so an
+//     expired-but-unswept activity window reads as not-engaged here while the
+//     live sweep (a.SourceActivity != nil) still counts it. That gap is one
+//     completion sweep wide and the snapshot's reading is the more honest of the
+//     two, so it is left alone rather than papered over.
+func SnapshotWearsGarments(objs map[VillageObjectID]*VillageObject, a *ActorSnapshot) bool {
+	if a == nil {
+		return false
+	}
+	return wearsGarments(
+		a.VisitorState != nil && a.VisitorState.Trade != nil,
+		ActorIsDistributor(objs, a.WorkStructureID),
+		a.State,
+		a.ProductionItem != "",
+		a.SourceActivityKind != "",
+	)
 }
 
 // WearGarments returns a Command that applies elapsedMinutes of garment wear to
