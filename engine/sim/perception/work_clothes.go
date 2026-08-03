@@ -116,22 +116,45 @@ func buildWorkClothes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		return nil
 	}
 	view := &WorkClothesView{Tier: tier}
-	// Steer toward the first working kind with a live supplier. Iterating the
-	// catalog rather than naming a kind keeps the cue honest about what can
-	// actually be bought today: if the only shop with cloth has shifts, the cue
-	// says shifts. A kind whose sellers are all shut or unaffordable resolves to
-	// no vendors and is skipped, so the cue never sends the wearer to a dead end
-	// (the LLM-216 posture the farm-upkeep cue also takes).
-	for _, kind := range workGarmentKinds(snap) {
-		vendors, _ := findItemVendors(snap, actorID, actorSnap, kind)
-		if len(vendors) == 0 {
-			continue
+	// Steer toward a working kind with a live supplier, preferring one the wearer
+	// ALREADY OWNS — replacing like with like. A kind whose sellers are all shut or
+	// unaffordable resolves to no vendors and is skipped, so the cue never sends
+	// the wearer to a dead end (the LLM-216 posture the farm-upkeep cue takes), and
+	// iterating the catalog rather than naming a kind keeps it honest about what
+	// can actually be bought today.
+	//
+	// The like-for-like pass exists because the engine models no sex and the
+	// catalog does. Without it the cue simply takes the first purchasable kind, and
+	// with the LLM-592 seed that is a GOWN — the distributor stocks gowns and
+	// shifts and no breeches — so Constable Gideon Marsh, threadbare in shift and
+	// breeches, would be told a fresh gown would set him right. Preferring what he
+	// already wears resolves it without modelling anything: he owns a shift, the
+	// shop sells shifts, the cue says shift. Nothing here reads a sex; it reads a
+	// wardrobe.
+	//
+	// The fallback still matters and is not a formality: an actor in the NONE tier
+	// owns no working garment to match against, so like-for-like has nothing to say
+	// and the cue takes whatever is purchasable — which is right, since anything
+	// fit to work in beats nothing.
+	pickKind := func(ownedOnly bool) bool {
+		for _, kind := range workGarmentKinds(snap) {
+			if ownedOnly && actorSnap.Inventory[kind] <= 0 {
+				continue
+			}
+			vendors, _ := findItemVendors(snap, actorID, actorSnap, kind)
+			if len(vendors) == 0 {
+				continue
+			}
+			view.Item = kind
+			view.ItemLabel = snap.ItemKinds[kind].Plural()
+			view.ItemSingular = snap.ItemKinds[kind].Singular()
+			view.Vendors = vendors
+			return true
 		}
-		view.Item = kind
-		view.ItemLabel = snap.ItemKinds[kind].Plural()
-		view.ItemSingular = snap.ItemKinds[kind].Singular()
-		view.Vendors = vendors
-		break
+		return false
+	}
+	if !pickKind(true) {
+		pickKind(false)
 	}
 	if view.Item == "" {
 		// Nothing purchasable anywhere, so the cue has nothing to say. Silence is a

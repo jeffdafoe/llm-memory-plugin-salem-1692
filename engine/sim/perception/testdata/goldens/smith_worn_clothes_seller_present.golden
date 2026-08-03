@@ -21,5 +21,5 @@ It is your working hours, yet you are away from your post — make your way to t
 - No coin has passed between you and Josiah Thorne.
 
 ## Your clothes
-Your working clothes are worn thin at the elbows, and the cloth is going at the seams. Josiah Thorne is here with you and sells pairs of breeches. Buy it now — call pay_with_item with seller "Josiah Thorne", item "breeches", a qty up to 1, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.
+Your working clothes are worn thin at the elbows, and the cloth is going at the seams. Josiah Thorne is here with you and sells shifts. Buy it now — call pay_with_item with seller "Josiah Thorne", item "shift", a qty up to 1, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

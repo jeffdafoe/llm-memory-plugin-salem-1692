@@ -217,3 +217,56 @@ func TestWorkClothes_DistributorIsNotToldToBuyHisOwnStock(t *testing.T) {
 		t.Fatalf("the distributor should get no clothing cue, got %+v", v)
 	}
 }
+
+func TestWorkClothes_PrefersTheKindHeAlreadyWears(t *testing.T) {
+	// The live case the LLM-592 seed created: the distributor stocks gowns and
+	// shifts and no breeches, so the plain first-purchasable pick lands on a GOWN
+	// for every threadbare worker in the village — including Constable Gideon
+	// Marsh, who is threadbare in shift and breeches. The engine models no sex and
+	// the catalog does, so the cue reads the WARDROBE instead: he owns a shift, the
+	// shop sells shifts, the cue says shift.
+	snap, id := workClothesSnapshot(
+		map[sim.ItemKind]int{"shift": 1, "breeches": 1},
+		map[sim.ItemKind]int{"shift": 500, "breeches": 600},
+		sim.StateWorking,
+	)
+	// The seller holds shifts but no breeches — breeches is unpurchasable, which is
+	// what makes the two passes distinguishable.
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"shift": 3}
+	v := buildWorkClothes(snap, id, snap.Actors[id])
+	if v == nil {
+		t.Fatal("a worker threadbare in every working garment should get the cue")
+	}
+	if v.Item != "shift" {
+		t.Fatalf("item = %q, want shift — the kind he already wears and the shop actually sells", v.Item)
+	}
+}
+
+func TestWorkClothes_OwnedKindLosesToWhatIsActuallyForSale(t *testing.T) {
+	// Like-for-like is a PREFERENCE, not a constraint. A wearer whose own kind has
+	// no supplier must still be steered to something he can buy — being sent
+	// nowhere because the shop is out of his usual is worse than a different
+	// garment that fits the need.
+	snap, id := workClothesSnapshot(
+		map[sim.ItemKind]int{"breeches": 1},
+		map[sim.ItemKind]int{"breeches": 600},
+		sim.StateWorking,
+	)
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"shift": 3} // no breeches to be had
+	v := buildWorkClothes(snap, id, snap.Actors[id])
+	if v == nil || v.Item != "shift" {
+		t.Fatalf("expected the fallback to the purchasable kind, got %+v", v)
+	}
+}
+
+func TestWorkClothes_NoneTierFallsBackToWhateverIsSold(t *testing.T) {
+	// The none tier owns no working garment at all, so like-for-like has nothing to
+	// match and the fallback is the ONLY path. Anything fit to work in beats
+	// nothing, so the cue takes what the shop has.
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"shift": 3}
+	v := buildWorkClothes(snap, id, snap.Actors[id])
+	if v == nil || v.Tier != sim.WarmGarmentNone || v.Item != "shift" {
+		t.Fatalf("expected the none tier steered to the only purchasable kind, got %+v", v)
+	}
+}
