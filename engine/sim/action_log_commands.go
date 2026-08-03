@@ -11,6 +11,31 @@ import (
 // event subscribers; CompactActionLog drops entries older than the
 // retention cutoff. Both run on the world goroutine.
 
+// actionLogIgnoresActor reports whether the action log should drop a row for
+// this actor. True for KindDecorative — sprite-only scenery the engine walks
+// but never ticks, so it has no doings to record (LLM-593).
+//
+// Gated here at the write funnel rather than in the one subscriber that
+// tripped over it. A decorative reaches the log only through locomotion
+// (ActorArrived / ActorLeftStructure), and the arrival subscriber was the
+// second place to miss this population after the LLM-582 huddle gate: the
+// pond ducks wander every few seconds, which put 15,672 "walked" rows a day
+// into a log the rest of the village fills at ~1,000/day. A funnel gate means
+// the next subscriber that starts observing movement cannot reopen it.
+//
+// Kind, not ActorIsDriven: the question is whether the actor DOES anything —
+// tick semantics — which is what KindDecorative names and what the sibling
+// gates (emitArrivalNarration, cascade's outdoorEncounterExcludesActor) test.
+// ActorIsDriven answers the different, database-facing question of whether the
+// actor occupies a display name.
+//
+// An unresolvable ActorID is NOT ignored: tests append under synthetic ids,
+// and a visitor's row is deliberately kept (see AppendActionLogDurable).
+func actionLogIgnoresActor(w *World, id ActorID) bool {
+	a := w.Actors[id]
+	return a != nil && a.Kind == KindDecorative
+}
+
 // AppendActionLogEntry returns a Command that appends entry to
 // World.ActionLog. Used by event subscribers (cascade.RegisterActionLog
 // wires Spoke / Paid / ItemConsumed / OrderDelivered / ActorArrived).
@@ -22,6 +47,8 @@ import (
 //   - ActorID empty → error (caller bug; surfaces in the subscriber's
 //     log line so we don't silently drop a row).
 //   - OccurredAt zero → error (same).
+//   - decorative actor → dropped silently (LLM-593, see
+//     actionLogIgnoresActor).
 //   - Text rune-truncated at the boundary so the substrate can't
 //     accumulate oversized rows even if a subscriber forgot to
 //     truncate: MaxSpokenActionLogTextLen for spoken lines (kept full
@@ -41,6 +68,9 @@ func AppendActionLogEntry(entry ActionLogEntry) Command {
 			}
 			if entry.OccurredAt.IsZero() {
 				return nil, fmt.Errorf("sim.AppendActionLogEntry: zero OccurredAt")
+			}
+			if actionLogIgnoresActor(w, entry.ActorID) {
+				return nil, nil
 			}
 			// Spoken lines keep the full utterance for the player-facing
 			// talk-panel backload; every other type stays at the tighter

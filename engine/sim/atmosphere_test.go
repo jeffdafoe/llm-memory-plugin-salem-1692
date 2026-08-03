@@ -514,3 +514,45 @@ func TestFetchAtmosphereContext_DigestEmptyActionLog(t *testing.T) {
 		t.Errorf("ActivityDigest = %v, want nil on empty action log", ctx.ActivityDigest)
 	}
 }
+
+// TestFetchAtmosphereContext_ExcludesDecorative: LLM-593. Scenery the
+// engine walks but never ticks belongs in neither half of the atmosphere
+// prompt. The roster names who is about, so eight identically-named
+// ducks read to the model as eight residents standing outdoors; the
+// digest counts what people did, and duck wander legs outnumbered every
+// real villager action by better than ten to one.
+//
+// The digest arm is defence in depth — the append funnel keeps decorative
+// rows out of ActionLog now — so the log is seeded here directly to prove
+// the filter holds for a log carried across the fix.
+func TestFetchAtmosphereContext_ExcludesDecorative(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Actors["duck"] = &Actor{ID: "duck", DisplayName: "Duck", Kind: KindDecorative}
+	w.Actors["drake"] = &Actor{ID: "drake", DisplayName: "Duck", Kind: KindDecorative}
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "duck", OccurredAt: priorAt.Add(1 * time.Minute), ActionType: ActionTypeWalked},
+		{ActorID: "drake", OccurredAt: priorAt.Add(2 * time.Minute), ActionType: ActionTypeWalked},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(20 * time.Minute), ActionType: ActionTypeSpoke},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+
+	if len(ctx.ActivityDigest) != 1 {
+		t.Fatalf("ActivityDigest len = %d, want 1 (decoratives filtered)", len(ctx.ActivityDigest))
+	}
+	if ctx.ActivityDigest[0].ActorID != "hannah" {
+		t.Errorf("ActorID = %q, want hannah (decoratives excluded)", ctx.ActivityDigest[0].ActorID)
+	}
+
+	if len(ctx.Roster) != 1 {
+		t.Fatalf("Roster len = %d, want 1 outdoor bucket", len(ctx.Roster))
+	}
+	names := ctx.Roster[0].DisplayNames
+	if len(names) != 1 || names[0] != "Hannah" {
+		t.Errorf("Roster names = %v, want [Hannah] — ducks are scenery, not residents", names)
+	}
+}
