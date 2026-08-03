@@ -132,12 +132,12 @@ const (
 	// day-shops shut at dusk rather than arriving to a shut village.
 	VisitorSpawnDuskMarginMinutes = 90
 
-	// TravelerWordLookback bounds how far back selectTravelerWord reaches into
+	// RoadWordLookback bounds how far back selectRoadWord reaches into
 	// the action log for a grounded item of news to hand a spawning traveler (LLM-371).
 	// The log itself is retention-bounded (DefaultActionLogRetention, 48h); this
 	// tighter window keeps the carried word feeling like recent news ("lately",
 	// "this week") rather than something stale from two days ago.
-	TravelerWordLookback = 24 * time.Hour
+	RoadWordLookback = 24 * time.Hour
 )
 
 // VisitorTagTavern is the per-instance VillageObject tag the destination
@@ -554,10 +554,10 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 	}
 }
 
-// selectTravelerWord picks one grounded item of news for a spawning traveler to
+// selectRoadWord picks one grounded item of news for a spawning traveler to
 // carry (LLM-371). It draws from the in-memory action log — the same
 // recent-happenings ring the atmosphere digest reads — filtered to carry-worthy
-// beats within TravelerWordLookback whose subject is a real resident (not another
+// beats within RoadWordLookback whose subject is a real resident (not another
 // visitor, not the PC, not decorative), and renders one to a diegetic past-tense
 // clause. This is the v2-faithful stand-in for the ticket's "recent
 // village_event": engine-v2 has no village_event table, but the action log
@@ -575,11 +575,11 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 // traveler's word is the opposite: grounded, checkable, never distorted, and
 // never escalated. The two systems shared the noun "rumor" until LLM-597, which
 // is how LLM-594 came to be filed against the wrong mechanism.
-func selectTravelerWord(w *World, r *rand.Rand, now time.Time) string {
+func selectRoadWord(w *World, r *rand.Rand, now time.Time) string {
 	if w == nil || len(w.ActionLog) == 0 {
 		return ""
 	}
-	cutoff := now.Add(-TravelerWordLookback)
+	cutoff := now.Add(-RoadWordLookback)
 	var candidates []string
 	for _, e := range w.ActionLog {
 		if e.OccurredAt.Before(cutoff) {
@@ -592,7 +592,7 @@ func selectTravelerWord(w *World, r *rand.Rand, now time.Time) string {
 		if subject.Kind == KindPC || subject.Kind == KindDecorative {
 			continue // word is about the village's own, not the player or props
 		}
-		if clause := renderTravelerWordClause(w, e); clause != "" {
+		if clause := renderRoadWordClause(w, e); clause != "" {
 			candidates = append(candidates, clause)
 		}
 	}
@@ -602,7 +602,7 @@ func selectTravelerWord(w *World, r *rand.Rand, now time.Time) string {
 	return candidates[r.Intn(len(candidates))]
 }
 
-// renderTravelerWordClause turns one action-log entry into the diegetic, past-tense
+// renderRoadWordClause turns one action-log entry into the diegetic, past-tense
 // clause a traveler carries as word from the road — "Ezekiel Crane turned out a plow for the
 // Hale farm" — or "" for a beat that is not worth carrying. The
 // preface owns the "Word reached you on the road that …" framing
@@ -614,7 +614,7 @@ func selectTravelerWord(w *World, r *rand.Rand, now time.Time) string {
 // everywhere NPC-facing) all render "". Amounts and exact coin counts are dropped
 // on purpose — scene, not ledger. The subject name is resolved by the caller's
 // guard (w.Actors[e.ActorID] non-nil), re-checked here for safety.
-func renderTravelerWordClause(w *World, e ActionLogEntry) string {
+func renderRoadWordClause(w *World, e ActionLogEntry) string {
 	subject := w.Actors[e.ActorID]
 	if subject == nil || subject.DisplayName == "" {
 		return ""
@@ -902,7 +902,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		Phase: VisitorPhaseArriving,
 		// A returner's PERSONA is stable across visits, but its road-word is fresh each
 		// trip: (re)selected here every spawn, NOT stored on the recurring_visitor row (LLM-372).
-		Payload:     selectTravelerWord(w, r, inputs.Now),
+		Payload:     selectRoadWord(w, r, inputs.Now),
 		RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
 		// The bound trade errand (LLM-455): non-nil for a merchant, nil for a passer-through.
 		// Drives the rounds cue, the commerce-confinement steer/gate, and the coin-valve.
@@ -1347,7 +1347,7 @@ func recordVisitorCallInPlace(w *World, actor *Actor) {
 // decoder truncates to it.
 const MaxPayloadSharedWith = 64
 
-// recordTravelerWordShared marks the traveler's carried word (VisitorState.Payload)
+// recordRoadWordShared marks the traveler's carried word (VisitorState.Payload)
 // as given to the huddle's other ACTIVE conversants — peers who have themselves
 // spoken (LLM-545). Called from the Speak commit path beside propagateRumorOnSpeak,
 // and deliberately the same shape: the token moves through actual conversation, not
@@ -1360,7 +1360,7 @@ const MaxPayloadSharedWith = 64
 // approximation risks (a word left ungiven to someone he only traded pleasantries
 // with). Idempotent per peer; visit-scoped like the Payload itself. MUST run on the
 // world goroutine.
-func recordTravelerWordShared(w *World, h *Huddle, speakerID ActorID) {
+func recordRoadWordShared(w *World, h *Huddle, speakerID ActorID) {
 	if w == nil || h == nil {
 		return
 	}
@@ -1388,7 +1388,7 @@ func recordTravelerWordShared(w *World, h *Huddle, speakerID ActorID) {
 			// conversant in THIS conversation", which the utterance ring below
 			// establishes — a peer who spoke here and later dozes off or walks away
 			// was still given the word. Present-company filtering is the READ
-			// side's job (travelerWordSharedWith), where "who is in the scene NOW"
+			// side's job (roadWordSharedWith), where "who is in the scene NOW"
 			// is actually the question.
 			continue
 		}

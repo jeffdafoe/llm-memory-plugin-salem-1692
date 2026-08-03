@@ -603,7 +603,7 @@ type VisitorState struct {
 	// Payload is the one grounded item of news the traveler carries — a diegetic,
 	// past-tense clause about a real thing that happened in the village
 	// recently ("Ezekiel Crane turned out a plow for the Hale farm"),
-	// selected at spawn from the in-memory action log (selectTravelerWord in
+	// selected at spawn from the in-memory action log (selectRoadWord in
 	// engine/sim/visitor.go) and voiced through the identity preface
 	// (renderTravelerPreface, LLM-371). "" when no carry-worthy beat was on
 	// hand at spawn — the preface simply drops the clause. Persisted in the
@@ -649,12 +649,12 @@ type VisitorState struct {
 
 	// PayloadSharedWith is the people-half of the same memory (LLM-545): the
 	// actors the traveler has already passed his carried word to. Stamped on the
-	// Speak commit path (recordTravelerWordShared) for every ACTIVE conversant in
+	// Speak commit path (recordRoadWordShared) for every ACTIVE conversant in
 	// the huddle — a peer who has themselves spoken — mirroring how the rumor.go
 	// layer moves its token through conversation rather than co-presence, and
 	// without reading the utterance: a real two-way exchange while carrying a
 	// payload is taken as the word having been given. The identity preface reads
-	// it back per co-present peer (TravelerSelfView.WordSharedWith) so a
+	// it back per co-present peer (TravelerSelfView.RoadWordSharedWith) so a
 	// traveler who returns to someone stops reopening a matter already spent
 	// between them. Visit-scoped like the Payload itself — no TTL, no decay —
 	// and persisted in the visitor.plan jsonb so the constant deploys don't
