@@ -696,6 +696,13 @@ type Payload struct {
 	// the buy happens at the blacksmith. LLM-215.
 	FarmUpkeep *FarmUpkeepView
 
+	// WorkClothes surfaces, to a working actor, that what they labour in has worn
+	// through, and where cloth can be had. nil when their working garment is sound
+	// (the common case) or they are not in a working posture. Owns shift/breeches/
+	// gown; outerwear stays with the cold self-line. Not co-location-gated — the
+	// replacement is bought elsewhere. LLM-589.
+	WorkClothes *WorkClothesView
+
 	// TownRate surfaces the constable's levy to whichever side is reading it: to a
 	// keeper, what his business owes and the constable standing with him; to the
 	// constable, that the rate runs toward him and which co-present keepers are

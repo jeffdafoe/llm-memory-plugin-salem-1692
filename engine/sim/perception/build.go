@@ -362,6 +362,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.Hearth = buildHearth(snap, actorID, actorSnap)
 	p.HearthCooking = buildHearthCooking(snap, actorSnap)
 	p.FarmUpkeep = buildFarmUpkeep(snap, actorID, actorSnap)
+	p.WorkClothes = buildWorkClothes(snap, actorID, actorSnap)
 	p.TownRate = buildTownRate(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
@@ -467,6 +468,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.Restocking = nil
 		p.StallRepairBuy = nil
 		p.Forage = nil
+		p.WorkClothes = nil
 	}
 	// LLM-414: a live summons also silences the walk-away work-errand cues,
 	// the same subtractive treatment the settled-evening block above applies —
@@ -480,6 +482,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.Restocking = nil
 		p.StallRepairBuy = nil
 		p.Forage = nil
+		p.WorkClothes = nil
 	}
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
@@ -664,6 +667,7 @@ func hasAtPostSupplyErrand(p *Payload) bool {
 	return p.Restocking.HasWalkToSupplier() ||
 		p.StallRepair.HasWalkToSupplier() ||
 		p.FarmUpkeep.HasWalkToSupplier() ||
+		p.WorkClothes.HasWalkToSupplier() ||
 		p.Hearth.HasWalkToSupplier()
 }
 

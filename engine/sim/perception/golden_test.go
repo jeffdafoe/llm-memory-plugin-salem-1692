@@ -3987,6 +3987,46 @@ var perceptionScenarios = []perceptionScenario{
 			"is in front of him. Off-scene the cue would be pure nagging with nothing to act on.",
 		build: keeperOwesTownRateNoConstable,
 	},
+	{
+		name: "smith_working_clothes_worn_thin",
+		summary: "LLM-589 threadbare arm: Ezekiel works his forge in a single shift with 1,200 worked minutes left of " +
+			"10,800 (inside the 20% band) and no spare. The golden pins the '## Your clothes' cue — the scene plus the " +
+			"walk-to steer to the general store. Garment wear is charged by worked MINUTE (LLM-422), so the smith wears " +
+			"clothes out faster than anyone alive, yet until this cue the only clothing demand surface sat behind " +
+			"'Storm && !Indoors' and he was never once told. The steer names breeches, not the shift he is wearing out: " +
+			"the cue takes the first working kind with a live supplier, since what it owes the model is something he can " +
+			"actually buy today. Not co-location-gated (the buy happens elsewhere), so it rides any tick he draws.",
+		build: smithWorkingClothesWornThin,
+	},
+	{
+		name: "smith_has_nothing_fit_to_work_in",
+		summary: "LLM-589 none arm and the outerwear split in one fixture: Ezekiel owns no working garment at all — only " +
+			"a coat, which carries `warms` and belongs to the cold self-line. The golden pins the harder none-tier scene " +
+			"firing anyway, and the coat neither satisfying the want nor being offered as the thing to buy. Without the " +
+			"split the two clothing cues would cover for each other and a man in a good coat and rags would hear nothing. " +
+			"The wording is about having nothing FIT TO WORK IN, never about being unclothed — every villager is " +
+			"obviously dressed and the other reading is a retcon.",
+		build: smithHasNothingFitToWorkIn,
+	},
+	{
+		name: "smith_worn_clothes_seller_present",
+		summary: "LLM-589 co-present arm: the same threadbare smith now shares Josiah's huddle at the store door. The " +
+			"golden pins the cue flipping from the walk-to list to the concrete pay_with_item buy-here imperative naming " +
+			"Josiah — the same fast path the nail and shovel cues take, closing the at-the-seller dead-spot where the " +
+			"weak model narrates the want and then walks off. Foil of smith_working_clothes_worn_thin (Josiah far off → " +
+			"the destination is named instead).",
+		build: smithWornClothesSellerPresent,
+	},
+	{
+		name: "village_has_no_cloth_to_sell",
+		summary: "LLM-589 silence arm: the threadbare smith with the store's shelves bare. Clothing is import-only " +
+			"(LLM-410), so no seller anywhere is an ORDINARY state, not a resolution failure — unlike farm upkeep, whose " +
+			"fallback can safely name the blacksmith because the smith definitively makes shovels. The golden pins that " +
+			"the section renders NOTHING: a standing line naming a problem with no action attached would ride every tick " +
+			"of every working actor in the village. Foil of smith_working_clothes_worn_thin — same wear, same posture, " +
+			"no stock.",
+		build: villageHasNoClothToSell,
+	},
 }
 
 // townRateSnapshot builds the shared LLM-557 fixture: Josiah Thorne keeping the
@@ -17216,4 +17256,212 @@ func TestGoldensSingleBedtimeCue(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// LLM-589 — the working-clothes cue.
+//
+// The subject is Ezekiel at his forge because he is the motivating case: garment
+// wear is charged by worked MINUTE (LLM-422), so the smith wears his shift out
+// faster than anyone in the village, and until this cue the only clothing demand
+// surface in the engine sat behind `Storm && !Indoors` — he was never once told.
+//
+// The seller is Josiah at the general store because that is the ONLY shape the
+// production world has: clothing is import-only (LLM-410), so nobody produces a
+// garment and every seller is a reseller. findItemVendors would refuse a plain
+// reseller as a supplier of record (LLM-252) — the cue can name a destination at
+// all only because isRestockSupplierOf admits the DISTRIBUTOR for anything he
+// stocks. These fixtures therefore give Josiah no RestockPolicy and tag his store
+// TagDistributor, matching the live world rather than a producer stand-in.
+// ---------------------------------------------------------------------------
+
+// garmentKinds is the clothing slice of the live catalog (LLM-410 labels and
+// LLM-589 wear budgets, verbatim). The coat is here to hold the SPLIT in place:
+// it carries `warms`, so it belongs to the cold self-line and must never satisfy
+// (or be steered toward by) the working-clothes cue.
+// clothingCategory is the item_kind.category the LLM-410 garments carry.
+// sim.ItemCategory is a free-text soft type with named constants only for the
+// engine-known four (food/drink/material/craft), so clothing is spelled out here
+// exactly as the migration seeds it.
+const clothingCategory = sim.ItemCategory("clothing")
+
+func garmentKinds() map[sim.ItemKind]*sim.ItemKindDef {
+	return map[sim.ItemKind]*sim.ItemKindDef{
+		"shift": {
+			Name: "shift", DisplayLabel: "Shift",
+			DisplayLabelSingular: "shift", DisplayLabelPlural: "shifts",
+			Category: clothingCategory, WearMinutes: 10800,
+			Description: "A plain linen shift, worn next to the skin.",
+		},
+		"breeches": {
+			Name: "breeches", DisplayLabel: "Breeches",
+			DisplayLabelSingular: "pair of breeches", DisplayLabelPlural: "pairs of breeches",
+			Category: clothingCategory, WearMinutes: 14400,
+			Description: "Woolen breeches, cut to the knee for a working man.",
+		},
+		"coat": {
+			Name: "coat", DisplayLabel: "Coat",
+			DisplayLabelSingular: "coat", DisplayLabelPlural: "coats",
+			Category: clothingCategory, WearMinutes: 18000,
+			Capabilities: []string{string(sim.CapabilityWarms)},
+			Description:  "A heavy wool coat, long against the wind and the rain.",
+		},
+	}
+}
+
+// workingClothesSnapshot: Ezekiel works his forge with `wear` worked minutes left
+// on the garments he carries, while Josiah keeps the general store — the village
+// distributor, and so the only resolvable clothing supplier — a long walk away.
+// Working posture (not idle) is load-bearing: the cue's audience mirrors
+// sim.actorWearsGarments, the set whose garments the wear sweep actually touches.
+// No orders, no clock read → byte-stable.
+func workingClothesSnapshot(inv, wear map[sim.ItemKind]int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		actorID  = sim.ActorID("ezekiel")
+		josiahID = sim.ActorID("josiah")
+		store    = sim.StructureID("general_store")
+		forge    = sim.StructureID("blacksmith")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateWorking,
+		Pos:               sim.WorldPos{X: 100, Y: 100}.Tile(),
+		WorkStructureID:   forge,
+		InsideStructureID: forge,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         inv,
+		GarmentWear:       wear,
+	}
+	// No RestockPolicy on Josiah — he PRODUCES nothing, exactly as in the live
+	// world. His standing as a supplier comes entirely from the distributor tag on
+	// the store below. Placed far from the forge, so he is a supplier of record to
+	// walk to rather than a seller already in the huddle.
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 4000, Y: 4000}.Tile(),
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"shift": 3, "breeches": 2, "coat": 1},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:              &now,
+		NeedThresholds:                sim.NeedThresholds{},
+		Assets:                        emptyAssetSet,
+		GarmentThreadbareFractionX100: sim.DefaultGarmentThreadbareFractionX100,
+		ItemKinds:                     garmentKinds(),
+		// The LLM-410 price anchors, verbatim: inert recipes (no producer, no
+		// inputs) carrying wholesale/retail only — clothing has no production path.
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"shift":    {OutputItem: "shift", OutputQty: 1, WholesalePrice: 3, RetailPrice: 6},
+			"breeches": {OutputItem: "breeches", OutputQty: 1, WholesalePrice: 4, RetailPrice: 7},
+			"coat":     {OutputItem: "coat", OutputQty: 1, WholesalePrice: 9, RetailPrice: 15},
+		},
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{actorID: ezekiel, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge: plainStructure(forge, "Blacksmith"),
+			store: plainStructure(store, "General Store"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {
+				ID: sim.VillageObjectID(store), OwnerActorID: josiahID,
+				Tags: []string{sim.TagBusiness, sim.TagDistributor},
+			},
+		},
+	}
+	return snap, actorID, nil
+}
+
+// smithWorkingClothesWornThin is the LLM-589 threadbare arm and the everyday shape
+// of this cue: Ezekiel labours at the forge in a single shift with 1,200 worked
+// minutes left of its 10,800 (11%, inside the 20% threadbare band) and no spare
+// behind it. The golden pins the "## Your clothes" scene plus the walk-to steer to
+// the general store. The steer names BREECHES rather than the shift he is wearing
+// out — the cue takes the first working kind with a live supplier, because what it
+// owes the model is a garment he can actually buy today, not a like-for-like
+// replacement of the one on his back.
+func smithWorkingClothesWornThin() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return workingClothesSnapshot(
+		map[sim.ItemKind]int{"shift": 1},
+		map[sim.ItemKind]int{"shift": 1200},
+	)
+}
+
+// smithHasNothingFitToWorkIn is the LLM-589 none arm: Ezekiel owns no working
+// garment at all — only a coat, which carries `warms` and so belongs to the cold
+// self-line. The golden pins both halves of that split at once: the harder
+// none-tier scene fires, and the coat neither satisfies the want nor is offered as
+// the thing to buy. Without the split the two clothing cues would quietly cover for
+// each other and a man in a good coat and rags would hear nothing.
+func smithHasNothingFitToWorkIn() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return workingClothesSnapshot(map[sim.ItemKind]int{"coat": 1}, nil)
+}
+
+// smithWornClothesSellerPresent is the LLM-589 co-present arm: the same threadbare
+// smith now shares Josiah's huddle at the store door. The golden pins the cue
+// flipping from the walk-to list to the concrete pay_with_item buy-here imperative
+// naming Josiah — the same fast path the nail and shovel cues take, closing the
+// at-the-seller dead-spot where the weak model narrates the want and then walks
+// off. Foil of smith_working_clothes_worn_thin (Josiah far off → a destination is
+// named instead).
+func smithWornClothesSellerPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithWorkingClothesWornThin()
+	const (
+		huddle = sim.HuddleID("store_huddle")
+		store  = sim.StructureID("general_store")
+	)
+	storePos := sim.WorldPos{X: 4000, Y: 4000}.Tile()
+	smith := snap.Actors[actorID]
+	// Inside the shop with the keeper, mirroring farmOwnerOwesUpkeepSellerPresent.
+	// The first cut of this fixture put the smith door-side (Pos at the store,
+	// InsideStructureID cleared) on the theory that a customer can't enter a shop —
+	// the huddle still resolved the buy, but "## Around you" then read "you are
+	// outdoors, with no one else here to hear you speak" directly above a line
+	// naming Josiah as standing with him. A golden that pins an incoherent world
+	// teaches the next reader the wrong thing about the cue.
+	smith.Pos = storePos
+	smith.InsideStructureID = store
+	smith.CurrentHuddleID = huddle
+	smith.Acquaintances = map[string]sim.Acquaintance{"Josiah Thorne": {}}
+	josiah := snap.Actors["josiah"]
+	josiah.CurrentHuddleID = huddle
+	josiah.Acquaintances = map[string]sim.Acquaintance{"Ezekiel Crane": {}}
+	// The huddle ROSTER, not just the id on each actor. buildSurroundings reads
+	// snap.Huddles for the company line; with the id set and no roster behind it,
+	// "## Around you" reports an empty room while the cue names Josiah as standing
+	// right there — which is what this fixture printed on its first pass, and what
+	// the two older co-present goldens (shovels, nails) still print today.
+	snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+		huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{actorID: {}, "josiah": {}}},
+	}
+	return snap, actorID, warrants
+}
+
+// villageHasNoClothToSell is the LLM-589 silence arm, and the one most likely to be
+// "fixed" into noise by a later hand: the threadbare smith with the store's shelves
+// bare. Clothing is import-only (LLM-410), so no seller anywhere is an ORDINARY
+// state rather than a resolution failure — unlike the farm-upkeep cue, which can
+// safely fall back on naming the blacksmith because the smith definitively makes
+// shovels. The golden pins that the section renders NOTHING at all: a standing line
+// naming a problem with no action attached would otherwise ride every tick of every
+// working actor in the village, which is the noise the scenes-not-stats register
+// exists to keep out. Foil of smith_working_clothes_worn_thin — same wear, same
+// posture, no stock.
+func villageHasNoClothToSell() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithWorkingClothesWornThin()
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{}
+	return snap, actorID, warrants
 }

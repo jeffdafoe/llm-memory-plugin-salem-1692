@@ -309,3 +309,238 @@ func TestColdRatePerMinuteX100_ThreadbareGarment(t *testing.T) {
 		t.Errorf("no coat outdoors = %d, want %d", got, DefaultColdStormOutdoorsPerMinuteX100)
 	}
 }
+
+// TestSnapshotWearsGarmentsParity is the LLM-589 guard on the two views of the
+// garment-wear audience: the live *Actor the sweep walks, and the *ActorSnapshot
+// the perception layer reads to decide who hears the working-clothes cue. Both
+// now route through wearsGarments, and this pins that they agree case by case —
+// a cue that addresses anyone the sweep doesn't touch is telling an actor his
+// clothes are going when they are not.
+//
+// The pairing is hand-built (snapshotActor fills most of ActorSnapshot, but the
+// source-activity projection happens later in the publish loop, gated on
+// BusyAtSource), so this test is parity over the FIELD MAPPING, not proof that
+// the publisher fills those fields. The value is the audience arms: any edit to
+// one predicate that the other doesn't follow lands here.
+//
+// The plain-visitor row is the one that caught a real bug: the first cut of the
+// perception mirror dropped every visitor, where the sweep exempts only a
+// visitor carrying a bound trade errand. A passer-through wears his clothes like
+// anyone else and is owed the cue like anyone else.
+func TestSnapshotWearsGarmentsParity(t *testing.T) {
+	w := &World{
+		VillageObjects: map[VillageObjectID]*VillageObject{
+			"store": {ID: "store", Tags: []string{TagDistributor}},
+		},
+	}
+	sellErrand := &TradeErrand{Direction: TradeDirectionSell, Counterparty: "store"}
+
+	cases := []struct {
+		name  string
+		actor *Actor
+		snap  *ActorSnapshot
+		want  bool
+	}{
+		{
+			name:  "on-shift keeper",
+			actor: &Actor{State: StateWorking},
+			snap:  &ActorSnapshot{State: StateWorking},
+			want:  true,
+		},
+		{
+			name:  "hired laborer",
+			actor: &Actor{State: StateLaboring},
+			snap:  &ActorSnapshot{State: StateLaboring},
+			want:  true,
+		},
+		{
+			name:  "mid production cycle",
+			actor: &Actor{State: StateIdle, ProductionActivity: &ProductionActivity{Item: "bread"}},
+			snap:  &ActorSnapshot{State: StateIdle, ProductionItem: "bread"},
+			want:  true,
+		},
+		{
+			name:  "mid source activity",
+			actor: &Actor{State: StateIdle, SourceActivity: &SourceActivity{Kind: SourceActivityHarvest}},
+			snap:  &ActorSnapshot{State: StateIdle, SourceActivityKind: SourceActivityHarvest},
+			want:  true,
+		},
+		{
+			name:  "idle",
+			actor: &Actor{State: StateIdle},
+			snap:  &ActorSnapshot{State: StateIdle},
+			want:  false,
+		},
+		{
+			name:  "commuting",
+			actor: &Actor{State: StateWalking},
+			snap:  &ActorSnapshot{State: StateWalking},
+			want:  false,
+		},
+		{
+			name:  "sleeping",
+			actor: &Actor{State: StateSleeping},
+			snap:  &ActorSnapshot{State: StateSleeping},
+			want:  false,
+		},
+		{
+			name:  "worker at a non-distributor workplace",
+			actor: &Actor{State: StateWorking, WorkStructureID: "farm"},
+			snap:  &ActorSnapshot{State: StateWorking, WorkStructureID: "farm"},
+			want:  true,
+		},
+		{
+			// His coats are sale stock, not clothing — and the cue must not steer
+			// him to buy the shifts already on his own shelf.
+			name:  "distributor on shift at his own store",
+			actor: &Actor{State: StateWorking, WorkStructureID: "store"},
+			snap:  &ActorSnapshot{State: StateWorking, WorkStructureID: "store"},
+			want:  false,
+		},
+		{
+			name:  "merchant visitor carrying a trade errand",
+			actor: &Actor{State: StateWorking, VisitorState: &VisitorState{Trade: sellErrand}},
+			snap:  &ActorSnapshot{State: StateWorking, VisitorState: &VisitorState{Trade: sellErrand}},
+			want:  false,
+		},
+		{
+			// A passer-through with no errand carries no trade stock, so his
+			// clothes are just clothes — he wears them and he hears the cue.
+			name:  "plain visitor with no trade errand",
+			actor: &Actor{State: StateWorking, VisitorState: &VisitorState{}},
+			snap:  &ActorSnapshot{State: StateWorking, VisitorState: &VisitorState{}},
+			want:  true,
+		},
+	}
+
+	for _, c := range cases {
+		live := actorWearsGarments(w, c.actor)
+		snapped := SnapshotWearsGarments(w.VillageObjects, c.snap)
+		if live != c.want {
+			t.Errorf("%s: actorWearsGarments = %v, want %v", c.name, live, c.want)
+		}
+		if snapped != live {
+			t.Errorf("%s: SnapshotWearsGarments = %v but actorWearsGarments = %v — the "+
+				"wear sweep and the working-clothes cue disagree about this actor", c.name, snapped, live)
+		}
+	}
+
+	if SnapshotWearsGarments(w.VillageObjects, nil) {
+		t.Errorf("nil snapshot should not wear garments")
+	}
+}
+
+// TestResolveWorkGarmentTierFreshUnits pins the missing-wear-entry convention on
+// the working-garment resolver (code_review raised it as a suspected inversion):
+// no entry in GarmentWear means a FRESH unit at full budget, never a spent one.
+// The convention lives in garmentUnitThreadbare, which clamps a remaining of 0
+// (and any remaining above budget, the operator-retuned-live case) back up to the
+// full budget before comparing. applyGarmentWear relies on the same reading — it
+// deletes the entry rather than writing budget when a unit is taken up fresh, so
+// "absent" is the normal state of a garment nobody has worked in yet.
+func TestResolveWorkGarmentTierFreshUnits(t *testing.T) {
+	kinds := garmentTestCatalog() // breeches: 480 minutes, no warms → a working garment
+	const frac = 20
+
+	// A single fresh working garment with a nil wear map — the state every
+	// newly-bought garment is in.
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, nil, frac); got != WarmGarmentSound {
+		t.Errorf("fresh breeches, nil wear map: tier = %d, want Sound", got)
+	}
+	// Same, with the map present but carrying no entry for this kind.
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, map[ItemKind]int{}, frac); got != WarmGarmentSound {
+		t.Errorf("fresh breeches, empty wear map: tier = %d, want Sound", got)
+	}
+	// A partially populated map: the coat's entry must not be read as the
+	// breeches' wear (and the coat, carrying warms, is not this cue's business).
+	partial := map[ItemKind]int{"coat": 30}
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1, "coat": 1}, partial, frac); got != WarmGarmentSound {
+		t.Errorf("fresh breeches beside a threadbare coat: tier = %d, want Sound", got)
+	}
+	// And the positive control, so the two rows above can't pass by the resolver
+	// simply never returning anything but Sound.
+	worn := map[ItemKind]int{"breeches": 50} // 50 of 480 left — inside the last 20%
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, worn, frac); got != WarmGarmentThreadbare {
+		t.Errorf("breeches with 50 of 480 minutes left: tier = %d, want Threadbare", got)
+	}
+}
+
+// TestRepublishCarriesTheGarmentWearAudienceFacts closes the gap
+// TestSnapshotWearsGarmentsParity leaves open (code_review): that test pairs a
+// live Actor with a hand-written ActorSnapshot, so it proves the two predicates
+// agree on the same facts but not that the PUBLISHER actually puts those facts
+// on the snapshot. SnapshotWearsGarments reads four of them, and two —
+// ProductionItem and SourceActivityKind — are projected in republish() rather
+// than carried straight across by snapshotActor. If either stopped being
+// populated, the shared predicate would quietly read "not working" and the
+// working-clothes cue would go silent for producers and foragers with nothing
+// failing.
+//
+// The third actor is the BusyAtSource boundary the snapshot deliberately reads
+// differently from the live sweep: an EXPIRED activity window publishes no
+// SourceActivityKind, so perception sees not-engaged while actorWearsGarments
+// still counts it. Pinned as expected divergence, not parity, so a future reader
+// finds it stated rather than discovering it as a bug.
+func TestRepublishCarriesTheGarmentWearAudienceFacts(t *testing.T) {
+	now := time.Now()
+	w := &World{}
+	w.Actors = map[ActorID]*Actor{
+		"baker": {
+			ID:                 "baker",
+			State:              StateIdle,
+			ProductionActivity: &ProductionActivity{Item: "bread", BatchQty: 10, RemainingSeconds: 600},
+		},
+		"forager": {
+			ID:    "forager",
+			State: StateIdle,
+			SourceActivity: &SourceActivity{Kind: SourceActivityHarvest, ObjectID: "bush",
+				Until: now.Add(5 * time.Minute)},
+		},
+		"lapsed": {
+			ID:    "lapsed",
+			State: StateIdle,
+			SourceActivity: &SourceActivity{Kind: SourceActivityHarvest, ObjectID: "bush",
+				Until: now.Add(-5 * time.Minute)}, // window closed, sweep hasn't cleared it yet
+		},
+	}
+	w.republish()
+	snap := w.Published()
+	if snap == nil {
+		t.Fatal("republish published nothing")
+	}
+
+	baker := snap.Actors["baker"]
+	if baker == nil || baker.ProductionItem != "bread" {
+		t.Fatalf("published baker = %+v, want ProductionItem bread — the working-clothes cue "+
+			"reads this field to know a producer is at work", baker)
+	}
+	forager := snap.Actors["forager"]
+	if forager == nil || forager.SourceActivityKind != SourceActivityHarvest {
+		t.Fatalf("published forager = %+v, want SourceActivityKind harvest", forager)
+	}
+
+	// Both must land in the audience through the published facts alone.
+	for _, id := range []ActorID{"baker", "forager"} {
+		if !SnapshotWearsGarments(w.VillageObjects, snap.Actors[id]) {
+			t.Errorf("%s is not in the garment-wear audience as PUBLISHED, though "+
+				"actorWearsGarments counts them live", id)
+		}
+		if !actorWearsGarments(w, w.Actors[id]) {
+			t.Errorf("%s should wear garments live (fixture check)", id)
+		}
+	}
+
+	// The documented one-sweep-wide divergence, asserted in both directions.
+	lapsed := snap.Actors["lapsed"]
+	if lapsed == nil || lapsed.SourceActivityKind != "" {
+		t.Errorf("an expired activity window should publish no SourceActivityKind, got %+v", lapsed)
+	}
+	if SnapshotWearsGarments(w.VillageObjects, lapsed) {
+		t.Errorf("perception should read an expired window as not-engaged")
+	}
+	if !actorWearsGarments(w, w.Actors["lapsed"]) {
+		t.Errorf("the live sweep still counts an expired-but-unswept window — if this " +
+			"changed, the divergence documented on SnapshotWearsGarments is gone and the " +
+			"comment should go with it")
+	}
+}
