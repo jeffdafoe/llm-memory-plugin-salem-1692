@@ -101,7 +101,7 @@ func garmentUnitThreadbare(budget, remaining, fractionX100 int) bool {
 // (WearMinutes > 0) that does NOT carry `warms` (LLM-589). The split is what
 // keeps the two clothing cues from covering the same ground: outerwear
 // (coat/cloak) is the cold self-line's business, and everything else worn at
-// labour (shift, breeches, gown) is the working-clothes cue's.
+// labour (linens, woolens, homespun) is the working-clothes cue's.
 //
 // Derived from capability + budget rather than a hardcoded kind list, matching
 // ResolveWarmGarmentTier's posture — a garment added to the catalog later joins
