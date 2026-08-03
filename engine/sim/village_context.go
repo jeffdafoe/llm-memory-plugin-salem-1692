@@ -185,15 +185,18 @@ func FetchAtmosphereContext(at time.Time) Command {
 // posture without joining village_object / asset (v2 Structure
 // carries DisplayName directly).
 //
-// Decoratives are excluded alongside PCs (LLM-593): the roster tells the
-// atmosphere model who is about, and scenery listed by name reads as a
+// Waterfowl are excluded alongside PCs (LLM-593): the roster tells the
+// atmosphere model who is about, and a duck listed by name reads as a
 // resident — the eight pond ducks, all called "Duck" since LLM-586, filled
-// the outdoor bucket with one repeated name.
+// the outdoor bucket with one repeated name. The exclusion is waterfowl and
+// not the wider KindDecorative on purpose: the lamplighter, washerwoman and
+// town crier are decorative carriers who really are about the village, and
+// dropping them would thin the roster the mood prose is drawn from.
 func buildVillageContextRoster(w *World) []AtmosphereRosterEntry {
 	byLoc := make(map[string][]string)
 	var outdoor []string
 	for _, a := range w.Actors {
-		if a == nil || a.Kind == KindPC || a.Kind == KindDecorative {
+		if a == nil || a.Kind == KindPC || actorIsWaterfowl(w, a) {
 			continue
 		}
 		if a.InsideStructureID == "" {
@@ -238,7 +241,7 @@ func buildVillageContextRoster(w *World) []AtmosphereRosterEntry {
 // NPCs only. First fire (zero LastAtmosphereRefreshAt) returns nil —
 // no "since beginning of time" dump at startup.
 //
-// The decorative arm of the actor filter is belt-and-braces (LLM-593): the
+// The waterfowl arm of the actor filter is belt-and-braces (LLM-593): the
 // append funnel keeps their rows out of ActionLog in the first place, so this
 // can only matter for a log carried across the fix. It stays because the
 // "NPCs only" contract above should be enforced where it is stated.
@@ -259,7 +262,7 @@ func buildVillageContextActivityDigest(w *World) []ActivityDigestEntry {
 			continue
 		}
 		a, ok := w.Actors[e.ActorID]
-		if !ok || a == nil || a.Kind == KindPC || a.Kind == KindDecorative {
+		if !ok || a == nil || a.Kind == KindPC || actorIsWaterfowl(w, a) {
 			continue
 		}
 		if perActor[e.ActorID] == nil {

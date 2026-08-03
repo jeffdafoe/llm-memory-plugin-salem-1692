@@ -1680,7 +1680,7 @@ func (w *World) AppendActionLogDurable(row DurableActionLogRow) {
 	if sink == nil {
 		return
 	}
-	// Decoratives never reach the durable table either (LLM-593) — the same
+	// Waterfowl never reach the durable table either (LLM-593) — the same
 	// gate the in-memory funnel applies, repeated because a subscriber calls
 	// the two independently and a silent in-memory skip would otherwise still
 	// let the row through to PG.
