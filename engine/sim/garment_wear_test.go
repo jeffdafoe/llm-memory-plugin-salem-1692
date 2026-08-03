@@ -16,9 +16,9 @@ import (
 // wear mechanic keys on WearMinutes, the relief on the warms capability.
 func garmentTestCatalog() map[ItemKind]*ItemKindDef {
 	return map[ItemKind]*ItemKindDef{
-		"coat":     {Name: "coat", DisplayLabel: "coat", Category: "clothing", Capabilities: []string{CapabilityWarms}, WearMinutes: 600},
-		"breeches": {Name: "breeches", DisplayLabel: "breeches", Category: "clothing", WearMinutes: 480},
-		"bread":    {Name: "bread", DisplayLabel: "bread", Category: ItemCategoryFood},
+		"coat":    {Name: "coat", DisplayLabel: "coat", Category: "clothing", Capabilities: []string{CapabilityWarms}, WearMinutes: 600},
+		"woolens": {Name: "woolens", DisplayLabel: "woolens", Category: "clothing", WearMinutes: 480},
+		"bread":   {Name: "bread", DisplayLabel: "bread", Category: ItemCategoryFood},
 	}
 }
 
@@ -27,7 +27,7 @@ func TestGarmentWearMinutes(t *testing.T) {
 	if got := GarmentWearMinutes(kinds, "coat"); got != 600 {
 		t.Errorf("coat budget = %d, want 600", got)
 	}
-	if got := GarmentWearMinutes(kinds, "breeches"); got != 480 {
+	if got := GarmentWearMinutes(kinds, "woolens"); got != 480 {
 		t.Errorf("breeches budget = %d, want 480", got)
 	}
 	if got := GarmentWearMinutes(kinds, "bread"); got != 0 {
@@ -119,7 +119,7 @@ func TestResolveWarmGarmentTier(t *testing.T) {
 		wear      map[ItemKind]int
 		want      WarmGarmentTier
 	}{
-		{"no warms garment", map[ItemKind]int{"bread": 3, "breeches": 1}, nil, WarmGarmentNone},
+		{"no warms garment", map[ItemKind]int{"bread": 3, "woolens": 1}, nil, WarmGarmentNone},
 		{"fresh coat", map[ItemKind]int{"coat": 1}, nil, WarmGarmentSound},
 		{"worn but above the line", map[ItemKind]int{"coat": 1}, map[ItemKind]int{"coat": 200}, WarmGarmentSound},
 		{"threadbare single coat", map[ItemKind]int{"coat": 1}, map[ItemKind]int{"coat": 60}, WarmGarmentThreadbare},
@@ -444,23 +444,23 @@ func TestResolveWorkGarmentTierFreshUnits(t *testing.T) {
 
 	// A single fresh working garment with a nil wear map — the state every
 	// newly-bought garment is in.
-	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, nil, frac); got != WarmGarmentSound {
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"woolens": 1}, nil, frac); got != WarmGarmentSound {
 		t.Errorf("fresh breeches, nil wear map: tier = %d, want Sound", got)
 	}
 	// Same, with the map present but carrying no entry for this kind.
-	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, map[ItemKind]int{}, frac); got != WarmGarmentSound {
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"woolens": 1}, map[ItemKind]int{}, frac); got != WarmGarmentSound {
 		t.Errorf("fresh breeches, empty wear map: tier = %d, want Sound", got)
 	}
 	// A partially populated map: the coat's entry must not be read as the
 	// breeches' wear (and the coat, carrying warms, is not this cue's business).
 	partial := map[ItemKind]int{"coat": 30}
-	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1, "coat": 1}, partial, frac); got != WarmGarmentSound {
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"woolens": 1, "coat": 1}, partial, frac); got != WarmGarmentSound {
 		t.Errorf("fresh breeches beside a threadbare coat: tier = %d, want Sound", got)
 	}
 	// And the positive control, so the two rows above can't pass by the resolver
 	// simply never returning anything but Sound.
-	worn := map[ItemKind]int{"breeches": 50} // 50 of 480 left — inside the last 20%
-	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"breeches": 1}, worn, frac); got != WarmGarmentThreadbare {
+	worn := map[ItemKind]int{"woolens": 50} // 50 of 480 left — inside the last 20%
+	if got := ResolveWorkGarmentTier(kinds, map[ItemKind]int{"woolens": 1}, worn, frac); got != WarmGarmentThreadbare {
 		t.Errorf("breeches with 50 of 480 minutes left: tier = %d, want Threadbare", got)
 	}
 }

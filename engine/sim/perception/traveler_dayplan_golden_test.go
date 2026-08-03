@@ -965,7 +965,7 @@ func travelerFactorShipmentDeliveredScenario() (*sim.Snapshot, sim.ActorID, []si
 		// The bale as the live factor carried it once his iron and salt had gone: the
 		// clothing line largely unmoved, one bar of iron left of the ten he brought.
 		Inventory: map[sim.ItemKind]int{
-			"iron": 1, "salt": 1, "breeches": 2, "gown": 3, "silver_locket": 2, "whalebone_charm": 3,
+			"iron": 1, "salt": 1, "woolens": 2, "homespun": 3, "silver_locket": 2, "whalebone_charm": 3,
 		},
 		Needs: map[sim.NeedKey]int{},
 		VisitorState: &sim.VisitorState{

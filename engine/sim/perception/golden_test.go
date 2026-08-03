@@ -12465,7 +12465,7 @@ func buyerOfferedBundleQuoteCounterPath() (*sim.Snapshot, sim.ActorID, []sim.War
 				Lines: []sim.QuoteLine{
 					{ItemKind: "iron", Qty: 1},
 					{ItemKind: "salt", Qty: 1},
-					{ItemKind: "breeches", Qty: 2},
+					{ItemKind: "woolens", Qty: 2},
 				},
 				Amount: 50,
 			},
@@ -17287,17 +17287,17 @@ const clothingCategory = sim.ItemCategory("clothing")
 
 func garmentKinds() map[sim.ItemKind]*sim.ItemKindDef {
 	return map[sim.ItemKind]*sim.ItemKindDef{
-		"shift": {
-			Name: "shift", DisplayLabel: "Shift",
-			DisplayLabelSingular: "shift", DisplayLabelPlural: "shifts",
+		"linens": {
+			Name: "linens", DisplayLabel: "Linens",
+			DisplayLabelSingular: "set of linens", DisplayLabelPlural: "sets of linens",
 			Category: clothingCategory, WearMinutes: 10800,
-			Description: "A plain linen shift, worn next to the skin.",
+			Description: "Plain linen worn next to the skin, and washed oftener than anything else.",
 		},
-		"breeches": {
-			Name: "breeches", DisplayLabel: "Breeches",
-			DisplayLabelSingular: "pair of breeches", DisplayLabelPlural: "pairs of breeches",
+		"woolens": {
+			Name: "woolens", DisplayLabel: "Woolens",
+			DisplayLabelSingular: "set of woolens", DisplayLabelPlural: "sets of woolens",
 			Category: clothingCategory, WearMinutes: 14400,
-			Description: "Woolen breeches, cut to the knee for a working man.",
+			Description: "Stout wool cut for the working day, and mended more than once.",
 		},
 		"coat": {
 			Name: "coat", DisplayLabel: "Coat",
@@ -17355,7 +17355,7 @@ func workingClothesSnapshot(inv, wear map[sim.ItemKind]int) (*sim.Snapshot, sim.
 		ScheduleEndMin:    &end,
 		Coins:             0,
 		Needs:             map[sim.NeedKey]int{},
-		Inventory:         map[sim.ItemKind]int{"shift": 3, "breeches": 2, "coat": 1},
+		Inventory:         map[sim.ItemKind]int{"linens": 3, "woolens": 2, "coat": 1},
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay:              &now,
@@ -17366,9 +17366,9 @@ func workingClothesSnapshot(inv, wear map[sim.ItemKind]int) (*sim.Snapshot, sim.
 		// The LLM-410 price anchors, verbatim: inert recipes (no producer, no
 		// inputs) carrying wholesale/retail only — clothing has no production path.
 		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
-			"shift":    {OutputItem: "shift", OutputQty: 1, WholesalePrice: 3, RetailPrice: 6},
-			"breeches": {OutputItem: "breeches", OutputQty: 1, WholesalePrice: 4, RetailPrice: 7},
-			"coat":     {OutputItem: "coat", OutputQty: 1, WholesalePrice: 9, RetailPrice: 15},
+			"linens":  {OutputItem: "linens", OutputQty: 1, WholesalePrice: 3, RetailPrice: 6},
+			"woolens": {OutputItem: "woolens", OutputQty: 1, WholesalePrice: 4, RetailPrice: 7},
+			"coat":    {OutputItem: "coat", OutputQty: 1, WholesalePrice: 9, RetailPrice: 15},
 		},
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{actorID: ezekiel, josiahID: josiah},
 		Structures: map[sim.StructureID]*sim.Structure{
@@ -17395,8 +17395,8 @@ func workingClothesSnapshot(inv, wear map[sim.ItemKind]int) (*sim.Snapshot, sim.
 // replacement of the one on his back.
 func smithWorkingClothesWornThin() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return workingClothesSnapshot(
-		map[sim.ItemKind]int{"shift": 1},
-		map[sim.ItemKind]int{"shift": 1200},
+		map[sim.ItemKind]int{"linens": 1},
+		map[sim.ItemKind]int{"linens": 1200},
 	)
 }
 

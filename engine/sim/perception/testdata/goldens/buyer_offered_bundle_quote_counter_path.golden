@@ -1,7 +1,7 @@
 # Your turn
 
 ## Since your last turn
-1. John Ellis offers you iron, salt, and 2 breeches for 50 coins. To take the whole bundle, call pay_with_item with quote_id 9 and amount 50 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. If you want only part of the bundle, or at another price, don't use that quote_id — make your own offer instead: call pay_with_item with no quote_id, naming the one good you want, its qty, and your coins, one good at a time; they can accept or counter.
+1. John Ellis offers you iron, salt, and 2 woolens for 50 coins. To take the whole bundle, call pay_with_item with quote_id 9 and amount 50 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. If you want only part of the bundle, or at another price, don't use that quote_id — make your own offer instead: call pay_with_item with no quote_id, naming the one good you want, its qty, and your coins, one good at a time; they can accept or counter.
 
 
 ## You

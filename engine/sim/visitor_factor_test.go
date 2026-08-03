@@ -91,7 +91,7 @@ func TestTickVisitorCascade_FactorSpawn(t *testing.T) {
 		t.Errorf("origin = %q, want Boston (forced for a factor)", got.VisitorState.Origin)
 	}
 	// Factor pack: at least one clothing/charm ware kind, and the heavier purse (>= min 120).
-	if got.Inventory["coat"] == 0 && got.Inventory["cloak"] == 0 && got.Inventory["gown"] == 0 {
+	if got.Inventory["coat"] == 0 && got.Inventory["cloak"] == 0 && got.Inventory["homespun"] == 0 {
 		t.Errorf("factor pack carries no garments: %v", got.Inventory)
 	}
 	if got.Coins < sim.DefaultVisitorFactorPurseMin {

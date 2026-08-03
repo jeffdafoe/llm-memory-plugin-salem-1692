@@ -14,10 +14,10 @@ import (
 // (no `warms`) and one outerwear kind that must stay with the cold self-line.
 func workClothesCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 	return map[sim.ItemKind]*sim.ItemKindDef{
-		"shift":    {Name: "shift", DisplayLabel: "shifts", WearMinutes: 10800},
-		"breeches": {Name: "breeches", DisplayLabel: "breeches", WearMinutes: 14400},
-		"coat":     {Name: "coat", DisplayLabel: "coats", WearMinutes: 18000, Capabilities: []string{string(sim.CapabilityWarms)}},
-		"nail":     {Name: "nail", DisplayLabel: "nails"},
+		"linens":  {Name: "linens", DisplayLabel: "Linens", DisplayLabelSingular: "set of linens", DisplayLabelPlural: "sets of linens", WearMinutes: 10800},
+		"woolens": {Name: "woolens", DisplayLabel: "Woolens", DisplayLabelSingular: "set of woolens", DisplayLabelPlural: "sets of woolens", WearMinutes: 14400},
+		"coat":    {Name: "coat", DisplayLabel: "coats", WearMinutes: 18000, Capabilities: []string{string(sim.CapabilityWarms)}},
+		"nail":    {Name: "nail", DisplayLabel: "nails"},
 	}
 }
 
@@ -48,8 +48,8 @@ func workClothesSnapshot(inv, wear map[sim.ItemKind]int, state sim.ActorState) (
 		ScheduleEndMin:   &end,
 		WorkStructureID:  "general_store",
 		Needs:            map[sim.NeedKey]int{},
-		Inventory:        map[sim.ItemKind]int{"shift": 3, "breeches": 2},
-		RestockPolicy:    producePolicy("shift", 20),
+		Inventory:        map[sim.ItemKind]int{"linens": 3, "woolens": 2},
+		RestockPolicy:    producePolicy("linens", 20),
 	}
 	snap := &sim.Snapshot{
 		LocalMinuteOfDay:              &now,
@@ -71,9 +71,9 @@ func workClothesSnapshot(inv, wear map[sim.ItemKind]int, state sim.ActorState) (
 }
 
 func TestWorkClothes_SoundGarmentIsSilent(t *testing.T) {
-	// A fresh shift (no wear entry) is sound, and silence is a valid volume —
+	// A fresh set of linens (no wear entry) is sound, and silence is a valid volume —
 	// the cue must not narrate a non-problem on every tick of every worker.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"shift": 1}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"linens": 1}, nil, sim.StateWorking)
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
 		t.Fatalf("sound garment should render nothing, got %+v", v)
 	}
@@ -81,6 +81,16 @@ func TestWorkClothes_SoundGarmentIsSilent(t *testing.T) {
 
 func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
 	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	// Flip the seller to produce WOOLENS while merely holding linens, so the
+	// FIRST-sorting kind is the one he cannot supply. That is what exercises the
+	// skip; with the shared fixture's linens policy the cue would resolve on its
+	// first try and this test would silently stop testing anything.
+	//
+	// The LLM-596 rename is why this override exists: under the old names breeches
+	// sorted before shift and the held-not-produced kind happened to sort first for
+	// free. linens sorting before woolens reversed that, and a rename that quietly
+	// retires a test's coverage is worse than one that breaks it.
+	snap.Actors["josiah"].RestockPolicy = producePolicy("woolens", 20)
 	v := buildWorkClothes(snap, id, snap.Actors[id])
 	if v == nil {
 		t.Fatal("a worker owning no working garment should get the cue")
@@ -88,12 +98,12 @@ func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
 	if v.Tier != sim.WarmGarmentNone {
 		t.Fatalf("tier = %v, want none", v.Tier)
 	}
-	// breeches sorts first but is SKIPPED: the seller holds them without producing
+	// linens sorts FIRST but is SKIPPED: the seller holds them without producing
 	// them and this fixture leaves his shop untagged, so isRestockSupplierOf refuses
-	// him as a supplier of record for that kind (LLM-252). The cue walks on to shift,
+	// him as a supplier of record for that kind (LLM-252). The cue walks on to woolens,
 	// which he does produce — the never-send-them-to-a-dead-end behaviour.
-	if v.Item != "shift" {
-		t.Fatalf("item = %q, want the first working kind with a RESOLVABLE supplier (shift)", v.Item)
+	if v.Item != "woolens" {
+		t.Fatalf("item = %q, want the first working kind with a RESOLVABLE supplier (woolens)", v.Item)
 	}
 	var b strings.Builder
 	renderWorkClothes(&b, v)
@@ -109,10 +119,10 @@ func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
 }
 
 func TestWorkClothes_ThreadbareTier(t *testing.T) {
-	// One shift, worn into the last 20% of its 10800-minute budget.
+	// One set of linens, worn into the last 20% of its 10800-minute budget.
 	snap, id := workClothesSnapshot(
-		map[sim.ItemKind]int{"shift": 1},
-		map[sim.ItemKind]int{"shift": 500},
+		map[sim.ItemKind]int{"linens": 1},
+		map[sim.ItemKind]int{"linens": 500},
 		sim.StateWorking,
 	)
 	v := buildWorkClothes(snap, id, snap.Actors[id])
@@ -131,8 +141,8 @@ func TestWorkClothes_SpareUnitReadsSound(t *testing.T) {
 	// so a worn one with a spare behind it is not a want. Mirrors the warms
 	// resolver exactly, which is the point of sharing the tier type.
 	snap, id := workClothesSnapshot(
-		map[sim.ItemKind]int{"shift": 2},
-		map[sim.ItemKind]int{"shift": 10},
+		map[sim.ItemKind]int{"linens": 2},
+		map[sim.ItemKind]int{"linens": 10},
 		sim.StateWorking,
 	)
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
@@ -197,15 +207,20 @@ func TestWorkClothes_DistributorResolvesAsTheClothingSupplier(t *testing.T) {
 	if v == nil || len(v.Vendors) == 0 {
 		t.Fatalf("the distributor must resolve as a clothing supplier, got %+v", v)
 	}
-	if v.Item != "breeches" {
-		t.Fatalf("item = %q, want breeches (sorts first, and now has a supplier)", v.Item)
+	// The subject owns nothing, so like-for-like has nothing to match and the
+	// fallback takes the first working kind with a resolvable supplier. That is
+	// linens under the LLM-596 names (it sorts before woolens, where the old
+	// breeches sorted before shift) — the assertion is about the fallback and the
+	// sort being deterministic, not about which noun wins.
+	if v.Item != "linens" {
+		t.Fatalf("item = %q, want linens (sorts first, and the distributor stocks it)", v.Item)
 	}
 }
 
 func TestWorkClothes_DistributorIsNotToldToBuyHisOwnStock(t *testing.T) {
 	// The distributor's garments are sale stock, not clothing — sim.actorWearsGarments
 	// excludes him from the wear sweep for that reason, and the cue has to make the
-	// same exclusion or he is steered to buy the shifts already on his shelf.
+	// same exclusion or he is steered to buy the linens already on his shelf.
 	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
 	snap.Actors[id].WorkStructureID = "general_store"
 	snap.VillageObjects["general_store"] = &sim.VillageObject{
@@ -219,25 +234,25 @@ func TestWorkClothes_DistributorIsNotToldToBuyHisOwnStock(t *testing.T) {
 }
 
 func TestWorkClothes_PrefersTheKindHeAlreadyWears(t *testing.T) {
-	// The live case the LLM-592 seed created: the distributor stocks gowns and
-	// shifts and no breeches, so the plain first-purchasable pick lands on a GOWN
+	// The live case the LLM-592 seed created: the distributor stocks homespun and
+	// linens and no woolens, so the plain first-purchasable pick lands on HOMESPUN
 	// for every threadbare worker in the village — including Constable Gideon
-	// Marsh, who is threadbare in shift and breeches. The engine models no sex and
-	// the catalog does, so the cue reads the WARDROBE instead: he owns a shift, the
-	// shop sells shifts, the cue says shift.
+	// Marsh, who is threadbare in linens and woolens. The engine models no sex and
+	// the catalog does, so the cue reads the WARDROBE instead: he owns linens, the
+	// shop sells linens, the cue says linens.
 	snap, id := workClothesSnapshot(
-		map[sim.ItemKind]int{"shift": 1, "breeches": 1},
-		map[sim.ItemKind]int{"shift": 500, "breeches": 600},
+		map[sim.ItemKind]int{"linens": 1, "woolens": 1},
+		map[sim.ItemKind]int{"linens": 500, "woolens": 600},
 		sim.StateWorking,
 	)
 	// The seller holds shifts but no breeches — breeches is unpurchasable, which is
 	// what makes the two passes distinguishable.
-	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"shift": 3}
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"linens": 3}
 	v := buildWorkClothes(snap, id, snap.Actors[id])
 	if v == nil {
 		t.Fatal("a worker threadbare in every working garment should get the cue")
 	}
-	if v.Item != "shift" {
+	if v.Item != "linens" {
 		t.Fatalf("item = %q, want shift — the kind he already wears and the shop actually sells", v.Item)
 	}
 }
@@ -248,13 +263,13 @@ func TestWorkClothes_OwnedKindLosesToWhatIsActuallyForSale(t *testing.T) {
 	// nowhere because the shop is out of his usual is worse than a different
 	// garment that fits the need.
 	snap, id := workClothesSnapshot(
-		map[sim.ItemKind]int{"breeches": 1},
-		map[sim.ItemKind]int{"breeches": 600},
+		map[sim.ItemKind]int{"woolens": 1},
+		map[sim.ItemKind]int{"woolens": 600},
 		sim.StateWorking,
 	)
-	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"shift": 3} // no breeches to be had
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"linens": 3} // no breeches to be had
 	v := buildWorkClothes(snap, id, snap.Actors[id])
-	if v == nil || v.Item != "shift" {
+	if v == nil || v.Item != "linens" {
 		t.Fatalf("expected the fallback to the purchasable kind, got %+v", v)
 	}
 }
@@ -264,9 +279,9 @@ func TestWorkClothes_NoneTierFallsBackToWhateverIsSold(t *testing.T) {
 	// match and the fallback is the ONLY path. Anything fit to work in beats
 	// nothing, so the cue takes what the shop has.
 	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
-	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"shift": 3}
+	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"linens": 3}
 	v := buildWorkClothes(snap, id, snap.Actors[id])
-	if v == nil || v.Tier != sim.WarmGarmentNone || v.Item != "shift" {
+	if v == nil || v.Tier != sim.WarmGarmentNone || v.Item != "linens" {
 		t.Fatalf("expected the none tier steered to the only purchasable kind, got %+v", v)
 	}
 }
