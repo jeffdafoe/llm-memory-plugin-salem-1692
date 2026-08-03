@@ -42,12 +42,18 @@ import (
 // The lookup needs no registry of departed decoratives to be sound: World.emit
 // dispatches subscribers synchronously and inline on the world goroutine, so
 // the append for a duck's ActorArrived completes inside the same command that
-// emitted it and no removal can interleave. The residual case is an operator
-// appending for an already-deleted id, which costs one surviving row per
-// deleted duck — bounded, and cheaper than the identity registry that closing
-// it would need.
+// emitted it and no removal can interleave. What remains is any append made
+// for an id ALREADY deleted from w.Actors — one surviving row per such append,
+// not one per deleted duck, since nothing stops a caller repeating it. That is
+// accepted rather than closed: a deleted duck emits no further locomotion, so
+// in practice the count is zero, and the alternative (splitting movement rows
+// onto their own unresolved-id policy so identity resolution stops carrying
+// the semantics) buys nothing against a case production does not produce.
 //
 // MUST be called from inside a Command.Fn — actorIsWaterfowl reads w.Sprites.
+// Not a new constraint on AppendActionLogDurable's exported surface: it
+// already read w.Actors on this line's behalf, so every caller was required
+// to be on the world goroutine before this gate existed.
 func actionLogIgnoresActor(w *World, id ActorID) bool {
 	return actorIsWaterfowl(w, w.Actors[id])
 }

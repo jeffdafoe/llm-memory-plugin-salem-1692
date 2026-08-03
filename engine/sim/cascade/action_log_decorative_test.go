@@ -25,7 +25,10 @@ import (
 // in-memory funnel and the durable sink independently, so a gate on only one
 // of them still ships half the defect.
 
-const duckSpriteID sim.SpriteID = "sprite-duck"
+const (
+	duckSpriteID   sim.SpriteID = "sprite-duck"
+	villagerSprite sim.SpriteID = "sprite-villager"
+)
 
 // seedWaterfowl adds a duck — a decorative actor whose sprite carries the
 // waterfowl behavior — to a running test world.
@@ -53,13 +56,28 @@ func seedWaterfowl(t *testing.T, w *sim.World, id sim.ActorID, name string) {
 // seedDecorativeCarrier adds a route carrier — decorative like a duck, but
 // with an ordinary sprite and real work to do (town crier / washerwoman /
 // lamplighter).
+//
+// The sprite is assigned EXPLICITLY with an empty behavior list rather than
+// left nil. A nil sprite would pass the gate for the uninteresting reason
+// that HasBehavior nil-guards to false, so the test would keep passing even
+// if sprites started defaulting to a waterfowl behavior. What must be
+// asserted is that an ordinary sprite is not ambient.
 func seedDecorativeCarrier(t *testing.T, w *sim.World, id sim.ActorID, name string) {
 	t.Helper()
 	invokeOnWorld(t, w, func(world *sim.World) {
+		if world.Sprites == nil {
+			world.Sprites = make(map[sim.SpriteID]*sim.Sprite)
+		}
+		world.Sprites[villagerSprite] = &sim.Sprite{
+			ID:        villagerSprite,
+			Name:      "Villager",
+			Behaviors: []string{},
+		}
 		world.Actors[id] = &sim.Actor{
 			ID:          id,
 			DisplayName: name,
 			Kind:        sim.KindDecorative,
+			SpriteID:    villagerSprite,
 			State:       sim.StateIdle,
 		}
 	})
