@@ -600,12 +600,12 @@ type VisitorState struct {
 	Disposition string
 	ExpiresAt   time.Time
 	Phase       VisitorPhase
-	// Payload is the one grounded rumor the traveler carries — a diegetic,
+	// Payload is the one grounded item of news the traveler carries — a diegetic,
 	// past-tense clause about a real thing that happened in the village
 	// recently ("Ezekiel Crane turned out a plow for the Hale farm"),
-	// selected at spawn from the in-memory action log (selectVisitorRumor in
+	// selected at spawn from the in-memory action log (selectTravelerWord in
 	// engine/sim/visitor.go) and voiced through the identity preface
-	// (renderTravelerPreface, LLM-371). "" when no rumor-worthy beat was on
+	// (renderTravelerPreface, LLM-371). "" when no carry-worthy beat was on
 	// hand at spawn — the preface simply drops the clause. Persisted in the
 	// visitor.payload column so the carried word survives a deploy restart
 	// (the action log is restart-wiped, so re-selecting on rehydrate would
@@ -649,12 +649,12 @@ type VisitorState struct {
 
 	// PayloadSharedWith is the people-half of the same memory (LLM-545): the
 	// actors the traveler has already passed his carried word to. Stamped on the
-	// Speak commit path (recordVisitorRumorShared) for every ACTIVE conversant in
-	// the huddle — a peer who has themselves spoken — mirroring how the rumor
+	// Speak commit path (recordTravelerWordShared) for every ACTIVE conversant in
+	// the huddle — a peer who has themselves spoken — mirroring how the rumor.go
 	// layer moves its token through conversation rather than co-presence, and
 	// without reading the utterance: a real two-way exchange while carrying a
 	// payload is taken as the word having been given. The identity preface reads
-	// it back per co-present peer (TravelerSelfView.RumorSharedWith) so a
+	// it back per co-present peer (TravelerSelfView.WordSharedWith) so a
 	// traveler who returns to someone stops reopening a matter already spent
 	// between them. Visit-scoped like the Payload itself — no TTL, no decay —
 	// and persisted in the visitor.plan jsonb so the constant deploys don't

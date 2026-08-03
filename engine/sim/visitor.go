@@ -132,12 +132,12 @@ const (
 	// day-shops shut at dusk rather than arriving to a shut village.
 	VisitorSpawnDuskMarginMinutes = 90
 
-	// VisitorRumorLookback bounds how far back selectVisitorRumor reaches into
-	// the action log for a grounded rumor to hand a spawning traveler (LLM-371).
+	// TravelerWordLookback bounds how far back selectTravelerWord reaches into
+	// the action log for a grounded item of news to hand a spawning traveler (LLM-371).
 	// The log itself is retention-bounded (DefaultActionLogRetention, 48h); this
 	// tighter window keeps the carried word feeling like recent news ("lately",
 	// "this week") rather than something stale from two days ago.
-	VisitorRumorLookback = 24 * time.Hour
+	TravelerWordLookback = 24 * time.Hour
 )
 
 // VisitorTagTavern is the per-instance VillageObject tag the destination
@@ -554,24 +554,32 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 	}
 }
 
-// selectVisitorRumor picks one grounded rumor for a spawning traveler to carry
-// (LLM-371). It draws from the in-memory action log — the same recent-happenings
-// ring the atmosphere digest reads — filtered to rumor-worthy beats within
-// VisitorRumorLookback whose subject is a real resident (not another visitor, not
-// the PC, not decorative), and renders one to a diegetic past-tense clause. This
-// is the v2-faithful stand-in for the ticket's "recent village_event": engine-v2
-// has no village_event table, but the action log records every actor's real beats
-// (a stateful keeper's delivery / a shared-VA vendor's sale alike), so a traveler
-// can carry checkable word about anyone in the village. Returns "" when nothing
-// rumor-worthy is on hand — the caller leaves Payload empty and the preface drops
-// the clause. Random pick (not most-recent) so back-to-back spawns don't all echo
-// the same freshest beat. Runs on the world goroutine (called from
-// dispatchVisitorSpawn), so reading w.ActionLog / w.Actors is race-free.
-func selectVisitorRumor(w *World, r *rand.Rand, now time.Time) string {
+// selectTravelerWord picks one grounded item of news for a spawning traveler to
+// carry (LLM-371). It draws from the in-memory action log — the same
+// recent-happenings ring the atmosphere digest reads — filtered to carry-worthy
+// beats within TravelerWordLookback whose subject is a real resident (not another
+// visitor, not the PC, not decorative), and renders one to a diegetic past-tense
+// clause. This is the v2-faithful stand-in for the ticket's "recent
+// village_event": engine-v2 has no village_event table, but the action log
+// records every actor's real beats (a stateful keeper's delivery / a shared-VA
+// vendor's sale alike), so a traveler can carry checkable word about anyone in
+// the village. Returns "" when nothing carry-worthy is on hand — the caller
+// leaves Payload empty and the preface drops the clause. Random pick (not
+// most-recent) so back-to-back spawns don't all echo the same freshest beat.
+// Runs on the world goroutine (called from dispatchVisitorSpawn), so reading
+// w.ActionLog / w.Actors is race-free.
+//
+// This is NOT a rumor and must not be confused with one (LLM-597). The rumor
+// layer in rumor.go is deliberately FALLIBLE — a frozen claim that escalates a
+// rung per retelling and is free to outgrow the fact that seeded it. A
+// traveler's word is the opposite: grounded, checkable, never distorted, and
+// never escalated. The two systems shared the noun "rumor" until LLM-597, which
+// is how LLM-594 came to be filed against the wrong mechanism.
+func selectTravelerWord(w *World, r *rand.Rand, now time.Time) string {
 	if w == nil || len(w.ActionLog) == 0 {
 		return ""
 	}
-	cutoff := now.Add(-VisitorRumorLookback)
+	cutoff := now.Add(-TravelerWordLookback)
 	var candidates []string
 	for _, e := range w.ActionLog {
 		if e.OccurredAt.Before(cutoff) {
@@ -582,9 +590,9 @@ func selectVisitorRumor(w *World, r *rand.Rand, now time.Time) string {
 			continue // subject must be a resident villager, not a passing traveler
 		}
 		if subject.Kind == KindPC || subject.Kind == KindDecorative {
-			continue // rumors are about the village's own, not the player or props
+			continue // word is about the village's own, not the player or props
 		}
-		if clause := renderRumorClause(w, e); clause != "" {
+		if clause := renderTravelerWordClause(w, e); clause != "" {
 			candidates = append(candidates, clause)
 		}
 	}
@@ -594,9 +602,9 @@ func selectVisitorRumor(w *World, r *rand.Rand, now time.Time) string {
 	return candidates[r.Intn(len(candidates))]
 }
 
-// renderRumorClause turns one action-log entry into the diegetic, past-tense
-// clause a traveler carries as a rumor — "Ezekiel Crane turned out a plow for the
-// Hale farm" — or "" for a beat that doesn't make a rumor worth carrying. The
+// renderTravelerWordClause turns one action-log entry into the diegetic, past-tense
+// clause a traveler carries as word from the road — "Ezekiel Crane turned out a plow for the
+// Hale farm" — or "" for a beat that is not worth carrying. The
 // preface owns the "Word reached you on the road that …" framing
 // (renderTravelerPreface); this returns just the grounded fact. Deliberately a
 // curated allow-set of the socially legible economic beats: the private
@@ -606,7 +614,7 @@ func selectVisitorRumor(w *World, r *rand.Rand, now time.Time) string {
 // everywhere NPC-facing) all render "". Amounts and exact coin counts are dropped
 // on purpose — scene, not ledger. The subject name is resolved by the caller's
 // guard (w.Actors[e.ActorID] non-nil), re-checked here for safety.
-func renderRumorClause(w *World, e ActionLogEntry) string {
+func renderTravelerWordClause(w *World, e ActionLogEntry) string {
 	subject := w.Actors[e.ActorID]
 	if subject == nil || subject.DisplayName == "" {
 		return ""
@@ -615,7 +623,7 @@ func renderRumorClause(w *World, e ActionLogEntry) string {
 	switch e.ActionType {
 	case ActionTypePaid:
 		if e.CounterpartyName == "" {
-			return "" // a payment to no one named isn't a rumor worth carrying
+			return "" // a payment to no one named is not worth carrying
 		}
 		clause := name + " settled up with " + e.CounterpartyName
 		if e.Text != "" {
@@ -892,9 +900,9 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		// Arriving: on the road, walking in to his first stop. Pacing flips it to
 		// making_rounds on arrival (LLM-373).
 		Phase: VisitorPhaseArriving,
-		// A returner's PERSONA is stable across visits, but its road-rumor is fresh each
+		// A returner's PERSONA is stable across visits, but its road-word is fresh each
 		// trip: (re)selected here every spawn, NOT stored on the recurring_visitor row (LLM-372).
-		Payload:     selectVisitorRumor(w, r, inputs.Now),
+		Payload:     selectTravelerWord(w, r, inputs.Now),
 		RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
 		// The bound trade errand (LLM-455): non-nil for a merchant, nil for a passer-through.
 		// Drives the rounds cue, the commerce-confinement steer/gate, and the coin-valve.
@@ -1339,7 +1347,7 @@ func recordVisitorCallInPlace(w *World, actor *Actor) {
 // decoder truncates to it.
 const MaxPayloadSharedWith = 64
 
-// recordVisitorRumorShared marks the traveler's carried word (VisitorState.Payload)
+// recordTravelerWordShared marks the traveler's carried word (VisitorState.Payload)
 // as given to the huddle's other ACTIVE conversants — peers who have themselves
 // spoken (LLM-545). Called from the Speak commit path beside propagateRumorOnSpeak,
 // and deliberately the same shape: the token moves through actual conversation, not
@@ -1352,7 +1360,7 @@ const MaxPayloadSharedWith = 64
 // approximation risks (a word left ungiven to someone he only traded pleasantries
 // with). Idempotent per peer; visit-scoped like the Payload itself. MUST run on the
 // world goroutine.
-func recordVisitorRumorShared(w *World, h *Huddle, speakerID ActorID) {
+func recordTravelerWordShared(w *World, h *Huddle, speakerID ActorID) {
 	if w == nil || h == nil {
 		return
 	}
@@ -1380,7 +1388,7 @@ func recordVisitorRumorShared(w *World, h *Huddle, speakerID ActorID) {
 			// conversant in THIS conversation", which the utterance ring below
 			// establishes — a peer who spoke here and later dozes off or walks away
 			// was still given the word. Present-company filtering is the READ
-			// side's job (travelerRumorSharedWith), where "who is in the scene NOW"
+			// side's job (travelerWordSharedWith), where "who is in the scene NOW"
 			// is actually the question.
 			continue
 		}

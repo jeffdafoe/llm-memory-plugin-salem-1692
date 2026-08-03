@@ -225,7 +225,7 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 		lv.VisitorState.VisitedBusinesses = append(lv.VisitorState.VisitedBusinesses, sim.StructureID(s))
 	}
 	// Dedup + drop empties + truncate at the cap on the way in (code_review):
-	// the engine-side writer (recordVisitorRumorShared) already keeps the set
+	// the engine-side writer (recordTravelerWordShared) already keeps the set
 	// unique and under sim.MaxPayloadSharedWith, so a duplicate, blank, or
 	// oversized array here is out-of-band plan data — the same trust posture the
 	// Trade validation above takes. Truncate rather than reject: the rest of the

@@ -482,14 +482,14 @@ func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
 	// Mixed company keeps the fresh line (there is a new listener) and names who
 	// has heard it already. Someone told elsewhere and not in the scene is never
 	// mentioned — the memory matters face to face.
-	if rumor := sanitizeInline(v.Rumor); rumor != "" {
-		if v.RumorSpentWithAllPresent {
+	if word := sanitizeInline(v.Word); word != "" {
+		if v.WordSpentWithAllPresent {
 			fmt.Fprintf(b, " The word you picked up on the road — that %s — you have already passed to %s, and heard what they had to say; that matter is spent between you.",
-				rumor, joinNames(v.RumorSharedWith))
+				word, joinNames(v.WordSharedWith))
 		} else {
-			fmt.Fprintf(b, " Word reached you on the road that %s.", rumor)
-			if len(v.RumorSharedWith) > 0 {
-				fmt.Fprintf(b, " You have already passed that word to %s.", joinNames(v.RumorSharedWith))
+			fmt.Fprintf(b, " Word reached you on the road that %s.", word)
+			if len(v.WordSharedWith) > 0 {
+				fmt.Fprintf(b, " You have already passed that word to %s.", joinNames(v.WordSharedWith))
 			}
 		}
 	}

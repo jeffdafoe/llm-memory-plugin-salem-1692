@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-// rumor_test.go — LLM-371: the grounded rumor a spawning traveler carries.
-// renderRumorClause maps one action-log beat to a diegetic past-tense clause (or
-// "" for a beat not worth carrying); selectVisitorRumor filters the action log to
-// recent, rumor-worthy beats about real residents and picks one. Together they are
+// traveler_word_test.go — LLM-371: the grounded word a spawning traveler carries.
+// NOT the rumor.go layer (deliberately fallible, escalating) — see selectTravelerWord.
+// renderTravelerWordClause maps one action-log beat to a diegetic past-tense clause (or
+// "" for a beat not worth carrying); selectTravelerWord filters the action log to
+// recent, carry-worthy beats about real residents and picks one. Together they are
 // what gives the stateless salem-visitor VA something true to trade instead of
 // empty small-talk.
 
@@ -26,7 +27,7 @@ func rumorTestWorld() *World {
 	}
 }
 
-func TestRenderRumorClause(t *testing.T) {
+func TestRenderTravelerWordClause(t *testing.T) {
 	w := rumorTestWorld()
 	cases := []struct {
 		name  string
@@ -64,23 +65,23 @@ func TestRenderRumorClause(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := renderRumorClause(w, tc.entry); got != tc.want {
-				t.Errorf("renderRumorClause = %q, want %q", got, tc.want)
+			if got := renderTravelerWordClause(w, tc.entry); got != tc.want {
+				t.Errorf("renderTravelerWordClause = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestRenderRumorClause_ArticleBeats covers the two beats that route a place name
+// TestRenderTravelerWordClause_ArticleBeats covers the two beats that route a place name
 // through WithDefiniteArticle — asserted by prefix so the test doesn't re-implement
 // the article rule.
-func TestRenderRumorClause_ArticleBeats(t *testing.T) {
+func TestRenderTravelerWordClause_ArticleBeats(t *testing.T) {
 	w := rumorTestWorld()
-	gathered := renderRumorClause(w, ActionLogEntry{ActorID: "alice", ActionType: ActionTypeGathered, Text: "firewood", CounterpartyName: "woodpile"})
+	gathered := renderTravelerWordClause(w, ActionLogEntry{ActorID: "alice", ActionType: ActionTypeGathered, Text: "firewood", CounterpartyName: "woodpile"})
 	if !strings.HasPrefix(gathered, "Goodwife Alice was out gathering firewood at ") {
 		t.Errorf("gathered clause = %q", gathered)
 	}
-	repairing := renderRumorClause(w, ActionLogEntry{ActorID: "smith", ActionType: ActionTypeRepairing, Text: "smithy"})
+	repairing := renderTravelerWordClause(w, ActionLogEntry{ActorID: "smith", ActionType: ActionTypeRepairing, Text: "smithy"})
 	if !strings.HasPrefix(repairing, "Ezekiel Crane was mending ") {
 		t.Errorf("repairing clause = %q", repairing)
 	}
@@ -122,7 +123,7 @@ func TestSnapshotActorCarriesRumorPayload(t *testing.T) {
 
 // TestSnapshotActorCarriesPayloadSharedWith is the LLM-545 sibling of the test
 // above: the shared-word memory must survive the real published-snapshot builder
-// (snapshotActor -> cloneVisitorState) — perception's travelerRumorSharedWith
+// (snapshotActor -> cloneVisitorState) — perception's travelerWordSharedWith
 // reads it off ActorSnapshot.VisitorState — and must be INDEPENDENT of the live
 // actor, so a world-side stamp can't appear mid-publish nor a snapshot mutation
 // bleed back.
@@ -156,15 +157,15 @@ func TestSnapshotActorCarriesPayloadSharedWith(t *testing.T) {
 	}
 }
 
-func TestSelectVisitorRumor(t *testing.T) {
+func TestSelectTravelerWord(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	r := rand.New(rand.NewSource(1))
 	recent := now.Add(-time.Hour)
-	stale := now.Add(-VisitorRumorLookback - time.Hour)
+	stale := now.Add(-TravelerWordLookback - time.Hour)
 
 	t.Run("empty log", func(t *testing.T) {
 		w := rumorTestWorld()
-		if got := selectVisitorRumor(w, r, now); got != "" {
+		if got := selectTravelerWord(w, r, now); got != "" {
 			t.Errorf("got %q, want empty", got)
 		}
 	})
@@ -174,7 +175,7 @@ func TestSelectVisitorRumor(t *testing.T) {
 		w.ActionLog = []ActionLogEntry{
 			{ActorID: "smith", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "a plow", CounterpartyName: "the Hale farm"},
 		}
-		if got := selectVisitorRumor(w, r, now); got != "Ezekiel Crane turned out a plow for the Hale farm" {
+		if got := selectTravelerWord(w, r, now); got != "Ezekiel Crane turned out a plow for the Hale farm" {
 			t.Errorf("got %q", got)
 		}
 	})
@@ -188,7 +189,7 @@ func TestSelectVisitorRumor(t *testing.T) {
 			{ActorID: "ghost", OccurredAt: recent, ActionType: ActionTypePaid, CounterpartyName: "Alice"},                       // no such actor
 			{ActorID: "smith", OccurredAt: recent, ActionType: ActionTypeSpoke, Text: "hello"},                                  // dull beat
 		}
-		if got := selectVisitorRumor(w, r, now); got != "" {
+		if got := selectTravelerWord(w, r, now); got != "" {
 			t.Errorf("got %q, want empty (no eligible resident rumor)", got)
 		}
 	})
@@ -198,7 +199,7 @@ func TestSelectVisitorRumor(t *testing.T) {
 		w.ActionLog = []ActionLogEntry{
 			{ActorID: "smith", OccurredAt: stale, ActionType: ActionTypeDelivered, Text: "a plow", CounterpartyName: "Alice"},
 		}
-		if got := selectVisitorRumor(w, r, now); got != "" {
+		if got := selectTravelerWord(w, r, now); got != "" {
 			t.Errorf("got %q, want empty (beat is stale)", got)
 		}
 	})

@@ -1846,13 +1846,13 @@ func buildTravelerSelf(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		Origin:      a.VisitorState.Origin,
 		Disposition: a.VisitorState.Disposition,
 		Vocation:    sim.VisitorVocation(a.VisitorState.Archetype),
-		Rumor:       a.VisitorState.Payload,
+		Word:        a.VisitorState.Payload,
 	}
 	if v.Vocation == "" {
 		v.Vocation = travelerBuyerVocation(snap, a.VisitorState)
 	}
-	if v.Rumor != "" {
-		v.RumorSharedWith, v.RumorSpentWithAllPresent = travelerRumorSharedWith(snap, actorID, a)
+	if v.Word != "" {
+		v.WordSharedWith, v.WordSpentWithAllPresent = travelerWordSharedWith(snap, actorID, a)
 	}
 	// LLM-372: a returner on a repeat visit carries continuity — how many times
 	// they've passed through, and the players they remember (most-recent first).
@@ -1897,7 +1897,7 @@ func travelerBuyerVocation(snap *sim.Snapshot, vs *sim.VisitorState) string {
 	return fmt.Sprintf("You buy %s in villages like this one and carry them home, where your trade is.", good)
 }
 
-// travelerRumorSharedWith intersects the traveler's shared-word memory
+// travelerWordSharedWith intersects the traveler's shared-word memory
 // (VisitorState.PayloadSharedWith, stamped on the Speak commit path — LLM-545)
 // with present company, returning the display names of the co-present peers who
 // have already had the word (sorted) and whether that covers EVERYONE present.
@@ -1914,7 +1914,7 @@ func travelerBuyerVocation(snap *sim.Snapshot, vs *sim.VisitorState) string {
 // heard it" nor block it. Away-routed PCs (stale presence, still huddle
 // members) are deliberately KEPT: physically in the scene, an untold one keeps
 // the fresh framing, which fails on the safe side.
-func travelerRumorSharedWith(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) (names []string, allPresent bool) {
+func travelerWordSharedWith(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) (names []string, allPresent bool) {
 	if snap == nil || len(a.VisitorState.PayloadSharedWith) == 0 {
 		return nil, false
 	}

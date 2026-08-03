@@ -263,7 +263,7 @@ func TestGoldensTravelerVocationMatchesArchetype(t *testing.T) {
 // cross-scenario invariant, computed through the production builder rather than
 // restated wording: for every scenario whose subject carries a rumor payload,
 // the preface's shared-word clause ("you have already passed" in either tier)
-// renders IFF travelerRumorSharedWith finds a stamped peer in present company,
+// renders IFF travelerWordSharedWith finds a stamped peer in present company,
 // and every name it renders belongs to a co-present actor. Guards the
 // co-presence rule matrix-wide — a stamp for someone elsewhere must never
 // surface a name, and a stamped co-present peer must never be silently dropped.
@@ -282,7 +282,7 @@ func TestGoldensRumorSharedClauseMatchesPresentCompany(t *testing.T) {
 				}
 				return
 			}
-			names, _ := travelerRumorSharedWith(snap, actorID, a)
+			names, _ := travelerWordSharedWith(snap, actorID, a)
 			if want := len(names) > 0; want != hasClause {
 				t.Errorf("scenario %q: production builder finds %d co-present shared peers but clause present=%v — the shared-word clause must render iff a stamped peer is in the scene (LLM-545)", sc.name, len(names), hasClause)
 			}
@@ -14118,7 +14118,7 @@ func travelerSelfIdentityPrefaceWithRumor() (*sim.Snapshot, sim.ActorID, []sim.W
 // travelerRumorSpentWithPresentCompany is the LLM-545 fixture: the same
 // rumor-carrying traveler, back in a huddle with the one person he has already
 // passed the word to (VisitorState.PayloadSharedWith carries her id — stamped by
-// recordVisitorRumorShared when she answered him earlier). The golden pins the
+// recordTravelerWordShared when she answered him earlier). The golden pins the
 // preface's SPENT reframing — "The word you picked up on the road — that … — you
 // have already passed to Hannah Boggs, and heard what they had to say; that
 // matter is spent between you." — in place of the fresh "Word reached you …"
