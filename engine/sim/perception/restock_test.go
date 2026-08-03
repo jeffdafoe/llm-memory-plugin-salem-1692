@@ -1231,7 +1231,7 @@ func TestRenderRestocking_DemandAndMarginClauses(t *testing.T) {
 	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 2}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 2 coins — nicely profitable on coin.") {
 		t.Errorf("missing nicely-profitable margin judgment:\n%s", out)
 	}
-	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 1 coin — breakeven on coin.") {
+	if out := render(RestockItemView{ItemLabel: "milk", CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: 1, ResaleUnit: 1}); !strings.Contains(out, "You are buying at about 1 coin and selling at about 1 coin — breakeven on coin; you need to buy lower or sell for more.") {
 		t.Errorf("missing break-even margin judgment:\n%s", out)
 	}
 	if out := render(RestockItemView{ItemLabel: "meat", CurrentQty: 0, Cap: 6, RecentSalesUnits: 8, BuyAnchorUnit: 4, ResaleUnit: 3}); !strings.Contains(out, "You are buying at about 4 coins and selling at about 3 coins — losing on coin; you need to buy lower or sell for more.") {
@@ -1626,5 +1626,69 @@ func TestRenderWalkToVendorsNamesOnlyCoPresentVendor(t *testing.T) {
 		"  - buy from General Store (destination: general_store)\n"
 	if b.String() != want {
 		t.Errorf("walk-to bullets:\n%s\nwant:\n%s", b.String(), want)
+	}
+}
+
+// TestRestockMarginVerdictAsksWhenNotEarning is the LLM-591 property, pinned
+// separately from the wording tests above because the wording is what drifted.
+//
+// A verdict that reports a state and asks for nothing is a dead end. Three tiers
+// are allowed to be dead ends — a keeper already earning has nothing to fix.
+// The two that aren't earning must carry an ask, and breakeven is the one that
+// didn't: it stated two identical numbers and stopped, while the keeper's
+// standing trade rule ("never sell a thing for less than it cost you") is a
+// floor that selling AT cost satisfies completely. Josiah ran ~1,200 coins of
+// fortnightly turnover for 85 of margin doing exactly as instructed.
+//
+// Asserted over the tier FUNCTION rather than a fixed list of strings, so a
+// sixth tier added later has to declare which side of this line it is on.
+func TestRestockMarginVerdictAsksWhenNotEarning(t *testing.T) {
+	// The ask, deliberately identical across both non-earning tiers: it steers the
+	// PRICE and says nothing about whether the good is worth trading. That
+	// boundary is load-bearing — an unscoped verdict once talked a keeper out of
+	// the input leg of a working trade whose other half settled in barter the coin
+	// book never sees.
+	const ask = "you need to buy lower or sell for more"
+
+	cases := []struct {
+		name    string
+		buy     int
+		resale  int
+		tier    restockMarginTier
+		wantAsk bool
+	}{
+		{"highly profitable", 1, 3, marginHighlyProfitable, false},
+		{"nicely profitable", 1, 2, marginNicelyProfitable, false},
+		{"slightly profitable", 2, 3, marginSlightlyProfitable, false},
+		{"breakeven", 1, 1, marginBreakEven, true},
+		{"losing", 4, 3, marginLosing, true},
+	}
+
+	for _, c := range cases {
+		// Guard the fixture: if a threshold moves, these inputs must still land on
+		// the tier the row is about, or the assertion below tests the wrong branch.
+		if got := restockMarginTierOf(c.buy, c.resale); got != c.tier {
+			t.Errorf("%s: buy %d / resale %d grades as tier %v, want %v — fixture no longer "+
+				"reaches the branch it is testing", c.name, c.buy, c.resale, got, c.tier)
+			continue
+		}
+		var b strings.Builder
+		renderRestocking(&b, &RestockingView{Items: []RestockItemView{{ItemLabel: "milk",
+			CurrentQty: 4, Cap: 20, RecentSalesUnits: 21, BuyAnchorUnit: c.buy, ResaleUnit: c.resale}}})
+		out := b.String()
+		if got := strings.Contains(out, ask); got != c.wantAsk {
+			if c.wantAsk {
+				t.Errorf("%s: the verdict names a price the keeper is not earning at and asks "+
+					"for nothing — a state with no action attached is a dead end:\n%s", c.name, out)
+			} else {
+				t.Errorf("%s: a keeper already earning on this good should not be told to "+
+					"change his price:\n%s", c.name, out)
+			}
+		}
+		// Whatever the tier, the two rates it judges must be present — the ask is an
+		// addition to the LLM-492 shape, not a replacement for it.
+		if !hasRestockMarginVerdict(out) {
+			t.Errorf("%s: rendered line carries no recognised margin verdict:\n%s", c.name, out)
+		}
 	}
 }
