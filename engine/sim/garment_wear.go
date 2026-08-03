@@ -97,6 +97,45 @@ func garmentUnitThreadbare(budget, remaining, fractionX100 int) bool {
 	return remaining*100 < budget*fractionX100
 }
 
+// IsWorkGarment reports whether kind is a working garment — a wearable garment
+// (WearMinutes > 0) that does NOT carry `warms` (LLM-589). The split is what
+// keeps the two clothing cues from covering the same ground: outerwear
+// (coat/cloak) is the cold self-line's business, and everything else worn at
+// labour (shift, breeches, gown) is the working-clothes cue's.
+//
+// Derived from capability + budget rather than a hardcoded kind list, matching
+// ResolveWarmGarmentTier's posture — a garment added to the catalog later joins
+// the right cue on its own, with no code change and no name to keep in sync.
+// It also avoids modelling who may wear what: an actor needs SOME sound working
+// garment, not a gendered one, and the engine carries no sex to gate that on.
+func IsWorkGarment(kinds map[ItemKind]*ItemKindDef, kind ItemKind) bool {
+	def := kinds[kind]
+	return def != nil && def.WearMinutes > 0 && !def.HasCapability(CapabilityWarms)
+}
+
+// ResolveWorkGarmentTier grades whether the actor has something fit to work in,
+// accounting for wear (LLM-589). Same shape and the same tiers as
+// ResolveWarmGarmentTier — best across every working kind held, a fresh spare
+// (qty >= 2) or an in-use unit above the threadbare line reads SOUND — so the
+// two clothing surfaces grade wear identically and can never disagree about what
+// "worn thin" means. Pure over the maps + threshold so the perception build and
+// any live read resolve the same tier from the same inputs.
+func ResolveWorkGarmentTier(kinds map[ItemKind]*ItemKindDef, inventory, garmentWear map[ItemKind]int, thresholdFractionX100 int) WarmGarmentTier {
+	best := WarmGarmentNone
+	for kind, qty := range inventory {
+		if qty <= 0 || !IsWorkGarment(kinds, kind) {
+			continue
+		}
+		if best < WarmGarmentThreadbare {
+			best = WarmGarmentThreadbare
+		}
+		if qty >= 2 || !garmentUnitThreadbare(kinds[kind].WearMinutes, garmentWear[kind], thresholdFractionX100) {
+			return WarmGarmentSound
+		}
+	}
+	return best
+}
+
 // ResolveWarmGarmentTier grades the cold relief the actor's warms garments give,
 // accounting for wear (LLM-422). The best tier across every warms kind held wins:
 // a kind is SOUND if there's a fresh spare (qty >= 2 — only the in-use unit wears)
