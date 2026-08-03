@@ -71,7 +71,7 @@ func workClothesSnapshot(inv, wear map[sim.ItemKind]int, state sim.ActorState) (
 }
 
 func TestWorkClothes_SoundGarmentIsSilent(t *testing.T) {
-	// A fresh shift (no wear entry) is sound, and silence is a valid volume —
+	// A fresh set of linens (no wear entry) is sound, and silence is a valid volume —
 	// the cue must not narrate a non-problem on every tick of every worker.
 	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"linens": 1}, nil, sim.StateWorking)
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
@@ -81,6 +81,16 @@ func TestWorkClothes_SoundGarmentIsSilent(t *testing.T) {
 
 func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
 	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	// Flip the seller to produce WOOLENS while merely holding linens, so the
+	// FIRST-sorting kind is the one he cannot supply. That is what exercises the
+	// skip; with the shared fixture's linens policy the cue would resolve on its
+	// first try and this test would silently stop testing anything.
+	//
+	// The LLM-596 rename is why this override exists: under the old names breeches
+	// sorted before shift and the held-not-produced kind happened to sort first for
+	// free. linens sorting before woolens reversed that, and a rename that quietly
+	// retires a test's coverage is worse than one that breaks it.
+	snap.Actors["josiah"].RestockPolicy = producePolicy("woolens", 20)
 	v := buildWorkClothes(snap, id, snap.Actors[id])
 	if v == nil {
 		t.Fatal("a worker owning no working garment should get the cue")
@@ -88,12 +98,12 @@ func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
 	if v.Tier != sim.WarmGarmentNone {
 		t.Fatalf("tier = %v, want none", v.Tier)
 	}
-	// breeches sorts first but is SKIPPED: the seller holds them without producing
+	// linens sorts FIRST but is SKIPPED: the seller holds them without producing
 	// them and this fixture leaves his shop untagged, so isRestockSupplierOf refuses
-	// him as a supplier of record for that kind (LLM-252). The cue walks on to shift,
+	// him as a supplier of record for that kind (LLM-252). The cue walks on to woolens,
 	// which he does produce — the never-send-them-to-a-dead-end behaviour.
-	if v.Item != "linens" {
-		t.Fatalf("item = %q, want the first working kind with a RESOLVABLE supplier (shift)", v.Item)
+	if v.Item != "woolens" {
+		t.Fatalf("item = %q, want the first working kind with a RESOLVABLE supplier (woolens)", v.Item)
 	}
 	var b strings.Builder
 	renderWorkClothes(&b, v)
@@ -109,7 +119,7 @@ func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
 }
 
 func TestWorkClothes_ThreadbareTier(t *testing.T) {
-	// One shift, worn into the last 20% of its 10800-minute budget.
+	// One set of linens, worn into the last 20% of its 10800-minute budget.
 	snap, id := workClothesSnapshot(
 		map[sim.ItemKind]int{"linens": 1},
 		map[sim.ItemKind]int{"linens": 500},
@@ -210,7 +220,7 @@ func TestWorkClothes_DistributorResolvesAsTheClothingSupplier(t *testing.T) {
 func TestWorkClothes_DistributorIsNotToldToBuyHisOwnStock(t *testing.T) {
 	// The distributor's garments are sale stock, not clothing — sim.actorWearsGarments
 	// excludes him from the wear sweep for that reason, and the cue has to make the
-	// same exclusion or he is steered to buy the shifts already on his shelf.
+	// same exclusion or he is steered to buy the linens already on his shelf.
 	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
 	snap.Actors[id].WorkStructureID = "general_store"
 	snap.VillageObjects["general_store"] = &sim.VillageObject{
@@ -224,12 +234,12 @@ func TestWorkClothes_DistributorIsNotToldToBuyHisOwnStock(t *testing.T) {
 }
 
 func TestWorkClothes_PrefersTheKindHeAlreadyWears(t *testing.T) {
-	// The live case the LLM-592 seed created: the distributor stocks gowns and
-	// shifts and no breeches, so the plain first-purchasable pick lands on a GOWN
+	// The live case the LLM-592 seed created: the distributor stocks homespun and
+	// linens and no woolens, so the plain first-purchasable pick lands on HOMESPUN
 	// for every threadbare worker in the village — including Constable Gideon
-	// Marsh, who is threadbare in shift and breeches. The engine models no sex and
-	// the catalog does, so the cue reads the WARDROBE instead: he owns a shift, the
-	// shop sells shifts, the cue says shift.
+	// Marsh, who is threadbare in linens and woolens. The engine models no sex and
+	// the catalog does, so the cue reads the WARDROBE instead: he owns linens, the
+	// shop sells linens, the cue says linens.
 	snap, id := workClothesSnapshot(
 		map[sim.ItemKind]int{"linens": 1, "woolens": 1},
 		map[sim.ItemKind]int{"linens": 500, "woolens": 600},
