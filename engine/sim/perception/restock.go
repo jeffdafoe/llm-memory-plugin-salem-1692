@@ -1126,6 +1126,14 @@ const (
 	marginSlightlyProfitable
 	marginBreakEven
 	marginLosing
+
+	// marginTierSentinel is not a tier — it bounds the enum so a test can walk
+	// every value and require each to declare whether its verdict carries a
+	// corrective (LLM-591). Breakeven was the one tier that reported a state and
+	// asked for nothing, and a hand-listed test would have let a sixth tier repeat
+	// that silently. Keep it LAST: a tier added above it is automatically in
+	// scope, one added below it is invisible.
+	marginTierSentinel
 )
 
 // Profit-band cutoffs, as a multiple of the buy rate. Graded by RATIO, not by the

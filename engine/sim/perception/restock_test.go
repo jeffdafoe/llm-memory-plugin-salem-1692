@@ -1640,8 +1640,12 @@ func TestRenderWalkToVendorsNamesOnlyCoPresentVendor(t *testing.T) {
 // floor that selling AT cost satisfies completely. Josiah ran ~1,200 coins of
 // fortnightly turnover for 85 of margin doing exactly as instructed.
 //
-// Asserted over the tier FUNCTION rather than a fixed list of strings, so a
-// sixth tier added later has to declare which side of this line it is on.
+// Asserted over the tier FUNCTION rather than a fixed list of strings, and the
+// case table is checked for EXHAUSTIVENESS against the enum (bounded by
+// marginTierSentinel), so a sixth tier added later has to declare which side of
+// this line it is on instead of going quietly untested. The first cut of this
+// test claimed that from a hand-maintained list of five and did not deliver it
+// (code_review).
 func TestRestockMarginVerdictAsksWhenNotEarning(t *testing.T) {
 	// The ask, deliberately identical across both non-earning tiers: it steers the
 	// PRICE and says nothing about whether the good is worth trading. That
@@ -1662,6 +1666,29 @@ func TestRestockMarginVerdictAsksWhenNotEarning(t *testing.T) {
 		{"slightly profitable", 2, 3, marginSlightlyProfitable, false},
 		{"breakeven", 1, 1, marginBreakEven, true},
 		{"losing", 4, 3, marginLosing, true},
+	}
+
+	// marginUnknown is the only tier legitimately absent above: it means one rate
+	// or neither is on record, so there is no margin to judge and renderRestocking
+	// takes its default branch instead of emitting a verdict at all. Named here
+	// rather than skipped silently, so "not a verdict" is a claim someone made
+	// rather than an omission.
+	notAVerdict := map[restockMarginTier]bool{marginUnknown: true}
+
+	// Exhaustiveness. Walk the enum and require every tier to be accounted for —
+	// this is what makes the doc comment above true. A new tier is in scope the
+	// moment it is declared before marginTierSentinel, and this fails until its
+	// author decides whether its verdict carries an ask.
+	covered := map[restockMarginTier]bool{}
+	for _, c := range cases {
+		covered[c.tier] = true
+	}
+	for tier := restockMarginTier(0); tier < marginTierSentinel; tier++ {
+		if !covered[tier] && !notAVerdict[tier] {
+			t.Errorf("margin tier %v is neither exercised here nor declared as carrying no "+
+				"verdict — every tier must say whether it asks the keeper for anything, or "+
+				"breakeven's dead end gets repeated", tier)
+		}
 	}
 
 	for _, c := range cases {
