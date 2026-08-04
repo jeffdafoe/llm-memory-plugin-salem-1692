@@ -277,7 +277,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// seller's own mild needs outrank a waiting customer for whole minutes
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
-	renderPayOffers(&ephemeral, payOffers, nameOf, p.PayOfferShortfalls, p.RoomAlreadySoldOrderByLedger)
+	renderPayOffers(&ephemeral, payOffers, nameOf, p.PayOfferShortfalls, p.RoomAlreadySoldOrderByLedger, p.PayOfferWorth)
 	// LLM-138: a gift offered TO this actor is the same "someone wants my answer"
 	// decision class as a pay offer, so it renders right alongside.
 	renderGiftsForMe(&ephemeral, p.GiftsForMe)
@@ -3143,7 +3143,7 @@ func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
 	}
 }
 
-func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, shortfalls map[sim.LedgerID]StockShortfall, roomAlreadySold map[sim.LedgerID]sim.OrderID) {
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, shortfalls map[sim.LedgerID]StockShortfall, roomAlreadySold map[sim.LedgerID]sim.OrderID, worth map[sim.LedgerID]offerWorth) {
 	if len(offers) == 0 {
 		return
 	}
@@ -3190,6 +3190,12 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		if oid, ok := roomAlreadySold[o.LedgerID]; ok {
 			fmt.Fprintf(b, " — you already sold %s a room (order #%d) you have not handed over; deliver that with deliver_order before accepting another", buyer, oid)
 		}
+		// LLM-598: what the buyer puts up, weighed against what it asks for. Barter
+		// only, and only when the payment falls short — buildPayOfferWorth carries an
+		// entry for no other case. No numbers: the wares cue above already prints the
+		// per-unit worths, and it was doing the arithmetic ACROSS those two sections
+		// that the miller skipped, judging 7 flour for 7 wheat an even hand.
+		b.WriteString(offerWorthPhrase(worth[o.LedgerID], item))
 		b.WriteString("\n")
 	}
 	// ONE tool, and the words ride on it (LLM-350). This cue used to read "Respond

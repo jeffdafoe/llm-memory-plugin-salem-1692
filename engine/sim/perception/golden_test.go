@@ -6660,6 +6660,7 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "distributor_underwater_resale" || // LLM-332: reseller in company with priced resale wares, one underwater
 			sc.name == "innkeeper_fried_meat_below_makings_cost" || // LLM-475: producer in company, priced own ware sold under its makings cost
 			sc.name == "miller_flour_wholesale_earns_nothing" || // LLM-475: wholesale producer in company — cost sentence restored to the channel line
+			sc.name == "miller_offered_parity_swap_for_flour" || // LLM-598: wholesale producer in company weighing a barter offer — the cue's figures are what the offer verdict must agree with
 			sc.name == "keeper_paid_with_long_note" // LLM-400: built ON keeper_reselling_in_company's fixture, so it inherits the cue correctly
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
@@ -6682,7 +6683,8 @@ func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
 		got := renderScenario(sc)
 		want := sc.name == "wholesaler_producer_bartering_with_customer" ||
 			sc.name == "wholesaler_producer_observed_rates" ||
-			sc.name == "miller_flour_wholesale_earns_nothing" // LLM-475: the same line, now carrying the maker's own cost
+			sc.name == "miller_flour_wholesale_earns_nothing" || // LLM-475: the same line, now carrying the maker's own cost
+			sc.name == "miller_offered_parity_swap_for_flour" // LLM-598: the same miller, weighing a barter offer against that line
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wholesale-channel wares line present=%v, want %v", sc.name, has, want)
 		}

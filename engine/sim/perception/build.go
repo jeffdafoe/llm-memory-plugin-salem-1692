@@ -126,6 +126,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// inventory + the catalog (services excluded); render stays catalog-free.
 	p.PayOfferShortfalls = buildPayOfferShortfalls(snap, p.PayOffersForMe, actorSnap)
 	p.RoomAlreadySoldOrderByLedger = buildRoomAlreadySold(snap, actorID, p.PayOffersForMe)
+	// LLM-598: price a barter offer's two sides against each other, so a seller
+	// weighing goods-for-goods reads a verdict instead of being left to multiply
+	// the wares cue's per-unit figures himself (live, the miller did not).
+	p.PayOfferWorth = buildPayOfferWorth(snap, actorID, p.PayOffersForMe)
 	// LLM-138: the recipient-side gift decision view (gifts offered TO me),
 	// the gift counterpart to PayOffersForMe. Drives the "## Gifts offered to
 	// you" cue + the accept_gift / decline_gift tool gate.

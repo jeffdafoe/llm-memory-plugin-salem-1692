@@ -28,7 +28,7 @@ func TestRenderPayOffers_PartialPaymentDepositClause(t *testing.T) {
 		}
 		return string(id)
 	}
-	renderPayOffers(&b, offers, nameOf, nil, nil)
+	renderPayOffers(&b, offers, nameOf, nil, nil, nil)
 	out := b.String()
 	if !strings.Contains(out, "5 down now as a deposit") || !strings.Contains(out, "remaining 10") {
 		t.Errorf("seller offer cue missing the deposit split:\n%s", out)

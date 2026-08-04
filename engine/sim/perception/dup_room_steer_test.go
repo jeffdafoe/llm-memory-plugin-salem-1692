@@ -50,7 +50,7 @@ func TestRenderPayOffers_DuplicateRoomSteer(t *testing.T) {
 		return string(id)
 	}
 	roomAlreadySold := map[sim.LedgerID]sim.OrderID{323: 77}
-	renderPayOffers(&b, offers, nameOf, nil, roomAlreadySold)
+	renderPayOffers(&b, offers, nameOf, nil, roomAlreadySold, nil)
 	out := b.String()
 	for _, want := range []string{"Ezekiel Crane", "#77", "deliver_order", "before accepting another"} {
 		if !strings.Contains(out, want) {
@@ -65,7 +65,7 @@ func TestRenderPayOffers_NoDuplicateNoSteer(t *testing.T) {
 		{LedgerID: 100, Buyer: "ezekiel", Item: "nights_stay", Qty: 1, Amount: 4},
 	}
 	nameOf := func(id sim.ActorID) string { return string(id) }
-	renderPayOffers(&b, offers, nameOf, nil, nil) // nil map → no overlap
+	renderPayOffers(&b, offers, nameOf, nil, nil, nil) // nil map → no overlap
 	if strings.Contains(b.String(), "deliver_order") {
 		t.Errorf("no outstanding room → no deliver steer, got %q", b.String())
 	}
