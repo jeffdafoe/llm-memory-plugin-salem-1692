@@ -1,6 +1,8 @@
 package perception
 
 import (
+	"math"
+
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
@@ -34,6 +36,27 @@ const (
 // be grading noise (the same reasoning as the restock profit bands).
 const offerWorthShortDivisor = 2
 
+// offerWorthCeiling bounds every side total. Both sides are (ledger quantity ×
+// ledger-derived worth), and a product that wrapped would not merely garble the
+// verdict — a negative total enters the short band and renders a confident "far
+// less" on a generous offer (code_review). Nothing in the village approaches this;
+// a total past it means the inputs are junk, and junk earns silence.
+const offerWorthCeiling = int64(math.MaxInt32)
+
+// offerSideValue is unit × qty, guarded. The bound is checked by DIVISION before the
+// multiply, so nothing is ever computed that could wrap. Reports false for a
+// non-positive operand or a product past the ceiling — both of which abandon the
+// whole judgment rather than contributing a wrong figure to it.
+func offerSideValue(unit, qty int) (int64, bool) {
+	if unit <= 0 || qty <= 0 {
+		return 0, false
+	}
+	if int64(qty) > offerWorthCeiling/int64(unit) {
+		return 0, false
+	}
+	return int64(unit) * int64(qty), true
+}
+
 // offerItemUnitWorth is what one unit of a good is worth TO THIS ACTOR, in whole
 // coins, resolved realized-first:
 //
@@ -55,6 +78,15 @@ const offerWorthShortDivisor = 2
 // verdict shares a prompt with those numbers and must not contradict them. A good
 // worth under half a coin therefore rounds to 0 and reads as unpriced — silence,
 // which is the safe direction.
+//
+// This is MARKET worth, not worth-to-this-actor-in-use: a good the actor could
+// transform into something dearer (wheat, to the miller whose recipe turns 5 into 5
+// sacks of flour) is priced at what the village pays for it. That is conservative
+// with respect to SHORTFALL DETECTION only — understating an incoming input can turn
+// a short verdict into silence, never silence into a false short. It is not
+// universally safe: an offer paying in a good this actor values far above market can
+// still grade fair when it is genuinely poor (code_review). Acceptable because the
+// cue gates nothing; pricing transformation value is a redesign, not a clause.
 func offerItemUnitWorth(snap *sim.Snapshot, actorID sim.ActorID, kind sim.ItemKind) int {
 	if snap == nil {
 		return 0
@@ -85,34 +117,37 @@ func offerItemUnitWorth(snap *sim.Snapshot, actorID sim.ActorID, kind sim.ItemKi
 //
 // Any single unpriced good — on either side — abandons the whole judgment rather
 // than totalling what is left, since a partial sum understates the payment and
-// would invent a shortfall out of missing data.
+// would invent a shortfall out of missing data. A MALFORMED payment leg is treated
+// the same way and deliberately not skipped: skipping a zero- or negative-quantity
+// entry would quietly price a barter offer off its coin leg alone and read as short
+// (code_review). Every leg must be judgeable or the offer is not judged.
 func offerWorthOf(snap *sim.Snapshot, actorID sim.ActorID, o sim.PayOfferWarrantReason) offerWorth {
-	if len(o.PayItems) == 0 || o.Qty <= 0 {
+	if len(o.PayItems) == 0 || o.Qty <= 0 || o.Amount < 0 {
 		return offerWorthUnknown
 	}
 	askedUnit := offerItemUnitWorth(snap, actorID, o.Item)
-	if askedUnit <= 0 {
+	out, ok := offerSideValue(askedUnit, o.Qty)
+	if !ok {
 		return offerWorthUnknown
 	}
-	out := askedUnit * o.Qty
 
-	in := o.Amount // coins on a mixed payment; 0 for pure barter
+	in := int64(o.Amount) // coins on a mixed payment; 0 for pure barter
 	for _, pi := range o.PayItems {
-		if pi.Qty <= 0 {
-			continue
-		}
-		unit := offerItemUnitWorth(snap, actorID, pi.Kind)
-		if unit <= 0 {
+		leg, ok := offerSideValue(offerItemUnitWorth(snap, actorID, pi.Kind), pi.Qty)
+		if !ok {
 			return offerWorthUnknown
 		}
-		in += unit * pi.Qty
+		if in > offerWorthCeiling-leg {
+			return offerWorthUnknown
+		}
+		in += leg
 	}
 
 	// Compared by DIVIDING the goods asked for, never by multiplying the payment:
-	// both sides are accumulated ledger figures, and a multiply can overflow on a
-	// large one and REVERSE the verdict rather than merely garble it (the same
-	// reasoning restockMarginTierOf records). Division truncates the threshold
-	// DOWN, so the short band is only ever harder to enter.
+	// division cannot overflow for positive operands, and both sides are guaranteed
+	// positive and bounded above (offerSideValue). Truncation rounds the threshold
+	// DOWN, so the short band is only ever harder to enter — the same reasoning
+	// restockMarginTierOf records.
 	switch {
 	case in <= out/offerWorthShortDivisor:
 		return offerWorthShort

@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,26 @@ func TestOfferWorthOf(t *testing.T) {
 		{"an unpriced ASKED good is equally unjudgeable",
 			sim.PayOfferWarrantReason{LedgerID: 1, Item: "whalebone_charm", Qty: 2, PayItems: []sim.ItemKindQty{wheat(1)}}, offerWorthUnknown},
 		{"an empty ask is no offer", offer(0, 0, wheat(7)), offerWorthUnknown},
+
+		// Malformed legs are UNJUDGED, not skipped. Skipping them would price a
+		// barter offer off its coin leg alone and read as short (code_review).
+		{"a zero-quantity payment leg is not a free pass to judge on coins alone",
+			offer(7, 0, sim.ItemKindQty{Kind: "wheat", Qty: 0}), offerWorthUnknown},
+		{"a negative payment leg is unjudgeable, not ignorable",
+			offer(7, 0, sim.ItemKindQty{Kind: "wheat", Qty: -5}), offerWorthUnknown},
+		{"a zero leg alongside a good one still abandons the offer",
+			offer(7, 0, wheat(25), sim.ItemKindQty{Kind: "wheat", Qty: 0}), offerWorthUnknown},
+		{"a negative coin amount cannot drag the payment below zero",
+			offer(7, -100, wheat(25)), offerWorthUnknown},
+
+		// Overflow: a wrapped total is worse than no total — a negative one enters
+		// the short band and renders a confident "far less" on a generous offer.
+		{"an absurd ask quantity earns silence, not a wrapped verdict",
+			offer(math.MaxInt64, 0, wheat(7)), offerWorthUnknown},
+		{"an absurd payment quantity earns silence too",
+			offer(7, 0, sim.ItemKindQty{Kind: "wheat", Qty: math.MaxInt64}), offerWorthUnknown},
+		{"payment legs that only overflow when SUMMED earn silence",
+			offer(7, 0, wheat(math.MaxInt32-1), wheat(math.MaxInt32-1)), offerWorthUnknown},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,6 +267,30 @@ func TestRenderPayOffers_WorthClause(t *testing.T) {
 	}
 	if got, want := fair.String(), "1. Josiah Thorne offers 7 wheat for 7 flour to keep (offer id 3710)\n"; !strings.Contains(got, want) {
 		t.Errorf("unjudged offer line changed shape:\ngot  %q\nwant to contain %q", got, want)
+	}
+}
+
+// TestOfferWorthAgreesWithTheRenderedWaresFigures is the whole point of resolving
+// worth realized-first, pinned end to end (code_review asked for it): the verdict and
+// the per-unit figures the model reads share one prompt, so a verdict resting on a
+// catalog seed the wares cue contradicts would be worse than no verdict. Here the
+// realized rate (5) and the catalog seed (3) DISAGREE, and the offer is short only
+// under the realized rate — 7 sacks at 5 is 35 against 21 sheaves-worth of wheat,
+// where the catalog seed would have graded it fair at 21 against 21.
+func TestOfferWorthAgreesWithTheRenderedWaresFigures(t *testing.T) {
+	snap, actorID, warrants := millerOfferedParitySwapForFlour()
+	richer := sim.NewRingBuffer[sim.PriceObservation](8)
+	richer.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 30, Qty: 6, Consumers: 1, At: snap.PublishedAt.Add(-2 * time.Hour)})
+	snap.PriceBook[sim.PriceBookKey{SellerID: actorID, Item: "flour"}] = richer
+	snap.PayLedger[3710].PayItems = []sim.ItemKindQty{{Kind: "wheat", Qty: 21}}
+
+	got := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+
+	if want := "the shop has lately paid you about 5 coins each"; !strings.Contains(got, want) {
+		t.Fatalf("wares cue is not showing the realized rate (%q), so this test proves nothing:\n%s", want, got)
+	}
+	if want := "— a little less than the flour is worth"; !strings.Contains(got, want) {
+		t.Errorf("the verdict does not follow the figure the same prompt prints (%q missing):\n%s", want, got)
 	}
 }
 
