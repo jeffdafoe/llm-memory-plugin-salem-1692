@@ -841,6 +841,15 @@ type Payload struct {
 	// render catalog-free. Empty when nothing is short. LLM-303 widened this to fire
 	// at zero held (a non-vendor offeree), not just vendors carrying some stock.
 	PayOfferShortfalls map[sim.LedgerID]StockShortfall
+
+	// PayOfferWorth carries, per pending BARTER offer (keyed by LedgerID), the
+	// engine's verdict on what the buyer puts up against what it asks for — the
+	// data renderPayOffers turns into the "far less than the flour is worth"
+	// clause (LLM-598). Present only for offers judged thin or short: a fair
+	// offer, a pure-coin offer, and anything the engine cannot price are all
+	// absent, because render has no phrase for them. Built in buildPayOfferWorth
+	// from the ledger + the catalog, keeping render catalog-free.
+	PayOfferWorth map[sim.LedgerID]offerWorth
 }
 
 // StockShortfall is the seller-side shortfall on a pending pay offer: how many of
