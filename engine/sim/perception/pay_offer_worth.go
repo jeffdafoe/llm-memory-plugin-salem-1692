@@ -80,13 +80,19 @@ func offerSideValue(unit, qty int) (int64, bool) {
 // which is the safe direction.
 //
 // This is MARKET worth, not worth-to-this-actor-in-use: a good the actor could
-// transform into something dearer (wheat, to the miller whose recipe turns 5 into 5
-// sacks of flour) is priced at what the village pays for it. That is conservative
-// with respect to SHORTFALL DETECTION only — understating an incoming input can turn
-// a short verdict into silence, never silence into a false short. It is not
-// universally safe: an offer paying in a good this actor values far above market can
-// still grade fair when it is genuinely poor (code_review). Acceptable because the
-// cue gates nothing; pricing transformation value is a redesign, not a clause.
+// transform into something dearer is priced at what the village pays for it. That is
+// conservative in NEITHER direction — pricing an incoming input at market
+// UNDERSTATES the payment, which biases toward a false SHORT, not toward silence
+// (code_review corrected this; the reverse claim stood here and was wrong). The
+// exposure is a recipe that multiplies units: paying a baker in flour, where 2 flour
+// becomes 6 journeycakes, reads thin at market prices though the baker does well out
+// of it. It does not bite the 1-for-1 conversions the village mostly runs on — the
+// mill turns 5 wheat into 5 flour, so flour-for-wheat at parity really is a morning's
+// grinding for nothing.
+//
+// Accepted because the cue GATES NOTHING: a false short costs a seller a phrase he
+// may disregard, and he keeps accept_pay either way. Pricing transformation value is
+// a redesign, not a clause.
 func offerItemUnitWorth(snap *sim.Snapshot, actorID sim.ActorID, kind sim.ItemKind) int {
 	if snap == nil {
 		return 0

@@ -180,9 +180,9 @@ func TestOfferWorthOf(t *testing.T) {
 		// Overflow: a wrapped total is worse than no total — a negative one enters
 		// the short band and renders a confident "far less" on a generous offer.
 		{"an absurd ask quantity earns silence, not a wrapped verdict",
-			offer(math.MaxInt64, 0, wheat(7)), offerWorthUnknown},
+			offer(math.MaxInt, 0, wheat(7)), offerWorthUnknown},
 		{"an absurd payment quantity earns silence too",
-			offer(7, 0, sim.ItemKindQty{Kind: "wheat", Qty: math.MaxInt64}), offerWorthUnknown},
+			offer(7, 0, sim.ItemKindQty{Kind: "wheat", Qty: math.MaxInt}), offerWorthUnknown},
 		{"payment legs that only overflow when SUMMED earn silence",
 			offer(7, 0, wheat(math.MaxInt32-1), wheat(math.MaxInt32-1)), offerWorthUnknown},
 	}
