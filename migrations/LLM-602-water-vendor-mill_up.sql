@@ -55,7 +55,15 @@ ON CONFLICT (actor_id, slug) DO NOTHING;
 --    as prod. His RestockPolicy lives on the `merchant` attribute (same slug as
 --    Josiah's), so APPEND rather than replace — he already holds flour/produce,
 --    wheat/buy and firewood/forage. The jsonb_typeof guard stops a malformed
---    non-array restock corrupting via ||; the @> guard makes it idempotent.
+--    non-array restock corrupting via ||.
+--
+--    The idempotency guard matches on ITEM ALONE, deliberately. Matching the full
+--    intended entry would append a SECOND water entry whenever an existing one had
+--    a different source or max, and a policy with two entries for one item is
+--    ambiguous — worse than the state being repaired (code_review). Item-only means
+--    "a water entry exists, leave it alone"; a wrong-shape one is then caught by the
+--    full-shape assertion below and fails the deploy loud rather than being silently
+--    accepted or duplicated.
 UPDATE actor_attribute
    SET params = jsonb_set(
        params,
@@ -73,12 +81,18 @@ UPDATE actor_attribute
 --    remove-then-append, which preserves his other 14 entries and their ordering.
 --    Matched on the entry being `forage` today, which also makes it idempotent — a
 --    second apply finds no forage water entry and updates nothing.
+--
+--    The CASE tests item AND source, not item alone. The outer WHERE only proves
+--    that AT LEAST ONE water/forage entry exists; an item-only CASE would rewrite
+--    every water entry in the array, including one already correctly on `buy`
+--    (code_review). One-entry-per-item is the policy invariant, but this migration
+--    enforces rather than assumes it — the assertions below reject duplicates.
 UPDATE actor_attribute
    SET params = jsonb_set(
        params,
        '{restock}',
        (SELECT jsonb_agg(
-                   CASE WHEN elem->>'item' = 'water'
+                   CASE WHEN elem->>'item' = 'water' AND elem->>'source' = 'forage'
                         THEN jsonb_set(elem, '{source}', '"buy"'::jsonb)
                         ELSE elem END
                    ORDER BY ord)
@@ -91,46 +105,65 @@ UPDATE actor_attribute
 
 -- Validate on a SEEDED DB — fail loud rather than shipping this half-applied. A
 -- schema-only DB has an empty actor table and skips. Mirrors the LLM-254 guard.
+-- Assertions check the COMPLETE entry and its UNIQUENESS, not `@>` containment on
+-- item+source. Containment alone passes for a forage entry with the wrong `max`, for
+-- extra unexpected fields, and for duplicate water entries as long as one matches
+-- (code_review). Exact equality plus a count of water entries closes all three.
 DO $$
+DECLARE
+    joseph   constant uuid  := '019da6b7-a853-79fb-91eb-645e5d9915c1';  -- Joseph Scott, the mill
+    josiah   constant uuid  := '019dcac2-e78a-715e-91b7-101f339b0891';  -- Josiah Thorne, General Store
+    want_jos constant jsonb := '{"item": "water", "source": "forage", "max": 20}';
+    want_jth constant jsonb := '{"item": "water", "source": "buy", "max": 20}';
+    n        int;
+    got      jsonb;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM actor) THEN
-        RETURN;
+        RETURN;  -- schema-only integration DB: nothing seeded, nothing to assert
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019da6b7-a853-79fb-91eb-645e5d9915c1') THEN
-        RAISE EXCEPTION 'LLM-602: seeded actors but Joseph Scott 019da6b7... is missing (stale id?)';
+    IF NOT EXISTS (SELECT 1 FROM actor WHERE id = joseph) THEN
+        RAISE EXCEPTION 'LLM-602: seeded actors but Joseph Scott % is missing (stale id?)', joseph;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM actor WHERE id = josiah) THEN
+        RAISE EXCEPTION 'LLM-602: seeded actors but Josiah Thorne % is missing (stale id?)', josiah;
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM actor_attribute
-                    WHERE actor_id = '019da6b7-a853-79fb-91eb-645e5d9915c1'
-                      AND slug = 'forage_range') THEN
+    IF NOT EXISTS (SELECT 1 FROM actor_attribute WHERE actor_id = joseph AND slug = 'forage_range') THEN
         RAISE EXCEPTION 'LLM-602: Joseph forage_range grant was not applied';
     END IF;
 
-    -- The grant is inert without the entry, and the entry is inert without the
-    -- grant. Assert BOTH halves so this can never ship in the exact broken shape
-    -- it was written to repair.
-    IF NOT EXISTS (SELECT 1 FROM actor_attribute
-                    WHERE actor_id = '019da6b7-a853-79fb-91eb-645e5d9915c1'
-                      AND slug = 'merchant'
-                      AND params->'restock' @> '[{"item": "water", "source": "forage"}]'::jsonb) THEN
-        RAISE EXCEPTION 'LLM-602: Joseph forage-water restock entry missing';
+    -- Joseph: exactly one water entry, and it is the full intended shape. The grant
+    -- is inert without this entry and the entry is inert without the grant, so both
+    -- halves are asserted — this can never ship in the shape it was written to repair.
+    -- Count and fetch are separate statements: there is no min(jsonb) aggregate, and
+    -- asserting the count FIRST is what makes the bare SELECT INTO below single-row.
+    SELECT count(*) INTO n
+      FROM actor_attribute aa, jsonb_array_elements(aa.params->'restock') e
+     WHERE aa.actor_id = joseph AND aa.slug = 'merchant' AND e->>'item' = 'water';
+    IF n <> 1 THEN
+        RAISE EXCEPTION 'LLM-602: Joseph must carry exactly 1 water restock entry, found %', n;
+    END IF;
+    SELECT e INTO got
+      FROM actor_attribute aa, jsonb_array_elements(aa.params->'restock') e
+     WHERE aa.actor_id = joseph AND aa.slug = 'merchant' AND e->>'item' = 'water';
+    IF got <> want_jos THEN
+        RAISE EXCEPTION 'LLM-602: Joseph water entry is %, expected %', got, want_jos;
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM actor_attribute
-                    WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
-                      AND slug = 'merchant'
-                      AND params->'restock' @> '[{"item": "water", "source": "buy"}]'::jsonb) THEN
-        RAISE EXCEPTION 'LLM-602: Josiah water entry was not flipped to buy';
+    -- Josiah: exactly one water entry, now `buy`. The count is what rejects a flip
+    -- that rebuilt the array wrongly and left a forage entry beside the buy one.
+    SELECT count(*) INTO n
+      FROM actor_attribute aa, jsonb_array_elements(aa.params->'restock') e
+     WHERE aa.actor_id = josiah AND aa.slug = 'merchant' AND e->>'item' = 'water';
+    IF n <> 1 THEN
+        RAISE EXCEPTION 'LLM-602: Josiah must carry exactly 1 water restock entry, found %', n;
     END IF;
-
-    -- One entry per item: if a forage water entry survives alongside the buy one,
-    -- the flip rebuilt the array wrongly and his policy is ambiguous.
-    IF EXISTS (SELECT 1 FROM actor_attribute
-                WHERE actor_id = '019dcac2-e78a-715e-91b7-101f339b0891'
-                  AND slug = 'merchant'
-                  AND params->'restock' @> '[{"item": "water", "source": "forage"}]'::jsonb) THEN
-        RAISE EXCEPTION 'LLM-602: Josiah still carries a forage water entry after the flip';
+    SELECT e INTO got
+      FROM actor_attribute aa, jsonb_array_elements(aa.params->'restock') e
+     WHERE aa.actor_id = josiah AND aa.slug = 'merchant' AND e->>'item' = 'water';
+    IF got <> want_jth THEN
+        RAISE EXCEPTION 'LLM-602: Josiah water entry is %, expected %', got, want_jth;
     END IF;
 END $$;
 
