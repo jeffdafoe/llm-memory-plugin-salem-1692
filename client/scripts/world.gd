@@ -1776,6 +1776,13 @@ func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x
             -texture.region.size.y * 2 * anchor_y
         )
         anim_sprite.play("default")
+        # play() starts at frame 0, and all placements are created in the same
+        # load pass — so identical assets (fish schools, fires) would animate in
+        # lockstep. Random start phase breaks the sync; the slight speed jitter
+        # keeps two placements from ever settling back into a shared cadence.
+        var frame_count: int = sprite_frames.get_frame_count("default")
+        anim_sprite.set_frame_and_progress(randi() % frame_count, randf())
+        anim_sprite.speed_scale = randf_range(0.9, 1.1)
         return anim_sprite
     else:
         # Static — use Sprite2D
