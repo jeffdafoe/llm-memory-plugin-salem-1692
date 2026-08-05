@@ -132,15 +132,45 @@ VALUES (
 -- for carrots (John Ellis and Josiah both buy), so flipping his entry to
 -- forage removes carrots from the produce path entirely.
 DO $$
-DECLARE n int;
+DECLARE carrot_produce int; carrot_total int;
 BEGIN
-    -- Rebuilt element-wise so Moses's wheat entry is untouched. COALESCE
-    -- because jsonb_agg over an EMPTY array returns SQL NULL, and jsonb_set
-    -- with a NULL replacement yields NULL for the whole params document.
+    -- Fresh schema-only DB (integration harness): no Moses, nothing to flip.
+    IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019da6ae-3376-73fc-8872-1cbb3ada1c78') THEN
+        RETURN;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM actor_attribute
+         WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
+           AND jsonb_typeof(params->'restock') = 'array'
+    ) THEN
+        RAISE EXCEPTION 'LLM-603: Moses James exists but his farmer restock array was not found';
+    END IF;
+
+    -- Assert the shape BEFORE mutating it. actor_attribute is checkpoint-
+    -- written and live-tunable (umbilical /restock/*), so it can drift between
+    -- authoring and deploy — fail loud on drift rather than generalize over
+    -- it (code_review). Exactly one carrots entry, and it must still be
+    -- source='produce'. max is deliberately NOT asserted: it is a tuning
+    -- knob, not part of the shape this migration owns.
+    SELECT count(*),
+           count(*) FILTER (WHERE e->>'source' = 'produce')
+      INTO carrot_total, carrot_produce
+      FROM actor_attribute, jsonb_array_elements(params->'restock') e
+     WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
+       AND e->>'item' = 'carrots';
+    IF carrot_total <> 1 OR carrot_produce <> 1 THEN
+        RAISE EXCEPTION 'LLM-603: expected exactly one carrots/produce restock entry on Moses''s farmer row, found % carrots entr(y/ies) of which % produce', carrot_total, carrot_produce;
+    END IF;
+
+    -- Rebuilt element-wise so Moses's wheat entry is untouched, and scoped to
+    -- item AND source so the flip touches only the entry just asserted.
+    -- COALESCE because jsonb_agg over an EMPTY array returns SQL NULL, and
+    -- jsonb_set with a NULL replacement yields NULL for the whole params
+    -- document.
     UPDATE actor_attribute
        SET params = jsonb_set(params, '{restock}', COALESCE((
                SELECT jsonb_agg(
-                          CASE WHEN e->>'item' = 'carrots'
+                          CASE WHEN e->>'item' = 'carrots' AND e->>'source' = 'produce'
                                THEN jsonb_set(e, '{source}', '"forage"')
                                ELSE e END
                           ORDER BY ord)
@@ -149,23 +179,17 @@ BEGIN
      WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78'  -- Moses James
        AND slug = 'farmer'
        AND jsonb_typeof(params->'restock') = 'array';
-    GET DIAGNOSTICS n = ROW_COUNT;
-    -- 0 rows is the unseeded case (fresh schema-only DB / integration
-    -- harness) — fine. But if Moses exists without his farmer row, fail loud
-    -- rather than leave the field unworked.
-    IF n = 0 AND EXISTS (SELECT 1 FROM actor WHERE id = '019da6ae-3376-73fc-8872-1cbb3ada1c78') THEN
-        RAISE EXCEPTION 'LLM-603: Moses James exists but his farmer actor_attribute row was not found';
-    END IF;
-    -- Assert the OUTCOME, not just that a row was touched: the UPDATE reports
-    -- one affected row even when the array held no carrots entry to flip.
-    IF EXISTS (
-        SELECT 1 FROM actor_attribute
-         WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
-           AND NOT EXISTS (
-               SELECT 1 FROM jsonb_array_elements(params->'restock') e
-                WHERE e->>'item' = 'carrots' AND e->>'source' = 'forage')
-    ) THEN
-        RAISE EXCEPTION 'LLM-603: Moses James has no forage restock entry for carrots after the flip';
+
+    -- Outcome assert, cardinality included: exactly one carrots entry remains
+    -- and it is now forage.
+    SELECT count(*),
+           count(*) FILTER (WHERE e->>'source' = 'forage')
+      INTO carrot_total, carrot_produce
+      FROM actor_attribute, jsonb_array_elements(params->'restock') e
+     WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
+       AND e->>'item' = 'carrots';
+    IF carrot_total <> 1 OR carrot_produce <> 1 THEN
+        RAISE EXCEPTION 'LLM-603: carrots restock flip did not land — % carrots entr(y/ies), % forage', carrot_total, carrot_produce;
     END IF;
 END $$;
 
