@@ -17,15 +17,17 @@ BEGIN;
 DO $$
 DECLARE template_rows int; placed_rows int;
 BEGIN
-    -- Mirror of the up's discipline: exactly one template row at the state
-    -- the up produced (periodic, max 3), else refuse — a down that silently
-    -- does nothing reads as a successful rollback (code_review).
+    -- Mirror of the up's discipline: exactly one template row at a state the
+    -- up can have produced — periodic max 3 at either known period (168 from
+    -- prod, 120 from a rebuilt-from-migrations DB) — else refuse; a down that
+    -- silently does nothing reads as a successful rollback, and an unpinned
+    -- period would let a 3/999 template mutate to 2/999 (code_review).
     UPDATE asset_refresh_default
        SET available_quantity = 2, max_quantity = 2
      WHERE asset_id = '019e5f00-c401-7a10-9e00-000000000576'
        AND gather_item = 'wheat'
        AND refresh_mode = 'periodic'
-       AND max_quantity = 3;
+       AND (max_quantity, refresh_period_hours) IN ((3, 168), (3, 120));
     GET DIAGNOSTICS template_rows = ROW_COUNT;
     IF template_rows <> 1 THEN
         RAISE EXCEPTION 'LLM-606 down: expected exactly one crop-wheat template at periodic/max 3, updated % — refusing a rollback of an unexpected state', template_rows;
