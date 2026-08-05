@@ -88,6 +88,21 @@ func (s *Server) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "unknown sprite_id")
 			return
 		}
+		// Uniqueness conflict, not malformed input (LLM-588): the character
+		// name is held by another driven actor. The existing PC (if any) is
+		// untouched — the player keeps their character and picks another name.
+		// Same 409 posture as the admin rename (writeActorAdminError, LLM-580).
+		if errors.Is(err, sim.ErrDisplayNameTaken) {
+			writeError(w, http.StatusConflict, "character name already in use")
+			return
+		}
+		// Reachable despite the pre-checks above: the command's validation is
+		// stricter than hasInvalidControlChar (a display name is a single-line
+		// label, so \t \n \r are refused too — see sim.containsControlChar).
+		if errors.Is(err, sim.ErrInvalidDisplayName) {
+			writeError(w, http.StatusBadRequest, "invalid character_name")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create PC")
 		return
 	}

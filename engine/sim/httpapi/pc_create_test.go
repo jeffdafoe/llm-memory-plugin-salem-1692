@@ -64,3 +64,32 @@ func TestHandlePCCreate_UnknownSprite(t *testing.T) {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestHandlePCCreate_NameTaken — LLM-588: a character name held by a driven
+// actor (seededWorld's "Hannah" is agent-linked) maps to 409, not the generic
+// 500, and no PC is materialized for the session.
+func TestHandlePCCreate_NameTaken(t *testing.T) {
+	w := seededWorld(t)
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/pc/create", `{"character_name":"Hannah","sprite_id":"sprite-1"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	for _, a := range w.Published().Actors {
+		if a.LoginUsername == "tester" {
+			t.Fatal("409'd create still materialized a PC for the session login")
+		}
+	}
+}
+
+// TestHandlePCCreate_SimRejectsControlName — LLM-588: an interior tab passes
+// the handler's hasInvalidControlChar (which exempts \t \n \r for freeform
+// text) but the sim command refuses it (a display name is single-line), so
+// this exercises the ErrInvalidDisplayName -> 400 mapping end to end.
+func TestHandlePCCreate_SimRejectsControlName(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/pc/create", `{"character_name":"Bad\tName","sprite_id":"sprite-1"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
