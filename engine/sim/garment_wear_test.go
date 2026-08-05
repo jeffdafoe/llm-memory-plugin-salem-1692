@@ -233,6 +233,85 @@ func TestActorWearsGarments(t *testing.T) {
 	}
 }
 
+// TestActorWearsGarments_ShiftWindowEdges pins the shift-window semantics the
+// business-person arm inherits from OnShiftAtMinute, now that they decide wear
+// and the working-clothes cue (LLM-595): the window is half-open [start, end)
+// with midnight wrap (the 16:00–03:00 tavern shape), and start == end is an
+// EMPTY window — never on shift, NOT all-day (minuteInShiftWindow's documented
+// convention, shared with the sleep machine). Checked through both views of the
+// predicate so the sweep and the cue can't drift apart at the edges.
+func TestActorWearsGarments_ShiftWindowEdges(t *testing.T) {
+	w := &World{}
+	cases := []struct {
+		name       string
+		start, end int
+		minute     int
+		want       bool
+	}{
+		{"day shift, mid-shift", 360, 1080, 600, true},
+		{"day shift, at start (inclusive)", 360, 1080, 360, true},
+		{"day shift, at end (exclusive)", 360, 1080, 1080, false},
+		{"day shift, before start", 360, 1080, 359, false},
+		{"wrap shift, evening side", 960, 180, 1200, true},
+		{"wrap shift, past-midnight side", 960, 180, 60, true},
+		{"wrap shift, at start (inclusive)", 960, 180, 960, true},
+		{"wrap shift, at end (exclusive)", 960, 180, 180, false},
+		{"wrap shift, daytime gap", 960, 180, 600, false},
+		{"start == end is empty, even at that minute", 600, 600, 600, false},
+		{"start == end is empty, any minute", 600, 600, 900, false},
+	}
+	for _, c := range cases {
+		start, end := c.start, c.end
+		actor := &Actor{State: StateIdle, WorkStructureID: "forge",
+			ScheduleStartMin: &start, ScheduleEndMin: &end}
+		snap := &ActorSnapshot{State: StateIdle, WorkStructureID: "forge",
+			ScheduleStartMin: &start, ScheduleEndMin: &end}
+		minute := c.minute
+		snapWorld := &Snapshot{VillageObjects: w.VillageObjects, LocalMinuteOfDay: &minute}
+		if got := actorWearsGarments(w, actor, c.minute); got != c.want {
+			t.Errorf("%s: actorWearsGarments = %v, want %v", c.name, got, c.want)
+		}
+		if got := SnapshotWearsGarments(snapWorld, snap); got != c.want {
+			t.Errorf("%s: SnapshotWearsGarments = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestWearGarments_WrapShift applies actual wear across midnight: a tavern
+// keeper on the 16:00–03:00 shape loses budget at 20:00 and at 01:00, and none
+// at 10:00. The sweep resolves the village-local minute from the time it is
+// handed, so the three sweeps differ only in clock.
+func TestWearGarments_WrapShift(t *testing.T) {
+	newKeeper := func() (*World, *Actor) {
+		start, end := 960, 180
+		keeper := &Actor{ID: "keeper", State: StateIdle, WorkStructureID: "tavern",
+			ScheduleStartMin: &start, ScheduleEndMin: &end, Inventory: map[ItemKind]int{"coat": 1}}
+		w := &World{
+			Settings:  WorldSettings{GarmentWearPerMinute: 1, GarmentThreadbareFractionX100: 20},
+			ItemKinds: garmentTestCatalog(),
+			Actors:    map[ActorID]*Actor{"keeper": keeper},
+		}
+		return w, keeper
+	}
+	sweepAt := func(hour int) map[ItemKind]int {
+		w, keeper := newKeeper()
+		now := time.Date(2026, 1, 1, hour, 0, 0, 0, time.UTC) // no Location → UTC minutes
+		if _, err := WearGarments(now, 10).Fn(w); err != nil {
+			t.Fatalf("WearGarments at %02d:00: %v", hour, err)
+		}
+		return keeper.GarmentWear
+	}
+	if wear := sweepAt(20); wear["coat"] != 590 { // 600 - 10, evening side
+		t.Errorf("evening-side sweep: coat wear = %v, want 590", wear)
+	}
+	if wear := sweepAt(1); wear["coat"] != 590 { // past midnight, still on shift
+		t.Errorf("past-midnight sweep: coat wear = %v, want 590", wear)
+	}
+	if wear := sweepAt(10); len(wear) != 0 { // daytime gap of the wrap shift
+		t.Errorf("daytime-gap sweep: coat wore off shift: %v", wear)
+	}
+}
+
 // TestWearGarments runs the sweep: a working actor's held garment loses budget,
 // an idle actor's doesn't, the distributor's stock is spared, non-garments are
 // untouched, and GarmentWearPerMinute == 0 disables the whole sweep.
