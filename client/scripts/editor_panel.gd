@@ -82,6 +82,12 @@ var _ignoring_name_input: bool = false
 # already cleared (deselection fires focus_exited as a side effect of
 # hiding the panel).
 var _name_input_object_id: String = ""
+# The name the server already has (set at populate, updated on every
+# emit). release_focus() in the submit handler fires focus_exited
+# synchronously, so without this latch Enter posted every rename twice
+# (LLM-587). The focus handler skips when the value is already saved;
+# the submit handler always emits so Enter can retry a rejected rename.
+var _name_last_saved: String = ""
 var _catalog_container: VBoxContainer = null
 var _terrain_picker: VBoxContainer = null
 var _catalog_scroll: ScrollContainer = null
@@ -262,6 +268,9 @@ var _obj_tags_current_list: Array = []
 var _npc_home_current_id: String = ""
 var _npc_work_current_id: String = ""
 var _ignoring_npc_inputs: bool = false
+# Same double-post latch as _name_last_saved, for the NPC name edit
+# (LLM-587).
+var _npc_name_last_saved: String = ""
 
 # NPC placement catalog section — sits at the bottom of _catalog_container
 # alongside the asset categories. Lets admins drop new villagers.
@@ -1517,19 +1526,26 @@ func _set_tool_active(btn: Button, active: bool) -> void:
 func _on_name_submitted(new_text: String) -> void:
     if _ignoring_name_input or _name_input_object_id == "":
         return
+    _name_last_saved = new_text.strip_edges()
     _name_input.release_focus()
-    display_name_changed.emit(new_text.strip_edges(), _name_input_object_id)
+    display_name_changed.emit(_name_last_saved, _name_input_object_id)
 
 func _on_name_focus_lost() -> void:
     if _ignoring_name_input or _name_input_object_id == "":
         return
-    display_name_changed.emit(_name_input.text.strip_edges(), _name_input_object_id)
+    var trimmed: String = _name_input.text.strip_edges()
+    if trimmed == _name_last_saved:
+        return
+    _name_last_saved = trimmed
+    display_name_changed.emit(trimmed, _name_input_object_id)
 
 func _on_npc_name_submitted(new_text: String) -> void:
     if _ignoring_npc_inputs:
         return
-    _npc_name_edit.release_focus()
     var trimmed: String = new_text.strip_edges()
+    if trimmed != "":
+        _npc_name_last_saved = trimmed
+    _npc_name_edit.release_focus()
     if trimmed != "":
         npc_name_changed.emit(trimmed)
 
@@ -1537,7 +1553,8 @@ func _on_npc_name_focus_lost() -> void:
     if _ignoring_npc_inputs:
         return
     var trimmed: String = _npc_name_edit.text.strip_edges()
-    if trimmed != "":
+    if trimmed != "" and trimmed != _npc_name_last_saved:
+        _npc_name_last_saved = trimmed
         npc_name_changed.emit(trimmed)
 
 ## Toggles the three cadence SpinBoxes enabled/disabled together. Visual
@@ -2529,6 +2546,7 @@ func show_selection(info: Dictionary) -> void:
     _ignoring_name_input = true
     _name_input.text = info.get("display_name", "")
     _name_input_object_id = info.get("object_id", "")
+    _name_last_saved = _name_input.text
     _ignoring_name_input = false
 
     # Populate owner dropdown from the full actor list. Any actor can own an object
@@ -2596,6 +2614,7 @@ func show_npc_selection(info: Dictionary) -> void:
     # emits the old name against the new selection.
     _npc_name_edit.release_focus()
     _npc_name_edit.text = display_name
+    _npc_name_last_saved = display_name
 
     # Stash the NPC + sprite identity for the Change… button. Show the
     # sprite name (or its id as a fallback) so admins can tell which sheet
