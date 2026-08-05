@@ -206,7 +206,6 @@ const (
 	StateIdle          ActorState = "idle"
 	StateWalking       ActorState = "walking"
 	StateConversing    ActorState = "conversing"
-	StateWorking       ActorState = "working"  // on shift, performing chores at workplace
 	StateLaboring      ActorState = "laboring" // fulfilling an accepted solicit_work commitment (LLM-26)
 	StateResting       ActorState = "resting"  // take_break, dwell-credit accumulating
 	StateSleeping      ActorState = "sleeping"

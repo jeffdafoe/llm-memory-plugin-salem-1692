@@ -241,6 +241,8 @@ func applyGarmentWear(a *Actor, kind ItemKind, budget, minutes int) garmentWearR
 
 // actorWearsGarments reports whether this actor wears (and so degrades) the
 // garments they carry right now — the eligibility gate for the wear sweep.
+// nowMinute is the village-local minute of day (localMinuteOfDay), which the
+// business-person arm compares against the actor's shift window.
 //
 // Two conditions, both required:
 //   - NOT a clothing STOCKHOLDER. The distributor and the visiting factor hold
@@ -250,24 +252,26 @@ func applyGarmentWear(a *Actor, kind ItemKind, budget, minutes int) garmentWearR
 //     with the distributor; everyone else buys from the distributor), so excluding
 //     exactly these two keeps all sale stock pristine — resolved by existing role
 //     predicates, no hardcoded ids.
-//   - In a WORKING posture. Occupation/activity drives wear (Jeff): on shift at a
-//     workplace (StateWorking — the business-person case), fulfilling a hired labor
-//     stint (StateLaboring), mid a production cycle, or mid a timed source activity.
-//     An idle, commuting, conversing, shopping, resting, or sleeping actor wears
-//     nothing.
+//   - In a WORKING posture. Occupation/activity drives wear (Jeff): inside the
+//     shift window and awake (the business-person case — a keeper wears his
+//     working clothes through the whole working day, errands included),
+//     fulfilling a hired labor stint (StateLaboring), mid a production cycle, or
+//     mid a timed source activity. An off-shift idler, an unscheduled actor
+//     between jobs, and anyone asleep or resting wear nothing.
 //
 // The one uncovered corner (documented, not a current case): an actor who BOTH
 // holds clothing as sale stock AND does exertion work would wear a unit of stock.
 // No live actor does both — the distributor is pure commerce and is excluded here
 // regardless. The stall-wear "one wearable business per owner" convention has the
 // same shape.
-func actorWearsGarments(w *World, a *Actor) bool {
+func actorWearsGarments(w *World, a *Actor, nowMinute int) bool {
 	if a == nil {
 		return false
 	}
 	return wearsGarments(
 		ActorHasTradeErrand(a),
 		ActorIsDistributor(w.VillageObjects, a.WorkStructureID),
+		OnShiftAtMinute(a.ScheduleStartMin, a.ScheduleEndMin, nowMinute),
 		a.State,
 		a.ProductionActivity != nil,
 		a.SourceActivity != nil,
@@ -280,14 +284,26 @@ func actorWearsGarments(w *World, a *Actor) bool {
 // perception layer reads (SnapshotWearsGarments). The cue that tells an actor his
 // clothes are going must speak to exactly the set whose clothes are actually
 // going, and two hand-copied predicates drift the first time either is edited.
-func wearsGarments(hasTradeErrand, isDistributor bool, state ActorState, producing, inSourceActivity bool) bool {
+//
+// onShift is the business-person case (LLM-595): inside the actor's own shift
+// window (OnShiftAtMinute — nil schedule bounds read as never on shift). This is
+// a DERIVED fact, not an ActorState: the engine's soft state model never
+// maintained a "working" state (the old StateWorking constant was declared but
+// never assigned, so this arm of the audience never fired). Deliberately NOT
+// gated on being at the workplace: a keeper in working hours wears his working
+// clothes through the whole working day — including the walk to the store this
+// very cue sends him on, where an at-post gate would silence the co-present
+// buy-here imperative right at the seller (the LLM-589 dead-spot). The arm is
+// gated on being awake instead: a keeper asleep or on a break mid-shift is not
+// working, and his clothes take no wear from it.
+func wearsGarments(hasTradeErrand, isDistributor, onShift bool, state ActorState, producing, inSourceActivity bool) bool {
 	if hasTradeErrand || isDistributor {
 		return false
 	}
-	return state == StateWorking ||
-		state == StateLaboring ||
-		producing ||
-		inSourceActivity
+	if state == StateLaboring || producing || inSourceActivity {
+		return true
+	}
+	return onShift && state != StateSleeping && state != StateResting
 }
 
 // SnapshotWearsGarments is actorWearsGarments over a published snapshot — the
@@ -305,13 +321,20 @@ func wearsGarments(hasTradeErrand, isDistributor bool, state ActorState, produci
 //     live sweep (a.SourceActivity != nil) still counts it. That gap is one
 //     completion sweep wide and the snapshot's reading is the more honest of the
 //     two, so it is left alone rather than papered over.
-func SnapshotWearsGarments(objs map[VillageObjectID]*VillageObject, a *ActorSnapshot) bool {
-	if a == nil {
+//
+// A third, one-minute-wide gap comes with the business-person arm: the live
+// sweep reads the clock at sweep time while this reads the publish-time
+// LocalMinuteOfDay, so right at a shift boundary the two can disagree for one
+// tick. Same acceptable-staleness shape as the BusyAtSource gap above.
+func SnapshotWearsGarments(snap *Snapshot, a *ActorSnapshot) bool {
+	if snap == nil || a == nil {
 		return false
 	}
 	return wearsGarments(
 		a.VisitorState != nil && a.VisitorState.Trade != nil,
-		ActorIsDistributor(objs, a.WorkStructureID),
+		ActorIsDistributor(snap.VillageObjects, a.WorkStructureID),
+		snap.LocalMinuteOfDay != nil &&
+			OnShiftAtMinute(a.ScheduleStartMin, a.ScheduleEndMin, *snap.LocalMinuteOfDay),
 		a.State,
 		a.ProductionItem != "",
 		a.SourceActivityKind != "",
@@ -322,9 +345,10 @@ func SnapshotWearsGarments(objs map[VillageObjectID]*VillageObject, a *ActorSnap
 // every working actor's in-use garment units. Driven once a minute by
 // RunGarmentWearTicker; the elapsed count is capped there so a stalled ticker
 // resuming can't shock-apply a backlog (the cold/needs no-catch-up posture — the
-// sweep just resumes). Returns the number of actors whose garments moved, for
-// the ticker telemetry.
-func WearGarments(elapsedMinutes int) Command {
+// sweep just resumes). now anchors the shift-window check of the business-person
+// arm (LLM-595). Returns the number of actors whose garments moved, for the
+// ticker telemetry.
+func WearGarments(now time.Time, elapsedMinutes int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			if elapsedMinutes <= 0 {
@@ -334,10 +358,11 @@ func WearGarments(elapsedMinutes int) Command {
 			if per <= 0 {
 				return 0, nil // wear disabled (off-switch)
 			}
+			nowMinute := localMinuteOfDay(w, now)
 			draw := per * elapsedMinutes
 			touched := 0
 			for _, a := range w.Actors {
-				if !actorWearsGarments(w, a) {
+				if !actorWearsGarments(w, a, nowMinute) {
 					continue
 				}
 				worn := false
@@ -382,7 +407,7 @@ func RunGarmentWearTicker(ctx context.Context, w *World) {
 			return
 		case <-t.C:
 			w.beatTicker("garment_wear")
-			if _, err := w.SendContext(ctx, WearGarments(1)); err != nil && ctx.Err() == nil {
+			if _, err := w.SendContext(ctx, WearGarments(time.Now(), 1)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/garment_wear: wear tick failed: %v", err)
 			}
 		}

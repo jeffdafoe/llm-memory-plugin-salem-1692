@@ -87,7 +87,7 @@ type WorkClothesView struct {
 // Gating on the working posture (rather than rendering to anyone, always) is
 // deliberate: you notice a worn-through sleeve at the work, not over supper.
 func snapActorWearsGarments(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
-	return sim.SnapshotWearsGarments(snap.VillageObjects, a)
+	return sim.SnapshotWearsGarments(snap, a)
 }
 
 // workGarmentKinds returns the catalog's working-garment kinds in a stable

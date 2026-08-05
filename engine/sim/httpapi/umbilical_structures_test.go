@@ -42,7 +42,7 @@ func TestUmbilicalStructuresFromSnapshot(t *testing.T) {
 			"hannah": {
 				DisplayName:      "Hannah Boggs",
 				LLMAgent:         "zbbs-hannah-boggs",
-				State:            sim.StateWorking,
+				State:            sim.StateIdle,
 				WorkStructureID:  "inn",
 				ScheduleStartMin: intPtr(9 * 60),
 				ScheduleEndMin:   intPtr(17 * 60),
@@ -100,7 +100,7 @@ func TestUmbilicalStructuresFromSnapshot(t *testing.T) {
 	if bram.OnShift {
 		t.Errorf("bram should be off shift at noon (16:00–03:00 wrap)")
 	}
-	if hannah.LLMAgent != "zbbs-hannah-boggs" || hannah.State != "working" {
+	if hannah.LLMAgent != "zbbs-hannah-boggs" || hannah.State != "idle" {
 		t.Errorf("hannah keeper fields wrong: %+v", hannah)
 	}
 

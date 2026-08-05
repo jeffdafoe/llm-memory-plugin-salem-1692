@@ -4027,6 +4027,15 @@ var perceptionScenarios = []perceptionScenario{
 			"no stock.",
 		build: villageHasNoClothToSell,
 	},
+	{
+		name: "smith_worn_clothes_off_shift",
+		summary: "LLM-595 audience boundary: the same threadbare smith stood at his own forge, but outside his shift " +
+			"window (an evening shift, while the clock reads mid-morning). The business-person case is the shift " +
+			"window — off shift his garments take no wear, and a cue here would be telling him his clothes are going " +
+			"when they are not. The golden pins silence. Foil of smith_working_clothes_worn_thin — same wear, same " +
+			"spot, wrong hours.",
+		build: smithWornClothesOffShift,
+	},
 }
 
 // townRateSnapshot builds the shared LLM-557 fixture: Josiah Thorne keeping the
@@ -17314,9 +17323,10 @@ func garmentKinds() map[sim.ItemKind]*sim.ItemKindDef {
 // workingClothesSnapshot: Ezekiel works his forge with `wear` worked minutes left
 // on the garments he carries, while Josiah keeps the general store — the village
 // distributor, and so the only resolvable clothing supplier — a long walk away.
-// Working posture (not idle) is load-bearing: the cue's audience mirrors
-// sim.actorWearsGarments, the set whose garments the wear sweep actually touches.
-// No orders, no clock read → byte-stable.
+// The business-person fact is load-bearing (LLM-595): inside his shift window,
+// Ezekiel is working his day, which is what puts him in sim.actorWearsGarments —
+// the set whose garments the wear sweep actually touches — with no ActorState
+// beyond idle involved. No orders, no clock read → byte-stable.
 func workingClothesSnapshot(inv, wear map[sim.ItemKind]int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		actorID  = sim.ActorID("ezekiel")
@@ -17330,7 +17340,7 @@ func workingClothesSnapshot(inv, wear map[sim.ItemKind]int) (*sim.Snapshot, sim.
 		Kind:              sim.KindNPCStateful,
 		DisplayName:       "Ezekiel Crane",
 		Role:              "blacksmith",
-		State:             sim.StateWorking,
+		State:             sim.StateIdle,
 		Pos:               sim.WorldPos{X: 100, Y: 100}.Tile(),
 		WorkStructureID:   forge,
 		InsideStructureID: forge,
@@ -17465,5 +17475,19 @@ func smithWornClothesSellerPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 func villageHasNoClothToSell() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, actorID, warrants := smithWorkingClothesWornThin()
 	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{}
+	return snap, actorID, warrants
+}
+
+// smithWornClothesOffShift is the LLM-595 audience boundary: the same threadbare
+// smith stood at his own forge, but OUTSIDE his shift window (an evening shift,
+// while the village clock reads mid-morning). The business-person case is the
+// shift window — off shift his garments take no wear, so the cue would be
+// telling him his clothes are going when they are not. The golden pins silence.
+// Foil of smith_working_clothes_worn_thin — same wear, same spot, wrong hours.
+func smithWornClothesOffShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithWorkingClothesWornThin()
+	eveStart, eveEnd := 1140, 180 // 19:00–03:00 — excludes the fixture's 10:00
+	snap.Actors[actorID].ScheduleStartMin = &eveStart
+	snap.Actors[actorID].ScheduleEndMin = &eveEnd
 	return snap, actorID, warrants
 }

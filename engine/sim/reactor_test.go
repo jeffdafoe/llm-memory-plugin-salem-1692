@@ -590,7 +590,6 @@ func TestActorCanReactNow_OtherStatesEligible(t *testing.T) {
 		sim.StateIdle,
 		sim.StateWalking,
 		sim.StateConversing,
-		sim.StateWorking,
 		sim.StateShopping,
 		sim.StateInTransaction,
 		sim.StateEating,
