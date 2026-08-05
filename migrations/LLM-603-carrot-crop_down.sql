@@ -38,7 +38,7 @@ DELETE FROM asset WHERE id = '019e5f00-c401-7a10-9e00-000000000603';
 -- other shape — duplicates, an already-produce entry, a missing entry — means
 -- state this migration did not create, so refuse rather than generalize.
 DO $$
-DECLARE carrot_forage int; carrot_total int;
+DECLARE carrot_forage int; carrot_produce int; carrot_total int;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019da6ae-3376-73fc-8872-1cbb3ada1c78') THEN
         RETURN;
@@ -69,12 +69,12 @@ BEGIN
 
     SELECT count(*),
            count(*) FILTER (WHERE e->>'source' = 'produce')
-      INTO carrot_total, carrot_forage
+      INTO carrot_total, carrot_produce
       FROM actor_attribute, jsonb_array_elements(params->'restock') e
      WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
        AND e->>'item' = 'carrots';
-    IF carrot_total <> 1 OR carrot_forage <> 1 THEN
-        RAISE EXCEPTION 'LLM-603 down: carrots restock restore did not land — % carrots entr(y/ies), % produce', carrot_total, carrot_forage;
+    IF carrot_total <> 1 OR carrot_produce <> 1 THEN
+        RAISE EXCEPTION 'LLM-603 down: carrots restock restore did not land — % carrots entr(y/ies), % produce', carrot_total, carrot_produce;
     END IF;
 END $$;
 

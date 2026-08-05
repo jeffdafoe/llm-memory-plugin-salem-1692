@@ -132,7 +132,7 @@ VALUES (
 -- for carrots (John Ellis and Josiah both buy), so flipping his entry to
 -- forage removes carrots from the produce path entirely.
 DO $$
-DECLARE carrot_produce int; carrot_total int;
+DECLARE carrot_produce int; carrot_forage int; carrot_total int;
 BEGIN
     -- Fresh schema-only DB (integration harness): no Moses, nothing to flip.
     IF NOT EXISTS (SELECT 1 FROM actor WHERE id = '019da6ae-3376-73fc-8872-1cbb3ada1c78') THEN
@@ -184,12 +184,12 @@ BEGIN
     -- and it is now forage.
     SELECT count(*),
            count(*) FILTER (WHERE e->>'source' = 'forage')
-      INTO carrot_total, carrot_produce
+      INTO carrot_total, carrot_forage
       FROM actor_attribute, jsonb_array_elements(params->'restock') e
      WHERE actor_id = '019da6ae-3376-73fc-8872-1cbb3ada1c78' AND slug = 'farmer'
        AND e->>'item' = 'carrots';
-    IF carrot_total <> 1 OR carrot_produce <> 1 THEN
-        RAISE EXCEPTION 'LLM-603: carrots restock flip did not land — % carrots entr(y/ies), % forage', carrot_total, carrot_produce;
+    IF carrot_total <> 1 OR carrot_forage <> 1 THEN
+        RAISE EXCEPTION 'LLM-603: carrots restock flip did not land — % carrots entr(y/ies), % forage', carrot_total, carrot_forage;
     END IF;
 END $$;
 
