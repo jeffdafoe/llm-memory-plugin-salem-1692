@@ -1185,8 +1185,6 @@ func renderFeltState(state sim.ActorState) string {
 		return "You are taking a rest."
 	case sim.StateSleeping:
 		return "You are asleep."
-	case sim.StateWorking:
-		return "You are at work."
 	case sim.StateConversing:
 		return "You are in conversation."
 	case sim.StateShopping:

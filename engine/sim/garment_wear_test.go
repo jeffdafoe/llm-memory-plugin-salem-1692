@@ -142,64 +142,93 @@ func TestResolveWarmGarmentTier(t *testing.T) {
 	}
 }
 
-// TestActorWearsGarments pins the eligibility gate: a working actor wears, an
-// idle one doesn't, and the clothing stockholders (distributor + factor) never
-// wear their sale stock even while working.
+// TestActorWearsGarments pins the eligibility gate: a scheduled keeper inside
+// his shift window wears (the LLM-595 business-person case, derived from the
+// shift window — position doesn't matter), a hired hand and anyone mid-activity
+// wear, an off-shift or unscheduled idler doesn't, sleep and rest suspend the
+// shift arm, and the clothing stockholders (distributor + factor) never wear
+// their sale stock even while working.
 func TestActorWearsGarments(t *testing.T) {
 	w := &World{
 		VillageObjects: map[VillageObjectID]*VillageObject{
 			"store": {ID: "store", Tags: []string{TagDistributor}},
 		},
 	}
-
-	working := &Actor{State: StateWorking}
-	if !actorWearsGarments(w, working) {
-		t.Errorf("on-shift keeper (StateWorking) should wear garments")
+	start, end := 360, 1080 // 06:00–18:00
+	const onShift = 600     // 10:00
+	const offShift = 90     // 01:30
+	scheduled := func(state ActorState) *Actor {
+		return &Actor{State: state, WorkStructureID: "forge",
+			ScheduleStartMin: &start, ScheduleEndMin: &end}
 	}
+
+	if !actorWearsGarments(w, scheduled(StateIdle), onShift) {
+		t.Errorf("keeper inside his shift window should wear garments")
+	}
+	if actorWearsGarments(w, scheduled(StateIdle), offShift) {
+		t.Errorf("keeper OFF shift should not wear garments")
+	}
+	// Asleep or on a break mid-shift: at the shop or not, he isn't working.
+	if actorWearsGarments(w, scheduled(StateSleeping), onShift) {
+		t.Errorf("keeper asleep mid-shift should not wear garments")
+	}
+	if actorWearsGarments(w, scheduled(StateResting), onShift) {
+		t.Errorf("keeper on a break mid-shift should not wear garments")
+	}
+	// No schedule at all: OnShiftAtMinute reads nil bounds as never on shift.
+	unscheduled := scheduled(StateIdle)
+	unscheduled.ScheduleStartMin, unscheduled.ScheduleEndMin = nil, nil
+	if actorWearsGarments(w, unscheduled, onShift) {
+		t.Errorf("unscheduled keeper should not wear garments via the business-person arm")
+	}
+
 	laboring := &Actor{State: StateLaboring}
-	if !actorWearsGarments(w, laboring) {
+	if !actorWearsGarments(w, laboring, onShift) {
 		t.Errorf("hired laborer (StateLaboring) should wear garments")
 	}
 	producing := &Actor{State: StateIdle, ProductionActivity: &ProductionActivity{}}
-	if !actorWearsGarments(w, producing) {
+	if !actorWearsGarments(w, producing, onShift) {
 		t.Errorf("mid production cycle should wear garments")
 	}
 	sourcing := &Actor{State: StateIdle, SourceActivity: &SourceActivity{}}
-	if !actorWearsGarments(w, sourcing) {
+	if !actorWearsGarments(w, sourcing, onShift) {
 		t.Errorf("mid source activity should wear garments")
 	}
 
 	idle := &Actor{State: StateIdle}
-	if actorWearsGarments(w, idle) {
-		t.Errorf("idle actor should not wear garments")
+	if actorWearsGarments(w, idle, onShift) {
+		t.Errorf("idle unscheduled actor should not wear garments")
 	}
 	walking := &Actor{State: StateWalking}
-	if actorWearsGarments(w, walking) {
-		t.Errorf("commuting actor should not wear garments")
+	if actorWearsGarments(w, walking, onShift) {
+		t.Errorf("commuting unscheduled actor should not wear garments")
 	}
 
 	// The stockholder exclusion is scoped to the distributor-tagged workplace: a
 	// working actor whose workplace is NOT the distributor (or is empty) still
 	// wears — the exclusion doesn't over-fire (code_review).
-	elsewhere := &Actor{State: StateWorking, WorkStructureID: "farm"} // "farm" isn't the distributor tag
-	if !actorWearsGarments(w, elsewhere) {
+	elsewhere := scheduled(StateIdle)
+	elsewhere.WorkStructureID = "farm" // "farm" isn't the distributor tag
+	if !actorWearsGarments(w, elsewhere, onShift) {
 		t.Errorf("worker at a non-distributor workplace should wear garments")
 	}
 
 	// The distributor is on shift at his distributor-tagged store — his coats are
 	// sale stock, not worn clothing, so he never wears them.
-	distributor := &Actor{State: StateWorking, WorkStructureID: "store"}
-	if actorWearsGarments(w, distributor) {
+	distributor := scheduled(StateIdle)
+	distributor.WorkStructureID = "store"
+	if actorWearsGarments(w, distributor, onShift) {
 		t.Errorf("distributor's sale stock must not wear (working at a distributor-tagged store)")
 	}
-	// A merchant visitor (here a factor) likewise holds trade stock, not worn clothing.
-	factor := &Actor{State: StateWorking, VisitorState: &VisitorState{
+	// A merchant visitor (here a factor) likewise holds trade stock, not worn
+	// clothing — even mid a source activity, the exclusion wins.
+	factor := &Actor{State: StateIdle, SourceActivity: &SourceActivity{}, VisitorState: &VisitorState{
 		Trade: &TradeErrand{Direction: TradeDirectionSell, Counterparty: "store"}}}
-	if actorWearsGarments(w, factor) {
+	if actorWearsGarments(w, factor, onShift) {
 		t.Errorf("merchant visitor's trade stock must not wear")
 	}
 
-	if actorWearsGarments(w, nil) {
+	if actorWearsGarments(w, nil, onShift) {
 		t.Errorf("nil actor should not wear garments")
 	}
 }
@@ -208,10 +237,16 @@ func TestActorWearsGarments(t *testing.T) {
 // an idle actor's doesn't, the distributor's stock is spared, non-garments are
 // untouched, and GarmentWearPerMinute == 0 disables the whole sweep.
 func TestWearGarments(t *testing.T) {
+	// 10:00 UTC — minute 600, inside the 06:00–18:00 fixture shift (the world
+	// has no Location set, so localMinuteOfDay reads UTC).
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	newWorld := func(per int) (*World, *Actor, *Actor, *Actor) {
-		worker := &Actor{ID: "worker", State: StateWorking, Inventory: map[ItemKind]int{"coat": 1, "bread": 2}}
+		start, end := 360, 1080
+		worker := &Actor{ID: "worker", State: StateIdle, WorkStructureID: "forge",
+			ScheduleStartMin: &start, ScheduleEndMin: &end, Inventory: map[ItemKind]int{"coat": 1, "bread": 2}}
 		idler := &Actor{ID: "idler", State: StateIdle, Inventory: map[ItemKind]int{"coat": 1}}
-		distributor := &Actor{ID: "josiah", State: StateWorking, WorkStructureID: "store", Inventory: map[ItemKind]int{"coat": 2}}
+		distributor := &Actor{ID: "josiah", State: StateIdle, WorkStructureID: "store",
+			ScheduleStartMin: &start, ScheduleEndMin: &end, Inventory: map[ItemKind]int{"coat": 2}}
 		w := &World{
 			Settings:  WorldSettings{GarmentWearPerMinute: per, GarmentThreadbareFractionX100: 20},
 			ItemKinds: garmentTestCatalog(),
@@ -225,7 +260,7 @@ func TestWearGarments(t *testing.T) {
 
 	// Normal sweep: 30 worked minutes drawn from the worker's coat only.
 	w, worker, idler, distributor := newWorld(1)
-	if _, err := WearGarments(30).Fn(w); err != nil {
+	if _, err := WearGarments(now, 30).Fn(w); err != nil {
 		t.Fatalf("WearGarments: %v", err)
 	}
 	if worker.GarmentWear["coat"] != 570 { // 600 - 30
@@ -243,7 +278,7 @@ func TestWearGarments(t *testing.T) {
 
 	// Off-switch: per-minute 0 disables the sweep entirely.
 	w, worker, _, _ = newWorld(0)
-	if _, err := WearGarments(30).Fn(w); err != nil {
+	if _, err := WearGarments(now, 30).Fn(w); err != nil {
 		t.Fatalf("WearGarments off: %v", err)
 	}
 	if len(worker.GarmentWear) != 0 {
@@ -333,7 +368,36 @@ func TestSnapshotWearsGarmentsParity(t *testing.T) {
 			"store": {ID: "store", Tags: []string{TagDistributor}},
 		},
 	}
+	const nowMinute = 600 // 10:00
+	minute := nowMinute
+	snapWorld := &Snapshot{
+		VillageObjects:   w.VillageObjects,
+		LocalMinuteOfDay: &minute,
+	}
 	sellErrand := &TradeErrand{Direction: TradeDirectionSell, Counterparty: "store"}
+	day := func() (*int, *int) { s, e := 360, 1080; return &s, &e }     // covers 600
+	evening := func() (*int, *int) { s, e := 1140, 180; return &s, &e } // excludes 600
+	// onShift pairs a live actor and its snapshot with identical business-person
+	// facts: the given workplace and shift window (position plays no part).
+	onShift := func(state ActorState, work StructureID, start, end *int) (*Actor, *ActorSnapshot) {
+		return &Actor{State: state, WorkStructureID: work,
+				ScheduleStartMin: start, ScheduleEndMin: end},
+			&ActorSnapshot{State: state, WorkStructureID: work,
+				ScheduleStartMin: start, ScheduleEndMin: end}
+	}
+	dayStart, dayEnd := day()
+	eveStart, eveEnd := evening()
+	keeper, keeperSnap := onShift(StateIdle, "forge", dayStart, dayEnd)
+	offShift, offShiftSnap := onShift(StateIdle, "forge", eveStart, eveEnd)
+	asleepMidShift, asleepMidShiftSnap := onShift(StateSleeping, "forge", dayStart, dayEnd)
+	farmhand, farmhandSnap := onShift(StateIdle, "farm", dayStart, dayEnd)
+	distributor, distributorSnap := onShift(StateIdle, "store", dayStart, dayEnd)
+	errandVisitor, errandVisitorSnap := onShift(StateIdle, "forge", dayStart, dayEnd)
+	errandVisitor.VisitorState = &VisitorState{Trade: sellErrand}
+	errandVisitorSnap.VisitorState = &VisitorState{Trade: sellErrand}
+	plainVisitor, plainVisitorSnap := onShift(StateIdle, "forge", dayStart, dayEnd)
+	plainVisitor.VisitorState = &VisitorState{}
+	plainVisitorSnap.VisitorState = &VisitorState{}
 
 	cases := []struct {
 		name  string
@@ -342,10 +406,22 @@ func TestSnapshotWearsGarmentsParity(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "on-shift keeper",
-			actor: &Actor{State: StateWorking},
-			snap:  &ActorSnapshot{State: StateWorking},
+			name:  "keeper inside his shift window",
+			actor: keeper,
+			snap:  keeperSnap,
 			want:  true,
+		},
+		{
+			name:  "keeper off shift",
+			actor: offShift,
+			snap:  offShiftSnap,
+			want:  false,
+		},
+		{
+			name:  "keeper asleep mid-shift",
+			actor: asleepMidShift,
+			snap:  asleepMidShiftSnap,
+			want:  false,
 		},
 		{
 			name:  "hired laborer",
@@ -385,37 +461,37 @@ func TestSnapshotWearsGarmentsParity(t *testing.T) {
 		},
 		{
 			name:  "worker at a non-distributor workplace",
-			actor: &Actor{State: StateWorking, WorkStructureID: "farm"},
-			snap:  &ActorSnapshot{State: StateWorking, WorkStructureID: "farm"},
+			actor: farmhand,
+			snap:  farmhandSnap,
 			want:  true,
 		},
 		{
 			// His coats are sale stock, not clothing — and the cue must not steer
 			// him to buy the shifts already on his own shelf.
 			name:  "distributor on shift at his own store",
-			actor: &Actor{State: StateWorking, WorkStructureID: "store"},
-			snap:  &ActorSnapshot{State: StateWorking, WorkStructureID: "store"},
+			actor: distributor,
+			snap:  distributorSnap,
 			want:  false,
 		},
 		{
 			name:  "merchant visitor carrying a trade errand",
-			actor: &Actor{State: StateWorking, VisitorState: &VisitorState{Trade: sellErrand}},
-			snap:  &ActorSnapshot{State: StateWorking, VisitorState: &VisitorState{Trade: sellErrand}},
+			actor: errandVisitor,
+			snap:  errandVisitorSnap,
 			want:  false,
 		},
 		{
 			// A passer-through with no errand carries no trade stock, so his
 			// clothes are just clothes — he wears them and he hears the cue.
 			name:  "plain visitor with no trade errand",
-			actor: &Actor{State: StateWorking, VisitorState: &VisitorState{}},
-			snap:  &ActorSnapshot{State: StateWorking, VisitorState: &VisitorState{}},
+			actor: plainVisitor,
+			snap:  plainVisitorSnap,
 			want:  true,
 		},
 	}
 
 	for _, c := range cases {
-		live := actorWearsGarments(w, c.actor)
-		snapped := SnapshotWearsGarments(w.VillageObjects, c.snap)
+		live := actorWearsGarments(w, c.actor, nowMinute)
+		snapped := SnapshotWearsGarments(snapWorld, c.snap)
 		if live != c.want {
 			t.Errorf("%s: actorWearsGarments = %v, want %v", c.name, live, c.want)
 		}
@@ -425,8 +501,11 @@ func TestSnapshotWearsGarmentsParity(t *testing.T) {
 		}
 	}
 
-	if SnapshotWearsGarments(w.VillageObjects, nil) {
+	if SnapshotWearsGarments(snapWorld, nil) {
 		t.Errorf("nil snapshot should not wear garments")
+	}
+	if SnapshotWearsGarments(nil, keeperSnap) {
+		t.Errorf("nil snapshot world should not wear garments")
 	}
 }
 
@@ -519,13 +598,16 @@ func TestRepublishCarriesTheGarmentWearAudienceFacts(t *testing.T) {
 		t.Fatalf("published forager = %+v, want SourceActivityKind harvest", forager)
 	}
 
-	// Both must land in the audience through the published facts alone.
+	// Both must land in the audience through the published facts alone. The
+	// minute is arbitrary — these actors qualify through the activity arms,
+	// which don't consult the clock.
+	const nowMinute = 600
 	for _, id := range []ActorID{"baker", "forager"} {
-		if !SnapshotWearsGarments(w.VillageObjects, snap.Actors[id]) {
+		if !SnapshotWearsGarments(snap, snap.Actors[id]) {
 			t.Errorf("%s is not in the garment-wear audience as PUBLISHED, though "+
 				"actorWearsGarments counts them live", id)
 		}
-		if !actorWearsGarments(w, w.Actors[id]) {
+		if !actorWearsGarments(w, w.Actors[id], nowMinute) {
 			t.Errorf("%s should wear garments live (fixture check)", id)
 		}
 	}
@@ -535,10 +617,10 @@ func TestRepublishCarriesTheGarmentWearAudienceFacts(t *testing.T) {
 	if lapsed == nil || lapsed.SourceActivityKind != "" {
 		t.Errorf("an expired activity window should publish no SourceActivityKind, got %+v", lapsed)
 	}
-	if SnapshotWearsGarments(w.VillageObjects, lapsed) {
+	if SnapshotWearsGarments(snap, lapsed) {
 		t.Errorf("perception should read an expired window as not-engaged")
 	}
-	if !actorWearsGarments(w, w.Actors["lapsed"]) {
+	if !actorWearsGarments(w, w.Actors["lapsed"], nowMinute) {
 		t.Errorf("the live sweep still counts an expired-but-unswept window — if this " +
 			"changed, the divergence documented on SnapshotWearsGarments is gone and the " +
 			"comment should go with it")

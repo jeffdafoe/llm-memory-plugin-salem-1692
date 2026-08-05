@@ -21,8 +21,11 @@ func workClothesCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 	}
 }
 
-// workClothesSnapshot builds a worker with the given inventory/wear alongside a
+// workClothesSnapshot builds a worker inside her shift window (the LLM-595
+// business-person fact: a schedule covering the snapshot minute) alongside a
 // cloth seller stationed far away (a supplier of record, never co-present).
+// Audience membership is derived from that fact plus `state` — StateIdle on
+// shift is in the audience, StateSleeping is not.
 func workClothesSnapshot(inv, wear map[sim.ItemKind]int, state sim.ActorState) (*sim.Snapshot, sim.ActorID) {
 	const actorID = sim.ActorID("worker")
 	start, end := 360, 1080
@@ -73,14 +76,14 @@ func workClothesSnapshot(inv, wear map[sim.ItemKind]int, state sim.ActorState) (
 func TestWorkClothes_SoundGarmentIsSilent(t *testing.T) {
 	// A fresh set of linens (no wear entry) is sound, and silence is a valid volume —
 	// the cue must not narrate a non-problem on every tick of every worker.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"linens": 1}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"linens": 1}, nil, sim.StateIdle)
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
 		t.Fatalf("sound garment should render nothing, got %+v", v)
 	}
 }
 
 func TestWorkClothes_NothingFitToWorkIn(t *testing.T) {
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
 	// Flip the seller to produce WOOLENS while merely holding linens, so the
 	// FIRST-sorting kind is the one he cannot supply. That is what exercises the
 	// skip; with the shared fixture's linens policy the cue would resolve on its
@@ -123,7 +126,7 @@ func TestWorkClothes_ThreadbareTier(t *testing.T) {
 	snap, id := workClothesSnapshot(
 		map[sim.ItemKind]int{"linens": 1},
 		map[sim.ItemKind]int{"linens": 500},
-		sim.StateWorking,
+		sim.StateIdle,
 	)
 	v := buildWorkClothes(snap, id, snap.Actors[id])
 	if v == nil || v.Tier != sim.WarmGarmentThreadbare {
@@ -143,7 +146,7 @@ func TestWorkClothes_SpareUnitReadsSound(t *testing.T) {
 	snap, id := workClothesSnapshot(
 		map[sim.ItemKind]int{"linens": 2},
 		map[sim.ItemKind]int{"linens": 10},
-		sim.StateWorking,
+		sim.StateIdle,
 	)
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
 		t.Fatalf("a fresh spare should read sound, got %+v", v)
@@ -154,7 +157,7 @@ func TestWorkClothes_OuterwearDoesNotSatisfyIt(t *testing.T) {
 	// A coat carries `warms`, so it belongs to the cold self-line and cannot
 	// stand in for a working garment. Without this the two cues would silently
 	// cover for each other and a worker in a coat and rags would hear nothing.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"coat": 1}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{"coat": 1}, nil, sim.StateIdle)
 	v := buildWorkClothes(snap, id, snap.Actors[id])
 	if v == nil || v.Tier != sim.WarmGarmentNone {
 		t.Fatalf("a coat must not satisfy the working-garment want, got %+v", v)
@@ -163,16 +166,30 @@ func TestWorkClothes_OuterwearDoesNotSatisfyIt(t *testing.T) {
 
 func TestWorkClothes_OnlyForWorkers(t *testing.T) {
 	// The audience must match sim.actorWearsGarments — the set whose garments the
-	// wear sweep actually touches. Nagging an idle actor about a garment that is
-	// not wearing down is noise, and you notice a worn sleeve at the work.
-	for _, state := range []sim.ActorState{sim.StateIdle, sim.StateSleeping} {
-		snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, state)
-		if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
-			t.Fatalf("state %v should get no cue, got %+v", state, v)
-		}
+	// wear sweep actually touches. Nagging an actor whose garments are not
+	// wearing down is noise, and you notice a worn sleeve at the work.
+
+	// The business-person case (LLM-595): inside the shift window, even
+	// nominally idle, is working — a keeper wears his working clothes through
+	// the whole working day.
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
+	if v := buildWorkClothes(snap, id, snap.Actors[id]); v == nil {
+		t.Fatal("a keeper inside his shift window should get the cue")
+	}
+	// Asleep mid-shift is not working the shift.
+	snap, id = workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateSleeping)
+	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
+		t.Fatalf("asleep mid-shift should get no cue, got %+v", v)
+	}
+	// Off shift: the working day is over, the garments take no wear.
+	snap, id = workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
+	early, done := 60, 300 // shift long over by the fixture's minute 600
+	snap.Actors[id].ScheduleStartMin, snap.Actors[id].ScheduleEndMin = &early, &done
+	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
+		t.Fatalf("off shift should get no cue, got %+v", v)
 	}
 	// Laboring for someone else still wears clothes out, so it still hears it.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateLaboring)
+	snap, id = workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateLaboring)
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v == nil {
 		t.Fatal("a laboring worker should get the cue")
 	}
@@ -183,7 +200,7 @@ func TestWorkClothes_SilentWithNoSupplier(t *testing.T) {
 	// state rather than a resolution failure. A standing line naming a problem
 	// with no action attached would ride every tick of every worker in the
 	// village — exactly the noise the scenes-not-stats register exists to avoid.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
 	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{}
 	if v := buildWorkClothes(snap, id, snap.Actors[id]); v != nil {
 		t.Fatalf("no supplier anywhere should be silent, got %+v", v)
@@ -196,7 +213,7 @@ func TestWorkClothes_DistributorResolvesAsTheClothingSupplier(t *testing.T) {
 	// garment seller is a reseller. isRestockSupplierOf admits the distributor for
 	// any kind he holds, which is the only reason the cue can name a destination.
 	// If that arm ever narrows to producers, this cue goes silent village-wide.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
 	snap.Actors["josiah"].RestockPolicy = nil // a pure reseller, as in production
 	snap.VillageObjects["general_store"] = &sim.VillageObject{
 		ID:          "general_store",
@@ -221,7 +238,7 @@ func TestWorkClothes_DistributorIsNotToldToBuyHisOwnStock(t *testing.T) {
 	// The distributor's garments are sale stock, not clothing — sim.actorWearsGarments
 	// excludes him from the wear sweep for that reason, and the cue has to make the
 	// same exclusion or he is steered to buy the linens already on his shelf.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
 	snap.Actors[id].WorkStructureID = "general_store"
 	snap.VillageObjects["general_store"] = &sim.VillageObject{
 		ID:          "general_store",
@@ -243,7 +260,7 @@ func TestWorkClothes_PrefersTheKindHeAlreadyWears(t *testing.T) {
 	snap, id := workClothesSnapshot(
 		map[sim.ItemKind]int{"linens": 1, "woolens": 1},
 		map[sim.ItemKind]int{"linens": 500, "woolens": 600},
-		sim.StateWorking,
+		sim.StateIdle,
 	)
 	// The seller holds shifts but no breeches — breeches is unpurchasable, which is
 	// what makes the two passes distinguishable.
@@ -265,7 +282,7 @@ func TestWorkClothes_OwnedKindLosesToWhatIsActuallyForSale(t *testing.T) {
 	snap, id := workClothesSnapshot(
 		map[sim.ItemKind]int{"woolens": 1},
 		map[sim.ItemKind]int{"woolens": 600},
-		sim.StateWorking,
+		sim.StateIdle,
 	)
 	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"linens": 3} // no breeches to be had
 	v := buildWorkClothes(snap, id, snap.Actors[id])
@@ -278,7 +295,7 @@ func TestWorkClothes_NoneTierFallsBackToWhateverIsSold(t *testing.T) {
 	// The none tier owns no working garment at all, so like-for-like has nothing to
 	// match and the fallback is the ONLY path. Anything fit to work in beats
 	// nothing, so the cue takes what the shop has.
-	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateWorking)
+	snap, id := workClothesSnapshot(map[sim.ItemKind]int{}, nil, sim.StateIdle)
 	snap.Actors["josiah"].Inventory = map[sim.ItemKind]int{"linens": 3}
 	v := buildWorkClothes(snap, id, snap.Actors[id])
 	if v == nil || v.Tier != sim.WarmGarmentNone || v.Item != "linens" {
