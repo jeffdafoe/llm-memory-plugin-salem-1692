@@ -27,23 +27,25 @@ BEGIN;
 DO $$
 DECLARE template_rows int; placed_rows int;
 BEGIN
-    -- Template first. Assert the shape we expect to be changing: the
-    -- crop-wheat template at the live 2/168 tuning. On a fresh schema-only DB
-    -- the LLM-576 migration has just seeded 3/120 — accept either seed, since
-    -- the point of the assert is refusing an UNKNOWN shape, not pinning one
-    -- history. (The 2/168 came from a post-LLM-576 live retune; a
-    -- rebuilt-from-migrations DB never had it.)
+    -- Template first. Exactly two histories are known and accepted, pinned as
+    -- explicit (mode, max, period) pairs: production's post-LLM-576 live
+    -- retune (periodic, 2, 168) and a rebuilt-from-migrations DB carrying the
+    -- LLM-576 seed (periodic, 3, 120). Any other tuning refuses — the point
+    -- of the assert is never stomping an UNKNOWN shape. The period is
+    -- preserved, whichever it is.
     UPDATE asset_refresh_default
        SET available_quantity = 3, max_quantity = 3
      WHERE asset_id = '019e5f00-c401-7a10-9e00-000000000576'
        AND gather_item = 'wheat'
-       AND max_quantity IN (2, 3);
+       AND refresh_mode = 'periodic'
+       AND (max_quantity, refresh_period_hours) IN ((2, 168), (3, 120));
     GET DIAGNOSTICS template_rows = ROW_COUNT;
     IF template_rows <> 1 THEN
         -- Zero updates with the asset present means an unexpected tuning is
-        -- live — refuse rather than stomp it.
+        -- live — refuse rather than stomp it. (More than one row is refused
+        -- by the same check; the template is expected to be unique.)
         IF EXISTS (SELECT 1 FROM asset WHERE id = '019e5f00-c401-7a10-9e00-000000000576') THEN
-            RAISE EXCEPTION 'LLM-606: crop-wheat refresh template not found at an expected tuning (max 2 or 3) — % row(s) updated', template_rows;
+            RAISE EXCEPTION 'LLM-606: crop-wheat refresh template not found at an expected tuning (periodic 2/168 or periodic 3/120) — % row(s) updated', template_rows;
         END IF;
         -- Asset absent entirely = schema-only DB where LLM-576 didn't run?
         -- Not reachable (migrations run in order), but be explicit.
@@ -60,12 +62,14 @@ BEGIN
        AND r.gather_item = 'wheat'
        AND r.max_quantity = 2;
     GET DIAGNOSTICS placed_rows = ROW_COUNT;
+    -- IS DISTINCT FROM, not <>: max_quantity is nullable, and NULL <> 3 is
+    -- unknown — a NULL row would slip a plain <> check (code_review).
     IF EXISTS (
         SELECT 1 FROM object_refresh r
           JOIN village_object vo ON vo.id = r.object_id
          WHERE vo.asset_id = '019e5f00-c401-7a10-9e00-000000000576'
            AND r.gather_item = 'wheat'
-           AND r.max_quantity <> 3
+           AND r.max_quantity IS DISTINCT FROM 3
     ) THEN
         RAISE EXCEPTION 'LLM-606: some placed wheat rows are not at max 3 after the update (% updated)', placed_rows;
     END IF;
