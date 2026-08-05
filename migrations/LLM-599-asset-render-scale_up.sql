@@ -13,8 +13,19 @@
 -- tuning is DB-only (no editor UI); the catalog is boot-loaded, so a
 -- change takes effect at engine restart, not live.
 
+-- The CHECK rejects the float values that would produce an unusable sprite
+-- transform: zero/negative, NaN, and the infinities. Postgres has no
+-- isfinite() for double precision, but its float ordering treats NaN as
+-- greater than every other value INCLUDING +Infinity (so `NaN > 0` is true
+-- and a bare positivity check would admit it) — `render_scale < 'Infinity'`
+-- therefore excludes both NaN and +Infinity in one clause, and `> 0`
+-- excludes -Infinity. The client keeps its own absent/zero guard as defense
+-- in depth.
+
 BEGIN;
 
-ALTER TABLE asset ADD COLUMN render_scale double precision NOT NULL DEFAULT 2.0;
+ALTER TABLE asset ADD COLUMN render_scale double precision NOT NULL DEFAULT 2.0
+    CONSTRAINT asset_render_scale_positive_finite
+    CHECK (render_scale > 0 AND render_scale < 'Infinity'::double precision);
 
 COMMIT;

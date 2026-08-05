@@ -1761,11 +1761,13 @@ func _place_object(data: Dictionary) -> void:
     placed_objects[obj_id] = container
 
 ## Per-asset draw scale from the catalog entry (LLM-599) — the object-side
-## counterpart of _sprite_render_scale. Guards absent / zero (a catalog served
-## before the migration, or a test fixture) back to the historical 2x default.
+## counterpart of _sprite_render_scale. Guards absent / zero / non-finite (a
+## catalog served before the migration, or a test fixture) back to the
+## historical 2x default. The DB CHECK already rejects non-finite values;
+## this is defense in depth.
 func _asset_render_scale(asset: Dictionary) -> float:
     var s: float = float(asset.get("render_scale", 2.0))
-    return s if s > 0.0 else 2.0
+    return s if is_finite(s) and s > 0.0 else 2.0
 
 ## Create the appropriate sprite node for an asset state.
 ## Returns AnimatedSprite2D for multi-frame states, Sprite2D for static ones.

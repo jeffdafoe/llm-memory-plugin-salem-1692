@@ -6,6 +6,8 @@
 
 BEGIN;
 
-ALTER TABLE asset DROP COLUMN render_scale;
+-- IF EXISTS makes a rerun a no-op. Dropping the column also drops its
+-- asset_render_scale_positive_finite CHECK.
+ALTER TABLE asset DROP COLUMN IF EXISTS render_scale;
 
 COMMIT;
