@@ -1729,7 +1729,7 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("effective_loiter_offset_x", data.get("effective_loiter_offset_x", null))
     container.set_meta("effective_loiter_offset_y", data.get("effective_loiter_offset_y", null))
 
-    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset))
     container.add_child(sprite_node)
     attach_state_light(container, state_info)
 
@@ -1760,9 +1760,20 @@ func _place_object(data: Dictionary) -> void:
 
     placed_objects[obj_id] = container
 
+## Per-asset draw scale from the catalog entry (LLM-599) — the object-side
+## counterpart of _sprite_render_scale. Guards absent / zero / non-finite (a
+## catalog served before the migration, or a test fixture) back to the
+## historical 2x default. The DB CHECK already rejects non-finite values;
+## this is defense in depth.
+func _asset_render_scale(asset: Dictionary) -> float:
+    var s: float = float(asset.get("render_scale", 2.0))
+    return s if is_finite(s) and s > 0.0 else 2.0
+
 ## Create the appropriate sprite node for an asset state.
 ## Returns AnimatedSprite2D for multi-frame states, Sprite2D for static ones.
-func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float) -> Node2D:
+## render_scale scales both the sprite and its anchor offset — the two must
+## move together or the ground anchor drifts as scale changes.
+func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float, render_scale: float = 2.0) -> Node2D:
     var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state_info)
 
     if sprite_frames != null:
@@ -1770,10 +1781,10 @@ func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x
         var anim_sprite = AnimatedSprite2D.new()
         anim_sprite.sprite_frames = sprite_frames
         anim_sprite.centered = false
-        anim_sprite.scale = Vector2(2, 2)
+        anim_sprite.scale = Vector2(render_scale, render_scale)
         anim_sprite.position = Vector2(
-            -texture.region.size.x * 2 * anchor_x,
-            -texture.region.size.y * 2 * anchor_y
+            -texture.region.size.x * render_scale * anchor_x,
+            -texture.region.size.y * render_scale * anchor_y
         )
         anim_sprite.play("default")
         # play() starts at frame 0, and all placements are created in the same
@@ -1789,10 +1800,10 @@ func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x
         var sprite = Sprite2D.new()
         sprite.texture = texture
         sprite.centered = false
-        sprite.scale = Vector2(2, 2)
+        sprite.scale = Vector2(render_scale, render_scale)
         sprite.position = Vector2(
-            -texture.region.size.x * 2 * anchor_x,
-            -texture.region.size.y * 2 * anchor_y
+            -texture.region.size.x * render_scale * anchor_x,
+            -texture.region.size.y * render_scale * anchor_y
         )
         return sprite
 
@@ -1834,7 +1845,7 @@ func add_attachment(overlay_asset_id: String, parent_node: Node2D) -> void:
     container.set_meta("display_name", "")
     container.set_meta("attached_to", str(parent_id))
 
-    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset))
     container.add_child(sprite_node)
     attach_state_light(container, state_info)
     parent_node.add_child(container)
@@ -1883,7 +1894,7 @@ func add_object(asset_id: String, world_pos: Vector2) -> Node2D:
     container.set_meta("owner", "")
     container.set_meta("display_name", "")
 
-    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset))
     container.add_child(sprite_node)
     attach_state_light(container, state_info)
     objects_node.add_child(container)

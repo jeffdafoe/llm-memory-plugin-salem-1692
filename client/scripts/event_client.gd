@@ -644,7 +644,7 @@ func _on_object_state_changed(data: Dictionary) -> void:
         if child is Sprite2D or child is AnimatedSprite2D:
             child.queue_free()
 
-    var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y, world._asset_render_scale(asset))
     node.add_child(new_sprite)
 
     # State flipped — update the light to match. Lit states get a glow, unlit
