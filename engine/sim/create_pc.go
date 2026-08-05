@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // create_pc.go — PC onboarding (the v2 port of v1's pc/create). Materializes a
@@ -65,11 +67,32 @@ func CreatePC(loginUsername, characterName, spriteID string, now time.Time) Comm
 				return CreatePCResult{}, ErrUnknownSprite
 			}
 
+			// Same name validation every other name-write path applies
+			// (SetActorDisplayName, CreateNPC). The httpapi handler pre-checks
+			// too, but the command is the validation authority — this path was
+			// the one name write with none of it (LLM-588).
+			name := strings.TrimSpace(characterName)
+			if name == "" || utf8.RuneCountInString(name) > MaxActorDisplayNameLen || containsControlChar(name) {
+				return CreatePCResult{}, ErrInvalidDisplayName
+			}
+
 			// Idempotent update path: an existing PC for this login keeps its
 			// row + lodging; we just refresh name/sprite and ensure needs.
 			if existingID, ok := findPCByLoginUsername(w, loginUsername); ok {
 				a := w.Actors[existingID]
-				a.DisplayName = characterName
+				// Refuse a rename onto another driven actor's name BEFORE
+				// mutating, so a rejected rename leaves the PC untouched
+				// (LLM-588). A PC is driven (login_username set), so a
+				// duplicate wouldn't fail here — it fails the next CHECKPOINT
+				// against actor_display_name_excl, killing durability for the
+				// whole village (the LLM-580 incident). Keeping one's own name
+				// is a no-op success, as SetActorDisplayName does; a name held
+				// only by decoratives stays allowed (displayNameInUse mirrors
+				// the constraint's driven-only predicate).
+				if a.DisplayName != name && displayNameInUse(w, name) {
+					return CreatePCResult{}, ErrDisplayNameTaken
+				}
+				a.DisplayName = name
 				if spriteID != "" {
 					a.SpriteID = SpriteID(spriteID)
 				}
@@ -79,13 +102,19 @@ func CreatePC(loginUsername, characterName, spriteID string, now time.Time) Comm
 				return CreatePCResult{ActorID: existingID, Created: false}, nil
 			}
 
+			// The fresh PC is born driven, so it enters the constraint's
+			// predicate the same way — gate before minting anything.
+			if displayNameInUse(w, name) {
+				return CreatePCResult{}, ErrDisplayNameTaken
+			}
+
 			id := mintPCActorID(w)
 			if id == "" {
 				return CreatePCResult{}, fmt.Errorf("sim: CreatePC: actor-ID minting exhausted retries")
 			}
 			actor := &Actor{
 				ID:            id,
-				DisplayName:   characterName,
+				DisplayName:   name,
 				Kind:          KindPC,
 				LoginUsername: loginUsername,
 				SpriteID:      SpriteID(spriteID), // "" when not yet picked

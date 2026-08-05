@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -137,6 +138,72 @@ func TestCreatePC_Idempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("PC count for bob-login = %d, want 1", count)
+	}
+}
+
+// TestCreatePC_RenameOntoDrivenNameRejected — the LLM-588 regression: the
+// returning-player branch must refuse a rename onto another driven actor's
+// display name (a PC is driven, so the duplicate would not fail here — it
+// would fail the next checkpoint against actor_display_name_excl, killing
+// durability villagewide), and the rejected rename must leave the PC untouched.
+func TestCreatePC_RenameOntoDrivenNameRejected(t *testing.T) {
+	w := newCreatePCWorld(t, true)
+	alice := createPC(t, w, "alice-login", "Alice", "sprite-1")
+	createPC(t, w, "bob-login", "Bob", "sprite-1")
+
+	if _, err := w.Send(sim.CreatePC("alice-login", "Bob", "", time.Now().UTC())); !errors.Is(err, sim.ErrDisplayNameTaken) {
+		t.Fatalf("rename onto another driven actor's name err = %v, want ErrDisplayNameTaken", err)
+	}
+	if got := w.Published().Actors[alice.ActorID].DisplayName; got != "Alice" {
+		t.Errorf("display_name after rejected rename = %q, want Alice (untouched)", got)
+	}
+}
+
+// TestCreatePC_SelfRenameNoop — re-creating with the PC's own current name is
+// a successful no-op (the name is "in use" only by the actor itself), matching
+// SetActorDisplayName's self-rename posture.
+func TestCreatePC_SelfRenameNoop(t *testing.T) {
+	w := newCreatePCWorld(t, true)
+	first := createPC(t, w, "alice-login", "Alice", "sprite-1")
+
+	second := createPC(t, w, "alice-login", "Alice", "")
+	if second.Created {
+		t.Error("Created = true on self-rename, want false (update path)")
+	}
+	if second.ActorID != first.ActorID {
+		t.Errorf("self-rename id = %q, want %q", second.ActorID, first.ActorID)
+	}
+	if got := w.Published().Actors[first.ActorID].DisplayName; got != "Alice" {
+		t.Errorf("display_name = %q, want Alice", got)
+	}
+}
+
+// TestCreatePC_FreshNameCollisionRejected — the fresh-actor branch is gated
+// too: a brand-new PC is born driven, so minting it with an in-use driven name
+// creates the same checkpoint-killing duplicate the rename would.
+func TestCreatePC_FreshNameCollisionRejected(t *testing.T) {
+	w := newCreatePCWorld(t, true)
+	createPC(t, w, "alice-login", "Alice", "sprite-1")
+
+	if _, err := w.Send(sim.CreatePC("eve-login", "Alice", "sprite-1", time.Now().UTC())); !errors.Is(err, sim.ErrDisplayNameTaken) {
+		t.Fatalf("fresh create with an in-use driven name err = %v, want ErrDisplayNameTaken", err)
+	}
+	for _, a := range w.Published().Actors {
+		if a.LoginUsername == "eve-login" {
+			t.Fatal("rejected create still materialized a PC for eve-login")
+		}
+	}
+}
+
+// TestCreatePC_InvalidName — the command applies the shared name validation
+// (trim/empty, rune cap, control characters) rather than trusting the HTTP
+// shell, like every other name-write path.
+func TestCreatePC_InvalidName(t *testing.T) {
+	w := newCreatePCWorld(t, true)
+	for _, name := range []string{"", "   ", "Bad\x00Name"} {
+		if _, err := w.Send(sim.CreatePC("frank-login", name, "sprite-1", time.Now().UTC())); !errors.Is(err, sim.ErrInvalidDisplayName) {
+			t.Errorf("CreatePC(%q) err = %v, want ErrInvalidDisplayName", name, err)
+		}
 	}
 }
 
