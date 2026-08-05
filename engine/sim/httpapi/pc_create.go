@@ -96,8 +96,9 @@ func (s *Server) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "character name already in use")
 			return
 		}
-		// Belt-and-braces: the handler pre-validates shape above, but the sim
-		// command is the validation authority and may still refuse the name.
+		// Reachable despite the pre-checks above: the command's validation is
+		// stricter than hasInvalidControlChar (a display name is a single-line
+		// label, so \t \n \r are refused too — see sim.containsControlChar).
 		if errors.Is(err, sim.ErrInvalidDisplayName) {
 			writeError(w, http.StatusBadRequest, "invalid character_name")
 			return

@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,13 +198,21 @@ func TestCreatePC_FreshNameCollisionRejected(t *testing.T) {
 
 // TestCreatePC_InvalidName — the command applies the shared name validation
 // (trim/empty, rune cap, control characters) rather than trusting the HTTP
-// shell, like every other name-write path.
+// shell, like every other name-write path. The length pair uses a multibyte
+// rune so the cap is proven rune-based, not byte-based.
 func TestCreatePC_InvalidName(t *testing.T) {
 	w := newCreatePCWorld(t, true)
-	for _, name := range []string{"", "   ", "Bad\x00Name"} {
+	overlong := strings.Repeat("é", sim.MaxActorDisplayNameLen+1)
+	for _, name := range []string{"", "   ", "Bad\x00Name", overlong} {
 		if _, err := w.Send(sim.CreatePC("frank-login", name, "sprite-1", time.Now().UTC())); !errors.Is(err, sim.ErrInvalidDisplayName) {
 			t.Errorf("CreatePC(%q) err = %v, want ErrInvalidDisplayName", name, err)
 		}
+	}
+	// Exactly at the cap is accepted (200 bytes, 100 runes).
+	atCap := strings.Repeat("é", sim.MaxActorDisplayNameLen)
+	r := createPC(t, w, "frank-login", atCap, "sprite-1")
+	if got := w.Published().Actors[r.ActorID].DisplayName; got != atCap {
+		t.Errorf("display_name at the rune cap = %q, want the full %d-rune name", got, sim.MaxActorDisplayNameLen)
 	}
 }
 
