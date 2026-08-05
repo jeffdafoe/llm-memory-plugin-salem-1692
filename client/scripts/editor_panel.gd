@@ -2546,7 +2546,7 @@ func show_selection(info: Dictionary) -> void:
     _ignoring_name_input = true
     _name_input.text = info.get("display_name", "")
     _name_input_object_id = info.get("object_id", "")
-    _name_last_saved = _name_input.text
+    _name_last_saved = _name_input.text.strip_edges()
     _ignoring_name_input = false
 
     # Populate owner dropdown from the full actor list. Any actor can own an object
@@ -2614,7 +2614,7 @@ func show_npc_selection(info: Dictionary) -> void:
     # emits the old name against the new selection.
     _npc_name_edit.release_focus()
     _npc_name_edit.text = display_name
-    _npc_name_last_saved = display_name
+    _npc_name_last_saved = display_name.strip_edges()
 
     # Stash the NPC + sprite identity for the Change… button. Show the
     # sprite name (or its id as a fallback) so admins can tell which sheet
