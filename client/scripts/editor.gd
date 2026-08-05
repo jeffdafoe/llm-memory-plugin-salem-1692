@@ -592,6 +592,9 @@ func select_npc_sprite_for_placement(sprite: Dictionary, sheet: Texture2D, npc_n
 
     ghost_sprite.texture = atlas
     ghost_sprite.visible = true
+    # A prior asset selection may have left a per-asset scale on the shared
+    # ghost (LLM-599); the NPC ghost keeps the historical 2x.
+    ghost_sprite.scale = Vector2(2, 2)
     # Match world._render_npc's feet-anchoring: sprite top-left is offset
     # (-fw/2, -fh*0.9) from the NPC's position, in texture pixels (the ghost
     # has scale 2, so the world-pixel shift is double).
@@ -606,6 +609,11 @@ func _apply_ghost_offset() -> void:
     var asset = Catalog.assets.get(selected_asset_id, {})
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+    # Ghost matches the placed sprite's per-asset scale (LLM-599). The offset
+    # stays in texture pixels — Sprite2D.offset is applied pre-scale, so the
+    # world-pixel shift scales with the sprite automatically.
+    var ghost_scale: float = world._asset_render_scale(asset)
+    ghost_sprite.scale = Vector2(ghost_scale, ghost_scale)
     var tex = ghost_sprite.texture
     if tex != null:
         ghost_sprite.offset = Vector2(

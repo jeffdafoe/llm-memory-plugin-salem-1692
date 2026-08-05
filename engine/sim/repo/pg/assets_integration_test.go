@@ -46,7 +46,7 @@ func TestIntegration_Assets_LoadAllHappyPath(t *testing.T) {
 			door_offset_x, door_offset_y, visible_when_inside,
 			stand_offset_x, stand_offset_y,
 			rotation_algo, transition_spread_seconds,
-			occupied_min_count, occupied_night_only)
+			occupied_min_count, occupied_night_only, render_scale)
 		VALUES (
 			$1, 'Tavern', 'structure', 'default', 0.5, 0.85, 'objects',
 			'pack-a', 'top', -1, true, false,
@@ -54,7 +54,7 @@ func TestIntegration_Assets_LoadAllHappyPath(t *testing.T) {
 			5, 6, true,
 			7, 8,
 			'deterministic', 9,
-			2, true)`, assetUUIDFull); err != nil {
+			2, true, 3.5)`, assetUUIDFull); err != nil {
 		t.Fatalf("seed asset: %v", err)
 	}
 
@@ -116,6 +116,9 @@ func TestIntegration_Assets_LoadAllHappyPath(t *testing.T) {
 	}
 	if a.OccupiedMinCount != 2 || !a.OccupiedNightOnly {
 		t.Errorf("occupancy: min=%d nightOnly=%v", a.OccupiedMinCount, a.OccupiedNightOnly)
+	}
+	if a.RenderScale != 3.5 {
+		t.Errorf("render_scale = %v, want 3.5", a.RenderScale)
 	}
 	// Nullable pointer fields populated.
 	if a.FitsSlot == nil || *a.FitsSlot != "top" {
@@ -213,6 +216,10 @@ func TestIntegration_Assets_NullablesAndNoPack(t *testing.T) {
 	if a.FitsSlot != nil || a.DoorOffsetX != nil || a.DoorOffsetY != nil ||
 		a.StandOffsetX != nil || a.StandOffsetY != nil {
 		t.Errorf("expected nil pointer fields: %+v", a)
+	}
+	// Column default — an unseeded asset renders at the historical 2x.
+	if a.RenderScale != 2.0 {
+		t.Errorf("render_scale default = %v, want 2.0", a.RenderScale)
 	}
 	if len(a.States) != 1 {
 		t.Fatalf("states len=%d want 1", len(a.States))

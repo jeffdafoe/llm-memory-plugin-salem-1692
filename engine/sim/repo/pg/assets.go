@@ -52,7 +52,7 @@ SELECT id, name, category, default_state, anchor_x, anchor_y, layer,
        door_offset_x, door_offset_y, visible_when_inside,
        stand_offset_x, stand_offset_y,
        rotation_algo, transition_spread_seconds,
-       occupied_min_count, occupied_night_only
+       occupied_min_count, occupied_night_only, render_scale
   FROM asset`
 
 // loadAllStatesSQL pulls every asset_state in one pass, LEFT JOINing
@@ -179,7 +179,7 @@ func (r *AssetsRepo) loadAssets(ctx context.Context, packs map[string]*sim.Tiles
 			&a.DoorOffsetX, &a.DoorOffsetY, &a.VisibleWhenInside,
 			&a.StandOffsetX, &a.StandOffsetY,
 			&a.RotationAlgo, &a.TransitionSpreadSeconds,
-			&a.OccupiedMinCount, &a.OccupiedNightOnly,
+			&a.OccupiedMinCount, &a.OccupiedNightOnly, &a.RenderScale,
 		); err != nil {
 			return nil, fmt.Errorf("pg assets LoadAll: asset scan: %w", err)
 		}

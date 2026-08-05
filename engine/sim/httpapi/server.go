@@ -831,6 +831,7 @@ func assetDTO(id sim.AssetID, a *sim.Asset) AssetDTO {
 		AnchorY:           a.AnchorY,
 		Layer:             a.Layer,
 		ZIndex:            a.ZIndex,
+		RenderScale:       a.RenderScale,
 		VisibleWhenInside: a.VisibleWhenInside,
 		StandOffsetX:      a.StandOffsetX,
 		StandOffsetY:      a.StandOffsetY,

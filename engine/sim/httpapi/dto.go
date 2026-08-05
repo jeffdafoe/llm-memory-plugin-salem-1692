@@ -273,8 +273,9 @@ type AssetDTO struct {
 	DefaultState      string          `json:"default_state"`
 	AnchorX           float64         `json:"anchor_x"`
 	AnchorY           float64         `json:"anchor_y"`
-	Layer             string          `json:"layer"`   // objects | above
-	ZIndex            int             `json:"z_index"` // Godot CanvasItem z; <0 renders below NPCs
+	Layer             string          `json:"layer"`        // objects | above
+	ZIndex            int             `json:"z_index"`      // Godot CanvasItem z; <0 renders below NPCs
+	RenderScale       float64         `json:"render_scale"` // client draw scale (LLM-599): 2.0 default, tuned per asset
 	VisibleWhenInside bool            `json:"visible_when_inside"`
 	StandOffsetX      *int            `json:"stand_offset_x,omitempty"`
 	StandOffsetY      *int            `json:"stand_offset_y,omitempty"`

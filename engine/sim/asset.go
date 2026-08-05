@@ -55,6 +55,14 @@ type Asset struct {
 	IsObstacle   bool // pathfind treats as blocked
 	IsPassage    bool // bridges / passages that override IsObstacle for movement
 
+	// RenderScale is the client draw scale for this asset's sprites
+	// (LLM-599) — the object-side counterpart of NPCSprite.RenderScale.
+	// Default 2.0 matches the scale the client historically hardcoded;
+	// tuned per asset when a pack's art carries a different apparent
+	// scale (the school-of-fish frames). The engine never reads it —
+	// it rides the catalog to the client.
+	RenderScale float64
+
 	// Per-side footprint counts (tiles from anchor in each cardinal
 	// direction, anchor tile always included).
 	FootprintLeft   int
