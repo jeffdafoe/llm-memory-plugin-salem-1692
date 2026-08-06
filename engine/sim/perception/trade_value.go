@@ -145,6 +145,33 @@ type TradeValueItem struct {
 	// on must not rest on a number the actor's own books don't support.
 	MakingsMargin makingsMargin
 
+	// ReserveFloor / ReserveHeld / ReserveMakes carry the production-input
+	// reservation (LLM-609): this good is a required input of one of the actor's
+	// OWN produce recipes, so the stock it holds is makings rather than
+	// merchandise. Live case — Ezekiel Crane sold Elizabeth Ellis his water at
+	// 1 coin, and within the hour all three of his recipes (nail, shovel,
+	// skillet) were input-short and the forge had stopped. The wares cue priced
+	// the water as stock to move and the only judgment on the line was about
+	// margin, so nothing gave the model a reason to hold it back.
+	//
+	// ReserveFloor is sim.ReorderFloors for the item — the SAME floor the reorder
+	// threshold and the sell-first nudge already read, deliberately not a second
+	// number. It means "two batches of the largest draw", so a good priced above
+	// it is stock the actor would not be rebuying anyway, and a good priced below
+	// it is stock it is about to send someone out to replace. Reusing it keeps the
+	// reservation and the restock warrant from ever disagreeing about what counts
+	// as spare.
+	//
+	// ReserveHeld is the on-hand quantity and ReserveMakes the display labels of
+	// the goods the item feeds, in policy order — render phrases the claim from
+	// those rather than from the recipe mechanics. All three are 0/nil unless the
+	// actor holds at least one of a floored good: at zero on hand there is nothing
+	// to reserve and the buy-side cues own the state, the same carve-out
+	// buildRepairReserve makes.
+	ReserveFloor int
+	ReserveHeld  int
+	ReserveMakes []string
+
 	// WholesaleTo, when non-empty, marks this as a wholesale producer's OWN
 	// produce (sim.IsOwnProduce) and names the village distributor it sells to —
 	// the sole legitimate buyer (LLM-223/252). Render then draws the wholesale-
@@ -192,6 +219,15 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	// lines route buyers to. Cheap (one object-map pass) and the cue is already
 	// gated to inHuddle + has-own-wares, so it isn't a hot path.
 	distLabel := distributorLabel(snap)
+	// LLM-609: the produce-input floors, read from the same sim.ReorderFloors
+	// catalog the restock warrant and the sell-first nudge use. The nudge half of
+	// THIS view already refused to name a production input as the ware to sell
+	// down (LLM-462, working_capital.go); the item list above it never got the
+	// same discriminator and went on pricing the smith's water as merchandise.
+	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
+	// Built before the item walk so a good already earmarked for a mend can't also
+	// pick up a bench reservation and render two claims on the same stock.
+	reserve := buildRepairReserve(snap, actorID, actorSnap)
 	var items []TradeValueItem
 	seen := make(map[sim.ItemKind]bool)
 	// valueGood appends the wares-worth line for one of the actor's own goods. isResale
@@ -376,6 +412,23 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				shopUnit = hi
 			}
 		}
+		// LLM-609: what of this good is spoken for by the actor's own bench. Keyed
+		// on the recipe EXISTING in the policy, never on it being runnable this
+		// minute: gating on "can he run a batch right now" recreates the LLM-608
+		// deadlock shape from the other side — short of flour, so the water is
+		// unreserved and sold, and by the time the flour is bought the water is
+		// gone. Skipped for a good the mend has already claimed (the repair line
+		// below states a stronger version of the same thing, and two lines on one
+		// stock contradict each other).
+		reserveFloor, reserveHeld := 0, 0
+		var reserveMakes []string
+		mendClaimed := reserve != nil && item == sim.NailItemKind
+		if floor := floors[item]; floor > 0 && !mendClaimed {
+			if held := actorSnap.Inventory[item]; held > 0 {
+				reserveFloor, reserveHeld = floor, held
+				reserveMakes = reservedMakings(snap, actorSnap.RestockPolicy, item)
+			}
+		}
 		seen[item] = true
 		items = append(items, TradeValueItem{
 			ItemLabel:         itemDisplayLabel(snap, item),
@@ -390,6 +443,9 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			AtOrBelowCost:     atOrBelowCost,
 			StrictlyBelowCost: strictlyBelowCost,
 			MakingsMargin:     makingsTier,
+			ReserveFloor:      reserveFloor,
+			ReserveHeld:       reserveHeld,
+			ReserveMakes:      reserveMakes,
 			WholesaleTo:       wholesaleTo,
 			BulkUnit:          bulkUnit,
 			BulkObserved:      bulkObserved,
@@ -406,7 +462,6 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	for _, e := range actorSnap.RestockPolicy.BuyEntries() {
 		valueGood(e.Item, true)
 	}
-	reserve := buildRepairReserve(snap, actorID, actorSnap)
 	if len(items) == 0 && reserve == nil {
 		return nil
 	}
@@ -428,6 +483,58 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		view.SellFirstCoins = c.Coins
 	}
 	return view
+}
+
+// reservedMakings names the goods the actor's own produce recipes make WITH item
+// — the concrete anchor the reservation line is phrased from ("for making your
+// own nails, shovels and skillets"), in policy order and deduped by output kind.
+// Reads the policy's produce entries rather than the recipe catalog at large, so
+// only a recipe the actor is actually set up to run puts a claim on the stock.
+//
+// A durable tool input (a skillet in a stew recipe) is deliberately INCLUDED. It
+// is not consumed by the batch, but selling the last one stops the work just as
+// surely as selling the last flask of water, and the reservation line's phrasing
+// — "for making your stew" — is true of a tool as well as of an ingredient.
+func reservedMakings(snap *sim.Snapshot, policy *sim.RestockPolicy, item sim.ItemKind) []string {
+	if snap == nil || policy == nil {
+		return nil
+	}
+	var makes []string
+	seen := make(map[sim.ItemKind]bool)
+	for _, pe := range policy.ProduceEntries() {
+		if seen[pe.Item] {
+			continue
+		}
+		recipe := snap.Recipes[pe.Item]
+		if recipe == nil {
+			continue
+		}
+		for _, in := range recipe.Inputs {
+			if in.Item != item || in.Qty <= 0 {
+				continue
+			}
+			seen[pe.Item] = true
+			makes = append(makes, sanitizeInline(itemDisplayLabel(snap, pe.Item)))
+			break
+		}
+	}
+	return makes
+}
+
+// makingsList joins the reserved-for labels into a readable series. Local to this
+// cue rather than shared: every list-joining site in the package inlines its own
+// so each can pick the conjunction its sentence needs.
+func makingsList(labels []string) string {
+	switch len(labels) {
+	case 0:
+		return ""
+	case 1:
+		return labels[0]
+	case 2:
+		return labels[0] + " and " + labels[1]
+	default:
+		return strings.Join(labels[:len(labels)-1], ", ") + " and " + labels[len(labels)-1]
+	}
 }
 
 // buildRepairReserve builds the earmarked-nails view (LLM-292), or nil. Non-nil
@@ -473,6 +580,31 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 	b.WriteString("## What your wares fetch\n")
 	b.WriteString("What your wares fetch in coin — use it to set a fair price or weigh a trade:\n")
 	for _, it := range v.Items {
+		// LLM-609: a good the actor's own recipes need is not merchandise. Two
+		// tiers, the shape the repair-reserve line below already uses: at or under
+		// the floor the reservation REPLACES the price entirely (a priced line and
+		// a keep-it line in the same section contradict each other, and the margin
+		// judgment on the price actively argued for the sale — Ezekiel's water read
+		// "selling below your costs loses you coin", which frames a break-even
+		// trade as the problem to solve rather than the sale as the problem);
+		// above it the good keeps its price and states the keep-back, so a maker
+		// who legitimately trades a good it also uses (the dairy selling milk it
+		// also turns into cheese) is not shut out of its own market.
+		//
+		// The stake is named and no imperative is issued — the scene is the
+		// argument. Nothing here blocks the sale; the engine still lets him sell it.
+		if it.ReserveHeld > 0 && it.ReserveHeld <= it.ReserveFloor && len(it.ReserveMakes) > 0 {
+			fmt.Fprintf(b, "- %s: the %d you carry are for making your own %s — makings, not wares. Selling them leaves you nothing to work with.\n",
+				sanitizeInline(it.ItemLabel), it.ReserveHeld, makingsList(it.ReserveMakes))
+			continue
+		}
+		// The surplus clause rides whichever line renders below (retail or
+		// wholesale-channel), so the two can't drift on how a keep-back is spoken.
+		keepBack := ""
+		if it.ReserveFloor > 0 && it.ReserveHeld > it.ReserveFloor && len(it.ReserveMakes) > 0 {
+			keepBack = fmt.Sprintf(" Keep %d back for making your own %s; only the %d beyond that are yours to sell.",
+				it.ReserveFloor, makingsList(it.ReserveMakes), it.ReserveHeld-it.ReserveFloor)
+		}
 		// LLM-291: a wholesale producer's own produce isn't sold retail — it goes
 		// in bulk to the shop that stocks it. Draw the wholesale-channel line (who
 		// buys it, what they pay, where to send other would-be buyers) instead of a
@@ -525,8 +657,8 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 				sentence = strings.ToUpper(sentence[:1]) + sentence[1:]
 			}
 			fmt.Fprintf(b,
-				"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s%s. Send other buyers to %s.\n",
-				label, to, sentence, makingsMarginPhrase(it.MakingsMargin), to,
+				"- %s: your own produce — it sells in bulk to %s, whose shop stocks it for the village, not to folk directly. %s%s. Send other buyers to %s.%s\n",
+				label, to, sentence, makingsMarginPhrase(it.MakingsMargin), to, keepBack,
 			)
 			continue
 		}
@@ -588,7 +720,7 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		if cost := makingsCostPhrase(it); cost != "" {
 			clauses += fmt.Sprintf("; the makings run you %s%s", cost, makingsMarginPhrase(it.MakingsMargin))
 		}
-		fmt.Fprintf(b, "- %s: %s%s.\n", sanitizeInline(it.ItemLabel), worth, clauses)
+		fmt.Fprintf(b, "- %s: %s%s.%s\n", sanitizeInline(it.ItemLabel), worth, clauses, keepBack)
 	}
 	// LLM-292: the earmarked repair nails, last — not a ware with a price but a
 	// holding a buyer's offer must be weighed against. States the obligation and
