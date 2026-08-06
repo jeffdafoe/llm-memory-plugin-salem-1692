@@ -49,11 +49,61 @@ func degradedMaker(onHand int) (*Actor, *World) {
 	return a, w
 }
 
+// TestDegradePredicatesAgreeAcrossTheSnapshot is the cue/warrant parity guard.
+// The warrant half reads the live World (ownerStallDegraded / degradedProduceBlocked);
+// the perception half reads a published Snapshot (perception.ownerBusinessDegraded /
+// ownerBusinessProduceBlocked). Both call the SAME exported primitives —
+// StallDegraded over OwnedWearableStall, against the degrade threshold — so the only
+// way they can ever disagree is the snapshot losing fidelity: a dropped Wear or Tags
+// on the object clone, or a settings field the snapshot builder forgets to carry.
+// This reconstructs the snapshot-side computation exactly as perception performs it
+// and requires the same answer, worn and mended, at both production percentages. It
+// is the test that would fail if someone broke that fidelity, which is the risk
+// LLM-608's split-across-two-packages narrowing actually carries.
+func TestDegradePredicatesAgreeAcrossTheSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		wear       int
+		producePct int
+	}{
+		{"worn, shop limps", 650, 50},
+		{"worn, production hard-blocked", 650, 0},
+		{"mended", 0, 50},
+		{"below threshold", 599, 50},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, w := degradedMaker(3)
+			w.VillageObjects["smiths_shop"].Wear = tc.wear
+			w.Settings.StallDegradedProducePct = tc.producePct
+			w.republish()
+			snap := w.Published()
+
+			// Exactly what perception.ownerBusinessDegraded / ownerBusinessProduceBlocked do.
+			snapDegraded := StallDegraded(OwnedWearableStall(snap.VillageObjects, "smith"), snap.StallWearDegradeThreshold)
+			snapBlocked := snap.StallDegradedProducePct <= 0 && snapDegraded
+
+			if got := ownerStallDegraded(w, "smith"); got != snapDegraded {
+				t.Errorf("degraded: world says %v, snapshot says %v — the two halves would disagree about what may be bought", got, snapDegraded)
+			}
+			if got := degradedProduceBlocked(w, "smith"); got != snapBlocked {
+				t.Errorf("produce-blocked: world says %v, snapshot says %v", got, snapBlocked)
+			}
+		})
+	}
+}
+
 // A degraded maker IS woken to buy the input his own production consumes — the
 // wake that carries him to the water that makes the nail that mends the forge.
 // The representative item must be that input, never the resale good.
+//
+// The supplier here is at his OWN workplace and shares no huddle with the smith,
+// so this is deliberately the WALK-TO case: the arm that breaks the deadlock when
+// nobody happens to be standing in the room, and the one this fix keeps on purpose.
 func TestEvaluateRestock_DegradedWarrantsProductionInput(t *testing.T) {
 	a, w := degradedMaker(3) // 3/20 = 15% < 25% on both items
+	if a.CurrentHuddleID != "" || w.Actors["potter"].CurrentHuddleID != "" {
+		t.Fatal("fixture drift: this case must exercise the walk-to arm, with no co-present seller")
+	}
 	now := time.Now().UTC()
 
 	res, err := EvaluateRestock(now).Fn(w)

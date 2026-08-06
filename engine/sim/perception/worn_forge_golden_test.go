@@ -152,11 +152,19 @@ func smithMendedForgeOutOfWater() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 // failure here means the exit LLM-446 built has been closed again.
 func TestGoldensWornBusinessKeepsItsProductionInputs(t *testing.T) {
 	out := renderScenario(perceptionScenario{name: "smith_worn_forge_out_of_water", build: smithWornForgeOutOfWater})
-	if !strings.Contains(out, "## Restocking") {
+	section := restockingSection(out)
+	if section == "" {
 		t.Fatalf("worn forge: the restocking section vanished — the smith has no route to his own inputs:\n%s", out)
 	}
-	if !strings.Contains(strings.ToLower(out), "water") {
-		t.Errorf("worn forge: water is not named anywhere — the input the mend depends on is invisible:\n%s", out)
+	// Scoped to the SECTION, and to the destination: "## Keeping up production"
+	// also says the word water, and it is precisely the section that says where to
+	// GET the water that the degrade gate used to remove. Asserting on the whole
+	// prompt would have passed against the very bug this pins.
+	if !strings.Contains(strings.ToLower(section), "water") {
+		t.Errorf("worn forge: the narrowed section does not name water — the input the mend depends on:\n%s", section)
+	}
+	if !strings.Contains(section, "destination: general_store") {
+		t.Errorf("worn forge: no walk-to destination for the input, so the cue names a want with nowhere to act on it:\n%s", section)
 	}
 	// The shelves still wait: the lead must not invite a shelf restock, because
 	// "## Your business" says in the same prompt that he cannot until he mends.
@@ -166,7 +174,7 @@ func TestGoldensWornBusinessKeepsItsProductionInputs(t *testing.T) {
 	// The resale control good stays suppressed — this is a narrowing of LLM-304,
 	// not a repeal of it. Scoped to the SECTION, not the whole prompt: the smith is
 	// carrying a set of linens, so "## You" names them either way.
-	if section := restockingSection(out); strings.Contains(strings.ToLower(section), "linens") {
+	if strings.Contains(strings.ToLower(section), "linens") {
 		t.Errorf("worn forge: resale stock leaked into the narrowed section:\n%s", section)
 	}
 	// And the foil: mended, the same resale good IS in the directory — otherwise
