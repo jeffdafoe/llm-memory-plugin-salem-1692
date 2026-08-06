@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -29,7 +30,8 @@ func TestDecodeOfferTrade_Valid(t *testing.T) {
         "give":[{"item":"milk","qty":5},{"item":"cheese","qty":2}],
         "coins":3,
         "want_item":"bread","want_qty":5,
-        "for":"a fair swap"
+        "for":"a fair swap",
+        "say":"Five jugs of milk and three coins for your bread, if that suits."
     }`)
 	decoded, err := DecodeOfferTradeArgs(raw)
 	if err != nil {
@@ -61,6 +63,57 @@ func TestDecodeOfferTrade_Valid(t *testing.T) {
 	}
 	if got.For != "a fair swap" {
 		t.Errorf("For = %q, want %q", got.For, "a fair swap")
+	}
+	if want := "Five jugs of milk and three coins for your bread, if that suits."; got.Say != want {
+		t.Errorf("Say = %q, want %q (say → Say; a barter offer must be able to carry words)", got.Say, want)
+	}
+}
+
+// TestDecodeOfferTrade_SayIsOptional — say stays optional, so a wordless offer
+// still decodes. This is the shape every offer_trade took before the field
+// existed; it must keep working.
+func TestDecodeOfferTrade_SayIsOptional(t *testing.T) {
+	decoded, err := DecodeOfferTradeArgs(json.RawMessage(`{
+        "with":"Josiah Thorne","give":[{"item":"milk","qty":2}],
+        "want_item":"water","want_qty":4
+    }`))
+	if err != nil {
+		t.Fatalf("wordless decode: %v", err)
+	}
+	if got := decoded.(PayWithItemArgs).Say; got != "" {
+		t.Errorf("Say = %q, want empty for an omitted say", got)
+	}
+}
+
+// TestDecodeOfferTrade_SayGuards — say lands on the same utterance path as
+// speak and pay_with_item's say, so it inherits both guards: the rune cap
+// (LLM-350) and the mojibake check (LLM-235). A tool that accepted unbounded
+// or mangled text here would put it straight into another villager's prompt.
+func TestDecodeOfferTrade_SayGuards(t *testing.T) {
+	base := `{"with":"Josiah Thorne","give":[{"item":"milk","qty":2}],"want_item":"water","want_qty":4,"say":%q}`
+
+	over := strings.Repeat("a", MaxSpeakTextChars+1)
+	if _, err := DecodeOfferTradeArgs(json.RawMessage(fmt.Sprintf(base, over))); err == nil {
+		t.Errorf("say of %d runes accepted, want rejection at the %d cap", len(over), MaxSpeakTextChars)
+	}
+
+	atCap := strings.Repeat("a", MaxSpeakTextChars)
+	if _, err := DecodeOfferTradeArgs(json.RawMessage(fmt.Sprintf(base, atCap))); err != nil {
+		t.Errorf("say exactly at the %d cap rejected: %v", MaxSpeakTextChars, err)
+	}
+
+	// Both spellings of the corruption reach checkUtteranceText as the same
+	// rune: a literal U+FFFD byte in the payload, and the JSON escape form a model is
+	// more likely to emit. Cover both so neither form slips the guard.
+	corrupt := json.RawMessage(`{"with":"Josiah Thorne","give":[{"item":"milk","qty":2}],` +
+		`"want_item":"water","want_qty":4,"say":"a corrupted � word"}`)
+	if _, err := DecodeOfferTradeArgs(corrupt); err == nil {
+		t.Error("literal U+FFFD in say accepted, want the checkUtteranceText rejection")
+	}
+	corrupt = json.RawMessage(`{"with":"Josiah Thorne","give":[{"item":"milk","qty":2}],` +
+		`"want_item":"water","want_qty":4,"say":"a corrupted \uFFFD word"}`)
+	if _, err := DecodeOfferTradeArgs(corrupt); err == nil {
+		t.Error("corrupted say accepted, want the checkUtteranceText rejection speak and pay_with_item both apply")
 	}
 }
 
@@ -281,6 +334,35 @@ func TestCommitResultContent_OfferTradeSteer(t *testing.T) {
 	}
 }
 
+// TestCommitResultContent_OfferTradeEchoesSay — the proposer's own words come
+// back in the steer, the same echo pay_with_item gets. Without this the model
+// has no confirmation its line was actually spoken, and offer_trade's whole
+// reason to exist is that a barter proposal reads as a scene rather than a
+// silent shuffle of goods.
+func TestCommitResultContent_OfferTradeEchoesSay(t *testing.T) {
+	decoded, err := DecodeOfferTradeArgs(json.RawMessage(`{
+        "with":"Joseph Scott","give":[{"item":"milk","qty":2}],
+        "want_item":"water","want_qty":4,
+        "say":"Two jugs of milk for four of your water, if that suits."
+    }`))
+	if err != nil {
+		t.Fatalf("DecodeOfferTradeArgs: %v", err)
+	}
+	vc := &ValidatedCall{Name: "offer_trade", DecodedArgs: decoded.(PayWithItemArgs)}
+
+	got := commitResultContent(vc, sim.PayWithItemResult{Announced: true})
+	if want := `You said: "Two jugs of milk for four of your water, if that suits."`; !strings.Contains(got, want) {
+		t.Errorf("steer missing the spoken echo %q\ngot: %s", want, got)
+	}
+
+	// Refused speech must be reported, not silently dropped — the proposer
+	// needs to know the offer went over wordless.
+	got = commitResultContent(vc, sim.PayWithItemResult{Announced: false, SayRefused: "you are walking"})
+	if !strings.Contains(got, "went unsaid") {
+		t.Errorf("steer hides a refused say\ngot: %s", got)
+	}
+}
+
 // TestHarness_OfferTradeDedup_RejectsRepeatAcrossRounds — the end-to-end
 // storm guard through RunTick: a proposer that re-offers the same trade on a
 // later round (drifting coins) is blocked before dispatch, exactly as
@@ -332,14 +414,71 @@ func TestHarness_OfferTradeDedup_RejectsRepeatAcrossRounds(t *testing.T) {
 // offerTradeJSON builds an offer_trade tool-call payload. give is a single
 // item+qty line (the common one-for-one swap); coins is added when > 0.
 func offerTradeJSON(with, wantItem string, wantQty int, giveItem string, giveQty, coins int) string {
+	return offerTradeJSONSaying(with, wantItem, wantQty, giveItem, giveQty, coins, "")
+}
+
+// offerTradeJSONSaying is offerTradeJSON with a spoken line, for the tests that
+// care whether say survives the registry → decode → dispatch path.
+func offerTradeJSONSaying(with, wantItem string, wantQty int, giveItem string, giveQty, coins int, say string) string {
 	b, _ := json.Marshal(offerTradeArgs{
 		With:     with,
 		Give:     []payItemArg{{Item: giveItem, Qty: giveQty}},
 		Coins:    coins,
 		WantItem: wantItem,
 		WantQty:  wantQty,
+		Say:      say,
 	})
 	return string(b)
+}
+
+// TestHarness_OfferTradeSayReachesDispatch — the say survives the whole
+// registry path, not just DecodeOfferTradeArgs in isolation: RunTick dispatches
+// a real offer_trade tool call and the handler receives the spoken line on the
+// lowered PayWithItemArgs. Constructing a ValidatedCall by hand (as the steer
+// test does) bypasses exactly this stretch, which is where a lowering that
+// dropped the field would still look fine.
+func TestHarness_OfferTradeSayReachesDispatch(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	const spoken = "Two jugs of milk for four of your water, if that suits."
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
+			newToolCall("c1", 0, "offer_trade", offerTradeJSONSaying("Joseph Scott", "water", 4, "milk", 2, 0, spoken))}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "done", `{}`)}}},
+	)
+
+	r := NewRegistry()
+	var gotSay string
+	var dispatched int
+	tradeFn := func(_ context.Context, in HandlerInput) (string, error) {
+		args, ok := in.Args.(PayWithItemArgs)
+		if !ok {
+			return "", errors.New("offer_trade test handler: unexpected args type")
+		}
+		dispatched++
+		gotSay = args.Say
+		return "[offer: ok]", nil
+	}
+	if err := r.RegisterObservation("offer_trade", offerTradeSchema, DecodeOfferTradeArgs, tradeFn, WithDescription(offerTradeDescription)); err != nil {
+		t.Fatalf("register offer_trade: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("register done: %v", err)
+	}
+	h, err := NewHarness(HarnessConfig{Client: client, Registry: r})
+	if err != nil {
+		t.Fatalf("NewHarness: %v", err)
+	}
+
+	h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if dispatched != 1 {
+		t.Fatalf("offer_trade dispatched %d times, want 1", dispatched)
+	}
+	if gotSay != spoken {
+		t.Errorf("handler received Say = %q, want %q — the spoken line was lost between the tool call and dispatch", gotSay, spoken)
+	}
 }
 
 // TestRegisterOfferTrade_IsTerminalOnSuccess — LLM-184. offer_trade shares the

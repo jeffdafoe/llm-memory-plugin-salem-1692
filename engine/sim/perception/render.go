@@ -2350,7 +2350,7 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 	// travel" keeps the cue off eat-here food (a bowl of porridge in a buyer's
 	// hands is a meal mid-eating, not trade stock) — asking for one is rejected
 	// at resolvePayItems (LLM-445), so don't advertise it.
-	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin — goods that travel, not a meal served to eat here — you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them. They are then free to accept, decline, or counter.\n")
+	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin — goods that travel, not a meal served to eat here — you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them, and the words you speak aloud in say. Do not put the trade to them with the speak tool: speaking ends your turn, and the offer would never be made. They are then free to accept, decline, or counter.\n")
 	fmt.Fprintf(b, "Your goods to sell: %s.\n", strings.Join(goods, ", "))
 	// LLM-171: a co-present customer who MAKES one of these goods is the wrong
 	// person to pitch it to — your stock of it came from a maker like them. Name

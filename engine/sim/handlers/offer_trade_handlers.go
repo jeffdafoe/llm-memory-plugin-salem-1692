@@ -35,6 +35,7 @@ import (
 //   - coins:      optional coins you add to your side
 //   - want_item:  the single good you want from them
 //   - want_qty:   how many
+//   - say:        what you speak aloud as you put the trade to them
 //
 // The decoder LOWERS those onto a PayWithItemArgs — proposer becomes the
 // buyer-role, `want` becomes the bought item (flows counterparty→proposer
@@ -65,6 +66,7 @@ type offerTradeArgs struct {
 	WantItem string      `json:"want_item"`
 	WantQty  int         `json:"want_qty"`
 	For      string      `json:"for"`
+	Say      string      `json:"say"`
 }
 
 var offerTradeSchema = json.RawMessage(`{
@@ -113,6 +115,11 @@ var offerTradeSchema = json.RawMessage(`{
             "type": "string",
             "maxLength": 200,
             "description": "Optional brief note describing what the trade is for."
+        },
+        "say": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "What you say aloud as you put the trade to them, in your own voice (e.g. 'Two jugs of milk for four of your water, if that suits.'). Spoken to the person you are trading with. Optional: omit to offer without a word."
         }
     },
     "required": ["with", "want_item", "want_qty"],
@@ -122,6 +129,7 @@ var offerTradeSchema = json.RawMessage(`{
 const offerTradeDescription = "Propose a direct trade (barter) with someone in your current conversation: hand over goods you carry — and/or coins — in exchange for goods they have. " +
 	"Set `with` (their name), `give` (the goods you hand over), optional `coins`, and `want_item` + `want_qty` (what you want from them). " +
 	"This places a pending offer they can accept, decline, or counter; when they accept, both sides' goods change hands at once. " +
+	"Say your piece in the same breath by passing `say` — do NOT speak first and then call this, because speaking ends your turn and the offer would never be made. " +
 	"Use this whenever you want something another villager is carrying. To sell your own wares to a buyer for coins, use sell instead."
 
 // DecodeOfferTradeArgs parses the raw offer_trade tool-call arguments,
@@ -138,6 +146,7 @@ const offerTradeDescription = "Propose a direct trade (barter) with someone in y
 //   - want_qty   → Qty
 //   - coins      → Amount    (coins the proposer adds)
 //   - give       → PayItems  (what flows proposer→counterparty on accept)
+//   - say        → Say       (the proposer's spoken line, carried with the offer)
 //   - consume_now is forced false (handover into inventory, not eat-here);
 //     consumers / quote_id / in_response_to / ready_in_days are all unused.
 func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
@@ -217,6 +226,15 @@ func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 			MaxPayWithItemForChars, n,
 		)
 	}
+	// say shares speak's rune cap and mojibake guard — it lands on the same
+	// utterance path as pay_with_item's say (LLM-350 / LLM-235).
+	if n := utf8.RuneCountInString(args.Say); n > MaxSpeakTextChars {
+		return nil, modelSafef(
+			"offer_trade: say exceeds %d-character cap (got %d characters)", MaxSpeakTextChars, n)
+	}
+	if err := checkUtteranceText("offer_trade", "say", args.Say); err != nil {
+		return nil, err
+	}
 
 	// Lower onto the buyer-centric PayWithItemArgs. HandlePayWithItem owns
 	// the remaining trim / control-char / huddle-bootstrap work and builds
@@ -229,6 +247,7 @@ func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 		ConsumeNow: false,
 		PayItems:   args.Give,
 		For:        args.For,
+		Say:        args.Say,
 	}, nil
 }
 
