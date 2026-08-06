@@ -316,7 +316,11 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// payment. Gated on an audience because the rule is about what you give
 	// someone: with no one within earshot there is no one to pay, and a standing
 	// line on every solo walking turn is noise the whole prompt pays for.
-	p.KeeperAwayFromPost = p.Businessowner && !p.AtOwnBusiness &&
+	// WorkStructureID != "" is required, not implied by !AtOwnBusiness: a
+	// businessowner with no post configured is not "away from" one, and telling it
+	// its goods come off its own shelf names a shelf that does not exist. Silence
+	// is the safer reading of a malformed keeper.
+	p.KeeperAwayFromPost = p.Businessowner && actorSnap.WorkStructureID != "" && !p.AtOwnBusiness &&
 		(len(p.Surroundings.HuddleMembers) > 0 || len(p.Surroundings.CoPresent) > 0)
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)

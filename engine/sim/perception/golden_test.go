@@ -4072,9 +4072,11 @@ var perceptionScenarios = []perceptionScenario{
 	{
 		name: "keeper_off_post_buying_alone",
 		summary: "LLM-611 audience arm: the same shopkeeper off his own post with the same pack and purse, but with nobody " +
-			"within earshot — walking between places. The golden pins silence. The rule is about what you hand to " +
-			"someone; with no one to pay there is nothing to weigh, and a standing line on every solo walking turn is " +
-			"noise the whole prompt pays for. Foil of keeper_off_post_buying_in_company.",
+			"within earshot — the seller is indoors in her own farmhouse, so her whereabouts is the single variable " +
+			"between the two arms (the extra 'the Ellis Farm is shut' line is a consequence of that move, not a second " +
+			"knob — a farm with its keeper indoors elsewhere IS untended). The golden pins silence. The rule is about " +
+			"what you hand to someone; with no one to pay there is nothing to weigh, and a standing line on every solo " +
+			"walking turn is noise the whole prompt pays for. Foil of keeper_off_post_buying_in_company.",
 		build: keeperOffPostBuyingAlone,
 	},
 }
@@ -7566,11 +7568,20 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 //     future fixture that happens to put a keeper off-post can't drift out of
 //     coverage silently.
 //
-//  2. The two trade blocks are MUTUALLY EXCLUSIVE — no prompt ever carries both the
-//     at-post conduct block and the off-post buy rule. This is the WORK-385 guard in
-//     structural form: the off-post rule exists precisely because the at-post block
-//     must not follow the keeper into someone else's place, so the day one of them
-//     leaks into the other's situation, this fails.
+//  2. For any Payload produced by Build, the two trade blocks are MUTUALLY EXCLUSIVE
+//     — no prompt carries both the at-post conduct block and the off-post buy rule.
+//     This is the WORK-385 guard in structural form: the off-post rule exists
+//     precisely because the at-post block must not follow the keeper into someone
+//     else's place, so the day one of them leaks into the other's situation, this
+//     fails. Scoped to Build deliberately: Payload is an internal struct and a
+//     hand-built one setting both flags would render both blocks. Nothing enforces
+//     that at the type level, and this test does not claim otherwise.
+//
+// A businessowner with NO WorkStructureID is expected ABSENT — it is not away from a
+// post it does not have, and the rule would name a shelf that does not exist. That is
+// a malformed keeper rather than a situation the village produces, so the branch is
+// asserted by the predicate below rather than by a fixture; a golden for it would pin
+// an invalid world state as though the engine were meant to reach it.
 func TestKeeperBuyRuleOnlyOffPostWithCompany(t *testing.T) {
 	const (
 		buyMarker   = "How you buy:"
@@ -7586,17 +7597,20 @@ func TestKeeperBuyRuleOnlyOffPostWithCompany(t *testing.T) {
 				return
 			}
 			p := Build(snap, actorID, warrants)
-			atOwnPost := a.BusinessownerState != nil && a.WorkStructureID != "" &&
-				a.InsideStructureID == a.WorkStructureID
+			hasPost := a.BusinessownerState != nil && a.WorkStructureID != ""
+			atOwnPost := hasPost && a.InsideStructureID == a.WorkStructureID
+			// Both collections exclude the subject at their source (build.go skips
+			// memberID == actorID; sim.colocatedAudienceIDs skips the speaker), so a
+			// non-empty either way means somebody ELSE is within earshot.
 			hasCompany := len(p.Surroundings.HuddleMembers) > 0 || len(p.Surroundings.CoPresent) > 0
-			want := a.BusinessownerState != nil && !atOwnPost && hasCompany
+			want := hasPost && !atOwnPost && hasCompany
 			if want {
 				exercised = true
 			}
 			got := combinedPrompt(Render(p, DefaultRenderConfig()))
 			if has := strings.Contains(got, buyMarker); has != want {
-				t.Errorf("scenario %q: buyer-side rule present=%v, want %v (businessowner=%v atOwnPost=%v company=%v)",
-					sc.name, has, want, a.BusinessownerState != nil, atOwnPost, hasCompany)
+				t.Errorf("scenario %q: buyer-side rule present=%v, want %v (businessowner=%v hasPost=%v atOwnPost=%v company=%v)",
+					sc.name, has, want, a.BusinessownerState != nil, hasPost, atOwnPost, hasCompany)
 			}
 			if strings.Contains(got, buyMarker) && strings.Contains(got, tradeMarker) {
 				t.Errorf("scenario %q: prompt carries BOTH the at-post trade block and the off-post buy rule — they are mutually exclusive (LLM-611/WORK-385)", sc.name)
@@ -7605,6 +7619,25 @@ func TestKeeperBuyRuleOnlyOffPostWithCompany(t *testing.T) {
 	}
 	if !exercised {
 		t.Error("no scenario puts a businessowner off its own post with company — the LLM-611 positive arm is uncovered")
+	}
+}
+
+// TestKeeperOffPostAloneHasNoAudience pins the foil half of the LLM-611 pair at the
+// level the gate actually reads. keeper_off_post_buying_alone proves silence, but a
+// golden showing no "How you buy:" line cannot distinguish "no audience" from "the
+// gate broke" — both render the same bytes. This asserts the fixture's own premise:
+// the seller is in the world, and neither audience collection reaches her.
+func TestKeeperOffPostAloneHasNoAudience(t *testing.T) {
+	snap, actorID, warrants := keeperOffPostBuyingAlone()
+	if len(snap.Actors) < 2 {
+		t.Fatal("the alone fixture must keep the seller in the world — moving her, not deleting her, is what makes it a one-variable foil")
+	}
+	p := Build(snap, actorID, warrants)
+	if n := len(p.Surroundings.HuddleMembers); n != 0 {
+		t.Errorf("HuddleMembers = %d, want 0 — the alone arm must have nobody within earshot", n)
+	}
+	if n := len(p.Surroundings.CoPresent); n != 0 {
+		t.Errorf("CoPresent = %d, want 0 — the alone arm must have nobody within earshot", n)
 	}
 }
 
@@ -17619,6 +17652,7 @@ func keeperOffPostBuying(withCompany bool) (*sim.Snapshot, sim.ActorID, []sim.Wa
 		store       = sim.StructureID("general_store")
 		farm        = sim.StructureID("ellis_farm")
 		home        = sim.StructureID("thorne_residence")
+		farmhouse   = sim.StructureID("ellis_farmhouse")
 		huddle      = sim.HuddleID("h1")
 	)
 	start, end := 360, 1260 // 06:00–21:00
@@ -17663,17 +17697,21 @@ func keeperOffPostBuying(withCompany bool) (*sim.Snapshot, sim.ActorID, []sim.Wa
 			home:  plainStructure(home, "Thorne Residence"),
 		},
 	}
+	// Elizabeth stays in the world in BOTH arms — only her whereabouts move. Deleting
+	// her would change actor discovery and relationship rendering as well as the
+	// audience, so the foil could shift for reasons that have nothing to do with this
+	// gate. Alone, she is inside her own farmhouse: a different structure, so neither
+	// the huddle roster nor the co-located audience reaches her.
+	josiah.Acquaintances = map[string]sim.Acquaintance{"Elizabeth Ellis": {}}
 	if withCompany {
 		josiah.CurrentHuddleID = huddle
 		elizabeth.CurrentHuddleID = huddle
-		josiah.Acquaintances = map[string]sim.Acquaintance{"Elizabeth Ellis": {}}
 		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
 			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josiahID: {}, elizabethID: {}}},
 		}
 	} else {
-		// Alone on the road: move the seller out of earshot entirely rather than only
-		// dropping the huddle, so neither HuddleMembers nor CoPresent picks her up.
-		delete(snap.Actors, elizabethID)
+		elizabeth.InsideStructureID = farmhouse
+		snap.Structures[farmhouse] = plainStructure(farmhouse, "Ellis Farmhouse")
 	}
 	return snap, josiahID, nil
 }

@@ -296,9 +296,10 @@ type Payload struct {
 	// block it feeds isn't rendered then.
 	VendorTradeSlow bool
 
-	// KeeperAwayFromPost is the complement of AtOwnBusiness for a businessowner:
-	// true iff the subject runs a business, is NOT at it, and has someone within
-	// earshot to deal with (LLM-611). It gates renderKeeperAwayFromPost — the
+	// KeeperAwayFromPost is the off-post counterpart of AtOwnBusiness: true iff the
+	// subject runs a business, HAS a post (WorkStructureID set — a keeper with none
+	// is not away from one), is not at it, and has someone within earshot to deal
+	// with (LLM-611). It gates renderKeeperAwayFromPost — the
 	// buyer-side conduct rule, which is the ONLY trade guidance a keeper carries
 	// off its own post. The trade-conduct block (renderVendorOperating) is
 	// deliberately at-post only, so a keeper out buying stock had no rule about

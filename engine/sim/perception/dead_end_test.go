@@ -154,6 +154,12 @@ func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 		// point of the scenario, since the live cue alone is what the village had
 		// while the trail stayed silent.
 		"turned_away_outdoors_at_shut_tavern": true,
+		// LLM-611 foil: Josiah stands in the Ellis Farm while Elizabeth is indoors in
+		// her farmhouse — that is what "nobody within earshot" looks like from inside
+		// someone else's business, so the shut cue is correct here. It is incidental
+		// to what that scenario pins (the buy rule's audience gate); the alternative
+		// was deleting her from the world, which made a worse foil.
+		"keeper_off_post_buying_alone": true,
 	}
 	var sawUntended, sawTended bool
 	for _, sc := range perceptionScenarios {
