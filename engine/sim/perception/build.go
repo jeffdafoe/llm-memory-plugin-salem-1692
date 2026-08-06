@@ -1759,7 +1759,7 @@ func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSn
 		return "", "", false // mid a source-activity window — a fresh gather bounces "already busy at the source"
 	}
 	low := sim.LowForageItems(a.RestockPolicy, a.Inventory, snap.RestockReorderPct)
-	_, obj, row := sim.ResolveGatherSource(snap.VillageObjects, snap.Assets, a.Pos, subjectID, a.GatherTargetObjectID, low)
+	_, obj, row := sim.ResolveGatherSource(snap.VillageObjects, snap.Assets, a.Pos, subjectID, a.GatherTargetObjectID, low, sim.ForageItems(a.RestockPolicy))
 	if obj == nil || row == nil || obj.OwnedByOther(subjectID) {
 		return "", "", false
 	}

@@ -2262,8 +2262,31 @@ var perceptionScenarios = []perceptionScenario{
 			"the General Store nearby — the LLM-113 situation (Ezekiel at the Raspberry Bush with buy options). The " +
 			"golden pins the count-aware catalog phrasing the singular/plural labels drive: the gather cue 'you can " +
 			"gather raspberries here', and the buy cue 'buy a wedge of cheese' (the period measure phrase with an " +
-			"indefinite article) rather than the bare 'buy Cheese'. A regression in the label model flips those lines.",
+			"indefinite article) rather than the bare 'buy Cheese'. A regression in the label model flips those lines. " +
+			"It also pins the free-eat line beside the paid one — a wild bush is PICK-AND-EAT, so a hungry man sees " +
+			"food he can take as well as food he can buy (LLM-610 corrected the fixture's row from forage-to-sell, " +
+			"which no live wild bush is, and the free-eat line appeared with it).",
 		build: hungryForagerAtStockedBush,
+	},
+	{
+		name: "smith_at_commons_well_may_not_draw",
+		summary: "LLM-610 paying arm: Ezekiel Crane the smith stands ON the village well's tile, on shift, with " +
+			"493 coins. The well is UNOWNED and carries the shipped two-row shape — an infinite drink row and a " +
+			"separate yield-only carry row holding 20 pails. He forages firewood and BUYS water, which is not a " +
+			"licence to draw it. The golden pins SILENCE on the gather: no 'you can gather water here'. Because " +
+			"GatherableItem is also what advertises the `gather` tool (gateTools: atGatherableSource), cue and tool " +
+			"vanish together. The live case, 2026-08-06: he walked to the well needing one pail to finish a nail, " +
+			"and the engine had nothing to stop fourteen such actors from stripping the mill's supply — 58 pails " +
+			"between them. Drinking is untouched: that is the OTHER row, which carries no gather item at all.",
+		build: smithAtCommonsWellMayNotDraw,
+	},
+	{
+		name: "water_drawer_at_commons_well_may_draw",
+		summary: "LLM-610 foil, and the arm that proves the gate protects rather than starves: the SAME well on the " +
+			"SAME tile, but the subject holds `forage water`. The golden pins the gather cue present — 'you can " +
+			"gather water here'. A fix that refused everyone would pass the paying arm above and still break the " +
+			"village, so the pair has to move in opposite directions.",
+		build: waterDrawerAtCommonsWellMayDraw,
 	},
 	{
 		name: "hungry_holding_nibble_sees_meal_vendor",
@@ -9567,7 +9590,13 @@ func hungryForagerAtStockedBush() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 				LoiterOffsetX: &zero,
 				LoiterOffsetY: &zero,
 				Refreshes: []*sim.ObjectRefresh{
-					{Attribute: "hunger", Amount: 0, GatherItem: "raspberries", AvailableQuantity: intp(3)},
+					// PICK-AND-EAT (Amount < 0), as the live unowned berry bushes are:
+					// wild food anyone may take, no forage trade required. It was
+					// authored Amount 0 (forage-to-sell), which no live wild bush is,
+					// and LLM-610 made that inaccuracy load-bearing — a yield-only row
+					// would now need a trade this forager has no restock policy to
+					// carry. Amount is -(hunger satisfied by one raspberry), per LLM-87.
+					{Attribute: "hunger", Amount: -2, GatherItem: "raspberries", AvailableQuantity: intp(3)},
 				},
 			},
 		},
@@ -17490,4 +17519,113 @@ func smithWornClothesOffShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	snap.Actors[actorID].ScheduleStartMin = &eveStart
 	snap.Actors[actorID].ScheduleEndMin = &eveEnd
 	return snap, actorID, warrants
+}
+
+// commonsWellScenario builds the SHIPPED well (LLM-254) with one actor standing
+// at it: an infinite drink row carrying NO GatherItem, plus a separate finite
+// yield-only carry row. Parameterized by the subject's restock manifest so the
+// paired goldens differ in exactly one variable — whether he holds the trade.
+//
+// Unowned, so ownership grants nothing and the LLM-610 permission gate is the
+// only thing deciding whether a pail is on offer.
+func commonsWellScenario(policy *sim.RestockPolicy) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const subjectID = sim.ActorID("ezekiel")
+	zero := 0
+	start, end := 420, 960 // 07:00–16:00
+	now := 780             // 13:00 — on shift
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	subject := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCStateful,
+		DisplayName:      "Ezekiel Crane",
+		Role:             "blacksmith",
+		State:            sim.StateIdle,
+		Pos:              wellPin,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            493,
+		Needs:            map[sim.NeedKey]int{},
+		RestockPolicy:    policy,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{subjectID: subject},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water": {
+				Name:         "water",
+				Capabilities: []string{"portable"}, DisplayLabel: "Water",
+				DisplayLabelSingular: "pail of water", DisplayLabelPlural: "pails of water",
+				Category:  sim.ItemCategoryDrink,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 8}},
+			},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"village_well": {
+				ID:            "village_well",
+				DisplayName:   "Village Well",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "thirst", Amount: -8}, // drink: infinite, ungathered
+					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)}, // carry: yield-only
+				},
+			},
+		},
+	}
+	return snap, subjectID, nil
+}
+
+// smithAtCommonsWellMayNotDraw — the live 2026-08-06 situation. He BUYS water
+// (a buy entry is not a licence to draw), and forages only firewood.
+func smithAtCommonsWellMayNotDraw() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return commonsWellScenario(&sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "firewood", Source: sim.RestockSourceForage, Max: 10},
+		{Item: "water", Source: sim.RestockSourceBuy, Max: 12},
+	}})
+}
+
+// waterDrawerAtCommonsWellMayDraw — the same well, the same tile, the role holder.
+func waterDrawerAtCommonsWellMayDraw() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return commonsWellScenario(&sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+	}})
+}
+
+// TestGoldensNeverOfferAGatherWithoutTheTrade is the LLM-610 cross-scenario
+// invariant. Across the WHOLE matrix: if a scene offers a gather, the resolved
+// source must be one the subject may actually take from — a pick-and-eat commons,
+// something he owns, or a yield-only source whose item is in his forage manifest.
+//
+// The property, not the instance: the smith-at-the-well golden pins one scene, and
+// this pins that no scenario anyone adds later can quietly reintroduce the leak.
+func TestGoldensNeverOfferAGatherWithoutTheTrade(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			p := Build(snap, actorID, warrants)
+			if p.Surroundings.GatherableItem == "" {
+				return // no gather on offer — nothing to check
+			}
+			a := snap.Actors[actorID]
+			if a == nil {
+				t.Fatalf("scenario %q has no subject actor", sc.name)
+			}
+			_, obj, row := sim.ResolveGatherSource(
+				snap.VillageObjects, snap.Assets, a.Pos, actorID, a.GatherTargetObjectID,
+				sim.LowForageItems(a.RestockPolicy, a.Inventory, snap.RestockReorderPct),
+				sim.ForageItems(a.RestockPolicy))
+			if row == nil {
+				t.Fatalf("cue offers %q but the shared resolution finds no source — cue and command have diverged",
+					p.Surroundings.GatherableItem)
+			}
+			if !sim.MayGatherSource(obj, row, actorID, sim.ForageItems(a.RestockPolicy)) {
+				t.Errorf("scene offers a gather of %q from %q the subject may not take: yield-only=%v, owner=%q, forage set=%v",
+					p.Surroundings.GatherableItem, p.Surroundings.GatherableSource,
+					row.IsYieldOnly(), obj.OwnerActorID, sim.ForageItems(a.RestockPolicy))
+			}
+		})
+	}
 }
