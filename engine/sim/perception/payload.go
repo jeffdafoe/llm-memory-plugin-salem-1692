@@ -296,6 +296,18 @@ type Payload struct {
 	// block it feeds isn't rendered then.
 	VendorTradeSlow bool
 
+	// KeeperAwayFromPost is the complement of AtOwnBusiness for a businessowner:
+	// true iff the subject runs a business, is NOT at it, and has someone within
+	// earshot to deal with (LLM-611). It gates renderKeeperAwayFromPost — the
+	// buyer-side conduct rule, which is the ONLY trade guidance a keeper carries
+	// off its own post. The trade-conduct block (renderVendorOperating) is
+	// deliberately at-post only, so a keeper out buying stock had no rule about
+	// value at all, and paid for stock with merchandise valued at whatever the
+	// seller granted. Carrying only the valuation clause — never a selling
+	// imperative — is what keeps this from reviving the WORK-385 sell-pressure
+	// (a keeper pitching its wares as a customer in someone else's place).
+	KeeperAwayFromPost bool
+
 	// OfferableCustomers is the seller-side "offer your wares" cue
 	// (ZBBS-HOME-404): non-nil when the subject is a businessowner co-present
 	// with one or more customers it could proactively offer goods to. Carries

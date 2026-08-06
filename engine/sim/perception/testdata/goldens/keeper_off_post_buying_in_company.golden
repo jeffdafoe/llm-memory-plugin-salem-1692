@@ -1,0 +1,25 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 1.
+You are carrying: carrots (x4), firewood (x2), flour (x12), milk (x2).
+
+How you buy:
+- Goods you hand over in payment come off your own shelf — count them at what they would fetch, not what they cost you.
+
+## Around you
+You are inside the Ellis Farm, with Elizabeth Ellis.
+It is midday.
+
+You keep your trade at the General Store (destination: general_store), and your home is at the Thorne Residence (destination: thorne_residence).
+
+It is your working hours, yet you are away from your post — make your way to the General Store (destination: general_store) now.
+
+## Coin between you and those here, this past week
+- No coin has passed between you and Elizabeth Ellis.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

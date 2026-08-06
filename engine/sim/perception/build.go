@@ -310,6 +310,14 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// slow — an engine judgment off the keeper's weekly sell-through, not a model
 	// guess. Unconditional, it was a standing licence to discount.
 	p.VendorTradeSlow = p.AtOwnBusinessOperating && keeperTradeSlow(snap, actorID, actorSnap)
+	// LLM-611: the off-post complement. A keeper away from its own business is
+	// there to BUY, and the at-post trade block does not follow it — so nothing
+	// told it what the goods in its own pack are worth when it hands them over as
+	// payment. Gated on an audience because the rule is about what you give
+	// someone: with no one within earshot there is no one to pay, and a standing
+	// line on every solo walking turn is noise the whole prompt pays for.
+	p.KeeperAwayFromPost = p.Businessowner && !p.AtOwnBusiness &&
+		(len(p.Surroundings.HuddleMembers) > 0 || len(p.Surroundings.CoPresent) > 0)
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
 	// LLM-572: the record behind the impression. Built right beside Relationships

@@ -250,6 +250,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// stops re-billing cold inside the volatile per-tick body.
 	renderNarrativeState(&stable, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusinessOperating, p.VendorTradeSlow)
+	renderKeeperAwayFromPost(&ephemeral, p.KeeperAwayFromPost)
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors, p.DutySteer != nil && p.DutySteer.AtPost, p.Surroundings.InsideStructureID)
 	renderDutySteer(&ephemeral, p.DutySteer)
@@ -2255,6 +2256,40 @@ func renderVendorOperating(b *strings.Builder, atOwnBusinessOperating, tradeSlow
 		b.WriteString("- Trade has been thin this week. A fair bargain is better than wares sitting idle — meet a willing buyer partway on price, but never below what a thing cost you.\n")
 	}
 	b.WriteString("Plain 1692 New England speech; no modern idioms.\n\n")
+}
+
+// renderKeeperAwayFromPost writes the buyer-side conduct rule a businessowner
+// carries when it is away from its own business (LLM-611) — the only trade
+// guidance it has off-post, since renderVendorOperating above is at-post only.
+//
+// The gap it closes: the at-post block's margin floor ("never sell a thing for
+// less than it cost you") governs SELLING, and a keeper out restocking is
+// buying. Josiah Thorne, the village distributor, ran every purchase from a
+// purse holding 1 coin and settled it in goods instead — 289 units handed over
+// as pay_items in a week against ~250 sold for coin, wheat bought at 0.43 and
+// pushed straight back out as payment. Merchandise left the shop at whatever the
+// seller granted for it, so a healthy per-unit margin (flour 1.02 in, 3.00 out)
+// never converted to coin, and the whole village consolidated the resulting
+// lowball bargaining as "he'll try the short count".
+//
+// Deliberately ONE line, and deliberately about valuation only. This rides every
+// off-post prompt where the keeper has company, and it renders in exactly the
+// situation WORK-385 narrowed the vendor cues to avoid — a keeper standing in
+// someone else's place. A selling imperative here would recreate that bug
+// (Prudence pitching Water mid-meal in John Ellis's tavern); a rule about what
+// the keeper's own goods are worth when it pays with them cannot.
+//
+// The header is "How you buy:", NOT the at-post block's "How you trade:". The two
+// blocks are mutually exclusive (at-post vs off-post), so a distinct header costs
+// the model nothing and names the situation it is actually in — and it keeps the
+// LLM-123 / LLM-413 cross-scenario invariants, which assert on the at-post block's
+// header, asserting the thing they were written to assert.
+func renderKeeperAwayFromPost(b *strings.Builder, awayFromPost bool) {
+	if !awayFromPost {
+		return
+	}
+	b.WriteString("How you buy:\n")
+	b.WriteString("- Goods you hand over in payment come off your own shelf — count them at what they would fetch, not what they cost you.\n\n")
 }
 
 // renderOfferableCustomers writes the seller-side "offer your wares" cue
