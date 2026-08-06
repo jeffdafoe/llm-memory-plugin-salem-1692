@@ -121,31 +121,34 @@ const (
 	// nothing about purpose rather than guessing.
 	CoinPaymentUnstated CoinPaymentKind = iota
 
-	// CoinPaymentForGoods is a pay-with-item ledger entry settling ACCEPTED
-	// (LLM-612) — goods for coin, with a delivery against it. Roughly seven in
-	// eight of the village's payments. Unlike the due marker this is derivable
-	// RETROACTIVELY: the durable row has carried ledger_id unconditionally since
-	// LLM-105, so the boot seed classifies history correctly rather than starting
-	// from the ticket that introduced the distinction.
+	// CoinPaymentForGoods is coin that bought something, with a delivery against
+	// it. Roughly seven in eight of the village's payments. Two settlements reach
+	// it, each with its own marker on the durable row:
 	//
-	// That retroactive read is only sound if ledger_id's presence on a `paid` row
-	// means goods-for-coin and nothing else, so the writers were audited
-	// (code_review). Three write ActionTypePaid: handlePaidActionLog (bare coin,
-	// no ledger_id), handlePayResolvedActionLog (stamps it), and lodger_rebook's
-	// nightly auto-charge, which writes {recipient, amount, for} and no ledger_id
-	// — so it classifies Unstated, which is right for a fee the engine levied
-	// rather than a purchase anyone transacted. A barter or free give reaches the
-	// ledger path with Amount 0 and RecordCoinPaid drops it before any kind is
-	// stored, so no zero-coin settlement can be counted as a purchase.
+	//   - a pay-with-item ledger entry settling ACCEPTED (LLM-612), marked by
+	//     ledger_id. Unlike the due marker this one is derivable RETROACTIVELY:
+	//     handlePayResolvedActionLog has stamped it unconditionally since LLM-105,
+	//     so the boot seed classifies history correctly rather than starting from
+	//     the ticket that introduced the distinction.
 	//
-	// THE AUDITED SET IS NOT CONSISTENT, and reading it as an all-clear is the
-	// mistake to avoid: the lodging writer never calls RecordCoinPaid at all, so
-	// its rows reach the seed but not the live tally and the pair's record changes
-	// at every restart. Tracked as LLM-615 and pinned by
-	// TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge, which is written
-	// to fail when that ticket lands. The classification here is unaffected —
-	// Unstated is what both halves would agree on — but the enumeration above says
-	// which writers stamp what, NOT that every writer credits the tally.
+	//   - a lodging auto-charge (LLM-615), marked by lodging_grant. The rebook
+	//     debits the night's rate and extends the room grant in ONE command, so the
+	//     delivery is not merely promised — it is committed with the debit, which
+	//     is a stronger guarantee than the ledger path gives. A stay bought by hand
+	//     goes through that ledger path and classifies here already; the same
+	//     purchase must not read two ways because the backstop settled it instead
+	//     of a negotiation. Forward-only, so rows older than the ticket read
+	//     Unstated.
+	//
+	// The retroactive read is only sound if a goods marker's presence on a `paid`
+	// row means goods-for-coin and nothing else, so the writers were audited
+	// (code_review). Three write ActionTypePaid: handlePaidActionLog (bare coin, no
+	// goods marker), handlePayResolvedActionLog (stamps ledger_id) and
+	// lodger_rebook (stamps lodging_grant). ALL THREE now credit the live tally, so
+	// the audit covers both halves — which writers stamp what, and that every
+	// writer calls RecordCoinPaid. A barter or free give reaches the ledger path
+	// with Amount 0 and RecordCoinPaid drops it before any kind is stored, so no
+	// zero-coin settlement can be counted as a purchase.
 	CoinPaymentForGoods
 
 	// CoinPaymentForDue is coin that discharged an obligation rather than buying
@@ -573,23 +576,42 @@ type CoinPaymentRow struct {
 	// reads a correct purchase history off rows written years before the ticket.
 	// The value itself is never parsed; only whether it is there.
 	LedgerID string
+	// LodgingGrant is the raw payload text naming the room grant a lodging
+	// auto-charge extended (LLM-615). Its PRESENCE is the second goods
+	// classification: the key is written only by lodger_rebook, which debits the
+	// night's rate and extends the grant in one command, so a row carrying it
+	// bought a night's occupancy and the delivery is already made.
+	//
+	// Forward-only, the shape RateSettled has: rows written before that ticket
+	// carry no marker and read back Unstated. That understates a purchase rather
+	// than inventing one, and it matches what the live tally holds for them —
+	// nothing, since the same ticket added the call that credits it.
+	//
+	// The value is never parsed; only whether it is there.
+	LodgingGrant string
 }
 
 // coinPaymentKindFromRow classifies a seeded row the way the live subscribers do,
 // from the settlement path the payload attests to and never from its `for` text.
 //
-// The due check runs first. The two markers cannot co-occur — settleTownRate is
-// reachable only from the bare-coin Pay command, which mints no ledger entry — but
-// if a future path ever wrote both, the due is the load-bearing one: it is what
-// stops a levy reading as an order placed and never filled, which is the defect
-// LLM-607 was built for. A malformed rate_settled reads as "not a due" rather than
-// failing the row, and an absent marker of either sort degrades to Unstated — the
-// wording the record used before any classification existed.
+// The due check runs first. No two markers can co-occur — settleTownRate is
+// reachable only from the bare-coin Pay command, which mints no ledger entry, and
+// lodger_rebook writes neither of the other two — but if a future path ever wrote a
+// due alongside a goods marker, the due is the load-bearing one: it is what stops a
+// levy reading as an order placed and never filled, which is the defect LLM-607 was
+// built for. A malformed rate_settled reads as "not a due" rather than failing the
+// row, and a row with no marker at all degrades to Unstated — the wording the
+// record used before any classification existed.
+//
+// The two goods markers name different settlements of the same shape, so they share
+// an arm rather than a kind: a pay-with-item entry that settled ACCEPTED, and a
+// lodging grant the engine extended as it took the coin. Both are goods for coin
+// with a delivery against them, which is the whole content of the classification.
 func coinPaymentKindFromRow(row CoinPaymentRow) CoinPaymentKind {
 	if settled, err := strconv.Atoi(strings.TrimSpace(row.RateSettled)); err == nil && settled > 0 {
 		return CoinPaymentForDue
 	}
-	if strings.TrimSpace(row.LedgerID) != "" {
+	if strings.TrimSpace(row.LedgerID) != "" || strings.TrimSpace(row.LodgingGrant) != "" {
 		return CoinPaymentForGoods
 	}
 	return CoinPaymentUnstated

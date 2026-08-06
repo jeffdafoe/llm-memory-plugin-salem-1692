@@ -389,10 +389,13 @@ func TestRehydrateCoinRecordOnLoad_ClassifiesHistoricalLedgerRowsAsGoods(t *test
 // what stops a levy reading as an order placed and never filled, while a purchase
 // left unnamed costs only the register.
 //
-// The lodging row is the third ActionTypePaid writer (sim/lodger_rebook.go), an
-// engine-levied nightly auto-charge carrying neither marker. It must read Unstated —
-// classifying an engine-levied fee as a purchase would be exactly the over-broad
-// marker the retroactive ledger_id read would be accused of.
+// The lodging row is the third ActionTypePaid writer (sim/lodger_rebook.go). Since
+// LLM-615 it carries lodging_grant and reads as goods: the rebook takes the night's
+// rate and extends the room grant in one command, so the occupancy is delivered
+// against the coin, and a stay bought by hand settles through the ledger as goods
+// already. A lodging row written BEFORE that ticket carries no marker and must still
+// read Unstated — the forward-only half, and the state of every such row in
+// production.
 func TestCoinPaymentKindFromRow(t *testing.T) {
 	cases := []struct {
 		name string
@@ -405,8 +408,11 @@ func TestCoinPaymentKindFromRow(t *testing.T) {
 		{"a rate that settled nothing", CoinPaymentRow{RateSettled: "0"}, CoinPaymentUnstated},
 		{"an unparseable rate", CoinPaymentRow{RateSettled: "nonsense"}, CoinPaymentUnstated},
 		{"an unparseable rate on a ledger row", CoinPaymentRow{RateSettled: "nonsense", LedgerID: "881"}, CoinPaymentForGoods},
-		{"a nightly lodging auto-charge", CoinPaymentRow{RecipientName: "John Ellis"}, CoinPaymentUnstated},
+		{"a nightly lodging auto-charge", CoinPaymentRow{RecipientName: "John Ellis", LodgingGrant: "tavern"}, CoinPaymentForGoods},
+		{"a lodging row from before the marker", CoinPaymentRow{RecipientName: "John Ellis"}, CoinPaymentUnstated},
+		{"a due settled on a lodging row — the due still wins", CoinPaymentRow{RateSettled: "1", LodgingGrant: "tavern"}, CoinPaymentForDue},
 		{"whitespace is not a ledger id", CoinPaymentRow{LedgerID: "  "}, CoinPaymentUnstated},
+		{"whitespace is not a lodging grant", CoinPaymentRow{LodgingGrant: "  "}, CoinPaymentUnstated},
 	}
 	for _, tc := range cases {
 		tc := tc

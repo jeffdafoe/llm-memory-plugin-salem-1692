@@ -27,11 +27,13 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 
 // loadPaymentsSinceSQL pulls the settled coin payments inside the window.
 //
-// Both `paid` writers — handlePaidActionLog (bare coin) and
-// handlePayResolvedActionLog (a pay-with-item ledger entry settling ACCEPTED) —
-// store the same {recipient, amount} payload keys, so one predicate covers every
-// path coin moves through. recipient_actor_id is stamped only on rows written since
-// LLM-572; the caller falls back to the display name for older rows.
+// All three `paid` writers — handlePaidActionLog (bare coin),
+// handlePayResolvedActionLog (a pay-with-item ledger entry settling ACCEPTED) and
+// lodger_rebook (the nightly lodging auto-charge) — store the same
+// {recipient, amount} payload keys, so one predicate covers every path coin moves
+// through. recipient_actor_id is stamped only on rows written since LLM-572, and on
+// the lodging path only since LLM-615; the caller falls back to the display name for
+// older rows.
 //
 // The amount comes back as TEXT and is parsed in Go rather than cast here. The
 // column is jsonb, so a single malformed value would fail the cast and take the
@@ -45,12 +47,18 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // historical row, both of which read back as an ordinary payment — the same
 // forward-only shape recipient_actor_id has. Read as TEXT for the reason amount is.
 //
-// ledger_id is the goods marker (LLM-612) and is NOT forward-only: it has been
+// ledger_id is a goods marker (LLM-612) and is NOT forward-only: it has been
 // stamped unconditionally by handlePayResolvedActionLog since LLM-105, so it is on
 // every ledger-settled row in the table's history. Only its presence is read, so it
 // comes back as TEXT and is never parsed — which also means a value of any shape
 // (the column has held a bare integer throughout, but nothing here depends on that)
 // cannot fail the boot query.
+//
+// lodging_grant is the other goods marker (LLM-615), on rows where the rebook took
+// the night's rate and extended the room grant together. Forward-only like
+// rate_settled, so the lodging rows already in the table read back Unstated — which
+// is what the live tally holds for them too, since the same ticket added the call
+// that credits it. Presence-only and never parsed, for the reason ledger_id is.
 //
 // result = 'ok' excludes rejected/failed/declined/countered attempts — nothing
 // moved on those. actor_id NOT NULL excludes the engine-authored rows that carry no
@@ -65,7 +73,8 @@ SELECT actor_id,
        COALESCE(payload->>'recipient_actor_id', ''),
        COALESCE(payload->>'recipient', ''),
        COALESCE(payload->>'rate_settled', ''),
-       COALESCE(payload->>'ledger_id', '')
+       COALESCE(payload->>'ledger_id', ''),
+       COALESCE(payload->>'lodging_grant', '')
   FROM agent_action_log
  WHERE action_type = 'paid'
    AND result = 'ok'
@@ -98,8 +107,9 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			recipientName string
 			rateSettled   string
 			ledgerID      string
+			lodgingGrant  string
 		)
-		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName, &rateSettled, &ledgerID); err != nil {
+		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName, &rateSettled, &ledgerID, &lodgingGrant); err != nil {
 			return nil, fmt.Errorf("pg coin records LoadPaymentsSince scan: %w", err)
 		}
 		out = append(out, sim.CoinPaymentRow{
@@ -110,6 +120,7 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			RecipientName:    recipientName,
 			RateSettled:      rateSettled,
 			LedgerID:         ledgerID,
+			LodgingGrant:     lodgingGrant,
 		})
 	}
 	if err := rows.Err(); err != nil {
