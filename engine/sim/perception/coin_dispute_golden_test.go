@@ -91,9 +91,15 @@ func peerDisputesAPaymentNeverMade() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 	// The record, exactly as production holds it: two single coins, both from Moses
 	// to Marsh, and nothing at all the other way. Held on BOTH actors' records
 	// because RecordCoinPaid writes the ordered pair in both directions.
+	//
+	// Due (LLM-607) because both coins WERE the town rate — settleTownRate cleared the
+	// farm's arrears with them, which is why RateOwed is 0 below. Leaving it false
+	// here would make the fixture describe a farm that paid its rate with coin the
+	// engine did not treat as rate, and would pin a rendering production no longer
+	// produces for this pair.
 	first := time.Date(2026, 7, 29, 14, 34, 15, 0, time.UTC)
 	second := time.Date(2026, 7, 30, 12, 18, 58, 0, time.UTC)
-	rates := []sim.CoinPayment{{At: first, Amount: 1}, {At: second, Amount: 1}}
+	rates := []sim.CoinPayment{{At: first, Amount: 1, Due: true}, {At: second, Amount: 1, Due: true}}
 
 	snap := &sim.Snapshot{
 		PublishedAt:      published,
@@ -133,14 +139,17 @@ func peerDisputesAPaymentNeverMade() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 // golden diff alone would let a wrong figure through as "intended".
 //
 // Pins the two facts that refute the live claim — that Moses paid, and that he paid
-// a coin twice rather than five coins once — and that nothing came back the other
-// way, which is what makes a "return of your coin" beat unsupportable.
+// a coin twice rather than five coins once — and, since LLM-607, that both coins
+// were a due, which is what makes a "return of your coin" beat unsupportable. The
+// count alone never did: two coins in with nothing back reads as two debts owing,
+// and over the following week Marsh refunded eight coins of rate on exactly that
+// reading.
 func TestCoinDisputeGoldenStatesTheRealAmount(t *testing.T) {
 	got := renderScenario(perceptionScenario{
 		name:  "peer_disputes_a_payment_never_made",
 		build: peerDisputesAPaymentNeverMade,
 	})
-	const want = "Moses James has paid you a coin twice, and nothing has gone back the other way."
+	const want = "Moses James has paid you a coin twice, all of it the town's due — settled as it was handed over, and no goods owed back."
 	if !strings.Contains(got, want) {
 		t.Errorf("constable's prompt must state what Moses actually paid.\nwant line: %s\n--- got ---\n%s", want, got)
 	}

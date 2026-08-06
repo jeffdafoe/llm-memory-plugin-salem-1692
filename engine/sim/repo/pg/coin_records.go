@@ -40,6 +40,11 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // A barter settles for 0 coin and still writes a `paid` row, so the caller drops
 // non-positive amounts: this is a record of coin, and no coin passed.
 //
+// rate_settled (LLM-607) is present only on rows whose coin discharged town-rate
+// arrears, and only since that ticket. Absent on every purchase and on every
+// historical row, both of which read back as an ordinary payment — the same
+// forward-only shape recipient_actor_id has. Read as TEXT for the reason amount is.
+//
 // result = 'ok' excludes rejected/failed/declined/countered attempts — nothing
 // moved on those. actor_id NOT NULL excludes the engine-authored rows that carry no
 // payer.
@@ -51,7 +56,8 @@ SELECT actor_id,
        occurred_at,
        COALESCE(payload->>'amount', ''),
        COALESCE(payload->>'recipient_actor_id', ''),
-       COALESCE(payload->>'recipient', '')
+       COALESCE(payload->>'recipient', ''),
+       COALESCE(payload->>'rate_settled', '')
   FROM agent_action_log
  WHERE action_type = 'paid'
    AND result = 'ok'
@@ -82,8 +88,9 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			amount        string
 			recipientID   string
 			recipientName string
+			rateSettled   string
 		)
-		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName); err != nil {
+		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName, &rateSettled); err != nil {
 			return nil, fmt.Errorf("pg coin records LoadPaymentsSince scan: %w", err)
 		}
 		out = append(out, sim.CoinPaymentRow{
@@ -92,6 +99,7 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			Amount:           amount,
 			RecipientActorID: recipientID,
 			RecipientName:    recipientName,
+			RateSettled:      rateSettled,
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -881,6 +882,103 @@ func (r *recordingActionLogSink) snapshot() []sim.DurableActionLogRow {
 	return out
 }
 
+// rejectingActionLogSink refuses every row, standing in for a durable append that
+// is rejected, fails to enqueue, or errors on the writer goroutine. The production
+// sink is an async enqueue whose error surfaces on its own goroutine and never
+// reaches the caller, so an error return here is the closest a test can drive that
+// failure from the subscriber's side.
+type rejectingActionLogSink struct {
+	mu     sync.Mutex
+	calls  int
+	lastID sim.ActorID
+}
+
+func (r *rejectingActionLogSink) Append(_ context.Context, row sim.DurableActionLogRow) error {
+	r.mu.Lock()
+	r.calls++
+	r.lastID = row.ActorID
+	r.mu.Unlock()
+	return errors.New("durable sink rejected the row")
+}
+
+func (r *rejectingActionLogSink) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// The failure semantics of the non-atomic pair, stated as a test (code_review,
+// LLM-607).
+//
+// handlePaidActionLog credits the in-memory tally BEFORE it enqueues the durable
+// row, and the enqueue can fail. So the two can diverge, and this pins the DIRECTION
+// of that divergence: the live process keeps the payment and its due classification,
+// the durable log has neither, and a restart therefore UNDERSTATES the pair by one
+// payment. It never reconstructs the payment while losing what the payment was.
+//
+// That distinction is the whole reason the marker rides the same payload as the
+// amount rather than a table of its own. An understated pair renders a smaller true
+// history; a misclassified one would render a levy as a purchase, which is the
+// reading that had a constable refund eight coins of collected rate.
+//
+// Accepting the loss rather than blocking on it is the LLM-572 posture, restated
+// here because a reader arriving at the due marker will ask the question again: the
+// coin itself moved in the Pay command and is checkpointed, so no persistent state
+// is inconsistent. What is lost is a recollection, which the GUIDELINES permit to be
+// restart-lossy.
+func TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	sink := &rejectingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(sink)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePaidActionLog(world, &sim.Paid{
+			BuyerID: "hannah", SellerID: "bob", Amount: 1,
+			ForText: "Day's rate", At: at, RateSettled: 1,
+		})
+	})
+
+	if sink.callCount() != 1 {
+		t.Fatalf("durable append called %d times, want 1 — the row must still be offered", sink.callCount())
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		d := snap.CoinDealingsFor("hannah", "bob", at.Add(time.Minute))
+		// The live tally keeps it. A rejected append does not roll the memory back,
+		// and deliberately so — rolling back would need the enqueue to be
+		// synchronous, i.e. the world goroutine blocking on Postgres.
+		if d.PaidCount != 1 || d.PaidDueCount != 1 {
+			t.Errorf("in-memory tally = %+v, want the payment kept and still marked a due", d)
+		}
+	})
+
+	// What a restart would rebuild. The rejected row never reached the durable log,
+	// so a seed replaying what IS durable reads nothing at all for this pair — one
+	// payment short, with no half-payment and no unclassified payment in between.
+	seeded := &sim.World{}
+	seeded.RecordCoinPaid("hannah", "bob", 1, at, false) // an unrelated earlier purchase
+	replayed := &sim.Snapshot{
+		CoinRecord:       sim.CloneCoinRecord(seeded.CoinRecord),
+		CoinRecordWindow: sim.DefaultCoinRecordWindow,
+	}
+	d := replayed.CoinDealingsFor("hannah", "bob", at.Add(time.Minute))
+	if d.PaidCount != 1 {
+		t.Fatalf("replay = %+v, want only the durable purchase", d)
+	}
+	if d.PaidDueCount != 0 {
+		t.Errorf("a replay without the rejected row shows a due = %+v — the loss must take the whole payment", d)
+	}
+}
+
 // --- TestSubscribers_EmitDurableRows -------------------------------
 // ZBBS-WORK-376: each subscriber, after the lean in-memory append,
 // mirrors a structured DurableActionLogRow to the installed sink. This
@@ -1302,6 +1400,63 @@ func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable(t *testin
 		}
 		if d := snap.CoinDealingsFor("hannah", "bob", at); d.PaidCount != 1 || d.PaidTotal != 2 {
 			t.Errorf("resident payment not tallied: %+v", d)
+		}
+	})
+}
+
+// The settlement classification reaches BOTH the durable payload and the live tally
+// from this one subscriber (LLM-607), which is what keeps them agreeing across a
+// restart — the tally is seeded from the payload, so a stamp written to one and not
+// the other changes the record silently on the next deploy.
+//
+// rate_settled is written only when a rate actually settled. Its presence is the
+// classification, so an ordinary purchase must carry no key at all rather than a
+// zero: a reader downstream distinguishes a levy from a purchase by asking whether
+// the field is there.
+func TestHandlePaidActionLog_StampsTheRateSettlement(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePaidActionLog(world, &sim.Paid{
+			BuyerID: "hannah", SellerID: "bob", Amount: 1,
+			ForText: "Day's rate on the James Farm", At: at, RateSettled: 1,
+		})
+		// A purchase for the same coin, from the same pair, on the same path.
+		handlePaidActionLog(world, &sim.Paid{
+			BuyerID: "hannah", SellerID: "bob", Amount: 1,
+			ForText: "milk", At: at.Add(time.Minute),
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d durable rows, want 2: %+v", len(rows), rows)
+	}
+	if rows[0].Payload["rate_settled"] != 1 {
+		t.Errorf("durable payload = %+v, want rate_settled 1", rows[0].Payload)
+	}
+	if _, ok := rows[1].Payload["rate_settled"]; ok {
+		t.Errorf("a purchase carries rate_settled = %+v — presence is the classification", rows[1].Payload)
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		d := snap.CoinDealingsFor("hannah", "bob", at.Add(2*time.Minute))
+		if d.PaidCount != 2 {
+			t.Fatalf("paid = %+v, want both payments tallied", d)
+		}
+		if d.PaidDueCount != 1 || d.PaidDueTotal != 1 {
+			t.Errorf("due = %d / %d, want 1 / 1 — the milk is not a levy", d.PaidDueCount, d.PaidDueTotal)
 		}
 	})
 }
