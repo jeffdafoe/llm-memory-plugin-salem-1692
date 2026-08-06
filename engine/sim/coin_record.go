@@ -137,6 +137,15 @@ const (
 	// rather than a purchase anyone transacted. A barter or free give reaches the
 	// ledger path with Amount 0 and RecordCoinPaid drops it before any kind is
 	// stored, so no zero-coin settlement can be counted as a purchase.
+	//
+	// THE AUDITED SET IS NOT CONSISTENT, and reading it as an all-clear is the
+	// mistake to avoid: the lodging writer never calls RecordCoinPaid at all, so
+	// its rows reach the seed but not the live tally and the pair's record changes
+	// at every restart. Tracked as LLM-615 and pinned by
+	// TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge, which is written
+	// to fail when that ticket lands. The classification here is unaffected —
+	// Unstated is what both halves would agree on — but the enumeration above says
+	// which writers stamp what, NOT that every writer credits the tally.
 	CoinPaymentForGoods
 
 	// CoinPaymentForDue is coin that discharged an obligation rather than buying
