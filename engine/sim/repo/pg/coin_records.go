@@ -40,12 +40,16 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // CASE per column and would put the rule in SQL, where sim.CoinPaymentSource
 // documents it in Go beside the code that acts on it.
 //
-// The counterparty COALESCEs across both shapes' key names because the keys are
-// disjoint by construction: a `paid` row has no `employer` and a `labored` row has no
-// `recipient`, so the first non-null is always the right one. Both id keys are
-// forward-only — recipient_actor_id since LLM-572, employer_actor_id since LLM-613,
-// and on the lodging path only since LLM-615 — and the caller falls back to the
-// display name for older rows of either shape.
+// The counterparty is selected by ACTION TYPE rather than by coalescing the two
+// shapes' key names. Coalescing would read correctly today — of 3,708 live rows, none
+// carries both a `recipient` and an `employer` key — but it makes correctness rest on
+// a property of the writers rather than of this query, and the failure would be
+// silent: a future writer that put both on one payload would have every wage
+// attributed to the recipient instead. The row type is the authority on which key
+// means what, the same principle sim.CoinPaymentSource applies to the direction
+// (code_review). Both id keys are forward-only — recipient_actor_id since LLM-572 and
+// on the lodging path only since LLM-615, employer_actor_id since LLM-613 — and the
+// caller falls back to the display name for older rows of either shape.
 //
 // The amount comes back as TEXT and is parsed in Go rather than cast here. The
 // column is jsonb, so a single malformed value would fail the cast and take the
@@ -83,8 +87,10 @@ SELECT action_type,
        actor_id,
        occurred_at,
        COALESCE(payload->>'amount', ''),
-       COALESCE(payload->>'recipient_actor_id', payload->>'employer_actor_id', ''),
-       COALESCE(payload->>'recipient', payload->>'employer', ''),
+       COALESCE(CASE WHEN action_type = 'labored' THEN payload->>'employer_actor_id'
+                     ELSE payload->>'recipient_actor_id' END, ''),
+       COALESCE(CASE WHEN action_type = 'labored' THEN payload->>'employer'
+                     ELSE payload->>'recipient' END, ''),
        COALESCE(payload->>'rate_settled', ''),
        COALESCE(payload->>'ledger_id', ''),
        COALESCE(payload->>'lodging_grant', '')

@@ -543,6 +543,72 @@ func TestHandleLaborResolvedActionLog_InKindRewardIsNotCoin(t *testing.T) {
 	})
 }
 
+// A rejected durable append loses the wage, not its meaning (LLM-613) — the labor
+// twin of TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning.
+//
+// RecordCoinPaid credits the live tally BEFORE the row is enqueued, and does not roll
+// back if the enqueue is refused. That is deliberate and is the mechanism's stated
+// exposure: rolling back would require the enqueue to be synchronous, i.e. the world
+// goroutine blocking on Postgres for a soft recollection cue. The coin itself moved
+// in settleCompletedLabor and is checkpointed, so persistent state stays consistent;
+// what degrades is a memory, which is the restart-lossy class the GUIDELINES permit.
+//
+// The property worth pinning is the DIRECTION of the divergence. A wage's
+// classification is derived from the row type rather than from a payload marker, so a
+// lost row takes the payment and its meaning together — the pair understates by one
+// wage rather than holding a wage the seed will read as something else. code_review
+// raised the reverse (a wage surviving as an unclassified payment) as the risk; it
+// cannot arise, because there is no partial state between the two.
+func TestHandleLaborResolvedActionLog_RejectedAppendLosesTheWageNotItsMeaning(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	sink := &rejectingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(sink)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleLaborResolvedActionLog(world, &sim.LaborResolved{
+			LaborID: 9, WorkerID: "hannah", EmployerID: "bob", Reward: 4,
+			DurationMin: 30, TerminalState: sim.LaborTerminalStateCompleted, At: at,
+		})
+	})
+
+	if sink.callCount() != 1 {
+		t.Fatalf("durable append called %d times, want 1 — the row must still be offered", sink.callCount())
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		d := snap.CoinDealingsFor("bob", "hannah", at.Add(time.Minute))
+		if d.PaidCount != 1 || d.PaidWorkCount != 1 {
+			t.Errorf("in-memory tally = %+v, want the wage kept and still marked as work", d)
+		}
+	})
+
+	// What a restart would rebuild. The rejected row never reached the durable log, so
+	// a seed replaying what IS durable reads nothing for it — no half-wage, and no
+	// wage demoted to an unclassified payment.
+	seeded := &sim.World{}
+	seeded.RecordCoinPaid("bob", "hannah", 2, at, sim.CoinPaymentForGoods) // an unrelated purchase
+	replayed := &sim.Snapshot{
+		CoinRecord:       sim.CloneCoinRecord(seeded.CoinRecord),
+		CoinRecordWindow: sim.DefaultCoinRecordWindow,
+	}
+	d := replayed.CoinDealingsFor("bob", "hannah", at.Add(time.Minute))
+	if d.PaidCount != 1 || d.PaidTotal != 2 {
+		t.Fatalf("replay = %+v, want only the durable purchase", d)
+	}
+	if d.PaidWorkCount != 0 {
+		t.Errorf("a replay without the rejected row still shows work = %+v — the loss must take the whole wage", d)
+	}
+}
+
 // A non-completed terminal pays nothing, so it must credit nothing (LLM-613).
 //
 // The pairing matters more than either half: settleCompletedLabor is all-or-nothing,

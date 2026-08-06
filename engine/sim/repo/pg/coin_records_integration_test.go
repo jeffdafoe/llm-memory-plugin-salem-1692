@@ -311,10 +311,9 @@ func TestCoinRecordsRepo_Integration_SkipsUnattributedVisitorRows(t *testing.T) 
 // keys (LLM-613).
 //
 // This is SQL and belongs here for the reason the kind extraction does: the
-// counterparty COALESCEs `recipient` against `employer`, and that only works because
-// the two keys never appear on the same row. If a future writer ever put both on one
-// payload the COALESCE would silently pick the first and this test is where that
-// shows up.
+// counterparty column is chosen by action_type, so the query has to read the right
+// key for each shape. TestCoinRecordsRepo_Integration_RowTypeWinsOverAStrayKey covers
+// what happens when a payload carries both.
 //
 // It also pins the direction discriminator. `labored` and `paid` come back through
 // one query and one struct, so the action_type column is the only thing telling the
@@ -398,5 +397,65 @@ func TestCoinRecordsRepo_Integration_SelectsCompletedWages(t *testing.T) {
 	// The wage carries no goods marker — its row type is its classification.
 	if rows[1].LedgerID != "" || rows[1].RateSettled != "" {
 		t.Errorf("a wage row carries a paid-path marker: %+v", rows[1])
+	}
+}
+
+// A payload carrying BOTH shapes' counterparty keys is read by its row type, not by
+// whichever key the query happens to look at first (LLM-613, code_review).
+//
+// No live row does this — of 3,708 `paid` and `labored` rows, none carries both — and
+// no current writer can produce one. The case is here because the alternative query
+// shape (COALESCE across the two key names) reads correctly ONLY while that holds,
+// and would fail silently the day it stopped: every wage would be attributed to the
+// `recipient` field, giving a plausible record with the wrong counterparty. Selecting
+// by action_type makes the row type the authority, and this pins that it is.
+//
+// The assertion is deliberately about which key WINS rather than about rejecting the
+// row. A stray key is a writer bug to fix at the writer; dropping the row here would
+// turn it into missing money, and understating is the one direction this seed must
+// not fail in.
+func TestCoinRecordsRepo_Integration_RowTypeWinsOverAStrayKey(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const (
+		workerID   = "55555555-5555-5555-5555-555555555555"
+		employerID = "66666666-6666-6666-6666-666666666666"
+		strayID    = "77777777-7777-7777-7777-777777777777"
+	)
+	for _, a := range []struct{ id, name string }{
+		{workerID, "Lewis Walker"},
+		{employerID, "Josiah Thorne"},
+		{strayID, "Hannah Boggs"},
+	} {
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, $2, 0, 0)`,
+			a.id, a.name,
+		); err != nil {
+			t.Fatalf("seed actor %s: %v", a.name, err)
+		}
+	}
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+		 VALUES ($1, $2, 'agent', 'labored', $3::jsonb, 'ok', 'seed')`,
+		workerID, base.Add(-time.Hour),
+		`{"employer": "Josiah Thorne", "employer_actor_id": "`+employerID+`",
+		  "recipient": "Hannah Boggs", "recipient_actor_id": "`+strayID+`", "amount": 4}`,
+	); err != nil {
+		t.Fatalf("insert conflicting payload: %v", err)
+	}
+
+	rows, err := NewCoinRecordsRepo(f.Pool).LoadPaymentsSince(ctx, base.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("LoadPaymentsSince: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d row(s), want 1 — a stray key must not drop the payment: %+v", len(rows), rows)
+	}
+	if rows[0].CounterpartyActorID != employerID || rows[0].CounterpartyName != "Josiah Thorne" {
+		t.Errorf("counterparty = %q / %q, want the EMPLOYER — a `labored` row's counterparty is never the recipient field",
+			rows[0].CounterpartyActorID, rows[0].CounterpartyName)
 	}
 }
