@@ -182,11 +182,19 @@ func (w *World) CoinRecordWindow() time.Duration {
 // completion callback, which is a large change for a soft recollection cue. The two
 // exposures, both accepted:
 //
-//   - a durable append that fails on the writer goroutine leaves the tally holding
-//     a payment the next restart will not see, so that pair understates by one.
-//     This is the restart-lossy class the GUIDELINES permit — the coin itself moved
-//     in the Pay command and is checkpointed, so persistent state stays consistent;
-//     what degrades is a recollection.
+//   - a durable append that is rejected, fails to enqueue, or errors on the writer
+//     goroutine leaves the tally holding a payment the next restart will not see, so
+//     that pair understates by one. This is the restart-lossy class the GUIDELINES
+//     permit — the coin itself moved in the Pay command and is checkpointed, so
+//     persistent state stays consistent; what degrades is a recollection.
+//
+//     The due marker shares that fate EXACTLY and adds no new exposure (code_review,
+//     LLM-607). It is one key of the same payload of the same row as the amount, so
+//     a lost append loses the payment and its classification together; the divergence
+//     is always a pair that understates, never one that misclassifies. Pinned by
+//     cascade.TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning.
+//     The one path that yields a payment WITHOUT a marker is a row written before
+//     this ticket, which is deliberate and documented on CoinPaymentRow.RateSettled.
 //   - a visitor's payment credits the tally but reaches the durable log with a
 //     BLANKED actor id (LLM-573), so the seed cannot key it to a pair. That one is
 //     closed rather than accepted: perception excludes travelers on both sides

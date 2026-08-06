@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -879,6 +880,103 @@ func (r *recordingActionLogSink) snapshot() []sim.DurableActionLogRow {
 	out := make([]sim.DurableActionLogRow, len(r.rows))
 	copy(out, r.rows)
 	return out
+}
+
+// rejectingActionLogSink refuses every row, standing in for a durable append that
+// is rejected, fails to enqueue, or errors on the writer goroutine. The production
+// sink is an async enqueue whose error surfaces on its own goroutine and never
+// reaches the caller, so an error return here is the closest a test can drive that
+// failure from the subscriber's side.
+type rejectingActionLogSink struct {
+	mu     sync.Mutex
+	calls  int
+	lastID sim.ActorID
+}
+
+func (r *rejectingActionLogSink) Append(_ context.Context, row sim.DurableActionLogRow) error {
+	r.mu.Lock()
+	r.calls++
+	r.lastID = row.ActorID
+	r.mu.Unlock()
+	return errors.New("durable sink rejected the row")
+}
+
+func (r *rejectingActionLogSink) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// The failure semantics of the non-atomic pair, stated as a test (code_review,
+// LLM-607).
+//
+// handlePaidActionLog credits the in-memory tally BEFORE it enqueues the durable
+// row, and the enqueue can fail. So the two can diverge, and this pins the DIRECTION
+// of that divergence: the live process keeps the payment and its due classification,
+// the durable log has neither, and a restart therefore UNDERSTATES the pair by one
+// payment. It never reconstructs the payment while losing what the payment was.
+//
+// That distinction is the whole reason the marker rides the same payload as the
+// amount rather than a table of its own. An understated pair renders a smaller true
+// history; a misclassified one would render a levy as a purchase, which is the
+// reading that had a constable refund eight coins of collected rate.
+//
+// Accepting the loss rather than blocking on it is the LLM-572 posture, restated
+// here because a reader arriving at the due marker will ask the question again: the
+// coin itself moved in the Pay command and is checkpointed, so no persistent state
+// is inconsistent. What is lost is a recollection, which the GUIDELINES permit to be
+// restart-lossy.
+func TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	sink := &rejectingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(sink)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePaidActionLog(world, &sim.Paid{
+			BuyerID: "hannah", SellerID: "bob", Amount: 1,
+			ForText: "Day's rate", At: at, RateSettled: 1,
+		})
+	})
+
+	if sink.callCount() != 1 {
+		t.Fatalf("durable append called %d times, want 1 — the row must still be offered", sink.callCount())
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		d := snap.CoinDealingsFor("hannah", "bob", at.Add(time.Minute))
+		// The live tally keeps it. A rejected append does not roll the memory back,
+		// and deliberately so — rolling back would need the enqueue to be
+		// synchronous, i.e. the world goroutine blocking on Postgres.
+		if d.PaidCount != 1 || d.PaidDueCount != 1 {
+			t.Errorf("in-memory tally = %+v, want the payment kept and still marked a due", d)
+		}
+	})
+
+	// What a restart would rebuild. The rejected row never reached the durable log,
+	// so a seed replaying what IS durable reads nothing at all for this pair — one
+	// payment short, with no half-payment and no unclassified payment in between.
+	seeded := &sim.World{}
+	seeded.RecordCoinPaid("hannah", "bob", 1, at, false) // an unrelated earlier purchase
+	replayed := &sim.Snapshot{
+		CoinRecord:       sim.CloneCoinRecord(seeded.CoinRecord),
+		CoinRecordWindow: sim.DefaultCoinRecordWindow,
+	}
+	d := replayed.CoinDealingsFor("hannah", "bob", at.Add(time.Minute))
+	if d.PaidCount != 1 {
+		t.Fatalf("replay = %+v, want only the durable purchase", d)
+	}
+	if d.PaidDueCount != 0 {
+		t.Errorf("a replay without the rejected row shows a due = %+v — the loss must take the whole payment", d)
+	}
 }
 
 // --- TestSubscribers_EmitDurableRows -------------------------------
