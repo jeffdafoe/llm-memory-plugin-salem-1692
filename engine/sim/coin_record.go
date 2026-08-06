@@ -195,6 +195,7 @@ func (w *World) CoinRecordWindow() time.Duration {
 //     cascade.TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning.
 //     The one path that yields a payment WITHOUT a marker is a row written before
 //     this ticket, which is deliberate and documented on CoinPaymentRow.RateSettled.
+//
 //   - a visitor's payment credits the tally but reaches the durable log with a
 //     BLANKED actor id (LLM-573), so the seed cannot key it to a pair. That one is
 //     closed rather than accepted: perception excludes travelers on both sides
