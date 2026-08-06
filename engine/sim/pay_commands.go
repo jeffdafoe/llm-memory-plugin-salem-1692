@@ -291,6 +291,11 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				Amount:   amount,
 				ForText:  forText,
 				At:       at,
+				// LLM-607: carry what the settlement actually was, not just
+				// how much coin moved. This is the only place in the engine
+				// that knows, and the subscribers that write the durable row
+				// and the coin tally both need it.
+				RateSettled: rateSettled,
 			})
 
 			// LLM-159: a coin payment is non-conversational progress (and

@@ -1305,3 +1305,60 @@ func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable(t *testin
 		}
 	})
 }
+
+// The settlement classification reaches BOTH the durable payload and the live tally
+// from this one subscriber (LLM-607), which is what keeps them agreeing across a
+// restart — the tally is seeded from the payload, so a stamp written to one and not
+// the other changes the record silently on the next deploy.
+//
+// rate_settled is written only when a rate actually settled. Its presence is the
+// classification, so an ordinary purchase must carry no key at all rather than a
+// zero: a reader downstream distinguishes a levy from a purchase by asking whether
+// the field is there.
+func TestHandlePaidActionLog_StampsTheRateSettlement(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePaidActionLog(world, &sim.Paid{
+			BuyerID: "hannah", SellerID: "bob", Amount: 1,
+			ForText: "Day's rate on the James Farm", At: at, RateSettled: 1,
+		})
+		// A purchase for the same coin, from the same pair, on the same path.
+		handlePaidActionLog(world, &sim.Paid{
+			BuyerID: "hannah", SellerID: "bob", Amount: 1,
+			ForText: "milk", At: at.Add(time.Minute),
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d durable rows, want 2: %+v", len(rows), rows)
+	}
+	if rows[0].Payload["rate_settled"] != 1 {
+		t.Errorf("durable payload = %+v, want rate_settled 1", rows[0].Payload)
+	}
+	if _, ok := rows[1].Payload["rate_settled"]; ok {
+		t.Errorf("a purchase carries rate_settled = %+v — presence is the classification", rows[1].Payload)
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		d := snap.CoinDealingsFor("hannah", "bob", at.Add(2*time.Minute))
+		if d.PaidCount != 2 {
+			t.Fatalf("paid = %+v, want both payments tallied", d)
+		}
+		if d.PaidDueCount != 1 || d.PaidDueTotal != 1 {
+			t.Errorf("due = %d / %d, want 1 / 1 — the milk is not a levy", d.PaidDueCount, d.PaidDueTotal)
+		}
+	})
+}

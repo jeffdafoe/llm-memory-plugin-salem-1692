@@ -23,7 +23,7 @@ func newCoinWorld(window time.Duration) *World {
 func TestRecordCoinPaid_WritesBothDirections(t *testing.T) {
 	w := newCoinWorld(0)
 	at := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	w.RecordCoinPaid("moses", "gideon", 1, at)
+	w.RecordCoinPaid("moses", "gideon", 1, at, false)
 
 	payer := w.CoinRecord["moses"]["gideon"]
 	if payer == nil || len(payer.Paid) != 1 || payer.Paid[0].Amount != 1 {
@@ -38,6 +38,50 @@ func TestRecordCoinPaid_WritesBothDirections(t *testing.T) {
 	}
 	if len(payee.Paid) != 0 {
 		t.Errorf("payee Paid = %v, want empty", payee.Paid)
+	}
+}
+
+// The due marker rides both directions of the pair (LLM-607). The keeper reads it
+// off his Paid trail and the constable off his Received trail, and a marker written
+// to only one of them would leave whichever man consulted the other side reading a
+// settled levy as an open debt — which is precisely the pair this exists for.
+func TestRecordCoinPaid_MarksTheDueOnBothSides(t *testing.T) {
+	w := newCoinWorld(0)
+	at := time.Date(2026, 8, 6, 12, 11, 0, 0, time.UTC)
+	w.RecordCoinPaid("moses", "gideon", 1, at, true)
+
+	if p := w.CoinRecord["moses"]["gideon"].Paid; len(p) != 1 || !p[0].Due {
+		t.Errorf("payer Paid = %+v, want the entry marked as a due", p)
+	}
+	if r := w.CoinRecord["gideon"]["moses"].Received; len(r) != 1 || !r[0].Due {
+		t.Errorf("payee Received = %+v, want the entry marked as a due", r)
+	}
+}
+
+// The tally separates the due portion from the rest of a direction, so a mixed
+// history can say which part of it was a levy. Marking the whole direction on the
+// strength of one due would tell an NPC that goods he really is owed were never
+// owed at all — the same failure as the original, inverted.
+func TestCoinDealingsFor_CountsTheDuePortion(t *testing.T) {
+	w := newCoinWorld(0)
+	at := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	w.RecordCoinPaid("moses", "gideon", 1, at, true)                     // the rate
+	w.RecordCoinPaid("moses", "gideon", 1, at.Add(time.Minute), true)    // the rate again
+	w.RecordCoinPaid("moses", "gideon", 4, at.Add(2*time.Minute), false) // a purchase
+	w.republish()
+
+	d := w.Published().CoinDealingsFor("moses", "gideon", at.Add(3*time.Minute))
+	if d.PaidCount != 3 || d.PaidTotal != 6 {
+		t.Fatalf("paid = %d payments / %d coins, want 3 / 6", d.PaidCount, d.PaidTotal)
+	}
+	if d.PaidDueCount != 2 || d.PaidDueTotal != 2 {
+		t.Errorf("due = %d payments / %d coins, want 2 / 2 — the 4-coin purchase is not a levy",
+			d.PaidDueCount, d.PaidDueTotal)
+	}
+	// The mirror carries the same split, since both sides read their own record.
+	m := w.Published().CoinDealingsFor("gideon", "moses", at.Add(3*time.Minute))
+	if m.ReceivedDueCount != 2 || m.ReceivedDueTotal != 2 {
+		t.Errorf("received due = %d / %d, want 2 / 2", m.ReceivedDueCount, m.ReceivedDueTotal)
 	}
 }
 
@@ -60,7 +104,7 @@ func TestRecordCoinPaid_IgnoresNonTransfers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newCoinWorld(0)
-			w.RecordCoinPaid(tc.payer, tc.payee, tc.amount, at)
+			w.RecordCoinPaid(tc.payer, tc.payee, tc.amount, at, false)
 			if n := countCoinPairs(w.CoinRecord); n != 0 {
 				t.Errorf("recorded %d pair(s), want 0", n)
 			}
@@ -74,8 +118,8 @@ func TestRecordCoinPaid_IgnoresNonTransfers(t *testing.T) {
 func TestRecordCoinPaid_PrunesToWindow(t *testing.T) {
 	w := newCoinWorld(48 * time.Hour)
 	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	w.RecordCoinPaid("moses", "gideon", 1, base.Add(-100*time.Hour)) // well outside
-	w.RecordCoinPaid("moses", "gideon", 1, base.Add(-1*time.Hour))   // inside
+	w.RecordCoinPaid("moses", "gideon", 1, base.Add(-100*time.Hour), false) // well outside
+	w.RecordCoinPaid("moses", "gideon", 1, base.Add(-1*time.Hour), false)   // inside
 	rec := w.CoinRecord["moses"]["gideon"]
 	if len(rec.Paid) != 1 || !rec.Paid[0].At.Equal(base.Add(-1*time.Hour)) {
 		t.Fatalf("Paid = %+v, want only the in-window entry", rec.Paid)
@@ -83,7 +127,7 @@ func TestRecordCoinPaid_PrunesToWindow(t *testing.T) {
 	// A late-arriving older payment: it is inside the window relative to the newest
 	// entry, so it survives, and it must NOT revive the 100h-old one (already gone)
 	// nor evict the newest.
-	w.RecordCoinPaid("moses", "gideon", 1, base.Add(-3*time.Hour))
+	w.RecordCoinPaid("moses", "gideon", 1, base.Add(-3*time.Hour), false)
 	if len(rec.Paid) != 2 {
 		t.Fatalf("Paid = %+v, want 2 entries", rec.Paid)
 	}
@@ -100,7 +144,7 @@ func TestRecordCoinPaid_CapCountsEvictions(t *testing.T) {
 	base := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	const extra = 3
 	for i := 0; i < MaxCoinPaymentsPerPairDirection+extra; i++ {
-		w.RecordCoinPaid("moses", "gideon", 1, base.Add(time.Duration(i)*time.Minute))
+		w.RecordCoinPaid("moses", "gideon", 1, base.Add(time.Duration(i)*time.Minute), false)
 	}
 	rec := w.CoinRecord["moses"]["gideon"]
 	if len(rec.Paid) != MaxCoinPaymentsPerPairDirection {
@@ -265,6 +309,41 @@ func TestRehydrateCoinRecordOnLoad_ResolvesAndSkips(t *testing.T) {
 	}
 }
 
+// The due survives a restart (LLM-607). The marker is not checkpointed anywhere —
+// it is reconstructed from the durable payload's rate_settled — so a seed that
+// ignored the field would leave every levy older than the current boot reading as a
+// purchase. Salem restarts several times a day, so "correct until the next deploy"
+// is the same as wrong.
+//
+// A row with no rate_settled, or an unparseable one, reads as an ordinary payment.
+// Every row written before this ticket is in that state, which is why the fallback
+// has to be the harmless direction rather than an error.
+func TestRehydrateCoinRecordOnLoad_RestoresTheDueMarker(t *testing.T) {
+	at := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	w := newCoinWorld(0)
+	w.Actors = map[ActorID]*Actor{
+		"moses":  {ID: "moses", DisplayName: "Moses James"},
+		"gideon": {ID: "gideon", DisplayName: "Constable Gideon Marsh"},
+	}
+	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
+		{PayerID: "moses", At: at, Amount: "1", RecipientActorID: "gideon", RateSettled: "1"},
+		{PayerID: "moses", At: at.Add(time.Minute), Amount: "4", RecipientActorID: "gideon"},
+		{PayerID: "moses", At: at.Add(2 * time.Minute), Amount: "2", RecipientActorID: "gideon", RateSettled: "nonsense"},
+	}}
+	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	paid := w.CoinRecord["moses"]["gideon"].Paid
+	if len(paid) != 3 {
+		t.Fatalf("Paid = %+v, want all three rows — a malformed marker must not drop the payment", paid)
+	}
+	for i, wantDue := range []bool{true, false, false} {
+		if paid[i].Due != wantDue {
+			t.Errorf("Paid[%d].Due = %v, want %v", i, paid[i].Due, wantDue)
+		}
+	}
+}
+
 // The seed asks only for the window it will keep — a full-table scan of an
 // append-only audit log that runs back months would grow without bound as the
 // village ages.
@@ -316,9 +395,9 @@ func TestRehydrateCoinRecordOnLoad_PropagatesError(t *testing.T) {
 func TestCloneCoinRecord_IsDeep(t *testing.T) {
 	at := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	w := newCoinWorld(0)
-	w.RecordCoinPaid("moses", "gideon", 1, at)
+	w.RecordCoinPaid("moses", "gideon", 1, at, false)
 	clone := CloneCoinRecord(w.CoinRecord)
-	w.RecordCoinPaid("moses", "gideon", 5, at.Add(time.Minute))
+	w.RecordCoinPaid("moses", "gideon", 5, at.Add(time.Minute), false)
 	if got := len(clone["moses"]["gideon"].Paid); got != 1 {
 		t.Errorf("clone saw a later append: len = %d, want 1", got)
 	}
@@ -334,7 +413,7 @@ func TestCloneCoinRecord_IsDeep(t *testing.T) {
 func TestRepublishCarriesTheCoinRecord(t *testing.T) {
 	w := &World{}
 	w.Actors = map[ActorID]*Actor{}
-	w.RecordCoinPaid("moses", "gideon", 1, time.Now().Add(-time.Hour))
+	w.RecordCoinPaid("moses", "gideon", 1, time.Now().Add(-time.Hour), false)
 	w.republish()
 	snap := w.Published()
 	if snap == nil {

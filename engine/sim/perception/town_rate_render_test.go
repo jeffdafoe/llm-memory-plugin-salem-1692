@@ -96,12 +96,36 @@ func TestTownRateKeeper_StillAsksForTheCoin(t *testing.T) {
 	}
 }
 
-// A keeper who owes nothing still gets no cue — the paid-up widening is the
-// COLLECTOR's arm only. A keeper does not need telling about a debt he does not
-// have, and the keeper line ends in a pay instruction.
-func TestTownRateKeeper_SilentWhenPaidUp(t *testing.T) {
+// A keeper who owes nothing is told he is square (LLM-607). This reverses the
+// earlier rule that he got no cue at all, and the reversal is the fix: "nothing to
+// pay" and "nothing to say" are not the same, and treating them as the same left the
+// settled state — the state a daily payer is in nearly always — as the one state the
+// scene never described. What filled the silence was a record of coin going one way,
+// and Moses James read eight settled levies off it as eight debts owing him.
+//
+// The settled line carries NO pay instruction. There is nothing to settle, and a pay
+// instruction here would ask a square keeper to pay the rate twice.
+func TestTownRateKeeper_SettledWhenPaidUp(t *testing.T) {
 	snap, keeperID, _ := townRateSnapshot(0, true)
+	v, got := renderTownRateFor(t, snap, keeperID)
+	if v == nil || v.Collector {
+		t.Fatalf("keeper view = %+v, want a non-collector view with nothing owing", v)
+	}
+	if !strings.Contains(got, "The rate on the General Store stands settled — nothing is owing on it, and nothing is owed back.") {
+		t.Errorf("settled keeper line missing:\n%s", got)
+	}
+	if strings.Contains(got, "Settle it with pay") {
+		t.Errorf("a square keeper is told to pay the rate again:\n%s", got)
+	}
+}
+
+// A keeper with no rateable business gets no cue at all. The widening above is from
+// "he owes" to "he is rateable", NOT to "he is co-present with a constable" — a
+// villager who keeps no shop owes no rate and has nothing to be square about.
+func TestTownRateKeeper_SilentWithoutARateableBusiness(t *testing.T) {
+	snap, keeperID, _ := townRateSnapshot(0, true)
+	snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{}
 	if v := buildTownRate(snap, keeperID, snap.Actors[keeperID]); v != nil {
-		t.Errorf("keeper view = %+v, want nil with nothing owing", v)
+		t.Errorf("keeper view = %+v, want nil for a villager who keeps no business", v)
 	}
 }

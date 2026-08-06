@@ -31,9 +31,18 @@ import (
 //
 // A per-ordered-pair tally of coin, both directions, over a one-week window. It is
 // deliberately NOT a relationship, a judgment, or a narrative: no summary, no free
-// text, no purpose. Two numbers per direction — how many payments and how much —
-// which is exactly enough to refute "I paid you five coins" and nothing more. An
-// NPC may still feel wronged, and should; it just can't invent the money.
+// text, no stated purpose. Two numbers per direction — how many payments and how
+// much — which is exactly enough to refute "I paid you five coins" and nothing
+// more. An NPC may still feel wronged, and should; it just can't invent the money.
+//
+// LLM-607 added one bit beside those numbers: whether the coin discharged a due
+// (CoinPayment.Due). That is not the payer's purpose creeping back in — it is the
+// engine's own record of what it did with the coin, and the distinction matters
+// because the numbers alone turned out to be refutable in one direction only. They
+// stopped Moses James inventing five coins he never paid; they did not stop him
+// reading nine coins he really did pay as nine debts owing, and he collected eight
+// of them back in refunds. A record that cannot say "this one was never going to
+// come back" is a record that reads every levy as an unfilled order.
 //
 // # Durability by derivation, not by a table
 //
@@ -82,8 +91,8 @@ import (
 // Going forward the payload also carries recipient_actor_id, so seeds after this
 // ticket resolve by id and the name lookup is only the historical fallback.
 
-// CoinPayment is one settled coin transfer between a pair. Amount and time only —
-// no purpose, no counterparty text.
+// CoinPayment is one settled coin transfer between a pair. Amount, time, and
+// whether the coin discharged a due — no purpose text, no counterparty text.
 //
 // The omission of the payer's stated `for` is deliberate and is the point. That
 // text is model-authored, it is re-read on every co-present turn once it is in the
@@ -92,9 +101,24 @@ import (
 // against it, which is indistinguishable from an order placed and never filled.
 // Carrying it here would re-import the ambiguity into the very cue built to settle
 // it, and would put untrusted free text into a section rendered every tick.
+//
+// Due is the answer to that same ambiguity from the other side (LLM-607). Omitting
+// the purpose stopped the cue REPEATING a misleading claim, but it did not let the
+// cue REFUTE one: nine single coins with nothing coming back reads as nine unfilled
+// orders whether or not the reason is quoted, and Moses James read it exactly that
+// way and was refunded eight of the nine. Due is not the payer's account of the
+// payment — it is settleTownRate's, i.e. what the engine itself did with the coin.
+// That distinction is the whole reason it is allowed in a section this file
+// otherwise keeps free of purpose: an engine-computed classification cannot be
+// authored by a villager with a grievance.
 type CoinPayment struct {
 	At     time.Time
 	Amount int
+	// Due marks coin that discharged an obligation rather than buying anything —
+	// today only the town rate, since that is the only levy a villager pays by
+	// hand. A due is settled the moment it is handed over and owes no delivery,
+	// which is the fact the record could not state before.
+	Due bool
 }
 
 // CoinPairRecord is one ORDERED pair's coin history. Paid is what the subject
@@ -176,12 +200,17 @@ func (w *World) CoinRecordWindow() time.Duration {
 //
 // CLOCK CONTRACT: `at` is the engine's tick time and the caller owns its validity,
 // the same contract RecordContact documents and for the same reasons.
-func (w *World) RecordCoinPaid(payerID, payeeID ActorID, amount int, at time.Time) {
+//
+// `due` marks coin that discharged an obligation (LLM-607). It is the CALLER's
+// classification and must come from what the engine did — settleTownRate's return
+// — never from the payer's stated purpose, which is the untrusted half.
+func (w *World) RecordCoinPaid(payerID, payeeID ActorID, amount int, at time.Time, due bool) {
 	if w == nil || amount <= 0 || payerID == "" || payeeID == "" || payerID == payeeID {
 		return
 	}
-	w.coinPairRecord(payerID, payeeID).appendPaid(CoinPayment{At: at, Amount: amount}, w.CoinRecordWindow())
-	w.coinPairRecord(payeeID, payerID).appendReceived(CoinPayment{At: at, Amount: amount}, w.CoinRecordWindow())
+	payment := CoinPayment{At: at, Amount: amount, Due: due}
+	w.coinPairRecord(payerID, payeeID).appendPaid(payment, w.CoinRecordWindow())
+	w.coinPairRecord(payeeID, payerID).appendReceived(payment, w.CoinRecordWindow())
 }
 
 // coinPairRecord returns the record for an ordered pair, creating it if absent.
@@ -253,16 +282,24 @@ func appendCoinPayment(trail []CoinPayment, dropped int, p CoinPayment, window t
 //
 // AtLeast marks a direction whose count understates because the cap evicted
 // entries. It is never set by the window.
+//
+// DueCount / DueTotal are the subset of a direction that discharged a due rather
+// than buying anything (LLM-607) — the difference between coin owed to the town and
+// coin handed over for goods that never came.
 type CoinDealings struct {
 	PaidCount     int
 	PaidTotal     int
 	PaidAtLeast   bool
 	PaidAllSingle bool
+	PaidDueCount  int
+	PaidDueTotal  int
 
 	ReceivedCount     int
 	ReceivedTotal     int
 	ReceivedAtLeast   bool
 	ReceivedAllSingle bool
+	ReceivedDueCount  int
+	ReceivedDueTotal  int
 }
 
 // Any reports whether any coin passed either way inside the window.
@@ -293,33 +330,53 @@ func (s *Snapshot) CoinDealingsFor(subjectID, peerID ActorID, now time.Time) Coi
 	}
 	cutoff := now.Add(-window)
 	var d CoinDealings
-	d.PaidCount, d.PaidTotal, d.PaidAllSingle = tallyCoinPayments(rec.Paid, cutoff)
-	d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle = tallyCoinPayments(rec.Received, cutoff)
+	paid := tallyCoinPayments(rec.Paid, cutoff)
+	received := tallyCoinPayments(rec.Received, cutoff)
+	d.PaidCount, d.PaidTotal, d.PaidAllSingle = paid.count, paid.total, paid.allSingle
+	d.PaidDueCount, d.PaidDueTotal = paid.dueCount, paid.dueTotal
+	d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle = received.count, received.total, received.allSingle
+	d.ReceivedDueCount, d.ReceivedDueTotal = received.dueCount, received.dueTotal
 	d.PaidAtLeast = rec.DroppedPaid > 0
 	d.ReceivedAtLeast = rec.DroppedReceived > 0
 	return d
 }
 
-// tallyCoinPayments sums the entries at or after cutoff. allSingle reports whether
-// every counted payment was a single coin — the difference between "a coin each
-// time" and "seven coins in all", which is the phrasing a person would actually
-// use about a recurring due.
-func tallyCoinPayments(trail []CoinPayment, cutoff time.Time) (count, total int, allSingle bool) {
-	allSingle = true
+// coinTally is one direction's totals inside the window. A struct rather than a
+// widening return list — five positional results is where a caller starts
+// transposing two of them silently.
+type coinTally struct {
+	count int
+	total int
+	// allSingle reports whether every counted payment was a single coin — the
+	// difference between "a coin each time" and "seven coins in all", which is the
+	// phrasing a person would actually use about a recurring due.
+	allSingle bool
+	// dueCount / dueTotal are the subset that discharged an obligation.
+	dueCount int
+	dueTotal int
+}
+
+// tallyCoinPayments sums the entries at or after cutoff.
+func tallyCoinPayments(trail []CoinPayment, cutoff time.Time) coinTally {
+	t := coinTally{allSingle: true}
 	for _, p := range trail {
 		if p.At.Before(cutoff) {
 			continue
 		}
-		count++
-		total += p.Amount
+		t.count++
+		t.total += p.Amount
 		if p.Amount != 1 {
-			allSingle = false
+			t.allSingle = false
+		}
+		if p.Due {
+			t.dueCount++
+			t.dueTotal += p.Amount
 		}
 	}
-	if count == 0 {
-		allSingle = false
+	if t.count == 0 {
+		t.allSingle = false
 	}
-	return count, total, allSingle
+	return t
 }
 
 // CloneCoinRecord deep-copies the ledger for the published snapshot. Every slice is
@@ -410,6 +467,13 @@ type CoinPaymentRow struct {
 	// rows, which resolve by RecipientName instead.
 	RecipientActorID string
 	RecipientName    string
+	// RateSettled is the raw payload text for how much of the payment discharged
+	// town-rate arrears (LLM-607), parsed here for the reason Amount is. Empty on
+	// every purchase and on every row written before that ticket; both read back as
+	// an ordinary payment, which is the safe direction — a due mistaken for a
+	// purchase is the state the village was already in, while a purchase mistaken
+	// for a due would tell an NPC nothing was owed him when something was.
+	RateSettled string
 }
 
 // rehydrateCoinRecordOnLoad rebuilds World.CoinRecord at boot from the durable
@@ -451,7 +515,12 @@ func (w *World) rehydrateCoinRecordOnLoad(ctx context.Context) error {
 			}
 			continue
 		}
-		w.RecordCoinPaid(row.PayerID, payeeID, amount, row.At)
+		// A malformed rate_settled reads as "not a due" rather than failing the row
+		// (LLM-607). The payment itself is still true and still belongs in the
+		// tally; only its classification is lost, which degrades to exactly the
+		// pre-ticket behaviour.
+		settled, _ := strconv.Atoi(strings.TrimSpace(row.RateSettled))
+		w.RecordCoinPaid(row.PayerID, payeeID, amount, row.At, settled > 0)
 	}
 	if pairs := countCoinPairs(w.CoinRecord); pairs > 0 || unresolved > 0 || ambiguous > 0 {
 		log.Printf("sim: seeded coin record for %d pair(s) from %d durable payment row(s) (%d recipient(s) unresolved, %d ambiguous, %d malformed)",

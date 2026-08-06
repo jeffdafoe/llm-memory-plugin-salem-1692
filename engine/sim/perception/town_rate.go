@@ -11,12 +11,12 @@ import (
 // town_rate.go — LLM-557. The "## Town rate" section, written for both sides of the
 // levy and rendered only when the two are standing together.
 //
-// The keeper sees what his business owes and the constable in front of him; the
-// constable sees which of the keepers present are behind. Neither line is an
-// imperative. The engine moves no coin here — the keeper hands it over with the
-// ordinary pay command, and settleTownRate draws the debt down by what actually
-// changed hands — so the scene has to be the argument, exactly as the farm-upkeep
-// cue is the argument for buying shovels.
+// The keeper sees where his business stands on the levy — behind, or settled — and
+// the constable in front of him; the constable sees which of the keepers present are
+// behind. Neither line is an imperative. The engine moves no coin here — the keeper
+// hands it over with the ordinary pay command, and settleTownRate draws the debt
+// down by what actually changed hands — so the scene has to be the argument, exactly
+// as the farm-upkeep cue is the argument for buying shovels.
 //
 // CO-LOCATION-GATED, unlike the farm-upkeep cue. A farm owner's obligation sends him
 // on an errand (walk to the smith, buy shovels), so his cue rides every tick
@@ -32,8 +32,12 @@ import (
 // co-present — from whichever side is reading it.
 type TownRateView struct {
 	// Owed and ConstableName are the KEEPER's side: what his business owes in
-	// arrears, and the constable standing with him. Owed is 0 on the collector's
-	// side.
+	// arrears, and the constable standing with him.
+	//
+	// Owed is 0 on the collector's side, and also on a keeper who is square — the
+	// two are told apart by Collector, never by this field. Since LLM-607 a
+	// paid-up keeper gets a view rather than nothing at all, so 0 here means
+	// "settled" and not "no cue".
 	Owed          int
 	ConstableName string
 
@@ -77,11 +81,20 @@ func buildTownRate(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Actor
 	return buildTownRateKeeper(snap, actorID, actorSnap)
 }
 
-// buildTownRateKeeper builds the paying side: this actor owns a business in arrears
-// and a constable is close enough that a pay resolves this tick.
+// buildTownRateKeeper builds the paying side: this actor owns a rateable business
+// and a constable is close enough that a pay would resolve this tick.
+//
+// LLM-607 widened the gate from "he OWES" to "he is rateable at all", the same
+// widening LLM-572 made on the collecting side and for the same reason. The old gate
+// meant the levy vanished from the keeper's scene the instant he paid it, so the one
+// state the scene never described was the settled one — and settled is the state a
+// keeper who pays every day is in almost all the time. What filled the silence was
+// the coin record: nine single coins to the constable with nothing coming back,
+// which is the shape of nine unfilled orders. Moses James read it that way and
+// collected eight coins of refunds on it.
 func buildTownRateKeeper(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *TownRateView {
 	business := sim.RateableBusinessOf(snap.VillageObjects, actorID)
-	if business == nil || business.RateOwed <= 0 {
+	if business == nil {
 		return nil
 	}
 	sc := buyerCoPresenceScope(snap, actorSnap)
@@ -213,6 +226,23 @@ func renderTownRate(b *strings.Builder, v *TownRateView) {
 // renderTownRateKeeper writes the paying side. It names the constable verbatim and
 // the exact coin, because both are arguments the pay call needs to resolve.
 func renderTownRateKeeper(b *strings.Builder, v *TownRateView) {
+	if v.Owed <= 0 {
+		// Nothing owing. The sentence has no tool and no imperative because there
+		// is nothing to do — it exists so the settled state is SAID rather than
+		// left to be inferred from a record of coin going one way (LLM-607). A due
+		// is discharged when it is handed over, and a keeper who reads his own rate
+		// payments as debts still owing him will ask for them back.
+		//
+		// "Stands settled" rather than "is paid": the engine knows the balance is
+		// clear, not that this keeper ever paid anything. A business assessed today
+		// and collected from an hour later is square by the same field as one whose
+		// levy has never yet accrued, and the line must not assert a payment for
+		// which there may be no record.
+		fmt.Fprintf(b,
+			"%s keeps the watch. The rate on the %s stands settled — nothing is owing on it, and nothing is owed back.\n",
+			v.ConstableName, v.BusinessName)
+		return
+	}
 	owed := coinsOwedPhrase(v.Owed)
 	if v.Owed > 1 {
 		// Several days behind — the keeper should feel it as arrears, not a courtesy.
@@ -236,8 +266,14 @@ func renderTownRateKeeper(b *strings.Builder, v *TownRateView) {
 // view, arrears or none (LLM-572). It is the only place the constable is ever told
 // which way the levy runs, and the settled case — a keeper in front of him owing
 // nothing — is the one that used to render no section at all.
+// The second sentence is LLM-607. Gideon Marsh handed back eight of the nine coins
+// of rate he had collected from Moses James, one refund at a time, because a keeper
+// pressed him about coin he had paid and received no goods for and nothing in the
+// constable's scene said a levy is not a purchase. He is a stateful NPC, so
+// buildRelationships is gated off and he holds no stored view of any villager — this
+// line is the only thing he has to answer with.
 func renderTownRateCollector(b *strings.Builder, v *TownRateView) {
-	b.WriteString("The town rate keeps you, and it falls to you to collect it.")
+	b.WriteString("The town rate keeps you, and it falls to you to collect it. What you collect is the town's, not yours to hand back.")
 	if len(v.Debtors) == 0 {
 		// Everyone here is square. Say so plainly and close the door on the rate
 		// being asked for again in this scene — the constable reading "it falls to

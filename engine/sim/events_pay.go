@@ -29,13 +29,24 @@ import "time"
 // At is wall-clock; it carries the same instant the per-pair
 // RecordInteraction calls use for SalientFact timestamps so the engine log
 // and the relationship facts line up exactly.
+//
+// RateSettled is how much of Amount discharged town-rate arrears (LLM-607),
+// straight from settleTownRate. It is the engine's own answer to WHAT THE
+// PAYMENT WAS, and it exists on the event because that answer is otherwise
+// known only inside the Pay command and lost the moment it returns. Everything
+// downstream — the durable payload, the coin record, the dream ledger — could
+// previously see only an amount and the payer's own words for it, and a
+// payment with a stated purpose and no delivery against it is indistinguishable
+// from an order placed and never filled. 0 for every pay that settled no rate,
+// which is nearly all of them.
 type Paid struct {
 	EventBase
-	BuyerID  ActorID
-	SellerID ActorID
-	Amount   int
-	ForText  string
-	At       time.Time
+	BuyerID     ActorID
+	SellerID    ActorID
+	Amount      int
+	ForText     string
+	At          time.Time
+	RateSettled int
 }
 
 func (Paid) isSimEvent() {}

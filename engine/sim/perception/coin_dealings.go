@@ -165,9 +165,17 @@ func renderCoinDealings(b *strings.Builder, peers []CoinDealingsPeerView) {
 // No pronoun stands for the peer anywhere in it. The village does not model gender
 // on actors, so "you have paid him back" would be a coin-flip on every line; the
 // name or a bare direction carries it instead.
+//
+// A pair with a due on the record takes the two-sentence form below (LLM-607).
+// A pair without takes the original wording unchanged, which is most of the village.
 func coinDealingsSentence(name string, d sim.CoinDealings) string {
 	received := coinFlowPhrase(d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle, d.ReceivedAtLeast)
 	paid := coinFlowPhrase(d.PaidCount, d.PaidTotal, d.PaidAllSingle, d.PaidAtLeast)
+	receivedDue := coinDueClause(d.ReceivedDueCount, d.ReceivedDueTotal, d.ReceivedCount)
+	paidDue := coinDueClause(d.PaidDueCount, d.PaidDueTotal, d.PaidCount)
+	if receivedDue != "" || paidDue != "" {
+		return coinDealingsDueSentence(name, received, receivedDue, paid, paidDue, d)
+	}
 	switch {
 	case d.ReceivedCount > 0 && d.PaidCount > 0:
 		return fmt.Sprintf("%s has paid you %s, and you have paid back %s.", name, received, paid)
@@ -177,6 +185,55 @@ func coinDealingsSentence(name string, d sim.CoinDealings) string {
 		return fmt.Sprintf("You have paid %s %s, and nothing has come back the other way.", name, paid)
 	default:
 		return fmt.Sprintf("No coin has passed between you and %s.", name)
+	}
+}
+
+// coinDealingsDueSentence voices a pair where at least one direction carries a due.
+//
+// One sentence per direction, rather than the single joined sentence the ordinary
+// case uses. The joined form has to name the second direction as "you have paid
+// BACK", and a levy is not a repayment — that phrasing casts the town rate as a
+// debt the keeper owed the constable personally, which is a sharper version of the
+// misreading this whole change exists to stop. Splitting also keeps the due clause
+// attached to the direction it describes, where a mid-sentence em-dash aside would
+// leave a reader to work out which half of the pair it qualified.
+//
+// The "nothing has come back the other way" tail is dropped whenever a due is
+// present, and its absence is the point rather than an omission: for coin that was
+// never going to come back, stating that nothing did is the exact inference the
+// scene must not invite. The due clause says what the tail was there to say.
+func coinDealingsDueSentence(name, received, receivedDue, paid, paidDue string, d sim.CoinDealings) string {
+	var parts []string
+	if d.ReceivedCount > 0 {
+		parts = append(parts, fmt.Sprintf("%s has paid you %s%s.", name, received, receivedDue))
+	}
+	if d.PaidCount > 0 {
+		parts = append(parts, fmt.Sprintf("You have paid %s %s%s.", name, paid, paidDue))
+	}
+	return strings.Join(parts, " ")
+}
+
+// coinDueClause qualifies one direction's flow with how much of it discharged a
+// due. Empty when none of it did, which is what dispatches the ordinary wording.
+//
+// The closing is the load-bearing half and it says the two things the counts cannot:
+// that the coin settled when it was handed over, and that no goods were ever owed
+// against it. It deliberately echoes townRatePaidFactText's closing — the two are
+// read by the same model, one as a recollection and one as a memory, and they should
+// not disagree in wording about a thing neither is guessing at.
+func coinDueClause(dueCount, dueTotal, count int) string {
+	if dueCount <= 0 {
+		return ""
+	}
+	const closing = " — settled as it was handed over, and no goods owed back"
+	switch {
+	case count == 1:
+		// "all of it" about a single coin reads as a quantity being apportioned.
+		return ", the town's due" + closing
+	case dueCount >= count:
+		return ", all of it the town's due" + closing
+	default:
+		return fmt.Sprintf(", %s of it the town's due%s", coinsOwedPhrase(dueTotal), closing)
 	}
 }
 
