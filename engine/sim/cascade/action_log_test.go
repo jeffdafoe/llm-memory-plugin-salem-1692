@@ -246,6 +246,84 @@ func TestHandlePayResolvedActionLog_AcceptedAppendsPaidRow(t *testing.T) {
 	}
 }
 
+// The two live write seams classify from the settlement path they are, and nothing
+// else (LLM-612). This is the half the pg integration test cannot reach: the seed
+// proves the markers come back OUT of the durable payload, and this proves the live
+// tally agrees with what that payload will say — the co-location guarantee the whole
+// mechanism rests on.
+//
+// A bare pay that settled no rate is Unstated, NOT a purchase. The village settles
+// wages, gifts, tips and hand-to-hand debts through it, and the only thing telling
+// them apart is the payer's own `for` text — the untrusted half. Calling them all
+// purchases to tidy up the render would be the same mistake this ticket fixed,
+// pointed the other way.
+func TestActionLogSeamsClassifyThePaymentKind(t *testing.T) {
+	cases := []struct {
+		name string
+		emit func(*sim.World, time.Time)
+		want sim.CoinPaymentKind
+	}{
+		{
+			name: "a ledger settlement bought goods",
+			emit: func(world *sim.World, at time.Time) {
+				handlePayResolvedActionLog(world, &sim.PayWithItemResolved{
+					LedgerID: 77, BuyerID: "hannah", SellerID: "bob",
+					ItemKind: "ale", QtyPerConsumer: 1, Amount: 4,
+					TerminalState: sim.PayTerminalStateAccepted, HuddleID: "h1", At: at,
+				})
+			},
+			want: sim.CoinPaymentForGoods,
+		},
+		{
+			name: "a bare pay that settled a rate is a due",
+			emit: func(world *sim.World, at time.Time) {
+				handlePaidActionLog(world, &sim.Paid{
+					BuyerID: "hannah", SellerID: "bob", Amount: 1,
+					ForText: "Day's rate", At: at, RateSettled: 1,
+				})
+			},
+			want: sim.CoinPaymentForDue,
+		},
+		{
+			name: "a bare pay that settled nothing stays unstated",
+			emit: func(world *sim.World, at time.Time) {
+				handlePaidActionLog(world, &sim.Paid{
+					BuyerID: "hannah", SellerID: "bob", Amount: 4,
+					// A wage, by the payer's account — which is exactly the account
+					// this record does not read.
+					ForText: "wages for splitting wood", At: at,
+				})
+			},
+			want: sim.CoinPaymentUnstated,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildActionLogCascadeWorld(t)
+			defer stop()
+
+			at := time.Now().UTC()
+			invokeOnWorld(t, w, func(world *sim.World) { tc.emit(world, at) })
+			invokeOnWorld(t, w, func(world *sim.World) {
+				paid := world.CoinRecord["hannah"]["bob"].Paid
+				if len(paid) != 1 {
+					t.Fatalf("Paid = %+v, want the one payment", paid)
+				}
+				if paid[0].Kind != tc.want {
+					t.Errorf("Kind = %v, want %v", paid[0].Kind, tc.want)
+				}
+				// Both sides carry the same classification — a peer consulting his
+				// own record must not read the payment differently from the payer.
+				received := world.CoinRecord["bob"]["hannah"].Received
+				if len(received) != 1 || received[0].Kind != tc.want {
+					t.Errorf("payee Received = %+v, want the same kind %v", received, tc.want)
+				}
+			})
+		})
+	}
+}
+
 func TestHandlePayResolvedActionLog_GroupOrderTotalsQty(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
 	defer stop()
@@ -965,7 +1043,7 @@ func TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning(t *testi
 	// so a seed replaying what IS durable reads nothing at all for this pair — one
 	// payment short, with no half-payment and no unclassified payment in between.
 	seeded := &sim.World{}
-	seeded.RecordCoinPaid("hannah", "bob", 1, at, false) // an unrelated earlier purchase
+	seeded.RecordCoinPaid("hannah", "bob", 1, at, sim.CoinPaymentForGoods) // an unrelated earlier purchase
 	replayed := &sim.Snapshot{
 		CoinRecord:       sim.CloneCoinRecord(seeded.CoinRecord),
 		CoinRecordWindow: sim.DefaultCoinRecordWindow,

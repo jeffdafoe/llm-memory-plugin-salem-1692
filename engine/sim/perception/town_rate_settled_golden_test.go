@@ -99,7 +99,7 @@ func keeperSquareOnAWeekOfTownRate() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		rates = append(rates, sim.CoinPayment{
 			At:     published.Add(-time.Duration(i) * 24 * time.Hour),
 			Amount: 1,
-			Due:    true,
+			Kind:   sim.CoinPaymentForDue,
 		})
 	}
 
@@ -176,12 +176,20 @@ func TestMixedDueAndPurchaseRendersBothDirections(t *testing.T) {
 	d := sim.CoinDealings{
 		// Four payments out, five coins: three single coins of rate, one 2-coin buy.
 		PaidCount: 4, PaidTotal: 5, PaidDueCount: 3, PaidDueTotal: 3,
+		PaidGoodsCount: 1, PaidGoodsTotal: 2,
 		// One purchase in, no due — the constable buying wheat off the farm.
 		ReceivedCount: 1, ReceivedTotal: 4,
+		ReceivedGoodsCount: 1, ReceivedGoodsTotal: 4,
 	}
 	got := coinDealingsSentence("Constable Gideon Marsh", d)
 	for _, want := range []string{
-		"Constable Gideon Marsh has paid you 4 coins.",
+		// The incoming direction carries no due, so it voices its own register
+		// rather than inheriting the outgoing one's silence (LLM-612).
+		"Constable Gideon Marsh has paid you 4 coins for goods.",
+		// The outgoing direction is mixed. The DUE portion is named and the goods
+		// portion is not: two portions in one sentence turns a recollection into an
+		// itemized statement, and the due is the clause that carries a correctness
+		// job rather than a register one.
 		"You have paid Constable Gideon Marsh 5 coins across 4 payments, 3 coins of it the town's due — settled as it was handed over, and no goods owed back.",
 	} {
 		if !strings.Contains(got, want) {
@@ -224,6 +232,52 @@ func TestCoinDueClauseBoundaries(t *testing.T) {
 	}
 }
 
+// The goods clause boundaries (LLM-612), mirroring the due ones above. Shorter by
+// design and carrying no closing: a levy needs explaining because coin that never
+// comes back is counterintuitive, while goods for coin is the ordinary shape of a
+// trade and a closing on it would be boilerplate re-read every tick on nearly every
+// line in the village.
+func TestCoinGoodsClauseBoundaries(t *testing.T) {
+	cases := []struct {
+		name                          string
+		goodsCount, goodsTotal, count int
+		want                          string
+	}{
+		{"nothing bought", 0, 0, 5, ""},
+		{"a single payment, and it bought goods", 1, 3, 1, " for goods"},
+		{"every payment bought goods", 24, 168, 24, " for goods"},
+		{"one coin of five payments bought goods", 1, 1, 5, ", 1 coin of it for goods"},
+		{"seven coins of five payments bought goods", 2, 7, 5, ", 7 coins of it for goods"},
+		// Defensive, matching the due clause's own guard: a goodsCount past count
+		// cannot arise from tallyCoinPayments, but the branch must not fall through
+		// to a partial phrase naming a portion of a direction it exceeds.
+		{"more goods than payments", 6, 9, 5, " for goods"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := coinGoodsClause(tc.goodsCount, tc.goodsTotal, tc.count); got != tc.want {
+				t.Errorf("coinGoodsClause(%d, %d, %d) = %q, want %q", tc.goodsCount, tc.goodsTotal, tc.count, got, tc.want)
+			}
+		})
+	}
+}
+
+// A due outranks goods within one direction. The two cannot co-occur today —
+// settleTownRate is reachable only from the bare-coin Pay command, which mints no
+// ledger entry — so this pins the tiebreak against a future path that produced both.
+// The due clause is the one carrying a correctness job: it is what stops a levy
+// reading as an order placed and never filled.
+func TestCoinDirectionClausePrefersTheDue(t *testing.T) {
+	got := coinDirectionClause(2, 2, 3, 9, 5)
+	if !strings.Contains(got, "the town's due") {
+		t.Errorf("a direction carrying a due must voice the due: %q", got)
+	}
+	if strings.Contains(got, "for goods") {
+		t.Errorf("naming both portions turns a recollection into an itemized statement: %q", got)
+	}
+}
+
 // TestGoldensNeverTellAKeeperASettledRateIsOwedBack is the cross-scenario invariant.
 //
 // The property: in no situation may a scene describe coin that discharged a due as
@@ -261,6 +315,11 @@ func TestGoldensNeverTellAKeeperASettledRateIsOwedBack(t *testing.T) {
 // CoinRecord rather than the rendered text, so the check cannot be satisfied by the
 // very wording it is policing.
 func scenarioHoldsADue(snap *sim.Snapshot, actorID sim.ActorID) bool {
+	return scenarioHoldsKind(snap, actorID, sim.CoinPaymentForDue)
+}
+
+// scenarioHoldsKind is the shared predicate behind both coin-record invariants.
+func scenarioHoldsKind(snap *sim.Snapshot, actorID sim.ActorID, kind sim.CoinPaymentKind) bool {
 	if snap == nil {
 		return false
 	}
@@ -270,7 +329,7 @@ func scenarioHoldsADue(snap *sim.Snapshot, actorID sim.ActorID) bool {
 		}
 		for _, trail := range [][]sim.CoinPayment{rec.Paid, rec.Received} {
 			for _, p := range trail {
-				if p.Due {
+				if p.Kind == kind {
 					return true
 				}
 			}

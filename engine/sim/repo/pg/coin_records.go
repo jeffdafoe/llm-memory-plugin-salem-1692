@@ -45,6 +45,13 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // historical row, both of which read back as an ordinary payment — the same
 // forward-only shape recipient_actor_id has. Read as TEXT for the reason amount is.
 //
+// ledger_id is the goods marker (LLM-612) and is NOT forward-only: it has been
+// stamped unconditionally by handlePayResolvedActionLog since LLM-105, so it is on
+// every ledger-settled row in the table's history. Only its presence is read, so it
+// comes back as TEXT and is never parsed — which also means a value of any shape
+// (the column has held a bare integer throughout, but nothing here depends on that)
+// cannot fail the boot query.
+//
 // result = 'ok' excludes rejected/failed/declined/countered attempts — nothing
 // moved on those. actor_id NOT NULL excludes the engine-authored rows that carry no
 // payer.
@@ -57,7 +64,8 @@ SELECT actor_id,
        COALESCE(payload->>'amount', ''),
        COALESCE(payload->>'recipient_actor_id', ''),
        COALESCE(payload->>'recipient', ''),
-       COALESCE(payload->>'rate_settled', '')
+       COALESCE(payload->>'rate_settled', ''),
+       COALESCE(payload->>'ledger_id', '')
   FROM agent_action_log
  WHERE action_type = 'paid'
    AND result = 'ok'
@@ -89,8 +97,9 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			recipientID   string
 			recipientName string
 			rateSettled   string
+			ledgerID      string
 		)
-		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName, &rateSettled); err != nil {
+		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName, &rateSettled, &ledgerID); err != nil {
 			return nil, fmt.Errorf("pg coin records LoadPaymentsSince scan: %w", err)
 		}
 		out = append(out, sim.CoinPaymentRow{
@@ -100,6 +109,7 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			RecipientActorID: recipientID,
 			RecipientName:    recipientName,
 			RateSettled:      rateSettled,
+			LedgerID:         ledgerID,
 		})
 	}
 	if err := rows.Err(); err != nil {

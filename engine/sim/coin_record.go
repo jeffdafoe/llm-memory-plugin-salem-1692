@@ -44,6 +44,15 @@ import (
 // of them back in refunds. A record that cannot say "this one was never going to
 // come back" is a record that reads every levy as an unfilled order.
 //
+// LLM-612 widened that one bit into CoinPaymentKind, for the symmetric reason. A
+// due was the rare case and everything else fell to a default that read as
+// repayment; but the overwhelming majority of village coin buys goods, and calling
+// a shopkeeper's stock purchases repayment mis-frames the ordinary case to spare
+// the exceptional one. Josiah Thorne, a distributor, read that he had "paid back"
+// Elizabeth Ellis 168 coins against 4 received — a 42-to-1 over-settlement, when in
+// truth he had bought a week of cheese and milk from her farm and sold it on to
+// third parties whose coin never appears in a pairwise line at all.
+//
 // # Durability by derivation, not by a table
 //
 // The live tally is in memory and there is no coin_record table. It is SEEDED AT
@@ -91,8 +100,44 @@ import (
 // Going forward the payload also carries recipient_actor_id, so seeds after this
 // ticket resolve by id and the name lookup is only the historical fallback.
 
-// CoinPayment is one settled coin transfer between a pair. Amount, time, and
-// whether the coin discharged a due — no purpose text, no counterparty text.
+// CoinPaymentKind is what the ENGINE did with the coin. It is the only kind of
+// classification this record accepts, and the rule is worth stating plainly because
+// the file otherwise refuses purpose outright: a kind may be derived ONLY from a
+// settlement path the engine itself took, NEVER from the payer's stated `for`. The
+// former cannot be authored by a villager with a grievance; the latter is exactly
+// the untrusted text that misled the reader in the trigger case.
+//
+// The zero value is CoinPaymentUnstated, and that is deliberate. Every path that
+// forgets to classify, every historical row, every malformed marker degrades to the
+// wording the record used before any of this existed — visibly unqualified rather
+// than confidently wrong.
+type CoinPaymentKind uint8
+
+const (
+	// CoinPaymentUnstated is coin whose settlement the engine cannot account for:
+	// the bare `pay` command, minus the town rate. In the live village this is a
+	// wage settled by hand, a gift, a tip, a hand-to-hand debt — about one payment
+	// in eight. The engine genuinely does not know which, and the render says
+	// nothing about purpose rather than guessing.
+	CoinPaymentUnstated CoinPaymentKind = iota
+
+	// CoinPaymentForGoods is a pay-with-item ledger entry settling ACCEPTED
+	// (LLM-612) — goods for coin, with a delivery against it. Roughly seven in
+	// eight of the village's payments. Unlike the due marker this is derivable
+	// RETROACTIVELY: the durable row has carried ledger_id unconditionally since
+	// LLM-105, so the boot seed classifies history correctly rather than starting
+	// from the ticket that introduced the distinction.
+	CoinPaymentForGoods
+
+	// CoinPaymentForDue is coin that discharged an obligation rather than buying
+	// anything (LLM-607) — today only the town rate, since that is the only levy a
+	// villager pays by hand. A due is settled the moment it is handed over and owes
+	// no delivery, which is the fact the record could not state before.
+	CoinPaymentForDue
+)
+
+// CoinPayment is one settled coin transfer between a pair. Amount, time, and what
+// the engine did with the coin — no purpose text, no counterparty text.
 //
 // The omission of the payer's stated `for` is deliberate and is the point. That
 // text is model-authored, it is re-read on every co-present turn once it is in the
@@ -102,23 +147,18 @@ import (
 // Carrying it here would re-import the ambiguity into the very cue built to settle
 // it, and would put untrusted free text into a section rendered every tick.
 //
-// Due is the answer to that same ambiguity from the other side (LLM-607). Omitting
-// the purpose stopped the cue REPEATING a misleading claim, but it did not let the
-// cue REFUTE one: nine single coins with nothing coming back reads as nine unfilled
-// orders whether or not the reason is quoted, and Moses James read it exactly that
-// way and was refunded eight of the nine. Due is not the payer's account of the
-// payment — it is settleTownRate's, i.e. what the engine itself did with the coin.
-// That distinction is the whole reason it is allowed in a section this file
-// otherwise keeps free of purpose: an engine-computed classification cannot be
-// authored by a villager with a grievance.
+// Kind is the answer to that same ambiguity from the other side (LLM-607/612).
+// Omitting the purpose stopped the cue REPEATING a misleading claim, but it did not
+// let the cue REFUTE one: nine single coins with nothing coming back reads as nine
+// unfilled orders whether or not the reason is quoted, and Moses James read it
+// exactly that way and was refunded eight of the nine. A kind is not the payer's
+// account of the payment — it is the settlement path's, i.e. what the engine itself
+// did with the coin. See CoinPaymentKind for why that distinction is what lets a
+// classification live in a section this file otherwise keeps free of purpose.
 type CoinPayment struct {
 	At     time.Time
 	Amount int
-	// Due marks coin that discharged an obligation rather than buying anything —
-	// today only the town rate, since that is the only levy a villager pays by
-	// hand. A due is settled the moment it is handed over and owes no delivery,
-	// which is the fact the record could not state before.
-	Due bool
+	Kind   CoinPaymentKind
 }
 
 // CoinPairRecord is one ORDERED pair's coin history. Paid is what the subject
@@ -188,13 +228,14 @@ func (w *World) CoinRecordWindow() time.Duration {
 //     permit — the coin itself moved in the Pay command and is checkpointed, so
 //     persistent state stays consistent; what degrades is a recollection.
 //
-//     The due marker shares that fate EXACTLY and adds no new exposure (code_review,
+//     The kind marker shares that fate EXACTLY and adds no new exposure (code_review,
 //     LLM-607). It is one key of the same payload of the same row as the amount, so
 //     a lost append loses the payment and its classification together; the divergence
 //     is always a pair that understates, never one that misclassifies. Pinned by
 //     cascade.TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning.
-//     The one path that yields a payment WITHOUT a marker is a row written before
-//     this ticket, which is deliberate and documented on CoinPaymentRow.RateSettled.
+//     The one path that yields a payment WITHOUT a marker is a bare-coin row that
+//     settled no rate, which is CoinPaymentUnstated by construction rather than by
+//     loss — see CoinPaymentRow.RateSettled and .LedgerID.
 //
 //   - a visitor's payment credits the tally but reaches the durable log with a
 //     BLANKED actor id (LLM-573), so the seed cannot key it to a pair. That one is
@@ -210,14 +251,14 @@ func (w *World) CoinRecordWindow() time.Duration {
 // CLOCK CONTRACT: `at` is the engine's tick time and the caller owns its validity,
 // the same contract RecordContact documents and for the same reasons.
 //
-// `due` marks coin that discharged an obligation (LLM-607). It is the CALLER's
-// classification and must come from what the engine did — settleTownRate's return
-// — never from the payer's stated purpose, which is the untrusted half.
-func (w *World) RecordCoinPaid(payerID, payeeID ActorID, amount int, at time.Time, due bool) {
+// `kind` is the CALLER's classification and must come from what the engine did —
+// which settlement path ran — never from the payer's stated purpose, which is the
+// untrusted half. See CoinPaymentKind.
+func (w *World) RecordCoinPaid(payerID, payeeID ActorID, amount int, at time.Time, kind CoinPaymentKind) {
 	if w == nil || amount <= 0 || payerID == "" || payeeID == "" || payerID == payeeID {
 		return
 	}
-	payment := CoinPayment{At: at, Amount: amount, Due: due}
+	payment := CoinPayment{At: at, Amount: amount, Kind: kind}
 	w.coinPairRecord(payerID, payeeID).appendPaid(payment, w.CoinRecordWindow())
 	w.coinPairRecord(payeeID, payerID).appendReceived(payment, w.CoinRecordWindow())
 }
@@ -294,21 +335,27 @@ func appendCoinPayment(trail []CoinPayment, dropped int, p CoinPayment, window t
 //
 // DueCount / DueTotal are the subset of a direction that discharged a due rather
 // than buying anything (LLM-607) — the difference between coin owed to the town and
-// coin handed over for goods that never came.
+// coin handed over for goods that never came. GoodsCount / GoodsTotal are the subset
+// that bought something and had a delivery against it (LLM-612). The two subsets are
+// disjoint by construction; what is in neither is CoinPaymentUnstated.
 type CoinDealings struct {
-	PaidCount     int
-	PaidTotal     int
-	PaidAtLeast   bool
-	PaidAllSingle bool
-	PaidDueCount  int
-	PaidDueTotal  int
+	PaidCount      int
+	PaidTotal      int
+	PaidAtLeast    bool
+	PaidAllSingle  bool
+	PaidDueCount   int
+	PaidDueTotal   int
+	PaidGoodsCount int
+	PaidGoodsTotal int
 
-	ReceivedCount     int
-	ReceivedTotal     int
-	ReceivedAtLeast   bool
-	ReceivedAllSingle bool
-	ReceivedDueCount  int
-	ReceivedDueTotal  int
+	ReceivedCount      int
+	ReceivedTotal      int
+	ReceivedAtLeast    bool
+	ReceivedAllSingle  bool
+	ReceivedDueCount   int
+	ReceivedDueTotal   int
+	ReceivedGoodsCount int
+	ReceivedGoodsTotal int
 }
 
 // Any reports whether any coin passed either way inside the window.
@@ -343,8 +390,10 @@ func (s *Snapshot) CoinDealingsFor(subjectID, peerID ActorID, now time.Time) Coi
 	received := tallyCoinPayments(rec.Received, cutoff)
 	d.PaidCount, d.PaidTotal, d.PaidAllSingle = paid.count, paid.total, paid.allSingle
 	d.PaidDueCount, d.PaidDueTotal = paid.dueCount, paid.dueTotal
+	d.PaidGoodsCount, d.PaidGoodsTotal = paid.goodsCount, paid.goodsTotal
 	d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle = received.count, received.total, received.allSingle
 	d.ReceivedDueCount, d.ReceivedDueTotal = received.dueCount, received.dueTotal
+	d.ReceivedGoodsCount, d.ReceivedGoodsTotal = received.goodsCount, received.goodsTotal
 	d.PaidAtLeast = rec.DroppedPaid > 0
 	d.ReceivedAtLeast = rec.DroppedReceived > 0
 	return d
@@ -360,9 +409,13 @@ type coinTally struct {
 	// difference between "a coin each time" and "seven coins in all", which is the
 	// phrasing a person would actually use about a recurring due.
 	allSingle bool
-	// dueCount / dueTotal are the subset that discharged an obligation.
-	dueCount int
-	dueTotal int
+	// dueCount / dueTotal are the subset that discharged an obligation;
+	// goodsCount / goodsTotal the subset that bought something. Disjoint — a
+	// payment carries one kind.
+	dueCount   int
+	dueTotal   int
+	goodsCount int
+	goodsTotal int
 }
 
 // tallyCoinPayments sums the entries at or after cutoff.
@@ -377,9 +430,13 @@ func tallyCoinPayments(trail []CoinPayment, cutoff time.Time) coinTally {
 		if p.Amount != 1 {
 			t.allSingle = false
 		}
-		if p.Due {
+		switch p.Kind {
+		case CoinPaymentForDue:
 			t.dueCount++
 			t.dueTotal += p.Amount
+		case CoinPaymentForGoods:
+			t.goodsCount++
+			t.goodsTotal += p.Amount
 		}
 	}
 	if t.count == 0 {
@@ -483,6 +540,37 @@ type CoinPaymentRow struct {
 	// purchase is the state the village was already in, while a purchase mistaken
 	// for a due would tell an NPC nothing was owed him when something was.
 	RateSettled string
+	// LedgerID is the raw payload text joining the row to its pay-ledger entry.
+	// Its PRESENCE is the goods classification (LLM-612): the key is written
+	// unconditionally by handlePayResolvedActionLog and by nothing else, so a row
+	// carrying it settled a pay-with-item entry — goods for coin, with a delivery
+	// against it.
+	//
+	// Unlike RateSettled this is NOT forward-only. handlePayResolvedActionLog has
+	// stamped it since LLM-105, long before the classification existed, so the seed
+	// reads a correct purchase history off rows written years before the ticket.
+	// The value itself is never parsed; only whether it is there.
+	LedgerID string
+}
+
+// coinPaymentKindFromRow classifies a seeded row the way the live subscribers do,
+// from the settlement path the payload attests to and never from its `for` text.
+//
+// The due check runs first. The two markers cannot co-occur — settleTownRate is
+// reachable only from the bare-coin Pay command, which mints no ledger entry — but
+// if a future path ever wrote both, the due is the load-bearing one: it is what
+// stops a levy reading as an order placed and never filled, which is the defect
+// LLM-607 was built for. A malformed rate_settled reads as "not a due" rather than
+// failing the row, and an absent marker of either sort degrades to Unstated — the
+// wording the record used before any classification existed.
+func coinPaymentKindFromRow(row CoinPaymentRow) CoinPaymentKind {
+	if settled, err := strconv.Atoi(strings.TrimSpace(row.RateSettled)); err == nil && settled > 0 {
+		return CoinPaymentForDue
+	}
+	if strings.TrimSpace(row.LedgerID) != "" {
+		return CoinPaymentForGoods
+	}
+	return CoinPaymentUnstated
 }
 
 // rehydrateCoinRecordOnLoad rebuilds World.CoinRecord at boot from the durable
@@ -524,12 +612,10 @@ func (w *World) rehydrateCoinRecordOnLoad(ctx context.Context) error {
 			}
 			continue
 		}
-		// A malformed rate_settled reads as "not a due" rather than failing the row
-		// (LLM-607). The payment itself is still true and still belongs in the
-		// tally; only its classification is lost, which degrades to exactly the
-		// pre-ticket behaviour.
-		settled, _ := strconv.Atoi(strings.TrimSpace(row.RateSettled))
-		w.RecordCoinPaid(row.PayerID, payeeID, amount, row.At, settled > 0)
+		// A row whose markers are absent or malformed still belongs in the tally —
+		// the payment is true, only its classification is lost, and that degrades to
+		// exactly the pre-classification behaviour.
+		w.RecordCoinPaid(row.PayerID, payeeID, amount, row.At, coinPaymentKindFromRow(row))
 	}
 	if pairs := countCoinPairs(w.CoinRecord); pairs > 0 || unresolved > 0 || ambiguous > 0 {
 		log.Printf("sim: seeded coin record for %d pair(s) from %d durable payment row(s) (%d recipient(s) unresolved, %d ambiguous, %d malformed)",

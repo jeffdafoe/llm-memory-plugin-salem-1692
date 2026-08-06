@@ -99,7 +99,7 @@ func peerDisputesAPaymentNeverMade() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 	// produces for this pair.
 	first := time.Date(2026, 7, 29, 14, 34, 15, 0, time.UTC)
 	second := time.Date(2026, 7, 30, 12, 18, 58, 0, time.UTC)
-	rates := []sim.CoinPayment{{At: first, Amount: 1, Due: true}, {At: second, Amount: 1, Due: true}}
+	rates := []sim.CoinPayment{{At: first, Amount: 1, Kind: sim.CoinPaymentForDue}, {At: second, Amount: 1, Kind: sim.CoinPaymentForDue}}
 
 	snap := &sim.Snapshot{
 		PublishedAt:      published,

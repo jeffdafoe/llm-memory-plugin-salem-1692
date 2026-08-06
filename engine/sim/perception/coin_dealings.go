@@ -167,24 +167,89 @@ func renderCoinDealings(b *strings.Builder, peers []CoinDealingsPeerView) {
 // name or a bare direction carries it instead.
 //
 // A pair with a due on the record takes the two-sentence form below (LLM-607).
-// A pair without takes the original wording unchanged, which is most of the village.
+//
+// THE WORD "BACK" APPEARS NOWHERE, and that is the LLM-612 half. It asserts that a
+// payment discharged something owed — a purpose, and this record carries no
+// purposes. It was wrong for the majority case rather than the edge one: Josiah
+// Thorne, a shopkeeper, read that he had "paid back" a farm 168 coins against 4
+// received, when he had bought a week of stock from her and sold it on to third
+// parties whose coin never appears in a pairwise line at all. A bare direction is
+// true whatever the coin was for, so the joined form simply names the pair twice.
 func coinDealingsSentence(name string, d sim.CoinDealings) string {
 	received := coinFlowPhrase(d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle, d.ReceivedAtLeast)
 	paid := coinFlowPhrase(d.PaidCount, d.PaidTotal, d.PaidAllSingle, d.PaidAtLeast)
-	receivedDue := coinDueClause(d.ReceivedDueCount, d.ReceivedDueTotal, d.ReceivedCount)
-	paidDue := coinDueClause(d.PaidDueCount, d.PaidDueTotal, d.PaidCount)
-	if receivedDue != "" || paidDue != "" {
-		return coinDealingsDueSentence(name, received, receivedDue, paid, paidDue, d)
+	receivedClause := coinDirectionClause(d.ReceivedDueCount, d.ReceivedDueTotal, d.ReceivedGoodsCount, d.ReceivedGoodsTotal, d.ReceivedCount)
+	paidClause := coinDirectionClause(d.PaidDueCount, d.PaidDueTotal, d.PaidGoodsCount, d.PaidGoodsTotal, d.PaidCount)
+	if d.ReceivedDueCount > 0 || d.PaidDueCount > 0 {
+		return coinDealingsDueSentence(name, received, receivedClause, paid, paidClause, d)
 	}
 	switch {
 	case d.ReceivedCount > 0 && d.PaidCount > 0:
-		return fmt.Sprintf("%s has paid you %s, and you have paid back %s.", name, received, paid)
+		return fmt.Sprintf("%s has paid you %s%s, and you have paid %s %s%s.", name, received, receivedClause, name, paid, paidClause)
 	case d.ReceivedCount > 0:
-		return fmt.Sprintf("%s has paid you %s, and nothing has gone back the other way.", name, received)
+		return fmt.Sprintf("%s has paid you %s%s%s.", name, received, receivedClause, coinNothingBackTail(d.ReceivedGoodsCount, " and nothing has gone back the other way"))
 	case d.PaidCount > 0:
-		return fmt.Sprintf("You have paid %s %s, and nothing has come back the other way.", name, paid)
+		return fmt.Sprintf("You have paid %s %s%s%s.", name, paid, paidClause, coinNothingBackTail(d.PaidGoodsCount, " and nothing has come back the other way"))
 	default:
 		return fmt.Sprintf("No coin has passed between you and %s.", name)
+	}
+}
+
+// coinNothingBackTail returns the one-directional "nothing came back" tail, or
+// nothing at all when any of that direction bought goods.
+//
+// Dropping it is the sharper half of LLM-612. "You have paid Abraham Warren 8
+// coins, and nothing has come back the other way" is not merely an odd register for
+// a purchase — it is false. Meat came back. The tail is the same claim the due
+// clause already suppresses for the same reason, so the rule is the one that was
+// there: any classified coin in a direction retires the blanket denial, because the
+// clause has said what the coin did and the reader must not infer a debt from what
+// it did not say.
+func coinNothingBackTail(goodsCount int, tail string) string {
+	if goodsCount > 0 {
+		return ""
+	}
+	return "," + tail
+}
+
+// coinDirectionClause picks one direction's qualifier: what the engine can say the
+// coin did, or nothing when it cannot say.
+//
+// A due outranks goods within a direction. They cannot co-occur on one payment, and
+// today not even on one direction — settleTownRate is reachable only from the
+// bare-coin Pay command, which mints no ledger entry. If a mixed direction ever does
+// arise, the due clause is the one that must survive: it is what stops a levy
+// reading as an order placed and never filled (LLM-607), while an unnamed purchase
+// only costs the register. Naming both portions in one sentence turns a
+// recollection into an itemized statement, which is what "scenes, not stats" is for.
+func coinDirectionClause(dueCount, dueTotal, goodsCount, goodsTotal, count int) string {
+	if clause := coinDueClause(dueCount, dueTotal, count); clause != "" {
+		return clause
+	}
+	return coinGoodsClause(goodsCount, goodsTotal, count)
+}
+
+// coinGoodsClause qualifies one direction's flow with how much of it bought goods.
+// Empty when none of it did, which leaves the bare direction — true of a wage, a
+// gift or a tip alike, none of which the engine can tell apart.
+//
+// Deliberately shorter than coinDueClause, and carrying no closing. A due needs its
+// "settled as it was handed over, and no goods owed back" because a levy is
+// genuinely counterintuitive — coin that was never coming back. Goods for coin is
+// the ordinary shape of a trade and explains itself; a closing on it would be a
+// sentence of boilerplate re-read every tick on nearly every line in the village,
+// on both directions of most pairs.
+func coinGoodsClause(goodsCount, goodsTotal, count int) string {
+	switch {
+	case goodsCount <= 0:
+		return ""
+	case goodsCount >= count:
+		return " for goods"
+	default:
+		// A portion names COIN, not payments — the same slot coinDueClause fills,
+		// and via coinsPhrase for the same reason: "a coin of it" reads as a stray
+		// article rather than a quantity.
+		return fmt.Sprintf(", %s of it for goods", coinsPhrase(goodsTotal))
 	}
 }
 
@@ -202,13 +267,16 @@ func coinDealingsSentence(name string, d sim.CoinDealings) string {
 // present, and its absence is the point rather than an omission: for coin that was
 // never going to come back, stating that nothing did is the exact inference the
 // scene must not invite. The due clause says what the tail was there to say.
-func coinDealingsDueSentence(name, received, receivedDue, paid, paidDue string, d sim.CoinDealings) string {
+//
+// The clauses arrive already chosen per direction (coinDirectionClause), so a pair
+// where one direction is a levy and the other is trade voices each as what it was.
+func coinDealingsDueSentence(name, received, receivedClause, paid, paidClause string, d sim.CoinDealings) string {
 	var parts []string
 	if d.ReceivedCount > 0 {
-		parts = append(parts, fmt.Sprintf("%s has paid you %s%s.", name, received, receivedDue))
+		parts = append(parts, fmt.Sprintf("%s has paid you %s%s.", name, received, receivedClause))
 	}
 	if d.PaidCount > 0 {
-		parts = append(parts, fmt.Sprintf("You have paid %s %s%s.", name, paid, paidDue))
+		parts = append(parts, fmt.Sprintf("You have paid %s %s%s.", name, paid, paidClause))
 	}
 	return strings.Join(parts, " ")
 }
