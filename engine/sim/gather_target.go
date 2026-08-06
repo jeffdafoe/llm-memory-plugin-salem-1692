@@ -199,10 +199,17 @@ func ForageItems(policy *RestockPolicy) map[ItemKind]bool {
 	}
 	var out map[ItemKind]bool
 	for _, e := range policy.ForageEntries() {
+		// Trimmed to match the lookup side: MayGatherSource trims GatherItem
+		// because IsGatherable() does, so an untrimmed entry here would silently
+		// revoke the right on a padded catalog value (code_review).
+		item := ItemKind(strings.TrimSpace(string(e.Item)))
+		if item == "" {
+			continue
+		}
 		if out == nil {
 			out = make(map[ItemKind]bool)
 		}
-		out[e.Item] = true
+		out[item] = true
 	}
 	return out
 }
@@ -229,6 +236,15 @@ func ForageItems(policy *RestockPolicy) map[ItemKind]bool {
 // TRADES, and this gate exists only where ownership has nothing to say.
 func MayGatherSource(obj *VillageObject, row *ObjectRefresh, actorID ActorID, foragable map[ItemKind]bool) bool {
 	if row == nil {
+		return false
+	}
+	// Another's source is never yours, whatever your trade. ResolveGatherSource
+	// already refuses one upstream (handing it back so the caller can raise the
+	// more specific ErrNotYourSource), so this is unreachable from there — it is
+	// here so the predicate is honest standalone. Without it a future caller
+	// reading the name at face value would be told a forager may take from a
+	// neighbour's field (code_review).
+	if obj.OwnedByOther(actorID) {
 		return false
 	}
 	if !row.IsYieldOnly() {

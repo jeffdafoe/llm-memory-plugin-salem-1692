@@ -144,18 +144,11 @@ func TestMayGatherSource(t *testing.T) {
 		{"commons yield-only is allowed with the matching entry", commons, yieldOnly, "joseph", forageSet("water", "firewood"), true},
 		{"your own yield-only source needs no entry — ownership is the claim", mine, yieldOnly, "moses", nil, true},
 		{"another's source is not made yours by holding the entry", theirs, yieldOnly, "moses", forageSet("water"), false},
+		{"another's WILD bush is still refused — ownership outranks the commons rule", theirs, pickAndEat, "moses", nil, false},
 		{"a nil row is never gatherable", commons, nil, "ezekiel", forageSet("water"), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// The owned-by-another case is enforced upstream by OwnedByOther; assert
-			// the same answer here so the two gates can never disagree about it.
-			if c.obj == theirs {
-				if !c.obj.OwnedByOther(c.actor) {
-					t.Fatalf("fixture broken: %q should be owned by another", c.obj.ID)
-				}
-				return
-			}
 			if got := MayGatherSource(c.obj, c.row, c.actor, c.foragable); got != c.want {
 				t.Errorf("MayGatherSource = %v, want %v", got, c.want)
 			}
@@ -200,5 +193,32 @@ func TestForageItems_IgnoresStockLevel(t *testing.T) {
 	}
 	if ForageItems(nil) != nil {
 		t.Error("a nil policy confers nothing")
+	}
+}
+
+// TestForageItems_NormalizesEntries — the policy side must be trimmed like the
+// lookup side, or a padded catalog value silently revokes the right (code_review).
+// Blank entries confer nothing rather than seeding an empty-string key that a
+// blank GatherItem could then match — though IsGatherable() rejects those upstream,
+// the pair must not depend on that.
+func TestForageItems_NormalizesEntries(t *testing.T) {
+	got := ForageItems(&RestockPolicy{Restock: []RestockEntry{
+		{Item: " water ", Source: RestockSourceForage, Max: 20},
+		{Item: "   ", Source: RestockSourceForage, Max: 5},
+		{Item: "", Source: RestockSourceForage, Max: 5},
+	}})
+	if !got["water"] {
+		t.Errorf(`a padded entry must normalize to "water": %v`, got)
+	}
+	if got[""] {
+		t.Errorf("a blank entry must confer nothing: %v", got)
+	}
+	if len(got) != 1 {
+		t.Errorf("want exactly one right conferred, got %v", got)
+	}
+	// End to end against the source side, which trims independently.
+	row := &ObjectRefresh{Amount: 0, GatherItem: "water"}
+	if !MayGatherSource(&VillageObject{ID: "well"}, row, "joseph", got) {
+		t.Error("a padded ENTRY and a clean gather_item must still match")
 	}
 }
