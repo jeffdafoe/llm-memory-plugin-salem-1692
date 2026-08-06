@@ -4059,6 +4059,26 @@ var perceptionScenarios = []perceptionScenario{
 			"spot, wrong hours.",
 		build: smithWornClothesOffShift,
 	},
+	{
+		name: "keeper_off_post_buying_in_company",
+		summary: "LLM-611 (the live 2026-08-06 Josiah case): Josiah Thorne, shopkeeper, is OFF his own post — inside the " +
+			"Ellis Farm, huddled with Elizabeth Ellis — with 1 coin and a pack of merchandise he means to pay with. The " +
+			"golden pins the 'How you buy:' rule, the only trade guidance a keeper carries away from its counter, and " +
+			"the ABSENCE of the at-post 'How you trade:' block (WORK-385: a keeper standing in someone else's place is " +
+			"not told to sell). Before this he had no rule about value at all here, and settled purchases in goods priced " +
+			"at whatever the seller granted — 289 units handed over as pay_items in a week.",
+		build: keeperOffPostBuyingInCompany,
+	},
+	{
+		name: "keeper_off_post_buying_alone",
+		summary: "LLM-611 audience arm: the same shopkeeper off his own post with the same pack and purse, but with nobody " +
+			"within earshot — the seller is indoors in her own farmhouse, so her whereabouts is the single variable " +
+			"between the two arms (the extra 'the Ellis Farm is shut' line is a consequence of that move, not a second " +
+			"knob — a farm with its keeper indoors elsewhere IS untended). The golden pins silence. The rule is about " +
+			"what you hand to someone; with no one to pay there is nothing to weigh, and a standing line on every solo " +
+			"walking turn is noise the whole prompt pays for. Foil of keeper_off_post_buying_in_company.",
+		build: keeperOffPostBuyingAlone,
+	},
 }
 
 // townRateSnapshot builds the shared LLM-557 fixture: Josiah Thorne keeping the
@@ -7536,6 +7556,88 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: trade-conduct cue present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestKeeperBuyRuleOnlyOffPostWithCompany is the LLM-611 cross-scenario invariant,
+// two properties over the whole matrix:
+//
+//  1. The buyer-side rule ("How you buy:") renders in EXACTLY the scenarios whose
+//     subject is a businessowner away from its own post with someone within earshot.
+//     Asserted against the gate's own inputs rather than a hand-kept name list, so a
+//     future fixture that happens to put a keeper off-post can't drift out of
+//     coverage silently.
+//
+//  2. For any Payload produced by Build, the two trade blocks are MUTUALLY EXCLUSIVE
+//     — no prompt carries both the at-post conduct block and the off-post buy rule.
+//     This is the WORK-385 guard in structural form: the off-post rule exists
+//     precisely because the at-post block must not follow the keeper into someone
+//     else's place, so the day one of them leaks into the other's situation, this
+//     fails. Scoped to Build deliberately: Payload is an internal struct and a
+//     hand-built one setting both flags would render both blocks. Nothing enforces
+//     that at the type level, and this test does not claim otherwise.
+//
+// A businessowner with NO WorkStructureID is expected ABSENT — it is not away from a
+// post it does not have, and the rule would name a shelf that does not exist. That is
+// a malformed keeper rather than a situation the village produces, so the branch is
+// asserted by the predicate below rather than by a fixture; a golden for it would pin
+// an invalid world state as though the engine were meant to reach it.
+func TestKeeperBuyRuleOnlyOffPostWithCompany(t *testing.T) {
+	const (
+		buyMarker   = "How you buy:"
+		tradeMarker = "How you trade:"
+	)
+	var exercised bool
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil {
+				return
+			}
+			p := Build(snap, actorID, warrants)
+			hasPost := a.BusinessownerState != nil && a.WorkStructureID != ""
+			atOwnPost := hasPost && a.InsideStructureID == a.WorkStructureID
+			// Both collections exclude the subject at their source (build.go skips
+			// memberID == actorID; sim.colocatedAudienceIDs skips the speaker), so a
+			// non-empty either way means somebody ELSE is within earshot.
+			hasCompany := len(p.Surroundings.HuddleMembers) > 0 || len(p.Surroundings.CoPresent) > 0
+			want := hasPost && !atOwnPost && hasCompany
+			if want {
+				exercised = true
+			}
+			got := combinedPrompt(Render(p, DefaultRenderConfig()))
+			if has := strings.Contains(got, buyMarker); has != want {
+				t.Errorf("scenario %q: buyer-side rule present=%v, want %v (businessowner=%v hasPost=%v atOwnPost=%v company=%v)",
+					sc.name, has, want, a.BusinessownerState != nil, hasPost, atOwnPost, hasCompany)
+			}
+			if strings.Contains(got, buyMarker) && strings.Contains(got, tradeMarker) {
+				t.Errorf("scenario %q: prompt carries BOTH the at-post trade block and the off-post buy rule — they are mutually exclusive (LLM-611/WORK-385)", sc.name)
+			}
+		})
+	}
+	if !exercised {
+		t.Error("no scenario puts a businessowner off its own post with company — the LLM-611 positive arm is uncovered")
+	}
+}
+
+// TestKeeperOffPostAloneHasNoAudience pins the foil half of the LLM-611 pair at the
+// level the gate actually reads. keeper_off_post_buying_alone proves silence, but a
+// golden showing no "How you buy:" line cannot distinguish "no audience" from "the
+// gate broke" — both render the same bytes. This asserts the fixture's own premise:
+// the seller is in the world, and neither audience collection reaches her.
+func TestKeeperOffPostAloneHasNoAudience(t *testing.T) {
+	snap, actorID, warrants := keeperOffPostBuyingAlone()
+	if len(snap.Actors) < 2 {
+		t.Fatal("the alone fixture must keep the seller in the world — moving her, not deleting her, is what makes it a one-variable foil")
+	}
+	p := Build(snap, actorID, warrants)
+	if n := len(p.Surroundings.HuddleMembers); n != 0 {
+		t.Errorf("HuddleMembers = %d, want 0 — the alone arm must have nobody within earshot", n)
+	}
+	if n := len(p.Surroundings.CoPresent); n != 0 {
+		t.Errorf("CoPresent = %d, want 0 — the alone arm must have nobody within earshot", n)
 	}
 }
 
@@ -17533,6 +17635,93 @@ func smithWornClothesOffShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	snap.Actors[actorID].ScheduleStartMin = &eveStart
 	snap.Actors[actorID].ScheduleEndMin = &eveEnd
 	return snap, actorID, warrants
+}
+
+// keeperOffPostBuying builds the LLM-611 fixture: Josiah Thorne, shopkeeper, standing
+// inside the Ellis Farm rather than his own General Store — the restocking trip, which
+// is where a distributor does the bulk of its bargaining. Purse at 1 coin against a
+// pack of merchandise, the live 2026-08-06 shape: he cannot meet a coin price, so he
+// offers goods, and nothing was telling him what those goods are worth.
+//
+// withCompany toggles the audience half of the gate (a shared huddle with Elizabeth,
+// the seller) so the paired goldens differ in exactly one variable.
+func keeperOffPostBuying(withCompany bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID    = sim.ActorID("josiah")
+		elizabethID = sim.ActorID("elizabeth")
+		store       = sim.StructureID("general_store")
+		farm        = sim.StructureID("ellis_farm")
+		home        = sim.StructureID("thorne_residence")
+		farmhouse   = sim.StructureID("ellis_farmhouse")
+		huddle      = sim.HuddleID("h1")
+	)
+	start, end := 360, 1260 // 06:00–21:00
+	now := 720              // 12:00 — midday, on shift and away restocking
+	published := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Josiah Thorne",
+		Role:               "merchant",
+		State:              sim.StateIdle,
+		WorkStructureID:    store,
+		InsideStructureID:  farm,
+		HomeStructureID:    home,
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		BusinessownerState: &sim.BusinessownerState{},
+		Coins:              1,
+		Needs:              map[sim.NeedKey]int{},
+		Inventory:          map[sim.ItemKind]int{"flour": 12, "carrots": 4, "firewood": 2, "milk": 2},
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		WorkStructureID:   farm,
+		InsideStructureID: farm,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"cheese": 1},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{josiahID: josiah, elizabethID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+			home:  plainStructure(home, "Thorne Residence"),
+		},
+	}
+	// Elizabeth stays in the world in BOTH arms — only her whereabouts move. Deleting
+	// her would change actor discovery and relationship rendering as well as the
+	// audience, so the foil could shift for reasons that have nothing to do with this
+	// gate. Alone, she is inside her own farmhouse: a different structure, so neither
+	// the huddle roster nor the co-located audience reaches her.
+	josiah.Acquaintances = map[string]sim.Acquaintance{"Elizabeth Ellis": {}}
+	if withCompany {
+		josiah.CurrentHuddleID = huddle
+		elizabeth.CurrentHuddleID = huddle
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josiahID: {}, elizabethID: {}}},
+		}
+	} else {
+		elizabeth.InsideStructureID = farmhouse
+		snap.Structures[farmhouse] = plainStructure(farmhouse, "Ellis Farmhouse")
+	}
+	return snap, josiahID, nil
+}
+
+func keeperOffPostBuyingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return keeperOffPostBuying(true)
+}
+
+func keeperOffPostBuyingAlone() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return keeperOffPostBuying(false)
 }
 
 // commonsWellScenario builds the SHIPPED well (LLM-254) with one actor standing
