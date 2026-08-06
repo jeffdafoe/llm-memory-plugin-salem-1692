@@ -160,6 +160,70 @@ func TestSettledRateReadsAsSettled(t *testing.T) {
 	}
 }
 
+// The mixed case: one direction carrying dues AND ordinary purchases, the other
+// carrying a plain purchase (code_review). This is the shape most likely to lose
+// information, because the presence of a single due switches the WHOLE pair to the
+// two-sentence form and suppresses the "nothing came back" tail for both
+// directions.
+//
+// What the render must keep separable: the total flow, the due portion of it, and
+// the fact that the peer paid in the other direction too. What it deliberately does
+// not say is that nothing came back for the non-due remainder — the section is a
+// record of coin, not a statement of what is owed, and the grievance channel is the
+// relationship file. Naming a portion as a due while leaving the reader to infer a
+// debt from the rest would recreate the defect at a smaller scale.
+func TestMixedDueAndPurchaseRendersBothDirections(t *testing.T) {
+	d := sim.CoinDealings{
+		// Four payments out, five coins: three single coins of rate, one 2-coin buy.
+		PaidCount: 4, PaidTotal: 5, PaidDueCount: 3, PaidDueTotal: 3,
+		// One purchase in, no due — the constable buying wheat off the farm.
+		ReceivedCount: 1, ReceivedTotal: 4,
+	}
+	got := coinDealingsSentence("Constable Gideon Marsh", d)
+	for _, want := range []string{
+		"Constable Gideon Marsh has paid you 4 coins.",
+		"You have paid Constable Gideon Marsh 5 coins across 4 payments, 3 coins of it the town's due — settled as it was handed over, and no goods owed back.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mixed sentence is missing a half.\nwant: %s\n got: %s", want, got)
+		}
+	}
+	// "paid back" would cast the levies as repayment of a debt to the collector.
+	if strings.Contains(got, "paid back") {
+		t.Errorf("a direction carrying a due is described as repayment: %s", got)
+	}
+}
+
+// The clause boundaries, including the singular partial the review flagged. The
+// difference between branches is one phrase in a line a weak model reads every
+// tick, so each is pinned rather than left to the two golden fixtures.
+func TestCoinDueClauseBoundaries(t *testing.T) {
+	const closing = " — settled as it was handed over, and no goods owed back"
+	cases := []struct {
+		name                      string
+		dueCount, dueTotal, count int
+		want                      string
+	}{
+		{"no due at all", 0, 0, 5, ""},
+		{"a single payment, and it was the due", 1, 1, 1, ", the town's due" + closing},
+		{"every payment was a due", 8, 8, 8, ", all of it the town's due" + closing},
+		{"one due coin among five payments", 1, 1, 5, ", 1 coin of it the town's due" + closing},
+		{"two due coins among five payments", 1, 2, 5, ", 2 coins of it the town's due" + closing},
+		// Defensive: a dueCount past count cannot arise from tallyCoinPayments (the
+		// due subset is counted from the same loop), but the branch must not fall
+		// through to a partial phrase naming more coin than the direction holds.
+		{"more dues than payments", 6, 6, 5, ", all of it the town's due" + closing},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := coinDueClause(tc.dueCount, tc.dueTotal, tc.count); got != tc.want {
+				t.Errorf("coinDueClause(%d, %d, %d) = %q, want %q", tc.dueCount, tc.dueTotal, tc.count, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestGoldensNeverTellAKeeperASettledRateIsOwedBack is the cross-scenario invariant.
 //
 // The property: in no situation may a scene describe coin that discharged a due as

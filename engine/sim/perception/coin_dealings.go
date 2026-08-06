@@ -233,7 +233,11 @@ func coinDueClause(dueCount, dueTotal, count int) string {
 	case dueCount >= count:
 		return ", all of it the town's due" + closing
 	default:
-		return fmt.Sprintf(", %s of it the town's due%s", coinsOwedPhrase(dueTotal), closing)
+		// coinsPhrase, not coinsOwedPhrase: the partial branch names a PORTION of
+		// a larger sum, and "a coin of it the town's due" reads as a stray article
+		// rather than a quantity (code_review). "1 coin of it" also matches the
+		// "2 coins of it" this same slot produces one coin higher.
+		return fmt.Sprintf(", %s of it the town's due%s", coinsPhrase(dueTotal), closing)
 	}
 }
 
