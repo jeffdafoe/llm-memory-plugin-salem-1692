@@ -69,8 +69,8 @@ func TestRecordCoinPaid_MarksTheDueOnBothSides(t *testing.T) {
 func TestCoinDealingsFor_CountsTheDuePortion(t *testing.T) {
 	w := newCoinWorld(0)
 	at := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
-	w.RecordCoinPaid("moses", "gideon", 1, at, CoinPaymentForDue)                     // the rate
-	w.RecordCoinPaid("moses", "gideon", 1, at.Add(time.Minute), CoinPaymentForDue)    // the rate again
+	w.RecordCoinPaid("moses", "gideon", 1, at, CoinPaymentForDue)                      // the rate
+	w.RecordCoinPaid("moses", "gideon", 1, at.Add(time.Minute), CoinPaymentForDue)     // the rate again
 	w.RecordCoinPaid("moses", "gideon", 4, at.Add(2*time.Minute), CoinPaymentForGoods) // a purchase
 	w.republish()
 
@@ -276,23 +276,23 @@ func TestRehydrateCoinRecordOnLoad_ResolvesAndSkips(t *testing.T) {
 	}
 	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
 		// Resolves by name (a historical row, written before the id was stamped).
-		{PayerID: "moses", At: at, Amount: "1", RecipientName: "Constable Gideon Marsh"},
+		{ActorID: "moses", At: at, Amount: "1", CounterpartyName: "Constable Gideon Marsh"},
 		// Resolves by the stamped id, which wins over the name.
-		{PayerID: "moses", At: at.Add(time.Minute), Amount: "1", RecipientActorID: "gideon", RecipientName: "Somebody Else"},
+		{ActorID: "moses", At: at.Add(time.Minute), Amount: "1", CounterpartyActorID: "gideon", CounterpartyName: "Somebody Else"},
 		// A visitor: no live actor by that name. Dropped.
-		{PayerID: "moses", At: at, Amount: "4", RecipientName: "Daniel Holcomb the factor"},
+		{ActorID: "moses", At: at, Amount: "4", CounterpartyName: "Daniel Holcomb the factor"},
 		// Ambiguous: two actors share the name, so it identifies neither. Dropped
 		// rather than attributed to a coin flip.
-		{PayerID: "moses", At: at, Amount: "9", RecipientName: "John Ellis"},
+		{ActorID: "moses", At: at, Amount: "9", CounterpartyName: "John Ellis"},
 		// A stamped id for an actor that no longer exists, but whose display name
 		// still names exactly one live actor. RESOLVES via the fallback — see
 		// TestRehydrateCoinRecordOnLoad_StaleStampedIDFallsBackToName.
-		{PayerID: "moses", At: at, Amount: "7", RecipientActorID: "vstr-deadbeef", RecipientName: "Constable Gideon Marsh"},
+		{ActorID: "moses", At: at, Amount: "7", CounterpartyActorID: "vstr-deadbeef", CounterpartyName: "Constable Gideon Marsh"},
 		// A barter — zero coin, and this is a record of coin.
-		{PayerID: "moses", At: at, Amount: "0", RecipientName: "Constable Gideon Marsh"},
+		{ActorID: "moses", At: at, Amount: "0", CounterpartyName: "Constable Gideon Marsh"},
 		// Malformed payload rather than a boot failure.
-		{PayerID: "moses", At: at, Amount: "not-a-number", RecipientName: "Constable Gideon Marsh"},
-		{PayerID: "moses", At: at, Amount: "", RecipientName: "Constable Gideon Marsh"},
+		{ActorID: "moses", At: at, Amount: "not-a-number", CounterpartyName: "Constable Gideon Marsh"},
+		{ActorID: "moses", At: at, Amount: "", CounterpartyName: "Constable Gideon Marsh"},
 	}}
 	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -310,6 +310,91 @@ func TestRehydrateCoinRecordOnLoad_ResolvesAndSkips(t *testing.T) {
 	}
 	if _, ok := w.CoinRecord["moses"]["twin-b"]; ok {
 		t.Errorf("ambiguous row was attributed to twin-b")
+	}
+}
+
+// LLM-613: a `labored` row seeds the pair in the direction the WORKER's row implies,
+// which is the reverse of a `paid` row's.
+//
+// This is the one place the two durable shapes disagree, and the only way to get it
+// wrong is silently. Both carry an actor_id and a named counterparty, so a seed that
+// treated them alike would build a completely plausible record with every wage
+// reversed — employers reading that their hired hands had been paying THEM, at the
+// right amounts, on the right days. Both directions are asserted because a reversal
+// populates the mirror just as convincingly as the truth does.
+//
+// The `paid` row rides along to pin that the two shapes coexist on one pair without
+// contaminating each other, which is the production shape: Josiah Thorne buys from
+// Lewis Walker and also hires him.
+func TestRehydrateCoinRecordOnLoad_LaboredRowPaysFromEmployerToWorker(t *testing.T) {
+	at := time.Date(2026, 8, 5, 19, 51, 0, 0, time.UTC)
+	w := newCoinWorld(0)
+	w.Actors = map[ActorID]*Actor{
+		"josiah": {ID: "josiah", DisplayName: "Josiah Thorne"},
+		"lewis":  {ID: "lewis", DisplayName: "Lewis Walker"},
+	}
+	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
+		// A wage, stamped with the employer's id since this ticket.
+		{Source: CoinPaymentSourceLabored, ActorID: "lewis", At: at, Amount: "4",
+			CounterpartyActorID: "josiah", CounterpartyName: "Josiah Thorne"},
+		// A historical wage: the employer by display name only, resolved through the
+		// same uniqueness rule the recipient fallback has always applied.
+		{Source: CoinPaymentSourceLabored, ActorID: "lewis", At: at.Add(-time.Hour), Amount: "4",
+			CounterpartyName: "Josiah Thorne"},
+		// And a purchase the other way, on the same pair.
+		{Source: CoinPaymentSourcePaid, ActorID: "lewis", At: at.Add(-2 * time.Hour), Amount: "10",
+			CounterpartyActorID: "josiah", LedgerID: "2053"},
+	}}
+	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	employer := w.CoinRecord["josiah"]["lewis"]
+	if employer == nil || len(employer.Paid) != 2 || len(employer.Received) != 1 {
+		t.Fatalf("employer's record = %+v, want the two wages PAID and the purchase received", employer)
+	}
+	for _, p := range employer.Paid {
+		if p.Kind != CoinPaymentForWork {
+			t.Errorf("seeded wage kind = %v, want CoinPaymentForWork", p.Kind)
+		}
+	}
+	if employer.Received[0].Kind != CoinPaymentForGoods {
+		t.Errorf("the purchase seeded as %v, want CoinPaymentForGoods", employer.Received[0].Kind)
+	}
+
+	worker := w.CoinRecord["lewis"]["josiah"]
+	if worker == nil || len(worker.Received) != 2 || len(worker.Paid) != 1 {
+		t.Errorf("worker's record = %+v, want the two wages RECEIVED and the purchase paid", worker)
+	}
+}
+
+// A wage the seed cannot attribute is dropped rather than guessed at, the same rule
+// the recipient fallback follows (LLM-613).
+//
+// Worth its own case because the employer name is the ONLY key a historical `labored`
+// row carries — nothing stamped an id before this ticket — so the whole back-window
+// of wages rides on the uniqueness rule. The village currently holds eight actors all
+// displaying as "Duck", which is what makes an ambiguous name a real shape rather
+// than a hypothetical one.
+func TestRehydrateCoinRecordOnLoad_UnattributableWageIsDropped(t *testing.T) {
+	at := time.Date(2026, 8, 5, 19, 51, 0, 0, time.UTC)
+	w := newCoinWorld(0)
+	w.Actors = map[ActorID]*Actor{
+		"lewis":  {ID: "lewis", DisplayName: "Lewis Walker"},
+		"twin-a": {ID: "twin-a", DisplayName: "John Ellis"},
+		"twin-b": {ID: "twin-b", DisplayName: "John Ellis"},
+	}
+	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
+		// Two actors answer to this name, so it identifies neither.
+		{Source: CoinPaymentSourceLabored, ActorID: "lewis", At: at, Amount: "4", CounterpartyName: "John Ellis"},
+		// No live actor at all — an employer since removed.
+		{Source: CoinPaymentSourceLabored, ActorID: "lewis", At: at, Amount: "4", CounterpartyName: "Ephraim Pollard"},
+	}}
+	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if n := countCoinPairs(w.CoinRecord); n != 0 {
+		t.Errorf("pairs = %d, want 0 — an unattributable wage is worse attributed than omitted", n)
 	}
 }
 
@@ -331,12 +416,12 @@ func TestRehydrateCoinRecordOnLoad_RestoresThePaymentKind(t *testing.T) {
 		"gideon": {ID: "gideon", DisplayName: "Constable Gideon Marsh"},
 	}
 	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
-		{PayerID: "moses", At: at, Amount: "1", RecipientActorID: "gideon", RateSettled: "1"},
-		{PayerID: "moses", At: at.Add(time.Minute), Amount: "4", RecipientActorID: "gideon"},
-		{PayerID: "moses", At: at.Add(2 * time.Minute), Amount: "2", RecipientActorID: "gideon", RateSettled: "nonsense"},
-		{PayerID: "moses", At: at.Add(3 * time.Minute), Amount: "3", RecipientActorID: "gideon", LedgerID: "4127"},
+		{ActorID: "moses", At: at, Amount: "1", CounterpartyActorID: "gideon", RateSettled: "1"},
+		{ActorID: "moses", At: at.Add(time.Minute), Amount: "4", CounterpartyActorID: "gideon"},
+		{ActorID: "moses", At: at.Add(2 * time.Minute), Amount: "2", CounterpartyActorID: "gideon", RateSettled: "nonsense"},
+		{ActorID: "moses", At: at.Add(3 * time.Minute), Amount: "3", CounterpartyActorID: "gideon", LedgerID: "4127"},
 		// rate_settled 0 is a bare pay that settled nothing, not a due.
-		{PayerID: "moses", At: at.Add(4 * time.Minute), Amount: "5", RecipientActorID: "gideon", RateSettled: "0"},
+		{ActorID: "moses", At: at.Add(4 * time.Minute), Amount: "5", CounterpartyActorID: "gideon", RateSettled: "0"},
 	}}
 	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -374,7 +459,7 @@ func TestRehydrateCoinRecordOnLoad_ClassifiesHistoricalLedgerRowsAsGoods(t *test
 	}
 	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
 		// Pre-LLM-572 shape: no recipient_actor_id either, resolved by name.
-		{PayerID: "josiah", At: at, Amount: "12", RecipientName: "Elizabeth Ellis", LedgerID: "881"},
+		{ActorID: "josiah", At: at, Amount: "12", CounterpartyName: "Elizabeth Ellis", LedgerID: "881"},
 	}}
 	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -461,10 +546,12 @@ func TestCoinPaymentKindFromRow(t *testing.T) {
 		{"a rate that settled nothing", CoinPaymentRow{RateSettled: "0"}, CoinPaymentUnstated},
 		{"an unparseable rate", CoinPaymentRow{RateSettled: "nonsense"}, CoinPaymentUnstated},
 		{"an unparseable rate on a ledger row", CoinPaymentRow{RateSettled: "nonsense", LedgerID: "881"}, CoinPaymentForGoods},
-		{"a nightly lodging auto-charge", CoinPaymentRow{RecipientName: "John Ellis", LodgingGrant: "tavern"}, CoinPaymentForGoods},
-		{"a lodging row from before the marker", CoinPaymentRow{RecipientName: "John Ellis"}, CoinPaymentUnstated},
+		{"a nightly lodging auto-charge", CoinPaymentRow{CounterpartyName: "John Ellis", LodgingGrant: "tavern"}, CoinPaymentForGoods},
+		{"a lodging row from before the marker", CoinPaymentRow{CounterpartyName: "John Ellis"}, CoinPaymentUnstated},
 		{"a due settled on a lodging row — the due still wins", CoinPaymentRow{RateSettled: "1", LodgingGrant: "tavern"}, CoinPaymentForDue},
 		{"an unparseable rate on a lodging row", CoinPaymentRow{RateSettled: "nonsense", LodgingGrant: "tavern"}, CoinPaymentForGoods},
+		// A wage is read off the row type, so it outranks every marker-based arm.
+		{"a completed labor contract", CoinPaymentRow{Source: CoinPaymentSourceLabored, CounterpartyName: "Josiah Thorne"}, CoinPaymentForWork},
 		{"whitespace is not a ledger id", CoinPaymentRow{LedgerID: "  "}, CoinPaymentUnstated},
 		{"whitespace is not a lodging grant", CoinPaymentRow{LodgingGrant: "  "}, CoinPaymentUnstated},
 	}
@@ -575,7 +662,7 @@ func TestRehydrateCoinRecordOnLoad_StaleStampedIDFallsBackToName(t *testing.T) {
 		"gideon": {ID: "gideon", DisplayName: "Constable Gideon Marsh"},
 	}
 	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
-		{PayerID: "moses", At: at, Amount: "2", RecipientActorID: "gone-forever", RecipientName: "Constable Gideon Marsh"},
+		{ActorID: "moses", At: at, Amount: "2", CounterpartyActorID: "gone-forever", CounterpartyName: "Constable Gideon Marsh"},
 	}}
 	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -598,7 +685,7 @@ func TestRehydrateCoinRecordOnLoad_StaleStampedIDWithAmbiguousNameIsDropped(t *t
 		"twin-b": {ID: "twin-b", DisplayName: "John Ellis"},
 	}
 	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
-		{PayerID: "moses", At: at, Amount: "2", RecipientActorID: "gone-forever", RecipientName: "John Ellis"},
+		{ActorID: "moses", At: at, Amount: "2", CounterpartyActorID: "gone-forever", CounterpartyName: "John Ellis"},
 	}}
 	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)

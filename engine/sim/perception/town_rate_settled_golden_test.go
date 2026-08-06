@@ -244,9 +244,15 @@ func TestCoinDirectionClauseBoundaries(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := coinDirectionClause(tc.dueCount, tc.dueTotal, tc.goodsCount, tc.goodsTotal, tc.count)
+			got := coinDirectionClause(coinDirection{
+				count:      tc.count,
+				dueCount:   tc.dueCount,
+				dueTotal:   tc.dueTotal,
+				goodsCount: tc.goodsCount,
+				goodsTotal: tc.goodsTotal,
+			})
 			if got != tc.want {
-				t.Errorf("coinDirectionClause(%d, %d, %d, %d, %d) = %q, want %q",
+				t.Errorf("coinDirectionClause(due %d/%d, goods %d/%d, count %d) = %q, want %q",
 					tc.dueCount, tc.dueTotal, tc.goodsCount, tc.goodsTotal, tc.count, got, tc.want)
 			}
 		})

@@ -1130,6 +1130,12 @@ func handleLaborResolvedActionLog(w *sim.World, evt sim.Event) {
 		"amount":       resolved.Reward,
 		"duration_min": resolved.DurationMin,
 		"labor_id":     uint64(resolved.LaborID),
+		// LLM-613: the employer's id alongside the name, so the coin-record boot
+		// seed can key this row to a pair exactly. Mirrors recipient_actor_id on
+		// the `paid` rows — and note the row shapes are inverted, since a `labored`
+		// row's actor_id is the worker who was PAID. Historical rows carry the name
+		// only and resolve through the seed's uniqueness rule.
+		"employer_actor_id": string(resolved.EmployerID),
 	}
 	// LLM-225: the in-kind reward leg that settled alongside (or instead of)
 	// the coins — the durable audit trail for "did the promised porridge
@@ -1137,6 +1143,22 @@ func handleLaborResolvedActionLog(w *sim.World, evt sim.Event) {
 	if goods := laborRewardItemsPayload(resolved.RewardItems); goods != nil {
 		payload["reward_items"] = goods
 	}
+	// LLM-613: credit the coin tally from the same place, and under the same
+	// condition, as the durable row it is seeded from — the co-location rule
+	// RecordCoinPaid documents. Before this, a wage moved coin and the record of
+	// coin never heard about it: 94 coin-carrying rows a week, all of them
+	// employer-to-worker, so the pair line understated the employer's payments and
+	// the worker's earnings in that one direction and never averaged out.
+	//
+	// Completed is exactly the terminal that pays. settleCompletedLabor re-checks
+	// both legs and is all-or-nothing — a shortfall on either resolves the whole
+	// reward unpaid as FailedUnavailable — so there is no partly-paid wage to
+	// model here, and the guard above already returned for every other terminal.
+	//
+	// An in-kind-only reward has Reward 0, which RecordCoinPaid drops. That is the
+	// right answer rather than a gap: goods for labor is a real settlement, but
+	// this is a record of coin.
+	w.RecordCoinPaid(resolved.EmployerID, resolved.WorkerID, resolved.Reward, resolved.At, sim.CoinPaymentForWork)
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     resolved.WorkerID,
 		OccurredAt:  resolved.At,

@@ -53,13 +53,24 @@ import (
 // truth he had bought a week of cheese and milk from her farm and sold it on to
 // third parties whose coin never appears in a pairwise line at all.
 //
+// LLM-613 closed the other half of that: not what the record CALLED a payment, but
+// which payments reached it at all. Wages settled through the labor mechanism moved
+// coin without ever being credited — 94 coin-carrying `labored` rows a week against
+// 678 `paid` ones, roughly one coin movement in eight, and every one of them
+// employer-to-worker because that is the only direction the path carries coin. So
+// the omission did not average out: it understated what every employer had paid and
+// what every worker had earned, in that one direction, and the record denied money
+// it was built to vouch for. Josiah Thorne read that he had paid Lewis Walker 4
+// coins against 20 received when he had in fact paid 12.
+//
 // # Durability by derivation, not by a table
 //
 // The live tally is in memory and there is no coin_record table. It is SEEDED AT
-// BOOT from agent_action_log, which the engine already writes a durable `paid` row
-// to on every settlement, and incremented from the same two events that write those
-// rows. That is the whole durability story: the record survives restart because the
-// table it is derived from does.
+// BOOT from agent_action_log, which the engine already writes a durable row to on
+// every settlement that moves coin — `paid` for a purchase or a bare pay, `labored`
+// for a completed wage — and incremented from the same events that write those rows.
+// That is the whole durability story: the record survives restart because the table
+// it is derived from does.
 //
 // Chosen over a new checkpointed aggregate (the contact_ledger.go shape, LLM-547)
 // because the requirement here is genuinely weaker. The contact ledger had to be
@@ -119,6 +130,14 @@ const (
 	// wage settled by hand, a gift, a tip, a hand-to-hand debt — about one payment
 	// in eight. The engine genuinely does not know which, and the render says
 	// nothing about purpose rather than guessing.
+	//
+	// A WAGE CAN LAND HERE OR IN CoinPaymentForWork depending on which tool closed
+	// it, and that residual asymmetry is deliberate rather than overlooked (LLM-613).
+	// An NPC who hands over coin with `pay` and calls it wages has told us so only in
+	// the untrusted `for` text; an NPC whose labor contract completed has been paid by
+	// the engine itself. The same words from a villager mean different things to this
+	// record depending on whether the engine can vouch for them, which is the whole
+	// principle of CoinPaymentKind and not a gap to close by trusting the text.
 	CoinPaymentUnstated CoinPaymentKind = iota
 
 	// CoinPaymentForGoods is coin that bought something, with a delivery against
@@ -171,6 +190,22 @@ const (
 	// villager pays by hand. A due is settled the moment it is handed over and owes
 	// no delivery, which is the fact the record could not state before.
 	CoinPaymentForDue
+
+	// CoinPaymentForWork is a wage: an LLM-26 labor contract that settled Completed,
+	// so the reward moved from employer to worker (LLM-613). Labor came back for the
+	// coin — not goods, but not nothing, which is the distinction the record needs to
+	// stop reading a wage as an unfilled order.
+	//
+	// This is the best-attested of the four kinds. Goods rest on the presence of a
+	// ledger_id and a due on a rate_settled marker; a wage has its own event
+	// (LaborResolved), its own terminal state, and a labor_id joining the durable row
+	// back to the offer. settleCompletedLabor is also all-or-nothing — a shortfall on
+	// either the coin or the in-kind leg resolves the whole reward unpaid rather than
+	// part-paying — so the Completed terminal is exactly the condition under which
+	// coin moved, with no partial wage to model. An items-only reward carries Reward 0
+	// and RecordCoinPaid drops it: labor for goods is a real settlement, but it is not
+	// a record of coin.
+	CoinPaymentForWork
 )
 
 // CoinPayment is one settled coin transfer between a pair. Amount, time, and what
@@ -376,8 +411,10 @@ func appendCoinPayment(trail []CoinPayment, dropped int, p CoinPayment, window t
 // DueCount / DueTotal are the subset of a direction that discharged a due rather
 // than buying anything (LLM-607) — the difference between coin owed to the town and
 // coin handed over for goods that never came. GoodsCount / GoodsTotal are the subset
-// that bought something and had a delivery against it (LLM-612). The two subsets are
-// disjoint by construction; what is in neither is CoinPaymentUnstated.
+// that bought something and had a delivery against it (LLM-612). WorkCount /
+// WorkTotal are the subset that paid for labor performed (LLM-613). The three
+// subsets are disjoint by construction; what is in none of them is
+// CoinPaymentUnstated.
 type CoinDealings struct {
 	PaidCount      int
 	PaidTotal      int
@@ -387,6 +424,8 @@ type CoinDealings struct {
 	PaidDueTotal   int
 	PaidGoodsCount int
 	PaidGoodsTotal int
+	PaidWorkCount  int
+	PaidWorkTotal  int
 
 	ReceivedCount      int
 	ReceivedTotal      int
@@ -396,7 +435,20 @@ type CoinDealings struct {
 	ReceivedDueTotal   int
 	ReceivedGoodsCount int
 	ReceivedGoodsTotal int
+	ReceivedWorkCount  int
+	ReceivedWorkTotal  int
 }
+
+// Accounted reports how many of a direction's payments the engine can say bought
+// something — goods delivered or labor performed. It is the test for whether the
+// "nothing came back the other way" tail is safe to write, which is why it exists as
+// a named idea rather than an addition at the call site: a due is deliberately NOT
+// counted, because coin that discharged a levy genuinely had nothing come back and
+// the due clause says so in its own words.
+func (d CoinDealings) PaidAccounted() int { return d.PaidGoodsCount + d.PaidWorkCount }
+
+// ReceivedAccounted is PaidAccounted for the other direction.
+func (d CoinDealings) ReceivedAccounted() int { return d.ReceivedGoodsCount + d.ReceivedWorkCount }
 
 // Any reports whether any coin passed either way inside the window.
 func (d CoinDealings) Any() bool { return d.PaidCount > 0 || d.ReceivedCount > 0 }
@@ -431,9 +483,11 @@ func (s *Snapshot) CoinDealingsFor(subjectID, peerID ActorID, now time.Time) Coi
 	d.PaidCount, d.PaidTotal, d.PaidAllSingle = paid.count, paid.total, paid.allSingle
 	d.PaidDueCount, d.PaidDueTotal = paid.dueCount, paid.dueTotal
 	d.PaidGoodsCount, d.PaidGoodsTotal = paid.goodsCount, paid.goodsTotal
+	d.PaidWorkCount, d.PaidWorkTotal = paid.workCount, paid.workTotal
 	d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle = received.count, received.total, received.allSingle
 	d.ReceivedDueCount, d.ReceivedDueTotal = received.dueCount, received.dueTotal
 	d.ReceivedGoodsCount, d.ReceivedGoodsTotal = received.goodsCount, received.goodsTotal
+	d.ReceivedWorkCount, d.ReceivedWorkTotal = received.workCount, received.workTotal
 	d.PaidAtLeast = rec.DroppedPaid > 0
 	d.ReceivedAtLeast = rec.DroppedReceived > 0
 	return d
@@ -450,12 +504,15 @@ type coinTally struct {
 	// phrasing a person would actually use about a recurring due.
 	allSingle bool
 	// dueCount / dueTotal are the subset that discharged an obligation;
-	// goodsCount / goodsTotal the subset that bought something. Disjoint — a
-	// payment carries one kind.
+	// goodsCount / goodsTotal the subset that bought something; workCount /
+	// workTotal the subset that paid for labor. Disjoint — a payment carries one
+	// kind.
 	dueCount   int
 	dueTotal   int
 	goodsCount int
 	goodsTotal int
+	workCount  int
+	workTotal  int
 }
 
 // tallyCoinPayments sums the entries at or after cutoff.
@@ -477,6 +534,9 @@ func tallyCoinPayments(trail []CoinPayment, cutoff time.Time) coinTally {
 		case CoinPaymentForGoods:
 			t.goodsCount++
 			t.goodsTotal += p.Amount
+		case CoinPaymentForWork:
+			t.workCount++
+			t.workTotal += p.Amount
 		}
 	}
 	if t.count == 0 {
@@ -559,20 +619,53 @@ func (r *CoinPairRecord) aliveAt(cutoff time.Time) bool {
 	return n > 0 && !r.Received[n-1].At.Before(cutoff)
 }
 
-// CoinPaymentRow is one durable `paid` action-log row as the seed reads it, before
-// the recipient is resolved to an actor. The repo layer returns this shape; the
+// CoinPaymentSource names which durable action-log row a seeded payment came from.
+//
+// It exists because THE TWO ROW SHAPES ARE DIRECTION-INVERTED, which is the one
+// thing a reader of this seed has to hold onto. A `paid` row is written from the
+// payer's side: actor_id is the buyer and the payload names the recipient. A
+// `labored` row is written from the WORKER's side (the beat worth narrating is the
+// broke NPC earning, LLM-83), so actor_id is the payee and the payload names the
+// employer who paid. Same pair, opposite columns.
+//
+// Kept separate from CoinPaymentKind even though the two are one-to-one today. Kind
+// is what the coin DID and direction is where the row PUT the pair; folding them
+// would mean a future kind on the `paid` path silently flips a direction.
+type CoinPaymentSource uint8
+
+const (
+	// CoinPaymentSourcePaid is a `paid` row — actor_id paid the counterparty.
+	CoinPaymentSourcePaid CoinPaymentSource = iota
+
+	// CoinPaymentSourceLabored is a `labored` row — the counterparty (the employer)
+	// paid actor_id (the worker).
+	CoinPaymentSourceLabored
+)
+
+// CoinPaymentRow is one durable action-log row as the seed reads it, before the
+// counterparty is resolved to an actor. The repo layer returns this shape; the
 // resolution is Go's, not SQL's.
 type CoinPaymentRow struct {
-	PayerID ActorID
+	// Source says which durable row this is, and therefore which way the coin went
+	// — see CoinPaymentSource. Read it before assuming ActorID paid anything.
+	Source CoinPaymentSource
+	// ActorID is the durable row's actor_id column: the payer on a `paid` row, the
+	// payee on a `labored` one.
+	ActorID ActorID
 	At      time.Time
 	// Amount is the raw payload text, parsed here rather than cast in SQL. The
 	// column is jsonb and a single malformed value would otherwise fail the cast
 	// and take the whole boot query with it.
 	Amount string
-	// RecipientActorID is set on rows written since LLM-572; empty on historical
-	// rows, which resolve by RecipientName instead.
-	RecipientActorID string
-	RecipientName    string
+	// CounterpartyActorID / CounterpartyName are the pair's other side, carried in
+	// the payload under whichever key the row shape uses — recipient_actor_id /
+	// recipient on a `paid` row, employer_actor_id / employer on a `labored` one.
+	//
+	// The id is forward-only in BOTH shapes, stamped since LLM-572 for a recipient
+	// and since LLM-613 for an employer; historical rows of either shape resolve by
+	// name instead, under the uniqueness rule resolveCoinCounterparty applies.
+	CounterpartyActorID string
+	CounterpartyName    string
 	// RateSettled is the raw payload text for how much of the payment discharged
 	// town-rate arrears (LLM-607), parsed here for the reason Amount is. Empty on
 	// every purchase and on every row written before that ticket; both read back as
@@ -609,7 +702,12 @@ type CoinPaymentRow struct {
 // coinPaymentKindFromRow classifies a seeded row the way the live subscribers do,
 // from the settlement path the payload attests to and never from its `for` text.
 //
-// The due check runs first. No two markers can co-occur — settleTownRate is
+// A `labored` row needs no marker to read: the row TYPE is the classification, since
+// the writer appends one only on the Completed terminal and coin moves on no other
+// (LLM-613). That makes the wage the one kind the seed cannot get wrong, and it is
+// fully retroactive — every `labored` row ever written is a completed wage.
+//
+// For a `paid` row the due check runs first. No two markers can co-occur — settleTownRate is
 // reachable only from the bare-coin Pay command, which mints no ledger entry, and
 // lodger_rebook writes neither of the other two — but if a future path ever wrote a
 // due alongside a goods marker, the due is the load-bearing one: it is what stops a
@@ -623,6 +721,9 @@ type CoinPaymentRow struct {
 // lodging grant the engine extended as it took the coin. Both are goods for coin
 // with a delivery against them, which is the whole content of the classification.
 func coinPaymentKindFromRow(row CoinPaymentRow) CoinPaymentKind {
+	if row.Source == CoinPaymentSourceLabored {
+		return CoinPaymentForWork
+	}
 	if settled, err := strconv.Atoi(strings.TrimSpace(row.RateSettled)); err == nil && settled > 0 {
 		return CoinPaymentForDue
 	}
@@ -660,33 +761,45 @@ func (w *World) rehydrateCoinRecordOnLoad(ctx context.Context) error {
 			malformed++
 			continue
 		}
-		payeeID, ok := resolveCoinRecipient(row, w.Actors, byName)
+		counterpartyID, ok := resolveCoinCounterparty(row, w.Actors, byName)
 		if !ok {
 			// Overwhelmingly a visitor whose actor row was deleted at cleanup —
 			// see the file header. Counted, not logged per row.
-			if row.RecipientName != "" && len(byName[strings.TrimSpace(row.RecipientName)]) > 1 {
+			if row.CounterpartyName != "" && len(byName[strings.TrimSpace(row.CounterpartyName)]) > 1 {
 				ambiguous++
 			} else {
 				unresolved++
 			}
 			continue
 		}
+		// Which side of the row paid depends on the row shape, not on the payload —
+		// a `labored` row is written from the worker's side, so its actor_id is the
+		// one that RECEIVED. See CoinPaymentSource.
+		payerID, payeeID := row.ActorID, counterpartyID
+		if row.Source == CoinPaymentSourceLabored {
+			payerID, payeeID = counterpartyID, row.ActorID
+		}
 		// A row whose markers are absent or malformed still belongs in the tally —
 		// the payment is true, only its classification is lost, and that degrades to
 		// exactly the pre-classification behaviour.
-		w.RecordCoinPaid(row.PayerID, payeeID, amount, row.At, coinPaymentKindFromRow(row))
+		w.RecordCoinPaid(payerID, payeeID, amount, row.At, coinPaymentKindFromRow(row))
 	}
 	if pairs := countCoinPairs(w.CoinRecord); pairs > 0 || unresolved > 0 || ambiguous > 0 {
-		log.Printf("sim: seeded coin record for %d pair(s) from %d durable payment row(s) (%d recipient(s) unresolved, %d ambiguous, %d malformed)",
+		log.Printf("sim: seeded coin record for %d pair(s) from %d durable payment row(s) (%d counterpart(ies) unresolved, %d ambiguous, %d malformed)",
 			pairs, len(rows), unresolved, ambiguous, malformed)
 	}
 	return nil
 }
 
-// resolveCoinRecipient maps a durable row's recipient onto a live actor. Prefers
-// the stamped id (rows written since LLM-572), then falls back to an exact
-// display-name match, which must be UNIQUE — a name shared by two actors identifies
-// neither, and mis-attributing money is worse than omitting it.
+// resolveCoinCounterparty maps a durable row's payload-carried side onto a live
+// actor — the recipient of a `paid` row, the employer of a `labored` one. Prefers
+// the stamped id, then falls back to an exact display-name match, which must be
+// UNIQUE — a name shared by two actors identifies neither, and mis-attributing money
+// is worse than omitting it.
+//
+// The uniqueness rule is not theoretical: the village currently holds eight actors
+// all displaying as "Duck". Nothing pays a duck, so it costs no row today, but any
+// future payload keyed by name inherits the same hazard.
 //
 // The fallback runs for a STALE stamped id too, not only for an absent one. A
 // stamped id naming an actor that no longer exists carries no information, and
@@ -695,13 +808,13 @@ func (w *World) rehydrateCoinRecordOnLoad(ctx context.Context) error {
 // record plainly holds, which is the failure this whole mechanism exists to prevent
 // (code_review, LLM-572). Falling through costs nothing: the name path applies the
 // same uniqueness rule, so an ambiguous name is still refused.
-func resolveCoinRecipient(row CoinPaymentRow, actors map[ActorID]*Actor, byName map[string][]ActorID) (ActorID, bool) {
-	if id := ActorID(strings.TrimSpace(row.RecipientActorID)); id != "" {
+func resolveCoinCounterparty(row CoinPaymentRow, actors map[ActorID]*Actor, byName map[string][]ActorID) (ActorID, bool) {
+	if id := ActorID(strings.TrimSpace(row.CounterpartyActorID)); id != "" {
 		if _, ok := actors[id]; ok {
 			return id, true
 		}
 	}
-	ids := byName[strings.TrimSpace(row.RecipientName)]
+	ids := byName[strings.TrimSpace(row.CounterpartyName)]
 	if len(ids) != 1 {
 		return "", false
 	}

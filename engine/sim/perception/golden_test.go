@@ -7813,6 +7813,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"reseller_at_post_brisk_trade":     true,
 		"reseller_at_post_slow_trade":      true,
 		"producer_at_post_sub_batch_sales": true,
+		// LLM-613: Josiah keeps his store on shift, at post, with the man he hires.
+		"employer_reads_the_wages_he_paid": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -7935,6 +7937,9 @@ func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
 		"reseller_at_post_slow_trade":      true,
 		"producer_at_post_sub_batch_sales": true,
 		// reseller_at_post_brisk_trade: block renders, concession does NOT.
+		// LLM-613: the coin record holds the pair's week, but the fixture carries no
+		// seller-side SALES, so his trade reads thin on the same rule as the others.
+		"employer_reads_the_wages_he_paid": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc

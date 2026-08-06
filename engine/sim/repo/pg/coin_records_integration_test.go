@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // coin_records_integration_test.go — real-pg coverage for the coin-record boot seed
@@ -80,14 +82,14 @@ func TestCoinRecordsRepo_Integration_SelectsSettledPayments(t *testing.T) {
 	if !rows[0].At.Before(rows[1].At) {
 		t.Errorf("rows are not oldest-first: %+v", rows)
 	}
-	if rows[0].Amount != "1" || rows[0].RecipientName != "Constable Gideon Marsh" || rows[0].RecipientActorID != "" {
+	if rows[0].Amount != "1" || rows[0].CounterpartyName != "Constable Gideon Marsh" || rows[0].CounterpartyActorID != "" {
 		t.Errorf("historical row = %+v, want amount 1 / name-only recipient", rows[0])
 	}
-	if rows[1].Amount != "4" || rows[1].RecipientActorID != otherID {
+	if rows[1].Amount != "4" || rows[1].CounterpartyActorID != otherID {
 		t.Errorf("stamped row = %+v, want amount 4 and the recipient id", rows[1])
 	}
-	if string(rows[0].PayerID) != payerID {
-		t.Errorf("PayerID = %q, want %q", rows[0].PayerID, payerID)
+	if string(rows[0].ActorID) != payerID {
+		t.Errorf("ActorID = %q, want the payer %q", rows[0].ActorID, payerID)
 	}
 }
 
@@ -300,7 +302,101 @@ func TestCoinRecordsRepo_Integration_SkipsUnattributedVisitorRows(t *testing.T) 
 	if len(rows) != 1 {
 		t.Fatalf("got %d row(s), want only the attributed one: %+v", len(rows), rows)
 	}
-	if string(rows[0].PayerID) != residentID {
-		t.Errorf("PayerID = %q, want the resident — the visitor row must not be seeded", rows[0].PayerID)
+	if string(rows[0].ActorID) != residentID {
+		t.Errorf("ActorID = %q, want the resident — the visitor row must not be seeded", rows[0].ActorID)
+	}
+}
+
+// A `labored` row is a payment too, and it comes back under the other set of payload
+// keys (LLM-613).
+//
+// This is SQL and belongs here for the reason the kind extraction does: the
+// counterparty COALESCEs `recipient` against `employer`, and that only works because
+// the two keys never appear on the same row. If a future writer ever put both on one
+// payload the COALESCE would silently pick the first and this test is where that
+// shows up.
+//
+// It also pins the direction discriminator. `labored` and `paid` come back through
+// one query and one struct, so the action_type column is the only thing telling the
+// caller that a wage row's actor_id is the PAYEE — get that wrong and every seeded
+// wage reverses, with nothing failing.
+func TestCoinRecordsRepo_Integration_SelectsCompletedWages(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const (
+		workerID   = "33333333-3333-3333-3333-333333333333"
+		employerID = "44444444-4444-4444-4444-444444444444"
+	)
+	for _, a := range []struct{ id, name string }{
+		{workerID, "Lewis Walker"},
+		{employerID, "Josiah Thorne"},
+	} {
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, $2, 0, 0)`,
+			a.id, a.name,
+		); err != nil {
+			t.Fatalf("seed actor %s: %v", a.name, err)
+		}
+	}
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	insert := func(actorID any, at time.Time, actionType, result, payload string) {
+		t.Helper()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+			 VALUES ($1, $2, 'agent', $3, $4::jsonb, $5, 'seed')`,
+			actorID, at, actionType, payload, result,
+		); err != nil {
+			t.Fatalf("insert %s/%s: %v", actionType, result, err)
+		}
+	}
+
+	// The historical wage shape: employer by display name only, no id stamped.
+	insert(workerID, base.Add(-3*time.Hour), "labored", "ok",
+		`{"employer": "Josiah Thorne", "amount": 4, "duration_min": 30, "labor_id": 9}`)
+	// The shape written since this ticket.
+	insert(workerID, base.Add(-2*time.Hour), "labored", "ok",
+		`{"employer": "Josiah Thorne", "employer_actor_id": "`+employerID+`", "amount": 4, "labor_id": 11}`)
+	// A purchase the other way, so both shapes are in one result set.
+	insert(workerID, base.Add(-time.Hour), "paid", "ok",
+		`{"recipient": "Josiah Thorne", "recipient_actor_id": "`+employerID+`", "amount": 10, "ledger_id": 2053}`)
+	// A contract that was accepted but never settled moves no coin.
+	insert(workerID, base.Add(-time.Hour), "hired", "ok",
+		`{"worker": "Lewis Walker", "amount": 4}`)
+
+	rows, err := NewCoinRecordsRepo(f.Pool).LoadPaymentsSince(ctx, base.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("LoadPaymentsSince: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d row(s), want the two wages and the purchase: %+v", len(rows), rows)
+	}
+	for i, want := range []struct {
+		source          sim.CoinPaymentSource
+		counterpartyID  string
+		counterpartyNam string
+	}{
+		{sim.CoinPaymentSourceLabored, "", "Josiah Thorne"},
+		{sim.CoinPaymentSourceLabored, employerID, "Josiah Thorne"},
+		{sim.CoinPaymentSourcePaid, employerID, "Josiah Thorne"},
+	} {
+		if rows[i].Source != want.source {
+			t.Errorf("row %d source = %v, want %v", i, rows[i].Source, want.source)
+		}
+		if rows[i].CounterpartyActorID != want.counterpartyID {
+			t.Errorf("row %d counterparty id = %q, want %q", i, rows[i].CounterpartyActorID, want.counterpartyID)
+		}
+		if rows[i].CounterpartyName != want.counterpartyNam {
+			t.Errorf("row %d counterparty name = %q, want %q", i, rows[i].CounterpartyName, want.counterpartyNam)
+		}
+		// Every row is the worker's, whichever direction its coin went.
+		if string(rows[i].ActorID) != workerID {
+			t.Errorf("row %d actor = %q, want the worker %q", i, rows[i].ActorID, workerID)
+		}
+	}
+	// The wage carries no goods marker — its row type is its classification.
+	if rows[1].LedgerID != "" || rows[1].RateSettled != "" {
+		t.Errorf("a wage row carries a paid-path marker: %+v", rows[1])
 	}
 }
