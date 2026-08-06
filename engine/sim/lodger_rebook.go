@@ -234,13 +234,40 @@ func RebookLodgersDue(now time.Time) Command {
 					ActionType: ActionTypePaid,
 					Payload: map[string]any{
 						"recipient": keeperName,
-						"amount":    nightly,
-						"for":       lodgingForText,
+						// The coin-record seed prefers the id and falls back to an
+						// exact display-name match that must be unique, dropping the
+						// row when it isn't (LLM-572). This path resolved by name
+						// only; the keeper's id is right here, so stamp it.
+						"recipient_actor_id": string(keeperID),
+						"amount":             nightly,
+						"for":                lodgingForText,
+						// lodging_grant is this path's goods marker (LLM-615), the
+						// counterpart of ledger_id on a pay-with-item settlement. It
+						// names the room grant the coin extended, so the boot seed
+						// classifies the row from the settlement the engine actually
+						// made and never from the `for` text beside it. Forward-only:
+						// rows written before this ticket carry no marker and seed as
+						// Unstated, the wording the record used before any of this.
+						"lodging_grant": string(room.StructureID),
 					},
 					SpeakerName: speakerName,
 					HuddleID:    lodger.CurrentHuddleID,
 					Source:      "engine",
 				})
+
+				// Credit the live tally beside the durable row, the way the cascade
+				// subscribers do — co-locating the two writes is what makes the live
+				// record and a post-restart seed agree on which events are payments
+				// and how each is classified (LLM-615). Without this the tally missed
+				// the charge until the next boot and held it afterwards, so the pair
+				// answered differently depending on uptime.
+				//
+				// ForGoods because a night's occupancy was delivered: the grant
+				// extension above IS that delivery, committed in the same command as
+				// the debit. A stay bought by hand settles through the pay ledger and
+				// already classifies ForGoods, so the same purchase must not read two
+				// ways because the backstop settled it instead of a negotiation.
+				w.RecordCoinPaid(lodgerID, keeperID, nightly, now, CoinPaymentForGoods)
 
 				result.Renewals = append(result.Renewals, RebookLodgerRecord{
 					LodgerID:     lodgerID,

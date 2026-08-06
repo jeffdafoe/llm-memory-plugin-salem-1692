@@ -2,6 +2,9 @@ package sim
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -267,6 +270,14 @@ func (s *recordingActionLogSink) Append(_ context.Context, row DurableActionLogR
 	return nil
 }
 
+// failingActionLogSink rejects every durable row, standing in for the async writer
+// erroring or the enqueue being dropped.
+type failingActionLogSink struct{}
+
+func (failingActionLogSink) Append(context.Context, DurableActionLogRow) error {
+	return errors.New("sink rejected")
+}
+
 func TestRebook_WritesDurableAudit(t *testing.T) {
 	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
 	lodger.CurrentHuddleID = "huddle-1" // the audit shape carries the lodger's huddle
@@ -309,29 +320,75 @@ func TestRebook_WritesDurableAudit(t *testing.T) {
 	if r.Payload["recipient"] != "Hannah" || r.Payload["amount"] != 4 || r.Payload["for"] != "a night's lodging" {
 		t.Errorf("durable payload = %+v, want recipient Hannah / amount 4 / for 'a night's lodging'", r.Payload)
 	}
+	// The coin-record seed prefers the id over an exact-name match it has to drop
+	// when ambiguous (LLM-572), and reads lodging_grant as the goods marker
+	// (LLM-615). Both are on the row, so a restart rebuilds this pair the way the
+	// live tally holds it.
+	if r.Payload["recipient_actor_id"] != "hannah" {
+		t.Errorf("recipient_actor_id = %v, want hannah", r.Payload["recipient_actor_id"])
+	}
+	if r.Payload["lodging_grant"] != "inn" {
+		t.Errorf("lodging_grant = %v, want the room's structure id 'inn'", r.Payload["lodging_grant"])
+	}
 }
 
-// TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge documents a defect
-// rather than a guarantee. It is deliberately written to go RED when LLM-615 is
-// fixed, so the fix cannot land without someone reading this comment.
+// TestRebook_CreditsTheCoinRecordAsGoods is the replacement for the LLM-615
+// divergence test, which asserted the opposite and was written to go red here.
 //
-// The rebook writes a durable `paid` row and does not call RecordCoinPaid. The
-// coin-record boot seed selects on action_type='paid' AND result='ok' AND actor_id
-// IS NOT NULL (repo/pg/coin_records.go), and this row satisfies all three. So the
-// lodger-keeper pair's coin record is MISSING the charge until the next restart and
-// HOLDS it afterwards — the tally changes at boot, and "## Coin between you and
-// those here" answers differently depending on uptime.
+// The rebook writes a durable `paid` row the coin-record boot seed selects
+// (action_type='paid' AND result='ok' AND actor_id IS NOT NULL). Before LLM-615 it
+// did not call RecordCoinPaid, so the pair's tally MISSED the charge until the next
+// restart and HELD it afterwards — "## Coin between you and those here" answered
+// differently depending on uptime.
 //
-// This is not the accepted non-atomic divergence RecordCoinPaid documents. That one
-// needs a durable append to fail; here the append succeeds deterministically and the
-// live tally is deterministically absent (code_review, LLM-612).
+// ForGoods, not Unstated: the debit and the grant extension commit in one command,
+// so a night's occupancy is delivered against the coin. The durable row carries
+// lodging_grant to say so, which is what keeps this live classification and a
+// post-restart seed from disagreeing.
+func TestRebook_CreditsTheCoinRecordAsGoods(t *testing.T) {
+	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
+
+	runRebook(t, w)
+
+	// Both sides of the pair, and nothing else.
+	if n := countCoinPairs(w.CoinRecord); n != 2 {
+		t.Fatalf("coin record holds %d pair-direction(s), want 2 (lodger's and keeper's)", n)
+	}
+	paid := w.CoinRecord["jefferey"]["hannah"]
+	if paid == nil || len(paid.Paid) != 1 || len(paid.Received) != 0 {
+		t.Fatalf("lodger's record = %+v, want exactly one Paid and no Received", paid)
+	}
+	if paid.Paid[0].Amount != 4 || paid.Paid[0].Kind != CoinPaymentForGoods {
+		t.Errorf("lodger's payment = %+v, want amount 4 kind ForGoods", paid.Paid[0])
+	}
+	if !paid.Paid[0].At.Equal(rebookNow) {
+		t.Errorf("payment At = %v, want the sweep's now %v", paid.Paid[0].At, rebookNow)
+	}
+	received := w.CoinRecord["hannah"]["jefferey"]
+	if received == nil || len(received.Received) != 1 || len(received.Paid) != 0 {
+		t.Fatalf("keeper's record = %+v, want exactly one Received and no Paid", received)
+	}
+	if received.Received[0].Amount != 4 || received.Received[0].Kind != CoinPaymentForGoods {
+		t.Errorf("keeper's receipt = %+v, want amount 4 kind ForGoods", received.Received[0])
+	}
+}
+
+// TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow pins the property the marker
+// exists for: what the live call credits and what a boot seed rebuilds FROM THE ROW
+// THE SAME SWEEP WROTE must be the same payment, on the same pair, with the same
+// classification.
 //
-// WHEN FIXING LLM-615: delete this test and assert the opposite — one Paid entry on
-// both sides of the pair, classified CoinPaymentUnstated. Unstated is not a
-// placeholder here, it is forced: the durable row carries neither marker, so the
-// seed already reads it that way, and a live call passing anything else would
-// replace a visible restart divergence with an invisible classification one.
-func TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge(t *testing.T) {
+// This is the actual LLM-615 defect. It was not that a number was wrong — it was
+// that two readers of one event disagreed, so the answer depended on uptime. A
+// future change that stamps the marker without crediting the tally, or credits it
+// without stamping, leaves this red where either half asserted alone stays green.
+//
+// The seed half runs through rehydrateCoinRecordOnLoad rather than calling the
+// classifier directly (code_review), so recipient resolution and the pair keying are
+// exercised too — the classification is only one of the ways the two can diverge.
+func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
 	keeper := rebookKeeper("hannah")
 	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
@@ -340,17 +397,88 @@ func TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge(t *testing.T) {
 
 	runRebook(t, w)
 
-	// The durable row exists, so a restart WILL count this payment.
-	if len(sink.rows) != 1 || sink.rows[0].ActionType != ActionTypePaid {
-		t.Fatalf("durable rows = %+v, want one paid row — the premise of the divergence", sink.rows)
+	live := w.CoinRecord
+	if len(sink.rows) != 1 {
+		t.Fatalf("want 1 durable row to seed from, got %d", len(sink.rows))
 	}
-	if got := sink.rows[0].Payload["amount"]; got != 4 {
-		t.Fatalf("durable amount = %v, want 4", got)
+	row := sink.rows[0]
+
+	// Rebuild the world's record the way FinalizeLoad does at boot, off nothing but
+	// the durable row. The repo hands back what the pg loader would read from that
+	// payload, so the keys the sweep wrote are what the seed sees.
+	seeded := rebookTestWorld(28, 11, lodger, keeper)
+	seeded.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{{
+		PayerID:          row.ActorID,
+		At:               row.OccurredAt,
+		Amount:           fmt.Sprint(row.Payload["amount"]),
+		RecipientActorID: fmt.Sprint(row.Payload["recipient_actor_id"]),
+		RecipientName:    fmt.Sprint(row.Payload["recipient"]),
+		RateSettled:      fmt.Sprint(row.Payload["rate_settled"]),
+		LodgingGrant:     fmt.Sprint(row.Payload["lodging_grant"]),
+	}}}
+	if err := seeded.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	// The live tally does not. This is the bug.
-	if n := countCoinPairs(w.CoinRecord); n != 0 {
-		t.Errorf("coin record holds %d pair(s) — if the lodging charge is now credited live, "+
-			"LLM-615 is fixed and this test must be replaced (see the doc comment)", n)
+
+	if got, want := countCoinPairs(seeded.CoinRecord), countCoinPairs(live); got != want {
+		t.Fatalf("seed rebuilt %d pair-direction(s), live holds %d — the record changes at boot", got, want)
+	}
+	for _, pair := range []struct{ subject, peer ActorID }{{"jefferey", "hannah"}, {"hannah", "jefferey"}} {
+		liveRec, seededRec := live[pair.subject][pair.peer], seeded.CoinRecord[pair.subject][pair.peer]
+		if seededRec == nil {
+			t.Fatalf("seed has no record for %s->%s", pair.subject, pair.peer)
+		}
+		if !reflect.DeepEqual(liveRec.Paid, seededRec.Paid) || !reflect.DeepEqual(liveRec.Received, seededRec.Received) {
+			t.Errorf("%s->%s: live %+v / %+v, seed %+v / %+v — the pair's record would change at boot",
+				pair.subject, pair.peer, liveRec.Paid, liveRec.Received, seededRec.Paid, seededRec.Received)
+		}
+	}
+}
+
+// The live credit is NOT atomic with the durable enqueue, and this pins the
+// direction of that gap rather than closing it.
+//
+// RecordCoinPaid documents the exposure and the decision behind it (LLM-572):
+// AppendActionLogDurable is a deliberately non-blocking enqueue onto an async
+// writer, so the world goroutine never waits on Postgres. Gating the credit on a
+// confirmed write would block that goroutine or need a completion callback — a
+// large change for a soft recollection cue. This path inherits that posture rather
+// than inventing a new one, which is the point: all three `paid` writers behave
+// alike here. The mechanism is intentionally restart-lossy for the tally; a
+// successful RecordCoinPaid establishes NOTHING about the durable write.
+//
+// What must stay true is the DIRECTION. A rejected sink leaves the tally holding a
+// payment the next boot will not rebuild, so the pair UNDERSTATES after a restart.
+// It must never be the reverse — a durable row the live tally lacks is the LLM-615
+// defect itself, and it is the reverse that made the record depend on uptime.
+//
+// SCOPE, precisely (code_review): this covers the SYNCHRONOUS enqueue-rejection
+// path only. The other two failure modes — the async writer erroring after a
+// successful enqueue, and a crash between the credit and the write — are documented
+// and UNTESTED. They are believed to fail in the same direction, but nothing here
+// proves it; that would need failure injection at the writer goroutine. Do not read
+// this test as the broader guarantee.
+func TestRebook_RejectedEnqueueUnderstatesRatherThanDiverging(t *testing.T) {
+	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
+	w.SetActionLogSink(&failingActionLogSink{})
+
+	runRebook(t, w)
+
+	// The lodger is still housed and the coins still moved — the renewal does not
+	// roll back on an audit failure, by the same reasoning the lean-ring append uses.
+	if lodger.Coins != 6 || keeper.Coins != 4 {
+		t.Errorf("coins = lodger %d / keeper %d, want 6 / 4 — the transfer must not depend on the sink", lodger.Coins, keeper.Coins)
+	}
+	// The live tally holds the payment. A boot seeded from a log that never got the
+	// row would hold nothing, so the pair understates after a restart.
+	paid := w.CoinRecord["jefferey"]["hannah"]
+	if paid == nil || len(paid.Paid) != 1 {
+		t.Fatalf("live record = %+v, want the payment held despite the failed append", paid)
+	}
+	if paid.Paid[0].Kind != CoinPaymentForGoods {
+		t.Errorf("kind = %v, want ForGoods — a lost append loses the payment and its meaning together, never one without the other", paid.Paid[0].Kind)
 	}
 }
 
