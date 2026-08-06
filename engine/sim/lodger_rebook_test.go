@@ -408,13 +408,13 @@ func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 	// payload, so the keys the sweep wrote are what the seed sees.
 	seeded := rebookTestWorld(28, 11, lodger, keeper)
 	seeded.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{{
-		PayerID:          row.ActorID,
-		At:               row.OccurredAt,
-		Amount:           fmt.Sprint(row.Payload["amount"]),
-		RecipientActorID: fmt.Sprint(row.Payload["recipient_actor_id"]),
-		RecipientName:    fmt.Sprint(row.Payload["recipient"]),
-		RateSettled:      fmt.Sprint(row.Payload["rate_settled"]),
-		LodgingGrant:     fmt.Sprint(row.Payload["lodging_grant"]),
+		ActorID:             row.ActorID,
+		At:                  row.OccurredAt,
+		Amount:              fmt.Sprint(row.Payload["amount"]),
+		CounterpartyActorID: fmt.Sprint(row.Payload["recipient_actor_id"]),
+		CounterpartyName:    fmt.Sprint(row.Payload["recipient"]),
+		RateSettled:         fmt.Sprint(row.Payload["rate_settled"]),
+		LodgingGrant:        fmt.Sprint(row.Payload["lodging_grant"]),
 	}}}
 	if err := seeded.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
 		t.Fatalf("seed: %v", err)

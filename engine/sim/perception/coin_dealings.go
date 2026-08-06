@@ -178,8 +178,8 @@ func renderCoinDealings(b *strings.Builder, peers []CoinDealingsPeerView) {
 func coinDealingsSentence(name string, d sim.CoinDealings) string {
 	received := coinFlowPhrase(d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle, d.ReceivedAtLeast)
 	paid := coinFlowPhrase(d.PaidCount, d.PaidTotal, d.PaidAllSingle, d.PaidAtLeast)
-	receivedClause := coinDirectionClause(d.ReceivedDueCount, d.ReceivedDueTotal, d.ReceivedGoodsCount, d.ReceivedGoodsTotal, d.ReceivedCount)
-	paidClause := coinDirectionClause(d.PaidDueCount, d.PaidDueTotal, d.PaidGoodsCount, d.PaidGoodsTotal, d.PaidCount)
+	receivedClause := coinDirectionClause(receivedDirection(d))
+	paidClause := coinDirectionClause(paidDirection(d))
 	if d.ReceivedDueCount > 0 || d.PaidDueCount > 0 {
 		return coinDealingsDueSentence(name, received, receivedClause, paid, paidClause, d)
 	}
@@ -187,18 +187,18 @@ func coinDealingsSentence(name string, d sim.CoinDealings) string {
 	case d.ReceivedCount > 0 && d.PaidCount > 0:
 		return fmt.Sprintf("%s has paid you %s%s, and you have paid %s %s%s.", name, received, receivedClause, name, paid, paidClause)
 	case d.ReceivedCount > 0:
-		return fmt.Sprintf("%s has paid you %s%s%s.", name, received, receivedClause, coinNothingBackTail(d.ReceivedGoodsCount, ", and nothing has gone back the other way"))
+		return fmt.Sprintf("%s has paid you %s%s%s.", name, received, receivedClause, coinNothingBackTail(d.ReceivedAccounted(), ", and nothing has gone back the other way"))
 	case d.PaidCount > 0:
-		return fmt.Sprintf("You have paid %s %s%s%s.", name, paid, paidClause, coinNothingBackTail(d.PaidGoodsCount, ", and nothing has come back the other way"))
+		return fmt.Sprintf("You have paid %s %s%s%s.", name, paid, paidClause, coinNothingBackTail(d.PaidAccounted(), ", and nothing has come back the other way"))
 	default:
 		return fmt.Sprintf("No coin has passed between you and %s.", name)
 	}
 }
 
 // coinNothingBackTail returns the one-directional "nothing came back" tail, or
-// nothing at all when any of that direction bought goods. The caller passes the
-// whole suffix including its punctuation, so the sentence is readable at the call
-// site rather than assembled across two files.
+// nothing at all when the engine can say the direction bought something. The caller
+// passes the whole suffix including its punctuation, so the sentence is readable at
+// the call site rather than assembled across two files.
 //
 // Dropping it is the sharper half of LLM-612. Read strictly the tail is not false —
 // this is a record of coin, and no coin did come back. But nothing in the sentence
@@ -208,8 +208,14 @@ func coinDealingsSentence(name string, d sim.CoinDealings) string {
 // what the coin did, the blanket denial can only invite a conclusion the record does
 // not support. Where the record genuinely cannot say (Unstated), the tail stays —
 // there the denial IS the record's honest position.
-func coinNothingBackTail(goodsCount int, suffix string) string {
-	if goodsCount > 0 {
+//
+// A WAGE COUNTS AS SOMETHING COMING BACK (LLM-613), which is the whole reason
+// CoinDealings.PaidAccounted exists rather than the caller reading a goods count.
+// Labor is not goods, but it is emphatically not nothing, and an employer told he
+// paid a man 8 coins and nothing came back is being invited to the exact conclusion
+// this section was built to refute.
+func coinNothingBackTail(accountedCount int, suffix string) string {
+	if accountedCount > 0 {
 		return ""
 	}
 	return suffix
@@ -223,38 +229,110 @@ func coinNothingBackTail(goodsCount int, suffix string) string {
 // at. Terminal, which is why a composed clause puts the due portion last.
 const coinDueClosing = " — settled as it was handed over, and no goods owed back"
 
+// coinDirection is one direction of a pair's dealings. It exists so the clause
+// builder takes one argument rather than seven ints, which is the same warning
+// sim.coinTally carries about itself: past a handful of positional numbers, two of
+// them get transposed silently and nothing catches it.
+type coinDirection struct {
+	count      int
+	dueCount   int
+	dueTotal   int
+	goodsCount int
+	goodsTotal int
+	workCount  int
+	workTotal  int
+}
+
+func paidDirection(d sim.CoinDealings) coinDirection {
+	return coinDirection{
+		count:      d.PaidCount,
+		dueCount:   d.PaidDueCount,
+		dueTotal:   d.PaidDueTotal,
+		goodsCount: d.PaidGoodsCount,
+		goodsTotal: d.PaidGoodsTotal,
+		workCount:  d.PaidWorkCount,
+		workTotal:  d.PaidWorkTotal,
+	}
+}
+
+func receivedDirection(d sim.CoinDealings) coinDirection {
+	return coinDirection{
+		count:      d.ReceivedCount,
+		dueCount:   d.ReceivedDueCount,
+		dueTotal:   d.ReceivedDueTotal,
+		goodsCount: d.ReceivedGoodsCount,
+		goodsTotal: d.ReceivedGoodsTotal,
+		workCount:  d.ReceivedWorkCount,
+		workTotal:  d.ReceivedWorkTotal,
+	}
+}
+
 // coinDirectionClause qualifies one direction's flow with what the engine can say
 // its coin did. Empty when it can say nothing, which leaves the bare direction —
-// true of a wage, a gift or a tip alike, none of which the engine tells apart.
+// true of a gift, a tip or a hand-settled wage alike, none of which the engine tells
+// apart.
 //
-// A direction CAN hold both kinds, and this is easy to talk yourself out of: no
+// A direction CAN hold several kinds, and this is easy to talk yourself out of: no
 // single payment carries two kinds, and settleTownRate is reachable only from the
 // bare-coin Pay command, which mints no ledger entry. But that is a constraint on
 // payments, not on directions — a keeper who pays the constable his town rate and
-// also buys something off him has both on the same direction of the same pair. So
-// both portions are named. Reporting only the due would leave the bulk of an
-// ordinary trading relationship unaccounted for in the one section built to account
-// for it, which is this ticket's own defect at a smaller scale (code_review).
+// also buys something off him has both on the same direction of the same pair, and
+// since LLM-613 an employer who both buys from a man and pays him wages has both of
+// those. So every portion present is named. Reporting only one would leave the bulk
+// of an ordinary trading relationship unaccounted for in the one section built to
+// account for it (code_review, LLM-612).
 //
-// Both portions are partial whenever both are present — their counts sum to at most
-// the direction's — so neither can claim the whole and the two never contradict.
-func coinDirectionClause(dueCount, dueTotal, goodsCount, goodsTotal, count int) string {
-	due := coinDuePortion(dueCount, dueTotal, count)
-	goods := coinGoodsPortion(goodsCount, goodsTotal, count)
+// Every portion is partial whenever more than one is present — the subsets are
+// disjoint and their counts sum to at most the direction's — so none can claim the
+// whole and they never contradict.
+func coinDirectionClause(dir coinDirection) string {
+	// One kind covering the WHOLE direction reads tighter without the apportioning
+	// comma: "8 coins for goods", not "8 coins, all of it for goods". Because the
+	// subsets are disjoint, full coverage by one kind means it is the only kind
+	// present. The due is deliberately not given this form — its closing is terminal
+	// and attaches to the comma form, and a levy is the counterintuitive case that
+	// earns the longer phrasing.
 	switch {
-	case due == "" && goods == "":
+	case dir.goodsCount > 0 && dir.goodsCount >= dir.count:
+		return " for goods"
+	case dir.workCount > 0 && dir.workCount >= dir.count:
+		return " for work done"
+	}
+	// Otherwise name each portion present, the due LAST because its closing ends the
+	// clause.
+	portions := make([]string, 0, 3)
+	if p := coinGoodsPortion(dir.goodsCount, dir.goodsTotal, dir.count); p != "" {
+		portions = append(portions, p)
+	}
+	if p := coinWorkPortion(dir.workCount, dir.workTotal, dir.count); p != "" {
+		portions = append(portions, p)
+	}
+	due := coinDuePortion(dir.dueCount, dir.dueTotal, dir.count)
+	if due != "" {
+		portions = append(portions, due)
+	}
+	if len(portions) == 0 {
 		return ""
-	case due == "":
-		if goodsCount >= count {
-			// The whole direction bought goods — the common case by a wide margin,
-			// and it reads tighter without the apportioning comma.
-			return " for goods"
-		}
-		return ", " + goods
-	case goods == "":
-		return ", " + due + coinDueClosing
+	}
+	clause := ", " + joinCoinPortions(portions)
+	if due != "" {
+		clause += coinDueClosing
+	}
+	return clause
+}
+
+// joinCoinPortions reads a portion list as speech — "a", "a and b", "a, b and c".
+// No serial comma before the final "and": these are apportionings of one sum rather
+// than a list of separate things, and the extra comma makes the last portion read as
+// an afterthought.
+func joinCoinPortions(portions []string) string {
+	switch len(portions) {
+	case 1:
+		return portions[0]
+	case 2:
+		return portions[0] + " and " + portions[1]
 	default:
-		return ", " + goods + " and " + due + coinDueClosing
+		return strings.Join(portions[:len(portions)-1], ", ") + " and " + portions[len(portions)-1]
 	}
 }
 
@@ -297,6 +375,29 @@ func coinGoodsPortion(goodsCount, goodsTotal, count int) string {
 		// Names COIN, not payments — the same slot coinDuePortion fills, and via
 		// coinsPhrase for the same reason.
 		return fmt.Sprintf("%s of it for goods", coinsPhrase(goodsTotal))
+	}
+}
+
+// coinWorkPortion is coinGoodsPortion's twin for coin that paid for labor (LLM-613).
+//
+// "for work done", not "in wages", because the same phrase has to read correctly in
+// both directions of the pair: an employer reads "you have paid Lewis Walker 8 coins
+// for work done" and the worker reads "Josiah Thorne has paid you 8 coins for work
+// done". A direction-specific word would need the clause to know which side it was
+// voicing, and every other portion here is direction-agnostic.
+//
+// Like goods and unlike a due it carries no closing. Labor for coin explains itself,
+// and the section is re-read every tick.
+func coinWorkPortion(workCount, workTotal, count int) string {
+	switch {
+	case workCount <= 0:
+		return ""
+	case count == 1:
+		return "for work done"
+	case workCount >= count:
+		return "all of it for work done"
+	default:
+		return fmt.Sprintf("%s of it for work done", coinsPhrase(workTotal))
 	}
 }
 

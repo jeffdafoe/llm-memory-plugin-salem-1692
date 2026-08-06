@@ -11,10 +11,10 @@ import (
 // CoinRecordsRepo seeds the per-pair coin tally (LLM-572) from agent_action_log.
 //
 // READ-ONLY — there is no coin_record table and nothing to checkpoint. The tally is
-// derived at boot from the durable `paid` rows the engine already writes on every
-// settlement, which is what lets the mechanism survive a restart without a schema
-// change of its own. See engine/sim/coin_record.go for why that was chosen over a
-// checkpointed aggregate.
+// derived at boot from the durable rows the engine already writes on every
+// coin-moving settlement (`paid` and `labored`), which is what lets the mechanism
+// survive a restart without a schema change of its own. See engine/sim/coin_record.go
+// for why that was chosen over a checkpointed aggregate.
 type CoinRecordsRepo struct {
 	pool Pool
 }
@@ -30,10 +30,26 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // All three `paid` writers — handlePaidActionLog (bare coin),
 // handlePayResolvedActionLog (a pay-with-item ledger entry settling ACCEPTED) and
 // lodger_rebook (the nightly lodging auto-charge) — store the same
-// {recipient, amount} payload keys, so one predicate covers every path coin moves
-// through. recipient_actor_id is stamped only on rows written since LLM-572, and on
-// the lodging path only since LLM-615; the caller falls back to the display name for
-// older rows.
+// {recipient, amount} payload keys. `labored` (LLM-613) is the fourth row type that
+// moves coin: handleLaborResolvedActionLog appends one when a labor contract settles
+// Completed, which is the only terminal that pays.
+//
+// THE TWO SHAPES ARE DIRECTION-INVERTED and this query does NOT normalize that — it
+// returns action_type and the caller decides. A `paid` row's actor_id is the payer;
+// a `labored` row's is the worker, i.e. the payee. Resolving it here would mean a
+// CASE per column and would put the rule in SQL, where sim.CoinPaymentSource
+// documents it in Go beside the code that acts on it.
+//
+// The counterparty is selected by ACTION TYPE rather than by coalescing the two
+// shapes' key names. Coalescing would read correctly today — of 3,708 live rows, none
+// carries both a `recipient` and an `employer` key — but it makes correctness rest on
+// a property of the writers rather than of this query, and the failure would be
+// silent: a future writer that put both on one payload would have every wage
+// attributed to the recipient instead. The row type is the authority on which key
+// means what, the same principle sim.CoinPaymentSource applies to the direction
+// (code_review). Both id keys are forward-only — recipient_actor_id since LLM-572 and
+// on the lodging path only since LLM-615, employer_actor_id since LLM-613 — and the
+// caller falls back to the display name for older rows of either shape.
 //
 // The amount comes back as TEXT and is parsed in Go rather than cast here. The
 // column is jsonb, so a single malformed value would fail the cast and take the
@@ -67,16 +83,19 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // No index is needed or added: the scan is bounded by the occurred_at window and
 // runs exactly once, at boot.
 const loadPaymentsSinceSQL = `
-SELECT actor_id,
+SELECT action_type,
+       actor_id,
        occurred_at,
        COALESCE(payload->>'amount', ''),
-       COALESCE(payload->>'recipient_actor_id', ''),
-       COALESCE(payload->>'recipient', ''),
+       COALESCE(CASE WHEN action_type = 'labored' THEN payload->>'employer_actor_id'
+                     ELSE payload->>'recipient_actor_id' END, ''),
+       COALESCE(CASE WHEN action_type = 'labored' THEN payload->>'employer'
+                     ELSE payload->>'recipient' END, ''),
        COALESCE(payload->>'rate_settled', ''),
        COALESCE(payload->>'ledger_id', ''),
        COALESCE(payload->>'lodging_grant', '')
   FROM agent_action_log
- WHERE action_type = 'paid'
+ WHERE action_type IN ('paid', 'labored')
    AND result = 'ok'
    AND actor_id IS NOT NULL
    AND occurred_at >= $1
@@ -100,27 +119,36 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 	var out []sim.CoinPaymentRow
 	for rows.Next() {
 		var (
-			payerID       string
-			at            time.Time
-			amount        string
-			recipientID   string
-			recipientName string
-			rateSettled   string
-			ledgerID      string
-			lodgingGrant  string
+			actionType       string
+			actorID          string
+			at               time.Time
+			amount           string
+			counterpartyID   string
+			counterpartyName string
+			rateSettled      string
+			ledgerID         string
+			lodgingGrant     string
 		)
-		if err := rows.Scan(&payerID, &at, &amount, &recipientID, &recipientName, &rateSettled, &ledgerID, &lodgingGrant); err != nil {
+		if err := rows.Scan(&actionType, &actorID, &at, &amount, &counterpartyID, &counterpartyName, &rateSettled, &ledgerID, &lodgingGrant); err != nil {
 			return nil, fmt.Errorf("pg coin records LoadPaymentsSince scan: %w", err)
 		}
+		// The predicate admits exactly these two, so anything else is unreachable;
+		// defaulting to the `paid` shape rather than switching on it keeps an
+		// unexpected type from silently inverting a direction.
+		source := sim.CoinPaymentSourcePaid
+		if actionType == string(sim.ActionTypeLabored) {
+			source = sim.CoinPaymentSourceLabored
+		}
 		out = append(out, sim.CoinPaymentRow{
-			PayerID:          sim.ActorID(payerID),
-			At:               at,
-			Amount:           amount,
-			RecipientActorID: recipientID,
-			RecipientName:    recipientName,
-			RateSettled:      rateSettled,
-			LedgerID:         ledgerID,
-			LodgingGrant:     lodgingGrant,
+			Source:              source,
+			ActorID:             sim.ActorID(actorID),
+			At:                  at,
+			Amount:              amount,
+			CounterpartyActorID: counterpartyID,
+			CounterpartyName:    counterpartyName,
+			RateSettled:         rateSettled,
+			LedgerID:            ledgerID,
+			LodgingGrant:        lodgingGrant,
 		})
 	}
 	if err := rows.Err(); err != nil {

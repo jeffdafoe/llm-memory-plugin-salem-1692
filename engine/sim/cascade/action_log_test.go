@@ -448,6 +448,203 @@ func TestHandleLaborResolvedActionLog_NonCompletedAppendsNothing(t *testing.T) {
 	}
 }
 
+// LLM-613: a completed wage credits the coin record, stamps the employer's id, and
+// classifies as work.
+//
+// Before this the handler wrote its `labored` row and returned. The row is the ONLY
+// durable trace of the coin, and the seed read `paid` rows exclusively, so the live
+// tally and the boot seed agreed on a number that was wrong on both sides — which is
+// why nothing had gone red. In the live village that was 94 coin-carrying rows a
+// week, every one employer-to-worker.
+func TestHandleLaborResolvedActionLog_CompletedCreditsTheCoinRecord(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleLaborResolvedActionLog(world, &sim.LaborResolved{
+			LaborID: 9, WorkerID: "hannah", EmployerID: "bob", Reward: 4,
+			DurationMin: 30, TerminalState: sim.LaborTerminalStateCompleted, At: at,
+		})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1: %+v", len(rows), rows)
+	}
+	// The seed keys the pair off this id. Without it a historical row falls back to
+	// the employer's display name, which the uniqueness rule can refuse.
+	if rows[0].Payload["employer_actor_id"] != "bob" {
+		t.Errorf("durable payload = %+v, want employer_actor_id bob", rows[0].Payload)
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		// The EMPLOYER paid, though the durable row is written from the worker's side.
+		d := snap.CoinDealingsFor("bob", "hannah", at.Add(time.Minute))
+		if d.PaidCount != 1 || d.PaidTotal != 4 {
+			t.Fatalf("employer paid = %d / %d, want 1 / 4", d.PaidCount, d.PaidTotal)
+		}
+		if d.PaidWorkCount != 1 || d.PaidWorkTotal != 4 {
+			t.Errorf("work = %d / %d, want 1 / 4 — a completed contract is the engine's own evidence",
+				d.PaidWorkCount, d.PaidWorkTotal)
+		}
+		if d.PaidGoodsCount != 0 || d.PaidDueCount != 0 {
+			t.Errorf("a wage was classified as goods or a due: %+v", d)
+		}
+		// And the worker's own record shows it coming in, not going out.
+		worker := snap.CoinDealingsFor("hannah", "bob", at.Add(time.Minute))
+		if worker.ReceivedCount != 1 || worker.ReceivedWorkTotal != 4 || worker.PaidCount != 0 {
+			t.Errorf("worker's side = %+v, want 4 coins received for work and nothing paid", worker)
+		}
+	})
+}
+
+// A reward that settled entirely in goods moves no coin, so it must not reach a
+// record of coin (LLM-613).
+//
+// RecordCoinPaid already drops a non-positive amount, so this is not a new guard —
+// it pins that the wage path relies on that rule rather than on a check of its own,
+// and that an in-kind contract still writes its durable row for the dream distiller.
+func TestHandleLaborResolvedActionLog_InKindRewardIsNotCoin(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleLaborResolvedActionLog(world, &sim.LaborResolved{
+			LaborID: 11, WorkerID: "hannah", EmployerID: "bob", Reward: 0,
+			RewardItems:   []sim.ItemKindQty{{Kind: "porridge", Qty: 2}},
+			DurationMin:   30,
+			TerminalState: sim.LaborTerminalStateCompleted,
+			At:            at,
+		})
+	})
+
+	if got := readActionLog(t, w); len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1 — an in-kind wage is still a durable beat", len(got))
+	}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		if d := snap.CoinDealingsFor("bob", "hannah", at.Add(time.Minute)); d.Any() {
+			t.Errorf("porridge for labor reached the coin record: %+v", d)
+		}
+	})
+}
+
+// A rejected durable append loses the wage, not its meaning (LLM-613) — the labor
+// twin of TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning.
+//
+// RecordCoinPaid credits the live tally BEFORE the row is enqueued, and does not roll
+// back if the enqueue is refused. That is deliberate and is the mechanism's stated
+// exposure: rolling back would require the enqueue to be synchronous, i.e. the world
+// goroutine blocking on Postgres for a soft recollection cue. The coin itself moved
+// in settleCompletedLabor and is checkpointed, so persistent state stays consistent;
+// what degrades is a memory, which is the restart-lossy class the GUIDELINES permit.
+//
+// The property worth pinning is the DIRECTION of the divergence. A wage's
+// classification is derived from the row type rather than from a payload marker, so a
+// lost row takes the payment and its meaning together — the pair understates by one
+// wage rather than holding a wage the seed will read as something else. code_review
+// raised the reverse (a wage surviving as an unclassified payment) as the risk; it
+// cannot arise, because there is no partial state between the two.
+func TestHandleLaborResolvedActionLog_RejectedAppendLosesTheWageNotItsMeaning(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	sink := &rejectingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(sink)
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleLaborResolvedActionLog(world, &sim.LaborResolved{
+			LaborID: 9, WorkerID: "hannah", EmployerID: "bob", Reward: 4,
+			DurationMin: 30, TerminalState: sim.LaborTerminalStateCompleted, At: at,
+		})
+	})
+
+	if sink.callCount() != 1 {
+		t.Fatalf("durable append called %d times, want 1 — the row must still be offered", sink.callCount())
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		d := snap.CoinDealingsFor("bob", "hannah", at.Add(time.Minute))
+		if d.PaidCount != 1 || d.PaidWorkCount != 1 {
+			t.Errorf("in-memory tally = %+v, want the wage kept and still marked as work", d)
+		}
+	})
+
+	// What a restart would rebuild. The rejected row never reached the durable log, so
+	// a seed replaying what IS durable reads nothing for it — no half-wage, and no
+	// wage demoted to an unclassified payment.
+	seeded := &sim.World{}
+	seeded.RecordCoinPaid("bob", "hannah", 2, at, sim.CoinPaymentForGoods) // an unrelated purchase
+	replayed := &sim.Snapshot{
+		CoinRecord:       sim.CloneCoinRecord(seeded.CoinRecord),
+		CoinRecordWindow: sim.DefaultCoinRecordWindow,
+	}
+	d := replayed.CoinDealingsFor("bob", "hannah", at.Add(time.Minute))
+	if d.PaidCount != 1 || d.PaidTotal != 2 {
+		t.Fatalf("replay = %+v, want only the durable purchase", d)
+	}
+	if d.PaidWorkCount != 0 {
+		t.Errorf("a replay without the rejected row still shows work = %+v — the loss must take the whole wage", d)
+	}
+}
+
+// A non-completed terminal pays nothing, so it must credit nothing (LLM-613).
+//
+// The pairing matters more than either half: settleCompletedLabor is all-or-nothing,
+// so FailedUnavailable is the case where the worker DID the job and was not paid —
+// the aggrieved beat. Crediting it would put coin on the record that never moved,
+// which is the opposite failure to this ticket's and the worse one, since the record
+// is what refutes an invented payment.
+func TestHandleLaborResolvedActionLog_UnpaidTerminalCreditsNothing(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	for _, terminal := range []sim.LaborTerminalState{
+		sim.LaborTerminalStateDeclined,
+		sim.LaborTerminalStateExpired,
+		sim.LaborTerminalStateFailedUnavailable,
+	} {
+		invokeOnWorld(t, w, func(world *sim.World) {
+			handleLaborResolvedActionLog(world, &sim.LaborResolved{
+				WorkerID: "hannah", EmployerID: "bob", Reward: 5, DurationMin: 30,
+				TerminalState: terminal, WorkPerformed: true, At: at,
+			})
+		})
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		snap := &sim.Snapshot{
+			CoinRecord:       sim.CloneCoinRecord(world.CoinRecord),
+			CoinRecordWindow: world.CoinRecordWindow(),
+		}
+		if d := snap.CoinDealingsFor("bob", "hannah", at.Add(time.Minute)); d.Any() {
+			t.Errorf("an unpaid contract put coin on the record: %+v", d)
+		}
+	})
+}
+
 // --- TestHandleConsumedActionLog_FormatsText -----------------------
 // Qty 1 → bare kind; Qty > 1 → "Nx kind".
 func TestHandleConsumedActionLog_FormatsText(t *testing.T) {
