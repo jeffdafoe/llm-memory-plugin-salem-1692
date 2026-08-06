@@ -63,7 +63,7 @@ type GatherResult struct {
 // actor's below-threshold forage set, the item bias for the dense-plot fallback.
 func findGatherableObjectNear(w *World, actor *Actor) (VillageObjectID, *VillageObject, *ObjectRefresh) {
 	low := LowForageItems(actor.RestockPolicy, actor.Inventory, w.Settings.RestockReorderPct)
-	return ResolveGatherSource(w.VillageObjects, w.Assets, actor.Pos, actor.ID, actor.GatherTargetObjectID, low)
+	return ResolveGatherSource(w.VillageObjects, w.Assets, actor.Pos, actor.ID, actor.GatherTargetObjectID, low, ForageItems(actor.RestockPolicy))
 }
 
 // Gather returns a Command that harvests qty units of the gatherable source

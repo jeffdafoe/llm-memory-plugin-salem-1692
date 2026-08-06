@@ -1,5 +1,7 @@
 package sim
 
+import "strings"
+
 // gather_target.go — LLM-93. The shared gather-source resolution used by BOTH the
 // gather command (findGatherableObjectNear → Gather / StartHarvest) and the at-bush
 // perception cue (findGatherableCue), so cue and command never disagree on which
@@ -101,8 +103,10 @@ func FirstGatherableRow(obj *VillageObject) (row *ObjectRefresh, hasStock bool, 
 // (owned-ok) bushes is ranked — the one walked to first (targetID), then stocked
 // over depleted, then a restock item over a not-needed one (BetterGatherCandidate).
 // So in a dense interleaved plot a depleted or wrong-item nearest yields to a ripe
-// sibling. lowItems is the actor's below-threshold forage set (LowForageItems).
-func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, actorTile TilePos, actorID ActorID, targetID VillageObjectID, lowItems map[ItemKind]bool) (VillageObjectID, *VillageObject, *ObjectRefresh) {
+// sibling. lowItems is the actor's below-threshold forage set (LowForageItems);
+// foragable is the actor's whole forage set (ForageItems), which gates rather than
+// ranks — see MayGatherSource.
+func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, actorTile TilePos, actorID ActorID, targetID VillageObjectID, lowItems, foragable map[ItemKind]bool) (VillageObjectID, *VillageObject, *ObjectRefresh) {
 	nearestID, ok := ResolveLoiteringObject(objects, assets, actorTile, LoiterAttributionTiles)
 	if !ok {
 		return "", nil, nil
@@ -121,6 +125,15 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 		// ErrNotYourSource; do NOT fall through to a farther commons source.
 		return nearestID, nearest, nearestRow
 	}
+	if !MayGatherSource(nearest, nearestRow, actorID, foragable) {
+		// A commons source this actor has no trade claim on owns the tile. Treated
+		// like the non-gatherable case rather than the owned-by-other one: nobody
+		// is wronged by a smith standing at the village well, so there is no
+		// ErrNotYourSource to raise — there is simply nothing here for him to take.
+		// Blocks rather than skipping past, same as every other nearest-owns-the-tile
+		// branch above.
+		return "", nil, nil
+	}
 	bestID, bestObj, bestRow := nearestID, nearest, nearestRow
 	best := GatherCandidate{ID: nearestID, Cheb: loiterChebIn(nearest, assets, actorTile), Mine: true, HasStock: nearestStock, Low: lowItems[nearestRow.GatherItem]}
 	for id, obj := range objects {
@@ -137,6 +150,9 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 		}
 		row, hasStock, ok := FirstGatherableRow(obj)
 		if !ok {
+			continue
+		}
+		if !MayGatherSource(obj, row, actorID, foragable) {
 			continue
 		}
 		cand := GatherCandidate{ID: id, Cheb: cheb, Mine: true, HasStock: hasStock, Low: lowItems[row.GatherItem]}
@@ -169,6 +185,76 @@ func loiterChebIn(obj *VillageObject, assets map[AssetID]*Asset, actorTile TileP
 // knowledge (an herbalist knows where herbs grow). Read in perception from
 // ActorSnapshot.AttributeSlugs.
 const AttrForageRange = "forage_range"
+
+// ForageItems returns every item the actor restocks by foraging, regardless of how
+// much is on hand. This is the PERMISSION set, and it is deliberately not
+// LowForageItems: being at cap on water makes a forager no less a forager, so
+// gating on the low set would revoke the right the moment the pack was full.
+//
+// Empty when the policy has no forage entries — which is the common case, and the
+// point: most of the village may not carry a commons yield away.
+func ForageItems(policy *RestockPolicy) map[ItemKind]bool {
+	if policy == nil {
+		return nil
+	}
+	var out map[ItemKind]bool
+	for _, e := range policy.ForageEntries() {
+		// Trimmed to match the lookup side: MayGatherSource trims GatherItem
+		// because IsGatherable() does, so an untrimmed entry here would silently
+		// revoke the right on a padded catalog value (code_review).
+		item := ItemKind(strings.TrimSpace(string(e.Item)))
+		if item == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[ItemKind]bool)
+		}
+		out[item] = true
+	}
+	return out
+}
+
+// MayGatherSource reports whether an actor may take from a resolved gather source
+// (LLM-610). The permission rule, which turns on the row kind the schema already
+// distinguishes (ObjectRefresh.IsYieldOnly):
+//
+//   - PICK-AND-EAT (Amount < 0) — wild food. Open to everyone. The unowned berry
+//     bushes are a commons by design: anyone may eat at one and pick a handful.
+//   - YIELD-ONLY (Amount == 0) — forage-to-SELL stock. A trade good, so it needs
+//     the trade: the actor must own the source, or hold a `forage` restock entry
+//     for what it yields.
+//
+// The bug this closes: ownership was the only check on the path, so the two
+// unowned yield-only sources in the village — the Wells — were free for all. Any
+// character may DRINK at a well (that is a separate, un-gathered `thirst` row with
+// no GatherItem, untouched here); only the water-drawer may carry a pail away.
+// Fourteen actors with no forage water entry had carried 58 pails between them,
+// stripping the 20-per-6h yield the mill needs to supply the village.
+//
+// Ownership still confers the right on its own. A keeper who owns a bush may pick
+// it whether or not his restock manifest lists it — the manifest says what he
+// TRADES, and this gate exists only where ownership has nothing to say.
+func MayGatherSource(obj *VillageObject, row *ObjectRefresh, actorID ActorID, foragable map[ItemKind]bool) bool {
+	if row == nil {
+		return false
+	}
+	// Another's source is never yours, whatever your trade. ResolveGatherSource
+	// already refuses one upstream (handing it back so the caller can raise the
+	// more specific ErrNotYourSource), so this is unreachable from there — it is
+	// here so the predicate is honest standalone. Without it a future caller
+	// reading the name at face value would be told a forager may take from a
+	// neighbour's field (code_review).
+	if obj.OwnedByOther(actorID) {
+		return false
+	}
+	if !row.IsYieldOnly() {
+		return true
+	}
+	if obj != nil && obj.OwnerActorID == actorID && actorID != "" {
+		return true
+	}
+	return foragable[ItemKind(strings.TrimSpace(string(row.GatherItem)))]
+}
 
 // LowForageItems returns the set of items the actor restocks by foraging and is
 // currently below the reorder threshold on — the item bias the fallback resolution

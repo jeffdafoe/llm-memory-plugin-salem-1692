@@ -187,12 +187,18 @@ func TestBuild_GatherableCue_NearestOwnedSuppresses_NoFallthrough(t *testing.T) 
 // gatherable bush at world (100,100) and the actor at actorTile. avail is the
 // bush's AvailableQuantity — pass 0 for a stripped bush, a positive count for a
 // ripe one. Forage-to-sell (Amount 0), so only the gather cue is in play.
+//
+// The actor holds a `forage raspberries` entry because a yield-only source needs
+// the trade since LLM-610. These cases are about STOCK gating (LLM-98), so the
+// permission is granted to keep the variable under test the only one moving.
 func gatherBushSnapshot(actorTile sim.TilePos, avail int) *sim.Snapshot {
 	zero := 0
 	return &sim.Snapshot{
 		Assets: emptyAssetSet,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
-			"hannah": {Pos: actorTile},
+			"hannah": {Pos: actorTile, RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+				{Item: "raspberries", Source: sim.RestockSourceForage, Max: 10},
+			}}},
 		},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			"bush": {
@@ -232,5 +238,91 @@ func TestBuild_GatherableCue_StockedSource_Shows(t *testing.T) {
 
 	if p.Surroundings.GatherableItem != "raspberries" {
 		t.Errorf("GatherableItem=%q, want raspberries (finite source still has stock)", p.Surroundings.GatherableItem)
+	}
+}
+
+// --- LLM-610: the cue obeys the yield-only permission gate --------------------
+
+// prodWellSnapshot builds the SHIPPED well (LLM-254): an infinite drink row with
+// no GatherItem, plus a separate finite yield-only carry row. policy is the
+// actor's restock manifest — nil for someone with no forage trade at all.
+func prodWellSnapshot(actorTile sim.TilePos, policy *sim.RestockPolicy) *sim.Snapshot {
+	zero := 0
+	q := func(v int) *int { return &v }
+	return &sim.Snapshot{
+		Assets: emptyAssetSet,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"subject": {Pos: actorTile, RestockPolicy: policy},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"well": {
+				ID:            "well",
+				DisplayName:   "Village Well",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Attribute: "thirst", Amount: -8},
+					{Amount: 0, GatherItem: "water", AvailableQuantity: q(20), MaxQuantity: q(20)},
+				},
+			},
+		},
+	}
+}
+
+// TestBuild_ProductionWell_NoGatherCueWithoutTheTrade — the smith at the well.
+// He may drink there all he likes; the scene must not offer him a pail to carry,
+// because GatherableItem is also what advertises the `gather` tool (gateTools:
+// atGatherableSource). Cue and tool disappear together, which is the point.
+func TestBuild_ProductionWell_NoGatherCueWithoutTheTrade(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	smith := &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "firewood", Source: sim.RestockSourceForage, Max: 10},
+		{Item: "water", Source: sim.RestockSourceBuy, Max: 12}, // he BUYS water — not a licence to draw it
+	}}
+	p := Build(prodWellSnapshot(wellPin, smith), "subject", nil)
+
+	if p.Surroundings.GatherableItem != "" {
+		t.Errorf("GatherableItem=%q, want empty — a smith may not draw the commons well", p.Surroundings.GatherableItem)
+	}
+	if p.Surroundings.GatherableSource != "" {
+		t.Errorf("GatherableSource=%q, want empty", p.Surroundings.GatherableSource)
+	}
+	if got := Render(p, DefaultRenderConfig()); strings.Contains(combinedPrompt(got), "Village Well") {
+		t.Error("the rendered scene must not name the well as a source he can draw from")
+	}
+}
+
+// TestBuild_ProductionWell_DrawerStillSeesTheCue — the other arm. The role holder
+// keeps the cue, so the fix protects the well without starving the village.
+func TestBuild_ProductionWell_DrawerStillSeesTheCue(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	miller := &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+	}}
+	p := Build(prodWellSnapshot(wellPin, miller), "subject", nil)
+
+	if p.Surroundings.GatherableItem != "water" {
+		t.Errorf("GatherableItem=%q, want water — the water-drawer keeps his cue", p.Surroundings.GatherableItem)
+	}
+	if p.Surroundings.GatherableSource != "Village Well" {
+		t.Errorf("GatherableSource=%q, want Village Well", p.Surroundings.GatherableSource)
+	}
+}
+
+// TestBuild_ProductionWell_DrawerAtCapKeepsTheCue guards the specific mistake the
+// permission set was written to avoid: gating on LowForageItems instead of
+// ForageItems. At cap the item is not "low", but the drawer is still the drawer —
+// otherwise he could never draw again after selling down.
+func TestBuild_ProductionWell_DrawerAtCapKeepsTheCue(t *testing.T) {
+	wellPin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	snap := prodWellSnapshot(wellPin, &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+	}})
+	snap.RestockReorderPct = 50
+	snap.Actors["subject"].Inventory = map[sim.ItemKind]int{"water": 20} // full
+
+	if got := Build(snap, "subject", nil).Surroundings.GatherableItem; got != "water" {
+		t.Errorf("GatherableItem=%q, want water — a forager at cap is still a forager", got)
 	}
 }

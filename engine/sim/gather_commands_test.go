@@ -122,6 +122,19 @@ func buildGatherTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 				{Attribute: "hunger", Amount: -4}, // no GatherItem
 			},
 		},
+		// prod_well models the SHIPPED well shape (LLM-254): an infinite drink row
+		// carrying no GatherItem, plus a SEPARATE finite yield-only carry row. The
+		// older "well" fixture above folds both into one Amount<0 row, which reads as
+		// pick-and-eat and so cannot exercise the LLM-610 gate at all.
+		"prod_well": {
+			ID: "prod_well", DisplayName: "Village Well", AssetID: "well-stone", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.WorldPos{X: 2500, Y: 2500},
+			Refreshes: []*sim.ObjectRefresh{
+				{Attribute: "thirst", Amount: -8},                                                // drink: infinite, ungathered, open to all
+				{Amount: 0, GatherItem: "water", AvailableQuantity: ip(20), MaxQuantity: ip(20)}, // carry: yield-only
+			},
+		},
 		"bench": {
 			ID: "bench", DisplayName: "Bench", AssetID: "bench-wood", CurrentState: "default",
 			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
@@ -158,6 +171,31 @@ func placeAt(t *testing.T, w *sim.World, actorID sim.ActorID, objID sim.VillageO
 	}})
 	if err != nil {
 		t.Fatalf("placeAt(%s): %v", objID, err)
+	}
+}
+
+// grantForageEntry gives actorID a `forage` restock entry for kind — the trade
+// LLM-610 requires before an actor may take from a YIELD-ONLY (forage-to-sell)
+// source it does not own. Pick-and-eat rows are open to all and need no grant, so
+// only the sell_bush cases call this.
+func grantForageEntry(t *testing.T, w *sim.World, actorID sim.ActorID, kind sim.ItemKind) {
+	t.Helper()
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		actor := world.Actors[actorID]
+		if actor == nil {
+			return nil, fmt.Errorf("grantForageEntry: no actor %q", actorID)
+		}
+		if actor.RestockPolicy == nil {
+			actor.RestockPolicy = &sim.RestockPolicy{}
+		}
+		actor.RestockPolicy.Restock = append(actor.RestockPolicy.Restock, sim.RestockEntry{
+			Item:   kind,
+			Source: sim.RestockSourceForage,
+		})
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("grantForageEntry(%s, %s): %v", actorID, kind, err)
 	}
 }
 
@@ -349,6 +387,7 @@ func TestGather_YieldOnlyBush_HarvestsAndDecrements(t *testing.T) {
 	w, cancel := buildGatherTestWorld(t)
 	defer cancel()
 	placeAt(t, w, "hannah", "sell_bush")
+	grantForageEntry(t, w, "hannah", "berries") // LLM-610: forage-to-sell needs the trade
 
 	res, err := w.Send(sim.Gather("hannah", 2, time.Now().UTC()))
 	if err != nil {
@@ -412,5 +451,65 @@ func TestGather_UnknownActor_Errors(t *testing.T) {
 	_, err := w.Send(sim.Gather("ghost", 1, time.Now().UTC()))
 	if err == nil {
 		t.Fatal("want error for unknown actor, got nil")
+	}
+}
+
+// TestGather_ProductionWell_RefusesWithoutTheTrade is the LLM-610 regression, run
+// through the real Gather command against the SHIPPED two-row well.
+//
+// The live case it reproduces: Ezekiel Crane, a smith with no forage water entry,
+// walked to the village well on 2026-08-06, drank, and — before this gate — could
+// have carried off the whole 20-pail yield the mill needs to supply the village.
+// Fourteen such actors had drawn 58 pails between them.
+func TestGather_ProductionWell_RefusesWithoutTheTrade(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	placeAt(t, w, "hannah", "prod_well") // no forage entries at all
+
+	_, err := w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNoGatherSource) {
+		t.Fatalf("gather at a commons well without the trade: err=%v, want ErrNoGatherSource", err)
+	}
+	if got := inventoryOf(t, w, "hannah", "water"); got != 0 {
+		t.Errorf("water=%d, want 0 — the pail must not have been drawn", got)
+	}
+}
+
+// TestGather_ProductionWell_AllowsTheWaterDrawer is the other half: the actor the
+// role belongs to still draws. Without this the gate could pass by refusing
+// everyone, which would starve the village instead of protecting it.
+func TestGather_ProductionWell_AllowsTheWaterDrawer(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	placeAt(t, w, "hannah", "prod_well")
+	grantForageEntry(t, w, "hannah", "water")
+
+	res, err := w.Send(sim.Gather("hannah", 2, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("gather with the trade: %v", err)
+	}
+	if gr := res.(sim.GatherResult); gr.Item != "water" || gr.Qty != 2 {
+		t.Errorf("got Item=%q Qty=%d, want water/2", gr.Item, gr.Qty)
+	}
+	if got := inventoryOf(t, w, "hannah", "water"); got != 2 {
+		t.Errorf("water=%d, want 2", got)
+	}
+}
+
+// TestGather_PickAndEatBushStaysACommons pins the other side of the rule: the
+// unowned wild bushes are food anyone may take, and the gate must not touch them.
+// Regression against over-reaching — an earlier draft of this ticket wrongly
+// counted 157 legitimate berry picks as violations.
+func TestGather_PickAndEatBushStaysACommons(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	placeAt(t, w, "hannah", "bush") // Amount<0 + GatherItem = pick-and-eat, unowned
+
+	res, err := w.Send(sim.Gather("hannah", 1, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("a wild bush must stay open to everyone: %v", err)
+	}
+	if gr := res.(sim.GatherResult); gr.Item != "berries" {
+		t.Errorf("got Item=%q, want berries", gr.Item)
 	}
 }

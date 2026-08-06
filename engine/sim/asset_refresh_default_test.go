@@ -327,8 +327,11 @@ func TestCreateVillageObject_SourceIsReachableOnceNamed(t *testing.T) {
 		anchor := obj.Pos.Tile()
 		pin := sim.TilePos{X: anchor.X + offX, Y: anchor.Y + offY}
 
+		// Entitled to sage: this test is about a nameless source being unreachable,
+		// not about the LLM-610 permission gate, so the forager holds the trade.
 		resolvedID, _, row := sim.ResolveGatherSource(
-			world.VillageObjects, world.Assets, pin, "forager", "", nil)
+			world.VillageObjects, world.Assets, pin, "forager", "", nil,
+			map[sim.ItemKind]bool{"sage": true})
 		if row == nil {
 			return sim.VillageObjectID(""), nil
 		}

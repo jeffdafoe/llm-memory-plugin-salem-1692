@@ -61,6 +61,10 @@ func buildCropWorld(t *testing.T, available int, currentState string, lastRefres
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"wheat-plant": {
 			ID: "wheat-plant", DisplayName: "Wheat", AssetID: "crop-wheat", CurrentState: currentState,
+			// Owned by the farmer, as the placed field is in production. A crop is a
+			// YIELD-ONLY source, so since LLM-610 taking from one needs either the
+			// owner's claim or a `forage` entry — and ownership is the truer fixture.
+			OwnerActorID:  "farmer",
 			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
 			Pos: sim.WorldPos{X: 100, Y: 100},
 			Refreshes: []*sim.ObjectRefresh{

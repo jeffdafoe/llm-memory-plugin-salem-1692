@@ -105,3 +105,120 @@ func TestHandleGatherTargetOnArrival(t *testing.T) {
 	// A non-arrival event is a no-op (no panic).
 	handleGatherTargetOnArrival(w, nil)
 }
+
+// --- LLM-610: the yield-only permission gate ---------------------------------
+//
+// The rule: any character may DRINK at a well, only a character with the gather
+// trade may carry a pail away. Expressed against the row kind the schema already
+// carries — pick-and-eat (Amount < 0) is a commons, yield-only (Amount == 0) is
+// forage-to-sell stock and needs the trade.
+
+func forageSet(items ...ItemKind) map[ItemKind]bool {
+	out := make(map[ItemKind]bool, len(items))
+	for _, i := range items {
+		out[i] = true
+	}
+	return out
+}
+
+func TestMayGatherSource(t *testing.T) {
+	q := func(v int) *int { return &v }
+	pickAndEat := &ObjectRefresh{Attribute: "hunger", Amount: -2, GatherItem: "raspberries", AvailableQuantity: q(4)}
+	yieldOnly := &ObjectRefresh{Amount: 0, GatherItem: "water", AvailableQuantity: q(20)}
+	commons := &VillageObject{ID: "well"}
+	mine := &VillageObject{ID: "my-field", OwnerActorID: "moses"}
+	theirs := &VillageObject{ID: "their-field", OwnerActorID: "someone-else"}
+
+	cases := []struct {
+		name      string
+		obj       *VillageObject
+		row       *ObjectRefresh
+		actor     ActorID
+		foragable map[ItemKind]bool
+		want      bool
+	}{
+		{"wild bush is a commons — no trade needed", commons, pickAndEat, "ezekiel", nil, true},
+		{"wild bush stays open even for a forager of something else", commons, pickAndEat, "ezekiel", forageSet("firewood"), true},
+		{"commons yield-only is REFUSED without the trade", commons, yieldOnly, "ezekiel", forageSet("firewood"), false},
+		{"commons yield-only is refused when the actor forages nothing", commons, yieldOnly, "ezekiel", nil, false},
+		{"commons yield-only is allowed with the matching entry", commons, yieldOnly, "joseph", forageSet("water", "firewood"), true},
+		{"your own yield-only source needs no entry — ownership is the claim", mine, yieldOnly, "moses", nil, true},
+		{"another's source is not made yours by holding the entry", theirs, yieldOnly, "moses", forageSet("water"), false},
+		{"another's WILD bush is still refused — ownership outranks the commons rule", theirs, pickAndEat, "moses", nil, false},
+		{"a nil row is never gatherable", commons, nil, "ezekiel", forageSet("water"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := MayGatherSource(c.obj, c.row, c.actor, c.foragable); got != c.want {
+				t.Errorf("MayGatherSource = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestMayGatherSource_TrimsGatherItem — IsGatherable() trims, so the permission
+// lookup has to trim too or a padded catalog value silently revokes the right.
+func TestMayGatherSource_TrimsGatherItem(t *testing.T) {
+	row := &ObjectRefresh{Amount: 0, GatherItem: " water "}
+	if !MayGatherSource(&VillageObject{ID: "well"}, row, "joseph", forageSet("water")) {
+		t.Error("a padded gather_item must still match the forage entry")
+	}
+}
+
+// TestForageItems_IgnoresStockLevel is the distinction from LowForageItems, and
+// the reason the gate does not reuse it: a forager standing at cap is still a
+// forager. Gating on the LOW set would revoke the right exactly when the pack is
+// full, and the actor could never refill after selling down.
+func TestForageItems_IgnoresStockLevel(t *testing.T) {
+	policy := &RestockPolicy{Restock: []RestockEntry{
+		{Item: "water", Source: RestockSourceForage, Max: 20},
+		{Item: "firewood", Source: RestockSourceForage, Max: 10},
+		{Item: "iron", Source: RestockSourceBuy, Max: 6},
+		{Item: "nail", Source: RestockSourceProduce, Max: 20},
+	}}
+	got := ForageItems(policy)
+	if !got["water"] || !got["firewood"] {
+		t.Errorf("forage entries missing from the permission set: %v", got)
+	}
+	if got["iron"] || got["nail"] {
+		t.Errorf("buy/produce entries must NOT confer a gather right: %v", got)
+	}
+	// At cap, so LowForageItems drops it — the permission set must not.
+	low := LowForageItems(policy, map[ItemKind]int{"water": 20, "firewood": 10}, 50)
+	if low["water"] {
+		t.Fatal("fixture broken: water should not read as low at cap")
+	}
+	if !ForageItems(policy)["water"] {
+		t.Error("a forager at cap must keep the right to draw")
+	}
+	if ForageItems(nil) != nil {
+		t.Error("a nil policy confers nothing")
+	}
+}
+
+// TestForageItems_NormalizesEntries — the policy side must be trimmed like the
+// lookup side, or a padded catalog value silently revokes the right (code_review).
+// Blank entries confer nothing rather than seeding an empty-string key that a
+// blank GatherItem could then match — though IsGatherable() rejects those upstream,
+// the pair must not depend on that.
+func TestForageItems_NormalizesEntries(t *testing.T) {
+	got := ForageItems(&RestockPolicy{Restock: []RestockEntry{
+		{Item: " water ", Source: RestockSourceForage, Max: 20},
+		{Item: "   ", Source: RestockSourceForage, Max: 5},
+		{Item: "", Source: RestockSourceForage, Max: 5},
+	}})
+	if !got["water"] {
+		t.Errorf(`a padded entry must normalize to "water": %v`, got)
+	}
+	if got[""] {
+		t.Errorf("a blank entry must confer nothing: %v", got)
+	}
+	if len(got) != 1 {
+		t.Errorf("want exactly one right conferred, got %v", got)
+	}
+	// End to end against the source side, which trims independently.
+	row := &ObjectRefresh{Amount: 0, GatherItem: "water"}
+	if !MayGatherSource(&VillageObject{ID: "well"}, row, "joseph", got) {
+		t.Error("a padded ENTRY and a clean gather_item must still match")
+	}
+}
