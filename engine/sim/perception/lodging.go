@@ -401,7 +401,7 @@ func lodgingAffordabilityCue(v *LodgingView) string {
 	// the earn-coins fallback so a producer can renew with its wares. Phrased
 	// conditionally ("if you have wares") — LodgingView carries no inventory, so
 	// an empty-handed lodger mustn't be told to offer goods it doesn't have.
-	return fmt.Sprintf("You have only %d coins — short of the %d for another night. If you have wares to spare, offer them for the room directly with offer_trade; otherwise earn coins before your room lapses.",
+	return fmt.Sprintf("You have only %d coins — short of the %d for another night. If you have wares to spare, offer them for the room directly with offer_trade, putting your words in that call's say; otherwise earn coins before your room lapses.",
 		v.Coins, v.NightlyRate)
 }
 

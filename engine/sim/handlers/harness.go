@@ -1861,9 +1861,9 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				if vc.Name == "offer_trade" {
 					lead = fmt.Sprintf("Your offer to trade for %d %s", args.Qty, item)
 				}
-				// Echo the buyer's own words back (LLM-350) — pay_with_item now
-				// carries them; offer_trade does not, so said is "" there and the
-				// sentence is unchanged.
+				// Echo the buyer's own words back (LLM-350). Both tools carry a
+				// say; it stays optional on each, so said is "" for a wordless
+				// offer and the sentence is unchanged.
 				//
 				// "call done()" is gone from this line for the same reason it left the
 				// response results: pay_with_item and offer_trade are both
