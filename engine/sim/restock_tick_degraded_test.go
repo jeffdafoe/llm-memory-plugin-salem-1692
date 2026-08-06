@@ -49,17 +49,25 @@ func degradedMaker(onHand int) (*Actor, *World) {
 	return a, w
 }
 
-// TestDegradePredicatesAgreeAcrossTheSnapshot is the cue/warrant parity guard.
-// The warrant half reads the live World (ownerStallDegraded / degradedProduceBlocked);
-// the perception half reads a published Snapshot (perception.ownerBusinessDegraded /
-// ownerBusinessProduceBlocked). Both call the SAME exported primitives —
-// StallDegraded over OwnedWearableStall, against the degrade threshold — so the only
-// way they can ever disagree is the snapshot losing fidelity: a dropped Wear or Tags
-// on the object clone, or a settings field the snapshot builder forgets to carry.
-// This reconstructs the snapshot-side computation exactly as perception performs it
-// and requires the same answer, worn and mended, at both production percentages. It
-// is the test that would fail if someone broke that fidelity, which is the risk
-// LLM-608's split-across-two-packages narrowing actually carries.
+// TestDegradePredicatesAgreeAcrossTheSnapshot pins that the INPUTS to the two
+// degrade predicates stay equivalent. The warrant half reads the live World
+// (ownerStallDegraded / degradedProduceBlocked); the perception half reads a
+// published Snapshot (perception.ownerBusinessDegraded /
+// ownerBusinessProduceBlocked). Both are wrappers over the SAME exported
+// primitives — StallDegraded over OwnedWearableStall, against the degrade
+// threshold — so the only way they can disagree is the snapshot losing fidelity:
+// a dropped Wear or Tags on the object clone, or a settings field the snapshot
+// builder forgets to carry.
+//
+// It RECONSTRUCTS the snapshot-side computation rather than calling perception's
+// wrappers, because perception imports sim and the dependency cannot run the
+// other way. So it does not prove the two wrappers stay in step with each other —
+// it proves the world and the snapshot keep telling them the same thing, which is
+// the failure this split-across-two-packages narrowing can actually produce.
+// Divergence in the wrappers themselves is covered by their own package's tests.
+//
+// The wear cases include the exact threshold, since StallDegraded's `>=` is the
+// load-bearing comparison and an accidental `>` would otherwise slip through.
 func TestDegradePredicatesAgreeAcrossTheSnapshot(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -68,8 +76,9 @@ func TestDegradePredicatesAgreeAcrossTheSnapshot(t *testing.T) {
 	}{
 		{"worn, shop limps", 650, 50},
 		{"worn, production hard-blocked", 650, 0},
+		{"exactly at the threshold", 600, 50},
+		{"one below the threshold", 599, 50},
 		{"mended", 0, 50},
-		{"below threshold", 599, 50},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, w := degradedMaker(3)
