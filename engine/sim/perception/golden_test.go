@@ -7005,37 +7005,65 @@ func TestGoldensNeverPriceAGoodTheBenchHasReserved(t *testing.T) {
 // keep-back naming more than the actor carries would tell a keeper to hold back
 // stock that does not exist, which is the same species of defect as pricing stock
 // that is already spoken for.
+//
+// Checked in both directions off the structured view, never by associating a
+// rendered line back to an item by its display label alone: two kinds sharing a
+// label would let a keep-back meant for one satisfy the check for the other. The
+// forward pass requires each surplus item to own exactly one line carrying the
+// clause (which is itself the ambiguity check — a shared label matches twice), and
+// the reverse pass is a count, so no clause can appear without an item behind it.
 func TestGoldensKeepBackClauseOnlyAboveTheFloor(t *testing.T) {
 	const marker = "beyond that are yours to sell"
 	seen := 0
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			snap, actorID, _ := sc.build()
-			a := snap.Actors[actorID]
-			if a == nil || a.RestockPolicy == nil {
+			snap, actorID, warrants := sc.build()
+			if a := snap.Actors[actorID]; a == nil || a.RestockPolicy == nil {
 				return
 			}
-			section := promptSection(renderScenario(sc), "## What your wares fetch")
-			floors := sim.ReorderFloors(snap.Recipes, a.RestockPolicy)
-			for _, line := range strings.Split(section, "\n") {
-				// The repair earmark uses the same surplus phrasing (LLM-292) and is
-				// governed by the mend, not by a recipe floor.
-				if !strings.Contains(line, marker) || strings.Contains(line, "to mend your") {
+			payload := Build(snap, actorID, warrants)
+			if payload.TradeValue == nil {
+				return
+			}
+			lines := strings.Split(promptSection(combinedPrompt(Render(payload, DefaultRenderConfig())), "## What your wares fetch"), "\n")
+
+			expected := 0
+			for i := range payload.TradeValue.Items {
+				it := payload.TradeValue.Items[i]
+				if it.ReserveFloor <= 0 || it.ReserveHeld <= it.ReserveFloor {
 					continue
 				}
-				surplus := false
-				for item, floor := range floors {
-					if floor > 0 && a.Inventory[item] > floor &&
-						strings.HasPrefix(line, "- "+itemDisplayLabel(snap, item)+":") {
-						surplus = true
+				expected++
+				prefix := "- " + itemDisplayLabel(snap, it.itemKind) + ":"
+				matched := 0
+				for _, line := range lines {
+					if !strings.HasPrefix(line, prefix) {
+						continue
+					}
+					matched++
+					if !strings.Contains(line, marker) {
+						t.Errorf("scenario %q: %q holds %d against a floor of %d but its line states no keep-back:\n%s",
+							sc.name, it.itemKind, it.ReserveHeld, it.ReserveFloor, line)
 					}
 				}
-				if !surplus {
-					t.Errorf("scenario %q: keep-back clause on a line with no bench surplus behind it:\n%s", sc.name, line)
-					continue
+				if matched != 1 {
+					t.Errorf("scenario %q: want exactly 1 wares line for the surplus %q, got %d (a duplicate display label would read as another item's line)",
+						sc.name, it.itemKind, matched)
 				}
-				seen++
+			}
+			seen += expected
+
+			// The repair earmark uses the same surplus phrasing (LLM-292) and is
+			// governed by the mend, not by a recipe floor.
+			rendered := 0
+			for _, line := range lines {
+				if strings.Contains(line, marker) && !strings.Contains(line, "to mend your") {
+					rendered++
+				}
+			}
+			if rendered != expected {
+				t.Errorf("scenario %q: %d keep-back clauses rendered, but %d items carry a bench surplus", sc.name, rendered, expected)
 			}
 		})
 	}
