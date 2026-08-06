@@ -311,6 +311,49 @@ func TestRebook_WritesDurableAudit(t *testing.T) {
 	}
 }
 
+// TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge documents a defect
+// rather than a guarantee. It is deliberately written to go RED when LLM-615 is
+// fixed, so the fix cannot land without someone reading this comment.
+//
+// The rebook writes a durable `paid` row and does not call RecordCoinPaid. The
+// coin-record boot seed selects on action_type='paid' AND result='ok' AND actor_id
+// IS NOT NULL (repo/pg/coin_records.go), and this row satisfies all three. So the
+// lodger-keeper pair's coin record is MISSING the charge until the next restart and
+// HOLDS it afterwards — the tally changes at boot, and "## Coin between you and
+// those here" answers differently depending on uptime.
+//
+// This is not the accepted non-atomic divergence RecordCoinPaid documents. That one
+// needs a durable append to fail; here the append succeeds deterministically and the
+// live tally is deterministically absent (code_review, LLM-612).
+//
+// WHEN FIXING LLM-615: delete this test and assert the opposite — one Paid entry on
+// both sides of the pair, classified CoinPaymentUnstated. Unstated is not a
+// placeholder here, it is forced: the durable row carries neither marker, so the
+// seed already reads it that way, and a live call passing anything else would
+// replace a visible restart divergence with an invisible classification one.
+func TestRebook_KnownDivergence_CoinRecordMissesTheLodgingCharge(t *testing.T) {
+	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
+	sink := &recordingActionLogSink{}
+	w.SetActionLogSink(sink)
+
+	runRebook(t, w)
+
+	// The durable row exists, so a restart WILL count this payment.
+	if len(sink.rows) != 1 || sink.rows[0].ActionType != ActionTypePaid {
+		t.Fatalf("durable rows = %+v, want one paid row — the premise of the divergence", sink.rows)
+	}
+	if got := sink.rows[0].Payload["amount"]; got != 4 {
+		t.Fatalf("durable amount = %v, want 4", got)
+	}
+	// The live tally does not. This is the bug.
+	if n := countCoinPairs(w.CoinRecord); n != 0 {
+		t.Errorf("coin record holds %d pair(s) — if the lodging charge is now credited live, "+
+			"LLM-615 is fixed and this test must be replaced (see the doc comment)", n)
+	}
+}
+
 func TestLodgingNightlyRate(t *testing.T) {
 	cases := []struct {
 		weekly, want int

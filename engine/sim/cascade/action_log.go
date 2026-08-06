@@ -218,7 +218,18 @@ func handlePaidActionLog(w *sim.World, evt sim.Event) {
 	// LLM-572: credit the in-memory coin tally from the same place, and under the
 	// same conditions, as the durable row it is seeded from. Keeping the two writes
 	// together is what guarantees the live tally and a post-restart seed agree.
-	w.RecordCoinPaid(paid.BuyerID, paid.SellerID, paid.Amount, paid.At, paid.RateSettled > 0)
+	//
+	// A bare pay that settled no rate is Unstated, not a purchase (LLM-612). Coin
+	// can leave this path for a wage, a gift, a tip or a hand-to-hand debt as
+	// readily as for goods, and the only thing distinguishing them is the payer's
+	// own `for` text — the untrusted half this record refuses. Calling them all
+	// purchases to tidy up the render would be the exact mistake in the other
+	// direction.
+	kind := sim.CoinPaymentUnstated
+	if paid.RateSettled > 0 {
+		kind = sim.CoinPaymentForDue
+	}
+	w.RecordCoinPaid(paid.BuyerID, paid.SellerID, paid.Amount, paid.At, kind)
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     paid.BuyerID,
 		OccurredAt:  paid.At,
@@ -304,7 +315,11 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	// Never a due (LLM-607): settleTownRate is reached only from the bare-coin Pay
 	// command, so a ledger settlement is always a purchase. This is goods for coin
 	// and it has a delivery against it, which is the very thing a due does not.
-	w.RecordCoinPaid(resolved.BuyerID, resolved.SellerID, resolved.Amount, resolved.At, false)
+	// LLM-612 turns that reasoning into the classification it always implied — this
+	// is the one settlement path the engine can call a purchase on its own evidence,
+	// without reading a word the payer wrote. The durable half is payload.ledger_id
+	// below, which the boot seed reads back for the same conclusion.
+	w.RecordCoinPaid(resolved.BuyerID, resolved.SellerID, resolved.Amount, resolved.At, sim.CoinPaymentForGoods)
 	// LLM-105: record the FULL settlement terms so the durable audit trail can tell a
 	// paid sale from a barter from a zero-value give-away. `amount` alone is ambiguous
 	// — a 0-coin barter and a 0-coin free gift both read amount:0; only the goods leg

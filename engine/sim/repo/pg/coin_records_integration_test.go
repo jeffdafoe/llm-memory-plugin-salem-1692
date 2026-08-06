@@ -91,6 +91,70 @@ func TestCoinRecordsRepo_Integration_SelectsSettledPayments(t *testing.T) {
 	}
 }
 
+// The payment KIND comes out of the payload, so the extraction is SQL and belongs
+// here (LLM-612). Two keys carry it and they behave differently:
+//
+//   - rate_settled is forward-only — written only since LLM-607, only when a rate
+//     actually settled;
+//   - ledger_id is NOT — handlePayResolvedActionLog has stamped it unconditionally
+//     since LLM-105, so it is on every ledger-settled row in the table's history.
+//
+// That asymmetry is the whole reason the goods classification reaches backwards, and
+// it holds only if the query really does read the key off a row that predates the
+// classification. The payloads below are the exact shapes the two writers produce.
+func TestCoinRecordsRepo_Integration_ReadsTheKindMarkers(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const payerID = "33333333-3333-3333-3333-333333333333"
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, 'Josiah Thorne', 0, 0)`,
+		payerID,
+	); err != nil {
+		t.Fatalf("seed actor: %v", err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	insert := func(at time.Time, payload string) {
+		t.Helper()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+			 VALUES ($1, $2, 'agent', 'paid', $3::jsonb, 'ok', 'seed')`,
+			payerID, at, payload,
+		); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	// Oldest first. A ledger settlement from before either classification existed —
+	// no rate_settled key, no recipient_actor_id, and ledger_id present all the same.
+	insert(base.Add(-3*time.Hour),
+		`{"recipient": "Elizabeth Ellis", "amount": 12, "for": "4x cheese", "ledger_id": 881, "consume_now": false}`)
+	// A bare pay that settled a town rate.
+	insert(base.Add(-2*time.Hour),
+		`{"recipient": "Constable Gideon Marsh", "amount": 1, "for": "Day's rate on the General Store", "rate_settled": 1}`)
+	// A bare pay that settled nothing the engine can name — neither key.
+	insert(base.Add(-time.Hour),
+		`{"recipient": "Lewis Walker", "amount": 4, "for": "wages for splitting wood"}`)
+
+	rows, err := NewCoinRecordsRepo(f.Pool).LoadPaymentsSince(ctx, base.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("LoadPaymentsSince: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d row(s), want 3: %+v", len(rows), rows)
+	}
+	if rows[0].LedgerID != "881" || rows[0].RateSettled != "" {
+		t.Errorf("historical ledger row = %+v, want LedgerID 881 and no rate", rows[0])
+	}
+	if rows[1].RateSettled != "1" || rows[1].LedgerID != "" {
+		t.Errorf("rate row = %+v, want RateSettled 1 and no ledger id", rows[1])
+	}
+	if rows[2].LedgerID != "" || rows[2].RateSettled != "" {
+		t.Errorf("unclassified row = %+v, want neither marker", rows[2])
+	}
+}
+
 // A `paid` row with no amount key at all must scan rather than blow up the boot
 // query. COALESCE is what makes that true, and the caller drops the row on the
 // parse — which is the correct outcome, since a payment with no amount is not a

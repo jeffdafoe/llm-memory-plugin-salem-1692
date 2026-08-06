@@ -176,12 +176,64 @@ func TestCoinDealingsSentence(t *testing.T) {
 			want: "You have paid Moses James 11 coins across 3 payments, and nothing has come back the other way.",
 		},
 		{
+			// Both directions unclassified. The peer is named twice rather than
+			// carried by "paid back" (LLM-612): the short form asserted that the
+			// second direction discharged the first, which nothing on an Unstated
+			// record supports.
 			name: "both directions",
 			d: sim.CoinDealings{
 				ReceivedCount: 2, ReceivedTotal: 2, ReceivedAllSingle: true,
 				PaidCount: 1, PaidTotal: 5,
 			},
-			want: "Moses James has paid you a coin twice, and you have paid back 5 coins.",
+			want: "Moses James has paid you a coin twice, and you have paid Moses James 5 coins.",
+		},
+		{
+			// The LLM-612 trigger, at the live figures.
+			name: "a distributor's week of buying stock",
+			d: sim.CoinDealings{
+				ReceivedCount: 2, ReceivedTotal: 4, ReceivedGoodsCount: 2, ReceivedGoodsTotal: 4,
+				PaidCount: 24, PaidTotal: 168, PaidGoodsCount: 24, PaidGoodsTotal: 168,
+			},
+			want: "Moses James has paid you 4 coins across 2 payments for goods, and you have paid Moses James 168 coins across 24 payments for goods.",
+		},
+		{
+			// One-directional purchase. The "nothing has come back" tail is DROPPED,
+			// and that is the sharper half of the ticket — something did come back.
+			name: "bought from a supplier who has never paid him",
+			d: sim.CoinDealings{PaidCount: 4, PaidTotal: 8, PaidGoodsCount: 4, PaidGoodsTotal: 8},
+			want: "You have paid Moses James 8 coins across 4 payments for goods.",
+		},
+		{
+			// A partial names the coin, not the payment count. What the rest was,
+			// the engine does not know, and the sentence does not say.
+			name: "some of a direction bought goods",
+			d:    sim.CoinDealings{PaidCount: 5, PaidTotal: 11, PaidGoodsCount: 2, PaidGoodsTotal: 7},
+			want: "You have paid Moses James 11 coins across 5 payments, 7 coins of it for goods.",
+		},
+		{
+			// Unstated coin keeps the blanket tail: with nothing known about what it
+			// bought, "nothing came back" is the record's honest position.
+			name: "an unclassified payment keeps the tail",
+			d:    sim.CoinDealings{PaidCount: 1, PaidTotal: 4},
+			want: "You have paid Moses James 4 coins, and nothing has come back the other way.",
+		},
+		{
+			// The incoming arm of the same suppression.
+			name: "sold to someone who has bought nothing back",
+			d:    sim.CoinDealings{ReceivedCount: 3, ReceivedTotal: 9, ReceivedGoodsCount: 3, ReceivedGoodsTotal: 9},
+			want: "Moses James has paid you 9 coins across 3 payments for goods.",
+		},
+		{
+			// Suppression is scoped to the DIRECTION, not the pair (code_review).
+			// With both directions live there is no tail to suppress at all, and
+			// each direction voices only what its own coin did — the goods clause
+			// must not leak onto the unclassified side.
+			name: "goods one way, unclassified the other",
+			d: sim.CoinDealings{
+				ReceivedCount: 1, ReceivedTotal: 4,
+				PaidCount: 3, PaidTotal: 9, PaidGoodsCount: 3, PaidGoodsTotal: 9,
+			},
+			want: "Moses James has paid you 4 coins, and you have paid Moses James 9 coins across 3 payments for goods.",
 		},
 		{
 			name: "an eviction softens the count rather than undercounting silently",
