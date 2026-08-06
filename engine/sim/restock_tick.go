@@ -171,6 +171,18 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 	// is not a required recipe input, so forage entries below fall through to the
 	// cap-fraction rule unchanged. Same catalog the perception gates read.
 	floors := ReorderFloors(w.Recipes, policy)
+	// LLM-608: a degraded business is shut for restock (LLM-304), but not for the
+	// inputs its OWN production consumes — see buildRestocking, whose narrowed
+	// degraded section this mirrors so the warrant and the cue can't disagree about
+	// what the keeper may buy. Resale stock waits on the mending; so does the forage
+	// side below, which LLM-304 shut along with it. The carve-out needs production
+	// to be possible at all, so at StallDegradedProducePct 0 (the legacy full block)
+	// productionInputs stays nil and every buy entry is skipped, as before.
+	degraded := ownerStallDegraded(w, a.ID)
+	var productionInputs map[ItemKind]bool
+	if degraded && !degradedProduceBlocked(w, a.ID) {
+		productionInputs = ProductionInputKinds(w.Recipes, policy)
+	}
 	// LLM-298: a conserving keeper (coin-poor + overstocked) is told to hold off buying
 	// and sell down — the "## Restocking" section flips to that steer, so waking it to
 	// BUY a low input contradicts the cue and just re-fires every minute for a keeper
@@ -179,14 +191,19 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 	// one's own bushes costs no coin, so the coin gate does not apply to them.
 	if !conserving {
 		for _, e := range EffectiveBuyEntries(w.Recipes, policy) {
+			if degraded && !productionInputs[e.Item] {
+				continue
+			}
 			if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, floors[e.Item]) && actorHasBuyPath(w, a, e.Item, now) {
 				return e, RestockSourceBuy, true
 			}
 		}
 	}
-	for _, e := range policy.ForageEntries() {
-		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && actorRemembersForageSource(a, w, e.Item) {
-			return e, RestockSourceForage, true
+	if !degraded {
+		for _, e := range policy.ForageEntries() {
+			if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && actorRemembersForageSource(a, w, e.Item) {
+				return e, RestockSourceForage, true
+			}
 		}
 	}
 	return RestockEntry{}, "", false
@@ -402,12 +419,10 @@ func EvaluateRestock(now time.Time) Command {
 				if a.RestockPolicy == nil {
 					continue
 				}
-				// LLM-304: a degraded business is shut for restock — no reorder warrant
-				// while it's too worn to keep stock. The owner sells down what's on hand
-				// and mends to reopen the refill; the "## Restocking" cue is suppressed.
-				if ownerStallDegraded(w, a.ID) {
-					continue
-				}
+				// LLM-304's degrade suppression now lives in firstActionableLowEntry
+				// (LLM-608), which narrows it to resale + forage rather than dropping the
+				// actor whole: the inputs his own production consumes still warrant, so
+				// the wake path matches the section the wake would render.
 				if !restockEligible(a, now) {
 					continue
 				}

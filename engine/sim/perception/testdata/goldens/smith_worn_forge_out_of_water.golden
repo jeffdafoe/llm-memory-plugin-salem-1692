@@ -1,0 +1,29 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 487.
+You are carrying: nails (x4), set of linens (x1).
+
+## Around you
+You are inside the Blacksmith, your workplace, with no one else here to hear you speak.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post (you close at 6 in the evening), but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.
+
+## Keeping up production
+- You use Water to make Nail — 0 on hand, enough for about 0 more, and you're running low.
+
+## Your business
+Your Blacksmith is badly worn — the disrepair drags at every task, and you can't restock the shelves until you mend it. You can still sell what's on hand, and work goes on, though slowly. Mending takes 5 nails and you have 4 — but nails are your own work: forge what you're short, then mend it here.
+## Restocking
+Your shelves must wait on the mending, but the makings your own work consumes are running low — those you can still buy.
+- You have 0 Water on hand and room for 12 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying. No seller is here now.
+  - buy from The General Store (destination: general_store)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
