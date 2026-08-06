@@ -3758,6 +3758,21 @@ var perceptionScenarios = []perceptionScenario{
 		build: ownerHoldingRepairNailsInCompany,
 	},
 	{
+		name: "smith_holding_forge_water_in_company",
+		summary: "LLM-609 production-input reservation (the live Ezekiel Crane water sale): a smith in company with " +
+			"Elizabeth Ellis holds 2 flasks of water — a `buy` entry on his policy, and the required input of all three " +
+			"goods he makes (nail, shovel, skillet) — alongside 6 nails of his own make. Live, on 2026-08-06 Elizabeth " +
+			"paid him 1 coin for water; within the hour he held none, all three recipes were input-short and the forge " +
+			"had stopped. The wares cue priced the water as stock to move and the only judgment on the line was about " +
+			"margin ('selling below your costs loses you coin'), which frames a break-even trade as the problem to solve " +
+			"rather than the sale itself. The golden pins the reservation line REPLACING the price ('the 2 you carry are " +
+			"for making your own nails, shovels and skillets — makings, not wares') while the nails he actually sells " +
+			"keep their ordinary priced line. Cross-scenario guard: TestGoldensNeverPriceAGoodTheBenchHasReserved. " +
+			"Contrast: miller_offered_parity_swap_for_flour, where the miller's 37 wheat clear the same floor and so " +
+			"keep their price plus a keep-back clause.",
+		build: smithHoldingForgeWaterInCompany,
+	},
+	{
 		name: "coin_poor_overstocked_keeper_conserves",
 		summary: "LLM-294 working-capital tone gate: a coin-poor keeper (Hannah Boggs, 1 coin — below the 10 floor) sitting " +
 			"on unsold stock (20 porridge, dead-stock over the 8 floor) is low on the milk she buys, with the milk seller " +
@@ -5582,6 +5597,92 @@ func ownerHoldingRepairNailsInCompany() (*sim.Snapshot, sim.ActorID, []sim.Warra
 	return snap, josiahID, nil
 }
 
+// smithHoldingForgeWaterInCompany is the LLM-609 fixture: Ezekiel Crane in a
+// huddle with Elizabeth Ellis, carrying 2 water (the required input of every good
+// he makes) and 6 of his own nails. The water is a `buy` entry, so before this it
+// walked the resale branch of the wares cue and got a price and a margin caution
+// — the exact line the live sale was weighed against.
+//
+// Clock-free and history-free on purpose: no realized sales or purchases, so the
+// priced nail line carries no observed-rate clauses and the golden pins the
+// reservation and nothing else that could drift.
+func smithHoldingForgeWaterInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID   = sim.ActorID("ezekiel")
+		elizabethID = sim.ActorID("elizabeth")
+		forge       = sim.VillageObjectID("blacksmith")
+		huddle      = sim.HuddleID("h1")
+	)
+	zero := 0
+	now := 600 // 10:00
+	forgePin := sim.WorldPos{X: 100, Y: 100}.Tile()
+	ezekiel := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Ezekiel Crane",
+		Role:            "blacksmith",
+		State:           sim.StateIdle,
+		Pos:             forgePin,
+		CurrentHuddleID: huddle,
+		Coins:           514,
+		Needs:           map[sim.NeedKey]int{},
+		Inventory:       map[sim.ItemKind]int{"water": 2, "nail": 6},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+			{Item: "shovel", Source: sim.RestockSourceProduce, Max: 3},
+			{Item: "skillet", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: "water", Source: sim.RestockSourceBuy, Max: 12},
+		}},
+		Acquaintances: map[string]sim.Acquaintance{"Elizabeth Ellis": {}},
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Elizabeth Ellis",
+		Role:            "farmer",
+		State:           sim.StateIdle,
+		Pos:             forgePin,
+		CurrentHuddleID: huddle,
+		Coins:           40,
+		Needs:           map[sim.NeedKey]int{},
+		Acquaintances:   map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			ezekielID: ezekiel, elizabethID: elizabeth,
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			forge: {
+				ID:            forge,
+				DisplayName:   "Blacksmith",
+				Pos:           sim.WorldPos{X: 100, Y: 100},
+				OwnerActorID:  ezekielID,
+				Tags:          []string{sim.TagBusiness},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{ezekielID: {}, elizabethID: {}}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"water":   {OutputItem: "water", OutputQty: 1, RateQty: 12, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 1},
+			"nail":    {OutputItem: "nail", OutputQty: 1, RateQty: 4, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2, Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+			"shovel":  {OutputItem: "shovel", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 5, RetailPrice: 10, Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+			"skillet": {OutputItem: "skillet", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 6, RetailPrice: 12, Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water":   {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+			"nail":    {Name: "nail", DisplayLabel: "nails", Category: sim.ItemCategoryMaterial},
+			"shovel":  {Name: "shovel", DisplayLabel: "shovels", Category: sim.ItemCategoryMaterial},
+			"skillet": {Name: "skillet", DisplayLabel: "skillets", Category: sim.ItemCategoryMaterial},
+		},
+		RestockReorderPct: 25,
+	}
+	return snap, ezekielID, nil
+}
+
 // buyerKeptConsumeRemainderReconciled is the LLM-188 buyer-POV fixture: Anne
 // Walker took a consume_now quote for 5 blueberries from Prudence Ward, but her
 // hunger was low so the needs-clamp (consumableUnits, ZBBS-WORK-391) ate 1 and
@@ -6708,6 +6809,7 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "wholesaler_producer_bartering_with_customer" || // LLM-291: wholesale producer in company — cue draws the wholesale-channel line
 			sc.name == "wholesaler_producer_observed_rates" || // LLM-295: same, with observed rates on both wholesale-line figures
 			sc.name == "owner_holding_repair_nails_in_company" || // LLM-292: keeper in company with priced ware + the repair-reserve earmark
+			sc.name == "smith_holding_forge_water_in_company" || // LLM-609: producer in company with a priced ware + a bench-reserved input
 			sc.name == "coin_poor_overstocked_keeper_conserves" || // LLM-294: producer in company (priced own wares) + the conserve sell-first nudge
 			sc.name == "distributor_underwater_resale" || // LLM-332: reseller in company with priced resale wares, one underwater
 			sc.name == "innkeeper_fried_meat_below_makings_cost" || // LLM-475: producer in company, priced own ware sold under its makings cost
@@ -6806,6 +6908,90 @@ func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: repair-reserve earmark line present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestGoldensNeverPriceAGoodTheBenchHasReserved is the LLM-609 cross-scenario
+// invariant: no scene ever prices a good the actor's own live recipes have
+// reserved. Re-derived from each fixture rather than trusting the build that
+// produced the section — sim.ReorderFloors is read here exactly as buildTradeValue
+// reads it, so a future change that drops the discriminator from the item walk
+// fails here even if it keeps the struct fields populated.
+//
+// Scoped to the wares section deliberately: "## Your bushes to harvest" and
+// "## Restocking" also open lines with "- <label>:", and those cues are about
+// getting the good IN, which a reservation has nothing to say about.
+func TestGoldensNeverPriceAGoodTheBenchHasReserved(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.RestockPolicy == nil {
+				return
+			}
+			section := promptSection(renderScenario(sc), "## What your wares fetch")
+			if section == "" {
+				return
+			}
+			for item, floor := range sim.ReorderFloors(snap.Recipes, a.RestockPolicy) {
+				held := a.Inventory[item]
+				// Above the floor the good keeps its price by design (the surplus IS
+				// merchandise), and at zero on hand there is nothing to reserve.
+				if floor <= 0 || held <= 0 || held > floor {
+					continue
+				}
+				prefix := "- " + itemDisplayLabel(snap, item) + ":"
+				for _, line := range strings.Split(section, "\n") {
+					if !strings.HasPrefix(line, prefix) {
+						continue
+					}
+					if !strings.Contains(line, "makings, not wares") {
+						t.Errorf("scenario %q: %q is reserved for the bench (%d held, floor %d) but its wares line is priced:\n%s",
+							sc.name, item, held, floor, line)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestGoldensKeepBackClauseOnlyAboveTheFloor is the other half of the LLM-609
+// invariant: the keep-back clause is a statement about SURPLUS, so it may never
+// ride a line for a good the actor does not hold more of than its bench needs. A
+// keep-back naming more than the actor carries would tell a keeper to hold back
+// stock that does not exist, which is the same species of defect as pricing stock
+// that is already spoken for.
+func TestGoldensKeepBackClauseOnlyAboveTheFloor(t *testing.T) {
+	const marker = "beyond that are yours to sell"
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.RestockPolicy == nil {
+				return
+			}
+			section := promptSection(renderScenario(sc), "## What your wares fetch")
+			floors := sim.ReorderFloors(snap.Recipes, a.RestockPolicy)
+			for _, line := range strings.Split(section, "\n") {
+				// The repair earmark uses the same surplus phrasing (LLM-292) and is
+				// governed by the mend, not by a recipe floor.
+				if !strings.Contains(line, marker) || strings.Contains(line, "to mend your") {
+					continue
+				}
+				priced := false
+				for item, floor := range floors {
+					if floor > 0 && a.Inventory[item] > floor &&
+						strings.HasPrefix(line, "- "+itemDisplayLabel(snap, item)+":") {
+						priced = true
+					}
+				}
+				if !priced {
+					t.Errorf("scenario %q: keep-back clause on a line with no bench surplus behind it:\n%s", sc.name, line)
+				}
+			}
+		})
 	}
 }
 
