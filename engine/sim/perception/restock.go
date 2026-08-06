@@ -47,6 +47,15 @@ type RestockingView struct {
 	// keeper knows what it will need once coin returns) but WITHOUT a buy imperative,
 	// so the cue can't tell the keeper to both buy now and conserve at once.
 	Conserve bool
+
+	// Degraded marks the section as the narrowed one a keeper gets while his own
+	// business is worn past the degrade threshold (LLM-608): every item in it is an
+	// input his own production consumes, never resale shelf stock. Render swaps the
+	// "your shop stock is running low" lead for one that says so, because the
+	// "## Your business" cue is telling him in the same prompt that he cannot
+	// restock the shelves until he mends — and two sections disagreeing about what
+	// he may buy is the LLM-64 contradiction trap.
+	Degraded bool
 }
 
 // AllBlocked reports whether EVERY low item in the section is blocked — nothing here
@@ -352,8 +361,35 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	// shelf stock until it's mended. Suppress the buy directory so it can't steer a
 	// restock the shop can't act on (which would fight the "## Your business" cue's
 	// "can't restock until mended"). The keeper sells down what's on hand and mends.
-	if ownerBusinessDegraded(snap, actorID) {
-		return nil
+	//
+	// LLM-608 narrows that suppression rather than lifting it. A good the keeper's
+	// OWN production consumes is not shelf stock, and shutting him out of it closed
+	// the only exit LLM-446 built: the sole nail producer mends by forging his own
+	// nails, so the moment the nail recipe took an input he could not buy, the
+	// forge stopped and the deadlock had no bottom (the live Ezekiel Crane case —
+	// water on nail/shovel/skillet, a `buy water` entry he was not allowed to act
+	// on, four nails against the five a mend takes). It also put the LLM-64 split
+	// halves at odds: "## Keeping up production" does NOT suppress on degrade, so
+	// he was told his water was out and never told where any was. So while degraded
+	// the section keeps only the inputs his produce recipes require — resale stock
+	// still waits on the mending.
+	// The exemption rides on production still being POSSIBLE. At
+	// StallDegradedProducePct 0 the legacy LLM-304 full block applies,
+	// StartProductionCycle refuses, and buying an input that cannot be consumed is
+	// the unactionable errand the cue exists to avoid — the same carve-out
+	// buildStallRepair makes for its forge-your-own-nails steer. Only the LLM-446
+	// limping shop (a positive pct — the live setting is 50) gets the narrowed
+	// section, because only it can turn the input into the work that mends it.
+	degraded := ownerBusinessDegraded(snap, actorID)
+	var productionInputs map[sim.ItemKind]bool
+	if degraded {
+		if ownerBusinessProduceBlocked(snap, actorID) {
+			return nil // production hard-blocked — its inputs buy nothing
+		}
+		productionInputs = sim.ProductionInputKinds(snap.Recipes, actorSnap.RestockPolicy)
+		if len(productionInputs) == 0 {
+			return nil // nothing he makes needs buying in — the LLM-304 suppression stands whole
+		}
 	}
 	// The effective buy demand (LLM-260): explicit `buy` entries plus the ones
 	// derived from the actor's produce recipes' unsourced inputs — the same set
@@ -366,6 +402,9 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
 	var items []RestockItemView
 	for _, e := range buyEntries {
+		if degraded && !productionInputs[e.Item] {
+			continue // LLM-608: while worn, only what his own work consumes — not the shelves
+		}
 		cap := e.Cap()
 		current := actorSnap.Inventory[e.Item]
 		if !sim.RestockReorderThresholdMet(current, cap, pct, floors[e.Item]) {
@@ -480,6 +519,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// LLM-294: coin-poor + overstocked flips the section to a conserve steer. Shared
 		// with the Tier-2 sell nudge (buildTradeValue) via the same determination.
 		Conserve: merchantConserve(snap, actorID, actorSnap).Active,
+		Degraded: degraded,
 	}
 }
 
@@ -1219,7 +1259,14 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 	// the section leads with the situation instead. Conserve (a keeper who COULD buy but
 	// shouldn't) still wins: it is a choice, and its own steer already says so.
 	if !v.Conserve && v.AllBlocked() {
-		b.WriteString("Your shop stock of these bought-in goods is running low, and there is no way to replenish it just now. This is what stands in the way:\n")
+		if v.Degraded {
+			// LLM-608: the narrowed degraded section — these are the makings his own
+			// work consumes, not shelf stock, so the blocked lead has to name them as
+			// such or it contradicts "## Your business" on what he may buy at all.
+			b.WriteString("The makings your own work consumes are running low, and there is no way to come by them just now. This is what stands in the way:\n")
+		} else {
+			b.WriteString("Your shop stock of these bought-in goods is running low, and there is no way to replenish it just now. This is what stands in the way:\n")
+		}
 		for _, it := range v.Items {
 			renderBlockedItem(b, it)
 		}
@@ -1232,6 +1279,12 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// and "conserve" in the same breath. Plain modern English + the stake (the
 		// weak-model prose rule): say what to do and why.
 		fmt.Fprintf(b, "Your purse is nearly empty (%s) and your shelves are full of goods still waiting to sell. Hold off buying more for now — sell down what you have and let your coins recover first. You'll want to restock these once you can afford them:\n", coinsPhrase(v.BuyerCoins))
+	} else if v.Degraded {
+		// LLM-608: the shelves DO wait on the mending — "## Your business" says so in
+		// the same prompt, and this section must not read as a licence to refill them.
+		// What it names is narrower and true at the same time: the makings his own
+		// hands need, which are what get the work (and so the mending) moving again.
+		b.WriteString("Your shelves must wait on the mending, but the makings your own work consumes are running low — those you can still buy.\n")
 	} else {
 		b.WriteString("Your shop stock of these bought-in goods is running low. You choose how much to buy.\n")
 	}

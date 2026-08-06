@@ -92,6 +92,12 @@ func addSnapSupplier(snap *sim.Snapshot, item sim.ItemKind) {
 // up production") go silent — neither may steer a buy the shut shop can't turn into
 // stock, which would fight the "## Your business" cue's "can't restock until mended".
 // Same low-on-a-bought-input producer renders both cues until the business degrades.
+//
+// This fixture leaves StallDegradedProducePct at 0 — the LEGACY FULL BLOCK, where
+// production is refused outright — which is why the suppression is still total here
+// after LLM-608. At a positive pct the shop limps rather than stopping, and the
+// restock section keeps the inputs that production consumes; that is the live
+// setting, and TestBuildRestocking_DegradedKeepsProductionInputs pins it.
 func TestBuildRefillCues_DegradedBusinessSuppressed(t *testing.T) {
 	subj := makesStewBuying("skillet", 10, 1) // 1/10 = 10% < 25% → low
 	snap := productionSnap(subj, stewRecipe("skillet", 1), "skillet")

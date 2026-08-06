@@ -6842,6 +6842,16 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 			owedByLabel := map[string]bool{}
 			if subj != nil && subj.RestockPolicy != nil {
 				floors := sim.ReorderFloors(snap.Recipes, subj.RestockPolicy)
+				// LLM-608: a worn business's section narrows to the inputs the owner's
+				// own production consumes (and goes silent entirely when production is
+				// hard-blocked at pct 0). Mirror that drop the same way the conserve and
+				// LLM-216 drops below are mirrored, or the invariant demands a line the
+				// build deliberately omits.
+				degraded := ownerBusinessDegraded(snap, actorID)
+				var productionInputs map[sim.ItemKind]bool
+				if degraded && !ownerBusinessProduceBlocked(snap, actorID) {
+					productionInputs = sim.ProductionInputKinds(snap.Recipes, subj.RestockPolicy)
+				}
 				for _, e := range sim.EffectiveBuyEntries(snap.Recipes, subj.RestockPolicy) {
 					// The RESOLVED anchor rate the same way buildRestocking derives it:
 					// observed reachable-supplier rate first (LLM-295), catalog seed as
@@ -6885,6 +6895,9 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					}
 					if conserve {
 						continue // conserve mode replaces the item line — no anchor owed (LLM-294)
+					}
+					if degraded && !productionInputs[e.Item] {
+						continue // LLM-608: resale stock waits on the mending — no line, no anchor owed
 					}
 					want = true
 					owedByLabel[label] = true // a full item line must render AND carry this label's clause
@@ -7042,6 +7055,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"owner_at_worn_tavern":                              true,
 		"owner_inside_worn_business":                        true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
 		"owner_holding_repair_nails_in_company":             true, // LLM-292: owner at own worn store's pin (the earmark fixture)
+		"smith_worn_forge_out_of_water":                     true, // LLM-608: degraded smith inside his own forge, short of a bought input
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
