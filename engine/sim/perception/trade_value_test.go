@@ -994,3 +994,108 @@ func TestBuildTradeValue_DualSourceProducedWins(t *testing.T) {
 		t.Errorf("produced good should carry no cost-basis clause:\n%s", b.String())
 	}
 }
+
+// TestBuildTradeValue_DurableToolInputIsReserved pins the LLM-609 policy that a
+// durable TOOL input is reserved from sale alongside the consumables. It is a
+// deliberate asymmetry with LLM-475, which excludes the same tool from the makings
+// COST: cost asks "what did this batch consume" (nothing — the tool wears), and the
+// reservation asks "what does the work need present" (the tool, or the work stops).
+// A skillet is not eaten by the stew, but a keeper who sells his last one has
+// stopped cooking just as surely as one who sells his last flask of water, and the
+// reorder floor already keeps two on hand for exactly that reason.
+func TestBuildTradeValue_DurableToolInputIsReserved(t *testing.T) {
+	inputs := []sim.RecipeInput{{Item: "meat", Qty: 1}, {Item: "skillet", Qty: 1}}
+	snap, subj := tvMakingsSnap(0, 0, inputs, "skillet")
+	subj.RestockPolicy.Restock = append(subj.RestockPolicy.Restock,
+		sim.RestockEntry{Item: "skillet", Source: sim.RestockSourceBuy, Max: 4})
+	subj.Inventory = map[sim.ItemKind]int{"skillet": 2} // exactly the 2-batch floor
+
+	v := buildTradeValue(snap, "hannah", subj, true)
+	if v == nil {
+		t.Fatal("want a view")
+	}
+	var skillet *TradeValueItem
+	for i := range v.Items {
+		if v.Items[i].itemKind == "skillet" {
+			skillet = &v.Items[i]
+		}
+	}
+	if skillet == nil {
+		t.Fatalf("skillet missing from the wares view: %+v", v.Items)
+	}
+	if skillet.ReserveFloor != 2 || skillet.ReserveHeld != 2 {
+		t.Errorf("tool input not reserved: floor=%d held=%d", skillet.ReserveFloor, skillet.ReserveHeld)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if want := "skillet: the 2 you carry are for making your own fried_meat — makings, not wares."; !strings.Contains(b.String(), want) {
+		t.Errorf("render missing the tool reservation %q:\n%s", want, b.String())
+	}
+	// The LLM-475 exclusion must survive alongside it: the tool is still not a cost.
+	for i := range v.Items {
+		if v.Items[i].itemKind == "fried_meat" && v.Items[i].CostBatch != 5 {
+			t.Errorf("tool leaked back into the makings cost: CostBatch=%d, want 5", v.Items[i].CostBatch)
+		}
+	}
+}
+
+// TestBuildTradeValue_MendClaimBeatsBenchReserve pins the LLM-609 tie-break: when a
+// good is BOTH earmarked for a mend (LLM-292) and a required input of the actor's
+// own recipes, only the repair line renders. Two claims on one pile of nails would
+// contradict each other — the mend says the whole holding is spoken for, the bench
+// reservation would price the surplus above its floor — and the mend's stake is the
+// stronger of the two (the business is already broken).
+//
+// No live recipe consumes nails today, so this is a guard against a catalog edit
+// rather than a fix for an observed scene.
+func TestBuildTradeValue_MendClaimBeatsBenchReserve(t *testing.T) {
+	const ownerID = sim.ActorID("ezekiel")
+	subj := &sim.ActorSnapshot{
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "shovel", Source: sim.RestockSourceProduce, Max: 5},
+			{Item: sim.NailItemKind, Source: sim.RestockSourceBuy, Max: 20},
+		}},
+		Inventory: map[sim.ItemKind]int{sim.NailItemKind: 3},
+	}
+	zero := 0
+	snap := &sim.Snapshot{
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{ownerID: subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"forge": {
+				ID: "forge", DisplayName: "Blacksmith",
+				OwnerActorID: ownerID, Tags: []string{sim.TagBusiness}, Wear: 450,
+				LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			// A shovel forged from nails — the catalog edit this guards against.
+			"shovel":         {OutputItem: "shovel", OutputQty: 1, WholesalePrice: 5, RetailPrice: 10, Inputs: []sim.RecipeInput{{Item: sim.NailItemKind, Qty: 1}}},
+			sim.NailItemKind: {OutputItem: sim.NailItemKind, OutputQty: 1, WholesalePrice: 1, RetailPrice: 2},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"shovel":         {Name: "shovel", DisplayLabel: "shovels"},
+			sim.NailItemKind: {Name: sim.NailItemKind, DisplayLabel: "nails"},
+		},
+	}
+	v := buildTradeValue(snap, ownerID, subj, true)
+	if v == nil || v.RepairReserve == nil {
+		t.Fatalf("want a view carrying the repair reserve, got %+v", v)
+	}
+	for i := range v.Items {
+		if v.Items[i].itemKind == sim.NailItemKind && v.Items[i].ReserveFloor != 0 {
+			t.Errorf("mend-claimed nails also picked up a bench reservation: %+v", v.Items[i])
+		}
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "to mend your Blacksmith") {
+		t.Errorf("repair line missing:\n%s", out)
+	}
+	if strings.Contains(out, "makings, not wares") {
+		t.Errorf("bench reservation rendered alongside the mend claim:\n%s", out)
+	}
+}

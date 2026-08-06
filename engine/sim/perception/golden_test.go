@@ -6915,25 +6915,31 @@ func TestRepairReserveLineOnlyForOwnerWithMendAndNails(t *testing.T) {
 // invariant: no scene ever prices a good the actor's own live recipes have
 // reserved. Re-derived from each fixture rather than trusting the build that
 // produced the section — sim.ReorderFloors is read here exactly as buildTradeValue
-// reads it, so a future change that drops the discriminator from the item walk
-// fails here even if it keeps the struct fields populated.
+// reads it, so a change that drops the discriminator from the item walk fails here
+// even if it keeps the struct fields populated.
 //
-// Scoped to the wares section deliberately: "## Your bushes to harvest" and
-// "## Restocking" also open lines with "- <label>:", and those cues are about
-// getting the good IN, which a reservation has nothing to say about.
+// Checks the structured view AND the rendered line, because each catches a
+// different regression: a good silently dropped from Items renders no line at all,
+// which a text-only assertion reads as a pass.
+//
+// The rendered half is scoped to the wares section deliberately — "## Your bushes
+// to harvest" and "## Restocking" also open lines with "- <label>:", and those cues
+// are about getting the good IN, which a reservation has nothing to say about.
 func TestGoldensNeverPriceAGoodTheBenchHasReserved(t *testing.T) {
+	checked := 0
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			snap, actorID, _ := sc.build()
+			snap, actorID, warrants := sc.build()
 			a := snap.Actors[actorID]
 			if a == nil || a.RestockPolicy == nil {
 				return
 			}
-			section := promptSection(renderScenario(sc), "## What your wares fetch")
-			if section == "" {
+			payload := Build(snap, actorID, warrants)
+			if payload.TradeValue == nil {
 				return
 			}
+			section := promptSection(combinedPrompt(Render(payload, DefaultRenderConfig())), "## What your wares fetch")
 			for item, floor := range sim.ReorderFloors(snap.Recipes, a.RestockPolicy) {
 				held := a.Inventory[item]
 				// Above the floor the good keeps its price by design (the surplus IS
@@ -6941,18 +6947,55 @@ func TestGoldensNeverPriceAGoodTheBenchHasReserved(t *testing.T) {
 				if floor <= 0 || held <= 0 || held > floor {
 					continue
 				}
+				// A good the mend has already claimed (LLM-292) is deliberately left to
+				// the repair line, which states a stronger version of the same thing.
+				if item == sim.NailItemKind && payload.TradeValue.RepairReserve != nil {
+					continue
+				}
+				var reserved *TradeValueItem
+				for i := range payload.TradeValue.Items {
+					if payload.TradeValue.Items[i].itemKind == item {
+						reserved = &payload.TradeValue.Items[i]
+					}
+				}
+				if reserved == nil {
+					continue // not one of this actor's own wares — never valued at all
+				}
+				checked++
+				if reserved.ReserveHeld != held || reserved.ReserveFloor != floor {
+					t.Errorf("scenario %q: %q is reserved for the bench (%d held, floor %d) but the view carries held=%d floor=%d",
+						sc.name, item, held, floor, reserved.ReserveHeld, reserved.ReserveFloor)
+				}
+				// Render turns an empty ReserveMakes back into a priced line, so a
+				// disagreement between ReorderFloors and reservedMakings would silently
+				// undo the reservation. The two walk the same produce entries under the
+				// same Qty > 0 test, so this holds for any valid catalog — pinned here
+				// rather than left to the reader.
+				if len(reserved.ReserveMakes) == 0 {
+					t.Errorf("scenario %q: %q has a reorder floor but reservedMakings named nothing it feeds", sc.name, item)
+				}
 				prefix := "- " + itemDisplayLabel(snap, item) + ":"
+				rendered := 0
 				for _, line := range strings.Split(section, "\n") {
 					if !strings.HasPrefix(line, prefix) {
 						continue
 					}
+					rendered++
 					if !strings.Contains(line, "makings, not wares") {
-						t.Errorf("scenario %q: %q is reserved for the bench (%d held, floor %d) but its wares line is priced:\n%s",
-							sc.name, item, held, floor, line)
+						t.Errorf("scenario %q: %q is reserved for the bench but its wares line is priced:\n%s", sc.name, item, line)
 					}
+				}
+				if rendered != 1 {
+					t.Errorf("scenario %q: want exactly 1 wares line for the reserved %q, got %d", sc.name, item, rendered)
 				}
 			}
 		})
+	}
+	// Non-vacuity: with no scenario holding a floored good at or under its floor the
+	// whole test is a no-op and would pass a regression through in silence.
+	// smith_holding_forge_water_in_company exists to keep this positive.
+	if checked == 0 {
+		t.Error("no scenario exercised a bench reservation — the invariant proved nothing")
 	}
 }
 
@@ -6964,6 +7007,7 @@ func TestGoldensNeverPriceAGoodTheBenchHasReserved(t *testing.T) {
 // that is already spoken for.
 func TestGoldensKeepBackClauseOnlyAboveTheFloor(t *testing.T) {
 	const marker = "beyond that are yours to sell"
+	seen := 0
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -6980,18 +7024,25 @@ func TestGoldensKeepBackClauseOnlyAboveTheFloor(t *testing.T) {
 				if !strings.Contains(line, marker) || strings.Contains(line, "to mend your") {
 					continue
 				}
-				priced := false
+				surplus := false
 				for item, floor := range floors {
 					if floor > 0 && a.Inventory[item] > floor &&
 						strings.HasPrefix(line, "- "+itemDisplayLabel(snap, item)+":") {
-						priced = true
+						surplus = true
 					}
 				}
-				if !priced {
+				if !surplus {
 					t.Errorf("scenario %q: keep-back clause on a line with no bench surplus behind it:\n%s", sc.name, line)
+					continue
 				}
+				seen++
 			}
 		})
+	}
+	// Non-vacuity, as above — the intended positive is
+	// miller_offered_parity_swap_for_flour, where 37 wheat clear a floor of 10.
+	if seen == 0 {
+		t.Error("no scenario rendered a keep-back clause — the invariant proved nothing")
 	}
 }
 
