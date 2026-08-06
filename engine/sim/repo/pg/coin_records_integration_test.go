@@ -173,6 +173,54 @@ func TestCoinRecordsRepo_Integration_ReadsTheKindMarkers(t *testing.T) {
 	}
 }
 
+// Marker precedence needs BOTH markers to reach the classifier off one row, and
+// whether they do is a property of this SQL (code_review, LLM-615). No live path
+// writes a due beside a goods marker today, so this pins the extraction against a
+// future one that does.
+//
+// The precedence itself — the due winning — is asserted in package sim, where
+// coinPaymentKindFromRow lives and is unexported. That split is the layering, not a
+// gap: this file owns getting the keys out of jsonb, sim owns what they mean. Read
+// the two together; neither is the whole invariant.
+//
+// Why the due must win: it is what stops a levy reading as an order placed and never
+// filled. Reading a levy as a purchase tells an NPC goods are owed him that never
+// were, which is the LLM-607 defect; reading a purchase as a due only leaves it
+// unqualified. The asymmetry is deliberate, not a tie-break.
+func TestCoinRecordsRepo_Integration_ReadsBothMarkersOffOneRow(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const payerID = "55555555-5555-5555-5555-555555555555"
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, 'Ezekiel Crane', 0, 0)`,
+		payerID,
+	); err != nil {
+		t.Fatalf("seed actor: %v", err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+		 VALUES ($1, $2, 'engine', 'paid', $3::jsonb, 'ok', 'seed')`,
+		payerID, base.Add(-time.Hour),
+		`{"recipient": "John Ellis", "amount": 4, "for": "a night's lodging", "lodging_grant": "tavern", "rate_settled": 1}`,
+	); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	rows, err := NewCoinRecordsRepo(f.Pool).LoadPaymentsSince(ctx, base.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatalf("LoadPaymentsSince: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d row(s), want 1: %+v", len(rows), rows)
+	}
+	if rows[0].RateSettled != "1" || rows[0].LodgingGrant != "tavern" {
+		t.Errorf("row = %+v, want BOTH markers extracted (RateSettled 1, LodgingGrant tavern) so the classifier can rank them", rows[0])
+	}
+}
+
 // A `paid` row with no amount key at all must scan rather than blow up the boot
 // query. COALESCE is what makes that true, and the caller drops the row on the
 // parse — which is the correct outcome, since a payment with no amount is not a

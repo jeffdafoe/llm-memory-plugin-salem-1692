@@ -2,7 +2,9 @@ package sim
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -268,6 +270,14 @@ func (s *recordingActionLogSink) Append(_ context.Context, row DurableActionLogR
 	return nil
 }
 
+// failingActionLogSink rejects every durable row, standing in for the async writer
+// erroring or the enqueue being dropped.
+type failingActionLogSink struct{}
+
+func (failingActionLogSink) Append(context.Context, DurableActionLogRow) error {
+	return errors.New("sink rejected")
+}
+
 func TestRebook_WritesDurableAudit(t *testing.T) {
 	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
 	lodger.CurrentHuddleID = "huddle-1" // the audit shape carries the lodger's huddle
@@ -366,13 +376,18 @@ func TestRebook_CreditsTheCoinRecordAsGoods(t *testing.T) {
 }
 
 // TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow pins the property the marker
-// exists for: what the live call credits and what the boot seed rebuilds from the
-// same row must be the same payment, with the same classification.
+// exists for: what the live call credits and what a boot seed rebuilds FROM THE ROW
+// THE SAME SWEEP WROTE must be the same payment, on the same pair, with the same
+// classification.
 //
-// This is the actual LLM-615 defect, which was not that a number was wrong but that
-// two readers of one event disagreed. A future change that stamps the marker without
-// crediting the tally (or the reverse) leaves this red where a one-sided assertion
-// would stay green.
+// This is the actual LLM-615 defect. It was not that a number was wrong — it was
+// that two readers of one event disagreed, so the answer depended on uptime. A
+// future change that stamps the marker without crediting the tally, or credits it
+// without stamping, leaves this red where either half asserted alone stays green.
+//
+// The seed half runs through rehydrateCoinRecordOnLoad rather than calling the
+// classifier directly (code_review), so recipient resolution and the pair keying are
+// exercised too — the classification is only one of the ways the two can diverge.
 func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
 	keeper := rebookKeeper("hannah")
@@ -382,22 +397,80 @@ func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 
 	runRebook(t, w)
 
-	live := w.CoinRecord["jefferey"]["hannah"].Paid[0]
-
+	live := w.CoinRecord
 	if len(sink.rows) != 1 {
 		t.Fatalf("want 1 durable row to seed from, got %d", len(sink.rows))
 	}
 	row := sink.rows[0]
-	seeded := coinPaymentKindFromRow(CoinPaymentRow{
+
+	// Rebuild the world's record the way FinalizeLoad does at boot, off nothing but
+	// the durable row. The repo hands back what the pg loader would read from that
+	// payload, so the keys the sweep wrote are what the seed sees.
+	seeded := rebookTestWorld(28, 11, lodger, keeper)
+	seeded.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{{
 		PayerID:          row.ActorID,
 		At:               row.OccurredAt,
 		Amount:           fmt.Sprint(row.Payload["amount"]),
 		RecipientActorID: fmt.Sprint(row.Payload["recipient_actor_id"]),
 		RecipientName:    fmt.Sprint(row.Payload["recipient"]),
+		RateSettled:      fmt.Sprint(row.Payload["rate_settled"]),
 		LodgingGrant:     fmt.Sprint(row.Payload["lodging_grant"]),
-	})
-	if seeded != live.Kind {
-		t.Errorf("seed classifies the row %v but the live tally holds %v — the pair's record would change at boot", seeded, live.Kind)
+	}}}
+	if err := seeded.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if got, want := countCoinPairs(seeded.CoinRecord), countCoinPairs(live); got != want {
+		t.Fatalf("seed rebuilt %d pair-direction(s), live holds %d — the record changes at boot", got, want)
+	}
+	for _, pair := range []struct{ subject, peer ActorID }{{"jefferey", "hannah"}, {"hannah", "jefferey"}} {
+		liveRec, seededRec := live[pair.subject][pair.peer], seeded.CoinRecord[pair.subject][pair.peer]
+		if seededRec == nil {
+			t.Fatalf("seed has no record for %s->%s", pair.subject, pair.peer)
+		}
+		if !reflect.DeepEqual(liveRec.Paid, seededRec.Paid) || !reflect.DeepEqual(liveRec.Received, seededRec.Received) {
+			t.Errorf("%s->%s: live %+v / %+v, seed %+v / %+v — the pair's record would change at boot",
+				pair.subject, pair.peer, liveRec.Paid, liveRec.Received, seededRec.Paid, seededRec.Received)
+		}
+	}
+}
+
+// The live credit is NOT atomic with the durable enqueue, and this pins the
+// direction of that gap rather than closing it.
+//
+// RecordCoinPaid documents the exposure and the decision behind it (LLM-572):
+// AppendActionLogDurable is a deliberately non-blocking enqueue onto an async
+// writer, so the world goroutine never waits on Postgres. Gating the credit on a
+// confirmed write would block that goroutine or need a completion callback — a
+// large change for a soft recollection cue. This path inherits that posture rather
+// than inventing a new one, which is the point: all three `paid` writers behave
+// alike here.
+//
+// What must stay true is the DIRECTION. A rejected sink leaves the tally holding a
+// payment the next boot will not rebuild, so the pair UNDERSTATES after a restart.
+// It must never be the reverse — a durable row the live tally lacks is the LLM-615
+// defect itself, and it is the reverse that made the record depend on uptime.
+func TestRebook_RejectedDurableAppendUnderstatesRatherThanDiverging(t *testing.T) {
+	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
+	keeper := rebookKeeper("hannah")
+	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
+	w.SetActionLogSink(&failingActionLogSink{})
+
+	runRebook(t, w)
+
+	// The lodger is still housed and the coins still moved — the renewal does not
+	// roll back on an audit failure, by the same reasoning the lean-ring append uses.
+	if lodger.Coins != 6 || keeper.Coins != 4 {
+		t.Errorf("coins = lodger %d / keeper %d, want 6 / 4 — the transfer must not depend on the sink", lodger.Coins, keeper.Coins)
+	}
+	// The live tally holds the payment. A boot seeded from a log that never got the
+	// row would hold nothing, so the pair understates after a restart.
+	paid := w.CoinRecord["jefferey"]["hannah"]
+	if paid == nil || len(paid.Paid) != 1 {
+		t.Fatalf("live record = %+v, want the payment held despite the failed append", paid)
+	}
+	if paid.Paid[0].Kind != CoinPaymentForGoods {
+		t.Errorf("kind = %v, want ForGoods — a lost append loses the payment and its meaning together, never one without the other", paid.Paid[0].Kind)
 	}
 }
 

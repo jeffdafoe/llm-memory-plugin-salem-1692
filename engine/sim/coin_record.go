@@ -144,11 +144,26 @@ const (
 	// row means goods-for-coin and nothing else, so the writers were audited
 	// (code_review). Three write ActionTypePaid: handlePaidActionLog (bare coin, no
 	// goods marker), handlePayResolvedActionLog (stamps ledger_id) and
-	// lodger_rebook (stamps lodging_grant). ALL THREE now credit the live tally, so
-	// the audit covers both halves — which writers stamp what, and that every
-	// writer calls RecordCoinPaid. A barter or free give reaches the ledger path
-	// with Amount 0 and RecordCoinPaid drops it before any kind is stored, so no
-	// zero-coin settlement can be counted as a purchase.
+	// lodger_rebook (stamps lodging_grant). All three now call RecordCoinPaid on
+	// the same path that writes the row, so the audit covers both halves — which
+	// writers stamp what, AND that no writer credits one reader without the other.
+	//
+	// BOTH MARKERS ARE ENGINE-OWNED, which is what lets a payload key stand as
+	// evidence at all (code_review, LLM-615). Neither is reachable from anything a
+	// model authors: the payload keys on a model-driven settlement are fixed by the
+	// cascade subscriber, and lodging_grant is written by lodger_rebook and nowhere
+	// else. Pinned by TestGoodsMarkersAreWrittenOnlyByTheEngine. A marker a
+	// villager could set would re-import the untrusted `for` text this file refuses,
+	// through a key instead of a sentence.
+	//
+	// What this does NOT establish is that the two readers agree when a durable
+	// write fails — the credit is not atomic with the enqueue, by an accepted and
+	// deliberate decision documented on RecordCoinPaid. That exposure always
+	// UNDERSTATES the durable side and is unchanged here.
+	//
+	// A barter or free give reaches the ledger path with Amount 0 and RecordCoinPaid
+	// drops it before any kind is stored, so no zero-coin settlement can be counted
+	// as a purchase.
 	CoinPaymentForGoods
 
 	// CoinPaymentForDue is coin that discharged an obligation rather than buying

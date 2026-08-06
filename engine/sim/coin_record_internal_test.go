@@ -3,6 +3,10 @@ package sim
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -381,6 +385,55 @@ func TestRehydrateCoinRecordOnLoad_ClassifiesHistoricalLedgerRowsAsGoods(t *test
 	}
 }
 
+// A goods marker is evidence at boot ONLY because the engine owns it. If a villager
+// could get lodging_grant onto a payload, the classification would be reading the
+// untrusted authorship this file refuses everywhere else — through a key instead of
+// a sentence (code_review, LLM-615).
+//
+// A tripwire, not a proof: it asserts the literal appears in exactly one non-test
+// source file. A second writer has to add the literal, which trips this and sends
+// whoever added it to the CoinPaymentForGoods comment before they can go on.
+//
+// Scoped to lodging_grant deliberately. ledger_id cannot be pinned this way — it is
+// a general-purpose key across handlers, httpapi and the repo tier, and its
+// engine-ownership rests instead on the cascade subscriber owning the whole payload
+// of the row it writes.
+func TestGoodsMarkersAreWrittenOnlyByTheEngine(t *testing.T) {
+	const marker = `"lodging_grant"`
+	want := map[string]bool{filepath.Join(".", "lodger_rebook.go"): true}
+
+	found := make(map[string]bool)
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(src), marker) {
+			found[path] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	for path := range found {
+		if !want[path] {
+			t.Errorf("%s writes the %s marker. Only the engine may — see the CoinPaymentForGoods comment before adding a writer.", path, marker)
+		}
+	}
+	for path := range want {
+		if !found[path] {
+			t.Errorf("%s no longer writes %s — if the marker moved, move this test with it", path, marker)
+		}
+	}
+}
+
 // The kinds a row can present, at the boundaries coinPaymentKindFromRow decides on.
 //
 // The both-markers case cannot arise today — settleTownRate is reachable only from
@@ -411,6 +464,7 @@ func TestCoinPaymentKindFromRow(t *testing.T) {
 		{"a nightly lodging auto-charge", CoinPaymentRow{RecipientName: "John Ellis", LodgingGrant: "tavern"}, CoinPaymentForGoods},
 		{"a lodging row from before the marker", CoinPaymentRow{RecipientName: "John Ellis"}, CoinPaymentUnstated},
 		{"a due settled on a lodging row — the due still wins", CoinPaymentRow{RateSettled: "1", LodgingGrant: "tavern"}, CoinPaymentForDue},
+		{"an unparseable rate on a lodging row", CoinPaymentRow{RateSettled: "nonsense", LodgingGrant: "tavern"}, CoinPaymentForGoods},
 		{"whitespace is not a ledger id", CoinPaymentRow{LedgerID: "  "}, CoinPaymentUnstated},
 		{"whitespace is not a lodging grant", CoinPaymentRow{LodgingGrant: "  "}, CoinPaymentUnstated},
 	}
