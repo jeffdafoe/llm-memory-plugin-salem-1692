@@ -186,11 +186,10 @@ func TestMixedDueAndPurchaseRendersBothDirections(t *testing.T) {
 		// The incoming direction carries no due, so it voices its own register
 		// rather than inheriting the outgoing one's silence (LLM-612).
 		"Constable Gideon Marsh has paid you 4 coins for goods.",
-		// The outgoing direction is mixed. The DUE portion is named and the goods
-		// portion is not: two portions in one sentence turns a recollection into an
-		// itemized statement, and the due is the clause that carries a correctness
-		// job rather than a register one.
-		"You have paid Constable Gideon Marsh 5 coins across 4 payments, 3 coins of it the town's due — settled as it was handed over, and no goods owed back.",
+		// The outgoing direction is mixed and names BOTH portions. Reporting only
+		// the due would leave the trade unaccounted for in the section built to
+		// account for it.
+		"You have paid Constable Gideon Marsh 5 coins across 4 payments, 2 coins of it for goods and 3 coins of it the town's due — settled as it was handed over, and no goods owed back.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("mixed sentence is missing a half.\nwant: %s\n got: %s", want, got)
@@ -205,76 +204,76 @@ func TestMixedDueAndPurchaseRendersBothDirections(t *testing.T) {
 // The clause boundaries, including the singular partial the review flagged. The
 // difference between branches is one phrase in a line a weak model reads every
 // tick, so each is pinned rather than left to the two golden fixtures.
-func TestCoinDueClauseBoundaries(t *testing.T) {
+//
+// Driven through coinDirectionClause, the production entry point, rather than the
+// portion helpers — the punctuation and the closing are assembled there, and a test
+// that stopped short of it would leave the comma unpinned (code_review, LLM-612).
+func TestCoinDirectionClauseBoundaries(t *testing.T) {
 	const closing = " — settled as it was handed over, and no goods owed back"
 	cases := []struct {
-		name                      string
-		dueCount, dueTotal, count int
-		want                      string
+		name                                              string
+		dueCount, dueTotal, goodsCount, goodsTotal, count int
+		want                                              string
 	}{
-		{"no due at all", 0, 0, 5, ""},
-		{"a single payment, and it was the due", 1, 1, 1, ", the town's due" + closing},
-		{"every payment was a due", 8, 8, 8, ", all of it the town's due" + closing},
-		{"one due coin among five payments", 1, 1, 5, ", 1 coin of it the town's due" + closing},
-		{"two due coins among five payments", 1, 2, 5, ", 2 coins of it the town's due" + closing},
+		{"nothing the engine can name", 0, 0, 0, 0, 5, ""},
+
+		// Due only — the LLM-607 boundaries, unchanged.
+		{"a single payment, and it was the due", 1, 1, 0, 0, 1, ", the town's due" + closing},
+		{"every payment was a due", 8, 8, 0, 0, 8, ", all of it the town's due" + closing},
+		{"one due coin among five payments", 1, 1, 0, 0, 5, ", 1 coin of it the town's due" + closing},
+		{"two due coins among five payments", 1, 2, 0, 0, 5, ", 2 coins of it the town's due" + closing},
 		// Defensive: a dueCount past count cannot arise from tallyCoinPayments (the
 		// due subset is counted from the same loop), but the branch must not fall
 		// through to a partial phrase naming more coin than the direction holds.
-		{"more dues than payments", 6, 6, 5, ", all of it the town's due" + closing},
+		{"more dues than payments", 6, 6, 0, 0, 5, ", all of it the town's due" + closing},
+
+		// Goods only. The whole-direction case is compact — no apportioning comma,
+		// because there is nothing to apportion against and it is most of the
+		// village.
+		{"a single payment, and it bought goods", 0, 0, 1, 3, 1, " for goods"},
+		{"every payment bought goods", 0, 0, 24, 168, 24, " for goods"},
+		{"one coin of five payments bought goods", 0, 0, 1, 1, 5, ", 1 coin of it for goods"},
+		{"seven coins of five payments bought goods", 0, 0, 2, 7, 5, ", 7 coins of it for goods"},
+		{"more goods than payments", 0, 0, 6, 9, 5, " for goods"},
+
+		// BOTH — a keeper who pays the constable his rate and also buys off him.
+		// Reachable: the constraint is that no PAYMENT carries two kinds, not that
+		// no direction does. Goods first; the due closing is terminal.
+		{"a rate and a week of buying", 1, 1, 4, 30, 5, ", 30 coins of it for goods and 1 coin of it the town's due" + closing},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if got := coinDueClause(tc.dueCount, tc.dueTotal, tc.count); got != tc.want {
-				t.Errorf("coinDueClause(%d, %d, %d) = %q, want %q", tc.dueCount, tc.dueTotal, tc.count, got, tc.want)
+			got := coinDirectionClause(tc.dueCount, tc.dueTotal, tc.goodsCount, tc.goodsTotal, tc.count)
+			if got != tc.want {
+				t.Errorf("coinDirectionClause(%d, %d, %d, %d, %d) = %q, want %q",
+					tc.dueCount, tc.dueTotal, tc.goodsCount, tc.goodsTotal, tc.count, got, tc.want)
 			}
 		})
 	}
 }
 
-// The goods clause boundaries (LLM-612), mirroring the due ones above. Shorter by
-// design and carrying no closing: a levy needs explaining because coin that never
-// comes back is counterintuitive, while goods for coin is the ordinary shape of a
-// trade and a closing on it would be boilerplate re-read every tick on nearly every
-// line in the village.
-func TestCoinGoodsClauseBoundaries(t *testing.T) {
-	cases := []struct {
-		name                          string
-		goodsCount, goodsTotal, count int
-		want                          string
-	}{
-		{"nothing bought", 0, 0, 5, ""},
-		{"a single payment, and it bought goods", 1, 3, 1, " for goods"},
-		{"every payment bought goods", 24, 168, 24, " for goods"},
-		{"one coin of five payments bought goods", 1, 1, 5, ", 1 coin of it for goods"},
-		{"seven coins of five payments bought goods", 2, 7, 5, ", 7 coins of it for goods"},
-		// Defensive, matching the due clause's own guard: a goodsCount past count
-		// cannot arise from tallyCoinPayments, but the branch must not fall through
-		// to a partial phrase naming a portion of a direction it exceeds.
-		{"more goods than payments", 6, 9, 5, " for goods"},
+// A direction holding both a levy and a week of trade must account for BOTH.
+//
+// Naming only the due leaves the bulk of an ordinary trading relationship
+// unaccounted for in the one section built to account for it — this ticket's own
+// defect at a smaller scale (code_review). Stated as its own test rather than left
+// to the table above because the property is what matters, not the phrasing: both
+// figures must survive whatever wording a later edit chooses.
+func TestMixedDirectionAccountsForBothPortions(t *testing.T) {
+	got := coinDealingsSentence("Constable Gideon Marsh", sim.CoinDealings{
+		PaidCount: 5, PaidTotal: 31,
+		PaidDueCount: 1, PaidDueTotal: 1,
+		PaidGoodsCount: 4, PaidGoodsTotal: 30,
+	})
+	for _, want := range []string{"30 coins of it for goods", "1 coin of it the town's due"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mixed direction dropped %q:\n%s", want, got)
+		}
 	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			if got := coinGoodsClause(tc.goodsCount, tc.goodsTotal, tc.count); got != tc.want {
-				t.Errorf("coinGoodsClause(%d, %d, %d) = %q, want %q", tc.goodsCount, tc.goodsTotal, tc.count, got, tc.want)
-			}
-		})
-	}
-}
-
-// A due outranks goods within one direction. The two cannot co-occur today —
-// settleTownRate is reachable only from the bare-coin Pay command, which mints no
-// ledger entry — so this pins the tiebreak against a future path that produced both.
-// The due clause is the one carrying a correctness job: it is what stops a levy
-// reading as an order placed and never filled.
-func TestCoinDirectionClausePrefersTheDue(t *testing.T) {
-	got := coinDirectionClause(2, 2, 3, 9, 5)
-	if !strings.Contains(got, "the town's due") {
-		t.Errorf("a direction carrying a due must voice the due: %q", got)
-	}
-	if strings.Contains(got, "for goods") {
-		t.Errorf("naming both portions turns a recollection into an itemized statement: %q", got)
+	// The tail is suppressed by the goods, as it already was by the due.
+	if strings.Contains(got, "nothing has come back") {
+		t.Errorf("a direction that bought goods must not also deny that anything came back:\n%s", got)
 	}
 }
 

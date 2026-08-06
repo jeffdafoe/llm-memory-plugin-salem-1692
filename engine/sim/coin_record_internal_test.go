@@ -381,6 +381,43 @@ func TestRehydrateCoinRecordOnLoad_ClassifiesHistoricalLedgerRowsAsGoods(t *test
 	}
 }
 
+// The kinds a row can present, at the boundaries coinPaymentKindFromRow decides on.
+//
+// The both-markers case cannot arise today — settleTownRate is reachable only from
+// the bare-coin Pay command, which mints no ledger entry — so the precedence is
+// pinned against a future path that produced both (code_review). The due wins: it is
+// what stops a levy reading as an order placed and never filled, while a purchase
+// left unnamed costs only the register.
+//
+// The lodging row is the third ActionTypePaid writer (sim/lodger_rebook.go), an
+// engine-levied nightly auto-charge carrying neither marker. It must read Unstated —
+// classifying an engine-levied fee as a purchase would be exactly the over-broad
+// marker the retroactive ledger_id read would be accused of.
+func TestCoinPaymentKindFromRow(t *testing.T) {
+	cases := []struct {
+		name string
+		row  CoinPaymentRow
+		want CoinPaymentKind
+	}{
+		{"a ledger settlement", CoinPaymentRow{LedgerID: "881"}, CoinPaymentForGoods},
+		{"a settled rate", CoinPaymentRow{RateSettled: "1"}, CoinPaymentForDue},
+		{"both markers — the due wins", CoinPaymentRow{RateSettled: "1", LedgerID: "881"}, CoinPaymentForDue},
+		{"a rate that settled nothing", CoinPaymentRow{RateSettled: "0"}, CoinPaymentUnstated},
+		{"an unparseable rate", CoinPaymentRow{RateSettled: "nonsense"}, CoinPaymentUnstated},
+		{"an unparseable rate on a ledger row", CoinPaymentRow{RateSettled: "nonsense", LedgerID: "881"}, CoinPaymentForGoods},
+		{"a nightly lodging auto-charge", CoinPaymentRow{RecipientName: "John Ellis"}, CoinPaymentUnstated},
+		{"whitespace is not a ledger id", CoinPaymentRow{LedgerID: "  "}, CoinPaymentUnstated},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := coinPaymentKindFromRow(tc.row); got != tc.want {
+				t.Errorf("coinPaymentKindFromRow(%+v) = %v, want %v", tc.row, got, tc.want)
+			}
+		})
+	}
+}
+
 // The seed asks only for the window it will keep — a full-table scan of an
 // append-only audit log that runs back months would grow without bound as the
 // village ages.

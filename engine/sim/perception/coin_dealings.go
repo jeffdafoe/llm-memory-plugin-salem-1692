@@ -187,69 +187,116 @@ func coinDealingsSentence(name string, d sim.CoinDealings) string {
 	case d.ReceivedCount > 0 && d.PaidCount > 0:
 		return fmt.Sprintf("%s has paid you %s%s, and you have paid %s %s%s.", name, received, receivedClause, name, paid, paidClause)
 	case d.ReceivedCount > 0:
-		return fmt.Sprintf("%s has paid you %s%s%s.", name, received, receivedClause, coinNothingBackTail(d.ReceivedGoodsCount, " and nothing has gone back the other way"))
+		return fmt.Sprintf("%s has paid you %s%s%s.", name, received, receivedClause, coinNothingBackTail(d.ReceivedGoodsCount, ", and nothing has gone back the other way"))
 	case d.PaidCount > 0:
-		return fmt.Sprintf("You have paid %s %s%s%s.", name, paid, paidClause, coinNothingBackTail(d.PaidGoodsCount, " and nothing has come back the other way"))
+		return fmt.Sprintf("You have paid %s %s%s%s.", name, paid, paidClause, coinNothingBackTail(d.PaidGoodsCount, ", and nothing has come back the other way"))
 	default:
 		return fmt.Sprintf("No coin has passed between you and %s.", name)
 	}
 }
 
 // coinNothingBackTail returns the one-directional "nothing came back" tail, or
-// nothing at all when any of that direction bought goods.
+// nothing at all when any of that direction bought goods. The caller passes the
+// whole suffix including its punctuation, so the sentence is readable at the call
+// site rather than assembled across two files.
 //
-// Dropping it is the sharper half of LLM-612. "You have paid Abraham Warren 8
-// coins, and nothing has come back the other way" is not merely an odd register for
-// a purchase — it is false. Meat came back. The tail is the same claim the due
-// clause already suppresses for the same reason, so the rule is the one that was
-// there: any classified coin in a direction retires the blanket denial, because the
-// clause has said what the coin did and the reader must not infer a debt from what
-// it did not say.
-func coinNothingBackTail(goodsCount int, tail string) string {
+// Dropping it is the sharper half of LLM-612. Read strictly the tail is not false —
+// this is a record of coin, and no coin did come back. But nothing in the sentence
+// scopes "nothing" to coin, and a weak model reads "you paid 8 coins and nothing
+// came back" as a debt outstanding. That is the same inference LLM-607 suppressed
+// the tail beside a due to avoid, and the rule generalizes: once the clause has said
+// what the coin did, the blanket denial can only invite a conclusion the record does
+// not support. Where the record genuinely cannot say (Unstated), the tail stays —
+// there the denial IS the record's honest position.
+func coinNothingBackTail(goodsCount int, suffix string) string {
 	if goodsCount > 0 {
 		return ""
 	}
-	return "," + tail
+	return suffix
 }
 
-// coinDirectionClause picks one direction's qualifier: what the engine can say the
-// coin did, or nothing when it cannot say.
+// coinDueClosing is the load-bearing half of the due clause: it says the two things
+// the counts cannot — that the coin settled when it was handed over, and that no
+// goods were ever owed against it. It deliberately echoes townRatePaidFactText's
+// closing, since the same model reads one as a recollection and the other as a
+// memory and they should not disagree in wording about a thing neither is guessing
+// at. Terminal, which is why a composed clause puts the due portion last.
+const coinDueClosing = " — settled as it was handed over, and no goods owed back"
+
+// coinDirectionClause qualifies one direction's flow with what the engine can say
+// its coin did. Empty when it can say nothing, which leaves the bare direction —
+// true of a wage, a gift or a tip alike, none of which the engine tells apart.
 //
-// A due outranks goods within a direction. They cannot co-occur on one payment, and
-// today not even on one direction — settleTownRate is reachable only from the
-// bare-coin Pay command, which mints no ledger entry. If a mixed direction ever does
-// arise, the due clause is the one that must survive: it is what stops a levy
-// reading as an order placed and never filled (LLM-607), while an unnamed purchase
-// only costs the register. Naming both portions in one sentence turns a
-// recollection into an itemized statement, which is what "scenes, not stats" is for.
+// A direction CAN hold both kinds, and this is easy to talk yourself out of: no
+// single payment carries two kinds, and settleTownRate is reachable only from the
+// bare-coin Pay command, which mints no ledger entry. But that is a constraint on
+// payments, not on directions — a keeper who pays the constable his town rate and
+// also buys something off him has both on the same direction of the same pair. So
+// both portions are named. Reporting only the due would leave the bulk of an
+// ordinary trading relationship unaccounted for in the one section built to account
+// for it, which is this ticket's own defect at a smaller scale (code_review).
+//
+// Both portions are partial whenever both are present — their counts sum to at most
+// the direction's — so neither can claim the whole and the two never contradict.
 func coinDirectionClause(dueCount, dueTotal, goodsCount, goodsTotal, count int) string {
-	if clause := coinDueClause(dueCount, dueTotal, count); clause != "" {
-		return clause
+	due := coinDuePortion(dueCount, dueTotal, count)
+	goods := coinGoodsPortion(goodsCount, goodsTotal, count)
+	switch {
+	case due == "" && goods == "":
+		return ""
+	case due == "":
+		if goodsCount >= count {
+			// The whole direction bought goods — the common case by a wide margin,
+			// and it reads tighter without the apportioning comma.
+			return " for goods"
+		}
+		return ", " + goods
+	case goods == "":
+		return ", " + due + coinDueClosing
+	default:
+		return ", " + goods + " and " + due + coinDueClosing
 	}
-	return coinGoodsClause(goodsCount, goodsTotal, count)
 }
 
-// coinGoodsClause qualifies one direction's flow with how much of it bought goods.
-// Empty when none of it did, which leaves the bare direction — true of a wage, a
-// gift or a tip alike, none of which the engine can tell apart.
+// coinDuePortion names how much of a direction discharged a due, without leading
+// punctuation or the closing — those belong to the assembler, which is the only
+// thing that knows whether another portion sits beside it.
+func coinDuePortion(dueCount, dueTotal, count int) string {
+	switch {
+	case dueCount <= 0:
+		return ""
+	case count == 1:
+		// "all of it" about a single coin reads as a quantity being apportioned.
+		return "the town's due"
+	case dueCount >= count:
+		return "all of it the town's due"
+	default:
+		// coinsPhrase, not coinsOwedPhrase: the partial branch names a PORTION of a
+		// larger sum, and "a coin of it the town's due" reads as a stray article
+		// rather than a quantity (code_review). "1 coin of it" also matches the
+		// "2 coins of it" this same slot produces one coin higher.
+		return fmt.Sprintf("%s of it the town's due", coinsPhrase(dueTotal))
+	}
+}
+
+// coinGoodsPortion is coinDuePortion's twin for coin that bought something.
 //
-// Deliberately shorter than coinDueClause, and carrying no closing. A due needs its
-// "settled as it was handed over, and no goods owed back" because a levy is
-// genuinely counterintuitive — coin that was never coming back. Goods for coin is
-// the ordinary shape of a trade and explains itself; a closing on it would be a
-// sentence of boilerplate re-read every tick on nearly every line in the village,
-// on both directions of most pairs.
-func coinGoodsClause(goodsCount, goodsTotal, count int) string {
+// It carries no closing of its own. A due needs one because a levy is genuinely
+// counterintuitive — coin that was never coming back. Goods for coin is the ordinary
+// shape of a trade and explains itself; a closing here would be boilerplate re-read
+// every tick on both directions of most pairs in the village.
+func coinGoodsPortion(goodsCount, goodsTotal, count int) string {
 	switch {
 	case goodsCount <= 0:
 		return ""
+	case count == 1:
+		return "for goods"
 	case goodsCount >= count:
-		return " for goods"
+		return "all of it for goods"
 	default:
-		// A portion names COIN, not payments — the same slot coinDueClause fills,
-		// and via coinsPhrase for the same reason: "a coin of it" reads as a stray
-		// article rather than a quantity.
-		return fmt.Sprintf(", %s of it for goods", coinsPhrase(goodsTotal))
+		// Names COIN, not payments — the same slot coinDuePortion fills, and via
+		// coinsPhrase for the same reason.
+		return fmt.Sprintf("%s of it for goods", coinsPhrase(goodsTotal))
 	}
 }
 
@@ -279,34 +326,6 @@ func coinDealingsDueSentence(name, received, receivedClause, paid, paidClause st
 		parts = append(parts, fmt.Sprintf("You have paid %s %s%s.", name, paid, paidClause))
 	}
 	return strings.Join(parts, " ")
-}
-
-// coinDueClause qualifies one direction's flow with how much of it discharged a
-// due. Empty when none of it did, which is what dispatches the ordinary wording.
-//
-// The closing is the load-bearing half and it says the two things the counts cannot:
-// that the coin settled when it was handed over, and that no goods were ever owed
-// against it. It deliberately echoes townRatePaidFactText's closing — the two are
-// read by the same model, one as a recollection and one as a memory, and they should
-// not disagree in wording about a thing neither is guessing at.
-func coinDueClause(dueCount, dueTotal, count int) string {
-	if dueCount <= 0 {
-		return ""
-	}
-	const closing = " — settled as it was handed over, and no goods owed back"
-	switch {
-	case count == 1:
-		// "all of it" about a single coin reads as a quantity being apportioned.
-		return ", the town's due" + closing
-	case dueCount >= count:
-		return ", all of it the town's due" + closing
-	default:
-		// coinsPhrase, not coinsOwedPhrase: the partial branch names a PORTION of
-		// a larger sum, and "a coin of it the town's due" reads as a stray article
-		// rather than a quantity (code_review). "1 coin of it" also matches the
-		// "2 coins of it" this same slot produces one coin higher.
-		return fmt.Sprintf(", %s of it the town's due%s", coinsPhrase(dueTotal), closing)
-	}
 }
 
 // coinFlowPhrase voices one direction's flow.

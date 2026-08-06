@@ -218,6 +218,24 @@ func TestCoinDealingsSentence(t *testing.T) {
 			want: "You have paid Moses James 4 coins, and nothing has come back the other way.",
 		},
 		{
+			// The incoming arm of the same suppression.
+			name: "sold to someone who has bought nothing back",
+			d:    sim.CoinDealings{ReceivedCount: 3, ReceivedTotal: 9, ReceivedGoodsCount: 3, ReceivedGoodsTotal: 9},
+			want: "Moses James has paid you 9 coins across 3 payments for goods.",
+		},
+		{
+			// Suppression is scoped to the DIRECTION, not the pair (code_review).
+			// With both directions live there is no tail to suppress at all, and
+			// each direction voices only what its own coin did — the goods clause
+			// must not leak onto the unclassified side.
+			name: "goods one way, unclassified the other",
+			d: sim.CoinDealings{
+				ReceivedCount: 1, ReceivedTotal: 4,
+				PaidCount: 3, PaidTotal: 9, PaidGoodsCount: 3, PaidGoodsTotal: 9,
+			},
+			want: "Moses James has paid you 4 coins, and you have paid Moses James 9 coins across 3 payments for goods.",
+		},
+		{
 			name: "an eviction softens the count rather than undercounting silently",
 			d:    sim.CoinDealings{ReceivedCount: 64, ReceivedTotal: 64, ReceivedAllSingle: true, ReceivedAtLeast: true},
 			want: "Moses James has paid you at least a coin 64 times, and nothing has gone back the other way.",

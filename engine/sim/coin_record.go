@@ -127,6 +127,16 @@ const (
 	// RETROACTIVELY: the durable row has carried ledger_id unconditionally since
 	// LLM-105, so the boot seed classifies history correctly rather than starting
 	// from the ticket that introduced the distinction.
+	//
+	// That retroactive read is only sound if ledger_id's presence on a `paid` row
+	// means goods-for-coin and nothing else, so the writers were audited
+	// (code_review). Three write ActionTypePaid: handlePaidActionLog (bare coin,
+	// no ledger_id), handlePayResolvedActionLog (stamps it), and lodger_rebook's
+	// nightly auto-charge, which writes {recipient, amount, for} and no ledger_id
+	// — so it classifies Unstated, which is right for a fee the engine levied
+	// rather than a purchase anyone transacted. A barter or free give reaches the
+	// ledger path with Amount 0 and RecordCoinPaid drops it before any kind is
+	// stored, so no zero-coin settlement can be counted as a purchase.
 	CoinPaymentForGoods
 
 	// CoinPaymentForDue is coin that discharged an obligation rather than buying
@@ -211,9 +221,12 @@ func (w *World) CoinRecordWindow() time.Duration {
 // Called from the cascade action-log subscribers, on the same two events and under
 // the same conditions that write the durable `paid` rows this ledger is seeded
 // from. That co-location settles the question the seed cannot answer for itself —
-// WHAT COUNTS as a payment — by making one place decide it for both. A future
-// settlement path that logs a `paid` row must call this too, or the tally will be
-// right until the next restart and then quietly change.
+// WHAT COUNTS as a payment — by making one place decide it for both. Note what it
+// does and does not buy (code_review, LLM-612): the two calls agree about which
+// events are payments and how each is classified, which is a decision, not a
+// transaction. They are not atomic and the paragraphs below are the exposure. A
+// future settlement path that logs a `paid` row must call this too, or the tally
+// will be right until the next restart and then quietly change.
 //
 // It is NOT atomic with the durable append, and does not try to be (code_review,
 // LLM-572). AppendActionLogDurable is a deliberately non-blocking enqueue onto an
