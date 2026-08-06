@@ -444,13 +444,21 @@ func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 // confirmed write would block that goroutine or need a completion callback — a
 // large change for a soft recollection cue. This path inherits that posture rather
 // than inventing a new one, which is the point: all three `paid` writers behave
-// alike here.
+// alike here. The mechanism is intentionally restart-lossy for the tally; a
+// successful RecordCoinPaid establishes NOTHING about the durable write.
 //
 // What must stay true is the DIRECTION. A rejected sink leaves the tally holding a
 // payment the next boot will not rebuild, so the pair UNDERSTATES after a restart.
 // It must never be the reverse — a durable row the live tally lacks is the LLM-615
 // defect itself, and it is the reverse that made the record depend on uptime.
-func TestRebook_RejectedDurableAppendUnderstatesRatherThanDiverging(t *testing.T) {
+//
+// SCOPE, precisely (code_review): this covers the SYNCHRONOUS enqueue-rejection
+// path only. The other two failure modes — the async writer erroring after a
+// successful enqueue, and a crash between the credit and the write — are documented
+// and UNTESTED. They are believed to fail in the same direction, but nothing here
+// proves it; that would need failure injection at the writer goroutine. Do not read
+// this test as the broader guarantee.
+func TestRebook_RejectedEnqueueUnderstatesRatherThanDiverging(t *testing.T) {
 	lodger := rebookLodger("jefferey", 10, 2, rebookNow.Add(3*time.Hour))
 	keeper := rebookKeeper("hannah")
 	w := rebookTestWorld(28, 11, lodger, keeper) // nightly = 4
