@@ -83,6 +83,37 @@ func TestBuyerLastPaidText(t *testing.T) {
 	}
 }
 
+// A non-positive amount is not a price. Both ingestion paths reject one already
+// (cascade/price_book.go on resolved.Amount <= 0; loadRecentPricesSQL on
+// `offered_amount > 0`), but a fixture, migration or hand-seeded row reaches the
+// book without passing either — so the render guards (code_review). The important
+// half is that it SKIPS rather than returns: a bad newest row must not hide an
+// older genuine price. Note the old bare-total code rendered "~0 coins", which at
+// least looked suspect; per-unit prose would have said "about 0 coins each", which
+// reads like a real free lunch.
+func TestBuyerLastPaidTextSkipsNonPositiveAmounts(t *testing.T) {
+	at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	buf := sim.NewRingBuffer[sim.PriceObservation](8)
+	// Oldest-first: a genuine purchase, then a junk row that arrived after it.
+	buf.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 6, Qty: 6, Consumers: 1, At: at})
+	buf.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 0, Qty: 4, Consumers: 1, At: at.Add(time.Hour)})
+	snap := &sim.Snapshot{PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+		{SellerID: "moses", Item: "wheat"}: buf,
+	}}
+	if got := buyerLastPaidText(snap, "josiah", "moses", "wheat", "ask the seller"); got != "about 1 coin each" {
+		t.Errorf("buyerLastPaidText() = %q, want %q — a zero-amount row must be skipped, not rendered as a free purchase, and must not hide the real price behind it", got, "about 1 coin each")
+	}
+	// Nothing but junk → the fallback, never "about 0 coins each".
+	only := sim.NewRingBuffer[sim.PriceObservation](8)
+	only.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 0, Qty: 4, Consumers: 1, At: at})
+	onlySnap := &sim.Snapshot{PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+		{SellerID: "moses", Item: "wheat"}: only,
+	}}
+	if got := buyerLastPaidText(onlySnap, "josiah", "moses", "wheat", "ask the seller"); got != "ask the seller" {
+		t.Errorf("buyerLastPaidText() = %q, want the fallback — with no valid observation the buyer has no remembered price", got)
+	}
+}
+
 // Price knowledge is per-buyer and per-(seller, item): patronage earns the number.
 // These arms were unwritten before LLM-620 touched the function, and pin the
 // fallback so the per-unit change cannot quietly start answering for a buyer who

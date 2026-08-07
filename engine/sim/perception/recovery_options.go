@@ -70,7 +70,7 @@ type RecoveryOption struct {
 	Label     string // "the old oak" | "Hannah's Inn" | the vendor's workplace | the actor's home
 	ItemLabel string // remedy only: the consumable's display label ("coca tea"); "" otherwise
 	Magnitude int    // tiredness eased (positive); 0/unused for inns
-	CostText  string // "free" | "~28 coins" | "ask the keeper"
+	CostText  string // "free" | "~28 coins" | "about 2 coins each" (multi-unit, LLM-620) | "ask the keeper"
 	Distance  string // qualitative ("a short walk"); "" when unknown (inns, remedies)
 	Direction string // cardinal ("northeast"); "" when unknown (inns, remedies)
 
@@ -511,20 +511,32 @@ func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item s
 	}
 	entries := buf.Snapshot() // oldest-first; scan from the end for newest-first
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].BuyerID != buyerID {
+		obs := entries[i]
+		if obs.BuyerID != buyerID {
 			continue
 		}
-		units := sim.ObservationUnits(entries[i])
-		// A malformed row (units 0) keeps the old bare-total wording rather than
-		// dividing by zero — one unit is also the only reading a total supports on
-		// its own, so this stays honest where the quantity is unknowable.
-		if units <= 1 {
-			return fmt.Sprintf("~%d coins", entries[i].Amount)
+		// A non-positive amount is not a price. BOTH ingestion paths already reject
+		// one — the live cascade on resolved.Amount <= 0 (cascade/price_book.go) and
+		// the boot seed on `offered_amount > 0` (loadRecentPricesSQL) — but a fixture,
+		// a migration or a hand-seeded row reaches the book without passing either, so
+		// the render guards rather than trusting that (code_review). SKIP it and keep
+		// scanning: one bad row must not hide an older genuine price the buyer
+		// remembers, which returning here would do. Divide-by-zero is covered too,
+		// since units <= 1 takes the bare-total branch below.
+		if obs.Amount <= 0 {
+			continue
 		}
-		if phrase := costEachPhrase(entries[i].Amount, int(units)); phrase != "" {
+		units := sim.ObservationUnits(obs)
+		// One unit (or a malformed row with no usable count) keeps the bare total:
+		// there is nothing to divide, and a single unit is the only reading a
+		// quantity-less total supports on its own.
+		if units <= 1 {
+			return fmt.Sprintf("~%d coins", obs.Amount)
+		}
+		if phrase := costEachPhrase(obs.Amount, int(units)); phrase != "" {
 			return phrase
 		}
-		return fmt.Sprintf("~%d coins", entries[i].Amount)
+		return fmt.Sprintf("~%d coins", obs.Amount)
 	}
 	return fallback
 }

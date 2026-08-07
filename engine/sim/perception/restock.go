@@ -328,7 +328,11 @@ type RestockVendor struct {
 	// observed anchor on the EXACT sellers this list points at — not every seller at
 	// the structure — so the anchor can't average in a non-rendered co-worker.
 	VendorID sim.ActorID
-	CostText string // per-buyer last-paid "~3 coins", or "" when no price is on record
+	// CostText is the per-buyer last-paid price, PER UNIT ("about 1 coin each") for a
+	// multi-unit purchase and "~3 coins" for a single one; "" when no price is on
+	// record. Per-unit since LLM-620 — a bare basket total beneath this cue's
+	// per-unit sentences was read as the unit price and stalled a restock for hours.
+	CostText string
 
 	// Barter marks a supplier the buyer's COINS cannot cover but its GOODS can reach
 	// — the LLM-406 means-to-pay state, and the exact mirror of SatiationVendor.Barter

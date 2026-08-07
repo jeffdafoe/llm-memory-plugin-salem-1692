@@ -106,7 +106,7 @@ type vendorConsumable struct {
 	StructureID    sim.StructureID // the workplace's key — what the buyer passes to move_to
 	ItemLabel      string          // the consumable's display label
 	Magnitude      int             // immediate need eased per unit (positive)
-	CostText       string          // per-buyer last-paid, or the caller's fallback
+	CostText       string          // per-buyer last-paid (per unit when multi-unit, LLM-620), or the caller's fallback
 	costCoins      int             // per-buyer last-paid as a number, 0 when unknown (LLM-176 affordability)
 	VendorID       sim.ActorID     // for the caller's deterministic sourceKey
 	ItemKind       sim.ItemKind

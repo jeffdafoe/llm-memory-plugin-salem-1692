@@ -133,7 +133,7 @@ type SatiationVendor struct {
 	StructureID    sim.StructureID // the workplace's key — passed to move_to to walk there
 	ItemLabel      string          // "stew"
 	Magnitude      int
-	CostText       string // "~3 coins" | "ask the seller"
+	CostText       string // "~3 coins" | "about 2 coins each" (multi-unit, LLM-620) | "ask the seller"
 
 	// costCoins is the per-buyer last-paid price as a number, 0 when the actor has
 	// never bought this item here (CostText is then the "ask the seller" fallback).
