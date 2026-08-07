@@ -2290,6 +2290,27 @@ var perceptionScenarios = []perceptionScenario{
 		build: growerUnderfootWithNoGatherCue,
 	},
 	{
+		name: "grower_on_ring_slot_that_is_a_neighbours_pin",
+		summary: "LLM-618 fix arm — the live Moses James wedge, one layer under LLM-617. He walked to his own ripe " +
+			"wheat and an ObjectVisit parked him on one of the EIGHT ring slots around its pin, which is the normal " +
+			"arrival (only 1 of the 9 accepted tiles is the pin itself). That slot happened to be Chebyshev 0 from a " +
+			"NEIGHBOUR's wheat plant — in the village, one plant a mis-click had assigned to a PC. The nearest-wins " +
+			"scan then answered a question nobody asked, reported the foreign owner of the tile, and withheld the " +
+			"gather cue at a bush he legitimately stood at; because the gather TOOL is advertised only when that " +
+			"resolution yields a source, he had no picking verb at all and re-walked the same bush for two hours. " +
+			"The golden pins the cue rendering off his walked-to target: 'You're at Wheat'.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerAtForeignPinRingSlot(true) },
+	},
+	{
+		name: "grower_on_a_neighbours_pin_with_no_walked_to_target",
+		summary: "LLM-618 foil of grower_on_ring_slot_that_is_a_neighbours_pin — identical geometry, but the grower " +
+			"carries NO walked-to target, so the unchanged nearest-scan still owns the answer and the gather cue " +
+			"stays suppressed. This arm is what keeps the fix from reading as 'the poacher gate was deleted': " +
+			"standing at a neighbour's bush and reaching past it for your own must still fail. Only an actor who " +
+			"deliberately walked to a source he may take from gets to skip the gate.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerAtForeignPinRingSlot(false) },
+	},
+	{
 		name: "hungry_forager_at_stocked_bush",
 		summary: "A hungry forager stands at an unowned raspberry bush that still has stock, with a cheese seller at " +
 			"the General Store nearby — the LLM-113 situation (Ezekiel at the Raspberry Bush with buy options). The " +
@@ -18305,6 +18326,100 @@ func growerUnderfootWithNoGatherCue() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 				Pos:           sim.WorldPos{X: 10 * 32, Y: 87 * 32},
 				LoiterOffsetX: &zero,
 				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, mosesID, nil
+}
+
+// growerAtForeignPinRingSlot is the LLM-618 fixture pair: Moses James standing on a
+// legal visitor slot of his OWN ripe wheat, where that slot is Chebyshev 0 from a
+// NEIGHBOUR's wheat plant.
+//
+//	Moses          (10,89) — a ring slot, the normal place an ObjectVisit parks him
+//	mine_bush pin  (11,90) — his own ripe bush, Chebyshev 1 (LLM-617 withholds its steer)
+//	neighbour_bush (10,89) — another actor's ripe bush, Chebyshev 0 — the strict nearest
+//
+// These are the live tile numbers from the 2026-08-07 wedge, and the collision is not
+// exotic: pickObjectVisitorSlot parks an arrival on one of eight ring slots, so any
+// ring slot may be some other object's pin.
+//
+// `walkedTo` is the single variable, and it is the whole foil:
+//   - true  → Moses carries mine_bush as his walked-to target (stamped on arrival from
+//     ActorArrived.DestObjectID), so walkedToGatherSeed answers the known-place
+//     question about the bush he came for and the gather cue renders.
+//   - false → no target, so the unchanged nearest-scan answers, finds the neighbour's
+//     bush owning the tile, and the cue stays suppressed. The poacher gate is intact.
+//
+// Both bushes carry an explicit (0,0) loiter override so each pin IS its anchor tile,
+// keeping the fixture independent of the footprint fallback. Idle, on shift, no orders,
+// no price book, no clock read → byte-stable.
+func growerAtForeignPinRingSlot(walkedTo bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const mosesID = sim.ActorID("moses")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	moses := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Moses James",
+		Role:             "farmer",
+		State:            sim.StateIdle,
+		Pos:              sim.WorldPos{X: 10 * 32, Y: 89 * 32}.Tile(),
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            46,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceForage, Max: 30},
+		}},
+		// Only his own bush is remembered — the owned-bush cue is sourced from
+		// EARNED MEMORY (LLM-79), and a neighbour's plant was never his to learn.
+		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+			"mine_bush": {Ref: "mine_bush", Kind: sim.PlaceKindObject, Affordances: []string{"gather:wheat"}},
+		},
+	}
+	if walkedTo {
+		moses.GatherTargetObjectID = "mine_bush"
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"wheat": {
+				Name: "wheat", Capabilities: []string{"portable"}, DisplayLabel: "Wheat",
+				DisplayLabelSingular: "sheaf of wheat", DisplayLabelPlural: "sheaves of wheat",
+				Category: sim.ItemCategoryMaterial,
+			},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"mine_bush": {
+				ID:            "mine_bush",
+				DisplayName:   "Wheat",
+				Pos:           sim.WorldPos{X: 11 * 32, Y: 90 * 32},
+				OwnerActorID:  mosesID,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(6), MaxQuantity: intp(9)},
+				},
+			},
+			// The neighbour's plant, ripe and owned by someone else, sitting exactly on
+			// the tile Moses was parked at. Nothing about it is malformed — it is an
+			// ordinary bush that happens to pin the slot he arrived on.
+			"neighbour_bush": {
+				ID:            "neighbour_bush",
+				DisplayName:   "Wheat",
+				Pos:           sim.WorldPos{X: 10 * 32, Y: 89 * 32},
+				OwnerActorID:  sim.ActorID("neighbour"),
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(2), MaxQuantity: intp(3)},
+				},
 			},
 		},
 	}
