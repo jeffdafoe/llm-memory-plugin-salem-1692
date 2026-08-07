@@ -378,3 +378,216 @@ func TestRenderForage_NoGatherMention_MoveToOnly(t *testing.T) {
 		t.Errorf("forage cue must steer move_to:\n%s", out)
 	}
 }
+
+// bushAssetID / bushAsset give a placed bush a resolvable loiter pin. No door and
+// FootprintBottom 0, so computeLoiterTile's footprint fallback puts the pin at
+// anchor + (0, 2) — the tile move_to parks a walker on, and the tile the LLM-617
+// already-at guard measures against.
+const bushAssetID = sim.AssetID("bush-asset")
+
+func bushAssets() map[sim.AssetID]*sim.Asset {
+	return map[sim.AssetID]*sim.Asset{bushAssetID: {FootprintBottom: 0}}
+}
+
+// bushPin is where a bush anchored at `anchor` parks a walker.
+func bushPin(anchor sim.TilePos) sim.TilePos {
+	return anchor.Add(sim.TileOffset{DX: 0, DY: 2})
+}
+
+// forageBushAt is forageBush placed at a tile with a real asset, so the LLM-617
+// already-at guard can resolve its loiter pin. The bare forageBush carries no
+// asset on purpose (see TestBuildForage_BushWithNoAsset_StillSteers).
+func forageBushAt(owner sim.ActorID, item sim.ItemKind, avail int, anchor sim.TilePos) *sim.VillageObject {
+	b := forageBush(owner, item, avail)
+	b.AssetID = bushAssetID
+	b.Pos = anchor.Center()
+	return b
+}
+
+// TestBuildForage_SkipsBushTheGrowerAlreadyStandsAt is the LLM-617 regression —
+// the live Moses James wedge. He stood at his wheat field for two hours re-calling
+// move_to on the bush he was already at: move_to bounced it as a no-op
+// (TerminalNoOpError), the tick ended on that terminal verb, and the unchanged cue
+// re-issued the same handle forever.
+//
+// bushA is the RIPEST, so the pre-fix ripest-wins rule named it — and the grower is
+// standing on its pin. The handle must skip it for the farther bushB, which move_to
+// will actually walk. Ripe counts still describe the whole plot (14), not just the
+// steerable part: the counts report the farm, the handle reports the errand.
+func TestBuildForage_SkipsBushTheGrowerAlreadyStandsAt(t *testing.T) {
+	anchorA := sim.TilePos{X: 10, Y: 87}
+	subj := &sim.ActorSnapshot{
+		Pos:           bushPin(anchorA), // standing exactly where move_to parks him at bushA
+		Inventory:     map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: foragePolicy("wheat", 30),
+		KnownPlaces:   remembersGather("wheat", "bushA", "bushB"),
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"moses": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"bushA": forageBushAt("moses", "wheat", 9, anchorA),
+			"bushB": forageBushAt("moses", "wheat", 5, sim.TilePos{X: 40, Y: 40}),
+		},
+		Assets:            bushAssets(),
+		RestockReorderPct: 25,
+	}
+	v := buildForage(snap, "moses", subj, false)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one item, got %+v", v)
+	}
+	got := v.Items[0]
+	if got.MoveHandle != "bushB" {
+		t.Fatalf("MoveHandle = %q, want \"bushB\" — the ripest bush is underfoot, so the steer must name one the grower can actually walk to (LLM-617)", got.MoveHandle)
+	}
+	if got.AtRipeBush {
+		t.Errorf("AtRipeBush must stay false while a walkable ripe bush remains — it only explains an EMPTY handle")
+	}
+	if got.RipeUnits != 14 {
+		t.Errorf("RipeUnits = %d, want 14 — the counts describe the whole plot, including the bush underfoot", got.RipeUnits)
+	}
+	if got.BushCount != 2 {
+		t.Errorf("BushCount = %d, want 2", got.BushCount)
+	}
+}
+
+// TestBuildForage_AllRipeBushesUnderfoot_FlagsInsteadOfSteering is the harder arm:
+// every ripe bush is one the grower already stands at, so there is no walk left to
+// name. The handle must be empty and AtRipeBush set, so render can say where he is
+// instead of emitting a move_to the command would bounce.
+func TestBuildForage_AllRipeBushesUnderfoot_FlagsInsteadOfSteering(t *testing.T) {
+	anchor := sim.TilePos{X: 10, Y: 87}
+	subj := &sim.ActorSnapshot{
+		Pos:           bushPin(anchor),
+		Inventory:     map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: foragePolicy("wheat", 30),
+		KnownPlaces:   remembersGather("wheat", "bushA"),
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"moses": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"bushA": forageBushAt("moses", "wheat", 4, anchor),
+		},
+		Assets:            bushAssets(),
+		RestockReorderPct: 25,
+	}
+	v := buildForage(snap, "moses", subj, false)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one item, got %+v", v)
+	}
+	got := v.Items[0]
+	if got.MoveHandle != "" {
+		t.Fatalf("MoveHandle = %q, want empty — move_to would bounce a walk to the bush underfoot (LLM-617)", got.MoveHandle)
+	}
+	if !got.AtRipeBush {
+		t.Fatalf("AtRipeBush must be set so render can tell this apart from the none-ripe case")
+	}
+	if got.RipeUnits != 4 {
+		t.Errorf("RipeUnits = %d, want 4 — there IS ripe stock, it is just underfoot", got.RipeUnits)
+	}
+}
+
+// TestBuildForage_BushWithNoAsset_StillSteers pins the guard's fail-open edge.
+// move_to's own no-op check resolves no pin for a dangling asset and lets the walk
+// through, so the cue must keep steering there too. Filtering on an unresolvable
+// pin would silently strip the only handle a grower had.
+func TestBuildForage_BushWithNoAsset_StillSteers(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Pos:           bushPin(sim.TilePos{X: 10, Y: 87}),
+		Inventory:     map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: foragePolicy("wheat", 30),
+		KnownPlaces:   remembersGather("wheat", "bushA"),
+	}
+	bush := forageBush("moses", "wheat", 4) // no AssetID, no Pos
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"moses": subj},
+		VillageObjects:    map[sim.VillageObjectID]*sim.VillageObject{"bushA": bush},
+		Assets:            bushAssets(),
+		RestockReorderPct: 25,
+	}
+	v := buildForage(snap, "moses", subj, false)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one item, got %+v", v)
+	}
+	if v.Items[0].MoveHandle != "bushA" {
+		t.Fatalf("MoveHandle = %q, want \"bushA\" — an unresolvable pin must fail OPEN, matching move_to", v.Items[0].MoveHandle)
+	}
+}
+
+// TestRenderForage_AtRipeBush_SaysStandingNotWalk pins the LLM-617 render arm. The
+// at-bush line must not steer move_to (the command would bounce it), must not name
+// gather (the LLM-59/79 posture — the at-bush proximity cue owns that verb), and
+// must not fall through to "none ripe yet", which would contradict its own count.
+func TestRenderForage_AtRipeBush_SaysStandingNotWalk(t *testing.T) {
+	v := &ForageView{Items: []ForageItemView{
+		{ItemLabel: "wheat", CurrentQty: 0, Cap: 30, BushCount: 51, RipeUnits: 6, MoveHandle: "", AtRipeBush: true},
+	}}
+	var b strings.Builder
+	renderForage(&b, v)
+	out := b.String()
+	if strings.Contains(out, "move_to") {
+		t.Errorf("must not steer move_to at a bush already underfoot — that is the LLM-617 wedge:\n%s", out)
+	}
+	if strings.Contains(out, "gather") {
+		t.Errorf("must not name the gather tool (LLM-59/79 steering posture):\n%s", out)
+	}
+	if strings.Contains(out, "none ripe yet") {
+		t.Errorf("must not claim nothing is ripe while reporting 6 ripe:\n%s", out)
+	}
+	if !strings.Contains(out, "6 ripe to pick now") {
+		t.Errorf("must still report the ripe count:\n%s", out)
+	}
+	if !strings.Contains(out, "standing among them") {
+		t.Errorf("must say where the grower is:\n%s", out)
+	}
+}
+
+// TestBuildForage_ExplicitOffsetsButNoAsset_StillSteers pins the exact edge
+// code_review raised on LLM-617: an object carrying explicit per-instance loiter
+// offsets but NO resolvable asset.
+//
+// The expected result is defined by move_to, not by what looks intuitive. Its
+// no-op guard goes through sim.ObjectLoiterPin, which requires the asset even when
+// an explicit override is present — so move_to does NOT consider the actor already
+// there and lets the walk proceed. The cue must therefore keep steering, and the
+// grower standing exactly on the override pin must NOT suppress the handle.
+//
+// Getting this backwards would make the cue stricter than the command: it would
+// drop the only handle for such an object and leave the grower with a section that
+// steers nowhere.
+func TestBuildForage_ExplicitOffsetsButNoAsset_StillSteers(t *testing.T) {
+	zero := 0
+	anchor := sim.TilePos{X: 10, Y: 87}
+	subj := &sim.ActorSnapshot{
+		Pos:           anchor, // standing ON the explicit (0,0) override pin
+		Inventory:     map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: foragePolicy("wheat", 30),
+		KnownPlaces:   remembersGather("wheat", "bushA"),
+	}
+	bush := forageBush("moses", "wheat", 4)
+	bush.AssetID = "no-such-asset" // dangling: absent from the Assets map below
+	bush.Pos = anchor.Center()
+	bush.LoiterOffsetX = &zero
+	bush.LoiterOffsetY = &zero
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"moses": subj},
+		VillageObjects:    map[sim.VillageObjectID]*sim.VillageObject{"bushA": bush},
+		Assets:            bushAssets(), // does NOT contain "no-such-asset"
+		RestockReorderPct: 25,
+	}
+	// Ground the expectation in the shared resolver rather than restating it: if
+	// ObjectLoiterPin ever starts resolving an assetless object, move_to's no-op
+	// guard changes with it and this test's premise must be revisited.
+	if _, ok := sim.ObjectLoiterPin(snap.VillageObjects, snap.Assets, "bushA"); ok {
+		t.Fatalf("premise broken: ObjectLoiterPin now resolves an assetless object — move_to's no-op guard changed, so revisit this test and growerStandsAtBush")
+	}
+	v := buildForage(snap, "moses", subj, false)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("expected one item, got %+v", v)
+	}
+	if v.Items[0].MoveHandle != "bushA" {
+		t.Fatalf("MoveHandle = %q, want \"bushA\" — move_to would still walk here, so the cue must not be stricter than the command", v.Items[0].MoveHandle)
+	}
+	if v.Items[0].AtRipeBush {
+		t.Errorf("AtRipeBush must stay false when the pin is unresolvable")
+	}
+}

@@ -2257,6 +2257,39 @@ var perceptionScenarios = []perceptionScenario{
 		build: npcQuenchedAtWellStaleCredit,
 	},
 	{
+		name: "grower_stands_at_the_bush_the_cue_would_name",
+		summary: "LLM-617 steer arm — the live Moses James wedge. A wheat grower with an empty pack stands exactly on " +
+			"the loiter pin of his own RIPEST bush (9 units), with a second ripe bush (5) across the map. The " +
+			"pre-fix ripest-wins rule named the bush underfoot, which move_to bounces as a no-op " +
+			"(TerminalNoOpError); the tick ends on that terminal verb and the unchanged cue re-issues the same " +
+			"handle next tick — Moses stood at his field for two hours doing exactly this. The golden pins the " +
+			"steer naming the FARTHER bush, the one he can actually walk to, while the ripe count still reports " +
+			"the whole plot (14) rather than only the steerable part. It also pins the handoff working: the " +
+			"at-bush proximity cue owns the gather verb, so 'You're at Wheat' appears beside the walk steer.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerAtOwnRipeBush(true) },
+	},
+	{
+		name: "grower_stands_at_his_only_ripe_bush",
+		summary: "LLM-617 silence arm and the foil of grower_stands_at_the_bush_the_cue_would_name — same grower, " +
+			"same posture, but the bush underfoot is his ONLY ripe one. There is no walk left to steer, so the " +
+			"golden pins the cue emitting NO move_to handle and saying where he stands instead. It must not fall " +
+			"through to 'none ripe yet', which would contradict the 9 ripe it reports in the same breath, and it " +
+			"must not name gather — the LLM-59/79 posture holds, and the at-bush cue carries that verb.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerAtOwnRipeBush(false) },
+	},
+	{
+		name: "grower_underfoot_with_no_gather_cue",
+		summary: "LLM-617 worst case (raised by code_review). The grower stands at his own ripe bush AND the at-bush " +
+			"gather cue is suppressed, because a NON-GATHERABLE object (a fence post) sits nearer and " +
+			"ResolveGatherSource's nearest-wins scan blocks on it rather than yielding to the farther bush — the " +
+			"same inverse-question trap LLM-550 named. The golden pins the honest outcome: the ripe count and the " +
+			"standing-among-them line, NO move_to, and NO 'you can gather' line. A section with no callable action " +
+			"is deliberately preferred to emitting a move_to guaranteed to terminal-no-op (which burns the tick's " +
+			"one terminal verb — the wedge itself) or to inventing a gather instruction (the LLM-59/79 " +
+			"rejected-tool fixation). If a later change gives this case an action, update this golden deliberately.",
+		build: growerUnderfootWithNoGatherCue,
+	},
+	{
 		name: "hungry_forager_at_stocked_bush",
 		summary: "A hungry forager stands at an unowned raspberry bush that still has stock, with a cheese seller at " +
 			"the General Store nearby — the LLM-113 situation (Ezekiel at the Raspberry Bush with buy options). The " +
@@ -18101,4 +18134,179 @@ func TestGoldensNeverOfferAGatherWithoutTheTrade(t *testing.T) {
 			}
 		})
 	}
+}
+
+// growerAtOwnRipeBush is the LLM-617 fixture pair: Moses James, a wheat grower with
+// an empty pack, standing exactly on the loiter pin of one of his OWN ripe bushes.
+//
+// `spare` adds a second ripe bush far across the map. That one variable is the
+// whole foil:
+//   - spare=true  → a walkable ripe bush exists, so the steer must name THAT one
+//     and never the bush underfoot.
+//   - spare=false → every ripe bush is underfoot, so there is no walk to steer and
+//     the cue must say where he stands instead of emitting a handle.
+//
+// The bush underfoot is the RIPEST (9 units vs 5), so the pre-LLM-617 ripest-wins
+// rule picked precisely the bush move_to would bounce as a no-op — the live wedge
+// that held Moses at his field for two hours re-calling move_to on a bush he had
+// already reached.
+//
+// Both bushes carry an explicit (0,0) loiter override so the pin IS the anchor
+// tile, keeping the fixture independent of the footprint fallback. Idle, on shift,
+// no orders, no price book, no clock read → byte-stable.
+func growerAtOwnRipeBush(spare bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const mosesID = sim.ActorID("moses")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	nearTile := sim.WorldPos{X: 10 * 32, Y: 87 * 32}.Tile()
+	moses := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Moses James",
+		Role:             "farmer",
+		State:            sim.StateIdle,
+		Pos:              nearTile, // standing ON the near bush's loiter pin
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            46,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceForage, Max: 30},
+		}},
+		// The owned-bush cue is sourced from EARNED MEMORY (LLM-79), so the grower
+		// only sees bushes he remembers gathering at.
+		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+			"near_bush": {Ref: "near_bush", Kind: sim.PlaceKindObject, Affordances: []string{"gather:wheat"}},
+			"far_bush":  {Ref: "far_bush", Kind: sim.PlaceKindObject, Affordances: []string{"gather:wheat"}},
+		},
+	}
+	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		"near_bush": {
+			ID:            "near_bush",
+			DisplayName:   "Wheat",
+			Pos:           sim.WorldPos{X: 10 * 32, Y: 87 * 32},
+			OwnerActorID:  mosesID,
+			LoiterOffsetX: &zero,
+			LoiterOffsetY: &zero,
+			Refreshes: []*sim.ObjectRefresh{
+				// Forage-to-sell (Amount 0): a yield-only harvest row, as the live
+				// owned crop plots are. The RIPEST of the two on purpose.
+				{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(9), MaxQuantity: intp(9)},
+			},
+		},
+	}
+	if spare {
+		objects["far_bush"] = &sim.VillageObject{
+			ID:            "far_bush",
+			DisplayName:   "Wheat",
+			Pos:           sim.WorldPos{X: 40 * 32, Y: 40 * 32},
+			OwnerActorID:  mosesID,
+			LoiterOffsetX: &zero,
+			LoiterOffsetY: &zero,
+			Refreshes: []*sim.ObjectRefresh{
+				{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(5), MaxQuantity: intp(9)},
+			},
+		}
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"wheat": {
+				Name: "wheat", Capabilities: []string{"portable"}, DisplayLabel: "Wheat",
+				DisplayLabelSingular: "sheaf of wheat", DisplayLabelPlural: "sheaves of wheat",
+				Category: sim.ItemCategoryMaterial,
+			},
+		},
+		VillageObjects: objects,
+	}
+	return snap, mosesID, nil
+}
+
+// growerUnderfootWithNoGatherCue is the LLM-617 worst case, added at code_review's
+// request: the grower stands at his own ripe bush AND the at-bush gather cue is
+// suppressed, so the section carries no callable action at all.
+//
+// Reachable because the two cues ask different questions. A NON-GATHERABLE object
+// sits nearer than the bush (a fence post on the pin the grower occupies), and
+// sim.ResolveGatherSource answers "which place is he at?" — nearest wins, and a
+// non-gatherable nearest BLOCKS rather than yielding to a farther bush — so gather
+// is never advertised. sim.ActorAtObjectPin answers the object-keyed question about
+// the bush itself and still reports him as standing there, so the walk steer is
+// correctly withheld.
+//
+// The golden pins the honest outcome: the ripe count and the standing-among-them
+// line, NO move_to, and NO "you can gather" line. That is deliberately preferred to
+// the alternative — emitting a move_to guaranteed to terminal-no-op, which burns the
+// tick's one terminal verb and is the wedge itself — and to inventing a gather
+// instruction, which is the LLM-59/79 rejected-tool fixation this cue was shaped to
+// avoid. If a future change makes the section carry an action here, that is an
+// improvement and this golden should be updated deliberately, not silently.
+func growerUnderfootWithNoGatherCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const mosesID = sim.ActorID("moses")
+	zero := 0
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	standTile := sim.WorldPos{X: 10 * 32, Y: 87 * 32}.Tile()
+	moses := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Moses James",
+		Role:             "farmer",
+		State:            sim.StateIdle,
+		Pos:              standTile,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            46,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceForage, Max: 30},
+		}},
+		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+			"near_bush": {Ref: "near_bush", Kind: sim.PlaceKindObject, Affordances: []string{"gather:wheat"}},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"wheat": {
+				Name: "wheat", Capabilities: []string{"portable"}, DisplayLabel: "Wheat",
+				DisplayLabelSingular: "sheaf of wheat", DisplayLabelPlural: "sheaves of wheat",
+				Category: sim.ItemCategoryMaterial,
+			},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// Ripe and his own, one tile off — inside LoiterAttributionTiles, so the
+			// already-at guard withholds the steer.
+			"near_bush": {
+				ID:            "near_bush",
+				DisplayName:   "Wheat",
+				Pos:           sim.WorldPos{X: 10 * 32, Y: 88 * 32},
+				OwnerActorID:  mosesID,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(9), MaxQuantity: intp(9)},
+				},
+			},
+			// NEARER and carries no gatherable row at all: ResolveGatherSource's
+			// nearest-wins scan stops here and blocks, so gather is never advertised.
+			"fence_post": {
+				ID:            "fence_post",
+				DisplayName:   "Fence Post",
+				Pos:           sim.WorldPos{X: 10 * 32, Y: 87 * 32},
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+		},
+	}
+	return snap, mosesID, nil
 }
