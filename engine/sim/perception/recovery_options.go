@@ -70,7 +70,7 @@ type RecoveryOption struct {
 	Label     string // "the old oak" | "Hannah's Inn" | the vendor's workplace | the actor's home
 	ItemLabel string // remedy only: the consumable's display label ("coca tea"); "" otherwise
 	Magnitude int    // tiredness eased (positive); 0/unused for inns
-	CostText  string // "free" | "~28 coins" | "ask the keeper"
+	CostText  string // "free" | "~28 coins" | "about 2 coins each" (multi-unit, LLM-620) | "ask the keeper"
 	Distance  string // qualitative ("a short walk"); "" when unknown (inns, remedies)
 	Direction string // cardinal ("northeast"); "" when unknown (inns, remedies)
 
@@ -475,13 +475,23 @@ func innCostText(snap *sim.Snapshot, actorID, keeperID sim.ActorID) string {
 	return buyerLastPaidText(snap, actorID, keeperID, nightsStayItem, "ask the keeper")
 }
 
-// buyerLastPaidText renders "~N coins" from the buyer's most-recent accepted
-// price for (seller, item) in the snapshot's PriceBook, else fallback.
-// Replicates World.LookupBuyerLastPaid against the snapshot (perception runs
-// off the world goroutine, so it must read Snapshot.PriceBook, not the live
-// accessor). Price knowledge is per-buyer: a buyer who has never bought this
-// item from this seller gets the fallback — patronage earns the number, the
-// same convention v1 used for both inns and remedy vendors.
+// buyerLastPaidText renders what the buyer last paid this seller for this item, as
+// PER-UNIT prose, from the snapshot's PriceBook, else fallback. Replicates
+// World.LookupBuyerLastPaid against the snapshot (perception runs off the world
+// goroutine, so it must read Snapshot.PriceBook, not the live accessor). Price
+// knowledge is per-buyer: a buyer who has never bought this item from this seller
+// gets the fallback — patronage earns the number, the same convention v1 used for
+// both inns and remedy vendors.
+//
+// PER-UNIT since LLM-620: this emitted PriceObservation.Amount bare, which is one
+// past transaction's TOTAL with no quantity attached, and in the restock cue that
+// total lands beneath a per-unit sentence and was read as the unit price. A
+// single-unit purchase is unaffected — total and unit coincide.
+//
+// Units are Qty × Consumers via sim.ObservationUnits, NOT Qty: Qty is per-consumer,
+// so dividing by Qty alone trebles the apparent price on a 3-recipient order.
+// costEachPhrase owns the conversion (see its doc for why the division happens
+// engine-side, and why it never rounds a fraction away).
 func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item sim.ItemKind, fallback string) string {
 	if sellerID == "" || snap.PriceBook == nil {
 		return fallback
@@ -492,9 +502,32 @@ func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item s
 	}
 	entries := buf.Snapshot() // oldest-first; scan from the end for newest-first
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].BuyerID == buyerID {
-			return fmt.Sprintf("~%d coins", entries[i].Amount)
+		obs := entries[i]
+		if obs.BuyerID != buyerID {
+			continue
 		}
+		// A non-positive amount is not a price. BOTH ingestion paths already reject
+		// one — the live cascade on resolved.Amount <= 0 (cascade/price_book.go) and
+		// the boot seed on `offered_amount > 0` (loadRecentPricesSQL) — but a fixture,
+		// a migration or a hand-seeded row reaches the book without passing either, so
+		// the render guards rather than trusting that (code_review). SKIP it and keep
+		// scanning: one bad row must not hide an older genuine price the buyer
+		// remembers, which returning here would do. Divide-by-zero is covered too,
+		// since units <= 1 takes the bare-total branch below.
+		if obs.Amount <= 0 {
+			continue
+		}
+		units := sim.ObservationUnits(obs)
+		// One unit (or a malformed row with no usable count) keeps the bare total:
+		// there is nothing to divide, and a single unit is the only reading a
+		// quantity-less total supports on its own.
+		if units <= 1 {
+			return fmt.Sprintf("~%d coins", obs.Amount)
+		}
+		if phrase := costEachPhrase(obs.Amount, int(units)); phrase != "" {
+			return phrase
+		}
+		return fmt.Sprintf("~%d coins", obs.Amount)
 	}
 	return fallback
 }

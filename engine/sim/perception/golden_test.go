@@ -2269,6 +2269,42 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithWithEmptyShelfTakesCommissions,
 	},
 	{
+		name: "grower_home_mid_shift_no_ripe_bush_still_owes_his_post",
+		summary: "LLM-620 arm 1 (the live 2026-08-07 Moses James lap). A grower stands in his own house mid-shift, " +
+			"low on wheat, owning bushes with NOTHING ripe. The harvest cue still renders — it fires on low stock, " +
+			"not ripeness — and says 'walk out to your bushes to restock' and 'none ripe yet' in the same breath. " +
+			"Level-triggered on that cue's mere presence, the duty-steer suppression treated it as an errand in " +
+			"progress and yielded forever, while the SAME signal flipped the at-post stabilizer to a step-out " +
+			"permission; both ends of the shift came unpinned at once and he ran James Farm<->James Residence in " +
+			"6-to-17-second laps. The golden pins the to-work steer FIRING here: a cue he cannot take one step " +
+			"toward is a want, not an errand. Paired with grower_home_mid_shift_ripe_bush_keeps_its_errand.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerHomeMidShift(false) },
+	},
+	{
+		name: "grower_home_mid_shift_ripe_bush_keeps_its_errand",
+		summary: "LLM-620 control for grower_home_mid_shift_no_ripe_bush_still_owes_his_post: the SAME grower, same " +
+			"hour, same low wheat — but one bush is ripe. The errand is now actionable, so the HOME-400/LLM-90 " +
+			"suppression still applies and he is not yanked off the harvest trip he is about to make. The golden " +
+			"pins the status-only line in the yank's place ('you are away from your post at the James Farm'), " +
+			"carrying the shift fact with NO destination id and no imperative — the LLM-620 second half.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerHomeMidShift(true) },
+	},
+	{
+		name: "keeper_home_mid_shift_evening_reads_his_own_hours",
+		summary: "LLM-620 arm 2 (the live 2026-08-07 Josiah Thorne lap). The shopkeeper stands in his house at 18:10 " +
+			"with an ACTIONABLE restock errand — wheat low, James Farm open and affordable — so the to-work yank is " +
+			"correctly deferred. Before LLM-620 that deferral returned no duty cue at all, leaving an ambient hour " +
+			"('Evening settles over the village.') with nothing tying it to his own shift; he answered 'Morning's " +
+			"come. I'm home, the fire's out, and there's business to attend to', walked to the shop, read the SAME " +
+			"evening at his post — where the shift fact IS rendered — as 'the day's winding down', and walked home. " +
+			"He honours the hour whenever a shift fact sits beside it. The golden pins that fact rendering away from " +
+			"post too, with its close time and without the '(destination: …)' token that would make it a yank. It ALSO " +
+			"pins the supplier cost hint as per-unit prose ('about 1 coin each'): the fixture's price observation is 6 " +
+			"coins for 6 sheaves, which used to render as the bare total '~6 coins' beneath a sell price of 1 — the " +
+			"misreading that kept this errand unresolved and the lap running.",
+		build: keeperHomeMidShiftActionableRestock,
+	},
+	{
 		name: "grower_stands_at_the_bush_the_cue_would_name",
 		summary: "LLM-617 steer arm — the live Moses James wedge. A wheat grower with an empty pack stands exactly on " +
 			"the loiter pin of his own RIPEST bush (9 units), with a second ripe bush (5) across the map. The " +
@@ -18512,4 +18548,186 @@ func smithWithEmptyShelfTakesCommissions() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// growerHomeMidShift builds the LLM-620 grower pair: Moses James standing inside
+// his own house during working hours, low on wheat, with owned bushes he remembers
+// gathering at. ripe selects the whole foil:
+//
+//   - ripe=false → the plot carries NOTHING ripe. The harvest cue still renders
+//     (it gates on low stock, not ripeness) and reads "walk out to your bushes to
+//     restock … none ripe yet — they will regrow, so check back later". There is no
+//     step to take, so this is a standing want and the to-work steer must FIRE.
+//   - ripe=true  → one bush has stock. The errand is real, the HOME-400/LLM-90
+//     suppression applies, and the status-only arm renders in the yank's place.
+//
+// Two bushes on purpose, both remembered and both his: with ripe=true only one
+// carries stock, so the fixture also proves Actionable reads the plot rather than
+// the first entry. He is at HOME, not at the field, which is the state the live lap
+// kept returning to and the one that used to render no shift fact at all.
+//
+// Idle, no orders, no price book, no clock read → byte-stable.
+func growerHomeMidShift(ripe bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		mosesID = sim.ActorID("moses")
+		farm    = sim.StructureID("james_farm")
+		home    = sim.StructureID("james_residence")
+	)
+	zero := 0
+	start, end := 360, 1080 // working hours 06:00–18:00
+	now := 900              // 15:00 — mid-shift, away from post
+	stock := 0
+	if ripe {
+		stock = 7
+	}
+	moses := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Moses James",
+		Role:              "farmer",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 20 * 32, Y: 100 * 32}.Tile(),
+		WorkStructureID:   farm,
+		HomeStructureID:   home,
+		InsideStructureID: home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             44,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"wheat": 2},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceForage, Max: 30},
+		}},
+		// Earned memory (LLM-79): the owned-bush cue only sees bushes he remembers.
+		KnownPlaces: map[sim.PlaceRef]*sim.KnownPlace{
+			"north_field": {Ref: "north_field", Kind: sim.PlaceKindObject, Affordances: []string{"gather:wheat"}},
+			"south_field": {Ref: "south_field", Kind: sim.PlaceKindObject, Affordances: []string{"gather:wheat"}},
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{mosesID: moses},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "James Farm"),
+			home: plainStructure(home, "James Residence"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"wheat": {
+				Name: "wheat", Capabilities: []string{"portable"}, DisplayLabel: "Wheat",
+				DisplayLabelSingular: "sheaf of wheat", DisplayLabelPlural: "sheaves of wheat",
+				Category: sim.ItemCategoryMaterial,
+			},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"north_field": {
+				ID:            "north_field",
+				DisplayName:   "Wheat",
+				Pos:           sim.WorldPos{X: 60 * 32, Y: 40 * 32},
+				OwnerActorID:  mosesID,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(stock), MaxQuantity: intp(9)},
+				},
+			},
+			"south_field": {
+				ID:            "south_field",
+				DisplayName:   "Wheat",
+				Pos:           sim.WorldPos{X: 62 * 32, Y: 44 * 32},
+				OwnerActorID:  mosesID,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "wheat", AvailableQuantity: intp(0), MaxQuantity: intp(9)},
+				},
+			},
+		},
+	}
+	return snap, mosesID, nil
+}
+
+// keeperHomeMidShiftActionableRestock is the LLM-620 Josiah Thorne scenario: the
+// shopkeeper at home during working hours with a restock errand that IS actionable
+// — wheat low, a supplier (James Farm) open, in business, and inside his purse.
+//
+// The suppression is therefore correct and stays: he is not yanked back to the shop
+// while a real errand stands. What the golden pins is the second half of the fix —
+// that deferring the yank no longer deletes the shift fact along with it. The hour
+// is evening (18:10) against a 21:00 close, exactly the live configuration in which
+// he wrote "Morning's come" at home and "the day's winding down" at his post twenty
+// nine seconds later.
+//
+// Idle, no huddle, no orders, one price observation for the cost hint → byte-stable.
+func keeperHomeMidShiftActionableRestock() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josiahID = sim.ActorID("josiah")
+		mosesID  = sim.ActorID("moses")
+		store    = sim.StructureID("general_store")
+		home     = sim.StructureID("thorne_residence")
+		farm     = sim.StructureID("james_farm")
+	)
+	start, end := 360, 1260 // working hours 06:00–21:00 (closes at 9 in the evening)
+	now := 1090             // 18:10 — evening, still on shift
+	published := time.Date(2026, 7, 1, 18, 10, 0, 0, time.UTC)
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 87, Y: 144},
+		WorkStructureID:   store,
+		HomeStructureID:   home,
+		InsideStructureID: home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             114,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"wheat": 0},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceBuy, Max: 20},
+		}},
+	}
+	moses := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCShared,
+		DisplayName:     "Moses James",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 20, Y: 100},
+		WorkStructureID: farm,
+		Inventory:       map[sim.ItemKind]int{"wheat": 40},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "wheat", Source: sim.RestockSourceProduce, Max: 40},
+		}},
+	}
+	// Buyer-side price history: what Josiah last paid Moses for wheat, which is the
+	// cost hint the walk-to bullet renders.
+	wheatBuys := sim.NewRingBuffer[sim.PriceObservation](8)
+	wheatBuys.Push(sim.PriceObservation{BuyerID: josiahID, Amount: 6, Qty: 6, Consumers: 1, At: published.Add(-2 * 24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			josiahID: josiah, mosesID: moses,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			store: plainStructure(store, "General Store"),
+			home:  plainStructure(home, "Thorne Residence"),
+			farm:  plainStructure(farm, "James Farm"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"wheat": {
+				Name: "wheat", Capabilities: []string{"portable"}, DisplayLabel: "Wheat",
+				DisplayLabelSingular: "sheaf of wheat", DisplayLabelPlural: "sheaves of wheat",
+				Category: sim.ItemCategoryMaterial,
+			},
+		},
+		RestockReorderPct: 25,
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: mosesID, Item: "wheat"}: wheatBuys,
+		},
+	}
+	return snap, josiahID, nil
 }

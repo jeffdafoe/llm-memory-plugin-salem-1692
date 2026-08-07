@@ -62,6 +62,34 @@ type ForageView struct {
 	WildSources []WildForageItemView
 }
 
+// Actionable reports whether there is ripe stock anywhere this cue names. The
+// forage-side twin of RestockingView.Actionable, gating the same suppression.
+//
+// The cue renders on LOW STOCK, not ripeness, so it can say "walk out to your
+// bushes to restock" and "none ripe yet" in one block — a want with no step to
+// take, which counted as an errand and suppressed shift duty indefinitely
+// (LLM-620).
+//
+// RipeUnits alone covers the LLM-617 AtRipeBush case: buildForage accumulates it
+// BEFORE the at-pin skip, so a grower standing on his only ripe bush still reads as
+// mid-errand — he cannot walk anywhere, but gather is right there.
+func (v *ForageView) Actionable() bool {
+	if v == nil {
+		return false
+	}
+	for _, it := range v.Items {
+		if it.RipeUnits > 0 {
+			return true
+		}
+	}
+	for _, w := range v.WildSources {
+		if w.RipeUnits > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ForageItemView is one low `forage` item the grower could replenish by
 // harvesting: its label, current on-hand vs the cap it tops up toward, how many
 // of the grower's own bushes carry it, the total ripe units across them, and the

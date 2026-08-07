@@ -1983,6 +1983,21 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		}
 		return
 	}
+	// LLM-620 status arm. Mirrors the at-post line's shape deliberately (same
+	// opening, same parenthesised close time): that pairing of ambient hour with
+	// shift fact is what the model reads correctly at post. No destination id and no
+	// verb, unlike the ToWork arm below — that is what keeps it a fact rather than
+	// the yank its caller just chose to defer.
+	if v.AwayFromPost {
+		if v.ShiftEndMin != nil {
+			fmt.Fprintf(b, "It is your working hours and "+dutySteerToPostMarker+" at %s (you close at %s).\n\n",
+				anchorPlace(v.TargetLabel, "your workplace"), sim.ClockHourProse(*v.ShiftEndMin))
+		} else {
+			fmt.Fprintf(b, "It is your working hours and "+dutySteerToPostMarker+" at %s.\n\n",
+				anchorPlace(v.TargetLabel, "your workplace"))
+		}
+		return
+	}
 	if v.ToWork {
 		fmt.Fprintf(b, "It is your working hours, yet "+dutySteerToPostMarker+" — make your way to %s (destination: %s) now.\n\n",
 			anchorPlace(v.TargetLabel, "your workplace"), v.TargetID)

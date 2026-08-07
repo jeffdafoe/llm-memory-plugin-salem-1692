@@ -87,13 +87,11 @@ func (v *RestockingView) AllBlocked() bool {
 // place to go is handed two contradictory instructions and left to pick.
 //
 // The branch order below MIRRORS renderRestocking's, and must keep mirroring it —
-// that correspondence is the whole guarantee. Conserve short-circuits everything
-// (its lead replaces the buy directory and every item renders as a hold-off);
-// all-blocked renders reasons with deliberately NO destination ids; and per item, a
-// standing offer, a blocked item, or a co-present seller each render something
-// other than the walk-to list.
+// that correspondence is the whole guarantee. The section-wide short-circuits live
+// in buyPathsEnabled; per item, a standing offer, a blocked item, or a co-present
+// seller each render something other than the walk-to list.
 func (v *RestockingView) HasWalkToSupplier() bool {
-	if v == nil || len(v.Items) == 0 || v.Conserve || v.AllBlocked() {
+	if !v.buyPathsEnabled() {
 		return false
 	}
 	for _, it := range v.Items {
@@ -105,6 +103,50 @@ func (v *RestockingView) HasWalkToSupplier() bool {
 		}
 	}
 	return false
+}
+
+// buyPathsEnabled is the section-wide gate both HasWalkToSupplier and Actionable
+// stand on: does this section offer ANY way to buy at all, before either asks which
+// kind. Conserve short-circuits everything (its lead replaces the buy directory and
+// every item renders as a hold-off, LLM-294); all-blocked renders reasons with
+// deliberately NO destination ids (LLM-406); an empty section renders nothing.
+//
+// Extracted so the two callers cannot drift (code_review, LLM-620). Actionable
+// cannot simply delegate to HasWalkToSupplier — it deliberately also admits a
+// co-present seller, which HasWalkToSupplier skips because that item renders a
+// buy-here imperative rather than a walk-to bullet — so without this the same three
+// conditions would be spelled out twice, in a file whose whole contract is that
+// these predicates keep mirroring renderRestocking.
+func (v *RestockingView) buyPathsEnabled() bool {
+	return v != nil && len(v.Items) > 0 && !v.Conserve && !v.AllBlocked()
+}
+
+// hasCoPresentSeller reports whether any low item has a seller standing with the
+// reseller right now — the arm that makes a section actionable with no walk to make.
+func (v *RestockingView) hasCoPresentSeller() bool {
+	for _, it := range v.Items {
+		if it.CoPresentSeller != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// Actionable reports whether this section gives the reseller something it can act
+// on RIGHT NOW — a supplier to walk to, or a seller standing with it. It gates the
+// duty-steer suppression (build.go), which exists so an agent mid-errand is not
+// yanked back to its post: an agent that cannot take one step toward its "errand"
+// is not mid-errand, and level-triggering on the cue's mere presence let a want
+// that never resolves suppress shift duty forever (LLM-620).
+//
+// A co-present seller counts despite naming no walk — transacting with him IS the
+// errand, happening here. Conserve/AllBlocked are excluded via buyPathsEnabled.
+// Same actionable-buy-path test LLM-277 applies to farm upkeep at the call site.
+func (v *RestockingView) Actionable() bool {
+	if !v.buyPathsEnabled() {
+		return false
+	}
+	return v.HasWalkToSupplier() || v.hasCoPresentSeller()
 }
 
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
@@ -274,7 +316,11 @@ type RestockVendor struct {
 	// observed anchor on the EXACT sellers this list points at — not every seller at
 	// the structure — so the anchor can't average in a non-rendered co-worker.
 	VendorID sim.ActorID
-	CostText string // per-buyer last-paid "~3 coins", or "" when no price is on record
+	// CostText is the per-buyer last-paid price, PER UNIT ("about 1 coin each") for a
+	// multi-unit purchase and "~3 coins" for a single one; "" when no price is on
+	// record. Per-unit since LLM-620 — a bare basket total beneath this cue's
+	// per-unit sentences was read as the unit price and stalled a restock for hours.
+	CostText string
 
 	// Barter marks a supplier the buyer's COINS cannot cover but its GOODS can reach
 	// — the LLM-406 means-to-pay state, and the exact mirror of SatiationVendor.Barter

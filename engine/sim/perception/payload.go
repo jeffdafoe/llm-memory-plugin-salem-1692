@@ -2138,14 +2138,29 @@ type DutySteerView struct {
 	// the off-shift wind-down fields.
 	AtPost bool
 
+	// AwayFromPost is the STATUS-ONLY arm: on-shift and away from your own post, but
+	// legitimately so (an errand, a live transaction, a satiation source reached).
+	// It states the shift fact where the to-work yank is suppressed — without it the
+	// prompt carries an ambient hour and nothing tying it to this actor's shift, and
+	// the model invents one (LLM-620).
+	//
+	// Two constraints, both load-bearing: carries NO destination id, or it becomes
+	// the yank it replaced (HOME-349 — that token is what the model echoes into
+	// move_to); and RENDER-ONLY like AtPost, excluded from shouldSkipNoop so it
+	// cannot force an idle tick that used to skip (HOME-441). Mutually exclusive
+	// with ToWork.
+	AwayFromPost bool
+
 	// ShiftEndMin is the keeper's effective close time as a wall-clock
 	// minute-of-day (0–1439) — its own schedule end, else the day-active dusk
-	// fallback (shiftWindowBounds). Set only on the AtPost cue (LLM-40): the
-	// at-post stabilizer states when the shift ends so "stay open later" is a
-	// bounded decision rather than a vague diligence reflex (the model otherwise
-	// reached for stay_open with no customer to serve and no sense of how near
-	// close was). nil → render omits the close-time clause. Render voices it via
-	// sim.ClockHourProse.
+	// fallback (shiftWindowBounds). Set on the AtPost cue (LLM-40) and on the
+	// AwayFromPost status arm, which states the same close time for the same
+	// reason: the shift's end is what makes the ambient hour mean something. On
+	// AtPost it makes "stay open later" a bounded decision rather than a vague
+	// diligence reflex (the model otherwise reached for stay_open with no customer
+	// to serve and no sense of how near close was); on AwayFromPost it is the anchor
+	// that stops the hour being re-invented. nil → render omits the close-time
+	// clause. Render voices it via sim.ClockHourProse.
 	ShiftEndMin *int
 
 	// ForageErrand modifies the AtPost stabilizer for a grower-seller who also has

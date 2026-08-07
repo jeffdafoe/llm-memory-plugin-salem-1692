@@ -317,12 +317,37 @@ func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
 	}
 }
 
-// TestBuildDutySteer_OptionBSuppression — ZBBS-HOME-400, amended by ZBBS-HOME-463.
-// The to-work cue is suppressed while the agent is mid-business — an active
-// restock errand or a pending outgoing offer — matching the shift-duty warrant. A
-// RED need suppresses both arms via the separate gate above; a merely MILD need no
-// longer suppresses the commute (HOME-463). The go-home arm is never suppressed by
-// these signals.
+// wantNoYank asserts the mid-business suppression contract as LLM-620 amended it:
+// the to-work YANK is held off, and what remains is the status-only AwayFromPost
+// arm — never a movement instruction, never a destination id.
+//
+// These cases returned nil outright before LLM-620, which suppressed more than the
+// yank: it removed the only text tying the ambient hour to the actor's own shift,
+// and the model then invented one ("Morning's come", live, at 18:10 mid-shift).
+// Asserting the arm's PRESENCE here is what stops a future simplification from
+// quietly restoring the nil and the confabulation with it.
+func wantNoYank(t *testing.T, v *DutySteerView, why string) {
+	t.Helper()
+	switch {
+	case v == nil:
+		t.Fatalf("want the status-only away-from-post arm (%s), got nil — the shift fact must survive the suppression", why)
+	case v.ToWork:
+		t.Fatalf("want no to-work yank (%s), got ToWork set: %+v", why, v)
+	case !v.AwayFromPost:
+		t.Fatalf("want AwayFromPost set (%s), got %+v", why, v)
+	case v.TargetID != "":
+		t.Fatalf("the status arm must carry no destination id (%s) — that token is what the model echoes into move_to: %+v", why, v)
+	}
+}
+
+// TestBuildDutySteer_OptionBSuppression — ZBBS-HOME-400, amended by ZBBS-HOME-463
+// and LLM-620. The to-work cue is suppressed while the agent is mid-business — an
+// active restock errand or a pending outgoing offer — matching the shift-duty
+// warrant, and what renders instead is the status-only arm (wantNoYank). A RED need
+// suppresses both arms via the separate gate above and still yields nil, because
+// there duty framing itself is unwanted, not merely its imperative. A merely MILD
+// need no longer suppresses the commute (HOME-463). The go-home arm is never
+// suppressed by these signals.
 func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 	// On-shift (now 18:20 in [16:00,03:00)), away from work — the baseline that
 	// fires the to-work cue when no suppressor is present.
@@ -343,9 +368,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 	})
 	t.Run("active restock errand suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, true, false, false); v != nil {
-			t.Fatalf("want nil (restock errand suppresses to-work), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, true, false, false), "restock errand")
 	})
 	t.Run("active forage errand suppresses toWork (LLM-90)", func(t *testing.T) {
 		// A grower walking out to her own bushes to restock a bare shelf is the
@@ -353,9 +376,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		// errand, so the to-work yank must defer it too (else it drags her back
 		// before she reaches the bushes).
 		snap, a := onShiftAway()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, true, false); v != nil {
-			t.Fatalf("want nil (forage errand suppresses to-work), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, true, false), "forage errand")
 	})
 	t.Run("active upkeep errand suppresses toWork (LLM-277)", func(t *testing.T) {
 		// An owner who has left her post to buy nails to mend her worn business
@@ -363,9 +384,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		// errand — the walk to the smith IS the errand, the buy-side twin of restock —
 		// so the to-work yank must defer it, else she is dragged home before she buys.
 		snap, a := onShiftAway()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, true); v != nil {
-			t.Fatalf("want nil (upkeep errand suppresses to-work), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, true), "upkeep errand")
 	})
 	t.Run("mild (sub-red) need does NOT suppress toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
@@ -388,9 +407,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
 			"well": thirstWell("well", "Well", 0, 0, -8), // at the actor's tile
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v != nil {
-			t.Fatalf("want nil (at a free water source — finish the errand), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "at a free water source — finish the errand")
 	})
 	t.Run("at a vendor for a felt need WITH coins suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway() // a.InsideStructureID = "general_store"
@@ -400,9 +417,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a, "wally": seller}
 		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
 		snap.ItemKinds = foodDrinkCatalog()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v != nil {
-			t.Fatalf("want nil (standing at a stall he can pay — finish the buy), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "standing at a stall he can pay — finish the buy")
 	})
 	t.Run("at a paid vendor but BROKE does NOT suppress (HOME-463 guard)", func(t *testing.T) {
 		snap, a := onShiftAway()
@@ -460,9 +475,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		if sat == nil || len(sat.Needs) != 1 || len(sat.Needs[0].Vendors) != 1 {
 			t.Fatalf("precondition: want the thirst vendor cue, got %+v", sat)
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v != nil {
-			t.Fatalf("want nil (cue offers the buy here; duty must not yank him off it), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "cue offers the buy here; duty must not yank him off it")
 	})
 	t.Run("red need suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
@@ -478,9 +491,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 			1: {BuyerID: "moses", State: sim.PayLedgerStatePending},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v != nil {
-			t.Fatalf("want nil (pending offer suppresses to-work), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "pending outgoing offer")
 	})
 	// ZBBS-WORK-431: a seller's active scene_quote addressed to the buyer is an
 	// in-progress purchase — the buyer-side complement to the pending-outgoing-offer
@@ -491,9 +502,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
 			2: {ID: 2, SellerID: "josiah", TargetBuyer: "moses", State: sim.SceneQuoteStateActive},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v != nil {
-			t.Fatalf("want nil (an offered quote suppresses to-work), got %+v", v)
-		}
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "an offered quote to this buyer")
 	})
 	t.Run("a quote to SOMEONE ELSE does not suppress", func(t *testing.T) {
 		snap, a := onShiftAway()
