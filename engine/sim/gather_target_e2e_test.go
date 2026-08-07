@@ -219,6 +219,46 @@ func TestGather_ForeignPinOnRingSlot_DepartureClearsTheBypass(t *testing.T) {
 	}
 }
 
+// TestGather_ForeignPinOnRingSlot_StopMoveLeavesTheBypassClosed — LLM-618, code_review
+// round 2. The sibling above proves MoveActor clears the target, but it then drops the
+// MoveIntent by hand to isolate the poacher-gate assertion, so it would still pass if a
+// real halt path later restored or re-stamped GatherTargetObjectID. This one runs the
+// production mechanism end to end: commit the move, then StopMove — the actual halt —
+// and require the target to still be empty and the gate to still reject.
+func TestGather_ForeignPinOnRingSlot_StopMoveLeavesTheBypassClosed(t *testing.T) {
+	w, cancel := buildForeignPinPlotWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["moses"].GatherTargetObjectID = "mine_bush"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	away := sim.TilePos{X: sim.PadX + 12, Y: sim.PadY + 12}
+	if _, err := w.Send(sim.MoveActor("moses", sim.NewPositionDestination(away), false, time.Now().UTC())); err != nil {
+		t.Fatalf("move away: %v", err)
+	}
+	if _, err := w.Send(sim.StopMove("moses", time.Now().UTC())); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["moses"]
+		if a.MoveIntent != nil {
+			return nil, fmt.Errorf("StopMove should clear the intent, still in flight")
+		}
+		if a.GatherTargetObjectID != "" {
+			return nil, fmt.Errorf("halting a walk must not restore the gather target, got %q", a.GatherTargetObjectID)
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("post-stop state: %v", err)
+	}
+	_, err := w.Send(sim.Gather("moses", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource (a halted walk leaves no walked-to target)", err)
+	}
+}
+
 // TestGather_DensePlot_HonorsWalkedToTarget: with BOTH bushes ripe (so lowest-id
 // would pick dry_bush), the bush she deliberately walked to wins.
 func TestGather_DensePlot_HonorsWalkedToTarget(t *testing.T) {
