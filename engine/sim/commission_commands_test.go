@@ -30,6 +30,8 @@ func commissionRecipes() map[sim.ItemKind]*sim.ItemRecipe {
 	return map[sim.ItemKind]*sim.ItemRecipe{
 		"nail":   {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 2},
 		"widget": {OutputItem: "widget", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 3, RetailPrice: 6},
+		// LLM-619: makeable on paper, but a lodging capability keeps it off commissions.
+		"cot": {OutputItem: "cot", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 3, RetailPrice: 6},
 	}
 }
 
@@ -46,6 +48,9 @@ func buildCommissionWorld(t *testing.T, smithRestock []sim.RestockEntry, smithIn
 		"nail":   {Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: sim.ItemCategoryMaterial, SortOrder: 310},
 		"widget": {Name: "widget", DisplayLabel: "Widget", DisplayLabelSingular: "widget", DisplayLabelPlural: "widgets", Category: sim.ItemCategoryMaterial, SortOrder: 320},
 		"pebble": {Name: "pebble", DisplayLabel: "Pebble", DisplayLabelSingular: "pebble", DisplayLabelPlural: "pebbles", Category: sim.ItemCategoryMaterial, SortOrder: 330},
+		// A LODGING kind (LLM-619): produced and makeable, so only the capability
+		// gate keeps it off the commission path — see TestAcceptPay_Commission_LodgingKindRejects.
+		"cot": {Name: "cot", DisplayLabel: "Cot", DisplayLabelSingular: "cot", DisplayLabelPlural: "cots", Category: sim.ItemCategoryMaterial, Capabilities: []string{"lodging"}, SortOrder: 340},
 	})
 	handles.Recipes.Seed(commissionRecipes())
 
@@ -663,5 +668,46 @@ func TestCommission_PartialPayment_ExpiryNarratesBothSides_Refund(t *testing.T) 
 	}
 	if joined := strings.Join(readSalientFacts(t, w, "alice", "smith"), " | "); !strings.Contains(joined, "deposit came back") {
 		t.Errorf("alice's memory of smith should record the refund, got %q", joined)
+	}
+}
+
+// TestAcceptPay_Commission_LodgingKindRejects pins the lodging/service gate at the
+// ACCEPT level (LLM-619). "cot" is produced by the smith and has a positive-rate
+// recipe, so every other commission condition is met — only the lodging capability
+// keeps it off the forward-order path. A stockless accept must therefore reject
+// rather than mint an order: lodging is rendered, not forged, and its shortfall is
+// a real rejection the buyer needs to hear.
+//
+// The perception-side sibling is TestCommissionableKind_MatchesAcceptGate; this is
+// the half that proves the live commerce behaviour rather than the wiring.
+func TestAcceptPay_Commission_LodgingKindRejects(t *testing.T) {
+	w, stop := buildCommissionWorld(t, []sim.RestockEntry{{Item: "cot", Source: sim.RestockSourceProduce, Max: 3}}, nil, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOffer(t, w, 1, "cot", 1, 6, at)
+
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err == nil {
+		t.Fatal("AcceptPay: want a stock-shortfall reject for a LODGING kind — it is rendered, not forged, so there is no commission to mint")
+	}
+	if orders := readOrders(t, w); len(orders) != 0 {
+		t.Errorf("no Order may be minted for a lodging kind, got %+v", orders)
+	}
+}
+
+// TestAcceptPay_Commission_NoRecipeRejects pins the makeable-recipe gate at the
+// ACCEPT level (LLM-619). "pebble" is a seeded item kind with NO recipe, so the
+// smith could never fulfil the order however willing — it would only ever
+// expire-and-refund. A stockless accept must reject rather than mint one.
+func TestAcceptPay_Commission_NoRecipeRejects(t *testing.T) {
+	w, stop := buildCommissionWorld(t, []sim.RestockEntry{{Item: "pebble", Source: sim.RestockSourceProduce, Max: 3}}, nil, 50, nil)
+	defer stop()
+	at := time.Now().UTC()
+	commissionOffer(t, w, 1, "pebble", 1, 6, at)
+
+	if _, err := w.Send(sim.AcceptPay("smith", 1, at)); err == nil {
+		t.Fatal("AcceptPay: want a stock-shortfall reject for a kind with no recipe — an order for it could never be fulfilled")
+	}
+	if orders := readOrders(t, w); len(orders) != 0 {
+		t.Errorf("no Order may be minted for an unmakeable kind, got %+v", orders)
 	}
 }

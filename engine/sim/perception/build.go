@@ -3613,19 +3613,79 @@ func hasOfferedQuote(snap *sim.Snapshot, actorID sim.ActorID) bool {
 //     the seller to offer them; and
 //   - the seller already has a live (Active) scene_quote out to that customer —
 //     they've offered and await the buyer; re-cueing would re-post every tick.
+//
+// commissionableGoods lists the goods the seller can forge TO ORDER but holds none
+// of, so the sale cue offers them alongside what is on the shelf (LLM-619).
+//
+// The gap it closes: "Your goods to sell" was built from physical inventory alone,
+// so a good at zero on hand vanished from the listing even though
+// acceptPendingOffer would have honoured the sale as a commission order. Ezekiel
+// Crane held 0 shovels while forging one, Moses James named "shovel" six times,
+// and neither ever called a commerce tool — the shovel simply was not on the list
+// of things the cue said he could sell. They struck the bargain aloud instead, six
+// times, which commits nothing, so no order row existed for LLM-518's farm-upkeep
+// suppression to find and the buyer walked forge↔home for over an hour.
+//
+// Two gates beyond sim.CommissionableKind, both deliberate:
+//   - already held is EXCLUDED — a good on the shelf is an ordinary take-home sale
+//     and is already listed with its count; listing it twice would be noise.
+//   - sim.HasProduceInputs is REQUIRED — the same inputs test the produce tool
+//     consumes on (and the LLM-324 forge-choice filter applies), so the cue never
+//     invites a seller to promise a good they cannot even start. A commission is a
+//     promise to forge, and a promise with no makings is the vapour trade this cue
+//     is otherwise meant to replace.
+//
+// Ordering is by the policy's produce entries, which are stable, and Render sorts
+// the merged list anyway.
+func commissionableGoods(snap *sim.Snapshot, subject sim.ActorID, held map[sim.ItemKind]bool) []OfferableGood {
+	// nil snap is reachable: the empty-shelf guard above used to return before any
+	// snapshot read, and a caller passing nil relied on that ordering.
+	if snap == nil {
+		return nil
+	}
+	actorSnap := snap.Actors[subject]
+	if actorSnap == nil || actorSnap.RestockPolicy == nil {
+		return nil
+	}
+	var out []OfferableGood
+	for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
+		if held[e.Item] {
+			continue
+		}
+		if !sim.CommissionableKind(snap.Recipes, snap.ItemKinds, actorSnap.RestockPolicy, e.Item) {
+			continue
+		}
+		if !sim.HasProduceInputs(snap.Recipes[e.Item], actorSnap.Inventory) {
+			continue
+		}
+		label := itemDisplayLabel(snap, e.Item)
+		if label == "" {
+			continue
+		}
+		out = append(out, OfferableGood{Label: label, OnHand: 0, Commission: true, kind: e.Item})
+	}
+	return out
+}
+
 func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusiness bool, members []HuddleMember, inventory []InventoryItem) *OfferableCustomersView {
-	if !atOwnBusiness || len(members) == 0 || len(inventory) == 0 {
+	// An EMPTY shelf is no longer a reason to bail: a maker with nothing on hand can
+	// still take a commission (LLM-619). The len(goods) == 0 check below is the real
+	// "nothing to offer" gate, and it now accounts for both sources.
+	if !atOwnBusiness || len(members) == 0 {
 		return nil
 	}
 	goods := make([]OfferableGood, 0, len(inventory))
+	held := make(map[sim.ItemKind]bool, len(inventory))
 	for _, it := range inventory {
 		if it.Label == "" {
 			continue
 		}
+		held[it.kind] = true
 		// it.Use is already resolved by buildInventoryView (LLM-166), so the
 		// for-sale listing reads consistently with the carry readout.
 		goods = append(goods, OfferableGood{Label: it.Label, OnHand: it.Qty, Use: it.Use, kind: it.kind})
 	}
+	goods = append(goods, commissionableGoods(snap, subject, held)...)
 	if len(goods) == 0 {
 		return nil
 	}

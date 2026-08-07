@@ -2257,6 +2257,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: npcQuenchedAtWellStaleCredit,
 	},
 	{
+		name: "smith_with_empty_shelf_takes_commissions",
+		summary: "LLM-619 (the live 2026-08-07 Ezekiel/Moses case). The smith produces shovels, holds NONE, and has the " +
+			"water a batch needs, with the buyer co-present at his forge. The sale cue used to build 'Your goods to " +
+			"sell' from physical inventory alone, so the shovel vanished and the model read that as 'cannot sell' — " +
+			"answering with a spoken promise, which commits nothing, leaves no order for LLM-518's farm-upkeep " +
+			"suppression to find, and sent the buyer forge<->home 13 times in 75 minutes over six re-struck bargains. " +
+			"The golden pins the shovel listed as a commission AND the steer naming sell for it — the listing alone " +
+			"was never the whole problem, the model also had to be told the sale was still its to make. Nail is the " +
+			"control: 3 on hand, so it stays an ordinary take-home sale listed once with its count.",
+		build: smithWithEmptyShelfTakesCommissions,
+	},
+	{
 		name: "grower_stands_at_the_bush_the_cue_would_name",
 		summary: "LLM-617 steer arm — the live Moses James wedge. A wheat grower with an empty pack stands exactly on " +
 			"the loiter pin of his own RIPEST bush (9 units), with a second ripe bush (5) across the map. The " +
@@ -7869,6 +7881,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"producer_at_post_sub_batch_sales": true,
 		// LLM-613: Josiah keeps his store on shift, at post, with the man he hires.
 		"employer_reads_the_wages_he_paid": true,
+		// LLM-619: Ezekiel keeps his forge on shift, at post, with a buyer before him.
+		"smith_with_empty_shelf_takes_commissions": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -7994,6 +8008,8 @@ func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
 		// LLM-613: the coin record holds the pair's week, but the fixture carries no
 		// seller-side SALES, so his trade reads thin on the same rule as the others.
 		"employer_reads_the_wages_he_paid": true,
+		// LLM-619: the smith fixture carries no sales either, so his week reads slow too.
+		"smith_with_empty_shelf_takes_commissions": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -18424,4 +18440,76 @@ func growerAtForeignPinRingSlot(walkedTo bool) (*sim.Snapshot, sim.ActorID, []si
 		},
 	}
 	return snap, mosesID, nil
+}
+
+// smithWithEmptyShelfTakesCommissions is the LLM-619 fixture — the live Ezekiel
+// Crane / Moses James shape of 2026-08-07.
+//
+// The smith PRODUCES shovels, holds NONE (one is on the fire), and has the water a
+// batch needs. Moses is co-present at the forge. Before this fix the sale cue built
+// "Your goods to sell" from physical inventory alone, so the shovel vanished from
+// the listing entirely and the model read that as "cannot sell" — answering with a
+// spoken promise instead. A promise commits nothing, so no order row existed for
+// LLM-518's farm-upkeep suppression to find, and Moses walked forge<->home 13 times
+// in 75 minutes re-striking the same bargain six times.
+//
+// The golden pins the shovel present as a commission, and the steer that names
+// `sell` for it — because the listing alone was never the whole problem; the model
+// also had to be told the sale was still its to make. Nail is the control: he holds
+// 3, so it stays an ordinary take-home sale listed with its count, never doubled.
+//
+// Idle, no orders, no price book, no clock read → byte-stable.
+func smithWithEmptyShelfTakesCommissions() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID = sim.ActorID("ezekiel")
+		mosesID   = sim.ActorID("moses")
+		forge     = sim.StructureID("blacksmith")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	huddle := sim.HuddleID("hud-llm619")
+	ezekiel := &sim.ActorSnapshot{
+		Kind: sim.KindNPCStateful, DisplayName: "Ezekiel Crane", Role: "blacksmith",
+		State: sim.StateIdle, WorkStructureID: forge, InsideStructureID: forge,
+		BusinessownerState: &sim.BusinessownerState{},
+		CurrentHuddleID:    huddle,
+		ScheduleStartMin:   &start, ScheduleEndMin: &end,
+		Coins: 511, Needs: map[sim.NeedKey]int{},
+		// No shovel on hand — the whole point. Water is the shovel's input.
+		Inventory: map[sim.ItemKind]int{"water": 3, "nail": 3},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "shovel", Source: sim.RestockSourceProduce, Max: 3},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	moses := &sim.ActorSnapshot{
+		Kind: sim.KindNPCShared, DisplayName: "Moses James", Role: "farmer",
+		State: sim.StateIdle, InsideStructureID: forge, CurrentHuddleID: huddle,
+		Coins: 50, Needs: map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, mosesID: moses},
+		Structures:       map[sim.StructureID]*sim.Structure{forge: plainStructure(forge, "Blacksmith")},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, StructureID: forge, Members: map[sim.ActorID]struct{}{ezekielID: {}, mosesID: {}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"shovel": {Name: "shovel", DisplayLabel: "Shovel", Capabilities: []string{"portable"},
+				DisplayLabelSingular: "shovel", DisplayLabelPlural: "shovels", Category: sim.ItemCategoryCraft},
+			"nail": {Name: "nail", DisplayLabel: "Nail", Capabilities: []string{"portable"},
+				DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: sim.ItemCategoryCraft},
+			"water": {Name: "water", DisplayLabel: "Water", Capabilities: []string{"portable"},
+				DisplayLabelSingular: "flask of water", DisplayLabelPlural: "flasks of water", Category: sim.ItemCategoryDrink},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"shovel": {OutputItem: "shovel", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+				Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+			"nail": {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+				Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+		},
+	}
+	return snap, ezekielID, nil
 }

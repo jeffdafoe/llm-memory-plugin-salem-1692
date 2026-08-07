@@ -2810,6 +2810,44 @@ func isAdvanceLodgingBooking(w *World, entry *PayLedgerEntry, at time.Time) bool
 //   - Stock short (have − reserved < needed): with stock on hand it's a normal
 //     deliver-at-accept take-home sale, not a commission.
 //
+// CommissionableKind reports whether `kind` is a good the holder of `policy` can
+// take a FORWARD order for — sell it now and forge it after — rather than one that
+// must be handed over from stock at accept time. The KIND-level half of
+// isCommissionOrder's test, split out because it is the half that is knowable
+// before any offer exists.
+//
+// Exported so the perception cue and the accept path share one definition of
+// "commissionable" (the LLM-617 lesson, applied deliberately). The seller-side
+// sale cue advertises exactly these goods when stock is empty, and
+// acceptPendingOffer waives its stock gate for exactly these goods; a cue that
+// judged it independently would either dangle a sale accept rejects, or hide one
+// accept would have honoured — which is LLM-619: Ezekiel's shovel was absent from
+// "Your goods to sell" purely because he held none, so six struck bargains never
+// became orders and the buyer walked the same loop for over an hour.
+//
+// The three gates, all pure over catalog + policy:
+//   - not a service / lodging kind — those are rendered, not forged, and their
+//     shortfall is a real rejection.
+//   - a makeable recipe (positive rate) — otherwise the order could never be
+//     fulfilled and would only ever expire-and-refund.
+//   - the seller actually PRODUCES it — a reseller who merely stocks a good has
+//     no forge to make good on the promise.
+//
+// It deliberately says nothing about whether the inputs are on hand right now.
+// That axis belongs to the caller: accept treats a commission as a promise to
+// forge later, while the cue additionally requires sim.HasProduceInputs so it
+// never invites a seller to promise what they cannot start.
+func CommissionableKind(recipes map[ItemKind]*ItemRecipe, kinds map[ItemKind]*ItemKindDef, policy *RestockPolicy, kind ItemKind) bool {
+	if def := kinds[kind]; def != nil && (def.HasCapability("service") || def.HasCapability("lodging")) {
+		return false
+	}
+	r := recipes[kind]
+	if r == nil || r.RateQty <= 0 || r.RatePerHours <= 0 {
+		return false
+	}
+	return policy.Produces(kind)
+}
+
 // MUST run inside a Command.Fn (reads w.Orders / w.Recipes).
 func isCommissionOrder(w *World, seller *Actor, entry *PayLedgerEntry) bool {
 	if entry == nil || seller == nil || entry.IsGift || entry.ConsumeNow {
@@ -2819,10 +2857,7 @@ func isCommissionOrder(w *World, seller *Actor, entry *PayLedgerEntry) bool {
 		return false
 	}
 	kind := entry.ItemKind
-	if itemHasCapability(w, kind, "service") || itemHasCapability(w, kind, "lodging") {
-		return false
-	}
-	if !makeableRecipe(w, kind) || !seller.RestockPolicy.Produces(kind) {
+	if !CommissionableKind(w.Recipes, w.ItemKinds, seller.RestockPolicy, kind) {
 		return false
 	}
 	effConsumers := effectivePayConsumerCount(entry.ConsumerIDs)

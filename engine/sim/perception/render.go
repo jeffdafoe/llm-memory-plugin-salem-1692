@@ -2325,9 +2325,16 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 			// the seller to name a quantity, so it must see what it actually holds.
 			// An inedible ingredient also carries its use (LLM-166), folded into
 			// the same parens as the carry readout.
-			if g.Use != "" {
+			switch {
+			case g.Commission:
+				// None on hand, but his to forge (LLM-619). Say both halves: that
+				// the shelf is bare, and that the sale is still his to make. The
+				// bare count alone read as "cannot sell" and sent the model to a
+				// spoken promise that commits nothing.
+				goods = append(goods, fmt.Sprintf("%s (none on hand — yours to make to order)", s))
+			case g.Use != "":
 				goods = append(goods, fmt.Sprintf("%s (%d on hand, %s)", s, g.OnHand, sanitizeInline(g.Use)))
-			} else {
+			default:
 				goods = append(goods, fmt.Sprintf("%s (%d on hand)", s, g.OnHand))
 			}
 		}
@@ -2352,6 +2359,19 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 	// at resolvePayItems (LLM-445), so don't advertise it.
 	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin — goods that travel, not a meal served to eat here — you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them, and the words you speak aloud in say. Do not put the trade to them with the speak tool: speaking ends your turn, and the offer would never be made. They are then free to accept, decline, or counter.\n")
 	fmt.Fprintf(b, "Your goods to sell: %s.\n", strings.Join(goods, ", "))
+	// LLM-619: the listing alone is not enough. With an empty shelf the model reads
+	// a bare good as unsellable and answers with a spoken promise — "come back at
+	// sunrise" — which commits nothing, leaves no order, and sends the buyer round
+	// the same walk every tick. Say plainly that the sale is still his to make, and
+	// name `sell` again so the path out is the tool and not the sentence. Rendered
+	// only when something is actually commissionable, so a seller with a full shelf
+	// never carries the line.
+	for _, g := range v.Goods {
+		if g.Commission {
+			b.WriteString("A good you have none of but can make is still yours to sell — call sell for it as you would any other, and they pay now for what you forge after. Do not settle it with the speak tool: a promise spoken aloud binds nothing, and they will be back asking again.\n")
+			break
+		}
+	}
 	// LLM-171: a co-present customer who MAKES one of these goods is the wrong
 	// person to pitch it to — your stock of it came from a maker like them. Name
 	// the overlap so the keeper doesn't sell a smith his own skillet back (which a

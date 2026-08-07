@@ -1266,8 +1266,15 @@ type OfferableGood struct {
 	// Use is the "used to produce X" annotation for an INEDIBLE sellable
 	// ingredient (LLM-166) — mirrors InventoryItem.Use so the for-sale listing
 	// reads consistently with the carry readout. Empty otherwise.
-	Use  string
-	kind sim.ItemKind
+	Use string
+	// Commission marks a good the seller holds NONE of but can forge to order
+	// (LLM-619): sim.CommissionableKind plus inputs on hand. acceptPendingOffer
+	// waives its stock gate for exactly these, so the sale is real — but with an
+	// empty shelf the good was previously absent from the listing entirely, and
+	// the model read that as "cannot sell" and fell back to a spoken promise
+	// nothing commits. OnHand is always 0 for these.
+	Commission bool
+	kind       sim.ItemKind
 }
 
 // ProducerNote names a co-present customer and the seller's goods that customer

@@ -369,3 +369,132 @@ func TestBuild_OfferableCustomers_NilForBusinessownerNotInHuddle(t *testing.T) {
 		t.Errorf("expected no cue for a businessowner not in a huddle, got %+v", p.OfferableCustomers)
 	}
 }
+
+// llm619Snap builds the live LLM-619 shape: a smith who PRODUCES shovels, holds
+// NONE, and has the water a shovel needs. `water` varies the inputs axis — 0 means
+// he cannot start a batch, so the commission must not be advertised.
+func llm619Snap(water int) (*sim.Snapshot, []InventoryItem) {
+	smith := &sim.ActorSnapshot{
+		DisplayName: "Ezekiel Crane", Role: "blacksmith", Kind: sim.KindNPCStateful,
+		Inventory: map[sim.ItemKind]int{"water": water, "nail": 3},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "shovel", Source: sim.RestockSourceProduce, Max: 3},
+			{Item: "nail", Source: sim.RestockSourceProduce, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"ezekiel": smith,
+			"moses":   {DisplayName: "Moses James", Role: "farmer", Kind: sim.KindNPCShared},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"shovel": {Name: "shovel", DisplayLabel: "Shovel", Capabilities: []string{"portable"}},
+			"nail":   {Name: "nail", DisplayLabel: "Nail", Capabilities: []string{"portable"}},
+			"water":  {Name: "water", DisplayLabel: "Water", Capabilities: []string{"portable"}},
+			"room":   {Name: "room", DisplayLabel: "Room", Capabilities: []string{"lodging"}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"shovel": {OutputItem: "shovel", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+				Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+			"nail": {OutputItem: "nail", OutputQty: 1, RateQty: 1, RatePerHours: 1,
+				Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+		},
+	}
+	inv := []InventoryItem{{Label: "Water", Qty: water, kind: "water"}, {Label: "Nail", Qty: 3, kind: "nail"}}
+	if water <= 0 {
+		inv = []InventoryItem{{Label: "Nail", Qty: 3, kind: "nail"}}
+	}
+	return snap, inv
+}
+
+// TestOfferableGoods_CommissionWhenShelfIsBare is the LLM-619 regression. Ezekiel
+// held 0 shovels while forging one; Moses named "shovel" six times; neither ever
+// called a commerce tool, because the shovel was simply absent from "Your goods to
+// sell". They struck the bargain aloud instead — which commits nothing, leaves no
+// order for LLM-518's farm-upkeep suppression to find, and sent the buyer walking
+// forge<->home for over an hour.
+func TestOfferableGoods_CommissionWhenShelfIsBare(t *testing.T) {
+	snap, inv := llm619Snap(3)
+	v := buildOfferableCustomers(snap, "ezekiel", true, []HuddleMember{{ID: "moses", DisplayName: "Moses James"}}, inv)
+	if v == nil {
+		t.Fatal("expected a view")
+	}
+	var shovel *OfferableGood
+	for i := range v.Goods {
+		if v.Goods[i].kind == "shovel" {
+			shovel = &v.Goods[i]
+		}
+	}
+	if shovel == nil {
+		t.Fatalf("shovel must be offerable though none are held — acceptPendingOffer would honour it as a commission (LLM-619); goods=%+v", v.Goods)
+	}
+	if !shovel.Commission || shovel.OnHand != 0 {
+		t.Errorf("shovel must be marked Commission with 0 on hand, got %+v", *shovel)
+	}
+	// A good he DOES hold stays an ordinary take-home sale, listed once with its count.
+	for _, g := range v.Goods {
+		if g.kind == "nail" && g.Commission {
+			t.Errorf("a held good must not be listed as a commission: %+v", g)
+		}
+	}
+	var b strings.Builder
+	renderOfferableCustomers(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "Shovel (none on hand — yours to make to order)") {
+		t.Errorf("render must show the commission plainly:\n%s", out)
+	}
+	if !strings.Contains(out, "still yours to sell") {
+		t.Errorf("render must name the commission steer, or the listing alone reads as 'cannot sell':\n%s", out)
+	}
+}
+
+// TestOfferableGoods_NoCommissionWithoutInputs is the foil: same smith, no water,
+// so he cannot even start a shovel. A commission is a promise to forge, and a
+// promise with no makings is exactly the vapour this cue exists to replace — so
+// the good must NOT be advertised. Mirrors the LLM-324 forge-choice filter.
+func TestOfferableGoods_NoCommissionWithoutInputs(t *testing.T) {
+	snap, inv := llm619Snap(0)
+	v := buildOfferableCustomers(snap, "ezekiel", true, []HuddleMember{{ID: "moses", DisplayName: "Moses James"}}, inv)
+	if v == nil {
+		t.Fatal("expected a view (he still holds nails)")
+	}
+	for _, g := range v.Goods {
+		if g.kind == "shovel" {
+			t.Fatalf("must not offer a commission he cannot start — no water for the batch: %+v", g)
+		}
+	}
+	var b strings.Builder
+	renderOfferableCustomers(&b, v)
+	if out := b.String(); strings.Contains(out, "yours to make to order") || strings.Contains(out, "still yours to sell") {
+		t.Errorf("no commissionable good means no commission line at all:\n%s", out)
+	}
+}
+
+// TestCommissionableKind_MatchesAcceptGate pins the cue against the SHARED predicate
+// the accept path uses, rather than restating its rules. If sim.CommissionableKind
+// ever changes, this fails loudly instead of the cue quietly drifting out of step
+// with what acceptPendingOffer will honour — the LLM-617 lesson.
+func TestCommissionableKind_MatchesAcceptGate(t *testing.T) {
+	snap, _ := llm619Snap(3)
+	pol := snap.Actors["ezekiel"].RestockPolicy
+	if !sim.CommissionableKind(snap.Recipes, snap.ItemKinds, pol, "shovel") {
+		t.Fatal("premise broken: shovel is no longer commissionable — revisit the cue with the accept gate")
+	}
+	// A kind he does not produce is outside it.
+	if sim.CommissionableKind(snap.Recipes, snap.ItemKinds, pol, "water") {
+		t.Error("a good the seller does not produce must not be commissionable")
+	}
+	// Lodging: give `room` BOTH a positive-rate recipe and a produce entry, so the
+	// capability check is the only thing left holding it false. Asserted against a
+	// bare `room` the test would pass even if that gate were deleted — it has no
+	// recipe and is not produced, so it would read false for the wrong reason
+	// (code_review).
+	snap.Recipes["room"] = &sim.ItemRecipe{OutputItem: "room", OutputQty: 1, RateQty: 1, RatePerHours: 1}
+	pol.Restock = append(pol.Restock, sim.RestockEntry{Item: "room", Source: sim.RestockSourceProduce, Max: 2})
+	if !pol.Produces("room") {
+		t.Fatal("premise broken: the room produce entry did not take")
+	}
+	if sim.CommissionableKind(snap.Recipes, snap.ItemKinds, pol, "room") {
+		t.Error("a lodging kind must not be commissionable even when produced and makeable — its shortfall is a real rejection, not a promise to forge")
+	}
+}
