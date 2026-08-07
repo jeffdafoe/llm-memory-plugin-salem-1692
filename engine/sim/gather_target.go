@@ -98,6 +98,9 @@ func FirstGatherableRow(obj *VillageObject) (row *ObjectRefresh, hasStock bool, 
 // (TestGather_NearestOwned_RejectsDespiteFartherCommons, the closer-non-gatherable
 // cue case).
 //
+// The gate is SKIPPED for an actor who deliberately walked to a source and is
+// standing at it (walkedToGatherSeed) — see that function for why.
+//
 // What it WIDENS: once the nearest is established to be a bush the actor MAY harvest
 // (their own or unowned commons), the choice among the co-located harvestable
 // (owned-ok) bushes is ranked — the one walked to first (targetID), then stocked
@@ -107,37 +110,40 @@ func FirstGatherableRow(obj *VillageObject) (row *ObjectRefresh, hasStock bool, 
 // foragable is the actor's whole forage set (ForageItems), which gates rather than
 // ranks — see MayGatherSource.
 func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, actorTile TilePos, actorID ActorID, targetID VillageObjectID, lowItems, foragable map[ItemKind]bool) (VillageObjectID, *VillageObject, *ObjectRefresh) {
-	nearestID, ok := ResolveLoiteringObject(objects, assets, actorTile, LoiterAttributionTiles)
-	if !ok {
-		return "", nil, nil
+	bestID, bestObj, bestRow := walkedToGatherSeed(objects, assets, actorTile, actorID, targetID, foragable)
+	if bestObj == nil {
+		nearestID, ok := ResolveLoiteringObject(objects, assets, actorTile, LoiterAttributionTiles)
+		if !ok {
+			return "", nil, nil
+		}
+		nearest := objects[nearestID]
+		if nearest == nil {
+			return "", nil, nil
+		}
+		nearestRow, _, gatherable := FirstGatherableRow(nearest)
+		if !gatherable {
+			// A non-gatherable object owns the tile — don't skip past it.
+			return "", nil, nil
+		}
+		if nearest.OwnedByOther(actorID) {
+			// Another's bush owns the tile — hand it back so the caller raises
+			// ErrNotYourSource; do NOT fall through to a farther commons source.
+			return nearestID, nearest, nearestRow
+		}
+		if !MayGatherSource(nearest, nearestRow, actorID, foragable) {
+			// A commons source this actor has no trade claim on owns the tile. Treated
+			// like the non-gatherable case rather than the owned-by-other one: nobody
+			// is wronged by a smith standing at the village well, so there is no
+			// ErrNotYourSource to raise — there is simply nothing here for him to take.
+			// Blocks rather than skipping past, same as every other nearest-owns-the-tile
+			// branch above.
+			return "", nil, nil
+		}
+		bestID, bestObj, bestRow = nearestID, nearest, nearestRow
 	}
-	nearest := objects[nearestID]
-	if nearest == nil {
-		return "", nil, nil
-	}
-	nearestRow, nearestStock, gatherable := FirstGatherableRow(nearest)
-	if !gatherable {
-		// A non-gatherable object owns the tile — don't skip past it.
-		return "", nil, nil
-	}
-	if nearest.OwnedByOther(actorID) {
-		// Another's bush owns the tile — hand it back so the caller raises
-		// ErrNotYourSource; do NOT fall through to a farther commons source.
-		return nearestID, nearest, nearestRow
-	}
-	if !MayGatherSource(nearest, nearestRow, actorID, foragable) {
-		// A commons source this actor has no trade claim on owns the tile. Treated
-		// like the non-gatherable case rather than the owned-by-other one: nobody
-		// is wronged by a smith standing at the village well, so there is no
-		// ErrNotYourSource to raise — there is simply nothing here for him to take.
-		// Blocks rather than skipping past, same as every other nearest-owns-the-tile
-		// branch above.
-		return "", nil, nil
-	}
-	bestID, bestObj, bestRow := nearestID, nearest, nearestRow
-	best := GatherCandidate{ID: nearestID, Cheb: loiterChebIn(nearest, assets, actorTile), Mine: true, HasStock: nearestStock, Low: lowItems[nearestRow.GatherItem]}
+	best := GatherCandidate{ID: bestID, Cheb: loiterChebIn(bestObj, assets, actorTile), Mine: true, HasStock: bestRow.HasStock(), Low: lowItems[bestRow.GatherItem]}
 	for id, obj := range objects {
-		if id == nearestID || obj == nil || obj.DisplayName == "" || obj.OwnedByOther(actorID) {
+		if id == bestID || obj == nil || obj.DisplayName == "" || obj.OwnedByOther(actorID) {
 			continue
 		}
 		asset, ok := assets[obj.AssetID]
@@ -161,6 +167,56 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 		}
 	}
 	return bestID, bestObj, bestRow
+}
+
+// walkedToGatherSeed resolves the source an actor DELIBERATELY WALKED TO, when the
+// actor is standing at it and may harvest it. It returns that object as the seed the
+// co-located ranking starts from, bypassing the nearest-owns-the-tile gate; a nil
+// object means "no such target" and the caller falls back to the nearest-scan.
+//
+// Why the bypass exists (LLM-618). An ObjectVisit parks the walker on one of the
+// EIGHT ring slots around the destination's loiter pin (pickObjectVisitorSlot), and
+// arrival accepts any tile within LoiterAttributionTiles — so landing off-pin is the
+// normal outcome, not an anomaly. A ring slot is a tile like any other, and it can be
+// some OTHER object's loiter pin. When it is, the nearest-scan gate answers a question
+// nobody asked: it reports who owns the tile, and a foreign owner there withholds the
+// gather cue at a bush the actor legitimately walked to and is standing at. Live case:
+// Moses James parked on a legal ring slot of his own ripe wheat, and that slot was the
+// pin of a neighbouring wheat plant a mis-click had assigned to a PC. He kept his
+// forage cue but lost the `gather` tool entirely (it is advertised only when this
+// resolution yields a source), so he had no picking verb and re-walked the same bush
+// for two hours.
+//
+// This is the ActorAtObjectPin lesson again (LLM-550, LLM-617): when you know WHICH
+// place you mean, ask the object-keyed predicate about THAT place — never the
+// nearest-scan, whose answer a closer neighbour can shadow. targetID is exactly that
+// knowledge (Actor.GatherTargetObjectID, stamped from ActorArrived.DestObjectID).
+//
+// The poacher gate it must NOT weaken: an actor with no walked-to target, or one whose
+// target is another's bush, still meets the unchanged nearest-scan. Standing at a
+// stranger's bush and reaching past it for the commons behind still rejects — the
+// bypass only ever hands back a source this actor may take from
+// (MayGatherSource + not OwnedByOther), and only while standing at it.
+//
+// A depleted target is deliberately still a valid seed: BetterGatherCandidate lets a
+// stocked co-located sibling outrank it (LLM-93), and findGatherableCue suppresses the
+// cue on an empty resolved source (LLM-98). Both stay in force.
+func walkedToGatherSeed(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, actorTile TilePos, actorID ActorID, targetID VillageObjectID, foragable map[ItemKind]bool) (VillageObjectID, *VillageObject, *ObjectRefresh) {
+	if targetID == "" {
+		return "", nil, nil
+	}
+	target := objects[targetID]
+	if target == nil || target.DisplayName == "" || target.OwnedByOther(actorID) {
+		return "", nil, nil
+	}
+	row, _, gatherable := FirstGatherableRow(target)
+	if !gatherable || !MayGatherSource(target, row, actorID, foragable) {
+		return "", nil, nil
+	}
+	if !ActorAtObjectPin(objects, assets, actorTile, targetID) {
+		return "", nil, nil
+	}
+	return targetID, target, row
 }
 
 // loiterChebIn is the Chebyshev distance from actorTile to obj's loiter pin, or a

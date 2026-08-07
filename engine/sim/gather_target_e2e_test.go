@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -71,6 +72,109 @@ func TestGather_DensePlot_SkipsDepletedForRipe(t *testing.T) {
 	}
 	if id := gatheredObject(t, res); id != "ripe_bush" {
 		t.Errorf("gathered from %q, want ripe_bush (the depleted dry_bush must be skipped)", id)
+	}
+}
+
+// buildForeignPinPlotWorld seeds the LLM-618 geometry: "moses" stands on a legal
+// visitor slot of his OWN ripe bush, and that slot is Chebyshev 0 from a neighbouring
+// bush owned by someone else.
+//
+//	actor tile      = pad origin
+//	foreign_bush pin = pad origin        (cheb 0 — the strict nearest)
+//	mine_bush pin    = pad origin +(1,1) (cheb 1 — a legal ring slot away)
+//
+// This is the live shape: an ObjectVisit parks the walker on one of the eight ring
+// slots around its destination's pin, and a ring slot can be another object's pin.
+// Both bushes are ripe, so stock is not the variable under test — ownership of the
+// tile is.
+func buildForeignPinPlotWorld(t *testing.T) (*sim.World, context.CancelFunc) {
+	t.Helper()
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	handles.ItemKinds.Seed(map[sim.ItemKind]*sim.ItemKindDef{
+		"wheat": {Name: "wheat", Category: sim.ItemCategoryMaterial},
+	})
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"wheat_plant": {ID: "wheat_plant", Name: "Wheat"}})
+	z, one := 0, 1
+	q := func(v int) *int { return &v }
+	ripe := func() []*sim.ObjectRefresh {
+		return []*sim.ObjectRefresh{{Attribute: "hunger", Amount: 0, GatherItem: "wheat",
+			AvailableQuantity: q(3), MaxQuantity: q(3)}}
+	}
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"mine_bush": {ID: "mine_bush", DisplayName: "Wheat", AssetID: "wheat_plant", OwnerActorID: "moses",
+			LoiterOffsetX: &one, LoiterOffsetY: &one, Pos: sim.WorldPos{X: 0, Y: 0}, Refreshes: ripe()},
+		"foreign_bush": {ID: "foreign_bush", DisplayName: "Wheat", AssetID: "wheat_plant", OwnerActorID: "wendy",
+			LoiterOffsetX: &z, LoiterOffsetY: &z, Pos: sim.WorldPos{X: 0, Y: 0}, Refreshes: ripe()},
+	})
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"moses": {ID: "moses", LLMAgent: "moses", Kind: sim.KindNPCStateful,
+			Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}, Inventory: map[sim.ItemKind]int{"wheat": 0},
+			RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "wheat", Source: sim.RestockSourceForage, Max: 30}}}},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	w.Settings.RestockReorderPct = 25
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
+	return w, cancel
+}
+
+// TestGather_ForeignPinOnRingSlot_WalkedToTargetWins — LLM-618. A grower parked on a
+// ring slot of the bush he walked to may harvest it, even though that slot is another
+// actor's loiter pin. Before the walked-to bypass the strict-nearest scan resolved the
+// foreign bush and rejected with ErrNotYourSource, which also stripped the `gather`
+// tool from his turn (it is advertised only when this resolution yields a source) —
+// Moses James re-walked the same wheat for two hours with no picking verb.
+func TestGather_ForeignPinOnRingSlot_WalkedToTargetWins(t *testing.T) {
+	w, cancel := buildForeignPinPlotWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["moses"].GatherTargetObjectID = "mine_bush"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	res, err := w.Send(sim.Gather("moses", 1, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("gather at his own walked-to bush should succeed, got: %v", err)
+	}
+	if id := gatheredObject(t, res); id != "mine_bush" {
+		t.Errorf("gathered from %q, want mine_bush", id)
+	}
+}
+
+// TestGather_ForeignPinOnRingSlot_NoTargetStillRejects is the foil that keeps the
+// bypass honest: the SAME geometry with no walked-to target still meets the unchanged
+// nearest-scan and rejects. Without this arm the fix would be indistinguishable from
+// deleting the poacher gate — standing at a stranger's bush and reaching past it must
+// still fail.
+func TestGather_ForeignPinOnRingSlot_NoTargetStillRejects(t *testing.T) {
+	w, cancel := buildForeignPinPlotWorld(t)
+	defer cancel()
+	_, err := w.Send(sim.Gather("moses", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource (no walked-to target — the foreign pin still owns the tile)", err)
+	}
+}
+
+// TestGather_ForeignPinOnRingSlot_ForeignTargetStillRejects — the bypass keys on the
+// target being one the actor MAY take from, not merely on a target being set. Walking
+// deliberately to another's bush is exactly the poaching case the gate exists for.
+func TestGather_ForeignPinOnRingSlot_ForeignTargetStillRejects(t *testing.T) {
+	w, cancel := buildForeignPinPlotWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["moses"].GatherTargetObjectID = "foreign_bush"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := w.Send(sim.Gather("moses", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource (the walked-to target is another's bush)", err)
 	}
 }
 
