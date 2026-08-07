@@ -2138,25 +2138,17 @@ type DutySteerView struct {
 	// the off-shift wind-down fields.
 	AtPost bool
 
-	// AwayFromPost is the STATUS-ONLY arm: on-shift, away from your own post, but
-	// legitimately so — an errand, a live transaction, or a satiation source you
-	// have reached. Those cases used to render no duty cue at all, which left the
-	// prompt with an ambient hour ("Evening settles over the village.") and nothing
-	// tying it to the actor's own shift. Live, that vacuum got filled with an
-	// invented premise: Josiah Thorne, standing in his house at 18:10 mid-shift,
-	// opened his turn "Morning's come. I'm home, the fire's out, and there's
-	// business to attend to" and walked to the shop — then read the SAME evening at
-	// his post, where the shift fact IS rendered, as "the day's winding down" and
-	// walked home. He honours the hour whenever a shift fact sits beside it.
+	// AwayFromPost is the STATUS-ONLY arm: on-shift and away from your own post, but
+	// legitimately so (an errand, a live transaction, a satiation source reached).
+	// It states the shift fact where the to-work yank is suppressed — without it the
+	// prompt carries an ambient hour and nothing tying it to this actor's shift, and
+	// the model invents one (LLM-620).
 	//
-	// So this arm states the fact and stops: on shift, away from post, and when it
-	// closes. It carries NO destination id — that token is what the weak model
-	// echoes into move_to (HOME-349), and pairing it with duty language would make
-	// this a to-work yank by the back door, which is exactly what the suppression
-	// exists to prevent. The anchors line already carries the ids.
-	//
-	// RENDER-ONLY, like AtPost: excluded from shouldSkipNoop so it cannot force an
-	// idle tick that used to skip (HOME-441). Mutually exclusive with ToWork.
+	// Two constraints, both load-bearing: carries NO destination id, or it becomes
+	// the yank it replaced (HOME-349 — that token is what the model echoes into
+	// move_to); and RENDER-ONLY like AtPost, excluded from shouldSkipNoop so it
+	// cannot force an idle tick that used to skip (HOME-441). Mutually exclusive
+	// with ToWork.
 	AwayFromPost bool
 
 	// ShiftEndMin is the keeper's effective close time as a wall-clock

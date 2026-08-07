@@ -483,24 +483,15 @@ func innCostText(snap *sim.Snapshot, actorID, keeperID sim.ActorID) string {
 // gets the fallback — patronage earns the number, the same convention v1 used for
 // both inns and remedy vendors.
 //
-// LLM-620: this used to emit PriceObservation.Amount bare — "~6 coins" — which is
-// the TOTAL of one past transaction with no quantity attached. In the restock cue
-// that bare total lands directly beneath a per-unit sentence ("You are buying at
-// about 1 coin and selling at about 1 coin"), and the model read the total as the
-// unit price. Live: Josiah Thorne had bought 38 wheat for 48 coins (~1.26 each) and
-// concluded, verbatim, on every turn for hours, "The wheat's a poor trade at six
-// coins from James Farm when I sell at one — I'd lose coin on every bushel", and so
-// never restocked. A single-unit purchase is unaffected: total and unit coincide.
-//
-// costEachPhrase already owns this conversion and its doc states the reason —
-// "weak models can compare a phrase against their asking price but cannot be
-// trusted to divide batch/qty themselves". Its buckets also refuse to round a
-// fraction away, so a 1.26 cost cannot flatten into "about 1 coin each" and hide
-// the loss the clause exists to show.
+// PER-UNIT since LLM-620: this emitted PriceObservation.Amount bare, which is one
+// past transaction's TOTAL with no quantity attached, and in the restock cue that
+// total lands beneath a per-unit sentence and was read as the unit price. A
+// single-unit purchase is unaffected — total and unit coincide.
 //
 // Units are Qty × Consumers via sim.ObservationUnits, NOT Qty: Qty is per-consumer,
-// so a group order of 2 rounds for 3 drinkers moved 6 units, and dividing by Qty
-// alone would treble the apparent unit price.
+// so dividing by Qty alone trebles the apparent price on a 3-recipient order.
+// costEachPhrase owns the conversion (see its doc for why the division happens
+// engine-side, and why it never rounds a fraction away).
 func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item sim.ItemKind, fallback string) string {
 	if sellerID == "" || snap.PriceBook == nil {
 		return fallback

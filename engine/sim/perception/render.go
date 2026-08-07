@@ -1983,17 +1983,11 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		}
 		return
 	}
-	// LLM-620 status arm: on shift, away from post, and deliberately not being
-	// argued back (an errand, a live transaction, a satiation source reached). It
-	// mirrors the at-post line's shape on purpose — same "It is your working hours
-	// and you are …" opening, same parenthesised close time — because the pairing of
-	// an ambient hour with a shift fact is precisely what the model reasons from
-	// correctly at post and was inventing from nothing away from it.
-	//
-	// No destination id and no verb, unlike the ToWork arm below. That is what keeps
-	// this a fact rather than the yank its caller just chose to defer: the id is the
-	// token the weak model echoes into move_to (HOME-349), and the anchors line
-	// carries it already for anyone who decides to go.
+	// LLM-620 status arm. Mirrors the at-post line's shape deliberately (same
+	// opening, same parenthesised close time): that pairing of ambient hour with
+	// shift fact is what the model reads correctly at post. No destination id and no
+	// verb, unlike the ToWork arm below — that is what keeps it a fact rather than
+	// the yank its caller just chose to defer.
 	if v.AwayFromPost {
 		if v.ShiftEndMin != nil {
 			fmt.Fprintf(b, "It is your working hours and "+dutySteerToPostMarker+" at %s (you close at %s).\n\n",
