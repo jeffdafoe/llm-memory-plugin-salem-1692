@@ -181,7 +181,12 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	// this a summoned target whose delivery tick didn't answer would
 	// skip-lock and never see the summons again. It self-extinguishes: the
 	// meeting, a take_break, or the errand TTL clears the cue.
-	if (payload.DutySteer != nil && !payload.DutySteer.AtPost) || payload.DutyPending ||
+	// AwayFromPost (LLM-620) is exempt for the same reason as AtPost: it is a status
+	// line that renders on ticks which already run, not a signal to force one. It
+	// appears exactly where buildDutySteer previously returned nil — an agent
+	// mid-errand — so counting it would re-open a gate that has been closed in all
+	// those cases since HOME-400, turning every deferred yank into a pester tick.
+	if (payload.DutySteer != nil && !payload.DutySteer.AtPost && !payload.DutySteer.AwayFromPost) || payload.DutyPending ||
 		payload.EveningLeisure.Invitation() || payload.SummonsForYou != nil {
 		return false
 	}

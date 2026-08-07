@@ -107,6 +107,42 @@ func (v *RestockingView) HasWalkToSupplier() bool {
 	return false
 }
 
+// Actionable reports whether this section gives the reseller something it can act
+// on RIGHT NOW — a supplier to walk to, or a seller standing with it. It is the
+// gate on the duty-steer suppression (build.go): the suppression exists so an agent
+// mid-errand is not yanked back to its post, and an agent whose "errand" it cannot
+// take a single step toward is not mid-errand. It is standing still with a want.
+//
+// The distinction matters because the suppression is level-triggered on the cue's
+// mere presence, so a want that never resolves suppresses shift duty FOREVER — and
+// the at-post stabilizer is flipped to a leave-permission by the same signal, so
+// BOTH ends of the shift come unpinned at once and the agent oscillates between the
+// only two places the prose names. Live: Josiah Thorne, home↔General Store, 6-second
+// stops (LLM-620).
+//
+// Conserve and AllBlocked are false here for the same reason they are false in
+// HasWalkToSupplier, which this mirrors: under either, render deliberately emits no
+// buy imperative and no destination — a hold-off-buying steer is the opposite of an
+// errand in progress. A co-present seller counts even though it names no walk,
+// because transacting with him IS the errand and it is happening here.
+//
+// This is the same actionable-buy-path test LLM-277 already applies to the farm
+// upkeep errand at the call site, generalized to the other two suppressors.
+func (v *RestockingView) Actionable() bool {
+	if v == nil || len(v.Items) == 0 || v.Conserve || v.AllBlocked() {
+		return false
+	}
+	if v.HasWalkToSupplier() {
+		return true
+	}
+	for _, it := range v.Items {
+		if it.CoPresentSeller != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
 // current on-hand quantity, the cap it restocks toward, and the suppliers
 // selling it. buildRestocking only emits an item that has at least one actionable

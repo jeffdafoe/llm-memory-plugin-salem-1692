@@ -2138,14 +2138,37 @@ type DutySteerView struct {
 	// the off-shift wind-down fields.
 	AtPost bool
 
+	// AwayFromPost is the STATUS-ONLY arm: on-shift, away from your own post, but
+	// legitimately so — an errand, a live transaction, or a satiation source you
+	// have reached. Those cases used to render no duty cue at all, which left the
+	// prompt with an ambient hour ("Evening settles over the village.") and nothing
+	// tying it to the actor's own shift. Live, that vacuum got filled with an
+	// invented premise: Josiah Thorne, standing in his house at 18:10 mid-shift,
+	// opened his turn "Morning's come. I'm home, the fire's out, and there's
+	// business to attend to" and walked to the shop — then read the SAME evening at
+	// his post, where the shift fact IS rendered, as "the day's winding down" and
+	// walked home. He honours the hour whenever a shift fact sits beside it.
+	//
+	// So this arm states the fact and stops: on shift, away from post, and when it
+	// closes. It carries NO destination id — that token is what the weak model
+	// echoes into move_to (HOME-349), and pairing it with duty language would make
+	// this a to-work yank by the back door, which is exactly what the suppression
+	// exists to prevent. The anchors line already carries the ids.
+	//
+	// RENDER-ONLY, like AtPost: excluded from shouldSkipNoop so it cannot force an
+	// idle tick that used to skip (HOME-441). Mutually exclusive with ToWork.
+	AwayFromPost bool
+
 	// ShiftEndMin is the keeper's effective close time as a wall-clock
 	// minute-of-day (0–1439) — its own schedule end, else the day-active dusk
-	// fallback (shiftWindowBounds). Set only on the AtPost cue (LLM-40): the
-	// at-post stabilizer states when the shift ends so "stay open later" is a
-	// bounded decision rather than a vague diligence reflex (the model otherwise
-	// reached for stay_open with no customer to serve and no sense of how near
-	// close was). nil → render omits the close-time clause. Render voices it via
-	// sim.ClockHourProse.
+	// fallback (shiftWindowBounds). Set on the AtPost cue (LLM-40) and on the
+	// AwayFromPost status arm, which states the same close time for the same
+	// reason: the shift's end is what makes the ambient hour mean something. On
+	// AtPost it makes "stay open later" a bounded decision rather than a vague
+	// diligence reflex (the model otherwise reached for stay_open with no customer
+	// to serve and no sense of how near close was); on AwayFromPost it is the anchor
+	// that stops the hour being re-invented. nil → render omits the close-time
+	// clause. Render voices it via sim.ClockHourProse.
 	ShiftEndMin *int
 
 	// ForageErrand modifies the AtPost stabilizer for a grower-seller who also has

@@ -397,8 +397,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// DutySteer is built AFTER Restocking + Forage (ZBBS-HOME-400 Option B /
 	// LLM-90): the return-to-post cue is suppressed while a restock OR forage
 	// errand is active, and the at-post stabilizer flips to a step-out line under a
-	// forage errand — p.Restocking != nil and p.Forage != nil are exactly those
-	// signals. (p.Forage already encodes "not mid-customer" via customerEngaged.)
+	// forage errand. LLM-620 narrows those two signals from "the cue rendered" to
+	// "the cue is ACTIONABLE" — a cue naming no ripe bush and no reachable supplier
+	// is a standing want the agent cannot take one step toward, and level-triggering
+	// the suppression on it unpinned both ends of the shift indefinitely. That is
+	// the same test LLM-277 already applies to hasFarmUpkeepErrand just below.
+	// (p.Forage already encodes "not mid-customer" via customerEngaged.)
 	// LLM-277 adds the owner supply errands to the suppressor set: an owner who has
 	// left her post to buy nails to mend her worn business (p.StallRepairBuy) or
 	// shovels the season owes (p.FarmUpkeep) must not be yanked back before she has
@@ -412,7 +416,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// mere presence is enough.
 	hasFarmUpkeepErrand := p.FarmUpkeep != nil && (p.FarmUpkeep.CoPresentSeller != "" || len(p.FarmUpkeep.ShovelVendors) > 0)
 	hasUpkeepErrand := p.StallRepairBuy != nil || hasFarmUpkeepErrand
-	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil, p.Forage != nil, hasUpkeepErrand)
+	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking.Actionable(), p.Forage.Actionable(), hasUpkeepErrand)
 	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
 	// LLM-149 (Lever 2): the evening "tavern's open" cue. Built off the same
 	// anchors; on the evening window it replaces the off-shift go-home steer
@@ -2472,7 +2476,17 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// the to-work yank defers until she has fetched them, the buy-side twin of the
 		// restock errand. Both cues clear once she carries enough, restoring the nag.
 		if hasRestockErrand || hasForageErrand || hasUpkeepErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
-			return nil
+			// LLM-620: suppress the YANK, keep the FACT. Returning nil here dropped the
+			// only text in the prompt that ties the ambient hour to this actor's own
+			// shift, and a weak model fills that vacuum by inventing the hour — Josiah
+			// Thorne opened a turn "Morning's come" while standing in his house at 18:10
+			// mid-shift. The status arm carries no destination id and no imperative, so
+			// it cannot re-argue the walk this branch exists to defer; it only stops the
+			// hour from being re-invented. Deliberately AFTER the red-need, summons and
+			// rounds returns above: each of those is a case where duty framing is itself
+			// unwanted, not merely its imperative.
+			endMin := end
+			return &DutySteerView{AwayFromPost: true, TargetLabel: anchors.WorkLabel, ShiftEndMin: &endMin}
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
 	case onShift && anchors.WorkID != "" && atWork:
