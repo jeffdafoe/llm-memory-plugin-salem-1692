@@ -87,13 +87,11 @@ func (v *RestockingView) AllBlocked() bool {
 // place to go is handed two contradictory instructions and left to pick.
 //
 // The branch order below MIRRORS renderRestocking's, and must keep mirroring it —
-// that correspondence is the whole guarantee. Conserve short-circuits everything
-// (its lead replaces the buy directory and every item renders as a hold-off);
-// all-blocked renders reasons with deliberately NO destination ids; and per item, a
-// standing offer, a blocked item, or a co-present seller each render something
-// other than the walk-to list.
+// that correspondence is the whole guarantee. The section-wide short-circuits live
+// in buyPathsEnabled; per item, a standing offer, a blocked item, or a co-present
+// seller each render something other than the walk-to list.
 func (v *RestockingView) HasWalkToSupplier() bool {
-	if v == nil || len(v.Items) == 0 || v.Conserve || v.AllBlocked() {
+	if !v.buyPathsEnabled() {
 		return false
 	}
 	for _, it := range v.Items {
@@ -101,6 +99,33 @@ func (v *RestockingView) HasWalkToSupplier() bool {
 			continue
 		}
 		if len(it.Vendors) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// buyPathsEnabled is the section-wide gate both HasWalkToSupplier and Actionable
+// stand on: does this section offer ANY way to buy at all, before either asks which
+// kind. Conserve short-circuits everything (its lead replaces the buy directory and
+// every item renders as a hold-off, LLM-294); all-blocked renders reasons with
+// deliberately NO destination ids (LLM-406); an empty section renders nothing.
+//
+// Extracted so the two callers cannot drift (code_review, LLM-620). Actionable
+// cannot simply delegate to HasWalkToSupplier — it deliberately also admits a
+// co-present seller, which HasWalkToSupplier skips because that item renders a
+// buy-here imperative rather than a walk-to bullet — so without this the same three
+// conditions would be spelled out twice, in a file whose whole contract is that
+// these predicates keep mirroring renderRestocking.
+func (v *RestockingView) buyPathsEnabled() bool {
+	return v != nil && len(v.Items) > 0 && !v.Conserve && !v.AllBlocked()
+}
+
+// hasCoPresentSeller reports whether any low item has a seller standing with the
+// reseller right now — the arm that makes a section actionable with no walk to make.
+func (v *RestockingView) hasCoPresentSeller() bool {
+	for _, it := range v.Items {
+		if it.CoPresentSeller != "" {
 			return true
 		}
 	}
@@ -120,27 +145,20 @@ func (v *RestockingView) HasWalkToSupplier() bool {
 // only two places the prose names. Live: Josiah Thorne, home↔General Store, 6-second
 // stops (LLM-620).
 //
-// Conserve and AllBlocked are false here for the same reason they are false in
-// HasWalkToSupplier, which this mirrors: under either, render deliberately emits no
-// buy imperative and no destination — a hold-off-buying steer is the opposite of an
-// errand in progress. A co-present seller counts even though it names no walk,
-// because transacting with him IS the errand and it is happening here.
+// Conserve and AllBlocked are false here via the shared buyPathsEnabled gate, for
+// the same reason they are false in HasWalkToSupplier: under either, render
+// deliberately emits no buy imperative and no destination — a hold-off-buying steer
+// is the opposite of an errand in progress. A co-present seller counts even though
+// it names no walk, because transacting with him IS the errand and it is happening
+// here.
 //
 // This is the same actionable-buy-path test LLM-277 already applies to the farm
 // upkeep errand at the call site, generalized to the other two suppressors.
 func (v *RestockingView) Actionable() bool {
-	if v == nil || len(v.Items) == 0 || v.Conserve || v.AllBlocked() {
+	if !v.buyPathsEnabled() {
 		return false
 	}
-	if v.HasWalkToSupplier() {
-		return true
-	}
-	for _, it := range v.Items {
-		if it.CoPresentSeller != "" {
-			return true
-		}
-	}
-	return false
+	return v.HasWalkToSupplier() || v.hasCoPresentSeller()
 }
 
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
