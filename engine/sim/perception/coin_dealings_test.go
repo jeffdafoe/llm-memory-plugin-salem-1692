@@ -200,7 +200,7 @@ func TestCoinDealingsSentence(t *testing.T) {
 			// One-directional purchase. The "nothing has come back" tail is DROPPED,
 			// and that is the sharper half of the ticket — something did come back.
 			name: "bought from a supplier who has never paid him",
-			d: sim.CoinDealings{PaidCount: 4, PaidTotal: 8, PaidGoodsCount: 4, PaidGoodsTotal: 8},
+			d:    sim.CoinDealings{PaidCount: 4, PaidTotal: 8, PaidGoodsCount: 4, PaidGoodsTotal: 8},
 			want: "You have paid Moses James 8 coins across 4 payments for goods.",
 		},
 		{
