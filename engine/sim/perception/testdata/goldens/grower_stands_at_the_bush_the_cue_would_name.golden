@@ -1,0 +1,21 @@
+## Who you are
+You are Moses James.
+
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 46.
+
+## Around you
+You are outdoors, with no one else here to hear you speak.
+It is morning in the village.
+You're at Wheat — you can gather sheaves of wheat here.
+
+## Your bushes to harvest
+Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.
+- Wheat: 0 on hand of 30 cap (room for 30 more). You own 2 bush(es) of it, 14 ripe to pick now. Use move_to with destination "far_bush" to walk out to them.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

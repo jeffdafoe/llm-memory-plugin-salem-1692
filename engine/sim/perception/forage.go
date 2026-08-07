@@ -65,9 +65,13 @@ type ForageView struct {
 // ForageItemView is one low `forage` item the grower could replenish by
 // harvesting: its label, current on-hand vs the cap it tops up toward, how many
 // of the grower's own bushes carry it, the total ripe units across them, and the
-// move_to handle of the ripest bush (surfaced as a structure_id, the same as
-// satiation's free-source navigation). RipeUnits 0 / MoveHandle "" means the
-// grower owns bushes for the item but none are ripe this tick.
+// move_to handle of the ripest bush the grower is not ALREADY standing at
+// (surfaced as a structure_id, the same as satiation's free-source navigation).
+//
+// MoveHandle "" has two distinct causes, told apart by AtRipeBush:
+//   - RipeUnits 0: the grower owns bushes for the item but none are ripe this tick.
+//   - AtRipeBush true: bushes are ripe, but the grower already stands at every one
+//     of them, so there is nowhere left to walk (LLM-617).
 type ForageItemView struct {
 	ItemLabel  string
 	CurrentQty int
@@ -75,6 +79,12 @@ type ForageItemView struct {
 	BushCount  int
 	RipeUnits  int
 	MoveHandle sim.VillageObjectID
+
+	// AtRipeBush reports that every ripe bush for this item was dropped from the
+	// handle because the grower is already standing at it (LLM-617). Splits the
+	// empty MoveHandle so render can say "you are standing at one" instead of the
+	// "none ripe yet" line, which would be a flat lie with ripe stock in reach.
+	AtRipeBush bool
 
 	// kind is the final sort tie-break for two kinds sharing a display label.
 	// Unexported — never rendered. Same posture as RestockItemView.kind.
@@ -155,6 +165,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 		ripeUnits := 0
 		var moveHandle sim.VillageObjectID
 		bestStock := -1
+		atRipeBush := false
 		for ref, kp := range actorSnap.KnownPlaces {
 			// Object-kind only: the VillageObjectID cast is sound only for an object
 			// ref — a structure ref shares its id with its placement object, so an
@@ -175,7 +186,30 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			}
 			bushCount++
 			ripeUnits += stock
-			if stock > 0 && (moveHandle == "" || stock > bestStock || (stock == bestStock && id < moveHandle)) {
+			if stock <= 0 {
+				continue
+			}
+			// A bush the grower already stands at is NOT a walk destination: move_to
+			// bounces it as a no-op, the tick ends on that terminal verb, and the
+			// unchanged cue re-issues the same handle next tick — the LLM-617 wedge.
+			// Skip it for the handle (the counts above still include it, since they
+			// describe the plot, not the steer) and let a farther ripe sibling carry
+			// the steer instead.
+			//
+			// sim.ActorAtObjectPin is the canonical known-place predicate (LLM-550) and
+			// the one move_to's own no-op guard resolves through, so the cue and the
+			// command share a definition of "at" and cannot drift. It must be this one
+			// and not sim.ResolveGatherSource: that answers the INVERSE question — which
+			// place is he at, nearest wins — so a nearer depleted bush shadows the one
+			// asked about. An actor in the gap between those two questions is precisely
+			// the LLM-617 wedge. It fails closed to false on an unresolvable pin, which
+			// is also what move_to does there (the walk proceeds), so a dangling asset
+			// can never strip a grower's only steer.
+			if sim.ActorAtObjectPin(snap.VillageObjects, snap.Assets, actorSnap.Pos, id) {
+				atRipeBush = true
+				continue
+			}
+			if moveHandle == "" || stock > bestStock || (stock == bestStock && id < moveHandle) {
 				bestStock = stock
 				moveHandle = id
 			}
@@ -199,6 +233,10 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			BushCount:  bushCount,
 			RipeUnits:  ripeUnits,
 			MoveHandle: moveHandle,
+			// Only meaningful once no handle survived: with a farther ripe bush to
+			// walk to, the steer is what the grower needs, not a note about where
+			// they stand.
+			AtRipeBush: moveHandle == "" && atRipeBush,
 			kind:       e.Item,
 		})
 	}
@@ -337,7 +375,8 @@ func renderForage(b *strings.Builder, v *ForageView) {
 			}
 			fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more). You own %d bush(es) of it",
 				sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom, it.BushCount)
-			if it.MoveHandle != "" {
+			switch {
+			case it.MoveHandle != "":
 				// Steer move_to ONLY — no `gather` mention (LLM-79 / LLM-59 fix). The
 				// at-bush proximity cue (findGatherableCue) advertises and steers gather
 				// once the grower arrives; naming it here, where gather isn't callable
@@ -345,7 +384,14 @@ func renderForage(b *strings.Builder, v *ForageView) {
 				// LLM-59 reject-retry loop).
 				fmt.Fprintf(b, ", %d ripe to pick now. Use move_to with destination \"%s\" to walk out to them.\n",
 					it.RipeUnits, it.MoveHandle)
-			} else {
+			case it.AtRipeBush:
+				// Ripe stock, but the grower stands at every ripe bush — there is no
+				// walk left to steer (LLM-617). State where they are and name NO tool:
+				// same LLM-59/79 posture as the branch above, and the at-bush cue owns
+				// the gather verb. Emitting the move_to handle here is precisely the
+				// wedge; emitting "none ripe yet" would contradict the count.
+				fmt.Fprintf(b, ", %d ripe to pick now — and you are standing among them.\n", it.RipeUnits)
+			default:
 				b.WriteString(", none ripe yet — they will regrow, so check back later.\n")
 			}
 		}
