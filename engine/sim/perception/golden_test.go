@@ -2298,7 +2298,10 @@ var perceptionScenarios = []perceptionScenario{
 			"come. I'm home, the fire's out, and there's business to attend to', walked to the shop, read the SAME " +
 			"evening at his post — where the shift fact IS rendered — as 'the day's winding down', and walked home. " +
 			"He honours the hour whenever a shift fact sits beside it. The golden pins that fact rendering away from " +
-			"post too, with its close time and without the '(destination: …)' token that would make it a yank.",
+			"post too, with its close time and without the '(destination: …)' token that would make it a yank. It ALSO " +
+			"pins the supplier cost hint as per-unit prose ('about 1 coin each'): the fixture's price observation is 6 " +
+			"coins for 6 sheaves, which used to render as the bare total '~6 coins' beneath a sell price of 1 — the " +
+			"misreading that kept this errand unresolved and the lap running.",
 		build: keeperHomeMidShiftActionableRestock,
 	},
 	{

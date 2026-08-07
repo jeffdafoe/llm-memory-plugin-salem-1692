@@ -18,6 +18,6 @@ It is your working hours and you are away from your post at the General Store (y
 ## Restocking
 Your shop stock of these bought-in goods is running low. You choose how much to buy.
 - You have 0 Wheat on hand and room for 20 more at the most. Of late it has been going for about 1 coin each — pay much above that and you're overpaying. You've bought about 6 of these this past week, sold only 0, and used or traded the rest. No seller is here now.
-  - buy from James Farm (destination: james_farm), ~6 coins
+  - buy from James Farm (destination: james_farm), about 1 coin each
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
