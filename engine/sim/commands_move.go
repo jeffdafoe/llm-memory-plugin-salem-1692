@@ -250,6 +250,22 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				}
 			}
 
+			// LLM-618: walking off also ends "the source I walked to". The gather
+			// target is stamped on arrival and, before this, was only replaced or
+			// cleared by a LATER arrival — so a move that never completes (halted,
+			// superseded) left a stale id behind. That matters because
+			// walkedToGatherSeed lets the walked-to target bypass the
+			// nearest-owns-the-tile gate, and the bypass must mean the source this
+			// actor is standing at BECAUSE HE WALKED THERE, not one he left. Cleared
+			// beside the SourceActivity abandon above for the same reason: he got up
+			// and walked off.
+			//
+			// This cannot cost the LLM-93 dense-plot preference. Gather is rejected
+			// outright while a MoveIntent is in flight, so no gather can occur between
+			// this clear and the next arrival — and every arrival re-stamps the field.
+			// The only case it changes is the stale one it exists for.
+			actor.GatherTargetObjectID = ""
+
 			// Step 6 — supersede any in-flight intent. The old attempt
 			// dies silently; no ActorMoveStopped is emitted.
 			var superseded MovementAttemptID

@@ -1263,8 +1263,10 @@ type Actor struct {
 	// The fix for a dense interleaved plot where nearest-wins resolution handed
 	// her a depleted or wrong-item bush (LLM-93). An arrival at a structure or a
 	// bare position carries an empty DestObjectID, which clears a stale bush
-	// target. Transient (not checkpointed); validity (in reach + stocked) is
-	// re-checked at gather time, so a lingering id is harmless.
+	// target, and committing ANY move clears it too (LLM-618) — so it means
+	// exactly "the source I walked to, until I walk somewhere else". Transient
+	// (not checkpointed); validity (in reach + stocked) is re-checked at gather
+	// time, so a lingering id is harmless.
 	GatherTargetObjectID VillageObjectID
 
 	// ProductionActivity is the actor's ONE in-flight production cycle

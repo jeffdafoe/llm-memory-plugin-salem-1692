@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -175,6 +176,46 @@ func TestGather_ForeignPinOnRingSlot_ForeignTargetStillRejects(t *testing.T) {
 	_, err := w.Send(sim.Gather("moses", 1, time.Now().UTC()))
 	if !errors.Is(err, sim.ErrNotYourSource) {
 		t.Errorf("err=%v, want ErrNotYourSource (the walked-to target is another's bush)", err)
+	}
+}
+
+// TestGather_ForeignPinOnRingSlot_DepartureClearsTheBypass — LLM-618, raised by
+// code_review. The bypass must mean "the source I walked to", so the walked-to target
+// must not outlive the visit. Here Moses holds mine_bush as his target, then commits a
+// move that never arrives; from the very same tile the gate is back in force. Without
+// the clear in MoveActor the stale id would keep bypassing a foreign pin he had
+// already walked away from — a real weakening of the poacher gate, and invisible,
+// because the actor never physically moves in this fixture.
+func TestGather_ForeignPinOnRingSlot_DepartureClearsTheBypass(t *testing.T) {
+	w, cancel := buildForeignPinPlotWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["moses"].GatherTargetObjectID = "mine_bush"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Walk off somewhere else. The move is accepted (that is what clears the
+	// target); it never completes, which is exactly the stale case.
+	away := sim.TilePos{X: sim.PadX + 12, Y: sim.PadY + 12}
+	if _, err := w.Send(sim.MoveActor("moses", sim.NewPositionDestination(away), false, time.Now().UTC())); err != nil {
+		t.Fatalf("move away: %v", err)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["moses"]
+		if a.GatherTargetObjectID != "" {
+			return nil, fmt.Errorf("committing a move must clear the gather target, got %q", a.GatherTargetObjectID)
+		}
+		// Drop the in-flight intent so the walk-incompatible gate is not what
+		// rejects below — the nearest-scan must be, on the unchanged tile.
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("post-move state: %v", err)
+	}
+	_, err := w.Send(sim.Gather("moses", 1, time.Now().UTC()))
+	if !errors.Is(err, sim.ErrNotYourSource) {
+		t.Errorf("err=%v, want ErrNotYourSource (the walked-to target did not survive the departure)", err)
 	}
 }
 

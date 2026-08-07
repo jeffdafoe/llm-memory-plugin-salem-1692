@@ -182,9 +182,9 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 // nobody asked: it reports who owns the tile, and a foreign owner there withholds the
 // gather cue at a bush the actor legitimately walked to and is standing at. Live case:
 // Moses James parked on a legal ring slot of his own ripe wheat, and that slot was the
-// pin of a neighbouring wheat plant a mis-click had assigned to a PC. He kept his
-// forage cue but lost the `gather` tool entirely (it is advertised only when this
-// resolution yields a source), so he had no picking verb and re-walked the same bush
+// pin of a neighbouring wheat plant a mis-click had assigned to a PC. The at-bush cue
+// went silent, and with it the `gather` tool — it is advertised only when this
+// resolution yields a source — so he had no picking verb and re-walked the same bush
 // for two hours.
 //
 // This is the ActorAtObjectPin lesson again (LLM-550, LLM-617): when you know WHICH
@@ -197,6 +197,12 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 // stranger's bush and reaching past it for the commons behind still rejects — the
 // bypass only ever hands back a source this actor may take from
 // (MayGatherSource + not OwnedByOther), and only while standing at it.
+//
+// That leaves STALENESS as the only way in, and MoveActor closes it (raised by
+// code_review): committing any move clears GatherTargetObjectID, so the id cannot
+// outlive the visit that earned it. Without that clear a halted or superseded move
+// would leave an actor bypassing the gate on a source he had already walked away
+// from, and the bypass would no longer mean what this comment says it means.
 //
 // A depleted target is deliberately still a valid seed: BetterGatherCandidate lets a
 // stocked co-located sibling outrank it (LLM-93), and findGatherableCue suppresses the
