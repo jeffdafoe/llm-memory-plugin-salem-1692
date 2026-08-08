@@ -2247,6 +2247,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: generalStoreWaterForageAtWell,
 	},
 	{
+		name: "miller_with_hired_hauler_keeps_water_cue",
+		summary: "LLM-621. A keeper at his OWN post, out of water (0 of a 20 cap, `forage water`, tagged " +
+			"sim.AttrForageRange) with a full commons Well nearby, and his own hired hauler co-present mid-job " +
+			"(StateLaboring + a Working LaborOffer naming him employer). The '## Free sources you can gather from' " +
+			"cue must SURVIVE: a worker fulfilling a contract is not custom, so customerEngaged's co-presence arm " +
+			"does not fire — the same rule LLM-231 already applies in buildOfferableCustomers, which drops a " +
+			"laboring peer as a sale target even for their own employer. Pre-fix the bare huddle-member count read " +
+			"the worker as a live sale and silenced the cue for the whole contract, hours rather than an encounter, " +
+			"while the same prompt rendered 'Lewis Walker is working a job for you'. Pins the at-post stabilizer " +
+			"reframed as a step-out errand alongside it. Fixed PublishedAt keeps the workers-for-me duration " +
+			"byte-stable; on shift, no orders, no price book.",
+		build: millerWithHiredHaulerKeepsWaterCue,
+	},
+	{
 		name: "quenched_at_well_no_drink_cue",
 		summary: "LLM-376. A shared-VA NPC stands ON the town Well's loiter pin, thirst fully quenched (0), " +
 			"still holding a stale open-ended thirst dwell credit for the Well (the immortal credit the pre-fix " +
@@ -6885,7 +6899,11 @@ func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
 		got := renderScenario(sc)
 		// LLM-231: seller_employing_own_laboring_worker also puts the subject in the
 		// employer seat of a Working offer (John employs Silence), so the cue is correct there.
-		want := sc.name == "employer_with_worker_on_job" || sc.name == "seller_employing_own_laboring_worker"
+		// LLM-621: the miller is likewise in the employer seat of a Working offer —
+		// that cue and the surviving forage cue in one prompt IS the scenario's point.
+		want := sc.name == "employer_with_worker_on_job" ||
+			sc.name == "seller_employing_own_laboring_worker" ||
+			sc.name == "miller_with_hired_hauler_keeps_water_cue"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: active-worker cue present=%v, want %v", sc.name, has, want)
 		}
@@ -7919,6 +7937,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"employer_reads_the_wages_he_paid": true,
 		// LLM-619: Ezekiel keeps his forge on shift, at post, with a buyer before him.
 		"smith_with_empty_shelf_takes_commissions": true,
+		// LLM-621: the miller keeps his mill on shift, at post, with his hauler at work.
+		"miller_with_hired_hauler_keeps_water_cue": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8046,6 +8066,8 @@ func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
 		"employer_reads_the_wages_he_paid": true,
 		// LLM-619: the smith fixture carries no sales either, so his week reads slow too.
 		"smith_with_empty_shelf_takes_commissions": true,
+		// LLM-621: the miller fixture carries no sales, so his week reads thin as well.
+		"miller_with_hired_hauler_keeps_water_cue": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8473,6 +8495,99 @@ func wildSageScenario(tagged bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 // drink row never pollutes it. Well ~tile (100,135), Josiah ~tile (108,141):
 // dx=-8, dy=-6 → ~10 tiles, "a short walk to the northwest". On shift, no orders,
 // no clock read → byte-stable.
+// millerWithHiredHaulerKeepsWaterCue is the live LLM-621 shape. A miller stands
+// at his own post, out of water (0 of a 20 cap, a `forage water` entry) with a
+// full commons Well a short walk off — and his own hired hauler is in the room
+// mid-job. The employer must still read "## Free sources you can gather from":
+// a worker fulfilling a contract is not custom, so nothing here is an encounter
+// to finish before stepping out.
+//
+// The pre-fix payload contradicted itself — "Lewis Walker is working a job for
+// you" and a silenced harvest cue in the same prompt — and because a contract
+// runs for hours the deferral covered the whole shift rather than a sale. Live
+// cost: Joseph Scott is the only actor permitted to gather water, so the village
+// water chain stalled behind one hire.
+//
+// Fixed PublishedAt with WorkingUntil four hours out keeps the workers-for-me
+// duration byte-stable; on shift, no orders, no price book.
+func millerWithHiredHaulerKeepsWaterCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josephID = sim.ActorID("joseph")
+		lewisID  = sim.ActorID("lewis")
+		mill     = sim.StructureID("mill")
+	)
+	zero := 0
+	start, end := 360, 1140 // 06:00–19:00
+	now := 690              // 11:30 — on shift
+	published := time.Date(2026, 8, 8, 11, 30, 0, 0, time.UTC)
+	workingUntil := published.Add(4 * time.Hour)
+	joseph := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Joseph Scott",
+		Role:               "miller",
+		State:              sim.StateIdle,
+		Pos:                sim.TilePos{X: 152, Y: 47},
+		BusinessownerState: &sim.BusinessownerState{},
+		WorkStructureID:    mill,
+		InsideStructureID:  mill, // AtOwnBusiness — the arm under test
+		CurrentHuddleID:    "h1",
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		Coins:              55,
+		// A hauler he has hired before — the live pairing. Acquaintance only
+		// changes how the worker is NAMED; the arm under test reads m.Laboring.
+		Acquaintances:  map[string]sim.Acquaintance{"Lewis Walker": {FirstInteractedAt: published.Add(-30 * 24 * time.Hour)}},
+		Inventory:      map[sim.ItemKind]int{"water": 0},
+		AttributeSlugs: []string{sim.AttrForageRange},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+		}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Lewis Walker",
+		State:           sim.StateLaboring, // the cheap mirror the ledger scan gates on
+		Pos:             sim.TilePos{X: 152, Y: 47},
+		CurrentHuddleID: "h1",
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:       published,
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph, lewisID: lewis},
+		Structures:        map[sim.StructureID]*sim.Structure{mill: plainStructure(mill, "Mill")},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{josephID: {}, lewisID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID: 1, WorkerID: lewisID, EmployerID: josephID,
+				State: sim.LaborStateWorking, Reward: 4, DurationMin: 240,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"mill_well": {
+				ID:            "mill_well",
+				DisplayName:   "Well",
+				Pos:           sim.WorldPos{X: 158 * 32, Y: 51 * 32},
+				OwnerActorID:  "", // unowned commons
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
+				},
+			},
+		},
+	}
+	return snap, josephID, nil
+}
+
 func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const josiahID = sim.ActorID("josiah")
 	zero := 0
