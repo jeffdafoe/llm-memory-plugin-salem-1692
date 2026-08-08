@@ -390,9 +390,19 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// p.OfferableCustomers — that view needs goods on hand to fire, so an empty-
 	// shelf grower (exactly when the harvest cue triggers) with a customer in front
 	// of her would slip through it.
+	//
+	// The arm counts only members who could BE custom — a peer mid-job is excluded
+	// (hasCustomAtPost). That is LLM-231's rule, which buildOfferableCustomers has
+	// applied since it shipped: a laboring peer is not a sale target, not even to
+	// their own employer. The co-presence arm never asked, so an employer's own
+	// hired worker read as a live sale at the stall. Because a contract runs for
+	// hours, that was not the brief "finish the encounter" deferral this signal is
+	// for — it silenced the harvest cue for the whole shift, and the payload
+	// contradicted itself: the same prompt said "X is working a job for you" while
+	// this treated X as custom.
 	customerEngaged := len(p.PayOffersForMe) > 0 ||
 		len(p.StandingQuotesFromMe) > 0 ||
-		(p.AtOwnBusiness && len(p.Surroundings.HuddleMembers) > 0)
+		(p.AtOwnBusiness && hasCustomAtPost(p.Surroundings.HuddleMembers))
 	p.Forage = buildForage(snap, actorID, actorSnap, customerEngaged)
 	// DutySteer is built AFTER Restocking + Forage (ZBBS-HOME-400 Option B /
 	// LLM-90): the return-to-post cue is suppressed while a restock OR forage
@@ -615,6 +625,35 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.Baseline, p.Primary = buildPrimaryScene(scene, actorID, actorSnap, sceneGroups[primarySceneID])
 	p.Secondary = buildSecondary(snap, sceneGroups, primarySceneID)
 	return p
+}
+
+// hasCustomAtPost reports whether any huddle member could be custom the subject
+// is mid-encounter with — the co-presence arm of customerEngaged. A member
+// fulfilling a hired job (m.Laboring, set for every observer) is not custom and
+// does not count: that is LLM-231's rule, the same one buildOfferableCustomers
+// applies when it drops a laboring peer as a sale target even for their own
+// employer.
+//
+// The distinction matters because of DURATION, not just correctness. The
+// customerEngaged deferral is built for a transient encounter — finish the sale,
+// then step out to the bushes. A labor contract runs for hours at the employer's
+// own post, so counting a worker as custom converted a brief deferral into a
+// shift-long blackout of the harvest cue. Live: Joseph Scott, the village's only
+// permitted water gatherer, hired Lewis Walker to haul at the Mill from 11:13 to
+// 15:13; his water cue rendered correctly on the walk in (0 of 20 on hand, a full
+// well a short walk northeast) and vanished on the first tick after Lewis started
+// work, while the same prompt told him "Lewis Walker is working a job for you".
+//
+// Deliberately NOT narrowed to the subject's OWN workers: a peer mid-job for
+// anyone is occupied and already excluded as a sale target, so the broader read
+// is both simpler and consistent with LLM-231.
+func hasCustomAtPost(members []HuddleMember) bool {
+	for _, m := range members {
+		if !m.Laboring {
+			return true
+		}
+	}
+	return false
 }
 
 // degeneracyFlagged reports whether the degeneracy observer (LLM-94) has the

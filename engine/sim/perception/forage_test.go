@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -207,6 +208,9 @@ func TestRenderForage_LowStock(t *testing.T) {
 // own apothecary, berry shelf low (1 of 10), remembering her own still-owned
 // raspberry bush — the actionable harvest setup; each subtest mutates it.
 func TestBuild_ForageErrandWiring(t *testing.T) {
+	// WorkerWorkingOffer skips an offer with a nil WorkingUntil, so a laboring
+	// fixture needs the deadline set or the peer never reads as mid-job.
+	laborUntil := time.Date(1692, 6, 1, 15, 0, 0, 0, time.UTC)
 	base := func() (*sim.Snapshot, *sim.ActorSnapshot) {
 		seller := &sim.ActorSnapshot{
 			DisplayName:        "Prudence Ward",
@@ -288,6 +292,81 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		}
 		if p.DutySteer == nil || p.DutySteer.ForageErrand {
 			t.Fatalf("expected no ForageErrand while a customer is present, got %+v", p.DutySteer)
+		}
+	})
+
+	// The subject's own hired worker is NOT custom. LLM-231 settled this for the
+	// sale-target question (buildOfferableCustomers drops a laboring peer even for
+	// their own employer); the customerEngaged co-presence arm never asked, so an
+	// employer standing in his own shop beside a worker he hired read as mid-sale
+	// for the whole contract — hours, not the transient encounter the deferral is
+	// built for. Live: Joseph Scott, the only actor permitted to gather water,
+	// hired a hauler 11:13-15:13 and lost his water cue on the first tick after the
+	// work began, while the same prompt said "Lewis Walker is working a job for you".
+	t.Run("own hired worker mid-job at own post -> Forage survives", func(t *testing.T) {
+		snap, seller := base()
+		seller.CurrentHuddleID = "h1"
+		snap.Actors["lewis"] = &sim.ActorSnapshot{
+			DisplayName: "Lewis Walker", Kind: sim.KindNPCStateful,
+			CurrentHuddleID: "h1", State: sim.StateLaboring,
+		}
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"prudence": {}, "lewis": {}}},
+		}
+		snap.LaborLedger = map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "lewis", EmployerID: "prudence", State: sim.LaborStateWorking, WorkingUntil: &laborUntil},
+		}
+		p := Build(snap, "prudence", nil)
+		if p.Forage == nil {
+			t.Fatal("expected the forage cue to survive: a worker mid-job is not custom (LLM-231)")
+		}
+		if p.DutySteer == nil || !p.DutySteer.AtPost || !p.DutySteer.ForageErrand {
+			t.Fatalf("expected the at-post stabilizer reframed as a step-out errand, got %+v", p.DutySteer)
+		}
+	})
+
+	// The narrowing is only about who counts, not about dropping the guard: one
+	// real companion still defers the cue even with a laboring worker in the room.
+	t.Run("hired worker plus an ordinary companion -> Forage still deferred", func(t *testing.T) {
+		snap, seller := base()
+		seller.CurrentHuddleID = "h1"
+		snap.Actors["lewis"] = &sim.ActorSnapshot{
+			DisplayName: "Lewis Walker", Kind: sim.KindNPCStateful,
+			CurrentHuddleID: "h1", State: sim.StateLaboring,
+		}
+		snap.Actors["mary"] = &sim.ActorSnapshot{DisplayName: "Goodwife Mary", Kind: sim.KindNPCStateful, CurrentHuddleID: "h1"}
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"prudence": {}, "lewis": {}, "mary": {}}},
+		}
+		snap.LaborLedger = map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "lewis", EmployerID: "prudence", State: sim.LaborStateWorking, WorkingUntil: &laborUntil},
+		}
+		p := Build(snap, "prudence", nil)
+		if p.Forage != nil {
+			t.Fatal("expected forage deferred: Mary is custom even though Lewis is not")
+		}
+	})
+
+	// A peer mid-job for SOMEONE ELSE is not custom either — the subject is not in
+	// an encounter with a stranger who is busy working. Same read as LLM-231, which
+	// drops a laboring peer as a sale target regardless of who employs them.
+	t.Run("someone else's worker mid-job at own post -> Forage survives", func(t *testing.T) {
+		snap, seller := base()
+		seller.CurrentHuddleID = "h1"
+		snap.Actors["silence"] = &sim.ActorSnapshot{
+			DisplayName: "Silence Walker", Kind: sim.KindNPCStateful,
+			CurrentHuddleID: "h1", State: sim.StateLaboring,
+		}
+		snap.Actors["abraham"] = &sim.ActorSnapshot{DisplayName: "Abraham Warren", Kind: sim.KindNPCStateful}
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"prudence": {}, "silence": {}}},
+		}
+		snap.LaborLedger = map[sim.LaborID]*sim.LaborOffer{
+			1: {ID: 1, WorkerID: "silence", EmployerID: "abraham", State: sim.LaborStateWorking, WorkingUntil: &laborUntil},
+		}
+		p := Build(snap, "prudence", nil)
+		if p.Forage == nil {
+			t.Fatal("expected the forage cue to survive beside a peer working for a third party")
 		}
 	})
 }
