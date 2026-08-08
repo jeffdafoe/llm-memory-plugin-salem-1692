@@ -23,12 +23,12 @@ It is morning in the village.
 
 You're at your workplace.
 
-It is your working hours and you are at your post (you close at 7 in the evening), but your shelves are bare — step out to gather what you need, then return to your post.
+It is your working hours and you are at your post (you close at 7 in the evening), but your shelves are bare — step out to your own bushes to restock, then return to your post.
 
 ## Coin between you and those here, this past week
 - No coin has passed between you and Lewis Walker.
 
-## Free sources you can gather from
-You know of these unowned sources out in the town and countryside. No one owns them, so you may take freely — walk out to gather when your own stock runs low. You choose how much to take.
-- water: 0 on hand of 20 cap (room for 20 more). The Well is a short walk to the northeast, 20 ready to gather now. Use move_to with destination "mill_well" to walk out to it.
+## Your bushes to harvest
+Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.
+- water: 0 on hand of 20 cap (room for 20 more). You own 1 bush(es) of it, 20 ripe to pick now. Use move_to with destination "mill_spring" to walk out to them.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

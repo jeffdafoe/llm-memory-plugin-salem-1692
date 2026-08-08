@@ -47,30 +47,30 @@ func TestBuildDutySteer_SummonsSuppressesBothArms(t *testing.T) {
 
 	t.Run("on shift, away from work: summons silences the to-work yank", func(t *testing.T) {
 		a := agent("general_store")
-		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, false, false); v == nil {
+		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, ForageErrandNone, false); v == nil {
 			t.Fatal("control: steer must render without a summons")
 		}
 		stampSummons(a, now)
-		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, false, false); v != nil {
+		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, ForageErrandNone, false); v != nil {
 			t.Fatalf("summoned: to-work steer must yield, got %+v", v)
 		}
 	})
 	t.Run("on shift, at post: summons silences the at-post stabilizer", func(t *testing.T) {
 		a := agent("tavern")
 		stampSummons(a, now)
-		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, false, false); v != nil {
+		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, ForageErrandNone, false); v != nil {
 			t.Fatalf("summoned: at-post stabilizer must yield, got %+v", v)
 		}
 	})
 	t.Run("off shift, away from home: summons silences the go-home steer (the incident)", func(t *testing.T) {
 		a := agent("general_store")
-		if v := buildDutySteer(freshSnap(1170), "", a, dutyAnchors, false, false, false); v == nil || v.ToWork {
+		if v := buildDutySteer(freshSnap(1170), "", a, dutyAnchors, false, ForageErrandNone, false); v == nil || v.ToWork {
 			// 19:30 — past shift end; without evening-leisure fixtures the
 			// go-home arm renders (this bare fixture has no night-place venue).
 			t.Fatalf("control: go-home steer must render without a summons, got %+v", v)
 		}
 		stampSummons(a, now)
-		if v := buildDutySteer(freshSnap(1170), "", a, dutyAnchors, false, false, false); v != nil {
+		if v := buildDutySteer(freshSnap(1170), "", a, dutyAnchors, false, ForageErrandNone, false); v != nil {
 			t.Fatalf("summoned: go-home steer must yield, got %+v", v)
 		}
 	})
@@ -80,7 +80,7 @@ func TestBuildDutySteer_SummonsSuppressesBothArms(t *testing.T) {
 			SummonerName: "John Ellis", Place: "the Tavern",
 			At: now.Add(-summonCueRenderTTL - time.Minute),
 		}
-		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, false, false); v == nil {
+		if v := buildDutySteer(freshSnap(600), "", a, dutyAnchors, false, ForageErrandNone, false); v == nil {
 			t.Fatal("aged-out summons must not suppress the steer forever")
 		}
 	})

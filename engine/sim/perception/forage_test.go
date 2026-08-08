@@ -246,7 +246,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage == nil {
 			t.Fatal("expected the forage cue (low shelf + remembered owned bush, no customer)")
 		}
-		if p.DutySteer == nil || !p.DutySteer.AtPost || !p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand != ForageErrandOwnBushes {
 			t.Fatalf("expected at-post steer with ForageErrand, got %+v", p.DutySteer)
 		}
 	})
@@ -260,7 +260,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage != nil {
 			t.Fatal("expected forage deferred while a buyer's offer is pending")
 		}
-		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand != ForageErrandNone {
 			t.Fatalf("expected the normal at-post stabilizer (no ForageErrand), got %+v", p.DutySteer)
 		}
 	})
@@ -274,7 +274,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage != nil {
 			t.Fatal("expected forage deferred while a quote she extended is still live")
 		}
-		if p.DutySteer == nil || p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || p.DutySteer.ForageErrand != ForageErrandNone {
 			t.Fatalf("expected no ForageErrand while engaged, got %+v", p.DutySteer)
 		}
 	})
@@ -290,7 +290,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage != nil {
 			t.Fatal("expected forage deferred while a companion shares her huddle at her post (broad abandon guard)")
 		}
-		if p.DutySteer == nil || p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || p.DutySteer.ForageErrand != ForageErrandNone {
 			t.Fatalf("expected no ForageErrand while a customer is present, got %+v", p.DutySteer)
 		}
 	})
@@ -320,7 +320,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage == nil {
 			t.Fatal("expected the forage cue to survive: a worker mid-job is not custom (LLM-231)")
 		}
-		if p.DutySteer == nil || !p.DutySteer.AtPost || !p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand != ForageErrandOwnBushes {
 			t.Fatalf("expected the at-post stabilizer reframed as a step-out errand, got %+v", p.DutySteer)
 		}
 	})
