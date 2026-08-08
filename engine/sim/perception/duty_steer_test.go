@@ -377,12 +377,28 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, true, ForageErrandNone, false), "restock errand")
 	})
 	t.Run("active forage errand suppresses toWork (LLM-90)", func(t *testing.T) {
-		// A grower walking out to her own bushes to restock a bare shelf is the
-		// harvest-side twin of the restock errand — the trip away from post IS the
-		// errand, so the to-work yank must defer it too (else it drags her back
-		// before she reaches the bushes).
+		// A grower walking out to restock a bare shelf is the harvest-side twin of the
+		// restock errand — the trip away from post IS the errand, so the to-work yank
+		// must defer it too (else it drags her back before she reaches the bushes).
+		//
+		// BOTH kinds defer it (LLM-622). Whose stock she is fetching decides only the
+		// at-post wording; the walk is the same walk. Without the free-source case a
+		// later narrowing back to owned bushes would keep the wording fix and quietly
+		// reintroduce the commute oscillation for a commons forager (code_review).
+		for _, kind := range []ForageErrandKind{ForageErrandOwnBushes, ForageErrandFreeSources} {
+			snap, a := onShiftAway()
+			wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, kind, false), "forage errand")
+		}
+	})
+	t.Run("an out-of-range forage kind does NOT suppress toWork (LLM-622)", func(t *testing.T) {
+		// ForageErrandKind.Errand() is a closed whitelist, so a value render has no arm
+		// for cannot suppress the yank. Suppressing without reframing would leave the
+		// actor off post with nothing in the prompt accounting for it — the LLM-620
+		// shape. Unreachable from ActionableErrand; pinned because the type is exported.
 		snap, a := onShiftAway()
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandOwnBushes, false), "forage errand")
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandKind(200), false); v == nil || !v.ToWork {
+			t.Fatalf("an unrecognised forage kind must fail closed to the ordinary yank, got %+v", v)
+		}
 	})
 	t.Run("active upkeep errand suppresses toWork (LLM-277)", func(t *testing.T) {
 		// An owner who has left her post to buy nails to mend her worn business

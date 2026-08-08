@@ -2516,7 +2516,7 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// restock errand. Both cues clear once she carries enough, restoring the nag.
 		// The to-work yank defers for an errand of EITHER kind — whose stock it is
 		// only picks the at-post wording, never whether the trip counts (LLM-622).
-		if hasRestockErrand || forageErrand != ForageErrandNone || hasUpkeepErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
+		if hasRestockErrand || forageErrand.Errand() || hasUpkeepErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
 			// LLM-620: suppress the YANK, keep the FACT. Returning nil here dropped the
 			// only text in the prompt that ties the ambient hour to this actor's own
 			// shift, and a weak model fills that vacuum by inventing the hour — Josiah

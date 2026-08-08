@@ -79,6 +79,22 @@ const (
 	ForageErrandFreeSources
 )
 
+// Errand reports whether the kind names an errand there is wording for. Written
+// as a closed whitelist rather than `!= ForageErrandNone` so an out-of-range value
+// fails CLOSED (code_review): the duty steer suppresses the to-work yank on this
+// predicate while render only reframes for a kind it recognises, and a value that
+// suppressed the yank without producing a reframe would leave the actor unpinned
+// with nothing in the prompt accounting for it — the LLM-620 shape exactly. A kind
+// added here without its render arm therefore does nothing at all, instead of
+// half-acting. Kept beside the constants so the two stay in view of each other.
+func (k ForageErrandKind) Errand() bool {
+	switch k {
+	case ForageErrandOwnBushes, ForageErrandFreeSources:
+		return true
+	}
+	return false
+}
+
 // ActionableErrand reports which side of this cue has ripe stock to walk out to.
 // Own bushes win when both do: the owned wording is true in that case, and it is
 // the more specific claim.
