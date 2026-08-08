@@ -1936,20 +1936,33 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		if v.ShiftEndMin != nil {
 			closeAt = sim.ClockHourProse(*v.ShiftEndMin)
 		}
-		if v.ForageErrand {
-			// LLM-90: a bare sell-shelf plus ripe own bushes, and NOT mid-customer
-			// (buildForage defers the harvest cue while a customer is engaged at the
-			// stall). The default stabilizer's "stay and look after your work" steer
-			// pulls against the "## Your bushes to harvest" cue's "walk out to your
-			// bushes" — so swap it for a step-out-and-return line the two cues agree
-			// on. Stepping out to one's OWN bushes to restock an empty shelf is tending
-			// the trade; the post stays the home base she returns to. The to-work arm
-			// defers a forage errand
-			// (buildDutySteer), so she isn't yanked back once she sets off.
+		// LLM-90: a bare sell-shelf plus ripe stock the forage cue names, and NOT
+		// mid-customer (buildForage defers the harvest cue while a customer is engaged
+		// at the stall). The default stabilizer's "stay and look after your work" steer
+		// pulls against the forage cue's "walk out" — so swap it for a step-out-and-
+		// return line the two cues agree on. Stepping out to restock an empty shelf is
+		// tending the trade; the post stays the home base to come back to. The to-work
+		// arm defers a forage errand (buildDutySteer), so the actor isn't yanked back
+		// once set off.
+		//
+		// The two arms differ ONLY in whose stock is being fetched (LLM-622). Calling a
+		// commons well "your own bushes" put the stabilizer at odds with the "## Free
+		// sources you can gather from" section printed directly beneath it, which says
+		// no one owns them — live for Joseph Scott at the Mill, 41 turns in 14 days.
+		// The free-source arm claims nothing and borrows that section's own verb.
+		switch v.ForageErrand {
+		case ForageErrandOwnBushes:
 			if closeAt != "" {
 				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but your shelves are bare — step out to your own bushes to restock, then return to your post.\n\n", closeAt)
 			} else {
 				b.WriteString("It is your working hours and you are at your post, but your shelves are bare — step out to your own bushes to restock, then return to your post.\n\n")
+			}
+			return
+		case ForageErrandFreeSources:
+			if closeAt != "" {
+				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but your shelves are bare — step out to gather what you need, then return to your post.\n\n", closeAt)
+			} else {
+				b.WriteString("It is your working hours and you are at your post, but your shelves are bare — step out to gather what you need, then return to your post.\n\n")
 			}
 			return
 		}

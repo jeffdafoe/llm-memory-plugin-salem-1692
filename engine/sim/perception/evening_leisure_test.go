@@ -436,12 +436,12 @@ func TestBuildDutySteer_EveningWindow_SuppressesGoHome(t *testing.T) {
 	a := eveningWorker("blacksmith") // 07:00–19:00, away from home (at its post)
 
 	// 20:30 — inside [19:00, 22:00): the go-home steer is suppressed.
-	if v := buildDutySteer(eveningSnap(1230), "ezekiel", a, eveningAnchors, false, false, false); v != nil {
+	if v := buildDutySteer(eveningSnap(1230), "ezekiel", a, eveningAnchors, false, ForageErrandNone, false); v != nil {
 		t.Fatalf("want nil go-home steer inside the evening window, got %+v", v)
 	}
 
 	// 22:30 — past bedtime, no longer the evening: the go-home steer resumes.
-	v := buildDutySteer(eveningSnap(1350), "ezekiel", a, eveningAnchors, false, false, false)
+	v := buildDutySteer(eveningSnap(1350), "ezekiel", a, eveningAnchors, false, ForageErrandNone, false)
 	if v == nil || v.ToWork || v.TargetID != "cottage" {
 		t.Fatalf("want a go-home steer to cottage past bedtime, got %+v", v)
 	}
@@ -455,12 +455,12 @@ func TestBuildDutySteer_EveningWindow_SuppressesLodgerWindDown(t *testing.T) {
 	a := eveningLodger("blacksmith") // off-shift at its post; home NULL; grant at the Inn
 
 	// 20:30 — inside [19:00, 22:00): the lodger wind-down steer is suppressed.
-	if v := buildDutySteer(withLodgerInn(eveningSnap(1230)), "ezekiel", a, eveningLodgerAnchors, false, false, false); v != nil {
+	if v := buildDutySteer(withLodgerInn(eveningSnap(1230)), "ezekiel", a, eveningLodgerAnchors, false, ForageErrandNone, false); v != nil {
 		t.Fatalf("want nil lodger wind-down steer inside the evening window, got %+v", v)
 	}
 
 	// 22:30 — past bedtime: the lodger wind-down steer resumes toward the inn.
-	v := buildDutySteer(withLodgerInn(eveningSnap(1350)), "ezekiel", a, eveningLodgerAnchors, false, false, false)
+	v := buildDutySteer(withLodgerInn(eveningSnap(1350)), "ezekiel", a, eveningLodgerAnchors, false, ForageErrandNone, false)
 	if v == nil || v.ToWork || v.TargetID != "inn" || !v.Lodging {
 		t.Fatalf("want a lodging wind-down steer to the inn past bedtime, got %+v", v)
 	}

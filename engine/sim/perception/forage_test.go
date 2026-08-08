@@ -201,6 +201,62 @@ func TestRenderForage_LowStock(t *testing.T) {
 	}
 }
 
+// TestForageView_ActionableErrand covers the LLM-622 classifier directly. The
+// own-before-free precedence is behaviour now, not an implementation detail — it
+// decides whether the at-post reframe may claim the target as the subject's own —
+// so the both-ripe row is the load-bearing one (code_review). RipeUnits is what
+// counts, not the presence of an entry: the cue renders on LOW STOCK, so a view
+// listing bushes with nothing ripe is a want with no step to take (LLM-620).
+func TestForageView_ActionableErrand(t *testing.T) {
+	ripeOwn := ForageItemView{ItemLabel: "raspberries", RipeUnits: 3}
+	bareOwn := ForageItemView{ItemLabel: "raspberries", RipeUnits: 0}
+	ripeWild := WildForageItemView{ItemLabel: "water", RipeUnits: 20}
+	bareWild := WildForageItemView{ItemLabel: "water", RipeUnits: 0}
+
+	for _, tc := range []struct {
+		name string
+		view *ForageView
+		want ForageErrandKind
+	}{
+		{"nil view", nil, ForageErrandNone},
+		{"empty view", &ForageView{}, ForageErrandNone},
+		{"own bushes, none ripe", &ForageView{Items: []ForageItemView{bareOwn}}, ForageErrandNone},
+		{"free source, none ripe", &ForageView{WildSources: []WildForageItemView{bareWild}}, ForageErrandNone},
+		{"neither ripe", &ForageView{Items: []ForageItemView{bareOwn}, WildSources: []WildForageItemView{bareWild}}, ForageErrandNone},
+		{"own ripe only", &ForageView{Items: []ForageItemView{ripeOwn}}, ForageErrandOwnBushes},
+		{"free ripe only", &ForageView{WildSources: []WildForageItemView{ripeWild}}, ForageErrandFreeSources},
+		{"both ripe -> own wins", &ForageView{Items: []ForageItemView{ripeOwn}, WildSources: []WildForageItemView{ripeWild}}, ForageErrandOwnBushes},
+		{"own bare, free ripe -> free", &ForageView{Items: []ForageItemView{bareOwn}, WildSources: []WildForageItemView{ripeWild}}, ForageErrandFreeSources},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.view.ActionableErrand(); got != tc.want {
+				t.Errorf("ActionableErrand() = %d, want %d", got, tc.want)
+			}
+			// Actionable delegates, so the two can never disagree about ripeness.
+			if got, want := tc.view.Actionable(), tc.want != ForageErrandNone; got != want {
+				t.Errorf("Actionable() = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestForageErrandKind_Errand pins the closed whitelist: a kind render has no arm
+// for must not read as an errand, or it would suppress the to-work yank while
+// producing no at-post reframe (LLM-622, code_review).
+func TestForageErrandKind_Errand(t *testing.T) {
+	for kind, want := range map[ForageErrandKind]bool{
+		ForageErrandNone:        false,
+		ForageErrandOwnBushes:   true,
+		ForageErrandFreeSources: true,
+		ForageErrandKind(200):   false,
+	} {
+		if got := kind.Errand(); got != want {
+			t.Errorf("ForageErrandKind(%d).Errand() = %v, want %v", kind, got, want)
+		}
+	}
+}
+
 // TestBuild_ForageErrandWiring locks the LLM-90 composition that the parameter-
 // level buildForage / buildDutySteer tests can't: Build must wire customerEngaged
 // -> p.Forage -> DutySteer.ForageErrand. A future refactor of the Build wiring
@@ -246,7 +302,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage == nil {
 			t.Fatal("expected the forage cue (low shelf + remembered owned bush, no customer)")
 		}
-		if p.DutySteer == nil || !p.DutySteer.AtPost || !p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand != ForageErrandOwnBushes {
 			t.Fatalf("expected at-post steer with ForageErrand, got %+v", p.DutySteer)
 		}
 	})
@@ -260,7 +316,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage != nil {
 			t.Fatal("expected forage deferred while a buyer's offer is pending")
 		}
-		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand != ForageErrandNone {
 			t.Fatalf("expected the normal at-post stabilizer (no ForageErrand), got %+v", p.DutySteer)
 		}
 	})
@@ -274,7 +330,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage != nil {
 			t.Fatal("expected forage deferred while a quote she extended is still live")
 		}
-		if p.DutySteer == nil || p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || p.DutySteer.ForageErrand != ForageErrandNone {
 			t.Fatalf("expected no ForageErrand while engaged, got %+v", p.DutySteer)
 		}
 	})
@@ -290,7 +346,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage != nil {
 			t.Fatal("expected forage deferred while a companion shares her huddle at her post (broad abandon guard)")
 		}
-		if p.DutySteer == nil || p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || p.DutySteer.ForageErrand != ForageErrandNone {
 			t.Fatalf("expected no ForageErrand while a customer is present, got %+v", p.DutySteer)
 		}
 	})
@@ -320,7 +376,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 		if p.Forage == nil {
 			t.Fatal("expected the forage cue to survive: a worker mid-job is not custom (LLM-231)")
 		}
-		if p.DutySteer == nil || !p.DutySteer.AtPost || !p.DutySteer.ForageErrand {
+		if p.DutySteer == nil || !p.DutySteer.AtPost || p.DutySteer.ForageErrand != ForageErrandOwnBushes {
 			t.Fatalf("expected the at-post stabilizer reframed as a step-out errand, got %+v", p.DutySteer)
 		}
 	})

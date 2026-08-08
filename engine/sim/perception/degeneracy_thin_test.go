@@ -52,14 +52,14 @@ func TestThinDegenerateSteer_KeepsAtPostStabilizerClearsForageErrand(t *testing.
 	// reads a step-out line with no harvest cue behind it.
 	end := 180
 	p := &Payload{
-		DutySteer: &DutySteerView{AtPost: true, ShiftEndMin: &end, ForageErrand: true},
+		DutySteer: &DutySteerView{AtPost: true, ShiftEndMin: &end, ForageErrand: ForageErrandOwnBushes},
 		Forage:    &ForageView{},
 	}
 	thinDegenerateSteer(p)
 	if p.DutySteer == nil || !p.DutySteer.AtPost {
 		t.Fatalf("the at-post stabilizer must survive thinning, got %+v", p.DutySteer)
 	}
-	if p.DutySteer.ForageErrand {
+	if p.DutySteer.ForageErrand != ForageErrandNone {
 		t.Error("ForageErrand must be cleared when the forage cue is thinned away")
 	}
 	if p.DutySteer.ShiftEndMin == nil {
@@ -131,8 +131,8 @@ func TestBuild_FlaggedActor_ThinsForageErrand(t *testing.T) {
 	if unflagged.Forage == nil {
 		t.Fatal("setup: expected the forage cue for the unflagged actor")
 	}
-	if unflagged.DutySteer == nil || !unflagged.DutySteer.ForageErrand {
-		t.Fatalf("setup: expected an at-post ForageErrand steer, got %+v", unflagged.DutySteer)
+	if unflagged.DutySteer == nil || unflagged.DutySteer.ForageErrand != ForageErrandOwnBushes {
+		t.Fatalf("setup: expected an at-post own-bushes ForageErrand steer, got %+v", unflagged.DutySteer)
 	}
 
 	// Flagged: the forage cue is thinned away and the at-post stabilizer drops
@@ -144,7 +144,7 @@ func TestBuild_FlaggedActor_ThinsForageErrand(t *testing.T) {
 	if flagged.DutySteer == nil || !flagged.DutySteer.AtPost {
 		t.Fatalf("the at-post stabilizer must survive, got %+v", flagged.DutySteer)
 	}
-	if flagged.DutySteer.ForageErrand {
+	if flagged.DutySteer.ForageErrand != ForageErrandNone {
 		t.Error("the surviving stabilizer must not keep the ForageErrand step-out reframe")
 	}
 }

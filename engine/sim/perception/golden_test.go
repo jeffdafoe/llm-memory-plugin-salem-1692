@@ -2257,8 +2257,22 @@ var perceptionScenarios = []perceptionScenario{
 			"the worker as a live sale and silenced the cue for the whole contract, hours rather than an encounter, " +
 			"while the same prompt rendered 'Lewis Walker is working a job for you'. Pins the at-post stabilizer " +
 			"reframed as a step-out errand alongside it. Fixed PublishedAt keeps the workers-for-me duration " +
-			"byte-stable; on shift, no orders, no price book.",
-		build: millerWithHiredHaulerKeepsWaterCue,
+			"byte-stable; on shift, no orders, no price book. LLM-622 additionally pins that step-out line " +
+			"claiming NOTHING: the only source here is the commons Well, so wording that called it his own " +
+			"contradicted the '## Free sources you can gather from' section printed directly beneath it, which " +
+			"says no one owns them. Paired with miller_stepping_out_to_his_own_bush.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return millerWithHiredHauler(false) },
+	},
+	{
+		name: "miller_stepping_out_to_his_own_bush",
+		summary: "LLM-622 control for miller_with_hired_hauler_keeps_water_cue: the SAME miller, same hour, same " +
+			"hire, same empty water — but he owns a spring of his own for it. The owned branch of the forage cue " +
+			"takes over ('## Your bushes to harvest' in place of the free-sources section, since the wild scan " +
+			"runs only where the grower owns no bush), and the at-post step-out line may then say 'your own " +
+			"bushes' truthfully. The pair is what makes the fix discriminating: one bit of fixture — who owns " +
+			"the water — has to move BOTH the forage section and the stabilizer's ownership claim together, so " +
+			"a reframe that ignores the distinction cannot pass both goldens.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return millerWithHiredHauler(true) },
 	},
 	{
 		name: "quenched_at_well_no_drink_cue",
@@ -6903,7 +6917,9 @@ func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
 		// that cue and the surviving forage cue in one prompt IS the scenario's point.
 		want := sc.name == "employer_with_worker_on_job" ||
 			sc.name == "seller_employing_own_laboring_worker" ||
-			sc.name == "miller_with_hired_hauler_keeps_water_cue"
+			sc.name == "miller_with_hired_hauler_keeps_water_cue" ||
+			// LLM-622: the owned-source arm of the same miller fixture — same hire.
+			sc.name == "miller_stepping_out_to_his_own_bush"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: active-worker cue present=%v, want %v", sc.name, has, want)
 		}
@@ -7939,6 +7955,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"smith_with_empty_shelf_takes_commissions": true,
 		// LLM-621: the miller keeps his mill on shift, at post, with his hauler at work.
 		"miller_with_hired_hauler_keeps_water_cue": true,
+		// LLM-622: the owned-source arm of the same miller — same post, same hours.
+		"miller_stepping_out_to_his_own_bush": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8068,6 +8086,8 @@ func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
 		"smith_with_empty_shelf_takes_commissions": true,
 		// LLM-621: the miller fixture carries no sales, so his week reads thin as well.
 		"miller_with_hired_hauler_keeps_water_cue": true,
+		// LLM-622: same fixture, same absent sales.
+		"miller_stepping_out_to_his_own_bush": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8569,9 +8589,17 @@ func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 // ~7 tiles, rendering "a short walk to the northeast". Both positions go through
 // WorldPos.Tile() so actor and object tiles share one conversion.
 //
+// ownsBush switches WHOSE water he is low on and can reach (LLM-622), which is the
+// only difference between the two scenarios built from this fixture. false: the
+// commons Well is the only source, so the wild cue renders and the at-post step-out
+// line must claim nothing. true: he owns a spring of his own for the same item, so
+// buildForage takes the owned branch (the wild scan runs only at bushCount == 0) and
+// the owned wording is correct. Everything else — hour, hire, geometry, coins — is
+// held identical so the golden diff is the ownership claim and nothing else.
+//
 // Fixed PublishedAt with WorkingUntil four hours out keeps the workers-for-me
 // duration byte-stable; on shift, no orders, no price book.
-func millerWithHiredHaulerKeepsWaterCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+func millerWithHiredHauler(ownsBush bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		josephID = sim.ActorID("joseph")
 		lewisID  = sim.ActorID("lewis")
@@ -8648,6 +8676,26 @@ func millerWithHiredHaulerKeepsWaterCue() (*sim.Snapshot, sim.ActorID, []sim.War
 				},
 			},
 		},
+	}
+	if ownsBush {
+		// His own spring, same item and same yield as the Well. It needs BOTH the
+		// ownership row and the remembered gather affordance: buildForage reads the
+		// known-places set (LLM-79), not a world scan, so an owned object the grower
+		// does not remember gathering at is invisible to the cue.
+		snap.VillageObjects["mill_spring"] = &sim.VillageObject{
+			ID:            "mill_spring",
+			DisplayName:   "Spring",
+			Pos:           sim.WorldPos{X: 158 * 32, Y: 51 * 32},
+			OwnerActorID:  josephID,
+			LoiterOffsetX: &zero,
+			LoiterOffsetY: &zero,
+			Refreshes: []*sim.ObjectRefresh{
+				{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
+			},
+		}
+		joseph.KnownPlaces = map[sim.PlaceRef]*sim.KnownPlace{
+			"mill_spring": {Ref: "mill_spring", Kind: sim.PlaceKindObject, Affordances: []string{"gather:water"}},
+		}
 	}
 	return snap, josephID, nil
 }
@@ -8793,6 +8841,34 @@ func TestGoldensRangedWildForageRequiresTag(t *testing.T) {
 			}
 			if out := renderScenario(sc); strings.Contains(out, header) {
 				t.Errorf("scenario %q: subject lacks sim.AttrForageRange but the prompt renders the ranged wild-forage section %q (LLM-253)", sc.name, header)
+			}
+		})
+	}
+}
+
+// TestGoldensStepOutClaimsOnlyOwnedBushes is the LLM-622 cross-scenario invariant:
+// the at-post step-out reframe may call the errand's target "your own bushes" ONLY
+// in a prompt that also carries the owned-bush section. Live, a miller read that
+// wording directly above "## Free sources you can gather from", which says no one
+// owns them — one line called the commons Well his property and the next did not.
+//
+// Keyed on the RENDERED pair rather than on DutySteerView.ForageErrand, on purpose:
+// what has to hold is that the two sections of one prompt agree about ownership, and
+// a future reframe that reaches the owned wording by some other route would satisfy
+// a flag check while still contradicting the section beneath it. Runs over the whole
+// matrix, so a new fixture whose only forage source is unowned is covered without
+// anyone remembering to add it.
+func TestGoldensStepOutClaimsOnlyOwnedBushes(t *testing.T) {
+	const (
+		ownedClaim   = "step out to your own bushes"
+		ownedSection = "## Your bushes to harvest"
+	)
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			if strings.Contains(out, ownedClaim) && !strings.Contains(out, ownedSection) {
+				t.Errorf("scenario %q: the step-out line claims %q but the prompt carries no %q — it is sending the subject to a source it does not own (LLM-622)", sc.name, ownedClaim, ownedSection)
 			}
 		})
 	}

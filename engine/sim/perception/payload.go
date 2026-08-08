@@ -2164,15 +2164,20 @@ type DutySteerView struct {
 	ShiftEndMin *int
 
 	// ForageErrand modifies the AtPost stabilizer for a grower-seller who also has
-	// an active forage errand this tick (p.Forage != nil — a bare sell-shelf plus
-	// ripe owned bushes, and NOT mid-customer, since buildForage defers the harvest
-	// cue while a customer is engaged at the stall). It flips the stabilizer's
-	// default "stay and look after your work" steer for a "step out to your bushes
-	// and return" line, so the at-post cue AGREES with the "## Your bushes to harvest"
-	// section instead of pinning her against it (LLM-90). Only meaningful when
-	// AtPost; the to-work arm separately defers a forage errand so she isn't yanked
-	// back mid-trip.
-	ForageErrand bool
+	// an actionable forage errand this tick (ForageView.ActionableErrand — a bare
+	// sell-shelf plus ripe stock somewhere the cue names, and NOT mid-customer, since
+	// buildForage defers the harvest cue while a customer is engaged at the stall). It
+	// flips the stabilizer's default "stay and look after your work" steer for a
+	// "step out and return" line, so the at-post cue AGREES with the forage section
+	// instead of pinning her against it (LLM-90). Only meaningful when AtPost; the
+	// to-work arm separately defers a forage errand so she isn't yanked back mid-trip.
+	//
+	// The KIND picks the wording, because the two halves of ForageView are not the
+	// same property (LLM-622): Items are the grower's own owner-gated bushes, while
+	// WildSources are unowned commons anyone may draw from. One reframe line for both
+	// told a miller to step out to "your own bushes" directly above a section saying
+	// nobody owns the well he was being sent to.
+	ForageErrand ForageErrandKind
 
 	// SupplyErrand is the BUY-side twin of ForageErrand (LLM-491): set when some
 	// other section of this same payload hands the at-post subject an off-scene
@@ -2190,7 +2195,8 @@ type DutySteerView struct {
 	// nil the very sections this reconciles with, and a stabilizer reframed for an
 	// errand cue that no longer renders is the "told to move" residue the thinning
 	// exists to remove. Only meaningful when AtPost; ForageErrand wins when both
-	// are set (its line is the more specific one — her OWN bushes).
+	// are set (its line is the more specific one — it names the stock she goes to
+	// take rather than the thing she goes to buy).
 	SupplyErrand bool
 
 	// Lodging marks the off-shift target as the actor's RENTED room at an inn

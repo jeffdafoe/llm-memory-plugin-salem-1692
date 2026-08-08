@@ -62,8 +62,42 @@ type ForageView struct {
 	WildSources []WildForageItemView
 }
 
-// Actionable reports whether there is ripe stock anywhere this cue names. The
-// forage-side twin of RestockingView.Actionable, gating the same suppression.
+// ForageErrandKind names which side of the forage cue carries the ripe stock, and
+// so whose property the at-post step-out reframe may call it (LLM-622). The two
+// sides are different claims — Items are the grower's OWN owner-gated bushes,
+// WildSources are unowned commons — and a single reframe line for both sent a
+// miller to "your own bushes" directly above a section saying no one owns the well.
+type ForageErrandKind uint8
+
+const (
+	// ForageErrandNone: nothing ripe anywhere the cue names, so there is no errand
+	// to reframe the stabilizer for.
+	ForageErrandNone ForageErrandKind = iota
+	// ForageErrandOwnBushes: the grower's own bushes carry ripe stock.
+	ForageErrandOwnBushes
+	// ForageErrandFreeSources: only unowned commons sources do.
+	ForageErrandFreeSources
+)
+
+// Errand reports whether the kind names an errand there is wording for. Written
+// as a closed whitelist rather than `!= ForageErrandNone` so an out-of-range value
+// fails CLOSED (code_review): the duty steer suppresses the to-work yank on this
+// predicate while render only reframes for a kind it recognises, and a value that
+// suppressed the yank without producing a reframe would leave the actor unpinned
+// with nothing in the prompt accounting for it — the LLM-620 shape exactly. A kind
+// added here without its render arm therefore does nothing at all, instead of
+// half-acting. Kept beside the constants so the two stay in view of each other.
+func (k ForageErrandKind) Errand() bool {
+	switch k {
+	case ForageErrandOwnBushes, ForageErrandFreeSources:
+		return true
+	}
+	return false
+}
+
+// ActionableErrand reports which side of this cue has ripe stock to walk out to.
+// Own bushes win when both do: the owned wording is true in that case, and it is
+// the more specific claim.
 //
 // The cue renders on LOW STOCK, not ripeness, so it can say "walk out to your
 // bushes to restock" and "none ripe yet" in one block — a want with no step to
@@ -73,21 +107,28 @@ type ForageView struct {
 // RipeUnits alone covers the LLM-617 AtRipeBush case: buildForage accumulates it
 // BEFORE the at-pin skip, so a grower standing on his only ripe bush still reads as
 // mid-errand — he cannot walk anywhere, but gather is right there.
-func (v *ForageView) Actionable() bool {
+func (v *ForageView) ActionableErrand() ForageErrandKind {
 	if v == nil {
-		return false
+		return ForageErrandNone
 	}
 	for _, it := range v.Items {
 		if it.RipeUnits > 0 {
-			return true
+			return ForageErrandOwnBushes
 		}
 	}
 	for _, w := range v.WildSources {
 		if w.RipeUnits > 0 {
-			return true
+			return ForageErrandFreeSources
 		}
 	}
-	return false
+	return ForageErrandNone
+}
+
+// Actionable reports whether there is ripe stock anywhere this cue names. The
+// forage-side twin of RestockingView.Actionable, gating the same suppression.
+// Delegates to ActionableErrand so ripeness keeps one definition.
+func (v *ForageView) Actionable() bool {
+	return v.ActionableErrand() != ForageErrandNone
 }
 
 // ForageItemView is one low `forage` item the grower could replenish by

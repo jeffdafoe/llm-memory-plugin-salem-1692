@@ -27,7 +27,7 @@ var dutyAnchors = &AnchorsView{
 // decision-table tests; the ZBBS-HOME-400 / LLM-90 / LLM-277 suppression signals
 // get their own dedicated tests.
 func dutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *DutySteerView {
-	return buildDutySteer(snap, "", a, anchors, false, false, false)
+	return buildDutySteer(snap, "", a, anchors, false, ForageErrandNone, false)
 }
 
 // TestMinuteInWindow covers the half-open window check incl. wrap-midnight and
@@ -83,12 +83,18 @@ func TestBuildDutySteer(t *testing.T) {
 		}
 	})
 	t.Run("on shift, at work, forage errand -> atPost with ForageErrand (LLM-90)", func(t *testing.T) {
-		// Same at-post stabilizer, but a bare sell-shelf (hasForageErrand → render
-		// flips the stay-put line for a step-out-and-return one). Still AtPost (the
-		// post is her home base) — the flag only modifies the rendered line.
-		v := buildDutySteer(dutySnap(1100, 420, 1140), "prudence", agentSched("tavern"), dutyAnchors, false, true, false)
-		if v == nil || !v.AtPost || v.ToWork || !v.ForageErrand {
-			t.Fatalf("want atPost stabilizer with ForageErrand set, got %+v", v)
+		// Same at-post stabilizer, but a bare sell-shelf (an actionable forage errand →
+		// render flips the stay-put line for a step-out-and-return one). Still AtPost
+		// (the post is her home base) — the kind only modifies the rendered line.
+		//
+		// The kind travels through UNCHANGED (LLM-622): buildDutySteer must not
+		// collapse it back to a yes/no, or render loses the distinction between the
+		// grower's own bushes and an unowned commons source.
+		for _, kind := range []ForageErrandKind{ForageErrandOwnBushes, ForageErrandFreeSources} {
+			v := buildDutySteer(dutySnap(1100, 420, 1140), "prudence", agentSched("tavern"), dutyAnchors, false, kind, false)
+			if v == nil || !v.AtPost || v.ToWork || v.ForageErrand != kind {
+				t.Fatalf("want atPost stabilizer carrying ForageErrand %d, got %+v", kind, v)
+			}
 		}
 	})
 	t.Run("off shift, away from home -> home", func(t *testing.T) {
@@ -199,7 +205,7 @@ func TestBuildDutyPending(t *testing.T) {
 		snap.NeedThresholds = sim.DefaultNeedThresholds()
 		a := agentSched("")
 		a.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold - 4} // mild band
-		if v := buildDutySteer(snap, "", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("a mild need must NOT nil the to-work steer since HOME-463, got %+v", v)
 		}
 		if !buildDutyPending(snap, a, dutyAnchors) {
@@ -214,7 +220,7 @@ func TestBuildDutyPending(t *testing.T) {
 		snap.NeedThresholds = sim.DefaultNeedThresholds()
 		a := agentSched("")
 		a.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold + 2}
-		if v := buildDutySteer(snap, "", a, dutyAnchors, false, false, false); v != nil {
+		if v := buildDutySteer(snap, "", a, dutyAnchors, false, ForageErrandNone, false); v != nil {
 			t.Fatalf("precondition: red need must nil the steer, got %+v", v)
 		}
 		if !buildDutyPending(snap, a, dutyAnchors) {
@@ -362,21 +368,37 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 
 	t.Run("baseline (no suppressor) -> toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork with no suppressor, got %+v", v)
 		}
 	})
 	t.Run("active restock errand suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, true, false, false), "restock errand")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, true, ForageErrandNone, false), "restock errand")
 	})
 	t.Run("active forage errand suppresses toWork (LLM-90)", func(t *testing.T) {
-		// A grower walking out to her own bushes to restock a bare shelf is the
-		// harvest-side twin of the restock errand — the trip away from post IS the
-		// errand, so the to-work yank must defer it too (else it drags her back
-		// before she reaches the bushes).
+		// A grower walking out to restock a bare shelf is the harvest-side twin of the
+		// restock errand — the trip away from post IS the errand, so the to-work yank
+		// must defer it too (else it drags her back before she reaches the bushes).
+		//
+		// BOTH kinds defer it (LLM-622). Whose stock she is fetching decides only the
+		// at-post wording; the walk is the same walk. Without the free-source case a
+		// later narrowing back to owned bushes would keep the wording fix and quietly
+		// reintroduce the commute oscillation for a commons forager (code_review).
+		for _, kind := range []ForageErrandKind{ForageErrandOwnBushes, ForageErrandFreeSources} {
+			snap, a := onShiftAway()
+			wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, kind, false), "forage errand")
+		}
+	})
+	t.Run("an out-of-range forage kind does NOT suppress toWork (LLM-622)", func(t *testing.T) {
+		// ForageErrandKind.Errand() is a closed whitelist, so a value render has no arm
+		// for cannot suppress the yank. Suppressing without reframing would leave the
+		// actor off post with nothing in the prompt accounting for it — the LLM-620
+		// shape. Unreachable from ActionableErrand; pinned because the type is exported.
 		snap, a := onShiftAway()
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, true, false), "forage errand")
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandKind(200), false); v == nil || !v.ToWork {
+			t.Fatalf("an unrecognised forage kind must fail closed to the ordinary yank, got %+v", v)
+		}
 	})
 	t.Run("active upkeep errand suppresses toWork (LLM-277)", func(t *testing.T) {
 		// An owner who has left her post to buy nails to mend her worn business
@@ -384,7 +406,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		// errand — the walk to the smith IS the errand, the buy-side twin of restock —
 		// so the to-work yank must defer it, else she is dragged home before she buys.
 		snap, a := onShiftAway()
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, true), "upkeep errand")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, true), "upkeep errand")
 	})
 	t.Run("mild (sub-red) need does NOT suppress toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
@@ -392,7 +414,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		// HOME-463 only a RED need defers the commute, so a peckish NPC still
 		// clocks in (the mild gate that stranded chronically-needy NPCs is gone).
 		a.Needs = map[sim.NeedKey]int{"hunger": 10}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (mild need must NOT suppress since HOME-463), got %+v", v)
 		}
 	})
@@ -407,7 +429,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
 			"well": thirstWell("well", "Well", 0, 0, -8), // at the actor's tile
 		}
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "at a free water source — finish the errand")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false), "at a free water source — finish the errand")
 	})
 	t.Run("at a vendor for a felt need WITH coins suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway() // a.InsideStructureID = "general_store"
@@ -417,7 +439,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a, "wally": seller}
 		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
 		snap.ItemKinds = foodDrinkCatalog()
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "standing at a stall he can pay — finish the buy")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false), "standing at a stall he can pay — finish the buy")
 	})
 	t.Run("at a paid vendor but BROKE does NOT suppress (HOME-463 guard)", func(t *testing.T) {
 		snap, a := onShiftAway()
@@ -427,7 +449,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a, "wally": seller}
 		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
 		snap.ItemKinds = foodDrinkCatalog()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (broke NPC at a paid stall still marches to work), got %+v", v)
 		}
 	})
@@ -438,7 +460,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
 			"well": thirstWell("well", "Well", 0, 0, -8),
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (need below floor isn't felt — no errand to finish), got %+v", v)
 		}
 	})
@@ -456,7 +478,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Actors = map[sim.ActorID]*sim.ActorSnapshot{"moses": a}
 		snap.Structures = map[sim.StructureID]*sim.Structure{"general_store": {ID: "general_store", DisplayName: "General Store"}}
 		snap.ItemKinds = foodDrinkCatalog()
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (own vendorship must not self-suppress), got %+v", v)
 		}
 	})
@@ -475,14 +497,14 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		if sat == nil || len(sat.Needs) != 1 || len(sat.Needs[0].Vendors) != 1 {
 			t.Fatalf("precondition: want the thirst vendor cue, got %+v", sat)
 		}
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "cue offers the buy here; duty must not yank him off it")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false), "cue offers the buy here; duty must not yank him off it")
 	})
 	t.Run("red need suppresses toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
 		// hunger 22 >= the red threshold (20) → caught by the red-need gate
 		// (HOME-362) above the switch, which suppresses both duty arms.
 		a.Needs = map[sim.NeedKey]int{"hunger": 22}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v != nil {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v != nil {
 			t.Fatalf("want nil (red need suppresses to-work), got %+v", v)
 		}
 	})
@@ -491,7 +513,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 			1: {BuyerID: "moses", State: sim.PayLedgerStatePending},
 		}
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "pending outgoing offer")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false), "pending outgoing offer")
 	})
 	// ZBBS-WORK-431: a seller's active scene_quote addressed to the buyer is an
 	// in-progress purchase — the buyer-side complement to the pending-outgoing-offer
@@ -502,14 +524,14 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
 			2: {ID: 2, SellerID: "josiah", TargetBuyer: "moses", State: sim.SceneQuoteStateActive},
 		}
-		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false), "an offered quote to this buyer")
+		wantNoYank(t, buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false), "an offered quote to this buyer")
 	})
 	t.Run("a quote to SOMEONE ELSE does not suppress", func(t *testing.T) {
 		snap, a := onShiftAway()
 		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
 			2: {ID: 2, SellerID: "josiah", TargetBuyer: "hannah", State: sim.SceneQuoteStateActive},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (another buyer's quote is irrelevant), got %+v", v)
 		}
 	})
@@ -518,7 +540,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
 			2: {ID: 2, SellerID: "josiah", TargetBuyer: "", State: sim.SceneQuoteStateActive},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (a public quote pins no particular buyer), got %+v", v)
 		}
 	})
@@ -527,7 +549,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.Quotes = map[sim.QuoteID]*sim.SceneQuote{
 			2: {ID: 2, SellerID: "josiah", TargetBuyer: "moses", State: sim.SceneQuoteStateExpired},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (an expired quote is irrelevant), got %+v", v)
 		}
 	})
@@ -536,7 +558,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 			1: {BuyerID: "hannah", State: sim.PayLedgerStatePending},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (another actor's offer is irrelevant), got %+v", v)
 		}
 	})
@@ -547,7 +569,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 			1: {BuyerID: "moses", State: sim.PayLedgerStateAccepted},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (own terminal offer is irrelevant), got %+v", v)
 		}
 	})
@@ -556,7 +578,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		// suppresses the to-work commute; this remains a valid lower-boundary case.
 		snap, a := onShiftAway()
 		a.Needs = map[sim.NeedKey]int{"hunger": 5}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, false, false); v == nil || !v.ToWork {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false, ForageErrandNone, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (sub-red need does not suppress), got %+v", v)
 		}
 	})
@@ -574,7 +596,7 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 			InsideStructureID: "tavern",
 			Needs:             map[sim.NeedKey]int{"hunger": 10},
 		}
-		if v := buildDutySteer(snap, "moses", a, dutyAnchors, true, false, false); v == nil || v.ToWork || v.TargetID != "cottage" {
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, true, ForageErrandNone, false); v == nil || v.ToWork || v.TargetID != "cottage" {
 			t.Fatalf("want home=cottage (go-home arm not suppressed), got %+v", v)
 		}
 	})
@@ -637,7 +659,7 @@ func TestRenderDutySteer(t *testing.T) {
 	// line instead of the generic "stay and look after your work" steer, so the
 	// stabilizer agrees with the "## Your bushes to harvest" cue rather than pinning
 	// her against it. The close time still renders.
-	atPostForage := render(&DutySteerView{AtPost: true, ForageErrand: true, ShiftEndMin: dutyMinPtr(1260)})
+	atPostForage := render(&DutySteerView{AtPost: true, ForageErrand: ForageErrandOwnBushes, ShiftEndMin: dutyMinPtr(1260)})
 	if !strings.Contains(atPostForage, "your shelves are bare") || !strings.Contains(atPostForage, "step out to your own bushes") {
 		t.Errorf("atPost+forage prose missing the step-out pieces, got %q", atPostForage)
 	}
@@ -646,6 +668,27 @@ func TestRenderDutySteer(t *testing.T) {
 	}
 	if !strings.Contains(atPostForage, "you close at 9 in the evening") {
 		t.Errorf("atPost+forage should still state the close time, got %q", atPostForage)
+	}
+
+	// LLM-622: the same step-out reframe for an errand whose only ripe stock is an
+	// UNOWNED commons source must claim no ownership. The owned wording sat directly
+	// above the "## Free sources you can gather from" section, which says no one owns
+	// them — one line called the well the miller's bushes and the next did not.
+	atPostWild := render(&DutySteerView{AtPost: true, ForageErrand: ForageErrandFreeSources, ShiftEndMin: dutyMinPtr(1260)})
+	if !strings.Contains(atPostWild, "your shelves are bare") || !strings.Contains(atPostWild, "step out to gather what you need") {
+		t.Errorf("atPost+wild-forage prose missing the step-out pieces, got %q", atPostWild)
+	}
+	if strings.Contains(atPostWild, "your own") {
+		t.Errorf("atPost+wild-forage must not call an unowned source the subject's own, got %q", atPostWild)
+	}
+	if !strings.Contains(atPostWild, "you close at 9 in the evening") {
+		t.Errorf("atPost+wild-forage should still state the close time, got %q", atPostWild)
+	}
+
+	// The none case falls through to the plain stabilizer — no step-out line at all.
+	atPostNoErrand := render(&DutySteerView{AtPost: true, ForageErrand: ForageErrandNone, ShiftEndMin: dutyMinPtr(1260)})
+	if !strings.Contains(atPostNoErrand, "stay and look after your work") || strings.Contains(atPostNoErrand, "step out") {
+		t.Errorf("atPost with no forage errand must render the plain stabilizer, got %q", atPostNoErrand)
 	}
 }
 
@@ -684,14 +727,14 @@ func TestBuildDutySteer_OpenUntilSuppression(t *testing.T) {
 	}
 
 	// Precondition: no commitment → wind-down fires (home=cottage).
-	if v := buildDutySteer(mkSnap(), "ez", base(), dutyAnchors, false, false, false); v == nil || v.ToWork || v.TargetID != "cottage" {
+	if v := buildDutySteer(mkSnap(), "ez", base(), dutyAnchors, false, ForageErrandNone, false); v == nil || v.ToWork || v.TargetID != "cottage" {
 		t.Fatalf("precondition: want home=cottage, got %+v", v)
 	}
 
 	// Unlapsed OpenUntil, not peak → suppressed.
 	committed := base()
 	committed.OpenUntil = ptrTime(now.Add(2 * time.Hour))
-	if v := buildDutySteer(mkSnap(), "ez", committed, dutyAnchors, false, false, false); v != nil {
+	if v := buildDutySteer(mkSnap(), "ez", committed, dutyAnchors, false, ForageErrandNone, false); v != nil {
 		t.Errorf("OpenUntil (not peak) should suppress the wind-down, got %+v", v)
 	}
 
@@ -703,14 +746,14 @@ func TestBuildDutySteer_OpenUntilSuppression(t *testing.T) {
 	peak := base()
 	peak.OpenUntil = ptrTime(now.Add(2 * time.Hour))
 	peak.Needs["tiredness"] = 24
-	if v := buildDutySteer(mkSnap(), "ez", peak, dutyAnchors, false, false, false); v != nil {
+	if v := buildDutySteer(mkSnap(), "ez", peak, dutyAnchors, false, ForageErrandNone, false); v != nil {
 		t.Errorf("at peak the wind-down cue should be silent (red-need gate), got %+v", v)
 	}
 
 	// Lapsed OpenUntil → inert.
 	lapsed := base()
 	lapsed.OpenUntil = ptrTime(now.Add(-time.Hour))
-	if v := buildDutySteer(mkSnap(), "ez", lapsed, dutyAnchors, false, false, false); v == nil || v.TargetID != "cottage" {
+	if v := buildDutySteer(mkSnap(), "ez", lapsed, dutyAnchors, false, ForageErrandNone, false); v == nil || v.TargetID != "cottage" {
 		t.Errorf("lapsed OpenUntil should not suppress, got %+v", v)
 	}
 }
@@ -733,14 +776,14 @@ func TestBuildDutySteer_LodgerWindsDownToInn(t *testing.T) {
 	structs := map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 1)}
 	snap := &sim.Snapshot{LocalMinuteOfDay: &m, PublishedAt: lodgingNow, Structures: structs, NeedThresholds: sim.DefaultNeedThresholds()}
 
-	v := buildDutySteer(snap, "ezekiel", subj, lodgerAnchors, false, false, false)
+	v := buildDutySteer(snap, "ezekiel", subj, lodgerAnchors, false, ForageErrandNone, false)
 	if v == nil || v.ToWork || v.TargetID != "inn" || !v.Lodging {
 		t.Fatalf("want lodger wind-down to inn (Lodging=true), got %+v", v)
 	}
 
 	// Already at the inn → nil.
 	subj.InsideStructureID = "inn"
-	if v := buildDutySteer(snap, "ezekiel", subj, lodgerAnchors, false, false, false); v != nil {
+	if v := buildDutySteer(snap, "ezekiel", subj, lodgerAnchors, false, ForageErrandNone, false); v != nil {
 		t.Errorf("lodger at the inn should have no wind-down cue, got %+v", v)
 	}
 }
@@ -758,7 +801,7 @@ func TestBuildDutySteer_HomelessNudgeAtPost(t *testing.T) {
 		Kind: sim.KindNPCStateful, ScheduleStartMin: dutyMinPtr(960), ScheduleEndMin: dutyMinPtr(180),
 		WorkStructureID: "smithy", InsideStructureID: "smithy",
 	}
-	if v := buildDutySteer(snap, "vagrant", atPost, anchors, false, false, false); v == nil || v.ToWork || v.TargetID != "" || v.Lodging {
+	if v := buildDutySteer(snap, "vagrant", atPost, anchors, false, ForageErrandNone, false); v == nil || v.ToWork || v.TargetID != "" || v.Lodging {
 		t.Fatalf("want placeless homeless wind-down (empty TargetID), got %+v", v)
 	}
 
@@ -766,7 +809,7 @@ func TestBuildDutySteer_HomelessNudgeAtPost(t *testing.T) {
 		Kind: sim.KindNPCStateful, ScheduleStartMin: dutyMinPtr(960), ScheduleEndMin: dutyMinPtr(180),
 		WorkStructureID: "smithy", InsideStructureID: "market",
 	}
-	if v := buildDutySteer(snap, "vagrant", offPost, anchors, false, false, false); v != nil {
+	if v := buildDutySteer(snap, "vagrant", offPost, anchors, false, ForageErrandNone, false); v != nil {
 		t.Errorf("homeless off the post should get no wind-down cue, got %+v", v)
 	}
 }

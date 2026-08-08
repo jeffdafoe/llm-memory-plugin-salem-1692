@@ -426,7 +426,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// mere presence is enough.
 	hasFarmUpkeepErrand := p.FarmUpkeep != nil && (p.FarmUpkeep.CoPresentSeller != "" || len(p.FarmUpkeep.ShovelVendors) > 0)
 	hasUpkeepErrand := p.StallRepairBuy != nil || hasFarmUpkeepErrand
-	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking.Actionable(), p.Forage.Actionable(), hasUpkeepErrand)
+	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking.Actionable(), p.Forage.ActionableErrand(), hasUpkeepErrand)
 	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
 	// LLM-149 (Lever 2): the evening "tavern's open" cue. Built off the same
 	// anchors; on the evening window it replaces the off-shift go-home steer
@@ -682,10 +682,10 @@ func degeneracyFlagged(a *sim.ActorSnapshot) bool {
 //   - A DutySteer carrying a TargetID is a "go to X" arm (to-work, go-home,
 //     lodging) — dropped whole; the stay-open / lodging modifiers ride with it.
 //   - The at-post stabilizer survives, but its ForageErrand modifier (the
-//     "step out to your bushes and return" reframe) is cleared in lockstep with
-//     p.Forage — otherwise the actor would read a step-out line with no forage
-//     cue behind it, the exact "told to move" residue the thinning exists to
-//     remove (the live Prudence-at-her-apothecary forage-loop shape).
+//     "step out and return" reframe) is cleared in lockstep with p.Forage —
+//     otherwise the actor would read a step-out line with no forage cue behind
+//     it, the exact "told to move" residue the thinning exists to remove (the
+//     live Prudence-at-her-apothecary forage-loop shape).
 //
 // The buy-side SupplyErrand modifier needs no such lockstep clearing: Build derives
 // it from the surviving views AFTER this runs, so a stabilizer here can never be
@@ -705,7 +705,7 @@ func thinDegenerateSteer(p *Payload) {
 		p.DutySteer = nil
 		return
 	}
-	p.DutySteer.ForageErrand = false
+	p.DutySteer.ForageErrand = ForageErrandNone
 }
 
 // hasAtPostSupplyErrand reports whether any section of the assembled payload hands
@@ -2420,7 +2420,7 @@ func minuteInWindow(start, end, now int) bool {
 //
 // a is guaranteed non-nil by Build's early return on a missing actor snapshot —
 // the same invariant buildAnchors and the other sub-builders rely on.
-func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand, hasForageErrand, hasUpkeepErrand bool) *DutySteerView {
+func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand bool, forageErrand ForageErrandKind, hasUpkeepErrand bool) *DutySteerView {
 	// Nil guard FIRST, so the a.Kind / clock dereferences below are safe even
 	// when buildDutySteer is called directly (Build never passes a nil actor
 	// snapshot, but the unit tests do). No anchors → no work/home to steer
@@ -2493,8 +2493,8 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// e.g. a homeless blacksmith parked at the inn all shift). Scope: the to-work
 		// arm ONLY — the go-home arm stays unsuppressed (going home is how an NPC rests).
 		//
-		// hasForageErrand (LLM-90): a grower stepping out to her OWN bushes to
-		// restock a bare sell-shelf is the harvest-side twin of the restock errand —
+		// forageErrand (LLM-90): a grower stepping out to restock a bare sell-shelf
+		// is the harvest-side twin of the restock errand —
 		// the trip away from post IS the errand, so the to-work yank must defer it
 		// too or it drags her back before she reaches the bushes (the buy-side
 		// Josiah-Thorne oscillation, on the forage side). p.Forage is nil while a
@@ -2514,7 +2514,9 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// is on a legitimate supply errand — the walk to the smith IS the errand — so
 		// the to-work yank defers until she has fetched them, the buy-side twin of the
 		// restock errand. Both cues clear once she carries enough, restoring the nag.
-		if hasRestockErrand || hasForageErrand || hasUpkeepErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
+		// The to-work yank defers for an errand of EITHER kind — whose stock it is
+		// only picks the at-post wording, never whether the trip counts (LLM-622).
+		if hasRestockErrand || forageErrand.Errand() || hasUpkeepErrand || hasPendingOutgoingOffer(snap, actorID) || hasOfferedQuote(snap, actorID) || atResolvableSatiationSource(snap, actorID, a) {
 			// LLM-620: suppress the YANK, keep the FACT. Returning nil here dropped the
 			// only text in the prompt that ties the ambient hour to this actor's own
 			// shift, and a weak model fills that vacuum by inventing the hour — Josiah
@@ -2542,18 +2544,19 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		// stabilizer can state when the shift ends — LLM-40.
 		//
 		// ForageErrand (LLM-90): when this same at-post grower has a bare sell-shelf
-		// and ripe own bushes (hasForageErrand → p.Forage != nil, which already
-		// excludes the mid-customer case), render flips the default "stay and look
-		// after your work" steer for a "step out to your bushes and return" line, so the
-		// stabilizer agrees with the "## Your bushes to harvest" cue instead of
-		// contradicting it. She's woken by the (now forage-aware) restock warrant,
-		// so this still renders only on a tick that already runs.
+		// and ripe stock the forage cue names (forageErrand → p.Forage actionable,
+		// which already excludes the mid-customer case), render flips the default
+		// "stay and look after your work" steer for a "step out and return" line, so
+		// the stabilizer agrees with the forage cue instead of contradicting it. She's
+		// woken by the (now forage-aware) restock warrant, so this still renders only
+		// on a tick that already runs. The kind rides through to render, which owns
+		// the choice between the owned-bush and free-source wording (LLM-622).
 		//
 		// The buy-side twin, SupplyErrand (LLM-491), is deliberately NOT set here:
 		// it reads sections the leisure/summons/degeneracy subtractions can still
 		// nil after this returns, so Build derives it at the end of that chain.
 		endMin := end
-		return &DutySteerView{AtPost: true, ShiftEndMin: &endMin, ForageErrand: hasForageErrand}
+		return &DutySteerView{AtPost: true, ShiftEndMin: &endMin, ForageErrand: forageErrand}
 	case !onShift:
 		// Off-shift wind-down (ZBBS-WORK-387) — housing-dependent target. The
 		// suppressors (windDownSuppressed: a mid-meal item dwell — WORK-386; an
