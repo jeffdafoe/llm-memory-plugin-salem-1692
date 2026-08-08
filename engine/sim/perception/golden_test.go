@@ -8495,99 +8495,6 @@ func wildSageScenario(tagged bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 // drink row never pollutes it. Well ~tile (100,135), Josiah ~tile (108,141):
 // dx=-8, dy=-6 → ~10 tiles, "a short walk to the northwest". On shift, no orders,
 // no clock read → byte-stable.
-// millerWithHiredHaulerKeepsWaterCue is the live LLM-621 shape. A miller stands
-// at his own post, out of water (0 of a 20 cap, a `forage water` entry) with a
-// full commons Well a short walk off — and his own hired hauler is in the room
-// mid-job. The employer must still read "## Free sources you can gather from":
-// a worker fulfilling a contract is not custom, so nothing here is an encounter
-// to finish before stepping out.
-//
-// The pre-fix payload contradicted itself — "Lewis Walker is working a job for
-// you" and a silenced harvest cue in the same prompt — and because a contract
-// runs for hours the deferral covered the whole shift rather than a sale. Live
-// cost: Joseph Scott is the only actor permitted to gather water, so the village
-// water chain stalled behind one hire.
-//
-// Fixed PublishedAt with WorkingUntil four hours out keeps the workers-for-me
-// duration byte-stable; on shift, no orders, no price book.
-func millerWithHiredHaulerKeepsWaterCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	const (
-		josephID = sim.ActorID("joseph")
-		lewisID  = sim.ActorID("lewis")
-		mill     = sim.StructureID("mill")
-	)
-	zero := 0
-	start, end := 360, 1140 // 06:00–19:00
-	now := 690              // 11:30 — on shift
-	published := time.Date(2026, 8, 8, 11, 30, 0, 0, time.UTC)
-	workingUntil := published.Add(4 * time.Hour)
-	joseph := &sim.ActorSnapshot{
-		Kind:               sim.KindNPCStateful,
-		DisplayName:        "Joseph Scott",
-		Role:               "miller",
-		State:              sim.StateIdle,
-		Pos:                sim.TilePos{X: 152, Y: 47},
-		BusinessownerState: &sim.BusinessownerState{},
-		WorkStructureID:    mill,
-		InsideStructureID:  mill, // AtOwnBusiness — the arm under test
-		CurrentHuddleID:    "h1",
-		ScheduleStartMin:   &start,
-		ScheduleEndMin:     &end,
-		Coins:              55,
-		// A hauler he has hired before — the live pairing. Acquaintance only
-		// changes how the worker is NAMED; the arm under test reads m.Laboring.
-		Acquaintances:  map[string]sim.Acquaintance{"Lewis Walker": {FirstInteractedAt: published.Add(-30 * 24 * time.Hour)}},
-		Inventory:      map[sim.ItemKind]int{"water": 0},
-		AttributeSlugs: []string{sim.AttrForageRange},
-		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
-			{Item: "water", Source: sim.RestockSourceForage, Max: 20},
-		}},
-	}
-	lewis := &sim.ActorSnapshot{
-		Kind:            sim.KindNPCStateful,
-		DisplayName:     "Lewis Walker",
-		State:           sim.StateLaboring, // the cheap mirror the ledger scan gates on
-		Pos:             sim.TilePos{X: 152, Y: 47},
-		CurrentHuddleID: "h1",
-	}
-	snap := &sim.Snapshot{
-		PublishedAt:       published,
-		LocalMinuteOfDay:  &now,
-		NeedThresholds:    sim.NeedThresholds{},
-		Assets:            emptyAssetSet,
-		RestockReorderPct: 25,
-		Actors:            map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph, lewisID: lewis},
-		Structures:        map[sim.StructureID]*sim.Structure{mill: plainStructure(mill, "Mill")},
-		Huddles: map[sim.HuddleID]*sim.Huddle{
-			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{josephID: {}, lewisID: {}}},
-		},
-		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
-			1: {
-				ID: 1, WorkerID: lewisID, EmployerID: josephID,
-				State: sim.LaborStateWorking, Reward: 4, DurationMin: 240,
-				WorkingUntil: &workingUntil,
-			},
-		},
-		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
-			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
-		},
-		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
-			"mill_well": {
-				ID:            "mill_well",
-				DisplayName:   "Well",
-				Pos:           sim.WorldPos{X: 158 * 32, Y: 51 * 32},
-				OwnerActorID:  "", // unowned commons
-				LoiterOffsetX: &zero,
-				LoiterOffsetY: &zero,
-				Refreshes: []*sim.ObjectRefresh{
-					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
-				},
-			},
-		},
-	}
-	return snap, josephID, nil
-}
-
 func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const josiahID = sim.ActorID("josiah")
 	zero := 0
@@ -8640,6 +8547,109 @@ func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// millerWithHiredHaulerKeepsWaterCue is the live LLM-621 shape. A miller stands
+// at his own post, out of water (0 of a 20 cap, a `forage water` entry) with a
+// full commons Well a short walk off — and his own hired hauler is in the room
+// mid-job. The employer must still read "## Free sources you can gather from":
+// a worker fulfilling a contract is not custom, so nothing here is an encounter
+// to finish before stepping out.
+//
+// The pre-fix payload contradicted itself — "Lewis Walker is working a job for
+// you" and a silenced harvest cue in the same prompt — and because a contract
+// runs for hours the deferral covered the whole shift rather than a sale.
+//
+// What this fixture pins is the laboring-peer condition alone. It does NOT model
+// why the live case mattered so much: Joseph Scott was the village's only actor
+// with a `forage water` restock entry, so the whole water chain stalled behind
+// one hire. That is a village-config fact (who holds the entry), not something a
+// perception fixture can carry — don't read the golden as documenting it.
+// Geometry does match the live line: the Well sits dx=+6, dy=-4 from the miller,
+// ~7 tiles, rendering "a short walk to the northeast". Both positions go through
+// WorldPos.Tile() so actor and object tiles share one conversion.
+//
+// Fixed PublishedAt with WorkingUntil four hours out keeps the workers-for-me
+// duration byte-stable; on shift, no orders, no price book.
+func millerWithHiredHaulerKeepsWaterCue() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josephID = sim.ActorID("joseph")
+		lewisID  = sim.ActorID("lewis")
+		mill     = sim.StructureID("mill")
+	)
+	zero := 0
+	start, end := 360, 1140 // 06:00–19:00
+	now := 690              // 11:30 — on shift
+	published := time.Date(2026, 8, 8, 11, 30, 0, 0, time.UTC)
+	workingUntil := published.Add(4 * time.Hour)
+	joseph := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCStateful,
+		DisplayName: "Joseph Scott",
+		Role:        "miller",
+		State:       sim.StateIdle,
+		// Both positions go through WorldPos.Tile() so the actor tile and the object
+		// tile share one conversion — a raw TilePos here would be compared against a
+		// converted object tile and the distance phrase would be nonsense.
+		Pos:                sim.WorldPos{X: 152 * 32, Y: 55 * 32}.Tile(),
+		BusinessownerState: &sim.BusinessownerState{},
+		WorkStructureID:    mill,
+		InsideStructureID:  mill, // AtOwnBusiness — the arm under test
+		CurrentHuddleID:    "h1",
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		Coins:              55,
+		// A hauler he has hired before — the live pairing. Acquaintance only
+		// changes how the worker is NAMED; the arm under test reads m.Laboring.
+		Acquaintances:  map[string]sim.Acquaintance{"Lewis Walker": {FirstInteractedAt: published.Add(-30 * 24 * time.Hour)}},
+		Inventory:      map[sim.ItemKind]int{"water": 0},
+		AttributeSlugs: []string{sim.AttrForageRange},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+		}},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Lewis Walker",
+		State:           sim.StateLaboring, // the cheap mirror the ledger scan gates on
+		Pos:             sim.WorldPos{X: 152 * 32, Y: 55 * 32}.Tile(),
+		CurrentHuddleID: "h1",
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:       published,
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph, lewisID: lewis},
+		Structures:        map[sim.StructureID]*sim.Structure{mill: plainStructure(mill, "Mill")},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{josephID: {}, lewisID: {}}},
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			1: {
+				ID: 1, WorkerID: lewisID, EmployerID: josephID,
+				State: sim.LaborStateWorking, Reward: 4, DurationMin: 240,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"mill_well": {
+				ID:            "mill_well",
+				DisplayName:   "Well",
+				Pos:           sim.WorldPos{X: 158 * 32, Y: 51 * 32},
+				OwnerActorID:  "", // unowned commons
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
+				},
+			},
+		},
+	}
+	return snap, josephID, nil
 }
 
 // npcAtWellWithThirst builds a shared-VA NPC standing ON the town Well's loiter
