@@ -57,6 +57,7 @@ DECLARE
         '019da690-4df2-75ce-bc2a-30180d5a5132'::uuid];
     total int;
     pinned int;
+    apple_rows int;
     seeded_rows int;
     restored int;
 BEGIN
@@ -88,6 +89,21 @@ BEGIN
     -- The refresh rows must still be the ones the _up seeded. A retuned yield or
     -- period means someone has been tuning the orchard live, which is state this
     -- migration cannot claim to own.
+    --
+    -- BOTH counts are checked, and that is not redundant. The shaped count alone
+    -- can read 20 while an EXTRA apple gather row exists on one of the pinned
+    -- objects — object_refresh's uniqueness on (object_id, gather_item) is
+    -- partial, covering only rows with attribute IS NULL, so an apple row
+    -- carrying an attribute can sit alongside the seeded one. The total count
+    -- catches it (code_review).
+    --
+    -- available_quantity and last_refresh_at are deliberately NOT checked:
+    -- ordinary harvesting and regen move both, so pinning them would make the
+    -- _down refuse on a working orchard.
+    SELECT count(*) INTO apple_rows
+      FROM object_refresh
+     WHERE object_id = ANY(grove_ids) AND gather_item = 'apples';
+
     SELECT count(*) INTO seeded_rows
       FROM object_refresh
      WHERE object_id = ANY(grove_ids)
@@ -97,18 +113,27 @@ BEGIN
        AND max_quantity = 3
        AND refresh_mode = 'periodic'
        AND refresh_period_hours = 168;
-    IF seeded_rows <> 20 THEN
+
+    IF apple_rows <> 20 OR seeded_rows <> 20 THEN
         RAISE EXCEPTION
-            'LLM-623 down: only % of 20 apple refresh rows still have the shape this migration seeded (3 units / 168h periodic) — the orchard has been retuned since',
-            seeded_rows;
+            'LLM-623 down: expected exactly 20 apple gather rows across the pinned trees, all in the seeded shape (3 units / 168h periodic) — found % row(s) of which % seeded-shaped; the orchard has been retuned since',
+            apple_rows, seeded_rows;
     END IF;
 
     -- object_refresh would cascade on an object delete, but nothing is being
-    -- deleted here, so the seeded rows come out explicitly. Scoped to the yield
-    -- row this migration wrote, so a shade or need row added to one of these
-    -- objects since would survive.
+    -- deleted here, so the seeded rows come out explicitly. The predicate is the
+    -- FULL shape asserted above rather than the looser gather_item match — a
+    -- broader delete would remove a row this migration did not create
+    -- (code_review). Shade and need rows added to these objects since are
+    -- untouched either way.
     DELETE FROM object_refresh
-     WHERE object_id = ANY(grove_ids) AND gather_item = 'apples';
+     WHERE object_id = ANY(grove_ids)
+       AND gather_item = 'apples'
+       AND attribute IS NULL
+       AND amount = 0
+       AND max_quantity = 3
+       AND refresh_mode = 'periodic'
+       AND refresh_period_hours = 168;
 
     UPDATE village_object
        SET asset_id = maple_id,

@@ -316,8 +316,15 @@ DECLARE
     prudence CONSTANT text := '019dbcec-1149-7149-8a49-2cdb54680b86';
     apple_entries int;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM actor WHERE id::text = prudence) THEN
+    -- Same empty-install condition as part 5, applied consistently: ONLY a
+    -- database with no village at all skips. On a real village a missing actor
+    -- is drift, and skipping would commit an orchard whose economy is half
+    -- wired (code_review).
+    IF NOT EXISTS (SELECT 1 FROM village_object) AND NOT EXISTS (SELECT 1 FROM actor) THEN
         RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM actor WHERE id::text = prudence) THEN
+        RAISE EXCEPTION 'LLM-623: Prudence Ward (%) was not found — the orchard has no forager', prudence;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM actor_attribute
@@ -375,8 +382,15 @@ DECLARE
     josiah CONSTANT text := '019dcac2-e78a-715e-91b7-101f339b0891';
     apple_entries int;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM actor WHERE id::text = josiah) THEN
+    -- Same empty-install condition as parts 5 and 6. A missing Josiah on a real
+    -- village previously let the transaction COMMIT with the orchard planted and
+    -- Prudence foraging, but no buyer — precisely the half-wired economy the
+    -- LLM-324 note in this part warns about (code_review).
+    IF NOT EXISTS (SELECT 1 FROM village_object) AND NOT EXISTS (SELECT 1 FROM actor) THEN
         RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM actor WHERE id::text = josiah) THEN
+        RAISE EXCEPTION 'LLM-623: Josiah Thorne (%) was not found — the orchard would have no buyer', josiah;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM actor_attribute
