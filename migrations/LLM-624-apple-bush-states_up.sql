@@ -45,7 +45,11 @@ BEGIN;
 DO $$
 DECLARE
     apple_id CONSTANT uuid := '019e5f00-c401-7a10-9e00-000000000623';
-    sheet    CONSTANT text := '/tilesets/mana-seed/growable-fruit-trees/fruit trees (apple, red) 48x64.png';
+    -- LLM-623 authored the growth states off the shadowless sheet; the two
+    -- bush states move to the baked-in-shadow variant. Both paths are named
+    -- because this block validates the OLD art and writes the NEW.
+    plain_sheet  CONSTANT text := '/tilesets/mana-seed/growable-fruit-trees/fruit trees (apple, red) 48x64.png';
+    shadow_sheet CONSTANT text := '/tilesets/mana-seed/growable-fruit-trees/fruit trees, shadow (apple, red) 48x64.png';
     growth_states int;
     leftover_growth_tags int;
     bush_states int;
@@ -57,15 +61,47 @@ BEGIN
         RAISE EXCEPTION 'LLM-624: the Apple Tree asset (%) was not found — LLM-623 must be applied first', apple_id;
     END IF;
 
-    -- Assert the shape before mutating: exactly the four growth states LLM-623
-    -- created. Anything else means the asset has been re-authored since, which
-    -- is state this migration must not silently overwrite.
-    SELECT count(*) INTO growth_states
-      FROM asset_state s
-     WHERE s.asset_id = apple_id AND s.state LIKE 'growth-%';
-    IF growth_states <> 4 THEN
+    -- Assert the COMPLETE state set before mutating, not just a count of growth
+    -- rows. The delete below is asset-wide, so counting only `growth-%` would
+    -- pass on an asset carrying the four plus some unrelated fifth state and
+    -- then silently destroy that fifth row; a bare count also accepts a
+    -- re-authored growth row pointing at different art (code_review).
+    --
+    -- Compared both directions so neither a missing nor an extra row slips
+    -- through, and over the fields that actually identify the art.
+    SELECT count(*) INTO growth_states FROM asset_state WHERE asset_id = apple_id;
+    IF growth_states <> 4
+       OR EXISTS (
+            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y
+              FROM asset_state s WHERE s.asset_id = apple_id
+            EXCEPT
+            SELECT v.state, plain_sheet, v.src_x, v.src_y
+              FROM (VALUES ('growth-1', 240, 0), ('growth-2', 144, 0),
+                           ('growth-3', 144, 64), ('growth-4', 192, 64)
+                   ) AS v(state, src_x, src_y))
+       OR EXISTS (
+            SELECT v.state, plain_sheet, v.src_x, v.src_y
+              FROM (VALUES ('growth-1', 240, 0), ('growth-2', 144, 0),
+                           ('growth-3', 144, 64), ('growth-4', 192, 64)
+                   ) AS v(state, src_x, src_y)
+            EXCEPT
+            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y
+              FROM asset_state s WHERE s.asset_id = apple_id)
+    THEN
         RAISE EXCEPTION
-            'LLM-624: expected the 4 growth states LLM-623 authored, found % — the Apple Tree asset has been re-authored since', growth_states;
+            'LLM-624: the Apple Tree asset does not carry exactly the 4 growth states LLM-623 authored (found % state(s), or the names/sheet/coordinates differ) — it has been re-authored since', growth_states;
+    END IF;
+
+    -- The tags travel with the states and are the thing the engine reads, so
+    -- they are verified too rather than assumed to match the state names.
+    IF EXISTS (
+        SELECT s.state::text, t.tag::text
+          FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+         WHERE s.asset_id = apple_id AND t.tag::text <> s.state::text)
+       OR (SELECT count(*) FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+            WHERE s.asset_id = apple_id) <> 4
+    THEN
+        RAISE EXCEPTION 'LLM-624: the Apple Tree growth states do not carry exactly their matching tags';
     END IF;
 
     -- asset_state_tag rows cascade with their states.
@@ -76,7 +112,7 @@ BEGIN
     -- rather than bare branches: the sheet's genuinely bare-branch rows read as
     -- winter or dead, not as harvested.
     INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate)
-    SELECT apple_id, v.state, sheet, v.src_x, 64, 48, 64, 1, 0
+    SELECT apple_id, v.state, shadow_sheet, v.src_x, 64, 48, 64, 1, 0
       FROM (VALUES
             ('bare',    144),   -- picked out
             ('berries', 192)    -- carrying fruit
@@ -130,6 +166,20 @@ BEGIN
         RETURN;  -- schema-only DB: reference data only, no village
     END IF;
 
+    -- The CASE below reads "any apples row with positive stock", which only
+    -- agrees with gatherableSupply while each tree carries exactly ONE apples
+    -- row — which is what LLM-623 seeded. Duplicate or malformed rows would let
+    -- the two diverge, so require the shape rather than assume it (code_review).
+    IF EXISTS (
+        SELECT 1 FROM village_object o
+         WHERE o.asset_id = apple_id
+           AND (SELECT count(*) FROM object_refresh r
+                 WHERE r.object_id = o.id AND r.gather_item = 'apples') <> 1)
+    THEN
+        RAISE EXCEPTION
+            'LLM-624: every apple tree must carry exactly one apples gather row — one or more does not, so its rendered state cannot be derived reliably';
+    END IF;
+
     -- current_state is recomputed by refreshObjectBerryState on its next sweep
     -- regardless; setting it here means the first frame drawn after boot is
     -- already right, and that a tree whose stock is currently zero is not left
@@ -176,5 +226,19 @@ UPDATE village_object
    SET display_name = 'Apple Tree'
  WHERE asset_id = '019e5f00-c401-7a10-9e00-000000000623'
    AND coalesce(btrim(display_name), '') = '';
+
+-- Postcondition, because a silent partial here restores the exact wedge this
+-- part exists to prevent: an unnamed tree is steerable but unresolvable, and
+-- the only symptom is an NPC walking in circles (code_review).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM village_object
+         WHERE asset_id = '019e5f00-c401-7a10-9e00-000000000623'
+           AND coalesce(btrim(display_name), '') = '')
+    THEN
+        RAISE EXCEPTION 'LLM-624: an Apple Tree is still unnamed — it would be steerable but unresolvable at the source';
+    END IF;
+END $$;
 
 COMMIT;
