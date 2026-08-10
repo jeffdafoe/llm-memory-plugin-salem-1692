@@ -38,30 +38,45 @@ BEGIN
     SELECT count(*) INTO bush_states FROM asset_state WHERE asset_id = apple_id;
     IF bush_states <> 2
        OR EXISTS (
-            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y
+            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count, s.frame_rate
               FROM asset_state s WHERE s.asset_id = apple_id
             EXCEPT
-            SELECT v.state, shadow_sheet, v.src_x, 64
+            SELECT v.state, shadow_sheet, v.src_x, 64, 48, 64, 1, 0::double precision
               FROM (VALUES ('bare', 144), ('berries', 192)) AS v(state, src_x))
        OR EXISTS (
-            SELECT v.state, shadow_sheet, v.src_x, 64
+            SELECT v.state, shadow_sheet, v.src_x, 64, 48, 64, 1, 0::double precision
               FROM (VALUES ('bare', 144), ('berries', 192)) AS v(state, src_x)
             EXCEPT
-            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y
+            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count, s.frame_rate
               FROM asset_state s WHERE s.asset_id = apple_id)
     THEN
         RAISE EXCEPTION
-            'LLM-624 down: the Apple Tree asset does not carry exactly the 2 bush states this migration created (found % state(s), or the names/sheet/coordinates differ) — it has been re-authored since', bush_states;
+            'LLM-624 down: the Apple Tree asset does not carry exactly the 2 bush states this migration created (found % state(s), or their sheet/coordinates/frame fields differ) — it has been re-authored since', bush_states;
     END IF;
 
+    IF (SELECT default_state FROM asset WHERE id = apple_id) <> 'berries' THEN
+        RAISE EXCEPTION 'LLM-624 down: expected default_state berries before rolling back, found %',
+            (SELECT default_state FROM asset WHERE id = apple_id);
+    END IF;
+
+    -- (state, tag) pairs compared both directions plus a total count, for the
+    -- duplicate-tag reason spelled out in the _up.
     IF EXISTS (
-        SELECT s.state::text, t.tag::text
-          FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
-         WHERE s.asset_id = apple_id AND t.tag::text <> s.state::text)
+            SELECT s.state::text, t.tag::text
+              FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+             WHERE s.asset_id = apple_id
+            EXCEPT
+            SELECT v.state, v.state FROM (VALUES ('bare'), ('berries')) AS v(state))
+       OR EXISTS (
+            SELECT v.state, v.state FROM (VALUES ('bare'), ('berries')) AS v(state)
+            EXCEPT
+            SELECT s.state::text, t.tag::text
+              FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+             WHERE s.asset_id = apple_id)
        OR (SELECT count(*) FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
             WHERE s.asset_id = apple_id) <> 2
     THEN
-        RAISE EXCEPTION 'LLM-624 down: the Apple Tree bush states do not carry exactly their matching tags';
+        RAISE EXCEPTION 'LLM-624 down: the Apple Tree bush states do not carry exactly one matching tag each';
     END IF;
 
     DELETE FROM asset_state WHERE asset_id = apple_id;

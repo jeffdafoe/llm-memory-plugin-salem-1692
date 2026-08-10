@@ -69,39 +69,64 @@ BEGIN
     --
     -- Compared both directions so neither a missing nor an extra row slips
     -- through, and over the fields that actually identify the art.
+    -- EVERY column these migrations author is compared, not just the ones that
+    -- identify the art: a state re-authored with a different src_w, frame_count
+    -- or frame_rate would otherwise pass and then be destroyed by the
+    -- asset-wide delete (code_review).
     SELECT count(*) INTO growth_states FROM asset_state WHERE asset_id = apple_id;
     IF growth_states <> 4
        OR EXISTS (
-            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y
+            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count, s.frame_rate
               FROM asset_state s WHERE s.asset_id = apple_id
             EXCEPT
-            SELECT v.state, plain_sheet, v.src_x, v.src_y
+            SELECT v.state, plain_sheet, v.src_x, v.src_y, 48, 64, 1, 0::double precision
               FROM (VALUES ('growth-1', 240, 0), ('growth-2', 144, 0),
                            ('growth-3', 144, 64), ('growth-4', 192, 64)
                    ) AS v(state, src_x, src_y))
        OR EXISTS (
-            SELECT v.state, plain_sheet, v.src_x, v.src_y
+            SELECT v.state, plain_sheet, v.src_x, v.src_y, 48, 64, 1, 0::double precision
               FROM (VALUES ('growth-1', 240, 0), ('growth-2', 144, 0),
                            ('growth-3', 144, 64), ('growth-4', 192, 64)
                    ) AS v(state, src_x, src_y)
             EXCEPT
-            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y
+            SELECT s.state::text, s.sheet::text, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count, s.frame_rate
               FROM asset_state s WHERE s.asset_id = apple_id)
     THEN
         RAISE EXCEPTION
-            'LLM-624: the Apple Tree asset does not carry exactly the 4 growth states LLM-623 authored (found % state(s), or the names/sheet/coordinates differ) — it has been re-authored since', growth_states;
+            'LLM-624: the Apple Tree asset does not carry exactly the 4 growth states LLM-623 authored (found % state(s), or their sheet/coordinates/frame fields differ) — it has been re-authored since', growth_states;
     END IF;
 
-    -- The tags travel with the states and are the thing the engine reads, so
-    -- they are verified too rather than assumed to match the state names.
+    -- default_state is overwritten below and is part of the authored contract,
+    -- so it is validated like everything else (code_review).
+    IF (SELECT default_state FROM asset WHERE id = apple_id) <> 'growth-4' THEN
+        RAISE EXCEPTION 'LLM-624: expected default_state growth-4 before the switch, found %',
+            (SELECT default_state FROM asset WHERE id = apple_id);
+    END IF;
+
+    -- The tags are what the engine actually reads, so the (state, tag) PAIRS
+    -- are compared both directions. A per-row "tag matches its own state" test
+    -- plus a total count would accept two growth-1 tags on one state and none
+    -- on another — every joined row matches and the count still reads 4
+    -- (code_review). EXCEPT dedupes, so the count is what catches duplicates
+    -- and the reverse EXCEPT is what catches the missing one.
     IF EXISTS (
-        SELECT s.state::text, t.tag::text
-          FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
-         WHERE s.asset_id = apple_id AND t.tag::text <> s.state::text)
+            SELECT s.state::text, t.tag::text
+              FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+             WHERE s.asset_id = apple_id
+            EXCEPT
+            SELECT v.state, v.state
+              FROM (VALUES ('growth-1'), ('growth-2'), ('growth-3'), ('growth-4')) AS v(state))
+       OR EXISTS (
+            SELECT v.state, v.state
+              FROM (VALUES ('growth-1'), ('growth-2'), ('growth-3'), ('growth-4')) AS v(state)
+            EXCEPT
+            SELECT s.state::text, t.tag::text
+              FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+             WHERE s.asset_id = apple_id)
        OR (SELECT count(*) FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
             WHERE s.asset_id = apple_id) <> 4
     THEN
-        RAISE EXCEPTION 'LLM-624: the Apple Tree growth states do not carry exactly their matching tags';
+        RAISE EXCEPTION 'LLM-624: the Apple Tree growth states do not carry exactly one matching tag each';
     END IF;
 
     -- asset_state_tag rows cascade with their states.
@@ -138,12 +163,15 @@ BEGIN
 
     -- Both tags must exist or the bush branch returns "not state-tracked" and
     -- the orchard stops flipping altogether.
-    SELECT count(*) INTO bush_states
+    -- Counting tags IN ('berries','bare') would read 2 for two `bare` tags, so
+    -- the DISTINCT set is what is checked (code_review).
+    SELECT count(DISTINCT t.tag) INTO bush_states
       FROM asset_state_tag t
       JOIN asset_state s ON s.id = t.state_id
      WHERE s.asset_id = apple_id AND t.tag IN ('berries', 'bare');
     IF bush_states <> 2 THEN
-        RAISE EXCEPTION 'LLM-624: expected both berries and bare tags, found %', bush_states;
+        RAISE EXCEPTION
+            'LLM-624: expected both a berries and a bare tag after the switch, found % distinct', bush_states;
     END IF;
 
     -- A placed tree drops in ripe (asset_refresh_default seeds it full), so the
@@ -170,14 +198,25 @@ BEGIN
     -- agrees with gatherableSupply while each tree carries exactly ONE apples
     -- row — which is what LLM-623 seeded. Duplicate or malformed rows would let
     -- the two diverge, so require the shape rather than assume it (code_review).
+    -- Cardinality alone would accept a single MALFORMED row — non-periodic, or
+    -- a retuned capacity — and treat it as a migrated tree, so the LLM-623
+    -- contract itself is required (code_review). available_quantity is
+    -- deliberately excluded: it moves with every harvest and regen, and it is
+    -- precisely the value the CASE below reads.
     IF EXISTS (
         SELECT 1 FROM village_object o
          WHERE o.asset_id = apple_id
            AND (SELECT count(*) FROM object_refresh r
-                 WHERE r.object_id = o.id AND r.gather_item = 'apples') <> 1)
+                 WHERE r.object_id = o.id
+                   AND r.gather_item = 'apples'
+                   AND r.attribute IS NULL
+                   AND r.amount = 0
+                   AND r.max_quantity = 3
+                   AND r.refresh_mode = 'periodic'
+                   AND r.refresh_period_hours = 168) <> 1)
     THEN
         RAISE EXCEPTION
-            'LLM-624: every apple tree must carry exactly one apples gather row — one or more does not, so its rendered state cannot be derived reliably';
+            'LLM-624: every apple tree must carry exactly one apples gather row in the shape LLM-623 seeded (yield-only, 3 units, periodic, 168h) — one or more does not, so its rendered state cannot be derived reliably';
     END IF;
 
     -- current_state is recomputed by refreshObjectBerryState on its next sweep
