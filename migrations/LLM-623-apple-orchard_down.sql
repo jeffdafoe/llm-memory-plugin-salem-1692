@@ -9,8 +9,21 @@
 -- made, and refuses anything else.
 --
 -- Anything else means: an apple tree the editor placed after the fact, or a
--- converted tree someone moved outside the grove's bounding box. Both are state
--- this migration did not create, so refuse rather than generalize.
+-- converted tree someone re-owned or re-stated. Both are state this migration
+-- did not create, so refuse rather than generalize.
+--
+-- PROVENANCE IS BY ID, matching the _up. A count of apple trees in a bounding
+-- box proves only that twenty exist there, not that they are the twenty this
+-- migration converted — swap one for a hand-placed apple and the count is still
+-- twenty, and reverting it would destroy legitimate post-migration state
+-- (code_review). The pinned list, plus the owner and refresh-shape checks
+-- below, means the _down reverts precisely what the _up did or nothing at all.
+--
+-- Reversibility limit, stated rather than hidden: if the editor has since
+-- MOVED one of these trees, its id still matches and the revert still lands —
+-- position is not restored, because the _up never changed it. If a tree has
+-- been deleted outright, the _down refuses and the orchard has to be finished
+-- off by hand.
 --
 -- The engine must be stopped, same as for the _up.
 
@@ -18,10 +31,33 @@ BEGIN;
 
 DO $$
 DECLARE
-    maple_id CONSTANT uuid := '2d91c8a9-6501-4e16-873a-4d18bdc6f63e';
-    apple_id CONSTANT uuid := '019e5f00-c401-7a10-9e00-000000000623';
+    maple_id  CONSTANT uuid := '2d91c8a9-6501-4e16-873a-4d18bdc6f63e';
+    apple_id  CONSTANT uuid := '019e5f00-c401-7a10-9e00-000000000623';
+    prudence  CONSTANT text := '019dbcec-1149-7149-8a49-2cdb54680b86';
+    grove_ids CONSTANT uuid[] := ARRAY[
+        '019da68e-1ac4-75f4-9164-ad6bfb303a5d'::uuid,
+        '019da68e-39fe-7cf2-bc72-39d0d02a323b'::uuid,
+        '019da68d-f208-77af-b331-b64de9723109'::uuid,
+        '019da68d-a3ce-723a-91c6-3381b169eee2'::uuid,
+        '019da68b-e156-776e-a0e4-46c8c3b2f2f5'::uuid,
+        '019da68e-6c2d-7c41-8ab5-8f39f4426f55'::uuid,
+        '019da68e-dd93-7209-9614-ba403ade9640'::uuid,
+        '019da68c-335c-770e-88d5-166179ad0f0f'::uuid,
+        '019da68f-7458-7c2f-a67e-822964956bac'::uuid,
+        '019da690-07a2-7a66-8d97-db76d77d5648'::uuid,
+        '019da68f-0487-7574-a120-4161cc983632'::uuid,
+        '019da68f-a92e-7120-8527-c5bc88ed56fa'::uuid,
+        '019da68e-86dc-78b0-9125-ea4aa5ce392a'::uuid,
+        '019da68c-94ff-71d8-be5d-efcbed2fc4ae'::uuid,
+        '019da690-2863-7213-bb2e-76db22f5ddb1'::uuid,
+        '019da68e-a71b-7878-b122-f938c7f1db4a'::uuid,
+        '019da68f-2271-76e1-ac8c-88af8e53c194'::uuid,
+        '019da68c-cb14-7f28-a7c3-ff971e40feb7'::uuid,
+        '019da68f-dee7-74a3-bb0b-2da1226b906a'::uuid,
+        '019da690-4df2-75ce-bc2a-30180d5a5132'::uuid];
     total int;
-    in_grove int;
+    pinned int;
+    seeded_rows int;
     restored int;
 BEGIN
     SELECT count(*) INTO total FROM village_object WHERE asset_id = apple_id;
@@ -31,16 +67,40 @@ BEGIN
         RETURN;
     END IF;
 
-    SELECT count(*) INTO in_grove
-      FROM village_object
-     WHERE asset_id = apple_id
-       AND x BETWEEN 3000 AND 4000
-       AND y BETWEEN -600 AND -50;
-
-    IF total <> 20 OR in_grove <> 20 THEN
+    -- Every apple tree in the world must be one this migration made. A
+    -- hand-placed one would otherwise be orphaned by the asset delete at the
+    -- bottom of this file.
+    IF total <> 20 THEN
         RAISE EXCEPTION
-            'LLM-623 down: expected exactly the 20 converted grove trees, found % apple tree(s) of which % in the grove — remove any hand-placed apple trees first',
-            total, in_grove;
+            'LLM-623 down: found % apple tree(s), expected the 20 converted grove trees — remove any hand-placed apple trees first',
+            total;
+    END IF;
+
+    SELECT count(*) INTO pinned
+      FROM village_object
+     WHERE id = ANY(grove_ids) AND asset_id = apple_id AND owner_actor_id = prudence;
+    IF pinned <> 20 THEN
+        RAISE EXCEPTION
+            'LLM-623 down: only % of the 20 pinned grove objects are still apple trees owned by Prudence Ward — refusing to revert objects this migration did not create',
+            pinned;
+    END IF;
+
+    -- The refresh rows must still be the ones the _up seeded. A retuned yield or
+    -- period means someone has been tuning the orchard live, which is state this
+    -- migration cannot claim to own.
+    SELECT count(*) INTO seeded_rows
+      FROM object_refresh
+     WHERE object_id = ANY(grove_ids)
+       AND gather_item = 'apples'
+       AND attribute IS NULL
+       AND amount = 0
+       AND max_quantity = 3
+       AND refresh_mode = 'periodic'
+       AND refresh_period_hours = 168;
+    IF seeded_rows <> 20 THEN
+        RAISE EXCEPTION
+            'LLM-623 down: only % of 20 apple refresh rows still have the shape this migration seeded (3 units / 168h periodic) — the orchard has been retuned since',
+            seeded_rows;
     END IF;
 
     -- object_refresh would cascade on an object delete, but nothing is being
@@ -48,17 +108,17 @@ BEGIN
     -- row this migration wrote, so a shade or need row added to one of these
     -- objects since would survive.
     DELETE FROM object_refresh
-     WHERE gather_item = 'apples'
-       AND object_id IN (SELECT id FROM village_object WHERE asset_id = apple_id);
+     WHERE object_id = ANY(grove_ids) AND gather_item = 'apples';
 
     UPDATE village_object
        SET asset_id = maple_id,
            -- The Maple Tree asset's default_state, which is what all twenty
            -- carried before the _up.
            current_state = 'default',
-           -- They were unowned before the _up; owner_actor_id was NULL.
+           -- They were unowned before the _up, which the _up asserted rather
+           -- than assumed, so nulling this restores the recorded prior state.
            owner_actor_id = NULL
-     WHERE asset_id = apple_id;
+     WHERE id = ANY(grove_ids);
 
     GET DIAGNOSTICS restored = ROW_COUNT;
     IF restored <> 20 THEN
@@ -82,13 +142,17 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Matched on the COMPLETE entry the _up wrote, not on item/source alone.
+    -- An entry whose max has since been retuned — {"max":999,...} — is no
+    -- longer this migration's row, and removing it would silently discard
+    -- someone's tuning (code_review). jsonb equality ignores key order.
     SELECT count(*) INTO apple_entries
       FROM actor_attribute, jsonb_array_elements(params->'restock') e
      WHERE actor_id::text = prudence AND slug = 'herbalist'
-       AND e->>'item' = 'apples' AND e->>'source' = 'forage';
+       AND e = '{"max": 10, "item": "apples", "source": "forage"}'::jsonb;
     IF apple_entries <> 1 THEN
         RAISE EXCEPTION
-            'LLM-623 down: expected exactly one apples/forage entry on Prudence''s herbalist row, found %', apple_entries;
+            'LLM-623 down: expected exactly one apples/forage/max-10 entry on Prudence''s herbalist row, found % — it has been retuned since', apple_entries;
     END IF;
 
     -- COALESCE because jsonb_agg over an EMPTY array returns SQL NULL, and
@@ -99,7 +163,7 @@ BEGIN
        SET params = jsonb_set(params, '{restock}', COALESCE((
                SELECT jsonb_agg(e ORDER BY ord)
                  FROM jsonb_array_elements(params->'restock') WITH ORDINALITY AS t(e, ord)
-                WHERE NOT (e->>'item' = 'apples' AND e->>'source' = 'forage')
+                WHERE e <> '{"max": 10, "item": "apples", "source": "forage"}'::jsonb
            ), '[]'::jsonb))
      WHERE actor_id::text = prudence
        AND slug = 'herbalist'
@@ -123,20 +187,21 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Complete-entry match, same reasoning as Prudence's above.
     SELECT count(*) INTO apple_entries
       FROM actor_attribute, jsonb_array_elements(params->'restock') e
      WHERE actor_id::text = josiah AND slug = 'merchant'
-       AND e->>'item' = 'apples' AND e->>'source' = 'buy';
+       AND e = '{"max": 8, "item": "apples", "source": "buy"}'::jsonb;
     IF apple_entries <> 1 THEN
         RAISE EXCEPTION
-            'LLM-623 down: expected exactly one apples/buy entry on Josiah''s merchant row, found %', apple_entries;
+            'LLM-623 down: expected exactly one apples/buy/max-8 entry on Josiah''s merchant row, found % — it has been retuned since', apple_entries;
     END IF;
 
     UPDATE actor_attribute
        SET params = jsonb_set(params, '{restock}', COALESCE((
                SELECT jsonb_agg(e ORDER BY ord)
                  FROM jsonb_array_elements(params->'restock') WITH ORDINALITY AS t(e, ord)
-                WHERE NOT (e->>'item' = 'apples' AND e->>'source' = 'buy')
+                WHERE e <> '{"max": 8, "item": "apples", "source": "buy"}'::jsonb
            ), '[]'::jsonb))
      WHERE actor_id::text = josiah
        AND slug = 'merchant'
