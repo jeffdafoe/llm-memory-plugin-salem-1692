@@ -1,0 +1,22 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 40.
+You are carrying: set of linens (x1).
+
+## Around you
+You are inside the Blacksmith, your workplace, with no one else here to hear you speak.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post (you close at 6 in the evening), but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.
+
+## Your clothes
+Your working clothes are worn thin at the elbows, and the cloth is going at the seams. A fresh set of linens would set you right. Use move_to to reach a seller, then pay_with_item once you arrive:
+  - buy from General Store (destination: general_store)
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -59,6 +59,10 @@ type ItemKindDef struct {
 	//     skipped. nights_stay carries this.
 	//   - "lodging" — a service that grants a private bedroom on delivery
 	//     (deliver_order routes to AssignBedroomForLodger instead of transfer).
+	//   - "mending" — a service that restores the buyer's worn garment units on
+	//     delivery (transferOrderGoods routes to MendGarments instead of
+	//     transfer; LLM-625). Sold only by a keeper of a TagMending structure,
+	//     consumes the seller's thread.
 	//   - "portable" — take-home eligible (v1 token; not consumed in v2 yet).
 	// v1 read these via hasCapability(); v2 models the column on the def.
 	Capabilities []string

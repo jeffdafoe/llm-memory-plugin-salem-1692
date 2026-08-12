@@ -532,6 +532,43 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor, a
 		}
 		return nil
 	}
+	// Mending (LLM-625): a service whose delivery restores the buyer's worn
+	// garment units instead of transferring goods — the lodging shape. The
+	// accept gate (gate 10c) pre-validated the mender's workplace, thread
+	// stock, and that the buyer has something worn, so the error paths here
+	// are defensive, mirroring the lodging branch's posture.
+	if itemHasCapability(w, o.Item, CapabilityMending) {
+		// Single self-consumer, like lodging: the buyer brings their own
+		// clothes. Mending a third party's wardrobe is out of scope — their
+		// wear counters were never validated co-present. The resolved actor is
+		// checked against the id list too (code_review): this is the boundary
+		// that protects settlement, and a malformed direct call could otherwise
+		// validate the buyer's wear yet mend someone else.
+		if len(o.ConsumerIDs) != 1 || o.ConsumerIDs[0] != o.BuyerID {
+			return fmt.Errorf("order %d: mending order must have the buyer as its sole consumer (buyer=%q consumers=%v)", o.ID, o.BuyerID, o.ConsumerIDs)
+		}
+		if len(consumers) != 1 || consumers[0] == nil || consumers[0].ID != o.BuyerID {
+			return fmt.Errorf("order %d: mending order resolved a consumer other than buyer %q", o.ID, o.BuyerID)
+		}
+		buyerActor := consumers[0]
+		// The shared preconditions (service capability, mender workplace,
+		// thread, worn garments) — the same predicate the accept gate and the
+		// commit preflight ran, so an error here is defensive only.
+		if err := ValidateMendingDelivery(w, seller, buyerActor, o.Item); err != nil {
+			return fmt.Errorf("order %d: %w", o.ID, err)
+		}
+		mended := MendGarments(w.ItemKinds, buyerActor)
+		if len(mended) == 0 {
+			// Unreachable past ValidateMendingDelivery; kept so a mend that
+			// touched nothing can never charge thread.
+			return fmt.Errorf("order %d: %s has nothing worn to mend", o.ID, buyerActor.DisplayName)
+		}
+		seller.Inventory[MendThreadKind] -= MendThreadPerMend
+		if seller.Inventory[MendThreadKind] <= 0 {
+			delete(seller.Inventory, MendThreadKind)
+		}
+		return nil
+	}
 	// Ordinary goods. The atomic-commit contract requires every per-consumer
 	// transfer to succeed or none to mutate state. Preflight the AGGREGATE
 	// required stock (and nil consumers) BEFORE any mutation so a multi-consumer

@@ -78,16 +78,17 @@ func TestInAfternoonSpawnWindow(t *testing.T) {
 
 // TestSeedFactorPack — a factor carries every factorWareKind (unitsPerKind..+1 of each),
 // an iron shipment (ironUnits..+2 — LLM-442), a salt shipment (saltUnits..+2 — LLM-444),
-// and a purse inside the configured [min,max]; a min==max range gives a fixed purse.
+// a thread shipment (threadUnits..+2 — LLM-625), and a purse inside the configured
+// [min,max]; a min==max range gives a fixed purse.
 func TestSeedFactorPack(t *testing.T) {
-	valid := map[ItemKind]bool{factorIronKind: true, factorSaltKind: true}
+	valid := map[ItemKind]bool{factorIronKind: true, factorSaltKind: true, factorThreadKind: true}
 	for _, k := range factorWareKinds {
 		valid[k] = true
 	}
 	for seed := int64(0); seed < 50; seed++ {
-		pack, purse := seedFactorPack(rand.New(rand.NewSource(seed)), 2, 10, 12, 120, 200)
-		if len(pack) != len(factorWareKinds)+2 {
-			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind plus iron and salt)", seed, len(pack), len(factorWareKinds)+2)
+		pack, purse := seedFactorPack(rand.New(rand.NewSource(seed)), 2, 10, 12, 12, 120, 200)
+		if len(pack) != len(factorWareKinds)+3 {
+			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind plus iron, salt and thread)", seed, len(pack), len(factorWareKinds)+3)
 		}
 		for kind, qty := range pack {
 			if !valid[kind] {
@@ -99,9 +100,9 @@ func TestSeedFactorPack(t *testing.T) {
 				}
 				continue
 			}
-			if kind == factorSaltKind {
+			if kind == factorSaltKind || kind == factorThreadKind {
 				if qty < 12 || qty > 14 {
-					t.Errorf("seed %d: salt qty %d out of [12,14]", seed, qty)
+					t.Errorf("seed %d: %q qty %d out of [12,14]", seed, kind, qty)
 				}
 				continue
 			}
@@ -113,7 +114,7 @@ func TestSeedFactorPack(t *testing.T) {
 			t.Errorf("seed %d: purse %d out of [120,200]", seed, purse)
 		}
 	}
-	if _, purse := seedFactorPack(rand.New(rand.NewSource(1)), 1, 1, 1, 150, 150); purse != 150 {
+	if _, purse := seedFactorPack(rand.New(rand.NewSource(1)), 1, 1, 1, 1, 150, 150); purse != 150 {
 		t.Errorf("purse = %d, want 150 when min==max", purse)
 	}
 }
@@ -458,7 +459,7 @@ func TestTransferItemRejectsNonPositiveQty(t *testing.T) {
 func TestSeedFactorPackStampsShipmentBaseline(t *testing.T) {
 	const ironUnits = 10
 	r := rand.New(rand.NewSource(7))
-	pack, _ := seedFactorPack(r, 2, ironUnits, 12, 100, 200)
+	pack, _ := seedFactorPack(r, 2, ironUnits, 12, 12, 100, 200)
 	shipment := pack[factorIronKind]
 	if shipment < ironUnits || shipment > ironUnits+2 {
 		t.Fatalf("seeded iron = %d, want the shipment quantity plus jitter (%d..%d)", shipment, ironUnits, ironUnits+2)

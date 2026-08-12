@@ -2136,6 +2136,9 @@ func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote 
 	if r.LodgedNow {
 		b.WriteString(" The room is yours — return to it tonight to sleep.")
 	}
+	if r.MendedNow {
+		b.WriteString(" Your clothes are mended — good as new.")
+	}
 	b.WriteString(" Call done() now unless something else needs you.")
 	return b.String()
 }

@@ -4205,6 +4205,37 @@ var perceptionScenarios = []perceptionScenario{
 		build: smithWornClothesOffShift,
 	},
 	{
+		name: "smith_worn_clothes_mender_at_inn",
+		summary: "LLM-625 mend arm: the threadbare smith of smith_working_clothes_worn_thin, with Hannah taking in " +
+			"mending at the inn (thread on hand) while Josiah's shelves still hold garments. The golden pins the cue " +
+			"steering to the MEND — walk-to the inn — instead of the replacement: wear lives on the wearer's in-use " +
+			"unit, so a mend brings his own clothes back for less coin than new cloth, and the conserving path wins " +
+			"whenever a live mender exists.",
+		build: smithWornClothesMenderAtInn,
+	},
+	{
+		name: "smith_worn_clothes_mender_present",
+		summary: "LLM-625 co-present arm: the threadbare smith shares Hannah's huddle at the inn. The golden pins the " +
+			"concrete pay_with_item imperative naming Hannah and the mending item — the same fast path the " +
+			"seller-present garment arm takes, so the mend cannot dead-spot right at the mender.",
+		build: smithWornClothesMenderPresent,
+	},
+	{
+		name: "smith_worn_clothes_mender_out_of_thread",
+		summary: "LLM-625 thread gate: Hannah takes in mending but holds no thread, so the mend arm is dead and the cue " +
+			"falls back to the LLM-589 replacement steer at the general store. A mender with nothing to mend WITH must " +
+			"not swallow the working replace path. Foil of smith_worn_clothes_mender_at_inn (thread 6 → 0).",
+		build: smithWornClothesMenderOutOfThread,
+	},
+	{
+		name: "smith_nothing_to_work_in_mender_live",
+		summary: "LLM-625 none-tier boundary: Ezekiel owns no working garment at all while a thread-stocked mender is " +
+			"live. The golden pins the NONE tier keeping the replacement steer — mending conserves garments, it cannot " +
+			"create one, so a man with nothing on the peg is never sent to the mender. Foil of " +
+			"smith_has_nothing_fit_to_work_in (same wardrobe, a mender added, same steer).",
+		build: smithNothingToWorkInMenderLive,
+	},
+	{
 		name: "keeper_off_post_buying_in_company",
 		summary: "LLM-611 (the live 2026-08-06 Josiah case): Josiah Thorne, shopkeeper, is OFF his own post — inside the " +
 			"Ellis Farm, huddled with Elizabeth Ellis — with 1 coin and a pack of merchandise he means to pay with. The " +
@@ -18212,6 +18243,115 @@ func smithWornClothesOffShift() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 	snap.Actors[actorID].ScheduleStartMin = &eveStart
 	snap.Actors[actorID].ScheduleEndMin = &eveEnd
 	return snap, actorID, warrants
+}
+
+// withMenderAtInn extends a working-clothes fixture with the LLM-625 mending
+// economy: Hannah keeps the Inn — tagged TagMending — holding `thread` spools of
+// thread, and the catalog gains the mending service kind (capabilities
+// service+mending, retail 4) and the imported thread material. Built as an
+// overlay on workingClothesSnapshot so every mend golden is a strict foil of an
+// existing LLM-589 arm: same smith, same wear, one new resolution in the world.
+func withMenderAtInn(snap *sim.Snapshot, thread int) *sim.Snapshot {
+	const (
+		hannahID = sim.ActorID("hannah")
+		inn      = sim.StructureID("inn")
+	)
+	start, end := 360, 1080
+	snap.ItemKinds["mending"] = &sim.ItemKindDef{
+		Name: "mending", DisplayLabel: "Mending",
+		DisplayLabelSingular: "mending", DisplayLabelPlural: "mending",
+		Category:     sim.ItemCategory("service"),
+		Capabilities: []string{"service", string(sim.CapabilityMending)},
+		Description:  "Needle and thread put to worn clothes — brought back good as new.",
+	}
+	snap.ItemKinds[sim.MendThreadKind] = &sim.ItemKindDef{
+		Name: sim.MendThreadKind, DisplayLabel: "Thread",
+		DisplayLabelSingular: "spool of thread", DisplayLabelPlural: "spools of thread",
+		Category: sim.ItemCategoryMaterial,
+	}
+	snap.Recipes["mending"] = &sim.ItemRecipe{OutputItem: "mending", OutputQty: 1, WholesalePrice: 2, RetailPrice: 4}
+	snap.Recipes[sim.MendThreadKind] = &sim.ItemRecipe{OutputItem: sim.MendThreadKind, OutputQty: 1, WholesalePrice: 1, RetailPrice: 2}
+	inventory := map[sim.ItemKind]int{}
+	if thread > 0 {
+		inventory[sim.MendThreadKind] = thread
+	}
+	snap.Actors[hannahID] = &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 2000, Y: 2000}.Tile(),
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         inventory,
+	}
+	snap.Structures[inn] = plainStructure(inn, "The Ordinary")
+	snap.VillageObjects[sim.VillageObjectID(inn)] = &sim.VillageObject{
+		ID: sim.VillageObjectID(inn), OwnerActorID: hannahID,
+		Tags: []string{sim.TagBusiness, sim.TagMending},
+	}
+	return snap
+}
+
+// smithWornClothesMenderAtInn is the LLM-625 mend arm: the threadbare smith of
+// smith_working_clothes_worn_thin, with Hannah now taking in mending at the inn
+// — thread on hand — while Josiah's shelves still hold replacement garments.
+// The golden pins the cue steering to the MEND (walk-to the inn) instead of the
+// replacement: the wearer's own garment comes back for less coin, so the
+// conserving path wins whenever it exists.
+func smithWornClothesMenderAtInn() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithWorkingClothesWornThin()
+	return withMenderAtInn(snap, 6), actorID, warrants
+}
+
+// smithWornClothesMenderPresent is the LLM-625 co-present arm: the threadbare
+// smith shares Hannah's huddle at the inn. The golden pins the concrete
+// pay_with_item buy-here imperative naming Hannah and the mending item — the
+// same fast path the seller-present garment arm takes, so the mend cannot
+// dead-spot right at the mender.
+func smithWornClothesMenderPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithWornClothesMenderAtInn()
+	const (
+		huddle = sim.HuddleID("inn_huddle")
+		inn    = sim.StructureID("inn")
+	)
+	smith := snap.Actors[actorID]
+	smith.Pos = sim.WorldPos{X: 2000, Y: 2000}.Tile()
+	smith.InsideStructureID = inn
+	smith.CurrentHuddleID = huddle
+	smith.Acquaintances = map[string]sim.Acquaintance{"Hannah Boggs": {}}
+	hannah := snap.Actors["hannah"]
+	hannah.CurrentHuddleID = huddle
+	hannah.Acquaintances = map[string]sim.Acquaintance{"Ezekiel Crane": {}}
+	snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+		huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{actorID: {}, "hannah": {}}},
+	}
+	return snap, actorID, warrants
+}
+
+// smithWornClothesMenderOutOfThread is the LLM-625 thread gate: Hannah takes in
+// mending but holds no thread, so the mend arm is dead and the cue falls back
+// to the LLM-589 replacement steer at the general store. The golden pins the
+// fallback — a mender with nothing to mend WITH must not swallow the working
+// replace path. Foil of smith_worn_clothes_mender_at_inn (thread 6 → 0).
+func smithWornClothesMenderOutOfThread() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithWorkingClothesWornThin()
+	return withMenderAtInn(snap, 0), actorID, warrants
+}
+
+// smithNothingToWorkInMenderLive is the LLM-625 none-tier boundary: Ezekiel
+// owns no working garment at all while a thread-stocked mender is live. The
+// golden pins that the NONE tier keeps the replacement steer — mending
+// conserves garments, it cannot create one, so a man with nothing on the peg
+// is never sent to the mender. Foil of smith_has_nothing_fit_to_work_in (same
+// wardrobe, a mender added, same steer).
+func smithNothingToWorkInMenderLive() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := smithHasNothingFitToWorkIn()
+	return withMenderAtInn(snap, 6), actorID, warrants
 }
 
 // keeperOffPostBuying builds the LLM-611 fixture: Josiah Thorne, shopkeeper, standing

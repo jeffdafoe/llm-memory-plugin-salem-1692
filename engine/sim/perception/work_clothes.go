@@ -70,6 +70,18 @@ type WorkClothesView struct {
 	PendingOffer    bool
 	SellerStock     int
 	Block           copresentBuyBlock
+
+	// Mend arm (LLM-625). Set only on the THREADBARE tier — the wearer still
+	// owns the garment, worn thin, which is exactly what a mender restores —
+	// and only when a live mender (a keeper of a TagMending structure holding
+	// thread) exists. When set, render steers to the MEND instead of a
+	// replacement: it is the cheaper resolution and conserves the garment. The
+	// NONE tier never mends (nothing left to mend) and keeps the replace steer.
+	MendItem         sim.ItemKind    // the catalog's mending service kind
+	MendVendors      []RestockVendor // walk-to mending shops, the replace steer's vendor shape
+	CoPresentMender  string          // the mender's display name when co-present, "" otherwise
+	MendPendingOffer bool            // a mending offer already stands with the co-present mender
+	MendBlock        copresentBuyBlock
 }
 
 // snapActorWearsGarments defers to sim.SnapshotWearsGarments — the audience is
@@ -116,6 +128,16 @@ func buildWorkClothes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		return nil
 	}
 	view := &WorkClothesView{Tier: tier}
+	// Mend arm (LLM-625): on the threadbare tier a live mender resolves the
+	// scene without a purchase of cloth at all — the wearer's own garment comes
+	// back. Checked before the replace steer so the cheaper, conserving path
+	// wins whenever it exists; the replace steer stays the fallback (and the
+	// only arm of the NONE tier, which owns nothing a mender could touch).
+	if tier == sim.WarmGarmentThreadbare {
+		if fillMendArm(snap, actorID, actorSnap, view) {
+			return view
+		}
+	}
 	// Steer toward a working kind with a live supplier, preferring one the wearer
 	// ALREADY OWNS — replacing like with like. A kind whose sellers are all shut or
 	// unaffordable resolves to no vendors and is skipped, so the cue never sends
@@ -185,13 +207,141 @@ func buildWorkClothes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 
 // HasWalkToSupplier reports whether this cue renders a walk-to destination — the
 // off-scene pull the at-post stabilizer has to weigh against. Mirrors
-// renderWorkClothes: a co-present seller returns before the vendor list is
-// reached, so it is not a walk-to.
+// renderWorkClothes: a co-present seller (or mender) returns before the vendor
+// list is reached, so it is not a walk-to.
 func (v *WorkClothesView) HasWalkToSupplier() bool {
-	if v == nil || v.CoPresentSeller != "" {
+	if v == nil {
+		return false
+	}
+	if v.MendItem != "" {
+		return v.CoPresentMender == "" && len(v.MendVendors) > 0
+	}
+	if v.CoPresentSeller != "" {
 		return false
 	}
 	return len(v.Vendors) > 0
+}
+
+// mendingServiceKind resolves the catalog's mending service kind — the first
+// (sorted) kind carrying both the mending and service capabilities. Derived
+// from the catalog like IsWorkGarment rather than a hardcoded name, so the
+// kind is operator-authorable; requiring `service` alongside keeps a
+// misconfigured mending-without-service kind out of the cue the same way the
+// delivery path rejects it. "" when the catalog has none (the pre-LLM-625
+// world — the whole arm then stays silent).
+func mendingServiceKind(snap *sim.Snapshot) sim.ItemKind {
+	var kinds []sim.ItemKind
+	for kind, def := range snap.ItemKinds {
+		if def != nil && def.HasCapability(sim.CapabilityMending) && def.HasCapability("service") {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 0 {
+		return ""
+	}
+	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
+	return kinds[0]
+}
+
+// fillMendArm resolves the mend resolution for a threadbare wearer: the
+// catalog's mending kind plus a live mender — a non-PC actor stationed at a
+// resolvable, TagMending workplace, holding thread to mend with. Fills the
+// view's mend fields and reports whether the arm is live. Mirrors the replace
+// steer's vendor discipline: a mender whose shop the wearer remembers shut is
+// skipped (the LLM-216 no-dead-end posture), one entry per structure with the
+// lowest ActorID as representative, sorted for a stable cue.
+func fillMendArm(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, view *WorkClothesView) bool {
+	mendKind := mendingServiceKind(snap)
+	if mendKind == "" {
+		return false
+	}
+	type pick struct {
+		vendorID  sim.ActorID
+		structure *sim.Structure
+	}
+	best := map[sim.StructureID]pick{}
+	sc := buyerCoPresenceScope(snap, actorSnap)
+	var coID sim.ActorID
+	var coName string
+	for menderID, mender := range snap.Actors {
+		if mender == nil || menderID == actorID || mender.Kind == sim.KindPC {
+			continue
+		}
+		if mender.Inventory[sim.MendThreadKind] < sim.MendThreadPerMend {
+			continue
+		}
+		if !sim.ActorIsMender(snap.VillageObjects, mender.WorkStructureID) {
+			continue
+		}
+		st := snap.Structures[mender.WorkStructureID]
+		if st == nil {
+			continue
+		}
+		if businessRememberedShut(snap, actorSnap, mender.WorkStructureID) {
+			continue
+		}
+		if sc.sellerCoPresent(mender) && (coID == "" || menderID < coID) {
+			coID = menderID
+			coName = mender.DisplayName
+		}
+		if cur, ok := best[mender.WorkStructureID]; ok && cur.vendorID <= menderID {
+			continue
+		}
+		best[mender.WorkStructureID] = pick{vendorID: menderID, structure: st}
+	}
+	if len(best) == 0 {
+		return false
+	}
+	view.MendItem = mendKind
+	view.CoPresentMender = coName
+	if coID != "" {
+		view.MendPendingOffer = hasPendingOfferTo(snap, actorID, coID, mendKind)
+		if !view.MendPendingOffer {
+			view.MendBlock = classifyCoPresentMend(snap, actorID, actorSnap, coID, mendKind)
+		}
+		return true
+	}
+	costFallback := ""
+	if r := snap.Recipes[mendKind]; r != nil && r.RetailPrice > 0 {
+		costFallback = fmt.Sprintf("~%d coins", r.RetailPrice)
+	}
+	vendors := make([]RestockVendor, 0, len(best))
+	for structureID, p := range best {
+		vendors = append(vendors, RestockVendor{
+			StructureLabel: vendorStructureLabel(p.structure),
+			StructureID:    structureID,
+			VendorID:       p.vendorID,
+			CostText:       buyerLastPaidText(snap, actorID, p.vendorID, mendKind, costFallback),
+		})
+	}
+	sort.Slice(vendors, func(i, j int) bool {
+		if vendors[i].StructureLabel != vendors[j].StructureLabel {
+			return vendors[i].StructureLabel < vendors[j].StructureLabel
+		}
+		return vendors[i].StructureID < vendors[j].StructureID
+	})
+	view.MendVendors = vendors
+	return true
+}
+
+// classifyCoPresentMend is classifyCoPresentBuy with the stock read swapped:
+// what a mender must hold is THREAD, not units of the service kind (a service
+// carries no inventory, so the shared classifier would misread every mender as
+// out of stock). The conserve and standoff arms are the shared ones, so the
+// mend goad softens in exactly the situations the buy goad would.
+func classifyCoPresentMend(snap *sim.Snapshot, buyer sim.ActorID, buyerSnap *sim.ActorSnapshot, mender sim.ActorID, mendKind sim.ItemKind) copresentBuyBlock {
+	thread := 0
+	if m := snap.Actors[mender]; m != nil {
+		thread = m.Inventory[sim.MendThreadKind]
+	}
+	switch {
+	case thread < sim.MendThreadPerMend:
+		return copresentBuyBlockedNoStock
+	case merchantConserve(snap, buyer, buyerSnap).Active:
+		return copresentBuyBlockedCoin
+	default:
+		return coPresentBuyStandoff(snap, buyer, mender, buyerSnap.CurrentHuddleID, mendKind)
+	}
 }
 
 // wornPhrase is the tiered scene. Diegetic and escalating, never an imperative —
@@ -217,6 +367,10 @@ func renderWorkClothes(b *strings.Builder, v *WorkClothesView) {
 	}
 	b.WriteString("## Your clothes\n")
 	b.WriteString(wornPhrase(v.Tier))
+	if v.MendItem != "" {
+		renderMendArm(b, v)
+		return
+	}
 	if v.Item == "" {
 		// No supplier anywhere — the scene alone, with no dead-end target.
 		b.WriteString("Nobody in the village has cloth to sell just now.\n")
@@ -241,4 +395,31 @@ func renderWorkClothes(b *strings.Builder, v *WorkClothesView) {
 	// ("Breeches") does not.
 	fmt.Fprintf(b, "A fresh %s would set you right. Use move_to to reach a seller, then pay_with_item once you arrive:\n", sanitizeInline(v.ItemSingular))
 	renderWalkToVendors(b, v.Vendors)
+}
+
+// renderMendArm writes the mend resolution of the threadbare scene (LLM-625):
+// a co-present mender gets the proven buy-here imperative (or its bide/soften
+// arms), an off-scene one the walk-to list. "mending" is both the prose noun
+// and the exact pay_with_item item, so the label doubles as the identifier —
+// the exact-identifiers rule.
+func renderMendArm(b *strings.Builder, v *WorkClothesView) {
+	if v.CoPresentMender != "" {
+		switch {
+		case v.MendPendingOffer:
+			renderCoPresentBuyPending(b, v.CoPresentMender, "mending")
+		case v.MendBlock == copresentBuyBlockedNoStock:
+			fmt.Fprintf(b, "%s takes in mending but has no thread to work with just now — come back once they have some rather than pressing them.\n",
+				sanitizeInline(v.CoPresentMender))
+		case v.MendBlock == copresentBuyBlockedCoin, v.MendBlock == copresentBuyBlockedTerms:
+			renderCoPresentBuySoften(b, v.CoPresentMender, "mending", v.MendBlock)
+		default:
+			// The lead-in carries the why (your OWN clothes come back, for less);
+			// renderCoPresentBuy carries the who-is-here and the proven call shape.
+			b.WriteString("A mend would see your own clothes good as new, cheaper than replacing them. ")
+			renderCoPresentBuy(b, v.CoPresentMender, "mending", v.MendItem, 1)
+		}
+		return
+	}
+	b.WriteString("They could be brought back for a few coins. Use move_to to reach the mender, then pay_with_item once you arrive:\n")
+	renderWalkToVendors(b, v.MendVendors)
 }

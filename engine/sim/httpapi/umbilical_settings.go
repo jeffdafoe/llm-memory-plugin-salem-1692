@@ -179,6 +179,7 @@ type UmbilicalSettingsDTO struct {
 	VisitorFactorPackUnits     int `json:"visitor_factor_pack_units"`
 	VisitorFactorIronUnits     int `json:"visitor_factor_iron_units"`
 	VisitorFactorSaltUnits     int `json:"visitor_factor_salt_units"`
+	VisitorFactorThreadUnits   int `json:"visitor_factor_thread_units"`
 	VisitorFactorPurseMin      int `json:"visitor_factor_purse_min"`
 	VisitorFactorPurseMax      int `json:"visitor_factor_purse_max"`
 	// Grounded merchant errand coin-valve (LLM-455): the resident-coin band that biases a
@@ -290,6 +291,10 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 		if factorSaltUnits < 1 {
 			factorSaltUnits = sim.DefaultVisitorFactorSaltUnits
 		}
+		factorThreadUnits := world.Settings.VisitorFactorThreadUnits
+		if factorThreadUnits < 1 {
+			factorThreadUnits = sim.DefaultVisitorFactorThreadUnits
+		}
 		factorPurseMin := world.Settings.VisitorFactorPurseMin
 		if factorPurseMin < 0 {
 			factorPurseMin = 0
@@ -343,6 +348,7 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 			VisitorFactorPackUnits:                factorUnits,
 			VisitorFactorIronUnits:                factorIronUnits,
 			VisitorFactorSaltUnits:                factorSaltUnits,
+			VisitorFactorThreadUnits:              factorThreadUnits,
 			VisitorFactorPurseMin:                 factorPurseMin,
 			VisitorFactorPurseMax:                 factorPurseMax,
 			VisitorCoinBandLow:                    world.Settings.VisitorCoinBandLow,

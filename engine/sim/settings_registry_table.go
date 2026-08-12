@@ -243,6 +243,7 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("visitor_factor_purse_max", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorFactorPurseMax }),
 		intSetting("visitor_factor_iron_units", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorFactorIronUnits }),
 		intSetting("visitor_factor_salt_units", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorFactorSaltUnits }),
+		intSetting("visitor_factor_thread_units", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorFactorThreadUnits }),
 		intSetting("visitor_coin_band_low", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandLow }),
 		intSetting("visitor_coin_band_high", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandHigh }),
 		intSetting("visitor_sell_weight_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorSellWeightPermille }),
