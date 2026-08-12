@@ -187,4 +187,67 @@ func TestTransferOrderGoods_Mending(t *testing.T) {
 			t.Fatalf("want the misconfigured-catalog rejection, got %v", err)
 		}
 	})
+
+	t.Run("a resolved consumer other than the buyer rejects", func(t *testing.T) {
+		w, seller, buyer := mendingWorld(2)
+		other := &Actor{ID: "other", DisplayName: "Someone Else",
+			Inventory: map[ItemKind]int{"linens": 1}, GarmentWear: map[ItemKind]int{"linens": 500}}
+		w.Actors[other.ID] = other
+		// ConsumerIDs pass the id check, but the resolved actor is someone else.
+		err := transferOrderGoods(w, mendingOrder(buyer.ID), seller, []*Actor{other}, at)
+		if err == nil || !strings.Contains(err.Error(), "other than buyer") {
+			t.Fatalf("want the resolved-consumer identity rejection, got %v", err)
+		}
+		if len(other.GarmentWear) == 0 {
+			t.Error("the mismatched consumer must not be mended")
+		}
+	})
+}
+
+// TestPreflightMendingEntry — the commit-time invariant boundary (code_review):
+// coins move before the delivery branch in commitPayTransfer, so every way a
+// mend can fail must reject in the preflight, and an entry with no mending
+// involvement must pass through untouched.
+func TestPreflightMendingEntry(t *testing.T) {
+	w, seller, buyer := mendingWorld(2)
+
+	t.Run("no mending involvement passes", func(t *testing.T) {
+		if err := preflightMendingEntry(w, buyer, seller, &PayLedgerEntry{ItemKind: "linens"}); err != nil {
+			t.Fatalf("a plain goods entry must pass the preflight: %v", err)
+		}
+	})
+	t.Run("a deliverable mend passes", func(t *testing.T) {
+		entry := &PayLedgerEntry{ID: 7, ItemKind: "mending", BuyerID: buyer.ID, SellerID: seller.ID}
+		if err := preflightMendingEntry(w, buyer, seller, entry); err != nil {
+			t.Fatalf("a deliverable mend must pass the preflight: %v", err)
+		}
+	})
+	t.Run("mending inside a bundle rejects", func(t *testing.T) {
+		entry := &PayLedgerEntry{ID: 7, Lines: []QuoteLine{{ItemKind: "linens"}, {ItemKind: "mending"}}}
+		if err := preflightMendingEntry(w, buyer, seller, entry); err == nil || !strings.Contains(err.Error(), "bundle") {
+			t.Fatalf("want the bundle rejection, got %v", err)
+		}
+	})
+	t.Run("a gifted mend rejects", func(t *testing.T) {
+		entry := &PayLedgerEntry{ID: 7, ItemKind: "mending", IsGift: true, BuyerID: buyer.ID}
+		if err := preflightMendingEntry(w, buyer, seller, entry); err == nil || !strings.Contains(err.Error(), "gift") {
+			t.Fatalf("want the gift rejection, got %v", err)
+		}
+	})
+	t.Run("a non-buyer consumer rejects", func(t *testing.T) {
+		entry := &PayLedgerEntry{ID: 7, ItemKind: "mending", BuyerID: buyer.ID, ConsumerIDs: []ActorID{seller.ID}}
+		if err := preflightMendingEntry(w, buyer, seller, entry); err == nil || !strings.Contains(err.Error(), "non-buyer") {
+			t.Fatalf("want the non-buyer consumer rejection, got %v", err)
+		}
+	})
+	t.Run("an undeliverable mend rejects without mutating", func(t *testing.T) {
+		wDry, sellerDry, buyerDry := mendingWorld(0)
+		entry := &PayLedgerEntry{ID: 7, ItemKind: "mending", BuyerID: buyerDry.ID}
+		if err := preflightMendingEntry(wDry, buyerDry, sellerDry, entry); err == nil || !strings.Contains(err.Error(), "thread") {
+			t.Fatalf("want the no-thread rejection, got %v", err)
+		}
+		if len(buyerDry.GarmentWear) == 0 {
+			t.Error("the preflight must not mutate the buyer")
+		}
+	})
 }

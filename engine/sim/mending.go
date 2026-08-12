@@ -1,5 +1,7 @@
 package sim
 
+import "fmt"
+
 // mending.go — LLM-625. Clothing repair: a "mending"-capability service item
 // that, when bought, restores the BUYER's worn garment units instead of
 // transferring goods — the lodging pattern (a service whose delivery routes to
@@ -46,6 +48,34 @@ const MendThreadPerMend = 1
 // MendThreadKind is the imported material a mend consumes — the factor-borne
 // supply line (visitor.go factorThreadKind names the same kind for the pack).
 const MendThreadKind = ItemKind("thread")
+
+// ValidateMendingDelivery is the ONE non-mutating statement of every
+// precondition a mend must meet, shared by the accept/fast-path gates, the
+// commit-time preflight (code_review: coins move before the delivery branch in
+// commitPayTransfer and an error return does not roll them back, so every way
+// a mend can fail must be checkable BEFORE payment), and the delivery arm
+// itself. nil means the mend can be delivered right now.
+func ValidateMendingDelivery(w *World, seller, buyer *Actor, kind ItemKind) error {
+	if !itemHasCapability(w, kind, "service") {
+		return fmt.Errorf("item %q has the mending capability without service — misconfigured catalog", kind)
+	}
+	if seller == nil {
+		return fmt.Errorf("mending: no seller")
+	}
+	if !ActorIsMender(w.VillageObjects, StructureID(seller.WorkStructureID)) {
+		return fmt.Errorf("%s does not work at a mending shop", seller.DisplayName)
+	}
+	if seller.Inventory[MendThreadKind] < MendThreadPerMend {
+		return fmt.Errorf("%s has no thread to mend with", seller.DisplayName)
+	}
+	if buyer == nil {
+		return fmt.Errorf("mending: no buyer")
+	}
+	if len(WornGarmentKinds(w.ItemKinds, buyer.Inventory, buyer.GarmentWear)) == 0 {
+		return fmt.Errorf("%s has nothing worn to mend", buyer.DisplayName)
+	}
+	return nil
+}
 
 // IsMendingStructure reports whether obj carries the mending tag. Nil-safe,
 // no-owner-required — the IsDistributorStructure posture.

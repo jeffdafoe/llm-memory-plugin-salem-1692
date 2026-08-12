@@ -2875,6 +2875,37 @@ type payTransferOutcome struct {
 	mealMinutes     int     // buyer's eat-here dwell duration in minutes; 0 = no ongoing meal/drink (ZBBS-WORK-409)
 }
 
+// preflightMendingEntry rejects, before commitPayTransfer mutates anything, a
+// ledger entry whose mend could not be delivered (LLM-625, code_review): a
+// mending kind riding a bundle line (the quote path forbids service kinds in
+// bundles, so only a legacy/direct entry can carry one — and deliverBundleLines
+// has no mending arm), a gifted mend (the gift path settles before the delivery
+// branches and would quietly skip the mend), a consumer set that is not the
+// buyer alone, or a mend failing ValidateMendingDelivery. nil for every entry
+// with no mending involvement — the common case, one capability probe.
+func preflightMendingEntry(w *World, buyer, seller *Actor, entry *PayLedgerEntry) error {
+	for _, ln := range entry.Lines {
+		if itemHasCapability(w, ln.ItemKind, CapabilityMending) {
+			return fmt.Errorf("commitPayTransfer: ledger %d carries mending inside a bundle — mending is single-item only", entry.ID)
+		}
+	}
+	if !itemHasCapability(w, entry.ItemKind, CapabilityMending) {
+		return nil
+	}
+	if entry.IsGift {
+		return fmt.Errorf("commitPayTransfer: ledger %d is a gift of mending — a mend is bought, not given", entry.ID)
+	}
+	for _, cid := range entry.ConsumerIDs {
+		if cid != entry.BuyerID {
+			return fmt.Errorf("commitPayTransfer: ledger %d mends a non-buyer consumer %q — the buyer brings their own clothes", entry.ID, cid)
+		}
+	}
+	if err := ValidateMendingDelivery(w, seller, buyer, entry.ItemKind); err != nil {
+		return fmt.Errorf("commitPayTransfer: ledger %d: %w", entry.ID, err)
+	}
+	return nil
+}
+
 // isAdvanceLodgingBooking reports whether a lodging entry is booked for a FUTURE
 // night (ready_by past today) rather than a same-day walk-in. A same-day room is
 // granted at the pay accept (LLM-84); a future reservation stays a deferred Order
@@ -3119,6 +3150,16 @@ func commitPayTransfer(
 	forText string,
 ) (payTransferOutcome, error) {
 	var out payTransferOutcome
+	// LLM-625 mending preflight (code_review). The mending delivery arm runs
+	// AFTER the coin transfer below, and an error return from this function
+	// does not roll that transfer back — so every way a mend can fail must
+	// reject HERE, before any mutation. The intake/accept/fast-path gates
+	// normally guarantee delivery, making this the invariant boundary for
+	// entries that reached commit some other way (reloaded across a deploy,
+	// seeded, or directly constructed).
+	if err := preflightMendingEntry(w, buyer, seller, entry); err != nil {
+		return payTransferOutcome{}, err
+	}
 	// Two-way swap (ZBBS-HOME-393): the buyer pays with coins AND/OR goods.
 	// Validate the goods leg in full BEFORE mutating anything so a single
 	// bad line aborts the whole swap (validate-all-then-apply, mirroring
