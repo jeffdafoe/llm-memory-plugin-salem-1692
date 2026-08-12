@@ -10,37 +10,61 @@ import (
 // (LLM-455), the factor pack seed, the sell-errand binding, and the arrival picker. Package-
 // internal (these helpers are unexported); the end-to-end spawn wiring is in visitor_factor_test.go.
 
-// TestChooseVisitorTradeDirection — the coin-valve (LLM-455): a configured band forces a seller
-// when resident coin is hot and a buyer when it is starved; unbanded / in-band leaves it to the
-// weighted random, where sell weight 1000 always sells and 0 never does.
-func TestChooseVisitorTradeDirection(t *testing.T) {
-	resident := func(coins int) *World {
-		return &World{Actors: map[ActorID]*Actor{"r": {ID: "r", Kind: KindNPCShared, Coins: coins}}}
+// TestRollVisitorSpawn — the LLM-626 two-flow spawn decision. The coin-valve band routes
+// the merchant flow to the CORRECTION roll with a forced direction (hot -> sell, starved ->
+// buy); in-band / unbanded it is the TRICKLE roll with the weighted-random direction (sell
+// weight 1000 always sells, 0 never does); the passer flow rolls independently; and all
+// chances at 0 reads as disabled.
+func TestRollVisitorSpawn(t *testing.T) {
+	resident := func(coins int, s WorldSettings) *World {
+		w := &World{Actors: map[ActorID]*Actor{"r": {ID: "r", Kind: KindNPCShared, Coins: coins}}}
+		w.Settings = s
+		return w
 	}
 	r := rand.New(rand.NewSource(1))
 
-	// Band [500,900]: hot -> sell, starved -> buy.
-	hot := resident(1000)
-	hot.Settings = WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900}
-	if got := chooseVisitorTradeDirection(hot, r); got != TradeDirectionSell {
-		t.Errorf("resident coin above high-water: direction = %q, want sell", got)
+	// Band [500,900], correction chance 1000: hot -> forced seller, starved -> forced buyer,
+	// both marked Corrective (a returner must not preempt them).
+	hot := resident(1000, WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900,
+		VisitorMerchantCorrectionChancePermille: 1000})
+	if got := rollVisitorSpawn(hot, r); got.Class != visitorSpawnMerchant || got.Direction != TradeDirectionSell || !got.Corrective {
+		t.Errorf("resident coin above high-water: roll = %+v, want corrective merchant seller", got)
 	}
-	starved := resident(100)
-	starved.Settings = WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900}
-	if got := chooseVisitorTradeDirection(starved, r); got != TradeDirectionBuy {
-		t.Errorf("resident coin below low-water: direction = %q, want buy", got)
+	starved := resident(100, WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900,
+		VisitorMerchantCorrectionChancePermille: 1000})
+	if got := rollVisitorSpawn(starved, r); got.Class != visitorSpawnMerchant || got.Direction != TradeDirectionBuy || !got.Corrective {
+		t.Errorf("resident coin below low-water: roll = %+v, want corrective merchant buyer", got)
 	}
 
-	// Unbanded: weighted random. Sell weight 1000 -> always sell; 0 -> always buy.
-	allSell := resident(600)
-	allSell.Settings = WorldSettings{VisitorSellWeightPermille: 1000}
-	if got := chooseVisitorTradeDirection(allSell, r); got != TradeDirectionSell {
-		t.Errorf("sell weight 1000: direction = %q, want sell", got)
+	// OUT-OF-BAND, correction chance 0: the trickle chance must NOT leak in — no merchant
+	// spawns even at trickle 1000, because the band owns the flow when it is crossed.
+	hotNoCorrection := resident(1000, WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900,
+		VisitorMerchantTrickleChancePermille: 1000})
+	if got := rollVisitorSpawn(hotNoCorrection, r); got.Class == visitorSpawnMerchant {
+		t.Errorf("out-of-band with correction chance 0: roll = %+v, want no merchant (trickle must not leak)", got)
 	}
-	allBuy := resident(600)
-	allBuy.Settings = WorldSettings{VisitorSellWeightPermille: 0}
-	if got := chooseVisitorTradeDirection(allBuy, r); got != TradeDirectionBuy {
-		t.Errorf("sell weight 0: direction = %q, want buy", got)
+
+	// In-band trickle at 1000: weighted-random direction, not corrective.
+	allSell := resident(600, WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900,
+		VisitorMerchantTrickleChancePermille: 1000, VisitorSellWeightPermille: 1000})
+	if got := rollVisitorSpawn(allSell, r); got.Class != visitorSpawnMerchant || got.Direction != TradeDirectionSell || got.Corrective {
+		t.Errorf("in-band, sell weight 1000: roll = %+v, want non-corrective merchant seller", got)
+	}
+	allBuy := resident(600, WorldSettings{VisitorMerchantTrickleChancePermille: 1000, VisitorSellWeightPermille: 0})
+	if got := rollVisitorSpawn(allBuy, r); got.Class != visitorSpawnMerchant || got.Direction != TradeDirectionBuy || got.Corrective {
+		t.Errorf("unbanded, sell weight 0: roll = %+v, want non-corrective merchant buyer", got)
+	}
+
+	// Passer flow rolls independently of the merchant flow.
+	passer := resident(600, WorldSettings{VisitorPasserSpawnChancePermille: 1000})
+	if got := rollVisitorSpawn(passer, r); got.Class != visitorSpawnPasser {
+		t.Errorf("passer chance 1000, merchant 0: roll = %+v, want passer", got)
+	}
+
+	// All chances 0 = disabled, and the reason says so.
+	off := resident(600, WorldSettings{})
+	if got := rollVisitorSpawn(off, r); got.Class != visitorSpawnNone || got.Reason != "disabled (all spawn chances 0)" {
+		t.Errorf("all chances 0: roll = %+v, want none/disabled", got)
 	}
 }
 

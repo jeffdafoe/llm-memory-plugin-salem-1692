@@ -22,7 +22,7 @@ func TestUmbilicalSettingSet_WritesKeysNoRouteEverCovered(t *testing.T) {
 		key, value string
 	}{
 		{"world_dusk_time", "18:30"},
-		{"visitor_spawn_chance_permille", "12"},
+		{"visitor_merchant_trickle_chance_permille", "12"},
 		{"cold_night_multiplier_x100", "150"},
 		{"eco_social_gap_seconds", "45"},
 		{"eco_enabled", "false"},
@@ -50,7 +50,7 @@ func TestUmbilicalSettingSet_WritesKeysNoRouteEverCovered(t *testing.T) {
 
 	// Applied to the live world, not just echoed back.
 	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return [3]any{world.Settings.DuskTime, world.Settings.VisitorSpawnChancePermille, world.Settings.EcoSocialGap}, nil
+		return [3]any{world.Settings.DuskTime, world.Settings.VisitorMerchantTrickleChancePermille, world.Settings.EcoSocialGap}, nil
 	}})
 	got, ok := res.([3]any)
 	if !ok {
@@ -60,7 +60,7 @@ func TestUmbilicalSettingSet_WritesKeysNoRouteEverCovered(t *testing.T) {
 		t.Errorf("live DuskTime = %v, want 18:30", got[0])
 	}
 	if got[1] != 12 {
-		t.Errorf("live VisitorSpawnChancePermille = %v, want 12", got[1])
+		t.Errorf("live VisitorMerchantTrickleChancePermille = %v, want 12", got[1])
 	}
 	if got[2] != 45*time.Second {
 		t.Errorf("live EcoSocialGap = %v, want 45s", got[2])

@@ -233,7 +233,7 @@ func TestTickVisitorCascade_Spawns(t *testing.T) {
 
 	// Force settings: chance=1000 guarantees the spawn roll fires.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 2
 		return nil, nil
 	}}); err != nil {
@@ -314,7 +314,7 @@ func TestTickVisitorCascade_SpawnsUnwatched(t *testing.T) {
 
 	// Guaranteed roll, eco armed, no PC → a spawn must happen anyway.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 2
 		world.Settings.EcoEnabled = true
 		return nil, nil
@@ -342,7 +342,7 @@ func TestTickVisitorCascade_RespectsCap(t *testing.T) {
 	defer cancel()
 	// Settings: chance=1000, cap=1.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 1
 		return nil, nil
 	}}); err != nil {
@@ -514,7 +514,7 @@ func TestTickVisitorCascade_SpawnEmitsNPCCreated(t *testing.T) {
 	defer cancel()
 
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 2
 		return nil, nil
 	}}); err != nil {
