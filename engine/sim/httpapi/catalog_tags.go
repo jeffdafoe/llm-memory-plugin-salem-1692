@@ -49,6 +49,9 @@ var allowedObjectTags = map[string]bool{
 	// (a farm carries both; the mill carries only wholesaler).
 	"wholesaler": true,
 	"lodging":    true,
+	// mending (LLM-625) marks a placement whose keeper takes in clothing
+	// repair — the seller-eligibility anchor for the mending service item.
+	"mending": true,
 	// summon_point marks a placement (loiter point, future bell) where a
 	// summoner walks to ring for a messenger. Underscore form by convention.
 	"summon_point": true,

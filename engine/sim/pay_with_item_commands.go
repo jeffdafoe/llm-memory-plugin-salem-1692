@@ -175,6 +175,7 @@ type PayWithItemResult struct {
 	TookHome        bool    // physical goods handed over at accept
 	Booked          bool    // future-night lodging Order minted, awaiting keeper check-in
 	LodgedNow       bool    // same-day walk-in room granted on the spot (LLM-84)
+	MendedNow       bool    // worn garments mended on the spot (LLM-625)
 	SatisfiesNeed   NeedKey // primary need the consumed item satisfies ("" when n/a)
 	FeltAfter       string  // buyer's post-meal felt label(s) for the item's needs; "" = sated
 	// MealMinutes is the buyer's eat-here dwell duration in minutes when this
@@ -738,6 +739,50 @@ func PayWithItem(
 				}
 			}
 
+			// Mending-shape intake gates (LLM-625) — the lodging block's posture
+			// applied to the garment-repair service: reject structurally
+			// impossible offers upfront, before any coin/ledger side effect.
+			// Transient conditions (the mender's thread stock) stay at the
+			// accept gate (10c), the all-rooms-occupied split.
+			if itemHasCapability(w, kind, CapabilityMending) {
+				// A mend is delivered as an effect on the buyer's wear counters,
+				// never eaten — consume_now is meaningless here for the same
+				// LLM-391 reason as lodging: left set, the coins settle in the
+				// eat-on-the-spot branch and no garment is mended.
+				consumeNow = false
+
+				// The mend restores the BUYER's own worn units; delivery
+				// enforces a single self-consumer (order_commands.go), so a
+				// non-buyer consumer is a guaranteed-impossible order.
+				for _, cid := range consumerIDs {
+					if cid != buyerID {
+						return nil, fmt.Errorf(
+							"%s can't be bought for someone else — the buyer brings their own clothes (drop the consumers list).",
+							kind,
+						)
+					}
+				}
+
+				// Seller-side structural gate: only a keeper of a mending-tagged
+				// structure can mend (the WORK-343 zero-bedrooms shape).
+				if !ActorIsMender(w.VillageObjects, StructureID(seller.WorkStructureID)) {
+					return nil, fmt.Errorf(
+						"%s doesn't take in mending — their shop isn't set up for it.",
+						seller.DisplayName,
+					)
+				}
+
+				// Buyer-side gate, the LLM-182 you-already-have-a-home mirror:
+				// paying to mend a wardrobe with nothing worn buys nothing, and
+				// wear only accrues, so this can't self-resolve within the
+				// offer's TTL.
+				if len(WornGarmentKinds(w.ItemKinds, buyer.Inventory, buyer.GarmentWear)) == 0 {
+					return nil, errors.New(
+						"your clothes have no wear worth paying to mend yet.",
+					)
+				}
+			}
+
 			// Resolve the booked date (ZBBS-HOME-403). Advance booking
 			// (ready_in_days > 0) is lodging-only — a physical good is handed
 			// over when paid for, so a future date would just strand the
@@ -1246,6 +1291,37 @@ func runPayWithItemFastPath(
 			)
 		}
 	}
+	// LLM-625: a mending quote-take mends at this accept (the service
+	// stock-skip leaves no gate to catch a threadless mender or an unworn
+	// wardrobe), so reject up front — mirrors the slow-path gate 10c. Only a
+	// single-item service quote reaches mending, the lodging shape above.
+	if !bundle && itemHasCapability(w, kind, CapabilityMending) {
+		if !ActorIsMender(w.VillageObjects, StructureID(seller.WorkStructureID)) {
+			return nil, fmt.Errorf(
+				"%s doesn't take in mending — their shop isn't set up for it.",
+				seller.DisplayName,
+			)
+		}
+		if seller.Inventory[MendThreadKind] < MendThreadPerMend {
+			return nil, fmt.Errorf(
+				"%s has no thread to mend with right now — try again once they've restocked.",
+				seller.DisplayName,
+			)
+		}
+		if len(WornGarmentKinds(w.ItemKinds, buyer.Inventory, buyer.GarmentWear)) == 0 {
+			return nil, errors.New(
+				"your clothes have no wear worth paying to mend yet.",
+			)
+		}
+		for _, cid := range entryConsumerIDs {
+			if cid != buyer.ID {
+				return nil, fmt.Errorf(
+					"%s can't be bought for someone else — the buyer brings their own clothes.",
+					kind,
+				)
+			}
+		}
+	}
 	if !buyerCanAfford(buyer, amount) {
 		return nil, fmt.Errorf(
 			"insufficient coins (have %d, need %d) — quote a smaller offer.",
@@ -1357,6 +1433,7 @@ func runPayWithItemFastPath(
 		TookHome:        out.tookHome,
 		Booked:          out.booked,
 		LodgedNow:       out.lodgedNow,
+		MendedNow:       out.mendedNow,
 		SatisfiesNeed:   out.satisfiesNeed,
 		FeltAfter:       out.feltAfter,
 		MealMinutes:     out.mealMinutes,
@@ -1632,6 +1709,29 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	// analog of the (service-skipped) stock gate above.
 	if !entry.IsGift && itemHasCapability(w, entry.ItemKind, "lodging") && !isAdvanceLodgingBooking(w, entry, at) {
 		if !lodgingRoomGrantable(w, seller, entry.BuyerID) {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+		}
+	}
+
+	// Gate 10c (LLM-625): mending. The garment repair happens at THIS accept
+	// (commitPayTransfer delivers it eagerly, like a same-day room) and coins
+	// move before the delivery branch runs, so every commit-time precondition
+	// must reject HERE, before payment: the seller works at a mending shop,
+	// holds thread, and the buyer actually has something worn. The thread
+	// shortfall is seller-fixable, so the accept-tool caller gets a retryable
+	// error naming it (the gate-10 stock posture); the rest terminal-flip.
+	if !entry.IsGift && itemHasCapability(w, entry.ItemKind, CapabilityMending) {
+		if !ActorIsMender(w.VillageObjects, StructureID(seller.WorkStructureID)) {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+		}
+		if seller.Inventory[MendThreadKind] < MendThreadPerMend {
+			if viaAcceptTool {
+				return entry.State, ModelFacingError{Msg: fmt.Sprintf(
+					"You have no %s to mend with — buy some before taking mending work.", MendThreadKind)}
+			}
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
+		}
+		if len(WornGarmentKinds(w.ItemKinds, buyer.Inventory, buyer.GarmentWear)) == 0 {
 			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 		}
 	}
@@ -2769,6 +2869,7 @@ type payTransferOutcome struct {
 	tookHome        bool    // physical take-home handed over at accept
 	booked          bool    // future-night lodging Order minted for keeper check-in
 	lodgedNow       bool    // same-day walk-in room granted on the spot (LLM-84)
+	mendedNow       bool    // worn garments mended on the spot (LLM-625)
 	satisfiesNeed   NeedKey // primary need the consumed item satisfies
 	feltAfter       string  // buyer's post-consume felt label(s); "" = sated
 	mealMinutes     int     // buyer's eat-here dwell duration in minutes; 0 = no ongoing meal/drink (ZBBS-WORK-409)
@@ -3151,7 +3252,7 @@ func commitPayTransfer(
 			return payTransferOutcome{}, bundleErr
 		}
 		out = bundleOut
-	} else if entry.ConsumeNow && !itemHasCapability(w, entry.ItemKind, "lodging") {
+	} else if entry.ConsumeNow && !itemHasCapability(w, entry.ItemKind, "lodging") && !itemHasCapability(w, entry.ItemKind, CapabilityMending) {
 		// Eat-on-the-spot: stock leaves seller, consumer needs
 		// satisfied directly. Per-consumer apply + dwell stamp +
 		// ItemConsumed emit. No Order minted.
@@ -3161,7 +3262,9 @@ func commitPayTransfer(
 		// normalizes consume_now→false for lodging at intake, but an entry that
 		// bypassed intake (a pre-fix pending offer reloaded across a deploy, or a
 		// future direct construction) would otherwise be silently "consumed" for
-		// nothing. Falling through to the lodging branch below routes it through
+		// nothing. Mending (LLM-625) is excluded for the identical reason: its
+		// delivery is an effect on the buyer's wear counters, and this branch
+		// would settle the coins without mending a stitch. Falling through to the lodging branch below routes it through
 		// transferOrderGoods → AssignBedroomForLodger, whose advancePastHeldLodging
 		// coalesces a same-night re-book instead of minting a duplicate
 		// (buyer, seller, ready_by) that wedges the checkpoint.
@@ -3319,6 +3422,21 @@ func commitPayTransfer(
 			orderMinted = true
 			out.lodgedNow = true
 		}
+	} else if itemHasCapability(w, entry.ItemKind, CapabilityMending) {
+		// Mending (LLM-625): always same-day — the buyer is standing in the
+		// shop in the clothes being mended, so there is no advance-booking
+		// arm. mintAndFulfillOrderNow runs transferOrderGoods, whose mending
+		// branch restores the buyer's worn units and draws the seller's
+		// thread; gate 10c pre-validated all three preconditions, so this
+		// can't fail for contention. The Order flips Delivered after the Paid
+		// facts below, the lodging walk-in shape.
+		o, err := mintAndFulfillOrderNow(w, entry, seller, at)
+		if err != nil {
+			return payTransferOutcome{}, err
+		}
+		eagerlyDelivered = o
+		orderMinted = true
+		out.mendedNow = true
 	} else if isCommissionOrder(w, seller, entry) {
 		// Commission (LLM-338): the seller MAKES this good but doesn't hold enough
 		// to hand over now, so mint a DEFERRED Ready Order — the same shape as an

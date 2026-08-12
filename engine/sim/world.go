@@ -570,6 +570,16 @@ type WorldSettings struct {
 	// visitor_factor_salt_units.
 	VisitorFactorSaltUnits int
 
+	// VisitorFactorThreadUnits (LLM-625): spools of thread per factor visit,
+	// a shipment-scale quantity for the iron/salt reason — thread is the
+	// mender's consumable (1 spool per wardrobe mend at the mending shop), so
+	// the rare factor visit must land enough to bridge the village's mending
+	// between calls. Like salt, undershooting is soft: mending just goes
+	// unoffered until the next visit. Falls back to
+	// DefaultVisitorFactorThreadUnits when zero/unset; settings key
+	// visitor_factor_thread_units.
+	VisitorFactorThreadUnits int
+
 	// Coin-valve band (LLM-455). A merchant visitor's trade direction — buy (pays the
 	// village, injects coin) vs sell (the factor; the village pays him, drains coin) — is
 	// biased by the resident money supply (residentCoinOnMap) against this operator band:

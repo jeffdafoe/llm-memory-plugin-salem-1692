@@ -73,6 +73,8 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			VisitorFactorIronUnits: sim.DefaultVisitorFactorIronUnits,
 			// Salt shipment per factor visit (LLM-444) — same mirror.
 			VisitorFactorSaltUnits: sim.DefaultVisitorFactorSaltUnits,
+			// Thread shipment per factor visit (LLM-625) — same mirror.
+			VisitorFactorThreadUnits: sim.DefaultVisitorFactorThreadUnits,
 			// Grounded merchant errand direction/class weights (LLM-455) — mirror the pg
 			// fallbacks so a mem-backed spawn picks buy/sell + merchant/passer like prod.
 			// Coin band low/high default 0 (unconfigured) so no explicit mirror is needed.

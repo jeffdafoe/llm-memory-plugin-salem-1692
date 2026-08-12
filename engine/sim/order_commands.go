@@ -532,6 +532,41 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor, a
 		}
 		return nil
 	}
+	// Mending (LLM-625): a service whose delivery restores the buyer's worn
+	// garment units instead of transferring goods — the lodging shape. The
+	// accept gate (gate 10c) pre-validated the mender's workplace, thread
+	// stock, and that the buyer has something worn, so the error paths here
+	// are defensive, mirroring the lodging branch's posture.
+	if itemHasCapability(w, o.Item, CapabilityMending) {
+		if !itemHasCapability(w, o.Item, "service") {
+			return fmt.Errorf("order %d: item %q has the mending capability without service — misconfigured catalog", o.ID, o.Item)
+		}
+		// Single self-consumer, like lodging: the buyer brings their own
+		// clothes. Mending a third party's wardrobe is out of scope — their
+		// wear counters were never validated co-present.
+		if len(o.ConsumerIDs) != 1 || o.ConsumerIDs[0] != o.BuyerID {
+			return fmt.Errorf("order %d: mending order must have the buyer as its sole consumer (buyer=%q consumers=%v)", o.ID, o.BuyerID, o.ConsumerIDs)
+		}
+		if !ActorIsMender(w.VillageObjects, StructureID(seller.WorkStructureID)) {
+			return fmt.Errorf("order %d: %s does not work at a mending shop", o.ID, seller.DisplayName)
+		}
+		if seller.Inventory[MendThreadKind] < MendThreadPerMend {
+			return fmt.Errorf("order %d: %s has no thread to mend with", o.ID, seller.DisplayName)
+		}
+		if len(consumers) != 1 || consumers[0] == nil {
+			return fmt.Errorf("order %d: mending order resolved %d consumers, want the buyer alone", o.ID, len(consumers))
+		}
+		buyerActor := consumers[0]
+		mended := MendGarments(w.ItemKinds, buyerActor)
+		if len(mended) == 0 {
+			return fmt.Errorf("order %d: %s has nothing worn to mend", o.ID, buyerActor.DisplayName)
+		}
+		seller.Inventory[MendThreadKind] -= MendThreadPerMend
+		if seller.Inventory[MendThreadKind] <= 0 {
+			delete(seller.Inventory, MendThreadKind)
+		}
+		return nil
+	}
 	// Ordinary goods. The atomic-commit contract requires every per-consumer
 	// transfer to succeed or none to mutate state. Preflight the AGGREGATE
 	// required stock (and nil consumers) BEFORE any mutation so a multi-consumer

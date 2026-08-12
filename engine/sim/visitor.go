@@ -872,6 +872,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		if saltUnits < 1 {
 			saltUnits = DefaultVisitorFactorSaltUnits
 		}
+		threadUnits := w.Settings.VisitorFactorThreadUnits
+		if threadUnits < 1 {
+			threadUnits = DefaultVisitorFactorThreadUnits
+		}
 		purseMin := w.Settings.VisitorFactorPurseMin
 		if purseMin < 0 {
 			purseMin = 0
@@ -880,7 +884,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		if purseMax < purseMin {
 			purseMax = purseMin
 		}
-		pack, purse = seedFactorPack(r, units, ironUnits, saltUnits, purseMin, purseMax)
+		pack, purse = seedFactorPack(r, units, ironUnits, saltUnits, threadUnits, purseMin, purseMax)
 		// Stamp the shipment he arrived with, so the sell-side settle has a baseline to
 		// measure drawdown against (LLM-553). Read off the seeded pack rather than the
 		// units knob: seedFactorPack jitters the count, and the errand Good is the bale's
@@ -1744,6 +1748,12 @@ const (
 	// sits silent and the coin drain barely fires. Sized a little above iron
 	// because salt feeds several kitchens rather than one forge; tunable.
 	DefaultVisitorFactorSaltUnits = 12
+	// DefaultVisitorFactorThreadUnits (LLM-625) — spools of thread per visit, a
+	// SHIPMENT like iron and salt: thread is the mender's consumable (1 spool
+	// per mend at the inn), so the rare factor visit must land enough to bridge
+	// the village's mending between calls. Sized at salt's scale — a wardrobe
+	// mend is about as frequent as a boosted dish.
+	DefaultVisitorFactorThreadUnits = 12
 )
 
 // sellErrandRemainderDivisor sets how much of his shipment a seller may leave undelivered and
@@ -1797,30 +1807,39 @@ const factorIronKind = ItemKind("iron")
 // so the rare visit must bring a sack, not a per-kind pinch.
 const factorSaltKind = ItemKind("salt")
 
+// factorThreadKind is the imported mending input the factor carries in SHIPMENT
+// quantity (LLM-625) — the same kind mending.go's MendThreadKind names on the
+// consumption side. Seeded via threadUnits for the iron/salt reason: thread is
+// drawn spool-by-spool as the village brings its mending in, so the rare visit
+// must land a shipment.
+const factorThreadKind = MendThreadKind
+
 // factorImportKinds names the strategic imports whose SUPPLY is deliberately owned by the
 // wholesale factor errand, where the operator tuning levers live (visitor_sell_weight_permille,
-// visitor_factor_iron_units / _salt_units). It is a policy list, not a runtime gate: no
+// visitor_factor_iron_units / _salt_units / _thread_units). It is a policy list, not a runtime gate: no
 // production path consults it — its one consumer is the guard test that keeps these kinds out
 // of the generic passer-through pool, whose packs would put an import on display that the
 // actors demanding it cannot buy (LLM-567). Spawn is the path it covers, and it is the only
 // one that needs covering: the pack switch in dispatchVisitorSpawn is exhaustive on errand
 // direction, so a no-errand visitor can only ever draw from visitorWareKinds.
-var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind}
+var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind}
 
-// seedFactorPack returns the pack (clothing/charm goods to sell, plus iron and
-// salt shipments — LLM-442/LLM-444) and purse (a heavier coin float than an
-// ordinary traveler) a wholesale factor spawns carrying (LLM-410). unitsPerKind
-// of each ware kind, ironUnits bars of iron, and saltUnits sacks of salt, each
-// plus a small jitter so back-to-back factors don't carry identical bales; purse
-// a uniform pull from [purseMin, purseMax]. r is non-nil; the caller clamps
-// unitsPerKind >= 1, ironUnits >= 1, saltUnits >= 1, and purseMin <= purseMax.
-func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, purseMin, purseMax int) (map[ItemKind]int, int) {
+// seedFactorPack returns the pack (clothing/charm goods to sell, plus iron,
+// salt and thread shipments — LLM-442/LLM-444/LLM-625) and purse (a heavier
+// coin float than an ordinary traveler) a wholesale factor spawns carrying
+// (LLM-410). unitsPerKind of each ware kind, ironUnits bars of iron, saltUnits
+// sacks of salt, and threadUnits spools of thread, each plus a small jitter so
+// back-to-back factors don't carry identical bales; purse a uniform pull from
+// [purseMin, purseMax]. r is non-nil; the caller clamps unitsPerKind >= 1,
+// ironUnits >= 1, saltUnits >= 1, threadUnits >= 1, and purseMin <= purseMax.
+func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnits, purseMin, purseMax int) (map[ItemKind]int, int) {
 	pack := map[ItemKind]int{}
 	for _, kind := range factorWareKinds {
 		pack[kind] = unitsPerKind + r.Intn(2) // unitsPerKind..unitsPerKind+1
 	}
-	pack[factorIronKind] = ironUnits + r.Intn(3) // ironUnits..ironUnits+2
-	pack[factorSaltKind] = saltUnits + r.Intn(3) // saltUnits..saltUnits+2
+	pack[factorIronKind] = ironUnits + r.Intn(3)     // ironUnits..ironUnits+2
+	pack[factorSaltKind] = saltUnits + r.Intn(3)     // saltUnits..saltUnits+2
+	pack[factorThreadKind] = threadUnits + r.Intn(3) // threadUnits..threadUnits+2
 	purse := purseMin
 	if purseMax > purseMin {
 		purse = purseMin + r.Intn(purseMax-purseMin+1)
