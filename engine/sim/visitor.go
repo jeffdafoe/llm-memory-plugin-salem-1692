@@ -60,11 +60,32 @@ import (
 // Default constants — fall back when WorldSettings.* zero values are
 // observed. Tests that bypass the environment loader get these for free.
 const (
-	// DefaultVisitorSpawnChancePermille is the permille (per-thousand)
-	// roll on every visitor cascade tick. 0 disables spawn entirely —
-	// the deploy default so the framework is no-op until an admin opts
-	// in by raising WorldSettings.VisitorSpawnChancePermille above 0.
-	DefaultVisitorSpawnChancePermille = 0
+	// The three per-tick spawn-roll chances (LLM-626), all permille and all
+	// defaulting to 0 = that flow disabled — the Phase-1 deploy posture: the
+	// framework is no-op until an admin raises the knobs. They replace the
+	// single master roll + class-share pair (visitor_spawn_chance_permille /
+	// visitor_passer_through_chance_permille), which entangled the corrective
+	// merchant flow with the flavor visitor flow: arming the coin valve made
+	// the correction rate hostage to overall visitor traffic.
+	//
+	// DefaultVisitorMerchantTrickleChancePermille — the IN-BAND merchant roll
+	// (resident coin inside the valve band, or the band unconfigured): a
+	// grounded trader arrives on ordinary business, direction picked by the
+	// visitor_sell_weight_permille weighted random. This is what keeps the
+	// "cheese-buyer come from Lynn" texture while the valve is quiet.
+	DefaultVisitorMerchantTrickleChancePermille = 0
+
+	// DefaultVisitorMerchantCorrectionChancePermille — the OUT-OF-BAND
+	// merchant roll: resident coin at/above visitor_coin_band_high forces the
+	// arrival to a SELLER (the factor, draining coin), at/below the low band
+	// a BUYER (injecting). Sized hotter than the trickle by the operator so an
+	// out-of-band state resolves in hours, not days.
+	DefaultVisitorMerchantCorrectionChancePermille = 0
+
+	// DefaultVisitorPasserSpawnChancePermille — the independent flavor roll:
+	// a passer-through (preacher, musician, scholar, …) arrives on its own
+	// cadence, no longer a share carved out of the merchant pipeline.
+	DefaultVisitorPasserSpawnChancePermille = 0
 
 	// Default stay-window bounds in minutes. Per-visitor stay is a
 	// uniform random pull from [min, max] at spawn time.
@@ -73,7 +94,7 @@ const (
 
 	// DefaultVisitorMaxConcurrent caps simultaneous visitors. Zero on the
 	// settings field falls back to this default — the documented halt-spawn
-	// dial is VisitorSpawnChancePermille=0, not a sentinel here.
+	// dial is the three spawn-roll chances at 0, not a sentinel here.
 	DefaultVisitorMaxConcurrent = 2
 
 	// DefaultVisitorTickInterval is the cadence the cascade driver pumps
@@ -173,21 +194,17 @@ const FactorArchetype = "factor"
 // preface and the keeper's cue read "a factor out of Boston." Boston per the ticket.
 const FactorOrigin = "Boston"
 
-// Direction/class weights (LLM-455). Applied by the settings loaders (repo/pg + repo/mem)
+// Direction weight (LLM-455). Applied by the settings loaders (repo/pg + repo/mem)
 // when the setting row is absent; the use site only clamps to [0,1000], so an explicit 0
-// genuinely means "off" (no sellers / never a passer-through) — real operator control and a
-// deterministic force for tests.
+// genuinely means "off" (no sellers) — real operator control and a deterministic force for
+// tests.
 const (
-	// DefaultVisitorSellWeightPermille — the in-band / band-unconfigured chance a merchant
+	// DefaultVisitorSellWeightPermille — the TRICKLE (in-band) chance a merchant
 	// visitor is a SELLER (the factor) rather than a buyer. Low on purpose: a seller drops a
 	// full import shipment and pack-magnitude scaling is deferred, so keeping sellers a
 	// minority pins the factor cadence near today's while buyers become the common merchant.
+	// Out-of-band arrivals ignore it — the correction roll forces their direction (LLM-626).
 	DefaultVisitorSellWeightPermille = 150
-
-	// DefaultVisitorPasserThroughChancePermille — the chance a spawning visitor is a
-	// passer-through (voice-flavor, no errand) rather than a merchant. Keeps the flavor
-	// archetypes a live minority instead of only appearing when a merchant can't be serviced.
-	DefaultVisitorPasserThroughChancePermille = 250
 )
 
 // passerThroughArchetypePool — the voice-flavor travelers who carry NO trade errand
@@ -678,30 +695,17 @@ func renderRoadWordClause(w *World, e ActionLogEntry) string {
 	}
 }
 
-// dispatchVisitorSpawn rolls the per-tick spawn chance and — when it
-// fires and the concurrent cap isn't reached — generates a persona,
-// picks an arrival edge tile + tavern destination, inserts a fresh
-// Actor + VisitorState, seeds need rows, and issues a MoveActor
-// targeting the destination.
+// dispatchVisitorSpawn makes the per-tick spawn decision (rollVisitorSpawn —
+// the LLM-626 two-flow split) and — when a roll fires and the concurrent cap
+// isn't reached — generates a persona, picks an arrival edge tile +
+// destination, inserts a fresh Actor + VisitorState, seeds need rows, and
+// issues a MoveActor targeting the destination.
 //
-// Single gate: WorldSettings.VisitorSpawnChancePermille (default 0)
-// disables spawn entirely. Other failure paths (no destination placed,
-// no walkable edge tile) log + skip the cycle without setting any
-// telemetry counters — they're configuration / map issues, not skip
-// reasons of architectural interest.
+// The off-switch is all three spawn chances at 0 (the deploy default). Other
+// failure paths (no destination placed, no walkable edge tile) log + skip the
+// cycle without setting any telemetry counters — they're configuration / map
+// issues, not skip reasons of architectural interest.
 func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeTelemetry) {
-	chance := w.Settings.VisitorSpawnChancePermille
-	if chance < 0 {
-		chance = 0
-	}
-	if chance > 1000 {
-		chance = 1000
-	}
-	if chance == 0 {
-		t.SpawnSkipChance = 1
-		t.SpawnSkipReason = "disabled (chance=0)"
-		return
-	}
 	// Afternoon spawn window (LLM-455, narrowing the LLM-373 daytime gate): a merchant
 	// arrives in the afternoon — late enough that his evening at the tavern overlaps the dusk
 	// company, early enough to finish his trade before the day-shops shut at dusk. The window
@@ -714,17 +718,12 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 			return
 		}
 	}
-	r := inputsRandOrDefault(inputs.Rand)
-	if r.Intn(1000) >= chance {
-		t.SpawnSkipChance = 1
-		t.SpawnSkipReason = "roll didn't fire"
-		return
-	}
-	// Zero / unset → fall back to default (matches every other settings
-	// field in this file). The documented "halt spawn" admin dial is
-	// VisitorSpawnChancePermille=0 (already gated above), not
-	// VisitorMaxConcurrent — keeping both as halt-spawn signals would
-	// give two ways to say the same thing.
+	// Cap BEFORE the rolls (LLM-626): a corrective roll that fired at cap would
+	// otherwise burn its firing on a tick that can't spawn. Zero / unset falls
+	// back to default (matches every other settings field in this file); the
+	// documented "halt spawn" admin dial is the spawn chances at 0, not
+	// VisitorMaxConcurrent — keeping both as halt-spawn signals would give two
+	// ways to say the same thing.
 	maxConcurrent := w.Settings.VisitorMaxConcurrent
 	if maxConcurrent <= 0 {
 		maxConcurrent = DefaultVisitorMaxConcurrent
@@ -740,6 +739,13 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		t.SpawnSkipReason = fmt.Sprintf("at cap %d/%d", current, maxConcurrent)
 		return
 	}
+	r := inputsRandOrDefault(inputs.Rand)
+	roll := rollVisitorSpawn(w, r)
+	if roll.Class == visitorSpawnNone {
+		t.SpawnSkipChance = 1
+		t.SpawnSkipReason = roll.Reason
+		return
+	}
 
 	// Persona FIRST (moved ahead of the spatial picks): the class (merchant vs passer-through)
 	// and, for a merchant, the bound errand decide the archetype label, origin, pack, and
@@ -752,10 +758,16 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// bails out (edge-tile miss, ID-mint exhaustion) leaves the returner still due to try again
 	// rather than consumed-but-not-arrived. Otherwise roll a new persona and scrub its surname
 	// against seated villagers.
+	//
+	// A CORRECTIVE merchant spawn (LLM-626) is never preempted by a returner:
+	// the band fired it to move coin, and a returner comes back as a
+	// passer-through (errand re-binding is a later refinement), which would
+	// silently swallow the correction. The returner stays due and rides the
+	// next trickle or flavor spawn instead.
 	var returnerID string
 	var dueReturner *RecurringVisitor
 	var profile visitorProfile
-	if rv, ok := w.pickDueReturner(inputs.Now); ok {
+	if rv, ok := w.pickDueReturner(inputs.Now); ok && !(roll.Class == visitorSpawnMerchant && roll.Corrective) {
 		profile = visitorProfile{Name: rv.Name, Archetype: rv.Archetype, Origin: rv.Origin, Disposition: rv.Disposition}
 		returnerID = string(rv.ID)
 		dueReturner = rv
@@ -774,22 +786,21 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		}
 	}
 
-	// Class + errand (LLM-455). A fresh traveler is a MERCHANT bound to a real errand unless
-	// the passer-through roll fires or the economy can't service one (no open keeper for a
-	// buyer, no distributor for a seller) — then he is a passer-through carrying only voice-
-	// flavor. The errand grounds the persona: the archetype label is DERIVED from the bound
-	// good (cheese -> "cheese-buyer") so it can never name an untradeable trade — the root fix
-	// for the ungrounded "wool-buyer" loop. A returner keeps its stored persona verbatim and
-	// comes back as a passer-through (merchant-returner errand re-binding is a later refinement).
+	// Errand (LLM-455; class decided by rollVisitorSpawn since LLM-626). A merchant spawn is
+	// bound to a real errand in the roll's direction unless the economy can't service one (no
+	// open keeper for a buyer, no distributor for a seller) — then he arrives a passer-through
+	// carrying only voice-flavor, the standing fallback. The errand grounds the persona: the
+	// archetype label is DERIVED from the bound good (cheese -> "cheese-buyer") so it can never
+	// name an untradeable trade — the root fix for the ungrounded "wool-buyer" loop. A returner
+	// keeps its stored persona verbatim and comes back as a passer-through (merchant-returner
+	// errand re-binding is a later refinement).
 	var trade *TradeErrand
-	if dueReturner == nil {
-		if r.Intn(1000) >= effectiveVisitorPasserThroughChance(w) {
-			if bound, ok := bindVisitorErrand(w, r, chooseVisitorTradeDirection(w, r)); ok {
-				trade = bound
-				profile.Archetype = visitorMerchantLabel(w, trade)
-				if trade.Direction == TradeDirectionSell {
-					profile.Origin = FactorOrigin // a factor hails from the city he trades out of
-				}
+	if dueReturner == nil && roll.Class == visitorSpawnMerchant {
+		if bound, ok := bindVisitorErrand(w, r, roll.Direction); ok {
+			trade = bound
+			profile.Archetype = visitorMerchantLabel(w, trade)
+			if trade.Direction == TradeDirectionSell {
+				profile.Origin = FactorOrigin // a factor hails from the city he trades out of
 			}
 		}
 	}
@@ -1572,57 +1583,102 @@ func seedBuyerPack(r *rand.Rand) (map[ItemKind]int, int) {
 	return map[ItemKind]int{}, 70 + r.Intn(41) // 70..110
 }
 
-// chooseVisitorTradeDirection picks a merchant visitor's trade direction via the coin-valve
-// (LLM-455): resident coin at/above the operator high-water mark forces a SELLER (drain the
-// excess), at/below the low-water mark forces a BUYER (inject), and in-band — or when the
-// band is unconfigured (high <= 0) — it is the weighted random, where VisitorSellWeightPermille
-// is the (low) chance of a seller so imports stay near today's cadence. Runs on the world
-// goroutine (reads live coin).
-func chooseVisitorTradeDirection(w *World, r *rand.Rand) TradeDirection {
-	high := w.Settings.VisitorCoinBandHigh
-	low := w.Settings.VisitorCoinBandLow
-	if high > 0 {
-		resident := residentCoinOnMap(w)
-		if resident >= high {
-			return TradeDirectionSell
-		}
-		if low > 0 && resident <= low {
-			return TradeDirectionBuy
-		}
-	}
-	if r.Intn(1000) < effectiveVisitorSellWeight(w) {
-		return TradeDirectionSell
-	}
-	return TradeDirectionBuy
+// visitorSpawnClass names what one tick's spawn decision produced (LLM-626).
+type visitorSpawnClass int
+
+const (
+	visitorSpawnNone     visitorSpawnClass = iota // neither roll fired — no spawn this tick
+	visitorSpawnMerchant                          // a grounded trader arrives (Direction set)
+	visitorSpawnPasser                            // a voice-flavor passer-through arrives
+)
+
+// visitorSpawnRoll is one tick's spawn decision — the LLM-626 split of the old
+// master-roll + class-share + direction chain into two independent flows.
+type visitorSpawnRoll struct {
+	Class     visitorSpawnClass
+	Direction TradeDirection // merchant only
+	// Corrective marks a band-forced merchant (coin outside the valve band):
+	// an economic instrument, not a social call — so a due returner must NOT
+	// preempt it the way it preempts a trickle or flavor spawn.
+	Corrective bool
+	Reason     string // telemetry skip reason when Class == visitorSpawnNone
 }
 
-// effectiveVisitorSellWeight clamps the in-band seller weight to [0,1000] (LLM-455). The
+// rollVisitorSpawn makes the per-tick spawn decision (LLM-626). Two independent
+// flows, merchant rolled first (at most one visitor spawns per tick, and the
+// corrective merchant is the roll with a job to do):
+//
+//   - MERCHANT — band-state driven. Resident coin at/above VisitorCoinBandHigh
+//     rolls VisitorMerchantCorrectionChancePermille for a forced SELLER (the
+//     factor, draining the excess); at/below the low band, the same knob for a
+//     forced BUYER (injecting). In-band — or the band unconfigured (high <= 0)
+//     — rolls VisitorMerchantTrickleChancePermille instead, direction picked by
+//     the VisitorSellWeightPermille weighted random: the ordinary grounded
+//     trader passing through on business.
+//   - PASSER — VisitorPasserSpawnChancePermille, the independent flavor roll.
+//
+// All three chances default 0 = that flow off (the Phase-1 no-op posture).
+// Runs on the world goroutine (reads live coin).
+func rollVisitorSpawn(w *World, r *rand.Rand) visitorSpawnRoll {
+	trickleChance := clampPermille(w.Settings.VisitorMerchantTrickleChancePermille)
+	correctionChance := clampPermille(w.Settings.VisitorMerchantCorrectionChancePermille)
+	passerChance := clampPermille(w.Settings.VisitorPasserSpawnChancePermille)
+	merchantChance := trickleChance
+	corrective := false
+	direction := TradeDirection("")
+	if high := w.Settings.VisitorCoinBandHigh; high > 0 {
+		resident := residentCoinOnMap(w)
+		if resident >= high {
+			corrective, direction = true, TradeDirectionSell
+		} else if low := w.Settings.VisitorCoinBandLow; low > 0 && resident <= low {
+			corrective, direction = true, TradeDirectionBuy
+		}
+		if corrective {
+			merchantChance = correctionChance
+		}
+	}
+	if merchantChance > 0 && r.Intn(1000) < merchantChance {
+		if !corrective {
+			direction = TradeDirectionBuy
+			if r.Intn(1000) < effectiveVisitorSellWeight(w) {
+				direction = TradeDirectionSell
+			}
+		}
+		return visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: direction, Corrective: corrective}
+	}
+	if passerChance > 0 && r.Intn(1000) < passerChance {
+		return visitorSpawnRoll{Class: visitorSpawnPasser}
+	}
+	// "Disabled" reads the three CONFIGURED chances, not the band-selected
+	// merchant chance — a trickle-on world whose valve is out of band with the
+	// correction off is a flow standing quiet, not a disabled feature, and
+	// telemetry claiming "disabled" there would send an operator to the wrong
+	// knob (code_review).
+	if trickleChance == 0 && correctionChance == 0 && passerChance == 0 {
+		return visitorSpawnRoll{Class: visitorSpawnNone, Reason: "disabled (all spawn chances 0)"}
+	}
+	return visitorSpawnRoll{Class: visitorSpawnNone, Reason: "rolls didn't fire"}
+}
+
+// clampPermille clamps a permille chance to [0,1000]. The DEFAULTS are applied
+// by the settings loaders when the row is absent, NOT re-defaulted here — so an
+// explicit 0 genuinely means "off" and a test can force a deterministic flow.
+func clampPermille(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 1000 {
+		return 1000
+	}
+	return v
+}
+
+// effectiveVisitorSellWeight clamps the trickle seller weight to [0,1000] (LLM-455). The
 // DEFAULT (150) is applied by the settings loaders (repo/pg + repo/mem) when the row is absent,
 // NOT re-defaulted here — so an explicit 0 genuinely means "no sellers" and a test can force a
 // deterministic direction.
 func effectiveVisitorSellWeight(w *World) int {
-	weight := w.Settings.VisitorSellWeightPermille
-	if weight < 0 {
-		weight = 0
-	}
-	if weight > 1000 {
-		weight = 1000
-	}
-	return weight
-}
-
-// effectiveVisitorPasserThroughChance clamps the passer-through chance to [0,1000] (LLM-455).
-// Like the sell weight, the DEFAULT (250) is applied by the settings loaders, not here, so an
-// explicit 0 genuinely means "never a passer-through (always attempt a merchant)".
-func effectiveVisitorPasserThroughChance(w *World) int {
-	chance := w.Settings.VisitorPasserThroughChancePermille
-	if chance < 0 {
-		chance = 0
-	}
-	if chance > 1000 {
-		chance = 1000
-	}
-	return chance
+	return clampPermille(w.Settings.VisitorSellWeightPermille)
 }
 
 // bindVisitorErrand binds a merchant visitor's grounded errand from live world state

@@ -44,7 +44,7 @@ func buildVisitorDriverWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.VisitorTickInterval = 20 * time.Millisecond
 		// Spawn disabled so the driver only exercises cleanup.
-		world.Settings.VisitorSpawnChancePermille = 0
+		world.Settings.VisitorMerchantTrickleChancePermille = 0
 		world.Actors["expired"] = &sim.Actor{
 			ID:          "expired",
 			DisplayName: "Elias Drum the peddler",

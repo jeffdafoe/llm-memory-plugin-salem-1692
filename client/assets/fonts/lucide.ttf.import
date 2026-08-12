@@ -2,13 +2,13 @@
 
 importer="font_data_dynamic"
 type="FontFile"
-uid="uid://b8x4lucide7salem"
-path="res://.godot/imported/lucide.ttf-lucide7salem.fontdata"
+uid="uid://cgaspd2eqn2y3"
+path="res://.godot/imported/lucide.ttf-40dd87e1299b8d343e30208b3b40a438.fontdata"
 
 [deps]
 
 source_file="res://assets/fonts/lucide.ttf"
-dest_files=["res://.godot/imported/lucide.ttf-lucide7salem.fontdata"]
+dest_files=["res://.godot/imported/lucide.ttf-40dd87e1299b8d343e30208b3b40a438.fontdata"]
 
 [params]
 

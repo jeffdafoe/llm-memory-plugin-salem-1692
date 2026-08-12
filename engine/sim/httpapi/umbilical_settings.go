@@ -169,26 +169,26 @@ type UmbilicalSettingsDTO struct {
 	// env-loader default (see handleUmbilicalSettings), so a stored 0 there reports
 	// 0 / the min, matching the engine.
 	//
-	// VisitorSpawnChancePermille is the master gate and is reported RAW — 0 means
-	// spawning is OFF, a real operator setting, not a fall-through to a default.
-	VisitorSpawnChancePermille int `json:"visitor_spawn_chance_permille"`
-	VisitorMaxConcurrent       int `json:"visitor_max_concurrent"`
-	VisitorTickIntervalSeconds int `json:"visitor_tick_interval_seconds"`
-	VisitorReturnMinDays       int `json:"visitor_return_min_days"`
-	VisitorReturnMaxDays       int `json:"visitor_return_max_days"`
-	VisitorFactorPackUnits     int `json:"visitor_factor_pack_units"`
-	VisitorFactorIronUnits     int `json:"visitor_factor_iron_units"`
-	VisitorFactorSaltUnits     int `json:"visitor_factor_salt_units"`
-	VisitorFactorThreadUnits   int `json:"visitor_factor_thread_units"`
-	VisitorFactorPurseMin      int `json:"visitor_factor_purse_min"`
-	VisitorFactorPurseMax      int `json:"visitor_factor_purse_max"`
-	// Grounded merchant errand coin-valve (LLM-455): the resident-coin band that biases a
-	// merchant visitor's direction (drain vs inject), the in-band seller weight, and the
-	// passer-through-vs-merchant class chance. All live-tunable.
-	VisitorCoinBandLow                 int `json:"visitor_coin_band_low"`
-	VisitorCoinBandHigh                int `json:"visitor_coin_band_high"`
-	VisitorSellWeightPermille          int `json:"visitor_sell_weight_permille"`
-	VisitorPasserThroughChancePermille int `json:"visitor_passer_through_chance_permille"`
+	// The three spawn-roll chances (LLM-626) are reported RAW — 0 means that
+	// flow is OFF, a real operator setting, not a fall-through to a default.
+	VisitorMerchantTrickleChancePermille    int `json:"visitor_merchant_trickle_chance_permille"`
+	VisitorMerchantCorrectionChancePermille int `json:"visitor_merchant_correction_chance_permille"`
+	VisitorPasserSpawnChancePermille        int `json:"visitor_passer_spawn_chance_permille"`
+	VisitorMaxConcurrent                    int `json:"visitor_max_concurrent"`
+	VisitorTickIntervalSeconds              int `json:"visitor_tick_interval_seconds"`
+	VisitorReturnMinDays                    int `json:"visitor_return_min_days"`
+	VisitorReturnMaxDays                    int `json:"visitor_return_max_days"`
+	VisitorFactorPackUnits                  int `json:"visitor_factor_pack_units"`
+	VisitorFactorIronUnits                  int `json:"visitor_factor_iron_units"`
+	VisitorFactorSaltUnits                  int `json:"visitor_factor_salt_units"`
+	VisitorFactorThreadUnits                int `json:"visitor_factor_thread_units"`
+	VisitorFactorPurseMin                   int `json:"visitor_factor_purse_min"`
+	VisitorFactorPurseMax                   int `json:"visitor_factor_purse_max"`
+	// Grounded merchant errand coin-valve (LLM-455): the resident-coin band that drives the
+	// LLM-626 correction roll (drain vs inject) and the trickle's seller weight. Live-tunable.
+	VisitorCoinBandLow        int `json:"visitor_coin_band_low"`
+	VisitorCoinBandHigh       int `json:"visitor_coin_band_high"`
+	VisitorSellWeightPermille int `json:"visitor_sell_weight_permille"`
 
 	// SettingWarnings lists settings that were out of range at load and clamped to
 	// a safe bound (LLM-439) — today the cold rate knobs, which must be >= 0. Each
@@ -309,54 +309,55 @@ func (s *Server) handleUmbilicalSettings(w http.ResponseWriter, r *http.Request)
 		settingWarnings := make([]sim.SettingWarning, 0, len(world.Settings.SettingWarnings))
 		settingWarnings = append(settingWarnings, world.Settings.SettingWarnings...)
 		dto := UmbilicalSettingsDTO{
-			ContractVersion:                       ContractVersion,
-			NeedThresholds:                        make(map[string]int, len(world.Settings.NeedThresholds)),
-			HuddleLoopEnabled:                     world.Settings.HuddleLoopTimeout > 0,
-			HuddleLoopTimeoutSeconds:              int(world.Settings.HuddleLoopTimeout / time.Second),
-			HuddleLoopRepeatPercent:               world.Settings.HuddleLoopRepeatPercent,
-			HuddleLoopSweepCadenceSeconds:         int(world.Settings.HuddleLoopSweepCadence / time.Second),
-			HuddleLoopMaxTurns:                    maxTurns,
-			HuddleConversationWindDownSeconds:     int(windDown / time.Second),
-			HuddleConversationHardConcludeSeconds: int(hardConclude / time.Second),
-			HuddleLiveWindowSeconds:               int(sim.EffectiveHuddleLiveWindow(world.Settings) / time.Second),
-			SeekWorkCoinCeiling:                   world.Settings.SeekWorkCoinCeiling,
-			SeekWorkNeedYieldMargin:               world.Settings.SeekWorkNeedYieldMargin,
-			FarmUpkeepFloor:                       world.Settings.FarmUpkeepFloor,
-			FarmUpkeepCoinsPerShovel:              world.Settings.FarmUpkeepCoinsPerShovel,
-			TownRateCoinsPerDay:                   world.Settings.TownRateCoinsPerDay,
-			TownRateMaxOwed:                       world.Settings.TownRateMaxOwed,
-			LaborProduceBoostPct:                  world.Settings.LaborProduceBoostPct,
-			MerchantCoinFloor:                     world.Settings.MerchantCoinFloor,
-			StallWearPerCoin:                      world.Settings.StallWearPerCoin,
-			StallWearRepairThreshold:              world.Settings.StallWearRepairThreshold,
-			StallWearDegradeThreshold:             world.Settings.StallWearDegradeThreshold,
-			StallNailsPerRepair:                   world.Settings.StallNailsPerRepair,
-			StallRepairDurationSeconds:            world.Settings.StallRepairDurationSeconds,
-			StallDegradedProducePct:               world.Settings.StallDegradedProducePct,
-			EcoEnabled:                            world.Settings.EcoEnabled,
-			EcoSocialGapSeconds:                   int(world.Settings.EcoSocialGap / time.Second),
-			EcoEconomyGapSeconds:                  int(world.Settings.EcoEconomyGap / time.Second),
-			EcoAudienceActive:                     audience,
-			EcoAudienceIdleSeconds:                int(sim.PCAudienceIdleAfter(world) / time.Second),
-			EcoEngaged:                            world.Settings.EcoEnabled && !audience,
-			ConstableRoundsIntervalSeconds:        int(world.Settings.ConstableRoundsInterval / time.Second),
-			VisitorSpawnChancePermille:            world.Settings.VisitorSpawnChancePermille,
-			VisitorMaxConcurrent:                  visitorMax,
-			VisitorTickIntervalSeconds:            int(visitorTick / time.Second),
-			VisitorReturnMinDays:                  returnMin,
-			VisitorReturnMaxDays:                  returnMax,
-			VisitorFactorPackUnits:                factorUnits,
-			VisitorFactorIronUnits:                factorIronUnits,
-			VisitorFactorSaltUnits:                factorSaltUnits,
-			VisitorFactorThreadUnits:              factorThreadUnits,
-			VisitorFactorPurseMin:                 factorPurseMin,
-			VisitorFactorPurseMax:                 factorPurseMax,
-			VisitorCoinBandLow:                    world.Settings.VisitorCoinBandLow,
-			VisitorCoinBandHigh:                   world.Settings.VisitorCoinBandHigh,
-			VisitorSellWeightPermille:             world.Settings.VisitorSellWeightPermille,
-			VisitorPasserThroughChancePermille:    world.Settings.VisitorPasserThroughChancePermille,
-			SettingWarnings:                       settingWarnings,
-			All:                                   sim.ReadAllSettings(&world.Settings),
+			ContractVersion:                         ContractVersion,
+			NeedThresholds:                          make(map[string]int, len(world.Settings.NeedThresholds)),
+			HuddleLoopEnabled:                       world.Settings.HuddleLoopTimeout > 0,
+			HuddleLoopTimeoutSeconds:                int(world.Settings.HuddleLoopTimeout / time.Second),
+			HuddleLoopRepeatPercent:                 world.Settings.HuddleLoopRepeatPercent,
+			HuddleLoopSweepCadenceSeconds:           int(world.Settings.HuddleLoopSweepCadence / time.Second),
+			HuddleLoopMaxTurns:                      maxTurns,
+			HuddleConversationWindDownSeconds:       int(windDown / time.Second),
+			HuddleConversationHardConcludeSeconds:   int(hardConclude / time.Second),
+			HuddleLiveWindowSeconds:                 int(sim.EffectiveHuddleLiveWindow(world.Settings) / time.Second),
+			SeekWorkCoinCeiling:                     world.Settings.SeekWorkCoinCeiling,
+			SeekWorkNeedYieldMargin:                 world.Settings.SeekWorkNeedYieldMargin,
+			FarmUpkeepFloor:                         world.Settings.FarmUpkeepFloor,
+			FarmUpkeepCoinsPerShovel:                world.Settings.FarmUpkeepCoinsPerShovel,
+			TownRateCoinsPerDay:                     world.Settings.TownRateCoinsPerDay,
+			TownRateMaxOwed:                         world.Settings.TownRateMaxOwed,
+			LaborProduceBoostPct:                    world.Settings.LaborProduceBoostPct,
+			MerchantCoinFloor:                       world.Settings.MerchantCoinFloor,
+			StallWearPerCoin:                        world.Settings.StallWearPerCoin,
+			StallWearRepairThreshold:                world.Settings.StallWearRepairThreshold,
+			StallWearDegradeThreshold:               world.Settings.StallWearDegradeThreshold,
+			StallNailsPerRepair:                     world.Settings.StallNailsPerRepair,
+			StallRepairDurationSeconds:              world.Settings.StallRepairDurationSeconds,
+			StallDegradedProducePct:                 world.Settings.StallDegradedProducePct,
+			EcoEnabled:                              world.Settings.EcoEnabled,
+			EcoSocialGapSeconds:                     int(world.Settings.EcoSocialGap / time.Second),
+			EcoEconomyGapSeconds:                    int(world.Settings.EcoEconomyGap / time.Second),
+			EcoAudienceActive:                       audience,
+			EcoAudienceIdleSeconds:                  int(sim.PCAudienceIdleAfter(world) / time.Second),
+			EcoEngaged:                              world.Settings.EcoEnabled && !audience,
+			ConstableRoundsIntervalSeconds:          int(world.Settings.ConstableRoundsInterval / time.Second),
+			VisitorMerchantTrickleChancePermille:    world.Settings.VisitorMerchantTrickleChancePermille,
+			VisitorMerchantCorrectionChancePermille: world.Settings.VisitorMerchantCorrectionChancePermille,
+			VisitorPasserSpawnChancePermille:        world.Settings.VisitorPasserSpawnChancePermille,
+			VisitorMaxConcurrent:                    visitorMax,
+			VisitorTickIntervalSeconds:              int(visitorTick / time.Second),
+			VisitorReturnMinDays:                    returnMin,
+			VisitorReturnMaxDays:                    returnMax,
+			VisitorFactorPackUnits:                  factorUnits,
+			VisitorFactorIronUnits:                  factorIronUnits,
+			VisitorFactorSaltUnits:                  factorSaltUnits,
+			VisitorFactorThreadUnits:                factorThreadUnits,
+			VisitorFactorPurseMin:                   factorPurseMin,
+			VisitorFactorPurseMax:                   factorPurseMax,
+			VisitorCoinBandLow:                      world.Settings.VisitorCoinBandLow,
+			VisitorCoinBandHigh:                     world.Settings.VisitorCoinBandHigh,
+			VisitorSellWeightPermille:               world.Settings.VisitorSellWeightPermille,
+			SettingWarnings:                         settingWarnings,
+			All:                                     sim.ReadAllSettings(&world.Settings),
 		}
 		for k, v := range world.Settings.NeedThresholds {
 			dto.NeedThresholds[string(k)] = v

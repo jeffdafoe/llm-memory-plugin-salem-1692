@@ -91,7 +91,9 @@ func decodeSettings(t *testing.T, h http.Handler) UmbilicalSettingsDTO {
 func TestUmbilicalSettings_VisitorCascade_Explicit(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 	if _, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 25
+		world.Settings.VisitorMerchantTrickleChancePermille = 25
+		world.Settings.VisitorMerchantCorrectionChancePermille = 40
+		world.Settings.VisitorPasserSpawnChancePermille = 8
 		world.Settings.VisitorMaxConcurrent = 3
 		world.Settings.VisitorTickInterval = 90 * time.Second
 		world.Settings.VisitorReturnMinDays = 7
@@ -105,8 +107,14 @@ func TestUmbilicalSettings_VisitorCascade_Explicit(t *testing.T) {
 	}
 
 	out := decodeSettings(t, h)
-	if out.VisitorSpawnChancePermille != 25 {
-		t.Errorf("visitor_spawn_chance_permille = %d, want 25", out.VisitorSpawnChancePermille)
+	if out.VisitorMerchantTrickleChancePermille != 25 {
+		t.Errorf("visitor_merchant_trickle_chance_permille = %d, want 25", out.VisitorMerchantTrickleChancePermille)
+	}
+	if out.VisitorMerchantCorrectionChancePermille != 40 {
+		t.Errorf("visitor_merchant_correction_chance_permille = %d, want 40", out.VisitorMerchantCorrectionChancePermille)
+	}
+	if out.VisitorPasserSpawnChancePermille != 8 {
+		t.Errorf("visitor_passer_spawn_chance_permille = %d, want 8", out.VisitorPasserSpawnChancePermille)
 	}
 	if out.VisitorMaxConcurrent != 3 {
 		t.Errorf("visitor_max_concurrent = %d, want 3", out.VisitorMaxConcurrent)
@@ -140,7 +148,9 @@ func TestUmbilicalSettings_VisitorCascade_Explicit(t *testing.T) {
 func TestUmbilicalSettings_VisitorCascade_Effective(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 	if _, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 0
+		world.Settings.VisitorMerchantTrickleChancePermille = 0
+		world.Settings.VisitorMerchantCorrectionChancePermille = 0
+		world.Settings.VisitorPasserSpawnChancePermille = 0
 		world.Settings.VisitorMaxConcurrent = 0
 		world.Settings.VisitorTickInterval = 0
 		world.Settings.VisitorReturnMinDays = 0
@@ -154,8 +164,9 @@ func TestUmbilicalSettings_VisitorCascade_Effective(t *testing.T) {
 	}
 
 	out := decodeSettings(t, h)
-	if out.VisitorSpawnChancePermille != 0 {
-		t.Errorf("visitor_spawn_chance_permille = %d, want 0 (raw, OFF)", out.VisitorSpawnChancePermille)
+	if out.VisitorMerchantTrickleChancePermille != 0 || out.VisitorMerchantCorrectionChancePermille != 0 || out.VisitorPasserSpawnChancePermille != 0 {
+		t.Errorf("spawn-roll chances = %d/%d/%d, want 0/0/0 (raw, OFF)",
+			out.VisitorMerchantTrickleChancePermille, out.VisitorMerchantCorrectionChancePermille, out.VisitorPasserSpawnChancePermille)
 	}
 	if out.VisitorMaxConcurrent != sim.DefaultVisitorMaxConcurrent {
 		t.Errorf("visitor_max_concurrent = %d, want %d (default)", out.VisitorMaxConcurrent, sim.DefaultVisitorMaxConcurrent)

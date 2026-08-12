@@ -231,7 +231,9 @@ func buildSettingRegistry() []SettingSpec {
 		// The spawn/return dispatchers read w.Settings and clamp at spawn time,
 		// so a change applies to the next visitor. This whole family was
 		// readable and unwritable before LLM-577.
-		intSetting("visitor_spawn_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorSpawnChancePermille }),
+		intSetting("visitor_merchant_trickle_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorMerchantTrickleChancePermille }),
+		intSetting("visitor_merchant_correction_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorMerchantCorrectionChancePermille }),
+		intSetting("visitor_passer_spawn_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorPasserSpawnChancePermille }),
 		intSetting("visitor_max_concurrent", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorMaxConcurrent }),
 		intSetting("visitor_min_stay_minutes", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorMinStayMinutes }),
 		intSetting("visitor_max_stay_minutes", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorMaxStayMinutes }),
@@ -247,7 +249,6 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("visitor_coin_band_low", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandLow }),
 		intSetting("visitor_coin_band_high", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandHigh }),
 		intSetting("visitor_sell_weight_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorSellWeightPermille }),
-		intSetting("visitor_passer_through_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorPasserThroughChancePermille }),
 
 		// --- businessowner cooldowns / scene radius ------------------------
 		intSetting("businessowner_greet_cooldown_minutes", SettingEffectUnaudited, func(s *WorldSettings) *int { return &s.BusinessownerGreetCooldownMinutes }),

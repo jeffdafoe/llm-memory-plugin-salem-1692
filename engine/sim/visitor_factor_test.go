@@ -3,6 +3,7 @@ package sim_test
 import (
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -46,10 +47,9 @@ func TestTickVisitorCascade_FactorSpawn(t *testing.T) {
 	// Force the coin-valve to a SELLER and disable passers-through so the spawn is
 	// deterministically a factor (LLM-455). A distributor is placed so bindSellErrand succeeds.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 2
 		world.Settings.VisitorSellWeightPermille = 1000
-		world.Settings.VisitorPasserThroughChancePermille = 0
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed settings: %v", err)
@@ -116,4 +116,131 @@ func TestTickVisitorCascade_FactorSpawn(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("MoveIntent check: %v", err)
 	}
+}
+
+// TestTickVisitorCascade_CorrectionForcesFactor — the LLM-626 correction roll end to end:
+// resident coin above the high band spawns a FORCED seller off the correction chance, with the
+// trickle roll off and the sell weight at 0 — proving the direction came from the band, not the
+// weighted random (which at 0 would have produced a buyer had the trickle path been taken).
+func TestTickVisitorCascade_CorrectionForcesFactor(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	distID := vw.seedDistributor(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["rich_resident"] = &sim.Actor{ID: "rich_resident", Kind: sim.KindNPCShared, DisplayName: "Rich Resident", Coins: 500}
+		world.Settings.VisitorCoinBandLow = 10
+		world.Settings.VisitorCoinBandHigh = 100
+		world.Settings.VisitorMerchantCorrectionChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 0
+		world.Settings.VisitorSellWeightPermille = 0
+		world.Settings.VisitorMaxConcurrent = 2
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	r := rand.New(rand.NewSource(7))
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: visitorSpawnDaytime, Rand: r}))
+	if err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
+		t.Fatalf("spawned = %d, want 1 (correction roll at 1000 must land)", tm.Spawned)
+	}
+	snap := w.Published()
+	for _, a := range snap.Actors {
+		if a.VisitorState == nil {
+			continue
+		}
+		if a.VisitorState.Trade == nil || a.VisitorState.Trade.Direction != sim.TradeDirectionSell {
+			t.Fatalf("corrective spawn errand = %+v, want a forced SELL to %q", a.VisitorState.Trade, distID)
+		}
+		return
+	}
+	t.Fatal("no visitor in snapshot after corrective spawn")
+}
+
+// TestTickVisitorCascade_ReturnerDoesNotPreemptCorrection — a due returner comes back as a
+// passer-through, so letting it ride a CORRECTIVE spawn would silently swallow the band's
+// correction (LLM-626). The corrective spawn must produce the errand-bound merchant; the
+// returner stays due for the next trickle or flavor slot.
+func TestTickVisitorCascade_ReturnerDoesNotPreemptCorrection(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	vw.seedDistributor(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["rich_resident"] = &sim.Actor{ID: "rich_resident", Kind: sim.KindNPCShared, DisplayName: "Rich Resident", Coins: 500}
+		world.RecurringVisitors = map[sim.RecurringVisitorID]*sim.RecurringVisitor{
+			"rvis-0000dddd": {ID: "rvis-0000dddd", Name: "Obadiah Pratt", Archetype: "circuit preacher",
+				NextReturnAt: visitorSpawnDaytime.Add(-time.Hour)},
+		}
+		world.Settings.VisitorCoinBandLow = 10
+		world.Settings.VisitorCoinBandHigh = 100
+		world.Settings.VisitorMerchantCorrectionChancePermille = 1000
+		world.Settings.VisitorSellWeightPermille = 0
+		world.Settings.VisitorMaxConcurrent = 2
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	r := rand.New(rand.NewSource(7))
+	if _, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: visitorSpawnDaytime, Rand: r})); err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	snap := w.Published()
+	for _, a := range snap.Actors {
+		if a.VisitorState == nil {
+			continue
+		}
+		if a.VisitorState.RecurringID != "" || a.VisitorState.Trade == nil {
+			t.Fatalf("corrective spawn = returner %q / trade %+v — the returner must not preempt a correction",
+				a.VisitorState.RecurringID, a.VisitorState.Trade)
+		}
+		return
+	}
+	t.Fatal("no visitor in snapshot after corrective spawn")
+}
+
+// TestTickVisitorCascade_PasserFlowIndependent — the LLM-626 flavor roll spawns a passer-through
+// with BOTH merchant chances at 0: the flavor flow no longer needs the merchant pipeline to fire.
+func TestTickVisitorCascade_PasserFlowIndependent(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.VisitorPasserSpawnChancePermille = 1000
+		world.Settings.VisitorMaxConcurrent = 2
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	r := rand.New(rand.NewSource(7))
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: visitorSpawnDaytime, Rand: r}))
+	if err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
+		t.Fatalf("spawned = %d, want 1 (passer roll at 1000 must land)", tm.Spawned)
+	}
+	snap := w.Published()
+	for _, a := range snap.Actors {
+		if a.VisitorState == nil {
+			continue
+		}
+		if a.VisitorState.Trade != nil {
+			t.Fatalf("passer spawn carries errand %+v, want none", a.VisitorState.Trade)
+		}
+		return
+	}
+	t.Fatal("no visitor in snapshot after passer spawn")
 }

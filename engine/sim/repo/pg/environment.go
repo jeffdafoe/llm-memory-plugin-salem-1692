@@ -328,7 +328,11 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.ActionLogSweepInterval = parseDurationSetting(values, "action_log_sweep_interval_hours", 1*time.Hour)
 
 	// Visitor cascade.
-	s.VisitorSpawnChancePermille = parseIntSetting(values, "visitor_spawn_chance_permille", 0)
+	// LLM-626: the three-flow spawn rolls (replacing the retired master
+	// visitor_spawn_chance_permille + visitor_passer_through_chance_permille).
+	s.VisitorMerchantTrickleChancePermille = parseIntSetting(values, "visitor_merchant_trickle_chance_permille", sim.DefaultVisitorMerchantTrickleChancePermille)
+	s.VisitorMerchantCorrectionChancePermille = parseIntSetting(values, "visitor_merchant_correction_chance_permille", sim.DefaultVisitorMerchantCorrectionChancePermille)
+	s.VisitorPasserSpawnChancePermille = parseIntSetting(values, "visitor_passer_spawn_chance_permille", sim.DefaultVisitorPasserSpawnChancePermille)
 	s.VisitorMaxConcurrent = parseIntSetting(values, "visitor_max_concurrent", 2)
 	s.VisitorMinStayMinutes = parseIntSetting(values, "visitor_min_stay_minutes", 240)
 	s.VisitorMaxStayMinutes = parseIntSetting(values, "visitor_max_stay_minutes", 1440)
@@ -350,7 +354,6 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.VisitorCoinBandLow = parseIntSetting(values, "visitor_coin_band_low", 0)
 	s.VisitorCoinBandHigh = parseIntSetting(values, "visitor_coin_band_high", 0)
 	s.VisitorSellWeightPermille = parseIntSetting(values, "visitor_sell_weight_permille", sim.DefaultVisitorSellWeightPermille)
-	s.VisitorPasserThroughChancePermille = parseIntSetting(values, "visitor_passer_through_chance_permille", sim.DefaultVisitorPasserThroughChancePermille)
 
 	// Businessowner cooldowns.
 	s.BusinessownerGreetCooldownMinutes = parseIntSetting(values, "businessowner_greet_cooldown_minutes",

@@ -78,8 +78,7 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			// Grounded merchant errand direction/class weights (LLM-455) — mirror the pg
 			// fallbacks so a mem-backed spawn picks buy/sell + merchant/passer like prod.
 			// Coin band low/high default 0 (unconfigured) so no explicit mirror is needed.
-			VisitorSellWeightPermille:          sim.DefaultVisitorSellWeightPermille,
-			VisitorPasserThroughChancePermille: sim.DefaultVisitorPasserThroughChancePermille,
+			VisitorSellWeightPermille: sim.DefaultVisitorSellWeightPermille,
 		},
 		phase: sim.PhaseDay,
 	}

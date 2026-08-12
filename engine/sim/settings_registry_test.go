@@ -114,7 +114,9 @@ func TestSettingRegistryRejectsBadValues(t *testing.T) {
 		{"cold_night_multiplier_x100", "-1", "0 or greater"},
 		{"cold_warm_recovery_per_minute_x100", "-250", "0 or greater"},
 		// Counts, permilles and thresholds: negative is meaningless.
-		{"visitor_spawn_chance_permille", "-5", "0 or greater"},
+		{"visitor_merchant_trickle_chance_permille", "-5", "0 or greater"},
+		{"visitor_merchant_correction_chance_permille", "-5", "0 or greater"},
+		{"visitor_passer_spawn_chance_permille", "-5", "0 or greater"},
 		{"tick_worker_count", "-2", "0 or greater"},
 		{"hunger_red_threshold", "-1", "0 or greater"},
 		{"world_dusk_time", "   ", "cannot be empty"},

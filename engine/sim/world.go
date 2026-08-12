@@ -503,29 +503,43 @@ type WorldSettings struct {
 	// in engine/sim/visitor.go when zero, so tests that bypass the
 	// environment loader get sensible behavior without seeding them.
 	//
-	// VisitorSpawnChancePermille: per-tick (per-thousand) probability of
-	// spawning a new visitor when below the concurrent cap. Default 0 —
-	// the feature is no-op until an admin opts in by raising this. At
-	// VisitorTickInterval = 60s, a value of ~10-30 produces "one visitor
-	// per game day on average."
+	// The three spawn-roll chances (LLM-626, replacing the retired master
+	// visitor_spawn_chance_permille + visitor_passer_through_chance_permille
+	// pair): per-tick per-thousand probabilities, all defaulting 0 = that
+	// flow off (the Phase-1 no-op posture; all three at 0 is the halt-spawn
+	// dial). At VisitorTickInterval = 60s a value of ~10-30 on a flow
+	// produces roughly one such visitor per game day.
+	//
+	// VisitorMerchantTrickleChancePermille: the IN-BAND merchant roll — a
+	// grounded trader arrives on ordinary business, direction picked by
+	// the VisitorSellWeightPermille weighted random.
+	//
+	// VisitorMerchantCorrectionChancePermille: the OUT-OF-BAND merchant
+	// roll — resident coin at/above VisitorCoinBandHigh forces a SELLER
+	// (drain), at/below the low band a BUYER (inject). Operators size it
+	// hotter than the trickle so an out-of-band state resolves in hours.
+	//
+	// VisitorPasserSpawnChancePermille: the independent flavor roll — a
+	// passer-through arrives on its own cadence, no longer a share carved
+	// out of the merchant pipeline.
 	//
 	// VisitorMaxConcurrent: cap on simultaneous visitors. Zero or unset
-	// falls back to DefaultVisitorMaxConcurrent (2). The documented
-	// halt-spawn admin dial is VisitorSpawnChancePermille=0, not a
-	// sentinel here.
+	// falls back to DefaultVisitorMaxConcurrent (2).
 	//
 	// VisitorMinStayMinutes / VisitorMaxStayMinutes: stay-window bounds.
 	// Concrete stay is a uniform random pull from [min, max] at spawn.
 	// Defaults 240 / 1440 (4h floor, 24h ceiling).
 	//
-	// VisitorTickInterval: how often the cascade slice runs its three
-	// dispatchers (despawn → cleanup → spawn). Default 60s — matches
-	// v1's runServerTickOnce cadence the visitor handlers piggybacked on.
-	VisitorSpawnChancePermille int
-	VisitorMaxConcurrent       int
-	VisitorMinStayMinutes      int
-	VisitorMaxStayMinutes      int
-	VisitorTickInterval        time.Duration
+	// VisitorTickInterval: how often the cascade slice runs its
+	// dispatchers (despawn → cleanup → pacing → spawn). Default 60s —
+	// matches v1's runServerTickOnce cadence.
+	VisitorMerchantTrickleChancePermille    int
+	VisitorMerchantCorrectionChancePermille int
+	VisitorPasserSpawnChancePermille        int
+	VisitorMaxConcurrent                    int
+	VisitorMinStayMinutes                   int
+	VisitorMaxStayMinutes                   int
+	VisitorTickInterval                     time.Duration
 
 	// VisitorReturnMinDays / VisitorReturnMaxDays: when a promoted returner
 	// (LLM-372) departs, next_return_at is set a uniform-random number of
@@ -602,17 +616,6 @@ type WorldSettings struct {
 	// 0 means "no sellers" and a direct-constructed world with the field left zero gets 0 (not
 	// the default). Settings key visitor_sell_weight_permille.
 	VisitorSellWeightPermille int
-
-	// VisitorPasserThroughChancePermille (LLM-455): the per-thousand probability that a
-	// spawning visitor is a passer-through (messenger / musician / preacher / scholar /
-	// surgeon — pure voice-flavor, no errand) rather than a merchant. The rest attempt a
-	// bound merchant errand and fall back to a passer-through if the economy can't service one
-	// (no good + open keeper). Keeps the flavor archetypes a live minority instead of only
-	// appearing on bind failure. Like the sell weight, the DEFAULT (250) is applied by the
-	// settings loaders when the row is ABSENT; the use site only clamps to [0,1000], so an
-	// explicit 0 means "never a passer-through (always attempt a merchant)". Settings key
-	// visitor_passer_through_chance_permille.
-	VisitorPasserThroughChancePermille int
 
 	// Businessowner cascade tunables (engine/sim/businessowner.go +
 	// engine/sim/cascade/businessowner.go). Both fall back to

@@ -27,7 +27,7 @@ func et(t *testing.T) *time.Location {
 func seedDayPlanSettings(t *testing.T, w *sim.World, loc *time.Location) {
 	t.Helper()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Settings.VisitorSpawnChancePermille = 1000
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
 		world.Settings.VisitorMaxConcurrent = 1 // one visitor → deterministic firstVisitor across ticks
 		world.Settings.DawnTime = "06:00"
 		world.Settings.DuskTime = "18:00"
@@ -688,7 +688,7 @@ func TestSellErrandSettlesOnDelivery(t *testing.T) {
 		// Spawning off — the seeded factor is the subject, and a second visitor would make
 		// the assertions ambiguous.
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			world.Settings.VisitorSpawnChancePermille = 0
+			world.Settings.VisitorMerchantTrickleChancePermille = 0
 			return nil, nil
 		}}); err != nil {
 			t.Fatalf("disable spawn: %v", err)
