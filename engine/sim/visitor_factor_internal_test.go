@@ -37,11 +37,13 @@ func TestRollVisitorSpawn(t *testing.T) {
 	}
 
 	// OUT-OF-BAND, correction chance 0: the trickle chance must NOT leak in — no merchant
-	// spawns even at trickle 1000, because the band owns the flow when it is crossed.
+	// spawns even at trickle 1000, because the band owns the flow when it is crossed. And
+	// the reason must be "rolls didn't fire", NOT "disabled": the trickle flow is configured
+	// on, merely inapplicable while the valve is out of band (code_review).
 	hotNoCorrection := resident(1000, WorldSettings{VisitorCoinBandLow: 500, VisitorCoinBandHigh: 900,
 		VisitorMerchantTrickleChancePermille: 1000})
-	if got := rollVisitorSpawn(hotNoCorrection, r); got.Class == visitorSpawnMerchant {
-		t.Errorf("out-of-band with correction chance 0: roll = %+v, want no merchant (trickle must not leak)", got)
+	if got := rollVisitorSpawn(hotNoCorrection, r); got.Class != visitorSpawnNone || got.Reason != "rolls didn't fire" {
+		t.Errorf("out-of-band with correction chance 0: roll = %+v, want none/\"rolls didn't fire\" (trickle must not leak, and a configured flow is not disabled)", got)
 	}
 
 	// In-band trickle at 1000: weighted-random direction, not corrective.

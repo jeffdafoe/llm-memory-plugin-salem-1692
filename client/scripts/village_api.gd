@@ -19,7 +19,7 @@ extends Node
 ## fail loud rather than render stale/garbage. Additive server fields do NOT
 ## bump the version, so an exact-equality check is correct. Keep this in lockstep
 ## with the server's httpapi.ContractVersion on any breaking read-contract change.
-const CONTRACT_VERSION: int = 1
+const CONTRACT_VERSION: int = 2
 
 ## The engine's locomotion tick interval in seconds — the authoritative actor
 ## advances one tile per this interval (engine sim.LocomotionTickInterval =

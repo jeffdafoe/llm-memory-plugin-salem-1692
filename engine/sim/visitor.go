@@ -1620,7 +1620,10 @@ type visitorSpawnRoll struct {
 // All three chances default 0 = that flow off (the Phase-1 no-op posture).
 // Runs on the world goroutine (reads live coin).
 func rollVisitorSpawn(w *World, r *rand.Rand) visitorSpawnRoll {
-	merchantChance := clampPermille(w.Settings.VisitorMerchantTrickleChancePermille)
+	trickleChance := clampPermille(w.Settings.VisitorMerchantTrickleChancePermille)
+	correctionChance := clampPermille(w.Settings.VisitorMerchantCorrectionChancePermille)
+	passerChance := clampPermille(w.Settings.VisitorPasserSpawnChancePermille)
+	merchantChance := trickleChance
 	corrective := false
 	direction := TradeDirection("")
 	if high := w.Settings.VisitorCoinBandHigh; high > 0 {
@@ -1631,7 +1634,7 @@ func rollVisitorSpawn(w *World, r *rand.Rand) visitorSpawnRoll {
 			corrective, direction = true, TradeDirectionBuy
 		}
 		if corrective {
-			merchantChance = clampPermille(w.Settings.VisitorMerchantCorrectionChancePermille)
+			merchantChance = correctionChance
 		}
 	}
 	if merchantChance > 0 && r.Intn(1000) < merchantChance {
@@ -1643,11 +1646,15 @@ func rollVisitorSpawn(w *World, r *rand.Rand) visitorSpawnRoll {
 		}
 		return visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: direction, Corrective: corrective}
 	}
-	passerChance := clampPermille(w.Settings.VisitorPasserSpawnChancePermille)
 	if passerChance > 0 && r.Intn(1000) < passerChance {
 		return visitorSpawnRoll{Class: visitorSpawnPasser}
 	}
-	if merchantChance == 0 && passerChance == 0 {
+	// "Disabled" reads the three CONFIGURED chances, not the band-selected
+	// merchant chance — a trickle-on world whose valve is out of band with the
+	// correction off is a flow standing quiet, not a disabled feature, and
+	// telemetry claiming "disabled" there would send an operator to the wrong
+	// knob (code_review).
+	if trickleChance == 0 && correctionChance == 0 && passerChance == 0 {
 		return visitorSpawnRoll{Class: visitorSpawnNone, Reason: "disabled (all spawn chances 0)"}
 	}
 	return visitorSpawnRoll{Class: visitorSpawnNone, Reason: "rolls didn't fire"}

@@ -25,7 +25,13 @@ import (
 // WorldEnvironment.Now (never assigned → always zero) to the real
 // Snapshot.PublishedAt — a value change, not a shape change — and the camera
 // zoom floors are additive. Old clients keep decoding, so no bump.
-const ContractVersion = 1
+//
+// LLM-626 bumped 1 → 2: the umbilical settings DTO REMOVED two fields
+// (visitor_spawn_chance_permille, visitor_passer_through_chance_permille;
+// replaced by the three spawn-roll chances) — a shape change under the rule
+// above. The Godot client rebuilds in the same deploy, so the loud version
+// mismatch only ever bites a stale cached client, which is the point.
+const ContractVersion = 2
 
 // WorldStateDTO is the GET /api/village/world response — coarse world state
 // for the client's top bar / lighting + the per-player camera zoom floor.
