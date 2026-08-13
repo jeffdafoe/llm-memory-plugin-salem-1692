@@ -589,6 +589,10 @@ func _build_ui() -> void:
     storm_fx = CanvasLayer.new()
     storm_fx.set_script(StormFXScript)
     add_child(storm_fx)
+    # The rain and lightning art is pixel art on the village's own 16px grid,
+    # so it is drawn at the village's on-screen pixel size — which moves with
+    # zoom (LLM-628). Injected the same way actor_tooltip takes the camera.
+    storm_fx.camera = camera
     world.storm_layer = storm_fx
     # Replay the last-known weather onto the freshly-injected layer: a
     # weather_changed frame or the world-DTO sync can land before this wiring
