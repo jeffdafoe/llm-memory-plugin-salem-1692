@@ -310,19 +310,22 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// read 0 <= 0 as "at or below cost" and warn though it cost nothing. Requiring a
 		// positive paid cost drops that false positive; a zero-coin SALE against a
 		// positive cost still (correctly) warns, since recentCoins 0 < paidCoins·units.
-		//
-		// LLM-627: lo != hi additionally gates the caution off the no-spread goods
-		// (water, carrots — wholesale = retail = 1). On those the caution is
-		// unactionable — integer coins put retail at the floor already, and raising
-		// it is the documented wrong fix (the water-at-2 chain break) — so it fired
-		// every turn as noise, teaching the model the clause means nothing on the
-		// lines where it does.
 		atOrBelowCost, strictlyBelowCost := false, false
-		if recentUnits > 0 && paidUnits > 0 && paidCoins > 0 && lo != hi {
+		if recentUnits > 0 && paidUnits > 0 && paidCoins > 0 {
 			saleTimesBuyUnits := recentCoins * paidUnits
 			buyTimesSaleUnits := paidCoins * recentUnits
 			atOrBelowCost = saleTimesBuyUnits <= buyTimesSaleUnits
 			strictlyBelowCost = saleTimesBuyUnits < buyTimesSaleUnits
+			// LLM-627: on a no-spread good (water, carrots — wholesale = retail = 1)
+			// breakeven at the floor is the ordinary state of the line, not a bleed —
+			// integer coins put retail at the floor already, so the at-cost caution
+			// fired every turn as unactionable noise, teaching the model the clause
+			// means nothing on the lines where it does. A STRICT loss still warns:
+			// the good can be bought above its fixed price, and that loss is real —
+			// the lever there is the buy side (render narrows the advisory to it).
+			if lo == hi {
+				atOrBelowCost = strictlyBelowCost
+			}
 		}
 		// For a produced good with real recipe inputs, estimate the cost of goods —
 		// the produce-side sibling of the reseller cost-basis clause (LLM-226).
@@ -466,8 +469,12 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			// A line already earning its markup (paid 2, sold 5, retail 6) is a
 			// winning line and carries no nudge — the LLM-385 no-boilerplate-on-
 			// profitable-lines principle. Raw sale rate, so a sub-coin-thin margin
-			// can't hide behind display rounding.
-			if recentUnits > 0 && recentCoins >= costPlus*recentUnits {
+			// can't hide behind display rounding. Division rather than the cross-
+			// multiply the caution above uses: floor(coins/units) >= costPlus is
+			// exactly equivalent to coins >= costPlus*units for an INTEGER threshold,
+			// and a ledger-sum multiply is one overflow away from suppressing the ask
+			// on the losing line it exists for.
+			if recentUnits > 0 && recentCoins/recentUnits >= costPlus {
 				askUnit = 0
 			}
 		}
@@ -772,7 +779,15 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		case it.AtOrBelowCost:
 			clauses += " — selling below your costs loses you coin"
 			if it.StrictlyBelowCost {
-				clauses += "; you may need to negotiate lower costs or raise your price"
+				// LLM-627: a no-spread good (Low == High) never gets "raise your
+				// price" — retail sits at the integer-coin floor and raising it is
+				// the documented wrong fix (the water-at-2 chain break). The only
+				// lever a merchant holds there is the buy side.
+				if it.Low == it.High {
+					clauses += "; you may need to negotiate lower costs"
+				} else {
+					clauses += "; you may need to negotiate lower costs or raise your price"
+				}
 			}
 		case it.AskUnit > 0:
 			clauses += fmt.Sprintf(" — ask %s or more at your counter; your shop lives on the difference", coinsPhrase(it.AskUnit))

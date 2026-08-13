@@ -409,43 +409,61 @@ func TestBuildTradeValue_ResoldGoodAtCost(t *testing.T) {
 	}
 }
 
-// TestBuildTradeValue_NoSpreadGoodStaysSilent pins the LLM-627 no-spread gate: a
-// good with no authored spread (wholesale = retail — water, carrots) gets NEITHER
-// the ask anchor NOR the below-cost caution, even when the raw rates read at-or-
-// below cost. Integer coins put retail at the floor already; a higher ask is the
-// documented wrong fix (water at 2 breaks the nail and porridge chains), and a
-// caution with no possible action fired every turn as noise, teaching the model
-// the clause means nothing on the lines where it does.
-func TestBuildTradeValue_NoSpreadGoodStaysSilent(t *testing.T) {
-	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("water", 20)}
+// TestBuildTradeValue_NoSpreadGood pins the LLM-627 no-spread gates. A good with
+// no authored spread (wholesale = retail — water, carrots) NEVER gets the ask
+// anchor: integer coins put retail at the floor already, and a higher ask is the
+// documented wrong fix (water at 2 breaks the nail and porridge chains). The
+// below-cost caution splits: BREAKEVEN at the floor is the line's ordinary state
+// and stays silent (pre-627 it fired every turn as unactionable noise), but a
+// STRICT loss — the good bought above its fixed price — still warns, with the
+// advisory narrowed to the buy-side lever ("negotiate lower costs"), never
+// "raise your price".
+func TestBuildTradeValue_NoSpreadGood(t *testing.T) {
 	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
-	buys := sim.NewRingBuffer[sim.PriceObservation](4)
-	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 4, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
-	sales := sim.NewRingBuffer[sim.PriceObservation](4)
-	sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: 4, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
-	snap := &sim.Snapshot{
-		PublishedAt: published,
-		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
-		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
-			"water": {OutputItem: "water", WholesalePrice: 1, RetailPrice: 1},
-		},
-		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
-			{SellerID: "mill", Item: "water"}:   buys,  // josiah as buyer (cost)
-			{SellerID: "josiah", Item: "water"}: sales, // josiah as seller (realized)
-		},
+	newSnap := func(buyAmt, buyQty, saleAmt, saleQty int) *sim.Snapshot {
+		buys := sim.NewRingBuffer[sim.PriceObservation](4)
+		buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: buyAmt, Qty: buyQty, Consumers: 1, At: published.Add(-24 * time.Hour)})
+		sales := sim.NewRingBuffer[sim.PriceObservation](4)
+		sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: saleAmt, Qty: saleQty, Consumers: 1, At: published.Add(-12 * time.Hour)})
+		return &sim.Snapshot{
+			PublishedAt: published,
+			Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+				"water": {OutputItem: "water", WholesalePrice: 1, RetailPrice: 1},
+			},
+			PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+				{SellerID: "mill", Item: "water"}:   buys,  // josiah as buyer (cost)
+				{SellerID: "josiah", Item: "water"}: sales, // josiah as seller (realized)
+			},
+		}
 	}
-	v := buildTradeValue(snap, "josiah", subj, true)
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("water", 20)}
+	// Breakeven at the floor (bought 1, sold 1) — the ordinary state: silent.
+	v := buildTradeValue(newSnap(4, 4, 4, 4), "josiah", subj, true)
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("want 1 item, got %+v", v)
 	}
 	if got := v.Items[0]; got.AtOrBelowCost || got.StrictlyBelowCost || got.AskUnit != 0 {
-		t.Fatalf("no-spread good must carry no caution flags and no ask, got %+v", got)
+		t.Fatalf("no-spread breakeven must carry no caution flags and no ask, got %+v", got)
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
-	out := b.String()
-	if strings.Contains(out, "selling below your costs") || strings.Contains(out, "ask ") {
-		t.Errorf("no-spread good must render neither caution nor ask (LLM-627):\n%s", out)
+	if out := b.String(); strings.Contains(out, "selling below your costs") || strings.Contains(out, "ask ") {
+		t.Errorf("no-spread breakeven must render neither caution nor ask (LLM-627):\n%s", out)
+	}
+	// Strict loss (bought 3, sold 1) — a real bleed: caution fires, advisory
+	// narrowed to the buy lever, still no ask.
+	v2 := buildTradeValue(newSnap(12, 4, 4, 4), "josiah", subj, true)
+	if got := v2.Items[0]; !got.AtOrBelowCost || !got.StrictlyBelowCost || got.AskUnit != 0 {
+		t.Fatalf("no-spread strict loss must flag below-cost with no ask, got %+v", got)
+	}
+	var b2 strings.Builder
+	renderTradeValue(&b2, v2)
+	out2 := b2.String()
+	if !strings.Contains(out2, "selling below your costs loses you coin; you may need to negotiate lower costs.") {
+		t.Errorf("no-spread strict loss wants the buy-lever-only advisory:\n%s", out2)
+	}
+	if strings.Contains(out2, "raise your price") || strings.Contains(out2, "ask ") {
+		t.Errorf("no-spread good must never be told to raise its price (LLM-627):\n%s", out2)
 	}
 }
 
