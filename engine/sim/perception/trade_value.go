@@ -128,6 +128,30 @@ type TradeValueItem struct {
 	AtOrBelowCost     bool
 	StrictlyBelowCost bool
 
+	// AskUnit is the cost-anchored ask floor for a resold good (LLM-627): what the
+	// actor should be charging at its counter, derived from its own recent purchase
+	// cost — PaidUnit plus a proportional markup (a quarter, minimum one coin),
+	// never below the catalog retail (High). Anchoring on cost rather than a fixed
+	// number is deliberate: a hard price would stop tracking the market, but a
+	// cost-plus floor rises when upstream prices rise, so pass-through survives.
+	//
+	// Live case: Josiah Thorne's realized cheese margin fell from ~2 coins/unit to
+	// 0.08 in a week. The cue's own trailing averages were the cause — "of late you
+	// have sold for about 3" certified his past undersell as the fair price (his
+	// accept reasoning, verbatim: "that's exactly what I sell cheese for... Fair
+	// terms"), while each accepted counter raised his "lately paid" anchor. The
+	// spread only ever narrowed. This field gives the model the RIGHT anchor
+	// instead; it self-anchors regardless (LLM-227's no-numbers rule assumed it
+	// wouldn't, and the live evidence says otherwise).
+	//
+	// 0 (clause omitted) when: the good is not a resale with a paid cost basis; the
+	// good has no authored spread (Low == High — water, carrots: retail already sits
+	// at the integer-coin floor, so a higher ask is the documented wrong fix); or
+	// the actor already sells at or above the ask (raw-rate compare — presence of
+	// the phrase is itself the signal, the LLM-475 principle, so a winning line
+	// carries no nudge).
+	AskUnit int
+
 	// MakingsMargin is the produce-side sibling of AtOrBelowCost (LLM-475): the
 	// actor's realized SALE rate for a good it MAKES, judged against what the
 	// makings actually cost it. The resold-goods path had this register from the
@@ -286,8 +310,15 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// read 0 <= 0 as "at or below cost" and warn though it cost nothing. Requiring a
 		// positive paid cost drops that false positive; a zero-coin SALE against a
 		// positive cost still (correctly) warns, since recentCoins 0 < paidCoins·units.
+		//
+		// LLM-627: lo != hi additionally gates the caution off the no-spread goods
+		// (water, carrots — wholesale = retail = 1). On those the caution is
+		// unactionable — integer coins put retail at the floor already, and raising
+		// it is the documented wrong fix (the water-at-2 chain break) — so it fired
+		// every turn as noise, teaching the model the clause means nothing on the
+		// lines where it does.
 		atOrBelowCost, strictlyBelowCost := false, false
-		if recentUnits > 0 && paidUnits > 0 && paidCoins > 0 {
+		if recentUnits > 0 && paidUnits > 0 && paidCoins > 0 && lo != hi {
 			saleTimesBuyUnits := recentCoins * paidUnits
 			buyTimesSaleUnits := paidCoins * recentUnits
 			atOrBelowCost = saleTimesBuyUnits <= buyTimesSaleUnits
@@ -412,6 +443,34 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				shopUnit = hi
 			}
 		}
+		// LLM-627: the cost-anchored ask floor (see the AskUnit field comment).
+		// Computed AFTER the wholesale branch on purpose: an own-produce good has
+		// its paidUnit cleared there, so this stays 0 and the wholesale-channel
+		// line keeps sole ownership of that good's pricing. Derived from the
+		// DISPLAYED paid cost, not the raw rates — the ask renders beside "you have
+		// lately paid about N", and the two must not disagree about what N is.
+		// The markup is ceil(paid/4): proportional so a dear good (a 20-coin cloak)
+		// earns shopkeeper's margin, floored at 1 coin so a cheap one still does.
+		// Clamped up to the catalog retail — in the normal case (cost at or under
+		// wholesale) the ask IS the authored shelf price; cost-plus takes over only
+		// when cost genuinely rises above the band, which is pass-through working.
+		askUnit := 0
+		if isResale && paidUnit > 0 && lo != hi {
+			costPlus := paidUnit + (paidUnit+3)/4
+			askUnit = costPlus
+			if askUnit < hi {
+				askUnit = hi
+			}
+			// Suppression compares against costPlus, NOT the clamped ask: the clause
+			// exists to stop a margin bleed, not to enforce the catalog shelf price.
+			// A line already earning its markup (paid 2, sold 5, retail 6) is a
+			// winning line and carries no nudge — the LLM-385 no-boilerplate-on-
+			// profitable-lines principle. Raw sale rate, so a sub-coin-thin margin
+			// can't hide behind display rounding.
+			if recentUnits > 0 && recentCoins >= costPlus*recentUnits {
+				askUnit = 0
+			}
+		}
 		// LLM-609: what of this good is spoken for by the actor's own bench. Keyed
 		// on the recipe EXISTING in the policy, never on it being runnable this
 		// minute: gating on "can he run a batch right now" recreates the LLM-608
@@ -442,6 +501,7 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CostFloor:         costFloor,
 			AtOrBelowCost:     atOrBelowCost,
 			StrictlyBelowCost: strictlyBelowCost,
+			AskUnit:           askUnit,
 			MakingsMargin:     makingsTier,
 			ReserveFloor:      reserveFloor,
 			ReserveHeld:       reserveHeld,
@@ -698,11 +758,24 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		// tell them apart), and the whole-coin `RecentUnit < PaidUnit` escalation missed
 		// sub-coin losses (milk paid 1.39, sold 1.30 both rounded to 1). A profitable or
 		// not-yet-sold line now carries no caution at all.
-		if it.AtOrBelowCost {
+		//
+		// LLM-627: where the cost-anchored ask is available it REPLACES the LLM-332
+		// two-lever advisory — "raise your price" with a number is that advice made
+		// actionable, and two price hints in one clause would hand a weak model a
+		// choice where the point is an anchor. Rides LAST in the clause list so the
+		// directive with a number is the final word against the trailing-average
+		// self-anchor ("of late you have sold for about 3") it exists to break.
+		switch {
+		case it.AtOrBelowCost && it.AskUnit > 0:
+			// The loss statement carries the stake; the ask is the lever.
+			clauses += fmt.Sprintf(" — selling below your costs loses you coin; ask %s or more at your counter", coinsPhrase(it.AskUnit))
+		case it.AtOrBelowCost:
 			clauses += " — selling below your costs loses you coin"
 			if it.StrictlyBelowCost {
 				clauses += "; you may need to negotiate lower costs or raise your price"
 			}
+		case it.AskUnit > 0:
+			clauses += fmt.Sprintf(" — ask %s or more at your counter; your shop lives on the difference", coinsPhrase(it.AskUnit))
 		}
 		// A produced good's cost of goods (LLM-226). All arithmetic is done HERE —
 		// the model gets a per-unit phrase to compare against its price, never a

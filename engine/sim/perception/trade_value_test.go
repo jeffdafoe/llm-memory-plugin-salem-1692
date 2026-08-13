@@ -207,18 +207,19 @@ func TestBuildTradeValue_ResoldGoodCostBasis(t *testing.T) {
 	if v == nil || len(v.Items) != 1 {
 		t.Fatalf("want 1 resold item, got %+v", v)
 	}
-	if got := v.Items[0]; got.itemKind != "cheese" || got.Low != 3 || got.High != 6 || got.PaidUnit != 2 || got.RecentUnit != 0 || got.AtOrBelowCost {
+	if got := v.Items[0]; got.itemKind != "cheese" || got.Low != 3 || got.High != 6 || got.PaidUnit != 2 || got.RecentUnit != 0 || got.AtOrBelowCost || got.AskUnit != 6 {
 		t.Fatalf("cheese item wrong: %+v", got)
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
 	out := b.String()
 	// LLM-385: with a purchase cost but NO realized sale on record, we can't say the
-	// good is being sold at or below cost — so the caution no longer fires. Only the
-	// bare cost-basis (paid) clause renders. (Pre-LLM-385 the caution appended on
-	// PaidUnit alone, which was boilerplate.)
-	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it.") {
-		t.Errorf("missing cost-basis clause:\n%s", out)
+	// good is being sold at or below cost — so the caution no longer fires. LLM-627:
+	// a not-yet-sold resale line DOES carry the ask anchor — before the first sale is
+	// exactly when the anchor is needed most; paid 2 → cost-plus 3, clamped up to
+	// retail 6.
+	if !strings.Contains(out, "cheese: 3 to 6 coins each; you have lately paid about 2 coins each for it — ask 6 coins or more at your counter; your shop lives on the difference.") {
+		t.Errorf("missing cost-basis clause with ask anchor:\n%s", out)
 	}
 	if strings.Contains(out, "selling below your costs") {
 		t.Errorf("no realized sale — below-cost caution must not fire (LLM-385):\n%s", out)
@@ -271,6 +272,12 @@ func TestBuildTradeValue_ResoldGoodBothClauses(t *testing.T) {
 	if strings.Contains(b.String(), "negotiate lower costs or raise your price") {
 		t.Errorf("healthy markup should not get the underwater lever hint:\n%s", b.String())
 	}
+	// LLM-627: a line already earning its markup (sold 5 ≥ cost-plus 3) carries no
+	// ask nudge either — suppression compares the raw sale rate against cost-plus,
+	// not the retail-clamped ask, so a profitable under-retail line stays clean.
+	if strings.Contains(b.String(), "ask ") {
+		t.Errorf("healthy markup must not get the ask nudge (LLM-627):\n%s", b.String())
+	}
 }
 
 // TestBuildTradeValue_ResoldGoodUnderwater: a resold good whose realized sale price sits
@@ -307,9 +314,14 @@ func TestBuildTradeValue_ResoldGoodUnderwater(t *testing.T) {
 	var b strings.Builder
 	renderTradeValue(&b, v)
 	out := b.String()
-	// LLM-332: underwater → the bare caution gains the two-lever hint.
-	if !strings.Contains(out, "of late you have sold for about 1 coin each — selling below your costs loses you coin; you may need to negotiate lower costs or raise your price.") {
-		t.Errorf("want underwater two-lever hint:\n%s", out)
+	// LLM-332 named the two levers; LLM-627 replaces that advisory with the lever
+	// made concrete — the cost-anchored ask. Paid 2 → cost-plus 3, above retail 2,
+	// so the pass-through arm carries the number.
+	if !strings.Contains(out, "of late you have sold for about 1 coin each — selling below your costs loses you coin; ask 3 coins or more at your counter.") {
+		t.Errorf("want underwater caution with concrete ask:\n%s", out)
+	}
+	if strings.Contains(out, "negotiate lower costs or raise your price") {
+		t.Errorf("ask anchor must replace the vague two-lever advisory (LLM-627):\n%s", out)
 	}
 }
 
@@ -348,8 +360,10 @@ func TestBuildTradeValue_ResoldGoodSubCoinUnderwater(t *testing.T) {
 	}
 	var b strings.Builder
 	renderTradeValue(&b, v)
-	if !strings.Contains(b.String(), "of late you have sold for about 1 coin each — selling below your costs loses you coin; you may need to negotiate lower costs or raise your price.") {
-		t.Errorf("sub-coin loss must fire caution + two-lever hint despite 1/1 display:\n%s", b.String())
+	// LLM-627: the ask replaces the two-lever advisory. Paid displays 1 → cost-plus
+	// 2, which equals retail — "ask 2".
+	if !strings.Contains(b.String(), "of late you have sold for about 1 coin each — selling below your costs loses you coin; ask 2 coins or more at your counter.") {
+		t.Errorf("sub-coin loss must fire caution + concrete ask despite 1/1 display:\n%s", b.String())
 	}
 }
 
@@ -385,11 +399,88 @@ func TestBuildTradeValue_ResoldGoodAtCost(t *testing.T) {
 	var b strings.Builder
 	renderTradeValue(&b, v)
 	out := b.String()
-	if !strings.Contains(out, "selling below your costs loses you coin.") {
-		t.Errorf("at-cost should carry the bare caution:\n%s", out)
+	// LLM-627: at-cost is a margin bleed, so the caution now carries the concrete
+	// ask (paid 2 → cost-plus 3, clamped up to retail 6) instead of standing bare.
+	if !strings.Contains(out, "selling below your costs loses you coin; ask 6 coins or more at your counter.") {
+		t.Errorf("at-cost should carry the caution with the ask anchor:\n%s", out)
 	}
 	if strings.Contains(out, "negotiate lower costs or raise your price") {
 		t.Errorf("at-cost (not strictly below) must not get the two-lever hint:\n%s", out)
+	}
+}
+
+// TestBuildTradeValue_NoSpreadGoodStaysSilent pins the LLM-627 no-spread gate: a
+// good with no authored spread (wholesale = retail — water, carrots) gets NEITHER
+// the ask anchor NOR the below-cost caution, even when the raw rates read at-or-
+// below cost. Integer coins put retail at the floor already; a higher ask is the
+// documented wrong fix (water at 2 breaks the nail and porridge chains), and a
+// caution with no possible action fired every turn as noise, teaching the model
+// the clause means nothing on the lines where it does.
+func TestBuildTradeValue_NoSpreadGoodStaysSilent(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("water", 20)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 4, Qty: 4, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	sales := sim.NewRingBuffer[sim.PriceObservation](4)
+	sales.Push(sim.PriceObservation{BuyerID: "martha", Amount: 4, Qty: 4, Consumers: 1, At: published.Add(-12 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"water": {OutputItem: "water", WholesalePrice: 1, RetailPrice: 1},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "mill", Item: "water"}:   buys,  // josiah as buyer (cost)
+			{SellerID: "josiah", Item: "water"}: sales, // josiah as seller (realized)
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0]; got.AtOrBelowCost || got.StrictlyBelowCost || got.AskUnit != 0 {
+		t.Fatalf("no-spread good must carry no caution flags and no ask, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	out := b.String()
+	if strings.Contains(out, "selling below your costs") || strings.Contains(out, "ask ") {
+		t.Errorf("no-spread good must render neither caution nor ask (LLM-627):\n%s", out)
+	}
+}
+
+// TestBuildTradeValue_AskProportionalMarkup pins the LLM-627 markup arithmetic on a
+// dear good: the markup is ceil(paid/4), not a flat coin, so a 20-coin cost asks 25
+// — and cost-plus above the catalog retail wins the clamp (pass-through: upstream
+// price rises raise the ask rather than being eaten). No sale history, so the ask
+// renders unsuppressed.
+func TestBuildTradeValue_AskProportionalMarkup(t *testing.T) {
+	subj := &sim.ActorSnapshot{RestockPolicy: buyPolicy("coat", 4)}
+	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	buys := sim.NewRingBuffer[sim.PriceObservation](4)
+	buys.Push(sim.PriceObservation{BuyerID: "josiah", Amount: 40, Qty: 2, Consumers: 1, At: published.Add(-24 * time.Hour)})
+	snap := &sim.Snapshot{
+		PublishedAt: published,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"coat": {OutputItem: "coat", WholesalePrice: 9, RetailPrice: 15},
+		},
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "factor", Item: "coat"}: buys,
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	// Paid 40/2 = 20; markup ceil(20/4) = 5; cost-plus 25 > retail 15 → ask 25.
+	if got := v.Items[0]; got.PaidUnit != 20 || got.AskUnit != 25 {
+		t.Fatalf("want PaidUnit=20 AskUnit=25, got %+v", got)
+	}
+	var b strings.Builder
+	renderTradeValue(&b, v)
+	if !strings.Contains(b.String(), "you have lately paid about 20 coins each for it — ask 25 coins or more at your counter; your shop lives on the difference.") {
+		t.Errorf("want proportional pass-through ask on a dear good:\n%s", b.String())
 	}
 }
 
