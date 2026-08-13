@@ -257,6 +257,13 @@ func _test_rain_hidden_after_instant_clear() -> void:
 ## properties is not sufficient on its own, so this asserts the schedulers are
 ## dead too, not merely that this frame looks right.
 func _test_clearing_mid_strike_leaves_nothing_running() -> void:
+    # Seed synthetic bolts rather than relying on the purchased pack. Without
+    # them _strike() correctly no-ops, so on an art-less checkout (CI) every
+    # assertion below would be vacuous — and the preconditions would fail
+    # outright. What is under test is the teardown, not the art.
+    var bolts: Array[Texture2D] = _fx._bolt_variants
+    _fx._bolt_variants = _fx._slice_texture(_make_strip(BOLT_FRAME, 2), BOLT_FRAME, 2)
+
     _fx.set_storm(true, false)
     _fx._flash()
     _fx._strike()
@@ -283,4 +290,6 @@ func _test_clearing_mid_strike_leaves_nothing_running() -> void:
     _check("a late timeout draws no bolt", not _fx._bolt.visible)
     _check("a late timeout does not flash", is_equal_approx(_fx._lightning.modulate.a, 0.0))
     _check("a late timeout schedules no further strike", _fx._lightning_timer.is_stopped())
+
+    _fx._bolt_variants = bolts
     _done()
