@@ -37,6 +37,7 @@ const TESTS := [
     "_test_bolt_scale_floors_only_when_zoomed_out",
     "_test_storm_cycle_without_art",
     "_test_rain_hidden_after_instant_clear",
+    "_test_clearing_mid_strike_leaves_nothing_running",
 ]
 
 const FRAME := Vector2i(32, 128)
@@ -247,4 +248,39 @@ func _test_rain_hidden_after_instant_clear() -> void:
     _fx.set_storm(false, false)
     _check("instant clear hides the rain", not _fx._rain_light.visible and not _fx._rain_heavy.visible)
     _check("instant clear hides the bolt", not _fx._bolt.visible)
+    _done()
+
+## Weather can clear mid-strike: the sky goes calm between the flash starting
+## and the bolt finishing. Nothing the storm scheduled may survive that — a
+## live flash tween would light the screen under a clear sky, and a pending
+## strike callback would draw a bolt out of nowhere. Resetting the two
+## properties is not sufficient on its own, so this asserts the schedulers are
+## dead too, not merely that this frame looks right.
+func _test_clearing_mid_strike_leaves_nothing_running() -> void:
+    _fx.set_storm(true, false)
+    _fx._flash()
+    _fx._strike()
+    _check("precondition — a strike is in flight", _fx._bolt.visible)
+    _check("precondition — the flash tween is live",
+        _fx._lightning_tween != null and _fx._lightning_tween.is_valid())
+    _check("precondition — the bolt tween is live",
+        _fx._bolt_tween != null and _fx._bolt_tween.is_valid())
+
+    _fx.set_storm(false, false)
+
+    _check("clearing hides the bolt", not _fx._bolt.visible)
+    _check("clearing resets the flash to dark", is_equal_approx(_fx._lightning.modulate.a, 0.0))
+    # Killed, not merely finished — a live tween would keep driving both of
+    # those properties after the storm is gone.
+    _check("clearing kills the flash tween", _fx._lightning_tween == null)
+    _check("clearing kills the bolt tween", _fx._bolt_tween == null)
+    # The repeat timer is the third way a bolt could come back on its own.
+    _check("clearing stops the strike timer", _fx._lightning_timer.is_stopped())
+
+    # Belt and braces: if that timer ever did fire anyway, the handler has to
+    # refuse it rather than rely on having been stopped.
+    _fx._on_lightning_timeout()
+    _check("a late timeout draws no bolt", not _fx._bolt.visible)
+    _check("a late timeout does not flash", is_equal_approx(_fx._lightning.modulate.a, 0.0))
+    _check("a late timeout schedules no further strike", _fx._lightning_timer.is_stopped())
     _done()
