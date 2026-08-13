@@ -147,6 +147,7 @@ func _ready() -> void:
     # against a blown-out sky, which is what a real strike looks like.
     _bolt = TextureRect.new()
     _bolt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _bolt.size = Vector2(BOLT_FRAME_SIZE)
     _bolt.visible = false
     add_child(_bolt)
 
@@ -301,7 +302,11 @@ func _layout() -> void:
     for rect: TextureRect in [_rain_heavy, _rain_light]:
         rect.scale = Vector2(pixel_scale, pixel_scale)
         rect.size = covered
+    # Size as well as scale: an unparented Control is not laid out by anything
+    # here, and its size only reaches the texture's minimum on a later deferred
+    # pass — so a bolt read or drawn in the same frame would have zero area.
     var bolt_scale: float = _bolt_scale()
+    _bolt.size = Vector2(BOLT_FRAME_SIZE)
     _bolt.scale = Vector2(bolt_scale, bolt_scale)
 
 

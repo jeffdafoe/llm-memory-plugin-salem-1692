@@ -41,6 +41,7 @@ const TESTS := [
 
 const FRAME := Vector2i(32, 128)
 const FRAME_COUNT := 8
+const BOLT_FRAME := Vector2i(32, 128)
 
 var _fx: CanvasLayer = null
 var _failures := 0
@@ -189,6 +190,13 @@ func _test_layout_covers_viewport_at_every_zoom() -> void:
             _fx._bolt.scale.is_equal_approx(Vector2(bolt, bolt)))
         _check("zoom %s — bolt never shrinks below the village's own size" % zoom,
             _fx._bolt.scale.x >= 2.0)
+        # Scale alone does not make a Control drawable — a zero-size bolt would
+        # satisfy every scale check above and still render nothing.
+        _check("zoom %s — bolt is one frame in unscaled units" % zoom,
+            _fx._bolt.size.is_equal_approx(Vector2(BOLT_FRAME)))
+        var bolt_rect: Vector2 = _fx._bolt.size * _fx._bolt.scale
+        _check("zoom %s — bolt covers real screen area (%s)" % [zoom, bolt_rect],
+            bolt_rect.x > 0.0 and bolt_rect.y > 0.0)
         _clear_zoom(cam)
     _done()
 
