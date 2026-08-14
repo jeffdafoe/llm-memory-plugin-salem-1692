@@ -1,24 +1,20 @@
 extends SceneTree
 
-## Headless regression harness for the storm overlay — particle rain plus
-## sprite lightning (LLM-117, LLM-630).
+## Headless regression harness for LLM-628 — the sprite-based storm overlay.
 ##
-## What this file exists to catch:
+## Two things this file exists to catch:
 ##
-##  1. The bolt's zoom contract. The bolt is pixel art on the village's 16px
-##     grid, and the village draws at render_scale 2.0, so it must be drawn at
-##     2.0 * camera.zoom.x or it reads as a different resolution than the world
-##     — with a floor, because a pixel-matched bolt at the 0.3 zoom limit is a
-##     scratch. The particles need none of this; a textureless point has no
-##     pixel size to mismatch.
+##  1. The zoom contract. The weather art is pixel art on the village's 16px
+##     grid, and the village draws at render_scale 2.0, so the overlay must
+##     draw its tiles at 2.0 * camera.zoom.x or the rain reads as a different
+##     resolution than the world under it. A Control's size is in PRE-scale
+##     units, so screen coverage has to divide by that scale — getting the
+##     two to move together is the regression here.
 ##
-##  2. Nothing outliving a storm. A flash tween or a pending strike that
-##     survives "clear" lights the screen under an open sky.
-##
-##  3. Degrading without the art. The Mana Seed pack is purchased and
+##  2. Degrading without the art. The Mana Seed pack is purchased and
 ##     gitignored (client/.gitignore), so a checkout without it is normal —
 ##     CI runs exactly that way. Missing sheets must leave a working storm
-##     (rain, tint, full-screen flash) rather than erroring every frame.
+##     (tint + full-screen flash) rather than erroring every frame.
 ##
 ## Run headless (CI and local):
 ##   godot --headless --path client --import
@@ -37,15 +33,16 @@ const TESTS := [
     "_test_slice_stops_short_on_an_undersized_sheet",
     "_test_missing_sheet_yields_no_frames",
     "_test_pixel_scale_tracks_camera_zoom",
+    "_test_layout_covers_viewport_at_every_zoom",
     "_test_bolt_scale_floors_only_when_zoomed_out",
-    "_test_bolt_is_drawable_at_every_zoom",
-    "_test_rain_particles_follow_the_storm",
     "_test_storm_cycle_without_art",
+    "_test_rain_hidden_after_instant_clear",
     "_test_clearing_mid_strike_leaves_nothing_running",
 ]
 
+const FRAME := Vector2i(32, 128)
+const FRAME_COUNT := 8
 const BOLT_FRAME := Vector2i(32, 128)
-const BOLT_VARIANTS := 2
 
 var _fx: CanvasLayer = null
 var _failures := 0
@@ -104,15 +101,19 @@ func _check_test_list() -> void:
 
 # --- fixtures --------------------------------------------------------------------
 
-## A stand-in for the 64x128 bolt sheet: N frames side by side.
+## A stand-in for one of the 256x128 rain sheets: 8 frames of 32x128.
 func _make_strip(frame: Vector2i, count: int) -> ImageTexture:
     var img := Image.create(frame.x * count, frame.y, false, Image.FORMAT_RGBA8)
     return ImageTexture.create_from_image(img)
 
 ## Camera2D fixture — the overlay reads only zoom off it.
-func _set_zoom(zoom: float) -> Camera2D:
+func _camera_at(zoom: float) -> Camera2D:
     var cam := Camera2D.new()
     cam.zoom = Vector2(zoom, zoom)
+    return cam
+
+func _set_zoom(zoom: float) -> Camera2D:
+    var cam := _camera_at(zoom)
     _fx.camera = cam
     return cam
 
@@ -134,30 +135,30 @@ func _check(label: String, ok: bool) -> void:
 # --- tests -----------------------------------------------------------------------
 
 func _test_slices_a_synthetic_sheet() -> void:
-    var frames: Array[Texture2D] = _fx._slice_texture(_make_strip(BOLT_FRAME, BOLT_VARIANTS), BOLT_FRAME, BOLT_VARIANTS)
-    _check("slices one frame per variant", frames.size() == BOLT_VARIANTS)
+    var frames: Array[Texture2D] = _fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT)
+    _check("slices one frame per animation frame", frames.size() == FRAME_COUNT)
     for i in frames.size():
-        _check("frame %d is one bolt wide" % i, frames[i].get_width() == BOLT_FRAME.x)
-        _check("frame %d is one bolt tall" % i, frames[i].get_height() == BOLT_FRAME.y)
+        _check("frame %d is one tile wide" % i, frames[i].get_width() == FRAME.x)
+        _check("frame %d is one tile tall" % i, frames[i].get_height() == FRAME.y)
     _done()
 
 ## A sheet shorter than count * frame width must stop at the last whole frame
 ## rather than reading past the edge — the shape a re-exported or wrong-sized
 ## replacement sheet would have.
 func _test_slice_stops_short_on_an_undersized_sheet() -> void:
-    var frames: Array[Texture2D] = _fx._slice_texture(_make_strip(BOLT_FRAME, 1), BOLT_FRAME, BOLT_VARIANTS)
-    _check("stops at the frames that actually fit", frames.size() == 1)
+    var frames: Array[Texture2D] = _fx._slice_texture(_make_strip(FRAME, 3), FRAME, FRAME_COUNT)
+    _check("stops at the frames that actually fit", frames.size() == 3)
     _done()
 
 func _test_missing_sheet_yields_no_frames() -> void:
-    var frames: Array[Texture2D] = _fx._slice_sheet("res://assets/tilesets/mana-seed/weather-effects/no such sheet.png", BOLT_FRAME, BOLT_VARIANTS)
+    var frames: Array[Texture2D] = _fx._slice_sheet("res://assets/tilesets/mana-seed/weather-effects/no such sheet.png", FRAME, FRAME_COUNT)
     _check("absent sheet slices to nothing", frames.is_empty())
     _done()
 
-## One source pixel of village art covers 2.0 * zoom screen pixels — the bolt
-## has to agree with world.gd's render_scale or it is the wrong size against
-## the world. No camera yet (main.gd injects it after _ready) falls back to the
-## unzoomed scale.
+## One source pixel of village art covers 2.0 * zoom screen pixels — the
+## overlay has to agree with world.gd's render_scale or the rain is the wrong
+## size against the world. No camera yet (main.gd injects it after _ready)
+## falls back to the unzoomed scale.
 func _test_pixel_scale_tracks_camera_zoom() -> void:
     _fx.camera = null
     _check("no camera falls back to the world render scale", is_equal_approx(_fx._world_pixel_scale(), 2.0))
@@ -167,8 +168,41 @@ func _test_pixel_scale_tracks_camera_zoom() -> void:
         _clear_zoom(cam)
     _done()
 
+## The rain rects are scaled, and a Control's size is in pre-scale units — so
+## size * scale must still span the viewport at both zoom extremes. This is the
+## pairing that breaks if someone "fixes" one half of it.
+func _test_layout_covers_viewport_at_every_zoom() -> void:
+    var view: Vector2 = _fx.get_viewport().get_visible_rect().size
+    _check("harness — viewport has area", view.x > 0.0 and view.y > 0.0)
+    for zoom in [0.3, 1.0, 3.0]:
+        var cam := _set_zoom(zoom)
+        _fx._layout()
+        var scale: float = 2.0 * zoom
+        for rect: TextureRect in [_fx._rain_heavy, _fx._rain_light]:
+            _check("zoom %s — tiles drawn at the village pixel size" % zoom,
+                rect.scale.is_equal_approx(Vector2(scale, scale)))
+            var covered: Vector2 = rect.size * rect.scale
+            _check("zoom %s — rain still spans the viewport (%s vs %s)" % [zoom, covered, view],
+                covered.x >= view.x and covered.y >= view.y)
+        # The bolt tracks the same scale but never below the unzoomed village
+        # size, or it reads as a scratch at the 0.3 zoom floor.
+        var bolt: float = maxf(scale, 2.0)
+        _check("zoom %s — bolt drawn at %s" % [zoom, bolt],
+            _fx._bolt.scale.is_equal_approx(Vector2(bolt, bolt)))
+        _check("zoom %s — bolt never shrinks below the village's own size" % zoom,
+            _fx._bolt.scale.x >= 2.0)
+        # Scale alone does not make a Control drawable — a zero-size bolt would
+        # satisfy every scale check above and still render nothing.
+        _check("zoom %s — bolt is one frame in unscaled units" % zoom,
+            _fx._bolt.size.is_equal_approx(Vector2(BOLT_FRAME)))
+        var bolt_rect: Vector2 = _fx._bolt.size * _fx._bolt.scale
+        _check("zoom %s — bolt covers real screen area (%s)" % [zoom, bolt_rect],
+            bolt_rect.x > 0.0 and bolt_rect.y > 0.0)
+        _clear_zoom(cam)
+    _done()
+
 ## The bolt floor must engage only when zoomed out past 1:1 — above it the bolt
-## keeps tracking the world.
+## has to keep tracking the world, or it stops matching the rain beside it.
 func _test_bolt_scale_floors_only_when_zoomed_out() -> void:
     for zoom in [0.3, 0.5, 1.0, 2.0]:
         var cam := _set_zoom(zoom)
@@ -177,46 +211,22 @@ func _test_bolt_scale_floors_only_when_zoomed_out() -> void:
         _clear_zoom(cam)
     _done()
 
-## Scale alone does not make a Control drawable: an unparented Control's size
-## reaches the texture's minimum only on a later deferred pass, so a bolt read
-## or drawn in the same frame would have zero area. That shipped as a real bug
-## once — and every scale assertion above passes with a zero-size bolt.
-func _test_bolt_is_drawable_at_every_zoom() -> void:
-    for zoom in [0.3, 1.0, 3.0]:
-        var cam := _set_zoom(zoom)
-        _fx._layout()
-        var scale: float = maxf(2.0 * zoom, 2.0)
-        _check("zoom %s — bolt drawn at %s" % [zoom, scale],
-            _fx._bolt.scale.is_equal_approx(Vector2(scale, scale)))
-        _check("zoom %s — bolt is one frame in unscaled units" % zoom,
-            _fx._bolt.size.is_equal_approx(Vector2(BOLT_FRAME)))
-        var rect: Vector2 = _fx._bolt.size * _fx._bolt.scale
-        _check("zoom %s — bolt covers real screen area (%s)" % [zoom, rect],
-            rect.x > 0.0 and rect.y > 0.0)
-        _clear_zoom(cam)
-    _done()
-
-## Rain is particles, and the emitter is the whole of its on/off state — there
-## is no fade, so a storm that forgets to stop emitting rains under a clear sky.
-func _test_rain_particles_follow_the_storm() -> void:
-    _fx.set_storm(true, false)
-    _check("a storm emits rain", _fx._rain.emitting)
-    _fx.set_storm(false, false)
-    _check("clearing stops the rain", not _fx._rain.emitting)
-    _done()
-
 ## The whole raise/strike/clear cycle with no art loaded (CI's state). Nothing
-## here may error, and the rain and flash — which need no art at all — must
+## here may error, and the flash — the part that carries the effect — must
 ## still run.
 func _test_storm_cycle_without_art() -> void:
+    var light: Array[Texture2D] = _fx._rain_light_frames
+    var heavy: Array[Texture2D] = _fx._rain_heavy_frames
     var bolts: Array[Texture2D] = _fx._bolt_variants
     # An untyped [] cannot be assigned to an Array[Texture2D] field.
     var none: Array[Texture2D] = []
-    _fx._bolt_variants = none
+    _fx._rain_light_frames = none.duplicate()
+    _fx._rain_heavy_frames = none.duplicate()
+    _fx._bolt_variants = none.duplicate()
 
     _fx.set_storm(true)
     _check("artless storm still raises the tint", _fx._tint_tween != null)
-    _check("artless storm still rains", _fx._rain.emitting)
+    _fx._advance_rain(1.0)
     _fx._flash()
     _check("artless storm still flashes", _fx._lightning_tween != null)
     _fx._strike()
@@ -224,7 +234,20 @@ func _test_storm_cycle_without_art() -> void:
     _fx.set_storm(false, false)
     _check("artless storm clears the flash", is_equal_approx(_fx._lightning.modulate.a, 0.0))
 
+    _fx._rain_light_frames = light
+    _fx._rain_heavy_frames = heavy
     _fx._bolt_variants = bolts
+    _done()
+
+## An instant clear (the connect/reconnect DTO sync path) must leave the rain
+## hidden, not merely transparent — two full-screen tiled draws every frame
+## under clear skies is the cost this guards.
+func _test_rain_hidden_after_instant_clear() -> void:
+    _fx.set_storm(true, false)
+    _check("instant storm shows the rain", _fx._rain_light.visible and _fx._rain_heavy.visible)
+    _fx.set_storm(false, false)
+    _check("instant clear hides the rain", not _fx._rain_light.visible and not _fx._rain_heavy.visible)
+    _check("instant clear hides the bolt", not _fx._bolt.visible)
     _done()
 
 ## Weather can clear mid-strike: the sky goes calm between the flash starting
@@ -239,7 +262,7 @@ func _test_clearing_mid_strike_leaves_nothing_running() -> void:
     # assertion below would be vacuous — and the preconditions would fail
     # outright. What is under test is the teardown, not the art.
     var bolts: Array[Texture2D] = _fx._bolt_variants
-    _fx._bolt_variants = _fx._slice_texture(_make_strip(BOLT_FRAME, BOLT_VARIANTS), BOLT_FRAME, BOLT_VARIANTS)
+    _fx._bolt_variants = _fx._slice_texture(_make_strip(BOLT_FRAME, 2), BOLT_FRAME, 2)
 
     _fx.set_storm(true, false)
     _fx._flash()
