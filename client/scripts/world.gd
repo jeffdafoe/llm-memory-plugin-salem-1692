@@ -26,7 +26,6 @@ const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
-const CloudShadowsScript = preload("res://scripts/cloud_shadows.gd")
 
 const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
@@ -53,12 +52,6 @@ var current_weather: String = "clear"
 # contact at specific map points, unlike the screen-space overlay above. Owned
 # here (not main.gd) because it reads placed_objects for its cover query.
 var rain_splashes: Node2D = null
-
-# Drifting cloud shadows (LLM-633) — always-on ambient sky movement, world-
-# space and weather-independent (deliberately NOT driven by set_weather: a
-# shadow reads best on a lit map, and the night/storm tints fade it
-# naturally). Owned here for the map-position injection.
-var cloud_shadows: Node2D = null
 
 const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
 # Salem 1692 sundown palette (designer-tuned 2026-06-16): cold, damp, color-drained
@@ -182,13 +175,8 @@ func build_terrain() -> void:
     # world at night / in the storm tint, unlike the screen-space overlay.
     _create_rain_splashes()
 
-    # Cloud shadows above the world content (z 20), still under the modulate
-    # so night and the storm tint fade them naturally.
-    _create_cloud_shadows()
-
     _generate_terrain()  # Generate first so something is visible immediately
     _load_terrain()      # Then try to load saved terrain (overwrites if found)
-    _load_world_phase()  # Then sync modulate to the server's current phase
 
 ## Build and wire the splash layer, then replay the last-known weather onto it
 ## — a weather frame can land before build_terrain runs, leaving
@@ -206,17 +194,7 @@ func _create_rain_splashes() -> void:
     rain_splashes.world = self
     add_child(rain_splashes)
     rain_splashes.set_storm(current_weather == "storm")
-
-## Build and wire the cloud-shadow layer (LLM-633). Weather-independent, so
-## no replay — creation is the whole wiring. Same replace-don't-stack guard
-## as the splash layer.
-func _create_cloud_shadows() -> void:
-    if is_instance_valid(cloud_shadows):
-        cloud_shadows.queue_free()
-    cloud_shadows = Node2D.new()
-    cloud_shadows.set_script(CloudShadowsScript)
-    cloud_shadows.world = self
-    add_child(cloud_shadows)
+    _load_world_phase()  # Then sync modulate to the server's current phase
 
 ## Load placed objects from the API — called after catalog is ready.
 ## Guards against duplicate calls (auth flow can trigger this twice).
