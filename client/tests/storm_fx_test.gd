@@ -41,6 +41,7 @@ const TESTS := [
     "_test_wind_drift_slides_and_wraps",
     "_test_artless_counters_stay_wrapped",
     "_test_a_long_delta_advances_all_its_frames",
+    "_test_rain_scale_snaps_to_whole_numbers",
 ]
 
 const FRAME := Vector2i(32, 128)
@@ -180,16 +181,19 @@ func _test_layout_covers_viewport_at_every_zoom() -> void:
     for zoom in [0.3, 1.0, 3.0]:
         var cam := _set_zoom(zoom)
         _fx._layout()
-        var scale: float = 2.0 * zoom
+        # Rain snaps to a whole-number scale (fractional nearest-neighbour
+        # sampling bands a repeating drop field — see _rain_scale); the bolt
+        # keeps tracking the raw village scale.
+        var scale: float = maxf(1.0, roundf(2.0 * zoom))
         for rect: TextureRect in [_fx._rain_heavy, _fx._rain_light]:
-            _check("zoom %s — tiles drawn at the village pixel size" % zoom,
+            _check("zoom %s — tiles drawn at the snapped pixel size" % zoom,
                 rect.scale.is_equal_approx(Vector2(scale, scale)))
             var covered: Vector2 = rect.size * rect.scale
             _check("zoom %s — rain still spans the viewport (%s vs %s)" % [zoom, covered, view],
                 covered.x >= view.x and covered.y >= view.y)
-        # The bolt tracks the same scale but never below the unzoomed village
+        # The bolt tracks the raw scale but never below the unzoomed village
         # size, or it reads as a scratch at the 0.3 zoom floor.
-        var bolt: float = maxf(scale, 2.0)
+        var bolt: float = maxf(2.0 * zoom, 2.0)
         _check("zoom %s — bolt drawn at %s" % [zoom, bolt],
             _fx._bolt.scale.is_equal_approx(Vector2(bolt, bolt)))
         _check("zoom %s — bolt never shrinks below the village's own size" % zoom,
@@ -389,4 +393,36 @@ func _test_a_long_delta_advances_all_its_frames() -> void:
     _fx._rain_heavy_frames = heavy
     _fx._rain_light_frame = 0
     _fx._rain_heavy_frame = 0
+    _done()
+
+## The rain must draw at a WHOLE-number scale at every zoom. At a fractional
+## scale, nearest-neighbour sampling hands some source pixels two screen
+## pixels and some one, and on a repeating field of identical drops that
+## quantization lines up into visible columns of fatter drops that jump at
+## every drift wrap. The coverage contract has to hold at the snapped scale
+## too, and the drift position must use the same snapped scale the sheets
+## draw at.
+func _test_rain_scale_snaps_to_whole_numbers() -> void:
+    var view: Vector2 = _fx.get_viewport().get_visible_rect().size
+    for pair in [[0.3, 1.0], [0.55, 1.0], [1.0, 2.0], [1.15, 2.0], [1.4, 3.0], [3.0, 6.0]]:
+        var zoom: float = pair[0]
+        var expected: float = pair[1]
+        var cam := _set_zoom(zoom)
+        _fx._layout()
+        _check("zoom %s — rain scale snaps to %s" % [zoom, expected],
+            is_equal_approx(_fx._rain_scale(), expected))
+        for rect: TextureRect in [_fx._rain_heavy, _fx._rain_light]:
+            _check("zoom %s — sheet drawn at the snapped scale" % zoom,
+                rect.scale.is_equal_approx(Vector2(expected, expected)))
+            _check("zoom %s — snapped sheet still spans the viewport" % zoom,
+                rect.position.x + rect.size.x * rect.scale.x >= view.x
+                and rect.size.y * rect.scale.y >= view.y)
+        # Drift geometry rides the same snapped scale: one tile left of the
+        # edge at phase zero, in SNAPPED screen units.
+        _fx._rain_light_drift = 0.0
+        _fx._apply_rain_drift()
+        _check("zoom %s — drift position uses the snapped scale" % zoom,
+            is_equal_approx(_fx._rain_light.position.x, -32.0 * expected))
+        _clear_zoom(cam)
+    _fx._layout()
     _done()
