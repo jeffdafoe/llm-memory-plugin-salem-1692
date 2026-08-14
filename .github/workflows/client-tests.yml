@@ -87,8 +87,19 @@ jobs:
                       name="$(basename "$path")"
                       log="$(mktemp)"
                       echo "::group::${name}"
-                      godot --headless --path client --script "res://tests/${name}" >"${log}" 2>&1
-                      status=$?
+                      # The job shell is the Actions default `bash -e {0}`, and a
+                      # failing suite is the ONE expected non-zero exit in this
+                      # step — so exempt exactly this command via `|| status=$?`
+                      # (the left side of || is not subject to errexit). Without
+                      # it the step died here: no status=$?, no `cat "${log}"`,
+                      # no endgroup, no SCRIPT ERROR grep, so a red suite printed
+                      # nothing but `##[group]<name>` and every failure had to be
+                      # reproduced locally to learn anything (LLM-631). Clearing
+                      # errexit step-wide would work too, but it would also
+                      # silence a broken mktemp/cat/rm and let this report a
+                      # suite result off missing infrastructure.
+                      status=0
+                      godot --headless --path client --script "res://tests/${name}" >"${log}" 2>&1 || status=$?
                       cat "${log}"
                       echo "::endgroup::"
                       if [ "${status}" -ne 0 ]; then
