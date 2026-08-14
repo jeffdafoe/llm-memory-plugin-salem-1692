@@ -46,9 +46,12 @@ var _checks := 0
 var _completed := {}
 var _current := ""
 
-## World double: cloud_shadows reads only pad_x / pad_y off it.
+## World double: cloud_shadows reads map_width / map_height at _ready and
+## pad_x / pad_y per frame.
 class StubWorld:
     extends Node2D
+    var map_width: int = 200
+    var map_height: int = 180
     var pad_x: int = 60
     var pad_y: int = 112
 
@@ -135,7 +138,7 @@ func _test_stamp_repeats_edges_on_a_larger_cloud() -> void:
 ## A cloud stamped at the right edge continues from column zero — the x-torus
 ## the drift wrap depends on.
 func _test_stamp_wraps_across_the_torus_edge() -> void:
-    var w: int = _clouds.FIELD_W
+    var w: int = _clouds._field_w
     var cells: Dictionary = {}
     _clouds._stamp_cloud(cells, w - 1, 5, 3, 2, 0)
     _check("west column sits at the right edge", cells.has(Vector2i(w - 1, 5)))
@@ -165,11 +168,11 @@ func _test_field_is_deterministic_and_sparse() -> void:
     var other: Dictionary = _clouds._generate_field(_clouds.FIELD_SEED + 1)
     _check("a different seed generates a different field", a.hash() != other.hash())
 
-    var coverage: float = float(a.size()) / float(_clouds.FIELD_W * _clouds.FIELD_H)
+    var coverage: float = float(a.size()) / float(_clouds._field_w * _clouds._field_h)
     _check("coverage is scattered shadow (%.1f%%)" % (coverage * 100.0),
         coverage > 0.02 and coverage < 0.12)
     for cell: Vector2i in a:
-        if cell.x < 0 or cell.x >= _clouds.FIELD_W or cell.y < 0 or cell.y >= _clouds.FIELD_H:
+        if cell.x < 0 or cell.x >= _clouds._field_w or cell.y < 0 or cell.y >= _clouds._field_h:
             _check("cell %s escaped the field grid" % cell, false)
             break
     _done()
@@ -187,7 +190,7 @@ func _test_layer_copies_sit_one_period_apart() -> void:
         var a: TileMapLayer = _clouds._layers[0]
         var b: TileMapLayer = _clouds._layers[1]
         _check("copies sit one period apart",
-            is_equal_approx(a.position.x - b.position.x, _clouds.PERIOD))
+            is_equal_approx(a.position.x - b.position.x, _clouds._period))
         _check("copies draw at the world render scale",
             a.scale.is_equal_approx(Vector2(2.0, 2.0)) and b.scale.is_equal_approx(Vector2(2.0, 2.0)))
         _check("copies carry identical cells",
@@ -201,7 +204,7 @@ func _test_drift_wraps_at_the_period() -> void:
     _clouds._process(1.0)
     _check("drift advances at the wind speed",
         is_equal_approx(_clouds._drift, _clouds.DRIFT_PPS))
-    _clouds._drift = _clouds.PERIOD - 1.0
+    _clouds._drift = _clouds._period - 1.0
     _clouds._process(1.0)
     _check("crossing the period wraps the phase (got %s)" % _clouds._drift,
         is_equal_approx(_clouds._drift, _clouds.DRIFT_PPS - 1.0))

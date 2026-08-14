@@ -41,14 +41,14 @@ const RENDER_SCALE: float = 2.0
 ## Over objects/NPCs (world.gd OBJECT_Z = 10), under CanvasLayers.
 const CLOUD_Z: int = 20
 
-## Field geometry — world.gd's default map grid. Fixed here rather than read
-## live so generation is deterministic and independent of terrain-load
-## timing; the field only has to COVER the map, and 200x180 is the map.
-const FIELD_W: int = 200
-const FIELD_H: int = 180
-
-## One period of the x-torus in world pixels: the whole field width.
-const PERIOD: float = FIELD_W * TILE * RENDER_SCALE
+## Field geometry fallback — world.gd's default map grid, used only when no
+## world is injected (the test harness). The real dimensions are read off the
+## injected world at _ready, so a map-size change is picked up automatically;
+## generation stays deterministic for a given (seed, width, height). A
+## mid-session dimension change would need a rebuild — none exists today
+## (world.gd never reassigns map_width/map_height), and clouds are cosmetic.
+const FIELD_W_FALLBACK: int = 200
+const FIELD_H_FALLBACK: int = 180
 
 ## Wind. Rightward like the rain's lean, slower than the rain sheets — cloud
 ## shadow crosses a zoom-1 viewport in a couple of minutes.
@@ -68,8 +68,9 @@ const CLOUD_MAX_H: int = 6
 ## differs by when the client loaded — cosmetic, nothing references clouds).
 const FIELD_SEED: int = 16920814
 
-## Injected by world.gd. Duck-typed: only pad_x / pad_y are read (where the
-## map's north-west corner sits in world pixels).
+## Injected by world.gd BEFORE add_child (so _ready sees it). Duck-typed:
+## reads map_width / map_height once at _ready for the field grid, and
+## pad_x / pad_y each frame for where the map's NW corner sits.
 var world: Node2D = null
 
 var _drift: float = 0.0
@@ -78,9 +79,18 @@ var _drift: float = 0.0
 var _cells: Dictionary = {}
 var _layers: Array[TileMapLayer] = []
 
+## Field grid + x-torus period, resolved at _ready (see FIELD_W_FALLBACK).
+var _field_w: int = FIELD_W_FALLBACK
+var _field_h: int = FIELD_H_FALLBACK
+var _period: float = FIELD_W_FALLBACK * TILE * RENDER_SCALE
+
 
 func _ready() -> void:
     z_index = CLOUD_Z
+    if world != null:
+        _field_w = world.map_width
+        _field_h = world.map_height
+        _period = _field_w * TILE * RENDER_SCALE
     var sheet: Texture2D = _load_sheet(SHEET)
     if sheet == null:
         # Purchased pack absent (gitignored — CI's normal state): no clouds,
@@ -93,7 +103,7 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-    _drift = fmod(_drift + delta * DRIFT_PPS, PERIOD)
+    _drift = fmod(_drift + delta * DRIFT_PPS, _period)
     if world == null:
         return
     # The map's NW corner is pad tiles up-left of world origin (32px village
@@ -120,8 +130,8 @@ func _generate_field(seed_value: int) -> Dictionary:
             break
         var w: int = rng.randi_range(CLOUD_MIN_W, CLOUD_MAX_W)
         var h: int = rng.randi_range(CLOUD_MIN_H, CLOUD_MAX_H)
-        var x: int = rng.randi_range(0, FIELD_W - 1)
-        var y: int = rng.randi_range(0, FIELD_H - 1)
+        var x: int = rng.randi_range(0, _field_w - 1)
+        var y: int = rng.randi_range(0, _field_h - 1)
         var variant_row: int = rng.randi_range(0, 1) * 3
         if _footprint_is_free(cells, x, y, w, h):
             _stamp_cloud(cells, x, y, w, h, variant_row)
@@ -152,7 +162,7 @@ func _stamp_cloud(cells: Dictionary, x: int, y: int, w: int, h: int, variant_row
 
 
 func _wrap(x: int, y: int) -> Vector2i:
-    return Vector2i(posmod(x, FIELD_W), posmod(y, FIELD_H))
+    return Vector2i(posmod(x, _field_w), posmod(y, _field_h))
 
 
 ## Two identical TileMapLayer copies one period apart: as the drift slides
@@ -175,7 +185,7 @@ func _build_layers(sheet: Texture2D) -> void:
         layer.scale = Vector2(RENDER_SCALE, RENDER_SCALE)
         # Copy 0 at the origin, copy 1 one period to the LEFT (position is in
         # the parent's units, pre-parent-scale — the parent isn't scaled).
-        layer.position = Vector2(-copy * PERIOD, 0.0)
+        layer.position = Vector2(-copy * _period, 0.0)
         for cell: Vector2i in _cells:
             layer.set_cell(cell, source_id, _cells[cell])
         add_child(layer)
