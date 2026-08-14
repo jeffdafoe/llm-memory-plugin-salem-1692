@@ -25,6 +25,7 @@ const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
+const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
 
 const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
@@ -46,6 +47,11 @@ var _light_gradient_texture: Texture2D = null
 # setup is not lost.
 var storm_layer: CanvasLayer = null
 var current_weather: String = "clear"
+
+# Rain impact splashes (LLM-629) — the world-space half of the storm: ground
+# contact at specific map points, unlike the screen-space overlay above. Owned
+# here (not main.gd) because it reads placed_objects for its cover query.
+var rain_splashes: Node2D = null
 
 const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
 # Salem 1692 sundown palette (designer-tuned 2026-06-16): cold, damp, color-drained
@@ -164,6 +170,13 @@ func build_terrain() -> void:
     canvas_modulate = CanvasModulate.new()
     canvas_modulate.color = DAY_COLOR
     add_child(canvas_modulate)
+
+    # Splash layer under the modulate too — ground contact darkens with the
+    # world at night / in the storm tint, unlike the screen-space overlay.
+    rain_splashes = Node2D.new()
+    rain_splashes.set_script(RainSplashesScript)
+    rain_splashes.world = self
+    add_child(rain_splashes)
 
     _generate_terrain()  # Generate first so something is visible immediately
     _load_terrain()      # Then try to load saved terrain (overwrites if found)
@@ -1251,6 +1264,10 @@ func _iso_to_unix(iso: String) -> float:
 ## without a fade-in from clear.
 func set_weather(weather: String, tween: bool = true) -> void:
     current_weather = weather
+    # Splashes are owned here, not injected, so they don't wait on main.gd's
+    # wiring the way the overlay's null-guard below does.
+    if rain_splashes != null:
+        rain_splashes.set_storm(weather == "storm")
     if storm_layer == null:
         return
     storm_layer.set_storm(weather == "storm", tween)
