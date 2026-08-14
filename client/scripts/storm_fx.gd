@@ -62,6 +62,17 @@ const BOLT_VARIANT_COUNT: int = 2
 const RAIN_LIGHT_FRAME_SECONDS: float = 0.05
 const RAIN_HEAVY_FRAME_SECONDS: float = 0.10
 
+## Wind drift (LLM-632 follow-up). The frame animation moves the droplets but
+## the tiled sheet itself is pinned, so without translation the rain reads as
+## a static curtain hanging in front of the village. A slow rightward slide of
+## the whole sheet is the missing wind. Speeds are in SOURCE pixels/second
+## (they scale with the on-screen pixel size like everything else), light
+## faster than heavy so the two layers shear against each other — near sheet
+## moves more than far sheet, which is what gives the curtain depth. One tile
+## is 32 source px, so the light layer crosses a tile in ~3s.
+const RAIN_DRIFT_LIGHT_PPS: float = 10.0
+const RAIN_DRIFT_HEAVY_PPS: float = 6.0
+
 ## Village art is drawn at render_scale 2.0 by default (world.gd
 ## _asset_render_scale), so one source pixel of village art covers
 ## 2.0 * camera.zoom.x screen pixels. The weather art is pixel art at the same
@@ -115,6 +126,12 @@ var _rain_light_frame: int = 0
 var _rain_heavy_frame: int = 0
 var _rain_light_elapsed: float = 0.0
 var _rain_heavy_elapsed: float = 0.0
+
+## Wind drift phase per layer, in source pixels, wrapped to one 32px tile —
+## the sheets tile seamlessly, so a full tile of travel lands back on the
+## identical image and the phase never has to grow.
+var _rain_light_drift: float = 0.0
+var _rain_heavy_drift: float = 0.0
 
 ## Last pixel scale the layout was built for, so _process can notice a zoom
 ## change without relaying out every frame.
@@ -298,10 +315,14 @@ func _layout() -> void:
     if _rain_heavy == null or _rain_light == null or _bolt == null:
         return
     var view: Vector2 = get_viewport().get_visible_rect().size
-    var covered: Vector2 = view / pixel_scale + Vector2(RAIN_FRAME_SIZE)
+    # One tile of slack for the fractional remainder at the right and bottom,
+    # plus a second horizontal tile because the wind drift starts the sheet up
+    # to one tile left of the viewport edge.
+    var covered: Vector2 = view / pixel_scale + Vector2(RAIN_FRAME_SIZE) + Vector2(RAIN_FRAME_SIZE.x, 0.0)
     for rect: TextureRect in [_rain_heavy, _rain_light]:
         rect.scale = Vector2(pixel_scale, pixel_scale)
         rect.size = covered
+    _apply_rain_drift()
     # Size as well as scale: an unparented Control is not laid out by anything
     # here, and its size only reaches the texture's minimum on a later deferred
     # pass — so a bolt read or drawn in the same frame would have zero area.
@@ -315,17 +336,38 @@ func _bolt_scale() -> float:
 
 
 func _advance_rain(delta: float) -> void:
+    # Wrap the elapsed counters whether or not frames exist — on an artless
+    # checkout they would otherwise accumulate for the life of the client and
+    # bleed float precision (code_review, LLM-632).
     _rain_light_elapsed += delta
-    if _rain_light_elapsed >= RAIN_LIGHT_FRAME_SECONDS and not _rain_light_frames.is_empty():
+    if _rain_light_elapsed >= RAIN_LIGHT_FRAME_SECONDS:
         _rain_light_elapsed = fmod(_rain_light_elapsed, RAIN_LIGHT_FRAME_SECONDS)
-        _rain_light_frame = (_rain_light_frame + 1) % _rain_light_frames.size()
-        _rain_light.texture = _rain_light_frames[_rain_light_frame]
+        if not _rain_light_frames.is_empty():
+            _rain_light_frame = (_rain_light_frame + 1) % _rain_light_frames.size()
+            _rain_light.texture = _rain_light_frames[_rain_light_frame]
 
     _rain_heavy_elapsed += delta
-    if _rain_heavy_elapsed >= RAIN_HEAVY_FRAME_SECONDS and not _rain_heavy_frames.is_empty():
+    if _rain_heavy_elapsed >= RAIN_HEAVY_FRAME_SECONDS:
         _rain_heavy_elapsed = fmod(_rain_heavy_elapsed, RAIN_HEAVY_FRAME_SECONDS)
-        _rain_heavy_frame = (_rain_heavy_frame + 1) % _rain_heavy_frames.size()
-        _rain_heavy.texture = _rain_heavy_frames[_rain_heavy_frame]
+        if not _rain_heavy_frames.is_empty():
+            _rain_heavy_frame = (_rain_heavy_frame + 1) % _rain_heavy_frames.size()
+            _rain_heavy.texture = _rain_heavy_frames[_rain_heavy_frame]
+
+    # Wind: slide each sheet rightward, wrapping at one tile — the art tiles
+    # seamlessly, so the wrap is invisible and the phase stays tiny.
+    _rain_light_drift = fmod(_rain_light_drift + delta * RAIN_DRIFT_LIGHT_PPS, float(RAIN_FRAME_SIZE.x))
+    _rain_heavy_drift = fmod(_rain_heavy_drift + delta * RAIN_DRIFT_HEAVY_PPS, float(RAIN_FRAME_SIZE.x))
+    _apply_rain_drift()
+
+
+## Position each sheet one tile left of the viewport edge plus its current
+## drift phase, in screen units (the phase is source px, scaled like the art).
+## Called from _advance_rain every frame and from _layout so a re-layout
+## doesn't snap the sheets back to phase zero.
+func _apply_rain_drift() -> void:
+    var tile: float = float(RAIN_FRAME_SIZE.x)
+    _rain_light.position.x = (_rain_light_drift - tile) * _applied_scale
+    _rain_heavy.position.x = (_rain_heavy_drift - tile) * _applied_scale
 
 
 func _hide_rain() -> void:
