@@ -350,6 +350,17 @@ func _test_world_replays_known_weather_onto_a_fresh_splash_layer() -> void:
 
     world.set_weather("clear")
     _check("later weather keeps driving the layer", not world.rain_splashes._active)
+
+    # A second creation must replace the layer, not stack a live spawner —
+    # rebuilding drops world's only reference to the old node, so without the
+    # queue_free an orphaned layer would keep spawning forever.
+    world.set_weather("storm")
+    var first: Node2D = world.rain_splashes
+    world._create_rain_splashes()
+    _check("rebuilding replaces the layer", world.rain_splashes != first)
+    _check("the replaced layer is on its way out", first.is_queued_for_deletion())
+    _check("the replacement heard the storm too", world.rain_splashes._active)
+
     world.free()
     _done()
 

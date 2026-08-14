@@ -179,12 +179,16 @@ func build_terrain() -> void:
     _load_terrain()      # Then try to load saved terrain (overwrites if found)
 
 ## Build and wire the splash layer, then replay the last-known weather onto it
-## — a weather frame can land before build_terrain runs (and a resync rebuild
-## can happen mid-storm), leaving current_weather set with no splash node to
-## hear it. Same replay posture as main.gd's storm_fx injection. Split out of
-## build_terrain so the test harness can exercise the replay contract without
-## terrain generation.
+## — a weather frame can land before build_terrain runs, leaving
+## current_weather set with no splash node to hear it. Same replay posture as
+## main.gd's storm_fx injection. Split out of build_terrain so the test
+## harness can exercise the replay contract without terrain generation.
 func _create_rain_splashes() -> void:
+    # build_terrain runs once today (main.gd _ready; resync resets state
+    # without rebuilding), but a second call must replace the layer, not
+    # stack a live spawner it just dropped the only reference to.
+    if is_instance_valid(rain_splashes):
+        rain_splashes.queue_free()
     rain_splashes = Node2D.new()
     rain_splashes.set_script(RainSplashesScript)
     rain_splashes.world = self
