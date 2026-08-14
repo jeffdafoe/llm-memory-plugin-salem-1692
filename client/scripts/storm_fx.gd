@@ -133,6 +133,12 @@ var _rain_heavy_elapsed: float = 0.0
 var _rain_light_drift: float = 0.0
 var _rain_heavy_drift: float = 0.0
 
+## The snapped scale the sheets are CURRENTLY drawn at — set only by _layout.
+## Drift positioning must use this, not a fresh _rain_scale(): between a zoom
+## change and the next layout the two disagree, and moving the sheet at a
+## scale it isn't drawn at reopens the coverage gap at the screen edge.
+var _applied_rain_scale: float = 1.0
+
 ## Last pixel scale the layout was built for, so _process can notice a zoom
 ## change without relaying out every frame.
 var _applied_scale: float = 0.0
@@ -305,22 +311,38 @@ func _world_pixel_scale() -> float:
     return WORLD_RENDER_SCALE * camera.zoom.x
 
 
-## Size and scale the rain layers to cover the viewport with tiles drawn at the
-## village's own pixel size. A Control's size is in pre-scale units, so the
-## coverage divides by the scale as the tiles grow; one extra tile of slack
-## absorbs the fractional remainder at the right and bottom edges.
+## The rain's draw scale: the village pixel size snapped to a whole number.
+## Nearest-neighbour sampling at a fractional scale gives some source pixels
+## one screen pixel and some two, and on a repeating field of identical 1px
+## drops that quantization lines up into visible columns of fatter/longer
+## drops. Worse, the wind drift wraps at the 32px TEXTURE period while the
+## fat-column beat has its own incommensurate period, so at every wrap the
+## bands jump back — they read as caught in place while the rain slides. An
+## integer scale has no fractional sampling, so there is no beat to see; the
+## cost is rain slightly chunkier or finer than the world between integer
+## zoom products, which the bolt already accepts with its own floor.
+func _rain_scale() -> float:
+    return maxf(1.0, roundf(_world_pixel_scale()))
+
+
+## Size and scale the rain layers to cover the viewport with tiles drawn at
+## the rain's snapped pixel size (see _rain_scale). A Control's size is in
+## pre-scale units, so the coverage divides by the scale as the tiles grow;
+## one extra tile of slack absorbs the fractional remainder at the right and
+## bottom edges.
 func _layout() -> void:
     var pixel_scale: float = _world_pixel_scale()
     _applied_scale = pixel_scale
     if _rain_heavy == null or _rain_light == null or _bolt == null:
         return
+    _applied_rain_scale = _rain_scale()
     var view: Vector2 = get_viewport().get_visible_rect().size
     # One tile of slack for the fractional remainder at the right and bottom,
     # plus a second horizontal tile because the wind drift starts the sheet up
     # to one tile left of the viewport edge.
-    var covered: Vector2 = view / pixel_scale + Vector2(RAIN_FRAME_SIZE) + Vector2(RAIN_FRAME_SIZE.x, 0.0)
+    var covered: Vector2 = view / _applied_rain_scale + Vector2(RAIN_FRAME_SIZE) + Vector2(RAIN_FRAME_SIZE.x, 0.0)
     for rect: TextureRect in [_rain_heavy, _rain_light]:
-        rect.scale = Vector2(pixel_scale, pixel_scale)
+        rect.scale = Vector2(_applied_rain_scale, _applied_rain_scale)
         rect.size = covered
     _apply_rain_drift()
     # Size as well as scale: an unparented Control is not laid out by anything
@@ -366,13 +388,14 @@ func _advance_rain(delta: float) -> void:
 
 
 ## Position each sheet one tile left of the viewport edge plus its current
-## drift phase, in screen units (the phase is source px, scaled like the art).
+## drift phase, in screen units at the scale the sheets are DRAWN at
+## (_applied_rain_scale — never a fresh _rain_scale(), see its comment).
 ## Called from _advance_rain every frame and from _layout so a re-layout
 ## doesn't snap the sheets back to phase zero.
 func _apply_rain_drift() -> void:
     var tile: float = float(RAIN_FRAME_SIZE.x)
-    _rain_light.position.x = (_rain_light_drift - tile) * _applied_scale
-    _rain_heavy.position.x = (_rain_heavy_drift - tile) * _applied_scale
+    _rain_light.position.x = (_rain_light_drift - tile) * _applied_rain_scale
+    _rain_heavy.position.x = (_rain_heavy_drift - tile) * _applied_rain_scale
 
 
 func _hide_rain() -> void:
