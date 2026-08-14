@@ -40,6 +40,7 @@ const TESTS := [
     "_test_clearing_mid_strike_leaves_nothing_running",
     "_test_wind_drift_slides_and_wraps",
     "_test_artless_counters_stay_wrapped",
+    "_test_a_long_delta_advances_all_its_frames",
 ]
 
 const FRAME := Vector2i(32, 128)
@@ -358,4 +359,34 @@ func _test_artless_counters_stay_wrapped() -> void:
 
     _fx._rain_light_frames = light
     _fx._rain_heavy_frames = heavy
+    _done()
+
+## A delta spanning many frame intervals must advance the animation phase by
+## ALL of them (modulo the loop), not one — a resumed background tab hands
+## _process a large delta, and a one-frame advance leaves the displayed phase
+## disagreeing with the wrapped counter. Needs synthetic frames present: the
+## artless test above only checks the counter remainder and passes either way.
+func _test_a_long_delta_advances_all_its_frames() -> void:
+    var light: Array[Texture2D] = _fx._rain_light_frames
+    var heavy: Array[Texture2D] = _fx._rain_heavy_frames
+    _fx._rain_light_frames = _fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT)
+    _fx._rain_heavy_frames = _fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT)
+    _fx._rain_light_frame = 0
+    _fx._rain_heavy_frame = 0
+    _fx._rain_light_elapsed = 0.0
+    _fx._rain_heavy_elapsed = 0.0
+
+    # 1.0s = 20 light intervals (0.05) and 10 heavy (0.10): 20 % 8 = 4, 10 % 8 = 2.
+    _fx._advance_rain(1.0)
+    _check("light advanced by every interval the delta spans (20 %% 8)",
+        _fx._rain_light_frame == 4)
+    _check("heavy advanced by every interval the delta spans (10 %% 8)",
+        _fx._rain_heavy_frame == 2)
+    _check("light counter kept only the remainder", _fx._rain_light_elapsed < _fx.RAIN_LIGHT_FRAME_SECONDS)
+    _check("heavy counter kept only the remainder", _fx._rain_heavy_elapsed < _fx.RAIN_HEAVY_FRAME_SECONDS)
+
+    _fx._rain_light_frames = light
+    _fx._rain_heavy_frames = heavy
+    _fx._rain_light_frame = 0
+    _fx._rain_heavy_frame = 0
     _done()

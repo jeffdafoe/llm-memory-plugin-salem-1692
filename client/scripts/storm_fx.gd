@@ -339,18 +339,23 @@ func _advance_rain(delta: float) -> void:
     # Wrap the elapsed counters whether or not frames exist — on an artless
     # checkout they would otherwise accumulate for the life of the client and
     # bleed float precision (code_review, LLM-632).
+    # Advance by ALL the intervals the delta spans, not one — a slow frame or
+    # a resumed background tab hands a delta worth many frames, and advancing
+    # one leaves the displayed phase behind the wrapped counter.
     _rain_light_elapsed += delta
     if _rain_light_elapsed >= RAIN_LIGHT_FRAME_SECONDS:
+        var light_steps: int = floori(_rain_light_elapsed / RAIN_LIGHT_FRAME_SECONDS)
         _rain_light_elapsed = fmod(_rain_light_elapsed, RAIN_LIGHT_FRAME_SECONDS)
         if not _rain_light_frames.is_empty():
-            _rain_light_frame = (_rain_light_frame + 1) % _rain_light_frames.size()
+            _rain_light_frame = (_rain_light_frame + light_steps) % _rain_light_frames.size()
             _rain_light.texture = _rain_light_frames[_rain_light_frame]
 
     _rain_heavy_elapsed += delta
     if _rain_heavy_elapsed >= RAIN_HEAVY_FRAME_SECONDS:
+        var heavy_steps: int = floori(_rain_heavy_elapsed / RAIN_HEAVY_FRAME_SECONDS)
         _rain_heavy_elapsed = fmod(_rain_heavy_elapsed, RAIN_HEAVY_FRAME_SECONDS)
         if not _rain_heavy_frames.is_empty():
-            _rain_heavy_frame = (_rain_heavy_frame + 1) % _rain_heavy_frames.size()
+            _rain_heavy_frame = (_rain_heavy_frame + heavy_steps) % _rain_heavy_frames.size()
             _rain_heavy.texture = _rain_heavy_frames[_rain_heavy_frame]
 
     # Wind: slide each sheet rightward, wrapping at one tile — the art tiles
