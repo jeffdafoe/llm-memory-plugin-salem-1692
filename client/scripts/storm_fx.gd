@@ -133,6 +133,12 @@ var _rain_heavy_elapsed: float = 0.0
 var _rain_light_drift: float = 0.0
 var _rain_heavy_drift: float = 0.0
 
+## The snapped scale the sheets are CURRENTLY drawn at — set only by _layout.
+## Drift positioning must use this, not a fresh _rain_scale(): between a zoom
+## change and the next layout the two disagree, and moving the sheet at a
+## scale it isn't drawn at reopens the coverage gap at the screen edge.
+var _applied_rain_scale: float = 1.0
+
 ## Last pixel scale the layout was built for, so _process can notice a zoom
 ## change without relaying out every frame.
 var _applied_scale: float = 0.0
@@ -329,14 +335,14 @@ func _layout() -> void:
     _applied_scale = pixel_scale
     if _rain_heavy == null or _rain_light == null or _bolt == null:
         return
-    var rain_scale: float = _rain_scale()
+    _applied_rain_scale = _rain_scale()
     var view: Vector2 = get_viewport().get_visible_rect().size
     # One tile of slack for the fractional remainder at the right and bottom,
     # plus a second horizontal tile because the wind drift starts the sheet up
     # to one tile left of the viewport edge.
-    var covered: Vector2 = view / rain_scale + Vector2(RAIN_FRAME_SIZE) + Vector2(RAIN_FRAME_SIZE.x, 0.0)
+    var covered: Vector2 = view / _applied_rain_scale + Vector2(RAIN_FRAME_SIZE) + Vector2(RAIN_FRAME_SIZE.x, 0.0)
     for rect: TextureRect in [_rain_heavy, _rain_light]:
-        rect.scale = Vector2(rain_scale, rain_scale)
+        rect.scale = Vector2(_applied_rain_scale, _applied_rain_scale)
         rect.size = covered
     _apply_rain_drift()
     # Size as well as scale: an unparented Control is not laid out by anything
@@ -382,15 +388,14 @@ func _advance_rain(delta: float) -> void:
 
 
 ## Position each sheet one tile left of the viewport edge plus its current
-## drift phase, in screen units (the phase is source px, scaled like the art
-## — the SNAPPED rain scale, so drift and drawing agree on the tile size).
+## drift phase, in screen units at the scale the sheets are DRAWN at
+## (_applied_rain_scale — never a fresh _rain_scale(), see its comment).
 ## Called from _advance_rain every frame and from _layout so a re-layout
 ## doesn't snap the sheets back to phase zero.
 func _apply_rain_drift() -> void:
     var tile: float = float(RAIN_FRAME_SIZE.x)
-    var rain_scale: float = _rain_scale()
-    _rain_light.position.x = (_rain_light_drift - tile) * rain_scale
-    _rain_heavy.position.x = (_rain_heavy_drift - tile) * rain_scale
+    _rain_light.position.x = (_rain_light_drift - tile) * _applied_rain_scale
+    _rain_heavy.position.x = (_rain_heavy_drift - tile) * _applied_rain_scale
 
 
 func _hide_rain() -> void:

@@ -42,6 +42,7 @@ const TESTS := [
     "_test_artless_counters_stay_wrapped",
     "_test_a_long_delta_advances_all_its_frames",
     "_test_rain_scale_snaps_to_whole_numbers",
+    "_test_drift_uses_the_drawn_scale_not_the_live_camera",
 ]
 
 const FRAME := Vector2i(32, 128)
@@ -424,5 +425,35 @@ func _test_rain_scale_snaps_to_whole_numbers() -> void:
         _check("zoom %s — drift position uses the snapped scale" % zoom,
             is_equal_approx(_fx._rain_light.position.x, -32.0 * expected))
         _clear_zoom(cam)
+    _fx._layout()
+    _done()
+
+## Between a zoom change and the next _layout, a fresh _rain_scale() disagrees
+## with the scale the sheets are drawn at — drift must ride the DRAWN scale
+## (_applied_rain_scale) or the sheet slides at one scale while painted at
+## another, reopening the edge-coverage gap this pairing exists to close.
+func _test_drift_uses_the_drawn_scale_not_the_live_camera() -> void:
+    var cam := _set_zoom(1.0)   # snapped scale 2.0
+    _fx._layout()
+    _check("precondition — drawn scale is 2.0", is_equal_approx(_fx._applied_rain_scale, 2.0))
+
+    # Zoom the camera WITHOUT laying out — the one-frame (or deferred-layout)
+    # window where live and drawn scales disagree.
+    cam.zoom = Vector2(3.0, 3.0)   # live snapped scale would be 6.0
+    _check("precondition — live snap now disagrees", is_equal_approx(_fx._rain_scale(), 6.0))
+
+    _fx._rain_light_drift = 0.0
+    _fx._rain_heavy_drift = 0.0
+    _fx._advance_rain(0.5)
+    _check("drift still moves at the drawn scale, not the live camera's",
+        is_equal_approx(_fx._rain_light.position.x,
+            (_fx._rain_light_drift - 32.0) * 2.0))
+    _check("heavy layer too",
+        is_equal_approx(_fx._rain_heavy.position.x,
+            (_fx._rain_heavy_drift - 32.0) * 2.0))
+
+    _fx._rain_light_drift = 0.0
+    _fx._rain_heavy_drift = 0.0
+    _clear_zoom(cam)
     _fx._layout()
     _done()
