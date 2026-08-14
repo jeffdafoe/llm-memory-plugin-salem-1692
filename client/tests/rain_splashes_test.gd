@@ -40,6 +40,9 @@ const TESTS := [
     "_test_spawning_follows_the_storm",
     "_test_splashes_avoid_covered_ground",
     "_test_artless_checkout_spawns_nothing",
+    "_test_a_stalled_frame_spawns_a_bounded_batch",
+    "_test_splashes_stay_on_the_map",
+    "_test_world_replays_known_weather_onto_a_fresh_splash_layer",
 ]
 
 const FRAME := Vector2i(16, 16)
@@ -57,6 +60,13 @@ var _current := ""
 class StubWorld:
     extends Node2D
     var placed_objects: Dictionary = {}
+    # Map geometry the spawner clamps to (world.gd's fields). Defaults size the
+    # map far past any headless viewport so the clamp is inert unless a test
+    # shrinks it.
+    var map_width: int = 1000
+    var map_height: int = 1000
+    var pad_x: int = 100
+    var pad_y: int = 100
 
     func compute_object_hit_rect(container: Node2D, _sprite_node: Node2D) -> Rect2:
         return container.get_meta("rect", Rect2())
@@ -269,6 +279,78 @@ func _test_splashes_avoid_covered_ground() -> void:
         _check("no splash on covered ground (%s)" % child.position,
             not left_half.has_point(child.position))
     _teardown_world(stub)
+    _done()
+
+## The web export's resume shape: a backgrounded tab hands _process its whole
+## stall as one delta. The banked spawn debt must be clamped or a minute of
+## "missed" rain becomes ~1500 nodes in a single frame, a stall on resume.
+func _test_a_stalled_frame_spawns_a_bounded_batch() -> void:
+    var stub := _setup_world()
+    _splashes.set_storm(true)
+    _splashes._process(60.0)
+    _check("a minute-long delta spawns at most the per-frame cap (%d spawned)"
+            % _splashes.get_child_count(),
+        _splashes.get_child_count() <= int(_splashes.MAX_SPAWNS_PER_FRAME))
+    _check("no spawn debt is carried past the cap either",
+        _splashes._spawn_accum < _splashes.MAX_SPAWNS_PER_FRAME)
+    _teardown_world(stub)
+    _done()
+
+## Splashes stop at the map edge, not the camera edge — camera limits normally
+## keep the two identical, but that is the camera's invariant. With a map
+## smaller than the viewport, every splash must land inside it; with the map
+## entirely off-view, none may spawn (and the frame must not error).
+func _test_splashes_stay_on_the_map() -> void:
+    var stub := _setup_world()
+    # 4x4 tiles at 32px with a 2-tile pad: world rect (-64,-64) to (64,64) —
+    # far smaller than the headless viewport's world rect.
+    stub.map_width = 4
+    stub.map_height = 4
+    stub.pad_x = 2
+    stub.pad_y = 2
+    var map_rect := Rect2(-64, -64, 128, 128)
+    _check("fixture — the map rect is what the fields describe",
+        _splashes._map_rect() == map_rect)
+
+    _splashes.set_storm(true)
+    _pump_spawns(30)
+    _check("splashes still fall on the tiny map", _splashes.get_child_count() > 0)
+    for child in _splashes.get_children():
+        _check("splash %s landed on generated terrain" % child.position,
+            map_rect.has_point(child.position))
+
+    # Push the map wholly outside the visible rect (viewport world rect starts
+    # at 0,0 in this cameraless harness; the map now ends before -32).
+    stub.pad_x = 100
+    stub.pad_y = 100
+    stub.map_width = 99
+    stub.map_height = 99
+    var before: int = _splashes.get_child_count()
+    _splashes._process(1.0)
+    _check("a map wholly off-view spawns nothing", _splashes.get_child_count() == before)
+    _check("an off-view frame drops its spawn debt", is_zero_approx(_splashes._spawn_accum))
+    _teardown_world(stub)
+    _done()
+
+## world.gd's side of the contract: a weather frame can land before
+## build_terrain creates the splash layer — current_weather records it with no
+## node to hear it, so creation must replay the known weather (the same
+## early-frame race main.gd replays onto the injected storm overlay).
+func _test_world_replays_known_weather_onto_a_fresh_splash_layer() -> void:
+    var world: Node2D = load("res://scripts/world.gd").new()
+    # Kept OFF the tree (same posture as asset_render_scale_test's world) so
+    # _ready and its web/JS probing never run; _create_rain_splashes is the
+    # unit under test.
+    world.set_weather("storm")
+    _check("an early frame records weather with no splash layer to hear it",
+        world.current_weather == "storm" and world.rain_splashes == null)
+    world._create_rain_splashes()
+    _check("creation replays the storm onto the fresh layer",
+        world.rain_splashes != null and world.rain_splashes._active)
+
+    world.set_weather("clear")
+    _check("later weather keeps driving the layer", not world.rain_splashes._active)
+    world.free()
     _done()
 
 ## CI's normal state: the purchased pack is absent, frames are null. The storm

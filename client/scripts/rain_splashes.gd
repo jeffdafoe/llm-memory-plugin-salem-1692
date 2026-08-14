@@ -51,6 +51,15 @@ const SPLASH_Z: int = 2
 ## per tile — which is fine, at 0.3 zoom a splash is ~10 screen px anyway.
 const SPLASHES_PER_SECOND: float = 25.0
 
+## Ceiling on banked spawn debt, which is also the per-frame spawn ceiling.
+## A stalled frame arrives with its whole stall as one delta — a backgrounded
+## web tab or a resumed device can hand _process a minute, which at 25/sec
+## would be 1500 placements and nodes in a single frame, a stall exactly on
+## resume. Rain that was "missed" while the tab was hidden isn't owed to
+## anyone. At a normal 60fps cadence the accumulator stays near 0.4 and this
+## clamp is inert.
+const MAX_SPAWNS_PER_FRAME: float = 4.0
+
 ## Rejection-sampling budget per splash. In a dense patch (many rects) some
 ## spawns find no uncovered point and are skipped — correct, covered ground
 ## is exactly where splashes don't belong.
@@ -96,10 +105,18 @@ func _process(delta: float) -> void:
         _cover_rects = _gather_cover_rects()
         _cover_age = 0.0
 
-    _spawn_accum += delta * SPLASHES_PER_SECOND
+    # Capping the bank at MAX_SPAWNS_PER_FRAME bounds the loop below to that
+    # many iterations — no separate per-frame counter needed.
+    _spawn_accum = minf(_spawn_accum + delta * SPLASHES_PER_SECOND, MAX_SPAWNS_PER_FRAME)
     if _spawn_accum < 1.0:
         return
-    var view: Rect2 = _visible_world_rect()
+    # Splashes stop at the map edge, not the camera edge. Camera limits
+    # normally keep the two identical, but that is the camera's invariant —
+    # don't inherit it here.
+    var view: Rect2 = _visible_world_rect().intersection(_map_rect())
+    if not view.has_area():
+        _spawn_accum = 0.0
+        return
     while _spawn_accum >= 1.0:
         _spawn_accum -= 1.0
         var point = _pick_uncovered_point(view, _cover_rects)
@@ -160,7 +177,9 @@ func _gather_cover_rects() -> Array[Rect2]:
         if sprite_node == null:
             continue
         var rect: Rect2 = world.compute_object_hit_rect(container, sprite_node)
-        if rect.size != Vector2.ZERO:
+        # has_area, not a zero-compare: a rect degenerate in ONE dimension (or
+        # negative) can't cover ground either, and mustn't reach has_point.
+        if rect.has_area():
             rects.append(rect)
     return rects
 
@@ -189,6 +208,21 @@ func _pick_uncovered_point(view: Rect2, rects: Array[Rect2]) -> Variant:
 func _visible_world_rect() -> Rect2:
     var viewport: Viewport = get_viewport()
     return viewport.get_canvas_transform().affine_inverse() * viewport.get_visible_rect()
+
+
+## The world-space rectangle of generated terrain. The grid is map_width x
+## map_height tiles of 32 world px, with world (0,0) sitting pad_x/pad_y tiles
+## in from the grid corner (world.gd's tile padding) — so terrain starts at
+## negative world coords and a splash outside this rect would land on void.
+func _map_rect() -> Rect2:
+    if world == null:
+        return Rect2()
+    return Rect2(
+        -world.pad_x * 32.0,
+        -world.pad_y * 32.0,
+        world.map_width * 32.0,
+        world.map_height * 32.0,
+    )
 
 
 func _spawn_splash(point: Vector2) -> void:

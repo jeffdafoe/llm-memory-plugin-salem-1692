@@ -173,13 +173,23 @@ func build_terrain() -> void:
 
     # Splash layer under the modulate too — ground contact darkens with the
     # world at night / in the storm tint, unlike the screen-space overlay.
+    _create_rain_splashes()
+
+    _generate_terrain()  # Generate first so something is visible immediately
+    _load_terrain()      # Then try to load saved terrain (overwrites if found)
+
+## Build and wire the splash layer, then replay the last-known weather onto it
+## — a weather frame can land before build_terrain runs (and a resync rebuild
+## can happen mid-storm), leaving current_weather set with no splash node to
+## hear it. Same replay posture as main.gd's storm_fx injection. Split out of
+## build_terrain so the test harness can exercise the replay contract without
+## terrain generation.
+func _create_rain_splashes() -> void:
     rain_splashes = Node2D.new()
     rain_splashes.set_script(RainSplashesScript)
     rain_splashes.world = self
     add_child(rain_splashes)
-
-    _generate_terrain()  # Generate first so something is visible immediately
-    _load_terrain()      # Then try to load saved terrain (overwrites if found)
+    rain_splashes.set_storm(current_weather == "storm")
     _load_world_phase()  # Then sync modulate to the server's current phase
 
 ## Load placed objects from the API — called after catalog is ready.
