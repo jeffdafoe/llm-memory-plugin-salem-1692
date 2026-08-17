@@ -7523,6 +7523,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"owner_holding_repair_nails_in_company":             true, // LLM-292: owner at own worn store's pin (the earmark fixture)
 		"smith_worn_forge_out_of_water":                     true, // LLM-608: degraded smith inside his own forge, short of a bought input
 		"miller_at_degraded_mill_keeps_water_forage_cue":    true, // LLM-634: degraded miller inside his own Mill, forage cue alongside
+		"smith_out_of_water_owes_nails_no_seller":           true, // LLM-635: degraded smith inside his own forge, nail input short, no seller
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc

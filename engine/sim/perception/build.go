@@ -4424,6 +4424,12 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 			v := toView(o)
 			v.AbsentRecipientNames = absentRecipientNames(snap, seller, o, resolveName)
 			v.AwaitingMake = orderAwaitingMake(seller, o)
+			if v.AwaitingMake {
+				// LLM-635: if the make is stalled on an input, say which — the
+				// "yet to make it" line otherwise steers toward a produce tool
+				// LLM-324 has withdrawn.
+				v.MissingInputs = missingProduceInputs(snap, seller, o.Item)
+			}
 			fromMe = append(fromMe, v)
 		}
 	}

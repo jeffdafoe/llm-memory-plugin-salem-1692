@@ -913,6 +913,13 @@ type OrderView struct {
 	// ("you've yet to make it") and does NOT cue deliver_order, so the keeper is
 	// steered to forge it first rather than into a bounce loop.
 	AwaitingMake bool
+	// MissingInputs (LLM-635): with AwaitingMake set, the required inputs of the
+	// good's recipe the seller is out of for even one batch (display labels,
+	// sorted) — the reason the produce tool the "yet to make it" line leans on is
+	// withdrawn (LLM-324). Render names them so the order book states what is
+	// stopping the make instead of leaving the keeper to promise delivery he has
+	// no tool for. Empty when the make is possible now, or the recipe is unknown.
+	MissingInputs []string
 	// BalanceDue is the coin still owed on a partial-payment commission
 	// (LLM-357), collected from the buyer at deliver_order; DepositPaid is what
 	// was already put down at accept, so the full price is DepositPaid +
