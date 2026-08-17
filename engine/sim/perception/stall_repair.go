@@ -56,11 +56,15 @@ type StallRepairView struct {
 	// input-short good, LLM-324). Non-empty flips the render from "forge what
 	// you're short" — an instruction the model has no tool for — to naming the
 	// input, so the prompt says what re-arms the forge instead of contradicting
-	// itself. NailInputsSourceable is whether the owner has SOME path to every
-	// missing input (an actionable buy path, or a forage entry for it), which
-	// picks "see to that first" over "none is to be had just now".
+	// itself. NailInputsSourceable counts how many of them the owner has a path
+	// to right now — an actionable buy path (itemHasActionableBuyPath) or an
+	// actionable own-forage source (itemHasActionableForagePath), each the same
+	// predicate its section renders on, so the onward steer always has a
+	// where/how beneath it. All → "see to that first"; none → "none is to be had
+	// just now"; some → "only some of it is to be had just now — see to what you
+	// can", since a reachable input is still a valid step toward re-arming.
 	NailInputsShort      []string
-	NailInputsSourceable bool
+	NailInputsSourceable int
 }
 
 // ownerBusinessDegraded reports whether the actor owns a wearable business worn
@@ -135,21 +139,19 @@ func buildStallRepair(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	}
 	// LLM-635: a nail maker out of a nail input has no produce tool to forge
 	// with (LLM-324 withdrew it with the "## Your trade" cue), so the steer must
-	// name the input, not the forge. Sourceable when every missing input has an
-	// actionable buy path (the same LLM-216 gate "## Restocking" renders on, so
-	// "see to that first" always has a where/how beneath it) or is one the owner
-	// forages for himself.
+	// name the input, not the forge. Each missing input counts as sourceable on
+	// an actionable buy path (the LLM-216 gate "## Restocking" renders on) or an
+	// actionable own-forage source (the gate the forage cue renders on) — never
+	// on a bare policy entry, which permits a gather without establishing one.
 	if view.MakesNails {
 		view.NailInputsShort = missingProduceInputs(snap, actorSnap, sim.NailItemKind)
 		if len(view.NailInputsShort) > 0 {
-			view.NailInputsSourceable = true
 			for _, in := range snap.Recipes[sim.NailItemKind].Inputs {
 				if in.Qty <= 0 || actorSnap.Inventory[in.Item] >= in.Qty {
 					continue
 				}
-				if !itemHasActionableBuyPath(snap, actorID, actorSnap, in.Item) && !actorSnap.RestockPolicy.Forages(in.Item) {
-					view.NailInputsSourceable = false
-					break
+				if itemHasActionableBuyPath(snap, actorID, actorSnap, in.Item) || itemHasActionableForagePath(snap, actorID, actorSnap, in.Item) {
+					view.NailInputsSourceable++
 				}
 			}
 		}
@@ -240,14 +242,19 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		// would instruct an action he has no tool for — the live smith enumerated
 		// his tools, found no "forge", and decided done() forges. Name the input
 		// instead: that is what re-arms the forge. "See to that first" only when
-		// every missing input has a path (a "## Restocking" line or his own forage
-		// source carries the where/how); otherwise say plainly that none is to be
-		// had, so the stall is understood rather than improvised around. Worded
-		// without the token "buy" (TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy).
+		// every missing input has a path (a "## Restocking" line or the forage
+		// section carries the where/how); with only some reachable, say so and
+		// steer at what can be had — a reachable input is still a step toward
+		// re-arming; with none, say plainly that none is to be had, so the stall
+		// is understood rather than improvised around. Worded without the token
+		// "buy" (TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy).
 		gap := missingInputsPhrase(v.NailInputsShort)
-		if v.NailInputsSourceable {
+		switch {
+		case v.NailInputsSourceable >= len(v.NailInputsShort):
 			fmt.Fprintf(b, "Mending takes %d nails and you have %d — nails are your own work, but you've no %s to forge them with: see to that first, then mend it here.\n", v.NailsNeeded, v.NailsHeld, gap)
-		} else {
+		case v.NailInputsSourceable > 0:
+			fmt.Fprintf(b, "Mending takes %d nails and you have %d — nails are your own work, but you've no %s to forge them with, and only some of it is to be had just now: see to what you can, then mend it here.\n", v.NailsNeeded, v.NailsHeld, gap)
+		default:
 			fmt.Fprintf(b, "Mending takes %d nails and you have %d — nails are your own work, but you've no %s to forge them with, and none is to be had just now.\n", v.NailsNeeded, v.NailsHeld, gap)
 		}
 	} else if v.MakesNails {

@@ -44,41 +44,92 @@ func TestMissingProduceInputs(t *testing.T) {
 	}
 }
 
-// The mend steer's sourceability: an actionable buy path OR the owner's own
-// forage entry counts; a dry village counts as nothing.
+// The mend steer's sourceability: an actionable buy path OR an actionable own
+// forage source counts; a bare forage policy entry with no remembered source does
+// NOT (it permits a gather without establishing one — code_review); a dry village
+// counts as nothing; a mixed shortage counts per input.
 func TestBuildStallRepair_NailInputShortArms(t *testing.T) {
-	build := func(water, sellerWater int, forages bool) *StallRepairView {
+	const (
+		forageNone   = iota // no forage entry
+		forageEntry         // a `forage water` entry, no source remembered
+		forageSpring        // the entry AND an owned, remembered, stocked spring
+	)
+	build := func(water, sellerWater int, forage int) (*StallRepairView, *sim.Snapshot, sim.ActorID) {
 		smith := wornForgeSmith(water)
-		if forages {
+		if forage != forageNone {
 			smith.RestockPolicy.Restock = append(smith.RestockPolicy.Restock,
 				sim.RestockEntry{Item: "water", Source: sim.RestockSourceForage, Max: 12})
 		}
 		snap, smithID := wornForgeSnapshot(smith, 91)
 		snap.Actors["josiah"].Inventory["water"] = sellerWater
-		return buildStallRepair(snap, smithID, snap.Actors[smithID])
+		if forage == forageSpring {
+			addOwnedSpring(snap, smith, smithID)
+		}
+		return buildStallRepair(snap, smithID, snap.Actors[smithID]), snap, smithID
 	}
 
-	v := build(0, 20, false)
+	v, _, _ := build(0, 20, forageNone)
 	if v == nil || !v.MakesNails {
 		t.Fatalf("fixture drift: want a MakesNails view, got %+v", v)
 	}
-	if len(v.NailInputsShort) != 1 || v.NailInputsShort[0] != "Water" || !v.NailInputsSourceable {
-		t.Errorf("stocked seller: short=%v sourceable=%v, want [Water] true", v.NailInputsShort, v.NailInputsSourceable)
+	if len(v.NailInputsShort) != 1 || v.NailInputsShort[0] != "Water" || v.NailInputsSourceable != 1 {
+		t.Errorf("stocked seller: short=%v sourceable=%d, want [Water] 1", v.NailInputsShort, v.NailInputsSourceable)
 	}
 
-	v = build(0, 0, false)
-	if len(v.NailInputsShort) != 1 || v.NailInputsSourceable {
-		t.Errorf("dry seller: short=%v sourceable=%v, want [Water] false", v.NailInputsShort, v.NailInputsSourceable)
+	v, _, _ = build(0, 0, forageNone)
+	if len(v.NailInputsShort) != 1 || v.NailInputsSourceable != 0 {
+		t.Errorf("dry seller: short=%v sourceable=%d, want [Water] 0", v.NailInputsShort, v.NailInputsSourceable)
 	}
 
-	v = build(0, 0, true)
-	if !v.NailInputsSourceable {
-		t.Errorf("dry seller but own forage entry: sourceable=false, want true (he can gather it himself)")
+	v, _, _ = build(0, 0, forageEntry)
+	if v.NailInputsSourceable != 0 {
+		t.Errorf("dry seller + bare forage entry: sourceable=%d, want 0 (a policy entry is not a source)", v.NailInputsSourceable)
 	}
 
-	v = build(1, 0, false)
+	v, snap, smithID := build(0, 0, forageSpring)
+	if v.NailInputsSourceable != 1 {
+		t.Errorf("dry seller + own stocked spring: sourceable=%d, want 1 (he can gather it himself)", v.NailInputsSourceable)
+	}
+	// And the forage cue really would render for it — the where/how the steer leans on.
+	if fv := buildForage(snap, smithID, snap.Actors[smithID], false); fv == nil || !fv.Actionable() {
+		t.Errorf("own stocked spring: buildForage = %+v, want an actionable view", fv)
+	}
+
+	v, _, _ = build(1, 0, forageNone)
 	if len(v.NailInputsShort) != 0 {
 		t.Errorf("water on hand: short=%v, want none (the plain forge-your-own steer applies)", v.NailInputsShort)
+	}
+
+	// Mixed shortage: water sourceable (stocked seller), iron not (nobody sells it).
+	smith := wornForgeSmith(0)
+	snap, smithID = wornForgeSnapshot(smith, 91)
+	snap.Recipes["nail"].Inputs = []sim.RecipeInput{{Item: "water", Qty: 1}, {Item: "iron", Qty: 1}}
+	snap.ItemKinds["iron"] = &sim.ItemKindDef{Name: "iron", DisplayLabel: "Bar iron"}
+	v = buildStallRepair(snap, smithID, snap.Actors[smithID])
+	if len(v.NailInputsShort) != 2 || v.NailInputsSourceable != 1 {
+		t.Errorf("mixed shortage: short=%v sourceable=%d, want [Bar iron Water] 1", v.NailInputsShort, v.NailInputsSourceable)
+	}
+}
+
+// addOwnedSpring gives the smith his own water source: an owned, yield-only
+// (forage-to-sell) object with 20 ripe, remembered as a gather:water place — the
+// LLM-77 seed the forage cue's owned-bush arm reads. Placed off his tile so it is a
+// walk destination, not a bush he already stands at.
+func addOwnedSpring(snap *sim.Snapshot, smith *sim.ActorSnapshot, smithID sim.ActorID) {
+	zero := 0
+	snap.VillageObjects["forge_spring"] = &sim.VillageObject{
+		ID:            "forge_spring",
+		DisplayName:   "Spring",
+		Pos:           sim.WorldPos{X: 800, Y: 640},
+		OwnerActorID:  smithID,
+		LoiterOffsetX: &zero,
+		LoiterOffsetY: &zero,
+		Refreshes: []*sim.ObjectRefresh{
+			{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
+		},
+	}
+	smith.KnownPlaces = map[sim.PlaceRef]*sim.KnownPlace{
+		"forge_spring": {Ref: "forge_spring", Kind: sim.PlaceKindObject, Affordances: []string{"gather:water"}},
 	}
 }
 
@@ -88,17 +139,19 @@ func TestBuildStallRepair_NailInputShortArms(t *testing.T) {
 func TestRenderStallRepair_NailInputShort(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
-		sourceable bool
+		short      []string
+		sourceable int
 		want       string
 	}{
-		{"path exists", true, "no Water to forge them with: see to that first, then mend it here."},
-		{"none to be had", false, "no Water to forge them with, and none is to be had just now."},
+		{"path exists", []string{"Water"}, 1, "no Water to forge them with: see to that first, then mend it here."},
+		{"none to be had", []string{"Water"}, 0, "no Water to forge them with, and none is to be had just now."},
+		{"mixed", []string{"Bar iron", "Water"}, 1, "no Bar iron or Water to forge them with, and only some of it is to be had just now: see to what you can, then mend it here."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var b strings.Builder
 			renderStallRepair(&b, &StallRepairView{
 				Degraded: true, NailsNeeded: 5, NailsHeld: 1, Name: "Blacksmith",
-				MakesNails: true, NailInputsShort: []string{"Water"}, NailInputsSourceable: tc.sourceable,
+				MakesNails: true, NailInputsShort: tc.short, NailInputsSourceable: tc.sourceable,
 			})
 			out := b.String()
 			if !strings.Contains(out, tc.want) {

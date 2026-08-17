@@ -1,0 +1,24 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 487.
+You are carrying: nail (x1), set of linens (x1).
+
+## Around you
+You are inside the Blacksmith, your workplace, with no one else here to hear you speak.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post (you close at 6 in the evening), but your shelves are bare — step out to your own bushes to restock, then return to your post.
+
+## Your business
+Your Blacksmith is badly worn — the disrepair drags at every task, and you can't take in shelf stock from suppliers until you mend it. You can still sell what's on hand, and work goes on, though slowly. Mending takes 5 nails and you have 1 — nails are your own work, but you've no Water to forge them with: see to that first, then mend it here.
+## Your bushes to harvest
+Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.
+- Water: 0 on hand of 12 cap (room for 12 more). You own 1 bush(es) of it, 20 ripe to pick now. Use move_to with destination "forge_spring" to walk out to them.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -268,19 +268,3 @@ func (p *RestockPolicy) Produces(kind ItemKind) bool {
 	}
 	return false
 }
-
-// Forages reports whether this item kind is one the actor GATHERS for itself —
-// it has a `forage` restock entry for it — the harvest-side twin of Produces.
-// The input-short mend steer (LLM-635) reads it as one of the two ways an owner
-// can source a missing production input without a seller. Nil-safe.
-func (p *RestockPolicy) Forages(kind ItemKind) bool {
-	if p == nil {
-		return false
-	}
-	for _, e := range p.Restock {
-		if e.Item == kind && e.Source == RestockSourceForage {
-			return true
-		}
-	}
-	return false
-}

@@ -7524,6 +7524,9 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"smith_worn_forge_out_of_water":                     true, // LLM-608: degraded smith inside his own forge, short of a bought input
 		"miller_at_degraded_mill_keeps_water_forage_cue":    true, // LLM-634: degraded miller inside his own Mill, forage cue alongside
 		"smith_out_of_water_owes_nails_no_seller":           true, // LLM-635: degraded smith inside his own forge, nail input short, no seller
+		"smith_out_of_water_can_still_make_shovels":         true, // LLM-635: same, with another makeable good keeping the produce tool offered
+		"smith_out_of_water_forage_entry_no_source":         true, // LLM-635: same, bare forage entry, no remembered source
+		"smith_out_of_water_own_spring":                     true, // LLM-635: same, owned stocked spring — the forage arm
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
