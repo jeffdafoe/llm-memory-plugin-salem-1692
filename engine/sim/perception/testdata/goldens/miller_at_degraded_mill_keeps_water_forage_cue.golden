@@ -23,7 +23,7 @@ You're at your workplace.
 It is your working hours and you are at your post (you close at 7 in the evening), but your shelves are bare — step out to gather what you need, then return to your post.
 
 ## Your business
-Your Mill is badly worn — the disrepair drags at every task, and you can't restock the shelves until you mend it. You can still sell what's on hand, and work goes on, though slowly. Mending takes 5 nails and you have 0 — you'll need to buy more before you can mend it.
+Your Mill is badly worn — the disrepair drags at every task, and you can't take in shelf stock from suppliers until you mend it. You can still sell what's on hand, and work goes on, though slowly. Mending takes 5 nails and you have 0 — you'll need to buy more before you can mend it.
 ## Free sources you can gather from
 You know of these unowned sources out in the town and countryside. No one owns them, so you may take freely — walk out to gather when your own stock runs low. You choose how much to take.
 - water: 0 on hand of 20 cap (room for 20 more). The Well is a short walk to the northeast, 20 ready to gather now. Use move_to with destination "mill_well" to walk out to it.

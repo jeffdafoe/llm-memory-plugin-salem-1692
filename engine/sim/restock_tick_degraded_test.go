@@ -196,6 +196,9 @@ func TestEvaluateRestock_DegradedForageStillWarrants(t *testing.T) {
 			a.RestockPolicy.Restock = append(a.RestockPolicy.Restock,
 				RestockEntry{Item: "berries", Source: RestockSourceForage, Max: 20})
 			a.Inventory["berries"] = 1
+			if w.VillageObjects == nil {
+				w.VillageObjects = map[VillageObjectID]*VillageObject{}
+			}
 			w.VillageObjects["bush"] = forageBushObj("smith", "berries", 10)
 			rememberForageBush(a, "berries", "bush")
 			now := time.Now().UTC()
@@ -207,18 +210,28 @@ func TestEvaluateRestock_DegradedForageStillWarrants(t *testing.T) {
 			if res.(int) != 1 {
 				t.Fatalf("stamped = %d, want 1 (a degraded keeper is still woken to gather)", res.(int))
 			}
-			if !hasWarrantKind(a, WarrantKindRestock) {
-				t.Fatalf("expected a restock warrant; kinds = %v", warrantKinds(a))
-			}
+			// Exactly one restock warrant, and it must carry a RestockWarrantReason —
+			// otherwise the loop below could pass vacuously on some other restock-kind
+			// stamp (code_review).
+			var reasons []RestockWarrantReason
 			for _, m := range a.Warrants {
-				if r, ok := m.Reason.(RestockWarrantReason); ok {
-					if r.Item != "berries" {
-						t.Errorf("warrant item = %q, want the forage item berries", r.Item)
-					}
-					if r.Source != RestockSourceForage {
-						t.Errorf("warrant source = %q, want %q", r.Source, RestockSourceForage)
-					}
+				if m.Reason == nil || m.Reason.Kind() != WarrantKindRestock {
+					continue
 				}
+				r, ok := m.Reason.(RestockWarrantReason)
+				if !ok {
+					t.Fatalf("restock warrant reason is %T, want RestockWarrantReason", m.Reason)
+				}
+				reasons = append(reasons, r)
+			}
+			if len(reasons) != 1 {
+				t.Fatalf("restock warrants = %d (%+v), want exactly 1; kinds = %v", len(reasons), reasons, warrantKinds(a))
+			}
+			if reasons[0].Item != "berries" {
+				t.Errorf("warrant item = %q, want the forage item berries", reasons[0].Item)
+			}
+			if reasons[0].Source != RestockSourceForage {
+				t.Errorf("warrant source = %q, want %q", reasons[0].Source, RestockSourceForage)
 			}
 		})
 	}

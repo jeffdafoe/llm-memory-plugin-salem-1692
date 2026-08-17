@@ -3016,7 +3016,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "owner_at_degraded_stall_produce_blocked",
 		summary: "LLM-446 legacy arm: the same degraded stall with StallDegradedProducePct dialed to 0 (the LLM-304 " +
 			"full block, still an operator mode). The golden pins the blocked wording ('too worn to keep stock … can't " +
-			"restock the shelves or make more until you mend it') so the two tiers can't blur.",
+			"can't take in shelf stock from suppliers or make more until you mend it') so the two tiers can't blur.",
 		build: ownerAtDegradedStallProduceBlocked,
 	},
 	{
@@ -9082,7 +9082,7 @@ func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 
 // ownerAtDegradedStallProduceBlocked: the same degraded stall under the legacy
 // pct-0 operator setting (LLM-446 keeps it dialable) — pins the full-block
-// "too worn to keep stock … can't restock the shelves or make more" wording so
+// "too worn to keep stock … can't take in shelf stock from suppliers or make more" wording so
 // the legacy mode stays reachable and worded truthfully.
 func ownerAtDegradedStallProduceBlocked() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, actorID, warrants := stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)

@@ -427,9 +427,10 @@ func EvaluateRestock(now time.Time) Command {
 					continue
 				}
 				// LLM-304's degrade suppression now lives in firstActionableLowEntry
-				// (LLM-608), which narrows it to resale + forage rather than dropping the
-				// actor whole: the inputs his own production consumes still warrant, so
-				// the wake path matches the section the wake would render.
+				// (LLM-608, LLM-634), which narrows it to resale buy entries rather than
+				// dropping the actor whole: the inputs his own production consumes and
+				// his forage entries still warrant, so the wake path matches the
+				// sections the wake would render.
 				if !restockEligible(a, now) {
 					continue
 				}
