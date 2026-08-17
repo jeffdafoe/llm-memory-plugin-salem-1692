@@ -2275,6 +2275,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return millerWithHiredHauler(true) },
 	},
 	{
+		name: "miller_at_degraded_mill_keeps_water_forage_cue",
+		summary: "LLM-634. The 2026-08-15 deadlock trigger: the village's only `forage water` keeper stands inside " +
+			"his OWN Mill, worn past the degrade threshold (650 >= 600) with 0 of the 5 nails a mend takes, out of " +
+			"water (0 of 20, tagged sim.AttrForageRange) with a full commons Well a short walk to the northeast. " +
+			"The golden pins BOTH the degraded '## Your business' framing (limping wording at the live pct, the " +
+			"nail shortfall with no supplier on record) AND '## Free sources you can gather from' naming the Well " +
+			"in the same prompt: a degraded stall must never silence the forage cue, because foraging spends no coin " +
+			"and its yield is the upstream of the nail that mends the stall (water → nail → mend). The warrant half " +
+			"is TestEvaluateRestock_DegradedForageStillWarrants (sim). Same geometry as " +
+			"miller_with_hired_hauler_keeps_water_cue, alone and unhired, so the diff is the worn business alone. " +
+			"On shift, no orders, no price book, no clock read — byte-stable.",
+		build: millerAtDegradedMillOutOfWater,
+	},
+	{
 		name: "quenched_at_well_no_drink_cue",
 		summary: "LLM-376. A shared-VA NPC stands ON the town Well's loiter pin, thirst fully quenched (0), " +
 			"still holding a stale open-ended thirst dwell credit for the Well (the immortal credit the pre-fix " +
@@ -3002,7 +3016,7 @@ var perceptionScenarios = []perceptionScenario{
 		name: "owner_at_degraded_stall_produce_blocked",
 		summary: "LLM-446 legacy arm: the same degraded stall with StallDegradedProducePct dialed to 0 (the LLM-304 " +
 			"full block, still an operator mode). The golden pins the blocked wording ('too worn to keep stock … can't " +
-			"restock the shelves or make more until you mend it') so the two tiers can't blur.",
+			"can't take in shelf stock from suppliers or make more until you mend it') so the two tiers can't blur.",
 		build: ownerAtDegradedStallProduceBlocked,
 	},
 	{
@@ -7508,6 +7522,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"owner_inside_worn_business":                        true, // LLM-266: owner INSIDE their worn business (not at the outdoor pin)
 		"owner_holding_repair_nails_in_company":             true, // LLM-292: owner at own worn store's pin (the earmark fixture)
 		"smith_worn_forge_out_of_water":                     true, // LLM-608: degraded smith inside his own forge, short of a bought input
+		"miller_at_degraded_mill_keeps_water_forage_cue":    true, // LLM-634: degraded miller inside his own Mill, forage cue alongside
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -7988,6 +8003,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"miller_with_hired_hauler_keeps_water_cue": true,
 		// LLM-622: the owned-source arm of the same miller — same post, same hours.
 		"miller_stepping_out_to_his_own_bush": true,
+		// LLM-634: the same miller alone at his degraded Mill — same post, same hours.
+		"miller_at_degraded_mill_keeps_water_forage_cue": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8119,6 +8136,8 @@ func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
 		"miller_with_hired_hauler_keeps_water_cue": true,
 		// LLM-622: same fixture, same absent sales.
 		"miller_stepping_out_to_his_own_bush": true,
+		// LLM-634: the degraded-Mill miller carries no sales either.
+		"miller_at_degraded_mill_keeps_water_forage_cue": true,
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8731,6 +8750,98 @@ func millerWithHiredHauler(ownsBush bool) (*sim.Snapshot, sim.ActorID, []sim.War
 	return snap, josephID, nil
 }
 
+// millerAtDegradedMillOutOfWater is the LLM-634 live shape — the 2026-08-15 trigger
+// of the four-day village-wide deadlock. Joseph Scott, the village's ONLY holder of
+// a `forage water` entry, stands inside his own Mill, which has worn past the
+// degrade threshold (650 >= 600) while he holds none of the 5 nails a mend takes.
+// He is out of water (0 of a 20 cap) and the commons Well sits a short walk to the
+// northeast, full. Two cues must render together: the degraded "## Your business"
+// framing (the honest state of his shop) AND "## Free sources you can gather from"
+// naming the Well — foraging spends no coin, and its yield is the upstream of the
+// very nail that would mend the Mill (water → nail → mend), so a degraded stall
+// must never silence it. Perception never gated the forage cue on degrade; the
+// warrant side did (restock_tick.go firstActionableLowEntry, the LLM-304 `!degraded`
+// guard), so the cue rendered on a wake that never came. This golden pins the
+// perception half so a future "tidy-up" that mirrors the old warrant gate into
+// buildForage cannot land silently; TestEvaluateRestock_DegradedForageStillWarrants
+// (sim) pins the wake.
+//
+// Same geometry as millerWithHiredHauler (Well dx=+6, dy=-4 → "a short walk to the
+// northeast"), but alone and no hire, so the diff against that golden is the worn
+// business alone. Live default StallDegradedProducePct (LLM-446), so the "## Your
+// business" line is the limping wording, not the legacy full block. On shift, no
+// orders, no price book, no clock read — byte-stable.
+func millerAtDegradedMillOutOfWater() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josephID = sim.ActorID("joseph")
+		mill     = sim.StructureID("mill")
+	)
+	zero := 0
+	start, end := 360, 1140 // 06:00–19:00
+	now := 690              // 11:30 — on shift
+	joseph := &sim.ActorSnapshot{
+		Kind:               sim.KindNPCStateful,
+		DisplayName:        "Joseph Scott",
+		Role:               "miller",
+		State:              sim.StateIdle,
+		Pos:                sim.WorldPos{X: 152 * 32, Y: 55 * 32}.Tile(),
+		BusinessownerState: &sim.BusinessownerState{},
+		WorkStructureID:    mill,
+		InsideStructureID:  mill, // AtOwnBusiness — the "## Your business" cue's location arm
+		ScheduleStartMin:   &start,
+		ScheduleEndMin:     &end,
+		Coins:              55,
+		Inventory:          map[sim.ItemKind]int{"water": 0, "nail": 0},
+		AttributeSlugs:     []string{sim.AttrForageRange},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "water", Source: sim.RestockSourceForage, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:          &now,
+		NeedThresholds:            sim.NeedThresholds{},
+		Assets:                    emptyAssetSet,
+		RestockReorderPct:         25,
+		StallWearRepairThreshold:  400,
+		StallWearDegradeThreshold: 600,
+		StallNailsPerRepair:       5,
+		StallDegradedProducePct:   sim.DefaultStallDegradedProducePct,
+		Actors:                    map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph},
+		Structures:                map[sim.StructureID]*sim.Structure{mill: plainStructure(mill, "Mill")},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink},
+			"nail":  {Name: "nail", Capabilities: []string{"portable"}, DisplayLabel: "nails"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// The Mill as a wearable business: shares its id with the structure he
+			// stands inside (structure-backed businesses do — LLM-266), owned by him,
+			// worn past degrade.
+			"mill": {
+				ID:            "mill",
+				DisplayName:   "Mill",
+				Pos:           sim.WorldPos{X: 152 * 32, Y: 55 * 32},
+				OwnerActorID:  josephID,
+				Tags:          []string{sim.TagBusiness},
+				Wear:          650,
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+			},
+			"mill_well": {
+				ID:            "mill_well",
+				DisplayName:   "Well",
+				Pos:           sim.WorldPos{X: 158 * 32, Y: 51 * 32},
+				OwnerActorID:  "", // unowned commons
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
+				Refreshes: []*sim.ObjectRefresh{
+					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
+				},
+			},
+		},
+	}
+	return snap, josephID, nil
+}
+
 // npcAtWellWithThirst builds a shared-VA NPC standing ON the town Well's loiter
 // pin, holding an open-ended thirst dwell credit for the Well, with thirst set to
 // the given value. LLM-376: the pre-fix arrival path could stamp such a credit
@@ -8971,7 +9082,7 @@ func ownerAtDegradedStall() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 
 // ownerAtDegradedStallProduceBlocked: the same degraded stall under the legacy
 // pct-0 operator setting (LLM-446 keeps it dialable) — pins the full-block
-// "too worn to keep stock … can't restock the shelves or make more" wording so
+// "too worn to keep stock … can't take in shelf stock from suppliers or make more" wording so
 // the legacy mode stays reachable and worded truthfully.
 func ownerAtDegradedStallProduceBlocked() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, actorID, warrants := stallWearSnapshot("ezekiel", "ezekiel", "Ezekiel Crane", "blacksmith", 650, 5)

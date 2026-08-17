@@ -25,7 +25,7 @@ import (
 // business you're working at" so the cue states the true relationship.
 type StallRepairView struct {
 	Hired          bool            // resolved through a hire (Working for the owner), not ownership (LLM-271)
-	Degraded       bool            // worn past the degrade threshold: shut for restock buying, production slowed, still sells on-hand stock (LLM-304, LLM-446)
+	Degraded       bool            // worn past the degrade threshold: shut for shelf stock from suppliers, production slowed, still sells on-hand stock and still forages (LLM-304, LLM-446, LLM-634)
 	ProduceBlocked bool            // Degraded AND StallDegradedProducePct == 0: the legacy full production block (LLM-446) — selects the "can't make more" wording over "work goes slowly"
 	NailsNeeded    int             // nails one repair consumes
 	NailsHeld      int             // nails the actor currently carries
@@ -175,6 +175,14 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 	}
 	b.WriteString("## Your business\n")
 	// Owner path only — the hired-worker branch returned above.
+	// Both degraded tiers name the restriction as TAKING IN shelf stock from suppliers,
+	// not "restocking": the resale buy side is what degrade shuts (LLM-304,
+	// narrowed to resale by LLM-608 — the makings his own work consumes stay
+	// buyable, and "## Restocking" says so), while a keeper's own forage sources
+	// stay open (LLM-634) and can render "step out to gather" in the same prompt.
+	// A flat "can't restock" contradicted both. Worded without the token "buy":
+	// TestOwnerShortNailsRepairCueNeverGoadsUnactionableBuy reads any "buy" in
+	// this section as a buy-shaped nail errand for the sole nail producer.
 	switch {
 	case v.ProduceBlocked:
 		// LLM-304 legacy (pct 0): a fully blocked shop sells down what's on hand
@@ -182,12 +190,12 @@ func renderStallRepair(b *strings.Builder, v *StallRepairView) {
 		// trading (which earns the coin for the nails) and treats mending as the
 		// way to restore the refill, instead of the old "stays shut, earns
 		// nothing" framing that trapped a broke keeper.
-		fmt.Fprintf(b, "Your %s is too worn to keep stock — you can still sell what's on hand, but you can't restock the shelves or make more until you mend it. ", name)
+		fmt.Fprintf(b, "Your %s is too worn to keep stock — you can still sell what's on hand, but you can't take in shelf stock from suppliers or make more until you mend it. ", name)
 	case v.Degraded:
 		// LLM-446: at a positive pct the degraded shop LIMPS — work continues
 		// slowly, so the way out (make/earn the nails) stays visibly open. Only
 		// restock buying is shut.
-		fmt.Fprintf(b, "Your %s is badly worn — the disrepair drags at every task, and you can't restock the shelves until you mend it. You can still sell what's on hand, and work goes on, though slowly. ", name)
+		fmt.Fprintf(b, "Your %s is badly worn — the disrepair drags at every task, and you can't take in shelf stock from suppliers until you mend it. You can still sell what's on hand, and work goes on, though slowly. ", name)
 	default:
 		fmt.Fprintf(b, "Your %s is showing hard use and needs mending. ", name)
 	}
@@ -235,9 +243,9 @@ func renderHiredStallRepair(b *strings.Builder, v *StallRepairView, name string)
 	b.WriteString("## The business you're working at\n")
 	switch {
 	case v.ProduceBlocked:
-		fmt.Fprintf(b, "The %s you're working at is too worn to keep stock — it can still sell what's on hand, but it can't restock or make more until it's mended. ", name)
+		fmt.Fprintf(b, "The %s you're working at is too worn to keep stock — it can still sell what's on hand, but it can't take in shelf stock from suppliers or make more until it's mended. ", name)
 	case v.Degraded:
-		fmt.Fprintf(b, "The %s you're working at is badly worn — the disrepair drags at every task, and it can't restock until it's mended. It can still sell what's on hand, and the work goes on, though slowly. ", name)
+		fmt.Fprintf(b, "The %s you're working at is badly worn — the disrepair drags at every task, and it can't take in shelf stock from suppliers until it's mended. It can still sell what's on hand, and the work goes on, though slowly. ", name)
 	default:
 		fmt.Fprintf(b, "The %s you're working at is showing hard use and needs mending. ", name)
 	}

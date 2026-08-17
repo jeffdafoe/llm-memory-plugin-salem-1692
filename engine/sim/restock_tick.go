@@ -174,10 +174,10 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 	// LLM-608: a degraded business is shut for restock (LLM-304), but not for the
 	// inputs its OWN production consumes — see buildRestocking, whose narrowed
 	// degraded section this mirrors so the warrant and the cue can't disagree about
-	// what the keeper may buy. Resale stock waits on the mending; so does the forage
-	// side below, which LLM-304 shut along with it. The carve-out needs production
-	// to be possible at all, so at StallDegradedProducePct 0 (the legacy full block)
-	// productionInputs stays nil and every buy entry is skipped, as before.
+	// what the keeper may buy. Resale stock waits on the mending. The carve-out
+	// needs production to be possible at all, so at StallDegradedProducePct 0 (the
+	// legacy full block) productionInputs stays nil and every buy entry is skipped,
+	// as before. The forage side below is NOT gated on degrade at all (LLM-634).
 	degraded := ownerStallDegraded(w, a.ID)
 	var productionInputs map[ItemKind]bool
 	if degraded && !degradedProduceBlocked(w, a.ID) {
@@ -199,11 +199,18 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 			}
 		}
 	}
-	if !degraded {
-		for _, e := range policy.ForageEntries() {
-			if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && actorRemembersForageSource(a, w, e.Item) {
-				return e, RestockSourceForage, true
-			}
+	// LLM-634: forage entries wake regardless of the owner's stall state. LLM-304
+	// shut them along with the buy side, and that recreated one step upstream the
+	// deadlock LLM-446 exists to prevent: the village's only water gatherer's Mill
+	// degraded, his `forage water` line went dark, and since water makes the nail
+	// that mends every business, nothing in the village could ever exit degrade
+	// (2026-08-15→17). The LLM-304 rationale — refilling shelves you cannot trade
+	// from is wasted errand — is a coin argument, and foraging spends none; its
+	// yield is often the repair chain's own upstream. buildForage (perception/
+	// forage.go) never had a degrade gate, so this only closes a warrant⊂cue gap.
+	for _, e := range policy.ForageEntries() {
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && actorRemembersForageSource(a, w, e.Item) {
+			return e, RestockSourceForage, true
 		}
 	}
 	return RestockEntry{}, "", false
@@ -420,9 +427,10 @@ func EvaluateRestock(now time.Time) Command {
 					continue
 				}
 				// LLM-304's degrade suppression now lives in firstActionableLowEntry
-				// (LLM-608), which narrows it to resale + forage rather than dropping the
-				// actor whole: the inputs his own production consumes still warrant, so
-				// the wake path matches the section the wake would render.
+				// (LLM-608, LLM-634), which narrows it to resale buy entries rather than
+				// dropping the actor whole: the inputs his own production consumes and
+				// his forage entries still warrant, so the wake path matches the
+				// sections the wake would render.
 				if !restockEligible(a, now) {
 					continue
 				}
