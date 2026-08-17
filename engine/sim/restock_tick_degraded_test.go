@@ -172,27 +172,54 @@ func TestEvaluateRestock_DegradedProduceBlockedNoWarrant(t *testing.T) {
 	}
 }
 
-// The forage side stays shut while worn, exactly as LLM-304 left it: harvesting
-// one's own bushes replenishes the SHELVES, which is the thing the mending gates.
-// Only the buy side was narrowed.
-func TestEvaluateRestock_DegradedForageStillSuppressed(t *testing.T) {
-	a, w := degradedMaker(3)
-	a.Inventory["skillet"] = 20 // input at cap, so only the forage entry could fire
-	a.RestockPolicy.Restock = append(a.RestockPolicy.Restock,
-		RestockEntry{Item: "berries", Source: RestockSourceForage, Max: 20})
-	a.Inventory["berries"] = 1
-	if w.VillageObjects == nil {
-		w.VillageObjects = map[VillageObjectID]*VillageObject{}
-	}
-	w.VillageObjects["bush"] = forageBushObj("smith", "berries", 10)
-	rememberForageBush(a, "berries", "bush")
-	now := time.Now().UTC()
+// The forage side wakes while worn (LLM-634). LLM-304 shut it along with the buy
+// side, and that deadlocked the whole village when the sole water gatherer's Mill
+// degraded (2026-08-15→17): water makes the nail that mends every business, so
+// blocking the gather removed the village's only exit from degrade. Foraging
+// spends no coin — the LLM-304 "wasted errand" argument does not reach it — and
+// buildForage never gated on degrade, so the wake was the missing half of the
+// lockstep pair. Both produce settings are covered because foraging is not
+// production: the wake must not ride the LLM-608 buy carve-out, which does switch
+// off at the legacy pct-0 full block.
+func TestEvaluateRestock_DegradedForageStillWarrants(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		producePct int
+	}{
+		{"shop limps (live pct 50)", 50},
+		{"production hard-blocked (legacy pct 0)", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, w := degradedMaker(3)
+			w.Settings.StallDegradedProducePct = tc.producePct
+			a.Inventory["skillet"] = 20 // input at cap, so only the forage entry could fire
+			a.RestockPolicy.Restock = append(a.RestockPolicy.Restock,
+				RestockEntry{Item: "berries", Source: RestockSourceForage, Max: 20})
+			a.Inventory["berries"] = 1
+			w.VillageObjects["bush"] = forageBushObj("smith", "berries", 10)
+			rememberForageBush(a, "berries", "bush")
+			now := time.Now().UTC()
 
-	res, err := EvaluateRestock(now).Fn(w)
-	if err != nil {
-		t.Fatalf("EvaluateRestock: %v", err)
-	}
-	if res.(int) != 0 {
-		t.Errorf("stamped = %d, want 0 (the forage side is still shut while worn)", res.(int))
+			res, err := EvaluateRestock(now).Fn(w)
+			if err != nil {
+				t.Fatalf("EvaluateRestock: %v", err)
+			}
+			if res.(int) != 1 {
+				t.Fatalf("stamped = %d, want 1 (a degraded keeper is still woken to gather)", res.(int))
+			}
+			if !hasWarrantKind(a, WarrantKindRestock) {
+				t.Fatalf("expected a restock warrant; kinds = %v", warrantKinds(a))
+			}
+			for _, m := range a.Warrants {
+				if r, ok := m.Reason.(RestockWarrantReason); ok {
+					if r.Item != "berries" {
+						t.Errorf("warrant item = %q, want the forage item berries", r.Item)
+					}
+					if r.Source != RestockSourceForage {
+						t.Errorf("warrant source = %q, want %q", r.Source, RestockSourceForage)
+					}
+				}
+			}
+		})
 	}
 }
