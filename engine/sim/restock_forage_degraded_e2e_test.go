@@ -160,7 +160,7 @@ func TestDegradedKeeper_ForageErrandEndToEnd(t *testing.T) {
 	}
 
 	// 3. The gather: the harvest starts for the degraded owner and its yield lands
-	//    at completion — the shelf refills without the mend.
+	//    at completion — the keeper's stock refills without the mend.
 	startRes, err := w.Send(sim.StartHarvest("joseph", 20))
 	if err != nil {
 		t.Fatalf("StartHarvest: %v", err)
