@@ -162,6 +162,66 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	return &ForgeChoiceView{Items: items}
 }
 
+// missingProduceInputs returns the display labels of the required inputs the
+// actor lacks for ONE batch of item — precisely the shortfall that makes
+// buildForgeChoice drop the good (LLM-324) and so withdraws the produce tool.
+// Empty when the recipe is unknown, inputless, or fully stocked. Sorted by label
+// then kind so the prose is byte-stable across snapshots.
+//
+// LLM-635: the cues that steer toward MAKING a good — the mend steer's
+// "nails are your own work" and the order book's "you've yet to make it" — read
+// this so that, whenever the tool they lean on has been withdrawn for want of an
+// input, they name that input instead of instructing an action the model has no
+// tool for. Left unnamed, the live smith enumerated his tool list, found no
+// "forge", and concluded that done() at his post forges — while three sections
+// told him to forge. The label is the same catalog label "## Restocking" and
+// "## Keeping up production" use, so the noun the model reads here is the one
+// its buy/gather tools resolve.
+func missingProduceInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, item sim.ItemKind) []string {
+	if snap == nil || actorSnap == nil || snap.Recipes == nil {
+		return nil
+	}
+	recipe := snap.Recipes[item]
+	if recipe == nil {
+		return nil
+	}
+	type short struct {
+		label string
+		kind  sim.ItemKind
+	}
+	var shorts []short
+	for _, in := range recipe.Inputs {
+		if in.Qty <= 0 || actorSnap.Inventory[in.Item] >= in.Qty {
+			continue
+		}
+		shorts = append(shorts, short{label: itemDisplayLabel(snap, in.Item), kind: in.Item})
+	}
+	if len(shorts) == 0 {
+		return nil
+	}
+	sort.Slice(shorts, func(i, j int) bool {
+		if shorts[i].label != shorts[j].label {
+			return shorts[i].label < shorts[j].label
+		}
+		return shorts[i].kind < shorts[j].kind
+	})
+	labels := make([]string, len(shorts))
+	for i, s := range shorts {
+		labels[i] = s.label
+	}
+	return labels
+}
+
+// missingInputsPhrase joins missing-input labels for prose: "water", "iron or
+// water". Labels are sanitized here so every caller renders them the same way.
+func missingInputsPhrase(labels []string) string {
+	clean := make([]string, len(labels))
+	for i, l := range labels {
+		clean[i] = sanitizeInline(l)
+	}
+	return strings.Join(clean, " or ")
+}
+
 // stockTier reduces on-hand vs cap to the scene's fullness judgment, used for
 // NARRATION only. Full means a whole batch wouldn't fit from a POSITIVE on-hand;
 // the cue does NOT gate on it — buildForgeChoice computes batchFitsCap directly,

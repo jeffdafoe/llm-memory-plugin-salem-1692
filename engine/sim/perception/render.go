@@ -2834,6 +2834,14 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 		switch {
 		case o.AwaitingMake:
 			b.WriteString(" — you've yet to make it")
+			// LLM-635: name the input the make is stalled on, so the line states
+			// WHY the good isn't made rather than reading as a standing "forge it"
+			// while the produce tool is withdrawn (LLM-324). The keeper then knows
+			// the noun to fetch (the "## Restocking" / forage cues carry the where)
+			// instead of promising sundown delivery he has no tool for.
+			if len(o.MissingInputs) > 0 {
+				fmt.Fprintf(b, ", and you've no %s for it", missingInputsPhrase(o.MissingInputs))
+			}
 		case len(o.AbsentRecipientNames) > 0:
 			fmt.Fprintf(b, " — waiting for %s to return", sanitizeInline(strings.Join(o.AbsentRecipientNames, ", ")))
 		}

@@ -330,6 +330,35 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	return &ForageView{Items: items, WildSources: wild}
 }
 
+// itemHasActionableForagePath reports whether the forage cue would name a RIPE
+// source for kind — an owned, remembered bush with stock, or (for a ranged
+// forager) an unowned wild source with stock. The harvest-side twin of
+// itemHasActionableBuyPath: it answers "is there a gather the actor can take a
+// step toward", by building the same view the cue renders from, so a steer that
+// says "see to that first" on its strength always has the forage section's
+// where/how beneath it (LLM-635). A bare `forage` policy entry is NOT enough —
+// it only permits gathering; with no remembered/reachable source the cue is
+// silent and so is this. Deliberately ignores the customer-engaged deferral:
+// this is a path question ("can he"), not a this-tick render question, the same
+// posture as the buy twin.
+func itemHasActionableForagePath(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, kind sim.ItemKind) bool {
+	v := buildForage(snap, actorID, actorSnap, false)
+	if v == nil {
+		return false
+	}
+	for _, it := range v.Items {
+		if it.kind == kind && it.RipeUnits > 0 {
+			return true
+		}
+	}
+	for _, w := range v.WildSources {
+		if w.kind == kind && w.RipeUnits > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // hasForageRange reports whether the actor carries the sim.AttrForageRange
 // capability marker (LLM-253), read from the snapshot's sorted AttributeSlugs
 // projection — the same presence-only read as subjectIsWorker (LLM-26).
