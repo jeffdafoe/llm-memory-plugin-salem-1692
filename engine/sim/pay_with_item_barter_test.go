@@ -359,6 +359,90 @@ func TestCounterPay_Barter_CounterWithGoods(t *testing.T) {
 	}
 }
 
+// TestCounterPay_Barter_SpokenForGoodsReject — LLM-636: a seller's counter
+// names goods the BUYER would hand over, so it is the buyer's reservation that
+// governs. Countering for the buyer's makings is refused up front, with a
+// third-person steer, and mints no counter; countering for the buyer's spare
+// goods flips Countered as before.
+func TestCounterPay_Barter_SpokenForGoodsReject(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 10, inventory: map[sim.ItemKind]int{"wheat": 2, "bread": 10}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "wheat", Source: sim.RestockSourceBuy, Max: 6}}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	_, err := w.Send(sim.CounterPay("bob", 1, 0, []sim.PayItemInput{{Item: "wheat", Qty: 1}}, "give me your wheat", at))
+	if err == nil || !strings.Contains(err.Error(), "Alice can spare only 0 of their 2 wheat — the rest they keep to work with") {
+		t.Fatalf("want spoken-for counter reject, got %v", err)
+	}
+	if entry := readPayLedger(t, w)[1]; entry.State != sim.PayLedgerStatePending {
+		t.Fatalf("refused counter moved the entry to %q, want still pending", entry.State)
+	}
+	if _, err := w.Send(sim.CounterPay("bob", 1, 0, []sim.PayItemInput{{Item: "bread", Qty: 3}}, "rather have bread", at)); err != nil {
+		t.Fatalf("CounterPay for spare bread: %v", err)
+	}
+	if entry := readPayLedger(t, w)[1]; entry.State != sim.PayLedgerStateCountered {
+		t.Fatalf("state = %q, want countered", entry.State)
+	}
+}
+
+// TestAcceptPay_Barter_SpokenForGoodsFlipsTerminal — LLM-636: gate 12 is the
+// backstop. An offer whose pay_items were spare at mint but have since fallen
+// inside the buyer's reservation (her pack shrank) fails at accept with the
+// insufficient-goods terminal, exactly as a raw shortfall does — no reserved
+// unit moves by any door.
+func TestAcceptPay_Barter_SpokenForGoodsFlipsTerminal(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 0, inventory: map[sim.ItemKind]int{"wheat": 8}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "wheat", Source: sim.RestockSourceBuy, Max: 6}}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	// 8 wheat, cap 6 → 2 spare: the offer of 2 mints.
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "wheat", Qty: 2}}, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem: %v", err)
+	}
+	id := res.(sim.PayWithItemResult).LedgerID
+	// Her pack shrinks to 7 before Bob answers: still HELD (7 >= 2), but only 1
+	// is spare now.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Inventory["wheat"] = 7
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("shrink pack: %v", err)
+	}
+	if _, err := w.Send(sim.AcceptPay("bob", id, at.Add(time.Second))); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	if entry := readPayLedger(t, w)[id]; entry.State != sim.PayLedgerStateFailedInsufficientGoods {
+		t.Fatalf("state = %q, want failed_insufficient_goods (spoken-for at accept)", entry.State)
+	}
+	if h := readHoldings(t, w, "alice"); h.inv["wheat"] != 7 {
+		t.Errorf("alice.wheat = %d, want 7 (no reserved unit moved)", h.inv["wheat"])
+	}
+}
+
 // TestCounterPay_Barter_NoCoercionWhenGoodsInvolved — the
 // non-increasing-coin coercion (counterAmount <= offered = "yes") applies
 // ONLY to pure-coin haggles. A counter that touches goods — or a counter

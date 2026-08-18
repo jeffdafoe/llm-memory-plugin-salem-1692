@@ -1747,12 +1747,15 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientFunds, "", at), nil
 	}
 	// Gate 12: barter goods (ZBBS-HOME-393). The buyer must still hold
-	// every PayItem they offered to pay WITH. Like funds, this is a
+	// every PayItem they offered to pay WITH — and hold it SPARE (the
+	// spoken-for reservation, LLM-636), so a counter that named the buyer's
+	// makings, or a pack that shrank into its reserve since the mint, cannot
+	// move goods the carry line called not for trade. Like funds, this is a
 	// drift backstop — the mint fast-fail already rejected an
 	// uncoverable offer, but the buyer's holdings can change between
 	// mint and accept. Flip to the goods-specific terminal so admin /
 	// telemetry can distinguish a goods shortfall from a coin one.
-	if !buyerHoldsPayItems(buyer, entry.PayItems) {
+	if !buyerCanSparePayItems(w, buyer, entry.PayItems) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientGoods, "", at), nil
 	}
 	// Seller balance overflow guard — symmetric with PR B's Pay
@@ -1968,6 +1971,27 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, counterP
 			resolvedCounterItems, err := resolvePayItems(w, counterPayItems)
 			if err != nil {
 				return nil, err
+			}
+			// The counter names goods the BUYER would hand over, so it is the
+			// buyer's spare that governs (LLM-636): a seller asking for the
+			// buyer's makings or the coat on their back is refused here, with a
+			// steer, rather than minting a counter the buyer's accept then fails
+			// on gate 12 as a wordless "the sale fell through". Coverage of the
+			// counter's quantities against the buyer's raw holdings is NOT checked
+			// here — the buyer's holdings can change before they answer, and gate
+			// 12 owns that at accept; only the reservation, which is a standing
+			// fact about the buyer's trade, is worth refusing up front.
+			if buyer := w.Actors[entry.BuyerID]; buyer != nil {
+				for _, short := range spokenForShortfall(w, buyer, resolvedCounterItems) {
+					spokenFor := SpokenFor(w.ItemKinds, w.Recipes, LiveBarterHolder(w, buyer))
+					if held := buyer.Inventory[short.Kind]; held >= short.Qty {
+						return nil, fmt.Errorf(
+							"%s can spare only %d of their %d %s — %s. Counter for goods they can spare, or coins.",
+							buyer.DisplayName, SpareQty(buyer.Inventory, spokenFor, short.Kind), held, short.Kind,
+							theirSpokenForClause(spokenFor[short.Kind].Reason),
+						)
+					}
+				}
 			}
 			// A counter must propose something — coins, goods, or both
 			// (symmetric with the offer-side rule, ZBBS-HOME-393).
@@ -2433,6 +2457,35 @@ func buyerHoldsPayItems(buyer *Actor, payItems []ItemKindQty) bool {
 	return true
 }
 
+// buyerCanSparePayItems is buyerHoldsPayItems with the spoken-for reservation
+// (LLM-636): every goods line must be covered by the buyer's SPARE units, not
+// merely held. This is the one goods-coverage question every trade path asks —
+// pay_with_item mint and accept (gate 12), counter_pay naming the buyer's
+// goods, and the labor wage in kind (employerCanCoverLaborReward) — so a
+// making or the garment on someone's back can never enter a trade by any
+// door once the carry line has called it "not for trade". A gift (give) is
+// deliberately not a trade and stays on the raw holdings check (LLM-544).
+func buyerCanSparePayItems(w *World, buyer *Actor, payItems []ItemKindQty) bool {
+	return len(spokenForShortfall(w, buyer, payItems)) == 0
+}
+
+// spokenForShortfall returns the goods lines the holder cannot cover from
+// SPARE units — held short OR held but spoken for — for the caller to name in
+// its steer. nil when every line is coverable.
+func spokenForShortfall(w *World, holder *Actor, payItems []ItemKindQty) []ItemKindQty {
+	if len(payItems) == 0 {
+		return nil
+	}
+	spokenFor := SpokenFor(w.ItemKinds, w.Recipes, LiveBarterHolder(w, holder))
+	var short []ItemKindQty
+	for _, pi := range payItems {
+		if SpareQty(holder.Inventory, spokenFor, pi.Kind) < pi.Qty {
+			short = append(short, pi)
+		}
+	}
+	return short
+}
+
 // payOfferShortfall returns a descriptive tool error if the buyer can't
 // cover the offer's coins + goods at this instant, or nil if they can.
 // The offer-time fast-fail (mint + fast-path) — an OPTIMIZATION that
@@ -2444,9 +2497,8 @@ func buyerHoldsPayItems(buyer *Actor, payItems []ItemKindQty) bool {
 // mending, or the one suit on its back, is steered to goods it can spare —
 // the same reservation the "## Restocking" barter steer and the carry
 // line already read, so the tool refuses only what the prompt said was
-// not for trade. Deliberately the buyer's OWN offer only: gate 12 at accept
-// stays a raw-holdings check, so a seller's counter naming such goods is
-// the buyer's call to accept or decline on what its carry line says.
+// not for trade. Gate 12 at accept asks the same question
+// (buyerCanSparePayItems), and counter_pay asks it of the buyer up front.
 func payOfferShortfall(w *World, buyer *Actor, amount, qty int, payItems []ItemKindQty) error {
 	if !buyerCanAfford(buyer, amount) {
 		// Name the quantity the purse actually covers at the offered unit price,
@@ -2494,12 +2546,22 @@ func payOfferShortfall(w *World, buyer *Actor, amount, qty int, payItems []ItemK
 }
 
 // spokenForClause is the terse reason a spoken-for good is refused as
-// payment, keyed on the SpokenFor claim (LLM-636).
+// payment, keyed on the SpokenFor claim (LLM-636) — second person, for the
+// holder's own offer.
 func spokenForClause(reason SpokenForReason) string {
 	if reason == SpokenForGarment {
 		return "the rest is your own clothes"
 	}
 	return "the rest you keep to work with"
+}
+
+// theirSpokenForClause is spokenForClause in the third person, for a seller
+// whose counter named the buyer's spoken-for goods.
+func theirSpokenForClause(reason SpokenForReason) string {
+	if reason == SpokenForGarment {
+		return "the rest is their own clothes"
+	}
+	return "the rest they keep to work with"
 }
 
 // resolvePayItems resolves a barter offer's free-text goods lines to

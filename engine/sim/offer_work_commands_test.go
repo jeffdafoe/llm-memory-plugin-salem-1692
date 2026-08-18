@@ -45,6 +45,43 @@ func mustOffer(t *testing.T, w *sim.World, employer sim.ActorID, worker string, 
 	return placed
 }
 
+// TestOfferWork_SpokenForWageRejects — LLM-636: an in-kind wage is paid from
+// SPARE goods. An employer naming the makings its own restock policy keeps
+// (wheat held under its cap) is refused at intake with the spare wording and
+// no offer minted; the same wage from spare wheat (held above the cap) mints.
+func TestOfferWork_SpokenForWageRejects(t *testing.T) {
+	w, stop := buildLaborWorld(t, offerHuddle, offerScene, []laborActor{
+		{id: "prudence", displayName: "Prudence Ward", coins: 0, inventory: map[sim.ItemKind]int{"wheat": 2}, huddleID: offerHuddle, workStruct: "apothecary", insideStruct: "apothecary"},
+		{id: "lewis", displayName: "Lewis Walker", coins: 26, huddleID: offerHuddle, worker: true, insideStruct: "apothecary"},
+	})
+	defer stop()
+	setPack := func(qty int) {
+		t.Helper()
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["prudence"]
+			a.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "wheat", Source: sim.RestockSourceBuy, Max: 6}}}
+			a.Inventory = map[sim.ItemKind]int{"wheat": qty}
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed policy: %v", err)
+		}
+	}
+	at := time.Now().UTC()
+	setPack(2)
+	_, err := w.Send(sim.OfferWork("prudence", "Lewis Walker", 0, []sim.PayItemInput{{Item: "wheat", Qty: 1}}, 240, at))
+	if err == nil || !strings.Contains(err.Error(), "you cannot spare the 1 wheat you offered as pay") {
+		t.Fatalf("want spoken-for wage reject, got %v", err)
+	}
+	setPack(8)
+	res, err := w.Send(sim.OfferWork("prudence", "Lewis Walker", 0, []sim.PayItemInput{{Item: "wheat", Qty: 1}}, 240, at))
+	if err != nil {
+		t.Fatalf("OfferWork with spare wheat: %v", err)
+	}
+	if _, ok := res.(sim.LaborOfferResult); !ok {
+		t.Fatalf("OfferWork result = %T, want sim.LaborOfferResult", res)
+	}
+}
+
 // TestOfferWork_MintsEmployerInitiatedPendingOffer is the happy path: the offer
 // stands, it is the employer's, and the worker is the one who owes an answer.
 func TestOfferWork_MintsEmployerInitiatedPendingOffer(t *testing.T) {

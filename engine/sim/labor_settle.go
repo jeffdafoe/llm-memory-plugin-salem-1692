@@ -236,7 +236,7 @@ func settleCompletedLabor(w *World, offer *LaborOffer, now time.Time) {
 	// to explain, and the unpaid path already narrates cleanly.
 	canPay := worker != nil &&
 		employer != nil &&
-		employerCanCoverLaborReward(employer, offer) &&
+		employerCanCoverLaborReward(w, employer, offer) &&
 		worker.Coins <= math.MaxInt-offer.Reward
 	if canPay {
 		for _, ri := range offer.RewardItems {
