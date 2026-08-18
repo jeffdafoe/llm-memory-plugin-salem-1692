@@ -441,6 +441,9 @@ func TestAcceptPay_Barter_SpokenForGoodsFlipsTerminal(t *testing.T) {
 	if h := readHoldings(t, w, "alice"); h.inv["wheat"] != 7 {
 		t.Errorf("alice.wheat = %d, want 7 (no reserved unit moved)", h.inv["wheat"])
 	}
+	if h := readHoldings(t, w, "bob"); h.inv["stew"] != 5 || h.inv["wheat"] != 0 {
+		t.Errorf("bob holds stew=%d wheat=%d, want 5/0 (neither leg moved)", h.inv["stew"], h.inv["wheat"])
+	}
 }
 
 // TestCounterPay_Barter_NoCoercionWhenGoodsInvolved — the
