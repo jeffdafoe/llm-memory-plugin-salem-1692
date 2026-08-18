@@ -989,7 +989,7 @@ func PayWithItem(
 			// acceptance. A pending offer staked against an on-break or
 			// out-of-stock seller is harmless — it resolves at accept
 			// time, or is withdrawn / expires first.
-			if err := payOfferShortfall(buyer, amount, qty, resolvedPayItems); err != nil {
+			if err := payOfferShortfall(w, buyer, amount, qty, resolvedPayItems); err != nil {
 				return nil, err
 			}
 
@@ -2438,7 +2438,16 @@ func buyerHoldsPayItems(buyer *Actor, payItems []ItemKindQty) bool {
 // The offer-time fast-fail (mint + fast-path) — an OPTIMIZATION that
 // spares a wasted seller deliberation tick, not a reservation. Coins are
 // reported first, then the first goods line short. ZBBS-HOME-393.
-func payOfferShortfall(buyer *Actor, amount, qty int, payItems []ItemKindQty) error {
+//
+// The goods leg is checked against the buyer's SPARE units, not its raw
+// holdings (SpokenFor, LLM-636): a maker naming the thread it keeps for
+// mending, or the one suit on its back, is steered to goods it can spare —
+// the same reservation the "## Restocking" barter steer and the carry
+// line already read, so the tool refuses only what the prompt said was
+// not for trade. Deliberately the buyer's OWN offer only: gate 12 at accept
+// stays a raw-holdings check, so a seller's counter naming such goods is
+// the buyer's call to accept or decline on what its carry line says.
+func payOfferShortfall(w *World, buyer *Actor, amount, qty int, payItems []ItemKindQty) error {
 	if !buyerCanAfford(buyer, amount) {
 		// Name the quantity the purse actually covers at the offered unit price,
 		// so the model lowers the QUANTITY rather than just the coins
@@ -2465,15 +2474,32 @@ func payOfferShortfall(buyer *Actor, amount, qty int, payItems []ItemKindQty) er
 			buyer.Coins, amount, affordable,
 		)
 	}
+	spokenFor := SpokenFor(w.ItemKinds, w.Recipes, LiveBarterHolder(w, buyer))
 	for _, pi := range payItems {
-		if buyer.Inventory[pi.Kind] < pi.Qty {
+		held := buyer.Inventory[pi.Kind]
+		if held < pi.Qty {
 			return fmt.Errorf(
 				"you don't have %d %s to offer (you carry %d) — offer goods you actually hold.",
-				pi.Qty, pi.Kind, buyer.Inventory[pi.Kind],
+				pi.Qty, pi.Kind, held,
+			)
+		}
+		if spare := SpareQty(buyer.Inventory, spokenFor, pi.Kind); spare < pi.Qty {
+			return fmt.Errorf(
+				"you can spare only %d of your %d %s — %s. Offer goods you can spare.",
+				spare, held, pi.Kind, spokenForClause(spokenFor[pi.Kind].Reason),
 			)
 		}
 	}
 	return nil
+}
+
+// spokenForClause is the terse reason a spoken-for good is refused as
+// payment, keyed on the SpokenFor claim (LLM-636).
+func spokenForClause(reason SpokenForReason) string {
+	if reason == SpokenForGarment {
+		return "the rest is your own clothes"
+	}
+	return "the rest you keep to work with"
 }
 
 // resolvePayItems resolves a barter offer's free-text goods lines to

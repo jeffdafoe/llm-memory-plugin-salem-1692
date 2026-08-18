@@ -1,0 +1,34 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.
+You are carrying: suit of homespun (x1, your own clothes — not for trade), journeycakes (x3), bowls of porridge (x12, to eat here — not for trade), spools of thread (x2, kept to work with — not for trade), flasks of water (x6, kept to work with — not for trade).
+
+## Around you
+You are inside The Inn, your workplace, with no one else here to hear you speak.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post (you close at 6 in the evening), but what you need is not to be had here — going to fetch it and coming back is part of minding your trade.
+
+## Keeping up production
+- You use flour to make journeycake — 0 on hand, enough for about 0 more, and you're running low.
+- You use water to make journeycake — 6 on hand, enough for about 18 more, and you're running low.
+- You use flour to make porridge — 0 on hand, enough for about 0 more, and you're running low.
+- You use water to make porridge — 6 on hand, enough for about 7 more, and you're running low.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 0 flour on hand and room for 6 more at the most. It is generally worth about 3 coins each — pay much above that and you're overpaying. No seller is here now.
+  - buy from General Store (destination: general_store), which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items)
+- You have 0 salt on hand and room for 6 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying. No seller is here now.
+  - buy from General Store (destination: general_store), which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items)
+- You have 6 water on hand and room for 4 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying. No seller is here now.
+  - buy from General Store (destination: general_store), which your coins won't cover — offer goods you carry in trade instead (use pay_with_item with pay_items)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

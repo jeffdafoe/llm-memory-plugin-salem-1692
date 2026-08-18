@@ -311,9 +311,12 @@ func actorHasBuyPath(w *World, a *Actor, item ItemKind, now time.Time) bool {
 //   - failing coin, any OTHER good to put up in a pay_with_item bundle
 //     (HoldsBarterableGoodsExcept) — the seller adjudicates the bundle, so goods the
 //     buyer carries ARE means to pay. The item being bought is excluded: a keeper
-//     down to his last few carrots cannot buy carrots by offering carrots.
+//     down to his last few carrots cannot buy carrots by offering carrots. So are
+//     the goods the buyer keeps to work with and the clothes on its back
+//     (SpokenFor, LLM-636): a maker cannot buy salt with the thread it just
+//     bought for mending either.
 //
-// So a supplier is a dead end exactly when the buyer holds no goods to offer AND
+// So a supplier is a dead end exactly when the buyer holds no SPARE goods to offer AND
 // either cannot cover its remembered price in coin, or has no coin at all for an
 // unknown one. (Being merely SHORT of a known price is not enough to be dropped — the
 // pack still has to be empty too.) The old test was coins-only (LLM-216): it asked
@@ -329,7 +332,7 @@ func buyerCanTransact(w *World, a *Actor, vendorID ActorID, item ItemKind) bool 
 	case price == 0 && a.Coins > 0:
 		return true
 	default:
-		return HoldsBarterableGoodsExcept(w.ItemKinds, a.Inventory, item)
+		return HoldsBarterableGoodsExcept(w.ItemKinds, w.Recipes, LiveBarterHolder(w, a), item)
 	}
 }
 

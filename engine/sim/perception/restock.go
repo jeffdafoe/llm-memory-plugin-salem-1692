@@ -357,8 +357,9 @@ const (
 	// as a destination once the memory lapses.
 	restockBlockShut restockBlockReason = iota
 	// restockBlockNoMeans — the buyer has no coin that covers the remembered price AND
-	// no goods at all to put up in trade. The genuine payment dead-end: nothing to pay
-	// with, in any form the seller could accept.
+	// no SPARE goods to put up in trade (sim.HoldsBarterableGoodsExcept — the makings
+	// it works with and the clothes on its back don't count, LLM-636). The genuine
+	// payment dead-end: nothing to pay with, in any form the seller could accept.
 	restockBlockNoMeans
 	// restockBlockStandoff — the buyer's offers for this item at this supplier
 	// dead-ended in a recent conversation (businessRememberedSaleStandoff, the
@@ -929,8 +930,10 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	coins := buyerSnap.Coins
 	// Goods it could put up in trade FOR this item — the item itself excluded, since a
 	// keeper down to his last few carrots cannot buy carrots by offering carrots
-	// (LLM-406). Same predicate the warrant reads (sim.buyerCanTransact).
-	hasGoods := sim.HoldsBarterableGoodsExcept(snap.ItemKinds, buyerSnap.Inventory, itemKind)
+	// (LLM-406), and the goods it keeps to work with excluded likewise (the
+	// spoken-for reservation, LLM-636). Same predicate the warrant reads
+	// (sim.buyerCanTransact).
+	hasGoods := sim.HoldsBarterableGoodsExcept(snap.ItemKinds, snap.Recipes, sim.SnapshotBarterHolder(snap, buyerSnap), itemKind)
 	// LLM-504: buyer-side co-presence anchors, for naming a keeper who is standing
 	// with the buyer on that keeper's walk-to bullet (CoPresentKeeper). Same
 	// huddle-or-scope pair coPresentSellerForItem resolves through.
@@ -1650,8 +1653,12 @@ func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 	for _, bl := range it.Blocked {
 		switch bl.Reason {
 		case restockBlockNoMeans:
+			// "a good you can spare", not "a single good" (LLM-636): the pack may
+			// well hold something — the makings the keeper works with, the clothes on
+			// its back — and the carry line has just said so. What it holds none of is
+			// a good it could put up.
 			noMeans = true
-			fmt.Fprintf(b, "  - %s sells %s, but you have neither the coin for it nor a single good to put up in trade.\n",
+			fmt.Fprintf(b, "  - %s sells %s, but you have neither the coin for it nor a good you can spare to put up in trade.\n",
 				sanitizeInline(bl.StructureLabel), sanitizeInline(it.ItemLabel))
 		case restockBlockStandoff:
 			standoff = true

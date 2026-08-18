@@ -84,6 +84,59 @@ func TestPayWithItem_Barter_BuyerLacksGoodsRejects(t *testing.T) {
 	}
 }
 
+// TestPayWithItem_Barter_SpokenForGoodsReject — LLM-636: the mint fast-fail
+// refuses pay_items the buyer's own restock policy has spoken for (a non-food
+// buy line, held under its cap, is the maker's makings), and names what it CAN
+// spare. The same wheat above the cap is spare and mints.
+func TestPayWithItem_Barter_SpokenForGoodsReject(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 0, inventory: map[sim.ItemKind]int{"wheat": 2}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	setPolicy := func(inv map[sim.ItemKind]int) {
+		t.Helper()
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{{Item: "wheat", Source: sim.RestockSourceBuy, Max: 6}}}
+			a.Inventory = inv
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("seed policy: %v", err)
+		}
+	}
+	at := time.Now().UTC()
+
+	// 2 wheat under a cap of 6 — all of it is makings; the offer is refused with
+	// the spare count and the reason, and no ledger entry is minted.
+	setPolicy(map[sim.ItemKind]int{"wheat": 2})
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "wheat", Qty: 1}}, 0, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "you can spare only 0 of your 2 wheat — the rest you keep to work with") {
+		t.Fatalf("want spoken-for mint reject, got %v", err)
+	}
+	if ledger := readPayLedger(t, w); len(ledger) != 0 {
+		t.Fatalf("a refused spoken-for offer minted a ledger entry: %+v", ledger)
+	}
+
+	// 8 wheat against the same cap: 2 are spare. Offering 3 is refused naming the
+	// 2; offering 2 mints.
+	setPolicy(map[sim.ItemKind]int{"wheat": 8})
+	_, err = w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "wheat", Qty: 3}}, 0, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "you can spare only 2 of your 8 wheat") {
+		t.Fatalf("want spare-count mint reject, got %v", err)
+	}
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "wheat", Qty: 2}}, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem with spare wheat: %v", err)
+	}
+	if out := res.(sim.PayWithItemResult); out.State != sim.PayLedgerStatePending {
+		t.Fatalf("state = %q, want pending", out.State)
+	}
+}
+
 // TestPayWithItem_Barter_UnknownAndDupGoodsReject — unknown item kinds and
 // duplicate kinds in pay_items reject at mint.
 func TestPayWithItem_Barter_UnknownAndDupGoodsReject(t *testing.T) {

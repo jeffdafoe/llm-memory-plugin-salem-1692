@@ -908,6 +908,26 @@ func deepFatigueDominatesNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThr
 	return false
 }
 
+// spokenForAnnotation is the carry-line clause for a good the spoken-for
+// reservation touches (LLM-636), or "" when every unit is spare. afterUse
+// marks that a "used to produce X" clause precedes it, so the not-for-trade
+// tail reads "— not for trade" off that clause instead of restating the
+// makings reason it already gave.
+func spokenForAnnotation(it InventoryItem, afterUse bool) string {
+	switch {
+	case it.SpokenFor == sim.SpokenForNone || it.Spare >= it.Qty:
+		return ""
+	case it.Spare > 0:
+		return fmt.Sprintf(", %d to spare", it.Spare)
+	case it.SpokenFor == sim.SpokenForGarment:
+		return ", your own clothes — not for trade"
+	case afterUse:
+		return " — not for trade"
+	default:
+		return ", kept to work with — not for trade"
+	}
+}
+
 func renderActor(b *strings.Builder, a ActorView) {
 	b.WriteString("## You\n")
 	if line := renderFeltNeeds(a.Needs, a.NeedThresholds); line != "" {
@@ -982,13 +1002,25 @@ func renderActor(b *strings.Builder, a ActorView) {
 			// here — not for trade)" — so the model spends it on its own hunger
 			// rather than planning a barter the resolver rejects. Mutually
 			// exclusive with Use (Use is inedibles-only).
-			if it.Use != "" {
-				fmt.Fprintf(b, "%s (x%d, %s)", sanitizeInline(noun), it.Qty, sanitizeInline(it.Use))
-			} else if it.EatHere {
-				fmt.Fprintf(b, "%s (x%d, to eat here — not for trade)", sanitizeInline(noun), it.Qty)
-			} else {
-				fmt.Fprintf(b, "%s (x%d)", sanitizeInline(noun), it.Qty)
+			//
+			// The spoken-for reservation (LLM-636) rides the same parens: a good
+			// with no spare unit is "not for trade" with its reason (the makings
+			// the keeper works with, or the garment on its back), and a partly
+			// reserved one names how many are to spare — so the model plans its
+			// barter from the count the pay_with_item gate will actually accept.
+			// It folds after Use ("used to produce stew — not for trade") and
+			// yields to EatHere, which already says not-for-trade.
+			fmt.Fprintf(b, "%s (x%d", sanitizeInline(noun), it.Qty)
+			switch {
+			case it.Use != "":
+				fmt.Fprintf(b, ", %s", sanitizeInline(it.Use))
+				b.WriteString(spokenForAnnotation(it, true))
+			case it.EatHere:
+				b.WriteString(", to eat here — not for trade")
+			default:
+				b.WriteString(spokenForAnnotation(it, false))
 			}
+			b.WriteString(")")
 		}
 		// LLM-574: a settled buy-errand traveler's pack is his own provisions, and the
 		// claim rides HERE rather than in his rounds cue. LLM-544 first wrote it into

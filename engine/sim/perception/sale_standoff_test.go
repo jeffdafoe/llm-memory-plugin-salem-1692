@@ -271,7 +271,7 @@ func TestRenderBlockedItem_StandoffProse(t *testing.T) {
 	const (
 		standoffBullet = "The Blacksmith sells nails, but you pressed them for it not long ago and could not come to terms."
 		shutBullet     = "Thorne's General Store sells nails, but you called there and found it shut."
-		noMeansBullet  = "Ellis Farm sells nails, but you have neither the coin for it nor a single good to put up in trade."
+		noMeansBullet  = "Ellis Farm sells nails, but you have neither the coin for it nor a good you can spare to put up in trade."
 		standoffCoda   = "Let that one rest and ask again later in the day"
 		shutCoda       = "Look in again another day"
 		noMeansCoda    = "Keep your shop and take what trade comes to you"

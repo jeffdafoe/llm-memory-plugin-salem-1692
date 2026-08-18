@@ -1536,10 +1536,19 @@ type InventoryItem struct {
 	// the model doesn't plan a barter the resolver rejects. Mutually exclusive
 	// with Use (Use is inedibles-only; EatHere is consumables-only).
 	EatHere bool
-	// Barterable mirrors sim.KindBarterable for this kind (LLM-445): could this
-	// good go up in a pay_items / offer_trade / labor-reward bundle at all (not a
-	// service, not eat-here-only). Render's coinless "offer goods in trade" line
-	// keys on it so the purse cue and the means-to-pay gates
+	// Spare is how many held units are up for barter, and SpokenFor why the rest
+	// are not (sim.SpokenFor, LLM-636): the makings a keeper works with, or the
+	// one garment on its back. Render annotates a kind with no spare unit "not
+	// for trade" and a partly-reserved one with its spare count, so the carry
+	// line says what the pay_with_item intake gate will refuse. Spare == Qty and
+	// SpokenForNone for an unreserved good.
+	Spare     int
+	SpokenFor sim.SpokenForReason
+	// Barterable is whether this good could go up in a pay_items / offer_trade /
+	// labor-reward bundle right now: its kind is tradeable at all
+	// (sim.KindBarterable — not a service, not eat-here-only; LLM-445) AND at
+	// least one unit is spare (LLM-636). Render's coinless "offer goods in trade"
+	// line keys on it so the purse cue and the means-to-pay gates
 	// (holdsBarterableGoods) cannot disagree about the same pack.
 	Barterable bool
 	kind       sim.ItemKind

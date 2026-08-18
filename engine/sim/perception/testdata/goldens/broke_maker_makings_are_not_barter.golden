@@ -1,0 +1,31 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.
+You are carrying: suit of homespun (x1, your own clothes — not for trade), bowls of porridge (x12, to eat here — not for trade), spools of thread (x2, kept to work with — not for trade), flasks of water (x6, kept to work with — not for trade).
+
+## Around you
+You are inside The Inn, your workplace, with no one else here to hear you speak.
+It is midday.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## Restocking
+Your shop stock of these bought-in goods is running low, and there is no way to replenish it just now. This is what stands in the way:
+- You have 0 flour on hand, and no way to restock just now.
+  - General Store sells flour, but you have neither the coin for it nor a good you can spare to put up in trade.
+  Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.
+- You have 0 salt on hand, and no way to restock just now.
+  - General Store sells salt, but you have neither the coin for it nor a good you can spare to put up in trade.
+  Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.
+- You have 6 water on hand, and no way to restock just now.
+  - General Store sells water, but you have neither the coin for it nor a good you can spare to put up in trade.
+  Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -1297,9 +1297,11 @@ func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
 // particular goods match a given ask (that is the per-offer coverage check).
 // The sim-side mirror of perception.holdsBarterableGoods (LLM-222), now
 // literally the same predicate so the hiring gate and the buy-side
-// means-to-pay cue cannot drift. World-goroutine-only.
+// means-to-pay cue cannot drift — including its spoken-for reservation
+// (LLM-636): a wage is paid from spare goods, not the makings the shop runs on.
+// World-goroutine-only.
 func employerCanHireInKind(w *World, employer *Actor) bool {
-	return HoldsBarterableGoodsExcept(w.ItemKinds, employer.Inventory, "")
+	return HoldsBarterableGoodsExcept(w.ItemKinds, w.Recipes, LiveBarterHolder(w, employer), "")
 }
 
 // workerHasLiveJob reports whether the worker currently holds a committed labor
