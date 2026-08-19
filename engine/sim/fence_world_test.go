@@ -43,6 +43,15 @@ func fenceTestHouseAsset() *sim.Asset {
 	}
 }
 
+// picketTestAsset is a SECOND fence asset — different art, so it never joins
+// the ranch fence: a picket segment under a ranch run is an ordinary obstacle.
+func picketTestAsset() *sim.Asset {
+	a := fenceTestAsset()
+	a.ID = "picket"
+	a.Name = "Picket Fence"
+	return a
+}
+
 // buildFenceWorld seeds all-grass terrain (with optional water tiles) plus the
 // fence and house assets, and runs the world goroutine.
 func buildFenceWorld(t *testing.T, water ...sim.TilePos) *sim.World {
@@ -59,6 +68,7 @@ func buildFenceWorld(t *testing.T, water ...sim.TilePos) *sim.World {
 	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
 		fenceTestAssetID: fenceTestAsset(),
 		"house":          fenceTestHouseAsset(),
+		"picket":         picketTestAsset(),
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -238,11 +248,13 @@ func TestPlaceFenceRun_BlockedTilePlacesNothing(t *testing.T) {
 	if _, err := w.Send(sim.CreateVillageObject("house", hx, hy, "", "tester")); err != nil {
 		t.Fatalf("house: %v", err)
 	}
-	// An existing fence line along y=30, x=30..33.
+	// A PICKET fence line along y=30, x=30..33 — another asset's fence is just
+	// an obstacle to a ranch run (same-asset segments are shared instead; see
+	// TestPlaceFenceRun_ConnectsToExistingRun).
 	fx1, fy1 := tilePx(sim.TilePos{X: sim.PadX + 30, Y: sim.PadY + 30})
 	fx2, fy2 := tilePx(sim.TilePos{X: sim.PadX + 33, Y: sim.PadY + 30})
-	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, fx1, fy1, fx2, fy2, "tester")); err != nil {
-		t.Fatalf("existing fence: %v", err)
+	if _, err := w.Send(sim.PlaceFenceRun("picket", fx1, fy1, fx2, fy2, "tester")); err != nil {
+		t.Fatalf("picket fence: %v", err)
 	}
 	before := countObjects(t, w)
 
@@ -254,7 +266,7 @@ func TestPlaceFenceRun_BlockedTilePlacesNothing(t *testing.T) {
 	}{
 		{"water on the top edge", sim.TilePos{sim.PadX + 10, sim.PadY + 10}, sim.TilePos{sim.PadX + 13, sim.PadY + 12}, water, "water"},
 		{"house footprint under the left edge", sim.TilePos{sim.PadX + 20, sim.PadY + 18}, sim.TilePos{sim.PadX + 25, sim.PadY + 24}, sim.TilePos{sim.PadX + 20, sim.PadY + 20}, "footprint"},
-		{"existing fence under the run", sim.TilePos{sim.PadX + 28, sim.PadY + 30}, sim.TilePos{sim.PadX + 35, sim.PadY + 30}, sim.TilePos{sim.PadX + 30, sim.PadY + 30}, "fence"},
+		{"another fence asset under the run", sim.TilePos{sim.PadX + 28, sim.PadY + 30}, sim.TilePos{sim.PadX + 35, sim.PadY + 30}, sim.TilePos{sim.PadX + 30, sim.PadY + 30}, "fence"},
 		// An off-grid corner has no tile to name: the error carries (-1,-1) and the
 		// clamped pixel position instead.
 		{"off the map", sim.TilePos{-2, sim.PadY + 5}, sim.TilePos{sim.PadX + 2, sim.PadY + 5}, sim.TilePos{-1, -1}, "bounds"},
@@ -396,5 +408,191 @@ func TestDeleteFenceRun_RemovesExactlyTheRun(t *testing.T) {
 	}
 	if _, err := w.Send(sim.DeleteFenceRun("")); !errors.Is(err, sim.ErrFenceRunNotFound) {
 		t.Errorf("blank id err = %v, want sim.ErrFenceRunNotFound", err)
+	}
+}
+
+// fenceStates snapshots state + run ids for a set of tiles of the fence asset
+// ("" state when no segment stands there).
+func fenceStates(t *testing.T, w *sim.World, tiles []sim.TilePos) ([]string, [][]string) {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		byTile := make(map[sim.TilePos]*sim.VillageObject)
+		for _, o := range world.VillageObjects {
+			if o != nil && o.AssetID == fenceTestAssetID {
+				byTile[o.Pos.Tile()] = o
+			}
+		}
+		states := make([]string, len(tiles))
+		runs := make([][]string, len(tiles))
+		for i, tile := range tiles {
+			if o := byTile[tile]; o != nil {
+				states[i] = o.CurrentState
+				runs[i] = sim.FenceRunIDsOf(o)
+			}
+		}
+		return [2]any{states, runs}, nil
+	}})
+	if err != nil {
+		t.Fatalf("fenceStates: %v", err)
+	}
+	pair := res.([2]any)
+	return pair[0].([]string), pair[1].([][]string)
+}
+
+// TestPlaceFenceRun_ConnectsToExistingRun is the LLM-638 ask: draw a horizontal
+// line, then draw a vertical line down from its right end. The shared end tile
+// is not re-minted, joins the second run, and its piece becomes the corner; the
+// new run resolves against it. Deleting the second run releases the junction
+// (still standing for run 1, end cap restored); deleting the first removes it.
+func TestPlaceFenceRun_ConnectsToExistingRun(t *testing.T) {
+	w := buildFenceWorld(t)
+	tp := func(x, y int) sim.TilePos { return sim.TilePos{X: sim.PadX + x, Y: sim.PadY + y} }
+	ax, ay := tilePx(tp(10, 10))
+	bx, by := tilePx(tp(13, 10))
+	r1, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, bx, by, "tester"))
+	if err != nil {
+		t.Fatalf("line: %v", err)
+	}
+	run1 := r1.(sim.PlaceFenceRunResult)
+
+	var restateEvents int
+	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if _, ok := evt.(*sim.VillageObjectStateChanged); ok {
+				restateEvents++
+			}
+		}))
+		return nil, nil
+	}})
+
+	// Vertical line starting ON the right end of the horizontal one.
+	cx, cy := tilePx(tp(13, 10))
+	dx, dy := tilePx(tp(13, 13))
+	r2, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, cx, cy, dx, dy, "tester"))
+	if err != nil {
+		t.Fatalf("attached vertical: %v", err)
+	}
+	run2 := r2.(sim.PlaceFenceRunResult)
+	if len(run2.Objects) != 3 || len(run2.Shared) != 1 {
+		t.Fatalf("run2: %d new, %d shared; want 3 and 1", len(run2.Objects), len(run2.Shared))
+	}
+	if len(run2.Restated) != 1 || restateEvents != 1 {
+		t.Errorf("restated = %v (%d events), want exactly the junction once", run2.Restated, restateEvents)
+	}
+
+	tiles := []sim.TilePos{tp(10, 10), tp(11, 10), tp(12, 10), tp(13, 10), tp(13, 11), tp(13, 12), tp(13, 13)}
+	states, runs := fenceStates(t, w, tiles)
+	want := []string{"corner-bl", "h", "h", "corner-tr", "v", "v", "v-bottom"}
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("states after attach = %v, want %v", states, want)
+	}
+	if !reflect.DeepEqual(runs[3], []string{run1.RunID, run2.RunID}) {
+		t.Errorf("junction runs = %v, want [run1 run2]", runs[3])
+	}
+	if !reflect.DeepEqual(runs[4], []string{run2.RunID}) || !reflect.DeepEqual(runs[0], []string{run1.RunID}) {
+		t.Errorf("segment runs = %v / %v, want run2-only / run1-only", runs[4], runs[0])
+	}
+
+	// Retracing the horizontal line adds nothing.
+	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, bx, by, "tester")); !errors.Is(err, sim.ErrFenceRunNothingNew) {
+		t.Errorf("retrace err = %v, want ErrFenceRunNothingNew", err)
+	}
+
+	// Delete run 2: the junction is released, not deleted, and its cap returns.
+	d2, err := w.Send(sim.DeleteFenceRun(run2.RunID))
+	if err != nil {
+		t.Fatalf("delete run2: %v", err)
+	}
+	out2 := d2.(sim.DeleteFenceRunResult)
+	if len(out2.DeletedIDs) != 3 || len(out2.ReleasedIDs) != 1 {
+		t.Errorf("delete run2: %d deleted, %d released; want 3 and 1", len(out2.DeletedIDs), len(out2.ReleasedIDs))
+	}
+	states, runs = fenceStates(t, w, tiles)
+	want = []string{"corner-bl", "h", "h", "corner-br", "", "", ""}
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("states after deleting run2 = %v, want %v", states, want)
+	}
+	if !reflect.DeepEqual(runs[3], []string{run1.RunID}) {
+		t.Errorf("junction runs after release = %v, want [run1]", runs[3])
+	}
+
+	// Delete run 1: everything goes, junction included.
+	d1, err := w.Send(sim.DeleteFenceRun(run1.RunID))
+	if err != nil {
+		t.Fatalf("delete run1: %v", err)
+	}
+	if got := len(d1.(sim.DeleteFenceRunResult).DeletedIDs); got != 4 {
+		t.Errorf("delete run1 removed %d, want 4", got)
+	}
+	states, _ = fenceStates(t, w, tiles)
+	if !reflect.DeepEqual(states, make([]string, len(tiles))) {
+		t.Errorf("states after deleting run1 = %v, want all empty", states)
+	}
+}
+
+// TestPlaceFenceRun_PenAttachedToLine: a ring drawn with one side ON an existing
+// line shares that whole side; the line's mids become T-junctions (h, the
+// straight fallback) and the new corners resolve against it.
+func TestPlaceFenceRun_PenAttachedToLine(t *testing.T) {
+	w := buildFenceWorld(t)
+	tp := func(x, y int) sim.TilePos { return sim.TilePos{X: sim.PadX + x, Y: sim.PadY + y} }
+	ax, ay := tilePx(tp(10, 10))
+	bx, by := tilePx(tp(16, 10))
+	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, bx, by, "tester")); err != nil {
+		t.Fatalf("line: %v", err)
+	}
+	// Ring 12..14 x 10..12: its top edge lies on the line.
+	cx, cy := tilePx(tp(12, 10))
+	dx, dy := tilePx(tp(14, 12))
+	r, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, cx, cy, dx, dy, "tester"))
+	if err != nil {
+		t.Fatalf("pen: %v", err)
+	}
+	out := r.(sim.PlaceFenceRunResult)
+	if len(out.Objects) != 5 || len(out.Shared) != 3 {
+		t.Fatalf("pen: %d new, %d shared; want 5 and 3", len(out.Objects), len(out.Shared))
+	}
+	tiles := []sim.TilePos{tp(11, 10), tp(12, 10), tp(13, 10), tp(14, 10), tp(15, 10), tp(12, 11), tp(14, 11), tp(12, 12), tp(13, 12), tp(14, 12)}
+	states, _ := fenceStates(t, w, tiles)
+	// (12,10): W+E+S → h; (14,10): W+E+S → h; the line's mids stay h; the pen's
+	// sides and bottom are v / corner-bl / h / corner-br.
+	want := []string{"h", "h", "h", "h", "h", "v", "v", "corner-bl", "h", "corner-br"}
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("states = %v, want %v", states, want)
+	}
+	// The pen is sealed: no path from outside into (13,11).
+	sealed, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		grid, err := sim.BuildWalkGrid(world)
+		if err != nil {
+			return nil, err
+		}
+		return sim.FindPath(grid, tp(30, 30), tp(13, 11)) == nil, nil
+	}})
+	if err != nil || !sealed.(bool) {
+		t.Errorf("pen attached to a line is not sealed (err=%v)", err)
+	}
+}
+
+// TestDeleteVillageObject_RecapsFenceNeighbours: removing one segment from a
+// line (opening a gate gap) re-resolves both sides — the tile left of the gap
+// becomes a right end cap, the tile right of it a left end cap.
+func TestDeleteVillageObject_RecapsFenceNeighbours(t *testing.T) {
+	w := buildFenceWorld(t)
+	tp := func(x, y int) sim.TilePos { return sim.TilePos{X: sim.PadX + x, Y: sim.PadY + y} }
+	ax, ay := tilePx(tp(10, 10))
+	bx, by := tilePx(tp(14, 10))
+	r, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, bx, by, "tester"))
+	if err != nil {
+		t.Fatalf("line: %v", err)
+	}
+	objs := r.(sim.PlaceFenceRunResult).Objects
+	if _, err := w.Send(sim.DeleteVillageObject(objs[2].ID)); err != nil { // (12,10)
+		t.Fatalf("delete segment: %v", err)
+	}
+	tiles := []sim.TilePos{tp(10, 10), tp(11, 10), tp(12, 10), tp(13, 10), tp(14, 10)}
+	states, _ := fenceStates(t, w, tiles)
+	want := []string{"corner-bl", "corner-br", "", "corner-bl", "corner-br"} // end-left / end-right cells
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("states after opening a gap = %v, want %v", states, want)
 	}
 }
