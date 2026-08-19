@@ -767,17 +767,17 @@ func DeleteVillageObject(id VillageObjectID) Command {
 			if _, ok := w.Structures[StructureID(id)]; ok {
 				return nil, ErrVillageObjectIsStructure
 			}
-			// LLM-638: a removed fence segment leaves its neighbours to re-resolve
-			// (the tiles either side of a gap become end caps). Captured before the
+			// LLM-638: a removed fence segment — the root, or one that cascades
+			// away as an attachment — leaves its neighbours to re-resolve (the
+			// tiles either side of a gap become end caps). Snapshot before the
 			// delete; applied after, when the neighbour set no longer has it.
-			obj := w.VillageObjects[id]
-			fenceAsset, fenceTile := w.Assets[obj.AssetID], obj.Pos.Tile()
+			snap := fenceRemovalSnapshot(w)
 			removed := deleteObjectCascade(w, id)
 			now := time.Now().UTC()
 			for _, rid := range removed {
 				w.emit(&VillageObjectDeleted{ObjectID: rid, At: now})
 			}
-			refenceAroundRemoved(w, fenceAsset, []TilePos{fenceTile})
+			refenceAfterCascade(w, snap, removed)
 			return DeleteObjectResult{DeletedIDs: removed}, nil
 		},
 	}

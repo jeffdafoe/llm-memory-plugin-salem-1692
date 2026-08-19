@@ -339,6 +339,37 @@ func refenceAroundRemoved(w *World, asset *Asset, removed []TilePos) {
 	refenceTiles(w, asset, occupied, around)
 }
 
+// fenceRemovalSnapshot captures every object's asset and tile BEFORE a delete
+// cascade runs, so the tiles of every removed FENCE segment — the root and any
+// segment that went with it as an attachment — can be re-resolved around
+// afterwards. deleteObjectCascade returns ids after it has dropped them from
+// the map, which is why the snapshot is taken first. O(objects) per delete,
+// which is a few hundred pointers.
+func fenceRemovalSnapshot(w *World) map[VillageObjectID]*VillageObject {
+	snap := make(map[VillageObjectID]*VillageObject, len(w.VillageObjects))
+	for id, obj := range w.VillageObjects {
+		snap[id] = obj
+	}
+	return snap
+}
+
+// refenceAfterCascade re-resolves around every removed fence segment in
+// `removed`, looked up in the pre-delete snapshot, grouped by asset so each
+// asset's neighbour index is built once. Non-fence objects are ignored.
+func refenceAfterCascade(w *World, snap map[VillageObjectID]*VillageObject, removed []VillageObjectID) {
+	byAsset := make(map[AssetID][]TilePos)
+	for _, id := range removed {
+		obj := snap[id]
+		if obj == nil || !isFenceAsset(w.Assets[obj.AssetID]) {
+			continue
+		}
+		byAsset[obj.AssetID] = append(byAsset[obj.AssetID], obj.Pos.Tile())
+	}
+	for assetID, tiles := range byAsset {
+		refenceAroundRemoved(w, w.Assets[assetID], tiles)
+	}
+}
+
 // PlaceFenceRunResult is the outcome of a PlaceFenceRun command: the run's id
 // (the value after FenceRunTagPrefix on every segment), the NEW segments in
 // row-major order, the existing segments the run shares (junction posts, now
@@ -564,8 +595,9 @@ func DeleteFenceRun(runID string) Command {
 			}
 			now := time.Now().UTC()
 			var removed, released []VillageObjectID
-			// Removed tiles per asset, for the re-resolution afterwards.
-			removedTiles := make(map[AssetID][]TilePos)
+			// Every removed object — root segments AND whatever cascades with them
+			// — is looked up in this pre-delete snapshot for the re-resolution.
+			snap := fenceRemovalSnapshot(w)
 			for _, id := range ids {
 				// A segment may already be gone as an overlay of an earlier one.
 				obj, ok := w.VillageObjects[id]
@@ -588,15 +620,12 @@ func DeleteFenceRun(runID string) Command {
 					released = append(released, obj.ID)
 					continue
 				}
-				removedTiles[obj.AssetID] = append(removedTiles[obj.AssetID], obj.Pos.Tile())
 				for _, rid := range deleteObjectCascade(w, id) {
 					w.emit(&VillageObjectDeleted{ObjectID: rid, At: now})
 					removed = append(removed, rid)
 				}
 			}
-			for assetID, tiles := range removedTiles {
-				refenceAroundRemoved(w, w.Assets[assetID], tiles)
-			}
+			refenceAfterCascade(w, snap, removed)
 			return DeleteFenceRunResult{DeletedIDs: removed, ReleasedIDs: released}, nil
 		},
 	}

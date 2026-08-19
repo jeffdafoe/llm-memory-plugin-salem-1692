@@ -596,3 +596,99 @@ func TestDeleteVillageObject_RecapsFenceNeighbours(t *testing.T) {
 		t.Errorf("states after opening a gap = %v, want %v", states, want)
 	}
 }
+
+// attachFenceSegmentTo re-parents a placed fence segment onto another object
+// (the overlay attached_to link) so a delete of the parent cascades to it.
+func attachFenceSegmentTo(t *testing.T, w *sim.World, segment, parent sim.VillageObjectID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects[segment].AttachedTo = parent
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+}
+
+// TestDeleteVillageObject_CascadedFenceSegmentRecaps: deleting a NON-fence
+// parent whose cascade takes a fence segment with it must still re-resolve
+// around the segment — the root's asset is not a fence, so a root-only
+// bookkeeping would skip it (code_review, LLM-638).
+func TestDeleteVillageObject_CascadedFenceSegmentRecaps(t *testing.T) {
+	w := buildFenceWorld(t)
+	tp := func(x, y int) sim.TilePos { return sim.TilePos{X: sim.PadX + x, Y: sim.PadY + y} }
+	ax, ay := tilePx(tp(10, 10))
+	bx, by := tilePx(tp(14, 10))
+	r, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, bx, by, "tester"))
+	if err != nil {
+		t.Fatalf("line: %v", err)
+	}
+	objs := r.(sim.PlaceFenceRunResult).Objects
+	hx, hy := tilePx(tp(30, 30))
+	hr, err := w.Send(sim.CreateVillageObject("house", hx, hy, "", "tester"))
+	if err != nil {
+		t.Fatalf("house: %v", err)
+	}
+	house := hr.(sim.CreateObjectResult).Object.ID
+	attachFenceSegmentTo(t, w, objs[2].ID, house) // (12,10) hangs off the house
+
+	dr, err := w.Send(sim.DeleteVillageObject(house))
+	if err != nil {
+		t.Fatalf("delete house: %v", err)
+	}
+	if got := len(dr.(sim.DeleteObjectResult).DeletedIDs); got != 2 {
+		t.Fatalf("cascade removed %d, want 2 (house + segment)", got)
+	}
+	tiles := []sim.TilePos{tp(10, 10), tp(11, 10), tp(12, 10), tp(13, 10), tp(14, 10)}
+	states, _ := fenceStates(t, w, tiles)
+	want := []string{"corner-bl", "corner-br", "", "corner-bl", "corner-br"}
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("states after cascaded removal = %v, want %v", states, want)
+	}
+}
+
+// TestDeleteFenceRun_CascadedSegmentRecaps: a run segment that carries another
+// fence segment as an attachment takes it along; both removed tiles get their
+// surviving neighbours re-resolved.
+func TestDeleteFenceRun_CascadedSegmentRecaps(t *testing.T) {
+	w := buildFenceWorld(t)
+	tp := func(x, y int) sim.TilePos { return sim.TilePos{X: sim.PadX + x, Y: sim.PadY + y} }
+	// Run A: (10..12, 10). Run B: a lone post at (12, 12) below the line's end,
+	// then attached to A's end segment so deleting A cascades to it.
+	ax, ay := tilePx(tp(10, 10))
+	bx, by := tilePx(tp(12, 10))
+	ra, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, bx, by, "tester"))
+	if err != nil {
+		t.Fatalf("run A: %v", err)
+	}
+	runA := ra.(sim.PlaceFenceRunResult)
+	// Run C: vertical (12,11)..(12,13) attached below, sharing nothing with A.
+	cx, cy := tilePx(tp(12, 11))
+	dx, dy := tilePx(tp(12, 13))
+	rc, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, cx, cy, dx, dy, "tester"))
+	if err != nil {
+		t.Fatalf("run C: %v", err)
+	}
+	runC := rc.(sim.PlaceFenceRunResult)
+	// Placing C re-stated A's end (12,10) to corner-tr (W + S) and C's top to v.
+	tiles := []sim.TilePos{tp(10, 10), tp(11, 10), tp(12, 10), tp(12, 11), tp(12, 12), tp(12, 13)}
+	states, _ := fenceStates(t, w, tiles)
+	if want := []string{"corner-bl", "h", "corner-tr", "v", "v", "v-bottom"}; !reflect.DeepEqual(states, want) {
+		t.Fatalf("precondition states = %v, want %v", states, want)
+	}
+	// Hang C's top segment (12,11) off A's end segment (12,10).
+	attachFenceSegmentTo(t, w, runC.Objects[0].ID, runA.Objects[2].ID)
+
+	dr, err := w.Send(sim.DeleteFenceRun(runA.RunID))
+	if err != nil {
+		t.Fatalf("delete run A: %v", err)
+	}
+	if got := len(dr.(sim.DeleteFenceRunResult).DeletedIDs); got != 4 {
+		t.Fatalf("removed %d, want 4 (A's three + the cascaded C segment)", got)
+	}
+	states, _ = fenceStates(t, w, tiles)
+	// (12,12) lost its N neighbour → it is now the top of a 2-tile line.
+	want := []string{"", "", "", "", "v-top", "v-bottom"}
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("states after cascaded run delete = %v, want %v", states, want)
+	}
+}

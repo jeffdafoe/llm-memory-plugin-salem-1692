@@ -1969,17 +1969,26 @@ func _commit_fence_drag() -> void:
     http.request(Auth.api_base + "/api/village/admin/fence/place", headers, HTTPClient.METHOD_POST, payload)
     _cancel_fence_drag()
 
-## The run id a selected fence segment carries in its tags, or "".
-func _selected_fence_run_id() -> String:
+## Every run id a selected fence segment carries, in tag order (oldest run
+## first). A junction post shared by several runs carries several.
+func _selected_fence_run_ids() -> Array:
+    var ids: Array = []
     if selected_object == null:
-        return ""
+        return ids
     var tags = selected_object.get_meta("tags", [])
     if tags is Array:
         for t in tags:
             var s: String = str(t)
             if s.begins_with(FENCE_RUN_TAG_PREFIX):
-                return s.substr(FENCE_RUN_TAG_PREFIX.length())
-    return ""
+                ids.append(s.substr(FENCE_RUN_TAG_PREFIX.length()))
+    return ids
+
+## The run "Delete fence run" acts on: the OLDEST run the selected segment
+## belongs to. Unambiguous except on a shared junction, where the confirm
+## dialog says so.
+func _selected_fence_run_id() -> String:
+    var ids: Array = _selected_fence_run_ids()
+    return "" if ids.is_empty() else str(ids[0])
 
 ## Count the placed segments sharing the selected run — for the confirm text.
 func _fence_run_segment_count(run_id: String) -> int:
@@ -2002,8 +2011,14 @@ func delete_selected_fence_run() -> void:
     if run_id == "":
         return
     var n: int = _fence_run_segment_count(run_id)
+    var shared_by: int = _selected_fence_run_ids().size()
     _delete_dialog.title = "Delete fence run"
-    _delete_dialog.dialog_text = "Delete this fence run (" + str(n) + " segments)? This cannot be undone."
+    if shared_by > 1:
+        # A junction post belongs to several runs; say which one goes. A
+        # shared post itself survives until its last run is deleted.
+        _delete_dialog.dialog_text = "This post is shared by " + str(shared_by) + " fence runs. Delete the oldest one (" + str(n) + " segments)? Shared posts stay for the other runs. This cannot be undone."
+    else:
+        _delete_dialog.dialog_text = "Delete this fence run (" + str(n) + " segments)? This cannot be undone."
     _pending_delete = "fence-run"
     _delete_dialog.popup_centered()
 
