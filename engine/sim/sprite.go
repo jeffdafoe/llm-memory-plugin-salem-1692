@@ -53,6 +53,13 @@ type Sprite struct {
 // dropped into, with occasional shore excursions.
 const BehaviorWaterfowl = "waterfowl"
 
+// BehaviorGrazer marks a sprite whose decorative actors are driven by the
+// grazer wander (LLM-639 — the cattle): long grazing dwells, short ambles
+// within the walkable region around them, and fence gates are barriers (the
+// grazer walk grid stamps gate footprints impassable). The land counterpart
+// of BehaviorWaterfowl.
+const BehaviorGrazer = "grazer"
+
 // BehaviorAmbient marks a sprite whose actors are village SCENERY: they move,
 // but nothing they do is part of the village's record. Their comings and
 // goings stay out of the action log, and they are named neither on the

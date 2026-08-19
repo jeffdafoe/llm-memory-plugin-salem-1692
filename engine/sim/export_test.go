@@ -17,6 +17,10 @@ import (
 var (
 	BuildWalkGrid               = buildWalkGrid
 	BuildWaterfowlWalkGrid      = buildWaterfowlWalkGrid
+	BuildGrazerWalkGrid         = buildGrazerWalkGrid
+	ActorIsGrazer               = actorIsGrazer
+	GrazerRegion                = grazerRegion
+	BuildVillageContextRoster   = buildVillageContextRoster
 	ActorIsWaterfowl            = actorIsWaterfowl
 	WaterfowlRegion             = waterfowlRegion
 	WaterfowlShore              = waterfowlShore

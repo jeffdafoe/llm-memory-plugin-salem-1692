@@ -162,14 +162,18 @@ func actorIsAmbient(w *World, a *Actor) bool {
 	return w.Sprites[a.SpriteID].HasBehavior(BehaviorAmbient)
 }
 
-// walkGridForActor returns the walk grid this actor paths on: the
-// waterfowl grid for waterfowl, the shared grid for everyone else. The
+// walkGridForActor returns the walk grid this actor paths on: the waterfowl
+// grid for waterfowl (water opened up), the grazer grid for grazers (fence
+// gates closed off — LLM-639), the shared grid for everyone else. The
 // two-value shape mirrors buildWalkGrid.
 //
 // MUST be called from inside a Command.Fn.
 func walkGridForActor(w *World, a *Actor) (*WalkGrid, error) {
 	if actorIsWaterfowl(w, a) {
 		return buildWaterfowlWalkGrid(w)
+	}
+	if actorIsGrazer(w, a) {
+		return buildGrazerWalkGrid(w)
 	}
 	return buildWalkGrid(w)
 }
