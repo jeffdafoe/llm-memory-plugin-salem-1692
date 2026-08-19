@@ -290,9 +290,23 @@ func TestPlaceFenceRun_Guards(t *testing.T) {
 	if _, err := w.Send(sim.PlaceFenceRun("house", ax, ay, bx, by, "tester")); !errors.Is(err, sim.ErrFenceAssetUnsupported) {
 		t.Errorf("untagged asset err = %v, want sim.ErrFenceAssetUnsupported", err)
 	}
-	// 120x120 ring = 476 segments > cap.
-	cx, cy := tilePx(sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 5})
-	dx, dy := tilePx(sim.TilePos{X: sim.PadX + 124, Y: sim.PadY + 124})
+	// Fully tagged but passable: looks like a fence, would not seal a pen.
+	passable := fenceTestAsset()
+	passable.ID = "passable-fence"
+	passable.IsObstacle = false
+	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) { world.Assets["passable-fence"] = passable; return nil, nil }})
+	if _, err := w.Send(sim.PlaceFenceRun("passable-fence", ax, ay, bx, by, "tester")); !errors.Is(err, sim.ErrFenceAssetUnsupported) {
+		t.Errorf("non-obstacle asset err = %v, want ErrFenceAssetUnsupported", err)
+	}
+	// Corners far off the grid are refused as blocked BEFORE any layout, so a
+	// huge finite coordinate cannot make the layout allocate or overflow.
+	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, 1e15, 1e15, "tester")); !errors.Is(err, sim.ErrFenceTileBlocked) {
+		t.Errorf("far corner err = %v, want ErrFenceTileBlocked", err)
+	}
+	// A ring over nearly the whole grid is 752 segments > cap (and every tile
+	// of it is in bounds, so the cap — not the bounds check — is what refuses).
+	cx, cy := tilePx(sim.TilePos{X: 1, Y: 1})
+	dx, dy := tilePx(sim.TilePos{X: sim.MapW - 1, Y: sim.MapH - 1})
 	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, cx, cy, dx, dy, "tester")); !errors.Is(err, sim.ErrFenceRunTooLarge) {
 		t.Errorf("oversized run err = %v, want sim.ErrFenceRunTooLarge", err)
 	}

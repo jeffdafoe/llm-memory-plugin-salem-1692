@@ -18,12 +18,15 @@ import (
 // fence asset and the two corners of the drag in world pixels (any corner
 // order). The engine floors them to tiles and lays the run over the inclusive
 // rectangle — a 1x1 drag is a post, a 1-wide drag a line, anything else a ring.
+//
+// The coordinates are pointers so a missing or null corner is a 400 rather
+// than a run silently anchored at (0,0).
 type adminFencePlaceRequest struct {
-	AssetID string  `json:"asset_id"`
-	X1      float64 `json:"x1"`
-	Y1      float64 `json:"y1"`
-	X2      float64 `json:"x2"`
-	Y2      float64 `json:"y2"`
+	AssetID string   `json:"asset_id"`
+	X1      *float64 `json:"x1"`
+	Y1      *float64 `json:"y1"`
+	X2      *float64 `json:"x2"`
+	Y2      *float64 `json:"y2"`
 }
 
 // adminFencePlaceResponse reports the run id (the value after "fence-run:" on
@@ -45,7 +48,7 @@ type adminFenceBlockedResponse struct {
 }
 
 // handleAdminFencePlace lays a fence run. 400 malformed body / missing asset_id
-// / non-finite coords / unknown asset / asset without fence piece states / run
+// or coordinate / non-finite coords / unknown asset / asset without fence piece states / run
 // over the size cap; 403 not admin; 409 a tile on the run is blocked (body
 // names it; nothing was placed); 422 corner outside the map; 200 ok.
 func (s *Server) handleAdminFencePlace(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +73,12 @@ func (s *Server) handleAdminFencePlace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "asset_id is required")
 		return
 	}
-	for _, c := range [][2]float64{{req.X1, req.Y1}, {req.X2, req.Y2}} {
+	if req.X1 == nil || req.Y1 == nil || req.X2 == nil || req.Y2 == nil {
+		writeError(w, http.StatusBadRequest, "x1, y1, x2 and y2 are required")
+		return
+	}
+	x1, y1, x2, y2 := *req.X1, *req.Y1, *req.X2, *req.Y2
+	for _, c := range [][2]float64{{x1, y1}, {x2, y2}} {
 		if status, msg := validateObjectPosition(c[0], c[1]); msg != "" {
 			writeError(w, status, msg)
 			return
@@ -78,7 +86,7 @@ func (s *Server) handleAdminFencePlace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
-		return sim.PlaceFenceRun(sim.AssetID(req.AssetID), req.X1, req.Y1, req.X2, req.Y2, user.Username).Fn(world)
+		return sim.PlaceFenceRun(sim.AssetID(req.AssetID), x1, y1, x2, y2, user.Username).Fn(world)
 	}))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

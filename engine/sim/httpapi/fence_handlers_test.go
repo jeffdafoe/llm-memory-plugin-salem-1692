@@ -125,6 +125,8 @@ func TestHandleAdminFencePlace_BadInput(t *testing.T) {
 		{"unknown asset", map[string]any{"asset_id": "nope", "x1": x1, "y1": y1, "x2": x2, "y2": y2}, http.StatusBadRequest},
 		{"asset without fence states", map[string]any{"asset_id": "asset-y", "x1": x1, "y1": y1, "x2": x2, "y2": y2}, http.StatusBadRequest},
 		{"corner off the map", map[string]any{"asset_id": "fence", "x1": x1, "y1": y1, "x2": 99999999.0, "y2": y2}, http.StatusUnprocessableEntity},
+		{"missing coordinate", map[string]any{"asset_id": "fence", "x1": x1, "y1": y1, "x2": x2}, http.StatusBadRequest},
+		{"null coordinate", map[string]any{"asset_id": "fence", "x1": x1, "y1": nil, "x2": x2, "y2": y2}, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

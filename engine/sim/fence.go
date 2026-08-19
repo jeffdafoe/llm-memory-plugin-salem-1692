@@ -87,6 +87,33 @@ type fenceSegment struct {
 	Tag  string
 }
 
+// fenceRunSize is the number of segments fenceRunSegments would lay over the
+// inclusive rectangle [a,b] — 1 for a post, w or h for a line, the ring's
+// perimeter otherwise — computed from the dimensions so the cap can be applied
+// without building the run.
+func fenceRunSize(a, b TilePos) int {
+	w := a.X - b.X
+	if w < 0 {
+		w = -w
+	}
+	h := a.Y - b.Y
+	if h < 0 {
+		h = -h
+	}
+	w++
+	h++
+	switch {
+	case w == 1 && h == 1:
+		return 1
+	case h == 1:
+		return w
+	case w == 1:
+		return h
+	default:
+		return 2*w + 2*h - 4
+	}
+}
+
 // fenceRunSegments lays out a run over the inclusive tile rectangle [a,b]
 // (either corner order) and returns the ring tiles in row-major order, each
 // with its piece tag. The shape decides the vocabulary:
@@ -177,11 +204,12 @@ type PlaceFenceRunResult struct {
 // the tile rectangle spanned by two world-pixel corners (x1,y1)-(x2,y2), any
 // corner order. Validation is complete before any mutation, so a refused run
 // places nothing: ErrUnknownAsset; ErrInvalidObjectPosition (non-finite
-// coords); ErrFenceAssetUnsupported (the asset lacks a tagged state the shape
-// needs); ErrFenceRunTooLarge; or a *FenceTileBlocked (wrapping
-// ErrFenceTileBlocked) naming the first tile that is not walkable on the
-// standard walk grid — out of bounds, water, inside an obstacle footprint, or
-// already fenced. Every segment is minted through the shared placement path
+// coords); ErrFenceAssetUnsupported (the asset is not an obstacle, or lacks a
+// tagged state the shape needs); ErrFenceRunTooLarge (sized from the corners
+// before anything is laid out); or a *FenceTileBlocked (wrapping
+// ErrFenceTileBlocked) naming the first tile that is not fenceable — a corner
+// off the grid, or a ring tile that is not walkable on the standard walk grid
+// (water, inside an obstacle footprint, already fenced). Every segment is minted through the shared placement path
 // (placeVillageObject) with its piece state, tagged FenceRunTagPrefix+RunID,
 // and announced with VillageObjectCreated then VillageObjectTagsUpdated so a
 // live client holds the tag without a reload.
@@ -197,10 +225,33 @@ func PlaceFenceRun(assetID AssetID, x1, y1, x2, y2 float64, placedBy string) Com
 			if !ok || asset == nil {
 				return nil, ErrUnknownAsset
 			}
-			segments := fenceRunSegments(WorldPos{X: x1, Y: y1}.Tile(), WorldPos{X: x2, Y: y2}.Tile())
-			if len(segments) > MaxFenceRunSegments {
+			// A fence that does not block is not a fence: the sealed-pen property
+			// rides on the obstacle stamp, so a tagged-but-passable asset is
+			// refused rather than placed as decoration that looks like a fence.
+			if !asset.IsObstacle {
+				return nil, fmt.Errorf("%w: asset is not an obstacle", ErrFenceAssetUnsupported)
+			}
+			a := WorldPos{X: x1, Y: y1}.Tile()
+			b := WorldPos{X: x2, Y: y2}.Tile()
+			// Bound the corners and size the run BEFORE laying it out, so a
+			// caller handing in huge finite coordinates (this command is the
+			// validation boundary, not the HTTP route) cannot make
+			// fenceRunSegments allocate an enormous slice or overflow the
+			// width/height arithmetic. A corner off the grid is a blocked tile
+			// — the same answer the per-tile walk check would give.
+			for _, c := range []TilePos{a, b} {
+				if c.X < 0 || c.X >= MapW || c.Y < 0 || c.Y >= MapH {
+					return nil, &FenceTileBlocked{
+						Tile: c,
+						X:    float64(c.X-PadX) * TileSize,
+						Y:    float64(c.Y-PadY) * TileSize,
+					}
+				}
+			}
+			if fenceRunSize(a, b) > MaxFenceRunSegments {
 				return nil, ErrFenceRunTooLarge
 			}
+			segments := fenceRunSegments(a, b)
 			states := make(map[string]string, 8)
 			for _, seg := range segments {
 				if _, seen := states[seg.Tag]; seen {
