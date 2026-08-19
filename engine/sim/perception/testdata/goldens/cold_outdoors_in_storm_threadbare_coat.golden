@@ -9,7 +9,7 @@ You're cold through to your clothes — the rain is soaking you where you stand.
 The warm clothes you carry are worn thin — they turn some of the cold, but the wind finds its way through now, and they won't hold much longer. A fresh coat or cloak would keep you working out here. Use move_to to reach a seller, then pay_with_item once you arrive:
   - buy from General Store (destination: general_store)
 Coins in your purse: 20.
-You are carrying: coat (x1).
+You are carrying: coat (x1, your own clothes — not for trade).
 
 ## Around you
 You are outdoors, with no one else here to hear you speak.

@@ -21,7 +21,7 @@ Your shop stock of these bought-in goods is running low, and there is no way to 
   - James Farm sells carrots, but you called there and found it shut.
   Look in again another day — a keeper will be tending it sooner or later.
 - You have 0 milk on hand, and no way to restock just now.
-  - Ellis Farm sells milk, but you have neither the coin for it nor a single good to put up in trade.
+  - Ellis Farm sells milk, but you have neither the coin for it nor a good you can spare to put up in trade.
   Keep your shop and take what trade comes to you — you can restock once you have coin or goods to trade with.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

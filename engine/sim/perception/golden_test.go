@@ -3779,6 +3779,41 @@ var perceptionScenarios = []perceptionScenario{
 		build: illiquidDistributorBartersForStock,
 	},
 	{
+		name: "broke_maker_makings_are_not_barter",
+		summary: "LLM-636, the live Hannah Boggs treadmill (2026-08-18): the innkeeper, coin-broke after the deadlock, at " +
+			"her post holding only what she works with — 2 spools of thread for mending, 6 flasks of water for the porridge " +
+			"pot, the one suit of homespun on her back, and a pot of eat-here porridge — and low on salt, flour and thread, " +
+			"all sold at the General Store. Live, every one of those lines rendered LLM-406's 'offer goods you carry in " +
+			"trade' and she did: thread for salt, salt for homespun, homespun for firewood, 103 laps with Josiah in a week " +
+			"and the mending line never held a spool. The golden pins the spoken-for reservation: the carry line marks the " +
+			"thread and water 'kept to work with — not for trade' and the homespun 'your own clothes — not for trade', the " +
+			"purse line says she cannot pay for anything, and every restock line lands on the LLM-406 blocked scene ('nor a " +
+			"good you can spare to put up in trade') instead of the barter steer. Contrast broke_maker_own_produce_is_barter " +
+			"(same pack plus her own journeycake) and illiquid_distributor_barters_for_stock (the distributor's identical-" +
+			"looking pack IS his wares). Non-vacuous fixture for TestGoldensNoBarterSteerWithoutSpareGoods.",
+		build: brokeMakerMakingsAreNotBarter,
+	},
+	{
+		name: "broke_maker_own_produce_is_barter",
+		summary: "The same coin-broke innkeeper (LLM-636), now also carrying 3 journeycakes of her own baking. Her produce " +
+			"is exactly what a broke maker should put up, so the golden pins the other half of the reservation: the " +
+			"journeycake rides the carry line unannotated, the purse line says she may offer goods in trade, and each low " +
+			"restock line gets the LLM-406 barter steer back — while the thread and water stay marked not for trade. The " +
+			"reservation takes the makings out of the bundle, not the buyer out of the market.",
+		build: brokeMakerOwnProduceIsBarter,
+	},
+	{
+		name: "broke_maker_at_store_no_spare_goods_hold_off",
+		summary: "The co-present half of LLM-636 — where the live laps actually happened. The coin-broke innkeeper stands IN " +
+			"the General Store with Josiah, holding only her makings and the suit on her back, low on salt and thread he " +
+			"stocks. Live, the buy-here imperative goaded 'Buy it now … goods you carry (pay_items)' every tick, and a " +
+			"refused pay_with_item mints no ledger entry, so the standoff soften could never latch. The golden pins " +
+			"classifyCoPresentBuy's no-means arm: with an empty purse and no spare good, each co-present line renders the " +
+			"coin hold-off ('your purse can't take on salt just now — hold off buying and let your coins recover') instead " +
+			"of the goad.",
+		build: brokeMakerAtStoreNoSpareGoodsHoldOff,
+	},
+	{
 		name: "keeper_restock_drops_shut_keeps_open_supplier",
 		summary: "LLM-216 shut-drop, section-present half: a general-store keeper with coin (30) is low on carrots and has " +
 			"TWO carrot suppliers — Bell Farm (open, ~3 coins, affordable) and James Farm (remembered SHUT). The golden pins " +
@@ -4887,6 +4922,145 @@ func illiquidDistributorBartersForStock() (*sim.Snapshot, sim.ActorID, []sim.War
 			{SellerID: ellisID, Item: "milk"}:    milkBuys,
 		},
 	}, josiahID, nil
+}
+
+// brokeMakerFixture is the LLM-636 innkeeper: Hannah Boggs, coin-broke, holding
+// only her makings and the suit on her back, with Josiah's General Store the one
+// supplier of the salt, flour and thread she is low on. Built from the live
+// 2026-08-18 pack (thread 2, water 6, homespun 1, porridge in the pot; salt and
+// flour empty). extraPack is merged into her inventory; atStore puts her in the
+// store in a huddle with Josiah (the co-present arm) instead of alone at the Inn.
+// No price book: at 0 coins the walk-to means-to-pay gate falls straight to the
+// goods question, which is what the fixture is about.
+func brokeMakerFixture(extraPack map[sim.ItemKind]int, atStore bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		josiahID = sim.ActorID("josiah")
+		inn      = sim.StructureID("the_inn")
+		store    = sim.StructureID("general_store")
+		huddleID = sim.HuddleID("store_huddle")
+	)
+	start, end := 360, 1080 // 06:00-18:00
+	now := 720              // 12:00 — on shift
+	published := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	pack := map[sim.ItemKind]int{
+		"thread": 2, "water": 6, "homespun": 1, "porridge": 12,
+		"salt": 0, "flour": 0,
+	}
+	for k, v := range extraPack {
+		pack[k] = v
+	}
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             0,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         pack,
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "porridge", Source: sim.RestockSourceProduce, Max: 30},
+			{Item: "journeycake", Source: sim.RestockSourceProduce, Max: 12},
+			{Item: "water", Source: sim.RestockSourceBuy, Max: 10},
+			{Item: "flour", Source: sim.RestockSourceBuy, Max: 6},
+			{Item: "salt", Source: sim.RestockSourceBuy, Max: 6},
+			{Item: "thread", Source: sim.RestockSourceBuy, Max: 6},
+		}},
+	}
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Josiah Thorne",
+		Role:              "shopkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 200, Y: 200},
+		WorkStructureID:   store,
+		InsideStructureID: store,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             194,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"salt": 10, "flour": 20, "thread": 8, "water": 20},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "salt", Source: sim.RestockSourceBuy, Max: 12},
+			{Item: "flour", Source: sim.RestockSourceBuy, Max: 20},
+			{Item: "thread", Source: sim.RestockSourceBuy, Max: 12},
+			{Item: "water", Source: sim.RestockSourceBuy, Max: 20},
+		}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, josiahID: josiah},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn:   plainStructure(inn, "The Inn"),
+			store: plainStructure(store, "General Store"),
+		},
+		// The store carries the distributor tag: that is what makes Josiah a lawful
+		// supplier of goods he does not himself produce (LLM-252), and what makes his
+		// own buy lines wares rather than makings (sim.BarterHolder.Stockholder).
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{sim.TagDistributor}},
+		},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"porridge": {OutputItem: "porridge", OutputQty: 6, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "flour", Qty: 2}, {Item: "water", Qty: 5}}},
+			"journeycake": {OutputItem: "journeycake", OutputQty: 6, WholesalePrice: 1, RetailPrice: 2,
+				Inputs: []sim.RecipeInput{{Item: "flour", Qty: 2}, {Item: "water", Qty: 2}}},
+			"flour":  {OutputItem: "flour", WholesalePrice: 3, RetailPrice: 4},
+			"salt":   {OutputItem: "salt", WholesalePrice: 1, RetailPrice: 2},
+			"thread": {OutputItem: "thread", WholesalePrice: 1, RetailPrice: 2},
+			"water":  {OutputItem: "water", WholesalePrice: 1, RetailPrice: 1},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"porridge": {Name: "porridge", DisplayLabel: "porridge", DisplayLabelSingular: "bowl of porridge", DisplayLabelPlural: "bowls of porridge",
+				Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}}},
+			"journeycake": {Name: "journeycake", DisplayLabel: "journeycake", DisplayLabelSingular: "journeycake", DisplayLabelPlural: "journeycakes",
+				Category: sim.ItemCategoryFood, Capabilities: []string{"portable"}, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}}},
+			"water": {Name: "water", DisplayLabel: "water", DisplayLabelSingular: "flask of water", DisplayLabelPlural: "flasks of water",
+				Category: sim.ItemCategoryDrink, Capabilities: []string{"portable"}, Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 8}}},
+			"flour":    {Name: "flour", DisplayLabel: "flour", DisplayLabelSingular: "sack of flour", DisplayLabelPlural: "sacks of flour", Category: sim.ItemCategoryMaterial},
+			"salt":     {Name: "salt", DisplayLabel: "salt", DisplayLabelSingular: "sack of salt", DisplayLabelPlural: "sacks of salt", Category: sim.ItemCategoryMaterial},
+			"thread":   {Name: "thread", DisplayLabel: "thread", DisplayLabelSingular: "spool of thread", DisplayLabelPlural: "spools of thread", Category: sim.ItemCategoryMaterial},
+			"homespun": {Name: "homespun", DisplayLabel: "homespun", DisplayLabelSingular: "suit of homespun", DisplayLabelPlural: "suits of homespun", Category: "clothing", WearMinutes: 3000},
+		},
+		RestockReorderPct: 25,
+	}
+	if atStore {
+		hannah.InsideStructureID = store
+		hannah.Pos = sim.TilePos{X: 201, Y: 200}
+		hannah.CurrentHuddleID = huddleID
+		josiah.CurrentHuddleID = huddleID
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{hannahID: {}, josiahID: {}}},
+		}
+	}
+	return snap, hannahID, nil
+}
+
+// brokeMakerMakingsAreNotBarter — LLM-636, walk-to arm: only makings and the suit
+// on her back, so no barter steer and the blocked no-means scene on every line.
+func brokeMakerMakingsAreNotBarter() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return brokeMakerFixture(nil, false)
+}
+
+// brokeMakerOwnProduceIsBarter — LLM-636: the same pack plus her own journeycake,
+// which IS spare, so the barter steer returns.
+func brokeMakerOwnProduceIsBarter() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return brokeMakerFixture(map[sim.ItemKind]int{"journeycake": 3}, false)
+}
+
+// brokeMakerAtStoreNoSpareGoodsHoldOff — LLM-636, co-present arm: in the store with
+// Josiah, no coin and no spare good, so the buy-here goad softens to the coin
+// hold-off instead of goading an offer the intake gate would refuse.
+func brokeMakerAtStoreNoSpareGoodsHoldOff() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return brokeMakerFixture(nil, true)
 }
 
 // keeperRestockDropsShutKeepsOpenSupplier is the LLM-216 section-present fixture: a
@@ -6996,7 +7170,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "innkeeper_fried_meat_below_makings_cost" || // LLM-475: producer in company, priced own ware sold under its makings cost
 			sc.name == "miller_flour_wholesale_earns_nothing" || // LLM-475: wholesale producer in company — cost sentence restored to the channel line
 			sc.name == "miller_offered_parity_swap_for_flour" || // LLM-598: wholesale producer in company weighing a barter offer — the cue's figures are what the offer verdict must agree with
-			sc.name == "keeper_paid_with_long_note" // LLM-400: built ON keeper_reselling_in_company's fixture, so it inherits the cue correctly
+			sc.name == "keeper_paid_with_long_note" || // LLM-400: built ON keeper_reselling_in_company's fixture, so it inherits the cue correctly
+			sc.name == "broke_maker_at_store_no_spare_goods_hold_off" // LLM-636: producer in company (with Josiah at the store), priced own wares + spoken-for makings held back
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -7400,6 +7575,9 @@ func TestRestockBuyAnchorRendersWhenRateKnown(t *testing.T) {
 					continue // not one of the effective entries — nothing to assert
 				}
 				seenByLabel[label] = true
+				if strings.Contains(line, ", and no way to restock just now.") {
+					continue // the LLM-406 blocked scene: names suppliers and reasons, never a price
+				}
 				switch {
 				case exp.tier != marginUnknown:
 					// Both rates known — the margin verdict carries the buy rate, and
@@ -8267,6 +8445,66 @@ func TestGoldensNoBuyCueWithoutMeansToPay(t *testing.T) {
 	}
 	if !sawPeerArm {
 		t.Error("no no-means-to-pay scenario stands the buyer in a huddle with a goods-carrying peer — the LLM-242 peer-offer suppression is untested; add one (broke_buyer_no_goods_no_peer_buy)")
+	}
+}
+
+// TestGoldensNoBarterSteerWithoutSpareGoods is the LLM-636 cross-scenario
+// invariant: a coin-broke subject whose pack holds nothing SPARE — only the
+// makings it works with, the garment on its back, eat-here food — must never be
+// steered to barter anywhere in the prompt. That covers the restock walk-to
+// steer, the eat/drink buy steer, and the co-present buy-here goad's
+// "goods you carry (pay_items)" clause, since every one of those offers a
+// pay_with_item the intake gate would refuse. The spare-goods question is asked
+// through the SAME predicate the render and the gate use (holdsBarterableGoods →
+// sim.HoldsBarterableGoodsExcept), so the guard cannot drift from them; a
+// scenario that reads the reservation differently in one cue would trip it. The
+// mirror direction — a subject with a spare good keeps its steer — is pinned by
+// broke_maker_own_produce_is_barter and illiquid_distributor_barters_for_stock.
+// Non-vacuous: broke_maker_makings_are_not_barter (walk-to) and
+// broke_maker_at_store_no_spare_goods_hold_off (co-present) build exactly this pack.
+func TestGoldensNoBarterSteerWithoutSpareGoods(t *testing.T) {
+	steers := []string{
+		"offer goods you carry in trade",
+		"goods you carry (pay_items)",
+	}
+	sawWalkTo, sawCoPresent := false, false
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || a.Coins != 0 || holdsBarterableGoods(snap, a) {
+				return // has some means to pay — invariant N/A here
+			}
+			// Only a subject that HOLDS something is interesting: an empty pack is
+			// LLM-222's dead-end, already guarded. This is the pack that looks full.
+			holdsAnything := false
+			for _, qty := range a.Inventory {
+				if qty > 0 {
+					holdsAnything = true
+				}
+			}
+			if !holdsAnything {
+				return
+			}
+			out := renderScenario(sc)
+			for _, s := range steers {
+				if strings.Contains(out, s) {
+					t.Errorf("scenario %q: subject holds 0 coins and no SPARE good, yet the prompt steers it to barter (%q) — that offer would be refused at pay_with_item intake, and goading it is the LLM-636 treadmill", sc.name, s)
+				}
+			}
+			if a.CurrentHuddleID != "" {
+				sawCoPresent = true
+			} else {
+				sawWalkTo = true
+			}
+		})
+	}
+	if !sawWalkTo {
+		t.Error("no scenario exercised the walk-to arm — add one (broke_maker_makings_are_not_barter)")
+	}
+	if !sawCoPresent {
+		t.Error("no scenario exercised the co-present arm — add one (broke_maker_at_store_no_spare_goods_hold_off)")
 	}
 }
 

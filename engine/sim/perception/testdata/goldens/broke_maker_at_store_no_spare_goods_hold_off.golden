@@ -1,0 +1,43 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.
+You are carrying: suit of homespun (x1, your own clothes — not for trade), bowls of porridge (x12, to eat here — not for trade), spools of thread (x2, kept to work with — not for trade), flasks of water (x6, kept to work with — not for trade).
+
+## Around you
+You are inside the General Store, with the shopkeeper.
+It is midday.
+
+You keep your trade at The Inn (destination: the_inn) — you can head back there whenever you wish.
+
+It is your working hours and you are away from your post at The Inn (you close at 6 in the evening).
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- flour: 3 to 4 coins each.
+- journeycake: 1 to 2 coins each; the makings run you a little over 1 coin each.
+- porridge: 1 to 2 coins each; the makings run you nearly 2 coins each.
+- salt: 1 to 2 coins each.
+- thread: the 2 you carry you keep to work with — makings, not wares. Selling them leaves you nothing to work with.
+- water: the 6 you carry are for making your own porridge and journeycake — makings, not wares. Selling them leaves you nothing to work with.
+
+## Keeping up production
+- You use flour to make journeycake — 0 on hand, enough for about 0 more, and you're running low.
+- You use water to make journeycake — 6 on hand, enough for about 18 more, and you're running low.
+- You use flour to make porridge — 0 on hand, enough for about 0 more, and you're running low.
+- You use water to make porridge — 6 on hand, enough for about 7 more, and you're running low.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 0 flour on hand and room for 6 more at the most. It is generally worth about 3 coins each — pay much above that and you're overpaying.
+  - Josiah Thorne is here with you, but your purse can't take on flour just now — hold off buying and let your coins recover before you come back for them.
+- You have 0 salt on hand and room for 6 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying.
+  - Josiah Thorne is here with you, but your purse can't take on salt just now — hold off buying and let your coins recover before you come back for them.
+- You have 6 water on hand and room for 4 more at the most. It is generally worth about 1 coin each — pay much above that and you're overpaying.
+  - Josiah Thorne is here with you, but your purse can't take on water just now — hold off buying and let your coins recover before you come back for them.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -55,6 +55,12 @@ const copresentStandoffDeclineThreshold = sim.SaleStandoffDeclineThreshold
 //   - the working-capital gate telling this keeper to hold off (merchantConserve — the
 //     same signal the "## Restocking" hold-off rides, so the two cues can never contradict),
 //     which reads as a coin block,
+//   - no means to pay at all — an empty purse and no SPARE good to put up (the LLM-406
+//     gate with its LLM-636 spoken-for reservation), which reads as a coin block too. The
+//     walk-to directory already drops such a supplier; without this arm the co-present goad
+//     kept saying "Buy it now … goods you carry (pay_items)" to a keeper whose every good the
+//     intake gate refuses, and a refused offer mints no ledger entry, so the standoff arm
+//     below could never latch and the goad rode every tick (the Hannah↔Josiah treadmill),
 //   - a recent negotiation with the seller has dead-ended (coPresentBuyStandoff → coin/terms).
 func classifyCoPresentBuy(snap *sim.Snapshot, buyer sim.ActorID, buyerSnap *sim.ActorSnapshot, seller sim.ActorID, kind sim.ItemKind) (int, copresentBuyBlock) {
 	stock := 0
@@ -65,6 +71,8 @@ func classifyCoPresentBuy(snap *sim.Snapshot, buyer sim.ActorID, buyerSnap *sim.
 	case stock <= 0:
 		return stock, copresentBuyBlockedNoStock
 	case merchantConserve(snap, buyer, buyerSnap).Active:
+		return stock, copresentBuyBlockedCoin
+	case buyerSnap.Coins <= 0 && !sim.HoldsBarterableGoodsExcept(snap.ItemKinds, snap.Recipes, sim.SnapshotBarterHolder(snap, buyerSnap), kind):
 		return stock, copresentBuyBlockedCoin
 	default:
 		return stock, coPresentBuyStandoff(snap, buyer, seller, buyerSnap.CurrentHuddleID, kind)

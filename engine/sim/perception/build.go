@@ -1104,6 +1104,11 @@ func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryIte
 		return nil
 	}
 	out := make([]InventoryItem, 0, len(a.Inventory))
+	// LLM-636: the goods this pack keeps to work with, and the garment on its
+	// back — the same reservation the barter steers and the pay_with_item intake
+	// gate read, so the carry line names as "not for trade" exactly what the tool
+	// will refuse.
+	spokenFor := sim.SpokenFor(snap.ItemKinds, snap.Recipes, sim.SnapshotBarterHolder(snap, a))
 	for kind, qty := range a.Inventory {
 		if qty <= 0 {
 			continue
@@ -1129,7 +1134,9 @@ func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryIte
 			// item so render can annotate the carry line and key the coinless
 			// barter cue on goods the resolver would actually accept.
 			EatHere:    def.EatHereOnly(),
-			Barterable: sim.KindBarterable(def),
+			Spare:      sim.SpareQty(a.Inventory, spokenFor, kind),
+			SpokenFor:  spokenFor[kind].Reason,
+			Barterable: sim.KindBarterable(def) && sim.SpareQty(a.Inventory, spokenFor, kind) > 0,
 			kind:       kind,
 		})
 	}

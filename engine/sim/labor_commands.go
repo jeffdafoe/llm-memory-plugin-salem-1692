@@ -325,7 +325,7 @@ func SolicitWork(workerID ActorID, employerName string, reward int, rewardItems 
 			// canCover spans both reward legs — coins AND the in-kind goods the
 			// worker asked for (LLM-225). Computed once and reused by the barter
 			// branch and the destitute decline below.
-			canCover := employerCanCoverLaborReward(employer, offer)
+			canCover := employerCanCoverLaborReward(w, employer, offer)
 
 			// LLM-243: coin-anchored-gate mirror of LLM-222 on the hiring side. The
 			// employer can't cover the reward the worker ASKED (coins and/or the
@@ -597,8 +597,8 @@ func OfferWork(employerID ActorID, workerName string, reward int, rewardItems []
 			// the CALL rather than minting a doomed offer: no ledger entry, no
 			// decline for either party to remember, and the message names exactly
 			// which leg is short so the model can re-offer terms it can meet.
-			if !employerCanCoverLaborReward(employer, offer) {
-				return nil, offerWorkCannotCoverError(employer, offer)
+			if !employerCanCoverLaborReward(w, employer, offer) {
+				return nil, offerWorkCannotCoverError(w, employer, offer)
 			}
 
 			// Mint: assign the id and record the offer.
@@ -634,24 +634,23 @@ func OfferWork(employerID ActorID, workerName string, reward int, rewardItems []
 
 // offerWorkCannotCoverError explains which leg of the wage the employer does not
 // hold, so the model can re-offer terms it can meet rather than guessing. The two
-// branches mirror employerCanCoverLaborReward's two legs exactly (LLM-346).
-func offerWorkCannotCoverError(employer *Actor, offer *LaborOffer) error {
+// branches mirror employerCanCoverLaborReward's two legs exactly (LLM-346). A
+// goods line is "missing" when the employer cannot cover it from SPARE units
+// (spokenForShortfall, LLM-636) — held short, or held but kept to work with —
+// and the wording says "spare" so a wage named in makings reads as the wrong
+// goods, not a miscount.
+func offerWorkCannotCoverError(w *World, employer *Actor, offer *LaborOffer) error {
 	shortOnCoins := !buyerCanAfford(employer, offer.Reward)
-	var missing []ItemKindQty
-	for _, ri := range offer.RewardItems {
-		if employer.Inventory[ri.Kind] < ri.Qty {
-			missing = append(missing, ri)
-		}
-	}
+	missing := spokenForShortfall(w, employer, offer.RewardItems)
 	switch {
 	case shortOnCoins && len(missing) > 0:
 		return fmt.Errorf(
-			"you have only %s and do not hold the %s you offered as pay — offer a wage you can hand over when the work is done.",
+			"you have only %s and cannot spare the %s you offered as pay — offer a wage you can hand over when the work is done.",
 			laborCoinsPhrase(employer.Coins), formatPayment(0, missing),
 		)
 	case len(missing) > 0:
 		return fmt.Errorf(
-			"you do not hold the %s you offered as pay — offer goods you have, coins, or both.",
+			"you cannot spare the %s you offered as pay — offer goods you can spare, coins, or both.",
 			formatPayment(0, missing),
 		)
 	default:
@@ -763,7 +762,7 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 			// authoritatively, since the employer's holdings can drift across a
 			// long work window. Checked against the offer's EMPLOYER, who is not the
 			// caller when the worker is the one accepting (LLM-346).
-			if !employerCanCoverLaborReward(employer, offer) {
+			if !employerCanCoverLaborReward(w, employer, offer) {
 				return laborAcceptTerminal(w, offer, LaborTerminalStateFailedUnavailable, at), nil
 			}
 
@@ -1276,15 +1275,18 @@ func laborCloseoutLine(payment string) string {
 
 // employerCanCoverLaborReward reports whether the employer currently holds
 // BOTH legs of the offer's reward: the coins (buyerCanAfford) and every
-// in-kind goods line (buyerHoldsPayItems) — LLM-225. The single "can the
-// employer pay this" predicate, shared by the three sites that ask it:
-// SolicitWork's LLM-193 affordability auto-decline, AcceptWork's courtesy
-// gate 8, and settleCompletedLabor's authoritative completion re-check.
-// Centralized so the cue, the gates, and the settle can never disagree on
-// what "can cover" means. The ACTION on false stays per-site (auto-decline /
-// terminal flip / unpaid settle), mirroring the buyerCanAfford posture.
-func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
-	return buyerCanAfford(employer, offer.Reward) && buyerHoldsPayItems(employer, offer.RewardItems)
+// in-kind goods line, held SPARE (buyerCanSparePayItems — the spoken-for
+// reservation, LLM-636: a wage is paid from spare goods, never the makings
+// the shop runs on or the coat on the employer's back) — LLM-225. The single
+// "can the employer pay this" predicate, shared by the four sites that ask
+// it: SolicitWork's LLM-193 affordability auto-decline, OfferWork's intake
+// reject, AcceptWork's courtesy gate 8, and settleCompletedLabor's
+// authoritative completion re-check. Centralized so the cue, the gates, and
+// the settle can never disagree on what "can cover" means. The ACTION on
+// false stays per-site (auto-decline / tool reject / terminal flip / unpaid
+// settle), mirroring the buyerCanAfford posture.
+func employerCanCoverLaborReward(w *World, employer *Actor, offer *LaborOffer) bool {
+	return buyerCanAfford(employer, offer.Reward) && buyerCanSparePayItems(w, employer, offer.RewardItems)
 }
 
 // employerCanHireInKind reports whether the employer holds any tradeable goods
@@ -1297,9 +1299,11 @@ func employerCanCoverLaborReward(employer *Actor, offer *LaborOffer) bool {
 // particular goods match a given ask (that is the per-offer coverage check).
 // The sim-side mirror of perception.holdsBarterableGoods (LLM-222), now
 // literally the same predicate so the hiring gate and the buy-side
-// means-to-pay cue cannot drift. World-goroutine-only.
+// means-to-pay cue cannot drift — including its spoken-for reservation
+// (LLM-636): a wage is paid from spare goods, not the makings the shop runs on.
+// World-goroutine-only.
 func employerCanHireInKind(w *World, employer *Actor) bool {
-	return HoldsBarterableGoodsExcept(w.ItemKinds, employer.Inventory, "")
+	return HoldsBarterableGoodsExcept(w.ItemKinds, w.Recipes, LiveBarterHolder(w, employer), "")
 }
 
 // workerHasLiveJob reports whether the worker currently holds a committed labor

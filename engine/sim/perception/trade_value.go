@@ -192,9 +192,19 @@ type TradeValueItem struct {
 	// actor holds at least one of a floored good: at zero on hand there is nothing
 	// to reserve and the buy-side cues own the state, the same carve-out
 	// buildRepairReserve makes.
-	ReserveFloor int
-	ReserveHeld  int
-	ReserveMakes []string
+	//
+	// ReserveReason widens the claim past recipe inputs (LLM-636): the shared
+	// spoken-for reservation (sim.SpokenFor) also holds back a non-food buy line
+	// the actor only ever uses (mending's thread, a boost salt, a bench tool) and
+	// the one garment on its back — the same units the carry line marks "not for
+	// trade" and the pay_with_item gate refuses. For those ReserveMakes is nil (no
+	// recipe names them) and render phrases the claim from the reason instead, so
+	// this cue can never price as wares what the line above it just said was
+	// not. SpokenForNone when the reservation is the LLM-609 recipe floor alone.
+	ReserveFloor  int
+	ReserveHeld   int
+	ReserveMakes  []string
+	ReserveReason sim.SpokenForReason
 
 	// WholesaleTo, when non-empty, marks this as a wholesale producer's OWN
 	// produce (sim.IsOwnProduce) and names the village distributor it sells to —
@@ -249,6 +259,10 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	// down (LLM-462, working_capital.go); the item list above it never got the
 	// same discriminator and went on pricing the smith's water as merchandise.
 	floors := sim.ReorderFloors(snap.Recipes, actorSnap.RestockPolicy)
+	// LLM-636: the wider spoken-for reservation — the same map the carry line and
+	// the pay_with_item intake gate read — so a non-recipe making (thread, salt)
+	// and the worn garment are held back here too, not just the recipe floors.
+	spokenFor := sim.SpokenFor(snap.ItemKinds, snap.Recipes, sim.SnapshotBarterHolder(snap, actorSnap))
 	// Built before the item walk so a good already earmarked for a mend can't also
 	// pick up a bench reservation and render two claims on the same stock.
 	reserve := buildRepairReserve(snap, actorID, actorSnap)
@@ -488,12 +502,19 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// stock contradict each other).
 		reserveFloor, reserveHeld := 0, 0
 		var reserveMakes []string
+		reserveReason := sim.SpokenForNone
 		mendClaimed := reserve != nil && item == sim.NailItemKind
 		if floor := floors[item]; floor > 0 && !mendClaimed {
 			if held := actorSnap.Inventory[item]; held > 0 {
 				reserveFloor, reserveHeld = floor, held
 				reserveMakes = reservedMakings(snap, actorSnap.RestockPolicy, item)
 			}
+		} else if c := spokenFor[item]; c.Qty > 0 && !mendClaimed {
+			// LLM-636: no recipe floors it, but the shared reservation does — a
+			// making the actor only uses, or the garment on its back. The claim's
+			// qty is the floor; ReserveMakes stays nil and the reason carries the
+			// phrasing.
+			reserveFloor, reserveHeld, reserveReason = c.Qty, actorSnap.Inventory[item], c.Reason
 		}
 		seen[item] = true
 		items = append(items, TradeValueItem{
@@ -513,6 +534,7 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			ReserveFloor:      reserveFloor,
 			ReserveHeld:       reserveHeld,
 			ReserveMakes:      reserveMakes,
+			ReserveReason:     reserveReason,
 			WholesaleTo:       wholesaleTo,
 			BulkUnit:          bulkUnit,
 			BulkObserved:      bulkObserved,
@@ -660,17 +682,42 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		//
 		// The stake is named and no imperative is issued — the scene is the
 		// argument. Nothing here blocks the sale; the engine still lets him sell it.
-		if it.ReserveHeld > 0 && it.ReserveHeld <= it.ReserveFloor && len(it.ReserveMakes) > 0 {
-			fmt.Fprintf(b, "- %s: the %d you carry are for making your own %s — makings, not wares. Selling them leaves you nothing to work with.\n",
-				sanitizeInline(it.ItemLabel), it.ReserveHeld, makingsList(it.ReserveMakes))
-			continue
+		//
+		// LLM-636 widens the same two tiers to the shared spoken-for claim: a
+		// making no recipe names (ReserveMakes nil, ReserveReason makings) and the
+		// garment on the actor's back (ReserveReason garment) — phrased from the
+		// reason, since there is no "for making your own X" to say.
+		if it.ReserveHeld > 0 && it.ReserveHeld <= it.ReserveFloor {
+			switch {
+			case len(it.ReserveMakes) > 0:
+				fmt.Fprintf(b, "- %s: the %d you carry are for making your own %s — makings, not wares. Selling them leaves you nothing to work with.\n",
+					sanitizeInline(it.ItemLabel), it.ReserveHeld, makingsList(it.ReserveMakes))
+				continue
+			case it.ReserveReason == sim.SpokenForGarment:
+				fmt.Fprintf(b, "- %s: the %d you carry are your own clothes, not wares.\n",
+					sanitizeInline(it.ItemLabel), it.ReserveHeld)
+				continue
+			case it.ReserveReason == sim.SpokenForMakings:
+				fmt.Fprintf(b, "- %s: the %d you carry you keep to work with — makings, not wares. Selling them leaves you nothing to work with.\n",
+					sanitizeInline(it.ItemLabel), it.ReserveHeld)
+				continue
+			}
 		}
 		// The surplus clause rides whichever line renders below (retail or
 		// wholesale-channel), so the two can't drift on how a keep-back is spoken.
 		keepBack := ""
-		if it.ReserveFloor > 0 && it.ReserveHeld > it.ReserveFloor && len(it.ReserveMakes) > 0 {
-			keepBack = fmt.Sprintf(" Keep %d back for making your own %s; only the %d beyond that are yours to sell.",
-				it.ReserveFloor, makingsList(it.ReserveMakes), it.ReserveHeld-it.ReserveFloor)
+		if it.ReserveFloor > 0 && it.ReserveHeld > it.ReserveFloor {
+			switch {
+			case len(it.ReserveMakes) > 0:
+				keepBack = fmt.Sprintf(" Keep %d back for making your own %s; only the %d beyond that are yours to sell.",
+					it.ReserveFloor, makingsList(it.ReserveMakes), it.ReserveHeld-it.ReserveFloor)
+			case it.ReserveReason == sim.SpokenForGarment:
+				keepBack = fmt.Sprintf(" Keep %d back — your own clothes; only the %d beyond that are yours to sell.",
+					it.ReserveFloor, it.ReserveHeld-it.ReserveFloor)
+			case it.ReserveReason == sim.SpokenForMakings:
+				keepBack = fmt.Sprintf(" Keep %d back to work with; only the %d beyond that are yours to sell.",
+					it.ReserveFloor, it.ReserveHeld-it.ReserveFloor)
+			}
 		}
 		// LLM-291: a wholesale producer's own produce isn't sold retail — it goes
 		// in bulk to the shop that stocks it. Draw the wholesale-channel line (who

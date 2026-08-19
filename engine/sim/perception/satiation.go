@@ -234,13 +234,14 @@ func dropDrinkSatisfiers(snap *sim.Snapshot, items []OwnStockItem) []OwnStockIte
 // "has something to pay with" means and none of them can drift back to coins-only.
 //
 // No exclusion ("" ): the consumer buy cue is a buyer paying for something it means
-// to CONSUME, so every TRADEABLE good it carries is fair payment — a service or an
-// eat-here-only food is not (resolvePayItems rejects both; LLM-445), so a pack
-// holding nothing else reads as no means to barter. The restock cue passes the
-// item being bought instead — restocking a line of stock by offering that same stock
-// is not a payment path (see HoldsBarterableGoodsExcept).
+// to CONSUME, so every SPARE tradeable good it carries is fair payment — a service or
+// an eat-here-only food is not (resolvePayItems rejects both; LLM-445), and neither
+// are the goods it keeps to work with or the clothes on its back (the spoken-for
+// reservation, LLM-636), so a pack holding nothing else reads as no means to barter.
+// The restock cue passes the item being bought instead — restocking a line of stock
+// by offering that same stock is not a payment path (see HoldsBarterableGoodsExcept).
 func holdsBarterableGoods(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
-	return sim.HoldsBarterableGoodsExcept(snap.ItemKinds, actorSnap.Inventory, "")
+	return sim.HoldsBarterableGoodsExcept(snap.ItemKinds, snap.Recipes, sim.SnapshotBarterHolder(snap, actorSnap), "")
 }
 
 // satiationMealFloor is the itemFeltAmount magnitude at which a satisfier reads
