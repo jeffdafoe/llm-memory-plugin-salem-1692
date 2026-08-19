@@ -48,8 +48,8 @@ type adminFenceBlockedResponse struct {
 }
 
 // handleAdminFencePlace lays a fence run. 400 malformed body / missing asset_id
-// or coordinate / non-finite coords / unknown asset / asset without fence piece states / run
-// over the size cap; 403 not admin; 409 a tile on the run is blocked (body
+// or coordinate / non-finite coords / unknown asset / asset without fence piece
+// states / run over the size cap / run that retraces existing fence; 403 not admin; 409 a tile on the run is blocked (body
 // names it; nothing was placed); 422 corner outside the map; 200 ok.
 func (s *Server) handleAdminFencePlace(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
@@ -104,7 +104,8 @@ func (s *Server) handleAdminFencePlace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, sim.ErrUnknownAsset) || errors.Is(err, sim.ErrInvalidObjectPosition) ||
-			errors.Is(err, sim.ErrFenceAssetUnsupported) || errors.Is(err, sim.ErrFenceRunTooLarge) {
+			errors.Is(err, sim.ErrFenceAssetUnsupported) || errors.Is(err, sim.ErrFenceRunTooLarge) ||
+			errors.Is(err, sim.ErrFenceRunNothingNew) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

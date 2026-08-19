@@ -1761,10 +1761,12 @@ func _on_delete_confirmed() -> void:
 # the tile grid, left-press starts a rubber-band, motion redraws a preview
 # built from the real piece sprites, and release POSTs the two corners to
 # /api/village/admin/fence/place. The ENGINE picks the piece per tile and
-# mints the segments (sim.PlaceFenceRun); _fence_run_segments below is a
-# preview-only mirror of that layout and must stay in lockstep with
-# fenceRunSegments in engine/sim/fence.go — the engine is the truth, the
-# preview is cosmetic. Segments render through the ordinary object_created
+# mints the segments (sim.PlaceFenceRun); _fence_run_tiles + _fence_piece_for
+# below are a preview-only mirror of that layout and must stay in lockstep
+# with fenceRunTiles / fencePieceFor in engine/sim/fence.go — the engine is
+# the truth, the preview is cosmetic. Pieces are neighbour-aware (LLM-638):
+# a run drawn onto an existing segment of the same asset shares it, and the
+# engine re-resolves the pieces it touches. Segments render through the ordinary object_created
 # broadcast, so nothing is created optimistically here. PLACE mode stays
 # active after a run (like terrain painting) so several runs can be drawn;
 # Esc / right-click leaves it.
@@ -1786,41 +1788,82 @@ func _fence_tile_anchor_pos(tile: Vector2i, asset: Dictionary) -> Vector2:
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
     return Vector2(tile.x * TILE_SIZE + anchor_x * TILE_SIZE, tile.y * TILE_SIZE + anchor_y * TILE_SIZE)
 
-## Preview mirror of sim.fenceRunSegments: the ring tiles of the inclusive
-## rectangle spanned by a and b (any corner order), each with its piece tag.
-## 1x1 → post; Nx1 → line with end caps; 1xN → vertical line; else the ring.
-func _fence_run_segments(a: Vector2i, b: Vector2i) -> Array:
+## Preview mirror of sim.fenceRunTiles: the ring tiles of the inclusive
+## rectangle spanned by a and b (any corner order), row-major. Geometry only —
+## pieces come from _fence_piece_for against the neighbourhood.
+func _fence_run_tiles(a: Vector2i, b: Vector2i) -> Array:
     var min_x: int = mini(a.x, b.x)
     var max_x: int = maxi(a.x, b.x)
     var min_y: int = mini(a.y, b.y)
     var max_y: int = maxi(a.y, b.y)
-    var w: int = max_x - min_x + 1
-    var h: int = max_y - min_y + 1
     var out: Array = []
-    if w == 1 and h == 1:
-        out.append([Vector2i(min_x, min_y), "fence-post"])
-    elif h == 1:
-        out.append([Vector2i(min_x, min_y), "fence-end-left"])
-        for x in range(min_x + 1, max_x):
-            out.append([Vector2i(x, min_y), "fence-h"])
-        out.append([Vector2i(max_x, min_y), "fence-end-right"])
-    elif w == 1:
-        out.append([Vector2i(min_x, min_y), "fence-v-top"])
-        for y in range(min_y + 1, max_y):
-            out.append([Vector2i(min_x, y), "fence-v"])
-        out.append([Vector2i(min_x, max_y), "fence-v-bottom"])
-    else:
-        out.append([Vector2i(min_x, min_y), "fence-corner-tl"])
-        for x in range(min_x + 1, max_x):
-            out.append([Vector2i(x, min_y), "fence-h"])
-        out.append([Vector2i(max_x, min_y), "fence-corner-tr"])
-        for y in range(min_y + 1, max_y):
-            out.append([Vector2i(min_x, y), "fence-v"])
-            out.append([Vector2i(max_x, y), "fence-v"])
-        out.append([Vector2i(min_x, max_y), "fence-corner-bl"])
-        for x in range(min_x + 1, max_x):
-            out.append([Vector2i(x, max_y), "fence-h"])
-        out.append([Vector2i(max_x, max_y), "fence-corner-br"])
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            if x == min_x or x == max_x or y == min_y or y == max_y:
+                out.append(Vector2i(x, y))
+    return out
+
+## Preview mirror of sim.fencePieceFor (LLM-638): the piece tag for a tile
+## given which of its four edge neighbours are fence segments of the same
+## asset. Corners, ends and mids all derive from this; three or four
+## neighbours fall back to the straight piece (the sheet has no T/cross art).
+## Pinned to the engine's 16-case matrix by tests/fence_run_test.gd.
+func _fence_piece_for(n: bool, e: bool, s: bool, w: bool) -> String:
+    if e and w:
+        return "fence-h"
+    if n and s:
+        return "fence-v"
+    if e and s:
+        return "fence-corner-tl"
+    if w and s:
+        return "fence-corner-tr"
+    if e and n:
+        return "fence-corner-bl"
+    if w and n:
+        return "fence-corner-br"
+    if e:
+        return "fence-end-left"
+    if w:
+        return "fence-end-right"
+    if s:
+        return "fence-v-top"
+    if n:
+        return "fence-v-bottom"
+    return "fence-post"
+
+## Tiles (unpadded world tiles) already holding a placed segment of `asset_id`
+## — the existing neighbours a preview resolves against, and the tiles the
+## engine will share rather than re-mint. Read off world.placed_objects.
+func _fence_existing_tiles(asset_id: String) -> Dictionary:
+    var tiles: Dictionary = {}
+    for node in world.placed_objects.values():
+        if node == null or not node.has_meta("asset_id"):
+            continue
+        if str(node.get_meta("asset_id", "")) != asset_id:
+            continue
+        tiles[world.world_to_tile(node.position)] = true
+    return tiles
+
+## The preview's segments for a drag: [tile, piece tag] for every NEW tile of
+## the run (a tile that already holds a same-asset segment is shared by the
+## engine and is not drawn), each piece resolved against new tiles ∪ existing
+## same-asset tiles. Re-resolution of the existing neighbours is not previewed;
+## the engine's object_state_changed lands it after the POST.
+func _fence_run_segments(a: Vector2i, b: Vector2i, existing: Dictionary) -> Array:
+    var tiles: Array = _fence_run_tiles(a, b)
+    var occupied: Dictionary = existing.duplicate()
+    for t in tiles:
+        occupied[t] = true
+    var out: Array = []
+    for t in tiles:
+        if existing.has(t):
+            continue
+        var tag: String = _fence_piece_for(
+            occupied.has(Vector2i(t.x, t.y - 1)),
+            occupied.has(Vector2i(t.x + 1, t.y)),
+            occupied.has(Vector2i(t.x, t.y + 1)),
+            occupied.has(Vector2i(t.x - 1, t.y)))
+        out.append([t, tag])
     return out
 
 func _begin_fence_drag(screen_pos: Vector2) -> void:
@@ -1866,7 +1909,8 @@ func _rebuild_fence_preview() -> void:
     for child in _fence_preview.get_children():
         child.queue_free()
     var asset = Catalog.assets.get(selected_asset_id, {})
-    var segments: Array = _fence_run_segments(_fence_drag_start_tile, _fence_drag_end_tile)
+    var existing: Dictionary = _fence_existing_tiles(selected_asset_id)
+    var segments: Array = _fence_run_segments(_fence_drag_start_tile, _fence_drag_end_tile, existing)
     var scale_v: float = world._asset_render_scale(asset)
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
@@ -1884,7 +1928,7 @@ func _rebuild_fence_preview() -> void:
         ghost.offset = Vector2(-tex.region.size.x * anchor_x, -tex.region.size.y * anchor_y)
         ghost.position = _fence_tile_anchor_pos(seg[0], asset)
         _fence_preview.add_child(ghost)
-    var over_cap: bool = segments.size() > FENCE_MAX_SEGMENTS
+    var over_cap: bool = _fence_run_tiles(_fence_drag_start_tile, _fence_drag_end_tile).size() > FENCE_MAX_SEGMENTS
     _fence_preview.modulate = Color(1, 0.35, 0.35, FENCE_PREVIEW_ALPHA) if over_cap else Color(1, 1, 1, FENCE_PREVIEW_ALPHA)
 
 ## POST the two corners (tile centres, world px — the engine floors them to
@@ -1925,17 +1969,26 @@ func _commit_fence_drag() -> void:
     http.request(Auth.api_base + "/api/village/admin/fence/place", headers, HTTPClient.METHOD_POST, payload)
     _cancel_fence_drag()
 
-## The run id a selected fence segment carries in its tags, or "".
-func _selected_fence_run_id() -> String:
+## Every run id a selected fence segment carries, in tag order (oldest run
+## first). A junction post shared by several runs carries several.
+func _selected_fence_run_ids() -> Array:
+    var ids: Array = []
     if selected_object == null:
-        return ""
+        return ids
     var tags = selected_object.get_meta("tags", [])
     if tags is Array:
         for t in tags:
             var s: String = str(t)
             if s.begins_with(FENCE_RUN_TAG_PREFIX):
-                return s.substr(FENCE_RUN_TAG_PREFIX.length())
-    return ""
+                ids.append(s.substr(FENCE_RUN_TAG_PREFIX.length()))
+    return ids
+
+## The run "Delete fence run" acts on: the OLDEST run the selected segment
+## belongs to. Unambiguous except on a shared junction, where the confirm
+## dialog says so.
+func _selected_fence_run_id() -> String:
+    var ids: Array = _selected_fence_run_ids()
+    return "" if ids.is_empty() else str(ids[0])
 
 ## Count the placed segments sharing the selected run — for the confirm text.
 func _fence_run_segment_count(run_id: String) -> int:
@@ -1958,8 +2011,14 @@ func delete_selected_fence_run() -> void:
     if run_id == "":
         return
     var n: int = _fence_run_segment_count(run_id)
+    var shared_by: int = _selected_fence_run_ids().size()
     _delete_dialog.title = "Delete fence run"
-    _delete_dialog.dialog_text = "Delete this fence run (" + str(n) + " segments)? This cannot be undone."
+    if shared_by > 1:
+        # A junction post belongs to several runs; say which one goes. A
+        # shared post itself survives until its last run is deleted.
+        _delete_dialog.dialog_text = "This post is shared by " + str(shared_by) + " fence runs. Delete the oldest one (" + str(n) + " segments)? Shared posts stay for the other runs. This cannot be undone."
+    else:
+        _delete_dialog.dialog_text = "Delete this fence run (" + str(n) + " segments)? This cannot be undone."
     _pending_delete = "fence-run"
     _delete_dialog.popup_centered()
 
