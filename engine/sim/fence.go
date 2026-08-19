@@ -339,16 +339,27 @@ func refenceAroundRemoved(w *World, asset *Asset, removed []TilePos) {
 	refenceTiles(w, asset, occupied, around)
 }
 
+// fenceRemovalInfo is the immutable per-object metadata a removal needs
+// afterwards: which asset it was and which tile it stood on.
+type fenceRemovalInfo struct {
+	assetID AssetID
+	tile    TilePos
+}
+
 // fenceRemovalSnapshot captures every object's asset and tile BEFORE a delete
 // cascade runs, so the tiles of every removed FENCE segment — the root and any
 // segment that went with it as an attachment — can be re-resolved around
 // afterwards. deleteObjectCascade returns ids after it has dropped them from
-// the map, which is why the snapshot is taken first. O(objects) per delete,
-// which is a few hundred pointers.
-func fenceRemovalSnapshot(w *World) map[VillageObjectID]*VillageObject {
-	snap := make(map[VillageObjectID]*VillageObject, len(w.VillageObjects))
+// the map, which is why the snapshot is taken first; it copies VALUES, not
+// object pointers, so it stays true even if the cascade ever clears fields on
+// the objects it removes. O(objects) per delete, a few hundred small structs.
+func fenceRemovalSnapshot(w *World) map[VillageObjectID]fenceRemovalInfo {
+	snap := make(map[VillageObjectID]fenceRemovalInfo, len(w.VillageObjects))
 	for id, obj := range w.VillageObjects {
-		snap[id] = obj
+		if obj == nil {
+			continue
+		}
+		snap[id] = fenceRemovalInfo{assetID: obj.AssetID, tile: obj.Pos.Tile()}
 	}
 	return snap
 }
@@ -356,14 +367,14 @@ func fenceRemovalSnapshot(w *World) map[VillageObjectID]*VillageObject {
 // refenceAfterCascade re-resolves around every removed fence segment in
 // `removed`, looked up in the pre-delete snapshot, grouped by asset so each
 // asset's neighbour index is built once. Non-fence objects are ignored.
-func refenceAfterCascade(w *World, snap map[VillageObjectID]*VillageObject, removed []VillageObjectID) {
+func refenceAfterCascade(w *World, snap map[VillageObjectID]fenceRemovalInfo, removed []VillageObjectID) {
 	byAsset := make(map[AssetID][]TilePos)
 	for _, id := range removed {
-		obj := snap[id]
-		if obj == nil || !isFenceAsset(w.Assets[obj.AssetID]) {
+		info, ok := snap[id]
+		if !ok || !isFenceAsset(w.Assets[info.assetID]) {
 			continue
 		}
-		byAsset[obj.AssetID] = append(byAsset[obj.AssetID], obj.Pos.Tile())
+		byAsset[info.assetID] = append(byAsset[info.assetID], info.tile)
 	}
 	for assetID, tiles := range byAsset {
 		refenceAroundRemoved(w, w.Assets[assetID], tiles)
