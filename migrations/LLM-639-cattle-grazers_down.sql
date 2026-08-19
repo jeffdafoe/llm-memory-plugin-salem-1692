@@ -5,8 +5,15 @@
 -- reassign those actors first rather than silently orphaning their render.
 --
 -- The gate half restores the Ranch Fence Gate to its pre-LLM-639 shape
--- (obstacle, anchor-only footprint, no fence-gate tag). Guarded like the up:
--- on a fresh replay DB the asset does not exist and these match zero rows.
+-- (obstacle, anchor-only footprint, no fence-gate tag) ONLY while the asset
+-- still carries exactly the values the up wrote. The gate asset is live
+-- catalog data the editor may retune after LLM-639 (footprint drag,
+-- is_obstacle toggle); a rollback must not silently destroy those edits, so
+-- a gate that no longer matches is left alone with a NOTICE — the operator
+-- reverts it deliberately or not at all. The fence-gate tag is removed
+-- unconditionally: it is the LLM-639 contract itself, meaningless once the
+-- engine code is rolled back. Guarded like the up: on a fresh replay DB the
+-- asset does not exist and everything here matches zero rows.
 
 BEGIN;
 
@@ -30,10 +37,22 @@ DELETE FROM public.asset_state_tag t
    AND s.asset_id = 'e2c34e96-14ef-487c-a6af-d2526d4c4526'
    AND t.tag = 'fence-gate';
 
-UPDATE public.asset
-   SET is_obstacle = true,
-       footprint_left = 0, footprint_right = 0,
-       footprint_top = 0, footprint_bottom = 0
- WHERE id = 'e2c34e96-14ef-487c-a6af-d2526d4c4526';
+DO $$
+BEGIN
+    UPDATE public.asset
+       SET is_obstacle = true,
+           footprint_left = 0, footprint_right = 0,
+           footprint_top = 0, footprint_bottom = 0
+     WHERE id = 'e2c34e96-14ef-487c-a6af-d2526d4c4526'
+       AND is_obstacle = false
+       AND footprint_left = 0 AND footprint_right = 1
+       AND footprint_top = 0 AND footprint_bottom = 0;
+    IF NOT FOUND AND EXISTS (
+        SELECT 1 FROM public.asset
+         WHERE id = 'e2c34e96-14ef-487c-a6af-d2526d4c4526') THEN
+        RAISE NOTICE
+            'LLM-639 down: Ranch Fence Gate geometry no longer matches what the up wrote (live editor changes) — left as is; revert manually if intended.';
+    END IF;
+END $$;
 
 COMMIT;

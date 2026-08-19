@@ -3,10 +3,12 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
@@ -58,8 +60,18 @@ func buildGrazerWorld(t *testing.T, pos sim.TilePos) *sim.World {
 		t.Fatalf("LoadWorld: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go w.Run(ctx)
+	// Cancel AND wait for the world goroutine to exit (code_review, LLM-639 —
+	// the same leak the waterfowl harness had): a test must not finish while
+	// its world is still draining queued commands or ticker callbacks.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 	return w
 }
 
@@ -272,5 +284,73 @@ func TestGrazerGates(t *testing.T) {
 	}
 	if _, err := w.Send(sim.SetActorPosition("npc-in-cow-suit", gateTile, time.Now())); err != nil {
 		t.Errorf("teleporting the stateful impostor onto the gate tile should be allowed: %v", err)
+	}
+}
+
+// TestGrazerLeavesNoHistory is the stated behavioural boundary of the feature
+// (code_review, LLM-639): a grazer's movement, driven end to end through the
+// real command path — wander decision, locomotion ticks, arrival, with the
+// cascade action-log subscribers registered — writes NOTHING to the action
+// log, and the animal is absent from the atmosphere roster. Both ride the
+// "ambient" behavior (LLM-593), so this regresses loudly if that filtering
+// ever changes shape.
+func TestGrazerLeavesNoHistory(t *testing.T) {
+	inside := sim.TilePos{X: sim.PadX + 12, Y: sim.PadY + 12}
+	w := buildGrazerWorld(t, inside)
+	buildPenWithGate(t, w, sim.PadX+10, sim.PadY+10, sim.PadX+15, sim.PadY+14, sim.PadX+12)
+	ctx, cancelCascade := context.WithCancel(context.Background())
+	t.Cleanup(cancelCascade)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		cascade.RegisterActionLog(ctx, world)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("register cascade: %v", err)
+	}
+
+	// Decision pass 1 stamps the dwell; pass 2 (past any dwell) dispatches.
+	now := time.Now()
+	if _, err := w.Send(sim.EvaluateGrazerTick(now)); err != nil {
+		t.Fatalf("tick 1: %v", err)
+	}
+	now = now.Add(2 * time.Minute)
+	if _, err := w.Send(sim.EvaluateGrazerTick(now)); err != nil {
+		t.Fatalf("tick 2: %v", err)
+	}
+	// Walk the amble to completion through real locomotion ticks (the grazer
+	// steps every 2nd tick; an amble is at most GrazerAmbleRange tiles).
+	arrived := false
+	for i := 0; i < 40 && !arrived; i++ {
+		now = now.Add(time.Second)
+		if _, err := w.Send(sim.EvaluateLocomotion(now)); err != nil {
+			t.Fatalf("locomotion: %v", err)
+		}
+		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			return world.Actors[cowID].MoveIntent == nil, nil
+		}})
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		arrived = res.(bool)
+	}
+	if !arrived {
+		t.Fatal("the cow never completed its amble — nothing exercised the arrival path")
+	}
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		for _, e := range world.ActionLog {
+			if e.ActorID == cowID {
+				t.Errorf("action log holds a %q row for the cow — ambient movement must leave no history", e.ActionType)
+			}
+		}
+		for _, entry := range sim.BuildVillageContextRoster(world) {
+			for _, name := range entry.DisplayNames {
+				if strings.Contains(name, "Cow") {
+					t.Errorf("atmosphere roster names the cow in bucket %q", entry.StructureLabel)
+				}
+			}
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("inspect: %v", err)
 	}
 }
