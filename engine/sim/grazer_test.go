@@ -316,8 +316,23 @@ func TestGrazerLeavesNoHistory(t *testing.T) {
 	if _, err := w.Send(sim.EvaluateGrazerTick(now)); err != nil {
 		t.Fatalf("tick 2: %v", err)
 	}
-	// Walk the amble to completion through real locomotion ticks (the grazer
-	// steps every 2nd tick; an amble is at most GrazerAmbleRange tiles).
+	// The decision must have DISPATCHED an amble — otherwise the loop below
+	// would "arrive" on its first read without exercising movement at all
+	// (code_review round 2). Capture the start tile to prove real travel.
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		cow := world.Actors[cowID]
+		return []any{cow.MoveIntent != nil, cow.Pos}, nil
+	}})
+	if err != nil {
+		t.Fatalf("read dispatched intent: %v", err)
+	}
+	if !res.([]any)[0].(bool) {
+		t.Fatal("grazer decision did not dispatch an amble")
+	}
+	startPos := res.([]any)[1].(sim.Position)
+	// Walk the observed amble to completion through real locomotion ticks
+	// (the grazer steps every 2nd tick; an amble is at most GrazerAmbleRange
+	// tiles).
 	arrived := false
 	for i := 0; i < 40 && !arrived; i++ {
 		now = now.Add(time.Second)
@@ -334,6 +349,15 @@ func TestGrazerLeavesNoHistory(t *testing.T) {
 	}
 	if !arrived {
 		t.Fatal("the cow never completed its amble — nothing exercised the arrival path")
+	}
+	moved, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors[cowID].Pos != startPos, nil
+	}})
+	if err != nil {
+		t.Fatalf("read final position: %v", err)
+	}
+	if !moved.(bool) {
+		t.Fatal("the cow's tile never changed — no real amble occurred")
 	}
 
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
