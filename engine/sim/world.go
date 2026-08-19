@@ -1384,6 +1384,7 @@ type World struct {
 	reactorEval        reactorEvaluatorState
 	locomotionTick     locomotionTickerState
 	waterfowlTick      waterfowlTickerState
+	grazerTick         grazerTickerState
 	sceneQuoteSweep    sceneQuoteSweepState
 	payLedgerSweep     payLedgerSweepState
 	laborLedgerSweep   laborLedgerSweepState
@@ -1397,6 +1398,10 @@ type World struct {
 	// restart-lossy by design (the checkpointed actor position is the
 	// re-seed anchor). World-goroutine-only.
 	waterfowl map[ActorID]*waterfowlState
+
+	// grazers is the per-animal transient wander state for the grazer
+	// ticker (grazer.go) — same lifecycle rules as waterfowl above.
+	grazers map[ActorID]*grazerState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first

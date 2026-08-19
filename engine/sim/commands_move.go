@@ -290,6 +290,9 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			if actorIsWaterfowl(w, actor) {
 				waterfowlResetStepBeat(w, actor.ID)
 			}
+			if actorIsGrazer(w, actor) {
+				grazerResetStepBeat(w, actor.ID)
+			}
 
 			// Step 8 - announce the walk to the client read surface. Carries
 			// the full cost-weighted tile path (computed as the step-4

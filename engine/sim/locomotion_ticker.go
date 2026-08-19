@@ -215,6 +215,7 @@ func EvaluateLocomotion(now time.Time) Command {
 			// LLM-579) — built lazily, once per tick, only when a duck is
 			// actually moving.
 			var waterfowlGrid *WalkGrid
+			var grazerGrid *WalkGrid
 			for _, id := range movers {
 				actor := w.Actors[id]
 				// Re-fetch and re-check: movers was snapshotted at the top
@@ -266,6 +267,20 @@ func EvaluateLocomotion(now time.Time) Command {
 						}
 					}
 					actorGrid = waterfowlGrid
+				} else if actorIsGrazer(w, actor) {
+					// Grazer slow walk (LLM-639) — same divisor contract as
+					// the waterfowl branch above, own beat and grid (gates
+					// stamped impassable for livestock only).
+					if !grazerShouldStep(w, id) {
+						continue
+					}
+					if grazerGrid == nil {
+						grazerGrid, err = buildGrazerWalkGrid(w)
+						if err != nil {
+							return nil, fmt.Errorf("locomotion tick: build grazer walk grid: %w", err)
+						}
+					}
+					actorGrid = grazerGrid
 				}
 				advanceActorLocomotion(w, actor, actorGrid, now)
 			}

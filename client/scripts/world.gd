@@ -941,13 +941,21 @@ func _sprite_render_scale(sprite_data: Dictionary) -> float:
     var s: float = float(sprite_data.get("render_scale", 2.0))
     return s if s > 0.0 else 2.0
 
-## Interpolation speed factor for this NPC's walk legs (LLM-580). Waterfowl
-## advance every WaterfowlStepDivisor-th engine locomotion tick, so the client
+## Whether this container's sprite carries a SLOW-WALK behavior: waterfowl
+## (LLM-580) or grazer (LLM-639). Both advance every 2nd engine locomotion
+## tick, so the client lerps them at the matching half speed.
+func _npc_is_slow_walker(container: Node2D) -> bool:
+    var behaviors = container.get_meta("behaviors", [])
+    return behaviors is Array and (behaviors.has("waterfowl") or behaviors.has("grazer"))
+
+## Interpolation speed factor for this NPC's walk legs (LLM-580). Slow walkers
+## (waterfowl, grazers) advance every 2nd engine locomotion tick, so the client
 ## lerps them at the matching 1/2 of walk_speed_px_per_s — the two sides MUST
-## stay in lockstep (engine/sim/waterfowl.go WaterfowlStepDivisor), the same
-## contract shape as LOCOMOTION_TICK_SECONDS. Everyone else is 1.0.
+## stay in lockstep (engine/sim/waterfowl.go WaterfowlStepDivisor and
+## grazer.go GrazerStepDivisor), the same contract shape as
+## LOCOMOTION_TICK_SECONDS. Everyone else is 1.0.
 func npc_walk_speed_factor(container: Node2D) -> float:
-    return 0.5 if _npc_is_waterfowl(container) else 1.0
+    return 0.5 if _npc_is_slow_walker(container) else 1.0
 
 ## Terrain type under a world-pixel position — shallow (5) or deep (6) water
 ## means a waterfowl floats there. Same map_data the terrain renderer draws.
