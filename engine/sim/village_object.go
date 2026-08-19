@@ -691,44 +691,56 @@ func CreateVillageObject(assetID AssetID, x, y float64, attachedTo VillageObject
 					return nil, ErrVillageObjectNotFound
 				}
 			}
-			entryPolicy := EntryPolicyClosed
-			if asset.DoorOffsetX != nil && asset.DoorOffsetY != nil {
-				entryPolicy = EntryPolicyOpen
-			}
-			obj := &VillageObject{
-				ID:           VillageObjectID(newUUIDv4()),
-				AssetID:      assetID,
-				CurrentState: asset.DefaultState,
-				Pos:          WorldPos{X: x, Y: y},
-				PlacedBy:     placedBy,
-				EntryPolicy:  entryPolicy,
-				AttachedTo:   attachedTo,
-				Tags:         []string{},
-			}
-			// LLM-363: seed the placement's refresh policy from the asset's default
-			// template when it carries one, so a forageable / eat-in-place source
-			// drops in working (a fresh full supply) instead of inert. nil/empty for
-			// the common non-refreshing asset — obj.Refreshes stays nil.
-			obj.Refreshes = seedRefreshesFromDefaults(asset.RefreshDefaults)
-			w.VillageObjects[obj.ID] = obj
-			w.emit(&VillageObjectCreated{
-				ObjectID:     obj.ID,
-				AssetID:      assetID,
-				CurrentState: obj.CurrentState,
-				X:            x,
-				Y:            y,
-				PlacedBy:     placedBy,
-				EntryPolicy:  entryPolicy,
-				AttachedTo:   attachedTo,
-				At:           time.Now().UTC(),
-			})
-			// LLM-398: a placement the template just turned into a source must carry a
-			// name or the gather/eat resolvers can never reach it. Runs AFTER the
-			// created event so the client has the object before the name frame lands.
-			nameSourceFromAsset(w, obj, asset)
+			obj := placeVillageObject(w, assetID, asset, WorldPos{X: x, Y: y}, attachedTo, placedBy, asset.DefaultState)
 			return CreateObjectResult{Object: obj}, nil
 		},
 	}
+}
+
+// placeVillageObject is the shared body of every authoring path that mints a
+// village object: CreateVillageObject (one placement, default state) and
+// PlaceFenceRun (many placements, one state per tile — fence.go). The caller
+// has already validated asset, position and attachedTo. entry_policy defaults
+// to open when the asset has a configured doorway (the placement is enterable)
+// else closed. Emits VillageObjectCreated → object_created so every client
+// renders the new object.
+func placeVillageObject(w *World, assetID AssetID, asset *Asset, pos WorldPos, attachedTo VillageObjectID, placedBy, state string) *VillageObject {
+	entryPolicy := EntryPolicyClosed
+	if asset.DoorOffsetX != nil && asset.DoorOffsetY != nil {
+		entryPolicy = EntryPolicyOpen
+	}
+	obj := &VillageObject{
+		ID:           VillageObjectID(newUUIDv4()),
+		AssetID:      assetID,
+		CurrentState: state,
+		Pos:          pos,
+		PlacedBy:     placedBy,
+		EntryPolicy:  entryPolicy,
+		AttachedTo:   attachedTo,
+		Tags:         []string{},
+	}
+	// LLM-363: seed the placement's refresh policy from the asset's default
+	// template when it carries one, so a forageable / eat-in-place source
+	// drops in working (a fresh full supply) instead of inert. nil/empty for
+	// the common non-refreshing asset — obj.Refreshes stays nil.
+	obj.Refreshes = seedRefreshesFromDefaults(asset.RefreshDefaults)
+	w.VillageObjects[obj.ID] = obj
+	w.emit(&VillageObjectCreated{
+		ObjectID:     obj.ID,
+		AssetID:      assetID,
+		CurrentState: obj.CurrentState,
+		X:            pos.X,
+		Y:            pos.Y,
+		PlacedBy:     placedBy,
+		EntryPolicy:  entryPolicy,
+		AttachedTo:   attachedTo,
+		At:           time.Now().UTC(),
+	})
+	// LLM-398: a placement the template just turned into a source must carry a
+	// name or the gather/eat resolvers can never reach it. Runs AFTER the
+	// created event so the client has the object before the name frame lands.
+	nameSourceFromAsset(w, obj, asset)
+	return obj
 }
 
 // DeleteObjectResult is the outcome of a DeleteVillageObject command.

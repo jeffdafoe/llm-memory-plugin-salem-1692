@@ -148,6 +148,13 @@ func _ready() -> void:
     ghost_sprite.z_index = 1000
     world.add_child(ghost_sprite)
 
+    # Fence-run rubber-band preview (LLM-637): one ghost per segment, world
+    # space, above everything like the ghost sprite.
+    _fence_preview = Node2D.new()
+    _fence_preview.z_index = 1000
+    _fence_preview.visible = false
+    world.add_child(_fence_preview)
+
     # Single confirmation dialog reused for both object and NPC deletes.
     # Title and body text are set per-call; on confirmed we dispatch on
     # _pending_delete. Adding to self (CanvasLayer) is fine in Godot 4 —
@@ -237,6 +244,23 @@ func _input(event: InputEvent) -> void:
             get_viewport().set_input_as_handled()
         return
 
+    # Fence-run rubber-band in progress (LLM-637) — owns input until release.
+    if _fence_dragging:
+        if event is InputEventMouseMotion:
+            _fence_drag_motion(event.position)
+            get_viewport().set_input_as_handled()
+        if event is InputEventMouseButton:
+            if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+                _commit_fence_drag()
+                get_viewport().set_input_as_handled()
+            if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+                _cancel_fence_drag()
+                get_viewport().set_input_as_handled()
+        if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+            _cancel_fence_drag()
+            get_viewport().set_input_as_handled()
+        return
+
     # Terrain painting: hold mouse to paint continuously
     if _terrain_painting:
         if event is InputEventMouseMotion:
@@ -301,7 +325,12 @@ func _input(event: InputEvent) -> void:
 
     if event is InputEventMouseMotion:
         if current_mode == Mode.PLACE and ghost_sprite.visible:
-            ghost_sprite.global_position = _screen_to_world(event.position)
+            if selected_asset_id != "" and Catalog.is_fence_run_asset(selected_asset_id):
+                # A fence ghost sits on the tile grid — the run is tile-aligned.
+                var fence_tile: Vector2i = world.world_to_tile(_screen_to_world(event.position))
+                ghost_sprite.global_position = _fence_tile_anchor_pos(fence_tile, Catalog.assets.get(selected_asset_id, {}))
+            else:
+                ghost_sprite.global_position = _screen_to_world(event.position)
             _apply_ghost_offset()
 
     # Keyboard shortcuts
@@ -336,7 +365,10 @@ func _input(event: InputEvent) -> void:
 func _on_left_press(screen_pos: Vector2) -> void:
     match current_mode:
         Mode.PLACE:
-            _place_at_mouse(screen_pos)
+            if not _placing_npc and selected_asset_id != "" and Catalog.is_fence_run_asset(selected_asset_id):
+                _begin_fence_drag(screen_pos)
+            else:
+                _place_at_mouse(screen_pos)
             left_click_used = true
             get_viewport().set_input_as_handled()
         Mode.SELECT:
@@ -477,6 +509,9 @@ func set_mode(new_mode: Mode) -> void:
     _dragging = false
     _drag_pending = false
     _terrain_painting = false
+    if _fence_dragging or (_fence_preview != null and _fence_preview.visible):
+        _fence_dragging = false
+        _clear_fence_preview()
     mode_changed.emit(new_mode)
 
 ## Enter structure-picking mode for the currently selected NPC. Called from
@@ -1716,6 +1751,238 @@ func _on_delete_confirmed() -> void:
     _pending_delete = ""
     if pending == "npc":
         _do_delete_selected_npc()
+    elif pending == "fence-run":
+        _do_delete_fence_run()
+
+# --- Fence runs (LLM-637) ---
+#
+# A fence-run asset (Catalog.is_fence_run_asset — its states carry the
+# fence piece tags) is not click-placed. In PLACE mode the ghost snaps to
+# the tile grid, left-press starts a rubber-band, motion redraws a preview
+# built from the real piece sprites, and release POSTs the two corners to
+# /api/village/admin/fence/place. The ENGINE picks the piece per tile and
+# mints the segments (sim.PlaceFenceRun); _fence_run_segments below is a
+# preview-only mirror of that layout and must stay in lockstep with
+# fenceRunSegments in engine/sim/fence.go — the engine is the truth, the
+# preview is cosmetic. Segments render through the ordinary object_created
+# broadcast, so nothing is created optimistically here. PLACE mode stays
+# active after a run (like terrain painting) so several runs can be drawn;
+# Esc / right-click leaves it.
+
+const FENCE_RUN_TAG_PREFIX: String = "fence-run:"
+const FENCE_PREVIEW_ALPHA: float = 0.6
+const FENCE_MAX_SEGMENTS: int = 400  # sim.MaxFenceRunSegments; preview turns red past it
+
+var _fence_dragging: bool = false
+var _fence_drag_start_tile: Vector2i = Vector2i.ZERO
+var _fence_drag_end_tile: Vector2i = Vector2i.ZERO
+var _fence_preview: Node2D = null  # world child holding one ghost Sprite2D per segment
+
+## Anchor position for a segment on `tile` (unpadded world tile): the tile's
+## origin plus the asset anchor × tile — the sprite's top-left lands on the
+## tile's top-left. Same arithmetic as sim.fenceSegmentPos.
+func _fence_tile_anchor_pos(tile: Vector2i, asset: Dictionary) -> Vector2:
+    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
+    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+    return Vector2(tile.x * TILE_SIZE + anchor_x * TILE_SIZE, tile.y * TILE_SIZE + anchor_y * TILE_SIZE)
+
+## Preview mirror of sim.fenceRunSegments: the ring tiles of the inclusive
+## rectangle spanned by a and b (any corner order), each with its piece tag.
+## 1x1 → post; Nx1 → line with end caps; 1xN → vertical line; else the ring.
+func _fence_run_segments(a: Vector2i, b: Vector2i) -> Array:
+    var min_x: int = mini(a.x, b.x)
+    var max_x: int = maxi(a.x, b.x)
+    var min_y: int = mini(a.y, b.y)
+    var max_y: int = maxi(a.y, b.y)
+    var w: int = max_x - min_x + 1
+    var h: int = max_y - min_y + 1
+    var out: Array = []
+    if w == 1 and h == 1:
+        out.append([Vector2i(min_x, min_y), "fence-post"])
+    elif h == 1:
+        out.append([Vector2i(min_x, min_y), "fence-end-left"])
+        for x in range(min_x + 1, max_x):
+            out.append([Vector2i(x, min_y), "fence-h"])
+        out.append([Vector2i(max_x, min_y), "fence-end-right"])
+    elif w == 1:
+        out.append([Vector2i(min_x, min_y), "fence-v-top"])
+        for y in range(min_y + 1, max_y):
+            out.append([Vector2i(min_x, y), "fence-v"])
+        out.append([Vector2i(min_x, max_y), "fence-v-bottom"])
+    else:
+        out.append([Vector2i(min_x, min_y), "fence-corner-tl"])
+        for x in range(min_x + 1, max_x):
+            out.append([Vector2i(x, min_y), "fence-h"])
+        out.append([Vector2i(max_x, min_y), "fence-corner-tr"])
+        for y in range(min_y + 1, max_y):
+            out.append([Vector2i(min_x, y), "fence-v"])
+            out.append([Vector2i(max_x, y), "fence-v"])
+        out.append([Vector2i(min_x, max_y), "fence-corner-bl"])
+        for x in range(min_x + 1, max_x):
+            out.append([Vector2i(x, max_y), "fence-h"])
+        out.append([Vector2i(max_x, max_y), "fence-corner-br"])
+    return out
+
+func _begin_fence_drag(screen_pos: Vector2) -> void:
+    if _fence_preview == null:
+        return
+    var tile: Vector2i = world.world_to_tile(_screen_to_world(screen_pos))
+    _fence_dragging = true
+    _fence_drag_start_tile = tile
+    _fence_drag_end_tile = tile
+    ghost_sprite.visible = false
+    _fence_preview.visible = true
+    _rebuild_fence_preview()
+
+func _fence_drag_motion(screen_pos: Vector2) -> void:
+    var tile: Vector2i = world.world_to_tile(_screen_to_world(screen_pos))
+    if tile == _fence_drag_end_tile:
+        return
+    _fence_drag_end_tile = tile
+    _rebuild_fence_preview()
+
+## Clear the rubber-band without placing; the ghost returns if we are still
+## in PLACE mode with the fence asset.
+func _cancel_fence_drag() -> void:
+    _fence_dragging = false
+    _clear_fence_preview()
+    if current_mode == Mode.PLACE and selected_asset_id != "":
+        ghost_sprite.visible = true
+
+func _clear_fence_preview() -> void:
+    if _fence_preview == null:
+        return
+    for child in _fence_preview.get_children():
+        child.queue_free()
+    _fence_preview.visible = false
+    _fence_preview.modulate = Color(1, 1, 1, 1)
+
+## Redraw the preview from the current corners: one ghost sprite per
+## segment, the real piece texture, tinted red when the run is over the
+## engine's segment cap (it would be refused).
+func _rebuild_fence_preview() -> void:
+    if _fence_preview == null or selected_asset_id == "":
+        return
+    for child in _fence_preview.get_children():
+        child.queue_free()
+    var asset = Catalog.assets.get(selected_asset_id, {})
+    var segments: Array = _fence_run_segments(_fence_drag_start_tile, _fence_drag_end_tile)
+    var scale_v: float = world._asset_render_scale(asset)
+    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
+    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+    for seg in segments:
+        var state_info = Catalog.get_state_for_tag(selected_asset_id, seg[1])
+        if state_info == null:
+            continue
+        var tex: AtlasTexture = Catalog.get_sprite_texture(state_info)
+        if tex == null:
+            continue
+        var ghost := Sprite2D.new()
+        ghost.centered = false
+        ghost.texture = tex
+        ghost.scale = Vector2(scale_v, scale_v)
+        ghost.offset = Vector2(-tex.region.size.x * anchor_x, -tex.region.size.y * anchor_y)
+        ghost.position = _fence_tile_anchor_pos(seg[0], asset)
+        _fence_preview.add_child(ghost)
+    var over_cap: bool = segments.size() > FENCE_MAX_SEGMENTS
+    _fence_preview.modulate = Color(1, 0.35, 0.35, FENCE_PREVIEW_ALPHA) if over_cap else Color(1, 1, 1, FENCE_PREVIEW_ALPHA)
+
+## POST the two corners (tile centres, world px — the engine floors them to
+## tiles) and clear the rubber-band. The segments arrive through
+## object_created. A refusal (409 names the blocked tile) is logged; the
+## preview is gone by then and a second drag is the natural retry.
+func _commit_fence_drag() -> void:
+    if not _fence_dragging:
+        return
+    _fence_dragging = false
+    var asset_id: String = selected_asset_id
+    if asset_id == "" or _fence_preview == null:
+        _cancel_fence_drag()
+        return
+    var a: Vector2 = Vector2(_fence_drag_start_tile) * TILE_SIZE + Vector2(TILE_SIZE, TILE_SIZE) * 0.5
+    var b: Vector2 = Vector2(_fence_drag_end_tile) * TILE_SIZE + Vector2(TILE_SIZE, TILE_SIZE) * 0.5
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, code, _h, body):
+        http.queue_free()
+        if not Auth.check_response(code):
+            return
+        if code >= 200 and code < 300:
+            return
+        var msg: String = ""
+        var json = JSON.parse_string(body.get_string_from_utf8())
+        if json is Dictionary:
+            msg = str(json.get("error", ""))
+        push_error("Fence run refused (" + str(code) + "): " + msg)
+    )
+    var headers: PackedStringArray = Auth.auth_headers()
+    var payload: String = JSON.stringify({
+        "asset_id": asset_id,
+        "x1": a.x, "y1": a.y,
+        "x2": b.x, "y2": b.y,
+    })
+    http.request(Auth.api_base + "/api/village/admin/fence/place", headers, HTTPClient.METHOD_POST, payload)
+    _cancel_fence_drag()
+
+## The run id a selected fence segment carries in its tags, or "".
+func _selected_fence_run_id() -> String:
+    if selected_object == null:
+        return ""
+    var tags = selected_object.get_meta("tags", [])
+    if tags is Array:
+        for t in tags:
+            var s: String = str(t)
+            if s.begins_with(FENCE_RUN_TAG_PREFIX):
+                return s.substr(FENCE_RUN_TAG_PREFIX.length())
+    return ""
+
+## Count the placed segments sharing the selected run — for the confirm text.
+func _fence_run_segment_count(run_id: String) -> int:
+    var tag: String = FENCE_RUN_TAG_PREFIX + run_id
+    var n: int = 0
+    for node in world.placed_objects.values():
+        if node == null or not node.has_meta("tags"):
+            continue
+        var tags = node.get_meta("tags", [])
+        if tags is Array and tags.has(tag):
+            n += 1
+    return n
+
+## "Delete fence run" entry point (panel button): confirm, then
+## _do_delete_fence_run removes every segment of the selected segment's run.
+## The single-segment Delete stays separate — that is how a gap for a gate
+## is opened.
+func delete_selected_fence_run() -> void:
+    var run_id: String = _selected_fence_run_id()
+    if run_id == "":
+        return
+    var n: int = _fence_run_segment_count(run_id)
+    _delete_dialog.title = "Delete fence run"
+    _delete_dialog.dialog_text = "Delete this fence run (" + str(n) + " segments)? This cannot be undone."
+    _pending_delete = "fence-run"
+    _delete_dialog.popup_centered()
+
+## POST /api/village/admin/fence/delete {run_id}. Every segment reaches all
+## clients as its own object_deleted broadcast, which removes the nodes; we
+## just drop the local selection.
+func _do_delete_fence_run() -> void:
+    var run_id: String = _selected_fence_run_id()
+    if run_id == "":
+        return
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers: PackedStringArray = Auth.auth_headers()
+    var body: String = JSON.stringify({"run_id": run_id})
+    http.request(Auth.api_base + "/api/village/admin/fence/delete",
+        headers, HTTPClient.METHOD_POST, body)
+    _deselect()
+
 
 # --- Drag-to-move ---
 

@@ -622,6 +622,7 @@ func _build_ui() -> void:
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
     editor_panel.asset_inspect_requested.connect(_on_asset_inspect_requested)
     editor_panel.delete_requested.connect(_on_panel_delete)
+    editor_panel.delete_fence_run_requested.connect(func(): editor.delete_selected_fence_run())
     editor_panel.terrain_mode_toggled.connect(_on_terrain_mode_toggled)
     editor_panel.terrain_type_selected.connect(_on_terrain_type_selected)
     editor_panel.owner_changed.connect(_on_owner_changed)

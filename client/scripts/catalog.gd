@@ -332,6 +332,26 @@ func get_state(asset_id: String, state: String = "") -> Variant:
     # Fallback to first state
     return states[0]
 
+## LLM-637: the first state of an asset carrying `tag` (asset_state_tag), or
+## null. The tag, not the state name, is the engine's contract for role-bearing
+## states (berry growth stages, fence pieces) — mirror of sim.Asset.StateForTag.
+func get_state_for_tag(asset_id: String, tag: String) -> Variant:
+    var asset = assets.get(asset_id)
+    if asset == null:
+        return null
+    for s in asset.get("states", []):
+        var tags = s.get("tags", [])
+        if tags is Array and tags.has(tag):
+            return s
+    return null
+
+## LLM-637: a fence-run asset is one whose states carry the fence piece tags.
+## The editor drags such an asset into a line or a pen (sim.PlaceFenceRun)
+## instead of click-placing it; the `fence-h` mid piece is the marker because
+## every shape but a lone post uses it.
+func is_fence_run_asset(asset_id: String) -> bool:
+    return get_state_for_tag(asset_id, "fence-h") != null
+
 ## Get the cached texture for a spritesheet.
 func get_sheet_texture(sheet_path: String) -> Texture2D:
     return sheet_cache.get(sheet_path)

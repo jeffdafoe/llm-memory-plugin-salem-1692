@@ -5,6 +5,7 @@ extends PanelContainer
 signal asset_selected(asset_id: String)
 signal asset_inspect_requested(asset_id: String)
 signal delete_requested
+signal delete_fence_run_requested
 signal terrain_mode_toggled(active: bool)
 signal terrain_type_selected(terrain_type: int)
 signal owner_changed(owner: String)
@@ -65,6 +66,7 @@ const ICON_CODEPOINT_HEART: int = 0xE0F2
 const ICON_CODEPOINT_X: int = 0xE1B2
 var _select_button: Button = null
 var _delete_button: Button = null
+var _delete_run_button: Button = null  # LLM-637: whole-run delete for a selected fence segment
 var _terrain_button: Button = null
 var _selection_info: VBoxContainer = null
 # ScrollContainer wrapping _selection_info. Show/hide this instead of
@@ -349,6 +351,14 @@ func _ready() -> void:
     _terrain_button = _make_tool_button("Terrain")
     _terrain_button.pressed.connect(_on_terrain_pressed)
     tools_box2.add_child(_terrain_button)
+
+    # LLM-637: enabled only while a fence segment is selected; removes every
+    # segment of its run (the plain Delete removes one segment — the way a
+    # gap for a gate is opened).
+    _delete_run_button = _make_tool_button("Delete fence run")
+    _delete_run_button.pressed.connect(func(): delete_fence_run_requested.emit())
+    _delete_run_button.disabled = true
+    tools_box2.add_child(_delete_run_button)
 
     # Set select as active by default
     _set_tool_active(_select_button, true)
@@ -2469,12 +2479,20 @@ func _on_select_pressed() -> void:
 func _on_delete_pressed() -> void:
     delete_requested.emit()
 
+## LLM-637: a fence segment carries a "fence-run:<id>" object tag.
+func _has_fence_run_tag(tags: Array) -> bool:
+    for t in tags:
+        if str(t).begins_with("fence-run:"):
+            return true
+    return false
+
 ## Called by editor when an object is selected/deselected on the map.
 func show_selection(info: Dictionary) -> void:
     var asset_id: String = info.get("asset_id", "")
     if asset_id == "":
         _selection_info_scroll.visible = false
         _delete_button.disabled = true
+        _delete_run_button.disabled = true
         _placed_by_label.visible = false
         _owner_label.visible = false
         _attachments_section.visible = false
@@ -2575,6 +2593,7 @@ func show_selection(info: Dictionary) -> void:
     var tags_raw = info.get("tags", [])
     _obj_tags_current_list = tags_raw if tags_raw is Array else []
     _refresh_obj_tags_ui()
+    _delete_run_button.disabled = not _has_fence_run_tag(_obj_tags_current_list)
 
     # Per-instance refresh rows (ZBBS-090). v2 has no standalone GET — the
     # rows ride the ObjectDTO (set on the object node's "refreshes" meta), so
@@ -2601,6 +2620,7 @@ func show_npc_selection(info: Dictionary) -> void:
     _npc_fields_section.visible = true
     _show_inventory_for_actor(npc_id)
     _delete_button.disabled = false
+    _delete_run_button.disabled = true
     sync_villager_selection(npc_id)
     _hide_browse_surfaces()
 

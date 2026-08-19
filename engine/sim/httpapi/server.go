@@ -409,6 +409,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/object/create", s.requireAuth(s.handleAdminObjectCreate))
 	mux.HandleFunc("POST /api/village/admin/object/move", s.requireAuth(s.handleAdminObjectMove))
 	mux.HandleFunc("POST /api/village/admin/object/delete", s.requireAuth(s.handleAdminObjectDelete))
+	// LLM-637: fence runs — drag-to-fence lines and pens (fence_handlers.go).
+	mux.HandleFunc("POST /api/village/admin/fence/place", s.requireAuth(s.handleAdminFencePlace))
+	mux.HandleFunc("POST /api/village/admin/fence/delete", s.requireAuth(s.handleAdminFenceDelete))
 	mux.HandleFunc("POST /api/village/admin/object/set-state", s.requireAuth(s.handleAdminObjectSetState))
 	mux.HandleFunc("POST /api/village/admin/object/set-owner", s.requireAuth(s.handleAdminObjectSetOwner))
 	mux.HandleFunc("POST /api/village/admin/object/set-loiter-offset", s.requireAuth(s.handleAdminObjectSetLoiterOffset))
