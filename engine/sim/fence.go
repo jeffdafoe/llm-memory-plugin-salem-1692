@@ -192,6 +192,28 @@ func fenceSegmentPos(t TilePos, asset *Asset) WorldPos {
 	}
 }
 
+// fenceCornerTile converts one drag corner from world pixels to its padded
+// grid tile, refusing a corner off the grid with *FenceTileBlocked. The
+// pixel range is checked BEFORE the float→int conversion in WorldPos.Tile():
+// a finite value beyond the int range converts implementation-specifically in
+// Go, so a tile-side bounds check alone is not a reliable guard for a direct
+// engine caller. Off-grid corners report the clamped pixel position rather
+// than a tile, since there is no tile to name.
+func fenceCornerTile(x, y float64) (TilePos, error) {
+	minX := -float64(PadX) * TileSize
+	maxX := float64(MapW-PadX) * TileSize
+	minY := -float64(PadY) * TileSize
+	maxY := float64(MapH-PadY) * TileSize
+	if x < minX || x >= maxX || y < minY || y >= maxY {
+		return TilePos{}, &FenceTileBlocked{
+			Tile: TilePos{X: -1, Y: -1},
+			X:    math.Max(minX, math.Min(x, maxX)),
+			Y:    math.Max(minY, math.Min(y, maxY)),
+		}
+	}
+	return WorldPos{X: x, Y: y}.Tile(), nil
+}
+
 // PlaceFenceRunResult is the outcome of a PlaceFenceRun command: the run's id
 // (the value after FenceRunTagPrefix on every segment) and the segments in
 // row-major order.
@@ -231,22 +253,19 @@ func PlaceFenceRun(assetID AssetID, x1, y1, x2, y2 float64, placedBy string) Com
 			if !asset.IsObstacle {
 				return nil, fmt.Errorf("%w: asset is not an obstacle", ErrFenceAssetUnsupported)
 			}
-			a := WorldPos{X: x1, Y: y1}.Tile()
-			b := WorldPos{X: x2, Y: y2}.Tile()
 			// Bound the corners and size the run BEFORE laying it out, so a
 			// caller handing in huge finite coordinates (this command is the
 			// validation boundary, not the HTTP route) cannot make
 			// fenceRunSegments allocate an enormous slice or overflow the
 			// width/height arithmetic. A corner off the grid is a blocked tile
 			// — the same answer the per-tile walk check would give.
-			for _, c := range []TilePos{a, b} {
-				if c.X < 0 || c.X >= MapW || c.Y < 0 || c.Y >= MapH {
-					return nil, &FenceTileBlocked{
-						Tile: c,
-						X:    float64(c.X-PadX) * TileSize,
-						Y:    float64(c.Y-PadY) * TileSize,
-					}
-				}
+			a, err := fenceCornerTile(x1, y1)
+			if err != nil {
+				return nil, err
+			}
+			b, err := fenceCornerTile(x2, y2)
+			if err != nil {
+				return nil, err
 			}
 			if fenceRunSize(a, b) > MaxFenceRunSegments {
 				return nil, ErrFenceRunTooLarge

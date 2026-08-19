@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 
@@ -254,7 +255,9 @@ func TestPlaceFenceRun_BlockedTilePlacesNothing(t *testing.T) {
 		{"water on the top edge", sim.TilePos{sim.PadX + 10, sim.PadY + 10}, sim.TilePos{sim.PadX + 13, sim.PadY + 12}, water, "water"},
 		{"house footprint under the left edge", sim.TilePos{sim.PadX + 20, sim.PadY + 18}, sim.TilePos{sim.PadX + 25, sim.PadY + 24}, sim.TilePos{sim.PadX + 20, sim.PadY + 20}, "footprint"},
 		{"existing fence under the run", sim.TilePos{sim.PadX + 28, sim.PadY + 30}, sim.TilePos{sim.PadX + 35, sim.PadY + 30}, sim.TilePos{sim.PadX + 30, sim.PadY + 30}, "fence"},
-		{"off the map", sim.TilePos{-2, sim.PadY + 5}, sim.TilePos{sim.PadX + 2, sim.PadY + 5}, sim.TilePos{-2, sim.PadY + 5}, "bounds"},
+		// An off-grid corner has no tile to name: the error carries (-1,-1) and the
+		// clamped pixel position instead.
+		{"off the map", sim.TilePos{-2, sim.PadY + 5}, sim.TilePos{sim.PadX + 2, sim.PadY + 5}, sim.TilePos{-1, -1}, "bounds"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -302,6 +305,11 @@ func TestPlaceFenceRun_Guards(t *testing.T) {
 	// huge finite coordinate cannot make the layout allocate or overflow.
 	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, 1e15, 1e15, "tester")); !errors.Is(err, sim.ErrFenceTileBlocked) {
 		t.Errorf("far corner err = %v, want ErrFenceTileBlocked", err)
+	}
+	// Beyond the int range the float→int conversion is implementation-specific,
+	// so the pixel range is checked before any conversion.
+	if _, err := w.Send(sim.PlaceFenceRun(fenceTestAssetID, ax, ay, math.MaxFloat64, -math.MaxFloat64, "tester")); !errors.Is(err, sim.ErrFenceTileBlocked) {
+		t.Errorf("MaxFloat64 corner err = %v, want ErrFenceTileBlocked", err)
 	}
 	// A ring over nearly the whole grid is 752 segments > cap (and every tile
 	// of it is in bounds, so the cap — not the bounds check — is what refuses).
