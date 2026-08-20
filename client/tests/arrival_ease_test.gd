@@ -119,10 +119,15 @@ func _test_finish_walk_lerps_then_idles() -> void:
         "started_at_s": now_s - 1.0,
         "attempt_id": 7,
         "finish_idle": true,
+        "finish_facing": "north",
     })
     c.set_meta("facing", "east")
     _world._tick_npc_walk(c)
-    _check("mid-flight position lerped", c.position.is_equal_approx(Vector2(32, 0)), true)
+    # Bounded, not exact: _tick_npc_walk reads its own clock, so a millisecond
+    # elapsing between the test's now_s and the tick shifts the lerp slightly
+    # (code_review, LLM-640). A generous window still proves mid-flight.
+    var mid_ok: bool = c.position.y == 0.0 and c.position.x >= 24.0 and c.position.x <= 40.0
+    _check("mid-flight position lerped (24..40px of 64)", mid_ok, true)
     _check("mid-flight meta kept", c.has_meta("walking"), true)
 
     var walk = c.get_meta("walking")
@@ -131,6 +136,7 @@ func _test_finish_walk_lerps_then_idles() -> void:
     _world._tick_npc_walk(c)
     _check("parked on the endpoint", c.position, Vector2(64, 0))
     _check("finish walk cleaned its own meta", c.has_meta("walking"), false)
+    _check("final idle applied the arrival's authoritative facing", String(c.get_meta("facing", "")), "north")
     c.free()
     _done()
 

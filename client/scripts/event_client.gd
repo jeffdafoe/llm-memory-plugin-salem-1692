@@ -835,6 +835,13 @@ func _on_npc_arrived(data: Dictionary) -> void:
             "started_at_s": Time.get_ticks_msec() / 1000.0,
             "attempt_id": int(data.get("attempt_id", 0)),
             "finish_idle": true,
+            # The arrival-computed facing, applied at the final idle so the ease
+            # branch honours an authoritative facing exactly like the snap
+            # branch would (today v2 arrivals carry none and this equals the
+            # travel direction; the field keeps the branches symmetric if a
+            # server payload ever supplies one). Travel direction still drives
+            # facing while the remainder is walking.
+            "finish_facing": facing,
         })
     else:
         # Discontinuous snap to the authoritative endpoint (see _snap_npc_to):
@@ -844,6 +851,14 @@ func _on_npc_arrived(data: Dictionary) -> void:
         container.set_meta("facing", facing)
         container.remove_meta("walking")
         world.play_npc_animation(container, facing, "idle")
+    # LOGICAL arrival, in both branches: in the eased case the container is
+    # still finishing its lerp (walking meta live, walk animation playing) when
+    # this fires. Audited (LLM-640): the signal's sole subscriber is
+    # main._on_event_npc_arrived, which keys on npc_id == the player's PC and
+    # its own pending flags (talk-panel refresh, notice-board open) and never
+    # reads the container node — deferring would only delay PC-facing UI. A
+    # future subscriber that needs the VISUAL stop must not assume the
+    # container is parked or idling when this fires.
     npc_arrived.emit(npc_id, final_x, final_y, facing)
 
 ## Server says an accepted walk failed to reach its goal (blocked / unreachable

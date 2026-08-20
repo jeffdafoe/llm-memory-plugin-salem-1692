@@ -1078,9 +1078,15 @@ func _tick_npc_walk(container: Node2D) -> void:
         # meta and drop into idle facing the way it was travelling. Ordinary
         # walks instead wait here for npc_arrived to do the cleanup.
         container.remove_meta("walking")
-        var idle_facing: String = String(container.get_meta("facing", "south"))
+        # Prefer the arrival's authoritative facing (finish_facing) over the
+        # travel-derived meta, mirroring what the snap branch applies; fall
+        # back to the direction of travel, then south.
+        var idle_facing: String = String(walk.get("finish_facing", ""))
+        if idle_facing == "":
+            idle_facing = String(container.get_meta("facing", "south"))
         if idle_facing == "":
             idle_facing = "south"
+        container.set_meta("facing", idle_facing)
         play_npc_animation(container, idle_facing, "idle")
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
