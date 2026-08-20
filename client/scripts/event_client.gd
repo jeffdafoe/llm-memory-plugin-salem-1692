@@ -801,10 +801,6 @@ func _on_npc_arrived(data: Dictionary) -> void:
         if facing == "":
             facing = "south"
 
-    # Discontinuous snap to the authoritative endpoint (see _snap_npc_to). The
-    # final visibility is set authoritatively just below from inside/structure,
-    # so the toggle's transient visible state only governs the position-write frame.
-    _snap_npc_to(container, Vector2(final_x, final_y))
     # npc_arrived carries `structure_id` — the structure the actor ended inside,
     # empty when it arrived outdoors (arrivedWireDTO.StructureID, from the
     # engine's ActorArrived.FinalStructureID). This is the ONLY post-load signal
@@ -825,9 +821,29 @@ func _on_npc_arrived(data: Dictionary) -> void:
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = world._compute_npc_visible(inside, inside_structure_id)
     world._apply_stand_offset_if_applicable(container, inside, inside_structure_id)
-    container.set_meta("facing", facing)
-    container.remove_meta("walking")
-    world.play_npc_animation(container, facing, "idle")
+    if _arrival_should_ease(container, final_pos, inside):
+        # LLM-640: walk the remainder instead of snapping — install a finishing
+        # leg on the ordinary "walking" machinery. The tick owns facing while it
+        # runs and plays idle when it parks (finish_idle — world._tick_npc_walk);
+        # logical arrival (inside meta, visibility, the signal below) is
+        # unchanged and immediate. A next route leg's npc_walking supersedes
+        # this like any walk, via the meta overwrite.
+        container.set_meta("walking", {
+            "start_pos": container.position,
+            "path": [final_pos],
+            "speed": VillageApi.walk_speed_px_per_s() * world.npc_walk_speed_factor(container),
+            "started_at_s": Time.get_ticks_msec() / 1000.0,
+            "attempt_id": int(data.get("attempt_id", 0)),
+            "finish_idle": true,
+        })
+    else:
+        # Discontinuous snap to the authoritative endpoint (see _snap_npc_to):
+        # arrived inside (masked by hide/stand-offset), already there, or
+        # drifted too far to walk it off.
+        _snap_npc_to(container, final_pos)
+        container.set_meta("facing", facing)
+        container.remove_meta("walking")
+        world.play_npc_animation(container, facing, "idle")
     npc_arrived.emit(npc_id, final_x, final_y, facing)
 
 ## Server says an accepted walk failed to reach its goal (blocked / unreachable
@@ -878,6 +894,27 @@ func _is_superseded_terminal(container: Node2D, data: Dictionary) -> bool:
     var frame_attempt: int = int(data.get("attempt_id", 0))
     var walk_attempt: int = int(walking_meta.get("attempt_id", 0))
     return frame_attempt != 0 and walk_attempt != 0 and frame_attempt < walk_attempt
+
+## LLM-640: whether an arrival should EASE into the authoritative endpoint
+## instead of snapping. The client lerps a walk on its own clock with no
+## per-tile correction, so the engine's npc_arrived routinely lands while the
+## lerp is still short of the goal — the old unconditional snap yanked the
+## sprite forward right as it stopped (worst on slow walkers, whose engine
+## cadence runs a systematic one-tick ahead of the half-speed lerp). Easing
+## keeps the endpoint authoritative but walks the remainder.
+##
+## Snap still wins when: the actor arrived INSIDE a structure (the hide /
+## stand-offset reposition masks the correction), the remainder is a couple of
+## px (the drifted-AHEAD case — already there), or the drift is huge (missed
+## frames / teleports; _snap_npc_to's y-sort ghost workaround exists for that).
+const ARRIVAL_EASE_MIN_PX: float = 2.0
+const ARRIVAL_EASE_MAX_PX: float = 96.0  # 3 tiles at 32px — beyond this, snap
+
+func _arrival_should_ease(container: Node2D, final_pos: Vector2, inside: bool) -> bool:
+    if inside:
+        return false
+    var dist: float = container.position.distance_to(final_pos)
+    return dist > ARRIVAL_EASE_MIN_PX and dist <= ARRIVAL_EASE_MAX_PX
 
 ## Snap an NPC container to an authoritative position, wrapping the write in the
 ## HTML5/WebGL y-sort ghost workaround (visible=false; move; visible=true — the

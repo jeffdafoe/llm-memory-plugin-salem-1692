@@ -1070,8 +1070,18 @@ func _tick_npc_walk(container: Node2D) -> void:
             return
         remaining -= leg_dist
         prev = wp
-    # Past the end — snap to final waypoint. Real cleanup waits for npc_arrived.
+    # Past the end — park on the final waypoint.
     container.position = path[path.size() - 1]
+    if bool(walk.get("finish_idle", false)):
+        # LLM-640: this walk is an arrival's finishing lerp — the endpoint is
+        # already authoritative, so the walk owns its own cleanup: clear the
+        # meta and drop into idle facing the way it was travelling. Ordinary
+        # walks instead wait here for npc_arrived to do the cleanup.
+        container.remove_meta("walking")
+        var idle_facing: String = String(container.get_meta("facing", "south"))
+        if idle_facing == "":
+            idle_facing = "south"
+        play_npc_animation(container, idle_facing, "idle")
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.
