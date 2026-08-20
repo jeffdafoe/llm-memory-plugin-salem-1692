@@ -1043,9 +1043,14 @@ func _process(delta: float) -> void:
         if container.has_meta("walking"):
             _tick_npc_walk(container)
 
+## Test seam (LLM-640): when >= 0, _tick_npc_walk reads this instead of the
+## real clock, so the headless harness can assert exact interpolation points
+## instead of racing the wall clock. Production never sets it.
+var _walk_clock_override_s: float = -1.0
+
 func _tick_npc_walk(container: Node2D) -> void:
     var walk = container.get_meta("walking")
-    var now_s: float = Time.get_ticks_msec() / 1000.0
+    var now_s: float = _walk_clock_override_s if _walk_clock_override_s >= 0.0 else Time.get_ticks_msec() / 1000.0
     var elapsed: float = now_s - walk["started_at_s"]
     var remaining: float = elapsed * walk["speed"]
 
@@ -1070,8 +1075,24 @@ func _tick_npc_walk(container: Node2D) -> void:
             return
         remaining -= leg_dist
         prev = wp
-    # Past the end — snap to final waypoint. Real cleanup waits for npc_arrived.
+    # Past the end — park on the final waypoint.
     container.position = path[path.size() - 1]
+    if bool(walk.get("finish_idle", false)):
+        # LLM-640: this walk is an arrival's finishing lerp — the endpoint is
+        # already authoritative, so the walk owns its own cleanup: clear the
+        # meta and drop into idle facing the way it was travelling. Ordinary
+        # walks instead wait here for npc_arrived to do the cleanup.
+        container.remove_meta("walking")
+        # Prefer the arrival's authoritative facing (finish_facing) over the
+        # travel-derived meta, mirroring what the snap branch applies; fall
+        # back to the direction of travel, then south.
+        var idle_facing: String = String(walk.get("finish_facing", ""))
+        if idle_facing == "":
+            idle_facing = String(container.get_meta("facing", "south"))
+        if idle_facing == "":
+            idle_facing = "south"
+        container.set_meta("facing", idle_facing)
+        play_npc_animation(container, idle_facing, "idle")
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.
