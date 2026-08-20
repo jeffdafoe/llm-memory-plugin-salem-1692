@@ -110,33 +110,30 @@ func _test_ease_decision_matrix() -> void:
 ## its own meta and stays parked — the cleanup npc_arrived would otherwise do.
 func _test_finish_walk_lerps_then_idles() -> void:
     var c := _make_container(Vector2(0, 0))
-    var now_s: float = Time.get_ticks_msec() / 1000.0
-    # 64px leg at 32px/s: half-way after 1s, done after 2s.
+    # Deterministic clock: the tick reads the _walk_clock_override_s seam, so
+    # the interpolation point is exact instead of racing the wall clock
+    # (code_review, LLM-640). Walk starts at t=100; 64px leg at 32px/s.
     c.set_meta("walking", {
         "start_pos": Vector2(0, 0),
         "path": [Vector2(64, 0)],
         "speed": 32.0,
-        "started_at_s": now_s - 1.0,
+        "started_at_s": 100.0,
         "attempt_id": 7,
         "finish_idle": true,
         "finish_facing": "north",
     })
     c.set_meta("facing", "east")
+    _world._walk_clock_override_s = 101.0
     _world._tick_npc_walk(c)
-    # Bounded, not exact: _tick_npc_walk reads its own clock, so a millisecond
-    # elapsing between the test's now_s and the tick shifts the lerp slightly
-    # (code_review, LLM-640). A generous window still proves mid-flight.
-    var mid_ok: bool = c.position.y == 0.0 and c.position.x >= 24.0 and c.position.x <= 40.0
-    _check("mid-flight position lerped (24..40px of 64)", mid_ok, true)
+    _check("mid-flight position is the exact half-way point", c.position, Vector2(32, 0))
     _check("mid-flight meta kept", c.has_meta("walking"), true)
 
-    var walk = c.get_meta("walking")
-    walk["started_at_s"] = now_s - 3.0
-    c.set_meta("walking", walk)
+    _world._walk_clock_override_s = 103.0
     _world._tick_npc_walk(c)
     _check("parked on the endpoint", c.position, Vector2(64, 0))
     _check("finish walk cleaned its own meta", c.has_meta("walking"), false)
     _check("final idle applied the arrival's authoritative facing", String(c.get_meta("facing", "")), "north")
+    _world._walk_clock_override_s = -1.0
     c.free()
     _done()
 
@@ -145,17 +142,18 @@ func _test_finish_walk_lerps_then_idles() -> void:
 ## parks but KEEPS its meta — npc_arrived owns the cleanup, exactly as before.
 func _test_ordinary_walk_still_waits_for_arrival() -> void:
     var c := _make_container(Vector2(0, 0))
-    var now_s: float = Time.get_ticks_msec() / 1000.0
+    _world._walk_clock_override_s = 110.0
     c.set_meta("walking", {
         "start_pos": Vector2(0, 0),
         "path": [Vector2(64, 0)],
         "speed": 32.0,
-        "started_at_s": now_s - 10.0,
+        "started_at_s": 100.0,
         "attempt_id": 8,
     })
     c.set_meta("facing", "east")
     _world._tick_npc_walk(c)
     _check("ordinary walk parked on the endpoint", c.position, Vector2(64, 0))
     _check("ordinary walk meta kept for npc_arrived", c.has_meta("walking"), true)
+    _world._walk_clock_override_s = -1.0
     c.free()
     _done()

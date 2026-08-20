@@ -1043,9 +1043,14 @@ func _process(delta: float) -> void:
         if container.has_meta("walking"):
             _tick_npc_walk(container)
 
+## Test seam (LLM-640): when >= 0, _tick_npc_walk reads this instead of the
+## real clock, so the headless harness can assert exact interpolation points
+## instead of racing the wall clock. Production never sets it.
+var _walk_clock_override_s: float = -1.0
+
 func _tick_npc_walk(container: Node2D) -> void:
     var walk = container.get_meta("walking")
-    var now_s: float = Time.get_ticks_msec() / 1000.0
+    var now_s: float = _walk_clock_override_s if _walk_clock_override_s >= 0.0 else Time.get_ticks_msec() / 1000.0
     var elapsed: float = now_s - walk["started_at_s"]
     var remaining: float = elapsed * walk["speed"]
 
