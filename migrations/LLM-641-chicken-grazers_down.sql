@@ -1,8 +1,9 @@
 -- LLM-641 down: remove the chicken sprites.
 --
--- The sprite deletes fail on the actor.sprite_id FK if a live actor still
+-- The sprite deletes fail on the actor.sprite_id FK if any actor row still
 -- wears a chicken sprite — deliberate (matching LLM-639's down): remove or
 -- reassign those actors first rather than silently orphaning their render.
+-- (actor has no soft-delete; every retained row is a live actor.)
 
 BEGIN;
 
