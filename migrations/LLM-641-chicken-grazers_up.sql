@@ -26,7 +26,10 @@
 -- npc_sprite / npc_sprite_animation are boot-loaded reference data (no
 -- checkpoint path) — no engine stop needed; the deploy's restart loads them.
 -- Fixed sprite UUIDs so re-runs and the down are deterministic; every insert
--- is ON CONFLICT / NOT EXISTS guarded.
+-- is ON CONFLICT / NOT EXISTS guarded. The guards establish rows only if
+-- absent — a re-run deliberately does NOT repair or validate pre-existing
+-- rows, identity fields included, because render_scale and frame_rate are
+-- live-tunable through the editor and convergence would revert that tuning.
 --
 -- THE SHEETS TRAVEL BY SCP, NOT BY DEPLOY (gitignored): six PNGs renamed
 -- hyphenated-lowercase into
