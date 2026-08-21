@@ -465,7 +465,30 @@ func renderForage(b *strings.Builder, v *ForageView) {
 	}
 	if len(v.Items) > 0 {
 		b.WriteString("## Your bushes to harvest\n")
-		b.WriteString("Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.\n")
+		// LLM-643: the "walk out to your bushes" instruction renders only when at
+		// least one listed item has a ripe bush to WALK to. With nothing ripe
+		// anywhere the old unconditional header ordered a walk the item lines below
+		// immediately contradicted ("none ripe yet"), and the walk instruction fed
+		// the farm↔house lap the anchors line invited (this is a want, not an
+		// errand — LLM-620). With ripe stock only underfoot (AtRipeBush), a walk
+		// order is the LLM-617 no-op-move bait — the neutral header lets the item
+		// line ("you are standing among them") and the at-bush cue carry it.
+		// Per item, MoveHandle/AtRipeBush ⟺ ripeUnits > 0: buildForage gives every
+		// ripe bush one of the two, with no asset precondition (ActorAtObjectPin
+		// fails closed to false, leaving the handle).
+		hasMoveTarget, ripeUnderfoot := false, false
+		for _, it := range v.Items {
+			hasMoveTarget = hasMoveTarget || it.MoveHandle != ""
+			ripeUnderfoot = ripeUnderfoot || it.AtRipeBush
+		}
+		switch {
+		case hasMoveTarget:
+			b.WriteString("Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.\n")
+		case ripeUnderfoot:
+			b.WriteString("Your stock of these is running low. You grow them yourself. You choose how much to pick.\n")
+		default:
+			b.WriteString("Your stock of these is running low. You grow them yourself, but nothing is ripe to pick just now.\n")
+		}
 		for _, it := range v.Items {
 			headroom := it.Cap - it.CurrentQty
 			if headroom < 0 {

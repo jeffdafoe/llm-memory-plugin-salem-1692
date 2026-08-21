@@ -98,24 +98,21 @@ func TestRenderAnchors_Different_bothIdsNoOpenInvite(t *testing.T) {
 	}
 }
 
-// ZBBS-WORK-431: on-shift AT its own post, the anchors line keeps BOTH
-// structure_ids (still navigable) but drops the "head ... whenever you wish"
-// invite that pulled an idle owner home — home is reframed as after-hours. The
-// at-post duty steer (renderDutySteer) carries the "stay put" cue in tandem.
+// ZBBS-WORK-431 / LLM-643: on-shift AT its own post, the anchors line keeps the
+// WORK structure_id (still navigable) but home gets neither an id nor an open
+// condition. The old "head home once your work is done" tail read as satisfied
+// to an idle keeper (no custom, nothing ripe) and lapped Moses James farm↔house
+// against the to-work yank; "after you close" pins departure to the close hour
+// the at-post duty steer states in tandem. Assert the WHOLE line, not phrase
+// absences — a future equivalent invitation must fail this too.
 func TestRenderAnchors_AtPost_reframesDeparture(t *testing.T) {
 	var b strings.Builder
 	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, true, "")
-	out := b.String()
-	if !strings.Contains(out, "destination: gstore") || !strings.Contains(out, "destination: thorne") {
-		t.Errorf("at-post anchors must still carry both ids (move_to tokens); got %q", out)
+	want := "You keep your trade at the General Store (destination: gstore); your home is at the Thorne Residence — head home after you close.\n\n"
+	if out := b.String(); out != want {
+		t.Errorf("at-post anchors line:\n got %q\nwant %q", out, want)
 	}
-	if strings.Contains(out, "whenever you wish") {
-		t.Errorf("at-post anchors must NOT invite departure; got %q", out)
-	}
-	if !strings.Contains(out, "once your work is done") {
-		t.Errorf("at-post anchors should frame home as after-hours; got %q", out)
-	}
-	t.Logf("RENDERED (at post): %s", strings.TrimSpace(out))
+	t.Logf("RENDERED (at post): %s", strings.TrimSpace(b.String()))
 }
 
 func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
@@ -243,5 +240,42 @@ func TestConstableOnRounds_KeepsRoundsCueWithoutAnchorInvitation(t *testing.T) {
 	// The anchors themselves remain navigable.
 	if !strings.Contains(got, "You keep your trade at the Meeting House") {
 		t.Errorf("work anchor missing — the move_to token must survive:\n%s", got)
+	}
+}
+
+// TestGoldensAtPostAnchorsCarryNoHomeDestination is the cross-scenario invariant
+// for LLM-643: wherever the at-post anchors line renders, the WORK half carries
+// the one destination token and the HOME half carries none. The home id on that
+// line was the echo bait (HOME-349) an idle keeper rode home mid-shift against
+// the to-work yank (the Moses James farm↔house lap). Scoped to the line itself:
+// the off-shift and away-from-post anchor arms legitimately carry home's id.
+// The line is found by its prose; the seen==0 Fatal keeps a wording change from
+// silently emptying the invariant.
+func TestGoldensAtPostAnchorsCarryNoHomeDestination(t *testing.T) {
+	seen := 0
+	for _, sc := range perceptionScenarios {
+		for _, line := range strings.Split(renderScenario(sc), "\n") {
+			if !strings.Contains(line, "head home after you close") {
+				continue
+			}
+			seen++
+			// Split at the home clause so the count is per-half: exactly one token
+			// on the work side, zero on the home side. A bare whole-line count of 1
+			// would also accept the inverted failure (home carrying the only token).
+			workHalf, homeHalf, ok := strings.Cut(line, "your home is at")
+			if !ok {
+				t.Errorf("scenario %q: at-post anchors line lost its home clause:\n%s", sc.name, line)
+				continue
+			}
+			if n := strings.Count(workHalf, "(destination:"); n != 1 {
+				t.Errorf("scenario %q: the work half of the at-post anchors line must carry exactly one destination token; got %d:\n%s", sc.name, n, line)
+			}
+			if n := strings.Count(homeHalf, "(destination:"); n != 0 {
+				t.Errorf("scenario %q: the home half of the at-post anchors line must carry NO destination token (the HOME-349 echo bait); got %d:\n%s", sc.name, n, line)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no scenario rendered the at-post anchors line; the invariant asserted nothing")
 	}
 }

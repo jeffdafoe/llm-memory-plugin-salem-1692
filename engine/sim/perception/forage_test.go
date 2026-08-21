@@ -201,6 +201,49 @@ func TestRenderForage_LowStock(t *testing.T) {
 	}
 }
 
+// TestRenderForage_HeaderMatchesRipeness covers the LLM-643 header split: the
+// "walk out to your bushes" instruction renders only when some item has a bush
+// to WALK to. Nothing ripe used to get the walk order beside its own "none ripe
+// yet" item line (the contradiction fed the Moses James farm↔house lap), and
+// ripe-only-underfoot must not get it either — there the walk order is the
+// LLM-617 no-op-move bait; the at-bush cue owns the verb.
+func TestRenderForage_HeaderMatchesRipeness(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		items    []ForageItemView
+		wantWalk bool
+		want     string
+	}{
+		{"off-tile ripe keeps the walk order",
+			[]ForageItemView{{ItemLabel: "Wheat", Cap: 30, BushCount: 2, RipeUnits: 7, MoveHandle: "north_field"}},
+			true, "walk out to your bushes to restock"},
+		{"nothing ripe says so instead of ordering a walk",
+			[]ForageItemView{{ItemLabel: "Wheat", Cap: 30, BushCount: 2, RipeUnits: 0}},
+			false, "nothing is ripe to pick just now"},
+		{"ripe only underfoot names no walk",
+			[]ForageItemView{{ItemLabel: "Wheat", Cap: 30, BushCount: 1, RipeUnits: 9, AtRipeBush: true}},
+			false, "You choose how much to pick"},
+		{"one underfoot, one walkable -> the walk order stands",
+			[]ForageItemView{
+				{ItemLabel: "Wheat", Cap: 30, BushCount: 1, RipeUnits: 9, AtRipeBush: true},
+				{ItemLabel: "Raspberries", Cap: 10, BushCount: 1, RipeUnits: 3, MoveHandle: "bushB"},
+			},
+			true, "walk out to your bushes to restock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			renderForage(&b, &ForageView{Items: tc.items})
+			out := b.String()
+			if got := strings.Contains(out, "walk out to your bushes"); got != tc.wantWalk {
+				t.Errorf("walk instruction rendered=%v, want %v:\n%s", got, tc.wantWalk, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("header missing %q:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
 // TestForageView_ActionableErrand covers the LLM-622 classifier directly. The
 // own-before-free precedence is behaviour now, not an implementation detail — it
 // decides whether the at-post reframe may claim the target as the subject's own —
