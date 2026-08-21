@@ -244,11 +244,13 @@ func TestConstableOnRounds_KeepsRoundsCueWithoutAnchorInvitation(t *testing.T) {
 }
 
 // TestGoldensAtPostAnchorsCarryNoHomeDestination is the cross-scenario invariant
-// for LLM-643: wherever the at-post anchors line renders, it carries exactly one
-// destination token — the workplace. The home id on that line was the echo bait
-// (HOME-349) an idle keeper rode home mid-shift against the to-work yank (the
-// Moses James farm↔house lap). Scoped to the line itself: the off-shift and
-// away-from-post anchor arms legitimately carry home's id.
+// for LLM-643: wherever the at-post anchors line renders, the WORK half carries
+// the one destination token and the HOME half carries none. The home id on that
+// line was the echo bait (HOME-349) an idle keeper rode home mid-shift against
+// the to-work yank (the Moses James farm↔house lap). Scoped to the line itself:
+// the off-shift and away-from-post anchor arms legitimately carry home's id.
+// The line is found by its prose; the seen==0 Fatal keeps a wording change from
+// silently emptying the invariant.
 func TestGoldensAtPostAnchorsCarryNoHomeDestination(t *testing.T) {
 	seen := 0
 	for _, sc := range perceptionScenarios {
@@ -257,8 +259,19 @@ func TestGoldensAtPostAnchorsCarryNoHomeDestination(t *testing.T) {
 				continue
 			}
 			seen++
-			if n := strings.Count(line, "(destination:"); n != 1 {
-				t.Errorf("scenario %q: the at-post anchors line must carry exactly one destination token (the workplace's); got %d:\n%s", sc.name, n, line)
+			// Split at the home clause so the count is per-half: exactly one token
+			// on the work side, zero on the home side. A bare whole-line count of 1
+			// would also accept the inverted failure (home carrying the only token).
+			workHalf, homeHalf, ok := strings.Cut(line, "your home is at")
+			if !ok {
+				t.Errorf("scenario %q: at-post anchors line lost its home clause:\n%s", sc.name, line)
+				continue
+			}
+			if n := strings.Count(workHalf, "(destination:"); n != 1 {
+				t.Errorf("scenario %q: the work half of the at-post anchors line must carry exactly one destination token; got %d:\n%s", sc.name, n, line)
+			}
+			if n := strings.Count(homeHalf, "(destination:"); n != 0 {
+				t.Errorf("scenario %q: the home half of the at-post anchors line must carry NO destination token (the HOME-349 echo bait); got %d:\n%s", sc.name, n, line)
 			}
 		}
 	}
