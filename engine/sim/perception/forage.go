@@ -465,7 +465,24 @@ func renderForage(b *strings.Builder, v *ForageView) {
 	}
 	if len(v.Items) > 0 {
 		b.WriteString("## Your bushes to harvest\n")
-		b.WriteString("Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.\n")
+		// LLM-643: the "walk out to your bushes" instruction renders only when at
+		// least one listed item has something ripe. With nothing ripe anywhere the
+		// old unconditional header ordered a walk the item lines below immediately
+		// contradicted ("none ripe yet"), and the walk instruction fed the
+		// farm↔house lap the anchors line invited (this is a want, not an errand —
+		// LLM-620).
+		anyRipe := false
+		for _, it := range v.Items {
+			if it.MoveHandle != "" || it.AtRipeBush {
+				anyRipe = true
+				break
+			}
+		}
+		if anyRipe {
+			b.WriteString("Your stock of these is running low. You grow them yourself — walk out to your bushes to restock. You choose how much to pick.\n")
+		} else {
+			b.WriteString("Your stock of these is running low. You grow them yourself, but nothing is ripe to pick just now.\n")
+		}
 		for _, it := range v.Items {
 			headroom := it.Cap - it.CurrentQty
 			if headroom < 0 {

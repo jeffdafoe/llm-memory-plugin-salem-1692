@@ -98,24 +98,21 @@ func TestRenderAnchors_Different_bothIdsNoOpenInvite(t *testing.T) {
 	}
 }
 
-// ZBBS-WORK-431: on-shift AT its own post, the anchors line keeps BOTH
-// structure_ids (still navigable) but drops the "head ... whenever you wish"
-// invite that pulled an idle owner home — home is reframed as after-hours. The
-// at-post duty steer (renderDutySteer) carries the "stay put" cue in tandem.
+// ZBBS-WORK-431 / LLM-643: on-shift AT its own post, the anchors line keeps the
+// WORK structure_id (still navigable) but home gets neither an id nor an open
+// condition. The old "head home once your work is done" tail read as satisfied
+// to an idle keeper (no custom, nothing ripe) and lapped Moses James farm↔house
+// against the to-work yank; "after you close" pins departure to the close hour
+// the at-post duty steer states in tandem. Assert the WHOLE line, not phrase
+// absences — a future equivalent invitation must fail this too.
 func TestRenderAnchors_AtPost_reframesDeparture(t *testing.T) {
 	var b strings.Builder
 	renderAnchors(&b, &AnchorsView{WorkLabel: "General Store", WorkID: "gstore", HomeLabel: "Thorne Residence", HomeID: "thorne"}, true, "")
-	out := b.String()
-	if !strings.Contains(out, "destination: gstore") || !strings.Contains(out, "destination: thorne") {
-		t.Errorf("at-post anchors must still carry both ids (move_to tokens); got %q", out)
+	want := "You keep your trade at the General Store (destination: gstore); your home is at the Thorne Residence — head home after you close.\n\n"
+	if out := b.String(); out != want {
+		t.Errorf("at-post anchors line:\n got %q\nwant %q", out, want)
 	}
-	if strings.Contains(out, "whenever you wish") {
-		t.Errorf("at-post anchors must NOT invite departure; got %q", out)
-	}
-	if !strings.Contains(out, "once your work is done") {
-		t.Errorf("at-post anchors should frame home as after-hours; got %q", out)
-	}
-	t.Logf("RENDERED (at post): %s", strings.TrimSpace(out))
+	t.Logf("RENDERED (at post): %s", strings.TrimSpace(b.String()))
 }
 
 func TestRenderAnchors_WorkOnly_emptyLabelFallback(t *testing.T) {
@@ -243,5 +240,29 @@ func TestConstableOnRounds_KeepsRoundsCueWithoutAnchorInvitation(t *testing.T) {
 	// The anchors themselves remain navigable.
 	if !strings.Contains(got, "You keep your trade at the Meeting House") {
 		t.Errorf("work anchor missing — the move_to token must survive:\n%s", got)
+	}
+}
+
+// TestGoldensAtPostAnchorsCarryNoHomeDestination is the cross-scenario invariant
+// for LLM-643: wherever the at-post anchors line renders, it carries exactly one
+// destination token — the workplace. The home id on that line was the echo bait
+// (HOME-349) an idle keeper rode home mid-shift against the to-work yank (the
+// Moses James farm↔house lap). Scoped to the line itself: the off-shift and
+// away-from-post anchor arms legitimately carry home's id.
+func TestGoldensAtPostAnchorsCarryNoHomeDestination(t *testing.T) {
+	seen := 0
+	for _, sc := range perceptionScenarios {
+		for _, line := range strings.Split(renderScenario(sc), "\n") {
+			if !strings.Contains(line, "head home after you close") {
+				continue
+			}
+			seen++
+			if n := strings.Count(line, "(destination:"); n != 1 {
+				t.Errorf("scenario %q: the at-post anchors line must carry exactly one destination token (the workplace's); got %d:\n%s", sc.name, n, line)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no scenario rendered the at-post anchors line; the invariant asserted nothing")
 	}
 }

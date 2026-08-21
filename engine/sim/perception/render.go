@@ -1877,10 +1877,16 @@ func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim
 		case atPost:
 			// On-shift AT its own post, the open "head to either whenever you wish"
 			// invitation actively pulls an idle owner home (the Prudence shop↔house
-			// oscillation, ZBBS-WORK-431). Keep both structure_ids — they are the
-			// load-bearing move_to tokens (HOME-349) — but frame home as after-hours
-			// rather than an open door; the at-post duty steer carries "stay put".
-			fmt.Fprintf(b, "You keep your trade at %s (destination: %s); your home is at %s (destination: %s) — head home once your work is done.\n\n", work, v.WorkID, home, v.HomeID)
+			// oscillation, ZBBS-WORK-431). Home gets NO destination id and no open
+			// condition (LLM-643): "head home once your work is done" read as
+			// satisfied to an idle keeper with nothing to sell and nothing ripe —
+			// Moses James lapped farm↔house on it, with the to-work yank marching
+			// him straight back. "After you close" pins the departure to the close
+			// hour the at-post duty steer states directly below. The id would not
+			// stop the walk anyway — move_to resolves labels ("home") as well as
+			// ids — but dropping it removes the echo bait (HOME-349); the off-shift
+			// wind-down steer carries home's id when it is actually time to go.
+			fmt.Fprintf(b, "You keep your trade at %s (destination: %s); your home is at %s — head home after you close.\n\n", work, v.WorkID, home)
 		case insideHome:
 			// Standing at home: its id is a no-op move target, so state it in-place and
 			// keep the workplace as the reachable anchor (LLM-214).

@@ -2332,6 +2332,19 @@ var perceptionScenarios = []perceptionScenario{
 		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return growerHomeMidShift(true) },
 	},
 	{
+		name: "grower_at_post_nothing_ripe_keeps_his_post",
+		summary: "LLM-643 (the live 2026-08-21 Moses James lap — the at-post door LLM-620 left open). The same grower " +
+			"stands AT his farm mid-shift: low wheat, nothing ripe, no customers. The at-post anchors line used to " +
+			"hand him home's destination id under 'head home once your work is done' — a condition an idle keeper " +
+			"judges satisfied right now — so he walked home, the to-work yank (correct, and pinned by the LLM-620 " +
+			"goldens) marched him straight back, and he lapped farm↔house in 17-to-24-second stays, 9 times in a day. " +
+			"The golden pins the anchors line naming home with NO destination id and the departure pinned to the " +
+			"close hour ('after you close') the at-post stabilizer states beside it; and the harvest cue header " +
+			"reading 'nothing is ripe to pick just now' instead of ordering the walk its own item line contradicts " +
+			"('none ripe yet'). Idle, on shift, no orders, no clock read — byte-stable.",
+		build: growerAtPostMidShiftNothingRipe,
+	},
+	{
 		name: "keeper_home_mid_shift_evening_reads_his_own_hours",
 		summary: "LLM-620 arm 2 (the live 2026-08-07 Josiah Thorne lap). The shopkeeper stands in his house at 18:10 " +
 			"with an ACTIONABLE restock errand — wheat low, James Farm open and affordable — so the to-work yank is " +
@@ -19340,6 +19353,17 @@ func growerHomeMidShift(ripe bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 		},
 	}
 	return snap, mosesID, nil
+}
+
+// growerAtPostMidShiftNothingRipe is the LLM-643 at-post arm: growerHomeMidShift's
+// grower (nothing ripe) moved to his own post. Only the location differs — the
+// diff against the home arm is exactly which duty voice renders (the at-post
+// stabilizer here, the to-work yank there) and what the anchors line offers.
+func growerAtPostMidShiftNothingRipe() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id, warrants := growerHomeMidShift(false)
+	a := snap.Actors[id]
+	a.InsideStructureID = a.WorkStructureID
+	return snap, id, warrants
 }
 
 // keeperHomeMidShiftActionableRestock is the LLM-620 Josiah Thorne scenario: the
