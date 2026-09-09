@@ -802,7 +802,7 @@ type AdvanceNPCRouteResult struct {
 // converged case (object already at NewState — happens when a fresher
 // bulk pass overwrote the same object).
 func AdvanceNPCRoute(actorID ActorID) Command {
-	return advanceNPCRoute(actorID, true)
+	return advanceNPCRoute(actorID, true, time.Now())
 }
 
 // AdvanceNPCRouteSkipFlip is AdvanceNPCRoute without the active-phase
@@ -813,13 +813,23 @@ func AdvanceNPCRoute(actorID ActorID) Command {
 // Every other behavior (stale-arrival re-walk + abandon, returning-home
 // transition, route clearing) is identical to AdvanceNPCRoute.
 func AdvanceNPCRouteSkipFlip(actorID ActorID) Command {
-	return advanceNPCRoute(actorID, false)
+	return advanceNPCRoute(actorID, false, time.Now())
+}
+
+// AdvanceNPCRouteSkipFlipAt is AdvanceNPCRouteSkipFlip with the arrival instant
+// supplied by the caller. The beat branch uses it: a credited stop can collect
+// the estate rate (advanceBeatRoute → collectEstateRateAtStop), and the records
+// that collection writes should carry the arrival's own timestamp, not the
+// moment the cascade got round to it.
+func AdvanceNPCRouteSkipFlipAt(actorID ActorID, at time.Time) Command {
+	return advanceNPCRoute(actorID, false, at)
 }
 
 // advanceNPCRoute is the shared body of AdvanceNPCRoute (flip=true) and
 // AdvanceNPCRouteSkipFlip (flip=false). flip gates only the active-phase
-// per-stop SetVillageObjectState; the walk machinery is identical.
-func advanceNPCRoute(actorID ActorID, flip bool) Command {
+// per-stop SetVillageObjectState; the walk machinery is identical. now is the
+// arrival instant, read only by the beat branch.
+func advanceNPCRoute(actorID ActorID, flip bool, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			route, ok := w.ActiveRoutes[actorID]
@@ -833,7 +843,7 @@ func advanceNPCRoute(actorID ActorID, flip bool) Command {
 			case RoutePhaseReturning:
 				return advanceReturningRoute(w, route)
 			case RoutePhaseBeat:
-				return advanceBeatRoute(w, route)
+				return advanceBeatRoute(w, route, now)
 			default:
 				log.Printf("sim/npc_route: %q route in unknown phase %q — clearing",
 					actorID, route.Phase)
@@ -1006,7 +1016,7 @@ func advanceActiveRoute(w *World, route *NPCRoute, flip bool) (AdvanceNPCRouteRe
 // credited. Nothing walks him there, so pointing it at a place he has already been
 // costs no wrong movement, only a wrong sentence in his prompt, which is worse: the
 // cue offering a shop he called at ten minutes ago is what sent him back to it.
-func advanceBeatRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
+func advanceBeatRoute(w *World, route *NPCRoute, now time.Time) (AdvanceNPCRouteResult, error) {
 	actor, ok := w.Actors[route.NPCID]
 	if !ok {
 		clearActiveRoute(w, route.NPCID)
@@ -1017,6 +1027,12 @@ func advanceBeatRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) 
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "beat_elsewhere"}, nil
 	}
 	route.markVisited(reachedIdx)
+
+	// The estate rate is collected at the door (estate_rate.go): crediting the stop
+	// is the one moment the engine knows the constable has arrived at a business,
+	// so the levy on its owner — if the owner is standing there and has not been
+	// assessed today — is taken here, in the same command as the credit.
+	collectEstateRateAtStop(w, actor, route.Stops[reachedIdx], now)
 
 	// Keep the cursor on something he still owes. nextUnvisitedFrom searches forward
 	// and then WRAPS, which is what lets him call at places out of order without

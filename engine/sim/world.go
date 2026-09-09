@@ -244,12 +244,16 @@ type WorldSettings struct {
 
 	// Estate rate (LLM-652). Once a game-day every resident NPC pays
 	// EstateRatePctPerDay percent of the coin held above EstateRateFloor into the
-	// town chest (WorldEnvironment.TownChest), assessed on the daily rotation
-	// boundary (assessEstateRate). Unlike the day's rate the ENGINE moves this
-	// coin — see estate_rate.go for why. Live-tunable (umbilical);
-	// EstateRatePctPerDay<=0 disables the levy (the off-switch).
+	// town chest (WorldEnvironment.TownChest), collected when the constable calls
+	// at their business on his rounds and they are there (collectEstateRateAtStop).
+	// Unlike the day's rate the ENGINE moves this coin — see estate_rate.go for
+	// why. Live-tunable (umbilical); EstateRatePctPerDay<=0 disables the levy (the
+	// off-switch). ConstableWagePerDay is what the chest pays each constable on the
+	// rotation boundary (payConstableWage), capped by the chest's balance;
+	// <=0 disables the wage.
 	EstateRateFloor     int
 	EstateRatePctPerDay int
+	ConstableWagePerDay int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar

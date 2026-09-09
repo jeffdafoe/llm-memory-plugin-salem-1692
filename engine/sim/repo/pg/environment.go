@@ -246,6 +246,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// Estate rate (LLM-652).
 	s.EstateRateFloor = parseIntSetting(values, "estate_rate_floor", sim.DefaultEstateRateFloor)
 	s.EstateRatePctPerDay = parseIntSetting(values, "estate_rate_pct_per_day", sim.DefaultEstateRatePctPerDay)
+	s.ConstableWagePerDay = parseIntSetting(values, "constable_wage_per_day", sim.DefaultConstableWagePerDay)
 
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery

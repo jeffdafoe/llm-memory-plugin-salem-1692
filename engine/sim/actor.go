@@ -861,6 +861,15 @@ type Actor struct {
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
 
+	// EstateRateAssessedAt is when the constable last assessed this purse for the
+	// estate rate (estate_rate.go) — the stamp that makes the levy once per
+	// game-day, and the ONLY state the collection keeps (no owed balance: the due
+	// is computed from the purse at the visit). Durable
+	// (actor.estate_rate_assessed_at), because the village restarts many times a
+	// day for deploys and a lost stamp between two rounds would collect twice.
+	// nil = never assessed.
+	EstateRateAssessedAt *time.Time
+
 	// LaborID is the accepted labor offer the worker is currently committed to
 	// (LLM-26), or LaborID(0) when not on a job. The AUTHORITATIVE per-actor
 	// ownership key: set by AcceptWork to the offer's id, cleared by the

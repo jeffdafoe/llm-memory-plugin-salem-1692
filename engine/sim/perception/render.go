@@ -2768,6 +2768,23 @@ func selfActionLine(a SelfActionView) string {
 		default:
 			return "You finished a job"
 		}
+	case sim.ActionTypeCollected:
+		// Coin taken in on the town's behalf (the estate rate at a keeper's door)
+		// or drawn from the town chest (the constable's wage) — estate_rate.go. The
+		// counterparty is who it came from and Text is what it was for; neither is
+		// optional on the paths that write it, so the fallbacks only guard a hand-
+		// built entry.
+		if a.Amount <= 0 {
+			return ""
+		}
+		line := "You collected " + coins(a.Amount)
+		if a.CounterpartyName != "" {
+			line += " from " + sanitizeInline(a.CounterpartyName)
+		}
+		if a.Text != "" {
+			line += " for " + sanitizeInline(a.Text)
+		}
+		return line
 	case sim.ActionTypeSolicitedWork:
 		switch {
 		case a.Amount > 0 && a.CounterpartyName != "":

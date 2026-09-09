@@ -726,6 +726,21 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 			line += " for " + e.Text
 		}
 		return name, line + ".", "act", true
+	case sim.ActionTypeCollected:
+		// Coin taken in for the town (the estate rate at a keeper's door) or drawn
+		// from the chest (the constable's wage) — estate_rate.go. Degrades like the
+		// paid case.
+		if e.Amount <= 0 {
+			return "", "", "", false
+		}
+		line := name + " collects " + formatCoins(e.Amount)
+		if e.CounterpartyName != "" {
+			line += " from " + e.CounterpartyName
+		}
+		if e.Text != "" {
+			line += " for " + e.Text
+		}
+		return name, line + ".", "act", true
 	case sim.ActionTypeConsumed:
 		if e.Text == "" {
 			return "", "", "", false

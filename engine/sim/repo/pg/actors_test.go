@@ -97,6 +97,7 @@ func actorParentColumns() []string {
 		"coins", "llm_memory_agent", "role", "login_username",
 		"schedule_start_minute", "schedule_end_minute",
 		"last_agent_tick_at", "break_until", "sleeping_until",
+		"estate_rate_assessed_at",
 		"move_attempt_counter", "sim_state",
 		"sprite_id", "facing",
 		"admin", "move_destination",
@@ -150,6 +151,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		20, (*string)(nil), (*string)(nil), (*string)(nil),
 		(*int16)(nil), (*int16)(nil),
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+		(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		int64(0), "idle",
 		(*string)(nil), "south",
 		false, []byte(nil), "", 0, int64(0),
@@ -314,6 +316,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				20, ptrStr("mira-agent"), ptrStr("tavernkeeper"), (*string)(nil),
 				&startMin, &endMin,
 				&tsTickedAt, &tsBreak, &tsSleep,
+				(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 				int64(7), "working",
 				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
 				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`),
@@ -326,6 +329,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				20, (*string)(nil), (*string)(nil), (*string)(nil),
 				(*int16)(nil), (*int16)(nil),
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+				(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 				int64(0), "idle",
 				(*string)(nil), "south",
 				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
@@ -600,6 +604,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			int64(101),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -685,6 +690,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			int64(102),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -793,6 +799,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			int64(105),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -859,6 +866,7 @@ func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
 			int64(106),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1177,6 +1185,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				20, (*string)(nil), (*string)(nil), (*string)(nil),
 				(*int16)(nil), (*int16)(nil),
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+				(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 				int64(0), "idle",
 				(*string)(nil), "south",
 				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
@@ -1379,6 +1388,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			int64(701),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1482,6 +1492,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			int64(702),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1657,6 +1668,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			int64(706),
 			nil,
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1922,6 +1934,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			int64(710),
 			nil,
 			"stew", 5, int64(1800), // production_item / batch_qty / remaining_seconds — live cycle (LLM-319)
+			(*time.Time)(nil), // estate_rate_assessed_at — never assessed
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).

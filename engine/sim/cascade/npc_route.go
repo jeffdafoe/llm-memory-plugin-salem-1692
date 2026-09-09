@@ -502,7 +502,7 @@ func handleActorArrivedAdvanceRoute(ctx context.Context, w *sim.World, evt sim.E
 	// below would advance him with flip=true and stamp them with a state his beat
 	// never sets.
 	if route.Phase == sim.RoutePhaseBeat {
-		if _, err := sim.AdvanceNPCRouteSkipFlip(arrived.ActorID).Fn(w); err != nil {
+		if _, err := sim.AdvanceNPCRouteSkipFlipAt(arrived.ActorID, arrived.At).Fn(w); err != nil {
 			log.Printf("cascade/npc_route: beat advance (actor %q event %d): %v",
 				arrived.ActorID, arrived.EventID(), err)
 		}
