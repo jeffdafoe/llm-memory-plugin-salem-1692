@@ -4210,6 +4210,7 @@ var selfActionTrailTypes = map[sim.ActionType]bool{
 	sim.ActionTypeSolicitedWork: true,
 	sim.ActionTypeOfferedWork:   true,
 	sim.ActionTypeHired:         true,
+	sim.ActionTypeCollected:     true,
 }
 
 // buildSelfActions projects the subject's own recent committed actions out of

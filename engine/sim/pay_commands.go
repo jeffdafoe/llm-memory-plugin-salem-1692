@@ -300,6 +300,16 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// other pay in the village. LLM-572: what it settled shapes the
 			// relationship facts written below.
 			rateSettled, rateBusiness := settleTownRate(w, buyer, seller, amount)
+			// What settled the rate is the town's, not the constable's: it passes
+			// through his hands into the town chest in the same command, and the
+			// chest pays his wage on the rotation boundary (estate_rate.go). The
+			// pair record and the durable row still say the keeper paid HIM — that
+			// is what happened in the scene, and the rate_settled marker already
+			// classifies it as a due rather than a purchase.
+			if rateSettled > 0 {
+				seller.Coins -= rateSettled
+				w.Environment.TownChest += rateSettled
+			}
 
 			// Emit the Paid event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world

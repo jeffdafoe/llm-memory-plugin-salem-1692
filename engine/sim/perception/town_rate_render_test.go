@@ -37,7 +37,7 @@ func TestTownRateCollector_RendersWhenNothingIsOwed(t *testing.T) {
 	if !v.Collector {
 		t.Errorf("Collector = false on the constable's own view")
 	}
-	if !strings.Contains(got, "The town rate keeps you, and it falls to you to collect it.") {
+	if !strings.Contains(got, "The town pays your wage out of the rates you collect, and it falls to you to collect them.") {
 		t.Errorf("direction of the levy is not stated:\n%s", got)
 	}
 	if !strings.Contains(got, "The rate on the General Store is paid up — nothing is owing you here.") {
@@ -57,7 +57,7 @@ func TestTownRateCollector_RendersWhenNothingIsOwed(t *testing.T) {
 func TestTownRateCollector_NamesDebtors(t *testing.T) {
 	snap, _, constableID := townRateSnapshot(2, true)
 	_, got := renderTownRateFor(t, snap, constableID)
-	if !strings.Contains(got, "The town rate keeps you, and it falls to you to collect it.") {
+	if !strings.Contains(got, "The town pays your wage out of the rates you collect, and it falls to you to collect them.") {
 		t.Errorf("direction of the levy is not stated:\n%s", got)
 	}
 	if !strings.Contains(got, "Josiah Thorne has let the rate on the General Store run on — 2 coins behind.") {

@@ -146,6 +146,13 @@ const (
 	// (ActionTypeLabored).
 	ActionTypeHired ActionType = "hired"
 
+	// ActionTypeCollected records coin taken in on the town's behalf rather than
+	// into the actor's own purse — the constable collecting the estate rate at a
+	// keeper's door — and coin drawn from the town chest (his wage). Amount is
+	// the coin, CounterpartyName who it came from ("the town" for the wage), Text
+	// what it was for. Written only by estate_rate.go.
+	ActionTypeCollected ActionType = "collected"
+
 	// ActionTypeGathered — a committed gather (NPC `gather` tool or PC
 	// POST /api/village/pc/gather). ActorID is the gatherer; Text is the
 	// harvested item kind (with qty prefix when qty > 1, the same

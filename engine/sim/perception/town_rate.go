@@ -273,7 +273,7 @@ func renderTownRateKeeper(b *strings.Builder, v *TownRateView) {
 // buildRelationships is gated off and he holds no stored view of any villager — this
 // line is the only thing he has to answer with.
 func renderTownRateCollector(b *strings.Builder, v *TownRateView) {
-	b.WriteString("The town rate keeps you, and it falls to you to collect it. What you collect is the town's, not yours to hand back.")
+	b.WriteString("The town pays your wage out of the rates you collect, and it falls to you to collect them. What you collect is the town's, not yours to hand back.")
 	if len(v.Debtors) == 0 {
 		// Everyone here is square. Say so plainly and close the door on the rate
 		// being asked for again in this scene — the constable reading "it falls to

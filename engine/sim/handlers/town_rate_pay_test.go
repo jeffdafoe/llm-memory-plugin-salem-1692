@@ -105,13 +105,51 @@ func TestPay_KeeperSettlesTownRate(t *testing.T) {
 	if got := peekRateOwed(t, w, "general_store"); got != 0 {
 		t.Errorf("RateOwed = %d after paying the full rate, want 0", got)
 	}
-	// The coin really moved — this is a levy, not a bookkeeping entry.
-	if got := peekCoins(t, w, "gideon"); got != 3 {
-		t.Errorf("constable coins = %d, want 3", got)
+	// The coin really moved — this is a levy, not a bookkeeping entry — and what
+	// settled the rate passed through the constable's hands into the town chest
+	// (estate_rate.go): the chest pays his wage, so the rate is not his to keep.
+	if got := peekCoins(t, w, "gideon"); got != 0 {
+		t.Errorf("constable coins = %d, want 0 (the rate is the town's)", got)
+	}
+	if got := peekChest(t, w); got != 3 {
+		t.Errorf("town chest = %d, want 3", got)
 	}
 	if got := peekCoins(t, w, "josiah"); got != 17 {
 		t.Errorf("keeper coins = %d, want 17", got)
 	}
+}
+
+// Only the SETTLED part is the town's. A payment larger than the arrears is a gift
+// or a repayment that happened to discharge the levy (the over-broad settle policy
+// below), so the surplus stays with the constable and only the rate reaches the
+// chest.
+func TestPay_OnlyTheSettledRateReachesTheChest(t *testing.T) {
+	w, stop := buildTownRatePayWorld(t, 2)
+	defer stop()
+
+	if _, err := w.Send(sim.Pay("josiah", "Constable Gideon Marsh", 5, "for your trouble", time.Now().UTC())); err != nil {
+		t.Fatalf("Pay: %v", err)
+	}
+	if got := peekRateOwed(t, w, "general_store"); got != 0 {
+		t.Errorf("RateOwed = %d, want 0", got)
+	}
+	if got := peekCoins(t, w, "gideon"); got != 3 {
+		t.Errorf("constable coins = %d, want 3 (5 paid, 2 of it the rate)", got)
+	}
+	if got := peekChest(t, w); got != 2 {
+		t.Errorf("town chest = %d, want 2", got)
+	}
+}
+
+func peekChest(t *testing.T, w *sim.World) int {
+	t.Helper()
+	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Environment.TownChest, nil
+	}})
+	if err != nil {
+		t.Fatalf("peekChest: %v", err)
+	}
+	return v.(int)
 }
 
 // A part payment leaves the remainder standing, so the cue keeps naming it.

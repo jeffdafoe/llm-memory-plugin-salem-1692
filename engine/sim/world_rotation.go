@@ -547,15 +547,17 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: town rate: %v", err)
 		}
 	}
-	// Estate rate (LLM-652): once per game-day, move each resident purse's share
-	// of coin above the floor into the town chest. Bound to the daily boundary
-	// crossing HERE beside the other two levies and for the same reasons — the
-	// umbilical force-rotate must never assess it, and keying to the durable
-	// boundary inherits the once-per-day + restart-idempotent guarantee. This one
-	// DOES move coin (see estate_rate.go); a no-op when disabled.
-	if _, err := w.SendContext(ctx, ApplyEstateRate(boundary)); err != nil {
+	// Constable's wage (LLM-652 collection slice): once per game-day, pay each
+	// constable his wage out of the town chest, capped by what the chest holds.
+	// Bound to the daily boundary crossing HERE beside the levies and for the same
+	// reasons — the umbilical force-rotate must never pay it, and keying to the
+	// durable boundary inherits the once-per-day + restart-idempotent guarantee.
+	// This one DOES move coin (see estate_rate.go); a no-op when disabled. The
+	// estate rate itself is no longer assessed here — it is collected at the door
+	// when the constable calls on his rounds (advanceBeatRoute).
+	if _, err := w.SendContext(ctx, ApplyConstableWage(boundary)); err != nil {
 		if ctx.Err() == nil {
-			log.Printf("sim/world_rotation: estate rate: %v", err)
+			log.Printf("sim/world_rotation: constable wage: %v", err)
 		}
 	}
 	// Coin record (LLM-572): drop pairs whose payments have all aged out of the

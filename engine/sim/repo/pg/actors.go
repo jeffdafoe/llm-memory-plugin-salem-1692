@@ -104,6 +104,7 @@ SELECT
     last_agent_tick_at,
     break_until,
     sleeping_until,
+    estate_rate_assessed_at,
     move_attempt_counter,
     sim_state,
     sprite_id::text,
@@ -153,7 +154,8 @@ INSERT INTO actor (
     move_attempt_counter, sim_state,
     sprite_id, facing,
     snapshot_gen, move_destination,
-    production_item, production_batch_qty, production_remaining_seconds
+    production_item, production_batch_qty, production_remaining_seconds,
+    estate_rate_assessed_at
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -164,7 +166,8 @@ INSERT INTO actor (
     $19, $20,
     $21, $22,
     $23, $24,
-    $25, $26, $27
+    $25, $26, $27,
+    $28
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -192,7 +195,8 @@ ON CONFLICT (id) DO UPDATE SET
     move_destination       = EXCLUDED.move_destination,
     production_item        = EXCLUDED.production_item,
     production_batch_qty   = EXCLUDED.production_batch_qty,
-    production_remaining_seconds = EXCLUDED.production_remaining_seconds`
+    production_remaining_seconds = EXCLUDED.production_remaining_seconds,
+    estate_rate_assessed_at = EXCLUDED.estate_rate_assessed_at`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -507,32 +511,33 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 	out := make(map[sim.ActorID]*sim.Actor)
 	for rows.Next() {
 		var (
-			id                  string
-			displayName         string
-			currentX, currentY  int
-			insideStructureID   *string
-			currentHuddleID     *string
-			insideRoomID        *int64
-			homeStructureID     *string
-			workStructureID     *string
-			coins               int
-			llmMemoryAgent      *string
-			role                *string
-			loginUsername       *string
-			scheduleStartMinute *int16
-			scheduleEndMinute   *int16
-			lastAgentTickAt     *time.Time
-			breakUntil          *time.Time
-			sleepingUntil       *time.Time
-			moveAttemptCounter  int64
-			simState            string
-			spriteID            *string
-			facing              string
-			isAdmin             bool
-			moveDestination     []byte
-			productionItem      string
-			productionBatchQty  int
-			productionRemaining int64
+			id                   string
+			displayName          string
+			currentX, currentY   int
+			insideStructureID    *string
+			currentHuddleID      *string
+			insideRoomID         *int64
+			homeStructureID      *string
+			workStructureID      *string
+			coins                int
+			llmMemoryAgent       *string
+			role                 *string
+			loginUsername        *string
+			scheduleStartMinute  *int16
+			scheduleEndMinute    *int16
+			lastAgentTickAt      *time.Time
+			breakUntil           *time.Time
+			sleepingUntil        *time.Time
+			estateRateAssessedAt *time.Time
+			moveAttemptCounter   int64
+			simState             string
+			spriteID             *string
+			facing               string
+			isAdmin              bool
+			moveDestination      []byte
+			productionItem       string
+			productionBatchQty   int
+			productionRemaining  int64
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -541,6 +546,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&coins, &llmMemoryAgent, &role, &loginUsername,
 			&scheduleStartMinute, &scheduleEndMinute,
 			&lastAgentTickAt, &breakUntil, &sleepingUntil,
+			&estateRateAssessedAt,
 			&moveAttemptCounter, &simState,
 			&spriteID, &facing,
 			&isAdmin, &moveDestination,
@@ -575,39 +581,40 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		}
 
 		a := &sim.Actor{
-			ID:                 sim.ActorID(id),
-			DisplayName:        displayName,
-			Kind:               sim.ClassifyActorKind(deref(loginUsername), deref(llmMemoryAgent)),
-			Pos:                sim.TilePos{X: currentX, Y: currentY},
-			InsideStructureID:  sim.StructureID(deref(insideStructureID)),
-			CurrentHuddleID:    sim.HuddleID(deref(currentHuddleID)),
-			InsideRoomID:       roomID,
-			HomeStructureID:    sim.StructureID(deref(homeStructureID)),
-			WorkStructureID:    sim.StructureID(deref(workStructureID)),
-			Coins:              coins,
-			LLMAgent:           deref(llmMemoryAgent),
-			Role:               deref(role),
-			LoginUsername:      deref(loginUsername),
-			ScheduleStartMin:   derefInt16(scheduleStartMinute),
-			ScheduleEndMin:     derefInt16(scheduleEndMinute),
-			LastTickedAt:       lastAgentTickAt,
-			BreakUntil:         breakUntil,
-			SleepingUntil:      sleepingUntil,
-			MoveAttemptCounter: sim.MovementAttemptID(moveAttemptCounter),
-			State:              sim.ActorState(simState),
-			SpriteID:           sim.SpriteID(deref(spriteID)),
-			Facing:             facing,
-			IsAdmin:            isAdmin,
-			ProductionActivity: productionActivity,
-			ResumeDestination:  resumeDest,
-			Needs:              make(map[sim.NeedKey]int),
-			Inventory:          make(map[sim.ItemKind]int),
-			Relationships:      make(map[sim.ActorID]*sim.Relationship),
-			Acquaintances:      make(map[string]sim.Acquaintance),
-			DwellCredits:       make(map[sim.DwellCreditKey]*sim.DwellCredit),
-			RoomAccess:         make(map[sim.RoomAccessKey]*sim.RoomAccess),
-			Attributes:         make(map[string][]byte),
-			KnownPlaces:        make(map[sim.PlaceRef]*sim.KnownPlace),
+			ID:                   sim.ActorID(id),
+			DisplayName:          displayName,
+			Kind:                 sim.ClassifyActorKind(deref(loginUsername), deref(llmMemoryAgent)),
+			Pos:                  sim.TilePos{X: currentX, Y: currentY},
+			InsideStructureID:    sim.StructureID(deref(insideStructureID)),
+			CurrentHuddleID:      sim.HuddleID(deref(currentHuddleID)),
+			InsideRoomID:         roomID,
+			HomeStructureID:      sim.StructureID(deref(homeStructureID)),
+			WorkStructureID:      sim.StructureID(deref(workStructureID)),
+			Coins:                coins,
+			LLMAgent:             deref(llmMemoryAgent),
+			Role:                 deref(role),
+			LoginUsername:        deref(loginUsername),
+			ScheduleStartMin:     derefInt16(scheduleStartMinute),
+			ScheduleEndMin:       derefInt16(scheduleEndMinute),
+			LastTickedAt:         lastAgentTickAt,
+			BreakUntil:           breakUntil,
+			SleepingUntil:        sleepingUntil,
+			EstateRateAssessedAt: estateRateAssessedAt,
+			MoveAttemptCounter:   sim.MovementAttemptID(moveAttemptCounter),
+			State:                sim.ActorState(simState),
+			SpriteID:             sim.SpriteID(deref(spriteID)),
+			Facing:               facing,
+			IsAdmin:              isAdmin,
+			ProductionActivity:   productionActivity,
+			ResumeDestination:    resumeDest,
+			Needs:                make(map[sim.NeedKey]int),
+			Inventory:            make(map[sim.ItemKind]int),
+			Relationships:        make(map[sim.ActorID]*sim.Relationship),
+			Acquaintances:        make(map[string]sim.Acquaintance),
+			DwellCredits:         make(map[sim.DwellCreditKey]*sim.DwellCredit),
+			RoomAccess:           make(map[sim.RoomAccessKey]*sim.RoomAccess),
+			Attributes:           make(map[string][]byte),
+			KnownPlaces:          make(map[sim.PlaceRef]*sim.KnownPlace),
 		}
 		out[a.ID] = a
 	}
@@ -1520,6 +1527,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			productionItemArg(a.ProductionActivity),      // $25 production_item
 			productionBatchQtyArg(a.ProductionActivity),  // $26 production_batch_qty
 			productionRemainingArg(a.ProductionActivity), // $27 production_remaining_seconds
+			a.EstateRateAssessedAt,                       // $28 estate_rate_assessed_at (estate-rate once-a-day stamp)
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

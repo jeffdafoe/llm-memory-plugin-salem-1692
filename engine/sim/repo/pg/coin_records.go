@@ -80,15 +80,18 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // moved on those. actor_id NOT NULL excludes the engine-authored rows that carry no
 // payer.
 //
-// NOT (payload ? 'estate_rate') excludes the estate-rate assessments (LLM-652):
-// coin the engine moved from a purse into the town chest. The chest is not an
-// actor, so the row has no counterparty to pair with, and letting it through would
-// only count it as an unresolved counterparty at boot — a bucket the header
-// reserves for departed visitors. Keyed on the marker's PRESENCE (the jsonb `?`
-// operator), not its text value, so a marked row whose value is null is still an
-// assessment and never a peer payment. The marker is engine-owned (estate_rate.go
-// writes it and nothing else does), the same footing as ledger_id and
-// lodging_grant.
+// NOT (payload ? 'estate_rate') excludes the estate-rate collections (LLM-652):
+// coin the engine moved from a purse into the town chest when the constable called.
+// The row names him as collected_by, but he never held the coin — the chest is not
+// an actor, so the row has no counterparty to pair with, and letting it through
+// would either credit the constable with coin he does not have or count it as an
+// unresolved counterparty at boot, a bucket the header reserves for departed
+// visitors. Keyed on the marker's PRESENCE (the jsonb `?` operator), not its text
+// value, so a marked row whose value is null is still a collection and never a
+// peer payment. The marker is engine-owned (estate_rate.go writes it and nothing
+// else does), the same footing as ledger_id and lodging_grant. The constable's
+// own `collected` rows (the rate taken in, and his wage from the chest) are not
+// an action_type this query selects at all.
 //
 // No index is needed or added: the scan is bounded by the occurred_at window and
 // runs exactly once, at boot.

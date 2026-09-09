@@ -170,7 +170,7 @@ func TestCoinDisputeGoldenTellsTheConstableWhichWayTheRateRuns(t *testing.T) {
 		name:  "peer_disputes_a_payment_never_made",
 		build: peerDisputesAPaymentNeverMade,
 	})
-	if !strings.Contains(got, "The town rate keeps you, and it falls to you to collect it.") {
+	if !strings.Contains(got, "The town pays your wage out of the rates you collect, and it falls to you to collect them.") {
 		t.Errorf("collector cue must render even with nothing owing:\n%s", got)
 	}
 	if !strings.Contains(got, "The rate on the James Farm is paid up — nothing is owing you here.") {
