@@ -54,8 +54,7 @@ func TestIntegration_EstateRate_TownChestSurvivesCheckpoint(t *testing.T) {
 // The once-a-day stamp is the collection's only stored state, and it is durable
 // for one reason: the village restarts many times a day for deploys, and a stamp
 // lost between two rounds would collect twice. Proves the actor column the
-// migration adds round-trips through the checkpoint (value and NULL both), and
-// that a reloaded world still refuses a second collection in the same game-day.
+// migration adds round-trips through the checkpoint (value and NULL both).
 func TestIntegration_EstateRate_AssessedAtStampSurvivesCheckpoint(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
@@ -85,6 +84,118 @@ func TestIntegration_EstateRate_AssessedAtStampSurvivesCheckpoint(t *testing.T) 
 	}
 	if other := loaded.Actors[otherID].EstateRateAssessedAt; other != nil {
 		t.Errorf("Moses's EstateRateAssessedAt = %v after checkpoint + load, want nil (never assessed)", other)
+	}
+}
+
+// The coupling the stamp exists for: a real collection, checkpointed and reloaded
+// as a deploy restart would, must come back with purse, chest and stamp together —
+// and a second visit in the same game-day on the reloaded world must collect
+// nothing and write nothing. The next game-day collects again on the reduced
+// purse, so the reload did not freeze the levy either.
+func TestIntegration_EstateRate_ReloadedWorldRefusesASecondCollectionToday(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	const (
+		payerID     = "44444444-4444-4444-4444-444444444444"
+		constableID = "66666666-6666-6666-6666-666666666666"
+		millID      = "77777777-7777-7777-7777-777777777777"
+	)
+	// The business lives in memory only (a placement with no real asset would
+	// not survive the checkpoint); the reloaded world gets the same fixture
+	// re-attached, the way boot re-reads placements from their own table.
+	mill := func() map[sim.VillageObjectID]*sim.VillageObject {
+		return map[sim.VillageObjectID]*sim.VillageObject{
+			millID: {ID: millID, DisplayName: "Mill", OwnerActorID: payerID, Tags: []string{sim.TagBusiness}},
+		}
+	}
+	w := checkpointableWorld(repo)
+	w.Settings.EstateRateFloor = 100
+	w.Settings.EstateRatePctPerDay = 5
+	w.Settings.Location = time.UTC
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		payerID:     {ID: payerID, DisplayName: "Joseph Scott", Kind: sim.KindNPCShared, LLMAgent: sim.VendorAgentName, State: sim.StateIdle, Coins: 864, Inventory: map[sim.ItemKind]int{}, InsideStructureID: millID},
+		constableID: {ID: constableID, DisplayName: "Constable Gideon Marsh", Kind: sim.KindNPCStateful, LLMAgent: "zbbs-gideon-marsh", State: sim.StateIdle, Coins: 7, Inventory: map[sim.ItemKind]int{}, Attributes: map[string][]byte{sim.AttrConstable: nil}},
+	}
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (fixture): %v", err)
+	}
+	w.VillageObjects = mill()
+	sink := NewActionLogRepo(f.Pool)
+	w.SetActionLogSink(sink)
+
+	morning := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
+	if _, err := sim.CollectEstateRate(constableID, millID, morning).Fn(w); err != nil {
+		t.Fatalf("CollectEstateRate (morning): %v", err)
+	}
+	if w.Actors[payerID].Coins != 826 || w.Environment.TownChest != 38 {
+		t.Fatalf("morning collection: Joseph %d, chest %d; want 826 / 38", w.Actors[payerID].Coins, w.Environment.TownChest)
+	}
+	// Checkpoint the state the collection produced — purse, chest and stamp in one
+	// transaction — then reload it the way a deploy restart does. The asset-less
+	// fixture business cannot be checkpointed (no asset id), so it is detached for
+	// the save and re-attached on the reloaded world below — and the payer steps
+	// outside for the save, since the loader refuses an InsideStructureID that
+	// names no loaded structure.
+	w.VillageObjects = nil
+	w.Actors[payerID].InsideStructureID = ""
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (after collection): %v", err)
+	}
+	loaded, err := LoadWorld(ctx, repo, true /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if loaded.Actors[payerID].Coins != 826 || loaded.Environment.TownChest != 38 {
+		t.Fatalf("reloaded: Joseph %d, chest %d; want 826 / 38", loaded.Actors[payerID].Coins, loaded.Environment.TownChest)
+	}
+	if stamp := loaded.Actors[payerID].EstateRateAssessedAt; stamp == nil || !stamp.Equal(morning) {
+		t.Fatalf("reloaded stamp = %v, want %v", stamp, morning)
+	}
+	loaded.Settings.Location = time.UTC
+	loaded.VillageObjects = mill()
+	loaded.Actors[payerID].InsideStructureID = millID // back at his post for the afternoon round
+	loaded.SetActionLogSink(sink)
+
+	// Drain the morning's rows so the count below is exact.
+	drained, cancel := context.WithCancel(ctx)
+	cancel()
+	sink.Run(drained)
+	rowsFor := func() int {
+		var n int
+		if err := f.Pool.QueryRow(ctx, `SELECT count(*) FROM agent_action_log WHERE actor_id IN ($1, $2)`, payerID, constableID).Scan(&n); err != nil {
+			t.Fatalf("count rows: %v", err)
+		}
+		return n
+	}
+	if got := rowsFor(); got != 2 {
+		t.Fatalf("durable rows after the morning collection = %d, want 2", got)
+	}
+
+	// The afternoon round, on the reloaded world: nothing moves, nothing is written.
+	if _, err := sim.CollectEstateRate(constableID, millID, morning.Add(4*time.Hour)).Fn(loaded); err != nil {
+		t.Fatalf("CollectEstateRate (afternoon): %v", err)
+	}
+	drained, cancel = context.WithCancel(ctx)
+	cancel()
+	sink.Run(drained)
+	if loaded.Actors[payerID].Coins != 826 || loaded.Environment.TownChest != 38 {
+		t.Errorf("afternoon on the reloaded world collected again: Joseph %d, chest %d", loaded.Actors[payerID].Coins, loaded.Environment.TownChest)
+	}
+	if stamp := loaded.Actors[payerID].EstateRateAssessedAt; stamp == nil || !stamp.Equal(morning) {
+		t.Errorf("afternoon re-stamped the purse: %v", stamp)
+	}
+	if got := rowsFor(); got != 2 {
+		t.Errorf("durable rows after the afternoon visit = %d, want 2 (unchanged)", got)
+	}
+
+	// The next game-day collects on the reduced purse: (826-100)*5/100 = 36.
+	if _, err := sim.CollectEstateRate(constableID, millID, morning.Add(24*time.Hour)).Fn(loaded); err != nil {
+		t.Fatalf("CollectEstateRate (next day): %v", err)
+	}
+	if loaded.Actors[payerID].Coins != 826-36 || loaded.Environment.TownChest != 38+36 {
+		t.Errorf("next day on the reloaded world: Joseph %d, chest %d; want 790 / 74", loaded.Actors[payerID].Coins, loaded.Environment.TownChest)
 	}
 }
 

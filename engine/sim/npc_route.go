@@ -1031,7 +1031,12 @@ func advanceBeatRoute(w *World, route *NPCRoute, now time.Time) (AdvanceNPCRoute
 	// The estate rate is collected at the door (estate_rate.go): crediting the stop
 	// is the one moment the engine knows the constable has arrived at a business,
 	// so the levy on its owner — if the owner is standing there and has not been
-	// assessed today — is taken here, in the same command as the credit.
+	// assessed today — is taken here, in the same command as the credit. Once per
+	// credit by construction: reachedStopIndex answers only with a stop NOT yet on
+	// the books, so a duplicate or stale arrival at a stop already credited comes
+	// back "beat_elsewhere" above and never reaches this line — even one processed
+	// after the game-day boundary, when the once-a-day stamp alone would not stop
+	// it (TestBeatCredit_CollectsTheEstateRate pins the repeat).
 	collectEstateRateAtStop(w, actor, route.Stops[reachedIdx], now)
 
 	// Keep the cursor on something he still owes. nextUnvisitedFrom searches forward

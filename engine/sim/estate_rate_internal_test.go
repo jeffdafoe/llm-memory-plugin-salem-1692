@@ -340,6 +340,24 @@ func TestBeatCredit_CollectsTheEstateRate(t *testing.T) {
 		t.Errorf("Prudence holds %d — the apothecary was not called at", w.Actors["prudence"].Coins)
 	}
 
+	// A duplicate or stale arrival at the stop he was just credited at — the
+	// cascade re-running the beat advance for the same visit — must not collect
+	// again, and the once-a-day stamp is not what stops it: this repeat is
+	// processed AFTER the game-day boundary, when a fresh assessment would be
+	// owed. The beat credit itself is the guard (reachedStopIndex answers only
+	// with an unvisited stop).
+	w.Actors["joseph"].Coins = 900
+	res, err = advanceBeatRoute(w, route, estateRateNoon.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("advanceBeatRoute (repeat): %v", err)
+	}
+	if res.Reason != "beat_elsewhere" {
+		t.Errorf("Reason = %q on a repeat arrival at a credited stop, want beat_elsewhere", res.Reason)
+	}
+	if w.Actors["joseph"].Coins != 900 || w.Environment.TownChest != 38 {
+		t.Errorf("a repeat arrival collected again: Joseph %d, chest %d", w.Actors["joseph"].Coins, w.Environment.TownChest)
+	}
+
 	// Standing somewhere that is no stop credits nothing and collects nothing.
 	gideon.InsideStructureID = "tavern"
 	res, err = advanceBeatRoute(w, route, estateRateNoon.Add(time.Minute))
@@ -446,6 +464,37 @@ func TestCollectEstateRate_WritesTheRecords(t *testing.T) {
 	for _, want := range []string{"I paid Constable Gideon Marsh the rate on my estate, 38 coins", "taken into the town chest", "none are owed in return"} {
 		if !strings.Contains(fact, want) {
 			t.Errorf("fact %q lacks %q", fact, want)
+		}
+	}
+	// The collector's wording names the payer's estate and the chest, never "paid
+	// me" — the constable did not receive it. He is stateful, so RecordInteraction
+	// stores nothing for him; the text is pinned directly.
+	got := estateRateCollectedFactText("Joseph Scott", 38)
+	for _, want := range []string{"Joseph Scott paid the rate on their estate, 38 coins", "I collected it into the town chest", "none are owed in return"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("collector fact %q lacks %q", got, want)
+		}
+	}
+	for _, bad := range []string{"paid me", "my estate"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("collector fact %q says %q", got, bad)
+		}
+	}
+}
+
+// A nameless actor still gets a named counterparty in the trail — the same
+// fallback the durable row uses, so the two records never disagree on who.
+func TestCollectEstateRate_RingNamesFallBackToIDs(t *testing.T) {
+	w := estateRateWorld()
+	w.Actors["joseph"].DisplayName = ""
+	w.Actors["gideon"].DisplayName = ""
+
+	collectAt(t, w, "mill", estateRateNoon)
+
+	for _, e := range w.ActionLog {
+		want := map[ActorID]string{"joseph": "gideon", "gideon": "joseph"}[e.ActorID]
+		if e.CounterpartyName != want {
+			t.Errorf("%s: ring counterparty = %q, want the id %q", e.ActorID, e.CounterpartyName, want)
 		}
 	}
 }

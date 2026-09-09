@@ -273,7 +273,7 @@ func collectEstateRateAtStop(w *World, constable *Actor, stop RouteStop, now tim
 		ActionType:       ActionTypePaid,
 		Text:             estateRateForText,
 		HuddleID:         owner.CurrentHuddleID,
-		CounterpartyName: constable.DisplayName,
+		CounterpartyName: constableName,
 		Amount:           due,
 	}).Fn(w); err != nil {
 		// Append failed (empty ActorID / zero time — caller bug). The coin has
@@ -287,7 +287,7 @@ func collectEstateRateAtStop(w *World, constable *Actor, stop RouteStop, now tim
 		ActionType:       ActionTypeCollected,
 		Text:             estateRateCollectedForText,
 		HuddleID:         constable.CurrentHuddleID,
-		CounterpartyName: owner.DisplayName,
+		CounterpartyName: ownerName,
 		Amount:           due,
 	}).Fn(w); err != nil {
 		log.Printf("sim/estate_rate: action-log append failed for collector %q: %v", constable.ID, err)
@@ -326,8 +326,8 @@ func collectEstateRateAtStop(w *World, constable *Actor, stop RouteStop, now tim
 		Source:      "engine",
 	})
 
-	payerFact := estateRatePaidFactText("I", "paid", constableName, due)
-	collectorFact := estateRatePaidFactText(ownerName, "paid", "me", due)
+	payerFact := estateRatePaidFactText(constableName, due)
+	collectorFact := estateRateCollectedFactText(ownerName, due)
 	if _, err := RecordInteraction(owner.ID, constable.ID, InteractionPaid, payerFact, now).Fn(w); err != nil {
 		log.Printf("sim/estate_rate: RecordInteraction payer→constable %q→%q: %v", owner.ID, constable.ID, err)
 	}
@@ -338,15 +338,26 @@ func collectEstateRateAtStop(w *World, constable *Actor, stop RouteStop, now tim
 		constable.ID, due, owner.ID, w.Environment.TownChest)
 }
 
-// estateRatePaidFactText is the relationship fact a collection leaves on both
-// sides — the estate-rate twin of townRatePaidFactText, with the same load-bearing
-// closing clause: consolidation is told to trust the ledger over what was said
-// (LLM-499), so a payment with a stated purpose and no delivery ever recorded
-// against it reads as an order placed and never filled unless the record itself
-// says it was a levy.
-func estateRatePaidFactText(subject, verb, object string, amount int) string {
-	return subject + " " + verb + " " + object + " the rate on my estate, " + coinsPhrase(amount) +
-		" — the town's due, taken into the town chest. No goods were bought and none are owed in return."
+// estateRateFactClosing is the load-bearing clause both relationship facts end on
+// — the estate-rate twin of townRatePaidFactText's: consolidation is told to
+// trust the ledger over what was said (LLM-499), so a payment with a stated
+// purpose and no delivery ever recorded against it reads as an order placed and
+// never filled unless the record itself says it was a levy.
+const estateRateFactClosing = "No goods were bought and none are owed in return."
+
+// estateRatePaidFactText is the payer's side: his estate, his coin, the town's
+// chest.
+func estateRatePaidFactText(constableName string, amount int) string {
+	return "I paid " + constableName + " the rate on my estate, " + coinsPhrase(amount) +
+		" — the town's due, taken into the town chest. " + estateRateFactClosing
+}
+
+// estateRateCollectedFactText is the collector's side, worded from where the coin
+// actually went: the payer's estate, and the chest rather than the constable's
+// purse — "paid me" would tell him he received it (code_review, LLM-653).
+func estateRateCollectedFactText(ownerName string, amount int) string {
+	return ownerName + " paid the rate on their estate, " + coinsPhrase(amount) +
+		" — the town's due; I collected it into the town chest. " + estateRateFactClosing
 }
 
 // actorDisplayNameOrID is the durable-row name fallback the auto-charge paths
