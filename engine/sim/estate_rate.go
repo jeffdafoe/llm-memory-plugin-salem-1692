@@ -62,11 +62,10 @@ import (
 //
 // THE CHEST PAYS THE CONSTABLE. Once a game-day on the rotation boundary the
 // constable draws ConstableWagePerDay from the chest, capped by what the chest
-// holds — nothing is minted. The LLM-557 day's rate he collects by hand also lands
-// in the chest now (pay_commands.go moves the settled coin from his purse to the
-// chest in the same command), so there is one till: every rate feeds it, and it
-// feeds the constable and, in a later slice, public works and provisions for the
-// poor.
+// holds — nothing is minted. This is the constable's ONE levy: the LLM-557
+// coin-a-day town rate he used to collect by hand was retired in LLM-655, so the
+// estate rate alone feeds the chest, and the chest feeds the constable and, in a
+// later slice, public works and provisions for the poor.
 //
 // Coin-neutral against the village as a whole: Σ resident coin + chest changes
 // only by visitor legs, grants and wages to visitors, which is the invariant the
@@ -76,10 +75,11 @@ import (
 // Seams: collectEstateRateAtStop hangs off the beat credit in advanceBeatRoute
 // (npc_route.go) — the moment the rounds machinery records the constable at a
 // business; payConstableWage fires once per game-day from checkAndRotate
-// (world_rotation.go), beside ApplyTownRate on the same durable LastRotationAt
+// (world_rotation.go), beside ApplyFarmUpkeep on the same durable LastRotationAt
 // boundary; the chest rides WorldEnvironment through the checkpoint; the knobs
-// are registry settings (settings_registry_table.go). There is no perception
-// cue — the two action rings and the relationship fact carry the explanation.
+// are registry settings (settings_registry_table.go). The payer has no perception
+// cue — the two action rings and the relationship fact carry the explanation; the
+// constable's one line about the levy is perception/estate_rate.go.
 
 const (
 	// DefaultEstateRateFloor is the coin an actor keeps untouched. Sized above every
@@ -89,7 +89,7 @@ const (
 
 	// DefaultEstateRatePctPerDay is the share of coin above the floor taken each
 	// game-day, in whole percent. A non-positive value disables the levy (the
-	// per-feature off-switch, mirroring TownRateCoinsPerDay<=0).
+	// per-feature off-switch, mirroring FarmUpkeepCoinsPerShovel==0).
 	DefaultEstateRatePctPerDay = 5
 
 	// DefaultConstableWagePerDay is what the chest pays each constable per
@@ -339,7 +339,7 @@ func collectEstateRateAtStop(w *World, constable *Actor, stop RouteStop, now tim
 }
 
 // estateRateFactClosing is the load-bearing clause both relationship facts end on
-// — the estate-rate twin of townRatePaidFactText's: consolidation is told to
+// (the retired town rate's fact carried the same one, LLM-572): consolidation is told to
 // trust the ledger over what was said (LLM-499), so a payment with a stated
 // purpose and no delivery ever recorded against it reads as an order placed and
 // never filled unless the record itself says it was a levy.
@@ -454,10 +454,68 @@ func payConstableWage(w *World, now time.Time) {
 }
 
 // ApplyConstableWage wraps the daily wage as a Command so the rotation driver can
-// run it on the world goroutine. Mirrors ApplyTownRate / ApplyFarmUpkeep.
+// run it on the world goroutine. Mirrors ApplyFarmUpkeep.
 func ApplyConstableWage(now time.Time) Command {
 	return Command{Fn: func(w *World) (any, error) {
 		payConstableWage(w, now)
 		return nil, nil
 	}}
+}
+
+// IsRateableBusiness reports whether obj is a place the estate rate is collected at:
+// an OWNED business. Nil-safe.
+//
+// Deliberately the same gate as IsWearableStall (owned + TagBusiness) rather than a
+// new scope of its own — the levy is collected at exactly the set of places that are
+// somebody's shop, which is also the set the constable's rounds call at
+// (buildConstableRoundsCandidates takes every TagBusiness object). The owner
+// requirement is what makes the stop collectable: an unowned business has nobody
+// whose purse the rate could come from.
+func IsRateableBusiness(obj *VillageObject) bool {
+	return obj != nil && obj.OwnerActorID != "" && obj.HasTag(TagBusiness)
+}
+
+// RateableBusinessOf returns the rateable business owned by ownerID, or nil when
+// they own none. Takes the object map so it serves both the live World
+// (w.VillageObjects) and a perception Snapshot (snap.VillageObjects).
+//
+// Picks the LOWEST VillageObjectID rather than the map-iteration first, so the result
+// is deterministic even if the one-business-per-owner data convention (shared with
+// OwnedWearableStall / OwnedFarm) is ever broken by a live re-tag or a bad seed.
+//
+// The tie-break was load-bearing for the retired town rate, whose keeper cue and
+// settle path each resolved the business independently and could disagree under map
+// order (LLM-557). Today the function only gates the constable's perception line
+// (perception/estate_rate.go asks whether a co-present actor owns ANY rateable
+// business), so a wobble would change nothing — the determinism is kept because it
+// costs nothing and the next caller may care which shop, as the first one did. Same
+// reasoning as WearableStallToMend's lowest-LaborID tie-break.
+func RateableBusinessOf(objects map[VillageObjectID]*VillageObject, ownerID ActorID) *VillageObject {
+	if ownerID == "" {
+		return nil
+	}
+	var best *VillageObject
+	for _, obj := range objects {
+		// nil-safe: also runs over hand-built perception/test maps where a stray
+		// nil entry must not panic the world (the OwnedHearth / OwnedFarm guard).
+		if obj == nil || obj.OwnerActorID != ownerID || !IsRateableBusiness(obj) {
+			continue
+		}
+		if best == nil || obj.ID < best.ID {
+			best = obj
+		}
+	}
+	return best
+}
+
+// ActorIsConstable reports whether a carries the constable attribute — the
+// collector side of the levy. The engine keys behaviour on attribute PRESENCE only
+// (the value is unused), matching findActorsWithAttribute in the rounds driver.
+// Nil-safe.
+func ActorIsConstable(a *Actor) bool {
+	if a == nil {
+		return false
+	}
+	_, ok := a.Attributes[AttrConstable]
+	return ok
 }

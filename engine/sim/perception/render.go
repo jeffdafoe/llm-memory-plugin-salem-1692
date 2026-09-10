@@ -328,7 +328,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderHearthCooking(&ephemeral, p.HearthCooking)
 	renderFarmUpkeep(&ephemeral, p.FarmUpkeep)
 	renderWorkClothes(&ephemeral, p.WorkClothes)
-	renderTownRate(&ephemeral, p.TownRate)
+	renderEstateRateCollector(&ephemeral, p.EstateRateCollector)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)

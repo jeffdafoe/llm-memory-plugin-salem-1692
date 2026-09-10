@@ -294,23 +294,6 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			seller.Coins += amount
 			drawVisitorSpend(buyer, amount)
 
-			// LLM-557: coin a keeper hands a constable settles his town rate.
-			// Inline here, the same placement accrueStallWear takes on the sale
-			// path, so the debt and the coin move together. A no-op for every
-			// other pay in the village. LLM-572: what it settled shapes the
-			// relationship facts written below.
-			rateSettled, rateBusiness := settleTownRate(w, buyer, seller, amount)
-			// What settled the rate is the town's, not the constable's: it passes
-			// through his hands into the town chest in the same command, and the
-			// chest pays his wage on the rotation boundary (estate_rate.go). The
-			// pair record and the durable row still say the keeper paid HIM — that
-			// is what happened in the scene, and the rate_settled marker already
-			// classifies it as a due rather than a purchase.
-			if rateSettled > 0 {
-				seller.Coins -= rateSettled
-				w.Environment.TownChest += rateSettled
-			}
-
 			// Emit the Paid event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world
 			// goroutine.
@@ -320,11 +303,6 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				Amount:   amount,
 				ForText:  forText,
 				At:       at,
-				// LLM-607: carry what the settlement actually was, not just
-				// how much coin moved. This is the only place in the engine
-				// that knows, and the subscribers that write the durable row
-				// and the coin tally both need it.
-				RateSettled: rateSettled,
 			})
 
 			// LLM-159: a coin payment is non-conversational progress (and
@@ -341,17 +319,6 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			sellerName := seller.DisplayName
 			buyerFact := payFactText("I", "paid", sellerName, amount, forText)
 			sellerFact := payFactText(buyerName, "paid", "me", amount, forText)
-			// LLM-572: when the coin settled town-rate arrears, say so instead.
-			// A rate is an obligation discharged; the generic text above voices it
-			// as a purchase, and consolidation cannot tell a purchase that was
-			// never delivered from a tax that was never meant to deliver anything.
-			// Engine-authored from what settleTownRate actually did, not inferred
-			// from the model's forText — the payer's stated purpose is exactly the
-			// thing that misled the reader, so it is not what decides the wording.
-			if rateSettled > 0 {
-				buyerFact = townRatePaidFactText("I", "paid", sellerName, amount, rateSettled, rateBusiness)
-				sellerFact = townRatePaidFactText(buyerName, "paid", "me", amount, rateSettled, rateBusiness)
-			}
 			if _, err := RecordInteraction(buyerID, sellerID, InteractionPaid, buyerFact, at).Fn(w); err != nil {
 				log.Printf("sim.Pay: RecordInteraction buyer→seller %q→%q: %v", buyerID, sellerID, err)
 			}
@@ -543,74 +510,7 @@ func payFactText(subject, verb, object string, amount int, forText string) strin
 	return fmt.Sprintf("%s %s %s %d %s for %s.", subject, verb, object, amount, coins, for_)
 }
 
-// townRatePaidFactText renders the SalientFact text for a pay that settled town-rate
-// arrears (LLM-572). Same subject/object shape as payFactText, which it replaces on
-// that path only.
-//
-// The closing clause is the whole point: "No goods were bought and none are owed in
-// return." A town-rate line is otherwise a payment with a stated purpose and no
-// delivery recorded against it, which is precisely the shape of an order placed and
-// never filled — and the consolidation prompt tells the model to trust the ledger
-// over what was said, so a reader that draws the wrong conclusion here draws it with
-// full confidence and writes it into a durable summary. Moses James paid two coins of
-// rate and came to believe the constable "takes my coin ... and I get nothing", then
-// collected a five-coin refund on that belief. The clause closes the inference by
-// stating the thing the ledger could not: nothing was ever owed back.
-//
-// No pronoun for the counterparty, deliberately — the village does not model gender
-// on actors, and "owed him" would be a coin-flip on every line. The passive keeps it
-// true from either side, so both directions render from one function.
-//
-// The payer's own forText is dropped rather than folded in. It is model-authored and
-// it is the misleading half ("Day's rate on the James Farm" reads as an order); the
-// engine knows what actually settled, so the engine's account is the one that goes
-// into memory.
-// The place clause is dropped rather than allowed to push the sentence past
-// MaxSalientFactTextLen. NewSalientFact truncates at that cap, and a truncated fact
-// is a memory that ENDS MID-SENTENCE — which here would cut the closing clause off
-// precisely, since it is last. Better to lose which shop the rate was levied on than
-// the statement that nothing is owed back: the shop is colour, the closing is the
-// fix. Unreachable at present village name lengths; it exists so a future rename
-// cannot quietly reintroduce the defect.
-func townRatePaidFactText(subject, verb, object string, amount, settled int, business *VillageObject) string {
-	rate := "the town rate"
-	if settled == 1 {
-		rate = "the day's rate"
-	}
-	where := ""
-	if business != nil {
-		if name := strings.TrimSpace(business.DisplayName); name != "" {
-			where = fmt.Sprintf(" on the %s", name)
-		}
-	}
-	text := townRatePaidSentence(subject, verb, object, amount, settled, rate, where)
-	if where != "" && len([]rune(text)) > MaxSalientFactTextLen {
-		text = townRatePaidSentence(subject, verb, object, amount, settled, rate, "")
-	}
-	return text
-}
-
-func townRatePaidSentence(subject, verb, object string, amount, settled int, rate, where string) string {
-	const closing = "the town's due, owed and now settled. No goods were bought and none are owed in return."
-	if settled == amount {
-		// The whole payment was the rate — the ordinary case, since the cue names
-		// the exact coin owed and the arrears cap keeps it small.
-		return fmt.Sprintf("%s %s %s %s%s, %s — %s",
-			subject, verb, object, rate, where, coinsPhrase(amount), closing)
-	}
-	// A larger payment that also cleared arrears. The settlement policy is
-	// deliberately over-broad (see settleTownRate), so this is a gift or a debt
-	// repayment that happened to discharge the levy — name both parts rather than
-	// call the whole sum a rate.
-	was := "was"
-	if settled != 1 {
-		was = "were"
-	}
-	return fmt.Sprintf("%s %s %s %s; %s of it %s %s owing%s — %s",
-		subject, verb, object, coinsPhrase(amount), coinsPhrase(settled), was, rate, where, closing)
-}
-
-// coinsPhrase voices a coin count with the right singular. Shared by the town-rate
+// coinsPhrase voices a coin count with the right singular. Shared by the estate-rate
 // fact texts, which need it in more than one slot per sentence.
 func coinsPhrase(n int) string {
 	if n == 1 {

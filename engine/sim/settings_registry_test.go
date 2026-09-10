@@ -191,7 +191,6 @@ func TestPersistableSettingRowsCoversThePreRegistryKeys(t *testing.T) {
 		"stall_wear_per_coin", "stall_wear_repair_threshold", "stall_wear_degrade_threshold",
 		"stall_nails_per_repair", "stall_repair_duration_seconds", "stall_degraded_produce_pct",
 		"farm_upkeep_floor", "farm_upkeep_coins_per_shovel",
-		"town_rate_coins_per_day", "town_rate_max_owed",
 		"huddle_loop_timeout_seconds", "huddle_loop_repeat_percent",
 		"huddle_loop_sweep_cadence_seconds", "huddle_loop_max_turns",
 		"huddle_conversation_wind_down_seconds",

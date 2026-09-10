@@ -46,13 +46,12 @@ func TestUmbilicalObjectsFromSnapshot(t *testing.T) {
 				Pos: sim.WorldPos{X: 128, Y: 128}, Tags: []string{"water"},
 			},
 			// The store carries all three LLM-559 runtime counters at once: an
-			// owned business (wear + rate_owed) that is also the hearth object.
+			// owned business (wear) that is also the hearth object.
 			"store": {
 				ID: "store", AssetID: "asset_store", CurrentState: "open",
 				Pos: sim.WorldPos{X: 512, Y: 512}, OwnerActorID: "josiah",
 				Tags:           []string{sim.TagBusiness, sim.TagHearth},
 				Wear:           37,
-				RateOwed:       2,
 				HearthLitUntil: lit,
 			},
 		},
@@ -112,18 +111,18 @@ func TestUmbilicalObjectsFromSnapshot(t *testing.T) {
 		t.Errorf("well = %+v, want tags[water] + no refresh_policy", well)
 	}
 
-	// LLM-559 runtime counters — carried raw on the store, which holds all three.
+	// LLM-559 runtime counters — carried raw on the store, which holds both.
 	store := all.Objects[3]
-	if store.Wear != 37 || store.RateOwed != 2 {
-		t.Errorf("store counters = wear %d / rate_owed %d, want 37 / 2", store.Wear, store.RateOwed)
+	if store.Wear != 37 {
+		t.Errorf("store wear = %d, want 37", store.Wear)
 	}
 	if store.HearthLitUntil == nil || !store.HearthLitUntil.Equal(lit) {
 		t.Errorf("store hearth_lit_until = %v, want %v", store.HearthLitUntil, lit)
 	}
 
-	// An object with no counters leaves all three at their omitted zero — the
-	// well is neither a business nor a hearth, so the roster stays quiet for it.
-	if well.Wear != 0 || well.RateOwed != 0 || well.HearthLitUntil != nil {
+	// An object with no counters leaves both at their omitted zero — the well is
+	// neither a business nor a hearth, so the roster stays quiet for it.
+	if well.Wear != 0 || well.HearthLitUntil != nil {
 		t.Errorf("well counters = %+v, want all zero/nil", well)
 	}
 
@@ -152,10 +151,10 @@ func TestUmbilicalObjectsFromSnapshot(t *testing.T) {
 	}
 
 	// The ticket's open question 2: `?tag=business` is the whole answer to "show
-	// me every business and what it owes" — no convenience filter needed.
+	// me every business and its counters" — no convenience filter needed.
 	biz := umbilicalObjectsFromSnapshot(snap, objectsFilter{tag: sim.TagBusiness})
-	if biz.Total != 1 || biz.Objects[0].ID != "store" || biz.Objects[0].RateOwed != 2 {
-		t.Errorf("business filter = %+v, want only store owing 2", biz.Objects)
+	if biz.Total != 1 || biz.Objects[0].ID != "store" || biz.Objects[0].Wear != 37 {
+		t.Errorf("business filter = %+v, want only store, worn 37", biz.Objects)
 	}
 }
 
@@ -189,7 +188,7 @@ func marshalledObjects(t *testing.T, dto UmbilicalObjectsDTO) []map[string]any {
 // *time.Time keeps it absent.
 func TestUmbilicalObjectsCountersOmitEmpty(t *testing.T) {
 	published := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
-	counterKeys := []string{"wear", "rate_owed", "hearth_lit_until"}
+	counterKeys := []string{"wear", "hearth_lit_until"}
 
 	// A plain placement: no owner, no business tag, no hearth, no fire.
 	snap := &sim.Snapshot{
@@ -205,13 +204,12 @@ func TestUmbilicalObjectsCountersOmitEmpty(t *testing.T) {
 		}
 	}
 
-	// A worn, indebted, lit business carries all three — so the absences above
-	// are omitempty working, not the fields being dropped outright.
+	// A worn, lit business carries both — so the absences above are omitempty
+	// working, not the fields being dropped outright.
 	snap.VillageObjects["store"] = &sim.VillageObject{
 		ID: "store", AssetID: "asset_store", OwnerActorID: "josiah",
 		Tags:           []string{sim.TagBusiness, sim.TagHearth},
 		Wear:           37,
-		RateOwed:       2,
 		HearthLitUntil: published.Add(time.Hour),
 	}
 	store := marshalledObjects(t, umbilicalObjectsFromSnapshot(snap, objectsFilter{id: "store"}))[0]
@@ -221,8 +219,8 @@ func TestUmbilicalObjectsCountersOmitEmpty(t *testing.T) {
 		}
 	}
 	// JSON numbers decode as float64.
-	if store["wear"] != float64(37) || store["rate_owed"] != float64(2) {
-		t.Errorf("store wire counters = wear %v / rate_owed %v, want 37 / 2", store["wear"], store["rate_owed"])
+	if store["wear"] != float64(37) {
+		t.Errorf("store wire wear = %v, want 37", store["wear"])
 	}
 	if store["hearth_lit_until"] != "2026-06-25T13:00:00Z" {
 		t.Errorf("store hearth_lit_until = %v, want 2026-06-25T13:00:00Z", store["hearth_lit_until"])

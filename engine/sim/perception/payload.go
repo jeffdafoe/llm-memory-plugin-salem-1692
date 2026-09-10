@@ -726,13 +726,13 @@ type Payload struct {
 	// replacement is bought elsewhere. LLM-589.
 	WorkClothes *WorkClothesView
 
-	// TownRate surfaces the constable's levy to whichever side is reading it: to a
-	// keeper, what his business owes and the constable standing with him; to the
-	// constable, that the rate runs toward him and which co-present keepers are
-	// behind. nil unless the two are co-present. Co-location-gated — the coin is
-	// handed over where they stand, so off-scene the cue has nothing to offer.
-	// LLM-557, widened to the settled case by LLM-572.
-	TownRate *TownRateView
+	// EstateRateCollector is true for a constable with a rateable keeper co-present:
+	// the one line telling him the estate rate he collects on his rounds pays his
+	// wage and is the town's, not his to hand back. The keeper's side has no cue —
+	// the engine takes the rate as the constable arrives and the payer's own action
+	// ring says so. Co-location-gated: the refund conversation it guards against
+	// happens face to face. LLM-655 (replacing the LLM-557 town-rate cue).
+	EstateRateCollector bool
 
 	// CoinDealings is what coin has actually passed between the subject and each
 	// co-present acquaintance inside the recall window — the record against which a

@@ -25,11 +25,12 @@ import (
 //     is gated to KindNPCShared, so the "## What you remember of those here"
 //     section is empty for him and the coin line is the ONLY per-peer record in
 //     his prompt. Flipping him to shared would hide the regression this pins.
-//   - The James Farm owes nothing. It is the paid-up branch of the collector cue
-//     (LLM-572's third half), and it renders here because a keeper is in front of
-//     him — before this ticket that whole section was suppressed whenever nobody
-//     was in arrears, which is how the constable came to pay a town rate TO a
-//     tavern keeper three minutes after the refund.
+//   - Moses is a KEEPER (the James Farm is his owned business). That is what makes
+//     the constable's estate-rate line render here — the section that tells him the
+//     rate runs toward the town, not toward him. LLM-572 first widened the old
+//     town-rate cue to render on a paid-up keeper because, with the section
+//     suppressed, the constable paid a town rate TO a tavern keeper three minutes
+//     after the refund; LLM-655 keeps that lesson with one static line.
 
 func init() {
 	perceptionScenarios = append(perceptionScenarios,
@@ -38,9 +39,10 @@ func init() {
 			summary: "LLM-572 money-claim ground truth: Constable Gideon Marsh (STATEFUL, so his Relationships are nil " +
 				"and this is his only per-peer record) stands at the James Farm with Moses James, who is about to claim " +
 				"he paid for help never delivered. The golden pins '## Coin between you and those here' reporting the two " +
-				"single coins of town rate Moses actually paid — the live record, 2026-07-29 14:34 and 2026-07-30 12:18 " +
-				"— so a five-coin refund cannot clear against it. It also pins the paid-up arm of the collector cue: the " +
-				"farm owes nothing, and the constable is still told the rate runs TOWARD him, which is the line whose " +
+				"single coins of town rate Moses actually paid — the live record, 2026-07-29 14:34 and 2026-07-30 12:18, " +
+				"dues from the retired LLM-557 levy that the coin record still carries — so a five-coin refund cannot " +
+				"clear against it. It also pins the collector's estate-rate line (LLM-655): a keeper is in front of him, " +
+				"so the constable is told the rate is the town's and none of it his to hand back — the line whose " +
 				"absence had him paying a town rate to a tavern keeper.",
 			build: peerDisputesAPaymentNeverMade,
 		},
@@ -92,11 +94,10 @@ func peerDisputesAPaymentNeverMade() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 	// to Marsh, and nothing at all the other way. Held on BOTH actors' records
 	// because RecordCoinPaid writes the ordered pair in both directions.
 	//
-	// Due (LLM-607) because both coins WERE the town rate — settleTownRate cleared the
-	// farm's arrears with them, which is why RateOwed is 0 below. Leaving it false
-	// here would make the fixture describe a farm that paid its rate with coin the
-	// engine did not treat as rate, and would pin a rendering production no longer
-	// produces for this pair.
+	// Due (LLM-607) because both coins WERE the town rate of the day — the retired
+	// LLM-557 levy's bare-coin settle classified them, and the durable rows still
+	// seed the record that way. Leaving the kind Unstated here would pin a rendering
+	// production does not produce for this pair.
 	first := time.Date(2026, 7, 29, 14, 34, 15, 0, time.UTC)
 	second := time.Date(2026, 7, 30, 12, 18, 58, 0, time.UTC)
 	rates := []sim.CoinPayment{{At: first, Amount: 1, Kind: sim.CoinPaymentForDue}, {At: second, Amount: 1, Kind: sim.CoinPaymentForDue}}
@@ -114,15 +115,14 @@ func peerDisputesAPaymentNeverMade() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		Structures: map[sim.StructureID]*sim.Structure{
 			farm: plainStructure(farm, "James Farm"),
 		},
-		// Owned + business, so the farm is rateable — and RateOwed 0, so it is the
-		// PAID-UP arm of the collector cue.
+		// Owned + business, so the farm is rateable and Moses is a keeper — the gate
+		// on the constable's estate-rate line.
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
 			sim.VillageObjectID(farm): {
 				ID:           sim.VillageObjectID(farm),
 				DisplayName:  "James Farm",
 				OwnerActorID: mosesID,
 				Tags:         []string{sim.TagBusiness},
-				RateOwed:     0,
 			},
 		},
 		CoinRecord: map[sim.ActorID]map[sim.ActorID]*sim.CoinPairRecord{
@@ -160,46 +160,50 @@ func TestCoinDisputeGoldenStatesTheRealAmount(t *testing.T) {
 }
 
 // TestCoinDisputeGoldenTellsTheConstableWhichWayTheRateRuns pins the third half of
-// LLM-572 on the same fixture. The James Farm owes nothing, and before this ticket
-// buildTownRateCollector returned nil in exactly that case — so the constable's
-// prompt said nothing about the levy at all, and he paid a "Town rate — Tavern
-// day's fee" of one coin to John Ellis at 19:03:43, three minutes after the refund
-// this scenario reproduces.
+// LLM-572 on the same fixture, in its LLM-655 shape. Before LLM-572 the constable's
+// prompt said nothing about the levy whenever nobody owed — so he paid a "Town rate
+// — Tavern day's fee" of one coin to John Ellis at 19:03:43, three minutes after the
+// refund this scenario reproduces. A keeper in front of him is the whole gate now,
+// and the line says the rate is the town's and none of it his to hand back.
 func TestCoinDisputeGoldenTellsTheConstableWhichWayTheRateRuns(t *testing.T) {
 	got := renderScenario(perceptionScenario{
 		name:  "peer_disputes_a_payment_never_made",
 		build: peerDisputesAPaymentNeverMade,
 	})
-	if !strings.Contains(got, "The town pays your wage out of the rates you collect, and it falls to you to collect them.") {
-		t.Errorf("collector cue must render even with nothing owing:\n%s", got)
-	}
-	if !strings.Contains(got, "The rate on the James Farm is paid up — nothing is owing you here.") {
-		t.Errorf("paid-up arm must name the settled business:\n%s", got)
+	if !strings.Contains(got, "## Town rate\n"+estateRateCollectorLine) {
+		t.Errorf("collector line must render with a keeper present:\n%s", got)
 	}
 }
 
-// TestGoldensNeverTellAConstableTheyOweTheRate is the cross-scenario invariant.
+// TestGoldensOnlyAConstableHearsTheRateSection is the cross-scenario invariant.
 //
-// The keeper cue ends in "Settle it with pay (recipient: …)" — an instruction to
-// hand coin to the constable. Rendered to a constable it is an instruction to pay
-// the levy he collects, which is the shape of the live 19:03:43 defect. The
-// Collector flag is what keeps the two branches apart, and a future edit that
-// dispatches on len(Debtors) again (as renderTownRate did before this ticket) would
-// silently reintroduce it for every settled scene. Runs over the whole matrix so
-// the property is pinned for any situation, not just the one scenario above.
-func TestGoldensNeverTellAConstableTheyOweTheRate(t *testing.T) {
+// The section is the constable's alone: the keeper's side of the estate rate is the
+// engine debit and his own action ring, and the retired town-rate cue that used to
+// tell a keeper "Settle it with pay (recipient: …)" is gone. Rendered to anyone
+// else, the line would tell a villager the town pays HIS wage out of a rate he
+// collects — the mirror image of the 19:03:43 defect. Runs over the whole matrix so
+// the property holds for any situation, not just the scenarios built for it.
+func TestGoldensOnlyAConstableHearsTheRateSection(t *testing.T) {
+	seen := false
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			snap, actorID, warrants := sc.build()
 			a := snap.Actors[actorID]
-			if a == nil || !isConstableSnapshot(a) {
+			if a == nil {
 				return
 			}
 			out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
-			if strings.Contains(out, "Settle it with pay") {
-				t.Errorf("constable %q is told to settle a rate he collects:\n%s", a.DisplayName, out)
+			has := strings.Contains(out, "## Town rate")
+			if has && !isConstableSnapshot(a) {
+				t.Errorf("%q is not a constable and is told the rate pays their wage:\n%s", a.DisplayName, out)
+			}
+			if has {
+				seen = true
 			}
 		})
+	}
+	if !seen {
+		t.Fatal("no scenario rendered the constable's rate section — the invariant is vacuous")
 	}
 }

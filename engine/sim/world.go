@@ -230,18 +230,6 @@ type WorldSettings struct {
 	FarmUpkeepFloor          int
 	FarmUpkeepCoinsPerShovel int
 
-	// Town rate (LLM-557). Each game-day every owned business owes the constable
-	// TownRateCoinsPerDay in rate, accrued on the daily rotation boundary
-	// (assessTownRate) and capped at TownRateMaxOwed so a keeper he cannot catch on
-	// shift never faces a shock bill. Unlike the farm-upkeep levy this one carries a
-	// per-object accumulator (VillageObject.RateOwed) — "have you paid today" is a
-	// record, not a stock — so neither knob rides the Snapshot: the perception cues
-	// read the stored balance, not a derived obligation. Live-tunable (umbilical);
-	// TownRateCoinsPerDay<=0 disables further accrual (the off-switch, mirroring
-	// FarmUpkeepCoinsPerShovel==0) but does NOT forgive outstanding arrears.
-	TownRateCoinsPerDay int
-	TownRateMaxOwed     int
-
 	// Estate rate (LLM-652). Once a game-day every resident NPC pays
 	// EstateRatePctPerDay percent of the coin held above EstateRateFloor into the
 	// town chest (WorldEnvironment.TownChest), collected when the constable calls

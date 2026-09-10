@@ -413,7 +413,6 @@ func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 		Amount:              fmt.Sprint(row.Payload["amount"]),
 		CounterpartyActorID: fmt.Sprint(row.Payload["recipient_actor_id"]),
 		CounterpartyName:    fmt.Sprint(row.Payload["recipient"]),
-		RateSettled:         fmt.Sprint(row.Payload["rate_settled"]),
 		LodgingGrant:        fmt.Sprint(row.Payload["lodging_grant"]),
 	}}}
 	if err := seeded.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
