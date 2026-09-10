@@ -256,7 +256,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 640.0, 320.0, "admin",
 			"Old Well", "closed", "alice", nil,
-			(*int)(nil), (*int)(nil), 0, []string{"vendor"}, 120, nil, 0, int64(5), 0,
+			(*int)(nil), (*int)(nil), 0, []string{"vendor"}, 120, nil, int64(5), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -264,7 +264,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		WithArgs(
 			uuidObj2, uuidAssetBench, "variant-1", 1000.0, 500.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(5), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(5), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -446,7 +446,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OrphanCheckViolation(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(3), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(3), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -484,7 +484,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OwnerNullVsValue(t *testing.T) {
 		WithArgs(
 			uuidOverlay, uuidAssetLamp, "lit", 100.0, 100.0, "",
 			"", "open", "alice", uuidObj1,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(2), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(2), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -731,7 +731,7 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(9), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(9), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -835,7 +835,7 @@ func TestVillageObjectsRepo_SaveSnapshot_NilRefreshSkipped(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(4), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(4), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
@@ -875,7 +875,7 @@ func TestVillageObjectsRepo_SaveSnapshot_RefreshNextvalError(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(1), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(1), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
@@ -906,7 +906,7 @@ func TestVillageObjectsRepo_SaveSnapshot_RefreshUpsertError(t *testing.T) {
 		WithArgs(
 			uuidObj1, uuidAssetWell, "", 0.0, 0.0, "", "",
 			"open", nil, nil,
-			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, 0, int64(1), 0,
+			(*int)(nil), (*int)(nil), 0, []string{}, 0, nil, int64(1), 0,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM village_object stale`).
