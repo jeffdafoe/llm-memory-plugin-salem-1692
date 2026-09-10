@@ -223,9 +223,10 @@ func coinNothingBackTail(accountedCount int, suffix string) string {
 
 // coinDueClosing is the load-bearing half of the due clause: it says the two things
 // the counts cannot — that the coin settled when it was handed over, and that no
-// goods were ever owed against it. It deliberately echoes townRatePaidFactText's
-// closing, since the same model reads one as a recollection and the other as a
-// memory and they should not disagree in wording about a thing neither is guessing
+// goods were ever owed against it. It deliberately echoes the closing the levy's
+// relationship fact carried (now sim.estateRateFactClosing), since the same model
+// reads one as a recollection and the other as a memory and they should not
+// disagree in wording about a thing neither is guessing
 // at. Terminal, which is why a composed clause puts the due portion last.
 const coinDueClosing = " — settled as it was handed over, and no goods owed back"
 
@@ -273,10 +274,10 @@ func receivedDirection(d sim.CoinDealings) coinDirection {
 // apart.
 //
 // A direction CAN hold several kinds, and this is easy to talk yourself out of: no
-// single payment carries two kinds, and settleTownRate is reachable only from the
-// bare-coin Pay command, which mints no ledger entry. But that is a constraint on
-// payments, not on directions — a keeper who pays the constable his town rate and
-// also buys something off him has both on the same direction of the same pair, and
+// single payment carries two kinds (a due was only ever a bare-coin pay, which mints
+// no ledger entry). But that is a constraint on payments, not on directions — a
+// keeper whose record still holds a settled town-rate due and who has since bought
+// something off the constable has both on the same direction of the same pair, and
 // since LLM-613 an employer who both buys from a man and pays him wages has both of
 // those. So every portion present is named. Reporting only one would leave the bulk
 // of an ordinary trading relationship unaccounted for in the one section built to

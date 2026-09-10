@@ -198,38 +198,20 @@ func handlePaidActionLog(w *sim.World, evt sim.Event) {
 	if paid.ForText != "" {
 		payload["for"] = paid.ForText
 	}
-	// LLM-607: how much of the payment was the town's due. Written only when a
-	// rate actually settled, so the key's PRESENCE is the classification and every
-	// ordinary purchase row is unchanged.
-	//
-	// This is what lets a reader downstream tell a levy from a purchase. The `for`
-	// text beside it is the payer's own words ("Day's rate on the James Farm") and
-	// reads as an order placed and never filled — the dream ledger consolidated
-	// nine of those into Moses James's character as a standing grievance, and he
-	// collected eight coins of refunds on it. The engine knows better and now says
-	// so in the durable record, not only in the relationship fact.
-	//
-	// It is also what makes the coin record's due marker survive a restart: the
-	// boot seed reads these rows back, so a classification the live tally holds but
-	// the payload omits would quietly disappear on the next deploy.
-	if paid.RateSettled > 0 {
-		payload["rate_settled"] = paid.RateSettled
-	}
 	// LLM-572: credit the in-memory coin tally from the same place, and under the
 	// same conditions, as the durable row it is seeded from. Keeping the two writes
 	// together is what guarantees the live tally and a post-restart seed agree.
 	//
-	// A bare pay that settled no rate is Unstated, not a purchase (LLM-612). Coin
-	// can leave this path for a wage, a gift, a tip or a hand-to-hand debt as
-	// readily as for goods, and the only thing distinguishing them is the payer's
-	// own `for` text — the untrusted half this record refuses. Calling them all
-	// purchases to tidy up the render would be the exact mistake in the other
-	// direction.
-	kind := sim.CoinPaymentUnstated
-	if paid.RateSettled > 0 {
-		kind = sim.CoinPaymentForDue
-	}
-	w.RecordCoinPaid(paid.BuyerID, paid.SellerID, paid.Amount, paid.At, kind)
+	// A bare pay is Unstated, not a purchase (LLM-612). Coin can leave this path for
+	// a wage, a gift, a tip or a hand-to-hand debt as readily as for goods, and the
+	// only thing distinguishing them is the payer's own `for` text — the untrusted
+	// half this record refuses. Calling them all purchases to tidy up the render
+	// would be the exact mistake in the other direction. (Until LLM-655 this path
+	// also stamped `rate_settled` and recorded a due when the coin discharged the
+	// LLM-557 town rate; that levy is retired, and the estate rate that replaced it
+	// is engine-collected and never passes through here. Rows already carrying the
+	// marker still read back as dues at boot.)
+	w.RecordCoinPaid(paid.BuyerID, paid.SellerID, paid.Amount, paid.At, sim.CoinPaymentUnstated)
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     paid.BuyerID,
 		OccurredAt:  paid.At,
@@ -312,9 +294,9 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	// LLM-572: credit the coin tally. Amount is 0 on a pure barter, which
 	// RecordCoinPaid drops — no coin passed, and this is a record of coin.
 	//
-	// Never a due (LLM-607): settleTownRate is reached only from the bare-coin Pay
-	// command, so a ledger settlement is always a purchase. This is goods for coin
-	// and it has a delivery against it, which is the very thing a due does not.
+	// Never a due (LLM-607): a ledger settlement is always a purchase. This is
+	// goods for coin and it has a delivery against it, which is the very thing a
+	// due does not.
 	// LLM-612 turns that reasoning into the classification it always implied — this
 	// is the one settlement path the engine can call a purchase on its own evidence,
 	// without reading a word the payer wrote. The durable half is payload.ledger_id

@@ -521,9 +521,10 @@ func TestGoodsMarkersAreWrittenOnlyByTheEngine(t *testing.T) {
 
 // The kinds a row can present, at the boundaries coinPaymentKindFromRow decides on.
 //
-// The both-markers case cannot arise today — settleTownRate is reachable only from
-// the bare-coin Pay command, which mints no ledger entry — so the precedence is
-// pinned against a future path that produced both (code_review). The due wins: it is
+// The both-markers case has never arisen — the due marker's only writer was the
+// retired town rate's bare-coin settle, which minted no ledger entry, and since
+// LLM-655 nothing writes it at all — so the precedence is pinned against a future
+// path that produced both (code_review). The due wins: it is
 // what stops a levy reading as an order placed and never filled, while a purchase
 // left unnamed costs only the register.
 //

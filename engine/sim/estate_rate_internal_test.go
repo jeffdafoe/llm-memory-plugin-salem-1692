@@ -12,7 +12,9 @@ import (
 // on, the collection at the constable's door (through the beat credit and the
 // exported command), the once-a-day stamp, the records, and the wage the chest
 // pays. Reaches the functions directly against a hand-built World, mirroring
-// town_rate_internal_test.go.
+// farm_upkeep_internal_test.go. The rateable-business and constable predicates
+// the levy is scoped by are covered at the bottom (moved here from the retired
+// LLM-557 town rate in LLM-655).
 
 func TestEstateRateDue(t *testing.T) {
 	cases := []struct {

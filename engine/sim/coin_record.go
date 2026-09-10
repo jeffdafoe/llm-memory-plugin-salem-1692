@@ -126,7 +126,7 @@ type CoinPaymentKind uint8
 
 const (
 	// CoinPaymentUnstated is coin whose settlement the engine cannot account for:
-	// the bare `pay` command, minus the town rate. In the live village this is a
+	// the bare `pay` command. In the live village this is a
 	// wage settled by hand, a gift, a tip, a hand-to-hand debt — about one payment
 	// in eight. The engine genuinely does not know which, and the render says
 	// nothing about purpose rather than guessing.
@@ -186,9 +186,14 @@ const (
 	CoinPaymentForGoods
 
 	// CoinPaymentForDue is coin that discharged an obligation rather than buying
-	// anything (LLM-607) — today only the town rate, since that is the only levy a
-	// villager pays by hand. A due is settled the moment it is handed over and owes
-	// no delivery, which is the fact the record could not state before.
+	// anything (LLM-607). A due is settled the moment it is handed over and owes
+	// no delivery, which is the fact the record could not state before. Since
+	// LLM-655 nothing live produces it: the LLM-557 town rate — the one levy a
+	// villager paid by hand — is retired, and the estate rate that replaced it is
+	// engine-collected into the town chest and never enters this record. The kind
+	// survives for the durable `rate_settled` rows already in agent_action_log,
+	// which the boot seed still classifies for as long as they sit inside the
+	// recall window.
 	CoinPaymentForDue
 
 	// CoinPaymentForWork is a wage: an LLM-26 labor contract that settled Completed,
@@ -308,9 +313,9 @@ func (w *World) CoinRecordWindow() time.Duration {
 //     a lost append loses the payment and its classification together; the divergence
 //     is always a pair that understates, never one that misclassifies. Pinned by
 //     cascade.TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning.
-//     The one path that yields a payment WITHOUT a marker is a bare-coin row that
-//     settled no rate, which is CoinPaymentUnstated by construction rather than by
-//     loss — see CoinPaymentRow.RateSettled and .LedgerID.
+//     The one path that yields a payment WITHOUT a marker is a bare-coin row,
+//     which is CoinPaymentUnstated by construction rather than by loss — see
+//     CoinPaymentRow.RateSettled and .LedgerID.
 //
 //   - a visitor's payment credits the tally but reaches the durable log with a
 //     BLANKED actor id (LLM-573), so the seed cannot key it to a pair. That one is
@@ -581,7 +586,7 @@ func CloneCoinRecord(src map[ActorID]map[ActorID]*CoinPairRecord) map[ActorID]ma
 // a horizon-predicate DELETE inside its checkpoint; this one has no table to sweep,
 // so it sweeps itself.
 //
-// Called once per game-day from checkAndRotate, beside assessTownRate — the same
+// Called once per game-day from checkAndRotate, beside assessFarmUpkeep — the same
 // durable rotation boundary, and far more often than the bound needs.
 func sweepCoinRecord(w *World, now time.Time) {
 	if w == nil || w.CoinRecord == nil {
@@ -601,7 +606,7 @@ func sweepCoinRecord(w *World, now time.Time) {
 }
 
 // SweepCoinRecord wraps the reclamation pass as a Command so the rotation driver
-// can run it on the world goroutine. Mirrors ApplyTownRate / ApplyFarmUpkeep.
+// can run it on the world goroutine. Mirrors ApplyFarmUpkeep.
 func SweepCoinRecord(now time.Time) Command {
 	return Command{Fn: func(w *World) (any, error) {
 		sweepCoinRecord(w, now)
@@ -707,14 +712,15 @@ type CoinPaymentRow struct {
 // (LLM-613). That makes the wage the one kind the seed cannot get wrong, and it is
 // fully retroactive — every `labored` row ever written is a completed wage.
 //
-// For a `paid` row the due check runs first. No two markers can co-occur — settleTownRate is
-// reachable only from the bare-coin Pay command, which mints no ledger entry, and
-// lodger_rebook writes neither of the other two — but if a future path ever wrote a
-// due alongside a goods marker, the due is the load-bearing one: it is what stops a
-// levy reading as an order placed and never filled, which is the defect LLM-607 was
-// built for. A malformed rate_settled reads as "not a due" rather than failing the
-// row, and a row with no marker at all degrades to Unstated — the wording the
-// record used before any classification existed.
+// For a `paid` row the due check runs first. The `rate_settled` marker is historical
+// since LLM-655 (the retired town rate was its only writer, from the bare-coin Pay
+// command, which mints no ledger entry), so no two markers co-occur on any row ever
+// written — but if a future path ever wrote a due alongside a goods marker, the due
+// is the load-bearing one: it is what stops a levy reading as an order placed and
+// never filled, which is the defect LLM-607 was built for. A malformed rate_settled
+// reads as "not a due" rather than failing the row, and a row with no marker at all
+// degrades to Unstated — the wording the record used before any classification
+// existed.
 //
 // The two goods markers name different settlements of the same shape, so they share
 // an arm rather than a kind: a pay-with-item entry that settled ACCEPTED, and a

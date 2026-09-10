@@ -30,11 +30,11 @@ import (
 // posture), not a 404.
 //
 // LLM-559 widened it from a PLACEMENT roster to a STATE roster: it also carries
-// the mutable per-object runtime counters (wear, rate_owed, hearth_lit_until).
+// the mutable per-object runtime counters (wear, equipment_use, hearth_lit_until).
 // Those had no live read at all, only the checkpointed `zbbs` DB — which lags by
 // up to ~60s and so contradicts the standing rule that live Salem state is read
 // off the umbilical. It left the operator tuning blind in one direction:
-// /stall-wear/set and /town-rate/set change the thresholds live and /settings
+// /stall-wear/set and /settings/set change the thresholds live and /settings
 // reports them, but the accrued value being compared against them was invisible.
 //
 // `available_quantity` is NOT among them, though the ticket floated it. The
@@ -99,10 +99,6 @@ type UmbilicalObjectDTO struct {
 	// repair" and "not a wearable business at all"; owner_actor_id + a
 	// `business` tag distinguish them.
 	Wear int `json:"wear,omitempty"`
-
-	// RateOwed is unpaid town-rate arrears on an owned business (LLM-557),
-	// capped at town_rate_max_owed. Omitted at 0 (paid up, or not rateable).
-	RateOwed int `json:"rate_owed,omitempty"`
 
 	// EquipmentUse is the accrued deep-maintenance demand on an owned business
 	// (LLM-648), reset only by the wright's bought equipment_service; due at
@@ -214,7 +210,6 @@ func umbilicalObjectsFromSnapshot(snap *sim.Snapshot, filter objectsFilter) Umbi
 			AttachedTo:      string(o.AttachedTo),
 			StructureBacked: backed,
 			Wear:            o.Wear,
-			RateOwed:        o.RateOwed,
 			EquipmentUse:    o.EquipmentUse,
 			HearthLitUntil:  ptrTimeIfSet(o.HearthLitUntil),
 		}

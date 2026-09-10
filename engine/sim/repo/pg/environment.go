@@ -239,10 +239,6 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.FarmUpkeepFloor = parseIntSetting(values, "farm_upkeep_floor", sim.DefaultFarmUpkeepFloor)
 	s.FarmUpkeepCoinsPerShovel = parseIntSetting(values, "farm_upkeep_coins_per_shovel", sim.DefaultFarmUpkeepCoinsPerShovel)
 
-	// Town rate (LLM-557).
-	s.TownRateCoinsPerDay = parseIntSetting(values, "town_rate_coins_per_day", sim.DefaultTownRateCoinsPerDay)
-	s.TownRateMaxOwed = parseIntSetting(values, "town_rate_max_owed", sim.DefaultTownRateMaxOwed)
-
 	// Estate rate (LLM-652).
 	s.EstateRateFloor = parseIntSetting(values, "estate_rate_floor", sim.DefaultEstateRateFloor)
 	s.EstateRatePctPerDay = parseIntSetting(values, "estate_rate_pct_per_day", sim.DefaultEstateRatePctPerDay)

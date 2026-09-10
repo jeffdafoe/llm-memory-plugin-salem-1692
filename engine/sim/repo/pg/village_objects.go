@@ -56,7 +56,7 @@ SELECT
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
     loiter_offset_x, loiter_offset_y, available_quantity, tags, wear,
-    hearth_lit_until, rate_owed, equipment_use
+    hearth_lit_until, equipment_use
 FROM village_object`
 
 // upsertSQLVO writes one VillageObject row. snapshot_gen is included
@@ -78,12 +78,12 @@ INSERT INTO village_object (
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
     loiter_offset_x, loiter_offset_y, available_quantity, tags,
-    wear, hearth_lit_until, rate_owed, snapshot_gen, equipment_use
+    wear, hearth_lit_until, snapshot_gen, equipment_use
 ) VALUES (
     $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
     $8, $9, $10::uuid,
     $11, $12, $13, $14,
-    $15, $16, $17, $18, $19
+    $15, $16, $17, $18
 )
 ON CONFLICT (id) DO UPDATE SET
     asset_id           = EXCLUDED.asset_id,
@@ -101,7 +101,6 @@ ON CONFLICT (id) DO UPDATE SET
     tags               = EXCLUDED.tags,
     wear               = EXCLUDED.wear,
     hearth_lit_until   = EXCLUDED.hearth_lit_until,
-    rate_owed          = EXCLUDED.rate_owed,
     equipment_use      = EXCLUDED.equipment_use,
     snapshot_gen       = EXCLUDED.snapshot_gen`
 
@@ -368,14 +367,13 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			tags           []string
 			wear           int
 			hearthLitUntil *time.Time // NULL when the fire has never been lit (zero time in-memory)
-			rateOwed       int
 			equipmentUse   int
 		)
 		if err := rows.Scan(
 			&id, &assetID, &currentState, &x, &y, &placedBy, &displayName,
 			&entryPolicy, &ownerActorID, &attachedTo,
 			&loiterX, &loiterY, &availableQty, &tags, &wear,
-			&hearthLitUntil, &rateOwed, &equipmentUse,
+			&hearthLitUntil, &equipmentUse,
 		); err != nil {
 			return nil, fmt.Errorf("pg village_objects LoadAll scan: %w", err)
 		}
@@ -432,7 +430,6 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			Tags:              tags,
 			AvailableQuantity: availableQty,
 			Wear:              wear,
-			RateOwed:          rateOwed,
 			EquipmentUse:      equipmentUse,
 			HearthLitUntil:    timeOrZero(hearthLitUntil),
 			// Refreshes populated below by loadAllRefreshes.
@@ -642,9 +639,8 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			tags,                    // $14 tags (text[])
 			obj.Wear,                // $15 wear
 			hearthArg,               // $16 hearth_lit_until (nullable — NULL for a never-lit fire)
-			obj.RateOwed,            // $17 rate_owed (LLM-557 town-rate arrears)
-			gen,                     // $18 snapshot_gen
-			obj.EquipmentUse,        // $19 equipment_use (LLM-648 deep-maintenance demand)
+			gen,                     // $17 snapshot_gen
+			obj.EquipmentUse,        // $18 equipment_use (LLM-648 deep-maintenance demand)
 		); err != nil {
 			return fmt.Errorf("pg village_objects SaveSnapshot: upsert id=%s: %w", obj.ID, err)
 		}

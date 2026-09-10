@@ -8,8 +8,9 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// town_rate_settled_golden_test.go — LLM-607. The situation a keeper who has paid
-// the town rate every day for a week stands with the constable who collected it.
+// coin_due_history_golden_test.go — LLM-607, in its LLM-655 shape. The situation a
+// keeper whose coin record holds a week of settled dues stands with the constable
+// who collected them.
 //
 // The companion to peer_disputes_a_payment_never_made, from the OTHER side of the
 // same pair. That scenario pins what the constable is told; this one pins what the
@@ -24,35 +25,36 @@ import (
 // Nothing in Moses's scene was wrong. His arithmetic was exact and the durable log
 // agreed with it to the coin — LLM-572 had already stopped the money being invented.
 // What his scene did not contain was any statement that a rate paid is a rate
-// settled. The town-rate cue was suppressed the moment he squared up, so the only
-// thing left about Marsh was a record of nine single coins going one way with
-// nothing coming back, which is the shape of nine orders placed and never filled.
+// settled: the only thing about Marsh was a record of nine single coins going one
+// way with nothing coming back, which is the shape of nine orders placed and never
+// filled.
 //
-// Two halves of the fixture are load-bearing:
-//
-//   - RateOwed is 0. Before this ticket buildTownRateKeeper returned nil on exactly
-//     that, so the settled state — the state a daily payer is in nearly always — was
-//     the one state the scene never described.
-//   - The eight payments carry Due. Without it the coin line reads "you have paid
-//     Gideon Marsh a coin 8 times, and nothing has come back the other way", which
-//     is a true sentence that supports a false conclusion.
+// The coin-a-day town rate is retired (LLM-655) — the estate rate that replaced it
+// is engine-collected and never enters the coin record — but the dues already on
+// record survive for as long as they sit inside the recall window, and the coin
+// line has to keep reading them right. That is what this fixture pins now: the eight
+// payments carry Due, and without it the line reads "you have paid Gideon Marsh a
+// coin 8 times, and nothing has come back the other way", which is a true sentence
+// that supports a false conclusion. The keeper-side rate cue that LLM-607 also added
+// is gone with the levy; the keeper's scene carries no rate section at all.
 
 func init() {
 	perceptionScenarios = append(perceptionScenarios,
 		perceptionScenario{
-			name: "keeper_square_on_a_week_of_town_rate",
-			summary: "LLM-607: Moses James, who has paid the town rate on eight straight days, stands at his farm with " +
-				"Constable Gideon Marsh. The farm owes nothing. The golden pins the two lines that keep eight settled " +
-				"levies from reading as eight unpaid debts: the town-rate cue saying the rate is paid and done with " +
-				"(which used to vanish entirely once he was square), and the coin-dealings line naming the eight coins " +
-				"as the town's due rather than as money that never came back. Live shape, 2026-08-06 — on the reading " +
-				"this fixture reproduces, the constable refunded eight of the nine coins he had collected.",
-			build: keeperSquareOnAWeekOfTownRate,
+			name: "keeper_with_a_week_of_settled_dues_on_record",
+			summary: "LLM-607 (LLM-655 shape): Moses James, whose coin record holds eight single coins of the retired " +
+				"town rate paid to Constable Gideon Marsh over eight days, stands at his farm with him. The golden pins " +
+				"the coin-dealings line naming the eight coins as the town's due — settled as handed over, nothing owed " +
+				"back — rather than as money that never came back, and pins that the keeper's scene carries NO rate " +
+				"section: the levy is engine-collected now and there is nothing to ask of him. Live shape, 2026-08-06 — " +
+				"on the reading this fixture guards against, the constable refunded eight of the nine coins he had " +
+				"collected.",
+			build: keeperWithAWeekOfSettledDuesOnRecord,
 		},
 	)
 }
 
-func keeperSquareOnAWeekOfTownRate() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+func keeperWithAWeekOfSettledDuesOnRecord() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		marshID = sim.ActorID("gideon")
 		mosesID = sim.ActorID("moses")
@@ -122,8 +124,6 @@ func keeperSquareOnAWeekOfTownRate() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 				DisplayName:  "James Farm",
 				OwnerActorID: mosesID,
 				Tags:         []string{sim.TagBusiness},
-				// Square. This is the branch that used to render nothing at all.
-				RateOwed: 0,
 			},
 		},
 		CoinRecord: map[sim.ActorID]map[sim.ActorID]*sim.CoinPairRecord{
@@ -139,18 +139,19 @@ func keeperSquareOnAWeekOfTownRate() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 // mechanism here — there is no tool call and no state change to check.
 func TestSettledRateReadsAsSettled(t *testing.T) {
 	got := renderScenario(perceptionScenario{
-		name:  "keeper_square_on_a_week_of_town_rate",
-		build: keeperSquareOnAWeekOfTownRate,
+		name:  "keeper_with_a_week_of_settled_dues_on_record",
+		build: keeperWithAWeekOfSettledDuesOnRecord,
 	})
-	for _, want := range []string{
-		// The town-rate cue, which used to be suppressed entirely once he squared up.
-		"The rate on the James Farm stands settled — nothing is owing on it, and nothing is owed back.",
-		// The coin record, saying what eight single coins one way actually were.
-		"You have paid Constable Gideon Marsh a coin 8 times, all of it the town's due — settled as it was handed over, and no goods owed back.",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("keeper's prompt is missing the settled reading.\nwant line: %s\n--- got ---\n%s", want, got)
-		}
+	// The coin record, saying what eight single coins one way actually were.
+	const want = "You have paid Constable Gideon Marsh a coin 8 times, all of it the town's due — settled as it was handed over, and no goods owed back."
+	if !strings.Contains(got, want) {
+		t.Errorf("keeper's prompt is missing the settled reading.\nwant line: %s\n--- got ---\n%s", want, got)
+	}
+	// The keeper's side of the levy is the engine debit and his own ring, never a
+	// section (LLM-655) — the constable's line rendered here would tell a farmer the
+	// town pays HIS wage.
+	if strings.Contains(got, "## Town rate") {
+		t.Errorf("keeper's prompt carries a rate section:\n%s", got)
 	}
 	// The clause the due replaces. On a pure-due record it is a true sentence that
 	// invites the false conclusion, so its ABSENCE is part of the fix rather than

@@ -275,17 +275,7 @@ func TestActionLogSeamsClassifyThePaymentKind(t *testing.T) {
 			want: sim.CoinPaymentForGoods,
 		},
 		{
-			name: "a bare pay that settled a rate is a due",
-			emit: func(world *sim.World, at time.Time) {
-				handlePaidActionLog(world, &sim.Paid{
-					BuyerID: "hannah", SellerID: "bob", Amount: 1,
-					ForText: "Day's rate", At: at, RateSettled: 1,
-				})
-			},
-			want: sim.CoinPaymentForDue,
-		},
-		{
-			name: "a bare pay that settled nothing stays unstated",
+			name: "a bare pay stays unstated",
 			emit: func(world *sim.World, at time.Time) {
 				handlePaidActionLog(world, &sim.Paid{
 					BuyerID: "hannah", SellerID: "bob", Amount: 4,
@@ -1214,7 +1204,7 @@ func TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning(t *testi
 	invokeOnWorld(t, w, func(world *sim.World) {
 		handlePaidActionLog(world, &sim.Paid{
 			BuyerID: "hannah", SellerID: "bob", Amount: 1,
-			ForText: "Day's rate", At: at, RateSettled: 1,
+			ForText: "a coin for your trouble", At: at,
 		})
 	})
 
@@ -1231,8 +1221,8 @@ func TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning(t *testi
 		// The live tally keeps it. A rejected append does not roll the memory back,
 		// and deliberately so — rolling back would need the enqueue to be
 		// synchronous, i.e. the world goroutine blocking on Postgres.
-		if d.PaidCount != 1 || d.PaidDueCount != 1 {
-			t.Errorf("in-memory tally = %+v, want the payment kept and still marked a due", d)
+		if d.PaidCount != 1 || d.PaidDueCount != 0 || d.PaidGoodsCount != 0 {
+			t.Errorf("in-memory tally = %+v, want the payment kept, unstated", d)
 		}
 	})
 
@@ -1249,8 +1239,8 @@ func TestHandlePaidActionLog_RejectedAppendLosesThePaymentNotItsMeaning(t *testi
 	if d.PaidCount != 1 {
 		t.Fatalf("replay = %+v, want only the durable purchase", d)
 	}
-	if d.PaidDueCount != 0 {
-		t.Errorf("a replay without the rejected row shows a due = %+v — the loss must take the whole payment", d)
+	if d.PaidGoodsCount != 1 {
+		t.Errorf("a replay without the rejected row = %+v — the loss must take the whole payment and leave the durable purchase", d)
 	}
 }
 
@@ -1679,16 +1669,18 @@ func TestHandlePaidActionLog_VisitorPaymentIsTalliedButNotAttributable(t *testin
 	})
 }
 
-// The settlement classification reaches BOTH the durable payload and the live tally
-// from this one subscriber (LLM-607), which is what keeps them agreeing across a
-// restart — the tally is seeded from the payload, so a stamp written to one and not
-// the other changes the record silently on the next deploy.
+// The classification reaches BOTH the durable payload and the live tally from this
+// one subscriber (LLM-607), which is what keeps them agreeing across a restart — the
+// tally is seeded from the payload, so a marker written to one and not the other
+// changes the record silently on the next deploy.
 //
-// rate_settled is written only when a rate actually settled. Its presence is the
-// classification, so an ordinary purchase must carry no key at all rather than a
-// zero: a reader downstream distinguishes a levy from a purchase by asking whether
-// the field is there.
-func TestHandlePaidActionLog_StampsTheRateSettlement(t *testing.T) {
+// Since LLM-655 a bare pay never carries a marker: the `rate_settled` key was written
+// only when the payment discharged the retired LLM-557 town rate, and its PRESENCE
+// was the classification. So both rows here must carry no key at all — not a zero —
+// and the tally must hold both payments as Unstated, whatever the payer said they
+// were for. A future path that stamps the key again, or classifies a bare pay from
+// its `for` text, fails here.
+func TestHandlePaidActionLog_BarePayCarriesNoDueMarker(t *testing.T) {
 	w, stop := buildActionLogCascadeWorld(t)
 	defer stop()
 
@@ -1699,11 +1691,11 @@ func TestHandlePaidActionLog_StampsTheRateSettlement(t *testing.T) {
 
 	at := time.Now().UTC()
 	invokeOnWorld(t, w, func(world *sim.World) {
+		// The payer's words call it a rate; the record does not read them.
 		handlePaidActionLog(world, &sim.Paid{
 			BuyerID: "hannah", SellerID: "bob", Amount: 1,
-			ForText: "Day's rate on the James Farm", At: at, RateSettled: 1,
+			ForText: "Day's rate on the James Farm", At: at,
 		})
-		// A purchase for the same coin, from the same pair, on the same path.
 		handlePaidActionLog(world, &sim.Paid{
 			BuyerID: "hannah", SellerID: "bob", Amount: 1,
 			ForText: "milk", At: at.Add(time.Minute),
@@ -1714,11 +1706,10 @@ func TestHandlePaidActionLog_StampsTheRateSettlement(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("recorded %d durable rows, want 2: %+v", len(rows), rows)
 	}
-	if rows[0].Payload["rate_settled"] != 1 {
-		t.Errorf("durable payload = %+v, want rate_settled 1", rows[0].Payload)
-	}
-	if _, ok := rows[1].Payload["rate_settled"]; ok {
-		t.Errorf("a purchase carries rate_settled = %+v — presence is the classification", rows[1].Payload)
+	for i, row := range rows {
+		if _, ok := row.Payload["rate_settled"]; ok {
+			t.Errorf("row %d carries rate_settled = %+v — no live path writes the due marker", i, row.Payload)
+		}
 	}
 
 	invokeOnWorld(t, w, func(world *sim.World) {
@@ -1730,8 +1721,8 @@ func TestHandlePaidActionLog_StampsTheRateSettlement(t *testing.T) {
 		if d.PaidCount != 2 {
 			t.Fatalf("paid = %+v, want both payments tallied", d)
 		}
-		if d.PaidDueCount != 1 || d.PaidDueTotal != 1 {
-			t.Errorf("due = %d / %d, want 1 / 1 — the milk is not a levy", d.PaidDueCount, d.PaidDueTotal)
+		if d.PaidDueCount != 0 || d.PaidGoodsCount != 0 || d.PaidWorkCount != 0 {
+			t.Errorf("tally = %+v, want both payments unstated — a bare pay is classified by no marker and never by its for-text", d)
 		}
 	})
 }
