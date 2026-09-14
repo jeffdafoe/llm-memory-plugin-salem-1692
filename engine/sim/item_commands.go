@@ -129,6 +129,12 @@ func sellErrandCredit(from, to *Actor, kind ItemKind) *TradeErrand {
 	if tr.Counterparty == "" || to.WorkStructureID != tr.Counterparty {
 		return nil
 	}
+	// A peddler's shipment is for one keeper by id (LLM-656): at a structure two
+	// keepers share, goods handed to the shop-mate reached the building but not
+	// the man they were sent for, and must not settle the errand.
+	if tr.Keeper != "" && to.ID != tr.Keeper {
+		return nil
+	}
 	return tr
 }
 

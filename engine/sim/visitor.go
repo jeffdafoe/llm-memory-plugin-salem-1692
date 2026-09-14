@@ -325,7 +325,9 @@ func visitorSpriteName(vs *VisitorState) string {
 		return ""
 	}
 	if vs.Trade != nil {
-		if vs.Trade.Direction == TradeDirectionSell {
+		// The city factor has his own look; a shortage peddler (LLM-656) is a
+		// country dealer and draws from the trader pool by his good, like a buyer.
+		if vs.Trade.Direction == TradeDirectionSell && !vs.Trade.Peddler {
 			return FactorSpriteName
 		}
 		if len(merchantBuyerSpriteNames) == 0 {
@@ -389,6 +391,7 @@ type VisitorCascadeTelemetry struct {
 	DespawnsStarted  int // visitors whose despawn walk was issued this tick
 	CleanedUp        int // visitor rows removed past ExpiresAt + grace
 	Spawned          int // new visitors created (0 or 1 per tick)
+	SpawnedPeddler   int // 1 if the spawn was a shortage peddler (LLM-656), counted within Spawned
 	RoundsPaced      int // stationary travelers woken this tick to reconsider their rounds (LLM-379 pacing)
 	CircuitToLodging int // visitors that turned to the lodging phase this tick (dusk)
 	SpawnSkipChance  int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
@@ -741,6 +744,20 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	}
 	r := inputsRandOrDefault(inputs.Rand)
 	roll := rollVisitorSpawn(w, r)
+	// Shortage peddler (LLM-656): a keeper's input shortage that has stood
+	// ShortagePeddlerDays sweeps with no village supplier is answered from out of
+	// town. It takes the tick's one spawn ahead of the rolls — a standing
+	// shortage is a job to do, the way the corrective merchant is — and binds its
+	// own sell errand here (the missing good, the short keeper's shop), so the
+	// merchant branch below skips the roll-direction binding. LastPeddlerAt is
+	// stamped only once the spawn commits, so a bail-out (edge tile, ID mint)
+	// leaves the shortage due to try again next tick.
+	shortageIdx := -1
+	var shortageErrand *TradeErrand
+	if i, errand, ok := dueShortagePeddler(w, inputs.Now); ok {
+		shortageIdx, shortageErrand = i, errand
+		roll = visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: TradeDirectionSell, Shortage: true}
+	}
 	if roll.Class == visitorSpawnNone {
 		t.SpawnSkipChance = 1
 		t.SpawnSkipReason = roll.Reason
@@ -767,7 +784,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	var returnerID string
 	var dueReturner *RecurringVisitor
 	var profile visitorProfile
-	if rv, ok := w.pickDueReturner(inputs.Now); ok && !(roll.Class == visitorSpawnMerchant && roll.Corrective) {
+	if rv, ok := w.pickDueReturner(inputs.Now); ok && !(roll.Class == visitorSpawnMerchant && (roll.Corrective || roll.Shortage)) {
 		profile = visitorProfile{Name: rv.Name, Archetype: rv.Archetype, Origin: rv.Origin, Disposition: rv.Disposition}
 		returnerID = string(rv.ID)
 		dueReturner = rv
@@ -796,7 +813,12 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// errand re-binding is a later refinement).
 	var trade *TradeErrand
 	if dueReturner == nil && roll.Class == visitorSpawnMerchant {
-		if bound, ok := bindVisitorErrand(w, r, roll.Direction); ok {
+		if shortageErrand != nil {
+			// A peddler keeps the generated origin: he is a country dealer from a town
+			// down the road with one thing to sell, not a city factor.
+			trade = shortageErrand
+			profile.Archetype = visitorMerchantLabel(w, trade)
+		} else if bound, ok := bindVisitorErrand(w, r, roll.Direction); ok {
 			trade = bound
 			profile.Archetype = visitorMerchantLabel(w, trade)
 			if trade.Direction == TradeDirectionSell {
@@ -870,6 +892,15 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	var pack map[ItemKind]int
 	var purse int
 	switch {
+	case trade != nil && trade.Peddler:
+		// A shortage peddler (LLM-656) carries the one missing good, sized to a
+		// couple of the keeper's batches, and a traveler's purse — no bale, no float.
+		batches := w.Settings.ShortagePeddlerBatches
+		if batches < 1 {
+			batches = DefaultShortagePeddlerBatches
+		}
+		pack, purse = seedPeddlerPack(r, w, trade, batches)
+		trade.ShipmentQty = pack[trade.Good]
 	case trade != nil && trade.Direction == TradeDirectionSell:
 		units := w.Settings.VisitorFactorPackUnits
 		if units < 1 {
@@ -953,6 +984,15 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	}
 	w.Actors[id] = visitor
 	w.outdoorActors[id] = struct{}{}
+	if shortageIdx >= 0 && shortageIdx < len(w.Environment.InputShortages) {
+		// The peddler is committed: start this shortage's cooldown so the next
+		// tick does not send a second one for the same lack (LLM-656).
+		s := &w.Environment.InputShortages[shortageIdx]
+		s.LastPeddlerAt = inputs.Now
+		t.SpawnedPeddler = 1
+		log.Printf("sim/visitor: dispatchSpawn: shortage peddler %q carrying %d %s for %s (short %d day(s))",
+			displayName, pack[trade.Good], trade.Good, shortageLabel(w, *s), s.Days)
+	}
 
 	// Tell every connected client the traveler exists, BEFORE the walk-in below is
 	// issued (LLM-552). add_npc_from_broadcast is the only path that puts an actor
@@ -1605,7 +1645,11 @@ type visitorSpawnRoll struct {
 	// an economic instrument, not a social call — so a due returner must NOT
 	// preempt it the way it preempts a trickle or flavor spawn.
 	Corrective bool
-	Reason     string // telemetry skip reason when Class == visitorSpawnNone
+	// Shortage marks a peddler spawn (LLM-656): the standing-shortage record, not a
+	// roll, decided this tick. Like Corrective it is an economic instrument a due
+	// returner must not preempt.
+	Shortage bool
+	Reason   string // telemetry skip reason when Class == visitorSpawnNone
 }
 
 // rollVisitorSpawn makes the per-tick spawn decision (LLM-626). Two independent
@@ -1773,6 +1817,17 @@ const ProvisionerArchetype = "provisioner"
 func visitorMerchantLabel(w *World, trade *TradeErrand) string {
 	if trade == nil {
 		return ""
+	}
+	if trade.Peddler {
+		// "meat-peddler": the good he carries names the trade (LLM-656), the
+		// buyer-label convention, so the label can never name an untradeable good.
+		// The bare catalog label, not the count noun — "cut of meat-peddler" is no
+		// name for a man.
+		noun := string(trade.Good)
+		if def := w.ItemKinds[trade.Good]; def != nil && def.DisplayLabel != "" {
+			noun = strings.ToLower(def.DisplayLabel)
+		}
+		return noun + "-peddler"
 	}
 	if trade.Direction == TradeDirectionSell {
 		return FactorArchetype

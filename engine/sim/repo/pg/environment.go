@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -58,7 +59,7 @@ func NewEnvironmentRepo(pool Pool) *EnvironmentRepo {
 // world_state_singleton CHECK constraint.
 const loadWorldStateSQL = `
 SELECT phase, last_transition_at, last_rotation_at, weather, atmosphere, last_needs_tick_at,
-       town_chest_coins
+       town_chest_coins, input_shortages
   FROM world_state
  WHERE id = 1`
 
@@ -79,9 +80,9 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
 const upsertWorldStateSQL = `
 INSERT INTO world_state (
     id, phase, last_transition_at, last_rotation_at,
-    weather, atmosphere, last_needs_tick_at, town_chest_coins
+    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages
 ) VALUES (
-    1, $1, $2, $3, $4, $5, $6, $7
+    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb
 )
 ON CONFLICT (id) DO UPDATE SET
     phase              = EXCLUDED.phase,
@@ -90,7 +91,8 @@ ON CONFLICT (id) DO UPDATE SET
     weather            = EXCLUDED.weather,
     atmosphere         = EXCLUDED.atmosphere,
     last_needs_tick_at = EXCLUDED.last_needs_tick_at,
-    town_chest_coins   = EXCLUDED.town_chest_coins`
+    town_chest_coins   = EXCLUDED.town_chest_coins,
+    input_shortages    = EXCLUDED.input_shortages`
 
 // Load reads the world_state singleton + every setting row, returning
 // a fully populated (env, phase, settings) triple. Missing setting rows
@@ -125,11 +127,12 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 		weather, atmosphere string
 		lastNeedsTickAt     *time.Time
 		townChest           int
+		inputShortages      []byte
 	)
 	err := r.pool.QueryRow(ctx, loadWorldStateSQL).Scan(
 		&phase, &lastTransitionAt, &lastRotationAt,
 		&weather, &atmosphere, &lastNeedsTickAt,
-		&townChest,
+		&townChest, &inputShortages,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -148,6 +151,18 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 	}
 	if lastNeedsTickAt != nil {
 		env.LastNeedsTickAt = *lastNeedsTickAt
+	}
+	// Standing input shortages (LLM-656): a jsonb array, '[]' when none. A
+	// malformed document (only reachable from an out-of-band edit) is logged and
+	// read as no shortages — the daily sweep rebuilds the record from live
+	// inventory, so the cost is a delayed peddler, never a failed boot.
+	if len(inputShortages) > 0 {
+		var shortages []sim.InputShortage
+		if err := json.Unmarshal(inputShortages, &shortages); err != nil {
+			log.Printf("pg environment Load: world_state.input_shortages unreadable (%v); starting with none", err)
+		} else {
+			env.InputShortages = shortages
+		}
 	}
 	// Now and LastAtmosphereRefreshAt are restart-lossy / live-clock —
 	// not stored. LoadWorld stamps LoadedAt separately.
@@ -359,6 +374,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.VisitorFactorSaltUnits = parseIntSetting(values, "visitor_factor_salt_units", sim.DefaultVisitorFactorSaltUnits)
 	// LLM-625: thread shipment size per factor visit.
 	s.VisitorFactorThreadUnits = parseIntSetting(values, "visitor_factor_thread_units", sim.DefaultVisitorFactorThreadUnits)
+	// Shortage peddler (LLM-656): days defaults only when the key is absent (0 is
+	// the explicit off-switch), batches re-defaults at the consumer when zero.
+	s.ShortagePeddlerDays = parseIntSetting(values, "shortage_peddler_days", sim.DefaultShortagePeddlerDays)
+	s.ShortagePeddlerBatches = parseIntSetting(values, "shortage_peddler_batches", sim.DefaultShortagePeddlerBatches)
 	// LLM-455: grounded merchant errand — coin-valve band + direction/class weights.
 	s.VisitorCoinBandLow = parseIntSetting(values, "visitor_coin_band_low", 0)
 	s.VisitorCoinBandHigh = parseIntSetting(values, "visitor_coin_band_high", 0)
@@ -646,14 +665,25 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 	if !env.LastNeedsTickAt.IsZero() {
 		lastNeedsArg = env.LastNeedsTickAt
 	}
+	// Standing input shortages (LLM-656) ride as jsonb text; a nil slice writes
+	// '[]' so the NOT NULL column always holds an array.
+	shortages := env.InputShortages
+	if shortages == nil {
+		shortages = []sim.InputShortage{}
+	}
+	shortagesJSON, err := json.Marshal(shortages)
+	if err != nil {
+		return fmt.Errorf("pg environment SaveSnapshot: encode input_shortages: %w", err)
+	}
 	if _, err := tx.Exec(ctx, upsertWorldStateSQL,
-		string(phase),        // $1 phase
-		env.LastTransitionAt, // $2 last_transition_at
-		env.LastRotationAt,   // $3 last_rotation_at
-		env.Weather,          // $4 weather
-		env.Atmosphere,       // $5 atmosphere
-		lastNeedsArg,         // $6 last_needs_tick_at (nullable)
-		env.TownChest,        // $7 town_chest_coins (LLM-652)
+		string(phase),         // $1 phase
+		env.LastTransitionAt,  // $2 last_transition_at
+		env.LastRotationAt,    // $3 last_rotation_at
+		env.Weather,           // $4 weather
+		env.Atmosphere,        // $5 atmosphere
+		lastNeedsArg,          // $6 last_needs_tick_at (nullable)
+		env.TownChest,         // $7 town_chest_coins (LLM-652)
+		string(shortagesJSON), // $8 input_shortages (LLM-656)
 	); err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: upsert: %w", err)
 	}

@@ -78,6 +78,36 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	}
 }
 
+// TestVisitorPlanPeddlerErrandRoundTrip — the shortage peddler's errand fields
+// (LLM-656) ride the plan jsonb: the Peddler flag and the short keeper's id, so a
+// mid-visit redeploy resumes him as a peddler for one keeper, not as a factor
+// bound to a building.
+func TestVisitorPlanPeddlerErrandRoundTrip(t *testing.T) {
+	a := &sim.Actor{
+		ID:        "vstr-ped",
+		Coins:     38,
+		Inventory: map[sim.ItemKind]int{"meat": 4},
+		VisitorState: &sim.VisitorState{
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "meat", Counterparty: "tavern",
+				Keeper: "john", Peddler: true, ShipmentQty: 4, Delivered: 1},
+			SpendBudget: 38,
+		},
+	}
+	js, err := encodeVisitorPlan(a)
+	if err != nil {
+		t.Fatalf("encodeVisitorPlan: %v", err)
+	}
+	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(js), lv); err != nil {
+		t.Fatalf("applyVisitorPlan: %v", err)
+	}
+	tr := lv.VisitorState.Trade
+	if tr == nil || !tr.Peddler || tr.Keeper != "john" || tr.Good != "meat" || tr.Counterparty != "tavern" ||
+		tr.ShipmentQty != 4 || tr.Delivered != 1 {
+		t.Errorf("peddler errand round-trip = %+v; want sell meat @ tavern for john, peddler, 4 shipped / 1 delivered", tr)
+	}
+}
+
 // TestVisitorPlanPayloadSharedWithSanitized — the LLM-545 decode posture for
 // out-of-band plan data: duplicates and blank ids are dropped on the way in (the
 // engine-side writer keeps the set unique, so they can only come from an edited

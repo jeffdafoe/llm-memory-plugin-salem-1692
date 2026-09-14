@@ -146,6 +146,13 @@ type tradeErrandJSON struct {
 	// as it did before.
 	ShipmentQty int `json:"shipment_qty,omitempty"`
 	Delivered   int `json:"delivered,omitempty"`
+	// Peddler marks a shortage peddler's errand (LLM-656). omitempty: a factor's or
+	// buyer's document is unchanged, and a row written before the field existed
+	// decodes to false — a plain sell errand.
+	Peddler bool `json:"peddler,omitempty"`
+	// Keeper is the short keeper a peddler's shipment is for (LLM-656); "" for
+	// the structure-bound factor and buyer errands. omitempty for the same reason.
+	Keeper string `json:"keeper,omitempty"`
 }
 
 // visitorGrantJSON is the on-disk element shape for a persisted RoomAccess grant.
@@ -182,6 +189,8 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 			Settled:      vs.Trade.Settled,
 			ShipmentQty:  vs.Trade.ShipmentQty,
 			Delivered:    vs.Trade.Delivered,
+			Peddler:      vs.Trade.Peddler,
+			Keeper:       string(vs.Trade.Keeper),
 		}
 	}
 	for _, sid := range vs.VisitedBusinesses {
@@ -279,6 +288,8 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 				Settled:      plan.Trade.Settled,
 				ShipmentQty:  shipmentQty,
 				Delivered:    delivered,
+				Peddler:      plan.Trade.Peddler,
+				Keeper:       sim.ActorID(plan.Trade.Keeper),
 			}
 		}
 	}

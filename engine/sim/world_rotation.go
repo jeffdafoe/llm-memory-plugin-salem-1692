@@ -559,4 +559,15 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: coin record sweep: %v", err)
 		}
 	}
+	// Input shortages (LLM-656): once per game-day, re-read which keepers are short
+	// a required input no village supplier holds and advance each standing
+	// shortage's day count — the record the visitor cascade sends a peddler on.
+	// Bound to the daily boundary crossing HERE for the farm-upkeep reasons: the
+	// umbilical force-rotate must not advance the count, and keying to the durable
+	// boundary makes the sweep once-per-day and restart-idempotent.
+	if _, err := w.SendContext(ctx, SweepInputShortages(boundary)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: input shortage sweep: %v", err)
+		}
+	}
 }

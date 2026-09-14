@@ -26,14 +26,15 @@ type WorldEnvironment struct {
 	Now                     time.Time
 	Weather                 string
 	Atmosphere              string
-	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go. Restart-lossy by design — cosmetic prose, fresh fire after restart is acceptable.
-	LastWeatherChangeAt     time.Time // last weather transition (UTC); see engine/sim/weather.go. Restart-lossy by design — the storm sweep boots to clear and reseeds this (SeedWeatherClear), so it is NOT persisted.
-	StormDueAt              time.Time // earliest the next automatic storm may start (UTC); armed by the storm sweep (engine/sim/cascade/storm.go), zero = unarmed. Separate from LastWeatherChangeAt because the sweep re-arms it while the village is empty, and LastWeatherChangeAt also feeds WeatherChangedSinceAtmosphere. Transient — not persisted.
-	LastTransitionAt        time.Time // last day↔night transition APPLY (UTC), real flip or idempotent re-apply — the phase ticker's boundary-dedupe stamp. Durable — persisted in world_state.last_transition_at.
-	LastPhaseFlipAt         time.Time // last REAL day↔night flip (From != To, UTC). Feeds the public world DTO's last_transition_at, which the client reads as "when the current phase began" to position its sunset curve — a redundant force-phase must NOT re-baseline that or a resyncing client jumps toward the opposite pole (LLM-578 code_review). NOT persisted: boot-initialized from LastTransitionAt in LoadWorld, which is the real flip instant in every case except a redundant force with no flip after it before shutdown.
-	LastRotationAt          time.Time // last daily asset rotation (UTC). Durable — persisted in world_state.last_rotation_at.
-	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
-	TownChest               int       // coin the estate rate (LLM-652) has taken out of purses and not yet spent back. Durable — persisted in world_state.town_chest_coins: the coin has left the purses, so losing it on restart would destroy it.
+	LastAtmosphereRefreshAt time.Time       // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go. Restart-lossy by design — cosmetic prose, fresh fire after restart is acceptable.
+	LastWeatherChangeAt     time.Time       // last weather transition (UTC); see engine/sim/weather.go. Restart-lossy by design — the storm sweep boots to clear and reseeds this (SeedWeatherClear), so it is NOT persisted.
+	StormDueAt              time.Time       // earliest the next automatic storm may start (UTC); armed by the storm sweep (engine/sim/cascade/storm.go), zero = unarmed. Separate from LastWeatherChangeAt because the sweep re-arms it while the village is empty, and LastWeatherChangeAt also feeds WeatherChangedSinceAtmosphere. Transient — not persisted.
+	LastTransitionAt        time.Time       // last day↔night transition APPLY (UTC), real flip or idempotent re-apply — the phase ticker's boundary-dedupe stamp. Durable — persisted in world_state.last_transition_at.
+	LastPhaseFlipAt         time.Time       // last REAL day↔night flip (From != To, UTC). Feeds the public world DTO's last_transition_at, which the client reads as "when the current phase began" to position its sunset curve — a redundant force-phase must NOT re-baseline that or a resyncing client jumps toward the opposite pole (LLM-578 code_review). NOT persisted: boot-initialized from LastTransitionAt in LoadWorld, which is the real flip instant in every case except a redundant force with no flip after it before shutdown.
+	LastRotationAt          time.Time       // last daily asset rotation (UTC). Durable — persisted in world_state.last_rotation_at.
+	LastNeedsTickAt         time.Time       // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
+	TownChest               int             // coin the estate rate (LLM-652) has taken out of purses and not yet spent back. Durable — persisted in world_state.town_chest_coins: the coin has left the purses, so losing it on restart would destroy it.
+	InputShortages          []InputShortage // standing input shortages the daily sweep found (LLM-656), sorted by (keeper, item). Durable — persisted in world_state.input_shortages: the peddler threshold is counted in game-days and the village restarts several times a day, so an in-memory count would rarely reach it.
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -601,6 +602,20 @@ type WorldSettings struct {
 	// DefaultVisitorFactorThreadUnits when zero/unset; settings key
 	// visitor_factor_thread_units.
 	VisitorFactorThreadUnits int
+
+	// ShortagePeddlerDays (LLM-656): consecutive daily sweeps a keeper's input
+	// shortage must stand — a required input for a good he makes that no village
+	// supplier holds — before the visitor cascade sends a peddler carrying it,
+	// and the cooldown between peddlers for one shortage. 0 is the off-switch.
+	// Falls back to DefaultShortagePeddlerDays when unset (the pg loader seeds
+	// the default only when the setting key is absent); settings key
+	// shortage_peddler_days.
+	ShortagePeddlerDays int
+	// ShortagePeddlerBatches (LLM-656): how many batches' worth of the missing
+	// input the peddler carries, at the keeper's own per-batch recipe quantity.
+	// Falls back to DefaultShortagePeddlerBatches when zero/unset; settings key
+	// shortage_peddler_batches.
+	ShortagePeddlerBatches int
 
 	// Coin-valve band (LLM-455). A merchant visitor's trade direction — buy (pays the
 	// village, injects coin) vs sell (the factor; the village pays him, drains coin) — is
