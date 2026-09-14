@@ -75,6 +75,9 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			VisitorFactorSaltUnits: sim.DefaultVisitorFactorSaltUnits,
 			// Thread shipment per factor visit (LLM-625) — same mirror.
 			VisitorFactorThreadUnits: sim.DefaultVisitorFactorThreadUnits,
+			// Shortage peddler threshold + pack (LLM-656) — same mirror.
+			ShortagePeddlerDays:    sim.DefaultShortagePeddlerDays,
+			ShortagePeddlerBatches: sim.DefaultShortagePeddlerBatches,
 			// Grounded merchant errand direction/class weights (LLM-455) — mirror the pg
 			// fallbacks so a mem-backed spawn picks buy/sell + merchant/passer like prod.
 			// Coin band low/high default 0 (unconfigured) so no explicit mirror is needed.

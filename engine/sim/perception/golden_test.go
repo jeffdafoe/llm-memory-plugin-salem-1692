@@ -7180,7 +7180,8 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "miller_offered_parity_swap_for_flour" || // LLM-598: wholesale producer in company weighing a barter offer — the cue's figures are what the offer verdict must agree with
 			sc.name == "keeper_paid_with_long_note" || // LLM-400: built ON keeper_reselling_in_company's fixture, so it inherits the cue correctly
 			sc.name == "broke_maker_at_store_no_spare_goods_hold_off" || // LLM-636: producer in company (with Josiah at the store), priced own wares + spoken-for makings held back
-			sc.name == "keeper_prices_bale_leftover_iron" // LLM-646: keeper in company holding off-policy priced stock — held goods ARE own trade now
+			sc.name == "keeper_prices_bale_leftover_iron" || // LLM-646: keeper in company holding off-policy priced stock — held goods ARE own trade now
+			sc.name == "keeper_views_peddler" // LLM-656: the tavernkeeper in company with the peddler, priced own ale + the stew he cannot yet make
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}

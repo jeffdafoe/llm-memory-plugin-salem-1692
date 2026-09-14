@@ -58,6 +58,9 @@ type RoundsErrand struct {
 	// Buy — true when he buys GoodKind from the counterparty (injecting coin); false for a
 	// seller (the factor), who lays out his imported bale and the keeper buys it.
 	Buy bool
+	// Peddler — true for a shortage peddler (LLM-656): a seller of ONE good to ONE keeper
+	// who initiates the sale himself (the keeper's own cues have been silent on it).
+	Peddler bool
 	// GoodKind is the EXACT catalog kind for the pay_with_item item argument ("cheese");
 	// GoodLabel is its display noun for the prose ("fresh cheese" -> here just the singular).
 	GoodKind  string
@@ -119,12 +122,19 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		counterparty = vs.Trade.Counterparty
 		e := &RoundsErrand{
 			Buy:      vs.Trade.Direction == sim.TradeDirectionBuy,
+			Peddler:  vs.Trade.Peddler,
 			GoodKind: string(vs.Trade.Good),
 			Settled:  vs.Trade.Settled,
 		}
 		e.GoodLabel = e.GoodKind
 		if def := snap.ItemKinds[vs.Trade.Good]; def != nil {
 			e.GoodLabel = def.Singular()
+			if e.Peddler {
+				// The bare good ("meat"), not the count noun: the peddler's lines
+				// speak of the good in bulk — "the meat their work has gone
+				// without", "most of the meat you brought" (LLM-656).
+				e.GoodLabel = bulkGoodLabel(def, e.GoodKind)
+			}
 		}
 		if st := snap.Structures[counterparty]; st != nil && st.DisplayName != "" {
 			e.ShopLabel = st.DisplayName
@@ -330,11 +340,20 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 	case e.AtShop && e.Buy:
 		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. Buy the %s you're after: call pay_with_item with seller \"%s\", item \"%s\", the quantity you want, consume_now false, coins in amount, and your words in say.\n",
 			keeper, shop, good, keeper, sanitizeInline(e.GoodKind))
+	// A shortage peddler (LLM-656) sells one thing to one keeper. Unlike the
+	// factor's two-way deal, he INITIATES: the keeper's own cues have been silent
+	// on this good for days, so the offer must come from the pack, not the counter.
+	case e.AtShop && e.Peddler:
+		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. You've brought the %s their work has gone without. Offer it: call sell with item \"%s\", the quantity you carry in qty, your price for the lot in amount, consume_now false, target_buyer \"%s\", and your words in say. They may take it as offered, or pay you in coin or in goods from their shelves.\n",
+			keeper, shop, good, sanitizeInline(e.GoodKind), keeper)
 	case e.AtShop:
 		fmt.Fprintf(b, "You're with %s at %s — the one keeper you came to deal with. Lay out the cloth, iron, and salt you carry from the city and let them buy what the village needs; a warm coat or a bar of iron is worth most just now. Buy their surplus in turn to carry off: call pay_with_item with seller \"%s\", the item, the quantity, consume_now false, coins in amount, and your words in say.\n",
 			keeper, shop, keeper)
 	case e.Buy:
 		fmt.Fprintf(b, "You came to buy %s at %s, %s — that is your business here, so make for it. %s\n",
+			good, shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
+	case e.Peddler:
+		fmt.Fprintf(b, "You came to bring %s to the keeper of %s, %s — that is your business here, so make for it. %s\n",
 			good, shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
 	default:
 		fmt.Fprintf(b, "You came to deal with the keeper of %s, %s — that is your business here, so make for it. %s\n",
@@ -551,7 +570,15 @@ type ErrandVisitView struct {
 	// Sell is true when the visitor is a seller (a factor bringing imports to sell the keeper);
 	// false when he is a buyer coming to buy GoodLabel.
 	Sell bool
-	// GoodLabel is the display noun of the good a BUYER wants (unused for a seller).
+	// Peddler is true for a shortage peddler (LLM-656): a seller who has brought
+	// ONE good the keeper's own work has been short of. GoodLabel / GoodKind name
+	// it and ForLabel names what the keeper makes with it, so the cue reads as the
+	// answer to a lack the keeper's other cues have been silent on.
+	Peddler  bool
+	GoodKind string
+	ForLabel string
+	// GoodLabel is the display noun of the good a BUYER wants, or the good a PEDDLER
+	// brings (unused for a factor).
 	GoodLabel string
 	// Pack lists a SELLER's actual pack goods (his live inventory), each with the
 	// keeper's own worth reference where one resolves (LLM-647). Sorted by noun for
@@ -605,18 +632,69 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			TraderName: m.DisplayName,
 			Origin:     vs.VisitorState.Origin,
 			Sell:       t.Direction == sim.TradeDirectionSell,
+			Peddler:    t.Peddler,
 		}
-		if !view.Sell {
+		if !view.Sell || view.Peddler {
+			view.GoodKind = string(t.Good)
 			view.GoodLabel = string(t.Good)
 			if def := snap.ItemKinds[t.Good]; def != nil {
 				view.GoodLabel = def.Singular()
+				if view.Peddler {
+					view.GoodLabel = bulkGoodLabel(def, view.GoodKind) // "meat", the pack line carries the count
+				}
 			}
+		}
+		if !view.Sell {
 			return view
+		}
+		if view.Peddler {
+			view.ForLabel = keeperProductsUsing(snap, actorSnap, t.Good)
 		}
 		view.Pack = buildPackGoods(snap, actorID, vs)
 		return view
 	}
 	return nil
+}
+
+// keeperProductsUsing names the goods the keeper makes that take `input` — "stew",
+// or "stew and porridge" — read off his produce entries' recipes (LLM-656). The
+// peddler's cue uses it to say what the good is FOR, since the keeper's own
+// trade cue has been dropping that good for days and the link is what makes the
+// purchase legible. "" when no recipe of his takes it (render then falls back
+// to a generic clause). Sorted by label so the render is deterministic.
+func keeperProductsUsing(snap *sim.Snapshot, keeper *sim.ActorSnapshot, input sim.ItemKind) string {
+	if snap == nil || keeper == nil || keeper.RestockPolicy == nil {
+		return ""
+	}
+	var labels []string
+	for _, e := range keeper.RestockPolicy.ProduceEntries() {
+		recipe := snap.Recipes[e.Item]
+		if recipe == nil {
+			continue
+		}
+		for _, in := range recipe.Inputs {
+			if in.Item != input || in.Qty <= 0 {
+				continue
+			}
+			labels = append(labels, bulkGoodLabel(snap.ItemKinds[e.Item], string(e.Item)))
+			break
+		}
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	sort.Strings(labels)
+	return strings.Join(labels, " and ")
+}
+
+// bulkGoodLabel names a good in bulk — "meat", "stew" — the lowercased catalog
+// label, falling back to the kind key. The count nouns ("cut of meat", "bowl of
+// stew") are for counted things; the peddler's cues speak of the good itself.
+func bulkGoodLabel(def *sim.ItemKindDef, kind string) string {
+	if def != nil && def.DisplayLabel != "" {
+		return strings.ToLower(def.DisplayLabel)
+	}
+	return kind
 }
 
 // buildPackGoods lists a selling visitor's live inventory as the keeper prices it
@@ -681,6 +759,21 @@ func renderErrandVisit(b *strings.Builder, v *ErrandVisitView) {
 		origin = " out of " + sanitizeInline(v.Origin)
 	}
 	b.WriteString("## A trader's come to deal\n")
+	if v.Peddler {
+		// LLM-656: the peddler is the answer to a lack the keeper's own cues have
+		// been silent on, so the cue says what the good is for and hands the keeper
+		// the buy in one breath. Goods in payment are named because the short keeper
+		// is typically the coin-poor one.
+		good := sanitizeInline(v.GoodLabel)
+		if v.ForLabel != "" {
+			fmt.Fprintf(b, "%s, a peddler%s, has come to you with %s — the makings of your %s, which the village has gone without.", name, origin, good, sanitizeInline(v.ForLabel))
+		} else {
+			fmt.Fprintf(b, "%s, a peddler%s, has come to you with %s — makings your work has gone without.", name, origin, good)
+		}
+		renderPackGoods(b, v.Pack)
+		fmt.Fprintf(b, " Buy what you need with pay_with_item (seller \"%s\", item \"%s\", the quantity, consume_now false, coins in amount or goods you carry in pay_items, your words in say).\n\n", name, sanitizeInline(v.GoodKind))
+		return
+	}
 	if v.Sell {
 		fmt.Fprintf(b, "%s, a factor%s, is here to deal with you. He's brought city goods to sell, and he'll buy the surplus stacking up in your store to carry off.", name, origin)
 		renderPackGoods(b, v.Pack)

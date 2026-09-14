@@ -585,6 +585,13 @@ type TradeErrand struct {
 	// Inventory[Good] either fails to settle him or settles a man who has sold nothing.
 	// A monotonic count of what reached the counterparty is the honest measure.
 	Delivered int
+	// Peddler marks a shortage peddler's sell errand (LLM-656): a seller whose
+	// pack is one missing input alone and whose Counterparty is the SHORT KEEPER's
+	// own shop, not the distributor. Every downstream rule (confinement, credit,
+	// settle) keys on Direction + Counterparty and needs no special case; the flag
+	// selects the pack seeding, the persona label and sprite, and the wording of
+	// the rounds and trader's-come cues. Persisted in the plan jsonb.
+	Peddler bool
 }
 
 // Archetype / Origin / Disposition come from per-spawn random pools in

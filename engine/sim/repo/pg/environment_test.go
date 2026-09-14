@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func newMockPoolE(t *testing.T) (pgxmock.PgxPoolIface, *EnvironmentRepo) {
 var worldStateColumns = []string{
 	"phase", "last_transition_at", "last_rotation_at",
 	"weather", "atmosphere", "last_needs_tick_at",
-	"town_chest_coins",
+	"town_chest_coins", "input_shortages",
 }
 
 // programWorldStateRow programs a single world_state row scan with
@@ -53,16 +54,30 @@ func programWorldStateRow(mock pgxmock.PgxPoolIface, phase sim.Phase,
 
 // programWorldStateRowWithChest is programWorldStateRow with an explicit
 // town_chest_coins value (LLM-652); the plain helper reads an empty chest.
+// The input_shortages document (LLM-656) is the empty array.
 func programWorldStateRowWithChest(mock pgxmock.PgxPoolIface, phase sim.Phase,
 	lastTransitionAt, lastRotationAt time.Time,
 	weather, atmosphere string,
 	lastNeedsTickAt *time.Time,
 	townChest int,
 ) {
+	programWorldStateRowFull(mock, phase, lastTransitionAt, lastRotationAt,
+		weather, atmosphere, lastNeedsTickAt, townChest, []byte("[]"))
+}
+
+// programWorldStateRowFull programs every world_state column, including the
+// raw input_shortages jsonb document (LLM-656).
+func programWorldStateRowFull(mock pgxmock.PgxPoolIface, phase sim.Phase,
+	lastTransitionAt, lastRotationAt time.Time,
+	weather, atmosphere string,
+	lastNeedsTickAt *time.Time,
+	townChest int,
+	inputShortages []byte,
+) {
 	mock.ExpectQuery(`SELECT[\s\S]+FROM world_state[\s\S]+WHERE id = 1`).
 		WillReturnRows(pgxmock.NewRows(worldStateColumns).
 			AddRow(string(phase), lastTransitionAt, lastRotationAt,
-				weather, atmosphere, lastNeedsTickAt, townChest))
+				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages))
 }
 
 // programSettingsRows programs the setting kv query returning the
@@ -340,10 +355,16 @@ func TestEnvironmentRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		Weather:          "clear",
 		Atmosphere:       "morning fog",
 		TownChest:        69,
+		// A standing shortage (LLM-656) rides the same upsert as a jsonb document.
+		InputShortages: []sim.InputShortage{{KeeperID: "john", Item: "meat", Days: 2, LastSeenAt: rotation}},
+	}
+	shortagesJSON, err := json.Marshal(env.InputShortages)
+	if err != nil {
+		t.Fatalf("encode shortages: %v", err)
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69).
+		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -444,7 +465,7 @@ func TestEnvironmentRepo_SaveSnapshot_ZeroLastNeedsTick_NULL(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0).
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -759,6 +780,61 @@ func TestEnvironmentRepo_Load_TownChest(t *testing.T) {
 	if settings.EstateRateFloor != 150 || settings.EstateRatePctPerDay != 10 {
 		t.Errorf("estate rate settings = floor %d / pct %d, want 150 / 10",
 			settings.EstateRateFloor, settings.EstateRatePctPerDay)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// --- Load: input shortages (LLM-656) ---------------------------------------
+
+// TestEnvironmentRepo_Load_InputShortages — the standing-shortage record rides
+// world_state as a jsonb array and comes back typed; the peddler knobs load
+// from settings. A document that will not decode (an out-of-band edit) reads as
+// no shortages rather than failing the boot — the daily sweep rebuilds it.
+func TestEnvironmentRepo_Load_InputShortages(t *testing.T) {
+	at := time.Date(2026, 9, 14, 4, 0, 0, 0, time.UTC)
+	doc := []byte(`[{"keeper_id":"john","item":"meat","days":3,"last_seen_at":"2026-09-14T04:00:00Z","last_peddler_at":"0001-01-01T00:00:00Z"}]`)
+
+	mock, repo := newMockPoolE(t)
+	programWorldStateRowFull(mock, sim.PhaseNight, at, at, "", "", nil, 0, doc)
+	programSettingsRows(mock, map[string]string{
+		"shortage_peddler_days":    "5",
+		"shortage_peddler_batches": "1",
+	})
+	env, _, settings, err := repo.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(env.InputShortages) != 1 {
+		t.Fatalf("InputShortages = %+v, want one entry", env.InputShortages)
+	}
+	if s := env.InputShortages[0]; s.KeeperID != "john" || s.Item != "meat" || s.Days != 3 || !s.LastSeenAt.Equal(at) || !s.LastPeddlerAt.IsZero() {
+		t.Errorf("InputShortages[0] = %+v, want john/meat day 3 seen at %s, no peddler yet", s, at)
+	}
+	if settings.ShortagePeddlerDays != 5 || settings.ShortagePeddlerBatches != 1 {
+		t.Errorf("peddler settings = days %d / batches %d, want 5 / 1",
+			settings.ShortagePeddlerDays, settings.ShortagePeddlerBatches)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+
+	// Malformed document: logged, read as none, boot proceeds; defaults for the knobs.
+	mock, repo = newMockPoolE(t)
+	programWorldStateRowFull(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte(`{"not":"an array"`))
+	programSettingsRows(mock, map[string]string{})
+	env, _, settings, err = repo.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load with malformed shortages: %v", err)
+	}
+	if len(env.InputShortages) != 0 {
+		t.Errorf("malformed document: InputShortages = %+v, want none", env.InputShortages)
+	}
+	if settings.ShortagePeddlerDays != sim.DefaultShortagePeddlerDays || settings.ShortagePeddlerBatches != sim.DefaultShortagePeddlerBatches {
+		t.Errorf("peddler defaults = days %d / batches %d, want %d / %d",
+			settings.ShortagePeddlerDays, settings.ShortagePeddlerBatches,
+			sim.DefaultShortagePeddlerDays, sim.DefaultShortagePeddlerBatches)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
