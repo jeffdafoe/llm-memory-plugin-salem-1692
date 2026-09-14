@@ -2,6 +2,7 @@ package sim
 
 import (
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -258,6 +259,64 @@ func TestSeedPeddlerPack(t *testing.T) {
 	w.Recipes["roast"] = &ItemRecipe{OutputItem: "roast", OutputQty: 1, RateQty: 1, RatePerHours: 1, Inputs: []RecipeInput{{Item: "meat", Qty: 5}}}
 	if pack, _ = seedPeddlerPack(r, w, errand, 2); pack["meat"] != 4 {
 		t.Errorf("shop-mate present: pack = %v, want 4 (john's 2 a batch, not the mate's 5)", pack)
+	}
+}
+
+// TestPeddlerShipmentIsBoundToTheKeeper — the shipment is for one keeper by id
+// (code_review, LLM-656): at a structure two keepers share, the shop-mate can
+// neither take it (the confinement gate refuses, naming the keeper) nor settle
+// it (a transfer to her credits nothing); the keeper himself does both.
+func TestPeddlerShipmentIsBoundToTheKeeper(t *testing.T) {
+	w := shortageWorld()
+	w.Actors["mate"] = &Actor{ID: "mate", DisplayName: "Hannah Boggs", Kind: KindNPCShared,
+		WorkStructureID: "tavern", InsideStructureID: "tavern",
+		BusinessownerState: &BusinessownerState{Flavor: "cook"}, Inventory: map[ItemKind]int{}}
+	newPeddler := func() (*Actor, *TradeErrand) {
+		errand := &TradeErrand{Direction: TradeDirectionSell, Good: "meat", Counterparty: "tavern", Keeper: "john", Peddler: true, ShipmentQty: 4}
+		return &Actor{ID: "vstr-ped", Kind: KindNPCShared, Inventory: map[ItemKind]int{"meat": 4},
+			VisitorState: &VisitorState{Trade: errand}}, errand
+	}
+	meat := w.ItemKinds["meat"]
+
+	peddler, _ := newPeddler()
+	if steer := TradeErrandSteer(w.VillageObjects, w.Actors, w.Actors["mate"], peddler, meat); steer == "" {
+		t.Error("the shop-mate buying the peddler's meat: allowed, want refused")
+	} else if !strings.Contains(steer, "John Ellis") {
+		t.Errorf("the refusal does not name the keeper the goods are for: %q", steer)
+	}
+	if steer := TradeErrandSteer(w.VillageObjects, w.Actors, w.Actors["john"], peddler, meat); steer != "" {
+		t.Errorf("the keeper buying the peddler's meat: refused %q, want allowed", steer)
+	}
+	// The peddler's own supper from the shop-mate stays allowed — self-provisioning
+	// is structure-wide for every traveler.
+	w.ItemKinds["stew"].Capabilities = nil
+	w.ItemKinds["stew"].Category = ItemCategoryFood
+	if steer := TradeErrandSteer(w.VillageObjects, w.Actors, peddler, w.Actors["mate"], w.ItemKinds["stew"]); steer != "" {
+		t.Errorf("the peddler buying supper from the shop-mate: refused %q, want allowed", steer)
+	}
+
+	peddler, errand := newPeddler()
+	if err := transferItem(nil, peddler, w.Actors["mate"], "meat", 4); err != nil {
+		t.Fatalf("transfer to the shop-mate: %v", err)
+	}
+	if errand.Delivered != 0 || sellErrandDelivered(errand.Delivered, errand.ShipmentQty) {
+		t.Errorf("Delivered = %d after handing the shipment to the shop-mate, want 0 and unsettled", errand.Delivered)
+	}
+	peddler, errand = newPeddler()
+	if err := transferItem(nil, peddler, w.Actors["john"], "meat", 4); err != nil {
+		t.Fatalf("transfer to the keeper: %v", err)
+	}
+	if errand.Delivered != 4 || !sellErrandDelivered(errand.Delivered, errand.ShipmentQty) {
+		t.Errorf("Delivered = %d after the keeper took the shipment, want 4 and settled", errand.Delivered)
+	}
+	// The factor's structure-wide rule is unchanged: no Keeper, any hand at the counter credits.
+	factor := &Actor{ID: "vstr-fac", Kind: KindNPCShared, Inventory: map[ItemKind]int{"meat": 4},
+		VisitorState: &VisitorState{Trade: &TradeErrand{Direction: TradeDirectionSell, Good: "meat", Counterparty: "tavern", ShipmentQty: 4}}}
+	if err := transferItem(nil, factor, w.Actors["mate"], "meat", 4); err != nil {
+		t.Fatalf("factor transfer: %v", err)
+	}
+	if factor.VisitorState.Trade.Delivered != 4 {
+		t.Errorf("factor Delivered = %d via the shop-mate, want 4 — a structure-bound errand credits any keeper there", factor.VisitorState.Trade.Delivered)
 	}
 }
 

@@ -587,17 +587,20 @@ type TradeErrand struct {
 	Delivered int
 	// Peddler marks a shortage peddler's sell errand (LLM-656): a seller whose
 	// pack is one missing input alone and whose Counterparty is the SHORT KEEPER's
-	// own shop, not the distributor. Every downstream rule (confinement, credit,
-	// settle) keys on Direction + Counterparty and needs no special case; the flag
-	// selects the pack seeding, the persona label and sprite, and the wording of
-	// the rounds and trader's-come cues. Persisted in the plan jsonb.
+	// own shop, not the distributor. Navigation, settle and departure key on
+	// Direction + Counterparty as for the factor; Keeper (below) binds the goods to
+	// the person. The flag selects the pack seeding, the persona label and sprite,
+	// and the wording of the rounds and trader's-come cues. Persisted in the plan
+	// jsonb.
 	Peddler bool
 	// Keeper is the specific actor a peddler's shipment is for — the short keeper
-	// (LLM-656). Counterparty still names the structure (navigation and the
-	// confinement gate key on it); Keeper narrows the shop to the person, so at a
-	// structure two keepers share the pack is sized to his recipes, the rounds cue
-	// targets him, and only he hears the trader's-come cue. "" for a factor or a
-	// buyer, whose errands are with a building. Persisted in the plan jsonb.
+	// (LLM-656). Counterparty still names the structure (navigation keys on it);
+	// Keeper narrows the shop to the person: at a structure two keepers share the
+	// pack is sized to his recipes, the rounds cue targets him, only he hears the
+	// trader's-come cue, the confinement gate (TradeErrandSteer) refuses the
+	// shop-mate the goods, and only a transfer to him credits the shipment
+	// (sellErrandCredit). "" for a factor or a buyer, whose errands are with a
+	// building. Persisted in the plan jsonb.
 	Keeper ActorID
 }
 

@@ -240,6 +240,17 @@ func TradeErrandSteer(objects map[VillageObjectID]*VillageObject, actors map[Act
 		counterparty = seller
 	}
 	if errand.Counterparty != "" && counterparty != nil && counterparty.WorkStructureID == errand.Counterparty {
+		// A peddler's shipment is for one keeper by id (LLM-656): a shop-mate who
+		// keeps the same structure may not take it. The keeper test is on the
+		// SELLING side only — his self-provisioning as a buyer stays structure-wide
+		// like any traveler's.
+		if sellerErrand != nil && errand.Keeper != "" && counterparty.ID != errand.Keeper {
+			who := errandKeeperLabel(objects, actors, errand.Counterparty)
+			if k := actors[errand.Keeper]; k != nil && k.DisplayName != "" {
+				who = k.DisplayName
+			}
+			return "that peddler brought his goods for " + who + " and deals with " + who + " alone; leave them to " + who + "."
+		}
 		return "" // the merchant's counterparty is his errand keeper — the one trade he may do
 	}
 	who := errandKeeperLabel(objects, actors, errand.Counterparty)
