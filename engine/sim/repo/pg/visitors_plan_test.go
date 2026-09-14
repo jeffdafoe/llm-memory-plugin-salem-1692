@@ -78,13 +78,6 @@ func TestVisitorPlanRoundTrip(t *testing.T) {
 	}
 }
 
-// TestVisitorPlanPayloadSharedWithSanitized — the LLM-545 decode posture for
-// out-of-band plan data: duplicates and blank ids are dropped on the way in (the
-// engine-side writer keeps the set unique, so they can only come from an edited
-// row), a JSON null field decodes to an empty set, and a structurally corrupt
-// array (non-string element) fails the whole plan apply like any other corrupt
-// plan. Unknown-but-well-formed actor ids are RETAINED — perception intersects
-// against the live snapshot before rendering, so they stay harmless.
 // TestVisitorPlanPeddlerErrandRoundTrip — the shortage peddler's errand fields
 // (LLM-656) ride the plan jsonb: the Peddler flag and the short keeper's id, so a
 // mid-visit redeploy resumes him as a peddler for one keeper, not as a factor
@@ -115,6 +108,13 @@ func TestVisitorPlanPeddlerErrandRoundTrip(t *testing.T) {
 	}
 }
 
+// TestVisitorPlanPayloadSharedWithSanitized — the LLM-545 decode posture for
+// out-of-band plan data: duplicates and blank ids are dropped on the way in (the
+// engine-side writer keeps the set unique, so they can only come from an edited
+// row), a JSON null field decodes to an empty set, and a structurally corrupt
+// array (non-string element) fails the whole plan apply like any other corrupt
+// plan. Unknown-but-well-formed actor ids are RETAINED — perception intersects
+// against the live snapshot before rendering, so they stay harmless.
 func TestVisitorPlanPayloadSharedWithSanitized(t *testing.T) {
 	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
 	raw := []byte(`{"payload_shared_with":["hannah","","hannah","john","hannah"]}`)
