@@ -130,6 +130,12 @@ func TestInputShortagesNow(t *testing.T) {
 		Inventory:     map[ItemKind]int{"meat": 4}}
 	check("a visitor holding some", w, want)
 
+	// A resident with no policy at all carrying the item (code_review): neither a
+	// supplier nor a crash.
+	w = shortageWorld()
+	w.Actors["anne"] = &Actor{ID: "anne", Kind: KindNPCShared, Inventory: map[ItemKind]int{"meat": 2}}
+	check("a policy-less resident holding some", w, want)
+
 	w = shortageWorld()
 	w.Actors["john"].RestockPolicy = nil
 	check("no policy, no produce entries", w, nil)
@@ -181,9 +187,20 @@ func TestDueShortagePeddler(t *testing.T) {
 	if !ok || i != 0 || errand == nil {
 		t.Fatalf("three days short: due = (%d, %+v, %v), want index 0 with an errand", i, errand, ok)
 	}
-	if errand.Direction != TradeDirectionSell || errand.Good != "meat" || errand.Counterparty != "tavern" || !errand.Peddler {
-		t.Errorf("errand = %+v, want a peddler sell of meat bound to the tavern", errand)
+	if errand.Direction != TradeDirectionSell || errand.Good != "meat" || errand.Counterparty != "tavern" || !errand.Peddler || errand.Keeper != "john" {
+		t.Errorf("errand = %+v, want a peddler sell of meat bound to the tavern, for john", errand)
 	}
+	// Resolved since the sweep (code_review): the keeper bought a batch's worth
+	// this morning. The stale entry is dropped on the spot, not sent for.
+	w.Actors["john"].Inventory["meat"] = 2
+	if _, _, ok := dueShortagePeddler(w, now); ok {
+		t.Error("shortage resolved since the sweep: due, want dropped")
+	}
+	if len(w.Environment.InputShortages) != 0 {
+		t.Errorf("resolved entry still stored: %+v, want dropped", w.Environment.InputShortages)
+	}
+	w.Actors["john"].Inventory["meat"] = 1
+	w.Environment.InputShortages = []InputShortage{{KeeperID: "john", Item: "meat", Days: 3, LastSeenAt: now}}
 	// Cooldown: a peddler sent an hour ago blocks; one sent four days ago does not.
 	w.Environment.InputShortages[0].LastPeddlerAt = now.Add(-time.Hour)
 	if _, _, ok := dueShortagePeddler(w, now); ok {
@@ -215,7 +232,7 @@ func TestDueShortagePeddler(t *testing.T) {
 
 func TestSeedPeddlerPack(t *testing.T) {
 	w := shortageWorld()
-	errand := &TradeErrand{Direction: TradeDirectionSell, Good: "meat", Counterparty: "tavern", Peddler: true}
+	errand := &TradeErrand{Direction: TradeDirectionSell, Good: "meat", Counterparty: "tavern", Keeper: "john", Peddler: true}
 	r := rand.New(rand.NewSource(1))
 	pack, purse := seedPeddlerPack(r, w, errand, 2)
 	if len(pack) != 1 || pack["meat"] != 4 {
@@ -228,15 +245,25 @@ func TestSeedPeddlerPack(t *testing.T) {
 	if pack, _ = seedPeddlerPack(r, w, errand, 0); pack["meat"] != 2 {
 		t.Errorf("batches 0: pack = %v, want 2 (clamped to one batch)", pack)
 	}
-	other := &TradeErrand{Direction: TradeDirectionSell, Good: "salt", Counterparty: "tavern", Peddler: true}
+	other := &TradeErrand{Direction: TradeDirectionSell, Good: "salt", Counterparty: "tavern", Keeper: "john", Peddler: true}
 	if pack, _ = seedPeddlerPack(r, w, other, 3); pack["salt"] != 3 {
 		t.Errorf("unrecipe'd input: pack = %v, want 3 (one a batch)", pack)
+	}
+	// Sized to the NAMED keeper's recipes, never to a shop-mate's (code_review): a
+	// second keeper at the tavern whose recipe takes five meat a batch changes nothing.
+	w.Actors["mate"] = &Actor{ID: "mate", Kind: KindNPCShared, WorkStructureID: "tavern", InsideStructureID: "tavern",
+		BusinessownerState: &BusinessownerState{Flavor: "cook"},
+		RestockPolicy:      &RestockPolicy{Restock: []RestockEntry{{Item: "roast", Source: RestockSourceProduce, Max: 5}}},
+		Inventory:          map[ItemKind]int{}}
+	w.Recipes["roast"] = &ItemRecipe{OutputItem: "roast", OutputQty: 1, RateQty: 1, RatePerHours: 1, Inputs: []RecipeInput{{Item: "meat", Qty: 5}}}
+	if pack, _ = seedPeddlerPack(r, w, errand, 2); pack["meat"] != 4 {
+		t.Errorf("shop-mate present: pack = %v, want 4 (john's 2 a batch, not the mate's 5)", pack)
 	}
 }
 
 func TestPeddlerPersona(t *testing.T) {
 	w := shortageWorld()
-	errand := &TradeErrand{Direction: TradeDirectionSell, Good: "meat", Counterparty: "tavern", Peddler: true}
+	errand := &TradeErrand{Direction: TradeDirectionSell, Good: "meat", Counterparty: "tavern", Keeper: "john", Peddler: true}
 	if got := visitorMerchantLabel(w, errand); got != "meat-peddler" {
 		t.Errorf("label = %q, want meat-peddler (the bare catalog label, not the count noun)", got)
 	}
@@ -251,7 +278,7 @@ func TestPeddlerPersona(t *testing.T) {
 	}
 	// The flag survives the visitor-state clone (the snapshot mirror).
 	cp := cloneVisitorState(peddler)
-	if cp.Trade == nil || !cp.Trade.Peddler {
-		t.Errorf("clone dropped the Peddler flag: %+v", cp.Trade)
+	if cp.Trade == nil || !cp.Trade.Peddler || cp.Trade.Keeper != "john" {
+		t.Errorf("clone dropped the peddler fields: %+v", cp.Trade)
 	}
 }

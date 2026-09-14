@@ -90,8 +90,8 @@ func TestTickVisitorCascade_ShortagePeddler(t *testing.T) {
 			t.Fatal("no visitor after the spawn")
 		}
 		tr := peddler.VisitorState.Trade
-		if tr == nil || !tr.Peddler || tr.Direction != sim.TradeDirectionSell || tr.Good != "meat" || tr.Counterparty != shop {
-			t.Errorf("errand = %+v, want a peddler sell of meat bound to %q", tr, shop)
+		if tr == nil || !tr.Peddler || tr.Direction != sim.TradeDirectionSell || tr.Good != "meat" || tr.Counterparty != shop || tr.Keeper != "john" {
+			t.Errorf("errand = %+v, want a peddler sell of meat bound to %q for john", tr, shop)
 		}
 		if tr != nil && tr.ShipmentQty != 4 {
 			t.Errorf("ShipmentQty = %d, want 4 (2 batches × 2 a batch)", tr.ShipmentQty)
@@ -131,16 +131,20 @@ func TestTickVisitorCascade_ShortagePeddler(t *testing.T) {
 	}
 }
 
-// TestTickVisitorCascade_ShortagePeddlerOff — the off-switch and the threshold:
-// with days 0, or a shortage younger than the threshold, the tick spawns nothing.
+// TestTickVisitorCascade_ShortagePeddlerOff — the off-switch, the threshold, and
+// a shortage the village resolved since the sweep: none of them spawns, and the
+// resolved one is dropped from the record on the spot (code_review).
 func TestTickVisitorCascade_ShortagePeddlerOff(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		days int
-		age  int
+		name     string
+		days     int
+		age      int
+		meat     int // the keeper's meat at tick time (1 = still short of a 2-a-batch stew)
+		wantKept int // stored shortages after the tick
 	}{
-		{"off switch", 0, 5},
-		{"under threshold", 3, 2},
+		{"off switch", 0, 5, 1, 1},
+		{"under threshold", 3, 2, 1, 1},
+		{"resolved since the sweep", 3, 5, 2, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vw := newVisitorWorld()
@@ -153,6 +157,7 @@ func TestTickVisitorCascade_ShortagePeddlerOff(t *testing.T) {
 				world.Settings.VisitorMerchantCorrectionChancePermille = 0
 				world.Settings.VisitorPasserSpawnChancePermille = 0
 				world.Settings.ShortagePeddlerDays = tc.days
+				world.Actors["john"].Inventory["meat"] = tc.meat
 				world.Environment.InputShortages = []sim.InputShortage{
 					{KeeperID: "john", Item: "meat", Days: tc.age, LastSeenAt: now.Add(-16 * time.Hour)},
 				}
@@ -166,6 +171,14 @@ func TestTickVisitorCascade_ShortagePeddlerOff(t *testing.T) {
 			}
 			if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 0 {
 				t.Errorf("spawned = %d, want 0", tm.Spawned)
+			}
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				if got := len(world.Environment.InputShortages); got != tc.wantKept {
+					t.Errorf("stored shortages after the tick = %d, want %d", got, tc.wantKept)
+				}
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("inspect: %v", err)
 			}
 		})
 	}

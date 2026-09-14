@@ -143,11 +143,17 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		}
 		for _, m := range members {
 			ks := snap.Actors[m.ID]
-			if ks != nil && ks.BusinessownerState != nil && ks.WorkStructureID == counterparty {
-				e.AtShop = true
-				e.KeeperName = m.DisplayName
-				break
+			if ks == nil || ks.BusinessownerState == nil || ks.WorkStructureID != counterparty {
+				continue
 			}
+			// A peddler's shipment is for one keeper by id (LLM-656): at a shop two
+			// keepers share, the other one is not the man he came to deal with.
+			if vs.Trade.Keeper != "" && m.ID != vs.Trade.Keeper {
+				continue
+			}
+			e.AtShop = true
+			e.KeeperName = m.DisplayName
+			break
 		}
 		if !e.AtShop {
 			if vobj := snap.VillageObjects[sim.VillageObjectID(counterparty)]; vobj != nil {
@@ -627,6 +633,9 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		t := vs.VisitorState.Trade
 		if t.Counterparty != actorSnap.WorkStructureID {
 			continue // his errand is with someone else
+		}
+		if t.Keeper != "" && t.Keeper != actorID {
+			continue // a peddler's errand is with one keeper by id (LLM-656) — not the shop-mate
 		}
 		view := &ErrandVisitView{
 			TraderName: m.DisplayName,

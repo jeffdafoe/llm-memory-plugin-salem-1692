@@ -592,6 +592,13 @@ type TradeErrand struct {
 	// selects the pack seeding, the persona label and sprite, and the wording of
 	// the rounds and trader's-come cues. Persisted in the plan jsonb.
 	Peddler bool
+	// Keeper is the specific actor a peddler's shipment is for — the short keeper
+	// (LLM-656). Counterparty still names the structure (navigation and the
+	// confinement gate key on it); Keeper narrows the shop to the person, so at a
+	// structure two keepers share the pack is sized to his recipes, the rounds cue
+	// targets him, and only he hears the trader's-come cue. "" for a factor or a
+	// buyer, whose errands are with a building. Persisted in the plan jsonb.
+	Keeper ActorID
 }
 
 // Archetype / Origin / Disposition come from per-spawn random pools in

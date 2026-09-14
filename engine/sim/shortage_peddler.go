@@ -95,7 +95,11 @@ func villageSupplierHolds(w *World, item ItemKind) bool {
 		if v.Inventory[item] <= 0 {
 			continue
 		}
-		if v.RestockPolicy.ProducesOrForages(item) || ActorIsDistributor(w.VillageObjects, v.WorkStructureID) {
+		// An ordinary resident with no policy at all can still carry the item
+		// (code_review): the nil-receiver-safe method is called through an
+		// explicit guard so the sweep never dereferences a policy that isn't there.
+		producesOrForages := v.RestockPolicy != nil && v.RestockPolicy.ProducesOrForages(item)
+		if producesOrForages || ActorIsDistributor(w.VillageObjects, v.WorkStructureID) {
 			return true
 		}
 	}
@@ -206,19 +210,45 @@ func shortageLabel(w *World, s InputShortage) string {
 
 // dueShortagePeddler picks the shortage a peddler should be sent for right now,
 // if any: the first (in (keeper, item) order) that has stood at least
-// ShortagePeddlerDays sweeps, has not had a peddler within that many days, and
-// whose keeper is at his post so the peddler has someone to deal with on
-// arrival (the bindBuyErrand posture — a shut shop is tried again next tick).
-// Returns the index into WorldEnvironment.InputShortages (for the LastPeddlerAt
-// stamp once the spawn commits) and the bound errand. ok=false when the feature
-// is off or nothing is due. Runs on the world goroutine.
+// ShortagePeddlerDays sweeps, STILL stands this instant, has not had a peddler
+// within that many days, and whose keeper is at his post so the peddler has
+// someone to deal with on arrival (the bindBuyErrand posture — a shut shop is
+// tried again next tick).
+//
+// The record is a midnight snapshot; hours pass before the afternoon spawn
+// window, and in between the keeper may have bought the input, a producer may
+// have made some, or the shelves may have filled (code_review). So the stored
+// entries are re-read against inputShortagesNow here, and an entry the village
+// has since resolved is dropped on the spot rather than left to send a peddler
+// for a lack that no longer exists — the keeper's cue would then claim a want
+// the village does not have. Returns the index into (the pruned)
+// WorldEnvironment.InputShortages, for the LastPeddlerAt stamp once the spawn
+// commits, and the bound errand. ok=false when the feature is off or nothing is
+// due. Runs on the world goroutine.
 func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
 	days := w.Settings.ShortagePeddlerDays
 	if days <= 0 {
 		return -1, nil, false
 	}
+	if len(w.Environment.InputShortages) == 0 {
+		return -1, nil, false
+	}
+	standing := map[shortageKey]struct{}{}
+	for _, k := range inputShortagesNow(w) {
+		standing[k] = struct{}{}
+	}
+	kept := w.Environment.InputShortages[:0]
+	for _, s := range w.Environment.InputShortages {
+		if _, ok := standing[shortageKey{keeper: s.KeeperID, item: s.Item}]; ok {
+			kept = append(kept, s)
+		} else {
+			log.Printf("sim/shortage_peddler: %s resolved since the sweep; dropped", shortageLabel(w, s))
+		}
+	}
+	w.Environment.InputShortages = kept
+
 	cooldown := time.Duration(days) * 24 * time.Hour
-	for i, s := range w.Environment.InputShortages {
+	for i, s := range kept {
 		if s.Days < days {
 			continue
 		}
@@ -235,8 +265,11 @@ func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
 }
 
 // bindShortageErrand binds the peddler's sell errand for one shortage: Good =
-// the missing input, Counterparty = the short keeper's own shop. ok=false when
-// the keeper is gone, has no structure-backed post, or is not at it now.
+// the missing input, Counterparty = the short keeper's own shop, Keeper = the
+// short keeper himself — the shipment is for a person, not a building, and a
+// structure two keepers share must not hand it to the other one (code_review).
+// ok=false when the keeper is gone, has no structure-backed post, or is not at
+// it now.
 func bindShortageErrand(w *World, s InputShortage) (*TradeErrand, bool) {
 	keeper := w.Actors[s.KeeperID]
 	if !shortageKeeper(keeper) {
@@ -252,6 +285,7 @@ func bindShortageErrand(w *World, s InputShortage) (*TradeErrand, bool) {
 		Direction:    TradeDirectionSell,
 		Good:         s.Item,
 		Counterparty: keeper.WorkStructureID,
+		Keeper:       keeper.ID,
 		Peddler:      true,
 	}, true
 }
@@ -289,12 +323,7 @@ func peddlerShipmentQty(w *World, keeper *Actor, item ItemKind, batches int) int
 func seedPeddlerPack(r *rand.Rand, w *World, errand *TradeErrand, batches int) (map[ItemKind]int, int) {
 	var keeper *Actor
 	if errand != nil {
-		for _, a := range w.Actors {
-			if shortageKeeper(a) && a.WorkStructureID == errand.Counterparty {
-				keeper = a
-				break
-			}
-		}
+		keeper = w.Actors[errand.Keeper] // the short keeper by id — never a structure scan
 	}
 	pack := map[ItemKind]int{}
 	if errand != nil && errand.Good != "" {

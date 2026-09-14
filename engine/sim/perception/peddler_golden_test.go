@@ -58,7 +58,7 @@ func peddlerActor() *sim.ActorSnapshot {
 			Disposition: "plainspoken",
 			Phase:       sim.VisitorPhaseMakingRounds,
 			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "meat",
-				Counterparty: peddlerScenarioTavern, ShipmentQty: 4, Peddler: true},
+				Counterparty: peddlerScenarioTavern, Keeper: peddlerKeeperID, ShipmentQty: 4, Peddler: true},
 		},
 	}
 }
@@ -163,5 +163,45 @@ func TestPeddlerCuesCarryTheHandoff(t *testing.T) {
 	}
 	if strings.Contains(keeper, "a factor") {
 		t.Errorf("keeper's prompt calls the peddler a factor:\n%s", keeper)
+	}
+}
+
+// TestPeddlerErrandIsWithOneKeeperNotTheBuilding — the shipment is for the short
+// keeper by id (code_review, LLM-656): a shop-mate who keeps the same structure
+// neither hears the trader's-come cue nor counts as "the one keeper you came to
+// deal with" for the peddler's own rounds steer.
+func TestPeddlerErrandIsWithOneKeeperNotTheBuilding(t *testing.T) {
+	const mateID = sim.ActorID("hannah")
+	withMate := func(withJohn bool) *sim.Snapshot {
+		snap := peddlerSnapshot()
+		mate := peddlerKeeper()
+		mate.DisplayName = "Hannah Boggs"
+		mate.Pos = sim.TilePos{X: 42, Y: 40}
+		mate.RestockPolicy = nil
+		snap.Actors[mateID] = mate
+		snap.Huddles[peddlerScenarioHuddle].Members[mateID] = struct{}{}
+		if !withJohn {
+			delete(snap.Actors, peddlerKeeperID)
+			delete(snap.Huddles[peddlerScenarioHuddle].Members, peddlerKeeperID)
+		}
+		return snap
+	}
+	// The shop-mate's view, John also present: no trader's-come cue for her.
+	mateView := renderScenario(perceptionScenario{build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		return withMate(true), mateID, nil
+	}})
+	if strings.Contains(mateView, "## A trader's come to deal") {
+		t.Errorf("the shop-mate hears the peddler's cue meant for John:\n%s", mateView)
+	}
+	// The peddler's view with only the shop-mate at the shop: not "with the one
+	// keeper you came to deal with" — the steer keeps him pointed at his errand.
+	peddlerView := renderScenario(perceptionScenario{build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		return withMate(false), peddlerID, nil
+	}})
+	if strings.Contains(peddlerView, "the one keeper you came to deal with") || strings.Contains(peddlerView, `target_buyer "Hannah Boggs"`) {
+		t.Errorf("the peddler treats the shop-mate as his keeper:\n%s", peddlerView)
+	}
+	if !strings.Contains(peddlerView, "You came to bring meat to the keeper of The Tavern") {
+		t.Errorf("the peddler's steer lost its errand with only the shop-mate present:\n%s", peddlerView)
 	}
 }
