@@ -871,3 +871,138 @@ func TestPay_AllowsUncountedSingleGoodMemo(t *testing.T) {
 		t.Errorf("bob.Coins = %d, want 2", got)
 	}
 }
+
+// --- LLM-659: a bare pay whose memo claims to be a refund is refused unless
+// the coin record shows the recipient actually paid the payer inside the
+// window. The live case: Lewis Walker, never paid by Josiah Thorne, "refunded"
+// him 6 coins for Josiah's own undelivered whetstone.
+
+func TestPay_RefundMemoWithNothingReceivedRejects(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 0},
+	)
+	defer stop()
+	paid := capturePaid(t, w)
+	at := time.Now().UTC()
+
+	_, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 6, "refund for the whetstone that never arrived", at))
+	if err == nil {
+		t.Fatal("refund memo with no coin received from the recipient should be refused")
+	}
+	if !strings.Contains(err.Error(), "Josiah Thorne has paid you no coin these past 7 days") {
+		t.Errorf("rejection = %q, want the record-driven line naming the recipient", err.Error())
+	}
+	snap := w.Published()
+	if got := snap.Actors["lewis"].Coins; got != 10 {
+		t.Errorf("lewis.Coins = %d, want 10 (unchanged)", got)
+	}
+	if got := snap.Actors["josiah"].Coins; got != 0 {
+		t.Errorf("josiah.Coins = %d, want 0 (unchanged)", got)
+	}
+	if len(*paid) != 0 {
+		t.Errorf("Paid events = %d, want 0", len(*paid))
+	}
+}
+
+// The same memo transfers once the record shows the recipient paid the payer —
+// the honest refund direction. Seeded straight onto the record: in production
+// the cascade subscriber credits it beside the durable row.
+func TestPay_RefundMemoAfterRecipientPaidAllows(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentForGoods)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone I never delivered", at)); err != nil {
+		t.Fatalf("a refund from the party who was paid should transfer: %v", err)
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 15 {
+		t.Errorf("lewis.Coins = %d, want 15", got)
+	}
+}
+
+// A payment the recipient made OUTSIDE the window does not license a refund —
+// the guard asks the same week the coin cue renders.
+func TestPay_RefundMemoWithReceiptAgedOutRejects(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-(sim.DefaultCoinRecordWindow + time.Hour)), sim.CoinPaymentForGoods)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err == nil {
+		t.Fatal("a receipt older than the window should not license a refund")
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 10 {
+		t.Errorf("lewis.Coins = %d, want 10 (unchanged)", got)
+	}
+}
+
+// A memo that is not a repayment claim never consults the record: the debt
+// memo where the PAYER owes ("what I owe you") is the ordinary shape and
+// transfers with nothing on the record at all.
+func TestPay_DebtMemoWithoutRepaymentClaimAllows(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 0},
+	)
+	defer stop()
+	at := time.Now().UTC()
+
+	if _, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 3, "what I owe you for the flour", at)); err != nil {
+		t.Fatalf("a debt memo where the payer owes should transfer: %v", err)
+	}
+	if got := w.Published().Actors["josiah"].Coins; got != 3 {
+		t.Errorf("josiah.Coins = %d, want 3", got)
+	}
+}
+
+// A receipt licenses a refund only up to its total: a 5-coin purchase does not
+// let the seller "refund" 6. The same memo at 5 transfers.
+func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentForGoods)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	_, err := w.Send(sim.Pay("josiah", "Lewis Walker", 6, "refund for the whetstone", at))
+	if err == nil {
+		t.Fatal("a refund larger than the recipient's receipts should be refused")
+	}
+	if !strings.Contains(err.Error(), "has paid you only 5 coins these past 7 days") {
+		t.Errorf("rejection = %q, want the received total named", err.Error())
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 10 {
+		t.Errorf("lewis.Coins = %d, want 10 (unchanged)", got)
+	}
+	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err != nil {
+		t.Fatalf("a refund within the recipient's receipts should transfer: %v", err)
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 15 {
+		t.Errorf("lewis.Coins = %d, want 15", got)
+	}
+}

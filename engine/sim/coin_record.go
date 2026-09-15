@@ -466,10 +466,30 @@ func (d CoinDealings) Any() bool { return d.PaidCount > 0 || d.ReceivedCount > 0
 // record whose payments have all aged out reads as empty until the next write (or
 // the daily sweep) prunes it.
 func (s *Snapshot) CoinDealingsFor(subjectID, peerID ActorID, now time.Time) CoinDealings {
-	if s == nil || s.CoinRecord == nil {
+	if s == nil {
 		return CoinDealings{}
 	}
-	byPeer, ok := s.CoinRecord[subjectID]
+	return coinDealingsFrom(s.CoinRecord, s.CoinRecordWindow, subjectID, peerID, now)
+}
+
+// CoinDealingsFor is the Snapshot read against the live record, for a Command
+// that has to answer the same question on the world goroutine before it commits
+// — the bare-pay refund guard (LLM-659) is the caller. Same window, same tally;
+// the two must never disagree about what passed between a pair.
+func (w *World) CoinDealingsFor(subjectID, peerID ActorID, now time.Time) CoinDealings {
+	if w == nil {
+		return CoinDealings{}
+	}
+	return coinDealingsFrom(w.CoinRecord, w.Settings.CoinRecordWindow, subjectID, peerID, now)
+}
+
+// coinDealingsFrom tallies one ordered pair out of a record as of `now`. A
+// non-positive window means the default.
+func coinDealingsFrom(record map[ActorID]map[ActorID]*CoinPairRecord, window time.Duration, subjectID, peerID ActorID, now time.Time) CoinDealings {
+	if record == nil {
+		return CoinDealings{}
+	}
+	byPeer, ok := record[subjectID]
 	if !ok {
 		return CoinDealings{}
 	}
@@ -477,7 +497,6 @@ func (s *Snapshot) CoinDealingsFor(subjectID, peerID ActorID, now time.Time) Coi
 	if rec == nil {
 		return CoinDealings{}
 	}
-	window := s.CoinRecordWindow
 	if window <= 0 {
 		window = DefaultCoinRecordWindow
 	}
