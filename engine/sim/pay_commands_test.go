@@ -916,7 +916,7 @@ func TestPay_RefundMemoAfterRecipientPaidAllows(t *testing.T) {
 	defer stop()
 	at := time.Now().UTC()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentForGoods)
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentUnstated)
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed coin record: %v", err)
@@ -940,7 +940,7 @@ func TestPay_RefundMemoWithReceiptAgedOutRejects(t *testing.T) {
 	defer stop()
 	at := time.Now().UTC()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-(sim.DefaultCoinRecordWindow + time.Hour)), sim.CoinPaymentForGoods)
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-(sim.DefaultCoinRecordWindow + time.Hour)), sim.CoinPaymentUnstated)
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed coin record: %v", err)
@@ -973,7 +973,7 @@ func TestPay_DebtMemoWithoutRepaymentClaimAllows(t *testing.T) {
 	}
 }
 
-// A receipt licenses a refund only up to its total: a 5-coin purchase does not
+// Bare-pay coin licenses a refund only up to its total: 5 coins paid by hand do not
 // let the seller "refund" 6. The same memo at 5 transfers.
 func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 	w, stop := buildPayTestWorld(t,
@@ -983,7 +983,7 @@ func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 	defer stop()
 	at := time.Now().UTC()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentForGoods)
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentUnstated)
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed coin record: %v", err)
@@ -993,7 +993,7 @@ func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 	if err == nil {
 		t.Fatal("a refund larger than the recipient's receipts should be refused")
 	}
-	if !strings.Contains(err.Error(), "has paid you only 5 coins these past 7 days") {
+	if !strings.Contains(err.Error(), "has paid you only 5 coins these past 7 days that bought nothing") {
 		t.Errorf("rejection = %q, want the received total named", err.Error())
 	}
 	if got := w.Published().Actors["lewis"].Coins; got != 10 {
@@ -1004,5 +1004,69 @@ func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 	}
 	if got := w.Published().Actors["lewis"].Coins; got != 15 {
 		t.Errorf("lewis.Coins = %d, want 15", got)
+	}
+}
+
+// LLM-660: coin that bought delivered goods is not refundable, so a purchase
+// does not license the reversed refund. This is the live Lewis/Josiah shape:
+// Josiah bought 7 coins of firewood and wheat from Lewis three days before
+// Lewis "refunded" him 6 for Josiah's own undelivered whetstone.
+func TestPay_RefundMemoAgainstGoodsReceiptRejects(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 0},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("josiah", "lewis", 7, at.Add(-3*24*time.Hour), sim.CoinPaymentForGoods)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	_, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 6, "refund for the whetstone that never arrived", at))
+	if err == nil {
+		t.Fatal("a delivered purchase must not license a refund to the buyer")
+	}
+	if !strings.Contains(err.Error(), "every coin Josiah Thorne has paid you these past 7 days bought goods") {
+		t.Errorf("rejection = %q, want the goods-accounted line", err.Error())
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 10 {
+		t.Errorf("lewis.Coins = %d, want 10 (unchanged)", got)
+	}
+}
+
+// Mixed receipts bound on the bare-pay part only: 7 coins for goods plus 3
+// paid by hand license a 3-coin refund, not a 5-coin one. A wage counts as
+// accounted the same way goods do.
+func TestPay_RefundMemoBoundsOnUnaccountedReceiptsOnly(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 0},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("josiah", "lewis", 7, at.Add(-3*24*time.Hour), sim.CoinPaymentForGoods)
+		world.RecordCoinPaid("josiah", "lewis", 4, at.Add(-2*24*time.Hour), sim.CoinPaymentForWork)
+		world.RecordCoinPaid("josiah", "lewis", 3, at.Add(-24*time.Hour), sim.CoinPaymentUnstated)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	_, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 5, "paying you back", at))
+	if err == nil {
+		t.Fatal("a refund above the bare-pay receipts should be refused")
+	}
+	if !strings.Contains(err.Error(), "has paid you only 3 coins these past 7 days that bought nothing") {
+		t.Errorf("rejection = %q, want the unaccounted total named", err.Error())
+	}
+	if _, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 3, "paying you back", at)); err != nil {
+		t.Fatalf("a refund within the bare-pay receipts should transfer: %v", err)
+	}
+	if got := w.Published().Actors["josiah"].Coins; got != 3 {
+		t.Errorf("josiah.Coins = %d, want 3", got)
 	}
 }

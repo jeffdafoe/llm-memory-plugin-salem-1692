@@ -281,19 +281,31 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// "refund". What this cannot see is a refund already made against the
 			// same receipt — the record carries no purpose, so a second refund of
 			// the same coin passes while the total still covers it (code_review).
+			// The bound is the UNACCOUNTED part of what came in — bare-pay coin
+			// only. Coin that bought delivered goods, paid a wage or settled a
+			// due had its return, and an order that failed is refunded by the
+			// engine itself; the shipped bound on the whole received total let
+			// the Lewis case through, because Josiah had bought 7 coins of
+			// firewood and wheat from him three days before.
 			if isRepaymentClaim(forText) {
-				received := w.CoinDealingsFor(buyerID, sellerID, at).ReceivedTotal
+				dealings := w.CoinDealingsFor(buyerID, sellerID, at)
+				refundable := dealings.ReceivedUnaccountedTotal()
 				window := coinWindowPhrase(w.CoinRecordWindow())
-				if received == 0 {
+				switch {
+				case dealings.ReceivedTotal == 0:
 					return nil, fmt.Errorf(
 						"%s has paid you no coin %s — there is none to hand back.",
 						seller.DisplayName, window,
 					)
-				}
-				if received < amount {
+				case refundable == 0:
 					return nil, fmt.Errorf(
-						"%s has paid you only %s %s — you cannot hand back more than that.",
-						seller.DisplayName, coinsPhrase(received), window,
+						"every coin %s has paid you %s bought goods, paid for work or settled a due — there is none to hand back.",
+						seller.DisplayName, window,
+					)
+				case refundable < amount:
+					return nil, fmt.Errorf(
+						"%s has paid you only %s %s that bought nothing — you cannot hand back more than that.",
+						seller.DisplayName, coinsPhrase(refundable), window,
 					)
 				}
 			}

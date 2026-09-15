@@ -87,6 +87,27 @@ func TestWorldCoinDealingsFor_MatchesSnapshotRead(t *testing.T) {
 	}
 }
 
+// The refundable pool is what is left of a direction once goods, work and dues
+// are taken out — never negative, and zero when everything is accounted for.
+func TestReceivedUnaccountedTotal(t *testing.T) {
+	cases := []struct {
+		name string
+		d    CoinDealings
+		want int
+	}{
+		{"empty", CoinDealings{}, 0},
+		{"all unstated", CoinDealings{ReceivedTotal: 5}, 5},
+		{"all goods", CoinDealings{ReceivedTotal: 7, ReceivedGoodsTotal: 7}, 0},
+		{"mixed", CoinDealings{ReceivedTotal: 14, ReceivedGoodsTotal: 7, ReceivedWorkTotal: 4}, 3},
+		{"with a due", CoinDealings{ReceivedTotal: 6, ReceivedDueTotal: 2, ReceivedGoodsTotal: 3}, 1},
+	}
+	for _, c := range cases {
+		if got := c.d.ReceivedUnaccountedTotal(); got != c.want {
+			t.Errorf("%s: ReceivedUnaccountedTotal = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
 // The refusal names the window the guard enforced, whatever it is set to.
 func TestCoinWindowPhrase(t *testing.T) {
 	cases := []struct {
