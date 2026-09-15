@@ -455,6 +455,17 @@ func (d CoinDealings) PaidAccounted() int { return d.PaidGoodsCount + d.PaidWork
 // ReceivedAccounted is PaidAccounted for the other direction.
 func (d CoinDealings) ReceivedAccounted() int { return d.ReceivedGoodsCount + d.ReceivedWorkCount }
 
+// ReceivedUnaccountedTotal is the coin the peer handed the subject that the
+// engine cannot say bought anything — the Unstated portion: a tip, a gift, a
+// debt paid across a table, a deposit paid by hand. It is the only coin a
+// refund can hand back: goods delivered, work done and a due settled all had
+// their return, and an order that failed is refunded by the engine itself.
+// The three subsets are disjoint and each lies inside the direction's total,
+// so the difference is never negative.
+func (d CoinDealings) ReceivedUnaccountedTotal() int {
+	return d.ReceivedTotal - d.ReceivedGoodsTotal - d.ReceivedWorkTotal - d.ReceivedDueTotal
+}
+
 // Any reports whether any coin passed either way inside the window.
 func (d CoinDealings) Any() bool { return d.PaidCount > 0 || d.ReceivedCount > 0 }
 
