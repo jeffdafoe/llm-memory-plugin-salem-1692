@@ -264,6 +264,26 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				}
 			}
 
+			// LLM-659: a pay that CLAIMS to hand coin back must have coin to hand
+			// back. The coin record is the authority (it already refutes the
+			// phantom-debt family from the other side, LLM-572/607): a refund from
+			// A to B is only possible if B has paid A inside the window. Live
+			// 2026-09-14 Lewis Walker, the party never paid, "refunded" Josiah
+			// Thorne 6 coins for Josiah's own undelivered whetstone, and the
+			// record then vouched for the reversed story in both memories. The
+			// memo decides only whether the pay is claiming to be a repayment;
+			// the record decides whether it can be one. A pay with no memo, or
+			// an ordinary purchase/tip/debt memo, is untouched. This gate sits in
+			// the Command rather than the handler so every door that moves bare
+			// coin — the pay tool and pay_with_item's coin-item translation —
+			// passes through it.
+			if isRepaymentClaim(forText) && w.CoinDealingsFor(buyerID, sellerID, at).ReceivedCount == 0 {
+				return nil, fmt.Errorf(
+					"%s has paid you no coin this past week — there is none to hand back.",
+					seller.DisplayName,
+				)
+			}
+
 			// SpendableCoins, not the raw wallet (LLM-644): a visitor's bare
 			// pay draws the same trip budget as every other buy door.
 			if buyer.SpendableCoins() < amount {
@@ -742,4 +762,48 @@ func joinItemLabels(w *World, goods []ItemKind) string {
 		return labels[0]
 	}
 	return strings.Join(labels[:len(labels)-1], ", ") + " and " + labels[len(labels)-1]
+}
+
+// isRepaymentClaim reports whether a pay memo says the coin is going BACK —
+// a refund, a repayment, coin returned. Only the claim is read here; whether
+// the claim can be true is the coin record's call (LLM-659). Token-level like
+// isLodgingToken so "refunded" does not need "refund" as a substring anywhere
+// else, and deliberately narrow: bare "return" ("in return for the ale") and
+// "owe you" ("what I owe you for the flour") are the ORDINARY debt-memo shape,
+// where the payer is the one who owes, and must keep transferring. "return"
+// counts only beside a coin word, and "back" only close after a giving verb
+// or a coin word, so "welcome back" and "back at the mill" stay tips.
+func isRepaymentClaim(forText string) bool {
+	tokens := strings.FieldsFunc(strings.ToLower(forText), func(r rune) bool { return !unicode.IsLetter(r) })
+	hasCoinWord := false
+	for _, tok := range tokens {
+		switch tok {
+		case "refund", "refunds", "refunded", "refunding",
+			"repay", "repays", "repaid", "repaying", "repayment",
+			"reimburse", "reimburses", "reimbursed", "reimbursing", "reimbursement":
+			return true
+		case "coin", "coins", "money", "payment", "deposit":
+			hasCoinWord = true
+		}
+	}
+	for i, tok := range tokens {
+		switch tok {
+		case "back":
+			for j := max(0, i-3); j < i; j++ {
+				switch tokens[j] {
+				case "pay", "pays", "paid", "paying",
+					"give", "gives", "gave", "given", "giving",
+					"hand", "hands", "handed", "handing",
+					"return", "returns", "returned", "returning",
+					"coin", "coins", "money", "payment", "deposit":
+					return true
+				}
+			}
+		case "return", "returns", "returned", "returning":
+			if hasCoinWord {
+				return true
+			}
+		}
+	}
+	return false
 }
