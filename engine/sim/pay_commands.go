@@ -304,7 +304,7 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 					)
 				case refundable < amount:
 					return nil, fmt.Errorf(
-						"%s has paid you only %s %s that bought nothing — you cannot hand back more than that.",
+						"%s has paid you only %s %s not for goods, work or a due — you cannot hand back more than that.",
 						seller.DisplayName, coinsPhrase(refundable), window,
 					)
 				}

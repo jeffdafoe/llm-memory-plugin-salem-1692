@@ -993,7 +993,7 @@ func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 	if err == nil {
 		t.Fatal("a refund larger than the recipient's receipts should be refused")
 	}
-	if !strings.Contains(err.Error(), "has paid you only 5 coins these past 7 days that bought nothing") {
+	if !strings.Contains(err.Error(), "has paid you only 5 coins these past 7 days not for goods, work or a due") {
 		t.Errorf("rejection = %q, want the received total named", err.Error())
 	}
 	if got := w.Published().Actors["lewis"].Coins; got != 10 {
@@ -1060,7 +1060,7 @@ func TestPay_RefundMemoBoundsOnUnaccountedReceiptsOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("a refund above the bare-pay receipts should be refused")
 	}
-	if !strings.Contains(err.Error(), "has paid you only 3 coins these past 7 days that bought nothing") {
+	if !strings.Contains(err.Error(), "has paid you only 3 coins these past 7 days not for goods, work or a due") {
 		t.Errorf("rejection = %q, want the unaccounted total named", err.Error())
 	}
 	if _, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 3, "paying you back", at)); err != nil {
