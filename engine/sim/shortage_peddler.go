@@ -68,16 +68,29 @@ type shortageKey struct {
 }
 
 // shortageKeeper reports whether a is a resident keeper the sweep assesses: an
-// NPC (never a PC, a decorative, or a visitor) with a business, a post and a
-// restock policy to read produce entries from.
-func shortageKeeper(a *Actor) bool {
-	if a == nil || a.VisitorState != nil || a.BusinessownerState == nil {
+// NPC (never a PC, a decorative, or a visitor) with a post, a restock policy to
+// read entries from, and a claim on that post — its businessowner, or the owner
+// of the business it stands at (LLM-657). The second form is the wright's: Lewis
+// Walker owns and works his workshop (the LLM-648 ActorIsWright posture, keyed
+// on OwnerActorID) but carries only a worker attribute, so BusinessownerState
+// is nil for him — and his whetstone line is the buy line this sweep exists to
+// notice. Everything downstream binds to him by id, so this is the one place
+// keeper-ness is decided for the peddler.
+func shortageKeeper(w *World, a *Actor) bool {
+	if a == nil || a.VisitorState != nil {
 		return false
 	}
 	if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
 		return false
 	}
-	return a.WorkStructureID != "" && a.RestockPolicy != nil
+	if a.WorkStructureID == "" || a.RestockPolicy == nil {
+		return false
+	}
+	if a.BusinessownerState != nil {
+		return true
+	}
+	obj := w.VillageObjects[VillageObjectID(a.WorkStructureID)]
+	return obj != nil && obj.HasTag(TagBusiness) && obj.OwnerActorID == a.ID
 }
 
 // villageSupplierHolds reports whether any resident supplier of record for item
@@ -106,19 +119,49 @@ func villageSupplierHolds(w *World, item ItemKind) bool {
 	return false
 }
 
-// inputShortagesNow lists every (keeper, input) where the keeper makes a good
-// that has room for another batch, lacks a required input for one batch, does
-// not make or gather that input himself, the input is a carriable good (not a
-// service or an eat-here-only kind), and no village supplier holds any. This is
-// precisely the situation the keeper's own cues go silent on (LLM-324 drops the
-// good, LLM-216/LLM-260 drop the input), so nothing in the village can act on it.
-// Sorted by (keeper, item), deduplicated across a keeper's recipes.
+// inputShortagesNow lists every (keeper, good) the village cannot supply him:
+//
+//   - a recipe input — the keeper makes a good that has room for another batch
+//     and lacks a required input for one batch (LLM-656);
+//   - a buy line he holds none of (LLM-657) — the wright's whetstone, consumed
+//     by a service rather than a recipe, and any other bought good a trade runs
+//     on. The distributor's buy lines are skipped: they are the wholesale
+//     import channel the factor cascade already serves, and villageSupplierHolds
+//     counts him as the village's supplier of record, so a peddler bound to him
+//     would be a factor by another name.
+//
+// Both forms require that the keeper does not make or gather the good himself,
+// that it is a carriable good (not a service or an eat-here-only kind), and
+// that no village supplier holds any. This is precisely the situation the
+// keeper's own cues go silent on (LLM-324 drops the good, LLM-216/LLM-260 drop
+// the input, the wright's rounds say "buy one" with nowhere to buy), so nothing
+// in the village can act on it. Sorted by (keeper, item), deduplicated across a
+// keeper's recipes and lines (a tavern's meat buy line and its stew input are
+// one shortage).
 func inputShortagesNow(w *World) []shortageKey {
 	seen := map[shortageKey]struct{}{}
 	var keys []shortageKey
 	for _, a := range w.Actors {
-		if !shortageKeeper(a) {
+		if !shortageKeeper(w, a) {
 			continue
+		}
+		// short records (keeper, item) once the gates the two forms share pass.
+		short := func(item ItemKind) {
+			if a.RestockPolicy.ProducesOrForages(item) {
+				return // his own to make or gather (the LLM-614/616 posture)
+			}
+			if !KindBarterable(w.ItemKinds[item]) {
+				return
+			}
+			if villageSupplierHolds(w, item) {
+				return
+			}
+			k := shortageKey{keeper: a.ID, item: item}
+			if _, dup := seen[k]; dup {
+				return
+			}
+			seen[k] = struct{}{}
+			keys = append(keys, k)
 		}
 		for _, e := range a.RestockPolicy.ProduceEntries() {
 			if !makeableRecipe(w, e.Item) {
@@ -132,22 +175,17 @@ func inputShortagesNow(w *World) []shortageKey {
 				if in.Qty <= 0 || a.Inventory[in.Item] >= in.Qty {
 					continue
 				}
-				if a.RestockPolicy.ProducesOrForages(in.Item) {
-					continue // his own to make or gather (the LLM-614/616 posture)
-				}
-				if !KindBarterable(w.ItemKinds[in.Item]) {
-					continue
-				}
-				if villageSupplierHolds(w, in.Item) {
-					continue
-				}
-				k := shortageKey{keeper: a.ID, item: in.Item}
-				if _, dup := seen[k]; dup {
-					continue
-				}
-				seen[k] = struct{}{}
-				keys = append(keys, k)
+				short(in.Item)
 			}
+		}
+		if ActorIsDistributor(w.VillageObjects, a.WorkStructureID) {
+			continue
+		}
+		for _, e := range a.RestockPolicy.BuyEntries() {
+			if e.Item == "" || a.Inventory[e.Item] > 0 {
+				continue // "short" of a bought good is holding none of it
+			}
+			short(e.Item)
 		}
 	}
 	sort.Slice(keys, func(i, j int) bool {
@@ -272,7 +310,7 @@ func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
 // it now.
 func bindShortageErrand(w *World, s InputShortage) (*TradeErrand, bool) {
 	keeper := w.Actors[s.KeeperID]
-	if !shortageKeeper(keeper) {
+	if !shortageKeeper(w, keeper) {
 		return nil, false
 	}
 	if !structureIDValid(w, VillageObjectID(keeper.WorkStructureID)) {
@@ -294,7 +332,10 @@ func bindShortageErrand(w *World, s InputShortage) (*TradeErrand, bool) {
 // quantity of item among the keeper's own recipes, floored at one unit per
 // batch. Read off the keeper's recipes rather than a fixed knob so a good that
 // takes two per batch (meat for stew) and one that takes five arrive in
-// proportion to what the keeper can actually use.
+// proportion to what the keeper can actually use. A buy line for the good caps
+// the pack at the room left under its cap (LLM-657): the wright keeps four
+// stones at most, so a peddler never brings more than he would hold — floored
+// at one so a shortage that fired always has something to buy.
 func peddlerShipmentQty(w *World, keeper *Actor, item ItemKind, batches int) int {
 	if batches < 1 {
 		batches = 1
@@ -313,7 +354,18 @@ func peddlerShipmentQty(w *World, keeper *Actor, item ItemKind, batches int) int
 			}
 		}
 	}
-	return batches * perBatch
+	qty := batches * perBatch
+	if keeper != nil && keeper.RestockPolicy != nil {
+		for _, e := range keeper.RestockPolicy.BuyEntries() {
+			if e.Item != item || e.Cap() <= 0 {
+				continue
+			}
+			if room := e.Cap() - keeper.Inventory[item]; room < qty {
+				qty = max(room, 1)
+			}
+		}
+	}
+	return qty
 }
 
 // seedPeddlerPack returns the pack and purse a shortage peddler spawns carrying:
