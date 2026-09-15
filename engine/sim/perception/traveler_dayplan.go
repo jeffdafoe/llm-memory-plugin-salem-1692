@@ -143,12 +143,20 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		}
 		for _, m := range members {
 			ks := snap.Actors[m.ID]
-			if ks == nil || ks.BusinessownerState == nil || ks.WorkStructureID != counterparty {
+			if ks == nil || ks.WorkStructureID != counterparty {
 				continue
 			}
 			// A peddler's shipment is for one keeper by id (LLM-656): at a shop two
-			// keepers share, the other one is not the man he came to deal with.
-			if vs.Trade.Keeper != "" && m.ID != vs.Trade.Keeper {
+			// keepers share, the other one is not the man he came to deal with — and
+			// the id is the whole test, since the sweep already decided he keeps the
+			// place (the wright owns his workshop without a businessowner attribute,
+			// LLM-657). A factor's errand names no keeper, so his is the shop's
+			// businessowner.
+			if vs.Trade.Keeper != "" {
+				if m.ID != vs.Trade.Keeper {
+					continue
+				}
+			} else if ks.BusinessownerState == nil {
 				continue
 			}
 			e.AtShop = true
@@ -622,8 +630,8 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
-	if actorSnap.VisitorState != nil || actorSnap.BusinessownerState == nil || actorSnap.WorkStructureID == "" {
-		return nil // the counterparty is a resident keeper at his own post, never a visitor
+	if actorSnap.VisitorState != nil || actorSnap.WorkStructureID == "" {
+		return nil // the counterparty is a resident at his own post, never a visitor
 	}
 	for _, m := range members {
 		vs := snap.Actors[m.ID]
@@ -634,8 +642,12 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		if t.Counterparty != actorSnap.WorkStructureID {
 			continue // his errand is with someone else
 		}
-		if t.Keeper != "" && t.Keeper != actorID {
-			continue // a peddler's errand is with one keeper by id (LLM-656) — not the shop-mate
+		if t.Keeper != "" {
+			if t.Keeper != actorID {
+				continue // a peddler's errand is with one keeper by id (LLM-656) — not the shop-mate
+			}
+		} else if actorSnap.BusinessownerState == nil {
+			continue // a factor deals with the shop's keeper, never a hired hand at it
 		}
 		view := &ErrandVisitView{
 			TraderName: m.DisplayName,
@@ -658,6 +670,12 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		}
 		if view.Peddler {
 			view.ForLabel = keeperProductsUsing(snap, actorSnap, t.Good)
+			// No recipe of his takes it — a service consumable, the wright's
+			// whetstone (LLM-657) — so the cue speaks of the goods themselves in
+			// the plural: "whetstones", not "whetstone".
+			if def := snap.ItemKinds[t.Good]; view.ForLabel == "" && def != nil && def.DisplayLabelPlural != "" {
+				view.GoodLabel = def.DisplayLabelPlural
+			}
 		}
 		view.Pack = buildPackGoods(snap, actorID, vs)
 		return view
@@ -777,7 +795,7 @@ func renderErrandVisit(b *strings.Builder, v *ErrandVisitView) {
 		if v.ForLabel != "" {
 			fmt.Fprintf(b, "%s, a peddler%s, has come to you with %s — the makings of your %s, which the village has gone without.", name, origin, good, sanitizeInline(v.ForLabel))
 		} else {
-			fmt.Fprintf(b, "%s, a peddler%s, has come to you with %s — makings your work has gone without.", name, origin, good)
+			fmt.Fprintf(b, "%s, a peddler%s, has come to you with %s, which your work has gone without.", name, origin, good)
 		}
 		renderPackGoods(b, v.Pack)
 		fmt.Fprintf(b, " Buy what you need with pay_with_item (seller \"%s\", item \"%s\", the quantity, consume_now false, coins in amount or goods you carry in pay_items, your words in say).\n\n", name, sanitizeInline(v.GoodKind))
@@ -863,18 +881,26 @@ func visitorCommerceStripped(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, m
 		return false
 	}
 	var counterparty sim.StructureID
-	if actorSnap.VisitorState.Trade != nil {
-		counterparty = actorSnap.VisitorState.Trade.Counterparty
+	var keeperID sim.ActorID
+	if t := actorSnap.VisitorState.Trade; t != nil {
+		counterparty, keeperID = t.Counterparty, t.Keeper
 	}
 	for _, m := range members {
 		ks := snap.Actors[m.ID]
-		if ks == nil || ks.BusinessownerState == nil || ks.WorkStructureID == "" {
+		if ks == nil || ks.WorkStructureID == "" {
 			continue
 		}
-		if counterparty != "" && ks.WorkStructureID == counterparty {
+		// The errand keeper is the one the errand names when it names one (a
+		// peddler's, LLM-656/657 — he may keep his post as its owner without a
+		// businessowner attribute), else the shop's businessowner.
+		isKeeper := ks.BusinessownerState != nil
+		if keeperID != "" {
+			isKeeper = m.ID == keeperID
+		}
+		if counterparty != "" && ks.WorkStructureID == counterparty && isKeeper {
 			return false // at his errand keeper — his one real trade is allowed
 		}
-		if structureSnapIsTavernOrInn(snap, ks.WorkStructureID) {
+		if ks.BusinessownerState != nil && structureSnapIsTavernOrInn(snap, ks.WorkStructureID) {
 			return false // at a tavern/inn keeper — self-provisioning allowed
 		}
 	}

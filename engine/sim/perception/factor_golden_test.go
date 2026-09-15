@@ -185,8 +185,10 @@ func distributorViewsFactorScenario() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 }
 
 // TestGoldensErrandVisitCueOnlyForKeeper — "## A trader's come to deal" (LLM-455) may render
-// only for a resident KEEPER subject (a businessowner at his own post, never a visitor); it is
-// the counterparty keeper's heads-up that the merchant he's bound to is co-present.
+// only for a resident KEEPER subject at his own post, never a visitor: a businessowner, or
+// the owner of the business he works (the wright's shape, LLM-657 — the sweep's own
+// keeper test). It is the counterparty keeper's heads-up that the merchant he's bound to
+// is co-present.
 func TestGoldensErrandVisitCueOnlyForKeeper(t *testing.T) {
 	const marker = "## A trader's come to deal"
 	for _, sc := range perceptionScenarios {
@@ -198,8 +200,14 @@ func TestGoldensErrandVisitCueOnlyForKeeper(t *testing.T) {
 			}
 			snap, actorID, _ := sc.build()
 			a := snap.Actors[actorID]
-			if a == nil || a.VisitorState != nil || a.BusinessownerState == nil || a.WorkStructureID == "" {
+			if a == nil || a.VisitorState != nil || a.WorkStructureID == "" {
 				t.Errorf("scenario %q: %q rendered for a non-keeper subject", sc.name, marker)
+				return
+			}
+			obj := snap.VillageObjects[sim.VillageObjectID(a.WorkStructureID)]
+			ownsPost := obj != nil && obj.HasTag(sim.TagBusiness) && obj.OwnerActorID == actorID
+			if a.BusinessownerState == nil && !ownsPost {
+				t.Errorf("scenario %q: %q rendered for a subject who neither keeps nor owns his post", sc.name, marker)
 			}
 		})
 	}
