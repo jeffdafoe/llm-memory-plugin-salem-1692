@@ -98,6 +98,8 @@ func TestCoinWindowPhrase(t *testing.T) {
 		{48 * time.Hour, "these past 2 days"},
 		{36 * time.Hour, "these past 36 hours"},
 		{time.Hour, "this past hour"},
+		{90 * time.Minute, "the past 1h30m0s"},
+		{30 * time.Minute, "the past 30m0s"},
 	}
 	for _, c := range cases {
 		if got := coinWindowPhrase(c.window); got != c.want {

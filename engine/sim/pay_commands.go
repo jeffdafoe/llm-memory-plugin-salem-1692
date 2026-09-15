@@ -850,9 +850,12 @@ func coinWindowPhrase(window time.Duration) string {
 		}
 		return fmt.Sprintf("these past %d days", days)
 	}
-	hours := int(window / time.Hour)
-	if hours <= 1 {
-		return "this past hour"
+	if window >= time.Hour && window%time.Hour == 0 {
+		hours := int(window / time.Hour)
+		if hours == 1 {
+			return "this past hour"
+		}
+		return fmt.Sprintf("these past %d hours", hours)
 	}
-	return fmt.Sprintf("these past %d hours", hours)
+	return "the past " + window.String()
 }
