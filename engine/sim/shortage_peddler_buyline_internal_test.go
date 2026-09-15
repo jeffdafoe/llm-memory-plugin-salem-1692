@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,6 +137,45 @@ func TestDueShortagePeddlerBindsTheWright(t *testing.T) {
 	}
 	if len(w.Environment.InputShortages) != 0 {
 		t.Errorf("resolved entry still stored: %+v, want dropped", w.Environment.InputShortages)
+	}
+}
+
+// TestWrightPeddlerShipmentIsBoundToLewis — the LLM-656 keeper binding is by id
+// and does not care how Lewis keeps his post: a hand at his workshop can neither
+// take the peddler's stones (TradeErrandSteer, the gate pay_with_item runs) nor
+// settle the errand by receiving them (sellErrandCredit); Lewis does both.
+func TestWrightPeddlerShipmentIsBoundToLewis(t *testing.T) {
+	w := wrightWorld()
+	w.Actors["hand"] = &Actor{ID: "hand", DisplayName: "Thomas Putnam", Kind: KindNPCShared,
+		WorkStructureID: "workshop", InsideStructureID: "workshop", Inventory: map[ItemKind]int{}}
+	newPeddler := func() (*Actor, *TradeErrand) {
+		errand := &TradeErrand{Direction: TradeDirectionSell, Good: WhetstoneKind, Counterparty: "workshop", Keeper: "lewis", Peddler: true, ShipmentQty: 2}
+		return &Actor{ID: "vstr-wped", Kind: KindNPCShared, Inventory: map[ItemKind]int{WhetstoneKind: 2},
+			VisitorState: &VisitorState{Trade: errand}}, errand
+	}
+	stone := w.ItemKinds[WhetstoneKind]
+	peddler, _ := newPeddler()
+	if steer := TradeErrandSteer(w.VillageObjects, w.Actors, w.Actors["hand"], peddler, stone); steer == "" {
+		t.Error("the hand buying the peddler's stones: allowed, want refused")
+	} else if !strings.Contains(steer, "Lewis Walker") {
+		t.Errorf("the refusal does not name the wright: %q", steer)
+	}
+	if steer := TradeErrandSteer(w.VillageObjects, w.Actors, w.Actors["lewis"], peddler, stone); steer != "" {
+		t.Errorf("the wright buying the peddler's stones: refused %q, want allowed", steer)
+	}
+	peddler, errand := newPeddler()
+	if err := transferItem(nil, peddler, w.Actors["hand"], WhetstoneKind, 2); err != nil {
+		t.Fatalf("transfer to the hand: %v", err)
+	}
+	if errand.Delivered != 0 || sellErrandDelivered(errand.Delivered, errand.ShipmentQty) {
+		t.Errorf("Delivered = %d after handing the stones to the hand, want 0 and unsettled", errand.Delivered)
+	}
+	peddler, errand = newPeddler()
+	if err := transferItem(nil, peddler, w.Actors["lewis"], WhetstoneKind, 2); err != nil {
+		t.Fatalf("transfer to the wright: %v", err)
+	}
+	if errand.Delivered != 2 || !sellErrandDelivered(errand.Delivered, errand.ShipmentQty) {
+		t.Errorf("Delivered = %d after the wright took the stones, want 2 and settled", errand.Delivered)
 	}
 }
 
