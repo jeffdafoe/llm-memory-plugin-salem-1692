@@ -890,7 +890,7 @@ func TestPay_RefundMemoWithNothingReceivedRejects(t *testing.T) {
 	if err == nil {
 		t.Fatal("refund memo with no coin received from the recipient should be refused")
 	}
-	if !strings.Contains(err.Error(), "Josiah Thorne has paid you no coin this past week") {
+	if !strings.Contains(err.Error(), "Josiah Thorne has paid you no coin these past 7 days") {
 		t.Errorf("rejection = %q, want the record-driven line naming the recipient", err.Error())
 	}
 	snap := w.Published()
@@ -970,5 +970,39 @@ func TestPay_DebtMemoWithoutRepaymentClaimAllows(t *testing.T) {
 	}
 	if got := w.Published().Actors["josiah"].Coins; got != 3 {
 		t.Errorf("josiah.Coins = %d, want 3", got)
+	}
+}
+
+// A receipt licenses a refund only up to its total: a 5-coin purchase does not
+// let the seller "refund" 6. The same memo at 5 transfers.
+func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "lewis", displayName: "Lewis Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payActorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("lewis", "josiah", 5, at.Add(-2*24*time.Hour), sim.CoinPaymentForGoods)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	_, err := w.Send(sim.Pay("josiah", "Lewis Walker", 6, "refund for the whetstone", at))
+	if err == nil {
+		t.Fatal("a refund larger than the recipient's receipts should be refused")
+	}
+	if !strings.Contains(err.Error(), "has paid you only 5 coins these past 7 days") {
+		t.Errorf("rejection = %q, want the received total named", err.Error())
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 10 {
+		t.Errorf("lewis.Coins = %d, want 10 (unchanged)", got)
+	}
+	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err != nil {
+		t.Fatalf("a refund within the recipient's receipts should transfer: %v", err)
+	}
+	if got := w.Published().Actors["lewis"].Coins; got != 15 {
+		t.Errorf("lewis.Coins = %d, want 15", got)
 	}
 }

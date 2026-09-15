@@ -24,12 +24,16 @@ func TestIsRepaymentClaim(t *testing.T) {
 		{"the coins I said I'd give back", true},
 		{"handing back your deposit", true},
 		{"returning your coins", true},
+		{"coins returned for the deposit", true},
 		{"your money back", true},
 		{"to reimburse you for the flour", true},
 
 		{"", false},
 		{"ale", false},
 		{"in return for the ale", false},
+		{"5 coins in return for the ale", false},
+		{"in return for your coins", false},
+		{"the ale, and I'll return your kindness", false},
 		{"what I owe you for the flour", false},
 		{"the coins I owed you", false},
 		{"welcome back to the tavern", false},
@@ -68,5 +72,36 @@ func TestWorldCoinDealingsFor_MatchesSnapshotRead(t *testing.T) {
 	var nilWorld *World
 	if d := nilWorld.CoinDealingsFor("lewis", "josiah", at); d.Any() {
 		t.Errorf("nil world = %+v, want empty", d)
+	}
+
+	// A configured window is applied by both reads alike: at 48 hours the
+	// 3-day-old payment falls out of both.
+	w.Settings.CoinRecordWindow = 48 * time.Hour
+	snap.CoinRecordWindow = w.Settings.CoinRecordWindow
+	got = w.CoinDealingsFor("lewis", "josiah", at)
+	if got.Any() {
+		t.Errorf("48h World read = %+v, want empty (payment is 3 days old)", got)
+	}
+	if want := snap.CoinDealingsFor("lewis", "josiah", at); got != want {
+		t.Errorf("48h World read %+v != Snapshot read %+v", got, want)
+	}
+}
+
+// The refusal names the window the guard enforced, whatever it is set to.
+func TestCoinWindowPhrase(t *testing.T) {
+	cases := []struct {
+		window time.Duration
+		want   string
+	}{
+		{7 * 24 * time.Hour, "these past 7 days"},
+		{24 * time.Hour, "this past day"},
+		{48 * time.Hour, "these past 2 days"},
+		{36 * time.Hour, "these past 36 hours"},
+		{time.Hour, "this past hour"},
+	}
+	for _, c := range cases {
+		if got := coinWindowPhrase(c.window); got != c.want {
+			t.Errorf("coinWindowPhrase(%v) = %q, want %q", c.window, got, c.want)
+		}
 	}
 }

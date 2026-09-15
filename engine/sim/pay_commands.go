@@ -276,12 +276,26 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// an ordinary purchase/tip/debt memo, is untouched. This gate sits in
 			// the Command rather than the handler so every door that moves bare
 			// coin — the pay tool and pay_with_item's coin-item translation —
-			// passes through it.
-			if isRepaymentClaim(forText) && w.CoinDealingsFor(buyerID, sellerID, at).ReceivedCount == 0 {
-				return nil, fmt.Errorf(
-					"%s has paid you no coin this past week — there is none to hand back.",
-					seller.DisplayName,
-				)
+			// passes through it. The bound is the window's TOTAL, not a bare
+			// "paid at least once": a one-coin tip must not license a hundred-coin
+			// "refund". What this cannot see is a refund already made against the
+			// same receipt — the record carries no purpose, so a second refund of
+			// the same coin passes while the total still covers it (code_review).
+			if isRepaymentClaim(forText) {
+				received := w.CoinDealingsFor(buyerID, sellerID, at).ReceivedTotal
+				window := coinWindowPhrase(w.CoinRecordWindow())
+				if received == 0 {
+					return nil, fmt.Errorf(
+						"%s has paid you no coin %s — there is none to hand back.",
+						seller.DisplayName, window,
+					)
+				}
+				if received < amount {
+					return nil, fmt.Errorf(
+						"%s has paid you only %s %s — you cannot hand back more than that.",
+						seller.DisplayName, coinsPhrase(received), window,
+					)
+				}
 			}
 
 			// SpendableCoins, not the raw wallet (LLM-644): a visitor's bare
@@ -771,39 +785,74 @@ func joinItemLabels(w *World, goods []ItemKind) string {
 // else, and deliberately narrow: bare "return" ("in return for the ale") and
 // "owe you" ("what I owe you for the flour") are the ORDINARY debt-memo shape,
 // where the payer is the one who owes, and must keep transferring. "return"
-// counts only beside a coin word, and "back" only close after a giving verb
-// or a coin word, so "welcome back" and "back at the mill" stay tips.
+// counts only with a coin word right beside it and never as "in return" —
+// "5 coins in return for the ale" is a purchase (code_review) — and "back"
+// only close after a giving verb or a coin word, so "welcome back" and "back
+// at the mill" stay tips.
 func isRepaymentClaim(forText string) bool {
 	tokens := strings.FieldsFunc(strings.ToLower(forText), func(r rune) bool { return !unicode.IsLetter(r) })
-	hasCoinWord := false
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		switch tok {
 		case "refund", "refunds", "refunded", "refunding",
 			"repay", "repays", "repaid", "repaying", "repayment",
 			"reimburse", "reimburses", "reimbursed", "reimbursing", "reimbursement":
 			return true
-		case "coin", "coins", "money", "payment", "deposit":
-			hasCoinWord = true
-		}
-	}
-	for i, tok := range tokens {
-		switch tok {
 		case "back":
 			for j := max(0, i-3); j < i; j++ {
-				switch tokens[j] {
-				case "pay", "pays", "paid", "paying",
-					"give", "gives", "gave", "given", "giving",
-					"hand", "hands", "handed", "handing",
-					"return", "returns", "returned", "returning",
-					"coin", "coins", "money", "payment", "deposit":
+				if isGivingVerb(tokens[j]) || isCoinWord(tokens[j]) {
 					return true
 				}
 			}
 		case "return", "returns", "returned", "returning":
-			if hasCoinWord {
+			if i > 0 && tokens[i-1] == "in" {
+				continue
+			}
+			if i > 0 && isCoinWord(tokens[i-1]) {
 				return true
+			}
+			for j := i + 1; j < len(tokens) && j <= i+2; j++ {
+				if isCoinWord(tokens[j]) {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+func isGivingVerb(tok string) bool {
+	switch tok {
+	case "pay", "pays", "paid", "paying",
+		"give", "gives", "gave", "given", "giving",
+		"hand", "hands", "handed", "handing",
+		"return", "returns", "returned", "returning":
+		return true
+	}
+	return false
+}
+
+func isCoinWord(tok string) bool {
+	switch tok {
+	case "coin", "coins", "money", "payment", "deposit":
+		return true
+	}
+	return false
+}
+
+// coinWindowPhrase names the coin-record window in the refund refusal so the
+// model is told the period the guard actually enforced — the window is a
+// setting, not always a week (code_review).
+func coinWindowPhrase(window time.Duration) string {
+	if window >= 24*time.Hour && window%(24*time.Hour) == 0 {
+		days := int(window / (24 * time.Hour))
+		if days == 1 {
+			return "this past day"
+		}
+		return fmt.Sprintf("these past %d days", days)
+	}
+	hours := int(window / time.Hour)
+	if hours <= 1 {
+		return "this past hour"
+	}
+	return fmt.Sprintf("these past %d hours", hours)
 }
