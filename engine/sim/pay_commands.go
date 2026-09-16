@@ -817,7 +817,14 @@ func isRepaymentClaim(forText string) bool {
 			if i > 0 && isNumberToken(tokens[i-1]) {
 				return true
 			}
-			for j := max(0, i-3); j < i; j++ {
+			// The three-token window counts letter tokens only, as it did
+			// before digits were kept: "I handed 3 of it back" must still
+			// reach "handed" (code_review, LLM-662).
+			for j, seen := i-1, 0; j >= 0 && seen < 3; j-- {
+				if isDigitToken(tokens[j]) {
+					continue
+				}
+				seen++
 				if isGivingVerb(tokens[j]) || isCoinWord(tokens[j]) {
 					return true
 				}
@@ -862,17 +869,7 @@ func isCoinWord(tok string) bool {
 // into a memo ("two back", "15 back"). Small on purpose: one to twenty and the
 // tens cover every pay amount seen in the record.
 func isNumberToken(tok string) bool {
-	if tok == "" {
-		return false
-	}
-	digits := true
-	for _, r := range tok {
-		if !unicode.IsDigit(r) {
-			digits = false
-			break
-		}
-	}
-	if digits {
+	if isDigitToken(tok) {
 		return true
 	}
 	switch tok {
@@ -882,6 +879,20 @@ func isNumberToken(tok string) bool {
 		return true
 	}
 	return false
+}
+
+// isDigitToken reports a non-empty run of digits — the tokens the memo
+// tokenizer keeps only for the number-before-"back" read.
+func isDigitToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for _, r := range tok {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // coinWindowPhrase names the coin-record window in the refund refusal so the

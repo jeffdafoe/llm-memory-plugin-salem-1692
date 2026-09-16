@@ -33,6 +33,11 @@ func TestIsRepaymentClaim(t *testing.T) {
 		{"You paid six but the ale and bread come to four — here's two back", true},
 		{"here's 2 back", true},
 		{"overcharged you — fifteen back", true},
+		// A digit inside the giving-verb window must not use up the window
+		// (code_review): these read exactly as they did when digits were
+		// dropped from the token stream.
+		{"I handed 3 of it back", true},
+		{"gave 5 of that back", true},
 
 		{"", false},
 		{"ale", false},
