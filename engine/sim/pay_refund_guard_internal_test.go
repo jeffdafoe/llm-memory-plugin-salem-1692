@@ -27,6 +27,17 @@ func TestIsRepaymentClaim(t *testing.T) {
 		{"coins returned for the deposit", true},
 		{"your money back", true},
 		{"to reimburse you for the flour", true},
+		// LLM-662: a number right before "back" — the live John Ellis memo
+		// (2026-09-15, passed the LLM-660 guard), its digit form, and a bare
+		// number word.
+		{"You paid six but the ale and bread come to four — here's two back", true},
+		{"here's 2 back", true},
+		{"overcharged you — fifteen back", true},
+		// A digit inside the giving-verb window must not use up the window
+		// (code_review): these read exactly as they did when digits were
+		// dropped from the token stream.
+		{"I handed 3 of it back", true},
+		{"gave 5 of that back", true},
 
 		{"", false},
 		{"ale", false},
@@ -37,7 +48,9 @@ func TestIsRepaymentClaim(t *testing.T) {
 		{"what I owe you for the flour", false},
 		{"the coins I owed you", false},
 		{"welcome back to the tavern", false},
+		{"4 coins for the ale, welcome back", false},
 		{"news from back at the mill", false},
+		{"3 sacks of flour, back at the mill", false},
 		{"a tip for the news", false},
 		{"the repair of my shovel", false},
 	}

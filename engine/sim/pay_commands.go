@@ -799,10 +799,14 @@ func joinItemLabels(w *World, goods []ItemKind) string {
 // where the payer is the one who owes, and must keep transferring. "return"
 // counts only with a coin word right beside it and never as "in return" —
 // "5 coins in return for the ale" is a purchase (code_review) — and "back"
-// only close after a giving verb or a coin word, so "welcome back" and "back
-// at the mill" stay tips.
+// only close after a giving verb or a coin word, or right after a number
+// ("here's two back", "here's 2 back" — the John Ellis memo that slipped the
+// LLM-660 guard, LLM-662), so "welcome back" and "back at the mill" stay
+// tips. The number reads ONE token back, not the three-token window, so a
+// purchase memo like "4 coins for the ale, welcome back" cannot be refused.
+// Digits are kept as tokens for that read; nothing else keys on them.
 func isRepaymentClaim(forText string) bool {
-	tokens := strings.FieldsFunc(strings.ToLower(forText), func(r rune) bool { return !unicode.IsLetter(r) })
+	tokens := strings.FieldsFunc(strings.ToLower(forText), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 	for i, tok := range tokens {
 		switch tok {
 		case "refund", "refunds", "refunded", "refunding",
@@ -810,7 +814,17 @@ func isRepaymentClaim(forText string) bool {
 			"reimburse", "reimburses", "reimbursed", "reimbursing", "reimbursement":
 			return true
 		case "back":
-			for j := max(0, i-3); j < i; j++ {
+			if i > 0 && isNumberToken(tokens[i-1]) {
+				return true
+			}
+			// The three-token window counts letter tokens only, as it did
+			// before digits were kept: "I handed 3 of it back" must still
+			// reach "handed" (code_review, LLM-662).
+			for j, seen := i-1, 0; j >= 0 && seen < 3; j-- {
+				if isDigitToken(tokens[j]) {
+					continue
+				}
+				seen++
 				if isGivingVerb(tokens[j]) || isCoinWord(tokens[j]) {
 					return true
 				}
@@ -849,6 +863,36 @@ func isCoinWord(tok string) bool {
 		return true
 	}
 	return false
+}
+
+// isNumberToken reports a digit run or a number word — the amounts NPCs write
+// into a memo ("two back", "15 back"). Small on purpose: one to twenty and the
+// tens cover every pay amount seen in the record.
+func isNumberToken(tok string) bool {
+	if isDigitToken(tok) {
+		return true
+	}
+	switch tok {
+	case "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+		"eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+		"thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred":
+		return true
+	}
+	return false
+}
+
+// isDigitToken reports a non-empty run of digits — the tokens the memo
+// tokenizer keeps only for the number-before-"back" read.
+func isDigitToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for _, r := range tok {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // coinWindowPhrase names the coin-record window in the refund refusal so the
