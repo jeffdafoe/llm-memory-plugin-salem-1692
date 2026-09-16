@@ -1037,6 +1037,38 @@ func TestPay_RefundMemoAgainstGoodsReceiptRejects(t *testing.T) {
 	}
 }
 
+// The live row that slipped LLM-660 (LLM-662): Silence Walker paid John
+// Ellis 6 coins for ale, bread and cheese, and a minute later John "handed
+// two back" for an overcharge that never happened. The memo carries no
+// refund word, no giving verb and no coin word — only "two back" — and the
+// receipt it claims against bought delivered goods, so the guard refuses.
+func TestPay_NumberBackMemoAgainstGoodsReceiptRejects(t *testing.T) {
+	w, stop := buildPayTestWorld(t,
+		payActorSpec{id: "john", displayName: "John Ellis", kind: sim.KindNPCStateful, huddleID: "h1", coins: 6},
+		payActorSpec{id: "silence", displayName: "Silence Walker", kind: sim.KindNPCShared, huddleID: "h1", coins: 0},
+	)
+	defer stop()
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.RecordCoinPaid("silence", "john", 6, at.Add(-time.Minute), sim.CoinPaymentForGoods)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed coin record: %v", err)
+	}
+
+	_, err := w.Send(sim.Pay("john", "Silence Walker", 2,
+		"You paid six but the ale and bread come to four — here's two back", at))
+	if err == nil {
+		t.Fatal("\"here's two back\" against a goods receipt must be refused")
+	}
+	if !strings.Contains(err.Error(), "every coin Silence Walker has paid you these past 7 days bought goods") {
+		t.Errorf("rejection = %q, want the goods-accounted line", err.Error())
+	}
+	if got := w.Published().Actors["john"].Coins; got != 6 {
+		t.Errorf("john.Coins = %d, want 6 (unchanged)", got)
+	}
+}
+
 // Mixed receipts bound on the bare-pay part only: 7 coins for goods plus 3
 // paid by hand license a 3-coin refund, not a 5-coin one. A wage counts as
 // accounted the same way goods do.
