@@ -640,21 +640,28 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 			break
 		}
 	}
-	kind, destSID, destOID, destPos := destToView(dest)
-	w.RecordDeadlock(DeadlockEntry{
-		Time:            now,
-		MoverID:         actor.ID,
-		MoverName:       actor.DisplayName,
-		MoverPos:        actor.Pos,
-		DestinationKind: kind,
-		DestStructureID: destSID,
-		DestObjectID:    destOID,
-		DestPosition:    destPos,
-		OccupantID:      occupantID,
-		OccupantName:    occupantName,
-		OccupantTile:    occupiedNext,
-		ReplanFailed:    replanFailed,
-	})
+	// A grazer's stable block is a pen-mate on the fenced grazer grid — the
+	// steady state of a full pen, not contention an operator needs to see.
+	// Recording those flushed the whole ring in ~11 hours (LLM-661), evicting
+	// every NPC entry, so a grazer mover skips the record; the walk-through
+	// below still runs for it.
+	if !actorIsGrazer(w, actor) {
+		kind, destSID, destOID, destPos := destToView(dest)
+		w.RecordDeadlock(DeadlockEntry{
+			Time:            now,
+			MoverID:         actor.ID,
+			MoverName:       actor.DisplayName,
+			MoverPos:        actor.Pos,
+			DestinationKind: kind,
+			DestStructureID: destSID,
+			DestObjectID:    destOID,
+			DestPosition:    destPos,
+			OccupantID:      occupantID,
+			OccupantName:    occupantName,
+			OccupantTile:    occupiedNext,
+			ReplanFailed:    replanFailed,
+		})
+	}
 
 	// Walk-through, not give-up (ZBBS-HOME-327). The mover has been stably
 	// soft-blocked for the full window — an actor that isn't going to yield (a
