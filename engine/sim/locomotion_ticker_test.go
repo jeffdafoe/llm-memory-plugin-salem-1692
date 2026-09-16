@@ -1280,3 +1280,74 @@ func TestLocomotionTicker_GoroutineDrivesMovement(t *testing.T) {
 		t.Errorf("ticker goroutine left walker at %+v, want %+v", pos, dest)
 	}
 }
+
+// LLM-661: a grazer that trips the stuck-tick cap walks through like anyone
+// else but leaves NO deadlock entry — pen-mates blocking each other inside a
+// fence are the pen's steady state, and recording them flushed the ring of
+// every NPC entry. Same boxed-in shape as the mutual-block test above, with
+// the walker turned into a decorative cow.
+func TestLocomotion_SoftBlocker_GrazerMoverLeavesNoDeadlockEntry(t *testing.T) {
+	w, cancel, _ := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Sprites["cow-sprite"] = &sim.Sprite{
+				ID: "cow-sprite", Name: "Cow", Behaviors: []string{sim.BehaviorGrazer},
+			}
+			walker := world.Actors["walker"]
+			walker.Kind = sim.KindDecorative
+			walker.SpriteID = "cow-sprite"
+			world.Actors["north_blocker"] = &sim.Actor{
+				ID: "north_blocker", DisplayName: "North",
+				Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+			}
+			world.Actors["west_blocker"] = &sim.Actor{
+				ID: "west_blocker", DisplayName: "West",
+				Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 5},
+			}
+			world.Actors["east_blocker"] = &sim.Actor{
+				ID: "east_blocker", DisplayName: "East",
+				Pos: sim.TilePos{X: sim.PadX + 6, Y: sim.PadY + 5},
+			}
+			world.Actors["south_blocker"] = &sim.Actor{
+				ID: "south_blocker", DisplayName: "South",
+				Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 6},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed grazer + blockers: %v", err)
+	}
+	if _, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 3}), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+
+	// The grazer slow walk (GrazerStepDivisor) advances the cow on every Nth
+	// locomotion tick, so the stuck window takes N times the ticks to fill.
+	// Tick until the walk-through is observed, with one extra grazer beat of
+	// slack, so the test does not depend on the beat's initial phase
+	// (code_review). Breaking on arrival also stops a later beat carrying the
+	// cow on to its goal and clearing MoveIntent before the assertions.
+	overlapTile := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}
+	walkedThrough := false
+	for i := 0; i < (sim.DeadlockStuckThreshold+1)*sim.GrazerStepDivisor; i++ {
+		tickLoco(t, w, now)
+		if pos, _ := actorSpatial(t, w, "walker"); pos == overlapTile {
+			walkedThrough = true
+			break
+		}
+	}
+	if !walkedThrough {
+		pos, _ := actorSpatial(t, w, "walker")
+		t.Fatalf("grazer did not walk through onto the north blocker tile: at %+v, want %+v", pos, overlapTile)
+	}
+	if entries := w.DeadlockSnapshot(); len(entries) != 0 {
+		t.Fatalf("DeadlockSnapshot length = %d, want 0 — a grazer mover must not be recorded", len(entries))
+	}
+	if moveIntentOf(t, w, "walker") == nil {
+		t.Error("MoveIntent cleared — the walk-through must preserve it for a grazer too")
+	}
+}
