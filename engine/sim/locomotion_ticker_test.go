@@ -1327,19 +1327,25 @@ func TestLocomotion_SoftBlocker_GrazerMoverLeavesNoDeadlockEntry(t *testing.T) {
 
 	// The grazer slow walk (GrazerStepDivisor) advances the cow on every Nth
 	// locomotion tick, so the stuck window takes N times the ticks to fill.
-	for i := 0; i < sim.DeadlockStuckThreshold*sim.GrazerStepDivisor; i++ {
+	// Tick until the walk-through is observed, with one extra grazer beat of
+	// slack, so the test does not depend on the beat's initial phase
+	// (code_review). Breaking on arrival also stops a later beat carrying the
+	// cow on to its goal and clearing MoveIntent before the assertions.
+	overlapTile := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}
+	walkedThrough := false
+	for i := 0; i < (sim.DeadlockStuckThreshold+1)*sim.GrazerStepDivisor; i++ {
 		tickLoco(t, w, now)
+		if pos, _ := actorSpatial(t, w, "walker"); pos == overlapTile {
+			walkedThrough = true
+			break
+		}
 	}
-
+	if !walkedThrough {
+		pos, _ := actorSpatial(t, w, "walker")
+		t.Fatalf("grazer did not walk through onto the north blocker tile: at %+v, want %+v", pos, overlapTile)
+	}
 	if entries := w.DeadlockSnapshot(); len(entries) != 0 {
 		t.Fatalf("DeadlockSnapshot length = %d, want 0 — a grazer mover must not be recorded", len(entries))
-	}
-	// The walk-through is unchanged: the cow still forces onto the north
-	// blocker's tile and keeps its MoveIntent.
-	pos, _ := actorSpatial(t, w, "walker")
-	overlapTile := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}
-	if pos != overlapTile {
-		t.Errorf("grazer did not walk through onto the north blocker tile: at %+v, want %+v", pos, overlapTile)
 	}
 	if moveIntentOf(t, w, "walker") == nil {
 		t.Error("MoveIntent cleared — the walk-through must preserve it for a grazer too")
