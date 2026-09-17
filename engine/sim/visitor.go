@@ -761,22 +761,30 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// leaves the shortage due to try again next tick.
 	shortageIdx := -1
 	var shortageErrand *TradeErrand
-	// Carter (carter.go) ahead of the peddler: a residue run, or a standing
-	// shortage the village's own shelves can cover, is the inside-supply job and
-	// takes the tick's one spawn first. The peddler below yields on its own
-	// (dueShortagePeddler defers to carterCoversShortage), so the two never
-	// answer the same lack. LastCarterAt is stamped only once the spawn commits.
+	// Carter (carter.go) and peddler share the tick's one spawn, in this order: a
+	// carter route that serves a standing shortage from the village's own
+	// shelves (the carter supersedes the peddler when the goods are already in
+	// town), else a due peddler (a keeper's work has stood still for days and
+	// the carter cannot make the run this tick — the holder is away, or nothing
+	// in town covers it), else a carter residue run. The peddler never waits on
+	// a carter who cannot come (code_review). LastCarterAt is stamped only once
+	// the spawn commits.
 	var carterLegs []CarterLeg
 	carterPurse := 0
-	if legs, purse, ok := dueCarter(w, inputs.Now); ok {
-		carterLegs, carterPurse = legs, purse
-		shortageErrand = &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: legs}
+	carterLegs, carterPurse, carterDue := dueCarter(w, inputs.Now)
+	carterShortageRun := carterDue && carterRouteHasShortage(w, carterLegs)
+	if !carterShortageRun {
+		if i, errand, ok := dueShortagePeddler(w, inputs.Now); ok {
+			shortageIdx, shortageErrand = i, errand
+			roll = visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: TradeDirectionSell, Shortage: true}
+			carterDue = false
+		}
+	}
+	if carterDue {
+		shortageErrand = &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: carterLegs}
 		// The first leg is projected here, before the arrival target is picked
 		// off the errand's Counterparty below: he walks in to his first stop.
 		projectCarterLeg(shortageErrand, nil)
-		roll = visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: TradeDirectionSell, Shortage: true}
-	} else if i, errand, ok := dueShortagePeddler(w, inputs.Now); ok {
-		shortageIdx, shortageErrand = i, errand
 		roll = visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: TradeDirectionSell, Shortage: true}
 	}
 	if roll.Class == visitorSpawnNone {

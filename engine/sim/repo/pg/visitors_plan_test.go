@@ -295,3 +295,21 @@ func TestVisitorPlanCarterRouteRoundTrip(t *testing.T) {
 		t.Errorf("a peddler's plan carries carter keys: %s", js)
 	}
 }
+
+// TestVisitorPlanDropsMalformedCarterLeg — an out-of-band leg with no price or
+// no quantity is dropped at decode, never normalized into an executable leg
+// that would move residue for free (code_review).
+func TestVisitorPlanDropsMalformedCarterLeg(t *testing.T) {
+	js := `{"coins":45,"spend_budget":45,"trade":{"direction":"sell","good":"wheat","counterparty":"farm","keeper":"liz","carter":true,
+		"legs":[{"buy":true,"good":"wheat","qty":25,"counterparty":"farm","keeper":"liz","unit":0},
+		        {"buy":true,"good":"iron","qty":0,"counterparty":"farm","keeper":"liz","unit":3},
+		        {"good":"wheat","qty":25,"counterparty":"mill","keeper":"joseph","unit":1}]}}`
+	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(js), lv); err != nil {
+		t.Fatalf("applyVisitorPlan: %v", err)
+	}
+	tr := lv.VisitorState.Trade
+	if tr == nil || !tr.Carter || len(tr.Legs) != 1 || tr.Legs[0].Buy || tr.Legs[0].Good != "wheat" || tr.Legs[0].Unit != 1 {
+		t.Errorf("legs = %+v, want only the well-formed sell leg", tr.Legs)
+	}
+}

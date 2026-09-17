@@ -293,15 +293,6 @@ func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
 		if !s.LastPeddlerAt.IsZero() && now.Sub(s.LastPeddlerAt) < cooldown {
 			continue
 		}
-		// The carter supersedes the peddler when the village already holds a
-		// batch of the good (carter.go): the peddler is the outside-supply
-		// mechanism, and importing what sits three buildings away is the
-		// defect the carter exists for. dueCarter runs ahead of this in the
-		// spawn and takes the run; here the entry simply waits for him.
-		if carterCoversShortage(w, s, now) {
-			log.Printf("sim/shortage_peddler: %s — the village holds the goods; the carter's run", shortageLabel(w, s))
-			continue
-		}
 		errand, ok := bindShortageErrand(w, s)
 		if !ok {
 			continue

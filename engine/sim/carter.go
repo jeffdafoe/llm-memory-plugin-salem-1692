@@ -41,9 +41,12 @@ import (
 // only while resident coin is under visitor_coin_band_high.
 //
 // The carter SUPERSEDES the shortage peddler when the village already holds the
-// goods (dueShortagePeddler defers to carterCoversShortage): the peddler is the
-// outside-supply mechanism and stays; the carter is the inside-supply one. One
-// visitor, one source, one settlement — no mixed run.
+// goods: dispatchVisitorSpawn asks dueCarter first, and a route that serves a
+// standing shortage takes the spawn ahead of the peddler. The peddler is the
+// outside-supply mechanism and stays — and it never waits on a carter who
+// cannot make the run this tick (the holder away or abed, nothing in town
+// covering the lack), or a keeper's work would stand still while the residue
+// sat on a shut shelf. One visitor, one source, one settlement — no mixed run.
 //
 // Everything downstream — arrival target, `## Your rounds`, the keeper's
 // `## A trader's come to deal`, errand confinement, dusk wind-down, daybreak
@@ -520,30 +523,6 @@ func actorTendsPost(w *World, a *Actor, structureID StructureID) bool {
 	return conversationalScopeStructure(w, a) == structureID
 }
 
-// carterCoversShortage reports whether the village's residue holds at least
-// one batch of the input a standing shortage names — the supersede test: the
-// peddler yields to the carter when the goods are already in town. One batch
-// is the unit the peddler pack is sized on (peddlerShipmentQty with batches 1).
-// Off with the carter (CarterDays 0), so the peddler runs as before.
-func carterCoversShortage(w *World, s InputShortage, now time.Time) bool {
-	days, floor, _, _ := carterSettings(w)
-	if days <= 0 {
-		return false
-	}
-	keeper := w.Actors[s.KeeperID]
-	if keeper == nil {
-		return false
-	}
-	need := peddlerShipmentQty(w, keeper, s.Item, 1)
-	total := 0
-	for _, lot := range residueLots(w, floor, now) {
-		if lot.item == s.Item && lot.holder.ID != s.KeeperID {
-			total += lot.qty
-		}
-	}
-	return total >= need
-}
-
 // stampCarterShortages marks the shortage entries a committed carter route
 // serves with LastPeddlerAt, so the peddler cooldown covers the carter's run
 // too — one visitor per lack per cooldown, whichever kind came.
@@ -601,10 +580,13 @@ func advanceCarter(w *World, actor *Actor, now time.Time) {
 // or the purse is short — logs and leaves the leg to be marked done by the
 // caller: a stop that found nothing is still over.
 func settleCarterBuyLeg(w *World, carter, holder *Actor, leg *CarterLeg, now time.Time) {
+	if leg == nil || leg.Qty <= 0 || leg.Unit <= 0 {
+		return // never planned; an out-of-band leg must not move goods for free (code_review)
+	}
 	// SpendableCoins, not the wallet (LLM-644): what he may put into a purchase is
 	// what he arrived with, so a sell leg's takings can never widen a later buy.
 	qty := min(leg.Qty, residueSpare(w, holder, leg.Good))
-	if leg.Unit > 0 && carter.SpendableCoins()/leg.Unit < qty {
+	if carter.SpendableCoins()/leg.Unit < qty {
 		qty = carter.SpendableCoins() / leg.Unit
 	}
 	if qty <= 0 {

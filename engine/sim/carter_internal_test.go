@@ -310,31 +310,71 @@ func TestDueCarter(t *testing.T) {
 	}
 }
 
-func TestCarterCoversShortage(t *testing.T) {
+// TestPeddlerNeverWaitsOnACarterWhoCannotCome — the peddler's own due gate
+// does not consult the carter at all (code_review): the supersede is the spawn
+// ordering in dispatchVisitorSpawn, so a shortage whose residue sits on a shut
+// shelf still brings the peddler.
+func TestPeddlerNeverWaitsOnACarterWhoCannotCome(t *testing.T) {
 	w := carterWorld()
 	s := InputShortage{KeeperID: "joseph", Item: "wheat", Days: 3}
-	if !carterCoversShortage(w, s, carterNow) {
-		t.Error("25 wheat at the dairy does not cover a 5-a-batch shortage?")
-	}
-	w.Actors["liz"].Inventory["wheat"] = 4
-	if carterCoversShortage(w, s, carterNow) {
-		t.Error("4 wheat covers a 5-a-batch shortage?")
-	}
-	w.Actors["liz"].Inventory["wheat"] = 25
-	w.Settings.CarterDays = 0
-	if carterCoversShortage(w, s, carterNow) {
-		t.Error("carter off: the peddler was told to yield")
-	}
-	// The peddler's due gate yields to the carter (dueShortagePeddler).
-	w.Settings.CarterDays = 3
 	w.Settings.ShortagePeddlerDays = 3
 	w.Environment.InputShortages = []InputShortage{s}
-	if _, _, ok := dueShortagePeddler(w, carterNow); ok {
-		t.Error("the peddler was sent for wheat the village holds")
-	}
-	w.Settings.CarterDays = 0
 	if _, _, ok := dueShortagePeddler(w, carterNow); !ok {
-		t.Error("carter off: the peddler was not sent")
+		t.Error("the peddler was not due for a standing shortage")
+	}
+	w.Actors["liz"].State = StateSleeping // the holder abed: no carter can make the run
+	if _, _, ok := dueCarter(w, carterNow); ok {
+		t.Error("a carter was due with the holder abed")
+	}
+	if _, _, ok := dueShortagePeddler(w, carterNow); !ok {
+		t.Error("the peddler was held back although no carter can come")
+	}
+}
+
+// TestSettleCarterBuyLegRejectsBadLeg — an out-of-band leg with no price or no
+// quantity moves nothing (code_review): no goods, no coin, no log row.
+func TestSettleCarterBuyLegRejectsBadLeg(t *testing.T) {
+	for _, bad := range []CarterLeg{
+		{Buy: true, Good: "wheat", Qty: 25, Counterparty: "farm", Keeper: "liz", Unit: 0},
+		{Buy: true, Good: "wheat", Qty: 0, Counterparty: "farm", Keeper: "liz", Unit: 1},
+	} {
+		w := carterWorld()
+		tr := &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: []CarterLeg{bad}}
+		carter := &Actor{ID: "vstr-cart", DisplayName: "Asa Larkin the carter", Kind: KindNPCShared, State: StateIdle,
+			InsideStructureID: "farm", Coins: 63, Inventory: map[ItemKind]int{}, VisitorState: &VisitorState{Trade: tr, SpendBudget: 63}}
+		projectCarterLeg(tr, carter.Inventory)
+		w.Actors[carter.ID] = carter
+		advanceCarter(w, carter, carterNow)
+		if carter.Inventory["wheat"] != 0 || w.Actors["liz"].Inventory["wheat"] != 25 || carter.Coins != 63 || w.Actors["liz"].Coins != 1 || len(w.ActionLog) != 0 {
+			t.Errorf("leg %+v moved something: carter %v/%d coin, liz %v/%d coin, log %d", bad, carter.Inventory, carter.Coins, w.Actors["liz"].Inventory, w.Actors["liz"].Coins, len(w.ActionLog))
+		}
+	}
+}
+
+// TestCarterPartialSaleHoldsTheLeg pins the decision (code_review): a keeper
+// who takes less than three quarters of the lot leaves the carter on that leg —
+// the peddler's own rule — and the unsold balance stays in his pack to leave
+// with him at daybreak. No decline protocol exists in the commerce path, so the
+// engine cannot tell "still considering" from "refused the rest".
+func TestCarterPartialSaleHoldsTheLeg(t *testing.T) {
+	w := carterWorld()
+	carter, tr := carterOnRoute(w)
+	carter.InsideStructureID = "farm"
+	advanceCarter(w, carter, carterNow) // the wheat buy settles; the sell at the mill is projected
+	carter.InsideStructureID = "mill"
+	if err := transferItem(w, carter, w.Actors["joseph"], "wheat", 10); err != nil {
+		t.Fatal(err)
+	}
+	advanceCarter(w, carter, carterNow)
+	if tr.Legs[1].Done || tr.Counterparty != "mill" || tr.Delivered != 10 {
+		t.Errorf("after 10 of 25 taken: leg done=%v counterparty=%s delivered=%d, want the sell leg still current", tr.Legs[1].Done, tr.Counterparty, tr.Delivered)
+	}
+	if err := transferItem(w, carter, w.Actors["joseph"], "wheat", 9); err != nil {
+		t.Fatal(err)
+	}
+	advanceCarter(w, carter, carterNow)
+	if !tr.Legs[1].Done || carter.Inventory["wheat"] != 6 {
+		t.Errorf("after 19 of 25 taken: leg done=%v carter wheat=%d, want done (three quarters landed) with 6 left in the pack", tr.Legs[1].Done, carter.Inventory["wheat"])
 	}
 }
 

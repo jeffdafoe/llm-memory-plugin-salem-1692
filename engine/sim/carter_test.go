@@ -196,6 +196,32 @@ func TestTickVisitorCascade_CarterSupersedesPeddler(t *testing.T) {
 		t.Fatalf("inspect: %v", err)
 	}
 
+	// The holder abed: no carter can make the run this tick, and the peddler
+	// does not wait on him (code_review) — the goods come from outside.
+	vw3 := newVisitorWorld()
+	vw3.seedResidueVillage(t)
+	w3, cancel3 := vw3.load(t)
+	defer cancel3()
+	if _, err := w3.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		rollsOff(world)
+		world.Settings.ShortagePeddlerDays = 3
+		world.Actors["joseph"].Coins = 0
+		world.Actors["liz"].State = sim.StateSleeping
+		world.Environment.InputShortages = []sim.InputShortage{
+			{KeeperID: "joseph", Item: "wheat", Days: 3, LastSeenAt: now.Add(-16 * time.Hour)},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	res, err = w3.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: now, Rand: rand.New(rand.NewSource(7))}))
+	if err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	if tm = res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 || tm.SpawnedPeddler != 1 || tm.SpawnedCarter != 0 {
+		t.Errorf("holder abed: spawned = %d peddler = %d carter = %d (%s), want the peddler", tm.Spawned, tm.SpawnedPeddler, tm.SpawnedCarter, tm.SpawnSkipReason)
+	}
+
 	// With the carter off, the same shortage brings the peddler as before.
 	vw2 := newVisitorWorld()
 	vw2.seedResidueVillage(t)

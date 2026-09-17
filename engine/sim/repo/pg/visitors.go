@@ -317,12 +317,16 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 				Carter:       plan.Trade.Carter,
 			}
 			for _, l := range plan.Trade.Legs {
-				if l.Good == "" || l.Counterparty == "" || l.Keeper == "" {
-					continue // an out-of-band edit; a leg with no stop is no leg
+				// A leg with no stop, no quantity or no price is not a leg: the
+				// planner never writes one, so it is an out-of-band edit, and a
+				// zero-unit buy leg would move residue for free (code_review).
+				// Dropped rather than normalized into something executable.
+				if l.Good == "" || l.Counterparty == "" || l.Keeper == "" || l.Qty <= 0 || l.Unit <= 0 {
+					continue
 				}
 				lv.VisitorState.Trade.Legs = append(lv.VisitorState.Trade.Legs, sim.CarterLeg{
-					Buy: l.Buy, Good: sim.ItemKind(l.Good), Qty: max(l.Qty, 0),
-					Counterparty: sim.StructureID(l.Counterparty), Keeper: sim.ActorID(l.Keeper), Unit: max(l.Unit, 0), Done: l.Done,
+					Buy: l.Buy, Good: sim.ItemKind(l.Good), Qty: l.Qty,
+					Counterparty: sim.StructureID(l.Counterparty), Keeper: sim.ActorID(l.Keeper), Unit: l.Unit, Done: l.Done,
 				})
 			}
 		}
