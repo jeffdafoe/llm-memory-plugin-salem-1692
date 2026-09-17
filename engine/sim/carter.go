@@ -155,6 +155,13 @@ func projectCarterLeg(tr *TradeErrand, carrying map[ItemKind]int) {
 			tr.Settled = true
 			return
 		}
+		if leg.Qty <= 0 || leg.Unit <= 0 || leg.Good == "" || leg.Counterparty == "" || leg.Keeper == "" {
+			// Never planned — an out-of-band leg, buy or sell. Skipped here, the one
+			// place every route passes through, so it is neither walked to nor
+			// advertised at a zero price (code_review).
+			leg.Done = true
+			continue
+		}
 		if !leg.Buy {
 			if held := carrying[leg.Good]; held <= 0 {
 				leg.Done = true

@@ -1,4 +1,4 @@
--- Carter rollback: drop the cooldown anchor.
+-- LLM-663 rollback: drop the cooldown anchor.
 --
 -- Harmless to the village: with the column gone the engine reads "no carter has
 -- come yet" and the next residue run is at most one cooldown early. Engine-STOPPED

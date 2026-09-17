@@ -1,4 +1,4 @@
--- The carter — the inside-supply visitor (engine sim/carter.go).
+-- LLM-663: the carter — the inside-supply visitor (engine sim/carter.go).
 --
 -- Goods are the village's currency: the distributor pays in stock, so coin never
 -- reaches producers and the goods he hands over land where nobody uses them
@@ -28,7 +28,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_name = 'world_state' AND column_name = 'last_carter_at') THEN
-        RAISE EXCEPTION 'carter: world_state.last_carter_at missing after ALTER';
+        RAISE EXCEPTION 'LLM-663: world_state.last_carter_at missing after ALTER';
     END IF;
 END $$;
 

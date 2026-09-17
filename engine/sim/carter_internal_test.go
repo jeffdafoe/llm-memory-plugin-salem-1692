@@ -351,6 +351,28 @@ func TestSettleCarterBuyLegRejectsBadLeg(t *testing.T) {
 	}
 }
 
+// TestProjectCarterLegSkipsBadLegs — projection is the one place every route
+// passes through, so a malformed leg of either kind is marked done there and
+// never walked to or advertised (code_review): a zero-unit sell leg does not
+// become the current leg, and a route of nothing but bad legs settles.
+func TestProjectCarterLegSkipsBadLegs(t *testing.T) {
+	tr := &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: []CarterLeg{
+		{Good: "wheat", Qty: 25, Counterparty: "mill", Keeper: "joseph", Unit: 0},
+		{Buy: true, Good: "iron", Qty: 6, Counterparty: "farm", Keeper: "liz", Unit: 3},
+	}}
+	projectCarterLeg(tr, map[ItemKind]int{"wheat": 25})
+	if !tr.Legs[0].Done || tr.Good != "iron" || tr.ShipmentQty != 0 || tr.Settled {
+		t.Errorf("after projection: legs=%+v good=%s shipment=%d settled=%v, want the zero-unit sell skipped and the iron buy current", tr.Legs, tr.Good, tr.ShipmentQty, tr.Settled)
+	}
+	tr = &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: []CarterLeg{
+		{Good: "wheat", Qty: 0, Counterparty: "mill", Keeper: "joseph", Unit: 1},
+	}}
+	projectCarterLeg(tr, map[ItemKind]int{"wheat": 25})
+	if !tr.Settled || tr.CarterLeg() != nil {
+		t.Errorf("a route of one bad leg: settled=%v leg=%+v, want settled with no leg", tr.Settled, tr.CarterLeg())
+	}
+}
+
 // TestCarterPartialSaleHoldsTheLeg pins the decision (code_review): a keeper
 // who takes less than three quarters of the lot leaves the carter on that leg —
 // the peddler's own rule — and the unsold balance stays in his pack to leave
