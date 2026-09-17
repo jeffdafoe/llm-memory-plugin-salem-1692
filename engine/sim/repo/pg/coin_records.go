@@ -106,7 +106,8 @@ SELECT action_type,
                      ELSE payload->>'recipient' END, ''),
        COALESCE(payload->>'rate_settled', ''),
        COALESCE(payload->>'ledger_id', ''),
-       COALESCE(payload->>'lodging_grant', '')
+       COALESCE(payload->>'lodging_grant', ''),
+       COALESCE(payload->>'carter_leg', '')
   FROM agent_action_log
  WHERE action_type IN ('paid', 'labored')
    AND result = 'ok'
@@ -142,8 +143,9 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			rateSettled      string
 			ledgerID         string
 			lodgingGrant     string
+			carterLeg        string
 		)
-		if err := rows.Scan(&actionType, &actorID, &at, &amount, &counterpartyID, &counterpartyName, &rateSettled, &ledgerID, &lodgingGrant); err != nil {
+		if err := rows.Scan(&actionType, &actorID, &at, &amount, &counterpartyID, &counterpartyName, &rateSettled, &ledgerID, &lodgingGrant, &carterLeg); err != nil {
 			return nil, fmt.Errorf("pg coin records LoadPaymentsSince scan: %w", err)
 		}
 		// The predicate admits exactly these two, so anything else is unreachable;
@@ -163,6 +165,7 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			RateSettled:         rateSettled,
 			LedgerID:            ledgerID,
 			LodgingGrant:        lodgingGrant,
+			CarterLeg:           carterLeg,
 		})
 	}
 	if err := rows.Err(); err != nil {

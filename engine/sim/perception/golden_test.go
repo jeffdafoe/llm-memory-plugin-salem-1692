@@ -7182,7 +7182,9 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "broke_maker_at_store_no_spare_goods_hold_off" || // LLM-636: producer in company (with Josiah at the store), priced own wares + spoken-for makings held back
 			sc.name == "keeper_prices_bale_leftover_iron" || // LLM-646: keeper in company holding off-policy priced stock — held goods ARE own trade now
 			sc.name == "keeper_views_peddler" || // LLM-656: the tavernkeeper in company with the peddler, priced own ale + the stew he cannot yet make
-			sc.name == "wright_views_peddler" // LLM-657: the wright in company with the whetstone peddler — his whetstone buy line is a priced ware
+			sc.name == "wright_views_peddler" || // LLM-657: the wright in company with the whetstone peddler — his whetstone buy line is a priced ware
+			sc.name == "holder_views_carter" || // carter: the dairykeeper in company with the carter, priced own milk and cheese
+			sc.name == "keeper_views_carter" // carter: the miller in company with the carter, priced own flour
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -7205,7 +7207,9 @@ func TestWholesaleChannelLineOnlyForWholesalerProduce(t *testing.T) {
 		want := sc.name == "wholesaler_producer_bartering_with_customer" ||
 			sc.name == "wholesaler_producer_observed_rates" ||
 			sc.name == "miller_flour_wholesale_earns_nothing" || // LLM-475: the same line, now carrying the maker's own cost
-			sc.name == "miller_offered_parity_swap_for_flour" // LLM-598: the same miller, weighing a barter offer against that line
+			sc.name == "miller_offered_parity_swap_for_flour" || // LLM-598: the same miller, weighing a barter offer against that line
+			sc.name == "holder_views_carter" || // carter: the wholesaler dairy pricing its own produce with the carter in company
+			sc.name == "keeper_views_carter" // carter: the wholesaler mill, likewise
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wholesale-channel wares line present=%v, want %v", sc.name, has, want)
 		}

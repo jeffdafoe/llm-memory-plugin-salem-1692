@@ -3,6 +3,7 @@ package pg
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,5 +247,51 @@ func TestVisitorPlanSpendBudgetDecode(t *testing.T) {
 	}
 	if lv.VisitorState.SpendBudget != 0 {
 		t.Errorf("spent budget round-trip = %d; want 0 (encode must write the field explicitly)", lv.VisitorState.SpendBudget)
+	}
+}
+
+// TestVisitorPlanCarterRouteRoundTrip — the carter's route (sim/carter.go) rides
+// the plan jsonb: the Carter flag and every leg with its done mark, so a
+// mid-visit redeploy resumes him on the same leg with the same stops ahead.
+func TestVisitorPlanCarterRouteRoundTrip(t *testing.T) {
+	a := &sim.Actor{
+		ID: "vstr-0000cart", Inventory: map[sim.ItemKind]int{"wheat": 25}, Coins: 20,
+		VisitorState: &sim.VisitorState{
+			SpendBudget: 45,
+			Trade: &sim.TradeErrand{Direction: sim.TradeDirectionSell, Carter: true,
+				Good: "wheat", Counterparty: "mill", Keeper: "joseph", ShipmentQty: 25, Delivered: 5,
+				Legs: []sim.CarterLeg{
+					{Buy: true, Good: "wheat", Qty: 25, Counterparty: "farm", Keeper: "liz", Unit: 1, Done: true},
+					{Good: "wheat", Qty: 25, Counterparty: "mill", Keeper: "joseph", Unit: 1},
+				}},
+		},
+	}
+	js, err := encodeVisitorPlan(a)
+	if err != nil {
+		t.Fatalf("encodeVisitorPlan: %v", err)
+	}
+	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(js), lv); err != nil {
+		t.Fatalf("applyVisitorPlan: %v", err)
+	}
+	tr := lv.VisitorState.Trade
+	if tr == nil || !tr.Carter || tr.Good != "wheat" || tr.Counterparty != "mill" || tr.Keeper != "joseph" || tr.ShipmentQty != 25 || tr.Delivered != 5 {
+		t.Fatalf("carter errand round-trip = %+v; want the projected sell leg at the mill intact", tr)
+	}
+	if len(tr.Legs) != 2 || tr.Legs[0] != a.VisitorState.Trade.Legs[0] || tr.Legs[1] != a.VisitorState.Trade.Legs[1] {
+		t.Errorf("legs round-trip = %+v; want %+v", tr.Legs, a.VisitorState.Trade.Legs)
+	}
+	if leg := tr.CarterLeg(); leg == nil || leg.Buy || leg.Keeper != "joseph" {
+		t.Errorf("current leg after the round-trip = %+v; want the sell at the mill", leg)
+	}
+	// A peddler's document carries no legs and decodes as it did.
+	p := &sim.Actor{ID: "vstr-0000ped0", Inventory: map[sim.ItemKind]int{}, VisitorState: &sim.VisitorState{
+		Trade: &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "meat", Counterparty: "tavern", Keeper: "john", Peddler: true}}}
+	js, err = encodeVisitorPlan(p)
+	if err != nil {
+		t.Fatalf("encodeVisitorPlan(peddler): %v", err)
+	}
+	if strings.Contains(js, `"legs"`) || strings.Contains(js, `"carter"`) {
+		t.Errorf("a peddler's plan carries carter keys: %s", js)
 	}
 }

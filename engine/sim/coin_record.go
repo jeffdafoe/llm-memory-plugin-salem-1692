@@ -732,6 +732,12 @@ type CoinPaymentRow struct {
 	//
 	// The value is never parsed; only whether it is there.
 	LodgingGrant string
+	// CarterLeg is the raw payload text naming the residue a carter's mechanical
+	// buy took (sim/carter.go settleCarterBuyLeg). Its PRESENCE is the third goods
+	// classification: the key is written only by that settle, which moves the
+	// goods and the coin in one step, so a row carrying it bought goods that are
+	// already delivered. Forward-only like LodgingGrant; never parsed.
+	CarterLeg string
 }
 
 // coinPaymentKindFromRow classifies a seeded row the way the live subscribers do,
@@ -763,7 +769,7 @@ func coinPaymentKindFromRow(row CoinPaymentRow) CoinPaymentKind {
 	if settled, err := strconv.Atoi(strings.TrimSpace(row.RateSettled)); err == nil && settled > 0 {
 		return CoinPaymentForDue
 	}
-	if strings.TrimSpace(row.LedgerID) != "" || strings.TrimSpace(row.LodgingGrant) != "" {
+	if strings.TrimSpace(row.LedgerID) != "" || strings.TrimSpace(row.LodgingGrant) != "" || strings.TrimSpace(row.CarterLeg) != "" {
 		return CoinPaymentForGoods
 	}
 	return CoinPaymentUnstated

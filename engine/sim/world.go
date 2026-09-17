@@ -35,6 +35,7 @@ type WorldEnvironment struct {
 	LastNeedsTickAt         time.Time       // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
 	TownChest               int             // coin the estate rate (LLM-652) has taken out of purses and not yet spent back. Durable — persisted in world_state.town_chest_coins: the coin has left the purses, so losing it on restart would destroy it.
 	InputShortages          []InputShortage // standing input shortages the daily sweep found (LLM-656), sorted by (keeper, item). Durable — persisted in world_state.input_shortages: the peddler threshold is counted in game-days and the village restarts several times a day, so an in-memory count would rarely reach it.
+	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -616,6 +617,19 @@ type WorldSettings struct {
 	// Falls back to DefaultShortagePeddlerBatches when zero/unset; settings key
 	// shortage_peddler_batches.
 	ShortagePeddlerBatches int
+
+	// Carter knobs (carter.go). CarterDays is the cooldown between
+	// residue-triggered carter visits in days; 0 is the off-switch (the pg
+	// loader seeds the default only when the key is absent); settings key
+	// carter_days. CarterResidueFloorCoins is the least a residue lot may be
+	// worth for him to stop for it; CarterResidueSpawnCoins the residue total
+	// that brings him with no buyer lined up; CarterPurseMax what he arrives
+	// carrying at most. The three re-default at zero; settings keys
+	// carter_residue_floor_coins, carter_residue_spawn_coins, carter_purse_max.
+	CarterDays              int
+	CarterResidueFloorCoins int
+	CarterResidueSpawnCoins int
+	CarterPurseMax          int
 
 	// Coin-valve band (LLM-455). A merchant visitor's trade direction — buy (pays the
 	// village, injects coin) vs sell (the factor; the village pays him, drains coin) — is

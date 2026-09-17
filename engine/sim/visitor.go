@@ -327,13 +327,19 @@ func visitorSpriteName(vs *VisitorState) string {
 	if vs.Trade != nil {
 		// The city factor has his own look; a shortage peddler (LLM-656) is a
 		// country dealer and draws from the trader pool by his good, like a buyer.
-		if vs.Trade.Direction == TradeDirectionSell && !vs.Trade.Peddler {
+		if vs.Trade.Direction == TradeDirectionSell && !vs.Trade.Peddler && !vs.Trade.Carter {
 			return FactorSpriteName
 		}
 		if len(merchantBuyerSpriteNames) == 0 {
 			return ""
 		}
-		return merchantBuyerSpriteNames[stableStringIndex(string(vs.Trade.Good), len(merchantBuyerSpriteNames))]
+		// A carter's Good changes leg by leg, so his sprite keys on the archetype
+		// rather than the good, or a redeploy mid-route would change his face.
+		key := string(vs.Trade.Good)
+		if vs.Trade.Carter {
+			key = CarterArchetype
+		}
+		return merchantBuyerSpriteNames[stableStringIndex(key, len(merchantBuyerSpriteNames))]
 	}
 	return passerThroughSprite[vs.Archetype]
 }
@@ -392,6 +398,7 @@ type VisitorCascadeTelemetry struct {
 	CleanedUp        int // visitor rows removed past ExpiresAt + grace
 	Spawned          int // new visitors created (0 or 1 per tick)
 	SpawnedPeddler   int // 1 if the spawn was a shortage peddler (LLM-656), counted within Spawned
+	SpawnedCarter    int // 1 if the spawn was a carter (carter.go), counted within Spawned
 	RoundsPaced      int // stationary travelers woken this tick to reconsider their rounds (LLM-379 pacing)
 	CircuitToLodging int // visitors that turned to the lodging phase this tick (dusk)
 	SpawnSkipChance  int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
@@ -754,7 +761,21 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// leaves the shortage due to try again next tick.
 	shortageIdx := -1
 	var shortageErrand *TradeErrand
-	if i, errand, ok := dueShortagePeddler(w, inputs.Now); ok {
+	// Carter (carter.go) ahead of the peddler: a residue run, or a standing
+	// shortage the village's own shelves can cover, is the inside-supply job and
+	// takes the tick's one spawn first. The peddler below yields on its own
+	// (dueShortagePeddler defers to carterCoversShortage), so the two never
+	// answer the same lack. LastCarterAt is stamped only once the spawn commits.
+	var carterLegs []CarterLeg
+	carterPurse := 0
+	if legs, purse, ok := dueCarter(w, inputs.Now); ok {
+		carterLegs, carterPurse = legs, purse
+		shortageErrand = &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: legs}
+		// The first leg is projected here, before the arrival target is picked
+		// off the errand's Counterparty below: he walks in to his first stop.
+		projectCarterLeg(shortageErrand, nil)
+		roll = visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: TradeDirectionSell, Shortage: true}
+	} else if i, errand, ok := dueShortagePeddler(w, inputs.Now); ok {
 		shortageIdx, shortageErrand = i, errand
 		roll = visitorSpawnRoll{Class: visitorSpawnMerchant, Direction: TradeDirectionSell, Shortage: true}
 	}
@@ -892,6 +913,11 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	var pack map[ItemKind]int
 	var purse int
 	switch {
+	case trade != nil && trade.Carter:
+		// A carter (carter.go) arrives empty-packed with the coin his route's buy
+		// legs come to plus a traveler's reserve — everything he will carry, he
+		// buys here.
+		pack, purse = map[ItemKind]int{}, carterPurse
 	case trade != nil && trade.Peddler:
 		// A shortage peddler (LLM-656) carries the one missing good, sized to a
 		// couple of the keeper's batches, and a traveler's purse — no bale, no float.
@@ -984,6 +1010,15 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	}
 	w.Actors[id] = visitor
 	w.outdoorActors[id] = struct{}{}
+	if trade != nil && trade.Carter {
+		// The carter is committed: start the residue cooldown, and stamp any
+		// shortage his route serves so the peddler cooldown covers this run too.
+		w.Environment.LastCarterAt = inputs.Now
+		stampCarterShortages(w, carterLegs, inputs.Now)
+		t.SpawnedCarter = 1
+		log.Printf("sim/visitor: dispatchSpawn: carter %q with %d coin on a %d-leg route: %s",
+			displayName, purse, len(carterLegs), describeCarterRoute(w, carterLegs))
+	}
 	if shortageIdx >= 0 && shortageIdx < len(w.Environment.InputShortages) {
 		// The peddler is committed: start this shortage's cooldown so the next
 		// tick does not send a second one for the same lack (LLM-656).
@@ -1212,6 +1247,13 @@ func dispatchVisitorPacing(w *World, inputs VisitorTickInputs, t *VisitorCascade
 		// on a meal or a room (a consumable is eaten, a service is never held). Turns the rounds
 		// cue to the wind-down. A seller (factor) has an open-ended two-way deal and winds down
 		// on the dusk phase flip instead.
+		// A carter (carter.go) walks a route of legs: settle a buy leg when he
+		// stands with the holder, advance past a landed sell leg, and project the
+		// next. His errand settles itself when the route is done, so the two
+		// single-errand settles below are not for him.
+		if tr := vs.Trade; tr != nil && tr.Carter {
+			advanceCarter(w, actor, now)
+		}
 		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionBuy && !tr.Settled && actor.Inventory[tr.Good] > 0 {
 			tr.Settled = true
 		}
@@ -1226,7 +1268,7 @@ func dispatchVisitorPacing(w *World, inputs VisitorTickInputs, t *VisitorCascade
 		// also the only place he could transact. He bid the keeper farewell, found every
 		// other stop talk-only, and came back — for hours. The settled-seller wind-down
 		// prose has existed since LLM-507 and was unreachable; this is what reaches it.
-		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionSell && !tr.Settled &&
+		if tr := vs.Trade; tr != nil && tr.Direction == TradeDirectionSell && !tr.Carter && !tr.Settled &&
 			sellErrandDelivered(tr.Delivered, tr.ShipmentQty) {
 			tr.Settled = true
 		}
@@ -1817,6 +1859,9 @@ const ProvisionerArchetype = "provisioner"
 func visitorMerchantLabel(w *World, trade *TradeErrand) string {
 	if trade == nil {
 		return ""
+	}
+	if trade.Carter {
+		return CarterArchetype // one label for the whole route — he carries many goods
 	}
 	if trade.Peddler {
 		// "meat-peddler": the good he carries names the trade (LLM-656), the

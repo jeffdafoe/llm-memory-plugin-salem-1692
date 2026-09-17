@@ -602,6 +602,15 @@ type TradeErrand struct {
 	// (sellErrandCredit). "" for a factor or a buyer, whose errands are with a
 	// building. Persisted in the plan jsonb.
 	Keeper ActorID
+	// Carter marks the inside-supply visitor (carter.go): a route of Legs
+	// through the village — buys of residue from its holders, sells to keepers
+	// with a line for the good — rather than one errand with one counterparty.
+	// The CURRENT leg is projected onto Good / Counterparty / Keeper /
+	// ShipmentQty / Delivered (projectCarterLeg) so every gate that reads those
+	// works per leg; Legs is the whole route and the source of truth. Both
+	// persisted in the plan jsonb.
+	Carter bool
+	Legs   []CarterLeg
 }
 
 // Archetype / Origin / Disposition come from per-spawn random pools in
