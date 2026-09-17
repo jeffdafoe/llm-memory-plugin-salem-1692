@@ -88,6 +88,16 @@ type RoundsErrand struct {
 	// Settled — the errand trade is done (or proven impossible for the day); the cue turns to
 	// winding him down to the tavern instead of pressing his rounds.
 	Settled bool
+	// Carter (sim/carter.go): a route of legs rather than one errand. BuyLeg marks
+	// the mechanical buy leg, where the engine settles the bargain as he stands
+	// with the holder and he needs only to be there. HolderName is whose shelves
+	// the goods are — the holder he buys from on a buy leg, the holder they came
+	// off on a sell leg. LotQty and AskPrice size the lot and his ask for it.
+	Carter     bool
+	BuyLeg     bool
+	HolderName string
+	LotQty     int
+	AskPrice   int
 }
 
 // RoundsShop is one still-open shop on the traveler's rounds: its name and a bearing
@@ -129,12 +139,23 @@ func buildTravelerRounds(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, membe
 		e.GoodLabel = e.GoodKind
 		if def := snap.ItemKinds[vs.Trade.Good]; def != nil {
 			e.GoodLabel = def.Singular()
-			if e.Peddler {
+			if e.Peddler || vs.Trade.Carter {
 				// The bare good ("meat"), not the count noun: the peddler's lines
 				// speak of the good in bulk — "the meat their work has gone
 				// without", "most of the meat you brought" (LLM-656).
 				e.GoodLabel = bulkGoodLabel(def, e.GoodKind)
 			}
+		}
+		// A carter's current leg (sim/carter.go): whom he deals with and for how
+		// much, and whose shelves the goods are off.
+		if leg := vs.Trade.CarterLeg(); vs.Trade.Carter && leg != nil {
+			e.Carter = true
+			e.BuyLeg = leg.Buy
+			e.LotQty = leg.Qty
+			e.AskPrice = leg.Price()
+			e.HolderName = carterLegHolderName(snap, vs.Trade, leg)
+		} else if vs.Trade.Carter {
+			e.Carter = true
 		}
 		if st := snap.Structures[counterparty]; st != nil && st.DisplayName != "" {
 			e.ShopLabel = st.DisplayName
@@ -335,7 +356,28 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 	keeper := sanitizeInline(e.KeeperName)
 	shop := sanitizeInline(e.ShopLabel)
 	good := sanitizeInline(e.GoodLabel)
+	holder := sanitizeInline(e.HolderName)
 	switch {
+	// The carter (sim/carter.go) walks a route: a buy leg settles itself as he
+	// stands with the holder, so the cue only has to get him there and keep him
+	// from haggling; a sell leg is the peddler's offer, with the provenance and
+	// his ask spelled out so the keeper hears where the goods came from.
+	case e.Carter && e.Settled && bedTime:
+		b.WriteString("Your dealing in this village is done — what you bought and could not sell goes down the road with you. The tavern's the place now, for your supper and a bed before the road.\n")
+	case e.Carter && e.Settled:
+		b.WriteString("Your dealing in this village is done — what you bought and could not sell goes down the road with you. The rest of the day is yours to look in on the other shops and pass the news.\n")
+	case e.Carter && e.BuyLeg && e.AtShop:
+		fmt.Fprintf(b, "You're with %s at %s, come for the %s they've no trade for — %d of it. The bargain is struck as you stand here: the coin is counted out of your purse and the goods into your pack, no haggling wanted. Pass the time of day and be on your way once they're stowed.\n",
+			holder, shop, good, e.LotQty)
+	case e.Carter && e.BuyLeg:
+		fmt.Fprintf(b, "You've come for the %s %s keeps at %s and has no trade for, %s — make for it; your coin is counted out for the lot. %s\n",
+			good, holder, shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
+	case e.Carter && e.AtShop:
+		fmt.Fprintf(b, "You're with %s at %s — the keeper you've brought the %s to, off %s's shelves, which their work has gone without. Offer it: call sell with item \"%s\", qty %d, about %d coin for the lot in amount, consume_now false, target_buyer \"%s\", and your words in say. They may take it as offered, pay you in coin or in goods from their shelves, or name a lower figure.\n",
+			keeper, shop, good, holder, sanitizeInline(e.GoodKind), e.LotQty, e.AskPrice, keeper)
+	case e.Carter:
+		fmt.Fprintf(b, "You carry %s off %s's shelves for the keeper of %s, %s — that is your business here, so make for it. %s\n",
+			good, holder, shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
 	case e.Settled && e.Buy && bedTime:
 		fmt.Fprintf(b, "You have what you came for — %s and stowed in your pack. Your business in this village is done; the tavern's the place now, for your supper and a bed before the road.\n", boughtClause(e, good))
 	case e.Settled && e.Buy:
@@ -373,6 +415,27 @@ func renderRoundsErrand(b *strings.Builder, e *RoundsErrand, bedTime bool) {
 		fmt.Fprintf(b, "You came to deal with the keeper of %s, %s — that is your business here, so make for it. %s\n",
 			shop, roundsDistPhrase(e.Steps, e.Direction), otherShopsAside(shop))
 	}
+}
+
+// carterLegHolderName names whose shelves a carter leg's goods are off: on a
+// buy leg the holder he buys from; on a sell leg the holder of the buy leg
+// that sourced the good (the last done buy of it), falling back to the plain
+// phrase when none is on the route. Display names, for the prose and the
+// keeper's ear.
+func carterLegHolderName(snap *sim.Snapshot, tr *sim.TradeErrand, leg *sim.CarterLeg) string {
+	source := leg.Keeper
+	if !leg.Buy {
+		source = ""
+		for _, l := range tr.Legs {
+			if l.Buy && l.Done && l.Good == leg.Good {
+				source = l.Keeper
+			}
+		}
+	}
+	if a := snap.Actors[source]; a != nil && a.DisplayName != "" {
+		return a.DisplayName
+	}
+	return "another keeper"
 }
 
 // boughtClause renders the settled buyer's purchase as he now holds it — "the nails
@@ -594,6 +657,14 @@ type ErrandVisitView struct {
 	// GoodLabel is the display noun of the good a BUYER wants, or the good a PEDDLER
 	// brings (unused for a factor).
 	GoodLabel string
+	// Carter (sim/carter.go): a carter on a SELL leg to this keeper — Peddler-shaped,
+	// with SourceLabel naming whose shelves the goods came off. CarterBuying is the
+	// carter on a BUY leg from this keeper: the engine settles it, so the cue only
+	// says what is happening; LotQty is the lot.
+	Carter       bool
+	CarterBuying bool
+	SourceLabel  string
+	LotQty       int
 	// Pack lists a SELLER's actual pack goods (his live inventory), each with the
 	// keeper's own worth reference where one resolves (LLM-647). Sorted by noun for
 	// deterministic render. Empty for a buyer errand or an empty pack.
@@ -654,6 +725,30 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			Origin:     vs.VisitorState.Origin,
 			Sell:       t.Direction == sim.TradeDirectionSell,
 			Peddler:    t.Peddler,
+		}
+		// A carter (sim/carter.go) deals leg by leg. With his route done there is
+		// no deal here; on a buy leg the engine settles it and the keeper only
+		// hears what is happening; on a sell leg the cue is the peddler's, with
+		// the goods' provenance, and the pack listing is the lot alone — the rest
+		// of his pack is for other keepers.
+		if t.Carter {
+			leg := t.CarterLeg()
+			if leg == nil {
+				continue
+			}
+			view.GoodKind = string(t.Good)
+			view.GoodLabel = bulkGoodLabel(snap.ItemKinds[t.Good], view.GoodKind)
+			view.LotQty = leg.Qty
+			if leg.Buy {
+				view.CarterBuying = true
+				return view
+			}
+			view.Carter = true
+			view.SourceLabel = carterLegHolderName(snap, t, leg)
+			view.ForLabel = keeperProductsUsing(snap, actorSnap, t.Good)
+			lot := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{t.Good: vs.Inventory[t.Good]}}
+			view.Pack = buildPackGoods(snap, actorID, lot)
+			return view
 		}
 		if !view.Sell || view.Peddler {
 			view.GoodKind = string(t.Good)
@@ -786,6 +881,22 @@ func renderErrandVisit(b *strings.Builder, v *ErrandVisitView) {
 		origin = " out of " + sanitizeInline(v.Origin)
 	}
 	b.WriteString("## A trader's come to deal\n")
+	if v.CarterBuying {
+		fmt.Fprintf(b, "%s, a carter%s, has come for the %s you've no trade for — %d of it. He counts out the coin himself and takes it off your hands; nothing for you to do but pass the time of day.\n\n",
+			name, origin, sanitizeInline(v.GoodLabel), v.LotQty)
+		return
+	}
+	if v.Carter {
+		good := sanitizeInline(v.GoodLabel)
+		if v.ForLabel != "" {
+			fmt.Fprintf(b, "%s, a carter%s, has come to you with %s off %s's shelves — the makings of your %s, which the village has gone without.", name, origin, good, sanitizeInline(v.SourceLabel), sanitizeInline(v.ForLabel))
+		} else {
+			fmt.Fprintf(b, "%s, a carter%s, has come to you with %s off %s's shelves, which your shelves are short of.", name, origin, good, sanitizeInline(v.SourceLabel))
+		}
+		renderPackGoods(b, v.Pack)
+		fmt.Fprintf(b, " Buy what you need with pay_with_item (seller \"%s\", item \"%s\", the quantity, consume_now false, coins in amount or goods you carry in pay_items, your words in say).\n\n", name, sanitizeInline(v.GoodKind))
+		return
+	}
 	if v.Peddler {
 		// LLM-656: the peddler is the answer to a lack the keeper's own cues have
 		// been silent on, so the cue says what the good is for and hands the keeper
@@ -882,7 +993,10 @@ func visitorCommerceStripped(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, m
 	}
 	var counterparty sim.StructureID
 	var keeperID sim.ActorID
-	if t := actorSnap.VisitorState.Trade; t != nil {
+	if t := actorSnap.VisitorState.Trade; t != nil && !t.CarterBuying() {
+		// A carter's buy leg is settled by the engine (sim/carter.go), so at the
+		// holder's he has no trade of his own to make — talk-only there, like
+		// anywhere off his errand.
 		counterparty, keeperID = t.Counterparty, t.Keeper
 	}
 	for _, m := range members {

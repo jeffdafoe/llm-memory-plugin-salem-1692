@@ -78,6 +78,11 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			// Shortage peddler threshold + pack (LLM-656) — same mirror.
 			ShortagePeddlerDays:    sim.DefaultShortagePeddlerDays,
 			ShortagePeddlerBatches: sim.DefaultShortagePeddlerBatches,
+			// Carter cooldown + thresholds (carter.go) — same mirror.
+			CarterDays:              sim.DefaultCarterDays,
+			CarterResidueFloorCoins: sim.DefaultCarterResidueFloorCoins,
+			CarterResidueSpawnCoins: sim.DefaultCarterResidueSpawnCoins,
+			CarterPurseMax:          sim.DefaultCarterPurseMax,
 			// Grounded merchant errand direction/class weights (LLM-455) — mirror the pg
 			// fallbacks so a mem-backed spawn picks buy/sell + merchant/passer like prod.
 			// Coin band low/high default 0 (unconfigured) so no explicit mirror is needed.

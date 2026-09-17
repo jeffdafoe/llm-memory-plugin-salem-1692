@@ -37,7 +37,7 @@ func newMockPoolE(t *testing.T) (pgxmock.PgxPoolIface, *EnvironmentRepo) {
 var worldStateColumns = []string{
 	"phase", "last_transition_at", "last_rotation_at",
 	"weather", "atmosphere", "last_needs_tick_at",
-	"town_chest_coins", "input_shortages",
+	"town_chest_coins", "input_shortages", "last_carter_at",
 }
 
 // programWorldStateRow programs a single world_state row scan with
@@ -62,22 +62,24 @@ func programWorldStateRowWithChest(mock pgxmock.PgxPoolIface, phase sim.Phase,
 	townChest int,
 ) {
 	programWorldStateRowFull(mock, phase, lastTransitionAt, lastRotationAt,
-		weather, atmosphere, lastNeedsTickAt, townChest, []byte("[]"))
+		weather, atmosphere, lastNeedsTickAt, townChest, []byte("[]"), nil)
 }
 
 // programWorldStateRowFull programs every world_state column, including the
-// raw input_shortages jsonb document (LLM-656).
+// raw input_shortages jsonb document (LLM-656) and the carter cooldown anchor
+// (nil = SQL NULL, no carter yet).
 func programWorldStateRowFull(mock pgxmock.PgxPoolIface, phase sim.Phase,
 	lastTransitionAt, lastRotationAt time.Time,
 	weather, atmosphere string,
 	lastNeedsTickAt *time.Time,
 	townChest int,
 	inputShortages []byte,
+	lastCarterAt *time.Time,
 ) {
 	mock.ExpectQuery(`SELECT[\s\S]+FROM world_state[\s\S]+WHERE id = 1`).
 		WillReturnRows(pgxmock.NewRows(worldStateColumns).
 			AddRow(string(phase), lastTransitionAt, lastRotationAt,
-				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages))
+				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt))
 }
 
 // programSettingsRows programs the setting kv query returning the
@@ -364,7 +366,7 @@ func TestEnvironmentRepo_SaveSnapshot_HappyPath(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON)).
+		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON), nil /*no carter yet*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -465,7 +467,7 @@ func TestEnvironmentRepo_SaveSnapshot_ZeroLastNeedsTick_NULL(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/).
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/, nil /*no carter yet*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -797,7 +799,7 @@ func TestEnvironmentRepo_Load_InputShortages(t *testing.T) {
 	doc := []byte(`[{"keeper_id":"john","item":"meat","days":3,"last_seen_at":"2026-09-14T04:00:00Z","last_peddler_at":"0001-01-01T00:00:00Z"}]`)
 
 	mock, repo := newMockPoolE(t)
-	programWorldStateRowFull(mock, sim.PhaseNight, at, at, "", "", nil, 0, doc)
+	programWorldStateRowFull(mock, sim.PhaseNight, at, at, "", "", nil, 0, doc, nil)
 	programSettingsRows(mock, map[string]string{
 		"shortage_peddler_days":    "5",
 		"shortage_peddler_batches": "1",
@@ -822,7 +824,7 @@ func TestEnvironmentRepo_Load_InputShortages(t *testing.T) {
 
 	// Malformed document: logged, read as none, boot proceeds; defaults for the knobs.
 	mock, repo = newMockPoolE(t)
-	programWorldStateRowFull(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte(`{"not":"an array"`))
+	programWorldStateRowFull(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte(`{"not":"an array"`), nil)
 	programSettingsRows(mock, map[string]string{})
 	env, _, settings, err = repo.Load(context.Background())
 	if err != nil {
@@ -861,5 +863,58 @@ func TestEnvironmentRepo_Load_EstateRateDefaults(t *testing.T) {
 		t.Errorf("estate rate settings = floor %d / pct %d, want the defaults %d / %d",
 			settings.EstateRateFloor, settings.EstateRatePctPerDay,
 			sim.DefaultEstateRateFloor, sim.DefaultEstateRatePctPerDay)
+	}
+}
+
+// TestEnvironmentRepo_CarterAnchorRoundTrip — the carter cooldown anchor
+// (sim/carter.go) rides world_state.last_carter_at: NULL reads as never, a
+// stamp reads back as itself, and the four carter knobs load from settings
+// with their compiled defaults when absent.
+func TestEnvironmentRepo_CarterAnchorRoundTrip(t *testing.T) {
+	at := time.Date(2026, 9, 17, 19, 30, 0, 0, time.UTC)
+	came := at.Add(-30 * time.Hour)
+
+	mock, repo := newMockPoolE(t)
+	programWorldStateRowFull(mock, sim.PhaseDay, at, at, "", "", nil, 0, []byte("[]"), &came)
+	programSettingsRows(mock, map[string]string{"carter_days": "0", "carter_purse_max": "60"})
+	env, _, settings, err := repo.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !env.LastCarterAt.Equal(came) {
+		t.Errorf("LastCarterAt = %v, want %v", env.LastCarterAt, came)
+	}
+	if settings.CarterDays != 0 || settings.CarterPurseMax != 60 ||
+		settings.CarterResidueFloorCoins != sim.DefaultCarterResidueFloorCoins ||
+		settings.CarterResidueSpawnCoins != sim.DefaultCarterResidueSpawnCoins {
+		t.Errorf("carter settings = %+v, want days 0 (an explicit off), purse 60, the other two at their defaults", settings)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+
+	// Absent row + absent key: never, and the default cooldown.
+	mock, repo = newMockPoolE(t)
+	programWorldStateRowFull(mock, sim.PhaseDay, at, at, "", "", nil, 0, []byte("[]"), nil)
+	programSettingsRows(mock, map[string]string{})
+	env, _, settings, err = repo.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !env.LastCarterAt.IsZero() || settings.CarterDays != sim.DefaultCarterDays {
+		t.Errorf("no anchor, no key: LastCarterAt = %v days = %d, want zero / %d", env.LastCarterAt, settings.CarterDays, sim.DefaultCarterDays)
+	}
+
+	// The stamp writes back through the upsert.
+	mock, repo = newMockPoolE(t)
+	tx := fakeTx{mock: mock}
+	mock.ExpectExec(`INSERT INTO world_state`).
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil, 0, "[]", came).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	if err := repo.SaveSnapshot(context.Background(), tx, sim.WorldEnvironment{LastTransitionAt: at, LastRotationAt: at, LastCarterAt: came}, sim.PhaseDay); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
 	}
 }

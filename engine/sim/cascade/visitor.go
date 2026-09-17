@@ -113,8 +113,8 @@ func runOneVisitorTick(ctx context.Context, w *sim.World, r *rand.Rand) {
 	}
 	if tm.Spawned > 0 || tm.DespawnsStarted > 0 || tm.CleanedUp > 0 ||
 		tm.RoundsPaced > 0 || tm.CircuitToLodging > 0 {
-		log.Printf("cascade/visitor: spawned=%d peddler=%d despawns=%d cleaned=%d rounds_paced=%d to_lodging=%d",
-			tm.Spawned, tm.SpawnedPeddler, tm.DespawnsStarted, tm.CleanedUp, tm.RoundsPaced, tm.CircuitToLodging)
+		log.Printf("cascade/visitor: spawned=%d peddler=%d carter=%d despawns=%d cleaned=%d rounds_paced=%d to_lodging=%d",
+			tm.Spawned, tm.SpawnedPeddler, tm.SpawnedCarter, tm.DespawnsStarted, tm.CleanedUp, tm.RoundsPaced, tm.CircuitToLodging)
 	}
 }
 

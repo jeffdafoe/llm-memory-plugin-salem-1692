@@ -59,7 +59,7 @@ func NewEnvironmentRepo(pool Pool) *EnvironmentRepo {
 // world_state_singleton CHECK constraint.
 const loadWorldStateSQL = `
 SELECT phase, last_transition_at, last_rotation_at, weather, atmosphere, last_needs_tick_at,
-       town_chest_coins, input_shortages
+       town_chest_coins, input_shortages, last_carter_at
   FROM world_state
  WHERE id = 1`
 
@@ -80,9 +80,9 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
 const upsertWorldStateSQL = `
 INSERT INTO world_state (
     id, phase, last_transition_at, last_rotation_at,
-    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages
+    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages, last_carter_at
 ) VALUES (
-    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb
+    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9
 )
 ON CONFLICT (id) DO UPDATE SET
     phase              = EXCLUDED.phase,
@@ -92,7 +92,8 @@ ON CONFLICT (id) DO UPDATE SET
     atmosphere         = EXCLUDED.atmosphere,
     last_needs_tick_at = EXCLUDED.last_needs_tick_at,
     town_chest_coins   = EXCLUDED.town_chest_coins,
-    input_shortages    = EXCLUDED.input_shortages`
+    input_shortages    = EXCLUDED.input_shortages,
+    last_carter_at     = EXCLUDED.last_carter_at`
 
 // Load reads the world_state singleton + every setting row, returning
 // a fully populated (env, phase, settings) triple. Missing setting rows
@@ -128,11 +129,12 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 		lastNeedsTickAt     *time.Time
 		townChest           int
 		inputShortages      []byte
+		lastCarterAt        *time.Time
 	)
 	err := r.pool.QueryRow(ctx, loadWorldStateSQL).Scan(
 		&phase, &lastTransitionAt, &lastRotationAt,
 		&weather, &atmosphere, &lastNeedsTickAt,
-		&townChest, &inputShortages,
+		&townChest, &inputShortages, &lastCarterAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -151,6 +153,10 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 	}
 	if lastNeedsTickAt != nil {
 		env.LastNeedsTickAt = *lastNeedsTickAt
+	}
+	// Carter cooldown anchor (carter.go): NULL = no carter has come yet.
+	if lastCarterAt != nil {
+		env.LastCarterAt = *lastCarterAt
 	}
 	// Standing input shortages (LLM-656): a jsonb array, '[]' when none. A
 	// malformed document (only reachable from an out-of-band edit) is logged and
@@ -378,6 +384,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// the explicit off-switch), batches re-defaults at the consumer when zero.
 	s.ShortagePeddlerDays = parseIntSetting(values, "shortage_peddler_days", sim.DefaultShortagePeddlerDays)
 	s.ShortagePeddlerBatches = parseIntSetting(values, "shortage_peddler_batches", sim.DefaultShortagePeddlerBatches)
+	// Carter (carter.go): days defaults only when the key is absent (0 is the
+	// explicit off-switch), the thresholds re-default at the consumer when zero.
+	s.CarterDays = parseIntSetting(values, "carter_days", sim.DefaultCarterDays)
+	s.CarterResidueFloorCoins = parseIntSetting(values, "carter_residue_floor_coins", sim.DefaultCarterResidueFloorCoins)
+	s.CarterResidueSpawnCoins = parseIntSetting(values, "carter_residue_spawn_coins", sim.DefaultCarterResidueSpawnCoins)
+	s.CarterPurseMax = parseIntSetting(values, "carter_purse_max", sim.DefaultCarterPurseMax)
 	// LLM-455: grounded merchant errand — coin-valve band + direction/class weights.
 	s.VisitorCoinBandLow = parseIntSetting(values, "visitor_coin_band_low", 0)
 	s.VisitorCoinBandHigh = parseIntSetting(values, "visitor_coin_band_high", 0)
@@ -675,6 +687,11 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 	if err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: encode input_shortages: %w", err)
 	}
+	// Carter cooldown anchor (carter.go): zero = never, stored NULL.
+	var lastCarterArg any
+	if !env.LastCarterAt.IsZero() {
+		lastCarterArg = env.LastCarterAt
+	}
 	if _, err := tx.Exec(ctx, upsertWorldStateSQL,
 		string(phase),         // $1 phase
 		env.LastTransitionAt,  // $2 last_transition_at
@@ -684,6 +701,7 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 		lastNeedsArg,          // $6 last_needs_tick_at (nullable)
 		env.TownChest,         // $7 town_chest_coins (LLM-652)
 		string(shortagesJSON), // $8 input_shortages (LLM-656)
+		lastCarterArg,         // $9 last_carter_at (carter.go, nullable)
 	); err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: upsert: %w", err)
 	}

@@ -153,6 +153,23 @@ type tradeErrandJSON struct {
 	// Keeper is the short keeper a peddler's shipment is for (LLM-656); "" for
 	// the structure-bound factor and buyer errands. omitempty for the same reason.
 	Keeper string `json:"keeper,omitempty"`
+	// Carter + Legs are the inside-supply visitor's route (sim/carter.go). The
+	// projected leg fields above are stored as they stand, so a mid-visit
+	// redeploy resumes him on the same leg; Legs is the whole route. omitempty:
+	// every other errand's document is unchanged.
+	Carter bool            `json:"carter,omitempty"`
+	Legs   []carterLegJSON `json:"legs,omitempty"`
+}
+
+// carterLegJSON is the on-disk shape of one sim.CarterLeg.
+type carterLegJSON struct {
+	Buy          bool   `json:"buy,omitempty"`
+	Good         string `json:"good"`
+	Qty          int    `json:"qty"`
+	Counterparty string `json:"counterparty"`
+	Keeper       string `json:"keeper"`
+	Unit         int    `json:"unit"`
+	Done         bool   `json:"done,omitempty"`
 }
 
 // visitorGrantJSON is the on-disk element shape for a persisted RoomAccess grant.
@@ -191,6 +208,13 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 			Delivered:    vs.Trade.Delivered,
 			Peddler:      vs.Trade.Peddler,
 			Keeper:       string(vs.Trade.Keeper),
+			Carter:       vs.Trade.Carter,
+		}
+		for _, l := range vs.Trade.Legs {
+			plan.Trade.Legs = append(plan.Trade.Legs, carterLegJSON{
+				Buy: l.Buy, Good: string(l.Good), Qty: l.Qty,
+				Counterparty: string(l.Counterparty), Keeper: string(l.Keeper), Unit: l.Unit, Done: l.Done,
+			})
 		}
 	}
 	for _, sid := range vs.VisitedBusinesses {
@@ -290,6 +314,20 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 				Delivered:    delivered,
 				Peddler:      plan.Trade.Peddler,
 				Keeper:       sim.ActorID(plan.Trade.Keeper),
+				Carter:       plan.Trade.Carter,
+			}
+			for _, l := range plan.Trade.Legs {
+				// A leg with no stop, no quantity or no price is not a leg: the
+				// planner never writes one, so it is an out-of-band edit, and a
+				// zero-unit buy leg would move residue for free (code_review).
+				// Dropped rather than normalized into something executable.
+				if l.Good == "" || l.Counterparty == "" || l.Keeper == "" || l.Qty <= 0 || l.Unit <= 0 {
+					continue
+				}
+				lv.VisitorState.Trade.Legs = append(lv.VisitorState.Trade.Legs, sim.CarterLeg{
+					Buy: l.Buy, Good: sim.ItemKind(l.Good), Qty: l.Qty,
+					Counterparty: sim.StructureID(l.Counterparty), Keeper: sim.ActorID(l.Keeper), Unit: l.Unit, Done: l.Done,
+				})
 			}
 		}
 	}
