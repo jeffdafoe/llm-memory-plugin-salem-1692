@@ -1533,6 +1533,12 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 		// renders nothing at all unless the peer is actually in the scene, because
 		// this function only ever runs for someone who is.
 		m.ContactTier, m.ContactRecentCount = snap.ContactTierFor(subjectID, memberID, snap.PublishedAt)
+		if bringsGoodsTo(subj, memberID) {
+			// "Little left unsaid" beside a rounds cue that says "offer it" is a scene
+			// arguing with itself, and the small model sides with the brake: the
+			// carter walked off with the smith's iron still in his pack.
+			m.ContactTier, m.ContactRecentCount = sim.ContactTierNone, 0
+		}
 		// LLM-231: a peer fulfilling a hired job is dropped from the seller
 		// offer/quote cue (m.Laboring, set for every observer — even the employer
 		// shouldn't pitch a sale to their own mid-job worker) and rendered as busy
@@ -6249,4 +6255,19 @@ func recentFactsMostRecentFirst(facts []sim.SalientFact, n int) []sim.SalientFac
 		out[len(tail)-1-i] = f
 	}
 	return out
+}
+
+// bringsGoodsTo reports whether the subject is a seller (a peddler or a carter
+// on a sell leg) standing on an open errand whose goods are for memberID and
+// still in his pack — the one case where having already spoken with someone
+// says nothing about whether the business with them is done.
+func bringsGoodsTo(subj *sim.ActorSnapshot, memberID sim.ActorID) bool {
+	if subj == nil || subj.VisitorState == nil || subj.VisitorState.Trade == nil {
+		return false
+	}
+	t := subj.VisitorState.Trade
+	if t.Settled || t.Direction != sim.TradeDirectionSell || t.CarterBuying() {
+		return false
+	}
+	return t.Keeper != "" && t.Keeper == memberID && subj.Inventory[t.Good] > 0
 }
