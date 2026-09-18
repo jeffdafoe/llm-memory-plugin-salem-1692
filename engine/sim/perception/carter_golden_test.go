@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -39,6 +40,12 @@ func init() {
 			summary: "Carter: Joseph Scott's own view with the carter co-present on his sell leg. '## A trader's come to deal' " +
 				"names the wheat, whose shelves it came off, what he makes with it, lists the lot, and hands him pay_with_item.",
 			build: keeperViewsCarterScenario,
+		},
+		perceptionScenario{
+			name: "carter_back_at_keeper_with_goods",
+			summary: "Carter: back at the Mill minutes after trading and talking with Joseph Scott there, a fresh lot for him in the pack. " +
+				"The contact brake ('little left unsaid') stays silent for the keeper he still carries goods for, so nothing argues with 'Offer it'.",
+			build: carterBackAtKeeperScenario,
 		},
 	)
 }
@@ -247,5 +254,39 @@ func TestCarterCuesCarryTheHandoff(t *testing.T) {
 		if !strings.Contains(keeper, want) {
 			t.Errorf("keeper's cue lacks %q:\n%s", want, keeper)
 		}
+	}
+}
+
+// carterBackAtKeeperScenario is the live first run (2026-09-18): the carter back
+// at a keeper he traded and talked with minutes ago, a fresh lot for that keeper
+// in his pack. The contact brake ("little left unsaid") would argue against the
+// rounds cue's "Offer it", and the carter walked off with the goods unsold.
+func carterBackAtKeeperScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := carterSnapshot(true)
+	snap.PublishedAt = time.Date(1692, 9, 18, 16, 0, 0, 0, time.UTC)
+	snap.Actors[carterID].Acquaintances = map[string]sim.Acquaintance{"Joseph Scott": {}}
+	return withContacts(snap, carterID, carterKeeperID, 8*time.Minute, 7*time.Minute, 6*time.Minute, 5*time.Minute), carterID, nil
+}
+
+// TestCarterContactBrakeYieldsToGoodsInHand: with the lot still in his pack the
+// brake line is absent and the offer stands; once the pack is empty the same
+// history renders the brake as for anyone else — the control that proves the
+// fixture's contact trail actually reaches the weighted tier.
+func TestCarterContactBrakeYieldsToGoodsInHand(t *testing.T) {
+	const brake = "little left unsaid"
+	carrying := renderScenario(perceptionScenario{build: carterBackAtKeeperScenario})
+	if strings.Contains(carrying, brake) {
+		t.Errorf("the contact brake rendered against a keeper he still carries goods for:\n%s", carrying)
+	}
+	if !strings.Contains(carrying, `call sell with item "wheat"`) {
+		t.Errorf("the sell cue is missing on the return call:\n%s", carrying)
+	}
+	sold := renderScenario(perceptionScenario{build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		snap, id, w := carterBackAtKeeperScenario()
+		snap.Actors[carterID].Inventory = map[sim.ItemKind]int{}
+		return snap, id, w
+	}})
+	if !strings.Contains(sold, brake) {
+		t.Errorf("control: with the pack empty the brake should render — the fixture's contact trail is not reaching the weighted tier:\n%s", sold)
 	}
 }

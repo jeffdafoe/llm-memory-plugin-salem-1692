@@ -534,3 +534,67 @@ func TestCarterPersonaAndRoute(t *testing.T) {
 		}
 	}
 }
+
+// The live first run: two iron lots for the smith became buy-sell-buy-sell, and
+// on the second call at the smithy eight minutes after the first the carter
+// read the business as done and walked off with four bars. A want is one call.
+func TestPlanCarterRouteCallsOnEachBuyerOnce(t *testing.T) {
+	w := carterWorld()
+	// The iron sits on two shelves; the smith also lacks water for his nails.
+	w.Actors["liz"].Inventory["iron"] = 2
+	w.Actors["joseph"].Inventory["iron"] = 4
+	w.Actors["joseph"].Inventory["water"] = 30
+	w.Recipes["water"] = &ItemRecipe{OutputItem: "water", OutputQty: 1, RateQty: 1, RatePerHours: 1, WholesalePrice: 1, RetailPrice: 1}
+	ez := w.Actors["ezekiel"]
+	ez.RestockPolicy.Restock = append(ez.RestockPolicy.Restock, RestockEntry{Item: "water", Source: RestockSourceBuy, Max: 10})
+
+	legs := planCarterRoute(w, 100, 4, false, carterNow)
+	var smithLegs []CarterLeg
+	for i, l := range legs {
+		if !l.Buy && l.Keeper == "ezekiel" {
+			smithLegs = append(smithLegs, l)
+			continue
+		}
+		// Once he has sold at the smithy, nothing on the route may take him away
+		// and back: no buy for the smith after the smith's first sell leg.
+		if l.Buy && len(smithLegs) > 0 && i+1 < len(legs) {
+			for _, later := range legs[i+1:] {
+				if !later.Buy && later.Keeper == "ezekiel" {
+					t.Fatalf("the route returns to the smithy after leaving it: %+v", legs)
+				}
+			}
+		}
+	}
+	if len(smithLegs) != 2 {
+		t.Fatalf("smith sell legs = %+v, want one for iron and one for water (route %+v)", smithLegs, legs)
+	}
+	for _, l := range smithLegs {
+		switch l.Good {
+		case "iron":
+			if l.Qty != 6 {
+				t.Errorf("iron sell leg = %d bars, want the 6 off both shelves in one offer", l.Qty)
+			}
+		case "water":
+		default:
+			t.Errorf("unexpected smith sell leg %+v", l)
+		}
+	}
+	ironBuys := 0
+	for _, l := range legs {
+		if l.Buy && l.Good == "iron" {
+			ironBuys++
+		}
+	}
+	if ironBuys != 2 {
+		t.Errorf("iron buy legs = %d, want 2 (one per shelf): %+v", ironBuys, legs)
+	}
+
+	// The coin rule holds across the lots of one want: a smith with 8 coin can
+	// pay for two bars at 4, not two from each shelf.
+	ez.Coins = 8
+	for _, l := range planCarterRoute(w, 100, 4, false, carterNow) {
+		if !l.Buy && l.Good == "iron" && l.Qty != 2 {
+			t.Errorf("iron sell leg = %d bars to a smith with 8 coin, want 2", l.Qty)
+		}
+	}
+}

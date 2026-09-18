@@ -350,23 +350,59 @@ func carterDemands(w *World) []carterDemand {
 	return out
 }
 
+// carterMatch is one want the route serves: the buy legs that fill it and the
+// one sell leg that lands it.
+type carterMatch struct {
+	buyer ActorID
+	buys  []CarterLeg
+	sell  CarterLeg
+}
+
+// carterLegsByBuyer orders the matched legs so the carter calls on each buyer
+// once: buyers in the order the planner first served them (priority order), and
+// for each, every buy for him and then his sells back to back at his post.
+func carterLegsByBuyer(matched []carterMatch) []CarterLeg {
+	var order []ActorID
+	byBuyer := map[ActorID][]carterMatch{}
+	for _, m := range matched {
+		if _, seen := byBuyer[m.buyer]; !seen {
+			order = append(order, m.buyer)
+		}
+		byBuyer[m.buyer] = append(byBuyer[m.buyer], m)
+	}
+	var legs []CarterLeg
+	for _, id := range order {
+		for _, m := range byBuyer[id] {
+			legs = append(legs, m.buys...)
+		}
+		for _, m := range byBuyer[id] {
+			legs = append(legs, m.sell)
+		}
+	}
+	return legs
+}
+
 // planCarterRoute lays out the carter's legs against the village as it stands:
-// for each want, in priority order, a buy leg at the largest residue lot of that
-// good and a sell leg to the buyer, sized to the lot, the buyer's room, what the
-// buyer can pay in coin (unless his shortage stands), and the purse; then, while
-// the band is open, buy legs for whatever residue is left, by value, as pure
-// export. Empty when nothing is worth the trip. Pure over the world.
+// for each want, in priority order, buy legs at the residue lots of that good
+// and ONE sell leg to the buyer for the sum, sized to the lots, the buyer's
+// room, what the buyer can pay in coin (unless his shortage stands), and the
+// purse; the matched legs are then ordered so he calls on each buyer once
+// (carterLegsByBuyer); then, while the band is open, buy legs for whatever
+// residue is left, by value, as pure export. Empty when nothing is worth the
+// trip. Pure over the world.
 func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Time) []CarterLeg {
 	lots := residueLots(w, floor, now)
 	if len(lots) == 0 {
 		return nil
 	}
 	budget := purse - carterTravelReserve
-	var legs []CarterLeg
+	var matched []carterMatch
 	for _, d := range carterDemands(w) {
 		if budget <= 0 {
 			break
 		}
+		m := carterMatch{buyer: d.buyer.ID}
+		sold := 0
 		for i := range lots {
 			lot := &lots[i]
 			if lot.item != d.item || lot.qty <= 0 || lot.holder.ID == d.buyer.ID || d.room <= 0 {
@@ -377,22 +413,29 @@ func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Tim
 				// The buyer must be able to pay coin for what he is brought — a leg
 				// he can only barter for would put coin into the holder's purse and
 				// goods, not coin, into the carter's. A standing shortage is the
-				// exception: the peddler would have taken his goods.
-				take = min(take, d.buyer.Coins/(lot.unit+carterSellMarkup))
+				// exception: the peddler would have taken his goods. Less what the
+				// earlier lots of this want already ask of him.
+				take = min(take, d.buyer.Coins/(lot.unit+carterSellMarkup)-sold)
 			}
 			take = min(take, budget/lot.unit)
 			if take <= 0 || take*lot.unit < floor {
 				continue
 			}
-			legs = append(legs,
-				CarterLeg{Buy: true, Good: lot.item, Qty: take, Counterparty: lot.holder.WorkStructureID, Keeper: lot.holder.ID, Unit: lot.unit},
-				CarterLeg{Good: lot.item, Qty: take, Counterparty: d.buyer.WorkStructureID, Keeper: d.buyer.ID, Unit: lot.unit},
-			)
+			m.buys = append(m.buys, CarterLeg{Buy: true, Good: lot.item, Qty: take, Counterparty: lot.holder.WorkStructureID, Keeper: lot.holder.ID, Unit: lot.unit})
+			// One sell leg for the want, however many shelves filled it: a second
+			// call on the same keeper minutes after the first reads to the carter
+			// as business already done, and he walks off with the goods.
+			m.sell = CarterLeg{Good: lot.item, Qty: sold + take, Counterparty: d.buyer.WorkStructureID, Keeper: d.buyer.ID, Unit: lot.unit}
+			sold += take
 			budget -= take * lot.unit
 			lot.qty -= take
 			d.room -= take
 		}
+		if sold > 0 {
+			matched = append(matched, m)
+		}
 	}
+	legs := carterLegsByBuyer(matched)
 	if bandOpen {
 		rest := make([]residueLot, 0, len(lots))
 		for _, lot := range lots {
