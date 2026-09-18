@@ -397,9 +397,16 @@ func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Tim
 	}
 	budget := purse - carterTravelReserve
 	var matched []carterMatch
+	// What each buyer's purse still covers once the wants planned ahead of this
+	// one are paid for: five wants each checked against the whole purse planned
+	// John Ellis 89 coin of sell legs against 32.
+	coinLeft := map[ActorID]int{}
 	for _, d := range carterDemands(w) {
 		if budget <= 0 {
 			break
+		}
+		if _, seen := coinLeft[d.buyer.ID]; !seen {
+			coinLeft[d.buyer.ID] = d.buyer.Coins
 		}
 		m := carterMatch{buyer: d.buyer.ID}
 		sold := 0
@@ -413,9 +420,8 @@ func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Tim
 				// The buyer must be able to pay coin for what he is brought — a leg
 				// he can only barter for would put coin into the holder's purse and
 				// goods, not coin, into the carter's. A standing shortage is the
-				// exception: the peddler would have taken his goods. Less what the
-				// earlier lots of this want already ask of him.
-				take = min(take, d.buyer.Coins/(lot.unit+carterSellMarkup)-sold)
+				// exception: the peddler would have taken his goods.
+				take = min(take, coinLeft[d.buyer.ID]/(lot.unit+carterSellMarkup))
 			}
 			take = min(take, budget/lot.unit)
 			if take <= 0 || take*lot.unit < floor {
@@ -425,8 +431,16 @@ func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Tim
 			// One sell leg for the want, however many shelves filled it: a second
 			// call on the same keeper minutes after the first reads to the carter
 			// as business already done, and he walks off with the goods.
-			m.sell = CarterLeg{Good: lot.item, Qty: sold + take, Counterparty: d.buyer.WorkStructureID, Keeper: d.buyer.ID, Unit: lot.unit}
+			// Priced off the first lot; the going rate is per good, so every lot
+			// of a want shares it.
+			if sold == 0 {
+				m.sell = CarterLeg{Good: lot.item, Counterparty: d.buyer.WorkStructureID, Keeper: d.buyer.ID, Unit: lot.unit}
+			}
+			m.sell.Qty += take
 			sold += take
+			// A shortage want is asked of his purse too — he may pay it in goods,
+			// but what he does pay in coin is not there for the next want.
+			coinLeft[d.buyer.ID] = max(0, coinLeft[d.buyer.ID]-take*(lot.unit+carterSellMarkup))
 			budget -= take * lot.unit
 			lot.qty -= take
 			d.room -= take

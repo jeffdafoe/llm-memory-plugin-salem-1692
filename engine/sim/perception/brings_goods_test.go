@@ -35,6 +35,12 @@ func TestBringsGoodsTo(t *testing.T) {
 		{"the errand is settled", seller(func(a *sim.ActorSnapshot) { a.VisitorState.Trade.Settled = true }), "ezekiel", false},
 		{"a carter on a buy leg has nothing to offer", seller(func(a *sim.ActorSnapshot) { a.VisitorState.Trade.Legs[0].Buy = true }), "ezekiel", false},
 		{"a buyer's errand", seller(func(a *sim.ActorSnapshot) { a.VisitorState.Trade.Direction = sim.TradeDirectionBuy }), "ezekiel", false},
+		{"a peddler, whose shipment is for one keeper by id", seller(func(a *sim.ActorSnapshot) {
+			a.VisitorState.Trade = &sim.TradeErrand{Direction: sim.TradeDirectionSell, Peddler: true, Good: "iron", Keeper: "ezekiel"}
+		}), "ezekiel", true},
+		{"a factor, whose errand is with a building", seller(func(a *sim.ActorSnapshot) {
+			a.VisitorState.Trade = &sim.TradeErrand{Direction: sim.TradeDirectionSell, Good: "iron", Counterparty: "store"}
+		}), "ezekiel", false},
 		{"a villager", &sim.ActorSnapshot{}, "ezekiel", false},
 	} {
 		if got := bringsGoodsTo(tc.subj, tc.member); got != tc.want {

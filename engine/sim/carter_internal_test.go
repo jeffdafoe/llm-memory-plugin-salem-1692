@@ -592,9 +592,98 @@ func TestPlanCarterRouteCallsOnEachBuyerOnce(t *testing.T) {
 	// The coin rule holds across the lots of one want: a smith with 8 coin can
 	// pay for two bars at 4, not two from each shelf.
 	ez.Coins = 8
+	found := false
 	for _, l := range planCarterRoute(w, 100, 4, false, carterNow) {
-		if !l.Buy && l.Good == "iron" && l.Qty != 2 {
-			t.Errorf("iron sell leg = %d bars to a smith with 8 coin, want 2", l.Qty)
+		if !l.Buy && l.Good == "iron" {
+			found = true
+			if l.Qty != 2 {
+				t.Errorf("iron sell leg = %d bars to a smith with 8 coin, want 2", l.Qty)
+			}
 		}
+	}
+	if !found {
+		t.Fatal("no iron sell leg planned for a smith with 8 coin")
+	}
+}
+
+// The live first run planned John Ellis 89 coin of sell legs against a purse of
+// 32: each want was checked against the whole purse. The purse is one purse.
+func TestPlanCarterRouteCoinRuleIsPerBuyer(t *testing.T) {
+	w := carterWorld()
+	// Joseph wants wheat (25 on Elizabeth's shelf, ask 2 a sheaf) and, now, iron
+	// (8 bars there, ask 4 a bar); 40 coin covers 20 sheaves and nothing else, or
+	// fewer sheaves and some bars — never both wants in full (50 + 32).
+	jo := w.Actors["joseph"]
+	jo.Coins = 40
+	jo.RestockPolicy.Restock = append(jo.RestockPolicy.Restock, RestockEntry{Item: "iron", Source: RestockSourceBuy, Max: 8})
+	w.Actors["ezekiel"].Coins = 0 // the iron is Joseph's or nobody's
+
+	asked, sells := 0, 0
+	for _, l := range planCarterRoute(w, 100, 4, false, carterNow) {
+		if !l.Buy && l.Keeper == "joseph" {
+			asked += l.Price()
+			sells++
+		}
+	}
+	if sells == 0 {
+		t.Fatal("no sell leg planned for Joseph at all")
+	}
+	if asked > 40 {
+		t.Errorf("Joseph is asked %d coin across %d sell legs with 40 in his purse", asked, sells)
+	}
+
+	// A standing shortage still plans past the purse (he may pay in goods), and
+	// what it asks is not there for his next want.
+	w.Environment.InputShortages = []InputShortage{{KeeperID: "joseph", Item: "wheat", Days: 3}}
+	jo.Coins = 10
+	for _, l := range planCarterRoute(w, 100, 4, false, carterNow) {
+		if l.Buy || l.Keeper != "joseph" {
+			continue
+		}
+		switch l.Good {
+		case "wheat":
+			if l.Qty != 25 {
+				t.Errorf("shortage wheat leg = %d, want the whole 25 — a standing shortage is not coin-bound", l.Qty)
+			}
+		case "iron":
+			t.Errorf("iron leg %+v planned against a purse the shortage already spoke for", l)
+		}
+	}
+}
+
+// Two sell legs back to back at one keeper — the shape carterLegsByBuyer makes.
+// The first delivery must finish only the first leg, and the second good must be
+// projected with a clean Delivered, the errand still open.
+func TestAdvanceCarterThroughTwoSellsAtOneKeeper(t *testing.T) {
+	w := carterWorld()
+	tr := &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: []CarterLeg{
+		{Good: "iron", Qty: 6, Counterparty: "smithy", Keeper: "ezekiel", Unit: 3},
+		{Good: "wheat", Qty: 8, Counterparty: "smithy", Keeper: "ezekiel", Unit: 1},
+	}}
+	carter := &Actor{ID: "vstr-cart", DisplayName: "Asa Larkin the carter", Kind: KindNPCShared, State: StateIdle,
+		InsideStructureID: "smithy", Coins: 20, Inventory: map[ItemKind]int{"iron": 6, "wheat": 8},
+		VisitorState: &VisitorState{Trade: tr, SpendBudget: 20}}
+	w.Actors[carter.ID] = carter
+	projectCarterLeg(tr, carter.Inventory)
+	if tr.Good != "iron" || tr.ShipmentQty != 6 {
+		t.Fatalf("projection = %+v, want the iron sell", tr)
+	}
+	// Wheat handed over while iron is the leg credits nothing to the iron leg.
+	if err := transferItem(w, carter, w.Actors["ezekiel"], "iron", 6); err != nil {
+		t.Fatal(err)
+	}
+	advanceCarter(w, carter, carterNow)
+	if !tr.Legs[0].Done || tr.Legs[1].Done || tr.Settled {
+		t.Fatalf("after the iron: legs done=%v/%v settled=%v, want true/false/false", tr.Legs[0].Done, tr.Legs[1].Done, tr.Settled)
+	}
+	if tr.Good != "wheat" || tr.Counterparty != "smithy" || tr.Keeper != "ezekiel" || tr.ShipmentQty != 8 || tr.Delivered != 0 {
+		t.Fatalf("projection after the iron = %+v, want the wheat sell at the smithy with nothing delivered", tr)
+	}
+	if err := transferItem(w, carter, w.Actors["ezekiel"], "wheat", 8); err != nil {
+		t.Fatal(err)
+	}
+	advanceCarter(w, carter, carterNow)
+	if !tr.Legs[1].Done || !tr.Settled {
+		t.Errorf("after the wheat: leg done=%v settled=%v, want both", tr.Legs[1].Done, tr.Settled)
 	}
 }
