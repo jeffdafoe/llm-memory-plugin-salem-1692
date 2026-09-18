@@ -416,12 +416,18 @@ func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Tim
 				continue
 			}
 			take := min(lot.qty, d.room)
+			// What the buyer is asked per unit is the sell leg's price — the first
+			// lot's — so the purse is bounded and drawn at the price he will hear.
+			ask := lot.unit + carterSellMarkup
+			if sold > 0 {
+				ask = m.sell.Unit + carterSellMarkup
+			}
 			if !d.shortage {
 				// The buyer must be able to pay coin for what he is brought — a leg
 				// he can only barter for would put coin into the holder's purse and
 				// goods, not coin, into the carter's. A standing shortage is the
 				// exception: the peddler would have taken his goods.
-				take = min(take, coinLeft[d.buyer.ID]/(lot.unit+carterSellMarkup))
+				take = min(take, coinLeft[d.buyer.ID]/ask)
 			}
 			take = min(take, budget/lot.unit)
 			if take <= 0 || take*lot.unit < floor {
@@ -440,7 +446,7 @@ func planCarterRoute(w *World, purse int, floor int, bandOpen bool, now time.Tim
 			sold += take
 			// A shortage want is asked of his purse too — he may pay it in goods,
 			// but what he does pay in coin is not there for the next want.
-			coinLeft[d.buyer.ID] = max(0, coinLeft[d.buyer.ID]-take*(lot.unit+carterSellMarkup))
+			coinLeft[d.buyer.ID] = max(0, coinLeft[d.buyer.ID]-take*ask)
 			budget -= take * lot.unit
 			lot.qty -= take
 			d.room -= take
