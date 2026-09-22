@@ -716,6 +716,9 @@ func renderRoadWordClause(w *World, e ActionLogEntry) string {
 // cycle without setting any telemetry counters — they're configuration / map
 // issues, not skip reasons of architectural interest.
 func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeTelemetry) {
+	// The shortage record is revalidated every tick, not only when a peddler
+	// could spawn: the producer's trade cue reads it all day (LLM-658).
+	pruneResolvedShortages(w)
 	// Afternoon spawn window (LLM-455, narrowing the LLM-373 daytime gate): a merchant
 	// arrives in the afternoon — late enough that his evening at the tavern overlaps the dusk
 	// company, early enough to finish his trade before the day-shops shut at dusk. The window

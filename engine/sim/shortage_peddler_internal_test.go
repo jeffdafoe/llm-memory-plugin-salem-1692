@@ -341,3 +341,23 @@ func TestPeddlerPersona(t *testing.T) {
 		t.Errorf("clone dropped the peddler fields: %+v", cp.Trade)
 	}
 }
+
+// TestPruneResolvedShortagesRunsOutsideTheSpawnWindow (LLM-658): the record is
+// revalidated on EVERY visitor tick, not only when a peddler could spawn. The
+// producer's trade cue reads it all day, so a shortage the village resolved in
+// the morning must not lead her scene until the afternoon window opens.
+func TestPruneResolvedShortagesRunsOutsideTheSpawnWindow(t *testing.T) {
+	morning := time.Date(2026, 9, 21, 9, 0, 0, 0, time.UTC)
+	w := shortageWorld()
+	w.Settings.DawnTime, w.Settings.DuskTime = "06:00", "18:00"
+	w.Environment.InputShortages = []InputShortage{{KeeperID: "john", Item: "meat", Days: 3, LastSeenAt: morning}}
+	w.Actors["john"].Inventory["meat"] = 2 // the keeper bought some this morning
+	var tel VisitorCascadeTelemetry
+	dispatchVisitorSpawn(w, VisitorTickInputs{Now: morning}, &tel)
+	if tel.SpawnSkipReason != "outside afternoon spawn window" {
+		t.Fatalf("skip reason = %q, want the morning tick to be outside the spawn window", tel.SpawnSkipReason)
+	}
+	if len(w.Environment.InputShortages) != 0 {
+		t.Errorf("resolved entry still stored after a morning tick: %+v, want dropped", w.Environment.InputShortages)
+	}
+}

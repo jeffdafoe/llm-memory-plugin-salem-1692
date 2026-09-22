@@ -22,7 +22,11 @@ import (
 //
 // The demand read reuses sellerRecentSales over restockSalesWindow — the same
 // weekly signal "## Restocking" shows a reseller, kept consistent so the two
-// cues can't disagree on "what's moving".
+// cues can't disagree on "what's moving". A request the seller cannot fill never
+// becomes a sale, so that read is blind to a good the village has run dry of;
+// the LLM-656 shortage record (WorldEnvironment.InputShortages) supplies that
+// signal, and a good of the producer's that stands in it leads the scene
+// (LLM-658).
 //
 // This cue's presence gates the produce tool (gateTools offerCraft), so while
 // a batch is in flight — buildForgeChoice returns nil then — the tool
@@ -72,9 +76,20 @@ type ForgeChoiceItem struct {
 	WorkPhrase  string // humanized cycle work ("an hour and a quarter")
 	Stock       StockTier
 	Movement    MovementTier
-	HasInputs   bool // the recipe requires inputs at all
-	InputsReady bool // one batch's inputs are on hand (LLM-257); always true for a listed good — LLM-324 drops input-short ones
-	SoldUnits   int  // raw units for narration order (demand first)
+	HasInputs   bool           // the recipe requires inputs at all
+	InputsReady bool           // one batch's inputs are on hand (LLM-257); always true for a listed good — LLM-324 drops input-short ones
+	SoldUnits   int            // raw units for narration order (demand first)
+	Shortage    *ForgeShortage // a standing village shortage of this good (LLM-658); nil when none
+}
+
+// ForgeShortage is a standing village shortage of a good the producer makes
+// (LLM-658), read off the LLM-656 record: which shop has gone without it, the
+// good in bulk ("meat"), and for how many game-days. Demand the sales read
+// cannot see — a request the seller cannot fill never becomes a sale.
+type ForgeShortage struct {
+	Where string // the short keeper's shop, else the keeper's name
+	Good  string
+	Days  int
 }
 
 // buildForgeChoice builds the trade-scene view for a producer AT its
@@ -91,6 +106,11 @@ type ForgeChoiceItem struct {
 // is dropped, and when none survive the view is nil → offerCraft false → the
 // produce tool is not advertised, so the cue can never invite a batch the tool
 // would then reject (LLM-324).
+//
+// A good that stands in the village shortage record leads the menu regardless
+// of its sell-through (LLM-658), but only once it has passed the craftability
+// filter: a shortage of a good the producer is himself short an input for
+// stays dropped — the input line is that fix, not this one.
 func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *ForgeChoiceView {
 	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil || snap.Recipes == nil {
 		return nil
@@ -144,13 +164,22 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			HasInputs:   len(recipe.Inputs) > 0,
 			InputsReady: inputsReady,
 			SoldUnits:   soldUnits,
+			Shortage:    standingShortage(snap, actorSnap, e.Item),
 		})
 	}
 	if len(items) == 0 {
 		return nil // not a producer, or nothing craftable right now (LLM-324)
 	}
-	// Highest recent demand narrated first, then noun, then kind.
+	// A standing shortage first (longest-standing leading), then highest recent
+	// demand, then noun, then kind.
 	sort.Slice(items, func(i, j int) bool {
+		si, sj := items[i].Shortage, items[j].Shortage
+		if (si != nil) != (sj != nil) {
+			return si != nil
+		}
+		if si != nil && si.Days != sj.Days {
+			return si.Days > sj.Days
+		}
 		if items[i].SoldUnits != items[j].SoldUnits {
 			return items[i].SoldUnits > items[j].SoldUnits
 		}
@@ -160,6 +189,66 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		return items[i].itemKind < items[j].itemKind
 	})
 	return &ForgeChoiceView{Items: items}
+}
+
+// standingShortage finds the longest-standing entry for `item` in the LLM-656
+// shortage record, else nil. The daily sweep lists only (keeper, good) pairs
+// where no village supplier holds any, and never a good the short keeper makes
+// himself, so an entry for one of this producer's own goods is another keeper's
+// demand that the sales read cannot see (LLM-658). Named for the keeper's post,
+// falling back to the keeper himself; an entry whose keeper is gone from the
+// snapshot is skipped — the next sweep drops it. The record is sorted by
+// (keeper, item), so on equal days the first keeper's shop is named.
+//
+// The record is revalidated against the shelves once a visitor tick
+// (pruneResolvedShortages), so it is at most a tick stale — except for the
+// producer's own landing, whose done-wake renders before that tick: a producer
+// holding any of the good is, by the sweep's own supplier test, the end of the
+// shortage, so the entry is ignored here rather than let "none is to be had"
+// stand beside her stock line.
+func standingShortage(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, item sim.ItemKind) *ForgeShortage {
+	if actorSnap.Inventory[item] > 0 {
+		return nil
+	}
+	var best *ForgeShortage
+	for _, s := range snap.Environment.InputShortages {
+		if s.Item != item || s.Days < 1 {
+			continue
+		}
+		keeper := snap.Actors[s.KeeperID]
+		if keeper == nil || (best != nil && s.Days <= best.Days) {
+			continue
+		}
+		where := keeper.DisplayName
+		if st := snap.Structures[keeper.WorkStructureID]; st != nil && st.DisplayName != "" {
+			where = st.DisplayName
+		}
+		if where == "" {
+			where = "the village"
+		}
+		best = &ForgeShortage{Where: where, Good: shortageGoodLabel(snap.ItemKinds[item], string(item)), Days: s.Days}
+	}
+	return best
+}
+
+// shortageGoodLabel names a good the village has gone without. A count good
+// takes its catalog plural ("whetstones", "nails"); a measured good — one whose
+// plural is a measure phrase ("cuts of meat", "jugs of milk") — takes the bulk
+// label instead ("meat", "milk"), since it is the good that is wanting, not
+// the cuts.
+func shortageGoodLabel(def *sim.ItemKindDef, kind string) string {
+	if def != nil && def.DisplayLabelPlural != "" && !strings.Contains(def.DisplayLabelPlural, " of ") {
+		return strings.ToLower(def.DisplayLabelPlural)
+	}
+	return bulkGoodLabel(def, kind)
+}
+
+// dayCountPhrase renders a game-day count as prose: "a day", "3 days".
+func dayCountPhrase(n int) string {
+	if n == 1 {
+		return "a day"
+	}
+	return strconv.Itoa(n) + " days"
 }
 
 // missingProduceInputs returns the display labels of the required inputs the
@@ -301,15 +390,23 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 	case StockAmple:
 		s.WriteString("You have a fair stock of " + noun)
 	}
-	switch it.Movement {
-	case MovementBrisk:
-		s.WriteString(", and folk keep asking for more.")
-	case MovementSteady:
-		s.WriteString("; sales were steady this past week.")
-	case MovementSlow:
-		s.WriteString("; only a few sold this past week.")
-	case MovementNone:
-		s.WriteString(", and none sold this past week.")
+	// The demand beat. A standing village shortage takes the slot (LLM-658): the
+	// sell-through it would otherwise voice is exactly the read that cannot see a
+	// good nobody has been able to buy, so the two must not stand side by side.
+	if sh := it.Shortage; sh != nil {
+		s.WriteString(", and " + sanitizeInline(sh.Where) + " has been without " + sanitizeInline(sh.Good) +
+			" for " + dayCountPhrase(sh.Days) + " — none is to be had in the village.")
+	} else {
+		switch it.Movement {
+		case MovementBrisk:
+			s.WriteString(", and folk keep asking for more.")
+		case MovementSteady:
+			s.WriteString("; sales were steady this past week.")
+		case MovementSlow:
+			s.WriteString("; only a few sold this past week.")
+		case MovementNone:
+			s.WriteString(", and none sold this past week.")
+		}
 	}
 
 	// The affordance: what another batch takes, closed with a readiness beat on BOTH
