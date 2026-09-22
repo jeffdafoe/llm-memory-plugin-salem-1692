@@ -365,10 +365,17 @@ func TestForgeChoiceOwnStockEndsTheShortage(t *testing.T) {
 			t.Errorf("%s carries a shortage %+v while the producer holds the good", it.itemKind, it.Shortage)
 		}
 	}
-	if scene := renderScenario(perceptionScenario{build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-		return snap, shortageDairyID, nil
-	}}); strings.Contains(scene, "has been without") {
-		t.Errorf("stale shortage rendered beside the producer's own stock:\n%s", scene)
+	prompt := renderScenario(perceptionScenario{build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		return snap, shortageDairyID, []sim.WarrantMeta{{TriggerActorID: shortageDairyID, Reason: sim.ProductionChoiceWarrantReason{}, SourceEventID: 1}}
+	}})
+	// The scene must render for the absence below to mean anything.
+	for _, want := range []string{"## Your trade", "Your stock of cuts of meat is running low"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt lacks %q — the trade scene did not render, so the stale-line check is vacuous:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "has been without") {
+		t.Errorf("stale shortage rendered beside the producer's own stock:\n%s", prompt)
 	}
 }
 
