@@ -328,23 +328,57 @@ func TestForgeChoiceShortageNeverRevivesAnInputShortGood(t *testing.T) {
 // TestForgeChoiceLongestShortageLeads: two short goods list longest-standing
 // first, and a good short at two shops names the shop that has waited longest.
 func TestForgeChoiceLongestShortageLeads(t *testing.T) {
+	const innID = sim.ActorID("hannah")
 	record := []sim.InputShortage{
+		{KeeperID: innID, Item: "meat", Days: 9},
 		{KeeperID: shortageTavernID, Item: "cheese", Days: 2},
 		{KeeperID: shortageTavernID, Item: "meat", Days: 6},
 	}
-	snap := dairyShortageSnapshot(dairyStock(), record)
+	snap := dairyShortageSnapshot(map[sim.ItemKind]int{"milk": 14}, record) // no cheese on hand, or its entry is stale
+	snap.Structures["inn"] = plainStructure("inn", "The Inn")
+	snap.Actors[innID] = &sim.ActorSnapshot{Kind: sim.KindNPCStateful, DisplayName: "Hannah Ward", WorkStructureID: "inn",
+		Inventory: map[sim.ItemKind]int{}, Needs: map[sim.NeedKey]int{}}
 	view := buildForgeChoice(snap, shortageDairyID, snap.Actors[shortageDairyID])
 	if got, want := tradeOrder(view), []sim.ItemKind{"meat", "cheese", "milk"}; !sameOrder(got, want) {
 		t.Fatalf("trade order = %v, want %v (longest-standing shortage leads)", got, want)
 	}
+	if sh := view.Items[0].Shortage; sh == nil || sh.Where != "The Inn" || sh.Days != 9 {
+		t.Errorf("meat.Shortage = %+v, want the Inn's nine days over the Tavern's six", sh)
+	}
+}
+
+// TestForgeChoiceOwnStockEndsTheShortage: a record entry that has outlived the
+// shelves — the producer landed a batch since the last revalidation — is
+// ignored, so "none is to be had in the village" never renders beside her own
+// stock line. By the sweep's supplier test, a producer holding any of the good
+// IS the end of the shortage.
+func TestForgeChoiceOwnStockEndsTheShortage(t *testing.T) {
+	stock := dairyStock()
+	stock["meat"] = 3
+	snap := dairyShortageSnapshot(stock, tavernMeatShortage(6))
+	view := buildForgeChoice(snap, shortageDairyID, snap.Actors[shortageDairyID])
+	if got, want := tradeOrder(view), []sim.ItemKind{"milk", "cheese", "meat"}; !sameOrder(got, want) {
+		t.Fatalf("trade order = %v, want %v (a stale entry does not lead)", got, want)
+	}
+	for _, it := range view.Items {
+		if it.Shortage != nil {
+			t.Errorf("%s carries a shortage %+v while the producer holds the good", it.itemKind, it.Shortage)
+		}
+	}
+	if scene := renderScenario(perceptionScenario{build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+		return snap, shortageDairyID, nil
+	}}); strings.Contains(scene, "has been without") {
+		t.Errorf("stale shortage rendered beside the producer's own stock:\n%s", scene)
+	}
 }
 
 // TestGoldensShortageGoodLeadsTheTradeScene is the LLM-658 cross-scenario
-// invariant: wherever a "## Your trade" scene carries a good in a standing
-// shortage, that good is narrated FIRST and its line names the shop that has
-// gone without; and the shortage line never appears without a shortage item
-// behind it. Runs over the whole matrix so a future sort tweak cannot bury the
-// one good the village is waiting on beneath whatever is selling.
+// invariant: wherever a "## Your trade" scene carries goods in a standing
+// shortage, they are narrated as a leading prefix — every shortage good before
+// every other, longest-standing first — each naming the shop that has gone
+// without; and the shortage line never appears without a shortage item behind
+// it. Runs over the whole matrix so a future sort tweak cannot bury the one
+// good the village is waiting on beneath whatever is selling.
 func TestGoldensShortageGoodLeadsTheTradeScene(t *testing.T) {
 	const marker = "has been without"
 	for _, sc := range perceptionScenarios {
@@ -364,14 +398,21 @@ func TestGoldensShortageGoodLeadsTheTradeScene(t *testing.T) {
 				return
 			}
 			short := false
-			for i, it := range view.Items {
+			prefixEnded := false
+			lastDays := 0
+			for _, it := range view.Items {
 				if it.Shortage == nil {
+					prefixEnded = true
 					continue
 				}
 				short = true
-				if i > 0 {
-					t.Errorf("scenario %q: shortage good %s narrated at position %d; a standing shortage leads (LLM-658)", sc.name, it.itemKind, i)
+				if prefixEnded {
+					t.Errorf("scenario %q: shortage good %s narrated after a good that is not short; standing shortages lead (LLM-658)", sc.name, it.itemKind)
 				}
+				if lastDays > 0 && it.Shortage.Days > lastDays {
+					t.Errorf("scenario %q: shortage good %s (%d days) narrated after a shorter one (%d days); longest-standing leads", sc.name, it.itemKind, it.Shortage.Days, lastDays)
+				}
+				lastDays = it.Shortage.Days
 				if it.Shortage.Where == "" || it.Shortage.Days < 1 {
 					t.Errorf("scenario %q: shortage on %s carries no shop or days: %+v", sc.name, it.itemKind, it.Shortage)
 				}

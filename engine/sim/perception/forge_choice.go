@@ -164,7 +164,7 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			HasInputs:   len(recipe.Inputs) > 0,
 			InputsReady: inputsReady,
 			SoldUnits:   soldUnits,
-			Shortage:    standingShortage(snap, e.Item),
+			Shortage:    standingShortage(snap, actorSnap, e.Item),
 		})
 	}
 	if len(items) == 0 {
@@ -199,7 +199,17 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 // falling back to the keeper himself; an entry whose keeper is gone from the
 // snapshot is skipped — the next sweep drops it. The record is sorted by
 // (keeper, item), so on equal days the first keeper's shop is named.
-func standingShortage(snap *sim.Snapshot, item sim.ItemKind) *ForgeShortage {
+//
+// The record is revalidated against the shelves once a visitor tick
+// (pruneResolvedShortages), so it is at most a tick stale — except for the
+// producer's own landing, whose done-wake renders before that tick: a producer
+// holding any of the good is, by the sweep's own supplier test, the end of the
+// shortage, so the entry is ignored here rather than let "none is to be had"
+// stand beside her stock line.
+func standingShortage(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, item sim.ItemKind) *ForgeShortage {
+	if actorSnap.Inventory[item] > 0 {
+		return nil
+	}
 	var best *ForgeShortage
 	for _, s := range snap.Environment.InputShortages {
 		if s.Item != item || s.Days < 1 {

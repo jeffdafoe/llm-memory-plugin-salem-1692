@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -2496,6 +2497,11 @@ func (w *World) republish() {
 		Recipes:    w.Recipes,
 		RecipeUses: w.ensureRecipeUses(),
 	}
+	// Environment is copied by value above, but a slice copies only its header:
+	// pruneResolvedShortages compacts the record in place and the peddler spawn
+	// stamps LastPeddlerAt through a pointer into it, so perception (LLM-658)
+	// reads its own copy.
+	snap.Environment.InputShortages = slices.Clone(w.Environment.InputShortages)
 	// LLM-309: the huddles in a silent transactional-futility loop, computed once
 	// per publish (a single O(ledger) pass) so the per-actor steer below is a map
 	// lookup rather than a per-member ledger walk in this hot, per-command path.

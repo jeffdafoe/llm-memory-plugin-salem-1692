@@ -263,13 +263,16 @@ func shortageLabel(w *World, s InputShortage) string {
 // WorldEnvironment.InputShortages, for the LastPeddlerAt stamp once the spawn
 // commits, and the bound errand. ok=false when the feature is off or nothing is
 // due. Runs on the world goroutine.
-func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
-	days := w.Settings.ShortagePeddlerDays
-	if days <= 0 {
-		return -1, nil, false
-	}
+// pruneResolvedShortages re-reads the stored record against inputShortagesNow
+// and drops every entry the village has since resolved, returning what stands.
+// Run every visitor tick (dispatchVisitorSpawn, ahead of its spawn window) so
+// the record its readers act on — the peddler, the carter's shortage run, and
+// the producer's "## Your trade" cue (LLM-658) — is never more than a tick
+// behind the shelves; the daily sweep alone left it a midnight snapshot until
+// the afternoon. Runs on the world goroutine.
+func pruneResolvedShortages(w *World) []InputShortage {
 	if len(w.Environment.InputShortages) == 0 {
-		return -1, nil, false
+		return nil
 	}
 	standing := map[shortageKey]struct{}{}
 	for _, k := range inputShortagesNow(w) {
@@ -284,6 +287,18 @@ func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
 		}
 	}
 	w.Environment.InputShortages = kept
+	return kept
+}
+
+func dueShortagePeddler(w *World, now time.Time) (int, *TradeErrand, bool) {
+	days := w.Settings.ShortagePeddlerDays
+	if days <= 0 {
+		return -1, nil, false
+	}
+	kept := pruneResolvedShortages(w)
+	if len(kept) == 0 {
+		return -1, nil, false
+	}
 
 	cooldown := time.Duration(days) * 24 * time.Hour
 	for i, s := range kept {
