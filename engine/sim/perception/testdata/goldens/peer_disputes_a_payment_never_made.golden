@@ -15,5 +15,5 @@ Evening settles over the village.
 - Moses James has paid you a coin twice, all of it the town's due — settled as it was handed over, and no goods owed back.
 
 ## Town rate
-The town pays your wage out of the estate rate. When you call at a shop on your rounds and the keeper is there, the rate on their estate is taken into the town chest as you arrive — none of it passes through your purse. What is taken is the town's, not yours to hand back.
+The town pays your wage out of the estate rate. When you call at a shop on your rounds and the keeper is there, the rate on their estate is taken into the town chest as you arrive — none of it passes through your purse. A keeper holding 100 coins or fewer owes nothing today. You never ask for the rate or name a sum: what is due is taken without a word from you, and what is taken is the town's, not yours to hand back.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

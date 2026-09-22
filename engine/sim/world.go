@@ -2481,6 +2481,7 @@ func (w *World) republish() {
 		GarmentThreadbareFractionX100: w.Settings.GarmentThreadbareFractionX100,
 		FarmUpkeepFloor:               w.Settings.FarmUpkeepFloor,
 		FarmUpkeepCoinsPerShovel:      w.Settings.FarmUpkeepCoinsPerShovel,
+		EstateRateFloor:               w.Settings.EstateRateFloor,
 		MerchantCoinFloor:             w.Settings.MerchantCoinFloor,
 		DefaultOutdoorSceneRadius:     w.Settings.DefaultOutdoorSceneRadius,
 		Assets:                        w.Assets,
