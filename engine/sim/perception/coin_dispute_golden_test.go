@@ -106,6 +106,7 @@ func peerDisputesAPaymentNeverMade() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		PublishedAt:      published,
 		LocalMinuteOfDay: &now,
 		NeedThresholds:   sim.NeedThresholds{},
+		EstateRateFloor:  sim.DefaultEstateRateFloor,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			marshID: marsh, mosesID: moses,
 		},
@@ -170,8 +171,14 @@ func TestCoinDisputeGoldenTellsTheConstableWhichWayTheRateRuns(t *testing.T) {
 		name:  "peer_disputes_a_payment_never_made",
 		build: peerDisputesAPaymentNeverMade,
 	})
-	if !strings.Contains(got, "## Town rate\n"+estateRateCollectorLine) {
-		t.Errorf("collector line must render with a keeper present:\n%s", got)
+	for _, want := range []string{
+		"## Town rate\nThe town pays your wage out of the estate rate.",
+		"coins or fewer owes nothing today. You never ask for the rate or name a sum",
+		"not yours to hand back.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("collector line must render with a keeper present.\nwant: %s\n--- got ---\n%s", want, got)
+		}
 	}
 }
 

@@ -4208,9 +4208,11 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "LLM-655 collecting side of the estate rate: the constable, called in at the General Store on his rounds, " +
 			"with the keeper in front of him. The golden pins the '## Town rate' section carrying the one line he has " +
 			"about his income — the estate rate pays his wage, it is taken into the chest as he arrives without passing " +
-			"through his purse, and it is not his to hand back — and pins what is deliberately ABSENT: no imperative, no " +
-			"tool, no amount. The engine already took the rate on the beat credit; his action ring says from whom. " +
-			"Foil of keeper_with_constable_present_hears_no_rate_cue (the same scene from the keeper's side).",
+			"through his purse, a keeper at or under the floor (named, off Snapshot.EstateRateFloor — LLM-665) owes " +
+			"nothing today, he never asks for the rate or names a sum, and it is not his to hand back — and pins what is " +
+			"deliberately ABSENT: no imperative, no tool, no amount taken. The engine already took the rate on the beat " +
+			"credit; his action ring says from whom. Foil of keeper_with_constable_present_hears_no_rate_cue (the same " +
+			"scene from the keeper's side).",
 		build: constableAtAKeepersShopEstateRateLine,
 	},
 	{
@@ -4381,6 +4383,7 @@ func estateRateSnapshot(constablePresent bool) (*sim.Snapshot, sim.ActorID, sim.
 		LocalMinuteOfDay: &now,
 		NeedThresholds:   sim.NeedThresholds{},
 		Assets:           emptyAssetSet,
+		EstateRateFloor:  sim.DefaultEstateRateFloor,
 		Actors:           map[sim.ActorID]*sim.ActorSnapshot{keeperID: josiah, constableID: gideon},
 		Structures: map[sim.StructureID]*sim.Structure{
 			"general_store": plainStructure("general_store", "General Store"),

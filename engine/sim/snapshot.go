@@ -245,6 +245,12 @@ type Snapshot struct {
 	FarmUpkeepFloor          int
 	FarmUpkeepCoinsPerShovel int
 
+	// EstateRateFloor mirrors WorldSettings.EstateRateFloor (LLM-665) so the
+	// constable's rate line names the SAME floor collectEstateRateAtStop assesses
+	// against — the figure under which a keeper owes nothing today — pure over the
+	// snapshot rather than racing on w.Settings.
+	EstateRateFloor int
+
 	// MerchantCoinFloor mirrors WorldSettings.MerchantCoinFloor RAW (LLM-294) — the
 	// working-capital floor below which a stock-rich keeper is steered to conserve
 	// coin. No effective-value fallback (unlike SeekWorkCoinCeiling): the perception

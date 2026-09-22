@@ -109,6 +109,7 @@ func keeperWithAWeekOfSettledDuesOnRecord() (*sim.Snapshot, sim.ActorID, []sim.W
 		PublishedAt:      published,
 		LocalMinuteOfDay: &now,
 		NeedThresholds:   sim.NeedThresholds{},
+		EstateRateFloor:  sim.DefaultEstateRateFloor,
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
 			marshID: marsh, mosesID: moses,
 		},
