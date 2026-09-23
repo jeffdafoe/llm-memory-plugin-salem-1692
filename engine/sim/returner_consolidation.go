@@ -167,16 +167,16 @@ func FindReturnerConsolidationCandidates(at time.Time, limit int) Command {
 //
 // On a stale snapshot returns ErrStaleConsolidationSnapshot with NO writes; the
 // next sweep re-snapshots and retries. An empty snapshot installs the summary +
-// stamp (benign edge case — all facts evicted before apply). Rejects an empty
-// summary, unknown returner, or unknown pair. rvID carries the rvis- id (the
+// stamp (benign edge case — all facts evicted before apply). Rejects an unknown
+// returner or unknown pair; an empty summary is stored as-is. rvID carries the rvis- id (the
 // candidate's ActorID).
 func ApplyReturnerConsolidation(rvID ActorID, pcID ActorID, newSummary string, snapshotFacts []SalientFact, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
+			// An empty summary is legal: a first fold whose reply was the no-update
+			// sentinel consumes the facts and leaves no impression, which
+			// renderReturnerKnownClause renders as plain familiarity.
 			newSummary = strings.TrimSpace(newSummary)
-			if newSummary == "" {
-				return nil, fmt.Errorf("ApplyReturnerConsolidation: empty new summary for %q→%q", rvID, pcID)
-			}
 			// Bound in Go so this write provably satisfies the summary_sane DB CHECK
 			// (char_length <= 4000); an unbounded fold would wedge the next checkpoint.
 			newSummary = BoundReturnerSummary(newSummary)

@@ -122,6 +122,42 @@ func TestRunOneReturnerSweep_FoldsDepartedReturner(t *testing.T) {
 	}
 }
 
+// TestRunOneReturnerSweep_SentinelNotStored — the shared fold prompt offers a
+// "nothing notable" / "nothing new" reply. A returner summary renders verbatim
+// into every returner preface, so the sentinel must never be stored: a first fold
+// leaves the summary empty, a later fold keeps the prior impression, and both
+// consume the facts.
+func TestRunOneReturnerSweep_SentinelNotStored(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Hour)
+	prior := time.Now().UTC().Add(-48 * time.Hour)
+	cases := []struct {
+		name, prior, reply string
+		lastConsolidated   *time.Time
+	}{
+		{"first fold", "", "nothing notable", nil},
+		{"later fold", "Jeff haggles hard but pays.", "Nothing new.", &prior},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, stop := buildReturnerFoldWorld(t, heardFacts(base, 4), c.prior, c.lastConsolidated, false /*departed*/)
+			defer stop()
+			client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: c.reply}})
+			runOneReturnerSweep(context.Background(), w, client)
+
+			facts, summary, stamped := returnerFacts(t, w)
+			if summary != c.prior {
+				t.Errorf("SummaryText = %q, want %q (sentinel must not be stored)", summary, c.prior)
+			}
+			if len(facts) != 0 {
+				t.Errorf("SalientFacts len = %d, want 0 (facts consumed)", len(facts))
+			}
+			if !stamped {
+				t.Error("LastConsolidatedAt not stamped after fold")
+			}
+		})
+	}
+}
+
 // TestFindReturnerConsolidation_PresentBelowCeilingSkipped — a returner still
 // in-village (present) with a sub-ceiling trail is NOT a fold candidate; the trail
 // keeps accruing until departure (or the ceiling backstop).

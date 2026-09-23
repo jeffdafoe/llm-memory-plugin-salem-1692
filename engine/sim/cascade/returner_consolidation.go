@@ -119,6 +119,13 @@ func consolidateOneReturner(ctx context.Context, w *sim.World, client llm.Client
 		log.Printf("cascade/returner_consolidation: empty reply for %s→%s (tool_calls=%d)", c.ActorID, c.PeerID, len(reply.ToolCalls))
 		return
 	}
+	// The shared fold prompt offers a no-update sentinel (LLM-426/497). A returner
+	// summary renders verbatim into every returner preface, so the sentinel is never
+	// stored: keep the prior impression (empty on a first fold, which
+	// renderReturnerKnownClause skips) and still consume the facts.
+	if isNoUpdateSentinel(newSummary) {
+		newSummary = strings.TrimSpace(c.PriorSummary)
+	}
 	applyAt := time.Now()
 	if _, err := w.SendContext(ctx, sim.ApplyReturnerConsolidation(c.ActorID, c.PeerID, newSummary, c.Facts, applyAt)); err != nil {
 		if ctx.Err() == nil {
