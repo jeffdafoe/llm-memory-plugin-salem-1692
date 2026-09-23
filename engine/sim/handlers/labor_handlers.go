@@ -151,7 +151,7 @@ var solicitWorkSchema = json.RawMessage(`{
 
 const solicitWorkDescription = "Offer to do a job for another villager in your current conversation, for pay. " +
 	"This is the transactional surface — speech that mentions wanting work is just talk, this is what they can actually answer. " +
-	"You set who you'll work for (employer), the pay you want — coins (reward), goods they hold (reward_items, e.g. a meal), or both — and how long it takes (duration_minutes — a real stretch of work: 2, 4, 6, or 8 hours). " +
+	"You set who you'll work for (employer), the pay you want — coins (reward), goods they hold (reward_items, e.g. a meal), or both — and how long it takes (duration_minutes — a real stretch of work between 4 and 8 hours; 4, 6, or 8 is usual). " +
 	"Ask them aloud in the same breath by passing `say` — do NOT ask with the speak tool and then call this, because speaking ends your turn and the offer would never be made. " +
 	"This creates a pending offer they must accept or decline. " +
 	"On accept you're paid when the work finishes — the coins and any goods are handed over together then — and you're occupied with the job the whole time; you get on with it rather than standing about talking. " +
@@ -387,7 +387,7 @@ var offerWorkSchema = json.RawMessage(`{
 
 const offerWorkDescription = "Ask another villager in your current conversation to do a job for you, for pay. " +
 	"This is the transactional surface — speech that mentions a job is just talk, this is what they can actually accept. " +
-	"You set who works (worker — they must take work for pay; your perception names who does), the pay you will hand over when the work is finished — coins (reward), goods you hold (reward_items, e.g. a meal), or both — and how long it takes (duration_minutes — a real stretch of work: 2, 4, 6, or 8 hours). " +
+	"You set who works (worker — they must take work for pay; your perception names who does), the pay you will hand over when the work is finished — coins (reward), goods you hold (reward_items, e.g. a meal), or both — and how long it takes (duration_minutes — a real stretch of work between 4 and 8 hours; 4, 6, or 8 is usual). " +
 	"Ask them aloud in the same breath by passing `say` — do NOT ask with the speak tool and then call this, because speaking ends your turn and the offer would never be made. " +
 	"This creates a pending offer they must accept or decline. On accept they come to your workplace and get to work, and you pay when the job finishes — so you must still hold the pay then. " +
 	"What the work actually is, and any back-and-forth on terms, is up to your conversation — re-offer with new terms if they want something different."
@@ -558,7 +558,7 @@ var acceptWorkSchema = json.RawMessage(`{
         "labor_id": {
             "type": "integer",
             "minimum": 1,
-            "description": "The numeric labor ID of the pending work offer to accept. You'll see this in your perception of the worker's offer."
+            "description": "The numeric labor ID of the pending work offer to accept. You'll see this in your perception of the offer."
         },
         "say": {
             "type": "string",

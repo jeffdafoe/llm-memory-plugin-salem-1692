@@ -422,7 +422,14 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// from that anti-repeat line down to the weaker default coda.
 	triageRunLong := conversationRunLong && !midItemDwell
 	triageLingering := conversationLingering && !midItemDwell
-	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering)
+	// The "you already spoke … do not address them again" line contradicts only
+	// the farewell codas (run long / lingering), so suppress it exactly when one
+	// of those WINS — mirroring renderTriage's case order, where an in-flight
+	// activity or move, the seek-work directive, and the looping coda all
+	// outrank them (and agree with the awaiting line).
+	windDownCodaWins := p.Actor.InFlightSourceActivity == nil && p.Actor.InFlightMove == nil &&
+		!seekWorkDirective && !conversationLooping && (triageRunLong || triageLingering)
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering, windDownCodaWins)
 	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, triageRunLong, triageLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
@@ -605,7 +612,7 @@ func returnerRecencyClause(t sim.RecencyTier) string {
 // not re-pitch a peer who hasn't answered; renderTriage's coda swap reinforces
 // it. Both lists are acquaintance-gated labels resolved at build time. Emits
 // nothing when there is no pending turn (the common case).
-func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply bool) {
+func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply, suppressAwaiting bool) {
 	// suppressOwedReply drops the "X is waiting for your reply" nag (LLM-160): when
 	// the actor's one productive move is to leave for work (the seek-work directive),
 	// the reply-pressure is exactly what kept it agree-looping instead of going. The
@@ -616,7 +623,11 @@ func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply boo
 			fmt.Fprintf(b, "%s is waiting for your reply.\n", sanitizeInline(name))
 		}
 	}
-	if len(ts.AwaitingReplyFrom) > 0 {
+	// suppressAwaiting drops the "you already spoke … do not address them again"
+	// half when the triage coda is a wind-down (run long / lingering) that asks the
+	// actor to say a farewell — a farewell IS addressing them again, and the two
+	// lines would contradict each other in the same prompt.
+	if len(ts.AwaitingReplyFrom) > 0 && !suppressAwaiting {
 		fmt.Fprintf(b,
 			"You already spoke to %s and are waiting for their reply. Do not repeat "+
 				"yourself or address them again — attend to your own work, or simply wait.\n",
@@ -834,7 +845,7 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// is the more specific read of why a reply is pending. The needRedirect
 		// swap is deliberately NOT applied here — it exists to break a
 		// confabulated plan-loop, and this case is by definition not a loop.
-		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
+		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell, or simply turn to your own affairs and call done(). Do not start a new topic.\n")
 	// LLM-416: also arrives gated off while mid item-dwell, same as
 	// conversationRunLong above — the pinned eater falls through rather than being
 	// told to let the talk end.
@@ -852,7 +863,7 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// silent conclude one persistence gate later exists for the case where it
 		// doesn't, and getting a graceful in-world farewell here instead is the
 		// entire point of the arm.
-		b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs, then call done(). Do not open a new topic.\n")
+		b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs and call done(). Do not open a new topic.\n")
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
@@ -3576,11 +3587,11 @@ func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutV
 	payment := formatOfferPayment(offer.Reward, offer.RewardItems)
 	duration := humanizeWorkMinutes(offer.DurationMin)
 	if offer.SubjectIsEmployer() {
-		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer — say a brief word if you like, or call done().\n",
 			nameOf(offer.Worker), payment, duration)
 		return
 	}
-	fmt.Fprintf(b, "You've offered to work for %s for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+	fmt.Fprintf(b, "You've offered to work for %s for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer — say a brief word if you like, or call done().\n",
 		nameOf(offer.Employer), payment, duration)
 }
 
@@ -3604,7 +3615,7 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool, employers []sim.
 	if !canSolicit {
 		return
 	}
-	const askShape = "name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; do NOT ask with speak first — speaking ends your turn and no offer is ever made.\n"
+	const askShape = "name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; don't ask with speak first — speaking ends your turn and no offer is ever made.\n"
 	// Only REAL names reach the named branch. buildSolicitableEmployers already
 	// restricts the slice to acquaintances, but the render must not trust that
 	// alone: a resolver returning "" or its "someone" fallback here would put a
@@ -3651,7 +3662,7 @@ func renderOfferWorkAffordance(b *strings.Builder, workers []sim.ActorID, nameOf
 	if len(names) > 1 {
 		takes = "take"
 	}
-	fmt.Fprintf(b, "%s %s work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; do NOT ask with speak first, because speaking ends your turn and the offer would never reach them.\n",
+	fmt.Fprintf(b, "%s %s work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; don't ask with speak first, because speaking ends your turn and the offer would never reach them.\n",
 		joinNames(names), takes)
 }
 

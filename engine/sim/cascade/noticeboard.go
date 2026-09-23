@@ -161,12 +161,8 @@ func authorNoticeboardText(ctx context.Context, w *sim.World, client llm.Client,
 
 	messages := buildNoticeboardPrompt(snap, boardLabel, priorText, capacity)
 	resp, err := client.Complete(callCtx, llm.Request{
-		Messages:    messages,
-		Model:       noticeboardLLMModel,
-		Temperature: 0.7,
-		// Scale the budget to the board's line capacity — up to 4 short
-		// notices need more room than one. ~100 tokens/line plus a base.
-		MaxTokens: noticeboardMaxTokens(capacity),
+		Messages: messages,
+		Model:    noticeboardLLMModel,
 		// Fresh scene per authoring call: memory-api's chat_messages
 		// history loader filters by scene_id when set, so each notice
 		// authoring is its own isolated conversation — without this,
@@ -464,16 +460,6 @@ func buildNoticeboardPrompt(snap sim.VillageContext, boardLabel, priorText strin
 	}
 }
 
-// noticeboardMaxTokens scales the completion budget to the board's line
-// capacity — one short notice fits comfortably in ~200 tokens, and each
-// additional line needs roughly another 100.
-func noticeboardMaxTokens(capacity int) int {
-	if capacity < 1 {
-		capacity = 1
-	}
-	return 100 + 100*capacity
-}
-
 // noticeboardSystemPrompt is the static system message — role + genre
 // catalog + anti-patterns + voice anchor + output format. Constant
 // per call (built fresh each invocation but content is fixed); the
@@ -504,14 +490,7 @@ func noticeboardSystemPrompt(capacity int) string {
 		"  - Petitions and grievances: a public ask of the community.",
 		"      Example: \"All who can spare hands at the Whittredge raising on Tuesday, the family would have your help.\"",
 		"",
-		"DO NOT write any of the following — these are not the purpose of a noticeboard:",
-		"  - Reports of where individual villagers currently are, what they are doing, or how they feel.",
-		"      DO NOT write: \"Goodman Reeves is at the forge.\"",
-		"      DO NOT write: \"Goodwife Wells is tired.\"",
-		"      DO NOT write: \"Ezekiel is at work today.\"",
-		"  - Counts or summaries of villager activity (\"X spoke 4 times today\").",
-		"  - Surveillance-shaped statements about individuals' health, mood, comings and goings.",
-		"  Notices are durable public posts that stand for hours or days — by the time anyone reads them, the moment has passed. Write things that remain useful to read: events scheduled, things offered, things lost, warnings to heed.",
+		"Notices are durable public posts that stand for hours or days — by the time anyone reads one, the moment has passed. Write only what stays useful to read: events scheduled, things offered, things lost, warnings to heed. A notice never reports where a particular villager is at the moment, what they are doing, or how they feel; that is stale before it is read, and a public board is no place for it.",
 		"",
 		"VOICE:",
 		"  - The voice of a 1692 New England villager. Formal for civic announcements; plain for offerings and warnings.",

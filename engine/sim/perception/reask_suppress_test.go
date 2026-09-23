@@ -50,7 +50,7 @@ func TestReaskAnchor_SolePeerSilentAnchored(t *testing.T) {
 		t.Error("AwaitingReply() = false, want true (drives the wait coda)")
 	}
 	var b strings.Builder
-	renderTurnState(&b, ts, false)
+	renderTurnState(&b, ts, false, false)
 	if !strings.Contains(b.String(), "waiting for their reply") {
 		t.Errorf("expected the wait line, got:\n%s", b.String())
 	}

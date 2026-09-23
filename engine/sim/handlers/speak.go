@@ -134,7 +134,8 @@ var speakSchema = json.RawMessage(`{
 // terse — the schema's text.description carries the per-field guidance.
 const speakDescription = "Say one message to the actors currently in your conversation. " +
 	"The message is heard by every actor in the same huddle as you. " +
-	"You cannot speak while walking — finish the move first, or speak before starting one."
+	"Speaking ends your turn: when you are also taking an action that has its own `say` " +
+	"argument, put your words there instead of calling speak."
 
 // DecodeSpeakArgs parses the raw tool-call arguments into a SpeakArgs.
 // Errors are typed validation failures the harness surfaces to the model

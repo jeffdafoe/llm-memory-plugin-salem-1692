@@ -42,7 +42,7 @@ var gatherSchema = json.RawMessage(`{
             "type": "integer",
             "minimum": 1,
             "maximum": 2147483647,
-            "description": "Ignored (LLM-87): gather always picks the source clean — it takes all ripe units at once. Kept for backward compatibility; you need not supply it."
+            "description": "Not used — gather always takes all ripe units at once. Leave it out."
         }
     },
     "required": [],

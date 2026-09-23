@@ -17957,7 +17957,7 @@ func TestInstructsSpeakAlongside(t *testing.T) {
 		// The shipped cues. Each names speak only to warn the model off it.
 		"Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.",
 		"call sell — the named item and quantity in lines, your price in coins in amount, and the words you speak aloud in say. Do not name a price with the speak tool: speaking ends your turn, and the offer would never be made.",
-		"Put what you say to them in offer_work's `say`, in your own voice; do NOT ask with speak first, because speaking ends your turn and the offer would never reach them.",
+		"Put what you say to them in offer_work's `say`, in your own voice; don't ask with speak first, because speaking ends your turn and the offer would never reach them.",
 		"call pay_with_item with seller \"Ezekiel Crane\", and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made.",
 		"call decline_work (offer id 1), telling them in say that you cannot pay what they ask.",
 		// speak as an ordinary verb, not a tool call.

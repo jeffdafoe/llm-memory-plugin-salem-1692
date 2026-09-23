@@ -109,6 +109,20 @@ func TestRunOneReturnerSweep_FoldsDepartedReturner(t *testing.T) {
 	if len(reqs[0].Tools) != 0 {
 		t.Errorf("Request.Tools = %d, want 0 (fold is tool-free)", len(reqs[0].Tools))
 	}
+	// The sweep sends the returner's own episodic prompt, not the persistent
+	// fold's dealing judgment + sentinel.
+	if len(reqs[0].Messages) != 1 {
+		t.Fatalf("Request.Messages = %d, want 1", len(reqs[0].Messages))
+	}
+	prompt := reqs[0].Messages[0].Content
+	if !strings.Contains(prompt, "what you will remember about Jeff") {
+		t.Errorf("sweep did not send the returner fold prompt:\n%s", prompt)
+	}
+	for _, banned := range []string{"not the pleasantries", "nothing notable", "nothing new"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("sweep prompt carries persistent-fold text %q:\n%s", banned, prompt)
+		}
+	}
 
 	facts, summary, stamped := returnerFacts(t, w)
 	if summary != "Jeff frets over his fence line and buys nails each visit." {
@@ -119,6 +133,42 @@ func TestRunOneReturnerSweep_FoldsDepartedReturner(t *testing.T) {
 	}
 	if !stamped {
 		t.Error("LastConsolidatedAt not stamped after fold")
+	}
+}
+
+// TestRunOneReturnerSweep_SentinelNotStored — the persistent fold prompt offers a
+// "nothing notable" / "nothing new" reply. A returner summary renders verbatim
+// into every returner preface, so the sentinel must never be stored: a first fold
+// leaves the summary empty, a later fold keeps the prior impression, and both
+// consume the facts.
+func TestRunOneReturnerSweep_SentinelNotStored(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Hour)
+	prior := time.Now().UTC().Add(-48 * time.Hour)
+	cases := []struct {
+		name, prior, reply string
+		lastConsolidated   *time.Time
+	}{
+		{"first fold", "", "nothing notable", nil},
+		{"later fold", "Jeff haggles hard but pays.", "Nothing new.", &prior},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, stop := buildReturnerFoldWorld(t, heardFacts(base, 4), c.prior, c.lastConsolidated, false /*departed*/)
+			defer stop()
+			client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: c.reply}})
+			runOneReturnerSweep(context.Background(), w, client)
+
+			facts, summary, stamped := returnerFacts(t, w)
+			if summary != c.prior {
+				t.Errorf("SummaryText = %q, want %q (sentinel must not be stored)", summary, c.prior)
+			}
+			if len(facts) != 0 {
+				t.Errorf("SalientFacts len = %d, want 0 (facts consumed)", len(facts))
+			}
+			if !stamped {
+				t.Error("LastConsolidatedAt not stamped after fold")
+			}
+		})
 	}
 }
 
@@ -229,18 +279,27 @@ func TestApplyReturnerConsolidation_BoundsSummaryLength(t *testing.T) {
 	}
 }
 
-// TestBuildReturnerFoldPrompt_AttributesHeard — the reused buildConsolidationPrompt
-// attributes a heard fact to the PC (not the returner), so the fold can't mistake
-// the PC's words for the returner's own (the cross-attribution guard the fold half
-// of the feature relies on).
+// TestBuildReturnerFoldPrompt_AttributesHeard — the returner fold prompt shares
+// the persistent fold's fact body, so it attributes a heard fact to the PC (not
+// the returner) and the fold can't mistake the PC's words for the returner's own
+// (the cross-attribution guard the fold half of the feature relies on). It asks
+// for episodic recall, not a dealing judgment, and offers no sentinel.
 func TestBuildReturnerFoldPrompt_AttributesHeard(t *testing.T) {
 	c := sim.ConsolidationCandidate{
 		ActorID: sim.ActorID(testRVID), PeerID: "pc-jeff",
 		ActorName: "Elias Drum", PeerName: "Jeff", ActorLLMAgent: sim.VisitorAgentName,
 		Facts: []sim.SalientFact{sim.NewSalientFact(time.Now(), sim.InteractionHeard, "the fence won't hold")},
 	}
-	prompt := buildConsolidationPrompt(c)
+	prompt := buildReturnerFoldPrompt(c)
 	if !strings.Contains(prompt, `Jeff said: "the fence won't hold"`) {
 		t.Errorf("prompt does not attribute the heard fact to Jeff:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "what you will remember about Jeff") {
+		t.Errorf("prompt does not ask for episodic recall:\n%s", prompt)
+	}
+	for _, banned := range []string{"not the pleasantries", "nothing notable", "nothing new"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("returner prompt carries persistent-fold text %q:\n%s", banned, prompt)
+		}
 	}
 }

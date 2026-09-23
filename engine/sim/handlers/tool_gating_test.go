@@ -506,6 +506,14 @@ func gatingRegistryWithPay(t *testing.T) *Registry {
 	if err := RegisterPay(r); err != nil {
 		t.Fatalf("RegisterPay: %v", err)
 	}
+	for name, reg := range map[string]func(*Registry) error{
+		"sell": RegisterSceneQuote,
+		"give": RegisterGive,
+	} {
+		if err := reg(r); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
 	return r
 }
 
@@ -522,9 +530,9 @@ func gatingRegistryWithPay(t *testing.T) *Registry {
 func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
 	r := gatingRegistryWithPay(t)
 
-	// Alone with no audience at all → both pay verbs dropped.
+	// Alone with no audience at all → every huddle-bound verb dropped.
 	alone := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
-	for _, v := range []string{"pay", "pay_with_item"} {
+	for _, v := range []string{"pay", "pay_with_item", "sell", "give"} {
 		if alone[v] != 0 {
 			t.Errorf("%q advertised to a lone actor with no huddle peer; count %d", v, alone[v])
 		}
@@ -536,7 +544,7 @@ func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
 		ActorID:      "keeper",
 		Surroundings: perception.SurroundingsView{CoPresent: []perception.HuddleMember{{ID: "customer"}}},
 	}, nil))
-	for _, v := range []string{"pay", "pay_with_item"} {
+	for _, v := range []string{"pay", "pay_with_item", "sell", "give"} {
 		if walkin[v] != 0 {
 			t.Errorf("%q advertised with only a not-yet-huddled walk-in present; count %d", v, walkin[v])
 		}
@@ -545,12 +553,12 @@ func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
 		t.Errorf("speak should stay advertised to greet a co-present walk-in; count %d", walkin["speak"])
 	}
 
-	// In a huddle with a peer → both pay verbs advertised (a resolvable co-present party).
+	// In a huddle with a peer → every huddle-bound verb advertised (a resolvable co-present party).
 	huddled := specNameSet(gateTools(r, perception.Payload{
 		ActorID:      "keeper",
 		Surroundings: perception.SurroundingsView{HuddleMembers: []perception.HuddleMember{{ID: "peer"}}},
 	}, nil))
-	for _, v := range []string{"pay", "pay_with_item"} {
+	for _, v := range []string{"pay", "pay_with_item", "sell", "give"} {
 		if huddled[v] != 1 {
 			t.Errorf("%q should be advertised to a huddled actor with a co-present peer; count %d", v, huddled[v])
 		}

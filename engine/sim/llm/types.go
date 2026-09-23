@@ -34,12 +34,6 @@ type Request struct {
 	// tool-free completion (rare, but legal).
 	Tools []ToolSpec
 
-	// Temperature and MaxTokens are provider model parameters carried
-	// through. Zero values mean "use the adapter's default" — interpretation
-	// is the adapter's job, not the harness's.
-	Temperature float64
-	MaxTokens   int
-
 	// Model is the provider's model identifier (e.g. "claude-sonnet-4-6").
 	// Empty when the adapter should use its configured default.
 	Model string
