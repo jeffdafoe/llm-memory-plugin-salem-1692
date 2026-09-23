@@ -316,20 +316,15 @@ func TestBuildNoticeboardPrompt_IncludesVisitorsAndCatalog(t *testing.T) {
 }
 
 // TestNoticeboardSystemPrompt_AntiSurveillance: the system prompt
-// carries the v1-hardened anti-surveillance instructions (the
-// fabrication-resistance core).
+// carries the anti-surveillance rule (the fabrication-resistance core),
+// with its reason.
 func TestNoticeboardSystemPrompt_AntiSurveillance(t *testing.T) {
 	sys := noticeboardSystemPrompt(1)
-	if !strings.Contains(sys, "DO NOT") {
-		t.Error("system prompt missing DO NOT anti-pattern callouts")
+	if !strings.Contains(sys, "never reports where a particular villager is at the moment") {
+		t.Error("system prompt missing the whereabouts/doings/mood guard")
 	}
-	if !strings.Contains(sys, "Surveillance-shaped") {
-		t.Error("system prompt missing surveillance-shaped guard")
-	}
-	// Make sure the example anti-patterns are in there (they're
-	// the load-bearing concrete examples).
-	if !strings.Contains(sys, "Goodman Reeves is at the forge") {
-		t.Error("system prompt missing the at-location surveillance example")
+	if !strings.Contains(sys, "stale before it is read") {
+		t.Error("system prompt missing the reason for the guard")
 	}
 }
 
