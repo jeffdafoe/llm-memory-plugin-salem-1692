@@ -63,7 +63,7 @@ func TestReplyPacing_OwedReplyOutlivesPlainWindow(t *testing.T) {
 		t.Fatalf("OwedReplyTo = %q, want [Constable Marsh] — the question is still owed at the cadence boundary", got)
 	}
 	var b strings.Builder
-	renderTurnState(&b, ts, false)
+	renderTurnState(&b, ts, false, false)
 	if !strings.Contains(b.String(), "Constable Marsh is waiting for your reply.") {
 		t.Errorf("expected the owed-reply line, got:\n%s", b.String())
 	}

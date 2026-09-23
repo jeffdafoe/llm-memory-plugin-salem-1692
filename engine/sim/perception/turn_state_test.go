@@ -105,7 +105,7 @@ func TestRenderTurnState_Lines(t *testing.T) {
 	renderTurnState(&b, TurnStateView{
 		AwaitingReplyFrom: []string{"Ezekiel Crane"},
 		OwedReplyTo:       []string{"Bob"},
-	}, false)
+	}, false, false)
 	out := b.String()
 	if !strings.Contains(out, "Bob is waiting for your reply.") {
 		t.Errorf("missing owed-reply line:\n%s", out)
@@ -119,7 +119,7 @@ func TestRenderTurnState_Lines(t *testing.T) {
 
 	// No turn → nothing rendered.
 	var empty strings.Builder
-	renderTurnState(&empty, TurnStateView{}, false)
+	renderTurnState(&empty, TurnStateView{}, false, false)
 	if empty.Len() != 0 {
 		t.Errorf("empty turn-state should render nothing, got: %q", empty.String())
 	}
@@ -249,7 +249,7 @@ func TestRenderTurnState_SuppressOwedReply(t *testing.T) {
 	renderTurnState(&b, TurnStateView{
 		AwaitingReplyFrom: []string{"Ezekiel Crane"},
 		OwedReplyTo:       []string{"Bob"},
-	}, true)
+	}, true, false)
 	out := b.String()
 	if strings.Contains(out, "Bob is waiting for your reply.") {
 		t.Errorf("owed-reply nag should be suppressed under the seek-work directive:\n%s", out)
@@ -324,5 +324,24 @@ func TestRenderTriage_ConversationRunLongCoda(t *testing.T) {
 	renderTriage(&both, needs, thresholds, false, true /*looping*/, true /*runLong*/, false /*conversationLingering*/, nil, false, false, nil, nil)
 	if !strings.Contains(both.String(), "keep saying the same thing") {
 		t.Errorf("looping should outrank run-long:\n%s", both.String())
+	}
+}
+
+// TestRenderTurnState_SuppressAwaiting — under a wind-down coda (run long /
+// lingering) that asks for a farewell, the "you already spoke … do not address
+// them again" line is dropped so the two don't contradict each other; the owed
+// line is gated separately.
+func TestRenderTurnState_SuppressAwaiting(t *testing.T) {
+	var b strings.Builder
+	renderTurnState(&b, TurnStateView{
+		AwaitingReplyFrom: []string{"Ezekiel Crane"},
+		OwedReplyTo:       []string{"Bob"},
+	}, false, true)
+	out := b.String()
+	if strings.Contains(out, "You already spoke to") {
+		t.Errorf("awaiting line should be suppressed under a wind-down coda:\n%s", out)
+	}
+	if !strings.Contains(out, "Bob is waiting for your reply.") {
+		t.Errorf("owed-reply line should still render:\n%s", out)
 	}
 }

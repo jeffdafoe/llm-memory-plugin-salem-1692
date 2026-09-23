@@ -422,7 +422,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// from that anti-repeat line down to the weaker default coda.
 	triageRunLong := conversationRunLong && !midItemDwell
 	triageLingering := conversationLingering && !midItemDwell
-	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering)
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering, triageRunLong || triageLingering)
 	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, triageRunLong, triageLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()
@@ -605,7 +605,7 @@ func returnerRecencyClause(t sim.RecencyTier) string {
 // not re-pitch a peer who hasn't answered; renderTriage's coda swap reinforces
 // it. Both lists are acquaintance-gated labels resolved at build time. Emits
 // nothing when there is no pending turn (the common case).
-func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply bool) {
+func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply, suppressAwaiting bool) {
 	// suppressOwedReply drops the "X is waiting for your reply" nag (LLM-160): when
 	// the actor's one productive move is to leave for work (the seek-work directive),
 	// the reply-pressure is exactly what kept it agree-looping instead of going. The
@@ -616,7 +616,11 @@ func renderTurnState(b *strings.Builder, ts TurnStateView, suppressOwedReply boo
 			fmt.Fprintf(b, "%s is waiting for your reply.\n", sanitizeInline(name))
 		}
 	}
-	if len(ts.AwaitingReplyFrom) > 0 {
+	// suppressAwaiting drops the "you already spoke … do not address them again"
+	// half when the triage coda is a wind-down (run long / lingering) that asks the
+	// actor to say a farewell — a farewell IS addressing them again, and the two
+	// lines would contradict each other in the same prompt.
+	if len(ts.AwaitingReplyFrom) > 0 && !suppressAwaiting {
 		fmt.Fprintf(b,
 			"You already spoke to %s and are waiting for their reply. Do not repeat "+
 				"yourself or address them again — attend to your own work, or simply wait.\n",
