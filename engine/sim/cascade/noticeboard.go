@@ -161,12 +161,8 @@ func authorNoticeboardText(ctx context.Context, w *sim.World, client llm.Client,
 
 	messages := buildNoticeboardPrompt(snap, boardLabel, priorText, capacity)
 	resp, err := client.Complete(callCtx, llm.Request{
-		Messages:    messages,
-		Model:       noticeboardLLMModel,
-		Temperature: 0.7,
-		// Scale the budget to the board's line capacity — up to 4 short
-		// notices need more room than one. ~100 tokens/line plus a base.
-		MaxTokens: noticeboardMaxTokens(capacity),
+		Messages: messages,
+		Model:    noticeboardLLMModel,
 		// Fresh scene per authoring call: memory-api's chat_messages
 		// history loader filters by scene_id when set, so each notice
 		// authoring is its own isolated conversation — without this,
@@ -462,16 +458,6 @@ func buildNoticeboardPrompt(snap sim.VillageContext, boardLabel, priorText strin
 		{Role: llm.RoleSystem, Content: noticeboardSystemPrompt(capacity)},
 		{Role: llm.RoleUser, Content: buildNoticeboardUserPrompt(snap, boardLabel, priorText, capacity)},
 	}
-}
-
-// noticeboardMaxTokens scales the completion budget to the board's line
-// capacity — one short notice fits comfortably in ~200 tokens, and each
-// additional line needs roughly another 100.
-func noticeboardMaxTokens(capacity int) int {
-	if capacity < 1 {
-		capacity = 1
-	}
-	return 100 + 100*capacity
 }
 
 // noticeboardSystemPrompt is the static system message — role + genre
