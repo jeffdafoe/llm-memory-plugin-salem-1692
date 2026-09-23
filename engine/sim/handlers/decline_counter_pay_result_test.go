@@ -24,12 +24,12 @@ func TestCommitResultContent_DeclinePay_DeclinedReportsRefusal(t *testing.T) {
 	if got == "[ok]" {
 		t.Fatalf("declined decline_pay returned a bare [ok] with no refusal report")
 	}
-	for _, want := range []string{"declined", "Do not decline again"} {
+	for _, want := range []string{"declined"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("declined decline_pay result %q missing %q", got, want)
 		}
 	}
-	for _, banned := range []string{"word of refusal", "done()"} {
+	for _, banned := range []string{"word of refusal", "done()", "again"} {
 		if strings.Contains(got, banned) {
 			t.Errorf("declined decline_pay result %q asks for %q — unreachable after the terminal decline (LLM-350)", got, banned)
 		}
@@ -48,12 +48,12 @@ func TestCommitResultContent_CounterPay_CounteredReportsWait(t *testing.T) {
 	if got == "[ok]" {
 		t.Fatalf("countered counter_pay returned a bare [ok] with no report")
 	}
-	for _, want := range []string{"counter stands", "Await their answer", "Do not counter again"} {
+	for _, want := range []string{"counter stands", "answer on their turn"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("countered counter_pay result %q missing %q", got, want)
 		}
 	}
-	if strings.Contains(got, "call speak") || strings.Contains(got, "done()") {
+	if strings.Contains(got, "call speak") || strings.Contains(got, "done()") || strings.Contains(got, "again") {
 		t.Errorf("countered counter_pay result %q asks for a verb the terminal counter has "+
 			"already made unreachable (LLM-350)", got)
 	}
@@ -73,12 +73,12 @@ func TestCommitResultContent_CounterPay_CoercedAcceptReportsSettle(t *testing.T)
 	if got == "[ok]" {
 		t.Fatalf("coerced-accept counter_pay returned a bare [ok] with no settle report")
 	}
-	for _, want := range []string{"settled", "Do not counter again"} {
+	for _, want := range []string{"settled"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("coerced-accept counter_pay result %q missing %q", got, want)
 		}
 	}
-	for _, banned := range []string{"Say a brief word", "done()"} {
+	for _, banned := range []string{"Say a brief word", "done()", "again"} {
 		if strings.Contains(got, banned) {
 			t.Errorf("coerced-accept counter_pay result %q asks for %q — unreachable (LLM-350)", got, banned)
 		}

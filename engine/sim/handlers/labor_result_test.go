@@ -44,14 +44,14 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work working → hired + handover steer",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5, Payment: "5 coins"},
-			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Do not accept again.",
+			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish.",
 		},
 		{
 			// LLM-225: an in-kind reward names both legs in the hired steer.
 			name:   "accept_work working with in-kind reward → payment phrase in steer",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Anne Walker", Reward: 2, Payment: "1 porridge and 2 coins"},
-			want:   "[ok] You hired Anne Walker — they are at the work now for 1 porridge and 2 coins, paid when they finish. Do not accept again.",
+			want:   "[ok] You hired Anne Walker — they are at the work now for 1 porridge and 2 coins, paid when they finish.",
 		},
 		{
 			// Defensive: a result built without the pre-formatted Payment falls
@@ -59,7 +59,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work working without Payment falls back to coins",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", Reward: 5},
-			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish. Do not accept again.",
+			want:   "[ok] You hired Lewis Walker — they are at the work now for 5 coins, paid when they finish.",
 		},
 		{
 			// The copy is role-neutral because either party may be the acceptor
@@ -81,13 +81,13 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "accept_work working, worker accepted an offered job",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateWorking, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward", AcceptorIsWorker: true, Payment: "4 coins"},
-			want:   "[ok] You took on the job for Prudence Ward — you are at the work now, paid 4 coins when you finish. Do not accept again.",
+			want:   "[ok] You took on the job for Prudence Ward — you are at the work now, paid 4 coins when you finish.",
 		},
 		{
 			name:   "accept_work en_route, worker must walk to the employer's post",
 			vc:     ValidatedCall{Name: "accept_work"},
 			result: sim.LaborAcceptResult{State: sim.LaborStateEnRoute, WorkerName: "Lewis Walker", EmployerName: "Prudence Ward", AcceptorIsWorker: true, Payment: "4 coins"},
-			want:   "[ok] You took on the job for Prudence Ward — make your way to their workplace and get to work once you're both there, paid 4 coins when you finish. Do not accept again.",
+			want:   "[ok] You took on the job for Prudence Ward — make your way to their workplace and get to work once you're both there, paid 4 coins when you finish.",
 		},
 		{
 			name:   "offer_work placed → the worker answers on their turn",
@@ -108,7 +108,7 @@ func TestCommitResultContent_LaborSteers(t *testing.T) {
 			name:   "decline_work declined → refusal steer",
 			vc:     ValidatedCall{Name: "decline_work"},
 			result: sim.LaborDeclineResult{State: sim.LaborStateDeclined},
-			want:   "[ok] You declined the work. Do not decline again.",
+			want:   "[ok] You declined the work.",
 		},
 		{
 			// Defensive: a wrong/unexpected result shape must degrade to the bare

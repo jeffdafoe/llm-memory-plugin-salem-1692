@@ -38,14 +38,14 @@ func TestCommitResultContent_AcceptPay_FailedTerminalsReported(t *testing.T) {
 	}
 }
 
-// A genuine acceptance (ZBBS-HOME-473) reports the settle and forbids
-// re-accepting — a bare [ok] left the weak model re-firing accept_pay to the
+// A genuine acceptance (ZBBS-HOME-473) reports the settle rather than a bare
+// [ok] — pre-terminal, a bare [ok] left the weak model re-firing accept_pay to the
 // budget and closing the sale mute (live: Josiah×Prudence bread, the seller
 // accepted then walked off without a word).
 //
-// It does NOT ask for a speak, and does not ask for done(). accept_pay is
+// It does NOT ask for a speak, done(), or "do not accept again". accept_pay is
 // terminal-on-success, so the tick returns the instant it lands and the model
-// never gets a round in which to obey either — the old "Say a brief word …, then
+// never gets a round in which to obey any of them — the old "Say a brief word …, then
 // call done()" tail was text no NPC could act on (LLM-350). The seller's word
 // rides on accept_pay's own `say` instead; the echo is covered below.
 func TestCommitResultContent_AcceptPay_AcceptedReportsSettle(t *testing.T) {
@@ -53,12 +53,12 @@ func TestCommitResultContent_AcceptPay_AcceptedReportsSettle(t *testing.T) {
 	if got == "[ok]" {
 		t.Fatalf("accepted accept_pay returned a bare [ok] with no settle report")
 	}
-	for _, want := range []string{"settled", "Do not accept again"} {
+	for _, want := range []string{"settled"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("accepted accept_pay result %q missing %q", got, want)
 		}
 	}
-	for _, banned := range []string{"Say a brief word", "done()"} {
+	for _, banned := range []string{"Say a brief word", "done()", "again"} {
 		if strings.Contains(got, banned) {
 			t.Errorf("accepted accept_pay result %q asks for %q, which the terminal accept "+
 				"has already made unreachable (LLM-350)", got, banned)

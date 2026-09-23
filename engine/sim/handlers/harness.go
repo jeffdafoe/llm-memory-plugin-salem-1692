@@ -1632,7 +1632,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	if vc.Name == "accept_pay" {
 		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			if state == sim.PayLedgerStateAccepted {
-				return "[ok] The sale is settled. " + payResponseSayEcho(vc, announced, refused) + "Do not accept again."
+				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ")
 			}
 			if msg, ok := paySettlementFellThroughContent(state); ok {
 				return msg
@@ -1643,7 +1643,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			switch state {
 			case sim.PayLedgerStateDeclined:
-				return "[ok] You declined. " + payResponseSayEcho(vc, announced, refused) + "Do not decline again."
+				return strings.TrimRight("[ok] You declined. "+payResponseSayEcho(vc, announced, refused), " ")
 			}
 		}
 	}
@@ -1651,14 +1651,14 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			switch state {
 			case sim.PayLedgerStateCountered:
-				return "[ok] Your counter stands. " + payResponseSayEcho(vc, announced, refused) + "Await their answer. Do not counter again."
+				return "[ok] Your counter stands. " + payResponseSayEcho(vc, announced, refused) + "They will answer on their turn."
 			// A non-increasing pure-coin counter coerces to an accept in
 			// sim.CounterPay (the "I'll let it go at your price" path), so the
 			// sale settles under the counter_pay name and would otherwise miss
 			// the handover steer accept_pay earns — the gap the HOME-473 ticket
 			// glossed (LLM-13). Voice the settle.
 			case sim.PayLedgerStateAccepted:
-				return "[ok] The sale is settled. " + payResponseSayEcho(vc, announced, refused) + "Do not counter again."
+				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ")
 			default:
 				// That same coercion can fail a gate at settle time (seller has
 				// no stock, buyer is short of coins, either party moved on, offer
@@ -1731,7 +1731,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// steer is the soft half; quotedThisTick's already_quoted reject is the
 	// teeth.
 	if vc.Name == "sell" {
-		const quoteSteer = "The room has heard your offer — await an answer or call done(). Do not post the same offer again."
+		const quoteSteer = "The room has heard your offer; they will answer on their turn."
 		// "Your offer now stands" only when the result proves a quote was
 		// actually created (code_review #415) — an unexpected result shape
 		// still steers, but doesn't assert state without evidence.
@@ -1874,8 +1874,8 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					said = sayEcho(args.Say, r.Announced, r.SayRefused)
 				}
 				return fmt.Sprintf(
-					"[ok] %s is before %s — bide for their answer. %sMake no second "+
-						"offer; let them accept, decline, or counter.%s",
+					"[ok] %s is before %s — bide for their answer. %sThey may accept, "+
+						"decline, or counter.%s",
 					lead, other, said, clampNote,
 				)
 			}
@@ -1972,19 +1972,19 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 			switch {
 			case r.State == sim.LaborStateWorking && r.AcceptorIsWorker:
-				return fmt.Sprintf("[ok] You took on the job for %s — you are at the work now, paid %s when you finish. %sDo not accept again.", r.EmployerName, payment, said)
+				return strings.TrimRight(fmt.Sprintf("[ok] You took on the job for %s — you are at the work now, paid %s when you finish. %s", r.EmployerName, payment, said), " ")
 			case r.State == sim.LaborStateWorking:
-				return fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. %sDo not accept again.", r.WorkerName, payment, said)
+				return strings.TrimRight(fmt.Sprintf("[ok] You hired %s — they are at the work now for %s, paid when they finish. %s", r.WorkerName, payment, said), " ")
 			case r.State == sim.LaborStateEnRoute && r.AcceptorIsWorker:
 				// LLM-229 from the worker's side: the deal was struck away from the
 				// employer's workplace, so the worker is the one who must walk there.
-				return fmt.Sprintf("[ok] You took on the job for %s — make your way to their workplace and get to work once you're both there, paid %s when you finish. %sDo not accept again.", r.EmployerName, payment, said)
+				return strings.TrimRight(fmt.Sprintf("[ok] You took on the job for %s — make your way to their workplace and get to work once you're both there, paid %s when you finish. %s", r.EmployerName, payment, said), " ")
 			case r.State == sim.LaborStateEnRoute:
 				// LLM-229: the deal was struck away from your workplace, so the
 				// worker is making their way there and starts once they arrive with
 				// you present. Same payment phrasing; no "until T" (the window
 				// hasn't started).
-				return fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. %sDo not accept again.", r.WorkerName, payment, said)
+				return strings.TrimRight(fmt.Sprintf("[ok] You hired %s — they will make their way to your workplace and get to work once you're both there, paid %s when they finish. %s", r.WorkerName, payment, said), " ")
 			case r.State == sim.LaborStateExpired:
 				return laborNoHireContent("That offer had already expired — too late to take it up.", said)
 			case r.State == sim.LaborStateFailedUnavailable:
@@ -2001,7 +2001,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			if args, ok := vc.DecodedArgs.(DeclineWorkArgs); ok {
 				said = sayEcho(args.Say, r.Announced, r.SayRefused)
 			}
-			return "[ok] You declined the work. " + said + "Do not decline again."
+			return strings.TrimRight("[ok] You declined the work. "+said, " ")
 		}
 	}
 	return "[ok]"
