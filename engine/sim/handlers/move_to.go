@@ -62,7 +62,7 @@ var moveToSchema = json.RawMessage(`{
 // schema's per-field description carries the arg guidance; this frames when to
 // reach for the tool and the two things the model must understand about it:
 // walking ends the turn, and it leaves any conversation.
-const moveToDescription = "Walk to a place you can see in your perception — your home, your workplace, a shop, the meeting house, or a free source nearby like a well or fruit tree. Give its destination — the place's name (e.g. \"the Tavern\", \"the Well\"), \"home\"/\"work\" for your own, or the id shown for it in your perception. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, so say anything you want the people around you to hear BEFORE you call move_to. If you are in a conversation, choosing to walk away leaves it."
+const moveToDescription = "Walk to a place you can see in your perception — your home, your workplace, a shop, the meeting house, or a free source nearby like a well or fruit tree. Give its destination — the place's name (e.g. \"the Tavern\", \"the Well\"), \"home\"/\"work\" for your own, or the id shown for it in your perception. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, and so does speaking, so you cannot do both in one turn: to leave with a parting word, speak now and walk on your next turn. If you are in a conversation, choosing to walk away leaves it."
 
 // DecodeMoveToArgs parses the raw tool-call arguments into a MoveToArgs.
 // Errors are typed validation failures the harness surfaces to the model as

@@ -989,7 +989,10 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 		// unknown_tool and the NPC was forced into another tool (typically a
 		// walk-off), manufacturing goal-thrash. ZBBS-HOME-369. Kept last so it is
 		// the terminal option the model reads after every action tool.
-		{"done", func(r *handlers.Registry) error { return r.RegisterTerminal("done") }},
+		{"done", func(r *handlers.Registry) error {
+			return r.RegisterTerminal("done", handlers.WithDescription(
+				"End your turn without doing anything further. Call it when nothing pressing remains, or after an action that does not end your turn on its own. Takes no arguments."))
+		}},
 	}
 	for _, t := range register {
 		if err := t.fn(r); err != nil {

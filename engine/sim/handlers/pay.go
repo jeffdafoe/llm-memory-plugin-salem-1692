@@ -79,7 +79,7 @@ var paySchema = json.RawMessage(`{
         "for": {
             "type": "string",
             "maxLength": 200,
-            "description": "Optional brief note describing what the payment is for (e.g. 'ale', 'news from the harbor')."
+            "description": "Optional brief note describing what the payment is for (e.g. 'wages for the wood-chopping', 'news from the harbor')."
         }
     },
     "required": ["recipient", "amount"],
