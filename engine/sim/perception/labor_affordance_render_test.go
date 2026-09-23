@@ -75,7 +75,7 @@ func TestRenderLaborAffordance_NameGuard(t *testing.T) {
 			}
 			// Both branches carry the say/speak-first warning — the fold is the
 			// fix, whichever wording renders.
-			if !strings.Contains(out, "do NOT ask with speak first") {
+			if !strings.Contains(out, "don't ask with speak first") {
 				t.Errorf("speak-first warning missing from %q", out)
 			}
 		})

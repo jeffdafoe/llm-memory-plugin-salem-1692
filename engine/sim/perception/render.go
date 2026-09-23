@@ -838,7 +838,7 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// is the more specific read of why a reply is pending. The needRedirect
 		// swap is deliberately NOT applied here — it exists to break a
 		// confabulated plan-loop, and this case is by definition not a loop.
-		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell or simply turn to your own affairs, then call done(). Do not start a new topic.\n")
+		b.WriteString("This conversation has gone on a good while and nothing new is coming of it. Bring it to a close — say a brief farewell, or simply turn to your own affairs and call done(). Do not start a new topic.\n")
 	// LLM-416: also arrives gated off while mid item-dwell, same as
 	// conversationRunLong above — the pinned eater falls through rather than being
 	// told to let the talk end.
@@ -856,7 +856,7 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// silent conclude one persistence gate later exists for the case where it
 		// doesn't, and getting a graceful in-world farewell here instead is the
 		// entire point of the arm.
-		b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs, then call done(). Do not open a new topic.\n")
+		b.WriteString("You have been talking here a long while now, and the day is getting on. Let the conversation come to its natural end — say your farewells, or simply turn back to your own affairs and call done(). Do not open a new topic.\n")
 	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
@@ -3580,11 +3580,11 @@ func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutV
 	payment := formatOfferPayment(offer.Reward, offer.RewardItems)
 	duration := humanizeWorkMinutes(offer.DurationMin)
 	if offer.SubjectIsEmployer() {
-		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer — say a brief word if you like, or call done().\n",
 			nameOf(offer.Worker), payment, duration)
 		return
 	}
-	fmt.Fprintf(b, "You've offered to work for %s for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer, say a brief word if you like, then call done().\n",
+	fmt.Fprintf(b, "You've offered to work for %s for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer — say a brief word if you like, or call done().\n",
 		nameOf(offer.Employer), payment, duration)
 }
 
@@ -3608,7 +3608,7 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool, employers []sim.
 	if !canSolicit {
 		return
 	}
-	const askShape = "name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; do NOT ask with speak first — speaking ends your turn and no offer is ever made.\n"
+	const askShape = "name them, the pay you want (coins, goods they hold such as a meal, or both), and roughly how long you'd work. Speak your ask in solicit_work's `say`, in your own voice; don't ask with speak first — speaking ends your turn and no offer is ever made.\n"
 	// Only REAL names reach the named branch. buildSolicitableEmployers already
 	// restricts the slice to acquaintances, but the render must not trust that
 	// alone: a resolver returning "" or its "someone" fallback here would put a
@@ -3655,7 +3655,7 @@ func renderOfferWorkAffordance(b *strings.Builder, workers []sim.ActorID, nameOf
 	if len(names) > 1 {
 		takes = "take"
 	}
-	fmt.Fprintf(b, "%s %s work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; do NOT ask with speak first, because speaking ends your turn and the offer would never reach them.\n",
+	fmt.Fprintf(b, "%s %s work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; don't ask with speak first, because speaking ends your turn and the offer would never reach them.\n",
 		joinNames(names), takes)
 }
 
