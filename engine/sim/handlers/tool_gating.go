@@ -117,9 +117,18 @@ var visitorTalkOnlyTools = map[string]struct{}{
 // a guaranteed substrate reject, so there are no false drops. Advertising-only:
 // the tools stay AvailabilityAvailable and sim.Pay / sim.PayWithItem stay
 // authoritative for any call that arrives.
+//
+// sell and give share the same necessary condition — each substrate rejects a
+// caller with CurrentHuddleID == "" (SceneQuoteCreate, GiveItems) and each
+// description already says "in your current conversation" — so they ride the
+// same gate rather than advertising a guaranteed reject. offer_trade is NOT here:
+// the lodger rent-shortfall cue (perception lodgingAffordabilityCue) names it
+// without a huddle check, and gating it would leave that cue dangling.
 var payVerbTools = map[string]struct{}{
 	"pay":           {},
 	"pay_with_item": {},
+	"sell":          {},
+	"give":          {},
 }
 
 // giftResponseTools are the recipient-side gift-decision tools advertised ONLY
