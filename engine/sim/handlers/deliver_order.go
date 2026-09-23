@@ -51,7 +51,7 @@ var deliverOrderSchema = json.RawMessage(`{
 const deliverOrderDescription = "Hand over goods you sold but haven't delivered yet. " +
 	"Use to fulfill a pending order from your 'Orders to deliver' list. " +
 	"You can only deliver to a buyer/consumer who is currently in your conversation. " +
-	"Pair with a brief speak (\"Here you are.\") to land the handover narratively."
+	"Delivering does not end your turn, so you can speak afterward."
 
 // DecodeDeliverOrderArgs parses the raw tool-call arguments into a
 // DeliverOrderArgs. Same posture as DecodePayArgs: reject non-object

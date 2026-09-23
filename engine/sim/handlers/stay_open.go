@@ -68,7 +68,7 @@ var stayOpenSchema = json.RawMessage(`{
 // stayOpenDescription is the tool description advertised to the model. The
 // schema's per-field descriptions carry the detailed guidance; this frames when
 // to reach for the tool and what it costs/promises.
-const stayOpenDescription = "Commit to keeping your business open past the end of your shift instead of closing up and heading off for the night. You MUST say what hour you will stay open until — the until_hour argument, on the 24-hour clock (e.g. 23 for 11pm, 1 for 1am the next morning). While committed you won't be nudged to wind down — but if you grow exhausted you will close early regardless. Reach for this when you have a concrete reason to stay open late (an order you still owe, a customer still present, work you want to finish). For stepping away to rest DURING the day, use take_break instead."
+const stayOpenDescription = "Commit to keeping your business open past the end of your shift instead of closing up and heading off for the night. Give the hour you will stay open until in until_hour, on the 24-hour clock (e.g. 23 for 11pm, 1 for 1am the next morning). While committed you won't be nudged to wind down — but if you grow exhausted you will close early regardless. Reach for this when you have a concrete reason to stay open late (an order you still owe, a customer still present, work you want to finish). For stepping away to rest DURING the day, use take_break instead."
 
 // DecodeStayOpenArgs parses the raw tool-call arguments into a StayOpenArgs.
 // Errors are typed validation failures the harness surfaces to the model as

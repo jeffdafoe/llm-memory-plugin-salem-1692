@@ -558,7 +558,7 @@ var acceptWorkSchema = json.RawMessage(`{
         "labor_id": {
             "type": "integer",
             "minimum": 1,
-            "description": "The numeric labor ID of the pending work offer to accept. You'll see this in your perception of the worker's offer."
+            "description": "The numeric labor ID of the pending work offer to accept. You'll see this in your perception of the offer."
         },
         "say": {
             "type": "string",
