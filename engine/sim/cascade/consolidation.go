@@ -329,14 +329,66 @@ func isNoUpdateSentinel(reply string) bool {
 // cross-group interleaving is given up.
 func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s. This is not a scene — you are reflecting privately on your acquaintance with %s. There are no tools available for this turn; respond with prose only.\n\n",
+	hasLedger := writeConsolidationFoldBody(&b, c)
+	fmt.Fprintf(&b, "\nFrom these dealings, write one or two sentences on what you have learned about %s that would matter the next time you deal with them — how they trade or work, whether they keep their word and pay what they owe, whether they can be trusted or relied upon.",
+		c.PeerName)
+	if hasLedger {
+		b.WriteString(consolidationLedgerAuthorityLine)
+	}
+	// The sentinel phrasing tracks what the mechanism does with it (LLM-497).
+	// With a prior reflection, the sentinel means "no update — keep what I
+	// already think", so the prompt asks "did these dealings change your
+	// view?" and offers "nothing new". Without one, the sentinel means "no
+	// judgment formed — don't store filler" (LLM-426), so the prompt keeps
+	// the original "nothing notable". Pre-LLM-497 both cases used "nothing
+	// notable", and the model's correct "this batch taught me nothing" on a
+	// quiet day was misread as "this relationship holds no judgment".
+	if strings.TrimSpace(c.PriorSummary) != "" {
+		b.WriteString(" Judge the person, not the pleasantries. Your reply replaces your prior reflection, so carry forward whatever still holds. If these dealings change nothing about your prior reflection, reply with exactly: nothing new\nGive just the sentence or two (or \"nothing new\") — no preamble or sign-off.")
+	} else {
+		b.WriteString(" Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.")
+	}
+	return b.String()
+}
+
+// buildReturnerFoldPrompt is the returner's visit-end fold (LLM-383). It shares
+// the fact body with buildConsolidationPrompt but asks for episodic recall — the
+// remembered specifics renderReturnerKnownClause surfaces on the next visit ("did
+// that nail hold?") — rather than the persistent tier's dealing judgment, whose
+// "judge the person, not the pleasantries" would discard exactly those specifics.
+// No sentinel: a visit worth folding always leaves something to remember, and
+// consolidateOneReturner guards against one anyway.
+func buildReturnerFoldPrompt(c sim.ConsolidationCandidate) string {
+	var b strings.Builder
+	hasLedger := writeConsolidationFoldBody(&b, c)
+	fmt.Fprintf(&b, "\nFrom this visit, write one or two sentences, in your own voice, on what you will remember about %s the next time you pass through Salem — what you spoke of, what they were about, anything left unfinished between you.",
+		c.PeerName)
+	if hasLedger {
+		b.WriteString(consolidationLedgerAuthorityLine)
+	}
+	if strings.TrimSpace(c.PriorSummary) != "" {
+		b.WriteString(" Your reply replaces your prior reflection, so carry forward whatever still holds.")
+	}
+	b.WriteString("\nGive just the sentence or two — no preamble or sign-off.")
+	return b.String()
+}
+
+// consolidationLedgerAuthorityLine closes a fold prompt whose body carries a
+// ledger group (see buildConsolidationPrompt's doc for the observed failure).
+const consolidationLedgerAuthorityLine = " The ledger is the true record of your dealings: every payment, wage, and delivery it lists actually happened, each one in addition to the others — where what was said disagrees with what the ledger records, trust the ledger."
+
+// writeConsolidationFoldBody writes the shared fold-prompt body — framing, the
+// prior reflection, and the said/ledger fact groups — and reports whether a
+// ledger group was written.
+func writeConsolidationFoldBody(b *strings.Builder, c sim.ConsolidationCandidate) bool {
+	fmt.Fprintf(b, "You are %s. This is not a scene — you are reflecting privately on your acquaintance with %s. There are no tools available for this turn; respond with prose only.\n\n",
 		c.ActorName, c.PeerName)
 	if s := strings.TrimSpace(c.PriorSummary); s != "" {
 		b.WriteString("Your prior reflection on them:\n")
 		b.WriteString(s)
 		b.WriteString("\n\n")
 	} else {
-		fmt.Fprintf(&b, "You haven't formed a reflection on %s before now.\n\n", c.PeerName)
+		fmt.Fprintf(b, "You haven't formed a reflection on %s before now.\n\n", c.PeerName)
 	}
 	var said, ledger []string
 	seen := make(map[string]struct{}, len(c.Facts))
@@ -385,25 +437,7 @@ func buildConsolidationPrompt(c sim.ConsolidationCandidate) string {
 			b.WriteString("\n")
 		}
 	}
-	fmt.Fprintf(&b, "\nFrom these dealings, write one or two sentences on what you have learned about %s that would matter the next time you deal with them — how they trade or work, whether they keep their word and pay what they owe, whether they can be trusted or relied upon.",
-		c.PeerName)
-	if len(ledger) > 0 {
-		b.WriteString(" The ledger is the true record of your dealings: every payment, wage, and delivery it lists actually happened, each one in addition to the others — where what was said disagrees with what the ledger records, trust the ledger.")
-	}
-	// The sentinel phrasing tracks what the mechanism does with it (LLM-497).
-	// With a prior reflection, the sentinel means "no update — keep what I
-	// already think", so the prompt asks "did these dealings change your
-	// view?" and offers "nothing new". Without one, the sentinel means "no
-	// judgment formed — don't store filler" (LLM-426), so the prompt keeps
-	// the original "nothing notable". Pre-LLM-497 both cases used "nothing
-	// notable", and the model's correct "this batch taught me nothing" on a
-	// quiet day was misread as "this relationship holds no judgment".
-	if strings.TrimSpace(c.PriorSummary) != "" {
-		b.WriteString(" Judge the person, not the pleasantries. Your reply replaces your prior reflection, so carry forward whatever still holds. If these dealings change nothing about your prior reflection, reply with exactly: nothing new\nGive just the sentence or two (or \"nothing new\") — no preamble or sign-off.")
-	} else {
-		b.WriteString(" Judge the person, not the pleasantries. If there is nothing about them that bears on future dealings, reply with exactly: nothing notable\nGive just the sentence or two (or \"nothing notable\") — no preamble or sign-off.")
-	}
-	return b.String()
+	return len(ledger) > 0
 }
 
 // renderConsolidationFactLine renders one SalientFact as a reflection-prompt

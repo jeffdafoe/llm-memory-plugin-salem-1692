@@ -15,7 +15,8 @@ import (
 // episodic memory at visit-end (LLM-383). Structurally identical to
 // consolidation.go's sweep, but drives the returner primitives
 // (FindReturnerConsolidationCandidates / ApplyReturnerConsolidation) instead of
-// the actor-relationship ones. Reuses buildConsolidationPrompt VERBATIM, so the
+// the actor-relationship ones. Shares buildConsolidationPrompt's fact body
+// (writeConsolidationFoldBody) under its own closing ask (buildReturnerFoldPrompt), so the
 // returner fold inherits the same speaker attribution + dedup + scene register the
 // persistent fold has (and, critically, the same cross-attribution guard). See
 // engine/sim/returner_consolidation.go for the cadence rationale.
@@ -93,7 +94,7 @@ func runOneReturnerSweep(ctx context.Context, w *sim.World, client llm.Client) {
 // consolidateOneReturner issues the LLM fold for one returner acquaintance and
 // applies it. Errors at every step log + return; no partial writes.
 func consolidateOneReturner(ctx context.Context, w *sim.World, client llm.Client, c sim.ConsolidationCandidate) {
-	prompt := buildConsolidationPrompt(c)
+	prompt := buildReturnerFoldPrompt(c)
 	req := llm.Request{
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: prompt}},
 		// Prose-only reflection, no tools (llm.Client contract allows empty Tools).
@@ -119,7 +120,8 @@ func consolidateOneReturner(ctx context.Context, w *sim.World, client llm.Client
 		log.Printf("cascade/returner_consolidation: empty reply for %s→%s (tool_calls=%d)", c.ActorID, c.PeerID, len(reply.ToolCalls))
 		return
 	}
-	// The shared fold prompt offers a no-update sentinel (LLM-426/497). A returner
+	// Defense against the persistent fold's no-update sentinel (LLM-426/497) leaking
+	// in: buildReturnerFoldPrompt offers none, but a returner
 	// summary renders verbatim into every returner preface, so the sentinel is never
 	// stored: keep the prior impression (empty on a first fold, which
 	// renderReturnerKnownClause skips) and still consume the facts.

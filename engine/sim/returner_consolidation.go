@@ -10,7 +10,7 @@ import (
 
 // returner_consolidation.go — visit-end fold of a returner's per-PC episodic
 // memory (LLM-383). Reuses the persistent-relationship consolidation MACHINERY
-// (ConsolidationCandidate + buildConsolidationPrompt + the prefix-verify apply
+// (ConsolidationCandidate + the fold-prompt fact body + the prefix-verify apply
 // shape) but with a different CADENCE. A returner accrues facts only during a
 // visit (hours) then goes dormant for weeks, so the trigger is "the visit ended"
 // (the returner is no longer present in the village) — not the persistent

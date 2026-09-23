@@ -122,7 +122,7 @@ func TestRunOneReturnerSweep_FoldsDepartedReturner(t *testing.T) {
 	}
 }
 
-// TestRunOneReturnerSweep_SentinelNotStored — the shared fold prompt offers a
+// TestRunOneReturnerSweep_SentinelNotStored — the persistent fold prompt offers a
 // "nothing notable" / "nothing new" reply. A returner summary renders verbatim
 // into every returner preface, so the sentinel must never be stored: a first fold
 // leaves the summary empty, a later fold keeps the prior impression, and both
@@ -265,18 +265,27 @@ func TestApplyReturnerConsolidation_BoundsSummaryLength(t *testing.T) {
 	}
 }
 
-// TestBuildReturnerFoldPrompt_AttributesHeard — the reused buildConsolidationPrompt
-// attributes a heard fact to the PC (not the returner), so the fold can't mistake
-// the PC's words for the returner's own (the cross-attribution guard the fold half
-// of the feature relies on).
+// TestBuildReturnerFoldPrompt_AttributesHeard — the returner fold prompt shares
+// the persistent fold's fact body, so it attributes a heard fact to the PC (not
+// the returner) and the fold can't mistake the PC's words for the returner's own
+// (the cross-attribution guard the fold half of the feature relies on). It asks
+// for episodic recall, not a dealing judgment, and offers no sentinel.
 func TestBuildReturnerFoldPrompt_AttributesHeard(t *testing.T) {
 	c := sim.ConsolidationCandidate{
 		ActorID: sim.ActorID(testRVID), PeerID: "pc-jeff",
 		ActorName: "Elias Drum", PeerName: "Jeff", ActorLLMAgent: sim.VisitorAgentName,
 		Facts: []sim.SalientFact{sim.NewSalientFact(time.Now(), sim.InteractionHeard, "the fence won't hold")},
 	}
-	prompt := buildConsolidationPrompt(c)
+	prompt := buildReturnerFoldPrompt(c)
 	if !strings.Contains(prompt, `Jeff said: "the fence won't hold"`) {
 		t.Errorf("prompt does not attribute the heard fact to Jeff:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "what you will remember about Jeff") {
+		t.Errorf("prompt does not ask for episodic recall:\n%s", prompt)
+	}
+	for _, banned := range []string{"not the pleasantries", "nothing notable", "nothing new"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("returner prompt carries persistent-fold text %q:\n%s", banned, prompt)
+		}
 	}
 }
