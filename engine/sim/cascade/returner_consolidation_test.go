@@ -109,6 +109,20 @@ func TestRunOneReturnerSweep_FoldsDepartedReturner(t *testing.T) {
 	if len(reqs[0].Tools) != 0 {
 		t.Errorf("Request.Tools = %d, want 0 (fold is tool-free)", len(reqs[0].Tools))
 	}
+	// The sweep sends the returner's own episodic prompt, not the persistent
+	// fold's dealing judgment + sentinel.
+	if len(reqs[0].Messages) != 1 {
+		t.Fatalf("Request.Messages = %d, want 1", len(reqs[0].Messages))
+	}
+	prompt := reqs[0].Messages[0].Content
+	if !strings.Contains(prompt, "what you will remember about Jeff") {
+		t.Errorf("sweep did not send the returner fold prompt:\n%s", prompt)
+	}
+	for _, banned := range []string{"not the pleasantries", "nothing notable", "nothing new"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("sweep prompt carries persistent-fold text %q:\n%s", banned, prompt)
+		}
+	}
 
 	facts, summary, stamped := returnerFacts(t, w)
 	if summary != "Jeff frets over his fence line and buys nails each visit." {

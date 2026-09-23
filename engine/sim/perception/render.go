@@ -422,7 +422,14 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// from that anti-repeat line down to the weaker default coda.
 	triageRunLong := conversationRunLong && !midItemDwell
 	triageLingering := conversationLingering && !midItemDwell
-	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering, triageRunLong || triageLingering)
+	// The "you already spoke … do not address them again" line contradicts only
+	// the farewell codas (run long / lingering), so suppress it exactly when one
+	// of those WINS — mirroring renderTriage's case order, where an in-flight
+	// activity or move, the seek-work directive, and the looping coda all
+	// outrank them (and agree with the awaiting line).
+	windDownCodaWins := p.Actor.InFlightSourceActivity == nil && p.Actor.InFlightMove == nil &&
+		!seekWorkDirective && !conversationLooping && (triageRunLong || triageLingering)
+	renderTurnState(&ephemeral, p.TurnState, seekWorkDirective || conversationLooping || conversationRunLong || conversationLingering, windDownCodaWins)
 	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), conversationLooping, triageRunLong, triageLingering, p.NeedRedirect, seekWorkDirective, len(payOffers) > 0, p.Actor.InFlightMove, p.Actor.InFlightSourceActivity)
 
 	out.Text = durable.String()

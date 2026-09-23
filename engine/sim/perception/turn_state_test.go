@@ -345,3 +345,37 @@ func TestRenderTurnState_SuppressAwaiting(t *testing.T) {
 		t.Errorf("owed-reply line should still render:\n%s", out)
 	}
 }
+
+// TestRender_AwaitingLineVsWindDownCoda — end to end through Render: the
+// awaiting line is dropped exactly when a farewell coda (run long / lingering)
+// is the coda that renders, and kept when the looping coda outranks it.
+func TestRender_AwaitingLineVsWindDownCoda(t *testing.T) {
+	const awaiting = "You already spoke to Ezekiel Crane"
+	cases := []struct {
+		name             string
+		ts               TurnStateView
+		wantAwaiting     bool
+		wantCodaFragment string
+	}{
+		{"run long", TurnStateView{ConversationRunLong: true}, false, "say a brief farewell"},
+		{"lingering", TurnStateView{ConversationLingering: true}, false, "say your farewells"},
+		{"looping outranks run long", TurnStateView{ConversationLooping: true, ConversationRunLong: true}, true, "keep saying the same thing"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ts := c.ts
+			ts.AwaitingReplyFrom = []string{"Ezekiel Crane"}
+			out := combinedPrompt(Render(Payload{
+				ActorID:   "hannah",
+				TurnState: ts,
+				Baseline:  BaselinePresent,
+			}, DefaultRenderConfig()))
+			if !strings.Contains(out, c.wantCodaFragment) {
+				t.Fatalf("coda %q missing:\n%s", c.wantCodaFragment, out)
+			}
+			if got := strings.Contains(out, awaiting); got != c.wantAwaiting {
+				t.Errorf("awaiting line present = %v, want %v:\n%s", got, c.wantAwaiting, out)
+			}
+		})
+	}
+}
