@@ -60,11 +60,15 @@ func _check_all_tests_ran() -> void:
 
 
 ## Runs one hover response through _on_count_loaded and returns the berry-line
-## text and whether the panel was shown.
+## text, whether the panel was shown, and whether the line was shown. Panel and
+## label start HIDDEN (a new Control is visible by default, which would let a
+## missing "show" pass).
 func _hover(response: Dictionary) -> Array:
     var tip = load("res://scripts/object_tooltip.gd").new()
     var panel := PanelContainer.new()
     var label := Label.new()
+    panel.visible = false
+    label.visible = false
     var node := Node2D.new()
     node.set_meta("object_id", "well-1")
     tip._tooltip_panel = panel
@@ -73,7 +77,7 @@ func _hover(response: Dictionary) -> Array:
     var http := HTTPRequest.new()
     var body := JSON.stringify(response).to_utf8_buffer()
     tip._on_count_loaded(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), body, http, "well-1")
-    var out := [label.text, panel.visible]
+    var out := [label.text, panel.visible, label.visible]
     node.free()
     label.free()
     panel.free()
@@ -85,6 +89,7 @@ func _test_damaged_well_reads_broken() -> void:
     var got := _hover({"gatherable": true, "item": "water", "available": 20, "max": 20, "serves_in_place": true, "damaged": true})
     _check("broken line", got[0], "Broken — the windlass is down")
     _check("panel shown", got[1], true)
+    _check("line shown", got[2], true)
     _done()
 
 

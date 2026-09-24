@@ -74,7 +74,7 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 			Gatherable:    true,
 			Item:          strings.TrimSpace(string(row.GatherItem)),
 			ServesInPlace: objectServesNeedInPlace(obj),
-			Damaged:       obj.Damaged(),
+			Damaged:       obj.IsWell() && obj.Damaged(),
 		}
 		// IsFinite only guarantees AvailableQuantity != nil; guard MaxQuantity
 		// too so a malformed row (one nil pointer) omits the count rather than
@@ -88,5 +88,5 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 		return
 	}
-	writeJSON(w, objectGatherResponse{Gatherable: false, Damaged: obj.Damaged()})
+	writeJSON(w, objectGatherResponse{Gatherable: false, Damaged: obj.IsWell() && obj.Damaged()})
 }

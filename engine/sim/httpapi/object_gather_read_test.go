@@ -168,18 +168,24 @@ func TestHandleObjectGather_MissingID(t *testing.T) {
 
 // TestHandleObjectGather_DamagedWell (LLM-654) — a broken well reports
 // damaged=true alongside its stock, so the tooltip can say "Broken" instead of
-// a water count nobody can draw; a sound well omits the field.
+// a water count nobody can draw; a sound well omits the field. The flag is
+// well-only (the client's line names the windlass): a damaged non-well — here a
+// drifted bush, gatherable and not — reports false.
 func TestHandleObjectGather_DamagedWell(t *testing.T) {
 	w := seededWorld(t)
 	seedGatherObjects(t, w)
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects["well2"].Tags = []string{sim.TagWell}
 		world.VillageObjects["well2"].DamagedAt = time.Now().UTC()
+		world.VillageObjects["well1"].Tags = []string{sim.TagWell}
+		world.VillageObjects["bush1"].DamagedAt = time.Now().UTC()
+		world.VillageObjects["bench1"].DamagedAt = time.Now().UTC()
 		return nil, nil
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(w, okAuth{})
-	for id, want := range map[string]bool{"well2": true, "well1": false} {
+	for id, want := range map[string]bool{"well2": true, "well1": false, "bush1": false, "bench1": false} {
 		rec := get(t, srv, "/api/village/object/gather?id="+id)
 		var res objectGatherResponse
 		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
