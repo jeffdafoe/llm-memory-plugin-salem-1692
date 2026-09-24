@@ -73,6 +73,7 @@ type SourceActivity struct {
 	StartedAt time.Time
 	Until     time.Time
 	Qty       int // harvest only: units requested (clamped to stock at completion)
+	Bounty    int // public-works repair only (LLM-654): the bounty agreed at start, paid at completion
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what
@@ -137,6 +138,7 @@ type SourceActivityCompleted struct {
 	Attribute      NeedKey  // refresh only: the primary need eased
 	SourceName     string   // resolved object display name (both kinds)
 	Continues      bool     // true when a refresh auto-repeat re-arms after this emit
+	PublicWorks    bool     // repair only: the town's repair of a damaged object (LLM-654); Qty then carries the bounty paid
 	At             time.Time
 }
 
@@ -187,6 +189,9 @@ func (ActorRepairNarrated) isSimEvent() {}
 // known need attribute, and stock if finite. Mirrors the per-row skips in
 // applyObjectRefreshEffect so START doesn't begin a bite that would no-op.
 func hasApplicableRefreshRow(obj *VillageObject) bool {
+	if obj.Damaged() {
+		return false // out of use (LLM-654): a broken well gives no drink
+	}
 	for _, r := range obj.Refreshes {
 		if r.Amount == 0 {
 			continue
@@ -314,6 +319,9 @@ func StartHarvest(actorID ActorID, qty int) Command {
 			if obj.OwnedByOther(actorID) {
 				return nil, fmt.Errorf("StartHarvest: %w", ErrNotYourSource)
 			}
+			if obj.Damaged() {
+				return nil, fmt.Errorf("StartHarvest: %w", ErrSourceDamaged)
+			}
 			if _, ok := resolveItemKind(w, string(row.GatherItem)); !ok {
 				return nil, fmt.Errorf("StartHarvest: %w %q (source %s gather_item)", ErrUnknownItemKind, row.GatherItem, objID)
 			}
@@ -398,11 +406,24 @@ func StartRepair(actorID ActorID) Command {
 			// can't diverge on who may mend or which stall (resolving "some
 			// loitering object" first would diverge when objects share a loiter pin).
 			stall, _ := WearableStallToMend(w.VillageObjects, w.LaborLedger, actorID)
+			atStall := false
+			if stall != nil {
+				pin, ok := effectiveObjectLoiterTile(w, stall.ID)
+				atStall = AtBusiness(actor.Pos, actor.InsideStructureID, stall.ID, pin, ok)
+			}
+			// Public works (LLM-654): a broken well underfoot is the town's work,
+			// open to any hand. Standing at the well, "repair" means the well —
+			// even for someone whose own worn stall is elsewhere. The cue
+			// (buildPublicWorks) offers it on the same terms.
+			if !atStall {
+				if site := publicWorksSiteAt(w, actor); site != nil {
+					return startPublicWorksRepair(w, actor, site, now)
+				}
+			}
 			if stall == nil {
 				return nil, errors.New("there's no stall of yours to mend here.")
 			}
-			pin, ok := effectiveObjectLoiterTile(w, stall.ID)
-			if !AtBusiness(actor.Pos, actor.InsideStructureID, stall.ID, pin, ok) {
+			if !atStall {
 				return nil, errors.New("walk to your stall before mending it.")
 			}
 			objID := stall.ID
@@ -657,6 +678,21 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// wild despite passing every unit/golden test (none drove the mend across the
 		// labor settle).
 		stall := w.VillageObjects[act.ObjectID]
+		// Public works (LLM-654): a mend begun at a damaged well lands the town's
+		// repair — the well back in use, the bounty paid from the chest.
+		if stall.IsWell() && stall.Damaged() {
+			paid := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
+			w.emit(&SourceActivityCompleted{
+				ActorID:     actorID,
+				ObjectID:    act.ObjectID,
+				Kind:        act.Kind,
+				Qty:         paid,
+				SourceName:  sourceActivityObjectName(w, stall),
+				PublicWorks: true,
+				At:          now,
+			})
+			return
+		}
 		if stall == nil || !IsWearableStall(stall) {
 			return
 		}
@@ -884,7 +920,7 @@ func sourceActivityWireLabel(w *World, objID VillageObjectID) string {
 // per-row skips in hasApplicableRefreshRow (yield-only Amount==0, unknown
 // attribute, depleted finite stock). Returns "" when none applies.
 func primaryRefreshNeed(obj *VillageObject) NeedKey {
-	if obj == nil {
+	if obj == nil || obj.Damaged() {
 		return ""
 	}
 	for _, r := range obj.Refreshes {

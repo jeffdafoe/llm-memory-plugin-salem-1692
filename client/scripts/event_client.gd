@@ -39,6 +39,12 @@ signal pc_idle_prompt_cleared(actor_id: String)
 ## bar immediately, instead of waiting on the ~10s /pc/me poll.
 signal pc_needs_changed(actor_id: String, needs: Dictionary)
 
+## LLM-654: the town's broken-things news changed (a well broke or was mended,
+## or the chest crossed the line where it can pay the bounty). The sprite and
+## the boards ride their own frames; main.gd uses this to refresh the ticker's
+## broken-things line now instead of on its slow world poll.
+signal damage_news_changed
+
 var _socket: WebSocketPeer = null
 var _connected: bool = false
 var _url: String = ""
@@ -284,6 +290,8 @@ func _handle_message(data: String) -> void:
         "noticeboard_content_changed":
             if world != null:
                 world.apply_object_content_changed(event_data)
+        "damage_news_changed":
+            damage_news_changed.emit()
         "object_loiter_offset_changed":
             if world != null:
                 world.apply_object_loiter_offset_changed(event_data)

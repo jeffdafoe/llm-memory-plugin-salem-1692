@@ -169,6 +169,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	if p.Laboring != nil || p.LaborEnRoute != nil {
 		p.WrightRounds = nil
 	}
+	// Public works (LLM-654): a broken well — the bounty for a free hand, the
+	// standing fact for the constable. A hand on a hired job is left to it.
+	p.PublicWorks = buildPublicWorks(snap, actorID, actorSnap, p.Laboring != nil || p.LaborEnRoute != nil)
 	// LLM-26: a free worker can solicit work — carries AttrWorker, isn't already
 	// laboring, has no pending offer already out (one bid at a time, the mirror
 	// of SolicitWork's gate), and has someone SOLICITABLE to offer to. The one
@@ -1118,6 +1121,8 @@ func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFl
 		Kind:        a.SourceActivityKind,
 		SourceLabel: resolveDwellPinLabel(snap, a.SourceActivityObjectID),
 		Attribute:   a.SourceActivityAttribute,
+		PublicWorks: a.SourceActivityKind == sim.SourceActivityRepair &&
+			snap.VillageObjects[a.SourceActivityObjectID].Damaged(),
 	}
 }
 
@@ -1865,7 +1870,7 @@ func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSn
 	// path resolves the same depleted source and errors cleanly, so dropping
 	// the cue here introduces no cue↔command divergence — it just stops the cue
 	// dangling a gather that can't succeed.
-	if !row.HasStock() {
+	if !row.HasStock() || obj.Damaged() {
 		return "", "", false
 	}
 	return sim.ItemKind(strings.TrimSpace(string(row.GatherItem))), obj.DisplayName, true

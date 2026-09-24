@@ -140,6 +140,9 @@ type NoticeboardContent struct {
 	Text     string
 	PostedAt time.Time
 	AtState  string
+	// Pinned is how many leading lines of Text are the town's pinned notices
+	// (public_works_notices.go) rather than the crier's; 0 for a board with none.
+	Pinned int
 }
 
 // SaveNoticeboardContentResult is the typed reply from

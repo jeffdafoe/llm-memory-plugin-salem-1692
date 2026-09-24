@@ -33,6 +33,31 @@ func TestGateTools_RepairOnlyWithStallCue(t *testing.T) {
 	}
 }
 
+// TestGateTools_RepairAtBrokenWell (LLM-654) — a hand standing at a broken well
+// (the "## The town's works" cue with AtSite) is handed repair; the same cue
+// away from the well, and the constable's standing-fact view, are not.
+func TestGateTools_RepairAtBrokenWell(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterRepair(r); err != nil {
+		t.Fatalf("RegisterRepair: %v", err)
+	}
+	cases := []struct {
+		name string
+		view *perception.PublicWorksView
+		want int
+	}{
+		{"hand at the well", &perception.PublicWorksView{AtSite: true}, 1},
+		{"hand away from the well", &perception.PublicWorksView{Walk: "a short walk north"}, 0},
+		{"the constable", &perception.PublicWorksView{Constable: true, AtSite: true}, 0},
+	}
+	for _, c := range cases {
+		got := specNameSet(gateTools(r, perception.Payload{ActorID: "anne", PublicWorks: c.view}, nil))
+		if got["repair"] != c.want {
+			t.Errorf("%s: repair count %d, want %d", c.name, got["repair"], c.want)
+		}
+	}
+}
+
 // TestGateTools_RepairAdvertisedToLaboringHiredWorker (LLM-271) — a hired worker
 // mid-job (payload.Laboring set) at their employer's worn business (StallRepair set,
 // Hired) is STILL advertised the repair tool. repair is not in laborAbandonTools, so

@@ -437,6 +437,12 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 		actor.DwellCredits = make(map[DwellCreditKey]*DwellCredit)
 	}
 
+	// A broken well (LLM-654) is out of use: nothing applies, whichever path
+	// reached here (arrival, a timed drink landing, a dwell re-arm).
+	if obj.Damaged() {
+		return ArrivalRefreshResult{ObjectID: objID}
+	}
+
 	var hits []RefreshHit
 	for _, r := range obj.Refreshes {
 		if r.IsFinite() && *r.AvailableQuantity <= 0 {
@@ -509,6 +515,10 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 				DwellPeriodMinutes: *r.DwellPeriodMinutes,
 			}
 		}
+	}
+	// A drink that landed is one draw toward the well's damage hazard (LLM-654).
+	if len(hits) > 0 {
+		accrueDamageUse(obj)
 	}
 	// Eating in place may have drained a finite bush — recompute its
 	// berries/bare visual so a picked-clean bush goes bare.

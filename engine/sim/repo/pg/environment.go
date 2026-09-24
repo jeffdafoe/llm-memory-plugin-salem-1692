@@ -265,6 +265,15 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.EstateRatePctPerDay = parseIntSetting(values, "estate_rate_pct_per_day", sim.DefaultEstateRatePctPerDay)
 	s.ConstableWagePerDay = parseIntSetting(values, "constable_wage_per_day", sim.DefaultConstableWagePerDay)
 
+	// Damage events and public works (LLM-654).
+	s.WellDamageChancePermille = parseIntSetting(values, "well_damage_chance_permille", sim.DefaultWellDamageChancePermille)
+	s.WellDamageStormChancePermille = parseIntSetting(values, "well_damage_storm_chance_permille", sim.DefaultWellDamageStormChancePermille)
+	s.WellDamageUseReference = parseIntSetting(values, "well_damage_use_reference", sim.DefaultWellDamageUseReference)
+	s.WellDamageMinGapHours = parseIntSetting(values, "well_damage_min_gap_hours", sim.DefaultWellDamageMinGapHours)
+	s.PublicWorksBounty = parseIntSetting(values, "public_works_bounty", sim.DefaultPublicWorksBounty)
+	s.PublicWorksRepairSeconds = parseIntSetting(values, "public_works_repair_seconds", sim.DefaultPublicWorksRepairSeconds)
+	s.PublicWorksChestReserve = parseIntSetting(values, "public_works_chest_reserve", sim.DefaultPublicWorksChestReserve)
+
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
 	// rate would FLIP recovery into accrual, `return -setting` going positive; a

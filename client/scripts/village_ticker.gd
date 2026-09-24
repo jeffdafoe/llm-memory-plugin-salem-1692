@@ -61,6 +61,10 @@ var _poll_timer: Timer = null
 ## alarm clears, so an operator doesn't lose the village's prose to an incident.
 var _atmosphere_line: String = ""
 var _alarm_line: String = ""
+## LLM-654: broken things in the village (WorldStateDTO `damaged`), one line
+## each joined — shown AHEAD of the atmosphere in the same band, because a
+## broken well is news and the prose is mood. "" when nothing is broken.
+var _damage_line: String = ""
 var _alarm_http: HTTPRequest = null
 var _alarm_timer: Timer = null
 
@@ -161,23 +165,44 @@ func _fetch_world_state() -> void:
         return
 
 
+## LLM-654: re-fetch the world read now — called when the engine says the
+## broken-things news changed, so the line doesn't wait on the slow poll. One
+## HTTPRequest serves one request at a time: a slow poll already in flight may
+## carry the pre-change snapshot, so cancel it and ask again rather than let the
+## new request bounce ERR_BUSY and lose the change until the next poll.
+func refresh_now() -> void:
+    if _http != null:
+        _http.cancel_request() # no-op when idle
+    _fetch_world_state()
+
+
 func _on_world_state_completed(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
     if code != 200:
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         return
+    # WorldStateDTO.damaged (LLM-654) — [{object_id, text}], omitted when
+    # nothing is broken. Read before the atmosphere so a mended well clears its
+    # line even when the atmosphere is still empty.
+    var damage_parts: PackedStringArray = PackedStringArray()
+    var raw_damaged = json.get("damaged", [])
+    if typeof(raw_damaged) == TYPE_ARRAY:
+        for entry in raw_damaged:
+            if typeof(entry) != TYPE_DICTIONARY:
+                continue
+            var raw_text = entry.get("text", "")
+            if typeof(raw_text) == TYPE_STRING and raw_text.strip_edges() != "":
+                damage_parts.append(raw_text.strip_edges())
+    _damage_line = "   ~   ".join(damage_parts)
     # WorldStateDTO.atmosphere — a single world-level string, or "" before the
     # cascade's first sweep populates it. Type-check defends the contract path
-    # (a JSON null would make str() scroll "<null>"); push() dedupes an
+    # (a JSON null would make str() scroll "<null>"); _show() dedupes an
     # unchanged line, so re-polling the same prose is a no-op.
     var raw = json.get("atmosphere", "")
-    if typeof(raw) != TYPE_STRING:
-        return
-    var text: String = raw.strip_edges()
-    if text == "":
-        return
-    push(text)
+    if typeof(raw) == TYPE_STRING and raw.strip_edges() != "":
+        _atmosphere_line = raw.strip_edges()
+    _refresh_band()
 
 
 # Add a raw atmosphere line to the marquee. Same line as the active one is a
@@ -186,11 +211,35 @@ func push(text: String) -> void:
     if text == "":
         return
     _atmosphere_line = text
-    # A firing alarm owns the band. The prose is remembered underneath and
-    # restored the moment the alarm clears.
+    _refresh_band()
+
+
+# The non-alarm band: broken things first, then the atmosphere.
+func _band_line() -> String:
+    if _damage_line != "" and _atmosphere_line != "":
+        return _damage_line + "   ~   " + _atmosphere_line
+    if _damage_line != "":
+        return _damage_line
+    return _atmosphere_line
+
+
+# Show the composed band, unless a firing alarm owns it — the band is
+# remembered underneath and restored the moment the alarm clears.
+func _refresh_band() -> void:
     if _alarm_line != "":
         return
-    _show(text, false)
+    var line := _band_line()
+    if line == "":
+        # A mended well with no atmosphere yet: blank the band rather than
+        # leave the stale broken-well line scrolling.
+        if _active_line != "":
+            _active_line = ""
+            _pending_line = ""
+            _scrolling = false
+            _repeat_timer.stop()
+            _label.text = ""
+        return
+    _show(line, false)
 
 
 # Take over the band with a line.
@@ -357,11 +406,12 @@ func _clear_alarm() -> void:
         return
     _alarm_line = ""
     _label.add_theme_color_override("font_color", COLOR_ATMOSPHERE)
-    if _atmosphere_line != "":
+    var band := _band_line()
+    if band != "":
         # Immediate, not courteous: the colour has already flipped back to the
         # atmosphere tone, so letting the resolved alarm finish its scroll would
         # paint red text in amber. Nothing is on fire — swap now.
-        _show(_atmosphere_line, true)
+        _show(band, true)
         return
     # Nothing to fall back to (the atmosphere cascade hasn't produced prose yet).
     # Blank the band rather than leaving a resolved alarm scrolling forever.

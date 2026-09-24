@@ -69,7 +69,7 @@ func runNoticeboardCascadeWorld(t *testing.T, w *sim.World) func() {
 
 // buildGappedCapacityBoardWorld seeds a notice board whose content-capacity
 // frames skip 1 — the live Notice Board's actual slip set {0,2,3,4,5} (LLM-49,
-// the sheet has no single-slip art). Used to exercise noticeboardStateForCapacity's
+// the sheet has no single-slip art). Used to exercise sim.NoticeboardStateForCapacity's
 // snap-DOWN behaviour for counts with no exact frame.
 func buildGappedCapacityBoardWorld(t *testing.T) *sim.World {
 	t.Helper()
@@ -119,9 +119,9 @@ func TestNoticeboardStateForCapacity_SnapsDownToAvailableFrame(t *testing.T) {
 		{9, "five", 5},
 	}
 	for _, c := range cases {
-		gotState, gotCap := noticeboardStateForCapacity(w, "board", c.want)
+		gotState, gotCap := sim.NoticeboardStateForCapacity(w, "board", c.want)
 		if gotState != c.wantState || gotCap != c.wantCap {
-			t.Errorf("noticeboardStateForCapacity(want=%d) = (%q, %d), want (%q, %d)",
+			t.Errorf("NoticeboardStateForCapacity(want=%d) = (%q, %d), want (%q, %d)",
 				c.want, gotState, gotCap, c.wantState, c.wantCap)
 		}
 	}

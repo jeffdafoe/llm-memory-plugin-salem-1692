@@ -185,6 +185,10 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:    string(e.ObjectID),
 			State: e.ToState,
 		}}, true
+	case *sim.DamageNewsChanged:
+		return WireFrame{Type: "damage_news_changed", Data: damageNewsChangedWireDTO{
+			At: e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.NoticeboardContentChanged:
 		return WireFrame{Type: "noticeboard_content_changed", Data: noticeboardContentChangedWireDTO{
 			ID:              string(e.ObjectID),
@@ -548,6 +552,23 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.ObjectConditionNarrated:
+		// LLM-654: a PC walked up to a broken well — the same private,
+		// speaker-less carrier as stall_condition. structure_id carries the well's
+		// object id (private frames skip the room filter), which the client uses
+		// to float the thought over the well.
+		if e.Text == "" {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   "",
+			Kind:        "object_condition",
+			Text:        e.Text,
+			Private:     true,
+			StructureID: string(e.ObjectID),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.StallConditionNarrated:
 		// LLM-118: a PC walked up to a worn market stall — a second-person felt
 		// atmosphere line ("The market stall here looks worn…"). PRIVATE +
@@ -757,6 +778,16 @@ type weatherChangedWireDTO struct {
 type objectStateChangedWireDTO struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+}
+
+// damageNewsChangedWireDTO is the damage_news_changed payload (LLM-654): the
+// town's broken-things news changed — a well broke or was mended, or the chest
+// crossed the line where it can pay the bounty. The sprite change rides
+// object_state_changed and the boards noticeboard_content_changed as usual; this
+// frame tells the client to refresh the ticker's damaged lines from the world
+// read. Additive — no contract_version bump.
+type damageNewsChangedWireDTO struct {
+	At string `json:"at"`
 }
 
 // noticeboardContentChangedWireDTO is the noticeboard_content_changed payload —

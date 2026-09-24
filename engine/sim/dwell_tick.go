@@ -417,6 +417,9 @@ func actorHoldsObjectDwellCredit(actor *Actor, objID VillageObjectID, need NeedK
 // recovery on the pressing need. Mirrors the depleted-finite-row skip in
 // applyObjectRefreshEffect (a dry source gives nothing).
 func objectHasInStockDwellRowFor(obj *VillageObject, need NeedKey) bool {
+	if obj.Damaged() {
+		return false // a broken well (LLM-654) re-arms nothing
+	}
 	for _, r := range obj.Refreshes {
 		if r == nil || !r.HasDwell() || r.Attribute != need {
 			continue

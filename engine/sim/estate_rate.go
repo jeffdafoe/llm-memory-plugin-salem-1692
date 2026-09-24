@@ -263,6 +263,9 @@ func collectEstateRateAtStop(w *World, constable *Actor, stop RouteStop, now tim
 	}
 	owner.Coins -= due
 	w.Environment.TownChest += due
+	// The chest may have crossed the line where it can pay a posted bounty
+	// (LLM-654) — bring the boards and ticker up to date if so.
+	syncPublicWorksNews(w, now)
 
 	ownerName := actorDisplayNameOrID(owner)
 	constableName := actorDisplayNameOrID(constable)
@@ -423,6 +426,7 @@ func payConstableWage(w *World, now time.Time) {
 		}
 		w.Environment.TownChest -= wage
 		a.Coins += wage
+		syncPublicWorksNews(w, now) // the wage may take the chest under a posted bounty (LLM-654)
 
 		if _, err := AppendActionLogEntry(ActionLogEntry{
 			ActorID:          a.ID,

@@ -41,6 +41,11 @@ var (
 	// reject for this actor — LLM-facing signal: it belongs to someone else,
 	// look for a wild source instead.
 	ErrNotYourSource = errors.New("that source belongs to someone else — find a wild one")
+
+	// ErrSourceDamaged — the source is out of use after a damage event
+	// (LLM-654): a well with its windlass down gives no water until it is
+	// mended. A transient reject — LLM-facing signal: use another well.
+	ErrSourceDamaged = errors.New("the windlass is down — no water can be drawn here until it is mended; use another well")
 )
 
 // GatherResult is the Command reply — what was harvested, for the handler /
@@ -120,6 +125,9 @@ func Gather(actorID ActorID, qty int, at time.Time) Command {
 			if obj.OwnedByOther(actorID) {
 				return nil, fmt.Errorf("Gather: %w", ErrNotYourSource)
 			}
+			if obj.Damaged() {
+				return nil, fmt.Errorf("Gather: %w", ErrSourceDamaged)
+			}
 
 			// gather_item is stored canonical, but resolve case-insensitively
 			// (and trim) so a hand-edited value still maps; an unresolvable
@@ -182,6 +190,9 @@ func applyGatherMint(w *World, actor *Actor, objID VillageObjectID, obj *Village
 	if obj.OwnerActorID == actor.ID {
 		AccrueEquipmentUse(w, actor.ID, actual)
 	}
+	// One pail drawn is one draw toward the well's damage hazard (LLM-654) —
+	// counted per trip, not per unit, so a full pail weighs like a drink.
+	accrueDamageUse(obj)
 
 	catalogName := ""
 	if a := w.Assets[obj.AssetID]; a != nil {

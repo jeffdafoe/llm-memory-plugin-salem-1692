@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -95,6 +96,9 @@ func (s *Server) handleUmbilicalSettingSet(w http.ResponseWriter, r *http.Reques
 		if err != nil {
 			return nil, err
 		}
+		// A bounty or reserve change can alter the posted public-works notices
+		// (LLM-654); a no-op for every other key.
+		sim.SyncPublicWorksNews(world, time.Now().UTC())
 		return umbilicalSettingSetResponse{
 			Key:         spec.Key,
 			Kind:        string(spec.Kind),
