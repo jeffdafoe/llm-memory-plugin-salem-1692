@@ -39,6 +39,11 @@ signal pc_idle_prompt_cleared(actor_id: String)
 ## bar immediately, instead of waiting on the ~10s /pc/me poll.
 signal pc_needs_changed(actor_id: String, needs: Dictionary)
 
+## LLM-654: an object broke (damaged=true) or was mended. The sprite change
+## rides object_state_changed as usual; main.gd uses this to refresh the
+## ticker's broken-things line now instead of on its slow world poll.
+signal object_damage_changed(object_id: String, damaged: bool)
+
 var _socket: WebSocketPeer = null
 var _connected: bool = false
 var _url: String = ""
@@ -284,6 +289,9 @@ func _handle_message(data: String) -> void:
         "noticeboard_content_changed":
             if world != null:
                 world.apply_object_content_changed(event_data)
+        "object_damage_changed":
+            if event_data is Dictionary:
+                object_damage_changed.emit(str(event_data.get("id", "")), bool(event_data.get("damaged", false)))
         "object_loiter_offset_changed":
             if world != null:
                 world.apply_object_loiter_offset_changed(event_data)
