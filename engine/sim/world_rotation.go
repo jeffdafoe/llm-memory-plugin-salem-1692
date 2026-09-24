@@ -570,4 +570,13 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: input shortage sweep: %v", err)
 		}
 	}
+	// Damage hazard (LLM-654): once per game-day, roll each sound well for a
+	// break scaled by its use since the last repair. Bound to the durable boundary
+	// here for the farm-upkeep reasons — the force-rotate must not roll it, and a
+	// restart must not roll twice.
+	if _, err := w.SendContext(ctx, RollDailyDamage(boundary, r)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: damage roll: %v", err)
+		}
+	}
 }

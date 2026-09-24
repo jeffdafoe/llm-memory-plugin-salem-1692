@@ -484,7 +484,9 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	hasHuddlePeer := len(payload.Surroundings.HuddleMembers) > 0
 	flaggedDegenerate := actorIsFlaggedDegenerate(payload.ActorID, snap)
 	offerCraft := payload.ForgeChoice != nil && len(payload.ForgeChoice.Items) > 0
-	offerRepair := payload.StallRepair != nil
+	// repair: the owner's worn stall, or a hand standing at a broken well the
+	// town has posted work for (LLM-654) — each gated on the cue it renders from.
+	offerRepair := payload.StallRepair != nil || payload.PublicWorks.OffersRepair()
 	offerStoke := payload.Hearth != nil
 	offerBake := payload.BakeChoice != nil
 	offerTurnIn := payload.TurnInChoice != nil

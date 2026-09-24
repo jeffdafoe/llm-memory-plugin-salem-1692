@@ -95,6 +95,20 @@ func RegisterStorm(ctx context.Context, w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterStorm requires a non-nil world")
 	}
+	// Storm damage (LLM-654): each storm start rolls the wells for a break — the
+	// spike on top of the daily wear roll. A subscriber rather than a call beside
+	// ApplyWeatherChange so the umbilical force-storm rolls too (the operator's way
+	// to test it). Subscribers run on the world goroutine, so the roll mutates
+	// world state directly; the rng is private to this subscriber.
+	stormRNG := mathrand.New(mathrand.NewPCG(uint64(time.Now().UnixNano()), 0x5a1e))
+	w.Subscribe(sim.SubscriberFunc(func(world *sim.World, evt sim.Event) {
+		changed, ok := evt.(*sim.WeatherChanged)
+		if !ok || strings.TrimSpace(changed.Weather) != sim.WeatherStorm {
+			return
+		}
+		sim.RollStormDamage(world, stormRNG, changed.At)
+	}))
+
 	// Cadence contract, declared before the goroutine starts (LLM-395): a ticker
 	// that never comes up must still be visible to the staleness alarm.
 	w.RegisterTicker("storm", stormSweepInterval)

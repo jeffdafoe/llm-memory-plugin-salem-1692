@@ -870,6 +870,8 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 	// LLM-118: a PC who walks up to a worn market stall gets a talk-box
 	// atmosphere line about its condition (the player's twin of the NPC cue).
 	emitStallConditionNarration(w, actor, arrivedEvt, now)
+	// LLM-654: a PC who walks up to a broken well is told it is broken.
+	emitDamagedObjectNarration(w, actor, arrivedEvt, now)
 }
 
 // emitArrivalNarration emits the observer-facing arrival narration to co-present

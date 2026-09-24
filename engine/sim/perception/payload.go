@@ -96,6 +96,11 @@ type Payload struct {
 	EquipmentService *EquipmentServiceView
 	WrightRounds     *WrightRoundsView
 
+	// PublicWorks is "## The town's works" (LLM-654): a well is broken — the
+	// bounty for a hand (AtSite also gates the repair tool), the standing fact
+	// for the constable. nil otherwise; see public_works.go.
+	PublicWorks *PublicWorksView
+
 	// VisitorCommerceStripped is true when the subject is a visitor whose commerce tools should
 	// be withheld this tick (LLM-455) — the talk-only-rounds gate: a visitor not co-present with
 	// his errand counterparty or a tavern/inn keeper trades nowhere. Read by handlers/tool_gating.go.
@@ -1621,6 +1626,10 @@ type InFlightSourceActivityView struct {
 	Kind        sim.SourceActivityKind
 	SourceLabel string
 	Attribute   sim.NeedKey
+	// PublicWorks marks a repair at a damaged object — the town's work
+	// (LLM-654), not the actor's own stall — so the standing line names what
+	// stays broken.
+	PublicWorks bool
 }
 
 // InFlightProductionView is the perception-side projection of the subject's

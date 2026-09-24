@@ -33,9 +33,10 @@ var repairSchema = json.RawMessage(`{
 // repairDescription is advertised to the model. gateTools only offers this tool
 // when the actor owns a co-located business worn to the repair threshold, so the
 // description can assume that context.
-const repairDescription = "Mend your place of business, which has worn from use. This is a short, visible job: " +
-	"you work at it for a little while (stay put until it's done) and it uses nails from your pack. " +
-	"You must have ARRIVED at your own business, and you need enough nails — buy them from the smith if you're short."
+const repairDescription = "Mend what you stand at: your own place of business worn from use, or a broken well the town has posted work for. " +
+	"You work at it for a while (stay put until it's done). " +
+	"Your own business uses nails from your pack — you must have ARRIVED at it, and buy nails from the smith if you're short. " +
+	"The town's well needs no nails, and the town pays you when the mending is done."
 
 // DecodeRepairArgs parses the raw tool-call arguments. repair takes no args, so
 // this accepts an empty payload or a bare "{}" and rejects anything else (any

@@ -514,6 +514,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 
 		// Stall wear (LLM-118) — live-tune the market-stall wear/repair knobs
 		// without a restart; applied in memory and persisted on the next checkpoint.
+		{http.MethodPost, umbilicalBasePath + "/object/damage", "Break a well now or mend it without a bounty (LLM-654 damage events). No roll and no guards beyond \"is a well\". Body: {id, action: \"damage\"|\"repair\"}.", true, s.handleUmbilicalObjectDamage},
 		{http.MethodPost, umbilicalBasePath + "/stall-wear/set", "Live-tune the stall wear knobs (LLM-118) without a restart. All fields optional (at least one required), non-negative ints; stall_degraded_produce_pct (LLM-446) is 0-100 — the production rate while the owner's business is degraded (0 = full block, 100 = no penalty). Body: {stall_wear_per_coin?, stall_wear_repair_threshold?, stall_wear_degrade_threshold?, stall_nails_per_repair?, stall_repair_duration_seconds?, stall_degraded_produce_pct?}.", true, s.handleUmbilicalStallWearSet},
 
 		// Farm upkeep wealth tax (LLM-215) — live-tune the per-farm shovel levy

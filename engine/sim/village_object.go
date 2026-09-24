@@ -103,6 +103,17 @@ type VillageObject struct {
 	// business, and never accrues while the due-threshold setting is 0.
 	EquipmentUse int
 
+	// DamagedAt is when a damage event (LLM-654, damage.go) put this object out
+	// of use; zero = sound. A damaged well gives no drink and no water until a
+	// public-works repair clears it. Durable (checkpointed): a restart must not
+	// quietly mend a broken well.
+	DamagedAt time.Time
+
+	// UseSinceRepair counts draws at this object since it was last repaired —
+	// the use factor of the damage hazard. Only wells accrue it. Durable
+	// (checkpointed) so the hazard does not reset on every deploy.
+	UseSinceRepair int
+
 	// HearthLitUntil is when this structure's hearth fire burns out (LLM-412).
 	// Meaningful only on an object tagged TagHearth (a structure-backed object
 	// whose building has a fireplace); zero = the fire is out. Stoking (the

@@ -36,6 +36,7 @@ type WorldEnvironment struct {
 	LastNeedsTickAt         time.Time       // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
 	TownChest               int             // coin the estate rate (LLM-652) has taken out of purses and not yet spent back. Durable — persisted in world_state.town_chest_coins: the coin has left the purses, so losing it on restart would destroy it.
 	InputShortages          []InputShortage // standing input shortages the daily sweep found (LLM-656), sorted by (keeper, item). Durable — persisted in world_state.input_shortages: the peddler threshold is counted in game-days and the village restarts several times a day, so an in-memory count would rarely reach it.
+	LastRepairAt            time.Time       // when a damaged object was last mended (damage.go), the min-gap anchor for the next damage event; zero = none yet. Transient — restart-lossy by design: losing it only lets the next break come a little sooner.
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 }
 
@@ -245,6 +246,20 @@ type WorldSettings struct {
 	EstateRateFloor     int
 	EstateRatePctPerDay int
 	ConstableWagePerDay int
+
+	// Damage events and public works (LLM-654, damage.go). The two chances are
+	// per thousand at the reference use (WellDamageUseReference draws since the
+	// last repair); 0 disables that roll. WellDamageMinGapHours is the quiet time
+	// after a repair. PublicWorksBounty / PublicWorksRepairSeconds are the
+	// engine-owned terms of a repair; the bounty is on offer only while the chest
+	// holds bounty + PublicWorksChestReserve. All live-tunable (umbilical).
+	WellDamageChancePermille      int
+	WellDamageStormChancePermille int
+	WellDamageUseReference        int
+	WellDamageMinGapHours         int
+	PublicWorksBounty             int
+	PublicWorksRepairSeconds      int
+	PublicWorksChestReserve       int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
@@ -1964,6 +1979,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	if err := w.rehydrateLaborContractsOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate labor contracts: %w", err)
 	}
+	// LLM-654: notice-board content is in-memory only, so a well still broken
+	// at boot gets its pinned notices reposted now rather than at the crier's
+	// next visit.
+	if anyWellDamaged(w) {
+		repostPublicWorksNotices(w, time.Now().UTC())
+	}
 	// Reactor state (warrants + in-flight + attempt-id + recent-tick ring)
 	// is ephemeral by design — payloads are interface-typed and weren't
 	// designed to cross the checkpoint serialization boundary. Cascade
@@ -2483,6 +2504,9 @@ func (w *World) republish() {
 		FarmUpkeepFloor:               w.Settings.FarmUpkeepFloor,
 		FarmUpkeepCoinsPerShovel:      w.Settings.FarmUpkeepCoinsPerShovel,
 		EstateRateFloor:               w.Settings.EstateRateFloor,
+		PublicWorksBounty:             w.Settings.PublicWorksBounty,
+		PublicWorksChestReserve:       w.Settings.PublicWorksChestReserve,
+		PublicWorksRepairSeconds:      w.Settings.PublicWorksRepairSeconds,
 		MerchantCoinFloor:             w.Settings.MerchantCoinFloor,
 		DefaultOutdoorSceneRadius:     w.Settings.DefaultOutdoorSceneRadius,
 		Assets:                        w.Assets,

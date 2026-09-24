@@ -77,7 +77,9 @@ func FirstGatherableRow(obj *VillageObject) (row *ObjectRefresh, hasStock bool, 
 	}
 	for _, r := range obj.Refreshes {
 		if r.IsGatherable() {
-			return r, r.HasStock(), true
+			// A broken well (LLM-654) is still a gather source, but it has
+			// nothing to give until it is mended.
+			return r, r.HasStock() && !obj.Damaged(), true
 		}
 	}
 	return nil, false, false
@@ -141,7 +143,7 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 		}
 		bestID, bestObj, bestRow = nearestID, nearest, nearestRow
 	}
-	best := GatherCandidate{ID: bestID, Cheb: loiterChebIn(bestObj, assets, actorTile), Mine: true, HasStock: bestRow.HasStock(), Low: lowItems[bestRow.GatherItem]}
+	best := GatherCandidate{ID: bestID, Cheb: loiterChebIn(bestObj, assets, actorTile), Mine: true, HasStock: bestRow.HasStock() && !bestObj.Damaged(), Low: lowItems[bestRow.GatherItem]}
 	for id, obj := range objects {
 		if id == bestID || obj == nil || obj.DisplayName == "" || obj.OwnedByOther(actorID) {
 			continue

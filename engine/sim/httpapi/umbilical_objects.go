@@ -106,6 +106,12 @@ type UmbilicalObjectDTO struct {
 	// serviced, or not a wearable business).
 	EquipmentUse int `json:"equipment_use,omitempty"`
 
+	// DamagedAt is when a damage event put the object out of use (LLM-654);
+	// absent while sound. UseSinceRepair is the draws since its last repair —
+	// the hazard's use factor. Omitted at 0.
+	DamagedAt      *time.Time `json:"damaged_at,omitempty"`
+	UseSinceRepair int        `json:"use_since_repair,omitempty"`
+
 	// HearthLitUntil is when a TagHearth object's fire burns out (LLM-412) —
 	// a future instant while lit, past once it has gone out by the clock (there
 	// is no burn-down sweep). Pointer + omitempty so a NEVER-lit hearth renders
@@ -211,6 +217,8 @@ func umbilicalObjectsFromSnapshot(snap *sim.Snapshot, filter objectsFilter) Umbi
 			StructureBacked: backed,
 			Wear:            o.Wear,
 			EquipmentUse:    o.EquipmentUse,
+			DamagedAt:       ptrTimeIfSet(o.DamagedAt),
+			UseSinceRepair:  o.UseSinceRepair,
 			HearthLitUntil:  ptrTimeIfSet(o.HearthLitUntil),
 		}
 		if o.LoiterOffsetX != nil || o.LoiterOffsetY != nil {

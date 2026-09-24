@@ -36,6 +36,13 @@ const ContractVersion = 2
 // WorldStateDTO is the GET /api/village/world response — coarse world state
 // for the client's top bar / lighting + the per-player camera zoom floor.
 // The carrier of ContractVersion.
+// DamageTickerDTO is one broken object on the world read (LLM-654): the id and
+// the ticker line.
+type DamageTickerDTO struct {
+	ObjectID string `json:"object_id"`
+	Text     string `json:"text"`
+}
+
 type WorldStateDTO struct {
 	ContractVersion int    `json:"contract_version"`
 	Phase           string `json:"phase"` // "day" | "night"
@@ -50,6 +57,9 @@ type WorldStateDTO struct {
 	Now        time.Time `json:"now"`
 	Weather    string    `json:"weather"`
 	Atmosphere string    `json:"atmosphere"`
+	// Damaged lists broken objects for the top ticker (LLM-654) — one line
+	// each. Omitted when nothing is broken. Additive — no contract_version bump.
+	Damaged []DamageTickerDTO `json:"damaged,omitempty"`
 	// LastTransitionAt is the wall-clock instant of the most recent REAL
 	// day↔night flip (UTC) — Environment.LastPhaseFlipAt, not the ticker's
 	// From==To-inclusive dedupe stamp. The client positions its sunset/sunrise color curve

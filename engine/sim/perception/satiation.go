@@ -683,6 +683,9 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actor
 // generalised over the need key so a well (thirst) and a shade tree (tiredness)
 // read the same way. ZBBS-HOME-359.
 func objectRefreshMagnitude(obj *sim.VillageObject, need sim.NeedKey) int {
+	if obj.Damaged() {
+		return 0 // a broken well (LLM-654) eases nothing and is never offered
+	}
 	for _, r := range obj.Refreshes {
 		if r == nil || r.Attribute != need {
 			continue

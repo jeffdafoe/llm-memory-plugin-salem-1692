@@ -437,6 +437,9 @@ func nearestWildForageSource(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, i
 func forageStockForItem(obj *sim.VillageObject, item sim.ItemKind) (int, bool) {
 	total := 0
 	found := false
+	// A broken well (LLM-654) keeps its rows but gives nothing until mended:
+	// report the source with no stock, so every caller skips it.
+	damaged := obj.Damaged()
 	for _, r := range obj.Refreshes {
 		// IsForageToSellFor is the shared row predicate (finite + yield-only +
 		// matching gather item) the forage WARRANT's actionability gate also uses,
@@ -446,7 +449,7 @@ func forageStockForItem(obj *sim.VillageObject, item sim.ItemKind) (int, bool) {
 			continue
 		}
 		stock := *r.AvailableQuantity
-		if stock < 0 {
+		if stock < 0 || damaged {
 			stock = 0 // a stock counter is never negative; clamp a corrupt row
 		}
 		total += stock

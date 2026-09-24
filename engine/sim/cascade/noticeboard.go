@@ -227,6 +227,15 @@ func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, r
 	}
 
 	capacity := sim.ContentCapacityForState(asset.FindState(stop.NewState))
+	// The town's pinned notices (LLM-654) take the first slips; she authors only
+	// what is left. With no slip left — or a no-news day — the board carries the
+	// pinned lines alone, posted and read now with no author call.
+	pinned := sim.PublicWorksNoticeLines(w)
+	if len(pinned) > 0 && capacity-len(pinned) <= 0 {
+		postAndVoicePinned(w, route, stopIdx, stop.ObjectID, pinned, nil)
+		return
+	}
+	capacity -= len(pinned)
 	if capacity <= 0 {
 		// No-news day: post the empty variant, clear prior content, say nothing.
 		// SetVillageObjectState never returns an error (it no-ops on not_found /
@@ -285,10 +294,18 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 		return
 	}
 
+	// The town's pinned notices (LLM-654) go first; her authored lines follow.
+	// Recomputed here rather than carried from the stop's start: a well may have
+	// broken or been mended during the author call.
+	if pinned := sim.PublicWorksNoticeLines(w); len(pinned) > 0 {
+		postAndVoicePinned(w, route, stopIdx, objectID, pinned, splitNoticeLines(text))
+		return
+	}
+
 	// Set the board variant to match the number of notices actually authored
 	// (LLM-44: drawn = read = shown), then save the content at that state.
 	lines := splitNoticeLines(text)
-	matchState, matchCap := noticeboardStateForCapacity(w, objectID, len(lines))
+	matchState, matchCap := sim.NoticeboardStateForCapacity(w, objectID, len(lines))
 	if matchState == "" {
 		// No notice-board state at all (misconfigured asset) — save against the
 		// current state so the stale-guard doesn't drop the content; the variant
@@ -310,7 +327,7 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 	if strings.TrimSpace(text) == "" {
 		// Snapped down to the empty board (a lone authored notice with no 1-slip
 		// frame): post the empty variant, clear it, say nothing, advance — the
-		// no-news-day shape. Guard on a real state: noticeboardStateForCapacity +
+		// no-news-day shape. Guard on a real state: sim.NoticeboardStateForCapacity +
 		// the obj fallback above can both miss on a missing/misconfigured object,
 		// and posting/clearing against "" would be a bogus mutation.
 		if matchState != "" {
@@ -349,38 +366,21 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 	scheduleCrierAdvance(w, route, stopIdx, objectID, time.Duration(voiced)*crierNoticeBeatDelay)
 }
 
-// noticeboardStateForCapacity returns the rotatable notice-board state best
-// suited to display `want` notices, plus that state's actual declared capacity.
-// It prefers an exact-capacity frame but snaps DOWN to the largest available
-// capacity <= want when none exists: a board's sprite sheet has no frame for
-// every integer (the live Notice Board provides 0,2,3,4,5 slips — no 1-slip
-// art), and drawing more slips than notices voiced is the exact mismatch this
-// guards against. The caller clamps its saved content + spiel to the returned
-// capacity so slips-drawn == lines-voiced. Returns ("", 0) only when the asset
-// declares no notice-board state at all (every rotatable board has at least the
-// empty, capacity-0 state).
-func noticeboardStateForCapacity(w *sim.World, objectID sim.VillageObjectID, want int) (string, int) {
-	obj, ok := w.VillageObjects[objectID]
-	if !ok || obj == nil {
-		return "", 0
+// postAndVoicePinned posts the town's pinned notices (LLM-654) with her authored
+// lines after them, reads aloud what was posted, and schedules the advance. The
+// frame is sized by sim.NoticeboardStateForCapacity (the helper the crier's own
+// path uses), so slips-drawn == lines-voiced holds here too.
+func postAndVoicePinned(w *sim.World, route *sim.NPCRoute, stopIdx int, objectID sim.VillageObjectID, pinned, authored []string) {
+	posted := sim.PostNoticeboardWithPinned(w, objectID, pinned, authored, time.Now())
+	if len(posted) == 0 {
+		advanceCrierWalk(w, route.NPCID, objectID)
+		return
 	}
-	asset, ok := w.Assets[obj.AssetID]
-	if !ok || asset == nil {
-		return "", 0
+	voiced := voiceCrierNotices(w, route.NPCID, strings.Join(posted, "\n"), time.Now())
+	if voiced < 1 {
+		voiced = 1
 	}
-	bestState, bestCap := "", -1
-	for _, s := range asset.RotatablePool() {
-		if !s.HasTag(sim.TagNoticeBoard) {
-			continue
-		}
-		if c := sim.ContentCapacityForState(s); c <= want && c > bestCap {
-			bestState, bestCap = s.State, c
-		}
-	}
-	if bestCap < 0 {
-		return "", 0
-	}
-	return bestState, bestCap
+	scheduleCrierAdvance(w, route, stopIdx, objectID, time.Duration(voiced)*crierNoticeBeatDelay)
 }
 
 // crierStillAtStop reports whether `route` is STILL the crier's installed

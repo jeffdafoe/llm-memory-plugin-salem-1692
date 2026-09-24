@@ -251,6 +251,13 @@ type Snapshot struct {
 	// snapshot rather than racing on w.Settings.
 	EstateRateFloor int
 
+	// Public-works terms (LLM-654) mirrored from WorldSettings so the bounty cue
+	// states the SAME bounty and reserve StartRepair's public-works branch gates
+	// on. Zero on a directly-built test snapshot = no bounty on offer.
+	PublicWorksBounty        int
+	PublicWorksChestReserve  int
+	PublicWorksRepairSeconds int
+
 	// MerchantCoinFloor mirrors WorldSettings.MerchantCoinFloor RAW (LLM-294) — the
 	// working-capital floor below which a stock-rich keeper is steered to conserve
 	// coin. No effective-value fallback (unlike SeekWorkCoinCeiling): the perception

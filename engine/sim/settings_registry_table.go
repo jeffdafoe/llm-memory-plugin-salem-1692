@@ -159,6 +159,15 @@ func buildSettingRegistry() []SettingSpec {
 		pctSetting("estate_rate_pct_per_day", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.EstateRatePctPerDay }),
 		intSetting("constable_wage_per_day", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.ConstableWagePerDay }),
 
+		// --- damage events + public works (LLM-654) ---------------------------
+		intSetting("well_damage_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.WellDamageChancePermille }),
+		intSetting("well_damage_storm_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.WellDamageStormChancePermille }),
+		intSetting("well_damage_use_reference", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.WellDamageUseReference }),
+		intSetting("well_damage_min_gap_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.WellDamageMinGapHours }),
+		intSetting("public_works_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksBounty }),
+		intSetting("public_works_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRepairSeconds }),
+		intSetting("public_works_chest_reserve", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksChestReserve }),
+
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute
 		// rate lookup.
