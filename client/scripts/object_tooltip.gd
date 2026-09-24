@@ -207,7 +207,16 @@ func _on_count_loaded(result: int, response_code: int, _headers: PackedStringArr
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
-    if typeof(json) != TYPE_DICTIONARY or not bool(json.get("gatherable", false)):
+    if typeof(json) != TYPE_DICTIONARY:
+        return
+    # A broken well (LLM-654) is out of use — say so in place of any count,
+    # since nothing can be drawn or drunk there until it is mended.
+    if bool(json.get("damaged", false)):
+        _berry_label.text = "Broken — the windlass is down"
+        _berry_label.visible = true
+        _tooltip_panel.visible = true
+        return
+    if not bool(json.get("gatherable", false)):
         return
     # Infinite sources (a well) report no count — nothing to show.
     if json.get("available", null) == null:

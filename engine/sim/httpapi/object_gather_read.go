@@ -28,6 +28,10 @@ type objectGatherResponse struct {
 	// avoid labeling the object "picked clean" — a plain berry bush has no such
 	// row, so it still reads "Picked clean" (LLM-282).
 	ServesInPlace bool `json:"serves_in_place,omitempty"`
+	// Damaged is true while the object is out of use after a damage event
+	// (LLM-654) — a broken well. The client shows "Broken" in place of any
+	// count, since nothing can be drawn or drunk there until it is mended.
+	Damaged bool `json:"damaged,omitempty"`
 }
 
 // objectServesNeedInPlace reports whether obj still satisfies a need in place
@@ -70,6 +74,7 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 			Gatherable:    true,
 			Item:          strings.TrimSpace(string(row.GatherItem)),
 			ServesInPlace: objectServesNeedInPlace(obj),
+			Damaged:       obj.IsWell() && obj.Damaged(),
 		}
 		// IsFinite only guarantees AvailableQuantity != nil; guard MaxQuantity
 		// too so a malformed row (one nil pointer) omits the count rather than
@@ -83,5 +88,5 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 		return
 	}
-	writeJSON(w, objectGatherResponse{Gatherable: false})
+	writeJSON(w, objectGatherResponse{Gatherable: false, Damaged: obj.IsWell() && obj.Damaged()})
 }
