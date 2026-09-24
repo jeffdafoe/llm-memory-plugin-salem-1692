@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -162,5 +163,30 @@ func TestHandleObjectGather_MissingID(t *testing.T) {
 	rec := getRaw(srv, "/api/village/object/gather")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleObjectGather_DamagedWell (LLM-654) — a broken well reports
+// damaged=true alongside its stock, so the tooltip can say "Broken" instead of
+// a water count nobody can draw; a sound well omits the field.
+func TestHandleObjectGather_DamagedWell(t *testing.T) {
+	w := seededWorld(t)
+	seedGatherObjects(t, w)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects["well2"].DamagedAt = time.Now().UTC()
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(w, okAuth{})
+	for id, want := range map[string]bool{"well2": true, "well1": false} {
+		rec := get(t, srv, "/api/village/object/gather?id="+id)
+		var res objectGatherResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("%s decode: %v", id, err)
+		}
+		if res.Damaged != want {
+			t.Errorf("%s damaged = %v, want %v", id, res.Damaged, want)
+		}
 	}
 }
