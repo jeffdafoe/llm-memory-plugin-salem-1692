@@ -467,8 +467,8 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // holds — the start gate checked it could pay, but the wage may have drawn it
 // down since).
 func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) int {
-	if actor == nil || !obj.Damaged() {
-		return 0
+	if actor == nil || !obj.IsWell() || !obj.Damaged() {
+		return 0 // slice 1 pays only for a well (nil-safe predicates)
 	}
 	bounty := agreed
 	if bounty > w.Environment.TownChest {

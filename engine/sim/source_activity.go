@@ -680,7 +680,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		stall := w.VillageObjects[act.ObjectID]
 		// Public works (LLM-654): a mend begun at a damaged well lands the town's
 		// repair — the well back in use, the bounty paid from the chest.
-		if stall.Damaged() {
+		if stall.IsWell() && stall.Damaged() {
 			paid := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
 			w.emit(&SourceActivityCompleted{
 				ActorID:     actorID,

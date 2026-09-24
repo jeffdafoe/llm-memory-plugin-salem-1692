@@ -350,3 +350,41 @@ func TestSetObjectDamageRejectsNonWells(t *testing.T) {
 		}
 	}
 }
+
+// TestStartRepairAwayFromEverything — no stall of one's own and no broken well
+// underfoot: StartRepair refuses cleanly (the site lookup is nil-safe).
+func TestStartRepairAwayFromEverything(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	breakWell(t, w, "well-a")
+	mustSend(t, w, func(world *sim.World) { world.Actors["anne"].Pos = sim.WorldPos{X: 9000, Y: 9000}.Tile() })
+	if _, err := w.Send(sim.StartRepair("anne")); err == nil {
+		t.Error("StartRepair away from any stall or well should refuse")
+	}
+}
+
+// TestPublicWorksCompletionPaysOnlyForAWell — a due repair window whose target
+// is a damaged NON-well (drifted data) lands no town repair and no bounty.
+func TestPublicWorksCompletionPaysOnlyForAWell(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	mustSend(t, w, func(world *sim.World) {
+		world.VillageObjects["board"].DamagedAt = time.Now().UTC()
+		world.Actors["anne"].SourceActivity = &sim.SourceActivity{
+			Kind: sim.SourceActivityRepair, ObjectID: "board", Bounty: 12,
+			StartedAt: time.Now().UTC().Add(-time.Hour), Until: time.Now().UTC().Add(-time.Second),
+		}
+	})
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, time.Now().UTC()) })
+	mustSend(t, w, func(world *sim.World) {
+		if got := world.Actors["anne"].Coins; got != 0 {
+			t.Errorf("paid %d for a non-well", got)
+		}
+		if got := world.Environment.TownChest; got != 100 {
+			t.Errorf("chest = %d, want the untouched 100", got)
+		}
+		if !world.VillageObjects["board"].Damaged() {
+			t.Error("a non-well was mended by the town's repair")
+		}
+	})
+}

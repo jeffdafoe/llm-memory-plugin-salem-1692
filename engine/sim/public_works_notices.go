@@ -171,7 +171,21 @@ func (DamageNewsChanged) isSimEvent() {}
 // changed, so the frequent chest writers cost one string compare.
 func syncPublicWorksNews(w *World, at time.Time) {
 	pinned := PublicWorksNoticeLines(w)
-	key := strings.Join(pinned, "\n")
+	// The key carries the broken wells' ids as well as the text, so a break or
+	// repair always counts as news even if two wells ever rendered alike.
+	var ids []string
+	for _, obj := range w.VillageObjects {
+		if obj.IsWell() && obj.Damaged() {
+			ids = append(ids, string(obj.ID))
+		}
+	}
+	sort.Strings(ids)
+	// Nothing broken is the empty key — the boot value — so a village with no
+	// broken well never reposts (and never re-frames) its boards.
+	key := ""
+	if len(ids) > 0 || len(pinned) > 0 {
+		key = strings.Join(ids, ",") + "\n" + strings.Join(pinned, "\n")
+	}
 	if key == w.publicWorksNewsKey {
 		return
 	}
