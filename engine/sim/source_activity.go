@@ -73,6 +73,7 @@ type SourceActivity struct {
 	StartedAt time.Time
 	Until     time.Time
 	Qty       int // harvest only: units requested (clamped to stock at completion)
+	Bounty    int // public-works repair only (LLM-654): the bounty agreed at start, paid at completion
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what
@@ -405,16 +406,24 @@ func StartRepair(actorID ActorID) Command {
 			// can't diverge on who may mend or which stall (resolving "some
 			// loitering object" first would diverge when objects share a loiter pin).
 			stall, _ := WearableStallToMend(w.VillageObjects, w.LaborLedger, actorID)
-			if stall == nil {
-				// Public works (LLM-654): no stall of one's own to mend, but a
-				// broken well underfoot is the town's work, open to any hand.
+			atStall := false
+			if stall != nil {
+				pin, ok := effectiveObjectLoiterTile(w, stall.ID)
+				atStall = AtBusiness(actor.Pos, actor.InsideStructureID, stall.ID, pin, ok)
+			}
+			// Public works (LLM-654): a broken well underfoot is the town's work,
+			// open to any hand. Standing at the well, "repair" means the well —
+			// even for someone whose own worn stall is elsewhere. The cue
+			// (buildPublicWorks) offers it on the same terms.
+			if !atStall {
 				if site := publicWorksSiteAt(w, actor); site != nil {
 					return startPublicWorksRepair(w, actor, site, now)
 				}
+			}
+			if stall == nil {
 				return nil, errors.New("there's no stall of yours to mend here.")
 			}
-			pin, ok := effectiveObjectLoiterTile(w, stall.ID)
-			if !AtBusiness(actor.Pos, actor.InsideStructureID, stall.ID, pin, ok) {
+			if !atStall {
 				return nil, errors.New("walk to your stall before mending it.")
 			}
 			objID := stall.ID
@@ -672,7 +681,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// Public works (LLM-654): a mend begun at a damaged well lands the town's
 		// repair — the well back in use, the bounty paid from the chest.
 		if stall.Damaged() {
-			paid := completePublicWorksRepair(w, actor, stall, now)
+			paid := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
 			w.emit(&SourceActivityCompleted{
 				ActorID:     actorID,
 				ObjectID:    act.ObjectID,

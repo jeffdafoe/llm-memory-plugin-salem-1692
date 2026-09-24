@@ -165,9 +165,14 @@ func _fetch_world_state() -> void:
         return
 
 
-## LLM-654: re-fetch the world read now — called when the engine says something
-## broke or was mended, so the broken-things line doesn't wait on the slow poll.
+## LLM-654: re-fetch the world read now — called when the engine says the
+## broken-things news changed, so the line doesn't wait on the slow poll. One
+## HTTPRequest serves one request at a time: a slow poll already in flight may
+## carry the pre-change snapshot, so cancel it and ask again rather than let the
+## new request bounce ERR_BUSY and lose the change until the next poll.
 func refresh_now() -> void:
+    if _http != null:
+        _http.cancel_request() # no-op when idle
     _fetch_world_state()
 
 

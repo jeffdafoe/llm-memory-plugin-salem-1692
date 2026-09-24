@@ -212,7 +212,7 @@ func damageObject(w *World, obj *VillageObject, trigger string, now time.Time) {
 	log.Printf("sim/damage: %s (%s) is out of use — trigger %s, %d draws since last repair",
 		name, obj.ID, trigger, obj.UseSinceRepair)
 	w.emit(&ObjectDamaged{ObjectID: obj.ID, Name: name, Trigger: trigger, At: now})
-	repostPublicWorksNotices(w, now)
+	syncPublicWorksNews(w, now)
 }
 
 // repairObject puts obj back in use: clears the damage and the use count,
@@ -234,7 +234,7 @@ func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, 
 	name := damageObjectName(w, obj)
 	log.Printf("sim/damage: %s (%s) is mended (repairer %q, bounty %d)", name, obj.ID, repairerID, bounty)
 	w.emit(&ObjectRepaired{ObjectID: obj.ID, Name: name, RepairerID: repairerID, Bounty: bounty, At: now})
-	repostPublicWorksNotices(w, now)
+	syncPublicWorksNews(w, now)
 }
 
 // soundAssetState returns the lowest-ID state that is not the damaged one — the
@@ -399,7 +399,7 @@ func objectUnderRepair(w *World, objID VillageObjectID, except ActorID) bool {
 // same loitering resolution the drink path uses), or nil.
 func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 	_, obj := findRefreshObjectNear(w, actor.Pos)
-	if obj.Damaged() {
+	if obj.IsWell() && obj.Damaged() {
 		return obj
 	}
 	return nil
@@ -433,11 +433,14 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 	if seconds <= 0 {
 		seconds = DefaultPublicWorksRepairSeconds
 	}
+	// The bounty is fixed now, on the terms the hand was offered — a live
+	// retune during the hour of work changes nothing they were promised.
 	actor.SourceActivity = &SourceActivity{
 		Kind:      SourceActivityRepair,
 		ObjectID:  site.ID,
 		StartedAt: now,
 		Until:     now.Add(time.Duration(seconds) * time.Second),
+		Bounty:    w.Settings.PublicWorksBounty,
 	}
 	name := sourceActivityObjectName(w, site)
 	w.emit(&SourceActivityStarted{
@@ -460,13 +463,14 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 }
 
 // completePublicWorksRepair lands a finished public-works repair: mends obj and
-// pays the hand from the chest (capped by what it holds — the gate at start
-// already checked it could pay, but the wage may have drawn it down since).
-func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, now time.Time) int {
+// pays the hand the bounty agreed at start from the chest (capped by what it
+// holds — the start gate checked it could pay, but the wage may have drawn it
+// down since).
+func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) int {
 	if actor == nil || !obj.Damaged() {
 		return 0
 	}
-	bounty := w.Settings.PublicWorksBounty
+	bounty := agreed
 	if bounty > w.Environment.TownChest {
 		bounty = w.Environment.TownChest
 	}
@@ -548,11 +552,11 @@ func SetObjectDamage(id VillageObjectID, action string) Command {
 			return nil, ErrVillageObjectNotFound
 		}
 		now := time.Now().UTC()
+		if !obj.IsWell() {
+			return nil, ErrNotDamageable
+		}
 		switch action {
 		case "damage":
-			if !obj.IsWell() {
-				return nil, ErrNotDamageable
-			}
 			damageObject(w, obj, DamageTriggerForce, now)
 		case "repair":
 			repairObject(w, obj, "", 0, now)

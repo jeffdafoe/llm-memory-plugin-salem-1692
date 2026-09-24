@@ -1292,6 +1292,12 @@ type World struct {
 	// reads nothing (board empty); subsequent cycles read normally.
 	NoticeboardContent map[VillageObjectID]*NoticeboardContent
 
+	// publicWorksNewsKey is the pinned public-works notice text last posted
+	// (LLM-654, public_works_notices.go) — syncPublicWorksNews compares against
+	// it so the frequent chest writers repost only on a real change. Transient:
+	// boot starts it empty and FinalizeLoad's sync brings it current.
+	publicWorksNewsKey string
+
 	// ActionLog is the world-level append-only audit trail of
 	// committed agent + engine-source actions. Consumed by the
 	// atmosphere refresh cascade (group-by-actor-by-action since
@@ -1982,9 +1988,7 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// LLM-654: notice-board content is in-memory only, so a well still broken
 	// at boot gets its pinned notices reposted now rather than at the crier's
 	// next visit.
-	if anyWellDamaged(w) {
-		repostPublicWorksNotices(w, time.Now().UTC())
-	}
+	syncPublicWorksNews(w, time.Now().UTC())
 	// Reactor state (warrants + in-flight + attempt-id + recent-tick ring)
 	// is ephemeral by design — payloads are interface-typed and weren't
 	// designed to cross the checkpoint serialization boundary. Cascade

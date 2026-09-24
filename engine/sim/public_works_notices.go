@@ -152,11 +152,44 @@ func PostNoticeboardWithPinned(w *World, objectID VillageObjectID, pinned, autho
 	return all
 }
 
-// repostPublicWorksNotices brings every notice board up to date with the
-// current pinned lines, keeping each board's crier-authored lines after them.
-// Called when a well breaks or is mended.
-func repostPublicWorksNotices(w *World, at time.Time) {
+// DamageNewsChanged is emitted when the town's broken-things news changes — a
+// well broke or was mended, or the chest crossed the line where it can (or can
+// no longer) pay the bounty, or the bounty setting moved. The client refreshes
+// its ticker off it; the boards have already been reposted.
+type DamageNewsChanged struct {
+	EventBase
+	At time.Time
+}
+
+func (DamageNewsChanged) isSimEvent() {}
+
+// syncPublicWorksNews reposts the boards and emits DamageNewsChanged when the
+// pinned lines differ from what was last posted. The lines are derived from
+// the damage state, the chest and the settings, so every writer of any of those
+// calls this: damageObject, repairObject, the estate-rate collection, the
+// constable's wage, the settings route, and FinalizeLoad. A no-op while nothing
+// changed, so the frequent chest writers cost one string compare.
+func syncPublicWorksNews(w *World, at time.Time) {
 	pinned := PublicWorksNoticeLines(w)
+	key := strings.Join(pinned, "\n")
+	if key == w.publicWorksNewsKey {
+		return
+	}
+	w.publicWorksNewsKey = key
+	repostPublicWorksNotices(w, pinned, at)
+	w.emit(&DamageNewsChanged{At: at})
+}
+
+// SyncPublicWorksNews is syncPublicWorksNews for callers outside the package
+// (the umbilical settings route, after a live setting change). MUST run on the
+// world goroutine.
+func SyncPublicWorksNews(w *World, at time.Time) {
+	syncPublicWorksNews(w, at)
+}
+
+// repostPublicWorksNotices brings every notice board up to date with the
+// pinned lines, keeping each board's crier-authored lines after them.
+func repostPublicWorksNotices(w *World, pinned []string, at time.Time) {
 	var boards []*VillageObject
 	for _, obj := range w.VillageObjects {
 		if IsNoticeBoard(w, obj) {

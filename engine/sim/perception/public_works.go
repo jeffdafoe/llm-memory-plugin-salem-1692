@@ -101,9 +101,10 @@ func buildPublicWorks(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if !subjectIsWorker(actorSnap) || laboring || !open {
 		return nil
 	}
-	// Already mending it: the in-flight line holds them there; a second "call
-	// repair" would bounce as busy.
-	if actorSnap.SourceActivityKind == sim.SourceActivityRepair && actorSnap.SourceActivityObjectID == site.ID {
+	// Busy at anything — eating, gathering, already mending this well — the
+	// in-flight line holds them there, and StartRepair would bounce a second
+	// window as busy. The work is still on offer once they finish.
+	if actorMidSourceActivity(actorSnap) {
 		return nil
 	}
 	if wellUnderRepair(snap, site.ID, actorID) {

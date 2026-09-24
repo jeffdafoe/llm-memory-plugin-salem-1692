@@ -68,6 +68,7 @@ func buildDamageWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"anne":   {ID: "anne", DisplayName: "Anne Walker", Kind: sim.KindNPCShared, Attributes: map[string][]byte{sim.AttrWorker: nil}},
 		"joseph": {ID: "joseph", DisplayName: "Joseph Scott", Kind: sim.KindNPCShared},
+		"gideon": {ID: "gideon", DisplayName: "Constable Gideon Marsh", Kind: sim.KindNPCStateful, Attributes: map[string][]byte{sim.AttrConstable: nil}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -254,4 +255,98 @@ func TestPublicWorksNoticesPinToTheBoard(t *testing.T) {
 			t.Errorf("board state = %q, want empty", world.VillageObjects["board"].CurrentState)
 		}
 	})
+}
+
+// TestPublicWorksTakesPrecedenceOverARemoteStall — a hand who owns a worn stall
+// elsewhere, standing at the broken well, mends the WELL (the cue offers it on
+// the same terms); the stall path is only for standing at the stall.
+func TestPublicWorksTakesPrecedenceOverARemoteStall(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	breakWell(t, w, "well-a")
+	mustSend(t, w, func(world *sim.World) {
+		world.VillageObjects["anne-stall"] = &sim.VillageObject{
+			ID: "anne-stall", DisplayName: "Anne's Stall", OwnerActorID: "anne",
+			Tags: []string{sim.TagBusiness}, Wear: 999, Pos: sim.WorldPos{X: 6000, Y: 6000},
+		}
+	})
+	placeAt(t, w, "anne", "well-a")
+	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
+		t.Fatalf("StartRepair at the well with a stall elsewhere: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if act := world.Actors["anne"].SourceActivity; act == nil || act.ObjectID != "well-a" {
+			t.Errorf("activity = %+v, want a repair at well-a", act)
+		}
+	})
+}
+
+// TestPublicWorksBountyFixedAtStart — the bounty agreed when the work began is
+// what the hand is paid, whatever the setting says by the time it lands.
+func TestPublicWorksBountyFixedAtStart(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	breakWell(t, w, "well-a")
+	placeAt(t, w, "anne", "well-a")
+	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
+		t.Fatalf("StartRepair: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		world.Settings.PublicWorksBounty = 30
+		world.Actors["anne"].SourceActivity.Until = time.Now().UTC().Add(-time.Second)
+	})
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, time.Now().UTC()) })
+	mustSend(t, w, func(world *sim.World) {
+		if got := world.Actors["anne"].Coins; got != 12 {
+			t.Errorf("anne coins = %d, want the 12 agreed at start", got)
+		}
+	})
+}
+
+// TestPublicWorksNoticesFollowTheChest — with a well still broken, the board's
+// bounty line follows the chest across the pay line in both directions: the
+// constable's wage takes it under (the "other well" line), an estate collection
+// or a retune back over.
+func TestPublicWorksNoticesFollowTheChest(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	breakWell(t, w, "well-a")
+	boardText := func() string {
+		var text string
+		mustSend(t, w, func(world *sim.World) {
+			if c := world.NoticeboardContent["board"]; c != nil {
+				text = c.Text
+			}
+		})
+		return text
+	}
+	if !strings.Contains(boardText(), "12 coins") {
+		t.Fatalf("board before = %q, want the bounty line", boardText())
+	}
+	mustSend(t, w, func(world *sim.World) { world.Settings.ConstableWagePerDay = 45 }) // 100 → 55, under 12+50
+	if _, err := w.Send(sim.ApplyConstableWage(time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	if got := boardText(); !strings.Contains(got, "other well") || strings.Contains(got, "12 coins") {
+		t.Errorf("board after the wage = %q, want the other-well line", got)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		world.Settings.PublicWorksChestReserve = 0 // 55 >= 12 + 0: the town can pay again
+		sim.SyncPublicWorksNews(world, time.Now().UTC())
+	})
+	if got := boardText(); !strings.Contains(got, "12 coins") {
+		t.Errorf("board after the retune = %q, want the bounty line back", got)
+	}
+}
+
+// TestSetObjectDamageRejectsNonWells — the operator control refuses anything
+// but a well, for both actions.
+func TestSetObjectDamageRejectsNonWells(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	for _, action := range []string{"damage", "repair"} {
+		if _, err := w.Send(sim.SetObjectDamage("board", action)); !errors.Is(err, sim.ErrNotDamageable) {
+			t.Errorf("%s on a board: err = %v, want ErrNotDamageable", action, err)
+		}
+	}
 }

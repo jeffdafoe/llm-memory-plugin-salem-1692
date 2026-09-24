@@ -185,15 +185,9 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:    string(e.ObjectID),
 			State: e.ToState,
 		}}, true
-	case *sim.ObjectDamaged:
-		return WireFrame{Type: "object_damage_changed", Data: objectDamageChangedWireDTO{
-			ID:      string(e.ObjectID),
-			Damaged: true,
-		}}, true
-	case *sim.ObjectRepaired:
-		return WireFrame{Type: "object_damage_changed", Data: objectDamageChangedWireDTO{
-			ID:      string(e.ObjectID),
-			Damaged: false,
+	case *sim.DamageNewsChanged:
+		return WireFrame{Type: "damage_news_changed", Data: damageNewsChangedWireDTO{
+			At: e.At.UTC().Format(time.RFC3339),
 		}}, true
 	case *sim.NoticeboardContentChanged:
 		return WireFrame{Type: "noticeboard_content_changed", Data: noticeboardContentChangedWireDTO{
@@ -786,14 +780,14 @@ type objectStateChangedWireDTO struct {
 	State string `json:"state"`
 }
 
-// objectDamageChangedWireDTO is the object_damage_changed payload (LLM-654): an
-// object broke (damaged=true) or was mended (false). The sprite change rides
-// object_state_changed as usual; this frame tells the client to refresh the
-// ticker's damaged lines from the world read. Additive — no contract_version
-// bump.
-type objectDamageChangedWireDTO struct {
-	ID      string `json:"id"`
-	Damaged bool   `json:"damaged"`
+// damageNewsChangedWireDTO is the damage_news_changed payload (LLM-654): the
+// town's broken-things news changed — a well broke or was mended, or the chest
+// crossed the line where it can pay the bounty. The sprite change rides
+// object_state_changed and the boards noticeboard_content_changed as usual; this
+// frame tells the client to refresh the ticker's damaged lines from the world
+// read. Additive — no contract_version bump.
+type damageNewsChangedWireDTO struct {
+	At string `json:"at"`
 }
 
 // noticeboardContentChangedWireDTO is the noticeboard_content_changed payload —

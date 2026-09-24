@@ -201,3 +201,17 @@ func TestBrokenWellEasesNothing(t *testing.T) {
 		t.Errorf("sound well eases thirst by %d, want > 0", got)
 	}
 }
+
+// TestPublicWorksSilentWhileBusy — a hand at the broken well who is mid another
+// activity (here, a harvest) is not offered the work or the repair tool:
+// StartRepair would bounce the second window as busy.
+func TestPublicWorksSilentWhileBusy(t *testing.T) {
+	snap, actorID, _ := handAtBrokenWellScenario()
+	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); !v.OffersRepair() {
+		t.Fatalf("control: an idle hand at the well should be offered repair, got %+v", v)
+	}
+	snap.Actors[actorID].SourceActivityKind = sim.SourceActivityHarvest
+	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); v != nil {
+		t.Errorf("busy hand offered the town's work: %+v", v)
+	}
+}

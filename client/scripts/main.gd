@@ -269,7 +269,7 @@ func _on_authenticated() -> void:
         event_client.pc_needs_changed.connect(_on_event_pc_needs_changed)
         event_client.pc_idle_prompt.connect(_on_pc_idle_prompt)
         event_client.pc_idle_prompt_cleared.connect(_on_pc_idle_prompt_cleared)
-        event_client.object_damage_changed.connect(_on_object_damage_changed)
+        event_client.damage_news_changed.connect(_on_damage_news_changed)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
@@ -689,9 +689,9 @@ func _on_pc_needs_changed(needs: Dictionary) -> void:
 ## on every eat/drink bite (auto-repeat included); filter to the local PC and
 ## reuse the /pc/me path so the hunger segment ticks + flashes in time with the
 ## eating instead of waiting on the ~10s poll.
-## LLM-654: something in the village broke or was mended — refresh the
-## ticker's broken-things line now rather than on its ten-minute world poll.
-func _on_object_damage_changed(_object_id: String, _damaged: bool) -> void:
+## LLM-654: the town's broken-things news changed — refresh the ticker's
+## broken-things line now rather than on its ten-minute world poll.
+func _on_damage_news_changed() -> void:
     if village_ticker != null and village_ticker.has_method("refresh_now"):
         village_ticker.refresh_now()
 
