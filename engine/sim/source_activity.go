@@ -74,6 +74,11 @@ type SourceActivity struct {
 	Until     time.Time
 	Qty       int // harvest only: units requested (clamped to stock at completion)
 	Bounty    int // public-works repair only (LLM-654): the bounty agreed at start, paid at completion
+	// PublicWorks marks a repair as the town's work on a damaged site (LLM-675).
+	// Set at start, read at completion: at a damaged business the keeper's own
+	// nail-mend targets the same object, so "the object is damaged" cannot tell
+	// the two apart.
+	PublicWorks bool
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what
@@ -139,6 +144,7 @@ type SourceActivityCompleted struct {
 	SourceName     string   // resolved object display name (both kinds)
 	Continues      bool     // true when a refresh auto-repeat re-arms after this emit
 	PublicWorks    bool     // repair only: the town's repair of a damaged object (LLM-654); Qty then carries the bounty paid
+	SiteKind       string   // with PublicWorks: the site's PublicWorksKind, which picks the completion wording (LLM-675)
 	At             time.Time
 }
 
@@ -428,6 +434,9 @@ func StartRepair(actorID ActorID) Command {
 			}
 			objID := stall.ID
 			if !StallRepairable(stall, w.Settings.StallWearRepairThreshold, w.Settings.StallWearDegradeThreshold) {
+				if stall.Damaged() {
+					return nil, errors.New("the damage here is the town's to mend — it pays a hand for the work, so it is not yours to fix.")
+				}
 				return nil, errors.New("your stall doesn't need mending yet.")
 			}
 			need := w.Settings.StallNailsPerRepair
@@ -678,17 +687,27 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// wild despite passing every unit/golden test (none drove the mend across the
 		// labor settle).
 		stall := w.VillageObjects[act.ObjectID]
-		// Public works (LLM-654): a mend begun at a damaged well lands the town's
-		// repair — the well back in use, the bounty paid from the chest.
-		if stall.IsWell() && stall.Damaged() {
-			paid := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
+		// Public works (LLM-654, LLM-675): a town repair lands the town's repair —
+		// the site back in use, the bounty paid from the chest. It always returns
+		// here: falling through would reset a business keeper's wear for free.
+		if act.PublicWorks {
+			kind := PublicWorksKind(stall)
+			name := sourceActivityObjectName(w, stall)
+			paid, landed := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
+			if !landed {
+				// Mended some other way mid-window: no work landed, nothing paid,
+				// and no "you finish mending it" beat to tell.
+				log.Printf("sim/damage: %q's repair of %s ended with nothing left to mend", actorID, act.ObjectID)
+				return
+			}
 			w.emit(&SourceActivityCompleted{
 				ActorID:     actorID,
 				ObjectID:    act.ObjectID,
 				Kind:        act.Kind,
 				Qty:         paid,
-				SourceName:  sourceActivityObjectName(w, stall),
+				SourceName:  name,
 				PublicWorks: true,
+				SiteKind:    kind,
 				At:          now,
 			})
 			return

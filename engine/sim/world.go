@@ -36,7 +36,8 @@ type WorldEnvironment struct {
 	LastNeedsTickAt         time.Time       // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
 	TownChest               int             // coin the estate rate (LLM-652) has taken out of purses and not yet spent back. Durable — persisted in world_state.town_chest_coins: the coin has left the purses, so losing it on restart would destroy it.
 	InputShortages          []InputShortage // standing input shortages the daily sweep found (LLM-656), sorted by (keeper, item). Durable — persisted in world_state.input_shortages: the peddler threshold is counted in game-days and the village restarts several times a day, so an in-memory count would rarely reach it.
-	LastRepairAt            time.Time       // when a damaged object was last mended (damage.go), the min-gap anchor for the next damage event; zero = none yet. Transient — restart-lossy by design: losing it only lets the next break come a little sooner.
+	LastWellRepairAt        time.Time       // when a broken well was last mended (damage.go), the min-gap anchor for the next well break; zero = none yet. Transient — restart-lossy by design: losing it only lets the next break come a little sooner.
+	LastBusinessRepairAt    time.Time       // the same anchor for business damage (LLM-675), kept apart so a well repair never holds off a shop break or the reverse. Transient.
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 }
 
@@ -260,6 +261,16 @@ type WorldSettings struct {
 	PublicWorksBounty             int
 	PublicWorksRepairSeconds      int
 	PublicWorksChestReserve       int
+
+	// Business damage (LLM-675): the same shape for owned businesses, with the
+	// use factor read off stall wear (BusinessDamageWearReference = factor 1),
+	// and the business repair's own terms. The chest reserve is shared.
+	BusinessDamageChancePermille      int
+	BusinessDamageStormChancePermille int
+	BusinessDamageWearReference       int
+	BusinessDamageMinGapHours         int
+	PublicWorksBusinessBounty         int
+	PublicWorksBusinessRepairSeconds  int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
@@ -2525,6 +2536,9 @@ func (w *World) republish() {
 		Recipes:    w.Recipes,
 		RecipeUses: w.ensureRecipeUses(),
 	}
+	// The business repair's terms (LLM-675), beside the well's in the literal.
+	snap.PublicWorksBusinessBounty = w.Settings.PublicWorksBusinessBounty
+	snap.PublicWorksBusinessRepairSeconds = w.Settings.PublicWorksBusinessRepairSeconds
 	// Environment is copied by value above, but a slice copies only its header:
 	// pruneResolvedShortages compacts the record in place and the peddler spawn
 	// stamps LastPeddlerAt through a pointer into it, so perception (LLM-658)
@@ -2594,6 +2608,7 @@ func (w *World) republish() {
 		if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
 			sa.SourceActivityKind = act.Kind
 			sa.SourceActivityObjectID = act.ObjectID
+			sa.SourceActivityPublicWorks = act.PublicWorks
 			if act.Kind == SourceActivityRefresh {
 				if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 					sa.SourceActivityAttribute = primaryRefreshNeed(obj)

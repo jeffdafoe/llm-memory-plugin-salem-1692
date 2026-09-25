@@ -167,6 +167,12 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("public_works_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksBounty }),
 		intSetting("public_works_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRepairSeconds }),
 		intSetting("public_works_chest_reserve", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksChestReserve }),
+		intSetting("business_damage_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.BusinessDamageChancePermille }),
+		intSetting("business_damage_storm_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.BusinessDamageStormChancePermille }),
+		intSetting("business_damage_wear_reference", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.BusinessDamageWearReference }),
+		intSetting("business_damage_min_gap_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.BusinessDamageMinGapHours }),
+		intSetting("public_works_business_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksBusinessBounty }),
+		intSetting("public_works_business_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksBusinessRepairSeconds }),
 
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute

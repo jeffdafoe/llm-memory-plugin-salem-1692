@@ -273,6 +273,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.PublicWorksBounty = parseIntSetting(values, "public_works_bounty", sim.DefaultPublicWorksBounty)
 	s.PublicWorksRepairSeconds = parseIntSetting(values, "public_works_repair_seconds", sim.DefaultPublicWorksRepairSeconds)
 	s.PublicWorksChestReserve = parseIntSetting(values, "public_works_chest_reserve", sim.DefaultPublicWorksChestReserve)
+	s.BusinessDamageChancePermille = parseIntSetting(values, "business_damage_chance_permille", sim.DefaultBusinessDamageChancePermille)
+	s.BusinessDamageStormChancePermille = parseIntSetting(values, "business_damage_storm_chance_permille", sim.DefaultBusinessDamageStormChancePermille)
+	s.BusinessDamageWearReference = parseIntSetting(values, "business_damage_wear_reference", sim.DefaultBusinessDamageWearReference)
+	s.BusinessDamageMinGapHours = parseIntSetting(values, "business_damage_min_gap_hours", sim.DefaultBusinessDamageMinGapHours)
+	s.PublicWorksBusinessBounty = parseIntSetting(values, "public_works_business_bounty", sim.DefaultPublicWorksBusinessBounty)
+	s.PublicWorksBusinessRepairSeconds = parseIntSetting(values, "public_works_business_repair_seconds", sim.DefaultPublicWorksBusinessRepairSeconds)
 
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery

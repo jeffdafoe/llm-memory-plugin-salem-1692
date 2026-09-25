@@ -17791,6 +17791,12 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		// housemate's bake annotation does not render beside it
 		// (TestNoSeekWorkPromptDepictsHousemateBake).
 		"seeking_worker_home_scene_hides_housemate_bake": true,
+		// LLM-675: Anne, workless at home, with the General Store in the village —
+		// damaged (the town's work is one more move_to beside the directory) or
+		// mended. Standing IN the damaged store she is offered repair instead, and
+		// the directory steps aside (hand_in_damaged_shop_offered_repair, absent).
+		"hand_hears_of_storm_damaged_shop":     true,
+		"hand_after_shop_mended_hears_nothing": true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]

@@ -257,6 +257,9 @@ type Snapshot struct {
 	PublicWorksBounty        int
 	PublicWorksChestReserve  int
 	PublicWorksRepairSeconds int
+	// The business repair's terms (LLM-675); read through PublicWorksTerms.
+	PublicWorksBusinessBounty        int
+	PublicWorksBusinessRepairSeconds int
 
 	// MerchantCoinFloor mirrors WorldSettings.MerchantCoinFloor RAW (LLM-294) — the
 	// working-capital floor below which a stock-rich keeper is steered to conserve

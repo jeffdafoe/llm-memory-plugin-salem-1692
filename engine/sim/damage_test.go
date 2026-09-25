@@ -147,7 +147,9 @@ func TestRollWellDamageGuards(t *testing.T) {
 		var got *sim.VillageObject
 		mustSend(t, w, func(world *sim.World) {
 			world.Settings.WellDamageStormChancePermille = permille
-			got = sim.RollStormDamage(world, &seqRoller{vals: vals}, now)
+			if broke := sim.RollStormDamage(world, &seqRoller{vals: vals}, now); len(broke) > 0 {
+				got = broke[0]
+			}
 		})
 		return got
 	}
@@ -172,7 +174,7 @@ func TestRollWellDamageGuards(t *testing.T) {
 	if got := roll(1000, 0, 0); got != nil {
 		t.Errorf("a well broke inside the min gap after a repair: %s", got.ID)
 	}
-	mustSend(t, w, func(world *sim.World) { world.Environment.LastRepairAt = now.Add(-49 * time.Hour) })
+	mustSend(t, w, func(world *sim.World) { world.Environment.LastWellRepairAt = now.Add(-49 * time.Hour) })
 	if got := roll(1000, 0); got == nil || got.ID != "well-a" {
 		t.Errorf("roll after the gap = %v, want well-a", got)
 	}
@@ -363,15 +365,16 @@ func TestStartRepairAwayFromEverything(t *testing.T) {
 	}
 }
 
-// TestPublicWorksCompletionPaysOnlyForAWell — a due repair window whose target
-// is a damaged NON-well (drifted data) lands no town repair and no bounty.
-func TestPublicWorksCompletionPaysOnlyForAWell(t *testing.T) {
+// TestPublicWorksCompletionPaysOnlyForADamagedSite — a due town repair window
+// whose target is a damaged object no damage kind covers (drifted data) lands
+// no town repair and no bounty.
+func TestPublicWorksCompletionPaysOnlyForADamagedSite(t *testing.T) {
 	w, cancel := buildDamageWorld(t)
 	defer cancel()
 	mustSend(t, w, func(world *sim.World) {
 		world.VillageObjects["board"].DamagedAt = time.Now().UTC()
 		world.Actors["anne"].SourceActivity = &sim.SourceActivity{
-			Kind: sim.SourceActivityRepair, ObjectID: "board", Bounty: 12,
+			Kind: sim.SourceActivityRepair, ObjectID: "board", Bounty: 12, PublicWorks: true,
 			StartedAt: time.Now().UTC().Add(-time.Hour), Until: time.Now().UTC().Add(-time.Second),
 		}
 	})

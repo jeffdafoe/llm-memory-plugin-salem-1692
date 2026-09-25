@@ -1628,8 +1628,10 @@ type InFlightSourceActivityView struct {
 	Attribute   sim.NeedKey
 	// PublicWorks marks a repair at a damaged object — the town's work
 	// (LLM-654), not the actor's own stall — so the standing line names what
-	// stays broken.
-	PublicWorks bool
+	// stays broken. PublicWorksKind (sim.PublicWorksKind of the site) picks
+	// whether that is a well or a damaged business (LLM-675).
+	PublicWorks     bool
+	PublicWorksKind string
 }
 
 // InFlightProductionView is the perception-side projection of the subject's

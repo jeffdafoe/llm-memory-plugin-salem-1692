@@ -33,22 +33,25 @@ func TestGateTools_RepairOnlyWithStallCue(t *testing.T) {
 	}
 }
 
-// TestGateTools_RepairAtBrokenWell (LLM-654) — a hand standing at a broken well
-// (the "## The town's works" cue with AtSite) is handed repair; the same cue
-// away from the well, and the constable's standing-fact view, are not.
+// TestGateTools_RepairAtBrokenWell (LLM-654, LLM-675) — a hand standing at a
+// damaged site (the "## The town's works" cue with one AtSite site) is handed
+// repair; the same cue away from the site, the constable's standing-fact view
+// and the damaged shop's keeper are not.
 func TestGateTools_RepairAtBrokenWell(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterRepair(r); err != nil {
 		t.Fatalf("RegisterRepair: %v", err)
 	}
+	at := []perception.PublicWorksSite{{AtSite: true}}
 	cases := []struct {
 		name string
 		view *perception.PublicWorksView
 		want int
 	}{
-		{"hand at the well", &perception.PublicWorksView{AtSite: true}, 1},
-		{"hand away from the well", &perception.PublicWorksView{Walk: "a short walk north"}, 0},
-		{"the constable", &perception.PublicWorksView{Constable: true, AtSite: true}, 0},
+		{"hand at the well", &perception.PublicWorksView{Sites: at}, 1},
+		{"hand away from the well", &perception.PublicWorksView{Sites: []perception.PublicWorksSite{{Walk: "a short walk north"}}}, 0},
+		{"the constable", &perception.PublicWorksView{Constable: true, Sites: at}, 0},
+		{"the damaged shop's keeper", &perception.PublicWorksView{Keeper: true, Sites: at}, 0},
 	}
 	for _, c := range cases {
 		got := specNameSet(gateTools(r, perception.Payload{ActorID: "anne", PublicWorks: c.view}, nil))

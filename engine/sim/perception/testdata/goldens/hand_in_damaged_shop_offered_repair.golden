@@ -1,0 +1,23 @@
+## Who you are
+You are Anne Walker.
+
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 20.
+
+## Around you
+You are inside the General Store, with no one else here to hear you speak.
+It is morning in the village.
+
+Your home is at the Walker Residence (destination: walker_home) — you can head back there whenever you wish.
+
+## The town's works
+The storm has torn at the General Store — it can take in no new stock, and its work goes slowly, until it is mended. The town pays 25 coins to whoever mends it — about 2 hours of work, no nails needed.
+You are standing at it. Call repair to take the work, and stay put until it is done.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
