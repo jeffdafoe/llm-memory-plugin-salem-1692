@@ -10,7 +10,8 @@ import (
 )
 
 // public_works.go — LLM-654 perception: the town's work on a damaged site — a
-// broken well, or (LLM-675) a damaged business.
+// broken well, (LLM-675) a damaged business, or (LLM-677) a fallen tree across
+// a road, which a hand clears standing at its loiter pin (sim.AtRoadObstacle).
 //
 // HAND side ("## The town's works"): a worker (AttrWorker, not a visitor, not
 // already on a job) is told what is damaged, what the town pays to mend it,
@@ -34,8 +35,9 @@ import (
 
 // PublicWorksSite is one damaged site as the subject sees it.
 type PublicWorksSite struct {
-	// Kind is sim.PublicWorksWell or sim.PublicWorksBusiness; Cause, for a
-	// business, is sim.DebrisStateStorm or sim.DebrisStateWorn.
+	// Kind is sim.PublicWorksWell, sim.PublicWorksBusiness or
+	// sim.PublicWorksRoad; Cause, for a business, is sim.DebrisStateStorm or
+	// sim.DebrisStateWorn.
 	Kind  string
 	Cause string
 	// Fact is the shared "what is broken" opening (sim.DamageFact); Site the

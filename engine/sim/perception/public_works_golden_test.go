@@ -81,6 +81,25 @@ func init() {
 				"the town's works.",
 			build: handAfterShopMendedScenario,
 		},
+		perceptionScenario{
+			name: "hand_hears_of_fallen_tree_on_road",
+			summary: "LLM-677: a fallen log lies across the road by the Mill (both wells sound). Anne, a worker at home, " +
+				"hears it under '## The town's works': walkers must go around it until it is cleared, the town pays 10 " +
+				"coins to whoever clears it, about an hour of work — and a walk-to by the log's id. No second tool.",
+			build: handHearsOfFallenTreeScenario,
+		},
+		perceptionScenario{
+			name: "hand_at_fallen_tree_offered_repair",
+			summary: "LLM-677: Anne stands at the fallen log's loiter pin, just south of it on the road. The cue names " +
+				"only that site and switches to 'Call repair' — the signal that hands her the repair tool.",
+			build: handAtFallenTreeScenario,
+		},
+		perceptionScenario{
+			name: "constable_knows_the_road_is_blocked",
+			summary: "LLM-677: Gideon hears the standing fact — a fallen log lies across the road by the Mill, and the " +
+				"town has posted 10 coins for the clearing, open to any hand. No imperative, no tool.",
+			build: constableKnowsRoadIsBlockedScenario,
+		},
 	)
 }
 
@@ -364,4 +383,40 @@ func TestPublicWorksSilentWhileBusy(t *testing.T) {
 	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); v != nil {
 		t.Errorf("busy hand offered the town's work: %+v", v)
 	}
+}
+
+// fallenTreeSnapshot is publicWorksSnapshot with both wells sound and a fallen
+// log (LLM-677) lying across the road about twelve tiles south of the Mill, on
+// the road terms (10 coins, an hour). The asset carries the live 3x2 obstacle
+// footprint, so its loiter pin is two tiles south of the anchor.
+func fallenTreeSnapshot(chest int) *sim.Snapshot {
+	snap := publicWorksSnapshot(chest)
+	snap.VillageObjects["mill_well"].DamagedAt = time.Time{}
+	snap.Assets = map[sim.AssetID]*sim.Asset{
+		sim.FallenLogAssetID: {ID: sim.FallenLogAssetID, Name: "Fallen Log", IsObstacle: true,
+			FootprintLeft: 1, FootprintRight: 1, FootprintTop: 1},
+	}
+	snap.VillageObjects["fallen_log"] = &sim.VillageObject{ID: "fallen_log", DisplayName: "Fallen log",
+		AssetID: sim.FallenLogAssetID, Pos: sim.WorldPos{X: 600, Y: 800}, Tags: []string{sim.TagRoadObstacle},
+		DamagedAt: time.Date(2026, 9, 25, 14, 0, 0, 0, time.UTC)}
+	snap.PublicWorksRoadBounty = 10
+	snap.PublicWorksRoadRepairSeconds = 3600
+	return snap
+}
+
+func handHearsOfFallenTreeScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return fallenTreeSnapshot(100), pwAnne, nil
+}
+
+func handAtFallenTreeScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := fallenTreeSnapshot(100)
+	a := snap.Actors[pwAnne]
+	anchor := snap.VillageObjects["fallen_log"].Pos.Tile()
+	a.Pos = sim.TilePos{X: anchor.X, Y: anchor.Y + 2}
+	a.InsideStructureID = ""
+	return snap, pwAnne, nil
+}
+
+func constableKnowsRoadIsBlockedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return fallenTreeSnapshot(100), pwGideon, nil
 }

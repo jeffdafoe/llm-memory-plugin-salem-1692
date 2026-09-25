@@ -43,6 +43,10 @@ package sim
 //     so the loiter resolvers never attribute anyone to it; the repair site is
 //     the business itself (AtBusiness — inside or at its pin).
 //
+// Slice 3 (LLM-677, damage_road.go) adds ROADS: the break places a fallen tree
+// across a road and the repair removes it — the obstacle is the damage. The
+// effect is the detour the walk grid already produces around any obstacle.
+//
 // Coin record: the chest is not an actor, so the payout — like the constable's
 // wage — writes a `collected` row (marker "public_works") and never calls
 // RecordCoinPaid; the coin-record seed selects only paid/labored rows.
