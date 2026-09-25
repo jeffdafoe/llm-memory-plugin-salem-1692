@@ -304,3 +304,41 @@ func TestRoadObstacleNeverFallsOnSomeone(t *testing.T) {
 		t.Fatalf("want ErrNoRoadSite with the road occupied, got %v", err)
 	}
 }
+
+// TestRoadClearingThatCannotLandPaysNothing (code_review) — a road obstacle the
+// engine cannot delete (here a structure tagged road_obstacle, which
+// DeleteVillageObject refuses) is not cleared by the hand's window: it stays
+// in the road and damaged, the chest pays nothing, and no gap is stamped.
+func TestRoadClearingThatCannotLandPaysNothing(t *testing.T) {
+	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.(sim.VillageObjectID)
+	mustSend(t, w, func(world *sim.World) {
+		world.Structures[sim.StructureID(id)] = &sim.Structure{ID: sim.StructureID(id), DisplayName: "Fallen log"}
+		a := world.VillageObjects[id].Pos.Tile()
+		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 2}
+	})
+	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
+		t.Fatalf("StartRepair: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) { world.Actors["anne"].SourceActivity.Until = time.Now().UTC().Add(-time.Second) })
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, time.Now().UTC()) })
+	mustSend(t, w, func(world *sim.World) {
+		o, ok := world.VillageObjects[id]
+		if !ok || !o.Damaged() {
+			t.Fatalf("obstacle present=%v damaged=%v, want it still in the road and damaged", ok, ok && o.Damaged())
+		}
+		if got := world.Actors["anne"].Coins; got != 0 {
+			t.Errorf("anne coins = %d, want 0 — the clearing never landed", got)
+		}
+		if got := world.Environment.TownChest; got != 100 {
+			t.Errorf("chest = %d, want 100 untouched", got)
+		}
+		if !world.Environment.LastRoadRepairAt.IsZero() {
+			t.Error("LastRoadRepairAt stamped for a clearing that did not land")
+		}
+	})
+}

@@ -346,13 +346,18 @@ func landmarkWithin(p TilePos, landmarks []TilePos, tiles int) bool {
 }
 
 // removeRoadObstacle clears a road: deletes the obstacle and stamps the road
-// kind's min-gap anchor. DeleteVillageObject fails only for a missing object
-// or a structure, neither possible here; a failure is logged.
-func removeRoadObstacle(w *World, obj *VillageObject, now time.Time) {
+// kind's min-gap anchor. Reports whether it was removed. DeleteVillageObject
+// fails only for a missing object or a structure — an obstacle this code
+// placed is neither, but a structure tagged road_obstacle by hand would be —
+// and then nothing changes: the road stays blocked and the repair has not
+// landed.
+func removeRoadObstacle(w *World, obj *VillageObject, now time.Time) bool {
 	if _, err := DeleteVillageObject(obj.ID).Fn(w); err != nil {
 		log.Printf("sim/damage: removing road obstacle %s: %v", obj.ID, err)
+		return false
 	}
 	w.Environment.LastRoadRepairAt = now
+	return true
 }
 
 // roadObstacleFact is the "what is broken" opening for a road obstacle — "A

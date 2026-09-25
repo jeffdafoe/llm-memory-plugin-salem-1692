@@ -397,13 +397,18 @@ func removeDebris(w *World, businessID VillageObjectID) {
 // returns the asset to its sound state, removes a business's debris, stamps
 // the kind's min-gap anchor, and emits ObjectRepaired. A business's stall wear
 // is the keeper's and is left as it is. A road obstacle IS the damage, so
-// mending a road deletes it (LLM-677). Paying the hand is the caller's job
+// mending a road deletes it (LLM-677). Reports whether the repair landed —
+// false for nothing to mend, or a road obstacle that could not be removed (it
+// stays damaged and in the road). Paying the hand is the caller's job
 // (completePublicWorksRepair); an operator reset pays nothing.
-func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, now time.Time) {
+func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, now time.Time) bool {
 	if obj == nil || !obj.Damaged() {
-		return
+		return false
 	}
 	name := damageObjectName(w, obj)
+	if PublicWorksKind(obj) == PublicWorksRoad && !removeRoadObstacle(w, obj, now) {
+		return false
+	}
 	obj.DamagedAt = time.Time{}
 	obj.UseSinceRepair = 0
 	// Only an object showing its damaged state goes back to a sound one — a
@@ -420,13 +425,14 @@ func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, 
 		removeDebris(w, obj.ID)
 		w.Environment.LastBusinessRepairAt = now
 	case PublicWorksRoad:
-		removeRoadObstacle(w, obj, now)
+		// Removed above, before the damage was cleared.
 	default:
 		w.Environment.LastWellRepairAt = now
 	}
 	log.Printf("sim/damage: %s (%s) is mended (repairer %q, bounty %d)", name, obj.ID, repairerID, bounty)
 	w.emit(&ObjectRepaired{ObjectID: obj.ID, Name: name, RepairerID: repairerID, Bounty: bounty, At: now})
 	syncPublicWorksNews(w, now)
+	return true
 }
 
 // soundAssetState returns the lowest-ID state that is not the damaged one — the
@@ -785,7 +791,8 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // holds — the start gate checked it could pay, but the wage may have drawn it
 // down since). landed is false when there was nothing left to mend — the site
 // was mended some other way mid-window (the operator), or is no damaged site
-// at all — and then nothing is paid and the caller tells the hand nothing.
+// at all — or the repair could not land (a road obstacle that could not be
+// removed), and then nothing is paid and the caller tells the hand nothing.
 func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) (paid int, landed bool) {
 	if actor == nil || !IsDamagedSite(obj) {
 		return 0, false // the town pays only for a damaged well or business (nil-safe predicates)
@@ -798,9 +805,16 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 	if bounty < 0 {
 		bounty = 0
 	}
+	// Mend first and pay only for a repair that landed: a road obstacle that
+	// cannot be removed stays in the road, and the hand is owed nothing.
+	if !repairObject(w, obj, actor.ID, bounty, now) {
+		return 0, false
+	}
 	w.Environment.TownChest -= bounty
 	actor.Coins += bounty
-	repairObject(w, obj, actor.ID, bounty, now)
+	// The chest moved after repairObject reposted the boards; the bounty lines
+	// for any other damaged site read the chest.
+	syncPublicWorksNews(w, now)
 	if bounty == 0 {
 		log.Printf("sim/damage: the chest is empty — %q mended %s unpaid", actor.ID, obj.ID)
 		return 0, true
