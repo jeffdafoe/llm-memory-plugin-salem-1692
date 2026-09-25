@@ -255,6 +255,13 @@ func TestBuildSeekWorkPlaces_DropsHouseholdKeptBusiness(t *testing.T) {
 	if got := names(buildSeekWorkPlaces(snap, crew)); got != "Mill,Tavern,Empty Stall" {
 		t.Errorf("workplace-kept Blacksmith should be dropped for its own crew: got %q", got)
 	}
+
+	// With Ezekiel gone the worker is the forge's ONLY keeper: it still drops,
+	// because the subject shares its own workplace.
+	delete(snap.Actors, "ezekiel")
+	if got := names(buildSeekWorkPlaces(snap, crew)); got != "Mill,Tavern,Empty Stall" {
+		t.Errorf("a business kept only by the worker themself should be dropped: got %q", got)
+	}
 }
 
 // TestBuildSeekWorkPlaces_RanksVisitedLast proves the LLM-563 treatment: a

@@ -5780,7 +5780,7 @@ func businessKeptOnlyByHousehold(snap *sim.Snapshot, actorSnap *sim.ActorSnapsho
 		if keeper == nil || keeper.WorkStructureID != structureID {
 			continue
 		}
-		if !sharesHousehold(actorSnap, keeper) && !sharesWorkplace(actorSnap, keeper) {
+		if !householdOrCrew(actorSnap, keeper) {
 			return false
 		}
 		kept = true
@@ -5953,7 +5953,7 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 	if employerDeclinedSubject(snap, subjectID, candidate) {
 		return false
 	}
-	return !sharesHousehold(subject, other) && !sharesWorkplace(subject, other)
+	return !householdOrCrew(subject, other)
 }
 
 // buildHireableWorkers lists the co-present actors the subject could offer an odd
@@ -6018,7 +6018,7 @@ func isHireableWorker(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.Ac
 	if _, acquainted := subject.Acquaintances[other.DisplayName]; !acquainted {
 		return false
 	}
-	if sharesHousehold(subject, other) || sharesWorkplace(subject, other) {
+	if householdOrCrew(subject, other) {
 		return false
 	}
 	if workerDeclinedSubject(snap, subjectID, candidate) {
@@ -6136,6 +6136,14 @@ func sharesHousehold(a, b *sim.ActorSnapshot) bool {
 // pay. An empty WorkStructureID never matches. LLM-145.
 func sharesWorkplace(a, b *sim.ActorSnapshot) bool {
 	return a.WorkStructureID != "" && a.WorkStructureID == b.WorkStructureID
+}
+
+// householdOrCrew reports whether a and b share a household or a workplace — the
+// pair who never take each other on for pay (LLM-145). The one rule behind the
+// solicit gate (isSolicitableEmployer), the hire gate (isHireableWorker) and the
+// seek-work directory (businessKeptOnlyByHousehold), so the three cannot drift.
+func householdOrCrew(a, b *sim.ActorSnapshot) bool {
+	return sharesHousehold(a, b) || sharesWorkplace(a, b)
 }
 
 // buildRoomAlreadySold maps each pending lodging offer (by its LedgerID) to an
