@@ -120,7 +120,7 @@ const (
 // fixed by the migration; its states name the cause, so the wording survives a
 // restart with the placement.
 const (
-	DebrisAssetID    AssetID = "5f0c2d8e-9b6a-4f75-8c1d-0675d3b12e4a"
+	DebrisAssetID    AssetID = "019e5f00-c401-7a10-9e00-000000675001"
 	TagDebris                = "debris"
 	DebrisStateStorm         = "storm"
 	DebrisStateWorn          = "worn"
