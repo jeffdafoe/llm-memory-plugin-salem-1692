@@ -116,8 +116,11 @@ func publicWorksSite(snap *sim.Snapshot, obj *sim.VillageObject) PublicWorksSite
 // well by the loitering resolution the drink path uses, a business inside or
 // at its pin (sim.AtBusiness — the test StartRepair uses).
 func atPublicWorksSite(snap *sim.Snapshot, a *sim.ActorSnapshot, obj *sim.VillageObject) bool {
-	if sim.PublicWorksKind(obj) == sim.PublicWorksBusiness {
+	switch sim.PublicWorksKind(obj) {
+	case sim.PublicWorksBusiness:
 		return sim.AtBusiness(a.Pos, a.InsideStructureID, obj.ID, objectLoiterPin(obj), true)
+	case sim.PublicWorksRoad:
+		return sim.AtRoadObstacle(a.Pos, obj, snap.Assets[obj.AssetID])
 	}
 	id, ok := sim.ResolveLoiteringObject(snap.VillageObjects, snap.Assets, a.Pos, sim.LoiterAttributionTiles)
 	return ok && id == obj.ID
@@ -198,8 +201,11 @@ func (v *PublicWorksView) OffersRepair() bool {
 
 // publicWorksConsequence is what a damaged site stops, after the fact.
 func publicWorksConsequence(s PublicWorksSite) string {
-	if s.Kind == sim.PublicWorksBusiness {
+	switch s.Kind {
+	case sim.PublicWorksBusiness:
 		return " — it can take in no new stock, and its work goes slowly, until it is mended."
+	case sim.PublicWorksRoad:
+		return " — walkers must go around it until it is cleared."
 	}
 	return " — nobody can drink or draw water there until it is mended."
 }
@@ -214,10 +220,11 @@ func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {
 	case v.Constable:
 		for _, s := range v.Sites {
 			b.WriteString(sanitizeInline(s.Fact) + publicWorksConsequence(s))
+			noun := sim.PublicWorksMendNoun(s.Kind)
 			if s.BountyOpen {
-				fmt.Fprintf(b, " The town has posted %s for the mending; any hand seeking work may take it on.\n", coinsPhrase(s.Bounty))
+				fmt.Fprintf(b, " The town has posted %s for %s; any hand seeking work may take it on.\n", coinsPhrase(s.Bounty), noun)
 			} else {
-				b.WriteString(" The town chest cannot pay for the mending just now.\n")
+				fmt.Fprintf(b, " The town chest cannot pay for %s just now.\n", noun)
 			}
 		}
 		b.WriteString("\n")
@@ -255,7 +262,7 @@ func renderHandPublicWorks(b *strings.Builder, s PublicWorksSite) {
 	if s.WorkMinutes > 0 {
 		work = "about " + humanizeWorkMinutes(s.WorkMinutes)
 	}
-	fmt.Fprintf(b, " The town pays %s to whoever mends it — %s of work, no nails needed.\n", coinsPhrase(s.Bounty), work)
+	fmt.Fprintf(b, " The town pays %s to whoever %s it — %s of work, no nails needed.\n", coinsPhrase(s.Bounty), sim.PublicWorksMendVerb(s.Kind), work)
 	switch {
 	case s.AtSite:
 		b.WriteString("You are standing at it. Call repair to take the work, and stay put until it is done.\n")

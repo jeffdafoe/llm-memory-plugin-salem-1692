@@ -29,25 +29,28 @@ import (
 // repost can tell the crier's lines from the town's.
 
 // PublicWorksNoticeLines returns the pinned lines for every damaged site — a
-// broken well or a damaged business (LLM-675) — lowest id first. Empty when
-// nothing is damaged.
+// broken well, a damaged business (LLM-675) or a road obstacle (LLM-677) —
+// lowest id first. Empty when nothing is damaged.
 func PublicWorksNoticeLines(w *World) []string {
 	broken := damagedSites(w)
 	var out []string
 	for _, obj := range broken {
 		kind := PublicWorksKind(obj)
 		fact := DamageFact(w.VillageObjects, w.Structures, w.Assets, obj)
-		if kind == PublicWorksBusiness {
+		switch kind {
+		case PublicWorksBusiness:
 			out = append(out, fact+" — it can take in no new stock until it is mended.")
-		} else {
+		case PublicWorksRoad:
+			out = append(out, fact+" — walkers must go around it until it is cleared.")
+		default:
 			out = append(out, fact+" — no water can be drawn there until it is mended.")
 		}
 		bounty, _ := w.Settings.publicWorksTerms(kind)
 		switch {
 		case PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve):
-			out = append(out, "The town pays "+coinsPhrase(bounty)+" to the hand who mends it.")
-		case kind == PublicWorksBusiness:
-			out = append(out, "The town cannot pay for the mending just now.")
+			out = append(out, "The town pays "+coinsPhrase(bounty)+" to the hand who "+PublicWorksMendVerb(kind)+" it.")
+		case kind == PublicWorksBusiness, kind == PublicWorksRoad:
+			out = append(out, "The town cannot pay for "+PublicWorksMendNoun(kind)+" just now.")
 		default:
 			out = append(out, "Until it is mended, draw your water at the other well.")
 		}

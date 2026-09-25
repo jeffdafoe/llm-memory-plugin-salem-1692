@@ -1359,8 +1359,11 @@ func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 		tail = "if you walk off now the mending is unfinished and the stall stays worn"
 		if v.PublicWorks {
 			tail = "if you walk off now the mending is unfinished, the well stays broken, and the town pays you nothing"
-			if v.PublicWorksKind == sim.PublicWorksBusiness {
+			switch v.PublicWorksKind {
+			case sim.PublicWorksBusiness:
 				tail = "if you walk off now the mending is unfinished, the damage stays, and the town pays you nothing"
+			case sim.PublicWorksRoad:
+				tail = "if you walk off now the road stays blocked, and the town pays you nothing"
 			}
 		}
 	case sim.SourceActivityStoke:
