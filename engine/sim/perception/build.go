@@ -5668,6 +5668,9 @@ type SeekWorkPlace struct {
 // back to a refusal. A business whose keeper the worker last found on break
 // (earned ObservedNoHiring memory) is dropped the same way (LLM-210) — a resting
 // keeper is "open" but cannot take on a worker, so routing back there just loops.
+// A business kept only by the worker's own household or workplace
+// (businessKeptOnlyByHousehold) is dropped outright: no one there can ever take
+// them on, so it is a permanent dead door, not a memory that decays.
 // A business the worker merely CALLED AT recently (earned ObservedSeekWorkVisited
 // memory, 2h TTL — LLM-563) is NOT dropped but ranked after every untried one,
 // least-recently-visited first: "I was just there" is far weaker evidence than a
@@ -5693,6 +5696,9 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 			continue
 		}
 		if workerRememberedNoHiring(snap, actorSnap, structureID) {
+			continue
+		}
+		if businessKeptOnlyByHousehold(snap, actorSnap, structureID) {
 			continue
 		}
 		label, ok := resolveStructureLabel(snap, structureID)
@@ -5758,6 +5764,28 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		return places[i].Name < places[j].Name
 	})
 	return places
+}
+
+// businessKeptOnlyByHousehold reports whether structureID has keepers (actors whose
+// WorkStructureID is it — the keeperOf / hireableKeeperPresentAt identity) and every
+// one of them shares the subject's household or workplace. isSolicitableEmployer
+// refuses exactly those peers, so no one at such a business can ever hire the
+// subject; listing it sends a worker to a door that cannot open for them (live,
+// 2026-09-25: Constance Scott walked home → her husband Joseph's Mill → home, again
+// and again). The subject working there counts as sharing its own workplace. A
+// keeperless business reports false — ObservedClosed covers that case.
+func businessKeptOnlyByHousehold(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
+	kept := false
+	for _, keeper := range snap.Actors {
+		if keeper == nil || keeper.WorkStructureID != structureID {
+			continue
+		}
+		if !sharesHousehold(actorSnap, keeper) && !sharesWorkplace(actorSnap, keeper) {
+			return false
+		}
+		kept = true
+	}
+	return kept
 }
 
 // workerRememberedDeclinedWork reports whether the subject has an earned

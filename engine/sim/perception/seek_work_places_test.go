@@ -201,6 +201,62 @@ func TestBuildSeekWorkPlaces_DropsDeclinedEmployer(t *testing.T) {
 	}
 }
 
+// TestBuildSeekWorkPlaces_DropsHouseholdKeptBusiness proves a business kept only
+// by the worker's own household or workplace is dropped — isSolicitableEmployer
+// refuses every keeper there, so the door can never hire them. A business with an
+// outside keeper beside a household one stays (the outsider can hire), and a
+// keeperless business stays (ObservedClosed owns that case).
+func TestBuildSeekWorkPlaces_DropsHouseholdKeptBusiness(t *testing.T) {
+	const (
+		home   = sim.StructureID("scott_res")
+		mill   = sim.StructureID("mill")
+		tavern = sim.StructureID("tav")
+		forge  = sim.StructureID("smy")
+		stall  = sim.StructureID("stall")
+	)
+	subject := &sim.ActorSnapshot{Pos: sim.WorldToTile(0, 0), HomeStructureID: home}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"constance": subject,
+			"joseph":    {HomeStructureID: home, WorkStructureID: mill},          // housemate keeps the Mill
+			"john":      {HomeStructureID: home, WorkStructureID: tavern},        // housemate at the Tavern…
+			"hannah":    {HomeStructureID: "boggs_res", WorkStructureID: tavern}, // …beside an outside keeper
+			"ezekiel":   {WorkStructureID: forge},                                // outsider keeps the forge
+			"nil_actor": nil,
+		},
+		Structures: map[sim.StructureID]*sim.Structure{
+			mill:   {DisplayName: "Mill"},
+			tavern: {DisplayName: "Tavern"},
+			forge:  {DisplayName: "Blacksmith"},
+			stall:  {DisplayName: "Empty Stall"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"mill":  {ID: "mill", Pos: sim.WorldPos{X: 32, Y: 0}, Tags: []string{"business"}},
+			"tav":   {ID: "tav", Pos: sim.WorldPos{X: 64, Y: 0}, Tags: []string{"business"}},
+			"smy":   {ID: "smy", Pos: sim.WorldPos{X: 96, Y: 0}, Tags: []string{"business"}},
+			"stall": {ID: "stall", Pos: sim.WorldPos{X: 128, Y: 0}, Tags: []string{"business"}},
+		},
+	}
+	names := func(places []SeekWorkPlace) string {
+		out := make([]string, 0, len(places))
+		for _, p := range places {
+			out = append(out, p.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := names(buildSeekWorkPlaces(snap, subject)); got != "Tavern,Blacksmith,Empty Stall" {
+		t.Errorf("household-kept Mill should be dropped, the rest kept: got %q", got)
+	}
+
+	// A worker anchored to the forge shares its workplace with Ezekiel: the forge
+	// drops for them too, and the Mill comes back (no household tie to Joseph).
+	crew := &sim.ActorSnapshot{Pos: sim.WorldToTile(0, 0), WorkStructureID: forge}
+	snap.Actors["crew"] = crew
+	if got := names(buildSeekWorkPlaces(snap, crew)); got != "Mill,Tavern,Empty Stall" {
+		t.Errorf("workplace-kept Blacksmith should be dropped for its own crew: got %q", got)
+	}
+}
+
 // TestBuildSeekWorkPlaces_RanksVisitedLast proves the LLM-563 treatment: a
 // business the worker called at recently (a live ObservedSeekWorkVisited memory)
 // is NOT dropped — it stays a real destination — but ranks after every untried
