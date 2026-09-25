@@ -56,7 +56,7 @@ SELECT
     id, asset_id, current_state, x, y, placed_by, display_name,
     entry_policy, owner_actor_id, attached_to,
     loiter_offset_x, loiter_offset_y, available_quantity, tags, wear,
-    hearth_lit_until, equipment_use, damaged_at, use_since_repair
+    hearth_lit_until, equipment_use, damaged_at, use_since_repair, expires_at
 FROM village_object`
 
 // upsertSQLVO writes one VillageObject row. snapshot_gen is included
@@ -79,13 +79,13 @@ INSERT INTO village_object (
     entry_policy, owner_actor_id, attached_to,
     loiter_offset_x, loiter_offset_y, available_quantity, tags,
     wear, hearth_lit_until, snapshot_gen, equipment_use,
-    damaged_at, use_since_repair
+    damaged_at, use_since_repair, expires_at
 ) VALUES (
     $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
     $8, $9, $10::uuid,
     $11, $12, $13, $14,
     $15, $16, $17, $18,
-    $19, $20
+    $19, $20, $21
 )
 ON CONFLICT (id) DO UPDATE SET
     asset_id           = EXCLUDED.asset_id,
@@ -106,6 +106,7 @@ ON CONFLICT (id) DO UPDATE SET
     equipment_use      = EXCLUDED.equipment_use,
     damaged_at         = EXCLUDED.damaged_at,
     use_since_repair   = EXCLUDED.use_since_repair,
+    expires_at         = EXCLUDED.expires_at,
     snapshot_gen       = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLVO prunes village_object rows whose snapshot_gen is
@@ -374,12 +375,13 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			equipmentUse   int
 			damagedAt      *time.Time // NULL when sound (zero time in-memory)
 			useSinceRepair int
+			expiresAt      *time.Time // NULL for a permanent placement (LLM-678)
 		)
 		if err := rows.Scan(
 			&id, &assetID, &currentState, &x, &y, &placedBy, &displayName,
 			&entryPolicy, &ownerActorID, &attachedTo,
 			&loiterX, &loiterY, &availableQty, &tags, &wear,
-			&hearthLitUntil, &equipmentUse, &damagedAt, &useSinceRepair,
+			&hearthLitUntil, &equipmentUse, &damagedAt, &useSinceRepair, &expiresAt,
 		); err != nil {
 			return nil, fmt.Errorf("pg village_objects LoadAll scan: %w", err)
 		}
@@ -440,6 +442,7 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			HearthLitUntil:    timeOrZero(hearthLitUntil),
 			DamagedAt:         timeOrZero(damagedAt),
 			UseSinceRepair:    useSinceRepair,
+			ExpiresAt:         timeOrZero(expiresAt),
 			// Refreshes populated below by loadAllRefreshes.
 		}
 	}
@@ -634,6 +637,10 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 		if !obj.DamagedAt.IsZero() {
 			damagedArg = obj.DamagedAt
 		}
+		var expiresArg any
+		if !obj.ExpiresAt.IsZero() {
+			expiresArg = obj.ExpiresAt
+		}
 		if _, err := tx.Exec(ctx, upsertSQLVO,
 			string(obj.ID),          // $1 id (UUID)
 			string(obj.AssetID),     // $2 asset_id (UUID)
@@ -655,6 +662,7 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			obj.EquipmentUse,        // $18 equipment_use (LLM-648 deep-maintenance demand)
 			damagedArg,              // $19 damaged_at (LLM-654; NULL when sound)
 			obj.UseSinceRepair,      // $20 use_since_repair (LLM-654 damage hazard)
+			expiresArg,              // $21 expires_at (LLM-678; NULL for a permanent placement)
 		); err != nil {
 			return fmt.Errorf("pg village_objects SaveSnapshot: upsert id=%s: %w", obj.ID, err)
 		}

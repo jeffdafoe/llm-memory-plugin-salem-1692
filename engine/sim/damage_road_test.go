@@ -51,19 +51,34 @@ func buildRoadDamageWorld(t *testing.T, paint roadTiles, landmark sim.TilePos) *
 			}
 		}
 		world.Terrain = &sim.Terrain{Data: data}
-		for _, id := range []sim.AssetID{sim.FallenLogAssetID, sim.FallenTreeAssetID} {
-			world.Assets[id] = &sim.Asset{ID: id, Name: "catalog name", DefaultState: "default",
-				IsObstacle: true, FootprintLeft: 1, FootprintRight: 1, FootprintTop: 1,
-				States: []sim.AssetState{{ID: 40, State: "default"}}}
-		}
+		// The live Fallen Maple (3x3 footprint, stump two tiles east of the
+		// anchor) and the Storm Stump; the other variants are absent, so every
+		// break is a maple.
+		world.Assets[sim.FallenMapleAssetID] = &sim.Asset{ID: sim.FallenMapleAssetID, Name: "Fallen Maple", DefaultState: "bare",
+			IsObstacle: true, FootprintLeft: 1, FootprintRight: 1, FootprintTop: 1, FootprintBottom: 1,
+			States: []sim.AssetState{{ID: 40, State: "bare"}, {ID: 41, State: "winter"}}}
+		world.Assets[sim.StormStumpAssetID] = &sim.Asset{ID: sim.StormStumpAssetID, Name: "Storm Stump", DefaultState: "maple-bare",
+			IsObstacle: true, States: []sim.AssetState{{ID: 42, State: "maple-bare"}, {ID: 43, State: "maple-winter"}}}
 		world.Assets["mill-asset"] = &sim.Asset{ID: "mill-asset", Name: "Mill"}
 		world.VillageObjects["mill"] = &sim.VillageObject{ID: "mill", DisplayName: "Mill", AssetID: "mill-asset", Pos: landmark.Center()}
 		world.Structures["mill"] = &sim.Structure{ID: "mill", DisplayName: "Mill"}
 		world.Settings.PublicWorksRoadBounty = 10
 		world.Settings.PublicWorksRoadRepairSeconds = 3600
 		world.Settings.RoadDamageMinGapHours = 24
+		world.Settings.RoadStumpDays = 7
 	})
 	return w
+}
+
+// stormStumps returns every placed storm stump.
+func stormStumps(world *sim.World) []*sim.VillageObject {
+	var out []*sim.VillageObject
+	for _, o := range world.VillageObjects {
+		if o.HasTag(sim.TagStormStump) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // roadObstacles returns every placed road obstacle.
@@ -77,11 +92,11 @@ func roadObstacles(world *sim.World) []*sim.VillageObject {
 	return out
 }
 
-// footprintTiles lists the tiles an obstacle's 3x2 footprint covers.
+// footprintTiles lists the tiles the Fallen Maple's 3x3 footprint covers.
 func footprintTiles(o *sim.VillageObject) []sim.TilePos {
 	a := o.Pos.Tile()
 	var out []sim.TilePos
-	for y := a.Y - 1; y <= a.Y; y++ {
+	for y := a.Y - 1; y <= a.Y+1; y++ {
 		for x := a.X - 1; x <= a.X+1; x++ {
 			out = append(out, sim.TilePos{X: x, Y: y})
 		}
@@ -90,13 +105,14 @@ func footprintTiles(o *sim.VillageObject) []sim.TilePos {
 }
 
 // TestRoadDamagePlacesAFallenTreeAcrossTheRoad — a daily hit brings a named,
-// damaged fallen log down across a north-south road near the Mill; it covers
-// the road's whole width, and walkers route around it on the grass.
+// damaged fallen maple down across a north-south road near the Mill; it covers
+// the road's whole width, its stump stands on the grass at the cut end, and
+// walkers route around both.
 func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
 	mustSend(t, w, func(world *sim.World) { world.Settings.RoadDamageChancePermille = 1000 })
 
-	// Roll a hit, pick the first asset (the log), pick a site mid-list.
+	// Roll a hit, pick the first variant (the bare maple), pick a site mid-list.
 	res, err := w.Send(sim.RollDailyDamage(time.Now().UTC(), &seqRoller{vals: []float64{0, 0, 0.5}}))
 	if err != nil {
 		t.Fatal(err)
@@ -110,13 +126,13 @@ func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 			t.Fatalf("road obstacles = %d, want 1", len(obs))
 		}
 		o := obs[0]
-		if !o.Damaged() || o.AssetID != sim.FallenLogAssetID || o.DisplayName != "Fallen log" {
-			t.Fatalf("obstacle = %+v, want a damaged Fallen log", o)
+		if !o.Damaged() || o.AssetID != sim.FallenMapleAssetID || o.CurrentState != "bare" || o.DisplayName != "Fallen maple" {
+			t.Fatalf("obstacle = %+v, want a damaged bare Fallen maple", o)
 		}
 		if got := sim.PublicWorksKind(o); got != sim.PublicWorksRoad {
 			t.Errorf("kind = %q, want road", got)
 		}
-		if got := sim.DamageFact(world.VillageObjects, world.Structures, world.Assets, o); got != "A fallen log lies across the road by the Mill" {
+		if got := sim.DamageFact(world.VillageObjects, world.Structures, world.Assets, o); got != "A fallen maple lies across the road by the Mill" {
 			t.Errorf("fact = %q", got)
 		}
 		// The log spans the road: both road columns sit inside the footprint.
@@ -135,7 +151,28 @@ func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 			}
 		}
 		a := o.Pos.Tile()
-		path := sim.FindPath(grid, sim.TilePos{X: 100, Y: a.Y - 4}, sim.TilePos{X: 100, Y: a.Y + 3})
+		// Its stump stands two tiles east of the anchor, past the cut end, on
+		// grass — and blocks its own tile.
+		stumps := stormStumps(world)
+		if len(stumps) != 1 {
+			t.Fatalf("storm stumps = %d, want 1", len(stumps))
+		}
+		st := stumps[0]
+		stTile := st.Pos.Tile()
+		if st.AssetID != sim.StormStumpAssetID || st.CurrentState != "maple-bare" || !st.ExpiresAt.IsZero() {
+			t.Errorf("stump = %+v, want a maple-bare Storm Stump with no expiry yet", st)
+		}
+		if stTile != (sim.TilePos{X: a.X + 2, Y: a.Y}) {
+			t.Errorf("stump tile %v, want %v — just past the cut end", stTile, sim.TilePos{X: a.X + 2, Y: a.Y})
+		}
+		if b := world.Terrain.Data[stTile.Y*sim.MapW+stTile.X]; b == sim.TerrainDirt || b == sim.TerrainCobblestone {
+			t.Errorf("stump stands on the road at %v", stTile)
+		}
+		if grid.CanWalk(stTile.X, stTile.Y) {
+			t.Errorf("stump tile %v is walkable, want blocked", stTile)
+		}
+		blocked[stTile] = true
+		path := sim.FindPath(grid, sim.TilePos{X: 100, Y: a.Y - 4}, sim.TilePos{X: 100, Y: a.Y + 4})
 		if path == nil {
 			t.Fatal("no way past the log — a site must leave a detour")
 		}
@@ -191,9 +228,10 @@ func TestRoadDamageGuards(t *testing.T) {
 	})
 }
 
-// TestRoadClearingByAHand — a hand at the log takes the town's work on the road
-// terms; on completion the log is gone, the chest pays 10, and the road's gap
-// anchor is stamped.
+// TestRoadClearingByAHand — a hand at the fallen tree takes the town's work on
+// the road terms; on completion the top is gone, the chest pays 10, the road's
+// gap anchor is stamped, and the stump starts its week: the daily sweep leaves
+// it before the week is out and takes it after (LLM-678).
 func TestRoadClearingByAHand(t *testing.T) {
 	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
 	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerStorm, &seqRoller{vals: []float64{0.9, 0.5}}))
@@ -203,12 +241,13 @@ func TestRoadClearingByAHand(t *testing.T) {
 	id := res.(sim.VillageObjectID)
 	mustSend(t, w, func(world *sim.World) {
 		o := world.VillageObjects[id]
-		if o.AssetID != sim.FallenTreeAssetID || o.DisplayName != "Fallen tree" {
-			t.Fatalf("obstacle = %+v, want the Fallen tree", o)
+		if o.AssetID != sim.FallenMapleAssetID || o.CurrentState != "winter" {
+			t.Fatalf("obstacle = %+v, want the winter Fallen maple", o)
 		}
-		// The loiter pin is two tiles south of the anchor — where move_to parks a hand.
+		// The loiter pin is two tiles below the footprint (bottom 1) — where
+		// move_to parks a hand.
 		a := o.Pos.Tile()
-		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 2}
+		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 3}
 	})
 	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
 		t.Fatalf("StartRepair at the fallen tree: %v", err)
@@ -237,16 +276,40 @@ func TestRoadClearingByAHand(t *testing.T) {
 		if world.Environment.LastRoadRepairAt.IsZero() {
 			t.Error("LastRoadRepairAt not stamped by the clearing")
 		}
+		stumps := stormStumps(world)
+		if len(stumps) != 1 {
+			t.Fatalf("storm stumps after the clearing = %d, want 1 — it outlives the tree", len(stumps))
+		}
+		if left := time.Until(stumps[0].ExpiresAt); left < 7*24*time.Hour-time.Minute || left > 7*24*time.Hour {
+			t.Errorf("stump expires in %v, want a week", left)
+		}
+	})
+	if _, err := w.Send(sim.RemoveExpiredObjects(time.Now().UTC().Add(6 * 24 * time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if n := len(stormStumps(world)); n != 1 {
+			t.Errorf("storm stumps six days on = %d, want 1", n)
+		}
+	})
+	if _, err := w.Send(sim.RemoveExpiredObjects(time.Now().UTC().Add(8 * 24 * time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if n := len(stormStumps(world)); n != 0 {
+			t.Errorf("storm stumps eight days on = %d, want 0", n)
+		}
 	})
 	if got, want := sim.PublicWorksCompletionNarration(sim.PublicWorksRoad, "Fallen tree", 10), "You finish clearing the fallen tree; the road is open again, and the town pays you 10 coins for the work."; got != want {
 		t.Errorf("completion = %q, want %q", got, want)
 	}
 }
 
-// TestRoadObstacleSiteRules — the log must cut a road, with open dry ground
-// around it and a named building near: a north-south road up to three wide and
-// an east-west road up to two take one; wider roads, water close by, or no
-// landmark in range take none.
+// TestRoadObstacleSiteRules — the snapped maple must cut a road, with open dry
+// ground around it, its stump off the road, and a named building near: a
+// north-south road up to three wide takes one; a wider road, water close by, no
+// landmark in range — or an east-west road, where the stump in line with the
+// trunk would stand on the road — takes none.
 func TestRoadObstacleSiteRules(t *testing.T) {
 	water := func(base roadTiles, wx int) roadTiles {
 		return func(x, y int) byte {
@@ -265,8 +328,7 @@ func TestRoadObstacleSiteRules(t *testing.T) {
 		{"north-south, 1 wide", northSouthRoad(100, 1), sim.TilePos{X: 106, Y: 45}, true},
 		{"north-south, 3 wide", northSouthRoad(100, 3), sim.TilePos{X: 106, Y: 45}, true},
 		{"north-south, 4 wide", northSouthRoad(100, 4), sim.TilePos{X: 106, Y: 45}, false},
-		{"east-west, 2 wide", eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46}, true},
-		{"east-west, 3 wide", eastWestRoad(40, 3), sim.TilePos{X: 100, Y: 46}, false},
+		{"east-west, 2 wide (stump would stand on the road)", eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46}, false},
 		{"water beside the road", water(northSouthRoad(100, 2), 103), sim.TilePos{X: 106, Y: 45}, false},
 		{"no building within range", northSouthRoad(100, 2), sim.TilePos{X: 150, Y: 150}, false},
 	}
@@ -319,7 +381,7 @@ func TestRoadClearingThatCannotLandPaysNothing(t *testing.T) {
 	mustSend(t, w, func(world *sim.World) {
 		world.Structures[sim.StructureID(id)] = &sim.Structure{ID: sim.StructureID(id), DisplayName: "Fallen log"}
 		a := world.VillageObjects[id].Pos.Tile()
-		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 2}
+		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 3}
 	})
 	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
 		t.Fatalf("StartRepair: %v", err)
@@ -339,6 +401,129 @@ func TestRoadClearingThatCannotLandPaysNothing(t *testing.T) {
 		}
 		if !world.Environment.LastRoadRepairAt.IsZero() {
 			t.Error("LastRoadRepairAt stamped for a clearing that did not land")
+		}
+	})
+}
+
+// TestRoadTrunkVariantHasNoStump — the broken-trunk variant (the summer-forest
+// Fallen Tree art) comes down with no stump, and, having none to keep off the
+// road, can close an east-west road the snapped trees cannot.
+func TestRoadTrunkVariantHasNoStump(t *testing.T) {
+	w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})
+	mustSend(t, w, func(world *sim.World) {
+		delete(world.Assets, sim.FallenMapleAssetID)
+		world.Assets[sim.FallenTrunkAssetID] = &sim.Asset{ID: sim.FallenTrunkAssetID, Name: "Fallen Trunk", DefaultState: "default",
+			IsObstacle: true, FootprintLeft: 1, FootprintTop: 1, States: []sim.AssetState{{ID: 44, State: "default"}}}
+	})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+	if err != nil {
+		t.Fatalf("want the trunk across the east-west road, got %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		o := world.VillageObjects[res.(sim.VillageObjectID)]
+		if o.AssetID != sim.FallenTrunkAssetID || o.DisplayName != "Fallen tree" {
+			t.Fatalf("obstacle = %+v, want the Fallen tree trunk", o)
+		}
+		if n := len(stormStumps(world)); n != 0 {
+			t.Errorf("storm stumps = %d, want none for the trunk", n)
+		}
+	})
+}
+
+// TestStumpOutlivingItsTreeGetsAClock (code_review) — a top that leaves the road
+// by any path but the town's clearing (here the editor's delete) must not strand
+// its stump for good: the daily sweep starts the stump's week, and a later sweep
+// removes it. A stump whose tree still lies there is never clocked by the sweep.
+func TestStumpOutlivingItsTreeGetsAClock(t *testing.T) {
+	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := res.(sim.VillageObjectID)
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.RemoveExpiredObjects(now)); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		st := stormStumps(world)
+		if len(st) != 1 || !st[0].ExpiresAt.IsZero() {
+			t.Fatalf("stump beside a standing tree = %+v, want one with no clock", st)
+		}
+	})
+	if _, err := w.Send(sim.DeleteVillageObject(top)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Send(sim.RemoveExpiredObjects(now)); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		st := stormStumps(world)
+		if len(st) != 1 {
+			t.Fatalf("storm stumps after the editor removed the tree = %d, want 1 (a week to go)", len(st))
+		}
+		if got := st[0].ExpiresAt.Sub(now); got != 7*24*time.Hour {
+			t.Errorf("orphaned stump expires %v after the sweep, want a week", got)
+		}
+	})
+	if _, err := w.Send(sim.RemoveExpiredObjects(now.Add(8 * 24 * time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if n := len(stormStumps(world)); n != 0 {
+			t.Errorf("storm stumps a week after = %d, want 0", n)
+		}
+	})
+}
+
+// TestRoadVariantNeedsItsWholeCatalog (code_review) — a variant is offered only
+// when everything placement uses exists: the trunk's default state, and a
+// stump asset that is an obstacle (the site rule counts on it blocking its
+// tile). Missing either, nothing comes down.
+func TestRoadVariantNeedsItsWholeCatalog(t *testing.T) {
+	t.Run("stump is not an obstacle", func(t *testing.T) {
+		w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+		mustSend(t, w, func(world *sim.World) { world.Assets[sim.StormStumpAssetID].IsObstacle = false })
+		if _, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}})); !errors.Is(err, sim.ErrNoRoadSite) {
+			t.Fatalf("want ErrNoRoadSite with a walkable stump asset, got %v", err)
+		}
+	})
+	t.Run("trunk default state missing", func(t *testing.T) {
+		w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})
+		mustSend(t, w, func(world *sim.World) {
+			delete(world.Assets, sim.FallenMapleAssetID)
+			world.Assets[sim.FallenTrunkAssetID] = &sim.Asset{ID: sim.FallenTrunkAssetID, Name: "Fallen Trunk", DefaultState: "default",
+				IsObstacle: true, FootprintLeft: 1, FootprintTop: 1, States: []sim.AssetState{{ID: 44, State: "other"}}}
+		})
+		if _, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}})); !errors.Is(err, sim.ErrNoRoadSite) {
+			t.Fatalf("want ErrNoRoadSite when the trunk's default state is missing, got %v", err)
+		}
+	})
+}
+
+// TestOrphanStumpWithNoStumpDaysGoesAtOnce (code_review) — with road_stump_days
+// at 0 a stump whose tree left another way is removed by the sweep itself, and
+// the sweep counts it.
+func TestOrphanStumpWithNoStumpDaysGoesAtOnce(t *testing.T) {
+	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) { world.Settings.RoadStumpDays = 0 })
+	if _, err := w.Send(sim.DeleteVillageObject(res.(sim.VillageObjectID))); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Send(sim.RemoveExpiredObjects(time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := got.(int); n != 1 {
+		t.Errorf("sweep removed count = %v, want 1", got)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if n := len(stormStumps(world)); n != 0 {
+			t.Errorf("storm stumps = %d, want 0 — no days to stand", n)
 		}
 	})
 }

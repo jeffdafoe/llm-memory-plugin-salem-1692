@@ -17,7 +17,7 @@ It is morning in the village.
 You're home.
 
 ## The town's works
-A fallen log lies across the road by the Mill — walkers must go around it until it is cleared. The town pays 10 coins to whoever clears it — about 1 hour of work, no nails needed.
-It is a long walk west. Head there (move_to "fallen_log") if you want the work.
+A fallen maple lies across the road by the Mill — walkers must go around it until it is cleared. The town pays 10 coins to whoever clears it — about 1 hour of work, no nails needed.
+It is a long walk west. Head there (move_to "fallen_maple") if you want the work.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
