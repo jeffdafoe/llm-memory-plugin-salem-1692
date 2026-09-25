@@ -5668,6 +5668,9 @@ type SeekWorkPlace struct {
 // back to a refusal. A business whose keeper the worker last found on break
 // (earned ObservedNoHiring memory) is dropped the same way (LLM-210) — a resting
 // keeper is "open" but cannot take on a worker, so routing back there just loops.
+// A business kept only by the worker's own household or workplace
+// (businessKeptOnlyByHousehold) is dropped outright: no one there can ever take
+// them on, so it is a permanent dead door, not a memory that decays.
 // A business the worker merely CALLED AT recently (earned ObservedSeekWorkVisited
 // memory, 2h TTL — LLM-563) is NOT dropped but ranked after every untried one,
 // least-recently-visited first: "I was just there" is far weaker evidence than a
@@ -5693,6 +5696,9 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 			continue
 		}
 		if workerRememberedNoHiring(snap, actorSnap, structureID) {
+			continue
+		}
+		if businessKeptOnlyByHousehold(snap, actorSnap, structureID) {
 			continue
 		}
 		label, ok := resolveStructureLabel(snap, structureID)
@@ -5758,6 +5764,28 @@ func buildSeekWorkPlaces(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []See
 		return places[i].Name < places[j].Name
 	})
 	return places
+}
+
+// businessKeptOnlyByHousehold reports whether structureID has keepers (actors whose
+// WorkStructureID is it — the keeperOf / hireableKeeperPresentAt identity) and every
+// one of them shares the subject's household or workplace. isSolicitableEmployer
+// refuses exactly those peers, so no one at such a business can ever hire the
+// subject; listing it sends a worker to a door that cannot open for them (live,
+// 2026-09-25: Constance Scott walked home → her husband Joseph's Mill → home, again
+// and again). The subject working there counts as sharing its own workplace. A
+// keeperless business reports false — ObservedClosed covers that case.
+func businessKeptOnlyByHousehold(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
+	kept := false
+	for _, keeper := range snap.Actors {
+		if keeper == nil || keeper.WorkStructureID != structureID {
+			continue
+		}
+		if !householdOrCrew(actorSnap, keeper) {
+			return false
+		}
+		kept = true
+	}
+	return kept
 }
 
 // workerRememberedDeclinedWork reports whether the subject has an earned
@@ -5925,7 +5953,7 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 	if employerDeclinedSubject(snap, subjectID, candidate) {
 		return false
 	}
-	return !sharesHousehold(subject, other) && !sharesWorkplace(subject, other)
+	return !householdOrCrew(subject, other)
 }
 
 // buildHireableWorkers lists the co-present actors the subject could offer an odd
@@ -5990,7 +6018,7 @@ func isHireableWorker(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.Ac
 	if _, acquainted := subject.Acquaintances[other.DisplayName]; !acquainted {
 		return false
 	}
-	if sharesHousehold(subject, other) || sharesWorkplace(subject, other) {
+	if householdOrCrew(subject, other) {
 		return false
 	}
 	if workerDeclinedSubject(snap, subjectID, candidate) {
@@ -6108,6 +6136,14 @@ func sharesHousehold(a, b *sim.ActorSnapshot) bool {
 // pay. An empty WorkStructureID never matches. LLM-145.
 func sharesWorkplace(a, b *sim.ActorSnapshot) bool {
 	return a.WorkStructureID != "" && a.WorkStructureID == b.WorkStructureID
+}
+
+// householdOrCrew reports whether a and b share a household or a workplace — the
+// pair who never take each other on for pay (LLM-145). The one rule behind the
+// solicit gate (isSolicitableEmployer), the hire gate (isHireableWorker) and the
+// seek-work directory (businessKeptOnlyByHousehold), so the three cannot drift.
+func householdOrCrew(a, b *sim.ActorSnapshot) bool {
+	return sharesHousehold(a, b) || sharesWorkplace(a, b)
 }
 
 // buildRoomAlreadySold maps each pending lodging offer (by its LedgerID) to an

@@ -3549,6 +3549,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: workerSeeksWorkRanksVisitedBusinessLast,
 	},
 	{
+		name: "worker_seeks_work_skips_household_business",
+		summary: "A workless idle worker (Constance Scott) at home, under the seek-work ceiling, whose NEAREST business — the " +
+			"Mill — is kept only by her housemate Joseph Scott. isSolicitableEmployer refuses a housemate (LLM-145), so no one " +
+			"at the Mill can ever hire her. The golden pins that the seek-work directory DROPS the Mill and lists only the " +
+			"Blacksmith, whose keeper is an outsider. A regression would put the Mill back on top and restore the live loop " +
+			"(2026-09-25): home → Mill, where the housemate cannot hire her → home, where the go-coda sends her to the Mill again.",
+		build: workerSeeksWorkSkipsHouseholdBusiness,
+	},
+	{
 		name: "red_tired_worker_no_seek_work",
 		summary: "The LLM-210 case: a WORKLESS worker (Lewis Walker) idle at home holding a few coins (15, below the seek-work " +
 			"ceiling → not comfortable) but at RED tiredness (20 >= the default red-line 16). A pressing need outranks job-" +
@@ -17648,6 +17657,72 @@ func workerSeeksWorkRanksVisitedBusinessLast() (*sim.Snapshot, sim.ActorID, []si
 	return snap, patienceID, nil
 }
 
+// workerSeeksWorkSkipsHouseholdBusiness is the live Constance Scott loop
+// (2026-09-25): a workless worker at home whose NEAREST business, the Mill, is kept
+// only by her housemate Joseph. isSolicitableEmployer refuses a housemate, so the
+// Mill can never hire her; the directory must drop it and list only the Blacksmith,
+// whose keeper is an outsider.
+func workerSeeksWorkSkipsHouseholdBusiness() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		constanceID = sim.ActorID("constance")
+		josephID    = sim.ActorID("joseph")
+		ezekielID   = sim.ActorID("ezekiel")
+		residence   = sim.StructureID("scott_residence")
+		mill        = sim.StructureID("mill")
+		blacksmith  = sim.StructureID("blacksmith")
+	)
+	now := 540 // 09:00 — daytime
+	published := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	constance := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Constance Scott",
+		State:             sim.StateIdle,
+		InsideStructureID: residence,
+		HomeStructureID:   residence,
+		Pos:               sim.WorldToTile(0, 0),
+		Coins:             22, // the live case: under the seek-work ceiling (25)
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Needs:             map[sim.NeedKey]int{},
+	}
+	joseph := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Joseph Scott",
+		State:             sim.StateIdle,
+		InsideStructureID: mill,
+		HomeStructureID:   residence,
+		WorkStructureID:   mill,
+		Pos:               sim.WorldToTile(160, 0),
+		Needs:             map[sim.NeedKey]int{},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Ezekiel Crane",
+		State:             sim.StateIdle,
+		InsideStructureID: blacksmith,
+		WorkStructureID:   blacksmith,
+		Pos:               sim.WorldToTile(0, 480),
+		Needs:             map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{constanceID: constance, josephID: joseph, ezekielID: ezekiel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			residence:  plainStructure(residence, "Scott Residence"),
+			mill:       plainStructure(mill, "Mill"),
+			blacksmith: plainStructure(blacksmith, "Blacksmith"),
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			// The household Mill is NEARER than the Blacksmith, so without the drop
+			// it would top the directory — the live loop.
+			sim.VillageObjectID(mill):       {ID: sim.VillageObjectID(mill), Pos: sim.WorldPos{X: 160, Y: 0}, Tags: []string{"business", "wholesaler"}},
+			sim.VillageObjectID(blacksmith): {ID: sim.VillageObjectID(blacksmith), Pos: sim.WorldPos{X: 0, Y: 480}, Tags: []string{"business", "smithy"}},
+		},
+	}
+	return snap, constanceID, nil
+}
+
 // redTiredWorkerNoSeekWork is the LLM-210 case: a WORKLESS worker (Lewis Walker) idle at
 // home holding a few coins (15, below the seek-work ceiling → not comfortable) but at RED
 // tiredness (20 >= the default red-line 16). A red need outranks job-hunting, so both
@@ -17703,6 +17778,9 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		// LLM-563: a visited business is deprioritised, never dropped — the
 		// directory stays populated, so the go-coda renders here too.
 		"worker_seeks_work_ranks_visited_business_last": true,
+		// The household-kept Mill is dropped, but the Blacksmith remains, so the
+		// directory is populated and the go-coda renders.
+		"worker_seeks_work_skips_household_business": true,
 		// LLM-459: a workless below-ceiling worker settled at home with the household
 		// bake going. It belongs here — the seek-work half is exactly what SHOULD
 		// survive; the point of the scenario is that the bake invitation does not
