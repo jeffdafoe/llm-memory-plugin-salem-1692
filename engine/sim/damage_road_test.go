@@ -429,3 +429,74 @@ func TestRoadTrunkVariantHasNoStump(t *testing.T) {
 		}
 	})
 }
+
+// TestStumpOutlivingItsTreeGetsAClock (code_review) — a top that leaves the road
+// by any path but the town's clearing (here the editor's delete) must not strand
+// its stump for good: the daily sweep starts the stump's week, and a later sweep
+// removes it. A stump whose tree still lies there is never clocked by the sweep.
+func TestStumpOutlivingItsTreeGetsAClock(t *testing.T) {
+	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := res.(sim.VillageObjectID)
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.RemoveExpiredObjects(now)); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		st := stormStumps(world)
+		if len(st) != 1 || !st[0].ExpiresAt.IsZero() {
+			t.Fatalf("stump beside a standing tree = %+v, want one with no clock", st)
+		}
+	})
+	if _, err := w.Send(sim.DeleteVillageObject(top)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Send(sim.RemoveExpiredObjects(now)); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		st := stormStumps(world)
+		if len(st) != 1 {
+			t.Fatalf("storm stumps after the editor removed the tree = %d, want 1 (a week to go)", len(st))
+		}
+		if got := st[0].ExpiresAt.Sub(now); got != 7*24*time.Hour {
+			t.Errorf("orphaned stump expires %v after the sweep, want a week", got)
+		}
+	})
+	if _, err := w.Send(sim.RemoveExpiredObjects(now.Add(8 * 24 * time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if n := len(stormStumps(world)); n != 0 {
+			t.Errorf("storm stumps a week after = %d, want 0", n)
+		}
+	})
+}
+
+// TestRoadVariantNeedsItsWholeCatalog (code_review) — a variant is offered only
+// when everything placement uses exists: the trunk's default state, and a
+// stump asset that is an obstacle (the site rule counts on it blocking its
+// tile). Missing either, nothing comes down.
+func TestRoadVariantNeedsItsWholeCatalog(t *testing.T) {
+	t.Run("stump is not an obstacle", func(t *testing.T) {
+		w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+		mustSend(t, w, func(world *sim.World) { world.Assets[sim.StormStumpAssetID].IsObstacle = false })
+		if _, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}})); !errors.Is(err, sim.ErrNoRoadSite) {
+			t.Fatalf("want ErrNoRoadSite with a walkable stump asset, got %v", err)
+		}
+	})
+	t.Run("trunk default state missing", func(t *testing.T) {
+		w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})
+		mustSend(t, w, func(world *sim.World) {
+			delete(world.Assets, sim.FallenMapleAssetID)
+			world.Assets[sim.FallenTrunkAssetID] = &sim.Asset{ID: sim.FallenTrunkAssetID, Name: "Fallen Trunk", DefaultState: "default",
+				IsObstacle: true, FootprintLeft: 1, FootprintTop: 1, States: []sim.AssetState{{ID: 44, State: "other"}}}
+		})
+		if _, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}})); !errors.Is(err, sim.ErrNoRoadSite) {
+			t.Fatalf("want ErrNoRoadSite when the trunk's default state is missing, got %v", err)
+		}
+	})
+}

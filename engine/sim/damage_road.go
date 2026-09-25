@@ -112,14 +112,23 @@ func (v roadObstacleVariant) stumpOffset() (TilePos, bool) {
 // the top as an obstacle in its state, and the stump in its state.
 func (v roadObstacleVariant) available(assets map[AssetID]*Asset) bool {
 	a := assets[v.Asset]
-	if a == nil || !a.IsObstacle || (v.State != "" && a.FindState(v.State) == nil) {
+	if a == nil || !a.IsObstacle {
+		return false
+	}
+	// The state placement will use: the variant's, else the asset's default.
+	state := v.State
+	if state == "" {
+		state = a.DefaultState
+	}
+	if state == "" || a.FindState(state) == nil {
 		return false
 	}
 	if v.StumpState == "" {
 		return true
 	}
+	// The site rule counts on the stump blocking its tile.
 	s := assets[StormStumpAssetID]
-	return s != nil && s.FindState(v.StumpState) != nil
+	return s != nil && s.IsObstacle && s.FindState(v.StumpState) != nil
 }
 
 // variantOf finds the variant a placed top was drawn from, by asset and state.
@@ -497,23 +506,72 @@ func startStumpClock(w *World, top *VillageObject, now time.Time) {
 // the storm stumps a cleared road leaves (LLM-678). Run at the durable daily
 // boundary (checkAndRotate), so a stump goes at the first boundary past its
 // expiry and a restart neither skips nor repeats it.
+//
+// It first starts the clock on any stump whose tree is gone without the repair
+// having started it (clockOrphanStumps), so a stump never outlives its tree
+// for good.
 func RemoveExpiredObjects(now time.Time) Command {
 	return Command{Fn: func(w *World) (any, error) {
+		clockOrphanStumps(w, now)
 		var ids []VillageObjectID
 		for id, o := range w.VillageObjects {
 			if o != nil && !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
 				ids = append(ids, id)
 			}
 		}
+		removed := 0
 		for _, id := range ids {
 			if _, err := DeleteVillageObject(id).Fn(w); err != nil {
 				log.Printf("sim/damage: removing expired %s: %v", id, err)
 				continue
 			}
+			removed++
 			log.Printf("sim/damage: expired placement %s removed", id)
 		}
-		return len(ids), nil
+		return removed, nil
 	}}
+}
+
+// clockOrphanStumps starts the clock on every stump still waiting on its tree
+// (no ExpiresAt) whose tree no longer lies where its variant would put the
+// stump — the top deleted in the editor, moved, or re-stated, anything but the
+// town's clearing, which starts the clock itself. Keyed on what is in the
+// world, not on how the tree left, so no path strands a stump for good. The
+// clock runs from this sweep, at most a day after the tree went.
+func clockOrphanStumps(w *World, now time.Time) {
+	standing := make(map[TilePos]struct{})
+	for _, o := range w.VillageObjects {
+		if !o.IsRoadObstacle() {
+			continue
+		}
+		v, ok := variantOf(o)
+		if !ok {
+			continue
+		}
+		if off, ok := v.stumpOffset(); ok {
+			a := o.Pos.Tile()
+			standing[TilePos{X: a.X + off.X, Y: a.Y + off.Y}] = struct{}{}
+		}
+	}
+	var orphans []VillageObjectID
+	for id, o := range w.VillageObjects {
+		if o == nil || !o.HasTag(TagStormStump) || !o.ExpiresAt.IsZero() {
+			continue
+		}
+		if _, ok := standing[o.Pos.Tile()]; !ok {
+			orphans = append(orphans, id)
+		}
+	}
+	for _, id := range orphans {
+		if w.Settings.RoadStumpDays <= 0 {
+			if _, err := DeleteVillageObject(id).Fn(w); err != nil {
+				log.Printf("sim/damage: removing orphaned stump %s: %v", id, err)
+			}
+			continue
+		}
+		w.VillageObjects[id].ExpiresAt = now.Add(time.Duration(w.Settings.RoadStumpDays) * 24 * time.Hour)
+		log.Printf("sim/damage: stump %s outlived its tree; removed in %d days", id, w.Settings.RoadStumpDays)
+	}
 }
 
 // roadObstacleFact is the "what is broken" opening for a road obstacle — "A
