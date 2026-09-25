@@ -402,3 +402,95 @@ func TestLingeringArm_EnduranceLatchedButLingeringConcluded(t *testing.T) {
 		t.Errorf("carried ring after the conclude = %d utterances, want 0", len(ring))
 	}
 }
+
+// TestLingeringArm_NewcomerRestartsTheClock (LLM-676) is the live 2026-09-25 case: the
+// factor Caleb Wendell walked up to Josiah Thorne's General Store conversation,
+// which had run past its wind-down window and then gone quiet. His pitch and
+// Josiah's answer made it live again, and the next sweep concluded it silently
+// two seconds after Josiah spoke — his answer never reached the factor. A
+// newcomer is a new scene: his join restarts the clock and clears the spell the
+// lingering arm had latched, so the exchange survives the sweep.
+func TestLingeringArm_NewcomerRestartsTheClock(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	lingeringSettings(t, w, 12*time.Minute)
+
+	// An old conversation that went quiet ten minutes ago.
+	feedTranscript(t, w, h, "alice", "bob", innSceneLines, t0.Add(-10*time.Minute), 30*time.Second)
+	setConversationSince(t, w, h, t0.Add(-30*time.Minute))
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(t0))
+	if huddleLoopingSince(t, w, h) == nil {
+		t.Fatal("precondition: an old conversation should latch the lingering spell")
+	}
+
+	// Past the gate, a newcomer joins and a fresh exchange begins.
+	arrive := t0.Add(4 * time.Minute)
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", arrive))
+	appendUtterance(t, w, h, "charlie", "Good day. I've brought cloth, iron and salt, if you've a mind to trade.", arrive)
+	appendUtterance(t, w, h, "alice", "Aye, spread your samples on the counter.", arrive.Add(3*time.Second))
+
+	if got := huddleConversationSince(t, w, h); !got.Equal(arrive) {
+		t.Errorf("ConversationSince after a newcomer joined = %v, want %v — his arrival starts a new scene", got, arrive)
+	}
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(arrive.Add(5*time.Second)))
+	if huddleConcludedAt(t, w, h) != nil {
+		t.Fatal("a newcomer's first exchange must not be concluded by the lingering arm — the old conversation's age is not his")
+	}
+	if lingeringSteer(t, w, "charlie") {
+		t.Error("a newcomer must not be steered to wind down a conversation he just joined")
+	}
+}
+
+// TestLingeringArm_ReturningMemberKeepsTheClock: stepping out and back in is not
+// a new scene. If it were, any clique could reset its own clock by one member
+// leaving and rejoining — the evasion LLM-397 closed for huddle churn.
+func TestLingeringArm_ReturningMemberKeepsTheClock(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", t0))
+	lingeringSettings(t, w, 12*time.Minute)
+	feedTranscript(t, w, h, "alice", "bob", innSceneLines, t0, time.Minute)
+	began := t0.Add(-20 * time.Minute)
+	setConversationSince(t, w, h, began)
+
+	sendT(t, w, sim.LeaveHuddle("charlie", t0.Add(time.Minute)))
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", t0.Add(2*time.Minute)))
+	if got := huddleConversationSince(t, w, h); !got.Equal(began) {
+		t.Errorf("ConversationSince after a member rejoined = %v, want %v — a returning member is not a newcomer", got, began)
+	}
+}
+
+// TestLingeringArm_SilentMemberCarriedAcrossReformation: a member who never
+// spoke is still part of the conversation. When the clique churns and re-forms,
+// the carry-over keeps him as a participant, so his rejoin does not restart the
+// clock the carry-over just preserved. The ring alone could not tell — he is
+// not in it.
+func TestLingeringArm_SilentMemberCarriedAcrossReformation(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h1 := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", t0))
+	lingeringSettings(t, w, 12*time.Minute)
+	feedTranscript(t, w, h1, "alice", "bob", innSceneLines, t0, time.Minute)
+	began := t0.Add(-20 * time.Minute)
+	setConversationSince(t, w, h1, began)
+
+	churn := t0.Add(30 * time.Second)
+	sendT(t, w, sim.ConcludeHuddle(h1, churn))
+	h2 := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", churn)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", churn.Add(10*time.Second)))
+	if got := huddleConversationSince(t, w, h2); !got.Equal(began) {
+		t.Errorf("ConversationSince after a silent member rejoined the re-formed huddle = %v, want the carried %v", got, began)
+	}
+}

@@ -121,9 +121,17 @@ type Huddle struct {
 	// call "how long have these people been talking" — the clock the loop
 	// sweep's lingering arm (LLM-397) reads. A conversation that genuinely lapses
 	// (no re-formation within HuddleContinuityWindow) leaves no carry-over to
-	// adopt, so the next huddle there starts a fresh clock. In-memory only, not
+	// adopt, so the next huddle there starts a fresh clock. A newcomer joining
+	// restarts it too (admitHuddleParticipant). In-memory only, not
 	// checkpointed — same transient posture as the ring it travels with.
 	ConversationSince time.Time
+
+	// Participants is everyone who has been a member of this conversation, silent
+	// or not, carried across same-clique re-formation with ConversationSince. It
+	// is what tells a newcomer from a returning member: the ring can't, since it
+	// holds only the last few lines and a silent member never appears in it.
+	// In-memory only, not checkpointed.
+	Participants map[ActorID]struct{}
 }
 
 // Utterance is one spoken line recorded in a Huddle's RecentUtterances ring.
@@ -230,6 +238,12 @@ func CloneHuddle(h *Huddle) *Huddle {
 		cp.Members = make(map[ActorID]struct{}, len(h.Members))
 		for k := range h.Members {
 			cp.Members[k] = struct{}{}
+		}
+	}
+	if h.Participants != nil {
+		cp.Participants = make(map[ActorID]struct{}, len(h.Participants))
+		for k := range h.Participants {
+			cp.Participants[k] = struct{}{}
 		}
 	}
 	if h.ConcludedAt != nil {
