@@ -795,7 +795,7 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // removed), and then nothing is paid and the caller tells the hand nothing.
 func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) (paid int, landed bool) {
 	if actor == nil || !IsDamagedSite(obj) {
-		return 0, false // the town pays only for a damaged well or business (nil-safe predicates)
+		return 0, false // the town pays only for a damaged well, business or road (nil-safe predicates)
 	}
 	forText := publicWorksForText(WithDefiniteArticle(damageObjectName(w, obj)))
 	bounty := agreed
