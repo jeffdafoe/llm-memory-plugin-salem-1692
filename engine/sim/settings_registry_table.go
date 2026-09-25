@@ -173,6 +173,11 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("business_damage_min_gap_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.BusinessDamageMinGapHours }),
 		intSetting("public_works_business_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksBusinessBounty }),
 		intSetting("public_works_business_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksBusinessRepairSeconds }),
+		intSetting("road_damage_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.RoadDamageChancePermille }),
+		intSetting("road_damage_storm_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.RoadDamageStormChancePermille }),
+		intSetting("road_damage_min_gap_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.RoadDamageMinGapHours }),
+		intSetting("public_works_road_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRoadBounty }),
+		intSetting("public_works_road_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRoadRepairSeconds }),
 
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute

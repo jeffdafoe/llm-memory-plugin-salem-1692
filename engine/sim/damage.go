@@ -43,6 +43,10 @@ package sim
 //     so the loiter resolvers never attribute anyone to it; the repair site is
 //     the business itself (AtBusiness — inside or at its pin).
 //
+// Slice 3 (LLM-677, damage_road.go) adds ROADS: the break places a fallen tree
+// across a road and the repair removes it — the obstacle is the damage. The
+// effect is the detour the walk grid already produces around any obstacle.
+//
 // Coin record: the chest is not an actor, so the payout — like the constable's
 // wage — writes a `collected` row (marker "public_works") and never calls
 // RecordCoinPaid; the coin-record seed selects only paid/labored rows.
@@ -51,13 +55,14 @@ import (
 	"errors"
 	"log"
 	"sort"
+	"strings"
 	"time"
 )
 
 var (
 	// ErrNotDamageable — the operator tried to damage an object no damage kind
 	// covers (only wells and owned businesses break).
-	ErrNotDamageable = errors.New("only a well or an owned business can be damaged")
+	ErrNotDamageable = errors.New("only a well, an owned business or a road obstacle can be damaged")
 	// ErrUnknownDamageAction — the operator control took an action other than
 	// "damage", "storm" or "repair".
 	ErrUnknownDamageAction = errors.New(`action must be "damage", "storm" or "repair"`)
@@ -164,20 +169,22 @@ func (o *VillageObject) IsWell() bool {
 }
 
 // PublicWorksKind is the damage kind an object belongs to — PublicWorksWell,
-// PublicWorksBusiness (an owned wearable business), or "" for anything that
-// never breaks. Nil-safe.
+// PublicWorksBusiness (an owned wearable business), PublicWorksRoad (a placed
+// road obstacle, LLM-677), or "" for anything that never breaks. Nil-safe.
 func PublicWorksKind(o *VillageObject) string {
 	switch {
 	case o.IsWell():
 		return PublicWorksWell
 	case IsWearableStall(o):
 		return PublicWorksBusiness
+	case o.IsRoadObstacle():
+		return PublicWorksRoad
 	}
 	return ""
 }
 
 // IsDamagedSite reports whether o is a damaged object the town's works cover:
-// a broken well or a damaged business. Nil-safe.
+// a broken well, a damaged business or a road obstacle. Nil-safe.
 func IsDamagedSite(o *VillageObject) bool {
 	return PublicWorksKind(o) != "" && o.Damaged()
 }
@@ -389,11 +396,18 @@ func removeDebris(w *World, businessID VillageObjectID) {
 // repairObject puts obj back in use: clears the damage and the use count,
 // returns the asset to its sound state, removes a business's debris, stamps
 // the kind's min-gap anchor, and emits ObjectRepaired. A business's stall wear
-// is the keeper's and is left as it is. Paying the hand is the caller's job
+// is the keeper's and is left as it is. A road obstacle IS the damage, so
+// mending a road deletes it (LLM-677). Reports whether the repair landed —
+// false for nothing to mend, or a road obstacle that could not be removed (it
+// stays damaged and in the road). Paying the hand is the caller's job
 // (completePublicWorksRepair); an operator reset pays nothing.
-func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, now time.Time) {
+func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, now time.Time) bool {
 	if obj == nil || !obj.Damaged() {
-		return
+		return false
+	}
+	name := damageObjectName(w, obj)
+	if PublicWorksKind(obj) == PublicWorksRoad && !removeRoadObstacle(w, obj, now) {
+		return false
 	}
 	obj.DamagedAt = time.Time{}
 	obj.UseSinceRepair = 0
@@ -406,16 +420,19 @@ func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, 
 			}
 		}
 	}
-	if PublicWorksKind(obj) == PublicWorksBusiness {
+	switch PublicWorksKind(obj) {
+	case PublicWorksBusiness:
 		removeDebris(w, obj.ID)
 		w.Environment.LastBusinessRepairAt = now
-	} else {
+	case PublicWorksRoad:
+		// Removed above, before the damage was cleared.
+	default:
 		w.Environment.LastWellRepairAt = now
 	}
-	name := damageObjectName(w, obj)
 	log.Printf("sim/damage: %s (%s) is mended (repairer %q, bounty %d)", name, obj.ID, repairerID, bounty)
 	w.emit(&ObjectRepaired{ObjectID: obj.ID, Name: name, RepairerID: repairerID, Bounty: bounty, At: now})
 	syncPublicWorksNews(w, now)
+	return true
 }
 
 // soundAssetState returns the lowest-ID state that is not the damaged one — the
@@ -470,6 +487,17 @@ func DamageSiteLabel(objects map[VillageObjectID]*VillageObject, structures map[
 	if _, ok := structures[StructureID(obj.ID)]; ok && name != "" {
 		return name
 	}
+	landmark := damageSiteLandmark(objects, structures, obj)
+	if landmark == "" {
+		return name
+	}
+	return name + " by " + WithDefiniteArticle(landmark)
+}
+
+// damageSiteLandmark is the nearest named building within
+// damageSiteLandmarkTiles of obj, or "" when none is near. Ties go to the
+// lowest id.
+func damageSiteLandmark(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, obj *VillageObject) string {
 	here := obj.Pos.Tile()
 	var bestName string
 	var bestID VillageObjectID
@@ -486,10 +514,7 @@ func DamageSiteLabel(objects map[VillageObjectID]*VillageObject, structures map[
 			bestName, bestID, bestDist = other.DisplayName, id, d
 		}
 	}
-	if bestName == "" {
-		return name
-	}
-	return name + " by " + WithDefiniteArticle(bestName)
+	return bestName
 }
 
 // ObjectConditionNarrated is the player's thought on walking up to a broken
@@ -527,12 +552,15 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 	}
 	kind := PublicWorksKind(obj)
 	text := "This well is broken — the windlass is down, and no water can be drawn here."
-	if kind == PublicWorksBusiness {
+	switch kind {
+	case PublicWorksBusiness:
 		text = DamageFact(w.VillageObjects, w.Structures, w.Assets, obj) + " — it can take in no new stock until it is mended."
+	case PublicWorksRoad:
+		text = DamageFact(w.VillageObjects, w.Structures, w.Assets, obj) + " — walkers must go around it until it is cleared."
 	}
 	bounty, _ := w.Settings.publicWorksTerms(kind)
 	if PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
-		text += " The town is paying " + coinsPhrase(bounty) + " to whoever mends it."
+		text += " The town is paying " + coinsPhrase(bounty) + " to whoever " + PublicWorksMendVerb(kind) + " it."
 	}
 	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, At: now})
 }
@@ -543,6 +571,9 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 // ticker, the boards, the PC's thought and the cue, so every surface names the
 // damage the same way. Pure over the maps.
 func DamageFact(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject) string {
+	if PublicWorksKind(obj) == PublicWorksRoad {
+		return roadObstacleFact(objects, structures, assets, obj)
+	}
 	site := DamageSiteLabel(objects, structures, assets, obj)
 	if PublicWorksKind(obj) == PublicWorksBusiness {
 		place := WithDefiniteArticle(site)
@@ -557,8 +588,11 @@ func DamageFact(objects map[VillageObjectID]*VillageObject, structures map[Struc
 // publicWorksTerms returns the engine-owned bounty and work seconds for
 // mending an object of kind.
 func (s WorldSettings) publicWorksTerms(kind string) (bounty, seconds int) {
-	if kind == PublicWorksBusiness {
+	switch kind {
+	case PublicWorksBusiness:
 		return s.PublicWorksBusinessBounty, s.PublicWorksBusinessRepairSeconds
+	case PublicWorksRoad:
+		return s.PublicWorksRoadBounty, s.PublicWorksRoadRepairSeconds
 	}
 	return s.PublicWorksBounty, s.PublicWorksRepairSeconds
 }
@@ -566,10 +600,31 @@ func (s WorldSettings) publicWorksTerms(kind string) (bounty, seconds int) {
 // PublicWorksTerms is publicWorksTerms over the snapshot's mirrors, so the cue
 // and the ticker state the same terms StartRepair gates on.
 func (s *Snapshot) PublicWorksTerms(kind string) (bounty, seconds int) {
-	if kind == PublicWorksBusiness {
+	switch kind {
+	case PublicWorksBusiness:
 		return s.PublicWorksBusinessBounty, s.PublicWorksBusinessRepairSeconds
+	case PublicWorksRoad:
+		return s.PublicWorksRoadBounty, s.PublicWorksRoadRepairSeconds
 	}
 	return s.PublicWorksBounty, s.PublicWorksRepairSeconds
+}
+
+// PublicWorksMendVerb is what a hand does to a site of kind, third person —
+// "mends" a well or a shop, "clears" a road.
+func PublicWorksMendVerb(kind string) string {
+	if kind == PublicWorksRoad {
+		return "clears"
+	}
+	return "mends"
+}
+
+// PublicWorksMendNoun is the work itself — "the mending", or "the clearing" of
+// a road.
+func PublicWorksMendNoun(kind string) string {
+	if kind == PublicWorksRoad {
+		return "the clearing"
+	}
+	return "the mending"
 }
 
 // DamageTickerLine is one broken object as a line for the client's top ticker.
@@ -592,7 +647,9 @@ func DamageTickerLines(s *Snapshot) []DamageTickerLine {
 		bounty, _ := s.PublicWorksTerms(kind)
 		switch {
 		case PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve):
-			text += " — the town pays " + coinsPhrase(bounty) + " to the hand who mends it."
+			text += " — the town pays " + coinsPhrase(bounty) + " to the hand who " + PublicWorksMendVerb(kind) + " it."
+		case kind == PublicWorksRoad:
+			text += " — walkers must go around it until it is cleared."
 		case kind == PublicWorksBusiness:
 			text += " — the town cannot pay for the mending just now."
 		default:
@@ -630,18 +687,28 @@ func objectUnderRepair(w *World, objID VillageObjectID, except ActorID) bool {
 // publicWorksSiteAt returns the damaged site the actor is standing at, or nil:
 // a broken well by the drink path's loitering resolution, else a damaged
 // business the actor is inside or at the pin of (AtBusiness — the same test the
-// keeper's own mend uses). Lowest id wins if, against the guards, two qualify.
+// keeper's own mend uses), or a road obstacle the actor stands at
+// (AtRoadObstacle). Lowest id wins if, against the guards, two qualify.
 func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 	if _, obj := findRefreshObjectNear(w, actor.Pos); obj.IsWell() && obj.Damaged() {
 		return obj
 	}
 	var best *VillageObject
 	for _, obj := range w.VillageObjects {
-		if PublicWorksKind(obj) != PublicWorksBusiness || !obj.Damaged() {
+		if !obj.Damaged() {
 			continue
 		}
-		pin, ok := effectiveObjectLoiterTile(w, obj.ID)
-		if !AtBusiness(actor.Pos, actor.InsideStructureID, obj.ID, pin, ok) {
+		switch PublicWorksKind(obj) {
+		case PublicWorksBusiness:
+			pin, ok := effectiveObjectLoiterTile(w, obj.ID)
+			if !AtBusiness(actor.Pos, actor.InsideStructureID, obj.ID, pin, ok) {
+				continue
+			}
+		case PublicWorksRoad:
+			if !AtRoadObstacle(actor.Pos, obj, w.Assets[obj.AssetID]) {
+				continue
+			}
+		default:
 			continue
 		}
 		if best == nil || obj.ID < best.ID {
@@ -678,9 +745,13 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 		return nil, errors.New("the town chest cannot pay for the mending just now.")
 	}
 	if seconds <= 0 {
-		seconds = DefaultPublicWorksRepairSeconds
-		if kind == PublicWorksBusiness {
+		switch kind {
+		case PublicWorksBusiness:
 			seconds = DefaultPublicWorksBusinessRepairSeconds
+		case PublicWorksRoad:
+			seconds = DefaultPublicWorksRoadRepairSeconds
+		default:
+			seconds = DefaultPublicWorksRepairSeconds
 		}
 	}
 	// The bounty is fixed now, on the terms the hand was offered — a live
@@ -720,10 +791,11 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // holds — the start gate checked it could pay, but the wage may have drawn it
 // down since). landed is false when there was nothing left to mend — the site
 // was mended some other way mid-window (the operator), or is no damaged site
-// at all — and then nothing is paid and the caller tells the hand nothing.
+// at all — or the repair could not land (a road obstacle that could not be
+// removed), and then nothing is paid and the caller tells the hand nothing.
 func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) (paid int, landed bool) {
 	if actor == nil || !IsDamagedSite(obj) {
-		return 0, false // the town pays only for a damaged well or business (nil-safe predicates)
+		return 0, false // the town pays only for a damaged well, business or road (nil-safe predicates)
 	}
 	forText := publicWorksForText(WithDefiniteArticle(damageObjectName(w, obj)))
 	bounty := agreed
@@ -733,9 +805,16 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 	if bounty < 0 {
 		bounty = 0
 	}
+	// Mend first and pay only for a repair that landed: a road obstacle that
+	// cannot be removed stays in the road, and the hand is owed nothing.
+	if !repairObject(w, obj, actor.ID, bounty, now) {
+		return 0, false
+	}
 	w.Environment.TownChest -= bounty
 	actor.Coins += bounty
-	repairObject(w, obj, actor.ID, bounty, now)
+	// The chest moved after repairObject reposted the boards; the bounty lines
+	// for any other damaged site read the chest.
+	syncPublicWorksNews(w, now)
 	if bounty == 0 {
 		log.Printf("sim/damage: the chest is empty — %q mended %s unpaid", actor.ID, obj.ID)
 		return 0, true
@@ -776,17 +855,26 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 func PublicWorksCompletionNarration(kind, sourceName string, paid int) string {
 	place := "the well"
 	restored := "it draws water again"
-	if kind == PublicWorksBusiness {
+	work := "mending"
+	switch kind {
+	case PublicWorksBusiness:
 		place = "the damage"
 		restored = "the place is sound again"
+	case PublicWorksRoad:
+		place = "the fallen tree"
+		restored = "the road is open again"
+		work = "clearing"
+		if sourceName != "" {
+			sourceName = strings.ToLower(sourceName)
+		}
 	}
 	if sourceName != "" {
 		place = WithDefiniteArticle(sourceName)
 	}
 	if paid <= 0 {
-		return "You finish mending " + place + "; " + restored + ", but the town chest was empty and nobody paid you."
+		return "You finish " + work + " " + place + "; " + restored + ", but the town chest was empty and nobody paid you."
 	}
-	return "You finish mending " + place + "; " + restored + ", and the town pays you " + coinsPhrase(paid) + " for the work."
+	return "You finish " + work + " " + place + "; " + restored + ", and the town pays you " + coinsPhrase(paid) + " for the work."
 }
 
 // RollDailyDamage is the rotation-boundary hazard roll — wells and businesses,
@@ -795,23 +883,28 @@ func PublicWorksCompletionNarration(kind, sourceName string, paid int) string {
 // rolls it and a restart does not roll twice. Returns what broke.
 func RollDailyDamage(boundary time.Time, rng DamageRoller) Command {
 	return Command{Fn: func(w *World) (any, error) {
-		return rollAllDamage(w, DamageTriggerWear, w.Settings.WellDamageChancePermille, w.Settings.BusinessDamageChancePermille, rng, boundary), nil
+		s := w.Settings
+		return rollAllDamage(w, DamageTriggerWear, s.WellDamageChancePermille, s.BusinessDamageChancePermille, s.RoadDamageChancePermille, rng, boundary), nil
 	}}
 }
 
 // RollStormDamage is the storm-start hazard roll; called inline from the
 // WeatherChanged subscriber (cascade), which already runs on the world goroutine.
-// Returns what broke — at most one well and one business.
+// Returns what broke — at most one well, one business and one road.
 func RollStormDamage(w *World, rng DamageRoller, now time.Time) []*VillageObject {
-	return rollAllDamage(w, DamageTriggerStorm, w.Settings.WellDamageStormChancePermille, w.Settings.BusinessDamageStormChancePermille, rng, now)
+	s := w.Settings
+	return rollAllDamage(w, DamageTriggerStorm, s.WellDamageStormChancePermille, s.BusinessDamageStormChancePermille, s.RoadDamageStormChancePermille, rng, now)
 }
 
-func rollAllDamage(w *World, trigger string, wellPermille, businessPermille int, rng DamageRoller, now time.Time) []*VillageObject {
+func rollAllDamage(w *World, trigger string, wellPermille, businessPermille, roadPermille int, rng DamageRoller, now time.Time) []*VillageObject {
 	var broke []*VillageObject
 	if obj := rollDamage(w, PublicWorksWell, trigger, wellPermille, rng, now); obj != nil {
 		broke = append(broke, obj)
 	}
 	if obj := rollDamage(w, PublicWorksBusiness, trigger, businessPermille, rng, now); obj != nil {
+		broke = append(broke, obj)
+	}
+	if obj := rollRoadDamage(w, trigger, roadPermille, rng, now); obj != nil {
 		broke = append(broke, obj)
 	}
 	return broke

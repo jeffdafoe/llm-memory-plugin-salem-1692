@@ -38,6 +38,7 @@ type WorldEnvironment struct {
 	InputShortages          []InputShortage // standing input shortages the daily sweep found (LLM-656), sorted by (keeper, item). Durable — persisted in world_state.input_shortages: the peddler threshold is counted in game-days and the village restarts several times a day, so an in-memory count would rarely reach it.
 	LastWellRepairAt        time.Time       // when a broken well was last mended (damage.go), the min-gap anchor for the next well break; zero = none yet. Transient — restart-lossy by design: losing it only lets the next break come a little sooner.
 	LastBusinessRepairAt    time.Time       // the same anchor for business damage (LLM-675), kept apart so a well repair never holds off a shop break or the reverse. Transient.
+	LastRoadRepairAt        time.Time       // the same anchor for road damage (LLM-677). Transient.
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 }
 
@@ -271,6 +272,14 @@ type WorldSettings struct {
 	BusinessDamageMinGapHours         int
 	PublicWorksBusinessBounty         int
 	PublicWorksBusinessRepairSeconds  int
+
+	// Road damage (LLM-677): a tree down across a road. No use factor — a flat
+	// daily chance and a larger storm-start chance — and the clearing's own terms.
+	RoadDamageChancePermille      int
+	RoadDamageStormChancePermille int
+	RoadDamageMinGapHours         int
+	PublicWorksRoadBounty         int
+	PublicWorksRoadRepairSeconds  int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
@@ -2539,6 +2548,8 @@ func (w *World) republish() {
 	// The business repair's terms (LLM-675), beside the well's in the literal.
 	snap.PublicWorksBusinessBounty = w.Settings.PublicWorksBusinessBounty
 	snap.PublicWorksBusinessRepairSeconds = w.Settings.PublicWorksBusinessRepairSeconds
+	snap.PublicWorksRoadBounty = w.Settings.PublicWorksRoadBounty
+	snap.PublicWorksRoadRepairSeconds = w.Settings.PublicWorksRoadRepairSeconds
 	// Environment is copied by value above, but a slice copies only its header:
 	// pruneResolvedShortages compacts the record in place and the peddler spawn
 	// stamps LastPeddlerAt through a pointer into it, so perception (LLM-658)
