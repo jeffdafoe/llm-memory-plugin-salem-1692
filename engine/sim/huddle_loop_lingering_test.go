@@ -494,3 +494,75 @@ func TestLingeringArm_SilentMemberCarriedAcrossReformation(t *testing.T) {
 		t.Errorf("ConversationSince after a silent member rejoined the re-formed huddle = %v, want the carried %v", got, began)
 	}
 }
+
+// TestLingeringArm_NewcomerFoundingTheNextHuddleStartsFresh: when a clique's
+// conversation concludes and a newcomer is the first to speak up there, the
+// huddle he forms is his conversation, not the clique's — the carried clock is
+// not his.
+func TestLingeringArm_NewcomerFoundingTheNextHuddleStartsFresh(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h1 := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	lingeringSettings(t, w, 12*time.Minute)
+	feedTranscript(t, w, h1, "alice", "bob", innSceneLines, t0, time.Minute)
+	setConversationSince(t, w, h1, t0.Add(-20*time.Minute))
+
+	churn := t0.Add(30 * time.Second)
+	sendT(t, w, sim.ConcludeHuddle(h1, churn))
+	arrive := churn.Add(10 * time.Second)
+	h2 := sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", arrive)).(sim.JoinHuddleResult).HuddleID
+	if got := huddleConversationSince(t, w, h2); !got.Equal(arrive) {
+		t.Errorf("ConversationSince of a huddle a newcomer founded = %v, want %v", got, arrive)
+	}
+}
+
+// TestLingeringArm_NewcomerClearsAMaturePathologySpell (code_review): the loop
+// arms share one LoopingSince. A pathology spell that matured before a newcomer
+// arrived must not conclude his first exchange with no gate. The ledger arm is
+// the case the join's progress stamp does not cover: declines resolved AFTER he
+// joins still count. His join clears the spell; the standoff relatches on the
+// next sweep and must run a full gate before it can conclude.
+func TestLingeringArm_NewcomerClearsAMaturePathologySpell(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	t0 := time.Now().UTC()
+
+	h := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", t0)).(sim.JoinHuddleResult).HuddleID
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", t0))
+	lingeringSettings(t, w, 12*time.Minute)
+	mature := t0.Add(-10 * time.Minute)
+	setHuddleLoopState(t, w, h, nil, &mature, time.Time{})
+
+	arrive := t0.Add(time.Minute)
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", arrive))
+	if since := huddleLoopingSince(t, w, h); since != nil {
+		t.Fatalf("a newcomer's join should clear the spell, LoopingSince = %v", since)
+	}
+
+	// Alice and Bob keep declining each other after he arrives: the ledger arm is
+	// armed on the newcomer's first sweep.
+	stagePayTerminal(t, w, 1, h, "alice", "bob", "sage", sim.PayLedgerStateDeclined, arrive.Add(1*time.Second))
+	stagePayTerminal(t, w, 2, h, "alice", "bob", "sage", sim.PayLedgerStateDeclined, arrive.Add(2*time.Second))
+	stagePayTerminal(t, w, 3, h, "alice", "bob", "sage", sim.PayLedgerStateDeclined, arrive.Add(3*time.Second))
+	first := arrive.Add(5 * time.Second)
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(first))
+	if huddleConcludedAt(t, w, h) != nil {
+		t.Fatal("a spell that matured before the newcomer arrived must not conclude his first exchange")
+	}
+	if since := huddleLoopingSince(t, w, h); since == nil || !since.Equal(first) {
+		t.Fatalf("the standoff should relatch at the sweep, LoopingSince = %v, want %v", since, first)
+	}
+
+	// The standoff persists through a full gate — now the pathology may end it.
+	later := first.Add(3 * time.Minute)
+	stagePayTerminal(t, w, 4, h, "alice", "bob", "sage", sim.PayLedgerStateDeclined, later.Add(-3*time.Second))
+	stagePayTerminal(t, w, 5, h, "alice", "bob", "sage", sim.PayLedgerStateDeclined, later.Add(-2*time.Second))
+	stagePayTerminal(t, w, 6, h, "alice", "bob", "sage", sim.PayLedgerStateDeclined, later.Add(-1*time.Second))
+	sendT(t, w, sim.EvaluateHuddleLoopSweep(later))
+	if huddleConcludedAt(t, w, h) == nil {
+		t.Error("a standoff that holds through a full gate after the newcomer's join should still be concluded")
+	}
+}

@@ -220,22 +220,21 @@ func seedHuddleFromContinuity(w *World, huddle *Huddle, structureID StructureID,
 // customer who walks up to a keeper's long, quiet conversation inherits its age,
 // and the lingering arm (LLM-397) cuts him off in his first exchange — the
 // factor Caleb Wendell's pitch to Josiah Thorne, 2026-09-25, concluded two
-// seconds after Josiah answered and his answer went unheard. A spell the
-// lingering arm latched is cleared with the clock, since the clock was its
-// whole cause; a pathology spell is left to the sweep. A returning participant
-// changes nothing, so a clique that steps out and back in cannot reset its own
-// clock. huddleNew marks the founding join, whose clock was just set.
-func admitHuddleParticipant(h *Huddle, actorID ActorID, huddleNew bool, now time.Time) {
+// seconds after Josiah answered and his answer went unheard. The loop spell is
+// cleared too, whatever arm latched it: a spell that matured before he arrived
+// must not let a still-armed arm conclude his first exchange with no gate. A
+// pathology that persists relatches on the next sweep and runs a full gate. A
+// returning participant changes nothing, so a clique that steps out and back in
+// cannot reset its own clock or spell. The founder of a fresh huddle is a
+// newcomer too — restamping its just-set clock is harmless — while the founder
+// of a same-clique re-formation is already a carried participant.
+func admitHuddleParticipant(h *Huddle, actorID ActorID, now time.Time) {
 	if _, ok := h.Participants[actorID]; ok {
 		return
 	}
-	if !huddleNew {
-		h.ConversationSince = now
-		if h.LoopingReason == huddleLoopReasonLingering {
-			h.LoopingSince = nil
-			h.LoopingReason = ""
-		}
-	}
+	h.ConversationSince = now
+	h.LoopingSince = nil
+	h.LoopingReason = ""
 	if h.Participants == nil {
 		h.Participants = make(map[ActorID]struct{})
 	}
