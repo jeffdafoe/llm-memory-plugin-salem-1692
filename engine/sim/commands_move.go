@@ -596,6 +596,7 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 					others = append(others, existing)
 				}
 
+				admitHuddleParticipant(huddle, id, now)
 				huddle.Members[id] = struct{}{}
 				actor.CurrentHuddleID = huddleID
 				w.actorsByHuddle[huddleID][id] = struct{}{}

@@ -358,6 +358,7 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				otherMembers = append(otherMembers, id)
 			}
 
+			admitHuddleParticipant(huddle, actorID, now)
 			huddle.Members[actorID] = struct{}{}
 			actor.CurrentHuddleID = huddleID
 			// ZBBS-HOME-417: a join (new huddle or an arrival into an existing

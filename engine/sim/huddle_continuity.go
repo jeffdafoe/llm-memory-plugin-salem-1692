@@ -70,6 +70,11 @@ type conversationCarryover struct {
 	// conversation ran 100 minutes across ten huddle ids, none of them older than
 	// a few minutes.
 	conversationSince time.Time
+
+	// participants carries Huddle.Participants with the clock, so a member who
+	// rejoins the re-formed huddle is not mistaken for a newcomer and does not
+	// restart the clock the carry-over just preserved.
+	participants map[ActorID]struct{}
 }
 
 // effectiveHuddleContinuityWindow returns the configured continuity window or the
@@ -153,6 +158,13 @@ func writeConversationCarryover(w *World, h *Huddle, now time.Time) {
 	if conversationSince.IsZero() {
 		conversationSince = h.StartedAt
 	}
+	participants := make(map[ActorID]struct{}, len(h.Participants)+len(members))
+	for id := range h.Participants {
+		participants[id] = struct{}{}
+	}
+	for id := range members {
+		participants[id] = struct{}{}
+	}
 	w.carryoverByStructure[h.StructureID] = &conversationCarryover{
 		utterances:         append([]Utterance(nil), h.RecentUtterances...),
 		members:            members,
@@ -162,6 +174,7 @@ func writeConversationCarryover(w *World, h *Huddle, now time.Time) {
 		concludedAt:        now,
 		turnsSinceProgress: h.TurnsSinceProgress,
 		conversationSince:  conversationSince,
+		participants:       participants,
 	}
 }
 
@@ -194,4 +207,36 @@ func seedHuddleFromContinuity(w *World, huddle *Huddle, structureID StructureID,
 	if !cb.conversationSince.IsZero() {
 		huddle.ConversationSince = cb.conversationSince
 	}
+	huddle.Participants = make(map[ActorID]struct{}, len(cb.participants))
+	for id := range cb.participants {
+		huddle.Participants[id] = struct{}{}
+	}
+}
+
+// admitHuddleParticipant (LLM-676) records actorID as part of the huddle's conversation. A
+// newcomer — someone never part of it, re-formations included — joining a
+// conversation already under way restarts its clock: the people talking have
+// changed, so this is a new scene, not the old one running long. Without it a
+// customer who walks up to a keeper's long, quiet conversation inherits its age,
+// and the lingering arm (LLM-397) cuts him off in his first exchange — the
+// factor Caleb Wendell's pitch to Josiah Thorne, 2026-09-25, concluded two
+// seconds after Josiah answered and his answer went unheard. The loop spell is
+// cleared too, whatever arm latched it: a spell that matured before he arrived
+// must not let a still-armed arm conclude his first exchange with no gate. A
+// pathology that persists relatches on the next sweep and runs a full gate. A
+// returning participant changes nothing, so a clique that steps out and back in
+// cannot reset its own clock or spell. The founder of a fresh huddle is a
+// newcomer too — restamping its just-set clock is harmless — while the founder
+// of a same-clique re-formation is already a carried participant.
+func admitHuddleParticipant(h *Huddle, actorID ActorID, now time.Time) {
+	if _, ok := h.Participants[actorID]; ok {
+		return
+	}
+	h.ConversationSince = now
+	h.LoopingSince = nil
+	h.LoopingReason = ""
+	if h.Participants == nil {
+		h.Participants = make(map[ActorID]struct{})
+	}
+	h.Participants[actorID] = struct{}{}
 }
