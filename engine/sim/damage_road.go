@@ -512,14 +512,13 @@ func startStumpClock(w *World, top *VillageObject, now time.Time) {
 // for good.
 func RemoveExpiredObjects(now time.Time) Command {
 	return Command{Fn: func(w *World) (any, error) {
-		clockOrphanStumps(w, now)
+		removed := clockOrphanStumps(w, now)
 		var ids []VillageObjectID
 		for id, o := range w.VillageObjects {
 			if o != nil && !o.ExpiresAt.IsZero() && !now.Before(o.ExpiresAt) {
 				ids = append(ids, id)
 			}
 		}
-		removed := 0
 		for _, id := range ids {
 			if _, err := DeleteVillageObject(id).Fn(w); err != nil {
 				log.Printf("sim/damage: removing expired %s: %v", id, err)
@@ -537,8 +536,9 @@ func RemoveExpiredObjects(now time.Time) Command {
 // stump — the top deleted in the editor, moved, or re-stated, anything but the
 // town's clearing, which starts the clock itself. Keyed on what is in the
 // world, not on how the tree left, so no path strands a stump for good. The
-// clock runs from this sweep, at most a day after the tree went.
-func clockOrphanStumps(w *World, now time.Time) {
+// clock runs from this sweep, at most a day after the tree went. Returns how
+// many stumps it removed outright (RoadStumpDays of 0 or less).
+func clockOrphanStumps(w *World, now time.Time) int {
 	standing := make(map[TilePos]struct{})
 	for _, o := range w.VillageObjects {
 		if !o.IsRoadObstacle() {
@@ -553,6 +553,7 @@ func clockOrphanStumps(w *World, now time.Time) {
 			standing[TilePos{X: a.X + off.X, Y: a.Y + off.Y}] = struct{}{}
 		}
 	}
+	removed := 0
 	var orphans []VillageObjectID
 	for id, o := range w.VillageObjects {
 		if o == nil || !o.HasTag(TagStormStump) || !o.ExpiresAt.IsZero() {
@@ -566,12 +567,15 @@ func clockOrphanStumps(w *World, now time.Time) {
 		if w.Settings.RoadStumpDays <= 0 {
 			if _, err := DeleteVillageObject(id).Fn(w); err != nil {
 				log.Printf("sim/damage: removing orphaned stump %s: %v", id, err)
+			} else {
+				removed++
 			}
 			continue
 		}
 		w.VillageObjects[id].ExpiresAt = now.Add(time.Duration(w.Settings.RoadStumpDays) * 24 * time.Hour)
 		log.Printf("sim/damage: stump %s outlived its tree; removed in %d days", id, w.Settings.RoadStumpDays)
 	}
+	return removed
 }
 
 // roadObstacleFact is the "what is broken" opening for a road obstacle — "A

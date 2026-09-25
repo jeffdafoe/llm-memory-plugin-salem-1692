@@ -500,3 +500,30 @@ func TestRoadVariantNeedsItsWholeCatalog(t *testing.T) {
 		}
 	})
 }
+
+// TestOrphanStumpWithNoStumpDaysGoesAtOnce (code_review) — with road_stump_days
+// at 0 a stump whose tree left another way is removed by the sweep itself, and
+// the sweep counts it.
+func TestOrphanStumpWithNoStumpDaysGoesAtOnce(t *testing.T) {
+	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) { world.Settings.RoadStumpDays = 0 })
+	if _, err := w.Send(sim.DeleteVillageObject(res.(sim.VillageObjectID))); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Send(sim.RemoveExpiredObjects(time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := got.(int); n != 1 {
+		t.Errorf("sweep removed count = %v, want 1", got)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if n := len(stormStumps(world)); n != 0 {
+			t.Errorf("storm stumps = %d, want 0 — no days to stand", n)
+		}
+	})
+}
