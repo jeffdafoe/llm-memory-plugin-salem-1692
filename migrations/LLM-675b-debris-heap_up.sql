@@ -39,8 +39,8 @@
 -- /var/www/llm-memory-salem-1692/tilesets/mana-seed/village-accessories/
 -- (owner www-data). Its source is in llm-memory-village-tiles.
 --
--- Rerun-safe: plain UPDATEs to fixed values; slot rows NOT EXISTS-guarded.
--- Loud validation at the end.
+-- Rerun-safe and convergent: plain UPDATEs to fixed values; the slot rows are
+-- upserted on (asset_id, slot_name). Exact-value validation at the end.
 
 BEGIN;
 
@@ -54,38 +54,51 @@ UPDATE asset_state
 UPDATE asset SET fits_slot = 'debris'
  WHERE id = '019e5f00-c401-7a10-9e00-000000675001';
 
-INSERT INTO asset_slot (asset_id, slot_name, offset_x, offset_y)
-SELECT v.asset_id::uuid, 'debris', v.ox, v.oy
-  FROM (VALUES
-        ('b24c6666-0830-481d-b502-be827f0c36c2',   0,  0),   -- Red House (Small)
-        ('50d047fe-6e0e-4969-85a1-ea8158a3f2d8',   0,  6),   -- Yellow Tower
-        ('b967fd3a-05ca-46e1-a84b-ea8226b72b6b', -60,  0),   -- Black House (Medium)
-        ('f02d52a7-ac65-4db6-a52a-fec5cdd6385e', -60,  0),   -- Blue House (Medium)
-        ('5073eb02-6f3f-4191-aced-242d8502d153',  40, 24),   -- Market Stall (Wood)
-        ('80c83812-f661-4f1d-8b70-99a5449814b2',  40, 24),   -- Market Stall (Tiled)
-        ('ab66597b-cf67-4a7a-a48f-d0fbc36117a4',  40, 24)    -- Market Stall (Fancy)
-       ) AS v(asset_id, ox, oy)
- WHERE EXISTS (SELECT 1 FROM asset a WHERE a.id = v.asset_id::uuid)
-   AND NOT EXISTS (SELECT 1 FROM asset_slot s
-                    WHERE s.asset_id = v.asset_id::uuid AND s.slot_name = 'debris');
+-- The seven slots this migration owns — also what the validation and the
+-- _down scope to.
+CREATE TEMP TABLE llm675b_debris_slot (asset_id uuid PRIMARY KEY, offset_x int, offset_y int) ON COMMIT DROP;
+INSERT INTO llm675b_debris_slot VALUES
+    ('b24c6666-0830-481d-b502-be827f0c36c2',   0,  0),   -- Red House (Small)
+    ('50d047fe-6e0e-4969-85a1-ea8158a3f2d8',   0,  6),   -- Yellow Tower
+    ('b967fd3a-05ca-46e1-a84b-ea8226b72b6b', -60,  0),   -- Black House (Medium)
+    ('f02d52a7-ac65-4db6-a52a-fec5cdd6385e', -60,  0),   -- Blue House (Medium)
+    ('5073eb02-6f3f-4191-aced-242d8502d153',  40, 24),   -- Market Stall (Wood)
+    ('80c83812-f661-4f1d-8b70-99a5449814b2',  40, 24),   -- Market Stall (Tiled)
+    ('ab66597b-cf67-4a7a-a48f-d0fbc36117a4',  40, 24);   -- Market Stall (Fancy)
 
+-- Upsert on the (asset_id, slot_name) unique key, so a rerun converges on
+-- these offsets even if a slot drifted. Only building assets present in the
+-- catalog get a row (a schema-only database has none).
+INSERT INTO asset_slot (asset_id, slot_name, offset_x, offset_y)
+SELECT d.asset_id, 'debris', d.offset_x, d.offset_y
+  FROM llm675b_debris_slot d
+ WHERE EXISTS (SELECT 1 FROM asset a WHERE a.id = d.asset_id)
+ON CONFLICT (asset_id, slot_name) DO UPDATE
+   SET offset_x = EXCLUDED.offset_x, offset_y = EXCLUDED.offset_y;
+
+-- Validate the exact values, where the rows exist (a schema-only harness has
+-- no catalog rows).
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM asset WHERE id = '019e5f00-c401-7a10-9e00-000000675001')
-       AND (SELECT count(*) FROM asset_state
+    IF EXISTS (SELECT 1 FROM asset WHERE id = '019e5f00-c401-7a10-9e00-000000675001') THEN
+        IF NOT EXISTS (SELECT 1 FROM asset
+                        WHERE id = '019e5f00-c401-7a10-9e00-000000675001' AND fits_slot = 'debris') THEN
+            RAISE EXCEPTION 'LLM-675 debris heap: the Debris asset does not fit the debris slot';
+        END IF;
+        IF (SELECT count(*) FROM asset_state
              WHERE asset_id = '019e5f00-c401-7a10-9e00-000000675001'
                AND sheet = '/tilesets/mana-seed/village-accessories/public-works-debris-heap.png'
-               AND src_w = 64 AND src_h = 40) <> 2 THEN
-        RAISE EXCEPTION 'LLM-675 debris heap: the Debris states were not repointed at the 64x40 sheet';
+               AND src_y = 0 AND src_w = 64 AND src_h = 40
+               AND ((state = 'worn' AND src_x = 0) OR (state = 'storm' AND src_x = 64))) <> 2 THEN
+            RAISE EXCEPTION 'LLM-675 debris heap: the worn/storm states are not exactly the 64x40 frames';
+        END IF;
     END IF;
-    -- Every business building type in this catalog carries its debris slot.
-    IF (SELECT count(*) FROM asset
-         WHERE id IN ('b24c6666-0830-481d-b502-be827f0c36c2', '50d047fe-6e0e-4969-85a1-ea8158a3f2d8',
-                      'b967fd3a-05ca-46e1-a84b-ea8226b72b6b', 'f02d52a7-ac65-4db6-a52a-fec5cdd6385e',
-                      '5073eb02-6f3f-4191-aced-242d8502d153', '80c83812-f661-4f1d-8b70-99a5449814b2',
-                      'ab66597b-cf67-4a7a-a48f-d0fbc36117a4'))
-       <> (SELECT count(*) FROM asset_slot WHERE slot_name = 'debris') THEN
-        RAISE EXCEPTION 'LLM-675 debris heap: a business building type is missing its debris slot';
+    IF EXISTS (SELECT 1 FROM llm675b_debris_slot d
+                WHERE EXISTS (SELECT 1 FROM asset a WHERE a.id = d.asset_id)
+                  AND NOT EXISTS (SELECT 1 FROM asset_slot s
+                                   WHERE s.asset_id = d.asset_id AND s.slot_name = 'debris'
+                                     AND s.offset_x = d.offset_x AND s.offset_y = d.offset_y)) THEN
+        RAISE EXCEPTION 'LLM-675 debris heap: a business building type lacks its debris slot at the expected offset';
     END IF;
 END $$;
 
