@@ -8,10 +8,11 @@ import (
 
 // public_works_notices.go — LLM-654: the town's work on the notice boards.
 //
-// A broken well puts two PINNED lines at the top of every notice board — what
-// is broken, and what the town pays to mend it (or, when the chest cannot pay,
-// where to draw water meanwhile). Two lines, not one, because the live board
-// has no 1-slip art: a lone line would snap down to the empty board.
+// A damaged site — a broken well, or a damaged business (LLM-675) — puts two
+// PINNED lines at the top of every notice board: what is broken, and what the
+// town pays to mend it (or, when the chest cannot pay, where to draw water
+// meanwhile / that the town cannot pay). Two lines, not one, because the live
+// board has no 1-slip art: a lone line would snap down to the empty board.
 //
 // The lines are DERIVED from the damage state, never authored, so they come
 // back after a restart even though board content is in-memory only. Two paths
@@ -27,27 +28,42 @@ import (
 // NoticeboardContent.Pinned records how many leading lines are pinned, so a
 // repost can tell the crier's lines from the town's.
 
-// PublicWorksNoticeLines returns the pinned lines for every broken well, lowest
-// id first. Empty when every well is sound.
+// PublicWorksNoticeLines returns the pinned lines for every damaged site — a
+// broken well or a damaged business (LLM-675) — lowest id first. Empty when
+// nothing is damaged.
 func PublicWorksNoticeLines(w *World) []string {
-	var broken []*VillageObject
-	for _, obj := range w.VillageObjects {
-		if obj.IsWell() && obj.Damaged() {
-			broken = append(broken, obj)
-		}
-	}
-	sortObjectsByID(broken)
+	broken := damagedSites(w)
 	var out []string
-	open := PublicWorksBountyOpen(w.Environment.TownChest, w.Settings.PublicWorksBounty, w.Settings.PublicWorksChestReserve)
 	for _, obj := range broken {
-		site := damageObjectName(w, obj)
-		out = append(out, "The windlass at the "+site+" is down — no water can be drawn there until it is mended.")
-		if open {
-			out = append(out, "The town pays "+coinsPhrase(w.Settings.PublicWorksBounty)+" to the hand who mends it.")
+		kind := PublicWorksKind(obj)
+		fact := DamageFact(w.VillageObjects, w.Structures, w.Assets, obj)
+		if kind == PublicWorksBusiness {
+			out = append(out, fact+" — it can take in no new stock until it is mended.")
 		} else {
+			out = append(out, fact+" — no water can be drawn there until it is mended.")
+		}
+		bounty, _ := w.Settings.publicWorksTerms(kind)
+		switch {
+		case PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve):
+			out = append(out, "The town pays "+coinsPhrase(bounty)+" to the hand who mends it.")
+		case kind == PublicWorksBusiness:
+			out = append(out, "The town cannot pay for the mending just now.")
+		default:
 			out = append(out, "Until it is mended, draw your water at the other well.")
 		}
 	}
+	return out
+}
+
+// damagedSites lists every damaged well and business, lowest id first.
+func damagedSites(w *World) []*VillageObject {
+	var out []*VillageObject
+	for _, obj := range w.VillageObjects {
+		if IsDamagedSite(obj) {
+			out = append(out, obj)
+		}
+	}
+	sortObjectsByID(out)
 	return out
 }
 
@@ -171,17 +187,14 @@ func (DamageNewsChanged) isSimEvent() {}
 // changed, so the frequent chest writers cost one string compare.
 func syncPublicWorksNews(w *World, at time.Time) {
 	pinned := PublicWorksNoticeLines(w)
-	// The key carries the broken wells' ids as well as the text, so a break or
-	// repair always counts as news even if two wells ever rendered alike.
+	// The key carries the damaged sites' ids as well as the text, so a break or
+	// repair always counts as news even if two sites ever rendered alike.
 	var ids []string
-	for _, obj := range w.VillageObjects {
-		if obj.IsWell() && obj.Damaged() {
-			ids = append(ids, string(obj.ID))
-		}
+	for _, obj := range damagedSites(w) {
+		ids = append(ids, string(obj.ID))
 	}
-	sort.Strings(ids)
-	// Nothing broken is the empty key — the boot value — so a village with no
-	// broken well never reposts (and never re-frames) its boards.
+	// Nothing broken is the empty key — the boot value — so a village with
+	// nothing damaged never reposts (and never re-frames) its boards.
 	key := ""
 	if len(ids) > 0 || len(pinned) > 0 {
 		key = strings.Join(ids, ",") + "\n" + strings.Join(pinned, "\n")

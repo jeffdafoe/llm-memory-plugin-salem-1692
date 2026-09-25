@@ -1881,6 +1881,10 @@ type ActorSnapshot struct {
 	SourceActivityKind      SourceActivityKind
 	SourceActivityObjectID  VillageObjectID
 	SourceActivityAttribute NeedKey
+	// SourceActivityPublicWorks marks a repair window as the town's work on a
+	// damaged site (SourceActivity.PublicWorks, LLM-675) rather than a keeper's
+	// own nail-mend — the two can share an object at a damaged business.
+	SourceActivityPublicWorks bool
 
 	// RouteLabel / RouteStopObjectID are the read-path projection of an in-flight
 	// scheduled NPC route the actor is walking (LLM-514) — today only the constable

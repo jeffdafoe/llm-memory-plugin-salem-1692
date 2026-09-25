@@ -183,13 +183,14 @@ func AtBusiness(actorPos TilePos, insideStructureID StructureID, businessID Vill
 // freezes further wear accrual (accrueStallWear). Selling from remaining stock is
 // NOT gated — a degraded shop draws down what's on hand and reopens its refill on
 // repair. (LLM-304 replaced the original LLM-118 sale-block, which trapped a broke
-// keeper who could no longer earn the coin to buy the nails.) nil-safe: an actor
-// who owns no stall is never degraded.
+// keeper who could no longer earn the coin to buy the nails.) A business damaged
+// by an event (LLM-675) takes the same effect until the town mends it — see
+// BusinessOutOfTrade. nil-safe: an actor who owns no stall is never degraded.
 func ownerStallDegraded(w *World, actorID ActorID) bool {
 	if w == nil {
 		return false
 	}
-	return StallDegraded(OwnedWearableStall(w.VillageObjects, actorID), w.Settings.StallWearDegradeThreshold)
+	return BusinessOutOfTrade(OwnedWearableStall(w.VillageObjects, actorID), w.Settings.StallWearDegradeThreshold)
 }
 
 // degradedProduceBlocked reports whether degrade FULLY blocks the actor's

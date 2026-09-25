@@ -190,9 +190,9 @@ func applyGatherMint(w *World, actor *Actor, objID VillageObjectID, obj *Village
 	if obj.OwnerActorID == actor.ID {
 		AccrueEquipmentUse(w, actor.ID, actual)
 	}
-	// One pail drawn is one draw toward the well's damage hazard (LLM-654) —
-	// counted per trip, not per unit, so a full pail weighs like a drink.
-	accrueDamageUse(obj)
+	// The water drawn counts toward the well's damage hazard, unit by unit
+	// (LLM-654, per-unit since LLM-675).
+	accrueDamageUse(obj, actual)
 
 	catalogName := ""
 	if a := w.Assets[obj.AssetID]; a != nil {

@@ -28,6 +28,21 @@ package sim
 //     The bounty is only on offer while the chest holds the bounty plus
 //     PublicWorksChestReserve — a broke town leaves its well broken.
 //
+// Slice 2 (LLM-675) adds owned BUSINESSES on the same loop, each kind with its
+// own guards, chances and terms:
+//
+//   - Hazard. The use factor is the business's stall wear (its owner's earned
+//     margin since the last nail-mend) over a reference, so busy shops break
+//     more. One damaged business at a time, its own min gap.
+//   - Effect. Not out of use: a damaged business gets the degrade effect (no
+//     shelf stock in, production slowed — BusinessOutOfTrade). The keeper's own
+//     nail-mend stays wear-only (StallRepairable), so it can never clear the
+//     town's damage and the town's repair never resets the keeper's wear.
+//   - Visual. A Debris overlay (storm branches or split boards, by trigger) is
+//     placed attached to the business and removed by the repair. It is unnamed,
+//     so the loiter resolvers never attribute anyone to it; the repair site is
+//     the business itself (AtBusiness — inside or at its pin).
+//
 // Coin record: the chest is not an actor, so the payout — like the constable's
 // wage — writes a `collected` row (marker "public_works") and never calls
 // RecordCoinPaid; the coin-record seed selects only paid/labored rows.
@@ -40,12 +55,12 @@ import (
 )
 
 var (
-	// ErrNotDamageable — the operator tried to damage an object slice 1 does not
-	// cover (only wells break).
-	ErrNotDamageable = errors.New("only a well can be damaged")
+	// ErrNotDamageable — the operator tried to damage an object no damage kind
+	// covers (only wells and owned businesses break).
+	ErrNotDamageable = errors.New("only a well or an owned business can be damaged")
 	// ErrUnknownDamageAction — the operator control took an action other than
-	// "damage" or "repair".
-	ErrUnknownDamageAction = errors.New(`action must be "damage" or "repair"`)
+	// "damage", "storm" or "repair".
+	ErrUnknownDamageAction = errors.New(`action must be "damage", "storm" or "repair"`)
 )
 
 // TagDamaged marks the asset state that renders an object out of use. Resolved
@@ -60,9 +75,9 @@ const (
 	// DefaultWellDamageStormChancePermille is the chance, per thousand, that a
 	// well at the reference use breaks when a storm starts. 0 disables it.
 	DefaultWellDamageStormChancePermille = 150
-	// DefaultWellDamageUseReference is the number of draws since the last repair
-	// at which the use factor is 1.
-	DefaultWellDamageUseReference = 60
+	// DefaultWellDamageUseReference is the water drawn since the last repair, in
+	// units (a drink is 1, a pail its size), at which the use factor is 1.
+	DefaultWellDamageUseReference = 120
 	// DefaultWellDamageMinGapHours is the quiet time after a repair before any
 	// well may break again.
 	DefaultWellDamageMinGapHours = 48
@@ -73,6 +88,42 @@ const (
 	// DefaultPublicWorksChestReserve is what the chest keeps back; the bounty is
 	// on offer only while the chest holds bounty + reserve.
 	DefaultPublicWorksChestReserve = 50
+
+	// DefaultBusinessDamageChancePermille is the daily chance, per thousand, that
+	// a business at the reference wear is damaged. 0 disables the daily roll.
+	DefaultBusinessDamageChancePermille = 60
+	// DefaultBusinessDamageStormChancePermille is the chance, per thousand, that
+	// a business at the reference wear is damaged when a storm starts.
+	DefaultBusinessDamageStormChancePermille = 150
+	// DefaultBusinessDamageWearReference is the stall wear at which the use
+	// factor is 1 — the nail-mend threshold's default, so a shop due its mend
+	// carries the base chance.
+	DefaultBusinessDamageWearReference = 180
+	// DefaultBusinessDamageMinGapHours is the quiet time after a business repair
+	// before any business may be damaged again.
+	DefaultBusinessDamageMinGapHours = 24
+	// DefaultPublicWorksBusinessBounty is what the chest pays for mending a
+	// damaged business.
+	DefaultPublicWorksBusinessBounty = 25
+	// DefaultPublicWorksBusinessRepairSeconds is how long mending a business takes.
+	DefaultPublicWorksBusinessRepairSeconds = 7200
+)
+
+// Public-works site kinds — what a damaged object is, for the terms, the
+// guards and the wording.
+const (
+	PublicWorksWell     = "well"
+	PublicWorksBusiness = "business"
+)
+
+// The Debris overlay a damaged business carries (LLM-675). The asset id is
+// fixed by the migration; its states name the cause, so the wording survives a
+// restart with the placement.
+const (
+	DebrisAssetID    AssetID = "5f0c2d8e-9b6a-4f75-8c1d-0675d3b12e4a"
+	TagDebris                = "debris"
+	DebrisStateStorm         = "storm"
+	DebrisStateWorn          = "worn"
 )
 
 // DamageRoller is the randomness a hazard roll needs. Both math/rand and
@@ -87,7 +138,12 @@ type DamageRoller interface {
 const damageUseFactorCap = 3.0
 
 // publicWorksForText is the "for" clause on the hand's `collected` row.
-const publicWorksForText = "mending the well at the town's charge"
+func publicWorksForText(site string) string {
+	if site == "" {
+		site = "the well"
+	}
+	return "mending " + site + " at the town's charge"
+}
 
 // Damage triggers, carried on ObjectDamaged and in the log.
 const (
@@ -105,6 +161,59 @@ func (o *VillageObject) Damaged() bool {
 // IsWell reports whether the object is a well. Nil-safe.
 func (o *VillageObject) IsWell() bool {
 	return o != nil && o.HasTag(TagWell)
+}
+
+// PublicWorksKind is the damage kind an object belongs to — PublicWorksWell,
+// PublicWorksBusiness (an owned wearable business), or "" for anything that
+// never breaks. Nil-safe.
+func PublicWorksKind(o *VillageObject) string {
+	switch {
+	case o.IsWell():
+		return PublicWorksWell
+	case IsWearableStall(o):
+		return PublicWorksBusiness
+	}
+	return ""
+}
+
+// IsDamagedSite reports whether o is a damaged object the town's works cover:
+// a broken well or a damaged business. Nil-safe.
+func IsDamagedSite(o *VillageObject) bool {
+	return PublicWorksKind(o) != "" && o.Damaged()
+}
+
+// BusinessOutOfTrade reports whether a wearable business is shut for shelf
+// stock and slowed at its work: worn past the degrade threshold, or damaged by
+// an event (LLM-675). The EFFECT predicate — restock, production and the
+// "## Restocking" suppression read it. Deliberately NOT StallDegraded, which
+// also gates the keeper's own nail-mend (StallRepairable): the town's damage
+// must never turn into a mend the keeper pays for, nor be cleared by one.
+func BusinessOutOfTrade(obj *VillageObject, degradeThreshold int) bool {
+	return StallDegraded(obj, degradeThreshold) || (IsWearableStall(obj) && obj.Damaged())
+}
+
+// BusinessDamageCause reads why a business was damaged off its Debris overlay's
+// state — DebrisStateStorm or DebrisStateWorn (also the fallback when the
+// overlay is missing, e.g. removed in the editor). Pure over the object map.
+func BusinessDamageCause(objects map[VillageObjectID]*VillageObject, businessID VillageObjectID) string {
+	if d := debrisFor(objects, businessID); d != nil && d.CurrentState == DebrisStateStorm {
+		return DebrisStateStorm
+	}
+	return DebrisStateWorn
+}
+
+// debrisFor returns the Debris overlay attached to businessID, or nil.
+func debrisFor(objects map[VillageObjectID]*VillageObject, businessID VillageObjectID) *VillageObject {
+	var best *VillageObject
+	for _, o := range objects {
+		if o == nil || o.AttachedTo != businessID || !o.HasTag(TagDebris) {
+			continue
+		}
+		if best == nil || o.ID < best.ID {
+			best = o
+		}
+	}
+	return best
 }
 
 // ObjectDamaged is emitted when a damage event puts an object out of use.
@@ -131,11 +240,14 @@ type ObjectRepaired struct {
 
 func (ObjectRepaired) isSimEvent() {}
 
-// accrueDamageUse counts one draw at obj toward its damage hazard. Only wells
-// accrue in slice 1.
-func accrueDamageUse(obj *VillageObject) {
-	if obj.IsWell() && !obj.Damaged() {
-		obj.UseSinceRepair++
+// accrueDamageUse counts units of water drawn at obj toward its damage hazard —
+// 1 for a drink, the pail's size for a gather — so the well that gives the most
+// water wears fastest (LLM-675; slice 1 counted trips, which made the mill well,
+// drawn a full pail at a time, the slowest to wear). Only wells accrue here; a
+// business's use factor is its stall wear.
+func accrueDamageUse(obj *VillageObject, units int) {
+	if units > 0 && obj.IsWell() && !obj.Damaged() {
+		obj.UseSinceRepair += units
 	}
 }
 
@@ -153,40 +265,56 @@ func damageUseFactor(use, reference int) float64 {
 	return f
 }
 
-// anyWellDamaged reports whether a well is already out of use — the
-// one-active-event guard.
-func anyWellDamaged(w *World) bool {
+// anyDamaged reports whether an object of kind is already damaged — the
+// one-active-event-per-kind guard.
+func anyDamaged(w *World, kind string) bool {
 	for _, obj := range w.VillageObjects {
-		if obj.IsWell() && obj.Damaged() {
+		if obj.Damaged() && PublicWorksKind(obj) == kind {
 			return true
 		}
 	}
 	return false
 }
 
-// rollWellDamage rolls every sound well once for trigger and damages at most one.
-// permille is the chance at the reference use. Wells are rolled in ID order so
-// a seeded rng is reproducible. Returns the damaged well, or nil.
-func rollWellDamage(w *World, trigger string, permille int, rng DamageRoller, now time.Time) *VillageObject {
+// lastRepairAt returns the min-gap anchor for kind.
+func lastRepairAt(w *World, kind string) time.Time {
+	if kind == PublicWorksBusiness {
+		return w.Environment.LastBusinessRepairAt
+	}
+	return w.Environment.LastWellRepairAt
+}
+
+// rollDamage rolls every sound object of kind once for trigger and damages at
+// most one. permille is the chance at the reference use; the use factor is a
+// well's water drawn or a business's stall wear. Objects are rolled in ID order
+// so a seeded rng is reproducible. Returns the damaged object, or nil.
+func rollDamage(w *World, kind, trigger string, permille int, rng DamageRoller, now time.Time) *VillageObject {
 	if w == nil || permille <= 0 || rng == nil {
 		return nil
 	}
-	if anyWellDamaged(w) {
+	if anyDamaged(w, kind) {
 		return nil
 	}
-	if gap := time.Duration(w.Settings.WellDamageMinGapHours) * time.Hour; gap > 0 &&
-		!w.Environment.LastRepairAt.IsZero() && now.Sub(w.Environment.LastRepairAt) < gap {
+	gapHours, reference := w.Settings.WellDamageMinGapHours, w.Settings.WellDamageUseReference
+	if kind == PublicWorksBusiness {
+		gapHours, reference = w.Settings.BusinessDamageMinGapHours, w.Settings.BusinessDamageWearReference
+	}
+	if last := lastRepairAt(w, kind); gapHours > 0 && !last.IsZero() && now.Sub(last) < time.Duration(gapHours)*time.Hour {
 		return nil
 	}
-	var wells []*VillageObject
+	var candidates []*VillageObject
 	for _, obj := range w.VillageObjects {
-		if obj.IsWell() {
-			wells = append(wells, obj)
+		if PublicWorksKind(obj) == kind {
+			candidates = append(candidates, obj)
 		}
 	}
-	sort.Slice(wells, func(i, j int) bool { return wells[i].ID < wells[j].ID })
-	for _, obj := range wells {
-		p := float64(permille) / 1000 * damageUseFactor(obj.UseSinceRepair, w.Settings.WellDamageUseReference)
+	sortObjectsByID(candidates)
+	for _, obj := range candidates {
+		use := obj.UseSinceRepair
+		if kind == PublicWorksBusiness {
+			use = obj.Wear
+		}
+		p := float64(permille) / 1000 * damageUseFactor(use, reference)
 		if rng.Float64() < p {
 			damageObject(w, obj, trigger, now)
 			return obj
@@ -208,29 +336,72 @@ func damageObject(w *World, obj *VillageObject, trigger string, now time.Time) {
 			setVillageObjectStateInline(w, obj, st.State)
 		}
 	}
+	if PublicWorksKind(obj) == PublicWorksBusiness {
+		placeDebris(w, obj, trigger)
+	}
 	name := damageObjectName(w, obj)
-	log.Printf("sim/damage: %s (%s) is out of use — trigger %s, %d draws since last repair",
-		name, obj.ID, trigger, obj.UseSinceRepair)
+	log.Printf("sim/damage: %s (%s) is out of use — trigger %s, use %d, wear %d",
+		name, obj.ID, trigger, obj.UseSinceRepair, obj.Wear)
 	w.emit(&ObjectDamaged{ObjectID: obj.ID, Name: name, Trigger: trigger, At: now})
 	syncPublicWorksNews(w, now)
 }
 
+// placeDebris hangs the Debris overlay on a damaged business — storm branches
+// for a storm, split boards otherwise. Unnamed on purpose: the loiter resolvers
+// skip unnamed objects, so nobody standing at the shop is attributed to the
+// debris instead of the shop. No-op when the catalog lacks the asset (a test
+// world) or the business already carries one.
+func placeDebris(w *World, business *VillageObject, trigger string) {
+	asset := w.Assets[DebrisAssetID]
+	if asset == nil || debrisFor(w.VillageObjects, business.ID) != nil {
+		return
+	}
+	state := DebrisStateWorn
+	if trigger == DamageTriggerStorm {
+		state = DebrisStateStorm
+	}
+	if asset.FindState(state) == nil {
+		state = asset.DefaultState
+	}
+	d := placeVillageObject(w, DebrisAssetID, asset, business.Pos, business.ID, "", state)
+	d.Tags = []string{TagDebris}
+}
+
+// removeDebris deletes a business's Debris overlay, if it has one.
+func removeDebris(w *World, businessID VillageObjectID) {
+	if d := debrisFor(w.VillageObjects, businessID); d != nil {
+		if _, err := DeleteVillageObject(d.ID).Fn(w); err != nil {
+			log.Printf("sim/damage: removing debris %s from %s: %v", d.ID, businessID, err)
+		}
+	}
+}
+
 // repairObject puts obj back in use: clears the damage and the use count,
-// returns the asset to its sound state, stamps the min-gap anchor, and emits
-// ObjectRepaired. Paying the hand is the caller's job (completePublicWorksRepair);
-// an operator reset pays nothing.
+// returns the asset to its sound state, removes a business's debris, stamps
+// the kind's min-gap anchor, and emits ObjectRepaired. A business's stall wear
+// is the keeper's and is left as it is. Paying the hand is the caller's job
+// (completePublicWorksRepair); an operator reset pays nothing.
 func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, now time.Time) {
 	if obj == nil || !obj.Damaged() {
 		return
 	}
 	obj.DamagedAt = time.Time{}
 	obj.UseSinceRepair = 0
+	// Only an object showing its damaged state goes back to a sound one — a
+	// business has no damaged art, and its open/closed state is not ours to reset.
 	if asset := w.Assets[obj.AssetID]; asset != nil {
-		if st := soundAssetState(asset); st != nil && obj.CurrentState != st.State {
-			setVillageObjectStateInline(w, obj, st.State)
+		if cur := asset.FindState(obj.CurrentState); cur != nil && stateHasTag(cur, TagDamaged) {
+			if st := soundAssetState(asset); st != nil {
+				setVillageObjectStateInline(w, obj, st.State)
+			}
 		}
 	}
-	w.Environment.LastRepairAt = now
+	if PublicWorksKind(obj) == PublicWorksBusiness {
+		removeDebris(w, obj.ID)
+		w.Environment.LastBusinessRepairAt = now
+	} else {
+		w.Environment.LastWellRepairAt = now
+	}
 	name := damageObjectName(w, obj)
 	log.Printf("sim/damage: %s (%s) is mended (repairer %q, bounty %d)", name, obj.ID, repairerID, bounty)
 	w.emit(&ObjectRepaired{ObjectID: obj.ID, Name: name, RepairerID: repairerID, Bounty: bounty, At: now})
@@ -285,6 +456,10 @@ func DamageSiteLabel(objects map[VillageObjectID]*VillageObject, structures map[
 		catalog = a.Name
 	}
 	name := obj.EffectiveDisplayName(catalog)
+	// A building is its own landmark — "the Tavern", never "Tavern by the Inn".
+	if _, ok := structures[StructureID(obj.ID)]; ok && name != "" {
+		return name
+	}
 	here := obj.Pos.Tile()
 	var bestName string
 	var bestID VillageObjectID
@@ -337,14 +512,54 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 			obj = w.VillageObjects[id]
 		}
 	}
-	if !obj.IsWell() || !obj.Damaged() {
+	if !IsDamagedSite(obj) {
 		return
 	}
+	kind := PublicWorksKind(obj)
 	text := "This well is broken — the windlass is down, and no water can be drawn here."
-	if PublicWorksBountyOpen(w.Environment.TownChest, w.Settings.PublicWorksBounty, w.Settings.PublicWorksChestReserve) {
-		text += " The town is paying " + coinsPhrase(w.Settings.PublicWorksBounty) + " to whoever mends it."
+	if kind == PublicWorksBusiness {
+		text = DamageFact(w.VillageObjects, w.Structures, w.Assets, obj) + " — it can take in no new stock until it is mended."
+	}
+	bounty, _ := w.Settings.publicWorksTerms(kind)
+	if PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
+		text += " The town is paying " + coinsPhrase(bounty) + " to whoever mends it."
 	}
 	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, At: now})
+}
+
+// DamageFact is the "what is broken" sentence opening for a damaged site —
+// "The windlass at the Well by the Mill is down", "The storm has torn at the
+// Tavern", "Boards have split and given way at the Tavern". Shared by the
+// ticker, the boards, the PC's thought and the cue, so every surface names the
+// damage the same way. Pure over the maps.
+func DamageFact(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject) string {
+	site := DamageSiteLabel(objects, structures, assets, obj)
+	if PublicWorksKind(obj) == PublicWorksBusiness {
+		place := WithDefiniteArticle(site)
+		if BusinessDamageCause(objects, obj.ID) == DebrisStateStorm {
+			return "The storm has torn at " + place
+		}
+		return "Boards have split and given way at " + place
+	}
+	return "The windlass at the " + site + " is down"
+}
+
+// publicWorksTerms returns the engine-owned bounty and work seconds for
+// mending an object of kind.
+func (s WorldSettings) publicWorksTerms(kind string) (bounty, seconds int) {
+	if kind == PublicWorksBusiness {
+		return s.PublicWorksBusinessBounty, s.PublicWorksBusinessRepairSeconds
+	}
+	return s.PublicWorksBounty, s.PublicWorksRepairSeconds
+}
+
+// PublicWorksTerms is publicWorksTerms over the snapshot's mirrors, so the cue
+// and the ticker state the same terms StartRepair gates on.
+func (s *Snapshot) PublicWorksTerms(kind string) (bounty, seconds int) {
+	if kind == PublicWorksBusiness {
+		return s.PublicWorksBusinessBounty, s.PublicWorksBusinessRepairSeconds
+	}
+	return s.PublicWorksBounty, s.PublicWorksRepairSeconds
 }
 
 // DamageTickerLine is one broken object as a line for the client's top ticker.
@@ -353,19 +568,24 @@ type DamageTickerLine struct {
 	Text     string
 }
 
-// DamageTickerLines lists every broken well as one ticker line, lowest id
-// first. Pure over the snapshot (the public world read builds it).
+// DamageTickerLines lists every damaged site (broken well, damaged business)
+// as one ticker line, lowest id first. Pure over the snapshot (the public
+// world read builds it).
 func DamageTickerLines(s *Snapshot) []DamageTickerLine {
 	var out []DamageTickerLine
 	for _, obj := range s.VillageObjects {
-		if !obj.IsWell() || !obj.Damaged() {
+		if !IsDamagedSite(obj) {
 			continue
 		}
-		site := DamageSiteLabel(s.VillageObjects, s.Structures, s.Assets, obj)
-		text := "The windlass at the " + site + " is down"
-		if PublicWorksBountyOpen(s.Environment.TownChest, s.PublicWorksBounty, s.PublicWorksChestReserve) {
-			text += " — the town pays " + coinsPhrase(s.PublicWorksBounty) + " to the hand who mends it."
-		} else {
+		kind := PublicWorksKind(obj)
+		text := DamageFact(s.VillageObjects, s.Structures, s.Assets, obj)
+		bounty, _ := s.PublicWorksTerms(kind)
+		switch {
+		case PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve):
+			text += " — the town pays " + coinsPhrase(bounty) + " to the hand who mends it."
+		case kind == PublicWorksBusiness:
+			text += " — the town cannot pay for the mending just now."
+		default:
 			text += " — draw your water at the other well."
 		}
 		out = append(out, DamageTickerLine{ObjectID: obj.ID, Text: text})
@@ -381,28 +601,44 @@ func PublicWorksBountyOpen(chest, bounty, reserve int) bool {
 	return bounty > 0 && chest >= bounty+reserve
 }
 
-// objectUnderRepair reports whether some actor already has a live repair window
-// on obj — so a second hand can't take the same job.
+// objectUnderRepair reports whether some actor already has a live town repair
+// window on obj — so a second hand can't take the same job. A keeper's own
+// nail-mend at a damaged shop is not the town's work and does not count.
 func objectUnderRepair(w *World, objID VillageObjectID, except ActorID) bool {
 	for id, a := range w.Actors {
 		if id == except || a == nil || a.SourceActivity == nil {
 			continue
 		}
-		if a.SourceActivity.Kind == SourceActivityRepair && a.SourceActivity.ObjectID == objID {
+		act := a.SourceActivity
+		if act.Kind == SourceActivityRepair && act.PublicWorks && act.ObjectID == objID {
 			return true
 		}
 	}
 	return false
 }
 
-// publicWorksSiteAt returns the damaged object the actor is standing at (the
-// same loitering resolution the drink path uses), or nil.
+// publicWorksSiteAt returns the damaged site the actor is standing at, or nil:
+// a broken well by the drink path's loitering resolution, else a damaged
+// business the actor is inside or at the pin of (AtBusiness — the same test the
+// keeper's own mend uses). Lowest id wins if, against the guards, two qualify.
 func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
-	_, obj := findRefreshObjectNear(w, actor.Pos)
-	if obj.IsWell() && obj.Damaged() {
+	if _, obj := findRefreshObjectNear(w, actor.Pos); obj.IsWell() && obj.Damaged() {
 		return obj
 	}
-	return nil
+	var best *VillageObject
+	for _, obj := range w.VillageObjects {
+		if PublicWorksKind(obj) != PublicWorksBusiness || !obj.Damaged() {
+			continue
+		}
+		pin, ok := effectiveObjectLoiterTile(w, obj.ID)
+		if !AtBusiness(actor.Pos, actor.InsideStructureID, obj.ID, pin, ok) {
+			continue
+		}
+		if best == nil || obj.ID < best.ID {
+			best = obj
+		}
+	}
+	return best
 }
 
 // MayTakePublicWorks reports whether an actor may take the town's repair work:
@@ -426,21 +662,28 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 	if objectUnderRepair(w, site.ID, actor.ID) {
 		return nil, errors.New("someone is already mending it.")
 	}
-	if !PublicWorksBountyOpen(w.Environment.TownChest, w.Settings.PublicWorksBounty, w.Settings.PublicWorksChestReserve) {
+	kind := PublicWorksKind(site)
+	bounty, seconds := w.Settings.publicWorksTerms(kind)
+	if !PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
 		return nil, errors.New("the town chest cannot pay for the mending just now.")
 	}
-	seconds := w.Settings.PublicWorksRepairSeconds
 	if seconds <= 0 {
 		seconds = DefaultPublicWorksRepairSeconds
+		if kind == PublicWorksBusiness {
+			seconds = DefaultPublicWorksBusinessRepairSeconds
+		}
 	}
 	// The bounty is fixed now, on the terms the hand was offered — a live
-	// retune during the hour of work changes nothing they were promised.
+	// retune during the work changes nothing they were promised. PublicWorks
+	// marks the window as the town's, so completion pays from the chest even at
+	// a business whose keeper could also mend (their own wear) there.
 	actor.SourceActivity = &SourceActivity{
-		Kind:      SourceActivityRepair,
-		ObjectID:  site.ID,
-		StartedAt: now,
-		Until:     now.Add(time.Duration(seconds) * time.Second),
-		Bounty:    w.Settings.PublicWorksBounty,
+		Kind:        SourceActivityRepair,
+		ObjectID:    site.ID,
+		StartedAt:   now,
+		Until:       now.Add(time.Duration(seconds) * time.Second),
+		Bounty:      bounty,
+		PublicWorks: true,
 	}
 	name := sourceActivityObjectName(w, site)
 	w.emit(&SourceActivityStarted{
@@ -467,9 +710,10 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // holds — the start gate checked it could pay, but the wage may have drawn it
 // down since).
 func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) int {
-	if actor == nil || !obj.IsWell() || !obj.Damaged() {
-		return 0 // slice 1 pays only for a well (nil-safe predicates)
+	if actor == nil || !IsDamagedSite(obj) {
+		return 0 // the town pays only for a damaged well or business (nil-safe predicates)
 	}
+	forText := publicWorksForText(WithDefiniteArticle(damageObjectName(w, obj)))
 	bounty := agreed
 	if bounty > w.Environment.TownChest {
 		bounty = w.Environment.TownChest
@@ -488,7 +732,7 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 		ActorID:          actor.ID,
 		OccurredAt:       now,
 		ActionType:       ActionTypeCollected,
-		Text:             publicWorksForText,
+		Text:             forText,
 		HuddleID:         actor.CurrentHuddleID,
 		CounterpartyName: estateRateRecipientName,
 		Amount:           bounty,
@@ -502,7 +746,7 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 		Payload: map[string]any{
 			"payer":        estateRateRecipientName,
 			"amount":       bounty,
-			"for":          publicWorksForText,
+			"for":          forText,
 			"public_works": true,
 			"object_id":    string(obj.ID),
 			"chest_after":  w.Environment.TownChest,
@@ -516,35 +760,55 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 
 // PublicWorksCompletionNarration is the hand's completion beat for a town repair
 // — the public-works sibling of SourceActivityCompletionNarration's stall line.
-func PublicWorksCompletionNarration(sourceName string, paid int) string {
+// kind is the site's PublicWorksKind; it picks what "working again" means.
+func PublicWorksCompletionNarration(kind, sourceName string, paid int) string {
 	place := "the well"
+	restored := "it draws water again"
+	if kind == PublicWorksBusiness {
+		place = "the damage"
+		restored = "the place is sound again"
+	}
 	if sourceName != "" {
 		place = WithDefiniteArticle(sourceName)
 	}
 	if paid <= 0 {
-		return "You finish mending " + place + "; it draws water again, but the town chest was empty and nobody paid you."
+		return "You finish mending " + place + "; " + restored + ", but the town chest was empty and nobody paid you."
 	}
-	return "You finish mending " + place + "; it draws water again, and the town pays you " + coinsPhrase(paid) + " for the work."
+	return "You finish mending " + place + "; " + restored + ", and the town pays you " + coinsPhrase(paid) + " for the work."
 }
 
-// RollDailyDamage is the rotation-boundary hazard roll. Bound to the durable
-// boundary in checkAndRotate (not ApplyDailyRotation), so the umbilical
-// force-rotate never rolls it and a restart does not roll twice.
+// RollDailyDamage is the rotation-boundary hazard roll — wells and businesses,
+// each on its own chance and guards. Bound to the durable boundary in
+// checkAndRotate (not ApplyDailyRotation), so the umbilical force-rotate never
+// rolls it and a restart does not roll twice. Returns what broke.
 func RollDailyDamage(boundary time.Time, rng DamageRoller) Command {
 	return Command{Fn: func(w *World) (any, error) {
-		return rollWellDamage(w, DamageTriggerWear, w.Settings.WellDamageChancePermille, rng, boundary), nil
+		return rollAllDamage(w, DamageTriggerWear, w.Settings.WellDamageChancePermille, w.Settings.BusinessDamageChancePermille, rng, boundary), nil
 	}}
 }
 
 // RollStormDamage is the storm-start hazard roll; called inline from the
 // WeatherChanged subscriber (cascade), which already runs on the world goroutine.
-func RollStormDamage(w *World, rng DamageRoller, now time.Time) *VillageObject {
-	return rollWellDamage(w, DamageTriggerStorm, w.Settings.WellDamageStormChancePermille, rng, now)
+// Returns what broke — at most one well and one business.
+func RollStormDamage(w *World, rng DamageRoller, now time.Time) []*VillageObject {
+	return rollAllDamage(w, DamageTriggerStorm, w.Settings.WellDamageStormChancePermille, w.Settings.BusinessDamageStormChancePermille, rng, now)
 }
 
-// SetObjectDamage is the operator control: action "damage" puts a well out of
-// use now (no roll, no guards but "is a well"), "repair" mends it without a
-// bounty.
+func rollAllDamage(w *World, trigger string, wellPermille, businessPermille int, rng DamageRoller, now time.Time) []*VillageObject {
+	var broke []*VillageObject
+	if obj := rollDamage(w, PublicWorksWell, trigger, wellPermille, rng, now); obj != nil {
+		broke = append(broke, obj)
+	}
+	if obj := rollDamage(w, PublicWorksBusiness, trigger, businessPermille, rng, now); obj != nil {
+		broke = append(broke, obj)
+	}
+	return broke
+}
+
+// SetObjectDamage is the operator control over a well or an owned business:
+// action "damage" breaks it now (no roll, no guards but the kind), "storm" the
+// same with the storm trigger (a business gets the storm debris), and "repair"
+// mends it without a bounty.
 func SetObjectDamage(id VillageObjectID, action string) Command {
 	return Command{Fn: func(w *World) (any, error) {
 		obj := w.VillageObjects[id]
@@ -552,12 +816,14 @@ func SetObjectDamage(id VillageObjectID, action string) Command {
 			return nil, ErrVillageObjectNotFound
 		}
 		now := time.Now().UTC()
-		if !obj.IsWell() {
+		if PublicWorksKind(obj) == "" {
 			return nil, ErrNotDamageable
 		}
 		switch action {
 		case "damage":
 			damageObject(w, obj, DamageTriggerForce, now)
+		case "storm":
+			damageObject(w, obj, DamageTriggerStorm, now)
 		case "repair":
 			repairObject(w, obj, "", 0, now)
 		default:

@@ -1117,12 +1117,17 @@ func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFl
 	if !actorMidSourceActivity(a) {
 		return nil
 	}
+	publicWorks := a.SourceActivityKind == sim.SourceActivityRepair && a.SourceActivityPublicWorks
+	kind := ""
+	if publicWorks {
+		kind = sim.PublicWorksKind(snap.VillageObjects[a.SourceActivityObjectID])
+	}
 	return &InFlightSourceActivityView{
-		Kind:        a.SourceActivityKind,
-		SourceLabel: resolveDwellPinLabel(snap, a.SourceActivityObjectID),
-		Attribute:   a.SourceActivityAttribute,
-		PublicWorks: a.SourceActivityKind == sim.SourceActivityRepair &&
-			snap.VillageObjects[a.SourceActivityObjectID].Damaged(),
+		Kind:            a.SourceActivityKind,
+		SourceLabel:     resolveDwellPinLabel(snap, a.SourceActivityObjectID),
+		Attribute:       a.SourceActivityAttribute,
+		PublicWorks:     publicWorks,
+		PublicWorksKind: kind,
 	}
 }
 

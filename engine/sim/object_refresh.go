@@ -516,9 +516,9 @@ func applyObjectRefreshEffect(w *World, actorID ActorID, objID VillageObjectID, 
 			}
 		}
 	}
-	// A drink that landed is one draw toward the well's damage hazard (LLM-654).
+	// A drink that landed is one unit toward the well's damage hazard (LLM-654).
 	if len(hits) > 0 {
-		accrueDamageUse(obj)
+		accrueDamageUse(obj, 1)
 	}
 	// Eating in place may have drained a finite bush — recompute its
 	// berries/bare visual so a picked-clean bush goes bare.

@@ -36,7 +36,8 @@ type WorldEnvironment struct {
 	LastNeedsTickAt         time.Time       // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
 	TownChest               int             // coin the estate rate (LLM-652) has taken out of purses and not yet spent back. Durable — persisted in world_state.town_chest_coins: the coin has left the purses, so losing it on restart would destroy it.
 	InputShortages          []InputShortage // standing input shortages the daily sweep found (LLM-656), sorted by (keeper, item). Durable — persisted in world_state.input_shortages: the peddler threshold is counted in game-days and the village restarts several times a day, so an in-memory count would rarely reach it.
-	LastRepairAt            time.Time       // when a damaged object was last mended (damage.go), the min-gap anchor for the next damage event; zero = none yet. Transient — restart-lossy by design: losing it only lets the next break come a little sooner.
+	LastWellRepairAt        time.Time       // when a broken well was last mended (damage.go), the min-gap anchor for the next well break; zero = none yet. Transient — restart-lossy by design: losing it only lets the next break come a little sooner.
+	LastBusinessRepairAt    time.Time       // the same anchor for business damage (LLM-675), kept apart so a well repair never holds off a shop break or the reverse. Transient.
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 }
 
@@ -260,6 +261,16 @@ type WorldSettings struct {
 	PublicWorksBounty             int
 	PublicWorksRepairSeconds      int
 	PublicWorksChestReserve       int
+
+	// Business damage (LLM-675): the same shape for owned businesses, with the
+	// use factor read off stall wear (BusinessDamageWearReference = factor 1),
+	// and the business repair's own terms. The chest reserve is shared.
+	BusinessDamageChancePermille      int
+	BusinessDamageStormChancePermille int
+	BusinessDamageWearReference       int
+	BusinessDamageMinGapHours         int
+	PublicWorksBusinessBounty         int
+	PublicWorksBusinessRepairSeconds  int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
@@ -2462,60 +2473,62 @@ func (w *World) republish() {
 		duskMin, duskOK = h*60+m, true
 	}
 	snap := &Snapshot{
-		AtTick:                        w.TickCounter,
-		PublishedAt:                   now,
-		Actors:                        make(map[ActorID]*ActorSnapshot, len(w.Actors)),
-		Huddles:                       make(map[HuddleID]*Huddle, len(w.Huddles)),
-		Scenes:                        make(map[SceneID]*Scene, len(w.Scenes)),
-		Structures:                    make(map[StructureID]*Structure, len(w.Structures)),
-		Orders:                        make(map[OrderID]*Order, len(w.Orders)),
-		VillageObjects:                make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
-		Quotes:                        make(map[QuoteID]*SceneQuote, len(w.Quotes)),
-		PayLedger:                     make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
-		LaborLedger:                   make(map[LaborID]*LaborOffer, len(w.LaborLedger)),
-		ActionLog:                     CloneActionLog(w.ActionLog),
-		ContactLedger:                 CloneContactLedger(w.ContactLedger),
-		ContactBrakeWindow:            w.ContactBrakeWindow(),
-		ContactRecallHorizon:          w.ContactRecallHorizon(),
-		CoinRecord:                    CloneCoinRecord(w.CoinRecord),
-		CoinRecordWindow:              w.CoinRecordWindow(),
-		NoticeboardContent:            make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
-		PriceBook:                     ClonePriceBook(w.PriceBook),
-		Environment:                   w.Environment,
-		Phase:                         w.Phase,
-		LocalMinuteOfDay:              &localMin,
-		LocalDateUTC:                  orderDateUTC(now, w.Settings.Location),
-		DawnMinute:                    dawnMin,
-		DuskMinute:                    duskMin,
-		DawnDuskMinuteOK:              dawnOK && duskOK,
-		NeedThresholds:                w.Settings.NeedThresholds.Clone(),
-		PCPresenceStaleAfter:          PCPresenceStaleAfter(w),
-		HuddleLiveWindow:              EffectiveHuddleLiveWindow(w.Settings),
-		SeekWorkCoinCeiling:           effectiveSeekWorkCoinCeiling(w.Settings),
-		LodgingDefaultWeeklyRate:      w.Settings.LodgingDefaultWeeklyRate,
-		LodgingBedtimeMinute:          lodgerBedtimeMinute(w),
-		HomeBakesActive:               homeBakesActiveSet(w),
-		LodgingCheckOutMinute:         w.Settings.LodgingCheckOutHour * 60,
-		RestockReorderPct:             w.Settings.RestockReorderPct,
-		StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,
-		StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
-		EquipmentServiceDueThreshold:  w.Settings.EquipmentServiceDueThreshold,
-		StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
-		StallDegradedProducePct:       w.Settings.StallDegradedProducePct,
-		HearthLowMinutes:              w.Settings.HearthLowMinutes,
-		StokeWoodPerStoke:             w.Settings.StokeWoodPerStoke,
-		GarmentThreadbareFractionX100: w.Settings.GarmentThreadbareFractionX100,
-		FarmUpkeepFloor:               w.Settings.FarmUpkeepFloor,
-		FarmUpkeepCoinsPerShovel:      w.Settings.FarmUpkeepCoinsPerShovel,
-		EstateRateFloor:               w.Settings.EstateRateFloor,
-		PublicWorksBounty:             w.Settings.PublicWorksBounty,
-		PublicWorksChestReserve:       w.Settings.PublicWorksChestReserve,
-		PublicWorksRepairSeconds:      w.Settings.PublicWorksRepairSeconds,
-		MerchantCoinFloor:             w.Settings.MerchantCoinFloor,
-		DefaultOutdoorSceneRadius:     w.Settings.DefaultOutdoorSceneRadius,
-		Assets:                        w.Assets,
-		ZoomMinAdmin:                  w.Settings.ZoomMinAdmin,
-		ZoomMinRegular:                w.Settings.ZoomMinRegular,
+		AtTick:                           w.TickCounter,
+		PublishedAt:                      now,
+		Actors:                           make(map[ActorID]*ActorSnapshot, len(w.Actors)),
+		Huddles:                          make(map[HuddleID]*Huddle, len(w.Huddles)),
+		Scenes:                           make(map[SceneID]*Scene, len(w.Scenes)),
+		Structures:                       make(map[StructureID]*Structure, len(w.Structures)),
+		Orders:                           make(map[OrderID]*Order, len(w.Orders)),
+		VillageObjects:                   make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		Quotes:                           make(map[QuoteID]*SceneQuote, len(w.Quotes)),
+		PayLedger:                        make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
+		LaborLedger:                      make(map[LaborID]*LaborOffer, len(w.LaborLedger)),
+		ActionLog:                        CloneActionLog(w.ActionLog),
+		ContactLedger:                    CloneContactLedger(w.ContactLedger),
+		ContactBrakeWindow:               w.ContactBrakeWindow(),
+		ContactRecallHorizon:             w.ContactRecallHorizon(),
+		CoinRecord:                       CloneCoinRecord(w.CoinRecord),
+		CoinRecordWindow:                 w.CoinRecordWindow(),
+		NoticeboardContent:               make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
+		PriceBook:                        ClonePriceBook(w.PriceBook),
+		Environment:                      w.Environment,
+		Phase:                            w.Phase,
+		LocalMinuteOfDay:                 &localMin,
+		LocalDateUTC:                     orderDateUTC(now, w.Settings.Location),
+		DawnMinute:                       dawnMin,
+		DuskMinute:                       duskMin,
+		DawnDuskMinuteOK:                 dawnOK && duskOK,
+		NeedThresholds:                   w.Settings.NeedThresholds.Clone(),
+		PCPresenceStaleAfter:             PCPresenceStaleAfter(w),
+		HuddleLiveWindow:                 EffectiveHuddleLiveWindow(w.Settings),
+		SeekWorkCoinCeiling:              effectiveSeekWorkCoinCeiling(w.Settings),
+		LodgingDefaultWeeklyRate:         w.Settings.LodgingDefaultWeeklyRate,
+		LodgingBedtimeMinute:             lodgerBedtimeMinute(w),
+		HomeBakesActive:                  homeBakesActiveSet(w),
+		LodgingCheckOutMinute:            w.Settings.LodgingCheckOutHour * 60,
+		RestockReorderPct:                w.Settings.RestockReorderPct,
+		StallWearRepairThreshold:         w.Settings.StallWearRepairThreshold,
+		StallWearDegradeThreshold:        w.Settings.StallWearDegradeThreshold,
+		EquipmentServiceDueThreshold:     w.Settings.EquipmentServiceDueThreshold,
+		StallNailsPerRepair:              w.Settings.StallNailsPerRepair,
+		StallDegradedProducePct:          w.Settings.StallDegradedProducePct,
+		HearthLowMinutes:                 w.Settings.HearthLowMinutes,
+		StokeWoodPerStoke:                w.Settings.StokeWoodPerStoke,
+		GarmentThreadbareFractionX100:    w.Settings.GarmentThreadbareFractionX100,
+		FarmUpkeepFloor:                  w.Settings.FarmUpkeepFloor,
+		FarmUpkeepCoinsPerShovel:         w.Settings.FarmUpkeepCoinsPerShovel,
+		EstateRateFloor:                  w.Settings.EstateRateFloor,
+		PublicWorksBounty:                w.Settings.PublicWorksBounty,
+		PublicWorksChestReserve:          w.Settings.PublicWorksChestReserve,
+		PublicWorksRepairSeconds:         w.Settings.PublicWorksRepairSeconds,
+		PublicWorksBusinessBounty:        w.Settings.PublicWorksBusinessBounty,
+		PublicWorksBusinessRepairSeconds: w.Settings.PublicWorksBusinessRepairSeconds,
+		MerchantCoinFloor:                w.Settings.MerchantCoinFloor,
+		DefaultOutdoorSceneRadius:        w.Settings.DefaultOutdoorSceneRadius,
+		Assets:                           w.Assets,
+		ZoomMinAdmin:                     w.Settings.ZoomMinAdmin,
+		ZoomMinRegular:                   w.Settings.ZoomMinRegular,
 		// Resolved (default-applied) conversation turn-state windows, so
 		// perception build reads the same expiry the sim.Speak backstop uses.
 		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),
@@ -2594,6 +2607,7 @@ func (w *World) republish() {
 		if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
 			sa.SourceActivityKind = act.Kind
 			sa.SourceActivityObjectID = act.ObjectID
+			sa.SourceActivityPublicWorks = act.PublicWorks
 			if act.Kind == SourceActivityRefresh {
 				if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 					sa.SourceActivityAttribute = primaryRefreshNeed(obj)

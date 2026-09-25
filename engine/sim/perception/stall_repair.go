@@ -72,10 +72,11 @@ type StallRepairView struct {
 // (or blocked at pct 0), until mended (LLM-304, LLM-446). The snapshot-side twin
 // of sim.ownerStallDegraded: the buy-side "## Restocking" cue suppresses on it
 // unconditionally so it can't steer a buy the degraded shop can't turn into
-// stock. nil-safe via sim.StallDegraded (an actor owning no wearable stall is
-// never degraded).
+// stock. A business damaged by an event counts too (LLM-675,
+// sim.BusinessOutOfTrade). nil-safe (an actor owning no wearable stall is never
+// degraded).
 func ownerBusinessDegraded(snap *sim.Snapshot, actorID sim.ActorID) bool {
-	return sim.StallDegraded(sim.OwnedWearableStall(snap.VillageObjects, actorID), snap.StallWearDegradeThreshold)
+	return sim.BusinessOutOfTrade(sim.OwnedWearableStall(snap.VillageObjects, actorID), snap.StallWearDegradeThreshold)
 }
 
 // ownerBusinessProduceBlocked reports whether degrade FULLY blocks the actor's
