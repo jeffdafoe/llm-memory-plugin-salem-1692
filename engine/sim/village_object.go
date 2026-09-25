@@ -114,6 +114,12 @@ type VillageObject struct {
 	// (checkpointed) so the hazard does not reset on every deploy.
 	UseSinceRepair int
 
+	// ExpiresAt is when a temporary placement is removed (LLM-678) — a storm
+	// stump left by a cleared road; zero = permanent. RemoveExpiredObjects
+	// deletes it at the first daily boundary past this time. Durable
+	// (checkpointed), so a restart keeps the stump until then.
+	ExpiresAt time.Time
+
 	// HearthLitUntil is when this structure's hearth fire burns out (LLM-412).
 	// Meaningful only on an object tagged TagHearth (a structure-backed object
 	// whose building has a fireplace); zero = the fire is out. Stoking (the

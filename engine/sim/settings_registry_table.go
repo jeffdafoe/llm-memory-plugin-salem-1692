@@ -178,6 +178,7 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("road_damage_min_gap_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.RoadDamageMinGapHours }),
 		intSetting("public_works_road_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRoadBounty }),
 		intSetting("public_works_road_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRoadRepairSeconds }),
+		intSetting("road_stump_days", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.RoadStumpDays }),
 
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute

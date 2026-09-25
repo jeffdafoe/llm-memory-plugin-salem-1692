@@ -570,6 +570,13 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: input shortage sweep: %v", err)
 		}
 	}
+	// Expired placements (LLM-678): the storm stumps a cleared road leaves stand
+	// a set number of days, removed at the first boundary past their expiry.
+	if _, err := w.SendContext(ctx, RemoveExpiredObjects(boundary)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: expired placements: %v", err)
+		}
+	}
 	// Damage hazard (LLM-654): once per game-day, roll each sound well for a
 	// break scaled by its use since the last repair. Bound to the durable boundary
 	// here for the farm-upkeep reasons — the force-rotate must not roll it, and a

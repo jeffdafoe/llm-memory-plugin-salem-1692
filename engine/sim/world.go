@@ -280,6 +280,7 @@ type WorldSettings struct {
 	RoadDamageMinGapHours         int
 	PublicWorksRoadBounty         int
 	PublicWorksRoadRepairSeconds  int
+	RoadStumpDays                 int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
