@@ -134,18 +134,18 @@ func (SourceActivityStarted) isSimEvent() {}
 // while the actor is still shelved mid-meal.
 type SourceActivityCompleted struct {
 	EventBase
-	ActorID         ActorID
-	ObjectID        VillageObjectID
-	Kind            SourceActivityKind
-	Item            ItemKind // harvest only: the kind credited
-	Qty             int      // harvest only: units actually gathered
-	SourceDepleted  bool     // harvest only: the finite source was emptied (bush picked clean) — drives the "it's bare now" beat (LLM-175)
-	Attribute       NeedKey  // refresh only: the primary need eased
-	SourceName      string   // resolved object display name (both kinds)
-	Continues       bool     // true when a refresh auto-repeat re-arms after this emit
-	PublicWorks     bool     // repair only: the town's repair of a damaged object (LLM-654); Qty then carries the bounty paid
-	PublicWorksKind string   // with PublicWorks: the site's PublicWorksKind, which picks the completion wording (LLM-675)
-	At              time.Time
+	ActorID        ActorID
+	ObjectID       VillageObjectID
+	Kind           SourceActivityKind
+	Item           ItemKind // harvest only: the kind credited
+	Qty            int      // harvest only: units actually gathered
+	SourceDepleted bool     // harvest only: the finite source was emptied (bush picked clean) — drives the "it's bare now" beat (LLM-175)
+	Attribute      NeedKey  // refresh only: the primary need eased
+	SourceName     string   // resolved object display name (both kinds)
+	Continues      bool     // true when a refresh auto-repeat re-arms after this emit
+	PublicWorks    bool     // repair only: the town's repair of a damaged object (LLM-654); Qty then carries the bounty paid
+	SiteKind       string   // with PublicWorks: the site's PublicWorksKind, which picks the completion wording (LLM-675)
+	At             time.Time
 }
 
 func (SourceActivityCompleted) isSimEvent() {}
@@ -695,14 +695,14 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			name := sourceActivityObjectName(w, stall)
 			paid := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
 			w.emit(&SourceActivityCompleted{
-				ActorID:         actorID,
-				ObjectID:        act.ObjectID,
-				Kind:            act.Kind,
-				Qty:             paid,
-				SourceName:      name,
-				PublicWorks:     true,
-				PublicWorksKind: kind,
-				At:              now,
+				ActorID:     actorID,
+				ObjectID:    act.ObjectID,
+				Kind:        act.Kind,
+				Qty:         paid,
+				SourceName:  name,
+				PublicWorks: true,
+				SiteKind:    kind,
+				At:          now,
 			})
 			return
 		}

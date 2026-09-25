@@ -42,7 +42,7 @@ func handleSourceActivityCompletedWarrants(w *sim.World, evt sim.Event) {
 	}
 	narration := sim.SourceActivityCompletionNarration(done.Kind, done.Item, done.Qty, done.Attribute, done.SourceName, done.SourceDepleted)
 	if done.PublicWorks {
-		narration = sim.PublicWorksCompletionNarration(done.PublicWorksKind, done.SourceName, done.Qty)
+		narration = sim.PublicWorksCompletionNarration(done.SiteKind, done.SourceName, done.Qty)
 	}
 	if narration == "" {
 		// An unhandled kind/attribute combination — keep the event for audit/
