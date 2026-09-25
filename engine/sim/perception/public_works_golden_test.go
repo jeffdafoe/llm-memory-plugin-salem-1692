@@ -333,6 +333,25 @@ func TestDamagedShopKeeperIsNotAskedToMend(t *testing.T) {
 	}
 }
 
+// TestPublicWorksSilentAtOwnStall — a hand who owns a stall and stands at it is
+// offered no town's work there, even with the broken well at the same spot:
+// StartRepair takes the own-stall branch first, so "call repair" would mend the
+// stall, not the well. With the stall elsewhere the offer stands.
+func TestPublicWorksSilentAtOwnStall(t *testing.T) {
+	snap, actorID, _ := handAtBrokenWellScenario()
+	zero := 0
+	stall := &sim.VillageObject{ID: "anne_stall", DisplayName: "Anne's Stall", OwnerActorID: actorID,
+		Tags: []string{sim.TagBusiness}, Pos: sim.WorldPos{X: 700, Y: 400}, LoiterOffsetX: &zero, LoiterOffsetY: &zero}
+	snap.VillageObjects["anne_stall"] = stall
+	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); v != nil {
+		t.Errorf("hand at her own stall offered the town's work: %+v", v)
+	}
+	stall.Pos = sim.WorldPos{X: 6000, Y: 6000}
+	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); !v.OffersRepair() {
+		t.Errorf("control: with her stall elsewhere she should be offered repair, got %+v", v)
+	}
+}
+
 // TestPublicWorksSilentWhileBusy — a hand at the broken well who is mid another
 // activity (here, a harvest) is not offered the work or the repair tool:
 // StartRepair would bounce the second window as busy.

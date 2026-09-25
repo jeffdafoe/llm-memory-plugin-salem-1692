@@ -254,6 +254,73 @@ func TestBusinessDamageNoticesAndTicker(t *testing.T) {
 	}
 }
 
+// TestStalePublicWorksRepairIsSilent — the operator mends the shop while a
+// hand's town repair is in flight: when the window lands there is nothing left
+// to mend, so nothing is paid and no completion beat is emitted.
+func TestStalePublicWorksRepairIsSilent(t *testing.T) {
+	w, cancel := buildBusinessDamageWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("shop", "damage")); err != nil {
+		t.Fatal(err)
+	}
+	var completions []*sim.SourceActivityCompleted
+	mustSend(t, w, func(world *sim.World) {
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if c, ok := evt.(*sim.SourceActivityCompleted); ok {
+				completions = append(completions, c)
+			}
+		}))
+		world.Actors["anne"].Pos = sim.WorldPos{X: 3000, Y: 3000}.Tile()
+		world.Actors["anne"].InsideStructureID = "shop"
+	})
+	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
+		t.Fatalf("StartRepair: %v", err)
+	}
+	if _, err := w.Send(sim.SetObjectDamage("shop", "repair")); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["anne"].SourceActivity.Until = time.Now().UTC().Add(-time.Second)
+	})
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, time.Now().UTC()) })
+	mustSend(t, w, func(world *sim.World) {
+		if got := world.Actors["anne"].Coins; got != 0 {
+			t.Errorf("anne paid %d for a repair someone else landed", got)
+		}
+		if got := world.Environment.TownChest; got != 100 {
+			t.Errorf("chest = %d, want the untouched 100", got)
+		}
+		if world.Actors["anne"].SourceActivity != nil {
+			t.Error("the stale window was not cleared")
+		}
+		if len(completions) != 0 {
+			t.Errorf("emitted %d completion(s) for a repair that never landed: %+v", len(completions), completions[0])
+		}
+	})
+}
+
+// TestRepairRemovesEveryDebrisOverlay — a stray second Debris overlay on the
+// shop goes with the first when it is mended.
+func TestRepairRemovesEveryDebrisOverlay(t *testing.T) {
+	w, cancel := buildBusinessDamageWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("shop", "damage")); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		world.VillageObjects["stray-debris"] = &sim.VillageObject{ID: "stray-debris", AssetID: sim.DebrisAssetID,
+			CurrentState: sim.DebrisStateWorn, AttachedTo: "shop", Tags: []string{sim.TagDebris}}
+	})
+	if _, err := w.Send(sim.SetObjectDamage("shop", "repair")); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if d := debrisOn(world, "shop"); d != nil {
+			t.Errorf("debris %s still on the mended shop", d.ID)
+		}
+	})
+}
+
 // TestSetObjectDamageUnknownAction — an action the control does not know is
 // refused, for a business as for a well.
 func TestSetObjectDamageUnknownAction(t *testing.T) {

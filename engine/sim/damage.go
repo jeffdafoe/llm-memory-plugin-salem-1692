@@ -367,11 +367,21 @@ func placeDebris(w *World, business *VillageObject, trigger string) {
 	d.Tags = []string{TagDebris}
 }
 
-// removeDebris deletes a business's Debris overlay, if it has one.
+// removeDebris deletes every Debris overlay attached to a business — normally
+// one, but a stray second (hand-placed in the editor, say) goes too, so a
+// mended shop never keeps a heap by its door. DeleteVillageObject fails only
+// for a missing object or a structure, neither possible for an overlay found
+// here; a failure is logged and the repair still stands.
 func removeDebris(w *World, businessID VillageObjectID) {
-	if d := debrisFor(w.VillageObjects, businessID); d != nil {
-		if _, err := DeleteVillageObject(d.ID).Fn(w); err != nil {
-			log.Printf("sim/damage: removing debris %s from %s: %v", d.ID, businessID, err)
+	var ids []VillageObjectID
+	for id, o := range w.VillageObjects {
+		if o != nil && o.AttachedTo == businessID && o.HasTag(TagDebris) {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		if _, err := DeleteVillageObject(id).Fn(w); err != nil {
+			log.Printf("sim/damage: removing debris %s from %s: %v", id, businessID, err)
 		}
 	}
 }
@@ -708,10 +718,12 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // completePublicWorksRepair lands a finished public-works repair: mends obj and
 // pays the hand the bounty agreed at start from the chest (capped by what it
 // holds — the start gate checked it could pay, but the wage may have drawn it
-// down since).
-func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) int {
+// down since). landed is false when there was nothing left to mend — the site
+// was mended some other way mid-window (the operator), or is no damaged site
+// at all — and then nothing is paid and the caller tells the hand nothing.
+func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) (paid int, landed bool) {
 	if actor == nil || !IsDamagedSite(obj) {
-		return 0 // the town pays only for a damaged well or business (nil-safe predicates)
+		return 0, false // the town pays only for a damaged well or business (nil-safe predicates)
 	}
 	forText := publicWorksForText(WithDefiniteArticle(damageObjectName(w, obj)))
 	bounty := agreed
@@ -726,7 +738,7 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 	repairObject(w, obj, actor.ID, bounty, now)
 	if bounty == 0 {
 		log.Printf("sim/damage: the chest is empty — %q mended %s unpaid", actor.ID, obj.ID)
-		return 0
+		return 0, true
 	}
 	if _, err := AppendActionLogEntry(ActionLogEntry{
 		ActorID:          actor.ID,
@@ -755,7 +767,7 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 		HuddleID:    actor.CurrentHuddleID,
 		Source:      "engine",
 	})
-	return bounty
+	return bounty, true
 }
 
 // PublicWorksCompletionNarration is the hand's completion beat for a town repair

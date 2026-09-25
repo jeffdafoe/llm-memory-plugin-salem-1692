@@ -693,7 +693,13 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		if act.PublicWorks {
 			kind := PublicWorksKind(stall)
 			name := sourceActivityObjectName(w, stall)
-			paid := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
+			paid, landed := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
+			if !landed {
+				// Mended some other way mid-window: no work landed, nothing paid,
+				// and no "you finish mending it" beat to tell.
+				log.Printf("sim/damage: %q's repair of %s ended with nothing left to mend", actorID, act.ObjectID)
+				return
+			}
 			w.emit(&SourceActivityCompleted{
 				ActorID:     actorID,
 				ObjectID:    act.ObjectID,

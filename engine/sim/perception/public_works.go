@@ -154,6 +154,12 @@ func buildPublicWorks(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if actorMidSourceActivity(actorSnap) {
 		return nil
 	}
+	// Standing at a stall of their own, "repair" means that stall (StartRepair
+	// takes the stall branch first), so no town's work is offered there.
+	if own, _ := sim.WearableStallToMend(snap.VillageObjects, snap.LaborLedger, actorID); own != nil &&
+		sim.AtBusiness(actorSnap.Pos, actorSnap.InsideStructureID, own.ID, objectLoiterPin(own), true) {
+		return nil
+	}
 	v := &PublicWorksView{}
 	for _, obj := range damaged {
 		s := publicWorksSite(snap, obj)
