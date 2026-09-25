@@ -49,7 +49,107 @@ func init() {
 				"only the sound well across the village — the broken one is never offered — and he hears no bounty.",
 			build: thirstyVillagerPassesBrokenWellScenario,
 		},
+		perceptionScenario{
+			name: "hand_hears_of_storm_damaged_shop",
+			summary: "LLM-675: a storm has torn at the General Store (both wells sound). Anne, a worker at home, " +
+				"hears it under '## The town's works': it takes in no new stock until mended, the town pays 25 coins " +
+				"for about two hours of work, no nails — and a walk-to by the store's id. No second tool.",
+			build: handHearsOfDamagedShopScenario,
+		},
+		perceptionScenario{
+			name: "hand_in_damaged_shop_offered_repair",
+			summary: "LLM-675: Anne stands inside the damaged General Store. The cue names only that site and " +
+				"switches to 'Call repair' — the signal that hands her the repair tool.",
+			build: handInDamagedShopScenario,
+		},
+		perceptionScenario{
+			name: "keeper_of_damaged_shop_hears_town_pays",
+			summary: "LLM-675: Josiah keeps the storm-damaged General Store and stands in it. He is told what the " +
+				"storm did, that he can take in no new shelf stock and works slowly until it is mended, and that the " +
+				"town pays a hand 25 coins — the work is not his. No repair tool, no '## Your business' mend.",
+			build: keeperOfDamagedShopScenario,
+		},
+		perceptionScenario{
+			name: "constable_knows_shop_and_well_are_damaged",
+			summary: "LLM-675: the mill well is broken and the General Store damaged at once. Gideon hears both " +
+				"standing facts, each with the bounty the town has posted — 12 for the well, 25 for the store.",
+			build: constableKnowsShopAndWellScenario,
+		},
+		perceptionScenario{
+			name: "hand_after_shop_mended_hears_nothing",
+			summary: "LLM-675: the General Store has been mended and both wells are sound. Anne hears nothing of " +
+				"the town's works.",
+			build: handAfterShopMendedScenario,
+		},
 	)
+}
+
+const pwJosiah = sim.ActorID("josiah")
+
+// damagedShopSnapshot is publicWorksSnapshot with the mill well set by
+// wellBroken, plus Josiah's General Store — storm-damaged when shopDamaged,
+// carrying its storm debris — and the business terms (25 coins, two hours).
+func damagedShopSnapshot(chest int, wellBroken, shopDamaged bool) *sim.Snapshot {
+	snap := publicWorksSnapshot(chest)
+	if !wellBroken {
+		snap.VillageObjects["mill_well"].DamagedAt = time.Time{}
+	}
+	zero := 0
+	start, end := 480, 1080
+	josiah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Josiah Thorne",
+		State:             sim.StateIdle,
+		Pos:               sim.WorldPos{X: 1600, Y: 1200}.Tile(),
+		InsideStructureID: "store",
+		WorkStructureID:   "store",
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{},
+	}
+	snap.Actors[pwJosiah] = josiah
+	snap.Structures["store"] = plainStructure("store", "General Store")
+	store := &sim.VillageObject{ID: "store", DisplayName: "General Store", Pos: sim.WorldPos{X: 1600, Y: 1200},
+		OwnerActorID: pwJosiah, Tags: []string{sim.TagBusiness}, Wear: 60,
+		LoiterOffsetX: &zero, LoiterOffsetY: &zero}
+	snap.VillageObjects["store"] = store
+	if shopDamaged {
+		store.DamagedAt = time.Date(2026, 9, 25, 14, 0, 0, 0, time.UTC)
+		snap.VillageObjects["store_debris"] = &sim.VillageObject{ID: "store_debris", AssetID: sim.DebrisAssetID,
+			CurrentState: sim.DebrisStateStorm, AttachedTo: "store", Tags: []string{sim.TagDebris},
+			Pos: sim.WorldPos{X: 1600, Y: 1200}}
+	}
+	snap.PublicWorksBusinessBounty = 25
+	snap.PublicWorksBusinessRepairSeconds = 7200
+	snap.StallWearRepairThreshold = 180
+	snap.StallWearDegradeThreshold = 270
+	return snap
+}
+
+func handHearsOfDamagedShopScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return damagedShopSnapshot(100, false, true), pwAnne, nil
+}
+
+func handInDamagedShopScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := damagedShopSnapshot(100, false, true)
+	a := snap.Actors[pwAnne]
+	a.Pos = sim.WorldPos{X: 1600, Y: 1200}.Tile()
+	a.InsideStructureID = "store"
+	return snap, pwAnne, nil
+}
+
+func keeperOfDamagedShopScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return damagedShopSnapshot(100, false, true), pwJosiah, nil
+}
+
+func constableKnowsShopAndWellScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return damagedShopSnapshot(100, true, true), pwGideon, nil
+}
+
+func handAfterShopMendedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return damagedShopSnapshot(100, false, false), pwAnne, nil
 }
 
 const (
@@ -156,11 +256,20 @@ func thirstyVillagerPassesBrokenWellScenario() (*sim.Snapshot, sim.ActorID, []si
 }
 
 // TestGoldensTownWorksReachOnlyHandsAndTheConstable — across the whole matrix,
-// "## The town's works" renders only for a worker or the constable, and "Call
-// repair" only for a worker standing at the broken well (the one signal that
-// also hands out the repair tool). Vacuity-guarded on both lines.
+// "## The town's works" renders only for a worker, the constable, or the keeper
+// of a damaged business (LLM-675), and "Call repair" only for a worker standing
+// at a damaged site (the one signal that also hands out the repair tool).
+// Vacuity-guarded on both lines.
 func TestGoldensTownWorksReachOnlyHandsAndTheConstable(t *testing.T) {
 	sawSection, sawRepair := false, false
+	keepsDamagedShop := func(snap *sim.Snapshot, id sim.ActorID) bool {
+		for _, obj := range snap.VillageObjects {
+			if obj.OwnerActorID == id && sim.PublicWorksKind(obj) == sim.PublicWorksBusiness && obj.Damaged() {
+				return true
+			}
+		}
+		return false
+	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -173,8 +282,8 @@ func TestGoldensTownWorksReachOnlyHandsAndTheConstable(t *testing.T) {
 			out := combinedPrompt(Render(p, DefaultRenderConfig()))
 			if strings.Contains(out, "## The town's works") {
 				sawSection = true
-				if !subjectIsWorker(a) && !isConstableSnapshot(a) {
-					t.Errorf("%q is neither a hand nor the constable and hears of the town's works:\n%s", a.DisplayName, out)
+				if !subjectIsWorker(a) && !isConstableSnapshot(a) && !keepsDamagedShop(snap, actorID) {
+					t.Errorf("%q is neither a hand, the constable nor a damaged shop's keeper and hears of the town's works:\n%s", a.DisplayName, out)
 				}
 			}
 			if strings.Contains(out, "Call repair to take the work") {
@@ -199,6 +308,28 @@ func TestBrokenWellEasesNothing(t *testing.T) {
 	}
 	if got := objectRefreshMagnitude(snap.VillageObjects["centre_well"], "thirst"); got <= 0 {
 		t.Errorf("sound well eases thirst by %d, want > 0", got)
+	}
+}
+
+// TestDamagedShopKeeperIsNotAskedToMend (LLM-675) — the keeper of a damaged
+// shop (wear under the mend line) is told of the town's work but is offered no
+// mend of his own and no repair tool, and his shop reads out of trade — the
+// "## Restocking" suppression keys on it.
+func TestDamagedShopKeeperIsNotAskedToMend(t *testing.T) {
+	snap, actorID, _ := keeperOfDamagedShopScenario()
+	p := Build(snap, actorID, nil)
+	if p.PublicWorks == nil || !p.PublicWorks.Keeper {
+		t.Fatalf("keeper view = %+v, want the keeper's town's-works view", p.PublicWorks)
+	}
+	if p.PublicWorks.OffersRepair() || p.StallRepair != nil {
+		t.Errorf("keeper offered a mend: town repair %v, own mend %+v", p.PublicWorks.OffersRepair(), p.StallRepair)
+	}
+	if !ownerBusinessDegraded(snap, actorID) {
+		t.Error("a damaged shop does not read out of trade")
+	}
+	snap.VillageObjects["store"].DamagedAt = time.Time{}
+	if ownerBusinessDegraded(snap, actorID) {
+		t.Error("control: a sound shop under the degrade line reads out of trade")
 	}
 }
 

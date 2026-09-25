@@ -313,6 +313,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// LLM-346: a worker holding an unanswered offer of work has a job in front
 		// of them — don't send them across town looking for another.
 		!subjectHasLaborOfferToAnswer(snap, actorID) &&
+		// LLM-675: likewise a hand standing at the town's work ("Call repair") —
+		// the go-to-a-business coda would argue against the repair it offers.
+		!p.PublicWorks.OffersRepair() &&
 		!hasSolicitableAudience(snap, actorID, actorSnap, p.Surroundings) {
 		p.SeekWorkPlaces = buildSeekWorkPlaces(snap, actorSnap)
 	}

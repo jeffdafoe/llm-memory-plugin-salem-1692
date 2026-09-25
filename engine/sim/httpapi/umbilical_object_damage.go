@@ -9,15 +9,17 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// umbilical_object_damage.go — LLM-654. The operator's hand on a damage event:
-// break a well now (no roll, no guards) or mend it without a bounty. For live
-// testing the public-works loop and for clearing a break by hand.
+// umbilical_object_damage.go — LLM-654, LLM-675. The operator's hand on a
+// damage event: break a well or an owned business now (no roll, no guards),
+// with the storm trigger ("storm" — a business gets the storm debris), or mend
+// it without a bounty. For live testing the public-works loop and for clearing
+// a break by hand.
 
 // umbilicalObjectDamageRequest is the body of POST
 // /api/village/umbilical/object/damage.
 type umbilicalObjectDamageRequest struct {
 	ID     string `json:"id"`
-	Action string `json:"action"` // "damage" | "repair"
+	Action string `json:"action"` // "damage" | "storm" | "repair"
 }
 
 // umbilicalObjectDamageResponse echoes the object's state after the change.
