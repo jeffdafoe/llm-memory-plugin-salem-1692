@@ -89,6 +89,7 @@ func TestVisitorsOfAClosedHouseStandOutside(t *testing.T) {
 			}
 			pin := sim.Position{X: anchor.X + h.wantOffset.X, Y: anchor.Y + h.wantOffset.Y}
 			now := time.Now().UTC()
+			standing := map[sim.Position]sim.ActorID{}
 			for i := 0; i < 6; i++ {
 				id := sim.ActorID(fmt.Sprintf("visitor-%d", i))
 				if _, err := w.Send(sim.MoveToStructure(id, "house", now)); err != nil {
@@ -96,6 +97,10 @@ func TestVisitorsOfAClosedHouseStandOutside(t *testing.T) {
 				}
 				driveToArrival(t, w, id, now, 120)
 				pos, inside := actorSpatial(t, w, id)
+				if other, ok := standing[pos]; ok {
+					t.Errorf("%s and %s both stand at %+v", other, id, pos)
+				}
+				standing[pos] = id
 				if inside != "" || inFootprint(pos) {
 					t.Errorf("%s stands at %+v (inside=%q) — on the footprint of a house it may not enter", id, pos, inside)
 				}
