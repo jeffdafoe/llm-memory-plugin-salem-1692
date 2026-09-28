@@ -427,15 +427,16 @@ func TestHandleObjects(t *testing.T) {
 	if o.CurrentState != "lit" || o.DisplayName != "Tavern" || len(o.Tags) != 1 || o.Tags[0] != "vendor" {
 		t.Errorf("object fields wrong: %+v", o)
 	}
-	// obj1 has no loiter override and asset-x has door_offset (1,2) +
-	// footprint_bottom 2, so the effective offset is the door fallback: door +
-	// 1 tile south = (1, 3). Raw override stays null; owner/placed_by/entry are
-	// unset on the seed (ZBBS-HOME-289).
+	// obj1 has no loiter override and asset-x has door_offset (1,2) on the
+	// footprint's east and bottom edges (L1 R1 T0 B2), so the effective offset
+	// is the door fallback: one tile out through the wall the door opens on —
+	// east, by the corridor's W > E > N > S tie order — (2, 2). Raw override
+	// stays null; owner/placed_by/entry are unset on the seed (ZBBS-HOME-289).
 	if o.LoiterOffsetX != nil || o.LoiterOffsetY != nil {
 		t.Errorf("raw loiter offset = (%v,%v), want null (no override)", o.LoiterOffsetX, o.LoiterOffsetY)
 	}
-	if o.EffectiveLoiterOffsetX != 1 || o.EffectiveLoiterOffsetY != 3 {
-		t.Errorf("effective loiter offset = (%d,%d), want (1,3) door fallback", o.EffectiveLoiterOffsetX, o.EffectiveLoiterOffsetY)
+	if o.EffectiveLoiterOffsetX != 2 || o.EffectiveLoiterOffsetY != 2 {
+		t.Errorf("effective loiter offset = (%d,%d), want (2,2) door fallback", o.EffectiveLoiterOffsetX, o.EffectiveLoiterOffsetY)
 	}
 	if o.Owner != "" || o.PlacedBy != "" || o.EntryPolicy != "" {
 		t.Errorf("owner/placed_by/entry_policy = %q/%q/%q, want all empty", o.Owner, o.PlacedBy, o.EntryPolicy)
