@@ -527,3 +527,61 @@ func TestOrphanStumpWithNoStumpDaysGoesAtOnce(t *testing.T) {
 		}
 	})
 }
+
+// TestHandWalksToTheFallenTreeAndClearsIt — the town's works cue sends a hand
+// with move_to "<the obstacle's id>"; the walk ends at the tree's loiter pin,
+// where StartRepair takes the clearing. The obstacle is neither a refresh
+// source nor a gather bush, so without its own arm move_to rejected the id and
+// the hand never reached the tree.
+func TestHandWalksToTheFallenTreeAndClearsIt(t *testing.T) {
+	w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+	res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerStorm, &seqRoller{vals: []float64{0.9, 0.5}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.(sim.VillageObjectID)
+	mustSend(t, w, func(world *sim.World) {
+		a := world.VillageObjects[id].Pos.Tile()
+		world.Actors["anne"].Pos = sim.TilePos{X: a.X + 4, Y: a.Y + 8}
+	})
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.MoveToDestination("anne", string(id), nil, sim.RememberedPlaces{}, now)); err != nil {
+		t.Fatalf("move_to the fallen tree by id: %v", err)
+	}
+	driveToArrival(t, w, "anne", now, 40)
+	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
+		t.Fatalf("StartRepair after walking to the fallen tree: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		act := world.Actors["anne"].SourceActivity
+		if act == nil || !act.PublicWorks || act.ObjectID != id {
+			t.Fatalf("activity = %+v, want the town's clearing of %s", act, id)
+		}
+	})
+}
+
+// TestMoveToFallenTreeByName — a hand may name the tree the way the cue words
+// it, by its own name or by its site label, from any distance.
+func TestMoveToFallenTreeByName(t *testing.T) {
+	for _, name := range []string{"the fallen maple", "Fallen maple", "the fallen maple by the Mill"} {
+		t.Run(name, func(t *testing.T) {
+			w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+			res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerStorm, &seqRoller{vals: []float64{0.9, 0.5}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := res.(sim.VillageObjectID)
+			mustSend(t, w, func(world *sim.World) {
+				a := world.VillageObjects[id].Pos.Tile()
+				world.Actors["anne"].Pos = sim.TilePos{X: a.X + 40, Y: a.Y + 20}
+			})
+			if _, err := w.Send(sim.MoveToDestination("anne", name, nil, sim.RememberedPlaces{}, time.Now().UTC())); err != nil {
+				t.Fatalf("move_to %q: %v", name, err)
+			}
+			intent := moveIntentOf(t, w, "anne")
+			if intent == nil || intent.Destination.ObjectID == nil || *intent.Destination.ObjectID != id {
+				t.Fatalf("intent = %+v, want an object visit to %s", intent, id)
+			}
+		})
+	}
+}

@@ -44,10 +44,11 @@ import (
 //
 //  1. An exact structure id → the structure path (MoveToStructure: enter-vs-visit
 //     derivation, already-there / in-flight no-ops, keeper-abed lock, etc.).
-//  2. An exact bare-object id that is a usable refresh source or a gatherable
-//     bush (a well / fruit tree whose id rode a free-source cue) → the object
-//     visit path (MoveToObject). Mirrors MoveToStructure's own by-id object
-//     fallthrough, so move_to(<objId>) still reaches it.
+//  2. An exact bare-object id that is a usable refresh source, a gatherable
+//     bush (a well / fruit tree whose id rode a free-source cue) or a road
+//     obstacle (the town's works cue) → the object visit path (MoveToObject).
+//     Mirrors MoveToStructure's own by-id object fallthrough, so
+//     move_to(<objId>) still reaches it.
 //  3. Otherwise a place NAME (or a home/work keyword) → MoveToStructureByName,
 //     which resolves structures + objects by name, the anchor keywords, the
 //     kitchen phantom, and hands back the bounded real-names steer on a miss.
@@ -70,10 +71,9 @@ func MoveToDestination(actorID ActorID, destination string, shownObjects []Villa
 			if _, ok := w.Structures[StructureID(target)]; ok {
 				return moveToStructureLabeled(actorID, StructureID(target), target, now).Fn(w)
 			}
-			// An exact bare-object id (a free refresh source or a gatherable bush the
-			// model saw in a cue) → the object visit path.
-			if obj := w.VillageObjects[VillageObjectID(target)]; obj != nil &&
-				(objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource()) {
+			// An exact bare-object id (a free refresh source, a gatherable bush or a
+			// road obstacle the model saw in a cue) → the object visit path.
+			if obj := w.VillageObjects[VillageObjectID(target)]; obj != nil && objectWalkableByID(obj) {
 				return moveToObjectLabeled(actorID, VillageObjectID(target), target, now).Fn(w)
 			}
 			// Otherwise treat it as a place NAME (or a home/work keyword).
@@ -145,9 +145,11 @@ func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string) str
 // a bare refresh source — a well, a fruit tree (resolveObjectByPerceivableName,
 // ZBBS-HOME-359) — and those stay gated on what the tick SHOWED (shownObjects) or
 // the actor has personally experienced (remembered.ObjectIDs, LLM-78): a wild
-// bush in the woods is not common knowledge the way a building is. Structures win
-// a name collision: the structure resolver runs first, so "the Tavern" enters
-// rather than stopping outside its placement.
+// bush in the woods is not common knowledge the way a building is. The one
+// exception is a road obstacle — town news, resolved at any distance
+// (resolveRoadObstacleByName). Structures win a name collision: the structure
+// resolver runs first, so "the Tavern" enters rather than stopping outside its
+// placement.
 func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageObjectID, remembered RememberedPlaces, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -164,6 +166,10 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			// shares with a bare object — the structure resolver runs first.
 			if structureID, ok := resolveStructureByVillageName(w, a, target); ok {
 				return moveToStructureLabeled(actorID, structureID, target, now).Fn(w)
+			}
+			// A tree down across the road is town news, known at any distance.
+			if objID, ok := resolveRoadObstacleByName(w, a, target); ok {
+				return moveToObjectLabeled(actorID, objID, target, now).Fn(w)
 			}
 			// No structure by that name — try a bare refresh source (a well, a
 			// fruit tree), which IS still discovered: shown this tick (ZBBS-HOME-359)
@@ -714,6 +720,46 @@ func resolveObjectByRememberedName(w *World, a *Actor, name string, remembered [
 	return bestID, true
 }
 
+// objectWalkableByID reports whether move_to may walk to a bare placement named
+// by its id: a need-easing refresh source or a finite gather bush (a free-source
+// or harvest cue carries the id), or a road obstacle (the town's works cue
+// carries it, and a hand clears it standing at its loiter pin — AtRoadObstacle).
+func objectWalkableByID(obj *VillageObject) bool {
+	return objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource() || obj.IsRoadObstacle()
+}
+
+// resolveRoadObstacleByName resolves a name to a road obstacle at any distance.
+// A tree down across the road is town news — the boards, the crier and the
+// town's works cue all carry it — so, like a building, where it lies is common
+// knowledge. The name matches either the obstacle's own name ("the fallen
+// maple") or its site label ("the fallen maple by the Thorne Residence"), the
+// two ways the cue words it. Nearest wins; ties break by id. MUST be called
+// from inside a Command.Fn.
+func resolveRoadObstacleByName(w *World, a *Actor, name string) (VillageObjectID, bool) {
+	bestID := VillageObjectID("")
+	bestDist := -1
+	for id, obj := range w.VillageObjects {
+		if !obj.IsRoadObstacle() {
+			continue
+		}
+		catalog := ""
+		if asset := w.Assets[obj.AssetID]; asset != nil {
+			catalog = asset.Name
+		}
+		if !placeNameMatches(obj.EffectiveDisplayName(catalog), name) && !placeNameMatches(damageObjectName(w, obj), name) {
+			continue
+		}
+		dist := a.Pos.Chebyshev(obj.Pos.Tile())
+		if bestDist == -1 || dist < bestDist || (dist == bestDist && id < bestID) {
+			bestID, bestDist = id, dist
+		}
+	}
+	if bestDist == -1 {
+		return "", false
+	}
+	return bestID, true
+}
+
 // objectIsRefreshSource reports whether obj carries at least one still-usable
 // refresh row that NET EASES a need — a free, public need-easing placement (a
 // well, a fruit tree, a shade oak) move_to can walk an actor to via an object
@@ -874,8 +920,7 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 				// objectIsRefreshSource), so it needs the IsFiniteGatherableSource arm —
 				// the by-id parity with the name path, which already walks to a
 				// remembered gather patch ungated (LLM-78/92). ZBBS-HOME-359.
-				if obj := w.VillageObjects[VillageObjectID(structureID)]; obj != nil &&
-					(objectIsRefreshSource(obj) || obj.IsFiniteGatherableSource()) {
+				if obj := w.VillageObjects[VillageObjectID(structureID)]; obj != nil && objectWalkableByID(obj) {
 					return moveToObjectLabeled(actorID, VillageObjectID(structureID), spokenAs, now).Fn(w)
 				}
 				return MoveActorResult{}, fmt.Errorf(
