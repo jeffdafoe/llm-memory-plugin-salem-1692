@@ -234,24 +234,7 @@ func buildWalkGridWithTerrainCost(w *World, terrainCost func(byte) uint8) (*Walk
 		if d.x < d.fpMinX || d.x > d.fpMaxX || d.y < d.fpMinY || d.y > d.fpMaxY {
 			continue // door outside footprint, no corridor needed
 		}
-		distW := d.x - d.fpMinX
-		distE := d.fpMaxX - d.x
-		distN := d.y - d.fpMinY
-		distS := d.fpMaxY - d.y
-		minDist := distW
-		dir := "w"
-		if distE < minDist {
-			minDist = distE
-			dir = "e"
-		}
-		if distN < minDist {
-			minDist = distN
-			dir = "n"
-		}
-		if distS < minDist {
-			dir = "s"
-		}
-		switch dir {
+		switch doorExitSide(d.x, d.y, d.fpMinX, d.fpMaxX, d.fpMinY, d.fpMaxY) {
 		case "w":
 			for tx := d.x - 1; tx >= d.fpMinX; tx-- {
 				stampWalk(tx, d.y)
@@ -272,6 +255,32 @@ func buildWalkGridWithTerrainCost(w *World, terrainCost func(byte) uint8) (*Walk
 	}
 
 	return g, nil
+}
+
+// doorExitSide picks the footprint edge a door inside the footprint opens
+// through: the nearest one, ties W > E > N > S. buildWalkGrid carves the door's
+// corridor toward it and doorLoiterTile parks visitors just past it, so the
+// walk grid and the loiter pin agree on which way a building faces.
+// Returns "w", "e", "n" or "s".
+func doorExitSide(x, y, fpMinX, fpMaxX, fpMinY, fpMaxY int) string {
+	distW := x - fpMinX
+	distE := fpMaxX - x
+	distN := y - fpMinY
+	distS := fpMaxY - y
+	minDist := distW
+	dir := "w"
+	if distE < minDist {
+		minDist = distE
+		dir = "e"
+	}
+	if distN < minDist {
+		minDist = distN
+		dir = "n"
+	}
+	if distS < minDist {
+		dir = "s"
+	}
+	return dir
 }
 
 // FindPath returns a tile-path from start to goal (inclusive of both),

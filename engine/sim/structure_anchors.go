@@ -82,7 +82,8 @@ func villageObjectForStructureOnly(w *World, structureID StructureID) (*VillageO
 //
 //  1. Per-instance loiter offset, when both axes are set on the
 //     VillageObject (the editor sets them as a pair — a dragged pin).
-//  2. Else the asset's door offset, one tile south of the door.
+//  2. Else the asset's door: one tile outside the footprint, straight out
+//     from the door through the wall it opens on (doorLoiterTile).
 //  3. Else (0, FootprintBottom + 2) — two tiles below the visible
 //     footprint.
 //
@@ -101,10 +102,46 @@ func computeLoiterTile(vobj *VillageObject, asset *Asset) Position {
 	case vobj.LoiterOffsetX != nil && vobj.LoiterOffsetY != nil:
 		return Position{X: anchor.X + *vobj.LoiterOffsetX, Y: anchor.Y + *vobj.LoiterOffsetY}
 	case asset.DoorOffsetX != nil && asset.DoorOffsetY != nil:
-		return Position{X: anchor.X + *asset.DoorOffsetX, Y: anchor.Y + *asset.DoorOffsetY + 1}
+		return doorLoiterTile(anchor, asset)
 	default:
 		return Position{X: anchor.X, Y: anchor.Y + asset.FootprintBottom + 2}
 	}
+}
+
+// doorLoiterTile is the loiter pin of a building with a door and no
+// per-instance offset: one tile outside the footprint, in line with the door,
+// past the wall its corridor opens through (doorExitSide) — south of a front
+// door, west of the Medium houses' side door, north of the Tiny houses' back
+// door. A door already outside the footprint keeps the tile south of it. Every
+// building's footprint takes the ground row below its drawn base, so a pin one
+// tile south of the door itself sat inside the footprint and parked visitors
+// in the doorway, counted as inside.
+func doorLoiterTile(anchor Position, asset *Asset) Position {
+	x, y := anchor.X+*asset.DoorOffsetX, anchor.Y+*asset.DoorOffsetY
+	minX, maxX := anchor.X-asset.FootprintLeft, anchor.X+asset.FootprintRight
+	minY, maxY := anchor.Y-asset.FootprintTop, anchor.Y+asset.FootprintBottom
+	if x < minX || x > maxX || y < minY || y > maxY {
+		return Position{X: x, Y: y + 1}
+	}
+	switch doorExitSide(x, y, minX, maxX, minY, maxY) {
+	case "w":
+		return Position{X: minX - 1, Y: y}
+	case "e":
+		return Position{X: maxX + 1, Y: y}
+	case "n":
+		return Position{X: x, Y: minY - 1}
+	default:
+		return Position{X: x, Y: maxY + 1}
+	}
+}
+
+// footprintContains reports whether tile p lies in the placement's footprint
+// rectangle — the one buildWalkGrid stamps and structureContainingTile
+// attributes "inside" by.
+func footprintContains(vobj *VillageObject, asset *Asset, p Position) bool {
+	anchor := vobj.Pos.Tile()
+	return p.X >= anchor.X-asset.FootprintLeft && p.X <= anchor.X+asset.FootprintRight &&
+		p.Y >= anchor.Y-asset.FootprintTop && p.Y <= anchor.Y+asset.FootprintBottom
 }
 
 // EffectiveLoiterOffset returns the resolved loiter offset in TILE units
@@ -454,9 +491,7 @@ func structureContainingTile(w *World, pos Position) (StructureID, bool) {
 		if !ok {
 			continue
 		}
-		anchor := vobj.Pos.Tile()
-		if pos.X >= anchor.X-asset.FootprintLeft && pos.X <= anchor.X+asset.FootprintRight &&
-			pos.Y >= anchor.Y-asset.FootprintTop && pos.Y <= anchor.Y+asset.FootprintBottom {
+		if footprintContains(vobj, asset, pos) {
 			return sid, true
 		}
 	}
@@ -493,11 +528,15 @@ func pickVisitorSlot(w *World, structureID StructureID, actor *Actor, grid *Walk
 	if actor == nil {
 		return Position{}, false
 	}
-	pin, ok := effectiveLoiterTile(w, structureID)
+	vobj, asset, ok := villageObjectForStructure(w, structureID)
 	if !ok {
 		return Position{}, false
 	}
-	return pickVisitorSlotAtPin(w, pin, actor, grid, nil, string(structureID))
+	// A visit stands OUTSIDE: a slot on the structure's own footprint (its door
+	// tile or corridor, the only walkable ones) would attribute the visitor as
+	// inside the building it was turned away from.
+	inside := func(p Position) bool { return footprintContains(vobj, asset, p) }
+	return pickVisitorSlotAtPin(w, computeLoiterTile(vobj, asset), actor, grid, nil, inside, string(structureID))
 }
 
 // pickObjectVisitorSlot is the object-keyed sibling of pickVisitorSlot: it
@@ -551,7 +590,7 @@ func pickObjectVisitorSlotAvoiding(w *World, objID VillageObjectID, actor *Actor
 		return Position{}, false
 	}
 	pin := computeLoiterTile(vobj, asset)
-	return pickVisitorSlotAtPin(w, pin, actor, grid, reserved, string(objID))
+	return pickVisitorSlotAtPin(w, pin, actor, grid, reserved, nil, string(objID))
 }
 
 // pickVisitorSlotAtPin is the shared ring-scan core behind pickVisitorSlot
@@ -572,14 +611,20 @@ func pickObjectVisitorSlotAvoiding(w *World, objID VillageObjectID, actor *Actor
 // pickObjectVisitorSlotAvoiding). nil means no reservations (the per-tick
 // single-actor callers).
 //
+// excluded, when non-nil, rejects any candidate (the pin fallback included) it
+// reports true for — a structure visit excludes the structure's own footprint.
+//
 // MUST be called from inside a Command.Fn. Unexported by design.
-func pickVisitorSlotAtPin(w *World, pin Position, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}, label string) (Position, bool) {
+func pickVisitorSlotAtPin(w *World, pin Position, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}, excluded func(Position) bool, label string) (Position, bool) {
 	n := len(visitorSlotOffsets)
 	start := int(hashActorID(actor.ID) % uint32(n))
 	for i := 0; i < n; i++ {
 		off := visitorSlotOffsets[(start+i)%n]
 		slot := Position{X: pin.X + off.X, Y: pin.Y + off.Y}
 		if !grid.CanWalk(slot.X, slot.Y) {
+			continue
+		}
+		if excluded != nil && excluded(slot) {
 			continue
 		}
 		if tileOccupiedByOtherActor(w, slot, actor.ID) {
@@ -595,7 +640,7 @@ func pickVisitorSlotAtPin(w *World, pin Position, actor *Actor, grid *WalkGrid, 
 	// occupied pin returned here would be accepted by resolvePathTarget
 	// and then soft-block forever at the final step; failing resolution
 	// instead lets MoveActor reject cleanly.
-	if _, pinTaken := reserved[pin]; !pinTaken &&
+	if _, pinTaken := reserved[pin]; !pinTaken && (excluded == nil || !excluded(pin)) &&
 		grid.CanWalk(pin.X, pin.Y) && !tileOccupiedByOtherActor(w, pin, actor.ID) {
 		log.Printf("pickVisitorSlotAtPin: all 8 visitor slots blocked for %s; "+
 			"falling back to loiter pin %+v (admin should relocate the pin)", label, pin)
