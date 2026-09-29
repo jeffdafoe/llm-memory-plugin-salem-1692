@@ -510,6 +510,92 @@ func TestSettleCarterBuyLegReadsTheShelfLive(t *testing.T) {
 	}
 }
 
+// TestSettleCarterBuyLegTellsTheHolder — LLM-681, live 2026-09-28 at the Mill:
+// the leg settled on the pacing pass, the holder's next prompt carried neither
+// the payment nor any sign the sale was over, and her standing offer to the
+// carter for the same goods still read "they have yet to answer" — so she asked
+// to be paid again. The settle now stamps her a carter_bought beat and closes
+// her offers to the carter for that good, and only those.
+func TestSettleCarterBuyLegTellsTheHolder(t *testing.T) {
+	w := carterWorld()
+	carter, _ := carterOnRoute(w)
+	quote := func(id QuoteID, buyer ActorID, lines ...QuoteLine) *SceneQuote {
+		return &SceneQuote{ID: id, SceneID: "s1", SellerID: "liz", TargetBuyer: buyer, Lines: lines, Amount: 40,
+			State: SceneQuoteStateActive, ExpiresAt: carterNow.Add(10 * time.Minute)}
+	}
+	wheat := QuoteLine{ItemKind: "wheat", Qty: 25}
+	w.Quotes = map[QuoteID]*SceneQuote{
+		1: quote(1, carter.ID, wheat),                                      // her offer to him for the wheat he buys: closed
+		2: quote(2, carter.ID, QuoteLine{ItemKind: "iron", Qty: 8}),        // a different good: stands
+		3: quote(3, "", wheat),                                             // public: stands for everyone else
+		4: quote(4, "joseph", wheat),                                       // to someone else: stands
+		5: quote(5, carter.ID, wheat, QuoteLine{ItemKind: "iron", Qty: 8}), // a bundle: offers goods the leg did not buy
+	}
+	w.Scenes = map[SceneID]*Scene{"s1": {ID: "s1", QuoteIDs: []QuoteID{1, 2, 3, 4, 5}}}
+
+	carter.InsideStructureID = "farm"
+	advanceCarter(w, carter, carterNow)
+
+	if w.Quotes[1].State != SceneQuoteStateTaken || !w.Quotes[1].ResolvedAt.Equal(carterNow) {
+		t.Errorf("her offer to the carter for wheat: state %s resolved %v, want taken at the settle", w.Quotes[1].State, w.Quotes[1].ResolvedAt)
+	}
+	for _, id := range []QuoteID{2, 3, 4, 5} {
+		if w.Quotes[id].State != SceneQuoteStateActive {
+			t.Errorf("quote %d: state %s, want still active", id, w.Quotes[id].State)
+		}
+	}
+	if got := w.Scenes["s1"].QuoteIDs; len(got) != 4 || got[0] != 2 {
+		t.Errorf("scene quote index = %v, want [2 3 4 5] — the closed offer leaves it", got)
+	}
+
+	liz := w.Actors["liz"]
+	var beat *CarterBoughtWarrantReason
+	for _, m := range liz.Warrants {
+		if r, ok := m.Reason.(CarterBoughtWarrantReason); ok {
+			beat = &r
+			if m.TriggerActorID != carter.ID {
+				t.Errorf("trigger = %s, want the carter", m.TriggerActorID)
+			}
+		}
+	}
+	if beat == nil {
+		t.Fatalf("no carter_bought warrant on the holder: %+v", liz.Warrants)
+	}
+	want := "Asa Larkin the carter bought 25 sheaves of wheat from you for 25 coins — the coin is in your purse and the goods have left your stock. " +
+		"The sale is done, and your offer to the carter is closed; nothing more is owed either way."
+	if beat.NarrationText != want || beat.Carter != carter.ID {
+		t.Errorf("beat = %+v\nwant narration %q", *beat, want)
+	}
+
+	// A leg with no offer standing says nothing about one.
+	w = carterWorld()
+	carter, _ = carterOnRoute(w)
+	carter.InsideStructureID = "farm"
+	advanceCarter(w, carter, carterNow)
+	found := false
+	for _, m := range w.Actors["liz"].Warrants {
+		if r, ok := m.Reason.(CarterBoughtWarrantReason); ok {
+			found = true
+			if strings.Contains(r.NarrationText, "offer") {
+				t.Errorf("no offer stood, but the beat names one: %q", r.NarrationText)
+			}
+		}
+	}
+	if !found {
+		t.Error("no carter_bought warrant when no offer stood")
+	}
+
+	// Nothing bought, nothing told.
+	w = carterWorld()
+	carter, _ = carterOnRoute(w)
+	carter.InsideStructureID = "farm"
+	delete(w.Actors["liz"].Inventory, "wheat")
+	advanceCarter(w, carter, carterNow)
+	if len(w.Actors["liz"].Warrants) != 0 {
+		t.Errorf("an empty shelf stamped the holder: %+v", w.Actors["liz"].Warrants)
+	}
+}
+
 func TestCarterPersonaAndRoute(t *testing.T) {
 	w := carterWorld()
 	tr := &TradeErrand{Direction: TradeDirectionSell, Carter: true}

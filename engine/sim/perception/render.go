@@ -4274,6 +4274,10 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// employer: wage paid), so neither party's next turn treats the settled
 		// job as still owed. Same narration-line path as the production beat.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.Counterparty), maxTextBytes)
+	case sim.CarterBoughtWarrantReason:
+		// LLM-681: a carter's buy leg settled on the pacing pass — pre-rendered at
+		// the settle, so the holder reads the sale as done rather than asking again.
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.Carter), maxTextBytes)
 	case sim.StallRepairWarrantReason:
 		// LLM-118 (generalized LLM-247): the business just wore through the repair
 		// threshold. At the business the "## Your business" cue carries the nail

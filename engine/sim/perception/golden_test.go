@@ -3779,6 +3779,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: employerLaborSettledBeat,
 	},
 	{
+		name: "holder_carter_bought_beat",
+		summary: "LLM-681: the carter's buy leg settled on the pacing pass — 2 coats off Joseph Scott's shelf for 18 coins — " +
+			"while Joseph's own offer to the carter ('2 coat for 24 coins') stood. Live 2026-09-28 at the Mill his next prompt " +
+			"carried neither the payment nor any sign the sale was over, and '## Offers you've put out' still read 'they have " +
+			"yet to answer', so he asked to be paid again. The golden pins the pre-rendered carter_bought line — the sale done, " +
+			"the offer closed, nothing more owed — and the absence of the offer section: the settle flipped that quote to taken.",
+		build: holderCarterBoughtBeat,
+	},
+	{
 		name: "worker_labor_settled_closeout_both_signals",
 		summary: "LLM-498 x LLM-190 combination: a job that ran up to the employer's closing time settles with BOTH worker-" +
 			"side signals in one tick — the keeper's spoken close-out (an observed social event, the LLM-190 Spoke riding the " +
@@ -14237,6 +14246,84 @@ func workerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 
 func employerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return laborSettledBeatSnapshot(false)
+}
+
+// holderCarterBoughtBeat is the LLM-681 fixture: the instant after the carter's
+// buy leg settled at the Mill, Joseph Scott two coats lighter and 18 coins
+// heavier, the carter still huddled with him. Joseph's offer to the carter is in
+// the snapshot as the settle left it — taken — so the golden shows it gone from
+// "## Offers you've put out". The narration comes from the real builder.
+func holderCarterBoughtBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		josephID = sim.ActorID("joseph")
+		carterID = sim.ActorID("vstr-carter")
+		mill     = sim.StructureID("mill")
+		huddle   = sim.HuddleID("h1")
+		scene    = sim.SceneID("s1")
+	)
+	published := time.Date(2026, 9, 28, 20, 5, 45, 0, time.UTC)
+	settled := published.Add(-39 * time.Second)
+	joseph := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Joseph Scott",
+		Role:              "miller",
+		State:             sim.StateIdle,
+		InsideStructureID: mill,
+		CurrentHuddleID:   huddle,
+		Coins:             738,
+		Inventory:         map[sim.ItemKind]int{"coat": 8},
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Tobias Hewes the carter": {}},
+	}
+	carter := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Tobias Hewes the carter",
+		Role:              "carter",
+		State:             sim.StateIdle,
+		InsideStructureID: mill,
+		CurrentHuddleID:   huddle,
+		Coins:             16,
+		Inventory:         map[sim.ItemKind]int{"coat": 2},
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			SpendBudget: 16,
+			Archetype:   "carter",
+			Origin:      "Marblehead",
+			Disposition: "wary",
+		},
+	}
+	kinds := foodDrinkCatalog()
+	kinds["coat"] = &sim.ItemKindDef{Name: "coat", DisplayLabel: "Coat", DisplayLabelSingular: "coat", DisplayLabelPlural: "coats",
+		Capabilities: []string{"portable"}, WearMinutes: 600}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{josephID: joseph, carterID: carter},
+		Structures: map[sim.StructureID]*sim.Structure{
+			mill: plainStructure(mill, "Mill"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{josephID: {}, carterID: {}}},
+		},
+		Quotes: map[sim.QuoteID]*sim.SceneQuote{
+			1: {ID: 1, SceneID: scene, SellerID: josephID, TargetBuyer: carterID,
+				Lines: []sim.QuoteLine{{ItemKind: "coat", Qty: 2}}, Amount: 24,
+				State: sim.SceneQuoteStateTaken, CreatedAt: published.Add(-65 * time.Second),
+				ExpiresAt: published.Add(9 * time.Minute), ResolvedAt: settled},
+		},
+		ItemKinds: kinds,
+	}
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: carterID,
+		Reason: sim.CarterBoughtWarrantReason{
+			Carter:        carterID,
+			NarrationText: sim.CarterBoughtNarration("Tobias Hewes the carter", "2 coats", 18, true),
+		},
+		SourceActorID: carterID,
+		HuddleID:      huddle,
+		OccurredAt:    settled,
+	}}
+	return snap, josephID, warrants
 }
 
 // workerLaborSettledCloseoutBothSignals is the shop-closed variant: the same
