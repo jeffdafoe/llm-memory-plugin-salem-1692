@@ -712,6 +712,7 @@ func settleCarterBuyLeg(w *World, carter, holder *Actor, leg *CarterLeg, now tim
 	// happened and, holding a standing offer to the carter for the same goods,
 	// asks to be paid again (LLM-681, live 2026-09-28 at the Mill).
 	offerClosed := closeCarterQuotes(w, holder, carter, leg.Good, now)
+	withdrawCarterPayOffers(w, holder, carter, leg.Good, now)
 	tryStampWarrant(w, holder, WarrantMeta{
 		TriggerActorID: carter.ID,
 		Reason: CarterBoughtWarrantReason{
@@ -725,33 +726,64 @@ func settleCarterBuyLeg(w *World, carter, holder *Actor, leg *CarterLeg, now tim
 }
 
 // closeCarterQuotes closes the holder's active offers to the carter for the good
-// a buy leg just took, as a pay_with_item take closes the quote it settles
-// (LLM-189). Only an offer addressed to this carter and naming nothing but that
-// good: a public offer still stands for everyone else, and a bundle offers goods
-// the leg did not buy. Reports whether any offer was closed.
+// a buy leg just took, the way a pay_with_item take closes the quote it settles
+// (LLM-189) — but as carter_settled, not taken: the route's terms, not the
+// quote's, are what changed hands. Only an offer addressed to this carter and
+// naming nothing but that good: a public offer still stands for everyone else,
+// and a bundle offers goods the leg did not buy. Reports whether any closed.
 func closeCarterQuotes(w *World, holder, carter *Actor, good ItemKind, at time.Time) bool {
 	var ids []QuoteID
 	for id, q := range w.Quotes {
-		if q == nil || q.State != SceneQuoteStateActive || q.SellerID != holder.ID || q.TargetBuyer != carter.ID || len(q.Lines) == 0 {
+		if q == nil || q.State != SceneQuoteStateActive || q.SellerID != holder.ID || q.TargetBuyer != carter.ID {
 			continue
 		}
-		onlyGood := true
-		for _, l := range q.Lines {
-			if l.ItemKind != good {
-				onlyGood = false
-				break
-			}
-		}
-		if onlyGood {
+		if linesOnlyGood(q.Lines, good) {
 			ids = append(ids, id)
 		}
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		q := w.Quotes[id]
-		flipQuoteTerminal(w, w.Scenes[q.SceneID], q, SceneQuoteStateTaken, SceneQuoteExpiredReasonTaken, at)
+		flipQuoteTerminal(w, w.Scenes[q.SceneID], q, SceneQuoteStateCarterSettled, SceneQuoteExpiredReasonCarterSettled, at)
 	}
 	return len(ids) > 0
+}
+
+// withdrawCarterPayOffers resolves the carter's own still-pending offers to the
+// holder for the good a buy leg just took — a re-offer in a counter chain too —
+// the carter-leg twin of withdrawCrossingOffers: left pending, the holder could
+// accept one and sell the same goods to him twice. Matched like the quotes: this
+// holder, nothing but that good. The carter's commerce tools are stripped at the
+// holder's on a buy leg (perception visitorCommerceStripped) except where the
+// holder keeps a tavern or inn, so this is the path such an offer comes from.
+func withdrawCarterPayOffers(w *World, holder, carter *Actor, good ItemKind, at time.Time) {
+	var ids []LedgerID
+	for id, e := range w.PayLedger {
+		if e == nil || e.State != PayLedgerStatePending || e.BuyerID != carter.ID || e.SellerID != holder.ID {
+			continue
+		}
+		if linesOnlyGood(entrySaleLines(e), good) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		finalizePayLedgerTerminal(w, w.PayLedger[id], PayTerminalStateWithdrawnByBuyer, "superseded — the carter's buy leg settled these goods", at)
+	}
+}
+
+// linesOnlyGood reports whether an offer's goods are that one good and nothing
+// else. No lines is false: an offer that moves no goods is not about this one.
+func linesOnlyGood(lines []QuoteLine, good ItemKind) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	for _, l := range lines {
+		if l.ItemKind != good {
+			return false
+		}
+	}
+	return true
 }
 
 // CarterBoughtWarrantReason is the holder's beat for a carter buy leg (LLM-681):

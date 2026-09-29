@@ -90,6 +90,11 @@ const (
 	// SceneQuoteStateShortfall. The seller is told via the perception beat;
 	// they re-post what they still hold next turn (LLM-409).
 	SceneQuoteExpiredReasonShortfall = "shortfall"
+
+	// SceneQuoteExpiredReasonCarterSettled — a carter's buy leg settled the
+	// quoted good on the route's terms, so the offer closed unaccepted
+	// (SceneQuoteStateCarterSettled, LLM-681).
+	SceneQuoteExpiredReasonCarterSettled = "carter_settled"
 )
 
 // SceneQuoteExpired fires on every scene-quote terminal-state

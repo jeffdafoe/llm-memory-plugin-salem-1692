@@ -532,12 +532,26 @@ func TestSettleCarterBuyLegTellsTheHolder(t *testing.T) {
 		5: quote(5, carter.ID, wheat, QuoteLine{ItemKind: "iron", Qty: 8}), // a bundle: offers goods the leg did not buy
 	}
 	w.Scenes = map[SceneID]*Scene{"s1": {ID: "s1", QuoteIDs: []QuoteID{1, 2, 3, 4, 5}}}
+	// The carter's own pending offers to her. Only the one for nothing but the
+	// wheat is obsolete once the leg settles.
+	offer := func(id LedgerID, buyer ActorID, kind ItemKind, lines ...QuoteLine) *PayLedgerEntry {
+		return &PayLedgerEntry{ID: id, BuyerID: buyer, SellerID: "liz", ItemKind: kind, Qty: 25, Lines: lines, Amount: 20,
+			State: PayLedgerStatePending, SceneID: "s1"}
+	}
+	w.PayLedger = map[LedgerID]*PayLedgerEntry{
+		11: offer(11, carter.ID, "wheat"),                                        // his offer for the wheat: withdrawn
+		12: offer(12, carter.ID, "iron"),                                         // another good: stands
+		13: offer(13, "joseph", "wheat"),                                         // someone else's: stands
+		14: offer(14, carter.ID, "", wheat, QuoteLine{ItemKind: "iron", Qty: 8}), // a bundle: stands
+	}
 
 	carter.InsideStructureID = "farm"
 	advanceCarter(w, carter, carterNow)
 
-	if w.Quotes[1].State != SceneQuoteStateTaken || !w.Quotes[1].ResolvedAt.Equal(carterNow) {
-		t.Errorf("her offer to the carter for wheat: state %s resolved %v, want taken at the settle", w.Quotes[1].State, w.Quotes[1].ResolvedAt)
+	// Her offer said 40 coin; the leg paid 25. The offer closed, but it was not
+	// the thing accepted — carter_settled, never taken.
+	if w.Quotes[1].State != SceneQuoteStateCarterSettled || !w.Quotes[1].ResolvedAt.Equal(carterNow) {
+		t.Errorf("her offer to the carter for wheat: state %s resolved %v, want carter_settled at the settle", w.Quotes[1].State, w.Quotes[1].ResolvedAt)
 	}
 	for _, id := range []QuoteID{2, 3, 4, 5} {
 		if w.Quotes[id].State != SceneQuoteStateActive {
@@ -546,6 +560,14 @@ func TestSettleCarterBuyLegTellsTheHolder(t *testing.T) {
 	}
 	if got := w.Scenes["s1"].QuoteIDs; len(got) != 4 || got[0] != 2 {
 		t.Errorf("scene quote index = %v, want [2 3 4 5] — the closed offer leaves it", got)
+	}
+	if got := w.PayLedger[11].State; got != PayLedgerStateWithdrawnByBuyer {
+		t.Errorf("his pending offer for the wheat: state %s, want withdrawn_by_buyer", got)
+	}
+	for _, id := range []LedgerID{12, 13, 14} {
+		if got := w.PayLedger[id].State; got != PayLedgerStatePending {
+			t.Errorf("pay offer %d: state %s, want still pending", id, got)
+		}
 	}
 
 	liz := w.Actors["liz"]
@@ -583,6 +605,29 @@ func TestSettleCarterBuyLegTellsTheHolder(t *testing.T) {
 	}
 	if !found {
 		t.Error("no carter_bought warrant when no offer stood")
+	}
+
+	// Two buy legs at one holder before her next turn: two beats, neither lost
+	// to warrant dedup.
+	w = carterWorld()
+	tr := &TradeErrand{Direction: TradeDirectionSell, Carter: true, Legs: []CarterLeg{
+		{Buy: true, Good: "wheat", Qty: 25, Counterparty: "farm", Keeper: "liz", Unit: 1},
+		{Buy: true, Good: "iron", Qty: 6, Counterparty: "farm", Keeper: "liz", Unit: 3},
+	}}
+	carter = &Actor{ID: "vstr-cart", DisplayName: "Asa Larkin the carter", Kind: KindNPCShared, State: StateIdle,
+		InsideStructureID: "farm", Coins: 63, Inventory: map[ItemKind]int{}, VisitorState: &VisitorState{Trade: tr, SpendBudget: 63}}
+	projectCarterLeg(tr, carter.Inventory)
+	w.Actors[carter.ID] = carter
+	advanceCarter(w, carter, carterNow)
+	advanceCarter(w, carter, carterNow)
+	var lots []string
+	for _, m := range w.Actors["liz"].Warrants {
+		if r, ok := m.Reason.(CarterBoughtWarrantReason); ok {
+			lots = append(lots, r.NarrationText)
+		}
+	}
+	if len(lots) != 2 || !strings.Contains(lots[0], "25 sheaves of wheat") || !strings.Contains(lots[1], "6 bars of iron") {
+		t.Errorf("beats after two legs = %q, want one for the wheat and one for the iron", lots)
 	}
 
 	// Nothing bought, nothing told.

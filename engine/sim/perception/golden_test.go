@@ -3784,7 +3784,7 @@ var perceptionScenarios = []perceptionScenario{
 			"while Joseph's own offer to the carter ('2 coat for 24 coins') stood. Live 2026-09-28 at the Mill his next prompt " +
 			"carried neither the payment nor any sign the sale was over, and '## Offers you've put out' still read 'they have " +
 			"yet to answer', so he asked to be paid again. The golden pins the pre-rendered carter_bought line — the sale done, " +
-			"the offer closed, nothing more owed — and the absence of the offer section: the settle flipped that quote to taken.",
+			"the offer closed, nothing more owed — and the absence of the offer section: the settle flipped that quote to carter_settled.",
 		build: holderCarterBoughtBeat,
 	},
 	{
@@ -14251,7 +14251,7 @@ func employerLaborSettledBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 // holderCarterBoughtBeat is the LLM-681 fixture: the instant after the carter's
 // buy leg settled at the Mill, Joseph Scott two coats lighter and 18 coins
 // heavier, the carter still huddled with him. Joseph's offer to the carter is in
-// the snapshot as the settle left it — taken — so the golden shows it gone from
+// the snapshot as the settle left it — carter_settled — so the golden shows it gone from
 // "## Offers you've put out". The narration comes from the real builder.
 func holderCarterBoughtBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
@@ -14308,7 +14308,7 @@ func holderCarterBoughtBeat() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 		Quotes: map[sim.QuoteID]*sim.SceneQuote{
 			1: {ID: 1, SceneID: scene, SellerID: josephID, TargetBuyer: carterID,
 				Lines: []sim.QuoteLine{{ItemKind: "coat", Qty: 2}}, Amount: 24,
-				State: sim.SceneQuoteStateTaken, CreatedAt: published.Add(-65 * time.Second),
+				State: sim.SceneQuoteStateCarterSettled, CreatedAt: published.Add(-65 * time.Second),
 				ExpiresAt: published.Add(9 * time.Minute), ResolvedAt: settled},
 		},
 		ItemKinds: kinds,
