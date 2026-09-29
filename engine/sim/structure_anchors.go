@@ -411,7 +411,7 @@ func ResolveLoiteringObject(objects map[VillageObjectID]*VillageObject, assets m
 	bestDist := 0
 	found := false
 	for id, vobj := range objects {
-		if vobj == nil || vobj.DisplayName == "" {
+		if !vobj.Attributable() {
 			continue
 		}
 		asset, ok := assets[vobj.AssetID]

@@ -145,7 +145,7 @@ func ResolveGatherSource(objects map[VillageObjectID]*VillageObject, assets map[
 	}
 	best := GatherCandidate{ID: bestID, Cheb: loiterChebIn(bestObj, assets, actorTile), Mine: true, HasStock: bestRow.HasStock() && !bestObj.Damaged(), Low: lowItems[bestRow.GatherItem]}
 	for id, obj := range objects {
-		if id == bestID || obj == nil || obj.DisplayName == "" || obj.OwnedByOther(actorID) {
+		if id == bestID || !obj.Attributable() || obj.OwnedByOther(actorID) {
 			continue
 		}
 		asset, ok := assets[obj.AssetID]
@@ -214,7 +214,7 @@ func walkedToGatherSeed(objects map[VillageObjectID]*VillageObject, assets map[A
 		return "", nil, nil
 	}
 	target := objects[targetID]
-	if target == nil || target.DisplayName == "" || target.OwnedByOther(actorID) {
+	if !target.Attributable() || target.OwnedByOther(actorID) {
 		return "", nil, nil
 	}
 	row, _, gatherable := FirstGatherableRow(target)

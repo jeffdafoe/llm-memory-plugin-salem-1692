@@ -246,7 +246,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			}
 			id := sim.VillageObjectID(ref)
 			obj := snap.VillageObjects[id]
-			if obj == nil || obj.OwnerActorID != actorID {
+			if !obj.Attributable() || obj.OwnerActorID != actorID {
 				continue
 			}
 			stock, ok := forageStockForItem(obj, e.Item)
@@ -394,7 +394,7 @@ func nearestWildForageSource(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, i
 	var best *sim.VillageObject
 	var bestDist2, bestStock int
 	for _, obj := range snap.VillageObjects {
-		if obj == nil || obj.OwnerActorID != "" || obj.DisplayName == "" {
+		if !obj.Attributable() || obj.OwnerActorID != "" {
 			continue // owned, or nameless (no name to render in the cue) — skip
 		}
 		stock, ok := forageStockForItem(obj, item)

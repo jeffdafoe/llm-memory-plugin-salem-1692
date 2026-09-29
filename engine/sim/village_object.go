@@ -159,6 +159,18 @@ func (o *VillageObject) OwnedByOther(actorID ActorID) bool {
 	return o.OwnerActorID != "" && o.OwnerActorID != actorID
 }
 
+// Attributable reports whether the at-source resolvers can attribute an actor to
+// this object — the one rule every steer or wake toward a source must share
+// (LLM-682). ResolveLoiteringObject, ResolveGatherSource and walkedToGatherSeed
+// attribute only NAMED objects, because decoration is deliberately nameless and a
+// named tree would win the tile over a real bush (asset-refresh-defaults note). A
+// cue that sends an actor to an unnamed source sends it where arrival refuses it,
+// and it walks again with no error — live three times (LLM-60, LLM-398, LLM-623).
+// Nil-safe: a nil object is not attributable.
+func (o *VillageObject) Attributable() bool {
+	return o != nil && o.DisplayName != ""
+}
+
 // IsFiniteGatherableSource reports whether the object carries a FINITE
 // gatherable row — a bush's exhaustible pick, or a well's water-pail yield
 // (LLM-254 split the well into an infinite drink row + a finite yield-only

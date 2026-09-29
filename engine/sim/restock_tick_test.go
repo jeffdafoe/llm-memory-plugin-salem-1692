@@ -68,6 +68,7 @@ func addSupplier(w *World, id ActorID, item ItemKind) *Actor {
 func forageBushObj(owner ActorID, item ItemKind, avail int) *VillageObject {
 	q := avail
 	return &VillageObject{
+		DisplayName:  "Raspberry Bush", // unnamed sources are unreachable (LLM-682)
 		OwnerActorID: owner,
 		Refreshes: []*ObjectRefresh{
 			{Attribute: "hunger", Amount: 0, GatherItem: item, AvailableQuantity: &q},

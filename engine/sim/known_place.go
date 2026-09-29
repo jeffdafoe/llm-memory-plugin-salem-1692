@@ -225,7 +225,7 @@ func recordFreeSourceExperience(a *Actor, objID VillageObjectID, hits []RefreshH
 // run on the world goroutine / before snapshot publish.
 func SeedOwnedKnownPlaces(actors map[ActorID]*Actor, objects map[VillageObjectID]*VillageObject, at time.Time) {
 	for id, obj := range objects {
-		if obj == nil || obj.OwnerActorID == "" {
+		if !obj.Attributable() || obj.OwnerActorID == "" {
 			continue
 		}
 		owner := actors[obj.OwnerActorID]

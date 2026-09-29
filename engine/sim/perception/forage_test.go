@@ -20,6 +20,7 @@ func forageBush(owner sim.ActorID, item sim.ItemKind, avail int) *sim.VillageObj
 	a := avail
 	m := 10
 	return &sim.VillageObject{
+		DisplayName:  "Raspberry Bush", // unnamed sources are unreachable (LLM-682)
 		OwnerActorID: owner,
 		Refreshes: []*sim.ObjectRefresh{
 			{Attribute: "hunger", Amount: 0, GatherItem: item, AvailableQuantity: &a, MaxQuantity: &m},
@@ -329,7 +330,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 			Actors:     map[sim.ActorID]*sim.ActorSnapshot{"prudence": seller},
 			Structures: map[sim.StructureID]*sim.Structure{"apothecary": {ID: "apothecary", DisplayName: "PW Apothecary"}},
 			VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
-				"bushA": {OwnerActorID: "prudence", Refreshes: []*sim.ObjectRefresh{
+				"bushA": {DisplayName: "Raspberry Bush", OwnerActorID: "prudence", Refreshes: []*sim.ObjectRefresh{
 					{Amount: 0, GatherItem: "raspberries", AvailableQuantity: dutyMinPtr(10)},
 				}},
 			},

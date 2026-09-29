@@ -430,7 +430,7 @@ func TestSeekWorkBackstop_RedirectsViaFreeSource(t *testing.T) {
 	a.Coins = 0
 	w := workerShiftWorld(a)
 	w.VillageObjects = map[VillageObjectID]*VillageObject{
-		"bush": {Refreshes: []*ObjectRefresh{{Attribute: "hunger", Amount: -5}}}, // unowned, eases hunger
+		"bush": {DisplayName: "Berry Bush", Refreshes: []*ObjectRefresh{{Attribute: "hunger", Amount: -5}}}, // unowned, eases hunger
 	}
 	tm := evalSeekWork(t, w, seekNoon)
 	if tm.Redirected != 1 || !hasTendNeedWarrant(a) {

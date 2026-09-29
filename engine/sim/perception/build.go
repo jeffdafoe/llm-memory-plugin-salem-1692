@@ -3117,7 +3117,7 @@ func atResolvableSatiationSource(snap *sim.Snapshot, actorID sim.ActorID, a *sim
 		// A free public source the actor is standing at (its loiter pin — the tile
 		// locomotion parks a visitor on, which may be offset from the base tile).
 		for _, obj := range snap.VillageObjects {
-			if obj == nil || objectRefreshMagnitude(obj, need) <= 0 || obj.OwnedByOther(actorID) {
+			if !obj.Attributable() || objectRefreshMagnitude(obj, need) <= 0 || obj.OwnedByOther(actorID) {
 				continue
 			}
 			if a.Pos.Chebyshev(objectLoiterPin(obj)) <= sim.LoiterAttributionTiles {
@@ -3209,7 +3209,7 @@ func consumableSourceColocated(snap *sim.Snapshot, actorID sim.ActorID, a *sim.A
 		return true
 	}
 	for _, obj := range snap.VillageObjects {
-		if obj == nil || objectRefreshMagnitude(obj, need) <= 0 || obj.OwnedByOther(actorID) {
+		if !obj.Attributable() || objectRefreshMagnitude(obj, need) <= 0 || obj.OwnedByOther(actorID) {
 			continue
 		}
 		if a.Pos.Chebyshev(objectLoiterPin(obj)) <= sim.LoiterAttributionTiles {
