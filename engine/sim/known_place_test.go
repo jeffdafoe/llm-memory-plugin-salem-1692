@@ -160,7 +160,7 @@ func TestSeedOwnedKnownPlaces_OwnedBushAndAnchors(t *testing.T) {
 	prudence := &Actor{ID: "prudence", Kind: KindNPCStateful, HomeStructureID: "ward_house", WorkStructureID: "herbalist"}
 	actors := map[ActorID]*Actor{"prudence": prudence}
 	objects := map[VillageObjectID]*VillageObject{
-		"bush1": {OwnerActorID: "prudence", Refreshes: []*ObjectRefresh{{GatherItem: "raspberries"}}},
+		"bush1": {DisplayName: "Raspberry Bush", OwnerActorID: "prudence", Refreshes: []*ObjectRefresh{{GatherItem: "raspberries"}}},
 		"wild":  {OwnerActorID: "", Refreshes: []*ObjectRefresh{{GatherItem: "blueberries"}}}, // unowned — commons, not seeded
 	}
 
@@ -192,7 +192,7 @@ func TestSeedOwnedKnownPlaces_MergesWithoutBumpingExperienced(t *testing.T) {
 	}
 	actors := map[ActorID]*Actor{"prudence": prudence}
 	objects := map[VillageObjectID]*VillageObject{
-		"bush1": {OwnerActorID: "prudence", Refreshes: []*ObjectRefresh{{GatherItem: "raspberries"}}},
+		"bush1": {DisplayName: "Raspberry Bush", OwnerActorID: "prudence", Refreshes: []*ObjectRefresh{{GatherItem: "raspberries"}}},
 	}
 
 	SeedOwnedKnownPlaces(actors, objects, loadTime)

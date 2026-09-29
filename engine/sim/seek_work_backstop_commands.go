@@ -493,8 +493,8 @@ func affordableConsumableVendorExists(w *World, a *Actor, need NeedKey) bool {
 // decrement) plus any dwell delta, the same magnitude objectRefreshMagnitude computes.
 func freeConsumableSourceExists(w *World, a *Actor, need NeedKey) bool {
 	for _, obj := range w.VillageObjects {
-		if obj == nil || obj.OwnedByOther(a.ID) || obj.Damaged() {
-			continue
+		if !obj.Attributable() || obj.OwnedByOther(a.ID) || obj.Damaged() {
+			continue // Attributable: the perception twin's rule, LLM-682
 		}
 		for _, refresh := range obj.Refreshes {
 			if refresh == nil || refresh.Attribute != need {

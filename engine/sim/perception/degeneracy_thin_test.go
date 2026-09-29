@@ -117,7 +117,7 @@ func TestBuild_FlaggedActor_ThinsForageErrand(t *testing.T) {
 			Actors:     map[sim.ActorID]*sim.ActorSnapshot{"prudence": seller},
 			Structures: map[sim.StructureID]*sim.Structure{"apothecary": {ID: "apothecary", DisplayName: "PW Apothecary"}},
 			VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
-				"bushA": {OwnerActorID: "prudence", Refreshes: []*sim.ObjectRefresh{
+				"bushA": {DisplayName: "Raspberry Bush", OwnerActorID: "prudence", Refreshes: []*sim.ObjectRefresh{
 					{Amount: 0, GatherItem: "raspberries", AvailableQuantity: dutyMinPtr(10)},
 				}},
 			},

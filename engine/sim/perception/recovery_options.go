@@ -323,8 +323,8 @@ func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []Rec
 	ay := float64(actorSnap.Pos.Y)
 	var out []RecoveryOption
 	for _, obj := range snap.VillageObjects {
-		if obj == nil {
-			continue
+		if !obj.Attributable() {
+			continue // arrival-rest resolves only a named spot (LLM-682)
 		}
 		mag := tirednessRefreshMagnitude(obj)
 		if mag <= 0 {

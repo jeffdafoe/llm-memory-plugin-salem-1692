@@ -606,8 +606,8 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actor
 	ay := float64(actorSnap.Pos.Y)
 	var out []SatiationFreeSource
 	consider := func(id sim.VillageObjectID, obj *sim.VillageObject) {
-		if obj == nil {
-			return
+		if !obj.Attributable() {
+			return // arrival-eat resolves only a named source (LLM-682)
 		}
 		mag := objectRefreshMagnitude(obj, need)
 		if mag <= 0 {
@@ -625,9 +625,6 @@ func gatherFreeSatiationSources(snap *sim.Snapshot, subjectID sim.ActorID, actor
 		dy := ty - ay
 		distTiles := math.Sqrt(dx*dx + dy*dy)
 		label := obj.DisplayName
-		if label == "" {
-			label = "a nearby source"
-		}
 		out = append(out, SatiationFreeSource{
 			Label:     label,
 			ObjectID:  id,

@@ -2275,6 +2275,19 @@ var perceptionScenarios = []perceptionScenario{
 		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return millerWithHiredHauler(true) },
 	},
 	{
+		name: "miller_own_spring_unnamed_falls_back_to_the_well",
+		summary: "LLM-682: the miller_stepping_out_to_his_own_bush fixture with the spring's name blanked — the LLM-623 " +
+			"shape, a gatherable a migration left nameless. Arrival and gather resolve only a named object, so before " +
+			"LLM-682 '## Your bushes to harvest' sent him to mill_spring, where gather refuses him, and he walked again " +
+			"with no error. The owned-bush branch now drops an unattributable bush, so he owns none for water and, as a " +
+			"forage_range forager, is pointed at the named commons Well instead — a destination arrival can resolve.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, id, w := millerWithHiredHauler(true)
+			snap.VillageObjects["mill_spring"].DisplayName = ""
+			return snap, id, w
+		},
+	},
+	{
 		name: "miller_at_degraded_mill_keeps_water_forage_cue",
 		summary: "LLM-634. The 2026-08-15 deadlock trigger: the village's only `forage water` keeper stands inside " +
 			"his OWN Mill, worn past the degrade threshold (650 >= 600) with 0 of the 5 nails a mend takes, out of " +
@@ -7151,6 +7164,36 @@ func TestGoldensToolWearLineOnlyForDurableTools(t *testing.T) {
 // nor anywhere else in the matrix. The marker is distinct from the worker's own
 // "You are working a job for X" self-state line (renderLaborSelfState), which is
 // second-person and never carries "is working a job for you".
+// TestGoldensNeverSteerToAnUnattributableObject — LLM-682 cross-scenario invariant:
+// no rendered move_to destination anywhere in the matrix names a village object
+// arrival cannot resolve. Arrival, gather and arrival-eat attribute an actor only to
+// an Attributable (named) object, so a cue that names an unnamed one sends the NPC
+// somewhere it will walk away from again with no error. A structure id is skipped —
+// a building shares its id with its placement object and resolves as a structure.
+func TestGoldensNeverSteerToAnUnattributableObject(t *testing.T) {
+	dest := regexp.MustCompile(`destination "([^"]+)"`)
+	checked := 0
+	for _, sc := range perceptionScenarios {
+		snap, _, _ := sc.build()
+		for _, m := range dest.FindAllStringSubmatch(renderScenario(sc), -1) {
+			obj, isObject := snap.VillageObjects[sim.VillageObjectID(m[1])]
+			if !isObject {
+				continue
+			}
+			if _, isStructure := snap.Structures[sim.StructureID(m[1])]; isStructure {
+				continue
+			}
+			checked++
+			if !obj.Attributable() {
+				t.Errorf("scenario %q steers to %q, an object arrival cannot resolve (no name)", sc.name, m[1])
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no scenario renders a move_to to a village object — the invariant checks nothing")
+	}
+}
+
 func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
 	const marker = "is working a job for you"
 	for _, sc := range perceptionScenarios {
@@ -7165,6 +7208,8 @@ func TestActiveWorkerCueOnlyForEmployerWithWorkingOffer(t *testing.T) {
 			sc.name == "miller_with_hired_hauler_keeps_water_cue" ||
 			// LLM-622: the owned-source arm of the same miller fixture — same hire.
 			sc.name == "miller_stepping_out_to_his_own_bush" ||
+			// LLM-682: the same miller with his spring unnamed — same hire.
+			sc.name == "miller_own_spring_unnamed_falls_back_to_the_well" ||
 			// LLM-651: the miller employing the wright on an odd job while the mill
 			// is due — the contract line is what the service pay arm yields to.
 			sc.name == "owner_with_wright_on_the_job"
@@ -8221,6 +8266,8 @@ func TestVendorOperatingCueOnlyDuringOperatingHours(t *testing.T) {
 		"miller_with_hired_hauler_keeps_water_cue": true,
 		// LLM-622: the owned-source arm of the same miller — same post, same hours.
 		"miller_stepping_out_to_his_own_bush": true,
+		// LLM-682: the same miller with his spring unnamed — same post, same hours.
+		"miller_own_spring_unnamed_falls_back_to_the_well": true,
 		// LLM-634: the same miller alone at his degraded Mill — same post, same hours.
 		"miller_at_degraded_mill_keeps_water_forage_cue": true,
 	}
@@ -8354,6 +8401,8 @@ func TestVendorConcessionLineOnlyWhenTradeSlow(t *testing.T) {
 		"miller_with_hired_hauler_keeps_water_cue": true,
 		// LLM-622: same fixture, same absent sales.
 		"miller_stepping_out_to_his_own_bush": true,
+		// LLM-682: same fixture, same absent sales.
+		"miller_own_spring_unnamed_falls_back_to_the_well": true,
 		// LLM-634: the degraded-Mill miller carries no sales either.
 		"miller_at_degraded_mill_keeps_water_forage_cue": true,
 	}

@@ -361,7 +361,7 @@ func actorRemembersForageSource(a *Actor, w *World, item ItemKind) bool {
 			continue
 		}
 		obj := w.VillageObjects[VillageObjectID(ref)]
-		if obj == nil || obj.OwnerActorID != a.ID {
+		if !obj.Attributable() || obj.OwnerActorID != a.ID {
 			continue
 		}
 		if obj.HasForageSourceFor(item) {
