@@ -24,6 +24,24 @@ func TestAttributableGatesTheSimSideDoors(t *testing.T) {
 	if kp := owner.KnownPlaces["bushA"]; kp != nil {
 		t.Errorf("an unnamed owned bush was seeded as a known place: %+v", kp)
 	}
+	bush.DisplayName = "Raspberry Bush"
+	SeedOwnedKnownPlaces(map[ActorID]*Actor{"prudence": owner}, map[VillageObjectID]*VillageObject{"bushA": bush}, time.Now())
+	if kp := owner.KnownPlaces["bushA"]; kp == nil || kp.Kind != PlaceKindObject || !kp.HasAffordance("gather:raspberries") {
+		t.Errorf("the same bush with a name was not seeded as a gather place: %+v", kp)
+	}
+	bush.DisplayName = ""
+
+	// The resolver every door must agree with.
+	placed := &VillageObject{ID: "src", AssetID: "bush-asset", Pos: WorldPos{X: 320, Y: 320}}
+	objects := map[VillageObjectID]*VillageObject{"src": placed}
+	assets := map[AssetID]*Asset{"bush-asset": {ID: "bush-asset"}}
+	if _, ok := ResolveLoiteringObject(objects, assets, computeLoiterTile(placed, assets["bush-asset"]), LoiterAttributionTiles); ok {
+		t.Error("the resolver attributed an actor to an unnamed object")
+	}
+	placed.DisplayName = "Berry Bush"
+	if id, ok := ResolveLoiteringObject(objects, assets, computeLoiterTile(placed, assets["bush-asset"]), LoiterAttributionTiles); !ok || id != "src" {
+		t.Errorf("the resolver did not attribute an actor standing on the named object: %q %v", id, ok)
+	}
 
 	// The forage restock wake.
 	a := &Actor{ID: "prudence"}
