@@ -2361,6 +2361,8 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 			add(r.Speaker)
 		case sim.PaidWarrantReason:
 			add(r.Buyer)
+		case sim.CarterBoughtWarrantReason:
+			add(r.Carter)
 		case sim.PayOfferWarrantReason:
 			add(r.Buyer)
 		case sim.SceneQuoteTargetedWarrantReason:

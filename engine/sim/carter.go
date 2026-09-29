@@ -707,6 +707,113 @@ func settleCarterBuyLeg(w *World, carter, holder *Actor, leg *CarterLeg, now tim
 		Source:      "engine",
 	})
 	log.Printf("sim/carter: %s paid %s %d coin for %s", carter.DisplayName, holder.DisplayName, price, forText)
+	// The settle happens on the pacing pass, outside both parties' turns, and
+	// emits no Paid event — so without this the holder never learns the sale
+	// happened and, holding a standing offer to the carter for the same goods,
+	// asks to be paid again (LLM-681, live 2026-09-28 at the Mill).
+	offerClosed := closeCarterQuotes(w, holder, carter, leg.Good, now)
+	withdrawCarterPayOffers(w, holder, carter, leg.Good, now)
+	tryStampWarrant(w, holder, WarrantMeta{
+		TriggerActorID: carter.ID,
+		Reason: CarterBoughtWarrantReason{
+			Carter:        carter.ID,
+			NarrationText: CarterBoughtNarration(carter.DisplayName, inputCountPhrase(w, leg.Good, qty), price, offerClosed),
+		},
+		SourceActorID: carter.ID,
+		HuddleID:      carter.CurrentHuddleID,
+		OccurredAt:    now,
+	}, now)
+}
+
+// closeCarterQuotes closes the holder's active offers to the carter for the good
+// a buy leg just took, the way a pay_with_item take closes the quote it settles
+// (LLM-189) — but as carter_settled, not taken: the route's terms, not the
+// quote's, are what changed hands. Only an offer addressed to this carter and
+// naming nothing but that good: a public offer still stands for everyone else,
+// and a bundle offers goods the leg did not buy. Reports whether any closed.
+func closeCarterQuotes(w *World, holder, carter *Actor, good ItemKind, at time.Time) bool {
+	var ids []QuoteID
+	for id, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive || q.SellerID != holder.ID || q.TargetBuyer != carter.ID {
+			continue
+		}
+		if linesOnlyGood(q.Lines, good) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		q := w.Quotes[id]
+		flipQuoteTerminal(w, w.Scenes[q.SceneID], q, SceneQuoteStateCarterSettled, SceneQuoteExpiredReasonCarterSettled, at)
+	}
+	return len(ids) > 0
+}
+
+// withdrawCarterPayOffers resolves the carter's own still-pending offers to the
+// holder for the good a buy leg just took — a re-offer in a counter chain too —
+// the carter-leg twin of withdrawCrossingOffers: left pending, the holder could
+// accept one and sell the same goods to him twice. Matched like the quotes: this
+// holder, nothing but that good. The carter's commerce tools are stripped at the
+// holder's on a buy leg (perception visitorCommerceStripped) except where the
+// holder keeps a tavern or inn, so this is the path such an offer comes from.
+func withdrawCarterPayOffers(w *World, holder, carter *Actor, good ItemKind, at time.Time) {
+	var ids []LedgerID
+	for id, e := range w.PayLedger {
+		if e == nil || e.State != PayLedgerStatePending || e.BuyerID != carter.ID || e.SellerID != holder.ID {
+			continue
+		}
+		if linesOnlyGood(entrySaleLines(e), good) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		finalizePayLedgerTerminal(w, w.PayLedger[id], PayTerminalStateWithdrawnByBuyer, "superseded — the carter's buy leg settled these goods", at)
+	}
+}
+
+// linesOnlyGood reports whether an offer's goods are that one good and nothing
+// else. No lines is false: an offer that moves no goods is not about this one.
+func linesOnlyGood(lines []QuoteLine, good ItemKind) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	for _, l := range lines {
+		if l.ItemKind != good {
+			return false
+		}
+	}
+	return true
+}
+
+// CarterBoughtWarrantReason is the holder's beat for a carter buy leg (LLM-681):
+// the goods left the shelf and the coin reached the purse on the pacing pass,
+// with no turn of the holder's in flight, so this is the only way the sale
+// reaches the holder's next prompt. Narration pre-rendered, the LaborSettled
+// posture. DedupDiscriminator 0 — each settle stamps once.
+type CarterBoughtWarrantReason struct {
+	Carter        ActorID
+	NarrationText string
+}
+
+func (CarterBoughtWarrantReason) isWarrantReason()           {}
+func (CarterBoughtWarrantReason) Kind() WarrantKind          { return WarrantKindCarterBought }
+func (CarterBoughtWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// CarterBoughtNarration is the holder's line for a settled carter buy leg. It
+// says the sale is finished in both directions, because the failure it answers
+// is a keeper asking for coin already paid. No pronoun for the carter: the
+// village does not model gender.
+func CarterBoughtNarration(carterName, lot string, price int, offerClosed bool) string {
+	if carterName == "" {
+		carterName = "The carter"
+	}
+	done := "The sale is done"
+	if offerClosed {
+		done += ", and your offer to the carter is closed"
+	}
+	return carterName + " bought " + lot + " from you for " + formatPayment(price, nil) +
+		" — the coin is in your purse and the goods have left your stock. " + done + "; nothing more is owed either way."
 }
 
 // describeCarterRoute is the log form of a route: "buy 25 wheat at Ellis Farm

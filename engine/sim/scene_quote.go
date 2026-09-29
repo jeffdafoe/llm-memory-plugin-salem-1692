@@ -93,6 +93,13 @@ const (
 	// seller re-posts what they still hold on their next turn. Terminal
 	// (LLM-409).
 	SceneQuoteStateShortfall SceneQuoteState = "shortfall"
+
+	// SceneQuoteStateCarterSettled — a carter's mechanical buy leg took the
+	// quoted good from the seller on the route's own terms (LLM-681), so her
+	// offer to him is obsolete without having been accepted: the quoted price
+	// and quantity are not what changed hands, which is why this is not Taken.
+	// Terminal.
+	SceneQuoteStateCarterSettled SceneQuoteState = "carter_settled"
 )
 
 // SceneQuoteTTLDefault is the default Time-To-Live for a scene quote

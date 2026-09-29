@@ -88,6 +88,7 @@ const (
 	WarrantKindHearthStokeHired   WarrantKind = "hearth_stoke_hired"   // a hired worker started on-post during a storm at an employer whose hearth wants stoking — wake them, piercing the laboring shelve-gate (LLM-412)
 	WarrantKindUnfinishedIntent   WarrantKind = "unfinished_intent"    // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
 	WarrantKindLaborSettled       WarrantKind = "labor_settled"        // a finished job's wage transferred at the completion sweep — both parties perceive the payment as squared (LLM-498)
+	WarrantKindCarterBought       WarrantKind = "carter_bought"        // a carter's mechanical buy leg took goods off the holder's shelf for coin — the holder perceives the sale as done (LLM-681)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
