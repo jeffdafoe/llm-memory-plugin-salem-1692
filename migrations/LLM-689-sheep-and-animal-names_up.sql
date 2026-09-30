@@ -76,7 +76,7 @@ WITH animals AS (
            split_part(s.name, ' (', 1) AS species,
            row_number() OVER (
                PARTITION BY split_part(s.name, ' (', 1)
-               ORDER BY coalesce(nullif(substring(a.display_name FROM '^Villager ([0-9]+)$'), ''), '1')::int, a.id
+               ORDER BY coalesce(nullif(substring(a.display_name FROM '^Villager ([0-9]+)$'), ''), '1')::numeric, a.id
            ) AS n
       FROM public.actor a
       JOIN public.npc_sprite s ON s.id = a.sprite_id
