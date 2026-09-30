@@ -63,10 +63,10 @@ func _ready() -> void:
     panel_style.border_width_right = 2
     panel_style.border_width_bottom = 2
     panel_style.border_color = COLOR_BORDER
-    panel_style.corner_radius_left_top = 4
-    panel_style.corner_radius_right_top = 4
-    panel_style.corner_radius_left_bottom = 4
-    panel_style.corner_radius_right_bottom = 4
+    panel_style.corner_radius_top_left = 4
+    panel_style.corner_radius_top_right = 4
+    panel_style.corner_radius_bottom_left = 4
+    panel_style.corner_radius_bottom_right = 4
     panel_style.content_margin_left = 24.0
     panel_style.content_margin_right = 24.0
     panel_style.content_margin_top = 20.0
@@ -204,10 +204,10 @@ func show_asset(asset_id: String) -> void:
     btn_style.border_width_right = 1
     btn_style.border_width_bottom = 1
     btn_style.border_color = COLOR_BTN_BORDER
-    btn_style.corner_radius_left_top = 3
-    btn_style.corner_radius_right_top = 3
-    btn_style.corner_radius_left_bottom = 3
-    btn_style.corner_radius_right_bottom = 3
+    btn_style.corner_radius_top_left = 3
+    btn_style.corner_radius_top_right = 3
+    btn_style.corner_radius_bottom_left = 3
+    btn_style.corner_radius_bottom_right = 3
     btn_style.content_margin_top = 8.0
     btn_style.content_margin_bottom = 8.0
     place_btn.add_theme_stylebox_override("normal", btn_style)
@@ -252,10 +252,10 @@ func _add_id_row(container: VBoxContainer, asset_id: String) -> void:
     btn_style.border_width_right = 1
     btn_style.border_width_bottom = 1
     btn_style.border_color = COLOR_BTN_BORDER
-    btn_style.corner_radius_left_top = 2
-    btn_style.corner_radius_right_top = 2
-    btn_style.corner_radius_left_bottom = 2
-    btn_style.corner_radius_right_bottom = 2
+    btn_style.corner_radius_top_left = 2
+    btn_style.corner_radius_top_right = 2
+    btn_style.corner_radius_bottom_left = 2
+    btn_style.corner_radius_bottom_right = 2
     btn_style.content_margin_left = 6.0
     btn_style.content_margin_right = 6.0
     btn_style.content_margin_top = 2.0
@@ -295,10 +295,10 @@ func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: b
         thumb_style.border_color = COLOR_STATE_DEFAULT
     else:
         thumb_style.border_color = COLOR_STATE_BORDER
-    thumb_style.corner_radius_left_top = 2
-    thumb_style.corner_radius_right_top = 2
-    thumb_style.corner_radius_left_bottom = 2
-    thumb_style.corner_radius_right_bottom = 2
+    thumb_style.corner_radius_top_left = 2
+    thumb_style.corner_radius_top_right = 2
+    thumb_style.corner_radius_bottom_left = 2
+    thumb_style.corner_radius_bottom_right = 2
     thumb_panel.add_theme_stylebox_override("panel", thumb_style)
     vbox.add_child(thumb_panel)
 
@@ -480,10 +480,10 @@ func _refresh_tag_editor_chips() -> void:
         pill_style.border_width_right = 1
         pill_style.border_width_bottom = 1
         pill_style.border_color = COLOR_BTN_BORDER
-        pill_style.corner_radius_left_top = 8
-        pill_style.corner_radius_right_top = 8
-        pill_style.corner_radius_left_bottom = 8
-        pill_style.corner_radius_right_bottom = 8
+        pill_style.corner_radius_top_left = 8
+        pill_style.corner_radius_top_right = 8
+        pill_style.corner_radius_bottom_left = 8
+        pill_style.corner_radius_bottom_right = 8
         pill_style.content_margin_left = 8.0
         pill_style.content_margin_right = 4.0
         pill_style.content_margin_top = 2.0

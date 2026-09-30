@@ -77,10 +77,10 @@ func _ready() -> void:
     panel_style.border_width_right = 2
     panel_style.border_width_bottom = 2
     panel_style.border_color = COLOR_BORDER
-    panel_style.corner_radius_left_top = 4
-    panel_style.corner_radius_right_top = 4
-    panel_style.corner_radius_left_bottom = 4
-    panel_style.corner_radius_right_bottom = 4
+    panel_style.corner_radius_top_left = 4
+    panel_style.corner_radius_top_right = 4
+    panel_style.corner_radius_bottom_left = 4
+    panel_style.corner_radius_bottom_right = 4
     panel_style.content_margin_left = 24.0
     panel_style.content_margin_right = 24.0
     panel_style.content_margin_top = 20.0
@@ -230,10 +230,10 @@ func _add_item(sprite: Dictionary, sheet: Texture2D) -> void:
     item_style.border_width_right = 1
     item_style.border_width_bottom = 1
     item_style.border_color = COLOR_ITEM_BORDER
-    item_style.corner_radius_left_top = 2
-    item_style.corner_radius_right_top = 2
-    item_style.corner_radius_left_bottom = 2
-    item_style.corner_radius_right_bottom = 2
+    item_style.corner_radius_top_left = 2
+    item_style.corner_radius_top_right = 2
+    item_style.corner_radius_bottom_left = 2
+    item_style.corner_radius_bottom_right = 2
     item.add_theme_stylebox_override("panel", item_style)
 
     var center = CenterContainer.new()

@@ -55,10 +55,10 @@ func _ready() -> void:
     panel_style.border_width_right = 1
     panel_style.border_width_bottom = 1
     panel_style.border_color = COLOR_BORDER
-    panel_style.corner_radius_left_top = 4
-    panel_style.corner_radius_right_top = 4
-    panel_style.corner_radius_left_bottom = 4
-    panel_style.corner_radius_right_bottom = 4
+    panel_style.corner_radius_top_left = 4
+    panel_style.corner_radius_top_right = 4
+    panel_style.corner_radius_bottom_left = 4
+    panel_style.corner_radius_bottom_right = 4
     panel_style.content_margin_left = PANEL_PAD
     panel_style.content_margin_right = PANEL_PAD
     panel_style.content_margin_top = PANEL_PAD - 4
