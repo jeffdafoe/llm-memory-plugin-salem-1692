@@ -153,7 +153,7 @@ func npcAutoAppliesRefreshRow(r *ObjectRefresh) bool {
 // a finite (tracked-supply) yield-only gather row whose GatherItem is item. This
 // is the single row-shape predicate behind BOTH the forage WARRANT's actionability
 // gate (sim — VillageObject.HasForageSourceFor → actorRemembersForageSource) and
-// the forage CUE's bush scan (perception — forageStockForItem), so the wake and
+// the forage CUE's bush scan (VillageObject.ForageStock), so the wake and
 // the "## Your bushes to harvest" section can never disagree on what counts as a
 // harvestable own-bush (a forage warrant must not fire against a section that
 // won't render — code_review LLM-90). Nil-safe.

@@ -249,7 +249,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			if !obj.Attributable() || obj.OwnerActorID != actorID {
 				continue
 			}
-			stock, ok := forageStockForItem(obj, e.Item)
+			stock, ok := obj.ForageStock(e.Item)
 			if !ok {
 				continue
 			}
@@ -391,27 +391,10 @@ func nearestWildForageSource(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, i
 		return WildForageItemView{}, false
 	}
 	ax, ay := actorSnap.Pos.X, actorSnap.Pos.Y
-	var best *sim.VillageObject
-	var bestDist2, bestStock int
-	for _, obj := range snap.VillageObjects {
-		if !obj.Attributable() || obj.OwnerActorID != "" {
-			continue // owned, or nameless (no name to render in the cue) — skip
-		}
-		stock, ok := forageStockForItem(obj, item)
-		if !ok || stock <= 0 {
-			continue
-		}
-		objTile := obj.Pos.Tile()
-		dx := objTile.X - ax
-		dy := objTile.Y - ay
-		dist2 := dx*dx + dy*dy
-		if best == nil || dist2 < bestDist2 ||
-			(dist2 == bestDist2 && stock > bestStock) ||
-			(dist2 == bestDist2 && stock == bestStock && obj.ID < best.ID) {
-			best, bestDist2, bestStock = obj, dist2, stock
-		}
-	}
-	if best == nil {
+	// sim.NearestWildForageSource is the selection the ranged forage WARRANT also
+	// reads, so a wake always names the source this cue renders.
+	best, bestStock, bestDist2, ok := sim.NearestWildForageSource(snap.VillageObjects, actorSnap.Pos, item)
+	if !ok {
 		return WildForageItemView{}, false
 	}
 	objTile := best.Pos.Tile()
@@ -426,36 +409,6 @@ func nearestWildForageSource(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, i
 		MoveHandle:  best.ID,
 		kind:        item,
 	}, true
-}
-
-// forageStockForItem returns the total gatherable stock of `item` across obj's
-// finite forage-to-sell refresh rows (Amount == 0 — yield-only harvest sources),
-// and whether obj carries any such row for the item. A non-forage owned object
-// (the grower's house, an eat+pick bush) returns ok=false. Aggregates rather than
-// taking the first match so the count never depends on Refreshes slice order if
-// an object ever carries more than one matching row.
-func forageStockForItem(obj *sim.VillageObject, item sim.ItemKind) (int, bool) {
-	total := 0
-	found := false
-	// A broken well (LLM-654) keeps its rows but gives nothing until mended:
-	// report the source with no stock, so every caller skips it.
-	damaged := obj.Damaged()
-	for _, r := range obj.Refreshes {
-		// IsForageToSellFor is the shared row predicate (finite + yield-only +
-		// matching gather item) the forage WARRANT's actionability gate also uses,
-		// so the cue and the wake agree on what's a harvestable own-bush (LLM-90).
-		// It implies IsFinite (AvailableQuantity != nil), so the deref below is safe.
-		if !r.IsForageToSellFor(item) {
-			continue
-		}
-		stock := *r.AvailableQuantity
-		if stock < 0 || damaged {
-			stock = 0 // a stock counter is never negative; clamp a corrupt row
-		}
-		total += stock
-		found = true
-	}
-	return total, found
 }
 
 // renderForage writes the "## Your bushes to harvest" section. Mirrors

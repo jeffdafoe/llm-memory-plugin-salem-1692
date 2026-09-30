@@ -475,16 +475,30 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 // warrant line points the grower at "## Your bushes to harvest", not the buy-side
 // "## Restocking" section she has no entries in (LLM-90).
 func TestRenderRestockWarrantLine_ForageRoutesToBushes(t *testing.T) {
-	buy := renderRestockWarrantLine(1, "milk", sim.RestockSourceBuy)
+	buy := renderRestockWarrantLine(1, "milk", sim.RestockSourceBuy, "")
 	if !strings.Contains(buy, "see Restocking.") {
 		t.Errorf("buy warrant line should point at Restocking, got %q", buy)
 	}
-	forage := renderRestockWarrantLine(2, "raspberries", sim.RestockSourceForage)
+	forage := renderRestockWarrantLine(2, "raspberries", sim.RestockSourceForage, sim.ForageGroundOwn)
 	if !strings.Contains(forage, "see Your bushes to harvest.") {
 		t.Errorf("forage warrant line should point at the bushes, got %q", forage)
 	}
 	if strings.Contains(forage, "Restocking") {
 		t.Errorf("forage warrant line must not mention Restocking, got %q", forage)
+	}
+}
+
+// TestRenderRestockWarrantLine_WildForageRoutesToFreeSources: a forage wake whose
+// Ground is an unowned source points at "## Free sources you can gather from", the
+// section a forage_range holder with no bush of its own is shown — never at "Your
+// bushes", which does not render for her.
+func TestRenderRestockWarrantLine_WildForageRoutesToFreeSources(t *testing.T) {
+	line := renderRestockWarrantLine(1, "water", sim.RestockSourceForage, sim.ForageGroundWild)
+	if !strings.Contains(line, "see Free sources you can gather from.") {
+		t.Errorf("wild forage warrant line should point at the free sources, got %q", line)
+	}
+	if strings.Contains(line, "bushes") {
+		t.Errorf("wild forage warrant line must not mention bushes, got %q", line)
 	}
 }
 

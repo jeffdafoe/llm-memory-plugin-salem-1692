@@ -2243,8 +2243,20 @@ var perceptionScenarios = []perceptionScenario{
 			"independent cues at once with no owner-gate conflict: the free-drink satiation cue ('## What you can " +
 			"eat or drink' — the -8 thirst row) AND the ranged forage cue ('## Free sources you can gather from' — " +
 			"the water yield row, 20 ready to gather). The forage count reads the yield row alone; the -8 drink row " +
-			"never pollutes it (forageStockForItem gates on Amount==0). Byte-stable: on shift, no orders, no clock read.",
+			"never pollutes it (ForageStock gates on Amount==0). Byte-stable: on shift, no orders, no clock read.",
 		build: generalStoreWaterForageAtWell,
+	},
+	{
+		name: "ranged_forager_woken_for_the_well",
+		summary: "The 2026-09-30 Hannah Boggs shape: a keeper with a `forage water` entry (5 of 40), tagged " +
+			"sim.AttrForageRange and owning no water source of her own, is WOKEN by a restock warrant whose Ground " +
+			"is ForageGroundWild. The wake line must point at '## Free sources you can gather from' — the section " +
+			"that renders for her, naming the commons Well — never at '## Your bushes to harvest', which does not. " +
+			"Before the fix no such wake existed: the forage warrant matched only remembered bushes of her own, so " +
+			"the Well cue appeared only on turns woken for something else. Warrant half: " +
+			"TestEvaluateRestock_RangedForagerWokenForCommonsWell (sim). Enforced across the matrix by " +
+			"TestGoldensForageWarrantPointsAtRenderedSection.",
+		build: rangedForagerWokenForTheWell,
 	},
 	{
 		name: "miller_with_hired_hauler_keeps_water_cue",
@@ -8888,7 +8900,7 @@ func wildSageScenario(tagged bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMet
 // gate conflict: the free-drink satiation cue ("## What you can eat or drink", from
 // the -8 thirst row) and the ranged forage cue ("## Free sources you can gather
 // from", from the water yield row — 20 ready to gather). The forage stock count
-// reads the yield row alone (forageStockForItem gates on Amount==0), so the -8
+// reads the yield row alone (ForageStock gates on Amount==0), so the -8
 // drink row never pollutes it. Well ~tile (100,135), Josiah ~tile (108,141):
 // dx=-8, dy=-6 → ~10 tiles, "a short walk to the northwest". On shift, no orders,
 // no clock read → byte-stable.
@@ -8937,13 +8949,33 @@ func generalStoreWaterForageAtWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 					{Attribute: "thirst", Amount: -8},
 					// Yield-only water row: forage-to-sell, unset attribute (LLM-264). A
 					// forage_range holder draws a pail; drinking-in-place never touches this
-					// counter (separate row, gated by Amount==0 in forageStockForItem).
+					// counter (separate row, gated by Amount==0 in ForageStock).
 					{Amount: 0, GatherItem: "water", AvailableQuantity: intp(20), MaxQuantity: intp(20)},
 				},
 			},
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// rangedForagerWokenForTheWell is the generalStoreWaterForageAtWell geometry with
+// the subject turned into the live Hannah Boggs case: an innkeeper, 5 of 40 water,
+// not thirsty, woken by a wild-ground forage restock warrant.
+func rangedForagerWokenForTheWell() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id, _ := generalStoreWaterForageAtWell()
+	a := snap.Actors[id]
+	a.DisplayName = "Hannah Boggs"
+	a.Role = "innkeeper"
+	a.Needs = map[sim.NeedKey]int{}
+	a.Inventory = map[sim.ItemKind]int{"water": 5}
+	a.RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "water", Source: sim.RestockSourceForage, Max: 40},
+	}}
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: id,
+		Reason:         sim.RestockWarrantReason{Item: "water", Source: sim.RestockSourceForage, Ground: sim.ForageGroundWild},
+	}}
+	return snap, id, warrants
 }
 
 // millerWithHiredHaulerKeepsWaterCue is the live LLM-621 shape. A miller stands
@@ -9310,6 +9342,40 @@ func TestGoldensRangedWildForageRequiresTag(t *testing.T) {
 			}
 			if out := renderScenario(sc); strings.Contains(out, header) {
 				t.Errorf("scenario %q: subject lacks sim.AttrForageRange but the prompt renders the ranged wild-forage section %q (LLM-253)", sc.name, header)
+			}
+		})
+	}
+}
+
+// TestGoldensForageWarrantPointsAtRenderedSection: a forage restock wake line
+// says "see <section>", and that section must render in the same prompt — own
+// bushes for ForageGroundOwn, the free sources for ForageGroundWild. A wake that
+// points at a section the prompt lacks sends the model looking for a steer that
+// is not there. Runs over the whole matrix.
+func TestGoldensForageWarrantPointsAtRenderedSection(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			_, _, warrants := sc.build()
+			var out string
+			for _, m := range warrants {
+				r, ok := m.Reason.(sim.RestockWarrantReason)
+				if !ok || r.Source != sim.RestockSourceForage {
+					continue
+				}
+				section := "Your bushes to harvest"
+				if r.Ground == sim.ForageGroundWild {
+					section = "Free sources you can gather from"
+				}
+				if out == "" {
+					out = renderScenario(sc)
+				}
+				if !strings.Contains(out, "see "+section+".") {
+					t.Errorf("scenario %q: forage wake (ground %q) should point at %q", sc.name, r.Ground, section)
+				}
+				if !strings.Contains(out, "## "+section+"\n") {
+					t.Errorf("scenario %q: forage wake points at %q but that section does not render", sc.name, section)
+				}
 			}
 		})
 	}

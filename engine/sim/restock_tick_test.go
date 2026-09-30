@@ -830,6 +830,138 @@ func TestFirstActionableLowEntry_BuyBeforeForageAndActionability(t *testing.T) {
 	}
 }
 
+// commonsWell builds the two-row town Well (LLM-254): an infinite drink row and a
+// finite yield-only water row with `avail` units, unowned and named.
+func commonsWell(avail int) *VillageObject {
+	q, maxQ := avail, 20
+	return &VillageObject{
+		ID:          "town_well",
+		DisplayName: "Well",
+		Pos:         WorldPos{X: 100 * 32, Y: 135 * 32},
+		Refreshes: []*ObjectRefresh{
+			{Attribute: "thirst", Amount: -8},
+			{Amount: 0, GatherItem: "water", AvailableQuantity: &q, MaxQuantity: &maxQ},
+		},
+	}
+}
+
+// rangedWaterKeeper is an innkeeper low on water (5 of 40) with a `forage water`
+// entry and no bush of her own — the 2026-09-30 Hannah Boggs shape.
+func rangedWaterKeeper(tagged bool) *Actor {
+	a := &Actor{
+		ID:        "hannah",
+		Kind:      KindNPCShared,
+		Pos:       TilePos{X: 108, Y: 141},
+		Inventory: map[ItemKind]int{"water": 5},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{
+			{Item: "water", Source: RestockSourceForage, Max: 40},
+		}},
+		Attributes: map[string][]byte{},
+	}
+	if tagged {
+		a.Attributes[AttrForageRange] = []byte("{}")
+	}
+	return a
+}
+
+// TestEvaluateRestock_RangedForagerWokenForCommonsWell: a forage_range holder
+// with no bush of her own, low on water, with a Well holding stock, is WOKEN for
+// it — and the reason carries ForageGroundWild so the cue line points at "## Free
+// sources you can gather from". Before, actorRemembersForageSource was the only
+// forage gate; the Well is nobody's bush, so she was never woken and saw the cue
+// only on a turn woken for something else.
+func TestEvaluateRestock_RangedForagerWokenForCommonsWell(t *testing.T) {
+	a := rangedWaterKeeper(true)
+	w := restockWorld(a)
+	w.VillageObjects = map[VillageObjectID]*VillageObject{"town_well": commonsWell(20)}
+
+	res, err := EvaluateRestock(time.Now().UTC()).Fn(w)
+	if err != nil {
+		t.Fatalf("EvaluateRestock: %v", err)
+	}
+	if res.(int) != 1 {
+		t.Fatalf("stamped = %d, want 1", res.(int))
+	}
+	var got *RestockWarrantReason
+	for _, m := range a.Warrants {
+		if r, ok := m.Reason.(RestockWarrantReason); ok {
+			got = &r
+		}
+	}
+	if got == nil {
+		t.Fatalf("no RestockWarrantReason; kinds = %v", warrantKinds(a))
+	}
+	if got.Item != "water" || got.Source != RestockSourceForage || got.Ground != ForageGroundWild {
+		t.Errorf("reason = %+v, want {water forage wild}", *got)
+	}
+}
+
+// TestFirstActionableLowEntry_RangedForageGates pins every condition the wild half
+// of forageGroundFor shares with the ranged cue (nearestWildForageSource): the tag,
+// an UNOWNED named source, stock > 0, not broken. Each case must stay quiet, or
+// the wake fires against a "## Free sources" section that will not render.
+func TestFirstActionableLowEntry_RangedForageGates(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name   string
+		tagged bool
+		well   func() *VillageObject
+		want   bool
+	}{
+		{"tagged, well with stock", true, func() *VillageObject { return commonsWell(20) }, true},
+		{"untagged", false, func() *VillageObject { return commonsWell(20) }, false},
+		{"well drawn dry", true, func() *VillageObject { return commonsWell(0) }, false},
+		{"well broken", true, func() *VillageObject {
+			o := commonsWell(20)
+			o.DamagedAt = now.Add(-time.Hour)
+			return o
+		}, false},
+		{"well owned by another", true, func() *VillageObject {
+			o := commonsWell(20)
+			o.OwnerActorID = "joseph"
+			return o
+		}, false},
+		{"well unnamed", true, func() *VillageObject {
+			o := commonsWell(20)
+			o.DisplayName = ""
+			return o
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := rangedWaterKeeper(c.tagged)
+			w := restockWorld(a)
+			w.VillageObjects = map[VillageObjectID]*VillageObject{"town_well": c.well()}
+			e, src, ok := firstActionableLowEntry(a, w, 25, now, false)
+			if ok != c.want {
+				t.Fatalf("actionable = %v, want %v", ok, c.want)
+			}
+			if ok && (e.Item != "water" || src != RestockSourceForage) {
+				t.Errorf("got (%q, %q), want (water, forage)", e.Item, src)
+			}
+		})
+	}
+}
+
+// TestForageGroundFor_OwnBushWinsOverWell: a ranged forager who remembers a bush
+// of her own for the item is sent there ("## Your bushes to harvest"), not to the
+// commons — buildForage runs the wild scan only where she owns no bush, so the
+// wake must take the same branch.
+func TestForageGroundFor_OwnBushWinsOverWell(t *testing.T) {
+	a := rangedWaterKeeper(true)
+	w := restockWorld(a)
+	spring := forageBushObj("hannah", "water", 0) // her own, dry right now
+	spring.ID = "spring"
+	w.VillageObjects = map[VillageObjectID]*VillageObject{
+		"town_well": commonsWell(20),
+		"spring":    spring,
+	}
+	rememberForageBush(a, "water", "spring")
+	if got := forageGroundFor(a, w, "water"); got != ForageGroundOwn {
+		t.Errorf("forageGroundFor = %q, want %q", got, ForageGroundOwn)
+	}
+}
+
 // TestEvaluateRestock_BuyNoVendorNoStamp: the LLM-260 buy-side actionability
 // gate (the wake-loop guard, mirroring the forage bush gate). A low buy entry
 // with NO qualifying vendor anywhere must NOT warrant — buildRestocking omits

@@ -4169,7 +4169,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.StrandedWarrantReason:
 		return renderStrandedWarrantLine(n), false
 	case sim.RestockWarrantReason:
-		return renderRestockWarrantLine(n, r.Item, r.Source), false
+		return renderRestockWarrantLine(n, r.Item, r.Source, r.Ground), false
 	case sim.DwellEndedWarrantReason:
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellTickAppliedWarrantReason:
@@ -4834,19 +4834,23 @@ func renderStrandedWarrantLine(n int) string {
 // reorder threshold. It names the representative low item; the actionable detail
 // (current/cap, suppliers or bushes, structure_ids) is in the section the line
 // points to, so the line stays a short pointer. The Source routes the pointer:
-// a `forage` low (LLM-90) points at "## Your bushes to harvest", everything else
-// at "## Restocking" — so the cue line never sends a grower to a buy-side section
-// she has no entries in.
+// a `forage` low (LLM-90) points at "## Your bushes to harvest", or at "## Free
+// sources you can gather from" when the wake's Ground is an unowned source (a
+// forage_range holder with no bush of its own); everything else at "## Restocking"
+// — so the cue line never sends a grower to a section she has no entries in.
 //
 // Form: `N. Your stock of <item> is running low — see <section>.`
 // Form (no item): `N. Your shop stock is running low — see <section>.`
 //
 // Rendered without truncation: the item is an engine-controlled catalog key,
 // not model- or user-supplied text.
-func renderRestockWarrantLine(n int, item sim.ItemKind, source sim.RestockSource) string {
+func renderRestockWarrantLine(n int, item sim.ItemKind, source sim.RestockSource, ground sim.ForageGround) string {
 	section := "Restocking"
 	if source == sim.RestockSourceForage {
 		section = "Your bushes to harvest"
+		if ground == sim.ForageGroundWild {
+			section = "Free sources you can gather from"
+		}
 	}
 	if item == "" {
 		return fmt.Sprintf("%d. Your shop stock is running low — see %s.\n", n, section)
