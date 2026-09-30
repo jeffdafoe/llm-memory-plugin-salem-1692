@@ -125,12 +125,6 @@ const (
 	// road, tight enough that "arriving from outside" still reads.
 	VisitorEdgeScanMaxDepth = 30
 
-	// surnameScrubMaxTries is the cap on profile re-rolls when scrubbing
-	// visitor surnames against seated actors. 5 tries is enough headroom
-	// in practice — collision residual rate at ~33% per-roll drops well
-	// under 1% after 5 independent rolls.
-	surnameScrubMaxTries = 5
-
 	// VisitorPerceptionRadius is a reserved bounding-box (Chebyshev) tile radius
 	// for a possible future "a traveler is about across the room" ambient observer
 	// line — a wider scan than the observer cue that shipped. LLM-370's cue is
@@ -166,21 +160,6 @@ const (
 // outsiders; falls back to any tagged structure if no tavern is placed.
 const VisitorTagTavern = "tavern"
 
-// visitorNamePool — period-flavored full names for spawned visitors.
-// Male-coded only because every available sprite family in
-// visitorArchetypeSprite is male-coded (Merchant / Old Man / Man) — a
-// female-coded name on a male sprite reads as a sprite-asset bug, not a
-// stylistic choice. Surnames are chosen to not match Salem's seated
-// villagers; the dynamic surname scrub in dispatchVisitorSpawn handles
-// drift as new villagers are added or this pool grows.
-var visitorNamePool = []string{
-	"Master Whitcombe", "Brother Ashford", "Elias Drum",
-	"Roger Standish", "Tobias Hewes", "Master Babbage",
-	"Jonas Penhallow", "Jeremiah Soames", "Nathaniel Pratt",
-	"Caleb Wendell", "Obadiah Brewster", "Ephraim Pollard",
-	"Silas Withrow", "Asa Larkin", "Daniel Holcomb",
-}
-
 // FactorArchetype is the wholesale-factor persona label (LLM-410, generalized LLM-455):
 // the SELL instance of a merchant errand. A factor deals with the village distributor — he
 // sells imported cloth / iron / salt into the village and buys its surplus to carry off. It
@@ -215,15 +194,6 @@ const (
 var passerThroughArchetypePool = []string{
 	"messenger", "itinerant musician", "circuit preacher",
 	"traveling scholar", "wandering surgeon",
-}
-
-// visitorOriginPool — fictional/historical next-village strings. Drives
-// the "from <origin>" prose in the perception cue and the LLM identity
-// preface.
-var visitorOriginPool = []string{
-	"Boston", "Marblehead", "Andover", "Ipswich", "Topsfield",
-	"Lynn", "Salem Town", "the next valley over",
-	"the coast road", "Beverly", "Wenham", "Rowley",
 }
 
 // visitorDispositionPool — short adjectives the model can use to color
@@ -797,42 +767,30 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	}
 
 	// Persona FIRST (moved ahead of the spatial picks): the class (merchant vs passer-through)
-	// and, for a merchant, the bound errand decide the archetype label, origin, pack, and
+	// and, for a merchant, the bound errand decide the name, archetype label, origin, pack, and
 	// arrival target (the errand counterparty, not the tavern), so they must be known before
 	// we pick a destination. A due returner (LLM-372) comes back as the SAME person — prefer
-	// one over a fresh stranger, reusing its established persona verbatim (and skipping the
-	// surname scrub, since the name is already in play and unique enough). Only READ the
-	// returner here; the durable mutation (beginReturnerVisit — bump visit count, clear
-	// next_return_at) is deferred until AFTER the actor is committed below, so a spawn that
-	// bails out (edge-tile miss, ID-mint exhaustion) leaves the returner still due to try again
-	// rather than consumed-but-not-arrived. Otherwise roll a new persona and scrub its surname
-	// against seated villagers.
+	// one over a fresh stranger. Only passer-through names are ever due (pickDueReturner,
+	// LLM-686); a merchant name returns when his class next spawns, below.
+	//
+	// arrivingRow is the durable returner row this visit belongs to — the due returner, or
+	// the row a freshly-picked name already has. Only READ it here; the durable mutation
+	// (beginReturnerVisit — bump visit count, clear next_return_at) is deferred until AFTER
+	// the actor is committed below, so a spawn that bails out (edge-tile miss, ID-mint
+	// exhaustion) leaves the row as it was rather than consumed-but-not-arrived.
 	//
 	// A CORRECTIVE merchant spawn (LLM-626) is never preempted by a returner:
 	// the band fired it to move coin, and a returner comes back as a
-	// passer-through (errand re-binding is a later refinement), which would
-	// silently swallow the correction. The returner stays due and rides the
-	// next trickle or flavor spawn instead.
-	var returnerID string
-	var dueReturner *RecurringVisitor
+	// passer-through, which would silently swallow the correction. The returner
+	// stays due and rides the next trickle or flavor spawn instead.
+	var arrivingRow *RecurringVisitor
+	scheduledReturn := false
 	var profile visitorProfile
 	if rv, ok := w.pickDueReturner(inputs.Now); ok && !(roll.Class == visitorSpawnMerchant && (roll.Corrective || roll.Shortage)) {
+		applyFixedPersona(rv)
 		profile = visitorProfile{Name: rv.Name, Archetype: rv.Archetype, Origin: rv.Origin, Disposition: rv.Disposition}
-		returnerID = string(rv.ID)
-		dueReturner = rv
-	} else {
-		existing := loadActorSurnames(w)
-		profile = generateVisitorProfile(r)
-		for tries := 0; tries < surnameScrubMaxTries; tries++ {
-			if !existing[extractSurname(profile.Name)] {
-				break
-			}
-			profile = generateVisitorProfile(r)
-		}
-		if existing[extractSurname(profile.Name)] {
-			log.Printf("sim/visitor: dispatchSpawn: surname for %q still collides after %d tries; shipping anyway",
-				profile.Name, surnameScrubMaxTries)
-		}
+		arrivingRow = rv
+		scheduledReturn = true
 	}
 
 	// Errand (LLM-455; class decided by rollVisitorSpawn since LLM-626). A merchant spawn is
@@ -840,23 +798,49 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// open keeper for a buyer, no distributor for a seller) — then he arrives a passer-through
 	// carrying only voice-flavor, the standing fallback. The errand grounds the persona: the
 	// archetype label is DERIVED from the bound good (cheese -> "cheese-buyer") so it can never
-	// name an untradeable trade — the root fix for the ungrounded "wool-buyer" loop. A returner
-	// keeps its stored persona verbatim and comes back as a passer-through (merchant-returner
-	// errand re-binding is a later refinement).
+	// name an untradeable trade — the root fix for the ungrounded "wool-buyer" loop. A scheduled
+	// returner is a passer-through and binds no errand.
 	var trade *TradeErrand
-	if dueReturner == nil && roll.Class == visitorSpawnMerchant {
+	if !scheduledReturn && roll.Class == visitorSpawnMerchant {
 		if shortageErrand != nil {
-			// A peddler keeps the generated origin: he is a country dealer from a town
-			// down the road with one thing to sell, not a city factor.
 			trade = shortageErrand
-			profile.Archetype = visitorMerchantLabel(w, trade)
 		} else if bound, ok := bindVisitorErrand(w, r, roll.Direction); ok {
 			trade = bound
+		}
+	}
+
+	// A fresh traveler: the errand decides his class, and the class decides who comes — a
+	// name is one fixed man with one trade and one road (LLM-686, visitor_persona.go). If
+	// that man has a returner row, this visit is his: link it, and keep his disposition.
+	if !scheduledReturn {
+		persona, ok := pickVisitorPersona(w, r, visitorClassOf(trade))
+		if !ok {
+			// Every man of this class is already in the village. Nothing is stamped
+			// yet (carter / peddler cooldowns commit only with the actor), so the
+			// errand is simply tried again on a later tick.
+			log.Printf("sim/visitor: dispatchSpawn: every %s persona is already in the village; skipping", visitorClassOf(trade))
+			return
+		}
+		profile = visitorProfile{
+			Name:        persona.Name,
+			Archetype:   persona.Archetype,
+			Origin:      persona.Origin,
+			Disposition: visitorDispositionPool[r.Intn(len(visitorDispositionPool))],
+		}
+		if trade != nil {
 			profile.Archetype = visitorMerchantLabel(w, trade)
-			if trade.Direction == TradeDirectionSell {
-				profile.Origin = FactorOrigin // a factor hails from the city he trades out of
+		}
+		if rv := w.recurringVisitorByName(persona.Name); rv != nil {
+			applyFixedPersona(rv)
+			arrivingRow = rv
+			if rv.Disposition != "" {
+				profile.Disposition = rv.Disposition
 			}
 		}
+	}
+	var returnerID string
+	if arrivingRow != nil {
+		returnerID = string(arrivingRow.ID)
 	}
 
 	// Arrival target. A merchant makes straight for his errand counterparty — the one must-hit
@@ -1074,10 +1058,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 
 	// The spawn is committed — now record the returner's arrival (bump visit count,
 	// clear next_return_at) on the durable row it came back as (LLM-372).
-	if dueReturner != nil {
-		dueReturner.beginReturnerVisit()
-		log.Printf("sim/visitor: returner arrived — %s the %s from %s (rvis=%s, id=%s, visit #%d)",
-			dueReturner.Name, dueReturner.Archetype, dueReturner.Origin, dueReturner.ID, id, dueReturner.VisitCount)
+	if arrivingRow != nil {
+		arrivingRow.beginReturnerVisit()
+		log.Printf("sim/visitor: returner arrived — %s from %s (rvis=%s, id=%s, visit #%d, scheduled=%v)",
+			displayName, arrivingRow.Origin, arrivingRow.ID, id, arrivingRow.VisitCount, scheduledReturn)
 	}
 
 	// Walk in from the road (LLM-379): head to the town's gathering place (the tavern
@@ -2018,27 +2002,13 @@ func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnit
 	return pack, purse
 }
 
-// visitorProfile holds the four persona slots a freshly-spawned visitor
-// receives. Drawn from the hardcoded pools above.
+// visitorProfile holds the four persona slots a spawned visitor receives: the
+// fixed persona (visitor_persona.go) or a returner row, plus the day's disposition.
 type visitorProfile struct {
 	Name        string
 	Archetype   string
 	Origin      string
 	Disposition string
-}
-
-// generateVisitorProfile pulls one entry from each pool using the supplied random source.
-// r is non-nil — callers thread the per-driver seeded rand in production and a deterministic
-// seed in tests. The Archetype is a passer-through default (LLM-455): spawn OVERRIDES it with
-// a derived label when the traveler binds a merchant errand, so a fresh profile carries a
-// flavor archetype and only a passer-through keeps it.
-func generateVisitorProfile(r *rand.Rand) visitorProfile {
-	return visitorProfile{
-		Name:        visitorNamePool[r.Intn(len(visitorNamePool))],
-		Archetype:   passerThroughArchetypePool[r.Intn(len(passerThroughArchetypePool))],
-		Origin:      visitorOriginPool[r.Intn(len(visitorOriginPool))],
-		Disposition: visitorDispositionPool[r.Intn(len(visitorDispositionPool))],
-	}
 }
 
 // extractSurname returns the lowercase last whitespace-delimited token of
