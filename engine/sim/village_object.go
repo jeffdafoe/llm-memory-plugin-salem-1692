@@ -236,6 +236,62 @@ func (o *VillageObject) HasForageSourceFor(item ItemKind) bool {
 	return false
 }
 
+// ForageStock returns the total gatherable stock of item across the object's
+// forage-to-sell rows, and whether it carries any such row for the item. A broken
+// source (LLM-654) keeps its rows but reports 0 until mended. Aggregates rather
+// than taking the first match so the count never depends on Refreshes order.
+// Shared by the forage cues (perception/forage.go) and the forage warrant so
+// the two agree on what is ripe. Nil-safe.
+func (o *VillageObject) ForageStock(item ItemKind) (int, bool) {
+	if o == nil {
+		return 0, false
+	}
+	total := 0
+	found := false
+	damaged := o.Damaged()
+	for _, r := range o.Refreshes {
+		// IsForageToSellFor implies IsFinite, so the deref is safe.
+		if !r.IsForageToSellFor(item) {
+			continue
+		}
+		stock := *r.AvailableQuantity
+		if stock < 0 || damaged {
+			stock = 0
+		}
+		total += stock
+		found = true
+	}
+	return total, found
+}
+
+// NearestWildForageSource returns the nearest named UNOWNED object with ripe
+// forage-to-sell stock of item, measured from `from` in integer squared tile
+// distance, with its stock and that distance. Ties break by more stock, then the
+// lowest id, for determinism over map iteration. ok is false when no unowned
+// source has stock. This is the selection behind the LLM-253 ranged cue
+// ("## Free sources you can gather from") AND the ranged forage warrant, so a
+// ranged forager is woken for exactly the source the cue will name.
+func NearestWildForageSource(objects map[VillageObjectID]*VillageObject, from TilePos, item ItemKind) (best *VillageObject, stock int, dist2 int, ok bool) {
+	for _, obj := range objects {
+		if !obj.Attributable() || obj.OwnerActorID != "" {
+			continue
+		}
+		s, found := obj.ForageStock(item)
+		if !found || s <= 0 {
+			continue
+		}
+		t := obj.Pos.Tile()
+		dx, dy := t.X-from.X, t.Y-from.Y
+		d2 := dx*dx + dy*dy
+		if best == nil || d2 < dist2 ||
+			(d2 == dist2 && s > stock) ||
+			(d2 == dist2 && s == stock && obj.ID < best.ID) {
+			best, stock, dist2 = obj, s, d2
+		}
+	}
+	return best, stock, dist2, best != nil
+}
+
 // ConfigWarnings returns one human-readable warning per village object that is
 // misconfigured in a way the engine TOLERATES but an operator should fix. It is
 // advisory only — never fatal — and is surfaced both at boot (logged) and on the

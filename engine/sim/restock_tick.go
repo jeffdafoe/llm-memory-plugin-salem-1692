@@ -83,10 +83,27 @@ const DefaultRestockReorderPct = 25
 // source-key dedup paths are bypassed — the per-actor WarrantedSince gate in the
 // producer is what prevents double-stamp. Mirrors NeedThresholdWarrantReason /
 // ShiftDutyWarrantReason — the other condition-driven, zero-sourced reasons.
+//
+// Ground says, for a forage wake, WHERE the item is gathered, so the cue line
+// names the section that actually renders: the actor's own remembered bushes, or
+// an unowned source a forage_range holder is pointed at. Empty for a buy wake.
 type RestockWarrantReason struct {
 	Item   ItemKind
 	Source RestockSource
+	Ground ForageGround
 }
+
+// ForageGround is where a forage restock is gathered from.
+type ForageGround string
+
+const (
+	// ForageGroundOwn — the actor's own remembered bushes ("## Your bushes to
+	// harvest"), LLM-90.
+	ForageGroundOwn ForageGround = "own"
+	// ForageGroundWild — the nearest unowned source with stock, for an actor
+	// carrying AttrForageRange ("## Free sources you can gather from"), LLM-253.
+	ForageGroundWild ForageGround = "wild"
+)
 
 func (RestockWarrantReason) isWarrantReason()           {}
 func (RestockWarrantReason) Kind() WarrantKind          { return WarrantKindRestock }
@@ -209,7 +226,7 @@ func firstActionableLowEntry(a *Actor, w *World, pct int, now time.Time, conserv
 	// yield is often the repair chain's own upstream. buildForage (perception/
 	// forage.go) never had a degrade gate, so this only closes a warrant⊂cue gap.
 	for _, e := range policy.ForageEntries() {
-		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && actorRemembersForageSource(a, w, e.Item) {
+		if RestockReorderThresholdMet(a.Inventory[e.Item], e.Cap(), pct, 0) && forageGroundFor(a, w, e.Item) != "" {
 			return e, RestockSourceForage, true
 		}
 	}
@@ -371,6 +388,27 @@ func actorRemembersForageSource(a *Actor, w *World, item ItemKind) bool {
 	return false
 }
 
+// forageGroundFor reports where a forage wake for item would send the actor, or
+// "" when nowhere — the warrant-side mirror of buildForage (perception/forage.go),
+// in the same order: a remembered bush of the actor's own wins; only an actor
+// with none may be pointed, as a forage_range holder, at the nearest unowned
+// source with stock. Without the wild half a ranged forager was never woken for
+// its low item: the Well is nobody's bush, so actorRemembersForageSource never
+// matched and the "## Free sources" cue rendered only on a turn woken for
+// something else.
+func forageGroundFor(a *Actor, w *World, item ItemKind) ForageGround {
+	if actorRemembersForageSource(a, w, item) {
+		return ForageGroundOwn
+	}
+	if _, ranged := a.Attributes[AttrForageRange]; !ranged {
+		return ""
+	}
+	if _, _, _, ok := NearestWildForageSource(w.VillageObjects, a.Pos, item); ok {
+		return ForageGroundWild
+	}
+	return ""
+}
+
 // restockEligible reports whether an actor is a candidate for a restock warrant
 // this scan: an agent-backed NPC (stateful or shared VA), not a transient
 // visitor, not already pending / mid-tick, not already walking somewhere, and
@@ -446,9 +484,13 @@ func EvaluateRestock(now time.Time) Command {
 				// bypassed), so this call always opens a fresh warrant cycle —
 				// the count is an accurate stamped-this-pass total, not just
 				// "eligible" (code_review).
+				reason := RestockWarrantReason{Item: low.Item, Source: src}
+				if src == RestockSourceForage {
+					reason.Ground = forageGroundFor(a, w, low.Item)
+				}
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
-					Reason:         RestockWarrantReason{Item: low.Item, Source: src},
+					Reason:         reason,
 				}, now)
 				stamped++
 			}

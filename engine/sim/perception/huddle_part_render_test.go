@@ -23,7 +23,7 @@ func huddlePartLine(t *testing.T, kind sim.WarrantKind, peers []sim.ActorID, nam
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "self",
 		Reason:         sim.HuddlePartReason{K: kind, PeerIDs: peers},
-	}, nameOf, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, 200)
+	}, nameOf, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, nil, 200)
 	if truncated {
 		t.Error("huddle part line reported truncation — it has no free-text payload")
 	}
