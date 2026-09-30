@@ -10,7 +10,8 @@ import (
 // create_npc.go — NPC authoring (the v2 port of v1's POST /api/village/npcs,
 // handleCreateNPC). Materializes a new stateful villager at a placement point.
 // Mirrors v1's contract exactly:
-//   - name defaults to "Villager" when blank;
+//   - name defaults to "Villager" when blank — or, for an animal sprite, to its
+//     species ("Sheep", "Cow"), LLM-689;
 //   - sprite_id is REQUIRED and must resolve in the catalog (ErrUnknownSprite);
 //   - the NPC spawns at pos (world-pixel → tile), facing south, with the full
 //     need-row set seeded and empty inventory/attributes;
@@ -50,7 +51,13 @@ func CreateNPC(name, spriteID string, pos WorldPos, now time.Time) Command {
 			name = strings.TrimSpace(name)
 			explicit := name != ""
 			if !explicit {
+				// An animal is named for its species — "Sheep", "Cow 2" — not
+				// "Villager" (LLM-689). Only a peek here: an unknown sprite is
+				// still refused below, after the name checks, as before.
 				name = "Villager"
+				if sp := w.Sprites[SpriteID(strings.TrimSpace(spriteID))]; sp.IsAnimal() && sp.Species() != "" {
+					name = sp.Species()
+				}
 			}
 			// Validate the (post-default) name the same way SetActorDisplayName
 			// does, so create can't introduce an overlong / control-char name

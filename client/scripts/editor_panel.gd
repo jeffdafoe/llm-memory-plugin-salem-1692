@@ -278,6 +278,9 @@ var _npc_name_last_saved: String = ""
 # alongside the asset categories. Lets admins drop new villagers.
 var _npc_catalog_section: VBoxContainer = null
 var _npc_catalog_grid: GridContainer = null
+# Animals get their own palette section (LLM-689) — sprites the engine flags
+# `animal` (grazers, waterfowl) are not villagers.
+var _animal_catalog_grid: GridContainer = null
 var _npc_name_input: LineEdit = null
 var _npc_sprites_loaded: bool = false
 
@@ -1115,6 +1118,7 @@ func build_catalog() -> void:
     _npc_catalog_section = null
     _npc_catalog_grid = null
     _npc_name_input = null
+    _animal_catalog_grid = null
 
     # Sort categories for consistent ordering
     var cat_names: Array = Catalog.categories.keys()
@@ -1307,6 +1311,28 @@ func _build_npc_catalog_section() -> void:
     _npc_catalog_grid.add_theme_constant_override("v_separation", 4)
     body.add_child(_npc_catalog_grid)
 
+    # ANIMALS — a sibling section with no name field: an animal dropped
+    # unnamed is named for its species by the engine ("Sheep", "Cow 2").
+    var animal_header = Button.new()
+    animal_header.text = "ANIMALS"
+    animal_header.flat = true
+    animal_header.add_theme_color_override("font_color", COLOR_LABEL)
+    animal_header.add_theme_font_size_override("font_size", 11)
+    animal_header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+    _npc_catalog_section.add_child(animal_header)
+
+    var animal_body = VBoxContainer.new()
+    animal_body.add_theme_constant_override("separation", 4)
+    animal_body.visible = false
+    _npc_catalog_section.add_child(animal_body)
+    animal_header.pressed.connect(func(): animal_body.visible = not animal_body.visible)
+
+    _animal_catalog_grid = GridContainer.new()
+    _animal_catalog_grid.columns = 4
+    _animal_catalog_grid.add_theme_constant_override("h_separation", 4)
+    _animal_catalog_grid.add_theme_constant_override("v_separation", 4)
+    animal_body.add_child(_animal_catalog_grid)
+
 ## Fetch the NPC sprite catalog from the server, then ask world.gd to load
 ## each sheet (using its shared cache). Once a sheet arrives, build that
 ## thumbnail. Thumbnails appear as sheets download — parallels the async
@@ -1350,7 +1376,8 @@ func _on_npc_sprites_loaded(result: int, code: int, _headers: PackedStringArray,
 ## Build one NPC sprite thumbnail. Click selects this sprite for placement
 ## — main.gd routes the signal to editor.select_npc_sprite_for_placement.
 func _add_npc_catalog_item(sprite: Dictionary, sheet: Texture2D) -> void:
-    if _npc_catalog_grid == null or sheet == null:
+    var grid: GridContainer = _npc_catalog_grid_for(sprite)
+    if grid == null or sheet == null:
         return
     var fw: int = int(sprite.get("frame_width", 32))
     var fh: int = int(sprite.get("frame_height", 32))
@@ -1402,7 +1429,7 @@ func _add_npc_catalog_item(sprite: Dictionary, sheet: Texture2D) -> void:
             _on_npc_catalog_item_selected(item, sprite, sheet)
     )
 
-    _npc_catalog_grid.add_child(item)
+    grid.add_child(item)
 
 func _on_npc_catalog_item_selected(item: Control, sprite: Dictionary, sheet: Texture2D) -> void:
     # Visual highlight only — don't route through _select_catalog_item because
@@ -1419,10 +1446,20 @@ func _on_npc_catalog_item_selected(item: Control, sprite: Dictionary, sheet: Tex
     item.add_theme_stylebox_override("panel", selected_style)
     _set_tool_active(_select_button, false)
 
-    var npc_name: String = ""
-    if _npc_name_input != null:
-        npc_name = _npc_name_input.text.strip_edges()
-    npc_sprite_selected.emit(sprite, sheet, npc_name)
+    npc_sprite_selected.emit(sprite, sheet, _placement_name_for(sprite))
+
+## The palette grid a sprite belongs in (LLM-689): a sprite the engine flags
+## `animal` goes to ANIMALS, everything else to VILLAGERS.
+func _npc_catalog_grid_for(sprite: Dictionary) -> GridContainer:
+    return _animal_catalog_grid if bool(sprite.get("animal", false)) else _npc_catalog_grid
+
+## The name a palette pick places with. The name field belongs to the
+## VILLAGERS section; an animal is placed unnamed so the engine names it for
+## its species ("Sheep", "Cow 2").
+func _placement_name_for(sprite: Dictionary) -> String:
+    if _npc_name_input == null or bool(sprite.get("animal", false)):
+        return ""
+    return _npc_name_input.text.strip_edges()
 
 func _on_item_hover(item: Control, hovering: bool) -> void:
     if item == _selected_item:
@@ -2111,11 +2148,15 @@ func rebuild_villagers_list() -> void:
             "display_name": sort_name,
             "container": container,
             "has_llm": has_llm,
+            "animal": bool(container.get_meta("animal", false)),
         })
-    # Two-key sort: LLM-attached first (true > false), then alphabetical
-    # within each group. The compare returns true when a should come
-    # before b.
+    # Three-key sort: people before animals (LLM-689 — animals are listed
+    # apart, under their own heading), then LLM-attached first (true > false),
+    # then alphabetical within each group. The compare returns true when a
+    # should come before b.
     npc_entries.sort_custom(func(a, b):
+        if a["animal"] != b["animal"]:
+            return b["animal"]
         if a["has_llm"] != b["has_llm"]:
             return a["has_llm"]
         return a["sort_name"].to_lower() < b["sort_name"].to_lower()
@@ -2124,14 +2165,28 @@ func rebuild_villagers_list() -> void:
     var filter_text: String = ""
     if _villagers_filter_input != null:
         filter_text = _villagers_filter_input.text.to_lower()
+    var animals_header_added := false
     for entry in npc_entries:
         if filter_text != "" and not entry["sort_name"].to_lower().contains(filter_text):
             continue
+        if entry["animal"] and not animals_header_added:
+            _villagers_list.add_child(_make_villagers_group_header("ANIMALS"))
+            animals_header_added = true
         var row := _make_villager_row(entry["id"], entry["display_name"], entry["container"])
         _villagers_list.add_child(row)
         _villager_rows[entry["id"]] = row
 
     _refresh_villager_row_highlight()
+
+## Group heading inside the Villagers list (LLM-689): animals follow the
+## people under their own heading. A plain Label, not a row — it has no
+## npc_id, so selection and highlight never touch it.
+func _make_villagers_group_header(title: String) -> Label:
+    var header := Label.new()
+    header.text = title
+    header.add_theme_color_override("font_color", COLOR_LABEL)
+    header.add_theme_font_size_override("font_size", 11)
+    return header
 
 ## Three-line row: name / behavior / landmark-relative location. Row
 ## uses PanelContainer + gui_input rather than a Button because Buttons

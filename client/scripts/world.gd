@@ -471,6 +471,9 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D)
     # swapped mid-walk keeps walking; on water that resolves to swim).
     var behaviors = sprite_data.get("behaviors", [])
     container.set_meta("behaviors", behaviors if behaviors is Array else [])
+    # Animal (LLM-689): the engine flags animal sprites; the editor lists
+    # animals apart from villagers.
+    container.set_meta("animal", bool(sprite_data.get("animal", false)))
     _ensure_ground_decal(container, sprite_data, sheet)
     var kind := "idle"
     if current_anim.ends_with("_walk") or current_anim.ends_with("_swim"):
@@ -874,6 +877,9 @@ func _render_npc(npc: Dictionary) -> void:
     # gets the ground decal (ripple on water / shadow on land) beneath it.
     var behaviors = sprite_data.get("behaviors", [])
     container.set_meta("behaviors", behaviors if behaviors is Array else [])
+    # Animal (LLM-689): the engine flags animal sprites; the editor lists
+    # animals apart from villagers.
+    container.set_meta("animal", bool(sprite_data.get("animal", false)))
     _ensure_ground_decal(container, sprite_data, sheet)
 
     var idle_name := facing + "_idle"

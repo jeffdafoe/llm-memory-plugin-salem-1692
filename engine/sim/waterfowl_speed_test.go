@@ -151,7 +151,8 @@ func TestDisplayNameUniqueness(t *testing.T) {
 		return res.(string)
 	}
 
-	// Blank names self-dedupe: Villager, Villager 2, Villager 3.
+	// Blank names self-dedupe. The duck sprite is an animal, so its default is
+	// its species (LLM-689): Duck, Duck 2, Duck 3.
 	var ids []sim.ActorID
 	for i := 0; i < 3; i++ {
 		id, err := mkNPC("", float64(100+32*i))
@@ -160,7 +161,7 @@ func TestDisplayNameUniqueness(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	for i, want := range []string{"Villager", "Villager 2", "Villager 3"} {
+	for i, want := range []string{"Duck", "Duck 2", "Duck 3"} {
 		if got := nameOf(ids[i]); got != want {
 			t.Errorf("defaulted name #%d = %q, want %q", i, got, want)
 		}
