@@ -172,10 +172,11 @@ func TestReturner_SecondMeetBumpsLastMetNotFirst(t *testing.T) {
 
 func TestReturner_DepartureSchedulesReturn(t *testing.T) {
 	rid := "rvis-0000abcd"
+	// A passer-through name — only a passer rides the return schedule (LLM-686).
 	seed := map[sim.RecurringVisitorID]*sim.RecurringVisitor{
 		sim.RecurringVisitorID(rid): {
-			ID: sim.RecurringVisitorID(rid), Name: "Elias Drum", Archetype: "peddler",
-			Origin: "Boston", Disposition: "weary", VisitCount: 1,
+			ID: sim.RecurringVisitorID(rid), Name: "Ephraim Pollard", Archetype: "itinerant musician",
+			Origin: "the coast road", Disposition: "weary", VisitCount: 1,
 			FirstSeenAt: time.Now().UTC().Add(-time.Hour), LastSeenAt: time.Now().UTC().Add(-time.Hour),
 			Acquaintances: map[sim.ActorID]*sim.RecurringAcquaintance{},
 		},

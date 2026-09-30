@@ -41,6 +41,13 @@ import (
 //     per-tick DB read, no new timer (GUIDELINES: the durable store is loaded once
 //     and mutated in memory, re-persisted each checkpoint).
 //
+// One row per name (LLM-686): a visitor name is one fixed man (visitor_persona.go),
+// so the row is keyed in practice by Name (unique index on recurring_visitor.name).
+// Promotion reuses a name's existing row, and a fresh spawn of a name with a row
+// links to it. Only a passer-through name is scheduled back — a merchant name (a
+// table persona of a merchant class) returns whenever his class spawns, bound to a
+// real errand, so his row carries LastSeenAt but no NextReturnAt.
+//
 // Persistence: durable, NON-swept (these rows outlive the visit) — the
 // DiscoveredKind precedent, not the visitor/labor_contract generation-marker
 // sweep. Loaded into World.RecurringVisitors at boot, cloned into the checkpoint
@@ -239,13 +246,22 @@ func (w *World) promoteVisitorIfNeeded(visitor *Actor, at time.Time) *RecurringV
 	if w.RecurringVisitors == nil {
 		w.RecurringVisitors = make(map[RecurringVisitorID]*RecurringVisitor)
 	}
+	// One row per name (LLM-686). Spawn links a name's row up front, so reaching here
+	// with a row for the name means the visitor spawned before that link existed (an
+	// in-flight visitor across the deploy). Link it now rather than mint a second row.
+	name := personaNameFromDisplayName(visitor.DisplayName)
+	if rv := w.recurringVisitorByName(name); rv != nil {
+		vs.RecurringID = string(rv.ID)
+		log.Printf("sim/recurring: linked visitor %s to existing returner %s (%s)", visitor.ID, rv.ID, rv.Name)
+		return rv
+	}
 	id := newRecurringVisitorID()
 	for _, exists := w.RecurringVisitors[id]; exists; _, exists = w.RecurringVisitors[id] {
 		id = newRecurringVisitorID()
 	}
 	rv := &RecurringVisitor{
 		ID:            id,
-		Name:          personaNameFromDisplayName(visitor.DisplayName),
+		Name:          name,
 		Archetype:     vs.Archetype,
 		Origin:        vs.Origin,
 		Disposition:   vs.Disposition,
@@ -331,7 +347,9 @@ func (w *World) recordReturnerSalientFact(returner, pc *Actor, kind InteractionK
 // NextReturnAt has passed and who is not currently in the village — or (nil,
 // false) when none is due. Deterministic: earliest NextReturnAt wins, id
 // tie-breaks. Called from dispatchVisitorSpawn on the world goroutine, so reading
-// w.Actors / w.RecurringVisitors is race-free.
+// w.Actors / w.RecurringVisitors is race-free. A merchant name is never due
+// (LLM-686): he comes back when his class spawns, with an errand — a scheduled
+// return would bring him as a passer-through with nothing to trade.
 func (w *World) pickDueReturner(now time.Time) (*RecurringVisitor, bool) {
 	if len(w.RecurringVisitors) == 0 {
 		return nil, false
@@ -340,6 +358,9 @@ func (w *World) pickDueReturner(now time.Time) (*RecurringVisitor, bool) {
 	var best *RecurringVisitor
 	for _, rv := range w.RecurringVisitors {
 		if rv == nil || rv.NextReturnAt.IsZero() || now.Before(rv.NextReturnAt) {
+			continue
+		}
+		if isMerchantPersonaName(rv.Name) {
 			continue
 		}
 		if _, here := present[rv.ID]; here {
@@ -374,6 +395,13 @@ func presentReturnerIDs(w *World) map[RecurringVisitorID]struct{} {
 func (w *World) scheduleReturnerDeparture(rid RecurringVisitorID, now time.Time, r *rand.Rand, minDays, maxDays int) {
 	rv := w.RecurringVisitors[rid]
 	if rv == nil {
+		return
+	}
+	if isMerchantPersonaName(rv.Name) {
+		// A merchant returns with his class, not on a schedule (LLM-686).
+		rv.LastSeenAt = now
+		rv.NextReturnAt = time.Time{}
+		log.Printf("sim/recurring: returner %s (%s) departed; comes back with his trade", rv.ID, rv.Name)
 		return
 	}
 	if r == nil {
@@ -528,6 +556,23 @@ func (w *World) rehydrateRecurringVisitorsOnLoad(ctx context.Context) error {
 		recurring = make(map[RecurringVisitorID]*RecurringVisitor)
 	}
 	w.RecurringVisitors = recurring
+	// Bring each row in line with the fixed persona table (LLM-686): a name's
+	// hometown and a passer's calling come from the table, and a merchant name is
+	// never scheduled back. The next checkpoint persists the corrected rows.
+	for _, rv := range w.RecurringVisitors {
+		if rv == nil {
+			continue
+		}
+		changed := applyFixedPersona(rv)
+		if isMerchantPersonaName(rv.Name) && !rv.NextReturnAt.IsZero() {
+			rv.NextReturnAt = time.Time{}
+			changed = true
+		}
+		if changed {
+			log.Printf("sim: rehydrate recurring: %s (%s) aligned to the fixed persona (the %s from %s)",
+				rv.ID, rv.Name, rv.Archetype, rv.Origin)
+		}
+	}
 	for _, a := range w.Actors {
 		if a == nil || a.VisitorState == nil || a.VisitorState.RecurringID == "" {
 			continue
