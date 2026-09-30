@@ -1,5 +1,7 @@
 package sim
 
+import "strings"
+
 // Sprite / SpriteAnimation — in-memory port of the character-sprite catalog
 // (engine/npcs.go NPCSprite / NPCSpriteAnim data types).
 //
@@ -92,6 +94,28 @@ func (s *Sprite) HasBehavior(slug string) bool {
 		}
 	}
 	return false
+}
+
+// IsAnimal reports whether the sprite is an animal — one whose actors are
+// driven by an animal wander (grazer or waterfowl) rather than being people.
+// The one predicate the editor (via the sprite payloads' `animal` flag) and
+// CreateNPC's default naming share (LLM-689), so a new animal wander adds its
+// slug here and both follow.
+func (s *Sprite) IsAnimal() bool {
+	return s.HasBehavior(BehaviorGrazer) || s.HasBehavior(BehaviorWaterfowl)
+}
+
+// Species is the sprite's name without its colourway suffix: "Cow (grey)" →
+// "Cow", "Sheep" → "Sheep". The default name of an animal placed without one.
+func (s *Sprite) Species() string {
+	if s == nil {
+		return ""
+	}
+	name := strings.TrimSpace(s.Name)
+	if i := strings.Index(name, " ("); i > 0 {
+		name = name[:i]
+	}
+	return name
 }
 
 // SpriteAnimation is one (direction, animation) mapping into a sprite sheet.

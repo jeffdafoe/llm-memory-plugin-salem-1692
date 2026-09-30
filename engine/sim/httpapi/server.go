@@ -726,6 +726,7 @@ func agentSpriteDTOFromSprite(sp *sim.Sprite) *AgentSpriteDTO {
 		FrameHeight: sp.FrameHeight,
 		Animations:  spriteAnimationsDTO(sp.Animations),
 		Behaviors:   sp.Behaviors,
+		Animal:      sp.IsAnimal(),
 		RenderScale: sp.RenderScale,
 	}
 }
@@ -978,6 +979,7 @@ func spriteDTO(id sim.SpriteID, sp *sim.Sprite) SpriteDTO {
 		FrameHeight: sp.FrameHeight,
 		Animations:  spriteAnimationsDTO(sp.Animations),
 		Behaviors:   sp.Behaviors,
+		Animal:      sp.IsAnimal(),
 		RenderScale: sp.RenderScale,
 	}
 	if sp.Pack != nil {
