@@ -54,10 +54,10 @@ func _ready() -> void:
     style.border_width_right = 1
     style.border_width_bottom = 1
     style.border_color = COLOR_BORDER
-    style.corner_radius_left_top = 4
-    style.corner_radius_right_top = 4
-    style.corner_radius_left_bottom = 4
-    style.corner_radius_right_bottom = 4
+    style.corner_radius_top_left = 4
+    style.corner_radius_top_right = 4
+    style.corner_radius_bottom_left = 4
+    style.corner_radius_bottom_right = 4
     style.content_margin_left = 12.0
     style.content_margin_right = 12.0
     style.content_margin_top = 8.0
