@@ -147,7 +147,7 @@ BEGIN
         RAISE EXCEPTION 'LLM-686: public.recurring_visitor_name_key is not a unique index on recurring_visitor(name) — drop the conflicting object and re-run';
     END IF;
     SELECT count(*) INTO dup_names
-      FROM (SELECT name FROM recurring_visitor GROUP BY name HAVING count(*) > 1) d;
+      FROM (SELECT name FROM public.recurring_visitor GROUP BY name HAVING count(*) > 1) d;
     IF dup_names > 0 THEN
         RAISE EXCEPTION 'LLM-686: % name(s) still hold more than one returner row', dup_names;
     END IF;
