@@ -4097,10 +4097,11 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	if buyRedundancy == nil {
 		buyRedundancy = func(sim.ItemKind) (bool, bool) { return false, false }
 	}
-	// Same nil-safety for the LLM-685 forage-section callback: a nil here must
-	// degrade to "shown", the pre-LLM-685 line that always names its section.
+	// Same nil-safety for the LLM-685 forage-section callback: a nil here cannot
+	// establish that the section exists, so it degrades to "not shown" — the bare
+	// low-stock line, never a pointer at a section that may be missing.
 	if forageShown == nil {
-		forageShown = func(sim.ForageGround, sim.ItemKind) bool { return true }
+		forageShown = func(sim.ForageGround, sim.ItemKind) bool { return false }
 	}
 	// Same nil-safety for the LLM-284 keeper-possessive callback: a nil here must
 	// degrade to "no keeper", so an arrival line keeps its plain, articled form.
