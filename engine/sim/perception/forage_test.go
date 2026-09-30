@@ -475,11 +475,13 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 // warrant line points the grower at "## Your bushes to harvest", not the buy-side
 // "## Restocking" section she has no entries in (LLM-90).
 func TestRenderRestockWarrantLine_ForageRoutesToBushes(t *testing.T) {
-	buy := renderRestockWarrantLine(1, "milk", sim.RestockSourceBuy, "")
+	shown := func(sim.ForageGround, sim.ItemKind) bool { return true }
+	buy := renderRestockWarrantLine(1, "milk", restockWarrantSection(sim.RestockWarrantReason{Item: "milk", Source: sim.RestockSourceBuy}, shown))
 	if !strings.Contains(buy, "see Restocking.") {
 		t.Errorf("buy warrant line should point at Restocking, got %q", buy)
 	}
-	forage := renderRestockWarrantLine(2, "raspberries", sim.RestockSourceForage, sim.ForageGroundOwn)
+	r := sim.RestockWarrantReason{Item: "raspberries", Source: sim.RestockSourceForage, Ground: sim.ForageGroundOwn}
+	forage := renderRestockWarrantLine(2, "raspberries", restockWarrantSection(r, shown))
 	if !strings.Contains(forage, "see Your bushes to harvest.") {
 		t.Errorf("forage warrant line should point at the bushes, got %q", forage)
 	}
@@ -493,12 +495,57 @@ func TestRenderRestockWarrantLine_ForageRoutesToBushes(t *testing.T) {
 // section a forage_range holder with no bush of its own is shown — never at "Your
 // bushes", which does not render for her.
 func TestRenderRestockWarrantLine_WildForageRoutesToFreeSources(t *testing.T) {
-	line := renderRestockWarrantLine(1, "water", sim.RestockSourceForage, sim.ForageGroundWild)
+	shown := func(sim.ForageGround, sim.ItemKind) bool { return true }
+	r := sim.RestockWarrantReason{Item: "water", Source: sim.RestockSourceForage, Ground: sim.ForageGroundWild}
+	line := renderRestockWarrantLine(1, "water", restockWarrantSection(r, shown))
 	if !strings.Contains(line, "see Free sources you can gather from.") {
 		t.Errorf("wild forage warrant line should point at the free sources, got %q", line)
 	}
 	if strings.Contains(line, "bushes") {
 		t.Errorf("wild forage warrant line must not mention bushes, got %q", line)
+	}
+}
+
+// TestRender_ForageWakeWithoutSectionNamesNone runs the real Render closure: the
+// ranged_forager_woken_for_the_well payload with its forage view removed (what
+// buildForage returns on a live customer) must carry the bare low-stock line and
+// no pointer at the missing section.
+func TestRender_ForageWakeWithoutSectionNamesNone(t *testing.T) {
+	snap, id, warrants := rangedForagerWokenForTheWell()
+	p := Build(snap, id, warrants)
+	if p.Forage == nil {
+		t.Fatal("fixture should build a forage view before it is removed")
+	}
+	p.Forage = nil
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+	if !strings.Contains(out, "1. Your stock of water is running low.\n") {
+		t.Errorf("want the bare low-stock wake line, got:\n%s", out)
+	}
+	if strings.Contains(out, "see Free sources") || strings.Contains(out, "## Free sources") {
+		t.Errorf("prompt must not point at or render the free sources, got:\n%s", out)
+	}
+}
+
+// TestRenderRestockWarrantLine_ForageSectionAbsentNamesNone: a forage wake stamped
+// on the world goroutine can meet a prompt whose forage section buildForage
+// deferred (a live customer at the stall). The line then states the low stock and
+// points at nothing — for both grounds — rather than at a section the model will
+// not find. The callback is asked about the wake's own ground and item.
+func TestRenderRestockWarrantLine_ForageSectionAbsentNamesNone(t *testing.T) {
+	for _, ground := range []sim.ForageGround{sim.ForageGroundOwn, sim.ForageGroundWild} {
+		var asked []string
+		hidden := func(g sim.ForageGround, k sim.ItemKind) bool {
+			asked = append(asked, string(g)+":"+string(k))
+			return false
+		}
+		r := sim.RestockWarrantReason{Item: "water", Source: sim.RestockSourceForage, Ground: ground}
+		line := renderRestockWarrantLine(1, "water", restockWarrantSection(r, hidden))
+		if line != "1. Your stock of water is running low.\n" {
+			t.Errorf("ground %q: line = %q, want the bare low-stock line", ground, line)
+		}
+		if len(asked) != 1 || asked[0] != string(ground)+":water" {
+			t.Errorf("ground %q: callback asked %v, want [%s:water]", ground, asked, ground)
+		}
 	}
 }
 

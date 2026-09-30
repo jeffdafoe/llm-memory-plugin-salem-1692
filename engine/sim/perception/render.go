@@ -219,6 +219,31 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return p.OwnProducedKinds[kind], p.AtCapKinds[kind]
 	}
 
+	// forageShown reports whether this prompt carries the forage line a forage
+	// restock wake for kind would point at (LLM-685). The wake is stamped on the
+	// world goroutine; buildForage defers the section on a live customer, so the
+	// two can meet in one prompt. The wake line then names no section rather than
+	// one that is not there.
+	forageShown := func(ground sim.ForageGround, kind sim.ItemKind) bool {
+		if p.Forage == nil {
+			return false
+		}
+		if ground == sim.ForageGroundWild {
+			for _, s := range p.Forage.WildSources {
+				if s.kind == kind {
+					return true
+				}
+			}
+			return false
+		}
+		for _, it := range p.Forage.Items {
+			if it.kind == kind {
+				return true
+			}
+		}
+		return false
+	}
+
 	// Pay offers render as an actionable decision section (renderPayOffers)
 	// so the seller gets the ledger_id it must echo into accept_pay/
 	// decline_pay/counter_pay. Sourced from the standing ledger scan
@@ -373,7 +398,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, p.RenderedAt, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, p.RenderedAt, cfg, &out)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -4060,7 +4085,7 @@ func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	}
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
 	// a nil here must degrade to "no eat-here tag", not panic (code_review).
@@ -4071,6 +4096,11 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	// degrade to "never redundant" (every quote keeps its actionable take).
 	if buyRedundancy == nil {
 		buyRedundancy = func(sim.ItemKind) (bool, bool) { return false, false }
+	}
+	// Same nil-safety for the LLM-685 forage-section callback: a nil here must
+	// degrade to "shown", the pre-LLM-685 line that always names its section.
+	if forageShown == nil {
+		forageShown = func(sim.ForageGround, sim.ItemKind) bool { return true }
 	}
 	// Same nil-safety for the LLM-284 keeper-possessive callback: a nil here must
 	// degrade to "no keeper", so an arrival line keeps its plain, articled form.
@@ -4116,7 +4146,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, cfg.MaxBytesPerWarrant)
 		// Interval-stamp each signal against the render clock (LLM-316), the
 		// LLM-217 treatment the conversation ring and self-action trail already
 		// get: a carried-forward or shelve-delayed warrant renders honestly as
@@ -4156,7 +4186,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -4169,7 +4199,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.StrandedWarrantReason:
 		return renderStrandedWarrantLine(n), false
 	case sim.RestockWarrantReason:
-		return renderRestockWarrantLine(n, r.Item, r.Source, r.Ground), false
+		return renderRestockWarrantLine(n, r.Item, restockWarrantSection(r, forageShown)), false
 	case sim.DwellEndedWarrantReason:
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellTickAppliedWarrantReason:
@@ -4833,29 +4863,48 @@ func renderStrandedWarrantLine(n int) string {
 // the reorder producer's nudge to an actor whose sell-stock has dropped below the
 // reorder threshold. It names the representative low item; the actionable detail
 // (current/cap, suppliers or bushes, structure_ids) is in the section the line
-// points to, so the line stays a short pointer. The Source routes the pointer:
-// a `forage` low (LLM-90) points at "## Your bushes to harvest", or at "## Free
-// sources you can gather from" when the wake's Ground is an unowned source (a
-// forage_range holder with no bush of its own); everything else at "## Restocking"
-// — so the cue line never sends a grower to a section she has no entries in.
+// points to, so the line stays a short pointer; restockWarrantSection picks it.
+// An empty section drops the pointer and states the low stock alone.
 //
 // Form: `N. Your stock of <item> is running low — see <section>.`
 // Form (no item): `N. Your shop stock is running low — see <section>.`
+// Form (no section): `N. Your stock of <item> is running low.`
 //
 // Rendered without truncation: the item is an engine-controlled catalog key,
 // not model- or user-supplied text.
-func renderRestockWarrantLine(n int, item sim.ItemKind, source sim.RestockSource, ground sim.ForageGround) string {
-	section := "Restocking"
-	if source == sim.RestockSourceForage {
-		section = "Your bushes to harvest"
-		if ground == sim.ForageGroundWild {
-			section = "Free sources you can gather from"
-		}
+func renderRestockWarrantLine(n int, item sim.ItemKind, section string) string {
+	what := "Your shop stock"
+	if item != "" {
+		what = "Your stock of " + string(item)
 	}
-	if item == "" {
-		return fmt.Sprintf("%d. Your shop stock is running low — see %s.\n", n, section)
+	if section == "" {
+		return fmt.Sprintf("%d. %s is running low.\n", n, what)
 	}
-	return fmt.Sprintf("%d. Your stock of %s is running low — see %s.\n", n, item, section)
+	return fmt.Sprintf("%d. %s is running low — see %s.\n", n, what, section)
+}
+
+// restockWarrantSection names the section a restock wake line points at: a buy
+// low → "Restocking"; a forage low (LLM-90) → "Your bushes to harvest", or "Free
+// sources you can gather from" when the wake's Ground is an unowned source
+// (LLM-685). A forage wake whose line is absent from this prompt — buildForage
+// defers on a live customer — gets "", so the line never sends the model to a
+// section it cannot find. A zero Ground (a wake stamped before LLM-685) reads as
+// own, its only meaning then.
+func restockWarrantSection(r sim.RestockWarrantReason, forageShown func(sim.ForageGround, sim.ItemKind) bool) string {
+	if r.Source != sim.RestockSourceForage {
+		return "Restocking"
+	}
+	ground := r.Ground
+	if ground == "" {
+		ground = sim.ForageGroundOwn
+	}
+	if !forageShown(ground, r.Item) {
+		return ""
+	}
+	if ground == sim.ForageGroundWild {
+		return "Free sources you can gather from"
+	}
+	return "Your bushes to harvest"
 }
 
 // renderImpulseWarrantLine renders the warrant line for an

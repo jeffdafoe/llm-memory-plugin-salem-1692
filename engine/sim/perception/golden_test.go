@@ -9348,10 +9348,11 @@ func TestGoldensRangedWildForageRequiresTag(t *testing.T) {
 }
 
 // TestGoldensForageWarrantPointsAtRenderedSection: a forage restock wake line
-// says "see <section>", and that section must render in the same prompt — own
+// says "see <section>" exactly when that section renders in the same prompt — own
 // bushes for ForageGroundOwn, the free sources for ForageGroundWild. A wake that
 // points at a section the prompt lacks sends the model looking for a steer that
-// is not there. Runs over the whole matrix.
+// is not there; one that stays silent beside it drops the steer. Runs over the
+// whole matrix.
 func TestGoldensForageWarrantPointsAtRenderedSection(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -9370,11 +9371,13 @@ func TestGoldensForageWarrantPointsAtRenderedSection(t *testing.T) {
 				if out == "" {
 					out = renderScenario(sc)
 				}
-				if !strings.Contains(out, "see "+section+".") {
-					t.Errorf("scenario %q: forage wake (ground %q) should point at %q", sc.name, r.Ground, section)
-				}
-				if !strings.Contains(out, "## "+section+"\n") {
+				pointed := strings.Contains(out, "see "+section+".")
+				rendered := strings.Contains(out, "## "+section+"\n")
+				if pointed && !rendered {
 					t.Errorf("scenario %q: forage wake points at %q but that section does not render", sc.name, section)
+				}
+				if rendered && !pointed {
+					t.Errorf("scenario %q: forage wake (ground %q) should point at the rendered %q", sc.name, r.Ground, section)
 				}
 			}
 		})
