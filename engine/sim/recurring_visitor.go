@@ -248,10 +248,12 @@ func (w *World) promoteVisitorIfNeeded(visitor *Actor, at time.Time) *RecurringV
 	}
 	// One row per name (LLM-686). Spawn links a name's row up front, so reaching here
 	// with a row for the name means the visitor spawned before that link existed (an
-	// in-flight visitor across the deploy). Link it now rather than mint a second row.
+	// in-flight visitor across the deploy). Link it now rather than mint a second row,
+	// and count this visit — it never passed through the spawn-time link that would have.
 	name := personaNameFromDisplayName(visitor.DisplayName)
 	if rv := w.recurringVisitorByName(name); rv != nil {
 		vs.RecurringID = string(rv.ID)
+		rv.beginReturnerVisit()
 		log.Printf("sim/recurring: linked visitor %s to existing returner %s (%s)", visitor.ID, rv.ID, rv.Name)
 		return rv
 	}
@@ -355,12 +357,15 @@ func (w *World) pickDueReturner(now time.Time) (*RecurringVisitor, bool) {
 		return nil, false
 	}
 	present := presentReturnerIDs(w)
+	namesHere := visitorNamesInVillage(w)
 	var best *RecurringVisitor
 	for _, rv := range w.RecurringVisitors {
 		if rv == nil || rv.NextReturnAt.IsZero() || now.Before(rv.NextReturnAt) {
 			continue
 		}
-		if isMerchantPersonaName(rv.Name) {
+		// A merchant name, or a man already in the village under his name without
+		// the row linked (a visitor from before the link existed).
+		if isMerchantPersonaName(rv.Name) || namesHere[rv.Name] {
 			continue
 		}
 		if _, here := present[rv.ID]; here {

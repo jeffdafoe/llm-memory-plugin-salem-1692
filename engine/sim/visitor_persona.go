@@ -160,39 +160,35 @@ func isMerchantPersonaName(name string) bool {
 	return ok && p.Class != VisitorClassPasser
 }
 
-// pickVisitorPersona picks a name from the class for a fresh spawn. It skips a
-// name already walking the village (no two of the same man) and one whose surname
-// a seated villager holds. When every name in the class is excluded it relaxes
-// the in-village rule first, then the surname rule (logged) — a spawn always gets
-// a persona of the right class.
+// pickVisitorPersona picks a name from the class for a fresh spawn. A name already
+// walking the village is never picked — one man cannot be in the village twice —
+// so (_, false) when every name of the class is here, and the spawn is skipped. A
+// name whose surname a seated villager holds is avoided while another is free,
+// then allowed (logged) rather than skip the spawn.
 //
 // MUST be called from inside a Command.Fn (reads w.Actors directly).
-func pickVisitorPersona(w *World, r *rand.Rand, class VisitorClass) VisitorPersona {
+func pickVisitorPersona(w *World, r *rand.Rand, class VisitorClass) (VisitorPersona, bool) {
 	villagerSurnames := loadActorSurnames(w)
 	inVillage := visitorNamesInVillage(w)
-	var inClass, clearSurname, open []VisitorPersona
+	var absent, clearSurname []VisitorPersona
 	for _, p := range visitorPersonas {
-		if p.Class != class {
+		if p.Class != class || inVillage[p.Name] {
 			continue
 		}
-		inClass = append(inClass, p)
-		if villagerSurnames[extractSurname(p.Name)] {
-			continue
-		}
-		clearSurname = append(clearSurname, p)
-		if !inVillage[p.Name] {
-			open = append(open, p)
+		absent = append(absent, p)
+		if !villagerSurnames[extractSurname(p.Name)] {
+			clearSurname = append(clearSurname, p)
 		}
 	}
 	switch {
-	case len(open) > 0:
-		return open[r.Intn(len(open))]
 	case len(clearSurname) > 0:
-		return clearSurname[r.Intn(len(clearSurname))]
+		return clearSurname[r.Intn(len(clearSurname))], true
+	case len(absent) > 0:
+		p := absent[r.Intn(len(absent))]
+		log.Printf("sim/visitor: every free %s persona's surname collides with a villager; shipping %q anyway", class, p.Name)
+		return p, true
 	default:
-		p := inClass[r.Intn(len(inClass))]
-		log.Printf("sim/visitor: every %s persona's surname collides with a villager; shipping %q anyway", class, p.Name)
-		return p
+		return VisitorPersona{}, false
 	}
 }
 

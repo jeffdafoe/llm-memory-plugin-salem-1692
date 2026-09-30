@@ -813,7 +813,14 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// name is one fixed man with one trade and one road (LLM-686, visitor_persona.go). If
 	// that man has a returner row, this visit is his: link it, and keep his disposition.
 	if !scheduledReturn {
-		persona := pickVisitorPersona(w, r, visitorClassOf(trade))
+		persona, ok := pickVisitorPersona(w, r, visitorClassOf(trade))
+		if !ok {
+			// Every man of this class is already in the village. Nothing is stamped
+			// yet (carter / peddler cooldowns commit only with the actor), so the
+			// errand is simply tried again on a later tick.
+			log.Printf("sim/visitor: dispatchSpawn: every %s persona is already in the village; skipping", visitorClassOf(trade))
+			return
+		}
 		profile = visitorProfile{
 			Name:        persona.Name,
 			Archetype:   persona.Archetype,

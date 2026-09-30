@@ -163,6 +163,8 @@ func TestReturner_PromotionReusesTheNamesRow(t *testing.T) {
 		rid: {
 			ID: rid, Name: "Elias Drum", Archetype: "factor", Origin: "Boston", Disposition: "weary",
 			VisitCount: 2, FirstSeenAt: past, LastSeenAt: past,
+			// A leftover return date — the adopting visit must clear it: he is here.
+			NextReturnAt: time.Now().UTC().Add(10 * 24 * time.Hour),
 			Acquaintances: map[sim.ActorID]*sim.RecurringAcquaintance{
 				"pc-wendy": {PCActorID: "pc-wendy", PCDisplayName: "Wendy", FirstMetAt: past, LastMetAt: past},
 			},
@@ -184,7 +186,54 @@ func TestReturner_PromotionReusesTheNamesRow(t *testing.T) {
 		if rv.Acquaintances["pc-jeff"] == nil || rv.Acquaintances["pc-wendy"] == nil {
 			t.Errorf("acquaintances = %v, want both Wendy (kept) and Jeff (new)", rv.Acquaintances)
 		}
+		if rv.VisitCount != 3 || !rv.NextReturnAt.IsZero() {
+			t.Errorf("adopted row: visit_count %d next_return %v, want 3 (this visit counted) and cleared",
+				rv.VisitCount, rv.NextReturnAt)
+		}
 	})
+
+	// A second meeting on the same visit must not count the visit again.
+	emitInCommand(t, w, &sim.ActorMet{A: "vstr-0000aaaa", B: "pc-jeff", At: time.Now().UTC()})
+	withWorld(t, w, func(world *sim.World) {
+		if n := world.RecurringVisitors[rid].VisitCount; n != 3 {
+			t.Errorf("visit_count after a second meeting = %d, want 3", n)
+		}
+	})
+}
+
+// TestSpawn_SkipsWhenEveryManOfTheClassIsHere: with every factor name already in
+// the village, a factor spawn is skipped rather than send a second copy of one.
+func TestSpawn_SkipsWhenEveryManOfTheClassIsHere(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	vw.seedDistributor(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+
+	var factors int
+	withWorld(t, w, func(world *sim.World) {
+		for i, p := range sim.VisitorPersonas() {
+			if p.Class != sim.VisitorClassFactor {
+				continue
+			}
+			factors++
+			id := sim.ActorID("vstr-0000000" + string(rune('a'+i)))
+			world.Actors[id] = &sim.Actor{
+				ID: id, DisplayName: p.Name + " the factor", Kind: sim.KindNPCShared,
+				VisitorState: &sim.VisitorState{Phase: sim.VisitorPhasePresent, ExpiresAt: visitorSpawnDaytime.Add(12 * time.Hour)},
+			}
+		}
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
+		world.Settings.VisitorMaxConcurrent = factors + 5
+		world.Settings.VisitorSellWeightPermille = 1000
+	})
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: visitorSpawnDaytime, Rand: rand.New(rand.NewSource(2))}))
+	if err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 0 {
+		t.Fatalf("spawned = %d with every factor already here, want 0", tm.Spawned)
+	}
 }
 
 // TestReturner_MerchantDepartureNotScheduled: a merchant name leaves with his

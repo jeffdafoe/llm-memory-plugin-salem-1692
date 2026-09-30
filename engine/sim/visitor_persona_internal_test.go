@@ -52,9 +52,9 @@ func TestVisitorClassOf(t *testing.T) {
 }
 
 // TestPickVisitorPersona_ClassAndExclusions: a pick always comes from the asked
-// class; a name already walking the village is skipped while another is free; and
-// with every name of the class in the village the pick still returns one of the
-// class rather than crossing into another.
+// class; a name already walking the village is never picked; and with every name
+// of the class in the village there is no pick at all — never a second copy of a
+// man who is here.
 func TestPickVisitorPersona_ClassAndExclusions(t *testing.T) {
 	var factors []string
 	for _, p := range visitorPersonas {
@@ -66,42 +66,55 @@ func TestPickVisitorPersona_ClassAndExclusions(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	for i := 0; i < 50; i++ {
 		for _, class := range []VisitorClass{VisitorClassFactor, VisitorClassCarter, VisitorClassDealer, VisitorClassPasser} {
-			if p := pickVisitorPersona(w, r, class); p.Class != class {
-				t.Fatalf("pick for %s returned %s (%s)", class, p.Name, p.Class)
+			if p, ok := pickVisitorPersona(w, r, class); !ok || p.Class != class {
+				t.Fatalf("pick for %s returned %s (%s, ok=%v)", class, p.Name, p.Class, ok)
 			}
 		}
 	}
 
-	// All factors but the last are in the village: the last is the only open pick.
+	// All factors but the last are in the village: the last is the only pick.
 	for i, name := range factors[:len(factors)-1] {
 		id := ActorID("vstr-0000000" + string(rune('a'+i)))
 		w.Actors[id] = &Actor{ID: id, DisplayName: name + " the factor", VisitorState: &VisitorState{}}
 	}
 	want := factors[len(factors)-1]
 	for i := 0; i < 20; i++ {
-		if p := pickVisitorPersona(w, r, VisitorClassFactor); p.Name != want {
-			t.Fatalf("pick = %s, want the one factor not in the village (%s)", p.Name, want)
+		if p, ok := pickVisitorPersona(w, r, VisitorClassFactor); !ok || p.Name != want {
+			t.Fatalf("pick = %s (ok=%v), want the one factor not in the village (%s)", p.Name, ok, want)
 		}
 	}
 
-	// Every factor in the village: still a factor.
+	// Every factor in the village: no pick.
 	w.Actors["vstr-0000000z"] = &Actor{ID: "vstr-0000000z", DisplayName: want + " the factor", VisitorState: &VisitorState{}}
-	if p := pickVisitorPersona(w, r, VisitorClassFactor); p.Class != VisitorClassFactor {
-		t.Fatalf("pick with every factor present = %s (%s), want a factor", p.Name, p.Class)
+	if p, ok := pickVisitorPersona(w, r, VisitorClassFactor); ok {
+		t.Fatalf("pick with every factor present = %s, want none", p.Name)
 	}
 }
 
 // TestPickVisitorPersona_SkipsVillagerSurname: a name whose surname a seated
-// villager holds is not picked while the class has another.
+// villager holds is not picked while the class has another free name — and when
+// it is the only free name it is picked (the surname rule relaxes, the in-village
+// rule never does).
 func TestPickVisitorPersona_SkipsVillagerSurname(t *testing.T) {
 	w := &World{Actors: map[ActorID]*Actor{
 		"v1": {ID: "v1", DisplayName: "Ruth Wendell", Kind: KindNPCStateful},
 	}}
 	r := rand.New(rand.NewSource(3))
 	for i := 0; i < 50; i++ {
-		if p := pickVisitorPersona(w, r, VisitorClassFactor); p.Name == "Caleb Wendell" {
+		if p, _ := pickVisitorPersona(w, r, VisitorClassFactor); p.Name == "Caleb Wendell" {
 			t.Fatal("picked Caleb Wendell while a villager is named Wendell")
 		}
+	}
+	i := 0
+	for _, p := range visitorPersonas {
+		if p.Class == VisitorClassFactor && p.Name != "Caleb Wendell" {
+			id := ActorID("vstr-000000" + string(rune('a'+i)) + "0")
+			w.Actors[id] = &Actor{ID: id, DisplayName: p.Name + " the factor", VisitorState: &VisitorState{}}
+			i++
+		}
+	}
+	if p, ok := pickVisitorPersona(w, r, VisitorClassFactor); !ok || p.Name != "Caleb Wendell" {
+		t.Fatalf("only free factor is Caleb Wendell; pick = %s (ok=%v)", p.Name, ok)
 	}
 }
 

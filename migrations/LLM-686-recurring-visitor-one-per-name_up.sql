@@ -124,8 +124,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS recurring_visitor_name_key
     ON public.recurring_visitor (name);
 
 DO $$
-DECLARE lost int; dangling int;
+DECLARE lost int; dangling int; dup_names int; enforced int;
 BEGIN
+    -- CREATE ... IF NOT EXISTS skips on ANY same-named relation, so prove the
+    -- index is what we need: unique, valid, on public.recurring_visitor, over
+    -- exactly (name), no predicate.
+    SELECT count(*) INTO enforced
+      FROM pg_index i
+      JOIN pg_class ic ON ic.oid = i.indexrelid
+      JOIN pg_namespace n ON n.oid = ic.relnamespace
+     WHERE n.nspname = 'public'
+       AND ic.relname = 'recurring_visitor_name_key'
+       AND i.indrelid = 'public.recurring_visitor'::regclass
+       AND i.indisunique
+       AND i.indisvalid
+       AND i.indpred IS NULL
+       AND i.indnkeyatts = 1
+       AND i.indkey[0] = (SELECT attnum FROM pg_attribute
+                           WHERE attrelid = 'public.recurring_visitor'::regclass
+                             AND attname = 'name');
+    IF enforced <> 1 THEN
+        RAISE EXCEPTION 'LLM-686: public.recurring_visitor_name_key is not a unique index on recurring_visitor(name) — drop the conflicting object and re-run';
+    END IF;
+    SELECT count(*) INTO dup_names
+      FROM (SELECT name FROM recurring_visitor GROUP BY name HAVING count(*) > 1) d;
+    IF dup_names > 0 THEN
+        RAISE EXCEPTION 'LLM-686: % name(s) still hold more than one returner row', dup_names;
+    END IF;
     SELECT count(*) INTO lost
       FROM llm686_bonds_before b
      WHERE NOT EXISTS (SELECT 1
