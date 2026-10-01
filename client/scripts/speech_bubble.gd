@@ -51,9 +51,11 @@ const PADDING_Y := 5.0
 const MAX_TEXT_WIDTH := 340.0  # bubble wraps text past this many pixels
 ## A long line is shown a page at a time, at most this many lines a page, so
 ## the bubble never towers over the village. A page with more after it ends
-## in MORE_MARK.
+## in MORE_MARK, and the page after it opens with LEAD_MARK, so the reader
+## sees the sentence carry on.
 const PAGE_LINES := 4
 const MORE_MARK := " …"
+const LEAD_MARK := "… "
 const TAIL_HALF_W := 6.0
 const TAIL_HEIGHT := 8.0
 const FONT_SIZE := 14
@@ -119,7 +121,7 @@ func setup(speak_text: String) -> void:
 func _page_lifetime(page: int) -> float:
     var chars := 0
     for line in _pages[page]:
-        chars += line.trim_suffix(MORE_MARK).length()
+        chars += line.trim_suffix(MORE_MARK).trim_prefix(LEAD_MARK).length()
     return clampf(chars * LIFETIME_PER_CHAR + LIFETIME_PICKUP, MIN_LIFETIME, MAX_LIFETIME)
 
 
@@ -174,6 +176,8 @@ func _wrap_text(text: String) -> void:
         var page := PackedStringArray(lines.slice(start, start + PAGE_LINES))
         if start + PAGE_LINES < lines.size():
             page[page.size() - 1] += MORE_MARK
+        if start > 0:
+            page[0] = LEAD_MARK + page[0]
         for line in page:
             var w_size: Vector2 = _font.get_string_size(
                 line, HORIZONTAL_ALIGNMENT_LEFT, -1, _font_size

@@ -45,6 +45,7 @@ const TESTS := [
     "_test_long_speech_shows_a_page_at_a_time",
     "_test_blank_speech_draws_no_bubble",
     "_test_art_text_is_ui_sized_and_smooth",
+    "_test_a_speaker_has_one_bubble",
 ]
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
@@ -340,6 +341,8 @@ func _test_long_speech_shows_a_page_at_a_time() -> void:
         var bubble: Node2D = _spawn(HAGGLE_TEXT)
         var pages: Array = bubble._pages
         var mark: String = _script.MORE_MARK
+        var lead: String = _script.LEAD_MARK
+        var lead_w: float = bubble._font.get_string_size(lead, HORIZONTAL_ALIGNMENT_LEFT, -1, bubble._font_size).x
         var max_w: float = _script.MAX_TEXT_WIDTH - 2 * _script.PADDING_X
         var mark_w: float = bubble._font.get_string_size(mark, HORIZONTAL_ALIGNMENT_LEFT, -1, bubble._font_size).x
         _check("the haggle runs to more than one page (art %s, %d pages)" % [art, pages.size()], pages.size() > 1)
@@ -350,11 +353,13 @@ func _test_long_speech_shows_a_page_at_a_time() -> void:
             var last: bool = p == pages.size() - 1
             _check("page %d ends in the more-mark only if more follows (art %s)" % [p, art],
                 page[page.size() - 1].ends_with(mark) != last)
+            _check("page %d opens with the lead-mark only if it continues a page (art %s)" % [p, art],
+                page[0].begins_with(lead) == (p > 0))
             for line in page:
-                var plain: String = line.trim_suffix(mark)
+                var plain: String = line.trim_suffix(mark).trim_prefix(lead)
                 var w: float = bubble._font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, bubble._font_size).x
                 _check("a line fits the wrap width, plus the mark on a page end (art %s): %s" % [art, line],
-                    w <= max_w + (mark_w if line.ends_with(mark) else 0.0) + 0.5)
+                    w <= max_w + (mark_w if line.ends_with(mark) else 0.0) + (lead_w if line.begins_with(lead) else 0.0) + 0.5)
                 words.append_array(Array(plain.split(" ", false)))
             var life: float = bubble._page_lifetime(p)
             _check("page %d stays up between MIN and MAX (art %s, %.1fs)" % [p, art, life],
@@ -378,6 +383,7 @@ func _test_long_speech_shows_a_page_at_a_time() -> void:
     var short: Node2D = _spawn("Aye, I'll see to it.")
     _check("a short line is one page", short._pages.size() == 1)
     _check("a short line carries no more-mark", not short._wrapped_lines[0].ends_with(_script.MORE_MARK))
+    _check("a short line carries no lead-mark", not short._wrapped_lines[0].begins_with(_script.LEAD_MARK))
     _check("a short line's bubble is one line tall",
         is_equal_approx(short._content_size.y, short._font.get_height(short._font_size)))
     short.free()
@@ -426,4 +432,34 @@ func _step_live_camera() -> void:
     _camera.free()
     _live_step += 1
     _current = "_test_live_camera_zoom_is_cancelled_the_same_frame"
+    _done()
+
+## LLM-693: a speaker who talks again replaces their bubble — never a second
+## one beside it. The old bubble used to stay a child until the end of the
+## frame, so the new one was renamed and the next line could not find it to
+## replace: bubbles stacked. Checked for a villager and for a structure.
+## Runs within one frame, the way the bug did.
+func _test_a_speaker_has_one_bubble() -> void:
+    var world = load("res://scripts/world.gd").new()
+    var npc := Node2D.new()
+    var shop := Node2D.new()
+    root.add_child(npc)
+    root.add_child(shop)
+    world.placed_npcs["josiah"] = npc
+    world.placed_objects["store"] = shop
+    for line in ["First line.", "Second line.", "Third line."]:
+        world._spawn_speech_bubble("josiah", line)
+        world.spawn_structure_bubble("store", line)
+    for pair in [["villager", npc], ["structure", shop]]:
+        var holder: Node2D = pair[1]
+        var live := []
+        for c in holder.get_children():
+            if not c.is_queued_for_deletion():
+                live.append(c)
+        _check("one bubble after three lines (%s, got %d)" % [pair[0], live.size()], live.size() == 1)
+        _check("it is the last line's bubble (%s)" % pair[0],
+            live.size() == 1 and live[0].name == world.SPEECH_BUBBLE_NODE_NAME and live[0]._wrapped_lines[0] == "Third line.")
+    npc.queue_free()
+    shop.queue_free()
+    world.free()
     _done()

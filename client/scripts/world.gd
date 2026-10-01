@@ -998,6 +998,9 @@ func _ensure_ground_decal(container: Node2D, sprite_data: Dictionary, sheet: Tex
             container.remove_meta("on_water")
         return
     if existing != null:
+        # Out of the tree now, so the rebuilt decal keeps the name every
+        # sprite lookup skips it by (see the speech bubble for the same trap).
+        container.remove_child(existing)
         existing.queue_free()
     var fw: int = int(sprite_data.get("frame_width", 32))
     var fh: int = int(sprite_data.get("frame_height", 32))
@@ -2628,6 +2631,10 @@ func _spawn_speech_bubble(npc_id: String, text: String) -> void:
         return
     var existing: Node = container.get_node_or_null(SPEECH_BUBBLE_NODE_NAME)
     if existing != null:
+        # Out of the tree NOW, not at the end of the frame: still a child, it
+        # would make Godot rename the new bubble, which the next line could
+        # then never find to replace — the speaker's bubbles would stack.
+        container.remove_child(existing)
         existing.queue_free()
     var bubble: Node2D = SpeechBubbleScript.new()
     bubble.name = SPEECH_BUBBLE_NODE_NAME
@@ -2685,6 +2692,10 @@ func spawn_structure_bubble(structure_id: String, text: String) -> void:
         return
     var existing: Node = container.get_node_or_null(SPEECH_BUBBLE_NODE_NAME)
     if existing != null:
+        # Out of the tree NOW, not at the end of the frame: still a child, it
+        # would make Godot rename the new bubble, which the next line could
+        # then never find to replace — the speaker's bubbles would stack.
+        container.remove_child(existing)
         existing.queue_free()
     var bubble: Node2D = SpeechBubbleScript.new()
     bubble.name = SPEECH_BUBBLE_NODE_NAME
