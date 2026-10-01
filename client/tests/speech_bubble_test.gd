@@ -41,6 +41,7 @@ const TESTS := [
     "_test_no_art_means_the_plain_bubble",
     "_test_art_bubble_grows_to_fit_the_text",
     "_test_live_camera_zoom_is_cancelled_the_same_frame",
+    "_test_pixel_font_text_has_no_missing_glyphs",
 ]
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
@@ -285,6 +286,35 @@ func _test_art_bubble_grows_to_fit_the_text() -> void:
             text_right <= last_fill_col + 1.0)
     short.free()
     long.free()
+    _done()
+
+## The Mana Seed Body font has no em/en dash, curly quotes, ellipsis,
+## no-break space, bullet, prime or ½, and Godot draws a missing glyph as a
+## box with its hex code. A predicate standing in for an ASCII-only font
+## checks the rule without the purchased font.
+func _test_pixel_font_text_has_no_missing_glyphs() -> void:
+    var ascii_only := func(code: int) -> bool: return code < 128
+    var cases := [
+        ["Aye—the peace holds.", "Aye--the peace holds."],
+        ["pages 3–4", "pages 3-4"],
+        ["‘Tis the Constable’s round.", "'Tis the Constable's round."],
+        ["“God keep you,” she said.", "\"God keep you,\" she said."],
+        ["Well…", "Well..."],
+        ["twelve coins", "twelve coins"],
+        ["• bread", "* bread"],
+        ["½ loaf", "1/2 loaf"],
+        ["Good day ☺", "Good day "],
+        ["Plain words, no change.", "Plain words, no change."],
+    ]
+    for c in cases:
+        var got: String = _script.font_safe(c[0], ascii_only)
+        _check("font_safe(%s) == %s (got %s)" % [c[0], c[1], got], got == c[1])
+    var every_stand_in := "".join(PackedStringArray(_script.ART_STAND_INS.keys()))
+    var safe: String = _script.font_safe("a" + every_stand_in + "z", ascii_only)
+    var drawable := true
+    for i in safe.length():
+        drawable = drawable and ascii_only.call(safe.unicode_at(i))
+    _check("every stand-in is itself drawable (got %s)" % safe, drawable)
     _done()
 
 ## Starts the live-camera test; _step_live_camera finishes it over the next

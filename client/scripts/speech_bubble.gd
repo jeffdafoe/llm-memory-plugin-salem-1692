@@ -68,6 +68,14 @@ const MAX_LIFETIME := 10.0
 const LIFETIME_PER_CHAR := 1.0 / 18.0  # ~18 chars per second reading rate
 const LIFETIME_PICKUP := 1.5            # extra buffer so bubbles don't vanish before noticed
 
+## Plain stand-ins for punctuation the pixel font has no glyph for. Godot
+## draws a missing glyph as a box holding its hex code ("2014" for an em
+## dash), and the NPCs' speech is full of these.
+const ART_STAND_INS := {
+    "—": "--", "–": "-", "‘": "'", "’": "'", "“": "\"", "”": "\"",
+    "…": "...", " ": " ", "•": "*", "′": "'", "½": "1/2",
+}
+
 # Shared by every bubble: loaded once, null when the art is absent.
 static var _art_sheet: Texture2D = null
 static var _art_font: Font = null
@@ -87,7 +95,7 @@ func setup(speak_text: String) -> void:
     _use_art = _art_sheet != null and _art_font != null
     _font = _art_font if _use_art else ThemeDB.fallback_font
     _font_size = ART_FONT_SIZE if _use_art else FONT_SIZE
-    _wrap_text(speak_text)
+    _wrap_text(font_safe(speak_text, _font.has_char) if _use_art else speak_text)
     _fit_to_screen()
     queue_redraw()
 
@@ -102,6 +110,20 @@ func setup(speak_text: String) -> void:
     timer.timeout.connect(queue_free)
     add_child(timer)
     timer.start()
+
+
+## text with every character the font cannot draw swapped for its plain
+## stand-in (ART_STAND_INS), or dropped when it has none. has_char takes a
+## code point (Font.has_char), so the rule is testable without the font.
+static func font_safe(text: String, has_char: Callable) -> String:
+    var out := ""
+    for i in text.length():
+        var ch: String = text[i]
+        if has_char.call(ch.unicode_at(0)):
+            out += ch
+        elif ART_STAND_INS.has(ch):
+            out += ART_STAND_INS[ch]
+    return out
 
 
 static func _load_art() -> void:
