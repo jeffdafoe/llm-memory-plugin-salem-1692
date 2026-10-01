@@ -265,6 +265,22 @@ func _test_art_bubble_grows_to_fit_the_text() -> void:
     _check("a one-line bubble is shorter than the sheet (no empty rows under the text)",
         _script.ART_TOP_ROWS + short._art_grow().y + (48 - _script.ART_BOTTOM_ROW) < 48)
     _check("a longer text grows the bubble taller", long._art_grow().y > short._art_grow().y)
+    # Checked against the sheet itself, not ART_TEXT_ROOM: in the Mana Seed
+    # bubble the last cream fill rows are sheet rows 33-34 (row 35 starts
+    # the bottom shading, row 36 the outline), and the fill's right edge is
+    # column 50. The text box must end inside the fill.
+    var sheet_last_fill_row := 34
+    var sheet_last_fill_col := 50
+    for b in [short, long]:
+        var grow: Vector2 = b._art_grow()
+        var last_fill_row: float = _script.ART_TOP_ROWS + grow.y + (sheet_last_fill_row - _script.ART_BOTTOM_ROW)
+        var last_fill_col: float = sheet_last_fill_col + grow.x
+        var text_bottom: float = _script.ART_TEXT_ORIGIN.y + b._content_size.y
+        var text_right: float = _script.ART_TEXT_ORIGIN.x + b._content_size.x
+        _check("text ends above the bottom shading (%s: bottom %.0f, last fill row %.0f)" % [b._wrapped_lines[0], text_bottom, last_fill_row],
+            text_bottom <= last_fill_row + 1.0)
+        _check("text ends inside the right edge (%s: right %.0f, last fill col %.0f)" % [b._wrapped_lines[0], text_right, last_fill_col],
+            text_right <= last_fill_col + 1.0)
     short.free()
     long.free()
     _done()
