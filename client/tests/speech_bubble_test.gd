@@ -42,11 +42,15 @@ const TESTS := [
     "_test_no_art_means_the_plain_bubble",
     "_test_art_bubble_grows_to_fit_the_text",
     "_test_live_camera_zoom_is_cancelled_the_same_frame",
+    "_test_long_speech_shows_a_page_at_a_time",
+    "_test_blank_speech_draws_no_bubble",
     "_test_art_text_is_ui_sized_and_smooth",
 ]
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
 const LONG_TEXT := "Good morning, neighbor. The well by the Tavern is broken again, and the town is paying twelve coins to mend it."
+## A merchant's haggle as seen live (2026-10-01): ten lines at the old wrap.
+const HAGGLE_TEXT := "Twenty-six and twelve, thirty-eight coins all told. I can manage that if you'll take thirty-seven and a sack of flour or two wedges of cheese to make up the difference. Or if you'd rather have goods than haggle over the last coin, I've flour, wheat, cheese, and a fine silver locket that would fetch a pretty penny in Boston. What say you to that? And mind, the roads to Boston are long this time of year, so I'd as soon settle it here and now."
 ## Zoom steps the live-camera test walks, one per frame.
 const LIVE_ZOOMS := [0.7, 1.3, 0.5, 2.0]
 
@@ -323,6 +327,67 @@ func _test_art_text_is_ui_sized_and_smooth() -> void:
             _check("text is UI-sized on screen at zoom %.1f, stretch %.1f (got %s, want %s)" % [z, stretch, s, want],
                 s.is_equal_approx(want))
         root.content_scale_factor = saved
+    bubble.free()
+    _done()
+
+## A long line is shown PAGE_LINES at a time so the bubble never towers;
+## nothing is lost, every page gets its own reading time, and the bubble
+## keeps one size across pages. Pages are turned by calling the timer's
+## handler directly.
+func _test_long_speech_shows_a_page_at_a_time() -> void:
+    for art in [false, true]:
+        _set_art(_synthetic_sheet() if art else null)
+        var bubble: Node2D = _spawn(HAGGLE_TEXT)
+        var pages: Array = bubble._pages
+        var mark: String = _script.MORE_MARK
+        var max_w: float = _script.MAX_TEXT_WIDTH - 2 * _script.PADDING_X
+        var mark_w: float = bubble._font.get_string_size(mark, HORIZONTAL_ALIGNMENT_LEFT, -1, bubble._font_size).x
+        _check("the haggle runs to more than one page (art %s, %d pages)" % [art, pages.size()], pages.size() > 1)
+        var words: Array[String] = []
+        for p in pages.size():
+            var page: PackedStringArray = pages[p]
+            _check("page %d holds at most PAGE_LINES lines (art %s)" % [p, art], page.size() <= _script.PAGE_LINES)
+            var last: bool = p == pages.size() - 1
+            _check("page %d ends in the more-mark only if more follows (art %s)" % [p, art],
+                page[page.size() - 1].ends_with(mark) != last)
+            for line in page:
+                var plain: String = line.trim_suffix(mark)
+                var w: float = bubble._font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, bubble._font_size).x
+                _check("a line fits the wrap width, plus the mark on a page end (art %s): %s" % [art, line],
+                    w <= max_w + (mark_w if line.ends_with(mark) else 0.0) + 0.5)
+                words.append_array(Array(plain.split(" ", false)))
+            var life: float = bubble._page_lifetime(p)
+            _check("page %d stays up between MIN and MAX (art %s, %.1fs)" % [p, art, life],
+                life >= _script.MIN_LIFETIME and life <= _script.MAX_LIFETIME)
+        _check("every word survives, in order (art %s)" % art,
+            " ".join(PackedStringArray(words)) == " ".join(HAGGLE_TEXT.split(" ", false)))
+        var size: Vector2 = bubble._content_size
+        _check("the bubble is PAGE_LINES lines tall (art %s)" % art,
+            is_equal_approx(size.y, bubble._font.get_height(bubble._font_size) * _script.PAGE_LINES))
+        for p in range(1, pages.size()):
+            bubble._next_page()
+            _check("turning shows page %d (art %s)" % [p, art], bubble._wrapped_lines == pages[p])
+            _check("the bubble keeps its size on page %d (art %s)" % [p, art], bubble._content_size == size)
+            _check("the timer restarts for page %d (art %s)" % [p, art],
+                is_equal_approx(bubble._page_timer.wait_time, bubble._page_lifetime(p)))
+        _check("the bubble is still up on its last page (art %s)" % art, not bubble.is_queued_for_deletion())
+        bubble._next_page()
+        _check("turning past the last page removes the bubble (art %s)" % art, bubble.is_queued_for_deletion())
+        bubble.free()
+    _set_art(null)
+    var short: Node2D = _spawn("Aye, I'll see to it.")
+    _check("a short line is one page", short._pages.size() == 1)
+    _check("a short line carries no more-mark", not short._wrapped_lines[0].ends_with(_script.MORE_MARK))
+    _check("a short line's bubble is one line tall",
+        is_equal_approx(short._content_size.y, short._font.get_height(short._font_size)))
+    short.free()
+    _done()
+
+func _test_blank_speech_draws_no_bubble() -> void:
+    _set_art(null)
+    var bubble: Node2D = _spawn("   ")
+    _check("all-space speech removes the bubble", bubble.is_queued_for_deletion())
+    _check("all-space speech starts no page timer", bubble._page_timer == null)
     bubble.free()
     _done()
 
