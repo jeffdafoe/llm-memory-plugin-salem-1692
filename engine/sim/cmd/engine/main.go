@@ -1042,6 +1042,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunProductionChoiceTicker(ctx, w) // LLM-116: wake an idle multi-output crafter to choose what to forge
 	go sim.RunObjectRefreshRegen(ctx, w)
 	go sim.RunSourceActivityTicker(ctx, w) // LLM-54: completes timed eat/drink/harvest
+	go sim.RunMinorWorksTicker(ctx, w)     // LLM-690: breaks and expires the players' minor works
 	go sim.RunOrderSweep(ctx, w)
 	go sim.RunPayLedgerSweep(ctx, w)
 	go sim.RunLaborLedgerSweep(ctx, w)   // LLM-26: expire pending + settle completed labor offers

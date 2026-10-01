@@ -292,6 +292,12 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.PCRepairRoadSteps = parseIntSetting(values, "pc_repair_road_steps", sim.DefaultPCRepairRoadSteps)
 	s.PCRepairRoadStepGapMs = parseIntSetting(values, "pc_repair_road_step_gap_ms", sim.DefaultPCRepairRoadStepGapMs)
 	s.PCRepairIdleSeconds = parseIntSetting(values, "pc_repair_idle_seconds", sim.DefaultPCRepairIdleSeconds)
+	s.MinorWorksChancePermille = parseIntSetting(values, "minor_works_chance_permille", sim.DefaultMinorWorksChancePermille)
+	s.MinorWorksOpenCap = parseIntSetting(values, "minor_works_open_cap", sim.DefaultMinorWorksOpenCap)
+	s.MinorWorksTTLHours = parseIntSetting(values, "minor_works_ttl_hours", sim.DefaultMinorWorksTTLHours)
+	s.PublicWorksMinorBounty = parseIntSetting(values, "public_works_minor_bounty", sim.DefaultPublicWorksMinorBounty)
+	s.PCRepairMinorSteps = parseIntSetting(values, "pc_repair_minor_steps", sim.DefaultPCRepairMinorSteps)
+	s.PCRepairMinorStepGapMs = parseIntSetting(values, "pc_repair_minor_step_gap_ms", sim.DefaultPCRepairMinorStepGapMs)
 
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
