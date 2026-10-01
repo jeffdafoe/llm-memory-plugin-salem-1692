@@ -13,6 +13,7 @@ const EventClientScript = preload("res://scripts/event_client.gd")
 const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
+const RepairPanelScript = preload("res://scripts/repair_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
 const CandlePromptScript = preload("res://scripts/candle_prompt.gd")
@@ -35,6 +36,9 @@ var event_client: Node = null
 var talk_panel_layer: CanvasLayer = null
 var notice_panel_layer: CanvasLayer = null
 var inventory_panel_layer: CanvasLayer = null
+## The town's repair work for the player (LLM-690): offer dialog + mini-game.
+## See client/scripts/repair_panel.gd.
+var repair_panel_layer: CanvasLayer = null
 var village_ticker: PanelContainer = null
 ## Sleep-fade overlay (ZBBS-WORK-204 Stage B). CanvasLayer with a
 ## ColorRect that tweens to twilight while the local PC sleeps and
@@ -278,6 +282,8 @@ func _on_authenticated() -> void:
     # refresh — wire here, after world is reachable. Idempotent.
     if notice_panel_layer != null and notice_panel_layer.has_method("attach_world"):
         notice_panel_layer.attach_world(world)
+    if repair_panel_layer != null:
+        repair_panel_layer.world = world
 
     # Recover terrain edits that didn't make it to the server (e.g. paints
     # done after a silent session expiry). If there's nothing buffered,
@@ -528,6 +534,25 @@ func _build_ui() -> void:
     notice_panel_layer.opened.connect(func(): _set_modal_blocker("notice", true))
     notice_panel_layer.closed.connect(func(): _set_modal_blocker("notice", false))
 
+    # Repair panel (LLM-690) — the town's repair work: opens on the arrival
+    # thought's offer (talk panel) or on a click at a damaged object (the
+    # probe in _post_pc_move_to_screen). Modal tier, like the notice panel.
+    repair_panel_layer = CanvasLayer.new()
+    repair_panel_layer.name = "RepairPanelLayer"
+    repair_panel_layer.set_script(RepairPanelScript)
+    add_child(repair_panel_layer)
+    repair_panel_layer.world = world
+    if top_bar != null and "coins_label" in top_bar:
+        repair_panel_layer.coin_target = top_bar.coins_label
+    repair_panel_layer.opened.connect(func(): _set_modal_blocker("repair", true))
+    repair_panel_layer.closed.connect(func(): _set_modal_blocker("repair", false))
+    # Paid: re-read /pc/me so the coin chip shows the new purse at once.
+    repair_panel_layer.earned.connect(func(_amount: int):
+        if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
+            talk_panel_layer._refresh_state())
+    if talk_panel_layer.has_signal("repair_offered"):
+        talk_panel_layer.repair_offered.connect(repair_panel_layer.show_offer)
+
     # Inventory popover — shows the player's pack when the top-bar
     # icon is clicked. Layer = 4 so it floats above the talk panel
     # (3) and below the modal config screen (5); a player can open
@@ -760,6 +785,8 @@ func _on_session_expired() -> void:
     _show_login_screen("Session expired — please log in again.")
 
 func _show_login_screen(message: String) -> void:
+    if repair_panel_layer != null:
+        repair_panel_layer.reset()
     if top_bar != null:
         top_bar.set_edit_visible(false)
         top_bar.set_config_visible(false)
@@ -1120,9 +1147,24 @@ func _input(event: InputEvent) -> void:
 ## World coordinates come from world.get_global_mouse_position so camera
 ## pan / zoom are baked in. Lazy-create the HTTPRequest so we don't
 ## allocate one until the player actually clicks.
-func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
+func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -> void:
     if world == null:
         return
+    # A click on an object first asks whether it is town's work the player
+    # stands at (LLM-690): if so the repair panel opens and there is no walk;
+    # otherwise the walk goes on as below. Ground clicks walk at once.
+    if not repair_probed and repair_panel_layer != null:
+        var probe_hit: Dictionary = world.find_object_at(screen_pos)
+        var probe_id: String = str(probe_hit.get("id", "")) if probe_hit.has("id") else ""
+        if probe_id != "":
+            # Walk only on a plain "no work here" — not when the panel has
+            # opened meanwhile (the arrival thought can open it first).
+            repair_panel_layer.probe_click(probe_id, func(panel_opened: bool):
+                if not panel_opened and not repair_panel_layer.is_open():
+                    _post_pc_move_to_screen(screen_pos, true))
+            return
+    if repair_panel_layer != null:
+        repair_panel_layer.close()
     if _pc_http_move == null:
         _pc_http_move = HTTPRequest.new()
         _pc_http_move.accept_gzip = false

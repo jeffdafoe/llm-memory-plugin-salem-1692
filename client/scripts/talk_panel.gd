@@ -245,6 +245,11 @@ signal lodging_changed(inn_name: String, until_label: String)
 ## button bleeds into the world handler and walks the PC underneath.
 signal modal_open_changed(open: bool)
 
+## Emitted when the PC's arrival thought at a damaged site carries the town's
+## repair offer (LLM-690: object_condition's `repair` field). main.gd opens the
+## repair panel on it.
+signal repair_offered(offer: Dictionary)
+
 # Same stick-bottom invariant for the room log. Cleared when the user
 # scrolls up to read history; re-armed when they scroll back down or
 # when an explicit follow-the-bottom path runs (e.g. open(), or a new
@@ -2926,6 +2931,9 @@ func _on_room_event(data: Dictionary) -> void:
             var world_node := get_node_or_null("/root/Main/World")
             if world_node != null and world_node.has_method("spawn_structure_bubble"):
                 world_node.spawn_structure_bubble(event_structure_id, text)
+    # The town pays to mend it (LLM-690): hand the offer to the repair panel.
+    if private_event and kind == "object_condition" and data.get("repair") is Dictionary:
+        repair_offered.emit(data["repair"])
 
 
 ## Public entry for client-only narrations (e.g. ZBBS-101 knock outcomes).
