@@ -15,19 +15,38 @@
 -- marker and the home/work pick list — none of which a prop needs. Their
 -- door_offset values stay: pathfinding reads them whatever the category.
 --
--- Pinned by asset id, not name. On a fresh replay without these assets the
--- UPDATE matches zero rows.
+-- Pinned by asset id, not name. These are catalog rows, not seeded by any
+-- migration, so a schema-only replay has none of them; the checks below assert
+-- only the targets that exist (the LLM-654 convention). On prod all five exist
+-- and were 'structure' when this was written (2026-10-01).
 --
 -- asset is engine-owned, but deploy.sh runs stop -> migrate -> start, and the
 -- catalog is boot-loaded, so the engine picks the new category up on start.
 
 BEGIN;
 
--- A promoted placement of one of these assets would be a Structure on a prop
--- asset — a state the promote guard forbids. None exists today; refuse rather
--- than create one.
 DO $$
 BEGIN
+    -- Precondition: an existing target is a structure (or already a prop, on a
+    -- rerun). Anything else means the catalog is not what this was written for.
+    IF EXISTS (
+        SELECT 1
+          FROM public.asset
+         WHERE id IN (
+             '35c7f051-266c-42a9-8650-f4f7ad4dc6a6',
+             '3500f9ce-59be-45c1-9917-50bf0e232f4e',
+             '053ec0f2-79bd-4db6-a9df-fec642792244',
+             'afc2110d-e882-461b-91c5-abb363a76476',
+             '64b37a3f-8b77-4083-bee9-37fe197b8270'
+         )
+           AND category NOT IN ('structure', 'prop')
+    ) THEN
+        RAISE EXCEPTION 'LLM-456: a well/bridge/outhouse/wagon asset has an unexpected category';
+    END IF;
+
+    -- A promoted placement of one of these assets would be a Structure on a
+    -- prop asset — a state the promote guard forbids. None exists today; refuse
+    -- rather than create one.
     IF EXISTS (
         SELECT 1
           FROM public.village_object vo
@@ -54,5 +73,24 @@ UPDATE public.asset
        'afc2110d-e882-461b-91c5-abb363a76476',  -- Well (Bucket)
        '64b37a3f-8b77-4083-bee9-37fe197b8270'   -- Well (Roofed)
    );
+
+-- Postcondition: every target that exists is now a prop.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM public.asset
+         WHERE id IN (
+             '35c7f051-266c-42a9-8650-f4f7ad4dc6a6',
+             '3500f9ce-59be-45c1-9917-50bf0e232f4e',
+             '053ec0f2-79bd-4db6-a9df-fec642792244',
+             'afc2110d-e882-461b-91c5-abb363a76476',
+             '64b37a3f-8b77-4083-bee9-37fe197b8270'
+         )
+           AND category <> 'prop'
+    ) THEN
+        RAISE EXCEPTION 'LLM-456: a well/bridge/outhouse/wagon asset is not a prop after update';
+    END IF;
+END $$;
 
 COMMIT;
