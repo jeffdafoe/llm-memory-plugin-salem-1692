@@ -20,6 +20,30 @@ BEGIN
     END IF;
 END $$;
 
+DO $$
+DECLARE placed int;
+BEGIN
+    SELECT count(*) INTO placed
+      FROM village_object
+     WHERE asset_id IN ('019e5f00-c401-7a10-9e00-000000690001', '019e5f00-c401-7a10-9e00-000000690002');
+
+    IF placed > 0 THEN
+        RAISE EXCEPTION
+            'LLM-690 down: % dark/light crate(s) still placed. Remove them first (engine stopped), then re-run.',
+            placed;
+    END IF;
+END $$;
+
+-- The two crate assets this migration added, whole.
+DELETE FROM asset_state_tag
+ WHERE state_id IN (
+    SELECT id FROM asset_state
+     WHERE asset_id IN ('019e5f00-c401-7a10-9e00-000000690001', '019e5f00-c401-7a10-9e00-000000690002'));
+DELETE FROM asset_state
+ WHERE asset_id IN ('019e5f00-c401-7a10-9e00-000000690001', '019e5f00-c401-7a10-9e00-000000690002');
+DELETE FROM asset
+ WHERE id IN ('019e5f00-c401-7a10-9e00-000000690001', '019e5f00-c401-7a10-9e00-000000690002');
+
 DELETE FROM asset_state_tag
  WHERE state_id IN (
     SELECT st.id FROM asset_state st

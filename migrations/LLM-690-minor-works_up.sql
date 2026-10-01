@@ -38,6 +38,19 @@ BEGIN
     END IF;
 END $$;
 
+-- Two more crates for the crate form (Jeff, 2026-10-01): the dark and the
+-- light crate from village accessories 16x32, each with its open-lid twin on
+-- the same sheet. Placed by the businesses through the umbilical after the
+-- deploy, not here. Fixed ids, <ticket><ordinal>, permanently reserved.
+INSERT INTO asset (
+    id, name, category, default_state, anchor_x, anchor_y, layer, pack_id,
+    z_index, is_obstacle, source_file, render_scale)
+VALUES
+    ('019e5f00-c401-7a10-9e00-000000690001', 'Crate (Dark)', 'prop', 'default',
+     0.5, 0.85, 'objects', 'mana-seed', 10, false, 'village accessories 16x32.png', 2),
+    ('019e5f00-c401-7a10-9e00-000000690002', 'Crate (Light)', 'prop', 'default',
+     0.5, 0.85, 'objects', 'mana-seed', 10, false, 'village accessories 16x32.png', 2);
+
 CREATE TEMP TABLE llm690_state (
     asset_id uuid, state text, sheet text,
     src_x int, src_y int, src_w int, src_h int
@@ -71,6 +84,24 @@ INSERT INTO llm690_state VALUES
      '/tilesets/mana-seed/village-accessories/village signposts 48x64.png', 96, 0, 48, 64),
     ('7bf7022c-c354-4333-a607-bb42650d2666', 'lid-loose',
      '/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 32, 32, 32, 32);
+
+-- The 16x32 crates: closed (default) and lid off. Cells (col, row 1):
+-- dark 6 / 5, light 10 / 12.
+INSERT INTO llm690_state VALUES
+    ('019e5f00-c401-7a10-9e00-000000690001', 'default',
+     '/tilesets/mana-seed/village-accessories/village accessories 16x32.png', 96, 32, 16, 32),
+    ('019e5f00-c401-7a10-9e00-000000690001', 'lid-loose',
+     '/tilesets/mana-seed/village-accessories/village accessories 16x32.png', 80, 32, 16, 32),
+    ('019e5f00-c401-7a10-9e00-000000690002', 'default',
+     '/tilesets/mana-seed/village-accessories/village accessories 16x32.png', 160, 32, 16, 32),
+    ('019e5f00-c401-7a10-9e00-000000690002', 'lid-loose',
+     '/tilesets/mana-seed/village-accessories/village accessories 16x32.png', 192, 32, 16, 32);
+
+INSERT INTO llm690_tag VALUES
+    ('019e5f00-c401-7a10-9e00-000000690001', 'lid-loose', 'minor-of-default'),
+    ('019e5f00-c401-7a10-9e00-000000690001', 'lid-loose', 'minor-form-crate'),
+    ('019e5f00-c401-7a10-9e00-000000690002', 'lid-loose', 'minor-of-default'),
+    ('019e5f00-c401-7a10-9e00-000000690002', 'lid-loose', 'minor-form-crate');
 
 INSERT INTO llm690_tag VALUES
     ('796d76b4-9a3b-4541-9852-98d389c1906a', 'crooked',   'minor-of-default'),
