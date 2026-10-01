@@ -267,6 +267,95 @@ func TestPCRepairIdleGivesUp(t *testing.T) {
 	}
 }
 
+// TestPCRepairIdleNeverBelowTwoGaps — an idle time retuned below the step gap
+// cannot give up a repair before its next step is allowed.
+func TestPCRepairIdleNeverBelowTwoGaps(t *testing.T) {
+	w, cancel, _ := buildPCRepairWorld(t)
+	defer cancel()
+	mustSend(t, w, func(world *sim.World) {
+		world.Settings.PCRepairWellStepGapMs = 10000
+		world.Settings.PCRepairIdleSeconds = 2
+	})
+	t0 := time.Now().UTC()
+	if _, err := w.Send(sim.StartPCRepair("pat", t0)); err != nil {
+		t.Fatalf("StartPCRepair: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, t0.Add(10*time.Second)) })
+	if step, err := pcRepairStep(t, w, "pat", t0.Add(10*time.Second)); err != nil || step.StepsDone != 1 {
+		t.Errorf("first legal step = %+v, %v; want counted — the repair must outlive one gap", step, err)
+	}
+}
+
+// TestPCRepairBusinessAndRoad — the other two kinds run on their own terms and
+// land the same way.
+func TestPCRepairBusinessAndRoad(t *testing.T) {
+	t.Run("business", func(t *testing.T) {
+		w, cancel := buildBusinessDamageWorld(t)
+		defer cancel()
+		if _, err := w.Send(sim.SetObjectDamage("shop", "damage")); err != nil {
+			t.Fatal(err)
+		}
+		mustSend(t, w, func(world *sim.World) {
+			world.Actors["pat"] = &sim.Actor{ID: "pat", DisplayName: "Pat", Kind: sim.KindPC, Needs: map[sim.NeedKey]int{},
+				Pos: sim.WorldPos{X: 3000, Y: 3000}.Tile(), InsideStructureID: "shop"}
+			world.Settings.PCRepairBusinessSteps = 2
+			world.Settings.PCRepairBusinessStepGapMs = 500
+		})
+		runPCRepairToTheEnd(t, w, sim.PublicWorksBusiness, 2, 500*time.Millisecond, 25)
+		mustSend(t, w, func(world *sim.World) {
+			if world.VillageObjects["shop"].Damaged() {
+				t.Error("shop still damaged")
+			}
+		})
+	})
+	t.Run("road", func(t *testing.T) {
+		w := buildRoadDamageWorld(t, northSouthRoad(100, 2), sim.TilePos{X: 106, Y: 45})
+		res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerStorm, &seqRoller{vals: []float64{0.9, 0.5}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := res.(sim.VillageObjectID)
+		mustSend(t, w, func(world *sim.World) {
+			a := world.VillageObjects[id].Pos.Tile()
+			world.Actors["pat"] = &sim.Actor{ID: "pat", DisplayName: "Pat", Kind: sim.KindPC, Needs: map[sim.NeedKey]int{},
+				Pos: sim.TilePos{X: a.X, Y: a.Y + 3}}
+			world.Settings.PCRepairRoadSteps = 3
+			world.Settings.PCRepairRoadStepGapMs = 250
+		})
+		runPCRepairToTheEnd(t, w, sim.PublicWorksRoad, 3, 250*time.Millisecond, 10)
+		mustSend(t, w, func(world *sim.World) {
+			if _, ok := world.VillageObjects[id]; ok {
+				t.Error("the fallen tree is still in the road")
+			}
+		})
+	})
+}
+
+// runPCRepairToTheEnd takes Pat's offer, checks its kind and terms, and plays
+// every step at the gap, expecting the bounty on the last.
+func runPCRepairToTheEnd(t *testing.T, w *sim.World, kind string, steps int, gap time.Duration, bounty int) {
+	t.Helper()
+	offer := pcRepairOffer(t, w, "pat")
+	if offer == nil || offer.SiteKind != kind || offer.Steps != steps || offer.StepGap != gap || offer.Bounty != bounty {
+		t.Fatalf("offer = %+v, want %s in %d steps %v apart for %d", offer, kind, steps, gap, bounty)
+	}
+	t0 := time.Now().UTC()
+	if _, err := w.Send(sim.StartPCRepair("pat", t0)); err != nil {
+		t.Fatalf("StartPCRepair: %v", err)
+	}
+	var last sim.PCRepairStepResult
+	for i := 1; i <= steps; i++ {
+		step, err := pcRepairStep(t, w, "pat", t0.Add(time.Duration(i)*gap))
+		if err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		last = step
+	}
+	if !last.Done || !last.Landed || last.Paid != bounty {
+		t.Errorf("last step = %+v, want done, landed, paid %d", last, bounty)
+	}
+}
+
 // TestPCRepairWalkAwayCancels — a committed move gives the repair up.
 func TestPCRepairWalkAwayCancels(t *testing.T) {
 	w, cancel, rec := buildPCRepairWorld(t)

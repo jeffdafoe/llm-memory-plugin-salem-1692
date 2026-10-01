@@ -83,6 +83,19 @@ func (s WorldSettings) pcRepairIdle() time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
+// pcRepairDeadline is the idle deadline a step (or the start) at now sets. Never
+// less than two step gaps, so a live retune of the idle time below the gap
+// cannot give up a repair before its next step is allowed.
+func (s WorldSettings) pcRepairDeadline(now time.Time, gap time.Duration) time.Time {
+	return now.Add(max(s.pcRepairIdle(), 2*gap))
+}
+
+// isPCRepair reports whether a window is a player's stepped town repair — the
+// one predicate the step, the idle give-up and the offer share.
+func (act *SourceActivity) isPCRepair() bool {
+	return act != nil && act.Kind == SourceActivityRepair && act.PublicWorks && act.Steps > 0
+}
+
 // PCRepairOffer is the town's repair work at one damaged site, as a player sees
 // it — the one source for the repair dialog, whether it opens on the arrival
 // thought (ObjectConditionNarrated.Offer) or on a click (PCRepairOfferAt).
@@ -124,7 +137,7 @@ func pcRepairOfferFor(w *World, actor *Actor, site *VillageObject) *PCRepairOffe
 		Steps:       steps,
 		StepGap:     gap,
 	}
-	if act := actor.SourceActivity; act != nil && act.PublicWorks && act.ObjectID == site.ID && act.Steps > 0 {
+	if act := actor.SourceActivity; act.isPCRepair() && act.ObjectID == site.ID {
 		offer.Yours = true
 		offer.Bounty = act.Bounty
 		offer.ChestCanPay = true
@@ -215,7 +228,7 @@ func StepPCRepair(actorID ActorID, now time.Time) Command {
 		// A window past its idle deadline is given up here, before the step.
 		completeIfDue(w, actorID, actor, now)
 		act := actor.SourceActivity
-		if act == nil || act.Steps == 0 {
+		if !act.isPCRepair() {
 			return nil, ErrNoPCRepair
 		}
 		last := act.LastStepAt
@@ -227,7 +240,7 @@ func StepPCRepair(actorID ActorID, now time.Time) Command {
 		}
 		act.StepsDone++
 		act.LastStepAt = now
-		act.Until = now.Add(w.Settings.pcRepairIdle())
+		act.Until = w.Settings.pcRepairDeadline(now, act.StepGap)
 		res := PCRepairStepResult{StepsDone: act.StepsDone, Steps: act.Steps}
 		if act.StepsDone < act.Steps {
 			return res, nil

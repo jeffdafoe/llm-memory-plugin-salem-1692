@@ -791,9 +791,9 @@ func completeIfDue(w *World, actorID ActorID, actor *Actor, now time.Time) bool 
 	if actor == nil || actor.SourceActivity == nil || actor.SourceActivity.Until.After(now) {
 		return false
 	}
-	if actor.SourceActivity.Steps > 0 {
+	if actor.SourceActivity.isPCRepair() {
 		act := abandonSourceActivity(w, actor, now)
-		log.Printf("sim/damage: %q gave up mending %s — no step for %s", actorID, act.ObjectID, w.Settings.pcRepairIdle())
+		log.Printf("sim/damage: %q gave up mending %s after %d of %d steps — idle", actorID, act.ObjectID, act.StepsDone, act.Steps)
 		return true
 	}
 	act := actor.SourceActivity
