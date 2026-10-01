@@ -48,7 +48,12 @@ const ART_TEXT_ROOM := Vector2(34, 3)  # text room in art px at the sheet's widt
 
 const PADDING_X := 8.0
 const PADDING_Y := 5.0
-const MAX_TEXT_WIDTH := 220.0  # bubble wraps text past this many pixels
+const MAX_TEXT_WIDTH := 340.0  # bubble wraps text past this many pixels
+## A long line is shown a page at a time, at most this many lines a page, so
+## the bubble never towers over the village. A page with more after it ends
+## in MORE_MARK.
+const PAGE_LINES := 4
+const MORE_MARK := " …"
 const TAIL_HALF_W := 6.0
 const TAIL_HEIGHT := 8.0
 const FONT_SIZE := 14
@@ -57,7 +62,7 @@ const BG_COLOR := Color(0.97, 0.94, 0.86, 0.97)
 const BORDER_COLOR := Color(0.22, 0.16, 0.10, 1.0)
 const TEXT_COLOR := Color(0.10, 0.08, 0.05, 1.0)
 
-# Lifetime is computed by setup() based on text length unless caller overrides.
+# Each page stays up for its own reading time, from its length.
 const MIN_LIFETIME := 5.0
 const MAX_LIFETIME := 10.0
 const LIFETIME_PER_CHAR := 1.0 / 18.0  # ~18 chars per second reading rate
@@ -67,8 +72,11 @@ const LIFETIME_PICKUP := 1.5            # extra buffer so bubbles don't vanish b
 static var _art_sheet: Texture2D = null
 static var _art_checked := false
 
-var _wrapped_lines: PackedStringArray
-var _content_size: Vector2  # UI units
+var _wrapped_lines: PackedStringArray  # the page on show
+var _pages: Array[PackedStringArray] = []
+var _page := 0
+var _page_timer: Timer = null
+var _content_size: Vector2  # UI units; the same for every page, so the bubble doesn't jump
 var _font: Font
 var _font_size: int = FONT_SIZE
 var _use_art := false
@@ -79,9 +87,9 @@ var _art_per_ui := Vector2(1.0 / ART_PIXEL_SCALE, 1.0 / ART_PIXEL_SCALE)
 ## while the 9-slice stays nearest-filtered pixel art.
 var _text_layer: Node2D = null
 
-## Initialize the bubble with text and start the lifetime timer. Call
-## this immediately after add_child — the bubble queue_frees itself
-## when the timer fires.
+## Initialize the bubble with text and start the first page's timer. Call
+## this immediately after add_child — the bubble turns its pages and
+## queue_frees itself after the last.
 func setup(speak_text: String) -> void:
     _load_art()
     _use_art = _art_sheet != null
@@ -93,20 +101,39 @@ func setup(speak_text: String) -> void:
         _text_layer.draw.connect(_draw_text_layer)
         add_child(_text_layer)
     _wrap_text(speak_text)
+    if _pages.is_empty():
+        # Nothing to say (blank or all spaces).
+        queue_free()
+        return
     _fit_to_screen()
     queue_redraw()
 
-    var lifetime: float = clamp(
-        speak_text.length() * LIFETIME_PER_CHAR + LIFETIME_PICKUP,
-        MIN_LIFETIME,
-        MAX_LIFETIME
-    )
-    var timer := Timer.new()
-    timer.wait_time = lifetime
-    timer.one_shot = true
-    timer.timeout.connect(queue_free)
-    add_child(timer)
-    timer.start()
+    _page_timer = Timer.new()
+    _page_timer.one_shot = true
+    _page_timer.timeout.connect(_next_page)
+    add_child(_page_timer)
+    _page_timer.start(_page_lifetime(_page))
+
+
+## How long a page stays up: its reading time, clamped.
+func _page_lifetime(page: int) -> float:
+    var chars := 0
+    for line in _pages[page]:
+        chars += line.trim_suffix(MORE_MARK).length()
+    return clampf(chars * LIFETIME_PER_CHAR + LIFETIME_PICKUP, MIN_LIFETIME, MAX_LIFETIME)
+
+
+## Turn to the next page, or go after the last.
+func _next_page() -> void:
+    if _page + 1 >= _pages.size():
+        queue_free()
+        return
+    _page += 1
+    _wrapped_lines = _pages[_page]
+    queue_redraw()
+    if _text_layer != null:
+        _text_layer.queue_redraw()
+    _page_timer.start(_page_lifetime(_page))
 
 
 static func _load_art() -> void:
@@ -119,8 +146,9 @@ static func _load_art() -> void:
         _art_sheet = load(ART_SHEET) as Texture2D
 
 
-## Greedy word-wrap to MAX_TEXT_WIDTH. Stores wrapped lines in
-## _wrapped_lines and the bounding box (widest line × line count) in
+## Greedy word-wrap to MAX_TEXT_WIDTH, cut into pages of PAGE_LINES. Stores
+## the pages in _pages, the first in _wrapped_lines, and one bounding box
+## for all of them (widest line × the most lines a page holds) in
 ## _content_size for the draw pass.
 func _wrap_text(text: String) -> void:
     var max_w: float = MAX_TEXT_WIDTH - 2 * PADDING_X
@@ -139,16 +167,23 @@ func _wrap_text(text: String) -> void:
             current = trial
     if current != "":
         lines.append(current)
-    _wrapped_lines = PackedStringArray(lines)
 
+    _pages.clear()
     var widest: float = 0.0
-    for line in _wrapped_lines:
-        var w_size: Vector2 = _font.get_string_size(
-            line, HORIZONTAL_ALIGNMENT_LEFT, -1, _font_size
-        )
-        widest = max(widest, w_size.x)
+    for start in range(0, lines.size(), PAGE_LINES):
+        var page := PackedStringArray(lines.slice(start, start + PAGE_LINES))
+        if start + PAGE_LINES < lines.size():
+            page[page.size() - 1] += MORE_MARK
+        for line in page:
+            var w_size: Vector2 = _font.get_string_size(
+                line, HORIZONTAL_ALIGNMENT_LEFT, -1, _font_size
+            )
+            widest = max(widest, w_size.x)
+        _pages.append(page)
+    _page = 0
+    _wrapped_lines = _pages[0] if not _pages.is_empty() else PackedStringArray()
     var line_height: float = _font.get_height(_font_size)
-    _content_size = Vector2(ceilf(widest), line_height * _wrapped_lines.size())
+    _content_size = Vector2(ceilf(widest), line_height * mini(lines.size(), PAGE_LINES))
 
 
 func _process(_delta: float) -> void:
