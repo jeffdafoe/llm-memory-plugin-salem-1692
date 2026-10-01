@@ -11,9 +11,10 @@ extends SceneTree
 ##     "hard to read" bubble. At every zoom the plain bubble must sit at one
 ##     local unit per screen pixel.
 ##
-##  2. Pixel art at a whole scale. With the Mana Seed bubble and font, one
-##     art pixel must land on a WHOLE number of screen pixels at every zoom
-##     and window stretch, or the pixel font's strokes come out uneven.
+##  2. Pixel art at a whole scale, text at UI size. With the Mana Seed
+##     bubble, one art pixel must land on a WHOLE number of screen pixels at
+##     every zoom and window stretch, or its outline comes out uneven; the
+##     text inside it is a smooth font on its own layer at the UI's size.
 ##
 ##  3. The anchor stays in the world. Only the bubble's size is
 ##     screen-space; its tail must still point at the same spot above the
@@ -22,8 +23,8 @@ extends SceneTree
 ##  4. Degrading without the art. The pack is purchased and gitignored
 ##     (client/.gitignore), so CI has none: no art must mean the plain
 ##     bubble, never an error. The art path is exercised with a synthetic
-##     sheet and the fallback font, so it is checked the same way with and
-##     without the art on disk.
+##     sheet, so it is checked the same way with and without the art on
+##     disk.
 ##
 ## Run headless (CI and local):
 ##   godot --headless --path client --import
@@ -41,7 +42,7 @@ const TESTS := [
     "_test_no_art_means_the_plain_bubble",
     "_test_art_bubble_grows_to_fit_the_text",
     "_test_live_camera_zoom_is_cancelled_the_same_frame",
-    "_test_pixel_font_text_has_no_missing_glyphs",
+    "_test_art_text_is_ui_sized_and_smooth",
 ]
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
@@ -94,7 +95,7 @@ func _process(_delta: float) -> bool:
     if _live_step >= 0 and _live_step <= LIVE_ZOOMS.size():
         _step_live_camera()
         return false
-    _set_art(null, null)
+    _set_art(null)
     root.canvas_transform = Transform2D.IDENTITY
     _actor.queue_free()
     _check_all_tests_ran()
@@ -130,11 +131,18 @@ func _check_test_list() -> void:
 # --- fixtures --------------------------------------------------------------------
 
 ## Sets the bubble's shared art cache directly and marks it loaded, so the
-## loader does not look at the disk. null, null = the artless checkout.
-func _set_art(sheet: Texture2D, font: Font) -> void:
+## loader does not look at the disk. null = the artless checkout.
+func _set_art(sheet: Texture2D) -> void:
     _script._art_sheet = sheet
-    _script._art_font = font
     _script._art_checked = true
+
+## Sets the window stretch (see _test_art_bubble_lands_on_whole_pixels) and
+## returns the factor to restore.
+func _set_stretch(stretch: float) -> float:
+    var saved: float = root.content_scale_factor
+    var base: float = root.get_final_transform().get_scale().x / saved
+    root.content_scale_factor = stretch / base
+    return saved
 
 func _synthetic_sheet() -> ImageTexture:
     var img := Image.create(64, 48, false, Image.FORMAT_RGBA8)
@@ -168,7 +176,7 @@ func _check(label: String, ok: bool) -> void:
 # --- tests -----------------------------------------------------------------------
 
 func _test_plain_bubble_cancels_the_zoom() -> void:
-    _set_art(null, null)
+    _set_art(null)
     var bubble: Node2D = _spawn(LONG_TEXT)
     for z in ZOOMS:
         _zoom(z)
@@ -183,7 +191,7 @@ func _test_plain_bubble_cancels_the_zoom() -> void:
 ## smooth font is rasterized at that size), so on screen it is exactly the
 ## stretch, whatever the zoom.
 func _test_plain_bubble_keeps_the_window_stretch() -> void:
-    _set_art(null, null)
+    _set_art(null)
     var bubble: Node2D = _spawn(LONG_TEXT)
     var stretch: Vector2 = root.get_final_transform().get_scale()
     for z in ZOOMS:
@@ -201,7 +209,7 @@ func _test_plain_bubble_keeps_the_window_stretch() -> void:
 ## The art stays ART_PIXEL_SCALE screen pixels per art pixel at both: it
 ## does not grow with the window (grown, it crowded the village at 3x).
 func _test_art_bubble_lands_on_whole_pixels() -> void:
-    _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
+    _set_art(_synthetic_sheet())
     var bubble: Node2D = _spawn(LONG_TEXT)
     _check("the art path is in use with a sheet and a font", bubble._use_art)
     var base_stretch: float = root.get_final_transform().get_scale().x
@@ -228,9 +236,9 @@ func _test_art_bubble_lands_on_whole_pixels() -> void:
 func _test_anchor_stays_above_the_head() -> void:
     for art in [false, true]:
         if art:
-            _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
+            _set_art(_synthetic_sheet())
         else:
-            _set_art(null, null)
+            _set_art(null)
         var bubble: Node2D = _spawn("Aye.")
         for z in ZOOMS:
             _zoom(z)
@@ -241,87 +249,88 @@ func _test_anchor_stays_above_the_head() -> void:
     _done()
 
 func _test_no_art_means_the_plain_bubble() -> void:
-    _set_art(null, ThemeDB.fallback_font)
+    _set_art(null)
     var bubble: Node2D = _spawn("Aye.")
-    _check("a font without the sheet falls back to the plain bubble", not bubble._use_art)
+    _check("no sheet falls back to the plain bubble", not bubble._use_art)
+    _check("the plain bubble has no separate text layer", bubble._text_layer == null)
     bubble.free()
-    _set_art(_synthetic_sheet(), null)
+    _set_art(_synthetic_sheet())
     bubble = _spawn("Aye.")
-    _check("a sheet without the font falls back to the plain bubble", not bubble._use_art)
-    _check("the plain bubble wraps in the fallback font size", bubble._font_size == _script.FONT_SIZE)
+    _check("a sheet means the art bubble", bubble._use_art)
     bubble.free()
     _done()
 
+## The text is UI-sized on both paths, so the 9-slice is sized from the
+## text's UI size times the window stretch, in art px. Checked at the base
+## size and a 1920-wide window.
 func _test_art_bubble_grows_to_fit_the_text() -> void:
-    _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
-    var short: Node2D = _spawn("Aye.")
-    var long: Node2D = _spawn(LONG_TEXT)
-    var room: Vector2 = _script.ART_TEXT_ROOM
-    _check("a long line wraps to more than one line", long._wrapped_lines.size() > 1)
-    _check("no wrapped line is wider than the wrap width",
-        long._content_size.x <= _script.ART_MAX_TEXT_WIDTH)
-    for b in [short, long]:
-        var fits: Vector2 = room + b._art_grow()
-        _check("the bubble fill holds the text (%s)" % b._wrapped_lines[0],
-            fits.x >= b._content_size.x and fits.y >= b._content_size.y)
-    _check("a short line keeps the sheet's own width", short._art_grow().x == 0.0)
-    _check("a one-line bubble is shorter than the sheet (no empty rows under the text)",
-        _script.ART_TOP_ROWS + short._art_grow().y + (48 - _script.ART_BOTTOM_ROW) < 48)
-    _check("a longer text grows the bubble taller", long._art_grow().y > short._art_grow().y)
-    # Checked against the sheet itself, not ART_TEXT_ROOM: in the Mana Seed
-    # bubble the last cream fill rows are sheet rows 33-34 (row 35 starts
-    # the bottom shading, row 36 the outline), and the fill's right edge is
-    # column 50. The text box must end inside the fill.
-    var sheet_last_fill_row := 34
-    var sheet_last_fill_col := 50
-    for b in [short, long]:
-        var grow: Vector2 = b._art_grow()
-        var last_fill_row: float = _script.ART_TOP_ROWS + grow.y + (sheet_last_fill_row - _script.ART_BOTTOM_ROW)
-        var last_fill_col: float = sheet_last_fill_col + grow.x
-        var text_bottom: float = _script.ART_TEXT_ORIGIN.y + b._content_size.y
-        var text_right: float = _script.ART_TEXT_ORIGIN.x + b._content_size.x
-        _check("text ends above the bottom shading (%s: bottom %.0f, last fill row %.0f)" % [b._wrapped_lines[0], text_bottom, last_fill_row],
-            text_bottom <= last_fill_row + 1.0)
-        _check("text ends inside the right edge (%s: right %.0f, last fill col %.0f)" % [b._wrapped_lines[0], text_right, last_fill_col],
-            text_right <= last_fill_col + 1.0)
-    short.free()
-    long.free()
+    _set_art(_synthetic_sheet())
+    for stretch in [1.0, 1.5]:
+        var saved: float = _set_stretch(stretch)
+        _zoom(1.0)
+        var short: Node2D = _spawn("Aye.")
+        var long: Node2D = _spawn(LONG_TEXT)
+        var room: Vector2 = _script.ART_TEXT_ROOM
+        _check("a long line wraps to more than one line", long._wrapped_lines.size() > 1)
+        _check("no wrapped line is wider than the wrap width",
+            long._content_size.x <= _script.MAX_TEXT_WIDTH - 2 * _script.PADDING_X)
+        for b in [short, long]:
+            var fits: Vector2 = room + b._art_grow()
+            var need: Vector2 = b._content_size * stretch / _script.ART_PIXEL_SCALE
+            _check("the bubble fill holds the text at stretch %.1f (%s)" % [stretch, b._wrapped_lines[0]],
+                fits.x >= need.x and fits.y >= need.y)
+        _check("a short line keeps the sheet's own width at stretch %.1f" % stretch, short._art_grow().x == 0.0)
+        _check("a longer text grows the bubble taller at stretch %.1f" % stretch,
+            long._art_grow().y > short._art_grow().y)
+        # Checked against the sheet itself, not ART_TEXT_ROOM: in the Mana
+        # Seed bubble the last cream fill rows are sheet rows 33-34 (row 35
+        # starts the bottom shading, row 36 the outline), and the fill's
+        # right edge is column 50. The text box must end inside the fill.
+        var sheet_last_fill_row := 34
+        var sheet_last_fill_col := 50
+        for b in [short, long]:
+            var grow: Vector2 = b._art_grow()
+            var text_art: Vector2 = b._content_size * stretch / _script.ART_PIXEL_SCALE
+            var last_fill_row: float = _script.ART_TOP_ROWS + grow.y + (sheet_last_fill_row - _script.ART_BOTTOM_ROW)
+            var last_fill_col: float = sheet_last_fill_col + grow.x
+            var text_bottom: float = _script.ART_TEXT_ORIGIN.y + text_art.y
+            var text_right: float = _script.ART_TEXT_ORIGIN.x + text_art.x
+            _check("text ends above the bottom shading at stretch %.1f (%s: bottom %.1f, last fill row %.0f)" % [stretch, b._wrapped_lines[0], text_bottom, last_fill_row],
+                text_bottom <= last_fill_row + 1.0)
+            _check("text ends inside the right edge at stretch %.1f (%s: right %.1f, last fill col %.0f)" % [stretch, b._wrapped_lines[0], text_right, last_fill_col],
+                text_right <= last_fill_col + 1.0)
+        short.free()
+        long.free()
+        root.content_scale_factor = saved
     _done()
 
-## The Mana Seed Body font has no em/en dash, curly quotes, ellipsis,
-## no-break space, bullet, prime or ½, and Godot draws a missing glyph as a
-## box with its hex code. A predicate standing in for an ASCII-only font
-## checks the rule without the purchased font.
-func _test_pixel_font_text_has_no_missing_glyphs() -> void:
-    var ascii_only := func(code: int) -> bool: return code < 128
-    var cases := [
-        ["Aye—the peace holds.", "Aye--the peace holds."],
-        ["pages 3–4", "pages 3-4"],
-        ["‘Tis the Constable’s round.", "'Tis the Constable's round."],
-        ["“God keep you,” she said.", "\"God keep you,\" she said."],
-        ["Well…", "Well..."],
-        ["twelve coins", "twelve coins"],
-        ["• bread", "* bread"],
-        ["½ loaf", "1/2 loaf"],
-        ["Good day ☺", "Good day "],
-        ["Plain words, no change.", "Plain words, no change."],
-    ]
-    for c in cases:
-        var got: String = _script.font_safe(c[0], ascii_only)
-        _check("font_safe(%s) == %s (got %s)" % [c[0], c[1], got], got == c[1])
-    var every_stand_in := "".join(PackedStringArray(_script.ART_STAND_INS.keys()))
-    var safe: String = _script.font_safe("a" + every_stand_in + "z", ascii_only)
-    var drawable := true
-    for i in safe.length():
-        drawable = drawable and ascii_only.call(safe.unicode_at(i))
-    _check("every stand-in is itself drawable (got %s)" % safe, drawable)
+## The text is not pixel art: inside the art bubble it sits on its own
+## layer, smoothly filtered, at the UI's size on screen (the window stretch,
+## like the plain bubble), at every zoom and window size.
+func _test_art_text_is_ui_sized_and_smooth() -> void:
+    _set_art(_synthetic_sheet())
+    var bubble: Node2D = _spawn(LONG_TEXT)
+    var layer: Node2D = bubble._text_layer
+    _check("the art bubble has a text layer", layer != null)
+    _check("the text layer filters smoothly", layer.texture_filter == CanvasItem.TEXTURE_FILTER_LINEAR)
+    for stretch in [1.0, 1.5]:
+        var saved: float = _set_stretch(stretch)
+        for z in ZOOMS:
+            _zoom(z)
+            bubble._fit_to_screen()
+            var s: Vector2 = _on_screen(layer)
+            var want: Vector2 = root.get_final_transform().get_scale()
+            _check("text is UI-sized on screen at zoom %.1f, stretch %.1f (got %s, want %s)" % [z, stretch, s, want],
+                s.is_equal_approx(want))
+        root.content_scale_factor = saved
+    bubble.free()
     _done()
 
 ## Starts the live-camera test; _step_live_camera finishes it over the next
 ## frames. A real Camera2D, zoomed from node processing.
 func _test_live_camera_zoom_is_cancelled_the_same_frame() -> void:
     root.canvas_transform = Transform2D.IDENTITY
-    _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
+    _set_art(_synthetic_sheet())
     _live_bubble = _spawn(LONG_TEXT)
     # Added after the actor, so at equal priority it would process after
     # the bubble — the order that leaves a bubble one zoom stale.
