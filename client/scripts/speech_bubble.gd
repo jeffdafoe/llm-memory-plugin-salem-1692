@@ -19,7 +19,7 @@
 ##
 ## Two looks. With the purchased Mana Seed art on disk: the pack's 9-slice
 ## chat bubble and its Body pixel font, one art pixel to ART_PIXEL_SCALE
-## screen pixels (the village art's own size at zoom 1). Without it (the
+## screen pixels at every window size. Without it (the
 ## art is gitignored; CI and fresh checkouts have none): a drawn bubble in
 ## the fallback font, one local unit to one screen pixel.
 
@@ -35,7 +35,7 @@ const ART_DIR := "res://assets/tilesets/mana-seed/fonts/"
 const ART_SHEET := ART_DIR + "chat bubble, variable 16x16.png"
 const ART_FONT := ART_DIR + "ManaSeedBody.ttf"
 const ART_FONT_SIZE := 8          # Body's native pixel height
-const ART_PIXEL_SCALE := 2        # screen px per art px at the 1280x720 base size
+const ART_PIXEL_SCALE := 2        # screen px per art px, at any zoom and window size
 const ART_MAX_TEXT_WIDTH := 120.0 # art px; the bubble wraps past this
 const ART_LINE_GAP := 1.0         # art px between lines
 # The sheet is 64x48. Column 40 is uniform top to bottom, so repeating it
@@ -68,6 +68,14 @@ const MAX_LIFETIME := 10.0
 const LIFETIME_PER_CHAR := 1.0 / 18.0  # ~18 chars per second reading rate
 const LIFETIME_PICKUP := 1.5            # extra buffer so bubbles don't vanish before noticed
 
+## Plain stand-ins for punctuation the pixel font has no glyph for. Godot
+## draws a missing glyph as a box holding its hex code ("2014" for an em
+## dash), and the NPCs' speech is full of these.
+const ART_STAND_INS := {
+    "—": "--", "–": "-", "‘": "'", "’": "'", "“": "\"", "”": "\"",
+    "…": "...", " ": " ", "•": "*", "′": "'", "½": "1/2",
+}
+
 # Shared by every bubble: loaded once, null when the art is absent.
 static var _art_sheet: Texture2D = null
 static var _art_font: Font = null
@@ -87,7 +95,7 @@ func setup(speak_text: String) -> void:
     _use_art = _art_sheet != null and _art_font != null
     _font = _art_font if _use_art else ThemeDB.fallback_font
     _font_size = ART_FONT_SIZE if _use_art else FONT_SIZE
-    _wrap_text(speak_text)
+    _wrap_text(font_safe(speak_text, _font.has_char) if _use_art else speak_text)
     _fit_to_screen()
     queue_redraw()
 
@@ -102,6 +110,20 @@ func setup(speak_text: String) -> void:
     timer.timeout.connect(queue_free)
     add_child(timer)
     timer.start()
+
+
+## text with every character the font cannot draw swapped for its plain
+## stand-in (ART_STAND_INS), or dropped when it has none. has_char takes a
+## code point (Font.has_char), so the rule is testable without the font.
+static func font_safe(text: String, has_char: Callable) -> String:
+    var out := ""
+    for i in text.length():
+        var ch: String = text[i]
+        if has_char.call(ch.unicode_at(0)):
+            out += ch
+        elif ART_STAND_INS.has(ch):
+            out += ART_STAND_INS[ch]
+    return out
 
 
 static func _load_art() -> void:
@@ -169,9 +191,11 @@ func _process(_delta: float) -> void:
 ## not the world. Two scales sit between this node and the screen: the
 ## canvas transform (camera zoom) and the viewport's stretch to the window
 ## (canvas_items stretch — get_final_transform, NOT part of the node's own
-## screen transform). The art cancels both, then multiplies back up by a
-## WHOLE number of screen pixels per art pixel. The stretch differs slightly
-## per axis (window 1920x1061 → 1.4747 x 1.4736), so each axis is its own.
+## screen transform). The art cancels both, then multiplies back up by
+## ART_PIXEL_SCALE screen pixels per art pixel — a fixed whole number, not
+## grown with the window stretch: grown, a 1920-wide window drew the bubble
+## at 3x and it crowded the village. The stretch differs slightly per axis
+## (window 1920x1061 → 1.4747 x 1.4736), so each axis is its own.
 ## The plain bubble cancels the zoom only, on purpose: it keeps the stretched
 ## size of the rest of the UI, and like the UI's own text its smooth font is
 ## rasterized at the stretched size (font oversampling), so a fractional
@@ -190,8 +214,7 @@ func _fit_to_screen() -> void:
     var stretch: Vector2 = get_viewport().get_final_transform().get_scale()
     if stretch.x <= 0.0 or stretch.y <= 0.0:
         stretch = Vector2.ONE
-    var units := float(maxi(1, roundi(ART_PIXEL_SCALE * stretch.x)))
-    scale = Vector2.ONE * units / (canvas_scale * stretch)
+    scale = Vector2.ONE * float(ART_PIXEL_SCALE) / (canvas_scale * stretch)
 
 
 func _draw() -> void:

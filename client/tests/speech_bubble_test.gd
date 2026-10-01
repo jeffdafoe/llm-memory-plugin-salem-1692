@@ -41,6 +41,7 @@ const TESTS := [
     "_test_no_art_means_the_plain_bubble",
     "_test_art_bubble_grows_to_fit_the_text",
     "_test_live_camera_zoom_is_cancelled_the_same_frame",
+    "_test_pixel_font_text_has_no_missing_glyphs",
 ]
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
@@ -178,9 +179,6 @@ func _test_plain_bubble_cancels_the_zoom() -> void:
     bubble.free()
     _done()
 
-## The headless window is 64x64 against the 1280x720 base, so the canvas
-## stretch is 0.05; content_scale_factor multiplies it, which sets the
-## stretch to 1.0 (the base size) and 1.5 (a 1920-wide browser window).
 ## The plain bubble keeps the window stretch like the rest of the UI (its
 ## smooth font is rasterized at that size), so on screen it is exactly the
 ## stretch, whatever the zoom.
@@ -197,13 +195,18 @@ func _test_plain_bubble_keeps_the_window_stretch() -> void:
     bubble.free()
     _done()
 
+## The headless window is 64x64 against the 1280x720 base, so the canvas
+## stretch is 0.05; content_scale_factor multiplies it, which sets the
+## stretch to 1.0 (the base size) and 1.5 (a 1920-wide browser window).
+## The art stays ART_PIXEL_SCALE screen pixels per art pixel at both: it
+## does not grow with the window (grown, it crowded the village at 3x).
 func _test_art_bubble_lands_on_whole_pixels() -> void:
     _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
     var bubble: Node2D = _spawn(LONG_TEXT)
     _check("the art path is in use with a sheet and a font", bubble._use_art)
     var base_stretch: float = root.get_final_transform().get_scale().x
     var saved_factor: float = root.content_scale_factor
-    for case in [[1.0, _script.ART_PIXEL_SCALE], [1.5, 3]]:
+    for case in [[1.0, _script.ART_PIXEL_SCALE], [1.5, _script.ART_PIXEL_SCALE]]:
         root.content_scale_factor = case[0] / base_stretch
         var stretch: float = root.get_final_transform().get_scale().x
         _check("harness — stretch set to %.1f (got %.3f)" % [case[0], stretch],
@@ -285,6 +288,35 @@ func _test_art_bubble_grows_to_fit_the_text() -> void:
     long.free()
     _done()
 
+## The Mana Seed Body font has no em/en dash, curly quotes, ellipsis,
+## no-break space, bullet, prime or ½, and Godot draws a missing glyph as a
+## box with its hex code. A predicate standing in for an ASCII-only font
+## checks the rule without the purchased font.
+func _test_pixel_font_text_has_no_missing_glyphs() -> void:
+    var ascii_only := func(code: int) -> bool: return code < 128
+    var cases := [
+        ["Aye—the peace holds.", "Aye--the peace holds."],
+        ["pages 3–4", "pages 3-4"],
+        ["‘Tis the Constable’s round.", "'Tis the Constable's round."],
+        ["“God keep you,” she said.", "\"God keep you,\" she said."],
+        ["Well…", "Well..."],
+        ["twelve coins", "twelve coins"],
+        ["• bread", "* bread"],
+        ["½ loaf", "1/2 loaf"],
+        ["Good day ☺", "Good day "],
+        ["Plain words, no change.", "Plain words, no change."],
+    ]
+    for c in cases:
+        var got: String = _script.font_safe(c[0], ascii_only)
+        _check("font_safe(%s) == %s (got %s)" % [c[0], c[1], got], got == c[1])
+    var every_stand_in := "".join(PackedStringArray(_script.ART_STAND_INS.keys()))
+    var safe: String = _script.font_safe("a" + every_stand_in + "z", ascii_only)
+    var drawable := true
+    for i in safe.length():
+        drawable = drawable and ascii_only.call(safe.unicode_at(i))
+    _check("every stand-in is itself drawable (got %s)" % safe, drawable)
+    _done()
+
 ## Starts the live-camera test; _step_live_camera finishes it over the next
 ## frames. A real Camera2D, zoomed from node processing.
 func _test_live_camera_zoom_is_cancelled_the_same_frame() -> void:
@@ -307,8 +339,7 @@ func _step_live_camera() -> void:
         var canvas: Vector2 = root.canvas_transform.get_scale()
         _check("harness — the camera applied zoom %.1f (canvas %s)" % [z, canvas],
             canvas.is_equal_approx(Vector2(z, z)))
-        var stretch: float = root.get_final_transform().get_scale().x
-        var units := float(maxi(1, roundi(_script.ART_PIXEL_SCALE * stretch)))
+        var units := float(_script.ART_PIXEL_SCALE)
         var s: Vector2 = _on_screen(_live_bubble)
         _check("the bubble matched zoom %.1f in the frame the camera zoomed (on screen %s, want %.0f)" % [z, s, units],
             s.is_equal_approx(Vector2(units, units)))
