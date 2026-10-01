@@ -19,7 +19,7 @@
 ##
 ## Two looks. With the purchased Mana Seed art on disk: the pack's 9-slice
 ## chat bubble and its Body pixel font, one art pixel to ART_PIXEL_SCALE
-## screen pixels (the village art's own size at zoom 1). Without it (the
+## screen pixels at every window size. Without it (the
 ## art is gitignored; CI and fresh checkouts have none): a drawn bubble in
 ## the fallback font, one local unit to one screen pixel.
 
@@ -35,7 +35,7 @@ const ART_DIR := "res://assets/tilesets/mana-seed/fonts/"
 const ART_SHEET := ART_DIR + "chat bubble, variable 16x16.png"
 const ART_FONT := ART_DIR + "ManaSeedBody.ttf"
 const ART_FONT_SIZE := 8          # Body's native pixel height
-const ART_PIXEL_SCALE := 2        # screen px per art px at the 1280x720 base size
+const ART_PIXEL_SCALE := 2        # screen px per art px, at any zoom and window size
 const ART_MAX_TEXT_WIDTH := 120.0 # art px; the bubble wraps past this
 const ART_LINE_GAP := 1.0         # art px between lines
 # The sheet is 64x48. Column 40 is uniform top to bottom, so repeating it
@@ -169,9 +169,11 @@ func _process(_delta: float) -> void:
 ## not the world. Two scales sit between this node and the screen: the
 ## canvas transform (camera zoom) and the viewport's stretch to the window
 ## (canvas_items stretch — get_final_transform, NOT part of the node's own
-## screen transform). The art cancels both, then multiplies back up by a
-## WHOLE number of screen pixels per art pixel. The stretch differs slightly
-## per axis (window 1920x1061 → 1.4747 x 1.4736), so each axis is its own.
+## screen transform). The art cancels both, then multiplies back up by
+## ART_PIXEL_SCALE screen pixels per art pixel — a fixed whole number, not
+## grown with the window stretch: grown, a 1920-wide window drew the bubble
+## at 3x and it crowded the village. The stretch differs slightly per axis
+## (window 1920x1061 → 1.4747 x 1.4736), so each axis is its own.
 ## The plain bubble cancels the zoom only, on purpose: it keeps the stretched
 ## size of the rest of the UI, and like the UI's own text its smooth font is
 ## rasterized at the stretched size (font oversampling), so a fractional
@@ -190,8 +192,7 @@ func _fit_to_screen() -> void:
     var stretch: Vector2 = get_viewport().get_final_transform().get_scale()
     if stretch.x <= 0.0 or stretch.y <= 0.0:
         stretch = Vector2.ONE
-    var units := float(maxi(1, roundi(ART_PIXEL_SCALE * stretch.x)))
-    scale = Vector2.ONE * units / (canvas_scale * stretch)
+    scale = Vector2.ONE * float(ART_PIXEL_SCALE) / (canvas_scale * stretch)
 
 
 func _draw() -> void:

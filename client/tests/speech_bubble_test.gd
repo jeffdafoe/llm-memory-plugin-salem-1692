@@ -178,9 +178,6 @@ func _test_plain_bubble_cancels_the_zoom() -> void:
     bubble.free()
     _done()
 
-## The headless window is 64x64 against the 1280x720 base, so the canvas
-## stretch is 0.05; content_scale_factor multiplies it, which sets the
-## stretch to 1.0 (the base size) and 1.5 (a 1920-wide browser window).
 ## The plain bubble keeps the window stretch like the rest of the UI (its
 ## smooth font is rasterized at that size), so on screen it is exactly the
 ## stretch, whatever the zoom.
@@ -197,13 +194,18 @@ func _test_plain_bubble_keeps_the_window_stretch() -> void:
     bubble.free()
     _done()
 
+## The headless window is 64x64 against the 1280x720 base, so the canvas
+## stretch is 0.05; content_scale_factor multiplies it, which sets the
+## stretch to 1.0 (the base size) and 1.5 (a 1920-wide browser window).
+## The art stays ART_PIXEL_SCALE screen pixels per art pixel at both: it
+## does not grow with the window (grown, it crowded the village at 3x).
 func _test_art_bubble_lands_on_whole_pixels() -> void:
     _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
     var bubble: Node2D = _spawn(LONG_TEXT)
     _check("the art path is in use with a sheet and a font", bubble._use_art)
     var base_stretch: float = root.get_final_transform().get_scale().x
     var saved_factor: float = root.content_scale_factor
-    for case in [[1.0, _script.ART_PIXEL_SCALE], [1.5, 3]]:
+    for case in [[1.0, _script.ART_PIXEL_SCALE], [1.5, _script.ART_PIXEL_SCALE]]:
         root.content_scale_factor = case[0] / base_stretch
         var stretch: float = root.get_final_transform().get_scale().x
         _check("harness — stretch set to %.1f (got %.3f)" % [case[0], stretch],
@@ -307,8 +309,7 @@ func _step_live_camera() -> void:
         var canvas: Vector2 = root.canvas_transform.get_scale()
         _check("harness — the camera applied zoom %.1f (canvas %s)" % [z, canvas],
             canvas.is_equal_approx(Vector2(z, z)))
-        var stretch: float = root.get_final_transform().get_scale().x
-        var units := float(maxi(1, roundi(_script.ART_PIXEL_SCALE * stretch)))
+        var units := float(_script.ART_PIXEL_SCALE)
         var s: Vector2 = _on_screen(_live_bubble)
         _check("the bubble matched zoom %.1f in the frame the camera zoomed (on screen %s, want %.0f)" % [z, s, units],
             s.is_equal_approx(Vector2(units, units)))
