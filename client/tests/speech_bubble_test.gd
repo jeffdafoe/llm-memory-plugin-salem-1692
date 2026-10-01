@@ -35,14 +35,18 @@ extends SceneTree
 
 const TESTS := [
     "_test_plain_bubble_cancels_the_zoom",
+    "_test_plain_bubble_keeps_the_window_stretch",
     "_test_art_bubble_lands_on_whole_pixels",
     "_test_anchor_stays_above_the_head",
     "_test_no_art_means_the_plain_bubble",
     "_test_art_bubble_grows_to_fit_the_text",
+    "_test_live_camera_zoom_is_cancelled_the_same_frame",
 ]
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
 const LONG_TEXT := "Good morning, neighbor. The well by the Tavern is broken again, and the town is paying twelve coins to mend it."
+## Zoom steps the live-camera test walks, one per frame.
+const LIVE_ZOOMS := [0.7, 1.3, 0.5, 2.0]
 
 var _script: GDScript = null
 var _actor: Node2D = null
@@ -50,6 +54,25 @@ var _failures := 0
 var _checks := 0
 var _completed := {}
 var _current := ""
+var _frame := 0
+
+# Live-camera test state, stepped one frame at a time from _process.
+var _camera: Camera2D = null
+var _zoomer: Zoomer = null
+var _live_bubble: Node2D = null
+var _live_step := -1
+
+## Sets the camera zoom from inside node processing at the default
+## priority, the way the client's camera.gd does on a scroll — so a bubble
+## that fitted itself BEFORE the camera moved would be caught one zoom stale.
+class Zoomer:
+    extends Node
+    var camera: Camera2D = null
+    var pending := 0.0
+    func _process(_delta: float) -> void:
+        if pending > 0.0:
+            camera.zoom = Vector2(pending, pending)
+            pending = 0.0
 
 func _initialize() -> void:
     _script = load("res://scripts/speech_bubble.gd")
@@ -57,10 +80,19 @@ func _initialize() -> void:
     _actor.position = Vector2(300, 400)
     root.add_child(_actor)
 
+## SceneTree._process runs before the nodes' own processing each frame, so
+## a zoom scheduled here lands in the Zoomer this frame, and its effect on
+## the bubble is read at the start of the next.
 func _process(_delta: float) -> bool:
-    _check("harness — actor entered the tree", _actor.is_inside_tree())
-    _check_test_list()
-    _run_all()
+    _frame += 1
+    if _frame == 1:
+        _check("harness — actor entered the tree", _actor.is_inside_tree())
+        _check_test_list()
+        _run_all()
+        return false
+    if _live_step >= 0 and _live_step <= LIVE_ZOOMS.size():
+        _step_live_camera()
+        return false
     _set_art(null, null)
     root.canvas_transform = Transform2D.IDENTITY
     _actor.queue_free()
@@ -149,6 +181,22 @@ func _test_plain_bubble_cancels_the_zoom() -> void:
 ## The headless window is 64x64 against the 1280x720 base, so the canvas
 ## stretch is 0.05; content_scale_factor multiplies it, which sets the
 ## stretch to 1.0 (the base size) and 1.5 (a 1920-wide browser window).
+## The plain bubble keeps the window stretch like the rest of the UI (its
+## smooth font is rasterized at that size), so on screen it is exactly the
+## stretch, whatever the zoom.
+func _test_plain_bubble_keeps_the_window_stretch() -> void:
+    _set_art(null, null)
+    var bubble: Node2D = _spawn(LONG_TEXT)
+    var stretch: Vector2 = root.get_final_transform().get_scale()
+    for z in ZOOMS:
+        _zoom(z)
+        bubble._fit_to_screen()
+        var s: Vector2 = _on_screen(bubble)
+        _check("plain bubble is the window stretch on screen at zoom %.1f (got %s, stretch %s)" % [z, s, stretch],
+            s.is_equal_approx(stretch))
+    bubble.free()
+    _done()
+
 func _test_art_bubble_lands_on_whole_pixels() -> void:
     _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
     var bubble: Node2D = _spawn(LONG_TEXT)
@@ -213,7 +261,48 @@ func _test_art_bubble_grows_to_fit_the_text() -> void:
         var fits: Vector2 = room + b._art_grow()
         _check("the bubble fill holds the text (%s)" % b._wrapped_lines[0],
             fits.x >= b._content_size.x and fits.y >= b._content_size.y)
-    _check("a short line keeps the sheet's own size", short._art_grow().x == 0.0)
+    _check("a short line keeps the sheet's own width", short._art_grow().x == 0.0)
+    _check("a one-line bubble is shorter than the sheet (no empty rows under the text)",
+        _script.ART_TOP_ROWS + short._art_grow().y + (48 - _script.ART_BOTTOM_ROW) < 48)
+    _check("a longer text grows the bubble taller", long._art_grow().y > short._art_grow().y)
     short.free()
     long.free()
+    _done()
+
+## Starts the live-camera test; _step_live_camera finishes it over the next
+## frames. A real Camera2D, zoomed from node processing.
+func _test_live_camera_zoom_is_cancelled_the_same_frame() -> void:
+    root.canvas_transform = Transform2D.IDENTITY
+    _set_art(_synthetic_sheet(), ThemeDB.fallback_font)
+    _live_bubble = _spawn(LONG_TEXT)
+    # Added after the actor, so at equal priority it would process after
+    # the bubble — the order that leaves a bubble one zoom stale.
+    _camera = Camera2D.new()
+    root.add_child(_camera)
+    _camera.make_current()
+    _zoomer = Zoomer.new()
+    _zoomer.camera = _camera
+    root.add_child(_zoomer)
+    _live_step = 0
+
+func _step_live_camera() -> void:
+    if _live_step > 0:
+        var z: float = LIVE_ZOOMS[_live_step - 1]
+        var canvas: Vector2 = root.canvas_transform.get_scale()
+        _check("harness — the camera applied zoom %.1f (canvas %s)" % [z, canvas],
+            canvas.is_equal_approx(Vector2(z, z)))
+        var stretch: float = root.get_final_transform().get_scale().x
+        var units := float(maxi(1, roundi(_script.ART_PIXEL_SCALE * stretch)))
+        var s: Vector2 = _on_screen(_live_bubble)
+        _check("the bubble matched zoom %.1f in the frame the camera zoomed (on screen %s, want %.0f)" % [z, s, units],
+            s.is_equal_approx(Vector2(units, units)))
+    if _live_step < LIVE_ZOOMS.size():
+        _zoomer.pending = LIVE_ZOOMS[_live_step]
+        _live_step += 1
+        return
+    _live_bubble.free()
+    _zoomer.free()
+    _camera.free()
+    _live_step += 1
+    _current = "_test_live_camera_zoom_is_cancelled_the_same_frame"
     _done()

@@ -38,14 +38,18 @@ const ART_FONT_SIZE := 8          # Body's native pixel height
 const ART_PIXEL_SCALE := 2        # screen px per art px at the 1280x720 base size
 const ART_MAX_TEXT_WIDTH := 120.0 # art px; the bubble wraps past this
 const ART_LINE_GAP := 1.0         # art px between lines
-# The sheet is 64x48. Column 40 and row 24 are uniform across the whole
-# bubble, so stretching that one column / row grows the bubble without
-# smearing the outline, the shading or the tail.
+# The sheet is 64x48. Column 40 is uniform top to bottom, so repeating it
+# widens the bubble without smearing the outline, the shading or the tail.
+# Rows 16-32 are all identical, so the bubble is drawn as the top band
+# (rows 0-15), any number of copies of one middle row (none at all for a
+# one-line bubble) and the bottom band (rows 33-47, with the tail).
 const ART_SLICE_COL := 40
-const ART_SLICE_ROW := 24
-const ART_TAIL_TIP := Vector2(12, 38)  # the tail's point, bottom-left
+const ART_TOP_ROWS := 16
+const ART_MIDDLE_ROW := 24
+const ART_BOTTOM_ROW := 33
+const ART_TAIL_TIP := Vector2(12, 21)  # the tail's point with no middle rows
 const ART_TEXT_ORIGIN := Vector2(15, 14)
-const ART_TEXT_ROOM := Vector2(34, 19) # text fits this at the sheet's own size
+const ART_TEXT_ROOM := Vector2(34, 3)  # text room at the sheet's width, with no middle rows
 
 const PADDING_X := 8.0
 const PADDING_Y := 5.0
@@ -104,16 +108,21 @@ static func _load_art() -> void:
     if _art_checked:
         return
     _art_checked = true
+    # Typed casts so a failed import or a wrong file at the path reads as
+    # "no art" rather than an error.
     if ResourceLoader.exists(ART_SHEET):
-        _art_sheet = load(ART_SHEET)
+        _art_sheet = load(ART_SHEET) as Texture2D
     if ResourceLoader.exists(ART_FONT):
-        var font: FontFile = load(ART_FONT)
-        # A pixel font is 1-bit art: any smoothing or sub-pixel placement
-        # blurs it.
-        font.antialiasing = TextServer.FONT_ANTIALIASING_NONE
-        font.hinting = TextServer.HINTING_NONE
-        font.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
-        _art_font = font
+        var loaded := load(ART_FONT) as FontFile
+        if loaded != null:
+            # A pixel font is 1-bit art: any smoothing or sub-pixel placement
+            # blurs it. Set on a copy — the loaded resource is shared through
+            # the resource cache with anything else that loads this font.
+            var font := loaded.duplicate() as FontFile
+            font.antialiasing = TextServer.FONT_ANTIALIASING_NONE
+            font.hinting = TextServer.HINTING_NONE
+            font.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
+            _art_font = font
 
 
 ## Greedy word-wrap. Stores wrapped lines in _wrapped_lines and the
@@ -160,10 +169,13 @@ func _process(_delta: float) -> void:
 ## not the world. Two scales sit between this node and the screen: the
 ## canvas transform (camera zoom) and the viewport's stretch to the window
 ## (canvas_items stretch — get_final_transform, NOT part of the node's own
-## screen transform). The plain bubble cancels the zoom only and keeps the
-## UI's stretched size; the art cancels both, then multiplies back up by a
+## screen transform). The art cancels both, then multiplies back up by a
 ## WHOLE number of screen pixels per art pixel. The stretch differs slightly
 ## per axis (window 1920x1061 → 1.4747 x 1.4736), so each axis is its own.
+## The plain bubble cancels the zoom only, on purpose: it keeps the stretched
+## size of the rest of the UI, and like the UI's own text its smooth font is
+## rasterized at the stretched size (font oversampling), so a fractional
+## stretch does not resample it the way the zoom did.
 func _fit_to_screen() -> void:
     position = Vector2(0, ANCHOR_Y)
     var parent := get_parent() as CanvasItem
@@ -192,21 +204,30 @@ func _draw() -> void:
 
 
 ## The Mana Seed 9-slice, in art pixels, laid out so the tail's point sits
-## on this node's origin. Grows by stretching the one uniform column and row.
+## on this node's origin. Grows by repeating the one uniform column and the
+## one middle row.
 func _draw_art() -> void:
     var grow: Vector2 = _art_grow()
     var origin := -ART_TAIL_TIP - Vector2(0, grow.y)
     var sheet_size := Vector2(_art_sheet.get_size())
     var src_x := [0.0, float(ART_SLICE_COL), ART_SLICE_COL + 1.0, sheet_size.x]
-    var src_y := [0.0, float(ART_SLICE_ROW), ART_SLICE_ROW + 1.0, sheet_size.y]
     var dst_x := [0.0, float(ART_SLICE_COL), ART_SLICE_COL + 1.0 + grow.x, sheet_size.x + grow.x]
-    var dst_y := [0.0, float(ART_SLICE_ROW), ART_SLICE_ROW + 1.0 + grow.y, sheet_size.y + grow.y]
-    for row in 3:
-        for col in 3:
-            var src := Rect2(src_x[col], src_y[row], src_x[col + 1] - src_x[col], src_y[row + 1] - src_y[row])
-            var dst := Rect2(dst_x[col], dst_y[row], dst_x[col + 1] - dst_x[col], dst_y[row + 1] - dst_y[row])
-            dst.position += origin
-            draw_texture_rect_region(_art_sheet, dst, src)
+    var bottom_rows: float = sheet_size.y - ART_BOTTOM_ROW
+    # [source top, source height, destination height] per band.
+    var bands := [
+        [0.0, float(ART_TOP_ROWS), float(ART_TOP_ROWS)],
+        [float(ART_MIDDLE_ROW), 1.0, grow.y],
+        [float(ART_BOTTOM_ROW), bottom_rows, bottom_rows],
+    ]
+    var dst_top: float = 0.0
+    for band in bands:
+        if band[2] > 0.0:
+            for col in 3:
+                var src := Rect2(src_x[col], band[0], src_x[col + 1] - src_x[col], band[1])
+                var dst := Rect2(dst_x[col], dst_top, dst_x[col + 1] - dst_x[col], band[2])
+                dst.position += origin
+                draw_texture_rect_region(_art_sheet, dst, src)
+        dst_top += band[2]
 
     var line_height: float = _line_height()
     var ascent: float = _art_font.get_ascent(_font_size)
@@ -219,12 +240,13 @@ func _draw_art() -> void:
         text_pos.y += line_height
 
 
-## How far the 9-slice grows past the sheet's own size, in art px, so the
-## wrapped text fits inside the fill.
+## How far the 9-slice grows, in art px, so the wrapped text fits inside
+## the fill: x = extra copies of the slice column past the sheet's width,
+## y = copies of the middle row.
 func _art_grow() -> Vector2:
     return Vector2(
-        maxf(0.0, _content_size.x - ART_TEXT_ROOM.x),
-        maxf(0.0, _content_size.y - ART_TEXT_ROOM.y)
+        maxf(0.0, ceilf(_content_size.x - ART_TEXT_ROOM.x)),
+        maxf(0.0, ceilf(_content_size.y - ART_TEXT_ROOM.y))
     )
 
 
@@ -289,3 +311,6 @@ func _ready() -> void:
     z_index = 100
     z_as_relative = false
     texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+    # Fit after the camera has applied this frame's zoom, so a zoom step
+    # never draws one frame at the old size.
+    process_priority = 1000
