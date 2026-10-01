@@ -66,6 +66,14 @@ var _round_won_at := 0
 var _round_answered := false
 var _release_pending := false
 var _paid := 0
+## Bumped on every open and every close. A callback carrying an older token —
+## an HTTP answer, a retry timer, the coin tween — belongs to work the player
+## has put down, and does nothing.
+var _token := 0
+var _coin_tween: Tween = null
+## Test seam: when valid, called as send_hook.call(route) in place of the
+## HTTP request, route one of "offer", "start", "step".
+var send_hook: Callable = Callable()
 
 
 func _ready() -> void:
@@ -187,9 +195,16 @@ func show_offer(o: Dictionary) -> void:
         return
     if phase == Phase.PLAYING or phase == Phase.STARTING or phase == Phase.FINISHING:
         return
+    # The arrival thought can open the panel while a click's probe is still
+    # out: the panel is open now, so that probe is settled — its answer must
+    # neither reopen nor walk.
+    _drop_probe()
+    _token += 1
     offer = o
     phase = Phase.OFFER
     _paid = 0
+    _release_pending = false
+    _round_answered = false
     var kind := str(o.get("site_kind", ""))
     var form := str(o.get("form", ""))
     var layers := build_layers(world, o)
@@ -222,47 +237,71 @@ func show_offer(o: Dictionary) -> void:
 
 
 ## A click on an object: ask the engine what work is here. If it is this
-## object (or a piece of the same break beside it, or an overlay on it) the
-## panel opens and callback(true) runs; otherwise callback(false), and the
-## caller walks as usual.
+## object (or a piece of the same fence break beside it, or an overlay on it)
+## the panel opens and callback(true) runs; otherwise callback(false), and the
+## caller walks as usual. The LATEST click wins: a click while a probe is out
+## takes the probe over, and the earlier click's callback never runs (it is
+## neither work nor a walk — the player has clicked again). With the panel
+## open the click is not ours (the panel is modal): callback(false) at once.
 func probe_click(hit_id: String, callback: Callable) -> void:
-    if hit_id == "" or phase != Phase.CLOSED or _probe_cb.is_valid():
+    if hit_id == "" or phase != Phase.CLOSED:
         callback.call(false)
         return
+    var pending := _probe_cb.is_valid()
     _probe_hit_id = hit_id
     _probe_cb = callback
-    _ensure_http()
-    var url := Auth.api_base + "/api/village/pc/repair/offer"
-    if _http_offer.request(url, Auth.auth_headers(false), HTTPClient.METHOD_GET) != OK:
+    if pending:
+        return  # the answer in flight is judged against this click
+    if not _send("offer"):
         _finish_probe(false)
+
+
+## Forget a probe that is out: its answer will find no callback and do nothing.
+func _drop_probe() -> void:
+    _probe_cb = Callable()
+    _probe_hit_id = ""
 
 
 func _on_offer_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     Auth.check_response(code)
+    if not _probe_cb.is_valid():
+        return
     var o: Dictionary = {}
     if code == 200:
         var parsed = JSON.parse_string(body.get_string_from_utf8())
         if parsed is Dictionary and parsed.get("repair") is Dictionary:
             o = parsed["repair"]
-    if not o.is_empty() and click_matches_offer(world, _probe_hit_id, str(o.get("object_id", ""))):
+    if phase == Phase.CLOSED and not o.is_empty() and click_matches_offer(world, _probe_hit_id, o):
         show_offer(o)
-        _finish_probe(true)
-        return
+        return  # show_offer settled the probe; the click is handled
     _finish_probe(false)
 
 
 func _finish_probe(opened_panel: bool) -> void:
     var cb := _probe_cb
-    _probe_cb = Callable()
-    _probe_hit_id = ""
+    _drop_probe()
     if cb.is_valid():
         cb.call(opened_panel)
 
 
-## Whether a click on hit_id is a click on the work at site_id: the site
-## itself, an overlay attached to it (a business's debris), or a placement of
-## the same asset within two tiles (the sagging neighbour of a fence break).
-static func click_matches_offer(w: Node2D, hit_id: String, site_id: String) -> bool:
+## Logout / session end: close, and forget a probe still out so its answer
+## neither opens the panel nor walks.
+func reset() -> void:
+    _drop_probe()
+    close()
+
+
+## Whether the panel is up — main.gd checks it before walking on a probe's
+## "no work here".
+func is_open() -> bool:
+    return phase != Phase.CLOSED
+
+
+## Whether a click on hit_id is a click on the offer's work: the site itself,
+## an overlay attached to it (a business's debris), or — for a fence break
+## only — one of the two segments that sag with it.
+static func click_matches_offer(w: Node2D, hit_id: String, o: Dictionary) -> bool:
+    var site_id := str(o.get("object_id", ""))
     if hit_id == "" or site_id == "":
         return false
     if hit_id == site_id:
@@ -275,9 +314,9 @@ static func click_matches_offer(w: Node2D, hit_id: String, site_id: String) -> b
         return false
     if str(hit.get_meta("attached_to", "")) == site_id:
         return true
-    if str(hit.get_meta("asset_id", "")) != str(site.get_meta("asset_id", "")):
+    if str(o.get("form", "")) != "fence":
         return false
-    return hit.position.distance_to(site.position) <= 2.0 * 32.0 + 1.0
+    return fence_neighbours(w, site).has(hit)
 
 
 # --- the object's layers ---------------------------------------------------
@@ -405,20 +444,47 @@ static func mended_state_name(states: Array, current: String, kind: String) -> S
 
 # --- play ------------------------------------------------------------------
 
+## Send one request through the panel's HTTPRequests (or the test seam).
+## False when it could not be sent.
+func _send(route: String) -> bool:
+    if send_hook.is_valid():
+        send_hook.call(route)
+        return true
+    _ensure_http()
+    match route:
+        "offer":
+            return _http_offer.request(Auth.api_base + "/api/village/pc/repair/offer",
+                Auth.auth_headers(false), HTTPClient.METHOD_GET) == OK
+        "start":
+            return _http_start.request(Auth.api_base + "/api/village/pc/repair/start",
+                Auth.auth_headers(), HTTPClient.METHOD_POST, "") == OK
+        "step":
+            return _http_step.request(Auth.api_base + "/api/village/pc/repair/step",
+                Auth.auth_headers(), HTTPClient.METHOD_POST, "") == OK
+    return false
+
+
 func _on_repair_pressed() -> void:
     if phase != Phase.OFFER:
         return
-    phase = Phase.STARTING
     status_label.text = ""
     repair_button.visible = false
-    _ensure_http()
-    var url := Auth.api_base + "/api/village/pc/repair/start"
-    if _http_start.request(url, Auth.auth_headers(), HTTPClient.METHOD_POST, "") != OK:
+    # Work already under way (a reload mid-game): play on from where it is —
+    # the engine would refuse a second start as busy.
+    if bool(offer.get("yours", false)):
+        _begin_play(offer)
+        return
+    phase = Phase.STARTING
+    if not _send("start"):
         _fail("The work could not be started. Try again.")
 
 
 func _on_start_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     Auth.check_response(code)
+    # Closed (or opened on other work) while the start was out: not ours now.
+    # The engine gives an unplayed repair up after its idle time.
+    if phase != Phase.STARTING:
+        return
     var parsed = JSON.parse_string(body.get_string_from_utf8())
     if code != 200 or not (parsed is Dictionary) or not (parsed.get("repair") is Dictionary):
         var msg := "The work could not be started."
@@ -426,11 +492,21 @@ func _on_start_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
             msg = _sentence(str(parsed["error"]))
         _fail(msg)
         return
-    offer = parsed["repair"]
-    stage.steps = maxi(1, int(offer.get("steps", 1)))
-    stage.set_progress(int(offer.get("steps_done", 0)))
+    var started: Dictionary = parsed["repair"]
+    if str(started.get("object_id", "")) != str(offer.get("object_id", "")):
+        _fail("The work could not be started.")
+        return
+    _begin_play(started)
+
+
+func _begin_play(o: Dictionary) -> void:
+    offer = o
+    stage.steps = maxi(1, int(o.get("steps", 1)))
+    stage.set_progress(int(o.get("steps_done", 0)))
     stage.start_game()
     phase = Phase.PLAYING
+    _release_pending = false
+    _round_answered = false
     fact_label.text = ""
     pay_label.text = ""
     hint_label.text = stage.game.hint()
@@ -440,7 +516,7 @@ func _on_start_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
 
 
 func _on_round_won(_perfect: bool) -> void:
-    if phase != Phase.PLAYING:
+    if phase != Phase.PLAYING or _release_pending:
         return
     _round_won_at = Time.get_ticks_msec()
     _round_answered = false
@@ -448,26 +524,38 @@ func _on_round_won(_perfect: bool) -> void:
     _send_step()
 
 
+## Send the won round's step. Only while a round is won and not yet answered
+## — never for work the player has put down, never twice for one round.
 func _send_step() -> void:
-    if _step_in_flight:
+    if _step_in_flight or phase != Phase.PLAYING or not _release_pending or _round_answered:
         return
-    _ensure_http()
-    var url := Auth.api_base + "/api/village/pc/repair/step"
-    if _http_step.request(url, Auth.auth_headers(), HTTPClient.METHOD_POST, "") != OK:
-        get_tree().create_timer(RETRY_429_MS / 1000.0).timeout.connect(_send_step)
+    if not _send("step"):
+        _retry_later()
         return
     _step_in_flight = true
+
+
+## Send the step again shortly, if the same work is still in hand by then.
+func _retry_later() -> void:
+    var token := _token
+    get_tree().create_timer(RETRY_429_MS / 1000.0).timeout.connect(_retry_step.bind(token))
+
+
+func _retry_step(token: int) -> void:
+    if token != _token:
+        return
+    _send_step()
 
 
 func _on_step_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     _step_in_flight = false
     Auth.check_response(code)
-    if phase != Phase.PLAYING:
+    if phase != Phase.PLAYING or not _release_pending:
         return
     if code == 429:
         # Inside the step gap after all (clock skew, a slow frame): not
         # counted, so send it again shortly.
-        get_tree().create_timer(RETRY_429_MS / 1000.0).timeout.connect(_send_step)
+        _retry_later()
         return
     var parsed = JSON.parse_string(body.get_string_from_utf8())
     if code != 200 or not (parsed is Dictionary):
@@ -499,18 +587,21 @@ func _process(_delta: float) -> void:
     if Time.get_ticks_msec() - _round_won_at < gap:
         return
     _release_pending = false
+    _round_answered = false
     stage.release_round()
 
 
 func _on_finish_shown() -> void:
-    _fly_coins(_paid)
+    if phase == Phase.FINISHING:
+        _fly_coins(_paid)
 
 
 ## The pay flies from the stage to the top-bar coin chip, then the panel
 ## closes.
 func _fly_coins(amount: int) -> void:
+    var token := _token
     if amount <= 0 or coin_target == null or not is_instance_valid(coin_target) or not coin_target.is_visible_in_tree():
-        _end_after_pay(amount)
+        _end_after_pay(amount, token)
         return
     var chip := Label.new()
     chip.text = "+%d" % amount
@@ -522,14 +613,18 @@ func _fly_coins(amount: int) -> void:
     root.add_child(chip)
     chip.global_position = stage.get_global_rect().get_center() - Vector2(12, 12)
     var to := coin_target.get_global_rect().get_center() - Vector2(12, 12)
-    var tw := create_tween()
-    tw.tween_property(chip, "global_position", to, 0.7).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-    tw.parallel().tween_property(chip, "scale", Vector2(0.6, 0.6), 0.7)
-    tw.tween_callback(chip.queue_free)
-    tw.tween_callback(_end_after_pay.bind(amount))
+    _coin_tween = create_tween()
+    _coin_tween.tween_property(chip, "global_position", to, 0.7).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+    _coin_tween.parallel().tween_property(chip, "scale", Vector2(0.6, 0.6), 0.7)
+    _coin_tween.tween_callback(chip.queue_free)
+    _coin_tween.tween_callback(_end_after_pay.bind(amount, token))
 
 
-func _end_after_pay(amount: int) -> void:
+## The pay landed: tell main.gd and close — unless the panel has since been
+## closed (and maybe opened on other work), which this must not close.
+func _end_after_pay(amount: int, token: int) -> void:
+    if token != _token:
+        return
     if amount > 0:
         earned.emit(amount)
     close()
@@ -537,6 +632,8 @@ func _end_after_pay(amount: int) -> void:
 
 func _fail(msg: String) -> void:
     phase = Phase.OFFER
+    _release_pending = false
+    _round_answered = false
     stage.playing = false
     status_label.text = msg
     hint_label.text = ""
@@ -550,9 +647,17 @@ func _fail(msg: String) -> void:
 func close() -> void:
     if phase == Phase.CLOSED:
         return
+    _token += 1
     phase = Phase.CLOSED
     offer = {}
     _release_pending = false
+    _round_answered = false
+    if _coin_tween != null and _coin_tween.is_valid():
+        _coin_tween.kill()
+    _coin_tween = null
+    for child in root.get_children():
+        if child is Label:
+            child.queue_free()  # a coin chip caught mid-flight
     stage.playing = false
     stage.set_process(false)
     close_button.visible = true

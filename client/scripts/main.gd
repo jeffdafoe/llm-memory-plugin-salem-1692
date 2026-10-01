@@ -785,6 +785,8 @@ func _on_session_expired() -> void:
     _show_login_screen("Session expired — please log in again.")
 
 func _show_login_screen(message: String) -> void:
+    if repair_panel_layer != null:
+        repair_panel_layer.reset()
     if top_bar != null:
         top_bar.set_edit_visible(false)
         top_bar.set_config_visible(false)
@@ -1155,8 +1157,10 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         var probe_hit: Dictionary = world.find_object_at(screen_pos)
         var probe_id: String = str(probe_hit.get("id", "")) if probe_hit.has("id") else ""
         if probe_id != "":
+            # Walk only on a plain "no work here" — not when the panel has
+            # opened meanwhile (the arrival thought can open it first).
             repair_panel_layer.probe_click(probe_id, func(panel_opened: bool):
-                if not panel_opened:
+                if not panel_opened and not repair_panel_layer.is_open():
                     _post_pc_move_to_screen(screen_pos, true))
             return
     if repair_panel_layer != null:

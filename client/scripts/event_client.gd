@@ -626,6 +626,8 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var node: Node2D = world.placed_objects[obj_id]
     var new_state: String = data.get("state", "")
     var asset_id: String = node.get_meta("asset_id", "")
+    # The state the server says, kept even when it cannot be drawn below.
+    node.set_meta("current_state", new_state)
 
     var state_info = Catalog.get_state(asset_id, new_state)
     if state_info == null:
@@ -633,7 +635,6 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var texture = Catalog.get_sprite_texture(state_info)
     if texture == null:
         return
-    node.set_meta("current_state", state_info.get("state", new_state))
 
     var asset = Catalog.assets.get(asset_id, {})
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))

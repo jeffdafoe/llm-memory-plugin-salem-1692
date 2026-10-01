@@ -32,6 +32,14 @@ const TESTS := [
     "_test_click_matches_offer",
     "_test_build_layers_fence_break",
     "_test_stage_round_signal",
+    "_test_close_while_start_in_flight",
+    "_test_retry_after_close_sends_nothing",
+    "_test_old_retry_does_not_count_in_new_work",
+    "_test_finish_tween_does_not_close_new_work",
+    "_test_event_opens_during_probe",
+    "_test_second_click_takes_over_probe",
+    "_test_go_on_mending_resumes_without_start",
+    "_test_state_change_without_texture_keeps_state",
 ]
 
 var _failures := 0
@@ -261,12 +269,190 @@ func _test_click_matches_offer() -> void:
     _placed(w, "crate", "crate", Vector2(110, 100))
     var debris := _placed(w, "debris", "debris", Vector2(0, 0))
     debris.set_meta("attached_to", "mid")
-    _check("the site itself", PanelScript.click_matches_offer(w, "mid", "mid"), true)
-    _check("the neighbour of the break", PanelScript.click_matches_offer(w, "left", "mid"), true)
-    _check("an overlay on the site", PanelScript.click_matches_offer(w, "debris", "mid"), true)
-    _check("a fence far along the run", PanelScript.click_matches_offer(w, "far", "mid"), false)
-    _check("another asset nearby", PanelScript.click_matches_offer(w, "crate", "mid"), false)
-    _check("no offer", PanelScript.click_matches_offer(w, "mid", ""), false)
+    _placed(w, "diag", "fence", Vector2(132, 132))
+    _placed(w, "crate2", "crate", Vector2(142, 100))
+    var fence_offer := {"object_id": "mid", "site_kind": "minor", "form": "fence"}
+    _check("the site itself", PanelScript.click_matches_offer(w, "mid", fence_offer), true)
+    _check("the neighbour of the break", PanelScript.click_matches_offer(w, "left", fence_offer), true)
+    _check("an overlay on the site", PanelScript.click_matches_offer(w, "debris", fence_offer), true)
+    _check("a fence far along the run", PanelScript.click_matches_offer(w, "far", fence_offer), false)
+    _check("a fence diagonal to the break", PanelScript.click_matches_offer(w, "diag", fence_offer), false)
+    _check("another asset nearby", PanelScript.click_matches_offer(w, "crate", fence_offer), false)
+    _check("no offer", PanelScript.click_matches_offer(w, "mid", {}), false)
+    # Neighbour matching is for a fence break only: a crate's twin beside it
+    # is other work.
+    var crate_offer := {"object_id": "crate", "site_kind": "minor", "form": "crate"}
+    _check("a same-asset crate beside a crate", PanelScript.click_matches_offer(w, "crate2", crate_offer), false)
+    w.free()
+    _done()
+
+
+# --- the panel's async transitions (LLM-690 review) -------------------------
+
+## A live panel in the tree, its requests recorded instead of sent.
+func _live_panel(sent: Array) -> CanvasLayer:
+    var p: CanvasLayer = PanelScript.new()
+    root.add_child(p)
+    p.world = _fake_world()
+    p.send_hook = func(route: String): sent.append(route)
+    return p
+
+
+func _body(d: Dictionary) -> PackedByteArray:
+    return JSON.stringify(d).to_utf8_buffer()
+
+
+const _OFFER := {"object_id": "mid", "site_kind": "minor", "form": "fence", "fact": "A rail is down",
+    "bounty": 3, "chest_can_pay": true, "steps": 3, "step_gap_ms": 0, "steps_done": 0}
+
+
+func _started(p: CanvasLayer, steps_done: int = 0) -> void:
+    var o := _OFFER.duplicate()
+    o["yours"] = true
+    o["steps_done"] = steps_done
+    p._on_start_response(0, 200, PackedStringArray(), _body({"repair": o}))
+
+
+func _free_panel(p: CanvasLayer) -> void:
+    p.world.free()
+    p.free()
+
+
+func _test_close_while_start_in_flight() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _check("start sent", sent, ["start"])
+    p.close()
+    _started(p)
+    _check("a late start answer does not reopen play", p.phase, p.Phase.CLOSED)
+    _check("the panel stays hidden", p.visible, false)
+    _free_panel(p)
+    _done()
+
+
+func _test_retry_after_close_sends_nothing() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _started(p)
+    _check("playing", p.phase, p.Phase.PLAYING)
+    p._on_round_won(false)
+    _check("one step sent", sent.count("step"), 1)
+    p._on_step_response(0, 429, PackedStringArray(), PackedByteArray())
+    var token: int = p._token
+    p.close()
+    p._retry_step(token)
+    _check("the retry after close sends nothing", sent.count("step"), 1)
+    _free_panel(p)
+    _done()
+
+
+func _test_old_retry_does_not_count_in_new_work() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _started(p)
+    p._on_round_won(false)
+    p._on_step_response(0, 429, PackedStringArray(), PackedByteArray())
+    var old: int = p._token
+    p.close()
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _started(p)
+    p._retry_step(old)
+    _check("an old retry sends nothing in the new work", sent.count("step"), 1)
+    p._retry_step(p._token)
+    _check("even this work's retry needs a won round", sent.count("step"), 1)
+    p._on_round_won(false)
+    p._on_round_won(false)
+    _check("one step per won round", sent.count("step"), 2)
+    _free_panel(p)
+    _done()
+
+
+func _test_finish_tween_does_not_close_new_work() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    var paid := []
+    p.earned.connect(func(n: int): paid.append(n))
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _started(p, 2)
+    p._on_round_won(false)
+    p._on_step_response(0, 200, PackedStringArray(), _body({"steps_done": 3, "steps": 3, "done": true, "landed": true, "paid": 3}))
+    _check("finishing", p.phase, p.Phase.FINISHING)
+    var old: int = p._token
+    p.close()
+    var other := _OFFER.duplicate()
+    other["object_id"] = "other"
+    p.show_offer(other)
+    p._end_after_pay(3, old)
+    _check("the old finish leaves the new offer open", p.phase, p.Phase.OFFER)
+    _check("and pays nothing twice", paid.size(), 0)
+    _free_panel(p)
+    _done()
+
+
+func _test_event_opens_during_probe() -> void:
+    for answer in [{"repair": null}, {"repair": _OFFER}]:
+        var sent := []
+        var p := _live_panel(sent)
+        var calls := []
+        p.probe_click("mid", func(opened: bool): calls.append(opened))
+        _check("probe sent", sent, ["offer"])
+        p.show_offer(_OFFER)  # the arrival thought lands first
+        p._on_offer_response(0, 200, PackedStringArray(), _body(answer))
+        _check("the probe's answer does not walk (%s)" % str(answer["repair"] != null), calls.size(), 0)
+        _check("the panel stays open", p.is_open(), true)
+        _free_panel(p)
+    _done()
+
+
+func _test_second_click_takes_over_probe() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    var first := []
+    var second := []
+    p.probe_click("a", func(opened: bool): first.append(opened))
+    p.probe_click("b", func(opened: bool): second.append(opened))
+    _check("one request for both clicks", sent, ["offer"])
+    p._on_offer_response(0, 200, PackedStringArray(), _body({"repair": null}))
+    _check("the first click never acts", first.size(), 0)
+    _check("the latest click gets the answer", second, [false])
+    _free_panel(p)
+    _done()
+
+
+func _test_go_on_mending_resumes_without_start() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    var o := _OFFER.duplicate()
+    o["yours"] = true
+    o["steps_done"] = 2
+    p.show_offer(o)
+    p._on_repair_pressed()
+    _check("no second start for work under way", sent.count("start"), 0)
+    _check("playing on", p.phase, p.Phase.PLAYING)
+    _check("from where it was", p.stage.steps_done, 2)
+    _free_panel(p)
+    _done()
+
+
+func _test_state_change_without_texture_keeps_state() -> void:
+    var catalog := root.get_node("Catalog")
+    catalog.assets["ghost"] = {"states": [{"state": "broken", "sheet": "/nowhere.png", "src_x": 0, "src_y": 0, "src_w": 16, "src_h": 16}]}
+    var w := _fake_world()
+    var n := _placed(w, "obj", "ghost", Vector2.ZERO, "sound")
+    var ec = load("res://scripts/event_client.gd").new()
+    ec.world = w
+    ec._on_object_state_changed({"id": "obj", "state": "broken"})
+    _check("the server's state is kept though it cannot be drawn", n.get_meta("current_state"), "broken")
+    catalog.assets.erase("ghost")
+    ec.free()
     w.free()
     _done()
 
