@@ -633,6 +633,7 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var texture = Catalog.get_sprite_texture(state_info)
     if texture == null:
         return
+    node.set_meta("current_state", state_info.get("state", new_state))
 
     var asset = Catalog.assets.get(asset_id, {})
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))

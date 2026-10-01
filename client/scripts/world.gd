@@ -1751,6 +1751,9 @@ func _place_object(data: Dictionary) -> void:
     var container = Node2D.new()
     container.set_meta("object_id", obj_id)
     container.set_meta("asset_id", asset_id)
+    # The state on show (LLM-690: the repair panel reads it to find the state
+    # a broken object mends back to). Kept current by object_state_changed.
+    container.set_meta("current_state", state_info.get("state", current_state))
     container.set_meta("placed_by", data.get("placed_by", ""))
     container.set_meta("owner", data.get("owner", ""))
     container.set_meta("display_name", data.get("display_name", ""))
