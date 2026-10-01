@@ -181,6 +181,38 @@ func TestMinorWorkIsNeverAHandsJob(t *testing.T) {
 	if _, err := w.Send(sim.StartPCRepair("anne", time.Now().UTC())); err == nil {
 		t.Error("StartPCRepair accepted an NPC at a minor work")
 	}
+	// The pay is gated too: a hand's window on a minor work (which the start
+	// gate never opens) lands nothing.
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["anne"].SourceActivity = &sim.SourceActivity{
+			Kind: sim.SourceActivityRepair, ObjectID: "fence-2", Bounty: 3, PublicWorks: true,
+			StartedAt: time.Now().UTC().Add(-time.Hour), Until: time.Now().UTC().Add(-time.Second),
+		}
+		sim.CompleteDueSourceActivities(world, time.Now().UTC())
+		if got := world.Actors["anne"].Coins; got != 0 {
+			t.Errorf("a hand was paid %d for a minor work", got)
+		}
+		if !world.VillageObjects["fence-2"].Damaged() {
+			t.Error("a hand's window mended a minor work")
+		}
+	})
+}
+
+// TestMinorWorkNarrationIsPlayerOnly — the arrival thought, offer and all,
+// never reaches an NPC that walks straight to a broken fence.
+func TestMinorWorkNarrationIsPlayerOnly(t *testing.T) {
+	w, cancel, rec := buildMinorWorksWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("fence-2", "damage")); err != nil {
+		t.Fatal(err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["anne"].Pos = sim.TilePos{X: 41, Y: 11}
+		sim.EmitDamagedObjectNarration(world, world.Actors["anne"], &sim.ActorArrived{DestObjectID: "fence-2"}, time.Now().UTC())
+	})
+	if n := rec.countEvents(func(e sim.Event) bool { _, ok := e.(*sim.ObjectConditionNarrated); return ok }); n != 0 {
+		t.Errorf("an NPC got %d minor-work narration(s)", n)
+	}
 }
 
 // TestMinorWorkMendsItselfAfterTheTTL — an untaken minor work mends itself at

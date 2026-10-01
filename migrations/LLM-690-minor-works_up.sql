@@ -29,6 +29,15 @@
 
 BEGIN;
 
+-- The fence asset is LLM-637's and must be there; only the hand-seeded
+-- signpost and crate are optional.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM asset WHERE id = '019e5f00-c401-7a10-9e00-000000637001') THEN
+        RAISE EXCEPTION 'LLM-690: the Ranch Fence asset (LLM-637) is missing';
+    END IF;
+END $$;
+
 CREATE TEMP TABLE llm690_state (
     asset_id uuid, state text, sheet text,
     src_x int, src_y int, src_w int, src_h int

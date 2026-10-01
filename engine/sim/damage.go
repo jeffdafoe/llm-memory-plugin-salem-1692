@@ -854,6 +854,9 @@ func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agree
 	if actor == nil || !IsRepairSite(obj) {
 		return 0, false // the town pays only for a damaged well, business, road or minor work (nil-safe predicates)
 	}
+	if PublicWorksKind(obj) == PublicWorksMinor && actor.Kind != KindPC {
+		return 0, false // a minor work is a player's job; the start gate refuses a hand, and so does the pay
+	}
 	forText := publicWorksForText(WithDefiniteArticle(damageObjectName(w, obj)))
 	bounty := agreed
 	if bounty > w.Environment.TownChest {
