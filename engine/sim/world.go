@@ -282,6 +282,18 @@ type WorldSettings struct {
 	PublicWorksRoadRepairSeconds  int
 	RoadStumpDays                 int
 
+	// PC repair (LLM-690): a player mends a damaged site by playing a mini-game,
+	// one step per round. Per site kind, the steps to finish and the least time
+	// between two steps (the anti-skip floor); and how long with no step before
+	// the repair is given up and the site freed for a hand.
+	PCRepairWellSteps         int
+	PCRepairWellStepGapMs     int
+	PCRepairBusinessSteps     int
+	PCRepairBusinessStepGapMs int
+	PCRepairRoadSteps         int
+	PCRepairRoadStepGapMs     int
+	PCRepairIdleSeconds       int
+
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
 	// budgets (MEM-052) own the hard $ ceiling.

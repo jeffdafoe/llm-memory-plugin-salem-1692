@@ -285,6 +285,13 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.PublicWorksRoadBounty = parseIntSetting(values, "public_works_road_bounty", sim.DefaultPublicWorksRoadBounty)
 	s.PublicWorksRoadRepairSeconds = parseIntSetting(values, "public_works_road_repair_seconds", sim.DefaultPublicWorksRoadRepairSeconds)
 	s.RoadStumpDays = parseIntSetting(values, "road_stump_days", sim.DefaultRoadStumpDays)
+	s.PCRepairWellSteps = parseIntSetting(values, "pc_repair_well_steps", sim.DefaultPCRepairWellSteps)
+	s.PCRepairWellStepGapMs = parseIntSetting(values, "pc_repair_well_step_gap_ms", sim.DefaultPCRepairWellStepGapMs)
+	s.PCRepairBusinessSteps = parseIntSetting(values, "pc_repair_business_steps", sim.DefaultPCRepairBusinessSteps)
+	s.PCRepairBusinessStepGapMs = parseIntSetting(values, "pc_repair_business_step_gap_ms", sim.DefaultPCRepairBusinessStepGapMs)
+	s.PCRepairRoadSteps = parseIntSetting(values, "pc_repair_road_steps", sim.DefaultPCRepairRoadSteps)
+	s.PCRepairRoadStepGapMs = parseIntSetting(values, "pc_repair_road_step_gap_ms", sim.DefaultPCRepairRoadStepGapMs)
+	s.PCRepairIdleSeconds = parseIntSetting(values, "pc_repair_idle_seconds", sim.DefaultPCRepairIdleSeconds)
 
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery

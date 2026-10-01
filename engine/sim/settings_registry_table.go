@@ -179,6 +179,13 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("public_works_road_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRoadBounty }),
 		intSetting("public_works_road_repair_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksRoadRepairSeconds }),
 		intSetting("road_stump_days", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.RoadStumpDays }),
+		intSetting("pc_repair_well_steps", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairWellSteps }),
+		intSetting("pc_repair_well_step_gap_ms", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairWellStepGapMs }),
+		intSetting("pc_repair_business_steps", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairBusinessSteps }),
+		intSetting("pc_repair_business_step_gap_ms", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairBusinessStepGapMs }),
+		intSetting("pc_repair_road_steps", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairRoadSteps }),
+		intSetting("pc_repair_road_step_gap_ms", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairRoadStepGapMs }),
+		intSetting("pc_repair_idle_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairIdleSeconds }),
 
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute

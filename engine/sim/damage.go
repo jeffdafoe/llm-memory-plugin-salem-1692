@@ -521,11 +521,15 @@ func damageSiteLandmark(objects map[VillageObjectID]*VillageObject, structures m
 // object (LLM-654) — the damage twin of StallConditionNarrated. TranslateEvent
 // maps it to a PRIVATE room_event addressed to the PC; ObjectID rides as the
 // frame's structure_id so the client can float the thought over the well.
+//
+// Offer carries the repair terms at the site (LLM-690), so the client builds
+// its repair dialog from fields, never by parsing Text.
 type ObjectConditionNarrated struct {
 	EventBase
 	ActorID  ActorID
 	ObjectID VillageObjectID
 	Text     string
+	Offer    *PCRepairOffer
 	At       time.Time
 }
 
@@ -562,7 +566,7 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 	if PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
 		text += " The town is paying " + coinsPhrase(bounty) + " to whoever " + PublicWorksMendVerb(kind) + " it."
 	}
-	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, At: now})
+	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, Offer: pcRepairOfferFor(w, actor, obj), At: now})
 }
 
 // DamageFact is the "what is broken" sentence opening for a damaged site —
@@ -672,16 +676,25 @@ func PublicWorksBountyOpen(chest, bounty, reserve int) bool {
 // window on obj — so a second hand can't take the same job. A keeper's own
 // nail-mend at a damaged shop is not the town's work and does not count.
 func objectUnderRepair(w *World, objID VillageObjectID, except ActorID) bool {
+	return objectRepairer(w, objID, except) != nil
+}
+
+// objectRepairer returns the actor with a live town repair window on obj, other
+// than except, or nil. Lowest id wins if, against the start gate, two have one.
+func objectRepairer(w *World, objID VillageObjectID, except ActorID) *Actor {
+	var best *Actor
 	for id, a := range w.Actors {
 		if id == except || a == nil || a.SourceActivity == nil {
 			continue
 		}
 		act := a.SourceActivity
 		if act.Kind == SourceActivityRepair && act.PublicWorks && act.ObjectID == objID {
-			return true
+			if best == nil || id < best.ID {
+				best = a
+			}
 		}
 	}
-	return false
+	return best
 }
 
 // publicWorksSiteAt returns the damaged site the actor is standing at, or nil:
@@ -719,10 +732,11 @@ func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 }
 
 // MayTakePublicWorks reports whether an actor may take the town's repair work:
-// a worker (AttrWorker) who is not a visitor. The live-job gate is separate
-// (workerHasLiveJob sim-side, the laboring views perception-side).
+// a player (LLM-690), or a worker (AttrWorker) who is not a visitor. The
+// live-job gate is separate (workerHasLiveJob sim-side, the laboring views
+// perception-side).
 func MayTakePublicWorks(a *Actor) bool {
-	return actorIsWorker(a) && !IsVisitorActorID(a.ID)
+	return a.Kind == KindPC || (actorIsWorker(a) && !IsVisitorActorID(a.ID))
 }
 
 // startPublicWorksRepair opens a public-works repair window on site for actor.
@@ -758,7 +772,7 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 	// retune during the work changes nothing they were promised. PublicWorks
 	// marks the window as the town's, so completion pays from the chest even at
 	// a business whose keeper could also mend (their own wear) there.
-	actor.SourceActivity = &SourceActivity{
+	act := &SourceActivity{
 		Kind:        SourceActivityRepair,
 		ObjectID:    site.ID,
 		StartedAt:   now,
@@ -766,6 +780,13 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 		Bounty:      bounty,
 		PublicWorks: true,
 	}
+	// A player mends by playing, not by waiting (LLM-690): the window lands on
+	// its last step, and Until is the idle deadline each step moves on.
+	if actor.Kind == KindPC {
+		act.Steps, act.StepGap = w.Settings.pcRepairTerms(kind)
+		act.Until = now.Add(w.Settings.pcRepairIdle())
+	}
+	actor.SourceActivity = act
 	name := sourceActivityObjectName(w, site)
 	w.emit(&SourceActivityStarted{
 		ActorID:    actor.ID,
