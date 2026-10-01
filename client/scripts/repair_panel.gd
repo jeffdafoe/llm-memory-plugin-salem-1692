@@ -70,7 +70,11 @@ var _paid := 0
 ## an HTTP answer, a retry timer, the coin tween — belongs to work the player
 ## has put down, and does nothing.
 var _token := 0
+## The token a step request went out under — its answer counts only while
+## the same work is in hand.
+var _step_token := -1
 var _coin_tween: Tween = null
+var _coin_chip: Label = null
 ## Test seam: when valid, called as send_hook.call(route) in place of the
 ## HTTP request, route one of "offer", "start", "step".
 var send_hook: Callable = Callable()
@@ -272,8 +276,13 @@ func _on_offer_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
         if parsed is Dictionary and parsed.get("repair") is Dictionary:
             o = parsed["repair"]
     if phase == Phase.CLOSED and not o.is_empty() and click_matches_offer(world, _probe_hit_id, o):
+        # show_offer drops the probe (for the arrival-thought path), so keep
+        # this click's callback to tell it the panel opened.
+        var cb := _probe_cb
         show_offer(o)
-        return  # show_offer settled the probe; the click is handled
+        if cb.is_valid():
+            cb.call(true)
+        return
     _finish_probe(false)
 
 
@@ -533,6 +542,7 @@ func _send_step() -> void:
         _retry_later()
         return
     _step_in_flight = true
+    _step_token = _token
 
 
 ## Send the step again shortly, if the same work is still in hand by then.
@@ -550,6 +560,11 @@ func _retry_step(token: int) -> void:
 func _on_step_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     _step_in_flight = false
     Auth.check_response(code)
+    if _step_token != _token:
+        # The answer to a step for work since put down. Drop it; if the work
+        # now in hand has a won round waiting on this request, send it.
+        _send_step()
+        return
     if phase != Phase.PLAYING or not _release_pending:
         return
     if code == 429:
@@ -611,13 +626,20 @@ func _fly_coins(amount: int) -> void:
     chip.add_theme_color_override("font_outline_color", Color(0.12, 0.08, 0.04))
     chip.add_theme_constant_override("outline_size", 4)
     root.add_child(chip)
+    _coin_chip = chip
     chip.global_position = stage.get_global_rect().get_center() - Vector2(12, 12)
     var to := coin_target.get_global_rect().get_center() - Vector2(12, 12)
     _coin_tween = create_tween()
     _coin_tween.tween_property(chip, "global_position", to, 0.7).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
     _coin_tween.parallel().tween_property(chip, "scale", Vector2(0.6, 0.6), 0.7)
-    _coin_tween.tween_callback(chip.queue_free)
+    _coin_tween.tween_callback(_free_coin_chip)
     _coin_tween.tween_callback(_end_after_pay.bind(amount, token))
+
+
+func _free_coin_chip() -> void:
+    if _coin_chip != null and is_instance_valid(_coin_chip):
+        _coin_chip.queue_free()
+    _coin_chip = null
 
 
 ## The pay landed: tell main.gd and close — unless the panel has since been
@@ -655,9 +677,7 @@ func close() -> void:
     if _coin_tween != null and _coin_tween.is_valid():
         _coin_tween.kill()
     _coin_tween = null
-    for child in root.get_children():
-        if child is Label:
-            child.queue_free()  # a coin chip caught mid-flight
+    _free_coin_chip()  # a coin chip caught mid-flight
     stage.playing = false
     stage.set_process(false)
     close_button.visible = true

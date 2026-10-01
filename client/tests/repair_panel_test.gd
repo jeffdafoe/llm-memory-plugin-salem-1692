@@ -40,6 +40,8 @@ const TESTS := [
     "_test_second_click_takes_over_probe",
     "_test_go_on_mending_resumes_without_start",
     "_test_state_change_without_texture_keeps_state",
+    "_test_stale_step_answer_skips_new_work",
+    "_test_matching_probe_calls_back_true",
 ]
 
 var _failures := 0
@@ -502,4 +504,45 @@ func _test_stage_round_signal() -> void:
     stage.set_progress(9)
     _check("progress clamps to the steps", stage.steps_done, 3)
     stage.queue_free()
+    _done()
+
+
+func _test_stale_step_answer_skips_new_work() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    var paid := []
+    p.earned.connect(func(n: int): paid.append(n))
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _started(p, 2)
+    p._on_round_won(false)
+    _check("work A's step out", sent.count("step"), 1)
+    p.close()
+    p.show_offer(_OFFER)
+    p._on_repair_pressed()
+    _started(p, 0)
+    p._on_round_won(false)
+    _check("work B's step waits on A's request", sent.count("step"), 1)
+    # A's answer — the last step, paid — lands while B's round is won.
+    p._on_step_response(0, 200, PackedStringArray(), _body({"steps_done": 3, "steps": 3, "done": true, "landed": true, "paid": 3}))
+    _check("A's answer does not finish B", p.phase, p.Phase.PLAYING)
+    _check("nor move B on", p.stage.steps_done, 0)
+    _check("B's own step goes out", sent.count("step"), 2)
+    p._on_step_response(0, 200, PackedStringArray(), _body({"steps_done": 1, "steps": 3, "done": false}))
+    _check("B's own answer counts", p.stage.steps_done, 1)
+    _check("nothing paid", paid.size(), 0)
+    _free_panel(p)
+    _done()
+
+
+func _test_matching_probe_calls_back_true() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    _placed(p.world, "mid", "fence", Vector2(100, 100))
+    var calls := []
+    p.probe_click("mid", func(opened: bool): calls.append(opened))
+    p._on_offer_response(0, 200, PackedStringArray(), _body({"repair": _OFFER}))
+    _check("the latest click hears the panel opened, once", calls, [true])
+    _check("the panel is open", p.is_open(), true)
+    _free_panel(p)
     _done()
