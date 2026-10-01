@@ -63,6 +63,9 @@ func (s WorldSettings) pcRepairTerms(kind string) (steps int, gap time.Duration)
 	case PublicWorksRoad:
 		steps, gapMs = s.PCRepairRoadSteps, s.PCRepairRoadStepGapMs
 		defSteps, defGapMs = DefaultPCRepairRoadSteps, DefaultPCRepairRoadStepGapMs
+	case PublicWorksMinor:
+		steps, gapMs = s.PCRepairMinorSteps, s.PCRepairMinorStepGapMs
+		defSteps, defGapMs = DefaultPCRepairMinorSteps, DefaultPCRepairMinorStepGapMs
 	}
 	if steps <= 0 {
 		steps = defSteps
@@ -102,6 +105,7 @@ func (act *SourceActivity) isPCRepair() bool {
 type PCRepairOffer struct {
 	ObjectID VillageObjectID
 	SiteKind string // PublicWorksKind — picks the mini-game
+	Form     string // a minor work's form (MinorFormFence, …) — picks its mini-game; "" otherwise
 	Fact     string // DamageFact: "The windlass at the Well by the Mill is down"
 	Bounty   int
 	// ChestCanPay — the chest holds the bounty plus the reserve, so the work is
@@ -122,7 +126,7 @@ type PCRepairOffer struct {
 // a damaged site. The terms are the live ones, except for the actor's own
 // repair under way, whose bounty and steps were fixed at start.
 func pcRepairOfferFor(w *World, actor *Actor, site *VillageObject) *PCRepairOffer {
-	if !IsDamagedSite(site) {
+	if !IsRepairSite(site) {
 		return nil
 	}
 	kind := PublicWorksKind(site)
@@ -131,6 +135,7 @@ func pcRepairOfferFor(w *World, actor *Actor, site *VillageObject) *PCRepairOffe
 	offer := &PCRepairOffer{
 		ObjectID:    site.ID,
 		SiteKind:    kind,
+		Form:        MinorWorkForm(w.Assets, site),
 		Fact:        DamageFact(w.VillageObjects, w.Structures, w.Assets, site),
 		Bounty:      bounty,
 		ChestCanPay: PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve),

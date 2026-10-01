@@ -294,6 +294,17 @@ type WorldSettings struct {
 	PCRepairRoadStepGapMs     int
 	PCRepairIdleSeconds       int
 
+	// Minor works (LLM-690): small damage for players only. Each pass of the
+	// minor-works ticker breaks one at this chance while fewer than the cap are
+	// open; an untaken one mends itself after the TTL. A cap or chance of 0
+	// turns the spawn off.
+	MinorWorksChancePermille int
+	MinorWorksOpenCap        int
+	MinorWorksTTLHours       int
+	PublicWorksMinorBounty   int
+	PCRepairMinorSteps       int
+	PCRepairMinorStepGapMs   int
+
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
 	// budgets (MEM-052) own the hard $ ceiling.

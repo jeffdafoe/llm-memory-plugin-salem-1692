@@ -186,6 +186,12 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("pc_repair_road_steps", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairRoadSteps }),
 		intSetting("pc_repair_road_step_gap_ms", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairRoadStepGapMs }),
 		intSetting("pc_repair_idle_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairIdleSeconds }),
+		intSetting("minor_works_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.MinorWorksChancePermille }),
+		intSetting("minor_works_open_cap", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.MinorWorksOpenCap }),
+		intSetting("minor_works_ttl_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.MinorWorksTTLHours }),
+		intSetting("public_works_minor_bounty", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PublicWorksMinorBounty }),
+		intSetting("pc_repair_minor_steps", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairMinorSteps }),
+		intSetting("pc_repair_minor_step_gap_ms", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairMinorStepGapMs }),
 
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute

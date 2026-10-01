@@ -28,6 +28,7 @@ import (
 type repairOfferWireDTO struct {
 	ObjectID    string `json:"object_id"`
 	SiteKind    string `json:"site_kind"`
+	Form        string `json:"form,omitempty"`
 	Fact        string `json:"fact"`
 	Bounty      int    `json:"bounty"`
 	ChestCanPay bool   `json:"chest_can_pay"`
@@ -46,6 +47,7 @@ func repairOfferWire(o *sim.PCRepairOffer) *repairOfferWireDTO {
 	return &repairOfferWireDTO{
 		ObjectID:    string(o.ObjectID),
 		SiteKind:    o.SiteKind,
+		Form:        o.Form,
 		Fact:        o.Fact,
 		Bounty:      o.Bounty,
 		ChestCanPay: o.ChestCanPay,

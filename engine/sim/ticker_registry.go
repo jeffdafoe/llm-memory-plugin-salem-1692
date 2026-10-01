@@ -55,6 +55,7 @@ func RegisterCoreTickers(w *World) {
 	w.RegisterTicker("pc_presence", PCPresenceSweepInterval)
 	w.RegisterTicker("pc_idle_audience", PCIdleAudienceSweepInterval)
 	w.RegisterTicker("rotation", RotationTickerInterval)
+	w.RegisterTicker("minor_works", MinorWorksTickerInterval)
 
 	// Coalesced AfterFunc self-rearm chains. Continuous despite the AfterFunc
 	// shape — every one of them re-arms unconditionally at the end of its scan,

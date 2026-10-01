@@ -420,3 +420,27 @@ func handAtFallenTreeScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 func constableKnowsRoadIsBlockedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return fallenTreeSnapshot(100), pwGideon, nil
 }
+
+// TestPublicWorksNeverOffersAMinorWork — a minor work (LLM-690) is a player's
+// job: a hand standing at a broken fence, and the constable, get no town's-works
+// view of it.
+func TestPublicWorksNeverOffersAMinorWork(t *testing.T) {
+	snap, actorID, _ := handAtBrokenWellScenario()
+	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); !v.OffersRepair() {
+		t.Fatalf("control: a hand at the broken well should be offered repair, got %+v", v)
+	}
+	for _, obj := range snap.VillageObjects {
+		obj.DamagedAt = time.Time{}
+	}
+	snap.VillageObjects["fence"] = &sim.VillageObject{ID: "fence", AssetID: "fence-asset", CurrentState: "h-broken-1", Tags: []string{sim.TagMinorWork},
+		Pos: sim.WorldPos{X: 700, Y: 400}, DamagedAt: time.Now().UTC()}
+	if sim.PublicWorksKind(snap.VillageObjects["fence"]) != sim.PublicWorksMinor {
+		t.Fatal("control: the broken fence should read as a minor work")
+	}
+	if v := buildPublicWorks(snap, actorID, snap.Actors[actorID], false); v != nil {
+		t.Errorf("a hand at a minor work got the town's works: %+v", v)
+	}
+	if v := buildPublicWorks(snap, pwGideon, snap.Actors[pwGideon], false); v != nil {
+		t.Errorf("the constable got the town's works for a minor work: %+v", v)
+	}
+}

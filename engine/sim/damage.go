@@ -62,7 +62,7 @@ import (
 var (
 	// ErrNotDamageable — the operator tried to damage an object no damage kind
 	// covers (only wells and owned businesses break).
-	ErrNotDamageable = errors.New("only a well, an owned business or a road obstacle can be damaged")
+	ErrNotDamageable = errors.New("only a well, an owned business, a road obstacle or an object with a minor-work state can be damaged")
 	// ErrUnknownDamageAction — the operator control took an action other than
 	// "damage", "storm" or "repair".
 	ErrUnknownDamageAction = errors.New(`action must be "damage", "storm" or "repair"`)
@@ -170,7 +170,8 @@ func (o *VillageObject) IsWell() bool {
 
 // PublicWorksKind is the damage kind an object belongs to — PublicWorksWell,
 // PublicWorksBusiness (an owned wearable business), PublicWorksRoad (a placed
-// road obstacle, LLM-677), or "" for anything that never breaks. Nil-safe.
+// road obstacle, LLM-677), PublicWorksMinor (a broken placement tagged as a
+// minor work, LLM-690), or "" for anything that never breaks. Nil-safe.
 func PublicWorksKind(o *VillageObject) string {
 	switch {
 	case o.IsWell():
@@ -179,13 +180,25 @@ func PublicWorksKind(o *VillageObject) string {
 		return PublicWorksBusiness
 	case o.IsRoadObstacle():
 		return PublicWorksRoad
+	case o.Damaged() && o.HasTag(TagMinorWork):
+		return PublicWorksMinor
 	}
 	return ""
 }
 
-// IsDamagedSite reports whether o is a damaged object the town's works cover:
-// a broken well, a damaged business or a road obstacle. Nil-safe.
+// IsDamagedSite reports whether o is a damaged object the town posts: a broken
+// well, a damaged business or a road obstacle — the ticker, the boards and a
+// hand's cue read it. A minor work is not one: it is a player's job only
+// (LLM-690; IsRepairSite covers both). Nil-safe.
 func IsDamagedSite(o *VillageObject) bool {
+	kind := PublicWorksKind(o)
+	return kind != "" && kind != PublicWorksMinor && o.Damaged()
+}
+
+// IsRepairSite reports whether o is any damaged object the town pays to mend
+// — a damaged site or a minor work. The player's repair paths read it.
+// Nil-safe.
+func IsRepairSite(o *VillageObject) bool {
 	return PublicWorksKind(o) != "" && o.Damaged()
 }
 
@@ -406,8 +419,13 @@ func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, 
 		return false
 	}
 	name := damageObjectName(w, obj)
-	if PublicWorksKind(obj) == PublicWorksRoad && !removeRoadObstacle(w, obj, now) {
+	// Read before the damage is cleared: a minor work has no kind once sound.
+	kind := PublicWorksKind(obj)
+	if kind == PublicWorksRoad && !removeRoadObstacle(w, obj, now) {
 		return false
+	}
+	if kind == PublicWorksMinor {
+		restoreMinor(w, obj)
 	}
 	obj.DamagedAt = time.Time{}
 	obj.UseSinceRepair = 0
@@ -420,12 +438,12 @@ func repairObject(w *World, obj *VillageObject, repairerID ActorID, bounty int, 
 			}
 		}
 	}
-	switch PublicWorksKind(obj) {
+	switch kind {
 	case PublicWorksBusiness:
 		removeDebris(w, obj.ID)
 		w.Environment.LastBusinessRepairAt = now
-	case PublicWorksRoad:
-		// Removed above, before the damage was cleared.
+	case PublicWorksRoad, PublicWorksMinor:
+		// Removed / restored above, before the damage was cleared.
 	default:
 		w.Environment.LastWellRepairAt = now
 	}
@@ -551,7 +569,12 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 			obj = w.VillageObjects[id]
 		}
 	}
-	if !IsDamagedSite(obj) {
+	// A minor work is found by nearness, not by what was clicked: walking to
+	// the fence segment beside the break still finds it (LLM-690).
+	if !IsRepairSite(obj) {
+		obj = publicWorksSiteAt(w, actor)
+	}
+	if !IsRepairSite(obj) {
 		return
 	}
 	kind := PublicWorksKind(obj)
@@ -561,6 +584,8 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 		text = DamageFact(w.VillageObjects, w.Structures, w.Assets, obj) + " — it can take in no new stock until it is mended."
 	case PublicWorksRoad:
 		text = DamageFact(w.VillageObjects, w.Structures, w.Assets, obj) + " — walkers must go around it until it is cleared."
+	case PublicWorksMinor:
+		text = DamageFact(w.VillageObjects, w.Structures, w.Assets, obj) + " — a small job."
 	}
 	bounty, _ := w.Settings.publicWorksTerms(kind)
 	if PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
@@ -575,8 +600,11 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 // ticker, the boards, the PC's thought and the cue, so every surface names the
 // damage the same way. Pure over the maps.
 func DamageFact(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject) string {
-	if PublicWorksKind(obj) == PublicWorksRoad {
+	switch PublicWorksKind(obj) {
+	case PublicWorksRoad:
 		return roadObstacleFact(objects, structures, assets, obj)
+	case PublicWorksMinor:
+		return minorWorksFact(objects, structures, assets, obj)
 	}
 	site := DamageSiteLabel(objects, structures, assets, obj)
 	if PublicWorksKind(obj) == PublicWorksBusiness {
@@ -597,6 +625,9 @@ func (s WorldSettings) publicWorksTerms(kind string) (bounty, seconds int) {
 		return s.PublicWorksBusinessBounty, s.PublicWorksBusinessRepairSeconds
 	case PublicWorksRoad:
 		return s.PublicWorksRoadBounty, s.PublicWorksRoadRepairSeconds
+	case PublicWorksMinor:
+		// A player's job only, so no hand's window length: the game is the work.
+		return s.PublicWorksMinorBounty, 0
 	}
 	return s.PublicWorksBounty, s.PublicWorksRepairSeconds
 }
@@ -701,7 +732,8 @@ func objectRepairer(w *World, objID VillageObjectID, except ActorID) *Actor {
 // a broken well by the drink path's loitering resolution, else a damaged
 // business the actor is inside or at the pin of (AtBusiness — the same test the
 // keeper's own mend uses), or a road obstacle the actor stands at
-// (AtRoadObstacle). Lowest id wins if, against the guards, two qualify.
+// (AtRoadObstacle), or — for a player only — a minor work near them
+// (atMinorWork, LLM-690). Lowest id wins if, against the guards, two qualify.
 func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 	if _, obj := findRefreshObjectNear(w, actor.Pos); obj.IsWell() && obj.Damaged() {
 		return obj
@@ -719,6 +751,10 @@ func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 			}
 		case PublicWorksRoad:
 			if !AtRoadObstacle(actor.Pos, obj, w.Assets[obj.AssetID]) {
+				continue
+			}
+		case PublicWorksMinor:
+			if actor.Kind != KindPC || !atMinorWork(w, actor, obj) {
 				continue
 			}
 		default:
@@ -744,7 +780,8 @@ func MayTakePublicWorks(a *Actor) bool {
 // found no stall of their own to mend. Terms are the engine's: the window is
 // PublicWorksRepairSeconds, and the bounty is paid at completion.
 func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now time.Time) (any, error) {
-	if !MayTakePublicWorks(actor) {
+	kind := PublicWorksKind(site)
+	if !MayTakePublicWorks(actor) || (kind == PublicWorksMinor && actor.Kind != KindPC) {
 		return nil, errors.New("the town's repair work is for hands seeking work — it is not yours to take.")
 	}
 	if workerHasLiveJob(w, actor.ID) {
@@ -753,7 +790,6 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 	if objectUnderRepair(w, site.ID, actor.ID) {
 		return nil, errors.New("someone is already mending it.")
 	}
-	kind := PublicWorksKind(site)
 	bounty, seconds := w.Settings.publicWorksTerms(kind)
 	if !PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
 		return nil, errors.New("the town chest cannot pay for the mending just now.")
@@ -815,8 +851,8 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 // at all — or the repair could not land (a road obstacle that could not be
 // removed), and then nothing is paid and the caller tells the hand nothing.
 func completePublicWorksRepair(w *World, actor *Actor, obj *VillageObject, agreed int, now time.Time) (paid int, landed bool) {
-	if actor == nil || !IsDamagedSite(obj) {
-		return 0, false // the town pays only for a damaged well, business or road (nil-safe predicates)
+	if actor == nil || !IsRepairSite(obj) {
+		return 0, false // the town pays only for a damaged well, business, road or minor work (nil-safe predicates)
 	}
 	forText := publicWorksForText(WithDefiniteArticle(damageObjectName(w, obj)))
 	bounty := agreed
@@ -888,6 +924,12 @@ func PublicWorksCompletionNarration(kind, sourceName string, paid int) string {
 		if sourceName != "" {
 			sourceName = strings.ToLower(sourceName)
 		}
+	case PublicWorksMinor:
+		place = "the job"
+		restored = "it is sound again"
+		if sourceName != "" {
+			sourceName = strings.ToLower(sourceName)
+		}
 	}
 	if sourceName != "" {
 		place = WithDefiniteArticle(sourceName)
@@ -942,8 +984,24 @@ func SetObjectDamage(id VillageObjectID, action string) Command {
 			return nil, ErrVillageObjectNotFound
 		}
 		now := time.Now().UTC()
-		if PublicWorksKind(obj) == "" {
+		// A sound object with a minor-work variant breaks as a minor work
+		// (LLM-690) — the first variant whose edges can be drawn.
+		var minor *AssetState
+		if !obj.Damaged() {
+			a := w.Assets[obj.AssetID]
+			for _, v := range minorVariants(a, obj.CurrentState) {
+				if _, _, ok := minorEdges(w, obj, a, v); ok {
+					minor = v
+					break
+				}
+			}
+		}
+		if PublicWorksKind(obj) == "" && minor == nil {
 			return nil, ErrNotDamageable
+		}
+		if minor != nil && (action == "damage" || action == "storm") {
+			damageMinor(w, obj, minor, now)
+			return obj.Damaged(), nil
 		}
 		switch action {
 		case "damage":
