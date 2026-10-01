@@ -147,10 +147,16 @@ func pcCanSleepHere(w *World, pc *Actor, now time.Time) (RoomID, bool) {
 // Unlike executeNPCSleep this does NOT refresh structure occupancy (a sleeping
 // player doesn't close a shop) and does not excuse the PC from a huddle (a
 // player's social state is theirs to manage). Runs on the world goroutine.
+//
+// A PC who goes to bed stops any work in hand (LLM-690): a player who closed the
+// tab mid-repair at the inn they lodge in is bedded by the offline arm within
+// the presence threshold, and must not hold the site asleep until the repair's
+// idle deadline.
 func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 	if pc.SleepingUntil != nil {
 		return false
 	}
+	abandonSourceActivity(w, pc, now)
 	pc.InsideRoomID = roomID
 	wakeAt := now.Add(DefaultPCSleepMaxDurationHours * time.Hour)
 	pc.SleepingUntil = &wakeAt

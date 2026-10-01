@@ -33,6 +33,8 @@ var (
 	RegenObjectRefresh          = regenObjectRefresh
 	DrawDownStock               = drawDownStock
 	CompleteDueSourceActivities = completeDueSourceActivities
+	ExecutePCSleep              = executePCSleep
+	EmitDamagedObjectNarration  = emitDamagedObjectNarration
 
 	// FireScheduledFlip exposes the post-AfterFunc callback body so the
 	// shutdown test can run it synchronously after cancelling the world.

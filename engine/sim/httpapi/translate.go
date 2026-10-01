@@ -556,7 +556,8 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		// LLM-654: a PC walked up to a broken well — the same private,
 		// speaker-less carrier as stall_condition. structure_id carries the well's
 		// object id (private frames skip the room filter), which the client uses
-		// to float the thought over the well.
+		// to float the thought over the well. repair carries the terms for the
+		// repair dialog (LLM-690).
 		if e.Text == "" {
 			return WireFrame{}, false
 		}
@@ -564,6 +565,22 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ActorID:     string(e.ActorID),
 			ActorName:   "",
 			Kind:        "object_condition",
+			Text:        e.Text,
+			Private:     true,
+			StructureID: string(e.ObjectID),
+			At:          e.At.UTC().Format(time.RFC3339),
+			Repair:      repairOfferWire(e.Offer),
+		}}, true
+	case *sim.PCRepairNarrated:
+		// LLM-690: the player's own repair landed — the same private carrier as
+		// object_condition, structure_id the mended object's id.
+		if e.Text == "" {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   "",
+			Kind:        "repair_done",
 			Text:        e.Text,
 			Private:     true,
 			StructureID: string(e.ObjectID),
@@ -1174,4 +1191,7 @@ type roomEventWireDTO struct {
 	Private     bool   `json:"private"`
 	StructureID string `json:"structure_id"`
 	At          string `json:"at"`
+	// Repair is the town's repair work at the site, on an object_condition
+	// frame only (LLM-690) — the client opens its repair dialog from it.
+	Repair *repairOfferWireDTO `json:"repair,omitempty"`
 }

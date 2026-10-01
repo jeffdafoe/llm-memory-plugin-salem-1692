@@ -79,6 +79,15 @@ type SourceActivity struct {
 	// nail-mend targets the same object, so "the object is damaged" cannot tell
 	// the two apart.
 	PublicWorks bool
+	// Steps marks a player's town repair (LLM-690): the player mends by playing,
+	// one step per mini-game round (StepPCRepair), and the repair lands on the
+	// last step, not on a clock. Until is then the idle deadline — each step moves
+	// it on, and a window that reaches it is given up, not landed (completeIfDue).
+	// StepGap is the least time between two steps, fixed at start with the bounty.
+	Steps      int
+	StepsDone  int
+	StepGap    time.Duration
+	LastStepAt time.Time
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what
@@ -691,25 +700,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// the site back in use, the bounty paid from the chest. It always returns
 		// here: falling through would reset a business keeper's wear for free.
 		if act.PublicWorks {
-			kind := PublicWorksKind(stall)
-			name := sourceActivityObjectName(w, stall)
-			paid, landed := completePublicWorksRepair(w, actor, stall, act.Bounty, now)
-			if !landed {
-				// Mended some other way mid-window: no work landed, nothing paid,
-				// and no "you finish mending it" beat to tell.
-				log.Printf("sim/damage: %q's repair of %s ended with nothing left to mend", actorID, act.ObjectID)
-				return
-			}
-			w.emit(&SourceActivityCompleted{
-				ActorID:     actorID,
-				ObjectID:    act.ObjectID,
-				Kind:        act.Kind,
-				Qty:         paid,
-				SourceName:  name,
-				PublicWorks: true,
-				SiteKind:    kind,
-				At:          now,
-			})
+			landPublicWorksRepair(w, actorID, actor, act, now)
 			return
 		}
 		if stall == nil || !IsWearableStall(stall) {
@@ -792,14 +783,80 @@ func completeDueSourceActivities(w *World, now time.Time) int {
 // calls it per due actor (so the count reflects activities actually applied, not
 // merely scanned), and the START gates call it to self-heal a finished-but-not-
 // yet-swept window instead of treating it as still busy.
+//
+// A player's stepped repair (LLM-690) never lands here: its Until is the idle
+// deadline, so reaching it means the player stopped playing — the window is
+// given up and the site freed for a hand. It still counts as cleared.
 func completeIfDue(w *World, actorID ActorID, actor *Actor, now time.Time) bool {
 	if actor == nil || actor.SourceActivity == nil || actor.SourceActivity.Until.After(now) {
 		return false
+	}
+	if actor.SourceActivity.isPCRepair() {
+		act := abandonSourceActivity(w, actor, now)
+		log.Printf("sim/damage: %q gave up mending %s after %d of %d steps — idle", actorID, act.ObjectID, act.StepsDone, act.Steps)
+		return true
 	}
 	act := actor.SourceActivity
 	actor.SourceActivity = nil // clear before applying; the effect re-resolves off live state
 	applyCompletedSourceActivity(w, actorID, actor, act, now)
 	return true
+}
+
+// abandonSourceActivity clears the actor's in-flight window without landing it
+// and emits SourceActivityCancelled, so a client showing the work gets a
+// terminal event. Returns the abandoned window, or nil when there was none.
+// The committed-move abandon (commands_move.go) is the same shape plus the
+// shared-bake teardown, which only a move can need.
+func abandonSourceActivity(w *World, actor *Actor, now time.Time) *SourceActivity {
+	act := actor.SourceActivity
+	if act == nil {
+		return nil
+	}
+	actor.SourceActivity = nil
+	w.emit(&SourceActivityCancelled{
+		ActorID:  actor.ID,
+		ObjectID: act.ObjectID,
+		Kind:     act.Kind,
+		At:       now,
+	})
+	return act
+}
+
+// landPublicWorksRepair lands a finished town repair: completePublicWorksRepair
+// mends the site and pays the bounty agreed at start, then the completion event
+// goes out — and, for a player (LLM-690), their own private completion line.
+// Called with the window already cleared.
+func landPublicWorksRepair(w *World, actorID ActorID, actor *Actor, act *SourceActivity, now time.Time) (paid int, landed bool) {
+	site := w.VillageObjects[act.ObjectID]
+	kind := PublicWorksKind(site)
+	name := sourceActivityObjectName(w, site)
+	paid, landed = completePublicWorksRepair(w, actor, site, act.Bounty, now)
+	if !landed {
+		// Mended some other way mid-window: no work landed, nothing paid,
+		// and no "you finish mending it" beat to tell.
+		log.Printf("sim/damage: %q's repair of %s ended with nothing left to mend", actorID, act.ObjectID)
+		return 0, false
+	}
+	w.emit(&SourceActivityCompleted{
+		ActorID:     actorID,
+		ObjectID:    act.ObjectID,
+		Kind:        act.Kind,
+		Qty:         paid,
+		SourceName:  name,
+		PublicWorks: true,
+		SiteKind:    kind,
+		At:          now,
+	})
+	if actor.Kind == KindPC {
+		w.emit(&PCRepairNarrated{
+			ActorID:  actorID,
+			ObjectID: act.ObjectID,
+			Text:     PublicWorksCompletionNarration(kind, name, paid),
+			Paid:     paid,
+			At:       now,
+		})
+	}
+	return paid, true
 }
 
 // SourceActivityTickerInterval is how often RunSourceActivityTicker wakes. One
