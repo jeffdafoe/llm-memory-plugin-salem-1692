@@ -55,6 +55,7 @@ func _ready() -> void:
     JavaScriptBridge.eval(FULLSCREEN_LISTENER_JS)
     _build_cover()
     get_tree().root.size_changed.connect(_refresh)
+    _watch_root()
     # Deferred: the root is still adding its children during an autoload's
     # _ready, and _apply may move this node among them.
     _refresh.call_deferred()
@@ -80,6 +81,15 @@ func _apply(covering: bool) -> void:
         # camera, the tooltips, the talk panel) read taps in _input — before the
         # GUI, so the cover's own mouse_filter cannot stop them. Moving to the end
         # of the root makes this node see every event first.
+        get_parent().move_child(self, -1)
+
+## A root child added while covering (a scene change, a popup) would land after
+## this node and read _input first, so the guard moves back to the end.
+func _watch_root() -> void:
+    get_tree().root.child_entered_tree.connect(_on_root_child_entered)
+
+func _on_root_child_entered(node: Node) -> void:
+    if _covering and node != self:
         get_parent().move_child(self, -1)
 
 func _input(event: InputEvent) -> void:

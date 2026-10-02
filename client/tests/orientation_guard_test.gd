@@ -22,6 +22,7 @@ const TESTS := [
     "_test_cover_decision_matrix",
     "_test_pointer_event_classification",
     "_test_covering_guard_eats_taps_first",
+    "_test_guard_stays_first_when_root_child_added",
 ]
 
 var _guard_script: GDScript = null
@@ -124,6 +125,32 @@ func _test_covering_guard_eats_taps_first() -> void:
 
     guard.free()
     reader.free()
+    _done()
+
+
+## A root child added AFTER the cover went up (a scene change, a popup) must not
+## get ahead of the guard: the guard moves back to the end and still eats the tap.
+func _test_guard_stays_first_when_root_child_added() -> void:
+    var guard: CanvasLayer = _guard_script.new()
+    root.add_child(guard)
+    guard._build_cover()
+    guard._watch_root()
+    guard._apply(true)
+
+    var late := _InputReader.new()
+    root.add_child(late)
+    _check("guard moved back to the end of the root", guard.get_index(), root.get_child_count() - 1)
+    root.push_input(_tap())
+    _check("late reader never saw the tap", late.seen, 0)
+
+    guard._apply(false)
+    var later := _InputReader.new()
+    root.add_child(later)
+    _check("uncovered: guard stays put when a child is added", later.get_index(), root.get_child_count() - 1)
+
+    guard.free()
+    late.free()
+    later.free()
     _done()
 
 
