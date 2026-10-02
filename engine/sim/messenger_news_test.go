@@ -36,6 +36,13 @@ func TestCleanMessengerNews(t *testing.T) {
 		// A clause that opens on a number keeps it — only a list marker is dropped.
 		{"300 men marched to the Maine frontier", "300 men marched to the Maine frontier"},
 		{"   ", ""},
+		// Live salem-news output, 2026-10-02: the clause follows "that", so a leading
+		// article is lowered and a name keeps its capital.
+		{"A great earthquake had struck Port Royal in Jamaica in June", "a great earthquake had struck Port Royal in Jamaica in June"},
+		{"The English and Dutch fleets had beaten the French at sea off Normandy in May", "the English and Dutch fleets had beaten the French at sea off Normandy in May"},
+		{"An English ship came into Boston with salt", "an English ship came into Boston with salt"},
+		{"Governor Phips had gone down east with soldiers", "Governor Phips had gone down east with soldiers"},
+		{"Thetford sent wool to Boston", "Thetford sent wool to Boston"},
 	}
 	for _, c := range cases {
 		if got := CleanMessengerNews(c.in); got != c.want {

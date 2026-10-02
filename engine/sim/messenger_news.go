@@ -91,7 +91,7 @@ func SetMessengerNews(id ActorID, text string) Command {
 // CleanMessengerNews shapes an authored reply into the bare clause the preface
 // completes ("Word reached you on the road that <clause>."): first non-empty
 // line only, wrapping quotes and list markers dropped, a leading "that" dropped,
-// trailing punctuation dropped, first letter kept as written.
+// trailing punctuation dropped, a capitalized leading article lowered.
 func CleanMessengerNews(text string) string {
 	line := ""
 	for _, l := range strings.Split(text, "\n") {
@@ -106,6 +106,14 @@ func CleanMessengerNews(text string) string {
 		line = rest
 	}
 	line = strings.TrimRight(line, ".!;:, ")
+	// The clause follows "that" mid-sentence, so a capitalized leading article
+	// ("A great earthquake …") is lowered; a name keeps its capital.
+	for _, article := range []string{"A ", "An ", "The "} {
+		if strings.HasPrefix(line, article) {
+			line = strings.ToLower(article[:1]) + line[1:]
+			break
+		}
+	}
 	return strings.TrimSpace(line)
 }
 
