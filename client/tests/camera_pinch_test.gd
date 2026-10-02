@@ -24,6 +24,8 @@ const TESTS := [
     "_test_zoom_clamps_to_max",
     "_test_second_finger_marks_pinch_until_next_gesture",
     "_test_one_finger_still_pans",
+    "_test_finger_lifted_under_modal_is_forgotten",
+    "_test_third_finger_keeps_first_pair",
 ]
 
 var _camera: Camera2D = null
@@ -167,4 +169,34 @@ func _test_one_finger_still_pans() -> void:
     _drag(0, Vector2(300, 300), Vector2(280, 300))
     _check_near("one-finger drag pans right by the drag distance", _camera.position.x - start.x, 20.0 * window_to_viewport)
     _check("one-finger drag leaves zoom alone", _camera.zoom, Vector2.ONE)
+    _done()
+
+
+## code_review (LLM-704): a finger lifted while a modal is open must be
+## forgotten, or the next one-finger drag reads as a pinch and never pans.
+func _test_finger_lifted_under_modal_is_forgotten() -> void:
+    var window_to_viewport: float = root.get_final_transform().affine_inverse().basis_xform(Vector2(1, 0)).x
+    _touch(0, Vector2(300, 300), true)
+    _camera.modal_open = true
+    _touch(0, Vector2(300, 300), false)
+    _camera.modal_open = false
+    _check("no finger left recorded", _camera._touches.size(), 0)
+    var start: Vector2 = _camera.position
+    _touch(1, Vector2(300, 300), true)
+    _drag(1, Vector2(300, 300), Vector2(280, 300))
+    _check_near("next one-finger drag pans", _camera.position.x - start.x, 20.0 * window_to_viewport)
+    _check("next one-finger drag leaves zoom alone", _camera.zoom, Vector2.ONE)
+    _done()
+
+
+## A third finger joins without changing the pinch pair (the first two
+## fingers down); moving it alone does not zoom.
+func _test_third_finger_keeps_first_pair() -> void:
+    _touch(0, Vector2(300, 300), true)
+    _touch(1, Vector2(400, 300), true)
+    _touch(2, Vector2(350, 500), true)
+    _drag(2, Vector2(350, 500), Vector2(350, 600))
+    _check_near("third finger alone does not zoom", _camera.zoom.x, 1.0)
+    _drag(1, Vector2(400, 300), Vector2(500, 300))  # pair span 100 -> 200
+    _check_near("first pair still drives the zoom", _camera.zoom.x, 2.0)
     _done()

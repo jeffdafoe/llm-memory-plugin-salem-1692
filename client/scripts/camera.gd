@@ -219,9 +219,8 @@ func _is_over_ui(pos: Vector2) -> bool:
 ## (ScrollContainer, PanelContainer) would otherwise consume events in
 ## _unhandled_input. A position check skips clicks on the UI panel area.
 func _input(event: InputEvent) -> void:
-    if modal_open:
-        return
-
+    # Finger bookkeeping runs even under a modal: a finger lifted while one is
+    # open must not stay recorded as down and make the next drag a "pinch".
     if event is InputEventScreenTouch:
         if event.pressed:
             if _touches.is_empty():
@@ -232,6 +231,9 @@ func _input(event: InputEvent) -> void:
         else:
             _touches.erase(event.index)
         _pinch_span = _touch_span()
+
+    if modal_open:
+        return
 
     if event is InputEventMouseButton and event.pressed:
         # Don't zoom when scrolling over the editor sidebar
