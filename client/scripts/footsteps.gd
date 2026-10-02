@@ -23,6 +23,11 @@ var _last_frame := -1
 func _process(_delta: float) -> void:
     if world == null or pc_actor_id == "" or not world.placed_npcs.has(pc_actor_id):
         _last_anim = ""
+        _last_frame = -1
+        # No PC, no roof: a PC removed while inside must not leave the rain
+        # muffled for good.
+        if Sound.indoors:
+            Sound.set_indoors(false)
         return
     var container: Node2D = world.placed_npcs[pc_actor_id]
     var inside := bool(container.get_meta("inside", false))

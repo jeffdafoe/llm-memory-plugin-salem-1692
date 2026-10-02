@@ -98,6 +98,8 @@ var _voices: Array[AudioStreamPlayer] = []
 var _next_voice := 0
 var _streams: Dictionary = {}  # file -> AudioStream (null when missing)
 var _rng := RandomNumberGenerator.new()
+## Dummy driver only: the players Sound has started (see _start).
+var _dummy_running: Dictionary = {}
 
 var _rain: AudioStreamPlayer = null
 var _rain_muffled: AudioStreamPlayer = null
@@ -146,11 +148,22 @@ func play(sound_name: String, extra_db := 0.0) -> void:
 ## Start a player — except under the headless Dummy driver (tests, CI), which
 ## mixes nothing: a playback started there is never released, and a test that
 ## quits right after a sound reports it as leaked. Everything up to here still
-## runs, so tests still cover the table and the file lookups.
+## runs, so tests still cover the table and the file lookups. There the player
+## is only marked running (_dummy_running), so the loop logic reads the same.
 func _start(p: AudioStreamPlayer) -> void:
     if AudioServer.get_driver_name() == "Dummy":
+        _dummy_running[p] = true
         return
     p.play()
+
+
+func _stop(p: AudioStreamPlayer) -> void:
+    _dummy_running.erase(p)
+    p.stop()
+
+
+func _is_running(p: AudioStreamPlayer) -> bool:
+    return p.playing or _dummy_running.has(p)
 
 
 ## Raise (true) or clear (false) the rain. fade false snaps (the connect-time
@@ -196,20 +209,22 @@ func _process(delta: float) -> void:
     _drive_loop(_rain_muffled, _rain_level * _indoor_mix, RAIN_MUFFLED_DB)
 
 
-## Set a loop's volume from a 0..1 level, starting it when it becomes audible
-## and stopping it at silence so a clear sky costs nothing. Both loops start
-## together on the first storm frame, so the crossfade never jumps in phase.
+## Set a loop's volume from a 0..1 level. Both loops run whenever it rains at
+## all — the silent one at -80 dB — so they start together on the first storm
+## frame and the indoor crossfade never jumps between two points of the
+## recording. Both stop once the storm has faded out, so a clear sky costs
+## nothing.
 func _drive_loop(p: AudioStreamPlayer, level: float, db: float) -> void:
     if p.stream == null:
         return
-    if level <= 0.0:
-        if p.playing and _rain_level <= 0.0:
-            p.stop()
+    if _rain_level <= 0.0:
+        if _is_running(p):
+            _stop(p)
         p.volume_db = -80.0
         return
-    p.volume_db = db + linear_to_db(level)
-    if not p.playing:
+    if not _is_running(p):
         _start(p)
+    p.volume_db = db + linear_to_db(level) if level > 0.0 else -80.0
 
 
 func _make_loop(file: String) -> AudioStreamPlayer:

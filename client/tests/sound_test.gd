@@ -29,10 +29,12 @@ extends SceneTree
 const TESTS := [
     "_test_every_sound_file_exists",
     "_test_rain_follows_the_storm_and_the_roof",
+    "_test_both_rain_loops_run_together",
     "_test_surface_for_terrain",
     "_test_footfall_frames",
     "_test_steps_only_on_footfalls_while_walking",
     "_test_inside_flag_reaches_sound",
+    "_test_removed_pc_clears_indoors",
     "_test_volume_and_mute_survive_a_reload",
 ]
 
@@ -187,6 +189,30 @@ func _test_rain_follows_the_storm_and_the_roof() -> void:
     _done()
 
 
+## Both loops start on the storm's first frame, wherever the player is — the
+## silent one at -80 dB — so a later crossfade lands on the same point of the
+## recording. Both stop once the storm has faded out.
+func _test_both_rain_loops_run_together() -> void:
+    var out: AudioStreamPlayer = _sound._rain
+    var muffled: AudioStreamPlayer = _sound._rain_muffled
+    for inside in [false, true]:
+        _sound.set_rain(false, false)
+        _sound._process(0.0)
+        _check("clear sky (inside=%s) — outdoor loop stopped" % inside, not _sound._is_running(out))
+        _check("clear sky (inside=%s) — muffled loop stopped" % inside, not _sound._is_running(muffled))
+        _sound.set_indoors(inside)
+        _sound._indoor_mix = 1.0 if inside else 0.0
+        _sound.set_rain(true, false)
+        _sound._process(0.0)
+        _check("storm starts (inside=%s) — outdoor loop running" % inside, _sound._is_running(out))
+        _check("storm starts (inside=%s) — muffled loop running" % inside, _sound._is_running(muffled))
+    _sound.set_rain(false, false)
+    _sound._process(0.0)
+    _sound.set_indoors(false)
+    _sound._indoor_mix = 0.0
+    _done()
+
+
 func _test_surface_for_terrain() -> void:
     _check("dirt", FootstepsScript.surface_for(1) == "dirt")
     _check("light grass", FootstepsScript.surface_for(2) == "grass")
@@ -278,6 +304,31 @@ func _test_inside_flag_reaches_sound() -> void:
     container.set_meta("inside", false)
     steps._process(0.0)
     _check("outside again — Sound hears it", not _sound.indoors)
+    steps.free()
+    world.free()
+    _done()
+
+
+## A PC removed while inside (or the id cleared) must not leave the rain
+## muffled for good.
+func _test_removed_pc_clears_indoors() -> void:
+    var parts := _make_walker()
+    var world: Node2D = parts[0]
+    var container: Node2D = parts[1]
+    var steps: Node = parts[3]
+    container.set_meta("inside", true)
+    steps._process(0.0)
+    _check("inside — Sound indoors", _sound.indoors)
+    world.placed_npcs.erase("pc-1")
+    steps._process(0.0)
+    _check("PC removed — Sound back outdoors", not _sound.indoors)
+
+    world.placed_npcs["pc-1"] = container
+    steps._process(0.0)
+    _check("PC back inside — Sound indoors", _sound.indoors)
+    steps.pc_actor_id = ""
+    steps._process(0.0)
+    _check("PC id cleared — Sound back outdoors", not _sound.indoors)
     steps.free()
     world.free()
     _done()
