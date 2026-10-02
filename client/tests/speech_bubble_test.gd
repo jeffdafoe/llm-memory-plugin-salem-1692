@@ -46,7 +46,13 @@ const TESTS := [
     "_test_blank_speech_draws_no_bubble",
     "_test_art_text_is_ui_sized_and_smooth",
     "_test_a_speaker_has_one_bubble",
+    "_test_side_by_side_speakers_stack_apart",
+    "_test_far_apart_speakers_keep_their_place",
+    "_test_a_stack_holds_three",
+    "_test_a_lift_eases_into_place",
 ]
+## One village tile, in world px.
+const TILE := 32.0
 
 const ZOOMS := [0.3, 0.5, 0.7, 1.0, 1.3, 2.0, 3.0]
 const LONG_TEXT := "Good morning, neighbor. The well by the Tavern is broken again, and the town is paying twelve coins to mend it."
@@ -158,6 +164,41 @@ func _spawn(text: String) -> Node2D:
     _actor.add_child(bubble)
     bubble.setup(text)
     return bubble
+
+## Speakers in a row, TILE apart, far from the shared _actor so the bubbles
+## of other tests never meet them.
+func _speakers(count: int, gap: float = TILE) -> Array:
+    var out := []
+    for i in count:
+        var n := Node2D.new()
+        n.position = Vector2(-6000 + i * gap, -6000)
+        root.add_child(n)
+        out.append(n)
+    return out
+
+func _say(speaker: Node2D, text: String) -> Node2D:
+    var bubble: Node2D = _script.new()
+    speaker.add_child(bubble)
+    bubble.setup(text)
+    return bubble
+
+## Lays the bubbles out settled (a long delta ends the easing), then fits
+## each the way its own _process does.
+func _settle(bubbles: Array) -> void:
+    _script._layout(bubbles, 10.0)
+    for b in bubbles:
+        if not b.is_queued_for_deletion():
+            b._fit_to_screen()
+
+## Where the bubble draws now, lift included, in canvas px.
+func _drawn_rect(bubble: Node2D) -> Rect2:
+    var t: Transform2D = bubble.get_global_transform_with_canvas()
+    var r: Rect2 = bubble._local_rect()
+    return Rect2(t * r.position, r.size * t.get_scale())
+
+func _free_all(nodes: Array) -> void:
+    for n in nodes:
+        n.free()
 
 func _zoom(z: float) -> void:
     root.canvas_transform = Transform2D(0.0, Vector2(z, z), 0.0, Vector2(640, 360))
@@ -462,4 +503,102 @@ func _test_a_speaker_has_one_bubble() -> void:
     npc.queue_free()
     shop.queue_free()
     world.free()
+    _done()
+
+## LLM-694: two speakers one tile apart both talk. The newer line stays at
+## its speaker's head; the older rises just clear of it, so neither hides
+## the other, and its stem reaches down to its own speaker. Every zoom,
+## both looks, at the base window size and a 1920-wide one.
+func _test_side_by_side_speakers_stack_apart() -> void:
+    var art_before: Texture2D = _script._art_sheet  # the live-camera bubble still draws with it
+    for art in [false, true]:
+        _set_art(_synthetic_sheet() if art else null)
+        for stretch in [1.0, 1.5]:
+            var saved: float = _set_stretch(stretch)
+            for z in ZOOMS:
+                _zoom(z)
+                var who: Array = _speakers(2)
+                var first: Node2D = _say(who[0], LONG_TEXT)
+                var second: Node2D = _say(who[1], "Aye, I heard it was the windlass.")
+                var label := "zoom %.1f, stretch %.1f, art %s" % [z, stretch, art]
+                _settle([first, second])
+                _check("harness — the bubbles would overlap unlifted (%s)" % label,
+                    first._canvas_rect().intersects(second._canvas_rect()))
+                var top: Rect2 = _drawn_rect(first)
+                var low: Rect2 = _drawn_rect(second)
+                _check("the two bubbles do not overlap (%s)" % label, not top.intersects(low))
+                _check("the older line sits above the newer (%s)" % label, top.end.y <= low.position.y + 0.01)
+                _check("the newer line stays at its speaker's head (%s)" % label,
+                    second._lift == 0.0 and second.position == Vector2(0, _script.ANCHOR_Y))
+                _check("the newer line has no stem (%s)" % label, not second._stem.visible)
+                _check("the older line has a stem (%s)" % label, first._stem.visible)
+                var tip_to_head: float = first._stem_length * first.get_global_transform_with_canvas().get_scale().y
+                var head: Vector2 = who[0].get_global_transform_with_canvas() * Vector2(0, _script.ANCHOR_Y)
+                var tip: Vector2 = first.get_global_transform_with_canvas() * Vector2.ZERO
+                _check("the stem reaches the older speaker's head (%s: tip %s + %.1f, head %s)" % [label, tip, tip_to_head, head],
+                    absf(tip.y + tip_to_head - head.y) < 0.01 and absf(tip.x - head.x) < 0.01)
+                _free_all(who)
+            root.content_scale_factor = saved
+    _zoom(1.0)
+    _set_art(art_before)
+    _done()
+
+## Speakers far apart keep their bubbles where they are.
+func _test_far_apart_speakers_keep_their_place() -> void:
+    var art_before: Texture2D = _script._art_sheet  # the live-camera bubble still draws with it
+    _set_art(null)
+    _zoom(1.0)
+    var who: Array = _speakers(2, 2000.0)
+    var a: Node2D = _say(who[0], LONG_TEXT)
+    var b: Node2D = _say(who[1], LONG_TEXT)
+    _settle([a, b])
+    for x in [a, b]:
+        _check("a bubble with no one near stays at its anchor", x._lift == 0.0 and not x._stem.visible)
+    _free_all(who)
+    _set_art(art_before)
+    _done()
+
+## Four speakers side by side, four lines: the stack keeps the newest
+## three, apart and in order; the oldest closes early.
+func _test_a_stack_holds_three() -> void:
+    var art_before: Texture2D = _script._art_sheet  # the live-camera bubble still draws with it
+    _set_art(null)
+    _zoom(1.0)
+    var who: Array = _speakers(4)
+    var bubbles := []
+    for i in 4:
+        bubbles.append(_say(who[i], "Line %d of the talk at the well." % i))
+    _settle(bubbles)
+    _check("the oldest line closes early", bubbles[0].is_queued_for_deletion())
+    for i in range(1, 4):
+        _check("line %d stays up" % i, not bubbles[i].is_queued_for_deletion())
+    for i in range(1, 3):
+        _check("line %d sits above line %d" % [i, i + 1],
+            _drawn_rect(bubbles[i]).end.y <= _drawn_rect(bubbles[i + 1]).position.y + 0.01)
+    _check("harness — MAX_STACK is three", _script.MAX_STACK == 3)
+    _free_all(who)
+    _set_art(art_before)
+    _done()
+
+## A bubble pushed up glides there over a few frames rather than jumping,
+## and lands exactly on its place.
+func _test_a_lift_eases_into_place() -> void:
+    var art_before: Texture2D = _script._art_sheet  # the live-camera bubble still draws with it
+    _set_art(null)
+    _zoom(1.0)
+    var who: Array = _speakers(2)
+    var first: Node2D = _say(who[0], LONG_TEXT)
+    _script._layout([first], 1.0 / 60.0)
+    _check("one bubble alone is not lifted", first._lift == 0.0)
+    var second: Node2D = _say(who[1], LONG_TEXT)
+    _script._layout([first, second], 1.0 / 60.0)
+    var target: float = first._lift_target
+    _check("the older bubble has somewhere to go (target %.1f)" % target, target > 0.0)
+    _check("one frame in, it has moved part of the way (%.1f of %.1f)" % [first._lift, target],
+        first._lift > 0.0 and first._lift < target)
+    for i in 12:
+        _script._layout([first, second], 1.0 / 60.0)
+    _check("after 0.2 s it is in place (%.1f of %.1f)" % [first._lift, target], first._lift == target)
+    _free_all(who)
+    _set_art(art_before)
     _done()

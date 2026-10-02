@@ -7,6 +7,14 @@
 ## before adding a new bubble — so a fresh speak from the same NPC
 ## replaces the old line immediately rather than queuing.
 ##
+## Bubbles of DIFFERENT speakers standing close would overlap, so every live
+## bubble is laid out together once a frame (_layout): newest first, each
+## stays at its speaker's head unless a newer bubble is in the way, and then
+## rises just clear of it — a stack reads top to bottom in speaking order. A
+## lifted bubble draws a stem down to its speaker. A stack holds MAX_STACK
+## bubbles; one that would sit higher closes early (the talk panel keeps
+## every line).
+##
 ## Drawn with primitives (draw_texture_rect_region, draw_string) rather
 ## than nested Control nodes — Controls render in screen-space, which
 ## doesn't compose with the Node2D world-space sprite hierarchy.
@@ -70,9 +78,27 @@ const MAX_LIFETIME := 10.0
 const LIFETIME_PER_CHAR := 1.0 / 18.0  # ~18 chars per second reading rate
 const LIFETIME_PICKUP := 1.5            # extra buffer so bubbles don't vanish before noticed
 
+const STACK_GAP := 2.0      # canvas px between stacked bubbles
+const MAX_STACK := 3
+const LIFT_EASE := 0.035    # seconds; a moving bubble settles in about 0.15 s
+const STEM_COLOR := Color(0.094, 0.094, 0.094, 1.0)  # the art's outline
+
 # Shared by every bubble: loaded once, null when the art is absent.
 static var _art_sheet: Texture2D = null
 static var _art_checked := false
+
+# Every bubble in the tree, for the layout; spawn order decides who is newest.
+static var _live: Array = []
+static var _next_seq := 0
+static var _laid_out_frame := -1
+
+var _seq := 0
+## Canvas px this bubble is raised above its anchor, eased toward the layout's target.
+var _lift := 0.0
+var _lift_target := 0.0
+## The line from a lifted bubble's tail down to its speaker, drawn under every bubble.
+var _stem: Node2D = null
+var _stem_length := 0.0  # local units
 
 var _wrapped_lines: PackedStringArray  # the page on show
 var _pages: Array[PackedStringArray] = []
@@ -97,11 +123,19 @@ func setup(speak_text: String) -> void:
     _use_art = _art_sheet != null
     _font = ThemeDB.fallback_font
     _font_size = FONT_SIZE
+    _seq = _next_seq
+    _next_seq += 1
     if _use_art:
         _text_layer = Node2D.new()
         _text_layer.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
         _text_layer.draw.connect(_draw_text_layer)
         add_child(_text_layer)
+    _stem = Node2D.new()
+    _stem.z_index = 99
+    _stem.z_as_relative = false
+    _stem.visible = false
+    _stem.draw.connect(_draw_stem)
+    add_child(_stem)
     _wrap_text(speak_text)
     if _pages.is_empty():
         # Nothing to say (blank or all spaces).
@@ -190,8 +224,109 @@ func _wrap_text(text: String) -> void:
     _content_size = Vector2(ceilf(widest), line_height * mini(lines.size(), PAGE_LINES))
 
 
-func _process(_delta: float) -> void:
+## The first bubble to process in a frame lays out all of them; every
+## bubble then fits itself with its lift.
+func _process(delta: float) -> void:
+    var frame := Engine.get_process_frames()
+    if frame != _laid_out_frame:
+        _laid_out_frame = frame
+        _layout(_live, delta)
     _fit_to_screen()
+
+
+func _enter_tree() -> void:
+    _live.append(self)
+
+
+func _exit_tree() -> void:
+    _live.erase(self)
+
+
+## Newest first: each bubble keeps its place unless a newer one is in the
+## way, and then rises the least that clears it (and whatever that lift
+## runs into). Depth counts the bubbles under it in its stack; past
+## MAX_STACK the bubble closes. Lifts ease toward their targets.
+static func _layout(bubbles: Array, delta: float) -> void:
+    var order: Array = []
+    for b in bubbles:
+        if is_instance_valid(b) and b.is_inside_tree() and not b.is_queued_for_deletion() and not b._wrapped_lines.is_empty():
+            b._fit_to_screen()
+            order.append(b)
+    order.sort_custom(func(x, y): return x._seq > y._seq)
+    var blend: float = 1.0 - exp(-delta / LIFT_EASE)
+    var placed: Array = []  # [Rect2 at its target lift, depth]
+    for b in order:
+        var rect: Rect2 = b._canvas_rect()
+        var lift := 0.0
+        var depth := 1
+        var moved := true
+        while moved:
+            moved = false
+            for p in placed:
+                var lifted := Rect2(rect.position - Vector2(0, lift), rect.size)
+                var below: Rect2 = p[0]
+                if lifted.intersects(below.grow(STACK_GAP)):
+                    depth = maxi(depth, p[1] + 1)
+                    # Only a higher lift is a move: rounding can leave a
+                    # cleared rect touching, and the same lift again would loop.
+                    var clear: float = rect.end.y - below.position.y + STACK_GAP
+                    if clear > lift:
+                        lift = clear
+                        moved = true
+        if depth > MAX_STACK:
+            b._close_early()
+            continue
+        placed.append([Rect2(rect.position - Vector2(0, lift), rect.size), depth])
+        b._lift_target = lift
+        b._lift = lerpf(b._lift, lift, blend)
+        if absf(b._lift - lift) < 1.0:
+            b._lift = lift
+
+
+## This bubble at its anchor (no lift), in canvas px.
+func _canvas_rect() -> Rect2:
+    var parent_xform: Transform2D = (get_parent() as CanvasItem).get_global_transform_with_canvas()
+    var anchor: Vector2 = parent_xform * Vector2(0, ANCHOR_Y)
+    var units: Vector2 = parent_xform.get_scale() * scale
+    var local: Rect2 = _local_rect()
+    return Rect2(anchor + local.position * units, local.size * units)
+
+
+## What the bubble draws, tail included, in its own units.
+func _local_rect() -> Rect2:
+    if _use_art:
+        var grow: Vector2 = _art_grow()
+        # Down to the last tail row; the sheet's rows under it are empty.
+        return Rect2(_art_origin(), Vector2(_art_sheet.get_width() + grow.x, ART_TAIL_TIP.y + grow.y + 1.0))
+    var w: float = _content_size.x + 2 * PADDING_X
+    var h: float = _content_size.y + 2 * PADDING_Y
+    return Rect2(-w * 0.5, -TAIL_HEIGHT - h, w, h + TAIL_HEIGHT)
+
+
+## A fourth bubble in a stack goes before its time.
+func _close_early() -> void:
+    if _page_timer != null:
+        _page_timer.stop()
+    queue_free()
+
+
+## The stem runs from the tail tip down to the anchor above the head: the
+## art's one-pixel column under the tip, or a line from the plain tail apex.
+func _draw_stem() -> void:
+    if _use_art:
+        _stem.draw_rect(Rect2(0, 1, 1, maxf(0.0, _stem_length - 1.0)), STEM_COLOR)
+    else:
+        _stem.draw_line(Vector2.ZERO, Vector2(0, _stem_length), BORDER_COLOR, 1.0)
+
+
+func _place_stem(canvas_per_unit: float) -> void:
+    if _stem == null or canvas_per_unit <= 0.0:
+        return
+    var length: float = _lift / canvas_per_unit
+    _stem.visible = _lift >= 1.0
+    if not is_equal_approx(length, _stem_length):
+        _stem_length = length
+        _stem.queue_redraw()
 
 
 ## Pin the bubble to the anchor above the head and size it for the screen,
@@ -219,8 +354,10 @@ func _fit_to_screen() -> void:
     var canvas_scale: Vector2 = parent.get_global_transform_with_canvas().get_scale()
     if canvas_scale.x <= 0.0 or canvas_scale.y <= 0.0:
         return
+    position.y -= _lift / canvas_scale.y
     if not _use_art:
         scale = Vector2.ONE / canvas_scale
+        _place_stem(1.0)
         return
     var stretch: Vector2 = get_viewport().get_final_transform().get_scale()
     if stretch.x <= 0.0 or stretch.y <= 0.0:
@@ -232,6 +369,7 @@ func _fit_to_screen() -> void:
         _art_per_ui = art_per_ui
         queue_redraw()
     _place_text_layer()
+    _place_stem(canvas_scale.y * scale.y)
 
 
 func _place_text_layer() -> void:
