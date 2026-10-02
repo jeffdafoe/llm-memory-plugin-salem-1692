@@ -211,9 +211,14 @@ func show_offer(o: Dictionary) -> void:
     _round_answered = false
     var kind := str(o.get("site_kind", ""))
     var form := str(o.get("form", ""))
-    var layers := build_layers(world, o)
+    # The site's close-up when there is one, else the village sprites.
+    var closeup := StageScript.site_key(kind, form)
+    var layers := StageScript.closeup_layers(closeup)
+    if layers.is_empty():
+        closeup = ""
+        layers = build_layers(world, o)
     stage.setup(title_for(kind, form), Games.game_kind(kind, form), layers["broken"], layers["sound"],
-        int(o.get("steps", 1)), int(o.get("steps_done", 0)))
+        int(o.get("steps", 1)), int(o.get("steps_done", 0)), closeup)
     fact_label.text = _sentence(str(o.get("fact", "")))
     var bounty := int(o.get("bounty", 0))
     pay_label.text = "The town pays %s for the work." % _coins(bounty)
@@ -331,7 +336,8 @@ static func click_matches_offer(w: Node2D, hit_id: String, o: Dictionary) -> boo
 # --- the object's layers ---------------------------------------------------
 
 ## The object as it stands and as it will be, as stage layers (see
-## repair_stage.gd): the site's own sprite, its attached overlays (debris),
+## repair_stage.gd), for a site with no close-up: the site's own village
+## sprite, its attached overlays (debris),
 ## and — for a fence break — the two neighbours that sag with it. The mended
 ## form comes from the catalog: a state's `minor-of-<state>` tag names the
 ## state it mends back to; a well mends to its first state without the

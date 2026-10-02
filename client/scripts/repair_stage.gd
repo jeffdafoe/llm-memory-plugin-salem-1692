@@ -12,13 +12,24 @@ extends Control
 ## loaded at a fixed 8 px with no antialiasing and no oversampling, and
 ## scaled by the same transform.
 ##
-## THE OBJECT. The panel hands over the object's sprites twice: as it stands
-## (`broken` — the damaged state, a business with its debris, a fence break
-## with both sagging neighbours) and as it will be (`sound`). Each layer is
-## {tex: Texture2D, pos: Vector2 (art px, top-left, relative to the object's
-## anchor)}. While the work goes on, a reveal line rises from the foot of the
-## object: below it the sound sprites, above it the broken ones. A road has no
-## sound sprites — the tree is CUT instead, a section falling away per round.
+## THE OBJECT. The panel hands over the object twice: as it stands (`broken`)
+## and as it will be (`sound`). Each layer is {tex: Texture2D, pos: Vector2
+## (art px, top-left, relative to the object's anchor)}. While the work goes
+## on, a reveal line rises from the foot of the object: below it the sound
+## layers, above it the broken ones.
+##
+## CLOSE-UPS (LLM-696). Every site kind the town pays for has a close-up drawn
+## at the stage's own resolution (client/assets/repair/, built by
+## tools/repair-art/build.ps1): a whole picture, broken and mended, drawn at
+## scale 1 filling the object area. A road has no mended picture — its trunk is
+## CUT a section per round, the section falling away and a sawn round stacking
+## on the verge, and the cleared road shows the crown dragged aside. A site with
+## no close-up (`site` "") falls back to the village sprites the panel collects,
+## scaled up to fit — a road there is cut the same way.
+##
+## THE GAMES draw from the same art: a plank, nails and a hammer; a bar with a
+## gold zone, a peg and a windlass wheel (a plumb bob for a signpost); a log
+## end-on with a saw across it.
 
 const Games = preload("res://scripts/repair_games.gd")
 
@@ -38,42 +49,40 @@ const GAP := 4
 const PLAY_X := (ART_W - Games.PLAY_W) / 2
 const MAX_PIXEL_SCALE := 5
 
-# Mana Seed-like palette for the drawn pieces (tools, nails, bar, sparks).
+# Colours for what is drawn in code (sparks, pips, the header, the zone).
 const C_WOOD_DARK := Color8(59, 36, 23)
-const C_WOOD := Color8(107, 63, 35)
 const C_WOOD_LIGHT := Color8(160, 101, 47)
 const C_WOOD_HI := Color8(211, 155, 74)
-const C_IRON_DARK := Color8(46, 46, 54)
-const C_IRON := Color8(106, 111, 122)
 const C_IRON_LIGHT := Color8(182, 188, 196)
-const C_GREEN := Color8(98, 160, 74)
-const C_GREEN_LIGHT := Color8(150, 204, 102)
 const C_GOLD := Color8(242, 210, 120)
 const C_TEXT := Color8(242, 222, 170)
 const C_SHADE := Color(0, 0, 0, 0.28)
 
-## Tools, nails and the wheel draw at this many art px per map pixel, so they
-## read beside an object drawn at 2–3x.
-const TOOL_SCALE := 2
+# The gold inlay that marks the windlass zone and the saw's wanted side.
+const C_ZONE := Color8(192, 160, 64)
+const C_ZONE_HI := Color8(240, 224, 96)
+const C_ZONE_LO := Color8(126, 94, 38)
+const C_OUTLINE := Color8(42, 34, 34)
 
-# Tool sprites, drawn from these maps: one char per map pixel.
-# I/i/h = iron dark/mid/light, W/w = wood dark/mid, '.' = clear.
-const HAMMER := [
-    ".IIIIII.",
-    "IiiiihhI",
-    ".IIIIII.",
-    "...Ww...",
-    "...Ww...",
-    "...Ww...",
-    "...Ww...",
-    "...WW...",
+const ART_DIR := "res://assets/repair/"
+
+# The road close-up's geometry, in picture px — tools/repair-art/build.ps1
+# draws the trunk to these numbers. Each round cuts a section off the trunk's
+# right end, stopping at the road's left edge.
+const ROAD_TRUNK_R := 146
+const ROAD_CUT_MIN := 56
+const ROAD_LOG_Y := 34
+const ROAD_FACE_HALF := 5
+## Where the sawn rounds stack on the right verge (top-left of each round), a
+## pile of four, three, two and one; rounds past ten are not drawn.
+const ROAD_ROUNDS := [
+    Vector2(118, 72), Vector2(131, 72), Vector2(144, 72), Vector2(157, 72),
+    Vector2(124, 64), Vector2(137, 64), Vector2(150, 64),
+    Vector2(131, 56), Vector2(144, 56),
+    Vector2(137, 48),
 ]
-const SAW := [
-    "WWW.............",
-    "WwwIIIIIIIIIIIII",
-    "WwwiiiiiiiihhhhI",
-    "WWW.I.I.I.I.I.I.",
-]
+
+static var _art_cache := {}
 
 var title := ""
 var game_kind := "hammer"
@@ -83,6 +92,9 @@ var sound: Array = []
 var steps := 1
 var steps_done := 0
 var playing := false
+## The close-up drawn ("fence", "well", "shop", "crate", "sign", "road"), or
+## "" for the village sprites.
+var site := ""
 
 var k := 2  # screen px per art px
 var _stretch := Vector2.ONE
@@ -211,9 +223,62 @@ static func object_scale_for(bbox_size: Vector2, area: Vector2) -> int:
     return clampi(mini(floori(area.x / bbox_size.x), floori(area.y / bbox_size.y)), 1, 3)
 
 
-func setup(title_text: String, kind: String, broken_layers: Array, sound_layers: Array, total_steps: int, done: int) -> void:
+## The close-up for a site: its form first (a minor work), then its kind. ""
+## when there is none.
+static func site_key(site_kind: String, form: String) -> String:
+    match form:
+        "fence":
+            return "fence"
+        "crate":
+            return "crate"
+        "signpost":
+            return "sign"
+    match site_kind:
+        "well":
+            return "well"
+        "business":
+            return "shop"
+        "road":
+            return "road"
+    return ""
+
+
+## A piece of the close-up art by name, or null when it is not there.
+static func art(piece: String) -> Texture2D:
+    if not _art_cache.has(piece):
+        var path := ART_DIR + piece + ".png"
+        _art_cache[piece] = load(path) if ResourceLoader.exists(path) else null
+    return _art_cache[piece]
+
+
+## The close-up's layers for setup(): the broken and the mended picture whole,
+## or for a road the ground alone (the trunk is drawn by progress). Empty when
+## the site has no close-up.
+static func closeup_layers(key: String) -> Dictionary:
+    if key == "road":
+        var ground := art("road-ground")
+        return {} if ground == null else {"broken": [{"tex": ground, "pos": Vector2.ZERO}], "sound": []}
+    if key == "":
+        return {}
+    var b := art(key + "-broken")
+    var m := art(key + "-mended")
+    if b == null or m == null:
+        return {}
+    return {"broken": [{"tex": b, "pos": Vector2.ZERO}], "sound": [{"tex": m, "pos": Vector2.ZERO}]}
+
+
+## Where the road's trunk ends after `done` of `total` rounds, picture px.
+static func road_cut_x(done: int, total: int) -> int:
+    var t := clampf(float(done) / maxi(1, total), 0.0, 1.0)
+    return roundi(lerpf(ROAD_TRUNK_R, ROAD_CUT_MIN, t))
+
+
+## `closeup` is the site_key() of art the layers came from ("" for village
+## sprites).
+func setup(title_text: String, kind: String, broken_layers: Array, sound_layers: Array, total_steps: int, done: int, closeup := "") -> void:
     title = title_text
     game_kind = kind
+    site = closeup
     broken = broken_layers
     sound = sound_layers
     steps = maxi(1, total_steps)
@@ -252,6 +317,10 @@ func relayout() -> void:
     var area := Vector2(ART_W - 16, OBJ_MAX_H)
     _obj_scale = object_scale_for(_bbox.size, area)
     var obj_h := clampi(int(_bbox.size.y) * _obj_scale + 8, OBJ_MIN_H, OBJ_MAX_H)
+    if site != "":
+        # A close-up is drawn at the stage's own resolution and fills the area.
+        _obj_scale = 1
+        obj_h = int(_bbox.size.y)
     _obj_rect = Rect2(8, HEADER_H, ART_W - 16, obj_h)
     _art_h = HEADER_H + obj_h + GAP + Games.PLAY_H + GAP
     var room := get_viewport().get_visible_rect().size * _stretch * Vector2(0.92, 0.6)
@@ -455,8 +524,11 @@ func _draw_text_centered(text: String, at: Vector2, color: Color) -> void:
     draw_string(_title_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, TITLE_PX, color)
 
 
-## Where the object's anchor sits: centred, its foot on the area's floor.
+## Where the object's anchor sits: centred, its foot on the area's floor. A
+## close-up's picture fills the area from its top-left.
 func _anchor() -> Vector2:
+    if site != "":
+        return _obj_rect.position
     var s := float(_obj_scale)
     var floor_y := _obj_rect.end.y - 4
     var x := _obj_rect.get_center().x - (_bbox.position.x + _bbox.size.x / 2.0) * s
@@ -465,13 +537,17 @@ func _anchor() -> Vector2:
 
 
 func _draw_object() -> void:
-    draw_rect(_obj_rect, Color(0, 0, 0, 0.18))
     var anchor := _anchor()
     var s := float(_obj_scale)
-    # A soft ground shadow under the object.
-    var shadow_w := _bbox.size.x * s * 0.8
-    draw_rect(Rect2(_obj_rect.get_center().x - shadow_w / 2.0, _obj_rect.end.y - 5, shadow_w, 2), C_SHADE)
+    if site == "":
+        draw_rect(_obj_rect, Color(0, 0, 0, 0.18))
+        # A soft ground shadow under the object.
+        var shadow_w := _bbox.size.x * s * 0.8
+        draw_rect(Rect2(_obj_rect.get_center().x - shadow_w / 2.0, _obj_rect.end.y - 5, shadow_w, 2), C_SHADE)
     var p := 1.0 if _finishing or steps_done >= steps and not playing else _shown_progress
+    if site == "road":
+        _draw_road(anchor, p >= 1.0)
+        return
     if sound.is_empty():
         _draw_cut(anchor, s, p)
         return
@@ -500,8 +576,14 @@ func _draw_layer_clipped(l: Dictionary, anchor: Vector2, s: float, y0: float, y1
         return
     var size := tex.get_size()
     var dst := Rect2(anchor + l.get("pos", Vector2.ZERO) * s, size * s)
-    var clip := _obj_rect
-    clip = clip.intersection(Rect2(clip.position.x, maxf(y0, clip.position.y), clip.size.x, minf(y1, clip.end.y) - maxf(y0, clip.position.y)))
+    # The rows between y0 and y1 inside the area. At either end of the work
+    # the line is off the area (±INF) and one side has no rows at all — a
+    # Rect2 with a negative height would log an error every frame.
+    var top := maxf(y0, _obj_rect.position.y)
+    var bottom := minf(y1, _obj_rect.end.y)
+    if bottom <= top:
+        return
+    var clip := Rect2(_obj_rect.position.x, top, _obj_rect.size.x, bottom - top)
     var vis := dst.intersection(clip)
     if vis.size.x <= 0 or vis.size.y <= 0:
         return
@@ -526,10 +608,49 @@ func _draw_cut(anchor: Vector2, s: float, p: float) -> void:
         draw_texture_rect_region(tex, vis, Rect2((vis.position - dst.position) / s, vis.size / s))
 
 
+## The road close-up: the ground, the trunk cut back a section per round with
+## a sawn face on its end, and the sawn rounds stacked on the verge. Cleared,
+## the crown lies dragged aside.
+func _draw_road(anchor: Vector2, cleared: bool) -> void:
+    var ground := art("road-ground")
+    if ground != null:
+        draw_texture(ground, anchor)
+    if cleared:
+        _tex("road-brush", anchor)
+    else:
+        var trunk := art("road-trunk")
+        if trunk != null:
+            if steps_done == 0:
+                draw_texture(trunk, anchor)
+            else:
+                var cut := road_cut_x(steps_done, steps)
+                draw_texture_rect_region(trunk, Rect2(anchor, Vector2(cut, trunk.get_size().y)), Rect2(0, 0, cut, trunk.get_size().y))
+                _tex("road-face", anchor + Vector2(cut - ROAD_FACE_HALF, ROAD_LOG_Y))
+    var rounds := steps if cleared else steps_done
+    for i in mini(rounds, ROAD_ROUNDS.size()):
+        _tex("road-round", anchor + ROAD_ROUNDS[i])
+
+
 ## The section a road round cut off falls away.
 func _drop_section(from_step: int) -> void:
     var anchor := _anchor()
     var s := float(_obj_scale)
+    if site == "road":
+        var trunk := art("road-trunk")
+        if trunk == null:
+            return
+        var x0 := road_cut_x(from_step + 1, steps)
+        # The first cut takes the splintered end with it.
+        var x1 := int(trunk.get_size().x) if from_step == 0 else road_cut_x(from_step, steps)
+        if x1 <= x0:
+            return
+        _chunks.append({
+            "tex": trunk, "region": Rect2(x0, ROAD_LOG_Y, x1 - x0, 18),
+            "pos": anchor + Vector2(x0, ROAD_LOG_Y),
+            "vel": Vector2(_rng.randf_range(10, 30), -30), "life": 0.8,
+        })
+        _burst(anchor + Vector2(x0, ROAD_LOG_Y + 8), 10, [C_WOOD_HI, C_WOOD_LIGHT])
+        return
     for l in broken:
         var tex: Texture2D = l.get("tex")
         if tex == null:
@@ -569,110 +690,91 @@ func _draw_play() -> void:
             _draw_hammer(o)
 
 
+## A texture at a whole art pixel, or nothing when the art is not there.
+func _tex(piece: String, at: Vector2) -> void:
+    var t := art(piece)
+    if t != null:
+        draw_texture(t, at.floor())
+
+
 func _draw_windlass(o: Vector2) -> void:
     var g = game
-    var bar := Rect2(o + Vector2(g.BAR_X, g.BAR_Y), Vector2(g.BAR_W, 6))
-    draw_rect(bar.grow(1), C_WOOD_DARK)
-    draw_rect(bar, C_WOOD)
-    draw_rect(Rect2(bar.position.x, bar.position.y, bar.size.x, 1), C_WOOD_LIGHT)
-    var zone := Rect2(bar.position.x + g.zone_x, bar.position.y, g.zone_w, bar.size.y)
-    draw_rect(zone, C_GREEN)
-    draw_rect(Rect2(zone.position, Vector2(zone.size.x, 1)), C_GREEN_LIGHT)
-    # The peg: an iron pin riding the bar.
-    var mx := floorf(bar.position.x + g.marker)
-    draw_rect(Rect2(mx - 1, bar.position.y - 4, 3, bar.size.y + 8), C_IRON_DARK)
-    draw_rect(Rect2(mx, bar.position.y - 3, 1, bar.size.y + 6), C_IRON_LIGHT)
-    # The windlass wheel above the bar's left end, a notch turned per hit.
-    var c := (o + Vector2(g.BAR_X + 2, g.BAR_Y - 9)).floor()
-    var ang: float = g.notch * PI / 4.0 + _swing * 0.6
-    draw_arc(c, 8.0, 0.0, TAU, 24, C_WOOD_DARK, 2.0)
-    draw_arc(c, 7.0, 0.0, TAU, 24, C_WOOD_LIGHT, 1.0)
-    for i in 4:
-        var a := ang + i * PI / 2.0
-        var tip := c + Vector2(cos(a), sin(a)) * 7.0
-        draw_line(c, tip.floor(), C_WOOD_HI, 2.0)
-    draw_rect(Rect2(c - Vector2(2, 2), Vector2(4, 4)), C_IRON)
+    var bx: float = o.x + g.BAR_X
+    var by: float = o.y + g.BAR_Y
+    # The bar: a beam with iron caps; the zone is a gold inlay set into it.
+    _tex("bar", Vector2(bx - 2, by - 2))
+    var zx: float = bx + g.zone_x
+    draw_rect(Rect2(zx, by + 1, g.zone_w, 5), C_ZONE)
+    draw_rect(Rect2(zx, by + 1, g.zone_w, 1), C_ZONE_HI)
+    draw_rect(Rect2(zx, by + 5, g.zone_w, 1), C_ZONE_LO)
+    draw_rect(Rect2(zx - 1, by, 1, 7), C_OUTLINE)
+    draw_rect(Rect2(zx + g.zone_w, by, 1, 7), C_OUTLINE)
+    # The peg: an iron pin with a ring head, riding the bar.
+    _tex("peg", Vector2(floorf(bx + g.marker) - 2, by - 11))
+    if site == "sign":
+        # A plumb bob in place of the wheel: what sets a post true.
+        _tex("plumb", Vector2(bx + 2, by - 28))
+        return
+    # The windlass wheel above the bar's left end, a notch (an eighth of a
+    # turn) per hit.
+    var wheel := art("wheel")
+    if wheel != null:
+        var frame := posmod(int(g.notch), 8)
+        draw_texture_rect_region(wheel, Rect2(Vector2(bx + 4 - 11, by - 16 - 11), Vector2(23, 23)), Rect2(frame * 23, 0, 23, 23))
 
 
 func _draw_hammer(o: Vector2) -> void:
     var g = game
-    var board := Rect2(o + Vector2(g.BOARD_X, g.BOARD_Y), Vector2(g.BOARD_W, g.BOARD_H))
-    draw_rect(board.grow(1), C_WOOD_DARK)
-    draw_rect(board, C_WOOD)
-    for y in [board.position.y + 4, board.position.y + 9]:
-        draw_rect(Rect2(board.position.x, y, board.size.x, 1), C_WOOD_DARK)
-    draw_rect(Rect2(board.position.x, board.position.y, board.size.x, 1), C_WOOD_LIGHT)
+    var top: float = o.y + g.BOARD_Y
+    _tex("plank", Vector2(o.x + g.BOARD_X - 4, top))
+    var nail := art("nail")
     for i in g.SLOTS:
         var x: float = o.x + g.slot_x(i)
-        var top := board.position.y
         if g.driven[i]:
             # Driven flush: just the head.
-            draw_rect(Rect2(x - 3, top, 7, 2), C_IRON_LIGHT)
-            draw_rect(Rect2(x - 3, top + 1, 7, 1), C_IRON)
-        elif i == g.up:
-            # Standing proud — rises fast, sinks over the last half second.
+            _tex("nail-driven", Vector2(x - 3, top))
+            draw_rect(Rect2(x - 3, top + 2, 7, 1), C_SHADE)
+        elif i == g.up and nail != null:
+            # Standing proud — rises fast, sinks over the last half second:
+            # the head over as much shaft as stands.
             var rise: float = clampf(g.up_t / 0.12, 0.0, 1.0)
             var sink: float = clampf((g.up_t - (g.UP_TIME - 0.5)) / 0.5, 0.0, 1.0)
             var h := roundf(8.0 * rise * (1.0 - sink))
-            draw_rect(Rect2(x - 1, top - h, 2, h), C_IRON)
-            draw_rect(Rect2(x, top - h, 1, h), C_IRON_LIGHT)
-            draw_rect(Rect2(x - 3, top - h - 2, 7, 2), C_IRON_LIGHT)
-            draw_rect(Rect2(x - 3, top - h - 1, 7, 1), C_IRON_DARK)
+            draw_texture_rect_region(nail, Rect2(x - 3, top - h - 3, 7, 3 + h), Rect2(0, 0, 7, 3 + h))
+            draw_rect(Rect2(x - 2, top, 5, 1), C_SHADE)
     # The hammer hangs over the nail standing (or the last struck), dropping
     # on a strike.
-    var hx: float = o.x + g.slot_x(maxi(g.up, 0)) - 8
-    var hy := board.position.y - 30 + roundf(_swing * 12.0)
-    _draw_map(HAMMER, Vector2(hx, hy))
+    var hx: float = o.x + g.slot_x(maxi(g.up, 0)) - 9
+    _tex("hammer", Vector2(hx, top - 33 + roundf(_swing * 12.0)))
 
 
 func _draw_saw(o: Vector2) -> void:
     var g = game
-    # Tap halves: the side wanted glows.
+    # Tap halves: the side wanted glows gold, its arrow pointing outward.
     var half := Games.PLAY_W / 2.0
     for side in 2:
         var r := Rect2(o + Vector2(side * half + 2, 4), Vector2(half - 4, 30))
         var want: bool = side == g.side
-        draw_rect(r, Color(C_GREEN, 0.28) if want else Color(0, 0, 0, 0.12))
+        draw_rect(r, Color(C_ZONE, 0.16) if want else Color(0, 0, 0, 0.12))
         var cy := floorf(r.get_center().y)
-        var col := C_GREEN_LIGHT if want else Color(C_TEXT, 0.35)
-        # A chevron pointing outward, 6 px tall: the side to draw toward.
-        for i in 6:
-            var dx := i if side == 0 else -i
-            var ax := r.position.x + (8.0 if side == 0 else r.size.x - 10.0) + dx
+        var col := C_ZONE_HI if want else Color(C_TEXT, 0.3)
+        var edge := C_ZONE_LO if want else Color(0, 0, 0, 0.24)
+        for i in 7:
+            var ax := r.position.x + (8.0 + i if side == 0 else r.size.x - 12.0 - i)
             draw_rect(Rect2(ax, cy - i, 2, i * 2 + 1), col)
-    # The log section under the saw, and the saw riding back and forth.
-    var log := Rect2(o + Vector2(g.LOG_X + 16, 16), Vector2(g.LOG_W - 32, 14))
-    draw_rect(log.grow(1), C_WOOD_DARK)
-    draw_rect(log, C_WOOD)
-    draw_rect(Rect2(log.position.x, log.position.y + 2, log.size.x, 1), C_WOOD_LIGHT)
-    draw_rect(Rect2(log.position.x, log.end.y - 2, log.size.x, 1), C_WOOD_DARK)
-    var cut := floorf(log.get_center().x)
-    var depth := floorf(float(g.strokes) / g.STROKES * log.size.y)
-    draw_rect(Rect2(cut - 1, log.position.y, 2, depth), C_WOOD_DARK)
-    var sx := cut - 16 + roundf(g.saw_x * 12.0)
-    _draw_map(SAW, Vector2(sx, log.position.y - 8 + depth))
-
-
-## Draw a tool map, each map pixel `scale` art px square.
-func _draw_map(rows: Array, at: Vector2, scale: int = TOOL_SCALE) -> void:
-    for y in rows.size():
-        var row: String = rows[y]
-        for x in row.length():
-            var col := _map_color(row[x])
-            if col.a > 0.0:
-                draw_rect(Rect2(at.floor() + Vector2(x, y) * scale, Vector2.ONE * scale), col)
-
-
-func _map_color(ch: String) -> Color:
-    match ch:
-        "I":
-            return C_IRON_DARK
-        "i":
-            return C_IRON
-        "h":
-            return C_IRON_LIGHT
-        "W":
-            return C_WOOD_DARK
-        "w":
-            return C_WOOD_LIGHT
-    return Color(0, 0, 0, 0)
+            draw_rect(Rect2(ax, cy - i, 1, 1), edge)
+            draw_rect(Rect2(ax, cy + i, 1, 1), edge)
+    # The log end-on, pointing at the player: the body recedes up and right,
+    # the blade runs in the cut behind the sawn face and shows past the log's
+    # sides, sinking a stroke at a time.
+    var face := (o + Vector2(half, 28)).floor()
+    _tex("log-back", face - Vector2(19, 27))
+    var depth := floorf(float(g.strokes) / g.STROKES * 38.0)
+    _tex("saw", Vector2(face.x - 34 + roundf(g.saw_x * 12.0), face.y - 27 + depth))
+    _tex("log-face", face - Vector2(19, 19))
+    # Sawdust where the blade comes out at both sides.
+    var by := face.y - 19 + depth
+    var w := floorf(sqrt(maxf(0.0, 361.0 - (by - face.y) * (by - face.y))))
+    for d in [Vector2(1, 1), Vector2(2, 3), Vector2(1, 5), Vector2(3, 6)]:
+        draw_rect(Rect2(face.x - w - d.x, by + d.y, 1, 1), C_WOOD_HI)
+        draw_rect(Rect2(face.x + w + d.x, by + d.y - 1, 1, 1), C_WOOD_HI)

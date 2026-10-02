@@ -10,9 +10,10 @@ extends SceneTree
 ##   godot --headless --path client --script res://tests/repair_panel_test.gd
 ## Exits 0 when every check passes, 1 if any check fails.
 ##
-## No purchased art is needed: textures are synthetic ImageTextures, and the
-## stage's Title font falls back to the default font when the Mana Seed file
-## is absent (as on CI).
+## No purchased art is needed: the close-up art (client/assets/repair/) is
+## drawn for the client and committed with it, village sprites are synthetic
+## ImageTextures, and the stage's Title font falls back to the default font
+## when the Mana Seed file is absent (as on CI).
 
 const Games = preload("res://scripts/repair_games.gd")
 const StageScript = preload("res://scripts/repair_stage.gd")
@@ -42,6 +43,21 @@ const TESTS := [
     "_test_state_change_without_texture_keeps_state",
     "_test_stale_step_answer_skips_new_work",
     "_test_matching_probe_calls_back_true",
+    "_test_site_key",
+    "_test_closeup_art_is_all_there",
+    "_test_closeup_fills_the_area_at_scale_1",
+    "_test_closeup_reveal_sweeps_only_the_damage",
+    "_test_road_cut_and_rounds",
+    "_test_panel_uses_the_closeup_else_village_sprites",
+]
+
+## Every piece tools/repair-art/build.ps1 writes, and what reads it.
+const _ART_PIECES := [
+    "fence-broken", "fence-mended", "well-broken", "well-mended", "shop-broken", "shop-mended",
+    "crate-broken", "crate-mended", "sign-broken", "sign-mended",
+    "road-ground", "road-trunk", "road-face", "road-round", "road-brush",
+    "plank", "nail", "nail-driven", "hammer", "bar", "peg", "wheel", "plumb",
+    "log-back", "log-face", "saw",
 ]
 
 var _failures := 0
@@ -544,5 +560,113 @@ func _test_matching_probe_calls_back_true() -> void:
     p._on_offer_response(0, 200, PackedStringArray(), _body({"repair": _OFFER}))
     _check("the latest click hears the panel opened, once", calls, [true])
     _check("the panel is open", p.is_open(), true)
+    _free_panel(p)
+    _done()
+
+
+func _test_site_key() -> void:
+    _check("a fence break", StageScript.site_key("minor", "fence"), "fence")
+    _check("a crate lid", StageScript.site_key("minor", "crate"), "crate")
+    _check("a signpost", StageScript.site_key("minor", "signpost"), "sign")
+    _check("a well", StageScript.site_key("well", ""), "well")
+    _check("a business", StageScript.site_key("business", ""), "shop")
+    _check("a road", StageScript.site_key("road", ""), "road")
+    _check("the form wins over the kind", StageScript.site_key("well", "fence"), "fence")
+    _check("anything else has none", StageScript.site_key("minor", "barrow"), "")
+    _done()
+
+
+## The art is committed with the client, so every piece is there — CI too.
+func _test_closeup_art_is_all_there() -> void:
+    for piece in _ART_PIECES:
+        _check("piece %s loads" % piece, StageScript.art(piece) != null, true)
+    for key in ["fence", "well", "shop", "crate", "sign"]:
+        var b := StageScript.art(key + "-broken")
+        var m := StageScript.art(key + "-mended")
+        if b == null or m == null:
+            continue
+        _check("%s pictures are 176 wide" % key, b.get_size().x, 176.0)
+        _check("%s broken and mended match in size" % key, b.get_size(), m.get_size())
+    var wheel := StageScript.art("wheel")
+    _check("the wheel is eight 23 px turns", wheel.get_size() if wheel != null else Vector2.ZERO, Vector2(184, 23))
+    var ground := StageScript.art("road-ground")
+    var trunk := StageScript.art("road-trunk")
+    if ground != null and trunk != null:
+        _check("the trunk lies over the whole road picture", trunk.get_size(), ground.get_size())
+    _check("no art, no piece", StageScript.art("no-such-piece"), null)
+    _done()
+
+
+func _test_closeup_fills_the_area_at_scale_1() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("fence")
+    _check("the fence has a close-up", layers.is_empty(), false)
+    if not layers.is_empty():
+        stage.setup("Mend the Fence", "hammer", layers["broken"], layers["sound"], 5, 0, "fence")
+        _check("drawn at the stage's own resolution", stage._obj_scale, 1)
+        _check("the area is the picture's height", stage._obj_rect.size.y, 72.0)
+        _check("the picture fills it from its top-left", stage._anchor(), stage._obj_rect.position)
+        # The village sprites still scale up to fit.
+        var broken := [{"tex": _tex(48, 16), "pos": Vector2(-24, -14)}]
+        stage.setup("Mend the Fence", "hammer", broken, broken, 5, 0)
+        _check("village sprites scale up", stage._obj_scale, 3)
+    _check("no close-up for an unknown key", StageScript.closeup_layers(""), {})
+    _check("a road's close-up is its ground alone", StageScript.closeup_layers("road")["sound"].size(), 0)
+    stage.queue_free()
+    _done()
+
+
+## The broken and mended pictures match pixel for pixel outside the damage
+## (each element seeds itself from its coordinates), so the reveal line
+## sweeps only what the repair changes — for the fence, the right-hand bay.
+func _test_closeup_reveal_sweeps_only_the_damage() -> void:
+    var layers: Dictionary = StageScript.closeup_layers("fence")
+    if layers.is_empty():
+        _check("the fence has a close-up", false, true)
+        _done()
+        return
+    var box := StageScript.layers_bbox(layers["broken"])
+    var reveal := StageScript.diff_rect(layers["broken"], layers["sound"], box)
+    _check("the pictures differ somewhere", reveal != box, true)
+    _check("the left bay and its posts are untouched", reveal.position.x >= 90.0, true)
+    _done()
+
+
+func _test_road_cut_and_rounds() -> void:
+    _check("uncut: the whole trunk", StageScript.road_cut_x(0, 10), StageScript.ROAD_TRUNK_R)
+    _check("all cut: back to the road's edge", StageScript.road_cut_x(10, 10), StageScript.ROAD_CUT_MIN)
+    _check("half way between", StageScript.road_cut_x(5, 10), 101)
+    _check("never past the edge", StageScript.road_cut_x(12, 10), StageScript.ROAD_CUT_MIN)
+    var shrinks := true
+    for i in 10:
+        if StageScript.road_cut_x(i + 1, 10) >= StageScript.road_cut_x(i, 10):
+            shrinks = false
+    _check("each round takes a section off", shrinks, true)
+    var ground := StageScript.art("road-ground")
+    var rnd := StageScript.art("road-round")
+    if ground != null and rnd != null:
+        var inside := true
+        for at in StageScript.ROAD_ROUNDS:
+            if not Rect2(Vector2.ZERO, ground.get_size()).encloses(Rect2(at, rnd.get_size())):
+                inside = false
+        _check("every stacked round lies inside the picture", inside, true)
+    _check("ten places in the pile", StageScript.ROAD_ROUNDS.size(), 10)
+    _done()
+
+
+func _test_panel_uses_the_closeup_else_village_sprites() -> void:
+    var sent := []
+    var p := _live_panel(sent)
+    p.show_offer(_OFFER)
+    _check("a fence break shows its close-up", p.stage.site, "fence")
+    p.close()
+    var o := _OFFER.duplicate()
+    o["object_id"] = "post"
+    o["form"] = "barrow"
+    _placed(p.world, "post", "fence", Vector2(100, 100))
+    p.show_offer(o)
+    _check("no close-up: the village sprites", p.stage.site, "")
     _free_panel(p)
     _done()
