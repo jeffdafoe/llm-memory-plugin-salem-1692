@@ -24,22 +24,23 @@ func NewCourtCasesRepo(pool Pool) *CourtCasesRepo {
 }
 
 const loadCourtCasesSQL = `
-SELECT id, filed_at, filed_by_actor_id, filed_by_name, parties, complaint, status,
+SELECT id, filed_at, filed_by_actor_id, filed_by_name, parties, complaint, status, seeded,
        ruled_at, result, found_for_actor_id, payer_actor_id, payee_actor_id,
        amount_ordered, amount_paid, words
   FROM court_case`
 
 const upsertCourtCaseSQL = `
 INSERT INTO court_case (
-    id, filed_at, filed_by_actor_id, filed_by_name, parties, complaint, status,
+    id, filed_at, filed_by_actor_id, filed_by_name, parties, complaint, status, seeded,
     ruled_at, result, found_for_actor_id, payer_actor_id, payee_actor_id,
     amount_ordered, amount_paid, words
-) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $16, $8, $9, $10, $11, $12, $13, $14, $15)
 ON CONFLICT (id) DO UPDATE SET
     filed_by_name      = EXCLUDED.filed_by_name,
     parties            = EXCLUDED.parties,
     complaint          = EXCLUDED.complaint,
     status             = EXCLUDED.status,
+    seeded             = EXCLUDED.seeded,
     ruled_at           = EXCLUDED.ruled_at,
     result             = EXCLUDED.result,
     found_for_actor_id = EXCLUDED.found_for_actor_id,
@@ -75,8 +76,9 @@ func (r *CourtCasesRepo) LoadAll(ctx context.Context) (map[sim.CourtCaseID]*sim.
 			partiesJSON                        []byte
 			ruledAt                            *time.Time
 			amountOrdered, amountPaid          *int
+			seeded                             bool
 		)
-		if err := rows.Scan(&id, &filedAt, &filedBy, &filedByName, &partiesJSON, &complaint, &status,
+		if err := rows.Scan(&id, &filedAt, &filedBy, &filedByName, &partiesJSON, &complaint, &status, &seeded,
 			&ruledAt, &result, &foundFor, &payer, &payee, &amountOrdered, &amountPaid, &words); err != nil {
 			return nil, fmt.Errorf("pg court_cases LoadAll scan: %w", err)
 		}
@@ -96,6 +98,7 @@ func (r *CourtCasesRepo) LoadAll(ctx context.Context) (map[sim.CourtCaseID]*sim.
 			PayerID:     sim.ActorID(deref(payer)),
 			PayeeID:     sim.ActorID(deref(payee)),
 			Words:       deref(words),
+			Seeded:      seeded,
 		}
 		for _, p := range wire {
 			c.Parties = append(c.Parties, sim.CourtParty{ActorID: sim.ActorID(p.ActorID), Name: p.Name})
@@ -175,6 +178,7 @@ func (r *CourtCasesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, cases map[
 			amountOrdered,                  // $13 amount_ordered
 			amountPaid,                     // $14 amount_paid
 			nullable(c.Words),              // $15 words
+			c.Seeded,                       // $16 seeded
 		); err != nil {
 			return fmt.Errorf("pg court_cases SaveSnapshot: upsert id=%s: %w", c.ID, err)
 		}

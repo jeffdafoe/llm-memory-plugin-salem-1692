@@ -104,6 +104,9 @@ type CourtCase struct {
 	Parties     []CourtParty
 	Complaint   string
 	Status      string
+	// Seeded marks a case the operator filed (umbilical /court/file). It does
+	// not count toward the filer's daily limit.
+	Seeded bool
 
 	// The ruling. Zero until Status is ruled.
 	RuledAt       time.Time
@@ -210,7 +213,7 @@ func courtCasesFiledToday(w *World, filerID ActorID, now time.Time) int {
 	start := gameDayStart(w, now)
 	n := 0
 	for _, c := range w.CourtCases {
-		if c != nil && c.FiledByID == filerID && !c.FiledAt.Before(start) {
+		if c != nil && !c.Seeded && c.FiledByID == filerID && !c.FiledAt.Before(start) {
 			n++
 		}
 	}
@@ -338,6 +341,7 @@ func FileCourtCase(filerID ActorID, partyNames []string, complaint string, now t
 			Parties:     parties,
 			Complaint:   complaint,
 			Status:      CourtCaseStatusPending,
+			Seeded:      operator,
 		}
 		w.CourtCases[id] = c
 		names := courtPartyNames(parties)
@@ -790,7 +794,7 @@ func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[Ac
 		if c == nil {
 			continue
 		}
-		if c.FiledByID != "" && !c.FiledAt.Before(start) {
+		if c.FiledByID != "" && !c.Seeded && !c.FiledAt.Before(start) {
 			if today == nil {
 				today = make(map[ActorID]int)
 			}

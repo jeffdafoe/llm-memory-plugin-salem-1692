@@ -41,6 +41,7 @@ type umbilicalCourtCase struct {
 	Parties       []umbilicalCourtParty `json:"parties"`
 	Complaint     string                `json:"complaint"`
 	Status        string                `json:"status"`
+	Seeded        bool                  `json:"seeded,omitempty"`
 	RuledAt       *time.Time            `json:"ruled_at,omitempty"`
 	Result        string                `json:"result,omitempty"`
 	FoundFor      string                `json:"found_for,omitempty"`
@@ -58,6 +59,7 @@ func toUmbilicalCourtCase(c *sim.CourtCase) umbilicalCourtCase {
 		FiledBy:   c.FiledByName,
 		Complaint: c.Complaint,
 		Status:    c.Status,
+		Seeded:    c.Seeded,
 		Result:    string(c.Result),
 		Words:     c.Words,
 	}

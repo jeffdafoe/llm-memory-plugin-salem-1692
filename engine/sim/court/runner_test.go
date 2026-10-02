@@ -196,6 +196,35 @@ func TestHear_ProseOnlyGivesUpAndLeavesThePendingCase(t *testing.T) {
 	}
 }
 
+// TestRecordWindow_AcrossClockChanges — seven village days are allowed and
+// eight refused on both sides of a daylight-saving change, in the village's own
+// zone.
+func TestRecordWindow_AcrossClockChanges(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tz data: %v", err)
+	}
+	now := time.Date(2026, 12, 1, 12, 0, 0, 0, loc)
+	for _, c := range []struct{ name, from, to string }{
+		{"spring forward", "2026-03-05", "2026-03-11"},
+		{"fall back", "2026-10-29", "2026-11-04"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start, end, err := recordWindow(c.from, c.to, now, loc)
+			if err != nil {
+				t.Fatalf("seven days refused: %v", err)
+			}
+			if got := start.AddDate(0, 0, 7); !got.Equal(end) {
+				t.Fatalf("window %v..%v is not seven village days", start, end)
+			}
+			last, _ := time.ParseInLocation("2006-01-02", c.to, loc)
+			if _, _, err := recordWindow(c.from, last.AddDate(0, 0, 1).Format("2006-01-02"), now, loc); err == nil {
+				t.Fatal("eight days accepted")
+			}
+		})
+	}
+}
+
 func TestRecordWindow(t *testing.T) {
 	now := time.Date(2026, 10, 3, 15, 0, 0, 0, time.UTC)
 	day := func(d int) time.Time { return time.Date(2026, 10, d, 0, 0, 0, 0, time.UTC) }

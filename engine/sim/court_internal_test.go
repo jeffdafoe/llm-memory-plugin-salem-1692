@@ -277,3 +277,18 @@ func TestCourtSittingPhrase(t *testing.T) {
 		}
 	}
 }
+
+// A case the operator seeds in the constable's name does not use up his day:
+// he can still bring two of his own.
+func TestFileCourtCase_SeededCaseDoesNotCountTowardTheLimit(t *testing.T) {
+	w, _ := courtWorld()
+	seeded := fileCase(t, w, "gideon", []string{"Josiah Thorne"}, courtMorning, true)
+	if !seeded.Seeded {
+		t.Fatal("an operator filing is not marked seeded")
+	}
+	fileCase(t, w, "gideon", []string{"Lewis Walker"}, courtMorning.Add(time.Hour), false)
+	fileCase(t, w, "gideon", []string{"Anne Walker"}, courtMorning.Add(2*time.Hour), false)
+	if _, today := courtDocketForSnapshot(w, courtMorning.Add(3*time.Hour)); today["gideon"] != 2 {
+		t.Fatalf("snapshot counts %d filings for gideon, want 2 (the seeded one excluded)", today["gideon"])
+	}
+}

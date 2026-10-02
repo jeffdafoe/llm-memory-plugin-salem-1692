@@ -573,7 +573,15 @@ func fillSettlementPayload(raw []byte, row *sim.SettlementRow, actorID string) {
 // both were part of (the whole exchange, third parties included), plus each
 // one's own rows that name the other — a payment, a delivery, a hire — wherever
 // they stood. A row names the other by id where the writer stamped one, else by
-// display name (older rows carry the name only).
+// display name (older rows carry the name only — and the name as it is NOW, so
+// a name-only row written before a rename is missed; rows since LLM-572 carry
+// the id).
+//
+// The table is never trimmed, so every branch is shaped to an index rather than
+// one OR over a time range (there is no index on occurred_at alone): the shared
+// conversations through idx_agent_action_log_huddle (huddle_id, occurred_at),
+// each party's own rows through idx_agent_action_log_npc (actor_id,
+// occurred_at). UNION drops a row two branches both return.
 //
 // $1/$2 actor ids, $3/$4 their display names, $5/$6 the window, $7 the row cap.
 const loadDealingsBetweenSQL = `
@@ -585,26 +593,34 @@ WITH shared AS (
     SELECT huddle_id FROM agent_action_log
      WHERE actor_id = $2::uuid AND huddle_id IS NOT NULL
        AND occurred_at >= $5 AND occurred_at < $6
-)
-SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
-  FROM agent_action_log al
- WHERE al.occurred_at >= $5
-   AND al.occurred_at < $6
-   AND al.result = 'ok'
-   AND (
-       al.huddle_id IN (SELECT huddle_id FROM shared)
-       OR (al.actor_id = $1::uuid AND (
-               al.payload->>'recipient_actor_id' = $2::text OR al.payload->>'employer_actor_id' = $2::text
+),
+rows AS (
+    SELECT al.id, al.occurred_at, al.action_type, al.payload, al.speaker_name
+      FROM agent_action_log al
+      JOIN shared s ON s.huddle_id = al.huddle_id
+     WHERE al.occurred_at >= $5 AND al.occurred_at < $6 AND al.result = 'ok'
+    UNION
+    SELECT al.id, al.occurred_at, al.action_type, al.payload, al.speaker_name
+      FROM agent_action_log al
+     WHERE al.actor_id = $1::uuid
+       AND al.occurred_at >= $5 AND al.occurred_at < $6 AND al.result = 'ok'
+       AND (al.payload->>'recipient_actor_id' = $2::text OR al.payload->>'employer_actor_id' = $2::text
             OR al.payload->>'payer_actor_id' = $2::text
             OR $4 IN (al.payload->>'recipient', al.payload->>'employer', al.payload->>'worker',
-                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer')))
-       OR (al.actor_id = $2::uuid AND (
-               al.payload->>'recipient_actor_id' = $1::text OR al.payload->>'employer_actor_id' = $1::text
+                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer'))
+    UNION
+    SELECT al.id, al.occurred_at, al.action_type, al.payload, al.speaker_name
+      FROM agent_action_log al
+     WHERE al.actor_id = $2::uuid
+       AND al.occurred_at >= $5 AND al.occurred_at < $6 AND al.result = 'ok'
+       AND (al.payload->>'recipient_actor_id' = $1::text OR al.payload->>'employer_actor_id' = $1::text
             OR al.payload->>'payer_actor_id' = $1::text
             OR $3 IN (al.payload->>'recipient', al.payload->>'employer', al.payload->>'worker',
-                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer')))
-   )
- ORDER BY al.occurred_at ASC, al.id ASC
+                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer'))
+)
+SELECT occurred_at, action_type, payload, speaker_name
+  FROM rows
+ ORDER BY occurred_at ASC, id ASC
  LIMIT $7`
 
 // LoadDealingsBetween returns what passed between two villagers in [start, end),

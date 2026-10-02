@@ -290,7 +290,9 @@ func recordWindow(from, to string, now time.Time, loc *time.Location) (time.Time
 	if last.Before(first) {
 		return time.Time{}, time.Time{}, errors.New("the last day is before the first")
 	}
-	if last.Sub(first) >= time.Duration(maxSpanDays)*24*time.Hour {
+	// Calendar days, not elapsed hours: across a clock change a day is 23 or 25
+	// hours long.
+	if !last.Before(first.AddDate(0, 0, maxSpanDays)) {
 		return time.Time{}, time.Time{}, fmt.Errorf("read at most %d days at a time", maxSpanDays)
 	}
 	return first, last.AddDate(0, 0, 1), nil

@@ -24,7 +24,7 @@ func TestIntegration_CourtCases_RoundTrip(t *testing.T) {
 		"case-0000aa01": {
 			ID: "case-0000aa01", FiledAt: now.Add(-3 * time.Hour), FiledByID: "gideon", FiledByName: "Constable Gideon Marsh",
 			Parties:   []sim.CourtParty{{ActorID: "josiah", Name: "Josiah Thorne"}},
-			Complaint: "the ledger was taken", Status: sim.CourtCaseStatusPending,
+			Complaint: "the ledger was taken", Status: sim.CourtCaseStatusPending, Seeded: true,
 		},
 		"case-0000aa02": {
 			ID: "case-0000aa02", FiledAt: now.Add(-30 * time.Hour), FiledByID: "gideon", FiledByName: "Constable Gideon Marsh",
@@ -63,7 +63,7 @@ func TestIntegration_CourtCases_RoundTrip(t *testing.T) {
 		t.Fatalf("loaded %d cases, want 3", len(loaded.CourtCases))
 	}
 	c1 := loaded.CourtCases["case-0000aa01"]
-	if c1.Status != sim.CourtCaseStatusRuled || c1.Result != sim.CourtResultNoCase || !c1.RuledAt.Equal(now) || c1.Words != "No ledger was ever kept." {
+	if !c1.Seeded || c1.Status != sim.CourtCaseStatusRuled || c1.Result != sim.CourtResultNoCase || !c1.RuledAt.Equal(now) || c1.Words != "No ledger was ever kept." {
 		t.Errorf("updated case = %+v", c1)
 	}
 	c2 := loaded.CourtCases["case-0000aa02"]

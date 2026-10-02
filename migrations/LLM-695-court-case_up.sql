@@ -33,6 +33,8 @@ BEGIN;
 --                          the actor rows it names.
 --   * parties            — [{actor_id, name}], the names as they were at filing.
 --   * status             — pending until the sitting, then ruled for good.
+--   * seeded             — filed by the operator (umbilical /court/file); does
+--                          not count toward the filer's daily limit.
 --   * result             — the closed set: no_case / found_for / pay /
 --                          no_such_charge. NULL while pending.
 --   * amount_ordered / amount_paid — a pay order and what the payer actually
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS public.court_case (
     parties            jsonb       NOT NULL CHECK (jsonb_typeof(parties) = 'array'),
     complaint          text        NOT NULL,
     status             text        NOT NULL CHECK (status IN ('pending', 'ruled')),
+    seeded             boolean     NOT NULL DEFAULT false,
     ruled_at           timestamptz,
     result             text        CHECK (result IN ('no_case', 'found_for', 'pay', 'no_such_charge')),
     found_for_actor_id text,
