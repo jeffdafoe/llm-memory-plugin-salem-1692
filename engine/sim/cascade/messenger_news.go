@@ -95,7 +95,13 @@ func authorMessengerNews(ctx context.Context, w *sim.World, client llm.Client, i
 		return
 	}
 	outcome, _ := res.(sim.MessengerNewsOutcome)
-	log.Printf("cascade/messenger_news: %s (%s) news for %s %d: %s — %q", name, id, month, day, outcome, sim.CleanMessengerNews(resp.Content))
+	// The text is logged so a refusal can be read, truncated to the install cap so
+	// a runaway reply cannot flood the log.
+	text := sim.CleanMessengerNews(resp.Content)
+	if r := []rune(text); len(r) > sim.MaxMessengerNewsLen {
+		text = string(r[:sim.MaxMessengerNewsLen]) + "…"
+	}
+	log.Printf("cascade/messenger_news: %s (%s) news for %s %d: %s — %q", name, id, month, day, outcome, text)
 }
 
 // buildMessengerNewsPrompt is the full instruction for one item of news. The

@@ -79,6 +79,33 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 	}
 }
 
+// TestFinalizeLoad_DropsNonMessengerWord pins LLM-700 across an upgrade: a
+// non-messenger traveler checkpointed by an older engine with one of the village's
+// trades as his road word comes back carrying nothing, while a messenger keeps the
+// word he carries.
+func TestFinalizeLoad_DropsNonMessengerWord(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	now := time.Now().UTC()
+	peddler := newVisitorFixture("vstr-0000beef", now.Add(2*time.Hour), "")
+	peddler.DisplayName = "Elias Drum the peddler"
+	peddler.VisitorState.Archetype = "peddler"
+	handles.Visitors.Seed(map[sim.ActorID]*sim.LoadedVisitor{
+		"vstr-0000abcd": newVisitorFixture("vstr-0000abcd", now.Add(2*time.Hour), ""),
+		"vstr-0000beef": peddler,
+	})
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if got := w.Actors["vstr-0000beef"].VisitorState.Payload; got != "" {
+		t.Errorf("rehydrated peddler still carries word %q; only a messenger carries word", got)
+	}
+	if got := w.Actors["vstr-0000abcd"].VisitorState.Payload; got == "" {
+		t.Error("rehydrated messenger lost the word he carries")
+	}
+}
+
 // TestFinalizeLoad_RestoresSprite — LLM-379: a rehydrated traveler gets its SpriteID
 // resolved from the persisted archetype (and a Facing), so a restart doesn't strand it
 // invisible. The sprite is derived from the archetype, not persisted separately.

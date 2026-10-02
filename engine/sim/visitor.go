@@ -1043,6 +1043,12 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 			elapsed++
 			continue
 		}
+		// Only a messenger carries word (LLM-700). A traveler checkpointed by an
+		// older engine may still hold one of the village's own trades as his road
+		// word; drop it so he does not keep carrying it after the upgrade.
+		if !lv.VisitorState.CarriesOutsideNews() {
+			lv.VisitorState.Payload = ""
+		}
 		// Pack / purse / booked-room grant ride on the plan jsonb (LLM-373), restored
 		// here so a mid-stay deploy resumes the traveler with its wares to pay with
 		// and its room still booked. nil maps seed empty (a traveler that carried
