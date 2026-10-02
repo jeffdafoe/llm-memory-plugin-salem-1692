@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,12 +167,11 @@ func TestHandleObjectGather_MissingID(t *testing.T) {
 	}
 }
 
-// TestHandleObjectGather_DamagedWell (LLM-654) — a broken well reports
-// damaged=true alongside its stock, so the tooltip can say "Broken" instead of
-// a water count nobody can draw; a sound well omits the field. The flag is
-// well-only (the client's line names the windlass): a damaged non-well — here a
-// drifted bush, gatherable and not — reports false.
-func TestHandleObjectGather_DamagedWell(t *testing.T) {
+// TestHandleObjectGather_RepairSite (LLM-654, LLM-698) — the hover read carries
+// `repair` for a site the town pays to mend: a broken well, gatherable or
+// not, with its fact and the well's bounty. A sound well and a damaged object
+// that is no kind of repair site (a drifted bush, a bench) carry none.
+func TestHandleObjectGather_RepairSite(t *testing.T) {
 	w := seededWorld(t)
 	seedGatherObjects(t, w)
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -180,6 +180,7 @@ func TestHandleObjectGather_DamagedWell(t *testing.T) {
 		world.VillageObjects["well1"].Tags = []string{sim.TagWell}
 		world.VillageObjects["bush1"].DamagedAt = time.Now().UTC()
 		world.VillageObjects["bench1"].DamagedAt = time.Now().UTC()
+		world.Settings.PublicWorksBounty = 12
 		return nil, nil
 	}}); err != nil {
 		t.Fatal(err)
@@ -191,8 +192,13 @@ func TestHandleObjectGather_DamagedWell(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 			t.Fatalf("%s decode: %v", id, err)
 		}
-		if res.Damaged != want {
-			t.Errorf("%s damaged = %v, want %v", id, res.Damaged, want)
+		if (res.Repair != nil) != want {
+			t.Errorf("%s repair = %+v, want present=%v", id, res.Repair, want)
+			continue
+		}
+		if want && (res.Repair.SiteID != id || res.Repair.Kind != sim.PublicWorksWell || res.Repair.Bounty != 12 ||
+			!strings.Contains(res.Repair.Fact, "windlass")) {
+			t.Errorf("%s repair = %+v, want the well's own fact and 12 coins", id, res.Repair)
 		}
 	}
 }

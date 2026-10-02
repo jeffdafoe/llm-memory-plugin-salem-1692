@@ -10,11 +10,13 @@ const COLOR_BG = Color(0.10, 0.08, 0.06, 0.92)
 const COLOR_BORDER = Color(0.45, 0.35, 0.22, 0.8)
 const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
+const COLOR_REPAIR = Color(0.93, 0.66, 0.45, 1.0)
 
 var _tooltip_panel: PanelContainer = null
 var _name_label: Label = null
 var _owner_label: Label = null
 var _berry_label: Label = null
+var _repair_label: Label = null
 var _inside_label: Label = null
 var _font: Font = null
 
@@ -65,6 +67,17 @@ func _ready() -> void:
     _owner_label.add_theme_font_size_override("font_size", 12)
     _owner_label.visible = false
     vbox.add_child(_owner_label)
+
+    # What needs mending here and what the town pays (LLM-698) — filled
+    # asynchronously by the same hover read as the berry count.
+    _repair_label = Label.new()
+    _repair_label.add_theme_color_override("font_color", COLOR_REPAIR)
+    _repair_label.add_theme_font_override("font", _font)
+    _repair_label.add_theme_font_size_override("font_size", 12)
+    _repair_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+    _repair_label.custom_minimum_size = Vector2(220, 0)
+    _repair_label.visible = false
+    vbox.add_child(_repair_label)
 
     # Live berry count for a gatherable bush (LLM-52) — filled asynchronously by
     # the pull-on-hover gather-count fetch, so it sits between owner and inside.
@@ -147,6 +160,8 @@ func _show_tooltip(node: Node2D) -> void:
     # hover so a prior object's count never lingers.
     _berry_label.text = ""
     _berry_label.visible = false
+    _repair_label.text = ""
+    _repair_label.visible = false
 
     # Pull-on-hover (LLM-52): ask the server for this object's gatherable count.
     # Fired for every hovered object; _on_count_loaded shows a line only for a
@@ -209,11 +224,12 @@ func _on_count_loaded(result: int, response_code: int, _headers: PackedStringArr
     var json = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         return
-    # A broken well (LLM-654) is out of use — say so in place of any count,
-    # since nothing can be drawn or drunk there until it is mended.
-    if bool(json.get("damaged", false)):
-        _berry_label.text = "Broken — the windlass is down"
-        _berry_label.visible = true
+    # Something here the town pays to mend (LLM-698): say what and for how
+    # much, in place of any count — a broken well gives nothing until mended.
+    # Shown for unnamed objects too (a fence rail, a crate).
+    if json.get("repair") is Dictionary:
+        _repair_label.text = repair_text(json["repair"])
+        _repair_label.visible = true
         _tooltip_panel.visible = true
         return
     if not bool(json.get("gatherable", false)):
@@ -244,6 +260,25 @@ func _on_count_loaded(result: int, response_code: int, _headers: PackedStringArr
         _berry_label.text = str(n) + " " + item
     _berry_label.visible = true
     _tooltip_panel.visible = true
+
+## The repair lines for the hover read's `repair` (sim.RepairSiteView): what is
+## broken, then who is mending it, what the town pays, or that it cannot pay.
+static func repair_text(r: Dictionary) -> String:
+    var fact := str(r.get("fact", "")).strip_edges()
+    if fact != "" and not (fact.ends_with(".") or fact.ends_with("!")):
+        fact += "."
+    var road := str(r.get("site_kind", "")) == "road"
+    var mender := str(r.get("mender_name", ""))
+    var bounty := int(r.get("bounty", 0))
+    var second := ""
+    if mender != "":
+        second = "%s is %s it." % [mender, "clearing" if road else "mending"]
+    elif bool(r.get("chest_can_pay", false)) and bounty > 0:
+        second = "The town pays %s to %s it." % ["1 coin" if bounty == 1 else "%d coins" % bounty, "clear" if road else "mend"]
+    else:
+        second = "The town cannot pay for the %s just now." % ("clearing" if road else "mending")
+    return fact + "\n" + second if fact != "" else second
+
 
 ## Build a comma-and-grammar-joined list of NPC display names whose
 ## inside_structure_id matches the given object id. Returns "" when no

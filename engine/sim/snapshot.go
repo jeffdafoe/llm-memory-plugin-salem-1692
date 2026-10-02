@@ -263,6 +263,8 @@ type Snapshot struct {
 	// The road clearing's terms (LLM-677); read through PublicWorksTerms.
 	PublicWorksRoadBounty        int
 	PublicWorksRoadRepairSeconds int
+	// The minor works' bounty (LLM-690), for the hover read (LLM-698).
+	PublicWorksMinorBounty int
 
 	// MerchantCoinFloor mirrors WorldSettings.MerchantCoinFloor RAW (LLM-294) — the
 	// working-capital floor below which a stock-rich keeper is steered to conserve

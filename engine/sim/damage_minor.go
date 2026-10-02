@@ -135,6 +135,54 @@ func MinorWorkForm(assets map[AssetID]*Asset, obj *VillageObject) string {
 	return form
 }
 
+// MinorWorkSiteOf returns the minor work obj belongs to: obj itself when it is
+// one, else the break one tile to its side that names obj's state as its edge
+// on that side — a fence break's sagging neighbour. nil for anything else.
+// Pure over the maps (the hover read, LLM-698).
+func MinorWorkSiteOf(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, obj *VillageObject) *VillageObject {
+	if obj == nil {
+		return nil
+	}
+	if obj.Damaged() {
+		if PublicWorksKind(obj) == PublicWorksMinor {
+			return obj
+		}
+		return nil
+	}
+	a := assets[obj.AssetID]
+	if a == nil {
+		return nil
+	}
+	// obj is the site's LEFT edge when the site stands one tile to its right,
+	// and its RIGHT edge when the site stands one tile to its left.
+	for _, side := range []struct {
+		prefix string
+		dx     int
+	}{{minorTagLeft, 1}, {minorTagRight, -1}} {
+		want := obj.Pos.Tile()
+		want.X += side.dx
+		var site *VillageObject
+		for _, o := range objects {
+			if o == nil || o == obj || o.AssetID != obj.AssetID || o.Pos.Tile() != want {
+				continue
+			}
+			if !o.Damaged() || PublicWorksKind(o) != PublicWorksMinor {
+				continue
+			}
+			if edge, ok := stateTagValue(a.FindState(o.CurrentState), side.prefix); !ok || edge != obj.CurrentState {
+				continue
+			}
+			if site == nil || o.ID < site.ID {
+				site = o
+			}
+		}
+		if site != nil {
+			return site
+		}
+	}
+	return nil
+}
+
 // minorNeighbour returns the placement of obj's asset one tile left (dx -1) or
 // right (dx +1) of it, or nil.
 func minorNeighbour(w *World, obj *VillageObject, dx int) *VillageObject {
