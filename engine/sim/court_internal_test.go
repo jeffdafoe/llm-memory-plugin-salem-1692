@@ -292,3 +292,58 @@ func TestFileCourtCase_SeededCaseDoesNotCountTowardTheLimit(t *testing.T) {
 		t.Fatalf("snapshot counts %d filings for gideon, want 2 (the seeded one excluded)", today["gideon"])
 	}
 }
+
+// Every `ruled` row is written before the payment: the record can then never
+// hold a payment without the ruling behind it.
+func TestApplyCourtRuling_RulingRowsPrecedeThePayment(t *testing.T) {
+	w, sink := courtWorld()
+	c := fileCase(t, w, "gideon", []string{"Josiah Thorne", "Lewis Walker"}, courtMorning, false)
+	sink.rows = nil
+	if _, err := ApplyCourtRuling(c.ID, CourtRuling{Result: CourtResultPay, Payer: "Josiah Thorne", Payee: "Lewis Walker", Amount: 5, Words: "x"}, courtMorning.Add(4*time.Hour)).Fn(w); err != nil {
+		t.Fatal(err)
+	}
+	var kinds []ActionType
+	for _, r := range sink.rows {
+		kinds = append(kinds, r.ActionType)
+	}
+	want := []ActionType{ActionTypeRuled, ActionTypeRuled, ActionTypeRuled, ActionTypePaid}
+	if len(kinds) != len(want) {
+		t.Fatalf("rows %v, want %v", kinds, want)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Fatalf("rows %v, want %v", kinds, want)
+		}
+	}
+}
+
+func TestCourtRulingFromRecord_Validates(t *testing.T) {
+	good := func() map[string]any {
+		return map[string]any{"result": "pay", "words": "w", "payer": "A", "payee": "B",
+			"amount_ordered": float64(10), "amount_paid": float64(4)}
+	}
+	if r, err := CourtRulingFromRecord(CourtRecord{Ruling: good()}); err != nil || r.Amount != 10 || r.RecoveredPaid != 4 || !r.Recovered {
+		t.Fatalf("valid record: %+v %v", r, err)
+	}
+	bad := map[string]func(map[string]any){
+		"unknown result":     func(p map[string]any) { p["result"] = "acquit" },
+		"no words":           func(p map[string]any) { delete(p, "words") },
+		"no payer":           func(p map[string]any) { delete(p, "payer") },
+		"negative paid":      func(p map[string]any) { p["amount_paid"] = float64(-3) },
+		"fractional paid":    func(p map[string]any) { p["amount_paid"] = 2.5 },
+		"paid over ordered":  func(p map[string]any) { p["amount_paid"] = float64(11) },
+		"ordered zero":       func(p map[string]any) { p["amount_ordered"] = float64(0); p["amount_paid"] = float64(0) },
+		"ordered as string":  func(p map[string]any) { p["amount_ordered"] = "10" },
+		"over the order cap": func(p map[string]any) { p["amount_ordered"] = float64(MaxCourtPayOrder + 1) },
+	}
+	for name, mutate := range bad {
+		p := good()
+		mutate(p)
+		if _, err := CourtRulingFromRecord(CourtRecord{Ruling: p}); err == nil {
+			t.Errorf("%s: accepted %v", name, p)
+		}
+	}
+	if _, err := CourtRulingFromRecord(CourtRecord{Ruling: map[string]any{"result": "found_for", "words": "w"}}); err == nil {
+		t.Error("found_for with no party accepted")
+	}
+}

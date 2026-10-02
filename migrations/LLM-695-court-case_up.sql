@@ -62,15 +62,18 @@ CREATE TABLE IF NOT EXISTS public.court_case (
 );
 
 -- Crash recovery. A ruling's agent_action_log rows are written through as it is
--- given; the case's ruled status and the purses reach Postgres only at the next
--- checkpoint. If the engine dies in between, the case reloads pending — and
--- before the court hears a pending case it looks here for a `ruled` row already
--- carrying its id, and finishes THAT ruling rather than asking the magistrate
--- again (who could rule differently). Partial expression index: only `ruled`
--- rows, keyed by the case id in the payload, so the lookup never scans the
--- never-trimmed log.
+-- given — every `ruled` row first, then the court's `paid` row — while the
+-- case's ruled status and the purses reach Postgres only at the next
+-- checkpoint. If the engine dies in between, the case reloads pending; before
+-- the court hears a pending case it reads the rows already carrying its id,
+-- finishes THAT ruling rather than asking the magistrate again (who could rule
+-- differently), and writes whichever rows are missing. Partial expression
+-- indexes, one per row kind, so the lookup never scans the never-trimmed log.
 CREATE INDEX IF NOT EXISTS ix_agent_action_log_ruled_case_id
     ON agent_action_log ((payload->>'case_id'))
     WHERE action_type = 'ruled';
+CREATE INDEX IF NOT EXISTS ix_agent_action_log_paid_court_case_id
+    ON agent_action_log ((payload->>'court_case_id'))
+    WHERE action_type = 'paid';
 
 COMMIT;

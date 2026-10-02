@@ -4,14 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math"
 	"sync/atomic"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -659,36 +656,61 @@ func (r *ActionLogRepo) LoadDealingsBetween(ctx context.Context, a, b sim.ActorI
 	return events, nil
 }
 
-// loadCourtRulingSQL finds the first durable `ruled` row for a court case — the
-// crash-recovery lookup (LLM-695). Served by ix_agent_action_log_ruled_case_id.
-// The first row is the one to trust: the async writer is a single FIFO
-// goroutine, so a ruling's `paid` row (enqueued before its `ruled` rows) is
-// already durable whenever any of its `ruled` rows is.
-const loadCourtRulingSQL = `
-SELECT occurred_at, payload
+// loadCourtRecordSQL reads what the durable record holds for one court case —
+// the crash-recovery lookup (LLM-695): every `ruled` row and the court's `paid`
+// row, oldest first. Two branches, each served by its partial expression index
+// (ix_agent_action_log_ruled_case_id, ix_agent_action_log_paid_court_case_id),
+// so the lookup never scans the never-trimmed log.
+const loadCourtRecordSQL = `
+SELECT id, occurred_at, action_type, payload, actor_id::text
   FROM agent_action_log
- WHERE action_type = 'ruled'
-   AND payload->>'case_id' = $1
- ORDER BY id ASC
- LIMIT 1`
+ WHERE action_type = 'ruled' AND payload->>'case_id' = $1
+UNION ALL
+SELECT id, occurred_at, action_type, payload, actor_id::text
+  FROM agent_action_log
+ WHERE action_type = 'paid' AND payload->>'court_case_id' = $1
+ ORDER BY id ASC`
 
-// LoadCourtRuling returns the payload and time of the first `ruled` row for the
-// case, found=false when the record holds none.
-func (r *ActionLogRepo) LoadCourtRuling(ctx context.Context, caseID sim.CourtCaseID) (map[string]any, time.Time, bool, error) {
-	var (
-		at  time.Time
-		raw []byte
-	)
-	err := r.pool.QueryRow(ctx, loadCourtRulingSQL, string(caseID)).Scan(&at, &raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, time.Time{}, false, nil
-	}
+// LoadCourtRecord returns what the record holds for the case. found is true
+// when any row exists — a ruling or a payment.
+func (r *ActionLogRepo) LoadCourtRecord(ctx context.Context, caseID sim.CourtCaseID) (sim.CourtRecord, bool, error) {
+	rec := sim.CourtRecord{RuledFor: map[sim.ActorID]bool{}}
+	rows, err := r.pool.Query(ctx, loadCourtRecordSQL, string(caseID))
 	if err != nil {
-		return nil, time.Time{}, false, fmt.Errorf("load court ruling %s: %w", caseID, err)
+		return rec, false, fmt.Errorf("load court record %s: %w", caseID, err)
 	}
-	payload := map[string]any{}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, time.Time{}, false, fmt.Errorf("decode court ruling %s: %w", caseID, err)
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var (
+			id         int64
+			at         time.Time
+			actionType string
+			raw        []byte
+			actorID    *string
+		)
+		if err := rows.Scan(&id, &at, &actionType, &raw, &actorID); err != nil {
+			return rec, false, fmt.Errorf("scan court record %s: %w", caseID, err)
+		}
+		found = true
+		switch sim.ActionType(actionType) {
+		case sim.ActionTypePaid:
+			rec.PaymentRecorded = true
+		case sim.ActionTypeRuled:
+			if actorID != nil {
+				rec.RuledFor[sim.ActorID(*actorID)] = true
+			}
+			if rec.Ruling == nil {
+				payload := map[string]any{}
+				if err := json.Unmarshal(raw, &payload); err != nil {
+					return rec, false, fmt.Errorf("decode court ruling %s: %w", caseID, err)
+				}
+				rec.Ruling, rec.RuledAt = payload, at
+			}
+		}
 	}
-	return payload, at, true, nil
+	if err := rows.Err(); err != nil {
+		return rec, false, fmt.Errorf("iterate court record %s: %w", caseID, err)
+	}
+	return rec, found, nil
 }

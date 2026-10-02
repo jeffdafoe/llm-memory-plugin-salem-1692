@@ -22,17 +22,19 @@ type fakeRecords struct {
 	mu       sync.Mutex
 	dealings int
 	days     int
-	// ruling, when set, is a `ruled` row already in the record.
-	ruling  map[string]any
-	ruledAt time.Time
+	// record, when set, is what the durable record already holds for the case.
+	record  *sim.CourtRecord
 	lookups int
 }
 
-func (f *fakeRecords) LoadCourtRuling(_ context.Context, _ sim.CourtCaseID) (map[string]any, time.Time, bool, error) {
+func (f *fakeRecords) LoadCourtRecord(_ context.Context, _ sim.CourtCaseID) (sim.CourtRecord, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lookups++
-	return f.ruling, f.ruledAt, f.ruling != nil, nil
+	if f.record == nil {
+		return sim.CourtRecord{}, false, nil
+	}
+	return *f.record, true, nil
 }
 
 func (f *fakeRecords) LoadDayEvents(_ context.Context, _ sim.ActorID, start, _ time.Time) ([]sim.SimDayEvent, error) {
@@ -281,14 +283,10 @@ func (s *recordingSink) Append(_ context.Context, row sim.DurableActionLogRow) e
 	return nil
 }
 
-// TestHear_RecoversARulingGivenBeforeACrash — the record already holds a
-// ruling for the pending case (its rows were written, then the engine died
-// before the checkpoint that would have saved the case and the purses). The
-// court finishes THAT ruling: the magistrate, scripted to rule differently, is
-// never asked; the case takes the recorded result, words and time; the pay
-// order moves the recorded sum again (the purses rolled back with the case);
-// and nothing new is written to the record.
-func TestHear_RecoversARulingGivenBeforeACrash(t *testing.T) {
+// recoveryWorld is courtTestWorld with Lewis added as a party and a recording
+// sink installed, for the crash-recovery tests.
+func recoveryWorld(t *testing.T) (*sim.World, context.Context, sim.CourtCaseID, *recordingSink) {
+	t.Helper()
 	w, ctx, caseID := courtTestWorld(t)
 	sink := &recordingSink{}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -299,39 +297,152 @@ func TestHear_RecoversARulingGivenBeforeACrash(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	ruledAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
-	records := &fakeRecords{
-		ruledAt: ruledAt,
-		ruling: map[string]any{
-			"case_id": string(caseID), "result": "pay", "words": "Josiah Thorne is to hand Lewis Walker ten coins.",
-			"payer": "Josiah Thorne", "payee": "Lewis Walker", "amount_ordered": float64(10), "amount_paid": float64(10),
-		},
+	return w, ctx, caseID, sink
+}
+
+const recordedWords = "Josiah Thorne is to hand Lewis Walker ten coins."
+
+func recordedPayRuling(caseID sim.CourtCaseID) map[string]any {
+	return map[string]any{
+		"case_id": string(caseID), "result": "pay", "words": recordedWords,
+		"payer": "Josiah Thorne", "payee": "Lewis Walker", "amount_ordered": float64(10), "amount_paid": float64(10),
 	}
+}
+
+// hearOnce runs one hearing with a magistrate scripted to rule DIFFERENTLY from
+// the record, and returns how often he was asked.
+func hearOnce(t *testing.T, w *sim.World, ctx context.Context, records *fakeRecords) int {
+	t.Helper()
 	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
 		call("x1", "rule", map[string]string{"result": "no_case", "words": "There is no case."}),
 	}}})
 	r := &Runner{ctx: ctx, w: w, client: client, records: records, notes: &fakeNotes{notes: map[string]string{}}, lastAttempt: map[sim.CourtCaseID]time.Time{}}
 	res, _ := w.Send(sim.CourtCaseList())
 	r.hear(res.([]*sim.CourtCase)[0])
+	return client.CallCount()
+}
 
-	if n := client.CallCount(); n != 0 {
-		t.Fatalf("the magistrate was asked %d time(s); a recorded ruling must be finished, not re-heard", n)
-	}
-	res, _ = w.Send(sim.CourtCaseList())
-	c := res.([]*sim.CourtCase)[0]
-	if c.Status != sim.CourtCaseStatusRuled || c.Result != sim.CourtResultPay || c.AmountPaid != 10 ||
-		c.Words != "Josiah Thorne is to hand Lewis Walker ten coins." || !c.RuledAt.Equal(ruledAt) {
-		t.Fatalf("recovered case = %+v", c)
-	}
+func caseAndPurses(t *testing.T, w *sim.World) (*sim.CourtCase, [2]int) {
+	t.Helper()
+	res, _ := w.Send(sim.CourtCaseList())
 	purses, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return [2]int{world.Actors["josiah"].Coins, world.Actors["lewis"].Coins}, nil
 	}})
-	if got := purses.([2]int); got != [2]int{7, 54} {
-		t.Fatalf("purses josiah/lewis = %v, want 7/54", got)
+	return res.([]*sim.CourtCase)[0], purses.([2]int)
+}
+
+func sinkKinds(s *recordingSink) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for _, r := range s.rows {
+		out[string(r.ActionType)+":"+string(r.ActorID)]++
 	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if len(sink.rows) != 0 {
-		t.Fatalf("recovery wrote %d durable row(s); the record already holds them", len(sink.rows))
+	return out
+}
+
+// TestHear_RecoversARulingGivenBeforeACrash — the record holds the whole ruling
+// (every `ruled` row and the payment); the engine died before the checkpoint.
+// The court finishes THAT ruling: the magistrate, scripted to rule differently,
+// is never asked; the case takes the recorded result, words and time; the pay
+// order moves the recorded sum again; and nothing new is written.
+func TestHear_RecoversARulingGivenBeforeACrash(t *testing.T) {
+	w, ctx, caseID, sink := recoveryWorld(t)
+	ruledAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	records := &fakeRecords{record: &sim.CourtRecord{
+		Ruling: recordedPayRuling(caseID), RuledAt: ruledAt,
+		RuledFor:        map[sim.ActorID]bool{"josiah": true, "lewis": true, "gideon": true},
+		PaymentRecorded: true,
+	}}
+	if n := hearOnce(t, w, ctx, records); n != 0 {
+		t.Fatalf("the magistrate was asked %d time(s); a recorded ruling must be finished, not re-heard", n)
+	}
+	c, purses := caseAndPurses(t, w)
+	if c.Status != sim.CourtCaseStatusRuled || c.Result != sim.CourtResultPay || c.AmountPaid != 10 ||
+		c.Words != recordedWords || !c.RuledAt.Equal(ruledAt) {
+		t.Fatalf("recovered case = %+v", c)
+	}
+	if purses != [2]int{7, 54} {
+		t.Fatalf("purses josiah/lewis = %v, want 7/54", purses)
+	}
+	if got := sinkKinds(sink); len(got) != 0 {
+		t.Fatalf("recovery wrote %v; the record already holds everything", got)
+	}
+}
+
+// Crash after the first `ruled` row, before the other recipients' rows and the
+// payment: recovery finishes the recorded ruling and writes exactly the rows
+// that are missing — the other two `ruled` rows and the `paid` row.
+func TestHear_RecoveryWritesTheRowsTheCrashLost(t *testing.T) {
+	w, ctx, caseID, sink := recoveryWorld(t)
+	records := &fakeRecords{record: &sim.CourtRecord{
+		Ruling: recordedPayRuling(caseID), RuledAt: time.Now().UTC().Add(-time.Minute),
+		RuledFor: map[sim.ActorID]bool{"josiah": true},
+	}}
+	if n := hearOnce(t, w, ctx, records); n != 0 {
+		t.Fatalf("the magistrate was asked %d time(s)", n)
+	}
+	c, purses := caseAndPurses(t, w)
+	if c.Status != sim.CourtCaseStatusRuled || c.Words != recordedWords || purses != [2]int{7, 54} {
+		t.Fatalf("case %+v purses %v", c, purses)
+	}
+	want := map[string]int{"ruled:lewis": 1, "ruled:gideon": 1, "paid:josiah": 1}
+	got := sinkKinds(sink)
+	if len(got) != len(want) {
+		t.Fatalf("recovery wrote %v, want %v", got, want)
+	}
+	for k, n := range want {
+		if got[k] != n {
+			t.Fatalf("recovery wrote %v, want %v", got, want)
+		}
+	}
+	// The payment was not on record, so the coin record is credited now.
+	d, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.CoinDealingsFor("lewis", "josiah", time.Now().UTC()), nil
+	}})
+	if d.(sim.CoinDealings).ReceivedTotal != 10 {
+		t.Fatalf("coin record shows %d received, want 10", d.(sim.CoinDealings).ReceivedTotal)
+	}
+}
+
+// Every `ruled` row durable but the payment row lost (crash, or the payment
+// append failing): only the `paid` row is written.
+func TestHear_RecoveryWritesALostPayment(t *testing.T) {
+	w, ctx, caseID, sink := recoveryWorld(t)
+	records := &fakeRecords{record: &sim.CourtRecord{
+		Ruling: recordedPayRuling(caseID), RuledAt: time.Now().UTC().Add(-time.Minute),
+		RuledFor: map[sim.ActorID]bool{"josiah": true, "lewis": true, "gideon": true},
+	}}
+	hearOnce(t, w, ctx, records)
+	if got := sinkKinds(sink); len(got) != 1 || got["paid:josiah"] != 1 {
+		t.Fatalf("recovery wrote %v, want only the paid row", got)
+	}
+}
+
+// A payment on record with no ruling behind it (only possible if the writer
+// dropped rows) is never heard again: the case stays pending for the operator.
+func TestHear_APaymentWithNoRulingIsLeftForTheOperator(t *testing.T) {
+	w, ctx, _, sink := recoveryWorld(t)
+	records := &fakeRecords{record: &sim.CourtRecord{PaymentRecorded: true, RuledFor: map[sim.ActorID]bool{}}}
+	if n := hearOnce(t, w, ctx, records); n != 0 {
+		t.Fatalf("the magistrate was asked %d time(s)", n)
+	}
+	c, purses := caseAndPurses(t, w)
+	if c.Status != sim.CourtCaseStatusPending || purses != [2]int{17, 44} || len(sinkKinds(sink)) != 0 {
+		t.Fatalf("case %s purses %v rows %v; want untouched", c.Status, purses, sinkKinds(sink))
+	}
+}
+
+// A recorded payment larger than the restored purse is not quietly reduced:
+// recovery refuses, and nothing changes.
+func TestHear_RecoveryRefusesWhenThePayerCannotCoverTheRecordedSum(t *testing.T) {
+	w, ctx, caseID, sink := recoveryWorld(t)
+	ruling := recordedPayRuling(caseID)
+	ruling["amount_ordered"], ruling["amount_paid"] = float64(30), float64(30) // Josiah holds 17
+	records := &fakeRecords{record: &sim.CourtRecord{Ruling: ruling, RuledAt: time.Now().UTC(), RuledFor: map[sim.ActorID]bool{"josiah": true}}}
+	hearOnce(t, w, ctx, records)
+	c, purses := caseAndPurses(t, w)
+	if c.Status != sim.CourtCaseStatusPending || purses != [2]int{17, 44} || len(sinkKinds(sink)) != 0 {
+		t.Fatalf("case %s purses %v rows %v; want untouched", c.Status, purses, sinkKinds(sink))
 	}
 }

@@ -151,14 +151,20 @@ func TestLoadDealingsBetween(t *testing.T) {
 	}
 }
 
-// syncActionLogSink writes durable rows straight into agent_action_log, in
-// order, the way the production async writer eventually does.
-type syncActionLogSink struct {
-	t    *testing.T
-	pool Pool
+// crashingSink writes durable rows straight into agent_action_log, in order,
+// the way the production async writer eventually does — and, when keep is
+// non-negative, "crashes" after that many rows: the rest never land.
+type crashingSink struct {
+	pool    Pool
+	keep    int
+	written int
 }
 
-func (s syncActionLogSink) Append(ctx context.Context, row sim.DurableActionLogRow) error {
+func (s *crashingSink) Append(ctx context.Context, row sim.DurableActionLogRow) error {
+	if s.keep >= 0 && s.written >= s.keep {
+		return nil
+	}
+	s.written++
 	payload, err := json.Marshal(row.Payload)
 	if err != nil {
 		return err
@@ -175,13 +181,28 @@ func (s syncActionLogSink) Append(ctx context.Context, row sim.DurableActionLogR
 }
 
 // TestIntegration_Court_CrashBetweenRulingAndCheckpoint — the crash window
-// code_review raised. A ruling is given and its rows reach agent_action_log;
-// the engine dies before the checkpoint, so the reload has the case pending and
-// the purses as they were. Recovery reads the recorded ruling and finishes it;
-// a different second ruling is then refused; after the next checkpoint and a
-// reload there is one ruling, one payment, and the case, the purses and the
-// record agree.
+// code_review raised, at every point the writes can stop: after the first
+// `ruled` row, after every `ruled` row but before the payment, and after all of
+// them. A ruling is given; the engine dies before the checkpoint, so the reload
+// has the case pending and the purses as they were. Recovery reads the record,
+// finishes the recorded ruling and writes what is missing; a different second
+// ruling is refused; after the next checkpoint and a reload there is one
+// ruling and one payment, delivered to everyone, and the case, the purses, the
+// coin record and the log agree.
 func TestIntegration_Court_CrashBetweenRulingAndCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keep int // durable rows that land before the crash (3 ruled + 1 paid in all)
+	}{
+		{"after the first ruled row", 1},
+		{"after every ruled row, before the payment", 3},
+		{"after every row", 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) { crashAndRecover(t, tc.keep) })
+	}
+}
+
+func crashAndRecover(t *testing.T, keep int) {
 	f := newFixture(t)
 	ctx := t.Context()
 	repo := NewRepository(f.Pool)
@@ -208,8 +229,8 @@ func TestIntegration_Court_CrashBetweenRulingAndCheckpoint(t *testing.T) {
 		t.Fatalf("SaveWorld before the ruling: %v", err)
 	}
 
-	// The ruling is given; its rows reach the record. No checkpoint follows.
-	w.SetActionLogSink(syncActionLogSink{t: t, pool: f.Pool})
+	// The ruling is given; `keep` of its rows reach the record. No checkpoint.
+	w.SetActionLogSink(&crashingSink{pool: f.Pool, keep: keep})
 	ruledAt := time.Now().UTC().Truncate(time.Microsecond)
 	words := "Josiah Thorne is to hand Lewis Walker ten coins for the whetstone."
 	if _, err := sim.ApplyCourtRuling(caseID, sim.CourtRuling{Result: sim.CourtResultPay, Payer: "Josiah Thorne", Payee: "Lewis Walker", Amount: 10, Words: words}, ruledAt).Fn(w); err != nil {
@@ -224,21 +245,27 @@ func TestIntegration_Court_CrashBetweenRulingAndCheckpoint(t *testing.T) {
 	if c := loaded.CourtCases[caseID]; c.Status != sim.CourtCaseStatusPending || loaded.Actors[josiah].Coins != 17 {
 		t.Fatalf("precondition: reload should have the case pending and the purse at 17; got %s / %d", c.Status, loaded.Actors[josiah].Coins)
 	}
-	loaded.SetActionLogSink(syncActionLogSink{t: t, pool: f.Pool})
+	loaded.SetActionLogSink(&crashingSink{pool: f.Pool, keep: -1})
 
-	// Recovery: the runner finds the recorded ruling and finishes it.
+	// Recovery, as the runner does it.
 	alr := &ActionLogRepo{pool: f.Pool}
-	payload, at, found, err := alr.LoadCourtRuling(ctx, caseID)
-	if err != nil || !found {
-		t.Fatalf("LoadCourtRuling found=%v err=%v", found, err)
+	rec, found, err := alr.LoadCourtRecord(ctx, caseID)
+	if err != nil || !found || rec.Ruling == nil {
+		t.Fatalf("LoadCourtRecord found=%v ruling=%v err=%v", found, rec.Ruling != nil, err)
 	}
-	if _, err := sim.ApplyCourtRuling(caseID, sim.CourtRulingFromRecord(payload, at), time.Now().UTC()).Fn(loaded); err != nil {
+	if len(rec.RuledFor) != min(keep, 3) || rec.PaymentRecorded != (keep == 4) {
+		t.Fatalf("record: ruled for %d, payment %v; want %d, %v", len(rec.RuledFor), rec.PaymentRecorded, min(keep, 3), keep == 4)
+	}
+	ruling, err := sim.CourtRulingFromRecord(rec)
+	if err != nil {
+		t.Fatalf("CourtRulingFromRecord: %v", err)
+	}
+	if _, err := sim.ApplyCourtRuling(caseID, ruling, time.Now().UTC()).Fn(loaded); err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
 	if d := loaded.CoinDealingsFor(lewis, josiah, time.Now().UTC()); d.ReceivedTotal != 10 {
-		t.Fatalf("coin record after recovery: lewis received %d from josiah, want 10 (seeded from the record; recovery must not credit it again)", d.ReceivedTotal)
+		t.Fatalf("coin record after recovery: lewis received %d from josiah, want 10", d.ReceivedTotal)
 	}
-	// A different ruling on the same case is refused.
 	if _, err := sim.ApplyCourtRuling(caseID, sim.CourtRuling{Result: sim.CourtResultNoCase, Words: "There is no case."}, time.Now().UTC()).Fn(loaded); err == nil {
 		t.Fatal("a second, different ruling was applied to a recovered case")
 	}
@@ -258,17 +285,18 @@ func TestIntegration_Court_CrashBetweenRulingAndCheckpoint(t *testing.T) {
 	if final.Actors[josiah].Coins != 7 || final.Actors[lewis].Coins != 54 {
 		t.Fatalf("final purses josiah=%d lewis=%d, want 7 and 54", final.Actors[josiah].Coins, final.Actors[lewis].Coins)
 	}
-	var paidRows, ruledRows int
+	var paidRows, ruledRows, ruledActors int
 	if err := f.Pool.QueryRow(ctx,
 		`SELECT count(*) FILTER (WHERE action_type = 'paid' AND payload->>'court_case_id' = $1),
-		        count(*) FILTER (WHERE action_type = 'ruled' AND payload->>'case_id' = $1)
-		   FROM agent_action_log`, string(caseID)).Scan(&paidRows, &ruledRows); err != nil {
+		        count(*) FILTER (WHERE action_type = 'ruled' AND payload->>'case_id' = $1),
+		        count(DISTINCT actor_id) FILTER (WHERE action_type = 'ruled' AND payload->>'case_id' = $1)
+		   FROM agent_action_log`, string(caseID)).Scan(&paidRows, &ruledRows, &ruledActors); err != nil {
 		t.Fatal(err)
 	}
-	if paidRows != 1 || ruledRows != 3 {
-		t.Fatalf("record holds %d paid and %d ruled rows; want 1 and 3 (one ruling, delivered to two parties and the filer)", paidRows, ruledRows)
+	if paidRows != 1 || ruledRows != 3 || ruledActors != 3 {
+		t.Fatalf("record holds %d paid and %d ruled rows (%d recipients); want 1, 3, 3", paidRows, ruledRows, ruledActors)
 	}
 	if d := final.CoinDealingsFor(lewis, josiah, time.Now().UTC()); d.ReceivedTotal != 10 {
-		t.Fatalf("coin record after reload: lewis received %d from josiah, want 10 (seeded once from the one paid row)", d.ReceivedTotal)
+		t.Fatalf("coin record after reload: lewis received %d from josiah, want 10", d.ReceivedTotal)
 	}
 }

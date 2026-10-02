@@ -35,9 +35,10 @@ type RecordStore interface {
 	// LoadDealingsBetween: every conversation both were part of, plus each one's
 	// rows naming the other, in [start, end), at most limit rows.
 	LoadDealingsBetween(ctx context.Context, a, b sim.ActorID, aName, bName string, start, end time.Time, limit int) ([]sim.SimDayEvent, error)
-	// LoadCourtRuling: the first durable `ruled` row for a case — the ruling
-	// already given before a crash lost the checkpoint that would have saved it.
-	LoadCourtRuling(ctx context.Context, caseID sim.CourtCaseID) (map[string]any, time.Time, bool, error)
+	// LoadCourtRecord: what the record holds for a case — a ruling already
+	// given (and to whom it was written) and whether its payment is on record —
+	// before a crash lost the checkpoint that would have saved the case.
+	LoadCourtRecord(ctx context.Context, caseID sim.CourtCaseID) (sim.CourtRecord, bool, error)
 }
 
 // NoteStore reads and writes the bench book (memory-api documents).
@@ -203,18 +204,29 @@ func (r *Runner) hear(c *sim.CourtCase) {
 	defer cancel()
 
 	// A pending case can already have been ruled: the ruling's rows are written
-	// through as it is given, the case and the purses only at the next
-	// checkpoint, and a crash between the two reloads the case pending. Finish
-	// THAT ruling; never ask the magistrate again, who could rule differently
-	// and leave the record with two rulings for one matter. A failed lookup
-	// leaves the case for the next attempt rather than risking a second ruling.
-	payload, at, found, err := r.records.LoadCourtRuling(ctx, c.ID)
+	// through as it is given (every `ruled` row, then the `paid` row), the case
+	// and the purses only at the next checkpoint, and a crash between the two
+	// reloads the case pending. Finish THAT ruling and write whatever rows are
+	// missing; never ask the magistrate again, who could rule differently and
+	// leave the record with two rulings for one matter. A failed lookup, an
+	// unreadable record, or a payment with no ruling behind it leaves the case
+	// pending rather than risk a second ruling.
+	rec, found, err := r.records.LoadCourtRecord(ctx, c.ID)
 	if err != nil {
 		log.Printf("court: %s: recovery lookup: %v (the case waits for the next attempt)", c.ID, err)
 		return
 	}
 	if found {
-		if _, err := r.w.SendContext(ctx, sim.ApplyCourtRuling(c.ID, sim.CourtRulingFromRecord(payload, at), time.Now().UTC())); err != nil {
+		if rec.Ruling == nil {
+			log.Printf("court: %s: the record holds a payment for this case but no ruling — left pending for the operator", c.ID)
+			return
+		}
+		ruling, err := sim.CourtRulingFromRecord(rec)
+		if err != nil {
+			log.Printf("court: %s: the recorded ruling cannot be finished: %v — left pending for the operator", c.ID, err)
+			return
+		}
+		if _, err := r.w.SendContext(ctx, sim.ApplyCourtRuling(c.ID, ruling, time.Now().UTC())); err != nil {
 			log.Printf("court: %s: recovering the recorded ruling: %v", c.ID, err)
 		}
 		return
