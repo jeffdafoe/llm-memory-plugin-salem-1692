@@ -1137,9 +1137,12 @@ func _input(event: InputEvent) -> void:
             _pc_walk_pending = true
             _pc_walk_press_screen = event.position
         else:
-            # Release. If the press wasn't cancelled by a drag, fire walk.
+            # Release. If the press wasn't cancelled by a drag or a
+            # two-finger pinch, fire walk.
             if _pc_walk_pending:
                 _pc_walk_pending = false
+                if camera != null and camera.touch_gesture_was_pinch:
+                    return
                 _post_pc_move_to_screen(event.position)
     elif event is InputEventMouseMotion:
         if _pc_walk_pending:

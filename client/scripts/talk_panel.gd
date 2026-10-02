@@ -496,7 +496,7 @@ func _build_header(parent: Control) -> void:
     # SIZE_SHRINK_BEGIN the label collapses to its minimum (which is
     # near zero with clip_text) and the room name disappears.
     context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    context_label.add_theme_font_size_override("font_size", 11)
+    context_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(11))
     header.add_child(context_label)
 
     # Kept around so existing _update_context_labels code that touches
@@ -513,7 +513,7 @@ func _build_header(parent: Control) -> void:
     room_tab_button.text = "Room"
     room_tab_button.custom_minimum_size = Vector2(0, 20)
     room_tab_button.focus_mode = Control.FOCUS_NONE
-    room_tab_button.add_theme_font_size_override("font_size", 11)
+    room_tab_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(11))
     room_tab_button.visible = false
     header.add_child(room_tab_button)
 
@@ -521,7 +521,7 @@ func _build_header(parent: Control) -> void:
     village_tab_button.text = "Village"
     village_tab_button.custom_minimum_size = Vector2(0, 20)
     village_tab_button.focus_mode = Control.FOCUS_NONE
-    village_tab_button.add_theme_font_size_override("font_size", 11)
+    village_tab_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(11))
     village_tab_button.visible = false
     header.add_child(village_tab_button)
 
@@ -530,7 +530,7 @@ func _build_header(parent: Control) -> void:
     close_button.custom_minimum_size = Vector2(28, 20)
     close_button.focus_mode = Control.FOCUS_ALL
     close_button.mouse_filter = Control.MOUSE_FILTER_STOP
-    close_button.add_theme_font_size_override("font_size", 14)
+    close_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
     header.add_child(close_button)
 
 
@@ -755,7 +755,7 @@ func _append_village_line(e: Dictionary) -> bool:
     rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     rich.scroll_active = false
     rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    rich.add_theme_font_size_override("normal_font_size", 13)
+    rich.add_theme_font_size_override("normal_font_size", OrientationGuard.text_size(13))
     var prefix := ""
     var time_prefix := _format_timestamp(str(e.get("occurred_at", "")))
     if time_prefix != "":
@@ -799,7 +799,7 @@ func _build_input(parent: Control) -> void:
     # 4px top/bottom content margins on the input stylebox. The TextEdit
     # itself handles internal scroll past 2 lines, so a long message
     # doesn't blow up the panel.
-    row.custom_minimum_size = Vector2(0, 52)
+    row.custom_minimum_size = Vector2(0, OrientationGuard.text_size(52))
     row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     row.add_theme_constant_override("separation", 6)
     parent.add_child(row)
@@ -807,12 +807,12 @@ func _build_input(parent: Control) -> void:
     speech_input = TextEdit.new()
     speech_input.placeholder_text = "Speak to those gathered here…"
     speech_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-    speech_input.custom_minimum_size = Vector2(0, 52)
+    speech_input.custom_minimum_size = Vector2(0, OrientationGuard.text_size(52))
     speech_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     speech_input.size_flags_vertical = Control.SIZE_FILL
     speech_input.focus_mode = Control.FOCUS_ALL
     speech_input.mouse_filter = Control.MOUSE_FILTER_STOP
-    speech_input.add_theme_font_size_override("font_size", 12)
+    speech_input.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     # The TextEdit default stylebox draws a thick bordered box that reads
     # heavy next to the rest of the small UI. Override with a flat fill
     # that matches the panel's tone, plus a 1px subtle border on focus.
@@ -843,7 +843,7 @@ func _build_input(parent: Control) -> void:
     pay_button.size_flags_vertical = Control.SIZE_FILL
     pay_button.focus_mode = Control.FOCUS_ALL
     pay_button.mouse_filter = Control.MOUSE_FILTER_STOP
-    pay_button.add_theme_font_size_override("font_size", 12)
+    pay_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     pay_button.tooltip_text = "Pay a villager — opens a confirmation form for amount and optional item."
     row.add_child(pay_button)
 
@@ -853,7 +853,7 @@ func _build_input(parent: Control) -> void:
     speak_button.size_flags_vertical = Control.SIZE_FILL
     speak_button.focus_mode = Control.FOCUS_ALL
     speak_button.mouse_filter = Control.MOUSE_FILTER_STOP
-    speak_button.add_theme_font_size_override("font_size", 12)
+    speak_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     row.add_child(speak_button)
 
 
@@ -1476,7 +1476,7 @@ func _make_chip(text: String) -> Control:
     label.text = text
     label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50, 1.0))
-    label.add_theme_font_size_override("font_size", 11)
+    label.add_theme_font_size_override("font_size", OrientationGuard.text_size(11))
     panel.add_child(label)
 
     return panel
@@ -1635,7 +1635,7 @@ func _ensure_pay_modal_built() -> void:
     var title := Label.new()
     title.text = "Settle a payment"
     title.add_theme_color_override("font_color", Color(0.92, 0.78, 0.42))
-    title.add_theme_font_size_override("font_size", 16)
+    title.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     vbox.add_child(title)
 
     # Live offers section (ZBBS-HOME-426): one take-able row per quote the
@@ -1645,7 +1645,7 @@ func _ensure_pay_modal_built() -> void:
     pay_quotes_header = Label.new()
     pay_quotes_header.text = "Offers on the table:"
     pay_quotes_header.add_theme_color_override("font_color", Color(0.85, 0.72, 0.42))
-    pay_quotes_header.add_theme_font_size_override("font_size", 13)
+    pay_quotes_header.add_theme_font_size_override("font_size", OrientationGuard.text_size(13))
     pay_quotes_header.visible = false
     vbox.add_child(pay_quotes_header)
 
@@ -1663,7 +1663,7 @@ func _ensure_pay_modal_built() -> void:
     var dispo_label := Label.new()
     dispo_label.text = "Take eligible offers as:"
     dispo_label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50))
-    dispo_label.add_theme_font_size_override("font_size", 12)
+    dispo_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     pay_disposition_row.add_child(dispo_label)
     var dispo_group := ButtonGroup.new()
     # Radio semantics, stated explicitly: re-pressing the active segment
@@ -1677,7 +1677,7 @@ func _ensure_pay_modal_built() -> void:
     pay_dispo_eat_button.button_group = dispo_group
     pay_dispo_eat_button.focus_mode = Control.FOCUS_NONE
     pay_dispo_eat_button.custom_minimum_size = Vector2(0, 24)
-    pay_dispo_eat_button.add_theme_font_size_override("font_size", 12)
+    pay_dispo_eat_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     pay_disposition_row.add_child(pay_dispo_eat_button)
     pay_dispo_carry_button = Button.new()
     pay_dispo_carry_button.text = "Carry home"
@@ -1685,7 +1685,7 @@ func _ensure_pay_modal_built() -> void:
     pay_dispo_carry_button.button_group = dispo_group
     pay_dispo_carry_button.focus_mode = Control.FOCUS_NONE
     pay_dispo_carry_button.custom_minimum_size = Vector2(0, 24)
-    pay_dispo_carry_button.add_theme_font_size_override("font_size", 12)
+    pay_dispo_carry_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     # Eat/drink now is the default (LLM-415) — the player is usually in the
     # tavern eating on the spot, so that's the common case; Carry home stays
     # one click away. Session-persisting choice; never reset on open.
@@ -1752,7 +1752,7 @@ func _ensure_pay_modal_built() -> void:
     pay_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     pay_status_label.custom_minimum_size = Vector2(320, 0)
     pay_status_label.add_theme_color_override("font_color", Color(0.92, 0.50, 0.42))
-    pay_status_label.add_theme_font_size_override("font_size", 12)
+    pay_status_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     vbox.add_child(pay_status_label)
 
     var button_row := HBoxContainer.new()
@@ -1885,7 +1885,7 @@ func _label_with(text: String, control: Control) -> Control:
     var lbl := Label.new()
     lbl.text = text
     lbl.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50))
-    lbl.add_theme_font_size_override("font_size", 13)
+    lbl.add_theme_font_size_override("font_size", OrientationGuard.text_size(13))
     lbl.custom_minimum_size = Vector2(120, 0)
     row.add_child(lbl)
     control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2177,12 +2177,12 @@ func _refresh_pay_quote_rows() -> void:
         text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
         text.custom_minimum_size = Vector2(220, 0)
-        text.add_theme_font_size_override("font_size", 12)
+        text.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
         row.add_child(text)
 
         var take := Button.new()
         take.text = "Take it"
-        take.add_theme_font_size_override("font_size", 12)
+        take.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
         take.pressed.connect(_on_pay_take_pressed.bind(q))
         row.add_child(take)
 
@@ -2225,7 +2225,7 @@ func _refresh_pay_quote_rows() -> void:
             text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
             text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
             text.custom_minimum_size = Vector2(220, 0)
-            text.add_theme_font_size_override("font_size", 12)
+            text.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
             # Slightly dimmed vs quote rows: a mention is softer than a
             # posted offer, and the tint cues the different button behavior.
             text.add_theme_color_override("font_color", Color(0.78, 0.70, 0.55))
@@ -2233,7 +2233,7 @@ func _refresh_pay_quote_rows() -> void:
 
             var offer := Button.new()
             offer.text = "Offer"
-            offer.add_theme_font_size_override("font_size", 12)
+            offer.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
             offer.pressed.connect(_on_pay_mention_pressed.bind(seller_name, item))
             row.add_child(offer)
 
@@ -2254,7 +2254,7 @@ func _refresh_pay_quote_rows() -> void:
         empty.text = empty_text
         empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         empty.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        empty.add_theme_font_size_override("font_size", 12)
+        empty.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
         empty.add_theme_color_override("font_color", Color(0.78, 0.70, 0.55))
         pay_quote_rows_box.add_child(empty)
     var show_box := any or empty_text != ""
@@ -2452,7 +2452,7 @@ func _make_pay_row_dismiss(on_pressed: Callable) -> Button:
     dismiss.text = "×"
     dismiss.custom_minimum_size = Vector2(22, 0)
     dismiss.focus_mode = Control.FOCUS_NONE
-    dismiss.add_theme_font_size_override("font_size", 12)
+    dismiss.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     dismiss.tooltip_text = "Hide this offer"
     dismiss.pressed.connect(on_pressed)
     return dismiss
@@ -3114,7 +3114,7 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         rich.scroll_active = false
         rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        rich.add_theme_font_size_override("normal_font_size", 13)
+        rich.add_theme_font_size_override("normal_font_size", OrientationGuard.text_size(13))
         var prefix := ""
         if time_prefix != "":
             prefix = "[color=#7a6f59]%s[/color] " % time_prefix
@@ -3129,7 +3129,7 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         rich.scroll_active = false
         rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        rich.add_theme_font_size_override("normal_font_size", 13)
+        rich.add_theme_font_size_override("normal_font_size", OrientationGuard.text_size(13))
         var prefix := ""
         if time_prefix != "":
             prefix = "[color=#7a6f59]%s[/color] " % time_prefix
@@ -3148,7 +3148,7 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         rich.scroll_active = false
         rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        rich.add_theme_font_size_override("normal_font_size", 13)
+        rich.add_theme_font_size_override("normal_font_size", OrientationGuard.text_size(13))
 
         var name_color: String = "#b39463"
         var text_color: String = "#d1c2a3"

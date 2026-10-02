@@ -19,6 +19,7 @@ extends SceneTree
 const GUARD_PATH := "res://scripts/orientation_guard.gd"
 
 const TESTS := [
+    "_test_text_size_scales_only_on_touch",
     "_test_js_flag_reads_every_yes_shape",
     "_test_cover_decision_matrix",
     "_test_pointer_event_classification",
@@ -81,6 +82,20 @@ func _check_test_list() -> void:
         var name: String = m["name"]
         if name.begins_with("_test_"):
             _check("harness — %s is registered in TESTS" % name, listed.has(name), true)
+
+
+## LLM-704: play-mode font sizes pass through text_size — unchanged off touch,
+## times TOUCH_TEXT_SCALE (rounded) on a touch screen.
+func _test_text_size_scales_only_on_touch() -> void:
+    var guard: CanvasLayer = _guard_script.new()
+    _check("desktop: 12 stays 12", guard.text_size(12), 12)
+    _check("desktop: 13 stays 13", guard.text_size(13), 13)
+    guard._text_scale = _guard_script.TOUCH_TEXT_SCALE
+    _check("touch: 12 becomes 18", guard.text_size(12), 18)
+    _check("touch: 13 rounds to 20", guard.text_size(13), 20)
+    _check("touch: 52 (talk input height) becomes 78", guard.text_size(52), 78)
+    guard.free()
+    _done()
 
 
 ## On Jeff's Alldocube the browser said yes to pointer:coarse but Godot received

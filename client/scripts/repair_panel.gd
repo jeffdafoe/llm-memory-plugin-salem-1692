@@ -152,7 +152,7 @@ func _label(size: int, color: Color) -> Label:
     l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     l.add_theme_font_override("font", _font)
-    l.add_theme_font_size_override("font_size", size)
+    l.add_theme_font_size_override("font_size", OrientationGuard.text_size(size))
     l.add_theme_color_override("font_color", color)
     l.custom_minimum_size = Vector2(260, 0)
     return l
@@ -163,7 +163,7 @@ func _button(text: String, cb: Callable) -> Button:
     b.text = text
     b.custom_minimum_size = TAP_SIZE
     b.add_theme_font_override("font", _font)
-    b.add_theme_font_size_override("font_size", 17)
+    b.add_theme_font_size_override("font_size", OrientationGuard.text_size(17))
     b.pressed.connect(cb)
     return b
 
@@ -627,7 +627,7 @@ func _fly_coins(amount: int) -> void:
     var chip := Label.new()
     chip.text = "+%d" % amount
     chip.add_theme_font_override("font", _font)
-    chip.add_theme_font_size_override("font_size", 22)
+    chip.add_theme_font_size_override("font_size", OrientationGuard.text_size(22))
     chip.add_theme_color_override("font_color", Color(0.95, 0.82, 0.42))
     chip.add_theme_color_override("font_outline_color", Color(0.12, 0.08, 0.04))
     chip.add_theme_constant_override("outline_size", 4)

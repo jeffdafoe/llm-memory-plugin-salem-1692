@@ -120,7 +120,7 @@ func _build_ui() -> void:
     title_label = Label.new()
     title_label.text = "Notice"
     title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    title_label.add_theme_font_size_override("font_size", 18)
+    title_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(18))
     header.add_child(title_label)
 
     close_button = Button.new()
@@ -131,7 +131,7 @@ func _build_ui() -> void:
 
     posted_label = Label.new()
     posted_label.text = ""
-    posted_label.add_theme_font_size_override("font_size", 11)
+    posted_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(11))
     vb.add_child(posted_label)
 
     # Body scroller — caps at PANEL_MAX_HEIGHT_FRAC of viewport.
@@ -146,7 +146,7 @@ func _build_ui() -> void:
     body_label.fit_content = true
     body_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     body_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    body_label.add_theme_font_size_override("normal_font_size", 14)
+    body_label.add_theme_font_size_override("normal_font_size", OrientationGuard.text_size(14))
     body_scroll.add_child(body_label)
 
 

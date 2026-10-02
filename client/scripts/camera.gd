@@ -88,6 +88,15 @@ var modal_open: bool = false
 var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
+## Two-finger pinch on a touch screen (LLM-704). Godot's web build delivers a
+## touch pinch as two InputEventScreenDrag streams, never as the trackpad's
+## InputEventMagnifyGesture, so the camera follows the fingers itself.
+var _touches: Dictionary = {}  # finger index -> screen position
+var _pinch_span: float = 0.0
+## True from the moment a second finger lands until the next first finger
+## lands, so main.gd never reads a finger that took part in a pinch as a tap.
+var touch_gesture_was_pinch: bool = false
+
 ## Top bar height — the editor's top toolbar is always present and pinned
 ## to the top of the viewport, so a constant suffices. Could become a
 ## registered Control later if the toolbar ever becomes optional.
@@ -210,6 +219,19 @@ func _is_over_ui(pos: Vector2) -> bool:
 ## (ScrollContainer, PanelContainer) would otherwise consume events in
 ## _unhandled_input. A position check skips clicks on the UI panel area.
 func _input(event: InputEvent) -> void:
+    # Finger bookkeeping runs even under a modal: a finger lifted while one is
+    # open must not stay recorded as down and make the next drag a "pinch".
+    if event is InputEventScreenTouch:
+        if event.pressed:
+            if _touches.is_empty():
+                touch_gesture_was_pinch = false
+            _touches[event.index] = event.position
+            if _touches.size() >= 2:
+                touch_gesture_was_pinch = true
+        else:
+            _touches.erase(event.index)
+        _pinch_span = _touch_span()
+
     if modal_open:
         return
 
@@ -266,6 +288,10 @@ func _input(event: InputEvent) -> void:
         if event.button_mask == 0:
             _panning = false
             return
+        # Mouse emulated from the first finger must not pan during a pinch.
+        if _touches.size() >= 2:
+            _pan_start = event.position
+            return
         # If the cursor moves into the UI panel mid-pan (e.g. user grabs the
         # selection panel's scrollbar while still holding a button), end the
         # pan rather than continuing to translate the map from scrollbar
@@ -281,14 +307,38 @@ func _input(event: InputEvent) -> void:
     # Touch support — single finger pan. Same UI-area gate as mouse motion
     # so a touch drag inside the panel doesn't pan the map underneath.
     if event is InputEventScreenDrag:
+        _touches[event.index] = event.position
+        if _touches.size() >= 2:
+            var span := _touch_span()
+            var center := _touch_center()
+            if _pinch_span > 0.0 and span > 0.0 and not _is_over_ui(center):
+                _zoom_to(center, zoom.x * span / _pinch_span)
+            _pinch_span = span
+            get_viewport().set_input_as_handled()
+            return
         if _is_over_ui(event.position):
             return
         position -= event.relative / zoom
         _clamp_position()
 
+## Distance between the first two fingers down; 0 with fewer than two.
+func _touch_span() -> float:
+    if _touches.size() < 2:
+        return 0.0
+    var points: Array = _touches.values()
+    return (points[0] as Vector2).distance_to(points[1])
+
+func _touch_center() -> Vector2:
+    var points: Array = _touches.values()
+    return ((points[0] as Vector2) + (points[1] as Vector2)) / 2.0
+
 func _zoom_at(mouse_pos: Vector2, step: float) -> void:
+    _zoom_to(mouse_pos, zoom.x + step)
+
+## Zoom to target (clamped), keeping the world point under focus fixed on screen.
+func _zoom_to(mouse_pos: Vector2, target: float) -> void:
     var old_zoom: float = zoom.x
-    var new_zoom: float = clampf(old_zoom + step, ZOOM_MIN, ZOOM_MAX)
+    var new_zoom: float = clampf(target, ZOOM_MIN, ZOOM_MAX)
     if new_zoom == old_zoom:
         return
 

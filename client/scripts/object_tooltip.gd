@@ -58,13 +58,13 @@ func _ready() -> void:
     _name_label = Label.new()
     _name_label.add_theme_color_override("font_color", COLOR_TEXT)
     _name_label.add_theme_font_override("font", _font)
-    _name_label.add_theme_font_size_override("font_size", 14)
+    _name_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
     vbox.add_child(_name_label)
 
     _owner_label = Label.new()
     _owner_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _owner_label.add_theme_font_override("font", _font)
-    _owner_label.add_theme_font_size_override("font_size", 12)
+    _owner_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _owner_label.visible = false
     vbox.add_child(_owner_label)
 
@@ -73,7 +73,7 @@ func _ready() -> void:
     _repair_label = Label.new()
     _repair_label.add_theme_color_override("font_color", COLOR_REPAIR)
     _repair_label.add_theme_font_override("font", _font)
-    _repair_label.add_theme_font_size_override("font_size", 12)
+    _repair_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _repair_label.autowrap_mode = TextServer.AUTOWRAP_WORD
     _repair_label.custom_minimum_size = Vector2(220, 0)
     _repair_label.visible = false
@@ -84,7 +84,7 @@ func _ready() -> void:
     _berry_label = Label.new()
     _berry_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _berry_label.add_theme_font_override("font", _font)
-    _berry_label.add_theme_font_size_override("font_size", 12)
+    _berry_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _berry_label.visible = false
     vbox.add_child(_berry_label)
 
@@ -94,7 +94,7 @@ func _ready() -> void:
     _inside_label = Label.new()
     _inside_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _inside_label.add_theme_font_override("font", _font)
-    _inside_label.add_theme_font_size_override("font_size", 12)
+    _inside_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _inside_label.autowrap_mode = TextServer.AUTOWRAP_WORD
     _inside_label.custom_minimum_size = Vector2(220, 0)
     _inside_label.visible = false
