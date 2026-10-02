@@ -42,6 +42,23 @@ func TestRepairSiteViewAtResolvesTheSite(t *testing.T) {
 	if v := view("fence-lone"); v != nil {
 		t.Errorf("the lone fence shows %+v, want nothing", v)
 	}
+	// An object attached to something sound shows nothing of its own parent,
+	// and an edge that is (oddly) attached to something sound is still the
+	// break's edge — the lookup runs from the hovered object, not the parent.
+	mustSend(t, w, func(world *sim.World) {
+		world.VillageObjects["sign"] = &sim.VillageObject{ID: "sign", AssetID: "crate-asset", CurrentState: "default", AttachedTo: "fence-lone"}
+		world.VillageObjects["fence-1"].AttachedTo = "fence-lone"
+	})
+	if v := view("sign"); v != nil {
+		t.Errorf("an overlay on a sound fence shows %+v, want nothing", v)
+	}
+	if v := view("fence-1"); v == nil || v.SiteID != "fence-2" {
+		t.Errorf("an edge attached to a sound fence shows %+v, want the break at fence-2", v)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		delete(world.VillageObjects, "sign")
+		world.VillageObjects["fence-1"].AttachedTo = ""
+	})
 
 	t0 := time.Now().UTC()
 	placeAt(t, w, "pat", "fence-2")

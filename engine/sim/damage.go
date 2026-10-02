@@ -667,8 +667,11 @@ func RepairSiteViewAt(s *Snapshot, obj *VillageObject) *RepairSiteView {
 	}
 	site := obj
 	if !IsRepairSite(site) && obj.AttachedTo != "" {
-		site = s.VillageObjects[obj.AttachedTo]
+		if parent := s.VillageObjects[obj.AttachedTo]; IsRepairSite(parent) {
+			site = parent
+		}
 	}
+	// Still none: the hovered object itself may be a fence break's edge.
 	if !IsRepairSite(site) {
 		site = MinorWorkSiteOf(s.VillageObjects, s.Assets, obj)
 	}
