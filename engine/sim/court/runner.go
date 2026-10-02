@@ -271,7 +271,7 @@ func (r *Runner) hear(c *sim.CourtCase) {
 
 const openingText = "The court is in session. Hear the matter set out before you and give your ruling."
 
-const nudgeText ="The court is waiting on your ruling. Read what you still need, then give it with the rule tool."
+const nudgeText = "The court is waiting on your ruling. Read what you still need, then give it with the rule tool."
 
 // session is one case's hearing.
 type session struct {
