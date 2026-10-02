@@ -625,17 +625,16 @@ type VisitorState struct {
 	Disposition string
 	ExpiresAt   time.Time
 	Phase       VisitorPhase
-	// Payload is the one grounded item of news the traveler carries — a diegetic,
-	// past-tense clause about a real thing that happened in the village
-	// recently ("Ezekiel Crane turned out a plow for the Hale farm"),
-	// selected at spawn from the in-memory action log (selectRoadWord in
-	// engine/sim/visitor.go) and voiced through the identity preface
-	// (renderTravelerPreface, LLM-371). "" when no carry-worthy beat was on
-	// hand at spawn — the preface simply drops the clause. Persisted in the
-	// visitor.payload column so the carried word survives a deploy restart
-	// (the action log is restart-wiped, so re-selecting on rehydrate would
-	// draw from an empty pool). Not live-updated: it is a snapshot of what
-	// the traveler "heard on the road," fixed for the visit.
+	// Payload is the one item of news the traveler carries — a past-tense clause
+	// of real 1692 news from outside the village ("Port Royal in Jamaica was
+	// swallowed by a great earthquake in June"), voiced through the identity
+	// preface (renderTravelerPreface) as word picked up on the road. Only a
+	// messenger carries news (CarriesOutsideNews, LLM-700): it is written off-world
+	// for the day's date after he spawns and installed by SetMessengerNews, which
+	// refuses news naming a villager. "" for every other traveler, and for a
+	// messenger whose news call failed — the preface then drops the clause.
+	// Persisted in the visitor.payload column so the word survives a deploy
+	// restart. Fixed for the visit once set.
 	Payload string
 
 	// RecurringID links this in-flight traveler to its durable returner identity

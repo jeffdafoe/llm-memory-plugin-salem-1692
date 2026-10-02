@@ -301,6 +301,46 @@ func TestTickVisitorCascade_Spawns(t *testing.T) {
 	}
 }
 
+// TestTickVisitorCascade_SpawnCarriesNoVillageWord pins LLM-700: a traveler no
+// longer spawns carrying one of the village's own trades as word "from the road".
+// The action log holds a resident's sale from an hour ago — the exact beat the old
+// road word handed Roger Standish ("Josiah Thorne turned out 4x carrots for John
+// Ellis") — and the spawned traveler still carries nothing. Only a messenger gets
+// word, and his is outside news installed after spawn.
+func TestTickVisitorCascade_SpawnCarriesNoVillageWord(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.VisitorMerchantTrickleChancePermille = 1000
+		world.Settings.VisitorMaxConcurrent = 2
+		world.Actors["josiah"] = &sim.Actor{ID: "josiah", DisplayName: "Josiah Thorne", Kind: sim.KindNPCStateful,
+			Pos: sim.TilePos{X: sim.PadX + 3, Y: sim.PadY + 3}, Inventory: map[sim.ItemKind]int{}, State: sim.StateIdle}
+		world.ActionLog = append(world.ActionLog, sim.ActionLogEntry{
+			Seq: 1, ActorID: "josiah", OccurredAt: visitorSpawnDaytime.Add(-time.Hour),
+			ActionType: sim.ActionTypeDelivered, Text: "4x carrots", CounterpartyName: "John Ellis",
+		})
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	res, err := w.Send(sim.TickVisitorCascade(sim.VisitorTickInputs{Now: visitorSpawnDaytime, Rand: rand.New(rand.NewSource(42))}))
+	if err != nil {
+		t.Fatalf("TickVisitorCascade: %v", err)
+	}
+	if tm := res.(sim.VisitorCascadeTelemetry); tm.Spawned != 1 {
+		t.Fatalf("spawned = %d, want 1", tm.Spawned)
+	}
+	for _, a := range w.Published().Actors {
+		if a.VisitorState != nil && a.VisitorState.Payload != "" {
+			t.Errorf("spawned traveler %q carries word %q; a traveler spawns with none", a.DisplayName, a.VisitorState.Payload)
+		}
+	}
+}
+
 // TestTickVisitorCascade_SpawnsUnwatched pins the LLM-502 eco exemption:
 // the visitor cascade spawns (and paces) with eco mode armed and NO player
 // presence. Travelers stay until next daybreak (LLM-373), so an unwatched

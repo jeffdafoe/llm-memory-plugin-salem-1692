@@ -1,91 +1,12 @@
 package sim
 
 import (
-	"math/rand"
-	"strings"
 	"testing"
-	"time"
 )
 
-// road_word_test.go — LLM-371: the grounded word a spawning traveler carries.
-// NOT the rumor.go layer (deliberately fallible, escalating) — see selectRoadWord.
-// renderRoadWordClause maps one action-log beat to a diegetic past-tense clause (or
-// "" for a beat not worth carrying); selectRoadWord filters the action log to
-// recent, carry-worthy beats about real residents and picks one. Together they are
-// what gives the stateless salem-visitor VA something true to trade instead of
-// empty small-talk.
-
-func roadWordTestWorld() *World {
-	return &World{
-		Actors: map[ActorID]*Actor{
-			"smith": {ID: "smith", DisplayName: "Ezekiel Crane", Kind: KindNPCStateful},
-			"alice": {ID: "alice", DisplayName: "Goodwife Alice", Kind: KindNPCShared},
-			"pc":    {ID: "pc", DisplayName: "The Player", Kind: KindPC},
-			"prop":  {ID: "prop", DisplayName: "A Cart", Kind: KindDecorative},
-			"trav":  {ID: "trav", DisplayName: "Elias Drum the peddler", Kind: KindNPCShared, VisitorState: &VisitorState{Archetype: "peddler", Phase: VisitorPhasePresent}},
-		},
-	}
-}
-
-func TestRenderRoadWordClause(t *testing.T) {
-	w := roadWordTestWorld()
-	cases := []struct {
-		name  string
-		entry ActionLogEntry
-		want  string // exact match; "" means the beat renders no road word
-	}{
-		{"paid_full", ActionLogEntry{ActorID: "smith", ActionType: ActionTypePaid, CounterpartyName: "Goodwife Alice", Text: "a mended kettle"},
-			"Ezekiel Crane settled up with Goodwife Alice over a mended kettle"},
-		{"paid_no_text", ActionLogEntry{ActorID: "smith", ActionType: ActionTypePaid, CounterpartyName: "Goodwife Alice"},
-			"Ezekiel Crane settled up with Goodwife Alice"},
-		{"paid_no_counterparty", ActionLogEntry{ActorID: "smith", ActionType: ActionTypePaid, Amount: 4},
-			""},
-		{"delivered_full", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeDelivered, Text: "a plow", CounterpartyName: "the Hale farm"},
-			"Ezekiel Crane turned out a plow for the Hale farm"},
-		{"delivered_no_text", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeDelivered, CounterpartyName: "Alice"},
-			""},
-		{"labored_full", ActionLogEntry{ActorID: "alice", ActionType: ActionTypeLabored, CounterpartyName: "Ezekiel Crane", Amount: 6},
-			"Goodwife Alice put in a day's work for Ezekiel Crane"},
-		{"labored_no_counterparty", ActionLogEntry{ActorID: "alice", ActionType: ActionTypeLabored},
-			"Goodwife Alice took on a piece of work"},
-		{"hired_full", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeHired, CounterpartyName: "Goodwife Alice"},
-			"Ezekiel Crane took Goodwife Alice on for a job"},
-		{"hired_no_counterparty", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeHired},
-			""},
-		{"solicited_full", ActionLogEntry{ActorID: "alice", ActionType: ActionTypeSolicitedWork, CounterpartyName: "Ezekiel Crane"},
-			"Goodwife Alice went looking to work for Ezekiel Crane"},
-		// Non-carry-worthy beats all degrade to "".
-		{"spoke", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeSpoke, Text: "good morrow"}, ""},
-		{"consumed", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeConsumed, Text: "porridge"}, ""},
-		{"walked", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeWalked, Text: "The Tavern"}, ""},
-		{"took_break", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeTookBreak}, ""},
-		{"negotiation_offered", ActionLogEntry{ActorID: "smith", ActionType: ActionTypeOffered, CounterpartyName: "Alice"}, ""},
-		// Unknown subject renders nothing even for a carry-worthy type.
-		{"unknown_subject", ActionLogEntry{ActorID: "ghost", ActionType: ActionTypePaid, CounterpartyName: "Alice"}, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := renderRoadWordClause(w, tc.entry); got != tc.want {
-				t.Errorf("renderRoadWordClause = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestRenderTravelerWordClause_ArticleBeats covers the two beats that route a place name
-// through WithDefiniteArticle — asserted by prefix so the test doesn't re-implement
-// the article rule.
-func TestRenderTravelerWordClause_ArticleBeats(t *testing.T) {
-	w := roadWordTestWorld()
-	gathered := renderRoadWordClause(w, ActionLogEntry{ActorID: "alice", ActionType: ActionTypeGathered, Text: "firewood", CounterpartyName: "woodpile"})
-	if !strings.HasPrefix(gathered, "Goodwife Alice was out gathering firewood at ") {
-		t.Errorf("gathered clause = %q", gathered)
-	}
-	repairing := renderRoadWordClause(w, ActionLogEntry{ActorID: "smith", ActionType: ActionTypeRepairing, Text: "smithy"})
-	if !strings.HasPrefix(repairing, "Ezekiel Crane was mending ") {
-		t.Errorf("repairing clause = %q", repairing)
-	}
-}
+// road_word_test.go — the snapshot carries the word a traveler holds (VisitorState.Payload,
+// the messenger's news since LLM-700) and who has already heard it (LLM-545), so
+// perception renders both off world.Published().
 
 // TestSnapshotActorCarriesRoadWordPayload guards the live Actor -> ActorSnapshot copy
 // path (snapshotActor -> cloneVisitorState). Perception reads the road word off
@@ -155,52 +76,4 @@ func TestSnapshotActorCarriesPayloadSharedWith(t *testing.T) {
 	if snap.VisitorState.PayloadSharedWith[0] != "hannah" {
 		t.Error("world-side write reached the published snapshot — the slice is aliased, not deep-copied")
 	}
-}
-
-func TestSelectRoadWord(t *testing.T) {
-	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	r := rand.New(rand.NewSource(1))
-	recent := now.Add(-time.Hour)
-	stale := now.Add(-RoadWordLookback - time.Hour)
-
-	t.Run("empty log", func(t *testing.T) {
-		w := roadWordTestWorld()
-		if got := selectRoadWord(w, r, now); got != "" {
-			t.Errorf("got %q, want empty", got)
-		}
-	})
-
-	t.Run("picks a carry-worthy resident beat", func(t *testing.T) {
-		w := roadWordTestWorld()
-		w.ActionLog = []ActionLogEntry{
-			{ActorID: "smith", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "a plow", CounterpartyName: "the Hale farm"},
-		}
-		if got := selectRoadWord(w, r, now); got != "Ezekiel Crane turned out a plow for the Hale farm" {
-			t.Errorf("got %q", got)
-		}
-	})
-
-	t.Run("skips non-resident and ineligible subjects", func(t *testing.T) {
-		w := roadWordTestWorld()
-		w.ActionLog = []ActionLogEntry{
-			{ActorID: "trav", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "trinkets", CounterpartyName: "Alice"}, // a visitor
-			{ActorID: "pc", OccurredAt: recent, ActionType: ActionTypePaid, CounterpartyName: "Alice"},                          // the player
-			{ActorID: "prop", OccurredAt: recent, ActionType: ActionTypeDelivered, Text: "x"},                                   // decorative
-			{ActorID: "ghost", OccurredAt: recent, ActionType: ActionTypePaid, CounterpartyName: "Alice"},                       // no such actor
-			{ActorID: "smith", OccurredAt: recent, ActionType: ActionTypeSpoke, Text: "hello"},                                  // dull beat
-		}
-		if got := selectRoadWord(w, r, now); got != "" {
-			t.Errorf("got %q, want empty (no eligible resident beat)", got)
-		}
-	})
-
-	t.Run("skips beats older than the lookback", func(t *testing.T) {
-		w := roadWordTestWorld()
-		w.ActionLog = []ActionLogEntry{
-			{ActorID: "smith", OccurredAt: stale, ActionType: ActionTypeDelivered, Text: "a plow", CounterpartyName: "Alice"},
-		}
-		if got := selectRoadWord(w, r, now); got != "" {
-			t.Errorf("got %q, want empty (beat is stale)", got)
-		}
-	})
 }
