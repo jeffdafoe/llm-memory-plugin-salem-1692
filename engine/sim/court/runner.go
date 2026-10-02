@@ -223,17 +223,22 @@ func (r *Runner) hear(c *sim.CourtCase) {
 		info:    info,
 		sceneID: llm.NewSceneID(),
 	}
-	s.transcript = []llm.Message{{Role: llm.RoleUser, Content: renderOpening(info, bench, time.Now())}}
+	// The matter, the roster and the bench book ride as stable context, which
+	// memory-api puts in the (cached) system prompt on every call — never in
+	// history, where a long session's 50-row replay window could drop it.
+	matter := renderOpening(info, bench, time.Now())
+	s.transcript = []llm.Message{{Role: llm.RoleUser, Content: openingText}}
 	defer s.persistTrailing()
 
 	nudges := 0
 	for round := 0; round < maxRounds; round++ {
 		resp, err := r.client.Complete(ctx, llm.Request{
-			Model:        sim.CourtMagistrateModel,
-			SceneID:      s.sceneID,
-			Messages:     s.transcript,
-			Tools:        toolSpecs,
-			SimActorName: "the magistrates",
+			Model:         sim.CourtMagistrateModel,
+			SceneID:       s.sceneID,
+			Messages:      s.transcript,
+			Tools:         toolSpecs,
+			StableContext: matter,
+			SimActorName:  "the magistrates",
 		})
 		if err != nil {
 			log.Printf("court: %s: round %d: %v", c.ID, round, err)
@@ -264,7 +269,9 @@ func (r *Runner) hear(c *sim.CourtCase) {
 	log.Printf("court: %s: no ruling after %d rounds — the case stays pending", c.ID, maxRounds)
 }
 
-const nudgeText = "The court is waiting on your ruling. Read what you still need, then give it with the rule tool."
+const openingText = "The court is in session. Hear the matter set out before you and give your ruling."
+
+const nudgeText ="The court is waiting on your ruling. Read what you still need, then give it with the rule tool."
 
 // session is one case's hearing.
 type session struct {

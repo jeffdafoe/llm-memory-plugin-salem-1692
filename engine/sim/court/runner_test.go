@@ -134,7 +134,7 @@ func TestHear_ReadsCorrectsAndRules(t *testing.T) {
 	if reqs[0].Model != sim.CourtMagistrateModel || reqs[0].SceneID == "" || reqs[0].SceneID != reqs[2].SceneID {
 		t.Fatalf("model/scene = %q/%q..%q; want the magistrate on one scene", reqs[0].Model, reqs[0].SceneID, reqs[2].SceneID)
 	}
-	opening := reqs[0].Messages[0].Content
+	opening := reqs[0].StableContext
 	for _, want := range []string{"Josiah Thorne's ledger was stolen", "Begin with the goods.", "Constable Gideon Marsh — constable"} {
 		if !strings.Contains(opening, want) {
 			t.Fatalf("opening lacks %q:\n%s", want, opening)
