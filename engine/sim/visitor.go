@@ -458,40 +458,70 @@ func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		if !now.After(actor.VisitorState.ExpiresAt) {
 			continue
 		}
-		// Pick a fresh anchor (any visitor destination) to validate the
-		// edge tile is connected to the village core. If no destination
-		// is placed at all, leave the visitor alone — cleanup will
-		// collect them after the grace window.
-		_, anchorTile, ok := pickVisitorDestination(w)
-		if !ok {
-			actor.VisitorState.Phase = VisitorPhaseDeparting
-			continue
+		if beginVisitorDespawn(w, id, actor, now, r) != despawnNoEdge {
+			t.DespawnsStarted++
 		}
-		grid, err := buildWalkGrid(w)
-		if err != nil {
-			log.Printf("sim/visitor: dispatchDespawn build walk grid: %v", err)
-			actor.VisitorState.Phase = VisitorPhaseDeparting
-			continue
-		}
-		edgeTile, ok := pickVisitorEdgeTile(w, grid, anchorTile, r)
-		if !ok {
-			actor.VisitorState.Phase = VisitorPhaseDeparting
-			continue
-		}
-		dest := NewPositionDestination(edgeTile)
-		// LeaveHuddleFirst=true so a visitor mid-conversation can still
-		// be despawn-dispatched (rather than the cascade silently stalling
-		// because the visitor is gossiping). MoveActor's huddle-leave
-		// emits HuddleLeft / HuddleConcluded events as appropriate.
-		if _, err := MoveActor(id, dest, true, now).Fn(w); err != nil {
-			// No path is typical for a visitor stranded somewhere
-			// unreachable. Cleanup will hard-remove past the grace
-			// window regardless.
-			log.Printf("sim/visitor: dispatchDespawn MoveActor %s: %v", id, err)
-		}
-		actor.VisitorState.Phase = VisitorPhaseDeparting
-		t.DespawnsStarted++
 	}
+}
+
+// despawnOutcome is how far beginVisitorDespawn got.
+type despawnOutcome int
+
+const (
+	// despawnNoEdge — no anchor, walk grid or edge tile could be had; MoveActor
+	// was never called.
+	despawnNoEdge despawnOutcome = iota
+	// despawnMoveFailed — MoveActor was called and refused (typically no path);
+	// no exit walk is in place.
+	despawnMoveFailed
+	// despawnWalkStarted — the exit walk's MoveIntent is stamped.
+	despawnWalkStarted
+)
+
+// beginVisitorDespawn issues one visitor's walk to a map edge and moves him into
+// VisitorPhaseDeparting — the per-visitor body of dispatchVisitorDespawn, shared
+// with the operator's DepartVisitor (LLM-701) so both departures take the one
+// path. The phase is set whatever the outcome so the despawn is not re-attempted
+// every tick — cleanup collects the visitor after the grace window regardless.
+// dispatchVisitorDespawn counts DespawnsStarted for any outcome that reached
+// MoveActor (its pre-LLM-701 telemetry); DepartVisitor reports a walk only for
+// despawnWalkStarted. MUST run on the world goroutine.
+func beginVisitorDespawn(w *World, id ActorID, actor *Actor, now time.Time, r *rand.Rand) despawnOutcome {
+	// Pick a fresh anchor (any visitor destination) to validate the
+	// edge tile is connected to the village core. If no destination
+	// is placed at all, leave the visitor alone — cleanup will
+	// collect them after the grace window.
+	_, anchorTile, ok := pickVisitorDestination(w)
+	if !ok {
+		actor.VisitorState.Phase = VisitorPhaseDeparting
+		return despawnNoEdge
+	}
+	grid, err := buildWalkGrid(w)
+	if err != nil {
+		log.Printf("sim/visitor: dispatchDespawn build walk grid: %v", err)
+		actor.VisitorState.Phase = VisitorPhaseDeparting
+		return despawnNoEdge
+	}
+	edgeTile, ok := pickVisitorEdgeTile(w, grid, anchorTile, r)
+	if !ok {
+		actor.VisitorState.Phase = VisitorPhaseDeparting
+		return despawnNoEdge
+	}
+	dest := NewPositionDestination(edgeTile)
+	// LeaveHuddleFirst=true so a visitor mid-conversation can still
+	// be despawn-dispatched (rather than the cascade silently stalling
+	// because the visitor is gossiping). MoveActor's huddle-leave
+	// emits HuddleLeft / HuddleConcluded events as appropriate.
+	outcome := despawnWalkStarted
+	if _, err := MoveActor(id, dest, true, now).Fn(w); err != nil {
+		// No path is typical for a visitor stranded somewhere
+		// unreachable. Cleanup will hard-remove past the grace
+		// window regardless.
+		log.Printf("sim/visitor: dispatchDespawn MoveActor %s: %v", id, err)
+		outcome = despawnMoveFailed
+	}
+	actor.VisitorState.Phase = VisitorPhaseDeparting
+	return outcome
 }
 
 // dispatchVisitorCleanup hard-removes visitor actor rows whose ExpiresAt
