@@ -20,15 +20,6 @@ func _ready() -> void:
     # Focus the username field
     username_field.grab_focus()
 
-    # TEMPORARY (LLM-702 tablet debugging) — remove with the guard's debug panel.
-    var debug := OrientationGuard.build_debug_panel()
-    debug.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-    debug.grow_vertical = Control.GROW_DIRECTION_BEGIN
-    debug.offset_left = 16
-    debug.offset_right = -16
-    debug.offset_bottom = -16
-    add_child(debug)
-
 ## Set a message on the error_label (used when re-showing the screen after
 ## a mid-session 401). Empty string clears it.
 func set_message(message: String) -> void:

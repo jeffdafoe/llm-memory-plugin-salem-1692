@@ -25,14 +25,10 @@ const COLOR_BG := Color(0.05, 0.03, 0.02, 1.0)
 const COLOR_TITLE := Color(0.93, 0.86, 0.70)
 const COLOR_TEXT := Color(0.80, 0.74, 0.62)
 
-## TEMPORARY (LLM-702 tablet debugging): shown in the debug panel so a stale
-## build is obvious — if the panel is missing, the tab runs an older build.
-const DEBUG_BUILD := "LLM-702 debug 1"
-
-## The landscape request plus a short log of every attempt, defined once per
-## page on web whether or not the guard is enabled, so the debug panel's button
-## can run it too. The flag on window keeps a second autoload instance (a scene
-## reload) from redefining it.
+## The landscape request, with the last few attempts and any refusal reason kept
+## in window.__salemGuardLog (read it from the browser console on a device). The
+## flag on window keeps a second autoload instance (a scene reload) from
+## redefining it.
 const LANDSCAPE_SUPPORT_JS := """
 (function () {
     if (window.__salemGoLandscape) return;
@@ -42,8 +38,7 @@ const LANDSCAPE_SUPPORT_JS := """
         log.push(new Date().toISOString().substr(11, 8) + ' ' + line);
         if (log.length > 6) log.shift();
     };
-    // One request at a time: a button tap also reaches the tap listener, and a
-    // second request off the same gesture would be refused and muddy the log.
+    // One request at a time: a second tap while one is pending sends nothing.
     var busy = false;
     function lock(source) {
         if (!(screen.orientation && screen.orientation.lock)) { window.__salemLog(source + ': no lock API'); return Promise.resolve(); }
@@ -83,21 +78,18 @@ const FULLSCREEN_LISTENER_JS := """
 })();
 """
 
-const DEBUG_READINGS_JS := "'coarse=' + matchMedia('(pointer: coarse)').matches + ' anyCoarse=' + matchMedia('(any-pointer: coarse)').matches + ' fine=' + matchMedia('(pointer: fine)').matches + ' hover=' + matchMedia('(hover: hover)').matches + ' touchPoints=' + navigator.maxTouchPoints + ' dpr=' + devicePixelRatio + ' css=' + innerWidth + 'x' + innerHeight + ' fsApi=' + !!document.documentElement.requestFullscreen + ' fsOn=' + !!document.fullscreenElement + ' lockApi=' + !!(screen.orientation && screen.orientation.lock) + ' orient=' + (screen.orientation ? screen.orientation.type : '?')"
-
 var _enabled := false
 var _covering := false
 var _cover: ColorRect = null
-var _coarse_raw: Variant = null
 
 func _ready() -> void:
     layer = LAYER_INDEX
-    if OS.has_feature("web"):
-        JavaScriptBridge.eval(LANDSCAPE_SUPPORT_JS)
-        _coarse_raw = JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true)
-    _enabled = OS.has_feature("web") and js_flag(_coarse_raw)
+    if not OS.has_feature("web"):
+        return
+    _enabled = js_flag(JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true))
     if not _enabled:
         return
+    JavaScriptBridge.eval(LANDSCAPE_SUPPORT_JS)
     JavaScriptBridge.eval(FULLSCREEN_LISTENER_JS)
     _build_cover()
     get_tree().root.size_changed.connect(_refresh)
@@ -107,8 +99,8 @@ func _ready() -> void:
     _refresh.call_deferred()
 
 ## JavaScriptBridge.eval hands a JS boolean back as the int 1 / 0 on Android
-## Chrome (seen on an Alldocube tablet), and an int never equals `true` in
-## GDScript, so a JS yes/no is read through this.
+## Chrome (seen on an Alldocube tablet), and comparing an int with a bool is a
+## script error in Godot 4.7, so a JS yes/no is read through this.
 static func js_flag(value: Variant) -> bool:
     match typeof(value):
         TYPE_BOOL:
@@ -173,59 +165,6 @@ func _build_cover() -> void:
 
     box.add_child(_label("Turn your tablet sideways", 44, COLOR_TITLE))
     box.add_child(_label("Salem is played in landscape.\nTap to play full screen.", 28, COLOR_TEXT))
-    # No button here: the guard swallows pointer input while covering, and a tap
-    # on the cover already runs the request through the tap listener.
-    var debug := build_debug_panel(false)
-    debug.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-    debug.grow_vertical = Control.GROW_DIRECTION_BEGIN
-    debug.offset_left = 16
-    debug.offset_right = -16
-    debug.offset_bottom = -16
-    _cover.add_child(debug)
-
-## TEMPORARY (LLM-702 tablet debugging): what the guard saw and every fullscreen
-## attempt, refreshed twice a second, plus a button that runs the same request.
-## Shown on the login screen and on the portrait cover.
-func debug_lines() -> PackedStringArray:
-    var lines := PackedStringArray()
-    lines.append("%s | web=%s enabled=%s covering=%s window=%s" % [DEBUG_BUILD, OS.has_feature("web"), _enabled, _covering, get_window().size])
-    lines.append("coarse as Godot saw it: %s (type %d)" % [_coarse_raw, typeof(_coarse_raw)])
-    if OS.has_feature("web"):
-        lines.append(str(JavaScriptBridge.eval(DEBUG_READINGS_JS, true)))
-        lines.append("log: " + str(JavaScriptBridge.eval("(window.__salemGuardLog || []).join(' | ')", true)))
-        lines.append(str(JavaScriptBridge.eval("navigator.userAgent", true)))
-    return lines
-
-func build_debug_panel(with_button: bool = true) -> Control:
-    var box := VBoxContainer.new()
-    box.add_theme_constant_override("separation", 8)
-    box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    var text := Label.new()
-    text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    text.add_theme_font_size_override("font_size", 18)
-    text.add_theme_color_override("font_color", COLOR_TEXT)
-    text.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    box.add_child(text)
-    if with_button:
-        var button := Button.new()
-        button.text = "Test fullscreen"
-        button.add_theme_font_size_override("font_size", 22)
-        button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-        # While not fullscreen, an installed tap listener already handles this
-        # same gesture; the button requests only when no listener is installed
-        # (guard off) or the page is fullscreen (lock-only test).
-        button.pressed.connect(func():
-            if OS.has_feature("web"):
-                JavaScriptBridge.eval("if (window.__salemGoLandscape && (document.fullscreenElement || !window.__salemLandscapeGuard)) window.__salemGoLandscape('button')")
-        )
-        box.add_child(button)
-    var timer := Timer.new()
-    timer.wait_time = 0.5
-    timer.autostart = true
-    timer.timeout.connect(func(): text.text = "\n".join(debug_lines()))
-    box.add_child(timer)
-    text.text = "\n".join(debug_lines())
-    return box
 
 func _label(text: String, size: int, color: Color) -> Label:
     var label := Label.new()
