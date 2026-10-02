@@ -19,6 +19,7 @@ extends SceneTree
 const GUARD_PATH := "res://scripts/orientation_guard.gd"
 
 const TESTS := [
+    "_test_js_flag_reads_every_yes_shape",
     "_test_cover_decision_matrix",
     "_test_pointer_event_classification",
     "_test_covering_guard_eats_taps_first",
@@ -80,6 +81,19 @@ func _check_test_list() -> void:
         var name: String = m["name"]
         if name.begins_with("_test_"):
             _check("harness — %s is registered in TESTS" % name, listed.has(name), true)
+
+
+## On Jeff's Alldocube the browser said yes to pointer:coarse but Godot received
+## the int 1, so `== true` kept the guard off.
+func _test_js_flag_reads_every_yes_shape() -> void:
+    _check("bool true is yes", _guard_script.js_flag(true), true)
+    _check("int 1 is yes (Android Chrome)", _guard_script.js_flag(1), true)
+    _check("float 1.0 is yes", _guard_script.js_flag(1.0), true)
+    _check("bool false is no", _guard_script.js_flag(false), false)
+    _check("int 0 is no", _guard_script.js_flag(0), false)
+    _check("null (eval failed) is no", _guard_script.js_flag(null), false)
+    _check("string is no", _guard_script.js_flag("true"), false)
+    _done()
 
 
 func _test_cover_decision_matrix() -> void:
