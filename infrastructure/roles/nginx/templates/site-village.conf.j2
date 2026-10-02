@@ -81,9 +81,15 @@ server {
         try_files $uri =404;
     }
 
-    # Godot build artifacts — no caching during development
+    # Godot build artifacts — the browser keeps a copy but revalidates it on
+    # every load (ETag → 304), so a deploy is picked up at once and a repeat
+    # visit does not download the build again. The wasm compresses ~4x; the
+    # pck holds already-compressed textures and is left alone.
     location ~* \.(wasm|pck|js)$ {
-        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        gzip on;
+        gzip_types application/wasm application/javascript text/javascript;
+        gzip_vary on;
+        add_header Cache-Control "no-cache, must-revalidate" always;
         add_header Pragma "no-cache" always;
         add_header Expires 0 always;
         try_files $uri =404;
