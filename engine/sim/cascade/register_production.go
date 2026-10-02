@@ -119,4 +119,7 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	}
 	RegisterNarrativeConsolidation(ctx, w, soul)
 	RegisterNoticeboard(ctx, w, client)
+	// The messenger's news from outside (LLM-700): one off-world call per
+	// messenger spawn, installed as his carried word.
+	RegisterMessengerNews(ctx, w, client)
 }

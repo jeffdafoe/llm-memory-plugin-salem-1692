@@ -1946,6 +1946,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: travelerSelfIdentityPrefaceVocation,
 	},
 	{
+		name: "messenger_carries_outside_news",
+		summary: "LLM-700: the messenger (Roger Standish, in from Boston) is the one traveler who carries word, and it is " +
+			"news from OUTSIDE the village — one item of real 1692 news written for the day's date. The golden pins his " +
+			"vocation followed by 'Word reached you on the road that Port Royal in Jamaica was swallowed by a great " +
+			"earthquake in June.' The live case it replaces: the road word was a villager's own sale that afternoon " +
+			"('Josiah Thorne turned out 4x carrots for John Ellis'); the messenger, whose calling is delivery, went " +
+			"hunting John Ellis with it and ended by telling the village John had died. News from outside names no " +
+			"villager to seek and contradicts nothing here.",
+		build: messengerCarriesOutsideNews,
+	},
+	{
 		name: "traveler_self_identity_preface_with_rumor",
 		summary: "LLM-371: the same traveler (Elias Drum the peddler) now carries a grounded rumor — VisitorState.Payload, " +
 			"selected at spawn from the action log. The golden pins the extra preface clause that closes the persona line — " +
@@ -15420,6 +15431,48 @@ func travelerSelfIdentityPrefaceVocation() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 	}
 	return snap, whitcombeID, warrants
+}
+
+// messengerCarriesOutsideNews is the LLM-700 fixture: the messenger arriving at the
+// Tavern carrying his one item of outside news (VisitorState.Payload, installed by
+// SetMessengerNews after spawn).
+func messengerCarriesOutsideNews() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		rogerID = sim.ActorID("vstr-roger")
+		tavern  = sim.StructureID("tavern")
+	)
+	now := 960 // 16:00 — afternoon, inside the spawn window
+	roger := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Roger Standish the messenger",
+		State:             sim.StateIdle,
+		InsideStructureID: tavern,
+		Coins:             33,
+		Needs:             map[sim.NeedKey]int{},
+		VisitorState: &sim.VisitorState{
+			SpendBudget: 33,
+			Archetype:   sim.MessengerArchetype,
+			Origin:      "Boston",
+			Disposition: "weary",
+			Payload:     "Port Royal in Jamaica was swallowed by a great earthquake in June",
+		},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{rogerID: roger},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: rogerID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: tavern},
+			SourceEventID:  1,
+		},
+	}
+	return snap, rogerID, warrants
 }
 
 // travelerSelfIdentityPrefaceWithRoadWord is the LLM-371 fixture: the same traveler

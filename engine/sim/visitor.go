@@ -146,13 +146,6 @@ const (
 	// so a freshly-arrived merchant has time to reach his counterparty and trade before the
 	// day-shops shut at dusk rather than arriving to a shut village.
 	VisitorSpawnDuskMarginMinutes = 90
-
-	// RoadWordLookback bounds how far back selectRoadWord reaches into
-	// the action log for a grounded item of news to hand a spawning traveler (LLM-371).
-	// The log itself is retention-bounded (DefaultActionLogRetention, 48h); this
-	// tighter window keeps the carried word feeling like recent news ("lately",
-	// "this week") rather than something stale from two days ago.
-	RoadWordLookback = 24 * time.Hour
 )
 
 // VisitorTagTavern is the per-instance VillageObject tag the destination
@@ -234,7 +227,7 @@ var VisitorArchetypeSprite = passerThroughSprite
 // from the bound errand (visitorMerchantLabel) and the errand cue already carries their
 // purpose. The init() below enforces every pool entry has a vocation.
 var passerThroughVocation = map[string]string{
-	"messenger":          "The news is your trade: you carry letters and word for pay, deliver them brisk and exact, and are back on the road as soon as they are passed.",
+	"messenger":          "The news is your trade: you carry letters and word between the towns for pay — your letters on this road are for other towns, so here you bring only the news, tell it brisk and exact, and are back on the road once it is passed.",
 	"itinerant musician": "You live by your fiddle and your voice — wherever folk gather you look for a corner and an audience, and offer a tune for a meal or a coin.",
 	"circuit preacher":   "You carry the Word as well as the news: you bless households, ask after souls, and would not leave a village without a bit of scripture spoken at a hearth or the meeting house.",
 	"traveling scholar":  "You travel for learning's sake, hungry for books, letters, and learned talk — you ask more questions than you answer and set down what you hear.",
@@ -581,130 +574,6 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 	}
 }
 
-// selectRoadWord picks one grounded item of news for a spawning traveler to
-// carry (LLM-371). It draws from the in-memory action log — the same
-// recent-happenings ring the atmosphere digest reads — filtered to carry-worthy
-// beats within RoadWordLookback whose subject is a real resident (not another
-// visitor, not the PC, not decorative), and renders one to a diegetic past-tense
-// clause. This is the v2-faithful stand-in for the ticket's "recent
-// village_event": engine-v2 has no village_event table, but the action log
-// records every actor's real beats (a stateful keeper's delivery / a shared-VA
-// vendor's sale alike), so a traveler can carry checkable word about anyone in
-// the village. Returns "" when nothing carry-worthy is on hand — the caller
-// leaves Payload empty and the preface drops the clause. Random pick (not
-// most-recent) so back-to-back spawns don't all echo the same freshest beat.
-// Runs on the world goroutine (called from dispatchVisitorSpawn), so reading
-// w.ActionLog / w.Actors is race-free.
-//
-// This is NOT a rumor and must not be confused with one (LLM-597). The rumor
-// layer in rumor.go is deliberately FALLIBLE — a frozen claim that escalates a
-// rung per retelling and is free to outgrow the fact that seeded it. A
-// traveler's word is the opposite: grounded, checkable, never distorted, and
-// never escalated. The two systems shared the noun "rumor" until LLM-597, which
-// is how LLM-594 came to be filed against the wrong mechanism.
-func selectRoadWord(w *World, r *rand.Rand, now time.Time) string {
-	if w == nil || len(w.ActionLog) == 0 {
-		return ""
-	}
-	cutoff := now.Add(-RoadWordLookback)
-	var candidates []string
-	for _, e := range w.ActionLog {
-		if e.OccurredAt.Before(cutoff) {
-			continue
-		}
-		subject := w.Actors[e.ActorID]
-		if subject == nil || subject.VisitorState != nil {
-			continue // subject must be a resident villager, not a passing traveler
-		}
-		if subject.Kind == KindPC || subject.Kind == KindDecorative {
-			continue // word is about the village's own, not the player or props
-		}
-		if clause := renderRoadWordClause(w, e); clause != "" {
-			candidates = append(candidates, clause)
-		}
-	}
-	if len(candidates) == 0 {
-		return ""
-	}
-	return candidates[r.Intn(len(candidates))]
-}
-
-// renderRoadWordClause turns one action-log entry into the diegetic, past-tense
-// clause a traveler carries as word from the road — "Ezekiel Crane turned out a plow for the
-// Hale farm" — or "" for a beat that is not worth carrying. The
-// preface owns the "Word reached you on the road that …" framing
-// (renderTravelerPreface); this returns just the grounded fact. Deliberately a
-// curated allow-set of the socially legible economic beats: the private
-// (consumed / took_break), the dull (walked / departed), the utterance itself
-// (spoke — long, contextual, and already carried by the speaker's own memory),
-// and the feed-only negotiation types (offered / declined / countered, filtered
-// everywhere NPC-facing) all render "". Amounts and exact coin counts are dropped
-// on purpose — scene, not ledger. The subject name is resolved by the caller's
-// guard (w.Actors[e.ActorID] non-nil), re-checked here for safety.
-func renderRoadWordClause(w *World, e ActionLogEntry) string {
-	subject := w.Actors[e.ActorID]
-	if subject == nil || subject.DisplayName == "" {
-		return ""
-	}
-	name := subject.DisplayName
-	switch e.ActionType {
-	case ActionTypePaid:
-		if e.CounterpartyName == "" {
-			return "" // a payment to no one named is not worth carrying
-		}
-		clause := name + " settled up with " + e.CounterpartyName
-		if e.Text != "" {
-			clause += " over " + e.Text
-		}
-		return clause
-	case ActionTypeDelivered:
-		if e.Text == "" {
-			return ""
-		}
-		clause := name + " turned out " + e.Text
-		if e.CounterpartyName != "" {
-			clause += " for " + e.CounterpartyName
-		}
-		return clause
-	case ActionTypeLabored:
-		if e.CounterpartyName != "" {
-			return name + " put in a day's work for " + e.CounterpartyName
-		}
-		return name + " took on a piece of work"
-	case ActionTypeHired:
-		if e.CounterpartyName == "" {
-			return ""
-		}
-		return name + " took " + e.CounterpartyName + " on for a job"
-	case ActionTypeSolicitedWork:
-		if e.CounterpartyName != "" {
-			return name + " went looking to work for " + e.CounterpartyName
-		}
-		return name + " was about looking for work"
-	case ActionTypeOfferedWork:
-		if e.CounterpartyName == "" {
-			return ""
-		}
-		return name + " offered " + e.CounterpartyName + " a piece of work"
-	case ActionTypeGathered:
-		if e.Text == "" {
-			return ""
-		}
-		clause := name + " was out gathering " + e.Text
-		if e.CounterpartyName != "" {
-			clause += " at " + WithDefiniteArticle(e.CounterpartyName)
-		}
-		return clause
-	case ActionTypeRepairing:
-		if e.Text != "" {
-			return name + " was mending " + WithDefiniteArticle(e.Text)
-		}
-		return name + " was busy at repairs"
-	default:
-		return ""
-	}
-}
-
 // dispatchVisitorSpawn makes the per-tick spawn decision (rollVisitorSpawn —
 // the LLM-626 two-flow split) and — when a roll fires and the concurrent cap
 // isn't reached — generates a persona, picks an arrival edge tile +
@@ -997,9 +866,8 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		// Arriving: on the road, walking in to his first stop. Pacing flips it to
 		// making_rounds on arrival (LLM-373).
 		Phase: VisitorPhaseArriving,
-		// A returner's PERSONA is stable across visits, but its road-word is fresh each
-		// trip: (re)selected here every spawn, NOT stored on the recurring_visitor row (LLM-372).
-		Payload:     selectRoadWord(w, r, inputs.Now),
+		// No word at spawn. Only a messenger carries news, and his is written off-world
+		// for today's date and installed after he spawns (LLM-700, cascade/messenger_news.go).
 		RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
 		// The bound trade errand (LLM-455): non-nil for a merchant, nil for a passer-through.
 		// Drives the rounds cue, the commerce-confinement steer/gate, and the coin-valve.
