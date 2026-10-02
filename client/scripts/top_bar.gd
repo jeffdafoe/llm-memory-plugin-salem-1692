@@ -174,13 +174,14 @@ func _ready() -> void:
     panel_style.content_margin_bottom = 0.0
     add_theme_stylebox_override("panel", panel_style)
 
-    # Size: full width, 40px tall, anchored to top
-    custom_minimum_size = Vector2(0, 40)
+    # Size: full width, 40px tall (taller on a touch screen, where its text is
+    # bigger), anchored to top
+    custom_minimum_size = Vector2(0, OrientationGuard.text_size(40))
     anchor_left = 0.0
     anchor_right = 1.0
     anchor_top = 0.0
     anchor_bottom = 0.0
-    offset_bottom = 40
+    offset_bottom = OrientationGuard.text_size(40)
 
     # HBox: title on left, buttons on right
     var hbox = HBoxContainer.new()
@@ -192,8 +193,11 @@ func _ready() -> void:
     title.text = "Salem \u2014 1692"
     title.add_theme_color_override("font_color", COLOR_TEXT)
     title.add_theme_font_override("font", _font)
-    title.add_theme_font_size_override("font_size", 22)
+    title.add_theme_font_size_override("font_size", OrientationGuard.text_size(22))
     title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    # The title gives way first when the row is crowded (bigger text on a
+    # touch screen), so the purse, needs and buttons never overflow.
+    title.clip_text = true
     title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     hbox.add_child(title)
 
@@ -211,7 +215,7 @@ func _ready() -> void:
     cursor_tile_label.visible = false
     cursor_tile_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     cursor_tile_label.add_theme_font_override("font", _font)
-    cursor_tile_label.add_theme_font_size_override("font_size", 14)
+    cursor_tile_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
     cursor_tile_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     right_box.add_child(cursor_tile_label)
 
@@ -246,7 +250,7 @@ func _ready() -> void:
     coins_label.visible = false
     coins_label.add_theme_color_override("font_color", Color(0.92, 0.78, 0.42, 1.0))
     coins_label.add_theme_font_override("font", _font)
-    coins_label.add_theme_font_size_override("font_size", 16)
+    coins_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     coins_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     coins_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(coins_label)
@@ -259,7 +263,7 @@ func _ready() -> void:
     lodging_label.visible = false
     lodging_label.add_theme_color_override("font_color", Color(0.72, 0.86, 0.74, 1.0))
     lodging_label.add_theme_font_override("font", _font)
-    lodging_label.add_theme_font_size_override("font_size", 16)
+    lodging_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     lodging_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     lodging_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(lodging_label)
@@ -272,7 +276,7 @@ func _ready() -> void:
     inventory_icon = Label.new()
     inventory_icon.text = String.chr(ICON_CODEPOINT_PACKAGE)
     inventory_icon.add_theme_font_override("font", _icon_font)
-    inventory_icon.add_theme_font_size_override("font_size", 18)
+    inventory_icon.add_theme_font_size_override("font_size", OrientationGuard.text_size(18))
     inventory_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     inventory_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     inventory_icon.visible = false
@@ -291,7 +295,7 @@ func _ready() -> void:
     username_label.text = ""
     username_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     username_label.add_theme_font_override("font", _font)
-    username_label.add_theme_font_size_override("font_size", 16)
+    username_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     username_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     right_box.add_child(username_label)
 
@@ -320,7 +324,7 @@ func _ready() -> void:
     sleep_label.text = ""
     sleep_label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.95, 1.0))
     sleep_label.add_theme_font_override("font", _font)
-    sleep_label.add_theme_font_size_override("font_size", 16)
+    sleep_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     sleep_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     sleep_chip.add_child(sleep_label)
     wake_button = _make_button("Wake up")
@@ -338,7 +342,7 @@ func _ready() -> void:
 func _build_sound_control(box: HBoxContainer) -> void:
     sound_icon = Label.new()
     sound_icon.add_theme_font_override("font", _icon_font)
-    sound_icon.add_theme_font_size_override("font_size", 18)
+    sound_icon.add_theme_font_size_override("font_size", OrientationGuard.text_size(18))
     sound_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     sound_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     sound_icon.tooltip_text = "Sound"
@@ -408,7 +412,7 @@ func _make_button(label: String) -> Button:
     btn.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     btn.add_theme_color_override("font_hover_color", COLOR_TEXT)
     btn.add_theme_font_override("font", _font)
-    btn.add_theme_font_size_override("font_size", 16)
+    btn.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
 
     var normal_style = StyleBoxFlat.new()
     normal_style.bg_color = Color(0.17, 0.14, 0.10, 1.0)
@@ -612,7 +616,7 @@ func _make_need_label(text: String, size: int, color: Color) -> Label:
     label.text = text
     label.add_theme_color_override("font_color", color)
     label.add_theme_font_override("font", _font)
-    label.add_theme_font_size_override("font_size", size)
+    label.add_theme_font_size_override("font_size", OrientationGuard.text_size(size))
     label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     return label
 
@@ -663,11 +667,12 @@ func set_cursor_tile_visible(show: bool) -> void:
     if not show:
         cursor_tile_label.text = ""
 
+## The editor is desktop-only, so Edit and Config never show on a touch screen.
 func set_edit_visible(show: bool) -> void:
-    edit_button.visible = show
+    edit_button.visible = show and not OrientationGuard.is_touch()
 
 func set_config_visible(show: bool) -> void:
-    config_button.visible = show
+    config_button.visible = show and not OrientationGuard.is_touch()
 
 func _on_edit_pressed() -> void:
     _editor_active = not _editor_active

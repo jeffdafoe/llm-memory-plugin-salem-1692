@@ -160,7 +160,7 @@ func _clamp_panel_insets() -> Vector4:
                 insets.y = maxf(insets.y, r.size.x)
         else:
             # Wide — top/bottom bar
-            if r.position.y <= TOP_BAR_HEIGHT + 1.0:
+            if r.position.y <= _top_bar_height() + 1.0:
                 insets.z = maxf(insets.z, r.size.y)
             if r.end.y >= viewport_size.y - 1.0:
                 insets.w = maxf(insets.w, r.size.y)
@@ -203,8 +203,12 @@ func _process(_delta: float) -> void:
 ## Panels self-register via register_ui_panel(self); the editor sidebar
 ## and talk panel both go through that. Adding a new panel requires no
 ## camera changes.
+## The top bar is taller on a touch screen, where its text is bigger.
+func _top_bar_height() -> float:
+    return OrientationGuard.text_size(int(TOP_BAR_HEIGHT))
+
 func _is_over_ui(pos: Vector2) -> bool:
-    if pos.y < TOP_BAR_HEIGHT:
+    if pos.y < _top_bar_height():
         return true
     for panel in ui_panels:
         if not is_instance_valid(panel):

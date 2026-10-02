@@ -32,7 +32,9 @@ const FADE_SECONDS: float = 0.6
 const MAX_VISIBLE: int = 4
 
 const TOAST_WIDTH: float = 460.0
-## Clears the top bar so a banner never covers the clock / wake button.
+## Clears the top bar so a banner never covers the clock / wake button. Scaled
+## like the bar, which is taller on a touch screen (OrientationGuard is the
+## autoload before this one, so its touch flag is already set).
 const TOP_MARGIN: float = 64.0
 
 const COLOR_TEXT := Color(0.96, 0.96, 0.96)
@@ -53,7 +55,7 @@ func _ready() -> void:
     _stack.anchor_right = 0.5
     _stack.grow_horizontal = Control.GROW_DIRECTION_BOTH
     _stack.grow_vertical = Control.GROW_DIRECTION_END
-    _stack.offset_top = TOP_MARGIN
+    _stack.offset_top = OrientationGuard.text_size(int(TOP_MARGIN))
     _stack.add_theme_constant_override("separation", 8)
     # The container itself must never eat clicks aimed at the map behind it; only
     # the individual banners are interactive (click-to-dismiss).

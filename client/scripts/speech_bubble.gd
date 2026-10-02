@@ -122,7 +122,7 @@ func setup(speak_text: String) -> void:
     _load_art()
     _use_art = _art_sheet != null
     _font = ThemeDB.fallback_font
-    _font_size = FONT_SIZE
+    _font_size = OrientationGuard.text_size(FONT_SIZE, OrientationGuard.BUBBLE_TOUCH_TEXT_SCALE)
     _seq = _next_seq
     _next_seq += 1
     if _use_art:

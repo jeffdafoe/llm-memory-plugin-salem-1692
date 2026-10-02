@@ -17,8 +17,8 @@ Auth="*res://scripts/auth.gd"
 Catalog="*res://scripts/catalog.gd"
 VillageApi="*res://scripts/village_api.gd"
 ErrorBeacon="*res://scripts/error_beacon.gd"
-Toast="*res://scripts/toast.gd"
 OrientationGuard="*res://scripts/orientation_guard.gd"
+Toast="*res://scripts/toast.gd"
 Sound="*res://scripts/sound.gd"
 
 [display]
