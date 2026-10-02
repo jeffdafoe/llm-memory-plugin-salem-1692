@@ -95,7 +95,7 @@ func _ready() -> void:
     if OS.has_feature("web"):
         JavaScriptBridge.eval(LANDSCAPE_SUPPORT_JS)
         _coarse_raw = JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true)
-    _enabled = OS.has_feature("web") and _coarse_raw == true
+    _enabled = OS.has_feature("web") and js_flag(_coarse_raw)
     if not _enabled:
         return
     JavaScriptBridge.eval(FULLSCREEN_LISTENER_JS)
@@ -105,6 +105,17 @@ func _ready() -> void:
     # Deferred: the root is still adding its children during an autoload's
     # _ready, and _apply may move this node among them.
     _refresh.call_deferred()
+
+## JavaScriptBridge.eval hands a JS boolean back as the int 1 / 0 on Android
+## Chrome (seen on an Alldocube tablet), and an int never equals `true` in
+## GDScript, so a JS yes/no is read through this.
+static func js_flag(value: Variant) -> bool:
+    match typeof(value):
+        TYPE_BOOL:
+            return value
+        TYPE_INT, TYPE_FLOAT:
+            return value == 1
+    return false
 
 ## The whole decision, kept pure so the headless test can drive it.
 static func should_cover(coarse_pointer: bool, window_size: Vector2i) -> bool:
