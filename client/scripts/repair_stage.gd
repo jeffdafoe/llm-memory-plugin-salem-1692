@@ -372,6 +372,7 @@ func finish(paid: int) -> void:
     _burst(_obj_center(), 18, [C_GOLD, C_WOOD_HI, Color.WHITE])
     if paid > 0:
         pop("+%d" % paid, _obj_center() + Vector2(0, -12))
+        _sound("coins")
 
 
 func pop(text: String, at: Vector2) -> void:
@@ -434,9 +435,14 @@ func _on_hit(perfect: bool) -> void:
             var wl = game
             at += Vector2(wl.BAR_X + wl.marker, wl.BAR_Y)
             _burst(at, 6, [C_IRON_LIGHT, C_WOOD_HI])
+            _sound("windlass_click")
+            _sound("windlass_turn")
         _:
             at += Vector2(Games.PLAY_W / 2.0, 20)
             _burst(at, 10, [C_WOOD_HI, C_WOOD_LIGHT])
+            # The saw's last stroke of a round — the earlier ones sound in
+            # _on_stroke.
+            _sound("saw_stroke")
     if perfect:
         _flash = 0.6
         pop("Perfect!", at + Vector2(0, -10))
@@ -474,6 +480,7 @@ func _land_swing() -> void:
         return
     var at := _play_origin() + Vector2(game.slot_x(_swing_slot), game.BOARD_Y - 2)
     if _swing_hit:
+        _sound("hammer_hit")
         _shake = 0.18
         _burst(at, 7, [C_GOLD, Color.WHITE, C_IRON_LIGHT])
         _burst(at + Vector2(0, 3), 4, [C_WOOD_LIGHT, C_WOOD_HI])
@@ -481,6 +488,7 @@ func _land_swing() -> void:
             _flash = 0.6
             pop("Perfect!", at + Vector2(0, -10))
     else:
+        _sound("hammer_miss")
         _shake = maxf(_shake, 0.12)
         _burst(at + Vector2(0, 2), 3, [C_WOOD_LIGHT, C_WOOD_HI])
 
@@ -496,6 +504,19 @@ static func _nail_height(g) -> float:
 func _on_stroke() -> void:
     var at := _play_origin() + Vector2(Games.PLAY_W / 2.0, 18)
     _burst(at, 3, [C_WOOD_HI, C_WOOD_LIGHT])
+    _sound("saw_stroke")
+
+
+## Play a sound through the Sound autoload (LLM-703). Looked up by node path,
+## not by its global name: the repair tests preload this script before the
+## tree — and so the autoload — exists, and the global name does not compile
+## there.
+func _sound(sound_name: String) -> void:
+    if not is_inside_tree():
+        return
+    var s := get_node_or_null("/root/Sound")
+    if s != null:
+        s.play(sound_name)
 
 
 func _obj_center() -> Vector2:
@@ -728,6 +749,7 @@ func _drop_section(from_step: int) -> void:
             "vel": Vector2(_rng.randf_range(10, 30), -30), "life": 0.8,
         })
         _burst(anchor + Vector2(x0, ROAD_LOG_Y + 8), 10, [C_WOOD_HI, C_WOOD_LIGHT])
+        _sound("section_drop")
         return
     for l in broken:
         var tex: Texture2D = l.get("tex")
