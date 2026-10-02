@@ -42,18 +42,29 @@ const LANDSCAPE_SUPPORT_JS := """
         log.push(new Date().toISOString().substr(11, 8) + ' ' + line);
         if (log.length > 6) log.shift();
     };
+    // One request at a time: a button tap also reaches the tap listener, and a
+    // second request off the same gesture would be refused and muddy the log.
+    var busy = false;
+    function lock(source) {
+        if (!(screen.orientation && screen.orientation.lock)) { window.__salemLog(source + ': no lock API'); return Promise.resolve(); }
+        return screen.orientation.lock('landscape').then(function () {
+            window.__salemLog(source + ': lock ok');
+        });
+    }
     window.__salemGoLandscape = function (source) {
         var root = document.documentElement;
+        if (busy) return;
         if (!root.requestFullscreen) { window.__salemLog(source + ': no fullscreen API'); return; }
-        root.requestFullscreen({ navigationUI: 'hide' }).then(function () {
-            window.__salemLog(source + ': fullscreen ok');
-            if (!(screen.orientation && screen.orientation.lock)) { window.__salemLog('no lock API'); return; }
-            return screen.orientation.lock('landscape').then(function () {
-                window.__salemLog('lock ok');
+        busy = true;
+        var step = document.fullscreenElement
+            ? lock(source)
+            : root.requestFullscreen({ navigationUI: 'hide' }).then(function () {
+                window.__salemLog(source + ': fullscreen ok');
+                return lock(source);
             });
-        }).catch(function (e) {
+        step.catch(function (e) {
             window.__salemLog(source + ': refused ' + (e && e.name ? e.name + ' ' + e.message : String(e)));
-        });
+        }).then(function () { busy = false; });
     };
 })();
 """
@@ -65,10 +76,10 @@ const FULLSCREEN_LISTENER_JS := """
     if (window.__salemLandscapeGuard) return;
     window.__salemLandscapeGuard = true;
     document.addEventListener('pointerup', function (e) {
-        window.__salemLog('pointerup ' + e.pointerType);
         if (document.fullscreenElement) return;
-        window.__salemGoLandscape('tap');
+        window.__salemGoLandscape('tap ' + e.pointerType);
     }, true);
+    window.__salemLog('listener installed');
 })();
 """
 
@@ -151,7 +162,9 @@ func _build_cover() -> void:
 
     box.add_child(_label("Turn your tablet sideways", 44, COLOR_TITLE))
     box.add_child(_label("Salem is played in landscape.\nTap to play full screen.", 28, COLOR_TEXT))
-    var debug := build_debug_panel()
+    # No button here: the guard swallows pointer input while covering, and a tap
+    # on the cover already runs the request through the tap listener.
+    var debug := build_debug_panel(false)
     debug.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
     debug.grow_vertical = Control.GROW_DIRECTION_BEGIN
     debug.offset_left = 16
@@ -172,24 +185,26 @@ func debug_lines() -> PackedStringArray:
         lines.append(str(JavaScriptBridge.eval("navigator.userAgent", true)))
     return lines
 
-func build_debug_panel() -> Control:
+func build_debug_panel(with_button: bool = true) -> Control:
     var box := VBoxContainer.new()
     box.add_theme_constant_override("separation", 8)
+    box.mouse_filter = Control.MOUSE_FILTER_IGNORE
     var text := Label.new()
     text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     text.add_theme_font_size_override("font_size", 18)
     text.add_theme_color_override("font_color", COLOR_TEXT)
     text.mouse_filter = Control.MOUSE_FILTER_IGNORE
     box.add_child(text)
-    var button := Button.new()
-    button.text = "Test fullscreen"
-    button.add_theme_font_size_override("font_size", 22)
-    button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-    button.pressed.connect(func():
-        if OS.has_feature("web"):
-            JavaScriptBridge.eval("window.__salemGoLandscape && window.__salemGoLandscape('button')")
-    )
-    box.add_child(button)
+    if with_button:
+        var button := Button.new()
+        button.text = "Test fullscreen"
+        button.add_theme_font_size_override("font_size", 22)
+        button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+        button.pressed.connect(func():
+            if OS.has_feature("web"):
+                JavaScriptBridge.eval("window.__salemGoLandscape && window.__salemGoLandscape('button')")
+        )
+        box.add_child(button)
     var timer := Timer.new()
     timer.wait_time = 0.5
     timer.autostart = true
