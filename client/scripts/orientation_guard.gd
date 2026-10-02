@@ -54,7 +54,7 @@ const LANDSCAPE_SUPPORT_JS := """
     window.__salemGoLandscape = function (source) {
         var root = document.documentElement;
         if (busy) return;
-        if (!root.requestFullscreen) { window.__salemLog(source + ': no fullscreen API'); return; }
+        if (!document.fullscreenElement && !root.requestFullscreen) { window.__salemLog(source + ': no fullscreen API'); return; }
         busy = true;
         var step = document.fullscreenElement
             ? lock(source)
@@ -200,9 +200,12 @@ func build_debug_panel(with_button: bool = true) -> Control:
         button.text = "Test fullscreen"
         button.add_theme_font_size_override("font_size", 22)
         button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+        # While not fullscreen, an installed tap listener already handles this
+        # same gesture; the button requests only when no listener is installed
+        # (guard off) or the page is fullscreen (lock-only test).
         button.pressed.connect(func():
             if OS.has_feature("web"):
-                JavaScriptBridge.eval("window.__salemGoLandscape && window.__salemGoLandscape('button')")
+                JavaScriptBridge.eval("if (window.__salemGoLandscape && (document.fullscreenElement || !window.__salemLandscapeGuard)) window.__salemGoLandscape('button')")
         )
         box.add_child(button)
     var timer := Timer.new()
