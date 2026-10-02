@@ -21,8 +21,10 @@ type VisitorDepartWalk string
 const (
 	// VisitorDepartWalkStarted — the walk to a map edge was dispatched now.
 	VisitorDepartWalkStarted VisitorDepartWalk = "started"
-	// VisitorDepartWalkNoRoute — no anchor, grid or edge tile could be had, so no
-	// walk was issued; cleanup removes him after the grace window where he stands.
+	// VisitorDepartWalkNoRoute — no exit walk is in place: no anchor, grid or edge
+	// tile could be had, or MoveActor refused (no path). Any walk of his own was
+	// halted, so he stands where he is until cleanup removes him after the grace
+	// window.
 	VisitorDepartWalkNoRoute VisitorDepartWalk = "no_route"
 	// VisitorDepartWalkAlreadyDeparting — he was already walking out on the natural
 	// departure; that walk stands and only the silencing was added.
@@ -46,7 +48,8 @@ type DepartVisitorResult struct {
 //   - wipes his reactor state: the open warrant cycle goes, and an LLM call already
 //     in flight is voided (its attempt id is cleared, so its tool calls are refused
 //     as stale when it returns);
-//   - ends his stay at now and starts the walk to a map edge through the same
+//   - halts any walk he was on (StopMove), then ends his stay at now and starts
+//     the walk to a map edge through the same
 //     beginVisitorDespawn the daybreak departure uses, so cleanup, the
 //     ActorDeparted event and a returner's comeback schedule all stay on the one
 //     path.
@@ -75,8 +78,17 @@ func DepartVisitor(id ActorID, now time.Time) Command {
 				if now.Before(vs.ExpiresAt) {
 					vs.ExpiresAt = now
 				}
+				// Halt any walk of his own choosing first. MoveActor supersedes it only
+				// when the exit walk is stamped; on no_route his last move_to would
+				// otherwise carry on. StopMove is the `stop` tool's own cancel — it
+				// clears the intent and tells the client the walk ended.
+				if a.MoveIntent != nil {
+					if _, err := StopMove(id, now).Fn(w); err != nil {
+						log.Printf("sim/visitor: operator depart %s: stop move: %v", id, err)
+					}
+				}
 				walk = VisitorDepartWalkNoRoute
-				if beginVisitorDespawn(w, id, a, now, inputsRandOrDefault(nil)) {
+				if beginVisitorDespawn(w, id, a, now, inputsRandOrDefault(nil)) == despawnWalkStarted {
 					walk = VisitorDepartWalkStarted
 				}
 			}
