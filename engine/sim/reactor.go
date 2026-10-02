@@ -889,7 +889,8 @@ func (m WarrantMeta) Kind() WarrantKind {
 //
 // Returns true when the warrant was recorded (a fresh cycle opened, or the
 // meta appended to an open cycle), false when the funnel declined it (nil
-// args, an agent-less actor kind, or a source-dedup hit). Most callers ignore
+// args, an agent-less actor kind, an operator-departed visitor, or a source-dedup
+// hit). Most callers ignore
 // the result — they stamp and move on. The red-need backstop (ZBBS-HOME-363)
 // consults it because it advances real per-actor backoff pacing on a stamp,
 // and must not pace an actor for a deliberation that the funnel never
@@ -912,6 +913,14 @@ func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) bo
 	// warrants are wiped on load (resetReactorStateOnLoad), so a stale PC
 	// cycle can't survive a boot either.
 	if actor.Kind != KindNPCStateful && actor.Kind != KindNPCShared {
+		return false
+	}
+
+	// A visitor the operator sent away (LLM-701) is silenced for the rest of his
+	// stay: no producer may open a turn for him, so he cannot keep talking on his
+	// way out or call move_to off his exit walk. A natural (stay-ended) departure
+	// is not gated.
+	if actor.VisitorState != nil && actor.VisitorState.DepartCause == VisitorDepartCauseOperator {
 		return false
 	}
 

@@ -703,7 +703,32 @@ type VisitorState struct {
 	// visit). An operator /grant raises it alongside the wallet — fiat coin
 	// is meant to be spendable (the LLM-410 float precedent).
 	SpendBudget int
+
+	// DepartCause says why the traveler is leaving. "" (VisitorDepartCauseStayEnded)
+	// for the natural daybreak departure and for every visitor not yet leaving;
+	// VisitorDepartCauseOperator once an operator sent him away (DepartVisitor,
+	// LLM-701). An operator-departed visitor is never warranted again
+	// (tryStampWarrant), so he cannot speak on his way out or call move_to off his
+	// exit walk. A natural departure keeps its turns — a traveler may still answer a
+	// farewell. Not persisted: departing means his ExpiresAt has passed, and
+	// rehydrateVisitorsOnLoad drops an expired visitor, so a restart inside the
+	// walk-out window ends the visit rather than restoring him.
+	DepartCause VisitorDepartCause
 }
+
+// VisitorDepartCause is why a visitor is departing (LLM-701) — a Go-owned enum. A
+// string, not a bool: other causes (a visitor turned out by the constable, say)
+// can join without a new field.
+type VisitorDepartCause string
+
+const (
+	// VisitorDepartCauseStayEnded — the zero value: not leaving yet, or leaving
+	// because his stay ran out (dispatchVisitorDespawn).
+	VisitorDepartCauseStayEnded VisitorDepartCause = ""
+	// VisitorDepartCauseOperator — an operator sent him away through
+	// /umbilical/visitor/depart. Silences him for the rest of his stay.
+	VisitorDepartCauseOperator VisitorDepartCause = "operator"
+)
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
 // persisted to the visitor.phase column. A string, not a bool: the lifecycle
