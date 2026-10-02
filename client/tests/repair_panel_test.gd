@@ -49,6 +49,7 @@ const TESTS := [
     "_test_closeup_reveal_sweeps_only_the_damage",
     "_test_road_cut_and_rounds",
     "_test_panel_uses_the_closeup_else_village_sprites",
+    "_test_hammer_swings_down_onto_the_nail",
 ]
 
 ## Every piece tools/repair-art/build.ps1 writes, and what reads it.
@@ -589,6 +590,10 @@ func _test_closeup_art_is_all_there() -> void:
         _check("%s broken and mended match in size" % key, b.get_size(), m.get_size())
     var wheel := StageScript.art("wheel")
     _check("the wheel is eight 23 px turns", wheel.get_size() if wheel != null else Vector2.ZERO, Vector2(184, 23))
+    var hammer := StageScript.art("hammer")
+    _check("the hammer is its swing, level to fully raised",
+        hammer.get_size() if hammer != null else Vector2.ZERO,
+        Vector2(StageScript.HAMMER_FRAME_W * (StageScript.HAMMER_REST + 1), StageScript.HAMMER_FRAME_H))
     var ground := StageScript.art("road-ground")
     var trunk := StageScript.art("road-trunk")
     if ground != null and trunk != null:
@@ -653,6 +658,52 @@ func _test_road_cut_and_rounds() -> void:
                 inside = false
         _check("every stacked round lies inside the picture", inside, true)
     _check("ten places in the pile", StageScript.ROAD_ROUNDS.size(), 10)
+    _done()
+
+
+## A hit is judged at the click, but the hammer has to come down first: the
+## nail stands and nothing flies until it lands, then it lifts back to rest.
+## A miss swings too and thuds on the board when it lands.
+func _test_hammer_swings_down_onto_the_nail() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("fence")
+    stage.setup("Mend the Fence", "hammer", layers["broken"], layers["sound"], 5, 0, "fence")
+    stage.start_game()
+    var g = stage.game
+    g.up = 2
+    g.up_t = 0.5
+    _check("at rest the hammer hangs raised", stage._hammer_frame(), StageScript.HAMMER_REST)
+    var wins := []
+    stage.round_won.connect(func(perfect: bool): wins.append(perfect))
+    stage.press_key()
+    _check("the hit counts at the click", wins.size(), 1)
+    _check("the nail is counted driven at once", g.driven[2], true)
+    _check("nothing flies before the hammer lands", stage._particles.size(), 0)
+    _check("no jolt yet", stage._shake, 0.0)
+    _check("it is swinging down", stage._hammer_frame() < StageScript.HAMMER_REST, true)
+    _check("the struck nail still stands while it swings", stage._swing_nail_h, 8.0)
+    stage._process(StageScript.SWING_DOWN + 0.01)
+    _check("it lands level on the nail", stage._hammer_frame(), 0)
+    _check("sparks fly when it lands", stage._particles.size() > 0, true)
+    _check("and the panel jolts", stage._shake > 0.0, true)
+    stage._process(StageScript.SWING_HOLD + StageScript.SWING_UP)
+    _check("it lifts back to rest", stage._hammer_frame(), StageScript.HAMMER_REST)
+    _check("the swing is over", stage._swing_t, -1.0)
+    # A miss: no nail standing — a swing, and a thud only when it lands.
+    g.release()
+    g.up = -1
+    stage._shake = 0.0
+    var misses := []
+    stage.missed.connect(func(): misses.append(true))
+    stage.press_key()
+    _check("a miss is counted at the click", misses.size(), 1)
+    _check("a miss swings too", stage._swing_t >= 0.0, true)
+    _check("no thud before it lands", stage._shake, 0.0)
+    stage._process(StageScript.SWING_DOWN + 0.01)
+    _check("it thuds on the board", stage._shake > 0.0, true)
+    stage.queue_free()
     _done()
 
 

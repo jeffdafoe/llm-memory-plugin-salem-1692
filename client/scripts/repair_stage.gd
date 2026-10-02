@@ -82,6 +82,18 @@ const ROAD_ROUNDS := [
     Vector2(137, 48),
 ]
 
+# The hammer's swing: `hammer` is a strip of HAMMER_FRAME_W x HAMMER_FRAME_H
+# frames turned about the grip — level (the strike), then raised 20°, 40°,
+# 60° — with the grip at the same place in each (tools/repair-art/build.ps1).
+# At rest it hangs raised; a swing comes down in SWING_DOWN, lands, holds on
+# the nail for SWING_HOLD and lifts back over SWING_UP.
+const HAMMER_FRAME_W := 28
+const HAMMER_FRAME_H := 32
+const HAMMER_REST := 3
+const SWING_DOWN := 0.06
+const SWING_HOLD := 0.06
+const SWING_UP := 0.21
+
 static var _art_cache := {}
 
 var title := ""
@@ -107,7 +119,15 @@ var _reveal := Rect2()  # where broken and mended differ, art px around the anch
 var _shown_progress := 0.0  # 0..1, eased toward steps_done / steps
 var _shake := 0.0
 var _flash := 0.0
-var _swing := 0.0  # 1 at a strike, decays — the hammer's drop
+## The hammer's swing: seconds since it started (-1 at rest), whether it is
+## coming down on a nail, and which slot it swings at.
+var _swing_t := -1.0
+var _swing_hit := false
+var _swing_perfect := false
+var _swing_slot := 0
+## How far the struck nail stood when it was hit — it stands until the hammer
+## lands, though the game has already counted it driven.
+var _swing_nail_h := 0.0
 var _particles: Array = []  # {pos, vel, life, max_life, color, size}
 var _chunks: Array = []  # road sections falling away: {tex, region, pos, vel, life}
 var _pops: Array = []  # {text, pos, life}
@@ -395,20 +415,21 @@ func _handle_press(pos: Variant) -> void:
             _on_stroke()
             stroke.emit()
         Games.Result.MISS:
-            _shake = maxf(_shake, 0.12)
+            if game_kind == "hammer":
+                _start_swing(false, false)
+            else:
+                _shake = maxf(_shake, 0.12)
             missed.emit()
 
 
 func _on_hit(perfect: bool) -> void:
+    if game_kind == "hammer":
+        # The strike lands when the swing comes down (_land_swing).
+        _start_swing(true, perfect)
+        return
     _shake = 0.18
-    _swing = 1.0
     var at := _play_origin()
     match game_kind:
-        "hammer":
-            var h = game
-            at += Vector2(h.slot_x(h.up), h.BOARD_Y - 2)
-            _burst(at, 7, [C_GOLD, Color.WHITE, C_IRON_LIGHT])
-            _burst(at + Vector2(0, 3), 4, [C_WOOD_LIGHT, C_WOOD_HI])
         "windlass":
             var wl = game
             at += Vector2(wl.BAR_X + wl.marker, wl.BAR_Y)
@@ -419,6 +440,57 @@ func _on_hit(perfect: bool) -> void:
     if perfect:
         _flash = 0.6
         pop("Perfect!", at + Vector2(0, -10))
+
+
+## Swing the hammer down onto the nail standing (a hit) or the board (a
+## miss). A miss while a swing is under way leaves it be; a hit restarts it.
+func _start_swing(hit: bool, perfect: bool) -> void:
+    if _swing_t >= 0.0 and not hit:
+        return
+    var g = game
+    _swing_t = 0.0
+    _swing_hit = hit
+    _swing_perfect = perfect
+    _swing_slot = maxi(g.up, 0)
+    _swing_nail_h = _nail_height(g) if hit else 0.0
+
+
+## Where the swing is: the hammer frame to draw (0 = level, the strike;
+## HAMMER_REST = raised at rest).
+func _hammer_frame() -> int:
+    if _swing_t < 0.0:
+        return HAMMER_REST
+    if _swing_t < SWING_DOWN:
+        return maxi(1, HAMMER_REST - 1 - int(_swing_t / SWING_DOWN * (HAMMER_REST - 1)))
+    if _swing_t < SWING_DOWN + SWING_HOLD:
+        return 0
+    var u := (_swing_t - SWING_DOWN - SWING_HOLD) / SWING_UP
+    return mini(HAMMER_REST, 1 + int(u * HAMMER_REST))
+
+
+## The hammer comes down: sparks and a jolt on a nail, a thud on the board.
+func _land_swing() -> void:
+    if game == null:
+        return
+    var at := _play_origin() + Vector2(game.slot_x(_swing_slot), game.BOARD_Y - 2)
+    if _swing_hit:
+        _shake = 0.18
+        _burst(at, 7, [C_GOLD, Color.WHITE, C_IRON_LIGHT])
+        _burst(at + Vector2(0, 3), 4, [C_WOOD_LIGHT, C_WOOD_HI])
+        if _swing_perfect:
+            _flash = 0.6
+            pop("Perfect!", at + Vector2(0, -10))
+    else:
+        _shake = maxf(_shake, 0.12)
+        _burst(at + Vector2(0, 2), 3, [C_WOOD_LIGHT, C_WOOD_HI])
+
+
+## How far the standing nail stands proud: it rises fast and sinks over the
+## last half second.
+static func _nail_height(g) -> float:
+    var rise: float = clampf(g.up_t / 0.12, 0.0, 1.0)
+    var sink: float = clampf((g.up_t - (g.UP_TIME - 0.5)) / 0.5, 0.0, 1.0)
+    return roundf(8.0 * rise * (1.0 - sink))
 
 
 func _on_stroke() -> void:
@@ -452,7 +524,13 @@ func _process(delta: float) -> void:
     _shown_progress = move_toward(_shown_progress, target, delta * 1.6)
     _shake = maxf(0.0, _shake - delta)
     _flash = maxf(0.0, _flash - delta * 2.5)
-    _swing = maxf(0.0, _swing - delta * 6.0)
+    if _swing_t >= 0.0:
+        var before := _swing_t
+        _swing_t += delta
+        if before < SWING_DOWN and _swing_t >= SWING_DOWN:
+            _land_swing()
+        if _swing_t >= SWING_DOWN + SWING_HOLD + SWING_UP:
+            _swing_t = -1.0
     for p in _particles:
         p["vel"] += Vector2(0, 140) * delta
         p["pos"] += p["vel"] * delta
@@ -728,24 +806,34 @@ func _draw_hammer(o: Vector2) -> void:
     var top: float = o.y + g.BOARD_Y
     _tex("plank", Vector2(o.x + g.BOARD_X - 4, top))
     var nail := art("nail")
+    # The nail just hit still stands until the hammer comes down on it.
+    var struck := _swing_hit and _swing_t >= 0.0 and _swing_t < SWING_DOWN
     for i in g.SLOTS:
         var x: float = o.x + g.slot_x(i)
-        if g.driven[i]:
+        var standing := -1.0
+        if struck and i == _swing_slot:
+            standing = _swing_nail_h
+        elif not g.driven[i] and i == g.up:
+            standing = _nail_height(g)
+        if standing >= 0.0 and nail != null:
+            # Standing proud: the head over as much shaft as stands.
+            draw_texture_rect_region(nail, Rect2(x - 3, top - standing - 3, 7, 3 + standing), Rect2(0, 0, 7, 3 + standing))
+            draw_rect(Rect2(x - 2, top, 5, 1), C_SHADE)
+        elif g.driven[i]:
             # Driven flush: just the head.
             _tex("nail-driven", Vector2(x - 3, top))
             draw_rect(Rect2(x - 3, top + 2, 7, 1), C_SHADE)
-        elif i == g.up and nail != null:
-            # Standing proud — rises fast, sinks over the last half second:
-            # the head over as much shaft as stands.
-            var rise: float = clampf(g.up_t / 0.12, 0.0, 1.0)
-            var sink: float = clampf((g.up_t - (g.UP_TIME - 0.5)) / 0.5, 0.0, 1.0)
-            var h := roundf(8.0 * rise * (1.0 - sink))
-            draw_texture_rect_region(nail, Rect2(x - 3, top - h - 3, 7, 3 + h), Rect2(0, 0, 7, 3 + h))
-            draw_rect(Rect2(x - 2, top, 5, 1), C_SHADE)
-    # The hammer hangs over the nail standing (or the last struck), dropping
-    # on a strike.
-    var hx: float = o.x + g.slot_x(maxi(g.up, 0)) - 9
-    _tex("hammer", Vector2(hx, top - 33 + roundf(_swing * 12.0)))
+    # The hammer hangs raised over the nail standing (or the last struck) and
+    # swings down about its grip. Its grip sits at the same place in every
+    # frame, so one top-left serves them all: level, its face lands on the
+    # board's top at the slot.
+    var hammer := art("hammer")
+    if hammer != null:
+        var slot := _swing_slot if _swing_t >= 0.0 else maxi(g.up, 0)
+        var at := Vector2(o.x + g.slot_x(slot) - 5, top - 30).floor()
+        var frame := _hammer_frame()
+        draw_texture_rect_region(hammer, Rect2(at, Vector2(HAMMER_FRAME_W, HAMMER_FRAME_H)),
+            Rect2(frame * HAMMER_FRAME_W, 0, HAMMER_FRAME_W, HAMMER_FRAME_H))
 
 
 func _draw_saw(o: Vector2) -> void:

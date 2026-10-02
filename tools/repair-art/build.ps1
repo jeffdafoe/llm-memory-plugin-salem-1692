@@ -262,37 +262,75 @@ function CloseupFence([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
     Rect $ax $ay $aw $ah (C '000000' 0)
 }
 
-# A hammer, drawn as a sprite map at one art px per map px.
+# The hammer, side-on: the head hangs at the end of a level handle, its face
+# (the bottom rows) toward the nail. O/I/i/h/H iron dark to light, D/W/w the
+# handle's wood dark to light, '.' clear.
 $HAMMER = @(
-    '...OOOOOOOOOOOOO..',
-    '..OhhhhhhhhhhhhiO.',
-    '.OhHhhhhhhhhhhhiIO',
-    '.OhhiiiiiiiiiiiiIO',
-    '.OiiiiiiiiiiiiiIIO',
-    '..OIIIIIIIIIIIIIO.',
-    '...OOOOOWwOOOOOO..',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '.......OwwO.......',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '.......OwWO.......',
-    '........OO........'
+    '.OOOOO..................',
+    'OhhhiIO.................',
+    'OhHhiIO.................',
+    'OhhhiIODDDDDDDDDDDDDDDD.',
+    'OhhhiIOwwwwwwwwwwwwwwwWD',
+    'OhhhiIOWWWWWWWWWWWWWWWWD',
+    'OhhhiIODDDDDDDDDDDDDDDD.',
+    'OhhhiIO.................',
+    'OhhhiIO.................',
+    'OiiiiIO.................',
+    '.OOOOO..................'
 )
-function DrawMap($rows, [int]$x, [int]$y, [int]$scale = 1) {
+# The grip the hammer swings about, in map space (pixel centres at +0.5): the
+# middle of the handle near its end. HAMMER_* in repair_stage.gd mirror the
+# frame size and where the grip lands in each frame.
+$HAMMER_GRIP_X = 22.0; $HAMMER_GRIP_Y = 5.0
+$HAMMER_FRAME_W = 28; $HAMMER_FRAME_H = 32
+$HAMMER_FRAME_GRIP_X = 24.0; $HAMMER_FRAME_GRIP_Y = 24.0
+$HAMMER_ANGLES = @(0, 20, 40, 60)
+
+function MapColor([string]$ch) {
+    switch -CaseSensitive ($ch) {
+        'O' { return $I0 } 'I' { return $I1 } 'i' { return $I2 } 'h' { return $I3 } 'H' { return $I4 }
+        'D' { return $W0 } 'W' { return $W1 } 'w' { return $W2 }
+    }
+    return $null
+}
+
+function DrawMap($rows, [int]$x, [int]$y) {
     for ($r = 0; $r -lt $rows.Count; $r++) {
-        $row = $rows[$r]
-        for ($c = 0; $c -lt $row.Length; $c++) {
-            $col = switch -CaseSensitive ($row[$c]) {
-                'O' { $I0 } 'I' { $I1 } 'i' { $I2 } 'h' { $I3 } 'H' { $I4 }
-                'W' { $W0 } 'w' { $W2 } default { $null }
+        for ($c = 0; $c -lt $rows[$r].Length; $c++) {
+            $col = MapColor ([string]$rows[$r][$c])
+            if ($col -ne $null) { Px ($x + $c) ($y + $r) $col }
+        }
+    }
+}
+
+# A map turned $deg (head up) about the pivot ($px, $py) in map space, the
+# pivot landing at ($ox, $oy) on the canvas, drawn into the w x h box at
+# ($bx, $by). Each pixel takes the colour most of its 4 x 4 subsamples land
+# on (when they cover enough of it), so a turned frame keeps clean edges.
+function DrawMapTurned($rows, [double]$px, [double]$py, [double]$deg, [double]$ox, [double]$oy, [int]$bx, [int]$by, [int]$w, [int]$h) {
+    $a = $deg * [Math]::PI / 180
+    $ca = [Math]::Cos($a); $sa = [Math]::Sin($a)
+    for ($y = $by; $y -lt $by + $h; $y++) {
+        for ($x = $bx; $x -lt $bx + $w; $x++) {
+            $counts = @{}
+            for ($sy = 0; $sy -lt 4; $sy++) {
+                for ($sx = 0; $sx -lt 4; $sx++) {
+                    $dx = $x + ($sx + 0.5) / 4 - $ox
+                    $dy = $y + ($sy + 0.5) / 4 - $oy
+                    # Back into map space: turn by -$deg.
+                    $mx = [int][Math]::Floor($dx * $ca + $dy * $sa + $px)
+                    $my = [int][Math]::Floor(-$dx * $sa + $dy * $ca + $py)
+                    if ($my -lt 0 -or $my -ge $rows.Count -or $mx -lt 0 -or $mx -ge $rows[$my].Length) { continue }
+                    $ch = [string]$rows[$my][$mx]
+                    if ($ch -ceq '.') { continue }
+                    # A case-sensitive key: 'W' and 'w' are different woods.
+                    $key = [string][int][char]$ch
+                    $counts[$key] = 1 + $counts[$key]
+                }
             }
-            if ($row[$c] -eq 'W') { $col = $W1 }
-            if ($col -ne $null) { Rect ($x + $c * $scale) ($y + $r * $scale) $scale $scale $col }
+            $best = $null; $n = 0
+            foreach ($k in $counts.Keys) { if ($counts[$k] -gt $n) { $n = $counts[$k]; $best = $k } }
+            if ($best -ne $null -and $n -ge 7) { Px $x $y (MapColor ([string][char][int]$best)) }
         }
     }
 }
@@ -1135,11 +1173,17 @@ Limb 40 60 ([Math]::PI + 0.6) 22 5 2
 SavePng 'road-brush'
 
 # Hammer game: the board, a nail (head over an 8 px shaft, drawn rising by
-# region), a driven head, the hammer.
+# region), a driven head, and the hammer's swing: one frame per angle in
+# $HAMMER_ANGLES, level (the strike) first, the grip at the same place in each.
 NewCanvas 152 14; Plank 0 0 152 14; SavePng 'plank'
 NewCanvas 7 11; Nail 3 11 8; SavePng 'nail'
 NewCanvas 7 2; NailDriven 3 0; SavePng 'nail-driven'
-NewCanvas 18 18; DrawMap $HAMMER 0 0; SavePng 'hammer'
+NewCanvas ($HAMMER_FRAME_W * $HAMMER_ANGLES.Count) $HAMMER_FRAME_H
+for ($f = 0; $f -lt $HAMMER_ANGLES.Count; $f++) {
+    $fx = $f * $HAMMER_FRAME_W
+    DrawMapTurned $HAMMER $HAMMER_GRIP_X $HAMMER_GRIP_Y $HAMMER_ANGLES[$f] ($fx + $HAMMER_FRAME_GRIP_X) $HAMMER_FRAME_GRIP_Y $fx 0 $HAMMER_FRAME_W $HAMMER_FRAME_H
+}
+SavePng 'hammer'
 
 # Windlass game: the bar (a 144 x 9 beam with iron caps; origin 2 px left of
 # and 2 px above the bar), the peg, the wheel turned through eight notches, and
