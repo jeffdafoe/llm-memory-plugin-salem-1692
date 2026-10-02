@@ -134,7 +134,7 @@ func _rebuild() -> void:
     header.text = "Your Pack"
     header.add_theme_color_override("font_color", COLOR_TEXT)
     header.add_theme_font_override("font", _font)
-    header.add_theme_font_size_override("font_size", 18)
+    header.add_theme_font_size_override("font_size", OrientationGuard.text_size(18))
     header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     _content.add_child(header)
 
@@ -155,7 +155,7 @@ func _rebuild() -> void:
         empty.text = "Your pack is empty."
         empty.add_theme_color_override("font_color", COLOR_TEXT_DIM)
         empty.add_theme_font_override("font", _font)
-        empty.add_theme_font_size_override("font_size", 14)
+        empty.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
         empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
         _content.add_child(empty)
         return
@@ -180,7 +180,7 @@ func _build_row(label_text: String, qty: int) -> HBoxContainer:
     name_label.text = label_text
     name_label.add_theme_color_override("font_color", COLOR_TEXT)
     name_label.add_theme_font_override("font", _font)
-    name_label.add_theme_font_size_override("font_size", 16)
+    name_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     row.add_child(name_label)
@@ -189,7 +189,7 @@ func _build_row(label_text: String, qty: int) -> HBoxContainer:
     qty_label.text = "× %d" % qty
     qty_label.add_theme_color_override("font_color", COLOR_QTY)
     qty_label.add_theme_font_override("font", _font)
-    qty_label.add_theme_font_size_override("font_size", 14)
+    qty_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
     qty_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     row.add_child(qty_label)
 

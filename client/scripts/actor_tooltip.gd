@@ -71,7 +71,7 @@ func _ready() -> void:
     _name_label = Label.new()
     _name_label.add_theme_color_override("font_color", COLOR_TEXT)
     _name_label.add_theme_font_override("font", _font)
-    _name_label.add_theme_font_size_override("font_size", 16)
+    _name_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
     vbox.add_child(_name_label)
 
     # In-flight source activity (LLM-441) — a current-doing line directly under
@@ -80,28 +80,28 @@ func _ready() -> void:
     _activity_label = Label.new()
     _activity_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _activity_label.add_theme_font_override("font", _font)
-    _activity_label.add_theme_font_size_override("font_size", 12)
+    _activity_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _activity_label.visible = false
     vbox.add_child(_activity_label)
 
     _role_label = Label.new()
     _role_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _role_label.add_theme_font_override("font", _font)
-    _role_label.add_theme_font_size_override("font_size", 12)
+    _role_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _role_label.visible = false
     vbox.add_child(_role_label)
 
     _work_label = Label.new()
     _work_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _work_label.add_theme_font_override("font", _font)
-    _work_label.add_theme_font_size_override("font_size", 12)
+    _work_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _work_label.visible = false
     vbox.add_child(_work_label)
 
     _home_label = Label.new()
     _home_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _home_label.add_theme_font_override("font", _font)
-    _home_label.add_theme_font_size_override("font_size", 12)
+    _home_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     _home_label.visible = false
     vbox.add_child(_home_label)
 

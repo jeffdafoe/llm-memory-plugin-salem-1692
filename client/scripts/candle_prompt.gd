@@ -99,7 +99,7 @@ func _build_label(text: String, font_size: int, color: Color) -> Label:
     label.text = text
     label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    label.add_theme_font_size_override("font_size", font_size)
+    label.add_theme_font_size_override("font_size", OrientationGuard.text_size(font_size))
     label.add_theme_color_override("font_color", color)
     # A dark outline keeps the line legible wherever the village underneath
     # happens to be bright (a lit tavern interior, daytime open ground).
