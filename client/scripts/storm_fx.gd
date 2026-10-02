@@ -25,6 +25,9 @@ extends CanvasLayer
 ##
 ## Mouse passthrough: every child uses MOUSE_FILTER_IGNORE so clicks fall
 ## through to the world underneath, exactly like the sleep-fade overlay.
+##
+## Sound (LLM-703) rides the same calls: set_storm raises / clears the rain
+## loop (Sound.set_rain) and each strike sends thunder after it (Sound.thunder).
 
 ## Storm tint — cool, desaturated slate. Alpha kept < 1.0 so the world bleeds
 ## through (darken, don't black out), matching the sleep-fade tone choice.
@@ -189,6 +192,7 @@ func _ready() -> void:
 ## scene doesn't flash clear before the first frame).
 func set_storm(active: bool, tween: bool = true) -> void:
     _active = active
+    Sound.set_rain(active, tween)
 
     if active:
         # Re-layout on the way in: zoom or window size may have moved while the
@@ -412,6 +416,7 @@ func _on_lightning_timeout() -> void:
         return
     _flash()
     _strike()
+    Sound.thunder()
     _schedule_lightning()
 
 

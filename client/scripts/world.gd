@@ -966,14 +966,19 @@ func npc_walk_speed_factor(container: Node2D) -> float:
 ## Terrain type under a world-pixel position — shallow (5) or deep (6) water
 ## means a waterfowl floats there. Same map_data the terrain renderer draws.
 func _is_water_at(world_pos: Vector2) -> bool:
+    var terrain: int = terrain_at(world_pos)
+    return terrain == 5 or terrain == 6
+
+## The terrain type (terrain.gd) under a world position, or -1 off the map or
+## before the map has loaded.
+func terrain_at(world_pos: Vector2) -> int:
     if map_data.is_empty():
-        return false
+        return -1
     var ax: int = int(floor(world_pos.x / VillageApi.tile_size)) + pad_x
     var ay: int = int(floor(world_pos.y / VillageApi.tile_size)) + pad_y
     if ax < 0 or ax >= map_width or ay < 0 or ay >= map_height:
-        return false
-    var terrain: int = map_data[ay][ax]
-    return terrain == 5 or terrain == 6
+        return -1
+    return map_data[ay][ax]
 
 # Ground-decal cell coordinates in the derived duck sheet (see
 # llm-memory-village-tiles tools/extend-duck-sheets.ps1 — the layout contract

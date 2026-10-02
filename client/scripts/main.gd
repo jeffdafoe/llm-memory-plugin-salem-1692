@@ -19,6 +19,7 @@ const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
 const CandlePromptScript = preload("res://scripts/candle_prompt.gd")
 const ActivityReporterScript = preload("res://scripts/activity_reporter.gd")
 const StormFXScript = preload("res://scripts/storm_fx.gd")
+const FootstepsScript = preload("res://scripts/footsteps.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -61,6 +62,8 @@ var _pc_attend_http: HTTPRequest = null
 ## lightning, raised while the world weather is "storm". See
 ## client/scripts/storm_fx.gd; driven via world.set_weather.
 var storm_fx: CanvasLayer = null
+## The player's footsteps (LLM-703). See client/scripts/footsteps.gd.
+var footsteps: Node = null
 ## Dream-snippet rotator. While the local PC is sleeping, fires every
 ## DREAM_SNIPPET_INTERVAL_SEC and pushes one of DREAM_SNIPPETS into
 ## the village ticker so the top scroller carries flavor instead of
@@ -626,6 +629,14 @@ func _build_ui() -> void:
     # (no tween) so a mid-storm load shows the storm at once.
     world.set_weather(world.current_weather, false)
 
+    # The player's footsteps and the indoor muffle on the rain (LLM-703). Learns
+    # the PC from _on_pc_me_completed.
+    footsteps = Node.new()
+    footsteps.set_script(FootstepsScript)
+    add_child(footsteps)
+    footsteps.world = world
+    footsteps.pc_actor_id = _pc_actor_id
+
     # Wake-up button on the top bar emits wake_pressed; route to the
     # /pc/wake endpoint. The engine clears sleeping_until and
     # broadcasts pc_sleep_ended which drives the fade-out + chip
@@ -1012,6 +1023,8 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     # the player's PC arriving." Engine populates it once the PC actor row
     # exists; empty before /pc/create completes.
     _pc_actor_id = str(data.get("actor_id", ""))
+    if footsteps != null:
+        footsteps.pc_actor_id = _pc_actor_id
     # Slide camera to the PC's actual position on the first /pc/me that
     # reports a placed PC. Login default is the village crossroads, so
     # without this the player has to find their own PC on the map after

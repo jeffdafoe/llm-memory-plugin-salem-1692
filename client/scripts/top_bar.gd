@@ -149,6 +149,15 @@ var _icon_font: Font = null
 # which feel modern). See `notes/codebase/salem/icon-fonts` for the
 # loading + materialization pattern.
 const ICON_CODEPOINT_PACKAGE: int = 0xE129
+# Lucide "volume-2" / "volume-x" — the sound control (LLM-703).
+const ICON_CODEPOINT_VOLUME: int = 0xE1AB
+const ICON_CODEPOINT_VOLUME_X: int = 0xE1AC
+
+## The speaker icon, and the popup it opens: a volume slider and a mute button.
+var sound_icon: Label = null
+var _sound_popup: PopupPanel = null
+var _sound_slider: HSlider = null
+var _mute_button: Button = null
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -275,6 +284,8 @@ func _ready() -> void:
     inventory_icon.mouse_exited.connect(func(): inventory_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM))
     right_box.add_child(inventory_icon)
 
+    _build_sound_control(right_box)
+
     # Username label
     username_label = Label.new()
     username_label.text = ""
@@ -321,6 +332,74 @@ func _ready() -> void:
     logout_button = _make_button("Logout")
     logout_button.pressed.connect(_on_logout_pressed)
     right_box.add_child(logout_button)
+
+## The speaker icon (a clickable Label, like the inventory icon) and its
+## popup. The popup is a PopupPanel so a click anywhere else closes it.
+func _build_sound_control(box: HBoxContainer) -> void:
+    sound_icon = Label.new()
+    sound_icon.add_theme_font_override("font", _icon_font)
+    sound_icon.add_theme_font_size_override("font_size", 18)
+    sound_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    sound_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    sound_icon.tooltip_text = "Sound"
+    sound_icon.mouse_filter = Control.MOUSE_FILTER_STOP
+    sound_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+    sound_icon.gui_input.connect(_on_sound_icon_input)
+    sound_icon.mouse_entered.connect(func(): sound_icon.add_theme_color_override("font_color", COLOR_TEXT))
+    sound_icon.mouse_exited.connect(func(): sound_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM))
+    box.add_child(sound_icon)
+
+    _sound_popup = PopupPanel.new()
+    var style := StyleBoxFlat.new()
+    style.bg_color = COLOR_BG
+    style.border_color = COLOR_BTN_BORDER
+    style.set_border_width_all(1)
+    style.set_corner_radius_all(3)
+    style.set_content_margin_all(10.0)
+    _sound_popup.add_theme_stylebox_override("panel", style)
+    var row := HBoxContainer.new()
+    row.add_theme_constant_override("separation", 10)
+    _mute_button = _make_button("Mute")
+    _mute_button.pressed.connect(func(): _set_sound(Sound.volume, not Sound.muted))
+    row.add_child(_mute_button)
+    _sound_slider = HSlider.new()
+    _sound_slider.min_value = 0.0
+    _sound_slider.max_value = 1.0
+    _sound_slider.step = 0.05
+    _sound_slider.custom_minimum_size = Vector2(140, 0)
+    _sound_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+    _sound_slider.value_changed.connect(func(v: float): _set_sound(v, false))
+    row.add_child(_sound_slider)
+    _sound_popup.add_child(row)
+    add_child(_sound_popup)
+    _sync_sound_control()
+
+
+func _on_sound_icon_input(event: InputEvent) -> void:
+    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        get_viewport().set_input_as_handled()
+        _sync_sound_control()
+        var r := sound_icon.get_global_rect()
+        _sound_popup.reset_size()
+        var x := r.end.x - _sound_popup.size.x
+        _sound_popup.popup(Rect2i(Vector2i(int(maxf(x, 0.0)), int(r.end.y + 6.0)), _sound_popup.size))
+
+
+## Moving the slider unmutes — a player turning it up wants to hear it.
+func _set_sound(v: float, mute: bool) -> void:
+    if not is_equal_approx(v, Sound.volume):
+        Sound.set_volume(v)
+    if mute != Sound.muted:
+        Sound.set_muted(mute)
+    _sync_sound_control()
+
+
+func _sync_sound_control() -> void:
+    var silent: bool = Sound.muted or Sound.volume <= 0.0
+    sound_icon.text = String.chr(ICON_CODEPOINT_VOLUME_X if silent else ICON_CODEPOINT_VOLUME)
+    _mute_button.text = "Unmute" if Sound.muted else "Mute"
+    _sound_slider.set_value_no_signal(Sound.volume)
+
 
 func _make_button(label: String) -> Button:
     var btn = Button.new()
