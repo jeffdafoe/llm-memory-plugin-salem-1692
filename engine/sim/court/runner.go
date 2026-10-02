@@ -35,6 +35,9 @@ type RecordStore interface {
 	// LoadDealingsBetween: every conversation both were part of, plus each one's
 	// rows naming the other, in [start, end), at most limit rows.
 	LoadDealingsBetween(ctx context.Context, a, b sim.ActorID, aName, bName string, start, end time.Time, limit int) ([]sim.SimDayEvent, error)
+	// LoadCourtRuling: the first durable `ruled` row for a case — the ruling
+	// already given before a crash lost the checkpoint that would have saved it.
+	LoadCourtRuling(ctx context.Context, caseID sim.CourtCaseID) (map[string]any, time.Time, bool, error)
 }
 
 // NoteStore reads and writes the bench book (memory-api documents).
@@ -198,6 +201,24 @@ func (r *Runner) sit(force bool) ([]sim.CourtCaseID, error) {
 func (r *Runner) hear(c *sim.CourtCase) {
 	ctx, cancel := context.WithTimeout(r.ctx, sessionTimeout)
 	defer cancel()
+
+	// A pending case can already have been ruled: the ruling's rows are written
+	// through as it is given, the case and the purses only at the next
+	// checkpoint, and a crash between the two reloads the case pending. Finish
+	// THAT ruling; never ask the magistrate again, who could rule differently
+	// and leave the record with two rulings for one matter. A failed lookup
+	// leaves the case for the next attempt rather than risking a second ruling.
+	payload, at, found, err := r.records.LoadCourtRuling(ctx, c.ID)
+	if err != nil {
+		log.Printf("court: %s: recovery lookup: %v (the case waits for the next attempt)", c.ID, err)
+		return
+	}
+	if found {
+		if _, err := r.w.SendContext(ctx, sim.ApplyCourtRuling(c.ID, sim.CourtRulingFromRecord(payload, at), time.Now().UTC())); err != nil {
+			log.Printf("court: %s: recovering the recorded ruling: %v", c.ID, err)
+		}
+		return
+	}
 
 	res, err := r.w.SendContext(ctx, sim.CourtSessionContext(c.ID))
 	if err != nil {

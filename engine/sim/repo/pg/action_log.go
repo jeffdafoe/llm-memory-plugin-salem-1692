@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"sync/atomic"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -654,4 +657,38 @@ func (r *ActionLogRepo) LoadDealingsBetween(ctx context.Context, a, b sim.ActorI
 		return nil, fmt.Errorf("iterate dealings rows: %w", err)
 	}
 	return events, nil
+}
+
+// loadCourtRulingSQL finds the first durable `ruled` row for a court case — the
+// crash-recovery lookup (LLM-695). Served by ix_agent_action_log_ruled_case_id.
+// The first row is the one to trust: the async writer is a single FIFO
+// goroutine, so a ruling's `paid` row (enqueued before its `ruled` rows) is
+// already durable whenever any of its `ruled` rows is.
+const loadCourtRulingSQL = `
+SELECT occurred_at, payload
+  FROM agent_action_log
+ WHERE action_type = 'ruled'
+   AND payload->>'case_id' = $1
+ ORDER BY id ASC
+ LIMIT 1`
+
+// LoadCourtRuling returns the payload and time of the first `ruled` row for the
+// case, found=false when the record holds none.
+func (r *ActionLogRepo) LoadCourtRuling(ctx context.Context, caseID sim.CourtCaseID) (map[string]any, time.Time, bool, error) {
+	var (
+		at  time.Time
+		raw []byte
+	)
+	err := r.pool.QueryRow(ctx, loadCourtRulingSQL, string(caseID)).Scan(&at, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, time.Time{}, false, nil
+	}
+	if err != nil {
+		return nil, time.Time{}, false, fmt.Errorf("load court ruling %s: %w", caseID, err)
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, time.Time{}, false, fmt.Errorf("decode court ruling %s: %w", caseID, err)
+	}
+	return payload, at, true, nil
 }

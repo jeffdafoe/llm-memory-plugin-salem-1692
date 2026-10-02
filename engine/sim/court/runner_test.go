@@ -22,6 +22,17 @@ type fakeRecords struct {
 	mu       sync.Mutex
 	dealings int
 	days     int
+	// ruling, when set, is a `ruled` row already in the record.
+	ruling  map[string]any
+	ruledAt time.Time
+	lookups int
+}
+
+func (f *fakeRecords) LoadCourtRuling(_ context.Context, _ sim.CourtCaseID) (map[string]any, time.Time, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookups++
+	return f.ruling, f.ruledAt, f.ruling != nil, nil
 }
 
 func (f *fakeRecords) LoadDayEvents(_ context.Context, _ sim.ActorID, start, _ time.Time) ([]sim.SimDayEvent, error) {
@@ -79,6 +90,7 @@ func courtTestWorld(t *testing.T) (*sim.World, context.Context, sim.CourtCaseID)
 		world.Settings.Location = time.UTC
 		world.Actors["gideon"] = &sim.Actor{ID: "gideon", DisplayName: "Constable Gideon Marsh", Kind: sim.KindNPCStateful,
 			Role: "constable", Attributes: map[string][]byte{sim.AttrConstable: nil}}
+		world.Actors["lewis"] = &sim.Actor{ID: "lewis", DisplayName: "Lewis Walker", Kind: sim.KindNPCShared, Coins: 44}
 		world.Actors["josiah"] = &sim.Actor{ID: "josiah", DisplayName: "Josiah Thorne", Kind: sim.KindNPCStateful, Coins: 17,
 			Inventory: map[sim.ItemKind]int{}}
 		return nil, nil
@@ -254,5 +266,72 @@ func TestRecordWindow(t *testing.T) {
 				t.Fatalf("got %v..%v err=%v; want %v..%v", start, end, err, c.start, c.end)
 			}
 		})
+	}
+}
+
+type recordingSink struct {
+	mu   sync.Mutex
+	rows []sim.DurableActionLogRow
+}
+
+func (s *recordingSink) Append(_ context.Context, row sim.DurableActionLogRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows = append(s.rows, row)
+	return nil
+}
+
+// TestHear_RecoversARulingGivenBeforeACrash — the record already holds a
+// ruling for the pending case (its rows were written, then the engine died
+// before the checkpoint that would have saved the case and the purses). The
+// court finishes THAT ruling: the magistrate, scripted to rule differently, is
+// never asked; the case takes the recorded result, words and time; the pay
+// order moves the recorded sum again (the purses rolled back with the case);
+// and nothing new is written to the record.
+func TestHear_RecoversARulingGivenBeforeACrash(t *testing.T) {
+	w, ctx, caseID := courtTestWorld(t)
+	sink := &recordingSink{}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.SetActionLogSink(sink)
+		c := world.CourtCases[caseID]
+		c.Parties = append(c.Parties, sim.CourtParty{ActorID: "lewis", Name: "Lewis Walker"})
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ruledAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	records := &fakeRecords{
+		ruledAt: ruledAt,
+		ruling: map[string]any{
+			"case_id": string(caseID), "result": "pay", "words": "Josiah Thorne is to hand Lewis Walker ten coins.",
+			"payer": "Josiah Thorne", "payee": "Lewis Walker", "amount_ordered": float64(10), "amount_paid": float64(10),
+		},
+	}
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
+		call("x1", "rule", map[string]string{"result": "no_case", "words": "There is no case."}),
+	}}})
+	r := &Runner{ctx: ctx, w: w, client: client, records: records, notes: &fakeNotes{notes: map[string]string{}}, lastAttempt: map[sim.CourtCaseID]time.Time{}}
+	res, _ := w.Send(sim.CourtCaseList())
+	r.hear(res.([]*sim.CourtCase)[0])
+
+	if n := client.CallCount(); n != 0 {
+		t.Fatalf("the magistrate was asked %d time(s); a recorded ruling must be finished, not re-heard", n)
+	}
+	res, _ = w.Send(sim.CourtCaseList())
+	c := res.([]*sim.CourtCase)[0]
+	if c.Status != sim.CourtCaseStatusRuled || c.Result != sim.CourtResultPay || c.AmountPaid != 10 ||
+		c.Words != "Josiah Thorne is to hand Lewis Walker ten coins." || !c.RuledAt.Equal(ruledAt) {
+		t.Fatalf("recovered case = %+v", c)
+	}
+	purses, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return [2]int{world.Actors["josiah"].Coins, world.Actors["lewis"].Coins}, nil
+	}})
+	if got := purses.([2]int); got != [2]int{7, 54} {
+		t.Fatalf("purses josiah/lewis = %v, want 7/54", got)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.rows) != 0 {
+		t.Fatalf("recovery wrote %d durable row(s); the record already holds them", len(sink.rows))
 	}
 }

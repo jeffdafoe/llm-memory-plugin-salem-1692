@@ -448,6 +448,46 @@ type CourtRuling struct {
 	Amount    int
 	Words     string
 	DecidedAt time.Time
+
+	// Recovered marks a ruling read back from the durable record rather than
+	// given in a session: the engine crashed after the ruling's rows were
+	// written and before a checkpoint saved the case and the purses, so the
+	// case reloaded pending. Applying it finishes the SAME ruling — the case
+	// takes the recorded result, words and time, a pay order moves exactly
+	// RecoveredPaid again (the purses rolled back with the case) — and writes
+	// no durable row and no coin-record credit, because the record already
+	// holds them (the coin record was seeded from the `paid` row at boot).
+	Recovered     bool
+	RecoveredPaid int
+}
+
+// CourtRulingFromRecord rebuilds a ruling from the payload of a durable `ruled`
+// row (courtDeliverRuling writes it) for recovery.
+func CourtRulingFromRecord(payload map[string]any, at time.Time) CourtRuling {
+	str := func(k string) string {
+		s, _ := payload[k].(string)
+		return s
+	}
+	num := func(k string) int {
+		switch v := payload[k].(type) {
+		case float64:
+			return int(v)
+		case int:
+			return v
+		}
+		return 0
+	}
+	return CourtRuling{
+		Result:        CourtResult(str("result")),
+		FoundFor:      str("found_for"),
+		Payer:         str("payer"),
+		Payee:         str("payee"),
+		Amount:        num("amount_ordered"),
+		Words:         str("words"),
+		DecidedAt:     at,
+		Recovered:     true,
+		RecoveredPaid: num("amount_paid"),
+	}
 }
 
 // CourtRulingApplied is what ApplyCourtRuling returns.
@@ -533,6 +573,9 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 
 		c.Status = CourtCaseStatusRuled
 		c.RuledAt = now
+		if r.Recovered && !r.DecidedAt.IsZero() {
+			c.RuledAt = r.DecidedAt
+		}
 		c.Result = r.Result
 		c.Words = words
 		c.FoundForID = foundFor.ActorID
@@ -540,14 +583,18 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 			c.PayerID = payer.ActorID
 			c.PayeeID = payee.ActorID
 			c.AmountOrdered = r.Amount
-			c.AmountPaid = courtCarryOutPayOrder(w, c, now)
+			c.AmountPaid = courtCarryOutPayOrder(w, c, now, r)
 		}
 
 		for _, id := range courtRecipients(c) {
-			courtDeliverRuling(w, c, id, now)
+			courtDeliverRuling(w, c, id, now, !r.Recovered)
 		}
-		log.Printf("sim/court: ruled %s (%s) result=%s paid=%d/%d: %q",
-			c.ID, joinCourtNames(courtPartyNames(c.Parties)), c.Result, c.AmountPaid, c.AmountOrdered, words)
+		verb := "ruled"
+		if r.Recovered {
+			verb = "recovered the ruling on"
+		}
+		log.Printf("sim/court: %s %s (%s) result=%s paid=%d/%d: %q",
+			verb, c.ID, joinCourtNames(courtPartyNames(c.Parties)), c.Result, c.AmountPaid, c.AmountOrdered, words)
 		return CourtRulingApplied{Case: c.Clone()}, nil
 	}}
 }
@@ -555,14 +602,19 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 // courtCarryOutPayOrder moves the ordered coin, or what the payer has, and
 // records it like any other payment: the payer's ring entry, the coin record
 // and the durable `paid` row. court_case_id marks the row as the court's; the
-// coin record has no court kind, so it reads Unstated, the safe zero.
-func courtCarryOutPayOrder(w *World, c *CourtCase, now time.Time) int {
+// coin record has no court kind, so it reads Unstated, the safe zero. A
+// recovered ruling moves the recorded amount again and writes only the ring
+// entry (see CourtRuling.Recovered).
+func courtCarryOutPayOrder(w *World, c *CourtCase, now time.Time, r CourtRuling) int {
 	payer := w.Actors[c.PayerID]
 	payee := w.Actors[c.PayeeID]
 	if payer == nil || payee == nil {
 		return 0
 	}
 	amount := c.AmountOrdered
+	if r.Recovered {
+		amount = r.RecoveredPaid
+	}
 	if payer.Coins < amount {
 		amount = payer.Coins
 	}
@@ -582,6 +634,9 @@ func courtCarryOutPayOrder(w *World, c *CourtCase, now time.Time) int {
 		Amount:           amount,
 	}).Fn(w); err != nil {
 		log.Printf("sim/court: append paid for %s: %v", payer.DisplayName, err)
+	}
+	if r.Recovered {
+		return amount
 	}
 	w.RecordCoinPaid(payer.ID, payee.ID, amount, now, CoinPaymentUnstated)
 	w.AppendActionLogDurable(DurableActionLogRow{
@@ -619,7 +674,10 @@ func courtRecipients(c *CourtCase) []ActorID {
 	return out
 }
 
-func courtDeliverRuling(w *World, c *CourtCase, id ActorID, now time.Time) {
+// courtDeliverRuling gives one recipient the beat and the ring entry, and —
+// unless the ruling is being recovered, whose rows the record already holds —
+// the durable `ruled` row.
+func courtDeliverRuling(w *World, c *CourtCase, id ActorID, now time.Time, durable bool) {
 	a := w.Actors[id]
 	if a == nil {
 		return
@@ -639,6 +697,9 @@ func courtDeliverRuling(w *World, c *CourtCase, id ActorID, now time.Time) {
 		CounterpartyName: c.FiledByName,
 	}).Fn(w); err != nil {
 		log.Printf("sim/court: append ruled for %s: %v", a.DisplayName, err)
+	}
+	if !durable {
+		return
 	}
 	payload := map[string]any{
 		"case_id":    string(c.ID),
