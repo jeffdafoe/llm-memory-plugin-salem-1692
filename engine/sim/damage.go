@@ -640,8 +640,68 @@ func (s *Snapshot) PublicWorksTerms(kind string) (bounty, seconds int) {
 		return s.PublicWorksBusinessBounty, s.PublicWorksBusinessRepairSeconds
 	case PublicWorksRoad:
 		return s.PublicWorksRoadBounty, s.PublicWorksRoadRepairSeconds
+	case PublicWorksMinor:
+		return s.PublicWorksMinorBounty, 0
 	}
 	return s.PublicWorksBounty, s.PublicWorksRepairSeconds
+}
+
+// RepairSiteView is a site the town pays to mend, as anyone hovering it sees it
+// (LLM-698): what is broken, the pay, and whether it is on offer.
+type RepairSiteView struct {
+	SiteID      VillageObjectID
+	Kind        string // PublicWorksKind
+	Fact        string // DamageFact — the same words the repair dialog uses
+	Bounty      int
+	ChestCanPay bool
+	MenderName  string // someone is mending it now; "" otherwise
+}
+
+// RepairSiteViewAt resolves a hovered object to the repair site it shows — the
+// site itself, a debris overlay attached to a damaged business, or a fence
+// break's sagging neighbour — or nil when it shows none. Pure over the
+// snapshot.
+func RepairSiteViewAt(s *Snapshot, obj *VillageObject) *RepairSiteView {
+	if obj == nil {
+		return nil
+	}
+	site := obj
+	if !IsRepairSite(site) && obj.AttachedTo != "" {
+		if parent := s.VillageObjects[obj.AttachedTo]; IsRepairSite(parent) {
+			site = parent
+		}
+	}
+	// Still none: the hovered object itself may be a fence break's edge.
+	if !IsRepairSite(site) {
+		site = MinorWorkSiteOf(s.VillageObjects, s.Assets, obj)
+	}
+	if !IsRepairSite(site) {
+		return nil
+	}
+	kind := PublicWorksKind(site)
+	bounty, _ := s.PublicWorksTerms(kind)
+	view := &RepairSiteView{
+		SiteID:      site.ID,
+		Kind:        kind,
+		Fact:        DamageFact(s.VillageObjects, s.Structures, s.Assets, site),
+		Bounty:      bounty,
+		ChestCanPay: PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve),
+	}
+	// Whoever has the town's window on it — lowest id, as objectRepairer.
+	var mender ActorID
+	for id, a := range s.Actors {
+		if a == nil || a.SourceActivityKind != SourceActivityRepair || !a.SourceActivityPublicWorks || a.SourceActivityObjectID != site.ID {
+			continue
+		}
+		if mender == "" || id < mender {
+			mender = id
+			view.MenderName = a.DisplayName
+			if view.MenderName == "" {
+				view.MenderName = string(id)
+			}
+		}
+	}
+	return view
 }
 
 // PublicWorksMendVerb is what a hand does to a site of kind, third person —

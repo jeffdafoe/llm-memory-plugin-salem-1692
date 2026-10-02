@@ -2574,6 +2574,7 @@ func (w *World) republish() {
 	snap.PublicWorksBusinessRepairSeconds = w.Settings.PublicWorksBusinessRepairSeconds
 	snap.PublicWorksRoadBounty = w.Settings.PublicWorksRoadBounty
 	snap.PublicWorksRoadRepairSeconds = w.Settings.PublicWorksRoadRepairSeconds
+	snap.PublicWorksMinorBounty = w.Settings.PublicWorksMinorBounty
 	// Environment is copied by value above, but a slice copies only its header:
 	// pruneResolvedShortages compacts the record in place and the peddler spawn
 	// stamps LastPeddlerAt through a pointer into it, so perception (LLM-658)

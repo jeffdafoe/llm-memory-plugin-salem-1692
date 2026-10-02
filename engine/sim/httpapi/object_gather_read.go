@@ -28,10 +28,37 @@ type objectGatherResponse struct {
 	// avoid labeling the object "picked clean" — a plain berry bush has no such
 	// row, so it still reads "Picked clean" (LLM-282).
 	ServesInPlace bool `json:"serves_in_place,omitempty"`
-	// Damaged is true while the object is out of use after a damage event
-	// (LLM-654) — a broken well. The client shows "Broken" in place of any
-	// count, since nothing can be drawn or drunk there until it is mended.
-	Damaged bool `json:"damaged,omitempty"`
+	// Repair is the site the town pays to mend that the hovered object shows
+	// (LLM-698): the object itself when damaged, the shop a debris overlay is
+	// attached to, or the break a fence segment sags into. Absent otherwise.
+	// The client shows it in place of any count — a broken well gives nothing
+	// until it is mended.
+	Repair *objectRepairView `json:"repair,omitempty"`
+}
+
+// objectRepairView is sim.RepairSiteView on the wire.
+type objectRepairView struct {
+	SiteID      string `json:"site_id"`
+	Kind        string `json:"site_kind"`
+	Fact        string `json:"fact"`
+	Bounty      int    `json:"bounty"`
+	ChestCanPay bool   `json:"chest_can_pay"`
+	MenderName  string `json:"mender_name,omitempty"`
+}
+
+func repairViewDTO(snap *sim.Snapshot, obj *sim.VillageObject) *objectRepairView {
+	v := sim.RepairSiteViewAt(snap, obj)
+	if v == nil {
+		return nil
+	}
+	return &objectRepairView{
+		SiteID:      string(v.SiteID),
+		Kind:        v.Kind,
+		Fact:        v.Fact,
+		Bounty:      v.Bounty,
+		ChestCanPay: v.ChestCanPay,
+		MenderName:  v.MenderName,
+	}
 }
 
 // objectServesNeedInPlace reports whether obj still satisfies a need in place
@@ -74,7 +101,7 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 			Gatherable:    true,
 			Item:          strings.TrimSpace(string(row.GatherItem)),
 			ServesInPlace: objectServesNeedInPlace(obj),
-			Damaged:       obj.IsWell() && obj.Damaged(),
+			Repair:        repairViewDTO(snap, obj),
 		}
 		// IsFinite only guarantees AvailableQuantity != nil; guard MaxQuantity
 		// too so a malformed row (one nil pointer) omits the count rather than
@@ -88,5 +115,5 @@ func (s *Server) handleObjectGather(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 		return
 	}
-	writeJSON(w, objectGatherResponse{Gatherable: false, Damaged: obj.IsWell() && obj.Damaged()})
+	writeJSON(w, objectGatherResponse{Gatherable: false, Repair: repairViewDTO(snap, obj)})
 }
