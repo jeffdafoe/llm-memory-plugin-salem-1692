@@ -50,6 +50,7 @@ const TESTS := [
     "_test_far_apart_speakers_keep_their_place",
     "_test_a_stack_holds_three",
     "_test_a_lift_eases_into_place",
+    "_test_a_wide_bubble_joins_two_stacks",
 ]
 ## One village tile, in world px.
 const TILE := 32.0
@@ -599,6 +600,37 @@ func _test_a_lift_eases_into_place() -> void:
     for i in 12:
         _script._layout([first, second], 1.0 / 60.0)
     _check("after 0.2 s it is in place (%.1f of %.1f)" % [first._lift, target], first._lift == target)
+    _free_all(who)
+    _set_art(art_before)
+    _done()
+
+## A stack is every bubble joined by overlaps, not the longest chain: two
+## short new lines that do not touch, one wide older line over both, and
+## an oldest line over that make four in one stack — the oldest closes.
+func _test_a_wide_bubble_joins_two_stacks() -> void:
+    var art_before: Texture2D = _script._art_sheet  # the live-camera bubble still draws with it
+    _set_art(null)
+    _zoom(1.0)
+    var who: Array = _speakers(3, 120.0)
+    var left: Node2D = _say(who[0], "Aye.")
+    var right: Node2D = _say(who[2], "Nay.")
+    # Spawned after, so newer: re-number the two short lines newest.
+    var wide: Node2D = _say(who[1], LONG_TEXT)
+    var oldest: Node2D = _say(who[1], LONG_TEXT)
+    oldest._seq = 0
+    wide._seq = 1
+    left._seq = 2
+    right._seq = 3
+    var all := [left, right, wide, oldest]
+    _check("harness — the two short lines do not touch",
+        not left._canvas_rect().grow(_script.STACK_GAP).intersects(right._canvas_rect()))
+    _check("harness — the wide line spans both",
+        wide._canvas_rect().intersects(left._canvas_rect()) and wide._canvas_rect().intersects(right._canvas_rect()))
+    _settle(all)
+    _check("the wide line rises over both short lines", wide._lift > 0.0 and left._lift == 0.0 and right._lift == 0.0)
+    _check("the fourth bubble of the joined stack closes", oldest.is_queued_for_deletion())
+    _check("the three newest stay up",
+        not left.is_queued_for_deletion() and not right.is_queued_for_deletion() and not wide.is_queued_for_deletion())
     _free_all(who)
     _set_art(art_before)
     _done()

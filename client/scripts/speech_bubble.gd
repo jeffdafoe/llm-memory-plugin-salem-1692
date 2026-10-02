@@ -224,18 +224,18 @@ func _wrap_text(text: String) -> void:
     _content_size = Vector2(ceilf(widest), line_height * mini(lines.size(), PAGE_LINES))
 
 
-## The first bubble to process in a frame lays out all of them; every
-## bubble then fits itself with its lift.
+## The first bubble to process in a frame lays out all of them.
 func _process(delta: float) -> void:
     var frame := Engine.get_process_frames()
     if frame != _laid_out_frame:
         _laid_out_frame = frame
         _layout(_live, delta)
-    _fit_to_screen()
 
 
 func _enter_tree() -> void:
     _live.append(self)
+    # A bubble spawned after this frame's layout gets one of its own.
+    _laid_out_frame = -1
 
 
 func _exit_tree() -> void:
@@ -244,8 +244,10 @@ func _exit_tree() -> void:
 
 ## Newest first: each bubble keeps its place unless a newer one is in the
 ## way, and then rises the least that clears it (and whatever that lift
-## runs into). Depth counts the bubbles under it in its stack; past
-## MAX_STACK the bubble closes. Lifts ease toward their targets.
+## runs into). A stack is every bubble joined by those collisions — one
+## wide bubble can bridge two that never touch — and one that would make
+## a stack bigger than MAX_STACK closes. Lifts ease toward their targets,
+## and every bubble is then fitted with its lift.
 static func _layout(bubbles: Array, delta: float) -> void:
     var order: Array = []
     for b in bubbles:
@@ -254,11 +256,11 @@ static func _layout(bubbles: Array, delta: float) -> void:
             order.append(b)
     order.sort_custom(func(x, y): return x._seq > y._seq)
     var blend: float = 1.0 - exp(-delta / LIFT_EASE)
-    var placed: Array = []  # [Rect2 at its target lift, depth]
+    var placed: Array = []  # [Rect2 at its target lift, stack id]
+    var stack_size := {}
     for b in order:
         var rect: Rect2 = b._canvas_rect()
         var lift := 0.0
-        var depth := 1
         var moved := true
         while moved:
             moved = false
@@ -266,21 +268,38 @@ static func _layout(bubbles: Array, delta: float) -> void:
                 var lifted := Rect2(rect.position - Vector2(0, lift), rect.size)
                 var below: Rect2 = p[0]
                 if lifted.intersects(below.grow(STACK_GAP)):
-                    depth = maxi(depth, p[1] + 1)
                     # Only a higher lift is a move: rounding can leave a
                     # cleared rect touching, and the same lift again would loop.
                     var clear: float = rect.end.y - below.position.y + STACK_GAP
                     if clear > lift:
                         lift = clear
                         moved = true
-        if depth > MAX_STACK:
+        # It joins every stack it rose over: whatever lies between its own
+        # place and where it ends up.
+        var touched := {}
+        var swept := Rect2(rect.position - Vector2(0, lift), rect.size + Vector2(0, lift))
+        for p in placed:
+            if lift > 0.0 and swept.intersects(p[0].grow(STACK_GAP)):
+                touched[p[1]] = true
+        var size := 1
+        for id in touched:
+            size += stack_size[id]
+        if size > MAX_STACK:
             b._close_early()
             continue
-        placed.append([Rect2(rect.position - Vector2(0, lift), rect.size), depth])
+        var stack_id: int = b._seq
+        for p in placed:
+            if touched.has(p[1]):
+                p[1] = stack_id
+        for id in touched:
+            stack_size.erase(id)
+        stack_size[stack_id] = size
+        placed.append([Rect2(rect.position - Vector2(0, lift), rect.size), stack_id])
         b._lift_target = lift
         b._lift = lerpf(b._lift, lift, blend)
         if absf(b._lift - lift) < 1.0:
             b._lift = lift
+        b._fit_to_screen()
 
 
 ## This bubble at its anchor (no lift), in canvas px.
