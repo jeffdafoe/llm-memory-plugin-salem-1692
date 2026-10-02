@@ -1925,6 +1925,13 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
+	// bring_before_magistrates (LLM-695): where the matter went and when it is
+	// heard, so the constable can tell those present without guessing.
+	if vc.Name == bringBeforeMagistratesToolName {
+		if r, ok := cmdResult.(sim.CourtFileResult); ok && r.Message != "" {
+			return "[ok] " + r.Message
+		}
+	}
 	// offer_work (LLM-346): the employer-side mint. Tick-terminal like
 	// solicit_work, so the result is purely informational — who the job went to,
 	// and that the answer is theirs to give. When a `say` line rode along it has

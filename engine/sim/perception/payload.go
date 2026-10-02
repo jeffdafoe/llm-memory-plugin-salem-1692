@@ -741,6 +741,13 @@ type Payload struct {
 	// LLM-665 added the floor.
 	EstateRateCollector *EstateRateCollectorView
 
+	// Court is set for a constable: how the magistrates in Salem Town hear the
+	// matters he cannot settle himself, how many more he may bring today, and what
+	// he has before the court now. It is the bring_before_magistrates gate
+	// (Court.OffersFiling). Not co-location-gated — the court is off the map.
+	// LLM-695.
+	Court *CourtView
+
 	// CoinDealings is what coin has actually passed between the subject and each
 	// co-present acquaintance inside the recall window — the record against which a
 	// money claim made in this scene can be checked (LLM-572). Empty when nobody

@@ -421,6 +421,8 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// Carter (carter.go): days defaults only when the key is absent (0 is the
 	// explicit off-switch), the thresholds re-default at the consumer when zero.
 	s.CarterDays = parseIntSetting(values, "carter_days", sim.DefaultCarterDays)
+	s.CourtSittingTime = parseStringSetting(values, "court_sitting_time", sim.DefaultCourtSittingTime)
+	s.CourtDailyCaseLimit = parseIntSetting(values, "court_daily_case_limit", sim.DefaultCourtDailyCaseLimit)
 	s.CarterResidueFloorCoins = parseIntSetting(values, "carter_residue_floor_coins", sim.DefaultCarterResidueFloorCoins)
 	s.CarterResidueSpawnCoins = parseIntSetting(values, "carter_residue_spawn_coins", sim.DefaultCarterResidueSpawnCoins)
 	s.CarterPurseMax = parseIntSetting(values, "carter_purse_max", sim.DefaultCarterPurseMax)

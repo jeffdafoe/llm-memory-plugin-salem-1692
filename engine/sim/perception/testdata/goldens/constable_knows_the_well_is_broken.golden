@@ -15,6 +15,8 @@ You're at your workplace.
 
 It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
 
+## The magistrates
+Matters you cannot settle yourself — a theft, a debt in dispute, a wrong one villager lays at another's door — go before the magistrates in Salem Town. They sit each day at noon, read what passed in the village, and send word of their ruling to everyone the matter concerns; their ruling ends it. You may bring up to 2 new matters a day with bring_before_magistrates, naming the villagers concerned and saying what the matter is.
 ## The town's works
 The windlass at the Well by the Mill is down — nobody can drink or draw water there until it is mended. The town has posted 12 coins for the mending; any hand seeking work may take it on.
 

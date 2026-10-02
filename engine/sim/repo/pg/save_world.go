@@ -152,6 +152,14 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 			return fmt.Errorf("pg SaveWorld: RecurringVisitors.SaveSnapshot: %w", err)
 		}
 	}
+	// LLM-695: the magistrates' docket and rulings. Upsert-only, like the
+	// returners. In the same Tx as Actors, so a pay order's coin movement and the
+	// case's ruled status can never split across a crash. No FK; order is free.
+	if repo.CourtCases != nil {
+		if err := repo.CourtCases.SaveSnapshot(ctx, tx, cp.CourtCases); err != nil {
+			return fmt.Errorf("pg SaveWorld: CourtCases.SaveSnapshot: %w", err)
+		}
+	}
 	// LLM-547: the per-pair conversational recency trail. Upsert plus a single
 	// horizon-predicate DELETE — NOT a generation-marker sweep (nothing is
 	// marked), but not upsert-only either: visitor ActorIDs are ephemeral, so

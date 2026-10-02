@@ -26,6 +26,7 @@ type Repository struct {
 	LaborContracts       LaborContractsRepo
 	Visitors             VisitorsRepo
 	RecurringVisitors    RecurringVisitorsRepo
+	CourtCases           CourtCasesRepo
 	Contacts             ContactsRepo
 	CoinRecords          CoinRecordsRepo
 
@@ -233,6 +234,17 @@ type VisitorsRepo interface {
 type RecurringVisitorsRepo interface {
 	LoadAll(ctx context.Context) (map[RecurringVisitorID]*RecurringVisitor, error)
 	SaveSnapshot(ctx context.Context, tx Tx, recurring map[RecurringVisitorID]*RecurringVisitor) error
+}
+
+// CourtCasesRepo loads + checkpoints the magistrates' docket and rulings
+// (LLM-695). Same posture as RecurringVisitorsRepo: a plain per-row upsert with
+// NO delete-stale sweep — a ruled case is the court's record for good, and the
+// in-memory set only grows. Written inside the SaveWorld Tx from cp.CourtCases,
+// so a pay order's coin and the case's ruled status can never split across a
+// crash; loaded into World.CourtCases at FinalizeLoad.
+type CourtCasesRepo interface {
+	LoadAll(ctx context.Context) (map[CourtCaseID]*CourtCase, error)
+	SaveSnapshot(ctx context.Context, tx Tx, cases map[CourtCaseID]*CourtCase) error
 }
 
 // ContactsRepo loads + checkpoints the per-pair conversational recency trail

@@ -518,6 +518,12 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// without a restart; applied in memory and persisted on the next checkpoint.
 		{http.MethodPost, umbilicalBasePath + "/object/damage", "Break a well or an owned business now, or mend any damaged site without a bounty — a road obstacle is removed (LLM-654/675/677 damage events). No roll and no guards beyond the kind. Body: {id, action: \"damage\"|\"storm\"|\"repair\"}.", true, s.handleUmbilicalObjectDamage},
 		{http.MethodPost, umbilicalBasePath + "/road/damage", "Bring a tree down across a road now (LLM-677): a random fallen-tree asset at a random site that cuts a road with open ground around it. No roll and no guards beyond a free site. Returns the obstacle id; mend it via /object/damage. Body: {action: \"damage\"|\"storm\"}.", true, s.handleUmbilicalRoadDamage},
+
+		// The magistrates (LLM-695): the docket and rulings, seeding a case, and
+		// hearing every pending case now.
+		{http.MethodGet, umbilicalBasePath + "/court/cases", "The magistrates' docket and rulings (LLM-695), newest first: who brought each matter, the parties, the complaint, and for a ruled case the result, any pay order (ordered vs paid) and the magistrate's words.", false, s.handleUmbilicalCourtCases},
+		{http.MethodPost, umbilicalBasePath + "/court/file", "Put a matter on the docket as if the named villager brought it (LLM-695). No daily limit. It is heard at the next sitting, or at once via /court/sit. Body: {filed_by, parties: [names], complaint}.", true, s.handleUmbilicalCourtFile},
+		{http.MethodPost, umbilicalBasePath + "/court/sit", "Hear every pending case now, regardless of the sitting time (LLM-695). Runs in the background; returns the case ids being heard. 409 while a sitting is already in progress.", true, s.handleUmbilicalCourtSit},
 		{http.MethodPost, umbilicalBasePath + "/stall-wear/set", "Live-tune the stall wear knobs (LLM-118) without a restart. All fields optional (at least one required), non-negative ints; stall_degraded_produce_pct (LLM-446) is 0-100 — the production rate while the owner's business is degraded (0 = full block, 100 = no penalty). Body: {stall_wear_per_coin?, stall_wear_repair_threshold?, stall_wear_degrade_threshold?, stall_nails_per_repair?, stall_repair_duration_seconds?, stall_degraded_produce_pct?}.", true, s.handleUmbilicalStallWearSet},
 
 		// Farm upkeep wealth tax (LLM-215) — live-tune the per-farm shovel levy

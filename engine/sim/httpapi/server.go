@@ -61,6 +61,8 @@ type Server struct {
 	// not import the cascade package that owns the route builders. Nil when
 	// unwired → the /route handler answers 503.
 	routeForcer func(attrSlug string, start bool) sim.Command
+	// court backs POST /umbilical/court/sit (LLM-695). Nil → 503.
+	court CourtSitter
 	// recipeWriter backs the operator-gated POST /umbilical/recipe/set control
 	// route (LLM-97) — the durable item_recipe upsert. Injected (set by
 	// cmd/engine via SetRecipeWriter) so httpapi does not import the pg package.

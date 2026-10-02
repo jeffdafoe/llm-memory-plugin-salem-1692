@@ -249,6 +249,13 @@ type WorldSettings struct {
 	EstateRatePctPerDay int
 	ConstableWagePerDay int
 
+	// The magistrates (LLM-695, court.go). CourtSittingTime is when the court
+	// sits each day, HH:MM in the world's timezone (parsed at use, falling back
+	// to DefaultCourtSittingTime). CourtDailyCaseLimit is how many new matters
+	// one constable may bring in a game-day (<=0 reads as the default).
+	CourtSittingTime    string
+	CourtDailyCaseLimit int
+
 	// Damage events and public works (LLM-654, damage.go). The two chances are
 	// per thousand at the reference use (WellDamageUseReference draws since the
 	// last repair); 0 disables that roll. WellDamageMinGapHours is the quiet time
@@ -1210,6 +1217,13 @@ type World struct {
 	// days-to-weeks out. See recurring_visitor.go.
 	RecurringVisitors map[RecurringVisitorID]*RecurringVisitor
 
+	// CourtCases is the magistrates' docket and their record of rulings
+	// (LLM-695). Durable: loaded from court_case at boot and upserted every
+	// checkpoint (no sweep — a ruling is the court's record for good). A case
+	// filed in the morning must survive the day's deploys to be heard at noon.
+	// See court.go.
+	CourtCases map[CourtCaseID]*CourtCase
+
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
 	// map used by the businessowner cascade slice to suppress redundant
 	// engine-spoken hospitality lines (e.g. don't re-greet the same
@@ -1715,6 +1729,7 @@ func NewWorld(repo Repository) *World {
 		PayLedger:            make(map[LedgerID]*PayLedgerEntry),
 		LaborLedger:          make(map[LaborID]*LaborOffer),
 		RecurringVisitors:    make(map[RecurringVisitorID]*RecurringVisitor),
+		CourtCases:           make(map[CourtCaseID]*CourtCase),
 		Assets:               make(map[AssetID]*Asset),
 		Sprites:              make(map[SpriteID]*Sprite),
 		AttributeDefinitions: make(map[string]*AttributeDefinition),
@@ -2009,6 +2024,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// co-present). Placed after visitors only for readability.
 	if err := w.rehydrateContactLedgerOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate contact ledger: %w", err)
+	}
+	// LLM-695: the magistrates' docket and rulings. Order-free — cases name
+	// actors by id and name, and a ruling against a departed actor degrades to
+	// nothing moved.
+	if err := w.rehydrateCourtCasesOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate court cases: %w", err)
 	}
 	// LLM-572: seed the per-pair coin tally from the durable action log. This one
 	// IS order-dependent — it resolves each historical row's recipient against
@@ -2575,6 +2596,12 @@ func (w *World) republish() {
 	snap.PublicWorksRoadBounty = w.Settings.PublicWorksRoadBounty
 	snap.PublicWorksRoadRepairSeconds = w.Settings.PublicWorksRoadRepairSeconds
 	snap.PublicWorksMinorBounty = w.Settings.PublicWorksMinorBounty
+	snap.CourtDocket, snap.CourtFiledToday = courtDocketForSnapshot(w, now)
+	snap.CourtDailyCaseLimit = courtDailyCaseLimit(w)
+	snap.CourtSittingTime = w.Settings.CourtSittingTime
+	if snap.CourtSittingTime == "" {
+		snap.CourtSittingTime = DefaultCourtSittingTime
+	}
 	// Environment is copied by value above, but a slice copies only its header:
 	// pruneResolvedShortages compacts the record in place and the peddler spawn
 	// stamps LastPeddlerAt through a pointer into it, so perception (LLM-658)

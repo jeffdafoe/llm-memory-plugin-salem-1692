@@ -89,6 +89,7 @@ const (
 	WarrantKindUnfinishedIntent   WarrantKind = "unfinished_intent"    // the actor's own batch queued a commit call AFTER a terminal one — the harness dropped it, so re-tick promptly to let the actor finish what it meant to do (LLM-414)
 	WarrantKindLaborSettled       WarrantKind = "labor_settled"        // a finished job's wage transferred at the completion sweep — both parties perceive the payment as squared (LLM-498)
 	WarrantKindCarterBought       WarrantKind = "carter_bought"        // a carter's mechanical buy leg took goods off the holder's shelf for coin — the holder perceives the sale as done (LLM-681)
+	WarrantKindCourtRuled         WarrantKind = "court_ruled"          // the magistrates ruled on a matter the recipient is party to or brought — the matter reads as closed (LLM-695)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.

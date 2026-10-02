@@ -354,6 +354,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderFarmUpkeep(&ephemeral, p.FarmUpkeep)
 	renderWorkClothes(&ephemeral, p.WorkClothes)
 	renderEstateRateCollector(&ephemeral, p.EstateRateCollector)
+	renderCourt(&ephemeral, p.Court)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)
@@ -4309,6 +4310,11 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// LLM-681: a carter's buy leg settled on the pacing pass — pre-rendered at
 		// the settle, so the holder reads the sale as done rather than asking again.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.Carter), maxTextBytes)
+	case sim.CourtRuledWarrantReason:
+		// LLM-695: the magistrates' ruling, pre-rendered per recipient at the
+		// sitting — the magistrate's words, any pay order as carried out, and
+		// "The matter is closed."
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.FiledBy), maxTextBytes)
 	case sim.StallRepairWarrantReason:
 		// LLM-118 (generalized LLM-247): the business just wore through the repair
 		// threshold. At the business the "## Your business" cue carries the nail

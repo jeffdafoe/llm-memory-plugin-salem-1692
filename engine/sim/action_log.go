@@ -214,6 +214,21 @@ const (
 	// non-increasing counter is coerced to an accept and emits no PayCountered);
 	// HuddleID is the offer's huddle. FEED-ONLY (see ActionTypeOffered).
 	ActionTypeCountered ActionType = "countered"
+
+	// ActionTypeBroughtCase — the constable brought a matter before the
+	// magistrates (LLM-695, court.go FileCourtCase). ActorID is the filer; Text is
+	// the complaint; CounterpartyName lists the parties. Durable
+	// {case_id, parties, complaint}. Reaches the filer's dream so the night
+	// records the matter as sent to the court.
+	ActionTypeBroughtCase ActionType = "brought_case"
+
+	// ActionTypeRuled — the magistrates' ruling reached a party or the filer
+	// (LLM-695, court.go ApplyCourtRuling). One row per recipient; ActorID is the
+	// recipient; Text is that recipient's pre-rendered line, ending "The matter is
+	// closed."; CounterpartyName is the filer. Durable {case_id, result,
+	// complaint, brought_by, parties, words, text, …pay fields}. It is how the
+	// night's dream records a matter as closed rather than open.
+	ActionTypeRuled ActionType = "ruled"
 )
 
 // isNegotiationActionType reports whether t is one of the pay-ledger negotiation

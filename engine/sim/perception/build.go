@@ -412,6 +412,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	p.FarmUpkeep = buildFarmUpkeep(snap, actorID, actorSnap)
 	p.WorkClothes = buildWorkClothes(snap, actorID, actorSnap)
 	p.EstateRateCollector = buildEstateRateCollector(snap, actorID, actorSnap)
+	p.Court = buildCourt(snap, actorID, actorSnap)
 	// customerEngaged (LLM-90): the seller-side "someone's at my stall right now"
 	// signal — a buyer's pending offer awaiting my decision (PayOffersForMe), a
 	// quote I have standing out to a buyer (StandingQuotesFromMe), or simply a
@@ -2363,6 +2364,8 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 			add(r.Buyer)
 		case sim.CarterBoughtWarrantReason:
 			add(r.Carter)
+		case sim.CourtRuledWarrantReason:
+			add(r.FiledBy)
 		case sim.PayOfferWarrantReason:
 			add(r.Buyer)
 		case sim.SceneQuoteTargetedWarrantReason:

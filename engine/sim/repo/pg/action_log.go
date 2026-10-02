@@ -567,3 +567,165 @@ func fillSettlementPayload(raw []byte, row *sim.SettlementRow, actorID string) {
 		row.PayItems = append(row.PayItems, sim.ItemKindQty{Kind: sim.ItemKind(pi.Item), Qty: pi.Qty})
 	}
 }
+
+// loadDealingsBetweenSQL pulls what passed between two villagers in a window,
+// for the magistrates' read tools (LLM-695): every row of every conversation
+// both were part of (the whole exchange, third parties included), plus each
+// one's own rows that name the other — a payment, a delivery, a hire — wherever
+// they stood. A row names the other by id where the writer stamped one, else by
+// display name (older rows carry the name only — and the name as it is NOW, so
+// a name-only row written before a rename is missed; rows since LLM-572 carry
+// the id).
+//
+// The table is never trimmed, so every branch is shaped to an index rather than
+// one OR over a time range (there is no index on occurred_at alone): the shared
+// conversations through idx_agent_action_log_huddle (huddle_id, occurred_at),
+// each party's own rows through idx_agent_action_log_npc (actor_id,
+// occurred_at). UNION drops a row two branches both return.
+//
+// $1/$2 actor ids, $3/$4 their display names, $5/$6 the window, $7 the row cap.
+const loadDealingsBetweenSQL = `
+WITH shared AS (
+    SELECT huddle_id FROM agent_action_log
+     WHERE actor_id = $1::uuid AND huddle_id IS NOT NULL
+       AND occurred_at >= $5 AND occurred_at < $6
+    INTERSECT
+    SELECT huddle_id FROM agent_action_log
+     WHERE actor_id = $2::uuid AND huddle_id IS NOT NULL
+       AND occurred_at >= $5 AND occurred_at < $6
+),
+rows AS (
+    SELECT al.id, al.occurred_at, al.action_type, al.payload, al.speaker_name
+      FROM agent_action_log al
+      JOIN shared s ON s.huddle_id = al.huddle_id
+     WHERE al.occurred_at >= $5 AND al.occurred_at < $6 AND al.result = 'ok'
+    UNION
+    SELECT al.id, al.occurred_at, al.action_type, al.payload, al.speaker_name
+      FROM agent_action_log al
+     WHERE al.actor_id = $1::uuid
+       AND al.occurred_at >= $5 AND al.occurred_at < $6 AND al.result = 'ok'
+       AND (al.payload->>'recipient_actor_id' = $2::text OR al.payload->>'employer_actor_id' = $2::text
+            OR al.payload->>'payer_actor_id' = $2::text
+            OR $4 IN (al.payload->>'recipient', al.payload->>'employer', al.payload->>'worker',
+                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer'))
+    UNION
+    SELECT al.id, al.occurred_at, al.action_type, al.payload, al.speaker_name
+      FROM agent_action_log al
+     WHERE al.actor_id = $2::uuid
+       AND al.occurred_at >= $5 AND al.occurred_at < $6 AND al.result = 'ok'
+       AND (al.payload->>'recipient_actor_id' = $1::text OR al.payload->>'employer_actor_id' = $1::text
+            OR al.payload->>'payer_actor_id' = $1::text
+            OR $3 IN (al.payload->>'recipient', al.payload->>'employer', al.payload->>'worker',
+                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer'))
+)
+SELECT occurred_at, action_type, payload, speaker_name
+  FROM rows
+ ORDER BY occurred_at ASC, id ASC
+ LIMIT $7`
+
+// LoadDealingsBetween returns what passed between two villagers in [start, end),
+// oldest first, at most limit rows. See loadDealingsBetweenSQL.
+func (r *ActionLogRepo) LoadDealingsBetween(ctx context.Context, a, b sim.ActorID, aName, bName string, start, end time.Time, limit int) ([]sim.SimDayEvent, error) {
+	rows, err := r.pool.Query(ctx, loadDealingsBetweenSQL, string(a), string(b), aName, bName, start, end, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query dealings between %q and %q: %w", a, b, err)
+	}
+	defer rows.Close()
+	events := []sim.SimDayEvent{}
+	for rows.Next() {
+		var (
+			occurredAt time.Time
+			actionType string
+			payloadRaw []byte
+			speaker    string
+		)
+		if err := rows.Scan(&occurredAt, &actionType, &payloadRaw, &speaker); err != nil {
+			return nil, fmt.Errorf("scan dealings row: %w", err)
+		}
+		payload := map[string]any{}
+		if len(payloadRaw) > 0 {
+			if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+				payload = map[string]any{}
+			}
+		}
+		events = append(events, sim.SimDayEvent{At: occurredAt, Kind: sim.ActionType(actionType), Payload: payload, Speaker: speaker})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dealings rows: %w", err)
+	}
+	return events, nil
+}
+
+// loadCourtRecordSQL reads what the durable record holds for one court case —
+// the crash-recovery lookup (LLM-695): every `ruled` row and the court's `paid`
+// row, oldest first. Two branches, each served by its partial expression index
+// (ix_agent_action_log_ruled_case_id, ix_agent_action_log_paid_court_case_id),
+// so the lookup never scans the never-trimmed log.
+const loadCourtRecordSQL = `
+SELECT id, occurred_at, action_type, payload, actor_id::text
+  FROM agent_action_log
+ WHERE action_type = 'ruled' AND payload->>'case_id' = $1
+UNION ALL
+SELECT id, occurred_at, action_type, payload, actor_id::text
+  FROM agent_action_log
+ WHERE action_type = 'paid' AND payload->>'court_case_id' = $1
+ ORDER BY id ASC`
+
+// LoadCourtRecord returns what the record holds for the case. found is true
+// when any row exists — a ruling or a payment.
+func (r *ActionLogRepo) LoadCourtRecord(ctx context.Context, caseID sim.CourtCaseID) (sim.CourtRecord, bool, error) {
+	rec := sim.CourtRecord{RuledFor: map[sim.ActorID]bool{}}
+	rows, err := r.pool.Query(ctx, loadCourtRecordSQL, string(caseID))
+	if err != nil {
+		return rec, false, fmt.Errorf("load court record %s: %w", caseID, err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var (
+			id         int64
+			at         time.Time
+			actionType string
+			raw        []byte
+			actorID    *string
+		)
+		if err := rows.Scan(&id, &at, &actionType, &raw, &actorID); err != nil {
+			return rec, false, fmt.Errorf("scan court record %s: %w", caseID, err)
+		}
+		found = true
+		payload := map[string]any{}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return rec, false, fmt.Errorf("decode court record %s row %d: %w", caseID, id, err)
+		}
+		switch sim.ActionType(actionType) {
+		case sim.ActionTypePaid:
+			// A court payment row that cannot be read exactly is an error, never
+			// a zero value: recovery then leaves the case for the operator.
+			payee, _ := payload["recipient_actor_id"].(string)
+			if actorID == nil || *actorID == "" || payee == "" {
+				return rec, false, fmt.Errorf("court record %s row %d: payment lacks a payer or payee id", caseID, id)
+			}
+			amount, err := sim.CourtRecordedAmount(payload["amount"])
+			if err != nil {
+				return rec, false, fmt.Errorf("court record %s row %d: payment amount: %w", caseID, id, err)
+			}
+			rec.Payments = append(rec.Payments, sim.CourtPaymentRow{
+				PayerID: sim.ActorID(*actorID),
+				PayeeID: sim.ActorID(payee),
+				Amount:  amount,
+			})
+		case sim.ActionTypeRuled:
+			if actorID != nil {
+				rec.RuledFor[sim.ActorID(*actorID)] = true
+			}
+			if rec.Ruling == nil {
+				rec.Ruling, rec.RuledAt = payload, at
+			}
+			rec.Rulings = append(rec.Rulings, payload)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return rec, false, fmt.Errorf("iterate court record %s: %w", caseID, err)
+	}
+	return rec, found, nil
+}

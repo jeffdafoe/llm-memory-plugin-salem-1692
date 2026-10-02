@@ -251,6 +251,16 @@ type Snapshot struct {
 	// snapshot rather than racing on w.Settings.
 	EstateRateFloor int
 
+	// The magistrates (LLM-695). CourtDocket is every pending case with the
+	// sitting it will be heard at; CourtFiledToday counts each filer's cases this
+	// game-day; the limit and sitting time mirror WorldSettings — so the
+	// constable's section and the tool gate read the same numbers FileCourtCase
+	// enforces.
+	CourtDocket         []CourtDocketEntry
+	CourtFiledToday     map[ActorID]int
+	CourtDailyCaseLimit int
+	CourtSittingTime    string
+
 	// Public-works terms (LLM-654) mirrored from WorldSettings so the bounty cue
 	// states the SAME bounty and reserve StartRepair's public-works branch gates
 	// on. Zero on a directly-built test snapshot = no bounty on offer.

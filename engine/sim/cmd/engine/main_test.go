@@ -237,7 +237,7 @@ func TestRegisterTools_CacheStableOrder(t *testing.T) {
 		"gather", "produce", "repair", "stoke", "bake", "turn_in", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
-		"accept_gift", "decline_gift", "summon",
+		"accept_gift", "decline_gift", "summon", "bring_before_magistrates",
 	}
 
 	maxCommon, maxCommonName := -1, ""
@@ -289,7 +289,7 @@ func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 		"gather", "produce", "repair", "stoke", "bake", "turn_in", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",
-		"accept_gift", "decline_gift", "summon", "done", "recall", "memorize",
+		"accept_gift", "decline_gift", "summon", "bring_before_magistrates", "done", "recall", "memorize",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertised tool sequence drifted (LLM-328):\ngot  %v\nwant %v", got, want)
