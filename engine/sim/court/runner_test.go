@@ -351,8 +351,8 @@ func TestHear_RecoversARulingGivenBeforeACrash(t *testing.T) {
 	ruledAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	records := &fakeRecords{record: &sim.CourtRecord{
 		Ruling: recordedPayRuling(caseID), RuledAt: ruledAt,
-		RuledFor:        map[sim.ActorID]bool{"josiah": true, "lewis": true, "gideon": true},
-		PaymentRecorded: true,
+		RuledFor: map[sim.ActorID]bool{"josiah": true, "lewis": true, "gideon": true},
+		Payments: []sim.CourtPaymentRow{{PayerID: "josiah", PayeeID: "lewis", Amount: 10}},
 	}}
 	if n := hearOnce(t, w, ctx, records); n != 0 {
 		t.Fatalf("the magistrate was asked %d time(s); a recorded ruling must be finished, not re-heard", n)
@@ -423,7 +423,7 @@ func TestHear_RecoveryWritesALostPayment(t *testing.T) {
 // dropped rows) is never heard again: the case stays pending for the operator.
 func TestHear_APaymentWithNoRulingIsLeftForTheOperator(t *testing.T) {
 	w, ctx, _, sink := recoveryWorld(t)
-	records := &fakeRecords{record: &sim.CourtRecord{PaymentRecorded: true, RuledFor: map[sim.ActorID]bool{}}}
+	records := &fakeRecords{record: &sim.CourtRecord{Payments: []sim.CourtPaymentRow{{PayerID: "josiah", PayeeID: "lewis", Amount: 10}}, RuledFor: map[sim.ActorID]bool{}}}
 	if n := hearOnce(t, w, ctx, records); n != 0 {
 		t.Fatalf("the magistrate was asked %d time(s)", n)
 	}
@@ -440,6 +440,22 @@ func TestHear_RecoveryRefusesWhenThePayerCannotCoverTheRecordedSum(t *testing.T)
 	ruling := recordedPayRuling(caseID)
 	ruling["amount_ordered"], ruling["amount_paid"] = float64(30), float64(30) // Josiah holds 17
 	records := &fakeRecords{record: &sim.CourtRecord{Ruling: ruling, RuledAt: time.Now().UTC(), RuledFor: map[sim.ActorID]bool{"josiah": true}}}
+	hearOnce(t, w, ctx, records)
+	c, purses := caseAndPurses(t, w)
+	if c.Status != sim.CourtCaseStatusPending || purses != [2]int{17, 44} || len(sinkKinds(sink)) != 0 {
+		t.Fatalf("case %s purses %v rows %v; want untouched", c.Status, purses, sinkKinds(sink))
+	}
+}
+
+// A payment on record between other villagers than the ruling names is not
+// finished: the case waits for the operator.
+func TestHear_RecoveryRefusesAPaymentThatDoesNotMatchTheRuling(t *testing.T) {
+	w, ctx, caseID, sink := recoveryWorld(t)
+	records := &fakeRecords{record: &sim.CourtRecord{
+		Ruling: recordedPayRuling(caseID), RuledAt: time.Now().UTC(),
+		RuledFor: map[sim.ActorID]bool{"josiah": true, "lewis": true, "gideon": true},
+		Payments: []sim.CourtPaymentRow{{PayerID: "lewis", PayeeID: "josiah", Amount: 10}},
+	}}
 	hearOnce(t, w, ctx, records)
 	c, purses := caseAndPurses(t, w)
 	if c.Status != sim.CourtCaseStatusPending || purses != [2]int{17, 44} || len(sinkKinds(sink)) != 0 {

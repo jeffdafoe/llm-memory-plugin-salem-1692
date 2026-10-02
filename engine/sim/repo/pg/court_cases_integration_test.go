@@ -253,8 +253,8 @@ func crashAndRecover(t *testing.T, keep int) {
 	if err != nil || !found || rec.Ruling == nil {
 		t.Fatalf("LoadCourtRecord found=%v ruling=%v err=%v", found, rec.Ruling != nil, err)
 	}
-	if len(rec.RuledFor) != min(keep, 3) || rec.PaymentRecorded != (keep == 4) {
-		t.Fatalf("record: ruled for %d, payment %v; want %d, %v", len(rec.RuledFor), rec.PaymentRecorded, min(keep, 3), keep == 4)
+	if len(rec.RuledFor) != min(keep, 3) || (len(rec.Payments) == 1) != (keep == 4) {
+		t.Fatalf("record: ruled for %d, payment %v; want %d, %v", len(rec.RuledFor), len(rec.Payments) == 1, min(keep, 3), keep == 4)
 	}
 	ruling, err := sim.CourtRulingFromRecord(rec)
 	if err != nil {

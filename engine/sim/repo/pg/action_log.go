@@ -693,20 +693,31 @@ func (r *ActionLogRepo) LoadCourtRecord(ctx context.Context, caseID sim.CourtCas
 			return rec, false, fmt.Errorf("scan court record %s: %w", caseID, err)
 		}
 		found = true
+		payload := map[string]any{}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return rec, false, fmt.Errorf("decode court record %s row %d: %w", caseID, id, err)
+		}
 		switch sim.ActionType(actionType) {
 		case sim.ActionTypePaid:
-			rec.PaymentRecorded = true
+			pay := sim.CourtPaymentRow{}
+			if actorID != nil {
+				pay.PayerID = sim.ActorID(*actorID)
+			}
+			if s, ok := payload["recipient_actor_id"].(string); ok {
+				pay.PayeeID = sim.ActorID(s)
+			}
+			if v, ok := payload["amount"].(float64); ok {
+				pay.Amount = int(v)
+			}
+			rec.Payments = append(rec.Payments, pay)
 		case sim.ActionTypeRuled:
 			if actorID != nil {
 				rec.RuledFor[sim.ActorID(*actorID)] = true
 			}
 			if rec.Ruling == nil {
-				payload := map[string]any{}
-				if err := json.Unmarshal(raw, &payload); err != nil {
-					return rec, false, fmt.Errorf("decode court ruling %s: %w", caseID, err)
-				}
 				rec.Ruling, rec.RuledAt = payload, at
 			}
+			rec.Rulings = append(rec.Rulings, payload)
 		}
 	}
 	if err := rows.Err(); err != nil {

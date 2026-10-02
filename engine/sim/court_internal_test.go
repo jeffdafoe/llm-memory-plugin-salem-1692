@@ -347,3 +347,27 @@ func TestCourtRulingFromRecord_Validates(t *testing.T) {
 		t.Error("found_for with no party accepted")
 	}
 }
+
+func TestCourtRulingFromRecord_RefusesARecordThatDisagreesWithItself(t *testing.T) {
+	ruling := func() map[string]any {
+		return map[string]any{"result": "pay", "words": "w", "payer": "A", "payee": "B",
+			"amount_ordered": float64(10), "amount_paid": float64(4)}
+	}
+	pay := CourtPaymentRow{PayerID: "a", PayeeID: "b", Amount: 4}
+	if _, err := CourtRulingFromRecord(CourtRecord{Ruling: ruling(), Rulings: []map[string]any{ruling(), ruling()}, Payments: []CourtPaymentRow{pay}}); err != nil {
+		t.Fatalf("a consistent record was refused: %v", err)
+	}
+	other := ruling()
+	other["words"] = "something else"
+	cases := map[string]CourtRecord{
+		"rulings disagree":            {Ruling: ruling(), Rulings: []map[string]any{ruling(), other}},
+		"two payments":                {Ruling: ruling(), Payments: []CourtPaymentRow{pay, pay}},
+		"payment amount differs":      {Ruling: ruling(), Payments: []CourtPaymentRow{{PayerID: "a", PayeeID: "b", Amount: 9}}},
+		"payment for a no-pay ruling": {Ruling: map[string]any{"result": "no_case", "words": "w"}, Payments: []CourtPaymentRow{pay}},
+	}
+	for name, rec := range cases {
+		if _, err := CourtRulingFromRecord(rec); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

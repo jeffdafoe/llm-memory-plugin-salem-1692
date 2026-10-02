@@ -464,23 +464,52 @@ type CourtRuling struct {
 	RecoveredPaid     int
 	RecordedRulingFor map[ActorID]bool
 	PaymentRecorded   bool
+	// RecordedPayment is the payment row on record, when there is one; recovery
+	// refuses unless its payer, payee and amount are the ruling's.
+	RecordedPayment CourtPaymentRow
 }
 
-// CourtRecord is what the durable record holds for one case: the first `ruled`
-// row (the canonical outcome — a ruling writes every `ruled` row before its
-// `paid` row), who has a `ruled` row, and whether the payment row exists.
+// CourtRecord is what the durable record holds for one case: every `ruled`
+// row (the first is the canonical outcome — a ruling writes every `ruled` row
+// before its `paid` row; the rest must agree with it), who has a `ruled` row,
+// and every court `paid` row (there must be at most one).
 type CourtRecord struct {
-	Ruling          map[string]any
-	RuledAt         time.Time
-	RuledFor        map[ActorID]bool
-	PaymentRecorded bool
+	Ruling   map[string]any
+	Rulings  []map[string]any
+	RuledAt  time.Time
+	RuledFor map[ActorID]bool
+	Payments []CourtPaymentRow
 }
+
+// CourtPaymentRow is a court `paid` row as recorded.
+type CourtPaymentRow struct {
+	PayerID ActorID
+	PayeeID ActorID
+	Amount  int
+}
+
+// courtRulingFields are the payload keys that make up the outcome; every
+// recorded `ruled` row of one case must carry the same values for them.
+var courtRulingFields = []string{"result", "words", "found_for", "payer", "payee", "amount_ordered", "amount_paid"}
 
 // CourtRulingFromRecord rebuilds the recorded ruling for recovery, validating
-// the payload: a recognised result and words, the parties a result needs, and
-// whole-number amounts with 0 <= paid <= ordered <= MaxCourtPayOrder.
+// it: a recognised result and words, the parties a result needs, whole-number
+// amounts with 0 <= paid <= ordered <= MaxCourtPayOrder, every `ruled` row
+// agreeing with the first, and at most one payment row, present only when the
+// ruling paid something. Recovery refuses on any of these rather than finish a
+// ruling the record does not agree on; the case then waits for the operator.
 func CourtRulingFromRecord(rec CourtRecord) (CourtRuling, error) {
 	p := rec.Ruling
+	for _, other := range rec.Rulings {
+		for _, k := range courtRulingFields {
+			if fmt.Sprint(other[k]) != fmt.Sprint(p[k]) {
+				return CourtRuling{}, fmt.Errorf("court: recorded rulings disagree on %s (%v vs %v)", k, p[k], other[k])
+			}
+		}
+	}
+	if len(rec.Payments) > 1 {
+		return CourtRuling{}, fmt.Errorf("court: the record holds %d payments for one ruling", len(rec.Payments))
+	}
 	str := func(k string) string {
 		s, _ := p[k].(string)
 		return strings.TrimSpace(s)
@@ -501,7 +530,10 @@ func CourtRulingFromRecord(rec CourtRecord) (CourtRuling, error) {
 		DecidedAt:         rec.RuledAt,
 		Recovered:         true,
 		RecordedRulingFor: rec.RuledFor,
-		PaymentRecorded:   rec.PaymentRecorded,
+		PaymentRecorded:   len(rec.Payments) == 1,
+	}
+	if r.PaymentRecorded {
+		r.RecordedPayment = rec.Payments[0]
 	}
 	if !r.Result.Valid() {
 		return CourtRuling{}, fmt.Errorf("court: recorded result %q is not one of the four", r.Result)
@@ -530,6 +562,9 @@ func CourtRulingFromRecord(rec CourtRecord) (CourtRuling, error) {
 			return CourtRuling{}, fmt.Errorf("court: recorded pay order is inconsistent (ordered %d, paid %d)", ordered, paid)
 		}
 		r.Amount, r.RecoveredPaid = ordered, paid
+	}
+	if r.PaymentRecorded && (r.Result != CourtResultPay || r.RecoveredPaid != r.RecordedPayment.Amount) {
+		return CourtRuling{}, fmt.Errorf("court: the recorded payment (%d coins) does not match the ruling (%s, %d paid)", r.RecordedPayment.Amount, r.Result, r.RecoveredPaid)
 	}
 	return r, nil
 }
@@ -626,6 +661,9 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 				paid = r.RecoveredPaid
 				if paid > 0 && (payerActor == nil || w.Actors[payee.ActorID] == nil || payerActor.Coins < paid) {
 					return nil, fmt.Errorf("court: recovering %s: the payer can no longer cover the recorded %d coins", caseID, paid)
+				}
+				if r.PaymentRecorded && (r.RecordedPayment.PayerID != payer.ActorID || r.RecordedPayment.PayeeID != payee.ActorID) {
+					return nil, fmt.Errorf("court: recovering %s: the recorded payment is between other villagers than the ruling names", caseID)
 				}
 			} else if payerActor != nil && w.Actors[payee.ActorID] != nil {
 				paid = min(r.Amount, max(payerActor.Coins, 0))
