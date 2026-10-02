@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -488,10 +489,6 @@ type CourtPaymentRow struct {
 	Amount  int
 }
 
-// courtRulingFields are the payload keys that make up the outcome; every
-// recorded `ruled` row of one case must carry the same values for them.
-var courtRulingFields = []string{"result", "words", "found_for", "payer", "payee", "amount_ordered", "amount_paid"}
-
 // CourtRulingFromRecord rebuilds the recorded ruling for recovery, validating
 // it: a recognised result and words, the parties a result needs, whole-number
 // amounts with 0 <= paid <= ordered <= MaxCourtPayOrder, every `ruled` row
@@ -499,41 +496,49 @@ var courtRulingFields = []string{"result", "words", "found_for", "payer", "payee
 // ruling paid something. Recovery refuses on any of these rather than finish a
 // ruling the record does not agree on; the case then waits for the operator.
 func CourtRulingFromRecord(rec CourtRecord) (CourtRuling, error) {
-	p := rec.Ruling
+	r, err := courtRulingFromPayload(rec.Ruling)
+	if err != nil {
+		return CourtRuling{}, err
+	}
 	for _, other := range rec.Rulings {
-		for _, k := range courtRulingFields {
-			if fmt.Sprint(other[k]) != fmt.Sprint(p[k]) {
-				return CourtRuling{}, fmt.Errorf("court: recorded rulings disagree on %s (%v vs %v)", k, p[k], other[k])
-			}
+		o, err := courtRulingFromPayload(other)
+		if err != nil {
+			return CourtRuling{}, err
+		}
+		if o.Result != r.Result || o.Words != r.Words || o.FoundFor != r.FoundFor || o.Payer != r.Payer ||
+			o.Payee != r.Payee || o.Amount != r.Amount || o.RecoveredPaid != r.RecoveredPaid {
+			return CourtRuling{}, errors.New("court: the recorded rulings for one case disagree")
 		}
 	}
 	if len(rec.Payments) > 1 {
 		return CourtRuling{}, fmt.Errorf("court: the record holds %d payments for one ruling", len(rec.Payments))
 	}
+	r.DecidedAt = rec.RuledAt
+	r.RecordedRulingFor = rec.RuledFor
+	r.PaymentRecorded = len(rec.Payments) == 1
+	if r.PaymentRecorded {
+		r.RecordedPayment = rec.Payments[0]
+		if r.Result != CourtResultPay || r.RecoveredPaid != r.RecordedPayment.Amount {
+			return CourtRuling{}, fmt.Errorf("court: the recorded payment (%d coins) does not match the ruling (%s, %d paid)", r.RecordedPayment.Amount, r.Result, r.RecoveredPaid)
+		}
+	}
+	return r, nil
+}
+
+// courtRulingFromPayload validates one recorded `ruled` payload and returns it
+// as a typed ruling (Recovered set; the record-level fields left for the caller).
+func courtRulingFromPayload(p map[string]any) (CourtRuling, error) {
 	str := func(k string) string {
 		s, _ := p[k].(string)
 		return strings.TrimSpace(s)
 	}
-	num := func(k string) (int, error) {
-		v, ok := p[k].(float64)
-		if !ok || v != float64(int(v)) || v < 0 || v > MaxCourtPayOrder {
-			return 0, fmt.Errorf("court: recorded %s is not a whole number in 0..%d: %v", k, MaxCourtPayOrder, p[k])
-		}
-		return int(v), nil
-	}
 	r := CourtRuling{
-		Result:            CourtResult(str("result")),
-		FoundFor:          str("found_for"),
-		Payer:             str("payer"),
-		Payee:             str("payee"),
-		Words:             str("words"),
-		DecidedAt:         rec.RuledAt,
-		Recovered:         true,
-		RecordedRulingFor: rec.RuledFor,
-		PaymentRecorded:   len(rec.Payments) == 1,
-	}
-	if r.PaymentRecorded {
-		r.RecordedPayment = rec.Payments[0]
+		Result:    CourtResult(str("result")),
+		FoundFor:  str("found_for"),
+		Payer:     str("payer"),
+		Payee:     str("payee"),
+		Words:     str("words"),
+		Recovered: true,
 	}
 	if !r.Result.Valid() {
 		return CourtRuling{}, fmt.Errorf("court: recorded result %q is not one of the four", r.Result)
@@ -550,23 +555,34 @@ func CourtRulingFromRecord(rec CourtRecord) (CourtRuling, error) {
 		if r.Payer == "" || r.Payee == "" {
 			return CourtRuling{}, errors.New("court: recorded pay ruling lacks a payer or payee")
 		}
-		ordered, err := num("amount_ordered")
+		ordered, err := CourtRecordedAmount(p["amount_ordered"])
 		if err != nil {
-			return CourtRuling{}, err
+			return CourtRuling{}, fmt.Errorf("court: recorded amount_ordered: %w", err)
 		}
-		paid, err := num("amount_paid")
+		paid, err := CourtRecordedAmount(p["amount_paid"])
 		if err != nil {
-			return CourtRuling{}, err
+			return CourtRuling{}, fmt.Errorf("court: recorded amount_paid: %w", err)
 		}
 		if ordered < 1 || paid > ordered {
 			return CourtRuling{}, fmt.Errorf("court: recorded pay order is inconsistent (ordered %d, paid %d)", ordered, paid)
 		}
 		r.Amount, r.RecoveredPaid = ordered, paid
 	}
-	if r.PaymentRecorded && (r.Result != CourtResultPay || r.RecoveredPaid != r.RecordedPayment.Amount) {
-		return CourtRuling{}, fmt.Errorf("court: the recorded payment (%d coins) does not match the ruling (%s, %d paid)", r.RecordedPayment.Amount, r.Result, r.RecoveredPaid)
-	}
 	return r, nil
+}
+
+// CourtRecordedAmount parses a recorded coin amount strictly: a JSON number
+// that is a finite whole number in 0..MaxCourtPayOrder. Anything else — a
+// string, a fraction, a missing value — is an error, never a silent zero.
+func CourtRecordedAmount(v any) (int, error) {
+	f, ok := v.(float64)
+	if !ok {
+		return 0, fmt.Errorf("not a number: %v", v)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || f < 0 || f > MaxCourtPayOrder {
+		return 0, fmt.Errorf("not a whole number in 0..%d: %v", MaxCourtPayOrder, f)
+	}
+	return int(f), nil
 }
 
 // CourtRulingApplied is what ApplyCourtRuling returns.

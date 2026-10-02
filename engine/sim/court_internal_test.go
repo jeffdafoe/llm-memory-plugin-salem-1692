@@ -371,3 +371,23 @@ func TestCourtRulingFromRecord_RefusesARecordThatDisagreesWithItself(t *testing.
 		}
 	}
 }
+
+// Recorded amounts are parsed strictly, and every ruling row is validated and
+// compared as typed values: a string "10" is not the number 10.
+func TestCourtRecordedAmounts_AreStrict(t *testing.T) {
+	for _, bad := range []any{"10", 10.5, -1.0, float64(MaxCourtPayOrder + 1), nil, true} {
+		if _, err := CourtRecordedAmount(bad); err == nil {
+			t.Errorf("CourtRecordedAmount(%#v) accepted", bad)
+		}
+	}
+	if n, err := CourtRecordedAmount(float64(10)); err != nil || n != 10 {
+		t.Fatalf("10 = %d, %v", n, err)
+	}
+	first := map[string]any{"result": "pay", "words": "w", "payer": "A", "payee": "B",
+		"amount_ordered": float64(10), "amount_paid": float64(10)}
+	stringy := map[string]any{"result": "pay", "words": "w", "payer": "A", "payee": "B",
+		"amount_ordered": "10", "amount_paid": float64(10)}
+	if _, err := CourtRulingFromRecord(CourtRecord{Ruling: first, Rulings: []map[string]any{first, stringy}}); err == nil {
+		t.Fatal("a second ruling row with a string amount was accepted")
+	}
+}

@@ -699,17 +699,21 @@ func (r *ActionLogRepo) LoadCourtRecord(ctx context.Context, caseID sim.CourtCas
 		}
 		switch sim.ActionType(actionType) {
 		case sim.ActionTypePaid:
-			pay := sim.CourtPaymentRow{}
-			if actorID != nil {
-				pay.PayerID = sim.ActorID(*actorID)
+			// A court payment row that cannot be read exactly is an error, never
+			// a zero value: recovery then leaves the case for the operator.
+			payee, _ := payload["recipient_actor_id"].(string)
+			if actorID == nil || *actorID == "" || payee == "" {
+				return rec, false, fmt.Errorf("court record %s row %d: payment lacks a payer or payee id", caseID, id)
 			}
-			if s, ok := payload["recipient_actor_id"].(string); ok {
-				pay.PayeeID = sim.ActorID(s)
+			amount, err := sim.CourtRecordedAmount(payload["amount"])
+			if err != nil {
+				return rec, false, fmt.Errorf("court record %s row %d: payment amount: %w", caseID, id, err)
 			}
-			if v, ok := payload["amount"].(float64); ok {
-				pay.Amount = int(v)
-			}
-			rec.Payments = append(rec.Payments, pay)
+			rec.Payments = append(rec.Payments, sim.CourtPaymentRow{
+				PayerID: sim.ActorID(*actorID),
+				PayeeID: sim.ActorID(payee),
+				Amount:  amount,
+			})
 		case sim.ActionTypeRuled:
 			if actorID != nil {
 				rec.RuledFor[sim.ActorID(*actorID)] = true
