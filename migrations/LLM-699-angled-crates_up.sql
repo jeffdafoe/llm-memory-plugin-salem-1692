@@ -68,7 +68,7 @@ BEGIN
     END IF;
     IF EXISTS (SELECT 1 FROM asset
                 WHERE id IN (SELECT asset_id FROM llm699_frame)
-                  AND (anchor_x <> 0.5 OR anchor_y <> 0.88)) THEN
+                  AND (anchor_x IS DISTINCT FROM 0.5 OR anchor_y IS DISTINCT FROM 0.88)) THEN
         RAISE EXCEPTION 'LLM-699: a crate asset is not anchored at 0.5/0.88';
     END IF;
 END $$;
