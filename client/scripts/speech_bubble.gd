@@ -224,7 +224,11 @@ func _wrap_text(text: String) -> void:
     _content_size = Vector2(ceilf(widest), line_height * mini(lines.size(), PAGE_LINES))
 
 
-## The first bubble to process in a frame lays out all of them.
+## The first bubble to process in a frame lays out all of them. Bubbles are
+## spawned at the default priority (the WebSocket poll in event_client.gd,
+## through world.gd and the talk panel) and process at 1000, so a new bubble
+## is always in _live before this frame's layout runs. A bubble spawned from
+## a node processing after 1000 would sit unstacked for one frame.
 func _process(delta: float) -> void:
     var frame := Engine.get_process_frames()
     if frame != _laid_out_frame:
