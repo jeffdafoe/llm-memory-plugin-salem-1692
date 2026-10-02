@@ -146,13 +146,6 @@ const (
 	// so a freshly-arrived merchant has time to reach his counterparty and trade before the
 	// day-shops shut at dusk rather than arriving to a shut village.
 	VisitorSpawnDuskMarginMinutes = 90
-
-	// RoadWordLookback bounds how far back selectRoadWord reaches into
-	// the action log for a grounded item of news to hand a spawning traveler (LLM-371).
-	// The log itself is retention-bounded (DefaultActionLogRetention, 48h); this
-	// tighter window keeps the carried word feeling like recent news ("lately",
-	// "this week") rather than something stale from two days ago.
-	RoadWordLookback = 24 * time.Hour
 )
 
 // VisitorTagTavern is the per-instance VillageObject tag the destination
@@ -234,7 +227,7 @@ var VisitorArchetypeSprite = passerThroughSprite
 // from the bound errand (visitorMerchantLabel) and the errand cue already carries their
 // purpose. The init() below enforces every pool entry has a vocation.
 var passerThroughVocation = map[string]string{
-	"messenger":          "The news is your trade: you carry letters and word for pay, deliver them brisk and exact, and are back on the road as soon as they are passed.",
+	"messenger":          "The news is your trade: you carry letters and word between the towns for pay — your letters on this road are for other towns, so here you bring only the news, tell it brisk and exact, and are back on the road once it is passed.",
 	"itinerant musician": "You live by your fiddle and your voice — wherever folk gather you look for a corner and an audience, and offer a tune for a meal or a coin.",
 	"circuit preacher":   "You carry the Word as well as the news: you bless households, ask after souls, and would not leave a village without a bit of scripture spoken at a hearth or the meeting house.",
 	"traveling scholar":  "You travel for learning's sake, hungry for books, letters, and learned talk — you ask more questions than you answer and set down what you hear.",
@@ -458,40 +451,70 @@ func dispatchVisitorDespawn(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		if !now.After(actor.VisitorState.ExpiresAt) {
 			continue
 		}
-		// Pick a fresh anchor (any visitor destination) to validate the
-		// edge tile is connected to the village core. If no destination
-		// is placed at all, leave the visitor alone — cleanup will
-		// collect them after the grace window.
-		_, anchorTile, ok := pickVisitorDestination(w)
-		if !ok {
-			actor.VisitorState.Phase = VisitorPhaseDeparting
-			continue
+		if beginVisitorDespawn(w, id, actor, now, r) != despawnNoEdge {
+			t.DespawnsStarted++
 		}
-		grid, err := buildWalkGrid(w)
-		if err != nil {
-			log.Printf("sim/visitor: dispatchDespawn build walk grid: %v", err)
-			actor.VisitorState.Phase = VisitorPhaseDeparting
-			continue
-		}
-		edgeTile, ok := pickVisitorEdgeTile(w, grid, anchorTile, r)
-		if !ok {
-			actor.VisitorState.Phase = VisitorPhaseDeparting
-			continue
-		}
-		dest := NewPositionDestination(edgeTile)
-		// LeaveHuddleFirst=true so a visitor mid-conversation can still
-		// be despawn-dispatched (rather than the cascade silently stalling
-		// because the visitor is gossiping). MoveActor's huddle-leave
-		// emits HuddleLeft / HuddleConcluded events as appropriate.
-		if _, err := MoveActor(id, dest, true, now).Fn(w); err != nil {
-			// No path is typical for a visitor stranded somewhere
-			// unreachable. Cleanup will hard-remove past the grace
-			// window regardless.
-			log.Printf("sim/visitor: dispatchDespawn MoveActor %s: %v", id, err)
-		}
-		actor.VisitorState.Phase = VisitorPhaseDeparting
-		t.DespawnsStarted++
 	}
+}
+
+// despawnOutcome is how far beginVisitorDespawn got.
+type despawnOutcome int
+
+const (
+	// despawnNoEdge — no anchor, walk grid or edge tile could be had; MoveActor
+	// was never called.
+	despawnNoEdge despawnOutcome = iota
+	// despawnMoveFailed — MoveActor was called and refused (typically no path);
+	// no exit walk is in place.
+	despawnMoveFailed
+	// despawnWalkStarted — the exit walk's MoveIntent is stamped.
+	despawnWalkStarted
+)
+
+// beginVisitorDespawn issues one visitor's walk to a map edge and moves him into
+// VisitorPhaseDeparting — the per-visitor body of dispatchVisitorDespawn, shared
+// with the operator's DepartVisitor (LLM-701) so both departures take the one
+// path. The phase is set whatever the outcome so the despawn is not re-attempted
+// every tick — cleanup collects the visitor after the grace window regardless.
+// dispatchVisitorDespawn counts DespawnsStarted for any outcome that reached
+// MoveActor (its pre-LLM-701 telemetry); DepartVisitor reports a walk only for
+// despawnWalkStarted. MUST run on the world goroutine.
+func beginVisitorDespawn(w *World, id ActorID, actor *Actor, now time.Time, r *rand.Rand) despawnOutcome {
+	// Pick a fresh anchor (any visitor destination) to validate the
+	// edge tile is connected to the village core. If no destination
+	// is placed at all, leave the visitor alone — cleanup will
+	// collect them after the grace window.
+	_, anchorTile, ok := pickVisitorDestination(w)
+	if !ok {
+		actor.VisitorState.Phase = VisitorPhaseDeparting
+		return despawnNoEdge
+	}
+	grid, err := buildWalkGrid(w)
+	if err != nil {
+		log.Printf("sim/visitor: dispatchDespawn build walk grid: %v", err)
+		actor.VisitorState.Phase = VisitorPhaseDeparting
+		return despawnNoEdge
+	}
+	edgeTile, ok := pickVisitorEdgeTile(w, grid, anchorTile, r)
+	if !ok {
+		actor.VisitorState.Phase = VisitorPhaseDeparting
+		return despawnNoEdge
+	}
+	dest := NewPositionDestination(edgeTile)
+	// LeaveHuddleFirst=true so a visitor mid-conversation can still
+	// be despawn-dispatched (rather than the cascade silently stalling
+	// because the visitor is gossiping). MoveActor's huddle-leave
+	// emits HuddleLeft / HuddleConcluded events as appropriate.
+	outcome := despawnWalkStarted
+	if _, err := MoveActor(id, dest, true, now).Fn(w); err != nil {
+		// No path is typical for a visitor stranded somewhere
+		// unreachable. Cleanup will hard-remove past the grace
+		// window regardless.
+		log.Printf("sim/visitor: dispatchDespawn MoveActor %s: %v", id, err)
+		outcome = despawnMoveFailed
+	}
+	actor.VisitorState.Phase = VisitorPhaseDeparting
+	return outcome
 }
 
 // dispatchVisitorCleanup hard-removes visitor actor rows whose ExpiresAt
@@ -548,130 +571,6 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		delete(w.outdoorActors, id)
 		delete(w.Actors, id)
 		t.CleanedUp++
-	}
-}
-
-// selectRoadWord picks one grounded item of news for a spawning traveler to
-// carry (LLM-371). It draws from the in-memory action log — the same
-// recent-happenings ring the atmosphere digest reads — filtered to carry-worthy
-// beats within RoadWordLookback whose subject is a real resident (not another
-// visitor, not the PC, not decorative), and renders one to a diegetic past-tense
-// clause. This is the v2-faithful stand-in for the ticket's "recent
-// village_event": engine-v2 has no village_event table, but the action log
-// records every actor's real beats (a stateful keeper's delivery / a shared-VA
-// vendor's sale alike), so a traveler can carry checkable word about anyone in
-// the village. Returns "" when nothing carry-worthy is on hand — the caller
-// leaves Payload empty and the preface drops the clause. Random pick (not
-// most-recent) so back-to-back spawns don't all echo the same freshest beat.
-// Runs on the world goroutine (called from dispatchVisitorSpawn), so reading
-// w.ActionLog / w.Actors is race-free.
-//
-// This is NOT a rumor and must not be confused with one (LLM-597). The rumor
-// layer in rumor.go is deliberately FALLIBLE — a frozen claim that escalates a
-// rung per retelling and is free to outgrow the fact that seeded it. A
-// traveler's word is the opposite: grounded, checkable, never distorted, and
-// never escalated. The two systems shared the noun "rumor" until LLM-597, which
-// is how LLM-594 came to be filed against the wrong mechanism.
-func selectRoadWord(w *World, r *rand.Rand, now time.Time) string {
-	if w == nil || len(w.ActionLog) == 0 {
-		return ""
-	}
-	cutoff := now.Add(-RoadWordLookback)
-	var candidates []string
-	for _, e := range w.ActionLog {
-		if e.OccurredAt.Before(cutoff) {
-			continue
-		}
-		subject := w.Actors[e.ActorID]
-		if subject == nil || subject.VisitorState != nil {
-			continue // subject must be a resident villager, not a passing traveler
-		}
-		if subject.Kind == KindPC || subject.Kind == KindDecorative {
-			continue // word is about the village's own, not the player or props
-		}
-		if clause := renderRoadWordClause(w, e); clause != "" {
-			candidates = append(candidates, clause)
-		}
-	}
-	if len(candidates) == 0 {
-		return ""
-	}
-	return candidates[r.Intn(len(candidates))]
-}
-
-// renderRoadWordClause turns one action-log entry into the diegetic, past-tense
-// clause a traveler carries as word from the road — "Ezekiel Crane turned out a plow for the
-// Hale farm" — or "" for a beat that is not worth carrying. The
-// preface owns the "Word reached you on the road that …" framing
-// (renderTravelerPreface); this returns just the grounded fact. Deliberately a
-// curated allow-set of the socially legible economic beats: the private
-// (consumed / took_break), the dull (walked / departed), the utterance itself
-// (spoke — long, contextual, and already carried by the speaker's own memory),
-// and the feed-only negotiation types (offered / declined / countered, filtered
-// everywhere NPC-facing) all render "". Amounts and exact coin counts are dropped
-// on purpose — scene, not ledger. The subject name is resolved by the caller's
-// guard (w.Actors[e.ActorID] non-nil), re-checked here for safety.
-func renderRoadWordClause(w *World, e ActionLogEntry) string {
-	subject := w.Actors[e.ActorID]
-	if subject == nil || subject.DisplayName == "" {
-		return ""
-	}
-	name := subject.DisplayName
-	switch e.ActionType {
-	case ActionTypePaid:
-		if e.CounterpartyName == "" {
-			return "" // a payment to no one named is not worth carrying
-		}
-		clause := name + " settled up with " + e.CounterpartyName
-		if e.Text != "" {
-			clause += " over " + e.Text
-		}
-		return clause
-	case ActionTypeDelivered:
-		if e.Text == "" {
-			return ""
-		}
-		clause := name + " turned out " + e.Text
-		if e.CounterpartyName != "" {
-			clause += " for " + e.CounterpartyName
-		}
-		return clause
-	case ActionTypeLabored:
-		if e.CounterpartyName != "" {
-			return name + " put in a day's work for " + e.CounterpartyName
-		}
-		return name + " took on a piece of work"
-	case ActionTypeHired:
-		if e.CounterpartyName == "" {
-			return ""
-		}
-		return name + " took " + e.CounterpartyName + " on for a job"
-	case ActionTypeSolicitedWork:
-		if e.CounterpartyName != "" {
-			return name + " went looking to work for " + e.CounterpartyName
-		}
-		return name + " was about looking for work"
-	case ActionTypeOfferedWork:
-		if e.CounterpartyName == "" {
-			return ""
-		}
-		return name + " offered " + e.CounterpartyName + " a piece of work"
-	case ActionTypeGathered:
-		if e.Text == "" {
-			return ""
-		}
-		clause := name + " was out gathering " + e.Text
-		if e.CounterpartyName != "" {
-			clause += " at " + WithDefiniteArticle(e.CounterpartyName)
-		}
-		return clause
-	case ActionTypeRepairing:
-		if e.Text != "" {
-			return name + " was mending " + WithDefiniteArticle(e.Text)
-		}
-		return name + " was busy at repairs"
-	default:
-		return ""
 	}
 }
 
@@ -967,9 +866,8 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		// Arriving: on the road, walking in to his first stop. Pacing flips it to
 		// making_rounds on arrival (LLM-373).
 		Phase: VisitorPhaseArriving,
-		// A returner's PERSONA is stable across visits, but its road-word is fresh each
-		// trip: (re)selected here every spawn, NOT stored on the recurring_visitor row (LLM-372).
-		Payload:     selectRoadWord(w, r, inputs.Now),
+		// No word at spawn. Only a messenger carries news, and his is written off-world
+		// for today's date and installed after he spawns (LLM-700, cascade/messenger_news.go).
 		RecurringID: returnerID, // "" for a fresh stranger; set for a returning traveler
 		// The bound trade errand (LLM-455): non-nil for a merchant, nil for a passer-through.
 		// Drives the rounds cue, the commerce-confinement steer/gate, and the coin-valve.
@@ -1144,6 +1042,12 @@ func (w *World) rehydrateVisitorsOnLoad(ctx context.Context) error {
 		if now.After(lv.VisitorState.ExpiresAt) {
 			elapsed++
 			continue
+		}
+		// Only a messenger carries word (LLM-700). A traveler checkpointed by an
+		// older engine may still hold one of the village's own trades as his road
+		// word; drop it so he does not keep carrying it after the upgrade.
+		if !lv.VisitorState.CarriesOutsideNews() {
+			lv.VisitorState.Payload = ""
 		}
 		// Pack / purse / booked-room grant ride on the plan jsonb (LLM-373), restored
 		// here so a mid-stay deploy resumes the traveler with its wares to pay with

@@ -625,17 +625,16 @@ type VisitorState struct {
 	Disposition string
 	ExpiresAt   time.Time
 	Phase       VisitorPhase
-	// Payload is the one grounded item of news the traveler carries — a diegetic,
-	// past-tense clause about a real thing that happened in the village
-	// recently ("Ezekiel Crane turned out a plow for the Hale farm"),
-	// selected at spawn from the in-memory action log (selectRoadWord in
-	// engine/sim/visitor.go) and voiced through the identity preface
-	// (renderTravelerPreface, LLM-371). "" when no carry-worthy beat was on
-	// hand at spawn — the preface simply drops the clause. Persisted in the
-	// visitor.payload column so the carried word survives a deploy restart
-	// (the action log is restart-wiped, so re-selecting on rehydrate would
-	// draw from an empty pool). Not live-updated: it is a snapshot of what
-	// the traveler "heard on the road," fixed for the visit.
+	// Payload is the one item of news the traveler carries — a past-tense clause
+	// of real 1692 news from outside the village ("Port Royal in Jamaica was
+	// swallowed by a great earthquake in June"), voiced through the identity
+	// preface (renderTravelerPreface) as word picked up on the road. Only a
+	// messenger carries news (CarriesOutsideNews, LLM-700): it is written off-world
+	// for the day's date after he spawns and installed by SetMessengerNews, which
+	// refuses news naming a villager. "" for every other traveler, and for a
+	// messenger whose news call failed — the preface then drops the clause.
+	// Persisted in the visitor.payload column so the word survives a deploy
+	// restart. Fixed for the visit once set.
 	Payload string
 
 	// RecurringID links this in-flight traveler to its durable returner identity
@@ -703,7 +702,32 @@ type VisitorState struct {
 	// visit). An operator /grant raises it alongside the wallet — fiat coin
 	// is meant to be spendable (the LLM-410 float precedent).
 	SpendBudget int
+
+	// DepartCause says why the traveler is leaving. "" (VisitorDepartCauseStayEnded)
+	// for the natural daybreak departure and for every visitor not yet leaving;
+	// VisitorDepartCauseOperator once an operator sent him away (DepartVisitor,
+	// LLM-701). An operator-departed visitor is never warranted again
+	// (tryStampWarrant), so he cannot speak on his way out or call move_to off his
+	// exit walk. A natural departure keeps its turns — a traveler may still answer a
+	// farewell. Not persisted: departing means his ExpiresAt has passed, and
+	// rehydrateVisitorsOnLoad drops an expired visitor, so a restart inside the
+	// walk-out window ends the visit rather than restoring him.
+	DepartCause VisitorDepartCause
 }
+
+// VisitorDepartCause is why a visitor is departing (LLM-701) — a Go-owned enum. A
+// string, not a bool: other causes (a visitor turned out by the constable, say)
+// can join without a new field.
+type VisitorDepartCause string
+
+const (
+	// VisitorDepartCauseStayEnded — the zero value: not leaving yet, or leaving
+	// because his stay ran out (dispatchVisitorDespawn).
+	VisitorDepartCauseStayEnded VisitorDepartCause = ""
+	// VisitorDepartCauseOperator — an operator sent him away through
+	// /umbilical/visitor/depart. Silences him for the rest of his stay.
+	VisitorDepartCauseOperator VisitorDepartCause = "operator"
+)
 
 // VisitorPhase is the visitor's lifecycle state — a small Go-owned enum
 // persisted to the visitor.phase column. A string, not a bool: the lifecycle

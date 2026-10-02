@@ -509,11 +509,11 @@ func renderTravelerPreface(b *strings.Builder, v *TravelerSelfView) {
 		b.WriteString(vocation)
 	}
 
-	// The grounded rumor the traveler carries (LLM-371). One real recent village
-	// beat, selected at spawn from the action log and framed as word picked up on
-	// the road — so the stateless salem-visitor VA has something true to trade in
-	// conversation rather than empty small-talk. Dropped when empty (no
-	// rumor-worthy beat was on hand at spawn).
+	// The news a messenger carries (LLM-700): one item of real 1692 news from
+	// outside the village, framed as word picked up on the road — so the
+	// stateless salem-visitor VA has something true to tell rather than inventing
+	// it. Dropped when empty (every non-messenger traveler, or a messenger whose
+	// news call failed).
 	//
 	// LLM-545 tiers the clause by present company. Once everyone in the scene has
 	// already had the word from him (and answered — the stamp requires an active
