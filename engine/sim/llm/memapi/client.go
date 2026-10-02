@@ -989,3 +989,36 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// readNoteRequest is the /v1/documents/read body.
+type readNoteRequest struct {
+	Namespace string `json:"namespace"`
+	Slug      string `json:"slug"`
+}
+
+type readNoteResponse struct {
+	Content string `json:"content"`
+}
+
+// ReadNote returns a note's content, or found=false when the note does not
+// exist (the route answers 404). Used by the court runner to load the
+// magistrate's bench book (LLM-695).
+func (c *Client) ReadNote(ctx context.Context, namespace, slug string) (string, bool, error) {
+	body, err := json.Marshal(readNoteRequest{Namespace: namespace, Slug: slug})
+	if err != nil {
+		return "", false, fmt.Errorf("memapi: marshal read request: %w", err)
+	}
+	respBytes, err := c.post(ctx, "/v1/documents/read", body)
+	if err != nil {
+		var se *statusError
+		if errors.As(err, &se) && se.status == http.StatusNotFound {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("memapi: read note: %w", err)
+	}
+	var resp readNoteResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return "", false, fmt.Errorf("memapi: parse read response: %w", err)
+	}
+	return resp.Content, true, nil
+}

@@ -290,6 +290,9 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("carter_residue_floor_coins", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.CarterResidueFloorCoins }),
 		intSetting("carter_residue_spawn_coins", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.CarterResidueSpawnCoins }),
 		intSetting("carter_purse_max", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.CarterPurseMax }),
+		// --- the magistrates (LLM-695) -------------------------------------
+		stringSetting("court_sitting_time", SettingEffectImmediate, func(s *WorldSettings) *string { return &s.CourtSittingTime }),
+		intSetting("court_daily_case_limit", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.CourtDailyCaseLimit }),
 		intSetting("visitor_coin_band_low", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandLow }),
 		intSetting("visitor_coin_band_high", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandHigh }),
 		intSetting("visitor_sell_weight_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorSellWeightPermille }),

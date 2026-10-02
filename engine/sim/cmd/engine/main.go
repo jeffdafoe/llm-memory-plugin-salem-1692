@@ -38,6 +38,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/court"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/httpapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -559,6 +560,18 @@ func run(rt runtime, stop stopSignals) error {
 	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
+	// LLM-695: the magistrates' sittings. Reads the durable record through the
+	// action-log repo and keeps the bench book through memory-api note I/O; both
+	// are absent in the headless lifecycle test, which wires no action-log sink.
+	var courtRunner *court.Runner
+	if rt.ActionLog != nil {
+		if notes, ok := rt.LLMClient.(court.NoteStore); ok {
+			courtRunner = court.Register(worldCtx, rt.World, rt.LLMClient, rt.ActionLog, notes)
+		} else {
+			log.Printf("engine: the LLM client has no note I/O — the magistrates will not sit")
+		}
+	}
+
 	// WebSocket event hub (Slice 2 WS /events). Subscribed before world.Run,
 	// like every other subscriber; its Run goroutine owns the client fan-out.
 	// Only wired when the HTTP surface is enabled (it serves the /events route).
@@ -693,6 +706,9 @@ func run(rt runtime, stop stopSignals) error {
 			if rt.ActionLog != nil {
 				server.SetTranscriptStore(rt.ActionLog)
 				server.SetSettlementStore(rt.ActionLog) // LLM-105: durable settlements audit read
+			}
+			if courtRunner != nil {
+				server.SetCourt(courtRunner) // LLM-695: backs /umbilical/court/sit
 			}
 			server.SetCheckpointHealth(checkpointHealth)
 			server.SetVABudgetHealth(rt.VABudgetHealth) // LLM-513: budget-exhaustion alarm feed
@@ -980,7 +996,8 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 		// gift resolution group (LLM-138): only a recipient with a pending gift.
 		{"accept_gift", handlers.RegisterAcceptGift},
 		{"decline_gift", handlers.RegisterDeclineGift},
-		{"summon", handlers.RegisterSummon}, // ZBBS-HOME-311: currently gated off for everyone (LLM-322)
+		{"summon", handlers.RegisterSummon},                                   // ZBBS-HOME-311: currently gated off for everyone (LLM-322)
+		{"bring_before_magistrates", handlers.RegisterBringBeforeMagistrates}, // LLM-695: only a constable under the day's limit
 		// `done` — the universal terminal tool. The NPC's instructions tell it
 		// to end its turn with done, and the v2 harness ends the tick on a
 		// ClassTerminal dispatch (sim.TickStatusDone, see sim/reactor_commands.go).

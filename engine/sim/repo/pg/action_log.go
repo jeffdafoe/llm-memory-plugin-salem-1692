@@ -567,3 +567,75 @@ func fillSettlementPayload(raw []byte, row *sim.SettlementRow, actorID string) {
 		row.PayItems = append(row.PayItems, sim.ItemKindQty{Kind: sim.ItemKind(pi.Item), Qty: pi.Qty})
 	}
 }
+
+// loadDealingsBetweenSQL pulls what passed between two villagers in a window,
+// for the magistrates' read tools (LLM-695): every row of every conversation
+// both were part of (the whole exchange, third parties included), plus each
+// one's own rows that name the other — a payment, a delivery, a hire — wherever
+// they stood. A row names the other by id where the writer stamped one, else by
+// display name (older rows carry the name only).
+//
+// $1/$2 actor ids, $3/$4 their display names, $5/$6 the window, $7 the row cap.
+const loadDealingsBetweenSQL = `
+WITH shared AS (
+    SELECT huddle_id FROM agent_action_log
+     WHERE actor_id = $1::uuid AND huddle_id IS NOT NULL
+       AND occurred_at >= $5 AND occurred_at < $6
+    INTERSECT
+    SELECT huddle_id FROM agent_action_log
+     WHERE actor_id = $2::uuid AND huddle_id IS NOT NULL
+       AND occurred_at >= $5 AND occurred_at < $6
+)
+SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
+  FROM agent_action_log al
+ WHERE al.occurred_at >= $5
+   AND al.occurred_at < $6
+   AND al.result = 'ok'
+   AND (
+       al.huddle_id IN (SELECT huddle_id FROM shared)
+       OR (al.actor_id = $1::uuid AND (
+               al.payload->>'recipient_actor_id' = $2::text OR al.payload->>'employer_actor_id' = $2::text
+            OR al.payload->>'payer_actor_id' = $2::text
+            OR $4 IN (al.payload->>'recipient', al.payload->>'employer', al.payload->>'worker',
+                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer')))
+       OR (al.actor_id = $2::uuid AND (
+               al.payload->>'recipient_actor_id' = $1::text OR al.payload->>'employer_actor_id' = $1::text
+            OR al.payload->>'payer_actor_id' = $1::text
+            OR $3 IN (al.payload->>'recipient', al.payload->>'employer', al.payload->>'worker',
+                      al.payload->>'buyer', al.payload->>'seller', al.payload->>'payer')))
+   )
+ ORDER BY al.occurred_at ASC, al.id ASC
+ LIMIT $7`
+
+// LoadDealingsBetween returns what passed between two villagers in [start, end),
+// oldest first, at most limit rows. See loadDealingsBetweenSQL.
+func (r *ActionLogRepo) LoadDealingsBetween(ctx context.Context, a, b sim.ActorID, aName, bName string, start, end time.Time, limit int) ([]sim.SimDayEvent, error) {
+	rows, err := r.pool.Query(ctx, loadDealingsBetweenSQL, string(a), string(b), aName, bName, start, end, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query dealings between %q and %q: %w", a, b, err)
+	}
+	defer rows.Close()
+	events := []sim.SimDayEvent{}
+	for rows.Next() {
+		var (
+			occurredAt time.Time
+			actionType string
+			payloadRaw []byte
+			speaker    string
+		)
+		if err := rows.Scan(&occurredAt, &actionType, &payloadRaw, &speaker); err != nil {
+			return nil, fmt.Errorf("scan dealings row: %w", err)
+		}
+		payload := map[string]any{}
+		if len(payloadRaw) > 0 {
+			if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+				payload = map[string]any{}
+			}
+		}
+		events = append(events, sim.SimDayEvent{At: occurredAt, Kind: sim.ActionType(actionType), Payload: payload, Speaker: speaker})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dealings rows: %w", err)
+	}
+	return events, nil
+}

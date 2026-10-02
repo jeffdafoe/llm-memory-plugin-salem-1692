@@ -49,6 +49,7 @@ func NewRepository(pool Pool) sim.Repository {
 		LaborContracts:       &LaborContractsRepo{pool: pool},
 		Visitors:             &VisitorsRepo{pool: pool},
 		RecurringVisitors:    &RecurringVisitorsRepo{pool: pool},
+		CourtCases:           &CourtCasesRepo{pool: pool},
 		Contacts:             &ContactsRepo{pool: pool},
 		CoinRecords:          &CoinRecordsRepo{pool: pool},
 		ActionLog:            notImplActionLog{},

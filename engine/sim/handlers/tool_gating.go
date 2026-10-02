@@ -336,6 +336,12 @@ const bakeToolName = "bake"
 // cue can't drift (discussion-109). sim.TurnIn stays the authoritative gate.
 const turnInToolName = "turn_in"
 
+// bringBeforeMagistratesToolName — the constable's filing tool (LLM-695).
+// Advertised ONLY when payload.Court.OffersFiling() — a constable under today's
+// limit — the same signal the "## The magistrates" section renders from.
+// sim.FileCourtCase stays the authoritative gate.
+const bringBeforeMagistratesToolName = "bring_before_magistrates"
+
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
 // empty when the actor is not moving). False when the actor can't be resolved
@@ -490,6 +496,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerStoke := payload.Hearth != nil
 	offerBake := payload.BakeChoice != nil
 	offerTurnIn := payload.TurnInChoice != nil
+	offerCourtFiling := payload.Court.OffersFiling()
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
@@ -640,6 +647,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// from, so tool and cue can't drift. sim.TurnIn stays authoritative — it
 		// re-checks the residency/off-shift/window gate on the world goroutine.
 		if spec.Name == turnInToolName && !offerTurnIn {
+			continue
+		}
+		// bring_before_magistrates (LLM-695): the constable under today's limit,
+		// the same signal the "## The magistrates" section renders from.
+		if spec.Name == bringBeforeMagistratesToolName && !offerCourtFiling {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

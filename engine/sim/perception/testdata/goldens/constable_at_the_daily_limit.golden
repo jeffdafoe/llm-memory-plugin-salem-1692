@@ -1,0 +1,21 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 20.
+
+## Around you
+You are inside the Meeting House, your workplace, with no one else here to hear you speak.
+It is morning in the village.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## The magistrates
+Matters you cannot settle yourself — a theft, a debt in dispute, a wrong one villager lays at another's door — go before the magistrates in Salem Town. They sit each day at noon, read what passed in the village, and send word of their ruling to everyone the matter concerns; their ruling ends it. You have brought 2 matters today; the court hears no more from you until tomorrow.
+Before the court now, as you brought it: "Joseph Scott's account book was taken from the Mill some days past; no one will say who took it." (Joseph Scott, Constable Gideon Marsh) — the court has sat, and its word has not yet come.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
