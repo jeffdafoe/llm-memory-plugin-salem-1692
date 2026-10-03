@@ -75,9 +75,11 @@ func _ready() -> void:
     anchor_right = 1.0
     anchor_top = 0.0
     anchor_bottom = 0.0
-    # Sit just below the 40px top bar (TopBar offset_bottom = 40).
-    offset_top = 40.0
-    offset_bottom = 40.0 + TICKER_HEIGHT
+    # Sit just below the top bar (TopBar offset_bottom: 40, taller on a touch
+    # screen).
+    var bar_height := float(OrientationGuard.text_size(40))
+    offset_top = bar_height
+    offset_bottom = bar_height + TICKER_HEIGHT
     mouse_filter = Control.MOUSE_FILTER_STOP
 
     var panel_style := StyleBoxFlat.new()

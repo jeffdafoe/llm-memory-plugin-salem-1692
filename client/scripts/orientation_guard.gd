@@ -82,11 +82,13 @@ const FULLSCREEN_LISTENER_JS := """
 ## draws the 1280x720 design on ~2.4x the pixel density of a desktop monitor,
 ## so 12 px text came out ~2 mm tall. Text only — layouts keep their size.
 const TOUCH_TEXT_SCALE := 1.5
+## Speech bubbles grow only slightly on touch (Jeff, LLM-705).
+const BUBBLE_TOUCH_TEXT_SCALE := 1.2
 
 var _enabled := false
 var _covering := false
 var _cover: ColorRect = null
-var _text_scale := 1.0
+var _touch_text := false
 
 func _ready() -> void:
     layer = LAYER_INDEX
@@ -95,7 +97,7 @@ func _ready() -> void:
     _enabled = js_flag(JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true))
     if not _enabled:
         return
-    _text_scale = TOUCH_TEXT_SCALE
+    _touch_text = true
     # Text with no font size of its own (login fields, toasts, plain buttons).
     # Set here, before the main scene builds its UI.
     ThemeDB.fallback_font_size = text_size(ThemeDB.fallback_font_size)
@@ -108,11 +110,15 @@ func _ready() -> void:
     # _ready, and _apply may move this node among them.
     _refresh.call_deferred()
 
-## A play-mode font size for this device: unchanged on desktop, scaled up on a
-## touch screen. Wrap every play-mode font size in it; desktop-only surfaces
-## (the editor and its popups) don't.
-func text_size(px: int) -> int:
-    return roundi(px * _text_scale)
+## A play-mode font size (or a size that holds text) for this device: unchanged
+## on desktop, times touch_scale on a touch screen. Wrap every play-mode font
+## size in it; desktop-only surfaces (the editor and its popups) don't.
+func text_size(px: int, touch_scale: float = TOUCH_TEXT_SCALE) -> int:
+    return roundi(px * touch_scale) if _touch_text else px
+
+## True on a touch screen (web, coarse primary pointer).
+func is_touch() -> bool:
+    return _touch_text
 
 ## JavaScriptBridge.eval hands a JS boolean back as the int 1 / 0 on Android
 ## Chrome (seen on an Alldocube tablet), and comparing an int with a bool is a

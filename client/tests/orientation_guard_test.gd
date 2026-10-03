@@ -90,10 +90,15 @@ func _test_text_size_scales_only_on_touch() -> void:
     var guard: CanvasLayer = _guard_script.new()
     _check("desktop: 12 stays 12", guard.text_size(12), 12)
     _check("desktop: 13 stays 13", guard.text_size(13), 13)
-    guard._text_scale = _guard_script.TOUCH_TEXT_SCALE
+    guard._touch_text = true
     _check("touch: 12 becomes 18", guard.text_size(12), 18)
     _check("touch: 13 rounds to 20", guard.text_size(13), 20)
     _check("touch: 52 (talk input height) becomes 78", guard.text_size(52), 78)
+    _check("touch: speech bubble 14 becomes 17", guard.text_size(14, _guard_script.BUBBLE_TOUCH_TEXT_SCALE), 17)
+    _check("touch: is_touch", guard.is_touch(), true)
+    guard._touch_text = false
+    _check("desktop: bubble scale ignored", guard.text_size(14, _guard_script.BUBBLE_TOUCH_TEXT_SCALE), 14)
+    _check("desktop: not is_touch", guard.is_touch(), false)
     guard.free()
     _done()
 
