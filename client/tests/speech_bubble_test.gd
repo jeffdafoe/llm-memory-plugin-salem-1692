@@ -644,6 +644,7 @@ func _test_a_wide_bubble_joins_two_stacks() -> void:
 func _test_touch_text_is_bigger_and_still_fits() -> void:
     var guard: Node = root.get_node("OrientationGuard")
     var prev_sheet: Texture2D = _script._art_sheet
+    var prev_touch_text: bool = guard._touch_text
     guard._touch_text = true
     var want_size: int = roundi(_script.FONT_SIZE * guard.BUBBLE_TOUCH_TEXT_SCALE)
     var max_w: float = _script.MAX_TEXT_WIDTH - 2 * _script.PADDING_X
@@ -672,6 +673,6 @@ func _test_touch_text_is_bigger_and_still_fits() -> void:
         _check("the art fill holds the bigger text at stretch %.1f" % stretch, fits.x >= need.x and fits.y >= need.y)
         long.free()
         root.content_scale_factor = saved
-    guard._touch_text = false
+    guard._touch_text = prev_touch_text
     _script._art_sheet = prev_sheet
     _done()
