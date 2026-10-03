@@ -748,6 +748,11 @@ type Payload struct {
 	// LLM-695.
 	Court *CourtView
 
+	// CourtRulings is set for a party or the filer of a ruling given in the last
+	// few days: the closed matter as a standing line, so a ruling slept through
+	// is not lost. LLM-695.
+	CourtRulings *CourtRulingsView
+
 	// CoinDealings is what coin has actually passed between the subject and each
 	// co-present acquaintance inside the recall window — the record against which a
 	// money claim made in this scene can be checked (LLM-572). Empty when nobody

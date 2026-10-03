@@ -2596,7 +2596,7 @@ func (w *World) republish() {
 	snap.PublicWorksRoadBounty = w.Settings.PublicWorksRoadBounty
 	snap.PublicWorksRoadRepairSeconds = w.Settings.PublicWorksRoadRepairSeconds
 	snap.PublicWorksMinorBounty = w.Settings.PublicWorksMinorBounty
-	snap.CourtDocket, snap.CourtFiledToday = courtDocketForSnapshot(w, now)
+	snap.CourtDocket, snap.CourtFiledToday, snap.CourtRecentRulings = courtDocketForSnapshot(w, now)
 	snap.CourtDailyCaseLimit = courtDailyCaseLimit(w)
 	snap.CourtSittingTime = w.Settings.CourtSittingTime
 	if snap.CourtSittingTime == "" {
