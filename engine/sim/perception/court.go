@@ -120,3 +120,45 @@ func elideRunes(s string, max int) string {
 	}
 	return strings.TrimSpace(string(r[:max])) + "…"
 }
+
+// CourtRulingsView is the "## The magistrates' word" payload: every ruling of
+// the last sim.CourtRulingNoticeDays on a matter the subject was party to or
+// brought, as a standing line. The ruling's beat reaches only the next turn,
+// and a sleeping villager's beats are dropped once stale (Josiah slept through
+// the first ruling), so the closed matter also stands here — built from the
+// case record, so sleep and restarts cannot lose it. No tool, no imperative.
+type CourtRulingsView struct {
+	Lines []string
+}
+
+// buildCourtRulings returns the section for a party or filer of a recent
+// ruling, nil otherwise.
+func buildCourtRulings(snap *sim.Snapshot, actorID sim.ActorID) *CourtRulingsView {
+	if snap == nil {
+		return nil
+	}
+	var v *CourtRulingsView
+	for _, r := range snap.CourtRecentRulings {
+		if r.Case == nil || !r.Case.Involves(actorID) {
+			continue
+		}
+		if v == nil {
+			v = &CourtRulingsView{}
+		}
+		// Collapsed to one line: nothing in a ruling may open a section of its own.
+		v.Lines = append(v.Lines, strings.Join(strings.Fields(sim.CourtRulingStandingLine(r.Case, actorID, r.Day)), " "))
+	}
+	return v
+}
+
+// renderCourtRulings writes the "## The magistrates' word" section. nil writes
+// nothing.
+func renderCourtRulings(b *strings.Builder, v *CourtRulingsView) {
+	if v == nil || len(v.Lines) == 0 {
+		return
+	}
+	b.WriteString("## The magistrates' word\n")
+	for _, l := range v.Lines {
+		b.WriteString(l + "\n")
+	}
+}

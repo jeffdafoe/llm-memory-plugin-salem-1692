@@ -635,7 +635,9 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 		if !r.Result.Valid() {
 			return nil, ModelFacingError{Msg: "the result must be one of no_case, found_for, pay or no_such_charge."}
 		}
-		words := strings.TrimSpace(r.Words)
+		// One line: the words reach prompts as a beat and as a standing line, and a
+		// newline in them could open a section of its own.
+		words := strings.Join(strings.Fields(r.Words), " ")
 		if words == "" {
 			return nil, ModelFacingError{Msg: "give the ruling's words — what the parties will hear."}
 		}
@@ -855,8 +857,21 @@ func (CourtRuledWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // closed. The last sentence is the point — it is what the dream records in place
 // of an open matter. No pronouns: the village does not model gender.
 func CourtRulingNarration(c *CourtCase, recipient ActorID) string {
+	return courtRulingText(c, recipient, "Word has come from the magistrates in Salem Town on the matter ")
+}
+
+// CourtRulingStandingLine is the same ruling as a standing fact, for the days
+// after it ("On 3 October the magistrates in Salem Town ruled on the matter
+// …"). The beat reaches only the next turn and a sleeping villager's beats are
+// dropped once stale, so the closed matter also stands in the prompt of every
+// party and the filer for CourtRulingNoticeDays (LLM-695).
+func CourtRulingStandingLine(c *CourtCase, recipient ActorID, day string) string {
+	return courtRulingText(c, recipient, "On "+day+" the magistrates in Salem Town ruled on the matter ")
+}
+
+func courtRulingText(c *CourtCase, recipient ActorID, lead string) string {
 	var b strings.Builder
-	b.WriteString("Word has come from the magistrates in Salem Town on the matter ")
+	b.WriteString(lead)
 	if recipient != "" && recipient == c.FiledByID {
 		b.WriteString("you brought before them")
 	} else {
@@ -950,17 +965,34 @@ func courtHearingFor(heardAt, now time.Time, loc *time.Location) CourtHearing {
 
 // courtDocketForSnapshot clones the pending cases with their hearing time, and
 // counts each filer's cases this game-day, for the constable's section.
-func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[ActorID]int) {
+// CourtRulingNoticeDays is how long a ruling stands in the prompt of the
+// villagers it concerns.
+const CourtRulingNoticeDays = 3
+
+// CourtRecentRuling is a ruling inside the notice window, with the village date
+// it was given ("3 October") — computed here because the snapshot carries no
+// time.Location.
+type CourtRecentRuling struct {
+	Case *CourtCase
+	Day  string
+}
+
+func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[ActorID]int, []CourtRecentRuling) {
 	if len(w.CourtCases) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	start := gameDayStart(w, now)
 	loc := worldLocation(w)
+	noticeFrom := now.AddDate(0, 0, -CourtRulingNoticeDays)
 	var docket []CourtDocketEntry
 	var today map[ActorID]int
+	var recent []CourtRecentRuling
 	for _, c := range w.CourtCases {
 		if c == nil {
 			continue
+		}
+		if c.Status == CourtCaseStatusRuled && c.RuledAt.After(noticeFrom) {
+			recent = append(recent, CourtRecentRuling{Case: c.Clone(), Day: c.RuledAt.In(loc).Format("2 January")})
 		}
 		if c.FiledByID != "" && !c.Seeded && !c.FiledAt.Before(start) {
 			if today == nil {
@@ -978,7 +1010,13 @@ func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[Ac
 		}
 	}
 	sort.Slice(docket, func(i, j int) bool { return docket[i].Case.FiledAt.Before(docket[j].Case.FiledAt) })
-	return docket, today
+	sort.Slice(recent, func(i, j int) bool {
+		if recent[i].Case.RuledAt.Equal(recent[j].Case.RuledAt) {
+			return recent[i].Case.ID < recent[j].Case.ID
+		}
+		return recent[i].Case.RuledAt.Before(recent[j].Case.RuledAt)
+	})
+	return docket, today, recent
 }
 
 // rehydrateCourtCasesOnLoad loads the docket and the rulings at boot. A missing

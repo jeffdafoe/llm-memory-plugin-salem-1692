@@ -355,6 +355,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderWorkClothes(&ephemeral, p.WorkClothes)
 	renderEstateRateCollector(&ephemeral, p.EstateRateCollector)
 	renderCourt(&ephemeral, p.Court)
+	renderCourtRulings(&ephemeral, p.CourtRulings)
 	renderRestocking(&ephemeral, p.Restocking)
 	renderForage(&ephemeral, p.Forage)
 	renderLodging(&ephemeral, p.Lodging)

@@ -256,7 +256,10 @@ type Snapshot struct {
 	// game-day; the limit and sitting time mirror WorldSettings — so the
 	// constable's section and the tool gate read the same numbers FileCourtCase
 	// enforces.
-	CourtDocket         []CourtDocketEntry
+	CourtDocket []CourtDocketEntry
+	// CourtRecentRulings are the rulings inside CourtRulingNoticeDays, for
+	// the standing line each party and the filer see.
+	CourtRecentRulings  []CourtRecentRuling
 	CourtFiledToday     map[ActorID]int
 	CourtDailyCaseLimit int
 	CourtSittingTime    string

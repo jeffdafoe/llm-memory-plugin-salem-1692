@@ -106,7 +106,7 @@ func TestGoldensOnlyAConstableHearsTheMagistrates(t *testing.T) {
 			}
 			p := Build(snap, actorID, warrants)
 			out := combinedPrompt(Render(p, DefaultRenderConfig()))
-			has := strings.Contains(out, "## The magistrates")
+			has := strings.Contains(out, "## The magistrates\n")
 			if has {
 				sawSection = true
 				if !isConstableSnapshot(a) {
@@ -127,5 +127,53 @@ func TestGoldensOnlyAConstableHearsTheMagistrates(t *testing.T) {
 	}
 	if !sawSection || !sawToolLine || !sawLimit {
 		t.Fatalf("vacuous: section=%v toolLine=%v limit=%v", sawSection, sawToolLine, sawLimit)
+	}
+}
+
+func init() {
+	perceptionScenarios = append(perceptionScenarios, perceptionScenario{
+		name: "party_wakes_to_a_closed_matter",
+		summary: "LLM-695: Joseph slept through the ruling, so its beat is gone. The matter still stands in his " +
+			"prompt under '## The magistrates' word': on 3 October the magistrates ruled on the matter Constable " +
+			"Gideon Marsh brought, their words, and 'The matter is closed.'",
+		build: partyWakesToAClosedMatterScenario,
+	})
+}
+
+func partyWakesToAClosedMatterScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := courtSnapshot()
+	ruled := ledgerCase.Clone()
+	ruled.Status = sim.CourtCaseStatusRuled
+	ruled.Result = sim.CourtResultNoCase
+	ruled.RuledAt = time.Date(2026, 10, 3, 12, 14, 0, 0, time.UTC)
+	ruled.Words = "No account book was ever kept at the Mill, and none was taken. There is no case."
+	snap.CourtRecentRulings = []sim.CourtRecentRuling{{Case: ruled, Day: "3 October"}}
+	return snap, pwJoseph, nil
+}
+
+// TestGoldensOnlyThoseAMatterConcernsHearTheMagistratesWord — across the
+// matrix, "## The magistrates' word" renders only for a party or the filer of
+// one of the snapshot's recent rulings. Vacuity-guarded.
+func TestGoldensOnlyThoseAMatterConcernsHearTheMagistratesWord(t *testing.T) {
+	saw := false
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			out := combinedPrompt(Render(Build(snap, actorID, warrants), DefaultRenderConfig()))
+			if !strings.Contains(out, "## The magistrates' word") {
+				return
+			}
+			saw = true
+			for _, r := range snap.CourtRecentRulings {
+				if r.Case != nil && r.Case.Involves(actorID) {
+					return
+				}
+			}
+			t.Fatalf("%s hears ## The magistrates' word but no recent ruling concerns them", actorID)
+		})
+	}
+	if !saw {
+		t.Fatal("vacuous: no scenario rendered ## The magistrates' word")
 	}
 }
