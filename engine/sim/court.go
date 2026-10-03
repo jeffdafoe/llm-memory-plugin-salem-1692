@@ -635,7 +635,9 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 		if !r.Result.Valid() {
 			return nil, ModelFacingError{Msg: "the result must be one of no_case, found_for, pay or no_such_charge."}
 		}
-		words := strings.TrimSpace(r.Words)
+		// One line: the words reach prompts as a beat and as a standing line, and a
+		// newline in them could open a section of its own.
+		words := strings.Join(strings.Fields(r.Words), " ")
 		if words == "" {
 			return nil, ModelFacingError{Msg: "give the ruling's words — what the parties will hear."}
 		}
@@ -1008,7 +1010,12 @@ func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[Ac
 		}
 	}
 	sort.Slice(docket, func(i, j int) bool { return docket[i].Case.FiledAt.Before(docket[j].Case.FiledAt) })
-	sort.Slice(recent, func(i, j int) bool { return recent[i].Case.RuledAt.Before(recent[j].Case.RuledAt) })
+	sort.Slice(recent, func(i, j int) bool {
+		if recent[i].Case.RuledAt.Equal(recent[j].Case.RuledAt) {
+			return recent[i].Case.ID < recent[j].Case.ID
+		}
+		return recent[i].Case.RuledAt.Before(recent[j].Case.RuledAt)
+	})
 	return docket, today, recent
 }
 

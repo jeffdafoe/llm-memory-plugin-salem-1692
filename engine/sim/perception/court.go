@@ -145,7 +145,8 @@ func buildCourtRulings(snap *sim.Snapshot, actorID sim.ActorID) *CourtRulingsVie
 		if v == nil {
 			v = &CourtRulingsView{}
 		}
-		v.Lines = append(v.Lines, sim.CourtRulingStandingLine(r.Case, actorID, r.Day))
+		// Collapsed to one line: nothing in a ruling may open a section of its own.
+		v.Lines = append(v.Lines, strings.Join(strings.Fields(sim.CourtRulingStandingLine(r.Case, actorID, r.Day)), " "))
 	}
 	return v
 }
