@@ -51,6 +51,7 @@ const TESTS := [
     "_test_a_stack_holds_three",
     "_test_a_lift_eases_into_place",
     "_test_a_wide_bubble_joins_two_stacks",
+    "_test_touch_text_is_bigger_and_still_fits",
 ]
 ## One village tile, in world px.
 const TILE := 32.0
@@ -633,4 +634,44 @@ func _test_a_wide_bubble_joins_two_stacks() -> void:
         not left.is_queued_for_deletion() and not right.is_queued_for_deletion() and not wide.is_queued_for_deletion())
     _free_all(who)
     _set_art(art_before)
+    _done()
+
+## LLM-705: on a touch screen the bubble text is bigger (14 -> 17 via
+## OrientationGuard.text_size with BUBBLE_TOUCH_TEXT_SCALE); paging, wrapping
+## and the art fill must all still hold. Touch mode is the guard autoload's
+## flag, set before setup() reads it. The art cache is restored, not cleared:
+## the live-camera test keeps drawing its bubble for frames after this.
+func _test_touch_text_is_bigger_and_still_fits() -> void:
+    var guard: Node = root.get_node("OrientationGuard")
+    var prev_sheet: Texture2D = _script._art_sheet
+    guard._touch_text = true
+    var want_size: int = roundi(_script.FONT_SIZE * guard.BUBBLE_TOUCH_TEXT_SCALE)
+    var max_w: float = _script.MAX_TEXT_WIDTH - 2 * _script.PADDING_X
+    for art in [false, true]:
+        _set_art(_synthetic_sheet() if art else null)
+        _zoom(1.0)
+        var paged: Node2D = _spawn(HAGGLE_TEXT)
+        _check("touch font is %d (art %s, got %d)" % [want_size, art, paged._font_size], paged._font_size == want_size)
+        _check("touch text still pages (art %s)" % art, paged._pages.size() > 1)
+        for p in paged._pages.size():
+            var page: PackedStringArray = paged._pages[p]
+            _check("touch page %d holds at most PAGE_LINES lines (art %s)" % [p, art], page.size() <= _script.PAGE_LINES)
+        _check("touch bubble is PAGE_LINES lines of the bigger font (art %s)" % art,
+            is_equal_approx(paged._content_size.y, paged._font.get_height(want_size) * _script.PAGE_LINES))
+        paged.free()
+        var long: Node2D = _spawn(LONG_TEXT)
+        _check("touch text wraps inside the wrap width (art %s)" % art, long._content_size.x <= max_w)
+        long.free()
+    _set_art(_synthetic_sheet())
+    for stretch in [1.0, 1.5]:
+        var saved: float = _set_stretch(stretch)
+        _zoom(1.0)
+        var long: Node2D = _spawn(LONG_TEXT)
+        var fits: Vector2 = _script.ART_TEXT_ROOM + long._art_grow()
+        var need: Vector2 = long._content_size * stretch / _script.ART_PIXEL_SCALE
+        _check("the art fill holds the bigger text at stretch %.1f" % stretch, fits.x >= need.x and fits.y >= need.y)
+        long.free()
+        root.content_scale_factor = saved
+    guard._touch_text = false
+    _script._art_sheet = prev_sheet
     _done()
