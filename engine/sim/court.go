@@ -346,6 +346,7 @@ func FileCourtCase(filerID ActorID, partyNames []string, complaint string, now t
 			Seeded:      operator,
 		}
 		w.CourtCases[id] = c
+		syncPublicWorksNews(w, now) // the hearing notice goes up (LLM-706)
 		names := courtPartyNames(parties)
 		if _, err := AppendActionLogEntry(ActionLogEntry{
 			ActorID:          filer.ID,
@@ -709,6 +710,7 @@ func ApplyCourtRuling(caseID CourtCaseID, r CourtRuling, now time.Time) Command 
 		if r.Result == CourtResultPay && paid > 0 {
 			courtCarryOutPayOrder(w, c, now, !r.PaymentRecorded)
 		}
+		syncPublicWorksNews(w, now) // the ruling replaces the hearing notice (LLM-706)
 		verb := "ruled"
 		if r.Recovered {
 			verb = "recovered the ruling on"
@@ -983,7 +985,6 @@ func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[Ac
 	}
 	start := gameDayStart(w, now)
 	loc := worldLocation(w)
-	noticeFrom := now.AddDate(0, 0, -CourtRulingNoticeDays)
 	var docket []CourtDocketEntry
 	var today map[ActorID]int
 	var recent []CourtRecentRuling
@@ -991,7 +992,7 @@ func courtDocketForSnapshot(w *World, now time.Time) ([]CourtDocketEntry, map[Ac
 		if c == nil {
 			continue
 		}
-		if c.Status == CourtCaseStatusRuled && c.RuledAt.After(noticeFrom) {
+		if courtRulingStands(c, now) {
 			recent = append(recent, CourtRecentRuling{Case: c.Clone(), Day: c.RuledAt.In(loc).Format("2 January")})
 		}
 		if c.FiledByID != "" && !c.Seeded && !c.FiledAt.Before(start) {

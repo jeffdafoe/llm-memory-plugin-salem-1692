@@ -566,6 +566,9 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 	for _, line := range sim.DamageTickerLines(s) {
 		dto.Damaged = append(dto.Damaged, DamageTickerDTO{ObjectID: string(line.ObjectID), Text: line.Text})
 	}
+	for _, line := range sim.CourtTickerLines(s) {
+		dto.Court = append(dto.Court, CourtTickerDTO{CaseID: string(line.CaseID), Text: line.Text})
+	}
 	// Omit-on-unset-only: a fresh world that has never transitioned sends no
 	// last_transition_at, and the client falls back to snapping the pole color.
 	// Sourced from the REAL-flip stamp, not the ticker's dedupe stamp, so an

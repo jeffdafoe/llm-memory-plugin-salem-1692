@@ -120,10 +120,19 @@ func (r *Runner) loop() {
 			return
 		case <-ticker.C:
 			r.w.BeatTicker(tickerName)
+			r.syncNotices()
 			if _, err := r.sit(false); err != nil && !errors.Is(err, ErrSitting) {
 				log.Printf("court: %v", err)
 			}
 		}
+	}
+}
+
+// syncNotices takes a ruling off the boards and the ticker once its notice days
+// run out (LLM-706) — nothing else changes the court's notices with the clock.
+func (r *Runner) syncNotices() {
+	if _, err := r.w.SendContext(r.ctx, sim.SyncTownNotices(time.Now().UTC())); err != nil && r.ctx.Err() == nil {
+		log.Printf("court: sync notices: %v", err)
 	}
 }
 

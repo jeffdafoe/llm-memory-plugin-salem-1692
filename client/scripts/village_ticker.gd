@@ -61,9 +61,10 @@ var _poll_timer: Timer = null
 ## alarm clears, so an operator doesn't lose the village's prose to an incident.
 var _atmosphere_line: String = ""
 var _alarm_line: String = ""
-## LLM-654: broken things in the village (WorldStateDTO `damaged`), one line
-## each joined — shown AHEAD of the atmosphere in the same band, because a
-## broken well is news and the prose is mood. "" when nothing is broken.
+## LLM-654: broken things in the village (WorldStateDTO `damaged`), then the
+## magistrates' notices (`court`, LLM-706), one line each joined — shown AHEAD
+## of the atmosphere in the same band, because they are news and the prose is
+## mood. "" when there is none.
 var _damage_line: String = ""
 var _alarm_http: HTTPRequest = null
 var _alarm_timer: Timer = null
@@ -184,19 +185,13 @@ func _on_world_state_completed(_result: int, code: int, _headers: PackedStringAr
     var json = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         return
-    # WorldStateDTO.damaged (LLM-654) — [{object_id, text}], omitted when
-    # nothing is broken. Read before the atmosphere so a mended well clears its
-    # line even when the atmosphere is still empty.
-    var damage_parts: PackedStringArray = PackedStringArray()
-    var raw_damaged = json.get("damaged", [])
-    if typeof(raw_damaged) == TYPE_ARRAY:
-        for entry in raw_damaged:
-            if typeof(entry) != TYPE_DICTIONARY:
-                continue
-            var raw_text = entry.get("text", "")
-            if typeof(raw_text) == TYPE_STRING and raw_text.strip_edges() != "":
-                damage_parts.append(raw_text.strip_edges())
-    _damage_line = "   ~   ".join(damage_parts)
+    # WorldStateDTO.damaged (LLM-654) — [{object_id, text}] — then .court
+    # (LLM-706) — [{case_id, text}]; each omitted when empty. Read before the
+    # atmosphere so a mended well or an expired ruling clears its line even when
+    # the atmosphere is still empty.
+    var news_parts := _news_texts(json.get("damaged", []))
+    news_parts.append_array(_news_texts(json.get("court", [])))
+    _damage_line = "   ~   ".join(news_parts)
     # WorldStateDTO.atmosphere — a single world-level string, or "" before the
     # cascade's first sweep populates it. Type-check defends the contract path
     # (a JSON null would make str() scroll "<null>"); _show() dedupes an
@@ -205,6 +200,21 @@ func _on_world_state_completed(_result: int, code: int, _headers: PackedStringAr
     if typeof(raw) == TYPE_STRING and raw.strip_edges() != "":
         _atmosphere_line = raw.strip_edges()
     _refresh_band()
+
+
+## The trimmed `text` of each entry in a world-read news list; malformed
+## entries are skipped.
+func _news_texts(raw) -> PackedStringArray:
+    var out := PackedStringArray()
+    if typeof(raw) != TYPE_ARRAY:
+        return out
+    for entry in raw:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var raw_text = entry.get("text", "")
+        if typeof(raw_text) == TYPE_STRING and raw_text.strip_edges() != "":
+            out.append(raw_text.strip_edges())
+    return out
 
 
 # Add a raw atmosphere line to the marquee. Same line as the active one is a

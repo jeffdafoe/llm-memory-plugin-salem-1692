@@ -146,6 +146,14 @@ func PostNoticeboardWithPinned(w *World, objectID VillageObjectID, pinned, autho
 	if state == "" {
 		return nil
 	}
+	if capacity < len(pinned) {
+		// The town's notices are two lines each (public works, the magistrates):
+		// when even they overflow, drop whole notices from the end — never a
+		// notice's first line without its second — and re-pick the frame.
+		pinned = pinned[:capacity-capacity%2]
+		all = append(append([]string{}, pinned...), authored...)
+		state, capacity = NoticeboardStateForCapacity(w, objectID, len(all))
+	}
 	if capacity < len(all) {
 		all = all[:capacity]
 	}
@@ -173,8 +181,9 @@ func PostNoticeboardWithPinned(w *World, objectID VillageObjectID, pinned, autho
 
 // DamageNewsChanged is emitted when the town's broken-things news changes — a
 // well broke or was mended, or the chest crossed the line where it can (or can
-// no longer) pay the bounty, or the bounty setting moved. The client refreshes
-// its ticker off it; the boards have already been reposted.
+// no longer) pay the bounty, or the bounty setting moved — or the magistrates'
+// notices changed (LLM-706). The client refreshes its ticker off it; the boards
+// have already been reposted.
 type DamageNewsChanged struct {
 	EventBase
 	At time.Time
@@ -188,8 +197,13 @@ func (DamageNewsChanged) isSimEvent() {}
 // calls this: damageObject, repairObject, the estate-rate collection, the
 // constable's wage, the settings route, and FinalizeLoad. A no-op while nothing
 // changed, so the frequent chest writers cost one string compare.
+//
+// The pinned lines are the whole town's (TownNoticeLines): the magistrates'
+// notices (LLM-706) ride the same repost and the same client refresh, and
+// FileCourtCase, ApplyCourtRuling and the court runner's minute tick call this
+// too.
 func syncPublicWorksNews(w *World, at time.Time) {
-	pinned := PublicWorksNoticeLines(w)
+	pinned := TownNoticeLines(w, at)
 	// The key carries the damaged sites' ids as well as the text, so a break or
 	// repair always counts as news even if two sites ever rendered alike.
 	var ids []string

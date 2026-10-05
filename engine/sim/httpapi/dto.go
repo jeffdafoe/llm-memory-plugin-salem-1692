@@ -43,6 +43,11 @@ type DamageTickerDTO struct {
 	Text     string `json:"text"`
 }
 
+type CourtTickerDTO struct {
+	CaseID string `json:"case_id"`
+	Text   string `json:"text"`
+}
+
 type WorldStateDTO struct {
 	ContractVersion int    `json:"contract_version"`
 	Phase           string `json:"phase"` // "day" | "night"
@@ -60,6 +65,10 @@ type WorldStateDTO struct {
 	// Damaged lists broken objects for the top ticker (LLM-654) — one line
 	// each. Omitted when nothing is broken. Additive — no contract_version bump.
 	Damaged []DamageTickerDTO `json:"damaged,omitempty"`
+	// Court lists the magistrates' notices for the top ticker (LLM-706) — a
+	// hearing notice per pending case, then each ruling for its notice days.
+	// Omitted when there are none. Additive — no contract_version bump.
+	Court []CourtTickerDTO `json:"court,omitempty"`
 	// LastTransitionAt is the wall-clock instant of the most recent REAL
 	// day↔night flip (UTC) — Environment.LastPhaseFlipAt, not the ticker's
 	// From==To-inclusive dedupe stamp. The client positions its sunset/sunrise color curve
