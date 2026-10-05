@@ -230,7 +230,7 @@ func beginCrierBoardStop(ctx context.Context, w *sim.World, client llm.Client, r
 	// The town's pinned notices (LLM-654 works, LLM-706 court) take the first slips; she authors only
 	// what is left. With no slip left — or a no-news day — the board carries the
 	// pinned lines alone, posted and read now with no author call.
-	pinned := sim.TownNoticeLines(w, time.Now())
+	pinned := sim.TownNoticeLines(w, time.Now().UTC())
 	if len(pinned) > 0 && capacity-len(pinned) <= 0 {
 		postAndVoicePinned(w, route, stopIdx, stop.ObjectID, pinned, nil)
 		return
@@ -297,7 +297,7 @@ func finishCrierBoardStop(w *sim.World, route *sim.NPCRoute, stopIdx int, object
 	// The town's pinned notices (LLM-654 works, LLM-706 court) go first; her authored lines follow.
 	// Recomputed here rather than carried from the stop's start: a well may have
 	// broken or been mended during the author call.
-	if pinned := sim.TownNoticeLines(w, time.Now()); len(pinned) > 0 {
+	if pinned := sim.TownNoticeLines(w, time.Now().UTC()); len(pinned) > 0 {
 		postAndVoicePinned(w, route, stopIdx, objectID, pinned, splitNoticeLines(text))
 		return
 	}
