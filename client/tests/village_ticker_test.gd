@@ -16,6 +16,7 @@ extends SceneTree
 const TESTS := [
     "_test_band_composition",
     "_test_world_read_parses_damaged",
+    "_test_world_read_parses_court",
     "_test_mended_with_no_atmosphere_blanks_the_band",
 ]
 
@@ -98,6 +99,31 @@ func _test_world_read_parses_damaged() -> void:
     _check("atmosphere kept", t._atmosphere_line, "Mist on the green.")
     t._on_world_state_completed(0, 200, PackedStringArray(), _body({"atmosphere": "Mist on the green."}))
     _check("a mended well clears the line", t._damage_line, "")
+    t.free()
+    _done()
+
+
+## LLM-706: the court's notices follow the broken things in the same news line,
+## and clear when the world read stops carrying them.
+func _test_world_read_parses_court() -> void:
+    var t = _ticker()
+    t._alarm_line = "*** ENGINE ALARM ***"
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({
+        "damaged": [{"object_id": "w1", "text": "The windlass at the Well by the Mill is down."}],
+        "court": [
+            {"case_id": "case-1", "text": "A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon."},
+            {"case_id": "bad", "text": null},
+        ],
+    }))
+    _check("court line follows the broken things", t._damage_line,
+        "The windlass at the Well by the Mill is down.   ~   A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon.")
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"court": [
+        {"case_id": "case-1", "text": "The magistrates in Salem Town have ruled on the matter concerning Josiah Thorne. They found no case. The matter is closed."},
+    ]}))
+    _check("court line alone", t._damage_line,
+        "The magistrates in Salem Town have ruled on the matter concerning Josiah Thorne. They found no case. The matter is closed.")
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({}))
+    _check("an expired ruling clears the line", t._damage_line, "")
     t.free()
     _done()
 
