@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,44 @@ func TestCourtNoticeLines_RulingStandsThreeDays(t *testing.T) {
 	}
 	if got := CourtNoticeLines(w, ruled.AddDate(0, 0, CourtRulingNoticeDays)); len(got) != 0 {
 		t.Fatalf("at the window's end: %q, want nothing", got)
+	}
+}
+
+// TestPostNoticeboardWithPinned_SettlesOnAFrameThatFits — boards whose frames
+// cannot show the whole-notice count: the fit re-picks until a frame holds the
+// kept lines, and a board with no frame small enough is left untouched.
+func TestPostNoticeboardWithPinned_SettlesOnAFrameThatFits(t *testing.T) {
+	board := func(caps ...int) *World {
+		var states []AssetState
+		for i, c := range caps {
+			states = append(states, AssetState{ID: AssetStateID(i + 1), State: fmt.Sprintf("cap%d", c),
+				Tags: []string{TagNoticeBoard, TagRotatable, fmt.Sprintf("content-capacity-%d", c)}})
+		}
+		return &World{
+			Assets:             map[AssetID]*Asset{"b": {ID: "b", States: states}},
+			VillageObjects:     map[VillageObjectID]*VillageObject{"board": {ID: "board", AssetID: "b", CurrentState: fmt.Sprintf("cap%d", caps[len(caps)-1])}},
+			NoticeboardContent: map[VillageObjectID]*NoticeboardContent{},
+		}
+	}
+	four := []string{"well 1", "well 2", "court 1", "court 2"}
+
+	// Frames 0 and 3: four lines pick 3, whole notices keep 2, no 2-slip frame,
+	// so the next pass keeps none and posts the empty board.
+	w := board(0, 3)
+	if got := PostNoticeboardWithPinned(w, "board", four, nil, courtMorning); len(got) != 0 {
+		t.Fatalf("posted %q, want nothing (no frame shows two lines)", got)
+	}
+	if got := w.VillageObjects["board"].CurrentState; got != "cap0" {
+		t.Errorf("state = %q, want the empty frame", got)
+	}
+
+	// Frame 3 only: the kept two lines have no frame at all — leave the board be.
+	w = board(3)
+	if got := PostNoticeboardWithPinned(w, "board", four, nil, courtMorning); got != nil {
+		t.Fatalf("posted %q, want nil", got)
+	}
+	if got := w.VillageObjects["board"].CurrentState; got != "cap3" {
+		t.Errorf("state = %q, want the board untouched", got)
 	}
 }
 

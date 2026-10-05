@@ -146,13 +146,17 @@ func PostNoticeboardWithPinned(w *World, objectID VillageObjectID, pinned, autho
 	if state == "" {
 		return nil
 	}
-	if capacity < len(pinned) {
-		// The town's notices are two lines each (public works, the magistrates):
-		// when even they overflow, drop whole notices from the end — never a
-		// notice's first line without its second — and re-pick the frame.
+	// The town's notices are two lines each (public works, the magistrates):
+	// when even they overflow, drop whole notices from the end — never a
+	// notice's first line without its second — and re-pick the frame until one
+	// fits. Ends: pinned shrinks on every pass.
+	for capacity < len(pinned) {
 		pinned = pinned[:capacity-capacity%2]
 		all = append(append([]string{}, pinned...), authored...)
 		state, capacity = NoticeboardStateForCapacity(w, objectID, len(all))
+		if state == "" {
+			return nil
+		}
 	}
 	if capacity < len(all) {
 		all = all[:capacity]
