@@ -6,6 +6,7 @@
 
 ## You
 Coins in your purse: 25.
+You are making a batch of porridge — about 40 minutes of work left; it only moves along while you're at your post.
 
 ## Around you
 You are inside the Tavern, your workplace, with no one else here to hear you speak.
@@ -18,4 +19,6 @@ It is your working hours and you are at your post (you close at 6 in the evening
 ## Your hearth
 The fire at your Tavern has burned down to embers. Feeding it takes 1 firewood and you have 0 — buy more, then come back and stoke the fire. Use move_to to reach a supplier, then pay_with_item once you arrive:
   - buy from Blacksmith (destination: blacksmith)
+## The fire and your cooking
+The porridge in your pot will come out the poorer if the fire at your Tavern is left to sink much further.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
