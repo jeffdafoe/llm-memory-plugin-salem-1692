@@ -2096,6 +2096,15 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 		}
 		return
 	}
+	// LLM-707 pre-shift status arm: the morning before work opens. A fact, not a
+	// steer — no destination id and no verb, so it neither sends the actor home
+	// nor yanks it to its post ahead of time.
+	if v.PreShift {
+		if v.ShiftStartMin != nil {
+			fmt.Fprintf(b, "Your working hours begin at %s.\n\n", sim.ClockHourProse(*v.ShiftStartMin))
+		}
+		return
+	}
 	// LLM-620 status arm. Mirrors the at-post line's shape deliberately (same
 	// opening, same parenthesised close time): that pairing of ambient hour with
 	// shift fact is what the model reads correctly at post. No destination id and no

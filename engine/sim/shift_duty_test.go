@@ -183,6 +183,68 @@ func TestShiftDutyTarget_OffShiftAtWork(t *testing.T) {
 	}
 }
 
+// TestInPreShiftMorning covers the LLM-707 window: off shift, [dawn, start).
+func TestInPreShiftMorning(t *testing.T) {
+	cases := []struct {
+		name                  string
+		start, end, dawn, now int
+		want                  bool
+	}{
+		{"before dawn", 570, 1110, 420, 400, false},
+		{"at dawn", 570, 1110, 420, 420, true},
+		{"mid-morning before the shift", 570, 1110, 420, 538, true},
+		{"at shift start", 570, 1110, 420, 570, false},
+		{"on shift", 570, 1110, 420, 900, false},
+		{"after close", 570, 1110, 420, 1200, false},
+		{"wrap shift, morning off", 960, 180, 420, 600, true},
+		{"wrap shift, after close before dawn", 960, 180, 420, 300, false},
+		{"wrap shift, on shift after midnight", 960, 180, 420, 60, false},
+		{"shift opens at dawn", 420, 960, 420, 420, false},
+		{"shift opens before dawn", 300, 900, 420, 400, false},
+		{"empty shift", 600, 600, 420, 500, false},
+	}
+	for _, c := range cases {
+		if got := InPreShiftMorning(c.start, c.end, c.dawn, c.now); got != c.want {
+			t.Errorf("%s: InPreShiftMorning(%d,%d,%d,%d) = %v, want %v", c.name, c.start, c.end, c.dawn, c.now, got, c.want)
+		}
+	}
+}
+
+// TestShiftDutyTarget_PreShiftMorning (LLM-707): an agent awake before its shift
+// opens carries no wind-down duty, wherever it stands; before dawn and after close
+// the wind-down is unchanged, and a decorative keeps its mechanical walk home.
+func TestShiftDutyTarget_PreShiftMorning(t *testing.T) {
+	world := func(a *Actor) *World {
+		w := sleepTestWorld(a)
+		w.Settings.DawnTime = "07:00"
+		w.Settings.DuskTime = "19:00"
+		return w
+	}
+	keeper := func(kind ActorKind, inside StructureID) *Actor {
+		a := shiftNPC("n", kind, "shop", "home", inside)
+		a.ScheduleStartMin = intptr(570) // 09:30
+		a.ScheduleEndMin = intptr(1110)  // 18:30
+		return a
+	}
+	for _, inside := range []StructureID{"shop", "tavern"} {
+		a := keeper(KindNPCShared, inside)
+		if target, toWork, ok := shiftDutyTarget(world(a), a, 538, time.Now()); ok {
+			t.Errorf("agent in %q at 08:58: got (%q,%v,%v), want no duty", inside, target, toWork, ok)
+		}
+	}
+	a := keeper(KindNPCShared, "shop")
+	if target, toWork, ok := shiftDutyTarget(world(a), a, 400, time.Now()); !ok || target != "home" || toWork {
+		t.Errorf("agent before dawn: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+	if target, toWork, ok := shiftDutyTarget(world(a), a, 1200, time.Now()); !ok || target != "home" || toWork {
+		t.Errorf("agent after close: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+	d := keeper(KindDecorative, "shop")
+	if target, toWork, ok := shiftDutyTarget(world(d), d, 538, time.Now()); !ok || target != "home" || toWork {
+		t.Errorf("decorative at 08:58: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+}
+
 // TestShiftDutyTarget_SuppressedDuringActiveRoute: an off-shift NPC with a
 // standing go-home duty is left alone while it has an in-flight scheduled route
 // (lamplighter / washerwoman / town_crier). The route owns the actor until it

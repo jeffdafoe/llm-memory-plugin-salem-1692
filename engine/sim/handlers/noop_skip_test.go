@@ -282,6 +282,18 @@ func TestShouldSkipNoop_AtPostSteer_StillSkips(t *testing.T) {
 	}
 }
 
+func TestShouldSkipNoop_PreShiftSteer_StillSkips(t *testing.T) {
+	// LLM-707: the pre-shift line is a render-only status fact. Nothing is owed
+	// before the shift opens, so an idle early riser still skips its idle-backstops;
+	// the to-work duty opens the gate at the shift start.
+	pl := quietPayload()
+	start := 570
+	pl.DutySteer = &perception.DutySteerView{PreShift: true, ShiftStartMin: &start}
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=true with a pre-shift (render-only) duty steer")
+	}
+}
+
 func TestShouldSkipNoop_DutyPending_DoesNotSkip(t *testing.T) {
 	// ZBBS-HOME-442: an off-post on-shift keeper whose to-work steer is
 	// Option-B-suppressed by a MILD need carries DutyPending instead of a

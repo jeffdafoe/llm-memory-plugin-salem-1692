@@ -554,7 +554,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// gate — an owed order, a co-present buyer, or a pending offer; the same class
 	// of "unfinished business" signal the HOME-400 to-work gate reads). Computed
 	// here, after buildDutySteer, off the already-built order/offer/customer views.
-	if p.DutySteer != nil && !p.DutySteer.ToWork && !p.DutySteer.AtPost && p.AtOwnBusiness {
+	if p.DutySteer != nil && !p.DutySteer.ToWork && !p.DutySteer.AtPost && !p.DutySteer.PreShift && p.AtOwnBusiness {
 		p.DutySteer.OfferStayOpen = true
 		p.DutySteer.StayOpenReason = stayOpenReason(
 			len(p.PendingDeliveriesFromMe) > 0,
@@ -2619,8 +2619,16 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	case !onShift:
 		// Off-shift wind-down (ZBBS-WORK-387) — housing-dependent target. The
 		// suppressors (windDownSuppressed: a mid-meal item dwell — WORK-386; an
-		// unlapsed stay_open "open until" commitment while not peak-exhausted)
-		// mirror shiftDutyTarget's go-home arm so cue and warrant agree.
+		// unlapsed stay_open "open until" commitment while not peak-exhausted; a
+		// batch in the works at the post — LLM-707) mirror shiftDutyTarget's
+		// go-home arm so cue and warrant agree.
+		//
+		// The pre-shift morning is not the wind-down (LLM-707) — same predicate as
+		// shiftDutyTarget. The status line names when work begins and nothing else.
+		if snap.DawnDuskMinuteOK && sim.InPreShiftMorning(start, end, snap.DawnMinute, nowMin) {
+			startMin := start
+			return &DutySteerView{PreShift: true, ShiftStartMin: &startMin}
+		}
 		switch {
 		case anchors.HomeID != "":
 			// Homed → head home (the long-standing behavior).
@@ -3560,6 +3568,11 @@ func buildDutyPending(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anchors
 //     the meal mid-dwell; the cue re-fires once the dwell ends.
 //   - an unlapsed stay_open "open until" commitment — the keeper has chosen to
 //     stay open, so suppress the routine wind-down.
+//   - a batch in the works while standing at its own post (LLM-707) — under the
+//     LLM-319 pause model the batch only advances there, and the warrant already
+//     leaves such a keeper alone. Without this the cue alone said "head home"
+//     over the standing "it only moves along while you're at your post" line.
+//     A keeper that wandered off has paused its batch, so the cue stays live.
 //
 // The peak-exhaustion override shiftDutyTarget applies (OpenUntil yields to peak,
 // so the engine still force-beds an exhausted keeper) is deliberately NOT
@@ -3573,6 +3586,9 @@ func windDownSuppressed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
 		return true
 	}
 	if a.OpenUntil != nil && a.OpenUntil.After(snap.PublishedAt) {
+		return true
+	}
+	if a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID && a.ProductionItem != "" {
 		return true
 	}
 	return false
