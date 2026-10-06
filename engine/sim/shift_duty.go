@@ -137,6 +137,23 @@ func OnShiftAtMinute(startMin, endMin *int, nowMinute int) bool {
 	return minuteInShiftWindow(*startMin, *endMin, nowMinute)
 }
 
+// InPreShiftMorning reports whether nowMinute falls in the pre-shift morning of
+// the [start, end) shift window: off shift, at or after dawn, and before the shift
+// opens (LLM-707). The off-shift wind-down ("your working hours are over — head
+// home") is the EVENING after work; read off a bare off-shift test it also fired
+// in the morning, so a keeper awake early who went to her post was sent straight
+// home, then pulled back by her own batch — Elizabeth Ellis walked home↔farm a
+// dozen or more times most mornings. Empty when the shift opens at or before
+// dawn, for an empty (start == end) shift, and for the dawn/dusk fallback window
+// (start == dawn). Shared by shiftDutyTarget and the perception duty steer so
+// warrant and cue agree.
+func InPreShiftMorning(start, end, dawn, nowMinute int) bool {
+	if start == end || dawn >= start || minuteInShiftWindow(start, end, nowMinute) {
+		return false
+	}
+	return nowMinute >= dawn && nowMinute < start
+}
+
 // effectiveShiftWindow returns the actor's [start, end) minute-of-day shift
 // window: its own schedule when both bounds are set, else the world's dawn/dusk
 // day window (decision B — unscheduled NPCs are day-active). ok=false only when
@@ -408,6 +425,17 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 		// perception-only nudge that defers to recovery_options — so it falls
 		// through here to no duty (preserving the prior homeless behavior, which
 		// also produced no shift duty for a homeless off-shift actor).
+		//
+		// The pre-shift morning is not the wind-down (LLM-707): an agent awake
+		// before its shift is free until the shift opens, and the to-work arm takes
+		// over at the start. Agents only — a decorative has no cue to agree with and
+		// keeps its mechanical walk home. Yields to red tiredness, like the mid-batch
+		// pin below, so classifyAgentDuty can still march an exhausted agent home.
+		if isAgent && !atRedTiredness(w, a) {
+			if dawn, _, dawnOK := worldDawnDuskMinutes(w); dawnOK && InPreShiftMorning(start, end, dawn, nowMinute) {
+				return "", false, false
+			}
+		}
 		target, ok := windDownTarget(w, a, now)
 		if !ok {
 			return "", false, false

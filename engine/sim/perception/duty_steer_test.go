@@ -97,14 +97,16 @@ func TestBuildDutySteer(t *testing.T) {
 			}
 		}
 	})
+	// The off-shift cases sit at 05:00 — after the 03:00 close, before the 07:00
+	// dawn — the post-shift wind-down. 10:00 is the pre-shift morning (LLM-707).
 	t.Run("off shift, away from home -> home", func(t *testing.T) {
-		v := dutySteer(dutySnap(600, 420, 1140), agentSched("tavern"), dutyAnchors)
+		v := dutySteer(dutySnap(300, 420, 1140), agentSched("tavern"), dutyAnchors)
 		if v == nil || v.ToWork || v.TargetID != "cottage" {
 			t.Fatalf("want home=cottage, got %+v", v)
 		}
 	})
 	t.Run("off shift, at home -> nil", func(t *testing.T) {
-		if v := dutySteer(dutySnap(600, 420, 1140), agentSched("cottage"), dutyAnchors); v != nil {
+		if v := dutySteer(dutySnap(300, 420, 1140), agentSched("cottage"), dutyAnchors); v != nil {
 			t.Fatalf("want nil (at home), got %+v", v)
 		}
 	})
@@ -285,7 +287,8 @@ func TestBuildDutyPending(t *testing.T) {
 // stew walk-away). Object-source dwell (resting at a tree/well) is out of scope
 // and does not suppress.
 func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
-	// Off shift (now=10:00 vs schedule 16:00-03:00 wrap), away from home → go-home arm.
+	// Off shift (now=05:00 vs schedule 16:00-03:00 wrap, before dawn — the post-shift
+	// wind-down, not the LLM-707 pre-shift morning), away from home → go-home arm.
 	base := func() *sim.ActorSnapshot {
 		return &sim.ActorSnapshot{
 			Kind:              sim.KindNPCStateful,
@@ -296,7 +299,7 @@ func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
 	}
 
 	// Precondition: with no dwell, the go-home cue fires.
-	if v := dutySteer(dutySnap(600, 420, 1140), base(), dutyAnchors); v == nil || v.ToWork || v.TargetID != "cottage" {
+	if v := dutySteer(dutySnap(300, 420, 1140), base(), dutyAnchors); v == nil || v.ToWork || v.TargetID != "cottage" {
 		t.Fatalf("precondition: want home=cottage, got %+v", v)
 	}
 
@@ -307,7 +310,7 @@ func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
 			ObjectID: "tavern", Attribute: "hunger", Source: sim.DwellSourceItem,
 		},
 	}
-	if v := dutySteer(dutySnap(600, 420, 1140), eating, dutyAnchors); v != nil {
+	if v := dutySteer(dutySnap(300, 420, 1140), eating, dutyAnchors); v != nil {
 		t.Errorf("mid-meal should suppress the go-home cue, got %+v", v)
 	}
 
@@ -318,7 +321,7 @@ func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
 			ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject,
 		},
 	}
-	if v := dutySteer(dutySnap(600, 420, 1140), resting, dutyAnchors); v == nil || v.ToWork {
+	if v := dutySteer(dutySnap(300, 420, 1140), resting, dutyAnchors); v == nil || v.ToWork {
 		t.Errorf("object-source dwell should NOT suppress the go-home cue, got %+v", v)
 	}
 }
@@ -583,9 +586,9 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		}
 	})
 	t.Run("go-home arm is NOT suppressed by these signals", func(t *testing.T) {
-		// Off-shift (now 10:00, outside [16:00,03:00)), away from home, WITH a mild
-		// need + restock errand + own pending offer → still steers home.
-		snap := dutySnap(600, 420, 1140)
+		// Off-shift (now 05:00, after the 03:00 close and before dawn), away from home,
+		// WITH a mild need + restock errand + own pending offer → still steers home.
+		snap := dutySnap(300, 420, 1140)
 		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
 			1: {BuyerID: "moses", State: sim.PayLedgerStatePending},
 		}
@@ -860,5 +863,123 @@ func TestRenderDutySteer_WindDownVariants(t *testing.T) {
 	disc := render(&DutySteerView{TargetID: "cottage", TargetLabel: "Ellis Cottage", OfferStayOpen: true})
 	if !strings.Contains(disc, "stay_open") || !strings.Contains(disc, "until_hour") {
 		t.Errorf("discretionary stay-open prose missing pieces, got %q", disc)
+	}
+}
+
+// TestBuildDutySteer_PreShiftMorning covers the LLM-707 arm: between dawn and the
+// shift's opening the actor gets the status-only PreShift view wherever it stands —
+// never the "working hours are over — head home" wind-down, never a destination.
+// Live trigger: Elizabeth Ellis (9:30–18:30) at her farm before 9:30, sent home,
+// pulled back by her own batch, a dozen or more round trips a morning.
+func TestBuildDutySteer_PreShiftMorning(t *testing.T) {
+	keeper := func(inside sim.StructureID) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind:              sim.KindNPCShared,
+			ScheduleStartMin:  dutyMinPtr(570),  // 09:30
+			ScheduleEndMin:    dutyMinPtr(1110), // 18:30
+			WorkStructureID:   "tavern",
+			InsideStructureID: inside,
+		}
+	}
+	wantPreShift := func(t *testing.T, v *DutySteerView) {
+		t.Helper()
+		if v == nil || !v.PreShift || v.ToWork || v.AtPost || v.TargetID != "" {
+			t.Fatalf("want status-only PreShift with no target, got %+v", v)
+		}
+		if v.ShiftStartMin == nil || *v.ShiftStartMin != 570 {
+			t.Fatalf("want ShiftStartMin=570, got %v", v.ShiftStartMin)
+		}
+	}
+
+	for _, inside := range []sim.StructureID{"tavern", "cottage", "general_store"} {
+		t.Run("08:58 inside "+string(inside)+" -> PreShift", func(t *testing.T) {
+			wantPreShift(t, dutySteer(dutySnap(538, 420, 1140), keeper(inside), dutyAnchors))
+		})
+	}
+	t.Run("at dawn exactly -> PreShift", func(t *testing.T) {
+		wantPreShift(t, dutySteer(dutySnap(420, 420, 1140), keeper("tavern"), dutyAnchors))
+	})
+	t.Run("a batch in the works at the post still reads PreShift", func(t *testing.T) {
+		a := keeper("tavern")
+		a.ProductionItem = "meat"
+		wantPreShift(t, dutySteer(dutySnap(538, 420, 1140), a, dutyAnchors))
+	})
+	t.Run("before dawn, away from home -> wind-down home", func(t *testing.T) {
+		v := dutySteer(dutySnap(390, 420, 1140), keeper("tavern"), dutyAnchors)
+		if v == nil || v.PreShift || v.ToWork || v.TargetID != "cottage" {
+			t.Fatalf("want home=cottage before dawn, got %+v", v)
+		}
+	})
+	t.Run("at shift start -> on shift, not PreShift", func(t *testing.T) {
+		v := dutySteer(dutySnap(570, 420, 1140), keeper("tavern"), dutyAnchors)
+		if v == nil || !v.AtPost || v.PreShift {
+			t.Fatalf("want AtPost at 09:30, got %+v", v)
+		}
+	})
+	t.Run("after close, away from home -> wind-down home", func(t *testing.T) {
+		v := dutySteer(dutySnap(1200, 420, 1140), keeper("tavern"), dutyAnchors)
+		if v == nil || v.PreShift || v.ToWork || v.TargetID != "cottage" {
+			t.Fatalf("want home=cottage after close, got %+v", v)
+		}
+	})
+	t.Run("dawn/dusk window is never PreShift", func(t *testing.T) {
+		a := &sim.ActorSnapshot{Kind: sim.KindNPCShared, InsideStructureID: "general_store"}
+		if v := dutySteer(dutySnap(400, 420, 1140), a, dutyAnchors); v == nil || v.PreShift || v.TargetID != "cottage" {
+			t.Fatalf("want wind-down home for an unscheduled actor before dawn, got %+v", v)
+		}
+	})
+	t.Run("dawn/dusk unusable -> no PreShift, wind-down as before", func(t *testing.T) {
+		m := 538
+		snap := &sim.Snapshot{LocalMinuteOfDay: &m, DawnDuskMinuteOK: false}
+		if v := dutySteer(snap, keeper("general_store"), dutyAnchors); v == nil || v.PreShift || v.TargetID != "cottage" {
+			t.Fatalf("want wind-down home without a dawn, got %+v", v)
+		}
+	})
+}
+
+// TestBuildDutySteer_BatchAtPostSuppressesGoHome covers the LLM-707 mirror of
+// shiftDutyTarget's mid-batch suppressor: off shift, at its own post with a batch
+// in the works, the keeper gets no go-home line (the batch only advances there).
+// Away from the post the batch is paused, so the wind-down stays live.
+func TestBuildDutySteer_BatchAtPostSuppressesGoHome(t *testing.T) {
+	// 05:00 against a 16:00–03:00 schedule: after close, before dawn.
+	keeper := func(inside sim.StructureID) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			ScheduleStartMin:  dutyMinPtr(960),
+			ScheduleEndMin:    dutyMinPtr(180),
+			WorkStructureID:   "tavern",
+			InsideStructureID: inside,
+		}
+	}
+	idle := keeper("tavern")
+	if v := dutySteer(dutySnap(300, 420, 1140), idle, dutyAnchors); v == nil || v.TargetID != "cottage" {
+		t.Fatalf("precondition: idle keeper at post after close is sent home, got %+v", v)
+	}
+	busy := keeper("tavern")
+	busy.ProductionItem = "ale"
+	if v := dutySteer(dutySnap(300, 420, 1140), busy, dutyAnchors); v != nil {
+		t.Errorf("a batch in the works at the post should suppress the go-home line, got %+v", v)
+	}
+	away := keeper("general_store")
+	away.ProductionItem = "ale"
+	if v := dutySteer(dutySnap(300, 420, 1140), away, dutyAnchors); v == nil || v.TargetID != "cottage" {
+		t.Errorf("a paused batch away from the post should not suppress the go-home line, got %+v", v)
+	}
+}
+
+// TestRenderDutySteer_PreShift covers the LLM-707 line: the opening hour, no
+// destination, no stay_open, no "working hours are over".
+func TestRenderDutySteer_PreShift(t *testing.T) {
+	var b strings.Builder
+	renderDutySteer(&b, &DutySteerView{PreShift: true, ShiftStartMin: dutyMinPtr(570)})
+	got := b.String()
+	if got != "Your working hours begin at 9:30 in the morning.\n\n" {
+		t.Errorf("pre-shift line = %q", got)
+	}
+	var empty strings.Builder
+	renderDutySteer(&empty, &DutySteerView{PreShift: true})
+	if empty.String() != "" {
+		t.Errorf("PreShift with no start should render nothing, got %q", empty.String())
 	}
 }

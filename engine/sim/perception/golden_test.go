@@ -2153,6 +2153,24 @@ var perceptionScenarios = []perceptionScenario{
 		build: homedWorkerEveningBatchHoldsLeisure,
 	},
 	{
+		name: "keeper_at_post_preshift_batch_running",
+		summary: "LLM-707: Elizabeth Ellis (09:30–18:30) at her farm at 08:58 — awake after dawn, before her shift — " +
+			"with a Cheese batch in the works. Live, the off-shift wind-down told her 'Your working hours are over … head " +
+			"home … now' and offered stay_open, which then refused her ('you are already open until 6:30'); at home the " +
+			"batch line pulled her back — a dozen or more home↔farm round trips most mornings. The golden pins the pre-shift " +
+			"status line ('Your working hours begin at 9:30 in the morning.') PRESENT and the wind-down line and any " +
+			"stay_open offer ABSENT; the batch line still renders.",
+		build: keeperAtPostPreShiftBatchRunning,
+	},
+	{
+		name: "keeper_at_post_after_close_batch_running",
+		summary: "LLM-707: the same keeper at her farm at 22:30 — after close and past the 22:00 bedtime, so outside the " +
+			"evening window and its LLM-335 batch hold — with a Cheese batch in the works. The engine warrant already leaves " +
+			"a mid-batch keeper at its post alone; the cue now agrees: the go-home wind-down ('Your working hours are over …') " +
+			"is ABSENT and the batch line renders. Mirror of keeper_at_post_preshift_batch_running on the evening side.",
+		build: keeperAtPostAfterCloseBatchRunning,
+	},
+	{
 		name: "homed_worker_evening_broke_still_invited",
 		summary: "LLM-353: a homed day-shift agent (Ezekiel, 07:00–19:00) off-shift at 20:30 — inside the evening window — " +
 			"holding only 2 coins, with the tavern's cheapest drink at 3 (ale, sold by the co-located keeper). Coin no longer " +
@@ -7086,6 +7104,46 @@ func TestInFlightProductionLineTracksBatch(t *testing.T) {
 				t.Errorf("scenario %q: in-flight batch line present=%v, want %v (ProductionItem=%q)", sc.name, has, want, item)
 			}
 		})
+	}
+}
+
+// TestGoldensNoWindDownBeforeShiftOrOverABatch is the LLM-707 cross-scenario
+// invariant: the imperative "Your working hours are over" wind-down never renders
+// (a) in the pre-shift morning, where it read as "go home" to a keeper who came to
+// work early, or (b) for a keeper at its own post with a batch in the works, which
+// only advances there. Neither case offers stay_open. The anchors line's permissive
+// "you can head home whenever you wish" is a location reference, not a steer, and
+// deliberately stays (as in homed_worker_evening_batch_holds_leisure). Re-derived
+// from each fixture.
+func TestGoldensNoWindDownBeforeShiftOrOverABatch(t *testing.T) {
+	const windDown = "Your working hours are over"
+	checked := 0
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, _ := sc.build()
+			a := snap.Actors[actorID]
+			if a == nil || snap.LocalMinuteOfDay == nil {
+				return
+			}
+			preShift := a.ScheduleStartMin != nil && a.ScheduleEndMin != nil && snap.DawnDuskMinuteOK &&
+				sim.InPreShiftMorning(*a.ScheduleStartMin, *a.ScheduleEndMin, snap.DawnMinute, *snap.LocalMinuteOfDay)
+			batchAtPost := a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID && a.ProductionItem != ""
+			if !preShift && !batchAtPost {
+				return
+			}
+			checked++
+			got := renderScenario(sc)
+			if strings.Contains(got, windDown) {
+				t.Errorf("scenario %q: wind-down rendered (preShift=%v, batchAtPost=%v)", sc.name, preShift, batchAtPost)
+			}
+			if strings.Contains(got, "stay_open") {
+				t.Errorf("scenario %q: stay_open offered (preShift=%v, batchAtPost=%v)", sc.name, preShift, batchAtPost)
+			}
+		})
+	}
+	if checked < 2 {
+		t.Fatalf("invariant covered %d scenarios, want at least the two LLM-707 ones", checked)
 	}
 }
 
@@ -16615,6 +16673,59 @@ func homedWorkerEveningBatchHoldsLeisure() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 	}
 	return snap, ezekielID, nil
+}
+
+// keeperAtPostBatchRunning builds Elizabeth Ellis (09:30–18:30) standing at her farm
+// with a Cheese batch in the works at minute-of-day now, under a 07:00/19:00 dawn/dusk
+// and a 22:00 bedtime. Shared by the two LLM-707 scenarios.
+func keeperAtPostBatchRunning(now int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		elizabethID = sim.ActorID("elizabeth")
+		farm        = sim.StructureID("ellis_farm")
+		home        = sim.StructureID("ellis_residence")
+	)
+	start, end := 570, 1110 // 09:30–18:30
+	elizabeth := &sim.ActorSnapshot{
+		Kind:                       sim.KindNPCShared,
+		DisplayName:                "Elizabeth Ellis",
+		Role:                       "dairywoman",
+		State:                      sim.StateIdle,
+		WorkStructureID:            farm,
+		InsideStructureID:          farm,
+		HomeStructureID:            home,
+		ScheduleStartMin:           &start,
+		ScheduleEndMin:             &end,
+		Coins:                      54,
+		Needs:                      map[sim.NeedKey]int{},
+		ProductionItem:             "cheese",
+		ProductionBatchQty:         1,
+		ProductionRemainingSeconds: 1800,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:     &now,
+		DawnMinute:           420,
+		DuskMinute:           1140,
+		DawnDuskMinuteOK:     true,
+		LodgingBedtimeMinute: 1320,
+		NeedThresholds:       sim.NeedThresholds{},
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{elizabethID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			farm: plainStructure(farm, "Ellis Farm"),
+			home: plainStructure(home, "Ellis Residence"),
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{"cheese": cheeseKind()},
+	}
+	return snap, elizabethID, nil
+}
+
+// keeperAtPostPreShiftBatchRunning is the LLM-707 live case: 08:58, before her open.
+func keeperAtPostPreShiftBatchRunning() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return keeperAtPostBatchRunning(538)
+}
+
+// keeperAtPostAfterCloseBatchRunning is the evening-side mirror: 22:30, past bedtime.
+func keeperAtPostAfterCloseBatchRunning() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return keeperAtPostBatchRunning(1350)
 }
 
 // lodgerEveningTavernOpen is the LLM-311 case: the SAME evening as

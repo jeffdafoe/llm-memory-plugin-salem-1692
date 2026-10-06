@@ -186,7 +186,9 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	// appears exactly where buildDutySteer previously returned nil — an agent
 	// mid-errand — so counting it would re-open a gate that has been closed in all
 	// those cases since HOME-400, turning every deferred yank into a pester tick.
-	if (payload.DutySteer != nil && !payload.DutySteer.AtPost && !payload.DutySteer.AwayFromPost) || payload.DutyPending ||
+	// PreShift (LLM-707) is exempt the same way: a status line in the morning
+	// before work, where nothing is owed until the shift opens.
+	if (payload.DutySteer != nil && !payload.DutySteer.AtPost && !payload.DutySteer.AwayFromPost && !payload.DutySteer.PreShift) || payload.DutyPending ||
 		payload.EveningLeisure.Invitation() || payload.SummonsForYou != nil {
 		return false
 	}

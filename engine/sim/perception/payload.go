@@ -2209,6 +2209,20 @@ type DutySteerView struct {
 	// with ToWork.
 	AwayFromPost bool
 
+	// PreShift is the STATUS-ONLY arm for the pre-shift morning (LLM-707): off
+	// shift, after dawn, before the shift opens (sim.InPreShiftMorning). It replaces
+	// the wind-down there — that line told a keeper who came to her post early that
+	// her working hours were over and to head home. It states only when work begins
+	// (ShiftStartMin): no destination id, no imperative, no stay_open offer.
+	// RENDER-ONLY like AtPost and AwayFromPost — excluded from shouldSkipNoop, so an
+	// idle early riser still skips its idle-backstops. Mutually exclusive with
+	// ToWork, AtPost, AwayFromPost and the wind-down.
+	PreShift bool
+
+	// ShiftStartMin is the shift's opening minute-of-day (0–1439), set only on the
+	// PreShift arm. nil → render omits the line. Voiced via sim.ClockHourProse.
+	ShiftStartMin *int
+
 	// ShiftEndMin is the keeper's effective close time as a wall-clock
 	// minute-of-day (0–1439) — its own schedule end, else the day-active dusk
 	// fallback (shiftWindowBounds). Set on the AtPost cue (LLM-40) and on the
