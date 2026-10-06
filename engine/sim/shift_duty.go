@@ -429,8 +429,9 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 		// The pre-shift morning is not the wind-down (LLM-707): an agent awake
 		// before its shift is free until the shift opens, and the to-work arm takes
 		// over at the start. Agents only — a decorative has no cue to agree with and
-		// keeps its mechanical walk home.
-		if isAgent {
+		// keeps its mechanical walk home. Yields to red tiredness, like the mid-batch
+		// pin below, so classifyAgentDuty can still march an exhausted agent home.
+		if isAgent && !atRedTiredness(w, a) {
 			if dawn, _, dawnOK := worldDawnDuskMinutes(w); dawnOK && InPreShiftMorning(start, end, dawn, nowMinute) {
 				return "", false, false
 			}

@@ -7108,10 +7108,13 @@ func TestInFlightProductionLineTracksBatch(t *testing.T) {
 }
 
 // TestGoldensNoWindDownBeforeShiftOrOverABatch is the LLM-707 cross-scenario
-// invariant: the "Your working hours are over" wind-down never renders (a) in the
-// pre-shift morning, where it read as "go home" to a keeper who came to work early,
-// or (b) for a keeper at its own post with a batch in the works, which only advances
-// there. Neither case offers stay_open. Re-derived from each fixture.
+// invariant: the imperative "Your working hours are over" wind-down never renders
+// (a) in the pre-shift morning, where it read as "go home" to a keeper who came to
+// work early, or (b) for a keeper at its own post with a batch in the works, which
+// only advances there. Neither case offers stay_open. The anchors line's permissive
+// "you can head home whenever you wish" is a location reference, not a steer, and
+// deliberately stays (as in homed_worker_evening_batch_holds_leisure). Re-derived
+// from each fixture.
 func TestGoldensNoWindDownBeforeShiftOrOverABatch(t *testing.T) {
 	const windDown = "Your working hours are over"
 	checked := 0

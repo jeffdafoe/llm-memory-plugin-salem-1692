@@ -243,6 +243,18 @@ func TestShiftDutyTarget_PreShiftMorning(t *testing.T) {
 	if target, toWork, ok := shiftDutyTarget(world(d), d, 538, time.Now()); !ok || target != "home" || toWork {
 		t.Errorf("decorative at 08:58: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
 	}
+	// Red tiredness keeps the LLM-62 rest floor: the go-home duty stands and the
+	// agent is marched home.
+	tired := keeper(KindNPCShared, "tavern")
+	tired.Needs["tiredness"] = 23
+	tw := world(tired)
+	target, toWork, ok := shiftDutyTarget(tw, tired, 538, time.Now())
+	if !ok || target != "home" || toWork {
+		t.Fatalf("red-tired agent at 08:58: got (%q,%v,%v), want (home,false,true)", target, toWork, ok)
+	}
+	if got := classifyAgentDuty(tw, tired, target, toWork); got != agentDutyMarchHome {
+		t.Errorf("red-tired agent at 08:58: classifyAgentDuty = %v, want agentDutyMarchHome", got)
+	}
 }
 
 // TestShiftDutyTarget_SuppressedDuringActiveRoute: an off-shift NPC with a
