@@ -108,6 +108,13 @@ func (s *Server) handlePCOutfit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveOutfit(w http.ResponseWriter, r *http.Request, sprite *sim.Sprite, install sim.Command, writeErr func(http.ResponseWriter, error)) bool {
 	s.outfitMu.Lock()
 	defer s.outfitMu.Unlock()
+	// Every outfit write runs under outfitMu, so the live catalog holds the
+	// version the row had before this save — the one to restore if the
+	// install is refused below.
+	var previous *sim.Sprite
+	if snap := s.world.Published(); snap != nil {
+		previous = snap.Sprites[sprite.ID]
+	}
 	if err := s.spriteWriter.UpsertRigSprite(r.Context(), sprite); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false
@@ -117,6 +124,15 @@ func (s *Server) saveOutfit(w http.ResponseWriter, r *http.Request, sprite *sim.
 		return false
 	}
 	if _, err := s.world.SendContext(context.WithoutCancel(r.Context()), install); err != nil {
+		// The install was refused (the actor is gone, no longer dressable, or
+		// the caller lost admin between the two checks). An actor already in
+		// this outfit still wears the live version, so the row goes back to
+		// it; a first outfit's row is simply unused.
+		if previous != nil {
+			if rerr := s.spriteWriter.UpsertRigSprite(context.WithoutCancel(r.Context()), previous); rerr != nil {
+				log.Printf("outfit rollback: sprite=%s: %v", sprite.ID, rerr)
+			}
+		}
 		writeErr(w, err)
 		return false
 	}

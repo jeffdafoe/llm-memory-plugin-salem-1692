@@ -229,3 +229,40 @@ func TestHandleAdminNPCOutfit_Refusals(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleAdminNPCOutfit_RefusedInstallRestoresRow: a villager already in
+// her outfit is re-dressed, but the install is refused after the row was
+// written (here: the caller loses admin between the two checks). The row goes
+// back to the version she still wears live, so a restart changes nothing.
+func TestHandleAdminNPCOutfit_RefusedInstallRestoresRow(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "pc-admin", "tester")
+	srv := NewServer(w, okAuth{})
+	writer := &fakeSpriteWriter{world: w}
+	srv.SetSpriteWriter(writer)
+	if rec := post(t, srv, "/api/village/admin/npc/outfit", adminOutfitBody("hannah")); rec.Code != http.StatusOK {
+		t.Fatalf("first dressing: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	writer.afterWrite = func() {
+		writer.afterWrite = nil
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors["pc-admin"].IsAdmin = false
+			return nil, nil
+		}}); err != nil {
+			t.Error(err)
+		}
+	}
+	rec := post(t, srv, "/api/village/admin/npc/outfit", strings.Replace(adminOutfitBody("hannah"), `"skin":4`, `"skin":9`, 1))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	id := sim.OutfitSpriteID("hannah")
+	last := writer.written[len(writer.written)-1]
+	if last.ID != id || !strings.Contains(string(last.Layers), `"skin":4`) {
+		t.Fatalf("row left as %s, want it restored to the live outfit (skin 4)", last.Layers)
+	}
+	if live := w.Published().Sprites[id]; live == nil || !strings.Contains(string(live.Layers), `"skin":4`) {
+		t.Fatal("the live outfit changed after a refused install")
+	}
+}
