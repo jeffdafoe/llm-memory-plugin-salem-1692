@@ -911,25 +911,35 @@ func TestBuildTradeValue_MakingsAskUnit(t *testing.T) {
 		name      string
 		saleUnits int
 		saleCoins int
+		outputQty int // units one 5-coin cut of meat makes
 		retail    int
 		want      int
 	}{
-		{"loss, cost above retail: ask the cost", 4, 12, 4, 5},
-		{"loss, retail above cost: ask the retail", 4, 12, 7, 7},
-		{"break-even earns nothing but is no loss: no ask", 4, 20, 4, 0},
-		{"profitable: no ask", 4, 32, 4, 0},
-		{"nothing sold yet: no ask", 0, 0, 4, 0},
+		{"loss, cost above retail: ask the cost", 4, 12, 1, 4, 5},
+		{"loss, retail above cost: ask the retail", 4, 12, 1, 7, 7},
+		{"loss, cost not whole: ask rounds up", 4, 8, 2, 2, 3}, // 2.5 each, sold at 2
+		{"break-even earns nothing but is no loss: no ask", 4, 20, 1, 4, 0},
+		{"profitable: no ask", 4, 32, 1, 4, 0},
+		{"nothing sold yet: no ask", 0, 0, 1, 4, 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			snap, subj := tvMakingsSnap(tc.saleUnits, tc.saleCoins, inputs)
-			snap.Recipes["fried_meat"].RetailPrice = tc.retail // makings: one 5-coin cut of meat
+			snap.Recipes["fried_meat"].OutputQty = tc.outputQty
+			snap.Recipes["fried_meat"].RetailPrice = tc.retail
+			if snap.Recipes["fried_meat"].WholesalePrice > tc.retail {
+				snap.Recipes["fried_meat"].WholesalePrice = tc.retail
+			}
 			v := buildTradeValue(snap, "hannah", subj, true)
 			if v == nil || len(v.Items) != 1 {
 				t.Fatalf("want 1 item, got %+v", v)
 			}
 			if got := v.Items[0].MakingsAskUnit; got != tc.want {
 				t.Errorf("MakingsAskUnit = %d, want %d (item %+v)", got, tc.want, v.Items[0])
+			}
+			// A made good never carries the resale ask too.
+			if got := v.Items[0].AskUnit; got != 0 {
+				t.Errorf("AskUnit = %d on a made good, want 0", got)
 			}
 		})
 	}
