@@ -23,8 +23,10 @@ import (
 // gates NOTHING, so a cook can be told her fire is good without `stoke` being
 // advertised for a fire that would bounce off StartStoke's worth-stoking gate
 // (the LLM-435 class). It also carries no vendor/tool mechanics: when the fire
-// is low the adjacent "## Your hearth" section already names the wood, the
-// supplier and the tool. Same split as LLM-64 — stake here, where-and-how there.
+// is low and has work to do (a boosted batch on, a storm, someone cold) the
+// adjacent "## Your hearth" section names the wood, the supplier and the tool.
+// Same split as LLM-64 — stake here, where-and-how there. With nothing on under
+// a calm sky this line speaks alone, of the next batch.
 
 // HearthCookingView is the fire-as-ingredient line for a keeper who cooks over
 // a hearth. Non-nil only when the actor produces at least one hearth-boosted
@@ -34,6 +36,11 @@ type HearthCookingView struct {
 	NeedsStoking bool     // out, or down to the low-water mark — kept in lockstep with HearthView
 	Dishes       []string // display labels of the boosted dishes made here
 	Name         string   // the structure's display name; "" → generic noun
+	// InPot is the display label of a boosted batch on the fire now, "" when none.
+	// The bonus is read when that batch lands, so a low fire threatens THIS batch,
+	// not the next one — and this is the only time the stoke cue speaks under a
+	// calm sky, so the stake has to name it.
+	InPot string
 }
 
 // buildHearthCooking returns the cook's fire line, or nil. Pure over the
@@ -69,11 +76,16 @@ func buildHearthCooking(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Heart
 		return nil // nothing they make here cares about the fire
 	}
 	now := snap.PublishedAt
+	inPot := ""
+	if item := boostedBatchOn(snap, actorSnap, work); item != "" {
+		inPot = itemDisplayLabel(snap, item)
+	}
 	return &HearthCookingView{
 		Lit:          sim.HearthLit(hearth, now),
 		NeedsStoking: sim.HearthNeedsStoking(hearth, now, snap.HearthLowMinutes),
 		Dishes:       dishes,
 		Name:         resolveDwellPinLabel(snap, hearth.ID),
+		InPot:        inPot,
 	}
 }
 
@@ -109,8 +121,12 @@ func renderHearthCooking(b *strings.Builder, v *HearthCookingView) {
 	// opens on the fire and the cold room; opening on the fire here too would read
 	// as the same sentence twice. The stake is the batch, so the batch leads.
 	switch {
+	case !v.Lit && v.InPot != "":
+		fmt.Fprintf(b, "There is no fire under the %s in your pot at your %s, and a cold hearth makes a mean batch — it will go nowhere near as far.\n", v.InPot, name)
 	case !v.Lit:
 		fmt.Fprintf(b, "There is no fire under your pot at your %s, and a cold hearth makes a mean batch — what %s you put up will go nowhere near as far.\n", name, dishes)
+	case v.NeedsStoking && v.InPot != "":
+		fmt.Fprintf(b, "The %s in your pot will come out the poorer if the fire at your %s is left to sink much further.\n", v.InPot, name)
 	case v.NeedsStoking:
 		fmt.Fprintf(b, "The next %s you put up will be the poorer if the fire at your %s is left to sink much further.\n", dishes, name)
 	default:

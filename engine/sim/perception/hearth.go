@@ -190,8 +190,9 @@ func renderColdGarment(b *strings.Builder, v *ColdSelfView) {
 
 // HearthView is the at-the-hearth stoke cue. Non-nil only when the actor is
 // responsible for a hearth (owner, or Working a hired job for its owner —
-// sim.HearthToStoke), is standing INSIDE its structure, and the fire is out or
-// low (sim.HearthNeedsStoking). Hired flips the render to the truthful "the
+// sim.HearthToStoke), is standing INSIDE its structure, the fire is out or
+// low (sim.HearthNeedsStoking), and the fire has work to do — a storm, someone
+// cold in the room, or a boosted batch on (see buildHearth). Hired flips the render to the truthful "the
 // hearth where you're working" framing, mirroring StallRepairView.Hired.
 type HearthView struct {
 	Hired         bool
@@ -226,6 +227,16 @@ func buildHearth(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	if !sim.HearthNeedsStoking(hearth, now, snap.HearthLowMinutes) {
 		return nil // burning well — nothing to say
 	}
+	// A low fire only costs something while it has work to do. Cold builds under a
+	// storm alone (sim.coldRatePerMinuteX100 recovers everyone under a clear sky),
+	// so outside one the fire matters to a chilled body in the room or to a batch
+	// it boosts. Ungated, the cue asked for wood on every clear-sky turn and the
+	// Tavern burned some thirty sticks a week for a bread bonus it rarely used.
+	storm := snap.Environment.Weather == sim.WeatherStorm
+	occupantsCold := structureOccupantsCold(snap, actorID, actorSnap.InsideStructureID)
+	if !storm && !occupantsCold && !actorFeelsCold(snap, actorSnap) && !hearthBatchOn(snap, hearth) {
+		return nil
+	}
 	needed := snap.StokeWoodPerStoke
 	if needed <= 0 {
 		needed = sim.DefaultStokeWoodPerStoke
@@ -234,8 +245,8 @@ func buildHearth(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	view := &HearthView{
 		Hired:         hired,
 		Out:           !sim.HearthLit(hearth, now),
-		Storm:         snap.Environment.Weather == sim.WeatherStorm,
-		OccupantsCold: structureOccupantsCold(snap, actorID, actorSnap.InsideStructureID),
+		Storm:         storm,
+		OccupantsCold: occupantsCold,
 		Name:          resolveDwellPinLabel(snap, hearth.ID),
 		WoodNeeded:    needed,
 		WoodHeld:      held,
@@ -273,6 +284,42 @@ func structureOccupantsCold(snap *sim.Snapshot, subjectID sim.ActorID, structure
 		}
 	}
 	return false
+}
+
+// actorFeelsCold reports whether the subject's own cold is at or above its
+// awareness floor — the self twin of structureOccupantsCold.
+func actorFeelsCold(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	need, ok := sim.FindNeed(sim.ColdNeedKey)
+	if !ok {
+		return false
+	}
+	return need.Tier(a.Needs[sim.ColdNeedKey], snap.NeedThresholds.Get(sim.ColdNeedKey)) > sim.NeedSilent
+}
+
+// hearthBatchOn reports whether the hearth's owner has a batch cooking over it
+// that the fire boosts. Keyed on the owner, so a hire tending the employer's
+// fire sees the same answer the owner does.
+func hearthBatchOn(snap *sim.Snapshot, hearth *sim.VillageObject) bool {
+	return boostedBatchOn(snap, snap.Actors[hearth.OwnerActorID], sim.StructureID(hearth.ID)) != ""
+}
+
+// boostedBatchOn returns the item of a fire-boosted batch the actor is cooking
+// at structureID, or "" when none. Cooking means in flight AND the actor at the
+// post: a batch only advances there (the LLM-319 pause model), so a paused batch
+// gives the fire no work. The boost is read when the batch lands
+// (sim.recipeBoostStateMet), so a fire stoked after the batch starts still
+// counts. Shared by the stoke gate and the cooking line's "in your pot" wording
+// so the two cannot drift.
+func boostedBatchOn(snap *sim.Snapshot, a *sim.ActorSnapshot, structureID sim.StructureID) sim.ItemKind {
+	if a == nil || a.ProductionItem == "" || a.ProductionRemainingSeconds <= 0 || structureID == "" ||
+		a.WorkStructureID != structureID || a.InsideStructureID != structureID {
+		return ""
+	}
+	recipe := snap.Recipes[a.ProductionItem]
+	if recipe == nil || !recipeHasHearthBoost(recipe) {
+		return ""
+	}
+	return a.ProductionItem
 }
 
 // renderHearth writes the "## Your hearth" section (or the hired framing).

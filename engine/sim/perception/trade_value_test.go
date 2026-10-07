@@ -875,7 +875,7 @@ func TestBuildTradeValue_MakingsMarginFloorUncertainty(t *testing.T) {
 		wantRender string
 	}{
 		{"break-even against a floor is unjudged", 4, 20, makingsMarginNone, "the makings run you at least 5 coins each."},
-		{"below a floor is still provably a loss", 4, 12, makingsMarginBelowCost, "the makings run you at least 5 coins each (a loss)."},
+		{"below a floor is still provably a loss", 4, 12, makingsMarginBelowCost, "the makings run you at least 5 coins each (a loss) — ask "},
 		{"above a floor is unjudged as ever", 4, 40, makingsMarginNone, "the makings run you at least 5 coins each."},
 	}
 	for _, tc := range tests {
@@ -892,6 +892,54 @@ func TestBuildTradeValue_MakingsMarginFloorUncertainty(t *testing.T) {
 			renderTradeValue(&b, v)
 			if !strings.Contains(b.String(), tc.wantRender) {
 				t.Errorf("want %q:\n%s", tc.wantRender, b.String())
+			}
+			// Only a proven loss carries the ask.
+			if hasAsk := strings.Contains(b.String(), "or more at your counter"); hasAsk != (tc.wantTier == makingsMarginBelowCost) {
+				t.Errorf("ask present=%v for tier %d:\n%s", hasAsk, tc.wantTier, b.String())
+			}
+		})
+	}
+}
+
+// TestBuildTradeValue_MakingsAskUnit pins the produce-side ask floor: a made good
+// sold at a loss is told what to ask — its per-unit makings cost rounded up, never
+// under the catalog retail — and nothing else is. Live case: John Ellis sold stew
+// at 4 for three months under "the makings run you nearly 5 coins each (a loss)".
+func TestBuildTradeValue_MakingsAskUnit(t *testing.T) {
+	inputs := []sim.RecipeInput{{Item: "meat", Qty: 1}}
+	tests := []struct {
+		name      string
+		saleUnits int
+		saleCoins int
+		outputQty int // units one 5-coin cut of meat makes
+		retail    int
+		want      int
+	}{
+		{"loss, cost above retail: ask the cost", 4, 12, 1, 4, 5},
+		{"loss, retail above cost: ask the retail", 4, 12, 1, 7, 7},
+		{"loss, cost not whole: ask rounds up", 4, 8, 2, 2, 3}, // 2.5 each, sold at 2
+		{"break-even earns nothing but is no loss: no ask", 4, 20, 1, 4, 0},
+		{"profitable: no ask", 4, 32, 1, 4, 0},
+		{"nothing sold yet: no ask", 0, 0, 1, 4, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snap, subj := tvMakingsSnap(tc.saleUnits, tc.saleCoins, inputs)
+			snap.Recipes["fried_meat"].OutputQty = tc.outputQty
+			snap.Recipes["fried_meat"].RetailPrice = tc.retail
+			if snap.Recipes["fried_meat"].WholesalePrice > tc.retail {
+				snap.Recipes["fried_meat"].WholesalePrice = tc.retail
+			}
+			v := buildTradeValue(snap, "hannah", subj, true)
+			if v == nil || len(v.Items) != 1 {
+				t.Fatalf("want 1 item, got %+v", v)
+			}
+			if got := v.Items[0].MakingsAskUnit; got != tc.want {
+				t.Errorf("MakingsAskUnit = %d, want %d (item %+v)", got, tc.want, v.Items[0])
+			}
+			// A made good never carries the resale ask too.
+			if got := v.Items[0].AskUnit; got != 0 {
+				t.Errorf("AskUnit = %d on a made good, want 0", got)
 			}
 		})
 	}

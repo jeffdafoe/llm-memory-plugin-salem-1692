@@ -35,8 +35,9 @@ func boostedPorridgeRecipes() map[sim.ItemKind]*sim.ItemRecipe {
 
 // cookAtHearth is the shared fixture body. litUntil sets the fire state relative
 // to cookHearthClock; hearthTagged decides whether the Inn has a fireplace at
-// all; wood is the firewood Hannah carries.
-func cookAtHearth(litUntil time.Duration, hearthTagged bool, wood int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+// all; wood is the firewood Hannah carries; batchOn puts a porridge batch on the
+// fire, which is what lets the stoke cue speak under a calm sky.
+func cookAtHearth(litUntil time.Duration, hearthTagged bool, wood int, batchOn bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	now := 720
 	start, end := 360, 1080
 	inventory := map[sim.ItemKind]int{}
@@ -57,6 +58,11 @@ func cookAtHearth(litUntil time.Duration, hearthTagged bool, wood int) (*sim.Sna
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         inventory,
 		RestockPolicy:     producePolicy("porridge", 20),
+	}
+	if batchOn {
+		hannah.ProductionItem = "porridge"
+		hannah.ProductionBatchQty = 10
+		hannah.ProductionRemainingSeconds = 2400
 	}
 	tags := []string{sim.TagBusiness}
 	if hearthTagged {
@@ -96,26 +102,36 @@ func cookAtHearth(litUntil time.Duration, hearthTagged bool, wood int) (*sim.Sna
 // cue is ABSENT — the case that forced this to be a separate view from
 // HearthView, which gates the stoke tool and is nil while a fire burns well.
 func cookAtBurningHearth() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return cookAtHearth(4*time.Hour, true, 2)
+	return cookAtHearth(4*time.Hour, true, 2, false)
 }
 
-// cookAtEbbingHearth: embers — under the low line but still lit. Both sections
-// render: "## Your hearth" carries the remedy (wood in hand, stoke now) and the
-// cooking line carries the stake. Neither repeats the other.
+// cookAtEbbingHearth: embers — under the low line but still lit — with a
+// porridge batch on. Both sections render: "## Your hearth" carries the remedy
+// (wood in hand, stoke now) and the cooking line carries the stake. Neither
+// repeats the other.
 func cookAtEbbingHearth() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return cookAtHearth(30*time.Minute, true, 2)
+	return cookAtHearth(30*time.Minute, true, 2, true)
 }
 
-// cookAtDeadHearthNoWood: the fire is out and she carries none. The cooking line
-// takes its coldest tier; the wood steer stays where it belongs, in the hearth
-// section.
+// cookAtEbbingHearthNothingOn: the same embers and wood in hand, calm sky, but
+// no batch on and nobody cold. The stoke cue stays silent — a low fire costs
+// nothing here yet — while the cooking line still states the stake for the next
+// batch. The live case: John Ellis kept the Tavern fire in all day for a bread
+// bonus, some thirty sticks a week.
+func cookAtEbbingHearthNothingOn() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return cookAtHearth(30*time.Minute, true, 2, false)
+}
+
+// cookAtDeadHearthNoWood: the fire is out, she carries none, and a porridge
+// batch is on. The cooking line takes its coldest tier; the wood steer stays
+// where it belongs, in the hearth section.
 func cookAtDeadHearthNoWood() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return cookAtHearth(-time.Hour, true, 0)
+	return cookAtHearth(-time.Hour, true, 0, true)
 }
 
 // cookAtHearthlessKitchen: the same cook and the same boosted recipe in a
 // kitchen with NO hearth object. Nothing renders — this is the fixture that pins
 // the promise that every non-hearth kitchen in the village is untouched.
 func cookAtHearthlessKitchen() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return cookAtHearth(0, false, 0)
+	return cookAtHearth(0, false, 0, false)
 }

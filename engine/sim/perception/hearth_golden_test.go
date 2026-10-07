@@ -385,6 +385,12 @@ func keeperLowHearthShortWoodWithSupplier() (*sim.Snapshot, sim.ActorID, []sim.W
 		Coins:             25,
 		Needs:             map[sim.NeedKey]int{},
 		Inventory:         map[sim.ItemKind]int{},
+		RestockPolicy:     producePolicy("porridge", 20),
+		// A porridge batch on the fire: under a calm sky with nobody cold, a
+		// boosted batch is what makes a low fire worth wood.
+		ProductionItem:             "porridge",
+		ProductionBatchQty:         10,
+		ProductionRemainingSeconds: 2400,
 	}
 	ezekiel := &sim.ActorSnapshot{
 		Kind:             sim.KindNPCStateful,
@@ -409,6 +415,7 @@ func keeperLowHearthShortWoodWithSupplier() (*sim.Snapshot, sim.ActorID, []sim.W
 		StokeWoodPerStoke: 1,
 		Environment:       sim.WorldEnvironment{Weather: sim.WeatherClear},
 		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"hannah": hannah, "ezekiel": ezekiel},
+		Recipes:           boostedPorridgeRecipes(),
 		Structures: map[sim.StructureID]*sim.Structure{
 			"tavern":     plainStructure("tavern", "Tavern"),
 			"blacksmith": plainStructure("blacksmith", "Blacksmith"),

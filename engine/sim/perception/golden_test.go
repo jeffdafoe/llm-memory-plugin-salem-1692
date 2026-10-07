@@ -4220,7 +4220,8 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "keeper_low_hearth_short_wood_with_supplier",
-		summary: "LLM-412: Hannah at her post under a calm sky, fire down to embers, holding NO firewood, while Ezekiel — " +
+		summary: "LLM-412: Hannah at her post under a calm sky, fire down to embers with a porridge batch on (the boosted " +
+			"batch is what lets the stoke cue speak under a calm sky), holding NO firewood, while Ezekiel — " +
 			"who forages firewood (supplier of record) — works the Blacksmith. The golden pins the quiet embers scene and " +
 			"the destination-bearing buy steer ('buy from Blacksmith (destination: blacksmith)'), the firewood twin of the " +
 			"LLM-274 nail steer: name the supplier or the model narrates the errand and never walks.",
@@ -4259,6 +4260,14 @@ var perceptionScenarios = []perceptionScenario{
 			"'## The fire and your cooking' carries only the stake (the next porridge is the poorer for it). Neither " +
 			"repeats the other, and the cooking line never issues an imperative.",
 		build: cookAtEbbingHearth,
+	},
+	{
+		name: "cook_at_ebbing_hearth_nothing_on",
+		summary: "The same embers and firewood in hand under a calm sky, but no batch on and nobody in the room cold. " +
+			"The golden pins that '## Your hearth' and the stoke tool stay SILENT — cold builds only under a storm, so " +
+			"a low fire costs nothing until a boosted batch is on — while the cooking line still states the stake for " +
+			"the next batch. Live case: John Ellis kept the Tavern fire in all day for a bread bonus, ~30 sticks a week.",
+		build: cookAtEbbingHearthNothingOn,
 	},
 	{
 		name: "cook_at_dead_hearth_no_wood",
@@ -7168,10 +7177,42 @@ func TestGoldensHearthCookingLineOnlyForHearthCooks(t *testing.T) {
 		got := renderScenario(sc)
 		want := sc.name == "cook_at_burning_hearth" ||
 			sc.name == "cook_at_ebbing_hearth" ||
-			sc.name == "cook_at_dead_hearth_no_wood"
+			sc.name == "cook_at_ebbing_hearth_nothing_on" ||
+			sc.name == "cook_at_dead_hearth_no_wood" ||
+			sc.name == "keeper_low_hearth_short_wood_with_supplier"
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: hearth-cooking line present=%v, want %v", sc.name, has, want)
 		}
+	}
+}
+
+// TestGoldensStokeCueOnlyWhenTheFireHasWork is the cross-scenario invariant for
+// the calm-sky gate on the stoke cue (which also gates the stoke tool): a scenario
+// that builds it has a storm overhead, someone cold in the room, or a boosted
+// batch on at the hearth. Cold builds only under a storm, so outside those three
+// a low fire costs nothing and asking for wood is pure spend.
+func TestGoldensStokeCueOnlyWhenTheFireHasWork(t *testing.T) {
+	checked := 0
+	for _, sc := range perceptionScenarios {
+		snap, actorID, warrants := sc.build()
+		if Build(snap, actorID, warrants).Hearth == nil {
+			continue
+		}
+		checked++
+		if snap.Environment.Weather == sim.WeatherStorm {
+			continue
+		}
+		subject := snap.Actors[actorID]
+		if subject != nil && (actorFeelsCold(snap, subject) || structureOccupantsCold(snap, actorID, subject.InsideStructureID)) {
+			continue
+		}
+		if hearth, _ := sim.HearthToStoke(snap.VillageObjects, snap.LaborLedger, actorID); hearth != nil && hearthBatchOn(snap, hearth) {
+			continue
+		}
+		t.Errorf("scenario %q builds the stoke cue under a calm sky with nobody cold and no boosted batch on", sc.name)
+	}
+	if checked == 0 {
+		t.Fatal("no scenario builds the stoke cue — the invariant checks nothing")
 	}
 }
 
