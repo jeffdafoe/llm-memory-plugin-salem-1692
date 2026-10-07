@@ -328,13 +328,13 @@ func containsInt(list []int, v int) bool {
 	return false
 }
 
-// pcOutfitNamespace is the UUIDv5 namespace of PC outfit sprite ids.
+// pcOutfitNamespace is the UUIDv5 namespace of outfit sprite ids.
 var pcOutfitNamespace = [16]byte{0x69, 0x1f, 0x0c, 0x02, 0x7a, 0x3e, 0x4b, 0x5d, 0x9c, 0x81, 0x2e, 0x4f, 0x60, 0xa7, 0x13, 0xd5}
 
-// PCOutfitSpriteID is the npc_sprite id of a PC's own outfit: a UUIDv5 of the
-// actor id, so every save of the creator upserts the same row and a player
-// never accumulates sprites.
-func PCOutfitSpriteID(id ActorID) SpriteID {
+// OutfitSpriteID is the npc_sprite id of an actor's own outfit (a player's, or
+// a villager's dressed in the editor): a UUIDv5 of the actor id, so every
+// save upserts the same row and no actor accumulates sprites.
+func OutfitSpriteID(id ActorID) SpriteID {
 	h := sha1.New()
 	h.Write(pcOutfitNamespace[:])
 	h.Write([]byte(id))
@@ -344,10 +344,10 @@ func PCOutfitSpriteID(id ActorID) SpriteID {
 	return SpriteID(fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16]))
 }
 
-// NewPCOutfitSprite builds the rig sprite for a PC's outfit from a validated
+// NewOutfitSprite builds the rig sprite for an actor's outfit from a validated
 // layer list. Sheet is the body layer's sheet (what a one-sheet consumer
-// would show); the name is the character's, cut to npc_sprite.name's 100.
-func NewPCOutfitSprite(id ActorID, characterName string, layers json.RawMessage) (*Sprite, error) {
+// would show); the name is the actor's, cut to npc_sprite.name's 100.
+func NewOutfitSprite(id ActorID, characterName string, layers json.RawMessage) (*Sprite, error) {
 	var parsed []outfitLayer
 	if err := json.Unmarshal(layers, &parsed); err != nil || len(parsed) == 0 {
 		return nil, fmt.Errorf("%w: no layers", ErrInvalidOutfit)
@@ -358,7 +358,7 @@ func NewPCOutfitSprite(id ActorID, characterName string, layers json.RawMessage)
 	}
 	pack := FarmerPackID
 	return &Sprite{
-		ID:          PCOutfitSpriteID(id),
+		ID:          OutfitSpriteID(id),
 		Name:        string(name),
 		Sheet:       parsed[0].Sheet,
 		FrameWidth:  farmerCellSize,

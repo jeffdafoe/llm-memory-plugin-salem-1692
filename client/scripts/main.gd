@@ -691,6 +691,7 @@ func _build_ui() -> void:
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
     editor_panel.npc_sprite_change_requested.connect(_on_npc_sprite_change_requested)
+    editor_panel.npc_dress_requested.connect(_on_npc_dress_requested)
     editor_panel.entry_policy_changed.connect(_on_entry_policy_changed)
     editor_panel.asset_visible_when_inside_toggled.connect(_on_asset_visible_when_inside_toggled)
     editor_panel.world = world
@@ -985,6 +986,17 @@ func _on_npc_sprite_change_requested(npc_id: String, current_sprite_id: String) 
         return
     npc_sprite_picker.show_for_npc(npc_id, current_sprite_id)
     _set_modal_blocker("sprite_picker", true)
+    editor.popup_open = true
+
+## Editor's Dress… (LLM-691): open the character creator on this villager,
+## starting from their current outfit when they already wear one.
+func _on_npc_dress_requested(npc_id: String) -> void:
+    var container: Node2D = world.placed_npcs.get(npc_id, null)
+    if character_creator == null or container == null or character_creator.visible:
+        return
+    var sprite = container.get_meta("sprite_data", {})
+    character_creator.open_for_npc(npc_id, str(container.get_meta("display_name", "")), sprite if sprite is Dictionary else {})
+    _set_modal_blocker("character_creator", true)
     editor.popup_open = true
 
 ## Picker emitted a selection. POST the new sprite_id and let the WS
@@ -1360,6 +1372,7 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "npc_id": npc_id,
         "sprite_id": container.get_meta("sprite_id", ""),
         "sprite_name": container.get_meta("sprite_name", ""),
+        "animal": bool(container.get_meta("animal", false)),
         "display_name": container.get_meta("display_name", ""),
         "attributes": container.get_meta("attributes", []),
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),

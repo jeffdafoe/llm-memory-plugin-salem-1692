@@ -207,9 +207,9 @@ func (r *SpritesRepo) attachAnimations(ctx context.Context, sprites map[sim.Spri
 }
 
 // upsertRigSpriteSQL writes one paper-doll sprite row (LLM-691) — a player's
-// outfit from the character creator. The id is fixed per PC
-// (sim.PCOutfitSpriteID), so a re-save updates the same row. A rig sprite has
-// no npc_sprite_animation rows and no behaviors.
+// outfit from the character creator, or a villager's from the editor. The id
+// is fixed per actor (sim.OutfitSpriteID), so a re-save updates the same row.
+// A rig sprite has no npc_sprite_animation rows and no behaviors.
 const upsertRigSpriteSQL = `
 INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, rig, layers)
 VALUES ($1::uuid, $2, $3, $4, $5, $6, '[]', $7, $8, $9::jsonb)

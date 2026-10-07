@@ -471,6 +471,8 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary) -> void:
 
     container.set_meta("sprite_id", sprite_data.get("id", ""))
     container.set_meta("sprite_name", sprite_data.get("name", ""))
+    # The whole payload, so the editor's Dress… (LLM-691) opens on the current outfit.
+    container.set_meta("sprite_data", sprite_data)
     # Waterfowl (LLM-579): the swap can cross the waterfowl boundary in either
     # direction — refresh the behaviors meta and add/remove the ground decal,
     # then re-land the surface state preserving the in-flight kind (a duck
@@ -891,6 +893,8 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("npc_id", npc_id)
     container.set_meta("sprite_id", sprite_data.get("id", ""))
     container.set_meta("sprite_name", sprite_data.get("name", ""))
+    # The whole payload, so the editor's Dress… (LLM-691) opens on the current outfit.
+    container.set_meta("sprite_data", sprite_data)
     container.set_meta("display_name", npc.get("display_name", ""))
     container.set_meta("facing", facing)
     # Attribute slugs (ZBBS-096) — sourced from the API response, kept

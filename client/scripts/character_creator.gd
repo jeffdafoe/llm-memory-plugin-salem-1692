@@ -50,6 +50,10 @@ var _picks: Dictionary = {}
 ## Colours remembered per category and slot, so cycling styles keeps them.
 var _remembered: Dictionary = {}
 var _pc_exists := false
+## Set while dressing a villager from the editor (open_for_npc); empty while
+## dressing the player.
+var _npc_id := ""
+var _name_label: Label = null
 var _current_name := ""
 var _current_layers: Array = []
 var _cancellable := true
@@ -113,7 +117,8 @@ func _ready() -> void:
     _preview_box.clip_contents = true
     _preview_box.resized.connect(_place_doll)
     left.add_child(_preview_box)
-    left.add_child(_label("Name", 13, COLOR_TEXT_DIM))
+    _name_label = _label("Name", 13, COLOR_TEXT_DIM)
+    left.add_child(_name_label)
     _name_edit = LineEdit.new()
     _name_edit.max_length = 100
     _name_edit.add_theme_font_override("font", _font)
@@ -164,6 +169,7 @@ func _ready() -> void:
 ## creates it and there is no Cancel). current_sprite: the PC's sprite payload
 ## from /pc/me; a farmer-base one is read back into the rows.
 func open(pc_exists: bool, character_name: String, current_sprite: Dictionary) -> void:
+    _npc_id = ""
     _pc_exists = pc_exists
     _current_name = character_name
     _cancellable = pc_exists
@@ -171,6 +177,23 @@ func open(pc_exists: bool, character_name: String, current_sprite: Dictionary) -
     _title.text = "Dress your character" if pc_exists else "Make your character"
     _cancel_button.visible = _cancellable
     _name_edit.text = character_name if character_name != "" else str(Auth.username)
+    _name_label.visible = true
+    _name_edit.visible = true
+    _show()
+
+## Open the creator on a villager from the editor's Dress… button. No name
+## field (the editor renames villagers); Save posts /admin/npc/outfit.
+func open_for_npc(npc_id: String, display_name: String, current_sprite: Dictionary) -> void:
+    _npc_id = npc_id
+    _cancellable = true
+    _current_layers = current_sprite.get("layers", []) if FarmerDoll.is_rig_sprite(current_sprite) else []
+    _title.text = "Dress " + display_name
+    _cancel_button.visible = true
+    _name_label.visible = false
+    _name_edit.visible = false
+    _show()
+
+func _show() -> void:
     _error.text = ""
     visible = true
     if _wardrobe.is_empty():
@@ -423,6 +446,9 @@ func _play_preview() -> void:
 func _on_save() -> void:
     if _saving or _wardrobe.is_empty():
         return
+    if _npc_id != "":
+        _save_npc()
+        return
     var character_name := _name_edit.text.strip_edges()
     if character_name == "":
         _error.text = "Enter a name."
@@ -472,6 +498,37 @@ func _on_outfit_done(result: int, code: int, _headers: PackedStringArray, _body:
     visible = false
     _turn_timer.stop()
     saved.emit(character_name)
+    closed.emit()
+
+## Villager mode: one admin request. The new outfit reaches every client as
+## npc_sprite_changed; the creator just closes.
+func _save_npc() -> void:
+    _saving = true
+    _save_button.disabled = true
+    _error.text = ""
+    var layers := FarmerOutfit.compose(_wardrobe, _picks)
+    if not _post("/api/village/admin/npc/outfit", JSON.stringify({"npc_id": _npc_id, "layers": layers}), _on_npc_outfit_done.bind(layers)):
+        _fail("The village did not answer. Try again.")
+
+func _on_npc_outfit_done(result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray, layers: Array) -> void:
+    _in_flight = false
+    if not Auth.check_response(code):
+        _fail("")
+        return
+    if code == 403:
+        _fail("Only an admin can dress villagers.")
+        return
+    if code == 422:
+        _fail("This one cannot be dressed.")
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
+        _fail("The clothes could not be saved. Try again.")
+        return
+    _saving = false
+    _save_button.disabled = false
+    _current_layers = layers
+    visible = false
+    _turn_timer.stop()
     closed.emit()
 
 func _fail(message: String) -> void:

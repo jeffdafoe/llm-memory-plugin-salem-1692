@@ -459,6 +459,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/npc/create", s.requireAuth(s.handleAdminNPCCreate))
 	mux.HandleFunc("POST /api/village/admin/npc/delete", s.requireAuth(s.handleAdminNPCDelete))
 	mux.HandleFunc("POST /api/village/admin/npc/set-sprite", s.requireAuth(s.handleAdminNPCSetSprite))
+	mux.HandleFunc("POST /api/village/admin/npc/outfit", s.requireAuth(s.handleAdminNPCOutfit))
 	mux.HandleFunc("POST /api/village/admin/npc/inventory", s.requireAuth(s.handleAdminNPCInventory))
 	mux.HandleFunc("POST /api/village/admin/npc/set-inventory", s.requireAuth(s.handleAdminNPCSetInventory))
 	if s.hub != nil {

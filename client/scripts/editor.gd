@@ -829,6 +829,7 @@ func _select_npc(container: Node2D) -> void:
         "npc_id": container.get_meta("npc_id", ""),
         "sprite_id": container.get_meta("sprite_id", ""),
         "sprite_name": container.get_meta("sprite_name", ""),
+        "animal": bool(container.get_meta("animal", false)),
         "display_name": container.get_meta("display_name", ""),
         "attributes": container.get_meta("attributes", []),
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),

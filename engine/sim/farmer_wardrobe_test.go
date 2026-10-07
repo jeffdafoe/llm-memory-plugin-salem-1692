@@ -149,12 +149,12 @@ func twoDigits(n int) string {
 	return string(rune('0'+n/10)) + string(rune('0'+n%10))
 }
 
-func TestPCOutfitSpriteID(t *testing.T) {
-	a := PCOutfitSpriteID("pc-1")
-	if a != PCOutfitSpriteID("pc-1") {
+func TestOutfitSpriteID(t *testing.T) {
+	a := OutfitSpriteID("pc-1")
+	if a != OutfitSpriteID("pc-1") {
 		t.Fatal("not deterministic")
 	}
-	if a == PCOutfitSpriteID("pc-2") {
+	if a == OutfitSpriteID("pc-2") {
 		t.Fatal("two PCs share an outfit id")
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(string(a)) {
@@ -175,7 +175,7 @@ func TestSetPCOutfit_InstallsWithoutWritingPublishedMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sprite, err := NewPCOutfitSprite("pc-1", "Tess", layers)
+	sprite, err := NewOutfitSprite("pc-1", "Tess", layers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestSetPCOutfit_InstallsWithoutWritingPublishedMap(t *testing.T) {
 	if _, err := SetPCOutfit("nobody", sprite).Fn(w); !errors.Is(err, ErrPCNotFound) {
 		t.Fatalf("unknown login: err = %v", err)
 	}
-	other, _ := NewPCOutfitSprite("pc-2", "Other", layers)
+	other, _ := NewOutfitSprite("pc-2", "Other", layers)
 	if _, err := SetPCOutfit("tester", other).Fn(w); !errors.Is(err, ErrPCNotFound) {
 		t.Fatalf("another PC's sprite: err = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestSetPCOutfit_FirstOutfitAppears(t *testing.T) {
 	w.Actors["pc-1"] = &Actor{ID: "pc-1", Kind: KindPC, LoginUsername: "tester", DisplayName: "Tess",
 		Pos: TilePos{X: 12, Y: 7}, InsideStructureID: "inn"}
 	layers, _ := ValidateFarmerOutfit(outfitJSON(layerJSON(testBody, `{"skin":2}`)))
-	sprite, _ := NewPCOutfitSprite("pc-1", "Tess", layers)
+	sprite, _ := NewOutfitSprite("pc-1", "Tess", layers)
 	var events []Event
 	w.Subscribe(SubscriberFunc(func(_ *World, e Event) { events = append(events, e) }))
 	if _, err := SetPCOutfit("tester", sprite).Fn(w); err != nil {
