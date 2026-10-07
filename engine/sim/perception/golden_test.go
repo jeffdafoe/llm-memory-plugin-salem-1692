@@ -7202,13 +7202,8 @@ func TestGoldensStokeCueOnlyWhenTheFireHasWork(t *testing.T) {
 		if snap.Environment.Weather == sim.WeatherStorm {
 			continue
 		}
-		someoneCold := false
-		for _, a := range snap.Actors {
-			if a != nil && a.Needs[sim.ColdNeedKey] > 0 {
-				someoneCold = true
-			}
-		}
-		if someoneCold {
+		subject := snap.Actors[actorID]
+		if subject != nil && (actorFeelsCold(snap, subject) || structureOccupantsCold(snap, actorID, subject.InsideStructureID)) {
 			continue
 		}
 		if hearth, _ := sim.HearthToStoke(snap.VillageObjects, snap.LaborLedger, actorID); hearth != nil && hearthBatchOn(snap, hearth) {

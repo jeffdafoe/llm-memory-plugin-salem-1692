@@ -77,8 +77,8 @@ func buildHearthCooking(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Heart
 	}
 	now := snap.PublishedAt
 	inPot := ""
-	if recipe := snap.Recipes[actorSnap.ProductionItem]; actorSnap.ProductionItem != "" && recipe != nil && recipeHasHearthBoost(recipe) {
-		inPot = itemDisplayLabel(snap, actorSnap.ProductionItem)
+	if item := boostedBatchOn(snap, actorSnap, work); item != "" {
+		inPot = itemDisplayLabel(snap, item)
 	}
 	return &HearthCookingView{
 		Lit:          sim.HearthLit(hearth, now),

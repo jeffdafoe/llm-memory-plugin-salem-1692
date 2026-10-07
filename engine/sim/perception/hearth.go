@@ -296,18 +296,30 @@ func actorFeelsCold(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
 	return need.Tier(a.Needs[sim.ColdNeedKey], snap.NeedThresholds.Get(sim.ColdNeedKey)) > sim.NeedSilent
 }
 
-// hearthBatchOn reports whether the hearth's owner has a batch on at this
-// structure that the fire boosts. The boost is read when the batch lands
-// (sim.recipeBoostStateMet), so a fire stoked after the batch starts still
-// counts. Keyed on the owner, so a hire tending the employer's fire sees the
-// same answer the owner does.
+// hearthBatchOn reports whether the hearth's owner has a batch cooking over it
+// that the fire boosts. Keyed on the owner, so a hire tending the employer's
+// fire sees the same answer the owner does.
 func hearthBatchOn(snap *sim.Snapshot, hearth *sim.VillageObject) bool {
-	owner := snap.Actors[hearth.OwnerActorID]
-	if owner == nil || owner.ProductionItem == "" || string(owner.WorkStructureID) != string(hearth.ID) {
-		return false
+	return boostedBatchOn(snap, snap.Actors[hearth.OwnerActorID], sim.StructureID(hearth.ID)) != ""
+}
+
+// boostedBatchOn returns the item of a fire-boosted batch the actor is cooking
+// at structureID, or "" when none. Cooking means in flight AND the actor at the
+// post: a batch only advances there (the LLM-319 pause model), so a paused batch
+// gives the fire no work. The boost is read when the batch lands
+// (sim.recipeBoostStateMet), so a fire stoked after the batch starts still
+// counts. Shared by the stoke gate and the cooking line's "in your pot" wording
+// so the two cannot drift.
+func boostedBatchOn(snap *sim.Snapshot, a *sim.ActorSnapshot, structureID sim.StructureID) sim.ItemKind {
+	if a == nil || a.ProductionItem == "" || a.ProductionRemainingSeconds <= 0 || structureID == "" ||
+		a.WorkStructureID != structureID || a.InsideStructureID != structureID {
+		return ""
 	}
-	recipe := snap.Recipes[owner.ProductionItem]
-	return recipe != nil && recipeHasHearthBoost(recipe)
+	recipe := snap.Recipes[a.ProductionItem]
+	if recipe == nil || !recipeHasHearthBoost(recipe) {
+		return ""
+	}
+	return a.ProductionItem
 }
 
 // renderHearth writes the "## Your hearth" section (or the hired framing).
