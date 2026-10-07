@@ -64,6 +64,8 @@ type FarmerWardrobeLayer struct {
 // FarmerWardrobeItem is one choice in a category. Slots are the ramp slots its
 // sheets are drawn in, one colour each (every layer of the item takes the same
 // colours). HidesHair: the hat covers the hair, so the hair layer is left out.
+// Good is the item kind a player must hold to wear it (LLM-710); empty for
+// the free starter pieces.
 type FarmerWardrobeItem struct {
 	ID        string                `json:"id"`
 	Category  string                `json:"category"`
@@ -71,15 +73,36 @@ type FarmerWardrobeItem struct {
 	Layers    []FarmerWardrobeLayer `json:"layers"`
 	Slots     []string              `json:"slots"`
 	HidesHair bool                  `json:"hides_hair,omitempty"`
+	Good      ItemKind              `json:"good,omitempty"`
+}
+
+// FarmerDye is a dye good and the colours it unlocks, per ramp slot (LLM-710).
+// A colour no dye names is undyed and free.
+type FarmerDye struct {
+	Good    ItemKind         `json:"good"`
+	Colours map[string][]int `json:"colours"`
+}
+
+// FarmerWardrobeGood is a wardrobe good's catalog label and list price, for
+// the creator's "sold at the Store" note.
+type FarmerWardrobeGood struct {
+	Label string `json:"label"`
+	Price int    `json:"price"`
 }
 
 // FarmerWardrobe is the pc/wardrobe payload. Colours maps a ramp slot to the
-// indexes (into the client's FarmerPalettes family for that slot) a player
-// may pick.
+// indexes (into the client's FarmerPalettes family for that slot) the creator
+// shows; Dyes says which of them need a dye. Goods prices every wardrobe good
+// and dye; Held lists the ones the caller's PC holds; Outfit is the PC's own
+// chosen layer list, which can name pieces it no longer holds.
 type FarmerWardrobe struct {
-	Categories []FarmerWardrobeCategory `json:"categories"`
-	Items      []FarmerWardrobeItem     `json:"items"`
-	Colours    map[string][]int         `json:"colours"`
+	Categories []FarmerWardrobeCategory        `json:"categories"`
+	Items      []FarmerWardrobeItem            `json:"items"`
+	Colours    map[string][]int                `json:"colours"`
+	Dyes       []FarmerDye                     `json:"dyes"`
+	Goods      map[ItemKind]FarmerWardrobeGood `json:"goods"`
+	Held       []ItemKind                      `json:"held"`
+	Outfit     json.RawMessage                 `json:"outfit,omitempty"`
 }
 
 var farmerWardrobeCategories = []FarmerWardrobeCategory{
@@ -133,6 +156,43 @@ func hidesHair(item FarmerWardrobeItem) FarmerWardrobeItem {
 	return item
 }
 
+// sold marks an item a player must hold the good kind to wear.
+func sold(kind ItemKind, item FarmerWardrobeItem) FarmerWardrobeItem {
+	item.Good = kind
+	return item
+}
+
+// farmerDyes split the cloth colours (c3, c4) into dye families (LLM-710).
+// Every colour in farmerColours that no dye names is undyed — greys, browns,
+// tans, oatmeal — and free. Hair and skin colours are always free.
+var farmerDyes = []FarmerDye{
+	{Good: "indigo", Colours: map[string][]int{"c3": {2, 4, 5, 6, 7, 8, 9, 14}, "c4": {4, 5, 6, 7, 10, 11}}},
+	{Good: "greenweed", Colours: map[string][]int{"c3": {11, 19, 21, 22, 23, 24}, "c4": {13, 14, 15, 16, 17, 19, 21, 22, 23, 24}}},
+	{Good: "weld", Colours: map[string][]int{"c3": {25, 26, 27}, "c4": {28, 29, 30, 31, 32, 33, 34}}},
+	{Good: "madder", Colours: map[string][]int{"c3": {29, 34, 35}, "c4": {35, 40}}},
+	{Good: "logwood", Colours: map[string][]int{"c3": {43, 47}, "c4": {51, 52, 57}}},
+}
+
+// farmerUndyed is the colour a slot falls back to when its dye is no longer
+// held: a tan and a brown, both undyed.
+var farmerUndyed = map[string]int{"c3": 28, "c4": 27}
+
+// dyeFor maps slot → colour index → the dye good that colour needs.
+var dyeFor = func() map[string]map[int]ItemKind {
+	out := map[string]map[int]ItemKind{}
+	for _, d := range farmerDyes {
+		for slot, indexes := range d.Colours {
+			if out[slot] == nil {
+				out[slot] = map[int]ItemKind{}
+			}
+			for _, i := range indexes {
+				out[slot][i] = d.Good
+			}
+		}
+	}
+	return out
+}()
+
 var (
 	slotsSkin   = []string{"skin"}
 	slotsHair   = []string{"hair"}
@@ -161,46 +221,176 @@ var farmerWardrobeItems = []FarmerWardrobeItem{
 	wardrobeItem("hair", "twintail", "Two tails", slotsHair, "13hair/fbas_13hair_twintail_00.png"),
 	wardrobeItem("hair", "twists", "Twists", slotsHair, "13hair/fbas_13hair_twists_00.png"),
 
-	hidesHair(wardrobeItem("head", "headscarf", "Headscarf", slotsC4, "14head/fbas_14head_headscarf_00b_e.png")),
-	wardrobeItem("head", "strawhat", "Straw hat", slotsC4C3, "14head/fbas_14head_strawhat_00d.png"),
-	wardrobeItem("head", "floppyhat", "Felt hat", slotsC4C3, "14head/fbas_14head_floppyhat_00d.png"),
-	wardrobeItem("head", "boaterhat", "Brimmed hat", slotsC4C3, "14head/fbas_14head_boaterhat_00d.png"),
+	sold("headscarf", hidesHair(wardrobeItem("head", "headscarf", "Headscarf", slotsC4, "14head/fbas_14head_headscarf_00b_e.png"))),
+	sold("straw_hat", wardrobeItem("head", "strawhat", "Straw hat", slotsC4C3, "14head/fbas_14head_strawhat_00d.png")),
+	sold("felt_hat", wardrobeItem("head", "floppyhat", "Felt hat", slotsC4C3, "14head/fbas_14head_floppyhat_00d.png")),
+	sold("brimmed_hat", wardrobeItem("head", "boaterhat", "Brimmed hat", slotsC4C3, "14head/fbas_14head_boaterhat_00d.png")),
 
+	// The linen shirt is free to wear; the village's linen_shirt good is the
+	// working garment villagers wear out (LLM-710).
 	wardrobeItem("shirt", "longshirt", "Linen shirt", slotsC3, "05shrt/fbas_05shrt_longshirt_00a.png|05shrt/fbas_05shrt_longshirtboobs_00a.png"),
 
-	wardrobeItem("over", "vest", "Vest", slotsC3, "10outr/fbas_10outr_vest_00a.png"),
-	wardrobeItem("over", "suspenders", "Suspenders", slotsC3, "10outr/fbas_10outr_suspenders_00a.png"),
+	sold("vest", wardrobeItem("over", "vest", "Vest", slotsC3, "10outr/fbas_10outr_vest_00a.png")),
+	sold("suspenders", wardrobeItem("over", "suspenders", "Suspenders", slotsC3, "10outr/fbas_10outr_suspenders_00a.png")),
 
-	wardrobeItem("face", "glasses", "Spectacles", slotsC3, "12face/fbas_12face_glasses_00a.png"),
+	sold("spectacles", wardrobeItem("face", "glasses", "Spectacles", slotsC3, "12face/fbas_12face_glasses_00a.png")),
 
-	wardrobeItem("neck", "cloakplain", "Cloak", slotsC4C3, "<00undr/fbas_00undr_cloakplain_00d.png", "11neck/fbas_11neck_cloakplain_00d.png"),
-	wardrobeItem("neck", "cloakwithmantleplain", "Cloak and mantle", slotsC4, "<00undr/fbas_00undr_cloakwithmantleplain_00b.png", "11neck/fbas_11neck_cloakwithmantleplain_00b.png"),
-	wardrobeItem("neck", "mantleplain", "Mantle", slotsC4, "11neck/fbas_11neck_mantleplain_00b.png"),
-	wardrobeItem("neck", "scarf", "Scarf", slotsC4, "11neck/fbas_11neck_scarf_00b.png"),
+	sold("cloak", wardrobeItem("neck", "cloakplain", "Cloak", slotsC4C3, "<00undr/fbas_00undr_cloakplain_00d.png", "11neck/fbas_11neck_cloakplain_00d.png")),
+	sold("mantled_cloak", wardrobeItem("neck", "cloakwithmantleplain", "Cloak and mantle", slotsC4, "<00undr/fbas_00undr_cloakwithmantleplain_00b.png", "11neck/fbas_11neck_cloakwithmantleplain_00b.png")),
+	sold("mantle", wardrobeItem("neck", "mantleplain", "Mantle", slotsC4, "11neck/fbas_11neck_mantleplain_00b.png")),
+	sold("scarf", wardrobeItem("neck", "scarf", "Scarf", slotsC4, "11neck/fbas_11neck_scarf_00b.png")),
 
 	wardrobeItem("lower", "longpants", "Breeches", slotsC3, "04lwr1/fbas_04lwr1_longpants_00a.png"),
 	wardrobeItem("lower", "longskirt", "Long skirt", slotsC3, "08lwr3/fbas_08lwr3_longskirt_00a.png"),
-	wardrobeItem("lower", "longdress", "Long dress", slotsC3, "08lwr3/fbas_08lwr3_longdress_00a.png|08lwr3/fbas_08lwr3_longdressboobs_00a.png"),
-	wardrobeItem("lower", "frillyskirt", "Frilly skirt", slotsC3, "08lwr3/fbas_08lwr3_frillyskirt_00a.png"),
-	wardrobeItem("lower", "frillydress", "Frilly dress", slotsC3, "08lwr3/fbas_08lwr3_frillydress_00a.png|08lwr3/fbas_08lwr3_frillydressboobs_00a.png"),
+	sold("long_dress", wardrobeItem("lower", "longdress", "Long dress", slotsC3, "08lwr3/fbas_08lwr3_longdress_00a.png|08lwr3/fbas_08lwr3_longdressboobs_00a.png")),
+	sold("frilly_skirt", wardrobeItem("lower", "frillyskirt", "Frilly skirt", slotsC3, "08lwr3/fbas_08lwr3_frillyskirt_00a.png")),
+	sold("frilly_dress", wardrobeItem("lower", "frillydress", "Frilly dress", slotsC3, "08lwr3/fbas_08lwr3_frillydress_00a.png|08lwr3/fbas_08lwr3_frillydressboobs_00a.png")),
 
-	wardrobeItem("legs", "sockshigh", "Knee socks", slotsC3, "02sock/fbas_02sock_sockshigh_00a.png"),
-	wardrobeItem("legs", "stockings", "Stockings", slotsC3, "02sock/fbas_02sock_stockings_00a.png"),
+	sold("knee_socks", wardrobeItem("legs", "sockshigh", "Knee socks", slotsC3, "02sock/fbas_02sock_sockshigh_00a.png")),
+	sold("stockings", wardrobeItem("legs", "stockings", "Stockings", slotsC3, "02sock/fbas_02sock_stockings_00a.png")),
 
-	wardrobeItem("feet", "boots", "Boots", slotsC3, "03fot1/fbas_03fot1_boots_00a.png"),
+	sold("boots", wardrobeItem("feet", "boots", "Boots", slotsC3, "03fot1/fbas_03fot1_boots_00a.png")),
 	wardrobeItem("feet", "shoes", "Shoes", slotsC3, "03fot1/fbas_03fot1_shoes_00a.png"),
-	wardrobeItem("feet", "cuffedboots", "Cuffed boots", slotsC3, "07fot2/fbas_07fot2_cuffedboots_00a.png"),
+	sold("cuffed_boots", wardrobeItem("feet", "cuffedboots", "Cuffed boots", slotsC3, "07fot2/fbas_07fot2_cuffedboots_00a.png")),
 
-	wardrobeItem("hands", "gloves", "Gloves", slotsC3, "09hand/fbas_09hand_gloves_00a.png"),
+	sold("gloves", wardrobeItem("hands", "gloves", "Gloves", slotsC3, "09hand/fbas_09hand_gloves_00a.png")),
 }
 
-// PlayerWardrobe returns the wardrobe the creator offers.
-func PlayerWardrobe() FarmerWardrobe {
+// WardrobeGoods is every good the wardrobe sells: the sold pieces, then the
+// dyes, in wardrobe order.
+func WardrobeGoods() []ItemKind {
+	var out []ItemKind
+	for _, item := range farmerWardrobeItems {
+		if item.Good != "" {
+			out = append(out, item.Good)
+		}
+	}
+	for _, d := range farmerDyes {
+		out = append(out, d.Good)
+	}
+	return out
+}
+
+// PlayerWardrobe returns the wardrobe the creator offers, priced from the
+// world's catalog. Held and Outfit are the caller's; see PCWardrobe.
+func PlayerWardrobe(w *World) FarmerWardrobe {
+	goods := make(map[ItemKind]FarmerWardrobeGood)
+	for _, kind := range WardrobeGoods() {
+		good := FarmerWardrobeGood{Label: string(kind)}
+		if def := w.ItemKinds[kind]; def != nil && def.DisplayLabel != "" {
+			good.Label = def.DisplayLabel
+		}
+		if r := w.Recipes[kind]; r != nil {
+			good.Price = r.RetailPrice
+		}
+		goods[kind] = good
+	}
 	return FarmerWardrobe{
 		Categories: farmerWardrobeCategories,
 		Items:      farmerWardrobeItems,
 		Colours:    farmerColours,
+		Dyes:       farmerDyes,
+		Goods:      goods,
+		Held:       []ItemKind{},
 	}
+}
+
+// PCWardrobe is the pc/wardrobe command: the wardrobe, the wardrobe goods the
+// login's PC holds, and the PC's chosen outfit. A login with no PC yet (the
+// creator's first run) gets an empty Held and no Outfit.
+func PCWardrobe(loginUsername string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			wardrobe := PlayerWardrobe(w)
+			id, ok := findPCByLoginUsername(w, loginUsername)
+			if !ok {
+				return wardrobe, nil
+			}
+			a := w.Actors[id]
+			for _, kind := range WardrobeGoods() {
+				if a.Inventory[kind] > 0 {
+					wardrobe.Held = append(wardrobe.Held, kind)
+				}
+			}
+			wardrobe.Outfit = w.chosenOutfit(id)
+			return wardrobe, nil
+		},
+	}
+}
+
+// OutfitGoods lists the goods a validated layer list needs held: each sold
+// piece, and the dye of each dyed colour. Each good is named once.
+func OutfitGoods(layers json.RawMessage) []ItemKind {
+	var parsed []outfitLayer
+	if err := json.Unmarshal(layers, &parsed); err != nil {
+		return nil
+	}
+	var out []ItemKind
+	seen := map[ItemKind]bool{}
+	add := func(kind ItemKind) {
+		if kind != "" && !seen[kind] {
+			seen[kind] = true
+			out = append(out, kind)
+		}
+	}
+	for _, l := range parsed {
+		if ws, ok := wardrobeSheets[l.Sheet]; ok {
+			add(ws.item.Good)
+		}
+		for slot, index := range l.Ramps {
+			add(dyeFor[slot][index])
+		}
+	}
+	return out
+}
+
+// VisibleOutfit is what an outfit shows while its wearer holds only what held
+// reports (nil holds everything): a piece whose good is not held is left off,
+// a colour whose dye is not held falls back to farmerUndyed, and a hat that
+// covers the head leaves the hair off. Layers the wardrobe no longer knows are
+// kept as they are. The result is re-encoded; on a parse failure the input is
+// returned unchanged.
+func VisibleOutfit(layers json.RawMessage, held func(ItemKind) bool) json.RawMessage {
+	var parsed []outfitLayer
+	if err := json.Unmarshal(layers, &parsed); err != nil {
+		return layers
+	}
+	holds := func(kind ItemKind) bool { return kind == "" || held == nil || held(kind) }
+	kept := make([]outfitLayer, 0, len(parsed))
+	hairHidden := false
+	for _, l := range parsed {
+		ws, known := wardrobeSheets[l.Sheet]
+		if known && !holds(ws.item.Good) {
+			continue
+		}
+		ramps := make(map[string]int, len(l.Ramps))
+		for slot, index := range l.Ramps {
+			if !holds(dyeFor[slot][index]) {
+				index = farmerUndyed[slot]
+			}
+			ramps[slot] = index
+		}
+		l.Ramps = ramps
+		if known && ws.item.HidesHair {
+			hairHidden = true
+		}
+		kept = append(kept, l)
+	}
+	if hairHidden {
+		shown := kept[:0]
+		for _, l := range kept {
+			if ws, ok := wardrobeSheets[l.Sheet]; ok && ws.item.Category == "hair" {
+				continue
+			}
+			shown = append(shown, l)
+		}
+		kept = shown
+	}
+	out, err := json.Marshal(kept)
+	if err != nil {
+		return layers
+	}
+	return out
 }
 
 // wardrobeSheet is one allowed sheet, resolved back to its item and layer.

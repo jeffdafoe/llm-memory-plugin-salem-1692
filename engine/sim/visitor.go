@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1852,7 +1853,25 @@ func sellErrandDelivered(delivered, shipmentQty int) bool {
 // the seeded item_kind rows so the distributor values them for the two-way trade; the
 // warms garments (coat/cloak) are what close the cold-relief loop. Which kinds exist is
 // itself operator-tunable via item/set; the per-visit quantity is visitor_factor_pack_units.
-var factorWareKinds = []ItemKind{"coat", "cloak", "homespun", "woolens", "linens", "silver_locket", "whalebone_charm"}
+var factorWareKinds = []ItemKind{"mantled_cloak", "cloak", "stockings", "vest", "linen_shirt", "silver_locket", "whalebone_charm"}
+
+// factorWardrobeKindsPerVisit is how many of the remaining wardrobe goods —
+// the hats, dresses, boots, dyes and the rest no cue steers anyone to buy —
+// a factor's bale carries, drawn at random each visit (LLM-710). Twenty kinds
+// at the full per-kind quantity would swamp the distributor's purse.
+const factorWardrobeKindsPerVisit = 4
+
+// factorWardrobeKinds are the wardrobe goods (WardrobeGoods) not already in
+// factorWareKinds.
+var factorWardrobeKinds = func() []ItemKind {
+	var out []ItemKind
+	for _, kind := range WardrobeGoods() {
+		if !slices.Contains(factorWareKinds, kind) {
+			out = append(out, kind)
+		}
+	}
+	return out
+}()
 
 // factorIronKind is the imported smith's input the factor carries in SHIPMENT
 // quantity (LLM-442) — seeded via ironUnits, not the per-kind unitsPerKind, so
@@ -1886,8 +1905,10 @@ var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadK
 // seedFactorPack returns the pack (clothing/charm goods to sell, plus iron,
 // salt and thread shipments — LLM-442/LLM-444/LLM-625) and purse (a heavier
 // coin float than an ordinary traveler) a wholesale factor spawns carrying
-// (LLM-410). unitsPerKind of each ware kind, ironUnits bars of iron, saltUnits
-// sacks of salt, and threadUnits spools of thread, each plus a small jitter so
+// (LLM-410). unitsPerKind of each ware kind, 1–2 each of
+// factorWardrobeKindsPerVisit wardrobe goods drawn at random (LLM-710),
+// ironUnits bars of iron, saltUnits sacks of salt, and threadUnits spools of
+// thread, each plus a small jitter so
 // back-to-back factors don't carry identical bales; purse a uniform pull from
 // [purseMin, purseMax]. r is non-nil; the caller clamps unitsPerKind >= 1,
 // ironUnits >= 1, saltUnits >= 1, threadUnits >= 1, and purseMin <= purseMax.
@@ -1895,6 +1916,9 @@ func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnit
 	pack := map[ItemKind]int{}
 	for _, kind := range factorWareKinds {
 		pack[kind] = unitsPerKind + r.Intn(2) // unitsPerKind..unitsPerKind+1
+	}
+	for _, i := range r.Perm(len(factorWardrobeKinds))[:min(factorWardrobeKindsPerVisit, len(factorWardrobeKinds))] {
+		pack[factorWardrobeKinds[i]] = 1 + r.Intn(2)
 	}
 	pack[factorIronKind] = ironUnits + r.Intn(3)     // ironUnits..ironUnits+2
 	pack[factorSaltKind] = saltUnits + r.Intn(3)     // saltUnits..saltUnits+2

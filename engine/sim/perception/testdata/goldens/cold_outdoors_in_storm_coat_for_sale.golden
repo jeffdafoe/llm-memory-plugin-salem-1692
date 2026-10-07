@@ -6,7 +6,7 @@
 
 ## You
 You're cold through to your clothes — the rain is soaking you where you stand. Any roof will stop the worst of it; get indoors. Your home, Walker House (destination: walker_house), is shelter for free.
-A warm coat or cloak would keep the worst of it off and let you keep working out here. Use move_to to reach a seller, then pay_with_item once you arrive:
+A warm cloak would keep the worst of it off and let you keep working out here. Use move_to to reach a seller, then pay_with_item once you arrive:
   - buy from General Store (destination: general_store)
 Coins in your purse: 20.
 

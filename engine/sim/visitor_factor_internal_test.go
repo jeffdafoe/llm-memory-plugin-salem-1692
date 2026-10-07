@@ -103,6 +103,7 @@ func TestInAfternoonSpawnWindow(t *testing.T) {
 }
 
 // TestSeedFactorPack — a factor carries every factorWareKind (unitsPerKind..+1 of each),
+// factorWardrobeKindsPerVisit wardrobe goods (1..2 of each — LLM-710),
 // an iron shipment (ironUnits..+2 — LLM-442), a salt shipment (saltUnits..+2 — LLM-444),
 // a thread shipment (threadUnits..+2 — LLM-625), and a purse inside the configured
 // [min,max]; a min==max range gives a fixed purse.
@@ -111,12 +112,22 @@ func TestSeedFactorPack(t *testing.T) {
 	for _, k := range factorWareKinds {
 		valid[k] = true
 	}
+	wardrobe := map[ItemKind]bool{}
+	for _, k := range factorWardrobeKinds {
+		wardrobe[k] = true
+	}
 	for seed := int64(0); seed < 50; seed++ {
 		pack, purse := seedFactorPack(rand.New(rand.NewSource(seed)), 2, 10, 12, 12, 120, 200)
-		if len(pack) != len(factorWareKinds)+3 {
-			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind plus iron, salt and thread)", seed, len(pack), len(factorWareKinds)+3)
+		if want := len(factorWareKinds) + 3 + factorWardrobeKindsPerVisit; len(pack) != want {
+			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind, iron, salt and thread, and %d wardrobe goods)", seed, len(pack), want, factorWardrobeKindsPerVisit)
 		}
 		for kind, qty := range pack {
+			if wardrobe[kind] {
+				if qty < 1 || qty > 2 {
+					t.Errorf("seed %d: wardrobe good %q qty %d out of [1,2]", seed, kind, qty)
+				}
+				continue
+			}
 			if !valid[kind] {
 				t.Errorf("seed %d: pack carries %q, not a factorWareKind", seed, kind)
 			}

@@ -13,7 +13,8 @@ import (
 
 // pc_outfit.go — the character creator's routes (LLM-691).
 //
-//	POST /api/village/pc/wardrobe        — what may be worn (sim.PlayerWardrobe).
+//	POST /api/village/pc/wardrobe        — what may be worn, and what the caller
+//	                                        holds of it (sim.PCWardrobe).
 //	POST /api/village/pc/outfit          — dress the caller's PC in a farmer_base
 //	                                        layer list composed from that wardrobe.
 //	POST /api/village/admin/npc/outfit    — dress a villager the same way, from
@@ -44,11 +45,17 @@ type pcOutfitResponse struct {
 }
 
 func (s *Server) handlePCWardrobe(w http.ResponseWriter, r *http.Request) {
-	if userFromContext(r.Context()) == nil {
+	user := userFromContext(r.Context())
+	if user == nil {
 		writeAuthError(w, "invalid")
 		return
 	}
-	writeJSON(w, sim.PlayerWardrobe())
+	res, err := s.world.SendContext(r.Context(), sim.PCWardrobe(user.Username))
+	if err != nil {
+		writeOutfitError(w, err)
+		return
+	}
+	writeJSON(w, res)
 }
 
 func (s *Server) handlePCOutfit(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +86,7 @@ func (s *Server) handlePCOutfit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.world.SendContext(r.Context(), sim.PCForLogin(user.Username))
+	res, err := s.world.SendContext(r.Context(), sim.PCForOutfit(user.Username, layers))
 	if err != nil {
 		writeOutfitError(w, err)
 		return
@@ -115,6 +122,13 @@ func (s *Server) saveOutfit(w http.ResponseWriter, r *http.Request, sprite *sim.
 	if snap := s.world.Published(); snap != nil {
 		previous = snap.Sprites[sprite.ID]
 	}
+	// A player's live sprite can show less than the row holds (LLM-710); the
+	// row goes back to the chosen outfit, not the shown one.
+	if previous != nil && previous.Chosen != nil {
+		restored := *previous
+		restored.Layers = previous.Chosen
+		previous = &restored
+	}
 	if err := s.spriteWriter.UpsertRigSprite(r.Context(), sprite); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false
@@ -145,6 +159,11 @@ func writeOutfitError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, sim.ErrPCNotFound) {
 		writeError(w, http.StatusNotFound, "pc not found — create a character first")
+		return
+	}
+	var notHeld *sim.OutfitNotHeldError
+	if errors.As(err, &notHeld) {
+		writeError(w, http.StatusConflict, notHeld.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "failed to save outfit")
@@ -179,6 +198,9 @@ func (s *Server) handleAdminNPCOutfit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// A villager holds no wardrobe goods; the row stores what it shows,
+	// with the hair left under a hat that covers it.
+	layers = sim.VisibleOutfit(layers, nil)
 	id := sim.ActorID(req.NPCID)
 	res, err := s.world.SendContext(r.Context(), adminCommand(username, sim.DressableNPC(id).Fn))
 	if err != nil {

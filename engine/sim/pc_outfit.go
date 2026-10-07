@@ -1,7 +1,10 @@
 package sim
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -36,9 +39,52 @@ type OutfitTarget struct {
 	DisplayName string
 }
 
-// SetPCOutfit installs sprite in the catalog and points the PC at it. The PC
-// is resolved again by login, so a PC removed since PCForLogin is
-// ErrPCNotFound (the row already written is then unused, which is harmless).
+// OutfitNotHeldError refuses an outfit naming wardrobe goods (pieces or dyes)
+// the PC does not hold (LLM-710). Missing holds the goods' catalog labels.
+type OutfitNotHeldError struct {
+	Missing []string
+}
+
+func (e *OutfitNotHeldError) Error() string {
+	return "you do not have: " + strings.Join(e.Missing, ", ")
+}
+
+// PCForOutfit is PCForLogin for a save: it also refuses, with
+// *OutfitNotHeldError, an outfit that needs a good the PC does not hold. The
+// handler checks this before it writes the outfit row.
+func PCForOutfit(loginUsername string, layers json.RawMessage) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			id, ok := findPCByLoginUsername(w, loginUsername)
+			if !ok {
+				return nil, ErrPCNotFound
+			}
+			a := w.Actors[id]
+			var missing []string
+			for _, kind := range OutfitGoods(layers) {
+				if a.Inventory[kind] > 0 {
+					continue
+				}
+				label := string(kind)
+				if def := w.ItemKinds[kind]; def != nil && def.DisplayLabel != "" {
+					label = def.DisplayLabel
+				}
+				missing = append(missing, label)
+			}
+			if len(missing) > 0 {
+				return nil, &OutfitNotHeldError{Missing: missing}
+			}
+			return OutfitTarget{ID: id, DisplayName: a.DisplayName}, nil
+		},
+	}
+}
+
+// SetPCOutfit installs sprite in the catalog and points the PC at it. sprite
+// carries the chosen outfit; the catalog gets what the PC can show of it
+// (pcShownSprite). The PC is resolved again by login, so a PC removed since
+// PCForOutfit is ErrPCNotFound (the row already written is then unused, which
+// is harmless). A good sold between the check and this install is not refused
+// here: the next ReconcilePCOutfits leaves it off.
 //
 // A PC with no sprite yet is drawn by no client — it was just created by the
 // creator's pc/create — so its first outfit emits NPCCreated, which carries
@@ -54,8 +100,9 @@ func SetPCOutfit(loginUsername string, sprite *Sprite) Command {
 			}
 			a := w.Actors[id]
 			appears := a.SpriteID == ""
-			w.InstallSprite(sprite)
-			a.SpriteID = sprite.ID
+			shown := pcShownSprite(a, sprite, sprite.Layers)
+			w.InstallSprite(shown)
+			a.SpriteID = shown.ID
 			now := time.Now().UTC()
 			if appears {
 				w.emit(&NPCCreated{
@@ -65,14 +112,74 @@ func SetPCOutfit(loginUsername string, sprite *Sprite) Command {
 					X:                 a.Pos.X,
 					Y:                 a.Pos.Y,
 					Facing:            "south",
-					Sprite:            sprite,
+					Sprite:            shown,
 					InsideStructureID: a.InsideStructureID,
 					At:                now,
 				})
 			} else {
-				w.emit(&NPCSpriteChanged{ActorID: id, Sprite: sprite, At: now})
+				w.emit(&NPCSpriteChanged{ActorID: id, Sprite: shown, At: now})
 			}
-			return sprite.ID, nil
+			return shown.ID, nil
+		},
+	}
+}
+
+// pcShownSprite is a copy of sprite showing what a holds of chosen
+// (VisibleOutfit), with chosen kept on it.
+func pcShownSprite(a *Actor, sprite *Sprite, chosen json.RawMessage) *Sprite {
+	shown := *sprite
+	shown.Layers = VisibleOutfit(chosen, func(kind ItemKind) bool { return a.Inventory[kind] > 0 })
+	shown.Chosen = chosen
+	return &shown
+}
+
+// chosenOutfit is the layer list a PC last saved: its outfit sprite's Chosen,
+// else its Layers (a row as loaded at boot). Nil for a PC not wearing its own
+// outfit.
+func (w *World) chosenOutfit(id ActorID) json.RawMessage {
+	a := w.Actors[id]
+	if a == nil || a.SpriteID != OutfitSpriteID(id) {
+		return nil
+	}
+	sp := w.Sprites[a.SpriteID]
+	if sp == nil {
+		return nil
+	}
+	if sp.Chosen != nil {
+		return sp.Chosen
+	}
+	return sp.Layers
+}
+
+// ReconcilePCOutfits re-dresses every PC wearing its own outfit in what it
+// still holds (LLM-710): a piece sold, given away or worn out comes off its
+// sprite, a dye's colours fall back to undyed, and both come back if the PC
+// holds them again. Emits NPCSpriteChanged only for a PC whose shown layers
+// changed. Run by the garment-wear ticker at start and every minute; the
+// outfit row is never rewritten, so it keeps the chosen outfit.
+func ReconcilePCOutfits() Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			changed := 0
+			now := time.Now().UTC()
+			for id, a := range w.Actors {
+				if a.Kind != KindPC {
+					continue
+				}
+				chosen := w.chosenOutfit(id)
+				if chosen == nil {
+					continue
+				}
+				current := w.Sprites[a.SpriteID]
+				shown := pcShownSprite(a, current, chosen)
+				if bytes.Equal(shown.Layers, current.Layers) {
+					continue
+				}
+				w.InstallSprite(shown)
+				w.emit(&NPCSpriteChanged{ActorID: id, Sprite: shown, At: now})
+				changed++
+			}
+			return changed, nil
 		},
 	}
 }
