@@ -1,7 +1,7 @@
 extends SceneTree
 
 ## Headless harness for the town's repair work on the client (LLM-690):
-## repair_games.gd (the three mini-games' rules), repair_stage.gd (pixel
+## repair_games.gd (the four mini-games' rules), repair_stage.gd (pixel
 ## scale, object layout, play input → round signals) and repair_panel.gd (the
 ## title, the mended state, click matching, the layers built from a placed
 ## object, text tidy-up).
@@ -26,6 +26,10 @@ const TESTS := [
     "_test_windlass_hits_only_in_the_zone_and_holds",
     "_test_hammer_hits_the_standing_nail",
     "_test_saw_keeps_the_beat",
+    "_test_plumb_swings_through_level",
+    "_test_plumb_straightens_with_the_work",
+    "_test_difficulty_hardens_every_game",
+    "_test_saw_beat_at_difficulty",
     "_test_pixel_and_object_scale",
     "_test_layers_bbox",
     "_test_title_and_sentence",
@@ -50,14 +54,17 @@ const TESTS := [
     "_test_road_cut_and_rounds",
     "_test_panel_uses_the_closeup_else_village_sprites",
     "_test_hammer_swings_down_onto_the_nail",
+    "_test_sign_layers_match_the_stage",
+    "_test_sign_stage_draws_the_arm_at_its_angle",
 ]
 
 ## Every piece tools/repair-art/build.ps1 writes, and what reads it.
 const _ART_PIECES := [
     "fence-broken", "fence-mended", "well-broken", "well-mended", "shop-broken", "shop-mended",
     "crate-broken", "crate-mended", "sign-broken", "sign-mended",
+    "sign-base", "sign-arm", "sign-loose", "sign-brace", "stake", "bob",
     "road-ground", "road-trunk", "road-face", "road-round", "road-brush",
-    "plank", "nail", "nail-driven", "hammer", "bar", "peg", "wheel", "plumb",
+    "plank", "nail", "nail-driven", "hammer", "bar", "peg", "wheel",
     "log-back", "log-face", "saw",
 ]
 
@@ -135,7 +142,7 @@ func _tex(w: int, h: int) -> ImageTexture:
 
 func _test_game_kind() -> void:
     _check("well → windlass", Games.game_kind("well", ""), "windlass")
-    _check("signpost → windlass", Games.game_kind("minor", "signpost"), "windlass")
+    _check("signpost → plumb", Games.game_kind("minor", "signpost"), "plumb")
     _check("road → saw", Games.game_kind("road", ""), "saw")
     _check("business → hammer", Games.game_kind("business", ""), "hammer")
     _check("fence → hammer", Games.game_kind("minor", "fence"), "hammer")
@@ -203,6 +210,163 @@ func _test_saw_keeps_the_beat() -> void:
     g.release()
     _check("a fresh section", g.strokes, 0)
     _check("a key press plays the wanted side", g.press(null), Games.Result.PROGRESS)
+    _done()
+
+
+## Run a plumb game until its arm is level (at most `limit` seconds); true when
+## it got there.
+func _plumb_to_level(g, limit := 10.0) -> bool:
+    var waited := 0.0
+    while not g.is_level() and waited < limit:
+        g.update(0.005)
+        waited += 0.005
+    return g.is_level()
+
+
+## How long the arm stays level as it swings through, seconds.
+func _plumb_level_window(g) -> float:
+    _plumb_to_level(g)
+    var level := 0.0
+    while g.is_level():
+        g.update(0.002)
+        level += 0.002
+    return level
+
+
+## The arm starts at its full sag, swings up past level and back, and a press
+## counts only near level; a hit holds it level.
+func _test_plumb_swings_through_level() -> void:
+    var g = Games.make("plumb", _rng())
+    g.set_progress(0, 5)
+    _check("starts at the full sag", g.angle, Games.Plumb.SAG)
+    _check("sagging: a miss", g.press(null), Games.Result.MISS)
+    _check("a miss does not hold", g.holding, false)
+    var lo := INF
+    var hi := -INF
+    for i in 1200:
+        g.update(0.01)
+        lo = minf(lo, g.angle)
+        hi = maxf(hi, g.angle)
+    _check("it swings up past level, OVER at most", lo > -Games.Plumb.OVER - 0.01 and lo < -Games.Plumb.OVER + 0.1, true)
+    _check("and back down to the sag", hi > Games.Plumb.SAG - 0.1, true)
+    # It crosses level at about `speed` degrees a second, so the window is
+    # about 2 * tolerance / speed long.
+    var window := _plumb_level_window(g)
+    var want: float = 2.0 * g.tolerance / g.speed
+    _check("the level window is about 2 * tolerance / speed (%.3f s vs %.3f s)" % [window, want],
+        absf(window - want) < want * 0.25, true)
+
+    var h = Games.make("plumb", _rng())
+    h.set_progress(0, 5)
+    _check("the arm comes level", _plumb_to_level(h), true)
+    _check("level: a hit", h.press(null), Games.Result.HIT)
+    _check("a hit holds", h.holding, true)
+    _check("held level", h.angle, 0.0)
+    h.update(1.0)
+    _check("held: the arm stays level", h.angle, 0.0)
+    _check("held: input ignored", h.press(null), Games.Result.NONE)
+    _done()
+
+
+## Each round's swing reaches down a shorter sag, and a reload partway through
+## resumes at the sag left.
+func _test_plumb_straightens_with_the_work() -> void:
+    var sag: float = Games.Plumb.SAG
+    var g = Games.make("plumb", _rng())
+    g.set_progress(0, 5)
+    _plumb_to_level(g)
+    g.press(null)
+    g.set_progress(1, 5)
+    _check("the sag shrinks a fifth", is_equal_approx(g.sag, sag * 0.8), true)
+    _check("held level through the step", g.angle, 0.0)
+    g.release()
+    _check("picks up from level", absf(g.angle) < 0.001, true)
+    var hi := -INF
+    for i in 1200:
+        g.update(0.01)
+        hi = maxf(hi, g.angle)
+    _check("swings down to the new sag, no further", hi > sag * 0.8 - 0.1 and hi < sag * 0.8 + 0.01, true)
+    var r = Games.make("plumb", _rng())
+    r.set_progress(3, 5)
+    _check("a reload resumes at the sag left", is_equal_approx(r.angle, sag * 0.4), true)
+    # The window to stop it level stays the same as the swing shortens.
+    var early = Games.make("plumb", _rng())
+    early.set_progress(0, 5)
+    var late = Games.make("plumb", _rng())
+    late.set_progress(4, 5)
+    var we := _plumb_level_window(early)
+    var wl := _plumb_level_window(late)
+    _check("the last round's level window matches the first (%.3f s vs %.3f s)" % [wl, we], absf(wl - we) < we * 0.15, true)
+    _done()
+
+
+## Difficulty 0 plays as before; 1 plays every game at its hardest; past 1 is
+## clamped.
+func _test_difficulty_hardens_every_game() -> void:
+    var w0 = Games.make("windlass", _rng(), 0.0)
+    var w1 = Games.make("windlass", _rng(), 1.0)
+    _check("windlass easy: speed", w0.speed, Games.Windlass.SPEED)
+    _check("windlass easy: zone", w0.zone_w, Games.Windlass.START_ZONE)
+    _check("windlass easy: floor", w0.min_zone, Games.Windlass.MIN_ZONE)
+    _check("windlass hard: speed", w1.speed, Games.Windlass.HARD_SPEED)
+    _check("windlass hard: zone", w1.zone_w, Games.Windlass.HARD_START_ZONE)
+    _check("windlass hard: floor", w1.min_zone, Games.Windlass.HARD_MIN_ZONE)
+    for i in 20:
+        w1.release()
+    _check("windlass hard: narrows to its own floor", w1.zone_w, Games.Windlass.HARD_MIN_ZONE)
+    var wh = Games.make("windlass", _rng(), 0.5)
+    _check("windlass half: between", wh.speed > w0.speed and wh.speed < w1.speed, true)
+    _check("past 1 is clamped", Games.make("windlass", _rng(), 5.0).speed, Games.Windlass.HARD_SPEED)
+
+    var h0 = Games.make("hammer", _rng(), 0.0)
+    var h1 = Games.make("hammer", _rng(), 1.0)
+    _check("hammer easy: stands", h0.up_time, Games.Hammer.UP_TIME)
+    _check("hammer hard: stands", h1.up_time, Games.Hammer.HARD_UP_TIME)
+    # A tap 4 px past the head's edge: inside the easy slack, outside the hard.
+    for g in [h0, h1]:
+        g.update(0.5)
+    var off0: Vector2 = h0.nail_rect(h0.up).position + Vector2(-4, 5)
+    var off1: Vector2 = h1.nail_rect(h1.up).position + Vector2(-4, 5)
+    _check("hammer easy: a near tap drives it", h0.press(off0), Games.Result.HIT)
+    _check("hammer hard: a near tap misses", h1.press(off1), Games.Result.MISS)
+    h1.update(Games.Hammer.HARD_UP_TIME + 0.01)
+    _check("hammer hard: a nail sinks sooner", h1.up, -1)
+
+    var p0 = Games.make("plumb", _rng(), 0.0)
+    var p1 = Games.make("plumb", _rng(), 1.0)
+    _check("plumb easy: speed", p0.speed, Games.Plumb.SPEED)
+    _check("plumb hard: tolerance", p1.tolerance, Games.Plumb.HARD_TOLERANCE)
+    p0.set_progress(0, 5)
+    p1.set_progress(0, 5)
+    _check("plumb hard: a shorter level window", _plumb_level_window(p1) < _plumb_level_window(p0) * 0.5, true)
+
+    _check("saw easy: strokes", Games.make("saw", _rng(), 0.0).strokes_needed, Games.Saw.STROKES)
+    _check("saw hard: strokes", Games.make("saw", _rng(), 1.0).strokes_needed, Games.Saw.HARD_STROKES)
+    _done()
+
+
+## At difficulty, the saw keeps a beat: too soon does not count, too late loses
+## the run. At 0 there is no beat.
+func _test_saw_beat_at_difficulty() -> void:
+    var left := Vector2(10, 20)
+    var right := Vector2(Games.PLAY_W - 10, 20)
+    var s = Games.make("saw", _rng(), 1.0)
+    _check("first stroke", s.press(left), Games.Result.PROGRESS)
+    s.update(0.05)
+    _check("too soon: it does not count", s.press(right), Games.Result.MISS)
+    _check("the run stands", s.strokes, 1)
+    s.update(0.25)
+    _check("on the beat", s.press(right), Games.Result.PROGRESS)
+    s.update(Games.Saw.HARD_MAX_GAP + 0.1)
+    _check("too late: a miss", s.press(left), Games.Result.MISS)
+    _check("the cut starts over", s.strokes, 0)
+    _check("the next tap starts a fresh run", s.press(left), Games.Result.PROGRESS)
+    var e = Games.make("saw", _rng(), 0.0)
+    e.press(left)
+    _check("easy: an instant stroke counts", e.press(right), Games.Result.PROGRESS)
+    e.update(60.0)
+    _check("easy: a long pause keeps the run", e.press(left), Games.Result.PROGRESS)
+    _check("easy: three strokes in", e.strokes, 3)
     _done()
 
 
@@ -719,5 +883,94 @@ func _test_panel_uses_the_closeup_else_village_sprites() -> void:
     _placed(p.world, "post", "fence", Vector2(100, 100))
     p.show_offer(o)
     _check("no close-up: the village sprites", p.stage.site, "")
+    _free_panel(p)
+    _done()
+
+
+## The signpost's layers are drawn to the stage's numbers: the arm strip holds
+## one frame per degree over the game's whole swing, and level hangs the bob on
+## the stake's gold notch.
+func _test_sign_layers_match_the_stage() -> void:
+    var arm := StageScript.art("sign-arm")
+    _check("the arm strip is SIGN_ARM_FRAMES frames",
+        arm.get_size() if arm != null else Vector2.ZERO,
+        Vector2(StageScript.SIGN_ARM_SIZE.x * StageScript.SIGN_ARM_FRAMES, StageScript.SIGN_ARM_SIZE.y))
+    _check("the first frame is the swing's top", StageScript.SIGN_ARM_MIN_DEG, -int(Games.Plumb.OVER))
+    _check("the last frame is the full sag", StageScript.SIGN_ARM_MIN_DEG + StageScript.SIGN_ARM_FRAMES - 1, int(Games.Plumb.SAG))
+    var picture := StageScript.art("sign-broken")
+    for piece in ["sign-base", "sign-loose", "sign-brace"]:
+        var t := StageScript.art(piece)
+        if t != null and picture != null:
+            _check("%s is the picture's size" % piece, t.get_size(), picture.get_size())
+    _check("frame for -10° is the first", StageScript.sign_arm_frame(-10.0), 0)
+    _check("frame for level", StageScript.sign_arm_frame(0.4), -StageScript.SIGN_ARM_MIN_DEG)
+    _check("frame for 0.6° is the next", StageScript.sign_arm_frame(0.6), 1 - StageScript.SIGN_ARM_MIN_DEG)
+    _check("frame past the sag is the last", StageScript.sign_arm_frame(40.0), StageScript.SIGN_ARM_FRAMES - 1)
+
+    var stake := StageScript.art("stake")
+    var bob := StageScript.art("bob")
+    if stake == null or bob == null:
+        _check("the stake and bob load", false, true)
+        _done()
+        return
+    # The notch is the brightest gold on the stake's left column.
+    var img := stake.get_image()
+    if img.is_compressed():
+        img.decompress()
+    var mark := -1
+    for y in img.get_height():
+        if img.get_pixel(0, y).is_equal_approx(Color8(240, 224, 96)):
+            mark = y
+    _check("the stake has its notch", mark >= 0, true)
+    var top := StageScript.sign_cord_top(0).floor()
+    var bob_mid := top.y + StageScript.SIGN_CORD_LEN + floorf(bob.get_size().y / 2.0)
+    _check("level: the bob hangs on the notch", bob_mid, StageScript.SIGN_STAKE.y + mark)
+    _check("the bob hangs beside the stake, not in it", top.x + 2 < StageScript.SIGN_STAKE.x + 1, true)
+    _check("a couple of degrees off level, the bob is visibly off the mark",
+        StageScript.sign_cord_top(2).y - StageScript.sign_cord_top(0).y >= 2.0, true)
+    _check("at the full sag the bob would lie in the grass",
+        StageScript.sign_cord_top(int(Games.Plumb.SAG)).y + StageScript.SIGN_CORD_LEN > StageScript.SIGN_BOB_REST_Y, true)
+    _done()
+
+
+## The stage shows the arm at rest, sagging less as the work goes on; plays it
+## from the game while playing; and level once mended. The game takes the
+## stage's difficulty, which the panel takes from the offer.
+func _test_sign_stage_draws_the_arm_at_its_angle() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("sign")
+    stage.setup("Straighten the Signpost", "plumb", layers["broken"], layers["sound"], 5, 0, "sign")
+    _check("the sign close-up", stage.site, "sign")
+    _check("the play strip holds only the pips", stage._play_h(), 10)
+    _check("at rest: the full sag", stage._sign_angle(false), Games.Plumb.SAG)
+    stage.set_progress(2)
+    _check("two of five done: the sag shrinks", is_equal_approx(stage._sign_angle(false), Games.Plumb.SAG * 0.6), true)
+    stage.difficulty = 1.0
+    stage.start_game()
+    _check("the game takes the stage's difficulty", stage.game.speed, Games.Plumb.HARD_SPEED)
+    _check("and its progress", is_equal_approx(stage.game.sag, Games.Plumb.SAG * 0.6), true)
+    stage.game.update(0.3)
+    _check("playing: the game's angle", stage._sign_angle(false), stage.game.angle)
+    _check("mended: level", stage._sign_angle(true), 0.0)
+    stage.queue_free()
+
+    var sent := []
+    var p := _live_panel(sent)
+    var o := _OFFER.duplicate()
+    o["form"] = "signpost"
+    o["yours"] = true
+    o["difficulty"] = 1.0
+    p.show_offer(o)
+    p._on_repair_pressed()
+    _check("the signpost plays the plumb game", p.stage.game_kind, "plumb")
+    _check("at the offer's difficulty", p.stage.game.speed if p.stage.game != null else 0.0, Games.Plumb.HARD_SPEED)
+    _check("the hint names the bob and the mark", p.hint_label.text, p.stage.game.hint())
+    p.close()
+    o.erase("difficulty")
+    p.show_offer(o)
+    p._on_repair_pressed()
+    _check("an offer with no difficulty plays easiest", p.stage.game.speed if p.stage.game != null else 0.0, Games.Plumb.SPEED)
     _free_panel(p)
     _done()
