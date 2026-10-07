@@ -14,18 +14,20 @@ extends Control
 ##
 ## THE OBJECT. The panel hands over the object twice: as it stands (`broken`)
 ## and as it will be (`sound`). Each layer is {tex: Texture2D, pos: Vector2
-## (art px, top-left, relative to the object's anchor)}. While the work goes
-## on, a reveal line rises from the foot of the object: below it the sound
-## layers, above it the broken ones.
+## (art px, top-left, relative to the object's anchor)}. For village sprites,
+## while the work goes on the sound layers rise from the foot of the object over
+## the broken ones.
 ##
 ## CLOSE-UPS (LLM-696). Every site kind the town pays for has a close-up drawn
 ## at the stage's own resolution (client/assets/repair/, built by
 ## tools/repair-art/build.ps1): a whole picture, broken and mended, drawn at
 ## scale 1 filling the object area. A road has no mended picture — its trunk is
 ## CUT a section per round, the section falling away and a sawn round stacking
-## on the verge, and the cleared road shows the crown dragged aside. A site with
-## no close-up (`site` "") falls back to the village sprites the panel collects,
-## scaled up to fit — a road there is cut the same way.
+## on the verge, and the cleared road shows the crown dragged aside. The fence,
+## well, shop and crate (LLM-713) mend a piece at a time: each round plays a
+## beat that takes broken pieces away and flies mended ones in (STAGED). A site
+## with no close-up (`site` "") falls back to the village sprites the panel
+## collects, scaled up to fit — a road there is cut the same way.
 ##
 ## THE SIGNPOST (LLM-712) is drawn in layers, not swept: its arm swings on its
 ## bolt in the close-up itself (the plumb game), a plumb bob hanging from it
@@ -90,6 +92,65 @@ const ROAD_ROUNDS := [
 # draws the layers to these numbers (SIGN_* there). `sign-arm` is a strip of
 # SIGN_ARM_FRAMES frames, one per whole degree from SIGN_ARM_MIN_DEG, each with
 # the hinge at SIGN_ARM_PIVOT; the hinge sits at SIGN_HINGE on the post.
+## The staged close-ups (LLM-713) mend a piece at a time. Each has strips from
+## tools/repair-art/build.ps1 — `<site>-states` (the picture after 0..N beats)
+## and per beat `-between` (the pieces taken away gone, none put in yet), `-in`
+## (what the beat puts in) and `-out` (what it takes away) — and here one entry
+## per beat, as many as the generator's: `in`, the offset (picture px) the new
+## pieces fly in from; `out`, where the old ones go as they fade; `nails`, the
+## new pieces are nails (they pop in with sparks); `say`, the pop.
+const STAGED := {
+    "fence": [
+        {"in": Vector2(0, 26), "out": Vector2(0, 4), "say": "Up she goes!"},
+        {"nails": true, "say": "Nailed!"},
+        {"out": Vector2(0, 24), "say": "Out with it!"},
+        {"in": Vector2(0, -22), "say": "New rail!"},
+        {"nails": true, "say": "Nailed fast!"},
+    ],
+    "well": [
+        {"out": Vector2(-6, -20), "say": "Cleared!"},
+        {"in": Vector2(0, 40), "out": Vector2(0, 6), "say": "New post!"},
+        {"out": Vector2(0, -28), "say": "Heave!"},
+        {"in": Vector2(0, -18), "say": "Beam up!"},
+        {"out": Vector2(-8, -10), "say": "Coiled!"},
+        {"out": Vector2(-30, 0), "say": "Roll it!"},
+        {"in": Vector2(0, -20), "say": "Drum in!"},
+        {"in": Vector2(14, 0), "say": "Crank on!"},
+        {"in": Vector2(0, -16), "say": "Rope down!"},
+        {"in": Vector2(0, 18), "out": Vector2(10, -8), "say": "Bucket up!"},
+    ],
+    "shop": [
+        {"out": Vector2(-20, -14), "say": "Heave!"},
+        {"out": Vector2(10, -16), "say": "Shingles!"},
+        {"out": Vector2(24, -12), "say": "Heave!"},
+        {"out": Vector2(-12, -16), "say": "Shingles!"},
+        {"out": Vector2(-16, -14), "say": "More shingles!"},
+        {"out": Vector2(-24, -10), "say": "Heave!"},
+        {"out": Vector2(0, -26), "say": "Last board!"},
+        {"out": Vector2(30, 0), "say": "Swept!"},
+        {"say": "Patched!"},
+        {"in": Vector2(0, -6), "out": Vector2(0, 4), "say": "Shutter hung!"},
+        {"nails": true, "out": Vector2(0, 2), "say": "Strap fixed!"},
+        {"in": Vector2(0, -8), "out": Vector2(0, 6), "say": "Sign up!"},
+    ],
+    "crate": [
+        {"out": Vector2(0, -10), "say": "Nails out!"},
+        {"out": Vector2(-26, -8), "say": "Tidied!"},
+        {"in": Vector2(22, -10), "out": Vector2(4, 0), "say": "Lid on!"},
+        {"nails": true, "say": "Nailed!"},
+        {"nails": true, "say": "Nailed down!"},
+    ],
+}
+## A beat's timing, seconds: the old pieces go over BEAT_OUT; the new ones fly
+## in from BEAT_IN_FROM to the end with a little overshoot, landing (dust, a
+## jolt, the pop) where the ease first reaches them home.
+const BEAT_TIME := 0.6
+const BEAT_OUT := 0.3
+const BEAT_IN_FROM := 0.12
+const BEAT_LAND_W := 0.37  # ease_out_back(w) first reaches 1 here
+const NAIL_FROM := Vector2(0, -4)
+const PIECE_FROM := Vector2(0, -16)
+
 const SIGN_HINGE := Vector2(48, 12)
 const SIGN_ARM_MIN_DEG := -5
 const SIGN_ARM_FRAMES := 30
@@ -158,6 +219,11 @@ var _chunks: Array = []  # road sections falling away: {tex, region, pos, vel, l
 var _pops: Array = []  # {text, pos, life}
 var _finishing := false
 var _finish_t := 0.0
+## The staged close-up's beats (LLM-713): how many are drawn as done, those
+## still to play in order, and how far into the first of them.
+var _beats_shown := 0
+var _beat_queue: Array[int] = []
+var _beat_t := 0.0
 var _rng := RandomNumberGenerator.new()
 
 
@@ -329,6 +395,9 @@ func setup(title_text: String, kind: String, broken_layers: Array, sound_layers:
     steps = maxi(1, total_steps)
     steps_done = clampi(done, 0, steps)
     _shown_progress = float(steps_done) / steps
+    _beat_queue.clear()
+    _beat_t = 0.0
+    _beats_shown = beats_for(steps_done, steps, STAGED.get(closeup, []).size())
     _particles.clear()
     _chunks.clear()
     _pops.clear()
@@ -382,6 +451,7 @@ func set_progress(done: int) -> void:
         _drop_section(before)
     if game != null:
         game.set_progress(steps_done, steps)
+    _queue_beats()
 
 
 func release_round() -> void:
@@ -395,6 +465,7 @@ func finish(paid: int) -> void:
     playing = false
     steps_done = steps
     _finishing = true
+    _queue_beats()
     _finish_t = 0.0
     _flash = 1.0
     _burst(_obj_center(), 18, [C_GOLD, C_WOOD_HI, Color.WHITE])
@@ -586,6 +657,8 @@ func _process(delta: float) -> void:
     _shown_progress = move_toward(_shown_progress, target, delta * 1.6)
     _shake = maxf(0.0, _shake - delta)
     _flash = maxf(0.0, _flash - delta * 2.5)
+    if not _beat_queue.is_empty():
+        _advance_beat(delta)
     if _swing_t >= 0.0:
         var before := _swing_t
         _swing_t += delta
@@ -694,9 +767,12 @@ func _draw_object() -> void:
     if sound.is_empty():
         _draw_cut(anchor, s, p)
         return
-    # The reveal line, in art px: below it the mended sprites, above it the
-    # broken ones. It rises through the rows that change, so outside them the
-    # two are the same picture and the seam never shows.
+    if _is_staged():
+        _draw_staged(anchor)
+        return
+    # The village sprites' sweep, in art px: below the line the mended
+    # sprites, above it the broken ones. It rises through the rows that change,
+    # so outside them the two are the same picture and the seam never shows.
     var line_y := anchor.y + (_reveal.position.y + _reveal.size.y * (1.0 - p)) * s
     if p >= 1.0:
         line_y = -INF
@@ -706,9 +782,6 @@ func _draw_object() -> void:
         _draw_layer_clipped(l, anchor, s, -INF, line_y)
     for l in sound:
         _draw_layer_clipped(l, anchor, s, line_y, INF)
-    if p > 0.0 and p < 1.0:
-        var lx := anchor.x + _reveal.position.x * s
-        draw_rect(Rect2(lx, floorf(line_y), _reveal.size.x * s, 1), Color(C_GOLD, 0.55))
 
 
 ## Draw a layer, only the rows between y0 and y1 (art px), and only inside
@@ -821,6 +894,146 @@ func _draw_sign(anchor: Vector2, mended: bool) -> void:
     draw_rect(Rect2(top.x, top.y, 1, bob_y - top.y), C_GOLD if game.is_level() else C_CORD)
     draw_rect(Rect2(top.x, top.y, 1, 1), C_IRON_LIGHT)
     _tex("bob", Vector2(top.x - 2, bob_y))
+
+
+## Beats done after `done` of `total` steps, for a close-up of `n` beats:
+## evenly spread, and all of them once the work is done.
+static func beats_for(done: int, total: int, n: int) -> int:
+    if done >= total:
+        return n
+    return clampi(floori(float(done) * n / maxi(1, total)), 0, n)
+
+
+## 0 → 1 with an overshoot past 1 before it settles: a piece lands a touch
+## past its place and bounces back.
+static func ease_out_back(w: float) -> float:
+    var c1 := 1.70158
+    var c3 := c1 + 1.0
+    var x := w - 1.0
+    return 1.0 + c3 * x * x * x + c1 * x * x
+
+
+## Where a strip frame's pixels are (frame-local), cached; empty when the frame
+## is clear.
+static var _used_cache := {}
+
+static func strip_used_rect(piece: String, frame: int) -> Rect2i:
+    var key := "%s#%d" % [piece, frame]
+    if _used_cache.has(key):
+        return _used_cache[key]
+    var r := Rect2i()
+    var tex := art(piece)
+    if tex != null:
+        var img := tex.get_image()
+        if img != null:
+            if img.is_compressed():
+                img.decompress()
+            var h := img.get_height()
+            var w := closeup_width()
+            if w > 0:
+                r = img.get_region(Rect2i(frame * w, 0, w, h)).get_used_rect()
+    _used_cache[key] = r
+    return r
+
+
+## A staged strip's frame width: every close-up is the object area's width.
+static func closeup_width() -> int:
+    return ART_W - 16
+
+
+func _is_staged() -> bool:
+    return STAGED.has(site) and art(site + "-states") != null
+
+
+## Queue the beats the steps done have reached and not yet played.
+func _queue_beats() -> void:
+    if not STAGED.has(site):
+        return
+    var want := beats_for(steps_done, steps, STAGED[site].size())
+    while _beats_shown < want:
+        _beat_queue.append(_beats_shown)
+        _beats_shown += 1
+
+
+## The close-up at rest, or the beat under way: the old pieces lifting away
+## and fading over the picture between, the new ones flying in.
+func _draw_staged(anchor: Vector2) -> void:
+    if _beat_queue.is_empty():
+        _draw_frame(site + "-states", _beats_shown, anchor, 1.0)
+        return
+    var b: int = _beat_queue[0]
+    var m: Dictionary = STAGED[site][b]
+    _draw_frame(site + "-between", b, anchor, 1.0)
+    var u := clampf(_beat_t / BEAT_OUT, 0.0, 1.0)
+    if u < 1.0:
+        var away: Vector2 = m.get("out", Vector2.ZERO)
+        _draw_frame(site + "-out", b, anchor + away * u * u, 1.0 - u)
+    var w := (_beat_t - BEAT_IN_FROM) / (BEAT_TIME - BEAT_IN_FROM)
+    if w > 0.0:
+        var from: Vector2 = m.get("in", NAIL_FROM if m.get("nails", false) else PIECE_FROM)
+        var e := ease_out_back(minf(w, 1.0))
+        _draw_frame(site + "-in", b, anchor + from * (1.0 - e), clampf(w * 5.0, 0.0, 1.0))
+
+
+## One frame of a strip at `at` (whole art px), clipped to the object area.
+func _draw_frame(piece: String, frame: int, at: Vector2, alpha: float) -> void:
+    var tex := art(piece)
+    if tex == null or alpha <= 0.0:
+        return
+    var size := Vector2(closeup_width(), tex.get_size().y)
+    var dst := Rect2(at.round(), size)
+    var vis := dst.intersection(_obj_rect)
+    if vis.size.x <= 0 or vis.size.y <= 0:
+        return
+    var src := Rect2(vis.position - dst.position + Vector2(frame * size.x, 0), vis.size)
+    draw_texture_rect_region(tex, vis, src, Color(1, 1, 1, alpha))
+
+
+## When a beat lands: with new pieces, when they first reach their place;
+## with only old ones going, halfway through their going.
+func _beat_land_t(b: int) -> float:
+    if strip_used_rect(site + "-in", b).has_area():
+        return BEAT_IN_FROM + BEAT_LAND_W * (BEAT_TIME - BEAT_IN_FROM)
+    return BEAT_OUT * 0.5
+
+
+func _advance_beat(delta: float) -> void:
+    var b: int = _beat_queue[0]
+    var before := _beat_t
+    if before == 0.0:
+        var gone := strip_used_rect(site + "-out", b)
+        if gone.has_area():
+            _burst(_anchor() + Vector2(gone.get_center()), 5, [C_WOOD_HI, C_WOOD_LIGHT])
+    _beat_t += delta
+    var land := _beat_land_t(b)
+    if before < land and _beat_t >= land:
+        _beat_landed(b)
+    if _beat_t >= BEAT_TIME:
+        _beat_queue.pop_front()
+        _beat_t = 0.0
+
+
+## The beat lands: sparks for nails, dust and a thud for a piece set down, a
+## puff where pieces were cleared away — and its pop.
+func _beat_landed(b: int) -> void:
+    var m: Dictionary = STAGED[site][b]
+    var anchor := _anchor()
+    var put := strip_used_rect(site + "-in", b)
+    var gone := strip_used_rect(site + "-out", b)
+    var r := put if put.has_area() else gone
+    var at := anchor + Vector2(r.get_center())
+    if put.has_area() and m.get("nails", false):
+        _burst(at, 8, [C_GOLD, Color.WHITE, C_IRON_LIGHT])
+        _shake = maxf(_shake, 0.1)
+    elif put.has_area():
+        _burst(anchor + Vector2(r.get_center().x, r.end.y - 1), 10, [C_WOOD_HI, C_WOOD_LIGHT, C_TEXT])
+        _shake = maxf(_shake, 0.14)
+        _sound("section_drop")
+    else:
+        _burst(at, 8, [C_WOOD_HI, C_TEXT])
+    var say: String = m.get("say", "")
+    if say != "":
+        pop(say, anchor + Vector2(r.get_center().x, maxf(r.position.y - 4, 10.0)))
 
 
 ## The section a road round cut off falls away.
