@@ -152,6 +152,23 @@ type TradeValueItem struct {
 	// carries no nudge).
 	AskUnit int
 
+	// MakingsAskUnit is the produce-side ask floor: set only for a good the actor
+	// MAKES and sells at a loss (MakingsMargin == makingsMarginBelowCost, retail
+	// line only). It is the per-unit makings cost rounded up, never below the
+	// catalog retail (High). No markup on top, unlike AskUnit: the cost is priced
+	// at what the actor lately paid for its makings, which can run well above the
+	// band, and a markup on an inflated basis would price the good out of the
+	// village. The floor's job is to stop the loss.
+	//
+	// This partly lifts LLM-227's no-number rule for made goods, on the LLM-627
+	// evidence that the model self-anchors on its trailing sale price anyway. Live
+	// case: John Ellis sold 248 bowls of stew at 4 coins from July on, with his own
+	// cue reading "the makings run you nearly 5 coins each (a loss)" — the verdict
+	// alone never moved his price, and he never countered a 4-coin offer. Limited
+	// to a proven loss, so a profitable or deliberately cheap line that is not
+	// actually underwater keeps the fact-only clause.
+	MakingsAskUnit int
+
 	// MakingsMargin is the produce-side sibling of AtOrBelowCost (LLM-475): the
 	// actor's realized SALE rate for a good it MAKES, judged against what the
 	// makings actually cost it. The resold-goods path had this register from the
@@ -492,6 +509,17 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 				askUnit = 0
 			}
 		}
+		// The produce-side ask floor (see the MakingsAskUnit field comment). After
+		// the wholesale branch for the same reason as AskUnit: an own-produce good
+		// sells to the distributor on its own line, which keeps sole ownership of
+		// that good's pricing.
+		makingsAskUnit := 0
+		if wholesaleTo == "" && makingsTier == makingsMarginBelowCost && costQty > 0 {
+			makingsAskUnit = (costBatch + costQty - 1) / costQty
+			if makingsAskUnit < hi {
+				makingsAskUnit = hi
+			}
+		}
 		// LLM-609: what of this good is spoken for by the actor's own bench. Keyed
 		// on the recipe EXISTING in the policy, never on it being runnable this
 		// minute: gating on "can he run a batch right now" recreates the LLM-608
@@ -530,6 +558,7 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			AtOrBelowCost:     atOrBelowCost,
 			StrictlyBelowCost: strictlyBelowCost,
 			AskUnit:           askUnit,
+			MakingsAskUnit:    makingsAskUnit,
 			MakingsMargin:     makingsTier,
 			ReserveFloor:      reserveFloor,
 			ReserveHeld:       reserveHeld,
@@ -883,6 +912,12 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 		// pays, so the phrase's presence is itself the signal.
 		if cost := makingsCostPhrase(it); cost != "" {
 			clauses += fmt.Sprintf("; the makings run you %s%s", cost, makingsMarginPhrase(it.MakingsMargin))
+		}
+		// The made-at-a-loss ask rides last, after the verdict it acts on — the
+		// number is the final word against the trailing-average self-anchor, as
+		// with the resale ask (LLM-627).
+		if it.MakingsAskUnit > 0 {
+			clauses += fmt.Sprintf(" — ask %s or more at your counter", coinsPhrase(it.MakingsAskUnit))
 		}
 		fmt.Fprintf(b, "- %s: %s%s.%s\n", sanitizeInline(it.ItemLabel), worth, clauses, keepBack)
 	}
