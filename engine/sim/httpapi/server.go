@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
@@ -70,6 +71,14 @@ type Server struct {
 	// the edit's durable half. Nil when unwired → the /recipe/set handler answers
 	// 503.
 	recipeWriter RecipeWriter
+	// spriteWriter backs POST /api/village/pc/outfit (LLM-691) — the durable
+	// upsert of a player's outfit sprite. A player route, wired whenever pg is
+	// present (Server.SetSpriteWriter). Nil → that route answers 503.
+	spriteWriter SpriteWriter
+	// outfitMu serializes PC outfit saves (pc/outfit): the durable row write and
+	// the world install must land in the same order, or the table and the live
+	// catalog end up holding different outfits. Saves are rare and short.
+	outfitMu sync.Mutex
 	// satisfiesWriter backs the operator-gated POST /umbilical/item/set-satisfies
 	// control route (LLM-119) — the durable item_satisfies upsert. Injected (set
 	// by cmd/engine via SetSatisfiesWriter) so httpapi does not import the pg
@@ -260,6 +269,13 @@ func (s *Server) SetRouteForcer(f func(attrSlug string, start bool) sim.Command)
 	s.routeForcer = f
 }
 
+// SetSpriteWriter wires the durable outfit-sprite upsert behind POST
+// /api/village/pc/outfit (LLM-691). Same wiring-time-only contract as
+// SetRecipeWriter — call before Handler, never concurrently with serving.
+func (s *Server) SetSpriteWriter(wr SpriteWriter) {
+	s.spriteWriter = wr
+}
+
 // SetRecipeWriter wires the durable item_recipe upsert behind the operator-gated
 // POST /umbilical/recipe/set control route (LLM-97). Recipes are reference data
 // with no checkpoint path, so the edit's durable half is this direct write (the
@@ -380,8 +396,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
 	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
-	mux.HandleFunc("POST /api/village/pc/sprite", s.requireAuth(s.handlePCSprite))
 	mux.HandleFunc("POST /api/village/pc/create", s.requireAuth(s.handlePCCreate))
+	mux.HandleFunc("POST /api/village/pc/wardrobe", s.requireAuth(s.handlePCWardrobe))
+	mux.HandleFunc("POST /api/village/pc/outfit", s.requireAuth(s.handlePCOutfit))
 	mux.HandleFunc("POST /api/village/pc/sleep", s.requireAuth(s.handlePCSleep))
 	mux.HandleFunc("POST /api/village/pc/wake", s.requireAuth(s.handlePCWake))
 	mux.HandleFunc("POST /api/village/pc/attend", s.requireAuth(s.handlePCAttend)) // LLM-466: candle-prompt ack
@@ -484,7 +501,7 @@ func (s *Server) handleWorld(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 	snap := s.world.Published()
-	writeJSON(w, agentsFromSnapshot(snap, s.world.Sprites))
+	writeJSON(w, agentsFromSnapshot(snap, snap.Sprites))
 }
 
 // handleAgentDrivers serves the assignable-driver catalog — the editor's NPC
@@ -526,10 +543,15 @@ func (s *Server) handleAssets(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleSprites serves the raw character-sprite catalog (the editor's sprite
-// picker source). Reads world.Sprites directly — same lock-free reference-
-// state posture and same SIGHUP invariant as handleTerrain/handleAssets.
+// picker source). Reads the catalog off the published snapshot, which aliases
+// World.Sprites: a live sprite install (LLM-691) swaps the map rather than
+// writing it, so this lock-free read never races the world goroutine.
 func (s *Server) handleSprites(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, spritesFromCatalog(s.world.Sprites))
+	var catalog map[sim.SpriteID]*sim.Sprite
+	if snap := s.world.Published(); snap != nil {
+		catalog = snap.Sprites
+	}
+	writeJSON(w, spritesFromCatalog(catalog))
 }
 
 // handleNPCBehaviors serves the actor-assignable attribute catalog (the

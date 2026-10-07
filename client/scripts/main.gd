@@ -7,6 +7,7 @@ const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 const AssetPopupScript = preload("res://scripts/asset_popup.gd")
 const NPCSpritePickerScript = preload("res://scripts/npc_sprite_picker.gd")
+const CharacterCreatorScript = preload("res://scripts/character_creator.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
 const ActorTooltipScript = preload("res://scripts/actor_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
@@ -31,6 +32,7 @@ var editor_panel: PanelContainer = null
 var config_panel: Control = null
 var asset_popup: Control = null
 var npc_sprite_picker: Control = null
+var character_creator: Control = null
 var object_tooltip: CanvasLayer = null
 var actor_tooltip: CanvasLayer = null
 var event_client: Node = null
@@ -131,7 +133,10 @@ var _world_ready_fired: bool = false
 # WS broadcasts like npc_arrived. Empty until the first /pc/me response.
 var _pc_actor_id: String = ""
 var _pc_http_me: HTTPRequest = null
-var _pc_http_save: HTTPRequest = null
+## The PC's name and sprite payload from the last /pc/me, for the character
+## creator (LLM-691).
+var _pc_character_name: String = ""
+var _pc_sprite: Dictionary = {}
 # Set after the camera tweens to the PC's spawn position the first time
 # /pc/me reports a placed PC. _ready hardcodes the camera at the village
 # crossroads as a pre-PC default; subsequent /pc/me polls don't re-center.
@@ -378,6 +383,7 @@ func _build_ui() -> void:
     top_bar.edit_toggled.connect(_on_edit_toggled)
     top_bar.config_pressed.connect(_on_config_pressed)
     top_bar.logout_pressed.connect(_on_logout)
+    top_bar.dress_pressed.connect(_open_character_creator)
 
     # Config panel — full-screen overlay on a higher CanvasLayer
     var config_layer = CanvasLayer.new()
@@ -419,17 +425,27 @@ func _build_ui() -> void:
 
     # NPC sprite picker — modal overlay above the editor. Same layer as the
     # asset popup; ownership of camera/editor input flags handled symmetrically.
-    # Doubles as the PC sprite picker via show_for_pc — see pc_sprite_selected
-    # signal wired below.
     npc_sprite_picker = Control.new()
     npc_sprite_picker.set_script(NPCSpritePickerScript)
     npc_sprite_picker.world = world
     config_layer.add_child(npc_sprite_picker)
     npc_sprite_picker.visible = false
     npc_sprite_picker.sprite_selected.connect(_on_npc_sprite_picker_selected)
-    npc_sprite_picker.pc_sprite_selected.connect(_on_pc_sprite_picker_selected)
     npc_sprite_picker.closed.connect(func():
         _set_modal_blocker("sprite_picker", false)
+        editor.popup_open = false
+    )
+
+    # Character creator (LLM-691) — the player's own look and name. Same
+    # layer and modal-blocker handling as the picker.
+    character_creator = Control.new()
+    character_creator.set_script(CharacterCreatorScript)
+    character_creator.world = world
+    config_layer.add_child(character_creator)
+    character_creator.visible = false
+    character_creator.saved.connect(_on_character_saved)
+    character_creator.closed.connect(func():
+        _set_modal_blocker("character_creator", false)
         editor.popup_open = false
     )
 
@@ -752,6 +768,7 @@ func _on_pc_dwelling_attributes_changed(attrs: PackedStringArray) -> void:
 ## username. Login fallback is set once at _on_authenticated; the
 ## override layer happens here on every /pc/me poll.
 func _on_pc_character_name_changed(name: String) -> void:
+    _pc_character_name = name
     if top_bar == null or not top_bar.has_method("set_character_name"):
         return
     top_bar.set_character_name(name)
@@ -990,9 +1007,9 @@ func _on_npc_sprite_picker_selected(npc_id: String, sprite_id: String) -> void:
         headers, HTTPClient.METHOD_POST, payload)
 
 ## PC bootstrap (M6.7): kick off /pc/me. The response either tells us
-## the PC has a sprite (nothing to do) or that they need to pick one
-## (open the picker in PC mode). _pc_http_me lives on this node so the
-## response handler closes over the right reference.
+## the PC has a sprite (nothing to do) or that they need to make a
+## character (open the character creator, LLM-691). _pc_http_me lives on
+## this node so the response handler closes over the right reference.
 func _bootstrap_pc() -> void:
     if _pc_http_me == null:
         _pc_http_me = HTTPRequest.new()
@@ -1006,9 +1023,8 @@ func _bootstrap_pc() -> void:
         push_warning("PC bootstrap /pc/me request failed: %s" % err)
 
 ## /pc/me response. Branch on whether the PC exists at all and whether
-## a sprite has been chosen. Either gap → open the picker. The
-## picker's pc_sprite_selected signal drives the right save call
-## (create vs sprite-only) based on _pc_exists.
+## a sprite has been chosen. Either gap → open the character creator,
+## which creates the PC (or renames it) and saves the outfit itself.
 func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
     if not Auth.check_response(code):
         return
@@ -1034,67 +1050,35 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
         # world-pixel position via the one tile->pixel home before centering.
         camera.center_on(VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0))))
         _pc_initial_camera_centered = true
-    var current_sprite_id := str(data.get("sprite_id", ""))
-    if current_sprite_id != "":
-        # PC already has a sprite — nothing to bootstrap. They'll see
-        # themselves on the map (A2) and can change the sprite later via
-        # a future settings affordance.
+    # Cached for the character creator (LLM-691): it opens on the current
+    # name and, for a farmer-base outfit, the current clothes.
+    _pc_character_name = str(data.get("character_name", ""))
+    var sprite = data.get("sprite", null)
+    _pc_sprite = sprite if sprite is Dictionary else {}
+    if top_bar != null and top_bar.has_method("set_dress_visible"):
+        top_bar.set_dress_visible(_pc_exists)
+    if str(data.get("sprite_id", "")) != "":
+        # PC already has a sprite — nothing to bootstrap. The shirt icon
+        # reopens the creator.
         return
-    if npc_sprite_picker == null:
-        # Picker hasn't been instantiated yet (UI build raced ahead of
-        # bootstrap). Defer until the picker exists. In practice
-        # _build_ui runs synchronously before _bootstrap_pc, so this is
-        # a defensive guard rather than an expected branch.
+    _open_character_creator()
+
+## Open the character creator (LLM-691) — on first login (no PC, or a PC
+## with no sprite yet) and from the top bar's shirt icon.
+func _open_character_creator() -> void:
+    if character_creator == null or character_creator.visible:
         return
-    npc_sprite_picker.show_for_pc(current_sprite_id)
-    _set_modal_blocker("sprite_picker", true)
+    character_creator.open(_pc_exists and _pc_sprite.size() > 0, _pc_character_name, _pc_sprite)
+    _set_modal_blocker("character_creator", true)
     editor.popup_open = true
 
-## PC mode picker emitted a selection. Branch on _pc_exists:
-##   - false: POST /pc/create with character_name + sprite_id (one-shot
-##            creation; default character_name to the auth username
-##            until a name-input UI lands).
-##   - true:  POST /pc/sprite with just sprite_id.
-## Either way, the WS broadcast (pc_sprite_changed) drives the visual
-## update on every connected client once A2 wires rendering. After the
-## save completes, re-fetch /pc/me so any local PC state we cache is
-## current.
-func _on_pc_sprite_picker_selected(sprite_id: String) -> void:
-    if sprite_id == "":
-        return
-    if _pc_http_save == null:
-        _pc_http_save = HTTPRequest.new()
-        _pc_http_save.accept_gzip = false
-        add_child(_pc_http_save)
-        _pc_http_save.request_completed.connect(_on_pc_save_completed)
-    var headers := Auth.auth_headers()
-    var url: String
-    var payload: String
-    if _pc_exists:
-        url = Auth.api_base + "/api/village/pc/sprite"
-        payload = JSON.stringify({"sprite_id": sprite_id})
-    else:
-        url = Auth.api_base + "/api/village/pc/create"
-        payload = JSON.stringify({
-            "character_name": Auth.username,
-            "sprite_id": sprite_id,
-        })
-    var err := _pc_http_save.request(url, headers, HTTPClient.METHOD_POST, payload)
-    if err != OK:
-        push_warning("PC sprite save request failed: %s" % err)
-
-func _on_pc_save_completed(result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
-    if not Auth.check_response(code):
-        return
-    if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
-        push_warning("PC sprite save failed: code=%s" % code)
-        return
-    # _pc_exists flips true post-create so a subsequent picker open
-    # (e.g., user re-opens to change sprite) routes through /pc/sprite
-    # instead of re-creating.
+## The creator saved: the PC exists now with its name and clothes. The
+## outfit itself reaches every client as npc_sprite_changed; re-fetch
+## /pc/me so the cached name and sprite are current.
+func _on_character_saved(character_name: String) -> void:
     _pc_exists = true
-    # Re-fetch /pc/me so any cached state (A2 rendering will need it)
-    # picks up the new sprite. Cheap; one round-trip.
+    _pc_character_name = character_name
+    _on_pc_character_name_changed(character_name)
     _bootstrap_pc_refetch()
 
 ## Re-fire /pc/me after a save, without re-running the bootstrap-done

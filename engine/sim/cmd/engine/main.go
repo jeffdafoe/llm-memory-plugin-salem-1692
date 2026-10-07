@@ -142,6 +142,10 @@ type runtime struct {
 	// run wires it via SetAssetGeometryWriter. Nil in the headless lifecycle test
 	// (mem-backed, no pg) → those routes answer 503.
 	AssetGeometryWriter *pg.AssetsRepo
+	// SpriteWriter is the durable outfit-sprite upsert behind the player route
+	// POST /api/village/pc/outfit (LLM-691), wired whenever pg is present. Nil in
+	// the headless lifecycle test → that route answers 503.
+	SpriteWriter *pg.SpritesRepo
 }
 
 func main() {
@@ -301,6 +305,7 @@ func main() {
 		SatisfiesWriter:     pg.NewItemKindsRepo(pool),
 		ItemKindWriter:      pg.NewItemKindsRepo(pool),
 		AssetGeometryWriter: pg.NewAssetsRepo(pool),
+		SpriteWriter:        pg.NewSpritesRepo(pool),
 		PromptRing:          promptRing,
 		ChatRing:            chatRing,
 		MemoryAPIBaseURL:    llmMemoryURL,
@@ -692,6 +697,10 @@ func run(rt runtime, stop stopSignals) error {
 			// (LLM-363) — reference data, no checkpoint path, wired whenever pg is
 			// present. Guarded by the same non-nil check for the same typed-nil reason.
 			server.SetAssetRefreshDefaultWriter(rt.AssetGeometryWriter)
+		}
+		// Backs the character creator's POST /pc/outfit (LLM-691). Same typed-nil guard.
+		if rt.SpriteWriter != nil {
+			server.SetSpriteWriter(rt.SpriteWriter)
 		}
 		// Enables the operator-gated umbilical routes. Nil when UMBILICAL_ENABLED
 		// is unset → SetTelemetry not called → routes never registered.

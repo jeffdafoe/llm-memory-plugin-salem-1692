@@ -205,3 +205,34 @@ func (r *SpritesRepo) attachAnimations(ctx context.Context, sprites map[sim.Spri
 	}
 	return nil
 }
+
+// upsertRigSpriteSQL writes one paper-doll sprite row (LLM-691) — a player's
+// outfit from the character creator. The id is fixed per PC
+// (sim.PCOutfitSpriteID), so a re-save updates the same row. A rig sprite has
+// no npc_sprite_animation rows and no behaviors.
+const upsertRigSpriteSQL = `
+INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, rig, layers)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, '[]', $7, $8, $9::jsonb)
+ON CONFLICT (id) DO UPDATE
+   SET name = EXCLUDED.name,
+       sheet = EXCLUDED.sheet,
+       frame_width = EXCLUDED.frame_width,
+       frame_height = EXCLUDED.frame_height,
+       pack_id = EXCLUDED.pack_id,
+       render_scale = EXCLUDED.render_scale,
+       rig = EXCLUDED.rig,
+       layers = EXCLUDED.layers`
+
+// UpsertRigSprite persists a paper-doll sprite. It runs before the world
+// points an actor at the sprite: actor.sprite_id has a foreign key to
+// npc_sprite, so the row must exist before a checkpoint can save the actor.
+func (r *SpritesRepo) UpsertRigSprite(ctx context.Context, sp *sim.Sprite) error {
+	if sp == nil || sp.Rig == "" {
+		return fmt.Errorf("pg sprites UpsertRigSprite: not a rig sprite")
+	}
+	if _, err := r.pool.Exec(ctx, upsertRigSpriteSQL, string(sp.ID), sp.Name, sp.Sheet,
+		sp.FrameWidth, sp.FrameHeight, sp.PackID, sp.RenderScale, sp.Rig, string(sp.Layers)); err != nil {
+		return fmt.Errorf("pg sprites UpsertRigSprite: exec: %w", err)
+	}
+	return nil
+}

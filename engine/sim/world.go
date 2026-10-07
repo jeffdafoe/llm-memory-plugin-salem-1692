@@ -2589,6 +2589,7 @@ func (w *World) republish() {
 		ItemKinds:  w.ItemKinds,
 		Recipes:    w.Recipes,
 		RecipeUses: w.ensureRecipeUses(),
+		Sprites:    w.Sprites,
 	}
 	// The business repair's terms (LLM-675), beside the well's in the literal.
 	snap.PublicWorksBusinessBounty = w.Settings.PublicWorksBusinessBounty

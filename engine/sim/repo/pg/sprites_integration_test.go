@@ -188,3 +188,48 @@ func TestIntegration_Sprites_RigLayers(t *testing.T) {
 		t.Error("object layers accepted, want npc_sprite_layers_check to reject it")
 	}
 }
+
+// S4 a player's outfit (LLM-691; the fixture's migrations seed the farmer pack) — UpsertRigSprite inserts the rig sprite,
+// a second save of the same id replaces its layers in place, and LoadAll
+// reads it back as a rig sprite.
+func TestIntegration_Sprites_UpsertRigSprite(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	repo := NewSpritesRepo(f.Pool)
+	first, err := sim.NewPCOutfitSprite("pc-1", "Tess", json.RawMessage(`[{"sheet":"/b.png","ramps":{"skin":1}}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertRigSprite(ctx, first); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	afterFirst, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	second, _ := sim.NewPCOutfitSprite("pc-1", "Tess Renamed", json.RawMessage(`[{"sheet":"/b.png","ramps":{"skin":7}}]`))
+	if err := repo.UpsertRigSprite(ctx, second); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	got, err := repo.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(got) != len(afterFirst) {
+		t.Fatalf("rows = %d after the re-save, want %d (updated in place)", len(got), len(afterFirst))
+	}
+	s := got[sim.PCOutfitSpriteID("pc-1")]
+	if s == nil {
+		t.Fatalf("outfit sprite missing: %v", got)
+	}
+	var layers []map[string]any
+	if err := json.Unmarshal(s.Layers, &layers); err != nil || len(layers) != 1 {
+		t.Fatalf("layers = %s", s.Layers)
+	}
+	if s.Rig != "farmer_base" || s.Name != "Tess Renamed" || s.FrameWidth != 64 || s.Pack == nil ||
+		layers[0]["ramps"].(map[string]any)["skin"] != float64(7) {
+		t.Errorf("sprite = %+v layers=%s", s, s.Layers)
+	}
+}
