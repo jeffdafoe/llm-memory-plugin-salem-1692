@@ -1363,6 +1363,10 @@ func _on_npc_sprites_loaded(result: int, code: int, _headers: PackedStringArray,
     if world == null:
         return
     for sprite in json:
+        # Farmer-base sprites (LLM-691) are per-villager layered outfits; a
+        # one-sheet thumbnail and the placement ghost cannot draw them.
+        if not (sprite is Dictionary) or FarmerDoll.is_rig_sprite(sprite):
+            continue
         var sheet_path: String = sprite.get("sheet", "")
         if sheet_path == "":
             continue
