@@ -54,6 +54,10 @@ const TESTS := [
     "_test_road_cut_and_rounds",
     "_test_panel_uses_the_closeup_else_village_sprites",
     "_test_hammer_swings_down_onto_the_nail",
+    "_test_beats_for",
+    "_test_staged_strips_match_their_beats",
+    "_test_staged_layers_compose",
+    "_test_staged_stage_plays_a_beat",
     "_test_sign_layers_match_the_stage",
     "_test_sign_stage_draws_the_arm_at_its_angle",
 ]
@@ -66,6 +70,10 @@ const _ART_PIECES := [
     "road-ground", "road-trunk", "road-face", "road-round", "road-brush",
     "plank", "nail", "nail-driven", "hammer", "bar", "peg", "wheel",
     "log-back", "log-face", "saw",
+    "fence-states", "fence-between", "fence-in", "fence-out",
+    "well-states", "well-between", "well-in", "well-out",
+    "shop-states", "shop-between", "shop-in", "shop-out",
+    "crate-states", "crate-between", "crate-in", "crate-out",
 ]
 
 var _failures := 0
@@ -788,8 +796,9 @@ func _test_closeup_fills_the_area_at_scale_1() -> void:
 
 
 ## The broken and mended pictures match pixel for pixel outside the damage
-## (each element seeds itself from its coordinates), so the reveal line
-## sweeps only what the repair changes — for the fence, the right-hand bay.
+## (each element seeds itself from its coordinates), so a repair changes only
+## the damage — for the fence, the right-hand bay, from the nails on the middle
+## post's right face (x 89).
 func _test_closeup_reveal_sweeps_only_the_damage() -> void:
     var layers: Dictionary = StageScript.closeup_layers("fence")
     if layers.is_empty():
@@ -799,7 +808,7 @@ func _test_closeup_reveal_sweeps_only_the_damage() -> void:
     var box := StageScript.layers_bbox(layers["broken"])
     var reveal := StageScript.diff_rect(layers["broken"], layers["sound"], box)
     _check("the pictures differ somewhere", reveal != box, true)
-    _check("the left bay and its posts are untouched", reveal.position.x >= 90.0, true)
+    _check("the left bay and its posts are untouched", reveal.position.x >= 89.0, true)
     _done()
 
 
@@ -973,4 +982,124 @@ func _test_sign_stage_draws_the_arm_at_its_angle() -> void:
     p._on_repair_pressed()
     _check("an offer with no difficulty plays easiest", p.stage.game.speed if p.stage.game != null else 0.0, Games.Plumb.SPEED)
     _free_panel(p)
+    _done()
+
+
+func _test_beats_for() -> void:
+    _check("none done, none shown", StageScript.beats_for(0, 5, 5), 0)
+    _check("a beat a step", StageScript.beats_for(3, 5, 5), 3)
+    _check("all done, all shown", StageScript.beats_for(5, 5, 5), 5)
+    _check("more steps than beats: spread", StageScript.beats_for(5, 10, 5), 2)
+    _check("more beats than steps: several a step", StageScript.beats_for(1, 2, 5), 2)
+    _check("done past the steps ends mended", StageScript.beats_for(9, 4, 12), 12)
+    _done()
+
+
+## The generator's strips agree with STAGED: one frame per beat (and one more
+## state), the close-up's size, and broken / mended are the first and last
+## states.
+func _test_staged_strips_match_their_beats() -> void:
+    var w := StageScript.closeup_width()
+    for key in StageScript.STAGED:
+        var n: int = StageScript.STAGED[key].size()
+        var states := StageScript.art(key + "-states")
+        var broken := StageScript.art(key + "-broken")
+        if states == null or broken == null:
+            _check("%s strips load" % key, false, true)
+            continue
+        var h := broken.get_size().y
+        _check("%s states: N+1 frames" % key, states.get_size(), Vector2(w * (n + 1), h))
+        for piece in ["between", "in", "out"]:
+            var t := StageScript.art("%s-%s" % [key, piece])
+            _check("%s %s: N frames" % [key, piece], t.get_size() if t != null else Vector2.ZERO, Vector2(w * n, h))
+        var si := _img(states)
+        _check("%s broken is the first state" % key, si.get_region(Rect2i(0, 0, w, int(h))).get_data() == _img(broken).get_data(), true)
+        var mended := StageScript.art(key + "-mended")
+        _check("%s mended is the last state" % key, si.get_region(Rect2i(n * w, 0, w, int(h))).get_data() == _img(mended).get_data(), true)
+        for b in n:
+            var m: Dictionary = StageScript.STAGED[key][b]
+            var changed: bool = StageScript.strip_used_rect(key + "-in", b).has_area() or StageScript.strip_used_rect(key + "-out", b).has_area()
+            _check("%s beat %d changes the picture" % [key, b], changed, true)
+            _check("%s beat %d has a pop" % [key, b], str(m.get("say", "")) != "", true)
+            if m.get("nails", false):
+                _check("%s beat %d puts nails in" % [key, b], StageScript.strip_used_rect(key + "-in", b).has_area(), true)
+    _done()
+
+
+func _img(t: Texture2D) -> Image:
+    var i := t.get_image()
+    if i.is_compressed():
+        i.decompress()
+    i.convert(Image.FORMAT_RGBA8)
+    return i
+
+
+## Every beat's layers rebuild its pictures exactly: between + in is the state
+## after, between + out the state before.
+func _test_staged_layers_compose() -> void:
+    var w := StageScript.closeup_width()
+    for key in StageScript.STAGED:
+        var n: int = StageScript.STAGED[key].size()
+        var states := StageScript.art(key + "-states")
+        if states == null:
+            continue
+        var si := _img(states)
+        var bi := _img(StageScript.art(key + "-between"))
+        var ii := _img(StageScript.art(key + "-in"))
+        var oi := _img(StageScript.art(key + "-out"))
+        var h := si.get_height()
+        for b in n:
+            var frame := Rect2i(b * w, 0, w, h)
+            var after := bi.get_region(frame)
+            after.blend_rect(ii, frame, Vector2i.ZERO)
+            _check("%s beat %d: between + in is the next state" % [key, b], after.get_data() == si.get_region(Rect2i((b + 1) * w, 0, w, h)).get_data(), true)
+            var before := bi.get_region(frame)
+            before.blend_rect(oi, frame, Vector2i.ZERO)
+            _check("%s beat %d: between + out is the state before" % [key, b], before.get_data() == si.get_region(frame).get_data(), true)
+    _done()
+
+
+## A step plays its beat: queued, the old pieces going and the new flying in,
+## a pop when it lands, then the next state at rest. A reload shows the state
+## reached with nothing to play.
+func _test_staged_stage_plays_a_beat() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("fence")
+    stage.setup("Mend the Fence", "hammer", layers["broken"], layers["sound"], 5, 0, "fence")
+    _check("the fence is staged", stage._is_staged(), true)
+    _check("at rest: nothing to play", stage._beat_queue.size(), 0)
+    stage.set_progress(1)
+    _check("a step queues its beat", stage._beat_queue, [0] as Array[int])
+    _check("the beat counts as shown", stage._beats_shown, 1)
+    stage._process(0.2)
+    _check("part way: still playing", stage._beat_queue.size(), 1)
+    stage._process(0.2)
+    _check("it landed: a pop", stage._pops.size(), 1)
+    _check("…saying what was done", stage._pops[0]["text"], StageScript.STAGED["fence"][0]["say"])
+    _check("…with dust", stage._particles.size() > 0, true)
+    stage._process(0.3)
+    _check("played out", stage._beat_queue.size(), 0)
+    stage.set_progress(3)
+    _check("two steps at once: two beats in turn", stage._beat_queue, [1, 2] as Array[int])
+    for i in 20:
+        stage._process(0.1)
+    _check("both played", stage._beat_queue.size(), 0)
+    stage.finish(3)
+    _check("finishing plays the rest", stage._beat_queue, [3, 4] as Array[int])
+    # One long frame (a stalled tab) plays through both, each landing once.
+    # (_advance_beat alone: _process would also age the pops by the same frame.)
+    stage._pops.clear()
+    stage._advance_beat(StageScript.BEAT_TIME * 2.0 + 0.05)
+    _check("a long frame plays every beat it covers", stage._beat_queue.size(), 0)
+    _check("…each landing once", stage._pops.size(), 2)
+    # The strips' rects were read at setup, one image read per strip.
+    _check("the in strip's rects are cached whole", (StageScript._used_cache.get("fence-in", []) as Array).size(), StageScript.STAGED["fence"].size())
+    stage.setup("Mend the Fence", "hammer", layers["broken"], layers["sound"], 5, 3, "fence")
+    _check("a reload shows the beats reached", stage._beats_shown, 3)
+    _check("…with nothing to play", stage._beat_queue.size(), 0)
+    stage.set_progress(3)
+    _check("…nor on resuming at the same step", stage._beat_queue.size(), 0)
+    stage.queue_free()
     _done()

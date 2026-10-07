@@ -226,7 +226,11 @@ function NailHead([int]$x, [int]$y) {
 }
 
 
-function CloseupFence([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
+# The fence from its piece flags ($f, a set): the right bay's top rail always
+# holds; broken, its middle rail is snapped in two (mid-left, mid-right), its
+# bottom rail lies in the grass (low-fallen) among splinters; mended, the rails
+# are up (low-set, mid-set) and nailed (low-nails, mid-nails).
+function CloseupFence([int]$ax, [int]$ay, [int]$aw, [int]$ah, $f) {
     # Backdrop: a dim sky wash, then ground.
     Rect $ax $ay $aw $ah (C '1E2A22')
     $groundH = 12
@@ -239,27 +243,25 @@ function CloseupFence([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
     foreach ($p in $posts) { Rect ($p - 2) ($foot - 1) 14 2 (C '000000' 70) }
     # Left bay: whole.
     foreach ($ry in $rails) { Rail ($posts[0] + 10) $ry ($posts[1] - 1) $ry }
-    if (-not $broken) {
-        foreach ($ry in $rails) { Rail ($posts[1] + 10) $ry ($posts[2] - 1) $ry }
-    } else {
-        # Right bay: top rail holds; middle rail snapped in two; bottom rail
-        # down in the grass.
-        Rail ($posts[1] + 10) $rails[0] ($posts[2] - 1) $rails[0]
-        Rail ($posts[1] + 10) $rails[1] ($posts[1] + 36) ($rails[1] + 7) 'R'
-        Rail ($posts[2] - 30) ($rails[1] + 12) ($posts[2] - 1) $rails[1] 'L'
-        Rail ($posts[1] + 14) ($foot - 6) ($posts[2] - 8) ($foot - 9)
-        # Splinters in the grass.
+    Rail ($posts[1] + 10) $rails[0] ($posts[2] - 1) $rails[0]
+    if ($f.ContainsKey('mid-set')) { Rail ($posts[1] + 10) $rails[1] ($posts[2] - 1) $rails[1] }
+    if ($f.ContainsKey('low-set')) { Rail ($posts[1] + 10) $rails[2] ($posts[2] - 1) $rails[2] }
+    if ($f.ContainsKey('mid-left')) { Rail ($posts[1] + 10) $rails[1] ($posts[1] + 36) ($rails[1] + 7) 'R' }
+    if ($f.ContainsKey('mid-right')) { Rail ($posts[2] - 30) ($rails[1] + 12) ($posts[2] - 1) $rails[1] 'L' }
+    if ($f.ContainsKey('low-fallen')) { Rail ($posts[1] + 14) ($foot - 6) ($posts[2] - 8) ($foot - 9) }
+    if ($f.ContainsKey('splinters')) {
         foreach ($s in @(@(44, -3), @(49, -2), @(60, -4))) { Px ($posts[1] + $s[0]) ($foot + $s[1]) $HI2; Px ($posts[1] + $s[0] + 1) ($foot + $s[1]) $MID }
     }
     foreach ($p in $posts) { Post $p $top $foot }
-    # Nails where rails meet posts.
-    foreach ($p in $posts) {
-        foreach ($ry in $rails) {
-            if ($p -gt $posts[0]) { NailHead ($p + 2) ($ry + 2) }
-            if ($p -lt $posts[2]) { NailHead ($p + 6) ($ry + 2) }
+    # Nails where rails meet posts; the right bay's lower two only once nailed.
+    for ($i = 0; $i -lt 3; $i++) {
+        foreach ($r in 0..2) {
+            $p = $posts[$i]; $ry = $rails[$r]
+            $unnailed = ($r -eq 1 -and -not $f.ContainsKey('mid-nails')) -or ($r -eq 2 -and -not $f.ContainsKey('low-nails'))
+            if ($i -gt 0 -and -not ($i -eq 2 -and $unnailed)) { NailHead ($p + 2) ($ry + 2) }
+            if ($i -lt 2 -and -not ($i -eq 1 -and $unnailed)) { NailHead ($p + 6) ($ry + 2) }
         }
     }
-    Rect $ax $ay $aw $ah (C '000000' 0)
 }
 
 # The hammer, side-on: the head hangs at the end of a level handle, its face
@@ -544,7 +546,13 @@ function Crank([int]$x, [int]$y) {
     Rect ($x + 4) ($y - 10) 5 3 $W1; Rect ($x + 4) ($y - 10) 5 1 $W2; Rect ($x + 8) ($y - 10) 1 3 $W0
 }
 
-function WellCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
+# The well from its piece flags ($f): broken, the right post is snapped
+# (post-snapped) with its top in the grass (post-top), the beam has fallen
+# across the rim (beam-fallen), the drum rolled into the grass (drum-grass),
+# slack rope lies over the rim (rope-slack), the bucket lies on its side in the
+# grass (bucket-grass), with splinters; mended, the post stands whole
+# (post-whole) under the beam, with the drum, crank, rope and bucket hung.
+function WellCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, $f) {
     Rect $ax $ay $aw $ah (C '1E2A22')
     $groundH = 30
     Ground $ax ($ay + $ah - $groundH) $aw $groundH
@@ -552,28 +560,27 @@ function WellCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
     $foot = $cy + 4
     $lx = $cx - 50; $rxp = $cx + 42
     $beamY = $ay + 7
-    if (-not $broken) {
-        # Posts behind the curb, frame above.
-        WellPost $lx ($beamY + 3) $foot $false
-        WellPost $rxp ($beamY + 3) $foot $false
-        Curb $cy 52 15 37 10 22
-        Beam ($lx - 4) $beamY ($rxp + 12) $beamY 7
-        Drum ($lx + 8) ($beamY + 22) ($rxp - $lx - 8) 10 30 58
-        Crank ($rxp + 8) ($beamY + 26)
-        Rope ($cx - 1) ($beamY + 32) ($cy - 6)
-        Bucket ($cx - 6) ($cy - 6) $false
-    } else {
-        WellPost $lx ($beamY + 3) $foot $false
-        WellPost $rxp ($cy - 20) $foot $true
-        Curb $cy 52 15 37 10 22
-        # The beam fell: one end on the rim, the other in the grass.
-        Beam ($lx + 10) ($cy - 12) ($rxp + 14) ($cy + 22) 7
-        # The snapped top of the right post, down in the grass.
-        Beam ($rxp - 34) ($ay + $ah - 13) ($rxp - 2) ($ay + $ah - 15) 8 'L'
-        # The drum rolled off; slack rope across the rim.
-        Drum ($ax + 6) ($ay + $ah - 18) 34 10 10 22
+    # Posts behind the curb, the frame above it.
+    WellPost $lx ($beamY + 3) $foot $false
+    if ($f.ContainsKey('post-whole')) { WellPost $rxp ($beamY + 3) $foot $false }
+    if ($f.ContainsKey('post-snapped')) { WellPost $rxp ($cy - 20) $foot $true }
+    Curb $cy 52 15 37 10 22
+    if ($f.ContainsKey('beam')) { Beam ($lx - 4) $beamY ($rxp + 12) $beamY 7 }
+    if ($f.ContainsKey('drum')) { Drum ($lx + 8) ($beamY + 22) ($rxp - $lx - 8) 10 30 58 }
+    if ($f.ContainsKey('crank')) { Crank ($rxp + 8) ($beamY + 26) }
+    if ($f.ContainsKey('rope')) { Rope ($cx - 1) ($beamY + 32) ($cy - 6) }
+    if ($f.ContainsKey('bucket')) { Bucket ($cx - 6) ($cy - 6) $false }
+    # The beam fell: one end on the rim, the other in the grass.
+    if ($f.ContainsKey('beam-fallen')) { Beam ($lx + 10) ($cy - 12) ($rxp + 14) ($cy + 22) 7 }
+    # The snapped top of the right post, down in the grass.
+    if ($f.ContainsKey('post-top')) { Beam ($rxp - 34) ($ay + $ah - 13) ($rxp - 2) ($ay + $ah - 15) 8 'L' }
+    # The drum rolled off; slack rope across the rim.
+    if ($f.ContainsKey('drum-grass')) { Drum ($ax + 6) ($ay + $ah - 18) 34 10 10 22 }
+    if ($f.ContainsKey('rope-slack')) {
         for ($i = 0; $i -lt 40; $i++) { $ry = $cy - 13 + [int]([Math]::Sin($i / 5.0) * 2) + [int]($i / 6); Px ($lx + 16 + $i) $ry $R1; Px ($lx + 16 + $i) ($ry + 1) $R0 }
-        Bucket ($cx + 44) ($ay + $ah - 16) $true
+    }
+    if ($f.ContainsKey('bucket-grass')) { Bucket ($cx + 44) ($ay + $ah - 16) $true }
+    if ($f.ContainsKey('splinters')) {
         foreach ($s in @(@(-10, -6), @(-6, -4), @(4, -7))) { Px ($rxp + $s[0]) ($ay + $ah + $s[1]) $HI2; Px ($rxp + $s[0] + 1) ($ay + $ah + $s[1]) $MID }
     }
 }
@@ -844,8 +851,10 @@ function Plaster([int]$x, [int]$y, [int]$w, [int]$h) {
     }
 }
 
-# A plank door with iron strap hinges and a ring pull.
-function Door([int]$x, [int]$y, [int]$w, [int]$h) {
+# A plank door with iron strap hinges and a ring pull. The lower strap is
+# 'hung', 'loose' (torn from its far bolt, hanging from the hinge end) or
+# 'none'.
+function Door([int]$x, [int]$y, [int]$w, [int]$h, [string]$lower = 'hung') {
     SeedAt @($x, $y, $w, $h, 6)
     for ($b = 0; $b -lt $w; $b += 6) {
         $bw = [Math]::Min(6, $w - $b)
@@ -856,7 +865,20 @@ function Door([int]$x, [int]$y, [int]$w, [int]$h) {
     }
     Rect ($x + $w - 1) $y 1 $h $OUT
     Rect $x $y $w 1 $OUT
-    foreach ($hy in @(($y + 6), ($y + $h - 9))) { Rect ($x + 1) $hy ($w - 8) 3 $I1; Rect ($x + 1) $hy ($w - 8) 1 $I3; Px ($x + 3) ($hy + 1) $I0; Px ($x + 9) ($hy + 1) $I0 }
+    $straps = @(($y + 6))
+    if ($lower -eq 'hung') { $straps += ($y + $h - 9) }
+    foreach ($hy in $straps) { Rect ($x + 1) $hy ($w - 8) 3 $I1; Rect ($x + 1) $hy ($w - 8) 1 $I3; Px ($x + 3) ($hy + 1) $I0; Px ($x + 9) ($hy + 1) $I0 }
+    if ($lower -eq 'loose') {
+        # Swung down about its first bolt.
+        $hy = $y + $h - 9
+        for ($c = 0; $c -lt $w - 8; $c++) {
+            $dy = [int][Math]::Round($c * 0.35)
+            Px ($x + 1 + $c) ($hy + $dy) $I3; Px ($x + 1 + $c) ($hy + 1 + $dy) $I1; Px ($x + 1 + $c) ($hy + 2 + $dy) $I1
+        }
+        Px ($x + 3) ($hy + 2) $I0
+        # Where the far bolt tore out.
+        Px ($x + 9) ($hy + 1) $OUT; Px ($x + 10) ($hy + 1) $DARK
+    }
     $rx = $x + $w - 6; $ry = $y + [int]($h / 2)
     Px $rx $ry $I3; Px ($rx - 1) ($ry + 1) $I2; Px ($rx + 1) ($ry + 1) $I2; Px ($rx - 1) ($ry + 2) $I1; Px ($rx + 1) ($ry + 2) $I1; Px $rx ($ry + 3) $I1
 }
@@ -875,17 +897,47 @@ function Shutter([int]$x, [int]$y, [int]$w, [int]$h, [double]$tilt) {
     }
 }
 
-function Window([int]$x, [int]$y, [int]$w, [int]$h, [bool]$hanging) {
+# A window with two shutters; the right one is 'hung', 'hanging' (from its top
+# hinge, askew) or 'none'.
+function Window([int]$x, [int]$y, [int]$w, [int]$h, [string]$right = 'hung') {
     Rect ($x - 1) ($y - 1) ($w + 2) ($h + 2) $OUT
     Rect $x $y $w $h (C '1C1A22')
     Rect ($x + [int]($w / 2)) $y 1 $h $DARK; Rect $x ($y + [int]($h / 2)) $w 1 $DARK
     Rect ($x + 1) ($y + 1) 3 2 (C '4A5868'); Rect ($x + [int]($w / 2) + 2) ($y + 1) 3 2 (C '4A5868')
     Timber ($x - 3) ($y + $h + 1) ($w + 6) 4
     Shutter ($x - 12) $y 11 $h 0
-    if ($hanging) {
+    if ($right -eq 'hanging') {
         Shutter ($x + $w + 1) ($y + 2) 11 $h 0.55
-    } else {
+    } elseif ($right -eq 'hung') {
         Shutter ($x + $w + 1) $y 11 $h 0
+    }
+}
+
+# The shop's hanging sign: two chains from iron brackets and a board with two
+# painted lines. 'hung', or 'hanging' by its left chain with the right one
+# snapped, or 'none' (brackets only).
+function ShopSign([int]$x, [int]$y, [string]$mode) {
+    Rect ($x + 4) $y 1 1 $I1; Rect ($x + 20) $y 1 1 $I1
+    if ($mode -eq 'none') { return }
+    Rect ($x + 4) $y 1 6 $I1
+    $tilt = 0.0
+    if ($mode -eq 'hanging') {
+        $tilt = 0.45
+        # The right chain's snapped end.
+        Rect ($x + 20) $y 1 2 $I1
+    } else {
+        Rect ($x + 20) $y 1 6 $I1
+    }
+    $w = 24; $h = 12
+    for ($c = 0; $c -lt $w; $c++) {
+        $dy = [int][Math]::Round([Math]::Max(0, $c - 4) * $tilt)
+        for ($r = 0; $r -lt $h; $r++) {
+            $col = $DARK
+            if ($r -eq 0 -or $r -eq $h - 1 -or $c -eq 0 -or $c -eq $w - 1) { $col = $OUT }
+            elseif ($r -eq 1) { $col = $MID }
+            elseif (($r -eq 4 -and $c -ge 5 -and $c -lt 19) -or ($r -eq 7 -and $c -ge 7 -and $c -lt 17)) { $col = $HI2 }
+            Px ($x + $c) ($y + 6 + $r + $dy) $col
+        }
     }
 }
 
@@ -910,19 +962,29 @@ function Board([int]$x0, [int]$y0, [int]$x1, [int]$y1, [int]$h) {
     for ($r = 0; $r -lt $h; $r++) { for ($j = 1; $j -le $len[$r % 5]; $j++) { Px ($x1 + $j) ($y1 + $r) $(if ($r -eq 1) { $HI2 } else { $MID }) }; Px ($x1 + $len[$r % 5] + 1) ($y1 + $r) $OUT }
 }
 
-function Heap([int]$x, [int]$y) {
-    Rect ($x - 8) ($y + 16) 84 3 (C '000000' 80)
-    # A board leaning against the wall, others criss-crossed at its foot.
-    Board ($x + 8) ($y + 14) ($x + 26) ($y - 22) 6
-    Board ($x - 6) ($y + 12) ($x + 46) ($y - 4) 7
-    Shingle ($x + 2) ($y + 4); Shingle ($x + 10) ($y + 9); Shingle ($x + 34) ($y + 1); Shingle ($x + 52) ($y + 8)
-    Board ($x + 14) ($y + 2) ($x + 66) ($y + 12) 7
-    Shingle ($x + 40) ($y + 10); Shingle ($x + 24) ($y + 12); Shingle ($x + 60) ($y + 13)
-    Board ($x) ($y + 15) ($x + 38) ($y + 11) 5
+# The heap before the door, from the shop's piece flags ($f), bottom of the
+# pile first: a board leaning on the wall (board1), others criss-crossed at its
+# foot (board2, board3, board4), slipped shingles between them (shingles-a1,
+# shingles-a2, shingles-b), and its shadow and splinters (heap-dust).
+function Heap([int]$x, [int]$y, $f) {
+    if ($f.ContainsKey('heap-dust')) { Rect ($x - 8) ($y + 16) 84 3 (C '000000' 80) }
+    if ($f.ContainsKey('board1')) { Board ($x + 8) ($y + 14) ($x + 26) ($y - 22) 6 }
+    if ($f.ContainsKey('board2')) { Board ($x - 6) ($y + 12) ($x + 46) ($y - 4) 7 }
+    if ($f.ContainsKey('shingles-a1')) { Shingle ($x + 2) ($y + 4); Shingle ($x + 10) ($y + 9) }
+    if ($f.ContainsKey('shingles-a2')) { Shingle ($x + 34) ($y + 1); Shingle ($x + 52) ($y + 8) }
+    if ($f.ContainsKey('board3')) { Board ($x + 14) ($y + 2) ($x + 66) ($y + 12) 7 }
+    if ($f.ContainsKey('shingles-b')) { Shingle ($x + 40) ($y + 10); Shingle ($x + 24) ($y + 12); Shingle ($x + 60) ($y + 13) }
+    if ($f.ContainsKey('board4')) { Board ($x) ($y + 15) ($x + 38) ($y + 11) 5 }
+    if (-not $f.ContainsKey('heap-dust')) { return }
     foreach ($s in @(@(72, 15), @(76, 13), @(-9, 14), @(48, 17), @(30, 17), @(80, 16))) { Px ($x + $s[0]) ($y + $s[1]) $HI2; Px ($x + $s[0] + 1) ($y + $s[1]) $MID }
 }
 
-function ShopCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
+# The shop front from its piece flags ($f): broken, the heap (Heap), a crack in
+# the plaster (crack), the right shutter hanging askew (shutter-hanging), the
+# door's lower strap torn loose (strap-loose) and the sign hanging by one chain
+# (sign-hanging); mended, the shutter, strap and sign set right (shutter,
+# strap, sign).
+function ShopCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, $f) {
     $groundY = $ay + $ah - 14
     # The wall: plaster panels in a timber frame on a stone footing.
     Plaster $ax $ay $aw ($groundY - $ay)
@@ -931,20 +993,20 @@ function ShopCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
     # A brace in the right bay.
     for ($i = 0; $i -lt 56; $i++) { $by = $ay + 10 + [int]($i * 0.86); Rect ($ax + 108 + $i) $by 5 1 $DARK; Px ($ax + 108 + $i) $by $OUT; Px ($ax + 112 + $i) $by $MID }
     for ($sx = $ax; $sx -lt $ax + $aw; $sx += 11) { Rect $sx ($groundY - 6) 11 6 $S3; Rect $sx ($groundY - 6) 11 1 $S4; Rect $sx ($groundY - 6) 1 6 $S1; Rect $sx ($groundY - 1) 11 1 $S1 }
-    Door ($ax + 62) ($ay + 16) 26 ($groundY - $ay - 22)
+    $strap = $(if ($f.ContainsKey('strap')) { 'hung' } elseif ($f.ContainsKey('strap-loose')) { 'loose' } else { 'none' })
+    Door ($ax + 62) ($ay + 16) 26 ($groundY - $ay - 22) $strap
     Timber ($ax + 59) ($ay + 12) 32 4
-    Window ($ax + 124) ($ay + 20) 22 18 $broken
+    $shutter = $(if ($f.ContainsKey('shutter')) { 'hung' } elseif ($f.ContainsKey('shutter-hanging')) { 'hanging' } else { 'none' })
+    Window ($ax + 124) ($ay + 20) 22 18 $shutter
     # A hanging sign over the door bay.
-    Rect ($ax + 18) ($ay + 14) 1 6 $I1; Rect ($ax + 34) ($ay + 14) 1 6 $I1
-    Timber ($ax + 14) ($ay + 20) 24 12
-    Rect ($ax + 19) ($ay + 24) 14 1 $HI2; Rect ($ax + 21) ($ay + 27) 10 1 $HI2
+    $sign = $(if ($f.ContainsKey('sign')) { 'hung' } elseif ($f.ContainsKey('sign-hanging')) { 'hanging' } else { 'none' })
+    ShopSign ($ax + 14) ($ay + 14) $sign
     Strip $ax $groundY $aw 14 'dirt'
-    if ($broken) {
-        # A crack in the plaster and the heap before the door.
+    if ($f.ContainsKey('crack')) {
         $cx = $ax + 30; $cy = $ay + 36
         foreach ($d in @(@(0, 0), @(1, 1), @(1, 2), @(2, 3), @(2, 4), @(1, 5), @(2, 6), @(3, 7), @(4, 7))) { Px ($cx + $d[0]) ($cy + $d[1]) $PL0 }
-        Heap ($ax + 56) ($groundY - 6)
     }
+    Heap ($ax + 56) ($groundY - 6) $f
 }
 
 # --- crate --------------------------------------------------------------------
@@ -989,25 +1051,122 @@ function Lid([int]$x, [int]$y, [int]$w, [int]$h, [double]$tilt) {
     }
 }
 
-function CrateCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
+# The crate from its piece flags ($f): broken, the lid knocked loose and slid
+# off to the right (lid-loose), a board sprung free in the grass (board-grass)
+# and two bent nails at the rim (nails-bent); mended, the lid on (lid) and
+# nailed down each side (nails-left, nails-right). The open top's straw is
+# always drawn — the lid covers it.
+function CrateCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, $f) {
     Rect $ax $ay $aw $ah (C '1E2A22')
     Strip $ax ($ay + $ah - 26) $aw 26 'grass'
     $w = 70; $h = 42; $topH = 12
     $x = $ax + [int](($aw - $w) / 2); $y = $ay + $ah - 18 - $h - $topH
-    if ($broken) {
-        CrateTop $x $y $w $topH
-        CrateBox $x $y $w $h $topH
-        # The lid knocked loose: slid off to the right, one end up on the rim.
-        Lid ($x + 22) ($y - 10) 60 15 0.22
-        # A board sprung free, lying in the grass, and two bent nails.
-        Board ($x - 20) ($ay + $ah - 10) ($x + 8) ($ay + $ah - 13) 5
+    CrateTop $x $y $w $topH
+    CrateBox $x $y $w $h $topH
+    # The lid knocked loose: slid off to the right, one end up on the rim.
+    if ($f.ContainsKey('lid-loose')) { Lid ($x + 22) ($y - 10) 60 15 0.22 }
+    if ($f.ContainsKey('board-grass')) { Board ($x - 20) ($ay + $ah - 10) ($x + 8) ($ay + $ah - 13) 5 }
+    if ($f.ContainsKey('nails-bent')) {
         Px ($x + 4) ($y + 1) $I2; Px ($x + 5) ($y) $I2; Px ($x + 6) ($y - 1) $I3
         Px ($x + 14) ($y + 1) $I2; Px ($x + 15) ($y) $I3
-    } else {
-        CrateBox $x $y $w $h $topH
-        Lid $x $y $w $topH 0
-        foreach ($nx in @(($x + 3), ($x + $w - 5))) { foreach ($ny in @(($y + 2), ($y + 7))) { NailHead $nx $ny } }
     }
+    if ($f.ContainsKey('lid')) { Lid $x $y $w $topH 0 }
+    if ($f.ContainsKey('nails-left')) { foreach ($ny in @(($y + 2), ($y + 7))) { NailHead ($x + 3) $ny } }
+    if ($f.ContainsKey('nails-right')) { foreach ($ny in @(($y + 2), ($y + 7))) { NailHead ($x + $w - 5) $ny } }
+}
+
+# --- staged close-ups (LLM-713) ------------------------------------------------
+#
+# A close-up mends a piece at a time: its scene is drawn from a set of piece
+# flags, and a list of beats each takes broken pieces away (remove) and puts
+# mended ones in (add). For every beat the generator draws the scene before,
+# between (the removals done, nothing added yet) and after, and writes four
+# strips per site, one frame per beat:
+#   <site>-states   N+1 frames: the scene after 0..N beats
+#   <site>-between  N frames: beat k's between
+#   <site>-in       N frames: where after differs from between, coloured as
+#                   after (what beat k puts in), clear elsewhere
+#   <site>-out      N frames: where before differs from between, coloured as
+#                   before (what beat k takes away)
+# repair_stage.gd draws `between` with `out` going and `in` coming; between +
+# in is exactly after, and between + out exactly before, so occlusion (a post
+# behind the curb) comes out right. STAGED in repair_stage.gd gives each beat
+# its motion and must list as many beats as here. <site>-broken and -mended are
+# frames 0 and N.
+
+function PixelBytes($bmp) {
+    $r = New-Object System.Drawing.Rectangle 0, 0, $bmp.Width, $bmp.Height
+    $d = $bmp.LockBits($r, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $a = New-Object byte[] ($d.Stride * $bmp.Height)
+    [System.Runtime.InteropServices.Marshal]::Copy($d.Scan0, $a, 0, $a.Length)
+    $bmp.UnlockBits($d)
+    return , $a
+}
+
+# A bitmap of the pixels where $a differs from $ref, coloured from $a.
+function DiffBitmap([byte[]]$a, [byte[]]$ref, [int]$w, [int]$h) {
+    $o = New-Object byte[] $a.Length
+    for ($i = 0; $i -lt $a.Length; $i += 4) {
+        if ($a[$i] -ne $ref[$i] -or $a[$i + 1] -ne $ref[$i + 1] -or $a[$i + 2] -ne $ref[$i + 2] -or $a[$i + 3] -ne $ref[$i + 3]) {
+            $o[$i] = $a[$i]; $o[$i + 1] = $a[$i + 1]; $o[$i + 2] = $a[$i + 2]; $o[$i + 3] = $a[$i + 3]
+        }
+    }
+    $b = New-Object System.Drawing.Bitmap $w, $h, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $r = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+    $d = $b.LockBits($r, [System.Drawing.Imaging.ImageLockMode]::WriteOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    [System.Runtime.InteropServices.Marshal]::Copy($o, 0, $d.Scan0, $o.Length)
+    $b.UnlockBits($d)
+    return $b
+}
+
+function RenderScene([scriptblock]$draw, [int]$w, [int]$h, $flags) {
+    NewCanvas $w $h
+    & $draw $flags
+    $script:g.Dispose()
+    $b = $script:bmp
+    $script:bmp = $null; $script:g = $null
+    return $b
+}
+
+function SaveStrip([string]$name, $frames, [int]$w, [int]$h) {
+    NewCanvas ($w * $frames.Count) $h
+    for ($i = 0; $i -lt $frames.Count; $i++) { $script:g.DrawImageUnscaled($frames[$i], $i * $w, 0) }
+    SavePng $name
+}
+
+function SaveBitmap($b, [string]$name) {
+    $b.Save((Join-Path $Dest "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+}
+
+function StagedSite([string]$key, [int]$w, [int]$h, [scriptblock]$draw, [string[]]$start, $beats) {
+    $flags = @{}
+    foreach ($s in $start) { $flags[$s] = 1 }
+    $states = New-Object System.Collections.ArrayList
+    $between = New-Object System.Collections.ArrayList
+    $ins = New-Object System.Collections.ArrayList
+    $outs = New-Object System.Collections.ArrayList
+    [void]$states.Add((RenderScene $draw $w $h $flags.Clone()))
+    foreach ($beat in $beats) {
+        foreach ($r in $beat.remove) {
+            if (-not $flags.ContainsKey($r)) { throw "$key beat removes '$r', which is not there" }
+            $flags.Remove($r)
+        }
+        $between_scene = RenderScene $draw $w $h $flags.Clone()
+        foreach ($a in $beat.add) { $flags[$a] = 1 }
+        $after = RenderScene $draw $w $h $flags.Clone()
+        $bb = PixelBytes $states[$states.Count - 1]; $mb = PixelBytes $between_scene; $ab = PixelBytes $after
+        [void]$ins.Add((DiffBitmap $ab $mb $w $h))
+        [void]$outs.Add((DiffBitmap $bb $mb $w $h))
+        [void]$between.Add($between_scene)
+        [void]$states.Add($after)
+    }
+    SaveStrip "$key-states" $states $w $h
+    SaveStrip "$key-between" $between $w $h
+    SaveStrip "$key-in" $ins $w $h
+    SaveStrip "$key-out" $outs $w $h
+    SaveBitmap $states[0] "$key-broken"
+    SaveBitmap $states[$states.Count - 1] "$key-mended"
+    foreach ($b in @($states + $between + $ins + $outs)) { $b.Dispose() }
 }
 
 
@@ -1192,12 +1351,51 @@ New-Item -ItemType Directory -Force $Dest | Out-Null
 # The pictures, broken and mended, one stage px per art px, 176 wide.
 foreach ($broken in @($true, $false)) {
     $tag = $(if ($broken) { 'broken' } else { 'mended' })
-    NewCanvas 176 72; CloseupFence 0 0 176 72 $broken; SavePng "fence-$tag"
-    NewCanvas 176 96; WellCloseup 0 0 176 96 $broken; SavePng "well-$tag"
-    NewCanvas 176 88; ShopCloseup 0 0 176 88 $broken; SavePng "shop-$tag"
-    NewCanvas 176 88; CrateCloseup 0 0 176 88 $broken; SavePng "crate-$tag"
     NewCanvas 176 88; SignCloseup 0 0 176 88 $broken; SavePng "sign-$tag"
 }
+
+# The staged close-ups, a beat per round at the default step counts (fence and
+# crate 5, well 10, shop 12). Each beat's motion is STAGED in repair_stage.gd.
+StagedSite 'fence' 176 72 { param($f) CloseupFence 0 0 176 72 $f } @('low-fallen', 'mid-left', 'mid-right', 'splinters') @(
+    @{ remove = @('low-fallen', 'splinters'); add = @('low-set') },
+    @{ remove = @(); add = @('low-nails') },
+    @{ remove = @('mid-left', 'mid-right'); add = @() },
+    @{ remove = @(); add = @('mid-set') },
+    @{ remove = @(); add = @('mid-nails') }
+)
+StagedSite 'well' 176 96 { param($f) WellCloseup 0 0 176 96 $f } @('post-snapped', 'post-top', 'beam-fallen', 'drum-grass', 'rope-slack', 'bucket-grass', 'splinters') @(
+    @{ remove = @('post-top', 'splinters'); add = @() },
+    @{ remove = @('post-snapped'); add = @('post-whole') },
+    @{ remove = @('beam-fallen'); add = @() },
+    @{ remove = @(); add = @('beam') },
+    @{ remove = @('rope-slack'); add = @() },
+    @{ remove = @('drum-grass'); add = @() },
+    @{ remove = @(); add = @('drum') },
+    @{ remove = @(); add = @('crank') },
+    @{ remove = @(); add = @('rope') },
+    @{ remove = @('bucket-grass'); add = @('bucket') }
+)
+StagedSite 'shop' 176 88 { param($f) ShopCloseup 0 0 176 88 $f } @('board1', 'board2', 'board3', 'board4', 'shingles-a1', 'shingles-a2', 'shingles-b', 'heap-dust', 'crack', 'shutter-hanging', 'strap-loose', 'sign-hanging') @(
+    @{ remove = @('board4'); add = @() },
+    @{ remove = @('shingles-b'); add = @() },
+    @{ remove = @('board3'); add = @() },
+    @{ remove = @('shingles-a2'); add = @() },
+    @{ remove = @('shingles-a1'); add = @() },
+    @{ remove = @('board2'); add = @() },
+    @{ remove = @('board1'); add = @() },
+    @{ remove = @('heap-dust'); add = @() },
+    @{ remove = @('crack'); add = @() },
+    @{ remove = @('shutter-hanging'); add = @('shutter') },
+    @{ remove = @('strap-loose'); add = @('strap') },
+    @{ remove = @('sign-hanging'); add = @('sign') }
+)
+StagedSite 'crate' 176 88 { param($f) CrateCloseup 0 0 176 88 $f } @('lid-loose', 'board-grass', 'nails-bent') @(
+    @{ remove = @('nails-bent'); add = @() },
+    @{ remove = @('board-grass'); add = @() },
+    @{ remove = @('lid-loose'); add = @('lid') },
+    @{ remove = @(); add = @('nails-left') },
+    @{ remove = @(); add = @('nails-right') }
+)
 
 # The signpost in layers (repair_stage.gd draws these, not the two pictures).
 NewCanvas 176 88; SignBase 0 0 176 88; SavePng 'sign-base'
