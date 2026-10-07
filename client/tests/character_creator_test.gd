@@ -19,6 +19,7 @@ const TESTS := [
     "_test_post_refuses_a_second_request",
     "_test_save_that_cannot_start_ends_the_save",
     "_test_no_close_mid_save",
+    "_test_villager_mode",
 ]
 
 var _creator: Control = null
@@ -91,6 +92,7 @@ func _reset() -> void:
     _creator._wardrobe = {"categories": [], "items": [], "colours": {}}
     _creator._picks = {"figure": "straight", "items": {}}
     _creator._name_edit.text = "Tess"
+    _creator._npc_id = ""
 
 
 ## Occupy the creator's HTTPRequest so its next request() returns ERR_BUSY.
@@ -142,4 +144,20 @@ func _test_no_close_mid_save() -> void:
     _creator._saving = false
     _creator._close()
     _check("close — allowed once the save ends", _creator.visible, false)
+    _done()
+
+
+func _test_villager_mode() -> void:
+    _creator.open_for_npc("hannah", "Hannah Boggs", {})
+    _check("villager — titled with the villager", _creator._title.text, "Dress Hannah Boggs")
+    _check("villager — no name field", _creator._name_edit.visible, false)
+    _check("villager — can cancel", _creator._cancel_button.visible, true)
+    _busy()
+    _creator._on_save()
+    _check("villager — a save that cannot start ends the save", _creator._saving, false)
+    _check("villager — no callback left connected", _connections(), 0)
+    _creator._http.cancel_request()
+    _creator.open(true, "Tess", {})
+    _check("player — reopening as the player clears the villager", _creator._npc_id, "")
+    _check("player — the name field is back", _creator._name_edit.visible, true)
     _done()

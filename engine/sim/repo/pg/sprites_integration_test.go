@@ -197,7 +197,7 @@ func TestIntegration_Sprites_UpsertRigSprite(t *testing.T) {
 	ctx := t.Context()
 
 	repo := NewSpritesRepo(f.Pool)
-	first, err := sim.NewPCOutfitSprite("pc-1", "Tess", json.RawMessage(`[{"sheet":"/b.png","ramps":{"skin":1}}]`))
+	first, err := sim.NewOutfitSprite("pc-1", "Tess", json.RawMessage(`[{"sheet":"/b.png","ramps":{"skin":1}}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestIntegration_Sprites_UpsertRigSprite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
-	second, _ := sim.NewPCOutfitSprite("pc-1", "Tess Renamed", json.RawMessage(`[{"sheet":"/b.png","ramps":{"skin":7}}]`))
+	second, _ := sim.NewOutfitSprite("pc-1", "Tess Renamed", json.RawMessage(`[{"sheet":"/b.png","ramps":{"skin":7}}]`))
 	if err := repo.UpsertRigSprite(ctx, second); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestIntegration_Sprites_UpsertRigSprite(t *testing.T) {
 	if len(got) != len(afterFirst) {
 		t.Fatalf("rows = %d after the re-save, want %d (updated in place)", len(got), len(afterFirst))
 	}
-	s := got[sim.PCOutfitSpriteID("pc-1")]
+	s := got[sim.OutfitSpriteID("pc-1")]
 	if s == nil {
 		t.Fatalf("outfit sprite missing: %v", got)
 	}

@@ -25,6 +25,9 @@ signal npc_schedule_changed(start_min: int, end_min: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_sprite_change_requested(npc_id: String, current_sprite_id: String)
+## Dress… on the SPRITE row (LLM-691) — main opens the character creator for
+## this villager.
+signal npc_dress_requested(npc_id: String)
 signal npc_select_requested(npc_id: String)
 signal entry_policy_changed(object_id: String, policy: String)
 signal asset_visible_when_inside_toggled(asset_id: String, visible: bool)
@@ -228,6 +231,7 @@ var _npc_agent_dropdown: OptionButton = null
 # opens the modal picker. NPC's current sprite_id is stashed for the picker.
 var _npc_sprite_label: Label = null
 var _npc_sprite_change_button: Button = null
+var _npc_dress_button: Button = null
 var _npc_current_sprite_id: String = ""
 var _npc_current_id: String = ""
 # Home / Work are pickers now, not dropdowns — clicking _npc_home_pick_button
@@ -805,6 +809,20 @@ func _ready() -> void:
     _npc_sprite_change_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
     _npc_sprite_change_button.pressed.connect(_on_npc_sprite_change_pressed)
     sprite_row.add_child(_npc_sprite_change_button)
+
+    _npc_dress_button = Button.new()
+    _npc_dress_button.text = "Dress…"
+    _npc_dress_button.tooltip_text = "Dress this villager on the farmer base"
+    _npc_dress_button.add_theme_font_override("font", _font)
+    _npc_dress_button.add_theme_font_size_override("font_size", 12)
+    _npc_dress_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_dress_button.add_theme_stylebox_override("normal", sprite_btn_style)
+    _npc_dress_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+    _npc_dress_button.pressed.connect(func():
+        if _npc_current_id != "":
+            npc_dress_requested.emit(_npc_current_id)
+    )
+    sprite_row.add_child(_npc_dress_button)
 
     # Shared stylebox for the agent dropdown + the attribute add-row's
     # dropdown and button below. Declared once here, reused everywhere
@@ -2705,6 +2723,9 @@ func show_npc_selection(info: Dictionary) -> void:
         sprite_name = _npc_current_sprite_id if _npc_current_sprite_id != "" else "(unknown)"
     _npc_sprite_label.text = sprite_name
     _npc_sprite_label.tooltip_text = sprite_name
+    # Animals carry engine behaviors on their sprite; the engine refuses to
+    # dress them, so the button is not offered.
+    _npc_dress_button.visible = not bool(info.get("animal", false))
 
     # Populate the attribute chip list from info["attributes"] (post-ZBBS-105
     # multi-attribute shape). The legacy behavior field is kept on the wire
