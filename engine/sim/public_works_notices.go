@@ -184,10 +184,10 @@ func PostNoticeboardWithPinned(w *World, objectID VillageObjectID, pinned, autho
 }
 
 // DamageNewsChanged is emitted when the town's broken-things news changes — a
-// well broke or was mended, or the chest crossed the line where it can (or can
-// no longer) pay the bounty, or the bounty setting moved — or the magistrates'
-// notices changed (LLM-706). The client refreshes its ticker off it; the boards
-// have already been reposted.
+// well broke or was mended, a minor work opened or closed, or the chest crossed
+// the line where it can (or can no longer) pay the bounty, or the bounty
+// setting moved — or the magistrates' notices changed (LLM-706). The client
+// refreshes its ticker off it; the boards have already been reposted.
 type DamageNewsChanged struct {
 	EventBase
 	At time.Time
@@ -196,7 +196,8 @@ type DamageNewsChanged struct {
 func (DamageNewsChanged) isSimEvent() {}
 
 // syncPublicWorksNews reposts the boards and emits DamageNewsChanged when the
-// pinned lines differ from what was last posted. The lines are derived from
+// pinned lines differ from what was last posted, and emits it alone when only
+// a minor work's ticker line changed. The lines are derived from
 // the damage state, the chest and the settings, so every writer of any of those
 // calls this: damageObject, repairObject, the estate-rate collection, the
 // constable's wage, the settings route, and FinalizeLoad. A no-op while nothing
@@ -220,12 +221,31 @@ func syncPublicWorksNews(w *World, at time.Time) {
 	if len(ids) > 0 || len(pinned) > 0 {
 		key = strings.Join(ids, ",") + "\n" + strings.Join(pinned, "\n")
 	}
-	if key == w.publicWorksNewsKey {
+	// Minor works ride the ticker only, never the boards: a change there is
+	// news for the client but no reason to repost a board.
+	minorKey := minorWorksTickerKey(w)
+	boardsChanged := key != w.publicWorksNewsKey
+	if !boardsChanged && minorKey == w.minorWorksNewsKey {
 		return
 	}
 	w.publicWorksNewsKey = key
-	repostPublicWorksNotices(w, pinned, at)
+	w.minorWorksNewsKey = minorKey
+	if boardsChanged {
+		repostPublicWorksNotices(w, pinned, at)
+	}
 	w.emit(&DamageNewsChanged{At: at})
+}
+
+// minorWorksTickerKey is every open minor work's id and ticker line, so the
+// key changes when one breaks, mends, or the chest crosses its bounty.
+func minorWorksTickerKey(w *World) string {
+	bounty, _ := w.Settings.publicWorksTerms(PublicWorksMinor)
+	open := PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve)
+	var parts []string
+	for _, obj := range openMinorWorks(w) {
+		parts = append(parts, string(obj.ID)+" "+damageTickerText(w.VillageObjects, w.Structures, w.Assets, obj, bounty, open))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // SyncPublicWorksNews is syncPublicWorksNews for callers outside the package

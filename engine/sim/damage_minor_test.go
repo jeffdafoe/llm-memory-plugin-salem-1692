@@ -106,13 +106,85 @@ func TestMinorWorkFenceBreaksAcrossThreeSegments(t *testing.T) {
 			t.Errorf("the boards carry a minor work: %q", lines)
 		}
 	})
-	if lines := sim.DamageTickerLines(w.Published()); len(lines) != 0 {
-		t.Errorf("the ticker carries a minor work: %+v", lines)
+	if lines := sim.DamageTickerLines(w.Published()); len(lines) != 1 || lines[0].ObjectID != "fence-2" {
+		t.Errorf("ticker = %+v, want the fence's line alone", lines)
 	}
 	// Nothing left to break: the edges are not 'h', and the lone fence has no neighbours.
 	if again := rollMinor(t, w, time.Now().UTC(), 0, 0); again != nil {
 		t.Errorf("a second break landed on %s", again.ID)
 	}
+}
+
+// TestMinorWorkOnTheTickerNotTheBoards — a minor work's break, a chest too poor
+// for its bounty, and its mend each tell the client (DamageNewsChanged) and
+// change its ticker line, and none of them reposts a board: the crier reads the
+// boards aloud, and a minor work is a player's job only.
+func TestMinorWorkOnTheTickerNotTheBoards(t *testing.T) {
+	w, cancel, _ := buildMinorWorksWorld(t)
+	defer cancel()
+	posted := time.Now().UTC().Add(-time.Hour)
+	news := 0
+	mustSend(t, w, func(world *sim.World) {
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if _, ok := evt.(*sim.DamageNewsChanged); ok {
+				news++
+			}
+		}))
+		sim.SetVillageObjectState("board", "two").Fn(world)
+		if _, err := sim.SaveNoticeboardContent("board", "The crier's first line\nThe crier's second line", "two", posted).Fn(world); err != nil {
+			t.Fatal(err)
+		}
+	})
+	boardUntouched := func(when string) {
+		t.Helper()
+		mustSend(t, w, func(world *sim.World) {
+			if c := world.NoticeboardContent["board"]; c == nil || !c.PostedAt.Equal(posted) || c.Pinned != 0 {
+				t.Errorf("%s: board = %+v, want the crier's post untouched", when, c)
+			}
+		})
+	}
+	tickerLine := func() string {
+		t.Helper()
+		lines := sim.DamageTickerLines(w.Published())
+		if len(lines) == 0 {
+			return ""
+		}
+		return lines[0].Text
+	}
+
+	if _, err := w.Send(sim.SetObjectDamage("fence-2", "damage")); err != nil {
+		t.Fatal(err)
+	}
+	if news != 1 {
+		t.Errorf("news events after the break = %d, want 1", news)
+	}
+	if got := tickerLine(); !strings.HasPrefix(got, "A rail has come down on the fence") || !strings.HasSuffix(got, " — the town pays 3 coins to the hand who mends it.") {
+		t.Errorf("ticker after the break = %q", got)
+	}
+	boardUntouched("after the break")
+
+	mustSend(t, w, func(world *sim.World) {
+		world.Environment.TownChest = 0
+		sim.SyncPublicWorksNews(world, time.Now().UTC())
+	})
+	if news != 2 {
+		t.Errorf("news events after the chest emptied = %d, want 2", news)
+	}
+	if got := tickerLine(); !strings.HasSuffix(got, " — the town cannot pay for the mending just now.") {
+		t.Errorf("ticker with an empty chest = %q", got)
+	}
+	boardUntouched("after the chest emptied")
+
+	if _, err := w.Send(sim.SetObjectDamage("fence-2", "repair")); err != nil {
+		t.Fatal(err)
+	}
+	if news != 3 {
+		t.Errorf("news events after the mend = %d, want 3", news)
+	}
+	if got := tickerLine(); got != "" {
+		t.Errorf("ticker after the mend = %q, want nothing", got)
+	}
+	boardUntouched("after the mend")
 }
 
 // TestMinorWorkPlayerMendsTheFence — Pat sees the fence offer (form fence,
