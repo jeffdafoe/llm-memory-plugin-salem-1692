@@ -763,7 +763,9 @@ type NPCSpriteChanged struct {
 func (NPCSpriteChanged) isSimEvent() {}
 
 // NPCCreated is emitted when a new actor is materialized into World.Actors —
-// CreateNPC (admin) and dispatchVisitorSpawn (a traveler arriving off the road).
+// CreateNPC (admin) and dispatchVisitorSpawn (a traveler arriving off the road)
+// — and when a PC is first dressed (SetPCOutfit): a PC with no sprite is drawn
+// by no client, so its first outfit is its appearance.
 // It carries the full render identity inline — including the resolved *Sprite (a
 // pointer into the immutable, lock-free sprite catalog, safe to read after the
 // world goroutine moves on) — so the httpapi hub can build a complete
@@ -787,7 +789,10 @@ type NPCCreated struct {
 	Y           int
 	Facing      string
 	Sprite      *Sprite
-	At          time.Time
+	// InsideStructureID is the structure the actor is inside when it appears
+	// (a new PC is lodged at the inn); empty for one placed outdoors.
+	InsideStructureID StructureID
+	At                time.Time
 }
 
 func (NPCCreated) isSimEvent() {}

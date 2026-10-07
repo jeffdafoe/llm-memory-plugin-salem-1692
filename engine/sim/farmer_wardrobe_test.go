@@ -201,3 +201,30 @@ func TestSetPCOutfit_InstallsWithoutWritingPublishedMap(t *testing.T) {
 		t.Fatalf("another PC's sprite: err = %v", err)
 	}
 }
+
+// TestSetPCOutfit_FirstOutfitAppears: a PC with no sprite has been drawn by
+// no client, so its first outfit is announced as NPCCreated with where it
+// stands — inside the inn, for a new PC.
+func TestSetPCOutfit_FirstOutfitAppears(t *testing.T) {
+	w := NewWorld(Repository{})
+	w.Sprites = map[SpriteID]*Sprite{}
+	w.Actors["pc-1"] = &Actor{ID: "pc-1", Kind: KindPC, LoginUsername: "tester", DisplayName: "Tess",
+		Pos: TilePos{X: 12, Y: 7}, InsideStructureID: "inn"}
+	layers, _ := ValidateFarmerOutfit(outfitJSON(layerJSON(testBody, `{"skin":2}`)))
+	sprite, _ := NewPCOutfitSprite("pc-1", "Tess", layers)
+	var events []Event
+	w.Subscribe(SubscriberFunc(func(_ *World, e Event) { events = append(events, e) }))
+	if _, err := SetPCOutfit("tester", sprite).Fn(w); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want one", len(events))
+	}
+	e, ok := events[0].(*NPCCreated)
+	if !ok {
+		t.Fatalf("event = %T, want *NPCCreated", events[0])
+	}
+	if e.ActorID != "pc-1" || e.Kind != KindPC || e.X != 12 || e.Y != 7 || e.InsideStructureID != "inn" || e.Sprite != sprite || e.DisplayName != "Tess" {
+		t.Fatalf("event = %+v", e)
+	}
+}

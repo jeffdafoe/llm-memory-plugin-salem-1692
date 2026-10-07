@@ -38,7 +38,11 @@ type PCIdentity struct {
 // SetPCOutfit installs sprite in the catalog and points the PC at it. The PC
 // is resolved again by login, so a PC removed since PCForLogin is
 // ErrPCNotFound (the row already written is then unused, which is harmless).
-// Emits NPCSpriteChanged even when the sprite id is unchanged — a re-save
+//
+// A PC with no sprite yet is drawn by no client — it was just created by the
+// creator's pc/create — so its first outfit emits NPCCreated, which carries
+// the position and inn room every client needs to draw it. After that, every
+// save emits NPCSpriteChanged, even with the sprite id unchanged: a re-save
 // keeps the id and changes the layers, and every client must redraw.
 func SetPCOutfit(loginUsername string, sprite *Sprite) Command {
 	return Command{
@@ -47,9 +51,26 @@ func SetPCOutfit(loginUsername string, sprite *Sprite) Command {
 			if !ok || sprite == nil || sprite.ID != PCOutfitSpriteID(id) {
 				return nil, ErrPCNotFound
 			}
+			a := w.Actors[id]
+			appears := a.SpriteID == ""
 			w.InstallSprite(sprite)
-			w.Actors[id].SpriteID = sprite.ID
-			w.emit(&NPCSpriteChanged{ActorID: id, Sprite: sprite, At: time.Now().UTC()})
+			a.SpriteID = sprite.ID
+			now := time.Now().UTC()
+			if appears {
+				w.emit(&NPCCreated{
+					ActorID:           id,
+					DisplayName:       a.DisplayName,
+					Kind:              a.Kind,
+					X:                 a.Pos.X,
+					Y:                 a.Pos.Y,
+					Facing:            "south",
+					Sprite:            sprite,
+					InsideStructureID: a.InsideStructureID,
+					At:                now,
+				})
+			} else {
+				w.emit(&NPCSpriteChanged{ActorID: id, Sprite: sprite, At: now})
+			}
 			return sprite.ID, nil
 		},
 	}

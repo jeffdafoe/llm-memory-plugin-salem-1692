@@ -14,6 +14,8 @@ signal inventory_toggle_requested(icon_rect: Rect2)
 ## sleeping_until and broadcasts pc_sleep_ended which drives the
 ## fade-out + dream-snippet stop on every connected client.
 signal wake_pressed
+## Shirt icon clicked (LLM-691) — main.gd opens the character creator.
+signal dress_pressed
 
 var edit_button: Button = null
 var config_button: Button = null
@@ -30,6 +32,9 @@ var _character_name: String = ""
 ## username. Hidden until /pc/me reports an existing PC; toggles a
 ## floating panel of the player's pack.
 var inventory_icon: Label = null
+## Shirt icon — opens the character creator. Hidden until /pc/me reports an
+## existing PC (set_dress_visible).
+var dress_icon: Label = null
 ## Cursor tile readout — only visible in edit mode. Shows the tile the
 ## mouse is hovering over so admins can place things at specific
 ## coordinates and interpret list-view "at X,Y" fallbacks.
@@ -152,6 +157,8 @@ const ICON_CODEPOINT_PACKAGE: int = 0xE129
 # Lucide "volume-2" / "volume-x" — the sound control (LLM-703).
 const ICON_CODEPOINT_VOLUME: int = 0xE1AB
 const ICON_CODEPOINT_VOLUME_X: int = 0xE1AC
+# Lucide "shirt" — the character creator (LLM-691).
+const ICON_CODEPOINT_SHIRT: int = 0xE1CA
 
 ## The speaker icon, and the popup it opens: a volume slider and a mute button.
 var sound_icon: Label = null
@@ -287,6 +294,21 @@ func _ready() -> void:
     inventory_icon.mouse_entered.connect(func(): inventory_icon.add_theme_color_override("font_color", COLOR_TEXT))
     inventory_icon.mouse_exited.connect(func(): inventory_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM))
     right_box.add_child(inventory_icon)
+
+    dress_icon = Label.new()
+    dress_icon.text = String.chr(ICON_CODEPOINT_SHIRT)
+    dress_icon.add_theme_font_override("font", _icon_font)
+    dress_icon.add_theme_font_size_override("font_size", OrientationGuard.text_size(18))
+    dress_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    dress_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    dress_icon.visible = false
+    dress_icon.tooltip_text = "Your clothes"
+    dress_icon.mouse_filter = Control.MOUSE_FILTER_STOP
+    dress_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+    dress_icon.gui_input.connect(_on_dress_icon_input)
+    dress_icon.mouse_entered.connect(func(): dress_icon.add_theme_color_override("font_color", COLOR_TEXT))
+    dress_icon.mouse_exited.connect(func(): dress_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM))
+    right_box.add_child(dress_icon)
 
     _build_sound_control(right_box)
 
@@ -522,6 +544,15 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         inventory_toggle_requested.emit(inventory_icon.get_global_rect())
         get_viewport().set_input_as_handled()
+
+func _on_dress_icon_input(event: InputEvent) -> void:
+    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        dress_pressed.emit()
+        get_viewport().set_input_as_handled()
+
+func set_dress_visible(show: bool) -> void:
+    if dress_icon != null:
+        dress_icon.visible = show
 
 ## Update the body-needs chip (ZBBS-123, animated ZBBS-HOME-215).
 ## `needs` is a Dictionary keyed by 'hunger' / 'thirst' / 'tiredness'

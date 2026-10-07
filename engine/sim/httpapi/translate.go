@@ -271,15 +271,16 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		// (no VA linked yet) omits the key exactly as before, while a visitor
 		// carries salem-visitor the way his /agents entry does.
 		return WireFrame{Type: "npc_created", Data: AgentDTO{
-			ID:          string(e.ActorID),
-			DisplayName: e.DisplayName,
-			Kind:        actorKindString(e.Kind),
-			State:       string(sim.StateIdle),
-			LLMAgent:    e.LLMAgent,
-			X:           e.X,
-			Y:           e.Y,
-			Facing:      normalizeFacing(e.Facing),
-			Sprite:      agentSpriteDTOFromSprite(e.Sprite),
+			ID:                string(e.ActorID),
+			DisplayName:       e.DisplayName,
+			Kind:              actorKindString(e.Kind),
+			State:             string(sim.StateIdle),
+			LLMAgent:          e.LLMAgent,
+			X:                 e.X,
+			Y:                 e.Y,
+			Facing:            normalizeFacing(e.Facing),
+			Sprite:            agentSpriteDTOFromSprite(e.Sprite),
+			InsideStructureID: string(e.InsideStructureID),
 		}}, true
 	case *sim.ActorDeparted:
 		// An actor left World.Actors — admin delete (DeleteActor) or visitor
