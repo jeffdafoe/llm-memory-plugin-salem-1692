@@ -69,7 +69,7 @@ type Sprite struct {
 	// VisibleOutfit). In memory only: npc_sprite.layers stores the chosen
 	// outfit, so a row loaded at boot has Chosen nil until the next
 	// reconcile. Nil means Layers is the chosen outfit.
-	Chosen json.RawMessage
+	Chosen json.RawMessage `json:"-"`
 }
 
 // BehaviorWaterfowl marks a sprite whose decorative actors are driven by the

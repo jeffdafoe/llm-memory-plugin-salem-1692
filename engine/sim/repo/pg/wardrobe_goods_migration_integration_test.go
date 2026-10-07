@@ -79,7 +79,49 @@ func TestWardrobeGoodsMigration_Integration(t *testing.T) {
 	      '{"restock":[{"item":"bread","source":"buy","max":5},{"item":"coat","source":"buy","max":4},{"item":"homespun","source":"buy","max":6}]}')`, shop)
 	exec(`INSERT INTO actor_inventory (actor_id, item_kind, quantity) VALUES ($1, 'coat', 2), ($1, 'homespun', 1), ($2, 'linens', 1)`, shop, buyer)
 
+	// The jsonb surfaces that name items: each carries a renamed good beside an
+	// untouched one, and a field that merely reads like a good.
+	exec(`UPDATE item_recipe
+	         SET inputs       = '[{"item":"linens","qty":1},{"item":"bread","qty":2}]',
+	             boost_inputs = '[{"item":"woolens","qty":1,"bonus_qty":2}]',
+	             speed_inputs = '[{"item":"coat","qty":1,"seconds":60}]'
+	       WHERE output_item = 'bread'`)
+	exec(`INSERT INTO labor_contract (labor_id, worker_id, employer_id, state, reward, duration_min, created_at, reward_items)
+	      VALUES (71001, 'w', 'e', 'open', 1, 10, now(), '[{"kind":"homespun","qty":1},{"kind":"bread","qty":1}]')`)
+	exec(`INSERT INTO world_state (phase) SELECT 'day' WHERE NOT EXISTS (SELECT 1 FROM world_state)`)
+	exec(`UPDATE world_state SET input_shortages = '[{"keeper_id":"k","item":"coat","days":1}]'`)
+	exec(`INSERT INTO visitor (actor_id, display_name, archetype, origin, disposition, position_x, position_y, expires_at, phase, plan)
+	      VALUES ('vstr-0000abcd', 'Factor', 'factor', 'Boston', 'calm', 0, 0, now() + interval '1 day', 'arriving',
+	              '{"trade":{"good":"woolens"},"inventory":{"woolens":2,"salt":1},"story":"woolens"}')`)
+	jsonText := func(sql string) string {
+		t.Helper()
+		var s string
+		if err := f.Pool.QueryRow(ctx, sql).Scan(&s); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		return s
+	}
+	checkJSON := func(stage string, want map[string]string) {
+		t.Helper()
+		for sql, w := range want {
+			if got := jsonText(sql); got != w {
+				t.Errorf("%s: %s\n  got  %s\n  want %s", stage, sql, got, w)
+			}
+		}
+	}
+	jsonSurfaces := func(shirt, vest, cloak, stock string) map[string]string {
+		return map[string]string{
+			`SELECT inputs::text FROM item_recipe WHERE output_item = 'bread'`:       `[{"qty": 1, "item": "` + shirt + `"}, {"qty": 2, "item": "bread"}]`,
+			`SELECT boost_inputs::text FROM item_recipe WHERE output_item = 'bread'`: `[{"qty": 1, "item": "` + vest + `", "bonus_qty": 2}]`,
+			`SELECT speed_inputs::text FROM item_recipe WHERE output_item = 'bread'`: `[{"qty": 1, "item": "` + cloak + `", "seconds": 60}]`,
+			`SELECT reward_items::text FROM labor_contract WHERE labor_id = 71001`:   `[{"qty": 1, "kind": "` + stock + `"}, {"qty": 1, "kind": "bread"}]`,
+			`SELECT input_shortages::text FROM world_state LIMIT 1`:                  `[{"days": 1, "item": "` + cloak + `", "keeper_id": "k"}]`,
+			`SELECT plan::text FROM visitor WHERE actor_id = 'vstr-0000abcd'`:        `{"story": "woolens", "trade": {"good": "` + vest + `"}, "inventory": {"salt": 1, "` + vest + `": 2}}`,
+		}
+	}
+
 	run("LLM-710-wardrobe-goods_up.sql")
+	checkJSON("up", jsonSurfaces("linen_shirt", "vest", "mantled_cloak", "stockings"))
 
 	if n := count(`SELECT count(*) FROM item_kind WHERE name IN ('coat', 'linens', 'woolens', 'homespun')`); n != 0 {
 		t.Errorf("%d old garment names survive the rename", n)
@@ -128,4 +170,5 @@ func TestWardrobeGoodsMigration_Integration(t *testing.T) {
 	if n := count(`SELECT quantity FROM actor_inventory WHERE actor_id = $1 AND item_kind = 'linens'`, buyer); n != 1 {
 		t.Errorf("down: the villager holds %d linens, want 1", n)
 	}
+	checkJSON("down", jsonSurfaces("linens", "woolens", "coat", "homespun"))
 }
