@@ -22,6 +22,10 @@ const TESTS := [
     "_test_decompose_drops_unknown_sheets",
     "_test_default_picks",
     "_test_random_picks_offered_only",
+    "_test_locks",
+    "_test_missing_goods",
+    "_test_without_locked",
+    "_test_save_keeps_covered_hair",
 ]
 
 const ROOT := "/tilesets/mana-seed/farmer/sheets/"
@@ -97,7 +101,7 @@ func _wardrobe() -> Dictionary:
         "items": [
             _item("body", "human", ["skin"], [{"sheet": "01body/body.png", "order": 1}]),
             _item("hair", "dapper", ["hair"], [{"sheet": "13hair/dapper.png", "order": 13}]),
-            _item("head", "strawhat", ["c4", "c3"], [{"sheet": "14head/straw.png", "order": 14}]),
+            _item("head", "strawhat", ["c4", "c3"], [{"sheet": "14head/straw.png", "order": 14}], false, "straw_hat"),
             _item("head", "headscarf", ["c4"], [{"sheet": "14head/scarf.png", "order": 14}], true),
             _item("shirt", "longshirt", ["c3"], [{"sheet": "05shrt/shirt.png", "curved": "05shrt/shirtc.png", "order": 5}]),
             _item("neck", "cloakplain", ["c4", "c3"], [
@@ -105,14 +109,19 @@ func _wardrobe() -> Dictionary:
                 {"sheet": "11neck/cloak.png", "order": 11},
             ]),
             _item("lower", "longpants", ["c3"], [{"sheet": "04lwr1/pants.png", "order": 4}]),
-            _item("feet", "boots", ["c3"], [{"sheet": "03fot1/boots.png", "order": 3}]),
+            _item("feet", "boots", ["c3"], [{"sheet": "03fot1/boots.png", "order": 3}], false, "boots"),
+            _item("feet", "shoes", ["c3"], [{"sheet": "03fot1/shoes.png", "order": 3}]),
         ],
         "colours": {"skin": [0, 1, 2], "hair": [5, 37], "c3": [0, 32, 34], "c4": [2, 30]},
+        "dyes": [{"good": "madder", "colours": {"c3": [34]}}],
+        "goods": {"straw_hat": {"label": "Straw hat", "price": 4}, "boots": {"label": "Boots", "price": 10},
+            "madder": {"label": "Madder", "price": 6}},
+        "held": [],
     }
     return JSON.parse_string(JSON.stringify(w))
 
 
-func _item(category: String, id: String, slots: Array, layers: Array, hides_hair := false) -> Dictionary:
+func _item(category: String, id: String, slots: Array, layers: Array, hides_hair := false, good := "") -> Dictionary:
     for layer in layers:
         layer["sheet"] = ROOT + layer["sheet"]
         if layer.has("curved"):
@@ -120,6 +129,8 @@ func _item(category: String, id: String, slots: Array, layers: Array, hides_hair
     var item := {"id": id, "category": category, "label": id, "slots": slots, "layers": layers}
     if hides_hair:
         item["hides_hair"] = true
+    if good != "":
+        item["good"] = good
     return item
 
 
@@ -204,10 +215,11 @@ func _test_decompose_drops_unknown_sheets() -> void:
 
 func _test_default_picks() -> void:
     var picks := FarmerOutfit.default_picks(_wardrobe())
-    _check("default — wears body, hair, shirt, breeches, boots",
+    _check("default — wears body, hair, shirt, breeches, shoes",
         _sorted(picks["items"].keys()), ["body", "feet", "hair", "lower", "shirt"])
     _check("default — brown breeches", picks["items"]["lower"]["ramps"], {"c3": 32})
     _check("default — linen shirt", picks["items"]["shirt"]["ramps"], {"c3": 0})
+    _check("default — free shoes, not boots", picks["items"]["feet"]["item"], "shoes")
     # A default colour the wardrobe stops offering falls back to its first.
     var wardrobe := _wardrobe()
     wardrobe["colours"]["c3"] = [0]
@@ -220,17 +232,21 @@ func _test_random_picks_offered_only() -> void:
     var wardrobe := _wardrobe()
     var rng := RandomNumberGenerator.new()
     rng.seed = 691
+    var locked_seen := false
     var ok := true
     for i in 200:
         var picks := FarmerOutfit.random_picks(wardrobe, rng)
+        if not FarmerOutfit.missing_goods(wardrobe, picks).is_empty():
+            locked_seen = true
         if not picks["items"].has("body"):
             ok = false
         for category in picks["items"]:
             var ramps: Dictionary = picks["items"][category]["ramps"]
             for slot in ramps:
-                if not FarmerOutfit.colours_for(wardrobe, slot).has(ramps[slot]):
+                if not FarmerOutfit.open_colours(wardrobe, slot).has(ramps[slot]):
                     ok = false
-    _check("random — always a body, only offered colours", ok, true)
+    _check("random — always a body, only open colours", ok, true)
+    _check("random — never a piece or dye the player lacks", locked_seen, false)
     _done()
 
 
@@ -238,3 +254,48 @@ func _sorted(a: Array) -> Array:
     var out := a.duplicate()
     out.sort()
     return out
+
+
+func _test_locks() -> void:
+    var wardrobe := _wardrobe()
+    var by_id := FarmerOutfit.items_by_id(wardrobe)
+    _check("locks — boots are sold", FarmerOutfit.item_locked(wardrobe, by_id["boots"]), true)
+    _check("locks — shoes are free", FarmerOutfit.item_locked(wardrobe, by_id["shoes"]), false)
+    _check("locks — a madder colour needs madder", FarmerOutfit.dye_for(wardrobe, "c3", 34), "madder")
+    _check("locks — undyed colours are open", FarmerOutfit.open_colours(wardrobe, "c3"), [0, 32])
+    wardrobe["held"] = ["boots", "madder"]
+    _check("locks — held boots open", FarmerOutfit.item_locked(wardrobe, by_id["boots"]), false)
+    _check("locks — held madder opens its colour", FarmerOutfit.open_colours(wardrobe, "c3"), [0, 32, 34])
+    _done()
+
+
+func _test_missing_goods() -> void:
+    var wardrobe := _wardrobe()
+    _check("missing — the dressed fixture needs boots, madder and a straw hat",
+        _sorted(FarmerOutfit.missing_goods(wardrobe, _dressed())), ["boots", "madder", "straw_hat"])
+    wardrobe["held"] = ["boots", "madder", "straw_hat"]
+    _check("missing — nothing once all are held", FarmerOutfit.missing_goods(wardrobe, _dressed()), [])
+    _check("missing — labels and prices", [FarmerOutfit.good_label(wardrobe, "madder"), FarmerOutfit.good_price(wardrobe, "madder")], ["Madder", 6])
+    _done()
+
+
+func _test_without_locked() -> void:
+    var wardrobe := _wardrobe()
+    var picks := _dressed()
+    picks["items"]["lower"]["ramps"] = {"c3": 34}
+    var open := FarmerOutfit.without_locked(wardrobe, picks)
+    _check("without locked — the boots and straw hat come off",
+        _sorted(open["items"].keys()), ["body", "hair", "lower", "neck", "shirt"])
+    _check("without locked — a madder colour falls back to the first open one",
+        open["items"]["lower"]["ramps"], {"c3": 0})
+    _check("without locked — open colours are kept", open["items"]["neck"]["ramps"], {"c4": 30, "c3": 0})
+    _done()
+
+
+func _test_save_keeps_covered_hair() -> void:
+    var picks := _dressed()
+    picks["items"]["head"] = {"item": "headscarf", "ramps": {"c4": 2}}
+    var sheets := _sheets(FarmerOutfit.compose(_wardrobe(), picks, true))
+    _check("save — the hair under a headscarf is kept", sheets.has("13hair/dapper.png"), true)
+    _check("save — the headscarf is worn", sheets.has("14head/scarf.png"), true)
+    _done()

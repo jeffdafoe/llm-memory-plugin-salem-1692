@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -98,7 +99,7 @@ func TestValidateFarmerOutfit_Rejects(t *testing.T) {
 // root with a layer order matching its folder.
 func TestPlayerWardrobe_Consistent(t *testing.T) {
 	familySize := map[string]int{"skin": 18, "hair": 58, "c3": 48, "c4": 59}
-	wr := PlayerWardrobe()
+	wr := PlayerWardrobe(NewWorld(Repository{}))
 	categories := map[string]bool{}
 	for _, c := range wr.Categories {
 		categories[c.ID] = true
@@ -184,7 +185,8 @@ func TestSetPCOutfit_InstallsWithoutWritingPublishedMap(t *testing.T) {
 	if _, err := SetPCOutfit("tester", sprite).Fn(w); err != nil {
 		t.Fatal(err)
 	}
-	if w.Actors["pc-1"].SpriteID != sprite.ID || w.Sprites[sprite.ID] != sprite {
+	installed := w.Sprites[sprite.ID]
+	if w.Actors["pc-1"].SpriteID != sprite.ID || installed == nil || string(installed.Layers) != string(sprite.Layers) {
 		t.Fatal("outfit not installed")
 	}
 	if _, leaked := before[sprite.ID]; leaked {
@@ -193,7 +195,7 @@ func TestSetPCOutfit_InstallsWithoutWritingPublishedMap(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want one NPCSpriteChanged", len(events))
 	}
-	if e, ok := events[0].(*NPCSpriteChanged); !ok || e.ActorID != "pc-1" || e.Sprite != sprite {
+	if e, ok := events[0].(*NPCSpriteChanged); !ok || e.ActorID != "pc-1" || e.Sprite != installed {
 		t.Fatalf("event = %#v", events[0])
 	}
 
@@ -228,7 +230,190 @@ func TestSetPCOutfit_FirstOutfitAppears(t *testing.T) {
 	if !ok {
 		t.Fatalf("event = %T, want *NPCCreated", events[0])
 	}
-	if e.ActorID != "pc-1" || e.Kind != KindPC || e.X != 12 || e.Y != 7 || e.InsideStructureID != "inn" || e.Sprite != sprite || e.DisplayName != "Tess" {
+	if e.ActorID != "pc-1" || e.Kind != KindPC || e.X != 12 || e.Y != 7 || e.InsideStructureID != "inn" || e.Sprite != w.Sprites[sprite.ID] || e.DisplayName != "Tess" {
 		t.Fatalf("event = %+v", e)
+	}
+}
+
+// TestWardrobeDyes_Consistent: every dyed colour is one the wardrobe offers,
+// no colour needs two dyes, the undyed fallbacks need none, and every good is
+// sold once.
+func TestWardrobeDyes_Consistent(t *testing.T) {
+	owner := map[string]ItemKind{}
+	for _, d := range farmerDyes {
+		for slot, list := range d.Colours {
+			if slot != "c3" && slot != "c4" {
+				t.Errorf("%s: dyes slot %q; only cloth is dyed", d.Good, slot)
+			}
+			for _, index := range list {
+				if !containsInt(farmerColours[slot], index) {
+					t.Errorf("%s: colour %s/%d is not offered", d.Good, slot, index)
+				}
+				key := slot + "/" + string(rune('0'+index/10)) + string(rune('0'+index%10))
+				if prev, ok := owner[key]; ok {
+					t.Errorf("colour %s needs both %s and %s", key, prev, d.Good)
+				}
+				owner[key] = d.Good
+			}
+		}
+	}
+	for slot, index := range farmerUndyed {
+		if !containsInt(farmerColours[slot], index) || dyeFor[slot][index] != "" {
+			t.Errorf("fallback %s/%d must be offered and undyed", slot, index)
+		}
+	}
+	seen := map[ItemKind]bool{}
+	for _, kind := range WardrobeGoods() {
+		if seen[kind] {
+			t.Errorf("good %s is sold twice", kind)
+		}
+		seen[kind] = true
+	}
+	for _, free := range []string{"human", "longshirt", "longpants", "longskirt", "shoes"} {
+		if item := wardrobeItemByID(free); item == nil || item.Good != "" {
+			t.Errorf("%s must be a free starter piece", free)
+		}
+	}
+}
+
+func TestOutfitGoods(t *testing.T) {
+	raw := outfitJSON(
+		layerJSON(testBody, `{"skin":0}`),
+		layerJSON(testShirt, `{"c3":4}`),
+		layerJSON(testHat, `{"c4":5,"c3":32}`),
+	)
+	got := OutfitGoods(raw)
+	want := []ItemKind{"indigo", "straw_hat"}
+	if len(got) != len(want) || !containsKinds(got, want) {
+		t.Fatalf("OutfitGoods = %v, want %v", got, want)
+	}
+	if got := OutfitGoods(outfitJSON(layerJSON(testBody, `{"skin":0}`), layerJSON(testPants, `{"c3":32}`))); len(got) != 0 {
+		t.Fatalf("free outfit needs %v", got)
+	}
+}
+
+func containsKinds(got, want []ItemKind) bool {
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			found = found || g == w
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+const (
+	testHair  = FarmerSheetRoot + "13hair/fbas_13hair_dapper_00.png"
+	testScarf = FarmerSheetRoot + "14head/fbas_14head_headscarf_00b_e.png"
+)
+
+func TestVisibleOutfit(t *testing.T) {
+	raw := outfitJSON(
+		layerJSON(testBody, `{"skin":0}`),
+		layerJSON(testShirt, `{"c3":4}`),
+		layerJSON(testHair, `{"hair":3}`),
+		layerJSON(testHat, `{"c4":5,"c3":32}`),
+	)
+	holding := func(kinds ...ItemKind) func(ItemKind) bool {
+		return func(k ItemKind) bool { return slices.Contains(kinds, k) }
+	}
+	sheets := func(layers json.RawMessage) (out []string, ramps []map[string]int) {
+		var parsed []outfitLayer
+		if err := json.Unmarshal(layers, &parsed); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range parsed {
+			out = append(out, l.Sheet)
+			ramps = append(ramps, l.Ramps)
+		}
+		return out, ramps
+	}
+
+	got, ramps := sheets(VisibleOutfit(raw, holding()))
+	if len(got) != 3 || slices.Contains(got, testHat) {
+		t.Fatalf("holding nothing: sheets %v, want the hat left off", got)
+	}
+	if ramps[1]["c3"] != farmerUndyed["c3"] {
+		t.Fatalf("holding nothing: shirt colour %d, want undyed %d", ramps[1]["c3"], farmerUndyed["c3"])
+	}
+
+	got, ramps = sheets(VisibleOutfit(raw, holding("straw_hat", "indigo")))
+	if len(got) != 4 || ramps[1]["c3"] != 4 || ramps[3]["c4"] != 5 {
+		t.Fatalf("holding all: sheets %v ramps %v, want the outfit unchanged", got, ramps)
+	}
+
+	scarfed := outfitJSON(
+		layerJSON(testBody, `{"skin":0}`),
+		layerJSON(testHair, `{"hair":3}`),
+		layerJSON(testScarf, `{"c4":0}`),
+	)
+	if got, _ := sheets(VisibleOutfit(scarfed, nil)); slices.Contains(got, testHair) || !slices.Contains(got, testScarf) {
+		t.Fatalf("headscarf worn: sheets %v, want the hair under it left off", got)
+	}
+	if got, _ := sheets(VisibleOutfit(scarfed, holding())); !slices.Contains(got, testHair) || slices.Contains(got, testScarf) {
+		t.Fatalf("headscarf not held: sheets %v, want the hair back", got)
+	}
+}
+
+// TestPCForOutfit_RefusesWhatIsNotHeld: a save naming a piece or a dye the PC
+// does not hold is refused, naming them; holding them, it passes.
+func TestPCForOutfit_RefusesWhatIsNotHeld(t *testing.T) {
+	w := NewWorld(Repository{})
+	w.ItemKinds["straw_hat"] = &ItemKindDef{Name: "straw_hat", DisplayLabel: "Straw hat"}
+	pc := &Actor{ID: "pc-1", Kind: KindPC, LoginUsername: "tester", DisplayName: "Tess", Inventory: map[ItemKind]int{}}
+	w.Actors["pc-1"] = pc
+	raw := outfitJSON(layerJSON(testBody, `{"skin":0}`), layerJSON(testHat, `{"c4":5,"c3":32}`))
+
+	_, err := PCForOutfit("tester", raw).Fn(w)
+	var notHeld *OutfitNotHeldError
+	if !errors.As(err, &notHeld) || !slices.Contains(notHeld.Missing, "Straw hat") || !slices.Contains(notHeld.Missing, "indigo") {
+		t.Fatalf("err = %v, want straw hat and indigo missing", err)
+	}
+	pc.Inventory["straw_hat"] = 1
+	pc.Inventory["indigo"] = 1
+	if _, err := PCForOutfit("tester", raw).Fn(w); err != nil {
+		t.Fatalf("holding both: err = %v", err)
+	}
+}
+
+// TestReconcilePCOutfits: a piece the PC stops holding comes off its sprite,
+// and back on when held again; the chosen outfit is kept throughout.
+func TestReconcilePCOutfits(t *testing.T) {
+	w := NewWorld(Repository{})
+	w.Sprites = map[SpriteID]*Sprite{}
+	pc := &Actor{ID: "pc-1", Kind: KindPC, LoginUsername: "tester", DisplayName: "Tess",
+		Inventory: map[ItemKind]int{"straw_hat": 1}}
+	w.Actors["pc-1"] = pc
+	chosen, err := ValidateFarmerOutfit(outfitJSON(layerJSON(testBody, `{"skin":0}`), layerJSON(testHat, `{"c4":27,"c3":32}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sprite, _ := NewOutfitSprite("pc-1", "Tess", chosen)
+	if _, err := SetPCOutfit("tester", sprite).Fn(w); err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	w.Subscribe(SubscriberFunc(func(_ *World, e Event) { events = append(events, e) }))
+
+	if n, _ := ReconcilePCOutfits().Fn(w); n != 0 || len(events) != 0 {
+		t.Fatalf("nothing lost: changed %v, events %d", n, len(events))
+	}
+	pc.Inventory["straw_hat"] = 0
+	if n, _ := ReconcilePCOutfits().Fn(w); n != 1 || len(events) != 1 {
+		t.Fatalf("hat sold: changed %v, events %d", n, len(events))
+	}
+	shown := w.Sprites[sprite.ID]
+	if strings.Contains(string(shown.Layers), testHat) || string(shown.Chosen) != string(chosen) {
+		t.Fatalf("hat sold: layers %s chosen %s", shown.Layers, shown.Chosen)
+	}
+	if got := w.chosenOutfit("pc-1"); string(got) != string(chosen) {
+		t.Fatalf("chosenOutfit = %s", got)
+	}
+	pc.Inventory["straw_hat"] = 1
+	if n, _ := ReconcilePCOutfits().Fn(w); n != 1 || !strings.Contains(string(w.Sprites[sprite.ID].Layers), testHat) {
+		t.Fatalf("hat bought back: changed %v, layers %s", n, w.Sprites[sprite.ID].Layers)
 	}
 }

@@ -398,7 +398,18 @@ const GarmentWearTickerInterval = time.Minute
 // GarmentWearTickerInterval and applies exactly one minute of wear — no catch-up
 // across a stall (the sweep resumes rather than shock-applying a backlog, the
 // cold ticker's LLM-393 posture).
+//
+// It also re-dresses players in what they still hold (ReconcilePCOutfits,
+// LLM-710): once at start, so a player's outfit as loaded from its row does
+// not show pieces sold before a restart, and after each wear tick, which is
+// one of the ways a piece leaves a player's inventory.
 func RunGarmentWearTicker(ctx context.Context, w *World) {
+	reconcileOutfits := func() {
+		if _, err := w.SendContext(ctx, ReconcilePCOutfits()); err != nil && ctx.Err() == nil {
+			log.Printf("sim/garment_wear: outfit reconcile failed: %v", err)
+		}
+	}
+	reconcileOutfits()
 	t := time.NewTicker(GarmentWearTickerInterval)
 	defer t.Stop()
 	for {
@@ -410,6 +421,7 @@ func RunGarmentWearTicker(ctx context.Context, w *World) {
 			if _, err := w.SendContext(ctx, WearGarments(time.Now(), 1)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/garment_wear: wear tick failed: %v", err)
 			}
+			reconcileOutfits()
 		}
 	}
 }

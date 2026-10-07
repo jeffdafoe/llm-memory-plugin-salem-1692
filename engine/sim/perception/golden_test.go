@@ -4170,7 +4170,7 @@ var perceptionScenarios = []perceptionScenario{
 	{
 		name: "cold_outdoors_in_storm_coat_for_sale",
 		summary: "LLM-410: the cold_outdoors_in_storm scene with a coat SELLER present — Josiah Thorne holds coats and a " +
-			"cloak at the General Store. The golden pins the vendor-gated warm-garment nudge — a warm coat or cloak would " +
+			"cloak at the General Store. The golden pins the vendor-gated warm-garment nudge — a warm cloak would " +
 			"keep the worst off, buy from General Store (destination: general_store) — rendered AFTER the unconditional " +
 			"free-relief steer (a coat is a PAID upgrade to keep working outside, never a substitute for shelter). Contrast " +
 			"cold_outdoors_in_storm, whose world has no seller, so no nudge renders — the vendor-gating proof.",

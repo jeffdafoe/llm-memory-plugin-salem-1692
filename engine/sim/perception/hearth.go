@@ -170,10 +170,10 @@ func renderColdGarment(b *strings.Builder, v *ColdSelfView) {
 		// won't last. Point at a fresh one when a seller has it; else just the fact.
 		b.WriteString("The warm clothes you carry are worn thin — they turn some of the cold, but the wind finds its way through now, and they won't hold much longer. ")
 		if len(v.CoatVendors) == 0 {
-			b.WriteString("A fresh coat or cloak would keep you working out here.\n")
+			b.WriteString("A fresh cloak would keep you working out here.\n")
 			return
 		}
-		b.WriteString("A fresh coat or cloak would keep you working out here. Use move_to to reach a seller, then pay_with_item once you arrive:\n")
+		b.WriteString("A fresh cloak would keep you working out here. Use move_to to reach a seller, then pay_with_item once you arrive:\n")
 		renderWalkToVendors(b, v.CoatVendors)
 		return
 	}
@@ -184,7 +184,7 @@ func renderColdGarment(b *strings.Builder, v *ColdSelfView) {
 	if len(v.CoatVendors) == 0 {
 		return
 	}
-	b.WriteString("A warm coat or cloak would keep the worst of it off and let you keep working out here. Use move_to to reach a seller, then pay_with_item once you arrive:\n")
+	b.WriteString("A warm cloak would keep the worst of it off and let you keep working out here. Use move_to to reach a seller, then pay_with_item once you arrive:\n")
 	renderWalkToVendors(b, v.CoatVendors)
 }
 
