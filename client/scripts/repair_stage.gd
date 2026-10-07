@@ -398,6 +398,10 @@ func setup(title_text: String, kind: String, broken_layers: Array, sound_layers:
     _beat_queue.clear()
     _beat_t = 0.0
     _beats_shown = beats_for(steps_done, steps, STAGED.get(closeup, []).size())
+    if STAGED.has(closeup):
+        # Read the strips' rects now, not in the middle of a beat.
+        strip_used_rect(closeup + "-in", 0)
+        strip_used_rect(closeup + "-out", 0)
     _particles.clear()
     _chunks.clear()
     _pops.clear()
@@ -913,27 +917,25 @@ static func ease_out_back(w: float) -> float:
     return 1.0 + c3 * x * x * x + c1 * x * x
 
 
-## Where a strip frame's pixels are (frame-local), cached; empty when the frame
-## is clear.
+## Where a strip frame's pixels are (frame-local); empty when the frame is
+## clear. A strip's image is read once and every frame's rect cached, since
+## get_image() is synchronous and a beat must not hitch on it.
 static var _used_cache := {}
 
 static func strip_used_rect(piece: String, frame: int) -> Rect2i:
-    var key := "%s#%d" % [piece, frame]
-    if _used_cache.has(key):
-        return _used_cache[key]
-    var r := Rect2i()
-    var tex := art(piece)
-    if tex != null:
-        var img := tex.get_image()
+    if not _used_cache.has(piece):
+        var rects: Array[Rect2i] = []
+        var tex := art(piece)
+        var img: Image = tex.get_image() if tex != null else null
         if img != null:
             if img.is_compressed():
                 img.decompress()
-            var h := img.get_height()
             var w := closeup_width()
-            if w > 0:
-                r = img.get_region(Rect2i(frame * w, 0, w, h)).get_used_rect()
-    _used_cache[key] = r
-    return r
+            for f in img.get_width() / w:
+                rects.append(img.get_region(Rect2i(f * w, 0, w, img.get_height())).get_used_rect())
+        _used_cache[piece] = rects
+    var cached: Array[Rect2i] = _used_cache[piece]
+    return cached[frame] if frame >= 0 and frame < cached.size() else Rect2i()
 
 
 ## A staged strip's frame width: every close-up is the object area's width.
@@ -945,7 +947,9 @@ func _is_staged() -> bool:
     return STAGED.has(site) and art(site + "-states") != null
 
 
-## Queue the beats the steps done have reached and not yet played.
+## Queue the beats the steps done have reached and not yet played. Steps only
+## go forward between two setup() calls (the engine counts them up), so the
+## beats shown only go forward too.
 func _queue_beats() -> void:
     if not STAGED.has(site):
         return
@@ -997,20 +1001,26 @@ func _beat_land_t(b: int) -> float:
     return BEAT_OUT * 0.5
 
 
+## Play the queue on by `delta`. A long frame (a stalled or resumed tab) plays
+## through as many beats as it covers, each one's start and landing once.
 func _advance_beat(delta: float) -> void:
-    var b: int = _beat_queue[0]
-    var before := _beat_t
-    if before == 0.0:
-        var gone := strip_used_rect(site + "-out", b)
-        if gone.has_area():
-            _burst(_anchor() + Vector2(gone.get_center()), 5, [C_WOOD_HI, C_WOOD_LIGHT])
-    _beat_t += delta
-    var land := _beat_land_t(b)
-    if before < land and _beat_t >= land:
-        _beat_landed(b)
-    if _beat_t >= BEAT_TIME:
-        _beat_queue.pop_front()
-        _beat_t = 0.0
+    var left := delta
+    while not _beat_queue.is_empty() and left > 0.0:
+        var b: int = _beat_queue[0]
+        var before := _beat_t
+        if before == 0.0:
+            var gone := strip_used_rect(site + "-out", b)
+            if gone.has_area():
+                _burst(_anchor() + Vector2(gone.get_center()), 5, [C_WOOD_HI, C_WOOD_LIGHT])
+        var step := minf(left, BEAT_TIME - before)
+        _beat_t = before + step
+        left -= step
+        var land := _beat_land_t(b)
+        if before < land and _beat_t >= land:
+            _beat_landed(b)
+        if _beat_t >= BEAT_TIME:
+            _beat_queue.pop_front()
+            _beat_t = 0.0
 
 
 ## The beat lands: sparks for nails, dust and a thud for a piece set down, a

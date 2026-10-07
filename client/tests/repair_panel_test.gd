@@ -1088,6 +1088,14 @@ func _test_staged_stage_plays_a_beat() -> void:
     _check("both played", stage._beat_queue.size(), 0)
     stage.finish(3)
     _check("finishing plays the rest", stage._beat_queue, [3, 4] as Array[int])
+    # One long frame (a stalled tab) plays through both, each landing once.
+    # (_advance_beat alone: _process would also age the pops by the same frame.)
+    stage._pops.clear()
+    stage._advance_beat(StageScript.BEAT_TIME * 2.0 + 0.05)
+    _check("a long frame plays every beat it covers", stage._beat_queue.size(), 0)
+    _check("…each landing once", stage._pops.size(), 2)
+    # The strips' rects were read at setup, one image read per strip.
+    _check("the in strip's rects are cached whole", (StageScript._used_cache.get("fence-in", []) as Array).size(), StageScript.STAGED["fence"].size())
     stage.setup("Mend the Fence", "hammer", layers["broken"], layers["sound"], 5, 3, "fence")
     _check("a reload shows the beats reached", stage._beats_shown, 3)
     _check("…with nothing to play", stage._beat_queue.size(), 0)
