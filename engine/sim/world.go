@@ -300,6 +300,10 @@ type WorldSettings struct {
 	PCRepairRoadSteps         int
 	PCRepairRoadStepGapMs     int
 	PCRepairIdleSeconds       int
+	// PCRepairHardCoins is the purse at which a player's repair games play at
+	// their hardest (LLM-712); the difficulty rises evenly from an empty purse.
+	// 0 or less keeps every game at its easiest.
+	PCRepairHardCoins int
 
 	// Minor works (LLM-690): small damage for players only. Each pass of the
 	// minor-works ticker breaks one at this chance while fewer than the cap are

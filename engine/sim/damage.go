@@ -880,6 +880,7 @@ func startPublicWorksRepair(w *World, actor *Actor, site *VillageObject, now tim
 	// its last step, and Until is the idle deadline each step moves on.
 	if actor.Kind == KindPC {
 		act.Steps, act.StepGap = w.Settings.pcRepairTerms(kind)
+		act.Difficulty = w.Settings.pcRepairDifficulty(actor.Coins)
 		act.Until = w.Settings.pcRepairDeadline(now, act.StepGap)
 	}
 	actor.SourceActivity = act

@@ -88,6 +88,9 @@ type SourceActivity struct {
 	StepsDone  int
 	StepGap    time.Duration
 	LastStepAt time.Time
+	// Difficulty is the player's game difficulty, 0..1, fixed at start from the
+	// purse (LLM-712) so a reload resumes the same game.
+	Difficulty float64
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what

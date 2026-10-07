@@ -150,6 +150,47 @@ func TestPCRepairStepPacing(t *testing.T) {
 	}
 }
 
+// TestPCRepairDifficultyFollowsThePurse — the offer's difficulty rises evenly
+// with the purse to 1 at pc_repair_hard_coins (LLM-712), and once the repair
+// starts it is fixed: coin earned or spent mid-repair does not change the game.
+func TestPCRepairDifficultyFollowsThePurse(t *testing.T) {
+	w, cancel, _ := buildPCRepairWorld(t)
+	defer cancel()
+	setCoins := func(n int) {
+		mustSend(t, w, func(world *sim.World) { world.Actors["pat"].Coins = n })
+	}
+	mustSend(t, w, func(world *sim.World) { world.Settings.PCRepairHardCoins = 200 })
+
+	for _, c := range []struct {
+		coins int
+		want  float64
+	}{{0, 0}, {50, 0.25}, {100, 0.5}, {200, 1}, {900, 1}} {
+		setCoins(c.coins)
+		if got := pcRepairOffer(t, w, "pat").Difficulty; got != c.want {
+			t.Errorf("purse %d: difficulty = %v, want %v", c.coins, got, c.want)
+		}
+	}
+
+	setCoins(100)
+	t0 := time.Now().UTC()
+	if _, err := w.Send(sim.StartPCRepair("pat", t0)); err != nil {
+		t.Fatalf("StartPCRepair: %v", err)
+	}
+	setCoins(200)
+	if got := pcRepairOffer(t, w, "pat").Difficulty; got != 0.5 {
+		t.Errorf("mid-repair difficulty = %v, want 0.5 fixed at start", got)
+	}
+
+	// 0 turns it off: every purse plays the easiest game.
+	mustSend(t, w, func(world *sim.World) { world.Settings.PCRepairHardCoins = 0 })
+	setCoins(500)
+	placeAt(t, w, "quinn", "well-a")
+	mustSend(t, w, func(world *sim.World) { world.Actors["quinn"].Coins = 500 })
+	if got := pcRepairOffer(t, w, "quinn").Difficulty; got != 0 {
+		t.Errorf("hard coins 0: difficulty = %v, want 0", got)
+	}
+}
+
 // TestPCRepairTakenSiteIsNotOnOffer — while a player mends the well, a hand and
 // a second player are refused and see who is at it; while a hand mends it, the
 // player is refused the same way.

@@ -292,6 +292,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.PCRepairRoadSteps = parseIntSetting(values, "pc_repair_road_steps", sim.DefaultPCRepairRoadSteps)
 	s.PCRepairRoadStepGapMs = parseIntSetting(values, "pc_repair_road_step_gap_ms", sim.DefaultPCRepairRoadStepGapMs)
 	s.PCRepairIdleSeconds = parseIntSetting(values, "pc_repair_idle_seconds", sim.DefaultPCRepairIdleSeconds)
+	s.PCRepairHardCoins = parseIntSetting(values, "pc_repair_hard_coins", sim.DefaultPCRepairHardCoins)
 	s.MinorWorksChancePermille = parseIntSetting(values, "minor_works_chance_permille", sim.DefaultMinorWorksChancePermille)
 	s.MinorWorksOpenCap = parseIntSetting(values, "minor_works_open_cap", sim.DefaultMinorWorksOpenCap)
 	s.MinorWorksTTLHours = parseIntSetting(values, "minor_works_ttl_hours", sim.DefaultMinorWorksTTLHours)

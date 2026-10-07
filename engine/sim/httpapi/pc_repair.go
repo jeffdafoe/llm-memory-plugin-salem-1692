@@ -26,17 +26,18 @@ import (
 
 // repairOfferWireDTO is sim.PCRepairOffer on the wire.
 type repairOfferWireDTO struct {
-	ObjectID    string `json:"object_id"`
-	SiteKind    string `json:"site_kind"`
-	Form        string `json:"form,omitempty"`
-	Fact        string `json:"fact"`
-	Bounty      int    `json:"bounty"`
-	ChestCanPay bool   `json:"chest_can_pay"`
-	MenderName  string `json:"mender_name,omitempty"`
-	Steps       int    `json:"steps"`
-	StepGapMs   int64  `json:"step_gap_ms"`
-	Yours       bool   `json:"yours"`
-	StepsDone   int    `json:"steps_done"`
+	ObjectID    string  `json:"object_id"`
+	SiteKind    string  `json:"site_kind"`
+	Form        string  `json:"form,omitempty"`
+	Fact        string  `json:"fact"`
+	Bounty      int     `json:"bounty"`
+	ChestCanPay bool    `json:"chest_can_pay"`
+	MenderName  string  `json:"mender_name,omitempty"`
+	Steps       int     `json:"steps"`
+	StepGapMs   int64   `json:"step_gap_ms"`
+	Yours       bool    `json:"yours"`
+	StepsDone   int     `json:"steps_done"`
+	Difficulty  float64 `json:"difficulty"`
 }
 
 // repairOfferWire maps an offer to the wire, nil for nil.
@@ -56,6 +57,7 @@ func repairOfferWire(o *sim.PCRepairOffer) *repairOfferWireDTO {
 		StepGapMs:   o.StepGap.Milliseconds(),
 		Yours:       o.Yours,
 		StepsDone:   o.StepsDone,
+		Difficulty:  o.Difficulty,
 	}
 }
 

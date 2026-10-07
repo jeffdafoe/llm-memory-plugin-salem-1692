@@ -36,6 +36,8 @@ const (
 	DefaultPCRepairRoadSteps         = 10
 	DefaultPCRepairRoadStepGapMs     = 4000
 	DefaultPCRepairIdleSeconds       = 90
+	// DefaultPCRepairHardCoins — a purse this full plays the hardest game.
+	DefaultPCRepairHardCoins = 300
 )
 
 var (
@@ -93,6 +95,17 @@ func (s WorldSettings) pcRepairDeadline(now time.Time, gap time.Duration) time.T
 	return now.Add(max(s.pcRepairIdle(), 2*gap))
 }
 
+// pcRepairDifficulty is how hard a player's repair game plays for a purse of
+// coins (LLM-712): 0 for an empty purse, rising evenly to 1 at
+// PCRepairHardCoins. The client reads it to set the game's speed and margins;
+// the engine sets nothing by it.
+func (s WorldSettings) pcRepairDifficulty(coins int) float64 {
+	if s.PCRepairHardCoins <= 0 || coins <= 0 {
+		return 0
+	}
+	return min(1, float64(coins)/float64(s.PCRepairHardCoins))
+}
+
 // isPCRepair reports whether a window is a player's stepped town repair — the
 // one predicate the step, the idle give-up and the offer share.
 func (act *SourceActivity) isPCRepair() bool {
@@ -120,6 +133,9 @@ type PCRepairOffer struct {
 	// gone, so a reloaded client can resume the game.
 	Yours     bool
 	StepsDone int
+	// Difficulty is how hard the game plays, 0..1 (pcRepairDifficulty): the
+	// player's purse now, or for their repair under way the one fixed at start.
+	Difficulty float64
 }
 
 // pcRepairOfferFor builds the offer at site for actor, or nil when site is not
@@ -141,6 +157,7 @@ func pcRepairOfferFor(w *World, actor *Actor, site *VillageObject) *PCRepairOffe
 		ChestCanPay: PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve),
 		Steps:       steps,
 		StepGap:     gap,
+		Difficulty:  w.Settings.pcRepairDifficulty(actor.Coins),
 	}
 	if act := actor.SourceActivity; act.isPCRepair() && act.ObjectID == site.ID {
 		offer.Yours = true
@@ -149,6 +166,7 @@ func pcRepairOfferFor(w *World, actor *Actor, site *VillageObject) *PCRepairOffe
 		offer.Steps = act.Steps
 		offer.StepGap = act.StepGap
 		offer.StepsDone = act.StepsDone
+		offer.Difficulty = act.Difficulty
 		return offer
 	}
 	if m := objectRepairer(w, site.ID, actor.ID); m != nil {

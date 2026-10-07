@@ -36,6 +36,7 @@ func seedRepairPC(t *testing.T, w *sim.World, login string) {
 		world.Actors["pc-mender"] = &sim.Actor{
 			ID: "pc-mender", DisplayName: "Mender", Kind: sim.KindPC,
 			State: sim.StateIdle, LoginUsername: login,
+			Coins: 60,
 			Pos:   sim.WorldPos{X: 500, Y: 500}.Tile(),
 			Needs: map[sim.NeedKey]int{},
 		}
@@ -44,6 +45,7 @@ func seedRepairPC(t *testing.T, w *sim.World, login string) {
 		world.Settings.PublicWorksChestReserve = 50
 		world.Settings.PCRepairWellSteps = 2
 		world.Settings.PCRepairWellStepGapMs = 1
+		world.Settings.PCRepairHardCoins = 120
 		return nil, nil
 	}})
 	if err != nil {
@@ -73,8 +75,8 @@ func TestHandlePCRepair_OfferStartStep(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &started); err != nil {
 		t.Fatalf("decode start: %v", err)
 	}
-	if started.Repair == nil || !started.Repair.Yours || started.Repair.StepGapMs != 1 {
-		t.Fatalf("start = %+v, want Yours with a 1 ms gap", started.Repair)
+	if started.Repair == nil || !started.Repair.Yours || started.Repair.StepGapMs != 1 || started.Repair.Difficulty != 0.5 {
+		t.Fatalf("start = %+v, want Yours with a 1 ms gap at difficulty 0.5 (60 of 120 coins)", started.Repair)
 	}
 
 	var step pcRepairStepResponse
