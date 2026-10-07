@@ -1,6 +1,9 @@
 package sim
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Sprite / SpriteAnimation — in-memory port of the character-sprite catalog
 // (engine/npcs.go NPCSprite / NPCSpriteAnim data types).
@@ -48,6 +51,18 @@ type Sprite struct {
 	// without hardcoding species. NOT NULL DEFAULT 2.0 in the schema; the
 	// client guards <= 0 back to its default for test-seeded zero values.
 	RenderScale float64
+
+	// Rig names a paper-doll animation table the client owns (npc_sprite.rig,
+	// LLM-691): "farmer_base" is the Mana Seed farmer, drawn as a stack of
+	// layer sheets that all share one cell layout. Empty for a classic
+	// one-sheet sprite, which animates from Animations instead.
+	Rig string
+
+	// Layers is the rig sprite's outfit (npc_sprite.layers jsonb): a JSON
+	// array of {sheet, ramps, behind?} the client stacks and recolours. The
+	// engine never reads it — it is carried verbatim to the client. Nil for a
+	// sprite with no rig.
+	Layers json.RawMessage
 }
 
 // BehaviorWaterfowl marks a sprite whose decorative actors are driven by the

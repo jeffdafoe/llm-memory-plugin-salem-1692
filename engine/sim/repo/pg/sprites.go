@@ -42,7 +42,7 @@ SELECT id, name, url
 // unreachable in valid data (the attach guard below is defensive only — see
 // LoadAll's orphan note).
 const loadAllSpritesSQL = `
-SELECT id::text, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale
+SELECT id::text, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, rig, layers
   FROM npc_sprite
  ORDER BY name`
 
@@ -126,8 +126,10 @@ func (r *SpritesRepo) loadSprites(ctx context.Context, packs map[string]*sim.Til
 			id            string
 			s             sim.Sprite
 			behaviorsJSON []byte
+			rig           *string
+			layersJSON    []byte
 		)
-		if err := rows.Scan(&id, &s.Name, &s.Sheet, &s.FrameWidth, &s.FrameHeight, &s.PackID, &behaviorsJSON, &s.RenderScale); err != nil {
+		if err := rows.Scan(&id, &s.Name, &s.Sheet, &s.FrameWidth, &s.FrameHeight, &s.PackID, &behaviorsJSON, &s.RenderScale, &rig, &layersJSON); err != nil {
 			return nil, fmt.Errorf("pg sprites LoadAll: npc_sprite scan: %w", err)
 		}
 		s.ID = sim.SpriteID(id)
@@ -137,6 +139,16 @@ func (r *SpritesRepo) loadSprites(ctx context.Context, packs map[string]*sim.Til
 		// stripping a behavior the migration authored.
 		if err := json.Unmarshal(behaviorsJSON, &s.Behaviors); err != nil {
 			return nil, fmt.Errorf("pg sprites LoadAll: npc_sprite %s behaviors: %w", id, err)
+		}
+		// layers rides to the client verbatim, and only for a rig sprite — a
+		// one-sheet sprite's default '[]' stays off its payload. The CHECK
+		// constraint keeps it an array; json.Valid guards the copy anyway.
+		if rig != nil {
+			s.Rig = *rig
+			if !json.Valid(layersJSON) {
+				return nil, fmt.Errorf("pg sprites LoadAll: npc_sprite %s layers: invalid JSON", id)
+			}
+			s.Layers = json.RawMessage(layersJSON)
 		}
 		if s.PackID != nil {
 			if pack, ok := packs[*s.PackID]; ok {
