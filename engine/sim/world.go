@@ -1359,6 +1359,9 @@ type World struct {
 	// it so the frequent chest writers repost only on a real change. Transient:
 	// boot starts it empty and FinalizeLoad's sync brings it current.
 	publicWorksNewsKey string
+	// minorWorksNewsKey is the same for the minor works, which ride the ticker
+	// only (minorWorksTickerKey).
+	minorWorksNewsKey string
 
 	// ActionLog is the world-level append-only audit trail of
 	// committed agent + engine-source actions. Consumed by the

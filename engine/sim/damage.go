@@ -187,9 +187,9 @@ func PublicWorksKind(o *VillageObject) string {
 }
 
 // IsDamagedSite reports whether o is a damaged object the town posts: a broken
-// well, a damaged business or a road obstacle — the ticker, the boards and a
-// hand's cue read it. A minor work is not one: it is a player's job only
-// (LLM-690; IsRepairSite covers both). Nil-safe.
+// well, a damaged business or a road obstacle — the boards and a hand's cue
+// read it. A minor work is not one: it is a player's job only (LLM-690;
+// IsRepairSite covers both, and the ticker reads that). Nil-safe.
 func IsDamagedSite(o *VillageObject) bool {
 	kind := PublicWorksKind(o)
 	return kind != "" && kind != PublicWorksMinor && o.Damaged()
@@ -728,32 +728,41 @@ type DamageTickerLine struct {
 	Text     string
 }
 
-// DamageTickerLines lists every damaged site (broken well, damaged business)
-// as one ticker line, lowest id first. Pure over the snapshot (the public
+// DamageTickerLines lists every repair site — a damaged site, or a minor work
+// (the ticker is the one town surface a minor work is posted on: no NPC reads
+// it) — as one ticker line, lowest id first. Pure over the snapshot (the public
 // world read builds it).
 func DamageTickerLines(s *Snapshot) []DamageTickerLine {
 	var out []DamageTickerLine
 	for _, obj := range s.VillageObjects {
-		if !IsDamagedSite(obj) {
+		if !IsRepairSite(obj) {
 			continue
 		}
-		kind := PublicWorksKind(obj)
-		text := DamageFact(s.VillageObjects, s.Structures, s.Assets, obj)
-		bounty, _ := s.PublicWorksTerms(kind)
-		switch {
-		case PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve):
-			text += " — the town pays " + coinsPhrase(bounty) + " to the hand who " + PublicWorksMendVerb(kind) + " it."
-		case kind == PublicWorksRoad:
-			text += " — walkers must go around it until it is cleared."
-		case kind == PublicWorksBusiness:
-			text += " — the town cannot pay for the mending just now."
-		default:
-			text += " — draw your water at the other well."
-		}
-		out = append(out, DamageTickerLine{ObjectID: obj.ID, Text: text})
+		bounty, _ := s.PublicWorksTerms(PublicWorksKind(obj))
+		open := PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve)
+		out = append(out, DamageTickerLine{ObjectID: obj.ID, Text: damageTickerText(s.VillageObjects, s.Structures, s.Assets, obj, bounty, open)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ObjectID < out[j].ObjectID })
 	return out
+}
+
+// damageTickerText is one repair site's ticker line. Pure over the maps, so
+// syncPublicWorksNews can tell over the live world when a minor work's line
+// changed.
+func damageTickerText(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject, bounty int, bountyOpen bool) string {
+	kind := PublicWorksKind(obj)
+	text := DamageFact(objects, structures, assets, obj)
+	switch {
+	case bountyOpen:
+		text += " — the town pays " + coinsPhrase(bounty) + " to the hand who " + PublicWorksMendVerb(kind) + " it."
+	case kind == PublicWorksRoad:
+		text += " — walkers must go around it until it is cleared."
+	case kind == PublicWorksBusiness, kind == PublicWorksMinor:
+		text += " — the town cannot pay for the mending just now."
+	default:
+		text += " — draw your water at the other well."
+	}
+	return text
 }
 
 // PublicWorksBountyOpen reports whether the chest can pay a bounty now: it holds

@@ -12,8 +12,10 @@ package sim
 // untaken one mends itself after a TTL.
 //
 // PC-ONLY, enforced engine-side. A minor work is not an IsDamagedSite, so the
-// ticker, the notice boards and a hand's "## The town's works" cue — which all
-// read IsDamagedSite — never see one, and no NPC pays an LLM turn for it.
+// notice boards (which the crier reads aloud) and a hand's "## The town's works"
+// cue — which read IsDamagedSite — never see one, and no NPC pays an LLM turn
+// for it. The client's ticker, which no NPC reads, does post it (IsRepairSite),
+// so a player hears of the work.
 // publicWorksSiteAt resolves one only for a player, and startPublicWorksRepair
 // refuses it to anyone else.
 //
@@ -247,6 +249,7 @@ func damageMinor(w *World, obj *VillageObject, variant *AssetState, now time.Tim
 	name := damageObjectName(w, obj)
 	log.Printf("sim/damage: minor work — %s (%s) is %s", name, obj.ID, variant.State)
 	w.emit(&ObjectDamaged{ObjectID: obj.ID, Name: name, Trigger: DamageTriggerWear, At: now})
+	syncPublicWorksNews(w, now) // the ticker posts it
 	return true
 }
 
