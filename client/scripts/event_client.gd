@@ -829,8 +829,6 @@ func _on_npc_arrived(data: Dictionary) -> void:
     var inside: bool = inside_structure_id != ""
     container.set_meta("inside", inside)
     container.set_meta("inside_structure_id", inside_structure_id)
-    container.visible = world._compute_npc_visible(inside, inside_structure_id)
-    world._apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     if _arrival_should_ease(container, final_pos, inside):
         # LLM-640: walk the remainder instead of snapping — install a finishing
         # leg on the ordinary "walking" machinery. The tick owns facing while it
@@ -855,12 +853,19 @@ func _on_npc_arrived(data: Dictionary) -> void:
         })
     else:
         # Discontinuous snap to the authoritative endpoint (see _snap_npc_to):
-        # arrived inside (masked by hide/stand-offset), already there, or
+        # arrived inside (masked by hide/stand-offset below), already there, or
         # drifted too far to walk it off.
         _snap_npc_to(container, final_pos)
         container.set_meta("facing", facing)
         container.remove_meta("walking")
         world.play_npc_animation(container, facing, "idle")
+    # The inside render runs AFTER the snap: the snap writes the door tile and,
+    # on a jump over one tile, forces visible=true, so applied before it the
+    # stand-offset and the hide were both undone — a keeper or hired hand who
+    # walked into a stall stood in its doorway. Inside arrivals never ease, so
+    # the eased branch only ever gets the outdoor no-op (visible, no reposition).
+    container.visible = world._compute_npc_visible(inside, inside_structure_id)
+    world._apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     # LOGICAL arrival, in both branches: in the eased case the container is
     # still finishing its lerp (walking meta live, walk animation playing) when
     # this fires. Audited (LLM-640): the signal's sole subscriber is
