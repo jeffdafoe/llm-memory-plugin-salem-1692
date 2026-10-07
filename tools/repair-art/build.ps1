@@ -822,6 +822,27 @@ function SawBlade([int]$x, [int]$y, [int]$len) {
     Rect ($bx + $len - 8) $y 1 6 $I0
 }
 
+# The same blade bowed by a bind (LLM-716): each blade column drops by
+# $amp * sin(pi * t), t running 0..1 from the grip to the tip, so a negative
+# $amp bows it up and a positive one down. The grip and the tip stay put.
+function SawBladeBent([int]$x, [int]$y, [int]$len, [int]$amp) {
+    Rect $x ($y - 2) 7 10 $W1; Rect $x ($y - 2) 7 1 $W2; Rect $x ($y - 2) 1 10 $W0; Rect ($x + 6) ($y - 2) 1 10 $W0; Rect $x ($y + 7) 7 1 $W0
+    for ($hy = 1; $hy -le 4; $hy++) { for ($hx = 2; $hx -le 4; $hx++) { Px ($x + $hx) ($y + $hy) $CLEAR } }
+    $bx = $x + 7
+    $n = $len - 7
+    for ($i = 0; $i -lt $n; $i++) {
+        $cx = $bx + $i
+        $cy = $y + [int][Math]::Round($amp * [Math]::Sin([Math]::PI * $i / ($n - 1)))
+        Px $cx $cy $I0
+        Px $cx ($cy + 1) $I3
+        Px $cx ($cy + 2) $I2; Px $cx ($cy + 3) $I2
+        Px $cx ($cy + 4) $I1
+        Px $cx ($cy + 5) $(if ($i % 2 -eq 0) { $I1 } else { $I0 })
+        if ($i % 2 -eq 0) { Px $cx ($cy + 6) $I0 }
+    }
+    Rect ($bx + $n - 1) $y 1 6 $I0
+}
+
 # Plaster, shingle and stone ramps for a half-timbered shop front.
 $PL0 = C 'A08C65'; $PL1 = C 'C9B48C'; $PL2 = C 'E3D3AE'; $PL3 = C 'F0E4C6'
 $SH0 = C '3A3046'; $SH1 = C '5A4E6B'; $SH2 = C '7E7090'; $SH3 = C 'A497B4'
@@ -1462,6 +1483,12 @@ SavePng 'wheel'
 NewCanvas 48 47; LogBack 19 27 19 8; SavePng 'log-back'
 NewCanvas 39 39; Disc 19 19 19 $false; SavePng 'log-face'
 NewCanvas 68 10; SawBlade 0 2 68; SavePng 'saw'
+# The blade bowed, one 68 x 16 frame per pixel of bow from -4 (up) to +2
+# (down), its top 4 rows lower than in 'saw' to leave room for the bow
+# (SAW_BEND_* in repair_stage.gd).
+NewCanvas (68 * 7) 16
+for ($f = 0; $f -lt 7; $f++) { SawBladeBent (68 * $f) 6 68 ($f - 4) }
+SavePng 'saw-bend'
 
 "wrote $((Get-ChildItem $Dest -Filter *.png).Count) pieces to $((Resolve-Path $Dest).Path)"
 

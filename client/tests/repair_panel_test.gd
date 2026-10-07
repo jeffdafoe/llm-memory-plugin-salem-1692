@@ -29,7 +29,9 @@ const TESTS := [
     "_test_plumb_swings_through_level",
     "_test_plumb_straightens_with_the_work",
     "_test_difficulty_hardens_every_game",
-    "_test_saw_beat_at_difficulty",
+    "_test_saw_binds_and_sticks",
+    "_test_saw_stage_bends_the_blade",
+    "_test_saw_same_however_time_arrives",
     "_test_pixel_and_object_scale",
     "_test_layers_bbox",
     "_test_title_and_sentence",
@@ -69,7 +71,7 @@ const _ART_PIECES := [
     "sign-base", "sign-arm", "sign-loose", "sign-brace", "stake", "bob",
     "road-ground", "road-trunk", "road-face", "road-round", "road-brush",
     "plank", "nail", "nail-driven", "hammer", "bar", "peg", "wheel",
-    "log-back", "log-face", "saw",
+    "log-back", "log-face", "saw", "saw-bend",
     "fence-states", "fence-between", "fence-in", "fence-out",
     "well-states", "well-between", "well-in", "well-out",
     "shop-states", "shop-between", "shop-in", "shop-out",
@@ -203,22 +205,6 @@ func _test_hammer_hits_the_standing_nail() -> void:
     _done()
 
 
-func _test_saw_keeps_the_beat() -> void:
-    var g = Games.make("saw", _rng())
-    var left := Vector2(10, 20)
-    var right := Vector2(Games.PLAY_W - 10, 20)
-    _check("right first: off the beat", g.press(right), Games.Result.MISS)
-    var r := Games.Result.NONE
-    for i in g.STROKES:
-        r = g.press(left if i % 2 == 0 else right)
-        if i < g.STROKES - 1:
-            _check("stroke %d is progress" % i, r, Games.Result.PROGRESS)
-    _check("the last stroke cuts through", r, Games.Result.HIT)
-    _check("held after the cut", g.press(left), Games.Result.NONE)
-    g.release()
-    _check("a fresh section", g.strokes, 0)
-    _check("a key press plays the wanted side", g.press(null), Games.Result.PROGRESS)
-    _done()
 
 
 ## Run a plumb game until its arm is level (at most `limit` seconds); true when
@@ -350,32 +336,14 @@ func _test_difficulty_hardens_every_game() -> void:
 
     _check("saw easy: strokes", Games.make("saw", _rng(), 0.0).strokes_needed, Games.Saw.STROKES)
     _check("saw hard: strokes", Games.make("saw", _rng(), 1.0).strokes_needed, Games.Saw.HARD_STROKES)
+    var s0 = Games.make("saw", _rng(), 0.0)
+    var s1 = Games.make("saw", _rng(), 1.0)
+    _check("saw hard: a faster stroke", [s0.period, s1.period], [Games.Saw.PERIOD, Games.Saw.HARD_PERIOD])
+    _check("saw hard: a narrower window", [s0.window, s1.window], [Games.Saw.WINDOW, Games.Saw.HARD_WINDOW])
+    _check("saw easy still has a real window", s0.window < s0.period / 4.0, true)
     _done()
 
 
-## At difficulty, the saw keeps a beat: too soon does not count, too late loses
-## the run. At 0 there is no beat.
-func _test_saw_beat_at_difficulty() -> void:
-    var left := Vector2(10, 20)
-    var right := Vector2(Games.PLAY_W - 10, 20)
-    var s = Games.make("saw", _rng(), 1.0)
-    _check("first stroke", s.press(left), Games.Result.PROGRESS)
-    s.update(0.05)
-    _check("too soon: it does not count", s.press(right), Games.Result.MISS)
-    _check("the run stands", s.strokes, 1)
-    s.update(0.25)
-    _check("on the beat", s.press(right), Games.Result.PROGRESS)
-    s.update(Games.Saw.HARD_MAX_GAP + 0.1)
-    _check("too late: a miss", s.press(left), Games.Result.MISS)
-    _check("the cut starts over", s.strokes, 0)
-    _check("the next tap starts a fresh run", s.press(left), Games.Result.PROGRESS)
-    var e = Games.make("saw", _rng(), 0.0)
-    e.press(left)
-    _check("easy: an instant stroke counts", e.press(right), Games.Result.PROGRESS)
-    e.update(60.0)
-    _check("easy: a long pause keeps the run", e.press(left), Games.Result.PROGRESS)
-    _check("easy: three strokes in", e.strokes, 3)
-    _done()
 
 
 func _test_pixel_and_object_scale() -> void:
@@ -1102,4 +1070,126 @@ func _test_staged_stage_plays_a_beat() -> void:
     stage.set_progress(3)
     _check("…nor on resuming at the same step", stage._beat_queue.size(), 0)
     stage.queue_free()
+    _done()
+
+
+## Run a saw's blade to end k (k * period on its clock).
+func _saw_to_end(g, k: int) -> void:
+    g.update(k * g.period - g.blade_t)
+
+
+## The saw keeps a beat (LLM-716): a stroke counts only on the side the blade
+## is reaching, while that end is lit, once per end.
+func _test_saw_keeps_the_beat() -> void:
+    var g = Games.make("saw", _rng())
+    var left := Vector2(10, 20)
+    var right := Vector2(Games.PLAY_W - 10, 20)
+    _check("at the start nothing is lit", g.lit(), false)
+    _check("a tap off the beat binds", g.press(right), Games.Result.MISS)
+    _check("a bind is counted", g.binds, 1)
+    _saw_to_end(g, 1)
+    _check("the right end is lit as the blade reaches it", g.lit(), true)
+    _check("tapping it is a stroke", g.press(right), Games.Result.PROGRESS)
+    _check("a stroke clears the binds", g.binds, 0)
+    _check("a second tap at the same end binds", g.press(right), Games.Result.MISS)
+    _check("and loses the stroke", g.strokes, 0)
+    g.update(g.period / 2.0)
+    _check("mid-stroke nothing is lit", g.lit(), false)
+    _saw_to_end(g, 2)
+    _check("the wrong side binds", g.press(right), Games.Result.MISS)
+    _check("the right side still counts in the window", g.press(left), Games.Result.PROGRESS)
+    var r := Games.Result.NONE
+    var k := 3
+    while g.strokes < g.strokes_needed and k < 20:
+        _saw_to_end(g, k)
+        r = g.press(null)
+        k += 1
+    _check("a key press on every beat cuts through", r, Games.Result.HIT)
+    _check("held after the cut", g.press(left), Games.Result.NONE)
+    g.release()
+    _check("a fresh section", g.strokes, 0)
+    _done()
+
+
+## Binds cost a stroke; three in a row stick the saw (the true fail), and once
+## a run has started a window let pass binds too.
+func _test_saw_binds_and_sticks() -> void:
+    var left := Vector2(10, 20)
+    var right := Vector2(Games.PLAY_W - 10, 20)
+    var g = Games.make("saw", _rng())
+    _saw_to_end(g, 1)
+    g.press(right)
+    _saw_to_end(g, 2)
+    g.press(left)
+    _check("two strokes in", g.strokes, 2)
+    _check("first bind: a stroke lost", [g.press(right), g.strokes], [Games.Result.MISS, 1])
+    _check("second bind", [g.press(right), g.strokes], [Games.Result.MISS, 0])
+    _check("third bind: stuck", g.press(right), Games.Result.FAIL)
+    _check("stuck for its time", g.stuck_left, Games.Saw.STUCK_TIME)
+    _check("the cut starts over", g.strokes, 0)
+    _check("no tap while stuck", g.press(left), Games.Result.NONE)
+    var held_at: float = g.blade_t
+    g.update(Games.Saw.STUCK_TIME / 2.0)
+    _check("the blade stops while stuck", g.blade_t, held_at)
+    g.update(Games.Saw.STUCK_TIME)
+    _check("free again", g.stuck_left, 0.0)
+    _check("binds start fresh", g.binds, 0)
+
+    var w = Games.make("saw", _rng())
+    w.update(w.period * 4.0)
+    _check("before a run starts, a window let pass is no bind", w.take_events(), [])
+    _saw_to_end(w, 5)
+    w.press(null)
+    _saw_to_end(w, 6)
+    w.update(w.window * 2.0)
+    _check("a run started: a window let pass binds", w.take_events(), [Games.Result.MISS])
+    _check("and costs the stroke", w.strokes, 0)
+    w.update(w.period * 2.0)
+    _check("three let pass stick the saw", w.take_events(), [Games.Result.MISS, Games.Result.FAIL])
+    _check("stuck", w.stuck_left > 0.0, true)
+    _done()
+
+
+## The stage bows the blade on a bind and springs it back; a stuck blade stays
+## bowed.
+func _test_saw_stage_bends_the_blade() -> void:
+    var g = Games.make("saw", _rng())
+    _check("straight before any bind", StageScript.saw_bend(g), 0)
+    g.press(null)
+    _check("buckled up at the bind", StageScript.saw_bend(g), StageScript.SAW_BEND_MIN)
+    g.update(0.12)
+    _check("springs past straight", StageScript.saw_bend(g) > 0, true)
+    g.update(StageScript.SAW_BEND_TIME)
+    _check("settled", StageScript.saw_bend(g), 0)
+    g.press(null)
+    g.press(null)
+    _check("stuck: bowed and held", StageScript.saw_bend(g), StageScript.SAW_STUCK_BEND)
+    _done()
+
+
+## One long update (a stall) ends in the same state as the same time given in
+## short frames: three windows let pass, the stuck spell, and on past it.
+func _test_saw_same_however_time_arrives() -> void:
+    var total := 0.0
+    var games: Array = []
+    for frames in [1, 7, 400]:
+        var g = Games.make("saw", _rng())
+        _saw_to_end(g, 1)
+        g.press(null)
+        total = 3.0 * g.period + Games.Saw.STUCK_TIME + 0.3
+        var events: Array = []
+        for i in frames:
+            g.update(total / frames)
+            events.append_array(g.take_events())
+        games.append({"g": g, "events": events})
+    var a = games[0]["g"]
+    _check("one update: three binds, the last sticks", games[0]["events"], [Games.Result.MISS, Games.Result.MISS, Games.Result.FAIL])
+    _check("the stuck bind lands when its window closed", absf(a.bound_at - (a.period + 3.0 * a.period + a.window)) < 0.001, true)
+    for i in [1, 2]:
+        var b = games[i]["g"]
+        _check("frames %d: same events" % i, games[i]["events"], games[0]["events"])
+        _check("frames %d: same stuck time" % i, absf(b.stuck_left - a.stuck_left) < 0.001, true)
+        _check("frames %d: same blade clock" % i, absf(b.blade_t - a.blade_t) < 0.001, true)
+        _check("frames %d: same bind time" % i, absf(b.bound_at - a.bound_at) < 0.001, true)
+    _check("free of the stuck spell, the blade moved on", a.stuck_left == 0.0 and a.blade_t > 4.0 * a.period + a.window, true)
     _done()

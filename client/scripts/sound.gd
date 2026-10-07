@@ -55,6 +55,18 @@ const SOUNDS := {
         "db": -14.0, "pitch": 0.04,
     },
     # A cut section of trunk dropping onto the verge — the board thud, lower.
+    # The saw binding (LLM-716): the teeth dragging in the cut, and the blade
+    # flexing; then, stuck, a clank and the log groaning on it.
+    "saw_bind": {"files": ["drawKnife1.ogg", "drawKnife2.ogg", "drawKnife3.ogg"], "db": -12.0, "pitch": 0.05, "base": 0.8},
+    "saw_flex": {
+        "files": ["impactTin_medium_000.ogg", "impactTin_medium_001.ogg", "impactTin_medium_002.ogg", "impactTin_medium_003.ogg", "impactTin_medium_004.ogg"],
+        "db": -16.0, "pitch": 0.06,
+    },
+    "saw_stuck": {
+        "files": ["impactMetal_heavy_000.ogg", "impactMetal_heavy_001.ogg", "impactMetal_heavy_002.ogg", "impactMetal_heavy_003.ogg", "impactMetal_heavy_004.ogg"],
+        "db": -12.0, "pitch": 0.03, "base": 0.85,
+    },
+    "saw_groan": {"files": ["creak1.ogg", "creak2.ogg", "creak3.ogg"], "db": -14.0, "pitch": 0.03, "base": 0.7},
     "section_drop": {
         "files": ["impactPlank_medium_000.ogg", "impactPlank_medium_002.ogg", "impactPlank_medium_004.ogg"],
         "db": -18.0, "pitch": 0.04, "base": 0.75,

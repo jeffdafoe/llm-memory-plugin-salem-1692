@@ -178,6 +178,19 @@ const SWING_DOWN := 0.06
 const SWING_HOLD := 0.06
 const SWING_UP := 0.21
 
+# The bent saw blade (LLM-716): `saw-bend` is a strip of SAW_BEND_FRAMES
+# frames of SAW_BEND_W × SAW_BEND_H, one per whole pixel of bow from
+# SAW_BEND_MIN (−4, bowed up) to +2 (bowed down); the blade's top sits
+# SAW_BEND_PAD rows down in each. A bind buckles it up and it springs back
+# over SAW_BEND_TIME; a stuck saw stays bowed (SAW_STUCK_BEND).
+const SAW_BEND_FRAMES := 7
+const SAW_BEND_MIN := -4
+const SAW_BEND_W := 68
+const SAW_BEND_H := 16
+const SAW_BEND_PAD := 4
+const SAW_BEND_TIME := 0.5
+const SAW_STUCK_BEND := -3
+
 static var _art_cache := {}
 
 var title := ""
@@ -205,6 +218,9 @@ var _reveal := Rect2()  # where broken and mended differ, art px around the anch
 var _shown_progress := 0.0  # 0..1, eased toward steps_done / steps
 var _shake := 0.0
 var _flash := 0.0
+# How deep the saw is drawn in the log; follows the cut, so a lost stroke or
+# a stuck saw rises back rather than jumping.
+var _saw_depth := 0.0
 ## The hammer's swing: seconds since it started (-1 at rest), whether it is
 ## coming down on a nail, and which slot it swings at.
 var _swing_t := -1.0
@@ -424,6 +440,7 @@ func start_game() -> void:
     _rng.randomize()
     game = Games.make(game_kind, _rng, difficulty)
     game.set_progress(steps_done, steps)
+    _saw_depth = 0.0
     playing = true
 
 
@@ -529,9 +546,47 @@ func _handle_press(pos: Variant) -> void:
         Games.Result.MISS:
             if game_kind == "hammer":
                 _start_swing(false, false)
+            elif game_kind == "saw":
+                _on_bind()
             else:
                 _shake = maxf(_shake, 0.12)
             missed.emit()
+        Games.Result.FAIL:
+            _on_stuck()
+            missed.emit()
+
+
+## The saw binds (LLM-716): the blade buckles with a scrape and a twang.
+func _on_bind() -> void:
+    _shake = maxf(_shake, 0.15)
+    _sound("saw_bind")
+    _sound("saw_flex")
+    _burst(_play_origin() + Vector2(Games.PLAY_W / 2.0, 18), 2, [C_WOOD_HI, C_IRON_LIGHT])
+
+
+## The saw sticks (LLM-716): a clank and a groan from the log, and the cut
+## starts over.
+func _on_stuck() -> void:
+    _shake = 0.35
+    _sound("saw_stuck")
+    _sound("saw_groan")
+    var at := _play_origin() + Vector2(Games.PLAY_W / 2.0, 14)
+    _burst(at, 8, [C_WOOD_HI, C_WOOD_LIGHT, C_IRON_LIGHT])
+    pop("Stuck!", at + Vector2(0, -8))
+
+
+## How far the saw blade bows, in whole pixels: up hard on a bind, springing
+## past straight and settling; held bowed while stuck.
+static func saw_bend(g) -> int:
+    if g.stuck_left > 0.0:
+        return SAW_STUCK_BEND
+    if g.bound_at < 0.0:
+        return 0
+    var a: float = g.t - g.bound_at
+    if a >= SAW_BEND_TIME:
+        return 0
+    var bend := roundi(SAW_BEND_MIN * exp(-a * 7.0) * cos(a * 26.0))
+    return clampi(bend, SAW_BEND_MIN, SAW_BEND_MIN + SAW_BEND_FRAMES - 1)
 
 
 func _on_hit(perfect: bool) -> void:
@@ -657,6 +712,15 @@ func _burst(at: Vector2, n: int, colors: Array) -> void:
 func _process(delta: float) -> void:
     if game != null and playing:
         game.update(delta)
+        for r in game.take_events():
+            if r == Games.Result.FAIL:
+                _on_stuck()
+            else:
+                _on_bind()
+            missed.emit()
+        if game_kind == "saw":
+            var want: float = float(game.strokes) / game.strokes_needed * 38.0
+            _saw_depth = move_toward(_saw_depth, want, delta * 60.0)
     var target := float(steps_done) / steps
     _shown_progress = move_toward(_shown_progress, target, delta * 1.6)
     _shake = maxf(0.0, _shake - delta)
@@ -1175,14 +1239,19 @@ func _draw_hammer(o: Vector2) -> void:
 
 func _draw_saw(o: Vector2) -> void:
     var g = game
-    # Tap halves: the side wanted glows gold, its arrow pointing outward.
+    # Tap halves: the side the blade is heading for shows a faint gold, and
+    # lights full gold while its window is open; the arrow points outward.
     var half := Games.PLAY_W / 2.0
+    var lit: bool = g.lit()
     for side in 2:
         var r := Rect2(o + Vector2(side * half + 2, 4), Vector2(half - 4, 30))
-        var want: bool = side == g.side
-        draw_rect(r, Color(C_ZONE, 0.16) if want else Color(0, 0, 0, 0.12))
+        var want: bool = side == g.side and g.stuck_left == 0.0
+        var fill := Color(0, 0, 0, 0.12)
+        if want:
+            fill = Color(C_ZONE, 0.5) if lit else Color(C_ZONE, 0.1)
+        draw_rect(r, fill)
         var cy := floorf(r.get_center().y)
-        var col := C_ZONE_HI if want else Color(C_TEXT, 0.3)
+        var col := C_ZONE_HI if want and lit else (Color(C_ZONE_HI, 0.45) if want else Color(C_TEXT, 0.3))
         var edge := C_ZONE_LO if want else Color(0, 0, 0, 0.24)
         for i in 7:
             var ax := r.position.x + (8.0 + i if side == 0 else r.size.x - 12.0 - i)
@@ -1194,8 +1263,18 @@ func _draw_saw(o: Vector2) -> void:
     # sides, sinking a stroke at a time.
     var face := (o + Vector2(half, 28)).floor()
     _tex("log-back", face - Vector2(19, 27))
-    var depth := floorf(float(g.strokes) / g.strokes_needed * 38.0)
-    _tex("saw", Vector2(face.x - 34 + roundf(g.saw_x * 12.0), face.y - 27 + depth))
+    var depth := floorf(_saw_depth)
+    var blade := Vector2(face.x - 34 + roundf(g.saw_x * 12.0), face.y - 27 + depth)
+    if g.stuck_left > 0.0:
+        # Fast in the log: the blade judders where it stuck.
+        blade.x += 1.0 if fmod(g.t, 0.1) < 0.05 else -1.0
+    var bent := art("saw-bend")
+    if bent != null:
+        var frame := saw_bend(g) - SAW_BEND_MIN
+        draw_texture_rect_region(bent, Rect2((blade - Vector2(0, SAW_BEND_PAD)).floor(), Vector2(SAW_BEND_W, SAW_BEND_H)),
+            Rect2(frame * SAW_BEND_W, 0, SAW_BEND_W, SAW_BEND_H))
+    else:
+        _tex("saw", blade)
     _tex("log-face", face - Vector2(19, 19))
     # Sawdust where the blade comes out at both sides.
     var by := face.y - 19 + depth
