@@ -54,6 +54,10 @@ var _current_name := ""
 var _current_layers: Array = []
 var _cancellable := true
 var _saving := false
+## A request is on _http. Every completion handler clears it first; _post
+## refuses a second request while it is set, so a callback can never consume
+## another request's completion.
+var _in_flight := false
 ## Bumped on every preview rebuild; a sheet callback from an older rebuild is
 ## dropped.
 var _preview_gen := 0
@@ -168,16 +172,17 @@ func open(pc_exists: bool, character_name: String, current_sprite: Dictionary) -
     _cancel_button.visible = _cancellable
     _name_edit.text = character_name if character_name != "" else str(Auth.username)
     _error.text = ""
-    _saving = false
-    _save_button.disabled = false
     visible = true
     if _wardrobe.is_empty():
-        _load_wardrobe()
+        if not _in_flight:
+            _load_wardrobe()
     else:
         _start_from_current()
 
 func _close() -> void:
-    if not _cancellable:
+    # No closing mid-save: the save would land with the creator shut, and a
+    # reopen could start a second one on the same request.
+    if not _cancellable or _saving:
         return
     visible = false
     _turn_timer.stop()
@@ -190,10 +195,25 @@ func _input(event: InputEvent) -> void:
 
 func _load_wardrobe() -> void:
     _error.text = "Opening the wardrobe…"
-    _http.request_completed.connect(_on_wardrobe_loaded, CONNECT_ONE_SHOT)
-    _http.request(Auth.api_base + "/api/village/pc/wardrobe", Auth.auth_headers(), HTTPClient.METHOD_POST, "")
+    if not _post("/api/village/pc/wardrobe", "", _on_wardrobe_loaded):
+        _error.text = "The wardrobe could not be opened. Close and try again."
+
+## Start one request on _http with callback as its one-shot completion.
+## Returns false, leaving nothing connected, when a request is already on
+## _http or the request cannot start (no completion would ever arrive).
+func _post(path: String, body: String, callback: Callable) -> bool:
+    if _in_flight:
+        return false
+    _http.request_completed.connect(callback, CONNECT_ONE_SHOT)
+    var err := _http.request(Auth.api_base + path, Auth.auth_headers(), HTTPClient.METHOD_POST, body)
+    if err != OK:
+        _http.request_completed.disconnect(callback)
+        return false
+    _in_flight = true
+    return true
 
 func _on_wardrobe_loaded(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    _in_flight = false
     if not Auth.check_response(code):
         return
     var data = JSON.parse_string(body.get_string_from_utf8())
@@ -411,13 +431,14 @@ func _on_save() -> void:
     _save_button.disabled = true
     _error.text = ""
     if not _pc_exists or character_name != _current_name:
-        _http.request_completed.connect(_on_create_done.bind(character_name), CONNECT_ONE_SHOT)
-        _http.request(Auth.api_base + "/api/village/pc/create", Auth.auth_headers(),
-            HTTPClient.METHOD_POST, JSON.stringify({"character_name": character_name}))
+        if not _post("/api/village/pc/create", JSON.stringify({"character_name": character_name}),
+                _on_create_done.bind(character_name)):
+            _fail("The village did not answer. Try again.")
     else:
         _send_outfit(character_name)
 
 func _on_create_done(result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray, character_name: String) -> void:
+    _in_flight = false
     if not Auth.check_response(code):
         _fail("")
         return
@@ -433,11 +454,11 @@ func _on_create_done(result: int, code: int, _headers: PackedStringArray, _body:
 
 func _send_outfit(character_name: String) -> void:
     var layers := FarmerOutfit.compose(_wardrobe, _picks)
-    _http.request_completed.connect(_on_outfit_done.bind(character_name, layers), CONNECT_ONE_SHOT)
-    _http.request(Auth.api_base + "/api/village/pc/outfit", Auth.auth_headers(),
-        HTTPClient.METHOD_POST, JSON.stringify({"layers": layers}))
+    if not _post("/api/village/pc/outfit", JSON.stringify({"layers": layers}), _on_outfit_done.bind(character_name, layers)):
+        _fail("The village did not answer. Try again.")
 
 func _on_outfit_done(result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray, character_name: String, layers: Array) -> void:
+    _in_flight = false
     if not Auth.check_response(code):
         _fail("")
         return

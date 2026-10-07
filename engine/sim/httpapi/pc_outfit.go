@@ -21,8 +21,8 @@ import (
 // by sim.PCOutfitSpriteID so every save rewrites the same row. The row is
 // written BEFORE the world points the PC at it — actor.sprite_id has a foreign
 // key to npc_sprite, and the checkpoint that saves the actor must never see an
-// id the table lacks. A failure between the two leaves the PC in its old
-// clothes and an unused row, which the next save overwrites.
+// id the table lacks. Saves are serialized (Server.outfitMu) so the table and
+// the live catalog see them in the same order.
 
 const maxOutfitBodyBytes = 16 << 10
 
@@ -92,6 +92,12 @@ func (s *Server) handlePCOutfit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The write and the install happen under one lock, in that order, and the
+	// install ignores the request's cancellation: once the row holds the new
+	// layers, the live catalog must hold them too, or the outfit changes on
+	// the next restart.
+	s.outfitMu.Lock()
+	defer s.outfitMu.Unlock()
 	if err := s.spriteWriter.UpsertRigSprite(r.Context(), sprite); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
@@ -100,7 +106,7 @@ func (s *Server) handlePCOutfit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save outfit")
 		return
 	}
-	if _, err := s.world.SendContext(r.Context(), sim.SetPCOutfit(user.Username, sprite)); err != nil {
+	if _, err := s.world.SendContext(context.WithoutCancel(r.Context()), sim.SetPCOutfit(user.Username, sprite)); err != nil {
 		writeOutfitError(w, err)
 		return
 	}

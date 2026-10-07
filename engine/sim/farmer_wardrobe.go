@@ -201,16 +201,17 @@ func PlayerWardrobe() FarmerWardrobe {
 type wardrobeSheet struct {
 	item  *FarmerWardrobeItem
 	layer FarmerWardrobeLayer
+	index int // the layer's position in item.Layers
 }
 
 var wardrobeSheets = func() map[string]wardrobeSheet {
 	out := make(map[string]wardrobeSheet)
 	for i := range farmerWardrobeItems {
 		item := &farmerWardrobeItems[i]
-		for _, layer := range item.Layers {
-			out[layer.Sheet] = wardrobeSheet{item: item, layer: layer}
+		for j, layer := range item.Layers {
+			out[layer.Sheet] = wardrobeSheet{item: item, layer: layer, index: j}
 			if layer.Curved != "" {
-				out[layer.Curved] = wardrobeSheet{item: item, layer: layer}
+				out[layer.Curved] = wardrobeSheet{item: item, layer: layer, index: j}
 			}
 		}
 	}
@@ -241,6 +242,10 @@ func ValidateFarmerOutfit(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	seenSheets := make(map[string]bool, len(layers))
 	wornBy := make(map[string]string, len(layers))
+	// Per worn item: which of its layers came in, and the colours of the first
+	// one (every layer of an item takes the same colours).
+	itemLayers := make(map[string]map[int]bool, len(layers))
+	itemRamps := make(map[string]map[string]int, len(layers))
 	lastOrder := -1
 	for i, l := range layers {
 		ws, ok := wardrobeSheets[l.Sheet]
@@ -279,9 +284,27 @@ func ValidateFarmerOutfit(raw json.RawMessage) (json.RawMessage, error) {
 				return nil, fmt.Errorf("%w: layer %d: colour %d is not offered for %s", ErrInvalidOutfit, i, index, slot)
 			}
 		}
+		if itemLayers[ws.item.ID] == nil {
+			itemLayers[ws.item.ID] = map[int]bool{}
+			itemRamps[ws.item.ID] = l.Ramps
+		}
+		if itemLayers[ws.item.ID][ws.index] {
+			return nil, fmt.Errorf("%w: layer %d: that part of %q is worn twice", ErrInvalidOutfit, i, ws.item.ID)
+		}
+		itemLayers[ws.item.ID][ws.index] = true
+		for slot, index := range itemRamps[ws.item.ID] {
+			if l.Ramps[slot] != index {
+				return nil, fmt.Errorf("%w: layer %d: every part of %q takes the same colours", ErrInvalidOutfit, i, ws.item.ID)
+			}
+		}
 	}
 	if _, ok := wornBy["body"]; !ok {
 		return nil, fmt.Errorf("%w: the body is required", ErrInvalidOutfit)
+	}
+	for _, id := range wornBy {
+		if item := wardrobeItemByID(id); item != nil && len(itemLayers[id]) != len(item.Layers) {
+			return nil, fmt.Errorf("%w: %q is missing a part", ErrInvalidOutfit, id)
+		}
 	}
 	out, err := json.Marshal(layers)
 	if err != nil {
@@ -341,4 +364,13 @@ func NewPCOutfitSprite(id ActorID, characterName string, layers json.RawMessage)
 		Rig:         "farmer_base",
 		Layers:      layers,
 	}, nil
+}
+
+func wardrobeItemByID(id string) *FarmerWardrobeItem {
+	for i := range farmerWardrobeItems {
+		if farmerWardrobeItems[i].ID == id {
+			return &farmerWardrobeItems[i]
+		}
+	}
+	return nil
 }

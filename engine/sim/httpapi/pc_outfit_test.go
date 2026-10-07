@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -18,6 +19,8 @@ type fakeSpriteWriter struct {
 	written   []*sim.Sprite
 	inCatalog bool
 	fail      error
+	// afterWrite runs once the row is "written" — a test cancels the request here.
+	afterWrite func()
 }
 
 func (f *fakeSpriteWriter) UpsertRigSprite(_ context.Context, sp *sim.Sprite) error {
@@ -26,6 +29,9 @@ func (f *fakeSpriteWriter) UpsertRigSprite(_ context.Context, sp *sim.Sprite) er
 	}
 	f.written = append(f.written, sp)
 	f.inCatalog = f.world.Published().Sprites[sp.ID] != nil
+	if f.afterWrite != nil {
+		f.afterWrite()
+	}
 	return nil
 }
 
@@ -129,4 +135,29 @@ func TestHandlePCOutfit_Refusals(t *testing.T) {
 			t.Fatalf("PC sprite changed to %q after a failed write", got)
 		}
 	})
+}
+
+// TestHandlePCOutfit_CancelAfterWriteStillInstalls: once the row holds the new
+// layers, the live catalog must take them too — a client that drops the
+// connection at that moment must not leave the table and the world apart
+// (the outfit would change on the next restart).
+func TestHandlePCOutfit_CancelAfterWriteStillInstalls(t *testing.T) {
+	w := seededWorld(t)
+	seedPC(t, w, "pc-tester", "tester", 5, 5)
+	srv := NewServer(w, okAuth{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.SetSpriteWriter(&fakeSpriteWriter{world: w, afterWrite: cancel})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/village/pc/outfit", strings.NewReader(testOutfitBody)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	want := sim.PCOutfitSpriteID("pc-tester")
+	if got := w.Published().Actors["pc-tester"].SpriteID; got != want {
+		t.Fatalf("PC sprite = %q after a cancel following the write, want %q", got, want)
+	}
+	if w.Published().Sprites[want] == nil {
+		t.Fatal("outfit sprite missing from the catalog")
+	}
 }

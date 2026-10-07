@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
@@ -74,6 +75,10 @@ type Server struct {
 	// upsert of a player's outfit sprite. A player route, wired whenever pg is
 	// present (Server.SetSpriteWriter). Nil → that route answers 503.
 	spriteWriter SpriteWriter
+	// outfitMu serializes PC outfit saves (pc/outfit): the durable row write and
+	// the world install must land in the same order, or the table and the live
+	// catalog end up holding different outfits. Saves are rare and short.
+	outfitMu sync.Mutex
 	// satisfiesWriter backs the operator-gated POST /umbilical/item/set-satisfies
 	// control route (LLM-119) — the durable item_satisfies upsert. Injected (set
 	// by cmd/engine via SetSatisfiesWriter) so httpapi does not import the pg
@@ -391,7 +396,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
 	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
-	mux.HandleFunc("POST /api/village/pc/sprite", s.requireAuth(s.handlePCSprite))
 	mux.HandleFunc("POST /api/village/pc/create", s.requireAuth(s.handlePCCreate))
 	mux.HandleFunc("POST /api/village/pc/wardrobe", s.requireAuth(s.handlePCWardrobe))
 	mux.HandleFunc("POST /api/village/pc/outfit", s.requireAuth(s.handlePCOutfit))
