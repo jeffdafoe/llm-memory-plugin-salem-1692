@@ -1013,9 +1013,9 @@ func _test_staged_strips_match_their_beats() -> void:
             var t := StageScript.art("%s-%s" % [key, piece])
             _check("%s %s: N frames" % [key, piece], t.get_size() if t != null else Vector2.ZERO, Vector2(w * n, h))
         var si := _img(states)
-        _check("%s broken is the first state" % key, si.get_region(Rect2i(0, 0, w, int(h))).get_data(), _img(broken).get_data())
+        _check("%s broken is the first state" % key, si.get_region(Rect2i(0, 0, w, int(h))).get_data() == _img(broken).get_data(), true)
         var mended := StageScript.art(key + "-mended")
-        _check("%s mended is the last state" % key, si.get_region(Rect2i(n * w, 0, w, int(h))).get_data(), _img(mended).get_data())
+        _check("%s mended is the last state" % key, si.get_region(Rect2i(n * w, 0, w, int(h))).get_data() == _img(mended).get_data(), true)
         for b in n:
             var m: Dictionary = StageScript.STAGED[key][b]
             var changed: bool = StageScript.strip_used_rect(key + "-in", b).has_area() or StageScript.strip_used_rect(key + "-out", b).has_area()
@@ -1052,10 +1052,10 @@ func _test_staged_layers_compose() -> void:
             var frame := Rect2i(b * w, 0, w, h)
             var after := bi.get_region(frame)
             after.blend_rect(ii, frame, Vector2i.ZERO)
-            _check("%s beat %d: between + in is the next state" % [key, b], after.get_data(), si.get_region(Rect2i((b + 1) * w, 0, w, h)).get_data())
+            _check("%s beat %d: between + in is the next state" % [key, b], after.get_data() == si.get_region(Rect2i((b + 1) * w, 0, w, h)).get_data(), true)
             var before := bi.get_region(frame)
             before.blend_rect(oi, frame, Vector2i.ZERO)
-            _check("%s beat %d: between + out is the state before" % [key, b], before.get_data(), si.get_region(frame).get_data())
+            _check("%s beat %d: between + out is the state before" % [key, b], before.get_data() == si.get_region(frame).get_data(), true)
     _done()
 
 
