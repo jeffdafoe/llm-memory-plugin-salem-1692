@@ -336,8 +336,10 @@ func _download_npc_sheet(sheet_path: String) -> void:
 ## when ready. Used by editor_panel's NPC placement thumbnails so it doesn't
 ## need its own sheet cache. Callback receives one ImageTexture argument
 ## (or is called with null on failure — currently we just don't call it,
-## keeping the pattern the same as _on_npc_sheet_downloaded).
-func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
+## keeping the pattern the same as _on_npc_sheet_downloaded). A caller that
+## must hear about a failure passes on_failed (LLM-691); it is called with no
+## arguments and the sheet is marked in _failed_sheets.
+func get_or_load_npc_sheet(sheet_path: String, callback: Callable, on_failed: Callable = Callable()) -> void:
     if sheet_path == "":
         return
     if _npc_sheets.has(sheet_path):
@@ -350,16 +352,24 @@ func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
         http.queue_free()
         if result != HTTPRequest.RESULT_SUCCESS or code != 200:
             push_warning("NPC sheet download failed: " + sheet_path + " code=" + str(code))
+            _sheet_load_failed(sheet_path, on_failed)
             return
         var image = Image.new()
         if image.load_png_from_buffer(body) != OK:
             push_warning("NPC sheet decode failed: " + sheet_path)
+            _sheet_load_failed(sheet_path, on_failed)
             return
         var tex = ImageTexture.create_from_image(image)
         _npc_sheets[sheet_path] = tex
+        _failed_sheets.erase(sheet_path)
         callback.call(tex)
     )
     http.request(api_base + sheet_path)
+
+func _sheet_load_failed(sheet_path: String, on_failed: Callable) -> void:
+    _failed_sheets[sheet_path] = true
+    if on_failed.is_valid():
+        on_failed.call()
 
 ## Apply a server-broadcast display name change to the local NPC. Idempotent —
 ## our own PATCH triggered the broadcast too, so this runs for both the admin
@@ -523,8 +533,11 @@ func _sprite_sheets_resolved(sprite_data: Dictionary) -> bool:
     return true
 
 ## Load every sheet the sprite needs through the shared cache, then call
-## callback once (synchronously when all are cached). A sheet that fails never
-## calls back, so neither does this — the same contract as get_or_load_npc_sheet.
+## callback once every download has finished, loaded or failed (synchronously
+## when all are cached). A farmer doll calls back even with failed layers —
+## setup() leaves them out, as the first render does, and a doll without its
+## body builds nothing. A one-sheet sprite calls back only once its sheet is
+## in, so a failed swap keeps the old sprite.
 func _load_sprite_sheets(sprite_data: Dictionary, callback: Callable) -> void:
     var paths := _sprite_sheet_paths(sprite_data)
     if paths.is_empty():
@@ -532,12 +545,12 @@ func _load_sprite_sheets(sprite_data: Dictionary, callback: Callable) -> void:
     # Lambdas capture locals by value; the Dictionary is shared, so every
     # completion decrements the same counter.
     var remaining := {"count": paths.size()}
+    var finished := func():
+        remaining.count -= 1
+        if remaining.count == 0 and (FarmerDoll.is_rig_sprite(sprite_data) or _sprite_sheets_ready(sprite_data)):
+            callback.call()
     for sheet_path in paths:
-        get_or_load_npc_sheet(sheet_path, func(_tex: Texture2D):
-            remaining.count -= 1
-            if remaining.count == 0:
-                callback.call()
-        )
+        get_or_load_npc_sheet(sheet_path, func(_tex: Texture2D): finished.call(), finished)
 
 ## Build an NPC's CharacterSprite from its sprite payload, scaled and anchored
 ## so its feet sit at the container's position. A farmer-base sprite becomes a

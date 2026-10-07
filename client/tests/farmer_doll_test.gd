@@ -23,6 +23,7 @@ const TESTS := [
     "_test_missing_layer_sheet",
     "_test_world_builds_doll",
     "_test_world_activity_animation",
+    "_test_world_swap_partial_sheets",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -152,6 +153,8 @@ func _test_sheet_paths() -> void:
     _check("layers first, in order", paths.slice(0, 3), [BODY, SHIRT, HAT])
     _check("repeated sheet listed once", paths.count(SHIRT), 1)
     _check("prop sheet listed", paths.has(FarmerRig.PROPS["axe"]["sheet"]), true)
+    var junk := FarmerDoll.sheet_paths(_sprite_data([null, "bad", 7, {"sheet": BODY}]))
+    _check("malformed layer entries skipped", junk.slice(0, 1), [BODY])
     _check("pack sprite is not a rig sprite", FarmerDoll.is_rig_sprite({"sheet": BODY}), false)
     _done()
 
@@ -220,6 +223,12 @@ func _test_missing_layer_sheet() -> void:
     var doll := _doll(_three_layers(), sheets)
     _check("missing layer left out", _layer_children(doll).size(), 1)
     _check("body still built", doll.sprite_frames != null, true)
+    var headless := _sheets()
+    headless.erase(BODY)
+    var floating := _doll(_three_layers(), headless)
+    _check("no body, no doll (clothes would float)", floating.sprite_frames, null)
+    _check("no body, no layers built", _layer_children(floating).size(), 0)
+    floating.free()
     var bare := FarmerDoll.new()
     bare.setup(_sprite_data([{"sheet": "/nowhere.png"}]), {})
     _check("no layer at all builds nothing", bare.sprite_frames, null)
@@ -283,5 +292,50 @@ func _test_world_activity_animation() -> void:
     _world._apply_activity_animation(pack)
     _check("pack sprite keeps idle", spr.animation, &"south_idle")
     pack.free()
+    _world._npc_sheets.clear()
+    _done()
+
+
+## A live outfit swap (npc_sprite_changed) with some sheets failed: the doll
+## comes up without the failed layer or prop, as a first render does; without
+## its body the old sprite stays. Driven at _swap_npc_sprite, the step
+## _load_sprite_sheets hands off to once every download has finished.
+func _test_world_swap_partial_sheets() -> void:
+    var c := Node2D.new()
+    var old := AnimatedSprite2D.new()
+    old.name = "CharacterSprite"
+    old.sprite_frames = SpriteFrames.new()
+    c.add_child(old)
+    _world.placed_npcs["abe"] = c
+    var data := _sprite_data(_three_layers())
+
+    var no_shirt := _sheets()
+    no_shirt.erase(SHIRT)
+    _world._npc_sheets = no_shirt
+    _world._swap_npc_sprite("abe", data)
+    var doll: AnimatedSprite2D = c.get_node_or_null("CharacterSprite")
+    _check("swap lands without the failed shirt", doll is FarmerDoll, true)
+    if doll is FarmerDoll:
+        _check("one layer over the body", _layer_children(doll).size(), 1)
+
+    var no_prop := _sheets()
+    no_prop.erase(FarmerRig.PROPS["axe"]["sheet"])
+    _world._npc_sheets = no_prop
+    _world._swap_npc_sprite("abe", data)
+    var swung: AnimatedSprite2D = c.get_node_or_null("CharacterSprite")
+    _check("swap lands without the prop sheet", swung is FarmerDoll and swung != doll, true)
+    if swung is FarmerDoll:
+        swung.play("east_chop")
+        swung.frame = 2
+        _check("no prop drawn without its sheet", (swung.get_node("Prop") as Sprite2D).visible, false)
+
+    var no_body := _sheets()
+    no_body.erase(BODY)
+    _world._npc_sheets = no_body
+    _world._swap_npc_sprite("abe", data)
+    _check("no body keeps the current sprite", c.get_node_or_null("CharacterSprite"), swung)
+
+    _world.placed_npcs.erase("abe")
+    c.free()
     _world._npc_sheets.clear()
     _done()

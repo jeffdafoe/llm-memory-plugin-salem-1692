@@ -605,6 +605,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 				At:       now,
 			})
 		}
+		return true
 	case SourceActivityHarvest:
 		objID, obj, row := findGatherableObjectNear(w, actor)
 		if row == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
@@ -636,6 +637,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:      false, // harvest never auto-repeats
 			At:             now,
 		})
+		return true
 	case SourceActivityStoke:
 		// LLM-412: the stoke lands — the fire is fed. Bound to the object the
 		// window BEGAN at (act.ObjectID), for exactly the LLM-287 reason the
@@ -659,6 +661,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+		return true
 	case SourceActivityBake:
 		// LLM-454: the evening bake lands. For the session INITIATOR the shared
 		// household batch mints — flour consumed HERE, not at start, so a restart
@@ -676,6 +679,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+		return true
 	case SourceActivityRepair:
 		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,
 		// the stall trades again. Wear=0 re-arms the owner's edge-triggered warrant
@@ -717,8 +721,9 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+		return true
 	}
-	return true
+	return false // a kind with no case lands nothing
 }
 
 // shouldRepeatRefresh reports whether an eat/drink in place should immediately

@@ -44,6 +44,9 @@ static func is_rig_sprite(sprite_data: Dictionary) -> bool:
 static func sheet_paths(sprite_data: Dictionary) -> Array:
     var out: Array = []
     for spec in _layer_specs(sprite_data):
+        # The DB checks only that layers is an array; never trust its members.
+        if not (spec is Dictionary):
+            continue
         var path := str(spec.get("sheet", ""))
         if path != "" and not out.has(path):
             out.append(path)
@@ -78,25 +81,31 @@ static func _layer_specs(sprite_data: Dictionary) -> Array:
 func setup(sprite_data: Dictionary, sheets: Dictionary) -> void:
     centered = false
     var anims := rig_animations()
-    # The first layer that loaded becomes this node (the body); the rest stack
-    # above it in list order.
-    var has_body := false
-    for spec in _layer_specs(sprite_data):
+    # The first layer is the body and is this node. Without it nothing is
+    # built — clothes with no body under them would float — so sprite_frames
+    # stays null and the caller skips the doll. The other layers stack above
+    # it in list order, each optional.
+    var specs := _layer_specs(sprite_data)
+    if specs.is_empty() or not (specs[0] is Dictionary):
+        return
+    var body_tex: Texture2D = sheets.get(str(specs[0].get("sheet", "")), null)
+    if body_tex == null:
+        return
+    sprite_frames = _build_frames(body_tex, anims)
+    material = _swap_material(specs[0].get("ramps", {}))
+    for spec in specs.slice(1):
         if not (spec is Dictionary):
             continue
         var tex: Texture2D = sheets.get(str(spec.get("sheet", "")), null)
         if tex == null:
             continue
-        var layer: AnimatedSprite2D = self
-        if has_body:
-            layer = AnimatedSprite2D.new()
-            layer.centered = false
-            layer.show_behind_parent = bool(spec.get("behind", false))
-            add_child(layer)
-            _layers.append(layer)
-        has_body = true
+        var layer := AnimatedSprite2D.new()
+        layer.centered = false
+        layer.show_behind_parent = bool(spec.get("behind", false))
         layer.sprite_frames = _build_frames(tex, anims)
         layer.material = _swap_material(spec.get("ramps", {}))
+        add_child(layer)
+        _layers.append(layer)
 
     for prop_name in FarmerRig.PROPS:
         var prop: Dictionary = FarmerRig.PROPS[prop_name]
