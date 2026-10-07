@@ -364,7 +364,13 @@ func get_or_load_npc_sheet(sheet_path: String, callback: Callable, on_failed: Ca
         _failed_sheets.erase(sheet_path)
         callback.call(tex)
     )
-    http.request(api_base + sheet_path)
+    # A request that cannot start never emits request_completed, so it is a
+    # failure here or neither callback would ever run.
+    var err := http.request(api_base + sheet_path)
+    if err != OK:
+        http.queue_free()
+        push_warning("NPC sheet request failed: " + sheet_path + " error=" + str(err))
+        _sheet_load_failed(sheet_path, on_failed)
 
 func _sheet_load_failed(sheet_path: String, on_failed: Callable) -> void:
     _failed_sheets[sheet_path] = true

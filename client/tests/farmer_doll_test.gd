@@ -24,6 +24,7 @@ const TESTS := [
     "_test_world_builds_doll",
     "_test_world_activity_animation",
     "_test_world_swap_partial_sheets",
+    "_test_world_load_sheets_settles",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -337,5 +338,37 @@ func _test_world_swap_partial_sheets() -> void:
 
     _world.placed_npcs.erase("abe")
     c.free()
+    _world._npc_sheets.clear()
+    _done()
+
+
+## _load_sprite_sheets calls back exactly once after every sheet settles,
+## loaded or failed. Off-tree, HTTPRequest.request() cannot start, so every
+## uncached sheet fails at once through get_or_load_npc_sheet's request-error
+## path — the real loader, driven synchronously.
+func _test_world_load_sheets_settles() -> void:
+    var calls := {"n": 0}
+    var count := func(): calls.n += 1
+    var data := _sprite_data(_three_layers())
+
+    _world._npc_sheets = _sheets()
+    _world._load_sprite_sheets(data, count)
+    _check("all cached: one callback", calls.n, 1)
+
+    calls.n = 0
+    var partial := _sheets()
+    partial.erase(SHIRT)
+    partial.erase(FarmerRig.PROPS["axe"]["sheet"])
+    _world._npc_sheets = partial
+    _world._load_sprite_sheets(data, count)
+    _check("doll with failed shirt and prop: one callback", calls.n, 1)
+    _check("failed sheets recorded", _world._failed_sheets.has(SHIRT), true)
+
+    calls.n = 0
+    _world._npc_sheets = {}
+    _world._load_sprite_sheets({"sheet": "/npc/man.png", "animations": []}, count)
+    _check("one-sheet sprite with failed sheet: no callback", calls.n, 0)
+
+    _world._failed_sheets.clear()
     _world._npc_sheets.clear()
     _done()
