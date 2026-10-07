@@ -19,8 +19,8 @@ import (
 // take — and ValidateFarmerOutfit holds a submitted list to it, so a player can
 // never point their sprite at an arbitrary sheet.
 //
-// The wardrobe is the pack's clothing filtered for Salem 1692: no shorts,
-// tank tops, overalls, sandals, shades or cowboy hats. Colours are the pack's
+// The wardrobe is the pack's clothing with the most modern pieces left out:
+// no shorts, tank tops, overalls, sandals, shades or cowboy hats. Colours are the pack's
 // ramps filtered to natural dyes and natural hair colours; skin takes every
 // ramp.
 
@@ -87,8 +87,9 @@ var farmerWardrobeCategories = []FarmerWardrobeCategory{
 	{ID: "hair", Label: "Hair"},
 	{ID: "head", Label: "Hat"},
 	{ID: "shirt", Label: "Shirt"},
-	{ID: "over", Label: "Vest"},
+	{ID: "over", Label: "Vest and suspenders"},
 	{ID: "neck", Label: "Cloak"},
+	{ID: "face", Label: "Glasses"},
 	{ID: "lower", Label: "Breeches and skirts"},
 	{ID: "legs", Label: "Stockings"},
 	{ID: "feet", Label: "Shoes"},
@@ -168,6 +169,9 @@ var farmerWardrobeItems = []FarmerWardrobeItem{
 	wardrobeItem("shirt", "longshirt", "Linen shirt", slotsC3, "05shrt/fbas_05shrt_longshirt_00a.png|05shrt/fbas_05shrt_longshirtboobs_00a.png"),
 
 	wardrobeItem("over", "vest", "Vest", slotsC3, "10outr/fbas_10outr_vest_00a.png"),
+	wardrobeItem("over", "suspenders", "Suspenders", slotsC3, "10outr/fbas_10outr_suspenders_00a.png"),
+
+	wardrobeItem("face", "glasses", "Spectacles", slotsC3, "12face/fbas_12face_glasses_00a.png"),
 
 	wardrobeItem("neck", "cloakplain", "Cloak", slotsC4C3, "<00undr/fbas_00undr_cloakplain_00d.png", "11neck/fbas_11neck_cloakplain_00d.png"),
 	wardrobeItem("neck", "cloakwithmantleplain", "Cloak and mantle", slotsC4, "<00undr/fbas_00undr_cloakwithmantleplain_00b.png", "11neck/fbas_11neck_cloakwithmantleplain_00b.png"),
@@ -177,6 +181,8 @@ var farmerWardrobeItems = []FarmerWardrobeItem{
 	wardrobeItem("lower", "longpants", "Breeches", slotsC3, "04lwr1/fbas_04lwr1_longpants_00a.png"),
 	wardrobeItem("lower", "longskirt", "Long skirt", slotsC3, "08lwr3/fbas_08lwr3_longskirt_00a.png"),
 	wardrobeItem("lower", "longdress", "Long dress", slotsC3, "08lwr3/fbas_08lwr3_longdress_00a.png|08lwr3/fbas_08lwr3_longdressboobs_00a.png"),
+	wardrobeItem("lower", "frillyskirt", "Frilly skirt", slotsC3, "08lwr3/fbas_08lwr3_frillyskirt_00a.png"),
+	wardrobeItem("lower", "frillydress", "Frilly dress", slotsC3, "08lwr3/fbas_08lwr3_frillydress_00a.png|08lwr3/fbas_08lwr3_frillydressboobs_00a.png"),
 
 	wardrobeItem("legs", "sockshigh", "Knee socks", slotsC3, "02sock/fbas_02sock_sockshigh_00a.png"),
 	wardrobeItem("legs", "stockings", "Stockings", slotsC3, "02sock/fbas_02sock_stockings_00a.png"),

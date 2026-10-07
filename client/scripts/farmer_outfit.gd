@@ -142,7 +142,7 @@ static func first_colours(wardrobe: Dictionary, item: Dictionary) -> Dictionary:
 
 ## How likely a random outfit wears each optional category.
 const WEAR_CHANCE := {
-    "hair": 0.9, "head": 0.4, "shirt": 0.9, "over": 0.4, "neck": 0.25,
+    "hair": 0.9, "head": 0.4, "shirt": 0.9, "over": 0.4, "neck": 0.25, "face": 0.1,
     "lower": 1.0, "legs": 0.5, "feet": 0.9, "hands": 0.15,
 }
 
