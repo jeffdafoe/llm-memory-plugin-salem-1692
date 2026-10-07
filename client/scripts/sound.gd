@@ -29,12 +29,12 @@ const SOUNDS := {
         "db": -22.0, "pitch": 0.06,
     },
     "step_dirt": {
-        "files": ["footstep00.ogg", "footstep01.ogg", "footstep02.ogg", "footstep03.ogg", "footstep04.ogg", "footstep05.ogg", "footstep06.ogg", "footstep07.ogg", "footstep08.ogg", "footstep09.ogg"],
-        "db": -22.0, "pitch": 0.06,
-    },
-    "step_stone": {
         "files": ["footstep_concrete_000.ogg", "footstep_concrete_001.ogg", "footstep_concrete_002.ogg", "footstep_concrete_003.ogg", "footstep_concrete_004.ogg"],
         "db": -24.0, "pitch": 0.06,
+    },
+    "step_stone": {
+        "files": ["footstep00.ogg", "footstep01.ogg", "footstep02.ogg", "footstep03.ogg", "footstep04.ogg", "footstep05.ogg", "footstep06.ogg", "footstep07.ogg", "footstep08.ogg", "footstep09.ogg"],
+        "db": -22.0, "pitch": 0.06,
     },
     "step_wood": {
         "files": ["footstep_wood_000.ogg", "footstep_wood_001.ogg", "footstep_wood_002.ogg", "footstep_wood_003.ogg", "footstep_wood_004.ogg"],
