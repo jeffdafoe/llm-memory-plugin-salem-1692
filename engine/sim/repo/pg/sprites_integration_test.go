@@ -15,6 +15,8 @@ package pg
 // defensive-only against schema drift).
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -136,5 +138,53 @@ func TestIntegration_Sprites_NullablesAndNoPack(t *testing.T) {
 	}
 	if s.RenderScale != 2.0 {
 		t.Errorf("default RenderScale = %v, want 2.0", s.RenderScale)
+	}
+	// LLM-691: a one-sheet sprite has no rig, and its default '[]' layers
+	// stay off the model so they stay off the payload.
+	if s.Rig != "" || s.Layers != nil {
+		t.Errorf("one-sheet sprite: Rig=%q Layers=%s, want empty", s.Rig, s.Layers)
+	}
+}
+
+// S3 rig sprite (LLM-691) — rig and the layers array round-trip, layers
+// verbatim as JSON; the CHECKs reject an unknown rig and a non-array layers.
+func TestIntegration_Sprites_RigLayers(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	const layers = `[{"sheet": "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png", "ramps": {"skin": 2}}, {"sheet": "/s.png", "behind": true}]`
+	if _, err := f.Pool.Exec(ctx, `
+		INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, rig, layers)
+		VALUES ($1, 'Farmer', '/b.png', 64, 64, 'farmer_base', $2)`, spriteUUIDFull, layers); err != nil {
+		t.Fatalf("seed rig sprite: %v", err)
+	}
+
+	got, err := NewSpritesRepo(f.Pool).LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	s := got[sim.SpriteID(spriteUUIDFull)]
+	if s == nil {
+		t.Fatalf("sprite %s missing", spriteUUIDFull)
+	}
+	if s.Rig != "farmer_base" {
+		t.Errorf("Rig = %q, want farmer_base", s.Rig)
+	}
+	var gotLayers, wantLayers any
+	if err := json.Unmarshal(s.Layers, &gotLayers); err != nil {
+		t.Fatalf("Layers not JSON: %v (%s)", err, s.Layers)
+	}
+	_ = json.Unmarshal([]byte(layers), &wantLayers)
+	if !reflect.DeepEqual(gotLayers, wantLayers) {
+		t.Errorf("Layers = %s, want %s", s.Layers, layers)
+	}
+
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO npc_sprite (id, name, sheet, rig) VALUES ($1, 'Bad rig', '/x.png', 'paper')`, spriteUUIDPlain); err == nil {
+		t.Error("unknown rig accepted, want npc_sprite_rig_check to reject it")
+	}
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO npc_sprite (id, name, sheet, rig, layers) VALUES ($1, 'Bad layers', '/x.png', 'farmer_base', '{}')`, spriteUUIDPlain); err == nil {
+		t.Error("object layers accepted, want npc_sprite_layers_check to reject it")
 	}
 }

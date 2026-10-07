@@ -306,14 +306,15 @@ func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArra
         npcs.append(VillageApi.normalize_agent(dto))
 
     # Collect unique sheet paths across all NPCs, kick off one download per sheet.
+    # A farmer-base sprite (LLM-691) needs several: its layers and the props.
     var unique_sheets: Dictionary = {}
     for npc in npcs:
         var sprite = npc.get("sprite", null)
-        if sprite == null:
+        if not (sprite is Dictionary):
             continue
-        var sheet: String = sprite.get("sheet", "")
-        if sheet != "" and not _npc_sheets.has(sheet) and not unique_sheets.has(sheet):
-            unique_sheets[sheet] = true
+        for sheet in _sprite_sheet_paths(sprite):
+            if not _npc_sheets.has(sheet):
+                unique_sheets[sheet] = true
     _pending_npcs = npcs
     # ZBBS-HOME-210: response landed. _check_world_ready can now flip
     # _npcs_render_complete once _render_pending_npcs drains the list.
@@ -335,8 +336,10 @@ func _download_npc_sheet(sheet_path: String) -> void:
 ## when ready. Used by editor_panel's NPC placement thumbnails so it doesn't
 ## need its own sheet cache. Callback receives one ImageTexture argument
 ## (or is called with null on failure — currently we just don't call it,
-## keeping the pattern the same as _on_npc_sheet_downloaded).
-func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
+## keeping the pattern the same as _on_npc_sheet_downloaded). A caller that
+## must hear about a failure passes on_failed (LLM-691); it is called with no
+## arguments and the sheet is marked in _failed_sheets.
+func get_or_load_npc_sheet(sheet_path: String, callback: Callable, on_failed: Callable = Callable()) -> void:
     if sheet_path == "":
         return
     if _npc_sheets.has(sheet_path):
@@ -349,16 +352,30 @@ func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
         http.queue_free()
         if result != HTTPRequest.RESULT_SUCCESS or code != 200:
             push_warning("NPC sheet download failed: " + sheet_path + " code=" + str(code))
+            _sheet_load_failed(sheet_path, on_failed)
             return
         var image = Image.new()
         if image.load_png_from_buffer(body) != OK:
             push_warning("NPC sheet decode failed: " + sheet_path)
+            _sheet_load_failed(sheet_path, on_failed)
             return
         var tex = ImageTexture.create_from_image(image)
         _npc_sheets[sheet_path] = tex
+        _failed_sheets.erase(sheet_path)
         callback.call(tex)
     )
-    http.request(api_base + sheet_path)
+    # A request that cannot start never emits request_completed, so it is a
+    # failure here or neither callback would ever run.
+    var err := http.request(api_base + sheet_path)
+    if err != OK:
+        http.queue_free()
+        push_warning("NPC sheet request failed: " + sheet_path + " error=" + str(err))
+        _sheet_load_failed(sheet_path, on_failed)
+
+func _sheet_load_failed(sheet_path: String, on_failed: Callable) -> void:
+    _failed_sheets[sheet_path] = true
+    if on_failed.is_valid():
+        on_failed.call()
 
 ## Apply a server-broadcast display name change to the local NPC. Idempotent —
 ## our own PATCH triggered the broadcast too, so this runs for both the admin
@@ -405,24 +422,21 @@ func apply_npc_sprite_change(data: Dictionary) -> void:
     var sprite_data = data.get("sprite", null)
     if sprite_data == null:
         return
-    var sheet_path: String = sprite_data.get("sheet", "")
-    if sheet_path == "":
-        return
-
-    # Defer to the shared sheet cache. If cached, callback fires
-    # synchronously; otherwise after the download completes.
-    get_or_load_npc_sheet(sheet_path, func(sheet: Texture2D):
-        _swap_npc_sprite(npc_id, sprite_data, sheet)
+    # Defer to the shared sheet cache. If every sheet is cached, the swap runs
+    # synchronously; otherwise once the last download lands.
+    _load_sprite_sheets(sprite_data, func():
+        _swap_npc_sprite(npc_id, sprite_data)
     )
 
-func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D) -> void:
+func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary) -> void:
     var container: Node2D = placed_npcs.get(npc_id, null)
-    if container == null or sheet == null:
+    if container == null:
         return
-
-    var fw: int = int(sprite_data.get("frame_width", 32))
-    var fh: int = int(sprite_data.get("frame_height", 32))
-    var sprite_frames := _build_npc_sprite_frames(sprite_data, sheet)
+    var sheet: Texture2D = _npc_sheets.get(str(sprite_data.get("sheet", "")), null)
+    var new_sprite := _build_character_sprite(sprite_data)
+    if new_sprite == null:
+        return
+    var sprite_frames := new_sprite.sprite_frames
 
     # Preserve current facing + animation kind so the new sprite picks up
     # mid-walk seamlessly. Default to facing meta (or south) if no anim.
@@ -431,14 +445,6 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D)
     var existing_sprite: AnimatedSprite2D = _npc_sprite(container)
     if existing_sprite != null:
         current_anim = existing_sprite.animation
-
-    var new_sprite := AnimatedSprite2D.new()
-    new_sprite.name = "CharacterSprite"
-    new_sprite.sprite_frames = sprite_frames
-    new_sprite.centered = false
-    var swap_scale: float = _sprite_render_scale(sprite_data)
-    new_sprite.scale = Vector2(swap_scale, swap_scale)
-    new_sprite.position = Vector2(-fw * swap_scale * 0.5, -fh * swap_scale * 0.9)
 
     # Replay the same animation if the new sheet has it; otherwise fall back
     # to facing_idle or the first available animation. Avoids a frozen sprite.
@@ -479,6 +485,8 @@ func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D)
     if current_anim.ends_with("_walk") or current_anim.ends_with("_swim"):
         kind = "walk"
     play_npc_animation(container, facing, kind)
+    # A sprite swapped mid-work picks the work animation back up (LLM-691).
+    _apply_activity_animation(container)
     npc_metadata_changed.emit(npc_id)
 
 ## Build a SpriteFrames from a sprite catalog entry. Shared by initial NPC
@@ -507,6 +515,80 @@ func _build_npc_sprite_frames(sprite_data: Dictionary, sheet: Texture2D) -> Spri
             atlas.region = Rect2(i * fw, row_index * fh, fw, fh)
             sprite_frames.add_frame(anim_name, atlas)
     return sprite_frames
+
+## Every sheet a sprite needs before it can render (LLM-691): its one sheet for
+## an NPC-pack sprite, every layer plus the prop sheets for a farmer-base one.
+func _sprite_sheet_paths(sprite_data: Dictionary) -> Array:
+    if FarmerDoll.is_rig_sprite(sprite_data):
+        return FarmerDoll.sheet_paths(sprite_data)
+    var sheet_path: String = str(sprite_data.get("sheet", ""))
+    return [sheet_path] if sheet_path != "" else []
+
+func _sprite_sheets_ready(sprite_data: Dictionary) -> bool:
+    for sheet_path in _sprite_sheet_paths(sprite_data):
+        if not _npc_sheets.has(sheet_path):
+            return false
+    return true
+
+## True once no sheet the sprite needs is still downloading — each is either
+## cached or in _failed_sheets.
+func _sprite_sheets_resolved(sprite_data: Dictionary) -> bool:
+    for sheet_path in _sprite_sheet_paths(sprite_data):
+        if not _npc_sheets.has(sheet_path) and not _failed_sheets.has(sheet_path):
+            return false
+    return true
+
+## Load every sheet the sprite needs through the shared cache, then call
+## callback once every download has finished, loaded or failed (synchronously
+## when all are cached). A farmer doll calls back even with failed layers —
+## setup() leaves them out, as the first render does, and a doll without its
+## body builds nothing. A one-sheet sprite calls back only once its sheet is
+## in, so a failed swap keeps the old sprite.
+func _load_sprite_sheets(sprite_data: Dictionary, callback: Callable) -> void:
+    var paths := _sprite_sheet_paths(sprite_data)
+    if paths.is_empty():
+        return
+    # Lambdas capture locals by value; the Dictionary is shared, so every
+    # completion decrements the same counter.
+    var remaining := {"count": paths.size()}
+    var finished := func():
+        remaining.count -= 1
+        if remaining.count == 0 and (FarmerDoll.is_rig_sprite(sprite_data) or _sprite_sheets_ready(sprite_data)):
+            callback.call()
+    for sheet_path in paths:
+        get_or_load_npc_sheet(sheet_path, func(_tex: Texture2D): finished.call(), finished)
+
+## Build an NPC's CharacterSprite from its sprite payload, scaled and anchored
+## so its feet sit at the container's position. A farmer-base sprite becomes a
+## FarmerDoll (LLM-691); anything else is the one-sheet AnimatedSprite2D.
+## Returns null when nothing can be drawn yet (the sheet is not cached).
+func _build_character_sprite(sprite_data: Dictionary) -> AnimatedSprite2D:
+    var anim_sprite: AnimatedSprite2D
+    var anchor := Vector2(0.5, 0.9)
+    if FarmerDoll.is_rig_sprite(sprite_data):
+        var doll := FarmerDoll.new()
+        doll.setup(sprite_data, _npc_sheets)
+        if doll.sprite_frames == null:
+            doll.free()
+            return null
+        anim_sprite = doll
+        anchor = FarmerDoll.ANCHOR
+    else:
+        var sheet: Texture2D = _npc_sheets.get(str(sprite_data.get("sheet", "")), null)
+        if sheet == null:
+            return null
+        anim_sprite = AnimatedSprite2D.new()
+        anim_sprite.sprite_frames = _build_npc_sprite_frames(sprite_data, sheet)
+    anim_sprite.name = "CharacterSprite"
+    anim_sprite.centered = false
+    # Per-sprite draw scale (LLM-580): villagers 2.0, ducks 1.0 — from the
+    # sprite catalog, so species sizing is data, not client special-casing.
+    var draw_scale: float = _sprite_render_scale(sprite_data)
+    anim_sprite.scale = Vector2(draw_scale, draw_scale)
+    var fw: int = int(sprite_data.get("frame_width", 32))
+    var fh: int = int(sprite_data.get("frame_height", 32))
+    anim_sprite.position = Vector2(-fw * draw_scale * anchor.x, -fh * draw_scale * anchor.y)
+    return anim_sprite
 
 ## Apply a server-broadcast agent link change. data.llm_memory_agent may be
 ## null for unlinked.
@@ -672,6 +754,7 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
     # LLM-448: the persistent above-head glyph (the at-a-glance sibling of the
     # hover tooltip line). Cleared when kind is empty.
     _apply_activity_marker(container, str(data.get("kind", "")))
+    _apply_activity_animation(container)
 
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
@@ -697,14 +780,16 @@ func add_npc_from_broadcast(data: Dictionary) -> void:
     var sprite = data.get("sprite", null)
     if sprite == null:
         return
-    var sheet_path: String = sprite.get("sheet", "")
-    if sheet_path == "":
+    var sheet_paths := _sprite_sheet_paths(sprite)
+    if sheet_paths.is_empty():
         return
     _pending_npcs.append(data)
-    if _npc_sheets.has(sheet_path):
+    if _sprite_sheets_ready(sprite):
         _render_pending_npcs()
-    else:
-        _download_npc_sheet(sheet_path)
+        return
+    for sheet_path in sheet_paths:
+        if not _npc_sheets.has(sheet_path):
+            _download_npc_sheet(sheet_path)
 
 ## Handle a pc_appeared broadcast (M6.7). Same payload shape as
 ## npc_created — the engine's broadcastPCAppeared inlines the sprite,
@@ -769,16 +854,16 @@ func _render_pending_npcs() -> void:
         var sprite = npc.get("sprite", null)
         if sprite == null:
             continue
-        var sheet_path: String = sprite.get("sheet", "")
-        if not _npc_sheets.has(sheet_path):
-            # Keep waiting only while the sheet is still in flight. A sheet in
-            # _failed_sheets resolved (badly) — drop the NPC from pending so the
-            # list can drain and world_ready can fire; _render_npc no-ops on a
-            # missing sheet, so the NPC simply renders without a sprite.
-            if not _failed_sheets.has(sheet_path):
-                still_pending.append(npc)
+        # Keep waiting only while a sheet is still in flight. A sheet in
+        # _failed_sheets resolved (badly) — the NPC leaves pending so the list
+        # can drain and world_ready can fire. A pack sprite missing its sheet
+        # is then skipped; a farmer doll (LLM-691) renders without the
+        # failed layer.
+        if not _sprite_sheets_resolved(sprite):
+            still_pending.append(npc)
             continue
-        _render_npc(npc)
+        if _sprite_sheets_ready(sprite) or FarmerDoll.is_rig_sprite(sprite):
+            _render_npc(npc)
     _pending_npcs = still_pending
     # ZBBS-HOME-210: NPC drain milestone. Once the response has been
     # received AND the pending list is empty, every NPC is rendered.
@@ -794,14 +879,11 @@ func _render_npc(npc: Dictionary) -> void:
     if npc_id == "" or placed_npcs.has(npc_id):
         return
     var sprite_data: Dictionary = npc.get("sprite", {})
-    var sheet_path: String = sprite_data.get("sheet", "")
-    var sheet: ImageTexture = _npc_sheets.get(sheet_path)
-    if sheet == null:
+    var sheet: ImageTexture = _npc_sheets.get(str(sprite_data.get("sheet", "")))
+    var anim_sprite := _build_character_sprite(sprite_data)
+    if anim_sprite == null:
         return
-
-    var fw: int = int(sprite_data.get("frame_width", 32))
-    var fh: int = int(sprite_data.get("frame_height", 32))
-    var sprite_frames := _build_npc_sprite_frames(sprite_data, sheet)
+    var sprite_frames := anim_sprite.sprite_frames
 
     var facing: String = npc.get("facing", "south")
 
@@ -861,16 +943,6 @@ func _render_npc(npc: Dictionary) -> void:
     _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     container.z_index = OBJECT_Z
 
-    var anim_sprite := AnimatedSprite2D.new()
-    anim_sprite.name = "CharacterSprite"
-    anim_sprite.sprite_frames = sprite_frames
-    anim_sprite.centered = false
-    # Per-sprite draw scale (LLM-580): villagers 2.0, ducks 1.0 — from the
-    # sprite catalog, so species sizing is data, not client special-casing.
-    var draw_scale: float = _sprite_render_scale(sprite_data)
-    anim_sprite.scale = Vector2(draw_scale, draw_scale)
-    # Anchor the sprite so its feet sit at the container's position.
-    anim_sprite.position = Vector2(-fw * draw_scale * 0.5, -fh * draw_scale * 0.9)
     container.add_child(anim_sprite)
 
     # Waterfowl (LLM-579): behaviors ride the sprite payload; a waterfowl
@@ -901,6 +973,7 @@ func _render_npc(npc: Dictionary) -> void:
     # at render time (LLM-448 — snapshot load carries source_activity_kind seeded
     # above); live transitions after this ride apply_npc_source_activity_changed.
     _apply_activity_marker(container, str(container.get_meta("source_activity_kind", "")))
+    _apply_activity_animation(container)
     npc_list_changed.emit()
 
 ## Facing direction from a movement vector. |dx| vs |dy| picks the dominant
@@ -932,6 +1005,30 @@ func play_npc_animation(container: Node2D, facing: String, kind: String) -> void
     if sprite.sprite_frames != null and sprite.sprite_frames.has_animation(anim_name):
         if sprite.animation != anim_name:
             sprite.play(anim_name)
+
+## Work animation per source-activity kind (LLM-691). Only farmer-base sprites
+## carry work animations; every other sprite keeps standing through the work.
+## A hand mending a well, a stall or a fence, or clearing a road, swings a
+## hatchet — the period tool, and the one the pack draws through a full swing.
+const ACTIVITY_ANIMATIONS := {"repair": "chop"}
+
+## Play the work animation of the container's in-flight source activity, or
+## drop a finished one back to idle. The activity closes when its actor commits
+## a move and the walk owns the sprite from then on, so a clear only reverts a
+## sprite still on a work animation — whichever frame arrives first.
+func _apply_activity_animation(container: Node2D) -> void:
+    var sprite := _npc_sprite(container)
+    if sprite == null or sprite.sprite_frames == null:
+        return
+    var facing := str(container.get_meta("facing", "south"))
+    var work := str(ACTIVITY_ANIMATIONS.get(str(container.get_meta("source_activity_kind", "")), ""))
+    if work != "" and sprite.sprite_frames.has_animation(facing + "_" + work):
+        play_npc_animation(container, facing, work)
+        return
+    for kind in ACTIVITY_ANIMATIONS.values():
+        if sprite.animation.ends_with("_" + str(kind)):
+            play_npc_animation(container, facing, "idle")
+            return
 
 ## Whether the sprite this container renders carries the waterfowl behavior
 ## (LLM-579). Behaviors arrive on the sprite payload and are stashed as meta
@@ -2867,7 +2964,13 @@ func _zzz_marker_position(spr: AnimatedSprite2D) -> Vector2:
             var tex := spr.sprite_frames.get_frame_texture(spr.animation, 0)
             if tex != null:
                 half_w = tex.get_width() * spr.scale.x * 0.5
-    return spr.position + Vector2(half_w - 12.0, -16.0)
+    return spr.position + Vector2(half_w - 12.0, -16.0 + _head_room(spr))
+
+## Empty rows above the head inside the sprite's frame, in world px. A pack
+## frame fills to its top edge; a 64px farmer cell (LLM-691) has a band of
+## empty rows above even a hat, so above-head markers drop by that much.
+func _head_room(spr: AnimatedSprite2D) -> float:
+    return FarmerDoll.HEAD_ROOM * spr.scale.y if spr is FarmerDoll else 0.0
 
 ## The character AnimatedSprite2D of an NPC container, or null — the same child
 ## play_npc_animation drives. Since LLM-579 an NPC container can hold a SECOND
@@ -2944,7 +3047,7 @@ func _activity_marker_position(spr: AnimatedSprite2D) -> Vector2:
             var tex := spr.sprite_frames.get_frame_texture(spr.animation, 0)
             if tex != null:
                 half_w = tex.get_width() * spr.scale.x * 0.5
-    return spr.position + Vector2(half_w - glyph_px * 0.5, -line_h - 2.0)
+    return spr.position + Vector2(half_w - glyph_px * 0.5, -line_h - 2.0 + _head_room(spr))
 
 ## The lucide glyph for a source-activity kind, or "" when the kind carries no marker
 ## (refresh / idle / unknown). Materialized via String.chr at use to dodge source-file

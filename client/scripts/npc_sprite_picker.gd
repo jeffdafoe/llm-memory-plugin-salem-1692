@@ -188,7 +188,9 @@ func _on_sprites_loaded(result: int, code: int, _headers: PackedStringArray, bod
     var json = JSON.parse_string(body.get_string_from_utf8())
     if json == null or not (json is Array):
         return
-    _sprites = json
+    # A farmer-base sprite (LLM-691) is one villager's layered outfit, not a
+    # stock look to pick; its thumbnail would show only the bare body sheet.
+    _sprites = json.filter(func(s): return s is Dictionary and not FarmerDoll.is_rig_sprite(s))
     _sprites_loaded = true
     _rebuild_grid()
 

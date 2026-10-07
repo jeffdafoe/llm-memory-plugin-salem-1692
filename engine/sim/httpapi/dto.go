@@ -11,6 +11,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -215,6 +216,11 @@ type AgentSpriteDTO struct {
 	// villagers 2.0, ducks 1.0. Omitted when zero (a test-seeded sprite);
 	// the client falls back to its default.
 	RenderScale float64 `json:"render_scale,omitempty"`
+	// Rig and Layers describe a paper-doll sprite (LLM-691): the client
+	// stacks the layer sheets over its own animation table for the rig and
+	// ignores Animations. Both omitted for a one-sheet sprite.
+	Rig    string          `json:"rig,omitempty"`
+	Layers json.RawMessage `json:"layers,omitempty"`
 }
 
 // ObjectDTO is one placed village object in the GET /api/village/objects
@@ -390,6 +396,8 @@ type SpriteDTO struct {
 	Behaviors   []string             `json:"behaviors,omitempty"`    // engine-behavior slugs (LLM-579), e.g. "waterfowl"
 	Animal      bool                 `json:"animal,omitempty"`       // an animal sprite (sim.Sprite.IsAnimal, LLM-689): the editor lists it apart from villagers
 	RenderScale float64              `json:"render_scale,omitempty"` // client draw scale (LLM-580): villagers 2.0, ducks 1.0
+	Rig         string               `json:"rig,omitempty"`          // paper-doll rig (LLM-691): "farmer_base", or omitted for a one-sheet sprite
+	Layers      json.RawMessage      `json:"layers,omitempty"`       // the rig sprite's layer list, verbatim from npc_sprite.layers
 }
 
 // SpriteAnimationDTO is one (direction, animation) row mapping into a sprite

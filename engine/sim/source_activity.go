@@ -159,9 +159,10 @@ type SourceActivityCompleted struct {
 
 func (SourceActivityCompleted) isSimEvent() {}
 
-// SourceActivityCancelled fires when an in-flight activity is abandoned before
-// completion — today only on a committed move (commands_move.go), the one place
-// abandonment is centralized. The surfacing seam for LLM-56 to clear a PC HUD
+// SourceActivityCancelled fires when an in-flight activity closes without
+// completing: abandoned on a committed move (commands_move.go) or an idle
+// player repair (abandonSourceActivity), or due but landing nothing
+// (completeIfDue). The surfacing seam for LLM-56 to clear a PC HUD
 // that was showing in-progress feedback (a start with no matching completion).
 type SourceActivityCancelled struct {
 	EventBase
@@ -545,13 +546,14 @@ func emitRepairNarration(w *World, actor *Actor, businessName string, now time.T
 // is still at the SAME object it began at — a defensive guard mirroring the
 // arrival freshness check (a deliberate move already abandons the window, so in
 // practice the actor is still here). On a kind/source mismatch it simply does
-// nothing; the window is already cleared by the caller.
-func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *SourceActivity, now time.Time) {
+// nothing; the window is already cleared by the caller. Reports whether it
+// emitted SourceActivityCompleted — false when nothing landed.
+func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *SourceActivity, now time.Time) bool {
 	switch act.Kind {
 	case SourceActivityRefresh:
 		objID, obj := findRefreshObjectNear(w, actor.Pos)
 		if obj == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
-			return
+			return false
 		}
 		res := applyObjectRefreshEffect(w, actorID, objID, obj, now)
 		// Compute the repeat decision BEFORE emitting so the completion event
@@ -603,14 +605,15 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 				At:       now,
 			})
 		}
+		return true
 	case SourceActivityHarvest:
 		objID, obj, row := findGatherableObjectNear(w, actor)
 		if row == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
-			return
+			return false
 		}
 		kind, ok := resolveItemKind(w, string(row.GatherItem))
 		if !ok {
-			return
+			return false
 		}
 		// Stock may have drained during the window: ErrGatherableDepleted is a
 		// benign nothing-harvested completion (clamped to empty), so swallow it
@@ -621,7 +624,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			if !errors.Is(err, ErrGatherableDepleted) {
 				log.Printf("sim/source_activity: harvest completion failed for %q at %q: %v", actorID, objID, err)
 			}
-			return
+			return false
 		}
 		w.emit(&SourceActivityCompleted{
 			ActorID:        actorID,
@@ -634,6 +637,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:      false, // harvest never auto-repeats
 			At:             now,
 		})
+		return true
 	case SourceActivityStoke:
 		// LLM-412: the stoke lands — the fire is fed. Bound to the object the
 		// window BEGAN at (act.ObjectID), for exactly the LLM-287 reason the
@@ -645,7 +649,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// carries the wood consumed at start.
 		hearth := w.VillageObjects[act.ObjectID]
 		if hearth == nil || !IsHearth(hearth) {
-			return
+			return false
 		}
 		StokeFireOn(hearth, act.Qty, now, w.Settings.HearthBurnMinutesPerWood, w.Settings.HearthMaxBankMinutes)
 		w.emit(&SourceActivityCompleted{
@@ -657,6 +661,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+		return true
 	case SourceActivityBake:
 		// LLM-454: the evening bake lands. For the session INITIATOR the shared
 		// household batch mints — flour consumed HERE, not at start, so a restart
@@ -674,6 +679,7 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+		return true
 	case SourceActivityRepair:
 		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,
 		// the stall trades again. Wear=0 re-arms the owner's edge-triggered warrant
@@ -700,11 +706,11 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// the site back in use, the bounty paid from the chest. It always returns
 		// here: falling through would reset a business keeper's wear for free.
 		if act.PublicWorks {
-			landPublicWorksRepair(w, actorID, actor, act, now)
-			return
+			_, landed := landPublicWorksRepair(w, actorID, actor, act, now)
+			return landed
 		}
 		if stall == nil || !IsWearableStall(stall) {
-			return
+			return false
 		}
 		stall.Wear = 0
 		w.emit(&SourceActivityCompleted{
@@ -715,7 +721,9 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Continues:  false,
 			At:         now,
 		})
+		return true
 	}
+	return false // a kind with no case lands nothing
 }
 
 // shouldRepeatRefresh reports whether an eat/drink in place should immediately
@@ -798,7 +806,13 @@ func completeIfDue(w *World, actorID ActorID, actor *Actor, now time.Time) bool 
 	}
 	act := actor.SourceActivity
 	actor.SourceActivity = nil // clear before applying; the effect re-resolves off live state
-	applyCompletedSourceActivity(w, actorID, actor, act, now)
+	if !applyCompletedSourceActivity(w, actorID, actor, act, now) {
+		// Nothing landed (the source moved, the stall stopped being one, a
+		// harvest minted nothing, the site was mended some other way), so no
+		// completion went out. The window is closed all the same: tell the
+		// client, or its activity marker and work animation (LLM-691) stay up.
+		w.emit(&SourceActivityCancelled{ActorID: actorID, ObjectID: act.ObjectID, Kind: act.Kind, At: now})
+	}
 	return true
 }
 

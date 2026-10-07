@@ -159,3 +159,44 @@ func TestStartStoke_Rejects(t *testing.T) {
 		t.Errorf("wood-less owner stoked anyway")
 	}
 }
+
+// TestStoke_HearthGoneMidWindowCancels: a due window that lands nothing still
+// closes on the wire (LLM-691). The hearth tag is cleared mid-window, so the
+// completion finds no hearth and emits no SourceActivityCompleted — it must
+// emit SourceActivityCancelled instead, or the client's activity marker and
+// work animation stay up with no window behind them.
+func TestStoke_HearthGoneMidWindowCancels(t *testing.T) {
+	w, cancel := buildHearthTestWorld(t)
+	defer cancel()
+
+	res, err := w.Send(sim.StartStoke("hannah"))
+	if err != nil {
+		t.Fatalf("StartStoke: %v", err)
+	}
+	sr := res.(sim.SourceActivityStartResult)
+	var events []sim.Event
+	after := sr.Until.Add(time.Second)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects["tavern"].Tags = []string{sim.TagBusiness}
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			events = append(events, evt)
+		}))
+		return sim.CompleteDueSourceActivities(world, after), nil
+	}}); err != nil {
+		t.Fatalf("complete sweep: %v", err)
+	}
+	var cancelled, completed int
+	for _, evt := range events {
+		switch e := evt.(type) {
+		case *sim.SourceActivityCancelled:
+			if e.ActorID == "hannah" && e.Kind == sim.SourceActivityStoke && e.ObjectID == "tavern" {
+				cancelled++
+			}
+		case *sim.SourceActivityCompleted:
+			completed++
+		}
+	}
+	if cancelled != 1 || completed != 0 {
+		t.Errorf("cancelled=%d completed=%d, want 1 and 0 (events %T)", cancelled, completed, events)
+	}
+}
