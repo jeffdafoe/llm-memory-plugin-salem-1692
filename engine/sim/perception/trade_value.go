@@ -583,7 +583,7 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// twenty empty lines would ride every turn he spends in company. Held
 		// ones are priced by the walk below. A factor's pack is priced in its own
 		// section (buildPackGoods), so this does not blind him at the bale.
-		if sim.IsWardrobeOnlyGood(e.Item) && actorSnap.Inventory[e.Item] <= 0 {
+		if sim.IsWardrobeOnlyGood(e.Item) {
 			continue
 		}
 		valueGood(e.Item, true)
