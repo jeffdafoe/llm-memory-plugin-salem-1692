@@ -3,7 +3,8 @@ extends RefCounted
 ## The repair mini-games (LLM-690) — one per site kind, the rules only.
 ##
 ## A player mends the town's damage by playing: each won round is one
-## pc/repair/step. There is no fail state — a miss costs time, nothing else.
+## pc/repair/step. A miss costs time; only the saw can fail a round outright
+## (Result.FAIL: the saw sticks and the cut starts over, LLM-716).
 ## These classes hold the game state and answer input; repair_stage.gd draws
 ## them in art pixels, and repair_panel.gd sends the steps. Kept free of nodes
 ## so tests can drive them with plain numbers.
@@ -17,7 +18,7 @@ extends RefCounted
 const PLAY_W := 176
 const PLAY_H := 56
 
-enum Result { NONE, HIT, MISS, PROGRESS }
+enum Result { NONE, HIT, MISS, PROGRESS, FAIL }
 
 ## The game for a site: a well is timing (windlass), a signpost is setting its
 ## arm level (plumb), a road is sawing, everything else — a business, a fence, a
@@ -69,6 +70,11 @@ class Game:
     ## How far the work has gone. Only the plumb game shows it.
     func set_progress(_done: int, _total: int) -> void:
         pass
+
+    ## Misses or fails the game found on its own in update() (a moment let
+    ## pass), for the stage to show. Only the saw has any.
+    func take_events() -> Array:
+        return []
 
     ## A short line telling the player what to do, drawn under the play area.
     func hint() -> String:
@@ -223,75 +229,125 @@ class Hammer:
         return "Strike each nail before it sinks"
 
 
-## SAW — keep the beat: tap the side the saw is drawing toward, left, right,
-## left. `strokes_needed` good strokes cut one section through. Harder: more
-## strokes, and a beat — a tap sooner than min_gap after the last stroke does
-## not count, and one later than max_gap loses the run (the blade binds and
-## the cut starts over). At difficulty 0 there is no beat.
+## SAW — keep the beat (LLM-716). The blade strokes across the log on its own,
+## end to end every `period` seconds; as it reaches an end, that end's window
+## lights for `window` seconds either side. Tap that side while it is lit and
+## the cut sinks a stroke. A tap off the window or on the wrong side BINDS the
+## saw — the blade buckles, the stroke is lost and the cut rises back one — and
+## once a run has started, letting a window pass untouched binds it too. Three
+## binds in a row stick the saw (Result.FAIL): the cut starts over, and the
+## blade stays fast in the log for STUCK_TIME. `strokes_needed` good strokes
+## cut one section through. Harder: more strokes, a faster stroke, a narrower
+## window.
 class Saw:
     extends Game
     const STROKES := 6
     const HARD_STROKES := 10
-    const HARD_MIN_GAP := 0.22
-    const SLOW_MAX_GAP := 4.0  # the max_gap just above difficulty 0
-    const HARD_MAX_GAP := 0.6
+    const PERIOD := 0.9
+    const HARD_PERIOD := 0.45
+    const WINDOW := 0.16
+    const HARD_WINDOW := 0.07
+    const STUCK_BINDS := 3
+    const STUCK_TIME := 1.2
     const LOG_X := 24
     const LOG_W := 128
-    var side := 0  # 0 = left wants the next tap, 1 = right
+    var side := 0  # 0 = the blade is heading for the left end, 1 = the right
     var strokes := 0
     var strokes_needed := STROKES
-    var min_gap := 0.0
-    var max_gap := INF
-    var last_t := -1.0  # game time of the last good stroke this run, -1 for none
-    var saw_x := 0.0  # -1..1, where the blade is drawn
-    var target := -1.0
+    var period := PERIOD
+    var window := WINDOW
+    var binds := 0  # binds in a row
+    var stuck_left := 0.0
+    var bound_at := -1.0  # game time of the last bind, -1 for none
+    var started := false  # a good stroke has been made this run
+    var blade_t := 0.0  # the blade's own clock; stops while stuck or holding
+    var next_end := 1  # the next end to be judged; end k is reached at k * period
+    var saw_x := -1.0  # -1..1, where the blade is drawn
+    var _events: Array = []
 
     func _init(r: RandomNumberGenerator, d := 0.0) -> void:
         super(r, d)
         strokes_needed = roundi(lerpf(STROKES, HARD_STROKES, d))
-        if d > 0.0:
-            min_gap = lerpf(0.0, HARD_MIN_GAP, d)
-            max_gap = lerpf(SLOW_MAX_GAP, HARD_MAX_GAP, d)
+        period = lerpf(PERIOD, HARD_PERIOD, d)
+        window = lerpf(WINDOW, HARD_WINDOW, d)
 
     func update(dt: float) -> void:
         super(dt)
-        saw_x = move_toward(saw_x, target, dt * 8.0)
+        if holding:
+            return
+        if stuck_left > 0.0:
+            stuck_left = maxf(0.0, stuck_left - dt)
+            if stuck_left == 0.0:
+                next_end = floori(blade_t / period) + 1
+            return
+        blade_t += dt
+        while blade_t > next_end * period + window:
+            next_end += 1
+            if started:
+                _events.append(_bind())
+                if stuck_left > 0.0:
+                    return
+        saw_x = -cos(PI * blade_t / period)
+        # The side to tap: the end lit now, else the end the blade is heading for.
+        var k := roundi(blade_t / period)
+        side = posmod(k, 2) if absf(blade_t - k * period) <= window else posmod(floori(blade_t / period) + 1, 2)
 
     ## A tap on the left half is the left side, the right half the right side.
-    ## A key press plays whichever side is wanted (keyboard players keep the
-    ## beat with one key).
+    ## A key press plays the side the blade is reaching (keyboard players keep
+    ## the beat with one key).
     func press(pos: Variant) -> Result:
-        if holding:
+        if holding or stuck_left > 0.0:
             return Result.NONE
-        var tapped := side
+        var k := roundi(blade_t / period)
+        var wanted := posmod(k, 2)
+        var tapped := wanted
         if pos is Vector2:
             tapped = 0 if pos.x < PLAY_W / 2.0 else 1
-        if tapped != side:
-            return Result.MISS
-        if last_t >= 0.0:
-            var gap := t - last_t
-            if gap < min_gap:
-                return Result.MISS
-            if gap > max_gap:
-                strokes = 0
-                last_t = -1.0
-                return Result.MISS
-        target = -1.0 if side == 0 else 1.0
-        side = 1 - side
+        if k < next_end or absf(blade_t - k * period) > window or tapped != wanted:
+            return _bind()
+        started = true
+        binds = 0
+        next_end = k + 1
         strokes += 1
-        last_t = t
         if strokes < strokes_needed:
             return Result.PROGRESS
         holding = true
         return Result.HIT
 
+    ## The blade binds: the stroke is lost, the cut rises back one, and the
+    ## third in a row sticks the saw.
+    func _bind() -> Result:
+        bound_at = t
+        binds += 1
+        strokes = maxi(0, strokes - 1)
+        if binds < STUCK_BINDS:
+            return Result.MISS
+        binds = 0
+        strokes = 0
+        started = false
+        stuck_left = STUCK_TIME
+        return Result.FAIL
+
+    ## Whether the end the blade is reaching is lit now.
+    func lit() -> bool:
+        var k := roundi(blade_t / period)
+        return k >= next_end and absf(blade_t - k * period) <= window and stuck_left == 0.0 and not holding
+
+    ## The binds update() found (a window let pass), for the stage to show.
+    func take_events() -> Array:
+        var out := _events
+        _events = []
+        return out
+
     func release() -> void:
         super()
         strokes = 0
-        last_t = -1.0
+        binds = 0
+        started = false
+        next_end = floori(blade_t / period) + 1
 
     func hint() -> String:
-        return "Tap left, right, left — keep the beat"
+        return "Tap each side as it lights — keep the beat"
 
 
 ## PLUMB — the signpost's arm swings on its bolt, from its sag up past level

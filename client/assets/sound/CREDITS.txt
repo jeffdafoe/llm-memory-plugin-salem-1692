@@ -2,8 +2,10 @@ Sound sources (LLM-703). Every file here is CC0 (public domain); credit is a cou
 
 Kenney (kenney.nl), CC0:
   Impact Sounds — footstep_grass_*, footstep_concrete_*, footstep_wood_*,
+                  impactMetal_heavy_*, impactTin_medium_* (the saw binding, LLM-716),
                   impactMetal_light_*, impactPlank_medium_*
-  RPG Audio     — footstep00-09, creak1-3, metalClick, handleCoins, handleCoins2
+  RPG Audio     — footstep00-09, creak1-3, metalClick, handleCoins, handleCoins2,
+                  drawKnife1-3 (the saw binding, LLM-716)
   Files as shipped by Kenney, unchanged.
 
 Freesound (freesound.org), CC0, cut from the HQ previews with ffmpeg:
