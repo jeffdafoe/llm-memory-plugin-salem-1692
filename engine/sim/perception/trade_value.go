@@ -578,6 +578,14 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		valueGood(e.Item, false)
 	}
 	for _, e := range actorSnap.RestockPolicy.BuyEntries() {
+		// LLM-710: the distributor carries a buy line for each of the twenty
+		// wardrobe-only goods, but one he holds none of has nothing to sell, and
+		// twenty empty lines would ride every turn he spends in company. Held
+		// ones are priced by the walk below. A factor's pack is priced in its own
+		// section (buildPackGoods), so this does not blind him at the bale.
+		if sim.IsWardrobeOnlyGood(e.Item) && actorSnap.Inventory[e.Item] <= 0 {
+			continue
+		}
 		valueGood(e.Item, true)
 	}
 	// LLM-646: goods actually ON HAND are priced too, policy entry or not.

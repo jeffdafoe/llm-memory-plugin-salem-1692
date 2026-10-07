@@ -1873,6 +1873,13 @@ var factorWardrobeKinds = func() []ItemKind {
 	return out
 }()
 
+// IsWardrobeOnlyGood reports whether kind is one of factorWardrobeKinds: a
+// wardrobe piece or dye that only dresses a player, with no part in the
+// working-clothes or cold economy.
+func IsWardrobeOnlyGood(kind ItemKind) bool {
+	return slices.Contains(factorWardrobeKinds, kind)
+}
+
 // factorIronKind is the imported smith's input the factor carries in SHIPMENT
 // quantity (LLM-442) — seeded via ironUnits, not the per-kind unitsPerKind, so
 // the rare factor visit can bridge the forge's batch-by-batch iron burn without

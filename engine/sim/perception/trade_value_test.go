@@ -1362,3 +1362,37 @@ func TestBuildTradeValue_HeldGoodNoWorkplace(t *testing.T) {
 		t.Fatalf("a workplace-less holder must still price held stock, got %+v", v)
 	}
 }
+
+// TestBuildTradeValue_WardrobeGoodOnlyWhenHeld (LLM-710): a buy line for a
+// wardrobe-only good (a hat, a dye) is priced only while the keeper holds
+// some; any other buy line is priced held or not.
+func TestBuildTradeValue_WardrobeGoodOnlyWhenHeld(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "felt_hat", Source: sim.RestockSourceBuy, Max: 2},
+			{Item: "indigo", Source: sim.RestockSourceBuy, Max: 3},
+			{Item: "cloak", Source: sim.RestockSourceBuy, Max: 4},
+		}},
+		Inventory: map[sim.ItemKind]int{"indigo": 1},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC),
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"josiah": subj},
+		Recipes: map[sim.ItemKind]*sim.ItemRecipe{
+			"felt_hat": {OutputItem: "felt_hat", WholesalePrice: 4, RetailPrice: 7},
+			"indigo":   {OutputItem: "indigo", WholesalePrice: 4, RetailPrice: 7},
+			"cloak":    {OutputItem: "cloak", WholesalePrice: 7, RetailPrice: 12},
+		},
+	}
+	v := buildTradeValue(snap, "josiah", subj, true)
+	if v == nil {
+		t.Fatal("no view")
+	}
+	got := map[sim.ItemKind]bool{}
+	for _, it := range v.Items {
+		got[it.itemKind] = true
+	}
+	if got["felt_hat"] || !got["indigo"] || !got["cloak"] {
+		t.Fatalf("priced %v; want indigo (held) and cloak (not wardrobe-only), not felt_hat (none held)", got)
+	}
+}
