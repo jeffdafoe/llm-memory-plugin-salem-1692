@@ -353,6 +353,14 @@ type Snapshot struct {
 	// stew") so a hungry model doesn't try to eat it (LLM-166). Same aliased,
 	// not-cloned posture as Recipes.
 	RecipeUses map[ItemKind][]ItemKind
+
+	// Sprites is an ALIASED reference to World.Sprites — the character-sprite
+	// catalog. HTTP readers (/agents, /sprites, pc/me) resolve sprites through
+	// it rather than World.Sprites, because a live write (a player saving an
+	// outfit, LLM-691) installs a sprite by swapping in a new map
+	// (InstallSprite), never by writing the published one. nil only before the
+	// first LoadWorld.
+	Sprites map[SpriteID]*Sprite
 }
 
 // WithActor returns a shallow copy of the snapshot with one actor's entry

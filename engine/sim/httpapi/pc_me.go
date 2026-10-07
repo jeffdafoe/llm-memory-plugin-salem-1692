@@ -268,7 +268,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	if pc.SpriteID != "" {
 		id := string(pc.SpriteID)
 		resp.SpriteID = &id
-		resp.Sprite = resolveAgentSprite(pc.SpriteID, s.world.Sprites)
+		resp.Sprite = resolveAgentSprite(pc.SpriteID, snap.Sprites)
 	}
 
 	resp.Lodging = pcLodgingSurface(snap, pc)
