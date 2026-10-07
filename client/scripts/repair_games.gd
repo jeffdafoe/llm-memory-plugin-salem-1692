@@ -271,22 +271,36 @@ class Saw:
         period = lerpf(PERIOD, HARD_PERIOD, d)
         window = lerpf(WINDOW, HARD_WINDOW, d)
 
+    ## The elapsed time is spent in segments — up to the next window's close,
+    ## or the end of a stuck spell — so each bind lands at the moment it
+    ## happened, and the result is the same however the time arrives (one
+    ## long frame after a stall, or many short ones).
     func update(dt: float) -> void:
         super(dt)
         if holding:
             return
-        if stuck_left > 0.0:
-            stuck_left = maxf(0.0, stuck_left - dt)
-            if stuck_left == 0.0:
-                next_end = floori(blade_t / period) + 1
-            return
-        blade_t += dt
-        while blade_t > next_end * period + window:
+        var now := t - dt
+        var left := dt
+        while left > 0.0:
+            if stuck_left > 0.0:
+                var spent := minf(left, stuck_left)
+                stuck_left -= spent
+                left -= spent
+                now += spent
+                if stuck_left <= 0.0:
+                    stuck_left = 0.0
+                    next_end = floori(blade_t / period) + 1
+                continue
+            var to_close := maxf(0.0, next_end * period + window - blade_t)
+            if left <= to_close:
+                blade_t += left
+                break
+            blade_t += to_close
+            left -= to_close
+            now += to_close
             next_end += 1
             if started:
-                _events.append(_bind())
-                if stuck_left > 0.0:
-                    return
+                _events.append(_bind(now))
         saw_x = -cos(PI * blade_t / period)
         # The side to tap: the end lit now, else the end the blade is heading for.
         var k := roundi(blade_t / period)
@@ -304,7 +318,7 @@ class Saw:
         if pos is Vector2:
             tapped = 0 if pos.x < PLAY_W / 2.0 else 1
         if k < next_end or absf(blade_t - k * period) > window or tapped != wanted:
-            return _bind()
+            return _bind(t)
         started = true
         binds = 0
         next_end = k + 1
@@ -316,8 +330,8 @@ class Saw:
 
     ## The blade binds: the stroke is lost, the cut rises back one, and the
     ## third in a row sticks the saw.
-    func _bind() -> Result:
-        bound_at = t
+    func _bind(at: float) -> Result:
+        bound_at = at
         binds += 1
         strokes = maxi(0, strokes - 1)
         if binds < STUCK_BINDS:

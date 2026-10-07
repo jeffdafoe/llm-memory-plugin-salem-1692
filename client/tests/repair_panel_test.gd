@@ -31,6 +31,7 @@ const TESTS := [
     "_test_difficulty_hardens_every_game",
     "_test_saw_binds_and_sticks",
     "_test_saw_stage_bends_the_blade",
+    "_test_saw_same_however_time_arrives",
     "_test_pixel_and_object_scale",
     "_test_layers_bbox",
     "_test_title_and_sentence",
@@ -1163,4 +1164,32 @@ func _test_saw_stage_bends_the_blade() -> void:
     g.press(null)
     g.press(null)
     _check("stuck: bowed and held", StageScript.saw_bend(g), StageScript.SAW_STUCK_BEND)
+    _done()
+
+
+## One long update (a stall) ends in the same state as the same time given in
+## short frames: three windows let pass, the stuck spell, and on past it.
+func _test_saw_same_however_time_arrives() -> void:
+    var total := 0.0
+    var games: Array = []
+    for frames in [1, 7, 400]:
+        var g = Games.make("saw", _rng())
+        _saw_to_end(g, 1)
+        g.press(null)
+        total = 3.0 * g.period + Games.Saw.STUCK_TIME + 0.3
+        var events: Array = []
+        for i in frames:
+            g.update(total / frames)
+            events.append_array(g.take_events())
+        games.append({"g": g, "events": events})
+    var a = games[0]["g"]
+    _check("one update: three binds, the last sticks", games[0]["events"], [Games.Result.MISS, Games.Result.MISS, Games.Result.FAIL])
+    _check("the stuck bind lands when its window closed", absf(a.bound_at - (a.period + 3.0 * a.period + a.window)) < 0.001, true)
+    for i in [1, 2]:
+        var b = games[i]["g"]
+        _check("frames %d: same events" % i, games[i]["events"], games[0]["events"])
+        _check("frames %d: same stuck time" % i, absf(b.stuck_left - a.stuck_left) < 0.001, true)
+        _check("frames %d: same blade clock" % i, absf(b.blade_t - a.blade_t) < 0.001, true)
+        _check("frames %d: same bind time" % i, absf(b.bound_at - a.bound_at) < 0.001, true)
+    _check("free of the stuck spell, the blade moved on", a.stuck_left == 0.0 and a.blade_t > 4.0 * a.period + a.window, true)
     _done()
