@@ -1092,41 +1092,96 @@ function Footing([int]$x, [int]$y, [int]$w, [int]$h) {
     Rect ($x - 1) $y 1 $h $S0; Rect ($x + $w) $y 1 $h $S0
 }
 
-function SignCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
+# The signpost close-up comes in layers (LLM-712) so repair_stage.gd can swing
+# the arm and set it truer round by round: the base (sky, grass, footing,
+# post), the arm (a strip of angle frames), and what hangs loose on the broken
+# post or braces the mended one. SIGN_* in repair_stage.gd mirror these.
+$SIGN_PX = 36; $SIGN_PW = 12; $SIGN_HY = 12
+
+function SignBase([int]$ax, [int]$ay, [int]$aw, [int]$ah) {
     Rect $ax $ay $aw $ah (C '1E2A22')
     Ground $ax ($ay + $ah - 16) $aw 16
-    $px = $ax + 36; $pw = 12
+    $px = $ax + $SIGN_PX; $pw = $SIGN_PW
     $foot = $ay + $ah - 10
     Footing ($px - 5) ($foot - 18) ($pw + 10) 16
     Post $px ($ay + 4) ($foot - 18) $pw
     # The iron collar where the post meets the footing.
     Rect ($px - 1) ($foot - 21) ($pw + 2) 3 $I1; Rect ($px - 1) ($foot - 21) ($pw + 2) 1 $I3
-    $hx = $px + $pw; $hy = $ay + 12
+}
+
+# The broken post's loose parts: the brace come away from the arm, hanging
+# from its lower nail, and a nail pulled half out of the post.
+function SignLoose([int]$ax, [int]$ay) {
+    $px = $ax + $SIGN_PX; $pw = $SIGN_PW; $hy = $ay + $SIGN_HY
+    Brace ($px + $pw + 1) ($hy + 30) ($px + $pw + 6) ($hy + 50)
+    Rect ($px + $pw) ($hy + 4) 4 1 $I2; Rect ($px + $pw + 4) ($hy + 3) 1 3 $I3
+}
+
+# The mended post's brace under the level arm, and the arm nailed home.
+function SignBrace([int]$ax, [int]$ay) {
+    $px = $ax + $SIGN_PX; $pw = $SIGN_PW; $hx = $px + $pw; $hy = $ay + $SIGN_HY
+    Brace ($px + $pw + 1) ($hy + 30) ($px + $pw + 26) ($hy + $ARM_H - 1)
+    NailHead ($hx + 2) ($hy + 3); NailHead ($hx + 2) ($hy + $ARM_H - 5)
+}
+
+function SignCloseup([int]$ax, [int]$ay, [int]$aw, [int]$ah, [bool]$broken) {
+    SignBase $ax $ay $aw $ah
+    $hx = $ax + $SIGN_PX + $SIGN_PW; $hy = $ay + $SIGN_HY
     if ($broken) {
         Arm $hx $hy 0.42
-        # The brace has come away from the arm and hangs from its lower nail.
-        Brace ($px + $pw + 1) ($hy + 30) ($px + $pw + 6) ($hy + 50)
-        # A nail pulled half out of the post.
-        Rect ($px + $pw) ($hy + 4) 4 1 $I2; Rect ($px + $pw + 4) ($hy + 3) 1 3 $I3
+        SignLoose $ax $ay
     } else {
         Arm $hx $hy 0
-        Brace ($px + $pw + 1) ($hy + 30) ($px + $pw + 26) ($hy + $ARM_H - 1)
-        NailHead ($hx + 2) ($hy + 3); NailHead ($hx + 2) ($hy + $ARM_H - 5)
+        SignBrace $ax $ay
     }
 }
 
-# --- the game: the approved bar, peg and gold zone, with a plumb bob in place
-# of the windlass wheel --------------------------------------------------------
+# The arm's frames: one per whole degree from SIGN_ARM_MIN_DEG (above level) to
+# SIGN_ARM_MAX_DEG (the broken droop), each SIGN_ARM_W x SIGN_ARM_H with the
+# hinge at (SIGN_ARM_FX, SIGN_ARM_FY). Each frame is drawn on its own canvas so
+# a turned arm cannot spill into its neighbour.
+$SIGN_ARM_MIN_DEG = -5; $SIGN_ARM_MAX_DEG = 24
+$SIGN_ARM_W = 112; $SIGN_ARM_H = 68; $SIGN_ARM_FX = 4; $SIGN_ARM_FY = 10
 
-function PlumbBob([int]$x, [int]$y) {
-    Rect ($x - 2) ($y - 22) 5 2 $I1; Rect ($x - 2) ($y - 22) 5 1 $I3
-    Rect $x ($y - 20) 1 14 (C 'E1CDA5')
+function SignArmFrames() {
+    $n = $SIGN_ARM_MAX_DEG - $SIGN_ARM_MIN_DEG + 1
+    $frames = @()
+    for ($f = 0; $f -lt $n; $f++) {
+        NewCanvas $SIGN_ARM_W $SIGN_ARM_H
+        Arm $SIGN_ARM_FX $SIGN_ARM_FY (($SIGN_ARM_MIN_DEG + $f) * [Math]::PI / 180)
+        $script:g.Dispose()
+        $frames += $script:bmp
+    }
+    NewCanvas ($SIGN_ARM_W * $n) $SIGN_ARM_H
+    for ($f = 0; $f -lt $n; $f++) {
+        $script:g.DrawImageUnscaled($frames[$f], $f * $SIGN_ARM_W, 0)
+        $frames[$f].Dispose()
+    }
+    SavePng 'sign-arm'
+}
+
+# The stake the plumb bob reads against: a stick driven into the grass, a gold
+# notch cut at SIGN_MARK_ROW where the bob hangs when the arm is level.
+$SIGN_MARK_ROW = 9
+function Stake([int]$x, [int]$y, [int]$h) {
+    Rect $x $y 4 $h $MID
+    Rect $x $y 1 $h $OUT; Rect ($x + 3) $y 1 $h $OUT
+    Rect ($x + 1) $y 1 $h $HI
+    Rect $x $y 4 1 $OUT; Rect ($x + 1) ($y + 1) 2 1 $HI2
+    Rect ($x - 1) ($y + $SIGN_MARK_ROW - 1) 3 3 $G0
+    Rect ($x - 1) ($y + $SIGN_MARK_ROW) 3 1 $G2
+}
+
+function Bob([int]$x, [int]$y) {
     $rows = @(1, 3, 5, 5, 5, 3, 1)
     for ($r = 0; $r -lt $rows.Count; $r++) {
         $w = $rows[$r]; $sx = $x - [int](($w - 1) / 2)
-        for ($c = 0; $c -lt $w; $c++) { Px ($sx + $c) ($y - 6 + $r) $(if ($c -eq 0 -or $c -eq $w - 1) { $G0 } elseif ($c -eq 1 -and $r -lt 4) { $G2 } else { $G1 }) }
+        for ($c = 0; $c -lt $w; $c++) { Px ($sx + $c) ($y + $r) $(if ($c -eq 0 -or $c -eq $w - 1) { $G0 } elseif ($c -eq 1 -and $r -lt 4) { $G2 } else { $G1 }) }
     }
 }
+
+# --- the game pieces drawn above are the bar, peg and wheel (windlass), and the
+# arm frames, stake and bob (the signpost) ------------------------------------
 
 
 
@@ -1143,6 +1198,14 @@ foreach ($broken in @($true, $false)) {
     NewCanvas 176 88; CrateCloseup 0 0 176 88 $broken; SavePng "crate-$tag"
     NewCanvas 176 88; SignCloseup 0 0 176 88 $broken; SavePng "sign-$tag"
 }
+
+# The signpost in layers (repair_stage.gd draws these, not the two pictures).
+NewCanvas 176 88; SignBase 0 0 176 88; SavePng 'sign-base'
+NewCanvas 176 88; SignLoose 0 0; SavePng 'sign-loose'
+NewCanvas 176 88; SignBrace 0 0; SavePng 'sign-brace'
+SignArmFrames
+NewCanvas 5 32; Stake 1 0 32; SavePng 'stake'
+NewCanvas 5 7; Bob 2 0; SavePng 'bob'
 
 # The road comes in parts: repair_stage.gd shortens the trunk a section per
 # round, puts a cut face on its end and stacks a round on the verge.
@@ -1186,8 +1249,7 @@ for ($f = 0; $f -lt $HAMMER_ANGLES.Count; $f++) {
 SavePng 'hammer'
 
 # Windlass game: the bar (a 144 x 9 beam with iron caps; origin 2 px left of
-# and 2 px above the bar), the peg, the wheel turned through eight notches, and
-# the signpost's plumb bob.
+# and 2 px above the bar), the peg, and the wheel turned through eight notches.
 NewCanvas 148 11
 Plank 2 1 144 9
 foreach ($ex in @(0, 144)) { Rect $ex 0 4 11 $I1; Rect ($ex + 1) 1 1 9 $I3 }
@@ -1196,7 +1258,6 @@ NewCanvas 5 22; Peg 2 10; SavePng 'peg'
 NewCanvas 184 23
 for ($f = 0; $f -lt 8; $f++) { Wheel (11 + 23 * $f) 11 ($f * [Math]::PI / 4) }
 SavePng 'wheel'
-NewCanvas 5 23; PlumbBob 2 22; SavePng 'plumb'
 
 # Saw game: the log end-on (the receding body, then the sawn face; the face's
 # centre is at (19, 27) in the back and (19, 19) in the face), the blade.

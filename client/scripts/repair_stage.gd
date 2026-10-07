@@ -27,9 +27,13 @@ extends Control
 ## no close-up (`site` "") falls back to the village sprites the panel collects,
 ## scaled up to fit — a road there is cut the same way.
 ##
+## THE SIGNPOST (LLM-712) is drawn in layers, not swept: its arm swings on its
+## bolt in the close-up itself (the plumb game), a plumb bob hanging from it
+## over a marked stake, and between rounds it rests a little truer each time.
+##
 ## THE GAMES draw from the same art: a plank, nails and a hammer; a bar with a
-## gold zone, a peg and a windlass wheel (a plumb bob for a signpost); a log
-## end-on with a saw across it.
+## gold zone, a peg and a windlass wheel; a log end-on with a saw across it; and
+## for the signpost only the progress pips, the game being in the picture.
 
 const Games = preload("res://scripts/repair_games.gd")
 
@@ -82,6 +86,25 @@ const ROAD_ROUNDS := [
     Vector2(137, 48),
 ]
 
+# The signpost close-up's geometry, in picture px — tools/repair-art/build.ps1
+# draws the layers to these numbers (SIGN_* there). `sign-arm` is a strip of
+# SIGN_ARM_FRAMES frames, one per whole degree from SIGN_ARM_MIN_DEG, each with
+# the hinge at SIGN_ARM_PIVOT; the hinge sits at SIGN_HINGE on the post.
+const SIGN_HINGE := Vector2(48, 12)
+const SIGN_ARM_MIN_DEG := -5
+const SIGN_ARM_FRAMES := 30
+const SIGN_ARM_SIZE := Vector2(112, 68)
+const SIGN_ARM_PIVOT := Vector2(4, 10)
+## The cord hangs from SIGN_CORD_AT on the arm (along it, across it, from the
+## hinge), SIGN_CORD_LEN long; a bob that would hang lower lies in the grass
+## with its top at SIGN_BOB_REST_Y. The stake's gold notch is where the bob
+## hangs when the arm is level.
+const SIGN_CORD_AT := Vector2(90, 16)
+const SIGN_CORD_LEN := 24
+const SIGN_BOB_REST_Y := 73
+const SIGN_STAKE := Vector2(140, 46)
+const C_CORD := Color8(225, 205, 165)
+
 # The hammer's swing: `hammer` is a strip of HAMMER_FRAME_W x HAMMER_FRAME_H
 # frames turned about the grip — level (the strike), then raised 20°, 40°,
 # 60° — with the grip at the same place in each (tools/repair-art/build.ps1).
@@ -104,6 +127,8 @@ var sound: Array = []
 var steps := 1
 var steps_done := 0
 var playing := false
+## The engine's game difficulty for this repair, 0..1 (LLM-712).
+var difficulty := 0.0
 ## The close-up drawn ("fence", "well", "shop", "crate", "sign", "road"), or
 ## "" for the village sprites.
 var site := ""
@@ -324,7 +349,8 @@ func setup(title_text: String, kind: String, broken_layers: Array, sound_layers:
 ## Begin play: the game for this kind, from a fresh state.
 func start_game() -> void:
     _rng.randomize()
-    game = Games.make(game_kind, _rng)
+    game = Games.make(game_kind, _rng, difficulty)
+    game.set_progress(steps_done, steps)
     playing = true
 
 
@@ -342,7 +368,7 @@ func relayout() -> void:
         _obj_scale = 1
         obj_h = int(_bbox.size.y)
     _obj_rect = Rect2(8, HEADER_H, ART_W - 16, obj_h)
-    _art_h = HEADER_H + obj_h + GAP + Games.PLAY_H + GAP
+    _art_h = HEADER_H + obj_h + GAP + _play_h() + GAP
     var room := get_viewport().get_visible_rect().size * _stretch * Vector2(0.92, 0.6)
     k = pixel_scale_for(room, Vector2(ART_W, _art_h))
     custom_minimum_size = Vector2(ART_W * k / _stretch.x, _art_h * k / _stretch.y)
@@ -354,6 +380,8 @@ func set_progress(done: int) -> void:
     steps_done = clampi(done, 0, steps)
     if steps_done > before and sound.is_empty():
         _drop_section(before)
+    if game != null:
+        game.set_progress(steps_done, steps)
 
 
 func release_round() -> void:
@@ -400,6 +428,12 @@ func _play_origin() -> Vector2:
     return Vector2(PLAY_X, _obj_rect.end.y + GAP)
 
 
+## The play area's height: the plumb game is played in the close-up, so its
+## strip holds only the progress pips.
+func _play_h() -> int:
+    return 10 if game_kind == "plumb" else Games.PLAY_H
+
+
 func _handle_press(pos: Variant) -> void:
     if not playing or game == null:
         return
@@ -410,6 +444,8 @@ func _handle_press(pos: Variant) -> void:
             if game_kind == "windlass":
                 var center: float = game.zone_x + game.zone_w / 2.0
                 perfect = absf(game.marker - center) <= game.zone_w * 0.18
+            elif game_kind == "plumb":
+                perfect = absf(game.hit_off) <= game.tolerance * 0.35
             _on_hit(perfect)
             round_won.emit(perfect)
         Games.Result.PROGRESS:
@@ -437,6 +473,11 @@ func _on_hit(perfect: bool) -> void:
             _burst(at, 6, [C_IRON_LIGHT, C_WOOD_HI])
             _sound("windlass_click")
             _sound("windlass_turn")
+        "plumb":
+            # The arm is nailed home at its bolt.
+            at = _anchor() + SIGN_HINGE + Vector2(2, 8)
+            _burst(at, 7, [C_GOLD, Color.WHITE, C_IRON_LIGHT])
+            _sound("hammer_hit")
         _:
             at += Vector2(Games.PLAY_W / 2.0, 20)
             _burst(at, 10, [C_WOOD_HI, C_WOOD_LIGHT])
@@ -497,7 +538,7 @@ func _land_swing() -> void:
 ## last half second.
 static func _nail_height(g) -> float:
     var rise: float = clampf(g.up_t / 0.12, 0.0, 1.0)
-    var sink: float = clampf((g.up_t - (g.UP_TIME - 0.5)) / 0.5, 0.0, 1.0)
+    var sink: float = clampf((g.up_t - (g.up_time - 0.5)) / 0.5, 0.0, 1.0)
     return roundf(8.0 * rise * (1.0 - sink))
 
 
@@ -647,6 +688,9 @@ func _draw_object() -> void:
     if site == "road":
         _draw_road(anchor, p >= 1.0)
         return
+    if site == "sign" and art("sign-base") != null:
+        _draw_sign(anchor, p >= 1.0)
+        return
     if sound.is_empty():
         _draw_cut(anchor, s, p)
         return
@@ -730,6 +774,55 @@ func _draw_road(anchor: Vector2, cleared: bool) -> void:
         _tex("road-round", anchor + ROAD_ROUNDS[i])
 
 
+## The signpost frame drawn for an arm `angle_deg` below level (negative above).
+static func sign_arm_frame(angle_deg: float) -> int:
+    return clampi(roundi(angle_deg) - SIGN_ARM_MIN_DEG, 0, SIGN_ARM_FRAMES - 1)
+
+
+## Where the plumb cord hangs from on an arm turned `deg` below level, picture
+## px — the same turn tools/repair-art/build.ps1 gives the arm's pixels.
+static func sign_cord_top(deg: int) -> Vector2:
+    var a := deg_to_rad(deg)
+    var u := SIGN_CORD_AT.x
+    var v := SIGN_CORD_AT.y
+    return SIGN_HINGE + Vector2(u * cos(a) - v * sin(a), u * sin(a) + v * cos(a))
+
+
+## How far below level the signpost's arm hangs: swinging while it is played,
+## else at rest, its droop shrinking with the work done; level once mended.
+func _sign_angle(mended: bool) -> float:
+    if mended:
+        return 0.0
+    if game != null and game_kind == "plumb":
+        return game.angle
+    return Games.Plumb.SAG * (1.0 - float(steps_done) / steps)
+
+
+## The signpost close-up: the base, the arm at its angle, the loose brace and
+## nail until it is mended (the brace set under the arm after), and while it is
+## played the stake and the plumb bob hanging from the arm.
+func _draw_sign(anchor: Vector2, mended: bool) -> void:
+    _tex("sign-base", anchor)
+    var gear := playing and game != null and game_kind == "plumb"
+    if gear:
+        _tex("stake", anchor + SIGN_STAKE)
+    var frame := sign_arm_frame(_sign_angle(mended))
+    var arm := art("sign-arm")
+    if arm != null:
+        draw_texture_rect_region(arm, Rect2(anchor + SIGN_HINGE - SIGN_ARM_PIVOT, SIGN_ARM_SIZE),
+            Rect2(frame * SIGN_ARM_SIZE.x, 0, SIGN_ARM_SIZE.x, SIGN_ARM_SIZE.y))
+    _tex("sign-brace" if mended else "sign-loose", anchor)
+    if not gear:
+        return
+    # The cord is drawn from the frame shown, not the exact angle, so the bob
+    # always hangs from the arm's pixels. It shows gold while the arm is level.
+    var top := (anchor + sign_cord_top(frame + SIGN_ARM_MIN_DEG)).floor()
+    var bob_y := minf(top.y + SIGN_CORD_LEN, anchor.y + SIGN_BOB_REST_Y)
+    draw_rect(Rect2(top.x, top.y, 1, bob_y - top.y), C_GOLD if game.is_level() else C_CORD)
+    draw_rect(Rect2(top.x, top.y, 1, 1), C_IRON_LIGHT)
+    _tex("bob", Vector2(top.x - 2, bob_y))
+
+
 ## The section a road round cut off falls away.
 func _drop_section(from_step: int) -> void:
     var anchor := _anchor()
@@ -771,14 +864,15 @@ func _drop_section(from_step: int) -> void:
 
 func _draw_play() -> void:
     var o := _play_origin()
-    draw_rect(Rect2(o, Vector2(Games.PLAY_W, Games.PLAY_H)), Color(0, 0, 0, 0.22))
+    var play_h := _play_h()
+    draw_rect(Rect2(o, Vector2(Games.PLAY_W, play_h)), Color(0, 0, 0, 0.22))
     # Progress pips: one per step, filled as the work lands.
     var pip_w := 6
     var total_w := steps * (pip_w + 2) - 2
     var px := o.x + (Games.PLAY_W - total_w) / 2.0
     for i in steps:
         var col := C_GOLD if i < steps_done else Color(C_WOOD_DARK, 0.8)
-        draw_rect(Rect2(floorf(px + i * (pip_w + 2)), o.y + Games.PLAY_H - 5, pip_w, 3), col)
+        draw_rect(Rect2(floorf(px + i * (pip_w + 2)), o.y + play_h - 5, pip_w, 3), col)
     if game == null:
         return
     match game_kind:
@@ -786,6 +880,8 @@ func _draw_play() -> void:
             _draw_windlass(o)
         "saw":
             _draw_saw(o)
+        "plumb":
+            pass
         _:
             _draw_hammer(o)
 
@@ -811,10 +907,6 @@ func _draw_windlass(o: Vector2) -> void:
     draw_rect(Rect2(zx + g.zone_w, by, 1, 7), C_OUTLINE)
     # The peg: an iron pin with a ring head, riding the bar.
     _tex("peg", Vector2(floorf(bx + g.marker) - 2, by - 11))
-    if site == "sign":
-        # A plumb bob in place of the wheel: what sets a post true.
-        _tex("plumb", Vector2(bx + 2, by - 28))
-        return
     # The windlass wheel above the bar's left end, a notch (an eighth of a
     # turn) per hit.
     var wheel := art("wheel")
@@ -879,7 +971,7 @@ func _draw_saw(o: Vector2) -> void:
     # sides, sinking a stroke at a time.
     var face := (o + Vector2(half, 28)).floor()
     _tex("log-back", face - Vector2(19, 27))
-    var depth := floorf(float(g.strokes) / g.STROKES * 38.0)
+    var depth := floorf(float(g.strokes) / g.strokes_needed * 38.0)
     _tex("saw", Vector2(face.x - 34 + roundf(g.saw_x * 12.0), face.y - 27 + depth))
     _tex("log-face", face - Vector2(19, 19))
     # Sawdust where the blade comes out at both sides.

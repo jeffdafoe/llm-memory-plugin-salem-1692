@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bxxxq1sbjkxcg"
-path="res://.godot/imported/plumb.png-cfee18c6f712d0b62de1fe913eb6f24d.ctex"
+uid="uid://bl4mpw7ag4vo2"
+path="res://.godot/imported/sign-arm.png-1841bd0973ebe4171a1d6091762fc64c.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/repair/plumb.png"
-dest_files=["res://.godot/imported/plumb.png-cfee18c6f712d0b62de1fe913eb6f24d.ctex"]
+source_file="res://assets/repair/sign-arm.png"
+dest_files=["res://.godot/imported/sign-arm.png-1841bd0973ebe4171a1d6091762fc64c.ctex"]
 
 [params]
 

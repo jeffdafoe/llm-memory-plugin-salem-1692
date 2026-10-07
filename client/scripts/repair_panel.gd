@@ -517,6 +517,7 @@ func _on_start_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
 func _begin_play(o: Dictionary) -> void:
     offer = o
     stage.steps = maxi(1, int(o.get("steps", 1)))
+    stage.difficulty = float(o.get("difficulty", 0.0))
     stage.set_progress(int(o.get("steps_done", 0)))
     stage.start_game()
     phase = Phase.PLAYING
