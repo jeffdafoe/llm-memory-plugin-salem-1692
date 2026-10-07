@@ -19,6 +19,9 @@ const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 const COLOR_ERROR = Color(0.85, 0.45, 0.35, 1.0)
 const COLOR_SWATCH_RING = Color(0.95, 0.85, 0.55, 1.0)
+## A swatch whose dye the player does not hold (LLM-710): still clickable, to
+## try the colour on, but faded.
+const LOCKED_SWATCH_ALPHA := 0.3
 
 ## Which ramp colour a swatch shows per slot: the main tone of the ramp.
 const SWATCH_TONE := {"skin": 0, "hair": 2, "c3": 1, "c4": 1}
@@ -193,13 +196,16 @@ func open_for_npc(npc_id: String, display_name: String, current_sprite: Dictiona
     _name_edit.visible = false
     _show()
 
+## A player's open always reloads the wardrobe: what the player holds changes
+## as they trade (LLM-710). Dressing a villager needs no holdings.
 func _show() -> void:
     _error.text = ""
     visible = true
-    if _wardrobe.is_empty():
+    if _wardrobe.is_empty() or _npc_id == "":
         if not _in_flight:
             _load_wardrobe()
     else:
+        _wardrobe["held"] = _wardrobe.get("goods", {}).keys()
         _start_from_current()
 
 func _close() -> void:
@@ -244,11 +250,21 @@ func _on_wardrobe_loaded(result: int, code: int, _headers: PackedStringArray, bo
         _error.text = "The wardrobe could not be opened. Close and try again."
         return
     _wardrobe = data
+    # A villager holds no wardrobe goods; the editor may dress one in anything.
+    if _npc_id != "":
+        _wardrobe["held"] = _wardrobe.get("goods", {}).keys()
     _error.text = ""
     _start_from_current()
 
+## A player starts from the outfit they chose (the wardrobe's "outfit"), less
+## what they no longer hold; a villager from what it wears.
 func _start_from_current() -> void:
-    _picks = FarmerOutfit.decompose(_wardrobe, _current_layers) if not _current_layers.is_empty() else {}
+    var layers: Array = _current_layers
+    var chosen = _wardrobe.get("outfit", null)
+    if _npc_id == "" and chosen is Array and not chosen.is_empty():
+        layers = chosen
+    _picks = FarmerOutfit.decompose(_wardrobe, layers) if not layers.is_empty() else {}
+    _picks = FarmerOutfit.without_locked(_wardrobe, _picks)
     if not _picks.get("items", {}).has("body"):
         _picks = FarmerOutfit.default_picks(_wardrobe)
     _remembered = {}
@@ -296,7 +312,30 @@ func _category_row(category: Dictionary) -> Control:
         if slots.size() > 1:
             row.add_child(_label(str(SLOT_LABELS.get(slot, slot)), 12, COLOR_TEXT_DIM))
         row.add_child(_swatch_row(id, str(slot), int(pick.get("ramps", {}).get(slot, 0))))
+    var note := _store_note(item, pick)
+    if note != "":
+        row.add_child(_label(note, 12, COLOR_TEXT_DIM))
     return row
+
+## Under a row trying on what the player does not hold: what to buy, and its
+## list price.
+func _store_note(item: Dictionary, pick: Dictionary) -> String:
+    var needs: Array = []
+    if FarmerOutfit.item_locked(_wardrobe, item):
+        needs.append(str(item.get("good", "")))
+    var ramps: Dictionary = pick.get("ramps", {})
+    for slot in ramps:
+        var dye := FarmerOutfit.dye_for(_wardrobe, str(slot), int(ramps[slot]))
+        if not FarmerOutfit.holds(_wardrobe, dye) and not needs.has(dye):
+            needs.append(dye)
+    if needs.is_empty():
+        return ""
+    var parts: Array = []
+    for good in needs:
+        var price := FarmerOutfit.good_price(_wardrobe, good)
+        var label := FarmerOutfit.good_label(_wardrobe, good)
+        parts.append("%s, about %d coins" % [label, price] if price > 0 else label)
+    return "Sold at the Store: " + "; ".join(parts) + "."
 
 ## The body row cycles the figure; every other row cycles its items plus none.
 func _choice_label(category: String) -> String:
@@ -342,12 +381,22 @@ func _swatch_row(category: String, slot: String, selected: int) -> Control:
     flow.add_theme_constant_override("v_separation", 4)
     var family: Array = FarmerPalettes.RAMPS.get(FarmerPalettes.FAMILY.get(slot, ""), [])
     var size := float(OrientationGuard.text_size(18))
+    # The colours the player may wear first, then the dyed ones to try on.
+    var open := FarmerOutfit.open_colours(_wardrobe, slot)
+    var order: Array[int] = open.duplicate()
     for index in FarmerOutfit.colours_for(_wardrobe, slot):
+        if not open.has(index):
+            order.append(index)
+    for index in order:
         if index < 0 or index >= family.size():
             continue
         var ramp: Array = family[index]
         var tone: int = mini(int(SWATCH_TONE.get(slot, 1)), ramp.size() - 1)
         var swatch := Panel.new()
+        if not open.has(index):
+            var dye := FarmerOutfit.dye_for(_wardrobe, slot, index)
+            swatch.modulate.a = LOCKED_SWATCH_ALPHA
+            swatch.tooltip_text = FarmerOutfit.good_label(_wardrobe, dye) + " — sold at the Store"
         swatch.custom_minimum_size = Vector2(size, size)
         swatch.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
         var style := StyleBoxFlat.new()
@@ -453,6 +502,13 @@ func _on_save() -> void:
     if character_name == "":
         _error.text = "Enter a name."
         return
+    var missing := FarmerOutfit.missing_goods(_wardrobe, _picks)
+    if not missing.is_empty():
+        var labels: Array = []
+        for good in missing:
+            labels.append(FarmerOutfit.good_label(_wardrobe, good))
+        _error.text = "You do not have: %s. Buy them at the Store first." % ", ".join(labels)
+        return
     _saving = true
     _save_button.disabled = true
     _error.text = ""
@@ -479,7 +535,7 @@ func _on_create_done(result: int, code: int, _headers: PackedStringArray, _body:
     _send_outfit(character_name)
 
 func _send_outfit(character_name: String) -> void:
-    var layers := FarmerOutfit.compose(_wardrobe, _picks)
+    var layers := FarmerOutfit.compose(_wardrobe, _picks, true)
     if not _post("/api/village/pc/outfit", JSON.stringify({"layers": layers}), _on_outfit_done.bind(character_name, layers)):
         _fail("The village did not answer. Try again.")
 
@@ -487,6 +543,10 @@ func _on_outfit_done(result: int, code: int, _headers: PackedStringArray, _body:
     _in_flight = false
     if not Auth.check_response(code):
         _fail("")
+        return
+    if code == 409:
+        # Something was sold or worn out since the wardrobe loaded.
+        _fail("You no longer have some of these clothes. Close and open the wardrobe again.")
         return
     if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
         _fail("Your clothes could not be saved. Try again.")
