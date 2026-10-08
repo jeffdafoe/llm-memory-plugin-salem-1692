@@ -183,5 +183,17 @@ func TestMakingsLineOf_AgreesWithSpokenFor(t *testing.T) {
 		if reserved := claim.Reason == SpokenForMakings; reserved != (got != MakingsLineNone) {
 			t.Errorf("%s: SpokenFor reserved=%v but MakingsLineOf=%d", e.Item, reserved, got)
 		}
+		// Held above both the floor and the cap, the claim is the classified bound.
+		wantQty := 0
+		switch got {
+		case MakingsLineFloor:
+			wantQty = floors[e.Item]
+		case MakingsLineCap:
+			wantQty = e.Cap()
+		}
+		big := SpokenFor(kinds, recipes, BarterHolder{Policy: policy, Inventory: map[ItemKind]int{e.Item: 50}})[e.Item]
+		if big.Qty != wantQty {
+			t.Errorf("%s: SpokenFor reserved %d of 50 held, want %d (MakingsLineOf=%d)", e.Item, big.Qty, wantQty, got)
+		}
 	}
 }
