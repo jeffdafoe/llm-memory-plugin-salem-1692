@@ -45,9 +45,36 @@ func init() {
 		},
 		perceptionScenario{
 			name: "wright_no_stone",
-			summary: "LLM-648: Lewis holds no whetstone, so '## Your trade' preempts the rounds with the " +
-				"resupply steer — no service without a stone — even though the mill is due.",
+			summary: "LLM-648/717: Lewis holds no whetstone, so the rounds cue preempts the rounds with the " +
+				"resupply line even though the mill is due. No one in the village holds a stone, so it names nobody " +
+				"and gives no destination — 'Nobody in the village has a whetstone to sell just now'.",
 			build: wrightNoStoneScenario,
+		},
+		perceptionScenario{
+			name: "wright_no_stone_smith_stocked",
+			summary: "LLM-717: Lewis at his own workshop, on shift, out of stone; Ezekiel holds two at the Blacksmith. " +
+				"The rounds line names the Blacksmith walk-to bullet (destination: smithy) — the same supplier " +
+				"'## Restocking' resolves — and the at-post steer takes its step-out form, not the bare 'stay'.",
+			build: wrightNoStoneSmithStockedScenario,
+		},
+		perceptionScenario{
+			name: "wright_no_stone_worn_workshop",
+			summary: "LLM-717: as wright_no_stone_smith_stocked, but Lewis's workshop is worn past the degrade line, so " +
+				"'## Restocking' is suppressed (LLM-304/608 — whetstone is not a production input). The rounds line " +
+				"alone carries the Blacksmith walk-to bullet, and alone turns the at-post steer to its step-out form.",
+			build: wrightNoStoneWornWorkshopScenario,
+		},
+		perceptionScenario{
+			name: "wright_no_stone_smith_copresent",
+			summary: "LLM-717: Lewis out of stone, standing in the Blacksmith in company with Ezekiel, who holds two. " +
+				"The rounds line issues the co-present pay_with_item buy (seller Ezekiel Crane, item whetstone, qty up to 1).",
+			build: wrightNoStoneSmithCopresentScenario,
+		},
+		perceptionScenario{
+			name: "wright_no_stone_smith_blocked",
+			summary: "LLM-717: Ezekiel holds stones, but Lewis has no coin and no spare goods — the supplier is blocked " +
+				"(no means). The rounds line names nobody and gives no destination: no way to buy one just now.",
+			build: wrightNoStoneSmithBlockedScenario,
 		},
 		perceptionScenario{
 			name: "wright_copresent_no_odd_job_bid",
@@ -187,6 +214,176 @@ func wrightNoStoneScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, actors := equipmentScenarioBase(150, 0, "")
 	actors["lewis"].Pos = sim.TilePos{X: 90, Y: 90}
 	return snap, "lewis", nil
+}
+
+// addStoneSmith gives the equipment fixture a whetstone supply (LLM-717):
+// Ezekiel making stones at the Blacksmith with `stones` on hand, and Lewis's
+// live `{whetstone, buy, cap 4}` restock entry, so "## Restocking" runs the
+// same finder the rounds line does.
+func addStoneSmith(snap *sim.Snapshot, stones int) {
+	snap.Actors["ezekiel"] = &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 60, Y: 60},
+		WorkStructureID:   "smithy",
+		InsideStructureID: "smithy",
+		Coins:             40,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{sim.WhetstoneKind: stones},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: sim.WhetstoneKind, Source: sim.RestockSourceProduce, Max: 4},
+		}},
+	}
+	snap.Structures["smithy"] = plainStructure("smithy", "Blacksmith")
+	snap.VillageObjects["smithy"] = &sim.VillageObject{ID: "smithy", Pos: sim.WorldPos{X: 480, Y: 480},
+		OwnerActorID: "ezekiel", Tags: []string{sim.TagBusiness}}
+	snap.Recipes[sim.WhetstoneKind] = &sim.ItemRecipe{OutputItem: sim.WhetstoneKind, OutputQty: 1, RateQty: 1,
+		RatePerHours: 1, WholesalePrice: 2, RetailPrice: 4}
+	snap.Actors["lewis"].RestockPolicy = &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: sim.WhetstoneKind, Source: sim.RestockSourceBuy, Max: 4},
+	}}
+	snap.RestockReorderPct = 25
+}
+
+func wrightNoStoneSmithStockedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actors := equipmentScenarioBase(150, 0, "")
+	addStoneSmith(snap, 2)
+	// At his own workshop on shift, so the at-post steer must reconcile with
+	// the walk-to bullet (LLM-491).
+	start, end := 360, 1080
+	actors["lewis"].InsideStructureID = "workshop"
+	actors["lewis"].ScheduleStartMin = &start
+	actors["lewis"].ScheduleEndMin = &end
+	return snap, "lewis", nil
+}
+
+func wrightNoStoneWornWorkshopScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := wrightNoStoneSmithStockedScenario()
+	snap.StallWearRepairThreshold = 180
+	snap.StallWearDegradeThreshold = 270
+	snap.StallDegradedProducePct = 50
+	snap.StallNailsPerRepair = 5
+	snap.VillageObjects["workshop"].Wear = 300
+	snap.Actors[actorID].Inventory["nail"] = 6
+	return snap, actorID, warrants
+}
+
+func wrightNoStoneSmithCopresentScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actors := equipmentScenarioBase(150, 0, "")
+	addStoneSmith(snap, 2)
+	lewis := actors["lewis"]
+	lewis.Pos = sim.TilePos{X: 61, Y: 60}
+	lewis.InsideStructureID = "smithy"
+	lewis.CurrentHuddleID = "h3"
+	snap.Actors["ezekiel"].CurrentHuddleID = "h3"
+	snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+		"h3": {ID: "h3", Members: map[sim.ActorID]struct{}{"lewis": {}, "ezekiel": {}}},
+	}
+	return snap, "lewis", nil
+}
+
+func wrightNoStoneSmithBlockedScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actors := equipmentScenarioBase(150, 0, "")
+	addStoneSmith(snap, 2)
+	actors["lewis"].Pos = sim.TilePos{X: 90, Y: 90}
+	actors["lewis"].Coins = 0
+	return snap, "lewis", nil
+}
+
+// TestWrightNoStoneLineFollowsSupply pins the LLM-717 arms by their load-bearing
+// tokens: each supply state renders its own line, and only the walk-to arm
+// carries a destination.
+func TestWrightNoStoneLineFollowsSupply(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)
+		want  string
+		dest  bool
+	}{
+		{"nobody", wrightNoStoneScenario, "Nobody in the village has a whetstone to sell just now — your rounds wait until one comes in.", false},
+		{"walk-to", wrightNoStoneSmithStockedScenario, "  - buy from Blacksmith (destination: smithy)", true},
+		{"co-present", wrightNoStoneSmithCopresentScenario, "Ezekiel Crane is here with you and sells them — you need one before you make your rounds.", false},
+		{"co-present-worn", wrightNoStoneSmithCopresentWornScenario, `call pay_with_item with seller "Ezekiel Crane", item "whetstone", a qty up to 1`, false},
+		{"blocked", wrightNoStoneSmithBlockedScenario, "You have no way to buy one just now — your rounds wait until you can.", false},
+		{"peddler", wrightViewsPeddlerScenario, "The trader here has whetstones — buy one from him before you make your rounds.", false},
+	}
+	for _, c := range cases {
+		snap, actorID, warrants := c.build()
+		p := Build(snap, actorID, warrants)
+		var b strings.Builder
+		renderWrightRounds(&b, p.WrightRounds)
+		got := b.String()
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s: rounds line lacks %q:\n%s", c.name, c.want, got)
+		}
+		if has := strings.Contains(got, "(destination: "); has != c.dest {
+			t.Errorf("%s: destination present=%v, want %v:\n%s", c.name, has, c.dest, got)
+		}
+		if c.name != "walk-to" && strings.Contains(got, "Blacksmith") {
+			t.Errorf("%s: a line with no buy path names the smith (LLM-301):\n%s", c.name, got)
+		}
+		// One pay_with_item per seller and item on the page: the rounds line
+		// carries its own only when Restocking does not (code_review).
+		if strings.Contains(got, "pay_with_item") && p.Restocking.carriesCoPresentBuy(sim.WhetstoneKind, p.WrightRounds.CoPresentSeller) {
+			t.Errorf("%s: rounds repeats the co-present buy Restocking already renders:\n%s", c.name, got)
+		}
+	}
+}
+
+// wrightNoStoneSmithCopresentWornScenario: the co-present scenario with Lewis's
+// workshop worn past the degrade line, so Restocking is suppressed and the
+// rounds line keeps its own pay_with_item.
+func wrightNoStoneSmithCopresentWornScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := wrightNoStoneSmithCopresentScenario()
+	snap.StallWearRepairThreshold = 180
+	snap.StallWearDegradeThreshold = 270
+	snap.StallDegradedProducePct = 50
+	snap.StallNailsPerRepair = 5
+	snap.VillageObjects["workshop"].Wear = 300
+	snap.Actors[actorID].Inventory["nail"] = 6
+	return snap, actorID, warrants
+}
+
+// TestGoldensWrightStoneSellersMatchRestocking — LLM-717 cross-scenario
+// invariant: wherever the rounds line and "## Restocking" both resolve
+// whetstone suppliers, they name the same destinations. The walk-to scenario
+// keeps it non-vacuous.
+func TestGoldensWrightStoneSellersMatchRestocking(t *testing.T) {
+	compared := 0
+	for _, sc := range perceptionScenarios {
+		snap, actorID, warrants := sc.build()
+		p := Build(snap, actorID, warrants)
+		if !p.WrightRounds.HasWalkToSupplier() || p.Restocking == nil {
+			continue
+		}
+		found := false
+		for _, it := range p.Restocking.Items {
+			if it.Kind != sim.WhetstoneKind {
+				continue
+			}
+			found = true
+			compared++
+			if got, want := vendorIDs(p.WrightRounds.StoneVendors), vendorIDs(it.Vendors); got != want {
+				t.Errorf("scenario %q: rounds names %s, Restocking names %s", sc.name, got, want)
+			}
+		}
+		if !found {
+			t.Errorf("scenario %q: rounds names whetstone suppliers but Restocking renders no whetstone line", sc.name)
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no scenario renders both whetstone lists — the invariant is vacuous (LLM-717)")
+	}
+}
+
+func vendorIDs(vs []RestockVendor) string {
+	ids := make([]string, 0, len(vs))
+	for _, v := range vs {
+		ids = append(ids, string(v.StructureID))
+	}
+	return strings.Join(ids, ",")
 }
 
 // oddJobWrightPair gives the base fixture the two facts the labor cues key on

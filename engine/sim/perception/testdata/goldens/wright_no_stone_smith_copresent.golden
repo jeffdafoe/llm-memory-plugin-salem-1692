@@ -1,0 +1,31 @@
+## Who you are
+You are Lewis Walker.
+
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 24.
+
+## Around you
+You are inside the Blacksmith, with the blacksmith.
+It is morning in the village.
+
+You keep your trade at Lewis's Workshop (destination: workshop) — you can head back there whenever you wish.
+
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- Whetstone: 2 to 4 coins each.
+
+## Restocking
+Your shop stock of these bought-in goods is running low. You choose how much to buy.
+- You have 0 Whetstone on hand and room for 4 more at the most. It is generally worth about 2 coins each — pay much above that and you're overpaying.
+  - Ezekiel Crane can spare only 2 just now, so buy what he has and come back for the rest once he has more. Ezekiel Crane is here with you and sells Whetstone. Buy it now — call pay_with_item with seller "Ezekiel Crane", item "whetstone", a qty up to 2, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.
+
+## The wright's rounds
+You're out of whetstones — no service without a stone. Ezekiel Crane is here with you and sells them — you need one before you make your rounds.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

@@ -7371,6 +7371,7 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "keeper_prices_bale_leftover_iron" || // LLM-646: keeper in company holding off-policy priced stock — held goods ARE own trade now
 			sc.name == "keeper_views_peddler" || // LLM-656: the tavernkeeper in company with the peddler, priced own ale + the stew he cannot yet make
 			sc.name == "wright_views_peddler" || // LLM-657: the wright in company with the whetstone peddler — his whetstone buy line is a priced ware
+			sc.name == "wright_no_stone_smith_copresent" || // LLM-717: the same wright in company with the smith — the same priced buy line
 			sc.name == "holder_views_carter" || // carter: the dairykeeper in company with the carter, priced own milk and cheese
 			sc.name == "keeper_views_carter" // carter: the miller in company with the carter, priced own flour
 		if has := strings.Contains(got, marker); has != want {
@@ -7908,6 +7909,7 @@ func TestStallRepairCueOnlyAtOwnWornStall(t *testing.T) {
 		"smith_out_of_water_can_still_make_shovels":         true, // LLM-635: same, with another makeable good keeping the produce tool offered
 		"smith_out_of_water_forage_entry_no_source":         true, // LLM-635: same, bare forage entry, no remembered source
 		"smith_out_of_water_own_spring":                     true, // LLM-635: same, owned stocked spring — the forage arm
+		"wright_no_stone_worn_workshop":                     true, // LLM-717: degraded wright inside his own workshop — Restocking suppressed
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc

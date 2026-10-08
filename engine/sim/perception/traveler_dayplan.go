@@ -669,6 +669,15 @@ type ErrandVisitView struct {
 	// keeper's own worth reference where one resolves (LLM-647). Sorted by noun for
 	// deterministic render. Empty for a buyer errand or an empty pack.
 	Pack []PackGood
+	// PackKinds is the item kinds Pack lists — what the keeper can buy off him
+	// here. The wright's rounds read it (LLM-717): a peddler is outside the
+	// shared resident-seller finder, but he is the buy when one stands here.
+	PackKinds map[sim.ItemKind]bool
+}
+
+// Offers reports whether the trader's listed pack holds kind.
+func (v *ErrandVisitView) Offers(kind sim.ItemKind) bool {
+	return v != nil && v.PackKinds[kind]
 }
 
 // PackGood is one good in a selling visitor's pack as the counterparty keeper
@@ -748,6 +757,7 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			view.ForLabel = keeperProductsUsing(snap, actorSnap, t.Good)
 			lot := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{t.Good: vs.Inventory[t.Good]}}
 			view.Pack = buildPackGoods(snap, actorID, lot)
+			view.PackKinds = packKinds(lot)
 			return view
 		}
 		if !view.Sell || view.Peddler {
@@ -773,9 +783,29 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			}
 		}
 		view.Pack = buildPackGoods(snap, actorID, vs)
+		view.PackKinds = packKinds(vs)
 		return view
 	}
 	return nil
+}
+
+// packKinds is the set of kinds buildPackGoods lists for seller: every held
+// kind with qty > 0.
+func packKinds(seller *sim.ActorSnapshot) map[sim.ItemKind]bool {
+	if seller == nil {
+		return nil
+	}
+	var out map[sim.ItemKind]bool
+	for kind, qty := range seller.Inventory {
+		if qty <= 0 {
+			continue
+		}
+		if out == nil {
+			out = map[sim.ItemKind]bool{}
+		}
+		out[kind] = true
+	}
+	return out
 }
 
 // keeperProductsUsing names the goods the keeper makes that take `input` — "stew",

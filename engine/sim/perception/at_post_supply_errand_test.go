@@ -224,6 +224,23 @@ func TestHasWalkToSupplierMatchesRenderedBullet(t *testing.T) {
 			assertParity(t, c.name, c.view.HasWalkToSupplier(), func(b *strings.Builder) { renderHearth(b, c.view) })
 		}
 	})
+
+	t.Run("wright_rounds", func(t *testing.T) {
+		cases := []struct {
+			name string
+			view *WrightRoundsView
+		}{
+			{"has_stone", &WrightRoundsView{Business: "The Mill", Gear: "millstones", Walk: "a fair walk east", StoneVendors: []RestockVendor{vendor}}},
+			{"copresent_seller", &WrightRoundsView{NoStone: true, StonesShort: 1, CoPresentSeller: "Ezekiel Crane", SellerStock: 2, StoneVendors: []RestockVendor{vendor}}},
+			{"trader_has_stone", &WrightRoundsView{NoStone: true, StonesShort: 1, TraderHasStone: true, StoneVendors: []RestockVendor{vendor}}},
+			{"walk_to_vendor", &WrightRoundsView{NoStone: true, StonesShort: 1, StoneVendors: []RestockVendor{vendor}}},
+			{"blocked", &WrightRoundsView{NoStone: true, StonesShort: 1, StoneBlocked: true}},
+			{"no_vendor", &WrightRoundsView{NoStone: true, StonesShort: 1}},
+		}
+		for _, c := range cases {
+			assertParity(t, c.name, c.view.HasWalkToSupplier(), func(b *strings.Builder) { renderWrightRounds(b, c.view) })
+		}
+	})
 }
 
 // assertParity renders one view and requires HasWalkToSupplier()'s answer to equal
