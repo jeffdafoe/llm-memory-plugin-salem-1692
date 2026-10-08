@@ -21,7 +21,7 @@ import (
 // fakeAdmission is a TickAdmissionController with a settable verdict.
 type fakeAdmission struct{ admit bool }
 
-func (f *fakeAdmission) CanAdmit() bool { return f.admit }
+func (f *fakeAdmission) CanAdmit(sim.TickLane) bool { return f.admit }
 
 // recordingTelemetry captures TickTelemetryRecords for assertions.
 type recordingTelemetry struct {

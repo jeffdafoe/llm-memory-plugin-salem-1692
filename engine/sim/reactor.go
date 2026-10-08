@@ -1382,8 +1382,12 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 // cap(jobChan)) and MUST return false once the pool is stopping/stopped,
 // otherwise an admit-then-send-to-closed-channel race is possible during
 // shutdown.
+//
+// Admission is per TickLane (LLM-723): the pool holds a separate queue for
+// player-triggered cycles, so a full village queue never turns away a turn a
+// player is standing there waiting on.
 type TickAdmissionController interface {
-	CanAdmit() bool
+	CanAdmit(lane TickLane) bool
 }
 
 // alwaysAdmit is the default TickAdmissionController — it admits every
@@ -1391,7 +1395,52 @@ type TickAdmissionController interface {
 // it did before admission control existed.
 type alwaysAdmit struct{}
 
-func (alwaysAdmit) CanAdmit() bool { return true }
+func (alwaysAdmit) CanAdmit(TickLane) bool { return true }
+
+// TickLane is the worker-pool queue a warrant cycle is admitted to (LLM-723).
+// With one tick worker the village runs a single LLM turn at a time; before
+// lanes, a keeper's greeting for a player who had just walked in waited
+// behind every NPC-to-NPC turn already queued (live 2026-10-08: John Ellis
+// greeted Jefferey 29 s after he entered the Tavern, ~23 s of it spent
+// deferred at admission behind five barter and reply turns). Workers drain
+// the player lane first, so a player-triggered turn waits only for the turn
+// already running.
+type TickLane int
+
+const (
+	TickLaneVillage TickLane = iota
+	TickLanePlayer
+)
+
+// String is the telemetry label for a lane.
+func (l TickLane) String() string {
+	if l == TickLanePlayer {
+		return "player"
+	}
+	return "village"
+}
+
+// WarrantCycleLane picks the lane for a warrant cycle: TickLanePlayer when a
+// player character caused any warrant in it (spoke, arrived and joined the
+// huddle, offered pay, ...), TickLaneVillage otherwise. Both the trigger and
+// the source actor are checked because stamp sites fill them differently. An
+// NPC answering another NPC inside a huddle a player is only watching stays
+// in the village lane — the player did not cause that turn.
+//
+// Must run on the world goroutine (reads w.Actors).
+func WarrantCycleLane(w *World, warrants []WarrantMeta) TickLane {
+	for _, m := range warrants {
+		for _, id := range [...]ActorID{m.TriggerActorID, m.SourceActorID} {
+			if id == "" {
+				continue
+			}
+			if a, ok := w.Actors[id]; ok && a.Kind == KindPC {
+				return TickLanePlayer
+			}
+		}
+	}
+	return TickLaneVillage
+}
 
 // checkRateGate returns true when the actor is below the per-minute cap.
 // The cap is a "gross gate" — settings-driven, no cost calculation. cap

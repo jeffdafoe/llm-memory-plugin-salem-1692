@@ -16,21 +16,30 @@ import (
 func (p *TickWorkerPool) worker(ctx context.Context) {
 	defer p.wg.Done()
 	for {
+		// Player lane first (LLM-723). A select over both queues picks a
+		// ready case at random, so a queued player job could still lose to
+		// a queued village job; the non-blocking pass makes it win.
+		var job tickJob
 		select {
-		case <-ctx.Done():
-			return
-		case job := <-p.jobs:
-			// select picks a ready case at random — after Stop, with both
-			// ctx.Done() and a buffered job ready, it may land here. Stop
-			// drops buffered jobs, so re-check cancellation before starting
-			// one rather than handing an already-cancelled ctx to the runner.
+		case job = <-p.playerJobs:
+		default:
 			select {
 			case <-ctx.Done():
 				return
-			default:
+			case job = <-p.playerJobs:
+			case job = <-p.jobs:
 			}
-			p.runJob(ctx, job)
 		}
+		// select picks a ready case at random — after Stop, with both
+		// ctx.Done() and a buffered job ready, it may land on the job. Stop
+		// drops buffered jobs, so re-check cancellation before starting
+		// one rather than handing an already-cancelled ctx to the runner.
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		p.runJob(ctx, job)
 	}
 }
 

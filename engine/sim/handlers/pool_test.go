@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // pool_test.go — TickWorkerPool: CanAdmit semantics, the job-buffer size
@@ -14,16 +16,16 @@ func TestCanAdmitTracksCapacity(t *testing.T) {
 	defer cancel()
 	p := NewTickWorkerPool(w, tel) // buffer = clamp(2*1, 2, 16) = 2
 
-	if !p.CanAdmit() {
+	if !p.CanAdmit(sim.TickLaneVillage) {
 		t.Fatal("CanAdmit should be true on an empty pool")
 	}
 	p.jobs <- tickJob{}
 	p.jobs <- tickJob{}
-	if p.CanAdmit() {
+	if p.CanAdmit(sim.TickLaneVillage) {
 		t.Fatal("CanAdmit should be false when the buffer is full")
 	}
 	<-p.jobs
-	if !p.CanAdmit() {
+	if !p.CanAdmit(sim.TickLaneVillage) {
 		t.Fatal("CanAdmit should be true again after a job drains")
 	}
 }
@@ -33,11 +35,11 @@ func TestCanAdmitFalseWhenStopping(t *testing.T) {
 	defer cancel()
 	p := NewTickWorkerPool(w, tel)
 
-	if !p.CanAdmit() {
+	if !p.CanAdmit(sim.TickLaneVillage) {
 		t.Fatal("precondition: an empty pool should admit")
 	}
 	p.Stop() // no Start — Stop still flips the stopping flag
-	if p.CanAdmit() {
+	if p.CanAdmit(sim.TickLaneVillage) {
 		t.Fatal("CanAdmit must be false once Stop has begun, even with an empty buffer")
 	}
 }

@@ -635,8 +635,8 @@ func reopenWarrants(w *World, actor *Actor, metas []WarrantMeta, now time.Time) 
 //     rather than dropped — the warrant survives, just delayed. A Force
 //     warrant bypasses both pacing gates.
 //
-//  3. TickAdmissionController.CanAdmit gates on downstream capacity
-//     (Option A — admit before consume). A "no" pushes WarrantDueAt by
+//  3. TickAdmissionController.CanAdmit gates on downstream capacity in the
+//     cycle's lane (WarrantCycleLane, LLM-723) (Option A — admit before consume). A "no" pushes WarrantDueAt by
 //     AdmissionBackoff, writes a `deferred` telemetry record, and emits
 //     nothing — the warrants stay OPEN. Force does NOT bypass this:
 //     admission is real capacity, not pacing.
@@ -941,7 +941,12 @@ func EvaluateReactors(now time.Time) Command {
 				// this: admission is real downstream capacity, not pacing;
 				// emitting into a full pool would drop the job. A `deferred`
 				// telemetry record is written so the deferral is visible.
-				if !w.tickAdmission.CanAdmit() {
+				//
+				// LLM-723: admission is per lane — a cycle a player caused is
+				// checked against the pool's player queue, so a full village
+				// queue cannot hold back a turn a player is waiting on.
+				lane := WarrantCycleLane(w, actor.Warrants)
+				if !w.tickAdmission.CanAdmit(lane) {
 					backoff := w.Settings.AdmissionBackoff
 					if backoff <= 0 {
 						backoff = defaultAdmissionBackoff
@@ -953,7 +958,7 @@ func EvaluateReactors(now time.Time) Command {
 							At:      now,
 							ActorID: actor.ID,
 							Kind:    "deferred",
-							Detail:  map[string]string{"gate": "admission"},
+							Detail:  map[string]string{"gate": "admission", "lane": lane.String()},
 						})
 					}
 					continue
@@ -1022,6 +1027,7 @@ func EvaluateReactors(now time.Time) Command {
 					WarrantedSince: warrantedSince,
 					DueAt:          dueAt,
 					EmittedAt:      now,
+					Lane:           lane,
 				})
 			}
 
