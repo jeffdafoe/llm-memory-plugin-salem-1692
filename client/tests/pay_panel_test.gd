@@ -31,6 +31,7 @@ const TESTS := [
     "_test_reopen_during_pay_keeps_the_new_box",
     "_test_unclear_answer_keeps_the_box_open",
     "_test_cleared_field_survives_refresh",
+    "_test_every_glyph_is_in_the_font",
 ]
 
 var _checks := 0
@@ -341,15 +342,24 @@ func _test_refused_take_refetches() -> void:
 
 func _test_empty_text() -> void:
     var p := _panel([])
-    _check("nothing offered", p.empty_text(),
-        "Nobody here has offered you anything yet. Ask them what they sell, or make your own offer.")
-    p.host.pc_lodging = {"inn_name": "the Inn", "until_label": "until Friday", "keeper_name": "Hannah Boggs"}
-    _check("keeper here, room held", p.empty_text(), "You already have a room at the Inn, paid until Friday.")
+    var help := ["Nobody here has offered you anything yet.", "Ask them what they sell, or make your own offer."]
+    _check("nothing offered", p.empty_lines(), help)
+    p.host.pc_lodging = {"inn_name": "Tavern", "until_label": "through the day", "keeper_name": "Hannah Boggs"}
+    _check("keeper here: the help, then the room", p.empty_lines(), help + ["Your room is paid through the day."])
     p.host.huddle_members = [{"name": "John Ellis"}]
-    _check("another seller: no room line", p.empty_text().begins_with("Nobody here"), true)
+    _check("another seller: no room line", p.empty_lines(), help)
     p.host.huddle_members = []
-    p.host.pc_lodging = {}
-    _check("nobody here", p.empty_text(), "There is nobody here to pay.")
+    _check("nobody here", p.empty_lines(), ["There is nobody here to pay."])
+    # The page: no "They offer you" over nothing; the help shows.
+    p.host.huddle_members = [{"name": "Hannah Boggs"}]
+    p.open()
+    _check("no header without offers", p.offers_header.visible, false)
+    _check("the help and the room line", p.offers_box.get_child_count(), 3)
+    p.quotes = [STEW_QUOTE.duplicate(true)]
+    p.quotes[0]["seller"] = "Hannah Boggs"
+    p.refresh()
+    _check("header over a card", p.offers_header.visible, true)
+    _check("just the card", p.offers_box.get_child_count(), 1)
     _free(p)
     _done()
 
@@ -504,3 +514,84 @@ func _test_cleared_field_survives_refresh() -> void:
     _check("unfocused: the value is put back", field.text, "8")
     _free(p)
     _done()
+
+
+## IM Fell has no glyph for some symbols (U+2212 minus drew a box on the web,
+## where there is no system font to fall back on — LLM-724). Every string
+## literal in pay_panel.gd, and every text the box builds, must be drawable.
+func _test_every_glyph_is_in_the_font() -> void:
+    var font: Font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
+    _check("font loads", font != null, true)
+    if font == null:
+        _done()
+        return
+    var missing := {}
+    for s in _string_literals(FileAccess.get_file_as_string("res://scripts/pay_panel.gd")):
+        _missing_glyphs(font, s, missing)
+    var p := _panel([])
+    p.host.vendor_mentions = {"John Ellis": ["ale"], "Hannah Boggs": ["bread"]}
+    p.host.vendor_mention_prices = {"John Ellis": {"ale": 3}}
+    p.host.pc_lodging = {"until_label": "for about 3 more nights", "keeper_name": "Hannah Boggs"}
+    p.open()
+    p.quotes = [STEW_QUOTE,
+        {"quote_id": 8, "seller": "Hannah Boggs", "item": "bread", "qty": 2, "amount": 6,
+            "lines": [{"item": "bread", "display_label": "a loaf of bread", "qty": 2}]},
+        {"quote_id": 9, "seller": "Hannah Boggs", "item": "nights_stay", "qty": 1, "amount": 4,
+            "lines": [{"item": "nights_stay", "display_label": "a night's stay", "qty": 1}]}]
+    p.note_countered({"ledger_id": 70, "buyer_id": "pc-1", "seller_name": "John Ellis",
+        "item": "ale", "qty": 2, "original_amount": 4, "counter_amount": 6})
+    p.refresh()
+    _collect_missing(font, p, missing)
+    p.start_offer("John Ellis", "ale")
+    for amount in [6, 2, 9, 99]:
+        p._on_qty(2)
+        p._on_amount(amount)
+        _collect_missing(font, p, missing)
+    p.start_offer("Hannah Boggs", "nights_stay")
+    p._on_night(2)
+    _collect_missing(font, p, missing)
+    _check("every character has a glyph", missing.keys(), [])
+    _free(p)
+    _done()
+
+
+func _collect_missing(font: Font, node: Node, missing: Dictionary) -> void:
+    if node is Label or node is Button or node is LineEdit:
+        _missing_glyphs(font, str(node.text), missing)
+    for child in node.get_children():
+        _collect_missing(font, child, missing)
+
+
+func _missing_glyphs(font: Font, s: String, missing: Dictionary) -> void:
+    for i in s.length():
+        var c := s.unicode_at(i)
+        if c >= 32 and not font.has_char(c):
+            missing["U+%04X %s" % [c, s]] = true
+
+
+## The double-quoted literals on the code part of each line (comments cut).
+static func _string_literals(src: String) -> Array:
+    var out: Array = []
+    for line in src.split("\n"):
+        var in_str := false
+        var cur := ""
+        var i := 0
+        while i < line.length():
+            var ch := line[i]
+            if in_str:
+                if ch == "\\" and i + 1 < line.length():
+                    cur += line[i + 1]
+                    i += 2
+                    continue
+                if ch == "\"":
+                    out.append(cur)
+                    cur = ""
+                    in_str = false
+                else:
+                    cur += ch
+            elif ch == "\"":
+                in_str = true
+            elif ch == "#":
+                break
+            i += 1
+    return out
