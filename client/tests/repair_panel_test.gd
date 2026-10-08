@@ -62,6 +62,13 @@ const TESTS := [
     "_test_staged_stage_plays_a_beat",
     "_test_sign_layers_match_the_stage",
     "_test_sign_stage_draws_the_arm_at_its_angle",
+    "_test_crosswise_order_and_spring",
+    "_test_crosswise_nails_sit_on_the_lid",
+    "_test_ladder_tips_and_falls",
+    "_test_ladder_steadied_wins_the_round",
+    "_test_ladder_same_however_time_arrives",
+    "_test_crosswise_stage",
+    "_test_ladder_stage",
 ]
 
 ## Every piece tools/repair-art/build.ps1 writes, and what reads it.
@@ -154,9 +161,203 @@ func _test_game_kind() -> void:
     _check("well → windlass", Games.game_kind("well", ""), "windlass")
     _check("signpost → plumb", Games.game_kind("minor", "signpost"), "plumb")
     _check("road → saw", Games.game_kind("road", ""), "saw")
-    _check("business → hammer", Games.game_kind("business", ""), "hammer")
+    _check("business → ladder", Games.game_kind("business", ""), "ladder")
     _check("fence → hammer", Games.game_kind("minor", "fence"), "hammer")
-    _check("crate → hammer", Games.game_kind("minor", "crate"), "hammer")
+    _check("crate → crosswise", Games.game_kind("minor", "crate"), "crosswise")
+    _done()
+
+
+## The lid shows its order, then takes the nails in it; a wrong nail springs
+## it and the same order shows again (LLM-721).
+func _test_crosswise_order_and_spring() -> void:
+    var g = Games.make("crosswise", _rng())
+    _check("four nails at the easy end", g.count(), 4)
+    var sorted: Array = g.order.duplicate()
+    sorted.sort()
+    _check("the order holds every nail once", sorted, [0, 1, 2, 3])
+    _check("the show opens with the first number", g.numbers_lit(), 1)
+    _check("no strike while it shows", g.press(g.order[0]), Games.Result.NONE)
+    g.update(g.show_step)
+    _check("the next number lights", g.numbers_lit(), 2)
+    g.update(g.show_len())
+    _check("then the numbers hide", [g.showing, g.numbers_lit()], [false, 0])
+    var head: Vector2 = g.nail_pos(g.order[0]) - Vector2(0, g.STAND)
+    _check("a tap on the first nail drives it", g.press(head), Games.Result.PROGRESS)
+    _check("driven", g.driven[g.order[0]], true)
+    _check("a tap on a driven nail does nothing", g.press(head), Games.Result.NONE)
+    _check("a tap off every nail does nothing", g.press(Vector2(2, 2)), Games.Result.NONE)
+    _check("a bare key press picks no nail", g.press(null), Games.Result.NONE)
+    var before: Array = g.order.duplicate()
+    _check("a wrong nail springs the lid", g.press(g.order[2]), Games.Result.FAIL)
+    _check("the nails pop out", g.driven.has(true), false)
+    _check("no strike while sprung", g.press(g.order[0]), Games.Result.NONE)
+    g.update(g.SPRUNG_TIME + 0.01)
+    _check("the same order shows again", [g.showing, g.order == before], [true, true])
+    g.update(g.show_len() + 0.01)
+    for n in 3:
+        _check("in order: nail %d" % n, g.press(g.order[n]), Games.Result.PROGRESS)
+    _check("the last nail wins the round", g.press(g.order[3]), Games.Result.HIT)
+    _check("one spring this round", g.springs, 1)
+    _check("held", g.press(g.order[0]), Games.Result.NONE)
+    g.release()
+    _check("released: a new order, shown afresh", [g.showing, g.order == before, g.springs, g.driven.has(true)], [true, false, 0, false])
+    _done()
+
+
+## Every nail sits on the lid, a tap on its head picks it, and the hammer
+## over it stays in the play area (or the gap above it).
+func _test_crosswise_nails_sit_on_the_lid() -> void:
+    for d in [0.0, 1.0]:
+        var g = Games.make("crosswise", _rng(), d)
+        for i in g.count():
+            var p: Vector2 = g.nail_pos(i)
+            var e: Vector2 = g.edge_x(p.y)
+            _check("d%s nail %d: on the lid" % [d, i], p.x > e.x and p.x < e.y and p.y > g.BACK_Y and p.y < g.FRONT_Y, true)
+            _check("d%s nail %d: a tap on its head picks it" % [d, i], g.nail_at(p - Vector2(0, g.STAND)), i)
+            _check("d%s nail %d: the hammer clears the picture" % [d, i], p.y - 30 >= -StageScript.GAP, true)
+    var hard = Games.make("crosswise", _rng(), 1.0)
+    _check("hard: six nails", hard.count(), 6)
+    _check("hard: a quicker show", [hard.show_step, hard.show_hold], [Games.Crosswise.HARD_SHOW_STEP, Games.Crosswise.HARD_SHOW_HOLD])
+    _done()
+
+
+## Left alone the ladder tips over and falls: the round's work is lost, and
+## it stands again after FALL_TIME.
+func _test_ladder_tips_and_falls() -> void:
+    var g = Games.make("ladder", _rng())
+    _check("it starts a little over", absf(g.lean), Games.Ladder.START_LEAN)
+    _check("steady at the start", g.is_steady(), true)
+    var events := []
+    var waited := 0.0
+    while events.is_empty() and waited < 10.0:
+        g.update(1.0 / 60.0)
+        waited += 1.0 / 60.0
+        events.append_array(g.take_events())
+    _check("left alone, it falls", events, [Games.Result.FAIL])
+    _check("one fall", g.falls, 1)
+    _check("the work is lost", g.work, 0.0)
+    _check("no nudge while it is down", g.press(null), Games.Result.NONE)
+    g.update(Games.Ladder.FALL_TIME + 0.02)
+    _check("stood up again", [g.fallen_left, g.is_steady()], [0.0, true])
+    # Off steady, no work is done.
+    g.lean = (g.steady + 1.0) / 2.0
+    g.lean_v = 0.0
+    var w: float = g.work
+    g.update(0.05)
+    _check("off steady: no work", g.work, w)
+    _done()
+
+
+## Nudged back whenever it leans further, it stays up and the work is done;
+## a tap on each half nudges it that way.
+func _test_ladder_steadied_wins_the_round() -> void:
+    var g = Games.make("ladder", _rng())
+    var events := []
+    var waited := 0.0
+    while events.is_empty() and waited < 20.0:
+        if absf(g.lean) > 0.15 and g.lean * g.lean_v > 0.0:
+            g.press(null)
+        g.update(1.0 / 60.0)
+        waited += 1.0 / 60.0
+        events.append_array(g.take_events())
+    _check("kept steady, the work is done", events, [Games.Result.HIT])
+    _check("with no fall", g.falls, 0)
+    _check("held", g.press(null), Games.Result.NONE)
+    g.release()
+    _check("released: fresh work", [g.work, g.falls, g.holding], [0.0, 0, false])
+    var v: float = g.lean_v
+    g.press(Vector2(10, 20))
+    _check("a tap on the left nudges it left", is_equal_approx(g.lean_v, v - Games.Ladder.NUDGE), true)
+    g.press(1)
+    _check("the right key nudges it right", is_equal_approx(g.lean_v, v), true)
+    _done()
+
+
+## One long update (a stall) ends where the same time in short frames does.
+func _test_ladder_same_however_time_arrives() -> void:
+    var total := 3.004
+    var games: Array = []
+    for frames in [1, 7, 400]:
+        var g = Games.make("ladder", _rng())
+        for i in frames:
+            g.update(total / frames)
+        games.append(g)
+    var a = games[0]
+    _check("it fell in that time", a.falls > 0, true)
+    for i in [1, 2]:
+        var b = games[i]
+        _check("frames %d: same lean" % i, absf(b.lean - a.lean) < 0.000001, true)
+        _check("frames %d: same falls" % i, b.falls, a.falls)
+        _check("frames %d: same work" % i, absf(b.work - a.work) < 0.000001, true)
+    var hard = Games.make("ladder", _rng(), 1.0)
+    _check("hard: tips faster, narrower, more work",
+        [hard.tip, hard.steady, hard.work_time], [Games.Ladder.HARD_TIP, Games.Ladder.HARD_STEADY, Games.Ladder.HARD_WORK_TIME])
+    _done()
+
+
+## The stage plays the lid: strokes swing the hammer onto the nail, a wrong
+## nail springs it when the hammer lands, and the last nail wins the round.
+func _test_crosswise_stage() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("crate")
+    stage.setup("Nail the Lid Down", "crosswise", layers["broken"], layers["sound"], 5, 0, "crate")
+    stage.start_game()
+    var g = stage.game
+    var strokes := []
+    var misses := []
+    var wins := []
+    stage.stroke.connect(func(): strokes.append(true))
+    stage.missed.connect(func(): misses.append(true))
+    stage.round_won.connect(func(perfect: bool): wins.append(perfect))
+    stage.press_key(g.order[0])
+    _check("nothing while the order shows", strokes.size(), 0)
+    stage._process(g.show_len() + 0.01)
+    stage.press_key(g.order[0])
+    _check("a right nail is a stroke", strokes.size(), 1)
+    _check("the hammer swings at it", [stage._swing_t >= 0.0, stage._swing_slot], [true, g.order[0]])
+    stage._process(StageScript.SWING_DOWN + StageScript.SWING_HOLD + StageScript.SWING_UP + 0.01)
+    stage.press_key(g.order[2])
+    _check("a wrong nail is a miss", misses.size(), 1)
+    _check("nothing springs before the hammer lands", stage._pops.size(), 0)
+    stage._process(StageScript.SWING_DOWN + 0.01)
+    _check("it springs when it lands", stage._pops.size() > 0 and stage._pops[-1]["text"] == "Sprung!", true)
+    stage._process(g.SPRUNG_TIME + 0.01)
+    stage._process(g.show_len() + 0.01)
+    for n in g.count():
+        stage.press_key(g.order[n])
+    _check("the last nail wins the round", wins, [false])
+    stage.queue_free()
+    _done()
+
+
+## The stage plays the ladder: a fall is a miss, and the work done wins the
+## round from the stage's own frame.
+func _test_ladder_stage() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("shop")
+    stage.setup("Mend the Damage", "ladder", layers["broken"], layers["sound"], 12, 0, "shop")
+    stage.start_game()
+    var g = stage.game
+    var misses := []
+    var wins := []
+    stage.missed.connect(func(): misses.append(true))
+    stage.round_won.connect(func(perfect: bool): wins.append(perfect))
+    g.lean = 0.99
+    g.lean_v = 2.0
+    stage._process(0.05)
+    _check("a fall is a miss", misses.size(), 1)
+    _check("drawn fallen over", StageScript.ladder_deg(g), g.fell_to * StageScript.LADDER_FALL_DEG)
+    stage._process(Games.Ladder.FALL_TIME + 0.02)
+    g.lean = 0.0
+    g.lean_v = 0.0
+    g.work = g.work_time - 0.005
+    stage._process(0.05)
+    _check("the work done wins the round, not perfect after a fall", wins, [false])
+    stage.queue_free()
     _done()
 
 

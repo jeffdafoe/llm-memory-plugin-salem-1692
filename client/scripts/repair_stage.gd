@@ -35,7 +35,9 @@ extends Control
 ##
 ## THE GAMES draw from the same art: a plank, nails and a hammer; a bar with a
 ## gold zone, a peg and a windlass wheel; a log end-on with a saw across it; and
-## for the signpost only the progress pips, the game being in the picture.
+## for the signpost only the progress pips, the game being in the picture. The
+## crate's lid and the shop's ladder (LLM-721) are drawn in code, pixel by
+## pixel, the lid's nails and hammer from the same art.
 
 const Games = preload("res://scripts/repair_games.gd")
 
@@ -191,6 +193,17 @@ const SAW_BEND_PAD := 4
 const SAW_BEND_TIME := 0.5
 const SAW_STUCK_BEND := -3
 
+# The shop's ladder (LLM-721), drawn in code: its foot in the play area, its
+# height, and how far it is drawn over at the edge of falling and once fallen.
+# The rails are sheared, not turned, so every rung stays a whole pixel row.
+const LADDER_FOOT := Vector2(88, 47)
+const LADDER_H := 40
+const LADDER_HALF_W := 6
+const LADDER_RUNG_EVERY := 6
+const LADDER_MAX_DEG := 24.0
+const LADDER_FALL_DEG := 55.0
+const LADDER_BLOW_EVERY := 0.6  # seconds of steady work between hammer blows
+
 static var _art_cache := {}
 
 var title := ""
@@ -230,6 +243,11 @@ var _swing_slot := 0
 ## How far the struck nail stood when it was hit — it stands until the hammer
 ## lands, though the game has already counted it driven.
 var _swing_nail_h := 0.0
+## The swing struck the wrong nail of the crate's lid: it springs when the
+## hammer lands.
+var _swing_sprung := false
+## The hammer blows heard so far from the ladder's work this round.
+var _ladder_blows := 0
 var _particles: Array = []  # {pos, vel, life, max_life, color, size}
 var _chunks: Array = []  # road sections falling away: {tex, region, pos, vel, life}
 var _pops: Array = []  # {text, pos, life}
@@ -499,9 +517,10 @@ func pop(text: String, at: Vector2) -> void:
     _pops.append({"text": text, "pos": at, "life": 1.1})
 
 
-## A key press plays the round (keyboard and accessibility).
-func press_key() -> void:
-    _handle_press(null)
+## A key press plays the round (keyboard and accessibility). `pick` is the
+## nail or side a key chose (an int), or null for a bare key press.
+func press_key(pick: Variant = null) -> void:
+    _handle_press(pick)
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -529,19 +548,35 @@ func _play_h() -> int:
 func _handle_press(pos: Variant) -> void:
     if not playing or game == null:
         return
-    var r: int = game.press(pos)
+    _apply(game.press(pos))
+
+
+## Show a result — from a press, or one the game found on its own — and
+## signal it.
+func _apply(r: int) -> void:
     match r:
         Games.Result.HIT:
             var perfect := false
-            if game_kind == "windlass":
-                var center: float = game.zone_x + game.zone_w / 2.0
-                perfect = absf(game.marker - center) <= game.zone_w * 0.18
-            elif game_kind == "plumb":
-                perfect = absf(game.hit_off) <= game.tolerance * 0.35
+            match game_kind:
+                "windlass":
+                    var center: float = game.zone_x + game.zone_w / 2.0
+                    perfect = absf(game.marker - center) <= game.zone_w * 0.18
+                "plumb":
+                    perfect = absf(game.hit_off) <= game.tolerance * 0.35
+                "crosswise":
+                    perfect = game.springs == 0
+                "ladder":
+                    perfect = game.falls == 0
             _on_hit(perfect)
             round_won.emit(perfect)
         Games.Result.PROGRESS:
-            _on_stroke()
+            match game_kind:
+                "crosswise":
+                    _start_swing(true, false)
+                "ladder":
+                    _on_nudge()
+                _:
+                    _on_stroke()
             stroke.emit()
         Games.Result.MISS:
             if game_kind == "hammer":
@@ -552,7 +587,14 @@ func _handle_press(pos: Variant) -> void:
                 _shake = maxf(_shake, 0.12)
             missed.emit()
         Games.Result.FAIL:
-            _on_stuck()
+            match game_kind:
+                "crosswise":
+                    _start_swing(true, false)
+                    _swing_sprung = true
+                "ladder":
+                    _on_fall()
+                _:
+                    _on_stuck()
             missed.emit()
 
 
@@ -589,14 +631,50 @@ static func saw_bend(g) -> int:
     return clampi(bend, SAW_BEND_MIN, SAW_BEND_MIN + SAW_BEND_FRAMES - 1)
 
 
+## The crate's lid springs (LLM-721): a twang and a clatter, the nails pop
+## out, and the same order shows again.
+func _on_sprung() -> void:
+    _shake = 0.35
+    _sound("saw_flex")
+    _sound("hammer_miss")
+    var g = game
+    var o := _play_origin()
+    for i in g.count():
+        _burst(o + g.nail_pos(i) - Vector2(0, g.STAND), 2, [C_IRON_LIGHT, Color.WHITE])
+    pop("Sprung!", o + Vector2(Games.PLAY_W / 2.0, g.BACK_Y - 6))
+
+
+## The ladder is nudged (LLM-721): a creak.
+func _on_nudge() -> void:
+    _sound("windlass_turn")
+
+
+## The ladder falls (LLM-721): a clatter on the ground and the round's work
+## lost.
+func _on_fall() -> void:
+    _shake = 0.35
+    _sound("section_drop")
+    _sound("hammer_miss")
+    _ladder_blows = 0
+    var foot := _play_origin() + LADDER_FOOT
+    _burst(foot + Vector2(game.fell_to * 30.0, 0), 10, [C_WOOD_HI, C_WOOD_LIGHT, C_TEXT])
+    pop("It fell!", foot + Vector2(0, -LADDER_H / 2.0))
+
+
 func _on_hit(perfect: bool) -> void:
-    if game_kind == "hammer":
+    if game_kind == "hammer" or game_kind == "crosswise":
         # The strike lands when the swing comes down (_land_swing).
         _start_swing(true, perfect)
         return
     _shake = 0.18
     var at := _play_origin()
     match game_kind:
+        "ladder":
+            # The last blow of the round's work, at the ladder's top.
+            var a := deg_to_rad(ladder_deg(game))
+            at += LADDER_FOOT + Vector2(roundf(LADDER_H * sin(a)), -roundf(LADDER_H * cos(a)))
+            _burst(at, 10, [C_GOLD, Color.WHITE, C_WOOD_HI])
+            _sound("hammer_hit")
         "windlass":
             var wl = game
             at += Vector2(wl.BAR_X + wl.marker, wl.BAR_Y)
@@ -628,8 +706,21 @@ func _start_swing(hit: bool, perfect: bool) -> void:
     _swing_t = 0.0
     _swing_hit = hit
     _swing_perfect = perfect
+    _swing_sprung = false
+    if game_kind == "crosswise":
+        _swing_slot = maxi(g.last, 0)
+        _swing_nail_h = g.STAND
+        return
     _swing_slot = maxi(g.up, 0)
     _swing_nail_h = _nail_height(g) if hit else 0.0
+
+
+## Where the hammer's face lands on a slot's nail: the board's top there, play
+## px. The crate's lid has its nails on two rows.
+func _nail_surface(slot: int) -> Vector2:
+    if game_kind == "crosswise":
+        return game.nail_pos(slot)
+    return Vector2(game.slot_x(slot), game.BOARD_Y)
 
 
 ## Where the swing is: the hammer frame to draw (0 = level, the strike;
@@ -649,7 +740,11 @@ func _hammer_frame() -> int:
 func _land_swing() -> void:
     if game == null:
         return
-    var at := _play_origin() + Vector2(game.slot_x(_swing_slot), game.BOARD_Y - 2)
+    if _swing_sprung:
+        _swing_sprung = false
+        _on_sprung()
+        return
+    var at := _play_origin() + _nail_surface(_swing_slot) - Vector2(0, 2)
     if _swing_hit:
         _sound("hammer_hit")
         _shake = 0.18
@@ -713,11 +808,14 @@ func _process(delta: float) -> void:
     if game != null and playing:
         game.update(delta)
         for r in game.take_events():
-            if r == Games.Result.FAIL:
-                _on_stuck()
-            else:
-                _on_bind()
-            missed.emit()
+            _apply(r)
+        if game_kind == "ladder":
+            # The work goes on up the ladder: a hammer blow every so often
+            # while it stands steady.
+            var blows := floori(game.work / LADDER_BLOW_EVERY)
+            if blows > _ladder_blows and not game.holding:
+                _sound("hammer_hit")
+            _ladder_blows = blows
         if game_kind == "saw":
             var want: float = float(game.strokes) / game.strokes_needed * 38.0
             _saw_depth = move_toward(_saw_depth, want, delta * 60.0)
@@ -1169,6 +1267,10 @@ func _draw_play() -> void:
             _draw_saw(o)
         "plumb":
             pass
+        "crosswise":
+            _draw_lid(o)
+        "ladder":
+            _draw_ladder(o)
         _:
             _draw_hammer(o)
 
@@ -1224,28 +1326,123 @@ func _draw_hammer(o: Vector2) -> void:
             # Driven flush: just the head.
             _tex("nail-driven", Vector2(x - 3, top))
             draw_rect(Rect2(x - 3, top + 2, 7, 1), C_SHADE)
-    # The hammer hangs raised over the nail standing (or the last struck) and
-    # swings down about its grip. Its grip sits at the same place in every
-    # frame, so one top-left serves them all: level, its face lands on the
-    # board's top at the slot.
+    # The hammer hangs raised over the nail standing (or the last struck).
+    var slot := _swing_slot if _swing_t >= 0.0 else maxi(g.up, 0)
+    _draw_hammer_over(o + Vector2(g.slot_x(slot), g.BOARD_Y))
+
+
+## The hammer, raised or swinging down about its grip. Its grip sits at the
+## same place in every frame, so one top-left serves them all: level, its face
+## lands on `surface`, the board's top at the nail.
+func _draw_hammer_over(surface: Vector2) -> void:
     var hammer := art("hammer")
-    if hammer != null:
-        var slot := _swing_slot if _swing_t >= 0.0 else maxi(g.up, 0)
-        var at := Vector2(o.x + g.slot_x(slot) - 5, top - 30).floor()
-        var frame := _hammer_frame()
-        draw_texture_rect_region(hammer, Rect2(at, Vector2(HAMMER_FRAME_W, HAMMER_FRAME_H)),
-            Rect2(frame * HAMMER_FRAME_W, 0, HAMMER_FRAME_W, HAMMER_FRAME_H))
+    if hammer == null:
+        return
+    var at := (surface - Vector2(5, 30)).floor()
+    var frame := _hammer_frame()
+    draw_texture_rect_region(hammer, Rect2(at, Vector2(HAMMER_FRAME_W, HAMMER_FRAME_H)),
+        Rect2(frame * HAMMER_FRAME_W, 0, HAMMER_FRAME_W, HAMMER_FRAME_H))
 
 
-func _draw_saw(o: Vector2) -> void:
+## The crate's lid (LLM-721), seen from the front and a little above: three
+## boards narrowing to the back, its front edge below, the nails standing at
+## its corners or driven flush, and while the order shows, its numbers over
+## the nails — the newest lit gold. A sprung lid jumps up off the crate.
+func _draw_lid(o: Vector2) -> void:
     var g = game
-    # Tap halves: the side the blade is heading for shows a faint gold, and
-    # lights full gold while its window is open; the arrow points outward.
+    var lift := 0.0
+    if g.sprung_left > 0.0:
+        lift = 2.0 if g.sprung_left > g.SPRUNG_TIME * 0.6 else 1.0
+    var lo := o - Vector2(0, lift)
+    var depth: int = g.FRONT_Y - g.BACK_Y
+    for y in range(g.BACK_Y, g.FRONT_Y):
+        var e: Vector2 = g.edge_x(y)
+        var row: int = (y - g.BACK_Y) * 3 % depth
+        var col := C_WOOD_LIGHT
+        if row < 3:
+            col = C_WOOD_HI
+        elif row >= depth - 3:
+            col = C_WOOD_DARK
+        draw_rect(Rect2(lo.x + e.x, lo.y + y, e.y - e.x, 1), col)
+        draw_rect(Rect2(lo.x + e.x - 1, lo.y + y, 1, 1), C_OUTLINE)
+        draw_rect(Rect2(lo.x + e.y, lo.y + y, 1, 1), C_OUTLINE)
+    var back: Vector2 = g.edge_x(g.BACK_Y)
+    draw_rect(Rect2(lo.x + back.x - 1, lo.y + g.BACK_Y - 1, back.y - back.x + 2, 1), C_OUTLINE)
+    # The lid's front edge, its thickness facing the player.
+    var front: Vector2 = g.edge_x(g.FRONT_Y)
+    draw_rect(Rect2(lo.x + front.x - 1, lo.y + g.FRONT_Y, front.y - front.x + 2, 3), C_WOOD_DARK)
+    draw_rect(Rect2(lo.x + front.x - 1, lo.y + g.FRONT_Y + 3, front.y - front.x + 2, 1), C_OUTLINE)
+    var nail := art("nail")
+    var struck := _swing_hit and _swing_t >= 0.0 and _swing_t < SWING_DOWN
+    for i in g.count():
+        var p: Vector2 = lo + g.nail_pos(i)
+        var standing := -1.0
+        if struck and i == _swing_slot:
+            standing = _swing_nail_h
+        elif not g.driven[i]:
+            standing = g.STAND
+        if standing >= 0.0 and nail != null:
+            draw_texture_rect_region(nail, Rect2(p.x - 3, p.y - standing - 3, 7, 3 + standing), Rect2(0, 0, 7, 3 + standing))
+            draw_rect(Rect2(p.x - 2, p.y, 5, 1), C_SHADE)
+        elif g.driven[i]:
+            _tex("nail-driven", Vector2(p.x - 3, p.y - 1))
+    var lit: int = g.numbers_lit()
+    for n in lit:
+        var p: Vector2 = lo + g.nail_pos(g.order[n])
+        var badge := Rect2(p.x - 4, p.y - g.STAND - 13, 9, 10)
+        draw_rect(badge, Color(C_OUTLINE, 0.85))
+        if n == lit - 1:
+            draw_rect(badge, C_GOLD, false, 1.0)
+        _draw_text_centered(str(n + 1), Vector2(p.x + 1, p.y - g.STAND - 5), C_GOLD if n == lit - 1 else C_TEXT)
+    if not g.showing:
+        var slot := _swing_slot if _swing_t >= 0.0 else maxi(g.last, 0)
+        _draw_hammer_over(lo + g.nail_pos(slot))
+
+
+## How far over the shop's ladder is drawn, degrees, positive to the right.
+static func ladder_deg(g) -> float:
+    if g.fallen_left > 0.0:
+        return g.fell_to * LADDER_FALL_DEG
+    return g.lean * LADDER_MAX_DEG
+
+
+## The shop's ladder (LLM-721): the work bar over it, the tap halves — the
+## side that brings it back shows gold, full gold once it is off steady — and
+## the ladder itself standing on the ground, sheared over by its lean.
+func _draw_ladder(o: Vector2) -> void:
+    var g = game
+    var bar := Rect2(o + Vector2(Games.PLAY_W / 2.0 - 36, 2), Vector2(72, 3))
+    draw_rect(bar, Color(C_WOOD_DARK, 0.8))
+    draw_rect(Rect2(bar.position, Vector2(roundf(bar.size.x * g.work / g.work_time), bar.size.y)), C_GOLD)
+    var upright: bool = g.fallen_left == 0.0
+    _draw_halves(o, g.wanted_side() if upright else -1, upright and not g.is_steady(), 8, 36)
+    var foot := o + LADDER_FOOT
+    draw_rect(Rect2(o.x + 8, foot.y + 1, Games.PLAY_W - 16, 1), Color(C_WOOD_DARK, 0.8))
+    # Over at angle a the ladder keeps its length: it stands H cos a rows tall,
+    # each row stepping tan a across, and its rungs close up to match.
+    var a := deg_to_rad(ladder_deg(g))
+    var rows := roundi(LADDER_H * cos(a))
+    var rung_every := maxi(2, roundi(LADDER_RUNG_EVERY * cos(a)))
+    for dy in rows + 1:
+        var x := foot.x + roundf(dy * tan(a))
+        var y := foot.y - dy
+        draw_rect(Rect2(x - LADDER_HALF_W, y, 2, 1), C_WOOD_LIGHT)
+        draw_rect(Rect2(x + LADDER_HALF_W - 1, y, 2, 1), C_WOOD_LIGHT)
+        draw_rect(Rect2(x - LADDER_HALF_W - 1, y, 1, 1), C_OUTLINE)
+        draw_rect(Rect2(x + LADDER_HALF_W + 1, y, 1, 1), C_OUTLINE)
+        if dy > 2 and dy % rung_every == 0:
+            draw_rect(Rect2(x - LADDER_HALF_W + 2, y, LADDER_HALF_W * 2 - 3, 1), C_WOOD_HI)
+            draw_rect(Rect2(x - LADDER_HALF_W + 2, y + 1, LADDER_HALF_W * 2 - 3, 1), C_SHADE)
+
+
+## Two tap halves, `top` art px down and `h` tall: the side `want` (or none,
+## -1) shows a faint gold, and full gold while `lit`; the arrows point
+## outward.
+func _draw_halves(o: Vector2, want_side: int, lit: bool, top: int, h: int) -> void:
     var half := Games.PLAY_W / 2.0
-    var lit: bool = g.lit()
     for side in 2:
-        var r := Rect2(o + Vector2(side * half + 2, 4), Vector2(half - 4, 30))
-        var want: bool = side == g.side and g.stuck_left == 0.0
+        var r := Rect2(o + Vector2(side * half + 2, top), Vector2(half - 4, h))
+        var want: bool = side == want_side
         var fill := Color(0, 0, 0, 0.12)
         if want:
             fill = Color(C_ZONE, 0.5) if lit else Color(C_ZONE, 0.1)
@@ -1258,6 +1455,14 @@ func _draw_saw(o: Vector2) -> void:
             draw_rect(Rect2(ax, cy - i, 2, i * 2 + 1), col)
             draw_rect(Rect2(ax, cy - i, 1, 1), edge)
             draw_rect(Rect2(ax, cy + i, 1, 1), edge)
+
+
+func _draw_saw(o: Vector2) -> void:
+    var g = game
+    # Tap halves: the side the blade is heading for shows a faint gold, and
+    # lights full gold while its window is open.
+    var half := Games.PLAY_W / 2.0
+    _draw_halves(o, g.side if g.stuck_left == 0.0 else -1, g.lit(), 4, 30)
     # The log end-on, pointing at the player: the body recedes up and right,
     # the blade runs in the cut behind the sawn face and shows past the log's
     # sides, sinking a stroke at a time.

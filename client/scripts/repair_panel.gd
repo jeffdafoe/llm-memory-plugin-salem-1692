@@ -712,6 +712,13 @@ func _unhandled_input(event: InputEvent) -> void:
         elif phase == Phase.PLAYING and (event.keycode == KEY_SPACE or event.keycode == KEY_ENTER):
             stage.press_key()
             get_viewport().set_input_as_handled()
+        elif phase == Phase.PLAYING and stage.game_kind == "crosswise" and event.keycode >= KEY_1 and event.keycode <= KEY_9:
+            # The lid's nails by number, in reading order (LLM-721).
+            stage.press_key(event.keycode - KEY_1)
+            get_viewport().set_input_as_handled()
+        elif phase == Phase.PLAYING and stage.game_kind == "ladder" and (event.keycode == KEY_LEFT or event.keycode == KEY_RIGHT):
+            stage.press_key(0 if event.keycode == KEY_LEFT else 1)
+            get_viewport().set_input_as_handled()
 
 
 func _ensure_http() -> void:
