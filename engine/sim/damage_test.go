@@ -410,7 +410,7 @@ func TestDamagedSitesToldAlikeShareOneNotice(t *testing.T) {
 	}
 	want := []string{
 		"In two places, the windlass at the Well is down — no water can be drawn there until they are mended.",
-		"The town pays 12 coins to the hand who mends each one.",
+		"The town pays 12 coins for each one mended.",
 	}
 	if got := notices(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("notices = %q, want %q", got, want)

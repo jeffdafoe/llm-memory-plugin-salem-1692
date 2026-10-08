@@ -55,7 +55,7 @@ func PublicWorksNoticeLines(w *World) []string {
 		bounty, _ := w.Settings.publicWorksTerms(kind)
 		switch {
 		case PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) && many:
-			out = append(out, "The town pays "+coinsPhrase(bounty)+" to the hand who "+PublicWorksMendVerb(kind)+" each one.")
+			out = append(out, "The town pays "+coinsPhrase(bounty)+" for each one "+publicWorksMendedWord(kind)+".")
 		case PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve):
 			out = append(out, "The town pays "+coinsPhrase(bounty)+" to the hand who "+PublicWorksMendVerb(kind)+" it.")
 		case kind == PublicWorksBusiness, kind == PublicWorksRoad:
