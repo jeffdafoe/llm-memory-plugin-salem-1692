@@ -24,6 +24,9 @@ const TESTS := [
     "_test_buy_button_only_with_a_holder",
     "_test_quote_for",
     "_test_buy_answer_flow",
+    "_test_early_answer_is_replayed",
+    "_test_pay_refusal_names_the_cause",
+    "_test_failed_quote_read_still_offers",
 ]
 
 var _creator: Control = null
@@ -98,6 +101,7 @@ func _reset() -> void:
     _creator._name_edit.text = "Tess"
     _creator._npc_id = ""
     _creator._buys = {}
+    _creator._early_frames = {}
 
 
 ## Occupy the creator's HTTPRequest so its next request() returns ERR_BUSY.
@@ -246,5 +250,57 @@ func _test_buy_answer_flow() -> void:
     _check("answer — accepted: press Save", _creator._store_text("felt_hat"), "Felt hat: bought. Press Save to wear it.")
     _creator._show()
     _check("answer — reopening drops the finished line", _creator._buys.has("felt_hat"), false)
+    _creator._http.cancel_request()
+    _done()
+
+
+func _pay_body(data: Dictionary) -> PackedByteArray:
+    return JSON.stringify(data).to_utf8_buffer()
+
+
+## The seller's answer can reach the world before the pc/pay response: it is
+## held while the offer is sending and applied once the ledger id is known.
+func _test_early_answer_is_replayed() -> void:
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 1}]})
+    var terms := {"seller": "Josiah Thorne"}
+    _creator._on_pay_resolved({"ledger_id": 5, "terminal_state": "accepted"})
+    _check("early — nothing held while no offer is sending", _creator._early_frames.is_empty(), true)
+    _creator._buys = {"felt_hat": {"state": "sending", "seller": "Josiah Thorne"}}
+    _creator._on_pay_resolved({"ledger_id": 5, "terminal_state": "accepted"})
+    _creator._on_buy_sent(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _pay_body({"ledger_id": 5, "state": "pending"}), "felt_hat", terms)
+    _check("early — an accept that outran the response is applied", _creator._buys["felt_hat"]["state"], "bought")
+    _check("early — the hat is held", _creator._wardrobe["held"].has("felt_hat"), true)
+    _check("early — nothing left held", _creator._early_frames.is_empty(), true)
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 1}]})
+    _creator._buys = {"felt_hat": {"state": "sending", "seller": "Josiah Thorne"}}
+    _creator._on_pay_countered({"ledger_id": 6, "counter_amount": 9})
+    _creator._on_buy_sent(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _pay_body({"ledger_id": 6, "state": "pending"}), "felt_hat", terms)
+    _check("early — a counter that outran the response is applied", _creator._buys["felt_hat"]["state"], "countered")
+    _check("early — the counter price", _creator._buys["felt_hat"]["amount"], 9)
+    _creator._buys = {"felt_hat": {"state": "sending", "seller": "Josiah Thorne"}}
+    _creator._on_pay_resolved({"ledger_id": 40, "terminal_state": "declined"})
+    _creator._on_buy_sent(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _pay_body({"ledger_id": 7, "state": "pending"}), "felt_hat", terms)
+    _check("early — another offer's answer is not applied", _creator._buys["felt_hat"]["state"], "waiting")
+    _check("early — and is dropped", _creator._early_frames.is_empty(), true)
+    _done()
+
+
+func _test_pay_refusal_names_the_cause() -> void:
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 1}]})
+    _creator._buys = {"felt_hat": {"state": "sending", "seller": "Josiah Thorne"}}
+    _creator._on_buy_sent(HTTPRequest.RESULT_SUCCESS, 422, PackedStringArray(), _pay_body({"error": "not enough coins"}), "felt_hat", {"seller": "Josiah Thorne"})
+    _check("refusal — the engine's reason is shown", _creator._store_text("felt_hat"), "Felt hat: not enough coins")
+    _check("refusal — Buy again", _line_buttons("felt_hat"), ["Buy"])
+    _done()
+
+
+## A quote read that fails still sends the list-price offer.
+func _test_failed_quote_read_still_offers() -> void:
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 1}]})
+    _creator._buys = {"felt_hat": {"state": "sending", "seller": "Josiah Thorne"}}
+    _creator._in_flight = true
+    _creator._on_buy_quotes(HTTPRequest.RESULT_SUCCESS, 500, PackedStringArray(), PackedByteArray(), "felt_hat")
+    _check("quote read failed — the offer is on its way", _creator._buys["felt_hat"]["state"], "sending")
+    _check("quote read failed — pc/pay is in flight", _creator._in_flight, true)
     _creator._http.cancel_request()
     _done()

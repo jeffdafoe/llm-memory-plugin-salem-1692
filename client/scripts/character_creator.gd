@@ -80,6 +80,10 @@ var _preview_sheets: Dictionary = {}
 ## message}. state is "sending" (a request is out), "waiting" (the offer is
 ## before the seller), "countered", "declined" (or failed) or "bought".
 var _buys: Dictionary = {}
+## Pay frames that matched no waiting offer while an offer was still being
+## sent, by ledger id: {kind, data}. The seller's answer could outrun the
+## pc/pay response; _on_buy_sent replays the one for its ledger id.
+var _early_frames: Dictionary = {}
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -512,7 +516,7 @@ func _on_buy_quotes(result: int, code: int, _headers: PackedStringArray, body: P
     var terms := {"seller": seller, "item": good, "qty": 1,
         "amount": maxi(1, FarmerOutfit.good_price(_wardrobe, good)), "consume_now": false}
     # A failed quote read is no reason to stop: the list-price offer still works.
-    var data = JSON.parse_string(body.get_string_from_utf8())
+    var data = JSON.parse_string(body.get_string_from_utf8()) if code == 200 else null
     if result == HTTPRequest.RESULT_SUCCESS and code == 200 and data is Dictionary:
         var quote := _quote_for(data.get("quotes", []), seller, good)
         if not quote.is_empty():
@@ -551,11 +555,19 @@ func _on_buy_sent(result: int, code: int, _headers: PackedStringArray, body: Pac
         _buy_failed(good, str(data.get("error", "")) if data is Dictionary else "")
         return
     var seller := str(terms.get("seller", ""))
+    var early: Dictionary = _early_frames.get(int(data.get("ledger_id", 0)), {})
+    _early_frames = {}
     if str(data.get("state", "")) == "accepted":
         _bought(good, seller)
         return
     _buys[good] = {"state": "waiting", "seller": seller, "ledger_id": int(data.get("ledger_id", 0))}
-    _rebuild_rows()
+    match str(early.get("kind", "")):
+        "resolved":
+            _on_pay_resolved(early["data"])
+        "countered":
+            _on_pay_countered(early["data"])
+        _:
+            _rebuild_rows()
 
 func _on_accept_counter(good: String) -> void:
     var buy: Dictionary = _buys.get(good, {})
@@ -578,6 +590,7 @@ func _on_refuse_counter(good: String) -> void:
 func _on_pay_resolved(data: Dictionary) -> void:
     var good := _good_for_ledger(int(data.get("ledger_id", 0)))
     if good == "":
+        _hold_early_frame("resolved", data)
         return
     var seller := str(_buys[good].get("seller", ""))
     var state := str(data.get("terminal_state", ""))
@@ -605,12 +618,24 @@ func _on_pay_resolved(data: Dictionary) -> void:
 func _on_pay_countered(data: Dictionary) -> void:
     var good := _good_for_ledger(int(data.get("ledger_id", 0)))
     if good == "":
+        _hold_early_frame("countered", data)
         return
     _buys[good] = {"state": "countered", "seller": str(_buys[good].get("seller", "")),
         "ledger_id": int(data.get("ledger_id", 0)), "amount": int(data.get("counter_amount", 0)),
         "message": str(data.get("message", ""))}
     if visible:
         _rebuild_rows()
+
+## Keep a frame no waiting offer claims, but only while an offer of ours is
+## being sent — it may be the answer to that offer.
+func _hold_early_frame(kind: String, data: Dictionary) -> void:
+    var ledger_id := int(data.get("ledger_id", 0))
+    if ledger_id == 0:
+        return
+    for good in _buys:
+        if str(_buys[good].get("state", "")) == "sending":
+            _early_frames[ledger_id] = {"kind": kind, "data": data}
+            return
 
 func _good_for_ledger(ledger_id: int) -> String:
     if ledger_id == 0:
@@ -633,6 +658,7 @@ func _bought(good: String, seller: String) -> void:
         _rebuild_rows()
 
 func _buy_failed(good: String, message: String) -> void:
+    _early_frames = {}
     _buys[good] = {"state": "declined", "seller": str(_buys.get(good, {}).get("seller", "")),
         "message": message if message != "" else "The village did not answer. Try again."}
     _rebuild_rows()
