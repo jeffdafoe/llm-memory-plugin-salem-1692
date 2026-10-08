@@ -84,6 +84,10 @@ type WrightRoundsView struct {
 	// whetstones; "## A trader's come to deal" holds the pay_with_item. Set in
 	// Build once ErrandVisit exists.
 	TraderHasStone bool
+	// RestockingBuysHere: "## Restocking" renders the co-present buy from the
+	// same CoPresentSeller, so this line names the need without its own
+	// pay_with_item. Set in Build after Restocking settles.
+	RestockingBuysHere bool
 }
 
 // HasWalkToSupplier reports whether the rounds cue will render a walk-to
@@ -379,6 +383,8 @@ func renderWrightStoneBuy(b *strings.Builder, v *WrightRoundsView) {
 			renderCoPresentBuyPending(b, v.CoPresentSeller, "whetstone")
 		case v.Block == copresentBuyBlockedNoStock, v.Block == copresentBuyBlockedCoin, v.Block == copresentBuyBlockedTerms:
 			renderCoPresentBuySoften(b, v.CoPresentSeller, "whetstones", v.Block)
+		case v.RestockingBuysHere:
+			fmt.Fprintf(b, "%s is here with you and sells them — you need one before you make your rounds.\n", sanitizeInline(v.CoPresentSeller))
 		case v.SellerStock > 0 && v.SellerStock < v.StonesShort:
 			renderCoPresentBuyCapped(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.SellerStock)
 		default:

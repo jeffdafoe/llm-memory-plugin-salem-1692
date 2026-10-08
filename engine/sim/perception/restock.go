@@ -132,6 +132,21 @@ func (v *RestockingView) hasCoPresentSeller() bool {
 	return false
 }
 
+// carriesCoPresentBuy reports whether this section renders the co-present buy
+// of kind with seller — an imperative another section must not repeat with a
+// different quantity (LLM-717).
+func (v *RestockingView) carriesCoPresentBuy(kind sim.ItemKind, seller string) bool {
+	if seller == "" || !v.buyPathsEnabled() {
+		return false
+	}
+	for _, it := range v.Items {
+		if it.Kind == kind && it.CoPresentSeller == seller {
+			return true
+		}
+	}
+	return false
+}
+
 // Actionable reports whether this section gives the reseller something it can act
 // on RIGHT NOW — a supplier to walk to, or a seller standing with it. It gates the
 // duty-steer suppression (build.go), which exists so an agent mid-errand is not
@@ -156,6 +171,7 @@ func (v *RestockingView) Actionable() bool {
 // supplier; an item with neither is omitted rather than surfaced as a dead-end
 // cue the weak model would tour on (LLM-216).
 type RestockItemView struct {
+	Kind       sim.ItemKind
 	ItemLabel  string
 	CurrentQty int
 	Cap        int
@@ -529,6 +545,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			buyAnchor = catalogBulkRate(snap, e.Item)
 		}
 		items = append(items, RestockItemView{
+			Kind:                          e.Item,
 			ItemLabel:                     itemDisplayLabel(snap, e.Item),
 			CurrentQty:                    current,
 			Cap:                           cap,

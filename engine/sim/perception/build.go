@@ -587,6 +587,13 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	if p.DutySteer != nil && p.DutySteer.AtPost {
 		p.DutySteer.SupplyErrand = hasAtPostSupplyErrand(&p)
 	}
+	// LLM-717: Restocking already renders the co-present whetstone buy from the
+	// same seller, with its own quantity — the rounds line names the need without
+	// a second pay_with_item. Read here, after the subtractions above settle
+	// whether Restocking renders at all.
+	if p.WrightRounds != nil && p.Restocking.carriesCoPresentBuy(sim.WhetstoneKind, p.WrightRounds.CoPresentSeller) {
+		p.WrightRounds.RestockingBuysHere = true
+	}
 	p.Lodging = buildLodgingView(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	// LLM-447: the voluntary bed-down affordance — the evening's exit. Built here,
 	// after Surroundings, because the line is shaped by whether there is company to

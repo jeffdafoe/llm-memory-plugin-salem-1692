@@ -304,7 +304,8 @@ func TestWrightNoStoneLineFollowsSupply(t *testing.T) {
 	}{
 		{"nobody", wrightNoStoneScenario, "Nobody in the village has a whetstone to sell just now — your rounds wait until one comes in.", false},
 		{"walk-to", wrightNoStoneSmithStockedScenario, "  - buy from Blacksmith (destination: smithy)", true},
-		{"co-present", wrightNoStoneSmithCopresentScenario, `call pay_with_item with seller "Ezekiel Crane", item "whetstone", a qty up to 1`, false},
+		{"co-present", wrightNoStoneSmithCopresentScenario, "Ezekiel Crane is here with you and sells them — you need one before you make your rounds.", false},
+		{"co-present-worn", wrightNoStoneSmithCopresentWornScenario, `call pay_with_item with seller "Ezekiel Crane", item "whetstone", a qty up to 1`, false},
 		{"blocked", wrightNoStoneSmithBlockedScenario, "You have no way to buy one just now — your rounds wait until you can.", false},
 		{"peddler", wrightViewsPeddlerScenario, "The trader here has whetstones — buy one from him before you make your rounds.", false},
 	}
@@ -320,10 +321,29 @@ func TestWrightNoStoneLineFollowsSupply(t *testing.T) {
 		if has := strings.Contains(got, "(destination: "); has != c.dest {
 			t.Errorf("%s: destination present=%v, want %v:\n%s", c.name, has, c.dest, got)
 		}
-		if c.name != "walk-to" && c.name != "co-present" && strings.Contains(got, "Blacksmith") {
+		if c.name != "walk-to" && strings.Contains(got, "Blacksmith") {
 			t.Errorf("%s: a line with no buy path names the smith (LLM-301):\n%s", c.name, got)
 		}
+		// One pay_with_item per seller and item on the page: the rounds line
+		// carries its own only when Restocking does not (code_review).
+		if strings.Contains(got, "pay_with_item") && p.Restocking.carriesCoPresentBuy(sim.WhetstoneKind, p.WrightRounds.CoPresentSeller) {
+			t.Errorf("%s: rounds repeats the co-present buy Restocking already renders:\n%s", c.name, got)
+		}
 	}
+}
+
+// wrightNoStoneSmithCopresentWornScenario: the co-present scenario with Lewis's
+// workshop worn past the degrade line, so Restocking is suppressed and the
+// rounds line keeps its own pay_with_item.
+func wrightNoStoneSmithCopresentWornScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := wrightNoStoneSmithCopresentScenario()
+	snap.StallWearRepairThreshold = 180
+	snap.StallWearDegradeThreshold = 270
+	snap.StallDegradedProducePct = 50
+	snap.StallNailsPerRepair = 5
+	snap.VillageObjects["workshop"].Wear = 300
+	snap.Actors[actorID].Inventory["nail"] = 6
+	return snap, actorID, warrants
 }
 
 // TestGoldensWrightStoneSellersMatchRestocking — LLM-717 cross-scenario
@@ -338,15 +358,19 @@ func TestGoldensWrightStoneSellersMatchRestocking(t *testing.T) {
 		if !p.WrightRounds.HasWalkToSupplier() || p.Restocking == nil {
 			continue
 		}
-		label := itemDisplayLabel(snap, sim.WhetstoneKind)
+		found := false
 		for _, it := range p.Restocking.Items {
-			if it.ItemLabel != label {
+			if it.Kind != sim.WhetstoneKind {
 				continue
 			}
+			found = true
 			compared++
 			if got, want := vendorIDs(p.WrightRounds.StoneVendors), vendorIDs(it.Vendors); got != want {
 				t.Errorf("scenario %q: rounds names %s, Restocking names %s", sc.name, got, want)
 			}
+		}
+		if !found {
+			t.Errorf("scenario %q: rounds names whetstone suppliers but Restocking renders no whetstone line", sc.name)
 		}
 	}
 	if compared == 0 {
