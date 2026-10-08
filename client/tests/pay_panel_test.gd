@@ -26,6 +26,11 @@ const TESTS := [
     "_test_not_now_hides_a_quote",
     "_test_pages_build",
     "_test_seller_gone_hides_cards",
+    "_test_counter_stays_gone_when_seller_returns",
+    "_test_offer_page_follows_the_roster",
+    "_test_reopen_during_pay_keeps_the_new_box",
+    "_test_unclear_answer_keeps_the_box_open",
+    "_test_cleared_field_survives_refresh",
 ]
 
 var _checks := 0
@@ -400,5 +405,101 @@ func _test_seller_gone_hides_cards() -> void:
     _check("no quote card", p.visible_quotes().size(), 0)
     _check("no counter card", p.visible_counters().size(), 0)
     _check("not on the offer page", p.goods_of("John Ellis"), [])
+    _free(p)
+    _done()
+
+
+func _test_counter_stays_gone_when_seller_returns() -> void:
+    var p := _panel([])
+    p.note_countered({"ledger_id": 60, "buyer_id": "pc-1", "seller_id": "npc-j", "seller_name": "John Ellis",
+        "item": "ale", "qty": 1, "original_amount": 2, "counter_amount": 3})
+    _check("card while John is here", p.visible_counters().size(), 1)
+    var everyone: Array = p.host.huddle_members
+    p.host.huddle_members = [{"name": "Hannah Boggs"}]
+    _check("no card once he leaves", p.visible_counters().size(), 0)
+    p.host.huddle_members = everyone
+    _check("still none when he comes back", p.visible_counters().size(), 0)
+    _free(p)
+    _done()
+
+
+func _test_offer_page_follows_the_roster() -> void:
+    var sent := []
+    var p := _panel(sent)
+    p.host.vendor_mentions = {"John Ellis": ["ale"], "Hannah Boggs": ["bread"]}
+    p.open()
+    p.start_offer("John Ellis", "ale")
+    p._on_qty(2)
+    p._on_amount(5)
+    p.refresh()
+    _check("a valid choice keeps its amounts", [p.sel_seller, p.sel_item, p.qty, p.amount], ["John Ellis", "ale", 2, 5])
+    p.host.huddle_members = [{"name": "Hannah Boggs"}]
+    p.refresh()
+    _check("John left: Hannah and her bread", [p.sel_seller, p.sel_item, p.qty, p.amount], ["Hannah Boggs", "bread", 1, 1])
+    p.host.vendor_mentions = {"Hannah Boggs": ["porridge"]}
+    p.refresh()
+    _check("bread gone: porridge", p.sel_item, "porridge")
+    # A stale choice that reaches the button (no refresh in between) sends nothing.
+    p.host.vendor_mentions = {"Hannah Boggs": ["cider"]}
+    p._on_send()
+    _check("nothing sent", _routes(sent).count("pay"), 0)
+    _check("the page shows the new choice", p.sel_item, "cider")
+    _check("says why", p.status_label.text, "That is no longer on offer. Check your offer and send again.")
+    p._on_send()
+    _check("sent once checked", _routes(sent).count("pay"), 1)
+    _check("with the shown good", sent[-1][1]["item"], "cider")
+    _free(p)
+    _done()
+
+
+func _test_reopen_during_pay_keeps_the_new_box() -> void:
+    var p := _panel([])
+    var paid := [0]
+    p.paid.connect(func(): paid[0] += 1)
+    p.open()
+    p._on_take(STEW_QUOTE)
+    p.close()
+    p.open()
+    p._on_pay_response(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _ok("accepted"))
+    _check("the new open stays", p.visible, true)
+    _check("the pay still counts", paid[0], 1)
+    _free(p)
+    _done()
+
+
+func _test_unclear_answer_keeps_the_box_open() -> void:
+    var p := _panel([])
+    var paid := [0]
+    p.paid.connect(func(): paid[0] += 1)
+    for body in [PackedByteArray(), JSON.stringify({"ledger_id": 3}).to_utf8_buffer()]:
+        p.open()
+        p._on_take(STEW_QUOTE)
+        p._on_pay_response(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), body)
+        _check("open", p.visible, true)
+        _check("says so", p.status_label.text, "The answer was unclear. Check the talk log before you pay again.")
+        _check("free to try again", p._busy, false)
+    _check("no pay claimed", paid[0], 0)
+    _free(p)
+    _done()
+
+
+func _test_cleared_field_survives_refresh() -> void:
+    var p := _panel([])
+    p.host.vendor_mentions = {"John Ellis": ["ale"]}
+    p.host.vendor_mention_prices = {"John Ellis": {"ale": 4}}
+    p.open()
+    p.start_offer("John Ellis", "ale")
+    var field: LineEdit = p.amount_stepper["field"]
+    field.grab_focus()
+    _check("field focused", field.has_focus(), true)
+    field.text = ""
+    p.refresh()
+    _check("a cleared field waits", field.text, "")
+    p._on_qty(2)
+    _check("a new price still shows", field.text, "8")
+    field.release_focus()
+    field.text = ""
+    p.refresh()
+    _check("unfocused: the value is put back", field.text, "8")
     _free(p)
     _done()

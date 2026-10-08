@@ -78,6 +78,13 @@ var _busy := false
 var _busy_kind := ""
 var _busy_seller := ""
 var _busy_counter := 0
+## Counts opens. A pay answer closes the box only if it is still the same
+## open it was sent from — not a box the player closed and opened again.
+var _open_gen := 0
+var _busy_gen := 0
+## True while a background refresh rebuilds the offer page — the one time a
+## field the player is typing in must not be rewritten.
+var _refreshing := false
 
 var _font: Font = null
 var _http_pay: HTTPRequest = null
@@ -118,6 +125,7 @@ func _ready() -> void:
 # --- public ------------------------------------------------------------------
 
 func open() -> void:
+    _open_gen += 1
     _ensure_catalog()
     quotes = []
     _send("quotes")
@@ -146,12 +154,16 @@ func refresh() -> void:
     if page == Page.OFFERS:
         _rebuild_offers()
     else:
+        _refreshing = true
         _rebuild_offer_page()
+        _refreshing = false
 
 
-## The player left the conversation: hidden quotes do not carry over.
+## The player left the conversation: hidden quotes and the bookkeeping of
+## their own offers do not carry over.
 func reset_huddle() -> void:
     dismissed_quotes.clear()
+    _offer_consume_now.clear()
 
 
 func note_pay_offer(data: Dictionary) -> void:
@@ -335,11 +347,11 @@ func visible_counters() -> Array:
     var out: Array = []
     for id in counters.keys():
         var c: Dictionary = counters[id]
-        if now - int(c.get("at_ms", 0)) > COUNTER_WINDOW_MS:
+        # Too old to answer, or the seller has gone: the counter is over.
+        if now - int(c.get("at_ms", 0)) > COUNTER_WINDOW_MS or not _has_name(here, str(c.get("seller", ""))):
             counters.erase(id)
             continue
-        if _has_name(here, str(c.get("seller", ""))):
-            out.append(c)
+        out.append(c)
     return out
 
 
@@ -661,6 +673,7 @@ func price_hint_text() -> String:
 
 
 func _rebuild_offer_page() -> void:
+    _reconcile_offer()
     _fill_chips(who_flow, recipients(), sel_seller, func(n: String) -> String: return n, _on_who)
     var goods := goods_of(sel_seller)
     _fill_chips(what_flow, goods, sel_item, func(n: String) -> String: return _good_chip_text(sel_seller, n), _on_what)
@@ -668,6 +681,21 @@ func _rebuild_offer_page() -> void:
     what_empty_label.visible = goods.is_empty() and sel_seller != ""
     what_empty_label.text = "%s hasn't named anything for sale yet. Ask them in the talk box." % sel_seller
     _sync_offer_values()
+
+
+## The chosen seller left, or the chosen good is no longer offered (a room or
+## roster change, a quote gone): choose again rather than keep a stale deal.
+## A still-valid choice is left as it is, with its amounts.
+func _reconcile_offer() -> void:
+    var here := recipients()
+    if not _has_name(here, sel_seller):
+        _select_seller(str(here[0]) if not here.is_empty() else "")
+        return
+    var goods := goods_of(sel_seller)
+    if sel_item == "" and goods.is_empty():
+        return
+    if not _has_name(goods, sel_item):
+        _select_seller(sel_seller)
 
 
 ## The parts that change on every tap, without rebuilding the chips.
@@ -713,6 +741,13 @@ func _on_night(v: int) -> void:
 
 
 func _on_send() -> void:
+    var chosen := [sel_seller, sel_item]
+    _reconcile_offer()
+    if [sel_seller, sel_item] != chosen:
+        # Changed under the player: show the new choice, send nothing yet.
+        _rebuild_offer_page()
+        _set_status("That is no longer on offer. Check your offer and send again.")
+        return
     if sel_seller == "":
         _set_status("There is nobody here to pay.")
         return
@@ -735,6 +770,7 @@ func _post_pay(body: Dictionary, kind: String, seller: String, counter_id: int) 
     _busy_kind = kind
     _busy_seller = seller
     _busy_counter = counter_id
+    _busy_gen = _open_gen
     _set_status("Sending…")
     if not _send("pay", body):
         _busy = false
@@ -787,6 +823,15 @@ func _ensure_catalog() -> void:
     _catalog_requested = _send("items")
 
 
+## The body as JSON, or null. A JSON instance parses quietly; the static
+## JSON.parse_string logs an engine error for an empty or broken body.
+static func _parse(body: PackedByteArray) -> Variant:
+    var json := JSON.new()
+    if json.parse(body.get_string_from_utf8()) != OK:
+        return null
+    return json.data
+
+
 func _on_pay_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     # Only the pay this box sent; a late answer after a reset is dropped.
     if not _busy:
@@ -797,7 +842,7 @@ func _on_pay_response(result: int, code: int, _h: PackedStringArray, body: Packe
     if result != HTTPRequest.RESULT_SUCCESS:
         _set_status("The offer did not reach them. Try again.")
         return
-    var parsed = JSON.parse_string(body.get_string_from_utf8())
+    var parsed = _parse(body)
     if code < 200 or code >= 300:
         var msg := "Something went wrong (%d)." % code
         if typeof(parsed) == TYPE_DICTIONARY and str(parsed.get("error", "")) != "":
@@ -807,21 +852,29 @@ func _on_pay_response(result: int, code: int, _h: PackedStringArray, body: Packe
         if kind == "take":
             _send("quotes")
         return
+    # pc/pay answers {ledger_id, state, fast_path}; without a state the
+    # outcome is unknown, so the box stays open rather than claim a pay.
     var state := ""
     if typeof(parsed) == TYPE_DICTIONARY:
         state = str(parsed.get("state", ""))
+    if state == "":
+        _set_status("The answer was unclear. Check the talk log before you pay again.")
+        return
     if kind == "counter":
         counters.erase(_busy_counter)
     if state == "pending":
         offer_pending.emit(_busy_seller)
-    close()
+    # The player may have closed the box and opened it again since; that
+    # newer open stays.
+    if _busy_gen == _open_gen:
+        close()
     paid.emit()
 
 
 func _on_quotes_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     if result != HTTPRequest.RESULT_SUCCESS or code != 200:
         return
-    var parsed = JSON.parse_string(body.get_string_from_utf8())
+    var parsed = _parse(body)
     if typeof(parsed) != TYPE_DICTIONARY or typeof(parsed.get("quotes", null)) != TYPE_ARRAY:
         return
     quotes = parsed["quotes"]
@@ -829,7 +882,7 @@ func _on_quotes_response(result: int, code: int, _h: PackedStringArray, body: Pa
 
 
 func _on_items_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
-    var parsed = JSON.parse_string(body.get_string_from_utf8()) if result == HTTPRequest.RESULT_SUCCESS and code == 200 else null
+    var parsed = _parse(body) if result == HTTPRequest.RESULT_SUCCESS and code == 200 else null
     if typeof(parsed) != TYPE_ARRAY:
         _catalog_requested = false
         return
@@ -1100,8 +1153,12 @@ func _set_stepper(s: Dictionary, v: int) -> void:
     var field: LineEdit = s["field"]
     var fmt: Callable = s["fmt"]
     var text := str(fmt.call(v)) if fmt.is_valid() else str(v)
-    # Don't fight the player's caret while they type the same number.
-    if field.text != text and not (field.has_focus() and field.text.is_valid_int() and field.text.to_int() == v):
+    # Don't fight the player while they type: a focused field that holds the
+    # same number is left alone, and so is any focused field during a
+    # background refresh (it may be cleared mid-edit) — focus leaving puts the
+    # value back. A tap (− / +, How many re-pricing) always shows its number.
+    var editing := field.has_focus() and (_refreshing or (field.text.is_valid_int() and field.text.to_int() == v))
+    if field.text != text and not editing:
         field.text = text
 
 
