@@ -189,9 +189,15 @@ func _test_crosswise_order_and_spring() -> void:
     _check("a bare key press picks no nail", g.press(null), Games.Result.NONE)
     var before: Array = g.order.duplicate()
     _check("a wrong nail springs the lid", g.press(g.order[2]), Games.Result.FAIL)
-    _check("the nails pop out", g.driven.has(true), false)
+    _check("not before the hammer lands", [g.driven.has(true), g.sprung_left], [true, 0.0])
+    _check("no strike while it comes down", g.press(g.order[1]), Games.Result.NONE)
+    g.update(g.SPRING_AT + 0.01)
+    _check("then the nails pop out", g.driven.has(true), false)
+    _check("sprung from the landing", is_equal_approx(g.sprung_left, g.SPRUNG_TIME - 0.01), true)
     _check("no strike while sprung", g.press(g.order[0]), Games.Result.NONE)
-    g.update(g.SPRUNG_TIME + 0.01)
+    g.update(g.SPRUNG_TIME - 0.02)
+    _check("the order waits out the spring", g.showing, false)
+    g.update(0.02)
     _check("the same order shows again", [g.showing, g.order == before], [true, true])
     g.update(g.show_len() + 0.01)
     for n in 3:
@@ -289,6 +295,18 @@ func _test_ladder_same_however_time_arrives() -> void:
         _check("frames %d: same lean" % i, absf(b.lean - a.lean) < 0.000001, true)
         _check("frames %d: same falls" % i, b.falls, a.falls)
         _check("frames %d: same work" % i, absf(b.work - a.work) < 0.000001, true)
+    # A long frame that wins a round with time to spare: the spare time is not
+    # played into the next round.
+    var w = Games.make("ladder", _rng())
+    w.lean = 0.0
+    w.lean_v = 0.0
+    w.work = w.work_time - 0.01
+    w.update(2.0)
+    _check("a long frame wins the round", w.take_events(), [Games.Result.HIT])
+    w.release()
+    var lean0: float = w.lean
+    w.update(0.0)
+    _check("the next round starts where it was set up", [w.lean, w.work, w.falls], [lean0, 0.0, 0])
     var hard = Games.make("ladder", _rng(), 1.0)
     _check("hard: tips faster, narrower, more work",
         [hard.tip, hard.steady, hard.work_time], [Games.Ladder.HARD_TIP, Games.Ladder.HARD_STEADY, Games.Ladder.HARD_WORK_TIME])
@@ -320,9 +338,12 @@ func _test_crosswise_stage() -> void:
     stage._process(StageScript.SWING_DOWN + StageScript.SWING_HOLD + StageScript.SWING_UP + 0.01)
     stage.press_key(g.order[2])
     _check("a wrong nail is a miss", misses.size(), 1)
-    _check("nothing springs before the hammer lands", stage._pops.size(), 0)
-    stage._process(StageScript.SWING_DOWN + 0.01)
+    _check("the lid springs as the hammer lands", g.SPRING_AT, StageScript.SWING_DOWN)
+    stage._process(StageScript.SWING_DOWN - 0.02)
+    _check("nothing springs before the hammer lands", [stage._pops.size(), g.driven.has(true), g.sprung_left], [0, true, 0.0])
+    stage._process(0.03)
     _check("it springs when it lands", stage._pops.size() > 0 and stage._pops[-1]["text"] == "Sprung!", true)
+    _check("and the nails pop with it", g.driven.has(true), false)
     stage._process(g.SPRUNG_TIME + 0.01)
     stage._process(g.show_len() + 0.01)
     for n in g.count():

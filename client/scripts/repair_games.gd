@@ -459,8 +459,9 @@ class Plumb:
 ## back row and a front row. A round opens by showing the order to drive them:
 ## a number lights on each nail in turn, all stay lit a moment, then they hide.
 ## Strike the nails in that order; there is no hurry. A wrong nail springs the
-## lid (Result.FAIL): the nails pop out, and after SPRUNG_TIME the same order
-## shows again. A tap off every nail, or on one already driven, does nothing.
+## lid (Result.FAIL) when the hammer lands on it, SPRING_AT later: the nails pop
+## out, and after SPRUNG_TIME the same order shows again. A tap off every nail,
+## or on one already driven, does nothing.
 ## Harder: a third column of nails, a quicker show.
 class Crosswise:
     extends Game
@@ -472,6 +473,7 @@ class Crosswise:
     const SHOW_HOLD := 1.0  # seconds all the numbers stay lit before they hide
     const HARD_SHOW_HOLD := 0.35
     const SPRUNG_TIME := 1.0
+    const SPRING_AT := 0.06  # the hammer's fall: repair_stage.gd's SWING_DOWN
     const STAND := 4  # art px a nail stands proud before it is driven
     const REACH := 12.0  # art px from a nail's head that a tap still picks it
     # The lid seen from the front and a little above: its back edge is the
@@ -493,6 +495,7 @@ class Crosswise:
     var next := 0  # how many of the order are driven
     var showing := true
     var show_t := 0.0
+    var spring_in := 0.0  # a wrong nail struck: seconds until the lid springs
     var sprung_left := 0.0
     var springs := 0  # this round
     var last := -1  # the nail last struck
@@ -567,21 +570,32 @@ class Crosswise:
         super(dt)
         if holding:
             return
+        var left := dt
+        if spring_in > 0.0:
+            if left < spring_in:
+                spring_in -= left
+                return
+            left -= spring_in
+            spring_in = 0.0
+            for k in count():
+                driven[k] = false
+            next = 0
+            sprung_left = SPRUNG_TIME
         if sprung_left > 0.0:
-            sprung_left -= dt
+            sprung_left -= left
             if sprung_left <= 0.0:
                 sprung_left = 0.0
                 _begin_show()
             return
         if showing:
-            show_t += dt
+            show_t += left
             if show_t >= show_len():
                 showing = false
 
     ## pos is a tap (Vector2), a nail picked by its key (int), or a bare key
     ## press (null), which picks no nail.
     func press(pos: Variant) -> Result:
-        if holding or showing or sprung_left > 0.0:
+        if holding or showing or spring_in > 0.0 or sprung_left > 0.0:
             return Result.NONE
         var i := -1
         if pos is int:
@@ -593,10 +607,7 @@ class Crosswise:
         last = i
         if i != order[next]:
             springs += 1
-            for k in count():
-                driven[k] = false
-            next = 0
-            sprung_left = SPRUNG_TIME
+            spring_in = SPRING_AT
             return Result.FAIL
         driven[i] = true
         next += 1
@@ -611,6 +622,7 @@ class Crosswise:
             driven[k] = false
         next = 0
         springs = 0
+        spring_in = 0.0
         sprung_left = 0.0
         _new_order()
         _begin_show()
@@ -745,8 +757,12 @@ class Ladder:
         _events = []
         return out
 
+    ## The next round starts from now: time left over from a long frame that
+    ## ended the last one is dropped, not played into this one.
     func release() -> void:
         super()
+        _acc = 0.0
+        _events.clear()
         work = 0.0
         falls = 0
         fallen_left = 0.0
