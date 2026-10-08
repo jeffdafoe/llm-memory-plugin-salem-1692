@@ -471,7 +471,8 @@ func _test_unclear_answer_keeps_the_box_open() -> void:
     var p := _panel([])
     var paid := [0]
     p.paid.connect(func(): paid[0] += 1)
-    for body in [PackedByteArray(), JSON.stringify({"ledger_id": 3}).to_utf8_buffer()]:
+    for body in [PackedByteArray(), JSON.stringify({"ledger_id": 3}).to_utf8_buffer(),
+            JSON.stringify({"state": null}).to_utf8_buffer(), JSON.stringify({"state": 3}).to_utf8_buffer()]:
         p.open()
         p._on_take(STEW_QUOTE)
         p._on_pay_response(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), body)

@@ -856,7 +856,9 @@ func _on_pay_response(result: int, code: int, _h: PackedStringArray, body: Packe
     # outcome is unknown, so the box stays open rather than claim a pay.
     var state := ""
     if typeof(parsed) == TYPE_DICTIONARY:
-        state = str(parsed.get("state", ""))
+        var raw_state = parsed.get("state", null)
+        if typeof(raw_state) == TYPE_STRING:
+            state = raw_state.strip_edges()
     if state == "":
         _set_status("The answer was unclear. Check the talk log before you pay again.")
         return
