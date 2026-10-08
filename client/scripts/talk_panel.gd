@@ -19,6 +19,8 @@ extends CanvasLayer
 ##   - POST /api/village/pc/me  → state (includes self x/y, used to filter outdoor speech by distance)
 ##   - POST /api/village/pc/speak {text}  → broadcast (indoor: huddle scope; outdoor: proximity broadcast with speaker_x/speaker_y)
 
+const PayPanelScript = preload("res://scripts/pay_panel.gd")
+
 const REFRESH_INTERVAL := 10.0
 # ZBBS-WORK-399: Village tab poll cadence. Runs only while the tab is the
 # active view; each poll is an incremental ?since= fetch, so the steady-state
@@ -93,72 +95,11 @@ var village_loading := false
 # stragglers. 0 = no cursor yet → the server sends a newest-tail backload.
 var village_since_seq := 0
 var input_row: HBoxContainer = null
-## Pay flow — small button next to Speak opens a modal (built lazily)
-## with recipient dropdown, item / qty / amount, and take-home or
-## booking (days-ahead) controls. Submit fires POST /api/village/pc/pay
-## (v2 pay-with-item contract, ZBBS-WORK-287) and re-polls /pc/me on
-## success so the top bar's coin chip refreshes immediately.
+## Pay flow — the Pay button next to Speak opens the Pay box (pay_panel.gd,
+## LLM-722). The box reads this panel's huddle roster, purse, lodging and the
+## vendor mention accumulators below through its `host`.
 var pay_button: Button = null
-var pay_modal: CanvasLayer = null
-var pay_recipient_option: OptionButton = null
-var pay_amount_spin: SpinBox = null
-var pay_item_option: OptionButton = null
-var pay_qty_spin: SpinBox = null
-var pay_take_home_check: CheckBox = null
-# Lodging bookings (item "nights_stay") carry ZBBS-HOME-403's
-# ready_in_days offset. The row is hidden for ordinary goods — see
-# _update_pay_booking_controls.
-var pay_days_ahead_spin: SpinBox = null
-var pay_days_ahead_row: Control = null
-var pay_status_label: Label = null
-var pay_confirm_button: Button = null
-var pay_cancel_button: Button = null
-var http_pay: HTTPRequest = null
-
-# Live take-able quotes rendered as "Offers on the table" rows at the top
-# of the pay modal (ZBBS-HOME-426). Fetched fresh on EVERY modal open —
-# quotes are mutable world state with a ~10-minute TTL, unlike the
-# boot-immutable item catalog which is fetched once. A Take row submits
-# pc/pay with the quote_id and the quote's terms copied verbatim, which
-# satisfies the server fast path's exact-term predicates by construction.
-var http_quotes: HTTPRequest = null
-var pay_quotes: Array = []
-# ZBBS-WORK-401: locally-dismissed offer rows — declining is UI
-# housekeeping, NOT an in-world action (refusing socially = just tell the
-# vendor; their LLM hears speech). Quote rows dismiss by quote_id (a
-# re-post/revision is a new id, so it legitimately reappears; expiry
-# cleans up). Mention rows dismiss per lowercased "seller|item" and
-# resurface when a FRESH mention of that item arrives. Both clear on
-# huddle change with the mention accumulators.
-var pay_dismissed_quotes: Dictionary = {}
-var pay_dismissed_mentions: Dictionary = {}
-var pay_quotes_header: Label = null
-var pay_quote_rows_box: VBoxContainer = null
-var pay_quotes_separator: HSeparator = null
-# True while the in-flight pc/pay submit came from a Take row — a reject
-# then means the row went stale (quote expired/taken), so the list is
-# re-fetched alongside surfacing the error.
-var pay_take_in_flight: bool = false
-# Item-kind catalog from GET /api/village/items (ZBBS-HOME-423) — lets the
-# player compose an offer for ANY good, not just formally-quoted ones (a
-# vendor's verbal "thou shalt have a room for 4 coins" posts no quote, so a
-# mentions-only dropdown couldn't express the purchase). Fetched once on
-# first Pay open; boot-immutable server-side so never re-polled.
-var http_items: HTTPRequest = null
-var pay_item_catalog_order: Array = []      # item names in server sort order
-var pay_item_catalog_labels: Dictionary = {} # item name -> display label
-var pay_items_catalog_requested: bool = false
-# item name (lowercase) -> disposition class from the catalog (ZBBS-WORK-402):
-# "choice" (buyer picks eat-here vs carry-home) or "tonight" (service — the
-# engine forces the service shape). Unknown/missing (catalog fetch failed)
-# degrades to quote-verbatim takes, the pre-402 behavior.
-var pay_item_catalog_dispo: Dictionary = {}
-# The buyer's standing disposition intent for one-click takes of eligible
-# goods (designer-recommended segmented toggle). Persists for the session —
-# deliberately NOT reset on modal open.
-var pay_disposition_row: HBoxContainer = null
-var pay_dispo_eat_button: Button = null
-var pay_dispo_carry_button: Button = null
+var pay_panel: CanvasLayer = null
 
 # Phase C of sales-and-gifts: per-vendor accumulator of item_kinds
 # they've mentioned in this huddle session. Sourced from npc_spoke's
@@ -184,10 +125,6 @@ var vendor_mention_prices: Dictionary = {}
 # Shape: { speaker_name: PackedStringArray of lowercase item_kinds from
 # the most recent mention-bearing speak }
 var vendor_latest_mentions: Dictionary = {}
-## Cached huddle member list at the moment the modal opened — used so
-## the dropdown index maps back to the chosen recipient name without
-## re-reading huddle_members during the click.
-var pay_modal_recipients: Array = []
 ## Last /pc/me snapshot of coins + inventory. Reused by the modal to
 ## show the player what they can afford.
 var pc_coins: int = 0
@@ -275,7 +212,7 @@ var huddle_members: Array = []
 # so an indoor sleeper with no visible map sprite is still legible. Kept SEPARATE
 # from huddle_members on purpose — these are NOT talk/pay targets (a sleeper is
 # out of the audience, server pcDormantRoster), so they must never feed
-# pay_modal_recipients.
+# the Pay box's recipients.
 var dormant_members: Array = []
 # Self position from the latest /pc/me snapshot — used to filter outdoor
 # npc_spoke broadcasts by Chebyshev distance (drop speech from PCs more
@@ -353,17 +290,12 @@ func _build_tree() -> void:
     http_speak.timeout = 15.0
     add_child(http_speak)
 
-    http_pay = HTTPRequest.new()
-    http_pay.timeout = 15.0
-    add_child(http_pay)
-
-    http_items = HTTPRequest.new()
-    http_items.timeout = 15.0
-    add_child(http_items)
-
-    http_quotes = HTTPRequest.new()
-    http_quotes.timeout = 15.0
-    add_child(http_quotes)
+    pay_panel = PayPanelScript.new()
+    pay_panel.host = self
+    add_child(pay_panel)
+    pay_panel.open_changed.connect(func(open: bool): modal_open_changed.emit(open))
+    pay_panel.offer_pending.connect(_on_pay_offer_pending)
+    pay_panel.paid.connect(_refresh_state)
 
     http_village = HTTPRequest.new()
     http_village.timeout = 4.0
@@ -844,7 +776,7 @@ func _build_input(parent: Control) -> void:
     pay_button.focus_mode = Control.FOCUS_ALL
     pay_button.mouse_filter = Control.MOUSE_FILTER_STOP
     pay_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-    pay_button.tooltip_text = "Pay a villager — opens a confirmation form for amount and optional item."
+    pay_button.tooltip_text = "Buy from, or pay, someone you are talking with."
     row.add_child(pay_button)
 
     speak_button = Button.new()
@@ -994,12 +926,6 @@ func _connect_signals() -> void:
     refresh_timer.timeout.connect(_refresh_state)
     http_me.request_completed.connect(_on_me_completed)
     http_speak.request_completed.connect(_on_speak_completed)
-    if http_pay != null:
-        http_pay.request_completed.connect(_on_pay_completed)
-    if http_items != null:
-        http_items.request_completed.connect(_on_items_completed)
-    if http_quotes != null:
-        http_quotes.request_completed.connect(_on_quotes_completed)
 
     if room_tab_button != null:
         room_tab_button.pressed.connect(_on_room_tab_pressed)
@@ -1158,7 +1084,7 @@ func _apply_pc_state(data: Dictionary) -> void:
     pc_y = float(data.get("y", 0.0))
 
     # Coins + inventory — surfaced in the top-bar coin chip and used
-    # by the pay modal to validate amount against current balance.
+    # by the Pay box to check an amount against the purse.
     pc_coins = int(data.get("coins", 0))
     var inv_data = data.get("inventory", [])
     pc_inventory = inv_data if typeof(inv_data) == TYPE_ARRAY else []
@@ -1179,7 +1105,7 @@ func _apply_pc_state(data: Dictionary) -> void:
     dwelling_attributes_changed.emit(dwelling)
 
     # Active lodging (LLM-38) — surfaced as the top-bar "Lodged at …" chip and
-    # used for the pay modal's empty-state copy. Absent when the PC holds no room.
+    # used for the Pay box's empty-state copy. Absent when the PC holds no room.
     var lodging_data = data.get("lodging", {})
     pc_lodging = lodging_data if typeof(lodging_data) == TYPE_DICTIONARY else {}
     _push_lodging_to_top_bar()
@@ -1202,6 +1128,9 @@ func _apply_pc_state(data: Dictionary) -> void:
     _update_launcher_text()
     _update_visibility_from_state()
     _maybe_auto_attention_for_first_encounter()
+    # The open Pay box follows the purse and who is here.
+    if pay_panel != null:
+        pay_panel.refresh()
 
     # Auto-open on huddle gain. Two paths land here:
     # 1. Knock-success: main.gd sets _open_after_next_refresh and we honor
@@ -1265,8 +1194,8 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
     vendor_latest_mentions.clear()
     # Dismissals share the accumulators' lifecycle: walk away and come
     # back = clean slate. (ZBBS-WORK-401)
-    pay_dismissed_quotes.clear()
-    pay_dismissed_mentions.clear()
+    if pay_panel != null:
+        pay_panel.reset_huddle()
 
     if current_structure.is_empty():
         return
@@ -1576,1134 +1505,17 @@ func _push_needs_to_top_bar() -> void:
     needs_changed.emit(pc_needs)
 
 
-## Build the pay modal lazily on first use. Lives as a CanvasLayer
-## sibling so it overlays the talk sheet and the world view; semi-
-## transparent backdrop swallows clicks outside the form so a misclick
-## doesn't dismiss it accidentally (Cancel button is the only way out).
-func _ensure_pay_modal_built() -> void:
-    if pay_modal != null:
-        return
-
-    var layer := CanvasLayer.new()
-    layer.layer = 30  # above the talk sheet's layer
-    layer.visible = false
-    add_child(layer)
-    pay_modal = layer
-
-    var backdrop := ColorRect.new()
-    backdrop.color = Color(0, 0, 0, 0.6)
-    backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
-    backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
-    layer.add_child(backdrop)
-
-    var center := CenterContainer.new()
-    center.set_anchors_preset(Control.PRESET_FULL_RECT)
-    layer.add_child(center)
-
-    var panel := PanelContainer.new()
-    panel.custom_minimum_size = Vector2(360, 0)
-    var panel_style := StyleBoxFlat.new()
-    panel_style.bg_color = Color(0.13, 0.10, 0.07, 0.98)
-    panel_style.border_color = Color(0.55, 0.42, 0.25, 1.0)
-    panel_style.border_width_left = 1
-    panel_style.border_width_right = 1
-    panel_style.border_width_top = 1
-    panel_style.border_width_bottom = 1
-    panel_style.corner_radius_top_left = 6
-    panel_style.corner_radius_top_right = 6
-    panel_style.corner_radius_bottom_left = 6
-    panel_style.corner_radius_bottom_right = 6
-    panel_style.content_margin_left = 16
-    panel_style.content_margin_right = 16
-    panel_style.content_margin_top = 14
-    panel_style.content_margin_bottom = 14
-    panel.add_theme_stylebox_override("panel", panel_style)
-    # ZBBS-HOME-238: apply a dark-wood theme to all form controls inside
-    # the modal so the OptionButton / SpinBox / CheckBox / Button defaults
-    # don't render as bright-white islands against the brown panel.
-    # Colors mirror the speech_input + panel palette above so the modal
-    # reads as one piece. Theme propagates to descendant Controls via
-    # Control.theme; OptionButton popup windows are separate so their
-    # popup gets the theme assigned individually below.
-    panel.theme = _build_pay_modal_theme()
-    center.add_child(panel)
-
-    var vbox := VBoxContainer.new()
-    vbox.add_theme_constant_override("separation", 8)
-    panel.add_child(vbox)
-
-    var title := Label.new()
-    title.text = "Settle a payment"
-    title.add_theme_color_override("font_color", Color(0.92, 0.78, 0.42))
-    title.add_theme_font_size_override("font_size", OrientationGuard.text_size(16))
-    vbox.add_child(title)
-
-    # Live offers section (ZBBS-HOME-426): one take-able row per quote the
-    # PC is currently eligible for, ahead of the compose form — taking a
-    # standing offer is the primary path, composing one the fallback. The
-    # header/box/separator hide as a unit when the fetch returns nothing.
-    pay_quotes_header = Label.new()
-    pay_quotes_header.text = "Offers on the table:"
-    pay_quotes_header.add_theme_color_override("font_color", Color(0.85, 0.72, 0.42))
-    pay_quotes_header.add_theme_font_size_override("font_size", OrientationGuard.text_size(13))
-    pay_quotes_header.visible = false
-    vbox.add_child(pay_quotes_header)
-
-    # ZBBS-WORK-402: the buyer's standing disposition intent for one-click
-    # takes — a segmented two-button radio pair (designer-recommended over
-    # a checkbox: both outcomes visible, one click to flip). Visually
-    # scoped to the offer rows (directly under the header) so it reads as
-    # part of the offer-taking apparatus, not a modal preference. Shown
-    # only when at least one visible Take row's item allows the choice
-    # (see _refresh_pay_quote_rows); rows that allow none ignore it and
-    # say so in their prose ("tonight").
-    pay_disposition_row = HBoxContainer.new()
-    pay_disposition_row.add_theme_constant_override("separation", 6)
-    pay_disposition_row.visible = false
-    var dispo_label := Label.new()
-    dispo_label.text = "Take eligible offers as:"
-    dispo_label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50))
-    dispo_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-    pay_disposition_row.add_child(dispo_label)
-    var dispo_group := ButtonGroup.new()
-    # Radio semantics, stated explicitly: re-pressing the active segment
-    # must not unpress it — exactly one disposition is always selected.
-    # (false is the Godot 4 default; pinned so an engine default change
-    # can't silently introduce a neither-pressed state. code_review)
-    dispo_group.allow_unpress = false
-    pay_dispo_eat_button = Button.new()
-    pay_dispo_eat_button.text = "Eat/drink now"
-    pay_dispo_eat_button.toggle_mode = true
-    pay_dispo_eat_button.button_group = dispo_group
-    pay_dispo_eat_button.focus_mode = Control.FOCUS_NONE
-    pay_dispo_eat_button.custom_minimum_size = Vector2(0, 24)
-    pay_dispo_eat_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-    pay_disposition_row.add_child(pay_dispo_eat_button)
-    pay_dispo_carry_button = Button.new()
-    pay_dispo_carry_button.text = "Carry home"
-    pay_dispo_carry_button.toggle_mode = true
-    pay_dispo_carry_button.button_group = dispo_group
-    pay_dispo_carry_button.focus_mode = Control.FOCUS_NONE
-    pay_dispo_carry_button.custom_minimum_size = Vector2(0, 24)
-    pay_dispo_carry_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-    # Eat/drink now is the default (LLM-415) — the player is usually in the
-    # tavern eating on the spot, so that's the common case; Carry home stays
-    # one click away. Session-persisting choice; never reset on open.
-    pay_dispo_eat_button.button_pressed = true
-    pay_disposition_row.add_child(pay_dispo_carry_button)
-    vbox.add_child(pay_disposition_row)
-
-    pay_quote_rows_box = VBoxContainer.new()
-    pay_quote_rows_box.add_theme_constant_override("separation", 4)
-    pay_quote_rows_box.visible = false
-    vbox.add_child(pay_quote_rows_box)
-
-    pay_quotes_separator = HSeparator.new()
-    pay_quotes_separator.visible = false
-    vbox.add_child(pay_quotes_separator)
-
-    pay_recipient_option = OptionButton.new()
-    pay_recipient_option.get_popup().theme = panel.theme
-    vbox.add_child(_label_with("Recipient:", pay_recipient_option))
-
-    pay_amount_spin = SpinBox.new()
-    pay_amount_spin.min_value = 0
-    pay_amount_spin.max_value = 999
-    pay_amount_spin.step = 1
-    pay_amount_spin.value = 1
-    vbox.add_child(_label_with("Amount (coins):", pay_amount_spin))
-
-    # Item is a dropdown sourced from the recipient vendor's accumulated
-    # speak.mentions for this huddle session (spoken mentions + posted
-    # scene quotes). The v2 pc/pay route requires an item, so there is
-    # no coins-only entry (ZBBS-HOME-423). When the recipient changes,
-    # the dropdown is repopulated.
-    pay_item_option = OptionButton.new()
-    pay_item_option.get_popup().theme = panel.theme
-    pay_item_option.item_selected.connect(_on_pay_item_changed)
-    vbox.add_child(_label_with("Item:", pay_item_option))
-
-    pay_qty_spin = SpinBox.new()
-    pay_qty_spin.min_value = 1
-    pay_qty_spin.max_value = 99
-    pay_qty_spin.step = 1
-    pay_qty_spin.value = 1
-    pay_qty_spin.value_changed.connect(_on_pay_qty_changed)
-    vbox.add_child(_label_with("Quantity:", pay_qty_spin))
-
-    pay_take_home_check = CheckBox.new()
-    pay_take_home_check.text = "Take it home (don't consume now)"
-    vbox.add_child(pay_take_home_check)
-
-    # Booking offset for lodging (ZBBS-HOME-403): 0 = a room for tonight,
-    # N = book N days ahead. Max mirrors sim.MaxOrderReadyInDays. Hidden
-    # unless the selected item is "nights_stay".
-    pay_days_ahead_spin = SpinBox.new()
-    pay_days_ahead_spin.min_value = 0
-    pay_days_ahead_spin.max_value = 30
-    pay_days_ahead_spin.step = 1
-    pay_days_ahead_spin.value = 0
-    pay_days_ahead_row = _label_with("Days ahead (0 = tonight):", pay_days_ahead_spin)
-    pay_days_ahead_row.visible = false
-    vbox.add_child(pay_days_ahead_row)
-
-    pay_status_label = Label.new()
-    pay_status_label.text = ""
-    pay_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    pay_status_label.custom_minimum_size = Vector2(320, 0)
-    pay_status_label.add_theme_color_override("font_color", Color(0.92, 0.50, 0.42))
-    pay_status_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-    vbox.add_child(pay_status_label)
-
-    var button_row := HBoxContainer.new()
-    button_row.alignment = BoxContainer.ALIGNMENT_END
-    button_row.add_theme_constant_override("separation", 8)
-    vbox.add_child(button_row)
-
-    pay_cancel_button = Button.new()
-    pay_cancel_button.text = "Cancel"
-    pay_cancel_button.pressed.connect(_close_pay_modal)
-    button_row.add_child(pay_cancel_button)
-
-    pay_confirm_button = Button.new()
-    pay_confirm_button.text = "Confirm"
-    pay_confirm_button.pressed.connect(_on_pay_confirm)
-    button_row.add_child(pay_confirm_button)
-
-
-## Build the dark-wood Theme for the pay modal's form controls. Covers
-## OptionButton (and its popup), SpinBox, CheckBox, Button, and Label
-## with consistent colors keyed off the panel + speech_input palette.
-## Keeping it as a single Theme means every control inside the modal
-## inherits the same look without per-instance theme_overrides.
-func _build_pay_modal_theme() -> Theme:
-    var theme := Theme.new()
-    var bg := Color(0.18, 0.13, 0.08, 0.95)
-    var bg_hover := Color(0.24, 0.18, 0.11, 0.97)
-    var bg_pressed := Color(0.14, 0.10, 0.06, 0.98)
-    var bg_disabled := Color(0.16, 0.12, 0.08, 0.6)
-    var border := Color(0.42, 0.32, 0.19, 0.55)
-    var border_focus := Color(0.78, 0.62, 0.34, 0.9)
-    var text_color := Color(0.92, 0.84, 0.70)
-    var text_dim := Color(0.62, 0.54, 0.42)
-    var icon_color := Color(0.85, 0.72, 0.42)
-
-    var make_box := func(fill: Color, stroke: Color) -> StyleBoxFlat:
-        var sb := StyleBoxFlat.new()
-        sb.bg_color = fill
-        sb.border_color = stroke
-        sb.border_width_left = 1
-        sb.border_width_right = 1
-        sb.border_width_top = 1
-        sb.border_width_bottom = 1
-        sb.corner_radius_top_left = 4
-        sb.corner_radius_top_right = 4
-        sb.corner_radius_bottom_left = 4
-        sb.corner_radius_bottom_right = 4
-        sb.content_margin_left = 8
-        sb.content_margin_right = 8
-        sb.content_margin_top = 4
-        sb.content_margin_bottom = 4
-        return sb
-
-    var sb_normal: StyleBoxFlat = make_box.call(bg, border)
-    var sb_hover: StyleBoxFlat = make_box.call(bg_hover, border)
-    var sb_pressed: StyleBoxFlat = make_box.call(bg_pressed, border_focus)
-    var sb_disabled: StyleBoxFlat = make_box.call(bg_disabled, border)
-    var sb_focus: StyleBoxFlat = make_box.call(bg, border_focus)
-
-    # Button (Cancel / Confirm) and OptionButton (which shares Button's
-    # state styleboxes) and CheckBox (which falls back to Button colors
-    # for its label).
-    for cls in ["Button", "OptionButton"]:
-        theme.set_stylebox("normal", cls, sb_normal)
-        theme.set_stylebox("hover", cls, sb_hover)
-        theme.set_stylebox("pressed", cls, sb_pressed)
-        theme.set_stylebox("disabled", cls, sb_disabled)
-        theme.set_stylebox("focus", cls, sb_focus)
-        theme.set_color("font_color", cls, text_color)
-        theme.set_color("font_hover_color", cls, text_color)
-        theme.set_color("font_pressed_color", cls, text_color)
-        theme.set_color("font_disabled_color", cls, text_dim)
-        theme.set_color("font_focus_color", cls, text_color)
-        theme.set_color("icon_normal_color", cls, icon_color)
-
-    # CheckBox: button text color inherits via "Button" fallback in theme,
-    # but the check-icon tint needs to land on the CheckBox class
-    # explicitly so the indicator is legible against the dark fill.
-    theme.set_color("font_color", "CheckBox", text_color)
-    theme.set_color("font_hover_color", "CheckBox", text_color)
-    theme.set_color("font_pressed_color", "CheckBox", text_color)
-    theme.set_color("icon_normal_color", "CheckBox", icon_color)
-    theme.set_color("icon_hover_color", "CheckBox", icon_color)
-    theme.set_color("icon_pressed_color", "CheckBox", icon_color)
-
-    # SpinBox: in Godot 4 the inner LineEdit and the up/down arrows take
-    # their styles from LineEdit theme entries. The arrow icon tint comes
-    # from SpinBox itself.
-    theme.set_stylebox("normal", "LineEdit", sb_normal)
-    theme.set_stylebox("focus", "LineEdit", sb_focus)
-    theme.set_stylebox("read_only", "LineEdit", sb_disabled)
-    theme.set_color("font_color", "LineEdit", text_color)
-    theme.set_color("font_uneditable_color", "LineEdit", text_dim)
-    theme.set_color("font_placeholder_color", "LineEdit", text_dim)
-    theme.set_color("caret_color", "LineEdit", text_color)
-    theme.set_color("selection_color", "LineEdit", Color(0.55, 0.42, 0.25, 0.55))
-    theme.set_color("up_icon_modulate", "SpinBox", icon_color)
-    theme.set_color("down_icon_modulate", "SpinBox", icon_color)
-
-    # PopupMenu (the OptionButton dropdown). Uses its own panel + item
-    # styleboxes; assign the themed boxes so the open dropdown reads as
-    # one piece with the modal instead of a bright-white island.
-    var popup_panel: StyleBoxFlat = make_box.call(Color(0.13, 0.10, 0.07, 0.99), border_focus)
-    popup_panel.content_margin_left = 4
-    popup_panel.content_margin_right = 4
-    popup_panel.content_margin_top = 4
-    popup_panel.content_margin_bottom = 4
-    var popup_hover: StyleBoxFlat = make_box.call(bg_hover, border)
-    popup_hover.content_margin_top = 2
-    popup_hover.content_margin_bottom = 2
-    theme.set_stylebox("panel", "PopupMenu", popup_panel)
-    theme.set_stylebox("hover", "PopupMenu", popup_hover)
-    theme.set_color("font_color", "PopupMenu", text_color)
-    theme.set_color("font_hover_color", "PopupMenu", text_color)
-    theme.set_color("font_disabled_color", "PopupMenu", text_dim)
-    theme.set_color("font_separator_color", "PopupMenu", text_dim)
-
-    # Label: the field labels in _label_with already set their own font
-    # color, but plain Labels (e.g. the "Take it home" text body) fall
-    # through to the theme. Keep them readable.
-    theme.set_color("font_color", "Label", text_color)
-    return theme
-
-
-## Helper: a horizontal row with a small label + the input control.
-## Keeps the pay modal layout uniform without hand-tuning each spacing.
-func _label_with(text: String, control: Control) -> Control:
-    var row := HBoxContainer.new()
-    row.add_theme_constant_override("separation", 8)
-    var lbl := Label.new()
-    lbl.text = text
-    lbl.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50))
-    lbl.add_theme_font_size_override("font_size", OrientationGuard.text_size(13))
-    lbl.custom_minimum_size = Vector2(120, 0)
-    row.add_child(lbl)
-    control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    row.add_child(control)
-    return row
-
-
 func _on_pay_pressed() -> void:
-    _ensure_pay_modal_built()
-    _ensure_pay_items_catalog()
-    # Drop the previous open's quote rows before fetching — they may be
-    # from another huddle or already expired; the response repopulates.
-    pay_quotes = []
-    _request_pay_quotes()
-    # Repopulate the recipient list each open — huddle membership
-    # changes (NPCs come and go) so the cached list at modal-build time
-    # would go stale fast.
-    pay_modal_recipients.clear()
-    pay_recipient_option.clear()
-    for member in huddle_members:
-        if typeof(member) != TYPE_DICTIONARY:
-            continue
-        var name := str(member.get("name", ""))
-        if name.is_empty() or name == character_name:
-            continue
-        pay_modal_recipients.append(name)
-        pay_recipient_option.add_item(name)
-    # Wire the recipient dropdown so the item dropdown re-populates when
-    # the customer flips between vendors (each one has its own mentions
-    # accumulator). Connect once per modal lifetime — the OptionButton
-    # is built lazily and reused across opens.
-    if not pay_recipient_option.item_selected.is_connected(_on_pay_recipient_changed):
-        pay_recipient_option.item_selected.connect(_on_pay_recipient_changed)
-    # Rows render only after the recipient list above refreshes: mention
-    # rows (ZBBS-WORK-400) derive their sellers from pay_modal_recipients,
-    # so the rebuild must see THIS huddle's members, not the previous
-    # open's. Quote rows re-render again when the in-flight fetch lands.
-    _refresh_pay_quote_rows()
-    if pay_modal_recipients.is_empty():
-        pay_status_label.text = "Nobody here to pay."
-    else:
-        pay_status_label.text = ""
-    pay_amount_spin.value = 1
-    pay_qty_spin.value = 1
-    pay_take_home_check.button_pressed = false
-    pay_days_ahead_spin.value = 0
-    _refresh_pay_item_dropdown()
-    var first_recipient: String = ""
-    if pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
-        first_recipient = pay_modal_recipients[pay_recipient_option.selected]
-    _apply_pay_defaults_for_recipient(first_recipient)
-    _update_pay_booking_controls()
-    pay_modal.visible = true
-    modal_open_changed.emit(true)
-
-
-## Repopulate the item dropdown for the currently-selected recipient: the
-## vendor's offered items only — accumulated speak.mentions (verbal,
-## ZBBS-WORK-400) + posted scene quotes — with the heard unit price in the
-## label when known. The full item-kind catalog is deliberately NOT listed
-## (ZBBS-WORK-400, Jeff's ruling — reverses ZBBS-HOME-423's catalog
-## dropdown): conversation is the catalog. Want something the vendor
-## hasn't named? Ask them — their LLM answers with a mention or a quote,
-## and the item appears here. The v2 pc/pay route requires an item
-## (ZBBS-WORK-287), so there is no coins-only entry.
-func _refresh_pay_item_dropdown() -> void:
-    if pay_item_option == null:
-        return
-    pay_item_option.clear()
-    var recipient: String = ""
-    if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
-        recipient = pay_modal_recipients[pay_recipient_option.selected]
-    var listed := {}
-    if not recipient.is_empty():
-        var prices = vendor_mention_prices.get(recipient, {})
-        if typeof(prices) != TYPE_DICTIONARY:
-            prices = {}
-        var mentions = vendor_mentions.get(recipient, null)
-        if typeof(mentions) == TYPE_ARRAY or typeof(mentions) == TYPE_PACKED_STRING_ARRAY:
-            for kind in mentions:
-                var s := str(kind)
-                if s.is_empty() or listed.has(s):
-                    continue
-                listed[s] = true
-                var label := _pay_item_label(s)
-                if prices.has(s) and int(prices[s]) > 0:
-                    label = "%s — %d coins" % [label, int(prices[s])]
-                pay_item_option.add_item(label)
-                pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
-    if pay_confirm_button != null:
-        pay_confirm_button.disabled = pay_item_option.item_count == 0
-    if pay_item_option.item_count > 0:
-        # clear() can leave selected == -1 even after items are added —
-        # select explicitly so Confirm-enabled always implies a valid
-        # selection for _selected_pay_item(). (code_review)
-        if pay_item_option.selected < 0:
-            pay_item_option.select(0)
-        if pay_status_label != null:
-            pay_status_label.text = ""
-    elif not recipient.is_empty() and pay_status_label != null:
-        # With the catalog listing gone (ZBBS-WORK-400) this is the normal
-        # state for a vendor who hasn't named any goods yet: the hint tells
-        # the player the move is to ASK. Re-evaluated on every refresh, so
-        # it clears itself once a mention or quote lands.
-        pay_status_label.text = "%s hasn't named anything for sale yet — ask them." % recipient
-
-
-func _on_pay_recipient_changed(_idx: int) -> void:
-    _refresh_pay_item_dropdown()
-    var recipient: String = ""
-    if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
-        recipient = pay_modal_recipients[pay_recipient_option.selected]
-    _apply_pay_defaults_for_recipient(recipient)
-    _update_pay_booking_controls()
-
-
-## When the recipient has mentioned exactly one item in this huddle,
-## auto-select it in the dropdown and pre-fill amount from any quoted
-## unit_price. Saves the player from re-entering values they already
-## heard in conversation. With multiple mentioned items (or none), the
-## dropdown keeps its default selection and the player picks
-## consciously.
-##
-## Called on modal open and on recipient change. Does nothing if the
-## modal hasn't been built yet.
-func _apply_pay_defaults_for_recipient(recipient: String) -> void:
-    if pay_item_option == null or pay_amount_spin == null or pay_qty_spin == null:
-        return
-    if recipient.is_empty():
-        return
-    # Pre-fill triggers when the vendor's MOST RECENT mention-bearing
-    # speak narrowed to a single item. The accumulated vendor_mentions
-    # union (used for the dropdown) stays wide once the vendor lists
-    # several options up-front, so reading from it would suppress
-    # pre-fill for every later "the X is N coins" follow-up.
-    var mentions = vendor_latest_mentions.get(recipient, null)
-    if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
-        return
-    if mentions.size() != 1:
-        return
-    var kind := str(mentions[0]).strip_edges().to_lower()
-    if kind.is_empty():
-        return
-    # Locate the matching dropdown entry by metadata. The mention block
-    # stores lowercase names and the catalog block keeps wire case, so
-    # match case-insensitively; the union may put the latest single
-    # mention at any index, so no position can be hard-coded.
-    for i in range(pay_item_option.item_count):
-        var meta = pay_item_option.get_item_metadata(i)
-        if typeof(meta) == TYPE_STRING and str(meta).to_lower() == kind:
-            pay_item_option.selected = i
-            break
-    var prices = vendor_mention_prices.get(recipient, {})
-    if typeof(prices) == TYPE_DICTIONARY and prices.has(kind):
-        var unit_price := int(prices[kind])
-        if unit_price > 0:
-            pay_amount_spin.value = unit_price
-            pay_qty_spin.value = 1
-
-
-## Fetch the item-kind catalog once. The response repopulates the open
-## dropdown via _on_items_completed; a failed fetch degrades to the old
-## mentions-only behavior (and a later modal open retries).
-func _ensure_pay_items_catalog() -> void:
-    if pay_items_catalog_requested or http_items == null:
-        return
-    pay_items_catalog_requested = true
-    var err := http_items.request(
-        _api_url("/api/village/items"),
-        _auth_headers(),
-        HTTPClient.METHOD_GET,
-    )
-    if err != OK:
-        pay_items_catalog_requested = false
-
-
-func _on_items_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        # Allow a retry on the next modal open rather than caching failure.
-        pay_items_catalog_requested = false
-        return
-    var parsed = JSON.parse_string(body.get_string_from_utf8())
-    if typeof(parsed) != TYPE_ARRAY:
-        pay_items_catalog_requested = false
-        return
-    pay_item_catalog_order.clear()
-    pay_item_catalog_labels.clear()
-    pay_item_catalog_dispo.clear()
-    for entry in parsed:
-        if typeof(entry) != TYPE_DICTIONARY:
-            continue
-        # Preserve the exact wire name — it becomes the metadata submitted
-        # back to pc/pay, so the client must not mutate its case. Lowercase
-        # is only a LOOKUP key (labels, dedup against the lowercased
-        # mentions accumulator). (code_review)
-        var name := str(entry.get("name", "")).strip_edges()
-        if name.is_empty():
-            continue
-        pay_item_catalog_order.append(name)
-        var label := str(entry.get("display_label", "")).strip_edges()
-        pay_item_catalog_labels[name.to_lower()] = label if not label.is_empty() else name
-        var dispo := str(entry.get("disposition", "")).strip_edges()
-        if not dispo.is_empty():
-            pay_item_catalog_dispo[name.to_lower()] = dispo
-    # The catalog may land while the modal is already open — refresh so
-    # the full list appears without reopening.
-    if pay_modal != null and pay_modal.visible:
-        _refresh_pay_item_dropdown()
-        _refresh_pay_quote_rows()
-        _update_pay_booking_controls()
-
-
-## Fetch the live take-able quotes for this PC (ZBBS-HOME-426). Called on
-## every modal open — quotes expire, get taken, and get superseded, so a
-## cached list goes stale within minutes.
-func _request_pay_quotes() -> void:
-    if http_quotes == null:
-        return
-    # Cancel any in-flight fetch first: an older response must never
-    # repopulate rows a newer open just cleared (it could be from another
-    # huddle), and a lingering request would otherwise ERR_BUSY this one
-    # into silently showing nothing. (code_review)
-    if http_quotes.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
-        http_quotes.cancel_request()
-    var err := http_quotes.request(
-        _api_url("/api/village/pc/quotes"),
-        _auth_headers(),
-        HTTPClient.METHOD_GET,
-    )
-    if err != OK:
-        # Degrade to the compose form for this open — rows stay hidden.
-        pay_quotes = []
-        _refresh_pay_quote_rows()
-
-
-func _on_quotes_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        # Degrade silently to the compose form — the quote rows are a
-        # convenience layer over the same pc/pay contract.
-        return
-    var parsed = JSON.parse_string(body.get_string_from_utf8())
-    if typeof(parsed) != TYPE_DICTIONARY:
-        return
-    var quotes = parsed.get("quotes", [])
-    if typeof(quotes) != TYPE_ARRAY:
-        return
-    pay_quotes = quotes
-    if pay_modal != null and pay_modal.visible:
-        _refresh_pay_quote_rows()
-
-
-## Rebuild the "Offers on the table" rows: formal quotes from the last
-## /pc/quotes fetch, then verbal mentions (ZBBS-WORK-400). A quote row's
-## Take button submits the quote verbatim (fast path); a mention row's
-## Offer button only PRE-FILLS the compose form — a remark in conversation
-## is not a binding offer, so the player reviews and confirms. With several
-## vendors pitching at once, each (seller, item) is its own labeled row —
-## the player picks between visible offers instead of navigating dropdowns.
-func _refresh_pay_quote_rows() -> void:
-    if pay_quote_rows_box == null:
-        return
-    for child in pay_quote_rows_box.get_children():
-        child.queue_free()
-    var shown := 0
-    # Visible Take rows whose item permits a disposition choice — drives the
-    # "Take eligible offers as" toggle's visibility (ZBBS-WORK-402).
-    var choice_rows := 0
-    # A formal quote supersedes a verbal mention of the same (seller, item):
-    # track coverage so each pairing renders exactly one row, quote first.
-    var covered := {}
-    for q in pay_quotes:
-        if typeof(q) != TYPE_DICTIONARY:
-            continue
-        # Lowercase BOTH key halves: quote seller casing comes off the wire,
-        # mention sellers come from the huddle roster — a casing mismatch
-        # would render duplicate rows for the same offer. (code_review)
-        # Coverage registers BEFORE the dismiss skip: dismissing a quote
-        # hides the offer entirely — its mention sibling must not pop back
-        # up in its place. (ZBBS-WORK-401)
-        covered["%s|%s" % [str(q.get("seller", "")).to_lower(), str(q.get("item", "")).to_lower()]] = true
-        var qid := int(q.get("quote_id", 0))
-        if qid != 0 and pay_dismissed_quotes.has(qid):
-            continue
-        var row := HBoxContainer.new()
-        row.add_theme_constant_override("separation", 8)
-
-        var text := Label.new()
-        text.text = _pay_quote_row_label(q)
-        text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-        text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        text.custom_minimum_size = Vector2(220, 0)
-        text.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-        row.add_child(text)
-
-        var take := Button.new()
-        take.text = "Take it"
-        take.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-        take.pressed.connect(_on_pay_take_pressed.bind(q))
-        row.add_child(take)
-
-        row.add_child(_make_pay_row_dismiss(_on_pay_quote_dismissed.bind(qid)))
-
-        pay_quote_rows_box.add_child(row)
-        shown += 1
-        # Counted HERE, with the row actually added, so the toggle's
-        # visibility can never claim a choice row that a future skip
-        # condition filtered out. (code_review)
-        if _pay_item_dispo(str(q.get("item", ""))) == "choice":
-            choice_rows += 1
-    # Verbal-mention rows, one per (huddle seller, mentioned item) not
-    # already quoted. Sellers iterate in recipient order so the rows group
-    # stably by vendor across rebuilds.
-    for seller in pay_modal_recipients:
-        var seller_name := str(seller)
-        var mentions = vendor_mentions.get(seller_name, null)
-        if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
-            continue
-        var prices = vendor_mention_prices.get(seller_name, {})
-        if typeof(prices) != TYPE_DICTIONARY:
-            prices = {}
-        for kind in mentions:
-            var item := str(kind)
-            if item.is_empty():
-                continue
-            var cover_key := "%s|%s" % [seller_name.to_lower(), item.to_lower()]
-            if covered.has(cover_key):
-                continue
-            covered[cover_key] = true
-            if pay_dismissed_mentions.has(cover_key):
-                continue
-
-            var row := HBoxContainer.new()
-            row.add_theme_constant_override("separation", 8)
-
-            var text := Label.new()
-            text.text = _pay_mention_row_label(seller_name, item, prices)
-            text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-            text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-            text.custom_minimum_size = Vector2(220, 0)
-            text.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-            # Slightly dimmed vs quote rows: a mention is softer than a
-            # posted offer, and the tint cues the different button behavior.
-            text.add_theme_color_override("font_color", Color(0.78, 0.70, 0.55))
-            row.add_child(text)
-
-            var offer := Button.new()
-            offer.text = "Offer"
-            offer.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-            offer.pressed.connect(_on_pay_mention_pressed.bind(seller_name, item))
-            row.add_child(offer)
-
-            row.add_child(_make_pay_row_dismiss(_on_pay_mention_dismissed.bind(cover_key)))
-
-            pay_quote_rows_box.add_child(row)
-            shown += 1
-    var any := shown > 0
-    # No takeable quotes or mentions — explain why instead of a blank gap
-    # (LLM-38). The held-room case is the common dead-end: the player reopens
-    # Pay expecting a room row after a keeper "offered" them a room they already
-    # hold. _pay_empty_state_text() returns "" when the compose form is the right
-    # path (recipients present, no lodging), leaving the prior hide-when-empty
-    # behavior. Added into the rows box so the top-of-function clear removes it.
-    var empty_text := "" if any else _pay_empty_state_text()
-    if empty_text != "":
-        var empty := Label.new()
-        empty.text = empty_text
-        empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-        empty.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        empty.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-        empty.add_theme_color_override("font_color", Color(0.78, 0.70, 0.55))
-        pay_quote_rows_box.add_child(empty)
-    var show_box := any or empty_text != ""
-    if pay_quotes_header != null:
-        pay_quotes_header.visible = any  # "Offers on the table" titles real offers only
-    pay_quote_rows_box.visible = show_box
-    if pay_quotes_separator != null:
-        pay_quotes_separator.visible = show_box
-    # The disposition toggle shows only when it can actually govern
-    # something — at least one visible Take row with a choice-class item.
-    # Mention rows don't count: they route through compose, where the
-    # checkbox stays authoritative. (ZBBS-WORK-402)
-    if pay_disposition_row != null:
-        pay_disposition_row.visible = any and choice_rows > 0
-
-
-## Empty-state copy for the pay modal when no quotes or mentions are takeable
-## (LLM-38). The held-room note shows only when the PC's own innkeeper is the
-## co-present recipient (the keeper-re-offers dead-end this fixes) or when there
-## is no one to pay at all — not while composing a payment to a DIFFERENT vendor,
-## where "you already have a room" would be a non-sequitur. Returns "" when the
-## compose form below is the natural path.
-func _pay_empty_state_text() -> String:
-    if not pc_lodging.is_empty():
-        var keeper := str(pc_lodging.get("keeper_name", ""))
-        var keeper_present: bool = keeper != "" and pay_modal_recipients.has(keeper)
-        if keeper_present or pay_modal_recipients.is_empty():
-            var inn := str(pc_lodging.get("inn_name", "your inn"))
-            var until := str(pc_lodging.get("until_label", ""))
-            if until != "":
-                return "You already have a room at %s, paid %s — nothing to pay for it." % [inn, until]
-            return "You already have a room at %s — nothing to pay for it." % inn
-    if pay_modal_recipients.is_empty():
-        return "Nothing to pay for right now."
-    return ""
-
-
-## One-line PROSE description of a mention row. "Spoke of" (vs the quote
-## rows' "offers") keeps the formal-vs-casual distinction the buttons act
-## on: a quote settles on Take, a mention only pre-fills. Mention prices
-## are per-unit on the wire, so the price reads "N coins each".
-func _pay_mention_row_label(seller: String, item: String, prices: Dictionary) -> String:
-    var label := _pay_item_label(item)
-    var key := item.to_lower()
-    var line := "%s spoke of %s" % [seller, label]
-    if prices.has(key) and int(prices[key]) > 0:
-        line += " — %d coins each" % int(prices[key])
-    return line + "."
-
-
-## A mention row's Offer button: pre-fill the compose form with the seller,
-## item, and any heard price, then let the player adjust and Confirm. No
-## submit happens here — mentions are conversation, not commitments.
-func _on_pay_mention_pressed(seller: String, item: String) -> void:
-    if pay_recipient_option == null or pay_item_option == null:
-        return
-    var idx := pay_modal_recipients.find(seller)
-    if idx < 0:
-        # The seller left the huddle between render and click; the next
-        # rebuild drops their rows.
-        if pay_status_label != null:
-            pay_status_label.text = "%s is no longer here." % seller
-        return
-    # select() doesn't fire item_selected for programmatic changes, so run
-    # the recipient-change chain by hand.
-    pay_recipient_option.select(idx)
-    _refresh_pay_item_dropdown()
-    var key := item.to_lower()
-    for i in range(pay_item_option.item_count):
-        var meta = pay_item_option.get_item_metadata(i)
-        if typeof(meta) == TYPE_STRING and str(meta).to_lower() == key:
-            pay_item_option.select(i)
-            break
-    # Amount: the heard price when the vendor named one, else reset to the
-    # modal-open default — never silently keep a previous row's amount.
-    # (code_review)
-    var heard := 0
-    var prices = vendor_mention_prices.get(seller, {})
-    if typeof(prices) == TYPE_DICTIONARY:
-        heard = int(prices.get(key, 0))
-    if pay_amount_spin != null:
-        if heard > 0:
-            pay_amount_spin.value = heard
-        else:
-            pay_amount_spin.value = 1
-    if pay_qty_spin != null:
-        pay_qty_spin.value = 1
-    # Sync the compose checkbox from the standing toggle for choice-class
-    # items (ZBBS-WORK-402, designer rec) — an Offer pre-fill lands with
-    # the same disposition the take rows would use, so the modal reads
-    # coherently end to end. The player can still flip the checkbox.
-    if _pay_item_dispo(item) == "choice" and pay_take_home_check != null and pay_dispo_carry_button != null:
-        pay_take_home_check.button_pressed = pay_dispo_carry_button.button_pressed
-    _update_pay_booking_controls()
-    if pay_status_label != null:
-        pay_status_label.text = "Review the terms below, then Confirm."
-
-
-## One-line PROSE description of a quote row (ZBBS-WORK-401, Jeff: "should
-## read nice — 'Josiah offered to sell X for Y'"). Carries qty, whether the
-## price is each-or-total, the disposition, and the "for you" marker.
-## The disposition phrase stays for now because a Take still settles at the
-## QUOTE's consume_now — it is a binding term until the buyer-decides
-## disposition work (WORK-402) ships; drop it there, not here.
-func _pay_quote_row_label(q: Dictionary) -> String:
-    var seller := str(q.get("seller", ""))
-    var amount := int(q.get("amount", 0))
-    var item := str(q.get("item", "")).to_lower()
-    # LLM-101: render every line of a bundle ("2× Blueberries + 2× Raspberries");
-    # a single-item quote (one line, or the legacy representative fields) reads as
-    # before. "a bowl of stew" pluralizes badly in the generic case, so qty > 1
-    # reads "2× bowl of stew" with the leading article stripped.
-    var parts := []
-    var lines = q.get("lines", [])
-    if typeof(lines) == TYPE_ARRAY and lines.size() > 0:
-        for ln in lines:
-            if typeof(ln) != TYPE_DICTIONARY:
-                continue
-            var ln_label := str(ln.get("display_label", ln.get("item", "")))
-            var ln_qty := int(ln.get("qty", 1))
-            if ln_qty > 1:
-                parts.append("%d× %s" % [ln_qty, _strip_leading_article(ln_label)])
-            else:
-                parts.append(ln_label)
-    if parts.is_empty():
-        # Legacy/representative single-item path (no lines array on the wire).
-        var label := str(q.get("display_label", q.get("item", "")))
-        var qty := int(q.get("qty", 1))
-        if qty > 1:
-            parts.append("%d× %s" % [qty, _strip_leading_article(label)])
-        else:
-            parts.append(label)
-    var is_bundle := parts.size() > 1
-    var what := " + ".join(parts)
-    # The bundle/multi-unit amount gains an explicit "total" so each-vs-total is
-    # never ambiguous (quote amounts are bundle totals on the wire).
-    var multi := is_bundle or int(q.get("qty", 1)) > 1
-    var dispo := _pay_item_dispo(item)
-    var line: String
-    if not is_bundle and (dispo == "tonight" or item == "nights_stay"):
-        line = "%s offers %s tonight for %d coins" % [seller, what, amount]
-    else:
-        line = "%s offers %s for %d coins" % [seller, what, amount]
-    if multi:
-        line += " total"
-    # Disposition clause (ZBBS-WORK-402/403): a bundle carries ONE disposition
-    # (its consume_now), so use that directly. For a single item, choice-class
-    # items carry NONE (the "Take eligible offers as" toggle governs the take);
-    # eat_here-class items say so plainly; unknown class keeps the quote-verbatim
-    # clause, matching what the Take will send in that degraded state.
-    if is_bundle:
-        if bool(q.get("consume_now", false)):
-            line += ", to eat here"
-        else:
-            line += ", to take home"
-    elif dispo == "eat_here":
-        line += ", to eat here"
-    elif dispo == "" and item != "nights_stay":
-        if bool(q.get("consume_now", false)):
-            line += ", to eat here"
-        else:
-            line += ", to take home"
-    if bool(q.get("targeted", false)):
-        line += " — for you"
-    line += "."
-    return line
-
-
-## Disposition class for an item from the catalog (ZBBS-WORK-402):
-## "choice" (buyer's toggle governs takes), "tonight" (service — engine
-## forces the shape), or "" when the catalog hasn't landed/failed —
-## unknown degrades to quote-verbatim takes, the pre-402 behavior.
-func _pay_item_dispo(item: String) -> String:
-    return str(pay_item_catalog_dispo.get(item.to_lower(), ""))
-
-
-## Strips a leading English article from a display label so qty-prefixed
-## prose reads "2× bowl of stew" rather than "2× a bowl of stew".
-func _strip_leading_article(label: String) -> String:
-    var lower := label.to_lower()
-    if lower.begins_with("a "):
-        return label.substr(2)
-    if lower.begins_with("an "):
-        return label.substr(3)
-    if lower.begins_with("the "):
-        return label.substr(4)
-    return label
-
-
-## Small (x) shared by quote and mention rows (ZBBS-WORK-401). Dismissal is
-## local housekeeping — to refuse the vendor socially, the player just says
-## so in chat.
-func _make_pay_row_dismiss(on_pressed: Callable) -> Button:
-    var dismiss := Button.new()
-    dismiss.text = "×"
-    dismiss.custom_minimum_size = Vector2(22, 0)
-    dismiss.focus_mode = Control.FOCUS_NONE
-    dismiss.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
-    dismiss.tooltip_text = "Hide this offer"
-    dismiss.pressed.connect(on_pressed)
-    return dismiss
-
-
-func _on_pay_quote_dismissed(quote_id: int) -> void:
-    if quote_id != 0:
-        pay_dismissed_quotes[quote_id] = true
-    _refresh_pay_quote_rows()
-
-
-func _on_pay_mention_dismissed(cover_key: String) -> void:
-    pay_dismissed_mentions[cover_key] = true
-    _refresh_pay_quote_rows()
-
-
-## Submit a quote take: pc/pay with quote_id + the quote's terms verbatim.
-## ready_in_days is deliberately omitted (same-day) — an advance booking
-## composes a date the quote doesn't carry, so it stays on the compose
-## form. Reuses http_pay / _on_pay_completed; a strict-reject (the quote
-## expired or was taken between render and click) surfaces there and
-## triggers a list re-fetch.
-func _on_pay_take_pressed(q: Dictionary) -> void:
-    # One pay submit at a time: a second Take (or a Take during a compose
-    # submit) would ERR_BUSY against the shared http_pay node, and its
-    # error path would clear pay_take_in_flight out from under the
-    # ORIGINAL in-flight take — losing the stale-row re-fetch when that
-    # take's rejection finally lands. (code_review)
-    if pay_take_in_flight or (http_pay != null and http_pay.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED):
-        pay_status_label.text = "Request already in progress."
-        return
-    var amount := int(q.get("amount", 0))
-    if amount > pc_coins:
-        pay_status_label.text = "You only have %d coins." % pc_coins
-        return
-    # Disposition (ZBBS-WORK-402/403): the buyer's standing toggle governs
-    # choice-class items; eat_here-class items (non-portable consumables —
-    # the original "people can't carry stew" data ruling) always settle
-    # eat-here for a PC, even when the quote proposed carry-home. "tonight"
-    # / unknown-class items send the quote verbatim (the engine clamps
-    # services regardless, and verbatim is the safe degrade when the
-    # catalog hasn't landed).
-    var take_dispo := _pay_item_dispo(str(q.get("item", "")))
-    var consume_now := bool(q.get("consume_now", false))
-    if take_dispo == "choice" and pay_dispo_eat_button != null:
-        consume_now = pay_dispo_eat_button.button_pressed
-    elif take_dispo == "eat_here":
-        consume_now = true
-    var body := {
-        "seller": str(q.get("seller", "")),
-        "item": str(q.get("item", "")),
-        "qty": int(q.get("qty", 1)),
-        "amount": amount,
-        "consume_now": consume_now,
-        "quote_id": int(q.get("quote_id", 0)),
-    }
-    pay_status_label.text = "Taking the offer…"
-    pay_confirm_button.disabled = true
-    pay_take_in_flight = true
-
-    var err := http_pay.request(
-        _api_url("/api/village/pc/pay"),
-        _auth_headers(),
-        HTTPClient.METHOD_POST,
-        JSON.stringify(body),
-    )
-    if err != OK:
-        pay_status_label.text = "Request failed (%s)." % err
-        pay_confirm_button.disabled = false
-        pay_take_in_flight = false
-
-
-## Display label for an item name: vendor-facing catalog label when
-## known, the raw name otherwise. Lookup is case-insensitive (the
-## mentions accumulator lowercases; catalog names keep wire case).
-func _pay_item_label(name: String) -> String:
-    var key := name.to_lower()
-    if pay_item_catalog_labels.has(key):
-        return str(pay_item_catalog_labels[key])
-    return name
-
-
-## The lowercase item_kind metadata of the currently-selected item, or
-## "" when the dropdown is empty.
-func _selected_pay_item() -> String:
-    if pay_item_option == null or pay_item_option.selected < 0:
-        return ""
-    var meta = pay_item_option.get_item_metadata(pay_item_option.selected)
-    if typeof(meta) == TYPE_STRING:
-        return str(meta)
-    return ""
-
-
-## Toggle the booking-specific controls for the selected item. A
-## "nights_stay" purchase is a lodging booking, not an eat-it-here
-## consume: the take-home checkbox is meaningless for it (submit forces
-## consume_now false) and the days-ahead offset row appears instead.
-func _update_pay_booking_controls() -> void:
-    if pay_item_option == null or pay_take_home_check == null or pay_days_ahead_row == null:
-        return
-    var booking := _selected_pay_item().to_lower() == "nights_stay"
-    # eat_here-class items (non-portable consumables, ZBBS-WORK-403) hide
-    # the take-home checkbox like bookings do — the compose submit forces
-    # consume_now for them, so showing an inert checkbox would lie.
-    var eat_only := _pay_item_dispo(_selected_pay_item()) == "eat_here"
-    pay_take_home_check.visible = not booking and not eat_only
-    pay_days_ahead_row.visible = booking
-
-
-func _on_pay_item_changed(_idx: int) -> void:
-    _update_pay_booking_controls()
-    _recompute_pay_amount()
-
-
-func _on_pay_qty_changed(_value: float) -> void:
-    _recompute_pay_amount()
-
-
-## Keep amount = unit price × qty while the vendor's quoted unit price
-## for the selected item is known. amount is the BUNDLE total on the
-## wire, so a qty bump without this would silently offer a 1-unit price
-## for an N-unit ask.
-func _recompute_pay_amount() -> void:
-    if pay_amount_spin == null or pay_qty_spin == null:
-        return
-    var item := _selected_pay_item()
-    if item.is_empty():
-        return
-    var recipient: String = ""
-    if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
-        recipient = pay_modal_recipients[pay_recipient_option.selected]
-    if recipient.is_empty():
-        return
-    var prices = vendor_mention_prices.get(recipient, {})
-    var key := item.to_lower()
-    if typeof(prices) == TYPE_DICTIONARY and prices.has(key):
-        var unit := int(prices[key])
-        if unit > 0:
-            pay_amount_spin.value = unit * int(pay_qty_spin.value)
-
-
-func _close_pay_modal() -> void:
-    if pay_modal != null:
-        pay_modal.visible = false
-    modal_open_changed.emit(false)
-
-
-func _on_pay_confirm() -> void:
-    if pay_modal_recipients.is_empty():
-        return
-    var idx: int = pay_recipient_option.selected
-    if idx < 0 or idx >= pay_modal_recipients.size():
-        return
-    var recipient: String = pay_modal_recipients[idx]
-    var amount := int(pay_amount_spin.value)
-    var item := _selected_pay_item()
-    var qty := int(pay_qty_spin.value)
-    # A lodging booking is never consumed on the spot; an eat_here-class
-    # item (non-portable consumable, ZBBS-WORK-403) is ALWAYS consumed on
-    # the spot; everything else follows the take-home checkbox.
-    var booking := item.to_lower() == "nights_stay"
-    var eat_only := _pay_item_dispo(item) == "eat_here"
-    var consume_now := true
-    if booking:
-        consume_now = false
-    elif not eat_only:
-        consume_now = not pay_take_home_check.button_pressed
-
-    if item.is_empty():
-        pay_status_label.text = "Pick an item — wait for them to offer something."
-        return
-    if amount < 1:
-        pay_status_label.text = "Amount must be at least 1 coin."
-        return
-    if qty < 1:
-        pay_status_label.text = "Quantity must be at least 1."
-        return
-    if amount > pc_coins:
-        pay_status_label.text = "You only have %d coins." % pc_coins
-        return
-
-    # v2 pc/pay contract (ZBBS-WORK-287): seller + item + qty + amount
-    # required; the buyer is the session PC. ready_in_days (ZBBS-HOME-403)
-    # only rides a booking, and 0 already means tonight.
-    var body := {
-        "seller": recipient,
-        "item": item,
-        "qty": qty,
-        "amount": amount,
-        "consume_now": consume_now,
-    }
-    if booking and pay_days_ahead_spin != null and int(pay_days_ahead_spin.value) > 0:
-        body["ready_in_days"] = int(pay_days_ahead_spin.value)
-    pay_status_label.text = "Sending…"
-    pay_confirm_button.disabled = true
-
-    var headers: PackedStringArray = _auth_headers()
-    var json := JSON.stringify(body)
-    var err := http_pay.request(
-        _api_url("/api/village/pc/pay"),
-        headers,
-        HTTPClient.METHOD_POST,
-        json,
-    )
-    if err != OK:
-        pay_status_label.text = "Request failed (%s)." % err
-        pay_confirm_button.disabled = false
-
-
-func _on_pay_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-    var was_take := pay_take_in_flight
-    pay_take_in_flight = false
-    pay_confirm_button.disabled = false
-    if result != HTTPRequest.RESULT_SUCCESS:
-        pay_status_label.text = "Network error."
-        return
-    var raw := body.get_string_from_utf8()
-    var parsed = JSON.parse_string(raw)
-    if response_code < 200 or response_code >= 300:
-        var msg := "Server error %d." % response_code
-        if typeof(parsed) == TYPE_DICTIONARY:
-            msg = str(parsed.get("error", msg))
-        pay_status_label.text = msg
-        # A rejected take means the row went stale (the explicit quote_id
-        # path is strict-reject — the quote expired, was taken, or the
-        # scene moved on). Re-fetch so the list reflects reality.
-        if was_take:
-            _request_pay_quotes()
-        return
-    if typeof(parsed) != TYPE_DICTIONARY:
-        pay_status_label.text = "Bad response."
-        return
-    # v2 pc/pay answers {ledger_id, state, fast_path} (ZBBS-WORK-287) —
-    # there is no "result" field. Any 2xx means the offer was minted;
-    # "pending" means the seller answers on a later tick (the resolution
-    # broadcast narrates the outcome in the room log when it lands).
-    var state := str(parsed.get("state", ""))
-    if state.is_empty():
-        pay_status_label.text = "Bad response."
-        return
-    if state == "pending":
-        var seller_name := ""
-        if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
-            seller_name = pay_modal_recipients[pay_recipient_option.selected]
-        if seller_name.is_empty():
-            seller_name = "the seller"
-        _append_log_line("", "Your offer is before %s — awaiting their answer." % seller_name, "act", false, Time.get_datetime_string_from_system(true))
-    # Close the modal and re-poll /pc/me so the coin chip and inventory
-    # snapshot refresh immediately.
-    _close_pay_modal()
-    _refresh_state()
+    if pay_panel != null:
+        pay_panel.open()
+
+
+## A slow-path offer is before the seller; their answer lands later as a
+## pay_resolved or pay_countered line.
+func _on_pay_offer_pending(seller: String) -> void:
+    if seller.is_empty():
+        seller = "the seller"
+    _append_log_line("", "Your offer is before %s — awaiting their answer." % seller, "act", false, Time.get_datetime_string_from_system(true))
 
 
 func _on_speak_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -2808,10 +1620,6 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
                 continue
             this_seen[k] = true
             this_speak.append(k)
-            # A fresh mention resurfaces a previously-dismissed row for
-            # this (seller, item) — the vendor brought it up again.
-            # (ZBBS-WORK-401)
-            pay_dismissed_mentions.erase("%s|%s" % [speaker_name.to_lower(), k])
             if not seen.has(k):
                 seen[k] = true
                 updated.append(k)
@@ -2836,17 +1644,9 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
                 if price > 0:
                     existing_prices[str(k).strip_edges().to_lower()] = price
             vendor_mention_prices[speaker_name] = existing_prices
-        # Live-refresh the open pay modal: the offer rows always (a new
-        # mention from ANY huddle vendor is a new row, ZBBS-WORK-400), the
-        # item dropdown + defaults only when it's pointing at this speaker.
-        if pay_modal != null and pay_modal.visible:
-            _refresh_pay_quote_rows()
-            if pay_recipient_option != null:
-                var sel: int = pay_recipient_option.selected
-                if sel >= 0 and sel < pay_modal_recipients.size() and pay_modal_recipients[sel] == speaker_name:
-                    _refresh_pay_item_dropdown()
-                    _apply_pay_defaults_for_recipient(speaker_name)
-                    _update_pay_booking_controls()
+        # The open Pay box shows a new spoken good straight away.
+        if pay_panel != null:
+            pay_panel.refresh()
 
 
 # Generic room-event handler. Engine emits these for narration-worthy
@@ -2990,6 +1790,8 @@ func _coins_phrase(n: int) -> String:
 func _on_pay_offer(data: Dictionary) -> void:
     var buyer_id := str(data.get("buyer_id", ""))
     var seller_id := str(data.get("seller_id", ""))
+    if pay_panel != null:
+        pay_panel.note_pay_offer(data)
     if not _pc_is_party(buyer_id, seller_id):
         return
     var item_phrase := _item_phrase(str(data.get("item", "")), int(data.get("qty", 1)))
@@ -3006,6 +1808,8 @@ func _on_pay_offer(data: Dictionary) -> void:
 func _on_pay_countered(data: Dictionary) -> void:
     var buyer_id := str(data.get("buyer_id", ""))
     var seller_id := str(data.get("seller_id", ""))
+    if pay_panel != null:
+        pay_panel.note_countered(data)
     if not _pc_is_party(buyer_id, seller_id):
         return
     var counter := _coins_phrase(int(data.get("counter_amount", 0)))
@@ -3019,12 +1823,17 @@ func _on_pay_countered(data: Dictionary) -> void:
         text = "You countered %s: %s." % [str(data.get("buyer_name", "")), counter]
     if not msg.is_empty():
         text += " \"%s\"" % msg
+    # The counter waits in the Pay box as a card with one Pay button.
+    if buyer_id == pc_actor_id:
+        text += " Press Pay to answer."
     append_local_narration(text, at)
 
 
 func _on_pay_resolved(data: Dictionary) -> void:
     var buyer_id := str(data.get("buyer_id", ""))
     var seller_id := str(data.get("seller_id", ""))
+    if pay_panel != null:
+        pay_panel.note_resolved(data)
     if not _pc_is_party(buyer_id, seller_id):
         return
     var pc_is_buyer := buyer_id == pc_actor_id
