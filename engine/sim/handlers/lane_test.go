@@ -92,6 +92,50 @@ func TestWorkerRunsPlayerLaneFirst(t *testing.T) {
 	}
 }
 
+// TestWorkerCapsPlayerRun: while the player lane never empties, a waiting
+// village job still runs after maxPlayerRun player jobs in a row.
+func TestWorkerCapsPlayerRun(t *testing.T) {
+	w, tel, cancel := newTestWorld(t, 1)
+	defer cancel()
+	var p *TickWorkerPool
+	refills := 0
+	runner := &fakeRunner{called: make(chan tickJob, 16)}
+	// Each player job queues another before the worker picks its next job,
+	// so the player lane is never empty. onRun runs on the single worker
+	// goroutine, so refills needs no lock.
+	runner.onRun = func(_ *sim.World, job tickJob) {
+		if job.attemptID != "village" && refills < 6 {
+			refills++
+			p.playerJobs <- tickJob{actorID: "alice", attemptID: "player"}
+		}
+	}
+	p = newPoolWithRunner(w, tel, runner)
+	p.jobs <- tickJob{actorID: "alice", attemptID: "village"}
+	p.playerJobs <- tickJob{actorID: "alice", attemptID: "player"}
+	p.playerJobs <- tickJob{actorID: "alice", attemptID: "player"}
+
+	p.Start(context.Background())
+	defer func() { p.Stop(); p.Wait() }()
+
+	var order []sim.TickAttemptID
+	for len(order) <= maxPlayerRun {
+		select {
+		case job := <-runner.called:
+			order = append(order, job.attemptID)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("worker ran only %v", order)
+		}
+	}
+	for i := 0; i < maxPlayerRun; i++ {
+		if order[i] != "player" {
+			t.Fatalf("run order = %v, want %d player jobs first", order, maxPlayerRun)
+		}
+	}
+	if order[maxPlayerRun] != "village" {
+		t.Fatalf("run order = %v, want the village job after %d player jobs", order, maxPlayerRun)
+	}
+}
+
 // TestEvaluatorAdmitsPlayerCycleWhenVillageQueueFull is the live 2026-10-08
 // shape under the real evaluator and pool: the village queue is full, an NPC
 // holds a cycle a player's arrival caused, and another NPC holds an ordinary

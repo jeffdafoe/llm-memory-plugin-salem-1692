@@ -1427,6 +1427,13 @@ func (l TickLane) String() string {
 // NPC answering another NPC inside a huddle a player is only watching stays
 // in the village lane — the player did not cause that turn.
 //
+// The rule is causal, not spatial: every warrant a PC can trigger comes from
+// a direct player action (speech, arrival, leaving, a pay offer or payment, a
+// hire settling), so the recipient is nearly always the NPC the player is
+// dealing with. The rare remote one (a hire's wage settling after the player
+// walked off) costs one early turn, and the worker's maxPlayerRun cap keeps
+// the lane from holding village turns back.
+//
 // Must run on the world goroutine (reads w.Actors).
 func WarrantCycleLane(w *World, warrants []WarrantMeta) TickLane {
 	for _, m := range warrants {

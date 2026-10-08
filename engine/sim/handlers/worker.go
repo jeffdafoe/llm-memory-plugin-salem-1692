@@ -15,20 +15,16 @@ import (
 // enqueue free of any send-on-closed hazard.
 func (p *TickWorkerPool) worker(ctx context.Context) {
 	defer p.wg.Done()
+	playerRun := 0
 	for {
-		// Player lane first (LLM-723). A select over both queues picks a
-		// ready case at random, so a queued player job could still lose to
-		// a queued village job; the non-blocking pass makes it win.
-		var job tickJob
-		select {
-		case job = <-p.playerJobs:
-		default:
-			select {
-			case <-ctx.Done():
-				return
-			case job = <-p.playerJobs:
-			case job = <-p.jobs:
-			}
+		job, lane, ok := p.nextJob(ctx, playerRun >= maxPlayerRun)
+		if !ok {
+			return
+		}
+		if lane == sim.TickLanePlayer {
+			playerRun++
+		} else {
+			playerRun = 0
 		}
 		// select picks a ready case at random — after Stop, with both
 		// ctx.Done() and a buffered job ready, it may land on the job. Stop
@@ -40,6 +36,40 @@ func (p *TickWorkerPool) worker(ctx context.Context) {
 		default:
 		}
 		p.runJob(ctx, job)
+	}
+}
+
+// maxPlayerRun bounds the player lane's precedence (LLM-723): after this many
+// player turns in a row, a waiting village turn runs next. One player line
+// wakes every NPC in the room, all in the player lane, so unbounded
+// precedence would hold village turns back for as long as a player keeps
+// talking in a crowded room.
+const maxPlayerRun = 3
+
+// nextJob blocks for the next job and reports its lane; ok is false when ctx
+// is cancelled first. A ready player job is taken before a ready village job
+// — a single select over both queues would pick between them at random —
+// unless villageFirst, when a ready village job goes first.
+func (p *TickWorkerPool) nextJob(ctx context.Context, villageFirst bool) (tickJob, sim.TickLane, bool) {
+	if villageFirst {
+		select {
+		case job := <-p.jobs:
+			return job, sim.TickLaneVillage, true
+		default:
+		}
+	}
+	select {
+	case job := <-p.playerJobs:
+		return job, sim.TickLanePlayer, true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return tickJob{}, sim.TickLaneVillage, false
+	case job := <-p.playerJobs:
+		return job, sim.TickLanePlayer, true
+	case job := <-p.jobs:
+		return job, sim.TickLaneVillage, true
 	}
 }
 
