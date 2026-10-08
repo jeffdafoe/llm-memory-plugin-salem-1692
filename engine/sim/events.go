@@ -218,6 +218,7 @@ type ReactorTickDue struct {
 	WarrantedSince time.Time     // when the warrant cycle began
 	DueAt          time.Time     // when the warrant became due (= WarrantedSince + jitter)
 	EmittedAt      time.Time
+	Lane           TickLane // the queue admission was checked against; the subscriber enqueues on it
 }
 
 func (ReactorTickDue) isSimEvent() {}

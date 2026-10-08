@@ -11,7 +11,7 @@ import (
 // The enqueue is non-blocking, and the panic on the default branch is
 // correct — not paranoia. The evaluator already called CanAdmit() on this
 // same goroutine, before consuming the actor's warrants and emitting; only
-// the world goroutine sends to p.jobs and only workers drain it, so between
+// the world goroutine sends to the lane queues and only workers drain them, so between
 // that CanAdmit and this enqueue the buffer length cannot have risen. If
 // the send would block, an admission invariant has been broken (single
 // producer / synchronous dispatch / Stop-makes-CanAdmit-false) and must be
@@ -41,8 +41,10 @@ func (p *TickWorkerPool) handleEvent(w *sim.World, evt sim.Event) {
 		// against a pre-dispatch snapshot. See tickJob.dispatchTick + RunTick.
 		dispatchTick: w.TickCounter,
 	}
+	// due.Lane is the lane the evaluator's CanAdmit checked, so the invariant
+	// below holds per queue.
 	select {
-	case p.jobs <- job:
+	case p.queue(due.Lane) <- job:
 	default:
 		panic("handlers: tick admission invariant violated — CanAdmit was true but the job enqueue would block")
 	}

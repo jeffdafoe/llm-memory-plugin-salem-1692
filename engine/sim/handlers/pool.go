@@ -48,6 +48,11 @@ type TickWorkerPool struct {
 	workerCount int
 	jobs        chan tickJob
 
+	// playerJobs is the TickLanePlayer queue (LLM-723): turns a player
+	// character caused. Workers drain it before jobs, so a player-triggered
+	// turn waits only for the turn already running. Same buffer size as jobs.
+	playerJobs chan tickJob
+
 	// stopping flips true on Stop. CanAdmit reads it (from the world
 	// goroutine); Stop writes it — hence atomic.
 	stopping atomic.Bool
@@ -118,10 +123,20 @@ func newPoolWithRunner(w *sim.World, sink sim.TickTelemetrySink, runner tickRunn
 		runner:      runner,
 		workerCount: count,
 		jobs:        make(chan tickJob, buf),
+		playerJobs:  make(chan tickJob, buf),
 	}
 }
 
-// CanAdmit reports whether the pool has buffer space for another tick job.
+// queue returns the job channel for a lane.
+func (p *TickWorkerPool) queue(lane sim.TickLane) chan tickJob {
+	if lane == sim.TickLanePlayer {
+		return p.playerJobs
+	}
+	return p.jobs
+}
+
+// CanAdmit reports whether the lane's queue has buffer space for another
+// tick job.
 // The reactor evaluator calls this on the world goroutine BEFORE consuming
 // an actor's warrants. It returns false once Stop has begun, so the
 // evaluator stops feeding a draining pool — an admit-then-enqueue against a
@@ -129,8 +144,9 @@ func newPoolWithRunner(w *sim.World, sink sim.TickTelemetrySink, runner tickRunn
 // deferral leaves the warrants open for a later, healthy pool.
 //
 // len and cap on a channel are safe to read from any goroutine.
-func (p *TickWorkerPool) CanAdmit() bool {
-	return !p.stopping.Load() && len(p.jobs) < cap(p.jobs)
+func (p *TickWorkerPool) CanAdmit(lane sim.TickLane) bool {
+	q := p.queue(lane)
+	return !p.stopping.Load() && len(q) < cap(q)
 }
 
 // Start launches the worker goroutines. They run until the context derived
