@@ -382,17 +382,38 @@ func orDefault(v, def int) int {
 // minorWorksFact is DamageFact for a minor work, by form, placed by the
 // nearest named building — "A rail has come down on the fence by the Mill".
 func minorWorksFact(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject) string {
+	return minorWorksFactCount(objects, structures, assets, obj, 1)
+}
+
+// minorWorksFactCount is minorWorksFact for n breaks of one form by one
+// landmark, told as one (LLM-718) — "Rails have come down in three places on
+// the fence by the Mill". n <= 1 is the single break's wording.
+func minorWorksFactCount(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject, n int) string {
 	by := ""
 	if landmark := damageSiteLandmark(objects, structures, obj); landmark != "" {
 		by = " by " + WithDefiniteArticle(landmark)
 	}
+	many := n > 1
+	count := countWord(n)
 	switch MinorWorkForm(assets, obj) {
 	case MinorFormFence:
+		if many {
+			return "Rails have come down in " + count + " places on the fence" + by
+		}
 		return "A rail has come down on the fence" + by
 	case MinorFormSignpost:
+		if many {
+			return "The arms of " + count + " signposts" + by + " hang crooked"
+		}
 		return "The arm of the signpost" + by + " hangs crooked"
 	case MinorFormCrate:
+		if many {
+			return "The lids have been knocked loose on " + count + " crates" + by
+		}
 		return "The lid has been knocked loose on the crate" + by
+	}
+	if many {
+		return upperFirst(count) + " things want mending" + by
 	}
 	return "Something wants mending" + by
 }

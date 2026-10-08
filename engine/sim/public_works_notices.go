@@ -30,27 +30,38 @@ import (
 
 // PublicWorksNoticeLines returns the pinned lines for every damaged site — a
 // broken well, a damaged business (LLM-675) or a road obstacle (LLM-677) —
-// lowest id first. Empty when nothing is damaged.
+// lowest id first. Sites whose notice would read the same share one notice
+// that counts them (LLM-718). Empty when nothing is damaged.
 func PublicWorksNoticeLines(w *World) []string {
-	broken := damagedSites(w)
 	var out []string
-	for _, obj := range broken {
+	for _, g := range groupRepairSites(w.VillageObjects, w.Structures, w.Assets, damagedSites(w)) {
+		obj, many := g.Lead, g.Count > 1
 		kind := PublicWorksKind(obj)
-		fact := DamageFact(w.VillageObjects, w.Structures, w.Assets, obj)
-		switch kind {
-		case PublicWorksBusiness:
+		fact := damageFactCount(w.VillageObjects, w.Structures, w.Assets, obj, g.Count)
+		switch {
+		case kind == PublicWorksBusiness && many:
+			out = append(out, fact+" — they can take in no new stock until they are mended.")
+		case kind == PublicWorksBusiness:
 			out = append(out, fact+" — it can take in no new stock until it is mended.")
-		case PublicWorksRoad:
+		case kind == PublicWorksRoad && many:
+			out = append(out, fact+" — walkers must go around them until they are cleared.")
+		case kind == PublicWorksRoad:
 			out = append(out, fact+" — walkers must go around it until it is cleared.")
+		case many:
+			out = append(out, fact+" — no water can be drawn there until they are mended.")
 		default:
 			out = append(out, fact+" — no water can be drawn there until it is mended.")
 		}
 		bounty, _ := w.Settings.publicWorksTerms(kind)
 		switch {
+		case PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) && many:
+			out = append(out, "The town pays "+coinsPhrase(bounty)+" for each one "+publicWorksMendedWord(kind)+".")
 		case PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve):
 			out = append(out, "The town pays "+coinsPhrase(bounty)+" to the hand who "+PublicWorksMendVerb(kind)+" it.")
 		case kind == PublicWorksBusiness, kind == PublicWorksRoad:
 			out = append(out, "The town cannot pay for "+PublicWorksMendNoun(kind)+" just now.")
+		case many:
+			out = append(out, "Until they are mended, draw your water at another well.")
 		default:
 			out = append(out, "Until it is mended, draw your water at the other well.")
 		}
@@ -243,7 +254,7 @@ func minorWorksTickerKey(w *World) string {
 	open := PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve)
 	var parts []string
 	for _, obj := range openMinorWorks(w) {
-		parts = append(parts, string(obj.ID)+" "+damageTickerText(w.VillageObjects, w.Structures, w.Assets, obj, bounty, open))
+		parts = append(parts, string(obj.ID)+" "+damageTickerText(w.VillageObjects, w.Structures, w.Assets, obj, 1, bounty, open))
 	}
 	return strings.Join(parts, "\n")
 }

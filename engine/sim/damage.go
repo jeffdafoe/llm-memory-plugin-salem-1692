@@ -54,7 +54,7 @@ package sim
 import (
 	"errors"
 	"log"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -713,6 +713,15 @@ func PublicWorksMendVerb(kind string) string {
 	return "mends"
 }
 
+// publicWorksMendedWord is the work done, as a participle — a well is
+// "mended", a road "cleared".
+func publicWorksMendedWord(kind string) string {
+	if kind == PublicWorksRoad {
+		return "cleared"
+	}
+	return "mended"
+}
+
 // PublicWorksMendNoun is the work itself — "the mending", or "the clearing" of
 // a road.
 func PublicWorksMendNoun(kind string) string {
@@ -730,35 +739,107 @@ type DamageTickerLine struct {
 
 // DamageTickerLines lists every repair site — a damaged site, or a minor work
 // (the ticker is the one town surface a minor work is posted on: no NPC reads
-// it) — as one ticker line, lowest id first. Pure over the snapshot (the public
-// world read builds it).
+// it) — as ticker lines, lowest id first. Sites whose line would read the same
+// share one line that counts them (LLM-718), carrying the lowest id. Pure over
+// the snapshot (the public world read builds it).
 func DamageTickerLines(s *Snapshot) []DamageTickerLine {
-	var out []DamageTickerLine
+	var sites []*VillageObject
 	for _, obj := range s.VillageObjects {
-		if !IsRepairSite(obj) {
-			continue
+		if IsRepairSite(obj) {
+			sites = append(sites, obj)
 		}
-		bounty, _ := s.PublicWorksTerms(PublicWorksKind(obj))
-		open := PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve)
-		out = append(out, DamageTickerLine{ObjectID: obj.ID, Text: damageTickerText(s.VillageObjects, s.Structures, s.Assets, obj, bounty, open)})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ObjectID < out[j].ObjectID })
+	sortObjectsByID(sites)
+	var out []DamageTickerLine
+	for _, g := range groupRepairSites(s.VillageObjects, s.Structures, s.Assets, sites) {
+		bounty, _ := s.PublicWorksTerms(PublicWorksKind(g.Lead))
+		open := PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve)
+		out = append(out, DamageTickerLine{ObjectID: g.Lead.ID, Text: damageTickerText(s.VillageObjects, s.Structures, s.Assets, g.Lead, g.Count, bounty, open)})
+	}
 	return out
 }
 
-// damageTickerText is one repair site's ticker line. Pure over the maps, so
-// syncPublicWorksNews can tell over the live world when a minor work's line
-// changed.
-func damageTickerText(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject, bounty int, bountyOpen bool) string {
+// repairSiteGroup is repair sites whose public line reads the same — breaks of
+// one kind told alike, usually by one landmark (LLM-718). Lead is the lowest id
+// and stands for the group; Count is how many there are.
+type repairSiteGroup struct {
+	Lead  *VillageObject
+	Count int
+}
+
+// groupRepairSites merges sites (lowest id first) of one kind whose DamageFact
+// reads the same, in first-seen order. The bounty and the tail of every line
+// follow from the kind, so same kind and same fact is the same line.
+func groupRepairSites(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, sites []*VillageObject) []repairSiteGroup {
+	var out []repairSiteGroup
+	index := map[string]int{}
+	for _, obj := range sites {
+		key := PublicWorksKind(obj) + "\x00" + DamageFact(objects, structures, assets, obj)
+		if i, ok := index[key]; ok {
+			out[i].Count++
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, repairSiteGroup{Lead: obj, Count: 1})
+	}
+	return out
+}
+
+// damageFactCount is DamageFact for n sites told as one (LLM-718). A minor
+// work counts in its own form's words; any other site is placed "In two
+// places, …". n <= 1 is DamageFact itself.
+func damageFactCount(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject, n int) string {
+	if n <= 1 {
+		return DamageFact(objects, structures, assets, obj)
+	}
+	if PublicWorksKind(obj) == PublicWorksMinor {
+		return minorWorksFactCount(objects, structures, assets, obj, n)
+	}
+	return "In " + countWord(n) + " places, " + lowerFirst(DamageFact(objects, structures, assets, obj))
+}
+
+// countWord spells out a small count ("three"); digits past twelve.
+func countWord(n int) string {
+	words := [...]string{"no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"}
+	if n >= 0 && n < len(words) {
+		return words[n]
+	}
+	return strconv.Itoa(n)
+}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// damageTickerText is the ticker line for n repair sites told as one (n is 1
+// for a lone site). Pure over the maps, so syncPublicWorksNews can tell over
+// the live world when a minor work's line changed.
+func damageTickerText(objects map[VillageObjectID]*VillageObject, structures map[StructureID]*Structure, assets map[AssetID]*Asset, obj *VillageObject, n, bounty int, bountyOpen bool) string {
 	kind := PublicWorksKind(obj)
-	text := DamageFact(objects, structures, assets, obj)
+	text := damageFactCount(objects, structures, assets, obj, n)
 	switch {
+	case bountyOpen && n > 1:
+		text += " — the town pays " + coinsPhrase(bounty) + " for each one " + publicWorksMendedWord(kind) + "."
 	case bountyOpen:
 		text += " — the town pays " + coinsPhrase(bounty) + " to the hand who " + PublicWorksMendVerb(kind) + " it."
+	case kind == PublicWorksRoad && n > 1:
+		text += " — walkers must go around them until they are cleared."
 	case kind == PublicWorksRoad:
 		text += " — walkers must go around it until it is cleared."
 	case kind == PublicWorksBusiness, kind == PublicWorksMinor:
 		text += " — the town cannot pay for the mending just now."
+	case n > 1:
+		text += " — draw your water at another well."
 	default:
 		text += " — draw your water at the other well."
 	}
