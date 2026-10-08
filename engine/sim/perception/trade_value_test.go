@@ -1396,3 +1396,68 @@ func TestBuildTradeValue_WardrobeGoodOnlyWhenHeld(t *testing.T) {
 		t.Fatalf("priced %v; want indigo (held) and cloak (not wardrobe-only), not felt_hat (none held)", got)
 	}
 }
+
+// TestBuildTradeValue_UsedOnlyBuyLineNotAWare (LLM-720): an empty buy line for a
+// good the keeper only uses — the wright's whetstone — is no ware and is not
+// priced. The controls keep their lines: the same good once held (the LLM-636
+// reservation line), a food resale line, a recipe input, and the distributor's
+// empty buy line, which is his stock.
+func TestBuildTradeValue_UsedOnlyBuyLineNotAWare(t *testing.T) {
+	const store = sim.StructureID("general_store")
+	kinds := map[sim.ItemKind]*sim.ItemKindDef{
+		"whetstone": {Name: "whetstone"},
+		"milk":      {Name: "milk", Category: sim.ItemCategoryDrink},
+		"water":     {Name: "water"},
+	}
+	recipes := map[sim.ItemKind]*sim.ItemRecipe{
+		"whetstone": {OutputItem: "whetstone", WholesalePrice: 2, RetailPrice: 4},
+		"milk":      {OutputItem: "milk", WholesalePrice: 1, RetailPrice: 2},
+		"water":     {OutputItem: "water", WholesalePrice: 1, RetailPrice: 1},
+		"nail":      {OutputItem: "nail", OutputQty: 1, WholesalePrice: 1, RetailPrice: 2, Inputs: []sim.RecipeInput{{Item: "water", Qty: 1}}},
+	}
+	policy := &sim.RestockPolicy{Restock: []sim.RestockEntry{
+		{Item: "nail", Source: sim.RestockSourceProduce, Max: 10},
+		{Item: "whetstone", Source: sim.RestockSourceBuy, Max: 4},
+		{Item: "milk", Source: sim.RestockSourceBuy, Max: 6},
+		{Item: "water", Source: sim.RestockSourceBuy, Max: 6},
+	}}
+	priced := func(subj *sim.ActorSnapshot) map[sim.ItemKind]TradeValueItem {
+		snap := &sim.Snapshot{
+			Actors:    map[sim.ActorID]*sim.ActorSnapshot{"keeper": subj},
+			ItemKinds: kinds,
+			Recipes:   recipes,
+			VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+				sim.VillageObjectID(store): {ID: sim.VillageObjectID(store), Tags: []string{sim.TagDistributor}},
+			},
+		}
+		v := buildTradeValue(snap, "keeper", subj, true)
+		if v == nil {
+			t.Fatal("no view")
+		}
+		out := map[sim.ItemKind]TradeValueItem{}
+		for _, it := range v.Items {
+			out[it.itemKind] = it
+		}
+		return out
+	}
+
+	got := priced(&sim.ActorSnapshot{RestockPolicy: policy})
+	if _, ok := got["whetstone"]; ok {
+		t.Errorf("empty used-only whetstone line was priced as a ware: %+v", got["whetstone"])
+	}
+	for _, kind := range []sim.ItemKind{"nail", "milk", "water"} {
+		if _, ok := got[kind]; !ok {
+			t.Errorf("%s lost its wares line; only the used-only line may drop", kind)
+		}
+	}
+
+	got = priced(&sim.ActorSnapshot{RestockPolicy: policy, Inventory: map[sim.ItemKind]int{"whetstone": 1}})
+	if it, ok := got["whetstone"]; !ok || it.ReserveReason != sim.SpokenForMakings || it.ReserveHeld != 1 {
+		t.Errorf("held whetstone must keep its LLM-636 reservation line, got %+v (present=%v)", it, ok)
+	}
+
+	got = priced(&sim.ActorSnapshot{RestockPolicy: policy, WorkStructureID: store})
+	if _, ok := got["whetstone"]; !ok {
+		t.Error("the distributor's empty whetstone line is his stock and must stay priced")
+	}
+}
