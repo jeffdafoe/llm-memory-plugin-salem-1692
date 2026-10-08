@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -90,19 +91,30 @@ type FarmerWardrobeGood struct {
 	Price int    `json:"price"`
 }
 
+// FarmerWardrobeSeller is a villager in the PC's huddle who holds or stocks a
+// wardrobe good (LLM-715), so the creator can offer to buy it there. Name is
+// the display name pc/pay resolves the seller by; Held is how many they hold —
+// 0 when they keep it in stock but have none just now.
+type FarmerWardrobeSeller struct {
+	Name string `json:"name"`
+	Held int    `json:"held"`
+}
+
 // FarmerWardrobe is the pc/wardrobe payload. Colours maps a ramp slot to the
 // indexes (into the client's FarmerPalettes family for that slot) the creator
 // shows; Dyes says which of them need a dye. Goods prices every wardrobe good
 // and dye; Held lists the ones the caller's PC holds; Outfit is the PC's own
-// chosen layer list, which can name pieces it no longer holds.
+// chosen layer list, which can name pieces it no longer holds. Sellers lists,
+// per good, who in the PC's huddle holds or stocks it.
 type FarmerWardrobe struct {
-	Categories []FarmerWardrobeCategory        `json:"categories"`
-	Items      []FarmerWardrobeItem            `json:"items"`
-	Colours    map[string][]int                `json:"colours"`
-	Dyes       []FarmerDye                     `json:"dyes"`
-	Goods      map[ItemKind]FarmerWardrobeGood `json:"goods"`
-	Held       []ItemKind                      `json:"held"`
-	Outfit     json.RawMessage                 `json:"outfit,omitempty"`
+	Categories []FarmerWardrobeCategory            `json:"categories"`
+	Items      []FarmerWardrobeItem                `json:"items"`
+	Colours    map[string][]int                    `json:"colours"`
+	Dyes       []FarmerDye                         `json:"dyes"`
+	Goods      map[ItemKind]FarmerWardrobeGood     `json:"goods"`
+	Held       []ItemKind                          `json:"held"`
+	Outfit     json.RawMessage                     `json:"outfit,omitempty"`
+	Sellers    map[ItemKind][]FarmerWardrobeSeller `json:"sellers"`
 }
 
 var farmerWardrobeCategories = []FarmerWardrobeCategory{
@@ -292,6 +304,7 @@ func PlayerWardrobe(w *World) FarmerWardrobe {
 		Dyes:       farmerDyes,
 		Goods:      goods,
 		Held:       []ItemKind{},
+		Sellers:    map[ItemKind][]FarmerWardrobeSeller{},
 	}
 }
 
@@ -313,9 +326,52 @@ func PCWardrobe(loginUsername string) Command {
 				}
 			}
 			wardrobe.Outfit = w.chosenOutfit(id)
+			wardrobe.Sellers = wardrobeSellers(w, id)
 			return wardrobe, nil
 		},
 	}
+}
+
+// wardrobeSellers lists, per wardrobe good, the villagers in the PC's huddle
+// who hold it or keep a restock line for it — the people the creator can send
+// a pc/pay offer to. A villager whose display name another huddle member
+// shares is left out: pc/pay refuses an ambiguous seller name. Sellers are
+// sorted by name so the payload is stable.
+func wardrobeSellers(w *World, pcID ActorID) map[ItemKind][]FarmerWardrobeSeller {
+	out := map[ItemKind][]FarmerWardrobeSeller{}
+	pc := w.Actors[pcID]
+	if pc == nil || pc.CurrentHuddleID == "" {
+		return out
+	}
+	members := w.actorsByHuddle[pc.CurrentHuddleID]
+	names := map[string]int{}
+	for peerID := range members {
+		if peer := w.Actors[peerID]; peer != nil && peerID != pcID {
+			names[strings.ToLower(peer.DisplayName)]++
+		}
+	}
+	for peerID := range members {
+		peer := w.Actors[peerID]
+		if peer == nil || peerID == pcID {
+			continue
+		}
+		if peer.Kind != KindNPCStateful && peer.Kind != KindNPCShared {
+			continue
+		}
+		if names[strings.ToLower(peer.DisplayName)] > 1 {
+			continue
+		}
+		for _, kind := range WardrobeGoods() {
+			held := peer.Inventory[kind]
+			if held > 0 || peer.RestockPolicy.Manages(kind) {
+				out[kind] = append(out[kind], FarmerWardrobeSeller{Name: peer.DisplayName, Held: held})
+			}
+		}
+	}
+	for _, sellers := range out {
+		sort.Slice(sellers, func(i, j int) bool { return sellers[i].Name < sellers[j].Name })
+	}
+	return out
 }
 
 // OutfitGoods lists the goods a validated layer list needs held: each sold
