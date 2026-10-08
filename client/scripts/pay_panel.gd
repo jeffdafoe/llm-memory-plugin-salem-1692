@@ -97,6 +97,7 @@ var coins_label: Label = null
 var title_label: Label = null
 var status_label: Label = null
 var offers_page: VBoxContainer = null
+var offers_header: Label = null
 var offers_scroll: ScrollContainer = null
 var offers_box: VBoxContainer = null
 var offers_dispo_row: Control = null
@@ -392,28 +393,33 @@ func _rebuild_offers() -> void:
             any_choice = true
     for g in spoken_goods():
         offers_box.add_child(_spoken_card(g))
-    if offers_box.get_child_count() == 0:
-        var empty := _label(empty_text(), 16, COLOR_DIM)
-        offers_box.add_child(empty)
+    var any_card := offers_box.get_child_count() > 0
+    offers_header.visible = any_card
+    if not any_card:
+        var lines := empty_lines()
+        for i in lines.size():
+            offers_box.add_child(_label(lines[i], 16 if i == 0 else 15, COLOR_TEXT if i == 0 else COLOR_DIM))
     offers_dispo_row.visible = any_choice
     own_offer_button.visible = not recipients().is_empty()
     _fit_scroll.call_deferred()
 
 
-## What the box says when nothing is on offer.
-func empty_text() -> String:
+## What the box says when nothing is on offer: the main line first, then the
+## help. When the player's own innkeeper is here, a quiet last line says the
+## room is already paid (LLM-38: the keeper "offers" a room the player holds,
+## and the player looks here for it). The inn is not named — the keeper is
+## right there, and the bare structure name reads "at Tavern".
+func empty_lines() -> Array:
     var here := recipients()
+    if here.is_empty():
+        return ["There is nobody here to pay."]
+    var lines: Array = ["Nobody here has offered you anything yet.", "Ask them what they sell, or make your own offer."]
     if host != null and typeof(host.pc_lodging) == TYPE_DICTIONARY and not host.pc_lodging.is_empty():
         var keeper := str(host.pc_lodging.get("keeper_name", ""))
-        if (keeper != "" and _has_name(here, keeper)) or here.is_empty():
-            var inn := str(host.pc_lodging.get("inn_name", "your inn"))
+        if keeper != "" and _has_name(here, keeper):
             var until := str(host.pc_lodging.get("until_label", ""))
-            if until != "":
-                return "You already have a room at %s, paid %s." % [inn, until]
-            return "You already have a room at %s." % inn
-    if here.is_empty():
-        return "There is nobody here to pay."
-    return "Nobody here has offered you anything yet. Ask them what they sell, or make your own offer."
+            lines.append("Your room is paid %s." % until if until != "" else "Your room is paid.")
+    return lines
 
 
 func _counter_card(c: Dictionary) -> Control:
@@ -975,7 +981,8 @@ func _build_offers_page(parent: Control) -> void:
     offers_page = VBoxContainer.new()
     offers_page.add_theme_constant_override("separation", 10)
     parent.add_child(offers_page)
-    offers_page.add_child(_label("They offer you", 15, COLOR_DIM))
+    offers_header = _label("They offer you", 15, COLOR_DIM)
+    offers_page.add_child(offers_header)
 
     offers_scroll = ScrollContainer.new()
     offers_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1121,7 +1128,9 @@ func _fill_chips(flow: HFlowContainer, names: Array, selected: String, text_of: 
 func _stepper(lo: int, hi: int, on_change: Callable, fmt: Callable = Callable()) -> Dictionary:
     var row := HBoxContainer.new()
     row.add_theme_constant_override("separation", 4)
-    var minus := _button("−", Callable())
+    # An en dash, not U+2212: IM Fell has no minus sign, and the web build
+    # has no system font to fall back on (it drew a box).
+    var minus := _button("–", Callable())
     var plus := _button("+", Callable())
     for b in [minus, plus]:
         b.custom_minimum_size = Vector2(TAP_H, TAP_H)
