@@ -391,3 +391,48 @@ func TestPublicWorksCompletionPaysOnlyForADamagedSite(t *testing.T) {
 		}
 	})
 }
+
+// TestDamagedSitesToldAlikeShareOneNotice — two wells with the same name and
+// no landmark read the same, so the boards carry one counted notice for both,
+// not the same two lines twice (LLM-718); with the chest too poor for the
+// bounty the water line no longer points at "the other well". Mending one
+// puts the other back on the single wording.
+func TestDamagedSitesToldAlikeShareOneNotice(t *testing.T) {
+	w, cancel := buildDamageWorld(t)
+	defer cancel()
+	breakWell(t, w, "well-a")
+	breakWell(t, w, "well-b")
+	notices := func() []string {
+		t.Helper()
+		var out []string
+		mustSend(t, w, func(world *sim.World) { out = sim.PublicWorksNoticeLines(world) })
+		return out
+	}
+	want := []string{
+		"In two places, the windlass at the Well is down — no water can be drawn there until they are mended.",
+		"The town pays 12 coins to the hand who mends each one.",
+	}
+	if got := notices(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("notices = %q, want %q", got, want)
+	}
+	if lines := sim.DamageTickerLines(w.Published()); len(lines) != 1 || lines[0].ObjectID != "well-a" ||
+		lines[0].Text != "In two places, the windlass at the Well is down — the town pays 12 coins for each one mended." {
+		t.Errorf("ticker = %+v, want one counted line under well-a", lines)
+	}
+
+	mustSend(t, w, func(world *sim.World) { world.Environment.TownChest = 0 })
+	if got := notices(); len(got) != 2 || got[1] != "Until they are mended, draw your water at another well." {
+		t.Errorf("notices with an empty chest = %q", got)
+	}
+
+	if _, err := w.Send(sim.SetObjectDamage("well-a", "repair")); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{
+		"The windlass at the Well is down — no water can be drawn there until it is mended.",
+		"Until it is mended, draw your water at the other well.",
+	}
+	if got := notices(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("notices after one mend = %q, want %q", got, want)
+	}
+}

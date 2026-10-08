@@ -392,3 +392,54 @@ func TestMinorWorkNotDamageableWithoutAVariant(t *testing.T) {
 		t.Errorf("damage a lone fence: err = %v, want ErrNotDamageable (no neighbours to sag into)", err)
 	}
 }
+
+// TestMinorWorksToldAlikeShareOneTickerLine — two fence breaks by the Mansion
+// read the same, so the ticker tells them as one line under the lower id,
+// counted; a break with no landmark near reads differently and keeps its own
+// singular line (LLM-718). Mending one of the pair puts the other back on the
+// single break's wording.
+func TestMinorWorksToldAlikeShareOneTickerLine(t *testing.T) {
+	w, cancel, _ := buildMinorWorksWorld(t)
+	defer cancel()
+	mustSend(t, w, func(world *sim.World) {
+		fence := func(id sim.VillageObjectID, x int) *sim.VillageObject {
+			return &sim.VillageObject{ID: id, AssetID: fenceAssetID, CurrentState: "h", Pos: sim.TilePos{X: x, Y: 10}.Center()}
+		}
+		// A second run beside the first, and a third far from any building.
+		for _, f := range []*sim.VillageObject{fence("fence-4", 44), fence("fence-5", 45), fence("fence-6", 46),
+			fence("fence-7", 90), fence("fence-8", 91), fence("fence-9", 92)} {
+			world.VillageObjects[f.ID] = f
+		}
+		world.Assets["mansion-asset"] = &sim.Asset{ID: "mansion-asset", Name: "Mansion"}
+		world.VillageObjects["mansion"] = &sim.VillageObject{ID: "mansion", DisplayName: "Mansion", AssetID: "mansion-asset", Pos: sim.TilePos{X: 43, Y: 14}.Center()}
+		world.Structures["mansion"] = &sim.Structure{ID: "mansion", DisplayName: "Mansion"}
+		world.Environment.TownChest = 100
+	})
+	for _, id := range []sim.VillageObjectID{"fence-5", "fence-2", "fence-8"} {
+		if _, err := w.Send(sim.SetObjectDamage(id, "damage")); err != nil {
+			t.Fatalf("break %s: %v", id, err)
+		}
+	}
+	lines := sim.DamageTickerLines(w.Published())
+	want := []sim.DamageTickerLine{
+		{ObjectID: "fence-2", Text: "Rails have come down in two places on the fence by the Mansion — the town pays 3 coins for each one mended."},
+		{ObjectID: "fence-8", Text: "A rail has come down on the fence — the town pays 3 coins to the hand who mends it."},
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("ticker = %+v, want %+v", lines, want)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("ticker[%d] = %+v, want %+v", i, lines[i], want[i])
+		}
+	}
+
+	if _, err := w.Send(sim.SetObjectDamage("fence-2", "repair")); err != nil {
+		t.Fatal(err)
+	}
+	lines = sim.DamageTickerLines(w.Published())
+	if len(lines) != 2 || lines[0].ObjectID != "fence-5" ||
+		lines[0].Text != "A rail has come down on the fence by the Mansion — the town pays 3 coins to the hand who mends it." {
+		t.Errorf("ticker after one mend = %+v, want fence-5 alone in the single wording", lines)
+	}
+}
