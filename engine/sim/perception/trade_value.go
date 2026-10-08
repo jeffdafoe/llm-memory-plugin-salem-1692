@@ -279,7 +279,8 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	// LLM-636: the wider spoken-for reservation — the same map the carry line and
 	// the pay_with_item intake gate read — so a non-recipe making (thread, salt)
 	// and the worn garment are held back here too, not just the recipe floors.
-	spokenFor := sim.SpokenFor(snap.ItemKinds, snap.Recipes, sim.SnapshotBarterHolder(snap, actorSnap))
+	holder := sim.SnapshotBarterHolder(snap, actorSnap)
+	spokenFor := sim.SpokenFor(snap.ItemKinds, snap.Recipes, holder)
 	// Built before the item walk so a good already earmarked for a mend can't also
 	// pick up a bench reservation and render two claims on the same stock.
 	reserve := buildRepairReserve(snap, actorID, actorSnap)
@@ -584,6 +585,15 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// ones are priced by the walk below. A factor's pack is priced in its own
 		// section (buildPackGoods), so this does not blind him at the bale.
 		if sim.IsWardrobeOnlyGood(e.Item) {
+			continue
+		}
+		// LLM-720: a good the keeper only uses (the wright's whetstone, mending
+		// thread) is never a ware — held units render the LLM-636 reservation
+		// line, and with none held the bare price read as a good he sells. A
+		// recipe input keeps its line: units above its floor ARE wares (LLM-609).
+		// A stockholder's buy lines are his wares.
+		if !holder.Stockholder && actorSnap.Inventory[e.Item] <= 0 &&
+			sim.MakingsLineOf(snap.ItemKinds, floors, e.Item) == sim.MakingsLineCap {
 			continue
 		}
 		valueGood(e.Item, true)

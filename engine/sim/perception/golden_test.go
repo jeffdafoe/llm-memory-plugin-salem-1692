@@ -7370,8 +7370,6 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "broke_maker_at_store_no_spare_goods_hold_off" || // LLM-636: producer in company (with Josiah at the store), priced own wares + spoken-for makings held back
 			sc.name == "keeper_prices_bale_leftover_iron" || // LLM-646: keeper in company holding off-policy priced stock — held goods ARE own trade now
 			sc.name == "keeper_views_peddler" || // LLM-656: the tavernkeeper in company with the peddler, priced own ale + the stew he cannot yet make
-			sc.name == "wright_views_peddler" || // LLM-657: the wright in company with the whetstone peddler — his whetstone buy line is a priced ware
-			sc.name == "wright_no_stone_smith_copresent" || // LLM-717: the same wright in company with the smith — the same priced buy line
 			sc.name == "holder_views_carter" || // carter: the dairykeeper in company with the carter, priced own milk and cheese
 			sc.name == "keeper_views_carter" // carter: the miller in company with the carter, priced own flour
 		if has := strings.Contains(got, marker); has != want {

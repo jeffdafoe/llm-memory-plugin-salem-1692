@@ -155,3 +155,33 @@ func TestHoldsBarterableGoodsExcept_HonorsSpokenFor(t *testing.T) {
 		t.Error("stockholder's buy-line stock not counted as barterable")
 	}
 }
+
+// TestMakingsLineOf_AgreesWithSpokenFor (LLM-720): the wares cue skips an empty
+// buy line that MakingsLineOf calls a cap line, so the classifier must say
+// exactly what SpokenFor reserves once a unit is held — for every buy-line shape.
+func TestMakingsLineOf_AgreesWithSpokenFor(t *testing.T) {
+	kinds, recipes, policy := spokenForFixture()
+	kinds["cheese"] = &ItemKindDef{Name: "cheese", Category: ItemCategoryFood}
+	policy.Restock = append(policy.Restock,
+		RestockEntry{Item: "cheese", Source: RestockSourceBuy, Max: 6},  // larder / resale line
+		RestockEntry{Item: "mystery", Source: RestockSourceBuy, Max: 6}, // a kind the catalog doesn't know
+	)
+	floors := ReorderFloors(recipes, policy)
+	want := map[ItemKind]MakingsLine{
+		"flour":   MakingsLineFloor,
+		"water":   MakingsLineFloor,
+		"thread":  MakingsLineCap,
+		"cheese":  MakingsLineNone,
+		"mystery": MakingsLineNone,
+	}
+	for _, e := range policy.BuyEntries() {
+		got := MakingsLineOf(kinds, floors, e.Item)
+		if got != want[e.Item] {
+			t.Errorf("MakingsLineOf(%s) = %d, want %d", e.Item, got, want[e.Item])
+		}
+		claim := SpokenFor(kinds, recipes, BarterHolder{Policy: policy, Inventory: map[ItemKind]int{e.Item: 1}})[e.Item]
+		if reserved := claim.Reason == SpokenForMakings; reserved != (got != MakingsLineNone) {
+			t.Errorf("%s: SpokenFor reserved=%v but MakingsLineOf=%d", e.Item, reserved, got)
+		}
+	}
+}

@@ -186,14 +186,14 @@ func SpokenFor(kinds map[ItemKind]*ItemKindDef, recipes map[ItemKind]*ItemRecipe
 		if held <= 0 {
 			continue
 		}
-		reserve := floors[e.Item]
-		if reserve <= 0 {
-			// A larder / resale line is spare to trade; so is a kind the catalog
-			// doesn't know (the KindBarterable permissive degrade — sparse fixtures).
-			if def := kinds[e.Item]; def == nil || kindFoodOrDrink(def) {
-				continue
-			}
+		var reserve int
+		switch MakingsLineOf(kinds, floors, e.Item) {
+		case MakingsLineFloor:
+			reserve = floors[e.Item]
+		case MakingsLineCap:
 			reserve = e.Cap()
+		default:
+			continue
 		}
 		if reserve <= 0 || reserve > held {
 			reserve = held
@@ -212,6 +212,29 @@ func SpokenFor(kinds map[ItemKind]*ItemKindDef, recipes map[ItemKind]*ItemRecipe
 		}
 	}
 	return out
+}
+
+// MakingsLine is how the makings claim treats one of a holder's buy lines.
+type MakingsLine int
+
+const (
+	MakingsLineNone  MakingsLine = iota // a larder or resale line, or a kind the catalog doesn't know (the KindBarterable permissive degrade) — spare to trade
+	MakingsLineFloor                    // a required input of the holder's own recipes — reserved up to its ReorderFloor; units above it are wares
+	MakingsLineCap                      // a good the holder only USES (thread, iron, a whetstone) — reserved up to the line's cap, so never a ware
+)
+
+// MakingsLineOf classifies item, a buy line of a non-stockholder, for the
+// makings claim. floors is ReorderFloors for the holder's recipes and policy.
+// SpokenFor and the wares cue (LLM-720) both read it, so what is reserved from a
+// bundle and what is priced as a ware cannot drift apart.
+func MakingsLineOf(kinds map[ItemKind]*ItemKindDef, floors map[ItemKind]int, item ItemKind) MakingsLine {
+	if floors[item] > 0 {
+		return MakingsLineFloor
+	}
+	if def := kinds[item]; def == nil || kindFoodOrDrink(def) {
+		return MakingsLineNone
+	}
+	return MakingsLineCap
 }
 
 // kindFoodOrDrink reports whether the kind is something someone eats or drinks
