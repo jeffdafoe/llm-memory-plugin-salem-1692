@@ -66,6 +66,35 @@ type WrightRoundsView struct {
 	// Walk is the bearing phrase ("a fair walk east"); "" when co-present or
 	// coincident.
 	Walk string
+
+	// The NoStone resupply (LLM-717), resolved by the same seller rule the
+	// nail and shovel buy cues and "## Restocking" run (findItemVendors /
+	// coPresentSellerForItem), so this line can never name a shop Restocking
+	// would not. StonesShort is what one service still lacks. StoneBlocked:
+	// suppliers exist but none is a destination this tick (shut, standoff,
+	// sold-to, no means). The co-present fields mirror StallRepairBuyView.
+	StonesShort     int
+	StoneVendors    []RestockVendor
+	StoneBlocked    bool
+	CoPresentSeller string
+	PendingOffer    bool
+	SellerStock     int
+	Block           copresentBuyBlock
+	// TraderHasStone: a selling trader co-present at his shop carries
+	// whetstones; "## A trader's come to deal" holds the pay_with_item. Set in
+	// Build once ErrandVisit exists.
+	TraderHasStone bool
+}
+
+// HasWalkToSupplier reports whether the rounds cue will render a walk-to
+// whetstone supplier (LLM-491 at-post reconciliation). Mirrors
+// renderWrightStoneBuy: a co-present seller or trader returns before the
+// vendor list.
+func (v *WrightRoundsView) HasWalkToSupplier() bool {
+	if v == nil || !v.NoStone || v.CoPresentSeller != "" || v.TraderHasStone {
+		return false
+	}
+	return len(v.StoneVendors) > 0
 }
 
 // equipmentGearPhrase maps a business's tags to its diegetic gear — a bare
@@ -252,8 +281,8 @@ func buildWrightRounds(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.A
 	if !sim.ActorIsWright(snap.VillageObjects, actorSnap.WorkStructureID, actorID) {
 		return nil
 	}
-	if actorSnap.Inventory[sim.WhetstoneKind] < sim.WhetstonesPerService {
-		return &WrightRoundsView{NoStone: true}
+	if held := actorSnap.Inventory[sim.WhetstoneKind]; held < sim.WhetstonesPerService {
+		return buildWrightStoneBuy(snap, actorID, actorSnap, sim.WhetstonesPerService-held)
 	}
 	threshold := snap.EquipmentServiceDueThreshold
 	var best *sim.VillageObject
@@ -316,6 +345,59 @@ func buildWrightRounds(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.A
 	return v
 }
 
+// buildWrightStoneBuy is the NoStone arm of the rounds cue (LLM-717). A bare
+// "Buy one" with no supplier was a want with no outlet: live, Lewis filled it
+// with ~19 recall calls a day asking who sells whetstones, every one in a turn
+// where Restocking named no seller. Same resolution as buildStallRepairBuy.
+func buildWrightStoneBuy(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, short int) *WrightRoundsView {
+	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.WhetstoneKind)
+	vendors, blocked := findItemVendors(snap, actorID, actorSnap, sim.WhetstoneKind)
+	v := &WrightRoundsView{
+		NoStone:         true,
+		StonesShort:     short,
+		StoneVendors:    vendors,
+		StoneBlocked:    len(blocked) > 0,
+		CoPresentSeller: coName,
+		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.WhetstoneKind),
+	}
+	if coID != "" && !v.PendingOffer {
+		v.SellerStock, v.Block = classifyCoPresentBuy(snap, actorID, actorSnap, coID, sim.WhetstoneKind)
+	}
+	return v
+}
+
+// renderWrightStoneBuy writes the NoStone line. With no destination to give it
+// says so and names nobody: a named smith or "the maker" with no move_to target
+// reads as an errand (LLM-301), and a dangling want gets filled with invented
+// ones (LLM-298).
+func renderWrightStoneBuy(b *strings.Builder, v *WrightRoundsView) {
+	b.WriteString("You're out of whetstones — no service without a stone. ")
+	switch {
+	case v.CoPresentSeller != "":
+		switch {
+		case v.PendingOffer:
+			renderCoPresentBuyPending(b, v.CoPresentSeller, "whetstone")
+		case v.Block == copresentBuyBlockedNoStock, v.Block == copresentBuyBlockedCoin, v.Block == copresentBuyBlockedTerms:
+			renderCoPresentBuySoften(b, v.CoPresentSeller, "whetstones", v.Block)
+		case v.SellerStock > 0 && v.SellerStock < v.StonesShort:
+			renderCoPresentBuyCapped(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.SellerStock)
+		default:
+			b.WriteString("Buy one before you make your rounds. ")
+			renderCoPresentBuy(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.StonesShort)
+		}
+	case v.TraderHasStone:
+		b.WriteString("The trader here has whetstones — buy one from him before you make your rounds.\n")
+	case len(v.StoneVendors) > 0:
+		b.WriteString("Buy one before you make your rounds. Use move_to to reach a supplier, then pay_with_item once you arrive:\n")
+		renderWalkToVendors(b, v.StoneVendors)
+	case v.StoneBlocked:
+		b.WriteString("You have no way to buy one just now — your rounds wait until you can.\n")
+	default:
+		b.WriteString("Nobody in the village has a whetstone to sell just now — your rounds wait until one comes in.\n")
+	}
+	b.WriteString("\n")
+}
+
 // renderWrightRounds writes the wright-side "## Your trade" cue.
 // Content-gated.
 func renderWrightRounds(b *strings.Builder, v *WrightRoundsView) {
@@ -326,7 +408,7 @@ func renderWrightRounds(b *strings.Builder, v *WrightRoundsView) {
 	// the production-choice cue and the golden invariants police it.
 	b.WriteString("## The wright's rounds\n")
 	if v.NoStone {
-		b.WriteString("You're out of whetstones — no service without a stone. Buy one before you make your rounds.\n\n")
+		renderWrightStoneBuy(b, v)
 		return
 	}
 	owner := sanitizeInline(v.OwnerName)

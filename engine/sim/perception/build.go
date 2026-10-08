@@ -624,6 +624,13 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// (buy or sell), and — for the tool gate — whether the visitor's commerce is confined to
 	// talk-only right now (not co-present with his errand keeper or a tavern/inn).
 	p.ErrandVisit = buildErrandVisit(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
+	// LLM-717: a trader at the wright's shop with stones in his pack is the buy
+	// the rounds line points at. The shortage peddler (LLM-657) arrives exactly
+	// when no resident sells one, so without this the line would read "nobody
+	// has one" beside the trader cue's pay_with_item.
+	if p.WrightRounds != nil && p.WrightRounds.NoStone && p.ErrandVisit != nil && p.ErrandVisit.Sell && p.ErrandVisit.Offers(sim.WhetstoneKind) {
+		p.WrightRounds.TraderHasStone = true
+	}
 	p.VisitorCommerceStripped = visitorCommerceStripped(snap, actorSnap, p.Surroundings.HuddleMembers)
 	p.SummonsForYou = buildSummonsForYou(snap, actorSnap)
 	p.SummonRefusal = buildSummonRefusal(actorSnap)
@@ -746,7 +753,8 @@ func thinDegenerateSteer(p *Payload) {
 // the subject an off-scene supplier to walk to (LLM-491). These four are the cues
 // that can render a "(destination: <id>)" for a BUY while the subject stands at its
 // own post — the state in which the duty stabilizer otherwise says "stay and look
-// after your work" in the same prompt.
+// after your work" in the same prompt. The wright's rounds joined them with its
+// whetstone resupply (LLM-717): a wright out of stone stands in his own workshop.
 //
 // Each view answers for itself, mirroring its own renderer's branch order, so this
 // can never claim an errand a section didn't actually print. Deliberately NOT in
@@ -761,7 +769,8 @@ func hasAtPostSupplyErrand(p *Payload) bool {
 		p.StallRepair.HasWalkToSupplier() ||
 		p.FarmUpkeep.HasWalkToSupplier() ||
 		p.WorkClothes.HasWalkToSupplier() ||
-		p.Hearth.HasWalkToSupplier()
+		p.Hearth.HasWalkToSupplier() ||
+		p.WrightRounds.HasWalkToSupplier()
 }
 
 // orderWarrants returns a copy of the batch ordered by SourceEventID
