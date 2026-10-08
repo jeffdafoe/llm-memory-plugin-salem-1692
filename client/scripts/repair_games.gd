@@ -3,8 +3,9 @@ extends RefCounted
 ## The repair mini-games (LLM-690) — one per site kind, the rules only.
 ##
 ## A player mends the town's damage by playing: each won round is one
-## pc/repair/step. A miss costs time; only the saw can fail a round outright
-## (Result.FAIL: the saw sticks and the cut starts over, LLM-716).
+## pc/repair/step. A miss costs time; the saw, the crate's lid and the shop's
+## ladder can fail a round outright (Result.FAIL: the saw sticks and the cut
+## starts over, LLM-716; the lid springs, the ladder falls, LLM-721).
 ## These classes hold the game state and answer input; repair_stage.gd draws
 ## them in art pixels, and repair_panel.gd sends the steps. Kept free of nodes
 ## so tests can drive them with plain numbers.
@@ -21,15 +22,20 @@ const PLAY_H := 56
 enum Result { NONE, HIT, MISS, PROGRESS, FAIL }
 
 ## The game for a site: a well is timing (windlass), a signpost is setting its
-## arm level (plumb), a road is sawing, everything else — a business, a fence, a
-## crate — is hammering.
+## arm level (plumb), a road is sawing, a crate is nailing its lid crosswise, a
+## business is worked from a ladder kept steady, and everything else — a fence —
+## is hammering.
 static func game_kind(site_kind: String, form: String) -> String:
     if form == "signpost":
         return "plumb"
+    if form == "crate":
+        return "crosswise"
     if site_kind == "well":
         return "windlass"
     if site_kind == "road":
         return "saw"
+    if site_kind == "business":
+        return "ladder"
     return "hammer"
 
 
@@ -44,6 +50,10 @@ static func make(kind: String, rng: RandomNumberGenerator, difficulty := 0.0) ->
             return Plumb.new(rng, d)
         "saw":
             return Saw.new(rng, d)
+        "crosswise":
+            return Crosswise.new(rng, d)
+        "ladder":
+            return Ladder.new(rng, d)
     return Hammer.new(rng, d)
 
 
@@ -71,8 +81,9 @@ class Game:
     func set_progress(_done: int, _total: int) -> void:
         pass
 
-    ## Misses or fails the game found on its own in update() (a moment let
-    ## pass), for the stage to show. Only the saw has any.
+    ## Results the game found on its own in update() (a moment let pass, a
+    ## fall, a round worked through), for the stage to show. Only the saw and
+    ## the ladder have any.
     func take_events() -> Array:
         return []
 
@@ -442,3 +453,320 @@ class Plumb:
 
     func hint() -> String:
         return "Stop the arm level — the bob on the mark"
+
+
+## CROSSWISE — the crate's lid (LLM-721). Nails stand at the lid's corners, a
+## back row and a front row. A round opens by showing the order to drive them:
+## a number lights on each nail in turn, all stay lit a moment, then they hide.
+## Strike the nails in that order; there is no hurry. A wrong nail springs the
+## lid (Result.FAIL) when the hammer lands on it, SPRING_AT later: the nails pop
+## out, and after SPRUNG_TIME the same order shows again. A tap off every nail,
+## or on one already driven, does nothing.
+## Harder: a third column of nails, a quicker show.
+class Crosswise:
+    extends Game
+    const ROWS := 2
+    const COLS := 2
+    const HARD_COLS := 3
+    const SHOW_STEP := 0.55  # seconds between one number lighting and the next
+    const HARD_SHOW_STEP := 0.3
+    const SHOW_HOLD := 1.0  # seconds all the numbers stay lit before they hide
+    const HARD_SHOW_HOLD := 0.35
+    const SPRUNG_TIME := 1.0
+    const SPRING_AT := 0.06  # the hammer's fall: repair_stage.gd's SWING_DOWN
+    const STAND := 4  # art px a nail stands proud before it is driven
+    const REACH := 12.0  # art px from a nail's head that a tap still picks it
+    # The lid seen from the front and a little above: its back edge is the
+    # narrower one. Each row of nails goes in at ROW_Y, and a nail sits
+    # INSET of the way in from the lid's edges at its row.
+    const BACK_Y := 26
+    const FRONT_Y := 46
+    const BACK_X0 := 38
+    const BACK_X1 := 138
+    const FRONT_X0 := 20
+    const FRONT_X1 := 156
+    const ROW_Y := [29, 42]
+    const INSET := 0.12
+    var cols := COLS
+    var show_step := SHOW_STEP
+    var show_hold := SHOW_HOLD
+    var order: Array[int] = []  # nail indices, in the order to drive them
+    var driven: Array[bool] = []
+    var next := 0  # how many of the order are driven
+    var showing := true
+    var show_t := 0.0
+    var spring_in := 0.0  # a wrong nail struck: seconds until the lid springs
+    var sprung_left := 0.0
+    var springs := 0  # this round
+    var last := -1  # the nail last struck
+
+    func _init(r: RandomNumberGenerator, d := 0.0) -> void:
+        super(r, d)
+        cols = HARD_COLS if d >= 0.5 else COLS
+        show_step = lerpf(SHOW_STEP, HARD_SHOW_STEP, d)
+        show_hold = lerpf(SHOW_HOLD, HARD_SHOW_HOLD, d)
+        for i in count():
+            driven.append(false)
+        _new_order()
+        _begin_show()
+
+    func count() -> int:
+        return ROWS * cols
+
+    ## Where a nail goes into the lid, play px. Nails are numbered in reading
+    ## order: the back row left to right, then the front row.
+    func nail_pos(i: int) -> Vector2:
+        var y: int = ROW_Y[i / cols]
+        var f := INSET + (1.0 - 2.0 * INSET) * float(i % cols) / (cols - 1)
+        var e := edge_x(y)
+        return Vector2(roundf(lerpf(e.x, e.y, f)), y)
+
+    ## The lid's left and right edge on row y.
+    static func edge_x(y: float) -> Vector2:
+        var u := clampf((y - BACK_Y) / float(FRONT_Y - BACK_Y), 0.0, 1.0)
+        return Vector2(roundf(lerpf(BACK_X0, FRONT_X0, u)), roundf(lerpf(BACK_X1, FRONT_X1, u)))
+
+    ## The nail whose head is nearest pos, within REACH; -1 for none.
+    func nail_at(pos: Vector2) -> int:
+        var best := -1
+        var best_d := REACH
+        for i in count():
+            var head := nail_pos(i) - Vector2(0, STAND)
+            var dist := head.distance_to(pos)
+            if dist <= best_d:
+                best = i
+                best_d = dist
+        return best
+
+    func show_len() -> float:
+        return show_step * (count() - 1) + show_hold
+
+    ## How many of the order's numbers are lit now.
+    func numbers_lit() -> int:
+        if not showing:
+            return 0
+        return mini(count(), floori(show_t / show_step) + 1)
+
+    ## A fresh order, never the same as the one before when another exists.
+    func _new_order() -> void:
+        var before := order.duplicate()
+        for attempt in 8:
+            order.clear()
+            for i in count():
+                order.append(i)
+            for i in range(order.size() - 1, 0, -1):
+                var j := rng.randi_range(0, i)
+                var tmp := order[i]
+                order[i] = order[j]
+                order[j] = tmp
+            if order != before:
+                return
+
+    func _begin_show() -> void:
+        showing = true
+        show_t = 0.0
+
+    func update(dt: float) -> void:
+        super(dt)
+        if holding:
+            return
+        var left := dt
+        if spring_in > 0.0:
+            if left < spring_in:
+                spring_in -= left
+                return
+            left -= spring_in
+            spring_in = 0.0
+            for k in count():
+                driven[k] = false
+            next = 0
+            sprung_left = SPRUNG_TIME
+        if sprung_left > 0.0:
+            sprung_left -= left
+            if sprung_left <= 0.0:
+                sprung_left = 0.0
+                _begin_show()
+            return
+        if showing:
+            show_t += left
+            if show_t >= show_len():
+                showing = false
+
+    ## pos is a tap (Vector2), a nail picked by its key (int), or a bare key
+    ## press (null), which picks no nail.
+    func press(pos: Variant) -> Result:
+        if holding or showing or spring_in > 0.0 or sprung_left > 0.0:
+            return Result.NONE
+        var i := -1
+        if pos is int:
+            i = pos if pos >= 0 and pos < count() else -1
+        elif pos is Vector2:
+            i = nail_at(pos)
+        if i < 0 or driven[i]:
+            return Result.NONE
+        last = i
+        if i != order[next]:
+            springs += 1
+            spring_in = SPRING_AT
+            return Result.FAIL
+        driven[i] = true
+        next += 1
+        if next < count():
+            return Result.PROGRESS
+        holding = true
+        return Result.HIT
+
+    func release() -> void:
+        super()
+        for k in count():
+            driven[k] = false
+        next = 0
+        springs = 0
+        spring_in = 0.0
+        sprung_left = 0.0
+        _new_order()
+        _begin_show()
+
+    func hint() -> String:
+        return "Watch the order, then drive the nails in it"
+
+
+## LADDER — the shop is mended from a ladder (LLM-721). It tips: the further it
+## leans the faster it goes, and it drifts a little of its own. A tap on a half
+## of the play area nudges it toward that side, so the player taps the side it
+## leans away from; a key press nudges it back toward upright. The round's work
+## goes on only while it stands steady, and the round is won (a HIT from
+## update) once the work is done. Let it lean past the edge and it falls
+## (Result.FAIL): the round's work is lost, and it takes FALL_TIME to set up
+## again. Harder: it tips faster and drifts more, the steady zone is narrower,
+## and the round needs more work.
+class Ladder:
+    extends Game
+    const STEP := 1.0 / 120.0  # the fixed step the lean is worked out in
+    const TIP := 4.0  # how hard the lean feeds on itself, per second squared
+    const HARD_TIP := 7.0
+    const DRIFT := 0.5  # the drift's push at most, lean per second squared
+    const HARD_DRIFT := 1.0
+    const DRIFT_EVERY := 0.4  # seconds between one drift and the next
+    const DAMP := 1.2  # how fast the swing dies away, per second
+    const NUDGE := 0.6  # lean per second a tap adds
+    const STEADY := 0.45  # the lean inside which the work goes on
+    const HARD_STEADY := 0.3
+    const START_LEAN := 0.12
+    const WORK_TIME := 2.5  # seconds of steady work a round needs
+    const HARD_WORK_TIME := 3.5
+    const FALL_TIME := 1.2
+    var tip := TIP
+    var drift_max := DRIFT
+    var steady := STEADY
+    var work_time := WORK_TIME
+    var lean := 0.0  # -1..1, positive to the right; past either end it falls
+    var lean_v := 0.0
+    var drift := 0.0
+    var work := 0.0  # seconds of steady work this round
+    var fallen_left := 0.0
+    var fell_to := 0.0  # the side it last fell to, -1 or 1
+    var falls := 0  # this round
+    var fell_at := -1.0  # game time of the last fall, -1 for none
+    var nudged_at := -1.0  # game time of the last nudge, -1 for none
+    var _acc := 0.0
+    var _drift_t := 0.0
+    var _events: Array = []
+
+    func _init(r: RandomNumberGenerator, d := 0.0) -> void:
+        super(r, d)
+        tip = lerpf(TIP, HARD_TIP, d)
+        drift_max = lerpf(DRIFT, HARD_DRIFT, d)
+        steady = lerpf(STEADY, HARD_STEADY, d)
+        work_time = lerpf(WORK_TIME, HARD_WORK_TIME, d)
+        _set_up()
+
+    ## Stood up again, leaning a little to one side.
+    func _set_up() -> void:
+        lean = START_LEAN if rng.randf() < 0.5 else -START_LEAN
+        lean_v = 0.0
+        drift = 0.0
+        _drift_t = 0.0
+
+    func is_steady() -> bool:
+        return fallen_left == 0.0 and absf(lean) < steady
+
+    ## The side to tap to bring it back: 0 the left, 1 the right.
+    func wanted_side() -> int:
+        return 1 if lean < 0.0 else 0
+
+    ## The lean is worked out in fixed steps, so the result is the same
+    ## however the time arrives (one long frame after a stall, or many short
+    ## ones).
+    func update(dt: float) -> void:
+        super(dt)
+        if holding:
+            return
+        _acc += dt
+        while _acc >= STEP and not holding:
+            _acc -= STEP
+            _step(t - _acc)
+
+    func _step(now: float) -> void:
+        if fallen_left > 0.0:
+            fallen_left -= STEP
+            if fallen_left <= 0.0:
+                fallen_left = 0.0
+                _set_up()
+            return
+        _drift_t += STEP
+        if _drift_t >= DRIFT_EVERY:
+            _drift_t -= DRIFT_EVERY
+            drift = rng.randf_range(-drift_max, drift_max)
+        lean_v += (lean * tip + drift) * STEP
+        lean_v -= lean_v * DAMP * STEP
+        lean += lean_v * STEP
+        if absf(lean) >= 1.0:
+            fell_to = signf(lean)
+            lean = fell_to
+            lean_v = 0.0
+            falls += 1
+            work = 0.0
+            fallen_left = FALL_TIME
+            fell_at = now
+            _events.append(Result.FAIL)
+            return
+        if absf(lean) < steady:
+            work += STEP
+            if work >= work_time:
+                work = work_time
+                holding = true
+                _events.append(Result.HIT)
+
+    ## A tap on the left half nudges it left, the right half right. A key
+    ## press nudges it back toward upright; an int key picks a side (0 left).
+    func press(pos: Variant) -> Result:
+        if holding or fallen_left > 0.0:
+            return Result.NONE
+        var dir := -1.0 if lean > 0.0 else 1.0
+        if pos is Vector2:
+            dir = -1.0 if pos.x < PLAY_W / 2.0 else 1.0
+        elif pos is int:
+            dir = -1.0 if pos == 0 else 1.0
+        lean_v += dir * NUDGE
+        nudged_at = t
+        return Result.PROGRESS
+
+    func take_events() -> Array:
+        var out := _events
+        _events = []
+        return out
+
+    ## The next round starts from now: time left over from a long frame that
+    ## ended the last one is dropped, not played into this one.
+    func release() -> void:
+        super()
+        _acc = 0.0
+        _events.clear()
+        work = 0.0
+        falls = 0
+        fallen_left = 0.0
+        _set_up()
+
+    func hint() -> String:
+        return "Keep the ladder upright — tap the other side"
