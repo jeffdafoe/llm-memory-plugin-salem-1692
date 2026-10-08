@@ -8,6 +8,13 @@ extends Control
 ## (idempotent — an existing PC is renamed, its sprite untouched), then
 ## POST /pc/outfit with the composed layer list. The outfit reaches every
 ## client, this one included, as an npc_sprite_changed frame.
+##
+## Buy (LLM-715): a piece or dye the player tries on but does not hold gets a
+## Buy button while someone in the player's huddle holds it (the wardrobe's
+## "sellers"). Buy takes that seller's live quote for one, if there is one, or
+## offers the list price through POST /pc/pay; the seller's answer arrives as
+## the world's pay_resolved / pay_countered. A bought good is held at once
+## (take-home goods move at accept), so the player only has to press Save.
 
 signal saved(character_name: String)
 signal closed
@@ -69,6 +76,10 @@ var _in_flight := false
 ## dropped.
 var _preview_gen := 0
 var _preview_sheets: Dictionary = {}
+## Buys started from the creator, by good: {state, seller, ledger_id, amount,
+## message}. state is "sending" (a request is out), "waiting" (the offer is
+## before the seller), "countered", "declined" (or failed) or "bought".
+var _buys: Dictionary = {}
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -165,6 +176,10 @@ func _ready() -> void:
     _http.accept_gzip = false
     add_child(_http)
 
+    if world != null and world.has_signal("pay_resolved"):
+        world.pay_resolved.connect(_on_pay_resolved)
+        world.pay_countered.connect(_on_pay_countered)
+
     get_viewport().size_changed.connect(_size_preview)
     _size_preview()
 
@@ -201,6 +216,10 @@ func open_for_npc(npc_id: String, display_name: String, current_sprite: Dictiona
 func _show() -> void:
     _error.text = ""
     visible = true
+    # An offer still before a seller keeps its line; a finished one does not.
+    for good in _buys.keys():
+        if not ["sending", "waiting", "countered"].has(str(_buys[good].get("state", ""))):
+            _buys.erase(good)
     if _wardrobe.is_empty() or _npc_id == "":
         if not _in_flight:
             _load_wardrobe()
@@ -230,11 +249,11 @@ func _load_wardrobe() -> void:
 ## Start one request on _http with callback as its one-shot completion.
 ## Returns false, leaving nothing connected, when a request is already on
 ## _http or the request cannot start (no completion would ever arrive).
-func _post(path: String, body: String, callback: Callable) -> bool:
+func _post(path: String, body: String, callback: Callable, method := HTTPClient.METHOD_POST) -> bool:
     if _in_flight:
         return false
     _http.request_completed.connect(callback, CONNECT_ONE_SHOT)
-    var err := _http.request(Auth.api_base + path, Auth.auth_headers(), HTTPClient.METHOD_POST, body)
+    var err := _http.request(Auth.api_base + path, Auth.auth_headers(), method, body)
     if err != OK:
         _http.request_completed.disconnect(callback)
         return false
@@ -312,30 +331,78 @@ func _category_row(category: Dictionary) -> Control:
         if slots.size() > 1:
             row.add_child(_label(str(SLOT_LABELS.get(slot, slot)), 12, COLOR_TEXT_DIM))
         row.add_child(_swatch_row(id, str(slot), int(pick.get("ramps", {}).get(slot, 0))))
-    var note := _store_note(item, pick)
-    if note != "":
-        row.add_child(_label(note, 12, COLOR_TEXT_DIM))
+    for good in _store_goods(item, pick):
+        row.add_child(_store_line(good))
     return row
 
-## Under a row trying on what the player does not hold: what to buy, and its
-## list price.
-func _store_note(item: Dictionary, pick: Dictionary) -> String:
-    var needs: Array = []
-    if FarmerOutfit.item_locked(_wardrobe, item):
-        needs.append(str(item.get("good", "")))
+## The goods a row is trying on that the player does not hold, plus any just
+## bought (their line says to press Save).
+func _store_goods(item: Dictionary, pick: Dictionary) -> Array:
+    var goods: Array = []
+    var wanted: Array = [str(item.get("good", ""))]
     var ramps: Dictionary = pick.get("ramps", {})
     for slot in ramps:
-        var dye := FarmerOutfit.dye_for(_wardrobe, str(slot), int(ramps[slot]))
-        if not FarmerOutfit.holds(_wardrobe, dye) and not needs.has(dye):
-            needs.append(dye)
-    if needs.is_empty():
-        return ""
-    var parts: Array = []
-    for good in needs:
-        var price := FarmerOutfit.good_price(_wardrobe, good)
-        var label := FarmerOutfit.good_label(_wardrobe, good)
-        parts.append("%s, about %d coins" % [label, price] if price > 0 else label)
-    return "Sold at the Store: " + "; ".join(parts) + "."
+        wanted.append(FarmerOutfit.dye_for(_wardrobe, str(slot), int(ramps[slot])))
+    for good in wanted:
+        if good == "" or goods.has(good):
+            continue
+        if not FarmerOutfit.holds(_wardrobe, good) or str(_buys.get(good, {}).get("state", "")) == "bought":
+            goods.append(good)
+    return goods
+
+## One line under a row per good: where it is sold or who here has it, or how
+## a buy is going, with the Buy / Accept / No buttons that apply.
+func _store_line(good: String) -> Control:
+    var line := HBoxContainer.new()
+    line.add_theme_constant_override("separation", 8)
+    var text := _label(_store_text(good), 12, COLOR_TEXT_DIM)
+    text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    line.add_child(text)
+    match str(_buys.get(good, {}).get("state", "")):
+        "countered":
+            line.add_child(_line_button("Accept", _on_accept_counter.bind(good)))
+            line.add_child(_line_button("No", _on_refuse_counter.bind(good)))
+        "sending", "waiting", "bought":
+            pass
+        _:
+            if _npc_id == "" and _seller_for(good) != "":
+                line.add_child(_line_button("Buy", _on_buy.bind(good)))
+    return line
+
+func _store_text(good: String) -> String:
+    var label := FarmerOutfit.good_label(_wardrobe, good)
+    var price := FarmerOutfit.good_price(_wardrobe, good)
+    var about := ", about %d coins" % price if price > 0 else ""
+    var buy: Dictionary = _buys.get(good, {})
+    var seller := str(buy.get("seller", ""))
+    match str(buy.get("state", "")):
+        "sending":
+            return "%s: asking %s…" % [label, seller]
+        "waiting":
+            return "%s: waiting for %s…" % [label, seller]
+        "countered":
+            var asks := "%s: %s asks %d coins." % [label, seller, int(buy.get("amount", 0))]
+            var note := str(buy.get("message", ""))
+            return asks + (" \"%s\"" % note if note != "" else "")
+        "declined":
+            return "%s: %s" % [label, str(buy.get("message", ""))]
+        "bought":
+            return "%s: bought. Press Save to wear it." % label
+    var holder := _seller_for(good)
+    if holder != "":
+        return "%s: %s has it%s." % [label, holder, about]
+    var sellers: Array = _wardrobe.get("sellers", {}).get(good, [])
+    if not sellers.is_empty():
+        return "%s: %s has none just now." % [label, str(sellers[0].get("name", ""))]
+    return "Sold at the Store: %s%s." % [label, about]
+
+## Someone in the player's huddle who holds the good, by name; "" if nobody.
+func _seller_for(good: String) -> String:
+    for seller in _wardrobe.get("sellers", {}).get(good, []):
+        if int(seller.get("held", 0)) > 0:
+            return str(seller.get("name", ""))
+    return ""
 
 ## The body row cycles the figure; every other row cycles its items plus none.
 func _choice_label(category: String) -> String:
@@ -421,6 +488,154 @@ func _set_colour(category: String, slot: String, index: int) -> void:
     pick["ramps"][slot] = index
     _rebuild_rows()
     _rebuild_preview()
+
+# --- buying -----------------------------------------------------------------
+
+## Buy one of a good from whoever here holds it: first look for that seller's
+## live quote (it settles at once), else offer the list price.
+func _on_buy(good: String) -> void:
+    var seller := _seller_for(good)
+    if seller == "" or _npc_id != "":
+        return
+    if not _post("/api/village/pc/quotes", "", _on_buy_quotes.bind(good), HTTPClient.METHOD_GET):
+        _error.text = "One moment, the village has not answered yet."
+        return
+    _buys[good] = {"state": "sending", "seller": seller}
+    _rebuild_rows()
+
+func _on_buy_quotes(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, good: String) -> void:
+    _in_flight = false
+    if not Auth.check_response(code):
+        _buy_failed(good, "")
+        return
+    var seller := str(_buys.get(good, {}).get("seller", ""))
+    var terms := {"seller": seller, "item": good, "qty": 1,
+        "amount": maxi(1, FarmerOutfit.good_price(_wardrobe, good)), "consume_now": false}
+    # A failed quote read is no reason to stop: the list-price offer still works.
+    var data = JSON.parse_string(body.get_string_from_utf8())
+    if result == HTTPRequest.RESULT_SUCCESS and code == 200 and data is Dictionary:
+        var quote := _quote_for(data.get("quotes", []), seller, good)
+        if not quote.is_empty():
+            terms["amount"] = int(quote.get("amount", 0))
+            terms["consume_now"] = bool(quote.get("consume_now", false))
+            terms["quote_id"] = int(quote.get("quote_id", 0))
+    _send_buy(good, terms)
+
+## The seller's live quote for exactly one of the good, taken home; {} if none.
+## A take must echo the quote's terms verbatim (pc/quotes).
+static func _quote_for(quotes: Array, seller: String, good: String) -> Dictionary:
+    for q in quotes:
+        if not (q is Dictionary):
+            continue
+        if str(q.get("seller", "")) != seller or q.get("lines", []).size() != 1:
+            continue
+        if str(q.get("item", "")) == good and int(q.get("qty", 0)) == 1 and not bool(q.get("consume_now", false)):
+            return q
+    return {}
+
+func _send_buy(good: String, terms: Dictionary) -> void:
+    if not _post("/api/village/pc/pay", JSON.stringify(terms), _on_buy_sent.bind(good, terms)):
+        _buy_failed(good, "")
+        return
+    _buys[good] = {"state": "sending", "seller": str(terms.get("seller", ""))}
+    _rebuild_rows()
+
+func _on_buy_sent(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, good: String, terms: Dictionary) -> void:
+    _in_flight = false
+    if not Auth.check_response(code):
+        _buy_failed(good, "")
+        return
+    var data = JSON.parse_string(body.get_string_from_utf8())
+    if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300 or not (data is Dictionary):
+        # The engine's refusal names the cause (too few coins, the seller left).
+        _buy_failed(good, str(data.get("error", "")) if data is Dictionary else "")
+        return
+    var seller := str(terms.get("seller", ""))
+    if str(data.get("state", "")) == "accepted":
+        _bought(good, seller)
+        return
+    _buys[good] = {"state": "waiting", "seller": seller, "ledger_id": int(data.get("ledger_id", 0))}
+    _rebuild_rows()
+
+func _on_accept_counter(good: String) -> void:
+    var buy: Dictionary = _buys.get(good, {})
+    if str(buy.get("state", "")) != "countered":
+        return
+    var terms := {"seller": str(buy.get("seller", "")), "item": good, "qty": 1,
+        "amount": int(buy.get("amount", 0)), "consume_now": false,
+        "in_response_to": int(buy.get("ledger_id", 0))}
+    if _in_flight:
+        _error.text = "One moment, the village has not answered yet."
+        return
+    _send_buy(good, terms)
+
+## The countered offer is already closed; saying no needs no request.
+func _on_refuse_counter(good: String) -> void:
+    _buys.erase(good)
+    _rebuild_rows()
+
+## The world's pay_resolved, for an offer this creator is waiting on.
+func _on_pay_resolved(data: Dictionary) -> void:
+    var good := _good_for_ledger(int(data.get("ledger_id", 0)))
+    if good == "":
+        return
+    var seller := str(_buys[good].get("seller", ""))
+    var state := str(data.get("terminal_state", ""))
+    if state == "accepted":
+        _bought(good, seller)
+        return
+    var reason := str(data.get("message", ""))
+    var text := ""
+    match state:
+        "declined":
+            text = "%s said no%s" % [seller, ": \"%s\"" % reason if reason != "" else "."]
+        "expired":
+            text = "%s did not answer." % seller
+        "failed_insufficient_funds":
+            text = "You did not have the coins."
+        "failed_insufficient_stock":
+            text = "%s had none left." % seller
+        _:
+            text = "The sale fell through."
+    _buys[good] = {"state": "declined", "seller": seller, "message": text}
+    if visible:
+        _rebuild_rows()
+
+## The world's pay_countered: the seller names another price.
+func _on_pay_countered(data: Dictionary) -> void:
+    var good := _good_for_ledger(int(data.get("ledger_id", 0)))
+    if good == "":
+        return
+    _buys[good] = {"state": "countered", "seller": str(_buys[good].get("seller", "")),
+        "ledger_id": int(data.get("ledger_id", 0)), "amount": int(data.get("counter_amount", 0)),
+        "message": str(data.get("message", ""))}
+    if visible:
+        _rebuild_rows()
+
+func _good_for_ledger(ledger_id: int) -> String:
+    if ledger_id == 0:
+        return ""
+    for good in _buys:
+        var buy: Dictionary = _buys[good]
+        if str(buy.get("state", "")) == "waiting" and int(buy.get("ledger_id", 0)) == ledger_id:
+            return good
+    return ""
+
+## The good is the player's now: unlock it here without reloading the wardrobe.
+## Save still checks holdings, so a stale unlock cannot dress anyone.
+func _bought(good: String, seller: String) -> void:
+    var held: Array = _wardrobe.get("held", [])
+    if not held.has(good):
+        held.append(good)
+    _wardrobe["held"] = held
+    _buys[good] = {"state": "bought", "seller": seller}
+    if visible:
+        _rebuild_rows()
+
+func _buy_failed(good: String, message: String) -> void:
+    _buys[good] = {"state": "declined", "seller": str(_buys.get(good, {}).get("seller", "")),
+        "message": message if message != "" else "The village did not answer. Try again."}
+    _rebuild_rows()
 
 # --- preview ----------------------------------------------------------------
 
@@ -612,4 +827,11 @@ func _button(text: String) -> Button:
     button.add_theme_font_override("font", _font)
     button.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
     button.focus_mode = Control.FOCUS_NONE
+    return button
+
+## A small button on a row's store line.
+func _line_button(text: String, on_pressed: Callable) -> Button:
+    var button := _button(text)
+    button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
+    button.pressed.connect(on_pressed)
     return button

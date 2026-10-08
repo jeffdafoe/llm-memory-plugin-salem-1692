@@ -1122,8 +1122,8 @@ type payCounteredWireDTO struct {
 // failed_insufficient_funds), which the client maps to its outcome UI.
 // message carries the seller's decline reason or the buyer's withdraw
 // note (empty otherwise). On accepted, this is the frame that confirms the
-// transfer; the goods themselves move at deliver_order time for a
-// take-home order. ledger_id correlates with the originating pay_offer.
+// transfer; physical take-home goods have already moved to the buyer at
+// accept (ZBBS-HOME-398). ledger_id correlates with the originating pay_offer.
 // buyer_took_quote is true only on an instant quote-take (the seller posted
 // the offer, the buyer took it); the client uses it to word the accepted line
 // ("you took their offer" vs the backwards "they accepted your offer").

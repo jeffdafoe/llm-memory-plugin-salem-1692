@@ -20,6 +20,10 @@ const TESTS := [
     "_test_save_that_cannot_start_ends_the_save",
     "_test_no_close_mid_save",
     "_test_villager_mode",
+    "_test_store_line_text",
+    "_test_buy_button_only_with_a_holder",
+    "_test_quote_for",
+    "_test_buy_answer_flow",
 ]
 
 var _creator: Control = null
@@ -93,6 +97,7 @@ func _reset() -> void:
     _creator._picks = {"figure": "straight", "items": {}}
     _creator._name_edit.text = "Tess"
     _creator._npc_id = ""
+    _creator._buys = {}
 
 
 ## Occupy the creator's HTTPRequest so its next request() returns ERR_BUSY.
@@ -160,4 +165,86 @@ func _test_villager_mode() -> void:
     _creator.open(true, "Tess", {})
     _check("player — reopening as the player clears the villager", _creator._npc_id, "")
     _check("player — the name field is back", _creator._name_edit.visible, true)
+    _done()
+
+
+## A wardrobe with one sold hat and the given sellers (LLM-715).
+func _hat_wardrobe(sellers: Dictionary) -> Dictionary:
+    return {"categories": [], "items": [], "colours": {}, "dyes": [], "held": [],
+        "goods": {"felt_hat": {"label": "Felt hat", "price": 6}}, "sellers": sellers}
+
+
+func _line_buttons(good: String) -> Array:
+    var out: Array = []
+    var line: Control = _creator._store_line(good)
+    for child in line.get_children():
+        if child is Button:
+            out.append(child.text)
+    line.free()
+    return out
+
+
+func _test_store_line_text() -> void:
+    _creator._wardrobe = _hat_wardrobe({})
+    _check("store — nobody here: where it is sold", _creator._store_text("felt_hat"), "Sold at the Store: Felt hat, about 6 coins.")
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 0}]})
+    _check("store — the keeper has none", _creator._store_text("felt_hat"), "Felt hat: Josiah Thorne has none just now.")
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 0}, {"name": "Hannah Boggs", "held": 1}]})
+    _check("store — names the one who holds it", _creator._store_text("felt_hat"), "Felt hat: Hannah Boggs has it, about 6 coins.")
+    _creator._buys = {"felt_hat": {"state": "countered", "seller": "Josiah Thorne", "amount": 9, "message": "Fine felt."}}
+    _check("store — a counter shows the price asked", _creator._store_text("felt_hat"), "Felt hat: Josiah Thorne asks 9 coins. \"Fine felt.\"")
+    _done()
+
+
+func _test_buy_button_only_with_a_holder() -> void:
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 0}]})
+    _check("buy — no button when nobody here holds it", _line_buttons("felt_hat"), [])
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 2}]})
+    _check("buy — a button when someone here holds it", _line_buttons("felt_hat"), ["Buy"])
+    _creator._buys = {"felt_hat": {"state": "waiting", "seller": "Josiah Thorne", "ledger_id": 7}}
+    _check("buy — no button while waiting", _line_buttons("felt_hat"), [])
+    _creator._buys = {"felt_hat": {"state": "countered", "seller": "Josiah Thorne", "ledger_id": 7, "amount": 9}}
+    _check("buy — Accept and No on a counter", _line_buttons("felt_hat"), ["Accept", "No"])
+    _creator._buys = {"felt_hat": {"state": "declined", "seller": "Josiah Thorne", "message": "x"}}
+    _check("buy — Buy again after a no", _line_buttons("felt_hat"), ["Buy"])
+    _creator._buys = {}
+    _creator._npc_id = "hannah"
+    _check("buy — never while dressing a villager", _line_buttons("felt_hat"), [])
+    _done()
+
+
+func _test_quote_for() -> void:
+    var hat := {"quote_id": 3, "seller": "Josiah Thorne", "item": "felt_hat", "qty": 1, "amount": 7, "consume_now": false, "lines": [{}]}
+    var two := hat.duplicate()
+    two["qty"] = 2
+    var bundle := hat.duplicate()
+    bundle["lines"] = [{}, {}]
+    var other := hat.duplicate()
+    other["seller"] = "Hannah Boggs"
+    _check("quote — takes the seller's quote for one", _creator._quote_for([two, bundle, other, hat], "Josiah Thorne", "felt_hat").get("quote_id", 0), 3)
+    _check("quote — none for another good", _creator._quote_for([hat], "Josiah Thorne", "boots"), {})
+    _check("quote — not a quote for two, a bundle, or another seller", _creator._quote_for([two, bundle, other], "Josiah Thorne", "felt_hat"), {})
+    _done()
+
+
+func _test_buy_answer_flow() -> void:
+    _creator._wardrobe = _hat_wardrobe({"felt_hat": [{"name": "Josiah Thorne", "held": 1}]})
+    _creator._buys = {"felt_hat": {"state": "waiting", "seller": "Josiah Thorne", "ledger_id": 7}}
+    _creator._on_pay_resolved({"ledger_id": 99, "terminal_state": "accepted"})
+    _check("answer — another offer's answer is ignored", _creator._buys["felt_hat"]["state"], "waiting")
+    _creator._on_pay_countered({"ledger_id": 7, "counter_amount": 9, "message": ""})
+    _check("answer — a counter", _creator._buys["felt_hat"]["state"], "countered")
+    _check("answer — the counter price", _creator._buys["felt_hat"]["amount"], 9)
+    _creator._on_refuse_counter("felt_hat")
+    _check("answer — No clears the line", _creator._buys.has("felt_hat"), false)
+    _creator._buys = {"felt_hat": {"state": "waiting", "seller": "Josiah Thorne", "ledger_id": 8}}
+    _creator._on_pay_resolved({"ledger_id": 8, "terminal_state": "declined", "message": "Too low."})
+    _check("answer — a no gives the reason", _creator._store_text("felt_hat"), "Felt hat: Josiah Thorne said no: \"Too low.\"")
+    _creator._buys = {"felt_hat": {"state": "waiting", "seller": "Josiah Thorne", "ledger_id": 9}}
+    _creator._on_pay_resolved({"ledger_id": 9, "terminal_state": "accepted"})
+    _check("answer — accepted: the hat is held", _creator._wardrobe["held"].has("felt_hat"), true)
+    _check("answer — accepted: press Save", _creator._store_text("felt_hat"), "Felt hat: bought. Press Save to wear it.")
+    _creator._show()
+    _check("answer — reopening drops the finished line", _creator._buys.has("felt_hat"), false)
+    _creator._http.cancel_request()
     _done()

@@ -3,6 +3,7 @@ package sim
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -415,5 +416,50 @@ func TestReconcilePCOutfits(t *testing.T) {
 	pc.Inventory["straw_hat"] = 1
 	if n, _ := ReconcilePCOutfits().Fn(w); n != 1 || !strings.Contains(string(w.Sprites[sprite.ID].Layers), testHat) {
 		t.Fatalf("hat bought back: changed %v, layers %s", n, w.Sprites[sprite.ID].Layers)
+	}
+}
+
+// TestPCWardrobe_Sellers: the wardrobe names the villagers in the PC's huddle
+// who hold or stock each good (LLM-715) — a keeper with a buy line and none on
+// hand is listed with Held 0; a villager outside the huddle, another PC, and
+// two villagers sharing a display name are not.
+func TestPCWardrobe_Sellers(t *testing.T) {
+	w := NewWorld(Repository{})
+	w.Actors["pc-1"] = &Actor{ID: "pc-1", Kind: KindPC, LoginUsername: "tester", DisplayName: "Tess",
+		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"vest": 1}}
+	w.Actors["josiah"] = &Actor{ID: "josiah", Kind: KindNPCStateful, DisplayName: "Josiah Thorne",
+		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"straw_hat": 2},
+		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{{Item: "straw_hat", Source: RestockSourceBuy, Max: 2}, {Item: "felt_hat", Source: RestockSourceBuy, Max: 2}}}}
+	w.Actors["hannah"] = &Actor{ID: "hannah", Kind: KindNPCStateful, DisplayName: "Hannah Boggs",
+		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"vest": 1}}
+	w.Actors["other-pc"] = &Actor{ID: "other-pc", Kind: KindPC, DisplayName: "Pat",
+		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"boots": 1}}
+	w.Actors["twin-a"] = &Actor{ID: "twin-a", Kind: KindNPCShared, DisplayName: "A Peddler",
+		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"gloves": 1}}
+	w.Actors["twin-b"] = &Actor{ID: "twin-b", Kind: KindNPCShared, DisplayName: "a peddler",
+		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{}}
+	w.Actors["away"] = &Actor{ID: "away", Kind: KindNPCStateful, DisplayName: "Ezekiel Crane",
+		CurrentHuddleID: "h2", Inventory: map[ItemKind]int{"cloak": 1}}
+	w.actorsByHuddle["h1"] = map[ActorID]struct{}{"pc-1": {}, "josiah": {}, "hannah": {}, "other-pc": {}, "twin-a": {}, "twin-b": {}}
+	w.actorsByHuddle["h2"] = map[ActorID]struct{}{"away": {}}
+
+	res, err := PCWardrobe("tester").Fn(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sellers := res.(FarmerWardrobe).Sellers
+	want := map[ItemKind][]FarmerWardrobeSeller{
+		"straw_hat": {{Name: "Josiah Thorne", Held: 2}},
+		"felt_hat":  {{Name: "Josiah Thorne", Held: 0}},
+		"vest":      {{Name: "Hannah Boggs", Held: 1}},
+	}
+	if !reflect.DeepEqual(sellers, want) {
+		t.Fatalf("sellers = %+v, want %+v", sellers, want)
+	}
+
+	w.Actors["pc-1"].CurrentHuddleID = ""
+	res, _ = PCWardrobe("tester").Fn(w)
+	if got := res.(FarmerWardrobe).Sellers; len(got) != 0 {
+		t.Fatalf("unhuddled PC: sellers = %+v, want none", got)
 	}
 }
