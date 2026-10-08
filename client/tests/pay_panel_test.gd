@@ -525,6 +525,10 @@ func _test_every_glyph_is_in_the_font() -> void:
     if font == null:
         _done()
         return
+    # The scanner itself: a glyph written plainly or as an escape is the glyph;
+    # a comment is not text.
+    var sample := "var a := _button(\"\u2212\")\nvar b := _button(\"\\u2212\") # \"not text\"\nvar c := \"\\U002212 \\\"q\\\"\""
+    _check("scanner decodes escapes", _string_literals(sample), ["\u2212", "\u2212", "\u2212 \"q\""])
     var missing := {}
     for s in _string_literals(FileAccess.get_file_as_string("res://scripts/pay_panel.gd")):
         _missing_glyphs(font, s, missing)
@@ -580,7 +584,15 @@ static func _string_literals(src: String) -> Array:
             var ch := line[i]
             if in_str:
                 if ch == "\\" and i + 1 < line.length():
-                    cur += line[i + 1]
+                    # Decode \uXXXX and \UXXXXXX as GDScript does, so an escaped
+                    # glyph is checked as the glyph, not as its hex digits.
+                    var esc := line[i + 1]
+                    var width := 4 if esc == "u" else (6 if esc == "U" else 0)
+                    if width > 0 and i + 2 + width <= line.length() and line.substr(i + 2, width).is_valid_hex_number():
+                        cur += char(line.substr(i + 2, width).hex_to_int())
+                        i += 2 + width
+                        continue
+                    cur += esc
                     i += 2
                     continue
                 if ch == "\"":
