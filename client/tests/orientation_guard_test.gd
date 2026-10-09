@@ -21,6 +21,7 @@ const GUARD_PATH := "res://scripts/orientation_guard.gd"
 const TESTS := [
     "_test_text_size_scales_only_on_touch",
     "_test_js_flag_reads_every_yes_shape",
+    "_test_touch_device_decision",
     "_test_cover_decision_matrix",
     "_test_pointer_event_classification",
     "_test_covering_guard_eats_taps_first",
@@ -113,6 +114,16 @@ func _test_js_flag_reads_every_yes_shape() -> void:
     _check("int 0 is no", _guard_script.js_flag(0), false)
     _check("null (eval failed) is no", _guard_script.js_flag(null), false)
     _check("string is no", _guard_script.js_flag("true"), false)
+    _done()
+
+
+## A Surface in Chrome reports pointer:coarse with its trackpad attached; the
+## fine pointer must keep it on the desktop layout (Edit/Config visible).
+func _test_touch_device_decision() -> void:
+    _check("tablet (coarse, no fine) is touch", _guard_script.is_touch_device(true, false), true)
+    _check("Surface (coarse, fine too) is desktop", _guard_script.is_touch_device(true, true), false)
+    _check("desktop (fine only) is desktop", _guard_script.is_touch_device(false, true), false)
+    _check("no pointer at all is desktop", _guard_script.is_touch_device(false, false), false)
     _done()
 
 
