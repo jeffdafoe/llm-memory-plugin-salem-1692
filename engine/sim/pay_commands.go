@@ -89,6 +89,12 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			if !ok {
 				return nil, fmt.Errorf("Pay: buyer %q not in world", buyerID)
 			}
+			// Coins alone move only from a player (LLM-725/726). Enforced here, not
+			// just by pc/give's session lookup, so a future tool or engine caller
+			// cannot quietly bring back NPC bare-coin payment.
+			if buyer.Kind != KindPC {
+				return nil, errors.New("only a player can give coins")
+			}
 			if buyer.MoveIntent != nil {
 				return nil, errors.New(
 					"you are walking — stop before you give coins.",

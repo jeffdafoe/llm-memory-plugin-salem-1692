@@ -51,7 +51,7 @@ func TestPay_LodgingForText_NoQuote_SteersToKeeper(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("alice", "Bob", 4, "a room for the night", at))
+	_, err := w.Send(playerPay("alice", "Bob", 4, "a room for the night", at))
 	if err == nil {
 		t.Fatal("a bare pay for a room should be refused")
 	}
@@ -76,7 +76,7 @@ func TestPay_LodgingForward_OpenQuote_NamesQuote(t *testing.T) {
 	w, stop, at := lodgingQuoteWorld(t)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("alice", "Bob", 4, "a night", at))
+	_, err := w.Send(playerPay("alice", "Bob", 4, "a night", at))
 	if err == nil {
 		t.Fatal("a bare pay toward an open room offer should be steered")
 	}
@@ -99,7 +99,7 @@ func TestPay_LodgingReversed_KeeperPaysGuest_Steered(t *testing.T) {
 	w, stop, at := lodgingQuoteWorld(t)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("bob", "Alice", 4, "lodging", at))
+	_, err := w.Send(playerPay("bob", "Alice", 4, "lodging", at))
 	if err == nil {
 		t.Fatal("a keeper paying a guest for lodging should be steered, not transferred")
 	}
@@ -121,7 +121,7 @@ func TestPay_OpenLodgingQuote_UnrelatedTip_NotSteered(t *testing.T) {
 	w, stop, at := lodgingQuoteWorld(t)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("alice", "Bob", 3, "last night's help", at)); err != nil {
+	if _, err := w.Send(playerPay("alice", "Bob", 3, "last night's help", at)); err != nil {
 		t.Fatalf("an unrelated tip alongside a public room quote should proceed: %v", err)
 	}
 	snap := w.Published()
@@ -155,7 +155,7 @@ func TestPay_TargetedLodgingQuote_BlocksUnrelatedBarePay(t *testing.T) {
 		ExpiresAt: at.Add(10 * time.Minute),
 	})
 
-	_, err := w.Send(sim.Pay("alice", "Bob", 4, "thanks", at))
+	_, err := w.Send(playerPay("alice", "Bob", 4, "thanks", at))
 	if err == nil || !strings.Contains(err.Error(), "Bob is offering a night's stay") {
 		t.Fatalf("a targeted room quote should steer any bare pay between the two: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestPay_NightWordTip_NotSteered(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("alice", "Bob", 3, "last night's help", at)); err != nil {
+	if _, err := w.Send(playerPay("alice", "Bob", 3, "last night's help", at)); err != nil {
 		t.Fatalf("a tip mentioning 'night' with no room offer should proceed: %v", err)
 	}
 	snap := w.Published()

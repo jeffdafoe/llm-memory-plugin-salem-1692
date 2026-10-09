@@ -36,6 +36,7 @@ const TESTS := [
     "_test_give_lists_a_player",
     "_test_give_sends_and_closes",
     "_test_give_refused_stays_open",
+    "_test_give_lost_answer_rereads_purse",
     "_test_give_checks_the_purse",
     "_test_give_follows_the_roster",
     "_test_every_glyph_is_in_the_font",
@@ -619,6 +620,27 @@ func _test_give_refused_stays_open() -> void:
     _check("the refusal shows", p.status_label.text,
         "John Ellis is offering Stew for 6 coins — buy it from its offer card. Giving coins does not buy it.")
     _check("nothing given", gave, [])
+    _check("free to try again", p._busy, false)
+    _free(p)
+    _done()
+
+
+## A lost answer is ambiguous — the coins may have moved. The box stays open,
+## nothing is logged as given, and the purse is re-read before a retry.
+func _test_give_lost_answer_rereads_purse() -> void:
+    var p := _panel([])
+    var gave := []
+    var paid := [0]
+    p.gave.connect(func(to: String, n: int): gave.append([to, n]))
+    p.paid.connect(func(): paid[0] += 1)
+    p.open()
+    p.start_give("John Ellis")
+    p._on_give_send()
+    p._on_give_response(HTTPRequest.RESULT_TIMEOUT, 0, PackedStringArray(), PackedByteArray())
+    _check("still open", p.visible, true)
+    _check("says so", p.status_label.text, "No answer came back. Check your coins and the talk log before you give again.")
+    _check("purse re-read", paid[0], 1)
+    _check("nothing logged as given", gave, [])
     _check("free to try again", p._busy, false)
     _free(p)
     _done()

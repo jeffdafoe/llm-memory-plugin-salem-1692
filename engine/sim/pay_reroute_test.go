@@ -112,7 +112,7 @@ func TestPay_RerouteWorkplaceNameToWorker(t *testing.T) {
 
 	captured := capturePaid(t, w)
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.Pay("john", "Ellis Farm", 10, "meat", at)); err != nil {
+	if _, err := w.Send(playerPay("john", "Ellis Farm", 10, "meat", at)); err != nil {
 		t.Fatalf("rerouted Pay should succeed, got: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestPay_RerouteNoWorkerPresentRejects(t *testing.T) {
 	)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("john", "Ellis Farm", 10, "meat", time.Now().UTC()))
+	_, err := w.Send(playerPay("john", "Ellis Farm", 10, "meat", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay to a building with no co-present worker should reject, got nil")
 	}
@@ -168,7 +168,7 @@ func TestPay_RerouteAmbiguousWorkersReject(t *testing.T) {
 	)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("john", "Ellis Farm", 10, "meat", time.Now().UTC()))
+	_, err := w.Send(playerPay("john", "Ellis Farm", 10, "meat", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("ambiguous workplace reroute should reject, got nil")
 	}
@@ -190,7 +190,7 @@ func TestPay_RerouteOwnerTiebreak(t *testing.T) {
 	defer stop()
 
 	captured := capturePaid(t, w)
-	if _, err := w.Send(sim.Pay("john", "Ellis Farm", 10, "meat", time.Now().UTC())); err != nil {
+	if _, err := w.Send(playerPay("john", "Ellis Farm", 10, "meat", time.Now().UTC())); err != nil {
 		t.Fatalf("owner-tiebreak reroute should succeed, got: %v", err)
 	}
 	if len(*captured) != 1 {
@@ -214,7 +214,7 @@ func TestPay_RerouteDuplicateStructureNamesReject(t *testing.T) {
 	)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("john", "Ellis Farm", 10, "meat", time.Now().UTC()))
+	_, err := w.Send(playerPay("john", "Ellis Farm", 10, "meat", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("duplicate-structure-name reroute should reject even with an owner present, got nil")
 	}

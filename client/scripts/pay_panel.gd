@@ -1009,7 +1009,10 @@ func _on_give_response(result: int, code: int, _h: PackedStringArray, body: Pack
     _busy = false
     _busy_kind = ""
     if result != HTTPRequest.RESULT_SUCCESS:
-        _set_status("The coins did not reach them. Check the talk log before you give again.")
+        # The engine may have moved the coins before the answer was lost: re-read
+        # the purse so the count is right before the player tries again.
+        _set_status("No answer came back. Check your coins and the talk log before you give again.")
+        paid.emit()
         return
     if code < 200 or code >= 300:
         var parsed = _parse(body)

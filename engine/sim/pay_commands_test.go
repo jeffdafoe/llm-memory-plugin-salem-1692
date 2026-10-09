@@ -64,6 +64,43 @@ func buildPayTestWorld(t *testing.T, specs ...payActorSpec) (*sim.World, func())
 	return w, func() { cancel(); <-done }
 }
 
+// playerPay runs sim.Pay with the payer made a player first. Only a PC may
+// hand over bare coin (LLM-725), and sim.Pay's one caller is the pc/give
+// route; these fixtures predate that and seed NPC payers, so each pay test
+// models the real caller rather than every fixture growing a PC.
+func playerPay(buyerID sim.ActorID, recipient string, amount int, forText string, at time.Time) sim.Command {
+	return sim.Command{Fn: func(w *sim.World) (any, error) {
+		if a := w.Actors[buyerID]; a != nil {
+			a.Kind = sim.KindPC
+		}
+		return sim.Pay(buyerID, recipient, amount, forText, at).Fn(w)
+	}}
+}
+
+// TestPay_NPCPayerRefused — LLM-725: an NPC cannot hand over bare coin, whoever
+// the caller is. No coin moves and no Paid event fires.
+func TestPay_NPCPayerRefused(t *testing.T) {
+	for _, kind := range []sim.ActorKind{sim.KindNPCShared, sim.KindNPCStateful, sim.KindDecorative} {
+		w, stop := buildPayTestWorld(t,
+			payActorSpec{id: "hannah", displayName: "Hannah", kind: kind, huddleID: "h1", coins: 10},
+			payActorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
+		)
+		captured := capturePaid(t, w)
+		_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 3, "for the ale", time.Now().UTC()))
+		if err == nil || !strings.Contains(err.Error(), "only a player can give coins") {
+			t.Errorf("kind %v: want the player-only refusal, got %v", kind, err)
+		}
+		snap := w.Published()
+		if snap.Actors["hannah"].Coins != 10 || snap.Actors["ezekiel"].Coins != 0 {
+			t.Errorf("kind %v: coins moved (hannah %d, ezekiel %d)", kind, snap.Actors["hannah"].Coins, snap.Actors["ezekiel"].Coins)
+		}
+		if len(*captured) != 0 {
+			t.Errorf("kind %v: a Paid event fired on a refused pay", kind)
+		}
+		stop()
+	}
+}
+
 // capturePaid registers a subscriber that records every emitted Paid event
 // into the returned slice. Same pattern as captureSpoke — Subscribe routes
 // through w.Send so it runs on the world goroutine.
@@ -94,7 +131,7 @@ func TestPay_HappyPath(t *testing.T) {
 
 	captured := capturePaid(t, w)
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 3, "ale", at)); err != nil {
+	if _, err := w.Send(playerPay("hannah", "Ezekiel Crane", 3, "ale", at)); err != nil {
 		t.Fatalf("Pay: %v", err)
 	}
 
@@ -125,23 +162,10 @@ func TestPay_HappyPath(t *testing.T) {
 		t.Errorf("ezekiel.Coins = %d, want %d", got, want)
 	}
 
-	// Bidirectional relationship facts.
-	hannah := snap.Actors["hannah"]
-	if rel := hannah.Relationships["ezekiel"]; rel == nil {
-		t.Fatal("hannah.Relationships[ezekiel] missing")
-	} else if len(rel.SalientFacts) != 1 {
-		t.Errorf("hannah→ezekiel facts = %d, want 1", len(rel.SalientFacts))
-	} else {
-		fact := rel.SalientFacts[0]
-		if fact.Kind != sim.InteractionPaid {
-			t.Errorf("hannah→ezekiel fact.Kind = %q, want Paid", fact.Kind)
-		}
-		if fact.Text != "I paid Ezekiel Crane 3 coins for ale." {
-			t.Errorf("hannah→ezekiel fact.Text = %q", fact.Text)
-		}
-		if !fact.At.Equal(at) {
-			t.Errorf("hannah→ezekiel fact.At = %v, want %v", fact.At, at)
-		}
+	// Relationship facts: the payer is a player, and RecordInteraction keeps no
+	// relationship row for a PC; the NPC recipient records being paid.
+	if rel := snap.Actors["hannah"].Relationships["ezekiel"]; rel != nil {
+		t.Errorf("player payer got a relationship row: %+v", rel)
 	}
 	ezekiel := snap.Actors["ezekiel"]
 	if rel := ezekiel.Relationships["hannah"]; rel == nil {
@@ -159,8 +183,8 @@ func TestPay_HappyPath(t *testing.T) {
 	}
 }
 
-// --- TestPay_NoForText: same shape, ForText omitted produces the
-// "X paid Y N coins." form without the trailing "for ...".
+// --- TestPay_NoForText: same shape, ForText omitted produces the recipient's
+// "X paid me N coins." form without the trailing "for ...".
 func TestPay_NoForText(t *testing.T) {
 	w, stop := buildPayTestWorld(t,
 		payActorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
@@ -168,13 +192,13 @@ func TestPay_NoForText(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 5, "", time.Now().UTC())); err != nil {
+	if _, err := w.Send(playerPay("hannah", "Ezekiel Crane", 5, "", time.Now().UTC())); err != nil {
 		t.Fatalf("Pay: %v", err)
 	}
 	snap := w.Published()
-	fact := snap.Actors["hannah"].Relationships["ezekiel"].SalientFacts[0]
-	if fact.Text != "I paid Ezekiel Crane 5 coins." {
-		t.Errorf("fact.Text = %q, want %q", fact.Text, "I paid Ezekiel Crane 5 coins.")
+	fact := snap.Actors["ezekiel"].Relationships["hannah"].SalientFacts[0]
+	if fact.Text != "Hannah paid me 5 coins." {
+		t.Errorf("fact.Text = %q, want %q", fact.Text, "Hannah paid me 5 coins.")
 	}
 }
 
@@ -186,11 +210,11 @@ func TestPay_SingularCoin(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 1, "", time.Now().UTC())); err != nil {
+	if _, err := w.Send(playerPay("hannah", "Ezekiel Crane", 1, "", time.Now().UTC())); err != nil {
 		t.Fatalf("Pay: %v", err)
 	}
 	snap := w.Published()
-	fact := snap.Actors["hannah"].Relationships["ezekiel"].SalientFacts[0]
+	fact := snap.Actors["ezekiel"].Relationships["hannah"].SalientFacts[0]
 	if !strings.Contains(fact.Text, "1 coin.") || strings.Contains(fact.Text, "1 coins") {
 		t.Errorf("singular coin missing: %q", fact.Text)
 	}
@@ -205,7 +229,7 @@ func TestPay_NoHuddle(t *testing.T) {
 	defer stop()
 
 	captured := capturePaid(t, w)
-	_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Ezekiel Crane", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for no-huddle, got nil")
 	}
@@ -234,7 +258,7 @@ func TestPay_WalkInFlight(t *testing.T) {
 	defer stop()
 
 	captured := capturePaid(t, w)
-	_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Ezekiel Crane", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for walk-in-flight, got nil")
 	}
@@ -257,7 +281,7 @@ func TestPay_RecipientNotInHuddle(t *testing.T) {
 	defer stop()
 
 	captured := capturePaid(t, w)
-	_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Ezekiel Crane", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for recipient-not-in-huddle, got nil")
 	}
@@ -283,7 +307,7 @@ func TestPay_RecipientNonExistent(t *testing.T) {
 	)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("hannah", "Phantom", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Phantom", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for nonexistent recipient, got nil")
 	}
@@ -303,7 +327,7 @@ func TestPay_SelfByName(t *testing.T) {
 	)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("hannah", "Hannah", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Hannah", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for self-by-name, got nil")
 	}
@@ -321,7 +345,7 @@ func TestPay_InsufficientCoins(t *testing.T) {
 	defer stop()
 
 	captured := capturePaid(t, w)
-	_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 5, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Ezekiel Crane", 5, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for insufficient coins, got nil")
 	}
@@ -352,7 +376,7 @@ func TestPay_ExactBalance(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 5, "", time.Now().UTC())); err != nil {
+	if _, err := w.Send(playerPay("hannah", "Ezekiel Crane", 5, "", time.Now().UTC())); err != nil {
 		t.Fatalf("Pay at exact balance: %v", err)
 	}
 	snap := w.Published()
@@ -377,7 +401,7 @@ func TestPay_CaseInsensitiveRecipient(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			// Fresh receiver balance each subtest — reuse the same world but
 			// re-test the lookup, not the transfer accumulating.
-			if _, err := w.Send(sim.Pay("hannah", name, 1, "", time.Now().UTC())); err != nil {
+			if _, err := w.Send(playerPay("hannah", name, 1, "", time.Now().UTC())); err != nil {
 				t.Errorf("Pay(%q): %v", name, err)
 			}
 		})
@@ -391,7 +415,7 @@ func TestPay_UnknownBuyer(t *testing.T) {
 	)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("ghost", "Hannah", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("ghost", "Hannah", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want error for unknown buyer, got nil")
 	}
@@ -400,26 +424,24 @@ func TestPay_UnknownBuyer(t *testing.T) {
 	}
 }
 
-// --- TestPay_KindNPCSharedGate_Matrix: persistence matrix from the
-// design — 4 combinations of (buyer kind, seller kind). Same shape as
-// speak's gate matrix.
+// --- TestPay_KindNPCSharedGate_Matrix: persistence matrix by recipient kind.
+// The payer is always a player (LLM-725) and RecordInteraction keeps no row
+// for a PC; only a shared-VA NPC recipient records being paid (a stateful
+// NPC's VA keeps its own memory). Same shape as speak's gate matrix.
 func TestPay_KindNPCSharedGate_Matrix(t *testing.T) {
 	cases := []struct {
 		name         string
-		buyerKind    sim.ActorKind
 		sellerKind   sim.ActorKind
-		buyerWrites  bool
 		sellerWrites bool
 	}{
-		{"shared_shared", sim.KindNPCShared, sim.KindNPCShared, true, true},
-		{"shared_stateful", sim.KindNPCShared, sim.KindNPCStateful, true, false},
-		{"stateful_shared", sim.KindNPCStateful, sim.KindNPCShared, false, true},
-		{"stateful_stateful", sim.KindNPCStateful, sim.KindNPCStateful, false, false},
+		{"pc_to_shared", sim.KindNPCShared, true},
+		{"pc_to_stateful", sim.KindNPCStateful, false},
+		{"pc_to_pc", sim.KindPC, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, stop := buildPayTestWorld(t,
-				payActorSpec{id: "b", displayName: "Buyer", kind: tc.buyerKind, huddleID: "h1", coins: 10},
+				payActorSpec{id: "b", displayName: "Buyer", kind: sim.KindPC, huddleID: "h1", coins: 10},
 				payActorSpec{id: "s", displayName: "Seller", kind: tc.sellerKind, huddleID: "h1"},
 			)
 			defer stop()
@@ -428,11 +450,10 @@ func TestPay_KindNPCSharedGate_Matrix(t *testing.T) {
 				t.Fatalf("Pay: %v", err)
 			}
 			snap := w.Published()
-			buyerSideWrote := snap.Actors["b"].Relationships["s"] != nil
-			sellerSideWrote := snap.Actors["s"].Relationships["b"] != nil
-			if buyerSideWrote != tc.buyerWrites {
-				t.Errorf("buyer side wrote = %v, want %v", buyerSideWrote, tc.buyerWrites)
+			if snap.Actors["b"].Relationships["s"] != nil {
+				t.Errorf("player payer side wrote a relationship row")
 			}
+			sellerSideWrote := snap.Actors["s"].Relationships["b"] != nil
 			if sellerSideWrote != tc.sellerWrites {
 				t.Errorf("seller side wrote = %v, want %v", sellerSideWrote, tc.sellerWrites)
 			}
@@ -503,7 +524,7 @@ func TestPay_RejectionEmitsNoPaid(t *testing.T) {
 			captured := capturePaid(t, w)
 			beforeSnap := w.Published()
 			beforeBuyer := beforeSnap.Actors[buyerID].Coins
-			_, err := w.Send(sim.Pay(buyerID, recipient, amount, "", time.Now().UTC()))
+			_, err := w.Send(playerPay(buyerID, recipient, amount, "", time.Now().UTC()))
 			if err == nil {
 				t.Fatal("Pay: want error, got nil")
 			}
@@ -541,7 +562,7 @@ func TestPay_RejectsNonPositiveAmount(t *testing.T) {
 			)
 			defer stop()
 			captured := capturePaid(t, w)
-			_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", tc.amount, "", time.Now().UTC()))
+			_, err := w.Send(playerPay("hannah", "Ezekiel Crane", tc.amount, "", time.Now().UTC()))
 			if err == nil {
 				t.Fatalf("Pay(amount=%d): want error, got nil", tc.amount)
 			}
@@ -573,7 +594,7 @@ func TestPay_RejectsAmountOverMax(t *testing.T) {
 	)
 	defer stop()
 	captured := capturePaid(t, w)
-	_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", sim.MaxPayAmount+1, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Ezekiel Crane", sim.MaxPayAmount+1, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay(amount=MaxPayAmount+1): want error, got nil")
 	}
@@ -596,7 +617,7 @@ func TestPay_RejectsSellerBalanceOverflow(t *testing.T) {
 	defer stop()
 	captured := capturePaid(t, w)
 	// 500 + (MaxInt - 100) overflows MaxInt.
-	_, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 500, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "Ezekiel Crane", 500, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay near seller overflow: want error, got nil")
 	}
@@ -623,7 +644,7 @@ func TestPay_AmbiguousRecipientRejects(t *testing.T) {
 	)
 	defer stop()
 	captured := capturePaid(t, w)
-	_, err := w.Send(sim.Pay("hannah", "John", 3, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("hannah", "John", 3, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay ambiguous: want error, got nil")
 	}
@@ -657,14 +678,14 @@ func TestPay_TwoPaysAccumulate(t *testing.T) {
 
 	first := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	second := first.Add(time.Minute)
-	if _, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 1, "", first)); err != nil {
+	if _, err := w.Send(playerPay("hannah", "Ezekiel Crane", 1, "", first)); err != nil {
 		t.Fatalf("Pay 1: %v", err)
 	}
-	if _, err := w.Send(sim.Pay("hannah", "Ezekiel Crane", 2, "bread", second)); err != nil {
+	if _, err := w.Send(playerPay("hannah", "Ezekiel Crane", 2, "bread", second)); err != nil {
 		t.Fatalf("Pay 2: %v", err)
 	}
 	snap := w.Published()
-	rel := snap.Actors["hannah"].Relationships["ezekiel"]
+	rel := snap.Actors["ezekiel"].Relationships["hannah"] // the recipient records; a player payer keeps no row
 	if rel == nil {
 		t.Fatal("relationship missing")
 	}
@@ -689,7 +710,7 @@ func TestPay_RedirectsToOpenQuoteSettlement(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("alice", "Bob", 4, "stew", at))
+	_, err := w.Send(playerPay("alice", "Bob", 4, "stew", at))
 	if err == nil {
 		t.Fatal("bare pay for a quoted good should point at the offer card")
 	}
@@ -719,7 +740,7 @@ func TestPay_AllowsTipWhenForTextNamesNoQuotedGood(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("alice", "Bob", 3, "your kindness", at)); err != nil {
+	if _, err := w.Send(playerPay("alice", "Bob", 3, "your kindness", at)); err != nil {
 		t.Fatalf("a tip naming no quoted good should proceed: %v", err)
 	}
 	snap := w.Published()
@@ -742,7 +763,7 @@ func TestPay_CoinShortQuoteStillRefused(t *testing.T) {
 	defer stop()
 	mustSend(t, w, func(world *sim.World) { world.Actors["alice"].Coins = 3 })
 
-	_, err := w.Send(sim.Pay("alice", "Bob", 3, "stew", at))
+	_, err := w.Send(playerPay("alice", "Bob", 3, "stew", at))
 	if err == nil {
 		t.Fatal("coin-short bare pay for a quoted good should be rejected")
 	}
@@ -783,7 +804,7 @@ func TestPay_VisitorBudgetGate(t *testing.T) {
 		t.Fatalf("seed visitor state: %v", err)
 	}
 
-	_, err := w.Send(sim.Pay("factor", "Josiah Thorne", 10, "", time.Now().UTC()))
+	_, err := w.Send(playerPay("factor", "Josiah Thorne", 10, "", time.Now().UTC()))
 	if err == nil {
 		t.Fatal("Pay: want budget rejection for a visitor over trip budget, got nil")
 	}
@@ -791,7 +812,7 @@ func TestPay_VisitorBudgetGate(t *testing.T) {
 		t.Errorf("error should name the spendable figure, not the wallet: %v", err)
 	}
 
-	if _, err := w.Send(sim.Pay("factor", "Josiah Thorne", 4, "", time.Now().UTC())); err != nil {
+	if _, err := w.Send(playerPay("factor", "Josiah Thorne", 4, "", time.Now().UTC())); err != nil {
 		t.Fatalf("Pay within budget: %v", err)
 	}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -826,7 +847,7 @@ func TestPay_RejectsBundleMemo(t *testing.T) {
 		"bread, ale", "5x wheat, 3x bread", "bread and ale", "bread; ale", "2 x bread & 1 ale",
 		"5x wheat and  3x bread", "bread\tand\tale", "wheat\nand\nbread",
 	} {
-		_, err := w.Send(sim.Pay("alice", "Bob", 7, memo, at))
+		_, err := w.Send(playerPay("alice", "Bob", 7, memo, at))
 		if err == nil {
 			t.Fatalf("bare pay for %q should be refused", memo)
 		}
@@ -849,7 +870,7 @@ func TestPay_RejectsCountedGoodMemo(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
-	_, err := w.Send(sim.Pay("alice", "Bob", 10, "5x wheat", at))
+	_, err := w.Send(playerPay("alice", "Bob", 10, "5x wheat", at))
 	if err == nil || !strings.Contains(err.Error(), "giving coins buys none of the Wheat") {
 		t.Fatalf("counted single good should be refused as a purchase, got %v", err)
 	}
@@ -865,7 +886,7 @@ func TestPay_AllowsUncountedSingleGoodMemo(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
-	if _, err := w.Send(sim.Pay("alice", "Bob", 2, "the ale", at)); err != nil {
+	if _, err := w.Send(playerPay("alice", "Bob", 2, "the ale", at)); err != nil {
 		t.Fatalf("a single uncounted good with no quote should transfer as a debt memo: %v", err)
 	}
 	if got := w.Published().Actors["bob"].Coins; got != 2 {
@@ -887,7 +908,7 @@ func TestPay_RefundMemoWithNothingReceivedRejects(t *testing.T) {
 	paid := capturePaid(t, w)
 	at := time.Now().UTC()
 
-	_, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 6, "refund for the whetstone that never arrived", at))
+	_, err := w.Send(playerPay("lewis", "Josiah Thorne", 6, "refund for the whetstone that never arrived", at))
 	if err == nil {
 		t.Fatal("refund memo with no coin received from the recipient should be refused")
 	}
@@ -923,7 +944,7 @@ func TestPay_RefundMemoAfterRecipientPaidAllows(t *testing.T) {
 		t.Fatalf("seed coin record: %v", err)
 	}
 
-	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone I never delivered", at)); err != nil {
+	if _, err := w.Send(playerPay("josiah", "Lewis Walker", 5, "refund for the whetstone I never delivered", at)); err != nil {
 		t.Fatalf("a refund from the party who was paid should transfer: %v", err)
 	}
 	if got := w.Published().Actors["lewis"].Coins; got != 15 {
@@ -947,7 +968,7 @@ func TestPay_RefundMemoWithReceiptAgedOutRejects(t *testing.T) {
 		t.Fatalf("seed coin record: %v", err)
 	}
 
-	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err == nil {
+	if _, err := w.Send(playerPay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err == nil {
 		t.Fatal("a receipt older than the window should not license a refund")
 	}
 	if got := w.Published().Actors["lewis"].Coins; got != 10 {
@@ -966,7 +987,7 @@ func TestPay_DebtMemoWithoutRepaymentClaimAllows(t *testing.T) {
 	defer stop()
 	at := time.Now().UTC()
 
-	if _, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 3, "what I owe you for the flour", at)); err != nil {
+	if _, err := w.Send(playerPay("lewis", "Josiah Thorne", 3, "what I owe you for the flour", at)); err != nil {
 		t.Fatalf("a debt memo where the payer owes should transfer: %v", err)
 	}
 	if got := w.Published().Actors["josiah"].Coins; got != 3 {
@@ -990,7 +1011,7 @@ func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 		t.Fatalf("seed coin record: %v", err)
 	}
 
-	_, err := w.Send(sim.Pay("josiah", "Lewis Walker", 6, "refund for the whetstone", at))
+	_, err := w.Send(playerPay("josiah", "Lewis Walker", 6, "refund for the whetstone", at))
 	if err == nil {
 		t.Fatal("a refund larger than the recipient's receipts should be refused")
 	}
@@ -1000,7 +1021,7 @@ func TestPay_RefundMemoCappedAtReceivedTotal(t *testing.T) {
 	if got := w.Published().Actors["lewis"].Coins; got != 10 {
 		t.Errorf("lewis.Coins = %d, want 10 (unchanged)", got)
 	}
-	if _, err := w.Send(sim.Pay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err != nil {
+	if _, err := w.Send(playerPay("josiah", "Lewis Walker", 5, "refund for the whetstone", at)); err != nil {
 		t.Fatalf("a refund within the recipient's receipts should transfer: %v", err)
 	}
 	if got := w.Published().Actors["lewis"].Coins; got != 15 {
@@ -1026,7 +1047,7 @@ func TestPay_RefundMemoAgainstGoodsReceiptRejects(t *testing.T) {
 		t.Fatalf("seed coin record: %v", err)
 	}
 
-	_, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 6, "refund for the whetstone that never arrived", at))
+	_, err := w.Send(playerPay("lewis", "Josiah Thorne", 6, "refund for the whetstone that never arrived", at))
 	if err == nil {
 		t.Fatal("a delivered purchase must not license a refund to the buyer")
 	}
@@ -1057,7 +1078,7 @@ func TestPay_NumberBackMemoAgainstGoodsReceiptRejects(t *testing.T) {
 		t.Fatalf("seed coin record: %v", err)
 	}
 
-	_, err := w.Send(sim.Pay("john", "Silence Walker", 2,
+	_, err := w.Send(playerPay("john", "Silence Walker", 2,
 		"You paid six but the ale and bread come to four — here's two back", at))
 	if err == nil {
 		t.Fatal("\"here's two back\" against a goods receipt must be refused")
@@ -1089,14 +1110,14 @@ func TestPay_RefundMemoBoundsOnUnaccountedReceiptsOnly(t *testing.T) {
 		t.Fatalf("seed coin record: %v", err)
 	}
 
-	_, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 5, "paying you back", at))
+	_, err := w.Send(playerPay("lewis", "Josiah Thorne", 5, "paying you back", at))
 	if err == nil {
 		t.Fatal("a refund above the bare-pay receipts should be refused")
 	}
 	if !strings.Contains(err.Error(), "has paid you only 3 coins these past 7 days not for goods, work or a due") {
 		t.Errorf("rejection = %q, want the unaccounted total named", err.Error())
 	}
-	if _, err := w.Send(sim.Pay("lewis", "Josiah Thorne", 3, "paying you back", at)); err != nil {
+	if _, err := w.Send(playerPay("lewis", "Josiah Thorne", 3, "paying you back", at)); err != nil {
 		t.Fatalf("a refund within the bare-pay receipts should transfer: %v", err)
 	}
 	if got := w.Published().Actors["josiah"].Coins; got != 3 {

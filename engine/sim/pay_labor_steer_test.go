@@ -41,7 +41,7 @@ func TestPay_WorkingLabor_EmployerPaysWorker_Blocked(t *testing.T) {
 		WorkingUntil: &until,
 	})
 
-	_, err := w.Send(sim.Pay("josiah", "Ezekiel", 4, "serving ale", at))
+	_, err := w.Send(playerPay("josiah", "Ezekiel", 4, "serving ale", at))
 	if err == nil {
 		t.Fatal("a bare pay to a worker mid-contract should be steered, not transferred")
 	}
@@ -75,7 +75,7 @@ func TestPay_PendingLabor_EmployerPaysWorker_Refused(t *testing.T) {
 		ExpiresAt: at.Add(2 * time.Minute),
 	})
 
-	_, err := w.Send(sim.Pay("josiah", "Ezekiel", 4, "serving ale", at))
+	_, err := w.Send(playerPay("josiah", "Ezekiel", 4, "serving ale", at))
 	if err == nil {
 		t.Fatal("a bare pay against a pending labor offer should be refused")
 	}
@@ -114,7 +114,7 @@ func TestPay_WorkingLabor_WorkerPaysEmployer_Blocked(t *testing.T) {
 		WorkingUntil: &until,
 	})
 
-	_, err := w.Send(sim.Pay("ezekiel", "Josiah", 1, "thanks", at))
+	_, err := w.Send(playerPay("ezekiel", "Josiah", 1, "thanks", at))
 	if err == nil {
 		t.Fatal("a pay in the worker→employer direction should still be steered")
 	}
@@ -138,7 +138,7 @@ func TestPay_NoLaborOffer_PlainPayProceeds(t *testing.T) {
 	defer stop()
 
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.Pay("josiah", "Ezekiel", 4, "thanks", at)); err != nil {
+	if _, err := w.Send(playerPay("josiah", "Ezekiel", 4, "thanks", at)); err != nil {
 		t.Fatalf("a plain pay with no labor offer between the two should proceed: %v", err)
 	}
 	snap := w.Published()
@@ -167,7 +167,7 @@ func TestPay_ExpiredPendingLabor_DoesNotBlock(t *testing.T) {
 		ExpiresAt: at.Add(-time.Minute), // already expired
 	})
 
-	if _, err := w.Send(sim.Pay("josiah", "Ezekiel", 4, "thanks", at)); err != nil {
+	if _, err := w.Send(playerPay("josiah", "Ezekiel", 4, "thanks", at)); err != nil {
 		t.Fatalf("an expired pending offer should not block a pay: %v", err)
 	}
 	snap := w.Published()
@@ -212,7 +212,7 @@ func TestPay_MultipleLaborOffersBetweenPair_DeterministicSteer(t *testing.T) {
 	// The Working offer must win on every call (a steered pay mutates nothing, so
 	// the offers persist; only the iteration order varies).
 	for i := 0; i < 5; i++ {
-		_, err := w.Send(sim.Pay("josiah", "Ezekiel", 4, "serving ale", at))
+		_, err := w.Send(playerPay("josiah", "Ezekiel", 4, "serving ale", at))
 		if err == nil {
 			t.Fatal("a pay across a live labor offer should be steered")
 		}
