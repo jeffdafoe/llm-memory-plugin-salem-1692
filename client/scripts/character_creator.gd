@@ -225,6 +225,7 @@ func _ready() -> void:
 
     get_viewport().size_changed.connect(_size_preview)
     _size_preview()
+    _refresh_save()
 
 ## Open the creator. pc_exists: the player already has a PC (otherwise Save
 ## creates it and there is no Cancel). current_sprite: the PC's sprite payload
@@ -437,14 +438,14 @@ func _buy_summary() -> String:
         parts.append("You have %d coins." % int(_wardrobe["coins"]))
     return " ".join(parts)
 
-## Save is usable only when the player holds everything tried on, and its text
-## says how many goods are left to buy.
+## Save is usable only once the wardrobe is loaded and the player holds
+## everything tried on; its text says how many goods are left to buy.
 func _refresh_save() -> void:
     var missing := 0
     if _npc_id == "" and not _wardrobe.is_empty():
         missing = FarmerOutfit.missing_goods(_wardrobe, _picks).size()
     _save_button.text = "Save" if missing == 0 else "Buy %d more first" % missing
-    _save_button.disabled = _saving or missing > 0
+    _save_button.disabled = _saving or _wardrobe.is_empty() or missing > 0
 
 ## The goods one row is trying on that the player does not hold, plus any just
 ## bought (their line says to press Save).
@@ -791,7 +792,7 @@ func _size_preview() -> void:
     var village_cell := FarmerRig.CELL_SIZE * village
     _village_box.custom_minimum_size = Vector2(cell * 0.75, village_cell * 0.75)
     if _village_doll != null:
-        _village_doll.scale = Vector2.ONE * maxf(village, 1.0)
+        _village_doll.scale = Vector2.ONE * _village_doll_scale()
     _place_doll()
 
 ## The village-size doll's scale: a farmer's draw scale times the camera zoom,
@@ -804,6 +805,12 @@ func _village_scale() -> float:
         zoom = camera.zoom.x
     var s := VILLAGE_RENDER_SCALE * zoom
     return s if s < float(_preview_scale()) else 0.0
+
+## The scale the village doll is drawn at: _village_scale, or 1 while it is
+## hidden (a node cannot take a zero scale).
+func _village_doll_scale() -> float:
+    var s := _village_scale()
+    return s if s > 0.0 else 1.0
 
 func _place_doll() -> void:
     _place_in(_doll, _preview_box, float(_preview_scale()))
@@ -840,7 +847,7 @@ func _show_doll(sprite: Dictionary) -> void:
         if old != null:
             old.queue_free()
     _doll = _make_doll(sprite, _preview_box, float(_preview_scale()))
-    _village_doll = _make_doll(sprite, _village_box, maxf(_village_scale(), 1.0))
+    _village_doll = _make_doll(sprite, _village_box, _village_doll_scale())
     if _doll == null:
         return
     _place_doll()

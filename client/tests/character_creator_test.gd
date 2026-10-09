@@ -372,10 +372,15 @@ func _test_buy_summary_and_save() -> void:
     _creator._buys["blue_dye"] = {"state": "sending", "seller": "Josiah Thorne"}
     _creator._on_buy_sent(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _pay_body({"ledger_id": 10, "state": "accepted"}), "blue_dye", {"seller": "Josiah Thorne", "amount": 2})
     _check("bought at once — the price leaves the purse", _creator._wardrobe["coins"], 3)
+    _creator._on_pay_resolved({"ledger_id": 10, "terminal_state": "accepted"})
+    _check("bought at once — a later answer for it takes nothing more", _creator._wardrobe["coins"], 3)
     _check("save — usable once everything is held", _creator._save_button.disabled, false)
     _check("save — says Save", _creator._save_button.text, "Save")
     _creator._wardrobe.erase("coins")
     _check("summary — no purse line without the wardrobe's coins", _creator._buy_summary(), "")
+    _creator._wardrobe = {}
+    _creator._refresh_save()
+    _check("save — not usable before the wardrobe has loaded", _creator._save_button.disabled, true)
     _done()
 
 
@@ -398,8 +403,12 @@ func _test_village_scale_follows_the_camera() -> void:
     camera.make_current()
     camera.zoom = Vector2(0.5, 0.5)
     _check("village — farmer scale times the zoom", _creator._village_scale(), 1.0)
+    camera.zoom = Vector2(0.25, 0.25)
+    _check("village — below 1x when zoomed far out", _creator._village_scale(), 0.5)
+    _check("village — the doll is drawn at that scale, not raised to 1x", _creator._village_doll_scale(), 0.5)
     camera.zoom = Vector2(3.0, 3.0)
     _check("village — none when no smaller than the big doll", _creator._village_scale(), 0.0)
+    _check("village — a hidden doll keeps a usable scale", _creator._village_doll_scale(), 1.0)
     _creator._size_preview()
     _check("village — its box is hidden then", _creator._village_box.visible, false)
     camera.zoom = Vector2(0.5, 0.5)
