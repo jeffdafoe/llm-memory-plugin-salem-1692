@@ -566,7 +566,7 @@ func _load_sprite_sheets(sprite_data: Dictionary, callback: Callable) -> void:
 ## Returns null when nothing can be drawn yet (the sheet is not cached).
 func _build_character_sprite(sprite_data: Dictionary) -> AnimatedSprite2D:
     var anim_sprite: AnimatedSprite2D
-    var anchor := Vector2(0.5, 0.9)
+    var anchor := Vector2(0.5, _sprite_anchor_y(sprite_data))
     if FarmerDoll.is_rig_sprite(sprite_data):
         var doll := FarmerDoll.new()
         doll.setup(sprite_data, _npc_sheets)
@@ -1044,6 +1044,15 @@ func _sprite_render_scale(sprite_data: Dictionary) -> float:
     var s: float = float(sprite_data.get("render_scale", 2.0))
     return s if s > 0.0 else 2.0
 
+## Per-sprite feet line from the sprite payload (LLM-742): the fraction of the
+## frame height where the art's feet sit. Villager sheets stand at 0.9; the
+## livestock sheets leave empty rows under the hooves, so they carry their own
+## or the animal draws north of where it stands. Guards absent / out of range
+## back to 0.9.
+func _sprite_anchor_y(sprite_data: Dictionary) -> float:
+    var a: float = float(sprite_data.get("anchor_y", 0.9))
+    return a if a > 0.0 and a <= 1.0 else 0.9
+
 ## Whether this container's sprite carries a SLOW-WALK behavior: waterfowl
 ## (LLM-580) or grazer (LLM-639). Both advance every 2nd engine locomotion
 ## tick, so the client lerps them at the matching half speed.
@@ -1130,7 +1139,7 @@ func _ensure_ground_decal(container: Node2D, sprite_data: Dictionary, sheet: Tex
     decal.scale = Vector2(decal_scale, decal_scale)
     # Same anchor as the character sprite — the decal art occupies the same
     # cell space as the duck pose it sits under.
-    decal.position = Vector2(-fw * decal_scale * 0.5, -fh * decal_scale * 0.9)
+    decal.position = Vector2(-fw * decal_scale * 0.5, -fh * decal_scale * _sprite_anchor_y(sprite_data))
     decal.z_index = -1
     container.add_child(decal)
     _update_ground_decal(container, _is_water_at(container.position))

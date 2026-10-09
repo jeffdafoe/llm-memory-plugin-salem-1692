@@ -631,9 +631,9 @@ func select_npc_sprite_for_placement(sprite: Dictionary, sheet: Texture2D, npc_n
     # ghost (LLM-599); the NPC ghost keeps the historical 2x.
     ghost_sprite.scale = Vector2(2, 2)
     # Match world._render_npc's feet-anchoring: sprite top-left is offset
-    # (-fw/2, -fh*0.9) from the NPC's position, in texture pixels (the ghost
-    # has scale 2, so the world-pixel shift is double).
-    ghost_sprite.offset = Vector2(-fw * 0.5, -fh * 0.9)
+    # (-fw/2, -fh*anchor_y) from the NPC's position, in texture pixels (the
+    # ghost has scale 2, so the world-pixel shift is double).
+    ghost_sprite.offset = Vector2(-fw * 0.5, -fh * world._sprite_anchor_y(sprite))
     mode_changed.emit(Mode.PLACE)
 
 func _apply_ghost_offset() -> void:

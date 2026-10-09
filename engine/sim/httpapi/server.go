@@ -762,6 +762,7 @@ func agentSpriteDTOFromSprite(sp *sim.Sprite) *AgentSpriteDTO {
 		Behaviors:   sp.Behaviors,
 		Animal:      sp.IsAnimal(),
 		RenderScale: sp.RenderScale,
+		AnchorY:     sp.AnchorY,
 		Rig:         sp.Rig,
 		Layers:      sp.Layers,
 	}
@@ -1017,6 +1018,7 @@ func spriteDTO(id sim.SpriteID, sp *sim.Sprite) SpriteDTO {
 		Behaviors:   sp.Behaviors,
 		Animal:      sp.IsAnimal(),
 		RenderScale: sp.RenderScale,
+		AnchorY:     sp.AnchorY,
 		Rig:         sp.Rig,
 		Layers:      sp.Layers,
 	}
