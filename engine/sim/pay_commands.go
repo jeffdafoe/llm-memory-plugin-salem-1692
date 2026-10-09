@@ -305,8 +305,8 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				}
 			}
 
-			// SpendableCoins, not the raw wallet (LLM-644): a visitor's bare
-			// pay draws the same trip budget as every other buy door.
+			// SpendableCoins, the same spend figure every buy door reads (LLM-644;
+			// for a player it is the wallet).
 			if buyer.SpendableCoins() < amount {
 				return nil, fmt.Errorf(
 					"you have only %s to spend — not enough to give %s.",
