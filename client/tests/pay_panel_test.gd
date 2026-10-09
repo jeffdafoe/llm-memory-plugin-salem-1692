@@ -170,6 +170,9 @@ func _test_quote_card_names_the_price() -> void:
     var skirt := {"quote_id": 11, "seller": "Josiah Thorne", "item": "frilly_skirt", "qty": 1, "amount": 8,
         "consume_now": true, "lines": [{"item": "frilly_skirt", "display_label": "Frilly skirt", "qty": 1}]}
     _check("a take_home good is taken home", p.quote_sub(skirt), "from Josiah Thorne · to take home")
+    var skirt_first := skirt.duplicate(true)
+    skirt_first["lines"] = [{"item": "frilly_skirt", "qty": 1}, {"item": "bread", "qty": 1}]
+    _check("a skirt-first bundle keeps its own disposition", p.quote_sub(skirt_first), "from Josiah Thorne · to eat here")
     _free(p)
     _done()
 
@@ -215,6 +218,9 @@ func _test_take_body_follows_the_good() -> void:
         "lines": [{"item": "frilly_skirt", "qty": 1}]}
     p.eat_here = true
     _check("a take_home good is never eaten (LLM-744)", p.take_body(skirt)["consume_now"], false)
+    var skirt_first := {"quote_id": 12, "seller": "Josiah Thorne", "item": "frilly_skirt", "qty": 1, "amount": 10,
+        "consume_now": true, "lines": [{"item": "frilly_skirt", "qty": 1}, {"item": "bread", "qty": 1}]}
+    _check("a skirt-first bundle sends the quote's own", p.take_body(skirt_first)["consume_now"], true)
     _free(p)
     _done()
 

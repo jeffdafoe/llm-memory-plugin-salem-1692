@@ -115,3 +115,70 @@ func TestPayWithItem_TakeHomeOnly_EatHereBundlePocketsTheSkirt(t *testing.T) {
 		t.Errorf("buyer skirt = %d, want 1 (pocketed, not eaten)", buyer.inv["frilly_skirt"])
 	}
 }
+
+// The same bundle with the skirt as the representative line the buyer echoes:
+// the intake clamp sees "frilly_skirt", but a bundle take adopts the quote's
+// own disposition, so the bread is still eaten (code_review round 1).
+func TestPayWithItem_TakeHomeOnly_SkirtFirstBundleStillEatsTheBread(t *testing.T) {
+	w, stop := buildSkirtWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	seedQuote(t, w, sim.SceneQuote{
+		ID: 9, SceneID: "sc1", SellerID: "josiah",
+		Lines:  []sim.QuoteLine{{ItemKind: "frilly_skirt", Qty: 1}, {ItemKind: "bread", Qty: 1}},
+		Amount: 10, ConsumeNow: true, State: sim.SceneQuoteStateActive, ExpiresAt: at.Add(10 * time.Minute),
+	})
+	events := capturePayWithItemEvents(t, w)
+
+	res, err := w.Send(sim.PayWithItem("wendy", "Josiah", "frilly_skirt", 1, 10, true, nil, nil, 9, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem (bundle): %v", err)
+	}
+	r := res.(sim.PayWithItemResult)
+	if entry := readPayLedger(t, w)[r.LedgerID]; !entry.ConsumeNow {
+		t.Error("bundle ledger ConsumeNow = false, want the quote's true")
+	}
+	if r.BuyerAte != 1 || len(events.Consumed) != 1 || events.Consumed[0].Kind != "bread" {
+		t.Errorf("BuyerAte = %d, ItemConsumed = %+v, want the bread eaten", r.BuyerAte, events.Consumed)
+	}
+	if buyer := readBundleActorState(t, w, "wendy"); buyer.inv["frilly_skirt"] != 1 {
+		t.Errorf("buyer skirt = %d, want 1", buyer.inv["frilly_skirt"])
+	}
+}
+
+// A pending eat-here offer whose kind has left the catalog never reaches the
+// settle branch: the accept gate fails it unavailable and no coin or good
+// moves (code_review round 1 asked whether such an entry still burns).
+func TestPayWithItem_UnknownKindAtAcceptMovesNothing(t *testing.T) {
+	w, stop := buildSkirtWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "wendy", SellerID: "josiah",
+		ItemKind: "frilly_skirt", Qty: 1, Amount: 8, ConsumeNow: true,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		delete(world.ItemKinds, "frilly_skirt")
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("drop kind: %v", err)
+	}
+	events := capturePayWithItemEvents(t, w)
+	res, err := w.Send(sim.AcceptPay("josiah", 1, at))
+	if err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	if res != sim.PayLedgerStateFailedUnavailable {
+		t.Errorf("AcceptPay = %v, want %v", res, sim.PayLedgerStateFailedUnavailable)
+	}
+	if len(events.Consumed) != 0 {
+		t.Errorf("ItemConsumed on an unknown kind: %+v", events.Consumed)
+	}
+	buyer := readBundleActorState(t, w, "wendy")
+	seller := readBundleActorState(t, w, "josiah")
+	if buyer.coins != 30 || seller.inv["frilly_skirt"] != 1 {
+		t.Errorf("buyer coins = %d, seller skirt = %d, want 30 / 1 (nothing moved)", buyer.coins, seller.inv["frilly_skirt"])
+	}
+}
