@@ -384,3 +384,27 @@ func TestRestoredTownRepairLandsAfterRestart(t *testing.T) {
 		}
 	})
 }
+
+// TestRestoredTownRepairOnAMendedSitePaysNothing — LLM-737: a restored window
+// whose site was mended some other way while the engine was down lands nothing
+// and pays nothing; the completion guard, not the restore, decides.
+func TestRestoredTownRepairOnAMendedSitePaysNothing(t *testing.T) {
+	w, cancel := buildBusinessDamageWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["anne"].SourceActivity = sim.RestoredHandTownRepair("shop", 25, now.Add(-2*time.Hour), now.Add(-time.Minute))
+	})
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, now) })
+	mustSend(t, w, func(world *sim.World) {
+		if got := world.Actors["anne"].Coins; got != 0 {
+			t.Errorf("anne coins = %d, want 0 for a site that was not damaged", got)
+		}
+		if got := world.Environment.TownChest; got != 100 {
+			t.Errorf("chest = %d, want 100 untouched", got)
+		}
+		if world.Actors["anne"].SourceActivity != nil {
+			t.Error("window still open after the sweep")
+		}
+	})
+}
