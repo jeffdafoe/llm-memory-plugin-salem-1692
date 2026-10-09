@@ -113,7 +113,11 @@ SELECT
     move_destination,
     production_item,
     production_batch_qty,
-    production_remaining_seconds
+    production_remaining_seconds,
+    town_repair_object_id,
+    town_repair_bounty,
+    town_repair_started_at,
+    town_repair_until
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -155,7 +159,8 @@ INSERT INTO actor (
     sprite_id, facing,
     snapshot_gen, move_destination,
     production_item, production_batch_qty, production_remaining_seconds,
-    estate_rate_assessed_at
+    estate_rate_assessed_at,
+    town_repair_object_id, town_repair_bounty, town_repair_started_at, town_repair_until
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -167,7 +172,8 @@ INSERT INTO actor (
     $21, $22,
     $23, $24,
     $25, $26, $27,
-    $28
+    $28,
+    $29, $30, $31, $32
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -196,7 +202,11 @@ ON CONFLICT (id) DO UPDATE SET
     production_item        = EXCLUDED.production_item,
     production_batch_qty   = EXCLUDED.production_batch_qty,
     production_remaining_seconds = EXCLUDED.production_remaining_seconds,
-    estate_rate_assessed_at = EXCLUDED.estate_rate_assessed_at`
+    estate_rate_assessed_at = EXCLUDED.estate_rate_assessed_at,
+    town_repair_object_id  = EXCLUDED.town_repair_object_id,
+    town_repair_bounty     = EXCLUDED.town_repair_bounty,
+    town_repair_started_at = EXCLUDED.town_repair_started_at,
+    town_repair_until      = EXCLUDED.town_repair_until`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -538,6 +548,10 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			productionItem       string
 			productionBatchQty   int
 			productionRemaining  int64
+			townRepairObjectID   string
+			townRepairBounty     int
+			townRepairStartedAt  *time.Time
+			townRepairUntil      *time.Time
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -551,6 +565,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&spriteID, &facing,
 			&isAdmin, &moveDestination,
 			&productionItem, &productionBatchQty, &productionRemaining,
+			&townRepairObjectID, &townRepairBounty, &townRepairStartedAt, &townRepairUntil,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -565,6 +580,16 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 				BatchQty:         productionBatchQty,
 				RemainingSeconds: productionRemaining,
 			}
+		}
+
+		// Rehydrate a hand's town repair (LLM-737) with its original Until.
+		var sourceActivity *sim.SourceActivity
+		if townRepairObjectID != "" && townRepairUntil != nil {
+			startedAt := *townRepairUntil
+			if townRepairStartedAt != nil {
+				startedAt = *townRepairStartedAt
+			}
+			sourceActivity = sim.RestoredHandTownRepair(sim.VillageObjectID(townRepairObjectID), townRepairBounty, startedAt, *townRepairUntil)
 		}
 
 		resumeDest, err := decodeMoveDestination(moveDestination)
@@ -606,6 +631,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			Facing:               facing,
 			IsAdmin:              isAdmin,
 			ProductionActivity:   productionActivity,
+			SourceActivity:       sourceActivity,
 			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
@@ -986,6 +1012,41 @@ func productionRemainingArg(pa *sim.ProductionActivity) int64 {
 		return 0
 	}
 	return pa.RemainingSeconds
+}
+
+// townRepairObjectIDArg / townRepairBountyArg / townRepairStartedAtArg /
+// townRepairUntilArg project a hand's town repair (LLM-737) onto the actor
+// row's four town_repair columns. Every other window — none, an eat or harvest,
+// a keeper's own mend, a player's stepped repair — writes the idle sentinel
+// (”, 0, NULL, NULL), which the load side reads back as "no window".
+func townRepairObjectIDArg(act *sim.SourceActivity) string {
+	if !act.IsHandTownRepair() {
+		return ""
+	}
+	return string(act.ObjectID)
+}
+
+func townRepairBountyArg(act *sim.SourceActivity) int {
+	if !act.IsHandTownRepair() {
+		return 0
+	}
+	return act.Bounty
+}
+
+func townRepairStartedAtArg(act *sim.SourceActivity) *time.Time {
+	if !act.IsHandTownRepair() || act.StartedAt.IsZero() {
+		return nil
+	}
+	t := act.StartedAt
+	return &t
+}
+
+func townRepairUntilArg(act *sim.SourceActivity) *time.Time {
+	if !act.IsHandTownRepair() || act.Until.IsZero() {
+		return nil
+	}
+	t := act.Until
+	return &t
 }
 
 // loadAllRoomAccess reads every room_access row and attaches it to the
@@ -1528,6 +1589,10 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			productionBatchQtyArg(a.ProductionActivity),  // $26 production_batch_qty
 			productionRemainingArg(a.ProductionActivity), // $27 production_remaining_seconds
 			a.EstateRateAssessedAt,                       // $28 estate_rate_assessed_at (estate-rate once-a-day stamp)
+			townRepairObjectIDArg(a.SourceActivity),      // $29 town_repair_object_id
+			townRepairBountyArg(a.SourceActivity),        // $30 town_repair_bounty
+			townRepairStartedAtArg(a.SourceActivity),     // $31 town_repair_started_at
+			townRepairUntilArg(a.SourceActivity),         // $32 town_repair_until
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

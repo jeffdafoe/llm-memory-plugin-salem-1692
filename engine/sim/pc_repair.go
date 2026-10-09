@@ -112,6 +112,30 @@ func (act *SourceActivity) isPCRepair() bool {
 	return act != nil && act.Kind == SourceActivityRepair && act.PublicWorks && act.Steps > 0
 }
 
+// IsHandTownRepair reports whether a window is a hand's town repair — the
+// clocked kind that lands at Until. It is the one window the checkpoint keeps
+// across a restart (LLM-737): it runs an hour or two, so a deploy that drops it
+// costs the whole job. A player's stepped repair is excluded — its Until is an
+// idle deadline, and a restart already drops the player's session.
+func (act *SourceActivity) IsHandTownRepair() bool {
+	return act != nil && act.Kind == SourceActivityRepair && act.PublicWorks && act.Steps == 0
+}
+
+// RestoredHandTownRepair rebuilds a hand's town repair from the checkpoint
+// (LLM-737). The original Until is kept, so a restart neither adds nor takes
+// away work; a window whose Until passed while the engine was down lands on the
+// first completion sweep, which re-resolves the site as any landing does.
+func RestoredHandTownRepair(objectID VillageObjectID, bounty int, startedAt, until time.Time) *SourceActivity {
+	return &SourceActivity{
+		Kind:        SourceActivityRepair,
+		ObjectID:    objectID,
+		StartedAt:   startedAt,
+		Until:       until,
+		Bounty:      bounty,
+		PublicWorks: true,
+	}
+}
+
 // PCRepairOffer is the town's repair work at one damaged site, as a player sees
 // it — the one source for the repair dialog, whether it opens on the arrival
 // thought (ObjectConditionNarrated.Offer) or on a click (PCRepairOfferAt).
