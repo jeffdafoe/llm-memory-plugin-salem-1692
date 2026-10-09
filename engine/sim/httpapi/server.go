@@ -586,6 +586,7 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 		Atmosphere:     s.Environment.Atmosphere,
 		ZoomMinAdmin:   s.ZoomMinAdmin,
 		ZoomMinRegular: s.ZoomMinRegular,
+		Build:          BuildCommit,
 	}
 	for _, line := range sim.DamageTickerLines(s) {
 		dto.Damaged = append(dto.Damaged, DamageTickerDTO{ObjectID: string(line.ObjectID), Text: line.Text})

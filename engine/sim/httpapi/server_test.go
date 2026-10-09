@@ -187,6 +187,26 @@ func TestHandleWorld(t *testing.T) {
 	if dto.LastTransitionAt != nil {
 		t.Errorf("last_transition_at = %v, want omitted on a never-transitioned world", dto.LastTransitionAt)
 	}
+	if dto.Build != "" {
+		t.Errorf("build = %q, want omitted in a local build", dto.Build)
+	}
+}
+
+// TestHandleWorld_Build: the deploy-stamped BuildCommit rides the world read,
+// so a client can tell its tab predates a deploy (LLM-740).
+func TestHandleWorld_Build(t *testing.T) {
+	saved := BuildCommit
+	BuildCommit = "00aa2b90"
+	t.Cleanup(func() { BuildCommit = saved })
+
+	rec := get(t, NewServer(seededWorld(t), okAuth{}), "/api/village/world")
+	var dto WorldStateDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.Build != "00aa2b90" {
+		t.Errorf("build = %q, want 00aa2b90", dto.Build)
+	}
 }
 
 // TestHandleWorld_TransitionAndBoundaries: last_transition_at rides the public

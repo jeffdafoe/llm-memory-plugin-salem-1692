@@ -42,6 +42,10 @@ const ALARM_POLL_INTERVAL_SEC: float = 60.0
 ## never decays into the atmosphere line's slow heartbeat. It is an emergency;
 ## it keeps shouting until someone fixes it.
 const ALARM_REPEAT_SEC: float = 30.0
+## LLM-740: shown ahead of the news when the engine's build differs from this
+## client's — the tab predates a deploy.
+const STALE_TEXT: String = "A new version of Salem is out. Reload the page to get it."
+const BuildInfo := preload("res://scripts/build_info.gd")
 const COLOR_ATMOSPHERE: Color = Color(0.85, 0.78, 0.55, 1.0)
 const COLOR_ALARM: Color = Color(1.0, 0.35, 0.30, 1.0)
 
@@ -68,6 +72,12 @@ var _alarm_line: String = ""
 var _damage_line: String = ""
 var _alarm_http: HTTPRequest = null
 var _alarm_timer: Timer = null
+## LLM-740: "Salem build <commit>" — the band's first line, scrolled once.
+var _intro_line: String = ""
+## This client's build, set in begin(); "" until then, which never reads stale.
+var _client_build: String = ""
+## STALE_TEXT while the engine's build differs from _client_build, else "".
+var _stale_line: String = ""
 
 
 func _ready() -> void:
@@ -142,6 +152,12 @@ func _ready() -> void:
 # world-state fetch so the ticker has atmosphere to display, then starts the
 # slow refresh poll. Operators additionally start the alarm poll.
 func begin() -> void:
+    # LLM-740: the build is the first thing the band shows. The world read's
+    # band arrives mid-scroll and queues behind it (_show's courteous path).
+    _client_build = BuildInfo.commit()
+    _intro_line = "Salem build " + _client_build
+    print(_intro_line)
+    _show(_intro_line, true)
     _fetch_world_state()
     # Guard against begin() being called before _ready() built the timer (the
     # current call site adds the node first, but don't crash if that changes).
@@ -185,6 +201,8 @@ func _on_world_state_completed(_result: int, code: int, _headers: PackedStringAr
     var json = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         return
+    var server_build = json.get("build", "")
+    _stale_line = STALE_TEXT if typeof(server_build) == TYPE_STRING and BuildInfo.is_stale(_client_build, server_build) else ""
     # WorldStateDTO.damaged (LLM-654) — [{object_id, text}] — then .court
     # (LLM-706) — [{case_id, text}]; each omitted when empty. Read before the
     # atmosphere so a mended well or an expired ruling clears its line even when
@@ -226,13 +244,14 @@ func push(text: String) -> void:
     _refresh_band()
 
 
-# The non-alarm band: broken things first, then the atmosphere.
+# The non-alarm band: a stale-tab notice, then broken things, then the
+# atmosphere.
 func _band_line() -> String:
-    if _damage_line != "" and _atmosphere_line != "":
-        return _damage_line + "   ~   " + _atmosphere_line
-    if _damage_line != "":
-        return _damage_line
-    return _atmosphere_line
+    var parts := PackedStringArray()
+    for part in [_stale_line, _damage_line, _atmosphere_line]:
+        if part != "":
+            parts.append(part)
+    return "   ~   ".join(parts)
 
 
 # Show the composed band, unless a firing alarm owns it — the band is
@@ -319,6 +338,14 @@ func _on_scroll_finished() -> void:
         return
     if _active_line == "":
         _label.text = ""
+        return
+    # The build line scrolls once; then the band, or nothing, takes over.
+    # Cleared so a later line with the same text is not taken for it.
+    if _intro_line != "" and _active_line == _intro_line:
+        _intro_line = ""
+        _active_line = ""
+        _label.text = ""
+        _refresh_band()
         return
     # Schedule the next re-scroll. An alarm re-scrolls on its own fixed interval
     # for as long as it fires — it must never decay into the 15-minute heartbeat,

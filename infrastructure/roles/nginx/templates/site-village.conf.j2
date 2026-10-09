@@ -95,6 +95,18 @@ server {
         try_files $uri =404;
     }
 
+    # The page that names the build files — revalidated like them (LLM-740), or
+    # a browser may keep an old copy by heuristic. "/" and the SPA fallback both
+    # land here by internal redirect. An add_header in a location drops the
+    # server-level ones, so the security headers are repeated.
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        try_files $uri =404;
+    }
+
     # Static village viewer files (SPA fallback)
     location / {
         try_files $uri $uri/ /index.html;

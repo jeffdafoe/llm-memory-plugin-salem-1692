@@ -18,6 +18,9 @@ const TESTS := [
     "_test_world_read_parses_damaged",
     "_test_world_read_parses_court",
     "_test_mended_with_no_atmosphere_blanks_the_band",
+    "_test_build_info_reads_and_compares",
+    "_test_stale_build_leads_the_band",
+    "_test_build_line_scrolls_once",
 ]
 
 var _failures := 0
@@ -139,6 +142,82 @@ func _test_mended_with_no_atmosphere_blanks_the_band() -> void:
     t._refresh_band()
     _check("band blanked", t._active_line, "")
     _check("label cleared", label.text, "")
+    label.free()
+    timer.free()
+    t.free()
+    _done()
+
+
+## LLM-740: the deploy-stamped file is read trimmed; a missing or empty one is
+## a local build. Only two known, different builds are stale.
+func _test_build_info_reads_and_compares() -> void:
+    var info = load("res://scripts/build_info.gd")
+    var path := "user://build_info_test.txt"
+    _check("missing file is dev", info.read("user://no_such_build_info.txt"), "dev")
+    var file := FileAccess.open(path, FileAccess.WRITE)
+    file.store_string("00aa2b90\n")
+    file.close()
+    _check("stamped file read trimmed", info.read(path), "00aa2b90")
+    file = FileAccess.open(path, FileAccess.WRITE)
+    file.close()
+    _check("empty file is dev", info.read(path), "dev")
+    DirAccess.remove_absolute(path)
+    _check("different builds are stale", info.is_stale("00aa2b90", "d39271bc"), true)
+    _check("same build is not stale", info.is_stale("00aa2b90", "00aa2b90"), false)
+    _check("local client is never stale", info.is_stale("dev", "d39271bc"), false)
+    _check("local engine is never stale", info.is_stale("00aa2b90", ""), false)
+    _check("unset client is never stale", info.is_stale("", "d39271bc"), false)
+    _done()
+
+
+## A world read from a newer engine puts the reload notice ahead of the news;
+## the same build clears it. (Alarm set so the parse is checked off-tree.)
+func _test_stale_build_leads_the_band() -> void:
+    var t = _ticker()
+    t._alarm_line = "*** ENGINE ALARM ***"
+    t._client_build = "00aa2b90"
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({
+        "build": "d39271bc",
+        "atmosphere": "Mist on the green.",
+        "damaged": [{"object_id": "w1", "text": "The windlass at the Well by the Mill is down."}],
+    }))
+    _check("stale notice leads the band", t._band_line(),
+        t.STALE_TEXT + "   ~   The windlass at the Well by the Mill is down.   ~   Mist on the green.")
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"build": "00aa2b90", "atmosphere": "Mist on the green."}))
+    _check("same build clears the notice", t._band_line(), "Mist on the green.")
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"build": 7, "atmosphere": "Mist on the green."}))
+    _check("a non-string build is ignored", t._stale_line, "")
+    t.free()
+    _done()
+
+
+## The build line scrolls once and does not repeat: with no band it blanks,
+## with a band the band takes over.
+func _test_build_line_scrolls_once() -> void:
+    var t = _ticker()
+    var label := Label.new()
+    var timer := Timer.new()
+    t._label = label
+    t._repeat_timer = timer
+    t._intro_line = "Salem build 00aa2b90"
+    t._active_line = t._intro_line
+    t._scrolling = true
+    t._on_scroll_finished()
+    _check("no band: line cleared", t._active_line, "")
+    _check("no band: label cleared", label.text, "")
+    _check("no band: no re-scroll scheduled", timer.is_stopped(), true)
+    _check("handled once: sentinel cleared", t._intro_line, "")
+    t._active_line = "Salem build 00aa2b90"
+    t._scrolling = true
+    t._on_scroll_finished()
+    _check("a later line with the same text re-scrolls", t._active_line, "Salem build 00aa2b90")
+    t._repeat_timer.stop()
+    t._intro_line = "Salem build 00aa2b90"
+    t._active_line = t._intro_line
+    t._scrolling = true
+    t._atmosphere_line = "Mist on the green."
+    t._on_scroll_finished()
+    _check("band takes over", t._active_line, "Mist on the green.")
     label.free()
     timer.free()
     t.free()

@@ -11,3 +11,6 @@ Thumbs.db
 # Commercial tilesets — purchased assets, not for public repos
 # These are deployed to the server separately
 assets/tilesets/mana-seed/
+
+# Build stamp written by the deploy before the web export (LLM-740)
+build_info.txt

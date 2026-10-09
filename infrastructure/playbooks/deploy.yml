@@ -61,9 +61,18 @@
     # old-code/old-schema state rather than the LLM-493 split state (new binary,
     # un-migrated schema: the village came up price-blind and every checkpoint
     # failed on a missing column). LLM-495.
+    # The commit being deployed, stamped into the engine (BuildCommit) and the
+    # client (build_info.txt) so a client can show its build and tell a tab that
+    # predates a deploy to reload (LLM-740). Read from repo_root — project_root
+    # is an rsync copy without .git.
+    - name: Read the build commit
+      command: git -C {{ repo_root }} log -1 --format=%h --abbrev=8
+      register: build_commit
+      changed_when: false
+
     - name: Build Go engine
       shell: |
-        cd {{ project_root }}/engine && go build -o salem.new ./sim/cmd/engine
+        cd {{ project_root }}/engine && go build -ldflags "-X github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/httpapi.BuildCommit={{ build_commit.stdout }}" -o salem.new ./sim/cmd/engine
       environment:
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
@@ -468,6 +477,14 @@
         state: directory
         owner: "{{ app_user }}"
         mode: "0755"
+
+    # Read by build_info.gd; packed by the Web preset's include_filter.
+    - name: Stamp the build commit into the client
+      copy:
+        content: "{{ build_commit.stdout }}\n"
+        dest: "{{ project_root }}/client/build_info.txt"
+        owner: "{{ app_user }}"
+        mode: "0644"
 
     - name: Export Godot client for web
       command: >
