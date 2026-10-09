@@ -212,6 +212,14 @@ func publicWorksConsequence(s PublicWorksSite) string {
 	return " — nobody can drink or draw water there until it is mended."
 }
 
+// publicWorksNoHireLine closes every audience's open bounty. Without it the
+// constable, a damaged shop's keeper and hands alike read "the town pays" as
+// coin they may hand out, and offer_work a villager for the town's job — paid
+// from their own purse, the hired villager held at the employer's post, the
+// site still unmended. One hand mends a site at a time (siteUnderRepair), so
+// the pay is never split either.
+const publicWorksNoHireLine = "No one hires for the town's works or shares out the pay — the town pays the one hand who does the work."
+
 // renderPublicWorks writes "## The town's works". Content-gated.
 func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {
 	if v == nil || len(v.Sites) == 0 {
@@ -220,14 +228,19 @@ func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {
 	b.WriteString("## The town's works\n")
 	switch {
 	case v.Constable:
+		anyOpen := false
 		for _, s := range v.Sites {
 			b.WriteString(sanitizeInline(s.Fact) + publicWorksConsequence(s))
 			noun := sim.PublicWorksMendNoun(s.Kind)
 			if s.BountyOpen {
+				anyOpen = true
 				fmt.Fprintf(b, " The town has posted %s for %s; any hand seeking work may take it on.\n", coinsPhrase(s.Bounty), noun)
 			} else {
 				fmt.Fprintf(b, " The town chest cannot pay for %s just now.\n", noun)
 			}
+		}
+		if anyOpen {
+			b.WriteString(publicWorksNoHireLine + "\n")
 		}
 		b.WriteString("\n")
 	case v.Keeper:
@@ -236,7 +249,7 @@ func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {
 		for _, s := range v.Sites {
 			renderHandPublicWorks(b, s)
 		}
-		b.WriteString("\n")
+		b.WriteString(publicWorksNoHireLine + "\n\n")
 	}
 }
 
@@ -251,7 +264,7 @@ func renderKeeperPublicWorks(b *strings.Builder, s PublicWorksSite) {
 	}
 	b.WriteString(" Until it is mended you can take in no new shelf stock, and your work goes slowly; you can still sell what's on hand.")
 	if s.BountyOpen {
-		fmt.Fprintf(b, " The town pays a hand %s to mend it — the work is the town's, not yours.\n\n", coinsPhrase(s.Bounty))
+		fmt.Fprintf(b, " The town pays a hand %s to mend it — the work is the town's, not yours. %s\n\n", coinsPhrase(s.Bounty), publicWorksNoHireLine)
 		return
 	}
 	b.WriteString(" The town chest cannot pay for the mending just now, so it waits.\n\n")

@@ -100,7 +100,97 @@ func init() {
 				"town has posted 10 coins for the clearing, open to any hand. No imperative, no tool.",
 			build: constableKnowsRoadIsBlockedScenario,
 		},
+		perceptionScenario{
+			name: "constable_in_damaged_shop_with_a_hand_hires_no_one",
+			summary: "Gideon calls at the storm-damaged General Store on his round while Anne, a worker, stands in it " +
+				"(live 10-09: he offer_work'd Anne the town's 25 for the Tavern, cut it to 4 from his own purse, and she " +
+				"sat at the Meeting House). Both the hire line for Anne and the town's works render; the works section " +
+				"closes with: no one hires for the town's works or shares out the pay.",
+			build: constableInDamagedShopWithHandScenario,
+		},
+		perceptionScenario{
+			name: "keeper_of_damaged_shop_with_a_hand_hires_no_one",
+			summary: "Josiah keeps the storm-damaged General Store and Anne, a worker, stands in it with him (live 10-04: " +
+				"Elizabeth Ellis offer_work'd Lewis the town's 25 for her own farm, twice). The keeper's line carries " +
+				"the same close: no one hires for the town's works or shares out the pay.",
+			build: keeperOfDamagedShopWithHandScenario,
+		},
 	)
+}
+
+// handInStoreWith puts Anne inside the General Store in one conversation with
+// the subject, so the subject's prompt carries the offer_work line for her.
+func handInStoreWith(snap *sim.Snapshot, subject sim.ActorID) {
+	const huddle = sim.HuddleID("store_talk")
+	anne, other := snap.Actors[pwAnne], snap.Actors[subject]
+	for _, a := range []*sim.ActorSnapshot{anne, other} {
+		a.Pos = sim.WorldPos{X: 1600, Y: 1200}.Tile()
+		a.InsideStructureID = "store"
+		a.CurrentHuddleID = huddle
+	}
+	anne.Acquaintances = map[string]sim.Acquaintance{other.DisplayName: {}}
+	other.Acquaintances = map[string]sim.Acquaintance{anne.DisplayName: {}}
+	snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+		huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{pwAnne: {}, subject: {}}},
+	}
+}
+
+func constableInDamagedShopWithHandScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := damagedShopSnapshot(100, false, true)
+	handInStoreWith(snap, pwGideon)
+	return snap, pwGideon, nil
+}
+
+func keeperOfDamagedShopWithHandScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := damagedShopSnapshot(100, false, true)
+	handInStoreWith(snap, pwJosiah)
+	return snap, pwJosiah, nil
+}
+
+// TestGoldensOpenTownWorksSayNoOneHires — across the whole matrix, every
+// "## The town's works" that names an open bounty (to a hand, the constable or
+// a damaged shop's keeper) also says no one hires for it. Live, all three
+// audiences offer_work'd villagers for the town's job. Vacuity-guarded on each
+// audience.
+func TestGoldensOpenTownWorksSayNoOneHires(t *testing.T) {
+	seen := map[string]bool{}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			if snap.Actors[actorID] == nil {
+				return
+			}
+			p := Build(snap, actorID, warrants)
+			if p.PublicWorks == nil {
+				return
+			}
+			open := false
+			for _, s := range p.PublicWorks.Sites {
+				open = open || s.BountyOpen
+			}
+			if !open {
+				return
+			}
+			switch {
+			case p.PublicWorks.Constable:
+				seen["constable"] = true
+			case p.PublicWorks.Keeper:
+				seen["keeper"] = true
+			default:
+				seen["hand"] = true
+			}
+			out := combinedPrompt(Render(p, DefaultRenderConfig()))
+			if !strings.Contains(out, publicWorksNoHireLine) {
+				t.Errorf("%q hears of an open town bounty but not that no one hires for it:\n%s", snap.Actors[actorID].DisplayName, out)
+			}
+		})
+	}
+	for _, who := range []string{"constable", "keeper", "hand"} {
+		if !seen[who] {
+			t.Fatalf("invariant is vacuous: no scenario shows the %s an open town bounty", who)
+		}
+	}
 }
 
 const pwJosiah = sim.ActorID("josiah")

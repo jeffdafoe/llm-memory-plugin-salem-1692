@@ -19,5 +19,6 @@ You're home.
 ## The town's works
 The windlass at the Well by the Mill is down — nobody can drink or draw water there until it is mended. The town pays 12 coins to whoever mends it — about 1 hour of work, no nails needed.
 It is a long walk west. Head there (move_to "mill_well") if you want the work.
+No one hires for the town's works or shares out the pay — the town pays the one hand who does the work.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

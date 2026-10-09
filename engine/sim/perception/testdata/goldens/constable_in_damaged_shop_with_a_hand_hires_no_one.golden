@@ -1,0 +1,30 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 20.
+
+## Around you
+You are inside the General Store, with Anne Walker.
+It is morning in the village.
+
+You keep your trade at the Meeting House (destination: meeting_house) — you can head back there whenever you wish.
+
+It is your working hours, yet you are away from your post — make your way to the Meeting House (destination: meeting_house) now.
+
+## Coin between you and those here, this past week
+- No coin has passed between you and Anne Walker.
+
+Anne Walker takes work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; don't ask with speak first, because speaking ends your turn and the offer would never reach them.
+## Town rate
+The town pays your wage out of the estate rate. When you call at a shop on your rounds and the keeper is there, the rate on their estate is taken into the town chest as you arrive — none of it passes through your purse. A keeper holding 0 coins or fewer owes nothing today. You never ask for the rate or name a sum: what is due is taken without a word from you, and what is taken is the town's, not yours to hand back.
+## The magistrates
+Matters you cannot settle yourself — a theft, a debt in dispute, a wrong one villager lays at another's door — go before the magistrates in Salem Town. They sit each day at noon, read what passed in the village, and send word of their ruling to everyone the matter concerns; their ruling ends it. You may bring up to 2 new matters a day with bring_before_magistrates, naming the villagers concerned and saying what the matter is.
+## The town's works
+The storm has torn at the General Store — it can take in no new stock, and its work goes slowly, until it is mended. The town has posted 25 coins for the mending; any hand seeking work may take it on.
+No one hires for the town's works or shares out the pay — the town pays the one hand who does the work.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
