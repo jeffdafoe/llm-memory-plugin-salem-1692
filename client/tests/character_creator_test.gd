@@ -31,6 +31,7 @@ const TESTS := [
     "_test_buy_summary_and_save",
     "_test_villager_mode_has_no_buy_section",
     "_test_village_scale_follows_the_camera",
+    "_test_save_waits_for_a_wardrobe_reload",
 ]
 
 var _creator: Control = null
@@ -101,6 +102,7 @@ func _reset() -> void:
     _creator._cancellable = true
     _creator.visible = true
     _creator._wardrobe = {"categories": [], "items": [], "colours": {}}
+    _creator._wardrobe_loaded = true
     _creator._picks = {"figure": "straight", "items": {}}
     _creator._name_edit.text = "Tess"
     _creator._npc_id = ""
@@ -378,9 +380,30 @@ func _test_buy_summary_and_save() -> void:
     _check("save — says Save", _creator._save_button.text, "Save")
     _creator._wardrobe.erase("coins")
     _check("summary — no purse line without the wardrobe's coins", _creator._buy_summary(), "")
-    _creator._wardrobe = {}
-    _creator._refresh_save()
-    _check("save — not usable before the wardrobe has loaded", _creator._save_button.disabled, true)
+    _done()
+
+
+## A reload keeps the old wardrobe on screen; Save waits for the new one and
+## stays off if it fails.
+func _test_save_waits_for_a_wardrobe_reload() -> void:
+    _creator._wardrobe = _outfit_wardrobe()
+    _creator._wardrobe["held"] = ["linen_shirt", "felt_hat", "blue_dye"]
+    _creator._picks = _outfit_picks()
+    _creator._rebuild_rows()
+    _check("reload — Save usable with everything held", _creator._save_button.disabled, false)
+    _creator._load_wardrobe()
+    _check("reload — Save off while the reload is out", _creator._save_button.disabled, true)
+    _creator._on_wardrobe_loaded(HTTPRequest.RESULT_SUCCESS, 500, PackedStringArray(), PackedByteArray())
+    _check("reload — Save stays off after a failed reload", _creator._save_button.disabled, true)
+    _check("reload — the old wardrobe is still shown", _creator._wardrobe.is_empty(), false)
+    _creator._on_save()
+    _check("reload — pressing Save does nothing", _creator._saving, false)
+    _creator._http.cancel_request()
+    _creator._in_flight = false
+    _creator._load_wardrobe()
+    _creator._on_wardrobe_loaded(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), JSON.stringify(_creator._wardrobe).to_utf8_buffer())
+    _check("reload — Save back once the wardrobe arrives", _creator._save_button.disabled, false)
+    _creator._http.cancel_request()
     _done()
 
 

@@ -74,6 +74,9 @@ var _http: HTTPRequest = null
 var _rng := RandomNumberGenerator.new()
 
 var _wardrobe: Dictionary = {}
+## The last wardrobe request succeeded. A reload keeps the old _wardrobe on
+## screen, so emptiness alone cannot tell a fresh wardrobe from a stale one.
+var _wardrobe_loaded := false
 var _picks: Dictionary = {}
 ## Colours remembered per category and slot, so cycling styles keeps them.
 var _remembered: Dictionary = {}
@@ -288,6 +291,8 @@ func _input(event: InputEvent) -> void:
         get_viewport().set_input_as_handled()
 
 func _load_wardrobe() -> void:
+    _wardrobe_loaded = false
+    _refresh_save()
     _error.text = "Opening the wardrobe…"
     if not _post("/api/village/pc/wardrobe", "", _on_wardrobe_loaded):
         _error.text = "The wardrobe could not be opened. Close and try again."
@@ -315,6 +320,7 @@ func _on_wardrobe_loaded(result: int, code: int, _headers: PackedStringArray, bo
         _error.text = "The wardrobe could not be opened. Close and try again."
         return
     _wardrobe = data
+    _wardrobe_loaded = true
     # A villager holds no wardrobe goods; the editor may dress one in anything.
     if _npc_id != "":
         _wardrobe["held"] = _wardrobe.get("goods", {}).keys()
@@ -438,14 +444,14 @@ func _buy_summary() -> String:
         parts.append("You have %d coins." % int(_wardrobe["coins"]))
     return " ".join(parts)
 
-## Save is usable only once the wardrobe is loaded and the player holds
+## Save is usable only once the wardrobe has loaded and the player holds
 ## everything tried on; its text says how many goods are left to buy.
 func _refresh_save() -> void:
     var missing := 0
-    if _npc_id == "" and not _wardrobe.is_empty():
+    if _npc_id == "" and _wardrobe_loaded:
         missing = FarmerOutfit.missing_goods(_wardrobe, _picks).size()
     _save_button.text = "Save" if missing == 0 else "Buy %d more first" % missing
-    _save_button.disabled = _saving or _wardrobe.is_empty() or missing > 0
+    _save_button.disabled = _saving or not _wardrobe_loaded or missing > 0
 
 ## The goods one row is trying on that the player does not hold, plus any just
 ## bought (their line says to press Save).
@@ -878,7 +884,7 @@ func _play_preview() -> void:
 # --- save -------------------------------------------------------------------
 
 func _on_save() -> void:
-    if _saving or _wardrobe.is_empty():
+    if _saving or not _wardrobe_loaded:
         return
     if _npc_id != "":
         _save_npc()
