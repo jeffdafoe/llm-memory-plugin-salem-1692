@@ -157,8 +157,10 @@ func TestHandlePCRepair_StartNamesTheSite(t *testing.T) {
 	if rec := post(t, srv, "/api/village/pc/repair/start", `{"object_id":"not-the-well"}`); rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("start on another object status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := post(t, srv, "/api/village/pc/repair/start", `{"object_id":`); rec.Code != http.StatusBadRequest {
-		t.Errorf("malformed body status = %d, want 400", rec.Code)
+	for _, body := range []string{`{"object_id":`, `{"object_id":"well"} trailing`} {
+		if rec := post(t, srv, "/api/village/pc/repair/start", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("malformed body %q status = %d, want 400", body, rec.Code)
+		}
 	}
 	rec := post(t, srv, "/api/village/pc/repair/start", `{"object_id":"well"}`)
 	var started pcRepairOfferResponse
