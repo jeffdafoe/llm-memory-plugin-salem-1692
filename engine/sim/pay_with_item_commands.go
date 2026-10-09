@@ -612,6 +612,13 @@ func PayWithItem(
 				consumeNow = true
 				eatHereClamped = true
 			}
+			// LLM-744: the mirror clamp — a good that eases no need has
+			// nothing to eat on the spot, so it always settles take-home.
+			// Left set, the eat-on-the-spot branch took the coins and burned
+			// the good.
+			if consumeNow && w.ItemKinds[kind].TakeHomeOnly() {
+				consumeNow = false
+			}
 
 			// Consumer resolution. Empty list = buyer is implicit single
 			// consumer. Non-empty enforces huddle membership +
@@ -3645,14 +3652,17 @@ func commitPayTransfer(
 				out.buyerAte = eat
 				out.mealMinutes = maxDwellMinutes(stamped)
 			}
-			w.emit(&ItemConsumed{
-				ActorID: cid,
-				Kind:    entry.ItemKind,
-				Qty:     eat,
-				Kept:    eventKept,
-				Applied: applied,
-				At:      at,
-			})
+			// Nothing eaten (a take-home-only good, LLM-744) is no consume.
+			if eat > 0 {
+				w.emit(&ItemConsumed{
+					ActorID: cid,
+					Kind:    entry.ItemKind,
+					Qty:     eat,
+					Kept:    eventKept,
+					Applied: applied,
+					At:      at,
+				})
+			}
 			if len(stamped) > 0 {
 				narration := ""
 				if def != nil {
@@ -3897,14 +3907,16 @@ func deliverBundleLines(w *World, buyer, seller *Actor, entry *PayLedgerEntry, c
 						out.mealMinutes = m
 					}
 				}
-				w.emit(&ItemConsumed{
-					ActorID: sp.cid,
-					Kind:    ln.ItemKind,
-					Qty:     sp.eat,
-					Kept:    eventKept,
-					Applied: applied,
-					At:      at,
-				})
+				if sp.eat > 0 {
+					w.emit(&ItemConsumed{
+						ActorID: sp.cid,
+						Kind:    ln.ItemKind,
+						Qty:     sp.eat,
+						Kept:    eventKept,
+						Applied: applied,
+						At:      at,
+					})
+				}
 				if len(stamped) > 0 {
 					narration := ""
 					if def != nil {
@@ -3958,6 +3970,13 @@ func deliverBundleLines(w *World, buyer, seller *Actor, entry *PayLedgerEntry, c
 // the pocketed surplus next tick (ZBBS-WORK-391).
 func consumableUnits(actor *Actor, def *ItemKindDef, maxQty int) int {
 	if maxQty <= 0 {
+		return 0
+	}
+	// LLM-744 backstop beneath the intake clamp: a good that eases no need
+	// is never eaten — it all pockets to the buyer. Covers what intake never
+	// saw: a bundle line (the take adopts the quote's disposition) and an
+	// offer minted before the clamp existed.
+	if def.TakeHomeOnly() {
 		return 0
 	}
 	if maxQty == 1 || actor == nil || def == nil {

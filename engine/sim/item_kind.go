@@ -228,6 +228,20 @@ func (d *ItemKindDef) EatHereOnly() bool {
 		!d.HasCapability("portable")
 }
 
+// TakeHomeOnly reports whether this kind always settles take-home: a good that
+// eases no need (a skirt, a shovel, raw meat) has nothing to consume on the
+// spot, so an eat-here purchase of one must hand it over rather than burn it
+// (LLM-744 — a player paid for a frilly skirt with the Pay box's default
+// "have it here" and the skirt was destroyed). Services are excluded: they
+// carry their own delivery shape (a room, a mend). Nil-safe: an unknown kind
+// is not take-home-only.
+func (d *ItemKindDef) TakeHomeOnly() bool {
+	if d == nil {
+		return false
+	}
+	return !d.Consumable() && !d.HasCapability("service")
+}
+
 // IsDrink reports whether this kind is a drink by its intrinsic category —
 // the food/drink identity that fixes how a consume reads, INDEPENDENT of which
 // need a unit happens to ease. A belly-filling ale (Category drink, primary

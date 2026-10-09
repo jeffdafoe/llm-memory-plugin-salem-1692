@@ -75,7 +75,7 @@ func TestHandleItems_EmptyCatalogIsArray(t *testing.T) {
 // TestItemDispositionClass (ZBBS-WORK-402/403) — the derived class the Pay
 // modal's disposition machinery keys off: service → tonight, non-portable
 // consumable → eat_here (the "people can't carry stew" data ruling),
-// portable consumable / non-consumable / unseeded → choice (permissive).
+// non-consumable → take_home (LLM-744), portable consumable → choice.
 func TestItemDispositionClass(t *testing.T) {
 	cases := []struct {
 		name string
@@ -93,9 +93,12 @@ func TestItemDispositionClass(t *testing.T) {
 			Name: "bread", Capabilities: []string{"portable"},
 			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger"}},
 		}, "choice"},
-		{"non-consumable is choice even without portable", &sim.ItemKindDef{
-			Name: "iron_tongs",
-		}, "choice"},
+		{"non-consumable is take_home", &sim.ItemKindDef{
+			Name: "frilly_skirt",
+		}, "take_home"},
+		{"portable non-consumable is take_home", &sim.ItemKindDef{
+			Name: "iron_tongs", Capabilities: []string{"portable"},
+		}, "take_home"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
