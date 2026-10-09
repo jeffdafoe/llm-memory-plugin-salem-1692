@@ -217,8 +217,9 @@ func publicWorksConsequence(s PublicWorksSite) string {
 // coin they may hand out, and offer_work a villager for the town's job — paid
 // from their own purse, the hired villager held at the employer's post, the
 // site still unmended. One hand mends a site at a time (siteUnderRepair), so
-// the pay is never split either.
-const publicWorksNoHireLine = "No one hires for the town's works or shares out the pay — the town pays the one hand who does the work."
+// the pay is never split either. Scoped to posted sums: the constable may see
+// an open bounty beside a site the chest cannot pay for.
+const publicWorksNoHireLine = "No one hires for the town's works or shares out the pay — the town pays each posted sum to the one hand who does that work."
 
 // renderPublicWorks writes "## The town's works". Content-gated.
 func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {

@@ -19,6 +19,6 @@ It is your working hours and you are at your post — stay and look after your w
 Matters you cannot settle yourself — a theft, a debt in dispute, a wrong one villager lays at another's door — go before the magistrates in Salem Town. They sit each day at noon, read what passed in the village, and send word of their ruling to everyone the matter concerns; their ruling ends it. You may bring up to 2 new matters a day with bring_before_magistrates, naming the villagers concerned and saying what the matter is.
 ## The town's works
 A fallen maple lies across the road by the Mill — walkers must go around it until it is cleared. The town has posted 10 coins for the clearing; any hand seeking work may take it on.
-No one hires for the town's works or shares out the pay — the town pays the one hand who does the work.
+No one hires for the town's works or shares out the pay — the town pays each posted sum to the one hand who does that work.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

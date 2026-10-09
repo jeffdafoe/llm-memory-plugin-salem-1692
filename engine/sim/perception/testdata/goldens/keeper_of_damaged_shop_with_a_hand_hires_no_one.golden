@@ -23,6 +23,6 @@ It is your working hours and you are at your post — stay and look after your w
 
 Anne Walker takes work for pay and could lend you a hand. If you have a task worth paying for, ask with offer_work — name them, the pay you will hand over when the work is done (coins, goods you hold such as a meal, or both), and roughly how long the job will take. Put what you say to them in offer_work's `say`, in your own voice; don't ask with speak first, because speaking ends your turn and the offer would never reach them.
 ## The town's works
-The storm has torn at your General Store — branches and broken boards lie by the door. Until it is mended you can take in no new shelf stock, and your work goes slowly; you can still sell what's on hand. The town pays a hand 25 coins to mend it — the work is the town's, not yours. No one hires for the town's works or shares out the pay — the town pays the one hand who does the work.
+The storm has torn at your General Store — branches and broken boards lie by the door. Until it is mended you can take in no new shelf stock, and your work goes slowly; you can still sell what's on hand. The town pays a hand 25 coins to mend it — the work is the town's, not yours. No one hires for the town's works or shares out the pay — the town pays each posted sum to the one hand who does that work.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

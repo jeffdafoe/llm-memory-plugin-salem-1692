@@ -115,7 +115,19 @@ func init() {
 				"the same close: no one hires for the town's works or shares out the pay.",
 			build: keeperOfDamagedShopWithHandScenario,
 		},
+		perceptionScenario{
+			name: "constable_one_bounty_posted_one_unpaid",
+			summary: "The mill well is broken and the General Store damaged, and the chest (70) covers the well's 12 " +
+				"over the 50 reserve but not the store's 25. Gideon hears the well's posted bounty and that the chest " +
+				"cannot pay for the store's mending; the no-hire close speaks only of posted sums, so it does not " +
+				"contradict the unpaid site.",
+			build: constableOneBountyPostedOneUnpaidScenario,
+		},
 	)
+}
+
+func constableOneBountyPostedOneUnpaidScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return damagedShopSnapshot(70, true, true), pwGideon, nil
 }
 
 // handInStoreWith puts Anne inside the General Store in one conversation with
