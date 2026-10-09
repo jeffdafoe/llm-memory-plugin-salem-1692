@@ -232,6 +232,21 @@ func _test_world_wiring() -> void:
     await create_timer(0.35).timeout
     _check("cut-short return: no double step", doll.position.is_equal_approx(near), true)
 
+    # A sprite swap while stepped in (the real _swap_npc_sprite path): the new
+    # sprite's stand is its own anchor, nothing stale rides over from the old
+    # one, and it steps in exactly once.
+    world._npc_sheets = sheets
+    world._swap_npc_sprite("n1", {"id": "s2", "name": "Farmer", "sheet": BODY, "rig": "farmer_base",
+        "frame_width": 64, "frame_height": 64, "render_scale": 2.0,
+        "layers": [{"sheet": BODY, "ramps": {}}], "animations": []})
+    var swapped: AnimatedSprite2D = npc.get_node("CharacterSprite")
+    _check("swap: a new sprite", swapped != doll, true)
+    var swap_base := Vector2(-64.0, -128.0 * FarmerDoll.ANCHOR.y)
+    _check("swap: stand is the new sprite's anchor", (swapped.get_meta("work_base", Vector2.INF) as Vector2).is_equal_approx(swap_base), true)
+    _check("swap: still chopping east", swapped.animation, &"east_chop")
+    await create_timer(0.35).timeout
+    _check("swap: stepped in once", swapped.position.is_equal_approx(swap_base + Vector2(11, 24)), true)
+
     npc.queue_free()
     world.objects_node.free()
     catalog.assets.erase("test-work-target")
