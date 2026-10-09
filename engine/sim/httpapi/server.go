@@ -805,6 +805,7 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			CurrentState:           o.CurrentState,
 			DisplayName:            o.DisplayName,
 			Tags:                   o.Tags,
+			AttachedTo:             string(o.AttachedTo),
 			Owner:                  string(o.OwnerActorID),
 			PlacedBy:               o.PlacedBy,
 			EntryPolicy:            string(o.EntryPolicy),

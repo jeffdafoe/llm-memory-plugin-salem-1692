@@ -23,6 +23,10 @@ const FACING_DIR := {
 }
 ## The strike frame's index in every *_chop animation.
 const STRIKE_FRAME := 2
+## The facings a swing is aimed with. The pack's north chop is a back view that
+## rises from low-left to overhead — it reads as a swing the wrong way (Jeff,
+## LLM-747) — so work to the north takes a side swing and a step instead.
+const AIM_FACINGS := ["south", "east", "west"]
 ## How far inside the target's visible box the blade lands, world px.
 const BITE := 4.0
 
@@ -42,7 +46,7 @@ static func aim(feet: Vector2, rect: Rect2, draw_scale: float, max_step: float) 
     var best := {}
     var best_len := INF
     var best_dot := -INF
-    for facing in STRIKE:
+    for facing in AIM_FACINGS:
         var strike: Vector2 = feet + STRIKE[facing] * draw_scale
         var landed := Vector2(clampf(strike.x, inner.position.x, inner.end.x), clampf(strike.y, inner.position.y, inner.end.y))
         var step := landed - strike
