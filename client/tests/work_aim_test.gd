@@ -11,6 +11,7 @@ extends SceneTree
 const TESTS := [
     "_test_faces_and_steps_toward_the_work",
     "_test_step_is_capped",
+    "_test_never_the_north_chop",
     "_test_inside_the_box_faces_its_centre",
     "_test_no_target_no_aim",
     "_test_strike_point",
@@ -78,8 +79,10 @@ func _test_faces_and_steps_toward_the_work() -> void:
     _check("work below: step down to it", south.get("step"), Vector2(0, 12))
     # North strike lands at (6, -75); the box ends at -100.
     var north: Dictionary = _aim.aim(feet, Rect2(-20, -140, 40, 40), SCALE, MAX_STEP)
-    _check("work above: face north", north.get("facing"), "north")
-    _check("work above: step up to it", north.get("step"), Vector2(0, -29))
+    # LLM-747: never the north chop — a side swing steps up to it. East strike
+    # (63,-24) to the box's corner (16,-104) is (-47,-80), capped.
+    _check("work above: a side swing, not north", north.get("facing"), "east")
+    _check("work above: step up to it, capped", (north.get("step") as Vector2).is_equal_approx(Vector2(-47, -80).limit_length(MAX_STEP)), true)
     _done()
 
 
@@ -94,7 +97,8 @@ func _test_step_is_capped() -> void:
 ## the facing that points at the box's centre wins and nothing steps.
 func _test_inside_the_box_faces_its_centre() -> void:
     var inside: Dictionary = _aim.aim(Vector2.ZERO, Rect2(-200, -300, 400, 320), SCALE, MAX_STEP)
-    _check("inside: face the centre", inside.get("facing"), "north")
+    # Every side strike lands; north is never aimed, so the first side wins.
+    _check("inside: a side swing", inside.get("facing"), "east")
     _check("inside: no step", inside.get("step"), Vector2.ZERO)
     _done()
 
@@ -178,6 +182,9 @@ func _test_world_wiring() -> void:
     world._apply_activity_animation(npc)
     _check("no target yet: keeps the walk's facing", doll.animation, &"south_chop")
     _check("no target yet: no step", doll.has_meta("work_base"), false)
+    npc.set_meta("facing", "north")
+    world._apply_activity_animation(npc)
+    _check("no target, walked north: a side swing, not the north chop", doll.animation, &"east_chop")
     _strike(doll)
     _check("no target yet: no chips", _chip_count(npc), 0)
 
@@ -357,3 +364,15 @@ func _named_debris(state: String) -> Node2D:
     n.set_meta("current_state", state)
     n.queue_free()
     return n
+
+
+## LLM-747: whatever side the work is on, the aim is never the north chop.
+func _test_never_the_north_chop() -> void:
+    var north_picks := 0
+    for gx in range(-4, 5):
+        for gy in range(-4, 5):
+            var aim: Dictionary = _aim.aim(Vector2.ZERO, Rect2(gx * 40 - 10, gy * 40 - 10, 20, 20), SCALE, MAX_STEP)
+            if aim.get("facing", "") == "north":
+                north_picks += 1
+    _check("no target position picks the north chop", north_picks, 0)
+    _done()

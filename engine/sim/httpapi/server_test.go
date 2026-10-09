@@ -917,3 +917,23 @@ func TestNewServer_NilAuthPanics(t *testing.T) {
 	}()
 	NewServer(seededWorld(t), nil)
 }
+
+// TestObjectsFromSnapshot_AttachedTo: an overlay carries its parent on the
+// object read (LLM-747), so a loading client draws it in the parent's slot as
+// a live create does; a root placement omits it.
+func TestObjectsFromSnapshot_AttachedTo(t *testing.T) {
+	snap := &sim.Snapshot{VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+		"tavern": {ID: "tavern", AssetID: "house"},
+		"debris": {ID: "debris", AssetID: "pile", AttachedTo: "tavern", Tags: []string{"debris"}},
+	}}
+	byID := map[string]ObjectDTO{}
+	for _, o := range objectsFromSnapshot(snap, nil) {
+		byID[o.ID] = o
+	}
+	if got := byID["debris"].AttachedTo; got != "tavern" {
+		t.Errorf("overlay attached_to = %q, want tavern", got)
+	}
+	if got := byID["tavern"].AttachedTo; got != "" {
+		t.Errorf("root attached_to = %q, want omitted", got)
+	}
+}

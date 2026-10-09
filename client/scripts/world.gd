@@ -1034,6 +1034,10 @@ func _apply_activity_animation(container: Node2D) -> void:
         if not aim.is_empty() and sprite.sprite_frames.has_animation(str(aim["facing"]) + "_" + work):
             facing = str(aim["facing"])
             container.set_meta("facing", facing)
+        elif facing == "north" and sprite.sprite_frames.has_animation("east_" + work):
+            # No target to aim at: still never the north chop (WorkAim.AIM_FACINGS).
+            facing = "east"
+            container.set_meta("facing", facing)
         play_npc_animation(container, facing, work)
         _step_work_sprite(sprite, aim.get("step", Vector2.ZERO))
         _watch_work_strikes(container, sprite)

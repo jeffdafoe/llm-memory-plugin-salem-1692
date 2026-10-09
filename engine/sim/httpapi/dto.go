@@ -251,6 +251,10 @@ type ObjectDTO struct {
 	CurrentState string   `json:"current_state,omitempty"`
 	DisplayName  string   `json:"display_name,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
+	// AttachedTo is the object this overlay is drawn on (a damaged business's
+	// debris, LLM-747), so a client loading the world places it in its parent's
+	// slot as a live create does. Omitted for a root placement.
+	AttachedTo string `json:"attached_to,omitempty"`
 
 	// Editor metadata (ZBBS-HOME-289). Owner / PlacedBy / EntryPolicy are
 	// admin-only labels — the editor sets them via the admin routes and reads
