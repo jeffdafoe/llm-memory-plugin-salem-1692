@@ -4,9 +4,8 @@ extends CanvasLayer
 ## ratio, so in portrait the 1280 design width is squeezed into the short side
 ## and every panel shrinks to an unreadable size.
 ##
-## Two parts, both only in the web build on a device whose primary pointer is
-## coarse and which has no fine pointer (a tablet; a touch-screen laptop or a
-## Surface with its keyboard has a trackpad and is left alone):
+## Two parts, both only in the web build on a tablet or phone (see
+## is_touch_device; a Windows touch-screen laptop or a Surface is left alone):
 ##
 ##   1. A DOM listener requests fullscreen on a tap while the page is not
 ##      fullscreen — which hides the browser's address bar and tabs — then locks
@@ -94,9 +93,11 @@ func _ready() -> void:
     layer = LAYER_INDEX
     if not OS.has_feature("web"):
         return
+    var user_agent: Variant = JavaScriptBridge.eval("navigator.userAgent", true)
+    var touch_points: Variant = JavaScriptBridge.eval("navigator.maxTouchPoints || 0", true)
     _enabled = is_touch_device(
-        js_flag(JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true)),
-        js_flag(JavaScriptBridge.eval("matchMedia('(any-pointer: fine)').matches", true)))
+        user_agent if user_agent is String else "",
+        int(touch_points) if typeof(touch_points) in [TYPE_INT, TYPE_FLOAT] else 0)
     if not _enabled:
         return
     _touch_text = true
@@ -118,32 +119,24 @@ func _ready() -> void:
 func text_size(px: int, touch_scale: float = TOUCH_TEXT_SCALE) -> int:
     return roundi(px * touch_scale) if _touch_text else px
 
-## True on a touch screen (web, coarse primary pointer, no fine pointer).
+## True on a tablet or phone (web; see is_touch_device).
 func is_touch() -> bool:
     return _touch_text
 
-## JavaScriptBridge.eval hands a JS boolean back as the int 1 / 0 on Android
-## Chrome (seen on an Alldocube tablet), and comparing an int with a bool is a
-## script error in Godot 4.7, so a JS yes/no is read through this.
-static func js_flag(value: Variant) -> bool:
-    match typeof(value):
-        TYPE_BOOL:
-            return value
-        TYPE_INT, TYPE_FLOAT:
-            return value == 1
-    return false
-
-## Touch mode needs a coarse primary pointer AND no fine pointer at all. Chrome
-## on a Windows touch screen (a Surface) reports the touch screen as primary even
-## with a trackpad or mouse attached; that device is used as a desktop. Known
-## limit: an active pen also reports as fine, so a pen tablet gets the desktop
-## layout. Read once at load; a keyboard attached or removed later needs a reload.
-static func is_touch_device(coarse_primary: bool, any_fine: bool) -> bool:
-    return coarse_primary and not any_fine
+## A tablet or phone: a touch screen on anything but Windows or ChromeOS. The
+## pointer media queries are not used: Chrome on a docked Surface (lid shut,
+## external mouse) still reported a coarse pointer and no fine one. An Android
+## tablet in Chrome's desktop mode sends an "X11; Linux" agent and an iPad sends
+## "Macintosh", so the touch points, not the agent, find those. Known limit: a
+## Windows tablet used by finger only gets the desktop layout.
+static func is_touch_device(user_agent: String, max_touch_points: int) -> bool:
+    if max_touch_points <= 0:
+        return false
+    return not (user_agent.contains("Windows") or user_agent.contains("CrOS"))
 
 ## The whole decision, kept pure so the headless test can drive it.
-static func should_cover(coarse_pointer: bool, window_size: Vector2i) -> bool:
-    return coarse_pointer and window_size.y > window_size.x
+static func should_cover(touch_device: bool, window_size: Vector2i) -> bool:
+    return touch_device and window_size.y > window_size.x
 
 static func is_pointer_event(event: InputEvent) -> bool:
     return event is InputEventMouse \
