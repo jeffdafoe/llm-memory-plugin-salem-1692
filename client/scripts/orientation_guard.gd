@@ -5,8 +5,8 @@ extends CanvasLayer
 ## and every panel shrinks to an unreadable size.
 ##
 ## Two parts, both only in the web build on a device whose primary pointer is
-## coarse (a tablet; a touch-screen laptop has a fine primary pointer and is left
-## alone):
+## coarse and which has no fine pointer (a tablet; a touch-screen laptop or a
+## Surface with its keyboard has a trackpad and is left alone):
 ##
 ##   1. A DOM listener requests fullscreen on a tap while the page is not
 ##      fullscreen — which hides the browser's address bar and tabs — then locks
@@ -94,7 +94,9 @@ func _ready() -> void:
     layer = LAYER_INDEX
     if not OS.has_feature("web"):
         return
-    _enabled = js_flag(JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true))
+    _enabled = is_touch_device(
+        js_flag(JavaScriptBridge.eval("matchMedia('(pointer: coarse)').matches", true)),
+        js_flag(JavaScriptBridge.eval("matchMedia('(any-pointer: fine)').matches", true)))
     if not _enabled:
         return
     _touch_text = true
@@ -116,7 +118,7 @@ func _ready() -> void:
 func text_size(px: int, touch_scale: float = TOUCH_TEXT_SCALE) -> int:
     return roundi(px * touch_scale) if _touch_text else px
 
-## True on a touch screen (web, coarse primary pointer).
+## True on a touch screen (web, coarse primary pointer, no fine pointer).
 func is_touch() -> bool:
     return _touch_text
 
@@ -130,6 +132,12 @@ static func js_flag(value: Variant) -> bool:
         TYPE_INT, TYPE_FLOAT:
             return value == 1
     return false
+
+## Touch mode needs a coarse primary pointer AND no fine pointer at all. Chrome
+## on a Windows touch screen (a Surface) reports the touch screen as primary even
+## with a trackpad or mouse attached; that device is used as a desktop.
+static func is_touch_device(coarse_primary: bool, any_fine: bool) -> bool:
+    return coarse_primary and not any_fine
 
 ## The whole decision, kept pure so the headless test can drive it.
 static func should_cover(coarse_pointer: bool, window_size: Vector2i) -> bool:
