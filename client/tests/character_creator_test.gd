@@ -32,6 +32,7 @@ const TESTS := [
     "_test_villager_mode_has_no_buy_section",
     "_test_village_scale_follows_the_camera",
     "_test_save_waits_for_a_wardrobe_reload",
+    "_test_buttons_are_tap_height",
 ]
 
 var _creator: Control = null
@@ -362,6 +363,20 @@ func _test_buy_summary_and_save() -> void:
     _creator._wardrobe = _outfit_wardrobe()
     _creator._picks = _outfit_picks()
     _creator._rebuild_rows()
+    _check("save — no seller here: says Save, not Buy", _creator._save_button.text, "Save")
+    _check("save — no seller here: still not usable", _creator._save_button.disabled, true)
+    _creator._wardrobe["sellers"] = {"felt_hat": [{"name": "Josiah Thorne", "held": 1}]}
+    _creator._rebuild_rows()
+    _check("save — only some can be bought here: says Save", _creator._save_button.text, "Save")
+    _creator._wardrobe["sellers"]["blue_dye"] = [{"name": "Josiah Thorne", "held": 0}]
+    _creator._rebuild_rows()
+    _check("save — a stockist with none does not count", _creator._save_button.text, "Save")
+    _creator._buys = {"blue_dye": {"state": "countered", "seller": "Josiah Thorne", "ledger_id": 2, "amount": 3}}
+    _creator._rebuild_rows()
+    _check("save — an open counter counts even with none on the shelf", _creator._save_button.text, "Buy 2 more first")
+    _creator._buys = {}
+    _creator._wardrobe["sellers"]["blue_dye"] = [{"name": "Josiah Thorne", "held": 2}]
+    _creator._rebuild_rows()
     _check("summary — total of what is missing and the purse", _creator._buy_summary(), "About 8 coins in all. You have 12 coins.")
     _check("save — names how many are left", _creator._save_button.text, "Buy 2 more first")
     _check("save — not usable while goods are missing", _creator._save_button.disabled, true)
@@ -438,4 +453,29 @@ func _test_village_scale_follows_the_camera() -> void:
     _creator._size_preview()
     _check("village — its box is back when zoomed out", _creator._village_box.visible, true)
     camera.free()
+    _done()
+
+
+## Every creator button is the Pay box's size (LLM-728).
+func _test_buttons_are_tap_height() -> void:
+    _creator._wardrobe = _outfit_wardrobe()
+    _creator._wardrobe["sellers"] = {"felt_hat": [{"name": "Josiah Thorne", "held": 1}]}
+    _creator._picks = _outfit_picks()
+    _check("theme — the creator carries the period theme", _creator.theme != null, true)
+    _check("tap — Save", _creator._save_button.custom_minimum_size.y, PeriodTheme.TAP_H)
+    _check("tap — Cancel", _creator._cancel_button.custom_minimum_size.y, PeriodTheme.TAP_H)
+    var row: Control = _creator._category_row({"id": "head", "label": "Hat"})
+    var heights: Array = []
+    for child in row.get_child(0).get_children():
+        if child is Button:
+            heights.append(child.custom_minimum_size.y)
+    row.free()
+    _check("tap — the row's < and >", heights, [PeriodTheme.TAP_H, PeriodTheme.TAP_H])
+    var line: Control = _creator._store_line("felt_hat")
+    var buy: Button = null
+    for child in line.get_children():
+        if child is Button:
+            buy = child
+    _check("tap — Buy", buy.custom_minimum_size.y if buy != null else 0.0, PeriodTheme.TAP_H)
+    line.free()
     _done()

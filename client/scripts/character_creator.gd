@@ -42,6 +42,9 @@ const COLOR_TO_BUY = Color(0.95, 0.72, 0.35, 1.0)
 const VILLAGE_RENDER_SCALE := 2.0
 ## Buy states with an offer still before a seller.
 const OPEN_BUY_STATES := ["sending", "waiting", "countered"]
+## Buy lines shown before the list scrolls, and the gap between lines.
+const BUY_LINES_SHOWN := 2
+const BUY_LINE_GAP := 6
 
 ## Which ramp colour a swatch shows per slot: the main tone of the ramp.
 const SWATCH_TONE := {"skin": 0, "hair": 2, "c3": 1, "c4": 1}
@@ -68,6 +71,9 @@ var _village_caption: Label = null
 var _village_doll: FarmerDoll = null
 var _buy_panel: PanelContainer = null
 var _buy_box: VBoxContainer = null
+var _buy_scroll: ScrollContainer = null
+var _buy_lines: VBoxContainer = null
+var _buy_summary_label: Label = null
 var _turn_timer: Timer = null
 var _facing_index := 0
 var _http: HTTPRequest = null
@@ -84,7 +90,6 @@ var _pc_exists := false
 ## Set while dressing a villager from the editor (open_for_npc); empty while
 ## dressing the player.
 var _npc_id := ""
-var _name_label: Label = null
 var _current_name := ""
 var _current_layers: Array = []
 var _cancellable := true
@@ -109,6 +114,8 @@ var _early_frames: Dictionary = {}
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
     _rng.randomize()
+    # The Pay box's look (LLM-728); the panel keeps its own stylebox.
+    theme = PeriodTheme.build(_font, OrientationGuard.text_size(16))
     anchors_preset = Control.PRESET_FULL_RECT
     anchor_right = 1.0
     anchor_bottom = 1.0
@@ -163,17 +170,6 @@ func _ready() -> void:
     _village_caption = _label("In the village", 12, COLOR_TEXT_DIM)
     _village_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     left.add_child(_village_caption)
-    _name_label = _label("Name", 13, COLOR_TEXT_DIM)
-    left.add_child(_name_label)
-    _name_edit = LineEdit.new()
-    _name_edit.max_length = 100
-    _name_edit.add_theme_font_override("font", _font)
-    _name_edit.add_theme_font_size_override("font_size", OrientationGuard.text_size(15))
-    _name_edit.text_changed.connect(func(_t): _error.text = "")
-    left.add_child(_name_edit)
-    var randomize_button := _button("Randomize")
-    randomize_button.pressed.connect(_on_randomize)
-    left.add_child(randomize_button)
 
     var scroll := ScrollContainer.new()
     scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -197,10 +193,34 @@ func _ready() -> void:
     _buy_box = VBoxContainer.new()
     _buy_box.add_theme_constant_override("separation", 6)
     _buy_panel.add_child(_buy_box)
+    _buy_box.add_child(_label("To wear this", 15, COLOR_TEXT))
+    # Past BUY_LINES_SHOWN lines the list scrolls, so Save stays on screen at
+    # the 720-high design size.
+    _buy_scroll = ScrollContainer.new()
+    _buy_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    _buy_box.add_child(_buy_scroll)
+    _buy_lines = VBoxContainer.new()
+    _buy_lines.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _buy_lines.add_theme_constant_override("separation", BUY_LINE_GAP)
+    _buy_scroll.add_child(_buy_lines)
+    _buy_summary_label = _label("", 14, COLOR_TEXT_DIM)
+    _buy_box.add_child(_buy_summary_label)
 
+    # The name and Randomize sit in the footer so the left column holds only
+    # the two dolls (LLM-728).
     var footer := HBoxContainer.new()
     footer.add_theme_constant_override("separation", 10)
     content.add_child(footer)
+    _name_edit = LineEdit.new()
+    _name_edit.max_length = 100
+    _name_edit.placeholder_text = "Name"
+    _name_edit.add_theme_font_size_override("font_size", OrientationGuard.text_size(15))
+    _name_edit.custom_minimum_size = Vector2(220, PeriodTheme.TAP_H)
+    _name_edit.text_changed.connect(func(_t): _error.text = "")
+    footer.add_child(_name_edit)
+    var randomize_button := _button("Randomize")
+    randomize_button.pressed.connect(_on_randomize)
+    footer.add_child(randomize_button)
     _error = _label("", 13, COLOR_ERROR)
     _error.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -209,7 +229,7 @@ func _ready() -> void:
     _cancel_button.pressed.connect(_close)
     footer.add_child(_cancel_button)
     _save_button = _button("Save")
-    _make_primary(_save_button)
+    PeriodTheme.make_primary(_save_button)
     _save_button.pressed.connect(_on_save)
     footer.add_child(_save_button)
 
@@ -242,7 +262,6 @@ func open(pc_exists: bool, character_name: String, current_sprite: Dictionary) -
     _title.text = "Dress your character" if pc_exists else "Make your character"
     _cancel_button.visible = _cancellable
     _name_edit.text = character_name if character_name != "" else str(Auth.username)
-    _name_label.visible = true
     _name_edit.visible = true
     _show()
 
@@ -254,7 +273,6 @@ func open_for_npc(npc_id: String, display_name: String, current_sprite: Dictiona
     _current_layers = current_sprite.get("layers", []) if FarmerDoll.is_rig_sprite(current_sprite) else []
     _title.text = "Dress " + display_name
     _cancel_button.visible = true
-    _name_label.visible = false
     _name_edit.visible = false
     _show()
 
@@ -371,6 +389,8 @@ func _category_row(category: Dictionary) -> Control:
     head.add_child(title)
     var prev := _button("<")
     var next := _button(">")
+    prev.custom_minimum_size.x = PeriodTheme.TAP_H
+    next.custom_minimum_size.x = PeriodTheme.TAP_H
     var current := _label(_choice_label(id), 15, COLOR_TEXT_DIM)
     current.custom_minimum_size.x = 140
     current.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -397,18 +417,18 @@ func _category_row(category: Dictionary) -> Control:
 # --- buy section --------------------------------------------------------------
 
 func _rebuild_buy_section() -> void:
-    for child in _buy_box.get_children():
+    for child in _buy_lines.get_children():
         child.queue_free()
     var goods := _buy_goods()
     _buy_panel.visible = not goods.is_empty()
     if goods.is_empty():
         return
-    _buy_box.add_child(_label("To wear this", 15, COLOR_TEXT))
     for good in goods:
-        _buy_box.add_child(_store_line(good))
-    var summary := _buy_summary()
-    if summary != "":
-        _buy_box.add_child(_label(summary, 14, COLOR_TEXT_DIM))
+        _buy_lines.add_child(_store_line(good))
+    var shown := mini(goods.size(), BUY_LINES_SHOWN)
+    _buy_scroll.custom_minimum_size.y = shown * PeriodTheme.TAP_H + (shown - 1) * BUY_LINE_GAP
+    _buy_summary_label.text = _buy_summary()
+    _buy_summary_label.visible = _buy_summary_label.text != ""
 
 ## The goods the buy section lists, in row order: each piece and dye tried on
 ## that the player does not hold (or has just bought), then any good with an
@@ -445,13 +465,23 @@ func _buy_summary() -> String:
     return " ".join(parts)
 
 ## Save is usable only once the wardrobe has loaded and the player holds
-## everything tried on; its text says how many goods are left to buy.
+## everything tried on. It says how many goods are left to buy only when buying
+## here can finish the outfit (LLM-728); otherwise it stays "Save" and the buy
+## lines say where each piece is sold.
 func _refresh_save() -> void:
-    var missing := 0
+    var missing: Array = []
     if _npc_id == "" and _wardrobe_loaded:
-        missing = FarmerOutfit.missing_goods(_wardrobe, _picks).size()
-    _save_button.text = "Save" if missing == 0 else "Buy %d more first" % missing
-    _save_button.disabled = _saving or not _wardrobe_loaded or missing > 0
+        missing = FarmerOutfit.missing_goods(_wardrobe, _picks)
+    var buyable := not missing.is_empty()
+    for good in missing:
+        if not _buyable_here(good):
+            buyable = false
+    _save_button.text = "Buy %d more first" % missing.size() if buyable else "Save"
+    _save_button.disabled = _saving or not _wardrobe_loaded or not missing.is_empty()
+
+## A seller with the player holds the good, or an offer for it is still open.
+func _buyable_here(good: String) -> bool:
+    return _seller_for(good) != "" or OPEN_BUY_STATES.has(str(_buys.get(good, {}).get("state", "")))
 
 ## The goods one row is trying on that the player does not hold, plus any just
 ## bought (their line says to press Save).
@@ -997,43 +1027,17 @@ func _label(text: String, size: int, color: Color) -> Label:
     label.add_theme_color_override("font_color", color)
     return label
 
+## Every creator button is the Pay box's (PeriodTheme): tap height, text size,
+## and the panel theme's framed brown box.
 func _button(text: String) -> Button:
-    var button := Button.new()
-    button.text = text
-    button.add_theme_font_override("font", _font)
-    button.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
-    button.focus_mode = Control.FOCUS_NONE
-    return button
+    return PeriodTheme.button(text, OrientationGuard.text_size(PeriodTheme.BUTTON_TEXT))
 
-## A button on a buy line, the same size as Save; Buy and Accept are filled
-## so they read as the thing to press.
+## A button on a buy line; Buy and Accept are filled so they read as the thing
+## to press.
 func _line_button(text: String, on_pressed: Callable, primary := true) -> Button:
     var button := _button(text)
     button.custom_minimum_size.x = 80
     if primary:
-        _make_primary(button)
+        PeriodTheme.make_primary(button)
     button.pressed.connect(on_pressed)
     return button
-
-## The Pay box's main-button look (pay_panel.gd). A disabled button keeps the
-## theme's dim look.
-func _make_primary(button: Button) -> void:
-    var normal := _box(Color(0.48, 0.33, 0.15), Color(0.78, 0.60, 0.33))
-    var hover := _box(Color(0.58, 0.40, 0.18), Color(0.85, 0.68, 0.38))
-    button.add_theme_stylebox_override("normal", normal)
-    button.add_theme_stylebox_override("hover", hover)
-    button.add_theme_stylebox_override("pressed", hover)
-    button.add_theme_color_override("font_color", Color(1.0, 0.95, 0.85))
-    button.add_theme_color_override("font_hover_color", Color(1.0, 0.95, 0.85))
-
-static func _box(fill: Color, stroke: Color) -> StyleBoxFlat:
-    var box := StyleBoxFlat.new()
-    box.bg_color = fill
-    box.border_color = stroke
-    box.set_border_width_all(1)
-    box.set_corner_radius_all(6)
-    box.content_margin_left = 12
-    box.content_margin_right = 12
-    box.content_margin_top = 4
-    box.content_margin_bottom = 4
-    return box
