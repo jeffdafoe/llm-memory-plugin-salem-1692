@@ -31,6 +31,13 @@ const TESTS := [
     "_test_reopen_during_pay_keeps_the_new_box",
     "_test_unclear_answer_keeps_the_box_open",
     "_test_cleared_field_survives_refresh",
+    "_test_empty_box_buttons",
+    "_test_give_body_and_button",
+    "_test_give_lists_a_player",
+    "_test_give_sends_and_closes",
+    "_test_give_refused_stays_open",
+    "_test_give_checks_the_purse",
+    "_test_give_follows_the_roster",
     "_test_every_glyph_is_in_the_font",
 ]
 
@@ -342,7 +349,7 @@ func _test_refused_take_refetches() -> void:
 
 func _test_empty_text() -> void:
     var p := _panel([])
-    var help := ["Nobody here has offered you anything yet.", "Ask them what they sell, or make your own offer."]
+    var help := ["Nobody here has offered you anything yet.", "Ask them what they sell — what they name will show here."]
     _check("nothing offered", p.empty_lines(), help)
     p.host.pc_lodging = {"inn_name": "Tavern", "until_label": "through the day", "keeper_name": "Hannah Boggs"}
     _check("keeper here: the help, then the room", p.empty_lines(), help + ["Your room is paid through the day."])
@@ -516,6 +523,137 @@ func _test_cleared_field_survives_refresh() -> void:
     _done()
 
 
+## The 10-08 dead end: in the empty box "Make your own offer" led to an empty
+## What list (any named or quoted good is already a card). The empty box shows
+## the help, Give coins and Close; with a card, the own offer comes back.
+func _test_empty_box_buttons() -> void:
+    var p := _panel([])
+    p.open()
+    _check("empty box: no own offer", p.own_offer_button.visible, false)
+    _check("empty box: give coins", p.give_button.visible, true)
+    p.quotes = [STEW_QUOTE]
+    p.refresh()
+    _check("with a card: own offer", p.own_offer_button.visible, true)
+    _check("with a card: give coins", p.give_button.visible, true)
+    p.host.huddle_members = []
+    p.refresh()
+    _check("nobody here: no own offer", p.own_offer_button.visible, false)
+    _check("nobody here: no give", p.give_button.visible, false)
+    _free(p)
+    _done()
+
+
+func _test_give_body_and_button() -> void:
+    var p := _panel([])
+    p.open()
+    p._on_give_pressed()
+    _check("give page", [p.offers_page.visible, p.offer_page.visible, p.give_page.visible], [false, false, true])
+    _check("title", p.title_label.text, "Give coins")
+    _check("first person here", p.give_to, "John Ellis")
+    _check("button", p.give_send_button.text, "Give John Ellis 1 coin")
+    _check("the line under it", p.give_hint.text, "They keep it. Nothing is bought.")
+    p._on_give_who("Hannah Boggs")
+    p._on_give_amount(5)
+    _check("button names the gift", p.give_send_button.text, "Give Hannah Boggs 5 coins")
+    _check("no for: none sent", p.give_body(), {"recipient": "Hannah Boggs", "amount": 5})
+    p.give_for_field.text = "  the  bread you  lent me  "
+    _check("for, tidied", p.give_body(), {"recipient": "Hannah Boggs", "amount": 5, "for": "the bread you lent me"})
+    _check("for is capped", p.give_for_field.max_length, 200)
+    p._on_give_pressed()
+    _check("reopen keeps the person", p.give_to, "Hannah Boggs")
+    _check("reopen clears the line", p.give_for_field.text, "")
+    _check("reopen starts at 1", p.give_amount, 1)
+    _free(p)
+    _done()
+
+
+## Player to player: another PC in the conversation is a chip like anyone.
+func _test_give_lists_a_player() -> void:
+    var p := _panel([])
+    p.host.huddle_members = [{"name": "Tom Gale"}, {"name": "John Ellis"}, {"name": "Mary Pell"}]
+    p.open()
+    p.start_give("Tom Gale")
+    _check("a chip per person, not me", p.give_who_flow.get_child_count(), 2)
+    _check("the player picked", p.give_body()["recipient"], "Tom Gale")
+    _free(p)
+    _done()
+
+
+func _test_give_sends_and_closes() -> void:
+    var sent := []
+    var p := _panel(sent)
+    var gave := []
+    var paid := [0]
+    p.gave.connect(func(to: String, n: int): gave.append([to, n]))
+    p.paid.connect(func(): paid[0] += 1)
+    p.open()
+    p.start_give("John Ellis")
+    p._on_give_amount(3)
+    p._on_give_send()
+    _check("give sent", _routes(sent), ["quotes", "give"])
+    _check("its body", sent[-1][1], {"recipient": "John Ellis", "amount": 3})
+    p._on_give_send()
+    _check("one at a time", _routes(sent).count("give"), 1)
+    # A pay answer must not settle the gift in flight.
+    p._on_pay_response(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _ok("accepted"))
+    _check("still busy after a stray pay answer", p._busy, true)
+    p._on_give_response(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(),
+        JSON.stringify({"recipient": "John Ellis", "amount": 3, "coins": 17}).to_utf8_buffer())
+    _check("closed", p.visible, false)
+    _check("the talk log hears of it", gave, [["John Ellis", 3]])
+    _check("the purse is re-read", paid[0], 1)
+    _free(p)
+    _done()
+
+
+func _test_give_refused_stays_open() -> void:
+    var p := _panel([])
+    var gave := []
+    p.gave.connect(func(to: String, n: int): gave.append([to, n]))
+    p.open()
+    p.start_give("John Ellis")
+    p._on_give_send()
+    p._on_give_response(HTTPRequest.RESULT_SUCCESS, 422, PackedStringArray(),
+        JSON.stringify({"error": "John Ellis is offering Stew for 6 coins — buy it from its offer card. Giving coins does not buy it."}).to_utf8_buffer())
+    _check("still open", p.visible, true)
+    _check("the refusal shows", p.status_label.text,
+        "John Ellis is offering Stew for 6 coins — buy it from its offer card. Giving coins does not buy it.")
+    _check("nothing given", gave, [])
+    _check("free to try again", p._busy, false)
+    _free(p)
+    _done()
+
+
+func _test_give_checks_the_purse() -> void:
+    var sent := []
+    var p := _panel(sent)
+    p.open()
+    p.start_give("John Ellis")
+    p._on_give_amount(25)
+    _check("hint says the purse", p.give_hint.text, "You only have 20 coins.")
+    p._on_give_send()
+    _check("nothing sent", _routes(sent).count("give"), 0)
+    _check("says so", p.status_label.text, "You only have 20 coins.")
+    _free(p)
+    _done()
+
+
+func _test_give_follows_the_roster() -> void:
+    var sent := []
+    var p := _panel(sent)
+    p.open()
+    p.start_give("John Ellis")
+    p.host.huddle_members = [{"name": "Hannah Boggs"}]
+    p._on_give_send()
+    _check("nothing sent to a person who left", _routes(sent).count("give"), 0)
+    _check("the page shows who is here", p.give_to, "Hannah Boggs")
+    _check("says why", p.status_label.text, "John Ellis has gone. Check who you give to and send again.")
+    p._on_give_send()
+    _check("sent once checked", sent[-1][1]["recipient"], "Hannah Boggs")
+    _free(p)
+    _done()
+
+
 ## IM Fell has no glyph for some symbols (U+2212 minus drew a box on the web,
 ## where there is no system font to fall back on — LLM-724). Every string
 ## literal in pay_panel.gd, and every text the box builds, must be drawable.
@@ -554,6 +692,11 @@ func _test_every_glyph_is_in_the_font() -> void:
     p.start_offer("Hannah Boggs", "nights_stay")
     p._on_night(2)
     _collect_missing(font, p, missing)
+    p.start_give("Hannah Boggs")
+    for amount in [1, 7, 99]:
+        p._on_give_amount(amount)
+        _collect_missing(font, p, missing)
+    _missing_glyphs(font, p.give_for_field.placeholder_text, missing)
     _check("every character has a glyph", missing.keys(), [])
     _free(p)
     _done()

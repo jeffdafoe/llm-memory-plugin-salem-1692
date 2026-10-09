@@ -43,20 +43,20 @@ func lodgingQuoteWorld(t *testing.T) (*sim.World, func(), time.Time) {
 	return w, stop, at
 }
 
-// TestPay_LodgingForText_NoQuote_SteersToPayWithItem — the lodger pays "for a
+// TestPay_LodgingForText_NoQuote_SteersToKeeper — the lodger pays "for a
 // room" before any quote is posted (Ezekiel's first move in the live loop). No
 // open lodging quote, so the vocabulary branch fires the generic steer; coins
 // stay put. The fixture's only quote is a stew quote, which must NOT match.
-func TestPay_LodgingForText_NoQuote_SteersToPayWithItem(t *testing.T) {
+func TestPay_LodgingForText_NoQuote_SteersToKeeper(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 
 	_, err := w.Send(sim.Pay("alice", "Bob", 4, "a room for the night", at))
 	if err == nil {
-		t.Fatal("a bare pay for a room should be steered to pay_with_item")
+		t.Fatal("a bare pay for a room should be refused")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "pay_with_item") || !strings.Contains(msg, "night's stay") {
+	if !strings.Contains(msg, "grants no room") || !strings.Contains(msg, "ask the keeper for a room") {
 		t.Errorf("missing the generic lodging steer: %v", err)
 	}
 	snap := w.Published()
@@ -71,7 +71,7 @@ func TestPay_LodgingForText_NoQuote_SteersToPayWithItem(t *testing.T) {
 // TestPay_LodgingForward_OpenQuote_NamesQuote — the guest pays the keeper "for a
 // night" while the keeper's nights_stay quote is open. "night" alone is not a
 // lodging token (so this exercises the quote branch, not the vocabulary one);
-// the steer names the live quote_id so the model can redeem it.
+// the refusal names the keeper's offer and its price.
 func TestPay_LodgingForward_OpenQuote_NamesQuote(t *testing.T) {
 	w, stop, at := lodgingQuoteWorld(t)
 	defer stop()
@@ -81,7 +81,7 @@ func TestPay_LodgingForward_OpenQuote_NamesQuote(t *testing.T) {
 		t.Fatal("a bare pay toward an open room offer should be steered")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "quote_id 9") || !strings.Contains(msg, "pay_with_item") {
+	if !strings.Contains(msg, "Bob is offering a night's stay for 4 coins") || !strings.Contains(msg, "offer card") {
 		t.Errorf("forward lodging pay should name the open quote: %v", err)
 	}
 	snap := w.Published()
@@ -103,7 +103,7 @@ func TestPay_LodgingReversed_KeeperPaysGuest_Steered(t *testing.T) {
 	if err == nil {
 		t.Fatal("a keeper paying a guest for lodging should be steered, not transferred")
 	}
-	if !strings.Contains(err.Error(), "quote_id 9") {
+	if !strings.Contains(err.Error(), "Bob is offering a night's stay for 4 coins") {
 		t.Errorf("reversed keeper pay should still be steered with the quote: %v", err)
 	}
 	snap := w.Published()
@@ -156,7 +156,7 @@ func TestPay_TargetedLodgingQuote_BlocksUnrelatedBarePay(t *testing.T) {
 	})
 
 	_, err := w.Send(sim.Pay("alice", "Bob", 4, "thanks", at))
-	if err == nil || !strings.Contains(err.Error(), "quote_id 11") {
+	if err == nil || !strings.Contains(err.Error(), "Bob is offering a night's stay") {
 		t.Fatalf("a targeted room quote should steer any bare pay between the two: %v", err)
 	}
 	snap := w.Published()

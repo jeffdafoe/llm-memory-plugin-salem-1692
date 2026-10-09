@@ -55,10 +55,10 @@ func TestPay_WorkingLabor_EmployerPaysWorker_Blocked(t *testing.T) {
 	}
 }
 
-// TestPay_PendingLabor_EmployerPaysWorker_SteersToAcceptWork — the worker has
-// solicited and the employer reaches for pay instead of accept_work. The Pending
-// branch names accept_work and no coins move.
-func TestPay_PendingLabor_EmployerPaysWorker_SteersToAcceptWork(t *testing.T) {
+// TestPay_PendingLabor_EmployerPaysWorker_Refused — the worker has
+// solicited and the employer gives coins by hand instead of booking it. The Pending
+// branch says the wage pays itself and no coins move.
+func TestPay_PendingLabor_EmployerPaysWorker_Refused(t *testing.T) {
 	w, stop := buildLaborWorld(t, "h1", "sc1", []laborActor{
 		{id: "ezekiel", displayName: "Ezekiel", huddleID: "h1", worker: true},
 		{id: "josiah", displayName: "Josiah", huddleID: "h1", coins: 50},
@@ -77,10 +77,10 @@ func TestPay_PendingLabor_EmployerPaysWorker_SteersToAcceptWork(t *testing.T) {
 
 	_, err := w.Send(sim.Pay("josiah", "Ezekiel", 4, "serving ale", at))
 	if err == nil {
-		t.Fatal("a bare pay against a pending labor offer should be steered to accept_work")
+		t.Fatal("a bare pay against a pending labor offer should be refused")
 	}
-	if !strings.Contains(err.Error(), "accept_work") {
-		t.Errorf("expected the accept_work steer: %v", err)
+	if !strings.Contains(err.Error(), "offered to work for you") || !strings.Contains(err.Error(), "pays itself") {
+		t.Errorf("expected the pending-offer refusal: %v", err)
 	}
 	snap := w.Published()
 	if snap.Actors["josiah"].Coins != 50 || snap.Actors["ezekiel"].Coins != 0 {

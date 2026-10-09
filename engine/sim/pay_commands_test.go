@@ -325,10 +325,10 @@ func TestPay_InsufficientCoins(t *testing.T) {
 	if err == nil {
 		t.Fatal("Pay: want error for insufficient coins, got nil")
 	}
-	if !strings.Contains(err.Error(), "insufficient coins") {
-		t.Errorf("error lacks 'insufficient coins': %v", err)
+	if !strings.Contains(err.Error(), "not enough to give") {
+		t.Errorf("error lacks 'not enough to give': %v", err)
 	}
-	if !strings.Contains(err.Error(), "have 2") || !strings.Contains(err.Error(), "need 5") {
+	if !strings.Contains(err.Error(), "only 2 coins") || !strings.Contains(err.Error(), "give 5 coins") {
 		t.Errorf("error should include exact balance and amount; got: %v", err)
 	}
 	if len(*captured) != 0 {
@@ -680,8 +680,8 @@ func TestPay_TwoPaysAccumulate(t *testing.T) {
 }
 
 // --- TestPay_RedirectsToOpenQuoteSettlement: LLM-172. A bare pay naming a good
-// the seller has an active quote for is rejected with a redirect to
-// pay_with_item, and no coins move — bare pay transfers coins but never delivers
+// the seller has an active quote for is rejected with a pointer to the quote's
+// offer card, and no coins move — bare pay transfers coins but never delivers
 // the good or settles the quote, so letting it through leaks coins for nothing
 // (the live Ezekiel/John stew loop). buildFastPathFixture posts Bob's active
 // stew quote (id 7, qty 1, 4 coins) to Alice in scene sc1.
@@ -691,13 +691,13 @@ func TestPay_RedirectsToOpenQuoteSettlement(t *testing.T) {
 
 	_, err := w.Send(sim.Pay("alice", "Bob", 4, "stew", at))
 	if err == nil {
-		t.Fatal("bare pay for a quoted good should be redirected to pay_with_item")
+		t.Fatal("bare pay for a quoted good should point at the offer card")
 	}
-	if !strings.Contains(err.Error(), "pay_with_item with quote_id 7") {
-		t.Errorf("redirect missing the quote_id steer: %v", err)
+	if !strings.Contains(err.Error(), "Bob is offering Stew for 4 coins") {
+		t.Errorf("redirect missing the quoted good and price: %v", err)
 	}
-	if !strings.Contains(err.Error(), "won't deliver") {
-		t.Errorf("redirect missing the no-delivery explanation: %v", err)
+	if !strings.Contains(err.Error(), "offer card") || !strings.Contains(err.Error(), "does not buy it") {
+		t.Errorf("redirect missing the offer-card steer: %v", err)
 	}
 
 	// The reject fires before any state change — no coins moved.
@@ -731,12 +731,13 @@ func TestPay_AllowsTipWhenForTextNamesNoQuotedGood(t *testing.T) {
 	}
 }
 
-// --- TestPay_CoinShortQuoteSteersToBargainNotSettlement: LLM-172 (code_review).
-// A coin-short buyer for a quoted good must NOT be redirected to a pay_with_item
-// it can't afford — that just loops with the right tool. Steer to bargain or
-// barter instead, and move no coins. Alice is dropped below Bob's 4-coin stew
-// quote.
-func TestPay_CoinShortQuoteSteersToBargainNotSettlement(t *testing.T) {
+// --- TestPay_CoinShortQuoteStillRefused: LLM-172. A payer short of the quote
+// is refused the same way and moves no coins. The refusal names the price, so
+// the player at the Pay box sees why the card is out of reach (the box itself
+// says "You only have N" before it sends a take). It names no tool — sim.Pay's
+// one caller is the player route (LLM-725). Alice is dropped below Bob's 4-coin
+// stew quote.
+func TestPay_CoinShortQuoteStillRefused(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 	mustSend(t, w, func(world *sim.World) { world.Actors["alice"].Coins = 3 })
@@ -746,11 +747,11 @@ func TestPay_CoinShortQuoteSteersToBargainNotSettlement(t *testing.T) {
 		t.Fatal("coin-short bare pay for a quoted good should be rejected")
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "pay_with_item") {
-		t.Errorf("coin-short buyer steered to an unaffordable settlement: %v", err)
+	if strings.Contains(msg, "pay_with_item") || strings.Contains(msg, "offer_trade") {
+		t.Errorf("refusal names an NPC tool: %v", err)
 	}
-	if !strings.Contains(msg, "you only have 3") || !strings.Contains(msg, "offer_trade") {
-		t.Errorf("missing the bargain/barter steer: %v", err)
+	if !strings.Contains(msg, "for 4 coins") || !strings.Contains(msg, "offer card") {
+		t.Errorf("refusal should name the quote's price and its offer card: %v", err)
 	}
 
 	snap := w.Published()
@@ -786,7 +787,7 @@ func TestPay_VisitorBudgetGate(t *testing.T) {
 	if err == nil {
 		t.Fatal("Pay: want budget rejection for a visitor over trip budget, got nil")
 	}
-	if !strings.Contains(err.Error(), "have 5 to spend") || !strings.Contains(err.Error(), "need 10") {
+	if !strings.Contains(err.Error(), "only 5 coins to spend") || !strings.Contains(err.Error(), "give 10 coins") {
 		t.Errorf("error should name the spendable figure, not the wallet: %v", err)
 	}
 
@@ -829,7 +830,7 @@ func TestPay_RejectsBundleMemo(t *testing.T) {
 		if err == nil {
 			t.Fatalf("bare pay for %q should be refused", memo)
 		}
-		if !strings.Contains(err.Error(), "pay_with_item") || !strings.Contains(err.Error(), "only hands over coins") {
+		if !strings.Contains(err.Error(), "giving coins buys none of") || !strings.Contains(err.Error(), "make Bob an offer") {
 			t.Errorf("memo %q: steer missing: %v", memo, err)
 		}
 	}
@@ -849,8 +850,8 @@ func TestPay_RejectsCountedGoodMemo(t *testing.T) {
 	defer stop()
 
 	_, err := w.Send(sim.Pay("alice", "Bob", 10, "5x wheat", at))
-	if err == nil || !strings.Contains(err.Error(), "pay_with_item") {
-		t.Fatalf("counted single good should be refused with the pay_with_item steer, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "giving coins buys none of the Wheat") {
+		t.Fatalf("counted single good should be refused as a purchase, got %v", err)
 	}
 	if got := w.Published().Actors["alice"].Coins; got != 50 {
 		t.Errorf("alice.Coins = %d, want 50 (no transfer on refusal)", got)

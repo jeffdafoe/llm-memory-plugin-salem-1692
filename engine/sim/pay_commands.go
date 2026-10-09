@@ -24,12 +24,14 @@ const MaxPayAmount = math.MaxInt32
 // in_response_to, no deliberation tick. The mismatched-pay haggling chain
 // + ledger + inventory port to later PRs alongside their substrate.
 //
-// No NPC tool reaches this command (LLM-726 removed the bare-coin `pay` tool:
-// its free-text memo let coin move for goods that never moved and for debts
-// paid again and again). It is kept for a player give-coins route.
+// Its one caller is the player give-coins route, POST pc/give
+// (httpapi/pc_give.go, LLM-725). No NPC tool reaches it: LLM-726 removed the
+// bare-coin `pay` tool, whose free-text memo let coin move for goods that
+// never moved and for debts paid again and again. So every refusal below is
+// worded for a player at the Pay box.
 //
 // Pre-conditions the caller normalizes but the Command Fn ALSO re-validates
-// because Pay is exported — no caller (tests, admin paths, a player route)
+// because Pay is exported — no caller (tests, admin paths, the player route)
 // may mint coins via a negative amount or smuggle a no-op event via
 // amount=0:
 //
@@ -89,13 +91,12 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			}
 			if buyer.MoveIntent != nil {
 				return nil, errors.New(
-					"you are walking — finish your move before paying. " +
-						"Either pay BEFORE the move_to, or wait until you arrive.",
+					"you are walking — stop before you give coins.",
 				)
 			}
 			if buyer.CurrentHuddleID == "" {
 				return nil, errors.New(
-					"you're not in a conversation — start one with the person you want to pay first.",
+					"you are not in a conversation — talk to them first.",
 				)
 			}
 
@@ -108,7 +109,7 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			sellerID, ok, ambiguous := findHuddlePeerByDisplayName(w, buyerID, buyer.CurrentHuddleID, recipientName)
 			if ambiguous {
 				return nil, fmt.Errorf(
-					"more than one person named %q is in this conversation — use a unique full name before paying.",
+					"more than one person named %q is in this conversation — use their full name.",
 					recipientName,
 				)
 			}
@@ -121,13 +122,13 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				peerID, structureName, peerOK, peerAmbiguous := findHuddlePeerByWorkplaceName(w, buyerID, buyer.CurrentHuddleID, recipientName)
 				if peerAmbiguous {
 					return nil, fmt.Errorf(
-						"more than one person here works at %q — name the person you want to pay.",
+						"more than one person here works at %q — name the person.",
 						recipientName,
 					)
 				}
 				if !peerOK {
 					return nil, fmt.Errorf(
-						"no one named %q in this conversation — re-check who is here before paying.",
+						"no one named %q is in this conversation.",
 						recipientName,
 					)
 				}
@@ -146,47 +147,33 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				return nil, fmt.Errorf("Pay: seller %q vanished mid-resolve", sellerID)
 			}
 
-			// LLM-172: bare pay is a pure coin transfer — it does NOT settle a
+			// LLM-172: a bare pay is a pure coin transfer — it does NOT settle a
 			// scene quote or deliver the quoted good. When forText names a good the
-			// seller has posted an active quote for, the buyer is almost certainly
-			// trying to BUY it and reached for the wrong tool; left to proceed the
-			// coins move but no item is delivered and the quote stays open, so the
-			// seller re-offers and the buyer re-accepts (the live Ezekiel/John stew
-			// loop). Redirect to the settlement tool. forText that names no active
-			// quoted good (a tip, a debt, an unquoted item) falls through to a
-			// plain transfer.
+			// seller has posted an active quote for, the payer is almost certainly
+			// trying to BUY it; left to proceed the coins move but no item is
+			// delivered and the quote stays open (the live Ezekiel/John stew loop).
+			// Point at the quote's offer card, the one path that delivers the good.
+			// forText that names no active quoted good (a tip, a debt, an unquoted
+			// item) falls through to a plain transfer.
 			if q := findCoinQuoteForPay(w, buyer, sellerID, forText, at); q != nil {
-				if buyer.SpendableCoins() < q.Amount {
-					// Coin-short for the quote: redirecting to pay_with_item would just
-					// bounce on funds and loop with the right tool (code_review). Steer
-					// to the real ways forward for a broke buyer — bargain the price
-					// down, or barter goods via offer_trade — not a settlement they
-					// can't cover.
-					return nil, fmt.Errorf(
-						"%s has an open quote for %s (quote_id %d, %d coins) but you only have %d to spend — a plain pay won't deliver the %s. Agree a lower coin price, or call offer_trade with goods you'll give and want_item %q.",
-						seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount, buyer.SpendableCoins(),
-						q.Lines[0].ItemKind, q.Lines[0].ItemKind,
-					)
-				}
 				return nil, fmt.Errorf(
-					"%s has an open quote for %s (quote_id %d, %d coins) — a plain pay only hands over coins and won't deliver the %s. Call pay_with_item with quote_id %d, item %q, qty %d, and amount %d to actually receive it.",
-					seller.DisplayName, q.Lines[0].ItemKind, q.ID, q.Amount,
-					q.Lines[0].ItemKind, q.ID, q.Lines[0].ItemKind, q.Lines[0].Qty, q.Amount,
+					"%s is offering %s for %s — buy it from its offer card. Giving coins does not buy it.",
+					seller.DisplayName, itemKindDisplayLabel(w, q.Lines[0].ItemKind), coinsPhrase(q.Amount),
 				)
 			}
 
-			// LLM-649: a memo that names a BUNDLE of goods is a purchase the model
-			// reached the wrong tool for, not a tip. The LLM-172 guard above
-			// resolves the whole memo as one item, so it sees nothing in
-			// "5x wheat, 3x flour, 2x firewood" and the pay fell through as a plain
-			// transfer — coins moved, no goods did (live 2026-08-31: a factor paid
-			// Josiah 26 and then 30 coins on two such memos, the second for goods
-			// Josiah did not even hold). Two or more distinct goods, or one good
-			// with an explicit count, is the purchase shape and is refused; a single
-			// good with no count ("the ale you gave me") stays a debt memo.
+			// LLM-649: a memo that names a BUNDLE of goods is a purchase, not a
+			// gift. The LLM-172 guard above resolves the whole memo as one item,
+			// so it sees nothing in "5x wheat, 3x flour, 2x firewood" and the pay
+			// fell through as a plain transfer — coins moved, no goods did (live
+			// 2026-08-31: a factor paid Josiah 26 and then 30 coins on two such
+			// memos, the second for goods Josiah did not even hold). Two or more
+			// distinct goods, or one good with an explicit count, is the purchase
+			// shape and is refused; a single good with no count ("the ale you gave
+			// me") stays a debt memo.
 			if goods, counted := goodsNamedInPayMemo(w, forText); len(goods) >= 2 || (len(goods) == 1 && counted) {
 				return nil, fmt.Errorf(
-					"a plain pay only hands over coins — it delivers none of the %s. Buy each good on its own: call pay_with_item with item, qty and amount; %s hands it over on accepting.",
+					"giving coins buys none of the %s — make %s an offer for each good instead.",
 					joinItemLabels(w, goods), seller.DisplayName,
 				)
 			}
@@ -202,7 +189,7 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// the two (either direction, so it also catches a keeper reversing
 			// coins to the guest) or on lodging vocabulary when no quote is posted
 			// yet. A bare pay touching lodging is wrong whoever pays whom: the
-			// guest rents with pay_with_item, the keeper grants the room by
+			// guest rents from the room offer, the keeper grants the room by
 			// accepting it. A PUBLIC room quote only counts as "this is a botched
 			// room payment" when the pay text itself signals lodging (lodgingIntent)
 			// — otherwise an unrelated tip that happens to coincide with an open
@@ -216,13 +203,13 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 					keeperName = keeper.DisplayName
 				}
 				return nil, fmt.Errorf(
-					"renting a room isn't a plain coin payment — it moves coins but grants no room. %s has a night's-stay offer (quote_id %d, %d coins): the guest rents it with pay_with_item (quote_id %d, item %q, qty %d, amount %d), and the keeper grants the room by accepting that — never by paying.",
-					keeperName, lq.ID, lq.Amount, lq.ID, lq.Lines[0].ItemKind, lq.Lines[0].Qty, lq.Amount,
+					"%s is offering a night's stay for %s — take the room from its offer card. Giving coins grants no room.",
+					keeperName, coinsPhrase(lq.Amount),
 				)
 			}
 			if isLodgingToken(forText) {
 				return nil, errors.New(
-					"renting a room isn't a plain coin payment — it moves coins but grants no room. Ask the keeper for a room; they'll offer you a night's stay, then take it with pay_with_item.",
+					"giving coins grants no room — ask the keeper for a room, then take it from its offer card.",
 				)
 			}
 
@@ -246,14 +233,14 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 					// The dominant, live case: the employer is paying their own worker
 					// who is mid-contract. Name the worker (the seller) accurately.
 					return nil, fmt.Errorf(
-						"%s is working a job for you right now (%d %s, paid when the work is done) — don't pay separately; the reward settles on its own as they finish. Say a word and let them work.",
+						"%s is working a job for you (%d %s) — the wage pays itself when the work is done.",
 						seller.DisplayName, lo.Reward, unit,
 					)
 				case lo.EmployerID == buyerID && lo.WorkerID == sellerID:
 					// Pending offer and the buyer is the employer who should book it,
 					// not pay by hand.
 					return nil, fmt.Errorf(
-						"%s has offered to work for you for %d %s — that reward pays when the job's done, so don't pay by hand (it would compensate the same work twice). Accept the offer with accept_work to set them working, or talk terms first.",
+						"%s has offered to work for you for %d %s — that wage pays itself when the job is done, so don't give it by hand.",
 						seller.DisplayName, lo.Reward, unit,
 					)
 				default:
@@ -261,7 +248,7 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 					// employer — the LLM-164 "paid while waiting" shape). Role-neutral
 					// copy that doesn't assert who works for whom.
 					return nil, fmt.Errorf(
-						"you and %s already have a work arrangement in play (%d %s) — don't settle it with a bare pay; labor pays out on its own when the job's done.",
+						"you and %s already have a work arrangement (%d %s) — it pays itself when the job is done.",
 						seller.DisplayName, lo.Reward, unit,
 					)
 				}
@@ -316,8 +303,8 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// pay draws the same trip budget as every other buy door.
 			if buyer.SpendableCoins() < amount {
 				return nil, fmt.Errorf(
-					"insufficient coins (have %d to spend, need %d) — agree on a lower amount before paying.",
-					buyer.SpendableCoins(), amount,
+					"you have only %s to spend — not enough to give %s.",
+					coinsPhrase(buyer.SpendableCoins()), coinsPhrase(amount),
 				)
 			}
 			// Seller balance overflow guard. amount is bounded by
