@@ -135,7 +135,9 @@ static func js_flag(value: Variant) -> bool:
 
 ## Touch mode needs a coarse primary pointer AND no fine pointer at all. Chrome
 ## on a Windows touch screen (a Surface) reports the touch screen as primary even
-## with a trackpad or mouse attached; that device is used as a desktop.
+## with a trackpad or mouse attached; that device is used as a desktop. Known
+## limit: an active pen also reports as fine, so a pen tablet gets the desktop
+## layout. Read once at load; a keyboard attached or removed later needs a reload.
 static func is_touch_device(coarse_primary: bool, any_fine: bool) -> bool:
     return coarse_primary and not any_fine
 
