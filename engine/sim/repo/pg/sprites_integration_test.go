@@ -253,36 +253,39 @@ func TestIntegration_Sprites_LivestockAnchorY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
-	want := map[string]float64{
-		"Cow (white)":        0.71875,
-		"Bull (brown)":       0.71875,
-		"Heifer (russet)":    0.71875,
-		"Hen (golden)":       0.703125,
-		"Rooster (speckled)": 0.703125,
-		"Sheep":              0.65625,
+	const cattle, chicken, sheep = 0.71875, 0.703125, 0.65625
+	want := map[sim.SpriteID]float64{
+		"639d0c01-0000-4000-8000-000000000001": cattle,  // Cow (white)
+		"639d0c02-0000-4000-8000-000000000002": cattle,  // Cow (golden)
+		"639d0c03-0000-4000-8000-000000000003": cattle,  // Cow (brown)
+		"639d0c04-0000-4000-8000-000000000004": cattle,  // Cow (grey)
+		"639d0c05-0000-4000-8000-000000000005": cattle,  // Bull (white)
+		"639d0c06-0000-4000-8000-000000000006": cattle,  // Bull (brown)
+		"639d0c07-0000-4000-8000-000000000007": cattle,  // Heifer (golden)
+		"639d0c08-0000-4000-8000-000000000008": cattle,  // Heifer (russet)
+		"641c0001-0000-4000-8000-000000000001": chicken, // Hen (golden)
+		"641c0002-0000-4000-8000-000000000002": chicken, // Hen (rust)
+		"641c0003-0000-4000-8000-000000000003": chicken, // Hen (cream)
+		"641c0004-0000-4000-8000-000000000004": chicken, // Rooster (golden)
+		"641c0005-0000-4000-8000-000000000005": chicken, // Rooster (slate)
+		"641c0006-0000-4000-8000-000000000006": chicken, // Rooster (speckled)
+		"689d0c01-0000-4000-8000-000000000001": sheep,   // Sheep
 	}
-	byName := map[string]*sim.Sprite{}
-	livestock := 0
-	for _, s := range got {
-		byName[s.Name] = s
-		if s.HasBehavior(sim.BehaviorGrazer) {
-			livestock++
-			if s.AnchorY == 0.9 {
-				t.Errorf("%s still stands at the villager 0.9", s.Name)
-			}
-		}
-	}
-	if livestock != 15 {
-		t.Errorf("grazer sprites = %d, want 15 (8 cattle, 6 chickens, 1 sheep)", livestock)
-	}
-	for name, a := range want {
-		s := byName[name]
+	for id, a := range want {
+		s := got[id]
 		if s == nil {
-			t.Errorf("%s missing from the seeded catalog", name)
+			t.Errorf("sprite %s missing from the seeded catalog", id)
 			continue
 		}
 		if s.AnchorY != a {
-			t.Errorf("%s AnchorY = %v, want %v", name, s.AnchorY, a)
+			t.Errorf("%s (%s) AnchorY = %v, want %v", s.Name, id, s.AnchorY, a)
+		}
+	}
+	// Every grazer in the catalog is one of the measured sprites — a new
+	// livestock sheet needs its own feet line.
+	for id, s := range got {
+		if _, ok := want[id]; !ok && s.HasBehavior(sim.BehaviorGrazer) {
+			t.Errorf("grazer sprite %s (%s) has no measured feet line", s.Name, id)
 		}
 	}
 
