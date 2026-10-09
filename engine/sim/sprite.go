@@ -52,6 +52,12 @@ type Sprite struct {
 	// client guards <= 0 back to its default for test-seeded zero values.
 	RenderScale float64
 
+	// AnchorY is where the art's feet sit, as a fraction of the frame height
+	// (npc_sprite.anchor_y, LLM-742). Villager sheets stand at 0.9; livestock
+	// sheets leave empty rows under the hooves and carry their own. A client
+	// draw hint like RenderScale — the engine never reads it.
+	AnchorY float64
+
 	// Rig names a paper-doll animation table the client owns (npc_sprite.rig,
 	// LLM-691): "farmer_base" is the Mana Seed farmer, drawn as a stack of
 	// layer sheets that all share one cell layout. Empty for a classic

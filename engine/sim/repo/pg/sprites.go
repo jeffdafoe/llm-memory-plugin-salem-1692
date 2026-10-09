@@ -42,7 +42,7 @@ SELECT id, name, url
 // unreachable in valid data (the attach guard below is defensive only — see
 // LoadAll's orphan note).
 const loadAllSpritesSQL = `
-SELECT id::text, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, rig, layers
+SELECT id::text, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, anchor_y, rig, layers
   FROM npc_sprite
  ORDER BY name`
 
@@ -129,7 +129,7 @@ func (r *SpritesRepo) loadSprites(ctx context.Context, packs map[string]*sim.Til
 			rig           *string
 			layersJSON    []byte
 		)
-		if err := rows.Scan(&id, &s.Name, &s.Sheet, &s.FrameWidth, &s.FrameHeight, &s.PackID, &behaviorsJSON, &s.RenderScale, &rig, &layersJSON); err != nil {
+		if err := rows.Scan(&id, &s.Name, &s.Sheet, &s.FrameWidth, &s.FrameHeight, &s.PackID, &behaviorsJSON, &s.RenderScale, &s.AnchorY, &rig, &layersJSON); err != nil {
 			return nil, fmt.Errorf("pg sprites LoadAll: npc_sprite scan: %w", err)
 		}
 		s.ID = sim.SpriteID(id)

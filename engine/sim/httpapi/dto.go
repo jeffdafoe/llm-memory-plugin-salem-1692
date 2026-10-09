@@ -225,6 +225,10 @@ type AgentSpriteDTO struct {
 	// villagers 2.0, ducks 1.0. Omitted when zero (a test-seeded sprite);
 	// the client falls back to its default.
 	RenderScale float64 `json:"render_scale,omitempty"`
+	// AnchorY is where the art's feet sit, as a fraction of the frame height
+	// (LLM-742): villagers 0.9, livestock lower. Omitted when zero; the client
+	// falls back to 0.9.
+	AnchorY float64 `json:"anchor_y,omitempty"`
 	// Rig and Layers describe a paper-doll sprite (LLM-691): the client
 	// stacks the layer sheets over its own animation table for the rig and
 	// ignores Animations. Both omitted for a one-sheet sprite.
@@ -405,6 +409,7 @@ type SpriteDTO struct {
 	Behaviors   []string             `json:"behaviors,omitempty"`    // engine-behavior slugs (LLM-579), e.g. "waterfowl"
 	Animal      bool                 `json:"animal,omitempty"`       // an animal sprite (sim.Sprite.IsAnimal, LLM-689): the editor lists it apart from villagers
 	RenderScale float64              `json:"render_scale,omitempty"` // client draw scale (LLM-580): villagers 2.0, ducks 1.0
+	AnchorY     float64              `json:"anchor_y,omitempty"`     // feet line as a fraction of frame height (LLM-742): villagers 0.9, livestock lower
 	Rig         string               `json:"rig,omitempty"`          // paper-doll rig (LLM-691): "farmer_base", or omitted for a one-sheet sprite
 	Layers      json.RawMessage      `json:"layers,omitempty"`       // the rig sprite's layer list, verbatim from npc_sprite.layers
 }

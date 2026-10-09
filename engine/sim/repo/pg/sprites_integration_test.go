@@ -39,8 +39,8 @@ func TestIntegration_Sprites_LoadAllHappyPath(t *testing.T) {
 		t.Fatalf("seed tileset_pack: %v", err)
 	}
 	if _, err := f.Pool.Exec(ctx, `
-		INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale)
-		VALUES ($1, 'Woman A v00', 'npc/woman_A_v00.png', 64, 64, 'mana-seed', '["waterfowl"]', 1.0)`, spriteUUIDFull); err != nil {
+		INSERT INTO npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, anchor_y)
+		VALUES ($1, 'Woman A v00', 'npc/woman_A_v00.png', 64, 64, 'mana-seed', '["waterfowl"]', 1.0, 0.71875)`, spriteUUIDFull); err != nil {
 		t.Fatalf("seed npc_sprite: %v", err)
 	}
 	// Insert south/walk before south/idle to prove the ORDER BY re-sorts
@@ -85,6 +85,9 @@ func TestIntegration_Sprites_LoadAllHappyPath(t *testing.T) {
 	}
 	if s.RenderScale != 1.0 {
 		t.Errorf("RenderScale = %v, want 1.0", s.RenderScale)
+	}
+	if s.AnchorY != 0.71875 {
+		t.Errorf("AnchorY = %v, want 0.71875", s.AnchorY)
 	}
 
 	// Deterministic order: (south, idle) before (south, walk).
@@ -138,6 +141,10 @@ func TestIntegration_Sprites_NullablesAndNoPack(t *testing.T) {
 	}
 	if s.RenderScale != 2.0 {
 		t.Errorf("default RenderScale = %v, want 2.0", s.RenderScale)
+	}
+	// LLM-742: a sprite without a measured feet line stands at the villager 0.9.
+	if s.AnchorY != 0.9 {
+		t.Errorf("default AnchorY = %v, want 0.9", s.AnchorY)
 	}
 	// LLM-691: a one-sheet sprite has no rig, and its default '[]' layers
 	// stay off the model so they stay off the payload.
@@ -231,5 +238,58 @@ func TestIntegration_Sprites_UpsertRigSprite(t *testing.T) {
 	if s.Rig != "farmer_base" || s.Name != "Tess Renamed" || s.FrameWidth != 64 || s.Pack == nil ||
 		layers[0]["ramps"].(map[string]any)["skin"] != float64(7) {
 		t.Errorf("sprite = %+v layers=%s", s, s.Layers)
+	}
+}
+
+// S5 feet line (LLM-742) — the migration gives every livestock sprite the feet
+// line measured off its sheet (the fixture replays the seeding migrations, so
+// this also pins the sprite ids the UPDATEs name), and the CHECK keeps the
+// value a fraction of the frame.
+func TestIntegration_Sprites_LivestockAnchorY(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	got, err := NewSpritesRepo(f.Pool).LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	want := map[string]float64{
+		"Cow (white)":        0.71875,
+		"Bull (brown)":       0.71875,
+		"Heifer (russet)":    0.71875,
+		"Hen (golden)":       0.703125,
+		"Rooster (speckled)": 0.703125,
+		"Sheep":              0.65625,
+	}
+	byName := map[string]*sim.Sprite{}
+	livestock := 0
+	for _, s := range got {
+		byName[s.Name] = s
+		if s.HasBehavior(sim.BehaviorGrazer) {
+			livestock++
+			if s.AnchorY == 0.9 {
+				t.Errorf("%s still stands at the villager 0.9", s.Name)
+			}
+		}
+	}
+	if livestock != 15 {
+		t.Errorf("grazer sprites = %d, want 15 (8 cattle, 6 chickens, 1 sheep)", livestock)
+	}
+	for name, a := range want {
+		s := byName[name]
+		if s == nil {
+			t.Errorf("%s missing from the seeded catalog", name)
+			continue
+		}
+		if s.AnchorY != a {
+			t.Errorf("%s AnchorY = %v, want %v", name, s.AnchorY, a)
+		}
+	}
+
+	for _, bad := range []string{"0", "1.5", "-0.2"} {
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO npc_sprite (id, name, sheet, anchor_y) VALUES ($1, 'Bad anchor', '/x.png', `+bad+`)`, spriteUUIDPlain); err == nil {
+			t.Errorf("anchor_y %s accepted, want npc_sprite_anchor_y_check to reject it", bad)
+		}
 	}
 }
