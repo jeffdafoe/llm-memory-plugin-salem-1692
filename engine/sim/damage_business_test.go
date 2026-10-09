@@ -356,3 +356,31 @@ func TestWellUseCountsUnitsDrawn(t *testing.T) {
 		}
 	})
 }
+
+// TestRestoredTownRepairLandsAfterRestart — LLM-737: a hand's town repair
+// restored from the checkpoint lands through the ordinary completion sweep and
+// pays the bounty agreed before the restart, even when its Until passed while
+// the engine was down.
+func TestRestoredTownRepairLandsAfterRestart(t *testing.T) {
+	w, cancel := buildBusinessDamageWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("shop", "storm")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["anne"].SourceActivity = sim.RestoredHandTownRepair("shop", 25, now.Add(-2*time.Hour), now.Add(-time.Minute))
+	})
+	mustSend(t, w, func(world *sim.World) { sim.CompleteDueSourceActivities(world, now) })
+	mustSend(t, w, func(world *sim.World) {
+		if world.VillageObjects["shop"].Damaged() {
+			t.Error("shop still damaged after the restored repair's window passed")
+		}
+		if got := world.Actors["anne"].Coins; got != 25 {
+			t.Errorf("anne coins = %d, want the agreed 25", got)
+		}
+		if world.Actors["anne"].SourceActivity != nil {
+			t.Error("window still open after landing")
+		}
+	})
+}

@@ -371,3 +371,77 @@ func TestIntegration_SaveWorld_KnownPlaceRoundTrip(t *testing.T) {
 		t.Errorf("shop known-place round-trip wrong: %+v", a.KnownPlaces[shopRef])
 	}
 }
+
+// TestIntegration_SaveWorld_TownRepairRoundTrip is the LLM-737 checkpoint
+// contract for a hand's town repair: the window (site, bounty, start, Until)
+// rides the actor row's four town_repair columns and comes back with its
+// original Until, so a restart neither adds nor takes away work. Every other
+// window — a player's stepped repair, a keeper's own mend, an eat at a source
+// — writes the idle sentinel and comes back nil, as before.
+func TestIntegration_SaveWorld_TownRepairRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	const (
+		handID   = sim.ActorID("dddddddd-0000-0000-0000-00000000d737")
+		pcID     = sim.ActorID("eeeeeeee-0000-0000-0000-00000000e737")
+		keeperID = sim.ActorID("ffffffff-0000-0000-0000-00000000f737")
+		eaterID  = sim.ActorID("aaaaaaaa-0000-0000-0000-00000000a737")
+		siteID   = sim.VillageObjectID("019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9")
+	)
+	started := time.Date(2026, 10, 9, 20, 5, 1, 0, time.UTC)
+	until := started.Add(2 * time.Hour)
+	w := checkpointableWorld(repo)
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		handID: {ID: handID, DisplayName: "Hand", State: sim.StateIdle,
+			SourceActivity: &sim.SourceActivity{
+				Kind: sim.SourceActivityRepair, ObjectID: siteID, StartedAt: started, Until: until,
+				Bounty: 25, PublicWorks: true,
+			}},
+		pcID: {ID: pcID, DisplayName: "Player", State: sim.StateIdle,
+			SourceActivity: &sim.SourceActivity{
+				Kind: sim.SourceActivityRepair, ObjectID: siteID, StartedAt: started, Until: started.Add(90 * time.Second),
+				Bounty: 25, PublicWorks: true, Steps: 12, StepGap: 3 * time.Second,
+			}},
+		keeperID: {ID: keeperID, DisplayName: "Keeper", State: sim.StateIdle,
+			SourceActivity: &sim.SourceActivity{
+				Kind: sim.SourceActivityRepair, ObjectID: siteID, StartedAt: started, Until: until,
+			}},
+		eaterID: {ID: eaterID, DisplayName: "Eater", State: sim.StateIdle,
+			SourceActivity: &sim.SourceActivity{
+				Kind: sim.SourceActivityRefresh, ObjectID: siteID, StartedAt: started, Until: started.Add(3 * time.Second),
+			}},
+	}
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld: %v", err)
+	}
+
+	loaded, err := LoadWorld(ctx, repo, true /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	hand := loaded.Actors[handID]
+	if hand == nil {
+		t.Fatalf("hand did not round-trip")
+	}
+	act := hand.SourceActivity
+	if act == nil {
+		t.Fatalf("SourceActivity = nil after reload — the hand's town repair must survive a restart")
+	}
+	if !act.IsHandTownRepair() || act.ObjectID != siteID || act.Bounty != 25 {
+		t.Errorf("SourceActivity = %+v, want the hand's town repair of %s at 25", act, siteID)
+	}
+	if !act.StartedAt.Equal(started) || !act.Until.Equal(until) {
+		t.Errorf("window = %v..%v after reload, want %v..%v (the original Until)", act.StartedAt, act.Until, started, until)
+	}
+	for _, id := range []sim.ActorID{pcID, keeperID, eaterID} {
+		a := loaded.Actors[id]
+		if a == nil {
+			t.Fatalf("%s did not round-trip", id)
+		}
+		if a.SourceActivity != nil {
+			t.Errorf("%s SourceActivity = %+v after reload, want nil (only a hand's town repair is kept)", a.DisplayName, a.SourceActivity)
+		}
+	}
+}
