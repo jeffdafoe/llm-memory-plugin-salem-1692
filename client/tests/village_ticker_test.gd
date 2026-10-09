@@ -206,6 +206,13 @@ func _test_build_line_scrolls_once() -> void:
     _check("no band: line cleared", t._active_line, "")
     _check("no band: label cleared", label.text, "")
     _check("no band: no re-scroll scheduled", timer.is_stopped(), true)
+    _check("handled once: sentinel cleared", t._intro_line, "")
+    t._active_line = "Salem build 00aa2b90"
+    t._scrolling = true
+    t._on_scroll_finished()
+    _check("a later line with the same text re-scrolls", t._active_line, "Salem build 00aa2b90")
+    t._repeat_timer.stop()
+    t._intro_line = "Salem build 00aa2b90"
     t._active_line = t._intro_line
     t._scrolling = true
     t._atmosphere_line = "Mist on the green."

@@ -340,7 +340,9 @@ func _on_scroll_finished() -> void:
         _label.text = ""
         return
     # The build line scrolls once; then the band, or nothing, takes over.
-    if _active_line == _intro_line:
+    # Cleared so a later line with the same text is not taken for it.
+    if _intro_line != "" and _active_line == _intro_line:
+        _intro_line = ""
         _active_line = ""
         _label.text = ""
         _refresh_band()
