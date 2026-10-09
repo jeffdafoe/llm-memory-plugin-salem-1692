@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
@@ -254,5 +255,58 @@ func TestRunTickToolCommandWrapperErrorsNotModelFacing(t *testing.T) {
 	var modelErr sim.ModelFacingError
 	if errors.As(err, &modelErr) {
 		t.Fatalf("unknown-actor dispatch error must NOT be ModelFacingError, got %v", err)
+	}
+}
+
+// TestRunTickToolCommandPostSnapshotKeepsTheWorkWindow — LLM-736: a hand
+// mending a damaged shop for the town eats from her pack mid-turn. The
+// post-commit self snapshot the harness re-perceives her from must still show
+// the repair under way, as the published snapshot does; built from bare
+// snapshotActor it showed no window, and the town's-works cue offered her the
+// job she was already doing.
+func TestRunTickToolCommandPostSnapshotKeepsTheWorkWindow(t *testing.T) {
+	w, cancel := buildBusinessDamageWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("shop", "storm")); err != nil {
+		t.Fatal(err)
+	}
+	var root sim.EventID
+	mustSend(t, w, func(world *sim.World) {
+		a := world.Actors["anne"]
+		a.Pos = sim.WorldPos{X: 3000, Y: 3000}.Tile()
+		a.InsideStructureID = "shop"
+		if a.Inventory == nil {
+			a.Inventory = map[sim.ItemKind]int{}
+		}
+		a.Inventory["water"] = 2
+		if a.Needs == nil {
+			a.Needs = map[sim.NeedKey]int{}
+		}
+		a.Needs["thirst"] = 60
+		a.TickInFlight = true
+		a.TickAttemptID = "A1"
+		sim.EmitForTest(world, &sim.ReactorTickDue{ActorID: "anne"})
+		root = sim.EventID(sim.WorldEventSeq(world))
+	})
+	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
+		t.Fatalf("StartRepair: %v", err)
+	}
+
+	val, err := w.Send(sim.RunTickToolCommand("anne", "A1", root, sim.Consume("anne", "water", 1, time.Now().UTC())))
+	if err != nil {
+		t.Fatalf("consume mid-repair: %v", err)
+	}
+	post := val.(sim.TickToolResult).PostActorSnapshot
+	if post == nil {
+		t.Fatal("no post-commit snapshot")
+	}
+	if post.SourceActivityKind != sim.SourceActivityRepair || post.SourceActivityObjectID != "shop" || !post.SourceActivityPublicWorks {
+		t.Errorf("post-commit window = %q %q town=%v, want the town's repair of the shop",
+			post.SourceActivityKind, post.SourceActivityObjectID, post.SourceActivityPublicWorks)
+	}
+	published := w.Published().Actors["anne"]
+	if published.SourceActivityKind != post.SourceActivityKind || published.SourceActivityObjectID != post.SourceActivityObjectID {
+		t.Errorf("post-commit window %q/%q differs from published %q/%q",
+			post.SourceActivityKind, post.SourceActivityObjectID, published.SourceActivityKind, published.SourceActivityObjectID)
 	}
 }

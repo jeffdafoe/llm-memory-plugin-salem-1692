@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrTickAttemptStale is returned by a RunTickToolCommand command when the
@@ -103,13 +104,14 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 		}
 		// LLM-88: capture the acting actor's post-commit self-state alongside the
 		// tool's result. The Fn just ran on the world goroutine, so a re-read of
-		// the actor reflects any need/inventory/coin change it made; snapshotActor
-		// is the same builder the published snapshot uses, so perception consumes
-		// it unchanged. Re-read rather than reuse the pre-Fn `actor` pointer in
-		// case the command replaced or removed the entry.
+		// the actor reflects any need/inventory/coin change it made;
+		// postCommitActorSnapshot is the same builder the published snapshot uses
+		// (LLM-736), so perception consumes it unchanged. Re-read rather than
+		// reuse the pre-Fn `actor` pointer in case the command replaced or
+		// removed the entry.
 		var post *ActorSnapshot
 		if a, ok := w.Actors[actorID]; ok {
-			post = snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
+			post = w.postCommitActorSnapshot(a, time.Now())
 		}
 		return TickToolResult{Result: res, PostActorSnapshot: post}, nil
 	})

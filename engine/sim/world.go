@@ -2629,144 +2629,7 @@ func (w *World) republish() {
 		commerceHuddles = ledgerCommerceHuddles(w)
 	}
 	for id, a := range w.Actors {
-		sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
-		// LLM-372: project a returner's durable continuity onto the snapshot here
-		// (not in snapshotActor, a *World-less free function) — buildReturnerSnapshot
-		// reads World.RecurringVisitors and needs the wall-clock now for recency.
-		sa.Returner = buildReturnerSnapshot(w, a, now)
-		// LLM-536: project how long this actor's NPC-speech replies are paced by,
-		// so perception's turn-line can hold an owed-reply edge live across the
-		// wait the pacing imposes. Computed here rather than in snapshotActor for
-		// the same reason as Returner above — it needs WorldSettings.
-		sa.ReplyPacingWindow = replyPacedCadence(a, now, w.Settings)
-		// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
-		// unhuddled conversational NPC would reach if it spoke now, so perception's
-		// "## Around you" line and the speak no-audience gate share one scope rule
-		// (colocatedAudienceIDs). Skip the huddled (their company is the huddle
-		// roster) and non-conversational kinds (PCs and decoratives get no NPC
-		// decision prompt, so the line is never rendered for them).
-		if a.CurrentHuddleID == "" {
-			switch a.Kind {
-			case KindNPCStateful, KindNPCShared:
-				sa.ColocatedAudienceIDs = colocatedAudienceIDs(w, a, now)
-				// Co-present sleepers in the same scope (ZBBS-WORK-426): surfaced
-				// for perception to mark "(asleep)" but kept out of the audience
-				// above, so a visible sleeper no longer vanishes from the speaker's
-				// "## Around you" while staying a non-target for the speak gate.
-				sa.ColocatedSleeperIDs = colocatedSleeperIDs(w, a, now)
-			}
-		}
-		// Co-location for active dwell credits (LLM-68): resolve the named
-		// object whose loiter pin owns the actor's tile so perception renders a
-		// "you are <verb> at X" self-state line only while the actor is still at
-		// the pin — not after a walk-away, when the credit lingers in the map
-		// until the next dwell-tick sweep deletes it. Same resolver + radius as
-		// the dwell-tick walk-away check (actorAtCreditObject) so the two agree.
-		// Only for credit-holders — the sole consumer — to skip the resolve for
-		// everyone else.
-		if len(a.DwellCredits) > 0 {
-			if objID, ok := resolveLoiteringObject(w, a.Pos, LoiterAttributionTiles); ok {
-				sa.CurrentLoiterObjectID = objID
-			}
-		}
-		// In-flight timed source activity (LLM-69): project the live window so
-		// perception renders a standing "you are picking/eating at X — stay put,
-		// walking off abandons it" self-state line, whatever ticks the actor
-		// mid-window. Gate on BusyAtSource so an expired-but-unswept window (the
-		// next completion sweep clears it) reads as not-engaged rather than
-		// still-in-progress. Resolve the refresh primary need world-side for the
-		// eat/drink verb; harvest needs none.
-		if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
-			sa.SourceActivityKind = act.Kind
-			sa.SourceActivityObjectID = act.ObjectID
-			sa.SourceActivityPublicWorks = act.PublicWorks
-			if act.Kind == SourceActivityRefresh {
-				if obj := w.VillageObjects[act.ObjectID]; obj != nil {
-					sa.SourceActivityAttribute = primaryRefreshNeed(obj)
-				}
-			}
-		}
-		// In-flight constable rounds route (LLM-514): project the route label (so
-		// perception renders "you are walking your rounds" on any tick during the
-		// tour) and, only once he has arrived at the current business stop, that
-		// stop's object (so the cue adds "you stand before the <business>" at a stop
-		// but not mid-walk). Stamped here, not in snapshotActor, because ActiveRoutes
-		// lives on *World. Constable-only for now — the other routes surface their
-		// effect through the object states they flip, not through route membership.
-		if r := w.ActiveRoutes[a.ID]; r != nil && r.Label == AttrConstable {
-			sa.RouteLabel = r.Label
-			// What he still OWES and where to go next are projected UNCONDITIONALLY —
-			// no arrival requirement (LLM-548). The cue's job is to keep a standing
-			// obligation legible wherever he happens to be, and nothing else tells
-			// him a round is under way; a man at the well needs the count and the
-			// next name every bit as much as a man on a doorstep. Gating these on
-			// arrival is what used to collapse the cue to a bare "you are walking
-			// your rounds" — no place, no count, nowhere to go — at exactly the
-			// moments he most needed telling.
-			// Where he is STANDING, which is the one part that does need him to have
-			// arrived — it is what lets the cue say "you stand before the smithy".
-			// Tolerant, because he reaches stops on his own feet and move_to parks
-			// him beside the pin rather than on it.
-			//
-			// It also anchors the count and the next name. Both are measured from
-			// where he IS when he is at a stop, and from the cursor otherwise. The
-			// stop under his feet must not be counted among the places still ahead of
-			// him — that is the "seven places lie ahead" line read by a man standing
-			// in the seventh — and it must not be offered as the next one either.
-			// Anchoring on the cursor alone would do both for the moment between his
-			// arriving somewhere and the beat crediting it.
-			anchor := r.StopIdx
-			if idx, atStop := r.stopIndexAt(w, a); atStop {
-				anchor = idx
-				sa.RouteStopObjectID = r.Stops[idx].ObjectID
-			}
-			sa.RouteStopsAhead = r.unvisitedExcluding(anchor)
-			if nextIdx, ok := r.nextUnvisitedFrom(anchor); ok {
-				// The move_to token. The next place he still owes, computed the SAME
-				// way the beat advancer moves its cursor, so the cue and the record
-				// can never name different places (LLM-543).
-				sa.RouteNextStopObjectID = r.Stops[nextIdx].ObjectID
-			}
-		}
-		// Per-tick conversational-loop flag (LLM-169): when this actor's huddle is
-		// in an armed loop right now (the same huddleLoopArmed signal the loop sweep
-		// arms on), perception swaps the reply-pressure nudge for an "you've agreed —
-		// act now" steer, nudging the huddle to self-resolve before the sweep's
-		// persistence gate silently concludes it. Gated on the loop sweep's master
-		// enable so one knob governs all loop handling, and on the conversational NPC
-		// kinds — Render is the NPC reactor-tick path (never a PC or decorative), so
-		// the flag would be inert noise on any other kind (matches the co-presence gate above).
-		if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
-			if h := w.Huddles[a.CurrentHuddleID]; h != nil && !huddlePCAttended(h, now) {
-				// The steer arms on EITHER a repetitive utterance loop or a silent
-				// transactional-futility loop (LLM-309), so an all-mechanical
-				// offer→decline standoff gets the same gentle nudge as a chatty one.
-				// The endurance arm (LLM-333) steers through the separate
-				// ConversationRunLong flag — its situation is "this has gone on and
-				// on", not "you keep saying the same thing", and the render line must
-				// state what is actually true of the scene. Looping wins when both
-				// hold: it is the more specific diagnosis.
-				//
-				// LLM-397: the lingering arm's steer (ConversationLingering) is last
-				// and least specific — it says only "this has run long", which is all
-				// that is TRUE of a conversation that has been productive and varied
-				// and simply hasn't stopped. It must not borrow the endurance line's
-				// "nothing is coming of it": on the live inn conversation that line
-				// would have been false — a bowl of porridge had just been bought,
-				// paid for, and served. Suppressed mid-deal, like the sweep's arm.
-				_, ledgerArmed := ledgerLoopHuddles[a.CurrentHuddleID]
-				switch {
-				case huddleLoopArmed(w.Settings, h, now) || ledgerArmed:
-					sa.ConversationLooping = true
-				case huddleEnduranceArmed(w.Settings, h, now):
-					sa.ConversationRunLong = true
-				case huddleLingeringArmed(w.Settings, h, now) &&
-					!huddleCarriesLiveCommerce(w, h, commerceHuddles):
-					sa.ConversationLingering = true
-				}
-			}
-		}
-		snap.Actors[id] = sa
+		snap.Actors[id] = w.publishedActorSnapshot(a, now, ledgerLoopHuddles, commerceHuddles)
 	}
 	for id, h := range w.Huddles {
 		snap.Huddles[id] = CloneHuddle(h)
@@ -3085,4 +2948,168 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		PendingSummon:              clonePendingSummon(a.PendingSummon),
 		SummonRefusal:              cloneSummonRefusal(a.SummonRefusal),
 	}
+}
+
+// publishedActorSnapshot is the ActorSnapshot republish publishes for one actor:
+// snapshotActor plus the projections that need the World (returner continuity,
+// reply pacing, co-presence, loiter object, the in-flight work window, the
+// constable's route, the conversation-loop flags). ledgerLoopHuddles and
+// commerceHuddles are republish's once-per-publish ledger passes.
+//
+// The tick harness's post-commit self snapshot (RunTickToolCommand) is built
+// here too, so a mid-turn re-perceive sees the same self as the published
+// snapshot. Built from bare snapshotActor it lost every field below — an NPC
+// mid-repair who ate from her pack was re-perceived with no window, offered
+// the work afresh, and walked off a job 57 s from done (LLM-736).
+func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddles, commerceHuddles map[HuddleID]struct{}) *ActorSnapshot {
+	sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
+	// LLM-372: project a returner's durable continuity onto the snapshot here
+	// (not in snapshotActor, a *World-less free function) — buildReturnerSnapshot
+	// reads World.RecurringVisitors and needs the wall-clock now for recency.
+	sa.Returner = buildReturnerSnapshot(w, a, now)
+	// LLM-536: project how long this actor's NPC-speech replies are paced by,
+	// so perception's turn-line can hold an owed-reply edge live across the
+	// wait the pacing imposes. Computed here rather than in snapshotActor for
+	// the same reason as Returner above — it needs WorldSettings.
+	sa.ReplyPacingWindow = replyPacedCadence(a, now, w.Settings)
+	// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
+	// unhuddled conversational NPC would reach if it spoke now, so perception's
+	// "## Around you" line and the speak no-audience gate share one scope rule
+	// (colocatedAudienceIDs). Skip the huddled (their company is the huddle
+	// roster) and non-conversational kinds (PCs and decoratives get no NPC
+	// decision prompt, so the line is never rendered for them).
+	if a.CurrentHuddleID == "" {
+		switch a.Kind {
+		case KindNPCStateful, KindNPCShared:
+			sa.ColocatedAudienceIDs = colocatedAudienceIDs(w, a, now)
+			// Co-present sleepers in the same scope (ZBBS-WORK-426): surfaced
+			// for perception to mark "(asleep)" but kept out of the audience
+			// above, so a visible sleeper no longer vanishes from the speaker's
+			// "## Around you" while staying a non-target for the speak gate.
+			sa.ColocatedSleeperIDs = colocatedSleeperIDs(w, a, now)
+		}
+	}
+	// Co-location for active dwell credits (LLM-68): resolve the named
+	// object whose loiter pin owns the actor's tile so perception renders a
+	// "you are <verb> at X" self-state line only while the actor is still at
+	// the pin — not after a walk-away, when the credit lingers in the map
+	// until the next dwell-tick sweep deletes it. Same resolver + radius as
+	// the dwell-tick walk-away check (actorAtCreditObject) so the two agree.
+	// Only for credit-holders — the sole consumer — to skip the resolve for
+	// everyone else.
+	if len(a.DwellCredits) > 0 {
+		if objID, ok := resolveLoiteringObject(w, a.Pos, LoiterAttributionTiles); ok {
+			sa.CurrentLoiterObjectID = objID
+		}
+	}
+	// In-flight timed source activity (LLM-69): project the live window so
+	// perception renders a standing "you are picking/eating at X — stay put,
+	// walking off abandons it" self-state line, whatever ticks the actor
+	// mid-window. Gate on BusyAtSource so an expired-but-unswept window (the
+	// next completion sweep clears it) reads as not-engaged rather than
+	// still-in-progress. Resolve the refresh primary need world-side for the
+	// eat/drink verb; harvest needs none.
+	if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
+		sa.SourceActivityKind = act.Kind
+		sa.SourceActivityObjectID = act.ObjectID
+		sa.SourceActivityPublicWorks = act.PublicWorks
+		if act.Kind == SourceActivityRefresh {
+			if obj := w.VillageObjects[act.ObjectID]; obj != nil {
+				sa.SourceActivityAttribute = primaryRefreshNeed(obj)
+			}
+		}
+	}
+	// In-flight constable rounds route (LLM-514): project the route label (so
+	// perception renders "you are walking your rounds" on any tick during the
+	// tour) and, only once he has arrived at the current business stop, that
+	// stop's object (so the cue adds "you stand before the <business>" at a stop
+	// but not mid-walk). Stamped here, not in snapshotActor, because ActiveRoutes
+	// lives on *World. Constable-only for now — the other routes surface their
+	// effect through the object states they flip, not through route membership.
+	if r := w.ActiveRoutes[a.ID]; r != nil && r.Label == AttrConstable {
+		sa.RouteLabel = r.Label
+		// What he still OWES and where to go next are projected UNCONDITIONALLY —
+		// no arrival requirement (LLM-548). The cue's job is to keep a standing
+		// obligation legible wherever he happens to be, and nothing else tells
+		// him a round is under way; a man at the well needs the count and the
+		// next name every bit as much as a man on a doorstep. Gating these on
+		// arrival is what used to collapse the cue to a bare "you are walking
+		// your rounds" — no place, no count, nowhere to go — at exactly the
+		// moments he most needed telling.
+		// Where he is STANDING, which is the one part that does need him to have
+		// arrived — it is what lets the cue say "you stand before the smithy".
+		// Tolerant, because he reaches stops on his own feet and move_to parks
+		// him beside the pin rather than on it.
+		//
+		// It also anchors the count and the next name. Both are measured from
+		// where he IS when he is at a stop, and from the cursor otherwise. The
+		// stop under his feet must not be counted among the places still ahead of
+		// him — that is the "seven places lie ahead" line read by a man standing
+		// in the seventh — and it must not be offered as the next one either.
+		// Anchoring on the cursor alone would do both for the moment between his
+		// arriving somewhere and the beat crediting it.
+		anchor := r.StopIdx
+		if idx, atStop := r.stopIndexAt(w, a); atStop {
+			anchor = idx
+			sa.RouteStopObjectID = r.Stops[idx].ObjectID
+		}
+		sa.RouteStopsAhead = r.unvisitedExcluding(anchor)
+		if nextIdx, ok := r.nextUnvisitedFrom(anchor); ok {
+			// The move_to token. The next place he still owes, computed the SAME
+			// way the beat advancer moves its cursor, so the cue and the record
+			// can never name different places (LLM-543).
+			sa.RouteNextStopObjectID = r.Stops[nextIdx].ObjectID
+		}
+	}
+	// Per-tick conversational-loop flag (LLM-169): when this actor's huddle is
+	// in an armed loop right now (the same huddleLoopArmed signal the loop sweep
+	// arms on), perception swaps the reply-pressure nudge for an "you've agreed —
+	// act now" steer, nudging the huddle to self-resolve before the sweep's
+	// persistence gate silently concludes it. Gated on the loop sweep's master
+	// enable so one knob governs all loop handling, and on the conversational NPC
+	// kinds — Render is the NPC reactor-tick path (never a PC or decorative), so
+	// the flag would be inert noise on any other kind (matches the co-presence gate above).
+	if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
+		if h := w.Huddles[a.CurrentHuddleID]; h != nil && !huddlePCAttended(h, now) {
+			// The steer arms on EITHER a repetitive utterance loop or a silent
+			// transactional-futility loop (LLM-309), so an all-mechanical
+			// offer→decline standoff gets the same gentle nudge as a chatty one.
+			// The endurance arm (LLM-333) steers through the separate
+			// ConversationRunLong flag — its situation is "this has gone on and
+			// on", not "you keep saying the same thing", and the render line must
+			// state what is actually true of the scene. Looping wins when both
+			// hold: it is the more specific diagnosis.
+			//
+			// LLM-397: the lingering arm's steer (ConversationLingering) is last
+			// and least specific — it says only "this has run long", which is all
+			// that is TRUE of a conversation that has been productive and varied
+			// and simply hasn't stopped. It must not borrow the endurance line's
+			// "nothing is coming of it": on the live inn conversation that line
+			// would have been false — a bowl of porridge had just been bought,
+			// paid for, and served. Suppressed mid-deal, like the sweep's arm.
+			_, ledgerArmed := ledgerLoopHuddles[a.CurrentHuddleID]
+			switch {
+			case huddleLoopArmed(w.Settings, h, now) || ledgerArmed:
+				sa.ConversationLooping = true
+			case huddleEnduranceArmed(w.Settings, h, now):
+				sa.ConversationRunLong = true
+			case huddleLingeringArmed(w.Settings, h, now) &&
+				!huddleCarriesLiveCommerce(w, h, commerceHuddles):
+				sa.ConversationLingering = true
+			}
+		}
+	}
+	return sa
+}
+
+// postCommitActorSnapshot is publishedActorSnapshot for one actor outside a
+// publish. The ledger passes only matter to the conversation-loop flags, so
+// they run only for an actor those flags can reach.
+func (w *World) postCommitActorSnapshot(a *Actor, now time.Time) *ActorSnapshot {
+	var ledgerLoopHuddles, commerceHuddles map[HuddleID]struct{}
+	if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
+		_, ledgerLoopHuddles = ledgerStandoffHuddles(w, now)
+		commerceHuddles = ledgerCommerceHuddles(w)
+	}
+	return w.publishedActorSnapshot(a, now, ledgerLoopHuddles, commerceHuddles)
 }
