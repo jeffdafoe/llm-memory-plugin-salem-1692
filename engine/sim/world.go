@@ -3107,7 +3107,7 @@ func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddle
 // they run only for an actor those flags can reach.
 func (w *World) postCommitActorSnapshot(a *Actor, now time.Time) *ActorSnapshot {
 	var ledgerLoopHuddles, commerceHuddles map[HuddleID]struct{}
-	if huddleLoopEnabled(w.Settings) && a.CurrentHuddleID != "" {
+	if huddleLoopEnabled(w.Settings) && (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) && a.CurrentHuddleID != "" {
 		_, ledgerLoopHuddles = ledgerStandoffHuddles(w, now)
 		commerceHuddles = ledgerCommerceHuddles(w)
 	}
