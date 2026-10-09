@@ -105,7 +105,8 @@ type FarmerWardrobeSeller struct {
 // shows; Dyes says which of them need a dye. Goods prices every wardrobe good
 // and dye; Held lists the ones the caller's PC holds; Outfit is the PC's own
 // chosen layer list, which can name pieces it no longer holds. Sellers lists,
-// per good, who in the PC's huddle holds or stocks it.
+// per good, who in the PC's huddle holds or stocks it. Coins is the PC's purse,
+// for the creator's buy section (LLM-727).
 type FarmerWardrobe struct {
 	Categories []FarmerWardrobeCategory            `json:"categories"`
 	Items      []FarmerWardrobeItem                `json:"items"`
@@ -115,6 +116,7 @@ type FarmerWardrobe struct {
 	Held       []ItemKind                          `json:"held"`
 	Outfit     json.RawMessage                     `json:"outfit,omitempty"`
 	Sellers    map[ItemKind][]FarmerWardrobeSeller `json:"sellers"`
+	Coins      int                                 `json:"coins"`
 }
 
 var farmerWardrobeCategories = []FarmerWardrobeCategory{
@@ -327,6 +329,7 @@ func PCWardrobe(loginUsername string) Command {
 			}
 			wardrobe.Outfit = w.chosenOutfit(id)
 			wardrobe.Sellers = wardrobeSellers(w, id)
+			wardrobe.Coins = a.Coins
 			return wardrobe, nil
 		},
 	}

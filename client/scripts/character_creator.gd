@@ -15,6 +15,12 @@ extends Control
 ## offers the list price through POST /pc/pay; the seller's answer arrives as
 ## the world's pay_resolved / pay_countered. A bought good is held at once
 ## (take-home goods move at accept), so the player only has to press Save.
+##
+## Layout (LLM-727): the rows on the right are for choosing only; a piece the
+## player does not hold shows its name in COLOR_TO_BUY. Every buy line sits in
+## one full-width section above Save, with the total and the player's coins,
+## and Save names how many goods are still to buy. Under the big doll stands
+## the same doll at the size the village draws it.
 
 signal saved(character_name: String)
 signal closed
@@ -29,6 +35,13 @@ const COLOR_SWATCH_RING = Color(0.95, 0.85, 0.55, 1.0)
 ## A swatch whose dye the player does not hold (LLM-710): still clickable, to
 ## try the colour on, but faded.
 const LOCKED_SWATCH_ALPHA := 0.3
+## A row's choice the player does not hold yet (LLM-727).
+const COLOR_TO_BUY = Color(0.95, 0.72, 0.35, 1.0)
+## The draw scale of a farmer in the village (the engine's farmer sprite
+## render_scale); the camera zoom multiplies it.
+const VILLAGE_RENDER_SCALE := 2.0
+## Buy states with an offer still before a seller.
+const OPEN_BUY_STATES := ["sending", "waiting", "countered"]
 
 ## Which ramp colour a swatch shows per slot: the main tone of the ramp.
 const SWATCH_TONE := {"skin": 0, "hair": 2, "c3": 1, "c4": 1}
@@ -50,12 +63,20 @@ var _save_button: Button = null
 var _cancel_button: Button = null
 var _preview_box: Control = null
 var _doll: FarmerDoll = null
+var _village_box: Control = null
+var _village_caption: Label = null
+var _village_doll: FarmerDoll = null
+var _buy_panel: PanelContainer = null
+var _buy_box: VBoxContainer = null
 var _turn_timer: Timer = null
 var _facing_index := 0
 var _http: HTTPRequest = null
 var _rng := RandomNumberGenerator.new()
 
 var _wardrobe: Dictionary = {}
+## The last wardrobe request succeeded. A reload keeps the old _wardrobe on
+## screen, so emptiness alone cannot tell a fresh wardrobe from a stale one.
+var _wardrobe_loaded := false
 var _picks: Dictionary = {}
 ## Colours remembered per category and slot, so cycling styles keeps them.
 var _remembered: Dictionary = {}
@@ -135,6 +156,13 @@ func _ready() -> void:
     _preview_box.clip_contents = true
     _preview_box.resized.connect(_place_doll)
     left.add_child(_preview_box)
+    _village_box = Control.new()
+    _village_box.clip_contents = true
+    _village_box.resized.connect(_place_doll)
+    left.add_child(_village_box)
+    _village_caption = _label("In the village", 12, COLOR_TEXT_DIM)
+    _village_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    left.add_child(_village_caption)
     _name_label = _label("Name", 13, COLOR_TEXT_DIM)
     left.add_child(_name_label)
     _name_edit = LineEdit.new()
@@ -157,6 +185,19 @@ func _ready() -> void:
     _rows.add_theme_constant_override("separation", 10)
     scroll.add_child(_rows)
 
+    _buy_panel = PanelContainer.new()
+    var buy_style := StyleBoxFlat.new()
+    buy_style.bg_color = Color(0, 0, 0, 0)
+    buy_style.border_width_top = 1
+    buy_style.border_color = COLOR_BORDER
+    buy_style.content_margin_top = 8.0
+    _buy_panel.add_theme_stylebox_override("panel", buy_style)
+    _buy_panel.visible = false
+    content.add_child(_buy_panel)
+    _buy_box = VBoxContainer.new()
+    _buy_box.add_theme_constant_override("separation", 6)
+    _buy_panel.add_child(_buy_box)
+
     var footer := HBoxContainer.new()
     footer.add_theme_constant_override("separation", 10)
     content.add_child(footer)
@@ -168,6 +209,7 @@ func _ready() -> void:
     _cancel_button.pressed.connect(_close)
     footer.add_child(_cancel_button)
     _save_button = _button("Save")
+    _make_primary(_save_button)
     _save_button.pressed.connect(_on_save)
     footer.add_child(_save_button)
 
@@ -186,6 +228,7 @@ func _ready() -> void:
 
     get_viewport().size_changed.connect(_size_preview)
     _size_preview()
+    _refresh_save()
 
 ## Open the creator. pc_exists: the player already has a PC (otherwise Save
 ## creates it and there is no Cancel). current_sprite: the PC's sprite payload
@@ -220,9 +263,11 @@ func open_for_npc(npc_id: String, display_name: String, current_sprite: Dictiona
 func _show() -> void:
     _error.text = ""
     visible = true
+    # The camera zoom sets the village-size doll; it may have changed since.
+    _size_preview()
     # An offer still before a seller keeps its line; a finished one does not.
     for good in _buys.keys():
-        if not ["sending", "waiting", "countered"].has(str(_buys[good].get("state", ""))):
+        if not OPEN_BUY_STATES.has(str(_buys[good].get("state", ""))):
             _buys.erase(good)
     if _wardrobe.is_empty() or _npc_id == "":
         if not _in_flight:
@@ -246,6 +291,8 @@ func _input(event: InputEvent) -> void:
         get_viewport().set_input_as_handled()
 
 func _load_wardrobe() -> void:
+    _wardrobe_loaded = false
+    _refresh_save()
     _error.text = "Opening the wardrobe…"
     if not _post("/api/village/pc/wardrobe", "", _on_wardrobe_loaded):
         _error.text = "The wardrobe could not be opened. Close and try again."
@@ -273,6 +320,7 @@ func _on_wardrobe_loaded(result: int, code: int, _headers: PackedStringArray, bo
         _error.text = "The wardrobe could not be opened. Close and try again."
         return
     _wardrobe = data
+    _wardrobe_loaded = true
     # A villager holds no wardrobe goods; the editor may dress one in anything.
     if _npc_id != "":
         _wardrobe["held"] = _wardrobe.get("goods", {}).keys()
@@ -301,11 +349,15 @@ func _on_randomize() -> void:
 
 # --- rows -------------------------------------------------------------------
 
+## Rebuild the rows, the buy section and Save's state: every change to the
+## picks or to a buy goes through here.
 func _rebuild_rows() -> void:
     for child in _rows.get_children():
         child.queue_free()
     for category in _wardrobe.get("categories", []):
         _rows.add_child(_category_row(category))
+    _rebuild_buy_section()
+    _refresh_save()
 
 func _category_row(category: Dictionary) -> Control:
     var id := str(category.get("id", ""))
@@ -330,16 +382,78 @@ func _category_row(category: Dictionary) -> Control:
 
     var pick: Dictionary = _picks.get("items", {}).get(id, {})
     var item: Dictionary = FarmerOutfit.items_by_id(_wardrobe).get(str(pick.get("item", "")), {})
+    var good := str(item.get("good", ""))
+    if _npc_id == "" and good != "" and not FarmerOutfit.holds(_wardrobe, good):
+        current.add_theme_color_override("font_color", COLOR_TO_BUY)
+        current.tooltip_text = "Not yours yet. Buy it below."
+        current.mouse_filter = Control.MOUSE_FILTER_STOP
     var slots: Array = item.get("slots", [])
     for slot in slots:
         if slots.size() > 1:
             row.add_child(_label(str(SLOT_LABELS.get(slot, slot)), 12, COLOR_TEXT_DIM))
         row.add_child(_swatch_row(id, str(slot), int(pick.get("ramps", {}).get(slot, 0))))
-    for good in _store_goods(item, pick):
-        row.add_child(_store_line(good))
     return row
 
-## The goods a row is trying on that the player does not hold, plus any just
+# --- buy section --------------------------------------------------------------
+
+func _rebuild_buy_section() -> void:
+    for child in _buy_box.get_children():
+        child.queue_free()
+    var goods := _buy_goods()
+    _buy_panel.visible = not goods.is_empty()
+    if goods.is_empty():
+        return
+    _buy_box.add_child(_label("To wear this", 15, COLOR_TEXT))
+    for good in goods:
+        _buy_box.add_child(_store_line(good))
+    var summary := _buy_summary()
+    if summary != "":
+        _buy_box.add_child(_label(summary, 14, COLOR_TEXT_DIM))
+
+## The goods the buy section lists, in row order: each piece and dye tried on
+## that the player does not hold (or has just bought), then any good with an
+## offer still before a seller that is no longer tried on.
+func _buy_goods() -> Array:
+    var goods: Array = []
+    if _npc_id != "":
+        return goods
+    var by_id := FarmerOutfit.items_by_id(_wardrobe)
+    var items: Dictionary = _picks.get("items", {})
+    for category in _wardrobe.get("categories", []):
+        var pick: Dictionary = items.get(str(category.get("id", "")), {})
+        if pick.is_empty():
+            continue
+        for good in _store_goods(by_id.get(str(pick.get("item", "")), {}), pick):
+            if not goods.has(good):
+                goods.append(good)
+    for good in _buys:
+        if OPEN_BUY_STATES.has(str(_buys[good].get("state", ""))) and not goods.has(good):
+            goods.append(good)
+    return goods
+
+## The cost of what is still to buy and the player's purse; "" when neither
+## is known.
+func _buy_summary() -> String:
+    var total := 0
+    for good in FarmerOutfit.missing_goods(_wardrobe, _picks):
+        total += FarmerOutfit.good_price(_wardrobe, good)
+    var parts: Array = []
+    if total > 0:
+        parts.append("About %d coins in all." % total)
+    if _wardrobe.has("coins"):
+        parts.append("You have %d coins." % int(_wardrobe["coins"]))
+    return " ".join(parts)
+
+## Save is usable only once the wardrobe has loaded and the player holds
+## everything tried on; its text says how many goods are left to buy.
+func _refresh_save() -> void:
+    var missing := 0
+    if _npc_id == "" and _wardrobe_loaded:
+        missing = FarmerOutfit.missing_goods(_wardrobe, _picks).size()
+    _save_button.text = "Save" if missing == 0 else "Buy %d more first" % missing
+    _save_button.disabled = _saving or not _wardrobe_loaded or missing > 0
+
+## The goods one row is trying on that the player does not hold, plus any just
 ## bought (their line says to press Save).
 func _store_goods(item: Dictionary, pick: Dictionary) -> Array:
     var goods: Array = []
@@ -354,19 +468,19 @@ func _store_goods(item: Dictionary, pick: Dictionary) -> Array:
             goods.append(good)
     return goods
 
-## One line under a row per good: where it is sold or who here has it, or how
-## a buy is going, with the Buy / Accept / No buttons that apply.
+## One line in the buy section per good: where it is sold or who here has it,
+## or how a buy is going, with the Buy / Accept / No buttons that apply.
 func _store_line(good: String) -> Control:
     var line := HBoxContainer.new()
     line.add_theme_constant_override("separation", 8)
-    var text := _label(_store_text(good), 12, COLOR_TEXT_DIM)
+    var text := _label(_store_text(good), 15, COLOR_TEXT)
     text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     line.add_child(text)
     match str(_buys.get(good, {}).get("state", "")):
         "countered":
             line.add_child(_line_button("Accept", _on_accept_counter.bind(good)))
-            line.add_child(_line_button("No", _on_refuse_counter.bind(good)))
+            line.add_child(_line_button("No", _on_refuse_counter.bind(good), false))
         "sending", "waiting", "bought":
             pass
         _:
@@ -555,12 +669,13 @@ func _on_buy_sent(result: int, code: int, _headers: PackedStringArray, body: Pac
         _buy_failed(good, str(data.get("error", "")) if data is Dictionary else "")
         return
     var seller := str(terms.get("seller", ""))
+    var amount := int(terms.get("amount", 0))
     var early: Dictionary = _early_frames.get(int(data.get("ledger_id", 0)), {})
     _early_frames = {}
     if str(data.get("state", "")) == "accepted":
-        _bought(good, seller)
+        _bought(good, seller, amount)
         return
-    _buys[good] = {"state": "waiting", "seller": seller, "ledger_id": int(data.get("ledger_id", 0))}
+    _buys[good] = {"state": "waiting", "seller": seller, "ledger_id": int(data.get("ledger_id", 0)), "amount": amount}
     match str(early.get("kind", "")):
         "resolved":
             _on_pay_resolved(early["data"])
@@ -595,7 +710,7 @@ func _on_pay_resolved(data: Dictionary) -> void:
     var seller := str(_buys[good].get("seller", ""))
     var state := str(data.get("terminal_state", ""))
     if state == "accepted":
-        _bought(good, seller)
+        _bought(good, seller, int(_buys[good].get("amount", 0)))
         return
     var reason := str(data.get("message", ""))
     var text := ""
@@ -646,13 +761,16 @@ func _good_for_ledger(ledger_id: int) -> String:
             return good
     return ""
 
-## The good is the player's now: unlock it here without reloading the wardrobe.
-## Save still checks holdings, so a stale unlock cannot dress anyone.
-func _bought(good: String, seller: String) -> void:
+## The good is the player's now: unlock it here and take the price from the
+## purse shown, without reloading the wardrobe. Save still checks holdings, so
+## a stale unlock cannot dress anyone.
+func _bought(good: String, seller: String, amount: int) -> void:
     var held: Array = _wardrobe.get("held", [])
     if not held.has(good):
         held.append(good)
     _wardrobe["held"] = held
+    if _wardrobe.has("coins"):
+        _wardrobe["coins"] = maxi(0, int(_wardrobe["coins"]) - amount)
     _buys[good] = {"state": "bought", "seller": seller}
     if visible:
         _rebuild_rows()
@@ -674,15 +792,42 @@ func _size_preview() -> void:
     _preview_box.custom_minimum_size = Vector2(cell * 0.75, cell * 0.75)
     if _doll != null:
         _doll.scale = Vector2.ONE * _preview_scale()
+    var village := _village_scale()
+    _village_box.visible = village > 0.0
+    _village_caption.visible = village > 0.0
+    var village_cell := FarmerRig.CELL_SIZE * village
+    _village_box.custom_minimum_size = Vector2(cell * 0.75, village_cell * 0.75)
+    if _village_doll != null:
+        _village_doll.scale = Vector2.ONE * _village_doll_scale()
     _place_doll()
 
-## The figure stands in the middle of the cell; crop the empty rows around it.
+## The village-size doll's scale: a farmer's draw scale times the camera zoom,
+## so it matches the people drawn behind the creator (2x with no camera). 0
+## when that is no smaller than the big doll, which then shows village size.
+func _village_scale() -> float:
+    var zoom := 1.0
+    var camera := get_viewport().get_camera_2d()
+    if camera != null:
+        zoom = camera.zoom.x
+    var s := VILLAGE_RENDER_SCALE * zoom
+    return s if s < float(_preview_scale()) else 0.0
+
+## The scale the village doll is drawn at: _village_scale, or 1 while it is
+## hidden (a node cannot take a zero scale).
+func _village_doll_scale() -> float:
+    var s := _village_scale()
+    return s if s > 0.0 else 1.0
+
 func _place_doll() -> void:
-    if _doll == null:
+    _place_in(_doll, _preview_box, float(_preview_scale()))
+    _place_in(_village_doll, _village_box, _village_scale())
+
+## The figure stands in the middle of the cell; crop the empty rows around it.
+func _place_in(doll: FarmerDoll, box: Control, s: float) -> void:
+    if doll == null:
         return
-    var s := float(_preview_scale())
     var cell := FarmerRig.CELL_SIZE * s
-    _doll.position = Vector2((_preview_box.size.x - cell) / 2.0, (_preview_box.size.y - cell) / 2.0 - 2.0 * s)
+    doll.position = Vector2((box.size.x - cell) / 2.0, (box.size.y - cell) / 2.0 - 2.0 * s)
 
 func _rebuild_preview() -> void:
     _preview_gen += 1
@@ -704,37 +849,42 @@ func _rebuild_preview() -> void:
         , settle)
 
 func _show_doll(sprite: Dictionary) -> void:
-    if _doll != null:
-        _doll.queue_free()
-        _doll = null
+    for old in [_doll, _village_doll]:
+        if old != null:
+            old.queue_free()
+    _doll = _make_doll(sprite, _preview_box, float(_preview_scale()))
+    _village_doll = _make_doll(sprite, _village_box, _village_doll_scale())
+    if _doll == null:
+        return
+    _place_doll()
+    _play_preview()
+    _turn_timer.start()
+
+func _make_doll(sprite: Dictionary, box: Control, s: float) -> FarmerDoll:
     var doll := FarmerDoll.new()
     doll.setup(sprite, _preview_sheets)
     if doll.sprite_frames == null:
         doll.free()
-        return
+        return null
     doll.centered = false
-    doll.scale = Vector2.ONE * _preview_scale()
-    _preview_box.add_child(doll)
-    _doll = doll
-    _place_doll()
-    _play_preview()
-    _turn_timer.start()
+    doll.scale = Vector2.ONE * s
+    box.add_child(doll)
+    return doll
 
 func _turn_preview() -> void:
     _facing_index = (_facing_index + 1) % PREVIEW_FACINGS.size()
     _play_preview()
 
 func _play_preview() -> void:
-    if _doll == null:
-        return
     var anim := str(PREVIEW_FACINGS[_facing_index]) + "_walk"
-    if _doll.sprite_frames.has_animation(anim):
-        _doll.play(anim)
+    for doll in [_doll, _village_doll]:
+        if doll != null and doll.sprite_frames.has_animation(anim):
+            doll.play(anim)
 
 # --- save -------------------------------------------------------------------
 
 func _on_save() -> void:
-    if _saving or _wardrobe.is_empty():
+    if _saving or not _wardrobe_loaded:
         return
     if _npc_id != "":
         _save_npc()
@@ -748,7 +898,7 @@ func _on_save() -> void:
         var labels: Array = []
         for good in missing:
             labels.append(FarmerOutfit.good_label(_wardrobe, good))
-        _error.text = "You do not have: %s. Buy them at the Store first." % ", ".join(labels)
+        _error.text = "You do not have: %s. Buy them first." % ", ".join(labels)
         return
     _saving = true
     _save_button.disabled = true
@@ -793,7 +943,7 @@ func _on_outfit_done(result: int, code: int, _headers: PackedStringArray, _body:
         _fail("Your clothes could not be saved. Try again.")
         return
     _saving = false
-    _save_button.disabled = false
+    _refresh_save()
     _current_layers = layers
     _cancellable = true
     visible = false
@@ -826,7 +976,7 @@ func _on_npc_outfit_done(result: int, code: int, _headers: PackedStringArray, _b
         _fail("The clothes could not be saved. Try again.")
         return
     _saving = false
-    _save_button.disabled = false
+    _refresh_save()
     _current_layers = layers
     visible = false
     _turn_timer.stop()
@@ -834,7 +984,7 @@ func _on_npc_outfit_done(result: int, code: int, _headers: PackedStringArray, _b
 
 func _fail(message: String) -> void:
     _saving = false
-    _save_button.disabled = false
+    _refresh_save()
     _error.text = message
 
 # --- widgets ----------------------------------------------------------------
@@ -855,9 +1005,35 @@ func _button(text: String) -> Button:
     button.focus_mode = Control.FOCUS_NONE
     return button
 
-## A small button on a row's store line.
-func _line_button(text: String, on_pressed: Callable) -> Button:
+## A button on a buy line, the same size as Save; Buy and Accept are filled
+## so they read as the thing to press.
+func _line_button(text: String, on_pressed: Callable, primary := true) -> Button:
     var button := _button(text)
-    button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
+    button.custom_minimum_size.x = 80
+    if primary:
+        _make_primary(button)
     button.pressed.connect(on_pressed)
     return button
+
+## The Pay box's main-button look (pay_panel.gd). A disabled button keeps the
+## theme's dim look.
+func _make_primary(button: Button) -> void:
+    var normal := _box(Color(0.48, 0.33, 0.15), Color(0.78, 0.60, 0.33))
+    var hover := _box(Color(0.58, 0.40, 0.18), Color(0.85, 0.68, 0.38))
+    button.add_theme_stylebox_override("normal", normal)
+    button.add_theme_stylebox_override("hover", hover)
+    button.add_theme_stylebox_override("pressed", hover)
+    button.add_theme_color_override("font_color", Color(1.0, 0.95, 0.85))
+    button.add_theme_color_override("font_hover_color", Color(1.0, 0.95, 0.85))
+
+static func _box(fill: Color, stroke: Color) -> StyleBoxFlat:
+    var box := StyleBoxFlat.new()
+    box.bg_color = fill
+    box.border_color = stroke
+    box.set_border_width_all(1)
+    box.set_corner_radius_all(6)
+    box.content_margin_left = 12
+    box.content_margin_right = 12
+    box.content_margin_top = 4
+    box.content_margin_bottom = 4
+    return box

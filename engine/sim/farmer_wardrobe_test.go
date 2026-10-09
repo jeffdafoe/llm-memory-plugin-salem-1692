@@ -426,7 +426,7 @@ func TestReconcilePCOutfits(t *testing.T) {
 func TestPCWardrobe_Sellers(t *testing.T) {
 	w := NewWorld(Repository{})
 	w.Actors["pc-1"] = &Actor{ID: "pc-1", Kind: KindPC, LoginUsername: "tester", DisplayName: "Tess",
-		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"vest": 1}}
+		CurrentHuddleID: "h1", Coins: 12, Inventory: map[ItemKind]int{"vest": 1}}
 	w.Actors["josiah"] = &Actor{ID: "josiah", Kind: KindNPCStateful, DisplayName: "Josiah Thorne",
 		CurrentHuddleID: "h1", Inventory: map[ItemKind]int{"straw_hat": 2},
 		RestockPolicy: &RestockPolicy{Restock: []RestockEntry{{Item: "straw_hat", Source: RestockSourceBuy, Max: 2}, {Item: "felt_hat", Source: RestockSourceBuy, Max: 2}}}}
@@ -455,6 +455,9 @@ func TestPCWardrobe_Sellers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sellers, want) {
 		t.Fatalf("sellers = %+v, want %+v", sellers, want)
+	}
+	if got := res.(FarmerWardrobe).Coins; got != 12 {
+		t.Fatalf("coins = %d, want the PC's purse 12", got)
 	}
 
 	w.Actors["pc-1"].CurrentHuddleID = ""

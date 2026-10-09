@@ -27,6 +27,11 @@ const TESTS := [
     "_test_early_answer_is_replayed",
     "_test_pay_refusal_names_the_cause",
     "_test_failed_quote_read_still_offers",
+    "_test_buy_section_lists_goods_in_row_order",
+    "_test_buy_summary_and_save",
+    "_test_villager_mode_has_no_buy_section",
+    "_test_village_scale_follows_the_camera",
+    "_test_save_waits_for_a_wardrobe_reload",
 ]
 
 var _creator: Control = null
@@ -97,6 +102,7 @@ func _reset() -> void:
     _creator._cancellable = true
     _creator.visible = true
     _creator._wardrobe = {"categories": [], "items": [], "colours": {}}
+    _creator._wardrobe_loaded = true
     _creator._picks = {"figure": "straight", "items": {}}
     _creator._name_edit.text = "Tess"
     _creator._npc_id = ""
@@ -303,4 +309,133 @@ func _test_failed_quote_read_still_offers() -> void:
     _check("quote read failed — the offer is on its way", _creator._buys["felt_hat"]["state"], "sending")
     _check("quote read failed — pc/pay is in flight", _creator._in_flight, true)
     _creator._http.cancel_request()
+    _done()
+
+
+## A hat and a shirt; the player holds the shirt but not the blue dye on it
+## (LLM-727).
+func _outfit_wardrobe() -> Dictionary:
+    return {
+        "categories": [{"id": "head", "label": "Hat"}, {"id": "shirt", "label": "Shirt"}],
+        "items": [
+            {"id": "felt", "category": "head", "good": "felt_hat", "slots": ["c4"]},
+            {"id": "linen", "category": "shirt", "good": "linen_shirt", "slots": ["c4"]},
+        ],
+        "colours": {"c4": [0, 1]},
+        "dyes": [{"good": "blue_dye", "colours": {"c4": [1]}}],
+        "goods": {
+            "felt_hat": {"label": "Felt hat", "price": 6},
+            "linen_shirt": {"label": "Linen shirt", "price": 3},
+            "blue_dye": {"label": "Blue dye", "price": 2},
+        },
+        "held": ["linen_shirt"],
+        "coins": 12,
+        "sellers": {},
+    }
+
+
+func _outfit_picks() -> Dictionary:
+    return {"figure": "straight", "items": {
+        "shirt": {"item": "linen", "ramps": {"c4": 1}},
+        "head": {"item": "felt", "ramps": {"c4": 0}},
+    }}
+
+
+func _test_buy_section_lists_goods_in_row_order() -> void:
+    _creator._wardrobe = _outfit_wardrobe()
+    _creator._picks = _outfit_picks()
+    _check("section — the hat row first, then the shirt's dye", _creator._buy_goods(), ["felt_hat", "blue_dye"])
+    _creator._buys = {"boots": {"state": "waiting", "seller": "Josiah Thorne", "ledger_id": 4}}
+    _check("section — an open offer stays listed after trying something else", _creator._buy_goods(), ["felt_hat", "blue_dye", "boots"])
+    _creator._buys = {"boots": {"state": "declined", "seller": "Josiah Thorne", "message": "x"}}
+    _check("section — a finished offer not tried on is not listed", _creator._buy_goods(), ["felt_hat", "blue_dye"])
+    _creator._rebuild_rows()
+    _check("section — shown while goods are missing", _creator._buy_panel.visible, true)
+    _creator._wardrobe["held"] = ["linen_shirt", "felt_hat", "blue_dye"]
+    _creator._buys = {}
+    _creator._rebuild_rows()
+    _check("section — hidden when the player holds everything", _creator._buy_panel.visible, false)
+    _done()
+
+
+func _test_buy_summary_and_save() -> void:
+    _creator._wardrobe = _outfit_wardrobe()
+    _creator._picks = _outfit_picks()
+    _creator._rebuild_rows()
+    _check("summary — total of what is missing and the purse", _creator._buy_summary(), "About 8 coins in all. You have 12 coins.")
+    _check("save — names how many are left", _creator._save_button.text, "Buy 2 more first")
+    _check("save — not usable while goods are missing", _creator._save_button.disabled, true)
+    _creator._buys = {"felt_hat": {"state": "waiting", "seller": "Josiah Thorne", "ledger_id": 9, "amount": 7}}
+    _creator._on_pay_resolved({"ledger_id": 9, "terminal_state": "accepted"})
+    _check("bought — the price paid leaves the purse", _creator._wardrobe["coins"], 5)
+    _check("bought — the total drops the hat", _creator._buy_summary(), "About 2 coins in all. You have 5 coins.")
+    _check("bought — the hat line stays, saying to press Save", _creator._buy_goods(), ["felt_hat", "blue_dye"])
+    _check("save — one left", _creator._save_button.text, "Buy 1 more first")
+    _creator._buys["blue_dye"] = {"state": "sending", "seller": "Josiah Thorne"}
+    _creator._on_buy_sent(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), _pay_body({"ledger_id": 10, "state": "accepted"}), "blue_dye", {"seller": "Josiah Thorne", "amount": 2})
+    _check("bought at once — the price leaves the purse", _creator._wardrobe["coins"], 3)
+    _creator._on_pay_resolved({"ledger_id": 10, "terminal_state": "accepted"})
+    _check("bought at once — a later answer for it takes nothing more", _creator._wardrobe["coins"], 3)
+    _check("save — usable once everything is held", _creator._save_button.disabled, false)
+    _check("save — says Save", _creator._save_button.text, "Save")
+    _creator._wardrobe.erase("coins")
+    _check("summary — no purse line without the wardrobe's coins", _creator._buy_summary(), "")
+    _done()
+
+
+## A reload keeps the old wardrobe on screen; Save waits for the new one and
+## stays off if it fails.
+func _test_save_waits_for_a_wardrobe_reload() -> void:
+    _creator._wardrobe = _outfit_wardrobe()
+    _creator._wardrobe["held"] = ["linen_shirt", "felt_hat", "blue_dye"]
+    _creator._picks = _outfit_picks()
+    _creator._rebuild_rows()
+    _check("reload — Save usable with everything held", _creator._save_button.disabled, false)
+    _creator._load_wardrobe()
+    _check("reload — Save off while the reload is out", _creator._save_button.disabled, true)
+    _creator._on_wardrobe_loaded(HTTPRequest.RESULT_SUCCESS, 500, PackedStringArray(), PackedByteArray())
+    _check("reload — Save stays off after a failed reload", _creator._save_button.disabled, true)
+    _check("reload — the old wardrobe is still shown", _creator._wardrobe.is_empty(), false)
+    _creator._on_save()
+    _check("reload — pressing Save does nothing", _creator._saving, false)
+    _creator._http.cancel_request()
+    _creator._in_flight = false
+    _creator._load_wardrobe()
+    _creator._on_wardrobe_loaded(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), JSON.stringify(_creator._wardrobe).to_utf8_buffer())
+    _check("reload — Save back once the wardrobe arrives", _creator._save_button.disabled, false)
+    _creator._http.cancel_request()
+    _done()
+
+
+func _test_villager_mode_has_no_buy_section() -> void:
+    _creator._wardrobe = _outfit_wardrobe()
+    _creator._picks = _outfit_picks()
+    _creator._npc_id = "hannah"
+    _creator._rebuild_rows()
+    _check("villager — nothing to buy", _creator._buy_goods(), [])
+    _check("villager — no buy section", _creator._buy_panel.visible, false)
+    _check("villager — Save usable", _creator._save_button.disabled, false)
+    _done()
+
+
+func _test_village_scale_follows_the_camera() -> void:
+    var preview := float(_creator._preview_scale())
+    _check("village — 2x with no camera", _creator._village_scale(), 2.0 if preview > 2.0 else 0.0)
+    var camera := Camera2D.new()
+    root.add_child(camera)
+    camera.make_current()
+    camera.zoom = Vector2(0.5, 0.5)
+    _check("village — farmer scale times the zoom", _creator._village_scale(), 1.0)
+    camera.zoom = Vector2(0.25, 0.25)
+    _check("village — below 1x when zoomed far out", _creator._village_scale(), 0.5)
+    _check("village — the doll is drawn at that scale, not raised to 1x", _creator._village_doll_scale(), 0.5)
+    camera.zoom = Vector2(3.0, 3.0)
+    _check("village — none when no smaller than the big doll", _creator._village_scale(), 0.0)
+    _check("village — a hidden doll keeps a usable scale", _creator._village_doll_scale(), 1.0)
+    _creator._size_preview()
+    _check("village — its box is hidden then", _creator._village_box.visible, false)
+    camera.zoom = Vector2(0.5, 0.5)
+    _creator._size_preview()
+    _check("village — its box is back when zoomed out", _creator._village_box.visible, true)
+    camera.free()
     _done()
