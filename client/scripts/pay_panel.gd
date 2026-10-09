@@ -283,8 +283,11 @@ func _dispo(item: String) -> String:
 func _default_consume_now(item: String) -> bool:
     if item.to_lower() == "nights_stay":
         return false
-    if _dispo(item) == "eat_here":
-        return true
+    match _dispo(item):
+        "eat_here":
+            return true
+        "take_home":
+            return false
     return eat_here
 
 
@@ -309,6 +312,8 @@ func take_body(q: Dictionary) -> Dictionary:
                 consume_now = eat_here
             "eat_here":
                 consume_now = true
+            "take_home":
+                consume_now = false
     return {
         "seller": str(q.get("seller", "")),
         "item": item,
@@ -546,6 +551,8 @@ func quote_sub(q: Dictionary) -> String:
         parts.append("for tonight")
     elif dispo == "eat_here":
         parts.append("to eat here")
+    elif dispo == "take_home":
+        parts.append("to take home")
     elif dispo == "":
         parts.append("to eat here" if bool(q.get("consume_now", false)) else "to take home")
     if bool(q.get("targeted", false)):
@@ -742,7 +749,7 @@ func _sync_offer_values() -> void:
     _set_stepper(night_stepper, days_ahead)
     var booking := sel_item.to_lower() == "nights_stay"
     night_row.visible = booking
-    offer_dispo_row.visible = sel_item != "" and not booking and _dispo(sel_item) != "eat_here"
+    offer_dispo_row.visible = sel_item != "" and not booking and not (_dispo(sel_item) in ["eat_here", "take_home"])
     price_hint.text = price_hint_text()
     price_hint.add_theme_color_override("font_color", COLOR_ERROR if amount > _coins_held() else COLOR_DIM)
     price_hint.visible = price_hint.text != ""

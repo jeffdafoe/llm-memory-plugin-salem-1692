@@ -115,6 +115,7 @@ const CATALOG := [
     {"name": "ale", "display_label": "Ale", "disposition": "choice"},
     {"name": "bread", "display_label": "a loaf of bread", "disposition": "choice"},
     {"name": "nights_stay", "display_label": "a night's stay", "disposition": "tonight"},
+    {"name": "frilly_skirt", "display_label": "Frilly skirt", "disposition": "take_home"},
 ]
 
 
@@ -166,6 +167,9 @@ func _test_quote_card_names_the_price() -> void:
         "lines": [{"item": "stew", "display_label": "Stew", "qty": 1}, {"item": "ale", "display_label": "Ale", "qty": 2}]}
     _check("a bundle lists every line", p.quote_what(bundle), "Stew + 2× Ale")
     _check("a bundle carries its own disposition", p.quote_sub(bundle), "from John Ellis · to take home")
+    var skirt := {"quote_id": 11, "seller": "Josiah Thorne", "item": "frilly_skirt", "qty": 1, "amount": 8,
+        "consume_now": true, "lines": [{"item": "frilly_skirt", "display_label": "Frilly skirt", "qty": 1}]}
+    _check("a take_home good is taken home", p.quote_sub(skirt), "from Josiah Thorne · to take home")
     _free(p)
     _done()
 
@@ -207,6 +211,10 @@ func _test_take_body_follows_the_good() -> void:
     var bundle := {"quote_id": 5, "seller": "John Ellis", "item": "ale", "qty": 1, "amount": 9, "consume_now": false,
         "lines": [{"item": "ale", "qty": 1}, {"item": "stew", "qty": 1}]}
     _check("a bundle sends the quote's own", p.take_body(bundle)["consume_now"], false)
+    var skirt := {"quote_id": 6, "seller": "Josiah Thorne", "item": "frilly_skirt", "qty": 1, "amount": 8, "consume_now": true,
+        "lines": [{"item": "frilly_skirt", "qty": 1}]}
+    p.eat_here = true
+    _check("a take_home good is never eaten (LLM-744)", p.take_body(skirt)["consume_now"], false)
     _free(p)
     _done()
 
@@ -229,6 +237,9 @@ func _test_offer_body_follows_the_good() -> void:
     p.sel_item = "ale"
     _check("a choice good follows the choice", p.offer_body()["consume_now"], false)
     _check("no offset on goods", p.offer_body().has("ready_in_days"), false)
+    p.sel_item = "frilly_skirt"
+    p.eat_here = true
+    _check("a take_home good is never eaten (LLM-744)", p.offer_body()["consume_now"], false)
     _free(p)
     _done()
 
@@ -403,6 +414,10 @@ func _test_pages_build() -> void:
     p._on_who("John Ellis")
     _check("John has stew only", p.what_flow.get_child_count(), 1)
     _check("stew needs no choice", p.offer_dispo_row.visible, false)
+    p.host.vendor_mentions = {"Hannah Boggs": ["bread", "frilly_skirt"]}
+    p.start_offer("Hannah Boggs", "frilly_skirt")
+    _check("skirt picked", p.sel_item, "frilly_skirt")
+    _check("a skirt needs no choice (LLM-744)", p.offer_dispo_row.visible, false)
     p.close()
     p.host.vendor_mentions = {}
     p.quotes = []

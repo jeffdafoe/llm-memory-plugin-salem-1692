@@ -37,31 +37,35 @@ type itemKindDTO struct {
 	Category     string `json:"category"`
 	SortOrder    int    `json:"sort_order"`
 	// Disposition: "choice" (buyer picks eat-here vs take-home), "eat_here"
-	// (non-portable consumable — can't leave the premises), or "tonight"
-	// (service kinds — no physical good, the engine forces the service
-	// shape on settle; nights_stay).
+	// (non-portable consumable — can't leave the premises), "take_home"
+	// (eases no need — nothing to eat on the spot), or "tonight" (service
+	// kinds — no physical good, the engine forces the service shape on
+	// settle; nights_stay).
 	Disposition string `json:"disposition"`
 }
 
 // itemDispositionClass derives the buyer-facing disposition class for an
 // item kind: "tonight" for service kinds, "eat_here" for consumables
-// without the portable capability, "choice" for everything else.
+// without the portable capability, "take_home" for goods that ease no need,
+// "choice" for portable consumables.
 //
 // The eat_here rule (ZBBS-WORK-403) leans on `portable` being genuinely
 // seeded in the live item data — Jeff confirmed it was set early on
 // precisely so stew can't be carried off (the WORK-402 deferral assumed
 // it was unseeded because no migration populates it; the live DB was
-// seeded by hand). Non-consumables (tools — no Satisfies rows) stay
-// "choice": eat-here is meaningless for them and carry-home is the only
-// sane outcome, which the buyer toggle covers; an unseeded consumable
-// also degrades to "choice" (permissive) rather than getting wrongly
-// locked.
+// seeded by hand). Non-consumables (clothes, tools, raw ingredients — no
+// Satisfies rows) are "take_home": eat-here is meaningless for them, and
+// the engine clamps it off at pay intake (LLM-744), so the Pay modal shows
+// no have-it-here choice for them.
 func itemDispositionClass(def *sim.ItemKindDef) string {
 	if def.HasCapability("service") {
 		return "tonight"
 	}
 	if def.Consumable() && !def.HasCapability("portable") {
 		return "eat_here"
+	}
+	if def.TakeHomeOnly() {
+		return "take_home"
 	}
 	return "choice"
 }
