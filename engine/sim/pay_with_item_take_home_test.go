@@ -178,7 +178,8 @@ func TestPayWithItem_UnknownKindAtAcceptMovesNothing(t *testing.T) {
 	}
 	buyer := readBundleActorState(t, w, "wendy")
 	seller := readBundleActorState(t, w, "josiah")
-	if buyer.coins != 30 || seller.inv["frilly_skirt"] != 1 {
-		t.Errorf("buyer coins = %d, seller skirt = %d, want 30 / 1 (nothing moved)", buyer.coins, seller.inv["frilly_skirt"])
+	if buyer.coins != 30 || seller.coins != 0 || buyer.inv["frilly_skirt"] != 0 || seller.inv["frilly_skirt"] != 1 {
+		t.Errorf("coins buyer=%d seller=%d, skirt buyer=%d seller=%d, want 30/0, 0/1 (nothing moved)",
+			buyer.coins, seller.coins, buyer.inv["frilly_skirt"], seller.inv["frilly_skirt"])
 	}
 }
