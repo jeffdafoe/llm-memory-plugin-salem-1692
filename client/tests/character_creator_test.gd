@@ -371,6 +371,10 @@ func _test_buy_summary_and_save() -> void:
     _creator._wardrobe["sellers"]["blue_dye"] = [{"name": "Josiah Thorne", "held": 0}]
     _creator._rebuild_rows()
     _check("save — a stockist with none does not count", _creator._save_button.text, "Save")
+    _creator._buys = {"blue_dye": {"state": "countered", "seller": "Josiah Thorne", "ledger_id": 2, "amount": 3}}
+    _creator._rebuild_rows()
+    _check("save — an open counter counts even with none on the shelf", _creator._save_button.text, "Buy 2 more first")
+    _creator._buys = {}
     _creator._wardrobe["sellers"]["blue_dye"] = [{"name": "Josiah Thorne", "held": 2}]
     _creator._rebuild_rows()
     _check("summary — total of what is missing and the purse", _creator._buy_summary(), "About 8 coins in all. You have 12 coins.")
