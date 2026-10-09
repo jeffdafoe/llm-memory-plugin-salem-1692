@@ -159,6 +159,14 @@ func _ready() -> void:
     var left := VBoxContainer.new()
     left.add_theme_constant_override("separation", 8)
     body.add_child(left)
+    # The name sits above the character it names.
+    _name_edit = LineEdit.new()
+    _name_edit.max_length = 100
+    _name_edit.placeholder_text = "Name"
+    _name_edit.add_theme_font_size_override("font_size", OrientationGuard.text_size(15))
+    _name_edit.custom_minimum_size.y = PeriodTheme.TAP_H
+    _name_edit.text_changed.connect(func(_t): _error.text = "")
+    left.add_child(_name_edit)
     _preview_box = Control.new()
     _preview_box.clip_contents = true
     _preview_box.resized.connect(_place_doll)
@@ -206,18 +214,11 @@ func _ready() -> void:
     _buy_summary_label = _label("", 14, COLOR_TEXT_DIM)
     _buy_box.add_child(_buy_summary_label)
 
-    # The name and Randomize sit in the footer so the left column holds only
-    # the two dolls (LLM-728).
+    # Randomize sits in the footer to keep the left column short enough for
+    # the 720-high design size (LLM-728).
     var footer := HBoxContainer.new()
     footer.add_theme_constant_override("separation", 10)
     content.add_child(footer)
-    _name_edit = LineEdit.new()
-    _name_edit.max_length = 100
-    _name_edit.placeholder_text = "Name"
-    _name_edit.add_theme_font_size_override("font_size", OrientationGuard.text_size(15))
-    _name_edit.custom_minimum_size = Vector2(220, PeriodTheme.TAP_H)
-    _name_edit.text_changed.connect(func(_t): _error.text = "")
-    footer.add_child(_name_edit)
     var randomize_button := _button("Randomize")
     randomize_button.pressed.connect(_on_randomize)
     footer.add_child(randomize_button)
