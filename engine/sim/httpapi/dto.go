@@ -201,6 +201,9 @@ type AgentDTO struct {
 	// non-empty only for a repair (stoke/harvest render place-less client-side).
 	SourceActivityKind  string `json:"source_activity_kind,omitempty"`
 	SourceActivityLabel string `json:"source_activity_label,omitempty"`
+	// SourceActivityObjectID is the object being worked (LLM-743), so the client
+	// can turn a repairer toward it and land the swing on it. Omitted when idle.
+	SourceActivityObjectID string `json:"source_activity_object_id,omitempty"`
 }
 
 // AgentSpriteDTO is the resolved character sprite inlined onto an AgentDTO.

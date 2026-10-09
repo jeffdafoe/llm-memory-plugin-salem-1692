@@ -42,9 +42,17 @@ func TestSnapshotSourceActivity(t *testing.T) {
 				SourceActivityKind:     c.kind,
 				SourceActivityObjectID: c.objID,
 			}
-			kind, label := snapshotSourceActivity(snap, a)
+			kind, label, objectID := snapshotSourceActivity(snap, a)
 			if kind != c.wantKind || label != c.wantLabel {
 				t.Errorf("snapshotSourceActivity = (%q, %q), want (%q, %q)", kind, label, c.wantKind, c.wantLabel)
+			}
+			// LLM-743: a rendered kind carries the worked object; a gated-out one nothing.
+			wantObject := ""
+			if c.wantKind != "" {
+				wantObject = string(c.objID)
+			}
+			if objectID != wantObject {
+				t.Errorf("object id = %q, want %q", objectID, wantObject)
 			}
 		})
 	}
@@ -82,10 +90,10 @@ func TestAgentsFromSnapshot_SourceActivity(t *testing.T) {
 	for _, dto := range agentsFromSnapshot(snap, nil) {
 		byID[dto.ID] = dto
 	}
-	if d := byID["josiah"]; d.SourceActivityKind != "repair" || d.SourceActivityLabel != "Market" {
-		t.Errorf("busy actor DTO = (%q, %q), want (repair, Market)", d.SourceActivityKind, d.SourceActivityLabel)
+	if d := byID["josiah"]; d.SourceActivityKind != "repair" || d.SourceActivityLabel != "Market" || d.SourceActivityObjectID != "market" {
+		t.Errorf("busy actor DTO = (%q, %q, %q), want (repair, Market, market)", d.SourceActivityKind, d.SourceActivityLabel, d.SourceActivityObjectID)
 	}
-	if d := byID["idle"]; d.SourceActivityKind != "" || d.SourceActivityLabel != "" {
-		t.Errorf("idle actor DTO = (%q, %q), want empty", d.SourceActivityKind, d.SourceActivityLabel)
+	if d := byID["idle"]; d.SourceActivityKind != "" || d.SourceActivityLabel != "" || d.SourceActivityObjectID != "" {
+		t.Errorf("idle actor DTO = (%q, %q, %q), want empty", d.SourceActivityKind, d.SourceActivityLabel, d.SourceActivityObjectID)
 	}
 }

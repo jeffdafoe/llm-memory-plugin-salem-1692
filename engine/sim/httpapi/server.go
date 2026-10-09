@@ -621,31 +621,32 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 	out := make([]AgentDTO, 0, len(s.Actors))
 	for id, a := range s.Actors {
 		hunger, thirst, tiredness := sim.DisplayNeeds(a.Needs)
-		saKind, saLabel := snapshotSourceActivity(s, a)
+		saKind, saLabel, saObject := snapshotSourceActivity(s, a)
 		out = append(out, AgentDTO{
-			ID:                  string(id),
-			DisplayName:         a.DisplayName,
-			Kind:                actorKindString(a.Kind),
-			State:               string(a.State),
-			Role:                a.Role,
-			LLMAgent:            a.LLMAgent,
-			X:                   a.Pos.X,
-			Y:                   a.Pos.Y,
-			Facing:              normalizeFacing(a.Facing),
-			InsideStructureID:   string(a.InsideStructureID),
-			CurrentHuddleID:     string(a.CurrentHuddleID),
-			Sprite:              resolveAgentSprite(a.SpriteID, sprites),
-			Hunger:              hunger,
-			Thirst:              thirst,
-			Tiredness:           tiredness,
-			Coins:               a.Coins,
-			Attributes:          a.AttributeSlugs,
-			HomeStructureID:     string(a.HomeStructureID),
-			WorkStructureID:     string(a.WorkStructureID),
-			ScheduleStartMin:    a.ScheduleStartMin,
-			ScheduleEndMin:      a.ScheduleEndMin,
-			SourceActivityKind:  saKind,
-			SourceActivityLabel: saLabel,
+			ID:                     string(id),
+			DisplayName:            a.DisplayName,
+			Kind:                   actorKindString(a.Kind),
+			State:                  string(a.State),
+			Role:                   a.Role,
+			LLMAgent:               a.LLMAgent,
+			X:                      a.Pos.X,
+			Y:                      a.Pos.Y,
+			Facing:                 normalizeFacing(a.Facing),
+			InsideStructureID:      string(a.InsideStructureID),
+			CurrentHuddleID:        string(a.CurrentHuddleID),
+			Sprite:                 resolveAgentSprite(a.SpriteID, sprites),
+			Hunger:                 hunger,
+			Thirst:                 thirst,
+			Tiredness:              tiredness,
+			Coins:                  a.Coins,
+			Attributes:             a.AttributeSlugs,
+			HomeStructureID:        string(a.HomeStructureID),
+			WorkStructureID:        string(a.WorkStructureID),
+			ScheduleStartMin:       a.ScheduleStartMin,
+			ScheduleEndMin:         a.ScheduleEndMin,
+			SourceActivityKind:     saKind,
+			SourceActivityLabel:    saLabel,
+			SourceActivityObjectID: saObject,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -655,19 +656,21 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 // snapshotSourceActivity projects an actor's in-flight source activity onto the
 // AgentDTO wire fields (LLM-441): the wire kind + resolved place label when the
 // actor is mid a RENDERED window (repair/stoke/harvest — the ActorSnapshot
-// projection is already BusyAtSource-gated in world.go), or two empty strings
-// otherwise. Label resolves only for a repair, the one kind the tooltip renders
-// with a place; stoke/harvest are place-less client-side, so their label stays
-// empty. Live open/close after load rides the npc_source_activity_changed frame.
-func snapshotSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) (kind, label string) {
+// projection is already BusyAtSource-gated in world.go), or empty strings
+// otherwise, plus the worked object id (LLM-743). Label resolves only for a
+// repair, the one kind the tooltip renders with a place; stoke/harvest are
+// place-less client-side, so their label stays empty. Live open/close after
+// load rides the npc_source_activity_changed frame.
+func snapshotSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) (kind, label, objectID string) {
 	if !renderedSourceActivityKind(a.SourceActivityKind) {
-		return "", ""
+		return "", "", ""
 	}
 	kind = string(a.SourceActivityKind)
+	objectID = string(a.SourceActivityObjectID)
 	if a.SourceActivityKind == sim.SourceActivityRepair {
 		label = sourceActivityLabel(snap, a.SourceActivityObjectID)
 	}
-	return kind, label
+	return kind, label, objectID
 }
 
 // sourceActivityLabel resolves an in-flight source-activity object's display

@@ -60,7 +60,7 @@ func TestTranslateEvent_SourceActivityStarted(t *testing.T) {
 	if !isType {
 		t.Fatalf("data type = %T, want sourceActivityChangedWireDTO", frame.Data)
 	}
-	if d.ID != "josiah" || d.Kind != "repair" || d.SourceName != "Market" {
+	if d.ID != "josiah" || d.Kind != "repair" || d.SourceName != "Market" || d.ObjectID != "market" {
 		t.Errorf("repair payload = %+v", d)
 	}
 
