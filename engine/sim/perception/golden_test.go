@@ -12307,7 +12307,7 @@ func keeperResellingInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) 
 }
 
 // longPaymentNote is a buyer's note sitting exactly ON the 200-rune cap every pay
-// tool enforces on `for` (MaxPayForChars / MaxPayWithItemForChars) — the longest
+// tool enforces on `for` (MaxPayWithItemForChars) — the longest
 // note production can actually emit, and 202 bytes, comfortably under the
 // renderer's MaxBytesPerWarrant (600), so a correct engine shows it WHOLE.
 //
@@ -12320,8 +12320,8 @@ const longPaymentNote = "the cheese and the milk both, and for keeping the last 
 	"Tuesday when I hadn't the coin to pay for it right then — my sister is stopping the week and I " +
 	"would not have her go without"
 
-// payForTextCapRunes restates handlers.MaxPayForChars (== MaxPayWithItemForChars,
-// == the PC route's mirror of it). Stated as a literal rather than imported: the
+// payForTextCapRunes restates handlers.MaxPayWithItemForChars
+// (== the PC route's mirror of it). Stated as a literal rather than imported: the
 // perception package does not depend on handlers, and the point here is to pin the
 // FIXTURE's claim about itself, not to re-derive the production constant.
 const payForTextCapRunes = 200
@@ -12335,7 +12335,7 @@ const payForTextCapRunes = 200
 func TestLongPaymentNoteSitsAtPayCap(t *testing.T) {
 	if got := utf8.RuneCountInString(longPaymentNote); got != payForTextCapRunes {
 		t.Fatalf(
-			"longPaymentNote = %d runes, want exactly %d (handlers.MaxPayForChars) — the fixture must sit ON "+
+			"longPaymentNote = %d runes, want exactly %d (handlers.MaxPayWithItemForChars) — the fixture must sit ON "+
 				"the pay tools' cap to be the longest note production can emit; re-word it to length or update both "+
 				"this test and the scenario summary",
 			got, payForTextCapRunes,

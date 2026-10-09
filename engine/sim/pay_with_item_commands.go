@@ -393,7 +393,7 @@ func PayWithItem(
 			// offer.
 			if IsCoinToken(itemName) {
 				return nil, errors.New(
-					"coins aren't a good to buy — to hand someone coins, use pay (recipient + amount). To sell your goods for coins, post them with sell.",
+					"coins aren't a good to buy — name the good you want, with your coins as the payment. To sell your goods for coins, post them with sell.",
 				)
 			}
 			// ZBBS-WORK-412 deliberately does NOT mint here. This is the BUY

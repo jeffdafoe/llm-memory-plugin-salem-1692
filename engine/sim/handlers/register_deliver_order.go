@@ -8,7 +8,7 @@ package handlers
 //
 //	r := handlers.NewRegistry()
 //	if err := handlers.RegisterSpeak(r); err != nil { return err }
-//	if err := handlers.RegisterPay(r); err != nil { return err }
+//	if err := handlers.RegisterPayWithItem(r); err != nil { return err }
 //	if err := handlers.RegisterConsume(r); err != nil { return err }
 //	if err := handlers.RegisterPayWithItemFamily(r); err != nil { return err }
 //	if err := handlers.RegisterDeliverOrder(r); err != nil { return err }

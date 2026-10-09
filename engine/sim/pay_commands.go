@@ -24,15 +24,18 @@ const MaxPayAmount = math.MaxInt32
 // in_response_to, no deliberation tick. The mismatched-pay haggling chain
 // + ledger + inventory port to later PRs alongside their substrate.
 //
-// Pre-conditions the caller (the pay handlers.CommitFn) normalizes but
-// the Command Fn ALSO re-validates because Pay is exported — non-handler
-// callers (tests, admin paths, future in-engine cascades) must not be
-// able to mint coins via a negative amount or smuggle a no-op event via
+// No NPC tool reaches this command (LLM-726 removed the bare-coin `pay` tool:
+// its free-text memo let coin move for goods that never moved and for debts
+// paid again and again). It is kept for a player give-coins route.
+//
+// Pre-conditions the caller normalizes but the Command Fn ALSO re-validates
+// because Pay is exported — no caller (tests, admin paths, a player route)
+// may mint coins via a negative amount or smuggle a no-op event via
 // amount=0:
 //
 //   - recipientName trimmed, non-empty
 //   - amount >= 1 and <= MaxPayAmount (re-checked here)
-//   - forText trimmed; control-char-rejected; length <= MaxPayForChars
+//   - forText trimmed and control-char-rejected; its length is capped by the caller
 //
 // World-state pre-conditions checked here:
 //
@@ -274,9 +277,8 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 			// memo decides only whether the pay is claiming to be a repayment;
 			// the record decides whether it can be one. A pay with no memo, or
 			// an ordinary purchase/tip/debt memo, is untouched. This gate sits in
-			// the Command rather than the handler so every door that moves bare
-			// coin — the pay tool and pay_with_item's coin-item translation —
-			// passes through it. The bound is the window's TOTAL, not a bare
+			// the Command rather than in any one route so every door that moves
+			// bare coin through sim.Pay passes through it. The bound is the window's TOTAL, not a bare
 			// "paid at least once": a one-coin tip must not license a hundred-coin
 			// "refund". What this cannot see is a refund already made against the
 			// same receipt — the record carries no purpose, so a second refund of

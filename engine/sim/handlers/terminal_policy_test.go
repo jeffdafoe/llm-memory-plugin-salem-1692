@@ -14,8 +14,8 @@ import "testing"
 // nothing useful chains after it, and the courtesy after-word was the re-fire
 // vector a weak model stormed to the round budget (LLM-184). speak is also
 // terminal-on-success (LLM-321): the trailing done() round it used to cost is
-// gone. pay / consume stay non-terminal (each has a real same-tick follow-on)
-// and are pinned here as the guard against an over-broad future flip.
+// gone. consume stays non-terminal (it has a real same-tick follow-on)
+// and is pinned here as the guard against an over-broad future flip.
 func TestCommitVerbs_TerminalPolicy(t *testing.T) {
 	r := NewRegistry()
 	registrations := []struct {
@@ -23,7 +23,6 @@ func TestCommitVerbs_TerminalPolicy(t *testing.T) {
 		fn   func(*Registry) error
 	}{
 		{"speak", RegisterSpeak},
-		{"pay", RegisterPay},
 		{"consume", RegisterConsume},
 		{"scene_quote", RegisterSceneQuote},
 		{"pay_with_item_family", RegisterPayWithItemFamily},
@@ -56,7 +55,6 @@ func TestCommitVerbs_TerminalPolicy(t *testing.T) {
 		{"speak", TerminalOnSuccess},
 		// Non-terminal: a legitimate same-tick follow-on. Pinned so an over-broad
 		// flip of the whole commit class can't slip through.
-		{"pay", TerminalNever},
 		{"consume", TerminalNever},
 	}
 	for _, tc := range cases {

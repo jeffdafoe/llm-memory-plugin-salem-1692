@@ -54,7 +54,7 @@ const deliverOrderDescription = "Hand over goods you sold but haven't delivered 
 	"Delivering does not end your turn, so you can speak afterward."
 
 // DecodeDeliverOrderArgs parses the raw tool-call arguments into a
-// DeliverOrderArgs. Same posture as DecodePayArgs: reject non-object
+// DeliverOrderArgs. Same posture as DecodePayWithItemArgs: reject non-object
 // payloads early, DisallowUnknownFields, trailing-data check,
 // minimum-bound check. Numeric upper bound is enforced by JSON
 // Schema (`maximum`) plus the natural uint64 range; the Go decoder

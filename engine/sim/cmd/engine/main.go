@@ -945,9 +945,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 	// same tools are registered and the same gates apply, so it is intended to be
 	// behavior-preserving; but tool order IS model-facing (the model reads an
 	// ordered array), so it is not a strict guarantee — the deepseek behavior
-	// soak (LLM-325) is the backstop. pay_with_item leads bare `pay` so the model
-	// meets the purchase path before the bare-coin one (the LLM-99 double-pay
-	// safety argument). The family composites (RegisterPayWithItemFamily / …Labor
+	// soak (LLM-325) is the backstop. The family composites (RegisterPayWithItemFamily / …Labor
 	// / …Give) are bypassed here in favor of the granular registrars so each
 	// member lands in its cache-appropriate section; the full family is still
 	// registered (no dangling offer surface), just not contiguously —
@@ -960,17 +958,12 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher, writer llm
 		{"speak", handlers.RegisterSpeak},
 		{"move_to", handlers.RegisterMoveTo}, // ZBBS-HOME-285
 		{"consume", handlers.RegisterConsume},
-		// pay_with_item — the commerce/purchase path; leads bare `pay` so the
-		// model meets it first (family split for cache order, LLM-328).
+		// pay_with_item — the commerce/purchase path (family split for cache
+		// order, LLM-328). NPCs have no bare-coin tool (LLM-726): its free-text
+		// memo let coin move for goods that never moved and for remembered
+		// debts paid again and again. Coin moves only against goods or a hire.
+		// PCs still pay via /pc/pay.
 		{"pay_with_item", handlers.RegisterPayWithItem},
-		// `pay` (bare-coin transfer) — wages, tips, gifts (LLM-99). Pulled in
-		// ZBBS-HOME-430 because it was then the only coin tool, so NPCs reached
-		// for it to settle purchases and double-charged on buy-then-pay.
-		// pay_with_item is now the registered purchase path, so bare pay is back
-		// for the non-purchase coin movement it was always meant for — the
-		// John→Ezekiel wages-for-chores case that otherwise lands as empty
-		// speech. PCs pay via /pc/pay.
-		{"pay", handlers.RegisterPay},
 		{"sell", handlers.RegisterSceneQuote},
 		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
 		{"give", handlers.RegisterGive},              // LLM-138 (family split for cache order, LLM-328)

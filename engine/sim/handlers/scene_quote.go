@@ -86,7 +86,7 @@ const MaxSceneQuoteLines = 8
 const MaxSceneQuoteItemChars = 64
 
 // MaxSceneQuoteNameChars caps each name field's length (target_buyer
-// and each consumers[] entry). Matches MaxPayRecipientChars — same
+// and each consumers[] entry). Matches MaxPayWithItemNameChars — same
 // canonical "First Last" headroom rationale.
 const MaxSceneQuoteNameChars = 100
 
