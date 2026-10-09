@@ -168,6 +168,8 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         # (the same trap the coins line above records).
         "source_activity_kind": str(dto.get("source_activity_kind", "")),
         "source_activity_label": str(dto.get("source_activity_label", "")),
+        # The object being worked (LLM-743) — the swing turns toward it.
+        "source_activity_object_id": str(dto.get("source_activity_object_id", "")),
     }
     # Sprite is already inlined on the v2 DTO in the exact render subset the
     # renderer expects (sheet / frame_width / frame_height / id / name /

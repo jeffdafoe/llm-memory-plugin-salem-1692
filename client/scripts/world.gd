@@ -26,6 +26,8 @@ const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
+const WorkAim = preload("res://scripts/work_aim.gd")
+const WorkChipsScript = preload("res://scripts/work_chips.gd")
 
 const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
@@ -753,6 +755,7 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
         return
     container.set_meta("source_activity_kind", str(data.get("kind", "")))
     container.set_meta("source_activity_label", str(data.get("source_name", "")))
+    container.set_meta("source_activity_object_id", str(data.get("object_id", "")))
     _apply_activity_animation(container)
 
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
@@ -908,6 +911,7 @@ func _render_npc(npc: Dictionary) -> void:
     # keys omitted from the DTO when idle, so the get() defaults clear them.
     container.set_meta("source_activity_kind", npc.get("source_activity_kind", ""))
     container.set_meta("source_activity_label", npc.get("source_activity_label", ""))
+    container.set_meta("source_activity_object_id", npc.get("source_activity_object_id", ""))
     # Worker work-window (ZBBS-071) — carry only when both are set so the
     # editor panel can distinguish "NULL inherits dawn/dusk" from the
     # 0/0 minute literal.
@@ -1023,12 +1027,120 @@ func _apply_activity_animation(container: Node2D) -> void:
     var facing := str(container.get_meta("facing", "south"))
     var work := str(ACTIVITY_ANIMATIONS.get(str(container.get_meta("source_activity_kind", "")), ""))
     if work != "" and sprite.sprite_frames.has_animation(facing + "_" + work):
+        # LLM-743: turn toward the work and step the drawn sprite in so the
+        # axe lands on it. No target on hand (not loaded yet, or an old
+        # engine) keeps the walk's facing and the stand tile.
+        var aim := _work_aim(container, sprite)
+        if not aim.is_empty() and sprite.sprite_frames.has_animation(str(aim["facing"]) + "_" + work):
+            facing = str(aim["facing"])
+            container.set_meta("facing", facing)
         play_npc_animation(container, facing, work)
+        _step_work_sprite(sprite, aim.get("step", Vector2.ZERO))
+        _watch_work_strikes(container, sprite)
         return
+    _step_work_sprite(sprite, Vector2.ZERO)
     for kind in ACTIVITY_ANIMATIONS.values():
         if sprite.animation.ends_with("_" + str(kind)):
             play_npc_animation(container, facing, "idle")
             return
+
+## Seconds a repairer takes to step in to the work, or back out.
+const WORK_STEP_TIME := 0.25
+## The farthest a repairer is drawn from their stand tile, in tiles.
+const WORK_MAX_STEP_TILES := 1.5
+
+## The facing and drawn step that land this container's axe on the object it
+## is working (WorkAim.aim), or {} when that object is not on hand.
+func _work_aim(container: Node2D, sprite: AnimatedSprite2D) -> Dictionary:
+    var object_id := str(container.get_meta("source_activity_object_id", ""))
+    var target: Node2D = placed_objects.get(object_id, null)
+    if target == null:
+        return {}
+    var rect := object_visible_rect(target)
+    return WorkAim.aim(container.position, rect, sprite.scale.x, WORK_MAX_STEP_TILES * VillageApi.tile_size)
+
+## Ease the drawn sprite to `step` from where it was built to stand (its anchor
+## offset, kept as the "work_base" meta while stepped). A zero step eases back
+## and drops the meta.
+func _step_work_sprite(sprite: AnimatedSprite2D, step: Vector2) -> void:
+    if not sprite.has_meta("work_base"):
+        if step == Vector2.ZERO:
+            return
+        sprite.set_meta("work_base", sprite.position)
+    var base: Vector2 = sprite.get_meta("work_base")
+    if sprite.has_meta("work_tween"):
+        var old = sprite.get_meta("work_tween")
+        if old is Tween and old.is_valid():
+            old.kill()
+    var tween := sprite.create_tween()
+    tween.tween_property(sprite, "position", base + step, WORK_STEP_TIME)
+    if step == Vector2.ZERO:
+        tween.tween_callback(sprite.remove_meta.bind("work_base"))
+    sprite.set_meta("work_tween", tween)
+
+## Throw chips off each blow: once per sprite, follow its frames and, on a
+## chop's strike frame, burst chips where the axe lands.
+func _watch_work_strikes(container: Node2D, sprite: AnimatedSprite2D) -> void:
+    if sprite.has_meta("work_strikes"):
+        return
+    sprite.set_meta("work_strikes", true)
+    sprite.frame_changed.connect(_on_work_frame.bind(container, sprite))
+
+func _on_work_frame(container: Node2D, sprite: AnimatedSprite2D) -> void:
+    if not is_instance_valid(container) or not is_instance_valid(sprite):
+        return
+    if sprite.frame != WorkAim.STRIKE_FRAME or not sprite.animation.ends_with("_chop"):
+        return
+    var facing := str(container.get_meta("facing", "south"))
+    var step := Vector2.ZERO
+    if sprite.has_meta("work_base"):
+        step = sprite.position - (sprite.get_meta("work_base") as Vector2)
+    var chips := WorkChipsScript.new()
+    chips.position = WorkAim.strike_point(Vector2.ZERO, step, facing, sprite.scale.x)
+    chips.z_index = 1
+    container.add_child(chips)
+    chips.burst(WorkChipsScript.palette(_work_target_name(container)), -WorkAim.FACING_DIR.get(facing, Vector2.DOWN))
+
+## The worked object's name for the chip colours: its display name, else its
+## asset's name.
+func _work_target_name(container: Node2D) -> String:
+    var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+    if target == null:
+        return ""
+    var asset: Dictionary = Catalog.assets.get(str(target.get_meta("asset_id", "")), {})
+    return str(target.get_meta("display_name", "")) + " " + str(asset.get("name", ""))
+
+## The opaque part of a placed object's sprite in world px: the hit rect
+## (compute_object_hit_rect) cut to the pixels that are drawn, so a big sprite's
+## transparent margin does not hold a repairer off. The hit rect when the
+## texture cannot be read.
+var _opaque_rects: Dictionary = {}
+
+func object_visible_rect(container: Node2D) -> Rect2:
+    var sprite_node: Node2D = null
+    for child in container.get_children():
+        if child is Sprite2D or child is AnimatedSprite2D:
+            sprite_node = child
+            break
+    if sprite_node == null:
+        return Rect2()
+    var full := compute_object_hit_rect(container, sprite_node)
+    var tex: Texture2D = null
+    if sprite_node is Sprite2D:
+        tex = sprite_node.texture
+    elif sprite_node.sprite_frames != null and sprite_node.sprite_frames.has_animation(sprite_node.animation):
+        tex = sprite_node.sprite_frames.get_frame_texture(sprite_node.animation, sprite_node.frame)
+    if not full.has_area() or tex == null:
+        return full
+    var key := tex.get_instance_id()
+    if not _opaque_rects.has(key):
+        var img := tex.get_image()
+        _opaque_rects[key] = img.get_used_rect() if img != null and not img.is_empty() and not img.is_compressed() else Rect2i()
+    var used: Rect2i = _opaque_rects[key]
+    if not used.has_area():
+        return full
+    var px := full.size / tex.get_size()
+    return Rect2(full.position + Vector2(used.position) * px, Vector2(used.size) * px)
 
 ## Whether the sprite this container renders carries the waterfowl behavior
 ## (LLM-579). Behaviors arrive on the sprite payload and are stashed as meta

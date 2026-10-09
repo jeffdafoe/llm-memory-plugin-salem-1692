@@ -517,6 +517,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:         string(e.ActorID),
 			Kind:       string(e.Kind),
 			SourceName: e.SourceName,
+			ObjectID:   string(e.ObjectID),
 		}}, true
 	case *sim.SourceActivityCompleted:
 		// Clear the tooltip busy line when the window closes on its own. Gated to the
@@ -959,6 +960,8 @@ type sourceActivityChangedWireDTO struct {
 	ID         string `json:"id"`
 	Kind       string `json:"kind,omitempty"`
 	SourceName string `json:"source_name,omitempty"`
+	// ObjectID is the object being worked (LLM-743); empty on a clear.
+	ObjectID string `json:"object_id,omitempty"`
 }
 
 // renderedSourceActivityKind reports whether a source-activity kind has a
