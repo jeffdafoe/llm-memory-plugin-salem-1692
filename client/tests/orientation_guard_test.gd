@@ -20,7 +20,6 @@ const GUARD_PATH := "res://scripts/orientation_guard.gd"
 
 const TESTS := [
     "_test_text_size_scales_only_on_touch",
-    "_test_js_flag_reads_every_yes_shape",
     "_test_touch_device_decision",
     "_test_cover_decision_matrix",
     "_test_pointer_event_classification",
@@ -104,26 +103,25 @@ func _test_text_size_scales_only_on_touch() -> void:
     _done()
 
 
-## On Jeff's Alldocube the browser said yes to pointer:coarse but Godot received
-## the int 1, so `== true` kept the guard off.
-func _test_js_flag_reads_every_yes_shape() -> void:
-    _check("bool true is yes", _guard_script.js_flag(true), true)
-    _check("int 1 is yes (Android Chrome)", _guard_script.js_flag(1), true)
-    _check("float 1.0 is yes", _guard_script.js_flag(1.0), true)
-    _check("bool false is no", _guard_script.js_flag(false), false)
-    _check("int 0 is no", _guard_script.js_flag(0), false)
-    _check("null (eval failed) is no", _guard_script.js_flag(null), false)
-    _check("string is no", _guard_script.js_flag("true"), false)
-    _done()
+const UA_WINDOWS := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+const UA_ANDROID_DESKTOP_MODE := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+const UA_ANDROID := "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+const UA_MAC := "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
+const UA_CHROMEOS := "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
 
 
-## A Surface in Chrome reports pointer:coarse with its trackpad attached; the
-## fine pointer must keep it on the desktop layout (Edit/Config visible).
+## A docked Surface (Windows, touch points > 0) reported pointer:coarse with no
+## fine pointer, so the decision reads the platform and touch points instead.
 func _test_touch_device_decision() -> void:
-    _check("tablet (coarse, no fine) is touch", _guard_script.is_touch_device(true, false), true)
-    _check("Surface (coarse, fine too) is desktop", _guard_script.is_touch_device(true, true), false)
-    _check("desktop (fine only) is desktop", _guard_script.is_touch_device(false, true), false)
-    _check("no pointer at all is desktop", _guard_script.is_touch_device(false, false), false)
+    _check("docked Surface (Windows, touch) is desktop", _guard_script.is_touch_device(UA_WINDOWS, 10), false)
+    _check("Windows desktop is desktop", _guard_script.is_touch_device(UA_WINDOWS, 0), false)
+    _check("Android tablet in desktop mode is touch", _guard_script.is_touch_device(UA_ANDROID_DESKTOP_MODE, 10), true)
+    _check("Android tablet is touch", _guard_script.is_touch_device(UA_ANDROID, 5), true)
+    _check("iPad (Mac agent, touch) is touch", _guard_script.is_touch_device(UA_MAC, 5), true)
+    _check("Mac computer is desktop", _guard_script.is_touch_device(UA_MAC, 0), false)
+    _check("Linux desktop is desktop", _guard_script.is_touch_device(UA_ANDROID_DESKTOP_MODE, 0), false)
+    _check("Chromebook with touch is desktop", _guard_script.is_touch_device(UA_CHROMEOS, 10), false)
+    _check("empty agent, no touch is desktop", _guard_script.is_touch_device("", 0), false)
     _done()
 
 
