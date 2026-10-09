@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -15,7 +17,8 @@ import (
 //   - GET  pc/repair/offer — the work at the damaged site the PC stands at, or
 //     {"repair": null}. The click path of the repair dialog; the arrival path
 //     reads the same shape off the object_condition room_event.
-//   - POST pc/repair/start — take it. Returns the terms the game runs on.
+//   - POST pc/repair/start — take it: {"object_id"} names the offered site
+//     (optional). Returns the terms the game runs on.
 //   - POST pc/repair/step  — one mini-game round. 429 when it comes sooner
 //     than step_gap_ms after the last (not counted; send it again later).
 //
@@ -86,10 +89,22 @@ func (s *Server) handlePCRepairOffer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, pcRepairOfferResponse{Repair: repairOfferWire(offer)})
 }
 
+// pcRepairStartRequest names the site the dialog offered. The body is
+// optional: with none, the start takes the site the PC stands at.
+type pcRepairStartRequest struct {
+	ObjectID string `json:"object_id"`
+}
+
 func (s *Server) handlePCRepairStart(w http.ResponseWriter, r *http.Request) {
+	var req pcRepairStartRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxMoveBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 	res, ok := s.runPCRepairCommand(w, r, func(world *sim.World, actorID sim.ActorID, now time.Time) (any, error) {
 		sim.TouchPCInput(world, actorID, now)
-		return sim.StartPCRepair(actorID, now).Fn(world)
+		return sim.StartPCRepairAt(actorID, sim.VillageObjectID(req.ObjectID), now).Fn(world)
 	})
 	if !ok {
 		return

@@ -570,12 +570,21 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 		}
 	}
 	// A minor work is found by nearness, not by what was clicked: walking to
-	// the fence segment beside the break still finds it (LLM-690).
-	if !IsRepairSite(obj) {
-		obj = publicWorksSiteAt(w, actor)
+	// the fence segment beside the break still finds it (LLM-690). A site the
+	// walk left the player out of reach of yields to one they are at.
+	if !IsRepairSite(obj) || !atPublicWorksSite(w, actor, obj) {
+		if near := publicWorksSiteAt(w, actor); near != nil {
+			obj = near
+		}
 	}
 	if !IsRepairSite(obj) {
 		return
+	}
+	// The offer only where the start will take it: an offer the start refuses
+	// opens a dialog whose Repair button fails.
+	var offer *PCRepairOffer
+	if atPublicWorksSite(w, actor, obj) {
+		offer = pcRepairOfferFor(w, actor, obj)
 	}
 	kind := PublicWorksKind(obj)
 	text := "This well is broken — the windlass is down, and no water can be drawn here."
@@ -591,7 +600,7 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 	if PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
 		text += " The town is paying " + coinsPhrase(bounty) + " to whoever " + PublicWorksMendVerb(kind) + " it."
 	}
-	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, Offer: pcRepairOfferFor(w, actor, obj), At: now})
+	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, Offer: offer, At: now})
 }
 
 // DamageFact is the "what is broken" sentence opening for a damaged site —
@@ -890,24 +899,7 @@ func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 	}
 	var best *VillageObject
 	for _, obj := range w.VillageObjects {
-		if !obj.Damaged() {
-			continue
-		}
-		switch PublicWorksKind(obj) {
-		case PublicWorksBusiness:
-			pin, ok := effectiveObjectLoiterTile(w, obj.ID)
-			if !AtBusiness(actor.Pos, actor.InsideStructureID, obj.ID, pin, ok) {
-				continue
-			}
-		case PublicWorksRoad:
-			if !AtRoadObstacle(actor.Pos, obj, w.Assets[obj.AssetID]) {
-				continue
-			}
-		case PublicWorksMinor:
-			if actor.Kind != KindPC || !atMinorWork(w, actor, obj) {
-				continue
-			}
-		default:
+		if obj.IsWell() || !atPublicWorksSite(w, actor, obj) {
 			continue
 		}
 		if best == nil || obj.ID < best.ID {
@@ -915,6 +907,29 @@ func publicWorksSiteAt(w *World, actor *Actor) *VillageObject {
 		}
 	}
 	return best
+}
+
+// atPublicWorksSite reports whether the actor stands at the damaged site obj,
+// by the test publicWorksSiteAt applies to each kind. The player's start reads
+// it for the one site their dialog offered, so a second site in reach can
+// never be started in its place.
+func atPublicWorksSite(w *World, actor *Actor, obj *VillageObject) bool {
+	if !obj.Damaged() {
+		return false
+	}
+	switch PublicWorksKind(obj) {
+	case PublicWorksWell:
+		_, near := findRefreshObjectNear(w, actor.Pos)
+		return near == obj
+	case PublicWorksBusiness:
+		pin, ok := effectiveObjectLoiterTile(w, obj.ID)
+		return AtBusiness(actor.Pos, actor.InsideStructureID, obj.ID, pin, ok)
+	case PublicWorksRoad:
+		return AtRoadObstacle(actor.Pos, obj, w.Assets[obj.AssetID])
+	case PublicWorksMinor:
+		return actor.Kind == KindPC && atMinorWork(w, actor, obj)
+	}
+	return false
 }
 
 // MayTakePublicWorks reports whether an actor may take the town's repair work:
