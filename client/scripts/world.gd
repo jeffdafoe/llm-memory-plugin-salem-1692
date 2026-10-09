@@ -1049,15 +1049,29 @@ const WORK_STEP_TIME := 0.25
 ## The farthest a repairer is drawn from their stand tile, in tiles.
 const WORK_MAX_STEP_TILES := 1.5
 
-## The facing and drawn step that land this container's axe on the object it
-## is working (WorkAim.aim), or {} when that object is not on hand.
+## The facing and drawn step that land this container's axe on the thing it is
+## working (WorkAim.aim), or {} when that is not on hand.
 func _work_aim(container: Node2D, sprite: AnimatedSprite2D) -> Dictionary:
-    var object_id := str(container.get_meta("source_activity_object_id", ""))
-    var target: Node2D = placed_objects.get(object_id, null)
+    var target := _work_target(container)
     if target == null:
         return {}
-    var rect := object_visible_rect(target)
+    var rect := object_map_rect(target)
     return WorkAim.aim(container.position, rect, sprite.scale.x, WORK_MAX_STEP_TILES * VillageApi.tile_size)
+
+## What the swing lands on: the worked object's debris overlay when it has one
+## (a damaged business's storm branches or split boards, drawn attached to the
+## building — the building itself is too big to be the mark), else the object.
+## null when the object is not on hand.
+func _work_target(container: Node2D) -> Node2D:
+    var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+    if target == null:
+        return null
+    for child in target.get_children():
+        if child is Node2D and child.has_meta("asset_id"):
+            var tags = child.get_meta("tags", [])
+            if tags is Array and tags.has("debris"):
+                return child
+    return target
 
 ## Ease the drawn sprite to `step` from where it was built to stand (its anchor
 ## offset, kept as the "work_base" meta while stepped). A zero step eases back
@@ -1101,7 +1115,7 @@ func _on_work_frame(container: Node2D, sprite: AnimatedSprite2D) -> void:
         return
     if sprite.frame != WorkAim.STRIKE_FRAME or not sprite.animation.ends_with("_chop"):
         return
-    var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+    var target := _work_target(container)
     if target == null:
         return
     var facing := str(container.get_meta("facing", "south"))
@@ -1109,20 +1123,20 @@ func _on_work_frame(container: Node2D, sprite: AnimatedSprite2D) -> void:
     if sprite.has_meta("work_base"):
         step = sprite.position - (sprite.get_meta("work_base") as Vector2)
     var at := WorkAim.strike_point(Vector2.ZERO, step, facing, sprite.scale.x)
-    if not object_visible_rect(target).grow(WorkAim.BITE).has_point(container.position + at):
+    if not object_map_rect(target).grow(WorkAim.BITE).has_point(container.position + at):
         return
     var chips := WorkChipsScript.new()
     chips.position = at
     chips.z_index = 1
     container.add_child(chips)
-    chips.burst(WorkChipsScript.palette(_work_target_name(container)), -WorkAim.FACING_DIR.get(facing, Vector2.DOWN))
+    chips.burst(WorkChipsScript.palette(_work_target_name(target)), -WorkAim.FACING_DIR.get(facing, Vector2.DOWN))
 
-## The worked object's name for the chip colours: its display name, else its
-## asset's name.
-func _work_target_name(container: Node2D) -> String:
-    var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
-    if target == null:
-        return ""
+## The swing's target's name for the chip colours: storm debris is branches,
+## worn debris split boards; anything else its display name, else its asset's.
+func _work_target_name(target: Node2D) -> String:
+    var tags = target.get_meta("tags", [])
+    if tags is Array and tags.has("debris"):
+        return "branch" if str(target.get_meta("current_state", "")) == "storm" else "boards"
     var asset: Dictionary = Catalog.assets.get(str(target.get_meta("asset_id", "")), {})
     return str(target.get_meta("display_name", "")) + " " + str(asset.get("name", ""))
 
@@ -1157,6 +1171,17 @@ func object_visible_rect(container: Node2D) -> Rect2:
         return full
     var px := full.size / tex.get_size()
     return Rect2(full.position + Vector2(used.position) * px, Vector2(used.size) * px)
+
+## object_visible_rect in map coordinates (where actors stand): an attached
+## overlay is drawn as a child of its parent object, so its position is
+## relative to the parent until the parents' positions are added.
+func object_map_rect(container: Node2D) -> Rect2:
+    var rect := object_visible_rect(container)
+    var parent := container.get_parent()
+    while parent is Node2D and parent.has_meta("asset_id"):
+        rect.position += (parent as Node2D).position
+        parent = parent.get_parent()
+    return rect
 
 ## Whether the sprite this container renders carries the waterfowl behavior
 ## (LLM-579). Behaviors arrive on the sprite payload and are stashed as meta
@@ -2071,6 +2096,9 @@ func _place_object(data: Dictionary) -> void:
 
     placed_objects[obj_id] = container
     _reaim_work_on(obj_id)
+    # A business's debris overlay arriving moves its worker's aim onto it.
+    if attached_to != null and str(attached_to) != "":
+        _reaim_work_on(str(attached_to))
 
 ## Per-asset draw scale from the catalog entry (LLM-599) — the object-side
 ## counterpart of _sprite_render_scale. Guards absent / zero / non-finite (a

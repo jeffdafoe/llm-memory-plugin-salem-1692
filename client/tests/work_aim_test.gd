@@ -17,6 +17,7 @@ const TESTS := [
     "_test_chip_palette",
     "_test_burst_throws_chips",
     "_test_world_wiring",
+    "_test_debris_is_the_mark",
 ]
 
 const SCALE := 2.0
@@ -266,4 +267,93 @@ func _chip_count(npc: Node2D) -> int:
     for child in npc.get_children():
         if child.get_script() == _chips and not child.is_queued_for_deletion():
             n += 1
+    return n
+
+
+## A damaged business: the swing's mark is its debris overlay (attached to the
+## building, so drawn relative to it), not the building's nearest edge; the
+## overlay arriving after the worker re-aims them; chips fly as branches for
+## storm debris and only when the blow lands on the debris.
+func _test_debris_is_the_mark() -> void:
+    var world = load("res://scripts/world.gd").new()
+    var catalog: Node = root.get_node("Catalog")
+    var solid := func(w: int, h: int) -> ImageTexture:
+        var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+        img.fill(Color.WHITE)
+        return ImageTexture.create_from_image(img)
+    catalog.sheet_cache["test://biz"] = solid.call(200, 100)
+    catalog.sheet_cache["test://debris"] = solid.call(20, 20)
+    catalog.assets["test-biz"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 1.0,
+        "states": [{"state": "default", "sheet": "test://biz", "src_x": 0, "src_y": 0, "src_w": 200, "src_h": 100}]}
+    catalog.assets["test-debris"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 1.0,
+        "states": [{"state": "storm", "sheet": "test://debris", "src_x": 0, "src_y": 0, "src_w": 20, "src_h": 20}]}
+    world.objects_node = Node2D.new()
+
+    var blank := ImageTexture.create_from_image(Image.create(1024, 1024, false, Image.FORMAT_RGBA8))
+    var sheets := {BODY: blank}
+    for prop in FarmerRig.PROPS.values():
+        sheets[prop["sheet"]] = ImageTexture.create_from_image(Image.create(224, 32, false, Image.FORMAT_RGBA8))
+    var doll := FarmerDoll.new()
+    doll.setup({"id": "s1", "name": "Farmer", "sheet": BODY, "rig": "farmer_base",
+        "frame_width": 64, "frame_height": 64, "render_scale": 2.0,
+        "layers": [{"sheet": BODY, "ramps": {}}], "animations": []}, sheets)
+    doll.name = "CharacterSprite"
+    doll.scale = Vector2(2, 2)
+    var base := Vector2(-64, -82)
+    doll.position = base
+    doll.speed_scale = 0.0
+    var npc := Node2D.new()
+    npc.position = Vector2(220, 30)
+    npc.add_child(doll)
+    root.add_child(npc)
+    world.placed_npcs["n1"] = npc
+    npc.set_meta("facing", "south")
+    npc.set_meta("source_activity_kind", "repair")
+    npc.set_meta("source_activity_object_id", "biz")
+
+    # The building: (200,-85)-(400,15). The worker below its front edge.
+    world._place_object({"id": "biz", "asset_id": "test-biz", "x": 300.0, "y": 0.0})
+    world._apply_activity_animation(npc)
+    _check("no debris yet: the building is the mark", world._work_target(npc), world.placed_objects["biz"])
+
+    # The debris, attached at the building's anchor: drawn at (290,-17)-(310,3).
+    world._place_object({"id": "deb", "asset_id": "test-debris", "x": 300.0, "y": 0.0,
+        "attached_to": "biz", "tags": ["debris"], "current_state": "storm"})
+    var debris: Node2D = world.placed_objects["deb"]
+    _check("debris: drawn as the building's child", debris.get_parent(), world.placed_objects["biz"])
+    _check("debris: map rect adds the building's position", world.object_map_rect(debris), Rect2(290, -17, 20, 20))
+    _check("debris arrives: it is the mark", world._work_target(npc), debris)
+    _check("debris arrives: faces it", npc.get_meta("facing"), "east")
+    await create_timer(0.35).timeout
+    # East strike from (220,30) lands at (283,6); the debris inset is (294..306, -13..-1).
+    _check("debris arrives: stepped onto it", doll.position.is_equal_approx(base + Vector2(11, -7)), true)
+    _strike(doll)
+    var chips: Array = []
+    for child in npc.get_children():
+        if child.get_script() == _chips:
+            chips.append(child)
+    _check("blow on the debris: chips", chips.size(), 1)
+    var has_leaf := false
+    for chip in chips[0]._chips if chips.size() > 0 else []:
+        if _chips.LEAF.has(chip["color"]) or _chips.BARK.has(chip["color"]):
+            has_leaf = true
+    _check("storm debris: branch chips", has_leaf, true)
+    _check("worn debris reads as boards", world._work_target_name(_named_debris("worn")), "boards")
+    _check("storm debris reads as branch", world._work_target_name(_named_debris("storm")), "branch")
+
+    npc.queue_free()
+    world.objects_node.free()
+    for key in ["test-biz", "test-debris"]:
+        catalog.assets.erase(key)
+    for key in ["test://biz", "test://debris"]:
+        catalog.sheet_cache.erase(key)
+    world.free()
+    _done()
+
+
+func _named_debris(state: String) -> Node2D:
+    var n := Node2D.new()
+    n.set_meta("tags", ["debris"])
+    n.set_meta("current_state", state)
+    n.queue_free()
     return n
