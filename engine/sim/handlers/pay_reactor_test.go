@@ -84,7 +84,7 @@ func peekActorWarrants(t *testing.T, w *sim.World, id sim.ActorID) []sim.Warrant
 // seller's Warrants list has one PaidWarrantReason entry.
 func TestPayReactor_SellerGetsWarrant(t *testing.T) {
 	w, stop := buildPayReactorWorld(t,
-		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindPC, huddleID: "h1", coins: 10}, // a player: only a PC pays bare coin (LLM-725)
 		payReactorActor{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
 	)
 	defer stop()
@@ -135,7 +135,7 @@ func TestPayReactor_SellerGetsWarrant(t *testing.T) {
 // to themselves.
 func TestPayReactor_BuyerHasNoWarrant(t *testing.T) {
 	w, stop := buildPayReactorWorld(t,
-		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindPC, huddleID: "h1", coins: 10}, // a player: only a PC pays bare coin (LLM-725)
 		payReactorActor{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
 	)
 	defer stop()
@@ -170,7 +170,7 @@ func TestPayReactor_ExcerptCarriesFullForText(t *testing.T) {
 	// handler enforces — sim.Pay is the floor, so it takes the string as given.
 	longForText := strings.Repeat("x", 300)
 	w, stop := buildPayReactorWorld(t,
-		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindPC, huddleID: "h1", coins: 10}, // a player: only a PC pays bare coin (LLM-725)
 		payReactorActor{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
 	)
 	defer stop()
@@ -197,7 +197,7 @@ func TestPayReactor_ExcerptCarriesFullForText(t *testing.T) {
 // warranted" claim in BuyerHasNoWarrant).
 func TestPayReactor_NoWarrantBeforePay(t *testing.T) {
 	w, stop := buildPayReactorWorld(t,
-		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1", coins: 10},
+		payReactorActor{id: "hannah", displayName: "Hannah", kind: sim.KindPC, huddleID: "h1", coins: 10}, // a player: only a PC pays bare coin (LLM-725)
 		payReactorActor{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
 	)
 	defer stop()

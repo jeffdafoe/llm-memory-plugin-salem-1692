@@ -127,7 +127,7 @@ func TestHuddleLiveness_PaymentStampsActivity(t *testing.T) {
 		t.Fatalf("precondition: the huddle must be dormant before the payment")
 	}
 
-	if _, err := w.Send(sim.Pay("alice", "bob", 3, "for the ale", paidAt)); err != nil {
+	if _, err := w.Send(playerPay("alice", "bob", 3, "for the ale", paidAt)); err != nil {
 		t.Fatalf("Pay: %v", err)
 	}
 	if !liveAfter(t, w, "alice", paidAt.Add(time.Minute)) {

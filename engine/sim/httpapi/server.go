@@ -396,6 +396,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
 	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
+	mux.HandleFunc("POST /api/village/pc/give", s.requireAuth(s.handlePCGive)) // LLM-725
 	mux.HandleFunc("POST /api/village/pc/create", s.requireAuth(s.handlePCCreate))
 	mux.HandleFunc("POST /api/village/pc/wardrobe", s.requireAuth(s.handlePCWardrobe))
 	mux.HandleFunc("POST /api/village/pc/outfit", s.requireAuth(s.handlePCOutfit))

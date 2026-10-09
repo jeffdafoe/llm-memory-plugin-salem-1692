@@ -296,6 +296,7 @@ func _build_tree() -> void:
     pay_panel.open_changed.connect(func(open: bool): modal_open_changed.emit(open))
     pay_panel.offer_pending.connect(_on_pay_offer_pending)
     pay_panel.paid.connect(_refresh_state)
+    pay_panel.gave.connect(_on_pay_gave)
 
     http_village = HTTPRequest.new()
     http_village.timeout = 4.0
@@ -1516,6 +1517,11 @@ func _on_pay_offer_pending(seller: String) -> void:
     if seller.is_empty():
         seller = "the seller"
     _append_log_line("", "Your offer is before %s — awaiting their answer." % seller, "act", false, Time.get_datetime_string_from_system(true))
+
+
+## A gift (pc/give) is final at once — no answer to wait on (LLM-725).
+func _on_pay_gave(recipient: String, amount: int) -> void:
+    _append_log_line("", "You gave %s %s." % [recipient, "1 coin" if amount == 1 else "%d coins" % amount], "act", false, Time.get_datetime_string_from_system(true))
 
 
 func _on_speak_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:

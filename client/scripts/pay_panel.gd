@@ -13,9 +13,13 @@ extends CanvasLayer
 ##   OFFER — the player's own offer: who, what, how many, how much. The goods
 ##     listed are the seller's spoken mentions plus anything they have a posted
 ##     quote for. The send button names the whole deal.
+##   GIVE — coins handed to anyone here, nothing bought (LLM-725): a gift, a
+##     tip, a debt paid back. Who, how much, an optional "what for". POST
+##     pc/give; the recipient may be another player.
 ##
-## Every pay is POST pc/pay. The engine owns every rule (co-presence, stock,
-## funds, counter chains); a refusal shows on the status line.
+## Every pay is POST pc/pay, every gift POST pc/give. The engine owns every
+## rule (co-presence, stock, funds, counter chains, a gift that is really a
+## purchase); a refusal shows on the status line.
 ##
 ## The panel reads the talk panel's live state through `host`: huddle_members,
 ## character_name, pc_actor_id, pc_coins, pc_lodging, vendor_mentions,
@@ -29,6 +33,8 @@ const TAP_H := 44.0
 ## The engine's PayLedgerInResponseToWindow: a counter older than this can no
 ## longer be answered, so its card is dropped.
 const COUNTER_WINDOW_MS := 60 * 60 * 1000
+## The engine's cap on a gift's "what for" line (pc/give, maxPayForChars).
+const GIVE_FOR_MAX := 200
 
 const COLOR_TITLE := Color(0.92, 0.78, 0.42)
 const COLOR_TEXT := Color(0.92, 0.84, 0.70)
@@ -41,8 +47,10 @@ signal open_changed(open: bool)
 signal offer_pending(seller: String)
 ## Any pay the engine took (2xx) — the host re-polls pc/me for the purse.
 signal paid()
+## A gift the engine took — the host writes it in the talk log.
+signal gave(recipient: String, amount: int)
 
-enum Page { OFFERS, OFFER }
+enum Page { OFFERS, OFFER, GIVE }
 
 var host: Node = null
 ## Test seam, like repair_panel.gd's: when set, called as
@@ -74,6 +82,10 @@ var qty := 1
 var amount := 1
 var days_ahead := 0
 
+## The player's gift.
+var give_to := ""
+var give_amount := 1
+
 var _busy := false
 var _busy_kind := ""
 var _busy_seller := ""
@@ -90,6 +102,7 @@ var _font: Font = null
 var _http_pay: HTTPRequest = null
 var _http_quotes: HTTPRequest = null
 var _http_items: HTTPRequest = null
+var _http_give: HTTPRequest = null
 
 var root: Control = null
 var sheet: PanelContainer = null
@@ -102,6 +115,7 @@ var offers_scroll: ScrollContainer = null
 var offers_box: VBoxContainer = null
 var offers_dispo_row: Control = null
 var own_offer_button: Button = null
+var give_button: Button = null
 var offer_page: VBoxContainer = null
 var who_flow: HFlowContainer = null
 var what_flow: HFlowContainer = null
@@ -113,6 +127,12 @@ var offer_dispo_row: Control = null
 var night_row: Control = null
 var night_stepper: Dictionary = {}
 var send_button: Button = null
+var give_page: VBoxContainer = null
+var give_who_flow: HFlowContainer = null
+var give_amount_stepper: Dictionary = {}
+var give_for_field: LineEdit = null
+var give_hint: Label = null
+var give_send_button: Button = null
 var _dispo_buttons: Array = []  # [eat, home] pairs, one per page
 
 
@@ -156,7 +176,10 @@ func refresh() -> void:
         _rebuild_offers()
     else:
         _refreshing = true
-        _rebuild_offer_page()
+        if page == Page.OFFER:
+            _rebuild_offer_page()
+        else:
+            _rebuild_give_page()
         _refreshing = false
 
 
@@ -400,7 +423,11 @@ func _rebuild_offers() -> void:
         for i in lines.size():
             offers_box.add_child(_label(lines[i], 16 if i == 0 else 15, COLOR_TEXT if i == 0 else COLOR_DIM))
     offers_dispo_row.visible = any_choice
-    own_offer_button.visible = not recipients().is_empty()
+    # The empty box has no own-offer button: every good someone has named or
+    # quoted is already a card here, so its What list would be empty (10-08).
+    var anyone := not recipients().is_empty()
+    own_offer_button.visible = anyone and any_card
+    give_button.visible = anyone
     _fit_scroll.call_deferred()
 
 
@@ -413,7 +440,7 @@ func empty_lines() -> Array:
     var here := recipients()
     if here.is_empty():
         return ["There is nobody here to pay."]
-    var lines: Array = ["Nobody here has offered you anything yet.", "Ask them what they sell, or make your own offer."]
+    var lines: Array = ["Nobody here has offered you anything yet.", "Ask them what they sell — what they name will show here."]
     if host != null and typeof(host.pc_lodging) == TYPE_DICTIONARY and not host.pc_lodging.is_empty():
         var keeper := str(host.pc_lodging.get("keeper_name", ""))
         if keeper != "" and _has_name(here, keeper):
@@ -572,6 +599,10 @@ func _on_spoken_pressed(seller: String, item: String) -> void:
 
 func _on_own_offer_pressed() -> void:
     start_offer("", "")
+
+
+func _on_give_pressed() -> void:
+    start_give("")
 
 
 # --- offer page ----------------------------------------------------------------
@@ -766,6 +797,88 @@ func _on_send() -> void:
     _post_pay(offer_body(), "offer", sel_seller, 0)
 
 
+# --- give page -----------------------------------------------------------------
+
+## Open the give page. An empty name keeps the last one if still here, else the
+## first person here. The "what for" line starts empty on each open.
+func start_give(to: String) -> void:
+    var here := recipients()
+    if to == "" or not _has_name(here, to):
+        to = give_to if _has_name(here, give_to) else (str(here[0]) if not here.is_empty() else "")
+    give_to = _name_in(here, to)
+    give_amount = 1
+    give_for_field.text = ""
+    _set_status("")
+    _show_page(Page.GIVE)
+
+
+## {recipient, amount} plus "for" when the player wrote one.
+func give_body() -> Dictionary:
+    var body := {"recipient": give_to, "amount": give_amount}
+    var why := " ".join(give_for_field.text.split(" ", false)).strip_edges()
+    if why != "":
+        body["for"] = why
+    return body
+
+
+func give_text() -> String:
+    if give_to == "":
+        return "Give coins"
+    return "Give %s %s" % [give_to, _coins(give_amount)]
+
+
+func _rebuild_give_page() -> void:
+    var here := recipients()
+    if not _has_name(here, give_to):
+        give_to = str(here[0]) if not here.is_empty() else ""
+    _fill_chips(give_who_flow, here, give_to, func(n: String) -> String: return n, _on_give_who)
+    _sync_give_values()
+
+
+func _sync_give_values() -> void:
+    _set_stepper(give_amount_stepper, give_amount)
+    var short := give_amount > _coins_held()
+    give_hint.text = "You only have %s." % _coins(_coins_held()) if short else "They keep it. Nothing is bought."
+    give_hint.add_theme_color_override("font_color", COLOR_ERROR if short else COLOR_DIM)
+    give_send_button.text = give_text()
+
+
+func _on_give_who(n: String) -> void:
+    give_to = n
+    _rebuild_give_page()
+
+
+func _on_give_amount(v: int) -> void:
+    give_amount = v
+    _sync_give_values()
+
+
+func _on_give_send() -> void:
+    var chosen := give_to
+    _rebuild_give_page()
+    if give_to != chosen:
+        _set_status("%s has gone. Check who you give to and send again." % chosen if chosen != "" else "There is nobody here to give to.")
+        return
+    if give_to == "":
+        _set_status("There is nobody here to give to.")
+        return
+    if give_amount > _coins_held():
+        _set_status("You only have %s." % _coins(_coins_held()))
+        return
+    if _busy:
+        _set_status("Your last offer is still on its way.")
+        return
+    _busy = true
+    _busy_kind = "give"
+    _busy_seller = give_to
+    _busy_counter = give_amount
+    _busy_gen = _open_gen
+    _set_status("Sending…")
+    if not _send("give", give_body()):
+        _busy = false
+        _set_status("The coins could not be sent. Try again.")
+
+
 # --- sending -------------------------------------------------------------------
 
 func _post_pay(body: Dictionary, kind: String, seller: String, counter_id: int) -> void:
@@ -791,6 +904,9 @@ func _send(route: String, body: Dictionary = {}) -> bool:
     match route:
         "pay":
             return _http_pay.request(Auth.api_base + "/api/village/pc/pay",
+                Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify(body)) == OK
+        "give":
+            return _http_give.request(Auth.api_base + "/api/village/pc/give",
                 Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify(body)) == OK
         "quotes":
             # An older answer must never fill a newer open's cards.
@@ -819,6 +935,10 @@ func _ensure_http() -> void:
     _http_items.timeout = 15.0
     add_child(_http_items)
     _http_items.request_completed.connect(_on_items_response)
+    _http_give = HTTPRequest.new()
+    _http_give.timeout = 15.0
+    add_child(_http_give)
+    _http_give.request_completed.connect(_on_give_response)
 
 
 ## Fetched once: names, labels and disposition classes are boot-fixed server
@@ -840,7 +960,7 @@ static func _parse(body: PackedByteArray) -> Variant:
 
 func _on_pay_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     # Only the pay this box sent; a late answer after a reset is dropped.
-    if not _busy:
+    if not _busy or _busy_kind == "give":
         return
     var kind := _busy_kind
     _busy = false
@@ -876,6 +996,34 @@ func _on_pay_response(result: int, code: int, _h: PackedStringArray, body: Packe
     # newer open stays.
     if _busy_gen == _open_gen:
         close()
+    paid.emit()
+
+
+## pc/give answers {recipient, amount, coins}. The gift is final on any 2xx —
+## coins move at once, nothing waits on an answer.
+func _on_give_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+    if not _busy or _busy_kind != "give":
+        return
+    var to := _busy_seller
+    var amount_given := _busy_counter
+    _busy = false
+    _busy_kind = ""
+    if result != HTTPRequest.RESULT_SUCCESS:
+        # The engine may have moved the coins before the answer was lost: re-read
+        # the purse so the count is right before the player tries again.
+        _set_status("No answer came back. Check your coins and the talk log before you give again.")
+        paid.emit()
+        return
+    if code < 200 or code >= 300:
+        var parsed = _parse(body)
+        var msg := "Something went wrong (%d)." % code
+        if typeof(parsed) == TYPE_DICTIONARY and str(parsed.get("error", "")) != "":
+            msg = _sentence(str(parsed.get("error", "")))
+        _set_status(msg)
+        return
+    if _busy_gen == _open_gen:
+        close()
+    gave.emit(to, amount_given)
     paid.emit()
 
 
@@ -965,6 +1113,7 @@ func _build_ui() -> void:
 
     _build_offers_page(vb)
     _build_offer_page(vb)
+    _build_give_page(vb)
 
     status_label = _label("", 15, COLOR_ERROR)
     vb.add_child(status_label)
@@ -996,12 +1145,16 @@ func _build_offers_page(parent: Control) -> void:
     offers_dispo_row = _dispo_row()
     offers_page.add_child(offers_dispo_row)
 
+    # Own offer on its own row: hidden in the empty box, which then shows just
+    # Give coins and Close.
+    own_offer_button = _button("Make your own offer", _on_own_offer_pressed)
+    offers_page.add_child(own_offer_button)
     var buttons := HBoxContainer.new()
     buttons.add_theme_constant_override("separation", 8)
     offers_page.add_child(buttons)
-    own_offer_button = _button("Make your own offer", _on_own_offer_pressed)
-    own_offer_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    buttons.add_child(own_offer_button)
+    give_button = _button("Give coins", _on_give_pressed)
+    give_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    buttons.add_child(give_button)
     buttons.add_child(_button("Close", close))
 
 
@@ -1049,17 +1202,56 @@ func _build_offer_page(parent: Control) -> void:
     offer_page.add_child(back)
 
 
+func _build_give_page(parent: Control) -> void:
+    give_page = VBoxContainer.new()
+    give_page.add_theme_constant_override("separation", 8)
+    parent.add_child(give_page)
+
+    give_page.add_child(_label("Who", 15, COLOR_DIM))
+    give_who_flow = _flow()
+    give_page.add_child(give_who_flow)
+
+    give_amount_stepper = _stepper(1, 999, _on_give_amount)
+    give_page.add_child(_titled("How much (coins)", give_amount_stepper["row"]))
+
+    give_for_field = LineEdit.new()
+    give_for_field.max_length = GIVE_FOR_MAX
+    give_for_field.placeholder_text = "A gift, a debt paid back…"
+    give_for_field.custom_minimum_size = Vector2(0, TAP_H)
+    give_page.add_child(_titled("What for? (if you like)", give_for_field))
+
+    give_send_button = _button("Give coins", _on_give_send, true)
+    give_send_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    give_page.add_child(give_send_button)
+    give_hint = _label("They keep it. Nothing is bought.", 14, COLOR_DIM)
+    give_page.add_child(give_hint)
+
+    var back := _button("Back", func(): _show_page(Page.OFFERS))
+    back.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+    give_page.add_child(back)
+
+
 func _show_page(p: Page) -> void:
     page = p
     offers_page.visible = p == Page.OFFERS
     offer_page.visible = p == Page.OFFER
-    title_label.text = "Pay" if p == Page.OFFERS else "Make an offer"
+    give_page.visible = p == Page.GIVE
+    match p:
+        Page.OFFERS:
+            title_label.text = "Pay"
+        Page.OFFER:
+            title_label.text = "Make an offer"
+        Page.GIVE:
+            title_label.text = "Give coins"
     _sync_dispo_buttons()
     _rebuild_coins()
-    if p == Page.OFFERS:
-        _rebuild_offers()
-    else:
-        _rebuild_offer_page()
+    match p:
+        Page.OFFERS:
+            _rebuild_offers()
+        Page.OFFER:
+            _rebuild_offer_page()
+        Page.GIVE:
+            _rebuild_give_page()
 
 
 func _rebuild_coins() -> void:
@@ -1257,7 +1449,7 @@ func _unhandled_input(event: InputEvent) -> void:
     if not visible or not event.is_action_pressed("ui_cancel"):
         return
     get_viewport().set_input_as_handled()
-    if page == Page.OFFER:
+    if page != Page.OFFERS:
         _show_page(Page.OFFERS)
     else:
         close()
