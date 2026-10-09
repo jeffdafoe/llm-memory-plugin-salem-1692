@@ -34,6 +34,12 @@ import (
 // mismatch only ever bites a stale cached client, which is the point.
 const ContractVersion = 2
 
+// BuildCommit is the git commit this engine was built from, set by the deploy
+// with -ldflags "-X …/httpapi.BuildCommit=<hash>" (LLM-740). Empty in a local
+// build. The client compares it with its own baked-in commit to tell a player
+// whose tab predates a deploy to reload.
+var BuildCommit = ""
+
 // WorldStateDTO is the GET /api/village/world response — coarse world state
 // for the client's top bar / lighting + the per-player camera zoom floor.
 // The carrier of ContractVersion.
@@ -70,6 +76,9 @@ type WorldStateDTO struct {
 	// hearing notice per pending case, then each ruling for its notice days.
 	// Omitted when there are none. Additive — no contract_version bump.
 	Court []CourtTickerDTO `json:"court,omitempty"`
+	// Build is BuildCommit (LLM-740). Omitted in a local build. Additive — no
+	// contract_version bump.
+	Build string `json:"build,omitempty"`
 	// LastTransitionAt is the wall-clock instant of the most recent REAL
 	// day↔night flip (UTC) — Environment.LastPhaseFlipAt, not the ticker's
 	// From==To-inclusive dedupe stamp. The client positions its sunset/sunrise color curve
