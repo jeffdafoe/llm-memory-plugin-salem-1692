@@ -592,7 +592,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 				args.QuoteID, args.QuoteID)
 		}
 		return sim.Command{}, modelSafef(
-			"pay_with_item: coins aren't a good to buy — name the good you want as item, with your coins in amount. Coins change hands only for goods or for work.")
+			"pay_with_item: coins aren't an item. To buy, name the good as item, with your coins in amount. Coins alone cannot be handed over — not for a debt, a tip, a gift or a favor — so do not retry with an invented item. A hire pays its wage by itself. Say a word or call done().")
 	}
 
 	// Normalize the consumer list. Per-entry trim + strict-control-char

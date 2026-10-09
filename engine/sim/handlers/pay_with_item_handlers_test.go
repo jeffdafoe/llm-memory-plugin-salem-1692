@@ -381,13 +381,13 @@ func TestHandlePayWithItem_CoinTokenRefused(t *testing.T) {
 	cases := []struct {
 		name string
 		args PayWithItemArgs
-		want string
+		want []string
 	}{
-		{"amount_carries_the_count", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5}, "coins aren't a good to buy"},
-		{"qty_only", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 4}, "coins aren't a good to buy"},
-		{"singular_and_article_tolerant", PayWithItemArgs{Seller: "Bob", Item: "  The Coin ", Qty: 2}, "coins aren't a good to buy"},
-		{"with_goods", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, PayItems: payItemList{{Item: "bread", Qty: 2}}}, "a sale, not a buy"},
-		{"with_quote", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, QuoteID: 12}, "quote_id 12"},
+		{"amount_carries_the_count", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5}, []string{"Coins alone cannot be handed over", "not for a debt", "do not retry"}},
+		{"qty_only", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 4}, []string{"Coins alone cannot be handed over", "not for a debt", "do not retry"}},
+		{"singular_and_article_tolerant", PayWithItemArgs{Seller: "Bob", Item: "  The Coin ", Qty: 2}, []string{"Coins alone cannot be handed over", "not for a debt", "do not retry"}},
+		{"with_goods", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, PayItems: payItemList{{Item: "bread", Qty: 2}}}, []string{"a sale, not a buy"}},
+		{"with_quote", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, QuoteID: 12}, []string{"quote_id 12"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -395,8 +395,10 @@ func TestHandlePayWithItem_CoinTokenRefused(t *testing.T) {
 			if err == nil {
 				t.Fatalf("HandlePayWithItem built a command (%v) for a coin-token item — want a refusal", cmd.Fn != nil)
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("steer %q does not contain %q", err.Error(), tc.want)
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("steer %q does not contain %q", err.Error(), want)
+				}
 			}
 			if strings.Contains(err.Error(), "use pay") {
 				t.Errorf("steer %q names the removed pay tool", err.Error())
