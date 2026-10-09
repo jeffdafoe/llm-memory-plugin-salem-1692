@@ -93,24 +93,6 @@ func TestDecodeCounterPay_CoinSynonyms(t *testing.T) {
 	}
 }
 
-// TestDecodePay_CoinSynonyms — the plain pay tool accepts coins / payment.coins
-// / a stringified amount too.
-func TestDecodePay_CoinSynonyms(t *testing.T) {
-	for _, raw := range []string{
-		`{"recipient":"Aldous","coins":5}`,
-		`{"recipient":"Aldous","payment":{"coins":5}}`,
-		`{"recipient":"Aldous","amount":"5"}`,
-	} {
-		decoded, err := DecodePayArgs(json.RawMessage(raw))
-		if err != nil {
-			t.Fatalf("%s: want decode, got %v", raw, err)
-		}
-		if got := decoded.(PayArgs).Amount; got != 5 {
-			t.Errorf("%s: Amount = %d, want 5", raw, got)
-		}
-	}
-}
-
 // TestDecodePayWithItem_LenientConsumeNow — the boolean arrives in the shapes
 // the weak model actually emits.
 func TestDecodePayWithItem_LenientConsumeNow(t *testing.T) {

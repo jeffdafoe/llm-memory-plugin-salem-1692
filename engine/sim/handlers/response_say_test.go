@@ -519,31 +519,3 @@ func TestSelectSayAlias_WhitespaceSayDoesNotSwallowTheAlias(t *testing.T) {
 		t.Errorf("Say = %q; a whitespace-only `say` swallowed the meaningful `message` alias", args.Say)
 	}
 }
-
-// TestPayWithItemCoinTranslation_EchoesSaid is the code_review regression for the
-// one folded-say path that reported nothing back. A buyer who names "coins" as the
-// good is translated to a plain sim.Pay (LLM-290), but the CALL is still
-// pay_with_item — terminal — so its `say` rides along. sim.Pay has no result shape
-// to carry the outcome, so payCoinTranslationResult wraps it, and the harness echoes
-// from that. Without it, the model was told nothing about whether the room heard it.
-func TestPayWithItemCoinTranslation_EchoesSaid(t *testing.T) {
-	vc := &ValidatedCall{
-		Name:        "pay_with_item",
-		DecodedArgs: PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 3, Say: "Here, for your trouble."},
-	}
-	got := commitResultContent(vc, payCoinTranslationResult{Announced: true})
-	if !strings.Contains(got, `You said: "Here, for your trouble."`) {
-		t.Errorf("coin-translation result %q does not echo the buyer's spoken line", got)
-	}
-	if !strings.Contains(got, "settled as a plain payment") {
-		t.Errorf("coin-translation result %q lost its own explanation", got)
-	}
-	if strings.Contains(got, "done()") {
-		t.Errorf("coin-translation result %q asks for done() after a terminal pay_with_item (LLM-350)", got)
-	}
-
-	got = commitResultContent(vc, payCoinTranslationResult{SayRefused: "you are walking"})
-	if !strings.Contains(got, "Your words went unsaid: you are walking") {
-		t.Errorf("coin-translation result %q does not report the refused line", got)
-	}
-}

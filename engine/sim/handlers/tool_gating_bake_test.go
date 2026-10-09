@@ -33,7 +33,7 @@ func TestGateTools_Baking_SpeakOnlySurface(t *testing.T) {
 	r := laborSpeakOnlyRegistry(t)
 	names := specNameSet(gateTools(r, bakingPayload(), nil))
 
-	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell", "move_to"} {
+	for _, gated := range []string{"pay_with_item", "offer_trade", "sell", "move_to"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a baker; want it stripped (speak-only surface, LLM-454)", gated)
 		}
@@ -82,7 +82,7 @@ func TestGateTools_Baking_MoveToByNeed(t *testing.T) {
 			}
 			// Commerce stays stripped regardless of the need tier — a baker eats/drinks
 			// if she must, she never trades mid-bake.
-			for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+			for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
 				if names[gated] != 0 {
 					t.Errorf("%q advertised to a baker; commerce stays stripped in all need cases", gated)
 				}
@@ -99,7 +99,7 @@ func TestGateTools_NotBaking_KeepsCommerceTools(t *testing.T) {
 
 	idle := perception.Payload{ActorID: "silence", Surroundings: speakAudience()}
 	names := specNameSet(gateTools(r, idle, nil))
-	for _, keep := range []string{"pay", "pay_with_item", "offer_trade", "sell", "move_to", "speak"} {
+	for _, keep := range []string{"pay_with_item", "offer_trade", "sell", "move_to", "speak"} {
 		if names[keep] != 1 {
 			t.Errorf("%q should be advertised to a non-baking actor; count %d", keep, names[keep])
 		}

@@ -100,7 +100,7 @@ func GiveItems(
 				return nil, err
 			}
 			// A gift must hand over at least one good — goods-only by design
-			// (bare-coin generosity is the pay tool). This is the gift's
+			// (an NPC hands over coin only for goods or a hire, LLM-726). This is the gift's
 			// counterpart to the offer-validity "must offer something" rule, and
 			// a gift sidesteps the free-goods hole by definition: the giver hands
 			// goods AWAY and the recipient pays nothing, the opposite of the

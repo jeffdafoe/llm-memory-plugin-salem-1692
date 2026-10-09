@@ -169,43 +169,27 @@ func TestRegisterTools_RegistersDoneTerminal(t *testing.T) {
 	}
 }
 
-// TestRegisterTools_RegistersBareCoinPay guards LLM-99: the bare-coin `pay`
-// tool is registered AND advertised to the model. It was pulled in
-// ZBBS-HOME-430 back when it was the only coin tool — NPCs reached for it to
-// settle purchases and double-charged on buy-then-pay. pay_with_item is now
-// the registered purchase path, so bare pay is back for the non-purchase coin
-// movement it was always meant for (wages/tips/gifts), which otherwise lands
-// as empty speech. pay_with_item must stay registered alongside it as the
-// commerce path.
-func TestRegisterTools_RegistersBareCoinPay(t *testing.T) {
+// TestRegisterTools_NoBareCoinPay guards LLM-726: NPCs have no bare-coin `pay`
+// tool. Its free-text memo let coin move for goods that never moved and for
+// remembered debts paid again and again, past seven guards that each closed one
+// wording. Coin moves only against goods (pay_with_item) or a hire, and
+// pay_with_item must stay registered and advertised as the commerce path.
+func TestRegisterTools_NoBareCoinPay(t *testing.T) {
 	r := handlers.NewRegistry()
 	if err := registerTools(r, stubSearcher{}, stubWriter{}); err != nil {
 		t.Fatalf("registerTools: %v", err)
 	}
-	if _, ok := r.Lookup("pay"); !ok {
-		t.Error("registerTools did not register the bare-coin `pay` tool — re-introduced in LLM-99 for wages/tips/gifts")
+	if _, ok := r.Lookup("pay"); ok {
+		t.Error("registerTools registered a bare-coin `pay` tool — NPCs must not hand over coin without goods or a hire (LLM-726)")
 	}
-	if _, ok := r.Lookup("pay_with_item"); !ok {
-		t.Error("registerTools did not register `pay_with_item` — the ledger flow must remain the NPC commerce path")
-	}
-	// Both must be ADVERTISED, not just registered: the safety argument for
-	// re-introducing bare `pay` is that the model sees the dedicated purchase
-	// path (pay_with_item) alongside it, so it routes goods/lodging there
-	// rather than double-paying with bare coins.
-	var advertisedPay, advertisedPayWithItem bool
+	var advertisedPayWithItem bool
 	for _, spec := range r.AdvertisedSpecs() {
-		switch spec.Name {
-		case "pay":
-			advertisedPay = true
-		case "pay_with_item":
+		if spec.Name == "pay_with_item" {
 			advertisedPayWithItem = true
 		}
 	}
-	if !advertisedPay {
-		t.Error("`pay` registered but not advertised to the model (AdvertisedSpecs omits it)")
-	}
 	if !advertisedPayWithItem {
-		t.Error("`pay_with_item` registered but not advertised to the model — the model needs the commerce path alongside bare pay")
+		t.Error("`pay_with_item` not advertised to the model — the ledger flow must remain the NPC commerce path")
 	}
 }
 
@@ -228,7 +212,7 @@ func TestRegisterTools_CacheStableOrder(t *testing.T) {
 		idx[spec.Name] = i
 	}
 
-	commonHead := []string{"speak", "move_to", "consume", "pay", "sell", "offer_trade", "pay_with_item", "give"}
+	commonHead := []string{"speak", "move_to", "consume", "sell", "offer_trade", "pay_with_item", "give"}
 	// The situationally-gated tools (gateTools turns each on only for some
 	// actors). `done`/`recall` are excluded — done is the terminal kept last by
 	// convention, recall is registered separately; neither is part of the
@@ -285,7 +269,7 @@ func TestRegisterTools_AdvertisedToolNamesExact(t *testing.T) {
 	}
 
 	want := []string{
-		"speak", "move_to", "consume", "pay_with_item", "pay", "sell", "offer_trade", "give",
+		"speak", "move_to", "consume", "pay_with_item", "sell", "offer_trade", "give",
 		"gather", "produce", "repair", "stoke", "bake", "turn_in", "take_break", "stay_open", "deliver_order", "stop",
 		"solicit_work", "offer_work", "accept_work", "decline_work",
 		"accept_pay", "decline_pay", "counter_pay", "withdraw_pay",

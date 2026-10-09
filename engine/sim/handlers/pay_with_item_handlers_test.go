@@ -1,13 +1,11 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
-	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
 // pay_with_item_handlers_test.go — Phase 3 PR S4 step 6. Handler-package
@@ -368,90 +366,42 @@ func TestHandlePayWithItem_RejectsBadShapes(t *testing.T) {
 }
 
 func TestHandlePayWithItem_WrongArgsType(t *testing.T) {
-	_, err := HandlePayWithItem(HandlerInput{ActorID: "alice", AttemptID: "tk-test", Args: PayArgs{Recipient: "X", Amount: 1}})
+	_, err := HandlePayWithItem(HandlerInput{ActorID: "alice", AttemptID: "tk-test", Args: AcceptPayArgs{LedgerID: 1}})
 	if err == nil || !strings.Contains(err.Error(), "unexpected args type") {
 		t.Fatalf("want unexpected-args-type error, got %v", err)
 	}
 }
 
-// coinXlatWorld builds the minimal world the LLM-290 coin-payment translation
-// needs to run end-to-end: buyer and seller sharing a huddle, buyer holding
-// coins. Seeded through the mem repo + LoadWorld (the buildPayTestWorld
-// pattern) so the huddle-membership index Pay's recipient resolver reads is
-// built. The translated command IS sim.Pay, so running it against a world is
-// the proof the translation reached the pay flow (a staked pay_with_item offer
-// would touch the ledger instead of moving coins).
-func coinXlatWorld(t *testing.T) (*sim.World, func()) {
-	t.Helper()
-	repo, handles := mem.NewRepository()
-	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"alice": {ID: "alice", DisplayName: "Alice", Kind: sim.KindNPCShared, State: sim.StateIdle,
-			CurrentHuddleID: "h1", Coins: 10, RecentActions: sim.NewRingBuffer[sim.Action](4)},
-		"bob": {ID: "bob", DisplayName: "Bob", Kind: sim.KindNPCShared, State: sim.StateIdle,
-			CurrentHuddleID: "h1", Coins: 2, RecentActions: sim.NewRingBuffer[sim.Action](4)},
-	})
-	w, err := sim.LoadWorld(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("LoadWorld: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		w.Run(ctx)
-		close(done)
-	}()
-	return w, func() { cancel(); <-done }
-}
-
-// TestHandlePayWithItem_CoinTokenTranslatesToPay (LLM-290): naming coins as
-// the good to buy translates to the pay flow — coins move immediately, no
-// pending offer is staked. The coin count comes from `amount` when set (the
-// schema's coins-offered field is authoritative), else `qty` (the "pay 5
-// coins" as qty=5 shape). Token matching is case- and article-tolerant.
-func TestHandlePayWithItem_CoinTokenTranslatesToPay(t *testing.T) {
+// TestHandlePayWithItem_CoinTokenRefused (LLM-726): naming coins as the good to
+// buy is refused at the handler — no command is built, so no coin can move. It
+// used to translate to a bare sim.Pay (LLM-290), which became the back door for
+// bare coin payment once NPCs lost the `pay` tool. Every steer on this path must
+// also stop naming a `pay` tool the model no longer holds.
+func TestHandlePayWithItem_CoinTokenRefused(t *testing.T) {
 	cases := []struct {
-		name      string
-		args      PayWithItemArgs
-		wantCoins int // expected transfer
+		name string
+		args PayWithItemArgs
+		want []string
 	}{
-		{"amount_carries_the_count", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5}, 5},
-		{"qty_fallback_when_no_amount", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 4}, 4},
-		{"amount_wins_over_qty", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 3, Amount: 7}, 7},
-		{"singular_and_article_tolerant", PayWithItemArgs{Seller: "Bob", Item: "  The Coin ", Qty: 2}, 2},
+		{"amount_carries_the_count", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5}, []string{"Coins alone cannot be handed over", "not for a debt", "do not retry"}},
+		{"qty_only", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 4}, []string{"Coins alone cannot be handed over", "not for a debt", "do not retry"}},
+		{"singular_and_article_tolerant", PayWithItemArgs{Seller: "Bob", Item: "  The Coin ", Qty: 2}, []string{"Coins alone cannot be handed over", "not for a debt", "do not retry"}},
+		{"with_goods", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, PayItems: payItemList{{Item: "bread", Qty: 2}}}, []string{"a sale, not a buy"}},
+		{"with_quote", PayWithItemArgs{Seller: "Bob", Item: "coins", Qty: 1, Amount: 5, QuoteID: 12}, []string{"quote_id 12"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd, err := HandlePayWithItem(HandlerInput{ActorID: "alice", AttemptID: "tk-test", Args: tc.args})
-			if err != nil {
-				t.Fatalf("HandlePayWithItem: %v", err)
+			if err == nil {
+				t.Fatalf("HandlePayWithItem built a command (%v) for a coin-token item — want a refusal", cmd.Fn != nil)
 			}
-			w, stop := coinXlatWorld(t)
-			defer stop()
-			if _, err := w.Send(cmd); err != nil {
-				t.Fatalf("translated command failed: %v", err)
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("steer %q does not contain %q", err.Error(), want)
+				}
 			}
-			type balances struct {
-				buyer, recipient, ledger int
-			}
-			res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-				return balances{
-					buyer:     world.Actors["alice"].Coins,
-					recipient: world.Actors["bob"].Coins,
-					ledger:    len(world.PayLedger),
-				}, nil
-			}})
-			if err != nil {
-				t.Fatalf("read balances: %v", err)
-			}
-			b := res.(balances)
-			if b.buyer != 10-tc.wantCoins {
-				t.Errorf("buyer coins = %d, want %d", b.buyer, 10-tc.wantCoins)
-			}
-			if b.recipient != 2+tc.wantCoins {
-				t.Errorf("recipient coins = %d, want %d", b.recipient, 2+tc.wantCoins)
-			}
-			if b.ledger != 0 {
-				t.Errorf("pay ledger has %d entries, want 0 — the translation must settle, not stake an offer", b.ledger)
+			if strings.Contains(err.Error(), "use pay") {
+				t.Errorf("steer %q names the removed pay tool", err.Error())
 			}
 		})
 	}
@@ -577,7 +527,7 @@ func TestHandleAcceptPay_BuildsCommand(t *testing.T) {
 }
 
 func TestHandleAcceptPay_WrongArgsType(t *testing.T) {
-	_, err := HandleAcceptPay(HandlerInput{ActorID: "bob", AttemptID: "tk-test", Args: PayArgs{}})
+	_, err := HandleAcceptPay(HandlerInput{ActorID: "bob", AttemptID: "tk-test", Args: PayWithItemArgs{}})
 	if err == nil || !strings.Contains(err.Error(), "unexpected args type") {
 		t.Fatalf("want unexpected-args error, got %v", err)
 	}

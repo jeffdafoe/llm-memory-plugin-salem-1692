@@ -36,10 +36,10 @@ import (
 // it were whole.
 //
 // The cut could not actually fire: every producer of ForText rune-caps it at
-// 200 first (the pay tool's MaxPayForChars, pay_with_item's
-// MaxPayWithItemForChars, and the PC HTTP route's mirror of the same), so 200
-// runes never reached a 220-rune cut. But the two constants live in different
-// packages with nothing linking them: raising MaxPayForChars past 220 would
+// 200 first (pay_with_item's MaxPayWithItemForChars and the PC HTTP route's
+// mirror of the same), so 200 runes never reached a 220-rune cut. But the two
+// constants live in different packages with nothing linking them: raising the
+// tool cap past 220 would
 // have switched silent mid-word truncation on in the seller's prompt with no
 // test failing. The dead cut is removed rather than left as a landmine.
 //

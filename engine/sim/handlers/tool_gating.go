@@ -79,7 +79,6 @@ var laborResponseTools = map[string]struct{}{
 // commerce this set exists to strip. The employer's own commitment, not the
 // target's, is what disqualifies the call.
 var laborAbandonTools = map[string]struct{}{
-	"pay":           {},
 	"pay_with_item": {},
 	"offer_trade":   {},
 	"sell":          {}, // the seller quote tool's model-facing name (scene_quote, renamed in LLM-184)
@@ -95,7 +94,6 @@ var laborAbandonTools = map[string]struct{}{
 // The TradeErrandSteer substrate gate is the backstop for any call that leaks through. speak /
 // move_to / consume stay, so he can greet, walk on, and eat.
 var visitorTalkOnlyTools = map[string]struct{}{
-	"pay":           {},
 	"pay_with_item": {},
 	"offer_trade":   {},
 	"sell":          {},
@@ -103,9 +101,9 @@ var visitorTalkOnlyTools = map[string]struct{}{
 
 // payVerbTools are the buyer-initiated payment tools advertised ONLY when the
 // actor has a co-present huddle peer to transact with (Surroundings.HuddleMembers
-// non-empty). Both hard-require CurrentHuddleID != "" at the substrate — sim.Pay
-// resolves the recipient among huddle peers, and sim.PayWithItem (the barter/offer
-// slow path AND the quote fast-path) rejects a non-huddled buyer — so an actor
+// non-empty). pay_with_item hard-requires CurrentHuddleID != "" at the substrate
+// — sim.PayWithItem (the barter/offer slow path AND the quote fast-path) rejects
+// a non-huddled buyer — so an actor
 // with no huddle peer storms a doomed call up to the per-tick iteration cap
 // (→ budget_forced) and, carrying no memory of the failure, re-storms it next tick
 // (LLM-329: Hannah Boggs fired pay_with_item at an absent seller 23× / 4 min while
@@ -115,7 +113,7 @@ var visitorTalkOnlyTools = map[string]struct{}{
 // co-presence the restock/satiation buy cues read, so tool and cue can't drift
 // (the discussion-109 invariant). A necessary-condition gate: no huddle peer means
 // a guaranteed substrate reject, so there are no false drops. Advertising-only:
-// the tools stay AvailabilityAvailable and sim.Pay / sim.PayWithItem stay
+// the tools stay AvailabilityAvailable and sim.PayWithItem stays
 // authoritative for any call that arrives.
 //
 // sell and give share the same necessary condition — each substrate rejects a
@@ -125,7 +123,6 @@ var visitorTalkOnlyTools = map[string]struct{}{
 // the lodger rent-shortfall cue (perception lodgingAffordabilityCue) names it
 // without a huddle check, and gating it would leave that cue dangling.
 var payVerbTools = map[string]struct{}{
-	"pay":           {},
 	"pay_with_item": {},
 	"sell":          {},
 	"give":          {},
@@ -210,8 +207,7 @@ const gatherToolName = "gather"
 // reappear once the actor is stationary (arrived, or halted via the stop
 // tool). Kept in sync with the command-side gates — consume
 // (item_commands.go), speak (speak_commands.go), gather (gather_commands.go),
-// pay_with_item (pay_with_item_commands.go), and bare pay (pay_commands.go,
-// which rejects on MoveIntent != nil).
+// and pay_with_item (pay_with_item_commands.go).
 var walkIncompatibleTools = map[string]struct{}{
 	"consume":       {},
 	"speak":         {},
@@ -219,7 +215,6 @@ var walkIncompatibleTools = map[string]struct{}{
 	"pay_with_item": {},
 	"offer_trade":   {}, // ZBBS-HOME-407: same substrate as pay_with_item (walk-in-flight reject)
 	"give":          {}, // LLM-138: GiveItems rejects on MoveIntent != nil (offer the gift when stationary)
-	"pay":           {}, // LLM-99: bare-coin pay re-registered; same walk-in-flight reject
 	"repair":        {}, // LLM-118: StartRepair rejects on MoveIntent != nil (mend at the stall)
 	"stoke":         {}, // LLM-412: StartStoke rejects on MoveIntent != nil (tend the fire on site)
 	"solicit_work":  {}, // LLM-26: SolicitWork rejects on MoveIntent != nil (offer when stationary)

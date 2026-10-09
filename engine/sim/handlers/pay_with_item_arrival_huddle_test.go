@@ -144,31 +144,6 @@ func TestArrival_PayWithItemStillRejectsWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestArrival_PayFormsHuddleOnPay pins that HandlePay (coin transfer) also
-// routes through withHuddleBootstrap: a buyer paying a co-located recipient with
-// no prior huddle succeeds and the two end co-huddled.
-func TestArrival_PayFormsHuddleOnPay(t *testing.T) {
-	w, stop := buildArrivalWorld(t)
-	defer stop()
-
-	cmd, err := handlers.HandlePay(handlers.HandlerInput{
-		ActorID: "buyer", AttemptID: "tk-1",
-		Args: handlers.PayArgs{Recipient: "Elizabeth", Amount: 4},
-	})
-	if err != nil {
-		t.Fatalf("HandlePay: %v", err)
-	}
-	if _, err := w.Send(cmd); err != nil {
-		t.Fatalf("pay-on-arrival rejected (huddle was not bootstrapped): %v", err)
-	}
-	snap := w.Published()
-	bh := snap.Actors["buyer"].CurrentHuddleID
-	sh := snap.Actors["seller"].CurrentHuddleID
-	if bh == "" || bh != sh {
-		t.Errorf("buyer/seller not co-huddled after pay: buyer=%q seller=%q", bh, sh)
-	}
-}
-
 // TestArrival_SceneQuoteFormsHuddleOnQuote pins that HandleSceneQuote
 // (seller-side quote) also routes through withHuddleBootstrap: a seller posting
 // a quote with a co-located customer and no prior huddle succeeds and the two

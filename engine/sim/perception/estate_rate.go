@@ -29,7 +29,7 @@ import (
 // It also names the floor and says he never asks (LLM-665). The inverse of the refund
 // shape: two minutes after his ring showed a real collection at the Mill, he stood
 // at a farm whose owner sat under the floor — where the engine took nothing — and
-// demanded "four-and-twenty coins this quarter". The keeper has the pay tool and no
+// demanded "four-and-twenty coins this quarter". The keeper had the pay tool and no
 // cue, so she handed it over, into HIS purse, and he did it twice more that round:
 // 64 coin gone from three purses, none of it in the chest. The line was silent on
 // why nothing happened at that door, and a collector who has just seen coin taken

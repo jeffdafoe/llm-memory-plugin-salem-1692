@@ -52,12 +52,10 @@ import (
 const MaxPayWithItemItemChars = 64
 
 // MaxPayWithItemNameChars caps each name field (seller, consumers[i]).
-// Mirrors MaxPayRecipientChars / MaxSceneQuoteNameChars.
+// Mirrors MaxSceneQuoteNameChars.
 const MaxPayWithItemNameChars = 100
 
-// MaxPayWithItemForChars caps the optional `for` flavor text. Mirrors
-// MaxPayForChars (the PR B pay tool's flavor cap), since the field
-// serves the same role on the buyer side here.
+// MaxPayWithItemForChars caps the optional `for` flavor text.
 const MaxPayWithItemForChars = 200
 
 // MaxPayWithItemConsumersHandler caps len(consumers[]) in the schema.
@@ -574,68 +572,27 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 	}
 
 	// LLM-290: coins named as the good to buy are currency, not an item —
-	// observed live as pay_with_item(item:"coins"). The intent is unambiguous
-	// (a closed token list), so TRANSLATE to the pay flow instead of steering:
-	// recipient = seller, coins = amount when set (the schema's "coins offered"
-	// field is authoritative), else qty (the "pay 5 coins" as qty=5 shape; the
-	// schema requires qty >= 1, so the payment is never zero). sim.Pay applies
-	// the full payment validation (huddle gate, recipient resolve, balance,
-	// the quote/lodging/labor mis-pay guards), and commitResultContent voices
-	// the settle so the model doesn't wait on an offer that isn't pending.
-	// consume_now/consumers are meaningless for currency and are dropped;
-	// a coin item alongside pay_items GOODS is a sale shape, steered instead
+	// observed live as pay_with_item(item:"coins"). This used to be translated
+	// into a bare coin payment; LLM-726 took bare coin payment away from NPCs
+	// (coin moved for goods that never moved, and for remembered debts paid
+	// again and again), so this shape is refused, or it would be the same door
+	// under another name. Coin moves only against goods or a hire. A coin item
+	// alongside pay_items GOODS is a sale shape, and a coin item on a quote take
+	// means the quoted good was left out — each gets its own steer.
 	// (offer_trade's want_item=coins case steers at decode, so this branch
-	// only ever sees genuine pay_with_item calls).
+	// only ever sees genuine pay_with_item calls.)
 	if sim.IsCoinToken(item) {
 		if len(args.PayItems) > 0 {
 			return sim.Command{}, modelSafef(
-				"pay_with_item: you named coins as the good while also offering goods in payment — that shape is a sale, not a buy. To sell your goods for coins, post them with sell; to just hand over coins, use pay.")
+				"pay_with_item: you named coins as the good while also offering goods in payment — that shape is a sale, not a buy. To sell your goods for coins, post them with sell.")
 		}
-		// A quote take must name the QUOTED GOOD — translating this shape to a
-		// bare payment would move coins while the quote stays open and the
-		// goods never change hands (sim.Pay's LLM-172 guard only fires when
-		// the pay's for-text names the good, which a coin call's doesn't).
-		// Steer to the correct take instead (code_review, round 1).
 		if args.QuoteID != 0 {
 			return sim.Command{}, modelSafef(
 				"pay_with_item: quote_id %d names goods to receive — coins are the payment amount, not the item. Call pay_with_item with quote_id %d, the quoted item name, and your coins in amount.",
 				args.QuoteID, args.QuoteID)
 		}
-		coins := args.Amount
-		if coins <= 0 {
-			coins = args.Qty
-		}
-		forText := strings.Join(strings.Fields(args.For), " ")
-		if forText != "" {
-			if i := indexInvalidControlChar(forText); i >= 0 {
-				return sim.Command{}, modelSafef(
-					"pay_with_item: 'for' contains a disallowed control character at byte offset %d", i)
-			}
-		}
-		say, err := normalizeSayLine("pay_with_item", args.Say)
-		if err != nil {
-			return sim.Command{}, err
-		}
-		now := time.Now().UTC()
-		actorID := in.ActorID
-		hasNewNews := in.HasNewNews
-		pay := sim.Pay(actorID, seller, coins, forText, now)
-		if say == "" {
-			return withHuddleBootstrap(actorID, now, pay), nil
-		}
-		// The translated payment is still a pay_with_item call, and pay_with_item is
-		// tick-terminal — so the buyer's line has to ride along here too (LLM-350),
-		// even though sim.Pay itself is not. Payment first, then the words.
-		return withHuddleBootstrap(actorID, now, sim.Command{Fn: func(w *sim.World) (any, error) {
-			res, err := pay.Fn(w)
-			if err != nil {
-				return nil, err
-			}
-			out := payCoinTranslationResult{Result: res}
-			out.Announced, out.SayRefused = sim.SpeakAlongside(
-				w, actorID, say, seller, hasNewNews, now, "pay_with_item handed over coins")
-			return out, nil
-		}}), nil
+		return sim.Command{}, modelSafef(
+			"pay_with_item: coins aren't an item. To buy, name the good as item, with your coins in amount. Coins alone cannot be handed over — not for a debt, a tip, a gift or a favor — so do not retry with an invented item. A hire pays its wage by itself. Say a word or call done().")
 	}
 
 	// Normalize the consumer list. Per-entry trim + strict-control-char
@@ -765,19 +722,6 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 // before this ticket — payResponseState unwraps both shapes for the harness.
 type payResponseResult struct {
 	State      sim.PayLedgerState
-	Announced  bool
-	SayRefused string
-}
-
-// payCoinTranslationResult wraps sim.Pay's result on pay_with_item's coin-token
-// translation path (LLM-290), so the buyer's folded `say` can be echoed back the
-// way every other folded line is. sim.Pay has no result shape of its own to carry
-// Announced / SayRefused, and the translated call is still a pay_with_item — a
-// terminal tool — so its speech has nowhere else to be reported. Without this the
-// one path that speaks would be the one path that never told the model whether the
-// room heard it (code_review).
-type payCoinTranslationResult struct {
-	Result     any
 	Announced  bool
 	SayRefused string
 }

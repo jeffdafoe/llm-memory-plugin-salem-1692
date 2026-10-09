@@ -189,7 +189,6 @@ func laborSpeakOnlyRegistry(t *testing.T) *Registry {
 		"speak":         RegisterSpeak,
 		"move_to":       RegisterMoveTo,
 		"consume":       RegisterConsume,
-		"pay":           RegisterPay,
 		"pay_with_item": RegisterPayWithItem,
 		"offer_trade":   RegisterOfferTrade,
 		"scene_quote":   RegisterSceneQuote,
@@ -234,7 +233,7 @@ func TestGateTools_Laboring_SpeakOnlySurface(t *testing.T) {
 	r := laborSpeakOnlyRegistry(t)
 	names := specNameSet(gateTools(r, laboringPayload(false), nil))
 
-	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell", "move_to"} {
+	for _, gated := range []string{"pay_with_item", "offer_trade", "sell", "move_to"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a laboring worker; want it stripped (speak-only surface, LLM-230)", gated)
 		}
@@ -257,7 +256,7 @@ func TestGateTools_LaboringWithRedNeed_KeepsMoveTo(t *testing.T) {
 	}
 	// The commerce tools stay stripped even then — a starving worker eats, she
 	// doesn't trade.
-	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+	for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a laboring worker even with a red need; want it stripped", gated)
 		}
@@ -270,7 +269,7 @@ func TestGateTools_NotLaboring_KeepsCommerceTools(t *testing.T) {
 	r := laborSpeakOnlyRegistry(t)
 	payload := perception.Payload{ActorID: "patience", Surroundings: speakAudience()}
 	names := specNameSet(gateTools(r, payload, nil))
-	for _, keep := range []string{"pay", "pay_with_item", "offer_trade", "sell", "move_to", "speak"} {
+	for _, keep := range []string{"pay_with_item", "offer_trade", "sell", "move_to", "speak"} {
 		if names[keep] != 1 {
 			t.Errorf("%q should be advertised to a non-laboring actor; count %d", keep, names[keep])
 		}
@@ -295,7 +294,7 @@ func TestGateTools_LaboringOffPost_KeepsMoveTo(t *testing.T) {
 	if names["move_to"] != 1 {
 		t.Errorf("move_to should be re-granted to an off-post laboring worker (walk back, LLM-268); count %d", names["move_to"])
 	}
-	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+	for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to an off-post laboring worker; commerce stays stripped", gated)
 		}
@@ -310,7 +309,7 @@ func TestGateTools_LaboringEmployerAway_KeepsMoveTo(t *testing.T) {
 	if names["move_to"] != 1 {
 		t.Errorf("move_to should be re-granted so the worker can follow an away employer (LLM-268); count %d", names["move_to"])
 	}
-	for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+	for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a laboring worker with an away employer; commerce stays stripped", gated)
 		}
@@ -342,7 +341,7 @@ func TestGateTools_Laboring_MoveToInvariant(t *testing.T) {
 			if got != wantMove {
 				t.Errorf("move_to advertised=%v, want %v (red=%v off=%v away=%v)", got, wantMove, tc.redNeed, tc.offPost, tc.employerAway)
 			}
-			for _, gated := range []string{"pay", "pay_with_item", "offer_trade", "sell"} {
+			for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
 				if names[gated] != 0 {
 					t.Errorf("%q advertised to a laboring worker; commerce stays stripped in all cases", gated)
 				}

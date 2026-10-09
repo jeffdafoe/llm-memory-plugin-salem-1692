@@ -497,15 +497,11 @@ func TestGateTools_Speak_DroppedWhenNoAudience(t *testing.T) {
 	}
 }
 
-// gatingRegistryWithPay extends the gating test registry with the bare-coin pay
-// tool. RegisterPayWithItemFamily registers pay_with_item but NOT bare pay (that's
-// RegisterPay), so the LLM-329 test registers it to exercise both pay verbs.
+// gatingRegistryWithPay extends the gating test registry with sell and give, the
+// other huddle-bound verbs that ride the LLM-329 gate beside pay_with_item.
 func gatingRegistryWithPay(t *testing.T) *Registry {
 	t.Helper()
 	r := gatingTestRegistry(t)
-	if err := RegisterPay(r); err != nil {
-		t.Fatalf("RegisterPay: %v", err)
-	}
 	for name, reg := range map[string]func(*Registry) error{
 		"sell": RegisterSceneQuote,
 		"give": RegisterGive,
@@ -517,11 +513,11 @@ func gatingRegistryWithPay(t *testing.T) *Registry {
 	return r
 }
 
-// TestGateTools_PayVerbs_DroppedWithoutHuddlePeer — LLM-329: pay / pay_with_item
-// are advertised only when the actor has a co-present huddle peer to transact with
-// (Surroundings.HuddleMembers non-empty). Both hard-require CurrentHuddleID != ""
-// at the substrate — pay resolves the recipient among huddle peers, pay_with_item
-// (offer and quote fast-path alike) rejects a non-huddled buyer — so a not-huddled
+// TestGateTools_PayVerbs_DroppedWithoutHuddlePeer — LLM-329: pay_with_item is
+// advertised only when the actor has a co-present huddle peer to transact with
+// (Surroundings.HuddleMembers non-empty). It hard-requires CurrentHuddleID != ""
+// at the substrate — pay_with_item (offer and quote fast-path alike) rejects a
+// non-huddled buyer — so a not-huddled
 // actor cued to restock/settle storms a doomed call across ticks (Hannah Boggs:
 // pay_with_item at an absent seller 23× / 4 min). The pay analog of the speak
 // audience gate, narrowed to the huddle subset: a co-present but NOT-yet-huddled
@@ -532,7 +528,7 @@ func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
 
 	// Alone with no audience at all → every huddle-bound verb dropped.
 	alone := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
-	for _, v := range []string{"pay", "pay_with_item", "sell", "give"} {
+	for _, v := range []string{"pay_with_item", "sell", "give"} {
 		if alone[v] != 0 {
 			t.Errorf("%q advertised to a lone actor with no huddle peer; count %d", v, alone[v])
 		}
@@ -544,7 +540,7 @@ func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
 		ActorID:      "keeper",
 		Surroundings: perception.SurroundingsView{CoPresent: []perception.HuddleMember{{ID: "customer"}}},
 	}, nil))
-	for _, v := range []string{"pay", "pay_with_item", "sell", "give"} {
+	for _, v := range []string{"pay_with_item", "sell", "give"} {
 		if walkin[v] != 0 {
 			t.Errorf("%q advertised with only a not-yet-huddled walk-in present; count %d", v, walkin[v])
 		}
@@ -558,7 +554,7 @@ func TestGateTools_PayVerbs_DroppedWithoutHuddlePeer(t *testing.T) {
 		ActorID:      "keeper",
 		Surroundings: perception.SurroundingsView{HuddleMembers: []perception.HuddleMember{{ID: "peer"}}},
 	}, nil))
-	for _, v := range []string{"pay", "pay_with_item", "sell", "give"} {
+	for _, v := range []string{"pay_with_item", "sell", "give"} {
 		if huddled[v] != 1 {
 			t.Errorf("%q should be advertised to a huddled actor with a co-present peer; count %d", v, huddled[v])
 		}

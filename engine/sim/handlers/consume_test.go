@@ -220,13 +220,13 @@ func TestHandleConsume_RejectsTab(t *testing.T) {
 }
 
 func TestHandleConsume_WrongArgsType(t *testing.T) {
-	// Passing PayArgs in by mistake (defense in depth — the harness should
+	// Passing PayWithItemArgs in by mistake (defense in depth — the harness should
 	// have routed correctly, but a misroute should surface as a typed error,
 	// not a nil-pointer panic in the type assertion).
 	_, err := HandleConsume(HandlerInput{
 		ActorID:   "hannah",
 		AttemptID: "tk-test",
-		Args:      PayArgs{Recipient: "X", Amount: 1},
+		Args:      PayWithItemArgs{Seller: "X", Item: "ale", Qty: 1, Amount: 1},
 	})
 	if err == nil {
 		t.Fatal("HandleConsume with wrong args type: want error, got nil")
