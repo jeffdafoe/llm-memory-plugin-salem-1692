@@ -1078,8 +1078,18 @@ func _step_work_sprite(sprite: AnimatedSprite2D, step: Vector2) -> void:
         tween.tween_callback(sprite.remove_meta.bind("work_base"))
     sprite.set_meta("work_tween", tween)
 
+## Re-aim everyone working obj_id — an actor drawn before the object it works
+## (snapshot order, an object re-rendered) chops from the stand tile until then.
+func _reaim_work_on(obj_id: String) -> void:
+    for npc_id in placed_npcs:
+        var container: Node2D = placed_npcs[npc_id]
+        if is_instance_valid(container) and str(container.get_meta("source_activity_object_id", "")) == obj_id:
+            _apply_activity_animation(container)
+
 ## Throw chips off each blow: once per sprite, follow its frames and, on a
-## chop's strike frame, burst chips where the axe lands.
+## chop's strike frame, burst chips where the axe lands — only when it lands on
+## the work (no target on hand, or a capped step short of a distant one, throws
+## nothing).
 func _watch_work_strikes(container: Node2D, sprite: AnimatedSprite2D) -> void:
     if sprite.has_meta("work_strikes"):
         return
@@ -1091,12 +1101,18 @@ func _on_work_frame(container: Node2D, sprite: AnimatedSprite2D) -> void:
         return
     if sprite.frame != WorkAim.STRIKE_FRAME or not sprite.animation.ends_with("_chop"):
         return
+    var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+    if target == null:
+        return
     var facing := str(container.get_meta("facing", "south"))
     var step := Vector2.ZERO
     if sprite.has_meta("work_base"):
         step = sprite.position - (sprite.get_meta("work_base") as Vector2)
+    var at := WorkAim.strike_point(Vector2.ZERO, step, facing, sprite.scale.x)
+    if not object_visible_rect(target).grow(WorkAim.BITE).has_point(container.position + at):
+        return
     var chips := WorkChipsScript.new()
-    chips.position = WorkAim.strike_point(Vector2.ZERO, step, facing, sprite.scale.x)
+    chips.position = at
     chips.z_index = 1
     container.add_child(chips)
     chips.burst(WorkChipsScript.palette(_work_target_name(container)), -WorkAim.FACING_DIR.get(facing, Vector2.DOWN))
@@ -2054,6 +2070,7 @@ func _place_object(data: Dictionary) -> void:
         objects_node.add_child(container)
 
     placed_objects[obj_id] = container
+    _reaim_work_on(obj_id)
 
 ## Per-asset draw scale from the catalog entry (LLM-599) — the object-side
 ## counterpart of _sprite_render_scale. Guards absent / zero / non-finite (a

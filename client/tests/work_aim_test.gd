@@ -39,7 +39,7 @@ func _run_once() -> void:
     _chips = load("res://scripts/work_chips.gd")
     for t in TESTS:
         _current = t
-        call(t)
+        await call(t)
     for t in TESTS:
         _check("harness — %s ran to completion" % t, _completed.has(t), true)
     print("\n[work_aim_test] %d checks, %d failure(s)" % [_checks, _failures])
@@ -145,23 +145,13 @@ func _test_burst_throws_chips() -> void:
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
 
 
-## world.gd end to end: the target's visible rect is cut to its drawn pixels,
-## a repairer with the work to the east turns east and steps in, a chop's
-## strike frame throws chips, and the end of the work steps back and idles.
+## world.gd end to end. A repairer drawn before the object it works keeps its
+## stand and throws no chips, then turns and steps in when the object appears;
+## a capped step short of a distant object throws no chips, one that reaches
+## does; the end of the work steps back to the exact stand, and a return cut
+## short by new work still steps from the original stand.
 func _test_world_wiring() -> void:
     var world = load("res://scripts/world.gd").new()
-    # A 40x40 sprite drawn only in its bottom-right 10x10, anchored at
-    # (0.5, 0.85): hit rect (80,-34)-(120,6), drawn part (110,-4)-(120,6).
-    var img := Image.create(40, 40, false, Image.FORMAT_RGBA8)
-    img.fill_rect(Rect2i(30, 30, 10, 10), Color.WHITE)
-    var target := Node2D.new()
-    target.position = Vector2(100, 0)
-    var tex_sprite := Sprite2D.new()
-    tex_sprite.texture = ImageTexture.create_from_image(img)
-    target.add_child(tex_sprite)
-    world.placed_objects["t1"] = target
-    _check("visible rect: cut to the drawn pixels", world.object_visible_rect(target), Rect2(110, -4, 10, 10))
-
     var blank := ImageTexture.create_from_image(Image.create(1024, 1024, false, Image.FORMAT_RGBA8))
     var sheets := {BODY: blank}
     for prop in FarmerRig.PROPS.values():
@@ -172,30 +162,93 @@ func _test_world_wiring() -> void:
         "layers": [{"sheet": BODY, "ramps": {}}], "animations": []}, sheets)
     doll.name = "CharacterSprite"
     doll.scale = Vector2(2, 2)
-    doll.position = Vector2(-64, -82)
+    var base := Vector2(-64, -82)
+    doll.position = base
     var npc := Node2D.new()
     npc.add_child(doll)
     root.add_child(npc)
+    world.placed_npcs["n1"] = npc
+    # Frozen: only _strike() reaches the strike frame, so chips are counted exactly.
+    doll.speed_scale = 0.0
     npc.set_meta("facing", "south")
     npc.set_meta("source_activity_kind", "repair")
     npc.set_meta("source_activity_object_id", "t1")
-    world._apply_activity_animation(npc)
-    _check("work to the east: turned east", npc.get_meta("facing"), "east")
-    _check("work to the east: chopping east", doll.animation, &"east_chop")
-    _check("stand position kept for the step back", doll.get_meta("work_base", Vector2.INF), Vector2(-64, -82))
 
-    doll.frame = 1
-    doll.frame = _aim.STRIKE_FRAME
-    var chips := 0
-    for child in npc.get_children():
-        if child.get_script() == _chips:
-            chips += 1
-    _check("strike frame: chips thrown", chips, 1)
+    world._apply_activity_animation(npc)
+    _check("no target yet: keeps the walk's facing", doll.animation, &"south_chop")
+    _check("no target yet: no step", doll.has_meta("work_base"), false)
+    _strike(doll)
+    _check("no target yet: no chips", _chip_count(npc), 0)
+
+    # A 40x40 sprite drawn only in its bottom-right 10x10, anchored at
+    # (0.5, 0.85): at (140, 0) the drawn part is (150,-4)-(160,6).
+    var img := Image.create(40, 40, false, Image.FORMAT_RGBA8)
+    img.fill_rect(Rect2i(30, 30, 10, 10), Color.WHITE)
+    # Placed through the real render path, which re-aims whoever works it.
+    var catalog: Node = root.get_node("Catalog")
+    catalog.sheet_cache["test://work-target"] = ImageTexture.create_from_image(img)
+    catalog.assets["test-work-target"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 1.0,
+        "states": [{"state": "default", "sheet": "test://work-target", "src_x": 0, "src_y": 0, "src_w": 40, "src_h": 40}]}
+    world.objects_node = Node2D.new()
+    world._place_object({"id": "t1", "asset_id": "test-work-target", "x": 140.0, "y": 0.0})
+    var target: Node2D = world.placed_objects.get("t1", null)
+    _check("object placed", target != null, true)
+    _check("visible rect: cut to the drawn pixels", world.object_visible_rect(target), Rect2(150, -4, 10, 10))
+    _check("object appears: turned east", npc.get_meta("facing"), "east")
+    _check("object appears: chopping east", doll.animation, &"east_chop")
+    _check("stand kept for the step back", doll.get_meta("work_base", Vector2.INF), base)
+    await create_timer(0.35).timeout
+    _check("far object: step capped", doll.position.is_equal_approx(base + Vector2(91, 24).limit_length(48)), true)
+    _strike(doll)
+    _check("far object: the capped swing falls short, no chips", _chip_count(npc), 0)
+
+    # Drawn part now (70,-4)-(80,6): the east strike (63,-24) steps (11,24).
+    target.position = Vector2(60, 0)
+    world._reaim_work_on("t1")
+    await create_timer(0.35).timeout
+    var near := base + Vector2(11, 24)
+    _check("near object: stepped all the way", doll.position.is_equal_approx(near), true)
+    _strike(doll)
+    _check("near object: the blow throws chips", _chip_count(npc), 1)
 
     npc.set_meta("source_activity_kind", "")
     world._apply_activity_animation(npc)
     _check("work done: idle", doll.animation, &"east_idle")
+    await create_timer(0.35).timeout
+    _check("work done: back on the stand", doll.position.is_equal_approx(base), true)
+    _check("work done: stand forgotten", doll.has_meta("work_base"), false)
+
+    # Step in, start back, and take the work up again halfway home: the step
+    # is measured from the original stand, not from where the sprite was.
+    npc.set_meta("source_activity_kind", "repair")
+    world._apply_activity_animation(npc)
+    await create_timer(0.35).timeout
+    npc.set_meta("source_activity_kind", "")
+    world._apply_activity_animation(npc)
+    await create_timer(0.1).timeout
+    npc.set_meta("source_activity_kind", "repair")
+    world._apply_activity_animation(npc)
+    _check("cut-short return: stand unchanged", doll.get_meta("work_base", Vector2.INF), base)
+    await create_timer(0.35).timeout
+    _check("cut-short return: no double step", doll.position.is_equal_approx(near), true)
+
     npc.queue_free()
-    target.free()
+    world.objects_node.free()
+    catalog.assets.erase("test-work-target")
+    catalog.sheet_cache.erase("test://work-target")
     world.free()
     _done()
+
+
+## Run the chop to its strike frame.
+func _strike(doll: AnimatedSprite2D) -> void:
+    doll.frame = 1
+    doll.frame = _aim.STRIKE_FRAME
+
+
+func _chip_count(npc: Node2D) -> int:
+    var n := 0
+    for child in npc.get_children():
+        if child.get_script() == _chips and not child.is_queued_for_deletion():
+            n += 1
+    return n
