@@ -419,10 +419,27 @@ func minorWorksFactCount(objects map[VillageObjectID]*VillageObject, structures 
 }
 
 // atMinorWork reports whether a player stands at a minor work: within
-// minorWorksSiteTiles of it, so a click on the fence segment beside the break
-// still finds it.
+// minorWorksSiteTiles of it, or on any tile a click on it or on one of its
+// edges walks them to — a visitor slot round that piece's loiter pin
+// (pickObjectVisitorSlot keeps within LoiterAttributionTiles of the pin). A
+// fence's pin sits two rows off the rail, so a slot in the row past it is three
+// tiles from the break; the walk must never stop a player out of reach.
 func atMinorWork(w *World, actor *Actor, obj *VillageObject) bool {
-	return obj.Pos.Tile().Chebyshev(actor.Pos) <= minorWorksSiteTiles
+	if obj.Pos.Tile().Chebyshev(actor.Pos) <= minorWorksSiteTiles {
+		return true
+	}
+	pieces := []*VillageObject{obj}
+	for _, dx := range []int{-1, 1} {
+		if n := minorNeighbour(w, obj, dx); n != nil && MinorWorkSiteOf(w.VillageObjects, w.Assets, n) == obj {
+			pieces = append(pieces, n)
+		}
+	}
+	for _, p := range pieces {
+		if pin, ok := effectiveObjectLoiterTile(w, p.ID); ok && pin.Chebyshev(actor.Pos) <= LoiterAttributionTiles {
+			return true
+		}
+	}
+	return false
 }
 
 // minorWorksRoller adapts math/rand/v2's global source to DamageRoller.

@@ -147,6 +147,31 @@ func TestHandlePCRepair_NotAtASiteIs422(t *testing.T) {
 	}
 }
 
+// TestHandlePCRepair_StartNamesTheSite — the body's object_id names the site:
+// another object is refused (422), a malformed body is 400, and the offered
+// site starts.
+func TestHandlePCRepair_StartNamesTheSite(t *testing.T) {
+	w := seededWorld(t)
+	seedRepairPC(t, w, "tester")
+	srv := NewServer(w, okAuth{})
+	if rec := post(t, srv, "/api/village/pc/repair/start", `{"object_id":"not-the-well"}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("start on another object status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	for _, body := range []string{`{"object_id":`, `{"object_id":"well"} trailing`} {
+		if rec := post(t, srv, "/api/village/pc/repair/start", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("malformed body %q status = %d, want 400", body, rec.Code)
+		}
+	}
+	rec := post(t, srv, "/api/village/pc/repair/start", `{"object_id":"well"}`)
+	var started pcRepairOfferResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &started); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("start the well: status %d, %v; body=%s", rec.Code, err, rec.Body.String())
+	}
+	if started.Repair == nil || started.Repair.ObjectID != "well" || !started.Repair.Yours {
+		t.Errorf("start = %+v, want the well, Yours", started.Repair)
+	}
+}
+
 func TestHandlePCRepair_NoPCIs404(t *testing.T) {
 	w := seededWorld(t)
 	srv := NewServer(w, okAuth{})

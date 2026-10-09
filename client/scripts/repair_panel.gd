@@ -7,7 +7,7 @@ extends CanvasLayer
 ## `repair` field, forwarded by talk_panel.gd), and on a click on a damaged
 ## object the player already stands at (probe_click → GET pc/repair/offer).
 ## The dialog shows the damage line and the pay; [Repair it] POSTs
-## pc/repair/start and swaps in the mini-game (repair_stage.gd), which plays
+## pc/repair/start with the offer's object_id and swaps in the mini-game (repair_stage.gd), which plays
 ## one round per step: each won round POSTs pc/repair/step. The last step
 ## lands the repair server-side; the panel shows the object whole, flies the
 ## coins to the top-bar chip and closes.
@@ -471,8 +471,11 @@ func _send(route: String) -> bool:
             return _http_offer.request(Auth.api_base + "/api/village/pc/repair/offer",
                 Auth.auth_headers(false), HTTPClient.METHOD_GET) == OK
         "start":
+            # Name the offered site: the engine starts that one only, never
+            # another break in reach.
             return _http_start.request(Auth.api_base + "/api/village/pc/repair/start",
-                Auth.auth_headers(), HTTPClient.METHOD_POST, "") == OK
+                Auth.auth_headers(), HTTPClient.METHOD_POST,
+                JSON.stringify({"object_id": str(offer.get("object_id", ""))})) == OK
         "step":
             return _http_step.request(Auth.api_base + "/api/village/pc/repair/step",
                 Auth.auth_headers(), HTTPClient.METHOD_POST, "") == OK

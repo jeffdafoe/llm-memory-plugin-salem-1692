@@ -200,11 +200,19 @@ func PCRepairOfferAt(actorID ActorID) Command {
 	}}
 }
 
-// StartPCRepair starts the player's repair of the damaged site they stand at,
-// through the same gates a hand's repair passes (startPublicWorksRepair): not
-// already taken, and the chest can pay. Returns the player's offer (Yours) —
-// the terms the client's game runs on.
+// StartPCRepair starts the player's repair of the damaged site they stand at —
+// StartPCRepairAt with no site named.
 func StartPCRepair(actorID ActorID, now time.Time) Command {
+	return StartPCRepairAt(actorID, "", now)
+}
+
+// StartPCRepairAt starts the player's repair of siteID — the site their dialog
+// offered — or, with siteID empty, of the damaged site they stand at, through
+// the same gates a hand's repair passes (startPublicWorksRepair): not already
+// taken, and the chest can pay. A named site the player is not at is refused
+// (ErrNoRepairSite), never swapped for another in reach. Returns the player's
+// offer (Yours) — the terms the client's game runs on.
+func StartPCRepairAt(actorID ActorID, siteID VillageObjectID, now time.Time) Command {
 	return Command{Fn: func(w *World) (any, error) {
 		actor, err := pcActor(w, actorID)
 		if err != nil {
@@ -218,6 +226,12 @@ func StartPCRepair(actorID ActorID, now time.Time) Command {
 			return nil, errors.New("you are already busy — finish what you're doing first.")
 		}
 		site := publicWorksSiteAt(w, actor)
+		if siteID != "" {
+			site = w.VillageObjects[siteID]
+			if !atPublicWorksSite(w, actor, site) {
+				site = nil
+			}
+		}
 		if site == nil {
 			return nil, ErrNoRepairSite
 		}

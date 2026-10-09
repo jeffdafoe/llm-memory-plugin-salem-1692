@@ -443,3 +443,106 @@ func TestMinorWorksToldAlikeShareOneTickerLine(t *testing.T) {
 		t.Errorf("ticker after one mend = %+v, want fence-5 alone in the single wording", lines)
 	}
 }
+
+// TestMinorWorkReachCoversTheClickWalk — a click on a fence piece walks the
+// player to a slot round that piece's loiter pin, two rows off the rail, so
+// the slot in the row past the pin is three tiles from the break. Every such
+// tile, for the break and both its edges, is in reach; a tile no click on the
+// break lands on is not.
+func TestMinorWorkReachCoversTheClickWalk(t *testing.T) {
+	w, cancel, _ := buildMinorWorksWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("fence-2", "damage")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		at   sim.TilePos
+		want bool
+	}{
+		{"below the break's own pin", sim.TilePos{X: 41, Y: 13}, true},
+		{"below the right edge's pin", sim.TilePos{X: 43, Y: 13}, true},
+		{"below the left edge's pin", sim.TilePos{X: 39, Y: 13}, true},
+		{"past every slot", sim.TilePos{X: 44, Y: 13}, false},
+		{"two rows past the pin", sim.TilePos{X: 41, Y: 14}, false},
+	} {
+		mustSend(t, w, func(world *sim.World) { world.Actors["pat"].Pos = c.at })
+		offer := pcRepairOffer(t, w, "pat")
+		if got := offer != nil && offer.ObjectID == "fence-2"; got != c.want {
+			t.Errorf("%s %v: offered fence-2 = %v, want %v", c.name, c.at, got, c.want)
+		}
+	}
+	mustSend(t, w, func(world *sim.World) { world.Actors["pat"].Pos = sim.TilePos{X: 41, Y: 13} })
+	if _, err := w.Send(sim.StartPCRepairAt("pat", "fence-2", time.Now().UTC())); err != nil {
+		t.Fatalf("start from the click-walk's slot: %v", err)
+	}
+}
+
+// TestMinorWorkStartTakesTheOfferedBreak — two fence breaks three tiles apart,
+// the player in reach of both (the live 10-09 case). The start takes the break
+// the dialog offered, not the lowest id in reach; a named break the player is
+// not at, or a sound placement, is refused, never swapped.
+func TestMinorWorkStartTakesTheOfferedBreak(t *testing.T) {
+	w, cancel, _ := buildMinorWorksWorld(t)
+	defer cancel()
+	mustSend(t, w, func(world *sim.World) {
+		for i, x := range []int{43, 44, 45} {
+			id := sim.VillageObjectID("fence-" + string(rune('4'+i)))
+			world.VillageObjects[id] = &sim.VillageObject{ID: id, AssetID: fenceAssetID, CurrentState: "h", Pos: sim.TilePos{X: x, Y: 10}.Center()}
+		}
+		world.Actors["pat"].Pos = sim.TilePos{X: 42, Y: 12}
+	})
+	for _, id := range []sim.VillageObjectID{"fence-2", "fence-5"} {
+		if _, err := w.Send(sim.SetObjectDamage(id, "damage")); err != nil {
+			t.Fatalf("break %s: %v", id, err)
+		}
+	}
+	if _, err := w.Send(sim.StartPCRepairAt("pat", "fence-lone", time.Now().UTC())); !errors.Is(err, sim.ErrNoRepairSite) {
+		t.Errorf("start on a sound fence: err %v, want ErrNoRepairSite", err)
+	}
+	if _, err := w.Send(sim.StartPCRepairAt("pat", "fence-5", time.Now().UTC())); err != nil {
+		t.Fatalf("start the offered break: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if act := world.Actors["pat"].SourceActivity; act == nil || act.ObjectID != "fence-5" {
+			t.Errorf("pat mends %+v, want fence-5", act)
+		}
+		world.Actors["pat"].SourceActivity = nil
+		world.Actors["pat"].Pos = sim.TilePos{X: 38, Y: 12}
+	})
+	if _, err := w.Send(sim.StartPCRepairAt("pat", "fence-5", time.Now().UTC())); !errors.Is(err, sim.ErrNoRepairSite) {
+		t.Errorf("start a break out of reach with another in reach: err %v, want ErrNoRepairSite", err)
+	}
+}
+
+// TestMinorWorkArrivalOffersOnlyInReach — the arrival thought for a clicked
+// break the walk left the player out of reach of names it but carries no
+// offer, so no dialog opens whose Repair the start refuses.
+func TestMinorWorkArrivalOffersOnlyInReach(t *testing.T) {
+	w, cancel, rec := buildMinorWorksWorld(t)
+	defer cancel()
+	if _, err := w.Send(sim.SetObjectDamage("fence-2", "damage")); err != nil {
+		t.Fatal(err)
+	}
+	narrate := func(at sim.TilePos) *sim.ObjectConditionNarrated {
+		t.Helper()
+		mustSend(t, w, func(world *sim.World) {
+			world.Actors["pat"].Pos = at
+			sim.EmitDamagedObjectNarration(world, world.Actors["pat"], &sim.ActorArrived{DestObjectID: "fence-2"}, time.Now().UTC())
+		})
+		var got *sim.ObjectConditionNarrated
+		rec.countEvents(func(e sim.Event) bool {
+			if n, ok := e.(*sim.ObjectConditionNarrated); ok {
+				got = n
+			}
+			return false
+		})
+		return got
+	}
+	if got := narrate(sim.TilePos{X: 41, Y: 16}); got == nil || got.ObjectID != "fence-2" || got.Offer != nil {
+		t.Errorf("out of reach: narration %+v, want fence-2 with no offer", got)
+	}
+	if got := narrate(sim.TilePos{X: 41, Y: 13}); got == nil || got.Offer == nil || got.Offer.ObjectID != "fence-2" {
+		t.Errorf("in reach: narration %+v, want the fence-2 offer", got)
+	}
+}
