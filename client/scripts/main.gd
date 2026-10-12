@@ -15,6 +15,7 @@ const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
+const InteriorPanelScript = preload("res://scripts/interior_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
 const CandlePromptScript = preload("res://scripts/candle_prompt.gd")
@@ -42,6 +43,13 @@ var inventory_panel_layer: CanvasLayer = null
 ## The town's repair work for the player (LLM-690): offer dialog + mini-game.
 ## See client/scripts/repair_panel.gd.
 var repair_panel_layer: CanvasLayer = null
+## The room of the building the player's character is in (LLM-750).
+## See client/scripts/interior_panel.gd.
+var interior_panel_layer: CanvasLayer = null
+## The structure the interior window last opened for: it opens once per
+## entry, so the ✕ keeps it shut until the character leaves and comes back
+## (or the building is clicked).
+var _interior_structure_id := ""
 var village_ticker: PanelContainer = null
 ## Sleep-fade overlay (ZBBS-WORK-204 Stage B). CanvasLayer with a
 ## ColorRect that tweens to twilight while the local PC sleeps and
@@ -572,6 +580,24 @@ func _build_ui() -> void:
     if talk_panel_layer.has_signal("repair_offered"):
         talk_panel_layer.repair_offered.connect(repair_panel_layer.show_offer)
 
+    # Interior window (LLM-750): opens when the player's character goes into
+    # a building that has a room; modal like the repair panel.
+    interior_panel_layer = CanvasLayer.new()
+    interior_panel_layer.name = "InteriorPanelLayer"
+    interior_panel_layer.set_script(InteriorPanelScript)
+    add_child(interior_panel_layer)
+    interior_panel_layer.world = world
+    interior_panel_layer.opened.connect(func(): _set_modal_blocker("interior", true))
+    interior_panel_layer.closed.connect(func(): _set_modal_blocker("interior", false))
+    interior_panel_layer.person_clicked.connect(func(_npc_id: String):
+        if talk_panel_layer != null and talk_panel_layer.has_method("open"):
+            talk_panel_layer.open())
+    world.npc_metadata_changed.connect(func(npc_id: String):
+        if _pc_actor_id != "" and npc_id == _pc_actor_id:
+            _sync_interior())
+    # /pc/me can land before the character is drawn; catch it when it is.
+    world.npc_list_changed.connect(_sync_interior)
+
     # Inventory popover — shows the player's pack when the top-bar
     # icon is clicked. Layer = 4 so it floats above the talk panel
     # (3) and below the modal config screen (5); a player can open
@@ -1053,6 +1079,8 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     _pc_actor_id = str(data.get("actor_id", ""))
     if footsteps != null:
         footsteps.pc_actor_id = _pc_actor_id
+    # A character already inside at login opens its room (LLM-750).
+    _sync_interior()
     # Slide camera to the PC's actual position on the first /pc/me that
     # reports a placed PC. Login default is the village crossroads, so
     # without this the player has to find their own PC on the map after
@@ -1162,6 +1190,14 @@ func _input(event: InputEvent) -> void:
 func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -> void:
     if world == null:
         return
+    # A click on the building the character is already in reopens its room
+    # (LLM-750) — the ✕ only hid it.
+    var inside_sid := _local_pc_inside_structure_id()
+    if interior_panel_layer != null and InteriorRooms.has_room(inside_sid):
+        var hit_here: Dictionary = world.find_object_at(screen_pos)
+        if str(hit_here.get("id", "")) == inside_sid:
+            interior_panel_layer.open(inside_sid)
+            return
     # A click on an object first asks whether it is town's work the player
     # stands at (LLM-690): if so the repair panel opens and there is no walk;
     # otherwise the walk goes on as below. Ground clicks walk at once.
@@ -1281,6 +1317,32 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
 ## close so concurrent modals (e.g. talk pay modal + notice panel)
 ## don't release the world-input lock for each other. World input
 ## stays locked while any blocker is registered.
+## Open the interior window when the player's character has just gone into a
+## building with a room, close it when they leave (LLM-750). Runs on every
+## metadata change of the PC's container (an inside flip among them) and on
+## /pc/me; acts only when the structure changed, so the ✕ sticks.
+func _sync_interior() -> void:
+    if interior_panel_layer == null or world == null:
+        return
+    var sid := _local_pc_inside_structure_id()
+    if sid == _interior_structure_id:
+        return
+    _interior_structure_id = sid
+    interior_panel_layer.pc_actor_id = _pc_actor_id
+    if InteriorRooms.has_room(sid):
+        interior_panel_layer.open(sid)
+    else:
+        interior_panel_layer.close()
+
+## The structure the player's character is inside, or "".
+func _local_pc_inside_structure_id() -> String:
+    if _pc_actor_id == "" or not world.placed_npcs.has(_pc_actor_id):
+        return ""
+    var c: Node2D = world.placed_npcs[_pc_actor_id]
+    if not bool(c.get_meta("inside", false)):
+        return ""
+    return str(c.get_meta("inside_structure_id", ""))
+
 func _set_modal_blocker(blocker_name: String, enabled: bool) -> void:
     if camera == null:
         return

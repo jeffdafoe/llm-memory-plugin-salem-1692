@@ -25,7 +25,8 @@ class_name FarmerRig
 ## Work animations (LLM-719): scythe = the guide's backhand strike (overlay
 ## animations #01-03), pull, pick = the pick-up crouch and back up, drink =
 ## drink standing (mug #11 south, #12 east; north reuses south, as the guide
-## draws no back view), sit = sit on floor.
+## draws no back view), sit = sit on floor. seat = sit in a chair (LLM-750,
+## the interior window), held.
 ##
 ## The dictionaries below are kept JSON-compatible (double quotes, no
 ## trailing commas) so offline tools can read this file as data.
@@ -115,6 +116,9 @@ const ANIMATIONS := {
     ]},
     "south_sit": {"frames": [{"cell": 197, "ms": 0}]},
     "north_sit": {"frames": [{"cell": 213, "ms": 0}]},
-    "east_sit": {"frames": [{"cell": 229, "ms": 0}]}
+    "east_sit": {"frames": [{"cell": 229, "ms": 0}]},
+    "south_seat": {"frames": [{"cell": 195, "ms": 0}]},
+    "north_seat": {"frames": [{"cell": 211, "ms": 0}]},
+    "east_seat": {"frames": [{"cell": 227, "ms": 0}]}
 }
 # END-JSON
