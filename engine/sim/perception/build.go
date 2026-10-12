@@ -1578,8 +1578,10 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 		// currently working for you" cue, and naming the employer to themselves reads
 		// wrong. Gate the ledger scan on the cheap State mirror first; the ledger is
 		// authoritative for the employer/until.
+		// A post-less employer's hire holds the worker nowhere (sim.LaborHoldsWorker),
+		// so she stays custom and is not marked busy.
 		if peer.State == sim.StateLaboring {
-			if o := laboringOfferFor(snap, memberID); o != nil {
+			if o := laboringOfferFor(snap, memberID); o != nil && laborOfferHoldsWorker(snap, o) {
 				m.Laboring = true
 				if o.EmployerID != subjectID {
 					m.LaboringBystander = true
@@ -5447,8 +5449,9 @@ func buildLaboring(snap *sim.Snapshot, subject sim.ActorID) *LaboringView {
 		return v
 	}
 	post := employer.WorkStructureID
-	if post == "" {
-		return v // an in-place hire (workless employer) — no post to be off
+	if !sim.LaborHoldsWorker(post) {
+		v.Free = true
+		return v
 	}
 	if label, ok := resolveStructureLabel(snap, post); ok {
 		v.PostLabel = label
@@ -5491,6 +5494,14 @@ func laboringOfferFor(snap *sim.Snapshot, workerID sim.ActorID) *sim.LaborOffer 
 	// + the self-state cue) and the world-side return-to-post backstop pick the
 	// same offer for a worker — same employer, same post, no drift (LLM-268).
 	return sim.WorkerWorkingOffer(snap.LaborLedger, workerID)
+}
+
+// laborOfferHoldsWorker is sim.LaborHoldsWorker over a published snapshot: the
+// job holds its worker unless the employer resolves and has no work post. An
+// unresolvable employer reads as held, the same as the reactor's laborPinsWorker.
+func laborOfferHoldsWorker(snap *sim.Snapshot, o *sim.LaborOffer) bool {
+	employer := snap.Actors[o.EmployerID]
+	return employer == nil || sim.LaborHoldsWorker(employer.WorkStructureID)
 }
 
 // buildLaborEnRoute scans snap.LaborLedger for an EnRoute offer where the

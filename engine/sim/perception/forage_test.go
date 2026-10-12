@@ -457,7 +457,7 @@ func TestBuild_ForageErrandWiring(t *testing.T) {
 			DisplayName: "Silence Walker", Kind: sim.KindNPCStateful,
 			CurrentHuddleID: "h1", State: sim.StateLaboring,
 		}
-		snap.Actors["abraham"] = &sim.ActorSnapshot{DisplayName: "Abraham Warren", Kind: sim.KindNPCStateful}
+		snap.Actors["abraham"] = &sim.ActorSnapshot{DisplayName: "Abraham Warren", Kind: sim.KindNPCStateful, WorkStructureID: "farm"}
 		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
 			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"prudence": {}, "silence": {}}},
 		}

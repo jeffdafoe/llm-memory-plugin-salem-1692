@@ -808,7 +808,7 @@ func AcceptWorkSaying(callerID ActorID, laborID LaborID, say string, hasNewNews 
 			var resultWorkingUntil time.Time
 			ws := employer.WorkStructureID
 			switch {
-			case ws == "" || (actorAtWorkpost(w, worker, ws) && actorAtWorkpost(w, employer, ws)):
+			case !LaborHoldsWorker(ws) || (actorAtWorkpost(w, worker, ws) && actorAtWorkpost(w, employer, ws)):
 				startLaborWork(w, offer, worker, employer, at)
 				resultState, resultWorkingUntil = LaborStateWorking, *offer.WorkingUntil
 			default:
@@ -1343,6 +1343,17 @@ func actorAtWorkpost(w *World, a *Actor, workStructureID StructureID) bool {
 		return false
 	}
 	return ActorAtWorkpost(w.VillageObjects, w.Assets, a.InsideStructureID, a.Pos, workStructureID)
+}
+
+// LaborHoldsWorker reports whether a hire for an employer whose work post is
+// employerPost keeps the worker at the job. A post-less employer's hire starts
+// where the deal was struck (AcceptWork's in-place branch) and its task is
+// fiction, so it holds the worker nowhere: she keeps her turns, her move_to and
+// her trade, and is paid when the window ends. The one rule behind the reactor
+// shelve, the reply pacing, the laboring tool strip, the self-state line and the
+// peer busy mark.
+func LaborHoldsWorker(employerPost StructureID) bool {
+	return employerPost != ""
 }
 
 // WorkerWorkingOffer returns the live Working LaborOffer that workerID is

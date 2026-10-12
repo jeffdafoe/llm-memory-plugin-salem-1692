@@ -225,7 +225,7 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 					// and the perception turn-line, which widens the same way,
 					// would be telling him to wait. Keeping the gate and the line
 					// on one value is the point of sharing replyPacedCadence.
-					window := w.awaitReplyWindow(addressee.Kind) + replyPacedCadence(addressee, at, w.Settings)
+					window := w.awaitReplyWindow(addressee.Kind) + replyPacedCadence(w, addressee, at)
 					if actor.hasLiveAwaitEdge(addressedID, at, window) {
 						name := addressee.DisplayName
 						if name == "" {

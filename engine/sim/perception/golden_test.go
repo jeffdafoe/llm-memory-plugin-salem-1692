@@ -1211,8 +1211,8 @@ func TestGoldensLaboringPeerNotAnOfferTarget(t *testing.T) {
 			continue // subject isn't a seller with co-present customers — invariant N/A here
 		}
 		for _, m := range p.Surroundings.HuddleMembers {
-			if laboringOfferFor(snap, m.ID) == nil {
-				continue
+			if o := laboringOfferFor(snap, m.ID); o == nil || !laborOfferHoldsWorker(snap, o) {
+				continue // free, or on a post-less hire that holds her nowhere
 			}
 			exercised = true
 			label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
@@ -1225,6 +1225,33 @@ func TestGoldensLaboringPeerNotAnOfferTarget(t *testing.T) {
 	}
 	if !exercised {
 		t.Error("matrix must exercise a seller scenario with a laboring co-present peer (LLM-231)")
+	}
+}
+
+// TestPostLessHireWorkerIsCustom: a worker on a post-less employer's hire is held
+// nowhere (sim.LaborHoldsWorker), so a seller sees her as custom — listed in the
+// offer cue and not annotated busy. The seller_huddled_with_laboring_peer fixture
+// with Josiah's work post cleared.
+func TestPostLessHireWorkerIsCustom(t *testing.T) {
+	snap, actorID, warrants := sellerHuddledWithLaboringPeer()
+	snap.Actors["josiah"].WorkStructureID = ""
+	p := Build(snap, actorID, warrants)
+	if p.OfferableCustomers == nil {
+		t.Fatal("seller should have an offer cue")
+	}
+	var listed bool
+	for _, name := range p.OfferableCustomers.CustomerNames {
+		if strings.Contains(name, "Patience Walker") {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Errorf("Patience on a post-less hire should be an offerable customer; got %v", p.OfferableCustomers.CustomerNames)
+	}
+	for _, m := range p.Surroundings.HuddleMembers {
+		if m.ID == "patience" && (m.Laboring || m.LaboringBystander) {
+			t.Errorf("Patience on a post-less hire marked busy (Laboring=%v, LaboringBystander=%v)", m.Laboring, m.LaboringBystander)
+		}
 	}
 }
 
@@ -3800,6 +3827,17 @@ var perceptionScenarios = []perceptionScenario{
 			"'come with me' errand can be acted on instead of being silently impossible. The tick that lets her act rides " +
 			"the employer's speech reply-cadence (unchanged); the move_to re-grant is asserted in handlers/labor_gating_test.go.",
 		build: laboringWorkerEmployerAway,
+	},
+	{
+		name: "laboring_worker_post_less_hire",
+		summary: "The live Anne Walker case, 2026-10-12: Anne asked Nathaniel Cole for work outside the shut Tavern and " +
+			"he took her on for four hours. Nathaniel has no work post, so the job started where they stood — and held " +
+			"her there, shelved and stripped of move_to, hungry, while Nathaniel walked off. A post-less employer's hire " +
+			"holds the worker nowhere (sim.LaborHoldsWorker). The golden pins her self-state line: the job and the pay " +
+			"are named, 'Stay with it' is gone, and she is told the work does not hold her in one place — with no " +
+			"head-back or follow-along cue, since there is no post. The tool and reactor halves are asserted in " +
+			"handlers/labor_gating_test.go and sim/reactor_laboring_test.go.",
+		build: laboringWorkerPostLessHire,
 	},
 	{
 		name: "constable_at_farm_worked_by_hired_hand",
@@ -13505,11 +13543,12 @@ func sellerHuddledWithLaboringPeer() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 		Needs:             map[sim.NeedKey]int{},
 	}
 	josiah := &sim.ActorSnapshot{
-		Kind:        sim.KindNPCStateful,
-		DisplayName: "Josiah Thorne",
-		Role:        "shopkeeper",
-		State:       sim.StateIdle,
-		Needs:       map[sim.NeedKey]int{},
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Josiah Thorne",
+		Role:            "shopkeeper",
+		State:           sim.StateIdle,
+		WorkStructureID: sim.StructureID("store"),
+		Needs:           map[sim.NeedKey]int{},
 	}
 	snap := &sim.Snapshot{
 		PublishedAt:      published,
@@ -14600,6 +14639,7 @@ func laboringWorkerAddressedByEmployer() (*sim.Snapshot, sim.ActorID, []sim.Warr
 		DisplayName:       "John Ellis",
 		Role:              "tavernkeeper",
 		State:             sim.StateIdle,
+		WorkStructureID:   tavern,
 		InsideStructureID: tavern,
 		CurrentHuddleID:   huddle,
 		Coins:             50,
@@ -14657,6 +14697,60 @@ func laboringWorkerAddressedByEmployer() (*sim.Snapshot, sim.ActorID, []sim.Warr
 		OccurredAt:     published,
 	}}
 	return snap, silenceID, warrants
+}
+
+// laboringWorkerPostLessHire is Anne Walker on a hire from Nathaniel Cole, who
+// has no work post (WorkStructureID empty), standing alone where the deal was
+// struck while Nathaniel has walked off to the Inn.
+func laboringWorkerPostLessHire() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		anneID      = sim.ActorID("anne")
+		nathanielID = sim.ActorID("nathaniel")
+		inn         = sim.StructureID("inn")
+	)
+	published := time.Date(2026, 10, 12, 11, 30, 0, 0, time.UTC)
+	workingUntil := published.Add(212 * time.Minute)
+	acceptedAt := published.Add(-28 * time.Minute)
+	nathaniel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Nathaniel Cole",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:          sim.KindNPCShared,
+		DisplayName:   "Anne Walker",
+		Role:          "laborer",
+		State:         sim.StateLaboring,
+		Coins:         24,
+		Needs:         map[sim.NeedKey]int{},
+		Acquaintances: map[string]sim.Acquaintance{"Nathaniel Cole": {}},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{anneID: anne, nathanielID: nathaniel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			inn: plainStructure(inn, "Inn"),
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			879: {
+				ID:           879,
+				WorkerID:     anneID,
+				EmployerID:   nathanielID,
+				Reward:       4,
+				DurationMin:  240,
+				State:        sim.LaborStateWorking,
+				AcceptedAt:   &acceptedAt,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	return snap, anneID, nil
 }
 
 // longHeardUtterance is a 372-rune line — the actual utterance Silence Walker

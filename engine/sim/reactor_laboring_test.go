@@ -264,3 +264,50 @@ func TestActorCanReactNow_ReturnToPostDoesNotWakeRester(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 }
+
+// A post-less employer's hire holds the worker nowhere (sim.LaborHoldsWorker):
+// the live Anne Walker case, 2026-10-12 — hired by Nathaniel Cole, who has no
+// work post, in front of the shut Tavern, then shelved there for four hours while
+// hungry. The same window for an employer WITH a post still shelves her, and so
+// does a window whose offer the ledger cannot resolve (the tests above).
+func TestActorCanReactNow_PostLessHireNotShelved(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		employerPost sim.StructureID
+		wantEligible bool
+	}{
+		{"post_less_employer", "", true},
+		{"employer_with_post", "tavern", false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			w, cancel := buildReactorTestWorld(t)
+			defer cancel()
+			if _, err := w.Send(sim.Command{
+				Fn: func(world *sim.World) (any, error) {
+					now := time.Now().UTC()
+					until := now.Add(2 * time.Hour)
+					world.Actors["bob"].WorkStructureID = tc.employerPost
+					world.LaborLedger[7] = &sim.LaborOffer{
+						ID: 7, WorkerID: "alice", EmployerID: "bob",
+						State: sim.LaborStateWorking, WorkingUntil: &until,
+					}
+					a := world.Actors["alice"]
+					a.State = sim.StateLaboring
+					a.LaborID = 7
+					a.LaboringUntil = &until
+					eligible, stale := sim.ActorCanReactNowAt(world, a, now)
+					if eligible != tc.wantEligible {
+						t.Errorf("eligible=%v, want %v", eligible, tc.wantEligible)
+					}
+					if stale {
+						t.Errorf("stale=true, want false")
+					}
+					return nil, nil
+				},
+			}); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		})
+	}
+}

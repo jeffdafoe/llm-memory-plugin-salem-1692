@@ -1190,6 +1190,10 @@ func (v LaborOfferView) SubjectIsEmployer() bool { return !v.EmployerInitiated }
 type LaboringView struct {
 	Employer sim.ActorID
 	Until    time.Time
+	// Free is true when the employer has no work post (sim.LaborHoldsWorker): the
+	// job holds her nowhere, so gateTools strips nothing and the self-state line
+	// says she may go about her day. The post fields below stay empty.
+	Free bool
 	// PostLabel is the employer's workplace name, for the return cue. "" when the
 	// post can't be labelled (its structure has no display name).
 	PostLabel string
