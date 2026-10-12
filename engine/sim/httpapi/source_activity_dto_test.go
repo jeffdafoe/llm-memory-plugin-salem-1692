@@ -33,7 +33,8 @@ func TestSnapshotSourceActivity(t *testing.T) {
 		{"repair with unresolvable id has no label", sim.SourceActivityRepair, "ghost", "repair", ""},
 		{"harvest is place-less", sim.SourceActivityHarvest, "bush", "harvest", ""},
 		{"stoke is place-less", sim.SourceActivityStoke, "market", "stoke", ""},
-		{"refresh is gated out", sim.SourceActivityRefresh, "bush", "", ""},
+		{"refresh is place-less", sim.SourceActivityRefresh, "bush", "refresh", ""},
+		{"bake is gated out", sim.SourceActivityBake, "market", "", ""},
 		{"idle actor carries nothing", "", "", "", ""},
 	}
 	for _, c := range cases {

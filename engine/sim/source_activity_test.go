@@ -463,6 +463,81 @@ func TestRefresh_AutoRepeatsUntilFullOrEmpty(t *testing.T) {
 	}
 }
 
+// sourceActivityRecorder captures the source-activity lifecycle events in order.
+type sourceActivityRecorder struct {
+	mu     sync.Mutex
+	events []sim.Event
+}
+
+func (r *sourceActivityRecorder) record(_ *sim.World, evt sim.Event) {
+	switch evt.(type) {
+	case *sim.SourceActivityStarted, *sim.SourceActivityCompleted, *sim.SourceActivityCancelled:
+		r.mu.Lock()
+		r.events = append(r.events, evt)
+		r.mu.Unlock()
+	}
+}
+
+func (r *sourceActivityRecorder) snapshot() []sim.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]sim.Event(nil), r.events...)
+}
+
+// TestRefresh_ContinuingBiteIsFollowedByStart (LLM-719): the wire sends no clear
+// for a completion with Continues, trusting that the next window's Started
+// follows at once. Pin that: every continuing completion is immediately followed
+// by a refresh Started for the same actor, and the last bite is terminal.
+func TestRefresh_ContinuingBiteIsFollowedByStart(t *testing.T) {
+	w, cancel := buildGatherTestWorld(t)
+	defer cancel()
+	setActorKind(t, w, "hannah", sim.KindPC)
+	setNeed(t, w, "hannah", "hunger", 14)
+	placeAt(t, w, "hannah", "bush")
+	rec := &sourceActivityRecorder{}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(sim.SubscriberFunc(rec.record))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("subscribe recorder: %v", err)
+	}
+
+	if _, err := w.Send(sim.StartRefreshAtArrival("hannah")); err != nil {
+		t.Fatalf("StartRefreshAtArrival: %v", err)
+	}
+	forceComplete(t, w)
+	backdateActivity(t, w, "hannah")
+	forceComplete(t, w)
+
+	events := rec.snapshot()
+	continuing := 0
+	var last *sim.SourceActivityCompleted
+	for i, evt := range events {
+		done, ok := evt.(*sim.SourceActivityCompleted)
+		if !ok {
+			continue
+		}
+		last = done
+		if !done.Continues {
+			continue
+		}
+		continuing++
+		if i+1 >= len(events) {
+			t.Fatalf("continuing completion is the last event: %+v", done)
+		}
+		next, ok := events[i+1].(*sim.SourceActivityStarted)
+		if !ok || next.ActorID != done.ActorID || next.Kind != sim.SourceActivityRefresh {
+			t.Errorf("event after a continuing completion = %#v, want a refresh Started for %s", events[i+1], done.ActorID)
+		}
+	}
+	if continuing != 1 {
+		t.Errorf("continuing completions = %d, want 1 (bite 1 re-arms)", continuing)
+	}
+	if last == nil || last.Continues {
+		t.Errorf("last completion = %+v, want a terminal one", last)
+	}
+}
+
 // TestRefresh_NPCNoEatOnArrivalAtBush (LLM-87): an NPC does NOT auto-eat on
 // arrival at a bush (a finite gatherable source) — it eats via gather->consume
 // instead. StartRefreshAtArrival no-ops for it, applying nothing, even though the

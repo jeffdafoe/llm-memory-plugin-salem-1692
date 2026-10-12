@@ -16,6 +16,17 @@ class_name FarmerRig
 ## The sheet draws each pose once, so a pose is flipped wherever the guide
 ## shows the blade facing the other way — the blade leads the swing.
 ##
+## A prop's cell_size is its sheet's cell (default PROP_CELL_SIZE). The pack's
+## two overlay sheets ("farmer animations 64x64" / "32x32", one animation per
+## row, column 0 a label) have a fixed layout the guide marks in green: a 64x64
+## overlay sits on the body cell at 0,0 and a 32x32 one at 16,16 — measured
+## against the guide, every pixel lands.
+##
+## Work animations (LLM-719): scythe = the guide's backhand strike (overlay
+## animations #01-03), pull, pick = the pick-up crouch and back up, drink =
+## drink standing (mug #11 south, #12 east; north reuses south, as the guide
+## draws no back view), sit = sit on floor.
+##
 ## The dictionaries below are kept JSON-compatible (double quotes, no
 ## trailing commas) so offline tools can read this file as data.
 
@@ -25,7 +36,9 @@ const PROP_CELL_SIZE := 32
 
 # BEGIN-JSON PROPS
 const PROPS := {
-    "axe": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_tool_001_v00.png", "ramps": {"tool_metal": 0, "tool_wood": 0, "tool_accent": 0}}
+    "axe": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_tool_001_v00.png", "ramps": {"tool_metal": 0, "tool_wood": 0, "tool_accent": 0}},
+    "scythe": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_animations_64x64_v00.png", "cell_size": 64, "ramps": {"tool_metal": 0}},
+    "mug": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_animations_32x32_v00.png", "ramps": {}}
 }
 # END-JSON
 
@@ -63,6 +76,45 @@ const ANIMATIONS := {
         {"cell": 164, "ms": 80, "prop": {"pose": 4, "x": 5, "y": 36}},
         {"cell": 165, "ms": 80, "prop": {"pose": 6, "x": 48, "y": 11, "flip_v": true}},
         {"cell": 165, "ms": 300, "prop": {"pose": 6, "x": 48, "y": 11, "flip_v": true}}
-    ]}
+    ]},
+    "south_scythe": {"prop": "scythe", "frames": [
+        {"cell": 132, "ms": 180, "prop": {"pose": 1, "x": 0, "y": 0}},
+        {"cell": 133, "ms": 80, "prop": {"pose": 2, "x": 0, "y": 0}},
+        {"cell": 12, "ms": 80, "prop": {"pose": 3, "x": 0, "y": 0}},
+        {"cell": 12, "ms": 300, "prop": {"pose": 4, "x": 0, "y": 0}}
+    ]},
+    "north_scythe": {"prop": "scythe", "frames": [
+        {"cell": 148, "ms": 180, "prop": {"pose": 9, "x": 0, "y": 0}},
+        {"cell": 149, "ms": 80, "prop": {"pose": 10, "x": 0, "y": 0}},
+        {"cell": 28, "ms": 80, "prop": {"pose": 11, "x": 0, "y": 0}},
+        {"cell": 28, "ms": 300, "prop": {"pose": 12, "x": 0, "y": 0}}
+    ]},
+    "east_scythe": {"prop": "scythe", "frames": [
+        {"cell": 164, "ms": 180, "prop": {"pose": 17, "x": 0, "y": 0}},
+        {"cell": 165, "ms": 80, "prop": {"pose": 18, "x": 0, "y": 0}},
+        {"cell": 44, "ms": 80, "prop": {"pose": 19, "x": 0, "y": 0}},
+        {"cell": 44, "ms": 300, "prop": {"pose": 20, "x": 0, "y": 0}}
+    ]},
+    "south_pull": {"frames": [{"cell": 10, "ms": 400}, {"cell": 11, "ms": 400}]},
+    "north_pull": {"frames": [{"cell": 26, "ms": 400}, {"cell": 27, "ms": 400}]},
+    "east_pull": {"frames": [{"cell": 42, "ms": 400}, {"cell": 43, "ms": 400}]},
+    "south_pick": {"frames": [{"cell": 130, "ms": 600}, {"cell": 0, "ms": 400}]},
+    "north_pick": {"frames": [{"cell": 146, "ms": 600}, {"cell": 16, "ms": 400}]},
+    "east_pick": {"frames": [{"cell": 162, "ms": 600}, {"cell": 32, "ms": 400}]},
+    "south_drink": {"prop": "mug", "frames": [
+        {"cell": 112, "ms": 1200, "prop": {"pose": 61, "x": 16, "y": 16}},
+        {"cell": 113, "ms": 800, "prop": {"pose": 62, "x": 16, "y": 16}}
+    ]},
+    "north_drink": {"prop": "mug", "frames": [
+        {"cell": 112, "ms": 1200, "prop": {"pose": 61, "x": 16, "y": 16}},
+        {"cell": 113, "ms": 800, "prop": {"pose": 62, "x": 16, "y": 16}}
+    ]},
+    "east_drink": {"prop": "mug", "frames": [
+        {"cell": 114, "ms": 1200, "prop": {"pose": 67, "x": 16, "y": 16}},
+        {"cell": 115, "ms": 800, "prop": {"pose": 68, "x": 16, "y": 16}}
+    ]},
+    "south_sit": {"frames": [{"cell": 197, "ms": 0}]},
+    "north_sit": {"frames": [{"cell": 213, "ms": 0}]},
+    "east_sit": {"frames": [{"cell": 229, "ms": 0}]}
 }
 # END-JSON

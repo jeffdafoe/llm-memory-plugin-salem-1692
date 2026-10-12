@@ -203,7 +203,7 @@ func _sync_prop(prop_name: String, f: Dictionary, flip: bool) -> void:
     if not (p is Dictionary) or tex == null:
         _prop.visible = false
         return
-    var size := FarmerRig.PROP_CELL_SIZE
+    var size := int(FarmerRig.PROPS[prop_name].get("cell_size", FarmerRig.PROP_CELL_SIZE))
     var columns: int = max(1, tex.get_width() / size)
     var pose := int(p.get("pose", 0))
     if _prop.texture != tex:

@@ -64,8 +64,8 @@ func TestTranslateEvent_SourceActivityStarted(t *testing.T) {
 		t.Errorf("repair payload = %+v", d)
 	}
 
-	// Stoke and harvest translate too (place-less client-side).
-	for _, k := range []sim.SourceActivityKind{sim.SourceActivityStoke, sim.SourceActivityHarvest} {
+	// Stoke, harvest and refresh translate too (place-less client-side).
+	for _, k := range []sim.SourceActivityKind{sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh} {
 		f, ok := TranslateEvent(&sim.SourceActivityStarted{ActorID: "a", ObjectID: "o", Kind: k})
 		if !ok {
 			t.Fatalf("SourceActivityStarted(%s) should translate", k)
@@ -75,9 +75,9 @@ func TestTranslateEvent_SourceActivityStarted(t *testing.T) {
 		}
 	}
 
-	// Refresh (eat/drink at a source) is deliberately not rendered — dropped.
-	if _, ok := TranslateEvent(&sim.SourceActivityStarted{ActorID: "a", Kind: sim.SourceActivityRefresh}); ok {
-		t.Error("SourceActivityStarted(refresh) should be dropped")
+	// Bake is not rendered (the baker is indoors) — dropped.
+	if _, ok := TranslateEvent(&sim.SourceActivityStarted{ActorID: "a", Kind: sim.SourceActivityBake}); ok {
+		t.Error("SourceActivityStarted(bake) should be dropped")
 	}
 }
 
@@ -107,9 +107,17 @@ func TestTranslateEvent_SourceActivityCleared(t *testing.T) {
 		}
 	}
 
-	// A refresh completion never set a busy line, so it's dropped (no spurious clear).
-	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "a", Kind: sim.SourceActivityRefresh}); ok {
-		t.Error("SourceActivityCompleted(refresh) should be dropped")
+	// A refresh completion clears like the others.
+	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "a", Kind: sim.SourceActivityRefresh}); !ok {
+		t.Error("SourceActivityCompleted(refresh) should clear")
+	}
+	// A PC's auto-repeat bite is not the end of eating: no clear between bites.
+	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "a", Kind: sim.SourceActivityRefresh, Continues: true}); ok {
+		t.Error("SourceActivityCompleted(refresh, continues) should be dropped")
+	}
+	// A bake completion never set a busy line, so it's dropped (no spurious clear).
+	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "a", Kind: sim.SourceActivityBake}); ok {
+		t.Error("SourceActivityCompleted(bake) should be dropped")
 	}
 }
 
