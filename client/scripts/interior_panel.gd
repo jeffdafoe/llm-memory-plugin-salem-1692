@@ -8,7 +8,8 @@ extends CanvasLayer
 ##
 ## main.gd opens it when the character goes in and closes it when they walk
 ## out; the ✕ (or a click on the dimmed village, or Esc) only hides it, and a
-## click on the building reopens it. The window reads the world each half
+## click on the building reopens it. A click on a person opens the talk panel,
+## which sits on the layer above, so the room stays in view behind the talk. The window reads the world each half
 ## second and rebuilds only when who is where has changed.
 ##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
@@ -61,7 +62,9 @@ var _http: HTTPRequest = null
 
 
 func _ready() -> void:
-    layer = 4
+    # Under the talk panel (4): a conversation opened from the room shows in
+    # front of it. main.gd sets this from the talk panel's layer.
+    layer = 3
     _font = load(FONT_PATH) if ResourceLoader.exists(FONT_PATH) else ThemeDB.fallback_font
     _build_ui()
     visible = false

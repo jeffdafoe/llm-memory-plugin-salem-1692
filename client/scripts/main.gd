@@ -586,6 +586,9 @@ func _build_ui() -> void:
     interior_panel_layer.name = "InteriorPanelLayer"
     interior_panel_layer.set_script(InteriorPanelScript)
     add_child(interior_panel_layer)
+    # Under the talk panel (which sets its own layer in _ready), so talk opened
+    # from the room comes up in front of it and the room stays in view.
+    interior_panel_layer.layer = talk_panel_layer.layer - 1
     interior_panel_layer.world = world
     interior_panel_layer.opened.connect(func(): _set_modal_blocker("interior", true))
     interior_panel_layer.closed.connect(func(): _set_modal_blocker("interior", false))
@@ -1325,10 +1328,12 @@ func _sync_interior() -> void:
     if interior_panel_layer == null or world == null:
         return
     var sid := _local_pc_inside_structure_id()
+    # Before the same-structure return: a reconnect can bring a new actor id
+    # while the character is still in the same room.
+    interior_panel_layer.pc_actor_id = _pc_actor_id
     if sid == _interior_structure_id:
         return
     _interior_structure_id = sid
-    interior_panel_layer.pc_actor_id = _pc_actor_id
     if InteriorRooms.has_room(sid):
         interior_panel_layer.open(sid)
     else:

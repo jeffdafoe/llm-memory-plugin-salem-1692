@@ -22,6 +22,8 @@ const TESTS := [
     "_test_person_at",
     "_test_pixel_scale",
     "_test_seat_animations",
+    "_test_main_sync_interior",
+    "_test_under_the_talk_panel",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -313,6 +315,66 @@ func _test_pixel_scale() -> void:
     _check("never below 1x", _panel.pixel_scale_for(Vector2(50, 50), art), 1)
     _check("capped at 4x", _panel.pixel_scale_for(Vector2(4000, 4000), art), 4)
     _done()
+
+
+## main.gd's _sync_interior, driven off-tree: opens on entering, follows a new
+## actor id on reconnect while still inside, keeps a ✕ shut, closes on leaving.
+func _test_main_sync_interior() -> void:
+    _clear_people()
+    _panel.close()
+    var main: Node2D = load("res://scripts/main.gd").new()
+    main.world = _world
+    main.interior_panel_layer = _panel
+    main._pc_actor_id = "pc"
+    var pc := _person("pc", _farmer(), _sid)
+    main._sync_interior()
+    _check("opens on entering", _panel.is_open(), true)
+    _check("knows the character", _panel.pc_actor_id, "pc")
+
+    # Reconnect: a new actor id for the character, same room.
+    pc.free()
+    _world.placed_npcs.erase("pc")
+    _person("pc2", _farmer(), _sid)
+    main._pc_actor_id = "pc2"
+    main._sync_interior()
+    _check("follows the new actor id", _panel.pc_actor_id, "pc2")
+    var cast: Dictionary = _panel.occupants()
+    _check("the character is at the door, not in a seat", cast["placed"][-1], _panel._entry("pc2", _panel.room["door"]))
+
+    _panel.close()
+    main._sync_interior()
+    _check("the ✕ stays shut while inside", _panel.is_open(), false)
+
+    _world.placed_npcs["pc2"].set_meta("inside", false)
+    _world.placed_npcs["pc2"].set_meta("inside_structure_id", "")
+    main._sync_interior()
+    _world.placed_npcs["pc2"].set_meta("inside", true)
+    _world.placed_npcs["pc2"].set_meta("inside_structure_id", _sid)
+    main._sync_interior()
+    _check("going back in opens it again", _panel.is_open(), true)
+    _world.placed_npcs["pc2"].set_meta("inside", false)
+    main._sync_interior()
+    _check("closes on leaving", _panel.is_open(), false)
+    main.free()
+    _done()
+
+
+## A person click opens the talk panel; it must come up in front of the room.
+func _test_under_the_talk_panel() -> void:
+    var talk_layer := _ready_layer_of("res://scripts/talk_panel.gd")
+    _check("talk panel layer found", talk_layer > 0, true)
+    _check("the room sits under the talk panel", _panel.layer < talk_layer, true)
+    _done()
+
+
+## The layer a CanvasLayer script sets for itself in _ready, read from its
+## source (building the talk panel would start its requests).
+func _ready_layer_of(path: String) -> int:
+    var src := FileAccess.get_file_as_string(path)
+    var at := src.find("func _ready()")
+    var re := RegEx.create_from_string("\\n\\s+layer = (\\d+)")
+    var m := re.search(src, at)
+    return int(m.get_string(1)) if m != null else -1
 
 
 func _test_seat_animations() -> void:
