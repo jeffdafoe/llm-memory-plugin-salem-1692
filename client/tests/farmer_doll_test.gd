@@ -220,6 +220,7 @@ func _test_prop_follows_frame() -> void:
     doll.play("north_chop")
     doll.frame = 2
     _check("overhead axe behind the body", prop.show_behind_parent, true)
+    _check("north after south: pose upright again", prop.flip_v, false)
     doll.play("south_walk")
     _check("prop hidden off a work animation", prop.visible, false)
     doll.free()
