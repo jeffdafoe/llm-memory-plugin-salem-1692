@@ -11,8 +11,10 @@ class_name FarmerRig
 ##
 ## Frame fields: cell, ms (0 = hold forever), flip (mirror this frame),
 ## prop (a tool drawn with the frame: pose = 32x32 cell index in the prop
-## sheet, x/y = the pose cell's top-left in body-cell pixels, behind = draw
-## under the body).
+## sheet, x/y = the pose cell's top-left in body-cell pixels, flip / flip_v =
+## mirror the pose sideways / upside down, behind = draw under the body).
+## The sheet draws each pose once, so a pose is flipped wherever the guide
+## shows the blade facing the other way — the blade leads the swing.
 ##
 ## The dictionaries below are kept JSON-compatible (double quotes, no
 ## trailing commas) so offline tools can read this file as data.
@@ -47,8 +49,8 @@ const ANIMATIONS := {
     "south_chop": {"prop": "axe", "frames": [
         {"cell": 131, "ms": 180, "prop": {"pose": 3, "x": 27, "y": -2}},
         {"cell": 132, "ms": 80, "prop": {"pose": 6, "x": 38, "y": 15}},
-        {"cell": 133, "ms": 80, "prop": {"pose": 2, "x": 17, "y": 29}},
-        {"cell": 133, "ms": 300, "prop": {"pose": 2, "x": 17, "y": 29}}
+        {"cell": 133, "ms": 80, "prop": {"pose": 3, "x": 16, "y": 38, "flip": true, "flip_v": true}},
+        {"cell": 133, "ms": 300, "prop": {"pose": 3, "x": 16, "y": 38, "flip": true, "flip_v": true}}
     ]},
     "north_chop": {"prop": "axe", "frames": [
         {"cell": 147, "ms": 180, "prop": {"pose": 0, "x": -2, "y": 29}},
@@ -59,8 +61,8 @@ const ANIMATIONS := {
     "east_chop": {"prop": "axe", "frames": [
         {"cell": 163, "ms": 180, "prop": {"pose": 1, "x": 7, "y": 5, "flip": true}},
         {"cell": 164, "ms": 80, "prop": {"pose": 4, "x": 5, "y": 36}},
-        {"cell": 165, "ms": 80, "prop": {"pose": 6, "x": 48, "y": 11}},
-        {"cell": 165, "ms": 300, "prop": {"pose": 6, "x": 48, "y": 11}}
+        {"cell": 165, "ms": 80, "prop": {"pose": 6, "x": 48, "y": 11, "flip_v": true}},
+        {"cell": 165, "ms": 300, "prop": {"pose": 6, "x": 48, "y": 11, "flip_v": true}}
     ]}
 }
 # END-JSON

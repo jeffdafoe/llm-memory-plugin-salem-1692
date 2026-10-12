@@ -7,12 +7,12 @@ extends RefCounted
 
 ## The axe head on the strike frame, in body-cell px from the feet
 ## (FarmerDoll.ANCHOR), measured from the axe sheet (farmer_tool_001): south
-## cell 133 pose 2, east cell 165 pose 6, west its mirror, north cell 149
-## pose 3.
+## cell 133 pose 3 turned blade-down, east cell 165 pose 6 blade-up, west its
+## mirror, north cell 149 pose 3.
 const STRIKE := {
-    "south": Vector2(1.0, 11.0),
-    "east": Vector2(31.5, -12.0),
-    "west": Vector2(-31.5, -12.0),
+    "south": Vector2(0.0, 11.5),
+    "east": Vector2(31.5, -16.0),
+    "west": Vector2(-31.5, -16.0),
     "north": Vector2(3.0, -37.5),
 }
 const FACING_DIR := {

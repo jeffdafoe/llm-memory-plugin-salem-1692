@@ -205,10 +205,18 @@ func _test_prop_follows_frame() -> void:
     _check("prop at the frame's offset", prop.position, Vector2(f["x"], f["y"]))
     _check("prop pose region", prop.region_rect, Rect2(int(f["pose"]) * 32, 0, 32, 32))
     _check("prop in front", prop.show_behind_parent, false)
+    _check("east strike: blade up", prop.flip_v, true)
+    doll.frame = 0
+    _check("wind-up: pose upright", prop.flip_v, false)
     doll.play("west_chop")
     doll.frame = 2
     _check("mirrored prop offset", prop.position, Vector2(64 - int(f["x"]) - 32, f["y"]))
     _check("mirrored prop flips", prop.flip_h, true)
+    _check("west strike: blade up", prop.flip_v, true)
+    doll.play("south_chop")
+    doll.frame = 2
+    _check("south follow-through: blade turned left", prop.flip_h, true)
+    _check("south follow-through: head down", prop.flip_v, true)
     doll.play("north_chop")
     doll.frame = 2
     _check("overhead axe behind the body", prop.show_behind_parent, true)

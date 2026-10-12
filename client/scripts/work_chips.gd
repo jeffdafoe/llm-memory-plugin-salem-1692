@@ -3,9 +3,9 @@ extends Node2D
 ## the axe lands, arc up and back toward the swinger, fall and fade, then the
 ## node frees itself.
 
-const LIFE := 0.5
+const LIFE := 0.6
 const GRAVITY := 420.0
-const COUNT := 5
+const COUNT := 10
 
 const BARK := [Color8(92, 64, 40), Color8(124, 88, 52)]
 const LEAF := [Color8(86, 128, 52)]
@@ -40,7 +40,7 @@ func burst(colors: Array, back: Vector2) -> void:
             "pos": Vector2(randf_range(-2.0, 2.0), randf_range(-2.0, 2.0)),
             "vel": vel,
             "color": colors[randi() % colors.size()],
-            "size": 2.0 if randf() < 0.6 else 3.0,
+            "size": [2.0, 2.0, 3.0, 3.0, 4.0][randi() % 5],
         })
 
 
