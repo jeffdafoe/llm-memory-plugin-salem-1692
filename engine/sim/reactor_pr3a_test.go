@@ -1297,6 +1297,20 @@ func TestEvaluateReactors_PacedWorkerOperatorNudgeNotDeferred(t *testing.T) {
 	})
 }
 
+// seedLaborJob puts a on a live two-hour Working job for a seeded employer "bob"
+// whose work post is employerPost ("" = post-less, LLM-749).
+func seedLaborJob(world *sim.World, a *sim.Actor, employerPost sim.StructureID, now time.Time) {
+	world.Actors["bob"] = &sim.Actor{ID: "bob", DisplayName: "Bob", WorkStructureID: employerPost}
+	until := now.Add(2 * time.Hour)
+	world.LaborLedger[7] = &sim.LaborOffer{
+		ID: 7, WorkerID: a.ID, EmployerID: "bob",
+		State: sim.LaborStateWorking, WorkingUntil: &until,
+	}
+	a.State = sim.StateLaboring
+	a.LaborID = 7
+	a.LaboringUntil = &until
+}
+
 // TestRepublish_ReplyPacingWindowProjection covers the LLM-536 snapshot
 // projection end-to-end through the real republish path, rather than off a
 // hand-built ActorSnapshot: perception widens its await-reply windows by
@@ -1305,12 +1319,12 @@ func TestEvaluateReactors_PacedWorkerOperatorNudgeNotDeferred(t *testing.T) {
 func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(a *sim.Actor, now time.Time)
+		setup func(world *sim.World, a *sim.Actor, now time.Time)
 		want  time.Duration
 	}{
 		{
 			name: "mid-job worker is paced",
-			setup: func(a *sim.Actor, now time.Time) {
+			setup: func(_ *sim.World, a *sim.Actor, now time.Time) {
 				a.State = sim.StateLaboring
 				until := now.Add(2 * time.Hour)
 				a.LaboringUntil = &until
@@ -1319,7 +1333,7 @@ func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
 		},
 		{
 			name: "mid-bake actor is paced",
-			setup: func(a *sim.Actor, now time.Time) {
+			setup: func(_ *sim.World, a *sim.Actor, now time.Time) {
 				a.SourceActivity = &sim.SourceActivity{
 					Kind:      sim.SourceActivityBake,
 					StartedAt: now.Add(-30 * time.Minute),
@@ -1330,7 +1344,7 @@ func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
 		},
 		{
 			name: "elapsed bake is not paced",
-			setup: func(a *sim.Actor, now time.Time) {
+			setup: func(_ *sim.World, a *sim.Actor, now time.Time) {
 				a.SourceActivity = &sim.SourceActivity{
 					Kind:      sim.SourceActivityBake,
 					StartedAt: now.Add(-time.Hour),
@@ -1341,7 +1355,7 @@ func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
 		},
 		{
 			name: "elapsed labor window is not paced",
-			setup: func(a *sim.Actor, now time.Time) {
+			setup: func(_ *sim.World, a *sim.Actor, now time.Time) {
 				a.State = sim.StateLaboring
 				until := now.Add(-time.Second)
 				a.LaboringUntil = &until
@@ -1349,8 +1363,24 @@ func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
 			want: 0,
 		},
 		{
+			// LLM-749: a post-less employer's hire holds the worker nowhere, so
+			// her replies are not paced either.
+			name: "post-less hire is not paced",
+			setup: func(world *sim.World, a *sim.Actor, now time.Time) {
+				seedLaborJob(world, a, "", now)
+			},
+			want: 0,
+		},
+		{
+			name: "hire at an employer's post is paced",
+			setup: func(world *sim.World, a *sim.Actor, now time.Time) {
+				seedLaborJob(world, a, "tavern", now)
+			},
+			want: 3 * time.Minute,
+		},
+		{
 			name:  "idle actor is not paced",
-			setup: func(a *sim.Actor, now time.Time) {},
+			setup: func(_ *sim.World, a *sim.Actor, now time.Time) {},
 			want:  0,
 		},
 	}
@@ -1361,7 +1391,7 @@ func TestRepublish_ReplyPacingWindowProjection(t *testing.T) {
 			now := time.Now().UTC()
 
 			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-				tc.setup(world.Actors["alice"], now)
+				tc.setup(world, world.Actors["alice"], now)
 				return nil, nil
 			}}); err != nil {
 				t.Fatalf("seed: %v", err)

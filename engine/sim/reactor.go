@@ -1522,18 +1522,20 @@ func (s WorldSettings) agentRateStarvationCeiling() time.Duration {
 
 // laborPinsWorker reports whether a is on a live job that holds her at the work
 // (LaborHoldsWorker) — the LaboringUntil window, for an employer with a work post.
-// An offer or employer that cannot be resolved reads as held, so the shelve
-// stays as it was for a job the ledger has lost track of.
+// The job is picked by WorkerWorkingOffer, the selector perception's
+// buildLaboring uses, so the shelve and the tool surface read the same employer.
+// A job or employer that cannot be resolved reads as held, so the shelve stays
+// as it was for a job the ledger has lost track of.
 func laborPinsWorker(w *World, a *Actor, now time.Time) bool {
 	if a.LaboringUntil == nil || !a.LaboringUntil.After(now) {
 		return false
 	}
-	if o := w.LaborLedger[a.LaborID]; o != nil {
-		if employer := w.Actors[o.EmployerID]; employer != nil {
-			return LaborHoldsWorker(employer.WorkStructureID)
-		}
+	o := WorkerWorkingOffer(w.LaborLedger, a.ID)
+	if o == nil {
+		return true
 	}
-	return true
+	employer := w.Actors[o.EmployerID]
+	return employer == nil || LaborHoldsWorker(employer.WorkStructureID)
 }
 
 // laborReplyCadenceElapsed reports whether enough time has passed since the
