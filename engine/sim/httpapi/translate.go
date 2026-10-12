@@ -504,10 +504,10 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		// LLM-441: surface a player-observable in-flight source activity (a keeper
 		// mending / stoking, a forager gathering) so the Godot actor tooltip reads
 		// "Mending the <place>" / "Tending the fire" / "Gathering" — the player-facing
-		// counterpart to the LLM-440 co-presence prompt annotation. Gated to the three
-		// rendered kinds; refresh (eat/drink at a source) is deliberately left out to
-		// match the perception annotation and to keep the busy line and a rendered
-		// phrase in lockstep. SourceName is stamped on the event at emit; only repair
+		// counterpart to the LLM-440 co-presence prompt annotation. Gated to the
+		// rendered kinds (renderedSourceActivityKind). Refresh (eat/drink at a
+		// source) rides too since LLM-719, for the drink and pick animations; the
+		// client reads eat vs drink off the object's refresh rows. SourceName is stamped on the event at emit; only repair
 		// uses it (stoke/harvest render place-less), but it rides along uniformly. The
 		// line clears on the matching Completed / Cancelled below.
 		if !renderedSourceActivityKind(e.Kind) {
@@ -520,12 +520,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ObjectID:   string(e.ObjectID),
 		}}, true
 	case *sim.SourceActivityCompleted:
-		// Clear the tooltip busy line when the window closes on its own. Gated to the
-		// same three kinds so a refresh completion (never set busy) can't emit a
-		// spurious clear. An empty kind is the client's idle signal. For the rendered
-		// kinds the completion is always terminal (refresh's auto-repeat Continues is
-		// gated out), so one clear per busy window.
-		if !renderedSourceActivityKind(e.Kind) {
+		// Clear the tooltip busy line when the window closes on its own. Same gate.
+		// An empty kind is the client's idle signal. A PC's auto-repeat bite
+		// (Continues) is not the end: the next window's Started follows at once and
+		// keeps the actor busy, so no clear goes out between bites (one would drop
+		// the eating animation to idle for a frame per bite).
+		if !renderedSourceActivityKind(e.Kind) || e.Continues {
 			return WireFrame{}, false
 		}
 		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
@@ -952,7 +952,7 @@ type npcAttributesChangedWireDTO struct {
 
 // sourceActivityChangedWireDTO is the npc_source_activity_changed payload
 // (LLM-441): an actor's in-flight source activity opened or closed. Kind is
-// "repair"/"stoke"/"harvest" while busy, or absent (omitempty) to clear the
+// "repair"/"stoke"/"harvest"/"refresh" while busy, or absent (omitempty) to clear the
 // tooltip line. SourceName is the resolved place label, present only for a
 // repair (stoke/harvest render place-less); absent otherwise. The client keys
 // the update to the actor by id and updates its placed_npcs container meta.
@@ -964,15 +964,15 @@ type sourceActivityChangedWireDTO struct {
 	ObjectID string `json:"object_id,omitempty"`
 }
 
-// renderedSourceActivityKind reports whether a source-activity kind has a
-// player-facing tooltip rendering (LLM-441) — the three "work" kinds, matching
-// the LLM-440 perception co-presence annotation. Refresh (eat/drink at a source)
-// is left out, and an unhandled future kind stays silent rather than flagging
+// renderedSourceActivityKind reports whether a source-activity kind reaches the
+// client: the three "work" kinds (LLM-441 tooltip) and refresh (LLM-719, the
+// eating and drinking animations). Bake is left out (the baker is indoors and
+// never drawn), and an unhandled future kind stays silent rather than flagging
 // busy with no phrase. Shared by the event translator (busy/clear frames) and
 // the snapshot builder (agentsFromSnapshot).
 func renderedSourceActivityKind(k sim.SourceActivityKind) bool {
 	switch k {
-	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest:
+	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh:
 		return true
 	}
 	return false

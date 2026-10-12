@@ -1010,23 +1010,73 @@ func play_npc_animation(container: Node2D, facing: String, kind: String) -> void
         if sprite.animation != anim_name:
             sprite.play(anim_name)
 
-## Work animation per source-activity kind (LLM-691). Only farmer-base sprites
-## carry work animations; every other sprite keeps standing through the work.
-## A hand mending a well, a stall or a fence, or clearing a road, swings a
-## hatchet — the period tool, and the one the pack draws through a full swing.
-const ACTIVITY_ANIMATIONS := {"repair": "chop"}
+## Work animations (LLM-691, LLM-719). Only farmer-base sprites carry them;
+## every other sprite keeps standing through the work. A hand mending a well, a
+## stall or a fence, or clearing a road, swings a hatchet (chop). A harvest
+## picks its motion by the crop (HARVEST_ANIMATIONS, else pick); eating at a
+## source picks and drinking drinks; a villager resting outdoors sits.
+const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "sit"]
+const HARVEST_ANIMATIONS := {"wheat": "scythe", "carrots": "pull"}
 
-## Play the work animation of the container's in-flight source activity, or
-## drop a finished one back to idle. The activity closes when its actor commits
-## a move and the walk owns the sprite from then on, so a clear only reverts a
-## sprite still on a work animation — whichever frame arrives first.
+## The work animation for the container's current activity, or "" for none.
+## Harvest and refresh read the worked object's refresh rows (crop, and eat vs
+## drink); with the object not on hand yet they fall back to pick and drink —
+## an NPC refreshes only at a well — and _reaim_work_on corrects it once the
+## object is drawn.
+func _work_animation(container: Node2D) -> String:
+    match str(container.get_meta("source_activity_kind", "")):
+        "repair":
+            return "chop"
+        "harvest":
+            return str(HARVEST_ANIMATIONS.get(_worked_refresh(container, "gather_item"), "pick"))
+        "refresh":
+            return "pick" if _worked_refresh(container, "attribute") == "hunger" else "drink"
+    if str(container.get_meta("dormant", "")) == "resting":
+        return "sit"
+    return ""
+
+## The `field` (gather_item, attribute) of the first refresh row of the worked
+## object that sets it, or "". A well has two rows: the drink and the water carry.
+func _worked_refresh(container: Node2D, field: String) -> String:
+    var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+    if target == null:
+        return ""
+    var rows = target.get_meta("refreshes", [])
+    if not (rows is Array):
+        return ""
+    for row in rows:
+        if row is Dictionary and str(row.get(field, "")) != "":
+            return str(row.get(field, ""))
+    return ""
+
+## Play the work animation of the container's in-flight source activity (or
+## its outdoor rest), or drop a finished one back to idle. The activity closes
+## when its actor commits a move and the walk owns the sprite from then on, so a
+## clear only reverts a sprite still on a work animation — whichever frame
+## arrives first.
 func _apply_activity_animation(container: Node2D) -> void:
+    # The tooltip's "Eating" / "Drinking" reads this, for every sprite.
+    container.set_meta("source_activity_need", _worked_refresh(container, "attribute"))
     var sprite := _npc_sprite(container)
     if sprite == null or sprite.sprite_frames == null:
         return
     var facing := str(container.get_meta("facing", "south"))
-    var work := str(ACTIVITY_ANIMATIONS.get(str(container.get_meta("source_activity_kind", "")), ""))
-    if work != "" and sprite.sprite_frames.has_animation(facing + "_" + work):
+    var work := _work_animation(container)
+    if work != "" and work != "chop" and sprite.sprite_frames.has_animation(facing + "_" + work):
+        # Face the worked object (a rest has none and keeps its facing). Only
+        # the chop steps in to land its blow.
+        var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+        if target != null:
+            var rect := object_map_rect(target)
+            var at := rect.get_center() if rect.has_area() else target.position
+            var toward := facing_from_vec(at - container.position)
+            if sprite.sprite_frames.has_animation(toward + "_" + work):
+                facing = toward
+                container.set_meta("facing", facing)
+        play_npc_animation(container, facing, work)
+        _step_work_sprite(sprite, Vector2.ZERO)
+        return
+    if work == "chop" and sprite.sprite_frames.has_animation(facing + "_" + work):
         # LLM-743: turn toward the work and step the drawn sprite in so the
         # axe lands on it. No target on hand (not loaded yet, or an old
         # engine) keeps the walk's facing and the stand tile.
@@ -1043,7 +1093,7 @@ func _apply_activity_animation(container: Node2D) -> void:
         _watch_work_strikes(container, sprite)
         return
     _step_work_sprite(sprite, Vector2.ZERO)
-    for kind in ACTIVITY_ANIMATIONS.values():
+    for kind in WORK_ANIMATIONS:
         if sprite.animation.ends_with("_" + str(kind)):
             play_npc_animation(container, facing, "idle")
             return
@@ -3073,6 +3123,8 @@ func apply_npc_dormancy_changed(data: Dictionary) -> void:
     if container == null:
         return
     _apply_dormant_visual(container, _dormant_token(str(data.get("state", ""))))
+    # A villager resting outdoors sits (LLM-719); waking stands them back up.
+    _apply_activity_animation(container)
 
 ## Map a server macro-state to the dormancy token the map renders a sleep marker
 ## for — "sleeping"/"resting" while dormant, "" otherwise. Mirrors the engine's

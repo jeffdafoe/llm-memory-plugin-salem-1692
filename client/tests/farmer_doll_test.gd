@@ -20,6 +20,7 @@ const TESTS := [
     "_test_swap_material",
     "_test_layers_follow_body",
     "_test_prop_follows_frame",
+    "_test_overlay_props",
     "_test_missing_layer_sheet",
     "_test_world_builds_doll",
     "_test_world_activity_animation",
@@ -112,9 +113,13 @@ func _three_layers() -> Array:
 ## Every sheet a farmer needs, as blank textures of the pack's sizes.
 func _sheets() -> Dictionary:
     var out := {BODY: _blank(1024, 1024), SHIRT: _blank(1024, 1024), HAT: _blank(1024, 1024)}
-    for prop in FarmerRig.PROPS.values():
-        out[prop["sheet"]] = _blank(224, 32)
+    for prop_name in FarmerRig.PROPS:
+        var size: Vector2i = PROP_SHEET_SIZES[prop_name]
+        out[FarmerRig.PROPS[prop_name]["sheet"]] = _blank(size.x, size.y)
     return out
+
+## The pack's real prop sheet sizes, so pose regions land as they do live.
+const PROP_SHEET_SIZES := {"axe": Vector2i(224, 32), "scythe": Vector2i(512, 512), "mug": Vector2i(192, 512)}
 
 
 func _doll(layers: Array, sheets: Dictionary) -> FarmerDoll:
@@ -227,6 +232,33 @@ func _test_prop_follows_frame() -> void:
     _done()
 
 
+## The pack's overlay sheets (LLM-719): a 64x64 overlay covers the body cell
+## at 0,0, a 32x32 one sits at 16,16; both stay put when mirrored west.
+func _test_overlay_props() -> void:
+    var doll := _doll(_three_layers(), _sheets())
+    var prop := _prop(doll)
+    doll.play("east_scythe")
+    doll.frame = 1
+    _check("scythe overlay: 64 cell of row #03", prop.region_rect, Rect2(2 * 64, 2 * 64, 64, 64))
+    _check("scythe overlay on the body cell", prop.position, Vector2.ZERO)
+    doll.play("west_scythe")
+    doll.frame = 1
+    _check("mirrored scythe stays on the cell", prop.position, Vector2.ZERO)
+    _check("mirrored scythe flips", prop.flip_h, true)
+    doll.play("south_drink")
+    doll.frame = 0
+    _check("mug: 32 cell of row #11", prop.region_rect, Rect2(1 * 32, 10 * 32, 32, 32))
+    _check("mug at 16,16", prop.position, Vector2(16, 16))
+    doll.play("west_drink")
+    _check("mirrored mug stays at 16,16", prop.position, Vector2(16, 16))
+    doll.play("south_pull")
+    _check("pull has no prop", prop.visible, false)
+    doll.play("east_sit")
+    _check("sit is one held frame", doll.sprite_frames.get_frame_count("east_sit"), 1)
+    doll.free()
+    _done()
+
+
 func _test_missing_layer_sheet() -> void:
     var sheets := _sheets()
     sheets.erase(SHIRT)
@@ -286,6 +318,55 @@ func _test_world_activity_animation() -> void:
     doll.play("east_idle")
     _world._apply_activity_animation(c)
     _check("unmapped kind keeps idle", doll.animation, &"east_idle")
+
+    # LLM-719: harvest picks its motion by the crop, refresh by the need; the
+    # worker turns to the object.
+    var field := Node2D.new()
+    field.position = Vector2(100, 0)
+    _world.placed_objects["o1"] = field
+    c.set_meta("source_activity_object_id", "o1")
+    c.set_meta("source_activity_kind", "harvest")
+    c.set_meta("facing", "north")
+    field.set_meta("refreshes", [{"attribute": "hunger", "gather_item": "wheat"}])
+    _world._apply_activity_animation(c)
+    _check("wheat: scythe", doll.animation, &"east_scythe")
+    _check("wheat: turned to the field", c.get_meta("facing"), "east")
+    field.set_meta("refreshes", [{"attribute": "hunger", "gather_item": "carrots"}])
+    _world._apply_activity_animation(c)
+    _check("carrots: pull", doll.animation, &"east_pull")
+    field.set_meta("refreshes", [{"attribute": "hunger", "gather_item": "blueberries"}])
+    _world._apply_activity_animation(c)
+    _check("berries: pick", doll.animation, &"east_pick")
+    field.position = Vector2(0, -100)
+    c.set_meta("source_activity_kind", "refresh")
+    field.set_meta("refreshes", [{"attribute": "", "gather_item": "water"}, {"attribute": "thirst", "gather_item": ""}])
+    _world._apply_activity_animation(c)
+    _check("well: drink (the drink row, not the carry row)", doll.animation, &"north_drink")
+    _check("well: need for the tooltip", c.get_meta("source_activity_need"), "thirst")
+    field.set_meta("refreshes", [{"attribute": "hunger", "gather_item": "blueberries"}])
+    _world._apply_activity_animation(c)
+    _check("eating at a bush: pick", doll.animation, &"north_pick")
+    _check("bush: need for the tooltip", c.get_meta("source_activity_need"), "hunger")
+    _world.placed_objects.erase("o1")
+    field.free()
+    _world._apply_activity_animation(c)
+    _check("refresh, object not drawn: drink", doll.animation, &"north_drink")
+    c.set_meta("source_activity_kind", "")
+    _world._apply_activity_animation(c)
+    _check("refresh clear: idle", doll.animation, &"north_idle")
+
+    # Resting outdoors sits; waking stands up.
+    c.set_meta("dormant", "resting")
+    _world._apply_activity_animation(c)
+    _check("resting: sit", doll.animation, &"north_sit")
+    c.set_meta("dormant", "sleeping")
+    _world._apply_activity_animation(c)
+    _check("sleeping: no sit (sleep is indoors, LLM-750)", doll.animation, &"north_idle")
+    c.set_meta("dormant", "resting")
+    _world._apply_activity_animation(c)
+    c.set_meta("dormant", "")
+    _world._apply_activity_animation(c)
+    _check("woken: idle", doll.animation, &"north_idle")
     c.free()
 
     # A pack sprite has no work animation and keeps standing.
