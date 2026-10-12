@@ -367,6 +367,10 @@ func _test_world_activity_animation() -> void:
     c.set_meta("dormant", "")
     _world._apply_activity_animation(c)
     _check("woken: idle", doll.animation, &"north_idle")
+    c.set_meta("dormant", "resting")
+    doll.play("north_walk")
+    _world._apply_activity_animation(c)
+    _check("resting flag never sits a walker", doll.animation, &"north_walk")
     c.free()
 
     # A pack sprite has no work animation and keeps standing.

@@ -1062,6 +1062,9 @@ func _apply_activity_animation(container: Node2D) -> void:
         return
     var facing := str(container.get_meta("facing", "south"))
     var work := _work_animation(container)
+    if work == "sit" and sprite.animation.ends_with("_walk"):
+        # A walk owns the sprite; a rest flag that has not caught up never sits a walker.
+        return
     if work != "" and work != "chop" and sprite.sprite_frames.has_animation(facing + "_" + work):
         # Face the worked object (a rest has none and keeps its facing). Only
         # the chop steps in to land its blow.
