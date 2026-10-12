@@ -66,23 +66,23 @@ func _done() -> void:
 ## way from a tile off. Each side picks its own facing and closes the gap.
 func _test_faces_and_steps_toward_the_work() -> void:
     var feet := Vector2.ZERO
-    # East strike lands at (63, -24); the box's near edge is 100, bite 4.
+    # East strike lands at (63, -32); the box's near edge is 100, bite 4.
     var east: Dictionary = _aim.aim(feet, Rect2(100, -60, 40, 60), SCALE, MAX_STEP)
     _check("work to the east: face east", east.get("facing"), "east")
     _check("work to the east: step in to its edge", east.get("step"), Vector2(41, 0))
     var west: Dictionary = _aim.aim(feet, Rect2(-140, -60, 40, 60), SCALE, MAX_STEP)
     _check("work to the west: face west", west.get("facing"), "west")
     _check("work to the west: step in to its edge", west.get("step"), Vector2(-41, 0))
-    # South strike lands at (2, 22); the box starts at 30.
+    # South strike lands at (0, 23); the box starts at 30.
     var south: Dictionary = _aim.aim(feet, Rect2(-20, 30, 40, 30), SCALE, MAX_STEP)
     _check("work below: face south", south.get("facing"), "south")
-    _check("work below: step down to it", south.get("step"), Vector2(0, 12))
+    _check("work below: step down to it", south.get("step"), Vector2(0, 11))
     # North strike lands at (6, -75); the box ends at -100.
     var north: Dictionary = _aim.aim(feet, Rect2(-20, -140, 40, 40), SCALE, MAX_STEP)
     # LLM-747: never the north chop — a side swing steps up to it. East strike
-    # (63,-24) to the box's corner (16,-104) is (-47,-80), capped.
+    # (63,-32) to the box's corner (16,-104) is (-47,-72), capped.
     _check("work above: a side swing, not north", north.get("facing"), "east")
-    _check("work above: step up to it, capped", (north.get("step") as Vector2).is_equal_approx(Vector2(-47, -80).limit_length(MAX_STEP)), true)
+    _check("work above: step up to it, capped", (north.get("step") as Vector2).is_equal_approx(Vector2(-47, -72).limit_length(MAX_STEP)), true)
     _done()
 
 
@@ -114,7 +114,7 @@ func _test_no_target_no_aim() -> void:
 
 func _test_strike_point() -> void:
     _check("strike point: feet + step + strike at scale",
-        _aim.strike_point(Vector2(10, 20), Vector2(5, 0), "east", SCALE), Vector2(10 + 5 + 63, 20 - 24))
+        _aim.strike_point(Vector2(10, 20), Vector2(5, 0), "east", SCALE), Vector2(10 + 5 + 63, 20 - 32))
     _check("strike point: unknown facing is the stepped feet",
         _aim.strike_point(Vector2(10, 20), Vector2(5, 0), "up", SCALE), Vector2(15, 20))
     _done()
@@ -206,15 +206,15 @@ func _test_world_wiring() -> void:
     _check("object appears: chopping east", doll.animation, &"east_chop")
     _check("stand kept for the step back", doll.get_meta("work_base", Vector2.INF), base)
     await create_timer(0.35).timeout
-    _check("far object: step capped", doll.position.is_equal_approx(base + Vector2(91, 24).limit_length(48)), true)
+    _check("far object: step capped", doll.position.is_equal_approx(base + Vector2(91, 32).limit_length(48)), true)
     _strike(doll)
     _check("far object: the capped swing falls short, no chips", _chip_count(npc), 0)
 
-    # Drawn part now (70,-4)-(80,6): the east strike (63,-24) steps (11,24).
+    # Drawn part now (70,-4)-(80,6): the east strike (63,-32) steps (11,32).
     target.position = Vector2(60, 0)
     world._reaim_work_on("t1")
     await create_timer(0.35).timeout
-    var near := base + Vector2(11, 24)
+    var near := base + Vector2(11, 32)
     _check("near object: stepped all the way", doll.position.is_equal_approx(near), true)
     _strike(doll)
     _check("near object: the blow throws chips", _chip_count(npc), 1)
@@ -253,7 +253,7 @@ func _test_world_wiring() -> void:
     _check("swap: stand is the new sprite's anchor", (swapped.get_meta("work_base", Vector2.INF) as Vector2).is_equal_approx(swap_base), true)
     _check("swap: still chopping east", swapped.animation, &"east_chop")
     await create_timer(0.35).timeout
-    _check("swap: stepped in once", swapped.position.is_equal_approx(swap_base + Vector2(11, 24)), true)
+    _check("swap: stepped in once", swapped.position.is_equal_approx(swap_base + Vector2(11, 32)), true)
 
     npc.queue_free()
     world.objects_node.free()
@@ -332,8 +332,8 @@ func _test_debris_is_the_mark() -> void:
     _check("debris arrives: it is the mark", world._work_target(npc), debris)
     _check("debris arrives: faces it", npc.get_meta("facing"), "east")
     await create_timer(0.35).timeout
-    # East strike from (220,30) lands at (283,6); the debris inset is (294..306, -13..-1).
-    _check("debris arrives: stepped onto it", doll.position.is_equal_approx(base + Vector2(11, -7)), true)
+    # East strike from (220,30) lands at (283,-2); the debris inset is (294..306, -13..-1).
+    _check("debris arrives: stepped onto it", doll.position.is_equal_approx(base + Vector2(11, 0)), true)
     _strike(doll)
     var chips: Array = []
     for child in npc.get_children():

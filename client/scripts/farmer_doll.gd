@@ -215,5 +215,6 @@ func _sync_prop(prop_name: String, f: Dictionary, flip: bool) -> void:
         x = FarmerRig.CELL_SIZE - x - size
     _prop.position = Vector2(x, int(p.get("y", 0)))
     _prop.flip_h = flip != bool(p.get("flip", false))
+    _prop.flip_v = bool(p.get("flip_v", false))
     _prop.show_behind_parent = bool(p.get("behind", false))
     _prop.visible = true
