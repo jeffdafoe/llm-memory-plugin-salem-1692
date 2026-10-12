@@ -24,6 +24,7 @@ const TESTS := [
     "_test_seat_animations",
     "_test_main_sync_interior",
     "_test_under_the_talk_panel",
+    "_test_click_to_talk",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -364,6 +365,51 @@ func _test_under_the_talk_panel() -> void:
     var talk_layer := _ready_layer_of("res://scripts/talk_panel.gd")
     _check("talk panel layer found", talk_layer > 0, true)
     _check("the room sits under the talk panel", _panel.layer < talk_layer, true)
+    _done()
+
+
+## The click-to-talk path through main.gd's own handlers: a real click on the
+## stage finds the person, person_clicked reaches main, the talk panel opens,
+## it sits above the room, and the room stays open behind it. The talk panel
+## is a stand-in (the real one starts its requests when built), on the layer
+## the real one sets for itself.
+func _test_click_to_talk() -> void:
+    _clear_people()
+    var stub_script := GDScript.new()
+    stub_script.source_code = "extends CanvasLayer\nvar opened := 0\nfunc open() -> void:\n    opened += 1\n"
+    stub_script.reload()
+    var talk := CanvasLayer.new()
+    talk.set_script(stub_script)
+    talk.layer = _ready_layer_of("res://scripts/talk_panel.gd")
+    var main: Node2D = load("res://scripts/main.gd").new()
+    main.world = _world
+    main.talk_panel_layer = talk
+    main.interior_panel_layer = _panel
+    main._place_interior_under_talk()
+    var on_click := Callable(main, "_on_interior_person_clicked")
+    _panel.person_clicked.connect(on_click)
+
+    _person("keeper", _pack(), _sid, {"work_structure_id": _sid})
+    _panel.open(_sid)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    var click := InputEventMouseButton.new()
+    click.button_index = MOUSE_BUTTON_LEFT
+    click.pressed = true
+    click.position = (Vector2(_panel.room["keeper"]["x"], _panel.room["keeper"]["y"]) + Vector2(0, -10)) * 4
+    _panel._on_stage_input(click)
+    _check("a click on a person opens the talk panel", talk.get("opened"), 1)
+    _check("talk sits above the room", talk.layer > _panel.layer, true)
+    _check("the room stays open behind the talk", _panel.is_open(), true)
+    click.position = Vector2(2, 2) * 4
+    _panel._on_stage_input(click)
+    _check("a click on bare floor opens nothing", talk.get("opened"), 1)
+
+    _panel.person_clicked.disconnect(on_click)
+    _panel.close()
+    main.free()
+    talk.free()
     _done()
 
 

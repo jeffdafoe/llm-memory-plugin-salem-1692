@@ -586,15 +586,11 @@ func _build_ui() -> void:
     interior_panel_layer.name = "InteriorPanelLayer"
     interior_panel_layer.set_script(InteriorPanelScript)
     add_child(interior_panel_layer)
-    # Under the talk panel (which sets its own layer in _ready), so talk opened
-    # from the room comes up in front of it and the room stays in view.
-    interior_panel_layer.layer = talk_panel_layer.layer - 1
+    _place_interior_under_talk()
     interior_panel_layer.world = world
     interior_panel_layer.opened.connect(func(): _set_modal_blocker("interior", true))
     interior_panel_layer.closed.connect(func(): _set_modal_blocker("interior", false))
-    interior_panel_layer.person_clicked.connect(func(_npc_id: String):
-        if talk_panel_layer != null and talk_panel_layer.has_method("open"):
-            talk_panel_layer.open())
+    interior_panel_layer.person_clicked.connect(_on_interior_person_clicked)
     world.npc_metadata_changed.connect(func(npc_id: String):
         if _pc_actor_id != "" and npc_id == _pc_actor_id:
             _sync_interior())
@@ -1338,6 +1334,19 @@ func _sync_interior() -> void:
         interior_panel_layer.open(sid)
     else:
         interior_panel_layer.close()
+
+## Put the room one layer under the talk panel (which sets its own layer in
+## _ready), so talk opened from the room comes up in front of it and the room
+## stays in view behind the conversation.
+func _place_interior_under_talk() -> void:
+    if interior_panel_layer != null and talk_panel_layer != null:
+        interior_panel_layer.layer = talk_panel_layer.layer - 1
+
+## A click on a person in the room opens the talk panel (talk goes through
+## the huddle; there is no per-person target). The room stays open behind it.
+func _on_interior_person_clicked(_npc_id: String) -> void:
+    if talk_panel_layer != null and talk_panel_layer.has_method("open"):
+        talk_panel_layer.open()
 
 ## The structure the player's character is inside, or "".
 func _local_pc_inside_structure_id() -> String:
