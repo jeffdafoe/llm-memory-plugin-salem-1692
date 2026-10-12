@@ -3527,7 +3527,8 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 // head back, or follow along — paired with the move_to gateTools re-grants for the
 // same LaboringView predicate, so cue and tool can't drift. The employer-away
 // (accompany) case takes precedence: if the employer has left, there is no held
-// post to return to, so "head back" would be wrong.
+// post to return to, so "head back" would be wrong. A Free job (post-less
+// employer) drops the "stay with it" — the job holds her nowhere.
 func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf func(sim.ActorID) string, renderedAt time.Time) {
 	if laboring == nil {
 		return
@@ -3555,6 +3556,11 @@ func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf fun
 	mins := minutesUntil(laboring.Until, renderedAt)
 	if mins <= 0 {
 		fmt.Fprintf(b, "You are finishing a job for %s — the work is just about done; you'll be paid as you finish.\n", employer)
+		return
+	}
+	if laboring.Free {
+		fmt.Fprintf(b, "You are doing a job for %s — about %s left; you are paid when it is done. The work does not hold you in one place; go where you need to.\n",
+			employer, humanizeWorkMinutes(mins))
 		return
 	}
 	fmt.Fprintf(b, "You are working a job for %s — about %s of work left. Stay with it until it's done; you are paid when you finish.\n",

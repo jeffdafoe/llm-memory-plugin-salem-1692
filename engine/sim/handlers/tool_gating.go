@@ -499,7 +499,9 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	// LLM-455 talk-only rounds: strip a merchant visitor's commerce tools when he is on his
 	// rounds but not at a sanctioned commerce place (his errand counterparty or a tavern/inn).
 	visitorCommerceStripped := payload.VisitorCommerceStripped
-	laboring := payload.Laboring != nil
+	// A post-less employer's hire holds the worker nowhere (sim.LaborHoldsWorker),
+	// so it strips nothing.
+	laboring := payload.Laboring != nil && !payload.Laboring.Free
 	// LLM-230 strips a laboring worker's move_to to keep her committed, EXCEPT when
 	// she has a red hunger/thirst need (reach food), OR (LLM-268) she has wandered
 	// off the post (walk back) or her employer has left it (follow along). The

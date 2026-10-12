@@ -349,3 +349,19 @@ func TestGateTools_Laboring_MoveToInvariant(t *testing.T) {
 		})
 	}
 }
+
+// TestGateTools_FreeLaboring_StripsNothing: a post-less employer's hire holds the
+// worker nowhere (sim.LaborHoldsWorker, LaboringView.Free), so neither move_to nor
+// the commerce tools are stripped — the live Anne Walker case, left standing four
+// hours outside the shut Tavern on a hire from Nathaniel Cole.
+func TestGateTools_FreeLaboring_StripsNothing(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	p := laboringPayload(false)
+	p.Laboring.Free = true
+	names := specNameSet(gateTools(r, p, nil))
+	for _, keep := range []string{"pay_with_item", "offer_trade", "sell", "move_to", "speak"} {
+		if names[keep] != 1 {
+			t.Errorf("%q should stay advertised on a post-less hire; count %d", keep, names[keep])
+		}
+	}
+}

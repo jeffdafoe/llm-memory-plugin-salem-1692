@@ -1292,7 +1292,10 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	// the underlying signal), no new rail. The speak-only tool surface that keeps
 	// that reply from abandoning the job is applied separately at advertise time
 	// (handlers.gateTools). The high-value interrupts below are unchanged.
-	laboring := a.LaboringUntil != nil && a.LaboringUntil.After(now)
+	//
+	// A post-less employer's hire holds the worker nowhere (LaborHoldsWorker), so
+	// it does not shelve her at all.
+	laboring := laborPinsWorker(w, a, now)
 	if laboring {
 		// hasHiredRepairWarrant (LLM-271): a worker hired at their employer's
 		// already-worn business is woken, on-post, to mend it — otherwise a
@@ -1517,6 +1520,22 @@ func (s WorldSettings) agentRateStarvationCeiling() time.Duration {
 	return defaultAgentRateStarvationCeiling
 }
 
+// laborPinsWorker reports whether a is on a live job that holds her at the work
+// (LaborHoldsWorker) — the LaboringUntil window, for an employer with a work post.
+// An offer or employer that cannot be resolved reads as held, so the shelve
+// stays as it was for a job the ledger has lost track of.
+func laborPinsWorker(w *World, a *Actor, now time.Time) bool {
+	if a.LaboringUntil == nil || !a.LaboringUntil.After(now) {
+		return false
+	}
+	if o := w.LaborLedger[a.LaborID]; o != nil {
+		if employer := w.Actors[o.EmployerID]; employer != nil {
+			return LaborHoldsWorker(employer.WorkStructureID)
+		}
+	}
+	return true
+}
+
 // laborReplyCadenceElapsed reports whether enough time has passed since the
 // worker's last reactor tick for another NPC-speech reply to be due while she is
 // laboring (LLM-230). Keys on lastReactorTickAt — any recent tick, for any
@@ -1577,8 +1596,8 @@ func bakeReplyDue(a *Actor, now time.Time, s WorldSettings) bool {
 // spends it on an unrelated topic (the live LLM-536 trace — Silence Walker
 // ticked 22 minutes after the constable's question and talked about window
 // mending).
-func replyPacedCadence(a *Actor, now time.Time, s WorldSettings) time.Duration {
-	cadence, _, _ := replyPacedWindow(a, now, s)
+func replyPacedCadence(w *World, a *Actor, now time.Time) time.Duration {
+	cadence, _, _ := replyPacedWindow(w, a, now)
 	return cadence
 }
 
@@ -1598,7 +1617,8 @@ func replyPacedCadence(a *Actor, now time.Time, s WorldSettings) time.Duration {
 // still coming, so it should expire with the work rather than with the
 // bookkeeping: in that ~1s gap the actor falls back to ordinary eviction, and
 // once the sweep lands it is eligible and ticks anyway.
-func replyPacedWindow(a *Actor, now time.Time, s WorldSettings) (time.Duration, time.Time, bool) {
+func replyPacedWindow(w *World, a *Actor, now time.Time) (time.Duration, time.Time, bool) {
+	s := w.Settings
 	if a == nil {
 		return 0, time.Time{}, false
 	}
@@ -1608,7 +1628,7 @@ func replyPacedWindow(a *Actor, now time.Time, s WorldSettings) (time.Duration, 
 	if a.State == StateResting || (a.BreakUntil != nil && a.BreakUntil.After(now)) {
 		return 0, time.Time{}, false
 	}
-	if a.LaboringUntil != nil && a.LaboringUntil.After(now) {
+	if laborPinsWorker(w, a, now) {
 		return s.laborReplyCadence(), *a.LaboringUntil, true
 	}
 	if a.BusyAtSource(now) && a.SourceActivity.Kind == SourceActivityBake {
@@ -1652,8 +1672,8 @@ func replyPacedWindow(a *Actor, now time.Time, s WorldSettings) (time.Duration, 
 // latency for no reason. The clamp only applies while that end is still in the
 // future, so the returned instant is always after now — a target in the past
 // would re-enter the evaluator on the next 250ms scan and spin.
-func replyCadenceDeferUntil(a *Actor, now time.Time, s WorldSettings) (time.Time, bool) {
-	cadence, end, paced := replyPacedWindow(a, now, s)
+func replyCadenceDeferUntil(w *World, a *Actor, now time.Time) (time.Time, bool) {
+	cadence, end, paced := replyPacedWindow(w, a, now)
 	if !paced || !hasNPCSpeechWarrant(a.Warrants) || hasForcedWarrant(a.Warrants) {
 		return time.Time{}, false
 	}

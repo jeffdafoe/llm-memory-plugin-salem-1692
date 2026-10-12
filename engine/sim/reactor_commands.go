@@ -715,7 +715,7 @@ func EvaluateReactors(now time.Time) Command {
 					// rester, a pile carrying no speech warrant, and any cycle
 					// holding a Force warrant all keep the ZBBS-WORK-361 handling
 					// below unchanged.
-					if until, ok := replyCadenceDeferUntil(actor, now, w.Settings); ok {
+					if until, ok := replyCadenceDeferUntil(w, actor, now); ok {
 						actor.WarrantDueAt = &until
 						continue
 					}
