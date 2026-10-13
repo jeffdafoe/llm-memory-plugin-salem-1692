@@ -27,6 +27,7 @@ const TESTS := [
     "_test_click_to_talk",
     "_test_speech_bubbles",
     "_test_bubble_survives_a_redraw",
+    "_test_carried_bubble_turns_with_its_speaker",
     "_test_room_and_village_bubbles_stack_apart",
     "_test_hidden_bubble_takes_no_room",
 ]
@@ -428,6 +429,7 @@ func _test_speech_bubbles() -> void:
     var bubble: Node2D = keeper.get_node_or_null(_panel.BUBBLE_NODE)
     _check("a bubble over the keeper", bubble != null, true)
     _check("anchored just above a head in room pixels", bubble.anchor_y, _panel.BUBBLE_ANCHOR_Y)
+    _check("the keeper, on the right, gets a bubble that opens left", bubble.opens_left, true)
     _panel.say("keeper", "Stew is three coins.")
     var bubbles := keeper.get_children().filter(func(c): return str(c.name).begins_with(_panel.BUBBLE_NODE))
     _check("a newer line replaces the bubble", bubbles.size(), 1)
@@ -438,6 +440,13 @@ func _test_speech_bubbles() -> void:
     _world.npc_spoke.emit("guest", "Guest", "Evening.", "speak", "", "", [], 0.0, 0.0, "", "", "", {}, true, [])
     _check("npc_spoke puts a bubble over the guest",
         _panel._people.get_node("guest").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    # The character at the door, in the middle of the room, opens right.
+    _panel.pc_actor_id = "pc"
+    _person("pc", _farmer(), _sid)
+    _panel.refresh()
+    _panel.say("pc", "Evening.")
+    var pc_bubble: Node2D = _panel._people.get_node("pc").get_node(_panel.BUBBLE_NODE)
+    _check("the character at the door opens right", pc_bubble.opens_left, false)
     _panel.close()
     _done()
 
@@ -458,6 +467,38 @@ func _test_bubble_survives_a_redraw() -> void:
     _world.placed_npcs["newcomer"].set_meta("inside", false)
     _panel.refresh()
     _check("a speaker who left takes their bubble along", _panel._people.get_node_or_null("newcomer"), null)
+    _panel.close()
+    _done()
+
+
+## LLM-752: a bubble carried over a redraw that moved its speaker to the other
+## side of the room turns to open the other way.
+func _test_carried_bubble_turns_with_its_speaker() -> void:
+    _clear_people()
+    var spots: Array = InteriorRooms.room_for(_sid)["spots"]
+    var west := -1
+    var east := -1
+    var half: float = InteriorRooms.room_for(_sid)["size"].x / 2.0
+    for i in spots.size():
+        if west < 0 and float(spots[i]["x"]) < half:
+            west = i
+        if east < 0 and float(spots[i]["x"]) > half:
+            east = i
+    _check("harness — a spot on each side", west >= 0 and east >= 0, true)
+    _person("guest", _farmer(), _sid)
+    _panel.open(_sid)
+    _panel._assigned = {"guest": west}
+    _panel._signature = ""
+    _panel.refresh()
+    _panel.say("guest", "Over here.")
+    var bubble: Node2D = _panel._people.get_node("guest").get_node(_panel.BUBBLE_NODE)
+    _check("on the left it opens right", bubble.opens_left, false)
+    _panel._assigned = {"guest": east}
+    _panel._signature = ""
+    _panel.refresh()
+    var carried: Node = _panel._people.get_node("guest").get_node_or_null(_panel.BUBBLE_NODE)
+    _check("the bubble carried over", carried != null and is_instance_valid(bubble) and carried == bubble, true)
+    _check("moved to the right, it opens left", bubble.opens_left, true)
     _panel.close()
     _done()
 

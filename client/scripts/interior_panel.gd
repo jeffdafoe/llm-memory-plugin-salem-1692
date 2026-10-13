@@ -297,7 +297,12 @@ func _draw_people(cast: Dictionary) -> void:
     for id in bubbles:
         var holder := _people.get_node_or_null(NodePath(id))
         if holder != null:
-            holder.add_child(bubbles[id])
+            # The speaker may have moved to the other side of the room.
+            var carried: Node2D = bubbles[id]
+            if carried.opens_left != _opens_left_at(holder):
+                carried.opens_left = _opens_left_at(holder)
+                carried.queue_redraw()
+            holder.add_child(carried)
         else:
             bubbles[id].free()
     var more := int(cast["more"])
@@ -363,8 +368,16 @@ func say(npc_id: String, text: String) -> void:
     var bubble: Node2D = SpeechBubbleScript.new()
     bubble.name = BUBBLE_NODE
     bubble.anchor_y = BUBBLE_ANCHOR_Y
+    bubble.opens_left = _opens_left_at(holder)
     holder.add_child(bubble)
     bubble.setup(text)
+
+
+## On the right side of the room a bubble opens left, over the room rather
+## than past the window's edge (LLM-752).
+func _opens_left_at(holder: Node) -> bool:
+    var size: Vector2i = room.get("size", Vector2i(128, 112))
+    return (holder as Node2D).position.x > size.x / 2.0
 
 
 func _on_npc_spoke(npc_id: String, _name: String, text: String, _kind: String, _at: String,

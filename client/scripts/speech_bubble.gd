@@ -44,6 +44,12 @@ const ANCHOR_Y := -88.0
 ## art pixels.
 var anchor_y := ANCHOR_Y
 
+## The art bubble opens to the speaker's left: the 9-slice mirrored, its tail
+## at the bottom-right, the text unmirrored. The room window (LLM-752) sets it
+## for people on the right side of a room so the bubble stays over the room.
+## The plain bubble is centred on its tail and ignores it.
+var opens_left := false
+
 const ART_SHEET := "res://assets/tilesets/mana-seed/fonts/chat bubble, variable 16x16.png"
 const ART_PIXEL_SCALE := 2        # screen px per art px, at any zoom and window size
 # The sheet is 64x48. Column 40 is uniform top to bottom, so repeating it
@@ -341,7 +347,10 @@ func _local_rect() -> Rect2:
     if _use_art:
         var grow: Vector2 = _art_grow()
         # Down to the last tail row; the sheet's rows under it are empty.
-        return Rect2(_art_origin(), Vector2(_art_sheet.get_width() + grow.x, ART_TAIL_TIP.y + grow.y + 1.0))
+        var rect := Rect2(_art_origin(), Vector2(_art_sheet.get_width() + grow.x, ART_TAIL_TIP.y + grow.y + 1.0))
+        if opens_left:
+            rect.position.x = 1.0 - rect.end.x
+        return rect
     var w: float = _content_size.x + 2 * PADDING_X
     var h: float = _content_size.y + 2 * PADDING_Y
     return Rect2(-w * 0.5, -TAIL_HEIGHT - h, w, h + TAIL_HEIGHT)
@@ -420,7 +429,11 @@ func _place_text_layer() -> void:
     if _text_layer == null:
         return
     _text_layer.scale = _art_per_ui
-    _text_layer.position = _art_origin() + ART_TEXT_ORIGIN
+    var at: Vector2 = _art_origin() + ART_TEXT_ORIGIN
+    if opens_left:
+        # The text room mirrored: the sheet pads it the same on both sides.
+        at.x = 1.0 - at.x - (ART_TEXT_ROOM.x + _art_grow().x)
+    _text_layer.position = at
     _text_layer.queue_redraw()
 
 
@@ -450,6 +463,10 @@ func _draw_art() -> void:
         [float(ART_BOTTOM_ROW), bottom_rows, bottom_rows],
     ]
     var dst_top: float = 0.0
+    if opens_left:
+        # Mirror about the tail: x -> 1 - x keeps the tip's pixel on [0, 1),
+        # where the stem draws.
+        draw_set_transform(Vector2(1, 0), 0.0, Vector2(-1, 1))
     for band in bands:
         if band[2] > 0.0:
             for col in 3:
@@ -458,6 +475,7 @@ func _draw_art() -> void:
                 dst.position += origin
                 draw_texture_rect_region(_art_sheet, dst, src)
         dst_top += band[2]
+    draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 ## The art path's text, in UI units on the text layer.
