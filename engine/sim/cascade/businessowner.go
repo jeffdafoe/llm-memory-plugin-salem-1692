@@ -87,7 +87,9 @@ func RegisterBusinessowner(_ context.Context, w *sim.World) {
 //     trading "welcome friend!" is silly; the gate avoids it.
 //  2. At least one OtherMember of the new huddle has BusinessownerState
 //     != nil AND WorkStructureID == event.StructureID (at-post check).
-//  3. The keeper is not sleeping or resting.
+//  3. The keeper is not sleeping or resting, and the joiner is not working
+//     a job for them (LLM-760: their hand joining a customer's conversation
+//     is not a customer).
 //  4. The keeper has no LLM agent (ZBBS-HOME-461). A VA-backed keeper greets
 //     in character on its own huddle-peer-joined tick, so the engine greet
 //     would only duplicate it; the engine greet is kept for an agent-less
@@ -136,6 +138,11 @@ func handleHuddleJoinedBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand) 
 			continue
 		}
 		if keeper.State == sim.StateSleeping || keeper.State == sim.StateResting {
+			continue
+		}
+		// LLM-760: a keeper does not welcome their own hand, who joins the
+		// customer's conversation while working a job for them.
+		if o := sim.WorkerWorkingOffer(w.LaborLedger, joined.ActorID); o != nil && o.EmployerID == peerID {
 			continue
 		}
 		// ZBBS-HOME-461: an LLM-backed keeper greets in character on its own

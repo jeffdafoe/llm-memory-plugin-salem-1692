@@ -65,7 +65,7 @@ func TestArrivalBusinessHuddle_HandJoins(t *testing.T) {
 // Joining an existing keeper conversation pulls the hand in too.
 func TestArrivalBusinessHuddle_HandJoinsExistingKeeperHuddle(t *testing.T) {
 	now := time.Now().UTC()
-	w, _, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
+	w, rec, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
 		{id: "keeper", inside: tavern, kind: sim.KindNPCStateful, keeperOf: tavern, huddleID: "hud-existing"},
 		{id: "regular", inside: tavern, kind: sim.KindNPCStateful, huddleID: "hud-existing"},
 		{id: "hand", inside: tavern, kind: sim.KindNPCShared},
@@ -78,6 +78,11 @@ func TestArrivalBusinessHuddle_HandJoinsExistingKeeperHuddle(t *testing.T) {
 
 	if got := readHuddleOf(t, w, "hand"); got != "hud-existing" {
 		t.Fatalf("hand huddle = %q, want hud-existing", got)
+	}
+	// The hand joins with the keeper already there: the keeper still greets
+	// only the customer, never their own hand.
+	if got := len(rec.bySpeaker("keeper")); got != 1 {
+		t.Fatalf("keeper greets = %d, want 1 (the customer only)", got)
 	}
 }
 

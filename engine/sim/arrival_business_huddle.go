@@ -133,10 +133,9 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now t
 
 			// LLM-760: hands working here for the keeper join too, or a
 			// customer's words never reach them (a laboring hand is shelved
-			// from ticks, but a PC speaking in the huddle wakes them). They
-			// join FIRST: the greet subscriber greets any non-keeper joiner
-			// who finds a keeper already in the huddle, and a keeper must
-			// not welcome their own hand.
+			// from ticks, but a PC speaking in the huddle wakes them). The
+			// greet subscriber never has a keeper welcome their own hand
+			// (cascade/businessowner.go gate 3).
 			hands := shopHandsAt(w, actor.ID, structureID, now)
 			for _, id := range hands {
 				if _, err := JoinHuddle(id, structureID, sceneID, now).Fn(w); err != nil {
