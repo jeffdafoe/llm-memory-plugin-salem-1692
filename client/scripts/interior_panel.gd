@@ -81,6 +81,10 @@ const SPEAK_HOLD := 4.0
 const HANDOFF_HOLD := 2.0
 const HANDOFF_AWAY := 0.6
 const HANDOFF_SLIDE := 14.0
+## In a room (LLM-757) a sale is served from the bar at SERVE_SPEED art px a
+## second; a meal set on a table stays MEAL_SECONDS before it is gone.
+const SERVE_SPEED := 48.0
+const MEAL_SECONDS := 6.0
 
 var world: Node2D = null
 var pc_actor_id := ""
@@ -251,6 +255,9 @@ func open(sid: String) -> void:
         world.pay_resolved.connect(on_pay_resolved)
     var was_open := visible
     for child in _handoff.get_children():
+        # Its tween is bound to it and dies with it; stopped first all the same.
+        if child.has_meta("tween"):
+            (child.get_meta("tween") as Tween).kill()
         child.free()
     _handoffs = []
     _handoff_now = {}
@@ -357,7 +364,9 @@ func occupants() -> Dictionary:
     _assigned = seated["spots"]
     var placed: Array = []
     if keeper_id != "":
-        placed.append(_entry(keeper_id, room.get("keeper", {})))
+        var k := _entry(keeper_id, room.get("keeper", {}))
+        k["keeper"] = true
+        placed.append(k)
     for id in others:
         if _assigned.has(id):
             placed.append(_entry(id, spots[int(_assigned[id])]))
@@ -463,6 +472,8 @@ func _draw_people(cast: Dictionary) -> void:
         holder.position = home
         holder.set_meta("home", home)
         holder.set_meta("sprite_data", sprite_data)
+        if bool(entry.get("keeper", false)):
+            holder.set_meta("keeper", true)
         holder.add_child(spr)
         # A window just opened draws everyone at their spots: nothing carries
         # over from the last time it was open.
@@ -636,6 +647,12 @@ func _bustle(delta: float) -> void:
 
 ## The person behind a stall's counter, or null.
 func _tending() -> Node2D:
+    if not is_stall():
+        # A room's keeper stands among the others, marked by _draw_people.
+        for child in _people.get_children():
+            if child.has_meta("keeper") and not child.has_meta("leaving"):
+                return child
+        return null
     for child in _staff.get_children():
         if not child.has_meta("leaving"):
             return child
@@ -825,8 +842,15 @@ func _draw_goods() -> void:
 ## be drawn: a goods picture, or for a sale anything on the shelf (a service
 ## has neither). Trades between customers, and offers that fell through, pass
 ## the counter by. The shelf is re-read at once.
+##
+## A room with a bar (the Tavern, LLM-757) hands a sale across its bar the
+## same way: the keeper steps to the bar's front and sets the good down, and
+## it is served — to the table in front of a seated buyer, where it stays a
+## while (a meal is eaten), or toward a standing buyer or the player's
+## character at the door; a good the keeper buys lies on the bar until they
+## take it.
 func on_pay_resolved(data: Dictionary) -> void:
-    if not visible or not is_stall() or str(data.get("terminal_state", "")) != "accepted":
+    if not visible or not (is_stall() or room.has("bar")) or str(data.get("terminal_state", "")) != "accepted":
         return
     var keeper := _tending()
     if keeper == null:
@@ -838,7 +862,8 @@ func on_pay_resolved(data: Dictionary) -> void:
         return
     if not (StallScenes.GOODS.has(item) or (selling and _on_shelf(item))):
         return
-    _request_wares(true)
+    if is_stall():
+        _request_wares(true)
     # The goods sheet still downloading: nothing to hand over.
     if _texture(StallScenes.GOODS_SHEET) == null:
         return
@@ -855,15 +880,26 @@ func _next_handoff() -> void:
         _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
         return
     var h: Dictionary = _handoffs.pop_front()
-    # Where along the counter: in front of the other party, or the middle
-    # when they are not drawn.
-    var size: Vector2i = room.get("size", StallScenes.SIZE)
-    var x := float(StallScenes.KEEPER["x"])
-    var customer := _people.get_node_or_null(NodePath(str(h["other"]))) as Node2D
-    if customer != null:
-        x = clampf(customer.position.x, 10.0, size.x - 10.0)
-    h["x"] = roundf(x)
-    var good := _handoff_good(str(h["item"]), int(h["qty"]), h["x"])
+    var keeper := _tending()
+    var at: Vector2
+    if is_stall():
+        # Where along the counter: in front of the other party, or the middle
+        # when they are not drawn.
+        var size: Vector2i = room.get("size", StallScenes.SIZE)
+        var x := float(StallScenes.KEEPER["x"])
+        var customer := _people.get_node_or_null(NodePath(str(h["other"]))) as Node2D
+        if customer != null:
+            x = clampf(customer.position.x, 10.0, size.x - 10.0)
+        at = Vector2(roundf(x), StallScenes.COUNTER_Y)
+        h["stop"] = Vector2(at.x, (keeper.get_meta("home") as Vector2).y if keeper != null else 0.0)
+        h["facing"] = "south"
+    else:
+        at = _spot_point(room["bar"])
+        h["stop"] = _spot_point(room.get("reach", room["keeper"]))
+        h["facing"] = str(room["keeper"].get("facing", "south"))
+        h["serve"] = _serve_to(str(h["other"]), at)
+    h["keeper"] = str(keeper.name) if keeper != null else ""
+    var good := _handoff_good(str(h["item"]), int(h["qty"]), at)
     if good == null:
         _next_handoff()
         return
@@ -876,15 +912,40 @@ func _next_handoff() -> void:
     _handoff_walk()
 
 
-## The good for a handoff: its goods picture, one of it or two for more, on
-## the counter at x — hidden until it is shown. Null without the goods sheet.
-func _handoff_good(item: String, qty: int, x: float) -> Node2D:
+## A spot's {x, y} as a point.
+func _spot_point(spot: Dictionary) -> Vector2:
+    return Vector2(int(spot.get("x", 0)), int(spot.get("y", 0)))
+
+
+## Where a sale on a room's bar is served to `buyer` (the good's bottom
+## middle), and whether it stays there: the table in front of a seated buyer
+## (it stays — a meal is eaten); most of the way toward a standing buyer or
+## the player's character at the door (it fades as it goes). {} for a buyer
+## not drawn: it stays on the bar a moment and goes.
+func _serve_to(buyer: String, bar: Vector2) -> Dictionary:
+    var spot: Dictionary = {}
+    if buyer != "" and buyer == pc_actor_id:
+        spot = room.get("door", {})
+    elif _assigned.has(buyer):
+        spot = room["spots"][int(_assigned[buyer])]
+    if spot.is_empty():
+        return {}
+    if spot.has("serve"):
+        return {"to": _spot_point(spot["serve"]), "stay": true}
+    var person := _spot_point(spot) + Vector2(0, -6)
+    return {"to": bar.lerp(person, 0.6).round(), "stay": false}
+
+
+## The good for a handoff: its goods picture, one of it or two for more,
+## standing at `at` (its bottom middle) — hidden until it is shown. Null
+## without the goods sheet.
+func _handoff_good(item: String, qty: int, at: Vector2) -> Node2D:
     var sheet := _texture(StallScenes.GOODS_SHEET)
     if sheet == null:
         return null
     var good := Node2D.new()
     good.name = "handoff_" + item
-    good.position = Vector2(x - StallScenes.CELL.x / 2.0, StallScenes.COUNTER_Y - StallScenes.CELL.y)
+    good.position = _cell_at(at)
     var cell := AtlasTexture.new()
     cell.atlas = sheet
     cell.region = StallScenes.cell_rect(2 * StallScenes.goods_index(item))
@@ -909,13 +970,20 @@ func _handoff_walk() -> void:
     if keeper.has_meta("walking"):
         (keeper.get_meta("walking") as Tween).kill()
         keeper.remove_meta("walking")
-    var stop := Vector2(float(_handoff_now["x"]), (keeper.get_meta("home") as Vector2).y)
-    _walk(keeper, stop, WALK_SPEED, "south", "stand", _handoff_arrived)
+    _walk(keeper, _handoff_now["stop"], WALK_SPEED, str(_handoff_now["facing"]), "stand", _handoff_arrived)
 
 
-## The keeper is at the handoff: a good sold is set down, lies a moment and
-## goes toward the buyer (down, out of the stall); a good bought is taken up
-## (toward the keeper). Then the next handoff.
+## A good's cell position (top-left) for a good standing at `at` (its bottom
+## middle).
+func _cell_at(at: Vector2) -> Vector2:
+    return Vector2(at.x - StallScenes.CELL.x / 2.0, at.y - StallScenes.CELL.y)
+
+
+## The keeper is at the handoff: a good sold is set down and lies a moment;
+## at a stall it then goes toward the buyer (down, out of the stall), in a
+## room it is served (_serve_to) — a meal to the table, where it stays while
+## the next handoff begins. A good bought is taken up toward the keeper. In a
+## room the keeper then steps back to their spot.
 func _handoff_arrived() -> void:
     if _handoff_now.is_empty() or bool(_handoff_now["arrived"]):
         return
@@ -931,13 +999,49 @@ func _handoff_arrived() -> void:
         t.tween_interval(HANDOFF_HOLD)
     else:
         t.tween_interval(0.3)
-    var away := Vector2(0, HANDOFF_SLIDE if selling else -HANDOFF_SLIDE)
-    t.tween_property(good, "position", good.position + away, HANDOFF_AWAY)
-    t.parallel().tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
+    if not is_stall():
+        t.tween_callback(_keeper_back.bind(str(_handoff_now["keeper"])))
+    var serve: Dictionary = _handoff_now.get("serve", {})
+    if selling and serve.has("to"):
+        var to := _cell_at(serve["to"])
+        var seconds := maxf(good.position.distance_to(to) / SERVE_SPEED, 0.2)
+        t.tween_property(good, "position", to, seconds)
+        if bool(serve["stay"]):
+            # On the table: the counter is free for the next one meanwhile.
+            t.tween_callback(_next_handoff)
+            t.tween_interval(MEAL_SECONDS)
+            t.tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
+            t.tween_callback(good.queue_free)
+            good.set_meta("tween", t)
+            return
+        t.parallel().tween_property(good, "modulate:a", 0.0, seconds)
+    elif selling and not is_stall():
+        # Sold to someone not drawn: it fades where it lies on the bar.
+        t.tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
+    else:
+        var away := Vector2(0, HANDOFF_SLIDE) if selling else Vector2(0, -HANDOFF_SLIDE)
+        if not is_stall():
+            away = Vector2(HANDOFF_SLIDE, 0)
+        t.tween_property(good, "position", good.position + away, HANDOFF_AWAY)
+        t.parallel().tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
     t.tween_callback(func():
         good.queue_free()
         _next_handoff())
     good.set_meta("tween", t)
+
+
+## A room's keeper steps back to their spot after a handoff — the keeper
+## who made it (`keeper_id`), redrawn or not; never someone who has taken
+## their place since. A walk they are on is stopped for it.
+func _keeper_back(keeper_id: String) -> void:
+    var keeper := _tending()
+    if keeper == null or str(keeper.name) != keeper_id:
+        return
+    if keeper.has_meta("walking"):
+        (keeper.get_meta("walking") as Tween).kill()
+        keeper.remove_meta("walking")
+    var spot: Dictionary = room.get("keeper", {})
+    _walk(keeper, keeper.get_meta("home"), WALK_SPEED, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
 
 
 func _on_shelf(item: String) -> bool:

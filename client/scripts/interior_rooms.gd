@@ -19,9 +19,14 @@ const ROOMS := {
         "size": Vector2i(128, 112),
         "keeper": {"x": 112, "y": 86, "facing": "west"},
         "door": {"x": 64, "y": 111, "facing": "north"},
+        # A sale is set on the bar's front arm (LLM-757): `bar` is where the
+        # good stands (its bottom middle), `reach` where the keeper steps to
+        # set it down; a seat's `serve` is where a meal lands on the table.
+        "bar": {"x": 90, "y": 94},
+        "reach": {"x": 102, "y": 86},
         "spots": [
-            {"x": 16, "y": 98, "facing": "east", "pose": "seat"},
-            {"x": 56, "y": 98, "facing": "west", "pose": "seat"},
+            {"x": 16, "y": 98, "facing": "east", "pose": "seat", "serve": {"x": 31, "y": 87}},
+            {"x": 56, "y": 98, "facing": "west", "pose": "seat", "serve": {"x": 39, "y": 87}},
             {"x": 76, "y": 100, "facing": "east", "pose": "stand"},
             {"x": 52, "y": 68, "facing": "south", "pose": "stand"},
             {"x": 68, "y": 74, "facing": "south", "pose": "stand"},
