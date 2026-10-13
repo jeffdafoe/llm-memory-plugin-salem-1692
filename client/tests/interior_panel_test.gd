@@ -678,6 +678,13 @@ func _test_stall_lay_out() -> void:
     _check("every slot used, no more", slots.size(), StallScenes.FLOOR_SLOTS.size() + StallScenes.COUNTER_SLOTS.size())
     _check("the seventh pile lies on the counter", [slots[6]["cell"], slots[6]["count"]], [2 * StallScenes.GOODS["apples"], 2])
     _check("nothing empty", StallScenes.lay_out([]), [])
+
+    # A trade's own floor slots (the smithy keeps the forge's side clear):
+    # piles past them go to the counter.
+    var right := [78, 94, 110]
+    slots = StallScenes.lay_out(many, right)
+    _check("piles on the trade's slots", [slots[0]["at"].x, slots[2]["at"].x], [78, 110])
+    _check("the fourth pile lies on the counter", [slots[3]["cell"], slots[3]["at"].y], [2 * StallScenes.GOODS["apples"], StallScenes.COUNTER_Y - 32])
     _done()
 
 
@@ -692,6 +699,21 @@ func _test_stall_at() -> void:
     _check("a stall has a scene", StallScenes.scene_for(_world, _assets(), STALL)["sheet"], StallScenes.SHEETS["Market Stall (Tiled)"])
     _check("titled by its name", StallScenes.scene_for(_world, _assets(), STALL)["title"], "General Store")
     _check("a well has none", StallScenes.scene_for(_world, _assets(), "well"), {})
+    _check("an untagged stall lays piles on both sides", StallScenes.scene_for(_world, _assets(), STALL)["floor_slots"], StallScenes.FLOOR_SLOTS)
+
+    # LLM-762: a stall tagged with a trade draws its roof's stall dressed for
+    # the trade, whatever its id; other tags change nothing.
+    var stall: Node2D = _world.placed_objects[STALL]
+    stall.set_meta("tags", ["business", "shop", "market_stall"])
+    _check("a shop tag keeps the plain stall", StallScenes.scene_for(_world, _assets(), STALL)["sheet"], "/tilesets/interiors/stall_tiled.png")
+    stall.set_meta("tags", ["business", "smithy", "market_stall"])
+    var smithy := StallScenes.scene_for(_world, _assets(), STALL)
+    _check("a smithy tag dresses the roof's stall", smithy["sheet"], "/tilesets/interiors/stall_tiled_smithy.png")
+    _check("a smithy lays piles clear of the forge", smithy["floor_slots"], StallScenes.TRADES["smithy"]["floor_slots"])
+    _check("still found as a stall at its pin", StallScenes.stall_at(_world, _assets(), pin), STALL)
+    stall.set_meta("tags", "smithy")
+    _check("tags that are not a list are no trade", StallScenes.trade_of(stall), "")
+    stall.remove_meta("tags")
     _done()
 
 
@@ -805,6 +827,19 @@ func _test_stall_draws() -> void:
     _check("the floor behind the keeper", _panel._goods_back.get_index() < _panel._staff.get_index(), true)
     var pile: Sprite2D = _panel._goods_back.get_child(0)
     _check("the pile's cell", (pile.texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["apples"] + 1))
+    _check("the pile on the first floor slot", pile.position.x, float(StallScenes.FLOOR_SLOTS[0]))
+
+    # LLM-762: a smithy draws its own backdrop and keeps its piles off the
+    # forge's side.
+    _world.placed_objects[STALL].set_meta("tags", ["smithy"])
+    _panel.close()
+    _panel.open(STALL)
+    _check("the smithy backdrop", _panel.room["sheet"], "/tilesets/interiors/stall_tiled_smithy.png")
+    pile = _panel._goods_back.get_child(0)
+    _check("the smithy's pile on its first slot", pile.position.x, float(StallScenes.TRADES["smithy"]["floor_slots"][0]))
+    _world.placed_objects[STALL].remove_meta("tags")
+    _panel.close()
+    _panel.open(STALL)
 
     # The keeper's line shows over their head behind the counter.
     _panel.say("keeper", "Fresh apples today.")

@@ -17,6 +17,14 @@ const SHEETS := {
     "Market Stall (Tiled)": "/tilesets/interiors/stall_tiled.png",
     "Market Stall (Fancy)": "/tilesets/interiors/stall_fancy.png",
 }
+## Trade backdrops (LLM-762): a stall tagged with a trade in the editor draws
+## its roof's stall dressed for that trade — stall_<roof>_<trade>.png, built
+## beside the plain one by build_stalls.gd — so a second smithy needs only the
+## tag. `floor_slots` replaces FLOOR_SLOTS where the dressing stands on the
+## floor (the smithy's forge is on the left).
+const TRADES := {
+    "smithy": {"floor_slots": [78, 94, 110]},
+}
 const COUNTER_SHEET := "/tilesets/interiors/stall_counter.png"
 const GOODS_SHEET := "/tilesets/interiors/stall_goods.png"
 
@@ -68,10 +76,16 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
     if sheet == "":
         return {}
     var title := str(node.get_meta("display_name", ""))
+    var trade := trade_of(node)
+    var floor_slots: Array = FLOOR_SLOTS
+    if trade != "":
+        sheet = sheet.replace(".png", "_%s.png" % trade)
+        floor_slots = TRADES[trade]["floor_slots"]
     return {
         "kind": "stall",
         "title": title if title != "" else "Market Stall",
         "sheet": sheet,
+        "floor_slots": floor_slots,
         "counter": COUNTER_SHEET,
         "size": SIZE,
         "keeper": KEEPER,
@@ -86,6 +100,18 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
 static func sheet_for(assets: Dictionary, node: Node2D) -> String:
     var asset: Dictionary = assets.get(str(node.get_meta("asset_id", "")), {})
     return str(SHEETS.get(str(asset.get("name", "")), ""))
+
+
+## The stall's trade, from the tags set on it in the editor: the first of
+## TRADES it carries, or "".
+static func trade_of(node: Node2D) -> String:
+    var tags = node.get_meta("tags", [])
+    if not tags is Array:
+        return ""
+    for trade in TRADES:
+        if tags.has(trade):
+            return trade
+    return ""
 
 
 ## The stall's loiter pin in (unpadded) map tiles: the object's anchor tile
@@ -137,7 +163,7 @@ static func stall_at(world: Node, assets: Dictionary, tile: Vector2i) -> String:
 ## top-left in art pixels. Piles take the floor slots (in the order given);
 ## the rest lie on the counter — piles past the floor first, as a few — two of
 ## a good for a few, one for one. Goods past the last slot are not drawn.
-static func lay_out(wares: Array) -> Array:
+static func lay_out(wares: Array, floor_slots: Array = FLOOR_SLOTS) -> Array:
     var piles: Array = []
     var loose: Array = []
     for w in wares:
@@ -149,9 +175,9 @@ static func lay_out(wares: Array) -> Array:
     var counter: Array = []
     for w in piles:
         var index := goods_index(str(w.get("item", "")))
-        if out.size() < FLOOR_SLOTS.size():
+        if out.size() < floor_slots.size():
             out.append({"item": str(w["item"]), "cell": 2 * index + 1,
-                "at": Vector2i(FLOOR_SLOTS[out.size()], FLOOR_Y - CELL.y), "count": 1})
+                "at": Vector2i(floor_slots[out.size()], FLOOR_Y - CELL.y), "count": 1})
         else:
             counter.append({"item": w["item"], "stock": "few"})
     var counter_used := 0

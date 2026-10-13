@@ -1110,7 +1110,7 @@ func _draw_goods() -> void:
     var sheet := _texture(StallScenes.GOODS_SHEET)
     if sheet == null:
         return
-    for slot in StallScenes.lay_out(_wares):
+    for slot in StallScenes.lay_out(_wares, room.get("floor_slots", StallScenes.FLOOR_SLOTS)):
         var cell := AtlasTexture.new()
         cell.atlas = sheet
         cell.region = StallScenes.cell_rect(int(slot["cell"]))
