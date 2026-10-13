@@ -2503,6 +2503,14 @@ func _test_room_pieces() -> void:
     var chair := _piece_at(8, 70)
     var table := _piece_at(20, 72)
     _check("the diner sits in front of their chair and the table", [guest.position.y > chair.position.y, guest.position.y > table.position.y], [true, true])
+    # A tap on furniture finds nobody; a person over furniture is still found.
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _panel._clip.position = Vector2.ZERO
+    _check("a tap on the bar's bare end finds nothing", _panel.thing_at(Vector2(126, 104) * 4), {})
+    _check("a tap on the table's far side finds nothing", _panel.thing_at(Vector2(36, 74) * 4), {})
+    _check("a tap on the keeper over the bar finds them", str(_panel.thing_at((keeper.position + Vector2(0, -16)) * 4).get("id", "")), "keeper")
     # A newcomer redraws the people; the furniture stays as it was.
     var before := _pieces()
     _person("newcomer", _farmer(), _sid)
