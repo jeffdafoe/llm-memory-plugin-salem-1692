@@ -627,7 +627,8 @@ func _draw_people(cast: Dictionary) -> void:
             "sprite_data": child.get_meta("sprite_data", {}), "hand": child.has_meta("hand"),
             "turn_left": child.get_meta("turn_left") if child.has_meta("turn_left") else null,
             "facing": child.get_meta("facing") if child.has_meta("facing") else null,
-            "smithing": child.get_meta("smithing") if child.has_meta("smithing") else null}
+            "smithing": child.get_meta("smithing") if child.has_meta("smithing") else null,
+            "anvil_trip": child.has_meta("anvil_trip")}
         child.free()
     _hits.clear()
     var drawn := {}
@@ -682,9 +683,12 @@ func _draw_people(cast: Dictionary) -> void:
             if was[id]["turn_left"] != null:
                 holder.set_meta("turn_left", was[id]["turn_left"])
         _pose(spr, facing, str(spot.get("pose", "stand")))
-        # The keeper hammering at the anvil keeps at it.
+        # The keeper hammering at the anvil keeps at it; one on the way there
+        # carries on.
         if stays and behind and not hand and not moves and was[id]["smithing"] != null:
             _start_smith(holder, float(was[id]["smithing"]))
+        elif stays and behind and not hand and not moves and bool(was[id]["anvil_trip"]):
+            _to_anvil(holder)
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         if _entrances and not stays:
@@ -863,10 +867,17 @@ func _route(holder: Node2D, to: Vector2) -> Array:
 ## keeper goes to hammer at the anvil instead.
 func _bustle(delta: float) -> void:
     var holder := _tending()
-    if holder == null or holder.has_meta("walking") or not _handoff_now.is_empty():
+    if holder == null or not _handoff_now.is_empty():
         return
-    if holder.has_meta("smithing"):
-        _hammer(holder, delta)
+    # On the way to the anvil or at it: a customer at the counter calls them
+    # back.
+    if holder.has_meta("anvil_trip") or holder.has_meta("smithing"):
+        if _customers_waiting():
+            _back_to_counter(holder)
+        elif holder.has_meta("smithing"):
+            _hammer(holder, delta)
+        return
+    if holder.has_meta("walking"):
         return
     _bustle_left -= delta
     if _bustle_left > 0.0:
@@ -874,8 +885,7 @@ func _bustle(delta: float) -> void:
     _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
     var anvil: Dictionary = room.get("anvil", {})
     if _can_work(holder, anvil, "smith") and not _customers_waiting() and _bustle_rng.randf() < SMITH_CHANCE:
-        _walk(holder, _spot_point(anvil), WALK_SPEED, str(anvil.get("facing", "west")), "stand",
-            func(): _start_smith(holder, _bustle_rng.randf_range(SMITH_MIN, SMITH_MAX)))
+        _to_anvil(holder)
         return
     var home: Vector2 = holder.get_meta("home")
     var to := home
@@ -1015,8 +1025,17 @@ func _stop_pull(hand: Node2D) -> void:
         hand.remove_meta(key)
 
 
+## The keeper sets off for the anvil (meta "anvil_trip" until they get there).
+func _to_anvil(keeper: Node2D) -> void:
+    var anvil: Dictionary = room.get("anvil", {})
+    keeper.set_meta("anvil_trip", true)
+    _walk(keeper, _spot_point(anvil), WALK_SPEED, str(anvil.get("facing", "west")), "stand",
+        func(): _start_smith(keeper, _bustle_rng.randf_range(SMITH_MIN, SMITH_MAX)))
+
+
 ## At the anvil: hammer for `seconds` (meta "smithing", seconds left).
 func _start_smith(keeper: Node2D, seconds: float) -> void:
+    keeper.remove_meta("anvil_trip")
     var anvil: Dictionary = room.get("anvil", {})
     var spr := _sprite_of(keeper)
     var anim := str(anvil.get("facing", "west")) + "_smith"
@@ -1035,10 +1054,14 @@ func _hammer(keeper: Node2D, delta: float) -> void:
     _back_to_counter(keeper)
 
 
-## The keeper leaves the anvil (or the work area) for their spot behind the
-## counter, facing the customers.
+## The keeper leaves the anvil (or the way there, or the work area) for their
+## spot behind the counter, facing the customers.
 func _back_to_counter(keeper: Node2D) -> void:
+    if keeper.has_meta("walking"):
+        (keeper.get_meta("walking") as Tween).kill()
+        keeper.remove_meta("walking")
     keeper.remove_meta("smithing")
+    keeper.remove_meta("anvil_trip")
     _walk(keeper, keeper.get_meta("home"), WALK_SPEED, "south")
 
 
@@ -1154,7 +1177,8 @@ func say(npc_id: String, text: String) -> void:
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")
-        if holder.has_meta("smithing") or holder.position.x < float(room.get("counter_from", 0)):
+        if holder.has_meta("smithing") or holder.has_meta("anvil_trip") \
+                or holder.position.x < float(room.get("counter_from", 0)):
             _back_to_counter(holder)
         else:
             var spr := _sprite_of(holder)
@@ -1641,8 +1665,9 @@ func _handoff_walk() -> void:
     if keeper.has_meta("walking"):
         (keeper.get_meta("walking") as Tween).kill()
         keeper.remove_meta("walking")
-    # A sale calls them from the anvil.
+    # A sale calls them from the anvil, or the way there.
     keeper.remove_meta("smithing")
+    keeper.remove_meta("anvil_trip")
     _walk(keeper, _handoff_now["stop"], WALK_SPEED, str(_handoff_now["facing"]), "stand", _handoff_arrived)
 
 

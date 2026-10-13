@@ -38,6 +38,7 @@ const TESTS := [
     "_test_smithy_layout",
     "_test_smithy_bellows",
     "_test_smithy_anvil",
+    "_test_smithy_anvil_interrupted",
     "_test_scrolling_stage",
     "_test_main_sync_stall",
     "_test_close_glyph_in_font",
@@ -1676,6 +1677,94 @@ func _test_smithy_anvil() -> void:
     _panel.close()
     _panel.wares_hook = Callable()
     _done()
+
+
+## LLM-764 (code_review): a redraw on either leg of the way to the anvil
+## carries the trip on; a customer arriving on the way or while hammering calls
+## the keeper back to the counter.
+func _test_smithy_anvil_interrupted() -> void:
+    _open_smithy_crew([], [])
+    var layout: Dictionary = StallScenes.TRADES["smithy"]
+    var anvil := Vector2(layout["anvil"]["x"], layout["anvil"]["y"])
+    var end := float(layout["counter_from"])
+    var keeper: Node2D = _panel._tending()
+    var home: Vector2 = keeper.get_meta("home")
+    _panel._bustle_rng.seed = 11
+
+    # A redraw on the first leg, still along the counter.
+    _check("off to the anvil", _start_anvil_trip(keeper), true)
+    (keeper.get_meta("walking") as Tween).custom_step(1.0)
+    var was_at := keeper.position
+    _check("partway along the counter", was_at.x > end and was_at.x < home.x, true)
+    _toggle_pc()
+    keeper = _panel._tending()
+    _check("a redraw on the first leg: on from there, still bound for the anvil", [keeper.position, keeper.has_meta("anvil_trip"), keeper.has_meta("walking")], [was_at, true, true])
+    _finish_walk(keeper)
+    _check("there, hammering", [keeper.position, keeper.has_meta("smithing"), keeper.has_meta("anvil_trip")], [anvil, true, false])
+    _panel._bustle(_panel.SMITH_MAX + 1.0)
+    _finish_walk(keeper)
+
+    # A redraw on the second leg, in the work area.
+    _check("off again", _start_anvil_trip(keeper), true)
+    (keeper.get_meta("walking") as Tween).custom_step(4.0)
+    was_at = keeper.position
+    _check("past the counter's end", was_at.x < end, true)
+    _toggle_pc()
+    keeper = _panel._tending()
+    _check("a redraw on the second leg: on from there, still bound for the anvil", [keeper.position, keeper.has_meta("anvil_trip"), keeper.has_meta("walking")], [was_at, true, true])
+    _finish_walk(keeper)
+    _check("there, hammering", [keeper.position, keeper.has_meta("smithing")], [anvil, true])
+
+    # A customer arrives while they hammer.
+    _at_tile("buyer", _farmer(), Vector2i(8, 21) + Vector2i(1, 1))
+    _panel.refresh()
+    keeper = _panel._tending()
+    _check("still hammering after the redraw", keeper.has_meta("smithing"), true)
+    _panel._bustle(0.01)
+    _check("a customer: back to the counter", [keeper.has_meta("smithing"), keeper.has_meta("walking")], [false, true])
+    _finish_walk(keeper)
+    _check("at their spot", keeper.position, home)
+
+    # A customer arrives while they are on the way.
+    _world.placed_npcs["buyer"].free()
+    _world.placed_npcs.erase("buyer")
+    _panel.refresh()
+    keeper = _panel._tending()
+    _finish_walk(keeper)
+    _check("off once more", _start_anvil_trip(keeper), true)
+    (keeper.get_meta("walking") as Tween).custom_step(4.0)
+    _at_tile("buyer", _farmer(), Vector2i(8, 21) + Vector2i(1, 1))
+    _panel.refresh()
+    keeper = _panel._tending()
+    _panel._bustle(0.01)
+    _check("a customer on the way: turned back", [keeper.has_meta("anvil_trip"), keeper.has_meta("walking")], [false, true])
+    _finish_walk(keeper)
+    _check("at their spot, not hammering", [keeper.position, keeper.has_meta("smithing")], [home, false])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## Run the keeper's bustle until they set off for the anvil (bounded); other
+## bustle walks are run to their end.
+func _start_anvil_trip(keeper: Node2D) -> bool:
+    for i in 60:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+        if keeper.has_meta("anvil_trip"):
+            return true
+        _finish_walk(keeper)
+    return false
+
+
+## Redraw the window: the player's character steps up to the counter, or away.
+func _toggle_pc() -> void:
+    if _world.placed_npcs.has("pc"):
+        _world.placed_npcs["pc"].free()
+        _world.placed_npcs.erase("pc")
+    else:
+        _at_tile("pc", _farmer(), Vector2i(8, 21))
+    _panel.refresh()
 
 
 ## Run the keeper's bustle until they are at the anvil, hammering (bounded).
