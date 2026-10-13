@@ -37,7 +37,10 @@ import (
 // on checkout eviction or morning descent), and INSIDE STATE
 // (ActorInsideChanged → npc_inside_changed — the sprite visibility +
 // see-through-structure stand-offset flip when an actor enters or leaves a
-// structure, restoring the v1 broadcast the rewrite dropped, ZBBS-WORK-373).
+// structure, restoring the v1 broadcast the rewrite dropped, ZBBS-WORK-373),
+// and MEALS (DwellStarted → npc_meal_started, item-source DwellEnded →
+// npc_meal_ended — the room window keeps a dish on the table while it is
+// eaten, LLM-758).
 // Per-tile ActorMoved is deliberately NOT mapped — it stays internal; nor are
 // spawn/despawn or object create (no sim bus source until those write routes
 // exist). An unmapped event returns ok=false and is dropped, so adding cases
@@ -408,12 +411,37 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Item:           string(e.ItemKind),
 			Qty:            e.QtyPerConsumer,
 			Amount:         e.Amount,
+			ConsumeNow:     e.ConsumeNow,
 			TerminalState:  string(e.TerminalState),
 			BuyerTookQuote: e.BuyerTookQuote,
 			Message:        e.Message,
 			HuddleID:       string(e.HuddleID),
 			SceneID:        string(e.SceneID),
 			At:             e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.DwellStarted:
+		// LLM-758: someone sat down to a meal that takes time (stew,
+		// porridge) — the room window keeps the dish on their table until the
+		// meal ends. Every DwellStarted is item-source.
+		return WireFrame{Type: "npc_meal_started", Data: mealStartedWireDTO{
+			ID:          string(e.ActorID),
+			Item:        string(e.Kind),
+			StructureID: string(e.StructureID),
+			Credits:     len(e.Credits),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.DwellEnded:
+		// Object-source dwells (resting under a tree, drinking at a well) have
+		// no dish to clear.
+		if e.Source != sim.DwellSourceItem {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "npc_meal_ended", Data: mealEndedWireDTO{
+			ID:          string(e.ActorID),
+			Item:        string(e.Kind),
+			StructureID: string(e.ObjectID),
+			Reason:      e.Reason.String(),
+			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
 	case *sim.PCSleepStarted:
 		return WireFrame{Type: "pc_sleep_started", Data: pcSleepStartedWireDTO{
@@ -1130,6 +1158,8 @@ type payCounteredWireDTO struct {
 // buyer_took_quote is true only on an instant quote-take (the seller posted
 // the offer, the buyer took it); the client uses it to word the accepted line
 // ("you took their offer" vs the backwards "they accepted your offer").
+// consume_now is the offer's eat-here flag: the room window leaves a good
+// eaten here on the buyer's table and hands a take-home good over (LLM-758).
 type payResolvedWireDTO struct {
 	LedgerID       uint64 `json:"ledger_id"`
 	BuyerID        string `json:"buyer_id"`
@@ -1137,12 +1167,39 @@ type payResolvedWireDTO struct {
 	Item           string `json:"item"`
 	Qty            int    `json:"qty"`
 	Amount         int    `json:"amount"`
+	ConsumeNow     bool   `json:"consume_now"`
 	TerminalState  string `json:"terminal_state"`
 	BuyerTookQuote bool   `json:"buyer_took_quote,omitempty"`
 	Message        string `json:"message,omitempty"`
 	HuddleID       string `json:"huddle_id,omitempty"`
 	SceneID        string `json:"scene_id,omitempty"`
 	At             string `json:"at"`
+}
+
+// mealStartedWireDTO is the npc_meal_started payload (LLM-758) — an actor
+// began eating an item whose satisfaction comes over time (an item dwell).
+// structure_id is the dwell pin, where they eat. credits is how many need
+// credits the meal stamped: one npc_meal_ended comes per credit, so the meal
+// is over when that many have ended. A second helping of the same good
+// refreshes the credits and sends this frame again, so the client sets the
+// count, never adds to it.
+type mealStartedWireDTO struct {
+	ID          string `json:"id"`
+	Item        string `json:"item"`
+	StructureID string `json:"structure_id"`
+	Credits     int    `json:"credits"`
+	At          string `json:"at"`
+}
+
+// mealEndedWireDTO is the npc_meal_ended payload — one item-source dwell
+// credit ended. reason is item_exhausted | floor_hit | walked_away |
+// catalog_unknown | stale_at_floor (sim.DwellEndReason.String()).
+type mealEndedWireDTO struct {
+	ID          string `json:"id"`
+	Item        string `json:"item"`
+	StructureID string `json:"structure_id"`
+	Reason      string `json:"reason"`
+	At          string `json:"at"`
 }
 
 // pcSleepStartedWireDTO is the pc_sleep_started payload — a PC bedded down

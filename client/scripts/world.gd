@@ -234,6 +234,8 @@ func reset_world_state() -> void:
             container.queue_free()
     placed_npcs.clear()
     _pending_npcs.clear()
+    # A meal's end may have been missed while disconnected.
+    meals.clear()
     _failed_sheets.clear()
     _objects_loaded = false
     # ZBBS-HOME-210: clear the world_ready latches so the curtain
@@ -767,6 +769,7 @@ func remove_npc_by_id(npc_id: String) -> void:
     if container == null:
         return
     placed_npcs.erase(npc_id)
+    meals.erase(npc_id)
     container.queue_free()
     npc_list_changed.emit()
 
@@ -2940,6 +2943,50 @@ func apply_pay_resolved(data: Dictionary) -> void:
     data["buyer_name"] = display_name_for(str(data.get("buyer_id", "")))
     data["seller_name"] = display_name_for(str(data.get("seller_id", "")))
     pay_resolved.emit(data)
+
+
+## Meals that take time (an item dwell: stew, porridge) — LLM-758. The engine
+## says when one starts (npc_meal_started) and sends one npc_meal_ended per
+## need credit; the meal is over when the last credit ends. Kept while the
+## room window is closed, so it can lay a running meal's dish when it opens.
+## meals: actor id -> {item, structure_id, left}.
+signal npc_meal_started(actor_id: String, item: String)
+signal npc_meal_ended(actor_id: String, item: String)
+
+var meals: Dictionary = {}
+
+
+func apply_npc_meal_started(data: Dictionary) -> void:
+    var id := str(data.get("id", ""))
+    var item := str(data.get("item", ""))
+    if id == "" or item == "":
+        return
+    # A second helping refreshes the credits and resends the frame: the count
+    # is set, never added to.
+    meals[id] = {"item": item, "structure_id": str(data.get("structure_id", "")),
+        "left": maxi(1, int(data.get("credits", 1)))}
+    npc_meal_started.emit(id, item)
+
+
+func apply_npc_meal_ended(data: Dictionary) -> void:
+    var id := str(data.get("id", ""))
+    var item := str(data.get("item", ""))
+    var meal: Dictionary = meals.get(id, {})
+    if meal.is_empty() or str(meal["item"]) != item:
+        return
+    meal["left"] = int(meal["left"]) - 1
+    if int(meal["left"]) > 0:
+        return
+    meals.erase(id)
+    npc_meal_ended.emit(id, item)
+
+
+## The item `actor_id` is eating at `structure_id`, or "".
+func meal_of(actor_id: String, structure_id: String) -> String:
+    var meal: Dictionary = meals.get(actor_id, {})
+    if meal.is_empty() or str(meal["structure_id"]) != structure_id:
+        return ""
+    return str(meal["item"])
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).

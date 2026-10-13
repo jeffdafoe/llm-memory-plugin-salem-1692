@@ -82,9 +82,11 @@ const HANDOFF_HOLD := 2.0
 const HANDOFF_AWAY := 0.6
 const HANDOFF_SLIDE := 14.0
 ## In a room (LLM-757) a sale is served from the bar at SERVE_SPEED art px a
-## second; a meal set on a table stays MEAL_SECONDS before it is gone.
+## second. A good eaten at the table stays there while the meal runs
+## (world.meals, LLM-758); a good with no meal that takes time (ale, bread)
+## stays TABLE_SECONDS. Then the keeper clears it.
 const SERVE_SPEED := 48.0
-const MEAL_SECONDS := 6.0
+const TABLE_SECONDS := 30.0
 
 var world: Node2D = null
 var pc_actor_id := ""
@@ -116,9 +118,11 @@ var _goods_back: Node2D = null
 var _staff: Node2D = null
 var _counter: Sprite2D = null
 var _goods_front: Node2D = null
-## Goods changing hands over the counter, above the goods on it.
+## Goods changing hands over the counter, above the goods on it — and in a
+## room the dishes on the tables (meta "buyer" and "item").
 var _handoff: Node2D = null
-## Handoffs waiting their turn, and the one under way ({} when none).
+## Handoffs (and in a room, dishes to clear: {"clear": dish}) waiting their
+## turn, and the one under way ({} when none).
 var _handoffs: Array = []
 var _handoff_now: Dictionary = {}
 var _people: Node2D = null
@@ -253,6 +257,9 @@ func open(sid: String) -> void:
         world.npc_spoke.connect(_on_npc_spoke)
     if world != null and world.has_signal("pay_resolved") and not world.pay_resolved.is_connected(on_pay_resolved):
         world.pay_resolved.connect(on_pay_resolved)
+    if world != null and world.has_signal("npc_meal_ended") and not world.npc_meal_ended.is_connected(_on_meal_ended):
+        world.npc_meal_started.connect(_on_meal_started)
+        world.npc_meal_ended.connect(_on_meal_ended)
     var was_open := visible
     for child in _handoff.get_children():
         # Its tween is bound to it and dies with it; stopped first all the same.
@@ -279,6 +286,7 @@ func open(sid: String) -> void:
                 child.free()
     refresh()
     _entrances = true
+    _lay_running_meals()
     _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
     _draw_goods()
     _refresh_left = REFRESH_SECONDS
@@ -498,6 +506,10 @@ func _draw_people(cast: Dictionary) -> void:
         for id in was:
             if not drawn.has(id):
                 _walk_out(id, was[id])
+    # Someone who left their table leaves their dish to be cleared.
+    for dish in _dishes():
+        if not drawn.has(str(dish.get_meta("buyer"))):
+            _clear_dish(dish)
     # The keeper was rebuilt mid-handoff: their walk to it goes on.
     if not _handoff_now.is_empty() and not bool(_handoff_now["arrived"]):
         _handoff_walk()
@@ -845,9 +857,10 @@ func _draw_goods() -> void:
 ##
 ## A room with a bar (the Tavern, LLM-757) hands a sale across its bar the
 ## same way: the keeper steps to the bar's front and sets the good down, and
-## it is served — to the table in front of a seated buyer, where it stays a
-## while (a meal is eaten), or toward a standing buyer or the player's
-## character at the door; a good the keeper buys lies on the bar until they
+## it is served — a good eaten here (consume_now) to the table in front of a
+## seated buyer, where it stays until they are done and the keeper clears it
+## (LLM-758); anything else toward the buyer, standing, seated or the player's
+## character at the door. A good the keeper buys lies on the bar until they
 ## take it.
 func on_pay_resolved(data: Dictionary) -> void:
     if not visible or not (is_stall() or room.has("bar")) or str(data.get("terminal_state", "")) != "accepted":
@@ -868,7 +881,8 @@ func on_pay_resolved(data: Dictionary) -> void:
     if _texture(StallScenes.GOODS_SHEET) == null:
         return
     _handoffs.append({"item": item, "qty": int(data.get("qty", 1)), "selling": selling,
-        "other": str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", ""))})
+        "other": str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", "")),
+        "eaten": bool(data.get("consume_now", false))})
     if _handoff_now.is_empty():
         _next_handoff()
 
@@ -881,6 +895,18 @@ func _next_handoff() -> void:
         return
     var h: Dictionary = _handoffs.pop_front()
     var keeper := _tending()
+    if h.has("clear"):
+        if not is_instance_valid(h["clear"]):
+            _next_handoff()
+            return
+        h["good"] = h["clear"]
+        h["stop"] = _spot_point(room.get("reach", room["keeper"]))
+        h["facing"] = str(room["keeper"].get("facing", "south"))
+        h["keeper"] = str(keeper.name) if keeper != null else ""
+        h["arrived"] = false
+        _handoff_now = h
+        _handoff_walk()
+        return
     var at: Vector2
     if is_stall():
         # Where along the counter: in front of the other party, or the middle
@@ -897,7 +923,7 @@ func _next_handoff() -> void:
         at = _spot_point(room["bar"])
         h["stop"] = _spot_point(room.get("reach", room["keeper"]))
         h["facing"] = str(room["keeper"].get("facing", "south"))
-        h["serve"] = _serve_to(str(h["other"]), at)
+        h["serve"] = _serve_to(str(h["other"]), at, bool(h["eaten"]))
     h["keeper"] = str(keeper.name) if keeper != null else ""
     var good := _handoff_good(str(h["item"]), int(h["qty"]), at)
     if good == null:
@@ -919,10 +945,10 @@ func _spot_point(spot: Dictionary) -> Vector2:
 
 ## Where a sale on a room's bar is served to `buyer` (the good's bottom
 ## middle), and whether it stays there: the table in front of a seated buyer
-## (it stays — a meal is eaten); most of the way toward a standing buyer or
-## the player's character at the door (it fades as it goes). {} for a buyer
-## not drawn: it stays on the bar a moment and goes.
-func _serve_to(buyer: String, bar: Vector2) -> Dictionary:
+## when it is `eaten` here (it stays); otherwise most of the way toward the
+## buyer, standing, seated or the player's character at the door (it fades as
+## it goes). {} for a buyer not drawn: it stays on the bar a moment and goes.
+func _serve_to(buyer: String, bar: Vector2, eaten: bool) -> Dictionary:
     var spot: Dictionary = {}
     if buyer != "" and buyer == pc_actor_id:
         spot = room.get("door", {})
@@ -930,7 +956,7 @@ func _serve_to(buyer: String, bar: Vector2) -> Dictionary:
         spot = room["spots"][int(_assigned[buyer])]
     if spot.is_empty():
         return {}
-    if spot.has("serve"):
+    if eaten and spot.has("serve"):
         return {"to": _spot_point(spot["serve"]), "stay": true}
     var person := _spot_point(spot) + Vector2(0, -6)
     return {"to": bar.lerp(person, 0.6).round(), "stay": false}
@@ -981,9 +1007,9 @@ func _cell_at(at: Vector2) -> Vector2:
 
 ## The keeper is at the handoff: a good sold is set down and lies a moment;
 ## at a stall it then goes toward the buyer (down, out of the stall), in a
-## room it is served (_serve_to) — a meal to the table, where it stays while
-## the next handoff begins. A good bought is taken up toward the keeper. In a
-## room the keeper then steps back to their spot.
+## room it is served (_serve_to) — a meal to the table, where it stays
+## (_on_table) while the next handoff begins. A good bought is taken up toward
+## the keeper. In a room the keeper then steps back to their spot.
 func _handoff_arrived() -> void:
     if _handoff_now.is_empty() or bool(_handoff_now["arrived"]):
         return
@@ -991,6 +1017,9 @@ func _handoff_arrived() -> void:
     var good: Node2D = _handoff_now["good"]
     if not is_instance_valid(good):
         _next_handoff()
+        return
+    if _handoff_now.has("clear"):
+        _clear_arrived(good)
         return
     var selling := bool(_handoff_now["selling"])
     var t := good.create_tween()
@@ -1008,10 +1037,10 @@ func _handoff_arrived() -> void:
         t.tween_property(good, "position", to, seconds)
         if bool(serve["stay"]):
             # On the table: the counter is free for the next one meanwhile.
+            # The bar is freed first: _on_table may clear the dish at once,
+            # which stops this tween.
             t.tween_callback(_next_handoff)
-            t.tween_interval(MEAL_SECONDS)
-            t.tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
-            t.tween_callback(good.queue_free)
+            t.tween_callback(_on_table.bind(good, str(_handoff_now["other"]), str(_handoff_now["item"])))
             good.set_meta("tween", t)
             return
         t.parallel().tween_property(good, "modulate:a", 0.0, seconds)
@@ -1028,6 +1057,101 @@ func _handoff_arrived() -> void:
         good.queue_free()
         _next_handoff())
     good.set_meta("tween", t)
+
+
+## A dish set on `buyer`'s table stays while their meal of `item` runs, until
+## world.npc_meal_ended (_on_meal_ended); with no meal running (ale, bread, or
+## a meal already over) it stays TABLE_SECONDS. A buyer gone before it lands
+## leaves it to be cleared at once.
+func _on_table(dish: Node2D, buyer: String, item: String) -> void:
+    dish.set_meta("buyer", buyer)
+    dish.set_meta("item", item)
+    if _holder(buyer) == null:
+        _clear_dish(dish)
+        return
+    if world != null and world.has_method("meal_of") and world.meal_of(buyer, structure_id) == item:
+        dish.remove_meta("tween")
+        return
+    var t := dish.create_tween()
+    t.tween_interval(TABLE_SECONDS)
+    t.tween_callback(_clear_dish.bind(dish))
+    dish.set_meta("tween", t)
+
+
+## The dishes on the tables, not yet being cleared.
+func _dishes() -> Array:
+    var out: Array = []
+    for child in _handoff.get_children():
+        if child.has_meta("buyer") and not child.has_meta("clearing") and not child.is_queued_for_deletion():
+            out.append(child)
+    return out
+
+
+## Clear a dish from its table: the keeper comes to the bar's front and the
+## dish goes back across to the bar and away — in turn with the handoffs, so
+## the keeper is never on two errands at once.
+func _clear_dish(dish: Node2D) -> void:
+    if not is_instance_valid(dish) or dish.has_meta("clearing"):
+        return
+    dish.set_meta("clearing", true)
+    if dish.has_meta("tween"):
+        (dish.get_meta("tween") as Tween).kill()
+        dish.remove_meta("tween")
+    _handoffs.append({"clear": dish})
+    if _handoff_now.is_empty():
+        _next_handoff()
+
+
+## The keeper is at the bar's front for a dish: it slides back to the bar,
+## the keeper steps back, and it fades. Nobody behind the bar: it fades where
+## it is.
+func _clear_arrived(dish: Node2D) -> void:
+    var keeper_id := str(_handoff_now["keeper"])
+    var t := dish.create_tween()
+    if keeper_id != "":
+        var to := _cell_at(_spot_point(room["bar"]))
+        t.tween_property(dish, "position", to, maxf(dish.position.distance_to(to) / SERVE_SPEED, 0.2))
+        t.tween_callback(_keeper_back.bind(keeper_id))
+    t.tween_property(dish, "modulate:a", 0.0, HANDOFF_AWAY)
+    t.tween_callback(func():
+        dish.queue_free()
+        _next_handoff())
+    dish.set_meta("tween", t)
+
+
+## Lay the dish of every running meal (world.meals) at the table of whoever
+## is seated eating it — the window opened partway through.
+func _lay_running_meals() -> void:
+    if not room.has("bar") or world == null or not world.has_method("meal_of"):
+        return
+    for entry in _hits:
+        var id := str(entry["id"])
+        if not _assigned.has(id):
+            continue
+        var spot: Dictionary = room["spots"][int(_assigned[id])]
+        var item: String = world.meal_of(id, structure_id)
+        if not spot.has("serve") or not StallScenes.GOODS.has(item):
+            continue
+        var dish := _handoff_good(item, 1, _spot_point(spot["serve"]))
+        if dish != null:
+            dish.set_meta("buyer", id)
+            dish.set_meta("item", item)
+
+
+## A meal is over (world.npc_meal_ended): its dish is cleared.
+func _on_meal_ended(actor_id: String, item: String) -> void:
+    for dish in _dishes():
+        if str(dish.get_meta("buyer")) == actor_id and str(dish.get_meta("item")) == item:
+            _clear_dish(dish)
+
+
+## A new meal of another good takes the place of the one running: the old
+## dish, left waiting on a meal that will now send no end, is cleared.
+func _on_meal_started(actor_id: String, item: String) -> void:
+    for dish in _dishes():
+        if str(dish.get_meta("buyer")) == actor_id and str(dish.get_meta("item")) != item \
+                and not dish.has_meta("tween"):
+            _clear_dish(dish)
 
 
 ## A room's keeper steps back to their spot after a handoff — the keeper

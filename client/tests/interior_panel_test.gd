@@ -53,6 +53,11 @@ const TESTS := [
     "_test_tavern_keeper_buys",
     "_test_tavern_keeper_back_is_theirs",
     "_test_reopen_stops_a_handoff",
+    "_test_world_meals",
+    "_test_tavern_guest_leaving_clears_the_dish",
+    "_test_tavern_ale_lingers_then_cleared",
+    "_test_tavern_take_home_handed_over",
+    "_test_tavern_reopen_lays_a_running_meal",
 ]
 
 const STALL := "stall-1"
@@ -1067,8 +1072,9 @@ func _stall_with_buyer(pin_offset := Vector2i(1, 1)) -> Array:
     return asked
 
 
-func _sale(seller: String, buyer: String, item := "apples", state := "accepted", qty := 3) -> Dictionary:
-    return {"seller_id": seller, "buyer_id": buyer, "item": item, "qty": qty, "terminal_state": state}
+func _sale(seller: String, buyer: String, item := "apples", state := "accepted", qty := 3, eaten := false) -> Dictionary:
+    return {"seller_id": seller, "buyer_id": buyer, "item": item, "qty": qty, "terminal_state": state,
+        "consume_now": eaten}
 
 
 ## Run the handoff under way to its end: the keeper's walk, then the good.
@@ -1217,6 +1223,7 @@ func _test_no_handoff() -> void:
 func _tavern_with_guest(spot: int) -> void:
     _clear_people()
     _panel.close()
+    _world.meals = {}
     _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
     _person("guest", _farmer(), _sid)
     _panel.open(_sid)
@@ -1229,7 +1236,9 @@ func _test_tavern_serves_a_meal_to_the_table() -> void:
     _tavern_with_guest(0)
     var keeper: Node2D = _panel._tending()
     _check("the Tavern's keeper is the one behind the bar", keeper != null and str(keeper.name) == "keeper", true)
-    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1))
+    # The engine's npc_meal_started comes before the sale's pay_resolved.
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
     var good: Node2D = _panel._handoff.get_node_or_null("handoff_stew")
     var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
     _check("the stew goes on the bar", good != null and good.position == _panel._cell_at(bar), true)
@@ -1251,7 +1260,135 @@ func _test_tavern_serves_a_meal_to_the_table() -> void:
     _check("eaten there, still to be seen", [good.modulate.a, good.is_queued_for_deletion()], [1.0, false])
     _check("the bar is free for the next", _panel._handoff_now, {})
     t.custom_step(60.0)
-    _check("then gone", good.is_queued_for_deletion(), true)
+    _finish_walk(keeper)
+    _check("the meal runs: it stays, nothing timed", [good.is_queued_for_deletion(), good.has_meta("tween"), good.has_meta("clearing")], [false, false, false])
+    _world.apply_npc_meal_ended({"id": "guest", "item": "porridge"})
+    _check("another good's end leaves it", good.has_meta("clearing"), false)
+    _world.apply_npc_meal_ended({"id": "guest", "item": "stew"})
+    _check("the meal over: the keeper comes to clear it", [good.has_meta("clearing"), _panel._handoff_now.get("clear") == good, keeper.has_meta("walking")], [true, true, true])
+    _finish_walk(keeper)
+    var c: Tween = good.get_meta("tween")
+    c.custom_step(0.3)
+    _check("it goes back toward the bar", good.position.x > _panel._cell_at(table).x, true)
+    c.custom_step(60.0)
+    _check("onto the bar and gone", [good.position, good.is_queued_for_deletion()], [_panel._cell_at(bar), true])
+    _check("the keeper steps back", keeper.has_meta("walking"), true)
+    _check("the bar is free", _panel._handoff_now, {})
+    _panel.close()
+    _done()
+
+
+## The world's meal record: a meal ends when its last credit does; a second
+## helping sets the count afresh; it is kept by where it is eaten.
+func _test_world_meals() -> void:
+    var ended := []
+    var on_end := func(id: String, item: String): ended.append([id, item])
+    _world.npc_meal_ended.connect(on_end)
+    _world.meals = {}
+    _world.apply_npc_meal_started({"id": "a", "item": "stew", "structure_id": _sid, "credits": 2})
+    _check("eating stew here", _world.meal_of("a", _sid), "stew")
+    _check("not somewhere else", _world.meal_of("a", "elsewhere"), "")
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _check("one credit of two ended: still eating", [_world.meal_of("a", _sid), ended], ["stew", []])
+    _world.apply_npc_meal_started({"id": "a", "item": "stew", "structure_id": _sid, "credits": 2})
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _check("a second helping sets the count afresh", _world.meal_of("a", _sid), "stew")
+    _world.apply_npc_meal_ended({"id": "a", "item": "porridge"})
+    _check("another good's end: still eating", _world.meal_of("a", _sid), "stew")
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _check("the last credit ended: done, and said so", [_world.meal_of("a", _sid), ended], ["", [["a", "stew"]]])
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _check("an end with no meal: nothing", ended.size(), 1)
+    _world.npc_meal_ended.disconnect(on_end)
+    _done()
+
+
+## A guest who gets up and goes leaves their dish to be cleared.
+func _test_tavern_guest_leaving_clears_the_dish() -> void:
+    _tavern_with_guest(0)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    var dish: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    _finish_walk(_panel._tending())
+    _check("on the table", [dish.has_meta("buyer"), dish.has_meta("clearing")], [true, false])
+    _world.placed_npcs["guest"].free()
+    _world.placed_npcs.erase("guest")
+    _panel.refresh()
+    _check("the guest gone: the keeper clears it", [dish.has_meta("clearing"), _panel._handoff_now.get("clear") == dish], [true, true])
+    _finish_handoff()
+    _check("cleared", dish.is_queued_for_deletion(), true)
+
+    # Gone while it is carried over: it lands, is cleared, and the bar is
+    # free after — the queue does not stall on it.
+    _tavern_with_guest(0)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    dish = _panel._handoff_now["good"]
+    _world.placed_npcs["guest"].free()
+    _world.placed_npcs.erase("guest")
+    _panel.refresh()
+    _finish_handoff()
+    _check("landed with nobody there: cleared at once", [dish.has_meta("clearing"), _panel._handoff_now.get("clear") == dish], [true, true])
+    _finish_handoff()
+    _check("then gone, the bar free", [dish.is_queued_for_deletion(), _panel._handoff_now, _panel._handoffs], [true, {}, []])
+    _panel.close()
+    _done()
+
+
+## Ale drunk at the table has no meal that takes time: it stays a while, then
+## the keeper clears it.
+func _test_tavern_ale_lingers_then_cleared() -> void:
+    _tavern_with_guest(0)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    var ale: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("the ale on the table", [ale.position, ale.is_queued_for_deletion()], [_panel._cell_at(table), false])
+    var linger: Tween = ale.get_meta("tween")
+    linger.custom_step(_panel.TABLE_SECONDS - 1.0)
+    _check("still there just before its time", ale.has_meta("clearing"), false)
+    linger.custom_step(2.0)
+    _check("then cleared", [ale.has_meta("clearing"), _panel._handoff_now.get("clear") == ale], [true, true])
+    _finish_handoff()
+    _check("gone", ale.is_queued_for_deletion(), true)
+    _panel.close()
+    _done()
+
+
+## A seated guest buying to take home: handed over toward them, never left
+## on the table.
+func _test_tavern_take_home_handed_over() -> void:
+    _tavern_with_guest(0)
+    var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
+    var seated := Vector2(_panel.room["spots"][0]["x"], _panel.room["spots"][0]["y"] - 6)
+    _check("take-home to a seated guest: toward them", _panel._serve_to("guest", bar, false), {"to": bar.lerp(seated, 0.6).round(), "stay": false})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "bread", "accepted", 1, false))
+    var bread: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    _check("handed over and gone, not on the table", [bread.is_queued_for_deletion(), bread.has_meta("buyer")], [true, false])
+    _panel.close()
+    _done()
+
+
+## The window opened partway through a meal shows its dish; a new meal of
+## another good clears the old dish.
+func _test_tavern_reopen_lays_a_running_meal() -> void:
+    _tavern_with_guest(0)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _world.apply_npc_meal_started({"id": "keeper", "item": "porridge", "structure_id": _sid, "credits": 1})
+    _panel.open(_sid)
+    var dishes: Array = _panel._dishes()
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("the guest's stew on their table, nothing for the keeper", dishes.size(), 1)
+    if dishes.size() == 1:
+        var dish: Node2D = dishes[0]
+        _check("the stew, in front of the guest", [str(dish.get_meta("buyer")), str(dish.get_meta("item")), dish.position], ["guest", "stew", _panel._cell_at(table)])
+        _world.apply_npc_meal_started({"id": "guest", "item": "porridge", "structure_id": _sid, "credits": 1})
+        _check("porridge in place of the stew: the stew is cleared", dish.has_meta("clearing"), true)
+    _world.meals = {"guest": {"item": "stew", "structure_id": "another-place", "left": 1}}
+    _panel.open(_sid)
+    _check("a meal somewhere else: no dish here", _panel._dishes().size(), 0)
     _panel.close()
     _done()
 
@@ -1260,13 +1397,13 @@ func _test_tavern_serves_standing_and_at_the_door() -> void:
     _tavern_with_guest(2)
     var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
     var standing := Vector2(_panel.room["spots"][2]["x"], _panel.room["spots"][2]["y"] - 6)
-    var serve: Dictionary = _panel._serve_to("guest", bar)
+    var serve: Dictionary = _panel._serve_to("guest", bar, true)
     _check("a standing guest: most of the way to them, then gone", serve, {"to": bar.lerp(standing, 0.6).round(), "stay": false})
     _person("pc", _farmer(), _sid)
     _panel.refresh()
     var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"] - 6)
-    _check("the player's character at the door", _panel._serve_to("pc", bar), {"to": bar.lerp(door, 0.6).round(), "stay": false})
-    _check("someone not drawn: it stays on the bar", _panel._serve_to("nobody", bar), {})
+    _check("the player's character at the door", _panel._serve_to("pc", bar, true), {"to": bar.lerp(door, 0.6).round(), "stay": false})
+    _check("someone not drawn: it stays on the bar", _panel._serve_to("nobody", bar, true), {})
     _panel.on_pay_resolved(_sale("keeper", "nobody", "bread", "accepted", 1))
     var bread: Node2D = _panel._handoff_now["good"]
     _finish_handoff()
@@ -1319,16 +1456,22 @@ func _test_tavern_keeper_back_is_theirs() -> void:
 ## table — stops it: nothing from the old handoff moves anyone afterwards.
 func _test_reopen_stops_a_handoff() -> void:
     for meal in [false, true]:
+        var where := "at the table" if meal else "on the bar"
         _tavern_with_guest(0)
-        _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1))
+        if meal:
+            _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+        _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
         var keeper: Node2D = _panel._tending()
         _finish_walk(keeper)
-        var t: Tween = _panel._handoff_now["good"].get_meta("tween")
+        var old: Node2D = _panel._handoff_now["good"]
+        var t: Tween = old.get_meta("tween")
         t.custom_step(1.0 if not meal else 6.0)
         _panel.open(_sid)
-        _check("reopened (%s): the tween is stopped" % ("at the table" if meal else "on the bar"), t.is_valid(), false)
-        _check("reopened (%s): nothing on the bar or queued" % ("at the table" if meal else "on the bar"), [_panel._handoff.get_child_count(), _panel._handoff_now, _panel._handoffs], [0, {}, []])
+        _check("reopened (%s): the old good and its tween are gone" % where, [is_instance_valid(old), t.is_running()], [false, false])
+        # A meal still running is laid afresh on the table; nothing else.
+        _check("reopened (%s): nothing handed or queued" % where, [_panel._handoff.get_child_count(), _panel._handoff_now, _panel._handoffs], [1 if meal else 0, {}, []])
         keeper = _panel._tending()
-        _check("reopened (%s): the keeper stands still at their spot" % ("at the table" if meal else "on the bar"), [keeper.has_meta("walking"), keeper.position], [false, keeper.get_meta("home")])
+        _check("reopened (%s): the keeper stands still at their spot" % where, [keeper.has_meta("walking"), keeper.position], [false, keeper.get_meta("home")])
+    _world.meals = {}
     _panel.close()
     _done()

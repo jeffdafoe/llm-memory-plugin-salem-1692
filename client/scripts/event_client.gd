@@ -364,6 +364,12 @@ func _handle_message(data: String) -> void:
         "pay_resolved":
             if world != null:
                 world.apply_pay_resolved(event_data)
+        "npc_meal_started":
+            if world != null:
+                world.apply_npc_meal_started(event_data)
+        "npc_meal_ended":
+            if world != null:
+                world.apply_npc_meal_ended(event_data)
 
 ## Apply a server-broadcast footprint change to the local catalog and
 ## redraw the selection border if the affected asset is the one currently
