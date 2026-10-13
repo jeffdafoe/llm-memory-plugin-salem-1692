@@ -458,6 +458,25 @@ func _test_world_rest_spot_sits() -> void:
     _world.placed_objects.erase("w1")
     well.free()
 
+    # Equal distance: the lower id wins, as the engine compares its string ids.
+    # The picnic pin (10, 9) and a well pin (10, 7) are both one tile from (10, 8).
+    var tie := Node2D.new()
+    tie.position = Vector2(10 * 32 + 16, 6 * 32 + 16)
+    tie.set_meta("display_name", "Well")
+    tie.set_meta("effective_loiter_offset_x", 0)
+    tie.set_meta("effective_loiter_offset_y", 1)
+    tie.set_meta("refreshes", [{"attribute": "thirst", "gather_item": ""}])
+    _world.placed_objects["a1"] = tie
+    doll.play("south_idle")
+    _world._apply_activity_animation(c)
+    _check("tie, lower id is the well: no sit", doll.animation, &"south_idle")
+    _world.placed_objects.erase("a1")
+    _world.placed_objects["z1"] = tie
+    _world._apply_activity_animation(c)
+    _check("tie, lower id is the picnic: sit", doll.animation, &"south_sit")
+    _world.placed_objects.erase("z1")
+    tie.free()
+
     c.set_meta("inside", true)
     _world._apply_activity_animation(c)
     _check("inside: no sit", doll.animation, &"south_idle")
