@@ -170,6 +170,11 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         "source_activity_label": str(dto.get("source_activity_label", "")),
         # The object being worked (LLM-743) — the swing turns toward it.
         "source_activity_object_id": str(dto.get("source_activity_object_id", "")),
+        # Where the engine put the actor in the room they are in, [x, y]
+        # (LLM-768); absent outdoors or asleep. _render_npc seeds the
+        # room_square meta from it — dropped here, every room window read
+        # everyone as unplaced until their next inside change.
+        "room_square": dto.get("room_square", null),
     }
     # Sprite is already inlined on the v2 DTO in the exact render subset the
     # renderer expects (sheet / frame_width / frame_height / id / name /
