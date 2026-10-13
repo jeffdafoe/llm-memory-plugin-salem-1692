@@ -13,6 +13,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
@@ -347,6 +348,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/terrain", s.requireAuth(s.handleTerrain))
 	mux.HandleFunc("GET /api/village/assets", s.requireAuth(s.handleAssets))
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
+	mux.HandleFunc("GET /api/village/rooms", s.requireAuth(s.handleRooms))
 	mux.HandleFunc("GET /api/village/npc-behaviors", s.requireAuth(s.handleNPCBehaviors))
 	mux.HandleFunc("GET /api/village/refresh-attributes", s.requireAuth(s.handleRefreshAttributes))
 	// Assignable-driver catalog for the editor's NPC "agent" picker (LLM-256):
@@ -637,6 +639,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			Facing:                 normalizeFacing(a.Facing),
 			InsideStructureID:      string(a.InsideStructureID),
 			CurrentHuddleID:        string(a.CurrentHuddleID),
+			RoomSquare:             a.RoomSquare,
 			Sprite:                 resolveAgentSprite(a.SpriteID, sprites),
 			Hunger:                 hunger,
 			Thirst:                 thirst,
@@ -1064,4 +1067,13 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("httpapi: encode response: %v", err)
 	}
+}
+
+// handleRooms serves the rooms' floor plans (LLM-768): for each structure
+// with a room window, its grid of squares, door, keeper's place and stations.
+// The client draws a person at the station on their square (room_square on
+// the agent and the inside/square frames). Compiled-in seed data, so the read
+// needs no lock.
+func (s *Server) handleRooms(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{"rooms": roomlayout.All()})
 }

@@ -163,11 +163,14 @@ func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 	stamp := now
 	pc.LastTirednessRecoveryAt = &stamp
 	pc.State = StateSleeping
+	releaseRoomSquare(w, pc)
 	w.emit(&PCSleepStarted{ActorID: pc.ID, WakeAt: wakeAt, At: now})
 	return true
 }
 
-// wakePCActor clears a PC's sleep and resets the recovery cursor. Does NOT emit
+// wakePCActor clears a PC's sleep, resets the recovery cursor and gives the PC a
+// square again if they wake in a room with a floor plan (LLM-768; that alone may
+// emit ActorRoomSquareChanged). Otherwise does NOT emit
 // — the caller emits PCSleepEnded with the right reason. Mirrors wakeNPC minus
 // the occupancy refresh. It does NOT touch InsideRoomID — each caller manages the
 // bedroom scope per wake reason (LLM-14): the manual/input wakes and the normal
@@ -178,12 +181,13 @@ func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 // after this and re-sets State (Walking/Conversing/…), so guarding here avoids
 // clobbering a macro-state another command set, and leaves a non-sleeping State
 // untouched if it ever diverged.
-func wakePCActor(pc *Actor) {
+func wakePCActor(w *World, pc *Actor) {
 	pc.SleepingUntil = nil
 	pc.LastTirednessRecoveryAt = nil
 	if pc.State == StateSleeping {
 		pc.State = StateIdle
 	}
+	reclaimRoomSquare(w, pc)
 }
 
 // PCSleepResult carries a SleepPC outcome to the httpapi handler. Bedded is
@@ -235,7 +239,7 @@ func WakePC(actorID ActorID, now time.Time) Command {
 				return false, nil
 			}
 			fromRoom := pc.InsideRoomID
-			wakePCActor(pc)
+			wakePCActor(w, pc)
 			// LLM-14: a player-driven wake drops the private-room scope itself
 			// (no morning-descent runs for "manual"/"input"), so an awake PC in
 			// the inn is public-scoped rather than stuck addressing its empty
@@ -275,7 +279,7 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 	}
 	if pc.SleepingUntil != nil {
 		fromRoom := pc.InsideRoomID
-		wakePCActor(pc)
+		wakePCActor(w, pc)
 		pc.InsideRoomID = 0 // LLM-14: player-driven wake drops the private-room scope (see WakePC)
 		w.emit(&PCSleepEnded{ActorID: actorID, Reason: "input", FromRoomID: fromRoom, At: now})
 	}
@@ -337,7 +341,7 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 					continue
 				}
 				fromRoom := a.InsideRoomID
-				wakePCActor(a)
+				wakePCActor(w, a)
 				// Non-checkout wakes clear the room scope now (invariant: a private
 				// InsideRoomID means asleep); descent relocates to common off
 				// FromRoomID. Checkout keeps it for the eviction sweep.

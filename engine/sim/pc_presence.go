@@ -249,7 +249,7 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 				// other player-driven wakes.
 				if a.SleepingUntil != nil && PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
 					fromRoom := a.InsideRoomID
-					wakePCActor(a)
+					wakePCActor(w, a)
 					a.InsideRoomID = 0 // LLM-14: an awake PC is never bedroom-scoped
 					w.emit(&PCSleepEnded{ActorID: a.ID, Reason: "reconnect", FromRoomID: fromRoom, At: now})
 				}

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
 // translate.go — the production EventTranslator: it maps the v2 sim event bus
@@ -97,6 +98,13 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			InsideStructureID: string(e.InsideStructureID),
 			X:                 e.X,
 			Y:                 e.Y,
+			RoomSquare:        e.RoomSquare,
+		}}, true
+	case *sim.ActorRoomSquareChanged:
+		return WireFrame{Type: "npc_room_square_changed", Data: roomSquareChangedWireDTO{
+			ID:          string(e.ActorID),
+			StructureID: string(e.StructureID),
+			Square:      e.Square,
 		}}, true
 	case *sim.ActorTeleported:
 		// An operator teleport (ZBBS-HOME-448) reuses the npc_arrived frame —
@@ -759,6 +767,18 @@ type insideChangedWireDTO struct {
 	InsideStructureID string `json:"inside_structure_id,omitempty"`
 	X                 int    `json:"x"`
 	Y                 int    `json:"y"`
+	// RoomSquare: where they were placed in the room entered, as [x, y] (LLM-768);
+	// absent leaving, asleep, or for a structure without a floor plan.
+	RoomSquare *roomlayout.Square `json:"room_square,omitempty"`
+}
+
+// roomSquareChangedWireDTO is the npc_room_square_changed payload (LLM-768): an
+// actor's square in a room changed without an inside flip — given up on going
+// to sleep (square absent), taken again on waking.
+type roomSquareChangedWireDTO struct {
+	ID          string             `json:"id"`
+	StructureID string             `json:"structure_id,omitempty"`
+	Square      *roomlayout.Square `json:"square,omitempty"`
 }
 
 // spokeWireDTO is the npc_spoke payload — one utterance the client renders as a

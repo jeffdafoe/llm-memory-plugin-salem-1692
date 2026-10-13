@@ -1,6 +1,10 @@
 package sim
 
-import "time"
+import (
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
+)
 
 // events_move.go — PR 4 locomotion events + the arrival warrant reason.
 //
@@ -266,9 +270,24 @@ type ActorInsideChanged struct {
 	InsideStructureID StructureID // empty = now outdoors
 	X                 int         // actor's padded-grid tile at the flip (ZBBS-HOME-464)
 	Y                 int
+	// RoomSquare is where the actor was placed in the room they entered
+	// (LLM-768); nil when it has no floor plan, they left, or they are asleep.
+	RoomSquare *roomlayout.Square
 }
 
 func (ActorInsideChanged) isSimEvent() {}
+
+// ActorRoomSquareChanged fires when an actor's square in a room changes
+// without an inside flip (LLM-768): given up on going to sleep (Square nil),
+// taken again on waking. Entering and leaving ride ActorInsideChanged.
+type ActorRoomSquareChanged struct {
+	EventBase
+	ActorID     ActorID
+	StructureID StructureID
+	Square      *roomlayout.Square // nil = no square
+}
+
+func (ActorRoomSquareChanged) isSimEvent() {}
 
 // ActorTeleported fires when an operator displaces an actor via the
 // umbilical set-position command (ZBBS-HOME-448) — an out-of-world

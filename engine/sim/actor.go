@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
 // ActorID identifies an actor uniquely within the world.
@@ -856,6 +858,11 @@ type Actor struct {
 	InsideRoomID      RoomID // 0 when not in a room
 	Pos               TilePos
 	CurrentHuddleID   HuddleID
+
+	// RoomSquare is where the actor stands in a room with a floor plan
+	// (LLM-768, room_square.go): nil outdoors, in a structure without a plan,
+	// asleep, or with every square taken. Memory only — placed afresh at boot.
+	RoomSquare *roomlayout.Square
 
 	// Render identity — client-facing only, the engine never branches on
 	// these. SpriteID references the npc_sprite catalog (World.Sprites) for
@@ -1717,6 +1724,8 @@ type ActorSnapshot struct {
 	InsideRoomID    RoomID
 	Pos             TilePos // padded grid tile; was CurrentX/CurrentY (see geom.go)
 	CurrentHuddleID HuddleID
+	// RoomSquare: LLM-768; see Actor.RoomSquare.
+	RoomSquare *roomlayout.Square
 	// ConversationLooping is set at publish (World.republish) when this actor's
 	// current huddle is in an armed conversational loop right now — the same
 	// huddleLoopArmed signal the loop sweep uses, surfaced per-tick so perception

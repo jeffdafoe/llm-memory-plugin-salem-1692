@@ -50,6 +50,11 @@ var state_tags_loaded_flag: bool = false
 var object_tags: Array = []
 var object_tags_loaded_flag: bool = false
 
+# The rooms' floor plans (LLM-768), structure id -> plan, from
+# /api/village/rooms: grid, door, keeper, keeper_door, stations — squares and
+# the art points people are drawn at. The room window reads them.
+var rooms: Dictionary = {}
+
 # Base URL for the Go API
 var api_base: String = ""
 
@@ -72,11 +77,13 @@ func _ready() -> void:
         _load_npc_behaviors()
         _load_state_tags()
         _load_object_tags()
+        _load_rooms()
     else:
         Auth.logged_in.connect(_load_catalog)
         Auth.logged_in.connect(_load_npc_behaviors)
         Auth.logged_in.connect(_load_state_tags)
         Auth.logged_in.connect(_load_object_tags)
+        Auth.logged_in.connect(_load_rooms)
 
 func _load_catalog() -> void:
     # Now gated on Auth.logged_in, which can fire again on a re-login. The
@@ -260,6 +267,35 @@ func _on_object_tags_loaded(result: int, response_code: int, headers: PackedStri
     object_tags = json
     object_tags_loaded_flag = true
     object_tags_loaded.emit()
+
+func _load_rooms() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_rooms_loaded.bind(http))
+    var err = http.request(api_base + "/api/village/rooms", Auth.auth_headers(false))
+    if err != OK:
+        push_error("Failed to request room plans: " + str(err))
+
+func _on_rooms_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_error("Room plans request failed: result=" + str(result) + " code=" + str(response_code))
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if not (json is Dictionary) or not (json.get("rooms", null) is Array):
+        push_error("Failed to parse room plans JSON")
+        return
+    set_rooms(json["rooms"])
+
+## Keep the plans by structure id.
+func set_rooms(list: Array) -> void:
+    rooms = {}
+    for plan in list:
+        if plan is Dictionary:
+            rooms[str(plan.get("structure_id", ""))] = plan
 
 ## Called from event_client when the WS asset_state_tags_updated event
 ## arrives. Updates our cached copy of the asset's state tags so downstream

@@ -2019,6 +2019,9 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	if err := w.rehydrateVisitorsOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate visitors: %w", err)
 	}
+	// LLM-768: squares in the rooms are memory only — deal them to everyone
+	// awake inside, visitors included, before the first snapshot publishes.
+	w.placeRoomSquaresOnLoad()
 	// LLM-372: load the durable returner set AFTER visitors so it can validate the
 	// in-flight visitor->recurring_visitor links against the loaded rows.
 	if err := w.rehydrateRecurringVisitorsOnLoad(ctx); err != nil {
@@ -2905,6 +2908,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		LastPCSeenAt:               lastPCSeenAt,
 		InsideStructureID:          a.InsideStructureID,
 		InsideRoomID:               a.InsideRoomID,
+		RoomSquare:                 copyRoomSquare(a.RoomSquare),
 		Pos:                        a.Pos,
 		CurrentHuddleID:            a.CurrentHuddleID,
 		GatherTargetObjectID:       a.GatherTargetObjectID,
