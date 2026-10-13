@@ -259,8 +259,9 @@ static func middle(square: Vector2i) -> Vector2:
 ## Where the keeper stands to set a good down at `toward` (room art px — a
 ## seat's serve point on the table, or where a standing buyer is): the open
 ## floor square nearest it that the keeper can walk to from their place, never
-## a seat, preferring one nobody holds (`taken`: square -> true). (-1, -1)
-## when there is none — the room has no way out from behind its counter.
+## a seat nor one somebody holds (`taken`: square -> true). (-1, -1) when
+## there is none — every such square is held, or the room has no way out
+## from behind its counter.
 static func serve_square(room: Dictionary, toward: Vector2, taken: Dictionary) -> Vector2i:
     var home: Vector2i = room.get("keeper", {}).get("square", Vector2i(-1, -1))
     var seats := {}
@@ -273,10 +274,10 @@ static func serve_square(room: Dictionary, toward: Vector2, taken: Dictionary) -
     for y in grid.size():
         for x in str(grid[y]).length():
             var sq := Vector2i(x, y)
-            if seats.has(sq) or not walkable(room, sq) or keeper_path(room, home, sq).is_empty():
+            if seats.has(sq) or taken.has(sq) or not walkable(room, sq) or keeper_path(room, home, sq).is_empty():
                 continue
             var spot := spot_at(room, sq)
-            var cost := Vector2(int(spot["x"]), int(spot["y"])).distance_to(toward) + (1000.0 if taken.has(sq) else 0.0)
+            var cost := Vector2(int(spot["x"]), int(spot["y"])).distance_to(toward)
             if cost < best_cost:
                 best_cost = cost
                 best = sq

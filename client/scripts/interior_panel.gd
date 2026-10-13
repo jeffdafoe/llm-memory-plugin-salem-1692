@@ -726,7 +726,7 @@ func _draw_people(cast: Dictionary) -> void:
                 room_route = was[id]["route_left"]
         # A room's keeper on a handoff (out on the floor with a meal, LLM-769)
         # carries on from where they had got to.
-        var errand := stays and not is_stall() and bool(entry.get("keeper", false)) and not _handoff_now.is_empty()
+        var errand := stays and not is_stall() and bool(entry.get("keeper", false)) and str(_handoff_now.get("keeper", "")) == id
         # The keeper carries on from where they bustled to, a newcomer from
         # partway in, a walker from where they had got to; anyone else (a hand
         # too) stands at their (maybe new) spot.
@@ -2046,6 +2046,10 @@ func _on_table(dish: Node2D, buyer: String, item: String) -> void:
     if _holder(buyer) == null:
         _clear_dish(dish)
         return
+    if dish.has_meta("meal_over"):
+        _show_empty(dish)
+        _clear_dish(dish)
+        return
     if world != null and world.has_method("meal_of") and world.meal_of(buyer, structure_id) == item:
         dish.remove_meta("tween")
         return
@@ -2125,6 +2129,12 @@ func _on_meal_ended(actor_id: String, item: String) -> void:
         if str(dish.get_meta("buyer")) == actor_id and str(dish.get_meta("item")) == item:
             _show_empty(dish)
             _clear_dish(dish)
+    # Over before its dish reached the table (still on the bar, carried, or
+    # landing): it is empty and cleared as it lands (_on_table).
+    var good = _handoff_now.get("good", null)
+    if not _handoff_now.has("clear") and is_instance_valid(good) and str(_handoff_now.get("other", "")) == actor_id \
+            and str(_handoff_now.get("item", "")) == item:
+        good.set_meta("meal_over", true)
 
 
 ## A finished dish shows its empty picture (EMPTY_DISH), when it has one.

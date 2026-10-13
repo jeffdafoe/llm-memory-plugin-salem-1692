@@ -71,6 +71,8 @@ const TESTS := [
     "_test_tavern_keeper_hands_to_a_standing_buyer",
     "_test_tavern_carry_survives_a_redraw",
     "_test_tavern_engine_walk_wins",
+    "_test_tavern_meal_over_before_the_bowl_lands",
+    "_test_tavern_keeper_replaced_during_a_carry",
     "_test_inn_keeper_behind_the_desk",
     "_test_inn_animations",
     "_test_inn_serves_porridge_to_the_bench",
@@ -2347,7 +2349,7 @@ func _test_keeper_path_and_serve_square() -> void:
     for y in 7:
         for x in 8:
             everywhere[Vector2i(x, y)] = true
-    _check("all held: the nearest all the same", InteriorRooms.serve_square(room, west_seat, everywhere), Vector2i(1, 4))
+    _check("all held: nowhere to stand (served across)", InteriorRooms.serve_square(room, west_seat, everywhere), Vector2i(-1, -1))
     _check("a seat is never stood on", InteriorRooms.serve_square(room, Vector2(16, 98), {}) != Vector2i(1, 6), true)
     _way_out(_sid, false)
     room = InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
@@ -2526,6 +2528,64 @@ func _test_tavern_engine_walk_wins() -> void:
     var ale: Node2D = _panel._handoff_now["good"]
     (ale.get_meta("tween") as Tween).custom_step(60.0)
     _check("served across to the table", ale.position, _panel._cell_at(table))
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-769: a meal over before its bowl reaches the table (a short meal, or
+## its end frame early) — carried, or sliding down — lands empty and is
+## cleared at once, never left full on the table.
+func _test_tavern_meal_over_before_the_bowl_lands() -> void:
+    for landing in [false, true]:
+        var when := "while it lands" if landing else "while it is carried"
+        _tavern_with_guest(0, true)
+        _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+        _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+        var bowl: Node2D = _panel._handoff_now["good"]
+        var keeper: Node2D = _panel._tending()
+        _finish_walk(keeper)
+        (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+        if landing:
+            _finish_walk(keeper)
+            (bowl.get_meta("tween") as Tween).custom_step(0.05)
+        _world.apply_npc_meal_ended({"id": "guest", "item": "stew", "structure_id": _sid})
+        _finish_walk(keeper)
+        (bowl.get_meta("tween") as Tween).custom_step(5.0)
+        _check("meal over %s: the plate lands empty" % when, (bowl.get_child(0).texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["stew_empty"]))
+        _check("meal over %s: and is cleared at once" % when, [bowl.has_meta("clearing"), _panel._handoff_now.get("clear") == bowl], [true, true])
+        _world.meals = {}
+        _panel.close()
+    _done()
+
+
+## LLM-769: the keeper goes while carrying a meal and another who works here,
+## already in the room, becomes the one keeping it: they stay where they are
+## drawn (their own square), never take over the first one's errand or
+## position, and the meal is set down at once.
+func _test_tavern_keeper_replaced_during_a_carry() -> void:
+    _tavern_with_guest(0, true)
+    _person("keeper2", _farmer(), _sid, {"work_structure_id": _sid})
+    _panel.refresh()
+    _finish_walk(_panel._holder("keeper2"))
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    var bowl: Node2D = _panel._handoff_now["good"]
+    _finish_walk(_panel._tending())
+    (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    (_panel._tending().get_meta("walking") as Tween).custom_step(1.5)
+    var second: Node2D = _panel._holder("keeper2")
+    second.position += Vector2(3, 0)
+    _world.placed_npcs["keeper"].free()
+    _world.placed_npcs.erase("keeper")
+    _panel.refresh()
+    var keeper: Node2D = _panel._tending()
+    _check("the other now keeps the room, at their own spot, standing", [str(keeper.name), keeper.position, keeper.has_meta("walking")], ["keeper2", keeper.get_meta("home"), false])
+    _check("the meal no longer carried", _panel._carrying(), false)
+    (bowl.get_meta("tween") as Tween).custom_step(5.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("set down on the table", [bowl.position, bowl.get_meta("buyer", "")], [_panel._cell_at(table), "guest"])
+    _check("the new keeper is not sent anywhere", keeper.has_meta("walking"), false)
     _world.meals = {}
     _panel.close()
     _done()
