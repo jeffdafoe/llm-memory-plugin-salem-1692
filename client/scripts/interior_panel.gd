@@ -114,6 +114,9 @@ var _counter: Sprite2D = null
 var _goods_front: Node2D = null
 ## Goods changing hands over the counter, above the goods on it.
 var _handoff: Node2D = null
+## Handoffs waiting their turn, and the one under way ({} when none).
+var _handoffs: Array = []
+var _handoff_now: Dictionary = {}
 var _people: Node2D = null
 var _font: Font = null
 var _stretch := Vector2.ONE
@@ -249,6 +252,8 @@ func open(sid: String) -> void:
     var was_open := visible
     for child in _handoff.get_children():
         child.free()
+    _handoffs = []
+    _handoff_now = {}
     if sid != structure_id:
         _assigned = {}
         _wares = []
@@ -459,7 +464,9 @@ func _draw_people(cast: Dictionary) -> void:
         holder.set_meta("home", home)
         holder.set_meta("sprite_data", sprite_data)
         holder.add_child(spr)
-        var stays := was.has(id) and bool(was[id]["behind"]) == behind
+        # A window just opened draws everyone at their spots: nothing carries
+        # over from the last time it was open.
+        var stays := _entrances and was.has(id) and bool(was[id]["behind"]) == behind
         # The keeper carries on from where they bustled to, a newcomer from
         # partway in; anyone else stands at their (maybe new) spot.
         if stays and (behind or bool(was[id]["entering"])):
@@ -480,6 +487,9 @@ func _draw_people(cast: Dictionary) -> void:
         for id in was:
             if not drawn.has(id):
                 _walk_out(id, was[id])
+    # The keeper was rebuilt mid-handoff: their walk to it goes on.
+    if not _handoff_now.is_empty() and not bool(_handoff_now["arrived"]):
+        _handoff_walk()
     for id in bubbles:
         # A leaver takes their last line out with them.
         var holder := _holder(id)
@@ -610,7 +620,7 @@ func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "s
 ## behind them or at the customers.
 func _bustle(delta: float) -> void:
     var holder := _tending()
-    if holder == null or holder.has_meta("walking"):
+    if holder == null or holder.has_meta("walking") or not _handoff_now.is_empty():
         return
     _bustle_left -= delta
     if _bustle_left > 0.0:
@@ -685,8 +695,9 @@ func say(npc_id: String, text: String) -> void:
         holder = _leaving(npc_id)
     if holder == null:
         return
-    # The one tending a stall stops to speak, facing the customers.
-    if holder.get_parent() == _staff and not holder.has_meta("leaving"):
+    # The one tending a stall stops to speak, facing the customers — but not
+    # in the middle of handing something over.
+    if holder.get_parent() == _staff and not holder.has_meta("leaving") and _handoff_now.is_empty():
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")
@@ -806,13 +817,14 @@ func _draw_goods() -> void:
 
 
 ## A sale settled (the world's pay_resolved, LLM-756). Over a stall's counter
-## it is handed across: when the one tending the stall sells, they walk along
-## the counter to the buyer, set the good down in front of them, and after a
-## moment it goes to the buyer; when they buy from someone at the counter, the
-## good lies in front of the seller until they come for it. Only goods: what
-## they sell must be on the shelf or have a goods picture (a service has
-## neither). Trades between customers, and offers that fell through, pass the
-## counter by. The shelf is re-read at once.
+## it is handed across, one handoff at a time (queued in _handoffs): when the
+## one tending the stall sells, they walk along the counter to the buyer, set
+## the good down in front of them when they get there, and after a moment it
+## goes to the buyer; when they buy from someone at the counter, the good lies
+## in front of the seller until they come and take it up. Only goods that can
+## be drawn: a goods picture, or for a sale anything on the shelf (a service
+## has neither). Trades between customers, and offers that fell through, pass
+## the counter by. The shelf is re-read at once.
 func on_pay_resolved(data: Dictionary) -> void:
     if not visible or not is_stall() or str(data.get("terminal_state", "")) != "accepted":
         return
@@ -822,54 +834,109 @@ func on_pay_resolved(data: Dictionary) -> void:
     var keeper_id := str(keeper.name)
     var item := str(data.get("item", ""))
     var selling := str(data.get("seller_id", "")) == keeper_id
-    var other := str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", ""))
     if not selling and str(data.get("buyer_id", "")) != keeper_id:
         return
-    if selling and not (StallScenes.GOODS.has(item) or _on_shelf(item)):
+    if not (StallScenes.GOODS.has(item) or (selling and _on_shelf(item))):
         return
-    _request_wares()
+    _request_wares(true)
+    # The goods sheet still downloading: nothing to hand over.
+    if _texture(StallScenes.GOODS_SHEET) == null:
+        return
+    _handoffs.append({"item": item, "qty": int(data.get("qty", 1)), "selling": selling,
+        "other": str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", ""))})
+    if _handoff_now.is_empty():
+        _next_handoff()
+
+
+## Start the next handoff in line; with none left the keeper bustles again.
+func _next_handoff() -> void:
+    _handoff_now = {}
+    if _handoffs.is_empty() or not visible:
+        _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+        return
+    var h: Dictionary = _handoffs.pop_front()
     # Where along the counter: in front of the other party, or the middle
     # when they are not drawn.
     var size: Vector2i = room.get("size", StallScenes.SIZE)
     var x := float(StallScenes.KEEPER["x"])
-    var customer := _people.get_node_or_null(NodePath(other)) as Node2D
+    var customer := _people.get_node_or_null(NodePath(str(h["other"]))) as Node2D
     if customer != null:
         x = clampf(customer.position.x, 10.0, size.x - 10.0)
-    x = roundf(x)
-    if keeper.has_meta("walking"):
-        (keeper.get_meta("walking") as Tween).kill()
-        keeper.remove_meta("walking")
-    var stop := Vector2(x, (keeper.get_meta("home") as Vector2).y)
-    var walk_seconds := keeper.position.distance_to(stop) / WALK_SPEED
-    _walk(keeper, stop, WALK_SPEED, "south")
-    var hold := HANDOFF_HOLD if selling else maxf(HANDOFF_HOLD, walk_seconds + 0.5)
-    _bustle_left = walk_seconds + hold + HANDOFF_AWAY + 1.0
+    h["x"] = roundf(x)
+    var good := _handoff_good(str(h["item"]), int(h["qty"]), h["x"])
+    if good == null:
+        _next_handoff()
+        return
+    # A good the keeper buys lies there from the start; one they sell
+    # appears when they set it down.
+    good.modulate.a = 0.0 if bool(h["selling"]) else 1.0
+    h["good"] = good
+    h["arrived"] = false
+    _handoff_now = h
+    _handoff_walk()
+
+
+## The good for a handoff: its goods picture, one of it or two for more, on
+## the counter at x — hidden until it is shown. Null without the goods sheet.
+func _handoff_good(item: String, qty: int, x: float) -> Node2D:
     var sheet := _texture(StallScenes.GOODS_SHEET)
     if sheet == null:
-        return
+        return null
     var good := Node2D.new()
     good.name = "handoff_" + item
     good.position = Vector2(x - StallScenes.CELL.x / 2.0, StallScenes.COUNTER_Y - StallScenes.CELL.y)
-    good.modulate.a = 0.0
     var cell := AtlasTexture.new()
     cell.atlas = sheet
     cell.region = StallScenes.cell_rect(2 * StallScenes.goods_index(item))
-    for i in (1 if int(data.get("qty", 1)) <= 1 else 2):
+    for i in (1 if qty <= 1 else 2):
         var spr := Sprite2D.new()
         spr.centered = false
         spr.texture = cell
         spr.position = Vector2(StallScenes.FEW_STEP * i)
         good.add_child(spr)
     _handoff.add_child(good)
-    # Sold: set down once the keeper is there, then toward the buyer (down,
-    # out of the stall). Bought: there at once, then up to the keeper.
+    return good
+
+
+## Send the keeper along the counter to the handoff in hand; there (at once
+## when nobody is behind the counter) the good changes hands. A redraw of the
+## keeper calls this again, so the walk resumes from where they had got to.
+func _handoff_walk() -> void:
+    var keeper := _tending()
+    if keeper == null:
+        _handoff_arrived()
+        return
+    if keeper.has_meta("walking"):
+        (keeper.get_meta("walking") as Tween).kill()
+        keeper.remove_meta("walking")
+    var stop := Vector2(float(_handoff_now["x"]), (keeper.get_meta("home") as Vector2).y)
+    _walk(keeper, stop, WALK_SPEED, "south", "stand", _handoff_arrived)
+
+
+## The keeper is at the handoff: a good sold is set down, lies a moment and
+## goes toward the buyer (down, out of the stall); a good bought is taken up
+## (toward the keeper). Then the next handoff.
+func _handoff_arrived() -> void:
+    if _handoff_now.is_empty() or bool(_handoff_now["arrived"]):
+        return
+    _handoff_now["arrived"] = true
+    var good: Node2D = _handoff_now["good"]
+    if not is_instance_valid(good):
+        _next_handoff()
+        return
+    var selling := bool(_handoff_now["selling"])
     var t := good.create_tween()
-    t.tween_property(good, "modulate:a", 1.0, 0.15).set_delay(walk_seconds if selling else 0.0)
-    t.tween_interval(hold)
+    if selling:
+        t.tween_property(good, "modulate:a", 1.0, 0.15)
+        t.tween_interval(HANDOFF_HOLD)
+    else:
+        t.tween_interval(0.3)
     var away := Vector2(0, HANDOFF_SLIDE if selling else -HANDOFF_SLIDE)
     t.tween_property(good, "position", good.position + away, HANDOFF_AWAY)
     t.parallel().tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
-    t.tween_callback(good.queue_free)
+    t.tween_callback(func():
+        good.queue_free()
+        _next_handoff())
     good.set_meta("tween", t)
 
 
@@ -880,8 +947,10 @@ func _on_shelf(item: String) -> bool:
     return false
 
 
-## Ask the engine what is on this stall's shelf.
-func _request_wares() -> void:
+## Ask the engine what is on this stall's shelf. `fresh`: a sale just
+## settled, so a request already under way (asked before the sale) is
+## restarted rather than reused.
+func _request_wares(fresh := false) -> void:
     var sid := structure_id
     if wares_hook.is_valid():
         set_wares(wares_hook.call(sid))
@@ -891,9 +960,10 @@ func _request_wares() -> void:
         add_child(_http_wares)
         _http_wares.request_completed.connect(_on_wares)
     elif _http_wares.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
-        # Already asking about this stall: that answer will do. A request for
-        # the stall the window just left is dropped for this one.
-        if str(_http_wares.get_meta("structure_id", "")) == sid:
+        # Already asking about this stall: that answer will do, unless a sale
+        # has settled since. A request for the stall the window just left is
+        # dropped for this one.
+        if str(_http_wares.get_meta("structure_id", "")) == sid and not fresh:
             return
         _http_wares.cancel_request()
     _http_wares.set_meta("structure_id", sid)
