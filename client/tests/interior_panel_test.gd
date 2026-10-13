@@ -36,6 +36,13 @@ const TESTS := [
     "_test_stall_occupants",
     "_test_stall_draws",
     "_test_main_sync_stall",
+    "_test_close_glyph_in_font",
+    "_test_walk_out",
+    "_test_walk_in",
+    "_test_keeper_bustles",
+    "_test_walk_in_survives_a_redraw",
+    "_test_leave_return_leave",
+    "_test_leaver_takes_their_bubble",
 ]
 
 const STALL := "stall-1"
@@ -73,6 +80,8 @@ func _run_once() -> void:
     _panel.free()
     for c in _world.placed_npcs.values():
         c.free()
+    for o in _world.placed_objects.values():
+        o.free()
     _world.free()
     print("\n[interior_panel_test] %d checks, %d failure(s)" % [_checks, _failures])
     if _failures == 0:
@@ -270,6 +279,8 @@ func _test_draws_people() -> void:
     _panel._assigned = {"sitter": seat, "stander": seat + 1}
     _panel._signature = ""
     _panel.refresh()
+    # Newcomers walk in (LLM-754); once there, the farmer sits.
+    _finish_walk(people.get_node("sitter"))
     var sit_spr: AnimatedSprite2D = people.get_node("sitter").get_child(0)
     _check("a farmer in a seat sits", sit_spr.animation, StringName(str(spots[seat]["facing"]) + "_seat"))
     _check("redraw only on change", _panel._signature != "", true)
@@ -804,4 +815,227 @@ func _test_main_sync_stall() -> void:
     for id in _world.placed_objects.keys():
         _world.placed_objects[id].free()
     _world.placed_objects.clear()
+    _done()
+
+
+## Run a drawn person's walk to its end (LLM-754 walks are tweens).
+func _finish_walk(holder: Node) -> void:
+    if holder != null and holder.has_meta("walking"):
+        (holder.get_meta("walking") as Tween).custom_step(600.0)
+
+
+func _leavers() -> Array:
+    var out := []
+    for layer in [_panel._people, _panel._staff]:
+        for child in layer.get_children():
+            if str(child.name).begins_with(_panel.LEAVING_PREFIX):
+                out.append(str(child.name))
+    return out
+
+
+## The close button's glyph is in the font the button draws with — a browser
+## has no system font to hide a missing one behind.
+func _test_close_glyph_in_font() -> void:
+    var text: String = _panel.close_button.text
+    _check("the close button is ×", text, "×")
+    var font: Font = _panel.close_button.get_theme_font("font")
+    _check("its font has the glyph", font.has_char(text.unicode_at(0)), true)
+    _done()
+
+
+func _test_walk_out() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    var buyer := _at_tile("buyer", _farmer(), pin)
+    _panel.open(STALL)
+    _check("opening walks nobody in or out", [_leavers(), _panel._people.get_node("buyer").has_meta("walking")], [[], false])
+    var was: Vector2 = _panel._people.get_node("buyer").position
+
+    # The buyer sets off: they turn and walk away toward the nearer side.
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    _check("the buyer is no longer drawn standing", _panel._people.get_node_or_null("buyer"), null)
+    var ghost: Node2D = _panel._people.get_node_or_null(_panel.LEAVING_PREFIX + "buyer")
+    _check("the buyer walks away", ghost != null and ghost.has_meta("walking"), true)
+    if ghost != null:
+        _check("from where they stood", ghost.position, was)
+        var side := "west" if was.x < StallScenes.SIZE.x / 2.0 else "east"
+        _check("toward the nearer side", (ghost.get_child(0) as AnimatedSprite2D).animation, StringName(side + "_walk"))
+        _check("not clickable on the way out", _panel.person_at(was * _panel.k), "")
+        _finish_walk(ghost)
+        _check("gone at the end", ghost.is_queued_for_deletion(), true)
+
+    # The keeper walks out of the stall too, behind the counter.
+    _world.placed_npcs["keeper"].set_meta("inside", false)
+    _world.placed_npcs["keeper"].set_meta("inside_structure_id", "")
+    _panel.refresh()
+    _check("the keeper walks out behind the counter", _panel._staff.get_node_or_null(_panel.LEAVING_PREFIX + "keeper") != null, true)
+    _panel.close()
+
+    # A room's guest walks to the door.
+    _clear_people()
+    _person("guest", _farmer(), _sid)
+    _panel._assigned = {"guest": 3}
+    _panel.open(_sid)
+    _world.placed_npcs["guest"].set_meta("inside", false)
+    _panel.refresh()
+    var out: Node2D = _panel._people.get_node_or_null(_panel.LEAVING_PREFIX + "guest")
+    _check("a guest leaves toward the door", out != null and (out.get_child(0) as AnimatedSprite2D).animation == &"south_walk", true)
+    _panel.close()
+    _panel.open(_sid)
+    _check("reopening clears the leavers", _leavers(), [])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_walk_in() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.open(STALL)
+    _at_tile("newcomer", _farmer(), pin + Vector2i(1, 1))
+    _panel.refresh()
+    var holder: Node2D = _panel._people.get_node_or_null("newcomer")
+    _check("a newcomer is drawn", holder != null, true)
+    if holder != null:
+        var home: Vector2 = holder.get_meta("home")
+        _check("walking in", holder.has_meta("walking"), true)
+        _check("from the side, not at their spot", holder.position != home, true)
+        _check("fading in", holder.modulate.a < 1.0, true)
+        _finish_walk(holder)
+        _check("at their spot at the end", holder.position, home)
+        _check("facing the counter", (holder.get_child(0) as AnimatedSprite2D).animation, &"north_idle")
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_keeper_bustles() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.open(STALL)
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    var home: Vector2 = keeper.get_meta("home")
+    _check("the keeper starts at their spot", keeper.position, home)
+    _panel._bustle_rng.seed = 7
+    _panel._bustle(0.01)
+    _check("not before the wait is up", keeper.has_meta("walking"), _panel._bustle_left <= 0.0)
+    _panel._bustle_left = 0.0
+    _panel._bustle(0.01)
+    _check("off along the counter", keeper.has_meta("walking"), true)
+    _finish_walk(keeper)
+    _check("somewhere else behind the counter", keeper.position != home, true)
+    _check("within reach of their spot", absf(keeper.position.x - home.x) <= _panel.BUSTLE_REACH, true)
+    _check("on the same line", keeper.position.y, home.y)
+    _check("a next wait", _panel._bustle_left >= _panel.BUSTLE_MIN, true)
+
+    # A redraw (someone arrives) keeps the keeper where they bustled to.
+    var there := keeper.position
+    _at_tile("buyer", _farmer(), pin)
+    _panel.refresh()
+    keeper = _panel._staff.get_node("keeper")
+    _check("still there after a redraw", keeper.position, there)
+
+    # Speaking stops them, facing the customers.
+    _panel._bustle_left = 0.0
+    _panel._bustle(0.01)
+    _panel.say("keeper", "Mind the step.")
+    _check("stopped to speak", keeper.has_meta("walking"), false)
+    _check("facing the customers", (keeper.get_child(0) as AnimatedSprite2D).animation, &"south_idle")
+    _check("held a while", _panel._bustle_left, _panel.SPEAK_HOLD)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## Someone else coming or going mid-entrance redraws everyone: a newcomer
+## partway in carries on walking in from there — in front of the counter
+## and behind it.
+func _test_walk_in_survives_a_redraw() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _panel.open(STALL)
+    _at_tile("first", _farmer(), pin + Vector2i(1, 1))
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.refresh()
+    for id in ["first", "keeper"]:
+        var h: Node2D = _panel._holder(id)
+        (h.get_meta("walking") as Tween).custom_step(0.4)
+    var part_way := {"first": _panel._holder("first").position, "keeper": _panel._holder("keeper").position}
+    _at_tile("second", _farmer(), pin + Vector2i(-1, 1))
+    _panel.refresh()
+    for id in ["first", "keeper"]:
+        var h: Node2D = _panel._holder(id)
+        _check("%s: picked up where the redraw found them" % id, h.position, part_way[id])
+        _check("%s: still walking in" % id, [h.has_meta("walking"), h.has_meta("entering")], [true, true])
+        _check("%s: still fading in" % id, h.modulate.a < 1.0, true)
+        _finish_walk(h)
+        _check("%s: at their spot" % id, h.position, h.get_meta("home"))
+        _check("%s: in" % id, [h.modulate.a, h.has_meta("entering")], [1.0, false])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## Leave, come back before the way out is over, leave again: one person
+## walking out, never two.
+func _test_leave_return_leave() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    var buyer := _at_tile("buyer", _farmer(), pin)
+    _panel.open(STALL)
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    _check("walking out", _leavers(), [_panel.LEAVING_PREFIX + "buyer"])
+    _panel.say("buyer", "Oh — one more thing.")
+    _check("a line on the way out", _panel._leaving("buyer").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    _at_tile("other", _farmer(), pin + Vector2i(1, 1))
+    _panel.refresh()
+    _check("a redraw leaves the line on them", _panel._leaving("buyer").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    buyer.remove_meta("walking")
+    _panel.refresh()
+    _check("back: nobody walking out", _leavers(), [])
+    _check("back: drawn again", _panel._holder("buyer") != null, true)
+    _check("back: with their line", _panel._holder("buyer").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    _check("gone again: one walking out", _leavers(), [_panel.LEAVING_PREFIX + "buyer"])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_leaver_takes_their_bubble() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    var buyer := _at_tile("buyer", _farmer(), pin)
+    _panel.open(STALL)
+    _panel.say("buyer", "Good day to you.")
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    var ghost: Node2D = _panel._leaving("buyer")
+    _check("the line goes with them", ghost != null and ghost.get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    _panel.close()
+    _panel.wares_hook = Callable()
     _done()
