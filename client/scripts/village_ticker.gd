@@ -72,7 +72,8 @@ var _alarm_line: String = ""
 var _damage_line: String = ""
 var _alarm_http: HTTPRequest = null
 var _alarm_timer: Timer = null
-## LLM-740: "Salem build <commit>" — the front of the band, set in begin().
+## LLM-740: "Salem build <commit>" — the front of the band's first pass, set
+## in begin() and cleared when that pass finishes.
 var _build_line: String = ""
 ## This client's build, set in begin(); "" until then, which never reads stale.
 var _client_build: String = ""
@@ -243,8 +244,8 @@ func push(text: String) -> void:
     _refresh_band()
 
 
-# The non-alarm band: the build, a stale-tab notice, broken things, then the
-# atmosphere.
+# The non-alarm band: the build (first pass only), a stale-tab notice, broken
+# things, then the atmosphere.
 func _band_line() -> String:
     var parts := PackedStringArray()
     for part in [_build_line, _stale_line, _damage_line, _atmosphere_line]:
@@ -327,6 +328,14 @@ func _process(delta: float) -> void:
 
 func _on_scroll_finished() -> void:
     _scrolling = false
+    # The build rides only the band's first pass. A line queued during that
+    # pass was composed with it too (only band lines queue; alarms take over
+    # immediately), so the build comes off the front of both.
+    if _build_line != "" and _active_line.begins_with(_build_line):
+        var lead := _build_line + "   ~   "
+        _active_line = "" if _active_line == _build_line else _active_line.trim_prefix(lead)
+        _pending_line = _pending_line.trim_prefix(lead)
+        _build_line = ""
     # A line came in mid-scroll; switch to it now and reset the burst.
     if _pending_line != "":
         _active_line = _pending_line
