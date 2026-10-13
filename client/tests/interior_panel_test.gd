@@ -51,6 +51,8 @@ const TESTS := [
     "_test_tavern_serves_a_meal_to_the_table",
     "_test_tavern_serves_standing_and_at_the_door",
     "_test_tavern_keeper_buys",
+    "_test_tavern_keeper_back_is_theirs",
+    "_test_reopen_stops_a_handoff",
 ]
 
 const STALL := "stall-1"
@@ -1265,8 +1267,12 @@ func _test_tavern_serves_standing_and_at_the_door() -> void:
     var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"] - 6)
     _check("the player's character at the door", _panel._serve_to("pc", bar), {"to": bar.lerp(door, 0.6).round(), "stay": false})
     _check("someone not drawn: it stays on the bar", _panel._serve_to("nobody", bar), {})
+    _panel.on_pay_resolved(_sale("keeper", "nobody", "bread", "accepted", 1))
+    var bread: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    _check("…and fades there", [bread.position, bread.is_queued_for_deletion()], [_panel._cell_at(bar), true])
     _panel.on_pay_resolved(_sale("keeper", "guest", "nights_stay", "accepted", 1))
-    _check("a night's stay: nothing on the bar", _panel._handoff.get_child_count(), 0)
+    _check("a night's stay: nothing on the bar", _panel._handoff.get_children().filter(func(n): return not n.is_queued_for_deletion()).size(), 0)
     _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1))
     _finish_handoff()
     var good: Node2D = _panel._handoff.get_node_or_null("handoff_ale")
@@ -1288,5 +1294,41 @@ func _test_tavern_keeper_buys() -> void:
         _check("taken toward the keeper", good.position.x > on_bar.x, true)
     _panel.on_pay_resolved(_sale("guest", "keeper", "mending"))
     _check("a service bought: nothing", _panel._handoff_now, {})
+    _panel.close()
+    _done()
+
+
+## The keeper's step back is for the keeper who made the sale: someone who
+## has taken the bar since is left alone; the same keeper, redrawn and on a
+## walk, is brought back all the same.
+func _test_tavern_keeper_back_is_theirs() -> void:
+    _tavern_with_guest(2)
+    var keeper: Node2D = _panel._tending()
+    keeper.position = Vector2(90, 86)
+    _panel._keeper_back("someone-else")
+    _check("another's step back leaves this keeper be", keeper.has_meta("walking"), false)
+    _panel._walk(keeper, Vector2(95, 86), _panel.WALK_SPEED, "west")
+    _panel._keeper_back("keeper")
+    _finish_walk(keeper)
+    _check("their own: brought back to their spot, a walk stopped for it", keeper.position, keeper.get_meta("home"))
+    _panel.close()
+    _done()
+
+
+## Reopening the window mid-handoff — the good on the bar, or a meal on the
+## table — stops it: nothing from the old handoff moves anyone afterwards.
+func _test_reopen_stops_a_handoff() -> void:
+    for meal in [false, true]:
+        _tavern_with_guest(0)
+        _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1))
+        var keeper: Node2D = _panel._tending()
+        _finish_walk(keeper)
+        var t: Tween = _panel._handoff_now["good"].get_meta("tween")
+        t.custom_step(1.0 if not meal else 6.0)
+        _panel.open(_sid)
+        _check("reopened (%s): the tween is stopped" % ("at the table" if meal else "on the bar"), t.is_valid(), false)
+        _check("reopened (%s): nothing on the bar or queued" % ("at the table" if meal else "on the bar"), [_panel._handoff.get_child_count(), _panel._handoff_now, _panel._handoffs], [0, {}, []])
+        keeper = _panel._tending()
+        _check("reopened (%s): the keeper stands still at their spot" % ("at the table" if meal else "on the bar"), [keeper.has_meta("walking"), keeper.position], [false, keeper.get_meta("home")])
     _panel.close()
     _done()

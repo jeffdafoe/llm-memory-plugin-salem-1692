@@ -255,6 +255,9 @@ func open(sid: String) -> void:
         world.pay_resolved.connect(on_pay_resolved)
     var was_open := visible
     for child in _handoff.get_children():
+        # Its tween is bound to it and dies with it; stopped first all the same.
+        if child.has_meta("tween"):
+            (child.get_meta("tween") as Tween).kill()
         child.free()
     _handoffs = []
     _handoff_now = {}
@@ -895,6 +898,7 @@ func _next_handoff() -> void:
         h["stop"] = _spot_point(room.get("reach", room["keeper"]))
         h["facing"] = str(room["keeper"].get("facing", "south"))
         h["serve"] = _serve_to(str(h["other"]), at)
+    h["keeper"] = str(keeper.name) if keeper != null else ""
     var good := _handoff_good(str(h["item"]), int(h["qty"]), at)
     if good == null:
         _next_handoff()
@@ -996,7 +1000,7 @@ func _handoff_arrived() -> void:
     else:
         t.tween_interval(0.3)
     if not is_stall():
-        t.tween_callback(_keeper_back)
+        t.tween_callback(_keeper_back.bind(str(_handoff_now["keeper"])))
     var serve: Dictionary = _handoff_now.get("serve", {})
     if selling and serve.has("to"):
         var to := _cell_at(serve["to"])
@@ -1011,9 +1015,12 @@ func _handoff_arrived() -> void:
             good.set_meta("tween", t)
             return
         t.parallel().tween_property(good, "modulate:a", 0.0, seconds)
+    elif selling and not is_stall():
+        # Sold to someone not drawn: it fades where it lies on the bar.
+        t.tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
     else:
         var away := Vector2(0, HANDOFF_SLIDE) if selling else Vector2(0, -HANDOFF_SLIDE)
-        if not is_stall() and not selling:
+        if not is_stall():
             away = Vector2(HANDOFF_SLIDE, 0)
         t.tween_property(good, "position", good.position + away, HANDOFF_AWAY)
         t.parallel().tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
@@ -1023,11 +1030,16 @@ func _handoff_arrived() -> void:
     good.set_meta("tween", t)
 
 
-## A room's keeper steps back to their spot after a handoff.
-func _keeper_back() -> void:
+## A room's keeper steps back to their spot after a handoff — the keeper
+## who made it (`keeper_id`), redrawn or not; never someone who has taken
+## their place since. A walk they are on is stopped for it.
+func _keeper_back(keeper_id: String) -> void:
     var keeper := _tending()
-    if keeper == null or keeper.has_meta("walking"):
+    if keeper == null or str(keeper.name) != keeper_id:
         return
+    if keeper.has_meta("walking"):
+        (keeper.get_meta("walking") as Tween).kill()
+        keeper.remove_meta("walking")
     var spot: Dictionary = room.get("keeper", {})
     _walk(keeper, keeper.get_meta("home"), WALK_SPEED, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
 
