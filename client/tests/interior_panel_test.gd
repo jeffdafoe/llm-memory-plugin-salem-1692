@@ -36,6 +36,9 @@ const TESTS := [
     "_test_stall_occupants",
     "_test_stall_draws",
     "_test_smithy_layout",
+    "_test_smithy_bellows",
+    "_test_smithy_anvil",
+    "_test_smithy_anvil_interrupted",
     "_test_scrolling_stage",
     "_test_main_sync_stall",
     "_test_close_glyph_in_font",
@@ -1475,6 +1478,304 @@ func _test_smithy_layout() -> void:
     _panel.close()
     _panel.wares_hook = Callable()
     _done()
+
+
+## A smithy open with a farmer-base keeper and the given hands behind the
+## counter, the given customers at the pin, and its shelf.
+func _open_smithy_crew(hands: Array, customers: Array) -> void:
+    _clear_people()
+    _place_stall()
+    _world.placed_objects[STALL].set_meta("tags", ["smithy"])
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return [{"item": "nail", "stock": "plenty"}]
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    for id in hands:
+        _person(id, _farmer(), STALL)
+    var i := 0
+    for id in customers:
+        _at_tile(id, _farmer(), Vector2i(8, 21) + Vector2i(i - 1, 1))
+        i += 1
+    _panel.open(STALL)
+
+
+func _anim(holder: Node2D) -> StringName:
+    return _panel._sprite_of(holder).animation
+
+
+## Run a hand's turns until they set off for the bellows (bounded).
+func _send_to_bellows(hand: Node2D) -> bool:
+    for i in 60:
+        hand.set_meta("turn_left", 0.0)
+        _panel._hands_turn(0.01)
+        if hand.has_meta("bellows"):
+            return true
+        _finish_walk(hand)
+    return false
+
+
+## LLM-764: now and then a farmer-base hand works the bellows; each pull down
+## flares the forge fire; one hand at a time; speech stops the pull.
+func _test_smithy_bellows() -> void:
+    _open_smithy_crew(["hand", "hand2"], [])
+    var layout: Dictionary = StallScenes.TRADES["smithy"]
+    var bellows := Vector2(layout["bellows"]["x"], layout["bellows"]["y"])
+    _check("the fire's glow laid over the fire, dark", [_panel._fire.visible, _panel._fire.position, _panel._fire.modulate.a], [true, Vector2(layout["fire"].position), 0.0])
+    _check("the glow is the fire's size in art px", _panel._fire.texture.get_size(), Vector2(layout["fire"].size))
+    _check("the staff are drawn in depth order", _panel._staff.y_sort_enabled, true)
+    var hand: Node2D = _panel._staff.get_node("hand")
+    var other: Node2D = _panel._staff.get_node("hand2")
+    var home: Vector2 = hand.get_meta("home")
+    _panel._bustle_rng.seed = 7
+    _check("a hand sets off for the bellows", _send_to_bellows(hand), true)
+    _check("walking there", hand.has_meta("walking"), true)
+    _finish_walk(hand)
+    _check("at the bellows, pulling, facing them", [hand.position, hand.has_meta("pulling"), _anim(hand)], [bellows, true, &"north_pull"])
+    var seconds := float(hand.get_meta("pulling"))
+    _check("for a few seconds", seconds >= _panel.PULL_MIN and seconds <= _panel.PULL_MAX, true)
+
+    # Each pull down flares the fire, once per stroke; it dies down after.
+    _panel._sprite_of(hand).frame = 1
+    _panel._hands_turn(0.01)
+    _check("the pull down flares the fire", _panel._flare, 1.0)
+    _panel._flare = 0.5
+    _panel._hands_turn(0.01)
+    _check("once per stroke", _panel._flare, 0.5)
+    _panel._sprite_of(hand).frame = 0
+    _panel._hands_turn(0.01)
+    _panel._sprite_of(hand).frame = 1
+    _panel._hands_turn(0.01)
+    _check("the next stroke flares it again", _panel._flare, 1.0)
+    _panel._process(_panel.FLARE_SECONDS / 2.0)
+    _check("the glow fading", [is_equal_approx(_panel._flare, 0.5), is_equal_approx(_panel._fire.modulate.a, 0.5 * _panel.FLARE_ALPHA)], [true, true])
+
+    # One hand at the bellows at a time.
+    var went := false
+    for i in 30:
+        other.set_meta("turn_left", 0.0)
+        _panel._hands_turn(0.01)
+        went = went or other.has_meta("bellows")
+        _finish_walk(other)
+    _check("the other hand never goes while one pulls", went, false)
+
+    # Time up: back to their spot, facing the customers.
+    _panel._hands_turn(_panel.PULL_MAX + 1.0)
+    _check("time up: walking back", [hand.has_meta("pulling"), hand.has_meta("bellows"), hand.has_meta("walking")], [false, false, true])
+    _finish_walk(hand)
+    _check("back at their spot facing the customers", [hand.position, _anim(hand)], [home, &"south_idle"])
+
+    # Speech stops a pull where they stand; they walk back at their next turn.
+    _check("off again", _send_to_bellows(hand), true)
+    _finish_walk(hand)
+    _panel.say("hand", "Hot work, this.")
+    _check("speaking stops the pull, facing the customers", [hand.has_meta("pulling"), _anim(hand), hand.position], [false, &"south_idle", bellows])
+    _check("holding it, the bellows still theirs", [float(hand.get_meta("turn_left")), hand.has_meta("bellows")], [_panel.SPEAK_HOLD, true])
+    _panel._hands_turn(_panel.SPEAK_HOLD + 0.1)
+    _check("then walks back", [hand.has_meta("walking"), hand.has_meta("bellows")], [true, false])
+    _finish_walk(hand)
+    _check("to their spot", hand.position, home)
+
+    # Speech on the way there stops them too.
+    _check("off once more", _send_to_bellows(hand), true)
+    _panel.say("hand", "Coming.")
+    _check("speech on the way: stopped, facing the customers", [hand.has_meta("walking"), _anim(hand)], [false, &"south_idle"])
+
+    # A redraw mid-pull: they walk back from the bellows.
+    _panel._hands_turn(_panel.SPEAK_HOLD + 0.1)
+    _finish_walk(hand)
+    _check("and once more", _send_to_bellows(hand), true)
+    _finish_walk(hand)
+    _at_tile("newcomer", _farmer(), Vector2i(8, 21) + Vector2i(0, 1))
+    _panel.refresh()
+    hand = _panel._staff.get_node("hand")
+    _check("a redraw mid-pull: from the bellows, walking back", [hand.position, hand.has_meta("walking"), hand.has_meta("hand")], [bellows, true, true])
+    _finish_walk(hand)
+    _check("to their spot", hand.position, home)
+
+    # A one-sheet pack sprite never pulls; a stall without bellows has no glow.
+    var pack := _pack_holder()
+    _check("a pack hand cannot pull", _panel._can_work(pack, layout["bellows"], "pull"), false)
+    pack.free()
+    _open_smithy_crew([], [])
+    _check("nobody pulls: the fire stays still", [_panel._fire.visible, _panel._fire.modulate.a], [true, 0.0])
+    _world.placed_objects[STALL].set_meta("tags", [])
+    _panel.close()
+    _panel.open(STALL)
+    _check("a plain stall: no glow", _panel._fire.visible, false)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## A pack-sprite person's holder, off the stage.
+func _pack_holder() -> Node2D:
+    var holder := Node2D.new()
+    holder.add_child(_panel._sprite(_pack()))
+    return holder
+
+
+## LLM-764: between customers a farmer-base keeper now and then walks round
+## the counter's end to the anvil and hammers; a sale or speech brings them
+## back.
+func _test_smithy_anvil() -> void:
+    _open_smithy_crew([], [])
+    var layout: Dictionary = StallScenes.TRADES["smithy"]
+    var anvil := Vector2(layout["anvil"]["x"], layout["anvil"]["y"])
+    var keeper: Node2D = _panel._tending()
+    var home: Vector2 = keeper.get_meta("home")
+    var gate := Vector2(float(layout["counter_from"]) - _panel.GATE_IN, home.y)
+    _check("to the anvil: round the counter's end", _panel._route(keeper, anvil), [gate, anvil])
+    _check("along the counter: straight", _panel._route(keeper, home + Vector2(10, 0)), [home + Vector2(10, 0)])
+    _panel._bustle_rng.seed = 11
+    _check("the keeper goes to the anvil", _send_to_anvil(keeper), true)
+    _check("hammering at the anvil, facing it", [keeper.position, _anim(keeper)], [anvil, &"west_smith"])
+    var seconds := float(keeper.get_meta("smithing"))
+    _check("for a few seconds", seconds >= _panel.SMITH_MIN and seconds <= _panel.SMITH_MAX, true)
+    _panel._bustle(1.0)
+    _check("still at it, no bustle", [keeper.has_meta("smithing"), keeper.has_meta("walking")], [true, false])
+
+    # A redraw keeps them at it.
+    _at_tile("pc", _farmer(), Vector2i(8, 21))
+    _panel.refresh()
+    keeper = _panel._tending()
+    _check("a redraw: still at the anvil, hammering", [keeper.position, keeper.has_meta("smithing"), _anim(keeper)], [anvil, true, &"west_smith"])
+
+    # Time up: back round the counter's end to their spot.
+    _panel._bustle(_panel.SMITH_MAX + 1.0)
+    _check("time up: walking back", [keeper.has_meta("smithing"), keeper.has_meta("walking")], [false, true])
+    _finish_walk(keeper)
+    _check("at their spot, facing the customers", [keeper.position, _anim(keeper)], [home, &"south_idle"])
+
+    # Speech brings them back to the counter.
+    _check("off to the anvil again", _send_to_anvil(keeper), true)
+    _panel.say("keeper", "With you directly.")
+    _check("speaking: walking back to the counter", [keeper.has_meta("smithing"), keeper.has_meta("walking")], [false, true])
+    _finish_walk(keeper)
+    _check("there", keeper.position, home)
+
+    # A sale brings them back to hand it over.
+    _check("and again", _send_to_anvil(keeper), true)
+    _panel.on_pay_resolved(_sale("keeper", "pc", "nail"))
+    _check("a sale: off the anvil, walking to the counter", [keeper.has_meta("smithing"), keeper.has_meta("walking")], [false, true])
+    _finish_handoff()
+    _check("over the counter", keeper.position.x >= float(layout["counter_from"]), true)
+
+    # Not while a customer waits at the counter.
+    _open_smithy_crew([], ["buyer"])
+    keeper = _panel._tending()
+    _panel._bustle_rng.seed = 11
+    var went := false
+    for i in 60:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+        went = went or keeper.has_meta("smithing") or keeper.position.x < float(layout["counter_from"])
+        _finish_walk(keeper)
+        went = went or keeper.has_meta("smithing")
+    _check("a customer waiting: the keeper stays at the counter", went, false)
+    var pack := _pack_holder()
+    _check("a pack keeper cannot smith", _panel._can_work(pack, layout["anvil"], "smith"), false)
+    pack.free()
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## LLM-764 (code_review): a redraw on either leg of the way to the anvil
+## carries the trip on; a customer arriving on the way or while hammering calls
+## the keeper back to the counter.
+func _test_smithy_anvil_interrupted() -> void:
+    _open_smithy_crew([], [])
+    var layout: Dictionary = StallScenes.TRADES["smithy"]
+    var anvil := Vector2(layout["anvil"]["x"], layout["anvil"]["y"])
+    var end := float(layout["counter_from"])
+    var keeper: Node2D = _panel._tending()
+    var home: Vector2 = keeper.get_meta("home")
+    _panel._bustle_rng.seed = 11
+
+    # A redraw on the first leg, still along the counter.
+    _check("off to the anvil", _start_anvil_trip(keeper), true)
+    (keeper.get_meta("walking") as Tween).custom_step(1.0)
+    var was_at := keeper.position
+    _check("partway along the counter", was_at.x > end and was_at.x < home.x, true)
+    _toggle_pc()
+    keeper = _panel._tending()
+    _check("a redraw on the first leg: on from there, still bound for the anvil", [keeper.position, keeper.has_meta("anvil_trip"), keeper.has_meta("walking")], [was_at, true, true])
+    _finish_walk(keeper)
+    _check("there, hammering", [keeper.position, keeper.has_meta("smithing"), keeper.has_meta("anvil_trip")], [anvil, true, false])
+    _panel._bustle(_panel.SMITH_MAX + 1.0)
+    _finish_walk(keeper)
+
+    # A redraw on the second leg, in the work area.
+    _check("off again", _start_anvil_trip(keeper), true)
+    (keeper.get_meta("walking") as Tween).custom_step(4.0)
+    was_at = keeper.position
+    _check("past the counter's end", was_at.x < end, true)
+    _toggle_pc()
+    keeper = _panel._tending()
+    _check("a redraw on the second leg: on from there, still bound for the anvil", [keeper.position, keeper.has_meta("anvil_trip"), keeper.has_meta("walking")], [was_at, true, true])
+    _finish_walk(keeper)
+    _check("there, hammering", [keeper.position, keeper.has_meta("smithing")], [anvil, true])
+
+    # A customer arrives while they hammer.
+    _at_tile("buyer", _farmer(), Vector2i(8, 21) + Vector2i(1, 1))
+    _panel.refresh()
+    keeper = _panel._tending()
+    _check("still hammering after the redraw", keeper.has_meta("smithing"), true)
+    _panel._bustle(0.01)
+    _check("a customer: back to the counter", [keeper.has_meta("smithing"), keeper.has_meta("walking")], [false, true])
+    _finish_walk(keeper)
+    _check("at their spot", keeper.position, home)
+
+    # A customer arrives while they are on the way.
+    _world.placed_npcs["buyer"].free()
+    _world.placed_npcs.erase("buyer")
+    _panel.refresh()
+    keeper = _panel._tending()
+    _finish_walk(keeper)
+    _check("off once more", _start_anvil_trip(keeper), true)
+    (keeper.get_meta("walking") as Tween).custom_step(4.0)
+    _at_tile("buyer", _farmer(), Vector2i(8, 21) + Vector2i(1, 1))
+    _panel.refresh()
+    keeper = _panel._tending()
+    _panel._bustle(0.01)
+    _check("a customer on the way: turned back", [keeper.has_meta("anvil_trip"), keeper.has_meta("walking")], [false, true])
+    _finish_walk(keeper)
+    _check("at their spot, not hammering", [keeper.position, keeper.has_meta("smithing")], [home, false])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## Run the keeper's bustle until they set off for the anvil (bounded); other
+## bustle walks are run to their end.
+func _start_anvil_trip(keeper: Node2D) -> bool:
+    for i in 60:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+        if keeper.has_meta("anvil_trip"):
+            return true
+        _finish_walk(keeper)
+    return false
+
+
+## Redraw the window: the player's character steps up to the counter, or away.
+func _toggle_pc() -> void:
+    if _world.placed_npcs.has("pc"):
+        _world.placed_npcs["pc"].free()
+        _world.placed_npcs.erase("pc")
+    else:
+        _at_tile("pc", _farmer(), Vector2i(8, 21))
+    _panel.refresh()
+
+
+## Run the keeper's bustle until they are at the anvil, hammering (bounded).
+func _send_to_anvil(keeper: Node2D) -> bool:
+    for i in 60:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+        _finish_walk(keeper)
+        if keeper.has_meta("smithing"):
+            return true
+    return false
 
 
 ## LLM-763: a room too big for the window at 2x scrolls — clipped, panned by
