@@ -802,8 +802,43 @@ func TestTranslateEvent_PayResolved(t *testing.T) {
 		TerminalState: string(sim.PayTerminalStateDeclined), Message: "not today",
 		HuddleID: "huddle-1", SceneID: "sc1", At: at.UTC().Format(time.RFC3339),
 	}
-	if d != want {
+	if !reflect.DeepEqual(d, want) {
 		t.Errorf("pay_resolved payload = %+v, want %+v", d, want)
+	}
+}
+
+// LLM-770: a bundle (a quote-take of several lines) has no single item; its
+// lines reach the wire so the room window can hand every good over. A
+// single-item sale carries none.
+func TestTranslateEvent_PayResolvedCarriesBundleLines(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.PayWithItemResolved{
+		BuyerID: "wendy", SellerID: "john", Amount: 3, ConsumeNow: true,
+		TerminalState: sim.PayTerminalStateAccepted,
+		Lines:         []sim.QuoteLine{{ItemKind: "raspberries", Qty: 1}, {ItemKind: "ale", Qty: 2}},
+	})
+	if !ok {
+		t.Fatal("PayWithItemResolved should translate")
+	}
+	d := frame.Data.(payResolvedWireDTO)
+	want := []payLineWireDTO{{Item: "raspberries", Qty: 1}, {Item: "ale", Qty: 2}}
+	if d.Item != "" || !reflect.DeepEqual(d.Lines, want) {
+		t.Errorf("bundle: item = %q, lines = %+v; want empty item, lines %+v", d.Item, d.Lines, want)
+	}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"lines":[{"item":"raspberries","qty":1},{"item":"ale","qty":2}]`) {
+		t.Errorf("bundle wire = %s, want its lines", raw)
+	}
+
+	frame, _ = TranslateEvent(&sim.PayWithItemResolved{
+		BuyerID: "wendy", SellerID: "john", ItemKind: "ale", QtyPerConsumer: 1,
+		TerminalState: sim.PayTerminalStateAccepted,
+	})
+	raw, _ = json.Marshal(frame.Data)
+	if strings.Contains(string(raw), `"lines"`) {
+		t.Errorf("single-item wire = %s, want no lines", raw)
 	}
 }
 

@@ -73,6 +73,10 @@ const TESTS := [
     "_test_tavern_engine_walk_wins",
     "_test_tavern_meal_over_before_the_bowl_lands",
     "_test_tavern_keeper_replaced_during_a_carry",
+    "_test_tavern_bundle_in_one_trip",
+    "_test_bundle_meal_over_in_hand",
+    "_test_bundle_skips_what_cannot_be_drawn",
+    "_test_stall_bundle_handed_over_together",
     "_test_inn_keeper_behind_the_desk",
     "_test_inn_animations",
     "_test_inn_serves_porridge_to_the_bench",
@@ -2588,6 +2592,130 @@ func _test_tavern_keeper_replaced_during_a_carry() -> void:
     _check("the new keeper is not sent anywhere", keeper.has_meta("walking"), false)
     _world.meals = {}
     _panel.close()
+    _done()
+
+
+## A bundle sale as the engine sends it (LLM-770): no single item, the goods
+## in `lines`.
+func _bundle(seller: String, buyer: String, lines: Array, eaten := true) -> Dictionary:
+    var wire: Array = []
+    for item in lines:
+        wire.append({"item": item, "qty": 1})
+    return {"seller_id": seller, "buyer_id": buyer, "item": "", "qty": 0, "lines": wire,
+        "terminal_state": "accepted", "consume_now": eaten}
+
+
+## LLM-770 (the live case: "raspberries, please. and an ale."): a bundle is one
+## handoff — the keeper takes both up and carries them out in one trip; on the
+## table each is its own dish, side by side, and each is cleared on its own —
+## the ale after its while, the raspberries when that meal ends.
+func _test_tavern_bundle_in_one_trip() -> void:
+    _tavern_with_guest(0, true)
+    _world.apply_npc_meal_started({"id": "guest", "item": "raspberries", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_bundle("keeper", "guest", ["raspberries", "ale"]))
+    var group: Node2D = _panel._handoff_now.get("good", null)
+    _check("one handoff for both", [group != null, _panel._handoffs.size()], [true, 0])
+    if group == null:
+        _done()
+        return
+    _check("both goods, side by side", group.get_children().map(func(n): return [str(n.get_meta("item")), n.position.x]),
+        [["raspberries", -_panel.BUNDLE_STEP / 2.0], ["ale", _panel.BUNDLE_STEP / 2.0]])
+    var keeper: Node2D = _panel._tending()
+    _finish_walk(keeper)
+    (group.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _check("taken up together", _panel._carrying(), true)
+    _finish_walk(keeper)
+    (group.get_meta("tween") as Tween).custom_step(5.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    var dishes := {}
+    for dish in _panel._dishes():
+        dishes[str(dish.get_meta("item"))] = dish
+    _check("two dishes on the table, one trip", [dishes.keys(), _panel._handoff_now], [["raspberries", "ale"], {}])
+    if dishes.size() != 2:
+        _done()
+        return
+    var berries: Node2D = dishes["raspberries"]
+    var ale: Node2D = dishes["ale"]
+    _check("side by side at the guest's place", [berries.position, ale.position],
+        [_panel._cell_at(table) + Vector2(-_panel.BUNDLE_STEP / 2.0, 0), _panel._cell_at(table) + Vector2(_panel.BUNDLE_STEP / 2.0, 0)])
+    _check("the bundle's carrier is gone", group.is_queued_for_deletion(), true)
+    _check("the raspberries wait on the meal, the ale on its while", [berries.has_meta("tween"), ale.has_meta("tween")], [false, true])
+    (ale.get_meta("tween") as Tween).custom_step(_panel.TABLE_SECONDS + 1.0)
+    _check("the ale cleared alone", [ale.has_meta("clearing"), berries.has_meta("clearing")], [true, false])
+    _finish_handoff()
+    _finish_walk(keeper)
+    _finish_handoff()
+    _finish_walk(keeper)
+    _world.apply_npc_meal_ended({"id": "guest", "item": "raspberries", "structure_id": _sid})
+    _check("the raspberries when their meal ends", berries.has_meta("clearing"), true)
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-770: a meal over while its bundle is still in hand — that good lands
+## and is cleared at once; the other stays.
+func _test_bundle_meal_over_in_hand() -> void:
+    _tavern_with_guest(0, true)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_bundle("keeper", "guest", ["stew", "ale"]))
+    var group: Node2D = _panel._handoff_now["good"]
+    var keeper: Node2D = _panel._tending()
+    _finish_walk(keeper)
+    (group.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _world.apply_npc_meal_ended({"id": "guest", "item": "stew", "structure_id": _sid})
+    _finish_walk(keeper)
+    (group.get_meta("tween") as Tween).custom_step(5.0)
+    var stew: Node2D = null
+    var ale: Node2D = null
+    for child in _panel._handoff.get_children():
+        if str(child.get_meta("item", "")) == "stew":
+            stew = child
+        elif str(child.get_meta("item", "")) == "ale":
+            ale = child
+    _check("the stew lands empty and is cleared", [stew != null and stew.has_meta("clearing"), stew != null and (stew.get_child(0).texture as AtlasTexture).region == StallScenes.cell_rect(2 * StallScenes.GOODS["stew_empty"])], [true, true])
+    _check("the ale stays", [ale != null, ale != null and ale.has_meta("clearing")], [true, false])
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-770: a bundle's lines that cannot be drawn (a service) are left out; one
+## drawable good is a plain handoff, and none at all is no handoff.
+func _test_bundle_skips_what_cannot_be_drawn() -> void:
+    _tavern_with_guest(0, true)
+    _panel.on_pay_resolved(_bundle("keeper", "guest", ["nights_stay", "ale"]))
+    var good: Node2D = _panel._handoff_now.get("good", null)
+    _check("only the ale: a plain handoff", [good != null and str(good.get_meta("item", "")) == "ale", good != null and good.has_meta("lines"), str(_panel._handoff_now.get("item", ""))], [true, false, "ale"])
+    _finish_handoff()
+    _finish_walk(_panel._tending())
+    _finish_handoff()
+    _panel._handoff_now = {}
+    _panel._handoffs = []
+    _panel.on_pay_resolved(_bundle("keeper", "guest", ["nights_stay", "mending"]))
+    _check("nothing drawable: no handoff", _panel._handoff_now, {})
+    _panel.on_pay_resolved({"seller_id": "keeper", "buyer_id": "guest", "item": "", "qty": 0, "terminal_state": "accepted"})
+    _check("an empty item and no lines: no handoff", _panel._handoff_now, {})
+    _panel.close()
+    _done()
+
+
+## LLM-770: at a stall a bundle goes over the counter together.
+func _test_stall_bundle_handed_over_together() -> void:
+    _stall_with_buyer()
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    _panel.on_pay_resolved(_bundle("keeper", "buyer", ["apples", "nail"], false))
+    var group: Node2D = _panel._handoff_now.get("good", null)
+    _check("one handoff, both goods", [group != null and group.get_child_count() == 2, _panel._handoffs.size()], [true, 0])
+    if group != null:
+        _finish_walk(keeper)
+        var t: Tween = group.get_meta("tween")
+        t.custom_step(1.0)
+        _check("set down together", group.modulate.a, 1.0)
+        t.custom_step(60.0)
+        _check("handed over together", [group.is_queued_for_deletion(), _panel._handoff_now], [true, {}])
+    _panel.close()
+    _panel.wares_hook = Callable()
     _done()
 
 
