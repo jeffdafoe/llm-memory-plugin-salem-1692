@@ -326,15 +326,22 @@ func _process(delta: float) -> void:
         _on_scroll_finished()
 
 
+func _without_build(line: String) -> String:
+    return "" if line == _build_line else line.trim_prefix(_build_line + "   ~   ")
+
+
 func _on_scroll_finished() -> void:
     _scrolling = false
     # The build rides only the band's first pass. A line queued during that
     # pass was composed with it too (only band lines queue; alarms take over
-    # immediately), so the build comes off the front of both.
+    # immediately), so the build comes off the front of both. A queued build
+    # alone means the band emptied during the pass: blank, don't repeat the old.
     if _build_line != "" and _active_line.begins_with(_build_line):
-        var lead := _build_line + "   ~   "
-        _active_line = "" if _active_line == _build_line else _active_line.trim_prefix(lead)
-        _pending_line = _pending_line.trim_prefix(lead)
+        var queued := _pending_line != ""
+        _active_line = _without_build(_active_line)
+        _pending_line = _without_build(_pending_line)
+        if queued and _pending_line == "":
+            _active_line = ""
         _build_line = ""
     # A line came in mid-scroll; switch to it now and reset the burst.
     if _pending_line != "":

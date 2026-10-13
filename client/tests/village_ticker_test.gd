@@ -239,8 +239,18 @@ func _test_build_only_on_first_pass() -> void:
     _check("queued line scrolls now", t._scrolling, true)
     _check("queued line gets a fresh burst", t._burst_done, 0)
     _check("queue drained", t._pending_line, "")
-    t._damage_line = ""
+
+    # The well is mended mid-pass with no atmosphere: the band empties.
     t._atmosphere_line = ""
+    t._build_line = "Salem build 00aa2b90"
+    t._active_line = t._band_line()
+    t._damage_line = ""
+    t._pending_line = t._band_line()
+    t._scrolling = true
+    t._on_scroll_finished()
+    _check("emptied mid-pass: band blanked", t._active_line, "")
+    _check("emptied mid-pass: queue drained", t._pending_line, "")
+    _check("emptied mid-pass: nothing scrolling", t._scrolling, false)
 
     t._build_line = "Salem build 00aa2b90"
     t._active_line = t._band_line()
