@@ -105,6 +105,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:          string(e.ActorID),
 			StructureID: string(e.StructureID),
 			Square:      e.Square,
+			Path:        e.Path,
 		}}, true
 	case *sim.ActorTeleported:
 		// An operator teleport (ZBBS-HOME-448) reuses the npc_arrived frame —
@@ -774,11 +775,14 @@ type insideChangedWireDTO struct {
 
 // roomSquareChangedWireDTO is the npc_room_square_changed payload (LLM-768): an
 // actor's square in a room changed without an inside flip — given up on going
-// to sleep (square absent), taken again on waking.
+// to sleep (square absent), taken again on waking, or walked to (a player's
+// tap, with the path walked).
 type roomSquareChangedWireDTO struct {
 	ID          string             `json:"id"`
 	StructureID string             `json:"structure_id,omitempty"`
 	Square      *roomlayout.Square `json:"square,omitempty"`
+	// Path: the squares walked, both ends included, when they walked there.
+	Path []roomlayout.Square `json:"path,omitempty"`
 }
 
 // spokeWireDTO is the npc_spoke payload — one utterance the client renders as a

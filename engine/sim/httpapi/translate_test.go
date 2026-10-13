@@ -1323,4 +1323,10 @@ func TestTranslateEvent_RoomSquares(t *testing.T) {
 	if want := `{"id":"silas","structure_id":"tavern"}`; string(b) != want {
 		t.Errorf("square given up = %s, want %s", b, want)
 	}
+	walked, _ := TranslateEvent(&sim.ActorRoomSquareChanged{ActorID: "jeff", StructureID: "tavern", Square: sq,
+		Path: []roomlayout.Square{{X: 4, Y: 4}, {X: 4, Y: 5}, {X: 4, Y: 6}}})
+	b, _ = json.Marshal(walked.Data)
+	if want := `{"id":"jeff","structure_id":"tavern","square":[4,6],"path":[[4,4],[4,5],[4,6]]}`; string(b) != want {
+		t.Errorf("square walked to = %s, want %s", b, want)
+	}
 }

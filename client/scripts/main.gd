@@ -83,6 +83,9 @@ var _dream_snippet_timer: Timer = null
 ## press so the HTTPRequest node doesn't sit idle when sleep isn't
 ## in use.
 var _pc_wake_http: HTTPRequest = null
+## /pc/move_inside POST helper (LLM-768) — a tap on a room's floor or a seat.
+## Made on the first tap, like _pc_wake_http.
+var _pc_move_inside_http: HTTPRequest = null
 ## Local-PC actor cache for the structure label shown in the sleep
 ## marker. Set when the PC's inside_structure_id is known via the
 ## world container's meta; falls back to "" when the structure isn't
@@ -594,6 +597,10 @@ func _build_ui() -> void:
     interior_panel_layer.opened.connect(func(): _set_modal_blocker("interior", true))
     interior_panel_layer.closed.connect(func(): _set_modal_blocker("interior", false))
     interior_panel_layer.person_clicked.connect(_on_interior_person_clicked)
+    interior_panel_layer.floor_tapped.connect(_on_interior_floor_tapped)
+    world.room_square_changed.connect(func(_id: String):
+        if interior_panel_layer.is_open():
+            interior_panel_layer.refresh())
     world.npc_metadata_changed.connect(func(npc_id: String):
         if _pc_actor_id != "" and npc_id == _pc_actor_id:
             _sync_interior())
@@ -1365,6 +1372,25 @@ func _place_interior_under_talk() -> void:
 func _on_interior_person_clicked(_npc_id: String) -> void:
     if talk_panel_layer != null and talk_panel_layer.has_method("open"):
         talk_panel_layer.open()
+
+## A tap on the room's floor or a free seat (LLM-768): ask the engine to walk
+## the character there. Every viewer — this one too — sees the walk from the
+## npc_room_square_changed frame; a refused step (taken, out of reach) just
+## does not happen. A newer tap replaces one still on its way.
+func _on_interior_floor_tapped(square: Vector2i) -> void:
+    if not Auth.is_authenticated():
+        return
+    if _pc_move_inside_http == null:
+        _pc_move_inside_http = HTTPRequest.new()
+        add_child(_pc_move_inside_http)
+        _pc_move_inside_http.request_completed.connect(func(_r, code, _h, _b):
+            if Auth.check_response(code) and (code < 200 or code >= 300):
+                push_warning("/pc/move_inside non-2xx: code=%s" % code))
+    _pc_move_inside_http.cancel_request()
+    var err := _pc_move_inside_http.request(Auth.api_base + "/api/village/pc/move_inside",
+        Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"square": [square.x, square.y]}))
+    if err != OK:
+        push_warning("/pc/move_inside request failed: %s" % err)
 
 ## The structure the player's character is inside, or "".
 func _local_pc_inside_structure_id() -> String:

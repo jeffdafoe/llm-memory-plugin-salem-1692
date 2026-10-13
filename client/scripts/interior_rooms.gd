@@ -74,6 +74,9 @@ const ROOMS := {
 ## One art square: the room art is drawn one 16 px tile per footprint tile.
 const SQUARE_PX := 16
 
+## Around a station's point (where the feet go): the box a tap on it falls in.
+const STATION_BOX := Rect2(-8, -24, 16, 26)
+
 static func room_for(structure_id: String) -> Dictionary:
     return ROOMS.get(structure_id, {})
 
@@ -97,6 +100,7 @@ static func with_layout(art: Dictionary, plan: Dictionary) -> Dictionary:
     for st in plan.get("stations", []):
         spots.append(_spot(st))
     room["spots"] = spots
+    room["grid"] = plan.get("grid", [])
     return room
 
 ## Where someone on `square` is drawn: the door, the keeper's place, the
@@ -117,6 +121,45 @@ static func spot_at(room: Dictionary, square: Vector2i) -> Dictionary:
             return spot
     return {"x": square.x * SQUARE_PX + SQUARE_PX / 2, "y": square.y * SQUARE_PX + SQUARE_PX - 2,
         "facing": "south", "pose": "stand", "square": square}
+
+## Whether a player may walk on or to `square` (LLM-768): open floor on the
+## plan's grid that is not the keeper's place or the keeper's way in — the
+## engine's rule, so a tap the engine would refuse is not sent.
+static func walkable(room: Dictionary, square: Vector2i) -> bool:
+    var grid: Array = room.get("grid", [])
+    if square.y < 0 or square.y >= grid.size() or square.x < 0 or square.x >= str(grid[square.y]).length():
+        return false
+    if str(grid[square.y])[square.x] != ".":
+        return false
+    if square == room.get("keeper", {}).get("square", Vector2i(-1, -1)):
+        return false
+    return not room.has("keeper_door") or square != room["keeper_door"].get("square", Vector2i(-1, -1))
+
+## The square a tap at `art` (room art px) asks for: a seat or standing place
+## whose person-sized box around its point holds the tap (so a tap on a chair
+## is its seat), else the floor square under the tap; (-1, -1) when that is
+## not walkable.
+static func square_at(room: Dictionary, art: Vector2) -> Vector2i:
+    for spot in [room.get("door", {})] + room.get("spots", []):
+        var at := Vector2(int(spot.get("x", -999)), int(spot.get("y", -999)))
+        if Rect2(at + STATION_BOX.position, STATION_BOX.size).has_point(art):
+            return spot.get("square", Vector2i(-1, -1))
+    var square := Vector2i(floori(art.x / SQUARE_PX), floori(art.y / SQUARE_PX))
+    return square if walkable(room, square) else Vector2i(-1, -1)
+
+## The points a person walks through for a walked `path` (wire squares, from
+## where they stood to where they stop): each square's middle on the way, then
+## where they are drawn on the last.
+static func route(room: Dictionary, path: Array) -> Array:
+    var points: Array = []
+    for i in range(1, path.size()):
+        var square := square_of(path[i])
+        if i == path.size() - 1:
+            var spot := spot_at(room, square)
+            points.append(Vector2(int(spot.get("x", 0)), int(spot.get("y", 0))))
+        else:
+            points.append(Vector2(square.x * SQUARE_PX + SQUARE_PX / 2, square.y * SQUARE_PX + SQUARE_PX - 2))
+    return points
 
 ## A square from the wire ([x, y]), or (-1, -1) for none.
 static func square_of(value) -> Vector2i:

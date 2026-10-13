@@ -37,9 +37,12 @@ func (s Square) MarshalJSON() ([]byte, error) {
 }
 
 func (s *Square) UnmarshalJSON(b []byte) error {
-	var xy [2]int
+	var xy []int
 	if err := json.Unmarshal(b, &xy); err != nil {
 		return err
+	}
+	if len(xy) != 2 {
+		return fmt.Errorf("a square is [x, y], got %s", b)
 	}
 	s.X, s.Y = xy[0], xy[1]
 	return nil
@@ -94,6 +97,55 @@ func (l *Layout) reserved() map[Square]bool {
 		out[st.Square] = true
 	}
 	return out
+}
+
+// Walkable reports whether a guest or a player can walk on or to s: an open
+// square that is not the keeper's place or the keeper's way in.
+func (l *Layout) Walkable(s Square) bool {
+	if !l.Open(s) || s == l.Keeper.Square {
+		return false
+	}
+	return l.KeeperDoor == nil || s != l.KeeperDoor.Square
+}
+
+// Path is the shortest way from one square to another, stepping up, down,
+// left or right over walkable squares, both ends included; nil when `to` is not
+// walkable or cannot be reached. `from` may be any square (where the walker
+// stands now). People are walked past, so who holds a square is the caller's
+// concern for `to` only.
+func (l *Layout) Path(from, to Square) []Square {
+	if !l.Walkable(to) {
+		return nil
+	}
+	if from == to {
+		return []Square{from}
+	}
+	prev := map[Square]Square{from: from}
+	queue := []Square{from}
+	for len(queue) > 0 {
+		at := queue[0]
+		queue = queue[1:]
+		for _, d := range [4]Square{{0, -1}, {1, 0}, {0, 1}, {-1, 0}} {
+			next := Square{at.X + d.X, at.Y + d.Y}
+			if _, seen := prev[next]; seen || !l.Walkable(next) {
+				continue
+			}
+			prev[next] = at
+			if next == to {
+				path := []Square{to}
+				for s := at; s != from; s = prev[s] {
+					path = append(path, s)
+				}
+				path = append(path, from)
+				for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+					path[i], path[j] = path[j], path[i]
+				}
+				return path
+			}
+			queue = append(queue, next)
+		}
+	}
+	return nil
 }
 
 // Role says which place a person is put at first.
@@ -173,11 +225,18 @@ func (l *Layout) validate() error {
 			return fmt.Errorf("room %s: station %q is drawn at %v, outside the room", l.StructureID, st.ID, st.At)
 		}
 	}
+	// A player walks from the door to any seat or standing place.
+	for _, st := range l.Stations {
+		if l.Path(l.Door.Square, st.Square) == nil {
+			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the door", l.StructureID, st.ID, st.Square)
+		}
+	}
 	return nil
 }
 
 // Parse reads and checks a seed: every row as wide as the first, every
-// station on its own open square and drawn inside the room.
+// station on its own open square, drawn inside the room and reachable on foot
+// from the door.
 func Parse(b []byte) (map[string]*Layout, error) {
 	var doc struct {
 		Rooms []*Layout `json:"rooms"`

@@ -71,6 +71,7 @@ const TESTS := [
     "_test_inn_serves_porridge_to_the_bench",
     "_test_room_pieces",
     "_test_room_squares",
+    "_test_room_walk",
 ]
 
 const STALL := "stall-1"
@@ -333,11 +334,11 @@ func _test_occupants() -> void:
     _check("keeper behind the bar", cast["placed"][0]["spot"], _panel.room["keeper"])
     _check("PC at the door", cast["placed"][-1]["spot"], _panel.room["door"])
     _check("nobody over", cast["more"], 0)
-    # The Tavern has 5 stations and 4 open squares besides: 14 others, 5 over.
+    # The Tavern has 5 stations and 5 open squares besides: 14 others, 4 over.
     for i in 12:
         _person("crowd%d" % i, _farmer(), _sid)
     cast = _panel.occupants()
-    _check("past the squares: and N more", cast["more"], 2 + 12 - 9)
+    _check("past the squares: and N more", cast["more"], 2 + 12 - 10)
     _done()
 
 
@@ -384,8 +385,8 @@ func _test_draws_people() -> void:
     _panel.refresh()
     _check("unchanged room is not rebuilt", _drawn(people)[0], before)
 
-    # Overflow shows the line.
-    for i in 8:
+    # Overflow shows the line: two seated and nine more, one past the ten places.
+    for i in 9:
         _person("crowd%d" % i, _farmer(), _sid)
     _panel.refresh()
     _check("and N more shown", _panel.more_label.visible, true)
@@ -2663,5 +2664,94 @@ func _test_room_squares() -> void:
     _panel._signature = ""
     _panel.refresh()
     _check("the plan lands: the keeper is drawn", _panel._people.get_node_or_null("keeper") != null, true)
+    _panel.close()
+    _done()
+
+
+## LLM-768 slice (ii): a tap on the floor or a free seat asks to walk there
+## (floor_tapped, the square); the engine's frame carries the path and the
+## character walks it square by square — carrying on across a redraw — and
+## sits on arriving at a seat.
+func _test_room_walk() -> void:
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
+    var plan: Dictionary = _catalog().rooms[_sid]
+    var west: Dictionary = {}
+    for st in plan["stations"]:
+        if st["id"] == "seat_west":
+            west = st
+    var west_sq := InteriorRooms.square_of(west["square"])
+    var west_at := Vector2(int(west["at"][0]), int(west["at"][1]))
+    _check("open floor is walkable", InteriorRooms.walkable(room, Vector2i(0, 4)), true)
+    _check("the table is not", InteriorRooms.walkable(room, Vector2i(2, 6)), false)
+    _check("the keeper's place is not", InteriorRooms.walkable(room, InteriorRooms.square_of(plan["keeper"]["square"])), false)
+    _check("off the grid is not", InteriorRooms.walkable(room, Vector2i(8, 0)), false)
+    _check("a tap on a seat is its square", InteriorRooms.square_at(room, west_at + Vector2(0, -12)), west_sq)
+    _check("a tap on open floor is that square", InteriorRooms.square_at(room, Vector2(8, 66)), Vector2i(0, 4))
+    _check("a tap on the wall is nothing", InteriorRooms.square_at(room, Vector2(40, 20)), Vector2i(-1, -1))
+    var path := [[4, 6], [4, 5], [4, 4], [3, 4], [2, 4], [1, 4], [0, 4], [0, 5], [0, 6], [1, 6]]
+    var points := InteriorRooms.route(room, path)
+    _check("a route: a point per square after the first", points.size(), 9)
+    _check("square middles on the way", [points[0], points[5]], [Vector2(72, 94), Vector2(8, 78)])
+    _check("the seat's own point at the end", points[-1], west_at)
+
+    _clear_people()
+    _person("pc", _farmer(), _sid)
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _panel.open(_sid)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    var tapped := []
+    var on_tap := func(sq: Vector2i): tapped.append(sq)
+    _panel.floor_tapped.connect(on_tap)
+    var talked := []
+    var on_talk := func(id: String): talked.append(id)
+    _panel.person_clicked.connect(on_talk)
+    _panel._on_stage_input(_press((west_at + Vector2(0, -12)) * 4))
+    _panel._on_stage_input(_press(Vector2(40, 20) * 4))
+    var keeper_at := Vector2(_panel.room["keeper"]["x"], _panel.room["keeper"]["y"])
+    _panel._on_stage_input(_press((keeper_at + Vector2(0, -10)) * 4))
+    _check("a tap on the seat asks for it; the wall asks nothing; a person is talk", [tapped, talked], [[west_sq], ["keeper"]])
+    # Not drawn in this room (the character is elsewhere): no walking.
+    _panel.pc_actor_id = "someone-else"
+    _panel._on_stage_input(_press(Vector2(8, 66) * 4))
+    _check("not here: a tap asks nothing", tapped.size(), 1)
+    _panel.pc_actor_id = "pc"
+
+    # The engine's frame: the character walks the path, not straight there.
+    var redraws := []
+    var on_change := func(id: String): redraws.append(id)
+    _world.room_square_changed.connect(on_change)
+    _world.apply_npc_room_square_change({"id": "pc", "structure_id": _sid, "square": west["square"], "path": path})
+    _check("the frame is announced", redraws, ["pc"])
+    _panel.refresh()
+    var pc: Node2D = _panel._people.get_node("pc")
+    var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"])
+    _check("sets off from the door", [pc.position, pc.has_meta("walking")], [door, true])
+    (pc.get_meta("walking") as Tween).custom_step(3.0)
+    var part_way := pc.position
+    _check("on the way, four legs behind them", (pc.get_meta("route_left") as Array).size(), 5)
+    # Someone comes in mid-walk: the redraw carries on from where they got to.
+    _person("guest", _farmer(), _sid)
+    _panel.refresh()
+    pc = _panel._people.get_node("pc")
+    _check("redrawn mid-walk: where they had got to, still walking", [pc.position, pc.has_meta("walking")], [part_way, true])
+    _check("redrawn mid-walk: the same legs left", (pc.get_meta("route_left") as Array).size(), 5)
+    _finish_walk(pc)
+    var spr: AnimatedSprite2D = pc.get_child(0)
+    _check("at the seat, sitting", [pc.position, spr.animation, pc.has_meta("route_left")],
+        [west_at, StringName(str(west["facing"]) + "_seat"), false])
+    # A later redraw does not walk the old path again.
+    _person("another", _farmer(), _sid)
+    _panel.refresh()
+    pc = _panel._people.get_node("pc")
+    _check("a later redraw: seated, not walking", [pc.position, pc.has_meta("walking")], [west_at, false])
+    # A square given in place (waking, say) drops the path.
+    _world.apply_npc_room_square_change({"id": "pc", "structure_id": _sid, "square": [0, 4]})
+    _check("a square with no path: no path kept", _world.placed_npcs["pc"].has_meta("room_path"), false)
+
+    _world.room_square_changed.disconnect(on_change)
+    _panel.floor_tapped.disconnect(on_tap)
+    _panel.person_clicked.disconnect(on_talk)
     _panel.close()
     _done()

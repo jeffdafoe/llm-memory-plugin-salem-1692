@@ -100,3 +100,43 @@ func TestParseRejectsBadPlans(t *testing.T) {
 		t.Errorf("a good plan was rejected: %v", err)
 	}
 }
+
+func TestPathWalksTheFloor(t *testing.T) {
+	l := For(tavern)
+	// Door to the west seat: up the gap by the bar, behind the table, down
+	// the west wall — one step at a time, never through a wall or the table.
+	path := l.Path(l.Door.Square, Square{1, 6})
+	if path == nil || path[0] != l.Door.Square || path[len(path)-1] != (Square{1, 6}) {
+		t.Fatalf("door to west seat = %v", path)
+	}
+	for i := 1; i < len(path); i++ {
+		dx, dy := path[i].X-path[i-1].X, path[i].Y-path[i-1].Y
+		if dx*dx+dy*dy != 1 || !l.Walkable(path[i]) {
+			t.Fatalf("step %v -> %v in %v is not one walkable square", path[i-1], path[i], path)
+		}
+	}
+	if len(path) != 10 {
+		t.Errorf("door to west seat took %d squares, want the shortest (10): %v", len(path), path)
+	}
+	if got := l.Path(l.Door.Square, l.Door.Square); len(got) != 1 {
+		t.Errorf("staying put = %v, want just the square", got)
+	}
+	// Nobody but the keeper walks to the keeper's place, or onto a wall.
+	if got := l.Path(l.Door.Square, l.Keeper.Square); got != nil {
+		t.Errorf("a path to the keeper's place: %v", got)
+	}
+	if got := l.Path(l.Door.Square, Square{2, 6}); got != nil {
+		t.Errorf("a path onto the table: %v", got)
+	}
+	inn := For(inn)
+	if got := inn.Path(inn.Door.Square, inn.KeeperDoor.Square); got != nil {
+		t.Errorf("a path up the keeper's stairs: %v", got)
+	}
+}
+
+func TestParseRejectsACutOffStation(t *testing.T) {
+	room := `{"structure_id": "s", "grid": [".#.", "..."], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 1], "at": [24, 30]}, "stations": [{"id": "x", "square": [2, 0], "at": [40, 14]}]}`
+	if _, err := Parse([]byte(`{"rooms": [` + room + `]}`)); err == nil || !strings.Contains(err.Error(), "cannot be walked to") {
+		t.Errorf("a station cut off by the keeper's place parsed: %v", err)
+	}
+}

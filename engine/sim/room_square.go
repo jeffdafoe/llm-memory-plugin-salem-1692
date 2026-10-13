@@ -1,6 +1,8 @@
 package sim
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
@@ -126,4 +128,54 @@ func copyRoomSquare(s *roomlayout.Square) *roomlayout.Square {
 	}
 	c := *s
 	return &c
+}
+
+// ErrRoomSquareRefused: a player's step inside a room cannot happen — they are
+// not awake in a room with a floor plan, or the square is not floor they may
+// stand on, is held by someone else, or cannot be reached.
+var ErrRoomSquareRefused = errors.New("you cannot go there")
+
+// RoomMoveResult answers MovePCInRoom: the square the player now holds and the
+// way they walked to it, both ends included.
+type RoomMoveResult struct {
+	Square roomlayout.Square
+	Path   []roomlayout.Square
+}
+
+// MovePCInRoom walks a player's character to another square of the room they
+// are in — a tap on the floor or on a free seat. It is not village movement:
+// they stay inside, keep their conversation and set no MoveIntent; only their
+// square changes, and the frame carries the path so every viewer sees them
+// walk it. Someone with no square yet (the room was full) sets off from the
+// door.
+func MovePCInRoom(actorID ActorID, to roomlayout.Square) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a := w.Actors[actorID]
+			if a == nil || a.Kind != KindPC {
+				return nil, fmt.Errorf("MovePCInRoom: %q is not a player's character", actorID)
+			}
+			layout := roomlayout.For(string(a.InsideStructureID))
+			if layout == nil || a.InsideStructureID == "" || a.State == StateSleeping || a.MoveIntent != nil {
+				return nil, ErrRoomSquareRefused
+			}
+			from := layout.Door.Square
+			if a.RoomSquare != nil {
+				from = *a.RoomSquare
+			}
+			if takenRoomSquares(w, a.InsideStructureID, a.ID)[to] {
+				return nil, ErrRoomSquareRefused
+			}
+			path := layout.Path(from, to)
+			if path == nil {
+				return nil, ErrRoomSquareRefused
+			}
+			if a.RoomSquare == nil || *a.RoomSquare != to {
+				sq := to
+				a.RoomSquare = &sq
+				w.emit(&ActorRoomSquareChanged{ActorID: a.ID, StructureID: a.InsideStructureID, Square: copyRoomSquare(&sq), Path: path})
+			}
+			return RoomMoveResult{Square: to, Path: path}, nil
+		},
+	}
 }
