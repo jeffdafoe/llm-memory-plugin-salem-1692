@@ -39,6 +39,11 @@ extends Node2D
 ## laid out from it in screen-sized units.
 const ANCHOR_Y := -88.0
 
+## This bubble's anchor, in its parent's units: ANCHOR_Y on the map; the room
+## window (interior_panel.gd, LLM-751) sets its own for people drawn in room
+## art pixels.
+var anchor_y := ANCHOR_Y
+
 const ART_SHEET := "res://assets/tilesets/mana-seed/fonts/chat bubble, variable 16x16.png"
 const ART_PIXEL_SCALE := 2        # screen px per art px, at any zoom and window size
 # The sheet is 64x48. Column 40 is uniform top to bottom, so repeating it
@@ -252,12 +257,28 @@ func _exit_tree() -> void:
 ## wide bubble can bridge two that never touch — and one that would make
 ## a stack bigger than MAX_STACK closes. Lifts ease toward their targets,
 ## and every bubble is then fitted with its lift.
+##
+## Stacks form per canvas: the village's bubbles and a window's (the room
+## window draws its own on its CanvasLayer, LLM-751) never meet as one stack.
+## A hidden bubble — its speaker indoors on the map, or its window shut —
+## takes no room and is not fitted.
 static func _layout(bubbles: Array, delta: float) -> void:
+    var by_canvas := {}
+    for b in bubbles:
+        if is_instance_valid(b) and b.is_inside_tree() and not b.is_queued_for_deletion() and not b._wrapped_lines.is_empty() and b.is_visible_in_tree():
+            var canvas: RID = b.get_canvas()
+            if not by_canvas.has(canvas):
+                by_canvas[canvas] = []
+            by_canvas[canvas].append(b)
+    for group in by_canvas.values():
+        _layout_canvas(group, delta)
+
+
+static func _layout_canvas(bubbles: Array, delta: float) -> void:
     var order: Array = []
     for b in bubbles:
-        if is_instance_valid(b) and b.is_inside_tree() and not b.is_queued_for_deletion() and not b._wrapped_lines.is_empty():
-            b._fit_to_screen()
-            order.append(b)
+        b._fit_to_screen()
+        order.append(b)
     order.sort_custom(func(x, y): return x._seq > y._seq)
     var blend: float = 1.0 - exp(-delta / LIFT_EASE)
     var placed: Array = []  # [Rect2 at its target lift, stack id]
@@ -309,7 +330,7 @@ static func _layout(bubbles: Array, delta: float) -> void:
 ## This bubble at its anchor (no lift), in canvas px.
 func _canvas_rect() -> Rect2:
     var parent_xform: Transform2D = (get_parent() as CanvasItem).get_global_transform_with_canvas()
-    var anchor: Vector2 = parent_xform * Vector2(0, ANCHOR_Y)
+    var anchor: Vector2 = parent_xform * Vector2(0, anchor_y)
     var units: Vector2 = parent_xform.get_scale() * scale
     var local: Rect2 = _local_rect()
     return Rect2(anchor + local.position * units, local.size * units)
@@ -370,7 +391,7 @@ func _place_stem(canvas_per_unit: float) -> void:
 ## the same size as the plain bubble's. The stretch differs slightly per
 ## axis (window 1920x1061 → 1.4747 x 1.4736), so each axis is its own.
 func _fit_to_screen() -> void:
-    position = Vector2(0, ANCHOR_Y)
+    position = Vector2(0, anchor_y)
     var parent := get_parent() as CanvasItem
     if parent == null or not parent.is_inside_tree():
         return
