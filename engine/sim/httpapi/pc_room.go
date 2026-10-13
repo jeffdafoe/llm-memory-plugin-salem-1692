@@ -75,13 +75,18 @@ func (s *Server) handlePCMoveInside(w http.ResponseWriter, r *http.Request) {
 
 // moveInsidePCCommand resolves username → PC actor on the world goroutine and
 // delegates to sim.MovePCInRoom. A deliberate act, so it stamps the input
-// cursor first, like the other action routes.
+// cursor first, like the other action routes — but a sleeping PC is refused
+// before that, since the stamp would wake them (they are upstairs, not in the
+// room, and a tap there cannot reach them).
 func moveInsidePCCommand(username string, to roomlayout.Square) sim.Command {
 	return sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			actorID, ok := findPCByLogin(world, username)
 			if !ok {
 				return nil, errPCNotFound
+			}
+			if world.Actors[actorID].State == sim.StateSleeping {
+				return nil, sim.ErrRoomSquareRefused
 			}
 			sim.TouchPCInput(world, actorID, time.Now().UTC())
 			return sim.MovePCInRoom(actorID, to).Fn(world)

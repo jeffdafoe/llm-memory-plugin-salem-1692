@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
@@ -66,5 +67,29 @@ func TestHandlePCMoveInside_PCNotFound(t *testing.T) {
 	srv := NewServer(seededWorld(t), okAuth{})
 	if rec := post(t, srv, "/api/village/pc/move_inside", `{"square": [3, 6]}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// A sleeping PC is refused before the input stamp: the tap neither wakes them
+// nor moves them (code_review).
+func TestHandlePCMoveInside_SleepingRefused(t *testing.T) {
+	w := seededWorld(t)
+	seedTavernPC(t, w, "tester")
+	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		pc := world.Actors["pc-guest"]
+		until := time.Now().UTC().Add(time.Hour)
+		pc.State, pc.SleepingUntil, pc.RoomSquare = sim.StateSleeping, &until, nil
+		return nil, nil
+	}})
+	srv := NewServer(w, okAuth{})
+	if rec := post(t, srv, "/api/village/pc/move_inside", `{"square": [3, 6]}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		pc := world.Actors["pc-guest"]
+		return []any{pc.State, pc.SleepingUntil != nil, pc.RoomSquare == nil}, nil
+	}})
+	if got := res.([]any); got[0] != sim.StateSleeping || got[1] != true || got[2] != true {
+		t.Errorf("after the refused tap: state %v, sleeping-until set %v, no square %v — want still asleep, no square", got[0], got[1], got[2])
 	}
 }
