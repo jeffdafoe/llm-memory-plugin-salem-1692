@@ -54,6 +54,7 @@ const TESTS := [
     "_test_tavern_keeper_back_is_theirs",
     "_test_reopen_stops_a_handoff",
     "_test_world_meals",
+    "_test_tavern_second_helping_one_dish",
     "_test_tavern_guest_leaving_clears_the_dish",
     "_test_tavern_ale_lingers_then_cleared",
     "_test_tavern_take_home_handed_over",
@@ -1262,9 +1263,9 @@ func _test_tavern_serves_a_meal_to_the_table() -> void:
     t.custom_step(60.0)
     _finish_walk(keeper)
     _check("the meal runs: it stays, nothing timed", [good.is_queued_for_deletion(), good.has_meta("tween"), good.has_meta("clearing")], [false, false, false])
-    _world.apply_npc_meal_ended({"id": "guest", "item": "porridge"})
+    _world.apply_npc_meal_ended({"id": "guest", "item": "porridge", "structure_id": _sid})
     _check("another good's end leaves it", good.has_meta("clearing"), false)
-    _world.apply_npc_meal_ended({"id": "guest", "item": "stew"})
+    _world.apply_npc_meal_ended({"id": "guest", "item": "stew", "structure_id": _sid})
     _check("the meal over: the keeper comes to clear it", [good.has_meta("clearing"), _panel._handoff_now.get("clear") == good, keeper.has_meta("walking")], [true, true, true])
     _finish_walk(keeper)
     var c: Tween = good.get_meta("tween")
@@ -1288,18 +1289,44 @@ func _test_world_meals() -> void:
     _world.apply_npc_meal_started({"id": "a", "item": "stew", "structure_id": _sid, "credits": 2})
     _check("eating stew here", _world.meal_of("a", _sid), "stew")
     _check("not somewhere else", _world.meal_of("a", "elsewhere"), "")
-    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew", "structure_id": _sid})
     _check("one credit of two ended: still eating", [_world.meal_of("a", _sid), ended], ["stew", []])
     _world.apply_npc_meal_started({"id": "a", "item": "stew", "structure_id": _sid, "credits": 2})
-    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew", "structure_id": _sid})
     _check("a second helping sets the count afresh", _world.meal_of("a", _sid), "stew")
-    _world.apply_npc_meal_ended({"id": "a", "item": "porridge"})
+    _world.apply_npc_meal_ended({"id": "a", "item": "porridge", "structure_id": _sid})
     _check("another good's end: still eating", _world.meal_of("a", _sid), "stew")
-    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew", "structure_id": "elsewhere"})
+    _check("a stew ended somewhere else: still eating here", [_world.meal_of("a", _sid), ended], ["stew", []])
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew", "structure_id": _sid})
     _check("the last credit ended: done, and said so", [_world.meal_of("a", _sid), ended], ["", [["a", "stew"]]])
-    _world.apply_npc_meal_ended({"id": "a", "item": "stew"})
+    _world.apply_npc_meal_ended({"id": "a", "item": "stew", "structure_id": _sid})
     _check("an end with no meal: nothing", ended.size(), 1)
+    _world.apply_npc_meal_started({"id": "gone", "item": "stew", "structure_id": _sid, "credits": 1})
+    _world.remove_npc_by_id("gone")
+    _check("an actor removed, drawn or not: their meal goes too", _world.meals.has("gone"), false)
     _world.npc_meal_ended.disconnect(on_end)
+    _done()
+
+
+## A second bowl of stew to the same guest: the first bowl is cleared, one
+## dish stays.
+func _test_tavern_second_helping_one_dish() -> void:
+    _tavern_with_guest(0)
+    for i in 2:
+        _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+        _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+        var bowl: Node2D = _panel._handoff_now["good"]
+        _finish_handoff()
+        _finish_walk(_panel._tending())
+        if i == 0:
+            _check("the first bowl waits on the meal", [_panel._dishes().size(), _panel._handoff_now], [1, {}])
+            continue
+        _check("the second bowl on the table, the only dish", _panel._dishes(), [bowl])
+        _check("the first bowl is being cleared, once", [_panel._handoff_now.has("clear"), _panel._handoffs.size()], [true, 0])
+    _finish_handoff()
+    _check("then just the one", [_panel._dishes().size(), _panel._handoff_now], [1, {}])
+    _panel.close()
     _done()
 
 

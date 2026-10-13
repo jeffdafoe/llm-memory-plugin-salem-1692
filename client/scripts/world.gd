@@ -765,11 +765,11 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
 func remove_npc_by_id(npc_id: String) -> void:
     if npc_id == "":
         return
+    meals.erase(npc_id)
     var container: Node2D = placed_npcs.get(npc_id, null)
     if container == null:
         return
     placed_npcs.erase(npc_id)
-    meals.erase(npc_id)
     container.queue_free()
     npc_list_changed.emit()
 
@@ -2972,7 +2972,10 @@ func apply_npc_meal_ended(data: Dictionary) -> void:
     var id := str(data.get("id", ""))
     var item := str(data.get("item", ""))
     var meal: Dictionary = meals.get(id, {})
-    if meal.is_empty() or str(meal["item"]) != item:
+    # Credits are kept per place: a late end of a meal somewhere else is not
+    # this one's.
+    if meal.is_empty() or str(meal["item"]) != item \
+            or str(meal["structure_id"]) != str(data.get("structure_id", "")):
         return
     meal["left"] = int(meal["left"]) - 1
     if int(meal["left"]) > 0:

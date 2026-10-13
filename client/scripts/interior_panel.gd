@@ -257,8 +257,9 @@ func open(sid: String) -> void:
         world.npc_spoke.connect(_on_npc_spoke)
     if world != null and world.has_signal("pay_resolved") and not world.pay_resolved.is_connected(on_pay_resolved):
         world.pay_resolved.connect(on_pay_resolved)
-    if world != null and world.has_signal("npc_meal_ended") and not world.npc_meal_ended.is_connected(_on_meal_ended):
+    if world != null and world.has_signal("npc_meal_started") and not world.npc_meal_started.is_connected(_on_meal_started):
         world.npc_meal_started.connect(_on_meal_started)
+    if world != null and world.has_signal("npc_meal_ended") and not world.npc_meal_ended.is_connected(_on_meal_ended):
         world.npc_meal_ended.connect(_on_meal_ended)
     var was_open := visible
     for child in _handoff.get_children():
@@ -1062,8 +1063,12 @@ func _handoff_arrived() -> void:
 ## A dish set on `buyer`'s table stays while their meal of `item` runs, until
 ## world.npc_meal_ended (_on_meal_ended); with no meal running (ale, bread, or
 ## a meal already over) it stays TABLE_SECONDS. A buyer gone before it lands
-## leaves it to be cleared at once.
+## leaves it to be cleared at once. A second helping of the same good: the
+## first bowl is cleared.
 func _on_table(dish: Node2D, buyer: String, item: String) -> void:
+    for old in _dishes():
+        if str(old.get_meta("buyer")) == buyer and str(old.get_meta("item")) == item:
+            _clear_dish(old)
     dish.set_meta("buyer", buyer)
     dish.set_meta("item", item)
     if _holder(buyer) == null:
