@@ -69,6 +69,7 @@ const TESTS := [
     "_test_inn_keeper_behind_the_desk",
     "_test_inn_animations",
     "_test_inn_serves_porridge_to_the_bench",
+    "_test_room_pieces",
 ]
 
 const STALL := "stall-1"
@@ -282,7 +283,7 @@ func _test_draws_people() -> void:
     _person("rester", _pack(), _sid, {"dormant": "resting"})
     _panel.open(_sid)
     var people: Node2D = _panel._people
-    _check("three drawn", people.get_child_count(), 3)
+    _check("three drawn", _drawn(people).size(), 3)
     var keeper: Node2D = people.get_node("keeper")
     var spr: AnimatedSprite2D = keeper.get_child(0)
     _check("keeper at the keeper spot", keeper.position, Vector2(_panel.room["keeper"]["x"], _panel.room["keeper"]["y"]))
@@ -313,9 +314,9 @@ func _test_draws_people() -> void:
     var sit_spr: AnimatedSprite2D = people.get_node("sitter").get_child(0)
     _check("a farmer in a seat sits", sit_spr.animation, StringName(str(spots[seat]["facing"]) + "_seat"))
     _check("redraw only on change", _panel._signature != "", true)
-    var before := people.get_child(0)
+    var before: Node = _drawn(people)[0]
     _panel.refresh()
-    _check("unchanged room is not rebuilt", people.get_child(0), before)
+    _check("unchanged room is not rebuilt", _drawn(people)[0], before)
 
     # Overflow shows the line.
     for i in 8:
@@ -2329,20 +2330,49 @@ func _inn_with_guest(spot: int) -> void:
     _panel.refresh()
 
 
-## The Inn's keeper stands behind the desk — drawn under it, as a stall's
-## keeper under the counter — and comes and goes by the stairs; everyone else
-## is in front of it and uses the door.
+## The people drawn in `layer` — a room's furniture shares the people's layer.
+func _drawn(layer: Node2D) -> Array:
+    var out: Array = []
+    for child in layer.get_children():
+        if not child.has_meta("piece"):
+            out.append(child)
+    return out
+
+
+## The room's furniture and sorted animations, in the people's layer.
+func _pieces() -> Array:
+    var out: Array = []
+    for child in _panel._people.get_children():
+        if child.has_meta("piece"):
+            out.append(child)
+    return out
+
+
+## The piece whose top-left is at (x, y), or null.
+func _piece_at(x: int, y: int) -> Sprite2D:
+    for p in _pieces():
+        if p.position.x == x and p.position.y + p.offset.y == y:
+            return p
+    return null
+
+
+## The Inn's keeper stands behind the desk — the desk sorts in front of them
+## — and comes and goes by the stairs; everyone else uses the door.
 func _test_inn_keeper_behind_the_desk() -> void:
     _inn_with_guest(3)
     _check("the Inn has a room", _panel.is_open(), true)
-    _check("the desk is drawn over the keeper", _panel._counter.texture != null, true)
-    var keeper: Node2D = _panel._staff.get_node_or_null("keeper")
-    _check("the keeper is behind the desk", keeper != null, true)
-    _check("the guest and the player's character in front", [_panel._people.get_node_or_null("guest") != null, _panel._people.get_node_or_null("pc") != null], [true, true])
+    var desk := _piece_at(20, 54)
+    _check("the desk is a piece", desk != null, true)
+    var keeper: Node2D = _panel._people.get_node_or_null("keeper")
+    _check("the keeper is drawn among the people", keeper != null, true)
+    _check("the guest and the player's character too", [_panel._people.get_node_or_null("guest") != null, _panel._people.get_node_or_null("pc") != null], [true, true])
     _check("the keeper is the one tending", _panel._tending() == keeper, true)
-    if keeper == null:
+    if keeper == null or desk == null:
         _done()
         return
+    _check("the desk sorts in front of the keeper", keeper.position.y < desk.position.y, true)
+    var guest: Node2D = _panel._people.get_node("guest")
+    _check("a guest at the desk sorts in front of it", guest.position.y > desk.position.y, true)
     var stairs := Vector2(_panel.room["keeper_door"]["x"], _panel.room["keeper_door"]["y"])
     var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"])
     _check("the keeper's way is the stairs", _panel._doorway(keeper.position, true), stairs)
@@ -2358,7 +2388,7 @@ func _test_inn_keeper_behind_the_desk() -> void:
     _panel.refresh()
     _person("keeper", _farmer(), INN, {"work_structure_id": INN})
     _panel.refresh()
-    keeper = _panel._staff.get_node_or_null("keeper")
+    keeper = _panel._people.get_node_or_null("keeper")
     _check("coming in from the stairs", keeper != null and keeper.position == stairs and keeper.has_meta("entering"), true)
     _finish_walk(keeper)
     _check("then at the desk", keeper.position, keeper.get_meta("home"))
@@ -2371,29 +2401,33 @@ func _test_inn_keeper_behind_the_desk() -> void:
     _clear_people()
     _panel.refresh()
     var ghost: Node2D = _panel._leaving("keeper")
-    _check("the keeper walks out behind the desk", ghost != null and ghost.get_parent() == _panel._staff, true)
+    _check("the keeper walks out", ghost != null, true)
     if ghost != null:
         _finish_walk(ghost)
         _check("up the stairs", ghost.position, stairs)
+        _check("behind the desk", ghost.position.y < desk.position.y, true)
     _panel.close()
     _done()
 
 
-## The fire, the pot and the candle play their strips; a room without
+## The fire, the pot and the candle play their strips: the fire as part of the
+## wall, the pot and the candle sorted with the furniture; a room without
 ## `anims` has none.
 func _test_inn_animations() -> void:
     _inn_with_guest(0)
     var anims: Array = _panel.room["anims"]
-    _check("one sprite per animation", _panel._anims.get_child_count(), anims.size())
-    var pot: Sprite2D = null
     var pot_spec: Dictionary = {}
-    for i in anims.size():
-        if str(anims[i]["sheet"]).ends_with("inn_pot.png"):
-            pot = _panel._anims.get_child(i)
-            pot_spec = anims[i]
-    _check("the pot is drawn", pot != null, true)
+    var wall := 0
+    for a in anims:
+        if str(a["sheet"]).ends_with("inn_pot.png"):
+            pot_spec = a
+        if not a.has("sort_y"):
+            wall += 1
+    _check("the fire is part of the wall", _panel._anims.get_child_count(), wall)
+    var pot := _piece_at(int(pot_spec["x"]), int(pot_spec["y"]))
+    _check("the pot is drawn among the furniture", pot != null, true)
     if pot != null:
-        _check("at its place", pot.position, Vector2(pot_spec["x"], pot_spec["y"]))
+        _check("sorted at its line", pot.position.y, float(pot_spec["sort_y"]))
         _check("its strip in frames", pot.hframes, int(pot_spec["frames"]))
         var step := 1.0 / float(pot_spec["fps"])
         # From the start of a frame, so a step crosses exactly one boundary.
@@ -2407,7 +2441,11 @@ func _test_inn_animations() -> void:
     _panel._process(0.5)
     _check("the window's clock runs them", _panel._anim_time > 0.5, true)
     _panel.open(_sid)
-    _check("the Tavern has none", _panel._anims.get_child_count(), 0)
+    var playing := 0
+    for p in _pieces():
+        if p.has_meta("fps"):
+            playing += 1
+    _check("the Tavern has none", [_panel._anims.get_child_count(), playing], [0, 0])
     _panel.close()
     _done()
 
@@ -2422,7 +2460,8 @@ func _test_inn_serves_porridge_to_the_bench() -> void:
     var good: Node2D = _panel._handoff.get_node_or_null("handoff_porridge")
     var desk := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
     _check("the porridge goes on the desk", good != null and good.position == _panel._cell_at(desk), true)
-    _check("the keeper steps to it behind the desk", [keeper.has_meta("walking"), keeper.get_parent() == _panel._staff], [true, true])
+    var desk_piece := _piece_at(20, 54)
+    _check("the keeper steps to it, behind the desk", [keeper.has_meta("walking"), desk_piece != null and (_panel._handoff_now["stop"] as Vector2).y < desk_piece.position.y], [true, true])
     if good == null:
         _done()
         return
@@ -2435,5 +2474,68 @@ func _test_inn_serves_porridge_to_the_bench() -> void:
     _check("cleared when it ends", good.has_meta("clearing"), true)
     _finish_handoff()
     _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-767: a room's furniture is drawn among the people, each piece sorted
+## by its own line — the Tavern's keeper stands inside the bar, its back arm
+## behind them and its front arm in front; a diner sits in front of their
+## chair and the table. The pieces outlive a redraw of the people, wait for
+## their sheet, and what lies on the bar and tables is drawn over everyone
+## (at a stall, still under the customers).
+func _test_room_pieces() -> void:
+    _tavern_with_guest(0)
+    var pieces: Array = _panel.room["pieces"]
+    _check("one sprite per piece", _pieces().size(), pieces.size())
+    var back := _piece_at(82, 50)
+    var front := _piece_at(82, 80)
+    _check("the bar is two pieces", back != null and front != null, true)
+    if back == null or front == null:
+        _done()
+        return
+    var spec: Dictionary = pieces[0]
+    _check("a piece is cut from the sheet where it stands", back.region_rect, Rect2(spec["x"], spec["y"], spec["w"], spec["h"]))
+    _check("and stands at its sort line", back.position, Vector2(spec["x"], spec["sort_y"]))
+    var keeper: Node2D = _panel._tending()
+    _check("the keeper stands between the bar's arms", [keeper.position.y > back.position.y, keeper.position.y < front.position.y], [true, true])
+    var guest: Node2D = _panel._people.get_node("guest")
+    var chair := _piece_at(8, 70)
+    var table := _piece_at(20, 72)
+    _check("the diner sits in front of their chair and the table", [guest.position.y > chair.position.y, guest.position.y > table.position.y], [true, true])
+    # A tap on furniture finds nobody; a person over furniture is still found.
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _panel._clip.position = Vector2.ZERO
+    _check("a tap on the bar's bare end finds nothing", _panel.thing_at(Vector2(126, 104) * 4), {})
+    _check("a tap on the table's far side finds nothing", _panel.thing_at(Vector2(36, 74) * 4), {})
+    _check("a tap on the keeper over the bar finds them", str(_panel.thing_at((keeper.position + Vector2(0, -16)) * 4).get("id", "")), "keeper")
+    # A newcomer redraws the people; the furniture stays as it was.
+    var before := _pieces()
+    _person("newcomer", _farmer(), _sid)
+    _panel.refresh()
+    _check("someone came in", _panel._people.get_node_or_null("newcomer") != null, true)
+    _check("the furniture is not rebuilt", _pieces(), before)
+    # What lies on the bar and tables over the people in a room; under the
+    # customers at a stall.
+    _check("in a room goods are over the people", _panel._handoff.get_index() > _panel._people.get_index(), true)
+    _place_stall()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _panel.open(STALL)
+    _check("at a stall under the customers", _panel._handoff.get_index() < _panel._people.get_index(), true)
+    _check("a stall has no pieces", _pieces().size(), 0)
+    _panel.wares_hook = Callable()
+    _panel.open(_sid)
+    _check("back in a room, over them again", _panel._handoff.get_index() > _panel._people.get_index(), true)
+    # The pieces' sheet still downloading: none until it lands.
+    var hook: Callable = _panel.texture_hook
+    _panel.texture_hook = func(path: String) -> Texture2D:
+        return null if path.ends_with("_pieces.png") else _blank(128, 112)
+    _panel._apply_textures()
+    _check("no sheet yet, no pieces", _pieces().size(), 0)
+    _panel.texture_hook = hook
+    _panel._apply_textures()
+    _check("then the pieces", _pieces().size(), pieces.size())
     _panel.close()
     _done()

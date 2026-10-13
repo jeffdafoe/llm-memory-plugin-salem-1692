@@ -394,6 +394,12 @@ func open(sid: String) -> void:
         _wares = []
     structure_id = sid
     room = r
+    # Goods changing hands: at a stall under the customers in front of the
+    # counter; in a room over everyone, as they lie on the bar and tables,
+    # which now sort among the people (LLM-767).
+    _scene.move_child(_handoff, -1)
+    if is_stall():
+        _scene.move_child(_people, -1)
     _press = {}
     _centre_pan = true
     title_label.text = str(room.get("title", ""))
@@ -528,8 +534,6 @@ func occupants() -> Dictionary:
     if keeper_id != "":
         var k := _entry(keeper_id, room.get("keeper", {}))
         k["keeper"] = true
-        # Behind a desk drawn over them (the Inn), as behind a stall's counter.
-        k["behind"] = room.has("counter")
         placed.append(k)
     for id in others:
         if _assigned.has(id):
@@ -613,6 +617,9 @@ func _draw_people(cast: Dictionary) -> void:
     # wherever they had bustled to.
     var was := {}
     for child in _people.get_children() + _staff.get_children():
+        # A room's furniture shares the people's layer and stays.
+        if child.has_meta("piece"):
+            continue
         # Someone walking out keeps walking, but their line is lifted too: if
         # they come back it goes on their new holder, else back on them.
         var id := str(child.get_meta("leaving")) if child.has_meta("leaving") else str(child.name)
@@ -624,6 +631,7 @@ func _draw_people(cast: Dictionary) -> void:
             continue
         was[id] = {"position": child.position, "alpha": child.modulate.a,
             "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
+            "keeper": child.has_meta("keeper"),
             "sprite_data": child.get_meta("sprite_data", {}), "hand": child.has_meta("hand"),
             "turn_left": child.get_meta("turn_left") if child.has_meta("turn_left") else null,
             "facing": child.get_meta("facing") if child.has_meta("facing") else null,
@@ -692,9 +700,9 @@ func _draw_people(cast: Dictionary) -> void:
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         if _entrances and not stays:
-            _walk_in(holder, spot, behind, true)
+            _walk_in(holder, spot, true)
         elif stays and bool(was[id]["entering"]):
-            _walk_in(holder, spot, behind, false)
+            _walk_in(holder, spot, false)
         elif moves:
             _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")))
         elif back:
@@ -753,23 +761,23 @@ func _sprite_of(holder: Node2D) -> AnimatedSprite2D:
 
 ## Where someone at `at` comes in from and goes out to: a stall's nearer side
 ## (the keeper behind the counter too), a room's door — or, for a room's
-## keeper behind its desk, the room's `keeper_door` (the Inn's stairs).
-func _doorway(at: Vector2, behind: bool) -> Vector2:
+## keeper, the room's `keeper_door` when it has one (the Inn's stairs).
+func _doorway(at: Vector2, keeper := false) -> Vector2:
     if is_stall() or not room.has("door"):
         var size: Vector2i = room.get("size", Vector2i(128, 112))
         var middle := (float(room.get("counter_from", 0)) + size.x) / 2.0
         return at + Vector2(-WALK_OFF if at.x < middle else WALK_OFF, 0)
-    var door := _spot_point(room["keeper_door"] if behind and room.has("keeper_door") else room["door"])
+    var door := _spot_point(room["keeper_door"] if keeper and room.has("keeper_door") else room["door"])
     return door + Vector2(0, 8) if at.distance_to(door) < 4.0 else door
 
 
 ## A newcomer walks in from the doorway to their spot, fading in — from the
 ## doorway, or (`from_doorway` false) on from wherever a redraw caught them.
 ## The holder carries an "entering" meta until they are there.
-func _walk_in(holder: Node2D, spot: Dictionary, behind: bool, from_doorway: bool) -> void:
+func _walk_in(holder: Node2D, spot: Dictionary, from_doorway: bool) -> void:
     var home: Vector2 = holder.get_meta("home")
     if from_doorway:
-        holder.position = _doorway(home, behind)
+        holder.position = _doorway(home, holder.has_meta("keeper"))
         holder.modulate.a = 0.0
     holder.set_meta("entering", true)
     _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")), str(spot.get("pose", "stand")),
@@ -807,7 +815,7 @@ func _walk_out(id: String, was: Dictionary) -> void:
     ghost.position = was["position"]
     ghost.add_child(spr)
     (_staff if bool(was["behind"]) else _people).add_child(ghost)
-    var to := _doorway(ghost.position, bool(was["behind"]))
+    var to := _doorway(ghost.position, bool(was["keeper"]))
     var seconds := ghost.position.distance_to(to) / WALK_SPEED
     _walk(ghost, to, WALK_SPEED, "south", "stand", ghost.queue_free,
         0.0, maxf(0.0, seconds - FADE_SECONDS), minf(FADE_SECONDS, seconds))
@@ -1297,11 +1305,10 @@ func _on_stage_mouse_exited() -> void:
 ## id, holder} or {kind: "good", node, item}, or {}. At a stall the customers
 ## stand in front of the counter goods (and goods being handed over), those
 ## in front of the keeper and hands, and they in front of the floor piles; in
-## a room the people stand in front of what is on the bar and tables, and
-## that in front of a keeper behind a desk.
+## a room what lies on the bar and tables is drawn over the people.
 func thing_at(local: Vector2) -> Dictionary:
     var art := _art_at(local)
-    var layers: Array = [_people, _goods_front, _handoff, _staff, _goods_back] if is_stall() else [_people, _handoff, _staff]
+    var layers: Array = [_people, _goods_front, _handoff, _staff, _goods_back] if is_stall() else [_handoff, _people]
     for layer in layers:
         var found := _person_in(layer, art) if layer == _people or layer == _staff else _good_in(layer, art)
         if not found.is_empty():
@@ -1456,29 +1463,56 @@ func _apply_textures() -> void:
     _draw_anims()
 
 
-## One sprite per `anims` entry whose strip has landed, at its x/y, showing
-## its frames in turn (_animate).
+## A room's furniture (`pieces`, cut from its `pieces_sheet`) and animated
+## pieces (`anims`), once their pictures have landed. A piece goes in the
+## people's layer, sorted by its `sort_y` — the line where it stands — so
+## someone behind the bar is drawn under it and someone in front over it
+## (LLM-767): the sprite sits at (x, sort_y) and its picture is offset up to
+## its top. An anim with a `sort_y` is such a piece; one without (the fire in
+## the fireplace) is part of the wall, drawn under everyone.
 func _draw_anims() -> void:
     for child in _anims.get_children():
         child.free()
+    for child in _people.get_children():
+        if child.has_meta("piece"):
+            child.free()
+    var sheet := _texture(str(room.get("pieces_sheet", "")))
+    if sheet != null:
+        for p in room.get("pieces", []):
+            var spr := _piece(sheet, int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("sort_y", 0)))
+            spr.region_enabled = true
+            spr.region_rect = Rect2(int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("w", 0)), int(p.get("h", 0)))
+            _people.add_child(spr)
     for anim in room.get("anims", []):
         var strip := _texture(str(anim.get("sheet", "")))
         if strip == null:
             continue
-        var spr := Sprite2D.new()
-        spr.centered = false
-        spr.texture = strip
+        var sorted: bool = anim.has("sort_y")
+        var spr := _piece(strip, int(anim.get("x", 0)), int(anim.get("y", 0)), int(anim.get("sort_y", anim.get("y", 0))))
+        if not sorted:
+            spr.remove_meta("piece")
         spr.hframes = maxi(1, int(anim.get("frames", 1)))
-        spr.position = Vector2(int(anim.get("x", 0)), int(anim.get("y", 0)))
         spr.set_meta("fps", float(anim.get("fps", 6.0)))
-        _anims.add_child(spr)
+        (_people if sorted else _anims).add_child(spr)
     _animate(0.0)
+
+
+## A picture whose top-left is at (x, y), placed at (x, sort_y) for sorting.
+func _piece(texture: Texture2D, x: int, y: int, sort_y: int) -> Sprite2D:
+    var spr := Sprite2D.new()
+    spr.centered = false
+    spr.texture = texture
+    spr.position = Vector2(x, sort_y)
+    spr.offset = Vector2(0, y - sort_y)
+    spr.set_meta("piece", true)
+    return spr
 
 
 func _animate(delta: float) -> void:
     _anim_time += delta
-    for spr in _anims.get_children():
-        spr.frame = int(_anim_time * float(spr.get_meta("fps"))) % spr.hframes
+    for spr in _anims.get_children() + _people.get_children():
+        if spr.has_meta("fps"):
+            spr.frame = int(_anim_time * float(spr.get_meta("fps"))) % spr.hframes
 
 
 ## The goods on the stall's shelf changed (or their sheet arrived): lay them
