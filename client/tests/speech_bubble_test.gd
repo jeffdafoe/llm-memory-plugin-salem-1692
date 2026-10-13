@@ -52,6 +52,7 @@ const TESTS := [
     "_test_a_lift_eases_into_place",
     "_test_a_wide_bubble_joins_two_stacks",
     "_test_touch_text_is_bigger_and_still_fits",
+    "_test_art_bubble_opens_left",
 ]
 ## One village tile, in world px.
 const TILE := 32.0
@@ -482,6 +483,43 @@ func _step_live_camera() -> void:
 ## frame, so the new one was renamed and the next line could not find it to
 ## replace: bubbles stacked. Checked for a villager and for a structure.
 ## Runs within one frame, the way the bug did.
+## LLM-752: opens_left mirrors the art bubble about its tail — the same rect
+## flipped (x -> 1 - x), the body to the left, the stem's pixel unmoved, and
+## the text, unmirrored, inside the mirrored fill (sheet columns 15-50).
+func _test_art_bubble_opens_left() -> void:
+    var art_before: Texture2D = _script._art_sheet  # the live-camera bubble still draws with it
+    _set_art(_synthetic_sheet())
+    _zoom(1.0)
+    for text in ["Aye.", LONG_TEXT]:
+        var right: Node2D = _spawn(text)
+        var left: Node2D = _script.new()
+        left.opens_left = true
+        _actor.add_child(left)
+        left.setup(text)
+        right._fit_to_screen()
+        left._fit_to_screen()
+        var r: Rect2 = right._local_rect()
+        var l: Rect2 = left._local_rect()
+        var label: String = text.substr(0, 12)
+        _check("the same size (%s)" % label, l.size == r.size)
+        _check("mirrored about the tail's pixel (%s)" % label,
+            is_equal_approx(l.position.x, 1.0 - r.end.x) and is_equal_approx(l.end.x, 1.0 - r.position.x))
+        _check("the right bubble opens right (%s)" % label, r.get_center().x > 0.0)
+        _check("the left bubble opens left (%s)" % label, l.get_center().x < 0.0)
+        var grow: Vector2 = left._art_grow()
+        var text_art: float = left._content_size.x * left._art_per_ui.x
+        var fill_left: float = 12.0 - (50.0 + grow.x)
+        var fill_right: float = 12.0 - 15.0 + 1.0
+        var text_left: float = left._text_layer.position.x
+        _check("the text starts inside the mirrored fill (%s: %.1f >= %.1f)" % [label, text_left, fill_left], text_left >= fill_left)
+        _check("the text ends inside the mirrored fill (%s: %.1f <= %.1f)" % [label, text_left + text_art, fill_right],
+            text_left + text_art <= fill_right + 0.01)
+        _check("the text layer is not mirrored (%s)" % label, left._text_layer.scale.x > 0.0)
+        right.free()
+        left.free()
+    _set_art(art_before)
+    _done()
+
 func _test_a_speaker_has_one_bubble() -> void:
     var world = load("res://scripts/world.gd").new()
     var npc := Node2D.new()

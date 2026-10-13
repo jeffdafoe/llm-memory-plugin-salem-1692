@@ -428,6 +428,7 @@ func _test_speech_bubbles() -> void:
     var bubble: Node2D = keeper.get_node_or_null(_panel.BUBBLE_NODE)
     _check("a bubble over the keeper", bubble != null, true)
     _check("anchored just above a head in room pixels", bubble.anchor_y, _panel.BUBBLE_ANCHOR_Y)
+    _check("the keeper, on the right, gets a bubble that opens left", bubble.opens_left, true)
     _panel.say("keeper", "Stew is three coins.")
     var bubbles := keeper.get_children().filter(func(c): return str(c.name).begins_with(_panel.BUBBLE_NODE))
     _check("a newer line replaces the bubble", bubbles.size(), 1)
@@ -438,6 +439,13 @@ func _test_speech_bubbles() -> void:
     _world.npc_spoke.emit("guest", "Guest", "Evening.", "speak", "", "", [], 0.0, 0.0, "", "", "", {}, true, [])
     _check("npc_spoke puts a bubble over the guest",
         _panel._people.get_node("guest").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    # The character at the door, in the middle of the room, opens right.
+    _panel.pc_actor_id = "pc"
+    _person("pc", _farmer(), _sid)
+    _panel.refresh()
+    _panel.say("pc", "Evening.")
+    var pc_bubble: Node2D = _panel._people.get_node("pc").get_node(_panel.BUBBLE_NODE)
+    _check("the character at the door opens right", pc_bubble.opens_left, false)
     _panel.close()
     _done()
 

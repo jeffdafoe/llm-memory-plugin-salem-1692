@@ -363,6 +363,10 @@ func say(npc_id: String, text: String) -> void:
     var bubble: Node2D = SpeechBubbleScript.new()
     bubble.name = BUBBLE_NODE
     bubble.anchor_y = BUBBLE_ANCHOR_Y
+    # On the right side of the room the bubble opens left, over the room
+    # rather than past the window's edge (LLM-752).
+    var size: Vector2i = room.get("size", Vector2i(128, 112))
+    bubble.opens_left = (holder as Node2D).position.x > size.x / 2.0
     holder.add_child(bubble)
     bubble.setup(text)
 
