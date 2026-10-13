@@ -10,20 +10,32 @@ class_name InteriorRooms
 ## art pixels; pose "seat" sits a farmer-base villager in a chair (others
 ## stand). The art lives in the tiles repo (tilesets/interiors/) and on the VPS
 ## beside the other tilesets.
+##
+## `sheet` is the room without its furniture (walls, floor, rug). The
+## furniture is `pieces` (LLM-767): each a rect {x, y, w, h} of `pieces_sheet`,
+## which holds every piece where it stands in the room, drawn among the people
+## and sorted by its `sort_y` — whoever's feet are above that line is drawn
+## behind the piece, anyone below it in front. A seat's furniture sorts just
+## above its sitter's feet, so they sit on it. `anims` are strips of `frames`
+## equal frames side by side, top-left at x/y, played at `fps`; with a
+## `sort_y` they sort like a piece, without one they are part of the wall.
 
 const ROOMS := {
     # The Tavern ("Black House (Medium)", footprint 8 x 7 tiles).
     "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9": {
         "title": "Tavern",
         "sheet": "/tilesets/interiors/tavern_common.png",
+        "pieces_sheet": "/tilesets/interiors/tavern_pieces.png",
         "size": Vector2i(128, 112),
-        "keeper": {"x": 112, "y": 86, "facing": "west"},
+        # The keeper stands in the gap inside the C bar: its back arm sorts
+        # behind them, its front arm in front.
+        "keeper": {"x": 112, "y": 80, "facing": "west"},
         "door": {"x": 64, "y": 111, "facing": "north"},
         # A sale is set on the bar's front arm (LLM-757): `bar` is where the
         # good stands (its bottom middle), `reach` where the keeper steps to
         # set it down; a seat's `serve` is where a meal lands on the table.
         "bar": {"x": 90, "y": 94},
-        "reach": {"x": 102, "y": 86},
+        "reach": {"x": 102, "y": 80},
         "spots": [
             {"x": 16, "y": 98, "facing": "east", "pose": "seat", "serve": {"x": 31, "y": 87}},
             {"x": 56, "y": 98, "facing": "west", "pose": "seat", "serve": {"x": 39, "y": 87}},
@@ -31,17 +43,22 @@ const ROOMS := {
             {"x": 52, "y": 68, "facing": "south", "pose": "stand"},
             {"x": 68, "y": 74, "facing": "south", "pose": "stand"},
         ],
+        "pieces": [
+            {"x": 82, "y": 50, "w": 48, "h": 30, "sort_y": 79},
+            {"x": 82, "y": 80, "w": 48, "h": 30, "sort_y": 99},
+            {"x": 8, "y": 70, "w": 15, "h": 32, "sort_y": 95},
+            {"x": 48, "y": 70, "w": 15, "h": 32, "sort_y": 95},
+            {"x": 20, "y": 72, "w": 32, "h": 32, "sort_y": 96},
+        ],
     },
     # The Inn ("Blue House (Medium)", footprint 8 x 7 tiles): an entry hall.
-    # The keeper stands behind the desk at the foot of the stairs; `counter`
-    # is the desk alone, drawn over them, and `keeper_door` the way they come
-    # and go (down the stairs). The bench seats face the table, backs to us.
-    # `anims` are drawn over the room and the desk: a strip of `frames`
-    # equal frames side by side, top-left at x/y, played at `fps`.
+    # The keeper stands behind the desk at the foot of the stairs, and
+    # `keeper_door` is the way they come and go (down the stairs). The bench
+    # seats face the table, backs to us.
     "019d98af-ac9b-7833-8e03-5a7015bb5b0c": {
         "title": "Inn",
         "sheet": "/tilesets/interiors/inn_common.png",
-        "counter": "/tilesets/interiors/inn_front.png",
+        "pieces_sheet": "/tilesets/interiors/inn_pieces.png",
         "size": Vector2i(128, 112),
         "keeper": {"x": 44, "y": 66, "facing": "south"},
         "keeper_door": {"x": 10, "y": 60},
@@ -56,10 +73,20 @@ const ROOMS := {
             {"x": 112, "y": 70, "facing": "west", "pose": "stand"},
             {"x": 12, "y": 80, "facing": "east", "pose": "stand"},
         ],
+        "pieces": [
+            # The desk with its bottle; the keeper stands behind it.
+            {"x": 20, "y": 54, "w": 48, "h": 36, "sort_y": 89},
+            # Table and bench: the bench sitters sort in front of both.
+            {"x": 74, "y": 74, "w": 48, "h": 32, "sort_y": 104},
+            {"x": 74, "y": 98, "w": 48, "h": 16, "sort_y": 109},
+            # Rocking chair and basket.
+            {"x": 0, "y": 78, "w": 32, "h": 32, "sort_y": 101},
+            {"x": 26, "y": 86, "w": 16, "h": 26, "sort_y": 111},
+        ],
         "anims": [
             {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 96, "y": 38},
-            {"sheet": "/tilesets/interiors/inn_pot.png", "frames": 4, "fps": 5.0, "x": 66, "y": 50},
-            {"sheet": "/tilesets/interiors/inn_candle.png", "frames": 4, "fps": 6.0, "x": 24, "y": 44},
+            {"sheet": "/tilesets/interiors/inn_pot.png", "frames": 4, "fps": 5.0, "x": 66, "y": 50, "sort_y": 81},
+            {"sheet": "/tilesets/interiors/inn_candle.png", "frames": 4, "fps": 6.0, "x": 24, "y": 44, "sort_y": 90},
         ],
     },
 }
