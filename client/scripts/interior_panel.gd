@@ -477,7 +477,9 @@ func _draw_people(cast: Dictionary) -> void:
             continue
         was[id] = {"position": child.position, "alpha": child.modulate.a,
             "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
-            "sprite_data": child.get_meta("sprite_data", {})}
+            "sprite_data": child.get_meta("sprite_data", {}), "hand": child.has_meta("hand"),
+            "turn_left": child.get_meta("turn_left") if child.has_meta("turn_left") else null,
+            "facing": child.get_meta("facing") if child.has_meta("facing") else null}
         child.free()
     _hits.clear()
     var drawn := {}
@@ -509,20 +511,34 @@ func _draw_people(cast: Dictionary) -> void:
         # A window just opened draws everyone at their spots: nothing carries
         # over from the last time it was open.
         var stays := _entrances and was.has(id) and bool(was[id]["behind"]) == behind
+        # Behind a stall's counter, a hand who now keeps the stall (the keeper
+        # left) or a keeper who is now a hand (the keeper came back) walks from
+        # where they were to their new spot.
+        var moves := stays and behind and bool(was[id]["hand"]) != hand and not bool(was[id]["entering"])
         # The keeper carries on from where they bustled to, a newcomer from
         # partway in; anyone else (a hand too) stands at their (maybe new) spot.
-        if stays and ((behind and not hand) or bool(was[id]["entering"])):
+        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves):
             holder.position = was[id]["position"]
             holder.modulate.a = was[id]["alpha"]
         # A stall's keeper stands behind the counter, which is drawn over them.
         (_staff if behind else _people).add_child(holder)
-        _pose(spr, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
+        var facing := str(spot.get("facing", "south"))
+        # A hand still a hand keeps the way they were looking and their wait.
+        if hand and stays and bool(was[id]["hand"]):
+            if was[id]["facing"] != null:
+                facing = str(was[id]["facing"])
+                holder.set_meta("facing", facing)
+            if was[id]["turn_left"] != null:
+                holder.set_meta("turn_left", was[id]["turn_left"])
+        _pose(spr, facing, str(spot.get("pose", "stand")))
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         if _entrances and not stays:
             _walk_in(holder, spot, behind, true)
         elif stays and bool(was[id]["entering"]):
             _walk_in(holder, spot, behind, false)
+        elif moves:
+            _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")))
         _hits.append({"id": id, "holder": holder})
         drawn[id] = true
     if _entrances:
@@ -714,12 +730,16 @@ func _hands_turn(delta: float) -> void:
     for hand in _hands():
         if hand.has_meta("walking"):
             continue
-        var left := float(hand.get_meta("turn_left", _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX))) - delta
+        if not hand.has_meta("turn_left"):
+            hand.set_meta("turn_left", _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX))
+        var left := float(hand.get_meta("turn_left")) - delta
         if left <= 0.0:
             left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+            var facing := "north" if _bustle_rng.randf() < 0.5 else "south"
+            hand.set_meta("facing", facing)
             var spr := _sprite_of(hand)
             if spr != null:
-                _pose(spr, "north" if _bustle_rng.randf() < 0.5 else "south", "stand")
+                _pose(spr, facing, "stand")
         hand.set_meta("turn_left", left)
 
 
@@ -776,15 +796,18 @@ func say(npc_id: String, text: String) -> void:
         holder = _leaving(npc_id)
     if holder == null:
         return
-    # A hand turns to the customers to speak and holds it a while.
-    if holder.has_meta("hand") and not holder.has_meta("walking"):
-        var hand_spr := _sprite_of(holder)
-        if hand_spr != null:
-            _pose(hand_spr, "south", "stand")
-        holder.set_meta("turn_left", SPEAK_HOLD)
+    # A hand turns to the customers to speak and holds it a while — once
+    # there, if still walking in.
+    if holder.has_meta("hand"):
+        if not holder.has_meta("walking"):
+            holder.set_meta("facing", "south")
+            var hand_spr := _sprite_of(holder)
+            if hand_spr != null:
+                _pose(hand_spr, "south", "stand")
+            holder.set_meta("turn_left", SPEAK_HOLD)
     # The one tending a stall stops to speak, facing the customers — but not
     # in the middle of handing something over.
-    elif holder.get_parent() == _staff and not holder.has_meta("leaving") and _handoff_now.is_empty():
+    elif holder.get_parent() == _staff and holder.has_meta("keeper") and not holder.has_meta("leaving") and _handoff_now.is_empty():
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")
