@@ -159,21 +159,9 @@ func MovePCInRoom(actorID ActorID, to roomlayout.Square) Command {
 			if layout == nil || a.InsideStructureID == "" || a.State == StateSleeping || a.MoveIntent != nil {
 				return nil, ErrRoomSquareRefused
 			}
-			from := layout.Door.Square
-			if a.RoomSquare != nil {
-				from = *a.RoomSquare
-			}
-			if takenRoomSquares(w, a.InsideStructureID, a.ID)[to] {
-				return nil, ErrRoomSquareRefused
-			}
-			path := layout.Path(from, to)
+			path := walkInRoom(w, a, to)
 			if path == nil {
 				return nil, ErrRoomSquareRefused
-			}
-			if a.RoomSquare == nil || *a.RoomSquare != to {
-				sq := to
-				a.RoomSquare = &sq
-				w.emit(&ActorRoomSquareChanged{ActorID: a.ID, StructureID: a.InsideStructureID, Square: copyRoomSquare(&sq), Path: path})
 			}
 			return RoomMoveResult{Square: to, Path: path}, nil
 		},

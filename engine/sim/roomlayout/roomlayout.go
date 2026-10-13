@@ -53,20 +53,26 @@ type Point = Square
 
 // Station is a square with a purpose and where a person there is drawn: At is
 // where their feet go in room art pixels, Facing and Pose how they stand or
-// sit, Serve (seats at a table) where a meal set before them lands.
+// sit, Serve (seats at a table) where a meal set before them lands. Use names
+// the work done there ("stoke": the hearth), which sends a worker to it.
 type Station struct {
-	ID     string `json:"id,omitempty"`
-	Kind   string `json:"kind,omitempty"`
-	Square Square `json:"square"`
-	At     Point  `json:"at"`
-	Facing string `json:"facing,omitempty"`
-	Pose   string `json:"pose,omitempty"`
-	Serve  *Point `json:"serve,omitempty"`
+	ID     string   `json:"id,omitempty"`
+	Kind   string   `json:"kind,omitempty"`
+	Square Square   `json:"square"`
+	At     Point    `json:"at"`
+	Facing string   `json:"facing,omitempty"`
+	Pose   string   `json:"pose,omitempty"`
+	Serve  *Point   `json:"serve,omitempty"`
+	Use    []string `json:"use,omitempty"`
 }
 
+// UseStoke: the station where the room's fire is fed.
+const UseStoke = "stoke"
+
 // Layout is one room's plan. Grid rows are top to bottom, '.' a square that
-// can be stood on, anything else blocked (walls, furniture). KeeperDoor, when
-// set, is where the keeper comes and goes (the Inn's stairs).
+// can be stood on, 'k' the keeper's way out from behind their counter (theirs
+// alone), anything else blocked (walls, furniture). KeeperDoor, when set, is
+// where the keeper comes and goes (the Inn's stairs).
 type Layout struct {
 	StructureID string    `json:"structure_id"`
 	Name        string    `json:"name"`
@@ -114,7 +120,66 @@ func (l *Layout) Walkable(s Square) bool {
 // stands now). People are walked past, so who holds a square is the caller's
 // concern for `to` only.
 func (l *Layout) Path(from, to Square) []Square {
-	if !l.Walkable(to) {
+	return l.path(from, to, l.Walkable, nil)
+}
+
+func (l *Layout) keeperWay(s Square) bool {
+	return s.Y >= 0 && s.Y < len(l.Grid) && s.X >= 0 && s.X < len(l.Grid[s.Y]) && l.Grid[s.Y][s.X] == 'k'
+}
+
+// keeperWalkable: what the room's keeper may walk on — any walkable square,
+// their own place, and the way out from behind their counter ('k').
+func (l *Layout) keeperWalkable(s Square) bool {
+	return l.Walkable(s) || s == l.Keeper.Square || l.keeperWay(s)
+}
+
+// keeperStep: in a room with a keeper's way, the keeper leaves and comes back
+// to their place only by it — never straight through the counter onto the
+// floor in front of it (the Inn's [2,5] below Hannah's place, behind the desk).
+func (l *Layout) keeperStep(at, next Square) bool {
+	if at != l.Keeper.Square && next != l.Keeper.Square {
+		return true
+	}
+	other := next
+	if next == l.Keeper.Square {
+		other = at
+	}
+	if l.keeperWay(other) {
+		return true
+	}
+	for _, row := range l.Grid {
+		for _, c := range row {
+			if c == 'k' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// KeeperPath is Path for the room's keeper, who may also use their own place
+// and the way out from behind their counter, and leaves their place only by
+// that way when the room has one.
+func (l *Layout) KeeperPath(from, to Square) []Square {
+	return l.path(from, to, l.keeperWalkable, l.keeperStep)
+}
+
+// StationFor returns the station whose Use names `use`, or nil.
+func (l *Layout) StationFor(use string) *Station {
+	for i := range l.Stations {
+		for _, u := range l.Stations[i].Use {
+			if u == use {
+				return &l.Stations[i]
+			}
+		}
+	}
+	return nil
+}
+
+// path is the BFS behind Path and KeeperPath; step, when set, may also refuse a
+// single step between two walkable squares.
+func (l *Layout) path(from, to Square, walkable func(Square) bool, step func(at, next Square) bool) []Square {
+	if !walkable(to) {
 		return nil
 	}
 	if from == to {
@@ -127,7 +192,7 @@ func (l *Layout) Path(from, to Square) []Square {
 		queue = queue[1:]
 		for _, d := range [4]Square{{0, -1}, {1, 0}, {0, 1}, {-1, 0}} {
 			next := Square{at.X + d.X, at.Y + d.Y}
-			if _, seen := prev[next]; seen || !l.Walkable(next) {
+			if _, seen := prev[next]; seen || !walkable(next) || (step != nil && !step(at, next)) {
 				continue
 			}
 			prev[next] = at
@@ -229,6 +294,11 @@ func (l *Layout) validate() error {
 	for _, st := range l.Stations {
 		if l.Path(l.Door.Square, st.Square) == nil {
 			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the door", l.StructureID, st.ID, st.Square)
+		}
+		// A station with work to do there is the keeper's too: they walk to it
+		// from behind their counter.
+		if len(st.Use) > 0 && l.KeeperPath(l.Keeper.Square, st.Square) == nil {
+			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the keeper's place", l.StructureID, st.ID, st.Square)
 		}
 	}
 	return nil

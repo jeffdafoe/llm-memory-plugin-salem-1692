@@ -72,6 +72,7 @@ const TESTS := [
     "_test_room_pieces",
     "_test_room_squares",
     "_test_room_walk",
+    "_test_keeper_walks_to_the_hearth",
 ]
 
 const STALL := "stall-1"
@@ -2753,5 +2754,46 @@ func _test_room_walk() -> void:
     _world.room_square_changed.disconnect(on_change)
     _panel.floor_tapped.disconnect(on_tap)
     _panel.person_clicked.disconnect(on_talk)
+    _panel.close()
+    _done()
+
+
+## LLM-768 slice (iii): the engine walks the keeper out from behind the bar by
+## the keeper's way ('k' squares) to the hearth to stoke, and back; the window
+## walks them along the path. A tap never asks for a keeper's-way square.
+func _test_keeper_walks_to_the_hearth() -> void:
+    var plan: Dictionary = _catalog().rooms[_sid]
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for(_sid), plan)
+    var hearth: Dictionary = {}
+    for st in plan["stations"]:
+        if st.get("use", []).has("stoke"):
+            hearth = st
+    _check("the plan names a stoke station", hearth.is_empty(), false)
+    var keeper_sq := InteriorRooms.square_of(plan["keeper"]["square"])
+    _check("the keeper's way is not the player's", InteriorRooms.walkable(room, Vector2i(5, 5)), false)
+
+    _clear_people()
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _panel.open(_sid)
+    var path := [[7, 5], [6, 5], [5, 5], [4, 5], [4, 4], [3, 4]]
+    _world.apply_npc_room_square_change({"id": "keeper", "structure_id": _sid, "square": hearth["square"], "path": path})
+    _panel.refresh()
+    var k: Node2D = _panel._people.get_node("keeper")
+    _check("sets off from behind the bar", [k.position, k.has_meta("walking")],
+        [Vector2(_panel.room["keeper"]["x"], _panel.room["keeper"]["y"]), true])
+    # Behind the bar's front arm (its depth line, sort 99) on the way out.
+    (k.get_meta("walking") as Tween).custom_step(0.8)
+    _check("on the keeper's way, behind the bar's front", k.position.y < 99.0 and k.position.x > 82.0, true)
+    _finish_walk(k)
+    var spr: AnimatedSprite2D = k.get_child(0)
+    _check("at the hearth, facing the fire", [k.position, spr.animation],
+        [Vector2(int(hearth["at"][0]), int(hearth["at"][1])), StringName(str(hearth["facing"]) + "_idle")])
+    var back := path.duplicate()
+    back.reverse()
+    _world.apply_npc_room_square_change({"id": "keeper", "structure_id": _sid, "square": [keeper_sq.x, keeper_sq.y], "path": back})
+    _panel.refresh()
+    k = _panel._people.get_node("keeper")
+    _finish_walk(k)
+    _check("back behind the bar", k.position, Vector2(_panel.room["keeper"]["x"], _panel.room["keeper"]["y"]))
     _panel.close()
     _done()

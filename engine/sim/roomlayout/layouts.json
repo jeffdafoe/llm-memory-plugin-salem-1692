@@ -9,7 +9,7 @@
                 "########",
                 "########",
                 ".....###",
-                ".###.##.",
+                ".###.kk.",
                 "..#..###"
             ],
             "door": {"square": [4, 6], "at": [64, 111], "facing": "north"},
@@ -18,7 +18,7 @@
                 {"id": "seat_west", "kind": "seat", "square": [1, 6], "at": [16, 98], "facing": "east", "pose": "seat", "serve": [31, 87]},
                 {"id": "seat_east", "kind": "seat", "square": [3, 6], "at": [56, 98], "facing": "west", "pose": "seat", "serve": [39, 87]},
                 {"id": "bar", "kind": "stand", "square": [4, 5], "at": [76, 100], "facing": "east"},
-                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [52, 68], "facing": "south"},
+                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [52, 68], "facing": "west", "use": ["stoke"]},
                 {"id": "window", "kind": "stand", "square": [4, 4], "at": [68, 74], "facing": "south"}
             ]
         },
@@ -30,7 +30,7 @@
                 "########",
                 "########",
                 ".######.",
-                ".#.#....",
+                ".#.k....",
                 ".#...###",
                 "........"
             ],
@@ -42,7 +42,7 @@
                 {"id": "bench_east", "kind": "seat", "square": [6, 6], "at": [110, 110], "facing": "north", "pose": "seat", "serve": [110, 86]},
                 {"id": "rocking_chair", "kind": "seat", "square": [0, 6], "at": [14, 102], "facing": "east", "pose": "seat"},
                 {"id": "desk", "kind": "stand", "square": [3, 6], "at": [48, 100], "facing": "north"},
-                {"id": "fire", "kind": "stand", "square": [7, 4], "at": [112, 70], "facing": "west"},
+                {"id": "fire", "kind": "stand", "square": [7, 4], "at": [112, 70], "facing": "north", "use": ["stoke"]},
                 {"id": "stair_foot", "kind": "stand", "square": [0, 5], "at": [12, 80], "facing": "east"}
             ]
         }
