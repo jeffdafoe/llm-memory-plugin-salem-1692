@@ -29,17 +29,21 @@ const (
 // walkInRoom walks a to `to` in the room they are in — the room's keeper by
 // the keeper's way, anyone else over the floor — and returns the path, both
 // ends included (just their square when already there). Nil when they are not
-// awake in a room with a plan, someone else holds `to`, or there is no way.
+// awake in a room with a plan, are on their way out (MoveIntent), someone else
+// holds `to`, or there is no way.
 func walkInRoom(w *World, a *Actor, to roomlayout.Square) []roomlayout.Square {
 	layout := roomlayout.For(string(a.InsideStructureID))
-	if layout == nil || a.InsideStructureID == "" || a.State == StateSleeping {
+	if layout == nil || a.InsideStructureID == "" || a.State == StateSleeping || a.MoveIntent != nil {
 		return nil
 	}
 	from := layout.Door.Square
 	if a.RoomSquare != nil {
 		from = *a.RoomSquare
 	}
-	if from != to && takenRoomSquares(w, a.InsideStructureID, a.ID)[to] {
+	// Only their own square is theirs to "walk" to while someone else holds
+	// it — not the door they start from when they have no square.
+	alreadyThere := a.RoomSquare != nil && *a.RoomSquare == to
+	if !alreadyThere && takenRoomSquares(w, a.InsideStructureID, a.ID)[to] {
 		return nil
 	}
 	var path []roomlayout.Square

@@ -226,3 +226,45 @@ func TestIdleGuestsDrift(t *testing.T) {
 		t.Errorf("drift time kept across an inside change: %v", guest.RoomDriftAt)
 	}
 }
+
+// code_review: someone with no square starts from the door but does not own
+// it — a walk to a door someone else holds is refused, nothing changes.
+func TestWalkInRoomNoSquareDoesNotTakeAHeldDoor(t *testing.T) {
+	pc := outdoors("pc", KindPC)
+	other := outdoors("other", KindPC)
+	w, events := squareWorld(pc, other)
+	plan := roomlayout.For(string(squareTavern))
+	setActorInsideStructure(w, other, squareTavern)
+	setActorInsideStructure(w, pc, squareTavern)
+	other.RoomSquare = &roomlayout.Square{X: plan.Door.Square.X, Y: plan.Door.Square.Y}
+	pc.RoomSquare = nil
+	*events = nil
+	if path := walkInRoom(w, pc, plan.Door.Square); path != nil {
+		t.Errorf("walked onto a held door: %v", path)
+	}
+	if pc.RoomSquare != nil || *other.RoomSquare != plan.Door.Square || walkCount(*events) != 0 {
+		t.Errorf("after the refused walk: pc %v, other %v, %d walks", pc.RoomSquare, other.RoomSquare, walkCount(*events))
+	}
+}
+
+// code_review: someone on their way out is never walked inside — not to the
+// hearth, not to a seat.
+func TestNoRoomWalkOnTheWayOut(t *testing.T) {
+	keeper := outdoors("keeper", KindNPCStateful)
+	keeper.WorkStructureID = squareTavern
+	diner := outdoors("diner", KindNPCStateful)
+	w, events := squareWorld(keeper, diner)
+	RegisterRoomWalkSubscriber(w)
+	setActorInsideStructure(w, keeper, squareTavern)
+	setActorInsideStructure(w, diner, squareTavern)
+	diner.RoomSquare = &roomlayout.Square{X: 4, Y: 4}
+	keeperAt, dinerAt := *keeper.RoomSquare, *diner.RoomSquare
+	keeper.MoveIntent = &MoveIntent{}
+	diner.MoveIntent = &MoveIntent{}
+	*events = nil
+	w.emit(&SourceActivityStarted{ActorID: keeper.ID, Kind: SourceActivityStoke})
+	w.emit(&DwellStarted{ActorID: diner.ID, Kind: "stew"})
+	if walkCount(*events) != 0 || *keeper.RoomSquare != keeperAt || *diner.RoomSquare != dinerAt {
+		t.Errorf("walked while leaving: %d walks, keeper %v, diner %v", walkCount(*events), keeper.RoomSquare, diner.RoomSquare)
+	}
+}
