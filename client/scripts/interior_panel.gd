@@ -244,7 +244,7 @@ func open(sid: String) -> void:
     _entrances = false
     for layer in [_people, _staff]:
         for child in layer.get_children():
-            if str(child.name).begins_with(LEAVING_PREFIX):
+            if child.has_meta("leaving"):
                 child.free()
     refresh()
     _entrances = true
@@ -400,13 +400,15 @@ func _draw_people(cast: Dictionary) -> void:
     # A bubble outlives the redraw (someone came in mid-sentence): lift it off
     # the old person and put it back on the new one below.
     var bubbles := {}
-    # Who was drawn where, so a leaver walks off from there and a stall's
-    # keeper carries on from wherever they had bustled to.
+    # Who was drawn where, so a leaver walks off from there, a newcomer cut
+    # short carries on walking in, and a stall's keeper carries on from
+    # wherever they had bustled to.
     var was := {}
     for child in _people.get_children() + _staff.get_children():
-        if str(child.name).begins_with(LEAVING_PREFIX):
+        if child.has_meta("leaving"):
             continue
-        was[str(child.name)] = {"position": child.position, "behind": child.get_parent() == _staff,
+        was[str(child.name)] = {"position": child.position, "alpha": child.modulate.a,
+            "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
             "sprite_data": child.get_meta("sprite_data", {})}
         var bubble := child.get_node_or_null(BUBBLE_NODE)
         if bubble != null:
@@ -427,21 +429,29 @@ func _draw_people(cast: Dictionary) -> void:
             continue
         var behind := bool(entry.get("behind", false))
         var home := Vector2(int(spot.get("x", 0)), int(spot.get("y", 0)))
+        # Back before their way out finished: the one walking out goes.
+        _stop_leaving(id)
         var holder := Node2D.new()
         holder.name = id
         holder.position = home
         holder.set_meta("home", home)
         holder.set_meta("sprite_data", sprite_data)
         holder.add_child(spr)
-        if behind and was.has(id) and bool(was[id]["behind"]):
+        var stays := was.has(id) and bool(was[id]["behind"]) == behind
+        # The keeper carries on from where they bustled to, a newcomer from
+        # partway in; anyone else stands at their (maybe new) spot.
+        if stays and (behind or bool(was[id]["entering"])):
             holder.position = was[id]["position"]
+            holder.modulate.a = was[id]["alpha"]
         # A stall's keeper stands behind the counter, which is drawn over them.
         (_staff if behind else _people).add_child(holder)
         _pose(spr, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
-        if _entrances and not was.has(id):
-            _walk_in(holder, spot, behind)
+        if _entrances and not stays:
+            _walk_in(holder, spot, behind, true)
+        elif stays and bool(was[id]["entering"]):
+            _walk_in(holder, spot, behind, false)
         _hits.append({"id": id, "holder": holder})
         drawn[id] = true
     if _entrances:
@@ -449,7 +459,10 @@ func _draw_people(cast: Dictionary) -> void:
             if not drawn.has(id):
                 _walk_out(id, was[id])
     for id in bubbles:
+        # A leaver takes their last line out with them.
         var holder := _holder(id)
+        if holder == null:
+            holder = _leaving(id)
         if holder != null:
             # The speaker may have moved to the other side of the room.
             var carried: Node2D = bubbles[id]
@@ -494,37 +507,63 @@ func _doorway(at: Vector2, behind: bool) -> Vector2:
     return door + Vector2(0, 8) if at.distance_to(door) < 4.0 else door
 
 
-## A newcomer walks in from the doorway to their spot, fading in.
-func _walk_in(holder: Node2D, spot: Dictionary, behind: bool) -> void:
+## A newcomer walks in from the doorway to their spot, fading in — from the
+## doorway, or (`from_doorway` false) on from wherever a redraw caught them.
+## The holder carries an "entering" meta until they are there.
+func _walk_in(holder: Node2D, spot: Dictionary, behind: bool, from_doorway: bool) -> void:
     var home: Vector2 = holder.get_meta("home")
-    holder.position = _doorway(home, behind)
-    holder.modulate.a = 0.0
-    holder.create_tween().tween_property(holder, "modulate:a", 1.0, FADE_SECONDS)
-    _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
+    if from_doorway:
+        holder.position = _doorway(home, behind)
+        holder.modulate.a = 0.0
+    holder.set_meta("entering", true)
+    _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")), str(spot.get("pose", "stand")),
+        func(): holder.remove_meta("entering"), 1.0, 0.0, FADE_SECONDS * (1.0 - holder.modulate.a))
+
+
+## The one walking out as `id`, or null.
+func _leaving(id: String) -> Node2D:
+    for layer in [_people, _staff]:
+        for child in layer.get_children():
+            if str(child.get_meta("leaving", "")) == id:
+                return child
+    return null
+
+
+## Drop whoever is walking out as `id` (they came back, or leave again).
+func _stop_leaving(id: String) -> void:
+    var ghost := _leaving(id)
+    while ghost != null:
+        ghost.free()
+        ghost = _leaving(id)
 
 
 ## Someone no longer here turns and walks from where they were drawn out
 ## through the doorway, fading as they go, then is gone. Not clickable.
 func _walk_out(id: String, was: Dictionary) -> void:
+    _stop_leaving(id)
     var spr := _sprite(was["sprite_data"])
     if spr == null:
         return
     var ghost := Node2D.new()
     ghost.name = LEAVING_PREFIX + id
+    ghost.set_meta("leaving", id)
+    ghost.modulate.a = was["alpha"]
     ghost.position = was["position"]
     ghost.add_child(spr)
     (_staff if bool(was["behind"]) else _people).add_child(ghost)
     var to := _doorway(ghost.position, bool(was["behind"]))
     var seconds := ghost.position.distance_to(to) / WALK_SPEED
-    _walk(ghost, to, WALK_SPEED, "south", "stand", ghost.queue_free)
-    ghost.create_tween().tween_property(ghost, "modulate:a", 0.0, minf(FADE_SECONDS, seconds)) \
-        .set_delay(maxf(0.0, seconds - FADE_SECONDS))
+    _walk(ghost, to, WALK_SPEED, "south", "stand", ghost.queue_free,
+        0.0, maxf(0.0, seconds - FADE_SECONDS), minf(FADE_SECONDS, seconds))
 
 
 ## Walk a drawn person to `to` at `speed` art px a second, walking the way
-## they go; at the end they take `facing` (and `pose`) and `done` runs. The
-## holder carries a "walking" meta (the tween) while under way.
-func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "stand", done := Callable()) -> void:
+## they go; at the end they take `facing` (and `pose`) and `done` runs. With
+## `fade_to` >= 0 they also fade to that alpha over `fade_seconds`, starting
+## `fade_delay` into the walk — one tween, so the walk and the fade end
+## together. The holder carries a "walking" meta (the tween) while under way.
+func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "stand", done := Callable(),
+        fade_to := -1.0, fade_delay := 0.0, fade_seconds := 0.0) -> void:
     var spr := _sprite_of(holder)
     var dist := holder.position.distance_to(to)
     if spr != null and dist > 0.5 and spr.sprite_frames != null:
@@ -534,6 +573,8 @@ func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "s
     var tween := holder.create_tween()
     holder.set_meta("walking", tween)
     tween.tween_property(holder, "position", to, maxf(dist / speed, 0.01))
+    if fade_to >= 0.0:
+        tween.parallel().tween_property(holder, "modulate:a", fade_to, maxf(fade_seconds, 0.01)).set_delay(fade_delay)
     tween.tween_callback(func():
         holder.remove_meta("walking")
         if spr != null:
@@ -564,7 +605,7 @@ func _bustle(delta: float) -> void:
 ## The person behind a stall's counter, or null.
 func _tending() -> Node2D:
     for child in _staff.get_children():
-        if not str(child.name).begins_with(LEAVING_PREFIX):
+        if not child.has_meta("leaving"):
             return child
     return null
 

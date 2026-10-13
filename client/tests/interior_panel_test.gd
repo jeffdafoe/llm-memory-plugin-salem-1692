@@ -40,6 +40,9 @@ const TESTS := [
     "_test_walk_out",
     "_test_walk_in",
     "_test_keeper_bustles",
+    "_test_walk_in_survives_a_redraw",
+    "_test_leave_return_leave",
+    "_test_leaver_takes_their_bubble",
 ]
 
 const STALL := "stall-1"
@@ -952,6 +955,81 @@ func _test_keeper_bustles() -> void:
     _check("stopped to speak", keeper.has_meta("walking"), false)
     _check("facing the customers", (keeper.get_child(0) as AnimatedSprite2D).animation, &"south_idle")
     _check("held a while", _panel._bustle_left, _panel.SPEAK_HOLD)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## Someone else coming or going mid-entrance redraws everyone: a newcomer
+## partway in carries on walking in from there — in front of the counter
+## and behind it.
+func _test_walk_in_survives_a_redraw() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _panel.open(STALL)
+    _at_tile("first", _farmer(), pin + Vector2i(1, 1))
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.refresh()
+    for id in ["first", "keeper"]:
+        var h: Node2D = _panel._holder(id)
+        (h.get_meta("walking") as Tween).custom_step(0.4)
+    var part_way := {"first": _panel._holder("first").position, "keeper": _panel._holder("keeper").position}
+    _at_tile("second", _farmer(), pin + Vector2i(-1, 1))
+    _panel.refresh()
+    for id in ["first", "keeper"]:
+        var h: Node2D = _panel._holder(id)
+        _check("%s: picked up where the redraw found them" % id, h.position, part_way[id])
+        _check("%s: still walking in" % id, [h.has_meta("walking"), h.has_meta("entering")], [true, true])
+        _check("%s: still fading in" % id, h.modulate.a < 1.0, true)
+        _finish_walk(h)
+        _check("%s: at their spot" % id, h.position, h.get_meta("home"))
+        _check("%s: in" % id, [h.modulate.a, h.has_meta("entering")], [1.0, false])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## Leave, come back before the way out is over, leave again: one person
+## walking out, never two.
+func _test_leave_return_leave() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    var buyer := _at_tile("buyer", _farmer(), pin)
+    _panel.open(STALL)
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    _check("walking out", _leavers(), [_panel.LEAVING_PREFIX + "buyer"])
+    buyer.remove_meta("walking")
+    _panel.refresh()
+    _check("back: nobody walking out", _leavers(), [])
+    _check("back: drawn again", _panel._holder("buyer") != null, true)
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    _check("gone again: one walking out", _leavers(), [_panel.LEAVING_PREFIX + "buyer"])
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_leaver_takes_their_bubble() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    var buyer := _at_tile("buyer", _farmer(), pin)
+    _panel.open(STALL)
+    _panel.say("buyer", "Good day to you.")
+    buyer.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    _panel.refresh()
+    var ghost: Node2D = _panel._leaving("buyer")
+    _check("the line goes with them", ghost != null and ghost.get_node_or_null(_panel.BUBBLE_NODE) != null, true)
     _panel.close()
     _panel.wares_hook = Callable()
     _done()
