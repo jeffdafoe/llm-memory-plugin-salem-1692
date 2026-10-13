@@ -40,6 +40,7 @@ const TESTS := [
     "_test_walk_out",
     "_test_walk_in",
     "_test_keeper_bustles",
+    "_test_stall_hands",
     "_test_walk_in_survives_a_redraw",
     "_test_leave_return_leave",
     "_test_leaver_takes_their_bubble",
@@ -732,6 +733,36 @@ func _test_stall_occupants() -> void:
     _check("the player's character front and centre", cast["placed"][2]["spot"], StallScenes.DOOR)
     _check("nobody over", cast["more"], 0)
 
+    # Hands working beside the keeper (LLM-759): two at the hands' spots, a
+    # third counted.
+    _person("worker-a", _farmer(), STALL)
+    _person("worker-b", _farmer(), STALL, {"work_structure_id": "elsewhere"})
+    _person("worker-c", _farmer(), STALL)
+    cast = _panel.occupants()
+    var behind := {}
+    for e in cast["placed"]:
+        if e.get("behind", false):
+            behind[e["id"]] = e
+    _check("the keeper and two hands behind the counter", behind.size(), 3)
+    _check("the keeper marked, at the keeper's spot", [behind["keeper"].get("keeper", false), behind["keeper"]["spot"]], [true, StallScenes.KEEPER])
+    var hand_spots := []
+    for id in behind:
+        if id != "keeper":
+            _check("%s is a hand, not the keeper" % id, [behind[id].get("hand", false), behind[id].get("keeper", false)], [true, false])
+            hand_spots.append(behind[id]["spot"])
+    _check("the hands at the two hands' spots", hand_spots.has(StallScenes.HANDS[0]) and hand_spots.has(StallScenes.HANDS[1]), true)
+    _check("the third hand: and 1 more", cast["more"], 1)
+    var kept: Dictionary = _panel._assigned_hands.duplicate()
+    _person("worker-0", _farmer(), STALL)
+    cast = _panel.occupants()
+    var still := {}
+    for id in kept:
+        still[id] = _panel._assigned_hands.get(id, -1)
+    _check("a hand who comes later does not move the others", still, kept)
+    for id in ["worker-a", "worker-b", "worker-c", "worker-0"]:
+        _world.placed_npcs[id].free()
+        _world.placed_npcs.erase(id)
+
     # The keeper away: a hand tending the stall stands behind the counter.
     _world.placed_npcs["keeper"].free()
     _world.placed_npcs.erase("keeper")
@@ -974,6 +1005,133 @@ func _test_keeper_bustles() -> void:
     _panel.close()
     _panel.wares_hook = Callable()
     _done()
+
+
+## A hand working beside the keeper (LLM-759) is drawn behind the counter at
+## a hand's spot; the keeper alone bustles (never into the hand) and hands
+## goods over; the hand turns now and then, and to the customers to speak.
+func _test_stall_hands() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return [{"item": "apples", "stock": "plenty"}]
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _person("hand", _farmer(), STALL)
+    _at_tile("buyer", _farmer(), pin + Vector2i(1, 1))
+    _panel.open(STALL)
+    var keeper: Node2D = _panel._staff.get_node_or_null("keeper")
+    var hand: Node2D = _panel._staff.get_node_or_null("hand")
+    _check("the hand is behind the counter with the keeper", hand != null and keeper != null, true)
+    if hand == null or keeper == null:
+        _done()
+        return
+    var hand_home: Vector2 = hand.get_meta("home")
+    _check("at a hand's spot", StallScenes.HANDS.map(func(s): return Vector2(s["x"], s["y"])).has(hand_home), true)
+    _check("the one tending is the keeper", _panel._tending(), keeper)
+
+    # The keeper's bustle stays clear of the hand.
+    _panel._bustle_rng.seed = 3
+    var clear := true
+    for i in 40:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+        _finish_walk(keeper)
+        if absf(keeper.position.x - hand_home.x) < _panel.HAND_CLEAR:
+            clear = false
+    _check("the keeper never bustles into the hand", clear, true)
+    _check("the hand stays at their spot", [hand.position, hand.has_meta("walking")], [hand_home, false])
+
+    # The hand turns now and then.
+    var facings := {}
+    for i in 30:
+        _panel._hands_turn(_panel.BUSTLE_MAX + 0.1)
+        facings[str((hand.get_child(0) as AnimatedSprite2D).animation)] = true
+    _check("the hand looks at the goods and at the customers", [facings.has("north_idle"), facings.has("south_idle")], [true, true])
+    _panel._hands_turn(0.01)
+    _check("and waits between turns", float(hand.get_meta("turn_left")) > 0.0, true)
+
+    # Speaking turns the hand to the customers; the keeper's bustle is not touched.
+    _pose_north(hand)
+    _panel._bustle_left = 1.5
+    _panel.say("hand", "Mind the sparks.")
+    _check("the hand faces the customers to speak", (hand.get_child(0) as AnimatedSprite2D).animation, &"south_idle")
+    _check("and holds it", [float(hand.get_meta("turn_left")), _panel._bustle_left], [_panel.SPEAK_HOLD, 1.5])
+
+    # The keeper hands a sale over; a sale by the hand passes the counter by.
+    _panel.on_pay_resolved(_sale("hand", "buyer"))
+    _check("the hand selling: no handoff", [_panel._handoff_now, hand.has_meta("walking")], [{}, false])
+    _panel.on_pay_resolved(_sale("keeper", "buyer"))
+    _check("the keeper selling: the keeper walks to it", [keeper.has_meta("walking"), hand.has_meta("walking")], [true, false])
+    _finish_handoff()
+
+    # A redraw keeps the hand at their spot and still a hand.
+    _at_tile("newcomer", _farmer(), pin + Vector2i(-1, 1))
+    _panel.refresh()
+    hand = _panel._staff.get_node("hand")
+    _check("after a redraw: the hand at their spot, still a hand", [hand.position, hand.has_meta("hand"), hand.has_meta("keeper")], [hand_home, true, false])
+
+    # A speaking hand keeps facing the customers, and their hold, over a
+    # redraw; a hand looking at the goods keeps looking there.
+    _panel.say("hand", "One moment.")
+    _at_tile("another", _farmer(), pin + Vector2i(0, 1))
+    _panel.refresh()
+    hand = _panel._staff.get_node("hand")
+    _check("a redraw mid-speech: still facing the customers, still holding", [(hand.get_child(0) as AnimatedSprite2D).animation, float(hand.get_meta("turn_left", 0.0))], [&"south_idle", _panel.SPEAK_HOLD])
+    hand.set_meta("facing", "north")
+    _pose_north(hand)
+    _world.placed_npcs["another"].free()
+    _world.placed_npcs.erase("another")
+    _panel.refresh()
+    hand = _panel._staff.get_node("hand")
+    _check("a redraw: a hand looking at the goods still does", (hand.get_child(0) as AnimatedSprite2D).animation, &"north_idle")
+    var rng_state: int = _panel._bustle_rng.state
+    _panel._hands_turn(0.01)
+    _check("a hand's wait counting down draws nothing from the bustle's dice", _panel._bustle_rng.state, rng_state)
+
+    # A hand who comes in while the window is open: speaking does not stop
+    # their walk in.
+    _person("late-hand", _farmer(), STALL)
+    _panel.refresh()
+    var late: Node2D = _panel._staff.get_node_or_null("late-hand")
+    _check("a second hand walks in", late != null and late.has_meta("walking") and late.has_meta("hand"), true)
+    if late != null:
+        _panel.say("late-hand", "Coming through.")
+        _check("speaking on the way in: still walking in", [late.has_meta("walking"), late.has_meta("entering")], [true, true])
+        _finish_walk(late)
+        _check("then at their spot", late.position, late.get_meta("home"))
+    _world.placed_npcs["late-hand"].free()
+    _world.placed_npcs.erase("late-hand")
+    _panel.refresh()
+    _finish_walk(_panel._staff.get_node_or_null(_panel.LEAVING_PREFIX + "late-hand"))
+
+    # A hand minding the stall alone bustles like a keeper; when the keeper
+    # comes back the hand goes to a hand's spot, not where they had got to.
+    keeper = _panel._staff.get_node("keeper")
+    _finish_walk(keeper)
+    _world.placed_npcs["keeper"].free()
+    _world.placed_npcs.erase("keeper")
+    _panel.refresh()
+    var minding: Node2D = _panel._tending()
+    _check("the hand minds the stall", minding != null and str(minding.name) == "hand", true)
+    if minding != null:
+        _check("the keeper gone: the hand walks to the keeper's spot", [minding.has_meta("walking"), minding.position], [true, hand_home])
+        _finish_walk(minding)
+        _check("…and stands there", minding.position, Vector2(StallScenes.KEEPER["x"], StallScenes.KEEPER["y"]))
+        minding.position = Vector2(StallScenes.KEEPER["x"] + 9, StallScenes.KEEPER["y"])
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.refresh()
+    hand = _panel._staff.get_node("hand")
+    _finish_walk(hand)
+    _check("the keeper back: the hand at a hand's spot", hand.position, hand.get_meta("home"))
+    _check("…which is a hand's spot", StallScenes.HANDS.map(func(s): return Vector2(s["x"], s["y"])).has(hand.position), true)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _pose_north(holder: Node2D) -> void:
+    (holder.get_child(0) as AnimatedSprite2D).play("north_idle")
 
 
 ## Someone else coming or going mid-entrance redraws everyone: a newcomer

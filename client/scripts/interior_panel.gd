@@ -75,6 +75,10 @@ const BUSTLE_MAX := 6.0
 const BUSTLE_REACH := 34.0
 const BUSTLE_SPEED := 16.0
 const SPEAK_HOLD := 4.0
+## A hand working beside the keeper (LLM-759) stays put and turns between the
+## goods and the customers every BUSTLE_MIN..BUSTLE_MAX seconds; the keeper's
+## bustle keeps HAND_CLEAR art px from a hand's spot.
+const HAND_CLEAR := 20.0
 ## A sale over a stall's counter (LLM-756): the good lies on the counter
 ## HANDOFF_HOLD seconds, then goes to its new owner over HANDOFF_AWAY seconds,
 ## sliding HANDOFF_SLIDE art px their way as it fades.
@@ -129,6 +133,8 @@ var _people: Node2D = null
 var _font: Font = null
 var _stretch := Vector2.ONE
 var _assigned: Dictionary = {}
+## A stall's hands' spots beside the keeper, sticky like _assigned.
+var _assigned_hands: Dictionary = {}
 var _signature := ""
 var _refresh_left := 0.0
 var _hits: Array = []
@@ -271,6 +277,7 @@ func open(sid: String) -> void:
     _handoff_now = {}
     if sid != structure_id:
         _assigned = {}
+        _assigned_hands = {}
         _wares = []
     structure_id = sid
     room = r
@@ -328,6 +335,7 @@ func _process(delta: float) -> void:
             _wares_left = WARES_SECONDS
             _request_wares()
         _bustle(delta)
+        _hands_turn(delta)
 
 
 ## Read who is inside and redraw the people when that has changed.
@@ -385,9 +393,10 @@ func occupants() -> Dictionary:
 
 
 ## A stall's people: behind the counter, whoever is inside the stall — its
-## own keeper first, else a hand tending it (anyone else inside is counted,
-## not drawn); in front, whoever stands at its loiter pin, the player's
-## character in the middle.
+## own keeper in the middle (else a hand tending it), and up to two more
+## working beside them at the hands' spots (anyone past those is counted, not
+## drawn); in front, whoever stands at its loiter pin, the player's character
+## in the middle.
 func _stall_occupants() -> Dictionary:
     var keeper_id := ""
     var inside: Array = []
@@ -414,6 +423,9 @@ func _stall_occupants() -> Dictionary:
                 customers.append(id)
     if keeper_id == "" and not inside.is_empty():
         keeper_id = inside.pop_front()
+    var hand_spots: Array = room.get("hands", [])
+    var hands := InteriorRooms.assign(hand_spots.size(), inside, _assigned_hands)
+    _assigned_hands = hands["spots"]
     var spots: Array = room.get("spots", [])
     var stood := InteriorRooms.assign(spots.size(), customers, _assigned)
     _assigned = stood["spots"]
@@ -421,13 +433,20 @@ func _stall_occupants() -> Dictionary:
     if keeper_id != "":
         var e := _entry(keeper_id, room.get("keeper", {}))
         e["behind"] = true
+        e["keeper"] = true
         placed.append(e)
+    for id in inside:
+        if _assigned_hands.has(id):
+            var e := _entry(id, hand_spots[int(_assigned_hands[id])])
+            e["behind"] = true
+            e["hand"] = true
+            placed.append(e)
     for id in customers:
         if _assigned.has(id):
             placed.append(_entry(id, spots[int(_assigned[id])]))
     if pc_here:
         placed.append(_entry(pc_actor_id, room.get("door", {})))
-    return {"placed": placed, "more": int(stood["more"]) + inside.size()}
+    return {"placed": placed, "more": int(stood["more"]) + int(hands["more"])}
 
 
 ## One drawn person. `look` stamps the outfit and the rest state so a change
@@ -458,7 +477,9 @@ func _draw_people(cast: Dictionary) -> void:
             continue
         was[id] = {"position": child.position, "alpha": child.modulate.a,
             "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
-            "sprite_data": child.get_meta("sprite_data", {})}
+            "sprite_data": child.get_meta("sprite_data", {}), "hand": child.has_meta("hand"),
+            "turn_left": child.get_meta("turn_left") if child.has_meta("turn_left") else null,
+            "facing": child.get_meta("facing") if child.has_meta("facing") else null}
         child.free()
     _hits.clear()
     var drawn := {}
@@ -483,24 +504,41 @@ func _draw_people(cast: Dictionary) -> void:
         holder.set_meta("sprite_data", sprite_data)
         if bool(entry.get("keeper", false)):
             holder.set_meta("keeper", true)
+        var hand := bool(entry.get("hand", false))
+        if hand:
+            holder.set_meta("hand", true)
         holder.add_child(spr)
         # A window just opened draws everyone at their spots: nothing carries
         # over from the last time it was open.
         var stays := _entrances and was.has(id) and bool(was[id]["behind"]) == behind
+        # Behind a stall's counter, a hand who now keeps the stall (the keeper
+        # left) or a keeper who is now a hand (the keeper came back) walks from
+        # where they were to their new spot.
+        var moves := stays and behind and bool(was[id]["hand"]) != hand and not bool(was[id]["entering"])
         # The keeper carries on from where they bustled to, a newcomer from
-        # partway in; anyone else stands at their (maybe new) spot.
-        if stays and (behind or bool(was[id]["entering"])):
+        # partway in; anyone else (a hand too) stands at their (maybe new) spot.
+        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves):
             holder.position = was[id]["position"]
             holder.modulate.a = was[id]["alpha"]
         # A stall's keeper stands behind the counter, which is drawn over them.
         (_staff if behind else _people).add_child(holder)
-        _pose(spr, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
+        var facing := str(spot.get("facing", "south"))
+        # A hand still a hand keeps the way they were looking and their wait.
+        if hand and stays and bool(was[id]["hand"]):
+            if was[id]["facing"] != null:
+                facing = str(was[id]["facing"])
+                holder.set_meta("facing", facing)
+            if was[id]["turn_left"] != null:
+                holder.set_meta("turn_left", was[id]["turn_left"])
+        _pose(spr, facing, str(spot.get("pose", "stand")))
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         if _entrances and not stays:
             _walk_in(holder, spot, behind, true)
         elif stays and bool(was[id]["entering"]):
             _walk_in(holder, spot, behind, false)
+        elif moves:
+            _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")))
         _hits.append({"id": id, "holder": holder})
         drawn[id] = true
     if _entrances:
@@ -653,23 +691,56 @@ func _bustle(delta: float) -> void:
     var home: Vector2 = holder.get_meta("home")
     var to := home
     if holder.position.distance_to(home) < 2.0 or _bustle_rng.randf() < 0.5:
-        to = Vector2(roundf(home.x + _bustle_rng.randf_range(-BUSTLE_REACH, BUSTLE_REACH)), home.y)
+        # Along the counter, but never into a hand working beside them.
+        var lo := home.x - BUSTLE_REACH
+        var hi := home.x + BUSTLE_REACH
+        for hand in _hands():
+            var x: float = (hand.get_meta("home") as Vector2).x
+            if x < home.x:
+                lo = maxf(lo, x + HAND_CLEAR)
+            else:
+                hi = minf(hi, x - HAND_CLEAR)
+        to = Vector2(roundf(_bustle_rng.randf_range(lo, maxf(lo, hi))), home.y)
     var facing := "south" if to == home else ("north" if _bustle_rng.randf() < 0.5 else "south")
     _walk(holder, to, BUSTLE_SPEED, facing)
 
 
-## The person behind a stall's counter, or null.
+## The one tending: a room's keeper, or in a stall the keeper behind the
+## counter (never a hand beside them); null when there is none. _draw_people
+## marks them.
 func _tending() -> Node2D:
-    if not is_stall():
-        # A room's keeper stands among the others, marked by _draw_people.
-        for child in _people.get_children():
-            if child.has_meta("keeper") and not child.has_meta("leaving"):
-                return child
-        return null
-    for child in _staff.get_children():
-        if not child.has_meta("leaving"):
+    for child in (_staff if is_stall() else _people).get_children():
+        if child.has_meta("keeper") and not child.has_meta("leaving"):
             return child
     return null
+
+
+## The hands working beside a stall's keeper.
+func _hands() -> Array:
+    var out: Array = []
+    for child in _staff.get_children():
+        if child.has_meta("hand") and not child.has_meta("leaving"):
+            out.append(child)
+    return out
+
+
+## Each hand now and then turns to the goods behind them or to the customers.
+## Each keeps their own wait (meta "turn_left"); one walking in waits.
+func _hands_turn(delta: float) -> void:
+    for hand in _hands():
+        if hand.has_meta("walking"):
+            continue
+        if not hand.has_meta("turn_left"):
+            hand.set_meta("turn_left", _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX))
+        var left := float(hand.get_meta("turn_left")) - delta
+        if left <= 0.0:
+            left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+            var facing := "north" if _bustle_rng.randf() < 0.5 else "south"
+            hand.set_meta("facing", facing)
+            var spr := _sprite_of(hand)
+            if spr != null:
+                _pose(spr, facing, "stand")
+        hand.set_meta("turn_left", left)
 
 
 ## Seat a farmer-base villager in a seat spot; everyone else stands, facing
@@ -725,9 +796,18 @@ func say(npc_id: String, text: String) -> void:
         holder = _leaving(npc_id)
     if holder == null:
         return
+    # A hand turns to the customers to speak and holds it a while — once
+    # there, if still walking in.
+    if holder.has_meta("hand"):
+        if not holder.has_meta("walking"):
+            holder.set_meta("facing", "south")
+            var hand_spr := _sprite_of(holder)
+            if hand_spr != null:
+                _pose(hand_spr, "south", "stand")
+            holder.set_meta("turn_left", SPEAK_HOLD)
     # The one tending a stall stops to speak, facing the customers — but not
     # in the middle of handing something over.
-    if holder.get_parent() == _staff and not holder.has_meta("leaving") and _handoff_now.is_empty():
+    elif holder.get_parent() == _staff and holder.has_meta("keeper") and not holder.has_meta("leaving") and _handoff_now.is_empty():
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")

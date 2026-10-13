@@ -21,6 +21,12 @@ const COUNTER_SHEET := "/tilesets/interiors/stall_counter.png"
 const GOODS_SHEET := "/tilesets/interiors/stall_goods.png"
 
 const KEEPER := {"x": 64, "y": 66, "facing": "south"}
+## Hands working in the stall beside the keeper (LLM-759), either side of
+## them behind the counter.
+const HANDS := [
+    {"x": 30, "y": 66, "facing": "south"},
+    {"x": 98, "y": 66, "facing": "south"},
+]
 ## The player's own character, front and centre.
 const DOOR := {"x": 64, "y": 108, "facing": "north"}
 const SPOTS := [
@@ -69,6 +75,7 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
         "counter": COUNTER_SHEET,
         "size": SIZE,
         "keeper": KEEPER,
+        "hands": HANDS,
         "door": DOOR,
         "spots": SPOTS,
         "pin": pin_tile(node),
