@@ -20,7 +20,7 @@ const TESTS := [
     "_test_mended_with_no_atmosphere_blanks_the_band",
     "_test_build_info_reads_and_compares",
     "_test_stale_build_leads_the_band",
-    "_test_build_line_scrolls_once",
+    "_test_build_leads_the_band",
 ]
 
 var _failures := 0
@@ -191,34 +191,17 @@ func _test_stale_build_leads_the_band() -> void:
     _done()
 
 
-## The build line scrolls once and does not repeat: with no band it blanks,
-## with a band the band takes over.
-func _test_build_line_scrolls_once() -> void:
+## The build rides at the front of the band, ahead of the stale notice and the
+## news, rather than scrolling as a line of its own.
+func _test_build_leads_the_band() -> void:
     var t = _ticker()
-    var label := Label.new()
-    var timer := Timer.new()
-    t._label = label
-    t._repeat_timer = timer
-    t._intro_line = "Salem build 00aa2b90"
-    t._active_line = t._intro_line
-    t._scrolling = true
-    t._on_scroll_finished()
-    _check("no band: line cleared", t._active_line, "")
-    _check("no band: label cleared", label.text, "")
-    _check("no band: no re-scroll scheduled", timer.is_stopped(), true)
-    _check("handled once: sentinel cleared", t._intro_line, "")
-    t._active_line = "Salem build 00aa2b90"
-    t._scrolling = true
-    t._on_scroll_finished()
-    _check("a later line with the same text re-scrolls", t._active_line, "Salem build 00aa2b90")
-    t._repeat_timer.stop()
-    t._intro_line = "Salem build 00aa2b90"
-    t._active_line = t._intro_line
-    t._scrolling = true
-    t._atmosphere_line = "Mist on the green."
-    t._on_scroll_finished()
-    _check("band takes over", t._active_line, "Mist on the green.")
-    label.free()
-    timer.free()
+    t._alarm_line = "*** ENGINE ALARM ***"
+    t._build_line = "Salem build 00aa2b90"
+    t._client_build = "00aa2b90"
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"build": "00aa2b90", "atmosphere": "Mist on the green."}))
+    _check("build leads the atmosphere", t._band_line(), "Salem build 00aa2b90   ~   Mist on the green.")
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"build": "d39271bc", "atmosphere": "Mist on the green."}))
+    _check("build leads the stale notice", t._band_line(),
+        "Salem build 00aa2b90   ~   " + t.STALE_TEXT + "   ~   Mist on the green.")
     t.free()
     _done()
