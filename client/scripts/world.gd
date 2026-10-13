@@ -1017,15 +1017,17 @@ func play_npc_animation(container: Node2D, facing: String, kind: String) -> void
 ## every other sprite keeps standing through the work. A hand mending a well, a
 ## stall or a fence, or clearing a road, swings a hatchet (chop). A harvest
 ## picks its motion by the crop (HARVEST_ANIMATIONS, else pick); eating at a
-## source picks and drinking drinks; a villager resting outdoors sits.
+## source picks and drinking drinks; a villager on a break, or anyone stopped
+## at an outdoor rest spot, sits (LLM-765).
 const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "sit"]
 const HARVEST_ANIMATIONS := {"wheat": "scythe", "carrots": "pull"}
+## The need a rest spot (the Picnic Area, a Shade Tree) eases.
+const REST_NEED := "tiredness"
 
 ## The work animation for the container's current activity, or "" for none.
 ## Harvest and refresh read the worked object's refresh rows (crop, and eat vs
-## drink); with the object not on hand yet they fall back to pick and drink —
-## an NPC refreshes only at a well — and _reaim_work_on corrects it once the
-## object is drawn.
+## drink vs rest); with the object not on hand yet they fall back to pick and
+## drink, and _reaim_work_on corrects it once the object is drawn.
 func _work_animation(container: Node2D) -> String:
     match str(container.get_meta("source_activity_kind", "")):
         "repair":
@@ -1033,10 +1035,47 @@ func _work_animation(container: Node2D) -> String:
         "harvest":
             return str(HARVEST_ANIMATIONS.get(_worked_refresh(container, "gather_item"), "pick"))
         "refresh":
-            return "pick" if _worked_refresh(container, "attribute") == "hunger" else "drink"
+            var need := _worked_refresh(container, "attribute")
+            if need == REST_NEED:
+                return "sit"
+            return "pick" if need == "hunger" else "drink"
     if str(container.get_meta("dormant", "")) == "resting":
         return "sit"
+    if _rest_spot(container) != null:
+        return "sit"
     return ""
+
+## The rest spot whose loiter pin the container stands still at, or null. The
+## engine eases tiredness there for as long as the actor stays (the object
+## dwell), past the short refresh on arrival, so the sitter stays seated until
+## they walk off. The pin rule is the engine's ResolveLoiteringObject, as the
+## stall window's (StallScenes): the nearest named object's pin within one
+## tile, the lower id on a tie — a nearer pin of another kind is not a rest.
+func _rest_spot(container: Node2D) -> Node2D:
+    if container.has_meta("walking") or bool(container.get_meta("inside", false)):
+        return null
+    var tile := StallScenes.standing_tile(container)
+    var best: Node2D = null
+    var best_id := ""
+    var best_d := 2
+    for id in placed_objects:
+        var node: Node2D = placed_objects[id]
+        if not is_instance_valid(node) or str(node.get_meta("display_name", "")) == "":
+            continue
+        var pin := StallScenes.pin_tile(node)
+        var d := maxi(absi(tile.x - pin.x), absi(tile.y - pin.y))
+        if d < best_d or (d == best_d and best != null and str(id) < best_id):
+            best = node
+            best_id = str(id)
+            best_d = d
+    if best == null:
+        return null
+    var rows = best.get_meta("refreshes", [])
+    if rows is Array:
+        for row in rows:
+            if row is Dictionary and str(row.get("attribute", "")) == REST_NEED:
+                return best
+    return null
 
 ## The `field` (gather_item, attribute) of the first refresh row of the worked
 ## object that sets it, or "". A well has two rows: the drink and the water carry.
@@ -1069,9 +1108,11 @@ func _apply_activity_animation(container: Node2D) -> void:
         # A walk owns the sprite; a rest flag that has not caught up never sits a walker.
         return
     if work != "" and work != "chop" and sprite.sprite_frames.has_animation(facing + "_" + work):
-        # Face the worked object (a rest has none and keeps its facing). Only
-        # the chop steps in to land its blow.
+        # Face the worked object, or the rest spot (a break away from one keeps
+        # its facing). Only the chop steps in to land its blow.
         var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
+        if target == null and work == "sit":
+            target = _rest_spot(container)
         if target != null:
             var rect := object_map_rect(target)
             var at := rect.get_center() if rect.has_area() else target.position
@@ -1426,6 +1467,8 @@ func _tick_npc_walk(container: Node2D) -> void:
             idle_facing = "south"
         container.set_meta("facing", idle_facing)
         play_npc_animation(container, idle_facing, "idle")
+        # Parked at a rest spot sits (LLM-765).
+        _apply_activity_animation(container)
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.

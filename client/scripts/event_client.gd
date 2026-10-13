@@ -869,6 +869,8 @@ func _on_npc_arrived(data: Dictionary) -> void:
         container.set_meta("facing", facing)
         container.remove_meta("walking")
         world.play_npc_animation(container, facing, "idle")
+        # Arrived at a rest spot sits (LLM-765).
+        world._apply_activity_animation(container)
     # The inside render runs AFTER the snap: the snap writes the door tile and,
     # on a jump over one tile, forces visible=true, so applied before it the
     # stand-offset and the hide were both undone — a keeper or hired hand who
