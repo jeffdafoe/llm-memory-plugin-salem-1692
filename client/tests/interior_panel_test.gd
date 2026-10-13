@@ -63,6 +63,9 @@ const TESTS := [
     "_test_tavern_ale_lingers_then_cleared",
     "_test_tavern_take_home_handed_over",
     "_test_tavern_reopen_lays_a_running_meal",
+    "_test_inn_keeper_behind_the_desk",
+    "_test_inn_animations",
+    "_test_inn_serves_porridge_to_the_bench",
 ]
 
 const STALL := "stall-1"
@@ -2002,6 +2005,134 @@ func _test_reopen_stops_a_handoff() -> void:
         _check("reopened (%s): nothing handed or queued" % where, [_panel._handoff.get_child_count(), _panel._handoff_now, _panel._handoffs], [1 if meal else 0, {}, []])
         keeper = _panel._tending()
         _check("reopened (%s): the keeper stands still at their spot" % where, [keeper.has_meta("walking"), keeper.position], [false, keeper.get_meta("home")])
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+const INN := "019d98af-ac9b-7833-8e03-5a7015bb5b0c"
+
+
+## The Inn with its keeper behind the desk, the player's character at the
+## door and `guest` at spot `spot`.
+func _inn_with_guest(spot: int) -> void:
+    _clear_people()
+    _panel.close()
+    _world.meals = {}
+    _person("keeper", _farmer(), INN, {"work_structure_id": INN})
+    _person("pc", _farmer(), INN)
+    _person("guest", _farmer(), INN)
+    _panel.open(INN)
+    _panel._assigned = {"guest": spot}
+    _panel._signature = ""
+    _panel.refresh()
+
+
+## The Inn's keeper stands behind the desk — drawn under it, as a stall's
+## keeper under the counter — and comes and goes by the stairs; everyone else
+## is in front of it and uses the door.
+func _test_inn_keeper_behind_the_desk() -> void:
+    _inn_with_guest(3)
+    _check("the Inn has a room", _panel.is_open(), true)
+    _check("the desk is drawn over the keeper", _panel._counter.texture != null, true)
+    var keeper: Node2D = _panel._staff.get_node_or_null("keeper")
+    _check("the keeper is behind the desk", keeper != null, true)
+    _check("the guest and the player's character in front", [_panel._people.get_node_or_null("guest") != null, _panel._people.get_node_or_null("pc") != null], [true, true])
+    _check("the keeper is the one tending", _panel._tending() == keeper, true)
+    if keeper == null:
+        _done()
+        return
+    var stairs := Vector2(_panel.room["keeper_door"]["x"], _panel.room["keeper_door"]["y"])
+    var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"])
+    _check("the keeper's way is the stairs", _panel._doorway(keeper.position, true), stairs)
+    _check("a guest's way is the door", _panel._doorway(Vector2(48, 100), false), door)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _panel._clip.position = Vector2.ZERO
+    _check("a tap on the keeper finds them", str(_panel.thing_at((keeper.position + Vector2(0, -16)) * 4).get("id", "")), "keeper")
+    # The keeper walks in down the stairs, behind the desk.
+    _clear_people()
+    _panel._signature = ""
+    _panel.refresh()
+    _person("keeper", _farmer(), INN, {"work_structure_id": INN})
+    _panel.refresh()
+    keeper = _panel._staff.get_node_or_null("keeper")
+    _check("coming in from the stairs", keeper != null and keeper.position == stairs and keeper.has_meta("entering"), true)
+    _finish_walk(keeper)
+    _check("then at the desk", keeper.position, keeper.get_meta("home"))
+    # Speaking does not stop the keeper as it stops a stall's bustle.
+    _panel._walk(keeper, Vector2(30, 66), _panel.WALK_SPEED, "south")
+    _panel.say("keeper", "Welcome to the Inn.")
+    _check("a room's keeper keeps walking while speaking", keeper.has_meta("walking"), true)
+    _finish_walk(keeper)
+    # Leaving, the keeper goes back up the stairs, behind the desk.
+    _clear_people()
+    _panel.refresh()
+    var ghost: Node2D = _panel._leaving("keeper")
+    _check("the keeper walks out behind the desk", ghost != null and ghost.get_parent() == _panel._staff, true)
+    if ghost != null:
+        _finish_walk(ghost)
+        _check("up the stairs", ghost.position, stairs)
+    _panel.close()
+    _done()
+
+
+## The fire, the pot and the candle play their strips; a room without
+## `anims` has none.
+func _test_inn_animations() -> void:
+    _inn_with_guest(0)
+    var anims: Array = _panel.room["anims"]
+    _check("one sprite per animation", _panel._anims.get_child_count(), anims.size())
+    var pot: Sprite2D = null
+    var pot_spec: Dictionary = {}
+    for i in anims.size():
+        if str(anims[i]["sheet"]).ends_with("inn_pot.png"):
+            pot = _panel._anims.get_child(i)
+            pot_spec = anims[i]
+    _check("the pot is drawn", pot != null, true)
+    if pot != null:
+        _check("at its place", pot.position, Vector2(pot_spec["x"], pot_spec["y"]))
+        _check("its strip in frames", pot.hframes, int(pot_spec["frames"]))
+        var step := 1.0 / float(pot_spec["fps"])
+        # From the start of a frame, so a step crosses exactly one boundary.
+        _panel._anim_time = 0.0
+        _panel._animate(0.0)
+        _check("the first frame at the start", pot.frame, 0)
+        _panel._animate(step * 1.5)
+        _check("the next frame after a frame's time", pot.frame, 1)
+        _panel._animate(step * float(pot.hframes))
+        _check("round again after the whole strip", pot.frame, 1)
+    _panel._process(0.5)
+    _check("the window's clock runs them", _panel._anim_time > 0.5, true)
+    _panel.open(_sid)
+    _check("the Tavern has none", _panel._anims.get_child_count(), 0)
+    _panel.close()
+    _done()
+
+
+## A bowl of porridge sold at the desk is set on it, then served to the table
+## in front of the bench where the guest sits.
+func _test_inn_serves_porridge_to_the_bench() -> void:
+    _inn_with_guest(0)
+    var keeper: Node2D = _panel._tending()
+    _world.apply_npc_meal_started({"id": "guest", "item": "porridge", "structure_id": INN, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "porridge", "accepted", 1, true))
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_porridge")
+    var desk := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
+    _check("the porridge goes on the desk", good != null and good.position == _panel._cell_at(desk), true)
+    _check("the keeper steps to it behind the desk", [keeper.has_meta("walking"), keeper.get_parent() == _panel._staff], [true, true])
+    if good == null:
+        _done()
+        return
+    _finish_walk(keeper)
+    (good.get_meta("tween") as Tween).custom_step(60.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("served to the table in front of the bench", good.position, _panel._cell_at(table))
+    _check("and stays while the meal runs", good.is_queued_for_deletion(), false)
+    _world.apply_npc_meal_ended({"id": "guest", "item": "porridge", "structure_id": INN})
+    _check("cleared when it ends", good.has_meta("clearing"), true)
+    _finish_handoff()
     _world.meals = {}
     _panel.close()
     _done()
