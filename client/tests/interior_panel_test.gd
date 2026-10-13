@@ -2066,6 +2066,14 @@ func _test_inn_keeper_behind_the_desk() -> void:
     _panel.say("keeper", "Welcome to the Inn.")
     _check("a room's keeper keeps walking while speaking", keeper.has_meta("walking"), true)
     _finish_walk(keeper)
+    # Leaving, the keeper goes back up the stairs, behind the desk.
+    _clear_people()
+    _panel.refresh()
+    var ghost: Node2D = _panel._leaving("keeper")
+    _check("the keeper walks out behind the desk", ghost != null and ghost.get_parent() == _panel._staff, true)
+    if ghost != null:
+        _finish_walk(ghost)
+        _check("up the stairs", ghost.position, stairs)
     _panel.close()
     _done()
 
@@ -2087,11 +2095,14 @@ func _test_inn_animations() -> void:
         _check("at its place", pot.position, Vector2(pot_spec["x"], pot_spec["y"]))
         _check("its strip in frames", pot.hframes, int(pot_spec["frames"]))
         var step := 1.0 / float(pot_spec["fps"])
-        var first := pot.frame
-        _panel._animate(step * 1.01)
-        _check("the next frame after a frame's time", pot.frame, (first + 1) % pot.hframes)
+        # From the start of a frame, so a step crosses exactly one boundary.
+        _panel._anim_time = 0.0
+        _panel._animate(0.0)
+        _check("the first frame at the start", pot.frame, 0)
+        _panel._animate(step * 1.5)
+        _check("the next frame after a frame's time", pot.frame, 1)
         _panel._animate(step * float(pot.hframes))
-        _check("round again after the whole strip", pot.frame, (first + 1) % pot.hframes)
+        _check("round again after the whole strip", pot.frame, 1)
     _panel._process(0.5)
     _check("the window's clock runs them", _panel._anim_time > 0.5, true)
     _panel.open(_sid)

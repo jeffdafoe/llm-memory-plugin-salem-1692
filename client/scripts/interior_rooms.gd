@@ -37,7 +37,7 @@ const ROOMS := {
     # is the desk alone, drawn over them, and `keeper_door` the way they come
     # and go (down the stairs). The bench seats face the table, backs to us.
     # `anims` are drawn over the room and the desk: a strip of `frames`
-    # frames of `frame` px, top-left at x/y, at `fps`.
+    # equal frames side by side, top-left at x/y, played at `fps`.
     "019d98af-ac9b-7833-8e03-5a7015bb5b0c": {
         "title": "Inn",
         "sheet": "/tilesets/interiors/inn_common.png",
@@ -57,9 +57,9 @@ const ROOMS := {
             {"x": 12, "y": 80, "facing": "east", "pose": "stand"},
         ],
         "anims": [
-            {"sheet": "/tilesets/interiors/inn_fire.png", "frame": Vector2i(16, 16), "frames": 4, "fps": 8.0, "x": 96, "y": 38},
-            {"sheet": "/tilesets/interiors/inn_pot.png", "frame": Vector2i(32, 32), "frames": 4, "fps": 5.0, "x": 66, "y": 50},
-            {"sheet": "/tilesets/interiors/inn_candle.png", "frame": Vector2i(16, 32), "frames": 4, "fps": 6.0, "x": 24, "y": 44},
+            {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 96, "y": 38},
+            {"sheet": "/tilesets/interiors/inn_pot.png", "frames": 4, "fps": 5.0, "x": 66, "y": 50},
+            {"sheet": "/tilesets/interiors/inn_candle.png", "frames": 4, "fps": 6.0, "x": 24, "y": 44},
         ],
     },
 }
