@@ -120,22 +120,48 @@ func (l *Layout) Walkable(s Square) bool {
 // stands now). People are walked past, so who holds a square is the caller's
 // concern for `to` only.
 func (l *Layout) Path(from, to Square) []Square {
-	return l.path(from, to, l.Walkable)
+	return l.path(from, to, l.Walkable, nil)
+}
+
+func (l *Layout) keeperWay(s Square) bool {
+	return s.Y >= 0 && s.Y < len(l.Grid) && s.X >= 0 && s.X < len(l.Grid[s.Y]) && l.Grid[s.Y][s.X] == 'k'
 }
 
 // keeperWalkable: what the room's keeper may walk on — any walkable square,
 // their own place, and the way out from behind their counter ('k').
 func (l *Layout) keeperWalkable(s Square) bool {
-	if l.Walkable(s) || s == l.Keeper.Square {
+	return l.Walkable(s) || s == l.Keeper.Square || l.keeperWay(s)
+}
+
+// keeperStep: in a room with a keeper's way, the keeper leaves and comes back
+// to their place only by it — never straight through the counter onto the
+// floor in front of it (the Inn's [2,5] below Hannah's place, behind the desk).
+func (l *Layout) keeperStep(at, next Square) bool {
+	if at != l.Keeper.Square && next != l.Keeper.Square {
 		return true
 	}
-	return s.Y >= 0 && s.Y < len(l.Grid) && s.X >= 0 && s.X < len(l.Grid[s.Y]) && l.Grid[s.Y][s.X] == 'k'
+	other := next
+	if next == l.Keeper.Square {
+		other = at
+	}
+	if l.keeperWay(other) {
+		return true
+	}
+	for _, row := range l.Grid {
+		for _, c := range row {
+			if c == 'k' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // KeeperPath is Path for the room's keeper, who may also use their own place
-// and the way out from behind their counter.
+// and the way out from behind their counter, and leaves their place only by
+// that way when the room has one.
 func (l *Layout) KeeperPath(from, to Square) []Square {
-	return l.path(from, to, l.keeperWalkable)
+	return l.path(from, to, l.keeperWalkable, l.keeperStep)
 }
 
 // StationFor returns the station whose Use names `use`, or nil.
@@ -150,7 +176,9 @@ func (l *Layout) StationFor(use string) *Station {
 	return nil
 }
 
-func (l *Layout) path(from, to Square, walkable func(Square) bool) []Square {
+// path is the BFS behind Path and KeeperPath; step, when set, may also refuse a
+// single step between two walkable squares.
+func (l *Layout) path(from, to Square, walkable func(Square) bool, step func(at, next Square) bool) []Square {
 	if !walkable(to) {
 		return nil
 	}
@@ -164,7 +192,7 @@ func (l *Layout) path(from, to Square, walkable func(Square) bool) []Square {
 		queue = queue[1:]
 		for _, d := range [4]Square{{0, -1}, {1, 0}, {0, 1}, {-1, 0}} {
 			next := Square{at.X + d.X, at.Y + d.Y}
-			if _, seen := prev[next]; seen || !walkable(next) {
+			if _, seen := prev[next]; seen || !walkable(next) || (step != nil && !step(at, next)) {
 				continue
 			}
 			prev[next] = at

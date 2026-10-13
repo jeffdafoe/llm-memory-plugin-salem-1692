@@ -188,3 +188,37 @@ func TestParseRejectsAWorkStationTheKeeperCannotReach(t *testing.T) {
 		t.Errorf("a work station the keeper cannot reach parsed: %v", err)
 	}
 }
+
+// The keeper leaves and returns to their place only by the keeper's way when
+// the room has one — at the Inn, never from Hannah's place [2,4] straight down
+// through the desk to [2,5].
+func TestKeeperLeavesOnlyByTheKeepersWay(t *testing.T) {
+	l := For(inn)
+	chair := Square{X: 0, Y: 6}
+	for _, path := range [][]Square{l.KeeperPath(l.Keeper.Square, chair), l.KeeperPath(chair, l.Keeper.Square)} {
+		if path == nil {
+			t.Fatal("no keeper path between the keeper's place and the rocking chair")
+		}
+		for i := 1; i < len(path); i++ {
+			a, b := path[i-1], path[i]
+			if a == l.Keeper.Square || b == l.Keeper.Square {
+				other := a
+				if a == l.Keeper.Square {
+					other = b
+				}
+				if l.Grid[other.Y][other.X] != 'k' {
+					t.Errorf("keeper path %v steps %v -> %v, not by the keeper's way", path, a, b)
+				}
+			}
+		}
+	}
+	// A room with no keeper's way: the keeper steps off their place freely.
+	room := `{"structure_id": "s", "grid": ["..", ".."], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 0], "at": [24, 14]}, "stations": []}`
+	plans, err := Parse([]byte(`{"rooms": [` + room + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := plans["s"].KeeperPath(Square{X: 1, Y: 0}, Square{X: 1, Y: 1}); len(p) != 2 {
+		t.Errorf("no keeper's way: path %v, want one step", p)
+	}
+}
