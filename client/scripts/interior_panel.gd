@@ -405,15 +405,18 @@ func _draw_people(cast: Dictionary) -> void:
     # wherever they had bustled to.
     var was := {}
     for child in _people.get_children() + _staff.get_children():
-        if child.has_meta("leaving"):
-            continue
-        was[str(child.name)] = {"position": child.position, "alpha": child.modulate.a,
-            "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
-            "sprite_data": child.get_meta("sprite_data", {})}
+        # Someone walking out keeps walking, but their line is lifted too: if
+        # they come back it goes on their new holder, else back on them.
+        var id := str(child.get_meta("leaving")) if child.has_meta("leaving") else str(child.name)
         var bubble := child.get_node_or_null(BUBBLE_NODE)
         if bubble != null:
             child.remove_child(bubble)
-            bubbles[str(child.name)] = bubble
+            bubbles[id] = bubble
+        if child.has_meta("leaving"):
+            continue
+        was[id] = {"position": child.position, "alpha": child.modulate.a,
+            "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
+            "sprite_data": child.get_meta("sprite_data", {})}
         child.free()
     _hits.clear()
     var drawn := {}
@@ -659,9 +662,12 @@ func say(npc_id: String, text: String) -> void:
         return
     var holder := _holder(npc_id)
     if holder == null:
+        # Someone walking out says it over their shoulder.
+        holder = _leaving(npc_id)
+    if holder == null:
         return
     # The one tending a stall stops to speak, facing the customers.
-    if holder.get_parent() == _staff:
+    if holder.get_parent() == _staff and not holder.has_meta("leaving"):
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")
