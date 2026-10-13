@@ -66,6 +66,11 @@ const TESTS := [
     "_test_tavern_ale_lingers_then_cleared",
     "_test_tavern_take_home_handed_over",
     "_test_tavern_reopen_lays_a_running_meal",
+    "_test_keeper_path_and_serve_square",
+    "_test_tavern_keeper_walks_a_meal_to_the_table",
+    "_test_tavern_keeper_hands_to_a_standing_buyer",
+    "_test_tavern_carry_survives_a_redraw",
+    "_test_tavern_engine_walk_wins",
     "_test_inn_keeper_behind_the_desk",
     "_test_inn_animations",
     "_test_inn_serves_porridge_to_the_bench",
@@ -89,6 +94,7 @@ var _failures := 0
 var _checks := 0
 var _completed := {}
 var _current := ""
+var _plans_as_loaded: Array = []
 
 
 func _initialize() -> void:
@@ -136,6 +142,8 @@ func _run_all() -> void:
     for t in TESTS:
         _current = t
         call(t)
+        # A test may have opened or closed a room's way out (_way_out).
+        _catalog().set_rooms(_plans_as_loaded.duplicate(true))
 
 
 func _done() -> void:
@@ -211,7 +219,26 @@ func _load_room_plans() -> void:
     var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
     _check("harness — the engine's room plans load", parsed is Dictionary, true)
     if parsed is Dictionary:
+        _plans_as_loaded = (parsed["rooms"] as Array).duplicate(true)
         _catalog().set_rooms(parsed["rooms"])
+
+
+## The keeper's way out from behind the counter ('k' squares, LLM-768 slice
+## 3), per room: the grid row that has it. A test sets it with _way_out, so it
+## means the same whatever the seed holds now.
+const WAY_OUT := {
+    "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9": [5, ".###.kk."],
+    "019d98af-ac9b-7833-8e03-5a7015bb5b0c": [4, ".#.k...."],
+}
+
+## Give room `sid` the keeper's way out (`open`) or take it away (every 'k'
+## blocked). Taken effect on the next open of the window.
+func _way_out(sid: String, open: bool) -> void:
+    var grid: Array = _catalog().rooms[sid]["grid"]
+    for y in grid.size():
+        grid[y] = str(grid[y]).replace("k", "#")
+    if open:
+        grid[int(WAY_OUT[sid][0])] = str(WAY_OUT[sid][1])
 
 
 ## A square as the engine deals one (sim/room_square.go): the keeper to the
@@ -2097,11 +2124,14 @@ func _test_no_handoff() -> void:
     _done()
 
 
-## The Tavern with its keeper behind the bar and `guest` at spot `spot`.
-func _tavern_with_guest(spot: int) -> void:
+## The Tavern with its keeper behind the bar and `guest` at spot `spot`. With
+## `way_out` the keeper can get out from behind the bar (LLM-769: they walk a
+## sale to the buyer); without, the bar is closed and a sale is served across.
+func _tavern_with_guest(spot: int, way_out := false) -> void:
     _clear_people()
     _panel.close()
     _world.meals = {}
+    _way_out(_sid, way_out)
     _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
     _person("guest", _farmer(), _sid)
     _panel.open(_sid)
@@ -2297,6 +2327,214 @@ func _test_tavern_reopen_lays_a_running_meal() -> void:
     _done()
 
 
+## LLM-769: the keeper's walks over the plan — the engine's KeeperPath rule —
+## and where they stand to set a good down.
+func _test_keeper_path_and_serve_square() -> void:
+    _way_out(_sid, true)
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
+    _check("the keeper's way is the keeper's", [InteriorRooms.keeper_walkable(room, Vector2i(5, 5)), InteriorRooms.walkable(room, Vector2i(5, 5))], [true, false])
+    _check("their own place too", InteriorRooms.keeper_walkable(room, Vector2i(7, 5)), true)
+    _check("never the bar itself", InteriorRooms.keeper_walkable(room, Vector2i(6, 4)), false)
+    _check("out from behind the bar and round the back of the table",
+        InteriorRooms.keeper_path(room, Vector2i(7, 5), Vector2i(1, 4)),
+        [Vector2i(7, 5), Vector2i(6, 5), Vector2i(5, 5), Vector2i(4, 5), Vector2i(4, 4), Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4)])
+    _check("a blocked square: no path", InteriorRooms.keeper_path(room, Vector2i(7, 5), Vector2i(2, 5)), [])
+    _check("from where they are mid-walk", InteriorRooms.keeper_path(room, Vector2i(4, 4), Vector2i(4, 4)), [Vector2i(4, 4)])
+    var west_seat := Vector2(31, 87)
+    _check("serving the west seat: from behind the table", InteriorRooms.serve_square(room, west_seat, {}), Vector2i(1, 4))
+    _check("a square held: the next nearest", InteriorRooms.serve_square(room, west_seat, {Vector2i(1, 4): true}), Vector2i(2, 4))
+    var everywhere := {}
+    for y in 7:
+        for x in 8:
+            everywhere[Vector2i(x, y)] = true
+    _check("all held: the nearest all the same", InteriorRooms.serve_square(room, west_seat, everywhere), Vector2i(1, 4))
+    _check("a seat is never stood on", InteriorRooms.serve_square(room, Vector2(16, 98), {}) != Vector2i(1, 6), true)
+    _way_out(_sid, false)
+    room = InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
+    _check("no way out: no path, nowhere to stand", [InteriorRooms.keeper_path(room, Vector2i(7, 5), Vector2i(1, 4)), InteriorRooms.serve_square(room, west_seat, {})], [[], Vector2i(-1, -1)])
+    # The Inn: open floor below the keeper's place, in front of the desk —
+    # with a way out they leave and come back only by it, never through the
+    # desk (the engine's keeperStep).
+    _way_out(INN, true)
+    var inn := InteriorRooms.with_layout(InteriorRooms.room_for(INN), _catalog().rooms[INN])
+    var out := InteriorRooms.keeper_path(inn, Vector2i(2, 4), Vector2i(2, 6))
+    _check("the Inn keeper leaves by the way out", out.slice(0, 2), [Vector2i(2, 4), Vector2i(3, 4)])
+    _check("never down through the desk", out.has(Vector2i(2, 5)) and out.find(Vector2i(2, 5)) == 1, false)
+    var back := InteriorRooms.keeper_path(inn, Vector2i(2, 6), Vector2i(2, 4))
+    _check("and comes back by it", back.slice(back.size() - 2), [Vector2i(3, 4), Vector2i(2, 4)])
+    _way_out(INN, false)
+    inn = InteriorRooms.with_layout(InteriorRooms.room_for(INN), _catalog().rooms[INN])
+    _check("a room with no way out keeps free steps", InteriorRooms.keeper_path(inn, Vector2i(2, 4), Vector2i(2, 5)), [Vector2i(2, 4), Vector2i(2, 5)])
+    _done()
+
+
+## LLM-769: with a way out from behind the bar the keeper takes a meal up off
+## the bar, carries it out by the keeper's way to the guest's table and sets it
+## down; the guest eats (a dip now and then); when the meal is over the bowl is
+## empty and the keeper walks over, takes it and carries it back to the bar.
+func _test_tavern_keeper_walks_a_meal_to_the_table() -> void:
+    _tavern_with_guest(0, true)
+    var keeper: Node2D = _panel._tending()
+    var home: Vector2 = keeper.get_meta("home")
+    _world.apply_npc_meal_started({"id": "guest", "item": "porridge", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "porridge", "accepted", 1, true))
+    var bowl: Node2D = _panel._handoff.get_node_or_null("handoff_porridge")
+    var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
+    _check("set on the bar first", bowl != null and bowl.position == _panel._cell_at(bar), true)
+    if bowl == null:
+        _done()
+        return
+    _finish_walk(keeper)
+    var t: Tween = bowl.get_meta("tween")
+    t.custom_step(0.2)
+    _check("down on the bar", [bowl.modulate.a, keeper.has_meta("walking")], [1.0, false])
+    t.custom_step(_panel.PICK_UP_HOLD)
+    var carry: Dictionary = _panel._handoff_now.get("carry", {})
+    _check("taken up, to stand behind the table", carry.get("stand", null), Vector2(24, 78))
+    _check("out by the keeper's way", (keeper.get_meta("route_left") as Array).slice(0, 3), [Vector2(88, 94), Vector2(72, 94), Vector2(72, 78)])
+    (keeper.get_meta("walking") as Tween).custom_step(1.0)
+    _panel._carry_follow()
+    _check("the bowl goes with them", bowl.position, _panel._cell_at(keeper.position + Vector2(0, -_panel.CARRY_LIFT)))
+    _finish_walk(keeper)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    (bowl.get_meta("tween") as Tween).custom_step(5.0)
+    _check("set down on the table in front of the guest", [bowl.position, bowl.get_meta("buyer", ""), bowl.is_queued_for_deletion()], [_panel._cell_at(table), "guest", false])
+    _check("the bar is free, the keeper walks back", [_panel._handoff_now, keeper.has_meta("walking")], [{}, true])
+    _check("back the way they came", (keeper.get_meta("route_left") as Array).has(Vector2(88, 94)), true)
+    _finish_walk(keeper)
+    _check("behind the bar again", keeper.position, home)
+
+    # Eating: a dip toward the bowl now and then, at rest between.
+    var spr: AnimatedSprite2D = _panel._sprite_of(_panel._holder("guest"))
+    _panel._eat(0.0)
+    var rest := float(spr.get_meta("rest_y"))
+    var seen := {}
+    for i in 28:
+        _panel._eat(0.1)
+        seen[spr.position.y - rest] = true
+    _check("the guest eats: dips and rests", seen, {0.0: true, _panel.EAT_DIP: true})
+    var keeper_spr: AnimatedSprite2D = _panel._sprite_of(keeper)
+    _check("the keeper does not", keeper_spr.position.y, float(keeper_spr.get_meta("rest_y")))
+
+    _world.apply_npc_meal_ended({"id": "guest", "item": "porridge", "structure_id": _sid})
+    _check("finished: the empty bowl", (bowl.get_child(0).texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["porridge_empty"]))
+    _check("the keeper comes to the table for it", [_panel._handoff_now.get("clear") == bowl, _panel._handoff_now.get("stop"), keeper.has_meta("walking")], [true, Vector2(24, 78), true])
+    _finish_walk(keeper)
+    _check("takes it up and carries it back", [_panel._carrying(), keeper.has_meta("walking")], [true, true])
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(1.0)
+    _check("onto the bar", bowl.position, _panel._cell_at(bar))
+    (bowl.get_meta("tween") as Tween).custom_step(60.0)
+    _check("and away", [bowl.is_queued_for_deletion(), _panel._handoff_now], [true, {}])
+    _finish_walk(keeper)
+    _check("the keeper behind the bar", keeper.position, home)
+    _panel._eat(0.0)
+    _check("nothing to eat: the guest sits still", spr.position.y, rest)
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-769: a standing buyer — the player's character at the door — is handed
+## the good from the square beside them, not thrown it across the room.
+func _test_tavern_keeper_hands_to_a_standing_buyer() -> void:
+    _tavern_with_guest(0, true)
+    _person("pc", _farmer(), _sid)
+    _panel.refresh()
+    var keeper: Node2D = _panel._tending()
+    _panel.on_pay_resolved(_sale("keeper", "pc", "porridge", "accepted", 1, true))
+    var bowl: Node2D = _panel._handoff_now["good"]
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    var carry: Dictionary = _panel._handoff_now.get("carry", {})
+    var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"])
+    _check("to stand at the bar beside the door, not on it", [carry.get("stand"), carry.get("stay")], [Vector2(76, 100), false])
+    _check("facing them", carry.get("facing"), str(_world.facing_from_vec(door - Vector2(76, 100))))
+    _finish_walk(keeper)
+    var t: Tween = bowl.get_meta("tween")
+    var hands: Vector2 = _panel._cell_at(door + Vector2(0, -_panel.CARRY_LIFT))
+    var from := bowl.position
+    t.custom_step(0.1)
+    _check("into their hands, fading", [bowl.position.distance_to(hands) < from.distance_to(hands), bowl.modulate.a < 1.0], [true, true])
+    t.custom_step(60.0)
+    _check("and gone, nothing on a table", [bowl.is_queued_for_deletion(), bowl.has_meta("buyer")], [true, false])
+    _check("the keeper walks back", keeper.has_meta("walking"), true)
+    _finish_walk(keeper)
+    _check("behind the bar", keeper.position, keeper.get_meta("home"))
+    _panel.close()
+    _done()
+
+
+## LLM-769: someone comes in while the keeper carries a meal: the redraw
+## rebuilds the keeper where they had got to, and they carry on with it.
+func _test_tavern_carry_survives_a_redraw() -> void:
+    _tavern_with_guest(0, true)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    var bowl: Node2D = _panel._handoff_now["good"]
+    _finish_walk(_panel._tending())
+    (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    (_panel._tending().get_meta("walking") as Tween).custom_step(1.5)
+    var part_way: Vector2 = _panel._tending().position
+    _person("newcomer", _farmer(), _sid)
+    _panel.refresh()
+    var keeper: Node2D = _panel._tending()
+    _check("rebuilt where they had got to, still carrying", [keeper.position, keeper.has_meta("walking"), _panel._carrying()], [part_way, true, true])
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(5.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("then on the table", [bowl.position, bowl.get_meta("buyer", "")], [_panel._cell_at(table), "guest"])
+    # Walking back when someone else comes in: back behind the bar all the same.
+    _person("another", _farmer(), _sid)
+    _panel.refresh()
+    keeper = _panel._tending()
+    _check("the walk back goes on", keeper.has_meta("walking"), true)
+    _finish_walk(keeper)
+    _check("behind the bar", keeper.position, keeper.get_meta("home"))
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-769 with LLM-768 slice 3: the engine walking the keeper (to stoke the
+## hearth) wins — a meal they carry is on the table at once and they go on to
+## the fire; a sale while they are away is served across, as with nobody
+## behind the bar, and does not call them back.
+func _test_tavern_engine_walk_wins() -> void:
+    _tavern_with_guest(0, true)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    var bowl: Node2D = _panel._handoff_now["good"]
+    _finish_walk(_panel._tending())
+    (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    (_panel._tending().get_meta("walking") as Tween).custom_step(0.5)
+    _check("carrying", _panel._carrying(), true)
+    var hearth := Vector2i(3, 4)
+    _world.apply_npc_room_square_change({"id": "keeper", "structure_id": _sid, "square": [hearth.x, hearth.y],
+        "path": [[7, 5], [6, 5], [5, 5], [4, 5], [4, 4], [3, 4]]})
+    _panel.refresh()
+    var keeper: Node2D = _panel._tending()
+    var at_hearth: Vector2 = _spot_point_of(InteriorRooms.spot_at(_panel.room, hearth))
+    _check("the engine's walk: on to the hearth", [keeper.has_meta("walking"), (keeper.get_meta("route_left") as Array).back()], [true, at_hearth])
+    _check("the meal is not carried any more", _panel._carrying(), false)
+    (bowl.get_meta("tween") as Tween).custom_step(5.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("it is on the table", [bowl.position, bowl.get_meta("buyer", "")], [_panel._cell_at(table), "guest"])
+    _check("and the keeper still on their way to the fire", (keeper.get_meta("route_left") as Array).back(), at_hearth)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    _check("a sale meanwhile: nobody comes to the bar for it", [str(_panel._handoff_now.get("keeper", "?")), (keeper.get_meta("route_left") as Array).back()], ["", at_hearth])
+    var ale: Node2D = _panel._handoff_now["good"]
+    (ale.get_meta("tween") as Tween).custom_step(60.0)
+    _check("served across to the table", ale.position, _panel._cell_at(table))
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+func _spot_point_of(spot: Dictionary) -> Vector2:
+    return Vector2(int(spot.get("x", 0)), int(spot.get("y", 0)))
+
+
 func _test_tavern_serves_standing_and_at_the_door() -> void:
     _tavern_with_guest(2)
     var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
@@ -2385,11 +2623,13 @@ const INN := "019d98af-ac9b-7833-8e03-5a7015bb5b0c"
 
 
 ## The Inn with its keeper behind the desk, the player's character at the
-## door and `guest` at spot `spot`.
+## door and `guest` at spot `spot`, and the keeper's way out from behind the
+## desk.
 func _inn_with_guest(spot: int) -> void:
     _clear_people()
     _panel.close()
     _world.meals = {}
+    _way_out(INN, true)
     _person("keeper", _farmer(), INN, {"work_structure_id": INN})
     _person("pc", _farmer(), INN)
     _person("guest", _farmer(), INN)
@@ -2519,8 +2759,9 @@ func _test_inn_animations() -> void:
     _done()
 
 
-## A bowl of porridge sold at the desk is set on it, then served to the table
-## in front of the bench where the guest sits.
+## A bowl of porridge sold at the desk is set on it; the keeper takes it up,
+## comes out by the way out (LLM-769) and sets it on the table in front of the
+## bench where the guest sits. The finished bowl is empty and fetched back.
 func _test_inn_serves_porridge_to_the_bench() -> void:
     _inn_with_guest(0)
     var keeper: Node2D = _panel._tending()
@@ -2535,13 +2776,24 @@ func _test_inn_serves_porridge_to_the_bench() -> void:
         _done()
         return
     _finish_walk(keeper)
-    (good.get_meta("tween") as Tween).custom_step(60.0)
+    (good.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _check("taken up, out by the way out", [_panel._carrying(), (keeper.get_meta("route_left") as Array).front()], [true, InteriorRooms.middle(Vector2i(4, 4))])
+    _check("to stand behind the table", _panel._handoff_now["carry"]["stand"], InteriorRooms.middle(Vector2i(5, 4)))
+    _finish_walk(keeper)
+    (good.get_meta("tween") as Tween).custom_step(5.0)
     var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
-    _check("served to the table in front of the bench", good.position, _panel._cell_at(table))
+    _check("set on the table in front of the bench", good.position, _panel._cell_at(table))
     _check("and stays while the meal runs", good.is_queued_for_deletion(), false)
+    _finish_walk(keeper)
+    _check("the keeper back behind the desk", keeper.position, keeper.get_meta("home"))
     _world.apply_npc_meal_ended({"id": "guest", "item": "porridge", "structure_id": INN})
-    _check("cleared when it ends", good.has_meta("clearing"), true)
-    _finish_handoff()
+    _check("cleared when it ends, empty", [good.has_meta("clearing"), (good.get_child(0).texture as AtlasTexture).region],
+        [true, StallScenes.cell_rect(2 * StallScenes.GOODS["porridge_empty"])])
+    _finish_walk(keeper)
+    _finish_walk(keeper)
+    (good.get_meta("tween") as Tween).custom_step(60.0)
+    _check("carried back to the desk and gone", [good.is_queued_for_deletion(), _panel._handoff_now], [true, {}])
+    _finish_walk(keeper)
     _world.meals = {}
     _panel.close()
     _done()

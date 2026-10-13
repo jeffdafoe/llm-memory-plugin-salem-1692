@@ -202,6 +202,86 @@ static func square_of(value) -> Vector2i:
         return Vector2i(int(value[0]), int(value[1]))
     return Vector2i(-1, -1)
 
+## Whether the room's keeper may walk on `square` (LLM-769): what a player may,
+## the keeper's own place, and the way out from behind their counter ('k' on
+## the grid, the keeper's alone) — the engine's KeeperPath rule.
+static func keeper_walkable(room: Dictionary, square: Vector2i) -> bool:
+    return walkable(room, square) or square == room.get("keeper", {}).get("square", Vector2i(-1, -1)) \
+        or _keeper_way(room, square)
+
+## Whether `square` is the keeper's way out from behind their counter ('k').
+static func _keeper_way(room: Dictionary, square: Vector2i) -> bool:
+    var grid: Array = room.get("grid", [])
+    return square.y >= 0 and square.y < grid.size() and square.x >= 0 and square.x < str(grid[square.y]).length() \
+        and str(grid[square.y])[square.x] == "k"
+
+## The squares the keeper walks from `from` to `to`, both ends included,
+## stepping up, down, left and right over keeper_walkable squares; [] when `to`
+## is not one or cannot be reached. `from` may be any square (where they are
+## drawn mid-walk). In a room with a keeper's way they leave and come back to
+## their place only by it, never through the counter (the engine's keeperStep).
+static func keeper_path(room: Dictionary, from: Vector2i, to: Vector2i) -> Array:
+    if not keeper_walkable(room, to):
+        return []
+    if from == to:
+        return [from]
+    var home: Vector2i = room.get("keeper", {}).get("square", Vector2i(-1, -1))
+    var has_way := false
+    for row in room.get("grid", []):
+        has_way = has_way or str(row).contains("k")
+    var prev := {from: from}
+    var queue: Array = [from]
+    while not queue.is_empty():
+        var at: Vector2i = queue.pop_front()
+        for d in [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]:
+            var next: Vector2i = at + d
+            if prev.has(next) or not keeper_walkable(room, next):
+                continue
+            if has_way and (at == home or next == home) and not _keeper_way(room, next if at == home else at):
+                continue
+            prev[next] = at
+            if next == to:
+                var path: Array = [to]
+                while path.front() != from:
+                    path.push_front(prev[path.front()])
+                return path
+            queue.append(next)
+    return []
+
+## The square under a point in room art px.
+static func square_under(at: Vector2) -> Vector2i:
+    return Vector2i(floori(at.x / SQUARE_PX), floori(at.y / SQUARE_PX))
+
+## A square's middle, where someone walking through it goes.
+static func middle(square: Vector2i) -> Vector2:
+    return Vector2(square.x * SQUARE_PX + SQUARE_PX / 2, square.y * SQUARE_PX + SQUARE_PX - 2)
+
+## Where the keeper stands to set a good down at `toward` (room art px — a
+## seat's serve point on the table, or where a standing buyer is): the open
+## floor square nearest it that the keeper can walk to from their place, never
+## a seat, preferring one nobody holds (`taken`: square -> true). (-1, -1)
+## when there is none — the room has no way out from behind its counter.
+static func serve_square(room: Dictionary, toward: Vector2, taken: Dictionary) -> Vector2i:
+    var home: Vector2i = room.get("keeper", {}).get("square", Vector2i(-1, -1))
+    var seats := {}
+    for spot in room.get("spots", []):
+        if str(spot.get("pose", "")) == "seat":
+            seats[spot.get("square", Vector2i(-1, -1))] = true
+    var best := Vector2i(-1, -1)
+    var best_cost := INF
+    var grid: Array = room.get("grid", [])
+    for y in grid.size():
+        for x in str(grid[y]).length():
+            var sq := Vector2i(x, y)
+            if seats.has(sq) or not walkable(room, sq) or keeper_path(room, home, sq).is_empty():
+                continue
+            var spot := spot_at(room, sq)
+            var cost := Vector2(int(spot["x"]), int(spot["y"])).distance_to(toward) + (1000.0 if taken.has(sq) else 0.0)
+            if cost < best_cost:
+                best_cost = cost
+                best = sq
+    return best
+
 static func _spot(station: Dictionary) -> Dictionary:
     var at := square_of(station.get("at", null))
     var spot := {"x": at.x, "y": at.y, "facing": str(station.get("facing", "south")),
