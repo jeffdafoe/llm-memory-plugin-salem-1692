@@ -40,6 +40,7 @@ const TESTS := [
     "_test_walk_out",
     "_test_walk_in",
     "_test_keeper_bustles",
+    "_test_name_tags",
     "_test_stall_hands",
     "_test_walk_in_survives_a_redraw",
     "_test_leave_return_leave",
@@ -1132,6 +1133,125 @@ func _test_stall_hands() -> void:
 
 func _pose_north(holder: Node2D) -> void:
     (holder.get_child(0) as AnimatedSprite2D).play("north_idle")
+
+
+## Stage coordinates for a point in room art pixels, at the test's 4x scale.
+func _at_art(art: Vector2) -> Vector2:
+    return art * 4.0
+
+
+func _tag_text() -> Array:
+    return [_panel.tag.visible, _panel.tag_name.text, _panel.tag_role.text if _panel.tag_role.visible else ""]
+
+
+## LLM-761: hovering a person shows their name and role, a good its name; a
+## tap shows the tag a while (a touch screen has no hover) and still opens talk.
+func _test_name_tags() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array:
+        return [{"item": "horseshoe", "display_label": "Horseshoe", "stock": "plenty"},
+            {"item": "nail", "display_label": "Nails", "stock": "few"}]
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL, "display_name": "Ezekiel Crane",
+        "llm_memory_agent": "salem-vendor", "attributes": ["blacksmith", "businessowner"]})
+    _person("hand", _farmer(), STALL, {"display_name": "Abraham Warren", "llm_memory_agent": "salem-vendor",
+        "attributes": ["worker"]})
+    _at_tile("pc", _farmer(), pin, {"display_name": "Jefferey"})
+    _panel.open(STALL)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _panel._scene.scale = Vector2(4, 4)
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    var hand: Node2D = _panel._staff.get_node("hand")
+    var pc: Node2D = _panel._people.get_node("pc")
+
+    _panel._on_stage_input(_motion(_at_art(keeper.position + Vector2(0, -10))))
+    _check("hovering the keeper: name and role", _tag_text(), [true, "Ezekiel Crane", "Blacksmith"])
+    _panel._on_stage_input(_motion(_at_art(hand.position + Vector2(0, -10))))
+    _check("hovering the hand: name and role", _tag_text(), [true, "Abraham Warren", "Worker"])
+    _panel._on_stage_input(_motion(_at_art(pc.position + Vector2(0, -10))))
+    _check("hovering a player: the name alone", _tag_text(), [true, "Jefferey", ""])
+    var pile: Node2D = _panel._goods_back.get_child(0)
+    _panel._on_stage_input(_motion(_at_art(pile.position + Vector2(8, 20))))
+    _check("hovering a pile on the floor: its name", _tag_text(), [true, "Horseshoe", ""])
+    var nails: Node2D = _panel._goods_front.get_child(0)
+    var on_nails := nails.position + Vector2(8, 18)
+    _panel._on_stage_input(_motion(_at_art(on_nails)))
+    _check("hovering goods on the counter: their name", _tag_text(), [true, "Nails", ""])
+    _panel._on_stage_input(_motion(_at_art(Vector2(64, 4))))
+    _check("hovering nothing: the tag goes", _panel.tag.visible, false)
+
+    # Front to back: the counter's goods in front of the keeper behind them.
+    keeper.position = Vector2(on_nails.x, keeper.position.y)
+    _panel._on_stage_input(_motion(_at_art(on_nails)))
+    _check("goods on the counter over the keeper behind", _panel.tag_name.text, "Nails")
+
+    # The tag follows the keeper along the counter.
+    keeper.position = Vector2(64, keeper.position.y)
+    _panel._on_stage_input(_motion(_at_art(keeper.position + Vector2(0, -10))))
+    var was_at: Vector2 = _panel.tag.position
+    keeper.position.x += 10
+    _panel._update_tag(0.01)
+    _check("the tag follows a walking keeper", _panel.tag.position.x > was_at.x, true)
+
+    # A tap shows the tag a while, and a tap on a person still opens talk.
+    var clicked := []
+    var on_click := func(id: String): clicked.append(id)
+    _panel.person_clicked.connect(on_click)
+    _panel._on_stage_input(_motion(_at_art(Vector2(64, 4))))
+    _panel._on_stage_input(_press(_at_art(hand.position + Vector2(0, -10))))
+    _check("a tap on the hand: the tag, and talk opens", [_tag_text(), clicked], [[true, "Abraham Warren", "Worker"], ["hand"]])
+    _panel._on_stage_input(_motion(_at_art(Vector2(64, 4))))
+    _check("a tap's tag stays as the pointer moves off", _panel.tag.visible, true)
+    _panel._update_tag(_panel.TAG_SECONDS + 0.1)
+    _check("then goes", _panel.tag.visible, false)
+    _panel._on_stage_input(_press(_at_art(on_nails)))
+    _check("a tap on a good: its tag, no talk", [_panel.tag_name.text, clicked.size()], ["Nails", 1])
+    _panel.person_clicked.disconnect(on_click)
+
+    # The person it is on leaves: the tag goes.
+    _panel._on_stage_input(_motion(_at_art(hand.position + Vector2(0, -10))))
+    _world.placed_npcs["hand"].free()
+    _world.placed_npcs.erase("hand")
+    _panel.refresh()
+    _panel._update_tag(0.01)
+    _check("its person gone: the tag goes", _panel.tag.visible, false)
+    _panel.close()
+    _check("closing hides it", [_panel.tag.visible, _panel._tag_on], [false, {}])
+
+    # In a room: a dish on the table; a good not yet set down is not there.
+    _tavern_with_guest(0)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    var dish: Node2D = _panel._handoff_good("stew", 1, table)
+    _panel._on_stage_input(_motion(_at_art(dish.position + Vector2(8, 22))))
+    _check("hovering a dish: its name", _tag_text(), [true, "Stew", ""])
+    dish.modulate.a = 0.0
+    _panel._on_stage_input(_motion(_at_art(dish.position + Vector2(8, 22))))
+    _check("a good not set down yet: nothing", _panel.tag.visible, false)
+    _check("a good's name from its kind", _panel.good_label("fried_meat"), "Fried meat")
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _motion(at: Vector2) -> InputEventMouseMotion:
+    var e := InputEventMouseMotion.new()
+    e.position = at
+    return e
+
+
+func _press(at: Vector2) -> InputEventMouseButton:
+    var e := InputEventMouseButton.new()
+    e.position = at
+    e.pressed = true
+    e.button_index = MOUSE_BUTTON_LEFT
+    return e
 
 
 ## Someone else coming or going mid-entrance redraws everyone: a newcomer
