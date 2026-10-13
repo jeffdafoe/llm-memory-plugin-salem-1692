@@ -284,6 +284,9 @@ func _on_authenticated() -> void:
         add_child(event_client)
         event_client.reconnected.connect(_on_ws_reconnected)
         event_client.npc_arrived.connect(_on_event_npc_arrived)
+        event_client.npc_walking.connect(func(npc_id: String):
+            if _pc_actor_id != "" and npc_id == _pc_actor_id:
+                _sync_interior())
         event_client.pc_sleep_started.connect(_on_pc_sleep_started)
         event_client.pc_sleep_ended.connect(_on_pc_sleep_ended)
         event_client.pc_needs_changed.connect(_on_event_pc_needs_changed)
@@ -1190,12 +1193,13 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
     if world == null:
         return
     # A click on the building the character is already in reopens its room
-    # (LLM-750) — the ✕ only hid it.
-    var inside_sid := _local_pc_inside_structure_id()
-    if interior_panel_layer != null and InteriorRooms.has_room(inside_sid):
+    # (LLM-750), and on the stall they stand at its counter (LLM-753) — the ✕
+    # only hid it.
+    var place_sid := _local_pc_place()
+    if interior_panel_layer != null and place_sid != "":
         var hit_here: Dictionary = world.find_object_at(screen_pos)
-        if str(hit_here.get("id", "")) == inside_sid:
-            interior_panel_layer.open(inside_sid)
+        if str(hit_here.get("id", "")) == place_sid:
+            interior_panel_layer.open(place_sid)
             return
     # A click on an object first asks whether it is town's work the player
     # stands at (LLM-690): if so the repair panel opens and there is no walk;
@@ -1317,23 +1321,35 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
 ## don't release the world-input lock for each other. World input
 ## stays locked while any blocker is registered.
 ## Open the interior window when the player's character has just gone into a
-## building with a room, close it when they leave (LLM-750). Runs on every
-## metadata change of the PC's container (an inside flip among them) and on
-## /pc/me; acts only when the structure changed, so the ✕ sticks.
+## building with a room (LLM-750) or stopped at a market stall's counter
+## (LLM-753), close it when they leave. Runs on every metadata change of the
+## PC's container (an inside flip among them), on the character's arrivals
+## and walk starts, and on /pc/me; acts only when the place changed, so the ✕
+## sticks.
 func _sync_interior() -> void:
     if interior_panel_layer == null or world == null:
         return
-    var sid := _local_pc_inside_structure_id()
+    var sid := _local_pc_place()
     # Before the same-structure return: a reconnect can bring a new actor id
     # while the character is still in the same room.
     interior_panel_layer.pc_actor_id = _pc_actor_id
     if sid == _interior_structure_id:
         return
     _interior_structure_id = sid
-    if InteriorRooms.has_room(sid):
+    if sid != "":
         interior_panel_layer.open(sid)
     else:
         interior_panel_layer.close()
+
+## Where the interior window belongs: the building the character is inside
+## when it has a room, else the stall whose counter they stand at, else "".
+func _local_pc_place() -> String:
+    var inside_sid := _local_pc_inside_structure_id()
+    if InteriorRooms.has_room(inside_sid):
+        return inside_sid
+    if inside_sid != "" or _pc_actor_id == "" or not world.placed_npcs.has(_pc_actor_id):
+        return ""
+    return StallScenes.stall_at(world, Catalog.assets, StallScenes.standing_tile(world.placed_npcs[_pc_actor_id]))
 
 ## Put the room one layer under the talk panel (which sets its own layer in
 ## _ready), so talk opened from the room comes up in front of it and the room
@@ -1389,6 +1405,9 @@ func _is_readable_noticeboard(object_id: String) -> bool:
 ## panel. Stale content (board cleared between dispatch and arrival)
 ## closes the pending state silently — no panel pops on a bare board.
 func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String) -> void:
+    # A stall's counter is reached by walking, with no inside flip (LLM-753).
+    if _pc_actor_id != "" and npc_id == _pc_actor_id:
+        _sync_interior()
     # Walk-then-knock (ZBBS-HOME-445): the server formed the service huddle
     # as part of this arrival (when someone was in to answer). Refresh the
     # talk panel now rather than waiting up to 10s for the periodic tick,

@@ -13,6 +13,9 @@ signal reconnected
 ## auto-open the panel on arrival). Carries the actor id, world position,
 ## and facing as the WS payload arrived.
 signal npc_arrived(npc_id: String, x: float, y: float, facing: String)
+## An actor set off on a walk (LLM-753) — main.gd closes the stall window when
+## the player's character walks away from the counter.
+signal npc_walking(npc_id: String)
 
 ## Sleep lifecycle (ZBBS-WORK-204 Stage B). Engine broadcasts
 ## pc_sleep_started when /pc/sleep or auto-bed transitions a PC into
@@ -769,6 +772,7 @@ func _on_npc_walking(data: Dictionary) -> void:
     var facing: String = world.facing_from_vec(first_dir)
     container.set_meta("facing", facing)
     world.play_npc_animation(container, facing, "walk")
+    npc_walking.emit(npc_id)
 
 ## Server says the NPC arrived at its destination. Snap position + facing,
 ## clear walking meta, switch to idle animation. Also re-emits as

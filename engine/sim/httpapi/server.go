@@ -391,6 +391,9 @@ func (s *Server) Handler() http.Handler {
 	// Live take-able scene quotes for the Pay modal (ZBBS-HOME-426) — pure
 	// snapshot read over Snapshot.Quotes; see pc_quotes.go.
 	mux.HandleFunc("GET /api/village/pc/quotes", s.requireAuth(s.handlePCQuotes))
+	// The goods on a stall's shelf for the stall window (LLM-753) — pure
+	// snapshot read; see pc_stall.go.
+	mux.HandleFunc("GET /api/village/pc/stall", s.requireAuth(s.handlePCStall))
 	// Write routes — same requireAuth gate; the mutation runs through the
 	// world command channel (see write_handlers.go).
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))

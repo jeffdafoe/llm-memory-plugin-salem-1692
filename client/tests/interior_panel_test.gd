@@ -30,7 +30,16 @@ const TESTS := [
     "_test_carried_bubble_turns_with_its_speaker",
     "_test_room_and_village_bubbles_stack_apart",
     "_test_hidden_bubble_takes_no_room",
+    "_test_stall_lay_out",
+    "_test_stall_at",
+    "_test_standing_tile",
+    "_test_stall_occupants",
+    "_test_stall_draws",
+    "_test_main_sync_stall",
 ]
+
+const STALL := "stall-1"
+const STALL_ASSET := "asset-stall"
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
 const PACK := "/tilesets/mana-seed/npc/chef_v02.png"
@@ -571,4 +580,220 @@ func _test_seat_animations() -> void:
     var anims := FarmerDoll.rig_animations()
     for f in ["south", "north", "east", "west"]:
         _check("%s_seat exists" % f, anims.has(f + "_seat"), true)
+    _done()
+
+
+## A stall placed at tile (10, 20) with its loiter pin at (8, 21), and a
+## plain object (a well) at a pin of its own: the Catalog knows the stall's
+## asset by name.
+func _place_stall() -> Node2D:
+    var catalog: Node = root.get_node("Catalog")
+    catalog.assets[STALL_ASSET] = {"name": "Market Stall (Tiled)"}
+    catalog.assets["asset-well"] = {"name": "Well"}
+    for id in _world.placed_objects.keys():
+        _world.placed_objects[id].free()
+    _world.placed_objects.clear()
+    var stall := Node2D.new()
+    stall.position = Vector2(10 * 32 + 5, 20 * 32 + 30)
+    stall.set_meta("asset_id", STALL_ASSET)
+    stall.set_meta("display_name", "General Store")
+    stall.set_meta("effective_loiter_offset_x", -2)
+    stall.set_meta("effective_loiter_offset_y", 1)
+    _world.placed_objects[STALL] = stall
+    var well := Node2D.new()
+    well.position = Vector2(30 * 32, 20 * 32)
+    well.set_meta("asset_id", "asset-well")
+    well.set_meta("effective_loiter_offset_x", 0)
+    well.set_meta("effective_loiter_offset_y", 1)
+    _world.placed_objects["well"] = well
+    return stall
+
+
+## The Catalog autoload's asset table (the autoload's global name does not
+## compile in a --script run; the node is there).
+func _assets() -> Dictionary:
+    return root.get_node("Catalog").assets
+
+
+## A person standing on map tile `tile`.
+func _at_tile(id: String, sprite: Dictionary, tile: Vector2i, extra := {}) -> Node2D:
+    var c := _person(id, sprite, "", extra)
+    c.position = Vector2(tile.x * 32 + 16, tile.y * 32 + 16)
+    return c
+
+
+func _test_stall_lay_out() -> void:
+    var wares := [
+        {"item": "apples", "stock": "plenty"},
+        {"item": "nail", "stock": "few"},
+        {"item": "skillet", "stock": "one"},
+        {"item": "no_such_good", "stock": "one"},
+    ]
+    var slots := StallScenes.lay_out(wares)
+    _check("every ware gets a slot", slots.size(), 4)
+    _check("a pile is the good's pile cell", slots[0]["cell"], 2 * StallScenes.GOODS["apples"] + 1)
+    _check("a pile stands on the first floor slot", slots[0]["at"], Vector2i(StallScenes.FLOOR_SLOTS[0], StallScenes.FLOOR_Y - 32))
+    _check("a few: the good, twice, on the counter", [slots[1]["cell"], slots[1]["count"]], [2 * StallScenes.GOODS["nail"], 2])
+    _check("on the first counter slot", slots[1]["at"], Vector2i(StallScenes.COUNTER_SLOTS[0], StallScenes.COUNTER_Y - 32))
+    _check("one: the good once", slots[2]["count"], 1)
+    _check("a good with no picture is a crate", slots[3]["cell"], 2 * StallScenes.OTHER)
+
+    # More piles than floor: the rest lie on the counter as a few; past the
+    # counter nothing more is drawn.
+    var many := []
+    for i in 10:
+        many.append({"item": "apples", "stock": "plenty"})
+    for i in 5:
+        many.append({"item": "nail", "stock": "one"})
+    slots = StallScenes.lay_out(many)
+    _check("every slot used, no more", slots.size(), StallScenes.FLOOR_SLOTS.size() + StallScenes.COUNTER_SLOTS.size())
+    _check("the seventh pile lies on the counter", [slots[6]["cell"], slots[6]["count"]], [2 * StallScenes.GOODS["apples"], 2])
+    _check("nothing empty", StallScenes.lay_out([]), [])
+    _done()
+
+
+func _test_stall_at() -> void:
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _check("the pin from the anchor tile and the offset", StallScenes.pin_tile(_world.placed_objects[STALL]), pin)
+    _check("on the pin", StallScenes.stall_at(_world, _assets(), pin), STALL)
+    _check("beside the pin", StallScenes.stall_at(_world, _assets(), pin + Vector2i(1, 1)), STALL)
+    _check("two away is not at the counter", StallScenes.stall_at(_world, _assets(), pin + Vector2i(2, 0)), "")
+    _check("at a well is at no stall", StallScenes.stall_at(_world, _assets(), Vector2i(30, 21)), "")
+    _check("a stall has a scene", StallScenes.scene_for(_world, _assets(), STALL)["sheet"], StallScenes.SHEETS["Market Stall (Tiled)"])
+    _check("titled by its name", StallScenes.scene_for(_world, _assets(), STALL)["title"], "General Store")
+    _check("a well has none", StallScenes.scene_for(_world, _assets(), "well"), {})
+    _done()
+
+
+func _test_standing_tile() -> void:
+    _clear_people()
+    var c := _at_tile("walker", _farmer(), Vector2i(3, 4))
+    _check("standing still: where they are", StallScenes.standing_tile(c), Vector2i(3, 4))
+    c.set_meta("walking", {"path": [Vector2(9 * 32 + 16, 9 * 32 + 16)]})
+    _check("walking a route: nowhere yet", StallScenes.standing_tile(c).x < -1000, true)
+    c.set_meta("walking", {"path": [Vector2(5 * 32 + 16, 6 * 32 + 16)], "finish_idle": true})
+    _check("an arrival's last steps: where they will stand", StallScenes.standing_tile(c), Vector2i(5, 6))
+    _done()
+
+
+func _test_stall_occupants() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _panel.open(STALL)
+    _check("a stall opens the window", _panel.is_stall(), true)
+    _person("keeper", _pack(), STALL, {"work_structure_id": STALL})
+    _at_tile("pc", _farmer(), pin)
+    _at_tile("buyer", _farmer(), pin + Vector2i(-1, 1))
+    _at_tile("sleeper", _farmer(), pin + Vector2i(1, 0), {"dormant": "sleeping"})
+    # Walking a route that runs through the pin: on the way, not at the counter.
+    _at_tile("passer", _farmer(), pin + Vector2i(0, 1), {"walking": {"path": [Vector2(pin * 32) + Vector2(16, 16)]}})
+    _at_tile("faraway", _farmer(), pin + Vector2i(3, 0))
+    _person("indoors", _farmer(), "tavern")
+    _panel._assigned = {}
+    var cast: Dictionary = _panel.occupants()
+    var ids := []
+    for e in cast["placed"]:
+        ids.append(e["id"])
+    _check("keeper, the customer, the player's character", ids, ["keeper", "buyer", "pc"])
+    _check("the keeper stands behind the counter", cast["placed"][0].get("behind", false), true)
+    _check("at the keeper's spot", cast["placed"][0]["spot"], StallScenes.KEEPER)
+    _check("a customer stands in front", cast["placed"][1].get("behind", false), false)
+    _check("the player's character front and centre", cast["placed"][2]["spot"], StallScenes.DOOR)
+    _check("nobody over", cast["more"], 0)
+
+    # The keeper away: a hand tending the stall stands behind the counter.
+    _world.placed_npcs["keeper"].free()
+    _world.placed_npcs.erase("keeper")
+    _person("hand", _farmer(), STALL, {"work_structure_id": "elsewhere"})
+    cast = _panel.occupants()
+    _check("a hand behind the counter", [cast["placed"][0]["id"], cast["placed"][0].get("behind", false)], ["hand", true])
+
+    # More at the counter than spots: counted.
+    for i in 5:
+        _at_tile("crowd%d" % i, _farmer(), pin + Vector2i(1, -1))
+    cast = _panel.occupants()
+    _check("past the spots: and N more", cast["more"], 1 + 5 - StallScenes.SPOTS.size())
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_stall_draws() -> void:
+    _clear_people()
+    _place_stall()
+    var pin := Vector2i(8, 21)
+    var asked := []
+    _panel.wares_hook = func(sid: String) -> Array:
+        asked.append(sid)
+        return [{"item": "apples", "stock": "plenty"}, {"item": "nail", "stock": "few"}]
+    _person("keeper", _pack(), STALL, {"work_structure_id": STALL})
+    _at_tile("buyer", _farmer(), pin + Vector2i(1, 1))
+    _panel.close()
+    _panel.open(STALL)
+    _check("the shelf is asked for on opening", asked, [STALL])
+    _check("title", _panel.title_label.text, "General Store")
+    _check("the counter is drawn", _panel._counter.texture != null, true)
+    _check("the keeper behind the counter", _panel._staff.get_node_or_null("keeper") != null, true)
+    _check("the customer in front of it", _panel._people.get_node_or_null("buyer") != null, true)
+    _check("the counter between them", _panel._counter.get_index() > _panel._staff.get_index()
+        and _panel._counter.get_index() < _panel._people.get_index(), true)
+    _check("a pile on the floor", _panel._goods_back.get_child_count(), 1)
+    _check("a few on the counter: two", _panel._goods_front.get_child_count(), 2)
+    _check("the floor behind the keeper", _panel._goods_back.get_index() < _panel._staff.get_index(), true)
+    var pile: Sprite2D = _panel._goods_back.get_child(0)
+    _check("the pile's cell", (pile.texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["apples"] + 1))
+
+    # The keeper's line shows over their head behind the counter.
+    _panel.say("keeper", "Fresh apples today.")
+    _check("the keeper's bubble", _panel._staff.get_node("keeper").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+
+    # The shelf sells out.
+    _panel.set_wares([])
+    _check("a bare shelf", _panel._goods_back.get_child_count() + _panel._goods_front.get_child_count(), 0)
+
+    # A room draws no goods and no counter.
+    _panel.open(_sid)
+    _check("a room has no counter", _panel._counter.texture, null)
+    _panel.set_wares([{"item": "apples", "stock": "plenty"}])
+    _check("a room has no goods", _panel._goods_back.get_child_count(), 0)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## main.gd's _sync_interior for a stall: arriving at the counter opens it,
+## walking away closes it, the ✕ stays shut while there.
+func _test_main_sync_stall() -> void:
+    _clear_people()
+    _place_stall()
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    var main: Node2D = load("res://scripts/main.gd").new()
+    main.world = _world
+    main.interior_panel_layer = _panel
+    main._pc_actor_id = "pc"
+    var pc := _at_tile("pc", _farmer(), Vector2i(8, 22))
+    main._sync_interior()
+    _check("opens at the counter", [_panel.is_open(), _panel.structure_id], [true, STALL])
+    _panel.close()
+    main._sync_interior()
+    _check("the ✕ stays shut while there", _panel.is_open(), false)
+    pc.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    main._sync_interior()
+    _check("walking away keeps it shut", _panel.is_open(), false)
+    pc.set_meta("walking", {"path": [Vector2(8 * 32 + 16, 20 * 32 + 16)], "finish_idle": true})
+    main._sync_interior()
+    _check("coming back opens it again", _panel.is_open(), true)
+    pc.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
+    main._sync_interior()
+    _check("closes on walking away", _panel.is_open(), false)
+    main.free()
+    _panel.wares_hook = Callable()
+    for id in _world.placed_objects.keys():
+        _world.placed_objects[id].free()
+    _world.placed_objects.clear()
     _done()

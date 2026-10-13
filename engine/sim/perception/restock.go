@@ -866,10 +866,7 @@ func isRestockSupplierOf(snap *sim.Snapshot, vendorID sim.ActorID, itemKind sim.
 	if vendor == nil {
 		return false
 	}
-	if vendor.RestockPolicy.ProducesOrForages(itemKind) {
-		return true
-	}
-	return sim.ActorIsDistributor(snap.VillageObjects, vendor.WorkStructureID)
+	return sim.FirstHandSupplier(snap.VillageObjects, vendor.WorkStructureID, vendor.RestockPolicy, itemKind)
 }
 
 // findItemVendors resolves the suppliers selling itemKind, ONE cue per workplace
