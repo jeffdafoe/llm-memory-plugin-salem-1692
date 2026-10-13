@@ -1779,12 +1779,29 @@ func _pc_is_party(buyer_id: String, seller_id: String) -> bool:
 
 ## "stew" / "3 stew". The wire carries the raw item kind, not a display
 ## label; good enough for a narration line.
-func _item_phrase(item: String, qty: int) -> String:
+static func _item_phrase(item: String, qty: int) -> String:
     if item.is_empty():
         return "an item"
     if qty > 1:
         return "%d %s" % [qty, item]
     return item
+
+
+## What a pay_resolved frame was for: a bundle's goods (`lines`, several taken
+## on one quote, LLM-770) as "raspberries and ale" / "bread, cheese and ale",
+## else its one item (_item_phrase).
+static func goods_phrase(data: Dictionary) -> String:
+    var lines = data.get("lines", null)
+    var parts: Array = []
+    if lines is Array:
+        for line in lines:
+            if line is Dictionary:
+                parts.append(_item_phrase(str(line.get("item", "")), int(line.get("qty", 1))))
+    if parts.is_empty():
+        return _item_phrase(str(data.get("item", "")), int(data.get("qty", 1)))
+    if parts.size() == 1:
+        return str(parts[0])
+    return ", ".join(parts.slice(0, parts.size() - 1)) + " and " + str(parts.back())
 
 
 func _coins_phrase(n: int) -> String:
@@ -1845,7 +1862,7 @@ func _on_pay_resolved(data: Dictionary) -> void:
     var pc_is_buyer := buyer_id == pc_actor_id
     var seller_name := str(data.get("seller_name", ""))
     var buyer_name := str(data.get("buyer_name", ""))
-    var item_phrase := _item_phrase(str(data.get("item", "")), int(data.get("qty", 1)))
+    var item_phrase := goods_phrase(data)
     var coins := _coins_phrase(int(data.get("amount", 0)))
     var state := str(data.get("terminal_state", ""))
     var msg := str(data.get("message", ""))
