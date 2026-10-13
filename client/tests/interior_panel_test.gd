@@ -1533,20 +1533,48 @@ func _test_scrolling_stage() -> void:
     _check("released where pressed: a tap", clicks, ["keeper"])
 
     _panel._on_stage_input(press)
+    # Twenty one-px steps, each half an art px at 2x: the whole way counts,
+    # the steps before the drag began included.
     var move := InputEventMouseMotion.new()
-    move.position = local + Vector2(-20, 0)
-    move.relative = Vector2(-20, 0)
-    _panel._on_stage_input(move)
-    _check("a drag pans", _panel._pan.x, 60.0)
+    for i in range(1, 21):
+        move.position = local + Vector2(-i, 0)
+        move.relative = Vector2(-1, 0)
+        _panel._on_stage_input(move)
+    _check("a drag pans by the whole way moved", _panel._pan.x, 60.0)
     release.position = move.position
     _panel._on_stage_input(release)
     _check("a drag is no tap", clicks, ["keeper"])
+
+    # The drag threshold is screen px: at a stretch of 2, four canvas units
+    # are eight screen px — a drag.
+    _panel._stretch = Vector2(2, 2)
+    _panel._set_pan(Vector2(60, 0))
+    press.position = local
+    _panel._on_stage_input(press)
+    move.position = local + Vector2(-4, 0)
+    move.relative = Vector2(-4, 0)
+    _panel._on_stage_input(move)
+    _check("past the threshold in screen px: a drag", bool(_panel._press["drag"]), true)
+    release.position = move.position
+    _panel._on_stage_input(release)
+    _check("and no tap", clicks, ["keeper"])
+    _panel._stretch = Vector2.ONE
+    _panel._set_pan(Vector2(60, 0))
 
     var wheel := InputEventMouseButton.new()
     wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
     wheel.pressed = true
     _panel._on_stage_input(wheel)
-    _check("the wheel pans", _panel._pan.x, 60.0 + _panel.WHEEL_STEP)
+    _check("the wheel pans a wide room along", _panel._pan, Vector2(60.0 + _panel.WHEEL_STEP, 0))
+    # A room too tall for the window: the wheel scrolls it up and down, a
+    # sideways wheel still along.
+    _panel._view = Vector2(size.x, 60)
+    _panel._set_pan(Vector2.ZERO)
+    _panel._on_stage_input(wheel)
+    _check("the wheel scrolls a tall room down", _panel._pan, Vector2(0, _panel.WHEEL_STEP))
+    wheel.button_index = MOUSE_BUTTON_WHEEL_RIGHT
+    _panel._on_stage_input(wheel)
+    _check("a sideways wheel goes along (none to go here)", _panel._pan, Vector2(0, _panel.WHEEL_STEP))
     _panel.person_clicked.disconnect(on_click)
     _panel.close()
     _panel.wares_hook = Callable()

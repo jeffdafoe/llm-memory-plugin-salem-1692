@@ -51,7 +51,8 @@ const MIN_PIXEL_SCALE := 2
 ## Screen px above a scrolling stage left unclipped, for speech bubbles over
 ## the back row.
 const BUBBLE_HEADROOM := 200.0
-## Screen px a press moves before it is a drag (a pan), not a tap.
+## Screen px a press moves before it is a drag (a pan), not a tap — measured
+## from the press, over the whole way moved.
 const DRAG_START := 6.0
 ## Art px one wheel notch pans.
 const WHEEL_STEP := 16.0
@@ -981,12 +982,15 @@ func person_at(local: Vector2) -> String:
 func _on_stage_input(event: InputEvent) -> void:
     if event is InputEventMouseMotion:
         if not _press.is_empty():
-            # A press on a scrolling stage that moves far enough pans it.
-            if not bool(_press["drag"]) and event.position.distance_to(_press["at"]) >= DRAG_START:
+            # A press on a scrolling stage that moves far enough (in screen
+            # px) pans it — from where it was at the press, by the whole way
+            # moved, so small steps are not rounded away.
+            var moved: Vector2 = event.position - Vector2(_press["at"])
+            if not bool(_press["drag"]) and (moved * _stretch).length() >= DRAG_START:
                 _press["drag"] = true
                 hide_tag()
             if bool(_press["drag"]):
-                _set_pan(_pan - event.relative * _stretch / float(k))
+                _set_pan(Vector2(_press["pan"]) - moved * _stretch / float(k))
             return
         # A tap's tag runs its time out: a touch screen sends motion with a
         # tap, and may send no motion or exit after it to take a hover down.
@@ -996,7 +1000,7 @@ func _on_stage_input(event: InputEvent) -> void:
         stage.accept_event()
         if event.pressed and scrolls():
             # Tap or drag is known on release.
-            _press = {"at": event.position, "drag": false}
+            _press = {"at": event.position, "pan": _pan, "drag": false}
         elif event.pressed:
             _tap(event.position)
         elif not _press.is_empty():
@@ -1005,7 +1009,11 @@ func _on_stage_input(event: InputEvent) -> void:
             if not dragged:
                 _tap(event.position)
     elif event is InputEventMouseButton and event.pressed and scrolls():
-        var step := {MOUSE_BUTTON_WHEEL_UP: Vector2(-WHEEL_STEP, 0), MOUSE_BUTTON_WHEEL_DOWN: Vector2(WHEEL_STEP, 0),
+        # The wheel scrolls up and down when the room is too tall, else along
+        # (a wide room like the smithy); sideways wheels always along.
+        var size := Vector2(room.get("size", Vector2i(128, 112)))
+        var roll := Vector2(0, WHEEL_STEP) if _view.y < size.y else Vector2(WHEEL_STEP, 0)
+        var step := {MOUSE_BUTTON_WHEEL_UP: -roll, MOUSE_BUTTON_WHEEL_DOWN: roll,
             MOUSE_BUTTON_WHEEL_LEFT: Vector2(-WHEEL_STEP, 0), MOUSE_BUTTON_WHEEL_RIGHT: Vector2(WHEEL_STEP, 0)}
         if step.has(event.button_index):
             stage.accept_event()
