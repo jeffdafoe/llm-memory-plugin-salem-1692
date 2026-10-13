@@ -117,10 +117,6 @@ func TestRoomSquareSleepAndWake(t *testing.T) {
 	if !hasSquareChange(*events, "silas", nil) {
 		t.Errorf("no square-cleared frame on sleeping: %#v", *events)
 	}
-	// While they sleep their square is free for someone else.
-	guest := outdoors("anne", KindNPCStateful)
-	w.Actors[guest.ID] = guest
-	w.outdoorActors[guest.ID] = struct{}{}
 	*events = nil
 	wakeNPC(w, lodger)
 	if lodger.RoomSquare == nil {
@@ -142,6 +138,25 @@ func TestRoomSquareSleepAndWake(t *testing.T) {
 	wakePCActor(w, pc)
 	if pc.RoomSquare == nil {
 		t.Error("a woken player has no square")
+	}
+
+	// While a player sleeps their square is free: a second player takes the
+	// door; the first wakes onto another square — never a shared one.
+	plan := roomlayout.For(string(squareTavern))
+	if *pc.RoomSquare != plan.Door.Square {
+		t.Fatalf("harness: the player woke on %v, not the door", *pc.RoomSquare)
+	}
+	executePCSleep(w, pc, 0, now)
+	second := outdoors("wendy", KindPC)
+	w.Actors[second.ID] = second
+	w.outdoorActors[second.ID] = struct{}{}
+	setActorInsideStructure(w, second, squareTavern)
+	if second.RoomSquare == nil || *second.RoomSquare != plan.Door.Square {
+		t.Fatalf("the second player took %v, want the door the sleeper gave up", second.RoomSquare)
+	}
+	wakePCActor(w, pc)
+	if pc.RoomSquare == nil || *pc.RoomSquare == *second.RoomSquare {
+		t.Errorf("woken onto %v with the door held by %v: want a square of their own", pc.RoomSquare, *second.RoomSquare)
 	}
 }
 
