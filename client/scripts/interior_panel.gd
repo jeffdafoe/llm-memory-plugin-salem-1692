@@ -9,7 +9,9 @@ extends CanvasLayer
 ## main.gd opens it when the character goes in and closes it when they walk
 ## out; the ✕ (or a click on the dimmed village, or Esc) only hides it, and a
 ## click on the building reopens it. A click on a person opens the talk panel,
-## which sits on the layer above, so the room stays in view behind the talk. The window reads the world each half
+## which sits on the layer above, so the room stays in view behind the talk.
+## A line spoken by someone drawn in the room shows as the village's speech
+## bubble over their head (LLM-751); it survives a redraw of the room. The window reads the world each half
 ## second and rebuilds only when who is where has changed.
 ##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
@@ -29,6 +31,12 @@ const REFRESH_SECONDS := 0.5
 const RESTING_DIM := Color(0.58, 0.62, 0.75, 1.0)
 ## A person's click box around their feet, in art pixels.
 const HIT_BOX := Rect2(-8, -28, 16, 28)
+## Speech bubbles (LLM-751): the village's bubble over a speaker drawn in the
+## room, its tail just above the head — room art px above the feet (a farmer's
+## hat reaches about 34 above the feet, a pack sprite's head about 29).
+const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
+const BUBBLE_NODE := "SpeechBubble"
+const BUBBLE_ANCHOR_Y := -36.0
 
 var world: Node2D = null
 var pc_actor_id := ""
@@ -119,7 +127,8 @@ func _build_ui() -> void:
 
     stage = Control.new()
     stage.name = "Stage"
-    stage.clip_contents = true
+    # Not clipped: a speech bubble over the back row rises past the room's top.
+    stage.clip_contents = false
     stage.mouse_filter = Control.MOUSE_FILTER_STOP
     stage.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
     stage.gui_input.connect(_on_stage_input)
@@ -154,6 +163,8 @@ func open(sid: String) -> void:
     var r := InteriorRooms.room_for(sid)
     if r.is_empty():
         return
+    if world != null and world.has_signal("npc_spoke") and not world.npc_spoke.is_connected(_on_npc_spoke):
+        world.npc_spoke.connect(_on_npc_spoke)
     var was_open := visible
     if sid != structure_id:
         _assigned = {}
@@ -250,7 +261,14 @@ func _entry(id: String, spot: Dictionary) -> Dictionary:
 
 
 func _draw_people(cast: Dictionary) -> void:
+    # A bubble outlives the redraw (someone came in mid-sentence): lift it off
+    # the old person and put it back on the new one below.
+    var bubbles := {}
     for child in _people.get_children():
+        var bubble := child.get_node_or_null(BUBBLE_NODE)
+        if bubble != null:
+            child.remove_child(bubble)
+            bubbles[str(child.name)] = bubble
         child.free()
     _hits.clear()
     for entry in cast["placed"]:
@@ -276,6 +294,12 @@ func _draw_people(cast: Dictionary) -> void:
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         _hits.append({"id": id, "rect": Rect2(holder.position + HIT_BOX.position, HIT_BOX.size)})
+    for id in bubbles:
+        var holder := _people.get_node_or_null(NodePath(id))
+        if holder != null:
+            holder.add_child(bubbles[id])
+        else:
+            bubbles[id].free()
     var more := int(cast["more"])
     more_label.text = "and %d more" % more
     more_label.visible = more > 0
@@ -320,6 +344,34 @@ func _snap() -> void:
         return
     var screen_origin := stage.get_global_transform_with_canvas().origin * _stretch
     _scene.position = (screen_origin.round() - screen_origin) / _stretch
+
+
+## A line spoken by someone drawn in the room shows as a bubble over their
+## head; a newer line replaces theirs. Someone not drawn (outside, upstairs, or
+## past the spots) gets none — the talk panel keeps every line.
+func say(npc_id: String, text: String) -> void:
+    if npc_id == "" or text == "":
+        return
+    var holder := _people.get_node_or_null(NodePath(npc_id))
+    if holder == null:
+        return
+    var existing := holder.get_node_or_null(BUBBLE_NODE)
+    if existing != null:
+        # Out of the tree now, or the new bubble would be renamed (as world.gd).
+        holder.remove_child(existing)
+        existing.queue_free()
+    var bubble: Node2D = SpeechBubbleScript.new()
+    bubble.name = BUBBLE_NODE
+    bubble.anchor_y = BUBBLE_ANCHOR_Y
+    holder.add_child(bubble)
+    bubble.setup(text)
+
+
+func _on_npc_spoke(npc_id: String, _name: String, text: String, _kind: String, _at: String,
+        _structure_id: String, _mentions: Array, _speaker_x: float, _speaker_y: float, _room_id: String,
+        _addressee_id: String, _addressee_name: String, _mention_prices: Dictionary, _huddle_scoped: bool,
+        _recipient_ids: Array) -> void:
+    say(npc_id, text)
 
 
 ## The person under a stage-local point (the nearest one in front wins), or "".

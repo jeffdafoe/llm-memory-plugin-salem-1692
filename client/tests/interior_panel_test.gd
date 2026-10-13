@@ -25,6 +25,10 @@ const TESTS := [
     "_test_main_sync_interior",
     "_test_under_the_talk_panel",
     "_test_click_to_talk",
+    "_test_speech_bubbles",
+    "_test_bubble_survives_a_redraw",
+    "_test_room_and_village_bubbles_stack_apart",
+    "_test_hidden_bubble_takes_no_room",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -410,6 +414,105 @@ func _test_click_to_talk() -> void:
     _panel.close()
     main.free()
     talk.free()
+    _done()
+
+
+## LLM-751: a line spoken by someone drawn in the room shows over their head.
+func _test_speech_bubbles() -> void:
+    _clear_people()
+    _person("keeper", _pack(), _sid, {"work_structure_id": _sid})
+    _person("guest", _farmer(), _sid)
+    _panel.open(_sid)
+    _panel.say("keeper", "Welcome in.")
+    var keeper: Node2D = _panel._people.get_node("keeper")
+    var bubble: Node2D = keeper.get_node_or_null(_panel.BUBBLE_NODE)
+    _check("a bubble over the keeper", bubble != null, true)
+    _check("anchored just above a head in room pixels", bubble.anchor_y, _panel.BUBBLE_ANCHOR_Y)
+    _panel.say("keeper", "Stew is three coins.")
+    var bubbles := keeper.get_children().filter(func(c): return str(c.name).begins_with(_panel.BUBBLE_NODE))
+    _check("a newer line replaces the bubble", bubbles.size(), 1)
+    _check("the newer bubble is a new one", bubbles[0] != bubble, true)
+    _panel.say("nobody-here", "Hello?")
+    _check("no bubble for someone not drawn", _panel._people.get_node_or_null("nobody-here"), null)
+    # The real path: world.gd's npc_spoke signal.
+    _world.npc_spoke.emit("guest", "Guest", "Evening.", "speak", "", "", [], 0.0, 0.0, "", "", "", {}, true, [])
+    _check("npc_spoke puts a bubble over the guest",
+        _panel._people.get_node("guest").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    _panel.close()
+    _done()
+
+
+func _test_bubble_survives_a_redraw() -> void:
+    _clear_people()
+    _person("keeper", _pack(), _sid, {"work_structure_id": _sid})
+    _panel.open(_sid)
+    _panel.say("keeper", "Welcome in.")
+    var bubble: Node2D = _panel._people.get_node("keeper").get_node(_panel.BUBBLE_NODE)
+    _person("newcomer", _farmer(), _sid)
+    _panel.refresh()
+    _check("the room was redrawn", _panel._people.get_node_or_null("newcomer") != null, true)
+    # A freed object compares equal to null, so check both sides are live.
+    var carried: Node = _panel._people.get_node("keeper").get_node_or_null(_panel.BUBBLE_NODE)
+    _check("the keeper's bubble carried over", carried != null and is_instance_valid(bubble) and carried == bubble, true)
+    _panel.say("newcomer", "Is there stew?")
+    _world.placed_npcs["newcomer"].set_meta("inside", false)
+    _panel.refresh()
+    _check("a speaker who left takes their bubble along", _panel._people.get_node_or_null("newcomer"), null)
+    _panel.close()
+    _done()
+
+
+## The room's bubbles and the village's never meet in one stack: a village
+## bubble at the very spot of a room bubble does not lift it.
+func _test_room_and_village_bubbles_stack_apart() -> void:
+    _clear_people()
+    _person("keeper", _pack(), _sid, {"work_structure_id": _sid})
+    _panel.open(_sid)
+    _panel.say("keeper", "Welcome in.")
+    var room_bubble: Node2D = _panel._people.get_node("keeper").get_node(_panel.BUBBLE_NODE)
+    var head: Vector2 = (room_bubble.get_parent() as Node2D).get_global_transform_with_canvas() * Vector2(0, _panel.BUBBLE_ANCHOR_Y)
+    var speaker := Node2D.new()
+    speaker.position = head
+    root.add_child(speaker)
+    var village: Node2D = _panel.SpeechBubbleScript.new()
+    village.anchor_y = 0.0
+    speaker.add_child(village)
+    village.setup("Welcome in.")
+    var both := [room_bubble, village]
+    _panel.SpeechBubbleScript._layout(both, 10.0)
+    _check("harness — the two would overlap", room_bubble._canvas_rect().intersects(village._canvas_rect()), true)
+    _check("the room bubble stays at its speaker's head", room_bubble._lift_target, 0.0)
+    _check("the village bubble stays at its speaker's head", village._lift_target, 0.0)
+    speaker.free()
+    _panel.close()
+    _done()
+
+
+## A bubble whose speaker is hidden (indoors on the map) takes no room: an
+## overlapping visible bubble on the same canvas stays at its head.
+func _test_hidden_bubble_takes_no_room() -> void:
+    var a := Node2D.new()
+    var b := Node2D.new()
+    a.position = Vector2(-7000, -7000)
+    b.position = Vector2(-7000 + 8, -7000)
+    root.add_child(a)
+    root.add_child(b)
+    # The hidden one is the newer, so visible it would push the other up.
+    var shown: Node2D = _panel.SpeechBubbleScript.new()
+    b.add_child(shown)
+    shown.setup("Out here.")
+    var hidden: Node2D = _panel.SpeechBubbleScript.new()
+    a.add_child(hidden)
+    hidden.setup("Inside, unseen.")
+    _panel.SpeechBubbleScript._layout([hidden, shown], 10.0)
+    _check("harness — both visible, the older is pushed up", shown._lift_target > 0.0, true)
+    a.visible = false
+    hidden._lift_target = 0.0
+    shown._lift_target = 0.0
+    _panel.SpeechBubbleScript._layout([hidden, shown], 10.0)
+    _check("with its speaker hidden it does not lift the other", shown._lift_target, 0.0)
+    a.free()
+    b.free()
     _done()
 
 
