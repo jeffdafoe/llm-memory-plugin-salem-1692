@@ -48,6 +48,9 @@ const TESTS := [
     "_test_handoff_survives_a_redraw",
     "_test_purchase_over_the_counter",
     "_test_no_handoff",
+    "_test_tavern_serves_a_meal_to_the_table",
+    "_test_tavern_serves_standing_and_at_the_door",
+    "_test_tavern_keeper_buys",
 ]
 
 const STALL := "stall-1"
@@ -1108,7 +1111,7 @@ func _test_sale_handed_over_the_counter() -> void:
 
     # Someone not drawn gets it on the counter's middle.
     _panel.on_pay_resolved(_sale("keeper", "somebody-past-the-spots"))
-    _check("not drawn: the counter's middle", float(_panel._handoff_now["x"]), float(StallScenes.KEEPER["x"]))
+    _check("not drawn: the counter's middle", float((_panel._handoff_now["stop"] as Vector2).x), float(StallScenes.KEEPER["x"]))
     _panel.open(STALL)
     _check("reopening clears the counter", [_panel._handoff.get_child_count(), _panel._handoff_now, _panel._handoffs], [0, {}, []])
     _panel.close()
@@ -1126,7 +1129,7 @@ func _test_sales_handed_over_in_turn() -> void:
     _check("the second waits its turn", [_panel._handoffs.size(), _panel._handoff.get_node_or_null("handoff_nail") == null], [1, true])
     _finish_handoff()
     _check("then the second", str(_panel._handoff_now.get("item", "")), "nail")
-    _check("the keeper walks for it", _panel._tending().has_meta("walking") or _panel._tending().position.x == float(_panel._handoff_now["x"]), true)
+    _check("the keeper walks for it", _panel._tending().has_meta("walking") or _panel._tending().position.x == float((_panel._handoff_now["stop"] as Vector2).x), true)
     _finish_handoff()
     _check("both done", [_panel._handoff_now, _panel._handoffs], [{}, []])
     _check("the bustle resumes", _panel._bustle_left >= _panel.BUSTLE_MIN, true)
@@ -1203,10 +1206,87 @@ func _test_no_handoff() -> void:
     _panel.close()
     _panel.on_pay_resolved(_sale("keeper", "buyer"))
     _check("a closed window: nothing", _panel._handoff.get_child_count(), 0)
-    # A room has no counter (the Tavern's bar is its own ticket).
-    _panel.open(_sid)
-    _panel.on_pay_resolved(_sale("keeper", "buyer"))
-    _check("a room: nothing", _panel._handoff.get_child_count(), 0)
     _panel.close()
     _panel.wares_hook = Callable()
+    _done()
+
+
+## The Tavern with its keeper behind the bar and `guest` at spot `spot`.
+func _tavern_with_guest(spot: int) -> void:
+    _clear_people()
+    _panel.close()
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _person("guest", _farmer(), _sid)
+    _panel.open(_sid)
+    _panel._assigned = {"guest": spot}
+    _panel._signature = ""
+    _panel.refresh()
+
+
+func _test_tavern_serves_a_meal_to_the_table() -> void:
+    _tavern_with_guest(0)
+    var keeper: Node2D = _panel._tending()
+    _check("the Tavern's keeper is the one behind the bar", keeper != null and str(keeper.name) == "keeper", true)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1))
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_stew")
+    var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
+    _check("the stew goes on the bar", good != null and good.position == _panel._cell_at(bar), true)
+    _check("the stew's picture", good != null and (good.get_child(0).texture as AtlasTexture).region == StallScenes.cell_rect(2 * StallScenes.GOODS["stew"]), true)
+    _check("the keeper steps to the bar's front", [keeper.has_meta("walking"), _panel._handoff_now["stop"]], [true, Vector2(_panel.room["reach"]["x"], _panel.room["reach"]["y"])])
+    _check("not down until the keeper is there", good != null and good.modulate.a == 0.0, true)
+    if good == null:
+        _done()
+        return
+    _finish_walk(keeper)
+    var t: Tween = good.get_meta("tween")
+    t.custom_step(1.0)
+    _check("set down", good.modulate.a, 1.0)
+    t.custom_step(_panel.HANDOFF_HOLD)
+    _check("the keeper steps back to their spot", keeper.has_meta("walking"), true)
+    t.custom_step(3.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("served to the table in front of the guest", good.position, _panel._cell_at(table))
+    _check("eaten there, still to be seen", [good.modulate.a, good.is_queued_for_deletion()], [1.0, false])
+    _check("the bar is free for the next", _panel._handoff_now, {})
+    t.custom_step(60.0)
+    _check("then gone", good.is_queued_for_deletion(), true)
+    _panel.close()
+    _done()
+
+
+func _test_tavern_serves_standing_and_at_the_door() -> void:
+    _tavern_with_guest(2)
+    var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
+    var standing := Vector2(_panel.room["spots"][2]["x"], _panel.room["spots"][2]["y"] - 6)
+    var serve: Dictionary = _panel._serve_to("guest", bar)
+    _check("a standing guest: most of the way to them, then gone", serve, {"to": bar.lerp(standing, 0.6).round(), "stay": false})
+    _person("pc", _farmer(), _sid)
+    _panel.refresh()
+    var door := Vector2(_panel.room["door"]["x"], _panel.room["door"]["y"] - 6)
+    _check("the player's character at the door", _panel._serve_to("pc", bar), {"to": bar.lerp(door, 0.6).round(), "stay": false})
+    _check("someone not drawn: it stays on the bar", _panel._serve_to("nobody", bar), {})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "nights_stay", "accepted", 1))
+    _check("a night's stay: nothing on the bar", _panel._handoff.get_child_count(), 0)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1))
+    _finish_handoff()
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_ale")
+    _check("the ale went toward them and is gone", good != null and good.is_queued_for_deletion() and good.position.distance_to(_panel._cell_at(serve["to"])) < 1.0, true)
+    _panel.close()
+    _done()
+
+
+func _test_tavern_keeper_buys() -> void:
+    _tavern_with_guest(2)
+    var keeper: Node2D = _panel._tending()
+    _panel.on_pay_resolved(_sale("guest", "keeper", "carrots"))
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_carrots")
+    _check("the carrots lie on the bar at once", good != null and good.modulate.a == 1.0, true)
+    _check("the keeper comes for them", keeper.has_meta("walking"), true)
+    if good != null:
+        var on_bar := good.position
+        _finish_handoff()
+        _check("taken toward the keeper", good.position.x > on_bar.x, true)
+    _panel.on_pay_resolved(_sale("guest", "keeper", "mending"))
+    _check("a service bought: nothing", _panel._handoff_now, {})
+    _panel.close()
     _done()
