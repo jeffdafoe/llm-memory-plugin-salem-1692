@@ -549,6 +549,7 @@ func run(rt runtime, stop stopSignals) error {
 	handlers.RegisterLaborHandlers(rt.World) // LLM-187: wake the employer when a worker solicits work (accept_work/decline_work)
 	sim.RegisterAcquaintanceSubscriber(rt.World)
 	sim.RegisterVisitorReturnerSubscriber(rt.World)       // LLM-372: promote a traveler who meets a player to a durable returner + record familiarity
+	sim.RegisterRoomWalkSubscriber(rt.World)              // LLM-768: walk a stoker to the hearth (keeper back after) and a diner to a seat, inside rooms
 	sim.RegisterSummonSubscriber(rt.World)                // ZBBS-HOME-311: advance summon errands on arrival + arrival-warrant suppression hook
 	sim.RegisterSleepSubscriber(rt.World)                 // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
 	sim.RegisterClosedBusinessSubscriber(rt.World)        // ZBBS-HOME-353: remember a business found shut on arrival
