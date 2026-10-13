@@ -33,6 +33,11 @@ extends CanvasLayer
 ## it goes to them; a good the keeper buys lies in front of the seller until
 ## the keeper comes for it.
 ##
+## A smithy's work area (LLM-764): now and then a farmer-base hand works the
+## bellows, the forge fire flaring with each pull, and between customers a
+## farmer-base keeper hammers at the anvil. Behind the counter, a walk between
+## the work area and the selling side goes round the counter's end.
+##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
 ## pixels at a WHOLE number of screen pixels each, `k`; the window stretch is
 ## cancelled and the origin snapped to a whole screen pixel. People come from
@@ -90,6 +95,26 @@ const SPEAK_HOLD := 4.0
 ## goods and the customers every BUSTLE_MIN..BUSTLE_MAX seconds; the keeper's
 ## bustle keeps HAND_CLEAR art px from a hand's spot.
 const HAND_CLEAR := 20.0
+## A smithy's work area (LLM-764). When a hand would turn, BELLOWS_CHANCE of
+## the time a farmer-base hand walks to the bellows instead and pulls for
+## PULL_MIN..PULL_MAX seconds, one hand at a time; each pull down flares the
+## fire, a glow that fades over FLARE_SECONDS. When the keeper would bustle,
+## SMITH_CHANCE of the time a farmer-base keeper walks to the anvil and
+## hammers for SMITH_MIN..SMITH_MAX seconds. A sale or speech brings the
+## keeper back; speech stops a hand's pull.
+const BELLOWS_CHANCE := 0.3
+const PULL_MIN := 3.0
+const PULL_MAX := 6.0
+const FLARE_SECONDS := 0.7
+const FLARE_ALPHA := 0.6
+const FLARE_INNER := Color(1.0, 0.62, 0.22, 1.0)
+const FLARE_OUTER := Color(1.0, 0.36, 0.08, 0.0)
+const SMITH_CHANCE := 0.25
+const SMITH_MIN := 4.0
+const SMITH_MAX := 8.0
+## Behind the counter, a walk between the work area and the selling side goes
+## round the counter's end, GATE_IN art px short of it.
+const GATE_IN := 6.0
 ## A sale over a stall's counter (LLM-756): the good lies on the counter
 ## HANDOFF_HOLD seconds, then goes to its new owner over HANDOFF_AWAY seconds,
 ## sliding HANDOFF_SLIDE art px their way as it fades.
@@ -147,6 +172,9 @@ var _centre_pan := false
 ## A press on a scrolling stage, waiting to be a tap or a drag: {at, drag}.
 var _press: Dictionary = {}
 var _background: Sprite2D = null
+## The glow over a smithy's forge fire, and how bright it is now (0..1).
+var _fire: Sprite2D = null
+var _flare := 0.0
 ## Stall layers (empty for a room): floor piles, the keeper, the counter, the
 ## goods on it. A room's people all go in _people, as do a stall's customers.
 var _goods_back: Node2D = null
@@ -270,9 +298,20 @@ func _build_ui() -> void:
     _background = Sprite2D.new()
     _background.centered = false
     _scene.add_child(_background)
+    _fire = Sprite2D.new()
+    _fire.name = "Fire"
+    _fire.centered = false
+    _fire.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+    var add := CanvasItemMaterial.new()
+    add.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+    _fire.material = add
+    _fire.visible = false
+    _scene.add_child(_fire)
     _goods_back = Node2D.new()
     _scene.add_child(_goods_back)
     _staff = Node2D.new()
+    # The keeper at a smithy's anvil stands in front of a hand at the forge.
+    _staff.y_sort_enabled = true
     _scene.add_child(_staff)
     _counter = Sprite2D.new()
     _counter.centered = false
@@ -359,6 +398,7 @@ func open(sid: String) -> void:
     _centre_pan = true
     title_label.text = str(room.get("title", ""))
     _apply_textures()
+    _lay_fire()
     visible = true
     _signature = ""
     _relayout()
@@ -415,6 +455,32 @@ func _process(delta: float) -> void:
             _request_wares()
         _bustle(delta)
         _hands_turn(delta)
+        _flare = maxf(0.0, _flare - delta / FLARE_SECONDS)
+        _fire.modulate.a = _flare * FLARE_ALPHA
+
+
+## A smithy's forge fire gets its glow: drawn in code, an art-pixel radial
+## gradient over the fire's rect, added onto it, dark until a pull flares it.
+func _lay_fire() -> void:
+    _flare = 0.0
+    _fire.modulate.a = 0.0
+    var rect = room.get("fire", null)
+    _fire.visible = rect is Rect2i
+    if not _fire.visible:
+        return
+    var gradient := Gradient.new()
+    gradient.set_color(0, FLARE_INNER)
+    gradient.set_color(1, FLARE_OUTER)
+    var glow := GradientTexture2D.new()
+    glow.gradient = gradient
+    glow.width = rect.size.x
+    glow.height = rect.size.y
+    glow.fill = GradientTexture2D.FILL_RADIAL
+    # Brightest low in the coals, fading out to the rect's edge.
+    glow.fill_from = Vector2(0.5, 0.65)
+    glow.fill_to = Vector2(1.0, 0.65)
+    _fire.texture = glow
+    _fire.position = Vector2(rect.position)
 
 
 ## Read who is inside and redraw the people when that has changed.
@@ -560,7 +626,8 @@ func _draw_people(cast: Dictionary) -> void:
             "entering": child.has_meta("entering"), "behind": child.get_parent() == _staff,
             "sprite_data": child.get_meta("sprite_data", {}), "hand": child.has_meta("hand"),
             "turn_left": child.get_meta("turn_left") if child.has_meta("turn_left") else null,
-            "facing": child.get_meta("facing") if child.has_meta("facing") else null}
+            "facing": child.get_meta("facing") if child.has_meta("facing") else null,
+            "smithing": child.get_meta("smithing") if child.has_meta("smithing") else null}
         child.free()
     _hits.clear()
     var drawn := {}
@@ -596,9 +663,12 @@ func _draw_people(cast: Dictionary) -> void:
         # left) or a keeper who is now a hand (the keeper came back) walks from
         # where they were to their new spot.
         var moves := stays and behind and bool(was[id]["hand"]) != hand and not bool(was[id]["entering"])
+        # A hand caught away from their spot (at a smithy's bellows) walks back.
+        var back := stays and hand and bool(was[id]["hand"]) and not bool(was[id]["entering"]) \
+            and (was[id]["position"] as Vector2).distance_to(home) > 0.5
         # The keeper carries on from where they bustled to, a newcomer from
         # partway in; anyone else (a hand too) stands at their (maybe new) spot.
-        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves):
+        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves or back):
             holder.position = was[id]["position"]
             holder.modulate.a = was[id]["alpha"]
         # A stall's keeper stands behind the counter, which is drawn over them.
@@ -612,6 +682,9 @@ func _draw_people(cast: Dictionary) -> void:
             if was[id]["turn_left"] != null:
                 holder.set_meta("turn_left", was[id]["turn_left"])
         _pose(spr, facing, str(spot.get("pose", "stand")))
+        # The keeper hammering at the anvil keeps at it.
+        if stays and behind and not hand and not moves and was[id]["smithing"] != null:
+            _start_smith(holder, float(was[id]["smithing"]))
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         if _entrances and not stays:
@@ -620,6 +693,8 @@ func _draw_people(cast: Dictionary) -> void:
             _walk_in(holder, spot, behind, false)
         elif moves:
             _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")))
+        elif back:
+            _walk(holder, home, WALK_SPEED, facing)
         _hits.append({"id": id, "holder": holder})
         drawn[id] = true
     if _entrances:
@@ -739,17 +814,27 @@ func _walk_out(id: String, was: Dictionary) -> void:
 ## `fade_to` >= 0 they also fade to that alpha over `fade_seconds`, starting
 ## `fade_delay` into the walk — one tween, so the walk and the fade end
 ## together. The holder carries a "walking" meta (the tween) while under way.
+## Behind the counter the walk may go round its end first (_route).
 func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "stand", done := Callable(),
         fade_to := -1.0, fade_delay := 0.0, fade_seconds := 0.0) -> void:
     var spr := _sprite_of(holder)
-    var dist := holder.position.distance_to(to)
-    if spr != null and dist > 0.5 and spr.sprite_frames != null:
-        var anim := str(world.facing_from_vec(to - holder.position)) + "_walk"
-        if spr.sprite_frames.has_animation(anim):
-            spr.play(anim)
     var tween := holder.create_tween()
     holder.set_meta("walking", tween)
-    tween.tween_property(holder, "position", to, maxf(dist / speed, 0.01))
+    var at := holder.position
+    var first := true
+    for point in (_route(holder, to) if fade_to < 0.0 else [to]):
+        var dist := at.distance_to(point)
+        if spr != null and dist > 0.5 and spr.sprite_frames != null:
+            var anim := str(world.facing_from_vec(point - at)) + "_walk"
+            if spr.sprite_frames.has_animation(anim):
+                # The first leg turns them at once; a later one as it starts.
+                if first:
+                    spr.play(anim)
+                else:
+                    tween.tween_callback(spr.play.bind(anim))
+        tween.tween_property(holder, "position", point, maxf(dist / speed, 0.01))
+        at = point
+        first = false
     if fade_to >= 0.0:
         tween.parallel().tween_property(holder, "modulate:a", fade_to, maxf(fade_seconds, 0.01)).set_delay(fade_delay)
     tween.tween_callback(func():
@@ -760,17 +845,38 @@ func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "s
             done.call())
 
 
+## The way a drawn person walks to `to`: straight there, or for someone behind
+## a counter that has a work area left of it (a smithy) and a walk from one
+## side of the counter's end to the other, round the end first — never
+## through the counter.
+func _route(holder: Node2D, to: Vector2) -> Array:
+    var end := float(room.get("counter_from", 0))
+    if holder.get_parent() != _staff or end <= 0.0 or (holder.position.x < end) == (to.x < end):
+        return [to]
+    var row := float(room.get("keeper", {}).get("y", to.y))
+    return [Vector2(end - GATE_IN, row), to]
+
+
 ## The one tending a stall bustles behind the counter: now and then a walk to
 ## another point along it (or back to their spot), then a look at the goods
-## behind them or at the customers.
+## behind them or at the customers. At a smithy, now and then a farmer-base
+## keeper goes to hammer at the anvil instead.
 func _bustle(delta: float) -> void:
     var holder := _tending()
     if holder == null or holder.has_meta("walking") or not _handoff_now.is_empty():
+        return
+    if holder.has_meta("smithing"):
+        _hammer(holder, delta)
         return
     _bustle_left -= delta
     if _bustle_left > 0.0:
         return
     _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+    var anvil: Dictionary = room.get("anvil", {})
+    if _can_work(holder, anvil, "smith") and not _customers_waiting() and _bustle_rng.randf() < SMITH_CHANCE:
+        _walk(holder, _spot_point(anvil), WALK_SPEED, str(anvil.get("facing", "west")), "stand",
+            func(): _start_smith(holder, _bustle_rng.randf_range(SMITH_MIN, SMITH_MAX)))
+        return
     var home: Vector2 = holder.get_meta("home")
     var to := home
     if holder.position.distance_to(home) < 2.0 or _bustle_rng.randf() < 0.5:
@@ -808,22 +914,132 @@ func _hands() -> Array:
 
 
 ## Each hand now and then turns to the goods behind them or to the customers.
-## Each keeps their own wait (meta "turn_left"); one walking in waits.
+## Each keeps their own wait (meta "turn_left"); one walking in waits. At a
+## smithy a farmer-base hand now and then works the bellows instead (one at a
+## time, meta "bellows" from setting off until back at their spot); one left
+## away from their spot (speech stopped their pull) walks back at their turn.
 func _hands_turn(delta: float) -> void:
+    var bellows: Dictionary = room.get("bellows", {})
     for hand in _hands():
         if hand.has_meta("walking"):
+            continue
+        if hand.has_meta("pulling"):
+            _pull(hand, delta)
             continue
         if not hand.has_meta("turn_left"):
             hand.set_meta("turn_left", _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX))
         var left := float(hand.get_meta("turn_left")) - delta
         if left <= 0.0:
             left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+            var home: Vector2 = hand.get_meta("home")
+            if hand.position.distance_to(home) <= 0.5 and _can_work(hand, bellows, "pull") \
+                    and not _bellows_taken() and _bustle_rng.randf() < BELLOWS_CHANCE:
+                hand.set_meta("bellows", true)
+                _walk(hand, _spot_point(bellows), WALK_SPEED, str(bellows.get("facing", "north")), "stand",
+                    func(): _start_pull(hand))
+                hand.set_meta("turn_left", left)
+                continue
             var facing := "north" if _bustle_rng.randf() < 0.5 else "south"
             hand.set_meta("facing", facing)
-            var spr := _sprite_of(hand)
-            if spr != null:
-                _pose(spr, facing, "stand")
+            hand.remove_meta("bellows")
+            if hand.position.distance_to(home) > 0.5:
+                _walk(hand, home, WALK_SPEED, facing)
+            else:
+                var spr := _sprite_of(hand)
+                if spr != null:
+                    _pose(spr, facing, "stand")
         hand.set_meta("turn_left", left)
+
+
+## Whether `who` can do `work` ("pull", "smith") at a work spot of the scene:
+## it has one, and their sprite has the animation for its facing — a
+## farmer-base sprite does, a one-sheet pack sprite does not.
+func _can_work(who: Node2D, spot: Dictionary, work: String) -> bool:
+    if spot.is_empty():
+        return false
+    var spr := _sprite_of(who)
+    return spr != null and spr.sprite_frames != null \
+        and spr.sprite_frames.has_animation(str(spot.get("facing", "south")) + "_" + work)
+
+
+## Whether anyone but the player's own character stands at the counter: the
+## keeper goes to the anvil only between customers.
+func _customers_waiting() -> bool:
+    for child in _people.get_children():
+        if not child.has_meta("leaving") and str(child.name) != pc_actor_id:
+            return true
+    return false
+
+
+## Whether a hand is at the bellows or on the way.
+func _bellows_taken() -> bool:
+    for hand in _hands():
+        if hand.has_meta("bellows"):
+            return true
+    return false
+
+
+## At the bellows: pull for a few seconds (meta "pulling", seconds left).
+func _start_pull(hand: Node2D) -> void:
+    var spr := _sprite_of(hand)
+    if spr == null:
+        return
+    hand.set_meta("pulling", _bustle_rng.randf_range(PULL_MIN, PULL_MAX))
+    hand.set_meta("pull_frame", -1)
+    spr.play(str(room.get("bellows", {}).get("facing", "north")) + "_pull")
+
+
+## Pulling: each pull down (the animation's second frame) flares the fire;
+## time up, back to their spot.
+func _pull(hand: Node2D, delta: float) -> void:
+    var spr := _sprite_of(hand)
+    if spr != null and str(spr.animation).ends_with("_pull"):
+        if spr.frame == 1 and int(hand.get_meta("pull_frame", -1)) != 1:
+            _flare = 1.0
+        hand.set_meta("pull_frame", spr.frame)
+    var left := float(hand.get_meta("pulling")) - delta
+    if left > 0.0:
+        hand.set_meta("pulling", left)
+        return
+    _stop_pull(hand)
+    hand.set_meta("facing", "south")
+    _walk(hand, hand.get_meta("home"), WALK_SPEED, "south")
+
+
+## Leave the bellows (or the way there) where they stand.
+func _stop_pull(hand: Node2D) -> void:
+    if hand.has_meta("walking"):
+        (hand.get_meta("walking") as Tween).kill()
+        hand.remove_meta("walking")
+    for key in ["pulling", "pull_frame", "bellows"]:
+        hand.remove_meta(key)
+
+
+## At the anvil: hammer for `seconds` (meta "smithing", seconds left).
+func _start_smith(keeper: Node2D, seconds: float) -> void:
+    var anvil: Dictionary = room.get("anvil", {})
+    var spr := _sprite_of(keeper)
+    var anim := str(anvil.get("facing", "west")) + "_smith"
+    if spr == null or spr.sprite_frames == null or not spr.sprite_frames.has_animation(anim):
+        return
+    keeper.set_meta("smithing", seconds)
+    spr.play(anim)
+
+
+## Hammering: time up, back to their spot behind the counter.
+func _hammer(keeper: Node2D, delta: float) -> void:
+    var left := float(keeper.get_meta("smithing")) - delta
+    if left > 0.0:
+        keeper.set_meta("smithing", left)
+        return
+    _back_to_counter(keeper)
+
+
+## The keeper leaves the anvil (or the work area) for their spot behind the
+## counter, facing the customers.
+func _back_to_counter(keeper: Node2D) -> void:
+    keeper.remove_meta("smithing")
+    _walk(keeper, keeper.get_meta("home"), WALK_SPEED, "south")
 
 
 ## Seat a farmer-base villager in a seat spot; everyone else stands, facing
@@ -919,8 +1135,12 @@ func say(npc_id: String, text: String) -> void:
     if holder == null:
         return
     # A hand turns to the customers to speak and holds it a while — once
-    # there, if still walking in.
+    # there, if still walking in. Speaking stops a pull at the bellows (or the
+    # way there) where they stand; they walk back at their next turn.
     if holder.has_meta("hand"):
+        if holder.has_meta("bellows"):
+            _stop_pull(holder)
+            holder.set_meta("bellows", true)
         if not holder.has_meta("walking"):
             holder.set_meta("facing", "south")
             var hand_spr := _sprite_of(holder)
@@ -928,14 +1148,18 @@ func say(npc_id: String, text: String) -> void:
                 _pose(hand_spr, "south", "stand")
             holder.set_meta("turn_left", SPEAK_HOLD)
     # The one tending a stall stops to speak, facing the customers — but not
-    # in the middle of handing something over.
+    # in the middle of handing something over. From a smithy's anvil (or on
+    # the way there) they come back to the counter to speak.
     elif is_stall() and holder.get_parent() == _staff and holder.has_meta("keeper") and not holder.has_meta("leaving") and _handoff_now.is_empty():
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")
-        var spr := _sprite_of(holder)
-        if spr != null:
-            _pose(spr, "south", "stand")
+        if holder.has_meta("smithing") or holder.position.x < float(room.get("counter_from", 0)):
+            _back_to_counter(holder)
+        else:
+            var spr := _sprite_of(holder)
+            if spr != null:
+                _pose(spr, "south", "stand")
         _bustle_left = SPEAK_HOLD
     var existing := holder.get_node_or_null(BUBBLE_NODE)
     if existing != null:
@@ -1417,6 +1641,8 @@ func _handoff_walk() -> void:
     if keeper.has_meta("walking"):
         (keeper.get_meta("walking") as Tween).kill()
         keeper.remove_meta("walking")
+    # A sale calls them from the anvil.
+    keeper.remove_meta("smithing")
     _walk(keeper, _handoff_now["stop"], WALK_SPEED, str(_handoff_now["facing"]), "stand", _handoff_arrived)
 
 

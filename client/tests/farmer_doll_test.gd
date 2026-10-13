@@ -120,7 +120,8 @@ func _sheets() -> Dictionary:
     return out
 
 ## The pack's real prop sheet sizes, so pose regions land as they do live.
-const PROP_SHEET_SIZES := {"axe": Vector2i(224, 32), "scythe": Vector2i(512, 512), "mug": Vector2i(192, 512)}
+const PROP_SHEET_SIZES := {"axe": Vector2i(224, 32), "scythe": Vector2i(512, 512), "mug": Vector2i(192, 512),
+    "hammer": Vector2i(192, 512)}
 
 
 func _doll(layers: Array, sheets: Dictionary) -> FarmerDoll:
@@ -252,6 +253,18 @@ func _test_overlay_props() -> void:
     _check("mug at 16,16", prop.position, Vector2(16, 16))
     doll.play("west_drink")
     _check("mirrored mug stays at 16,16", prop.position, Vector2(16, 16))
+    # LLM-764: the smith's hammer and iron, overlay #09 — the sheet draws its
+    # first two frames 12 px left of the last three.
+    doll.play("east_smith")
+    doll.frame = 0
+    _check("smith: 32 cell of row #09", prop.region_rect, Rect2(1 * 32, 8 * 32, 32, 32))
+    _check("smith's first frames at 13,10", prop.position, Vector2(13, 10))
+    doll.frame = 3
+    _check("smith's strike frames at 25,10", [prop.region_rect, prop.position], [Rect2(4 * 32, 8 * 32, 32, 32), Vector2(25, 10)])
+    doll.play("west_smith")
+    doll.frame = 3
+    _check("mirrored smith: the strike on the west side", [prop.position, prop.flip_h], [Vector2(64 - 25 - 32, 10), true])
+    _check("smith faces east or west only", [doll.sprite_frames.has_animation("south_smith"), doll.sprite_frames.has_animation("north_smith")], [false, false])
     doll.play("south_pull")
     _check("pull has no prop", prop.visible, false)
     doll.play("east_sit")

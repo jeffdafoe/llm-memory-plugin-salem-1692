@@ -28,6 +28,12 @@ class_name FarmerRig
 ## draws no back view), sit = sit on floor. seat = sit in a chair (LLM-750,
 ## the interior window), held.
 ##
+## smith (LLM-764, the smithy window) = the guide's SMITH, east only (the guide
+## draws no other facing): hammer and hot iron from overlay animation #09.
+## The sheet does not draw #09's frames in one place — measured against the
+## guide, frames 1-2 sit at 13,10 and frames 3-5 at 25,10 — so the iron
+## stays put on the anvil.
+##
 ## The dictionaries below are kept JSON-compatible (double quotes, no
 ## trailing commas) so offline tools can read this file as data.
 
@@ -39,7 +45,8 @@ const PROP_CELL_SIZE := 32
 const PROPS := {
     "axe": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_tool_001_v00.png", "ramps": {"tool_metal": 0, "tool_wood": 0, "tool_accent": 0}},
     "scythe": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_animations_64x64_v00.png", "cell_size": 64, "ramps": {"tool_metal": 0}},
-    "mug": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_animations_32x32_v00.png", "ramps": {}}
+    "mug": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_animations_32x32_v00.png", "ramps": {}},
+    "hammer": {"sheet": "/tilesets/mana-seed/farmer/effects/farmer_animations_32x32_v00.png", "ramps": {}}
 }
 # END-JSON
 
@@ -117,6 +124,13 @@ const ANIMATIONS := {
     "south_sit": {"frames": [{"cell": 197, "ms": 0}]},
     "north_sit": {"frames": [{"cell": 213, "ms": 0}]},
     "east_sit": {"frames": [{"cell": 229, "ms": 0}]},
+    "east_smith": {"prop": "hammer", "frames": [
+        {"cell": 123, "ms": 400, "prop": {"pose": 49, "x": 13, "y": 10}},
+        {"cell": 124, "ms": 400, "prop": {"pose": 50, "x": 13, "y": 10}},
+        {"cell": 125, "ms": 100, "prop": {"pose": 51, "x": 25, "y": 10}},
+        {"cell": 125, "ms": 100, "prop": {"pose": 52, "x": 25, "y": 10}},
+        {"cell": 125, "ms": 100, "prop": {"pose": 53, "x": 25, "y": 10}}
+    ]},
     "south_seat": {"frames": [{"cell": 195, "ms": 0}]},
     "north_seat": {"frames": [{"cell": 211, "ms": 0}]},
     "east_seat": {"frames": [{"cell": 227, "ms": 0}]}
