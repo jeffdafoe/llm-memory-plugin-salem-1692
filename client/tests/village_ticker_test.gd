@@ -218,9 +218,10 @@ func _test_build_only_on_first_pass() -> void:
     t._repeat_timer = timer
     root.add_child(timer)
     t._build_line = "Salem build 00aa2b90"
-    t._atmosphere_line = "Mist on the green."
-    t._active_line = t._band_line()
-    t._scrolling = true
+    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"atmosphere": "Mist on the green."}))
+    _check("world read scrolls build and band together", t._active_line,
+        "Salem build 00aa2b90   ~   Mist on the green.")
+    _check("first pass is scrolling", t._scrolling, true)
     t._on_scroll_finished()
     _check("repeat drops the build", t._active_line, "Mist on the green.")
     _check("repeat goes on the schedule", timer.is_stopped(), false)
