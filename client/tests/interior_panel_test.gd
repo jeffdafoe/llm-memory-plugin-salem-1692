@@ -43,6 +43,9 @@ const TESTS := [
     "_test_walk_in_survives_a_redraw",
     "_test_leave_return_leave",
     "_test_leaver_takes_their_bubble",
+    "_test_sale_handed_over_the_counter",
+    "_test_purchase_over_the_counter",
+    "_test_no_handoff",
 ]
 
 const STALL := "stall-1"
@@ -1036,6 +1039,110 @@ func _test_leaver_takes_their_bubble() -> void:
     _panel.refresh()
     var ghost: Node2D = _panel._leaving("buyer")
     _check("the line goes with them", ghost != null and ghost.get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## A stall open with its keeper behind the counter and `buyer` at it; the
+## shelf (asked for through the hook) holds apples. Returns the shelf-asks log.
+func _stall_with_buyer(pin_offset := Vector2i(1, 1)) -> Array:
+    _clear_people()
+    _place_stall()
+    var asked := []
+    _panel.close()
+    _panel.wares_hook = func(sid: String) -> Array:
+        asked.append(sid)
+        return [{"item": "apples", "stock": "plenty"}]
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _at_tile("buyer", _farmer(), Vector2i(8, 21) + pin_offset)
+    _panel.open(STALL)
+    return asked
+
+
+func _sale(seller: String, buyer: String, item := "apples", state := "accepted", qty := 3) -> Dictionary:
+    return {"seller_id": seller, "buyer_id": buyer, "item": item, "qty": qty, "terminal_state": state}
+
+
+func _test_sale_handed_over_the_counter() -> void:
+    var asked := _stall_with_buyer()
+    var buyer: Node2D = _panel._people.get_node("buyer")
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    _panel.on_pay_resolved(_sale("keeper", "buyer"))
+    _check("the shelf is read again", asked.size(), 2)
+    _check("the keeper walks to the buyer", keeper.has_meta("walking"), true)
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_apples")
+    _check("the apples go on the counter", good != null, true)
+    if good != null:
+        _check("in front of the buyer", good.position.x + StallScenes.CELL.x / 2.0, roundf(buyer.position.x))
+        _check("on the counter", good.position.y, float(StallScenes.COUNTER_Y - StallScenes.CELL.y))
+        _check("a few: two of them", good.get_child_count(), 2)
+        _check("not down until the keeper gets there", good.modulate.a, 0.0)
+        _check("the apples' picture", (good.get_child(0).texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["apples"]))
+        _finish_walk(keeper)
+        _check("the keeper stands at the buyer", keeper.position.x, roundf(buyer.position.x))
+        var t: Tween = good.get_meta("tween")
+        # Past the keeper's walk (at most ~2 s across the counter), inside the hold.
+        t.custom_step(3.0)
+        _check("set down", good.modulate.a, 1.0)
+        var on_counter := good.position
+        t.custom_step(60.0)
+        _check("then toward the buyer", good.position.y > on_counter.y, true)
+        _check("and gone", good.is_queued_for_deletion(), true)
+    _panel.on_pay_resolved(_sale("keeper", "buyer", "apples", "accepted", 1))
+    var one: Node2D = _panel._handoff.get_child(_panel._handoff.get_child_count() - 1)
+    _check("one bought: one on the counter", one.get_child_count(), 1)
+
+    # Someone not drawn gets it on the counter's middle.
+    _panel.on_pay_resolved(_sale("keeper", "somebody-past-the-spots"))
+    var mid: Node2D = _panel._handoff.get_child(_panel._handoff.get_child_count() - 1)
+    _check("not drawn: the counter's middle", mid.position.x + StallScenes.CELL.x / 2.0, float(StallScenes.KEEPER["x"]))
+    _panel.open(STALL)
+    _check("reopening clears the counter", _panel._handoff.get_child_count(), 0)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_purchase_over_the_counter() -> void:
+    _stall_with_buyer(Vector2i(-1, 1))
+    var seller: Node2D = _panel._people.get_node("buyer")
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    # The keeper buys a bale the customer brought — not a good the shelf has.
+    _panel.on_pay_resolved(_sale("buyer", "keeper", "iron"))
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_iron")
+    _check("the iron lies in front of the seller", good != null and good.position.x + StallScenes.CELL.x / 2.0 == roundf(seller.position.x), true)
+    _check("the keeper comes for it", keeper.has_meta("walking"), true)
+    if good != null:
+        var t: Tween = good.get_meta("tween")
+        t.custom_step(0.2)
+        _check("there at once", good.modulate.a, 1.0)
+        var on_counter := good.position
+        t.custom_step(60.0)
+        _check("then up to the keeper", good.position.y < on_counter.y, true)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+func _test_no_handoff() -> void:
+    var asked := _stall_with_buyer()
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    _panel.on_pay_resolved(_sale("keeper", "buyer", "apples", "declined"))
+    _check("a declined offer: nothing", [_panel._handoff.get_child_count(), keeper.has_meta("walking"), asked.size()], [0, false, 1])
+    _panel.on_pay_resolved(_sale("keeper", "buyer", "mending"))
+    _check("a service: nothing over the counter", _panel._handoff.get_child_count(), 0)
+    _at_tile("other", _farmer(), Vector2i(8, 21) + Vector2i(-1, 1))
+    _panel.refresh()
+    _panel.on_pay_resolved(_sale("other", "buyer"))
+    _check("customers trading: nothing", _panel._handoff.get_child_count(), 0)
+    _panel.close()
+    _panel.on_pay_resolved(_sale("keeper", "buyer"))
+    _check("a closed window: nothing", _panel._handoff.get_child_count(), 0)
+    # A room has no counter (the Tavern's bar is its own ticket).
+    _panel.open(_sid)
+    _panel.on_pay_resolved(_sale("keeper", "buyer"))
+    _check("a room: nothing", _panel._handoff.get_child_count(), 0)
     _panel.close()
     _panel.wares_hook = Callable()
     _done()

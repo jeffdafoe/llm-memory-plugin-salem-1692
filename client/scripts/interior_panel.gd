@@ -28,6 +28,11 @@ extends CanvasLayer
 ## bustles along the counter every few seconds and stops, facing the
 ## customers, to speak. Clicks find people where they stand now.
 ##
+## A sale at a stall is handed over the counter (LLM-756): the keeper walks
+## along the counter to the buyer, sets the good down in front of them, and
+## it goes to them; a good the keeper buys lies in front of the seller until
+## the keeper comes for it.
+##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
 ## pixels at a WHOLE number of screen pixels each, `k`; the window stretch is
 ## cancelled and the origin snapped to a whole screen pixel. People come from
@@ -70,6 +75,12 @@ const BUSTLE_MAX := 6.0
 const BUSTLE_REACH := 34.0
 const BUSTLE_SPEED := 16.0
 const SPEAK_HOLD := 4.0
+## A sale over a stall's counter (LLM-756): the good lies on the counter
+## HANDOFF_HOLD seconds, then goes to its new owner over HANDOFF_AWAY seconds,
+## sliding HANDOFF_SLIDE art px their way as it fades.
+const HANDOFF_HOLD := 2.0
+const HANDOFF_AWAY := 0.6
+const HANDOFF_SLIDE := 14.0
 
 var world: Node2D = null
 var pc_actor_id := ""
@@ -101,6 +112,8 @@ var _goods_back: Node2D = null
 var _staff: Node2D = null
 var _counter: Sprite2D = null
 var _goods_front: Node2D = null
+## Goods changing hands over the counter, above the goods on it.
+var _handoff: Node2D = null
 var _people: Node2D = null
 var _font: Font = null
 var _stretch := Vector2.ONE
@@ -202,6 +215,8 @@ func _build_ui() -> void:
     _scene.add_child(_counter)
     _goods_front = Node2D.new()
     _scene.add_child(_goods_front)
+    _handoff = Node2D.new()
+    _scene.add_child(_handoff)
     _people = Node2D.new()
     _people.y_sort_enabled = true
     _scene.add_child(_people)
@@ -229,7 +244,11 @@ func open(sid: String) -> void:
         return
     if world != null and world.has_signal("npc_spoke") and not world.npc_spoke.is_connected(_on_npc_spoke):
         world.npc_spoke.connect(_on_npc_spoke)
+    if world != null and world.has_signal("pay_resolved") and not world.pay_resolved.is_connected(on_pay_resolved):
+        world.pay_resolved.connect(on_pay_resolved)
     var was_open := visible
+    for child in _handoff.get_children():
+        child.free()
     if sid != structure_id:
         _assigned = {}
         _wares = []
@@ -784,6 +803,81 @@ func _draw_goods() -> void:
             spr.position = Vector2(slot["at"] + StallScenes.FEW_STEP * i)
             spr.name = "%s_%d" % [slot["item"], i]
             layer.add_child(spr)
+
+
+## A sale settled (the world's pay_resolved, LLM-756). Over a stall's counter
+## it is handed across: when the one tending the stall sells, they walk along
+## the counter to the buyer, set the good down in front of them, and after a
+## moment it goes to the buyer; when they buy from someone at the counter, the
+## good lies in front of the seller until they come for it. Only goods: what
+## they sell must be on the shelf or have a goods picture (a service has
+## neither). Trades between customers, and offers that fell through, pass the
+## counter by. The shelf is re-read at once.
+func on_pay_resolved(data: Dictionary) -> void:
+    if not visible or not is_stall() or str(data.get("terminal_state", "")) != "accepted":
+        return
+    var keeper := _tending()
+    if keeper == null:
+        return
+    var keeper_id := str(keeper.name)
+    var item := str(data.get("item", ""))
+    var selling := str(data.get("seller_id", "")) == keeper_id
+    var other := str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", ""))
+    if not selling and str(data.get("buyer_id", "")) != keeper_id:
+        return
+    if selling and not (StallScenes.GOODS.has(item) or _on_shelf(item)):
+        return
+    _request_wares()
+    # Where along the counter: in front of the other party, or the middle
+    # when they are not drawn.
+    var size: Vector2i = room.get("size", StallScenes.SIZE)
+    var x := float(StallScenes.KEEPER["x"])
+    var customer := _people.get_node_or_null(NodePath(other)) as Node2D
+    if customer != null:
+        x = clampf(customer.position.x, 10.0, size.x - 10.0)
+    x = roundf(x)
+    if keeper.has_meta("walking"):
+        (keeper.get_meta("walking") as Tween).kill()
+        keeper.remove_meta("walking")
+    var stop := Vector2(x, (keeper.get_meta("home") as Vector2).y)
+    var walk_seconds := keeper.position.distance_to(stop) / WALK_SPEED
+    _walk(keeper, stop, WALK_SPEED, "south")
+    var hold := HANDOFF_HOLD if selling else maxf(HANDOFF_HOLD, walk_seconds + 0.5)
+    _bustle_left = walk_seconds + hold + HANDOFF_AWAY + 1.0
+    var sheet := _texture(StallScenes.GOODS_SHEET)
+    if sheet == null:
+        return
+    var good := Node2D.new()
+    good.name = "handoff_" + item
+    good.position = Vector2(x - StallScenes.CELL.x / 2.0, StallScenes.COUNTER_Y - StallScenes.CELL.y)
+    good.modulate.a = 0.0
+    var cell := AtlasTexture.new()
+    cell.atlas = sheet
+    cell.region = StallScenes.cell_rect(2 * StallScenes.goods_index(item))
+    for i in (1 if int(data.get("qty", 1)) <= 1 else 2):
+        var spr := Sprite2D.new()
+        spr.centered = false
+        spr.texture = cell
+        spr.position = Vector2(StallScenes.FEW_STEP * i)
+        good.add_child(spr)
+    _handoff.add_child(good)
+    # Sold: set down once the keeper is there, then toward the buyer (down,
+    # out of the stall). Bought: there at once, then up to the keeper.
+    var t := good.create_tween()
+    t.tween_property(good, "modulate:a", 1.0, 0.15).set_delay(walk_seconds if selling else 0.0)
+    t.tween_interval(hold)
+    var away := Vector2(0, HANDOFF_SLIDE if selling else -HANDOFF_SLIDE)
+    t.tween_property(good, "position", good.position + away, HANDOFF_AWAY)
+    t.parallel().tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
+    t.tween_callback(good.queue_free)
+    good.set_meta("tween", t)
+
+
+func _on_shelf(item: String) -> bool:
+    for w in _wares:
+        if str(w.get("item", "")) == item:
+            return true
+    return false
 
 
 ## Ask the engine what is on this stall's shelf.
