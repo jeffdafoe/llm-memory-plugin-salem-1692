@@ -135,6 +135,9 @@ const TABLE_SECONDS := 30.0
 ## CARRY_LIFT art px above their feet to the buyer.
 const PICK_UP_HOLD := 0.8
 const CARRY_LIFT := 9.0
+## A bundle's goods (LLM-770) stand BUNDLE_STEP art px apart, in hand and on
+## the table.
+const BUNDLE_STEP := 10.0
 ## A diner with a dish in front of them dips EAT_DIP art px toward it for
 ## EAT_DOWN seconds of every EAT_PERIOD — spooning, sipping. A finished meal's
 ## dish shows its empty picture (EMPTY_DISH, the goods sheet's kinds) until it
@@ -1689,18 +1692,29 @@ func on_pay_resolved(data: Dictionary) -> void:
     if keeper == null:
         return
     var keeper_id := str(keeper.name)
-    var item := str(data.get("item", ""))
     var selling := str(data.get("seller_id", "")) == keeper_id
     if not selling and str(data.get("buyer_id", "")) != keeper_id:
         return
-    if not (StallScenes.GOODS.has(item) or (selling and _on_shelf(item))):
+    # A bundle (several goods taken on one quote, LLM-770) names its goods in
+    # `lines`, with no single item; they change hands together.
+    var lines: Array = []
+    var bundle = data.get("lines", null)
+    if bundle is Array and not bundle.is_empty():
+        for line in bundle:
+            if line is Dictionary:
+                lines.append({"item": str(line.get("item", "")), "qty": int(line.get("qty", 1))})
+    else:
+        lines.append({"item": str(data.get("item", "")), "qty": int(data.get("qty", 1))})
+    lines = lines.filter(func(line): return StallScenes.GOODS.has(line["item"]) or (selling and _on_shelf(line["item"])))
+    if lines.is_empty():
         return
     if is_stall():
         _request_wares(true)
     # The goods sheet still downloading: nothing to hand over.
     if _texture(StallScenes.GOODS_SHEET) == null:
         return
-    _handoffs.append({"item": item, "qty": int(data.get("qty", 1)), "selling": selling,
+    _handoffs.append({"item": str(lines[0]["item"]) if lines.size() == 1 else "", "qty": int(lines[0]["qty"]),
+        "lines": lines, "selling": selling,
         "other": str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", "")),
         "eaten": bool(data.get("consume_now", false))})
     if _handoff_now.is_empty():
@@ -1752,7 +1766,7 @@ func _next_handoff() -> void:
         h["facing"] = str(room["keeper"].get("facing", "south"))
         h["serve"] = _serve_to(str(h["other"]), at, bool(h["eaten"]))
     h["keeper"] = str(keeper.name) if keeper != null else ""
-    var good := _handoff_good(str(h["item"]), int(h["qty"]), at)
+    var good := _handoff_goods(h.get("lines", [{"item": h["item"], "qty": h["qty"]}]), at)
     if good == null:
         _next_handoff()
         return
@@ -1789,13 +1803,44 @@ func _serve_to(buyer: String, bar: Vector2, eaten: bool) -> Dictionary:
 ## standing at `at` (its bottom middle) — hidden until it is shown. Null
 ## without the goods sheet.
 func _handoff_good(item: String, qty: int, at: Vector2) -> Node2D:
+    var good := _good_picture(item, qty)
+    if good == null:
+        return null
+    good.position = _cell_at(at)
+    _handoff.add_child(good)
+    return good
+
+
+## The goods of one handoff (`lines`: [{item, qty}]) standing at `at`: one
+## good as _handoff_good; a bundle's (LLM-770) side by side, BUNDLE_STEP art px
+## apart, in one node (meta `lines`) that moves as one, each good its own child
+## — on a table they become a dish each (_on_table). Null without the sheet.
+func _handoff_goods(lines: Array, at: Vector2) -> Node2D:
+    if lines.size() == 1:
+        return _handoff_good(str(lines[0]["item"]), int(lines[0]["qty"]), at)
+    if _texture(StallScenes.GOODS_SHEET) == null:
+        return null
+    var group := Node2D.new()
+    group.name = "handoff_bundle"
+    group.set_meta("lines", true)
+    group.position = _cell_at(at)
+    for i in lines.size():
+        var good := _good_picture(str(lines[i]["item"]), int(lines[i]["qty"]))
+        good.position = Vector2(roundf((i - (lines.size() - 1) / 2.0) * BUNDLE_STEP), 0)
+        group.add_child(good)
+    _handoff.add_child(group)
+    return group
+
+
+## A good's picture — one of it, or two for more — as a node not yet placed.
+## Null without the goods sheet.
+func _good_picture(item: String, qty: int) -> Node2D:
     var sheet := _texture(StallScenes.GOODS_SHEET)
     if sheet == null:
         return null
     var good := Node2D.new()
     good.name = "handoff_" + item
     good.set_meta("item", item)
-    good.position = _cell_at(at)
     var cell := AtlasTexture.new()
     cell.atlas = sheet
     cell.region = StallScenes.cell_rect(2 * StallScenes.goods_index(item))
@@ -1805,7 +1850,6 @@ func _handoff_good(item: String, qty: int, at: Vector2) -> Node2D:
         spr.texture = cell
         spr.position = Vector2(StallScenes.FEW_STEP * i)
         good.add_child(spr)
-    _handoff.add_child(good)
     return good
 
 
@@ -2038,6 +2082,16 @@ func _cell_bottom(cell: Vector2) -> Vector2:
 ## leaves it to be cleared at once. A second helping of the same good: the
 ## first bowl is cleared.
 func _on_table(dish: Node2D, buyer: String, item: String) -> void:
+    # A bundle (LLM-770) lands as one; on the table each good is its own dish.
+    if dish.has_meta("lines"):
+        var at := dish.position
+        for good in dish.get_children():
+            dish.remove_child(good)
+            _handoff.add_child(good)
+            good.position = at + good.position
+            _on_table(good, buyer, str(good.get_meta("item")))
+        dish.queue_free()
+        return
     for old in _dishes():
         if str(old.get_meta("buyer")) == buyer and str(old.get_meta("item")) == item:
             _clear_dish(old)
@@ -2132,8 +2186,13 @@ func _on_meal_ended(actor_id: String, item: String) -> void:
     # Over before its dish reached the table (still on the bar, carried, or
     # landing): it is empty and cleared as it lands (_on_table).
     var good = _handoff_now.get("good", null)
-    if not _handoff_now.has("clear") and is_instance_valid(good) and str(_handoff_now.get("other", "")) == actor_id \
-            and str(_handoff_now.get("item", "")) == item:
+    if _handoff_now.has("clear") or not is_instance_valid(good) or str(_handoff_now.get("other", "")) != actor_id:
+        return
+    if good.has_meta("lines"):
+        for line in good.get_children():
+            if str(line.get_meta("item", "")) == item:
+                line.set_meta("meal_over", true)
+    elif str(_handoff_now.get("item", "")) == item:
         good.set_meta("meal_over", true)
 
 

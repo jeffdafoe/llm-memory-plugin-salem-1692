@@ -413,12 +413,17 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			At:             e.At.UTC().Format(time.RFC3339),
 		}}, true
 	case *sim.PayWithItemResolved:
+		var lines []payLineWireDTO
+		for _, l := range e.Lines {
+			lines = append(lines, payLineWireDTO{Item: string(l.ItemKind), Qty: l.Qty})
+		}
 		return WireFrame{Type: "pay_resolved", Data: payResolvedWireDTO{
 			LedgerID:       uint64(e.LedgerID),
 			BuyerID:        string(e.BuyerID),
 			SellerID:       string(e.SellerID),
 			Item:           string(e.ItemKind),
 			Qty:            e.QtyPerConsumer,
+			Lines:          lines,
 			Amount:         e.Amount,
 			ConsumeNow:     e.ConsumeNow,
 			TerminalState:  string(e.TerminalState),
@@ -1184,20 +1189,29 @@ type payCounteredWireDTO struct {
 // ("you took their offer" vs the backwards "they accepted your offer").
 // consume_now is the offer's eat-here flag: the room window leaves a good
 // eaten here on the buyer's table and hands a take-home good over (LLM-758).
+// lines is a bundle's goods (a quote-take of several lines, LLM-101), where
+// item is empty — the window hands them all over (LLM-770); absent otherwise.
 type payResolvedWireDTO struct {
-	LedgerID       uint64 `json:"ledger_id"`
-	BuyerID        string `json:"buyer_id"`
-	SellerID       string `json:"seller_id"`
-	Item           string `json:"item"`
-	Qty            int    `json:"qty"`
-	Amount         int    `json:"amount"`
-	ConsumeNow     bool   `json:"consume_now"`
-	TerminalState  string `json:"terminal_state"`
-	BuyerTookQuote bool   `json:"buyer_took_quote,omitempty"`
-	Message        string `json:"message,omitempty"`
-	HuddleID       string `json:"huddle_id,omitempty"`
-	SceneID        string `json:"scene_id,omitempty"`
-	At             string `json:"at"`
+	LedgerID       uint64           `json:"ledger_id"`
+	BuyerID        string           `json:"buyer_id"`
+	SellerID       string           `json:"seller_id"`
+	Item           string           `json:"item"`
+	Qty            int              `json:"qty"`
+	Lines          []payLineWireDTO `json:"lines,omitempty"`
+	Amount         int              `json:"amount"`
+	ConsumeNow     bool             `json:"consume_now"`
+	TerminalState  string           `json:"terminal_state"`
+	BuyerTookQuote bool             `json:"buyer_took_quote,omitempty"`
+	Message        string           `json:"message,omitempty"`
+	HuddleID       string           `json:"huddle_id,omitempty"`
+	SceneID        string           `json:"scene_id,omitempty"`
+	At             string           `json:"at"`
+}
+
+// payLineWireDTO is one good of a bundle on pay_resolved.lines.
+type payLineWireDTO struct {
+	Item string `json:"item"`
+	Qty  int    `json:"qty"`
 }
 
 // mealStartedWireDTO is the npc_meal_started payload (LLM-758) — an actor
