@@ -17,11 +17,21 @@ extends CanvasLayer
 ## the press before main.gd's PC walk handler. Main exposes the hit-test
 ## result via is_press_over_actor() so the walk handler can skip walking
 ## when the click lands on a sprite.
+##
+## A person is clicked by their body (BODY_BOX around the feet), never the
+## sprite frame's empty margin, and the player's own character is never
+## clicked (LLM-755): a farmer-base frame is 64 x 64 drawn at 2x, so the
+## frame took a 4 x 4 tile square of the map — every walk click within two
+## tiles of yourself, or of a villager by a door, was swallowed.
 
 const COLOR_BG = Color(0.10, 0.08, 0.06, 0.92)
 const COLOR_BORDER = Color(0.45, 0.35, 0.22, 0.8)
 const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
+## A person's body in sprite-frame pixels around the feet (the room window's
+## click box, plus two pixels under the feet), scaled by the sprite's draw
+## scale and kept inside the frame.
+const BODY_BOX := Rect2(-8, -28, 16, 30)
 
 var _panel: PanelContainer = null
 var _name_label: Label = null
@@ -35,6 +45,8 @@ var _font: Font = null
 var world: Node2D = null
 var editor: CanvasLayer = null
 var camera: Node = null
+## The player's own character, which a click never lands on.
+var pc_actor_id := ""
 
 # Currently shown actor's container node, or null. Used to support
 # tap-to-toggle: clicking the same actor again dismisses the panel.
@@ -282,6 +294,8 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
     var best_dist: float = INF
 
     for actor_id in world.placed_npcs:
+        if pc_actor_id != "" and str(actor_id) == pc_actor_id:
+            continue
         var container: Node2D = world.placed_npcs[actor_id]
         if container == null or not container.visible:
             continue
@@ -298,9 +312,7 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
         var size: Vector2 = _get_sprite_size(sprite_node)
         if size == Vector2.ZERO:
             continue
-        var world_size: Vector2 = size * sprite_node.scale
-        var origin: Vector2 = container.position + sprite_node.position
-        var rect = Rect2(origin, world_size)
+        var rect := body_rect(container.position, sprite_node.position, size, sprite_node.scale)
         if rect.has_point(world_pos):
             var dist: float = container.position.distance_to(world_pos)
             if dist < best_dist:
@@ -308,6 +320,15 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
                 best_node = container
 
     return best_node
+
+## A person's click box in world pixels: BODY_BOX around the feet (the
+## container's position) at the sprite's scale, cut to the drawn frame so a
+## small sprite (a duck) is never clicked past its own picture.
+static func body_rect(feet: Vector2, sprite_offset: Vector2, frame_size: Vector2, scale: Vector2) -> Rect2:
+    var body := Rect2(BODY_BOX.position * scale, BODY_BOX.size * scale)
+    var frame := Rect2(sprite_offset, frame_size * scale)
+    var box := body.intersection(frame)
+    return Rect2(feet + box.position, box.size)
 
 func _get_sprite_size(sprite_node: Node2D) -> Vector2:
     if sprite_node is Sprite2D:

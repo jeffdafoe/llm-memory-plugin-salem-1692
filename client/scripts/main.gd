@@ -1081,6 +1081,8 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     _pc_actor_id = str(data.get("actor_id", ""))
     if footsteps != null:
         footsteps.pc_actor_id = _pc_actor_id
+    if actor_tooltip != null:
+        actor_tooltip.pc_actor_id = _pc_actor_id
     # A character already inside at login opens its room (LLM-750).
     _sync_interior()
     # Slide camera to the PC's actual position on the first /pc/me that
