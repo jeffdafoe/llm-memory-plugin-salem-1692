@@ -751,6 +751,14 @@ func _test_stall_draws() -> void:
     _panel.say("keeper", "Fresh apples today.")
     _check("the keeper's bubble", _panel._staff.get_node("keeper").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
 
+    # A newcomer at the counter redraws everyone: the keeper is rebuilt, not
+    # doubled, and keeps the bubble.
+    _at_tile("newcomer", _farmer(), pin + Vector2i(-1, 0))
+    _panel.refresh()
+    _check("one keeper after a redraw", _panel._staff.get_child_count(), 1)
+    _check("the newcomer drawn", _panel._people.get_node_or_null("newcomer") != null, true)
+    _check("the keeper's bubble carried over", _panel._staff.get_node("keeper").get_node_or_null(_panel.BUBBLE_NODE) != null, true)
+
     # The shelf sells out.
     _panel.set_wares([])
     _check("a bare shelf", _panel._goods_back.get_child_count() + _panel._goods_front.get_child_count(), 0)

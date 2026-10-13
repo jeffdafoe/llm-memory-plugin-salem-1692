@@ -575,7 +575,11 @@ func _request_wares() -> void:
         add_child(_http_wares)
         _http_wares.request_completed.connect(_on_wares)
     elif _http_wares.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
-        return
+        # Already asking about this stall: that answer will do. A request for
+        # the stall the window just left is dropped for this one.
+        if str(_http_wares.get_meta("structure_id", "")) == sid:
+            return
+        _http_wares.cancel_request()
     _http_wares.set_meta("structure_id", sid)
     _http_wares.request(Auth.api_base + "/api/village/pc/stall?structure_id=" + sid.uri_encode(),
         Auth.auth_headers(false), HTTPClient.METHOD_GET)
