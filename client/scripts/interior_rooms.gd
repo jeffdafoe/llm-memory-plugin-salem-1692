@@ -32,6 +32,36 @@ const ROOMS := {
             {"x": 68, "y": 74, "facing": "south", "pose": "stand"},
         ],
     },
+    # The Inn ("Blue House (Medium)", footprint 8 x 7 tiles): an entry hall.
+    # The keeper stands behind the desk at the foot of the stairs; `counter`
+    # is the desk alone, drawn over them, and `keeper_door` the way they come
+    # and go (down the stairs). The bench seats face the table, backs to us.
+    # `anims` are drawn over the room and the desk: a strip of `frames`
+    # frames of `frame` px, top-left at x/y, at `fps`.
+    "019d98af-ac9b-7833-8e03-5a7015bb5b0c": {
+        "title": "Inn",
+        "sheet": "/tilesets/interiors/inn_common.png",
+        "counter": "/tilesets/interiors/inn_front.png",
+        "size": Vector2i(128, 112),
+        "keeper": {"x": 44, "y": 66, "facing": "south"},
+        "keeper_door": {"x": 10, "y": 60},
+        "door": {"x": 64, "y": 111, "facing": "north"},
+        "bar": {"x": 50, "y": 70},
+        "reach": {"x": 48, "y": 66},
+        "spots": [
+            {"x": 86, "y": 110, "facing": "north", "pose": "seat", "serve": {"x": 86, "y": 86}},
+            {"x": 110, "y": 110, "facing": "north", "pose": "seat", "serve": {"x": 110, "y": 86}},
+            {"x": 14, "y": 102, "facing": "east", "pose": "seat"},
+            {"x": 48, "y": 100, "facing": "north", "pose": "stand"},
+            {"x": 112, "y": 70, "facing": "west", "pose": "stand"},
+            {"x": 12, "y": 80, "facing": "east", "pose": "stand"},
+        ],
+        "anims": [
+            {"sheet": "/tilesets/interiors/inn_fire.png", "frame": Vector2i(16, 16), "frames": 4, "fps": 8.0, "x": 96, "y": 38},
+            {"sheet": "/tilesets/interiors/inn_pot.png", "frame": Vector2i(32, 32), "frames": 4, "fps": 5.0, "x": 66, "y": 50},
+            {"sheet": "/tilesets/interiors/inn_candle.png", "frame": Vector2i(16, 32), "frames": 4, "fps": 6.0, "x": 24, "y": 44},
+        ],
+    },
 }
 
 static func room_for(structure_id: String) -> Dictionary:

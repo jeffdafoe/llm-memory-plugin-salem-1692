@@ -153,6 +153,10 @@ var _goods_back: Node2D = null
 var _staff: Node2D = null
 var _counter: Sprite2D = null
 var _goods_front: Node2D = null
+## A room's animated pieces (InteriorRooms `anims`), over the room and its
+## counter, under the people; `_anim_time` runs while the window is open.
+var _anims: Node2D = null
+var _anim_time := 0.0
 ## Goods changing hands over the counter, above the goods on it — and in a
 ## room the dishes on the tables (meta "buyer" and "item").
 var _handoff: Node2D = null
@@ -273,6 +277,8 @@ func _build_ui() -> void:
     _counter = Sprite2D.new()
     _counter.centered = false
     _scene.add_child(_counter)
+    _anims = Node2D.new()
+    _scene.add_child(_anims)
     _goods_front = Node2D.new()
     _scene.add_child(_goods_front)
     _handoff = Node2D.new()
@@ -401,6 +407,7 @@ func _process(delta: float) -> void:
         _refresh_left = REFRESH_SECONDS
         refresh()
     _update_tag(delta)
+    _animate(delta)
     if is_stall():
         _wares_left -= delta
         if _wares_left <= 0.0:
@@ -455,6 +462,8 @@ func occupants() -> Dictionary:
     if keeper_id != "":
         var k := _entry(keeper_id, room.get("keeper", {}))
         k["keeper"] = true
+        # Behind a desk drawn over them (the Inn), as behind a stall's counter.
+        k["behind"] = room.has("counter")
         placed.append(k)
     for id in others:
         if _assigned.has(id):
@@ -664,13 +673,14 @@ func _sprite_of(holder: Node2D) -> AnimatedSprite2D:
 
 
 ## Where someone at `at` comes in from and goes out to: a stall's nearer side
-## (the keeper behind the counter too), a room's door.
+## (the keeper behind the counter too), a room's door — or, for a room's
+## keeper behind its desk, the room's `keeper_door` (the Inn's stairs).
 func _doorway(at: Vector2, behind: bool) -> Vector2:
-    if is_stall() or behind or not room.has("door"):
+    if is_stall() or not room.has("door"):
         var size: Vector2i = room.get("size", Vector2i(128, 112))
         var middle := (float(room.get("counter_from", 0)) + size.x) / 2.0
         return at + Vector2(-WALK_OFF if at.x < middle else WALK_OFF, 0)
-    var door := Vector2(int(room["door"].get("x", 0)), int(room["door"].get("y", 0)))
+    var door := _spot_point(room["keeper_door"] if behind and room.has("keeper_door") else room["door"])
     return door + Vector2(0, 8) if at.distance_to(door) < 4.0 else door
 
 
@@ -778,11 +788,11 @@ func _bustle(delta: float) -> void:
     _walk(holder, to, BUSTLE_SPEED, facing)
 
 
-## The one tending: a room's keeper, or in a stall the keeper behind the
-## counter (never a hand beside them); null when there is none. _draw_people
-## marks them.
+## The one tending: a room's keeper (behind its desk, or not), or in a stall
+## the keeper behind the counter (never a hand beside them); null when there
+## is none. _draw_people marks them.
 func _tending() -> Node2D:
-    for child in (_staff if is_stall() else _people).get_children():
+    for child in _staff.get_children() + ([] if is_stall() else _people.get_children()):
         if child.has_meta("keeper") and not child.has_meta("leaving"):
             return child
     return null
@@ -919,7 +929,7 @@ func say(npc_id: String, text: String) -> void:
             holder.set_meta("turn_left", SPEAK_HOLD)
     # The one tending a stall stops to speak, facing the customers — but not
     # in the middle of handing something over.
-    elif holder.get_parent() == _staff and holder.has_meta("keeper") and not holder.has_meta("leaving") and _handoff_now.is_empty():
+    elif is_stall() and holder.get_parent() == _staff and holder.has_meta("keeper") and not holder.has_meta("leaving") and _handoff_now.is_empty():
         if holder.has_meta("walking"):
             (holder.get_meta("walking") as Tween).kill()
             holder.remove_meta("walking")
@@ -1039,10 +1049,11 @@ func _on_stage_mouse_exited() -> void:
 ## id, holder} or {kind: "good", node, item}, or {}. At a stall the customers
 ## stand in front of the counter goods (and goods being handed over), those
 ## in front of the keeper and hands, and they in front of the floor piles; in
-## a room the people stand in front of what is on the bar and tables.
+## a room the people stand in front of what is on the bar and tables, and
+## that in front of a keeper behind a desk.
 func thing_at(local: Vector2) -> Dictionary:
     var art := _art_at(local)
-    var layers: Array = [_people, _goods_front, _handoff, _staff, _goods_back] if is_stall() else [_people, _handoff]
+    var layers: Array = [_people, _goods_front, _handoff, _staff, _goods_back] if is_stall() else [_people, _handoff, _staff]
     for layer in layers:
         var found := _person_in(layer, art) if layer == _people or layer == _staff else _good_in(layer, art)
         if not found.is_empty():
@@ -1188,12 +1199,38 @@ func _unhandled_input(event: InputEvent) -> void:
         get_viewport().set_input_as_handled()
 
 
-## Put the room's pictures on: the backdrop, and for a stall the counter (the
-## goods redraw from their own sheet). A picture still downloading leaves its
-## layer blank until it lands.
+## Put the room's pictures on: the backdrop, the counter (a stall's, or a
+## room's desk) and the animated pieces (the goods redraw from their own
+## sheet). A picture still downloading leaves its layer blank until it lands.
 func _apply_textures() -> void:
     _background.texture = _texture(str(room.get("sheet", "")))
-    _counter.texture = _texture(str(room.get("counter", ""))) if is_stall() else null
+    _counter.texture = _texture(str(room.get("counter", ""))) if room.has("counter") else null
+    _draw_anims()
+
+
+## One sprite per `anims` entry whose strip has landed, at its x/y, showing
+## its frames in turn (_animate).
+func _draw_anims() -> void:
+    for child in _anims.get_children():
+        child.free()
+    for anim in room.get("anims", []):
+        var strip := _texture(str(anim.get("sheet", "")))
+        if strip == null:
+            continue
+        var spr := Sprite2D.new()
+        spr.centered = false
+        spr.texture = strip
+        spr.hframes = maxi(1, int(anim.get("frames", 1)))
+        spr.position = Vector2(int(anim.get("x", 0)), int(anim.get("y", 0)))
+        spr.set_meta("fps", float(anim.get("fps", 6.0)))
+        _anims.add_child(spr)
+    _animate(0.0)
+
+
+func _animate(delta: float) -> void:
+    _anim_time += delta
+    for spr in _anims.get_children():
+        spr.frame = int(_anim_time * float(spr.get_meta("fps"))) % spr.hframes
 
 
 ## The goods on the stall's shelf changed (or their sheet arrived): lay them
