@@ -806,6 +806,79 @@ func TestTranslateEvent_PayResolved(t *testing.T) {
 	}
 }
 
+// LLM-758: the eat-here flag reaches the wire, so the room window can tell a
+// meal eaten at the table from a good carried home.
+func TestTranslateEvent_PayResolvedCarriesConsumeNow(t *testing.T) {
+	for _, consumeNow := range []bool{true, false} {
+		frame, ok := TranslateEvent(&sim.PayWithItemResolved{
+			BuyerID: "alice", SellerID: "bob", ItemKind: "ale", QtyPerConsumer: 1,
+			ConsumeNow: consumeNow, TerminalState: sim.PayTerminalStateAccepted,
+		})
+		if !ok {
+			t.Fatal("PayWithItemResolved should translate")
+		}
+		if d := frame.Data.(payResolvedWireDTO); d.ConsumeNow != consumeNow {
+			t.Errorf("consume_now = %v, want %v", d.ConsumeNow, consumeNow)
+		}
+	}
+}
+
+func TestTranslateEvent_DwellStartedIsMealStarted(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 30, 0, 0, time.FixedZone("local", -4*3600))
+	ticks := 8
+	frame, ok := TranslateEvent(&sim.DwellStarted{
+		ActorID:     "alice",
+		Kind:        "stew",
+		StructureID: "tavern",
+		Credits: []sim.DwellCreditSnapshot{
+			{Attribute: "hunger", DwellDelta: -1, PeriodMinutes: 2, RemainingTicks: &ticks},
+			{Attribute: "tiredness", DwellDelta: -1, PeriodMinutes: 2, RemainingTicks: &ticks},
+		},
+		At: at,
+	})
+	if !ok {
+		t.Fatal("DwellStarted should translate")
+	}
+	if frame.Type != "npc_meal_started" {
+		t.Fatalf("type = %q, want npc_meal_started", frame.Type)
+	}
+	want := mealStartedWireDTO{ID: "alice", Item: "stew", StructureID: "tavern", Credits: 2,
+		At: at.UTC().Format(time.RFC3339)}
+	if d := frame.Data.(mealStartedWireDTO); d != want {
+		t.Errorf("npc_meal_started payload = %+v, want %+v", d, want)
+	}
+}
+
+func TestTranslateEvent_ItemDwellEndedIsMealEnded(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 46, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.DwellEnded{
+		ActorID: "alice", ObjectID: "tavern", Source: sim.DwellSourceItem, Kind: "stew",
+		Attribute: "hunger", Reason: sim.DwellEndWalkedAway, At: at,
+	})
+	if !ok {
+		t.Fatal("an item-source DwellEnded should translate")
+	}
+	if frame.Type != "npc_meal_ended" {
+		t.Fatalf("type = %q, want npc_meal_ended", frame.Type)
+	}
+	want := mealEndedWireDTO{ID: "alice", Item: "stew", StructureID: "tavern", Reason: "walked_away",
+		At: at.UTC().Format(time.RFC3339)}
+	if d := frame.Data.(mealEndedWireDTO); d != want {
+		t.Errorf("npc_meal_ended payload = %+v, want %+v", d, want)
+	}
+}
+
+// Resting under a tree or drinking at a well is an object-source dwell: no
+// dish, no frame.
+func TestTranslateEvent_ObjectDwellEndedIsDropped(t *testing.T) {
+	if frame, ok := TranslateEvent(&sim.DwellEnded{
+		ActorID: "alice", ObjectID: "well", Source: sim.DwellSourceObject,
+		Attribute: "thirst", Reason: sim.DwellEndFloorHit,
+	}); ok {
+		t.Errorf("object-source DwellEnded translated to %q, want dropped", frame.Type)
+	}
+}
+
 // ZBBS-WORK-420: an instant quote-take fast-path accept carries
 // BuyerTookQuote=true through to the wire so the client words it "you took
 // their offer" rather than the backwards "they accepted your offer".
