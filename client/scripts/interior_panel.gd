@@ -22,6 +22,12 @@ extends CanvasLayer
 ## the floor behind and on the counter top. Layers, back to front: the stall,
 ## the floor piles, the keeper, the counter, the counter goods, the customers.
 ##
+## People come and go on foot (LLM-754): once the window is open, someone who
+## leaves turns and walks out — a stall's nearer side, a room's door — fading
+## as they go, and a newcomer walks in the same way. The one tending a stall
+## bustles along the counter every few seconds and stops, facing the
+## customers, to speak. Clicks find people where they stand now.
+##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
 ## pixels at a WHOLE number of screen pixels each, `k`; the window stretch is
 ## cancelled and the origin snapped to a whole screen pixel. People come from
@@ -47,6 +53,23 @@ const BUBBLE_NODE := "SpeechBubble"
 const BUBBLE_ANCHOR_Y := -36.0
 ## How often an open stall re-reads its shelf.
 const WARES_SECONDS := 5.0
+## Coming and going (LLM-754): someone who leaves turns and walks off this far
+## (art px) toward the way out, fading over the last FADE_SECONDS; a newcomer
+## walks in the same way. WALK_SPEED is art px a second.
+const WALK_OFF := 40.0
+const WALK_SPEED := 24.0
+const FADE_SECONDS := 0.5
+const LEAVING_PREFIX := "leaving_"
+## The one tending a stall bustles behind the counter (LLM-754): every
+## BUSTLE_MIN..BUSTLE_MAX seconds a walk to a point up to BUSTLE_REACH either
+## side of their spot (or back to it) at BUSTLE_SPEED, then a look at the
+## goods or the customers. Speaking stops them, facing the customers, for
+## SPEAK_HOLD seconds.
+const BUSTLE_MIN := 2.5
+const BUSTLE_MAX := 6.0
+const BUSTLE_REACH := 34.0
+const BUSTLE_SPEED := 16.0
+const SPEAK_HOLD := 4.0
 
 var world: Node2D = null
 var pc_actor_id := ""
@@ -89,6 +112,11 @@ var _fetching: Dictionary = {}
 var _wares: Array = []
 var _wares_left := 0.0
 var _http_wares: HTTPRequest = null
+## False while open() draws the room as it is; true after, when a change in
+## who is here is someone coming or going.
+var _entrances := false
+var _bustle_left := 0.0
+var _bustle_rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
@@ -141,7 +169,10 @@ func _build_ui() -> void:
     title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     head.add_child(title_label)
     close_button = Button.new()
-    close_button.text = "✕"
+    # "×", not "✕": the default font has no U+2715, and a browser shows the
+    # missing-glyph box (a desktop run hides it behind a system font).
+    close_button.text = "×"
+    close_button.add_theme_font_size_override("font_size", 24)
     close_button.custom_minimum_size = Vector2(44, 44)
     close_button.focus_mode = Control.FOCUS_NONE
     close_button.pressed.connect(close)
@@ -209,7 +240,15 @@ func open(sid: String) -> void:
     visible = true
     _signature = ""
     _relayout()
+    # Drawn as it is: nobody walks in or out of a window just opened.
+    _entrances = false
+    for layer in [_people, _staff]:
+        for child in layer.get_children():
+            if str(child.name).begins_with(LEAVING_PREFIX):
+                child.free()
     refresh()
+    _entrances = true
+    _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
     _draw_goods()
     _refresh_left = REFRESH_SECONDS
     _wares_left = 0.0
@@ -248,6 +287,7 @@ func _process(delta: float) -> void:
         if _wares_left <= 0.0:
             _wares_left = WARES_SECONDS
             _request_wares()
+        _bustle(delta)
 
 
 ## Read who is inside and redraw the people when that has changed.
@@ -360,37 +400,54 @@ func _draw_people(cast: Dictionary) -> void:
     # A bubble outlives the redraw (someone came in mid-sentence): lift it off
     # the old person and put it back on the new one below.
     var bubbles := {}
+    # Who was drawn where, so a leaver walks off from there and a stall's
+    # keeper carries on from wherever they had bustled to.
+    var was := {}
     for child in _people.get_children() + _staff.get_children():
+        if str(child.name).begins_with(LEAVING_PREFIX):
+            continue
+        was[str(child.name)] = {"position": child.position, "behind": child.get_parent() == _staff,
+            "sprite_data": child.get_meta("sprite_data", {})}
         var bubble := child.get_node_or_null(BUBBLE_NODE)
         if bubble != null:
             child.remove_child(bubble)
             bubbles[str(child.name)] = bubble
         child.free()
     _hits.clear()
+    var drawn := {}
     for entry in cast["placed"]:
         var id := str(entry["id"])
         var spot: Dictionary = entry["spot"]
         var c: Node2D = world.placed_npcs.get(id, null)
         if c == null:
             continue
-        var spr: AnimatedSprite2D = world._build_character_sprite(c.get_meta("sprite_data", {}))
+        var sprite_data: Dictionary = c.get_meta("sprite_data", {})
+        var spr := _sprite(sprite_data)
         if spr == null:
             continue
-        # From the village's draw scale down to the room's art pixels.
-        var s := spr.scale.x
-        if s > 0.0:
-            spr.scale /= s
-            spr.position /= s
+        var behind := bool(entry.get("behind", false))
+        var home := Vector2(int(spot.get("x", 0)), int(spot.get("y", 0)))
         var holder := Node2D.new()
         holder.name = id
-        holder.position = Vector2(int(spot.get("x", 0)), int(spot.get("y", 0)))
+        holder.position = home
+        holder.set_meta("home", home)
+        holder.set_meta("sprite_data", sprite_data)
         holder.add_child(spr)
+        if behind and was.has(id) and bool(was[id]["behind"]):
+            holder.position = was[id]["position"]
         # A stall's keeper stands behind the counter, which is drawn over them.
-        (_staff if bool(entry.get("behind", false)) else _people).add_child(holder)
+        (_staff if behind else _people).add_child(holder)
         _pose(spr, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
-        _hits.append({"id": id, "rect": Rect2(holder.position + HIT_BOX.position, HIT_BOX.size)})
+        if _entrances and not was.has(id):
+            _walk_in(holder, spot, behind)
+        _hits.append({"id": id, "holder": holder})
+        drawn[id] = true
+    if _entrances:
+        for id in was:
+            if not drawn.has(id):
+                _walk_out(id, was[id])
     for id in bubbles:
         var holder := _holder(id)
         if holder != null:
@@ -405,6 +462,111 @@ func _draw_people(cast: Dictionary) -> void:
     var more := int(cast["more"])
     more_label.text = "and %d more" % more
     more_label.visible = more > 0
+
+
+## A person's sprite at the room's scale: from the village's draw scale down
+## to the room's art pixels.
+func _sprite(sprite_data: Dictionary) -> AnimatedSprite2D:
+    var spr: AnimatedSprite2D = world._build_character_sprite(sprite_data)
+    if spr == null:
+        return null
+    var s := spr.scale.x
+    if s > 0.0:
+        spr.scale /= s
+        spr.position /= s
+    return spr
+
+
+func _sprite_of(holder: Node2D) -> AnimatedSprite2D:
+    for child in holder.get_children():
+        if child is AnimatedSprite2D:
+            return child
+    return null
+
+
+## Where someone at `at` comes in from and goes out to: a stall's nearer side
+## (the keeper behind the counter too), a room's door.
+func _doorway(at: Vector2, behind: bool) -> Vector2:
+    if is_stall() or behind or not room.has("door"):
+        var size: Vector2i = room.get("size", Vector2i(128, 112))
+        return at + Vector2(-WALK_OFF if at.x < size.x / 2.0 else WALK_OFF, 0)
+    var door := Vector2(int(room["door"].get("x", 0)), int(room["door"].get("y", 0)))
+    return door + Vector2(0, 8) if at.distance_to(door) < 4.0 else door
+
+
+## A newcomer walks in from the doorway to their spot, fading in.
+func _walk_in(holder: Node2D, spot: Dictionary, behind: bool) -> void:
+    var home: Vector2 = holder.get_meta("home")
+    holder.position = _doorway(home, behind)
+    holder.modulate.a = 0.0
+    holder.create_tween().tween_property(holder, "modulate:a", 1.0, FADE_SECONDS)
+    _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
+
+
+## Someone no longer here turns and walks from where they were drawn out
+## through the doorway, fading as they go, then is gone. Not clickable.
+func _walk_out(id: String, was: Dictionary) -> void:
+    var spr := _sprite(was["sprite_data"])
+    if spr == null:
+        return
+    var ghost := Node2D.new()
+    ghost.name = LEAVING_PREFIX + id
+    ghost.position = was["position"]
+    ghost.add_child(spr)
+    (_staff if bool(was["behind"]) else _people).add_child(ghost)
+    var to := _doorway(ghost.position, bool(was["behind"]))
+    var seconds := ghost.position.distance_to(to) / WALK_SPEED
+    _walk(ghost, to, WALK_SPEED, "south", "stand", ghost.queue_free)
+    ghost.create_tween().tween_property(ghost, "modulate:a", 0.0, minf(FADE_SECONDS, seconds)) \
+        .set_delay(maxf(0.0, seconds - FADE_SECONDS))
+
+
+## Walk a drawn person to `to` at `speed` art px a second, walking the way
+## they go; at the end they take `facing` (and `pose`) and `done` runs. The
+## holder carries a "walking" meta (the tween) while under way.
+func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "stand", done := Callable()) -> void:
+    var spr := _sprite_of(holder)
+    var dist := holder.position.distance_to(to)
+    if spr != null and dist > 0.5 and spr.sprite_frames != null:
+        var anim := str(world.facing_from_vec(to - holder.position)) + "_walk"
+        if spr.sprite_frames.has_animation(anim):
+            spr.play(anim)
+    var tween := holder.create_tween()
+    holder.set_meta("walking", tween)
+    tween.tween_property(holder, "position", to, maxf(dist / speed, 0.01))
+    tween.tween_callback(func():
+        holder.remove_meta("walking")
+        if spr != null:
+            _pose(spr, facing, pose)
+        if done.is_valid():
+            done.call())
+
+
+## The one tending a stall bustles behind the counter: now and then a walk to
+## another point along it (or back to their spot), then a look at the goods
+## behind them or at the customers.
+func _bustle(delta: float) -> void:
+    var holder := _tending()
+    if holder == null or holder.has_meta("walking"):
+        return
+    _bustle_left -= delta
+    if _bustle_left > 0.0:
+        return
+    _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+    var home: Vector2 = holder.get_meta("home")
+    var to := home
+    if holder.position.distance_to(home) < 2.0 or _bustle_rng.randf() < 0.5:
+        to = Vector2(roundf(home.x + _bustle_rng.randf_range(-BUSTLE_REACH, BUSTLE_REACH)), home.y)
+    var facing := "south" if to == home else ("north" if _bustle_rng.randf() < 0.5 else "south")
+    _walk(holder, to, BUSTLE_SPEED, facing)
+
+
+## The person behind a stall's counter, or null.
+func _tending() -> Node2D:
+    for child in _staff.get_children():
+        if not str(child.name).begins_with(LEAVING_PREFIX):
+            return child
+    return null
 
 
 ## Seat a farmer-base villager in a seat spot; everyone else stands, facing
@@ -457,6 +619,15 @@ func say(npc_id: String, text: String) -> void:
     var holder := _holder(npc_id)
     if holder == null:
         return
+    # The one tending a stall stops to speak, facing the customers.
+    if holder.get_parent() == _staff:
+        if holder.has_meta("walking"):
+            (holder.get_meta("walking") as Tween).kill()
+            holder.remove_meta("walking")
+        var spr := _sprite_of(holder)
+        if spr != null:
+            _pose(spr, "south", "stand")
+        _bustle_left = SPEAK_HOLD
     var existing := holder.get_node_or_null(BUBBLE_NODE)
     if existing != null:
         # Out of the tree now, or the new bubble would be renamed (as world.gd).
@@ -498,7 +669,11 @@ func person_at(local: Vector2) -> String:
     var best := ""
     var best_y := -INF
     for h in _hits:
-        var r: Rect2 = h["rect"]
+        var holder: Node2D = h["holder"]
+        if not is_instance_valid(holder):
+            continue
+        # Where they stand now: the keeper bustles, newcomers walk in.
+        var r := Rect2(holder.position + HIT_BOX.position, HIT_BOX.size)
         if r.has_point(art) and r.end.y > best_y:
             best = str(h["id"])
             best_y = r.end.y
