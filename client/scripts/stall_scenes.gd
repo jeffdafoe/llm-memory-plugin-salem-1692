@@ -20,10 +20,31 @@ const SHEETS := {
 ## Trade backdrops (LLM-762): a stall tagged with a trade in the editor draws
 ## its roof's stall dressed for that trade — stall_<roof>_<trade>.png, built
 ## beside the plain one by build_stalls.gd — so a second smithy needs only the
-## tag. `floor_slots` replaces FLOOR_SLOTS where the dressing stands on the
-## floor (the smithy's forge is on the left).
+## tag. A trade's entry replaces any of the scene's layout fields (LLM-763):
+## its size, counter picture, `counter_from` (the counter's left edge — the
+## selling side), spots and slots. The smithy is 192 wide: a work area with
+## the forge on the left, the plain stall's layout moved 64 right, and a hand's
+## spot at the forge.
 const TRADES := {
-    "smithy": {"floor_slots": [78, 94, 110]},
+    "smithy": {
+        "size": Vector2i(192, 112),
+        "counter": "/tilesets/interiors/stall_counter_smithy.png",
+        "counter_from": 64,
+        "keeper": {"x": 128, "y": 66, "facing": "south"},
+        "hands": [
+            {"x": 44, "y": 66, "facing": "south"},
+            {"x": 162, "y": 66, "facing": "south"},
+        ],
+        "door": {"x": 128, "y": 108, "facing": "north"},
+        "spots": [
+            {"x": 82, "y": 106, "facing": "north"},
+            {"x": 174, "y": 106, "facing": "north"},
+            {"x": 104, "y": 109, "facing": "north"},
+            {"x": 152, "y": 109, "facing": "north"},
+        ],
+        "floor_slots": [66, 82, 98, 142, 158, 174],
+        "counter_slots": [68, 84, 100, 140, 156, 172],
+    },
 }
 const COUNTER_SHEET := "/tilesets/interiors/stall_counter.png"
 const GOODS_SHEET := "/tilesets/interiors/stall_goods.png"
@@ -76,17 +97,14 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
     if sheet == "":
         return {}
     var title := str(node.get_meta("display_name", ""))
-    var trade := trade_of(node)
-    var floor_slots: Array = FLOOR_SLOTS
-    if trade != "":
-        sheet = sheet.replace(".png", "_%s.png" % trade)
-        floor_slots = TRADES[trade]["floor_slots"]
-    return {
+    var scene := {
         "kind": "stall",
         "title": title if title != "" else "Market Stall",
         "sheet": sheet,
-        "floor_slots": floor_slots,
+        "floor_slots": FLOOR_SLOTS,
+        "counter_slots": COUNTER_SLOTS,
         "counter": COUNTER_SHEET,
+        "counter_from": 0,
         "size": SIZE,
         "keeper": KEEPER,
         "hands": HANDS,
@@ -94,6 +112,11 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
         "spots": SPOTS,
         "pin": pin_tile(node),
     }
+    var trade := trade_of(node)
+    if trade != "":
+        scene["sheet"] = sheet.replace(".png", "_%s.png" % trade)
+        scene.merge(TRADES[trade], true)
+    return scene
 
 
 ## The backdrop for a placed object's asset, or "" when it is not a stall.
@@ -160,10 +183,13 @@ static func stall_at(world: Node, assets: Dictionary, tile: Vector2i) -> String:
 
 
 ## Where each ware is drawn: [{item, cell, at, count}], `at` the cell's
-## top-left in art pixels. Piles take the floor slots (in the order given);
-## the rest lie on the counter — piles past the floor first, as a few — two of
-## a good for a few, one for one. Goods past the last slot are not drawn.
-static func lay_out(wares: Array, floor_slots: Array = FLOOR_SLOTS) -> Array:
+## top-left in art pixels. Piles take the scene's floor slots (in the order
+## given); the rest lie on its counter slots — piles past the floor first, as
+## a few — two of a good for a few, one for one. Goods past the last slot are
+## not drawn. A scene without slots takes the plain stall's.
+static func lay_out(wares: Array, scene: Dictionary = {}) -> Array:
+    var floor_slots: Array = scene.get("floor_slots", FLOOR_SLOTS)
+    var counter_slots: Array = scene.get("counter_slots", COUNTER_SLOTS)
     var piles: Array = []
     var loose: Array = []
     for w in wares:
@@ -182,11 +208,11 @@ static func lay_out(wares: Array, floor_slots: Array = FLOOR_SLOTS) -> Array:
             counter.append({"item": w["item"], "stock": "few"})
     var counter_used := 0
     for w in counter + loose:
-        if counter_used >= COUNTER_SLOTS.size():
+        if counter_used >= counter_slots.size():
             break
         var index := goods_index(str(w.get("item", "")))
         out.append({"item": str(w["item"]), "cell": 2 * index,
-            "at": Vector2i(COUNTER_SLOTS[counter_used], COUNTER_Y - CELL.y),
+            "at": Vector2i(counter_slots[counter_used], COUNTER_Y - CELL.y),
             "count": 1 if str(w.get("stock", "")) == "one" else 2})
         counter_used += 1
     return out

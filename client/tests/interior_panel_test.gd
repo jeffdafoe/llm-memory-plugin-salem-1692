@@ -35,6 +35,8 @@ const TESTS := [
     "_test_standing_tile",
     "_test_stall_occupants",
     "_test_stall_draws",
+    "_test_smithy_layout",
+    "_test_scrolling_stage",
     "_test_main_sync_stall",
     "_test_close_glyph_in_font",
     "_test_walk_out",
@@ -83,6 +85,9 @@ func _initialize() -> void:
 
 
 func _run_once() -> void:
+    # A desktop window: the headless one is tiny, and every room would scroll
+    # (LLM-763).
+    root.size = Vector2i(1280, 720)
     _sid = str(InteriorRooms.ROOMS.keys()[0])
     _world = load("res://scripts/world.gd").new()
     _world._npc_sheets = _sheets()
@@ -358,6 +363,12 @@ func _test_pixel_scale() -> void:
     _check("phone width: 2x", _panel.pixel_scale_for(Vector2(331, 460), art), 2)
     _check("never below 1x", _panel.pixel_scale_for(Vector2(50, 50), art), 1)
     _check("capped at 4x", _panel.pixel_scale_for(Vector2(4000, 4000), art), 4)
+    # LLM-763: how much of a room shows at a scale — all of it when it fits,
+    # else whole art px as far as the window reaches.
+    var wide := Vector2(192, 112)
+    _check("desktop shows all of a wide room", _panel.view_for(Vector2(1178, 518), wide, 4), wide)
+    _check("a phone shows part of it at 2x", _panel.view_for(Vector2(331, 460), wide, 2), Vector2(165, 112))
+    _check("never less than one art px", _panel.view_for(Vector2(0, 0), wide, 2), Vector2(1, 1))
     _done()
 
 
@@ -681,10 +692,11 @@ func _test_stall_lay_out() -> void:
 
     # A trade's own floor slots (the smithy keeps the forge's side clear):
     # piles past them go to the counter.
-    var right := [78, 94, 110]
-    slots = StallScenes.lay_out(many, right)
-    _check("piles on the trade's slots", [slots[0]["at"].x, slots[2]["at"].x], [78, 110])
-    _check("the fourth pile lies on the counter", [slots[3]["cell"], slots[3]["at"].y], [2 * StallScenes.GOODS["apples"], StallScenes.COUNTER_Y - 32])
+    var scene := {"floor_slots": [78, 94, 110], "counter_slots": [140, 156]}
+    slots = StallScenes.lay_out(many, scene)
+    _check("piles on the scene's slots", [slots[0]["at"].x, slots[2]["at"].x], [78, 110])
+    _check("the fourth pile lies on the scene's counter", [slots[3]["cell"], slots[3]["at"]], [2 * StallScenes.GOODS["apples"], Vector2i(140, StallScenes.COUNTER_Y - 32)])
+    _check("no more than the scene's slots", slots.size(), 5)
     _done()
 
 
@@ -706,10 +718,19 @@ func _test_stall_at() -> void:
     var stall: Node2D = _world.placed_objects[STALL]
     stall.set_meta("tags", ["business", "shop", "market_stall"])
     _check("a shop tag keeps the plain stall", StallScenes.scene_for(_world, _assets(), STALL)["sheet"], "/tilesets/interiors/stall_tiled.png")
+    var plain := StallScenes.scene_for(_world, _assets(), STALL)
+    _check("a plain stall's layout", [plain["size"], plain["counter"], plain["counter_from"], plain["counter_slots"], plain["keeper"]],
+        [StallScenes.SIZE, StallScenes.COUNTER_SHEET, 0, StallScenes.COUNTER_SLOTS, StallScenes.KEEPER])
     stall.set_meta("tags", ["business", "smithy", "market_stall"])
     var smithy := StallScenes.scene_for(_world, _assets(), STALL)
     _check("a smithy tag dresses the roof's stall", smithy["sheet"], "/tilesets/interiors/stall_tiled_smithy.png")
     _check("a smithy lays piles clear of the forge", smithy["floor_slots"], StallScenes.TRADES["smithy"]["floor_slots"])
+    # LLM-763: the trade's layout replaces the plain stall's, field by field.
+    _check("the smithy is 192 wide", smithy["size"], Vector2i(192, 112))
+    _check("with its own counter on the selling side", [smithy["counter"], smithy["counter_from"]], ["/tilesets/interiors/stall_counter_smithy.png", 64])
+    _check("the keeper in the selling side's middle", smithy["keeper"]["x"], 128)
+    _check("a hand's spot at the forge", smithy["hands"][0]["x"] < 64, true)
+    _check("still its own title and pin", [smithy["title"], smithy["pin"]], ["General Store", pin])
     _check("still found as a stall at its pin", StallScenes.stall_at(_world, _assets(), pin), STALL)
     stall.set_meta("tags", "smithy")
     _check("tags that are not a list are no trade", StallScenes.trade_of(stall), "")
@@ -1406,6 +1427,130 @@ func _stall_with_buyer(pin_offset := Vector2i(1, 1)) -> Array:
 func _sale(seller: String, buyer: String, item := "apples", state := "accepted", qty := 3, eaten := false) -> Dictionary:
     return {"seller_id": seller, "buyer_id": buyer, "item": item, "qty": qty, "terminal_state": state,
         "consume_now": eaten}
+
+
+## A smithy-tagged stall open with the keeper behind the counter and a buyer
+## at the pin, selling a pile and a few.
+func _open_smithy() -> void:
+    _clear_people()
+    _place_stall()
+    _world.placed_objects[STALL].set_meta("tags", ["smithy"])
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array:
+        return [{"item": "nail", "stock": "plenty"}, {"item": "skillet", "stock": "few"}]
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _at_tile("buyer", _farmer(), Vector2i(8, 21) + Vector2i(1, 1))
+    _panel.open(STALL)
+
+
+## LLM-763: everything in the window follows the scene's layout — the
+## smithy's keeper, customers, goods and counter sit on its selling side.
+func _test_smithy_layout() -> void:
+    _open_smithy()
+    var layout: Dictionary = StallScenes.TRADES["smithy"]
+    var keeper: Node2D = _panel._tending()
+    _check("the keeper at the smithy's spot", keeper.position, Vector2(layout["keeper"]["x"], layout["keeper"]["y"]))
+    var buyer: Node2D = _panel._people.get_node("buyer")
+    var spot_xs := []
+    for s in layout["spots"]:
+        spot_xs.append(float(s["x"]))
+    _check("the buyer at one of the smithy's spots", spot_xs.has(buyer.position.x), true)
+    var pile: Node2D = _panel._goods_back.get_child(0)
+    _check("the pile on the smithy's first floor slot", pile.position.x, float(layout["floor_slots"][0]))
+    var few: Node2D = _panel._goods_front.get_child(0)
+    _check("the few on the smithy's first counter slot", few.position.x, float(layout["counter_slots"][0]))
+    _check("the smithy's counter picture", _panel.room["counter"], layout["counter"])
+    # A sale to someone not drawn: set down at the keeper's spot, not the
+    # plain stall's.
+    _panel.on_pay_resolved(_sale("keeper", "somebody-past-the-spots", "nail"))
+    _check("not drawn: at the smithy keeper's spot", float((_panel._handoff_now["stop"] as Vector2).x), float(layout["keeper"]["x"]))
+    _finish_handoff()
+    # A customer walking away leaves by the selling side's nearer edge.
+    var middle: float = (float(layout["counter_from"]) + layout["size"].x) / 2.0
+    _check("the doorway from the left of the selling side", _panel._doorway(Vector2(middle - 10, 106), false).x < middle - 10, true)
+    _check("the doorway from the right of it", _panel._doorway(Vector2(middle + 10, 106), false).x > middle + 10, true)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## LLM-763: a room too big for the window at 2x scrolls — clipped, panned by
+## a drag or the wheel, a tap still a tap.
+func _test_scrolling_stage() -> void:
+    _open_smithy()
+    var size := Vector2(_panel.room["size"])
+    _check("a window that fits shows it all", [_panel.scrolls(), _panel._view], [false, size])
+    _check("unclipped while it fits", _panel._clip.clip_contents, false)
+
+    # A phone: never below 2x, the rest scrolls, opening on the door.
+    var was_size := root.size
+    root.size = Vector2i(360, 640)
+    _panel._stretch = Vector2.ONE
+    _panel._centre_pan = true
+    _panel._relayout()
+    if root.size == Vector2i(360, 640):
+        _check("a phone: 2x", _panel.k, 2)
+        _check("a phone: part of it shown", _panel.scrolls(), true)
+        _check("clipped, with room above for bubbles", [_panel._clip.clip_contents, _panel._clip.position.y < 0.0], [true, true])
+        var door := float(_panel.room["door"]["x"])
+        var centred := clampf(roundf(door - _panel._view.x / 2.0), 0.0, size.x - _panel._view.x)
+        _check("opens centred on the door, as far as the edge allows", _panel._pan.x, centred)
+        var head: Vector2 = _panel._tending().position + Vector2(0, -10)
+        var at: Vector2 = head * float(_panel.k) / _panel._stretch + _panel._clip.position + _panel._scene.position
+        _check("a person found under the headroom and the pan", _panel.person_at(at), "keeper")
+    root.size = was_size
+
+    # The pan math, on a view set by hand.
+    _panel.k = 2
+    _panel._stretch = Vector2.ONE
+    _panel._view = Vector2(100, size.y)
+    _panel._clip.position = Vector2.ZERO
+    _panel._set_pan(Vector2(1000, 50))
+    _check("panned no further than the room's edge", _panel._pan, Vector2(size.x - 100, 0))
+    _panel._set_pan(Vector2(-5, 0))
+    _check("nor before its start", _panel._pan, Vector2.ZERO)
+    _check("it scrolls", _panel.scrolls(), true)
+    _panel._set_pan(Vector2(50, 0))
+    var keeper: Node2D = _panel._tending()
+    var feet := keeper.position + Vector2(0, -10)
+    var local: Vector2 = feet * 2.0 + _panel._clip.position + _panel._scene.position
+    _check("the scene moved with the pan", absf(_panel._scene.position.x + 100.0) <= 1.0, true)
+    _check("a point maps back to the room", _panel._art_at(local), feet)
+    _check("the keeper found where the pan puts them", _panel.person_at(local), "keeper")
+
+    var clicks := []
+    var on_click := func(id: String): clicks.append(id)
+    _panel.person_clicked.connect(on_click)
+    var press := InputEventMouseButton.new()
+    press.button_index = MOUSE_BUTTON_LEFT
+    press.pressed = true
+    press.position = local
+    _panel._on_stage_input(press)
+    _check("a press waits to be a tap or a drag", clicks, [])
+    var release := press.duplicate() as InputEventMouseButton
+    release.pressed = false
+    _panel._on_stage_input(release)
+    _check("released where pressed: a tap", clicks, ["keeper"])
+
+    _panel._on_stage_input(press)
+    var move := InputEventMouseMotion.new()
+    move.position = local + Vector2(-20, 0)
+    move.relative = Vector2(-20, 0)
+    _panel._on_stage_input(move)
+    _check("a drag pans", _panel._pan.x, 60.0)
+    release.position = move.position
+    _panel._on_stage_input(release)
+    _check("a drag is no tap", clicks, ["keeper"])
+
+    var wheel := InputEventMouseButton.new()
+    wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+    wheel.pressed = true
+    _panel._on_stage_input(wheel)
+    _check("the wheel pans", _panel._pan.x, 60.0 + _panel.WHEEL_STEP)
+    _panel.person_clicked.disconnect(on_click)
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
 
 
 ## Run the handoff under way to its end: the keeper's walk, then the good.

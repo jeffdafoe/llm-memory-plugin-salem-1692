@@ -45,6 +45,16 @@ signal person_clicked(npc_id: String)
 
 const FONT_PATH := "res://assets/fonts/IMFellEnglish-Regular.ttf"
 const MAX_PIXEL_SCALE := 4
+## Never drawn smaller than this (LLM-763): a room too big for the window at
+## this scale scrolls instead — drag (or the wheel) to pan.
+const MIN_PIXEL_SCALE := 2
+## Screen px above a scrolling stage left unclipped, for speech bubbles over
+## the back row.
+const BUBBLE_HEADROOM := 200.0
+## Screen px a press moves before it is a drag (a pan), not a tap.
+const DRAG_START := 6.0
+## Art px one wheel notch pans.
+const WHEEL_STEP := 16.0
 const REFRESH_SECONDS := 0.5
 ## The dimming world.gd gives a resting villager.
 const RESTING_DIM := Color(0.58, 0.62, 0.75, 1.0)
@@ -125,6 +135,16 @@ var wares_hook: Callable = Callable()
 static var _textures: Dictionary = {}
 
 var _scene: Node2D = null
+## Holds the scene; clips it to the stage only while it scrolls.
+var _clip: Control = null
+## The part of the room shown, in art px: its top-left (`_pan`) and size
+## (`_view`, the room's size when it all fits). `_centre_pan` centres the
+## view on the door at the next layout (set on open).
+var _pan := Vector2.ZERO
+var _view := Vector2.ZERO
+var _centre_pan := false
+## A press on a scrolling stage, waiting to be a tap or a drag: {at, drag}.
+var _press: Dictionary = {}
 var _background: Sprite2D = null
 ## Stall layers (empty for a room): floor piles, the keeper, the counter, the
 ## goods on it. A room's people all go in _people, as do a stall's customers.
@@ -236,8 +256,12 @@ func _build_ui() -> void:
     stage.item_rect_changed.connect(_snap)
     vb.add_child(stage)
 
+    _clip = Control.new()
+    _clip.name = "Clip"
+    _clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    stage.add_child(_clip)
     _scene = Node2D.new()
-    stage.add_child(_scene)
+    _clip.add_child(_scene)
     _background = Sprite2D.new()
     _background.centered = false
     _scene.add_child(_background)
@@ -324,6 +348,8 @@ func open(sid: String) -> void:
         _wares = []
     structure_id = sid
     room = r
+    _press = {}
+    _centre_pan = true
     title_label.text = str(room.get("title", ""))
     _apply_textures()
     visible = true
@@ -641,7 +667,8 @@ func _sprite_of(holder: Node2D) -> AnimatedSprite2D:
 func _doorway(at: Vector2, behind: bool) -> Vector2:
     if is_stall() or behind or not room.has("door"):
         var size: Vector2i = room.get("size", Vector2i(128, 112))
-        return at + Vector2(-WALK_OFF if at.x < size.x / 2.0 else WALK_OFF, 0)
+        var middle := (float(room.get("counter_from", 0)) + size.x) / 2.0
+        return at + Vector2(-WALK_OFF if at.x < middle else WALK_OFF, 0)
     var door := Vector2(int(room["door"].get("x", 0)), int(room["door"].get("y", 0)))
     return door + Vector2(0, 8) if at.distance_to(door) < 4.0 else door
 
@@ -805,12 +832,24 @@ func _relayout() -> void:
     _stretch = get_viewport().get_final_transform().get_scale()
     if _stretch.x <= 0.0 or _stretch.y <= 0.0:
         _stretch = Vector2.ONE
-    var size: Vector2i = room.get("size", Vector2i(128, 112))
+    var size := Vector2(room.get("size", Vector2i(128, 112)))
     var avail := get_viewport().get_visible_rect().size * _stretch * Vector2(0.92, 0.72)
-    k = pixel_scale_for(avail, Vector2(size))
-    stage.custom_minimum_size = Vector2(size.x * k / _stretch.x, size.y * k / _stretch.y)
-    _scene.scale = Vector2(k / _stretch.x, k / _stretch.y)
-    _snap()
+    k = maxi(pixel_scale_for(avail, size), MIN_PIXEL_SCALE)
+    _view = view_for(avail, size, k)
+    var px := Vector2(k / _stretch.x, k / _stretch.y)
+    stage.custom_minimum_size = _view * px
+    # Clipped only while it scrolls, and then with room above for bubbles
+    # over the back row; otherwise nothing clips, as before.
+    var headroom := BUBBLE_HEADROOM / _stretch.y if scrolls() else 0.0
+    _clip.clip_contents = scrolls()
+    _clip.position = Vector2(0, -headroom)
+    _clip.size = _view * px + Vector2(0, headroom)
+    _scene.scale = px
+    if _centre_pan:
+        _centre_pan = false
+        var door: Dictionary = room.get("door", {})
+        _pan = Vector2(int(door.get("x", size.x / 2.0)), int(door.get("y", size.y / 2.0))) - _view / 2.0
+    _set_pan(_pan)
 
 
 ## The biggest whole scale at which the room fits, 1..MAX_PIXEL_SCALE.
@@ -820,13 +859,40 @@ static func pixel_scale_for(avail_px: Vector2, art: Vector2) -> int:
     return clampi(mini(floori(avail_px.x / art.x), floori(avail_px.y / art.y)), 1, MAX_PIXEL_SCALE)
 
 
+## How much of an `art`-sized room shows at `scale` in `avail_px`: all of it,
+## or on a side too big, whole art px as far as the window reaches.
+static func view_for(avail_px: Vector2, art: Vector2, scale: int) -> Vector2:
+    return Vector2(minf(art.x, maxf(1.0, floorf(avail_px.x / scale))), minf(art.y, maxf(1.0, floorf(avail_px.y / scale))))
+
+
+## Whether the room is bigger than the part shown.
+func scrolls() -> bool:
+    var size := Vector2(room.get("size", Vector2i(128, 112)))
+    return _view.x > 0.0 and (_view.x < size.x or _view.y < size.y)
+
+
+## Show the room from `pan` (art px), kept inside the room.
+func _set_pan(pan: Vector2) -> void:
+    var size := Vector2(room.get("size", Vector2i(128, 112)))
+    _pan = Vector2(clampf(roundf(pan.x), 0.0, maxf(0.0, size.x - _view.x)),
+        clampf(roundf(pan.y), 0.0, maxf(0.0, size.y - _view.y)))
+    _snap()
+
+
 ## Put the room's origin on a whole screen pixel so every art pixel is
 ## exactly k screen pixels.
 func _snap() -> void:
     if stage == null or not stage.is_inside_tree():
         return
-    var screen_origin := stage.get_global_transform_with_canvas().origin * _stretch
-    _scene.position = (screen_origin.round() - screen_origin) / _stretch
+    var base := Vector2(0, -_clip.position.y) - _pan * Vector2(k / _stretch.x, k / _stretch.y)
+    _scene.position = base
+    var screen_origin := _scene.get_global_transform_with_canvas().origin * _stretch
+    _scene.position = base + (screen_origin.round() - screen_origin) / _stretch
+
+
+## A stage-local point in room art px.
+func _art_at(local: Vector2) -> Vector2:
+    return (local - _clip.position - _scene.position) * _stretch / float(k)
 
 
 ## A line spoken by someone drawn in the room shows as a bubble over their
@@ -884,8 +950,8 @@ func _holder(id: String) -> Node2D:
 ## On the right side of the room a bubble opens left, over the room rather
 ## than past the window's edge (LLM-752).
 func _opens_left_at(holder: Node) -> bool:
-    var size: Vector2i = room.get("size", Vector2i(128, 112))
-    return (holder as Node2D).position.x > size.x / 2.0
+    var view := _view if _view.x > 0.0 else Vector2(room.get("size", Vector2i(128, 112)))
+    return (holder as Node2D).position.x - _pan.x > view.x / 2.0
 
 
 func _on_npc_spoke(npc_id: String, _name: String, text: String, _kind: String, _at: String,
@@ -897,7 +963,7 @@ func _on_npc_spoke(npc_id: String, _name: String, text: String, _kind: String, _
 
 ## The person under a stage-local point (the nearest one in front wins), or "".
 func person_at(local: Vector2) -> String:
-    var art := local * _stretch / float(k) - _scene.position * _stretch / float(k)
+    var art := _art_at(local)
     var best := ""
     var best_y := -INF
     for h in _hits:
@@ -914,17 +980,46 @@ func person_at(local: Vector2) -> String:
 
 func _on_stage_input(event: InputEvent) -> void:
     if event is InputEventMouseMotion:
+        if not _press.is_empty():
+            # A press on a scrolling stage that moves far enough pans it.
+            if not bool(_press["drag"]) and event.position.distance_to(_press["at"]) >= DRAG_START:
+                _press["drag"] = true
+                hide_tag()
+            if bool(_press["drag"]):
+                _set_pan(_pan - event.relative * _stretch / float(k))
+            return
         # A tap's tag runs its time out: a touch screen sends motion with a
         # tap, and may send no motion or exit after it to take a hover down.
         if _tag_left <= 0.0:
             _show_tag(thing_at(event.position), 0.0)
-    elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+    elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
         stage.accept_event()
-        # A tap shows the tag a while — on a touch screen there is no hover.
-        var thing := thing_at(event.position)
-        _show_tag(thing, TAG_SECONDS)
-        if str(thing.get("kind", "")) == "person":
-            person_clicked.emit(str(thing["id"]))
+        if event.pressed and scrolls():
+            # Tap or drag is known on release.
+            _press = {"at": event.position, "drag": false}
+        elif event.pressed:
+            _tap(event.position)
+        elif not _press.is_empty():
+            var dragged := bool(_press["drag"])
+            _press = {}
+            if not dragged:
+                _tap(event.position)
+    elif event is InputEventMouseButton and event.pressed and scrolls():
+        var step := {MOUSE_BUTTON_WHEEL_UP: Vector2(-WHEEL_STEP, 0), MOUSE_BUTTON_WHEEL_DOWN: Vector2(WHEEL_STEP, 0),
+            MOUSE_BUTTON_WHEEL_LEFT: Vector2(-WHEEL_STEP, 0), MOUSE_BUTTON_WHEEL_RIGHT: Vector2(WHEEL_STEP, 0)}
+        if step.has(event.button_index):
+            stage.accept_event()
+            hide_tag()
+            _set_pan(_pan + step[event.button_index])
+
+
+## A tap shows the tag a while — on a touch screen there is no hover — and a
+## tap on a person opens talk.
+func _tap(local: Vector2) -> void:
+    var thing := thing_at(local)
+    _show_tag(thing, TAG_SECONDS)
+    if str(thing.get("kind", "")) == "person":
+        person_clicked.emit(str(thing["id"]))
 
 
 func _on_stage_mouse_exited() -> void:
@@ -938,7 +1033,7 @@ func _on_stage_mouse_exited() -> void:
 ## in front of the keeper and hands, and they in front of the floor piles; in
 ## a room the people stand in front of what is on the bar and tables.
 func thing_at(local: Vector2) -> Dictionary:
-    var art := local * _stretch / float(k) - _scene.position * _stretch / float(k)
+    var art := _art_at(local)
     var layers: Array = [_people, _goods_front, _handoff, _staff, _goods_back] if is_stall() else [_people, _handoff]
     for layer in layers:
         var found := _person_in(layer, art) if layer == _people or layer == _staff else _good_in(layer, art)
@@ -1110,7 +1205,7 @@ func _draw_goods() -> void:
     var sheet := _texture(StallScenes.GOODS_SHEET)
     if sheet == null:
         return
-    for slot in StallScenes.lay_out(_wares, room.get("floor_slots", StallScenes.FLOOR_SLOTS)):
+    for slot in StallScenes.lay_out(_wares, room):
         var cell := AtlasTexture.new()
         cell.atlas = sheet
         cell.region = StallScenes.cell_rect(int(slot["cell"]))
@@ -1192,10 +1287,10 @@ func _next_handoff() -> void:
         # Where along the counter: in front of the other party, or the middle
         # when they are not drawn.
         var size: Vector2i = room.get("size", StallScenes.SIZE)
-        var x := float(StallScenes.KEEPER["x"])
+        var x := float(room["keeper"].get("x", size.x / 2.0))
         var customer := _people.get_node_or_null(NodePath(str(h["other"]))) as Node2D
         if customer != null:
-            x = clampf(customer.position.x, 10.0, size.x - 10.0)
+            x = clampf(customer.position.x, float(room.get("counter_from", 0)) + 10.0, size.x - 10.0)
         at = Vector2(roundf(x), StallScenes.COUNTER_Y)
         h["stop"] = Vector2(at.x, (keeper.get_meta("home") as Vector2).y if keeper != null else 0.0)
         h["facing"] = "south"
