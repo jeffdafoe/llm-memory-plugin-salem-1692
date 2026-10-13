@@ -131,7 +131,19 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now t
 				return nil, nil
 			}
 
-			// Keepers first (sorted for deterministic event order), arriver
+			// LLM-760: hands working here for the keeper join too, or a
+			// customer's words never reach them (a laboring hand is shelved
+			// from ticks, but a PC speaking in the huddle wakes them). The
+			// greet subscriber never has a keeper welcome their own hand
+			// (cascade/businessowner.go gate 3).
+			hands := shopHandsAt(w, actor.ID, structureID, now)
+			for _, id := range hands {
+				if _, err := JoinHuddle(id, structureID, sceneID, now).Fn(w); err != nil {
+					log.Printf("sim: EnsureArrivalBusinessHuddle join hand %q at %q: %v", id, structureID, err)
+				}
+			}
+
+			// Keepers next (sorted for deterministic event order), arriver
 			// last — the ordering the greet subscriber depends on.
 			sort.Slice(keepers, func(i, j int) bool { return keepers[i] < keepers[j] })
 			for _, id := range keepers {
@@ -145,4 +157,38 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now t
 			return nil, nil
 		},
 	}
+}
+
+// shopHandsAt lists, sorted, the unhuddled conversational NPCs other than
+// the arriver who are working a job at structureID right now: a working
+// labor offer whose employer's post is structureID, the worker inside it and
+// awake. A hand who has wandered off post, or is already talking elsewhere,
+// is left alone.
+func shopHandsAt(w *World, arriverID ActorID, structureID StructureID, now time.Time) []ActorID {
+	var out []ActorID
+	for id, a := range w.Actors {
+		if a == nil || id == arriverID || a.CurrentHuddleID != "" || a.InsideStructureID != structureID {
+			continue
+		}
+		if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
+			continue
+		}
+		if a.State == StateSleeping || a.State == StateResting {
+			continue
+		}
+		if a.LaboringUntil == nil || !a.LaboringUntil.After(now) {
+			continue
+		}
+		o := WorkerWorkingOffer(w.LaborLedger, id)
+		if o == nil {
+			continue
+		}
+		employer := w.Actors[o.EmployerID]
+		if employer == nil || employer.WorkStructureID != structureID {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
