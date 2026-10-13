@@ -1210,7 +1210,24 @@ func _test_name_tags() -> void:
     _check("then goes", _panel.tag.visible, false)
     _panel._on_stage_input(_press(_at_art(on_nails)))
     _check("a tap on a good: its tag, no talk", [_panel.tag_name.text, clicked.size()], ["Nails", 1])
+    _panel._on_stage_input(_press(_at_art(Vector2(64, 4))))
+    _check("a tap on nothing takes a tapped tag down", _panel.tag.visible, false)
+    # A touch screen sends motion with the tap: the tag still runs its time out.
+    _panel._on_stage_input(_press(_at_art(hand.position + Vector2(0, -10))))
+    _panel._on_stage_input(_motion(_at_art(hand.position + Vector2(0, -10))))
+    _check("motion after a tap keeps the tap's time", _panel._tag_left > 0.0, true)
+    _panel._update_tag(_panel.TAG_SECONDS + 0.1)
+    _check("and the tag goes when it is up", _panel.tag.visible, false)
     _panel.person_clicked.disconnect(on_click)
+
+    # The tag sits over its person wherever the window is.
+    var root_at: Vector2 = _panel.root.position
+    _panel.root.position = Vector2(50, 30)
+    _panel._on_stage_input(_motion(_at_art(keeper.position + Vector2(0, -10))))
+    var head: Vector2 = _panel._scene.get_global_transform() * (keeper.position + Vector2(0, _panel.HIT_BOX.position.y - 2))
+    var box: Rect2 = _panel.tag.get_global_rect()
+    _check("the tag centred just above the head, the window moved", [roundf(box.get_center().x), roundf(box.end.y)], [roundf(head.x), roundf(head.y)])
+    _panel.root.position = root_at
 
     # The person it is on leaves: the tag goes.
     _panel._on_stage_input(_motion(_at_art(hand.position + Vector2(0, -10))))

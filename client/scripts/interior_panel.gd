@@ -914,7 +914,10 @@ func person_at(local: Vector2) -> String:
 
 func _on_stage_input(event: InputEvent) -> void:
     if event is InputEventMouseMotion:
-        _show_tag(thing_at(event.position), 0.0)
+        # A tap's tag runs its time out: a touch screen sends motion with a
+        # tap, and may send no motion or exit after it to take a hover down.
+        if _tag_left <= 0.0:
+            _show_tag(thing_at(event.position), 0.0)
     elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         stage.accept_event()
         # A tap shows the tag a while — on a touch screen there is no hover.
@@ -977,10 +980,11 @@ func _good_in(layer: Node2D, art: Vector2) -> Dictionary:
 
 
 ## Show the tag on `thing` (from thing_at), or hide it for {}; `seconds` > 0
-## keeps it up that long (a tap), 0 while hovered.
+## keeps it up that long (a tap — and a tap on nothing takes a tag down), 0
+## while hovered.
 func _show_tag(thing: Dictionary, seconds: float) -> void:
     if thing.is_empty():
-        if _tag_left <= 0.0:
+        if seconds > 0.0 or _tag_left <= 0.0:
             hide_tag()
         return
     var lines := tag_lines(thing)
@@ -1060,10 +1064,12 @@ func _place_tag() -> void:
             hide_tag()
             return
         anchor = node.position + Vector2(GOOD_BOX.size.x / 2.0, GOOD_BOX.position.y - 2)
+    # Canvas coordinates throughout: the scene's point, the clamp to the
+    # screen, and the tag's own global position.
     var at: Vector2 = _scene.get_global_transform() * anchor
     var size := tag.size
     var view := get_viewport().get_visible_rect().size if is_inside_tree() else Vector2(1e6, 1e6)
-    tag.position = Vector2(clampf(at.x - size.x / 2.0, 4.0, maxf(4.0, view.x - size.x - 4.0)),
+    tag.global_position = Vector2(clampf(at.x - size.x / 2.0, 4.0, maxf(4.0, view.x - size.x - 4.0)),
         clampf(at.y - size.y, 4.0, maxf(4.0, view.y - size.y - 4.0)))
 
 
