@@ -73,6 +73,7 @@ const TESTS := [
     "_test_room_squares",
     "_test_room_walk",
     "_test_keeper_walks_to_the_hearth",
+    "_test_tap_on_furniture",
 ]
 
 const STALL := "stall-1"
@@ -2795,5 +2796,41 @@ func _test_keeper_walks_to_the_hearth() -> void:
     k = _panel._people.get_node("keeper")
     _finish_walk(k)
     _check("back behind the bar", k.position, Vector2(_panel.room["keeper"]["x"], _panel.room["keeper"]["y"]))
+    _panel.close()
+    _done()
+
+
+## A tap on furniture walks to the nearest free place to stand beside it (Jeff,
+## 10-13: a tap on the bar counter did nothing): the counter is the bar, the
+## table its nearer chair; past TAP_REACH (high on the wall) nothing.
+func _test_tap_on_furniture() -> void:
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
+    var counter := Vector2(100, 92)
+    _check("the counter is not floor", InteriorRooms.walkable(room, Vector2i(6, 5)), false)
+    _check("a tap on the counter: the bar", InteriorRooms.square_at(room, counter), Vector2i(4, 5))
+    _check("the bar held: the next place within reach", InteriorRooms.square_at(room, counter, {Vector2i(4, 5): true}), Vector2i(4, 4))
+    _check("a tap on the table: the nearer chair", InteriorRooms.square_at(room, Vector2(32, 88)), Vector2i(1, 6))
+    _check("high on the wall: nothing", InteriorRooms.square_at(room, Vector2(40, 20)), Vector2i(-1, -1))
+
+    _clear_people()
+    _person("pc", _farmer(), _sid)
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _panel.open(_sid)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    var tapped := []
+    var on_tap := func(sq: Vector2i): tapped.append(sq)
+    _panel.floor_tapped.connect(on_tap)
+    _panel._on_stage_input(_press(counter * 4))
+    # Someone now stands at the bar: the same tap goes to the next place.
+    _person("drinker", _farmer(), _sid)
+    _world.placed_npcs["drinker"].set_meta("room_square", [4, 5])
+    _panel._signature = ""
+    _panel.refresh()
+    _finish_walk(_panel._people.get_node("drinker"))
+    _panel._on_stage_input(_press(counter * 4))
+    _check("taps on the counter, free then held", tapped, [Vector2i(4, 5), Vector2i(4, 4)])
+    _panel.floor_tapped.disconnect(on_tap)
     _panel.close()
     _done()

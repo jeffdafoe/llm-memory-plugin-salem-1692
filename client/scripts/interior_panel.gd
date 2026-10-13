@@ -1351,9 +1351,21 @@ func _tap(local: Vector2) -> void:
     if str(thing.get("kind", "")) == "person":
         person_clicked.emit(str(thing["id"]))
     elif thing.is_empty() and not is_stall() and pc_actor_id != "" and _holder(pc_actor_id) != null:
-        var square := InteriorRooms.square_at(room, _art_at(local))
+        var square := InteriorRooms.square_at(room, _art_at(local), _held_squares())
         if square != Vector2i(-1, -1):
             floor_tapped.emit(square)
+
+
+## The squares the people drawn in the room stand on, the player's character
+## left out — a tap on furniture walks to a free place beside it.
+func _held_squares() -> Dictionary:
+    var held := {}
+    for h in _hits:
+        var id := str(h["id"])
+        var c: Node2D = world.placed_npcs.get(id, null)
+        if id != pc_actor_id and c != null and c.has_meta("room_square"):
+            held[InteriorRooms.square_of(c.get_meta("room_square"))] = true
+    return held
 
 
 func _on_stage_mouse_exited() -> void:

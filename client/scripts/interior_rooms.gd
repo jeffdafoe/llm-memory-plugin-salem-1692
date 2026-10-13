@@ -76,6 +76,9 @@ const SQUARE_PX := 16
 
 ## Around a station's point (where the feet go): the box a tap on it falls in.
 const STATION_BOX := Rect2(-8, -24, 16, 26)
+## How far (room art px, to where the feet go) a tap on furniture looks for a
+## place to stand: about two and a half squares.
+const TAP_REACH := 40.0
 
 static func room_for(structure_id: String) -> Dictionary:
     return ROOMS.get(structure_id, {})
@@ -137,15 +140,47 @@ static func walkable(room: Dictionary, square: Vector2i) -> bool:
 
 ## The square a tap at `art` (room art px) asks for: a seat or standing place
 ## whose person-sized box around its point holds the tap (so a tap on a chair
-## is its seat), else the floor square under the tap; (-1, -1) when that is
-## not walkable.
-static func square_at(room: Dictionary, art: Vector2) -> Vector2i:
+## is its seat), else the floor square under the tap, else — a tap on furniture
+## (the bar counter, the table) — the nearest free place to stand within
+## TAP_REACH of it, `held` being the squares others stand on; (-1, -1) when
+## there is none (a tap high on the wall).
+static func square_at(room: Dictionary, art: Vector2, held := {}) -> Vector2i:
     for spot in [room.get("door", {})] + room.get("spots", []):
         var at := Vector2(int(spot.get("x", -999)), int(spot.get("y", -999)))
         if Rect2(at + STATION_BOX.position, STATION_BOX.size).has_point(art):
             return spot.get("square", Vector2i(-1, -1))
     var square := Vector2i(floori(art.x / SQUARE_PX), floori(art.y / SQUARE_PX))
-    return square if walkable(room, square) else Vector2i(-1, -1)
+    if walkable(room, square):
+        return square
+    # Seats and standing places first (a tap on the table is a chair), plain
+    # floor only when none is in reach.
+    var places: Array = []
+    for spot in [room.get("door", {})] + room.get("spots", []):
+        places.append(spot.get("square", Vector2i(-1, -1)))
+    var best := _nearest_free(room, art, places, held)
+    if best != Vector2i(-1, -1):
+        return best
+    var floor: Array = []
+    var grid: Array = room.get("grid", [])
+    for y in grid.size():
+        for x in str(grid[y]).length():
+            floor.append(Vector2i(x, y))
+    return _nearest_free(room, art, floor, held)
+
+## Of `squares`, the walkable one not in `held` drawn nearest `art` within
+## TAP_REACH, or (-1, -1).
+static func _nearest_free(room: Dictionary, art: Vector2, squares: Array, held: Dictionary) -> Vector2i:
+    var best := Vector2i(-1, -1)
+    var best_d := TAP_REACH
+    for sq in squares:
+        if held.has(sq) or not walkable(room, sq):
+            continue
+        var spot := spot_at(room, sq)
+        var d := art.distance_to(Vector2(int(spot.get("x", 0)), int(spot.get("y", 0))))
+        if d <= best_d:
+            best = sq
+            best_d = d
+    return best
 
 ## The points a person walks through for a walked `path` (wire squares, from
 ## where they stood to where they stop): each square's middle on the way, then
