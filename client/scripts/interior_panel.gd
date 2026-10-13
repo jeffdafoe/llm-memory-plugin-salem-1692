@@ -47,6 +47,9 @@ extends CanvasLayer
 signal opened
 signal closed
 signal person_clicked(npc_id: String)
+## A tap on the floor or a free seat of a room the player's character is in
+## (LLM-768): main.gd asks the engine to walk them there.
+signal floor_tapped(square: Vector2i)
 
 const FONT_PATH := "res://assets/fonts/IMFellEnglish-Regular.ttf"
 const MAX_PIXEL_SCALE := 4
@@ -622,7 +625,7 @@ func _stall_occupants() -> Dictionary:
 func _entry(id: String, spot: Dictionary) -> Dictionary:
     var c: Node2D = world.placed_npcs[id]
     var look := "%d|%s" % [hash(JSON.stringify(c.get_meta("sprite_data", {}))), str(c.get_meta("dormant", ""))]
-    return {"id": id, "spot": spot, "look": look}
+    return {"id": id, "spot": spot, "look": look, "walk": int(c.get_meta("room_walk", 0))}
 
 
 func _draw_people(cast: Dictionary) -> void:
@@ -653,7 +656,8 @@ func _draw_people(cast: Dictionary) -> void:
             "turn_left": child.get_meta("turn_left") if child.has_meta("turn_left") else null,
             "facing": child.get_meta("facing") if child.has_meta("facing") else null,
             "smithing": child.get_meta("smithing") if child.has_meta("smithing") else null,
-            "anvil_trip": child.has_meta("anvil_trip")}
+            "anvil_trip": child.has_meta("anvil_trip"), "walk": int(child.get_meta("walk", 0)),
+            "route_left": child.get_meta("route_left") if child.has_meta("route_left") else null}
         child.free()
     _hits.clear()
     var drawn := {}
@@ -692,9 +696,21 @@ func _draw_people(cast: Dictionary) -> void:
         # A hand caught away from their spot (at a smithy's bellows) walks back.
         var back := stays and hand and bool(was[id]["hand"]) and not bool(was[id]["entering"]) \
             and (was[id]["position"] as Vector2).distance_to(home) > 0.5
+        # In a room, someone the engine walked to another square (a player's
+        # tap) walks the path square by square; one redrawn mid-walk carries on.
+        var walk := int(entry.get("walk", 0))
+        holder.set_meta("walk", walk)
+        var room_route: Array = []
+        if stays and not is_stall() and not bool(was[id]["entering"]):
+            if walk != int(was[id]["walk"]) and c.has_meta("room_path"):
+                room_route = InteriorRooms.route(room, c.get_meta("room_path"))
+            elif was[id]["route_left"] is Array and not was[id]["route_left"].is_empty() \
+                    and (was[id]["route_left"].back() as Vector2).distance_to(home) <= 0.5:
+                room_route = was[id]["route_left"]
         # The keeper carries on from where they bustled to, a newcomer from
-        # partway in; anyone else (a hand too) stands at their (maybe new) spot.
-        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves or back):
+        # partway in, a walker from where they had got to; anyone else (a hand
+        # too) stands at their (maybe new) spot.
+        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves or back or not room_route.is_empty()):
             holder.position = was[id]["position"]
             holder.modulate.a = was[id]["alpha"]
         # A stall's keeper stands behind the counter, which is drawn over them.
@@ -720,6 +736,8 @@ func _draw_people(cast: Dictionary) -> void:
             _walk_in(holder, spot, true)
         elif stays and bool(was[id]["entering"]):
             _walk_in(holder, spot, false)
+        elif not room_route.is_empty():
+            _walk_along(holder, room_route, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
         elif moves:
             _walk(holder, home, WALK_SPEED, str(spot.get("facing", "south")))
         elif back:
@@ -801,6 +819,14 @@ func _walk_in(holder: Node2D, spot: Dictionary, from_doorway: bool) -> void:
         func(): holder.remove_meta("entering"), 1.0, 0.0, FADE_SECONDS * (1.0 - holder.modulate.a))
 
 
+## Walk a drawn person through `points` (room art px; the last is where they
+## stop) — a path the engine walked them in a room (LLM-768) — taking `facing`
+## and `pose` at the end.
+func _walk_along(holder: Node2D, points: Array, facing: String, pose: String) -> void:
+    holder.set_meta("via", points.slice(0, points.size() - 1))
+    _walk(holder, points.back(), WALK_SPEED, facing, pose)
+
+
 ## The one walking out as `id`, or null.
 func _leaving(id: String) -> Node2D:
     for layer in [_people, _staff]:
@@ -851,7 +877,10 @@ func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "s
     holder.set_meta("walking", tween)
     var at := holder.position
     var first := true
-    for point in (_route(holder, to) if fade_to < 0.0 else [to]):
+    var points: Array = _route(holder, to) if fade_to < 0.0 else [to]
+    # The points still ahead, so a redraw mid-walk carries on from there.
+    holder.set_meta("route_left", points.duplicate())
+    for point in points:
         var dist := at.distance_to(point)
         if spr != null and dist > 0.5 and spr.sprite_frames != null:
             var anim := str(world.facing_from_vec(point - at)) + "_walk"
@@ -862,23 +891,32 @@ func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "s
                 else:
                     tween.tween_callback(spr.play.bind(anim))
         tween.tween_property(holder, "position", point, maxf(dist / speed, 0.01))
+        # (Not on a fading walk: its fade runs alongside the last leg.)
+        if fade_to < 0.0:
+            tween.tween_callback(func(): (holder.get_meta("route_left", []) as Array).pop_front())
         at = point
         first = false
     if fade_to >= 0.0:
         tween.parallel().tween_property(holder, "modulate:a", fade_to, maxf(fade_seconds, 0.01)).set_delay(fade_delay)
     tween.tween_callback(func():
         holder.remove_meta("walking")
+        holder.remove_meta("route_left")
         if spr != null:
             _pose(spr, facing, pose)
         if done.is_valid():
             done.call())
 
 
-## The way a drawn person walks to `to`: straight there, or for someone behind
+## The way a drawn person walks to `to`: through the points a room walk laid
+## (_walk_along), straight there, or for someone behind
 ## a counter that has a work area left of it (a smithy) and a walk from one
 ## side of the counter's end to the other, round the end first — never
 ## through the counter.
 func _route(holder: Node2D, to: Vector2) -> Array:
+    if holder.has_meta("via"):
+        var via: Array = holder.get_meta("via")
+        holder.remove_meta("via")
+        return via + [to]
     var end := float(room.get("counter_from", 0))
     if holder.get_parent() != _staff or end <= 0.0 or (holder.position.x < end) == (to.x < end):
         return [to]
@@ -1305,12 +1343,17 @@ func _on_stage_input(event: InputEvent) -> void:
 
 
 ## A tap shows the tag a while — on a touch screen there is no hover — and a
-## tap on a person opens talk.
+## tap on a person opens talk. In a room the player's character is drawn in,
+## a tap on the floor or a free seat walks them there (floor_tapped).
 func _tap(local: Vector2) -> void:
     var thing := thing_at(local)
     _show_tag(thing, TAG_SECONDS)
     if str(thing.get("kind", "")) == "person":
         person_clicked.emit(str(thing["id"]))
+    elif thing.is_empty() and not is_stall() and pc_actor_id != "" and _holder(pc_actor_id) != null:
+        var square := InteriorRooms.square_at(room, _art_at(local))
+        if square != Vector2i(-1, -1):
+            floor_tapped.emit(square)
 
 
 func _on_stage_mouse_exited() -> void:

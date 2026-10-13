@@ -6,6 +6,9 @@ extends Node2D
 ## Emitted after an NPC's metadata is updated from a WS broadcast. Listeners
 ## (main.gd) refresh the editor panel if the changed NPC is currently selected.
 signal npc_metadata_changed(npc_id: String)
+## A person's square in a room changed with no inside flip (LLM-768) — the
+## room window redraws at once rather than at its next look.
+signal room_square_changed(npc_id: String)
 
 ## Emitted when the placed_npcs dictionary gains or loses an entry — NPC
 ## created or deleted from anywhere (local placement or WS broadcast).
@@ -647,8 +650,10 @@ func apply_npc_inside_change(data: Dictionary) -> void:
 ## Where the engine put the villager in the room they are in (LLM-768): meta
 ## `room_square` [x, y] on the room's floor plan, removed when there is none
 ## (outdoors, asleep, a structure without a plan). The room window draws them
-## there.
+## there. A square set this way is not walked to: any path is dropped.
 func _set_room_square(container: Node2D, square) -> void:
+    if container.has_meta("room_path"):
+        container.remove_meta("room_path")
     if square is Array and square.size() == 2:
         container.set_meta("room_square", [int(square[0]), int(square[1])])
     elif container.has_meta("room_square"):
@@ -656,12 +661,19 @@ func _set_room_square(container: Node2D, square) -> void:
 
 ## Apply a server-broadcast square change with no inside flip
 ## (npc_room_square_changed, LLM-768): given up on going to sleep, taken again
-## on waking.
+## on waking, or walked to — then `path` lists the squares walked, kept as meta
+## `room_path` with `room_walk` counting the walks, so the room window walks
+## each one once.
 func apply_npc_room_square_change(data: Dictionary) -> void:
     var container: Node2D = placed_npcs.get(str(data.get("id", "")), null)
     if container == null:
         return
     _set_room_square(container, data.get("square", null))
+    var path = data.get("path", null)
+    if path is Array and path.size() >= 2 and container.has_meta("room_square"):
+        container.set_meta("room_path", path.duplicate())
+        container.set_meta("room_walk", int(container.get_meta("room_walk", 0)) + 1)
+    room_square_changed.emit(str(data.get("id", "")))
 
 ## Resolve whether an NPC should be rendered given the inside flag and
 ## which structure they're inside. For structures whose asset has

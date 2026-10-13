@@ -279,12 +279,16 @@ func (ActorInsideChanged) isSimEvent() {}
 
 // ActorRoomSquareChanged fires when an actor's square in a room changes
 // without an inside flip (LLM-768): given up on going to sleep (Square nil),
-// taken again on waking. Entering and leaving ride ActorInsideChanged.
+// taken again on waking, walked to (a player's tap). Entering and leaving
+// ride ActorInsideChanged.
 type ActorRoomSquareChanged struct {
 	EventBase
 	ActorID     ActorID
 	StructureID StructureID
 	Square      *roomlayout.Square // nil = no square
+	// Path is the way walked to Square, both ends included, when they walked
+	// there (a player's tap); nil for a square given or taken in place.
+	Path []roomlayout.Square
 }
 
 func (ActorRoomSquareChanged) isSimEvent() {}

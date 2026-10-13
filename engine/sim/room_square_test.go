@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -191,5 +192,91 @@ func TestPlaceRoomSquaresOnLoad(t *testing.T) {
 	}
 	if sleeper.RoomSquare != nil || out.RoomSquare != nil {
 		t.Errorf("sleeper %v / outdoors %v placed", sleeper.RoomSquare, out.RoomSquare)
+	}
+}
+
+// A player walks to a square of the room: the square changes, the frame carries
+// the path, and they stay inside with no village move. A square someone else
+// holds, the keeper's place, a wall, a sleeper or someone outdoors is refused.
+func TestMovePCInRoom(t *testing.T) {
+	pc := outdoors("jeff", KindPC)
+	guest := outdoors("silas", KindNPCStateful)
+	w, events := squareWorld(pc, guest)
+	plan := roomlayout.For(string(squareTavern))
+	setActorInsideStructure(w, pc, squareTavern)
+	setActorInsideStructure(w, guest, squareTavern)
+	*events = nil
+
+	west := roomlayout.Square{X: 1, Y: 6}
+	if *guest.RoomSquare == west {
+		guest.RoomSquare = &roomlayout.Square{X: 3, Y: 6}
+	}
+	res, err := MovePCInRoom(pc.ID, west).Fn(w)
+	if err != nil {
+		t.Fatalf("walk to the west seat: %v", err)
+	}
+	if pc.RoomSquare == nil || *pc.RoomSquare != west || pc.InsideStructureID != squareTavern || pc.MoveIntent != nil {
+		t.Errorf("after the walk: square %v inside %q intent %v", pc.RoomSquare, pc.InsideStructureID, pc.MoveIntent)
+	}
+	path := res.(RoomMoveResult).Path
+	if len(path) < 2 || path[0] != plan.Door.Square || path[len(path)-1] != west {
+		t.Errorf("path = %v, want door to west seat", path)
+	}
+	if len(*events) != 1 {
+		t.Fatalf("events = %#v, want one square change", *events)
+	}
+	if e, ok := (*events)[0].(*ActorRoomSquareChanged); !ok || e.Square == nil || *e.Square != west || len(e.Path) != len(path) {
+		t.Errorf("frame = %#v, want the west seat with the path", (*events)[0])
+	}
+
+	// Staying put: no frame.
+	*events = nil
+	if _, err := MovePCInRoom(pc.ID, west).Fn(w); err != nil || len(*events) != 0 {
+		t.Errorf("a tap on their own square: err %v, events %v", err, *events)
+	}
+
+	for name, to := range map[string]roomlayout.Square{
+		"someone else's square": *guest.RoomSquare,
+		"the keeper's place":    plan.Keeper.Square,
+		"the table":             {X: 2, Y: 6},
+		"off the grid":          {X: 9, Y: 9},
+	} {
+		if _, err := MovePCInRoom(pc.ID, to).Fn(w); !errors.Is(err, ErrRoomSquareRefused) {
+			t.Errorf("%s: err %v, want refused", name, err)
+		}
+	}
+	if *pc.RoomSquare != west {
+		t.Errorf("a refused step moved them to %v", pc.RoomSquare)
+	}
+
+	// Asleep, or outdoors: refused.
+	pc.State = StateSleeping
+	if _, err := MovePCInRoom(pc.ID, plan.Door.Square).Fn(w); !errors.Is(err, ErrRoomSquareRefused) {
+		t.Errorf("asleep: err %v, want refused", err)
+	}
+	pc.State = StateIdle
+	setActorInsideStructure(w, pc, "")
+	if _, err := MovePCInRoom(pc.ID, plan.Door.Square).Fn(w); !errors.Is(err, ErrRoomSquareRefused) {
+		t.Errorf("outdoors: err %v, want refused", err)
+	}
+	if _, err := MovePCInRoom(guest.ID, plan.Door.Square).Fn(w); err == nil {
+		t.Error("a villager was walked by the player's route")
+	}
+}
+
+// Someone inside with no square (the room was full when they came in) sets
+// off from the door.
+func TestMovePCInRoomWithNoSquareStartsAtTheDoor(t *testing.T) {
+	pc := outdoors("jeff", KindPC)
+	w, _ := squareWorld(pc)
+	setActorInsideStructure(w, pc, squareTavern)
+	pc.RoomSquare = nil
+	plan := roomlayout.For(string(squareTavern))
+	res, err := MovePCInRoom(pc.ID, roomlayout.Square{X: 3, Y: 6}).Fn(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path := res.(RoomMoveResult).Path; path[0] != plan.Door.Square {
+		t.Errorf("path = %v, want it to start at the door", path)
 	}
 }
