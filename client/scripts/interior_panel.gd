@@ -14,6 +14,14 @@ extends CanvasLayer
 ## bubble over their head (LLM-751); it survives a redraw of the room. The window reads the world each half
 ## second and rebuilds only when who is where has changed.
 ##
+## A market stall (StallScenes, LLM-753) opens the same window while the
+## character stands at the stall's counter — nobody but the keeper goes in.
+## The keeper (whoever is inside the stall) stands behind the counter, the
+## people at its loiter pin stand outside in front, and the goods the keeper
+## sells (engine read pc/stall, refetched every few seconds) lie in piles on
+## the floor behind and on the counter top. Layers, back to front: the stall,
+## the floor piles, the keeper, the counter, the counter goods, the customers.
+##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
 ## pixels at a WHOLE number of screen pixels each, `k`; the window stretch is
 ## cancelled and the origin snapped to a whole screen pixel. People come from
@@ -37,6 +45,8 @@ const HIT_BOX := Rect2(-8, -28, 16, 28)
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const BUBBLE_NODE := "SpeechBubble"
 const BUBBLE_ANCHOR_Y := -36.0
+## How often an open stall re-reads its shelf.
+const WARES_SECONDS := 5.0
 
 var world: Node2D = null
 var pc_actor_id := ""
@@ -54,11 +64,20 @@ var more_label: Label = null
 
 ## Test seam: path -> Texture2D, used in place of a download.
 var texture_hook: Callable = Callable()
+## Test seam: structure id -> the pc/stall wares array, used in place of the
+## request.
+var wares_hook: Callable = Callable()
 
 static var _textures: Dictionary = {}
 
 var _scene: Node2D = null
 var _background: Sprite2D = null
+## Stall layers (empty for a room): floor piles, the keeper, the counter, the
+## goods on it. A room's people all go in _people, as do a stall's customers.
+var _goods_back: Node2D = null
+var _staff: Node2D = null
+var _counter: Sprite2D = null
+var _goods_front: Node2D = null
 var _people: Node2D = null
 var _font: Font = null
 var _stretch := Vector2.ONE
@@ -66,7 +85,10 @@ var _assigned: Dictionary = {}
 var _signature := ""
 var _refresh_left := 0.0
 var _hits: Array = []
-var _http: HTTPRequest = null
+var _fetching: Dictionary = {}
+var _wares: Array = []
+var _wares_left := 0.0
+var _http_wares: HTTPRequest = null
 
 
 func _ready() -> void:
@@ -140,6 +162,15 @@ func _build_ui() -> void:
     _background = Sprite2D.new()
     _background.centered = false
     _scene.add_child(_background)
+    _goods_back = Node2D.new()
+    _scene.add_child(_goods_back)
+    _staff = Node2D.new()
+    _scene.add_child(_staff)
+    _counter = Sprite2D.new()
+    _counter.centered = false
+    _scene.add_child(_counter)
+    _goods_front = Node2D.new()
+    _scene.add_child(_goods_front)
     _people = Node2D.new()
     _people.y_sort_enabled = true
     _scene.add_child(_people)
@@ -158,9 +189,11 @@ func _label(font_size: int, color: Color) -> Label:
     return l
 
 
-## Show the room of `sid`. A structure with no room is a no-op.
+## Show the room — or the stall — of `sid`. Anything else is a no-op.
 func open(sid: String) -> void:
     var r := InteriorRooms.room_for(sid)
+    if r.is_empty():
+        r = StallScenes.scene_for(world, Catalog.assets, sid)
     if r.is_empty():
         return
     if world != null and world.has_signal("npc_spoke") and not world.npc_spoke.is_connected(_on_npc_spoke):
@@ -168,18 +201,28 @@ func open(sid: String) -> void:
     var was_open := visible
     if sid != structure_id:
         _assigned = {}
+        _wares = []
     structure_id = sid
     room = r
     title_label.text = str(room.get("title", ""))
-    _background.texture = _texture(str(room.get("sheet", "")))
+    _apply_textures()
     visible = true
     _signature = ""
     _relayout()
     refresh()
+    _draw_goods()
     _refresh_left = REFRESH_SECONDS
+    _wares_left = 0.0
+    if is_stall():
+        _request_wares()
+        _wares_left = WARES_SECONDS
     set_process(true)
     if not was_open:
         opened.emit()
+
+
+func is_stall() -> bool:
+    return str(room.get("kind", "")) == "stall"
 
 
 ## Hide the window. Idempotent.
@@ -200,6 +243,11 @@ func _process(delta: float) -> void:
     if _refresh_left <= 0.0:
         _refresh_left = REFRESH_SECONDS
         refresh()
+    if is_stall():
+        _wares_left -= delta
+        if _wares_left <= 0.0:
+            _wares_left = WARES_SECONDS
+            _request_wares()
 
 
 ## Read who is inside and redraw the people when that has changed.
@@ -218,6 +266,8 @@ func refresh() -> void:
 ## plus the "more" count, from the world's containers. Pure apart from the
 ## sticky spot memory, so tests drive it directly.
 func occupants() -> Dictionary:
+    if is_stall():
+        return _stall_occupants()
     var keeper_id := ""
     var others: Array = []
     var pc_inside := false
@@ -252,6 +302,52 @@ func occupants() -> Dictionary:
     return {"placed": placed, "more": int(seated["more"])}
 
 
+## A stall's people: behind the counter, whoever is inside the stall — its
+## own keeper first, else a hand tending it (anyone else inside is counted,
+## not drawn); in front, whoever stands at its loiter pin, the player's
+## character in the middle.
+func _stall_occupants() -> Dictionary:
+    var keeper_id := ""
+    var inside: Array = []
+    var customers: Array = []
+    var pc_here := false
+    var pin: Vector2i = room.get("pin", Vector2i.ZERO)
+    var ids: Array = world.placed_npcs.keys()
+    ids.sort()
+    for id in ids:
+        var c: Node2D = world.placed_npcs[id]
+        if not is_instance_valid(c) or str(c.get_meta("dormant", "")) == "sleeping":
+            continue
+        if bool(c.get_meta("inside", false)):
+            if str(c.get_meta("inside_structure_id", "")) != structure_id:
+                continue
+            if keeper_id == "" and str(c.get_meta("work_structure_id", "")) == structure_id:
+                keeper_id = id
+            else:
+                inside.append(id)
+        elif StallScenes.at_pin(StallScenes.standing_tile(c), pin):
+            if id == pc_actor_id:
+                pc_here = true
+            else:
+                customers.append(id)
+    if keeper_id == "" and not inside.is_empty():
+        keeper_id = inside.pop_front()
+    var spots: Array = room.get("spots", [])
+    var stood := InteriorRooms.assign(spots.size(), customers, _assigned)
+    _assigned = stood["spots"]
+    var placed: Array = []
+    if keeper_id != "":
+        var e := _entry(keeper_id, room.get("keeper", {}))
+        e["behind"] = true
+        placed.append(e)
+    for id in customers:
+        if _assigned.has(id):
+            placed.append(_entry(id, spots[int(_assigned[id])]))
+    if pc_here:
+        placed.append(_entry(pc_actor_id, room.get("door", {})))
+    return {"placed": placed, "more": int(stood["more"]) + inside.size()}
+
+
 ## One drawn person. `look` stamps the outfit and the rest state so a change
 ## to either redraws the room.
 func _entry(id: String, spot: Dictionary) -> Dictionary:
@@ -264,7 +360,7 @@ func _draw_people(cast: Dictionary) -> void:
     # A bubble outlives the redraw (someone came in mid-sentence): lift it off
     # the old person and put it back on the new one below.
     var bubbles := {}
-    for child in _people.get_children():
+    for child in _people.get_children() + _staff.get_children():
         var bubble := child.get_node_or_null(BUBBLE_NODE)
         if bubble != null:
             child.remove_child(bubble)
@@ -289,13 +385,14 @@ func _draw_people(cast: Dictionary) -> void:
         holder.name = id
         holder.position = Vector2(int(spot.get("x", 0)), int(spot.get("y", 0)))
         holder.add_child(spr)
-        _people.add_child(holder)
+        # A stall's keeper stands behind the counter, which is drawn over them.
+        (_staff if bool(entry.get("behind", false)) else _people).add_child(holder)
         _pose(spr, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
         _hits.append({"id": id, "rect": Rect2(holder.position + HIT_BOX.position, HIT_BOX.size)})
     for id in bubbles:
-        var holder := _people.get_node_or_null(NodePath(id))
+        var holder := _holder(id)
         if holder != null:
             # The speaker may have moved to the other side of the room.
             var carried: Node2D = bubbles[id]
@@ -357,7 +454,7 @@ func _snap() -> void:
 func say(npc_id: String, text: String) -> void:
     if npc_id == "" or text == "":
         return
-    var holder := _people.get_node_or_null(NodePath(npc_id))
+    var holder := _holder(npc_id)
     if holder == null:
         return
     var existing := holder.get_node_or_null(BUBBLE_NODE)
@@ -371,6 +468,14 @@ func say(npc_id: String, text: String) -> void:
     bubble.opens_left = _opens_left_at(holder)
     holder.add_child(bubble)
     bubble.setup(text)
+
+
+## The drawn person `id`, in front of the counter or behind it, or null.
+func _holder(id: String) -> Node2D:
+    var holder := _people.get_node_or_null(NodePath(id)) as Node2D
+    if holder == null:
+        holder = _staff.get_node_or_null(NodePath(id)) as Node2D
+    return holder
 
 
 ## On the right side of the room a bubble opens left, over the room rather
@@ -420,9 +525,82 @@ func _unhandled_input(event: InputEvent) -> void:
         get_viewport().set_input_as_handled()
 
 
-## The room's picture: cached, else fetched from the server's tileset folder
-## (the window shows the people on a blank room until it lands).
+## Put the room's pictures on: the backdrop, and for a stall the counter (the
+## goods redraw from their own sheet). A picture still downloading leaves its
+## layer blank until it lands.
+func _apply_textures() -> void:
+    _background.texture = _texture(str(room.get("sheet", "")))
+    _counter.texture = _texture(str(room.get("counter", ""))) if is_stall() else null
+
+
+## The goods on the stall's shelf changed (or their sheet arrived): lay them
+## out again. Each is a cell of the goods sheet — a pile on the floor, or one
+## or two of the good on the counter (StallScenes.lay_out).
+func set_wares(wares: Array) -> void:
+    _wares = wares
+    _draw_goods()
+
+
+func _draw_goods() -> void:
+    for layer in [_goods_back, _goods_front]:
+        for child in layer.get_children():
+            child.free()
+    if not is_stall():
+        return
+    var sheet := _texture(StallScenes.GOODS_SHEET)
+    if sheet == null:
+        return
+    for slot in StallScenes.lay_out(_wares):
+        var cell := AtlasTexture.new()
+        cell.atlas = sheet
+        cell.region = StallScenes.cell_rect(int(slot["cell"]))
+        var layer: Node2D = _goods_back if int(slot["cell"]) % 2 == 1 else _goods_front
+        for i in int(slot["count"]):
+            var spr := Sprite2D.new()
+            spr.centered = false
+            spr.texture = cell
+            spr.position = Vector2(slot["at"] + StallScenes.FEW_STEP * i)
+            spr.name = "%s_%d" % [slot["item"], i]
+            layer.add_child(spr)
+
+
+## Ask the engine what is on this stall's shelf.
+func _request_wares() -> void:
+    var sid := structure_id
+    if wares_hook.is_valid():
+        set_wares(wares_hook.call(sid))
+        return
+    if _http_wares == null:
+        _http_wares = HTTPRequest.new()
+        add_child(_http_wares)
+        _http_wares.request_completed.connect(_on_wares)
+    elif _http_wares.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
+        # Already asking about this stall: that answer will do. A request for
+        # the stall the window just left is dropped for this one.
+        if str(_http_wares.get_meta("structure_id", "")) == sid:
+            return
+        _http_wares.cancel_request()
+    _http_wares.set_meta("structure_id", sid)
+    _http_wares.request(Auth.api_base + "/api/village/pc/stall?structure_id=" + sid.uri_encode(),
+        Auth.auth_headers(false), HTTPClient.METHOD_GET)
+
+
+func _on_wares(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    # An answer for a stall the window has since left is dropped.
+    if str(_http_wares.get_meta("structure_id", "")) != structure_id or not is_stall():
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+        return
+    var data = JSON.parse_string(body.get_string_from_utf8())
+    if data is Dictionary and data.get("wares", null) is Array:
+        set_wares(data["wares"])
+
+
+## A picture by its served path: cached, else fetched from the server's
+## tileset folder (null until it lands; _apply_textures puts it on then).
 func _texture(path: String) -> Texture2D:
+    if path == "":
+        return null
     if texture_hook.is_valid():
         return texture_hook.call(path)
     if _textures.has(path):
@@ -432,14 +610,15 @@ func _texture(path: String) -> Texture2D:
 
 
 func _fetch(path: String) -> void:
-    if path == "" or _http != null:
+    if _fetching.has(path):
         return
-    _http = HTTPRequest.new()
-    _http.accept_gzip = false
-    add_child(_http)
-    _http.request_completed.connect(func(result: int, code: int, _h, body: PackedByteArray):
-        _http.queue_free()
-        _http = null
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    _fetching[path] = http
+    http.request_completed.connect(func(result: int, code: int, _h, body: PackedByteArray):
+        http.queue_free()
+        _fetching.erase(path)
         if result != HTTPRequest.RESULT_SUCCESS or code != 200:
             push_warning("Interior sheet download failed: %s code=%d" % [path, code])
             return
@@ -447,8 +626,9 @@ func _fetch(path: String) -> void:
         if img.load_png_from_buffer(body) != OK:
             return
         _textures[path] = ImageTexture.create_from_image(img)
-        if str(room.get("sheet", "")) == path:
-            _background.texture = _textures[path])
-    if _http.request(Auth.api_base + path) != OK:
-        _http.queue_free()
-        _http = null
+        if visible:
+            _apply_textures()
+            _draw_goods())
+    if http.request(Auth.api_base + path) != OK:
+        http.queue_free()
+        _fetching.erase(path)
