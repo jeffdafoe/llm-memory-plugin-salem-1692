@@ -1,0 +1,50 @@
+{
+    "rooms": [
+        {
+            "structure_id": "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9",
+            "name": "Tavern common room",
+            "grid": [
+                "########",
+                "########",
+                "########",
+                "########",
+                ".....###",
+                "####.##.",
+                "..#..###"
+            ],
+            "door": {"square": [4, 6], "at": [64, 111], "facing": "north"},
+            "keeper": {"square": [7, 5], "at": [112, 80], "facing": "west"},
+            "stations": [
+                {"id": "seat_west", "kind": "seat", "square": [1, 6], "at": [16, 98], "facing": "east", "pose": "seat", "serve": [31, 87]},
+                {"id": "seat_east", "kind": "seat", "square": [3, 6], "at": [56, 98], "facing": "west", "pose": "seat", "serve": [39, 87]},
+                {"id": "bar", "kind": "stand", "square": [4, 5], "at": [76, 100], "facing": "east"},
+                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [52, 68], "facing": "south"},
+                {"id": "window", "kind": "stand", "square": [4, 4], "at": [68, 74], "facing": "south"}
+            ]
+        },
+        {
+            "structure_id": "019d98af-ac9b-7833-8e03-5a7015bb5b0c",
+            "name": "Inn entry hall",
+            "grid": [
+                "########",
+                "########",
+                "########",
+                ".######.",
+                ".#.####.",
+                ".#..####",
+                ".#......"
+            ],
+            "door": {"square": [4, 6], "at": [64, 111], "facing": "north"},
+            "keeper": {"square": [2, 4], "at": [44, 66], "facing": "south"},
+            "keeper_door": {"square": [0, 3], "at": [10, 60], "facing": "south"},
+            "stations": [
+                {"id": "bench_west", "kind": "seat", "square": [5, 6], "at": [86, 110], "facing": "north", "pose": "seat", "serve": [86, 86]},
+                {"id": "bench_east", "kind": "seat", "square": [6, 6], "at": [110, 110], "facing": "north", "pose": "seat", "serve": [110, 86]},
+                {"id": "rocking_chair", "kind": "seat", "square": [0, 6], "at": [14, 102], "facing": "east", "pose": "seat"},
+                {"id": "desk", "kind": "stand", "square": [3, 6], "at": [48, 100], "facing": "north"},
+                {"id": "fire", "kind": "stand", "square": [7, 4], "at": [112, 70], "facing": "west"},
+                {"id": "stair_foot", "kind": "stand", "square": [0, 5], "at": [12, 80], "facing": "east"}
+            ]
+        }
+    ]
+}

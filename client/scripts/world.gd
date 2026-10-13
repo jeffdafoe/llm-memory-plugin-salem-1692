@@ -639,9 +639,29 @@ func apply_npc_inside_change(data: Dictionary) -> void:
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = _compute_npc_visible(inside, inside_structure_id)
     _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
+    _set_room_square(container, data.get("room_square", null))
     # Buttons that depend on location (Go Home / Go to Work) refresh via
     # the metadata-changed path, so nudge the panel when inside flips.
     npc_metadata_changed.emit(npc_id)
+
+## Where the engine put the villager in the room they are in (LLM-768): meta
+## `room_square` [x, y] on the room's floor plan, removed when there is none
+## (outdoors, asleep, a structure without a plan). The room window draws them
+## there.
+func _set_room_square(container: Node2D, square) -> void:
+    if square is Array and square.size() == 2:
+        container.set_meta("room_square", [int(square[0]), int(square[1])])
+    elif container.has_meta("room_square"):
+        container.remove_meta("room_square")
+
+## Apply a server-broadcast square change with no inside flip
+## (npc_room_square_changed, LLM-768): given up on going to sleep, taken again
+## on waking.
+func apply_npc_room_square_change(data: Dictionary) -> void:
+    var container: Node2D = placed_npcs.get(str(data.get("id", "")), null)
+    if container == null:
+        return
+    _set_room_square(container, data.get("square", null))
 
 ## Resolve whether an NPC should be rendered given the inside flag and
 ## which structure they're inside. For structures whose asset has
@@ -945,6 +965,7 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = _compute_npc_visible(inside, inside_structure_id)
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
+    _set_room_square(container, npc.get("room_square", null))
     # Stand offset overrides the server-provided current_x/y when inside
     # a visible_when_inside structure — NPCs render behind the counter
     # rather than at the door tile they actually walked to.

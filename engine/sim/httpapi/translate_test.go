@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
 func TestTranslateEvent_MoveStarted(t *testing.T) {
@@ -1290,5 +1291,36 @@ func TestTranslateEvent_NPCCreatedAdminOmitsAgent(t *testing.T) {
 	}
 	if bytes.Contains(b, []byte("llm_memory_agent")) {
 		t.Errorf("admin npc_created frame carries llm_memory_agent: %s", b)
+	}
+}
+
+// TestTranslateEvent_RoomSquares covers LLM-768: the square an actor is placed
+// on rides npc_inside_changed as room_square [x, y], and a square change with
+// no inside flip (sleep, waking) is npc_room_square_changed — square absent
+// when given up.
+func TestTranslateEvent_RoomSquares(t *testing.T) {
+	sq := &roomlayout.Square{X: 4, Y: 6}
+	in, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "jeff", InsideStructureID: "tavern", X: 1, Y: 2, RoomSquare: sq})
+	b, _ := json.Marshal(in.Data)
+	if want := `"room_square":[4,6]`; !strings.Contains(string(b), want) {
+		t.Errorf("inside frame %s lacks %s", b, want)
+	}
+	out, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "jeff"})
+	b, _ = json.Marshal(out.Data)
+	if strings.Contains(string(b), "room_square") {
+		t.Errorf("leaving frame %s carries a square", b)
+	}
+	moved, ok := TranslateEvent(&sim.ActorRoomSquareChanged{ActorID: "silas", StructureID: "tavern", Square: sq})
+	if !ok || moved.Type != "npc_room_square_changed" {
+		t.Fatalf("square change = %v %v, want npc_room_square_changed", moved.Type, ok)
+	}
+	b, _ = json.Marshal(moved.Data)
+	if want := `{"id":"silas","structure_id":"tavern","square":[4,6]}`; string(b) != want {
+		t.Errorf("square frame = %s, want %s", b, want)
+	}
+	gone, _ := TranslateEvent(&sim.ActorRoomSquareChanged{ActorID: "silas", StructureID: "tavern"})
+	b, _ = json.Marshal(gone.Data)
+	if want := `{"id":"silas","structure_id":"tavern"}`; string(b) != want {
+		t.Errorf("square given up = %s, want %s", b, want)
 	}
 }

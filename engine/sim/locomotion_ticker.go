@@ -1131,5 +1131,10 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	// frame the client's apply_npc_inside_change handler still consumes. The
 	// unchanged-value early return above guarantees this fires only on a real
 	// flip; emitted last, after indices + room + occupancy are consistent.
-	w.emit(&ActorInsideChanged{ActorID: actor.ID, InsideStructureID: structureID, X: actor.Pos.X, Y: actor.Pos.Y})
+	//
+	// LLM-768: a square in the room entered (nil leaving, or for a structure
+	// without a floor plan), sent on the same frame.
+	actor.RoomSquare = pickRoomSquare(w, actor, structureID)
+	w.emit(&ActorInsideChanged{ActorID: actor.ID, InsideStructureID: structureID, X: actor.Pos.X, Y: actor.Pos.Y,
+		RoomSquare: copyRoomSquare(actor.RoomSquare)})
 }

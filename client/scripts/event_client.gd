@@ -310,6 +310,9 @@ func _handle_message(data: String) -> void:
         "npc_inside_changed":
             if world != null:
                 world.apply_npc_inside_change(event_data)
+        "npc_room_square_changed":
+            if world != null:
+                world.apply_npc_room_square_change(event_data)
         "room_event":
             if world != null:
                 world.apply_room_event(event_data)

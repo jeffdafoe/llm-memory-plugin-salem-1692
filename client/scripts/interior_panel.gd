@@ -195,7 +195,11 @@ var _handoff_now: Dictionary = {}
 var _people: Node2D = null
 var _font: Font = null
 var _stretch := Vector2.ONE
+## A stall's customers' spots, sticky (InteriorRooms.assign).
 var _assigned: Dictionary = {}
+## In a room, where each drawn person stands this draw (id -> spot), from
+## their engine square — the handoffs serve to it.
+var _spot_of: Dictionary = {}
 ## A stall's hands' spots beside the keeper, sticky like _assigned.
 var _assigned_hands: Dictionary = {}
 var _signature := ""
@@ -367,6 +371,8 @@ func _label(font_size: int, color: Color) -> Label:
 ## Show the room — or the stall — of `sid`. Anything else is a no-op.
 func open(sid: String) -> void:
     var r := InteriorRooms.room_for(sid)
+    if not r.is_empty():
+        r = InteriorRooms.with_layout(r, Catalog.rooms.get(sid, {}))
     if r.is_empty():
         r = StallScenes.scene_for(world, Catalog.assets, sid)
     if r.is_empty():
@@ -391,6 +397,7 @@ func open(sid: String) -> void:
     if sid != structure_id:
         _assigned = {}
         _assigned_hands = {}
+        _spot_of = {}
         _wares = []
     structure_id = sid
     room = r
@@ -502,11 +509,17 @@ func refresh() -> void:
 
 
 ## Who is drawn where: [{id, spot: {x, y, facing, pose}}] in drawing order
-## plus the "more" count, from the world's containers. Pure apart from the
-## sticky spot memory, so tests drive it directly.
+## plus the "more" count, from the world's containers. In a room each person
+## stands where the engine put them — their `room_square` meta, on the room's
+## floor plan (LLM-768); someone with no square (every square taken, or the
+## plan not loaded yet) is counted, not drawn. Pure apart from the spot memory
+## (`_spot_of`, read by the handoffs), so tests drive it directly.
 func occupants() -> Dictionary:
     if is_stall():
         return _stall_occupants()
+    # The plan may land after the window opened.
+    if not room.has("door") and Catalog.rooms.has(structure_id):
+        room = InteriorRooms.with_layout(room, Catalog.rooms[structure_id])
     var keeper_id := ""
     var others: Array = []
     var pc_inside := false
@@ -527,20 +540,24 @@ func occupants() -> Dictionary:
             keeper_id = id
         else:
             others.append(id)
-    var spots: Array = room.get("spots", [])
-    var seated := InteriorRooms.assign(spots.size(), others, _assigned)
-    _assigned = seated["spots"]
+    # The keeper first, the player's character last, as they were drawn
+    # before (the people's layer sorts by depth all the same).
+    var order: Array = ([keeper_id] if keeper_id != "" else []) + others + ([pc_actor_id] if pc_inside else [])
+    _spot_of = {}
     var placed: Array = []
-    if keeper_id != "":
-        var k := _entry(keeper_id, room.get("keeper", {}))
-        k["keeper"] = true
-        placed.append(k)
-    for id in others:
-        if _assigned.has(id):
-            placed.append(_entry(id, spots[int(_assigned[id])]))
-    if pc_inside:
-        placed.append(_entry(pc_actor_id, room.get("door", {})))
-    return {"placed": placed, "more": int(seated["more"])}
+    var more := 0
+    for id in order:
+        var c: Node2D = world.placed_npcs[id]
+        var spot := InteriorRooms.spot_at(room, InteriorRooms.square_of(c.get_meta("room_square") if c.has_meta("room_square") else null))
+        if spot.is_empty():
+            more += 1
+            continue
+        _spot_of[id] = spot
+        var e := _entry(id, spot)
+        if id == keeper_id:
+            e["keeper"] = true
+        placed.append(e)
+    return {"placed": placed, "more": more}
 
 
 ## A stall's people: behind the counter, whoever is inside the stall — its
@@ -1651,11 +1668,7 @@ func _spot_point(spot: Dictionary) -> Vector2:
 ## buyer, standing, seated or the player's character at the door (it fades as
 ## it goes). {} for a buyer not drawn: it stays on the bar a moment and goes.
 func _serve_to(buyer: String, bar: Vector2, eaten: bool) -> Dictionary:
-    var spot: Dictionary = {}
-    if buyer != "" and buyer == pc_actor_id:
-        spot = room.get("door", {})
-    elif _assigned.has(buyer):
-        spot = room["spots"][int(_assigned[buyer])]
+    var spot: Dictionary = _spot_of.get(buyer, {})
     if spot.is_empty():
         return {}
     if eaten and spot.has("serve"):
@@ -1836,9 +1849,7 @@ func _lay_running_meals() -> void:
         return
     for entry in _hits:
         var id := str(entry["id"])
-        if not _assigned.has(id):
-            continue
-        var spot: Dictionary = room["spots"][int(_assigned[id])]
+        var spot: Dictionary = _spot_of.get(id, {})
         var item: String = world.meal_of(id, structure_id)
         if not spot.has("serve") or not StallScenes.GOODS.has(item):
             continue

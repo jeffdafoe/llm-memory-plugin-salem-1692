@@ -70,6 +70,7 @@ const TESTS := [
     "_test_inn_animations",
     "_test_inn_serves_porridge_to_the_bench",
     "_test_room_pieces",
+    "_test_room_squares",
 ]
 
 const STALL := "stall-1"
@@ -104,6 +105,7 @@ func _run_once() -> void:
     _panel.world = _world
     _panel.pc_actor_id = "pc"
     _panel.texture_hook = func(_path: String) -> Texture2D: return _blank(128, 112)
+    _load_room_plans()
     _check_test_list()
     _run_all()
     _check_all_tests_ran()
@@ -179,7 +181,8 @@ func _pack() -> Dictionary:
     return {"id": "p", "sheet": PACK, "frame_width": 32, "frame_height": 32, "render_scale": 2.0, "animations": anims}
 
 
-## A villager's container as world.gd leaves it.
+## A villager's container as world.gd leaves it — inside a room, with the
+## square the engine would deal them (_deal_square).
 func _person(id: String, sprite: Dictionary, inside_sid: String, extra := {}) -> Node2D:
     var c := Node2D.new()
     c.set_meta("inside", inside_sid != "")
@@ -188,7 +191,68 @@ func _person(id: String, sprite: Dictionary, inside_sid: String, extra := {}) ->
     for key in extra:
         c.set_meta(key, extra[key])
     _world.placed_npcs[id] = c
+    _deal_square(id, c, inside_sid)
     return c
+
+
+## The Catalog autoload (its global name does not compile in a --script run).
+func _catalog() -> Node:
+    return root.get_node("Catalog")
+
+
+## The engine's own floor plans (engine/sim/roomlayout/layouts.json), as
+## /api/village/rooms serves them, so the client is tested against the plans
+## the engine places people on.
+func _load_room_plans() -> void:
+    var path := ProjectSettings.globalize_path("res://").path_join("../engine/sim/roomlayout/layouts.json")
+    var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
+    _check("harness — the engine's room plans load", parsed is Dictionary, true)
+    if parsed is Dictionary:
+        _catalog().set_rooms(parsed["rooms"])
+
+
+## A square as the engine deals one (sim/room_square.go): the keeper to the
+## keeper's place, the player's character to the door, anyone else to the first
+## free station, then the first free open square that is no station; nothing
+## past those, and nothing asleep. (The engine starts guests at a hashed
+## station; the order does not matter to the window.)
+func _deal_square(id: String, c: Node2D, sid: String) -> void:
+    var plan: Dictionary = _catalog().rooms.get(sid, {})
+    if plan.is_empty() or str(c.get_meta("dormant", "")) == "sleeping":
+        return
+    var taken := {}
+    for other in _world.placed_npcs:
+        var o: Node2D = _world.placed_npcs[other]
+        if other != id and str(o.get_meta("inside_structure_id", "")) == sid and o.has_meta("room_square"):
+            taken[InteriorRooms.square_of(o.get_meta("room_square"))] = true
+    var first: Array = []
+    if id.begins_with("pc"):
+        first.append(plan["door"]["square"])
+    elif str(c.get_meta("work_structure_id", "")) == sid:
+        first.append(plan["keeper"]["square"])
+    var reserved := {InteriorRooms.square_of(plan["door"]["square"]): true, InteriorRooms.square_of(plan["keeper"]["square"]): true}
+    if plan.get("keeper_door", null) is Dictionary:
+        reserved[InteriorRooms.square_of(plan["keeper_door"]["square"])] = true
+    for st in plan["stations"]:
+        first.append(st["square"])
+        reserved[InteriorRooms.square_of(st["square"])] = true
+    for y in plan["grid"].size():
+        var row: String = plan["grid"][y]
+        for x in row.length():
+            if row[x] == "." and not reserved.has(Vector2i(x, y)):
+                first.append([x, y])
+    for sq in first:
+        if not taken.has(InteriorRooms.square_of(sq)):
+            c.set_meta("room_square", [int(sq[0]), int(sq[1])])
+            return
+
+
+## Put `id` on the room's station `i` (in plan order), as if the engine had.
+func _seat(id: String, i: int) -> void:
+    var c: Node2D = _world.placed_npcs[id]
+    var plan: Dictionary = _catalog().rooms[str(c.get_meta("inside_structure_id"))]
+    var sq: Array = plan["stations"][i]["square"]
+    c.set_meta("room_square", [int(sq[0]), int(sq[1])])
 
 
 func _clear_people() -> void:
@@ -254,7 +318,7 @@ func _test_occupants() -> void:
     _person("elsewhere", _farmer(), "other-structure")
     _person("outdoors", _farmer(), "")
     _panel.structure_id = _sid
-    _panel.room = InteriorRooms.room_for(_sid)
+    _panel.room = InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
     _panel._assigned = {}
     var cast: Dictionary = _panel.occupants()
     var ids := []
@@ -269,10 +333,11 @@ func _test_occupants() -> void:
     _check("keeper behind the bar", cast["placed"][0]["spot"], _panel.room["keeper"])
     _check("PC at the door", cast["placed"][-1]["spot"], _panel.room["door"])
     _check("nobody over", cast["more"], 0)
-    for i in 7:
+    # The Tavern has 5 stations and 4 open squares besides: 14 others, 5 over.
+    for i in 12:
         _person("crowd%d" % i, _farmer(), _sid)
     cast = _panel.occupants()
-    _check("past the spots: and N more", cast["more"], 2 + 7 - 5)
+    _check("past the squares: and N more", cast["more"], 2 + 12 - 9)
     _done()
 
 
@@ -306,7 +371,8 @@ func _test_draws_people() -> void:
             break
     _person("sitter", _farmer(), _sid)
     _person("stander", _pack(), _sid)
-    _panel._assigned = {"sitter": seat, "stander": seat + 1}
+    _seat("sitter", seat)
+    _seat("stander", seat + 1)
     _panel._signature = ""
     _panel.refresh()
     # Newcomers walk in (LLM-754); once there, the farmer sits.
@@ -323,7 +389,7 @@ func _test_draws_people() -> void:
         _person("crowd%d" % i, _farmer(), _sid)
     _panel.refresh()
     _check("and N more shown", _panel.more_label.visible, true)
-    _check("and N more text", _panel.more_label.text, "and 5 more")
+    _check("and N more text", _panel.more_label.text, "and 1 more")
     _panel.close()
     _done()
 
@@ -531,7 +597,7 @@ func _test_bubble_survives_a_redraw() -> void:
 ## side of the room turns to open the other way.
 func _test_carried_bubble_turns_with_its_speaker() -> void:
     _clear_people()
-    var spots: Array = InteriorRooms.room_for(_sid)["spots"]
+    var spots: Array = InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])["spots"]
     var west := -1
     var east := -1
     var half: float = InteriorRooms.room_for(_sid)["size"].x / 2.0
@@ -543,13 +609,13 @@ func _test_carried_bubble_turns_with_its_speaker() -> void:
     _check("harness — a spot on each side", west >= 0 and east >= 0, true)
     _person("guest", _farmer(), _sid)
     _panel.open(_sid)
-    _panel._assigned = {"guest": west}
+    _seat("guest", west)
     _panel._signature = ""
     _panel.refresh()
     _panel.say("guest", "Over here.")
     var bubble: Node2D = _panel._people.get_node("guest").get_node(_panel.BUBBLE_NODE)
     _check("on the left it opens right", bubble.opens_left, false)
-    _panel._assigned = {"guest": east}
+    _seat("guest", east)
     _panel._signature = ""
     _panel.refresh()
     var carried: Node = _panel._people.get_node("guest").get_node_or_null(_panel.BUBBLE_NODE)
@@ -990,7 +1056,7 @@ func _test_walk_out() -> void:
     # A room's guest walks to the door.
     _clear_people()
     _person("guest", _farmer(), _sid)
-    _panel._assigned = {"guest": 3}
+    _seat("guest", 3)
     _panel.open(_sid)
     _world.placed_npcs["guest"].set_meta("inside", false)
     _panel.refresh()
@@ -2036,7 +2102,7 @@ func _tavern_with_guest(spot: int) -> void:
     _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
     _person("guest", _farmer(), _sid)
     _panel.open(_sid)
-    _panel._assigned = {"guest": spot}
+    _seat("guest", spot)
     _panel._signature = ""
     _panel.refresh()
 
@@ -2325,7 +2391,7 @@ func _inn_with_guest(spot: int) -> void:
     _person("pc", _farmer(), INN)
     _person("guest", _farmer(), INN)
     _panel.open(INN)
-    _panel._assigned = {"guest": spot}
+    _seat("guest", spot)
     _panel._signature = ""
     _panel.refresh()
 
@@ -2537,5 +2603,65 @@ func _test_room_pieces() -> void:
     _panel.texture_hook = hook
     _panel._apply_textures()
     _check("then the pieces", _pieces().size(), pieces.size())
+    _panel.close()
+    _done()
+
+
+## LLM-768: people stand where the engine put them. A square on a station is
+## drawn at the station; any other open square at its middle; no square (every
+## square taken, or the plan not loaded) is counted, not drawn. The frames move
+## a person's square, and a plan that lands after the window opened is used.
+func _test_room_squares() -> void:
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
+    var plan: Dictionary = _catalog().rooms[_sid]
+    var st: Dictionary = plan["stations"][0]
+    var spot := InteriorRooms.spot_at(room, InteriorRooms.square_of(st["square"]))
+    _check("a station's square is drawn at the station", [spot["x"], spot["y"], spot["pose"]], [int(st["at"][0]), int(st["at"][1]), st["pose"]])
+    _check("the door's square at the door", InteriorRooms.spot_at(room, InteriorRooms.square_of(plan["door"]["square"])), room["door"])
+    var floor := InteriorRooms.spot_at(room, Vector2i(0, 4))
+    _check("a plain square at its middle, standing", [floor["x"], floor["y"], floor["pose"]], [8, 78, "stand"])
+    _check("off the grid: nowhere", InteriorRooms.spot_at(room, Vector2i(9, 9)), {})
+    _check("no square: nowhere", InteriorRooms.spot_at(room, Vector2i(-1, -1)), {})
+    _check("no plan merged: nowhere", InteriorRooms.spot_at(InteriorRooms.room_for(_sid), Vector2i(0, 4)), {})
+
+    _clear_people()
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _person("guest", _farmer(), _sid)
+    var unplaced := _person("unplaced", _farmer(), _sid)
+    unplaced.remove_meta("room_square")
+    _panel.open(_sid)
+    var guest: Node2D = _panel._people.get_node_or_null("guest")
+    _finish_walk(guest)
+    var guest_spot := InteriorRooms.spot_at(_panel.room, InteriorRooms.square_of(_world.placed_npcs["guest"].get_meta("room_square")))
+    _check("the guest stands on their square", guest != null and guest.position == Vector2(guest_spot["x"], guest_spot["y"]), true)
+    _check("no square: not drawn, counted", [_panel._people.get_node_or_null("unplaced") == null, _panel.more_label.text], [true, "and 1 more"])
+
+    # The engine moves the guest: npc_room_square_changed.
+    _world.apply_npc_room_square_change({"id": "guest", "structure_id": _sid, "square": [0, 4]})
+    _check("the frame sets the square", _world.placed_npcs["guest"].get_meta("room_square"), [0, 4])
+    _panel.refresh()
+    guest = _panel._people.get_node("guest")
+    _finish_walk(guest)
+    _check("drawn on the new square", guest.position, Vector2(8, 78))
+    _world.apply_npc_room_square_change({"id": "guest", "structure_id": _sid})
+    _check("a frame with no square takes it away", _world.placed_npcs["guest"].has_meta("room_square"), false)
+    _world.apply_npc_inside_change({"id": "guest", "inside": true, "inside_structure_id": _sid, "room_square": [2, 4]})
+    _check("npc_inside_changed carries the square", _world.placed_npcs["guest"].get_meta("room_square"), [2, 4])
+    _world.apply_npc_inside_change({"id": "guest", "inside": false})
+    _check("leaving drops it", _world.placed_npcs["guest"].has_meta("room_square"), false)
+    _panel.close()
+
+    # The plans not loaded yet: nobody drawn; once they land, everyone is.
+    var plans: Dictionary = _catalog().rooms
+    _catalog().rooms = {}
+    _clear_people()
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _world.placed_npcs["keeper"].set_meta("room_square", plan["keeper"]["square"])
+    _panel.open(_sid)
+    _check("no plan: nobody drawn", _drawn(_panel._people).size(), 0)
+    _catalog().rooms = plans
+    _panel._signature = ""
+    _panel.refresh()
+    _check("the plan lands: the keeper is drawn", _panel._people.get_node_or_null("keeper") != null, true)
     _panel.close()
     _done()

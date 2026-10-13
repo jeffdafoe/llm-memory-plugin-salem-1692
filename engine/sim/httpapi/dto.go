@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
 // ContractVersion is the monotonic version of the whole read API. The Godot
@@ -159,6 +160,10 @@ type AgentDTO struct {
 	InsideStructureID string          `json:"inside_structure_id,omitempty"`
 	CurrentHuddleID   string          `json:"current_huddle_id,omitempty"`
 	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
+
+	// RoomSquare is where the actor stands inside a room with a floor plan, as
+	// [x, y] (LLM-768); absent outdoors, asleep, or in a structure without one.
+	RoomSquare *roomlayout.Square `json:"room_square,omitempty"`
 
 	// Live needs (ZBBS-HOME-462) — current hunger/thirst/tiredness in [0, NeedMax].
 	// The editor's per-NPC needs readout renders these; v1's /npcs row carried them
