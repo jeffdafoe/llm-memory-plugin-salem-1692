@@ -92,6 +92,16 @@ const HANDOFF_SLIDE := 14.0
 const SERVE_SPEED := 48.0
 const TABLE_SECONDS := 30.0
 
+## A name tag (LLM-761): hovering a person shows their name and role (the
+## village popup's colours), hovering a good its name; a tap shows it
+## TAG_SECONDS. A good's hit box is the lower GOOD_BOX of its cell.
+const TAG_SECONDS := 2.5
+const GOOD_BOX := Rect2(0, 12, 16, 20)
+const TAG_BG := Color(0.10, 0.08, 0.06, 0.92)
+const TAG_BORDER := Color(0.45, 0.35, 0.22, 0.8)
+const TAG_TEXT := Color(0.85, 0.75, 0.55, 1.0)
+const TAG_TEXT_DIM := Color(0.63, 0.56, 0.44, 1.0)
+
 var world: Node2D = null
 var pc_actor_id := ""
 var structure_id := ""
@@ -147,6 +157,13 @@ var _http_wares: HTTPRequest = null
 var _entrances := false
 var _bustle_left := 0.0
 var _bustle_rng := RandomNumberGenerator.new()
+## The name tag and what it is on: {} when hidden, else {kind: "person" | "good",
+## id (a person), node (a good)}. _tag_left > 0 while a tap's tag is up.
+var tag: PanelContainer = null
+var tag_name: Label = null
+var tag_role: Label = null
+var _tag_on: Dictionary = {}
+var _tag_left := 0.0
 
 
 func _ready() -> void:
@@ -215,6 +232,7 @@ func _build_ui() -> void:
     stage.mouse_filter = Control.MOUSE_FILTER_STOP
     stage.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
     stage.gui_input.connect(_on_stage_input)
+    stage.mouse_exited.connect(_on_stage_mouse_exited)
     stage.item_rect_changed.connect(_snap)
     vb.add_child(stage)
 
@@ -243,6 +261,30 @@ func _build_ui() -> void:
     more_label.visible = false
     vb.add_child(more_label)
 
+    # Over everything, never in the way of a click.
+    tag = PanelContainer.new()
+    tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    tag.visible = false
+    var style := StyleBoxFlat.new()
+    style.bg_color = TAG_BG
+    style.set_border_width_all(1)
+    style.border_color = TAG_BORDER
+    style.set_corner_radius_all(4)
+    style.content_margin_left = 8.0
+    style.content_margin_right = 8.0
+    style.content_margin_top = 4.0
+    style.content_margin_bottom = 4.0
+    tag.add_theme_stylebox_override("panel", style)
+    var tag_box := VBoxContainer.new()
+    tag_box.add_theme_constant_override("separation", 0)
+    tag_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    tag.add_child(tag_box)
+    tag_name = _label(15, TAG_TEXT)
+    tag_box.add_child(tag_name)
+    tag_role = _label(12, TAG_TEXT_DIM)
+    tag_box.add_child(tag_role)
+    root.add_child(tag)
+
 
 func _label(font_size: int, color: Color) -> Label:
     var l := Label.new()
@@ -268,6 +310,7 @@ func open(sid: String) -> void:
     if world != null and world.has_signal("npc_meal_ended") and not world.npc_meal_ended.is_connected(_on_meal_ended):
         world.npc_meal_ended.connect(_on_meal_ended)
     var was_open := visible
+    hide_tag()
     for child in _handoff.get_children():
         # Its tween is bound to it and dies with it; stopped first all the same.
         if child.has_meta("tween"):
@@ -316,6 +359,7 @@ func close() -> void:
     if not visible:
         return
     visible = false
+    hide_tag()
     set_process(false)
     closed.emit()
 
@@ -329,6 +373,7 @@ func _process(delta: float) -> void:
     if _refresh_left <= 0.0:
         _refresh_left = REFRESH_SECONDS
         refresh()
+    _update_tag(delta)
     if is_stall():
         _wares_left -= delta
         if _wares_left <= 0.0:
@@ -868,11 +913,164 @@ func person_at(local: Vector2) -> String:
 
 
 func _on_stage_input(event: InputEvent) -> void:
-    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+    if event is InputEventMouseMotion:
+        # A tap's tag runs its time out: a touch screen sends motion with a
+        # tap, and may send no motion or exit after it to take a hover down.
+        if _tag_left <= 0.0:
+            _show_tag(thing_at(event.position), 0.0)
+    elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         stage.accept_event()
-        var id := person_at(event.position)
-        if id != "":
-            person_clicked.emit(id)
+        # A tap shows the tag a while — on a touch screen there is no hover.
+        var thing := thing_at(event.position)
+        _show_tag(thing, TAG_SECONDS)
+        if str(thing.get("kind", "")) == "person":
+            person_clicked.emit(str(thing["id"]))
+
+
+func _on_stage_mouse_exited() -> void:
+    if _tag_left <= 0.0:
+        hide_tag()
+
+
+## What is under `local` (stage coordinates), front to back: {kind: "person",
+## id, holder} or {kind: "good", node, item}, or {}. At a stall the customers
+## stand in front of the counter goods (and goods being handed over), those
+## in front of the keeper and hands, and they in front of the floor piles; in
+## a room the people stand in front of what is on the bar and tables.
+func thing_at(local: Vector2) -> Dictionary:
+    var art := local * _stretch / float(k) - _scene.position * _stretch / float(k)
+    var layers: Array = [_people, _goods_front, _handoff, _staff, _goods_back] if is_stall() else [_people, _handoff]
+    for layer in layers:
+        var found := _person_in(layer, art) if layer == _people or layer == _staff else _good_in(layer, art)
+        if not found.is_empty():
+            return found
+    return {}
+
+
+## The front-most drawn person in `layer` whose hit box holds `art`.
+func _person_in(layer: Node2D, art: Vector2) -> Dictionary:
+    var best: Dictionary = {}
+    var best_y := -INF
+    for h in _hits:
+        var holder: Node2D = h["holder"]
+        if not is_instance_valid(holder) or holder.get_parent() != layer:
+            continue
+        var r := Rect2(holder.position + HIT_BOX.position, HIT_BOX.size)
+        if r.has_point(art) and r.end.y > best_y:
+            best = {"kind": "person", "id": str(h["id"]), "holder": holder}
+            best_y = r.end.y
+    return best
+
+
+## The front-most good in `layer` whose box holds `art` — the lower part of
+## its cell, widened for a good drawn two or more times.
+func _good_in(layer: Node2D, art: Vector2) -> Dictionary:
+    var children := layer.get_children()
+    children.reverse()
+    for node in children:
+        if not node.has_meta("item") or node.is_queued_for_deletion() or (node as CanvasItem).modulate.a < 0.5:
+            continue
+        var r := Rect2((node as Node2D).position + GOOD_BOX.position, GOOD_BOX.size)
+        var copies := node.get_child_count()
+        if copies > 1:
+            r.size.x += StallScenes.FEW_STEP.x * (copies - 1)
+        if r.has_point(art):
+            return {"kind": "good", "node": node, "item": str(node.get_meta("item"))}
+    return {}
+
+
+## Show the tag on `thing` (from thing_at), or hide it for {}; `seconds` > 0
+## keeps it up that long (a tap — and a tap on nothing takes a tag down), 0
+## while hovered.
+func _show_tag(thing: Dictionary, seconds: float) -> void:
+    if thing.is_empty():
+        if seconds > 0.0 or _tag_left <= 0.0:
+            hide_tag()
+        return
+    var lines := tag_lines(thing)
+    if str(lines[0]) == "":
+        hide_tag()
+        return
+    tag_name.text = str(lines[0])
+    tag_role.text = str(lines[1])
+    tag_role.visible = str(lines[1]) != ""
+    _tag_on = thing
+    _tag_left = seconds
+    tag.visible = true
+    tag.reset_size()
+    _place_tag()
+
+
+func hide_tag() -> void:
+    _tag_on = {}
+    _tag_left = 0.0
+    if tag != null:
+        tag.visible = false
+
+
+## [name, second line]: a person's name and role (a villager's first
+## attribute, as the village popup shows it; a player's name alone), or a
+## good's name.
+func tag_lines(thing: Dictionary) -> Array:
+    if str(thing.get("kind", "")) == "good":
+        return [good_label(str(thing["item"])), ""]
+    var c: Node2D = world.placed_npcs.get(str(thing.get("id", "")), null) if world != null else null
+    if c == null:
+        return ["", ""]
+    var role := ""
+    var attrs = c.get_meta("attributes", [])
+    if str(c.get_meta("llm_memory_agent", "")) != "" and attrs is Array and not attrs.is_empty():
+        var slug := str(attrs[0])
+        role = slug.substr(0, 1).to_upper() + slug.substr(1)
+    return [str(c.get_meta("display_name", "")), role]
+
+
+## A good's name: the label the stall's shelf carries, else its kind made
+## readable ("fried_meat" → "Fried meat").
+func good_label(item: String) -> String:
+    for w in _wares:
+        if str(w.get("item", "")) == item and str(w.get("display_label", "")) != "":
+            return str(w["display_label"])
+    var words := item.replace("_", " ")
+    return words.substr(0, 1).to_upper() + words.substr(1)
+
+
+## Keep the tag over what it is on — a person may be walking — and take a
+## tap's tag down when its time is up, or when its person or good is gone.
+func _update_tag(delta: float) -> void:
+    if _tag_on.is_empty():
+        return
+    if _tag_left > 0.0:
+        _tag_left -= delta
+        if _tag_left <= 0.0:
+            hide_tag()
+            return
+    _place_tag()
+
+
+## Put the tag centred above its person's head or its good, inside the window.
+func _place_tag() -> void:
+    var anchor: Vector2
+    if str(_tag_on.get("kind", "")) == "person":
+        var holder := _holder(str(_tag_on["id"]))
+        if holder == null:
+            hide_tag()
+            return
+        _tag_on["holder"] = holder
+        anchor = holder.position + Vector2(0, HIT_BOX.position.y - 2)
+    else:
+        var node: Node2D = _tag_on.get("node", null)
+        if not is_instance_valid(node) or node.is_queued_for_deletion():
+            hide_tag()
+            return
+        anchor = node.position + Vector2(GOOD_BOX.size.x / 2.0, GOOD_BOX.position.y - 2)
+    # Canvas coordinates throughout: the scene's point, the clamp to the
+    # screen, and the tag's own global position.
+    var at: Vector2 = _scene.get_global_transform() * anchor
+    var size := tag.size
+    var view := get_viewport().get_visible_rect().size if is_inside_tree() else Vector2(1e6, 1e6)
+    tag.global_position = Vector2(clampf(at.x - size.x / 2.0, 4.0, maxf(4.0, view.x - size.x - 4.0)),
+        clampf(at.y - size.y, 4.0, maxf(4.0, view.y - size.y - 4.0)))
 
 
 func _on_backdrop_input(event: InputEvent) -> void:
@@ -923,6 +1121,7 @@ func _draw_goods() -> void:
             spr.texture = cell
             spr.position = Vector2(slot["at"] + StallScenes.FEW_STEP * i)
             spr.name = "%s_%d" % [slot["item"], i]
+            spr.set_meta("item", str(slot["item"]))
             layer.add_child(spr)
 
 
@@ -1052,6 +1251,7 @@ func _handoff_good(item: String, qty: int, at: Vector2) -> Node2D:
         return null
     var good := Node2D.new()
     good.name = "handoff_" + item
+    good.set_meta("item", item)
     good.position = _cell_at(at)
     var cell := AtlasTexture.new()
     cell.atlas = sheet
