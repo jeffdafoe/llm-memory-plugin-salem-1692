@@ -253,7 +253,12 @@ func _format_activity(node: Node2D) -> String:
             return "Gathering"
         "refresh":
             # world.gd stamps the worked object's need (LLM-719).
-            return "Eating" if str(node.get_meta("source_activity_need", "")) == "hunger" else "Drinking"
+            match str(node.get_meta("source_activity_need", "")):
+                "hunger":
+                    return "Eating"
+                "tiredness":
+                    return "Resting"
+            return "Drinking"
     return ""
 
 ## Title-case the first attribute slug. Slugs are role identifiers

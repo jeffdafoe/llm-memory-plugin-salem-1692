@@ -24,6 +24,7 @@ const TESTS := [
     "_test_missing_layer_sheet",
     "_test_world_builds_doll",
     "_test_world_activity_animation",
+    "_test_world_rest_spot_sits",
     "_test_world_swap_partial_sheets",
     "_test_world_load_sheets_settles",
 ]
@@ -387,6 +388,84 @@ func _test_world_activity_animation() -> void:
     _world._apply_activity_animation(pack)
     _check("pack sprite keeps idle", spr.animation, &"south_idle")
     pack.free()
+    _world._npc_sheets.clear()
+    _done()
+
+
+## LLM-765: standing still at a rest spot's loiter pin (the Picnic Area) sits,
+## facing it — through the arrival's refresh and the dwell after it. Walking,
+## a nearer pin of another kind, or being inside does not sit.
+func _test_world_rest_spot_sits() -> void:
+    _world._npc_sheets = _sheets()
+    var c := Node2D.new()
+    var doll: AnimatedSprite2D = _world._build_character_sprite(_sprite_data(_three_layers()))
+    c.add_child(doll)
+    c.set_meta("facing", "east")
+    doll.play("east_idle")
+    # Anchored on tile (10, 10) with its pin a tile north, at (10, 9).
+    var picnic := Node2D.new()
+    picnic.position = Vector2(10 * 32 + 16, 10 * 32 + 16)
+    picnic.set_meta("display_name", "Picnic Area")
+    picnic.set_meta("effective_loiter_offset_x", 0)
+    picnic.set_meta("effective_loiter_offset_y", -1)
+    picnic.set_meta("refreshes", [{"attribute": "tiredness", "gather_item": ""}])
+    _world.placed_objects["p1"] = picnic
+    c.position = Vector2(10 * 32 + 16, 9 * 32 + 16)
+
+    c.set_meta("source_activity_kind", "refresh")
+    c.set_meta("source_activity_object_id", "p1")
+    _world._apply_activity_animation(c)
+    _check("arrival refresh at a rest spot: sit, not drink", doll.animation, &"south_sit")
+    _check("faces the rest spot", c.get_meta("facing"), "south")
+    _check("rest spot: need for the tooltip", c.get_meta("source_activity_need"), "tiredness")
+    c.set_meta("source_activity_kind", "")
+    c.set_meta("source_activity_object_id", "")
+    _world._apply_activity_animation(c)
+    _check("refresh over, still at the pin: stays seated", doll.animation, &"south_sit")
+
+    c.set_meta("facing", "east")
+    doll.play("east_idle")
+    c.position = Vector2(11 * 32 + 16, 8 * 32 + 16)
+    _world._apply_activity_animation(c)
+    _check("one tile off the pin (diagonal): sit", doll.animation, &"south_sit")
+
+    c.set_meta("walking", {"path": [Vector2(0, 0)]})
+    doll.play("south_walk")
+    _world._apply_activity_animation(c)
+    _check("walking off: the walk keeps the sprite", doll.animation, &"south_walk")
+    c.remove_meta("walking")
+    c.position = Vector2(14 * 32 + 16, 9 * 32 + 16)
+    doll.play("south_sit")
+    _world._apply_activity_animation(c)
+    _check("parked away from the pin: idle", doll.animation, &"south_idle")
+
+    # A well's pin nearer than the picnic's wins the tile, as the engine's
+    # resolver does: no sit.
+    c.position = Vector2(10 * 32 + 16, 8 * 32 + 16)
+    var well := Node2D.new()
+    well.position = Vector2(10 * 32 + 16, 7 * 32 + 16)
+    well.set_meta("display_name", "Well")
+    well.set_meta("effective_loiter_offset_x", 0)
+    well.set_meta("effective_loiter_offset_y", 1)
+    well.set_meta("refreshes", [{"attribute": "thirst", "gather_item": ""}])
+    _world.placed_objects["w1"] = well
+    _world._apply_activity_animation(c)
+    _check("nearer pin of another kind: no sit", doll.animation, &"south_idle")
+    # An unnamed object is never attributed (the engine's Attributable).
+    well.set_meta("display_name", "")
+    _world._apply_activity_animation(c)
+    _check("unnamed nearer pin is skipped: sit", doll.animation, &"south_sit")
+    _world.placed_objects.erase("w1")
+    well.free()
+
+    c.set_meta("inside", true)
+    _world._apply_activity_animation(c)
+    _check("inside: no sit", doll.animation, &"south_idle")
+    c.set_meta("inside", false)
+
+    _world.placed_objects.erase("p1")
+    picnic.free()
+    c.free()
     _world._npc_sheets.clear()
     _done()
 
