@@ -130,6 +130,19 @@ const HANDOFF_SLIDE := 14.0
 ## stays TABLE_SECONDS. Then the keeper clears it.
 const SERVE_SPEED := 48.0
 const TABLE_SECONDS := 30.0
+## A keeper who can get out from behind the counter (LLM-769) sets the good on
+## the bar, takes it up after PICK_UP_HOLD seconds and carries it at
+## CARRY_LIFT art px above their feet to the buyer.
+const PICK_UP_HOLD := 0.8
+const CARRY_LIFT := 9.0
+## A diner with a dish in front of them dips EAT_DIP art px toward it for
+## EAT_DOWN seconds of every EAT_PERIOD — spooning, sipping. A finished meal's
+## dish shows its empty picture (EMPTY_DISH, the goods sheet's kinds) until it
+## is cleared.
+const EAT_PERIOD := 1.4
+const EAT_DOWN := 0.35
+const EAT_DIP := 1.0
+const EMPTY_DISH := {"porridge": "porridge_empty", "stew": "stew_empty"}
 
 ## A name tag (LLM-761): hovering a person shows their name and role (the
 ## village popup's colours), hovering a good its name; a tap shows it
@@ -188,6 +201,7 @@ var _goods_front: Node2D = null
 ## counter, under the people; `_anim_time` runs while the window is open.
 var _anims: Node2D = null
 var _anim_time := 0.0
+var _eat_time := 0.0
 ## Goods changing hands over the counter, above the goods on it — and in a
 ## room the dishes on the tables (meta "buyer" and "item").
 var _handoff: Node2D = null
@@ -464,6 +478,9 @@ func _process(delta: float) -> void:
         refresh()
     _update_tag(delta)
     _animate(delta)
+    if not is_stall():
+        _carry_follow()
+        _eat(delta)
     if is_stall():
         _wares_left -= delta
         if _wares_left <= 0.0:
@@ -707,10 +724,13 @@ func _draw_people(cast: Dictionary) -> void:
             elif was[id]["route_left"] is Array and not was[id]["route_left"].is_empty() \
                     and (was[id]["route_left"].back() as Vector2).distance_to(home) <= 0.5:
                 room_route = was[id]["route_left"]
+        # A room's keeper on a handoff (out on the floor with a meal, LLM-769)
+        # carries on from where they had got to.
+        var errand := stays and not is_stall() and bool(entry.get("keeper", false)) and str(_handoff_now.get("keeper", "")) == id
         # The keeper carries on from where they bustled to, a newcomer from
         # partway in, a walker from where they had got to; anyone else (a hand
         # too) stands at their (maybe new) spot.
-        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves or back or not room_route.is_empty()):
+        if stays and ((behind and not hand) or bool(was[id]["entering"]) or moves or back or errand or not room_route.is_empty()):
             holder.position = was[id]["position"]
             holder.modulate.a = was[id]["alpha"]
         # A stall's keeper stands behind the counter, which is drawn over them.
@@ -752,9 +772,12 @@ func _draw_people(cast: Dictionary) -> void:
     for dish in _dishes():
         if not drawn.has(str(dish.get_meta("buyer"))):
             _clear_dish(dish)
-    # The keeper was rebuilt mid-handoff: their walk to it goes on.
+    # The keeper was rebuilt mid-handoff: their walk to it, or with the good
+    # they carry, goes on.
     if not _handoff_now.is_empty() and not bool(_handoff_now["arrived"]):
         _handoff_walk()
+    elif _carrying():
+        _carry_walk()
     for id in bubbles:
         # A leaver takes their last line out with them.
         var holder := _holder(id)
@@ -911,12 +934,20 @@ func _walk(holder: Node2D, to: Vector2, speed: float, facing: String, pose := "s
 ## (_walk_along), straight there, or for someone behind
 ## a counter that has a work area left of it (a smithy) and a walk from one
 ## side of the counter's end to the other, round the end first — never
-## through the counter.
+## through the counter. A room's keeper on an errand of their own (a handoff,
+## LLM-769) goes square by square over the plan, out from behind their counter
+## by its way out.
 func _route(holder: Node2D, to: Vector2) -> Array:
     if holder.has_meta("via"):
         var via: Array = holder.get_meta("via")
         holder.remove_meta("via")
         return via + [to]
+    if not is_stall() and holder.has_meta("keeper"):
+        var path := InteriorRooms.keeper_path(room, InteriorRooms.square_under(holder.position), InteriorRooms.square_under(to))
+        var points: Array = []
+        for i in range(1, path.size() - 1):
+            points.append(InteriorRooms.middle(path[i]))
+        return points + [to]
     var end := float(room.get("counter_from", 0))
     if holder.get_parent() != _staff or end <= 0.0 or (holder.position.x < end) == (to.x < end):
         return [to]
@@ -975,6 +1006,21 @@ func _tending() -> Node2D:
         if child.has_meta("keeper") and not child.has_meta("leaving"):
             return child
     return null
+
+
+## The one who makes a handoff: _tending(), except a room's keeper whom the
+## engine has walked away from their place (to stoke the fire, LLM-768) —
+## that walk is theirs, so a sale meanwhile goes as with nobody behind the
+## bar.
+func _serving_keeper() -> Node2D:
+    var keeper := _tending()
+    if keeper == null or is_stall() or world == null:
+        return keeper
+    var c: Node2D = world.placed_npcs.get(str(keeper.name), null)
+    if c != null and c.has_meta("room_square") \
+            and InteriorRooms.square_of(c.get_meta("room_square")) != room.get("keeper", {}).get("square", Vector2i(-1, -1)):
+        return null
+    return keeper
 
 
 ## The hands working beside a stall's keeper.
@@ -1668,7 +1714,7 @@ func _next_handoff() -> void:
         _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
         return
     var h: Dictionary = _handoffs.pop_front()
-    var keeper := _tending()
+    var keeper := _serving_keeper()
     if h.has("clear"):
         if not is_instance_valid(h["clear"]):
             _next_handoff()
@@ -1676,6 +1722,13 @@ func _next_handoff() -> void:
         h["good"] = h["clear"]
         h["stop"] = _spot_point(room.get("reach", room["keeper"]))
         h["facing"] = str(room["keeper"].get("facing", "south"))
+        # With a way out from behind the counter the keeper walks to the
+        # table for it (LLM-769).
+        var fetch := _waiter_stand(_cell_bottom((h["good"] as Node2D).position)) if keeper != null else {}
+        if not fetch.is_empty():
+            h["stop"] = fetch["stand"]
+            h["facing"] = fetch["facing"]
+            h["fetch"] = true
         h["keeper"] = str(keeper.name) if keeper != null else ""
         h["arrived"] = false
         _handoff_now = h
@@ -1760,7 +1813,7 @@ func _handoff_good(item: String, qty: int, at: Vector2) -> Node2D:
 ## when nobody is behind the counter) the good changes hands. A redraw of the
 ## keeper calls this again, so the walk resumes from where they had got to.
 func _handoff_walk() -> void:
-    var keeper := _tending()
+    var keeper := _serving_keeper()
     if keeper == null:
         _handoff_arrived()
         return
@@ -1799,9 +1852,24 @@ func _handoff_arrived() -> void:
     var t := good.create_tween()
     if selling:
         t.tween_property(good, "modulate:a", 1.0, 0.15)
+        # A room's keeper with a way out takes it to the buyer (LLM-769).
+        if not is_stall() and _serving_keeper() != null and not _waiter_target().is_empty():
+            t.tween_interval(PICK_UP_HOLD)
+            t.tween_callback(_take_up)
+            good.set_meta("tween", t)
+            return
         t.tween_interval(HANDOFF_HOLD)
     else:
         t.tween_interval(0.3)
+    _serve_across(good, t)
+
+
+## The rest of a handoff once the good is down or taken up, on tween `t`: in a
+## room the keeper steps back, and a sold good is served across (_serve_to) —
+## a meal slid to the table, anything else toward the buyer, fading — or
+## fades on the bar; at a stall it goes toward the buyer, or up to the keeper.
+func _serve_across(good: Node2D, t: Tween) -> void:
+    var selling := bool(_handoff_now["selling"])
     if not is_stall():
         t.tween_callback(_keeper_back.bind(str(_handoff_now["keeper"])))
     var serve: Dictionary = _handoff_now.get("serve", {})
@@ -1833,6 +1901,137 @@ func _handoff_arrived() -> void:
     good.set_meta("tween", t)
 
 
+## Where the keeper stands to set a good down at `at` (room art px), and the
+## way they face there: {stand, facing}, or {} when the room has no way out
+## from behind its counter. A square someone else holds is avoided where it
+## can be.
+func _waiter_stand(at: Vector2) -> Dictionary:
+    var keeper := _tending()
+    var taken := {}
+    for id in _spot_of:
+        if keeper == null or id != str(keeper.name):
+            taken[(_spot_of[id] as Dictionary).get("square", Vector2i(-1, -1))] = true
+    var square := InteriorRooms.serve_square(room, at, taken)
+    if square == Vector2i(-1, -1):
+        return {}
+    var stand := _spot_point(InteriorRooms.spot_at(room, square))
+    var facing := "south" if stand.distance_to(at) < 0.5 else str(world.facing_from_vec(at - stand))
+    return {"stand": stand, "facing": facing}
+
+
+## Where the keeper takes the good in hand to its buyer (LLM-769): {stand,
+## facing, put, stay} — `put` on the table in front of a seated buyer eating
+## it here (it stays), else into the buyer's hands — or {} when the buyer is
+## not drawn or the keeper cannot get out from behind the counter.
+func _waiter_target() -> Dictionary:
+    var spot: Dictionary = _spot_of.get(str(_handoff_now.get("other", "")), {})
+    if spot.is_empty():
+        return {}
+    var on_table := bool(_handoff_now.get("eaten", false)) and spot.has("serve")
+    var put := _spot_point(spot["serve"]) if on_table else _spot_point(spot) + Vector2(0, -CARRY_LIFT)
+    var target := _waiter_stand(put if on_table else _spot_point(spot))
+    if target.is_empty():
+        return {}
+    target["put"] = put
+    target["stay"] = on_table
+    return target
+
+
+## The keeper takes the good up off the bar and sets off with it to the buyer,
+## who may have sat down meanwhile. Nowhere to take it now (the buyer gone, or
+## the keeper called away): it is served across as before.
+func _take_up() -> void:
+    if _handoff_now.is_empty():
+        return
+    var good: Node2D = _handoff_now["good"]
+    var keeper := _serving_keeper()
+    var target := _waiter_target() if keeper != null and str(keeper.name) == str(_handoff_now["keeper"]) else {}
+    if target.is_empty():
+        _handoff_now["serve"] = _serve_to(str(_handoff_now["other"]), _spot_point(room["bar"]), bool(_handoff_now["eaten"]))
+        var t := good.create_tween()
+        t.tween_interval(maxf(HANDOFF_HOLD - PICK_UP_HOLD, 0.01))
+        _serve_across(good, t)
+        return
+    _handoff_now["carry"] = target
+    _carry_walk()
+
+
+## Whether the keeper is on their way with a good in hand.
+func _carrying() -> bool:
+    return _handoff_now.has("carry") and not bool(_handoff_now.get("landed", false))
+
+
+## The keeper walks the good in hand to where it goes, from where they are —
+## so a redraw carries on. A keeper the engine has walked away (to the fire)
+## drops the errand: the good is where it goes at once.
+func _carry_walk() -> void:
+    var keeper := _serving_keeper()
+    if keeper == null or str(keeper.name) != str(_handoff_now["keeper"]):
+        _carry_landed()
+        return
+    if keeper.has_meta("walking"):
+        (keeper.get_meta("walking") as Tween).kill()
+        keeper.remove_meta("walking")
+    var c: Dictionary = _handoff_now["carry"]
+    _walk(keeper, c["stand"], WALK_SPEED, str(c["facing"]), "stand", _carry_landed)
+    _carry_follow()
+
+
+## The good in hand goes along with the keeper (each frame, from _process).
+func _carry_follow() -> void:
+    if not _carrying():
+        return
+    var keeper := _holder(str(_handoff_now["keeper"]))
+    var good: Node2D = _handoff_now["good"]
+    if keeper != null and is_instance_valid(good):
+        good.position = _cell_at(keeper.position + Vector2(0, -CARRY_LIFT))
+
+
+## The keeper is there with the good: it goes down on the table, where it
+## stays and the bar is free for the next; or into the buyer's hands and is
+## gone; or, a dish being cleared, onto the bar and away. The keeper walks
+## back to their spot.
+func _carry_landed() -> void:
+    if not _carrying():
+        return
+    _carry_follow()
+    _handoff_now["landed"] = true
+    var h := _handoff_now
+    var c: Dictionary = h["carry"]
+    var good: Node2D = h["good"]
+    var keeper_id := str(h["keeper"])
+    if not is_instance_valid(good):
+        _keeper_back(keeper_id)
+        _next_handoff()
+        return
+    var to := _cell_at(c["put"])
+    var t := good.create_tween()
+    t.tween_property(good, "position", to, maxf(good.position.distance_to(to) / SERVE_SPEED, 0.15))
+    if bool(c["stay"]):
+        # As in _handoff_arrived: the bar is freed before _on_table, which
+        # may clear the dish at once.
+        t.tween_callback(_keeper_back.bind(keeper_id))
+        t.tween_callback(_next_handoff)
+        t.tween_callback(_on_table.bind(good, str(h["other"]), str(h["item"])))
+        good.set_meta("tween", t)
+        return
+    if h.has("clear"):
+        t.tween_callback(_keeper_back.bind(keeper_id))
+        t.tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
+    else:
+        t.parallel().tween_property(good, "modulate:a", 0.0, HANDOFF_AWAY)
+        t.tween_callback(_keeper_back.bind(keeper_id))
+    t.tween_callback(func():
+        good.queue_free()
+        _next_handoff())
+    good.set_meta("tween", t)
+
+
+## A good's bottom middle, from its cell position (the inverse of _cell_at).
+func _cell_bottom(cell: Vector2) -> Vector2:
+    return Vector2(cell.x + StallScenes.CELL.x / 2.0, cell.y + StallScenes.CELL.y)
+
+
 ## A dish set on `buyer`'s table stays while their meal of `item` runs, until
 ## world.npc_meal_ended (_on_meal_ended); with no meal running (ale, bread, or
 ## a meal already over) it stays TABLE_SECONDS. A buyer gone before it lands
@@ -1845,6 +2044,10 @@ func _on_table(dish: Node2D, buyer: String, item: String) -> void:
     dish.set_meta("buyer", buyer)
     dish.set_meta("item", item)
     if _holder(buyer) == null:
+        _clear_dish(dish)
+        return
+    if dish.has_meta("meal_over"):
+        _show_empty(dish)
         _clear_dish(dish)
         return
     if world != null and world.has_method("meal_of") and world.meal_of(buyer, structure_id) == item:
@@ -1885,6 +2088,12 @@ func _clear_dish(dish: Node2D) -> void:
 ## it is.
 func _clear_arrived(dish: Node2D) -> void:
     var keeper_id := str(_handoff_now["keeper"])
+    # At the table (LLM-769): the keeper carries it back to the bar.
+    if bool(_handoff_now.get("fetch", false)) and keeper_id != "":
+        _handoff_now["carry"] = {"stand": _spot_point(room.get("reach", room["keeper"])),
+            "facing": str(room["keeper"].get("facing", "south")), "put": _spot_point(room["bar"]), "stay": false}
+        _carry_walk()
+        return
     var t := dish.create_tween()
     if keeper_id != "":
         var to := _cell_at(_spot_point(room["bar"]))
@@ -1914,11 +2123,53 @@ func _lay_running_meals() -> void:
             dish.set_meta("item", item)
 
 
-## A meal is over (world.npc_meal_ended): its dish is cleared.
+## A meal is over (world.npc_meal_ended): its dish, emptied, is cleared.
 func _on_meal_ended(actor_id: String, item: String) -> void:
     for dish in _dishes():
         if str(dish.get_meta("buyer")) == actor_id and str(dish.get_meta("item")) == item:
+            _show_empty(dish)
             _clear_dish(dish)
+    # Over before its dish reached the table (still on the bar, carried, or
+    # landing): it is empty and cleared as it lands (_on_table).
+    var good = _handoff_now.get("good", null)
+    if not _handoff_now.has("clear") and is_instance_valid(good) and str(_handoff_now.get("other", "")) == actor_id \
+            and str(_handoff_now.get("item", "")) == item:
+        good.set_meta("meal_over", true)
+
+
+## A finished dish shows its empty picture (EMPTY_DISH), when it has one.
+func _show_empty(dish: Node2D) -> void:
+    var empty := str(EMPTY_DISH.get(str(dish.get_meta("item")), ""))
+    if empty == "" or not StallScenes.GOODS.has(empty):
+        return
+    for spr in dish.get_children():
+        if spr is Sprite2D and spr.texture is AtlasTexture:
+            var cell := (spr.texture as AtlasTexture).duplicate() as AtlasTexture
+            cell.region = StallScenes.cell_rect(2 * StallScenes.goods_index(empty))
+            spr.texture = cell
+
+
+## Everyone with a dish in front of them eats from it: now and then a dip
+## toward it, each diner on their own beat. The rest stand as drawn.
+func _eat(delta: float) -> void:
+    _eat_time += delta
+    var eating := {}
+    for dish in _dishes():
+        eating[str(dish.get_meta("buyer"))] = true
+    for entry in _hits:
+        var holder: Node2D = entry["holder"]
+        if not is_instance_valid(holder):
+            continue
+        var spr := _sprite_of(holder)
+        if spr == null:
+            continue
+        if not spr.has_meta("rest_y"):
+            spr.set_meta("rest_y", spr.position.y)
+        var dip := 0.0
+        if eating.has(str(entry["id"])):
+            var beat := float(absi(hash(str(entry["id"]))) % 100) / 100.0 * EAT_PERIOD
+            dip = EAT_DIP if fmod(_eat_time + beat, EAT_PERIOD) < EAT_DOWN else 0.0
+        spr.position.y = float(spr.get_meta("rest_y")) + dip
 
 
 ## A new meal of another good takes the place of the one running: the old
@@ -1932,9 +2183,11 @@ func _on_meal_started(actor_id: String, item: String) -> void:
 
 ## A room's keeper steps back to their spot after a handoff — the keeper
 ## who made it (`keeper_id`), redrawn or not; never someone who has taken
-## their place since. A walk they are on is stopped for it.
+## their place since, nor one the engine has walked away (_serving_keeper).
+## A walk they are on is stopped for it; with a way out from behind the
+## counter they walk back by it (_route).
 func _keeper_back(keeper_id: String) -> void:
-    var keeper := _tending()
+    var keeper := _serving_keeper()
     if keeper == null or str(keeper.name) != keeper_id:
         return
     if keeper.has_meta("walking"):
