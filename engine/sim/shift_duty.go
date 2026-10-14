@@ -144,6 +144,11 @@ type ShiftWindow struct {
 	End   int
 }
 
+// ShiftWindowAllDay is the window of a keeper holding an unlapsed stay_open
+// commitment: it has chosen to keep the place open past its hours, so it counts
+// as in hours at every minute and no opening hour is named.
+var ShiftWindowAllDay = ShiftWindow{Start: 0, End: 1440}
+
 // ShutHoursPhrase says when a shut business opens, for the "is shut" lines an
 // NPC reads at its door, in its own recent-actions trail and in the move_to
 // already-there reply (LLM-771). windows are the shift windows of everyone who
@@ -161,7 +166,7 @@ func ShutHoursPhrase(windows []ShiftWindow, nowMinute int) string {
 	}
 	best, bestWait := ShiftWindow{}, -1
 	for _, sw := range windows {
-		if sw.Start == sw.End {
+		if sw.Start < 0 || sw.Start > 1439 || sw.End < 0 || sw.End > 1440 || sw.Start == sw.End {
 			continue
 		}
 		if minuteInShiftWindow(sw.Start, sw.End, nowMinute) {
@@ -186,11 +191,16 @@ func ShutHoursPhrase(windows []ShiftWindow, nowMinute int) string {
 }
 
 // keeperShiftWindows returns the effective shift window of every actor who works
-// structureID — the live-world input to ShutHoursPhrase.
-func keeperShiftWindows(w *World, structureID StructureID) []ShiftWindow {
+// structureID — the live-world input to ShutHoursPhrase — with ShiftWindowAllDay
+// for a worker whose stay_open commitment is unlapsed at now.
+func keeperShiftWindows(w *World, structureID StructureID, now time.Time) []ShiftWindow {
 	var out []ShiftWindow
 	for _, worker := range w.Actors {
 		if worker == nil || worker.WorkStructureID != structureID {
+			continue
+		}
+		if worker.OpenUntil != nil && worker.OpenUntil.After(now) {
+			out = append(out, ShiftWindowAllDay)
 			continue
 		}
 		if start, end, ok := effectiveShiftWindow(w, worker); ok {

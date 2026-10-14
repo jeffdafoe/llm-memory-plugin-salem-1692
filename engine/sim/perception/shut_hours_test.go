@@ -125,6 +125,9 @@ func TestShutHoursPhrase(t *testing.T) {
 		{"empty window ignored", []sim.ShiftWindow{{Start: 600, End: 600}}, 300, ""},
 		{"no windows", nil, 720, ""},
 		{"clock out of range", []sim.ShiftWindow{john}, 1440, ""},
+		{"invalid window beside a valid one is skipped", []sim.ShiftWindow{{Start: 1500, End: 100}, smith}, 300, "until 7 in the morning"},
+		{"negative window beside a valid one is skipped", []sim.ShiftWindow{{Start: -60, End: 600}, smith}, 1020, "for the day — it opens at 7 in the morning"},
+		{"all-day (stay_open) window → in hours", []sim.ShiftWindow{smith, sim.ShiftWindowAllDay}, 1020, ""},
 	}
 	for _, c := range cases {
 		if got := sim.ShutHoursPhrase(c.windows, c.now); got != c.want {
@@ -158,5 +161,30 @@ func TestSnapshotMinuteAt(t *testing.T) {
 	}
 	if _, ok := snapshotMinuteAt(&sim.Snapshot{PublishedAt: published}, published); ok {
 		t.Errorf("nil LocalMinuteOfDay: want ok=false")
+	}
+}
+
+// TestShutDoorLine_DawnDuskFallbackAndStayOpen pins the two window sources the
+// scheduled goldens don't reach. A keeper with no schedule row is day-active on the
+// world dawn/dusk window (shiftWindowBounds), so before dawn the door names dawn as
+// the opening. A keeper off shift but holding an unlapsed stay_open has chosen to
+// keep the place open, so its absence keeps the plain line.
+func TestShutDoorLine_DawnDuskFallbackAndStayOpen(t *testing.T) {
+	doorLine := func(snap *sim.Snapshot, id sim.ActorID) string {
+		return deadEndClause(Build(snap, id, nil).Surroundings)
+	}
+
+	snap, id, _ := turnedAwayOutdoorsAtShutTavern() // John unscheduled
+	snap.DawnMinute, snap.DuskMinute, snap.DawnDuskMinuteOK = 420, 1140, true
+	snap.LocalMinuteOfDay = intp(300)
+	if got, want := doorLine(snap, id), "The Tavern is shut until 7 in the morning."; got != want {
+		t.Errorf("dawn/dusk fallback before dawn: door line = %q, want %q", got, want)
+	}
+
+	snap, id, _ = tavernBeforeOpening()
+	until := snap.PublishedAt.Add(time.Hour)
+	snap.Actors[sim.ActorID("john")].OpenUntil = &until
+	if got, want := doorLine(snap, id), "The Tavern is shut — no one is tending it."; got != want {
+		t.Errorf("keeper on stay_open: door line = %q, want %q", got, want)
 	}
 }

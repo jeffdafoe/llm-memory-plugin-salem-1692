@@ -1466,7 +1466,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	if isShutBusiness(snap, a, curStructureID) {
 		s.LocationDeadEnd = DeadEndShutBusiness
 		if snap.LocalMinuteOfDay != nil {
-			s.DeadEndShutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, curStructureID), *snap.LocalMinuteOfDay)
+			s.DeadEndShutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, curStructureID, snap.PublishedAt), *snap.LocalMinuteOfDay)
 		}
 	} else if hungerDE, thirstDE := consumableDeadEndHere(snap, actorID, a); hungerDE || thirstDE {
 		// LLM-176: the actor feels hunger/thirst, holds nothing to ease it, and no
@@ -3385,14 +3385,19 @@ func isShutBusiness(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.Structure
 
 // snapshotKeeperShiftWindows returns the effective shift window (shiftWindowBounds:
 // own schedule, else dawn/dusk) of every actor who works stID — the snapshot
-// mirror of sim.keeperShiftWindows, the input to sim.ShutHoursPhrase.
-func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID) []sim.ShiftWindow {
+// mirror of sim.keeperShiftWindows, the input to sim.ShutHoursPhrase. A worker
+// whose stay_open commitment is unlapsed at `at` gets sim.ShiftWindowAllDay.
+func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID, at time.Time) []sim.ShiftWindow {
 	if snap == nil || stID == "" {
 		return nil
 	}
 	var out []sim.ShiftWindow
 	for _, w := range snap.Actors {
 		if w == nil || w.WorkStructureID != stID {
+			continue
+		}
+		if !at.IsZero() && w.OpenUntil != nil && w.OpenUntil.After(at) {
+			out = append(out, sim.ShiftWindowAllDay)
 			continue
 		}
 		if start, end, ok := shiftWindowBounds(snap, w); ok {
@@ -3407,6 +3412,14 @@ func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID) []sim.
 // *time.Location. Both instants are cut to the whole minute first, which lines up
 // with local minutes for any whole-minute zone offset. ok=false when the clock is
 // unknown.
+//
+// Known limit, accepted: it assumes the zone offset did not change between t and
+// the publish. A DST switch in between puts the result an hour off, which can
+// flip a trail line between "found it shut until X" and the plain "no one tending
+// it" for a walk near an opening or closing hour. The trail only reaches back
+// over the 4h closed-business memory, so this touches walks in the few hours
+// around a 2 AM switch, twice a year. Carrying the village Location on the
+// snapshot would remove it; that is a wider change than this prose line needs.
 func snapshotMinuteAt(snap *sim.Snapshot, t time.Time) (int, bool) {
 	if snap == nil || snap.LocalMinuteOfDay == nil || snap.PublishedAt.IsZero() {
 		return 0, false
@@ -4370,7 +4383,7 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 				// The hours as they stood at the walk, not now: "found it shut until
 				// 3 in the afternoon" stays a true account of that trip after 3.
 				if minute, ok := snapshotMinuteAt(snap, e.OccurredAt); ok {
-					shutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, e.DestStructureID), minute)
+					shutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, e.DestStructureID, e.OccurredAt), minute)
 				}
 			}
 		}

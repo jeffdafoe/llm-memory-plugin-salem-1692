@@ -108,7 +108,7 @@ func moveToLabel(spokenAs, fallback string) string {
 // when it opens (ShutHoursPhrase), the same phrase as the perception door line.
 func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string, now time.Time) string {
 	if structureHasWorker(w, structureID) && !businessTendedAt(w, structureID) && a.WorkStructureID != structureID {
-		if hours := ShutHoursPhrase(keeperShiftWindows(w, structureID), localMinuteOfDay(w, now)); hours != "" {
+		if hours := ShutHoursPhrase(keeperShiftWindows(w, structureID, now), localMinuteOfDay(w, now)); hours != "" {
 			return fmt.Sprintf(
 				"you are already at %q, and it is shut %s, so there's nothing to do here.", label, hours)
 		}

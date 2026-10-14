@@ -204,6 +204,21 @@ func TestMoveToDestination_AlreadyAtShutBusiness_NamesOpeningHour(t *testing.T) 
 			t.Errorf("%s: no-op = %q, want it to contain %q", c.name, err.Error(), c.want)
 		}
 	}
+
+	// Off shift at midday but holding an unlapsed stay_open: he chose to keep the
+	// place open, so his absence keeps the plain line.
+	midday := time.Date(2026, 10, 14, 12, 0, 0, 0, loc)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		until := midday.Add(time.Hour)
+		world.Actors["john"].OpenUntil = &until
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed stay_open: %v", err)
+	}
+	_, err := w.Send(sim.MoveToDestination("hannah", "the Tavern", nil, sim.RememberedPlaces{}, midday))
+	if err == nil || !strings.Contains(err.Error(), "it is shut just now — no one is tending it") {
+		t.Errorf("stay_open: no-op = %v, want the plain shut line", err)
+	}
 }
 
 // buildMoveToOwnerTestWorld seeds a world with a single owner-only structure
