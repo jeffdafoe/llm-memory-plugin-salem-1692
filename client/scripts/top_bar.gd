@@ -16,6 +16,10 @@ signal inventory_toggle_requested(icon_rect: Rect2)
 signal wake_pressed
 ## Shirt icon clicked (LLM-691) — main.gd opens the character creator.
 signal dress_pressed
+## The "Salem — 1692" title clicked (LLM-777) — main.gd opens the credits scroll.
+signal title_pressed
+
+var title_label: Label = null
 
 var edit_button: Button = null
 var config_button: Button = null
@@ -141,6 +145,7 @@ const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
 const COLOR_BORDER = Color(0.45, 0.35, 0.22, 1.0)
 const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
+const COLOR_TITLE_HOVER = Color(0.95, 0.82, 0.58, 1.0)
 const COLOR_BTN_BG = Color(0.35, 0.25, 0.12, 1.0)
 const COLOR_BTN_BORDER = Color(0.55, 0.42, 0.25, 1.0)
 const COLOR_BTN_ACTIVE_BG = Color(0.29, 0.29, 0.19, 1.0)
@@ -206,6 +211,10 @@ func _ready() -> void:
     # touch screen), so the purse, needs and buttons never overflow.
     title.clip_text = true
     title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    title.mouse_filter = Control.MOUSE_FILTER_STOP
+    title.gui_input.connect(_on_title_input)
+    title.mouse_exited.connect(func(): _set_title_hover(false))
+    title_label = title
     hbox.add_child(title)
 
     # Right side container
@@ -544,6 +553,24 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         inventory_toggle_requested.emit(inventory_icon.get_global_rect())
         get_viewport().set_input_as_handled()
+
+## The title label fills the row's spare width, so only the text itself is the
+## credits link: hover, the hand cursor and the click all stop at its end.
+func _on_title_input(event: InputEvent) -> void:
+    if not (event is InputEventMouse):
+        return
+    var font: Font = title_label.get_theme_font("font")
+    var font_size := title_label.get_theme_font_size("font_size")
+    var text_width := font.get_string_size(title_label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+    var over_text: bool = event.position.x <= text_width
+    _set_title_hover(over_text)
+    if over_text and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        title_pressed.emit()
+        get_viewport().set_input_as_handled()
+
+func _set_title_hover(on: bool) -> void:
+    title_label.add_theme_color_override("font_color", COLOR_TITLE_HOVER if on else COLOR_TEXT)
+    title_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if on else Control.CURSOR_ARROW
 
 func _on_dress_icon_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:

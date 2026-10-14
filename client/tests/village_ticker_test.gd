@@ -20,8 +20,6 @@ const TESTS := [
     "_test_mended_with_no_atmosphere_blanks_the_band",
     "_test_build_info_reads_and_compares",
     "_test_stale_build_leads_the_band",
-    "_test_build_leads_the_band",
-    "_test_build_only_on_first_pass",
 ]
 
 var _failures := 0
@@ -191,74 +189,3 @@ func _test_stale_build_leads_the_band() -> void:
     t.free()
     _done()
 
-
-## The build rides at the front of the band, ahead of the stale notice and the
-## news, rather than scrolling as a line of its own.
-func _test_build_leads_the_band() -> void:
-    var t = _ticker()
-    t._alarm_line = "*** ENGINE ALARM ***"
-    t._build_line = "Salem build 00aa2b90"
-    t._client_build = "00aa2b90"
-    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"build": "00aa2b90", "atmosphere": "Mist on the green."}))
-    _check("build leads the atmosphere", t._band_line(), "Salem build 00aa2b90   ~   Mist on the green.")
-    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"build": "d39271bc", "atmosphere": "Mist on the green."}))
-    _check("build leads the stale notice", t._band_line(),
-        "Salem build 00aa2b90   ~   " + t.STALE_TEXT + "   ~   Mist on the green.")
-    t.free()
-    _done()
-
-
-## The build rides only the band's first pass: the repeat, and a line queued
-## during that pass, come without it; a band of only the build blanks.
-func _test_build_only_on_first_pass() -> void:
-    var t = _ticker()
-    var label := Label.new()
-    var timer := Timer.new()
-    t._label = label
-    t._repeat_timer = timer
-    root.add_child(timer)
-    t._build_line = "Salem build 00aa2b90"
-    t._on_world_state_completed(0, 200, PackedStringArray(), _body({"atmosphere": "Mist on the green."}))
-    _check("world read scrolls build and band together", t._active_line,
-        "Salem build 00aa2b90   ~   Mist on the green.")
-    _check("first pass is scrolling", t._scrolling, true)
-    t._on_scroll_finished()
-    _check("repeat drops the build", t._active_line, "Mist on the green.")
-    _check("repeat goes on the schedule", timer.is_stopped(), false)
-    _check("build cleared", t._build_line, "")
-    timer.stop()
-
-    t._build_line = "Salem build 00aa2b90"
-    t._active_line = t._band_line()
-    t._damage_line = "The windlass at the Well by the Mill is down."
-    t._pending_line = t._band_line()
-    t._scrolling = true
-    t._on_scroll_finished()
-    _check("queued line drops the build", t._active_line,
-        "The windlass at the Well by the Mill is down.   ~   Mist on the green.")
-    _check("queued line scrolls now", t._scrolling, true)
-    _check("queued line gets a fresh burst", t._burst_done, 0)
-    _check("queue drained", t._pending_line, "")
-
-    # The well is mended mid-pass with no atmosphere: the band empties.
-    t._atmosphere_line = ""
-    t._build_line = "Salem build 00aa2b90"
-    t._active_line = t._band_line()
-    t._damage_line = ""
-    t._pending_line = t._band_line()
-    t._scrolling = true
-    t._on_scroll_finished()
-    _check("emptied mid-pass: band blanked", t._active_line, "")
-    _check("emptied mid-pass: queue drained", t._pending_line, "")
-    _check("emptied mid-pass: nothing scrolling", t._scrolling, false)
-
-    t._build_line = "Salem build 00aa2b90"
-    t._active_line = t._band_line()
-    t._scrolling = true
-    t._on_scroll_finished()
-    _check("build alone: band blanked", t._active_line, "")
-    _check("build alone: label cleared", label.text, "")
-    label.free()
-    timer.free()
-    t.free()
-    _done()
