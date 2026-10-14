@@ -127,7 +127,9 @@ func TestShutHoursPhrase(t *testing.T) {
 		{"clock out of range", []sim.ShiftWindow{john}, 1440, ""},
 		{"invalid window beside a valid one is skipped", []sim.ShiftWindow{{Start: 1500, End: 100}, smith}, 300, "until 7 in the morning"},
 		{"negative window beside a valid one is skipped", []sim.ShiftWindow{{Start: -60, End: 600}, smith}, 1020, "for the day — it opens at 7 in the morning"},
-		{"all-day (stay_open) window → in hours", []sim.ShiftWindow{smith, sim.ShiftWindowAllDay}, 1020, ""},
+		{"end past 1440 beside a valid one is skipped", []sim.ShiftWindow{{Start: 60, End: 1500}, smith}, 1020, "for the day — it opens at 7 in the morning"},
+		{"negative end beside a valid one is skipped", []sim.ShiftWindow{{Start: 60, End: -10}, smith}, 300, "until 7 in the morning"},
+		{"all-day (stay_open) window → in hours", []sim.ShiftWindow{smith, sim.ShiftWindowAllDay()}, 1020, ""},
 	}
 	for _, c := range cases {
 		if got := sim.ShutHoursPhrase(c.windows, c.now); got != c.want {
@@ -186,5 +188,13 @@ func TestShutDoorLine_DawnDuskFallbackAndStayOpen(t *testing.T) {
 	snap.Actors[sim.ActorID("john")].OpenUntil = &until
 	if got, want := doorLine(snap, id), "The Tavern is shut — no one is tending it."; got != want {
 		t.Errorf("keeper on stay_open: door line = %q, want %q", got, want)
+	}
+
+	// The same stay_open must NOT reach back onto the walk in the trail: the
+	// snapshot can't tell whether it began before or after the walk, so the trail
+	// keeps the hours as the shift alone gives them.
+	trail := Render(Build(snap, id, nil), DefaultRenderConfig())
+	if want := "You went to the Tavern but found it shut until 3 in the afternoon"; !strings.Contains(combinedPrompt(trail), want) {
+		t.Errorf("keeper on stay_open: trail must still name the hours, want %q in the prompt", want)
 	}
 }

@@ -144,10 +144,13 @@ type ShiftWindow struct {
 	End   int
 }
 
-// ShiftWindowAllDay is the window of a keeper holding an unlapsed stay_open
+// ShiftWindowAllDay returns the window of a keeper holding an unlapsed stay_open
 // commitment: it has chosen to keep the place open past its hours, so it counts
-// as in hours at every minute and no opening hour is named.
-var ShiftWindowAllDay = ShiftWindow{Start: 0, End: 1440}
+// as in hours at every minute and no opening hour is named. A func, not a var, so
+// no caller can change it for everyone.
+func ShiftWindowAllDay() ShiftWindow {
+	return ShiftWindow{Start: 0, End: 1440}
+}
 
 // ShutHoursPhrase says when a shut business opens, for the "is shut" lines an
 // NPC reads at its door, in its own recent-actions trail and in the move_to
@@ -199,8 +202,8 @@ func keeperShiftWindows(w *World, structureID StructureID, now time.Time) []Shif
 		if worker == nil || worker.WorkStructureID != structureID {
 			continue
 		}
-		if worker.OpenUntil != nil && worker.OpenUntil.After(now) {
-			out = append(out, ShiftWindowAllDay)
+		if !now.IsZero() && worker.OpenUntil != nil && worker.OpenUntil.After(now) {
+			out = append(out, ShiftWindowAllDay())
 			continue
 		}
 		if start, end, ok := effectiveShiftWindow(w, worker); ok {

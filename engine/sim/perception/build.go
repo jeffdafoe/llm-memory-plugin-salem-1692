@@ -3386,7 +3386,10 @@ func isShutBusiness(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.Structure
 // snapshotKeeperShiftWindows returns the effective shift window (shiftWindowBounds:
 // own schedule, else dawn/dusk) of every actor who works stID — the snapshot
 // mirror of sim.keeperShiftWindows, the input to sim.ShutHoursPhrase. A worker
-// whose stay_open commitment is unlapsed at `at` gets sim.ShiftWindowAllDay.
+// whose stay_open commitment is unlapsed at `at` gets sim.ShiftWindowAllDay. A
+// zero `at` skips that check: the trail passes zero, because the snapshot holds
+// only OpenUntil, not when the commitment began, so a stay_open made after a walk
+// would otherwise be read back onto it.
 func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID, at time.Time) []sim.ShiftWindow {
 	if snap == nil || stID == "" {
 		return nil
@@ -3397,7 +3400,7 @@ func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID, at tim
 			continue
 		}
 		if !at.IsZero() && w.OpenUntil != nil && w.OpenUntil.After(at) {
-			out = append(out, sim.ShiftWindowAllDay)
+			out = append(out, sim.ShiftWindowAllDay())
 			continue
 		}
 		if start, end, ok := shiftWindowBounds(snap, w); ok {
@@ -4383,7 +4386,7 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 				// The hours as they stood at the walk, not now: "found it shut until
 				// 3 in the afternoon" stays a true account of that trip after 3.
 				if minute, ok := snapshotMinuteAt(snap, e.OccurredAt); ok {
-					shutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, e.DestStructureID, e.OccurredAt), minute)
+					shutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, e.DestStructureID, time.Time{}), minute)
 				}
 			}
 		}
