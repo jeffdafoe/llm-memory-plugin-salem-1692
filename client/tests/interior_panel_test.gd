@@ -2591,6 +2591,21 @@ func _test_carried_dish_sorts_by_facing() -> void:
     _check("the mug on the keeper", mug.get_parent() == keeper, true)
     _panel.open(_sid)
     _check("reopened: the mug is gone, nothing rides on the keeper", is_instance_valid(mug), false)
+
+    # Closed mid-carry, then another room opened: freed all the same.
+    _world.meals = {}
+    _tavern_with_guest(0, true)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    mug = _panel._handoff_now["good"]
+    keeper = _panel._tending()
+    _finish_walk(keeper)
+    (mug.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _panel._carry_follow()
+    _check("the mug on the keeper again", mug.get_parent() == keeper, true)
+    _panel.close()
+    _person("innkeeper", _farmer(), INN, {"work_structure_id": INN})
+    _panel.open(INN)
+    _check("closed, then the Inn opened: the mug is gone", is_instance_valid(mug), false)
     _world.meals = {}
     _panel.close()
     _done()
