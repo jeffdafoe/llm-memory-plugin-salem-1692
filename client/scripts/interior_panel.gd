@@ -446,6 +446,9 @@ func open(sid: String) -> void:
     _lay_running_meals()
     _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
     _draw_goods()
+    # A room draws no goods of its own, so nothing else would ask for the
+    # goods sheet before its first sale (LLM-772).
+    _texture(StallScenes.GOODS_SHEET)
     _refresh_left = REFRESH_SECONDS
     _wares_left = 0.0
     if is_stall():
@@ -1710,9 +1713,8 @@ func on_pay_resolved(data: Dictionary) -> void:
         return
     if is_stall():
         _request_wares(true)
-    # The goods sheet still downloading: nothing to hand over.
-    if _texture(StallScenes.GOODS_SHEET) == null:
-        return
+    # With the goods sheet still downloading the sale waits in line; its
+    # arrival starts it (_on_texture_arrived, LLM-772).
     _handoffs.append({"item": str(lines[0]["item"]) if lines.size() == 1 else "", "qty": int(lines[0]["qty"]),
         "lines": lines, "selling": selling,
         "other": str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", "")),
@@ -1726,6 +1728,10 @@ func _next_handoff() -> void:
     _handoff_now = {}
     if _handoffs.is_empty() or not visible:
         _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+        return
+    # A sale needs the goods sheet to be drawn: it stays in line until the
+    # sheet arrives (LLM-772). Clearing a dish already drawn does not.
+    if not (_handoffs.front() as Dictionary).has("clear") and _texture(StallScenes.GOODS_SHEET) == null:
         return
     var h: Dictionary = _handoffs.pop_front()
     var keeper := _serving_keeper()
@@ -2311,6 +2317,17 @@ func _texture(path: String) -> Texture2D:
     return null
 
 
+## A sheet has come down: redraw with it, and when it is the goods sheet start
+## any sale that was waiting for it (LLM-772).
+func _on_texture_arrived(path: String) -> void:
+    if not visible:
+        return
+    _apply_textures()
+    _draw_goods()
+    if path == StallScenes.GOODS_SHEET and _handoff_now.is_empty() and not _handoffs.is_empty():
+        _next_handoff()
+
+
 func _fetch(path: String) -> void:
     if _fetching.has(path):
         return
@@ -2328,9 +2345,7 @@ func _fetch(path: String) -> void:
         if img.load_png_from_buffer(body) != OK:
             return
         _textures[path] = ImageTexture.create_from_image(img)
-        if visible:
-            _apply_textures()
-            _draw_goods())
+        _on_texture_arrived(path))
     if http.request(Auth.api_base + path) != OK:
         http.queue_free()
         _fetching.erase(path)
