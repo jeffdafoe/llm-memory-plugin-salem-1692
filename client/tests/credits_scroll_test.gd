@@ -6,9 +6,10 @@ extends SceneTree
 ## Covers: the rod art (transparent outside the rod, opaque across it, an
 ## outline on the body's edge, different grain per seed); every credit link is
 ## https; open() unrolls the paper from 0 to its full height and close() ends
-## it; the scroll fits the 1280x720 design canvas on desktop; and a click on
-## the title's text opens the scroll while a click in the empty bar beside it
-## does not.
+## it; the scroll fits the 1280x720 design canvas on desktop; a link opens on
+## the release of a tap but not after a drag or a scroll of the paper, and its
+## press is left for the ScrollContainer; and a click on the title's text opens
+## the scroll while a click in the empty bar beside it does not.
 ##
 ## Run headless (CI and local):
 ##   godot --headless --path client --script res://tests/credits_scroll_test.gd
@@ -19,6 +20,7 @@ const TESTS := [
     "_test_credit_links_are_https",
     "_test_open_unrolls_and_close_ends",
     "_test_fits_design_canvas",
+    "_test_link_opens_on_tap_not_drag",
     "_test_title_text_opens_credits",
 ]
 
@@ -162,6 +164,54 @@ func _test_fits_design_canvas() -> void:
     scroll.close()
     scroll.queue_free()
     root.size = old_size
+    await process_frame
+    _done()
+
+
+func _button(pressed: bool, at: Vector2) -> InputEventMouseButton:
+    var event := InputEventMouseButton.new()
+    event.button_index = MOUSE_BUTTON_LEFT
+    event.pressed = pressed
+    event.position = at
+    event.global_position = at
+    return event
+
+
+## On a touch screen the paper is mostly links, so a drag that starts on one
+## must scroll, not open it. The paper is squeezed to force it to overflow.
+func _test_link_opens_on_tap_not_drag() -> void:
+    var scroll: CanvasLayer = _scroll_script().new()
+    root.add_child(scroll)
+    var opened := []
+    scroll.open_url = func(url: String): opened.append(url)
+    scroll.open()
+    scroll.body_scroll.custom_minimum_size.y = 120.0
+    scroll.body_scroll.size.y = 120.0
+    await process_frame
+    await process_frame
+    var url := "https://kenney.nl/"
+    var press := {}
+
+    scroll._on_link_input(_button(true, Vector2(50, 50)), url, press)
+    _check("the press opens nothing", opened, [])
+    _check("the press is left for the paper to drag", root.is_input_handled(), false)
+    scroll._on_link_input(_button(false, Vector2(53, 52)), url, press)
+    _check("a tap opens the link on release", opened, [url])
+
+    scroll._on_link_input(_button(true, Vector2(50, 50)), url, press)
+    scroll._on_link_input(_button(false, Vector2(50, 90)), url, press)
+    _check("a drag opens nothing", opened, [url])
+
+    scroll._on_link_input(_button(true, Vector2(50, 50)), url, press)
+    scroll.body_scroll.scroll_vertical = 40
+    _check("the paper can scroll", scroll.body_scroll.scroll_vertical, 40)
+    scroll._on_link_input(_button(false, Vector2(50, 50)), url, press)
+    _check("a press the paper scrolled under opens nothing", opened, [url])
+
+    scroll._on_link_input(_button(false, Vector2(50, 50)), url, press)
+    _check("a release with no press opens nothing", opened, [url])
+    scroll.close()
+    scroll.queue_free()
     await process_frame
     _done()
 

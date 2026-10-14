@@ -29,6 +29,8 @@ const PAD_Y := 10
 const SECTION_GAP := 8.0
 const ENTRY_GAP := 4.0
 const UNROLL_SEC := 0.45
+## A press that moves further than this before it lifts is a drag, not a tap.
+const LINK_TAP_SLOP := 10.0
 
 const COLOR_PAPER := Color(0.925, 0.863, 0.714)
 const COLOR_PAPER_EDGE := Color(0.78, 0.67, 0.47)
@@ -100,6 +102,8 @@ var _heading_font: FontVariation = null
 var _rod_width_px := 0
 var _paper_height := 0.0
 var _tween: Tween = null
+## How a link is opened; a test swaps it to catch the call without a browser.
+var open_url: Callable = Callable(OS, "shell_open")
 
 signal opened()
 signal closed()
@@ -238,7 +242,7 @@ func _make_label(text: String, font: Font, font_size: int, color: Color) -> Labe
 
 
 ## A label that opens url in a new tab. PASS, not STOP, so a wheel over a link
-## still scrolls the paper; only the click is consumed. Hover darkens it.
+## still scrolls the paper. Hover darkens it.
 func _make_link(text: String, url: String, font: Font, font_size: int, color: Color, hover_color: Color) -> Label:
     var label := _make_label(text, font, font_size, color)
     label.mouse_filter = Control.MOUSE_FILTER_PASS
@@ -246,11 +250,28 @@ func _make_link(text: String, url: String, font: Font, font_size: int, color: Co
     label.tooltip_text = url
     label.mouse_entered.connect(func(): label.add_theme_color_override("font_color", hover_color))
     label.mouse_exited.connect(func(): label.add_theme_color_override("font_color", color))
-    label.gui_input.connect(func(event: InputEvent):
-        if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-            OS.shell_open(url)
-            label.accept_event())
+    label.gui_input.connect(_on_link_input.bind(url, {}))
     return label
+
+
+## Opens on the release of a tap, not on the press: on a touch screen most of
+## the paper is links, so the press must reach the ScrollContainer to start a
+## drag. A press that moved, or that the paper scrolled under, is a drag.
+func _on_link_input(event: InputEvent, url: String, press: Dictionary) -> void:
+    if not (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT):
+        return
+    if event.pressed:
+        press["at"] = event.global_position
+        press["scroll"] = body_scroll.scroll_vertical
+        return
+    if not press.has("at"):
+        return
+    var tapped: bool = event.global_position.distance_to(press["at"]) <= LINK_TAP_SLOP \
+            and body_scroll.scroll_vertical == press["scroll"]
+    press.clear()
+    if tapped:
+        open_url.call(url)
+        get_viewport().set_input_as_handled()
 
 
 func _add_space(height: float) -> void:
