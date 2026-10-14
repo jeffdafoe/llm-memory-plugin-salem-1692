@@ -2102,6 +2102,30 @@ var perceptionScenarios = []perceptionScenario{
 		build: turnedAwayOutdoorsAtShutTavern,
 	},
 	{
+		name: "turned_away_at_tavern_before_opening",
+		summary: "LLM-771, the live trigger (2026-10-14): Constable Gideon Marsh walked his round to the Tavern " +
+			"at midday, read 'The Tavern is shut — no one is tending it.', asked around and brought John Ellis before the " +
+			"magistrates as missing — John was abed, his 15:00–03:00 shift not yet begun, exactly as built. The same door " +
+			"as turned_away_outdoors_at_shut_tavern with John's real shift on him. The golden pins 'The Tavern is shut " +
+			"until 3 in the afternoon.' at the door and '…but found it shut until 3 in the afternoon' in the trail. A " +
+			"regression that drops the hours brings back the plain line that reads as a vanished keeper.",
+		build: tavernBeforeOpening,
+	},
+	{
+		name: "turned_away_at_tavern_after_close",
+		summary: "LLM-771: the after-close half. The keeper on a 07:00–16:00 day shift, the clock at 17:00, so the " +
+			"place is shut for the day. The golden pins 'is shut for the day — it opens at 7 in the morning' at the door " +
+			"and in the trail.",
+		build: tavernAfterClose,
+	},
+	{
+		name: "turned_away_at_tavern_in_hours",
+		summary: "LLM-771 control: John abed at 16:00, INSIDE his 15:00–03:00 shift. The place should be open, so the " +
+			"door and the trail keep the plain 'shut — no one is tending it': the keeper's absence during his hours is the " +
+			"news, and naming an opening hour that has already passed would be wrong.",
+		build: tavernShutInHours,
+	},
+	{
 		name: "shared_npc_soul_who_you_are",
 		summary: "A shared-VA keeper (Hannah, salem-vendor) at her own post during working hours, carrying a " +
 			"synthesized about_me soul (LLM-199). The golden pins that '## Who you are' renders the soul prose — the " +

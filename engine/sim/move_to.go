@@ -104,9 +104,14 @@ func moveToLabel(spokenAs, fallback string) string {
 // is shut (guards the abed-innkeeper edge; it also keeps a move_to("work") that
 // lands on the actor's own post from reading "your work is shut").
 // structureHasWorker / businessTendedAt are the same world-goroutine checks the
-// closed-business arrival memory uses.
-func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string) string {
+// closed-business arrival memory uses. Outside its keepers' hours the reply says
+// when it opens (ShutHoursPhrase), the same phrase as the perception door line.
+func alreadyAtMsg(w *World, a *Actor, structureID StructureID, label string, now time.Time) string {
 	if structureHasWorker(w, structureID) && !businessTendedAt(w, structureID) && a.WorkStructureID != structureID {
+		if hours := ShutHoursPhrase(keeperShiftWindows(w, structureID, now), localMinuteOfDay(w, now)); hours != "" {
+			return fmt.Sprintf(
+				"you are already at %q, and it is shut %s, so there's nothing to do here.", label, hours)
+		}
 		return fmt.Sprintf(
 			"you are already at %q, and it is shut just now — no one is tending it, so there's nothing to do here.", label)
 	}
@@ -941,7 +946,7 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 			if a.InsideStructureID == structureID {
 				// LLM-209: a no-op walk — TerminalNoOpError ends the tick (the model
 				// was re-firing move_to(home) here to the budget while already home).
-				return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
+				return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)), now)}
 			}
 			if a.MoveIntent != nil && a.MoveIntent.Destination.StructureID != nil &&
 				*a.MoveIntent.Destination.StructureID == structureID {
@@ -962,7 +967,7 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 			// guard; LoiterAttributionTiles = "standing AT" the pin.
 			if dest.Kind == MoveDestinationStructureVisit {
 				if pin, ok := effectiveLoiterTile(w, structureID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
-					return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)))}
+					return MoveActorResult{}, TerminalNoOpError{Msg: alreadyAtMsg(w, a, structureID, moveToLabel(spokenAs, string(structureID)), now)}
 				}
 			}
 			// LLM-366: we deliberately do NOT drop the actor's stale "found it

@@ -1441,6 +1441,12 @@ type SelfActionView struct {
 	// arrived at X", giving LLM-217's churn-mirror the outcome it lacked: a run of
 	// dead-end trips reads AS dead ends, not ordinary errands (LLM-366).
 	FoundShut bool
+
+	// ShutHours qualifies FoundShut when the trip landed outside the keepers'
+	// hours: sim.ShutHoursPhrase at the minute of the walk ("until 3 in the
+	// afternoon"). Empty when the place was shut inside its hours, or the clock
+	// can't be read (LLM-771).
+	ShutHours string
 }
 
 // ActorView is the subject actor's own current state, lifted from the
@@ -1737,6 +1743,13 @@ type SurroundingsView struct {
 	// keeper is asleep." Closed-business is the first wired reason; out-of-stock
 	// / exhausted-source / locked-entry slot in as further values.
 	LocationDeadEnd DeadEndReason
+
+	// DeadEndShutHours qualifies a DeadEndShutBusiness read when the place is
+	// outside its keepers' hours: sim.ShutHoursPhrase now ("until 3 in the
+	// afternoon"), so the line says when it opens instead of leaving the model
+	// to read a by-design closing as a vanished keeper (LLM-771). Empty
+	// inside its hours, where "no one is tending it" stays the news.
+	DeadEndShutHours string
 
 	// DeadEndHunger / DeadEndThirst qualify a DeadEndNoConsumableHere
 	// LocationDeadEnd: which felt consumable need(s) have no source at this place,

@@ -164,6 +164,63 @@ func TestMoveToDestination_AlreadyAtShutBusiness_EchoesNameAndSaysShut(t *testin
 	}
 }
 
+// TestMoveToDestination_AlreadyAtShutBusiness_NamesOpeningHour (LLM-771):
+// outside the keeper's shift the already-there reply says when the place opens,
+// the same phrase as the perception door line; inside the shift (keeper abed when
+// he should be up) it keeps the plain "no one is tending it". John is put on his
+// live 15:00–03:00 shift; the times are built in the world's own Location.
+func TestMoveToDestination_AlreadyAtShutBusiness_NamesOpeningHour(t *testing.T) {
+	w, cancel := buildShutTavernWorld(t)
+	defer cancel()
+	loc := time.UTC
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].InsideStructureID = "tavern"
+		start, end := 900, 180
+		world.Actors["john"].ScheduleStartMin = &start
+		world.Actors["john"].ScheduleEndMin = &end
+		if world.Settings.Location != nil {
+			loc = world.Settings.Location
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		now  time.Time
+		want string
+	}{
+		{"midday, before his shift", time.Date(2026, 10, 14, 12, 0, 0, 0, loc), "it is shut until 3 in the afternoon, so there's nothing to do here"},
+		{"16:00, inside his shift", time.Date(2026, 10, 14, 16, 0, 0, 0, loc), "it is shut just now — no one is tending it"},
+	}
+	for _, c := range cases {
+		_, err := w.Send(sim.MoveToDestination("hannah", "the Tavern", nil, sim.RememberedPlaces{}, c.now))
+		if err == nil {
+			t.Fatalf("%s: want an already-at no-op error, got nil", c.name)
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: no-op = %q, want it to contain %q", c.name, err.Error(), c.want)
+		}
+	}
+
+	// Off shift at midday but holding an unlapsed stay_open: he chose to keep the
+	// place open, so his absence keeps the plain line.
+	midday := time.Date(2026, 10, 14, 12, 0, 0, 0, loc)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		until := midday.Add(time.Hour)
+		world.Actors["john"].OpenUntil = &until
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed stay_open: %v", err)
+	}
+	_, err := w.Send(sim.MoveToDestination("hannah", "the Tavern", nil, sim.RememberedPlaces{}, midday))
+	if err == nil || !strings.Contains(err.Error(), "it is shut just now — no one is tending it") {
+		t.Errorf("stay_open: no-op = %v, want the plain shut line", err)
+	}
+}
+
 // buildMoveToOwnerTestWorld seeds a world with a single owner-only structure
 // "manor" (house asset, has a door) owned by "lord", plus three actors at the
 // pad with a clear path: "lord" (owner), "resident" (home == manor), and
