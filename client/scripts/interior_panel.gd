@@ -134,6 +134,8 @@ const TABLE_SECONDS := 30.0
 ## the bar, takes it up after PICK_UP_HOLD seconds and carries it at
 ## CARRY_LIFT art px above their feet to the buyer.
 const PICK_UP_HOLD := 0.8
+## How often a sale waiting for the goods sheet asks for it again (LLM-772).
+const SHEET_RETRY_SECONDS := 3.0
 const CARRY_LIFT := 9.0
 ## A bundle's goods (LLM-770) stand BUNDLE_STEP art px apart, in hand and on
 ## the table.
@@ -233,6 +235,7 @@ var _http_wares: HTTPRequest = null
 ## who is here is someone coming or going.
 var _entrances := false
 var _bustle_left := 0.0
+var _sheet_retry_left := 0.0
 var _bustle_rng := RandomNumberGenerator.new()
 ## The name tag and what it is on: {} when hidden, else {kind: "person" | "good",
 ## id (a person), node (a good)}. _tag_left > 0 while a tap's tag is up.
@@ -484,6 +487,7 @@ func _process(delta: float) -> void:
         refresh()
     _update_tag(delta)
     _animate(delta)
+    _retry_sheet(delta)
     if not is_stall():
         _carry_follow()
         _eat(delta)
@@ -2315,6 +2319,20 @@ func _texture(path: String) -> Texture2D:
         return _textures[path]
     _fetch(path)
     return null
+
+
+## While a sale waits for the goods sheet, try it again every
+## SHEET_RETRY_SECONDS: a download that failed asks again, one in flight is
+## left alone (_fetch), and one that has come starts the sale (LLM-772).
+func _retry_sheet(delta: float) -> void:
+    if not _handoff_now.is_empty() or _handoffs.is_empty():
+        _sheet_retry_left = SHEET_RETRY_SECONDS
+        return
+    _sheet_retry_left -= delta
+    if _sheet_retry_left > 0.0:
+        return
+    _sheet_retry_left = SHEET_RETRY_SECONDS
+    _next_handoff()
 
 
 ## A sheet has come down: redraw with it, and when it is the goods sheet start
