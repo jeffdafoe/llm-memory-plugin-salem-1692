@@ -75,9 +75,18 @@ server {
         proxy_set_header Authorization $http_authorization;
     }
 
-    # Tilesets — persistent directory for all sprite sheets (purchased and free)
+    # Tilesets — persistent directory for all sprite sheets (purchased and free).
+    # Revalidated on every load like the build files (ETag → 304): with no
+    # Cache-Control a browser keeps a sheet by heuristic for hours, so art
+    # installed on the VPS did not show — a new client drew cells the cached
+    # old sheet does not have as blank (LLM-774). The add_header here drops the
+    # server-level ones, so the security headers are repeated.
     location /tilesets/ {
         alias {{ project_root }}/tilesets/;
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
         try_files $uri =404;
     }
 
