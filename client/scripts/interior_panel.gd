@@ -134,6 +134,12 @@ const TABLE_SECONDS := 30.0
 ## the bar, takes it up after PICK_UP_HOLD seconds and carries it at
 ## CARRY_LIFT art px above their feet to the buyer.
 const PICK_UP_HOLD := 0.8
+## A sale waiting for the goods sheet asks for it again after
+## SHEET_RETRY_SECONDS, doubling each time up to SHEET_RETRY_MAX; after
+## SHEET_RETRY_LIMIT tries the waiting sales are shown no more (LLM-772).
+const SHEET_RETRY_SECONDS := 3.0
+const SHEET_RETRY_MAX := 60.0
+const SHEET_RETRY_LIMIT := 6
 const CARRY_LIFT := 9.0
 ## A bundle's goods (LLM-770) stand BUNDLE_STEP art px apart, in hand and on
 ## the table.
@@ -176,6 +182,9 @@ var texture_hook: Callable = Callable()
 ## Test seam: structure id -> the pc/stall wares array, used in place of the
 ## request.
 var wares_hook: Callable = Callable()
+## Test seam: path -> nothing, called in place of the HTTP request a fetch
+## would send; the test answers through _on_fetch_done.
+var fetch_hook: Callable = Callable()
 
 static var _textures: Dictionary = {}
 
@@ -233,6 +242,8 @@ var _http_wares: HTTPRequest = null
 ## who is here is someone coming or going.
 var _entrances := false
 var _bustle_left := 0.0
+var _sheet_retry_left := 0.0
+var _sheet_retries := 0
 var _bustle_rng := RandomNumberGenerator.new()
 ## The name tag and what it is on: {} when hidden, else {kind: "person" | "good",
 ## id (a person), node (a good)}. _tag_left > 0 while a tap's tag is up.
@@ -414,6 +425,8 @@ func open(sid: String) -> void:
         child.free()
     _handoffs = []
     _handoff_now = {}
+    _sheet_retries = 0
+    _sheet_retry_left = SHEET_RETRY_SECONDS
     if sid != structure_id:
         _assigned = {}
         _assigned_hands = {}
@@ -446,6 +459,9 @@ func open(sid: String) -> void:
     _lay_running_meals()
     _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
     _draw_goods()
+    # A room draws no goods of its own, so nothing else would ask for the
+    # goods sheet before its first sale (LLM-772).
+    _texture(StallScenes.GOODS_SHEET)
     _refresh_left = REFRESH_SECONDS
     _wares_left = 0.0
     if is_stall():
@@ -481,6 +497,7 @@ func _process(delta: float) -> void:
         refresh()
     _update_tag(delta)
     _animate(delta)
+    _retry_sheet(delta)
     if not is_stall():
         _carry_follow()
         _eat(delta)
@@ -1710,9 +1727,8 @@ func on_pay_resolved(data: Dictionary) -> void:
         return
     if is_stall():
         _request_wares(true)
-    # The goods sheet still downloading: nothing to hand over.
-    if _texture(StallScenes.GOODS_SHEET) == null:
-        return
+    # With the goods sheet still downloading the sale waits in line; its
+    # arrival starts it (_on_texture_arrived, LLM-772).
     _handoffs.append({"item": str(lines[0]["item"]) if lines.size() == 1 else "", "qty": int(lines[0]["qty"]),
         "lines": lines, "selling": selling,
         "other": str(data.get("buyer_id", "")) if selling else str(data.get("seller_id", "")),
@@ -1726,6 +1742,10 @@ func _next_handoff() -> void:
     _handoff_now = {}
     if _handoffs.is_empty() or not visible:
         _bustle_left = _bustle_rng.randf_range(BUSTLE_MIN, BUSTLE_MAX)
+        return
+    # A sale needs the goods sheet to be drawn: it stays in line until the
+    # sheet arrives (LLM-772). Clearing a dish already drawn does not.
+    if not (_handoffs.front() as Dictionary).has("clear") and _texture(StallScenes.GOODS_SHEET) == null:
         return
     var h: Dictionary = _handoffs.pop_front()
     var keeper := _serving_keeper()
@@ -2311,8 +2331,65 @@ func _texture(path: String) -> Texture2D:
     return null
 
 
+## While a sale waits for the goods sheet, try it again: a download that
+## failed asks again, one in flight is left alone (_fetch), and one that has
+## come starts the sale. The wait doubles from SHEET_RETRY_SECONDS up to
+## SHEET_RETRY_MAX; after SHEET_RETRY_LIMIT tries the waiting sales are
+## dropped from the window — the engine has settled them, only the picture is
+## lost — and any clearing behind them goes on (LLM-772).
+func _retry_sheet(delta: float) -> void:
+    if not _handoff_now.is_empty() or _handoffs.is_empty():
+        _sheet_retries = 0
+        _sheet_retry_left = SHEET_RETRY_SECONDS
+        return
+    _sheet_retry_left -= delta
+    if _sheet_retry_left > 0.0:
+        return
+    if _sheet_retries >= SHEET_RETRY_LIMIT:
+        var dropped := _handoffs.filter(func(h): return not h.has("clear"))
+        push_warning("Goods sheet never came: %d sale(s) not shown" % dropped.size())
+        _handoffs = _handoffs.filter(func(h): return h.has("clear"))
+        _sheet_retries = 0
+        _sheet_retry_left = SHEET_RETRY_SECONDS
+        _next_handoff()
+        return
+    _sheet_retries += 1
+    _sheet_retry_left = minf(SHEET_RETRY_SECONDS * pow(2.0, _sheet_retries), SHEET_RETRY_MAX)
+    _next_handoff()
+
+
+## A sheet has come down: redraw with it, and when it is the goods sheet start
+## any sale that was waiting for it (LLM-772).
+func _on_texture_arrived(path: String) -> void:
+    if not visible:
+        return
+    _apply_textures()
+    _draw_goods()
+    if path == StallScenes.GOODS_SHEET and _handoff_now.is_empty() and not _handoffs.is_empty():
+        _next_handoff()
+
+
+## A download has finished. It is no longer in flight either way, so a later
+## _texture asks again; a picture that came is cached and put on.
+func _on_fetch_done(path: String, result: int, code: int, body: PackedByteArray) -> void:
+    _fetching.erase(path)
+    if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+        push_warning("Interior sheet download failed: %s code=%d" % [path, code])
+        return
+    var img := Image.new()
+    if img.load_png_from_buffer(body) != OK:
+        push_warning("Interior sheet is not a PNG: %s" % path)
+        return
+    _textures[path] = ImageTexture.create_from_image(img)
+    _on_texture_arrived(path)
+
+
 func _fetch(path: String) -> void:
     if _fetching.has(path):
+        return
+    if fetch_hook.is_valid():
+        _fetching[path] = null
+        fetch_hook.call(path)
         return
     var http := HTTPRequest.new()
     http.accept_gzip = false
@@ -2320,17 +2397,7 @@ func _fetch(path: String) -> void:
     _fetching[path] = http
     http.request_completed.connect(func(result: int, code: int, _h, body: PackedByteArray):
         http.queue_free()
-        _fetching.erase(path)
-        if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-            push_warning("Interior sheet download failed: %s code=%d" % [path, code])
-            return
-        var img := Image.new()
-        if img.load_png_from_buffer(body) != OK:
-            return
-        _textures[path] = ImageTexture.create_from_image(img)
-        if visible:
-            _apply_textures()
-            _draw_goods())
+        _on_fetch_done(path, result, code, body))
     if http.request(Auth.api_base + path) != OK:
         http.queue_free()
         _fetching.erase(path)

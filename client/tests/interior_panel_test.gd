@@ -80,6 +80,10 @@ const TESTS := [
     "_test_inn_keeper_behind_the_desk",
     "_test_inn_animations",
     "_test_inn_serves_porridge_to_the_bench",
+    "_test_room_open_fetches_the_goods_sheet",
+    "_test_inn_sale_waits_for_the_goods_sheet",
+    "_test_room_sale_retries_a_failed_sheet",
+    "_test_room_sale_gives_up_on_the_sheet",
     "_test_room_pieces",
     "_test_room_squares",
     "_test_room_walk",
@@ -2120,8 +2124,13 @@ func _test_no_handoff() -> void:
     _panel.texture_hook = func(path: String) -> Texture2D:
         return null if path == StallScenes.GOODS_SHEET else _blank(128, 112)
     _panel.on_pay_resolved(_sale("keeper", "buyer"))
-    _check("no goods sheet: nothing, and the keeper stays", [_panel._handoff.get_child_count(), keeper.has_meta("walking")], [0, false])
+    _check("no goods sheet: nothing yet, and the keeper stays", [_panel._handoff.get_child_count(), keeper.has_meta("walking")], [0, false])
     _panel.texture_hook = hook
+    # The sheet arrives: the sale waited for it and is handed over now.
+    _panel._on_texture_arrived(StallScenes.GOODS_SHEET)
+    _check("the sheet arrives: the sale is handed over", [_panel._handoff.get_child_count(), keeper.has_meta("walking")], [1, true])
+    _finish_walk(keeper)
+    _panel.open(STALL)
     _panel.close()
     _panel.on_pay_resolved(_sale("keeper", "buyer"))
     _check("a closed window: nothing", _panel._handoff.get_child_count(), 0)
@@ -2982,6 +2991,140 @@ func _test_inn_serves_porridge_to_the_bench() -> void:
     (good.get_meta("tween") as Tween).custom_step(60.0)
     _check("carried back to the desk and gone", [good.is_queued_for_deletion(), _panel._handoff_now], [true, {}])
     _finish_walk(keeper)
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-772: a room draws no goods of its own, so nothing asked for the goods
+## sheet until a sale came — and that sale was dropped while it downloaded.
+## Opening a room asks for the sheet straight away.
+func _test_room_open_fetches_the_goods_sheet() -> void:
+    _clear_people()
+    _panel.close()
+    var asked := []
+    var hook: Callable = _panel.texture_hook
+    _panel.texture_hook = func(path: String) -> Texture2D:
+        asked.append(path)
+        return _blank(128, 112)
+    _person("keeper", _farmer(), INN, {"work_structure_id": INN})
+    _panel.open(INN)
+    _check("opening the Inn asks for the goods sheet", asked.has(StallScenes.GOODS_SHEET), true)
+    _panel.texture_hook = hook
+    _panel.close()
+    _done()
+
+
+## LLM-772, the live case: the player's character sits on the Inn's bench and
+## buys porridge before the goods sheet has come down. The sale waits; when
+## the sheet arrives Hannah carries the bowl out and sets it on the table in
+## front of the player, as for any seated diner.
+func _test_inn_sale_waits_for_the_goods_sheet() -> void:
+    _clear_people()
+    _panel.close()
+    _world.meals = {}
+    _way_out(INN, true)
+    var hook: Callable = _panel.texture_hook
+    _panel.texture_hook = func(path: String) -> Texture2D:
+        return null if path == StallScenes.GOODS_SHEET else _blank(128, 112)
+    _person("keeper", _farmer(), INN, {"work_structure_id": INN})
+    _person("pc", _farmer(), INN)
+    _panel.open(INN)
+    _seat("pc", 0)
+    _panel._signature = ""
+    _panel.refresh()
+    var keeper: Node2D = _panel._tending()
+    _world.apply_npc_meal_started({"id": "pc", "item": "porridge", "structure_id": INN, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "pc", "porridge", "accepted", 1, true))
+    _check("no sheet yet: nothing on the desk, the keeper stays", [_panel._handoff.get_child_count(), keeper.has_meta("walking")], [0, false])
+    _panel.texture_hook = hook
+    _panel._on_texture_arrived(StallScenes.GOODS_SHEET)
+    var bowl: Node2D = _panel._handoff.get_node_or_null("handoff_porridge")
+    var desk := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
+    _check("the sheet arrives: the porridge goes on the desk", bowl != null and bowl.position == _panel._cell_at(desk), true)
+    if bowl == null:
+        _world.meals = {}
+        _panel.close()
+        _done()
+        return
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _check("taken up and carried out", _panel._carrying(), true)
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(5.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("set on the table in front of the player", [bowl.position, bowl.get_meta("buyer", "")], [_panel._cell_at(table), "pc"])
+    _finish_walk(keeper)
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-772: the goods sheet's download fails, through the real download
+## callback (_on_fetch_done): a 404, then a body that is no PNG. Each failure
+## leaves nothing in flight, so the next retry sends a new request; the waits
+## double. When a download brings a PNG the sale is handed over.
+func _test_room_sale_retries_a_failed_sheet() -> void:
+    var sheet := StallScenes.GOODS_SHEET
+    var t_hook: Callable = _panel.texture_hook
+    var asked := []
+    _panel.texture_hook = Callable()
+    _panel.fetch_hook = func(path: String) -> void:
+        asked.append(path)
+    _panel._textures.erase(sheet)
+    _panel._fetching.clear()
+    _inn_with_guest(0)
+    var requests := func() -> int: return asked.count(sheet)
+    _check("opening the room asks once", requests.call(), 1)
+    var keeper: Node2D = _panel._tending()
+    _panel.on_pay_resolved(_sale("keeper", "guest", "porridge", "accepted", 1, true))
+    _check("the sale waits; no second request while one is in flight", [_panel._handoffs.size(), _panel._handoff.get_child_count(), requests.call()], [1, 0, 1])
+
+    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 404, PackedByteArray())
+    _check("a 404: nothing in flight, nothing cached, the sale waits", [_panel._fetching.has(sheet), _panel._textures.has(sheet), _panel._handoffs.size()], [false, false, 1])
+    _panel._retry_sheet(_panel.SHEET_RETRY_SECONDS - 0.5)
+    _check("not before the first retry is due", requests.call(), 1)
+    _panel._retry_sheet(0.6)
+    _check("the retry sends a second request", requests.call(), 2)
+    _check("and waits twice as long for the next", _panel._sheet_retry_left, _panel.SHEET_RETRY_SECONDS * 2.0)
+
+    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 200, PackedByteArray([1, 2, 3]))
+    _check("not a PNG: nothing in flight, nothing cached", [_panel._fetching.has(sheet), _panel._textures.has(sheet), _panel._handoffs.size()], [false, false, 1])
+    _panel._retry_sheet(_panel.SHEET_RETRY_SECONDS * 2.0 + 0.1)
+    _check("a third request", requests.call(), 3)
+
+    var png := Image.create(128, 112, false, Image.FORMAT_RGBA8).save_png_to_buffer()
+    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 200, png)
+    _check("the sheet comes: cached, and the porridge goes on the desk",
+        [_panel._textures.has(sheet), _panel._handoff.get_node_or_null("handoff_porridge") != null, keeper.has_meta("walking")], [true, true, true])
+    _finish_walk(keeper)
+    _panel._textures.erase(sheet)
+    _panel._fetching.clear()
+    _panel.fetch_hook = Callable()
+    _panel.texture_hook = t_hook
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-772: the sheet never comes. The waits double up to SHEET_RETRY_MAX;
+## after SHEET_RETRY_LIMIT tries the waiting sale is dropped from the window
+## (the engine settled it — only the picture is lost) and the queue is empty.
+func _test_room_sale_gives_up_on_the_sheet() -> void:
+    _inn_with_guest(0)
+    var hook: Callable = _panel.texture_hook
+    _panel.texture_hook = func(path: String) -> Texture2D:
+        return null if path == StallScenes.GOODS_SHEET else _blank(128, 112)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "porridge", "accepted", 1, true))
+    var waits := []
+    for i in _panel.SHEET_RETRY_LIMIT:
+        _panel._retry_sheet(_panel.SHEET_RETRY_MAX + 1.0)
+        waits.append(_panel._sheet_retry_left)
+    _check("the waits double, capped", waits, [6.0, 12.0, 24.0, 48.0, 60.0, 60.0])
+    _check("still waiting after the last try", _panel._handoffs.size(), 1)
+    _panel._retry_sheet(_panel.SHEET_RETRY_MAX + 1.0)
+    _check("then dropped: nothing queued, nothing drawn", [_panel._handoffs.size(), _panel._handoff.get_child_count(), _panel._sheet_retries], [0, 0, 0])
+    _panel.texture_hook = hook
     _world.meals = {}
     _panel.close()
     _done()
