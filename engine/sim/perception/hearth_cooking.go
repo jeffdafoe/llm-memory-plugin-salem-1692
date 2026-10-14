@@ -129,11 +129,11 @@ func renderHearthCooking(b *strings.Builder, v *HearthCookingView) {
 		// batch rather than to now. Put in the present tense, John Ellis read a
 		// cost he had no tool to meet and invented a "striker" to light it with
 		// (LLM-778).
-		fmt.Fprintf(b, "Your pot at your %s stands empty and the hearth under it is cold — no matter while nothing cooks, but %s put up over a cold hearth goes nowhere near as far, so the fire is wanted once a batch goes on.\n", name, dishes)
+		fmt.Fprintf(b, "Your pot at your %s stands empty and the hearth under it is cold — the empty pot needs no fire, but %s put up over a cold hearth goes nowhere near as far, so the pot will want a fire under it once a batch goes on.\n", name, dishes)
 	case v.NeedsStoking && v.InPot != "":
 		fmt.Fprintf(b, "The %s in your pot will come out the poorer if the fire at your %s is left to sink much further.\n", v.InPot, name)
 	case v.NeedsStoking:
-		fmt.Fprintf(b, "Your pot at your %s stands empty and the fire under it is sinking — no matter while nothing cooks, but the next %s will want it built back up once it goes on.\n", name, dishes)
+		fmt.Fprintf(b, "Your pot at your %s stands empty and the fire under it is sinking — the empty pot needs nothing from it, but the next %s will want it built back up once it goes on.\n", name, dishes)
 	default:
 		fmt.Fprintf(b, "%s put up over a good fire goes further, and the fire at your %s is burning well.\n", capitalizeFirst(dishes), name)
 	}

@@ -4340,6 +4340,13 @@ var perceptionScenarios = []perceptionScenario{
 		build: cookAtColdHearthNothingOn,
 	},
 	{
+		name: "cook_at_cold_hearth_nothing_on_storm",
+		summary: "LLM-778 (code_review): the same cold hearth and empty pot under a storm. The fire has work now, so '## Your " +
+			"hearth' asks for it and offers stoke; the cooking line beside it is scoped to the pot ('the empty pot needs no " +
+			"fire'), so a small model cannot read it as putting the fire off while the hearth section asks for it now.",
+		build: cookAtColdHearthNothingOnStorm,
+	},
+	{
 		name: "cook_at_dead_hearth_no_wood",
 		summary: "LLM-474: fire out, no firewood carried. The golden pins the coldest tier of the cooking line (a cold " +
 			"hearth makes a mean batch) while the where-and-how of getting wood stays in the hearth section — the LLM-64 " +
@@ -7249,6 +7256,7 @@ func TestGoldensHearthCookingLineOnlyForHearthCooks(t *testing.T) {
 			sc.name == "cook_at_ebbing_hearth" ||
 			sc.name == "cook_at_ebbing_hearth_nothing_on" ||
 			sc.name == "cook_at_cold_hearth_nothing_on" ||
+			sc.name == "cook_at_cold_hearth_nothing_on_storm" ||
 			sc.name == "cook_at_dead_hearth_no_wood" ||
 			sc.name == "keeper_low_hearth_short_wood_with_supplier"
 		if has := strings.Contains(got, marker); has != want {
