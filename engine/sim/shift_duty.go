@@ -137,6 +137,69 @@ func OnShiftAtMinute(startMin, endMin *int, nowMinute int) bool {
 	return minuteInShiftWindow(*startMin, *endMin, nowMinute)
 }
 
+// ShiftWindow is a [Start, End) minute-of-day work window, wrap-aware as in
+// minuteInShiftWindow.
+type ShiftWindow struct {
+	Start int
+	End   int
+}
+
+// ShutHoursPhrase says when a shut business opens, for the "is shut" lines an
+// NPC reads at its door, in its own recent-actions trail and in the move_to
+// already-there reply (LLM-771). windows are the shift windows of everyone who
+// works the place. It returns "" when any of them is inside its hours at
+// nowMinute: the place should be open, so the absence is the news and the line
+// keeps its plain "no one is tending it". Also "" for an unusable clock or no
+// usable window. Otherwise it is the phrase that follows "is shut", for the
+// worker who opens soonest: "until 3 in the afternoon" before today's opening,
+// "for the day — it opens at 7 in the morning" after close. Without it, a
+// constable at John Ellis' Tavern at midday (shut by design until his 3 PM
+// shift) read only "shut — no one is tending it" and reported John missing.
+func ShutHoursPhrase(windows []ShiftWindow, nowMinute int) string {
+	if nowMinute < 0 || nowMinute > 1439 {
+		return ""
+	}
+	best, bestWait := ShiftWindow{}, -1
+	for _, sw := range windows {
+		if sw.Start == sw.End {
+			continue
+		}
+		if minuteInShiftWindow(sw.Start, sw.End, nowMinute) {
+			return ""
+		}
+		wait := (sw.Start - nowMinute + 1440) % 1440
+		if bestWait < 0 || wait < bestWait {
+			best, bestWait = sw, wait
+		}
+	}
+	if bestWait < 0 {
+		return ""
+	}
+	opens := ClockHourProse(best.Start)
+	if opens == "" {
+		return ""
+	}
+	if nowMinute < best.Start {
+		return "until " + opens
+	}
+	return "for the day — it opens at " + opens
+}
+
+// keeperShiftWindows returns the effective shift window of every actor who works
+// structureID — the live-world input to ShutHoursPhrase.
+func keeperShiftWindows(w *World, structureID StructureID) []ShiftWindow {
+	var out []ShiftWindow
+	for _, worker := range w.Actors {
+		if worker == nil || worker.WorkStructureID != structureID {
+			continue
+		}
+		if start, end, ok := effectiveShiftWindow(w, worker); ok {
+			out = append(out, ShiftWindow{Start: start, End: end})
+		}
+	}
+	return out
+}
+
 // InPreShiftMorning reports whether nowMinute falls in the pre-shift morning of
 // the [start, end) shift window: off shift, at or after dawn, and before the shift
 // opens (LLM-707). The off-shift wind-down ("your working hours are over — head

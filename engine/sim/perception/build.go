@@ -1465,6 +1465,9 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	// persists while they linger, robust to a failed/rerun arrival tick.
 	if isShutBusiness(snap, a, curStructureID) {
 		s.LocationDeadEnd = DeadEndShutBusiness
+		if snap.LocalMinuteOfDay != nil {
+			s.DeadEndShutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, curStructureID), *snap.LocalMinuteOfDay)
+		}
 	} else if hungerDE, thirstDE := consumableDeadEndHere(snap, actorID, a); hungerDE || thirstDE {
 		// LLM-176: the actor feels hunger/thirst, holds nothing to ease it, and no
 		// source is co-located here — name the dead end so a weak model can't
@@ -3380,6 +3383,41 @@ func isShutBusiness(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.Structure
 	return snapshotStructureHasWorker(snap, stID) && !snapshotBusinessTended(snap, stID)
 }
 
+// snapshotKeeperShiftWindows returns the effective shift window (shiftWindowBounds:
+// own schedule, else dawn/dusk) of every actor who works stID — the snapshot
+// mirror of sim.keeperShiftWindows, the input to sim.ShutHoursPhrase.
+func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID) []sim.ShiftWindow {
+	if snap == nil || stID == "" {
+		return nil
+	}
+	var out []sim.ShiftWindow
+	for _, w := range snap.Actors {
+		if w == nil || w.WorkStructureID != stID {
+			continue
+		}
+		if start, end, ok := shiftWindowBounds(snap, w); ok {
+			out = append(out, sim.ShiftWindow{Start: start, End: end})
+		}
+	}
+	return out
+}
+
+// snapshotMinuteAt maps an instant at or before the publish to its village
+// minute-of-day by stepping back from LocalMinuteOfDay — the snapshot carries no
+// *time.Location. Both instants are cut to the whole minute first, which lines up
+// with local minutes for any whole-minute zone offset. ok=false when the clock is
+// unknown.
+func snapshotMinuteAt(snap *sim.Snapshot, t time.Time) (int, bool) {
+	if snap == nil || snap.LocalMinuteOfDay == nil || snap.PublishedAt.IsZero() {
+		return 0, false
+	}
+	ago := int(snap.PublishedAt.Truncate(time.Minute).Sub(t.Truncate(time.Minute)) / time.Minute)
+	if ago < 0 {
+		ago = 0
+	}
+	return ((*snap.LocalMinuteOfDay-ago)%1440 + 1440) % 1440, true
+}
+
 // snapshotStructureHasWorker reports whether any actor in the snapshot has stID
 // as its workplace — the snapshot mirror of sim.structureHasWorker. A structure
 // no one works is a residence, not a business, so it can't read as "shut".
@@ -4322,12 +4360,18 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		// exactly the trips this exists to name — every arrival at the shut Tavern from
 		// the moment its loiter pin moved outside its footprint.
 		foundShut := false
+		shutHours := ""
 		if e.ActionType == sim.ActionTypeWalked && e.DestStructureID != "" {
 			key := sim.ObservedStateKey{StructureID: e.DestStructureID, Condition: sim.ObservedClosed}
 			if observedAt, ok := actorSnap.Observed.At(key); ok &&
 				!e.OccurredAt.Before(observedAt) &&
 				actorSnap.Observed.Active(key, snap.PublishedAt) {
 				foundShut = true
+				// The hours as they stood at the walk, not now: "found it shut until
+				// 3 in the afternoon" stays a true account of that trip after 3.
+				if minute, ok := snapshotMinuteAt(snap, e.OccurredAt); ok {
+					shutHours = sim.ShutHoursPhrase(snapshotKeeperShiftWindows(snap, e.DestStructureID), minute)
+				}
 			}
 		}
 		out = append(out, SelfActionView{
@@ -4338,6 +4382,7 @@ func buildSelfActions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			PayItems:         append([]sim.ItemKindQty(nil), e.PayItems...),
 			At:               e.OccurredAt,
 			FoundShut:        foundShut,
+			ShutHours:        shutHours,
 		})
 	}
 	return out

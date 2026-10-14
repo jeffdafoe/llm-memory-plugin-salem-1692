@@ -154,6 +154,12 @@ func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 		// point of the scenario, since the live cue alone is what the village had
 		// while the trail stayed silent.
 		"turned_away_outdoors_at_shut_tavern": true,
+		// LLM-771: the same door with the keeper's shift on him. Outside his
+		// hours the line names the opening hour instead of "no one is tending it"
+		// (TestShutLineNamesHoursOnlyOutsideKeeperHours pins which form).
+		"turned_away_at_tavern_before_opening": true,
+		"turned_away_at_tavern_after_close":    true,
+		"turned_away_at_tavern_in_hours":       true,
 		// LLM-611 foil: Josiah stands in the Ellis Farm while Elizabeth is indoors in
 		// her farmhouse — that is what "nobody within earshot" looks like from inside
 		// someone else's business, so the shut cue is correct here. It is incidental
@@ -171,7 +177,10 @@ func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 		} else {
 			sawTended = true
 		}
-		if has := strings.Contains(got, marker); has != want {
+		has := strings.Contains(got, marker) ||
+			strings.Contains(got, " is shut until ") ||
+			strings.Contains(got, " is shut for the day — it opens at ")
+		if has != want {
 			t.Errorf("scenario %q: shut cue present=%v, want %v", sc.name, has, want)
 		}
 	}
@@ -251,6 +260,8 @@ func TestDeadEndClause(t *testing.T) {
 		{"outdoors, common-noun place", SurroundingsView{LocationDeadEnd: DeadEndShutBusiness, NearbyStructureName: "Tavern"}, "The Tavern is shut — no one is tending it."},
 		{"possessive proper name keeps no article", SurroundingsView{LocationDeadEnd: DeadEndShutBusiness, StructureName: "Hannah's Inn"}, "Hannah's Inn is shut — no one is tending it."},
 		{"dead end but no place name → empty", SurroundingsView{LocationDeadEnd: DeadEndShutBusiness}, ""},
+		{"outside hours, before opening", SurroundingsView{LocationDeadEnd: DeadEndShutBusiness, NearbyStructureName: "Tavern", DeadEndShutHours: "until 3 in the afternoon"}, "The Tavern is shut until 3 in the afternoon."},
+		{"outside hours, after close", SurroundingsView{LocationDeadEnd: DeadEndShutBusiness, StructureName: "Blacksmith", DeadEndShutHours: "for the day — it opens at 7 in the morning"}, "The Blacksmith is shut for the day — it opens at 7 in the morning."},
 	}
 	for _, c := range cases {
 		if got := deadEndClause(c.view); got != c.want {

@@ -1562,6 +1562,9 @@ func deadEndClause(s SurroundingsView) string {
 			return ""
 		}
 		place := capitalizeFirst(sim.WithDefiniteArticle(sanitizeInline(name)))
+		if s.DeadEndShutHours != "" {
+			return place + " is shut " + s.DeadEndShutHours + "."
+		}
 		return place + " is shut — no one is tending it."
 	case DeadEndNoConsumableHere:
 		// LLM-176: name the missing affordance at a foodless spot so a weak model
@@ -2804,6 +2807,9 @@ func selfActionLine(a SelfActionView) string {
 		}
 		if a.FoundShut {
 			// LLM-366: name the dead end so a churn of these reads as dead ends.
+			if a.ShutHours != "" {
+				return "You went to " + sim.WithDefiniteArticle(sanitizeInline(a.Text)) + " but found it shut " + a.ShutHours
+			}
 			return "You went to " + sim.WithDefiniteArticle(sanitizeInline(a.Text)) + " but found it shut, no one tending it"
 		}
 		return "You arrived at " + sim.WithDefiniteArticle(sanitizeInline(a.Text))
