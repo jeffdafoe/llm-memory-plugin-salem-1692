@@ -71,6 +71,7 @@ const TESTS := [
     "_test_tavern_keeper_walks_a_meal_to_the_table",
     "_test_tavern_keeper_hands_to_a_standing_buyer",
     "_test_tavern_carry_survives_a_redraw",
+    "_test_carried_dish_sorts_by_facing",
     "_test_tavern_engine_walk_wins",
     "_test_tavern_meal_over_before_the_bowl_lands",
     "_test_tavern_keeper_replaced_during_a_carry",
@@ -1037,6 +1038,12 @@ func _test_main_sync_stall() -> void:
 
 
 ## Run a drawn person's walk to its end (LLM-754 walks are tweens).
+## Where a good is drawn in the goods layer's terms, whichever node it rides on
+## (a carried good rides on its keeper's node, LLM-775).
+func _drawn_at(good: Node2D) -> Vector2:
+    return _panel._handoff.to_local(good.global_position)
+
+
 func _finish_walk(holder: Node) -> void:
     if holder != null and holder.has_meta("walking"):
         (holder.get_meta("walking") as Tween).custom_step(600.0)
@@ -2433,7 +2440,9 @@ func _test_tavern_keeper_walks_a_meal_to_the_table() -> void:
     _check("out by the keeper's way", (keeper.get_meta("route_left") as Array).slice(0, 3), [Vector2(88, 94), Vector2(72, 94), Vector2(72, 78)])
     (keeper.get_meta("walking") as Tween).custom_step(1.0)
     _panel._carry_follow()
-    _check("the bowl goes with them", bowl.position, _panel._cell_at(keeper.position + Vector2(0, -_panel.CARRY_LIFT)))
+    var side: float = {"east": _panel.CARRY_SIDE, "west": -_panel.CARRY_SIDE}.get(_panel._facing_of(keeper), 0.0)
+    _check("the bowl goes with them, on the keeper", [bowl.get_parent() == keeper, _drawn_at(bowl)],
+        [true, _panel._cell_at(keeper.position + Vector2(side, -_panel.CARRY_LIFT))])
     _finish_walk(keeper)
     var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
     (bowl.get_meta("tween") as Tween).custom_step(5.0)
@@ -2519,6 +2528,7 @@ func _test_tavern_carry_survives_a_redraw() -> void:
     _panel.refresh()
     var keeper: Node2D = _panel._tending()
     _check("rebuilt where they had got to, still carrying", [keeper.position, keeper.has_meta("walking"), _panel._carrying()], [part_way, true, true])
+    _check("the bowl outlives the old keeper's node, on the new one", [is_instance_valid(bowl), is_instance_valid(bowl) and bowl.get_parent() == keeper], [true, true])
     _finish_walk(keeper)
     (bowl.get_meta("tween") as Tween).custom_step(5.0)
     var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
@@ -2530,6 +2540,57 @@ func _test_tavern_carry_survives_a_redraw() -> void:
     _check("the walk back goes on", keeper.has_meta("walking"), true)
     _finish_walk(keeper)
     _check("behind the bar", keeper.position, keeper.get_meta("home"))
+    _world.meals = {}
+    _panel.close()
+    _done()
+
+
+## LLM-775: a carried dish rides on the keeper's node — behind their sprite
+## when they face away (north), so their body hides it, in front of it
+## otherwise, held CARRY_SIDE to the side facing east or west. Set down, it
+## is back on the goods layer; a window reopened mid-carry leaves nothing on
+## the keeper.
+func _test_carried_dish_sorts_by_facing() -> void:
+    _tavern_with_guest(0, true)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    var bowl: Node2D = _panel._handoff_now["good"]
+    var keeper: Node2D = _panel._tending()
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _check("carrying", _panel._carrying(), true)
+    var spr: AnimatedSprite2D = _panel._sprite_of(keeper)
+    var lift := Vector2(0, -_panel.CARRY_LIFT)
+    var cases := [
+        ["north", true, Vector2.ZERO],
+        ["south", false, Vector2.ZERO],
+        ["east", false, Vector2(_panel.CARRY_SIDE, 0)],
+        ["west", false, Vector2(-_panel.CARRY_SIDE, 0)],
+    ]
+    for c in cases:
+        spr.play(str(c[0]) + "_walk")
+        _panel._carry_follow()
+        var behind: bool = keeper.get_children().find(bowl) < keeper.get_children().find(spr)
+        _check("facing %s: behind the sprite = %s, held at" % [c[0], c[1]], [bowl.get_parent() == keeper, behind, _drawn_at(bowl)],
+            [true, c[1], _panel._cell_at(keeper.position + c[2] + lift)])
+    _finish_walk(keeper)
+    (bowl.get_meta("tween") as Tween).custom_step(5.0)
+    var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
+    _check("set down: back on the goods layer, on the table", [bowl.get_parent() == _panel._handoff, bowl.position], [true, _panel._cell_at(table)])
+    _finish_walk(keeper)
+
+    # Reopened mid-carry: the bowl is freed with the other goods, not left on the keeper.
+    _world.meals = {}
+    _tavern_with_guest(0, true)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    var mug: Node2D = _panel._handoff_now["good"]
+    keeper = _panel._tending()
+    _finish_walk(keeper)
+    (mug.get_meta("tween") as Tween).custom_step(_panel.PICK_UP_HOLD + 0.2)
+    _panel._carry_follow()
+    _check("the mug on the keeper", mug.get_parent() == keeper, true)
+    _panel.open(_sid)
+    _check("reopened: the mug is gone, nothing rides on the keeper", is_instance_valid(mug), false)
     _world.meals = {}
     _panel.close()
     _done()

@@ -141,6 +141,9 @@ const SHEET_RETRY_SECONDS := 3.0
 const SHEET_RETRY_MAX := 60.0
 const SHEET_RETRY_LIMIT := 6
 const CARRY_LIFT := 9.0
+## A good carried by a keeper facing east or west is held this far (art px)
+## to that side, in front of them (LLM-775).
+const CARRY_SIDE := 5.0
 ## A bundle's goods (LLM-770) stand BUNDLE_STEP art px apart, in hand and on
 ## the table.
 const BUNDLE_STEP := 10.0
@@ -420,6 +423,8 @@ func open(sid: String) -> void:
         world.npc_meal_ended.connect(_on_meal_ended)
     var was_open := visible
     hide_tag()
+    if _carrying():
+        _carry_drop(_handoff_now["good"])
     for child in _handoff.get_children():
         # Its tween is bound to it and dies with it; stopped first all the same.
         if child.has_meta("tween"):
@@ -668,6 +673,10 @@ func _entry(id: String, spot: Dictionary) -> Dictionary:
 
 
 func _draw_people(cast: Dictionary) -> void:
+    # A good in a keeper's hands rides on their node, which is about to be
+    # freed: back on the goods layer; _carry_follow puts it on the new one.
+    if _carrying():
+        _carry_drop(_handoff_now["good"])
     # A bubble outlives the redraw (someone came in mid-sentence): lift it off
     # the old person and put it back on the new one below.
     var bubbles := {}
@@ -2043,14 +2052,48 @@ func _carry_walk() -> void:
     _carry_follow()
 
 
-## The good in hand goes along with the keeper (each frame, from _process).
+## The good in hand goes along with the keeper (each frame, from _process). It
+## rides on the keeper's own node, so it sorts with them among the room's
+## people and furniture: behind their sprite when they face away (north) —
+## their body hides it — in front of it otherwise, and CARRY_SIDE to the side
+## they face east or west (LLM-775). Drawn over everyone, it read as a
+## backpack on a keeper walking away.
 func _carry_follow() -> void:
     if not _carrying():
         return
     var keeper := _holder(str(_handoff_now["keeper"]))
     var good: Node2D = _handoff_now["good"]
-    if keeper != null and is_instance_valid(good):
-        good.position = _cell_at(keeper.position + Vector2(0, -CARRY_LIFT))
+    if keeper == null or not is_instance_valid(good):
+        return
+    if good.get_parent() != keeper:
+        good.get_parent().remove_child(good)
+        keeper.add_child(good)
+    var facing := _facing_of(keeper)
+    var side: float = {"east": CARRY_SIDE, "west": -CARRY_SIDE}.get(facing, 0.0)
+    good.position = _cell_at(Vector2(side, -CARRY_LIFT))
+    keeper.move_child(good, 0 if facing == "north" else -1)
+
+
+## A good carried on the keeper's node goes back to the goods layer, where it
+## was drawn — before it is set down, before a redraw frees the keeper's node,
+## and when the window reopens.
+func _carry_drop(good: Node2D) -> void:
+    if not is_instance_valid(good) or good.get_parent() == _handoff:
+        return
+    var at := _handoff.to_local(good.global_position)
+    good.get_parent().remove_child(good)
+    _handoff.add_child(good)
+    good.position = at
+
+
+## Where a drawn person faces, from the animation their sprite plays.
+func _facing_of(holder: Node2D) -> String:
+    var spr := _sprite_of(holder)
+    if spr != null:
+        var facing := str(spr.animation).get_slice("_", 0)
+        if facing in ["north", "south", "east", "west"]:
+            return facing
+    return "south"
 
 
 ## The keeper is there with the good: it goes down on the table, where it
@@ -2065,6 +2108,7 @@ func _carry_landed() -> void:
     var h := _handoff_now
     var c: Dictionary = h["carry"]
     var good: Node2D = h["good"]
+    _carry_drop(good)
     var keeper_id := str(h["keeper"])
     if not is_instance_valid(good):
         _keeper_back(keeper_id)
