@@ -177,6 +177,13 @@ func _button(pressed: bool, at: Vector2) -> InputEventMouseButton:
     return event
 
 
+func _motion(at: Vector2) -> InputEventMouseMotion:
+    var event := InputEventMouseMotion.new()
+    event.position = at
+    event.global_position = at
+    return event
+
+
 ## On a touch screen the paper is mostly links, so a drag that starts on one
 ## must scroll, not open it. The paper is squeezed to force it to overflow.
 func _test_link_opens_on_tap_not_drag() -> void:
@@ -210,6 +217,20 @@ func _test_link_opens_on_tap_not_drag() -> void:
 
     scroll._on_link_input(_button(false, Vector2(50, 50)), url, press)
     _check("a release with no press opens nothing", opened, [url])
+
+    # Out and back with the paper pinned at its top edge, so the scroll check
+    # cannot catch it: only the sticky drag mark does.
+    scroll.body_scroll.scroll_vertical = 0
+    scroll._on_link_input(_button(true, Vector2(50, 50)), url, press)
+    scroll._on_link_input(_motion(Vector2(50, 10)), url, press)
+    scroll._on_link_input(_motion(Vector2(50, 50)), url, press)
+    scroll._on_link_input(_button(false, Vector2(50, 50)), url, press)
+    _check("a drag out and back opens nothing", opened, [url])
+
+    scroll._on_link_input(_button(true, Vector2(50, 50)), url, press)
+    scroll._on_link_input(_motion(Vector2(54, 52)), url, press)
+    scroll._on_link_input(_button(false, Vector2(54, 52)), url, press)
+    _check("a tap after a drag opens again", opened, [url, url])
     scroll.close()
     scroll.queue_free()
     await process_frame

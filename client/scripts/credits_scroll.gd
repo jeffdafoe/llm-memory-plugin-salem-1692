@@ -256,17 +256,24 @@ func _make_link(text: String, url: String, font: Font, font_size: int, color: Co
 
 ## Opens on the release of a tap, not on the press: on a touch screen most of
 ## the paper is links, so the press must reach the ScrollContainer to start a
-## drag. A press that moved, or that the paper scrolled under, is a drag.
+## drag. A press that ever moved past the slop (even if it came back), or that
+## the paper scrolled under, is a drag.
 func _on_link_input(event: InputEvent, url: String, press: Dictionary) -> void:
+    if event is InputEventMouseMotion and press.has("at"):
+        if event.global_position.distance_to(press["at"]) > LINK_TAP_SLOP:
+            press["dragged"] = true
+        return
     if not (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT):
         return
     if event.pressed:
+        press.clear()
         press["at"] = event.global_position
         press["scroll"] = body_scroll.scroll_vertical
         return
     if not press.has("at"):
         return
-    var tapped: bool = event.global_position.distance_to(press["at"]) <= LINK_TAP_SLOP \
+    var tapped: bool = not press.get("dragged", false) \
+            and event.global_position.distance_to(press["at"]) <= LINK_TAP_SLOP \
             and body_scroll.scroll_vertical == press["scroll"]
     press.clear()
     if tapped:
