@@ -1,6 +1,8 @@
 package perception
 
 import (
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -120,6 +122,70 @@ func cookAtEbbingHearth() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 // bonus, some thirty sticks a week.
 func cookAtEbbingHearthNothingOn() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return cookAtHearth(30*time.Minute, true, 2, false)
+}
+
+// cookAtColdHearthNothingOn (LLM-778): the fire out, six firewood in hand (as
+// John Ellis carried), calm sky, nobody cold, nothing in the pot. The stoke cue
+// and tool stay silent, so the cooking line must not put the fire's cost in
+// the present: it ties the fire to the next batch. The old present-tense line
+// had John promising to light a hearth he had no tool for, and inventing a
+// "striker" he was waiting on.
+func cookAtColdHearthNothingOn() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return cookAtHearth(-time.Hour, true, 6, false)
+}
+
+// cookAtColdHearthNothingOnStorm (LLM-778, code_review): the same cold hearth
+// and empty pot, but a storm overhead — so the fire has work now (the cold
+// room) and "## Your hearth" offers stoke. The cooking line beside it speaks only
+// of the pot ("the empty pot needs no fire"), so it cannot read as putting the
+// fire off while the hearth section asks for it now.
+func cookAtColdHearthNothingOnStorm() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id, warrants := cookAtHearth(-time.Hour, true, 6, false)
+	snap.Environment.Weather = sim.WeatherStorm
+	return snap, id, warrants
+}
+
+// TestColdHearthNothingOnStormStillOffersStoke pins that branch: the hearth view
+// is built (so stoke is offered), "## Your hearth" asks for the fire now, and the
+// cooking line is scoped to the pot, never to the hearth as a whole.
+func TestColdHearthNothingOnStormStillOffersStoke(t *testing.T) {
+	snap, id, warrants := cookAtColdHearthNothingOnStorm()
+	p := Build(snap, id, warrants)
+	if p.Hearth == nil {
+		t.Fatalf("no Hearth view under a storm: the stoke cue and tool would be missing")
+	}
+	got := combinedPrompt(Render(p, DefaultRenderConfig()))
+	for _, want := range []string{"## Your hearth", "use the stoke tool now", "the empty pot needs no fire"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("storm, empty pot: want %q in the prompt:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "no matter while nothing cooks") {
+		t.Errorf("the cooking line speaks of the whole hearth, not the pot")
+	}
+}
+
+// TestColdHearthNothingOnOffersNoStoke pins the payload side of LLM-778: with
+// the hearth cold and nothing in the pot under a calm sky, the build carries the
+// cooking view (cold, empty pot) and NO hearth view — the stoke tool rides the
+// hearth view — and the rendered line speaks of the next batch, not of now.
+func TestColdHearthNothingOnOffersNoStoke(t *testing.T) {
+	snap, id, warrants := cookAtColdHearthNothingOn()
+	p := Build(snap, id, warrants)
+	if p.Hearth != nil {
+		t.Fatalf("Hearth view built: the stoke cue and tool would be offered with nothing in the pot")
+	}
+	c := p.HearthCooking
+	if c == nil || c.Lit || c.InPot != "" {
+		t.Fatalf("HearthCooking = %+v, want a cold hearth with an empty pot", c)
+	}
+	got := combinedPrompt(Render(p, DefaultRenderConfig()))
+	if !strings.Contains(got, "stands empty and the hearth under it is cold — the empty pot needs no fire") || !strings.Contains(got, "once a batch goes on") {
+		t.Errorf("cooking line does not tie the cold fire to the next batch:\n%s", got)
+	}
+	if strings.Contains(got, "There is no fire under your pot") {
+		t.Errorf("the old present-tense line is back")
+	}
 }
 
 // cookAtDeadHearthNoWood: the fire is out, she carries none, and a porridge

@@ -1,0 +1,24 @@
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 25.
+You are carrying: firewood (x6).
+
+## Around you
+You are inside the Inn, your workplace, with no one else here to hear you speak.
+It is midday.
+Rain falls steady over the village, and the lanes are turning to mud.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 6 in the evening.
+
+## Your hearth
+The hearth at your Inn sits cold and dark, and the storm outside is pressing its chill into the room. You carry enough firewood (6) to feed it — use the stoke tool now to build the fire back up (it takes a moment).
+## The fire and your cooking
+Your pot at your Inn stands empty and the hearth under it is cold — the empty pot needs no fire, but porridge put up over a cold hearth goes nowhere near as far, so the pot will want a fire under it once a batch goes on.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
