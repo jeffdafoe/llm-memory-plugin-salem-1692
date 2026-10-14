@@ -13,6 +13,7 @@ const ActorTooltipScript = preload("res://scripts/actor_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
 const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 const NoticePanelScript = preload("res://scripts/notice_panel.gd")
+const CreditsScrollScript = preload("res://scripts/credits_scroll.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
 const InteriorPanelScript = preload("res://scripts/interior_panel.gd")
@@ -39,6 +40,7 @@ var actor_tooltip: CanvasLayer = null
 var event_client: Node = null
 var talk_panel_layer: CanvasLayer = null
 var notice_panel_layer: CanvasLayer = null
+var credits_scroll_layer: CanvasLayer = null
 var inventory_panel_layer: CanvasLayer = null
 ## The town's repair work for the player (LLM-690): offer dialog + mini-game.
 ## See client/scripts/repair_panel.gd.
@@ -567,6 +569,16 @@ func _build_ui() -> void:
     notice_panel_layer.opened.connect(func(): _set_modal_blocker("notice", true))
     notice_panel_layer.closed.connect(func(): _set_modal_blocker("notice", false))
 
+    # Credits scroll (LLM-777) — the build and the credits, opened from the
+    # top bar's title. Modal tier, like the notice panel.
+    credits_scroll_layer = CanvasLayer.new()
+    credits_scroll_layer.name = "CreditsScrollLayer"
+    credits_scroll_layer.set_script(CreditsScrollScript)
+    add_child(credits_scroll_layer)
+    credits_scroll_layer.opened.connect(func(): _set_modal_blocker("credits", true))
+    credits_scroll_layer.closed.connect(func(): _set_modal_blocker("credits", false))
+    top_bar.title_pressed.connect(credits_scroll_layer.open)
+
     # Repair panel (LLM-690) — the town's repair work: opens on the arrival
     # thought's offer (talk panel) or on a click at a damaged object (the
     # probe in _post_pc_move_to_screen). Modal tier, like the notice panel.
@@ -851,6 +863,8 @@ func _on_session_expired() -> void:
 func _show_login_screen(message: String) -> void:
     if repair_panel_layer != null:
         repair_panel_layer.reset()
+    if credits_scroll_layer != null:
+        credits_scroll_layer.close()
     if top_bar != null:
         top_bar.set_edit_visible(false)
         top_bar.set_config_visible(false)

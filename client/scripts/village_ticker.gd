@@ -42,8 +42,8 @@ const ALARM_POLL_INTERVAL_SEC: float = 60.0
 ## never decays into the atmosphere line's slow heartbeat. It is an emergency;
 ## it keeps shouting until someone fixes it.
 const ALARM_REPEAT_SEC: float = 30.0
-## LLM-740: shown right after the build when the engine's build differs from
-## this client's — the tab predates a deploy.
+## LLM-740: shown at the front of the band when the engine's build differs
+## from this client's — the tab predates a deploy.
 const STALE_TEXT: String = "A new version of Salem is out. Reload the page to get it."
 const BuildInfo := preload("res://scripts/build_info.gd")
 const COLOR_ATMOSPHERE: Color = Color(0.85, 0.78, 0.55, 1.0)
@@ -72,9 +72,6 @@ var _alarm_line: String = ""
 var _damage_line: String = ""
 var _alarm_http: HTTPRequest = null
 var _alarm_timer: Timer = null
-## LLM-740: "Salem build <commit>" — the front of the band's first pass, set
-## in begin() and cleared when that pass finishes.
-var _build_line: String = ""
 ## This client's build, set in begin(); "" until then, which never reads stale.
 var _client_build: String = ""
 ## STALE_TEXT while the engine's build differs from _client_build, else "".
@@ -153,11 +150,10 @@ func _ready() -> void:
 # world-state fetch so the ticker has atmosphere to display, then starts the
 # slow refresh poll. Operators additionally start the alarm poll.
 func begin() -> void:
-    # LLM-740: the build leads the band. Nothing shows until the world read
-    # lands, so the build never scrolls on its own ahead of the news.
+    # The build itself is shown on the credits scroll (LLM-777); the ticker
+    # keeps it only to tell a tab that predates a deploy to reload.
     _client_build = BuildInfo.commit()
-    _build_line = "Salem build " + _client_build
-    print(_build_line)
+    print("Salem build " + _client_build)
     _fetch_world_state()
     # Guard against begin() being called before _ready() built the timer (the
     # current call site adds the node first, but don't crash if that changes).
@@ -244,11 +240,10 @@ func push(text: String) -> void:
     _refresh_band()
 
 
-# The non-alarm band: the build (first pass only), a stale-tab notice, broken
-# things, then the atmosphere.
+# The non-alarm band: a stale-tab notice, broken things, then the atmosphere.
 func _band_line() -> String:
     var parts := PackedStringArray()
-    for part in [_build_line, _stale_line, _damage_line, _atmosphere_line]:
+    for part in [_stale_line, _damage_line, _atmosphere_line]:
         if part != "":
             parts.append(part)
     return "   ~   ".join(parts)
@@ -326,23 +321,8 @@ func _process(delta: float) -> void:
         _on_scroll_finished()
 
 
-func _without_build(line: String) -> String:
-    return "" if line == _build_line else line.trim_prefix(_build_line + "   ~   ")
-
-
 func _on_scroll_finished() -> void:
     _scrolling = false
-    # The build rides only the band's first pass. A line queued during that
-    # pass was composed with it too (only band lines queue; alarms take over
-    # immediately), so the build comes off the front of both. A queued build
-    # alone means the band emptied during the pass: blank, don't repeat the old.
-    if _build_line != "" and _active_line.begins_with(_build_line):
-        var queued := _pending_line != ""
-        _active_line = _without_build(_active_line)
-        _pending_line = _without_build(_pending_line)
-        if queued and _pending_line == "":
-            _active_line = ""
-        _build_line = ""
     # A line came in mid-scroll; switch to it now and reset the burst.
     if _pending_line != "":
         _active_line = _pending_line
