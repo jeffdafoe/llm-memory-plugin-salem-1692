@@ -151,7 +151,9 @@ const BUNDLE_STEP := 10.0
 const EAT_PERIOD := 1.4
 const EAT_DOWN := 0.35
 const EAT_DIP := 1.0
-const EMPTY_DISH := {"porridge": "porridge_empty", "stew": "stew_empty"}
+const EMPTY_DISH := {"porridge": "porridge_empty", "stew": "stew_empty",
+    "ale": "ale_empty", "small_ale": "ale_empty", "mulled_ale": "ale_empty",
+    "fried_meat": "plate_empty", "journeycake": "plate_empty"}
 
 ## A name tag (LLM-761): hovering a person shows their name and role (the
 ## village popup's colours), hovering a good its name; a tap shows it
@@ -2098,7 +2100,8 @@ func _cell_bottom(cell: Vector2) -> Vector2:
 
 ## A dish set on `buyer`'s table stays while their meal of `item` runs, until
 ## world.npc_meal_ended (_on_meal_ended); with no meal running (ale, bread, or
-## a meal already over) it stays TABLE_SECONDS. A buyer gone before it lands
+## a meal already over) it stays TABLE_SECONDS, then shows its empty picture
+## when it has one (ale, fried meat, a journeycake: LLM-773). A buyer gone before it lands
 ## leaves it to be cleared at once. A second helping of the same good: the
 ## first bowl is cleared.
 func _on_table(dish: Node2D, buyer: String, item: String) -> void:
@@ -2129,6 +2132,7 @@ func _on_table(dish: Node2D, buyer: String, item: String) -> void:
         return
     var t := dish.create_tween()
     t.tween_interval(TABLE_SECONDS)
+    t.tween_callback(_show_empty.bind(dish))
     t.tween_callback(_clear_dish.bind(dish))
     dish.set_meta("tween", t)
 

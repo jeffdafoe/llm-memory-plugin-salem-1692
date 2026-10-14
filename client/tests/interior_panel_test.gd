@@ -64,6 +64,7 @@ const TESTS := [
     "_test_tavern_second_helping_one_dish",
     "_test_tavern_guest_leaving_clears_the_dish",
     "_test_tavern_ale_lingers_then_cleared",
+    "_test_tavern_plates_left_empty",
     "_test_tavern_take_home_handed_over",
     "_test_tavern_reopen_lays_a_running_meal",
     "_test_keeper_path_and_serve_square",
@@ -2294,14 +2295,37 @@ func _test_tavern_ale_lingers_then_cleared() -> void:
     _finish_handoff()
     var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
     _check("the ale on the table", [ale.position, ale.is_queued_for_deletion()], [_panel._cell_at(table), false])
+    _check("a full tankard", (ale.get_child(0).texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["ale"]))
     var linger: Tween = ale.get_meta("tween")
     linger.custom_step(_panel.TABLE_SECONDS - 1.0)
     _check("still there just before its time", ale.has_meta("clearing"), false)
     linger.custom_step(2.0)
     _check("then cleared", [ale.has_meta("clearing"), _panel._handoff_now.get("clear") == ale], [true, true])
+    _check("an empty tankard (LLM-773)", (ale.get_child(0).texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["ale_empty"]))
     _finish_handoff()
     _check("gone", ale.is_queued_for_deletion(), true)
     _panel.close()
+    _done()
+
+
+## LLM-773: fried meat and a journeycake leave the empty plate when their time
+## on the table runs out; bread, with no empty picture, is cleared as it is.
+## The journeycake draws as its own cake, not the bread loaf.
+func _test_tavern_plates_left_empty() -> void:
+    _check("a journeycake is not the bread loaf", StallScenes.GOODS["journeycake"] != StallScenes.GOODS["bread"], true)
+    var empty_plate := StallScenes.cell_rect(2 * StallScenes.GOODS["plate_empty"])
+    for item in ["fried_meat", "journeycake", "bread"]:
+        _tavern_with_guest(0)
+        _panel.on_pay_resolved(_sale("keeper", "guest", item, "accepted", 1, true))
+        var dish: Node2D = _panel._handoff_now["good"]
+        _finish_handoff()
+        var full := StallScenes.cell_rect(2 * StallScenes.GOODS[item])
+        _check("%s drawn full on the table" % item, (dish.get_child(0).texture as AtlasTexture).region, full)
+        (dish.get_meta("tween") as Tween).custom_step(_panel.TABLE_SECONDS + 1.0)
+        var want := full if item == "bread" else empty_plate
+        _check("%s when its time is up" % item, [dish.has_meta("clearing"), (dish.get_child(0).texture as AtlasTexture).region], [true, want])
+        _finish_handoff()
+        _panel.close()
     _done()
 
 
