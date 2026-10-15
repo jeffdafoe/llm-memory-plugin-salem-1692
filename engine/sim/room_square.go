@@ -86,8 +86,9 @@ func takenRoomSquares(w *World, structureID StructureID, except ActorID) map[roo
 // pickRoomSquare: the square for an actor inside structureID, or nil when the
 // structure has no plan or every square is taken. Someone asleep there takes a
 // free bed (LLM-782) — unless they sleep in a private room (a lodger, a
-// keeper in their quarters: upstairs, not in this room) or every bed is taken
-// (the loft); either way they are not drawn.
+// keeper in their quarters: upstairs, not in this room — audienceRoomScope; a
+// sleeper in the common room sleeps here) or every bed is taken (the loft);
+// either way they are not drawn.
 func pickRoomSquare(w *World, a *Actor, structureID StructureID) *roomlayout.Square {
 	layout := roomPlan(w, structureID)
 	if layout == nil {
@@ -97,7 +98,7 @@ func pickRoomSquare(w *World, a *Actor, structureID StructureID) *roomlayout.Squ
 	var sq roomlayout.Square
 	var ok bool
 	if a.State == StateSleeping {
-		if a.InsideRoomID != 0 {
+		if audienceRoomScope(w, a) != 0 {
 			return nil
 		}
 		sq, ok = layout.Bed(string(a.ID), taken)
