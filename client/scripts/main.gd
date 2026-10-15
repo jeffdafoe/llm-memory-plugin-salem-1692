@@ -180,6 +180,10 @@ var _pending_knock: bool = false
 var _pending_knock_structure_id := ""
 var _pc_move_target := ""
 var _pc_http_knock: HTTPRequest = null
+# A walk-out from a closed room (LLM-787): the room it leaves, and one that
+# waits for the move in flight to answer before it can be sent.
+var _leave_sid := ""
+var _queued_leave_sid := ""
 
 # Discriminator for the in-flight /pc/move so the shared completion
 # handler can decide which side-effects to roll back on a non-2xx.
@@ -1340,6 +1344,8 @@ func _ensure_pc_http_move() -> void:
         add_child(_pc_http_move)
         _pc_http_move.request_completed.connect(func(_r, c, _h, b):
             Auth.check_response(c)
+            # A walk-out that waited for this answer goes next (LLM-787).
+            call_deferred("_send_queued_leave")
             if c < 200 or c >= 300:
                 # Server rejected the move. Roll back any side-effects
                 # the in-flight click set up — today the only one is the
@@ -1348,6 +1354,9 @@ func _ensure_pc_http_move() -> void:
                 # opens the panel for a stale board.
                 if _pc_move_purpose == "noticeboard":
                     _pending_notice_object_id = ""
+                # A refused walk-out leaves them inside: the room comes back.
+                if _pc_move_purpose == "leave":
+                    _reopen_room(_leave_sid)
                 _pc_move_purpose = ""
                 return
             _pc_move_purpose = ""
@@ -1398,14 +1407,39 @@ func _on_interior_dismissed(sid: String, stall: bool) -> void:
     _ensure_pc_http_move()
     var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move", Auth.auth_headers(), HTTPClient.METHOD_POST,
         JSON.stringify({"destination": {"kind": "position", "position": {"x": tile.x, "y": tile.y}}}))
+    _leave_sent(sid, err)
+
+## What became of a walk-out request (LLM-787). Sent: it is the move in flight
+## (purpose "leave", so a refusal reopens the room). Another move still in
+## flight (ERR_BUSY): wait, and send it when that one answers
+## (_send_queued_leave). Any other failure: the player is still inside, so the
+## room comes back rather than leaving them in with nothing showing.
+func _leave_sent(sid: String, err: int) -> void:
     if err == OK:
         _pending_notice_object_id = ""
-        _pc_move_purpose = ""
+        _pc_move_purpose = "leave"
+        _leave_sid = sid
         _pc_move_target = ""
         _pending_knock = false
         _pending_knock_structure_id = ""
+    elif err == ERR_BUSY:
+        _queued_leave_sid = sid
     else:
         push_warning("walk out of %s failed to send: %s" % [sid, err])
+        _reopen_room(sid)
+
+## Send a walk-out that waited for the move in flight to answer.
+func _send_queued_leave() -> void:
+    var sid := _queued_leave_sid
+    _queued_leave_sid = ""
+    if sid != "":
+        _on_interior_dismissed(sid, false)
+
+## The room window again for a player still inside `sid` (their walk-out did
+## not happen). Nothing when they are no longer there.
+func _reopen_room(sid: String) -> void:
+    if sid != "" and interior_panel_layer != null and _local_pc_place() == sid:
+        interior_panel_layer.open(sid)
 
 ## Open the door popup for the pending knock when the character stands at that
 ## house's door (LLM-785) — called on their arrival and when the move's answer

@@ -4068,6 +4068,27 @@ func _test_dismiss_walks_out_of_a_room() -> void:
     _check("a room: out to the loiter pin", main._walk_out_tile(_sid, false), want)
     _check("a stall: nowhere", main._walk_out_tile(_sid, true), main.NO_TILE)
     _check("a building not on the map: nowhere", main._walk_out_tile("gone", false), main.NO_TILE)
+
+    # What becomes of the walk-out request (code_review): sent → the move in
+    # flight, purpose "leave"; another move in flight → queued, room stays
+    # shut; any other failure → the player is still inside, the room is back.
+    main.interior_panel_layer = _panel
+    main._pc_actor_id = "pc"
+    _panel.close()
+    main._leave_sent(_sid, OK)
+    _check("sent: the walk-out is the move in flight", [main._pc_move_purpose, main._leave_sid], ["leave", _sid])
+    main._pc_move_purpose = ""
+    main._leave_sent(_sid, ERR_BUSY)
+    _check("busy: queued, the room stays shut", [main._queued_leave_sid, _panel.is_open()], [_sid, false])
+    main._leave_sent(_sid, FAILED)
+    _check("failed: still inside, so the room comes back", _panel.is_open(), true)
+    _panel.close()
+    # The queued walk-out goes when the move in flight answers. Off the tree its
+    # request cannot be sent, so it ends like any failed send: room back.
+    main._send_queued_leave()
+    _check("the queue is drained", main._queued_leave_sid, "")
+    _check("the queued walk-out was tried (here it fails: room back)", _panel.is_open(), true)
+    _panel.close()
     _world.placed_objects.erase(_sid)
     house.free()
     main.free()
