@@ -221,6 +221,9 @@ class Hammer:
     var bent := {}
     ## Dents in the board this round: Vector2(board x, game time).
     var dents: Array[Vector2] = []
+    ## The slots whose nails the last split knocked out, for the stage to
+    ## show coming out when the hammer lands.
+    var popped: Array[int] = []
 
     func _init(r: RandomNumberGenerator, d := 0.0) -> void:
         super(r, d)
@@ -283,9 +286,7 @@ class Hammer:
             if split_left > 0.0:
                 return
             split_left = 0.0
-            # The split board is set right: its nails are out.
-            for i in SLOTS:
-                driven[i] = false
+            # The split board is set right.
             dents.clear()
             wait = GAP_TIME
             return
@@ -373,6 +374,13 @@ class Hammer:
         up = -1
         split_left = SPLIT_TIME
         split_at = t
+        # The nails come out at once; `popped` keeps which, so the stage can
+        # show them until the hammer lands however the time arrives.
+        popped.clear()
+        for i in SLOTS:
+            if driven[i]:
+                popped.append(i)
+            driven[i] = false
         return Result.FAIL
 
     func release() -> void:
@@ -382,6 +390,12 @@ class Hammer:
         nails = 0
         bad = 0
         clean = true
+        split_left = 0.0
+        split_at = -1.0
+        last_kind = ""
+        last_slot = -1
+        bent.clear()
+        popped.clear()
         for i in SLOTS:
             driven[i] = false
         dents.clear()

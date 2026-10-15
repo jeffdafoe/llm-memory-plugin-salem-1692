@@ -57,6 +57,7 @@ const TESTS := [
     "_test_road_cut_and_rounds",
     "_test_panel_uses_the_closeup_else_village_sprites",
     "_test_hammer_swings_down_onto_the_nail",
+    "_test_hammer_stage_split_and_bend",
     "_test_beats_for",
     "_test_staged_strips_match_their_beats",
     "_test_staged_layers_compose",
@@ -466,11 +467,23 @@ func _test_hammer_splits_the_board() -> void:
     _check("still not split", g.press(Vector2(20, 40)), Games.Result.MISS)
     _check("the third in a row splits it", g.press(Vector2(20, 40)), Games.Result.FAIL)
     _check("the round starts over, held", [g.nails, g.bad, g.up, g.split_left], [0, 0, -1, g.SPLIT_TIME])
-    _check("the driven nails stay in until the board is set right", g.driven[slot], true)
+    _check("its nails are out, and kept for the stage to show", [g.driven.has(true), g.popped.size(), g.popped.has(slot)], [false, 2, true])
     _check("held: a strike does nothing", g.press(null), Games.Result.NONE)
     g.update(g.SPLIT_TIME + 0.01)
-    _check("set right: nails out, dents gone", [g.split_left, g.driven.has(true), g.dents.size()], [0.0, false, 0])
+    _check("set right: dents gone", [g.split_left, g.dents.size()], [0.0, 0])
     _check("and it goes on", _hammer_to_true(g), true)
+
+    # A release mid-split (the round reset under it) leaves nothing behind.
+    g = Games.make("hammer", _rng())
+    _hammer_to_true(g)
+    g.press(Vector2(g.slot_x(g.up), g.BOARD_Y - 2))  # a bend
+    for i in 2:
+        g.press(Vector2(20, 40))
+    _check("split", [g.split_left > 0.0, g.bent.is_empty()], [true, false])
+    g.release()
+    _check("released mid-split: all clear", [g.split_left, g.split_at, g.bent.is_empty(), g.popped.size(), g.last_kind, g.last_slot], [0.0, -1.0, true, 0, "", -1])
+    _check("and it plays at once", _hammer_to_true(g), true)
+    _check("a strike counts", g.press(null), Games.Result.PROGRESS)
     _done()
 
 
@@ -1130,16 +1143,63 @@ func _test_hammer_swings_down_onto_the_nail() -> void:
     _check("no thud before it lands", stage._shake, 0.0)
     stage._process(StageScript.SWING_DOWN + 0.01)
     _check("it thuds on the board", stage._shake > 0.0, true)
-    # Two more bad strikes in a row split the board as the hammer lands.
+    # A strike before the last has landed is not taken: every strike judged
+    # is one the player sees land.
     stage._process(StageScript.SWING_HOLD + StageScript.SWING_UP)
     stage.press_key()
+    _check("a second bad strike, once the last has landed", [misses.size(), g.bad], [2, 2])
     stage.press_key()
-    _check("the split is counted at the click", [misses.size(), g.split_left > 0.0], [3, true])
+    _check("a strike before it lands is not taken", [misses.size(), g.bad], [2, 2])
+    # The third bad strike in a row splits the board as the hammer lands.
+    g.driven[1] = true
+    g.driven[3] = true
+    stage._process(StageScript.SWING_DOWN + 0.01)
+    stage.press_key()
+    _check("the split is counted at the click", [misses.size(), g.split_left > 0.0, g.popped.size(), g.popped.has(1), g.popped.has(3)], [3, true, 2, true, true])
     _check("the split swing comes down", [stage._swing_t, stage._swing_split], [0.0, true])
     var said := func() -> Array: return stage._pops.map(func(p): return p["text"])
     _check("nothing splits before the hammer lands", said.call().has("Split!"), false)
     stage._process(StageScript.SWING_DOWN + 0.01)
     _check("it splits when it lands", said.call().has("Split!"), true)
+    stage.queue_free()
+    _done()
+
+
+## LLM-786: however the time arrives — even the whole split in one frame —
+## the split's nails still burst out when the hammer lands, and a bend's
+## sparks fly from the struck nail, not the board.
+func _test_hammer_stage_split_and_bend() -> void:
+    var stage := Control.new()
+    stage.set_script(StageScript)
+    root.add_child(stage)
+    var layers: Dictionary = StageScript.closeup_layers("fence")
+    stage.setup("Mend the Fence", "hammer", layers["broken"], layers["sound"], 5, 0, "fence")
+    stage.start_game()
+    var g = stage.game
+    g._raise()
+    g.up = 2
+    g.up_t = g.RISE + 0.02  # leaning, fully risen
+    g.driven[0] = true
+    g.driven[4] = true
+    stage.press_key()
+    _check("a bend keeps the struck nail's height", [g.last_kind, stage._swing_nail_h], ["bend", float(g.STAND)])
+    stage._process(StageScript.SWING_DOWN + 0.01)
+    var lowest := 1e9
+    for p in stage._particles:
+        lowest = minf(lowest, p["pos"].y)
+    var board_top: float = stage._play_origin().y + g.BOARD_Y
+    _check("the bend's sparks fly from the nail's head", lowest <= board_top - g.STAND, true)
+    stage._particles.clear()
+    stage.press_key()
+    stage._process(StageScript.SWING_DOWN + 0.01)
+    stage.press_key()
+    _check("split", [g.split_left > 0.0, stage._swing_split], [true, true])
+    # The whole split passes in the game before the hammer lands.
+    g.update(g.SPLIT_TIME + 0.5)
+    _check("the split is over in the game", g.split_left, 0.0)
+    stage._particles.clear()
+    stage._land_swing()
+    _check("the dent, the two nails bursting out, and the board", stage._particles.size(), 3 + 2 * 3 + 8)
     stage.queue_free()
     _done()
 

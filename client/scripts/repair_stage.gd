@@ -559,6 +559,10 @@ func _play_h() -> int:
 func _handle_press(pos: Variant) -> void:
     if not playing or game == null:
         return
+    # The fence's hammer must land one strike before it can make the next
+    # (LLM-786): every strike the game judges is a swing the player sees land.
+    if game_kind == "hammer" and _swing_t >= 0.0 and _swing_t < SWING_DOWN:
+        return
     _apply(game.press(pos))
 
 
@@ -716,9 +720,10 @@ func _on_hit(perfect: bool) -> void:
 
 ## Swing the hammer down onto the nail struck (a hit) or the board (a miss).
 ## A miss while a swing is under way leaves it be, unless `force`; a hit
-## restarts it.
+## restarts it. The fence's hammer always swings anew: a strike is only taken
+## once the last has landed (_handle_press).
 func _start_swing(hit: bool, perfect: bool, force := false) -> void:
-    if _swing_t >= 0.0 and not hit and not force:
+    if _swing_t >= 0.0 and not hit and not force and game_kind != "hammer":
         return
     var g = game
     _swing_t = 0.0
@@ -734,7 +739,7 @@ func _start_swing(hit: bool, perfect: bool, force := false) -> void:
     _swing_slot = maxi(g.last_slot, 0)
     _swing_x = g.last_x
     _swing_kind = g.last_kind
-    _swing_nail_h = g.last_h if hit else 0.0
+    _swing_nail_h = g.last_h if hit or _swing_kind == "bend" else 0.0
 
 
 ## Where the hammer's face lands on a slot's nail: the board's top there, play
@@ -805,9 +810,8 @@ func _on_split() -> void:
     _sound("hammer_miss")
     var g = game
     var o := _play_origin()
-    for i in g.SLOTS:
-        if g.driven[i]:
-            _burst(o + Vector2(g.slot_x(i), g.BOARD_Y - 2), 3, [C_IRON_LIGHT, Color.WHITE])
+    for i in g.popped:
+        _burst(o + Vector2(g.slot_x(i), g.BOARD_Y - 2), 3, [C_IRON_LIGHT, Color.WHITE])
     _burst(o + Vector2(g.BOARD_X + g.BOARD_W / 2.0, g.BOARD_Y + 6), 8, [C_WOOD_HI, C_WOOD_LIGHT, C_WOOD_DARK])
     pop("Split!", o + Vector2(Games.PLAY_W / 2.0, g.BOARD_Y - 14))
 
@@ -1359,6 +1363,8 @@ func _draw_hammer(o: Vector2) -> void:
     _tex("plank", Vector2(o.x + g.BOARD_X - 4, top))
     var swinging := _swing_t >= 0.0 and _swing_t < SWING_DOWN
     var split: bool = g.split_left > 0.0 and g.t - g.split_at >= SWING_DOWN
+    # The split's nails stay in until the hammer lands.
+    var popping: bool = g.split_left > 0.0 and not split
     for dent in g.dents:
         if g.t - dent.y >= SWING_DOWN:
             draw_rect(Rect2(o.x + roundf(dent.x) - 1, top + 1, 3, 1), C_WOOD_DARK)
@@ -1378,7 +1384,7 @@ func _draw_hammer(o: Vector2) -> void:
             _draw_nail(nail, x, top, _swing_nail_h, 0)
         elif i == g.up:
             _draw_nail(nail, x, top, g.height(), g.lean())
-        elif g.driven[i] and not split:
+        elif g.driven[i] or (popping and g.popped.has(i)):
             # Driven flush: just the head.
             _tex("nail-driven", Vector2(x - 3, top))
             draw_rect(Rect2(x - 3, top + 2, 7, 1), C_SHADE)
