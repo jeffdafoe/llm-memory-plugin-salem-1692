@@ -22,6 +22,7 @@ const TESTS := [
     "_test_fits_design_canvas",
     "_test_link_opens_on_tap_not_drag",
     "_test_title_text_opens_credits",
+    "_test_every_freesound_sound_is_credited",
 ]
 
 var _failures := 0
@@ -111,7 +112,7 @@ func _test_credit_links_are_https() -> void:
                 for work in line:
                     _check("%s link is https" % work[0], str(work[1]).begins_with("https://"), true)
                     links += 1
-    _check("every credit is listed", links, 19)
+    _check("every credit is listed", links, 20)
     _done()
 
 
@@ -258,4 +259,40 @@ func _test_title_text_opens_credits() -> void:
     bar._on_title_input(click)
     _check("a click beside the title does nothing", pressed[0], 1)
     bar.free()
+    _done()
+
+
+## Every Freesound recording the village plays (the Freesound section of
+## assets/sound/CREDITS.txt: one line per file, `<files> — <id> "<title>" by
+## <author>.`) has its author on the scroll, linked to that sound (LLM-20: the
+## knock went into CREDITS.txt but not the scroll). A recording line in any
+## other shape fails, so a sound cannot slip past by being written differently.
+func _test_every_freesound_sound_is_credited() -> void:
+    var text := FileAccess.get_file_as_string("res://assets/sound/CREDITS.txt")
+    var start := text.find("Freesound (freesound.org)")
+    _check("CREDITS.txt has its Freesound section", start >= 0, true)
+    var shape := RegEx.new()
+    shape.compile("— ([0-9]+) \"[^\"]+\" by ([^.]+)\\.")
+    # Each scroll link and the name shown on it.
+    var shown := {}
+    for section in _scroll_script().CREDITS:
+        for entry in section[1]:
+            for line in entry[2]:
+                for work in line:
+                    shown[str(work[1])] = str(work[0])
+    var found := 0
+    for line in text.substr(maxi(start, 0)).split("\n"):
+        # A recording line sits two spaces in and names its .ogg files before
+        # the dash; the lines indented further under it say how it was cut.
+        var dash := line.find("—")
+        if not line.begins_with("  ") or line.begins_with("   ") or dash < 0 or not line.substr(0, dash).contains(".ogg"):
+            continue
+        found += 1
+        var m := shape.search(line)
+        _check("credits line has the <id> \"title\" by author shape: %s" % line.strip_edges(), m != null, true)
+        if m == null:
+            continue
+        var url := "https://freesound.org/s/%s/" % m.get_string(1)
+        _check("Freesound %s is on the scroll as %s" % [m.get_string(1), m.get_string(2)], shown.get(url, ""), m.get_string(2))
+    _check("the Freesound sounds were read", found >= 5, true)
     _done()
