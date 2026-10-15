@@ -495,6 +495,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
 	canSolicitWork := payload.CanSolicitWork
 	canOfferWork := len(payload.HireableWorkers) > 0
+	canLetIn := len(payload.AtYourDoor) > 0
 	hasGift := len(perception.PendingGiftsForMe(payload)) > 0
 	// LLM-455 talk-only rounds: strip a merchant visitor's commerce tools when he is on his
 	// rounds but not at a sanctioned commerce place (his errand counterparty or a tavern/inn).
@@ -681,6 +682,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// co-present worker this actor could hire — the same HireableWorkers slice
 		// the affordance cue names them from, so the tool and its cue can't drift.
 		if spec.Name == offerWorkToolName && !canOfferWork {
+			continue
+		}
+		// let_in consumer (LLM-20): only while perception names someone at the
+		// door of the actor's home — the AtYourDoor slice the door cue names.
+		if spec.Name == letInToolName && !canLetIn {
 			continue
 		}
 		// labor-response consumer (LLM-26): advertise accept_work/decline_work

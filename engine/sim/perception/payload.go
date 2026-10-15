@@ -595,6 +595,15 @@ type Payload struct {
 	// verbatim.
 	HireableWorkers []sim.ActorID
 
+	// AtYourDoor are the people the subject could let into their home right
+	// now (LLM-20): members of the subject's conversation standing outdoors at
+	// the door of the home the subject is in — theirs to live in or to own —
+	// who are not of the household. A non-empty slice IS the let_in gate:
+	// renderLetInAffordance names them and gateTools advertises let_in off the
+	// same field. Each is also flagged AtYourDoor on its HuddleMember, so the
+	// company line reads them as outside. Ordered by display name.
+	AtYourDoor []sim.ActorID
+
 	// SeekWorkPlaces are the town's businesses (village objects tagged
 	// sim.TagBusiness, resolved to their structure names), surfaced as move_to
 	// destinations when a broke worker is nudged to go earn. Build populates it
@@ -2087,6 +2096,12 @@ type HuddleMember struct {
 	Traveler          bool
 	TravelerArchetype string
 	TravelerOrigin    string
+
+	// AtYourDoor marks a conversation member standing outdoors at the door of
+	// the subject's home, someone the subject could let in (Payload.AtYourDoor,
+	// LLM-20). Rendered "(at your door, outside)" — otherwise a knocker reads as
+	// though in the room.
+	AtYourDoor bool
 
 	// SolicitTie marks a co-present member the subject shares a household or
 	// workplace with — kin/crew the subject (when a worker) should not solicit for

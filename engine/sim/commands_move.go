@@ -419,6 +419,8 @@ func resolvePathTarget(w *World, actor *Actor, dest MoveDestination, grid *WalkG
 //   - Owner    — the structure's OwnerActorID is this actor.
 //   - Lodger   — the actor holds an active, unexpired ledger RoomAccess
 //     grant for a room inside this structure (actorIsLodgerAt).
+//   - Guest    — a resident let them in (let_in, LLM-20) and the GuestPass
+//     has not run out (guestPassAt).
 //   - Hired    — the actor holds a live labor job (EnRoute / Working) whose
 //     employer's work structure is this one (workerHiredAt, LLM-229): a worker
 //     taken on to help here is staff for the window and may enter to do the
@@ -450,6 +452,10 @@ func structureMembershipAllows(w *World, actor *Actor, structureID StructureID, 
 	// Hired-for-the-window (LLM-229): a worker on a live labor job at this
 	// establishment enters to do it, even when the shop is owner-only.
 	if workerHiredAt(w, actor.ID, structureID) {
+		return true
+	}
+	// Guest (LLM-20): a resident let them in, and the pass has not run out.
+	if guestPassAt(w, actor.ID, structureID, now) {
 		return true
 	}
 	return actorIsLodgerAt(w, actor, structureID, now)

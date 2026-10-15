@@ -4491,6 +4491,13 @@ var perceptionScenarios = []perceptionScenario{
 			"spoke to him and she asked twice into silence.",
 		build: customerHuddledWithKeeperMidRepair,
 	},
+	{
+		name: "resident_with_knocker_at_door",
+		summary: "LLM-20: Silence Walker at home, Jefferey (a player she knows) knocking at the door in the doorway " +
+			"conversation. Before, the company line read him as in the room. The golden pins the outside note on the " +
+			"company line and the door cue offering let_in. Property guard: TestLetInCueAndDoorstep.",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return knockAtHomeScenario(false) },
+	},
 }
 
 // estateRateSnapshot builds the shared constable-and-keeper fixture (LLM-557 origin,

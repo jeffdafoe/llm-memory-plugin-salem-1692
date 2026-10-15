@@ -1510,6 +1510,13 @@ func paySettlementFellThroughContent(state sim.PayLedgerState) (string, bool) {
 // needs the result because the ZBBS-WORK-391 needs-clamp decides the
 // eaten/kept split on the world goroutine, after the args are fixed.
 func commitResultContent(vc *ValidatedCall, cmdResult any) string {
+	// let_in (LLM-20): say who came in, so the model reads the door as open and
+	// the guest as here — not a bare [ok] that invites a second let_in.
+	if vc.Name == letInToolName {
+		if r, ok := cmdResult.(sim.LetInResult); ok {
+			return fmt.Sprintf("[ok] You open the door and %s steps inside.", r.VisitorName)
+		}
+	}
 	// A consume must tell the model what actually happened. A clamped consume
 	// (Kept > 0) reports the eaten/kept split so a "consume 10" answered by a
 	// bare [ok] isn't read as ten eaten. A need-moving consume with no surplus
