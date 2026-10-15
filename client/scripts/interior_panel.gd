@@ -38,6 +38,12 @@ extends CanvasLayer
 ## farmer-base keeper hammers at the anvil. Behind the counter, a walk between
 ## the work area and the selling side goes round the counter's end.
 ##
+## Mending (LLM-780): a keeper or hand mending this business works where they
+## stand while the engine's repair runs — a farmer-base sprite swings the
+## hatchet sideways (the map's chop), anyone else dips at each blow — with wood
+## chips and a knock; no bustle, anvil or bellows meanwhile. A sale or a word
+## stops the work a while.
+##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
 ## pixels at a WHOLE number of screen pixels each, `k`; the window stretch is
 ## cancelled and the origin snapped to a whole screen pixel. People come from
@@ -73,6 +79,8 @@ const HIT_BOX := Rect2(-8, -28, 16, 28)
 ## room, its tail just above the head — room art px above the feet (a farmer's
 ## hat reaches about 34 above the feet, a pack sprite's head about 29).
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
+const WorkAim = preload("res://scripts/work_aim.gd")
+const WorkChipsScript = preload("res://scripts/work_chips.gd")
 const BUBBLE_NODE := "SpeechBubble"
 const BUBBLE_ANCHOR_Y := -36.0
 ## How often an open stall re-reads its shelf.
@@ -115,6 +123,17 @@ const FLARE_OUTER := Color(1.0, 0.36, 0.08, 0.0)
 const SMITH_CHANCE := 0.25
 const SMITH_MIN := 4.0
 const SMITH_MAX := 8.0
+## Mending (LLM-780). The swing faces the nearer side of the scene, east or
+## west: the pack's north chop reads as a swing the wrong way (LLM-747), and a
+## south one would chop at the customers. A sprite with no chop dips MEND_DIP
+## art px for MEND_DOWN seconds of every MEND_PERIOD, each mender on their own
+## beat. The stand-in's blow lands MEND_REACH art px in front of the feet, at
+## hand height.
+const MEND_PERIOD := 0.9
+const MEND_DOWN := 0.15
+const MEND_DIP := 1.0
+const MEND_REACH := Vector2(8.0, -12.0)
+const MEND_SOUND := "hammer_miss"
 ## Behind the counter, a walk between the work area and the selling side goes
 ## round the counter's end, GATE_IN art px short of it.
 const GATE_IN := 6.0
@@ -190,6 +209,8 @@ var wares_hook: Callable = Callable()
 ## Test seam: path -> nothing, called in place of the HTTP request a fetch
 ## would send; the test answers through _on_fetch_done.
 var fetch_hook: Callable = Callable()
+## Test seam: sound name -> nothing, called in place of the Sound autoload.
+var sound_hook: Callable = Callable()
 
 static var _textures: Dictionary = {}
 
@@ -517,6 +538,8 @@ func _process(delta: float) -> void:
         _hands_turn(delta)
         _flare = maxf(0.0, _flare - delta / FLARE_SECONDS)
         _fire.modulate.a = _flare * FLARE_ALPHA
+    # After _eat: a mender's dip is set last.
+    _mend(delta)
 
 
 ## A smithy's forge fire gets its glow: drawn in code, an art-pixel radial
@@ -994,6 +1017,12 @@ func _bustle(delta: float) -> void:
     var holder := _tending()
     if holder == null or not _handoff_now.is_empty():
         return
+    # Mending: no bustle; from the anvil (or the way there) back to the counter
+    # to work at it.
+    if _mending(holder):
+        if holder.has_meta("anvil_trip") or holder.has_meta("smithing"):
+            _back_to_counter(holder)
+        return
     # On the way to the anvil or at it: a customer at the counter calls them
     # back.
     if holder.has_meta("anvil_trip") or holder.has_meta("smithing"):
@@ -1072,6 +1101,12 @@ func _hands_turn(delta: float) -> void:
     var bellows: Dictionary = room.get("bellows", {})
     for hand in _hands():
         if hand.has_meta("walking"):
+            continue
+        # Mending: no turns; from the bellows back to their spot to work there.
+        if _mending(hand):
+            if hand.has_meta("pulling") or hand.has_meta("bellows"):
+                _stop_pull(hand)
+                _walk(hand, hand.get_meta("home"), WALK_SPEED, "south")
             continue
         if hand.has_meta("pulling"):
             _pull(hand, delta)
@@ -1205,6 +1240,129 @@ func _back_to_counter(keeper: Node2D) -> void:
     _walk(keeper, keeper.get_meta("home"), WALK_SPEED, "south")
 
 
+## Whether the villager drawn as `holder` is mending this business: the
+## engine's repair window (source_activity_kind, LLM-441) on this structure.
+func _mending(holder: Node2D) -> bool:
+    if world == null:
+        return false
+    var c: Node2D = world.placed_npcs.get(str(holder.name), null)
+    return c != null and is_instance_valid(c) \
+        and str(c.get_meta("source_activity_kind", "")) == "repair" \
+        and str(c.get_meta("source_activity_object_id", "")) == structure_id
+
+
+## Everyone mending here works where they stand (meta "mend" while at it). One
+## on the move — walking, coming in, going out, or making a handoff — stops
+## and starts again once still; one whose repair has ended stands as before.
+func _mend(delta: float) -> void:
+    for entry in _hits:
+        var holder: Node2D = entry["holder"]
+        if not is_instance_valid(holder):
+            continue
+        var spr := _sprite_of(holder)
+        if spr == null:
+            continue
+        var moving := holder.has_meta("walking") or holder.has_meta("entering") or holder.has_meta("leaving") \
+            or str(_handoff_now.get("keeper", "")) == str(holder.name)
+        if moving or not _mending(holder):
+            if holder.has_meta("mend"):
+                _end_mend(holder, spr, not moving)
+            continue
+        if not holder.has_meta("mend"):
+            _start_mend(holder, spr)
+        _mend_beat(holder, spr, delta)
+
+
+func _start_mend(holder: Node2D, spr: AnimatedSprite2D) -> void:
+    var width := float(room.get("size", Vector2i(128, 112)).x)
+    var facing := "east" if holder.position.x >= width / 2.0 else "west"
+    var swing := spr.sprite_frames != null and spr.sprite_frames.has_animation(facing + "_chop")
+    holder.set_meta("mend", {"facing": facing, "swing": swing, "was": spr.animation,
+        "frame": -1, "time": 0.0, "down": false, "hold": 0.0})
+    if swing:
+        spr.play(facing + "_chop")
+
+
+## One frame of the work: the swing's strike frame, or the stand-in's dip
+## coming down, is a blow. Paused while `hold` runs (they stopped to speak).
+func _mend_beat(holder: Node2D, spr: AnimatedSprite2D, delta: float) -> void:
+    var m: Dictionary = holder.get_meta("mend")
+    if float(m["hold"]) > 0.0:
+        m["hold"] = float(m["hold"]) - delta
+        if float(m["hold"]) > 0.0:
+            return
+    if bool(m["swing"]):
+        var anim := str(m["facing"]) + "_chop"
+        if spr.animation != anim:
+            spr.play(anim)
+        if spr.frame == WorkAim.STRIKE_FRAME and int(m["frame"]) != WorkAim.STRIKE_FRAME:
+            _blow(holder, spr, m)
+        m["frame"] = spr.frame
+        return
+    m["time"] = float(m["time"]) + delta
+    var beat := float(absi(hash(str(holder.name))) % 100) / 100.0 * MEND_PERIOD
+    var down := fmod(float(m["time"]) + beat, MEND_PERIOD) < MEND_DOWN
+    if down and not bool(m["down"]):
+        _blow(holder, spr, m)
+    m["down"] = down
+    if not spr.has_meta("rest_y"):
+        spr.set_meta("rest_y", spr.position.y)
+    spr.position.y = float(spr.get_meta("rest_y")) + (MEND_DIP if down else 0.0)
+
+
+## A blow: wood chips thrown back toward the mender from where it lands — the
+## hatchet's head on its strike frame (WorkAim, as on the map), or just in
+## front of a stand-in — and a knock.
+func _blow(holder: Node2D, spr: AnimatedSprite2D, m: Dictionary) -> void:
+    var facing := str(m["facing"])
+    var side: Vector2 = WorkAim.FACING_DIR[facing]
+    var at := Vector2(MEND_REACH.x * side.x, MEND_REACH.y)
+    if bool(m["swing"]):
+        at = WorkAim.strike_point(Vector2.ZERO, Vector2.ZERO, facing, spr.scale.x)
+    var chips := WorkChipsScript.new()
+    chips.position = at
+    chips.z_index = 1
+    holder.add_child(chips)
+    chips.burst(WorkChipsScript.WOOD, -side)
+    _sound(MEND_SOUND)
+
+
+## Stop the work: back to the stance they had (unless off on a walk, whose
+## own animation stands).
+func _end_mend(holder: Node2D, spr: AnimatedSprite2D, restore: bool) -> void:
+    var m: Dictionary = holder.get_meta("mend")
+    holder.remove_meta("mend")
+    if spr.has_meta("rest_y"):
+        spr.position.y = float(spr.get_meta("rest_y"))
+    if restore:
+        spr.play(m["was"])
+
+
+## Stop the work SPEAK_HOLD seconds to speak, standing as before.
+func _hold_mend(holder: Node2D) -> void:
+    var m: Dictionary = holder.get_meta("mend")
+    m["hold"] = SPEAK_HOLD
+    m["down"] = false
+    var spr := _sprite_of(holder)
+    if spr == null:
+        return
+    if spr.has_meta("rest_y"):
+        spr.position.y = float(spr.get_meta("rest_y"))
+    if str(spr.animation).ends_with("_chop"):
+        spr.play(m["was"])
+
+
+func _sound(sound_name: String) -> void:
+    if sound_hook.is_valid():
+        sound_hook.call(sound_name)
+        return
+    if not is_inside_tree():
+        return
+    var s := get_node_or_null("/root/Sound")
+    if s != null:
+        s.play(sound_name)
+
+
 ## Seat a farmer-base villager in a seat spot; everyone else stands, facing
 ## the spot's way when their sprite has that facing.
 func _pose(spr: AnimatedSprite2D, facing: String, pose: String) -> void:
@@ -1325,6 +1483,9 @@ func say(npc_id: String, text: String) -> void:
             if spr != null:
                 _pose(spr, "south", "stand")
         _bustle_left = SPEAK_HOLD
+    # A mender stops the work to speak, a while (LLM-780).
+    if holder.has_meta("mend"):
+        _hold_mend(holder)
     var existing := holder.get_node_or_null(BUBBLE_NODE)
     if existing != null:
         # Out of the tree now, or the new bubble would be renamed (as world.gd).
