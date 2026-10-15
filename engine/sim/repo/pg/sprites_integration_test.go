@@ -196,6 +196,43 @@ func TestIntegration_Sprites_RigLayers(t *testing.T) {
 	}
 }
 
+// Visitor outfits (LLM-783) — every name the engine resolves a visitor's sprite by
+// (sim.VisitorSpriteCatalogNames) is seeded by the migrations as exactly one
+// farmer_base rig sprite with the body as its first layer. A name in visitor.go
+// with no row would ship that visitor spriteless.
+func TestIntegration_Sprites_VisitorOutfits(t *testing.T) {
+	f := newFixture(t)
+	got, err := NewSpritesRepo(f.Pool).LoadAll(t.Context())
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	byName := map[string][]*sim.Sprite{}
+	for _, s := range got {
+		byName[s.Name] = append(byName[s.Name], s)
+	}
+	for _, name := range sim.VisitorSpriteCatalogNames() {
+		rows := byName[name]
+		if len(rows) != 1 {
+			t.Errorf("%q: %d sprite rows, want 1", name, len(rows))
+			continue
+		}
+		s := rows[0]
+		if s.Rig != "farmer_base" {
+			t.Errorf("%q: Rig = %q, want farmer_base", name, s.Rig)
+		}
+		var layers []struct {
+			Sheet string `json:"sheet"`
+		}
+		if err := json.Unmarshal(s.Layers, &layers); err != nil || len(layers) == 0 {
+			t.Errorf("%q: layers %s (%v), want a non-empty array", name, s.Layers, err)
+			continue
+		}
+		if layers[0].Sheet != s.Sheet {
+			t.Errorf("%q: first layer %q, want the body sheet %q", name, layers[0].Sheet, s.Sheet)
+		}
+	}
+}
+
 // S4 a player's outfit (LLM-691; the fixture's migrations seed the farmer pack) — UpsertRigSprite inserts the rig sprite,
 // a second save of the same id replaces its layers in place, and LoadAll
 // reads it back as a rig sprite.

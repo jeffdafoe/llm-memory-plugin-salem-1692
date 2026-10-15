@@ -203,13 +203,14 @@ var visitorDispositionPool = []string{
 // derived string, not a fixed pool entry. Spawn / rehydrate resolve the name to the
 // uuid-keyed SpriteID via the loaded catalog and stamp it on the Actor, so the client
 // renders the traveler instead of drawing nothing (LLM-379). The init() below enforces
-// every passerThroughArchetypePool entry has an entry here.
+// every passerThroughArchetypePool entry has an entry here. Every visitor sprite is a
+// farmer-base outfit dressed as city folk, seeded by migration LLM-783 under these names.
 var passerThroughSprite = map[string]string{
-	"messenger":          "Man A (v00)",
-	"itinerant musician": "Man B (v00)",
-	"circuit preacher":   "Old Man B (v00)",
-	"traveling scholar":  "Old Man A (v01)",
-	"wandering surgeon":  "Old Man A (v02)",
+	"messenger":          "Visitor messenger (farmer)",
+	"itinerant musician": "Visitor musician (farmer)",
+	"circuit preacher":   "Visitor preacher (farmer)",
+	"traveling scholar":  "Visitor scholar (farmer)",
+	"wandering surgeon":  "Visitor surgeon (farmer)",
 }
 
 // VisitorArchetypeSprite is the passer-through archetype→sprite map, exported so tests
@@ -244,14 +245,15 @@ func VisitorVocation(archetype string) string {
 
 // FactorSpriteName is the sprite a wholesale factor (a sell errand) renders with — a
 // well-to-do merchant (LLM-410/455).
-const FactorSpriteName = "Merchant A (v00)"
+const FactorSpriteName = "Visitor factor (farmer)"
 
 // merchantBuyerSpriteNames is the sprite pool a buy-merchant renders with (LLM-455), picked
 // DETERMINISTICALLY by the errand good (stableStringIndex) so a mid-visit rehydrate
-// reproduces the same sprite without persisting it. The Merchant family reads as a traveling
-// trader.
+// reproduces the same sprite without persisting it. One outfit per colour, so two traders
+// in the village at once rarely match.
 var merchantBuyerSpriteNames = []string{
-	"Merchant B (v00)", "Merchant C (v00)", "Merchant A (v01)", "Merchant C (v01)",
+	"Visitor trader blue (farmer)", "Visitor trader green (farmer)",
+	"Visitor trader purple (farmer)", "Visitor trader orange (farmer)",
 }
 
 func init() {
