@@ -95,3 +95,24 @@ func TestUmbilicalDepartVisitor_Gated(t *testing.T) {
 		t.Errorf("no token = %d, want 401", rec.Code)
 	}
 }
+
+// TestUmbilicalSpawnVisitor (LLM-790): an unknown kind is 400; in the control
+// world, which has no place for a traveler to walk in to, the arrival bails
+// out and the route answers 409; the route honors the gate. The arrival
+// itself is pinned in sim (TestForceVisitorSpawn).
+func TestUmbilicalSpawnVisitor(t *testing.T) {
+	_, h := controlServer(t, operatorPerms)
+	if rec := postReq(t, h, "/api/village/umbilical/visitor/spawn", "tok", `{"kind":"gate"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown kind = %d, want 400", rec.Code)
+	}
+	if rec := postReq(t, h, "/api/village/umbilical/visitor/spawn", "tok", `{}`); rec.Code != http.StatusConflict {
+		t.Errorf("no destination = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	_, gated := controlServer(t, nil)
+	if rec := postReq(t, gated, "/api/village/umbilical/visitor/spawn", "tok", `{}`); rec.Code != http.StatusForbidden {
+		t.Errorf("non-operator = %d, want 403", rec.Code)
+	}
+	if rec := postReq(t, gated, "/api/village/umbilical/visitor/spawn", "", `{}`); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token = %d, want 401", rec.Code)
+	}
+}
