@@ -79,10 +79,11 @@ func knockHuddleOf(t *testing.T, w *sim.World, actorID sim.ActorID) sim.HuddleID
 	return res.(sim.HuddleID)
 }
 
-// TestHandleBusinessArrival_KnockedOutdoorFormsServiceHuddle: a Knocked
-// outdoor arrival routes to EnsureKnockServiceHuddle — knocker and keeper
-// end up in one shared huddle.
-func TestHandleBusinessArrival_KnockedOutdoorFormsServiceHuddle(t *testing.T) {
+// TestHandleBusinessArrival_KnockedOutdoorWaitsForTheKnock: a Knocked outdoor
+// arrival — the walk to a door the walker may not go through — forms no
+// huddle by itself (LLM-785): the player knocks from the door popup
+// (sim.KnockAtDoor), and only then does anyone come to the door.
+func TestHandleBusinessArrival_KnockedOutdoorWaitsForTheKnock(t *testing.T) {
 	w, cleanup := buildKnockArrivalWorld(t)
 	defer cleanup()
 
@@ -99,9 +100,8 @@ func TestHandleBusinessArrival_KnockedOutdoorFormsServiceHuddle(t *testing.T) {
 		t.Fatalf("dispatch knock arrival: %v", err)
 	}
 
-	knocker, keeper := knockHuddleOf(t, w, "knocker"), knockHuddleOf(t, w, "keeper")
-	if knocker == "" || knocker != keeper {
-		t.Errorf("knocker and keeper should share one huddle; knocker=%q keeper=%q", knocker, keeper)
+	if knocker, keeper := knockHuddleOf(t, w, "knocker"), knockHuddleOf(t, w, "keeper"); knocker != "" || keeper != "" {
+		t.Errorf("arriving at the door is not knocking: knocker in %q, keeper in %q, want neither", knocker, keeper)
 	}
 }
 
