@@ -1,5 +1,6 @@
 // Package roomlayout holds the floor plans of the rooms people are drawn in
-// (LLM-768): for each structure with a room window, a grid of squares — one
+// (LLM-768): for each structure with a room window — or, for homes, each house
+// type (LLM-782) — a grid of squares — one
 // per tile of the building's footprint — saying which squares can be stood
 // on, and its stations: the door, the keeper's place, and the seats and
 // standing places a guest is put at. The plans are a seed file compiled into
@@ -74,6 +75,10 @@ const UseStoke = "stoke"
 // on the bar top, so an order is set down in front of the guest there.
 const UseDrink = "drink"
 
+// UseSleep: a bed (LLM-782). It stands on a bed square ('b' on the grid),
+// which nobody walks on; only someone asleep in the room is put there.
+const UseSleep = "sleep"
+
 // has reports whether the station's Use names use.
 func (st *Station) has(use string) bool {
 	for _, u := range st.Use {
@@ -86,10 +91,18 @@ func (st *Station) has(use string) bool {
 
 // Layout is one room's plan. Grid rows are top to bottom, '.' a square that
 // can be stood on, 'k' the keeper's way out from behind their counter (theirs
-// alone), anything else blocked (walls, furniture). KeeperDoor, when set, is
-// where the keeper comes and goes (the Inn's stairs).
+// alone), 'b' a bed (a sleeper's alone), anything else blocked (walls,
+// furniture). KeeperDoor, when set, is where the keeper comes and goes (the
+// Inn's stairs).
+//
+// A plan is for one structure (StructureID) or for every structure placed as
+// one of Assets — a house type, so the homes of one size share a plan
+// (LLM-782). Art names the client's picture of the room when it is not keyed
+// by the structure.
 type Layout struct {
 	StructureID string    `json:"structure_id"`
+	Assets      []string  `json:"assets,omitempty"`
+	Art         string    `json:"art,omitempty"`
 	Name        string    `json:"name"`
 	Grid        []string  `json:"grid"`
 	Door        Station   `json:"door"`
@@ -264,6 +277,9 @@ func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, boo
 		for _, work := range []bool{false, true} {
 			for i := 0; i < n; i++ {
 				st := &l.Stations[(start+i)%n]
+				if st.has(UseSleep) {
+					continue
+				}
 				if st.has(UseStoke) == work && !taken[st.Square] {
 					return st.Square, true
 				}
@@ -282,13 +298,65 @@ func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, boo
 	return Square{}, false
 }
 
+// Bed picks a free bed for someone going to sleep in the room, starting from
+// the one their id hashes to, or false when the room has no free bed (they
+// sleep in the loft, out of sight).
+func (l *Layout) Bed(id string, taken map[Square]bool) (Square, bool) {
+	var beds []Square
+	for _, st := range l.Stations {
+		if st.has(UseSleep) {
+			beds = append(beds, st.Square)
+		}
+	}
+	if len(beds) == 0 {
+		return Square{}, false
+	}
+	h := fnv.New32a()
+	h.Write([]byte(id))
+	start := int(h.Sum32() % uint32(len(beds)))
+	for i := range beds {
+		if s := beds[(start+i)%len(beds)]; !taken[s] {
+			return s, true
+		}
+	}
+	return Square{}, false
+}
+
+// IsBed reports whether s is one of the room's beds.
+func (l *Layout) IsBed(s Square) bool {
+	for _, st := range l.Stations {
+		if st.Square == s && st.has(UseSleep) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *Layout) bedSquare(s Square) bool {
+	return s.Y >= 0 && s.Y < len(l.Grid) && s.X >= 0 && s.X < len(l.Grid[s.Y]) && l.Grid[s.Y][s.X] == 'b'
+}
+
+// label names the plan in errors: its structure, or its house types.
+func (l *Layout) label() string {
+	if l.StructureID != "" {
+		return l.StructureID
+	}
+	return fmt.Sprint(l.Assets)
+}
+
 func (l *Layout) validate() error {
 	if len(l.Grid) == 0 || len(l.Grid[0]) == 0 {
-		return fmt.Errorf("room %s: empty grid", l.StructureID)
+		return fmt.Errorf("room %s: empty grid", l.label())
+	}
+	if (l.StructureID == "") == (len(l.Assets) == 0) {
+		return fmt.Errorf("room %s: a plan is for one structure or for house types, not both or neither", l.label())
+	}
+	if len(l.Assets) > 0 && l.Art == "" {
+		return fmt.Errorf("room %s: a house-type plan names its art", l.label())
 	}
 	for i, row := range l.Grid {
 		if len(row) != len(l.Grid[0]) {
-			return fmt.Errorf("room %s: grid row %d is %d wide, row 0 is %d", l.StructureID, i, len(row), len(l.Grid[0]))
+			return fmt.Errorf("room %s: grid row %d is %d wide, row 0 is %d", l.label(), i, len(row), len(l.Grid[0]))
 		}
 	}
 	all := []Station{l.Door, l.Keeper}
@@ -298,37 +366,53 @@ func (l *Layout) validate() error {
 	all = append(all, l.Stations...)
 	seen := map[Square]string{}
 	for _, st := range all {
-		if !l.Open(st.Square) {
-			return fmt.Errorf("room %s: station %q at %v is not an open square", l.StructureID, st.ID, st.Square)
+		// A bed stands on a bed square; everything else on open floor.
+		if st.has(UseSleep) {
+			if !l.bedSquare(st.Square) {
+				return fmt.Errorf("room %s: bed %q at %v is not a bed square", l.label(), st.ID, st.Square)
+			}
+		} else if !l.Open(st.Square) {
+			return fmt.Errorf("room %s: station %q at %v is not an open square", l.label(), st.ID, st.Square)
 		}
 		if other, dup := seen[st.Square]; dup {
-			return fmt.Errorf("room %s: stations %q and %q share square %v", l.StructureID, other, st.ID, st.Square)
+			return fmt.Errorf("room %s: stations %q and %q share square %v", l.label(), other, st.ID, st.Square)
 		}
 		seen[st.Square] = st.ID
 		if st.At.X < 0 || st.At.Y < 0 || st.At.X >= l.Width()*SquarePx || st.At.Y >= l.Height()*SquarePx {
-			return fmt.Errorf("room %s: station %q is drawn at %v, outside the room", l.StructureID, st.ID, st.At)
+			return fmt.Errorf("room %s: station %q is drawn at %v, outside the room", l.label(), st.ID, st.At)
 		}
 	}
-	// A player walks from the door to any seat or standing place.
+	// A player walks from the door to any seat or standing place. Beds are
+	// never walked to: a sleeper is put there, and gets up from there.
 	for _, st := range l.Stations {
+		if st.has(UseSleep) {
+			continue
+		}
 		if st.has(UseDrink) && st.Serve == nil {
-			return fmt.Errorf("room %s: bar place %q has no serve point on the bar", l.StructureID, st.ID)
+			return fmt.Errorf("room %s: bar place %q has no serve point on the bar", l.label(), st.ID)
 		}
 		if l.Path(l.Door.Square, st.Square) == nil {
-			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the door", l.StructureID, st.ID, st.Square)
+			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the door", l.label(), st.ID, st.Square)
 		}
 		// A station with work to do there is the keeper's too: they walk to it
 		// from behind their counter.
 		if len(st.Use) > 0 && l.KeeperPath(l.Keeper.Square, st.Square) == nil {
-			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the keeper's place", l.StructureID, st.ID, st.Square)
+			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the keeper's place", l.label(), st.ID, st.Square)
 		}
 	}
 	return nil
 }
 
+// assetKey is the key a house-type plan is kept under, beside the structure
+// ids.
+func assetKey(name string) string {
+	return "asset:" + name
+}
+
 // Parse reads and checks a seed: every row as wide as the first, every
-// station on its own open square, drawn inside the room and reachable on foot
-// from the door.
+// station on its own open square (a bed on its bed square), drawn inside the
+// room and reachable on foot from the door. Plans are keyed by structure id,
+// house-type plans by assetKey of each house type.
 func Parse(b []byte) (map[string]*Layout, error) {
 	var doc struct {
 		Rooms []*Layout `json:"rooms"`
@@ -341,10 +425,19 @@ func Parse(b []byte) (map[string]*Layout, error) {
 		if err := l.validate(); err != nil {
 			return nil, fmt.Errorf("roomlayout: %w", err)
 		}
-		if _, dup := out[l.StructureID]; dup {
-			return nil, fmt.Errorf("roomlayout: room %s listed twice", l.StructureID)
+		keys := []string{l.StructureID}
+		if l.StructureID == "" {
+			keys = keys[:0]
+			for _, a := range l.Assets {
+				keys = append(keys, assetKey(a))
+			}
 		}
-		out[l.StructureID] = l
+		for _, k := range keys {
+			if _, dup := out[k]; dup {
+				return nil, fmt.Errorf("roomlayout: room %s listed twice", k)
+			}
+			out[k] = l
+		}
 	}
 	return out, nil
 }
@@ -359,16 +452,51 @@ var layouts = func() map[string]*Layout {
 	return l
 }()
 
-// For returns the plan of the structure's room, or nil when it has none.
+// For returns the plan of the structure's own room, or nil when it has none.
+// A home's plan is its house type's: see Resolve.
 func For(structureID string) *Layout {
-	return layouts[structureID]
+	if l := layouts[structureID]; l != nil && l.StructureID == structureID {
+		return l
+	}
+	return nil
 }
 
-// All returns every plan, by structure id order.
+// Resolve returns the plan of a structure placed as house type `asset`: its
+// own plan when it has one, else its house type's, else nil.
+func Resolve(structureID, asset string) *Layout {
+	if structureID == "" {
+		return nil
+	}
+	if l := For(structureID); l != nil {
+		return l
+	}
+	if asset == "" {
+		return nil
+	}
+	return layouts[assetKey(asset)]
+}
+
+// ForStructure is a house-type plan as one structure's: a copy carrying the
+// structure's id and name, for the wire. A structure's own plan comes back as
+// it is.
+func (l *Layout) ForStructure(structureID, name string) *Layout {
+	if l.StructureID != "" {
+		return l
+	}
+	c := *l
+	c.StructureID = structureID
+	c.Name = name
+	return &c
+}
+
+// All returns every structure's own plan, by structure id order. House-type
+// plans are not in it: each structure resolves its own (Resolve).
 func All() []*Layout {
 	out := make([]*Layout, 0, len(layouts))
-	for _, l := range layouts {
-		out = append(out, l)
+	for k, l := range layouts {
+		if k == l.StructureID {
+			out = append(out, l)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StructureID < out[j].StructureID })
 	return out

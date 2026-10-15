@@ -163,7 +163,7 @@ func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 	stamp := now
 	pc.LastTirednessRecoveryAt = &stamp
 	pc.State = StateSleeping
-	releaseRoomSquare(w, pc)
+	bedRoomSquare(w, pc)
 	w.emit(&PCSleepStarted{ActorID: pc.ID, WakeAt: wakeAt, At: now})
 	return true
 }

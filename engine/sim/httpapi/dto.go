@@ -162,7 +162,8 @@ type AgentDTO struct {
 	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
 
 	// RoomSquare is where the actor stands inside a room with a floor plan, as
-	// [x, y] (LLM-768); absent outdoors, asleep, or in a structure without one.
+	// [x, y] (LLM-768) — asleep, their bed (LLM-782); absent outdoors, asleep
+	// with no bed in the room, or in a structure without one.
 	RoomSquare *roomlayout.Square `json:"room_square,omitempty"`
 
 	// Live needs (ZBBS-HOME-462) — current hunger/thirst/tiredness in [0, NeedMax].

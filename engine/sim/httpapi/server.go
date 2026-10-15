@@ -13,7 +13,6 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
-	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
@@ -1071,10 +1070,10 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // handleRooms serves the rooms' floor plans (LLM-768): for each structure
-// with a room window, its grid of squares, door, keeper's place and stations.
-// The client draws a person at the station on their square (room_square on
-// the agent and the inside/square frames). Compiled-in seed data, so the read
-// needs no lock.
+// with a room window — a home by its house type's plan (LLM-782) — its grid
+// of squares, door, keeper's place and stations. The client draws a person at
+// the station on their square (room_square on the agent and the inside/square
+// frames). Read from the published snapshot, so it needs no lock.
 func (s *Server) handleRooms(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{"rooms": roomlayout.All()})
+	writeJSON(w, map[string]any{"rooms": sim.RoomPlans(s.world.Published())})
 }

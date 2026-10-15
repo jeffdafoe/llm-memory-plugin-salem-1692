@@ -448,7 +448,7 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	stamp := now
 	a.LastTirednessRecoveryAt = &stamp
 	a.State = StateSleeping
-	releaseRoomSquare(w, a)
+	bedRoomSquare(w, a)
 	if a.InsideStructureID != "" {
 		refreshStructureOccupancyState(w, a.InsideStructureID)
 		// LLM-360: a keeper bedding down at its OWN workplace closes the shop
