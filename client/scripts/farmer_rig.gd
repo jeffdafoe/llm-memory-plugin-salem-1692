@@ -26,7 +26,8 @@ class_name FarmerRig
 ## animations #01-03), pull, pick = the pick-up crouch and back up, drink =
 ## drink standing (mug #11 south, #12 east; north reuses south, as the guide
 ## draws no back view), sit = sit on floor. seat = sit in a chair (LLM-750,
-## the interior window), held.
+## the interior window), held. doze = the guide's SLEEP standing, eyes shut
+## (LLM-782): only its head shows, on a bed's pillow under the cover.
 ##
 ## smith (LLM-764, the smithy window) = the guide's SMITH, east only (the guide
 ## draws no other facing): hammer and hot iron from overlay animation #09.
@@ -133,6 +134,7 @@ const ANIMATIONS := {
     ]},
     "south_seat": {"frames": [{"cell": 195, "ms": 0}]},
     "north_seat": {"frames": [{"cell": 211, "ms": 0}]},
-    "east_seat": {"frames": [{"cell": 227, "ms": 0}]}
+    "east_seat": {"frames": [{"cell": 227, "ms": 0}]},
+    "south_doze": {"frames": [{"cell": 199, "ms": 0}]}
 }
 # END-JSON

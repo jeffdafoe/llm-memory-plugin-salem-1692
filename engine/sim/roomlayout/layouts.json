@@ -45,6 +45,123 @@
                 {"id": "fire", "kind": "stand", "square": [7, 4], "at": [112, 70], "facing": "north", "use": ["stoke"]},
                 {"id": "stair_foot", "kind": "stand", "square": [0, 5], "at": [12, 80], "facing": "east"}
             ]
+        },
+        {
+            "assets": ["Red House (Medium)"],
+            "art": "home_red_medium",
+            "name": "Home",
+            "grid": [
+                "#######",
+                "#######",
+                "#######",
+                "....#b#",
+                "b#.####",
+                "##.####",
+                "##...##"
+            ],
+            "door": {"square": [3, 6], "at": [56, 111], "facing": "north"},
+            "keeper": {"square": [0, 3], "at": [10, 62], "facing": "south"},
+            "stations": [
+                {"id": "bed", "kind": "bed", "square": [5, 3], "at": [96, 72], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "pallet", "kind": "bed", "square": [0, 4], "at": [16, 89], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "chair_west", "kind": "seat", "square": [2, 5], "at": [40, 92], "facing": "east", "pose": "seat"}
+            ]
+        },
+        {
+            "assets": ["Red House (Small)"],
+            "art": "home_red_small",
+            "name": "Home",
+            "grid": [
+                "######",
+                "######",
+                "######",
+                ".....#",
+                "b#..b#",
+                "##..##",
+                "##..##",
+                "##..##",
+                "##..##"
+            ],
+            "door": {"square": [3, 8], "at": [56, 143], "facing": "north"},
+            "keeper": {"square": [0, 3], "at": [10, 62], "facing": "south"},
+            "stations": [
+                {"id": "bed", "kind": "bed", "square": [4, 4], "at": [80, 90], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "pallet", "kind": "bed", "square": [0, 4], "at": [16, 87], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "chair_east", "kind": "seat", "square": [2, 8], "at": [36, 136], "facing": "west", "pose": "seat"}
+            ]
+        },
+        {
+            "assets": ["Red House (Tiny)"],
+            "art": "home_red_tiny",
+            "name": "Home",
+            "grid": [
+                "#######",
+                "#######",
+                "#######",
+                ".....b#",
+                "..##.##",
+                "..##.##",
+                "#....b#",
+                "#....##",
+                "###..##"
+            ],
+            "door": {"square": [3, 8], "at": [56, 143], "facing": "north"},
+            "keeper": {"square": [0, 3], "at": [10, 62], "facing": "south"},
+            "stations": [
+                {"id": "bed_north", "kind": "bed", "square": [5, 3], "at": [96, 72], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "bed_south", "kind": "bed", "square": [5, 6], "at": [96, 126], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "chair_west", "kind": "seat", "square": [1, 5], "at": [24, 92], "facing": "east", "pose": "seat"},
+                {"id": "chair_east", "kind": "seat", "square": [4, 5], "at": [68, 92], "facing": "west", "pose": "seat"}
+            ]
+        },
+        {
+            "assets": ["Blue House (Tiny)"],
+            "art": "home_blue_tiny",
+            "name": "Home",
+            "grid": [
+                "#######",
+                "#######",
+                "#######",
+                ".....b#",
+                "..##.##",
+                "..##.##",
+                "#....b#",
+                "#....##",
+                "###..##"
+            ],
+            "door": {"square": [3, 8], "at": [56, 143], "facing": "north"},
+            "keeper": {"square": [0, 3], "at": [10, 62], "facing": "south"},
+            "stations": [
+                {"id": "bed_north", "kind": "bed", "square": [5, 3], "at": [96, 72], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "bed_south", "kind": "bed", "square": [5, 6], "at": [96, 126], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "chair_west", "kind": "seat", "square": [1, 5], "at": [24, 92], "facing": "east", "pose": "seat"},
+                {"id": "chair_east", "kind": "seat", "square": [4, 5], "at": [68, 92], "facing": "west", "pose": "seat"}
+            ]
+        },
+        {
+            "assets": ["Blue House (Small)"],
+            "art": "home_blue_small",
+            "name": "Home",
+            "grid": [
+                "#######",
+                "#######",
+                "#######",
+                "......#",
+                ".....b#",
+                "..##.##",
+                "..##.##",
+                "#....b#",
+                "#....##",
+                "###..##"
+            ],
+            "door": {"square": [3, 9], "at": [56, 159], "facing": "north"},
+            "keeper": {"square": [0, 3], "at": [10, 62], "facing": "south"},
+            "stations": [
+                {"id": "bed_north", "kind": "bed", "square": [5, 4], "at": [96, 88], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "bed_south", "kind": "bed", "square": [5, 7], "at": [96, 142], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "chair_west", "kind": "seat", "square": [1, 6], "at": [24, 108], "facing": "east", "pose": "seat"},
+                {"id": "chair_east", "kind": "seat", "square": [4, 6], "at": [68, 108], "facing": "west", "pose": "seat"}
+            ]
         }
     ]
 }

@@ -263,3 +263,104 @@ func TestKeeperLeavesOnlyByTheKeepersWay(t *testing.T) {
 		t.Errorf("no keeper's way: path %v, want one step", p)
 	}
 }
+
+// LLM-782: the homes' plans are kept by house type. Each home of a type
+// resolves to it; a structure's own plan wins; All lists only structures' own.
+func TestHouseTypePlans(t *testing.T) {
+	for _, asset := range []string{"Red House (Medium)", "Red House (Small)", "Red House (Tiny)", "Blue House (Tiny)", "Blue House (Small)"} {
+		l := Resolve("some-home", asset)
+		if l == nil || l.Art == "" || l.StructureID != "" {
+			t.Fatalf("%s: plan %v, want a house-type plan with its art", asset, l)
+		}
+		if l.Height() < 7 || l.StructureID != "" {
+			t.Errorf("%s: %d rows", asset, l.Height())
+		}
+		if l.StationFor(UseSleep) == nil {
+			t.Errorf("%s: no bed", asset)
+		}
+	}
+	if Resolve(tavern, "Red House (Medium)") != For(tavern) {
+		t.Error("a structure's own plan does not win over its house type's")
+	}
+	if Resolve("some-home", "Market Stall (Wood)") != nil || Resolve("", "Red House (Medium)") != nil {
+		t.Error("a house type without a plan, or no structure, resolved to one")
+	}
+	if For("asset:Red House (Medium)") != nil {
+		t.Error("For reaches a house-type plan by its key")
+	}
+	l := Resolve("some-home", "Red House (Medium)")
+	named := l.ForStructure("cole", "Cole Residence")
+	if named.StructureID != "cole" || named.Name != "Cole Residence" || l.StructureID != "" || l.Name == "Cole Residence" {
+		t.Errorf("ForStructure: copy %q %q, shared plan now %q %q", named.StructureID, named.Name, l.StructureID, l.Name)
+	}
+	if For(tavern).ForStructure(tavern, "Tavern") != For(tavern) {
+		t.Error("ForStructure copied a structure's own plan")
+	}
+}
+
+// A bed is only ever a sleeper's: never placed for someone awake, never
+// walked on, picked free from the id's hash.
+func TestBeds(t *testing.T) {
+	l := Resolve("some-home", "Red House (Medium)")
+	beds := map[Square]bool{}
+	for _, st := range l.Stations {
+		if st.has(UseSleep) {
+			beds[st.Square] = true
+			if l.Walkable(st.Square) || !l.IsBed(st.Square) {
+				t.Errorf("bed %v: walkable %v, IsBed %v", st.Square, l.Walkable(st.Square), l.IsBed(st.Square))
+			}
+		}
+	}
+	taken := map[Square]bool{}
+	for i := 0; i < 40; i++ {
+		s, ok := l.Place(RoleGuest, string(rune('a'+i)), taken)
+		if !ok {
+			break
+		}
+		if beds[s] {
+			t.Fatalf("an awake guest was placed on the bed %v", s)
+		}
+		taken[s] = true
+	}
+	taken = map[Square]bool{}
+	for range beds {
+		s, ok := l.Bed("x", taken)
+		if !ok || !beds[s] || taken[s] {
+			t.Fatalf("Bed gave %v %v with %v taken", s, ok, taken)
+		}
+		taken[s] = true
+	}
+	if _, ok := l.Bed("x", taken); ok {
+		t.Error("a bed was found with every bed taken")
+	}
+	if _, ok := For(tavern).Bed("x", nil); ok {
+		t.Error("the Tavern has a bed")
+	}
+}
+
+func TestParseRejectsBadHomePlans(t *testing.T) {
+	home := `{"assets": ["Hut"], "art": "hut", "grid": ["..", ".b"], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 0], "at": [24, 14]}, "stations": [%s]}`
+	bed := `{"id": "bed", "square": [1, 1], "at": [24, 30], "pose": "sleep", "use": ["sleep"]}`
+	cases := map[string]string{
+		"no art":             strings.Replace(strings.Replace(home, `"art": "hut", `, ``, 1), `%s`, bed, 1),
+		"structure and type": strings.Replace(strings.Replace(home, `{"assets"`, `{"structure_id": "s", "assets"`, 1), `%s`, bed, 1),
+		"bed on the floor":   strings.Replace(strings.Replace(home, `".b"`, `".."`, 1), `%s`, bed, 1),
+		"seat on a bed":      strings.Replace(home, `%s`, `{"id": "x", "square": [1, 1], "at": [24, 30]}`, 1),
+		"bed with no id":     strings.Replace(home, `%s`, `{"square": [1, 1], "at": [24, 30], "pose": "sleep", "use": ["sleep"]}`, 1),
+		"bed not posed":      strings.Replace(home, `%s`, `{"id": "bed", "square": [1, 1], "at": [24, 30], "use": ["sleep"]}`, 1),
+		"posed, not a bed":   strings.Replace(strings.Replace(home, `".b"`, `".."`, 1), `%s`, `{"id": "x", "square": [1, 1], "at": [24, 30], "pose": "sleep"}`, 1),
+	}
+	for name, room := range cases {
+		if _, err := Parse([]byte(`{"rooms": [` + room + `]}`)); err == nil {
+			t.Errorf("%s: parsed without error", name)
+		}
+	}
+	// A bed is never walked to, so one the door cannot reach is fine.
+	if _, err := Parse([]byte(`{"rooms": [` + strings.Replace(home, `%s`, bed, 1) + `]}`)); err != nil {
+		t.Errorf("a good home plan was rejected: %v", err)
+	}
+	two := strings.Replace(home, `%s`, bed, 1)
+	if _, err := Parse([]byte(`{"rooms": [` + two + `, ` + two + `]}`)); err == nil {
+		t.Error("a house type listed twice parsed")
+	}
+}

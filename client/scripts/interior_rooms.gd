@@ -8,8 +8,9 @@ class_name InteriorRooms
 ## square (container meta `room_square`). with_layout() merges the plan into
 ## the art as the spots the window draws at.
 ##
-## Keyed by structure id. The art lives in the tiles repo (tilesets/interiors/)
-## and on the VPS beside the other tilesets.
+## Keyed by structure id, or for homes by the plan's art (LLM-782). The art
+## lives in the tiles repo (tilesets/interiors/) and on the VPS beside the
+## other tilesets.
 ##
 ## `sheet` is the room without its furniture (walls, floor, rug). The
 ## furniture is `pieces` (LLM-767): each a rect {x, y, w, h} of `pieces_sheet`,
@@ -69,6 +70,117 @@ const ROOMS := {
             {"sheet": "/tilesets/interiors/inn_candle.png", "frames": 4, "fps": 6.0, "x": 24, "y": 44, "sort_y": 90},
         ],
     },
+    # Homes (LLM-782): one room per house type, keyed by the plan's `art` — every
+    # home placed as that type shares it; the title is the home's name. Built
+    # by build_rooms.gd's HOMES, which prints these. `covers` is each bed's
+    # cover on pieces_sheet (by the plan's bed id), drawn again over its sleeper
+    # up to the chin.
+    "home_red_medium": {
+        "sheet": "/tilesets/interiors/home_red_medium_common.png",
+        "pieces_sheet": "/tilesets/interiors/home_red_medium_pieces.png",
+        "size": Vector2i(112, 112),
+        "pieces": [
+            {"x": 64, "y": 28, "w": 16, "h": 37, "sort_y": 65},
+            {"x": 80, "y": 44, "w": 32, "h": 44, "sort_y": 71},
+            {"x": 0, "y": 62, "w": 32, "h": 48, "sort_y": 88},
+            {"x": 48, "y": 70, "w": 32, "h": 25, "sort_y": 88},
+            {"x": 32, "y": 68, "w": 14, "h": 27, "sort_y": 89},
+            {"x": 80, "y": 96, "w": 32, "h": 16, "sort_y": 111},
+        ],
+        "covers": {
+            "bed": {"x": 80, "y": 56, "w": 32, "h": 32},
+            "pallet": {"x": 0, "y": 74, "w": 32, "h": 36},
+        },
+        "anims": [
+            {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+        ],
+    },
+    "home_red_small": {
+        "sheet": "/tilesets/interiors/home_red_small_common.png",
+        "pieces_sheet": "/tilesets/interiors/home_red_small_pieces.png",
+        "size": Vector2i(96, 144),
+        "pieces": [
+            {"x": 80, "y": 28, "w": 16, "h": 37, "sort_y": 65},
+            {"x": 64, "y": 62, "w": 32, "h": 44, "sort_y": 89},
+            {"x": 0, "y": 60, "w": 32, "h": 48, "sort_y": 86},
+            {"x": 0, "y": 114, "w": 32, "h": 25, "sort_y": 132},
+            {"x": 29, "y": 112, "w": 14, "h": 27, "sort_y": 133},
+            {"x": 64, "y": 112, "w": 32, "h": 16, "sort_y": 127},
+            {"x": 68, "y": 112, "w": 16, "h": 27, "sort_y": 139},
+            {"x": 80, "y": 116, "w": 16, "h": 27, "sort_y": 143},
+        ],
+        "covers": {
+            "bed": {"x": 64, "y": 74, "w": 32, "h": 32},
+            "pallet": {"x": 0, "y": 72, "w": 32, "h": 36},
+        },
+        "anims": [
+            {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+        ],
+    },
+    "home_red_tiny": {
+        "sheet": "/tilesets/interiors/home_red_tiny_common.png",
+        "pieces_sheet": "/tilesets/interiors/home_red_tiny_pieces.png",
+        "size": Vector2i(112, 144),
+        "pieces": [
+            {"x": 80, "y": 44, "w": 32, "h": 44, "sort_y": 71},
+            {"x": 80, "y": 98, "w": 32, "h": 44, "sort_y": 125},
+            {"x": 32, "y": 70, "w": 32, "h": 25, "sort_y": 88},
+            {"x": 16, "y": 68, "w": 14, "h": 27, "sort_y": 89},
+            {"x": 61, "y": 68, "w": 14, "h": 27, "sort_y": 89},
+            {"x": 0, "y": 96, "w": 16, "h": 48, "sort_y": 143},
+            {"x": 16, "y": 128, "w": 32, "h": 16, "sort_y": 143},
+        ],
+        "covers": {
+            "bed_north": {"x": 80, "y": 56, "w": 32, "h": 32},
+            "bed_south": {"x": 80, "y": 110, "w": 32, "h": 32},
+        },
+        "anims": [
+            {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+        ],
+    },
+    "home_blue_tiny": {
+        "sheet": "/tilesets/interiors/home_blue_tiny_common.png",
+        "pieces_sheet": "/tilesets/interiors/home_blue_tiny_pieces.png",
+        "size": Vector2i(112, 144),
+        "pieces": [
+            {"x": 80, "y": 44, "w": 32, "h": 44, "sort_y": 71},
+            {"x": 80, "y": 98, "w": 32, "h": 44, "sort_y": 125},
+            {"x": 32, "y": 70, "w": 32, "h": 25, "sort_y": 88},
+            {"x": 16, "y": 68, "w": 14, "h": 27, "sort_y": 89},
+            {"x": 61, "y": 68, "w": 14, "h": 27, "sort_y": 89},
+            {"x": 0, "y": 96, "w": 16, "h": 48, "sort_y": 143},
+            {"x": 16, "y": 128, "w": 32, "h": 16, "sort_y": 143},
+        ],
+        "covers": {
+            "bed_north": {"x": 80, "y": 56, "w": 32, "h": 32},
+            "bed_south": {"x": 80, "y": 110, "w": 32, "h": 32},
+        },
+        "anims": [
+            {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+        ],
+    },
+    "home_blue_small": {
+        "sheet": "/tilesets/interiors/home_blue_small_common.png",
+        "pieces_sheet": "/tilesets/interiors/home_blue_small_pieces.png",
+        "size": Vector2i(112, 160),
+        "pieces": [
+            {"x": 96, "y": 28, "w": 16, "h": 37, "sort_y": 65},
+            {"x": 80, "y": 60, "w": 32, "h": 44, "sort_y": 87},
+            {"x": 80, "y": 114, "w": 32, "h": 44, "sort_y": 141},
+            {"x": 32, "y": 86, "w": 32, "h": 25, "sort_y": 104},
+            {"x": 16, "y": 84, "w": 14, "h": 27, "sort_y": 105},
+            {"x": 61, "y": 84, "w": 14, "h": 27, "sort_y": 105},
+            {"x": 0, "y": 112, "w": 16, "h": 48, "sort_y": 159},
+            {"x": 16, "y": 144, "w": 32, "h": 16, "sort_y": 159},
+        ],
+        "covers": {
+            "bed_north": {"x": 80, "y": 72, "w": 32, "h": 32},
+            "bed_south": {"x": 80, "y": 126, "w": 32, "h": 32},
+        },
+        "anims": [
+            {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+        ],
+    },
 }
 
 ## One art square: the room art is drawn one 16 px tile per footprint tile.
@@ -80,11 +192,23 @@ const STATION_BOX := Rect2(-8, -24, 16, 26)
 ## place to stand: about two and a half squares.
 const TAP_REACH := 40.0
 
-static func room_for(structure_id: String) -> Dictionary:
-    return ROOMS.get(structure_id, {})
+## The room's art: by the structure's id (the Tavern, the Inn), else by its
+## plan's `art` (a home, LLM-782), titled with the plan's name — the home's.
+## {} when it has neither. `plan` is the structure's Catalog.rooms entry.
+static func room_for(structure_id: String, plan := {}) -> Dictionary:
+    if structure_id == "":
+        return {}
+    if ROOMS.has(structure_id):
+        return ROOMS[structure_id]
+    var art := str(plan.get("art", ""))
+    if art == "" or not ROOMS.has(art):
+        return {}
+    var room: Dictionary = ROOMS[art].duplicate()
+    room["title"] = str(plan.get("name", ""))
+    return room
 
-static func has_room(structure_id: String) -> bool:
-    return ROOMS.has(structure_id)
+static func has_room(structure_id: String, plan := {}) -> bool:
+    return not room_for(structure_id, plan).is_empty()
 
 ## The room's art with the engine's floor plan merged in as spots — `door`,
 ## `keeper`, `keeper_door` (when the plan has one) and `spots` (the stations) —
@@ -292,6 +416,8 @@ static func _spot(station: Dictionary) -> Dictionary:
         spot["serve"] = {"x": serve.x, "y": serve.y}
     if station.get("use", null) is Array:
         spot["use"] = (station["use"] as Array).duplicate()
+    if station.has("id"):
+        spot["id"] = str(station["id"])
     return spot
 
 ## Spread people over a stall's spots — its customers, the hands beside its

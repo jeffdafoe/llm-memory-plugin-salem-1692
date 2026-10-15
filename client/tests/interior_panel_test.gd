@@ -101,9 +101,13 @@ const TESTS := [
     "_test_smithy_crew_leaves_off_to_mend",
     "_test_tavern_keeper_mends_and_serves",
     "_test_mender_speech_hold_outlasts_a_redraw",
+    "_test_home_rooms",
+    "_test_home_sleepers_in_bed",
 ]
 
 const STALL := "stall-1"
+## A test home's structure id: HOME + its house type's art (_load_room_plans).
+const HOME := "home:"
 const STALL_ASSET := "asset-stall"
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -241,8 +245,20 @@ func _load_room_plans() -> void:
     var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
     _check("harness — the engine's room plans load", parsed is Dictionary, true)
     if parsed is Dictionary:
-        _plans_as_loaded = (parsed["rooms"] as Array).duplicate(true)
-        _catalog().set_rooms(parsed["rooms"])
+        # The engine serves each structure's plan: a home's is its house
+        # type's, carrying the home's id and name (LLM-782). Here each house
+        # type stands for one test home, HOME + its art.
+        var served: Array = []
+        for plan in parsed["rooms"]:
+            if (plan as Dictionary).has("assets"):
+                var home: Dictionary = (plan as Dictionary).duplicate(true)
+                home["structure_id"] = HOME + str(plan["art"])
+                home["name"] = "Test Home"
+                served.append(home)
+            else:
+                served.append(plan)
+        _plans_as_loaded = served.duplicate(true)
+        _catalog().set_rooms(served)
 
 
 ## The keeper's way out from behind the counter ('k' squares, LLM-768 slice
@@ -286,8 +302,10 @@ func _deal_square(id: String, c: Node2D, sid: String) -> void:
     if plan.get("keeper_door", null) is Dictionary:
         reserved[InteriorRooms.square_of(plan["keeper_door"]["square"])] = true
     for st in plan["stations"]:
-        first.append(st["square"])
         reserved[InteriorRooms.square_of(st["square"])] = true
+        # A bed is a sleeper's alone (LLM-782).
+        if not (st.get("use", []) as Array).has("sleep"):
+            first.append(st["square"])
     for y in plan["grid"].size():
         var row: String = plan["grid"][y]
         for x in row.length():
@@ -3906,4 +3924,102 @@ func _test_tavern_bar_reopen() -> void:
     _check("eaten there: they dip toward it", dipped, true)
     _world.meals = {}
     _panel.close()
+    _done()
+
+
+## LLM-782: each house type's room — its art found by the plan's `art`, titled
+## with the home's name, the size of its plan, every bed with a cover, every
+## piece inside the room. No structure, or a plan without art, has no room.
+func _test_home_rooms() -> void:
+    var homes := 0
+    for key in InteriorRooms.ROOMS:
+        if not str(key).begins_with("home_"):
+            continue
+        homes += 1
+        var sid: String = HOME + str(key)
+        var plan: Dictionary = _catalog().rooms.get(sid, {})
+        _check("%s: the engine has its plan" % key, plan.is_empty(), false)
+        var room := InteriorRooms.room_for(sid, plan)
+        _check("%s: found by the plan's art" % key, [room.is_empty(), str(room.get("title", ""))], [false, "Test Home"])
+        _check("%s: a room to open" % key, InteriorRooms.has_room(sid, plan), true)
+        var size := Vector2i(str(plan["grid"][0]).length() * 16, (plan["grid"] as Array).size() * 16)
+        _check("%s: drawn at the plan's size" % key, room["size"], size)
+        for st in plan["stations"]:
+            if str(st.get("pose", "")) == "sleep":
+                _check("%s: bed %s has a cover" % [key, st["id"]], (room["covers"] as Dictionary).has(st["id"]), true)
+        for p in room["pieces"]:
+            var r := Rect2i(int(p["x"]), int(p["y"]), int(p["w"]), int(p["h"]))
+            _check("%s: piece %s inside the room" % [key, r], Rect2i(Vector2i.ZERO, size).encloses(r), true)
+    _check("five house types", homes, 5)
+    var any_home: Dictionary = _catalog().rooms[HOME + "home_red_medium"]
+    _check("no structure, no room", InteriorRooms.room_for("", any_home), {})
+    _check("a plan with art that is not drawn", InteriorRooms.room_for("x", {"art": "nope"}), {})
+    _check("the Tavern is still its own", str(InteriorRooms.room_for(_sid, any_home).get("sheet", "")), str(InteriorRooms.ROOMS[_sid]["sheet"]))
+    _done()
+
+
+## LLM-782: a sleeper in one of the room's beds is drawn there — a farmer-base
+## sleeper dozing, a pack sprite as it stands — with the bed's cover drawn over
+## them; a sleeper with no square (the loft) is neither drawn nor counted.
+## Waking, they stand on the floor, uncovered. A cover waits for the pieces
+## sheet.
+func _test_home_sleepers_in_bed() -> void:
+    _clear_people()
+    _panel.close()
+    var sid: String = HOME + "home_red_medium"
+    var plan: Dictionary = _catalog().rooms[sid]
+    var beds := {}
+    for st in plan["stations"]:
+        if str(st.get("pose", "")) == "sleep":
+            beds[str(st["id"])] = st
+    _person("lewis", _farmer(), sid)
+    _check("awake, not dealt a bed", beds.values().any(func(st): return InteriorRooms.square_of(st["square"]) == InteriorRooms.square_of(_world.placed_npcs["lewis"].get_meta("room_square"))), false)
+    var silence := _person("silence", _farmer(), sid, {"dormant": "sleeping"})
+    silence.set_meta("room_square", beds["bed"]["square"])
+    var anne := _person("anne", _pack(), sid, {"dormant": "sleeping"})
+    anne.set_meta("room_square", beds["pallet"]["square"])
+    _person("patience", _pack(), sid, {"dormant": "sleeping"})
+    _panel.open(sid)
+    _check("the window is the home's", _panel.room.get("title", ""), "Test Home")
+    var cast: Dictionary = _panel.occupants()
+    var ids: Array = []
+    for e in cast["placed"]:
+        ids.append(str(e["id"]))
+    ids.sort()
+    _check("drawn: the waker and the two in bed", ids, ["anne", "lewis", "silence"])
+    _check("the one in the loft is not counted", cast["more"], 0)
+    var held: Node2D = _panel._holder("silence")
+    _check("in bed: at the bed's point", held.position, Vector2(int(beds["bed"]["at"][0]), int(beds["bed"]["at"][1])))
+    _check("a farmer-base sleeper dozes", _anim(held), &"south_doze")
+    var standing: AnimatedSprite2D = _panel._sprite(_farmer())
+    _check("lifted so the face clears the cover", _panel._sprite_of(held).position.y, standing.position.y - _panel.DOZE_LIFT)
+    standing.free()
+    var cover: Sprite2D = held.get_node_or_null("Cover")
+    var want: Dictionary = _panel.room["covers"]["bed"]
+    _check("the bed's cover over them", cover != null and cover.region_rect == Rect2(want["x"], want["y"], want["w"], want["h"]), true)
+    _check("the cover in place", cover.position + held.position if cover != null else Vector2.ZERO, Vector2(want["x"], want["y"]))
+    var pallet: Node2D = _panel._holder("anne")
+    _check("a pack sleeper shows as they stand", _anim(pallet), &"south_idle")
+    _check("the pallet's blanket over them", pallet.get_node_or_null("Cover") != null, true)
+
+    # Waking: on the floor, no cover.
+    silence.set_meta("dormant", "")
+    silence.set_meta("room_square", [2, 3])
+    _panel._signature = ""
+    _panel.refresh()
+    held = _panel._holder("silence")
+    _check("awake: standing on the floor", [_anim(held), held.get_node_or_null("Cover") == null], [&"south_idle", true])
+
+    # Drawn before the pieces sheet landed: covered once it does.
+    var hook: Callable = _panel.texture_hook
+    _panel.texture_hook = func(path: String) -> Texture2D:
+        return null if path.ends_with("_pieces.png") else _blank(128, 112)
+    _panel._signature = ""
+    _panel.refresh()
+    _check("no sheet yet: no cover", _panel._holder("anne").get_node_or_null("Cover") == null, true)
+    _panel.texture_hook = hook
+    _panel._draw_anims()
+    _check("the sheet lands: covered", _panel._holder("anne").get_node_or_null("Cover") != null, true)
+    _panel.close()
+    _clear_people()
     _done()

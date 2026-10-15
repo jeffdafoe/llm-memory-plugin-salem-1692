@@ -860,8 +860,9 @@ type Actor struct {
 	CurrentHuddleID   HuddleID
 
 	// RoomSquare is where the actor stands in a room with a floor plan
-	// (LLM-768, room_square.go): nil outdoors, in a structure without a plan,
-	// asleep, or with every square taken. Memory only — placed afresh at boot.
+	// (LLM-768, room_square.go) — asleep, the bed they lie in (LLM-782): nil
+	// outdoors, in a structure without a plan, asleep upstairs or in the loft, or
+	// with every square taken. Memory only — placed afresh at boot.
 	RoomSquare *roomlayout.Square
 	// RoomDriftAt: when an idle guest next drifts a step or three in the room
 	// (room_walk.go); zero until the drift sweep first sees them inside. Memory

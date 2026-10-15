@@ -32,7 +32,7 @@ const (
 // awake in a room with a plan, are on their way out (MoveIntent), someone else
 // holds `to`, or there is no way.
 func walkInRoom(w *World, a *Actor, to roomlayout.Square) []roomlayout.Square {
-	layout := roomlayout.For(string(a.InsideStructureID))
+	layout := roomPlan(w, a.InsideStructureID)
 	if layout == nil || a.InsideStructureID == "" || a.State == StateSleeping || a.MoveIntent != nil {
 		return nil
 	}
@@ -97,7 +97,7 @@ func walkToStoke(w *World, a *Actor) {
 	if a == nil {
 		return
 	}
-	layout := roomlayout.For(string(a.InsideStructureID))
+	layout := roomPlan(w, a.InsideStructureID)
 	if layout == nil {
 		return
 	}
@@ -113,7 +113,7 @@ func keeperBackToPlace(w *World, a *Actor) {
 	if a == nil || a.MoveIntent != nil || roomRole(a, a.InsideStructureID) != roomlayout.RoleKeeper {
 		return
 	}
-	if layout := roomlayout.For(string(a.InsideStructureID)); layout != nil {
+	if layout := roomPlan(w, a.InsideStructureID); layout != nil {
 		walkInRoom(w, a, layout.Keeper.Square)
 	}
 }
@@ -126,7 +126,7 @@ func walkToSeat(w *World, a *Actor) {
 		roomRole(a, a.InsideStructureID) == roomlayout.RoleKeeper {
 		return
 	}
-	layout := roomlayout.For(string(a.InsideStructureID))
+	layout := roomPlan(w, a.InsideStructureID)
 	if layout == nil {
 		return
 	}
@@ -166,8 +166,16 @@ func DriftInRooms(now time.Time, rng *rand.Rand) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			res := RoomDriftResult{}
-			for _, layout := range roomlayout.All() {
-				sid := StructureID(layout.StructureID)
+			sids := make([]StructureID, 0, len(w.actorsByStructure))
+			for sid := range w.actorsByStructure {
+				sids = append(sids, sid)
+			}
+			sort.Slice(sids, func(i, j int) bool { return sids[i] < sids[j] })
+			for _, sid := range sids {
+				layout := roomPlan(w, sid)
+				if layout == nil {
+					continue
+				}
 				ids := make([]ActorID, 0, len(w.actorsByStructure[sid]))
 				for id := range w.actorsByStructure[sid] {
 					ids = append(ids, id)
