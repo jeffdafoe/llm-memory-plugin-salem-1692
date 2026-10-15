@@ -222,7 +222,8 @@ func roomDriftWait(rng *rand.Rand) time.Duration {
 }
 
 // roomDriftSquare picks a free square one to roomDriftSteps steps from the
-// guest — never the door (stepping onto it reads as leaving).
+// guest — never the door (stepping onto it reads as leaving), never right
+// beside someone else (LLM-788).
 func roomDriftSquare(w *World, a *Actor, layout *roomlayout.Layout, rng *rand.Rand) (roomlayout.Square, bool) {
 	taken := takenRoomSquares(w, a.InsideStructureID, a.ID)
 	var near []roomlayout.Square
@@ -240,5 +241,21 @@ func roomDriftSquare(w *World, a *Actor, layout *roomlayout.Layout, rng *rand.Ra
 	if len(near) == 0 {
 		return roomlayout.Square{}, false
 	}
-	return near[rng.Intn(len(near))], true
+	// Never step up beside someone (LLM-788): a square with nobody on the
+	// eight round it, picked at random; with none in reach, stay put — unless
+	// they already stand beside someone, then step to the roomiest square that
+	// gives them more room than they have.
+	var clear []roomlayout.Square
+	for _, s := range near {
+		if roomlayout.Room(s, taken) > 1 {
+			clear = append(clear, s)
+		}
+	}
+	if len(clear) > 0 {
+		return clear[rng.Intn(len(clear))], true
+	}
+	if best := roomlayout.Roomiest(near, taken); roomlayout.Room(best, taken) > roomlayout.Room(*a.RoomSquare, taken) {
+		return best, true
+	}
+	return roomlayout.Square{}, false
 }

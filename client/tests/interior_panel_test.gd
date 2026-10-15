@@ -103,6 +103,7 @@ const TESTS := [
     "_test_mender_speech_hold_outlasts_a_redraw",
     "_test_home_rooms",
     "_test_home_sleepers_in_bed",
+    "_test_dismiss_walks_out_of_a_room",
 ]
 
 const STALL := "stall-1"
@@ -4021,5 +4022,75 @@ func _test_home_sleepers_in_bed() -> void:
     _panel._draw_anims()
     _check("the sheet lands: covered", _panel._holder("anne").get_node_or_null("Cover") != null, true)
     _panel.close()
+    _clear_people()
+    _done()
+
+
+## LLM-787: the player's own close — ×, Esc, a click on the dimmed village —
+## says so (dismissed), and main.gd walks them out of a room to just outside
+## its door (the loiter pin). A close because they walked away says nothing,
+## and a stall's dismissal walks nowhere.
+func _test_dismiss_walks_out_of_a_room() -> void:
+    _clear_people()
+    _panel.close()
+    var log: Array = []
+    var on_dismissed := func(sid: String, stall: bool): log.append([sid, stall])
+    _panel.dismissed.connect(on_dismissed)
+    _person("pc", _farmer(), _sid)
+    _panel.open(_sid)
+    _panel.close_button.pressed.emit()
+    _check("×: closed and dismissed", [_panel.is_open(), log], [false, [[_sid, false]]])
+    _panel.open(_sid)
+    var esc := InputEventAction.new()
+    esc.action = "ui_cancel"
+    esc.pressed = true
+    _panel._unhandled_input(esc)
+    _check("Esc: dismissed", log.size(), 2)
+    _panel.open(_sid)
+    var click := InputEventMouseButton.new()
+    click.button_index = MOUSE_BUTTON_LEFT
+    click.pressed = true
+    _panel._on_backdrop_input(click)
+    _check("backdrop: dismissed", log.size(), 3)
+    _panel.open(_sid)
+    _panel.close()
+    _check("walking away closes it without a dismissal", log.size(), 3)
+    _panel.dismissed.disconnect(on_dismissed)
+
+    var main: Node2D = load("res://scripts/main.gd").new()
+    main.world = _world
+    var house := Node2D.new()
+    house.position = Vector2(20 * StallScenes.TILE, 20 * StallScenes.TILE)
+    house.set_meta("effective_loiter_offset_x", 1)
+    house.set_meta("effective_loiter_offset_y", 2)
+    _world.placed_objects[_sid] = house
+    var want: Vector2i = root.get_node("VillageApi").world_to_tile_padded(Vector2(21.5, 22.5) * StallScenes.TILE)
+    _check("a room: out to the loiter pin", main._walk_out_tile(_sid, false), want)
+    _check("a stall: nowhere", main._walk_out_tile(_sid, true), main.NO_TILE)
+    _check("a building not on the map: nowhere", main._walk_out_tile("gone", false), main.NO_TILE)
+
+    # What becomes of the walk-out request (code_review): sent → the move in
+    # flight, purpose "leave"; another move in flight → queued, room stays
+    # shut; any other failure → the player is still inside, the room is back.
+    main.interior_panel_layer = _panel
+    main._pc_actor_id = "pc"
+    _panel.close()
+    main._leave_sent(_sid, OK)
+    _check("sent: the walk-out is the move in flight", [main._pc_move_purpose, main._leave_sid], ["leave", _sid])
+    main._pc_move_purpose = ""
+    main._leave_sent(_sid, ERR_BUSY)
+    _check("busy: queued, the room stays shut", [main._queued_leave_sid, _panel.is_open()], [_sid, false])
+    main._leave_sent(_sid, FAILED)
+    _check("failed: still inside, so the room comes back", _panel.is_open(), true)
+    _panel.close()
+    # The queued walk-out goes when the move in flight answers. Off the tree its
+    # request cannot be sent, so it ends like any failed send: room back.
+    main._send_queued_leave()
+    _check("the queue is drained", main._queued_leave_sid, "")
+    _check("the queued walk-out was tried (here it fails: room back)", _panel.is_open(), true)
+    _panel.close()
+    _world.placed_objects.erase(_sid)
+    house.free()
+    main.free()
     _clear_people()
     _done()
