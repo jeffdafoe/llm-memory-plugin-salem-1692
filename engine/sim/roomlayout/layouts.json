@@ -17,9 +17,9 @@
             "stations": [
                 {"id": "seat_west", "kind": "seat", "square": [1, 6], "at": [16, 98], "facing": "east", "pose": "seat", "serve": [31, 87]},
                 {"id": "seat_east", "kind": "seat", "square": [3, 6], "at": [56, 98], "facing": "west", "pose": "seat", "serve": [39, 87]},
-                {"id": "bar", "kind": "stand", "square": [4, 5], "at": [76, 100], "facing": "east"},
-                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [52, 68], "facing": "west", "use": ["stoke"]},
-                {"id": "window", "kind": "stand", "square": [4, 4], "at": [68, 74], "facing": "south"}
+                {"id": "bar", "kind": "stand", "square": [4, 5], "at": [76, 100], "facing": "east", "serve": [90, 92], "use": ["drink"]},
+                {"id": "bar_north", "kind": "stand", "square": [4, 4], "at": [76, 78], "facing": "east", "serve": [90, 78], "use": ["drink"]},
+                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [52, 68], "facing": "west", "use": ["stoke"]}
             ]
         },
         {

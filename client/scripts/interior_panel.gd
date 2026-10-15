@@ -44,6 +44,12 @@ extends CanvasLayer
 ## chips and a knock; no bustle, anvil or bellows meanwhile. A sale or a word
 ## stops the work a while.
 ##
+## At the bar (LLM-781): an order for someone standing at a bar place (a
+## station with use "drink") slides across the bar to its serve point and
+## stays, eaten or drunk there, and is cleared from behind the bar. A
+## farmer-base drinker holds their drink (the drink-standing pose, the tankard
+## off the bar meanwhile) until the empty is left for the keeper.
+##
 ## PIXEL RULE (as repair_stage.gd): the room and the people are drawn in art
 ## pixels at a WHOLE number of screen pixels each, `k`; the window stretch is
 ## cancelled and the origin snapped to a whole screen pixel. People come from
@@ -173,6 +179,9 @@ const BUNDLE_STEP := 10.0
 const EAT_PERIOD := 1.4
 const EAT_DOWN := 0.35
 const EAT_DIP := 1.0
+## Drinks a farmer-base guest at the bar holds rather than leaves on it
+## (LLM-781).
+const BAR_DRINKS := ["ale", "small_ale", "mulled_ale"]
 const EMPTY_DISH := {"porridge": "porridge_empty", "stew": "stew_empty",
     "ale": "ale_empty", "small_ale": "ale_empty", "mulled_ale": "ale_empty",
     "fried_meat": "plate_empty", "journeycake": "plate_empty"}
@@ -1920,8 +1929,9 @@ func _next_handoff() -> void:
         h["stop"] = _spot_point(room.get("reach", room["keeper"]))
         h["facing"] = str(room["keeper"].get("facing", "south"))
         # With a way out from behind the counter the keeper walks to the
-        # table for it (LLM-769).
-        var fetch := _waiter_stand(_cell_bottom((h["good"] as Node2D).position)) if keeper != null else {}
+        # table for it (LLM-769); one on the bar is taken back across it.
+        var fetch := _waiter_stand(_cell_bottom((h["good"] as Node2D).position)) \
+            if keeper != null and not (h["good"] as Node2D).has_meta("at_bar") else {}
         if not fetch.is_empty():
             h["stop"] = fetch["stand"]
             h["facing"] = fetch["facing"]
@@ -2152,7 +2162,8 @@ func _waiter_stand(at: Vector2) -> Dictionary:
 ## not drawn or the keeper cannot get out from behind the counter.
 func _waiter_target() -> Dictionary:
     var spot: Dictionary = _spot_of.get(str(_handoff_now.get("other", "")), {})
-    if spot.is_empty():
+    # At the bar it goes across the bar, not round it (LLM-781).
+    if spot.is_empty() or _bar_place(spot):
         return {}
     var on_table := bool(_handoff_now.get("eaten", false)) and spot.has("serve")
     var put := _spot_point(spot["serve"]) if on_table else _spot_point(spot) + Vector2(0, -CARRY_LIFT)
@@ -2316,6 +2327,8 @@ func _on_table(dish: Node2D, buyer: String, item: String) -> void:
             _clear_dish(old)
     dish.set_meta("buyer", buyer)
     dish.set_meta("item", item)
+    if _bar_place(_spot_of.get(buyer, {})):
+        dish.set_meta("at_bar", true)
     if _holder(buyer) == null:
         _clear_dish(dish)
         return
@@ -2395,6 +2408,8 @@ func _lay_running_meals() -> void:
         if dish != null:
             dish.set_meta("buyer", id)
             dish.set_meta("item", item)
+            if _bar_place(spot):
+                dish.set_meta("at_bar", true)
 
 
 ## A meal is over (world.npc_meal_ended): its dish, emptied, is cleared.
@@ -2433,8 +2448,14 @@ func _show_empty(dish: Node2D) -> void:
 func _eat(delta: float) -> void:
     _eat_time += delta
     var eating := {}
+    # A drink on the bar in front of its buyer (LLM-781): buyer -> dish.
+    var drinks := {}
     for dish in _dishes():
-        eating[str(dish.get_meta("buyer"))] = true
+        var buyer := str(dish.get_meta("buyer"))
+        eating[buyer] = true
+        if dish.has_meta("at_bar") and BAR_DRINKS.has(str(dish.get_meta("item"))):
+            drinks[buyer] = dish
+    var in_hand := {}
     for entry in _hits:
         var holder: Node2D = entry["holder"]
         if not is_instance_valid(holder):
@@ -2442,13 +2463,51 @@ func _eat(delta: float) -> void:
         var spr := _sprite_of(holder)
         if spr == null:
             continue
+        var id := str(entry["id"])
         if not spr.has_meta("rest_y"):
             spr.set_meta("rest_y", spr.position.y)
+        var drinking := drinks.has(id) and _drink_at_bar(holder, spr, id)
+        if drinking:
+            in_hand[drinks[id]] = true
+        elif holder.has_meta("drinking"):
+            # Done (or walked off): they stand as their place has them.
+            holder.remove_meta("drinking")
+            if not holder.has_meta("walking"):
+                var spot: Dictionary = _spot_of.get(id, {})
+                _pose(spr, str(spot.get("facing", "south")), str(spot.get("pose", "stand")))
         var dip := 0.0
-        if eating.has(str(entry["id"])):
-            var beat := float(absi(hash(str(entry["id"]))) % 100) / 100.0 * EAT_PERIOD
+        if eating.has(id) and not drinking:
+            var beat := float(absi(hash(id)) % 100) / 100.0 * EAT_PERIOD
             dip = EAT_DIP if fmod(_eat_time + beat, EAT_PERIOD) < EAT_DOWN else 0.0
         spr.position.y = float(spr.get_meta("rest_y")) + dip
+    # A drink in hand is off the bar; every other dish shows (the empty once
+    # it is done).
+    for child in _handoff.get_children():
+        if child.has_meta("buyer"):
+            child.visible = not in_hand.has(child)
+
+
+## Whether `spot` is a place to stand at the bar (LLM-781).
+func _bar_place(spot: Dictionary) -> bool:
+    var use = spot.get("use", [])
+    return use is Array and (use as Array).has("drink")
+
+
+## A farmer-base guest standing at their bar place drinks what is in front of
+## them: the drink-standing pose, facing the bar. False (and nothing played)
+## for anyone else — on the move, elsewhere, or a sprite without the pose.
+func _drink_at_bar(holder: Node2D, spr: AnimatedSprite2D, id: String) -> bool:
+    var spot: Dictionary = _spot_of.get(id, {})
+    if not _bar_place(spot) or spr.sprite_frames == null or holder.has_meta("walking") \
+            or holder.has_meta("entering") or holder.has_meta("leaving"):
+        return false
+    var anim := str(spot.get("facing", "east")) + "_drink"
+    if not spr.sprite_frames.has_animation(anim):
+        return false
+    holder.set_meta("drinking", true)
+    if spr.animation != anim:
+        spr.play(anim)
+    return true
 
 
 ## A new meal of another good takes the place of the one running: the old
