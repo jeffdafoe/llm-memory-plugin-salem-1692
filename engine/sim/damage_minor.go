@@ -40,6 +40,7 @@ package sim
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math/rand/v2"
 	"sort"
@@ -370,6 +371,69 @@ func rollMinorWorks(w *World, rng DamageRoller, now time.Time) *VillageObject {
 		return nil
 	}
 	return obj
+}
+
+// Errors of ForceMinorWork.
+var (
+	ErrUnknownMinorForm      = errors.New(`form must be "fence", "signpost" or "crate"`)
+	ErrNoMinorWorkSite       = errors.New("nothing in the village can break into a minor work of that form now")
+	ErrNotMinorWorkCandidate = errors.New("that object cannot break into a minor work of that form now")
+)
+
+// ForcedMinorWork is what ForceMinorWork broke: the site, the state it took,
+// and that state's form.
+type ForcedMinorWork struct {
+	ID    VillageObjectID
+	State string
+	Form  string
+}
+
+// ForceMinorWork breaks a minor work now — the operator's hand (LLM-790): no
+// roll and no open cap. A non-empty id names the object, which must be a
+// candidate; otherwise a random candidate. form ("" for any) narrows the pick
+// to the variants of that form. Returns a ForcedMinorWork.
+func ForceMinorWork(id VillageObjectID, form string, rng DamageRoller) Command {
+	return Command{Fn: func(w *World) (any, error) {
+		switch form {
+		case "", MinorFormFence, MinorFormSignpost, MinorFormCrate:
+		default:
+			return nil, ErrUnknownMinorForm
+		}
+		if id != "" && w.VillageObjects[id] == nil {
+			return nil, ErrVillageObjectNotFound
+		}
+		objs, variants := minorWorkCandidates(w)
+		var pickable []*VillageObject
+		for _, obj := range objs {
+			if id != "" && obj.ID != id {
+				continue
+			}
+			var vs []*AssetState
+			for _, v := range variants[obj.ID] {
+				if f, _ := stateTagValue(v, minorTagForm); form == "" || f == form {
+					vs = append(vs, v)
+				}
+			}
+			if len(vs) > 0 {
+				variants[obj.ID] = vs
+				pickable = append(pickable, obj)
+			}
+		}
+		if len(pickable) == 0 {
+			if id != "" {
+				return nil, ErrNotMinorWorkCandidate
+			}
+			return nil, ErrNoMinorWorkSite
+		}
+		obj := pickable[pick(rng, len(pickable))]
+		vs := variants[obj.ID]
+		v := vs[pick(rng, len(vs))]
+		if !damageMinor(w, obj, v, time.Now().UTC()) {
+			return nil, ErrNotMinorWorkCandidate
+		}
+		f, _ := stateTagValue(v, minorTagForm)
+		return ForcedMinorWork{ID: obj.ID, State: v.State, Form: f}, nil
+	}}
 }
 
 func orDefault(v, def int) int {
