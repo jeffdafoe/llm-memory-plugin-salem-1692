@@ -1294,12 +1294,19 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
             if parsed is Dictionary:
                 _pending_knock = bool(parsed.get("knocked", false))
                 _pending_knock_structure_id = _pc_move_target if _pending_knock else ""
+                # Already standing at that door (a click on the house from its
+                # doorstep): the zero-length walk's arrival may have beaten this
+                # answer, so ask now rather than wait for it.
+                _open_door_if_there()
         )
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)
     var payload: String
     var hit_id: String = str(hit.get("id", "")) if hit.has("id") else ""
     _pc_move_target = ""
+    # A new walk drops any knock still pending from the last one (LLM-785).
+    _pending_knock = false
+    _pending_knock_structure_id = ""
 
     # Walk-then-read state machine (ZBBS-112). Any new walk closes a
     # currently-open notice panel — clicking elsewhere mid-read IS the
@@ -1353,6 +1360,19 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         _pending_notice_object_id = ""
         _pc_move_purpose = ""
         push_warning("PC move request failed: %s" % err)
+
+## Open the door popup for the pending knock when the character stands at that
+## house's door (LLM-785) — called on their arrival and when the move's answer
+## arms the knock, whichever comes last.
+func _open_door_if_there() -> void:
+    if not _pending_knock or _pending_knock_structure_id == "" or door_panel_layer == null or _pc_actor_id == "":
+        return
+    var sid := _pending_knock_structure_id
+    if not DoorPanelScript.at_door(world.placed_npcs.get(_pc_actor_id, null), world.placed_objects.get(sid, null)):
+        return
+    _pending_knock = false
+    _pending_knock_structure_id = ""
+    door_panel_layer.open(sid, _place_title(sid))
 
 ## A placed building's name, for the door popup's title ("" when unknown).
 func _place_title(sid: String) -> String:
@@ -1508,12 +1528,12 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     # Walk-then-knock (ZBBS-HOME-445, LLM-785): at the door of a house they
     # may not walk into, the player is asked whether to knock — the knock
     # waits for the popup's Knock button (_on_door_knocked).
-    if _pending_knock and _pc_actor_id != "" and npc_id == _pc_actor_id:
-        _pending_knock = false
-        var sid := _pending_knock_structure_id
-        _pending_knock_structure_id = ""
-        if sid != "" and door_panel_layer != null:
-            door_panel_layer.open(sid, _place_title(sid))
+    # The move's answer and the arrival come by different channels, so an
+    # arrival is matched to the pending house by where the character now
+    # stands: only at that house's door does the popup open, and an arrival
+    # from an earlier walk leaves the knock pending for its own arrival.
+    if _pc_actor_id != "" and npc_id == _pc_actor_id:
+        _open_door_if_there()
     if _pending_notice_object_id == "":
         return
     if _pc_actor_id == "" or npc_id != _pc_actor_id:

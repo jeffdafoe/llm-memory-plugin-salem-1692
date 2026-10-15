@@ -112,6 +112,16 @@ func _button(text: String, cb: Callable) -> Button:
     return b
 
 
+## Whether `person` (a world container) stands at the door of `house` (a placed
+## building): on its loiter pin or one of the eight tiles round it — the
+## engine's own "at the door" (AtDoorOf / ActorAtObjectPin), so an arrival
+## frame for some other walk cannot open the popup for this house.
+static func at_door(person: Node2D, house: Node2D) -> bool:
+    if person == null or house == null or not is_instance_valid(person) or not is_instance_valid(house):
+        return false
+    return StallScenes.at_pin(StallScenes.standing_tile(person), StallScenes.pin_tile(house))
+
+
 ## Ask at the door of `sid`, named `title` (the house's name). Opening again
 ## while open just retitles it.
 func open(sid: String, title: String) -> void:

@@ -19,6 +19,7 @@ const TESTS := [
     "_test_knock_closes_then_knocks",
     "_test_leave_esc_and_backdrop_close_without_knocking",
     "_test_reopen_retitles",
+    "_test_at_door_is_the_engines_door",
 ]
 
 var _failures := 0
@@ -151,4 +152,31 @@ func _test_reopen_retitles() -> void:
     p.knock_button.pressed.emit()
     _check("knocks on the new door", log.back(), "knocked:cole-home")
     p.free()
+    _done()
+
+
+## at_door: the person stands on the house's loiter pin or one of the eight
+## tiles round it (the engine's AtDoorOf); anywhere else, or still walking a
+## route, is not at the door — so an arrival from some other walk cannot open
+## the popup for this house.
+func _test_at_door_is_the_engines_door() -> void:
+    var script: GDScript = load(PANEL_PATH)
+    var tile := float(StallScenes.TILE)
+    var house := Node2D.new()
+    house.position = Vector2(10 * tile, 10 * tile)
+    house.set_meta("effective_loiter_offset_x", 0)
+    house.set_meta("effective_loiter_offset_y", 2)
+    var person := Node2D.new()
+    person.position = Vector2(10 * tile + 4, 12 * tile + 4)
+    _check("on the pin", script.at_door(person, house), true)
+    person.position = Vector2(11 * tile + 4, 13 * tile + 4)
+    _check("a tile off, diagonally", script.at_door(person, house), true)
+    person.position = Vector2(13 * tile + 4, 12 * tile + 4)
+    _check("three tiles off", script.at_door(person, house), false)
+    person.position = Vector2(10 * tile + 4, 12 * tile + 4)
+    person.set_meta("walking", {"path": [Vector2(40 * tile, 40 * tile)], "finish_idle": false})
+    _check("walking a route through the door", script.at_door(person, house), false)
+    _check("no house", script.at_door(person, null), false)
+    house.free()
+    person.free()
     _done()

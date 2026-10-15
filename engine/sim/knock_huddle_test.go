@@ -226,6 +226,21 @@ func TestKnockWalk_ArrivedEventCarriesKnocked(t *testing.T) {
 	if arrived != 1 {
 		t.Errorf("ActorArrived{walker, Knocked, dest=cottage, outside} count = %d, want 1", arrived)
 	}
+
+	// LLM-785: a click on the house while standing at its door starts a
+	// zero-length walk that arrives again — the client reopens the door popup
+	// off that arrival, so it must keep coming.
+	if res, err := w.Send(sim.EnterOrKnock("walker", "cottage", true, now)); err != nil || !res.(sim.EnterOrKnockResult).Knocked {
+		t.Fatalf("second click at the door: %v %v, want a knock", res, err)
+	}
+	driveToArrival(t, w, "walker", now, 5)
+	again := rec.countEvents(func(e sim.Event) bool {
+		a, ok := e.(*sim.ActorArrived)
+		return ok && a.ActorID == "walker" && a.Knocked && a.DestStructureID == "cottage" && a.FinalStructureID == ""
+	})
+	if again != 2 {
+		t.Errorf("after a second click at the door: knocked arrivals = %d, want 2", again)
+	}
 }
 
 // LLM-784: an unanswered knock is told on ARRIVAL, after the knock — a private

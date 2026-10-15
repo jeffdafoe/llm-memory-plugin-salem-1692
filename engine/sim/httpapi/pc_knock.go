@@ -53,11 +53,8 @@ func (s *Server) handlePCKnock(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		if errors.Is(err, errPCNotFound) {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		status, msg := knockErrorResponse(err)
+		writeError(w, status, msg)
 		return
 	}
 	out, ok := res.(sim.KnockResult)
@@ -66,6 +63,19 @@ func (s *Server) handlePCKnock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, pcKnockResponse{Answered: out.Answered})
+}
+
+// knockErrorResponse maps a knock's error to its status and message: no PC →
+// 404, a refusal (sim.ErrKnockRefused: not at that door, a door they may walk
+// through) → 422 with the reason, anything else → 500 with no internal detail.
+func knockErrorResponse(err error) (int, string) {
+	switch {
+	case errors.Is(err, errPCNotFound):
+		return http.StatusNotFound, err.Error()
+	case errors.Is(err, sim.ErrKnockRefused):
+		return http.StatusUnprocessableEntity, err.Error()
+	}
+	return http.StatusInternalServerError, "knock failed"
 }
 
 // knockPCCommand resolves username → PC actor on the world goroutine and
