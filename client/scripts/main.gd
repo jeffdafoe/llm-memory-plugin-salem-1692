@@ -1368,7 +1368,7 @@ func _sync_interior() -> void:
 ## when it has a room, else the stall whose counter they stand at, else "".
 func _local_pc_place() -> String:
     var inside_sid := _local_pc_inside_structure_id()
-    if InteriorRooms.has_room(inside_sid):
+    if InteriorRooms.has_room(inside_sid, Catalog.rooms.get(inside_sid, {})):
         return inside_sid
     if inside_sid != "" or _pc_actor_id == "" or not world.placed_npcs.has(_pc_actor_id):
         return ""

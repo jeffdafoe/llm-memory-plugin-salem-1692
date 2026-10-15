@@ -179,6 +179,9 @@ const BUNDLE_STEP := 10.0
 const EAT_PERIOD := 1.4
 const EAT_DOWN := 0.35
 const EAT_DIP := 1.0
+## How far (room art px) a farmer-base sleeper's doze frame is lifted in bed so
+## their face clears the cover (LLM-782).
+const DOZE_LIFT := 3.0
 ## Drinks a farmer-base guest at the bar holds rather than leaves on it
 ## (LLM-781).
 const BAR_DRINKS := ["ale", "small_ale", "mulled_ale"]
@@ -439,7 +442,7 @@ func _label(font_size: int, color: Color) -> Label:
 
 ## Show the room — or the stall — of `sid`. Anything else is a no-op.
 func open(sid: String) -> void:
-    var r := InteriorRooms.room_for(sid)
+    var r := InteriorRooms.room_for(sid, Catalog.rooms.get(sid, {}))
     if not r.is_empty():
         r = InteriorRooms.with_layout(r, Catalog.rooms.get(sid, {}))
     if r.is_empty():
@@ -614,8 +617,9 @@ func occupants() -> Dictionary:
             continue
         if not bool(c.get_meta("inside", false)) or str(c.get_meta("inside_structure_id", "")) != structure_id:
             continue
-        # Asleep means upstairs in a bedroom, not in this room.
-        if str(c.get_meta("dormant", "")) == "sleeping":
+        # Asleep: in a bed of this room (a home, LLM-782), else upstairs in a
+        # bedroom or up in the loft — not in this room.
+        if str(c.get_meta("dormant", "")) == "sleeping" and not _in_bed(c):
             continue
         if id == pc_actor_id:
             pc_inside = true
@@ -698,6 +702,13 @@ func _stall_occupants() -> Dictionary:
     if pc_here:
         placed.append(_entry(pc_actor_id, room.get("door", {})))
     return {"placed": placed, "more": int(stood["more"]) + int(hands["more"])}
+
+
+## Whether the engine has this sleeper in one of the room's beds: their square
+## is a bed (a spot posed "sleep").
+func _in_bed(c: Node2D) -> bool:
+    var square := InteriorRooms.square_of(c.get_meta("room_square") if c.has_meta("room_square") else null)
+    return str(InteriorRooms.spot_at(room, square).get("pose", "")) == "sleep"
 
 
 ## One drawn person. `look` stamps the outfit and the rest state so a change
@@ -811,6 +822,14 @@ func _draw_people(cast: Dictionary) -> void:
             if was[id]["turn_left"] != null:
                 holder.set_meta("turn_left", was[id]["turn_left"])
         _pose(spr, facing, str(spot.get("pose", "stand")))
+        var asleep := str(spot.get("pose", "")) == "sleep"
+        if asleep:
+            # The doze frame's head sits lower in its cell than a standing
+            # pack sprite's: up a little, so the face clears the cover.
+            if spr.animation == &"south_doze":
+                spr.position.y -= DOZE_LIFT
+            holder.set_meta("bed", str(spot.get("id", "")))
+            _tuck_in(holder)
         # The keeper hammering at the anvil keeps at it; one on the way there
         # carries on.
         if stays and behind and not hand and not moves and was[id]["smithing"] != null:
@@ -819,7 +838,8 @@ func _draw_people(cast: Dictionary) -> void:
             _to_anvil(holder)
         if str(c.get_meta("dormant", "")) == "resting":
             spr.modulate = RESTING_DIM
-        if _entrances and not stays:
+        # Someone found in bed was never seen walking to it: they are just there.
+        if _entrances and not stays and not asleep:
             _walk_in(holder, spot, true)
         elif stays and bool(was[id]["entering"]):
             _walk_in(holder, spot, false)
@@ -1364,11 +1384,16 @@ func _sound(sound_name: String) -> void:
 
 
 ## Seat a farmer-base villager in a seat spot; everyone else stands, facing
-## the spot's way when their sprite has that facing.
+## the spot's way when their sprite has that facing. In bed a farmer-base
+## sleeper dozes, eyes shut (`south_doze`); anyone else shows their face — the
+## cover hides the rest (_tuck_in).
 func _pose(spr: AnimatedSprite2D, facing: String, pose: String) -> void:
     if spr.sprite_frames == null:
         return
-    for anim in [facing + "_" + ("seat" if pose == "seat" else "idle"), facing + "_idle", "south_idle"]:
+    var wanted := facing + "_" + ("seat" if pose == "seat" else "idle")
+    if pose == "sleep":
+        wanted = "south_doze"
+    for anim in [wanted, facing + "_idle", "south_idle"]:
         if spr.sprite_frames.has_animation(anim):
             spr.play(anim)
             return
@@ -1793,6 +1818,10 @@ func _draw_anims() -> void:
             spr.region_enabled = true
             spr.region_rect = Rect2(int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("w", 0)), int(p.get("h", 0)))
             _people.add_child(spr)
+    # Sleepers drawn before the sheet landed get their covers now.
+    for child in _people.get_children():
+        if child.has_meta("bed"):
+            _tuck_in(child)
     for anim in room.get("anims", []):
         var strip := _texture(str(anim.get("sheet", "")))
         if strip == null:
@@ -1805,6 +1834,28 @@ func _draw_anims() -> void:
         spr.set_meta("fps", float(anim.get("fps", 6.0)))
         (_people if sorted else _anims).add_child(spr)
     _animate(0.0)
+
+
+## A sleeper lies in their bed (LLM-782): the bed's cover — `covers` on the
+## pieces sheet, by the bed's id (holder meta `bed`) — is drawn again over
+## them, so only their head shows on the pillow. Again when the sheet lands
+## (_draw_anims); nothing until then.
+func _tuck_in(holder: Node2D) -> void:
+    var old := holder.get_node_or_null("Cover")
+    if old != null:
+        old.free()
+    var rect: Dictionary = room.get("covers", {}).get(str(holder.get_meta("bed")), {})
+    var sheet := _texture(str(room.get("pieces_sheet", "")))
+    if rect.is_empty() or sheet == null:
+        return
+    var cover := Sprite2D.new()
+    cover.name = "Cover"
+    cover.centered = false
+    cover.texture = sheet
+    cover.region_enabled = true
+    cover.region_rect = Rect2(int(rect["x"]), int(rect["y"]), int(rect["w"]), int(rect["h"]))
+    cover.position = Vector2(int(rect["x"]), int(rect["y"])) - (holder.get_meta("home") as Vector2)
+    holder.add_child(cover)
 
 
 ## A picture whose top-left is at (x, y), placed at (x, sort_y) for sorting.
