@@ -18,7 +18,8 @@
 -- old one-sheet sprites stay in the catalog, so a code revert is the rollback.
 --
 -- The sheets are already on the VPS (the pack's farmer_base_sheets/ is copied
--- whole, LLM-691). Rerun-safe: ON CONFLICT (id) DO NOTHING.
+-- whole, LLM-691). Rerun-safe: a row already at one of these ids is set to
+-- the values below, so a stale row cannot survive under the expected name.
 
 BEGIN;
 
@@ -154,6 +155,10 @@ VALUES
    {"sheet": "/tilesets/mana-seed/farmer/sheets/13hair/fbas_13hair_flattop_00.png", "ramps": {"hair": 3}},
    {"sheet": "/tilesets/mana-seed/farmer/sheets/14head/fbas_14head_floppyhat_00d.png", "ramps": {"c4": 2, "c3": 3}}
  ]')
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET
+    name = EXCLUDED.name, sheet = EXCLUDED.sheet,
+    frame_width = EXCLUDED.frame_width, frame_height = EXCLUDED.frame_height,
+    pack_id = EXCLUDED.pack_id, behaviors = EXCLUDED.behaviors,
+    render_scale = EXCLUDED.render_scale, rig = EXCLUDED.rig, layers = EXCLUDED.layers;
 
 COMMIT;

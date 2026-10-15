@@ -16,6 +16,8 @@ package pg
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -202,7 +204,26 @@ func TestIntegration_Sprites_RigLayers(t *testing.T) {
 // with no row would ship that visitor spriteless.
 func TestIntegration_Sprites_VisitorOutfits(t *testing.T) {
 	f := newFixture(t)
-	got, err := NewSpritesRepo(f.Pool).LoadAll(t.Context())
+	ctx := t.Context()
+
+	// A stale row at a seeded id is put back by a rerun, not kept.
+	if _, err := f.Pool.Exec(ctx,
+		`UPDATE npc_sprite SET name = 'stale', layers = '[]' WHERE id = '783f0c01-0000-4000-8000-000000000001'`); err != nil {
+		t.Fatalf("stale the factor row: %v", err)
+	}
+	dir, err := findMigrationsDir()
+	if err != nil {
+		t.Fatalf("findMigrationsDir: %v", err)
+	}
+	up, err := os.ReadFile(filepath.Join(dir, "LLM-783-visitor-farmer-outfits_up.sql"))
+	if err != nil {
+		t.Fatalf("read up migration: %v", err)
+	}
+	if _, err := f.Pool.Exec(ctx, string(up)); err != nil {
+		t.Fatalf("rerun up migration: %v", err)
+	}
+
+	got, err := NewSpritesRepo(f.Pool).LoadAll(ctx)
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
@@ -210,7 +231,12 @@ func TestIntegration_Sprites_VisitorOutfits(t *testing.T) {
 	for _, s := range got {
 		byName[s.Name] = append(byName[s.Name], s)
 	}
+	seen := map[string]bool{}
 	for _, name := range sim.VisitorSpriteCatalogNames() {
+		if seen[name] {
+			t.Errorf("%q: named by two visitor classes, want one look each", name)
+		}
+		seen[name] = true
 		rows := byName[name]
 		if len(rows) != 1 {
 			t.Errorf("%q: %d sprite rows, want 1", name, len(rows))
