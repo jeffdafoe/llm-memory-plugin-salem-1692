@@ -2273,35 +2273,38 @@ func eatingPhrase(m HuddleMember) string {
 //
 // Rendered in BOTH the co-present line and the huddle roster (LLM-779): a customer
 // who speaks to a mending keeper joins his huddle, and the note must not drop at the
-// moment it matters. Repair/stoke/gather carry busyNoAnswerTail because the reactor
-// shelves NPC speech to an actor mid a source activity (reactor.go, the
-// SourceActivity gate) — the tail states what will actually happen, so the customer
-// waits instead of re-asking a keeper who cannot answer. Bake carries no tail: the
-// baker's bakeReplyDue carve-out does answer.
+// moment it matters. When the reactor will shelve the member's replies to NPC speech
+// (SourceActivityNoAnswer — an NPC mid repair/stoke/gather) the note closes with
+// busyNoAnswerTail, so the customer waits instead of re-asking a keeper who cannot
+// answer. A PC mid a repair and a baker carry no tail: both do answer.
 func busyActivityPhrase(m HuddleMember) string {
 	if !m.SourceActivityBusy {
 		return ""
+	}
+	tail := ""
+	if m.SourceActivityNoAnswer {
+		tail = busyNoAnswerTail
 	}
 	switch m.SourceActivityKind {
 	case sim.SourceActivityRepair:
 		// Sanitize before the emptiness check: a label that sanitizes down to nothing
 		// must fall back to the place-less phrase, not render "(mending at  just now)".
 		if label := sanitizeInline(m.SourceActivityLabel); label != "" {
-			return fmt.Sprintf(" (mending at %s just now%s)", sim.WithDefiniteArticle(label), busyNoAnswerTail)
+			return fmt.Sprintf(" (mending at %s just now%s)", sim.WithDefiniteArticle(label), tail)
 		}
-		return " (mending just now" + busyNoAnswerTail + ")"
+		return " (mending just now" + tail + ")"
 	case sim.SourceActivityStoke:
-		return " (tending the fire just now" + busyNoAnswerTail + ")"
+		return " (tending the fire just now" + tail + ")"
 	case sim.SourceActivityHarvest:
-		return " (gathering just now" + busyNoAnswerTail + ")"
+		return " (gathering just now" + tail + ")"
 	case sim.SourceActivityBake:
 		return " (at the hearth, baking just now)"
 	}
 	return ""
 }
 
-// busyNoAnswerTail closes the busy note for the source activities that shelve NPC
-// speech. "May" because a red need or an operator nudge still ticks the actor.
+// busyNoAnswerTail closes the busy note for a member whose replies to NPC speech are
+// shelved. "May" because a red need or an operator nudge still ticks the actor.
 const busyNoAnswerTail = " — may not answer you until done"
 
 // laborTiePhrase names a co-present member's relationship to the subject —

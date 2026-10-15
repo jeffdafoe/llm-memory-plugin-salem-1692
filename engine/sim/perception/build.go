@@ -1625,6 +1625,7 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 			m.SourceActivityBusy = true
 			m.SourceActivityKind = peer.SourceActivityKind
 			m.SourceActivityLabel = resolveDwellPinLabel(snap, peer.SourceActivityObjectID)
+			m.SourceActivityNoAnswer = peer.Kind != sim.KindPC && peer.SourceActivityKind != sim.SourceActivityBake
 		}
 		// LLM-370: a co-present transient traveler is named by archetype + origin in
 		// "## Around you" while the observer doesn't yet know them by name.

@@ -465,10 +465,13 @@ func TestRenderSurroundings_SourceActivityBusyAnnotated(t *testing.T) {
 		m    HuddleMember
 		want string
 	}{
-		{"repair names the business", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair, SourceActivityLabel: "the Market"}, "(mending at the Market just now — may not answer you until done)"},
-		{"repair with no resolved place", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair}, "(mending just now — may not answer you until done)"},
-		{"stoke", HuddleMember{ID: "hannah", DisplayName: "Hannah Boggs", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityStoke}, "(tending the fire just now — may not answer you until done)"},
-		{"harvest", HuddleMember{ID: "josiah", DisplayName: "Josiah Thorne", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityHarvest}, "(gathering just now — may not answer you until done)"},
+		{"repair names the business", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair, SourceActivityLabel: "the Market", SourceActivityNoAnswer: true}, "(mending at the Market just now — may not answer you until done)"},
+		{"repair with no resolved place", HuddleMember{ID: "ez", DisplayName: "Ezekiel Stone", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair, SourceActivityNoAnswer: true}, "(mending just now — may not answer you until done)"},
+		{"stoke", HuddleMember{ID: "hannah", DisplayName: "Hannah Boggs", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityStoke, SourceActivityNoAnswer: true}, "(tending the fire just now — may not answer you until done)"},
+		{"harvest", HuddleMember{ID: "josiah", DisplayName: "Josiah Thorne", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityHarvest, SourceActivityNoAnswer: true}, "(gathering just now — may not answer you until done)"},
+		// A PC mid a repair answers whenever the player likes: no no-answer tail. The bare
+		// live label ("Tavern") takes its article.
+		{"pc repair", HuddleMember{ID: "pc", DisplayName: "Goodman Dafoe", Acquainted: true, SourceActivityBusy: true, SourceActivityKind: sim.SourceActivityRepair, SourceActivityLabel: "Tavern"}, "(mending at the Tavern just now)"},
 		// LLM-454: a co-baking / entering housemate reads a baker as "join her at the
 		// bread," not "interrupt her." Place-less like stoke/harvest, and no no-answer
 		// tail: bakeReplyDue lets the baker answer.
@@ -498,12 +501,15 @@ func TestRenderSurroundings_SourceActivityBusyAnnotated(t *testing.T) {
 			})
 		}
 	}
-	// The bake arm must not carry the no-answer tail in either view.
+	// The PC-repair and bake arms (the last two cases) must not carry the no-answer
+	// tail in either view: both members do answer.
 	for _, v := range views {
-		var b strings.Builder
-		renderSurroundings(&b, v.view(cases[len(cases)-1].m))
-		if out := b.String(); strings.Contains(out, "may not answer") {
-			t.Errorf("%s: bake note carries the no-answer tail, but a baker answers (bakeReplyDue):\n%s", v.name, out)
+		for _, tc := range cases[len(cases)-2:] {
+			var b strings.Builder
+			renderSurroundings(&b, v.view(tc.m))
+			if out := b.String(); strings.Contains(out, "may not answer") {
+				t.Errorf("%s/%s: note carries the no-answer tail, but this member answers:\n%s", v.name, tc.name, out)
+			}
 		}
 	}
 }
@@ -581,5 +587,37 @@ func TestGoldenObserverSeesBakingPeer(t *testing.T) {
 	}
 	if !strings.Contains(section, "Silence Walker") || !strings.Contains(section, "(at the hearth, baking just now)") {
 		t.Errorf("observer should see the baking housemate annotated in ## Around you, got section:\n%s", section)
+	}
+}
+
+// TestBuild_HuddledBusyPeerNoAnswerOnlyForNPC is the LLM-779 build guard for the
+// no-answer flag: the reactor shelves an NPC keeper's replies mid a repair, but a PC
+// mid a repair answers whenever the player likes, so the flag (and the "may not answer
+// you" tail it drives) must be set for the NPC and clear for the PC. Same huddled
+// Tavern scene for both; only the keeper's Kind changes.
+func TestBuild_HuddledBusyPeerNoAnswerOnlyForNPC(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind sim.ActorKind
+		want bool
+	}{
+		{"npc keeper", sim.KindNPCStateful, true},
+		{"pc", sim.KindPC, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap, observer, _ := customerHuddledWithKeeperMidRepair()
+			snap.Actors["john"].Kind = tc.kind
+			p := Build(snap, observer, nil)
+			if len(p.Surroundings.HuddleMembers) != 1 {
+				t.Fatalf("HuddleMembers = %v, want John", p.Surroundings.HuddleMembers)
+			}
+			m := p.Surroundings.HuddleMembers[0]
+			if !m.SourceActivityBusy {
+				t.Fatal("John mid repair: SourceActivityBusy = false, want true")
+			}
+			if m.SourceActivityNoAnswer != tc.want {
+				t.Errorf("SourceActivityNoAnswer = %v, want %v", m.SourceActivityNoAnswer, tc.want)
+			}
+		})
 	}
 }
