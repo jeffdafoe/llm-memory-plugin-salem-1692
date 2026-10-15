@@ -95,6 +95,7 @@ const TESTS := [
     "_test_pack_keeper_mends_by_stand_in",
     "_test_smithy_crew_leaves_off_to_mend",
     "_test_tavern_keeper_mends_and_serves",
+    "_test_mender_speech_hold_outlasts_a_redraw",
 ]
 
 const STALL := "stall-1"
@@ -3712,4 +3713,45 @@ func _test_tavern_keeper_mends_and_serves() -> void:
     _check("done: no swing", String(_anim(keeper)).ends_with("_chop"), false)
     _panel.sound_hook = Callable()
     _panel.close()
+    _done()
+
+
+## LLM-780 (code_review): a word holds the work whether it comes before the
+## first mend frame or mid-swing, and a redraw during the hold does not cut it
+## short.
+func _test_mender_speech_hold_outlasts_a_redraw() -> void:
+    _clear_people()
+    _place_stall()
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.open(STALL)
+    _listen()
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    # The repair arrives and the keeper speaks before any mend frame.
+    _set_mending("keeper", STALL)
+    _panel.say("keeper", "Just a moment.")
+    _panel._mend(0.01)
+    _check("spoke before the first frame: not swinging", String(_anim(keeper)).ends_with("_chop"), false)
+
+    # A redraw mid-hold: still standing.
+    _panel._mend(1.0)
+    _at_tile("buyer", _farmer(), Vector2i(8, 21))
+    _panel.refresh()
+    keeper = _panel._staff.get_node("keeper")
+    _panel._mend(0.01)
+    _check("a redraw mid-hold: still not swinging", String(_anim(keeper)).ends_with("_chop"), false)
+    _panel._mend(_panel.SPEAK_HOLD)
+    _check("the hold over: swinging", String(_anim(keeper)).ends_with("_chop"), true)
+
+    # Reopening the window forgets a hold.
+    _panel.say("keeper", "Once more.")
+    _panel.close()
+    _panel.open(STALL)
+    keeper = _panel._staff.get_node("keeper")
+    _panel._mend(0.01)
+    _check("reopened: no hold carried over", String(_anim(keeper)).ends_with("_chop"), true)
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _panel.wares_hook = Callable()
     _done()

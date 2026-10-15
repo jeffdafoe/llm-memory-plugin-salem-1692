@@ -268,6 +268,9 @@ var _http_wares: HTTPRequest = null
 ## who is here is someone coming or going.
 var _entrances := false
 var _bustle_left := 0.0
+## A mender who spoke stops the work this many seconds more (id -> seconds).
+## Kept here, not on the holder, so a redraw does not cut it short.
+var _mend_hold: Dictionary = {}
 var _sheet_retry_left := 0.0
 var _sheet_retries := 0
 var _bustle_rng := RandomNumberGenerator.new()
@@ -453,6 +456,7 @@ func open(sid: String) -> void:
         child.free()
     _handoffs = []
     _handoff_now = {}
+    _mend_hold = {}
     _sheet_retries = 0
     _sheet_retry_left = SHEET_RETRY_SECONDS
     if sid != structure_id:
@@ -1253,8 +1257,13 @@ func _mending(holder: Node2D) -> bool:
 
 ## Everyone mending here works where they stand (meta "mend" while at it). One
 ## on the move — walking, coming in, going out, or making a handoff — stops
-## and starts again once still; one whose repair has ended stands as before.
+## and starts again once still; one who spoke stands while _mend_hold runs;
+## one whose repair has ended stands as before.
 func _mend(delta: float) -> void:
+    for id in _mend_hold.keys():
+        _mend_hold[id] = float(_mend_hold[id]) - delta
+        if float(_mend_hold[id]) <= 0.0:
+            _mend_hold.erase(id)
     for entry in _hits:
         var holder: Node2D = entry["holder"]
         if not is_instance_valid(holder):
@@ -1264,7 +1273,7 @@ func _mend(delta: float) -> void:
             continue
         var moving := holder.has_meta("walking") or holder.has_meta("entering") or holder.has_meta("leaving") \
             or str(_handoff_now.get("keeper", "")) == str(holder.name)
-        if moving or not _mending(holder):
+        if moving or _mend_hold.has(str(holder.name)) or not _mending(holder):
             if holder.has_meta("mend"):
                 _end_mend(holder, spr, not moving)
             continue
@@ -1278,19 +1287,15 @@ func _start_mend(holder: Node2D, spr: AnimatedSprite2D) -> void:
     var facing := "east" if holder.position.x >= width / 2.0 else "west"
     var swing := spr.sprite_frames != null and spr.sprite_frames.has_animation(facing + "_chop")
     holder.set_meta("mend", {"facing": facing, "swing": swing, "was": spr.animation,
-        "frame": -1, "time": 0.0, "down": false, "hold": 0.0})
+        "frame": -1, "time": 0.0, "down": false})
     if swing:
         spr.play(facing + "_chop")
 
 
 ## One frame of the work: the swing's strike frame, or the stand-in's dip
-## coming down, is a blow. Paused while `hold` runs (they stopped to speak).
+## coming down, is a blow.
 func _mend_beat(holder: Node2D, spr: AnimatedSprite2D, delta: float) -> void:
     var m: Dictionary = holder.get_meta("mend")
-    if float(m["hold"]) > 0.0:
-        m["hold"] = float(m["hold"]) - delta
-        if float(m["hold"]) > 0.0:
-            return
     if bool(m["swing"]):
         var anim := str(m["facing"]) + "_chop"
         if spr.animation != anim:
@@ -1335,20 +1340,6 @@ func _end_mend(holder: Node2D, spr: AnimatedSprite2D, restore: bool) -> void:
     if spr.has_meta("rest_y"):
         spr.position.y = float(spr.get_meta("rest_y"))
     if restore:
-        spr.play(m["was"])
-
-
-## Stop the work SPEAK_HOLD seconds to speak, standing as before.
-func _hold_mend(holder: Node2D) -> void:
-    var m: Dictionary = holder.get_meta("mend")
-    m["hold"] = SPEAK_HOLD
-    m["down"] = false
-    var spr := _sprite_of(holder)
-    if spr == null:
-        return
-    if spr.has_meta("rest_y"):
-        spr.position.y = float(spr.get_meta("rest_y"))
-    if str(spr.animation).ends_with("_chop"):
         spr.play(m["was"])
 
 
@@ -1483,9 +1474,9 @@ func say(npc_id: String, text: String) -> void:
             if spr != null:
                 _pose(spr, "south", "stand")
         _bustle_left = SPEAK_HOLD
-    # A mender stops the work to speak, a while (LLM-780).
-    if holder.has_meta("mend"):
-        _hold_mend(holder)
+    # A mender stops the work to speak, a while (LLM-780); _mend stands them.
+    if _mending(holder):
+        _mend_hold[npc_id] = SPEAK_HOLD
     var existing := holder.get_node_or_null(BUBBLE_NODE)
     if existing != null:
         # Out of the tree now, or the new bubble would be renamed (as world.gd).
