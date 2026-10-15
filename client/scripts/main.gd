@@ -1303,10 +1303,9 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
     var hit: Dictionary = world.find_object_at(screen_pos)
     var payload: String
     var hit_id: String = str(hit.get("id", "")) if hit.has("id") else ""
-    _pc_move_target = ""
-    # A new walk drops any knock still pending from the last one (LLM-785).
-    _pending_knock = false
-    _pending_knock_structure_id = ""
+    # The house this walk names (LLM-785), kept for its answer only once the
+    # request is really sent — see below.
+    var move_target := ""
 
     # Walk-then-read state machine (ZBBS-112). Any new walk closes a
     # currently-open notice panel — clicking elsewhere mid-read IS the
@@ -1334,7 +1333,7 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         # through structure_enter → object_visit; misdispatching on a bare
         # object 404s, so the client must pick the right kind here.
         if bool(hit.get("has_interior", false)):
-            _pc_move_target = hit_id
+            move_target = hit_id
             payload = JSON.stringify({
                 "destination": {"kind": "structure_enter", "structure_id": hit_id},
             })
@@ -1353,6 +1352,14 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         })
     var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move",
         headers, HTTPClient.METHOD_POST, payload)
+    if err == OK:
+        # Sent: this is now the one move in flight (a click while another is in
+        # flight never sends — ERR_BUSY — so it must not touch the answer's
+        # target or the pending knock of the walk still under way). A new walk
+        # drops any knock still pending from the last one.
+        _pc_move_target = move_target
+        _pending_knock = false
+        _pending_knock_structure_id = ""
     if err != OK:
         # Local request failure — never reached the server. Clear the
         # pending notice flag and the purpose discriminator so a later
