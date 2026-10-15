@@ -16,6 +16,8 @@ package pg
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -193,6 +195,67 @@ func TestIntegration_Sprites_RigLayers(t *testing.T) {
 	if _, err := f.Pool.Exec(ctx,
 		`INSERT INTO npc_sprite (id, name, sheet, rig, layers) VALUES ($1, 'Bad layers', '/x.png', 'farmer_base', '{}')`, spriteUUIDPlain); err == nil {
 		t.Error("object layers accepted, want npc_sprite_layers_check to reject it")
+	}
+}
+
+// Visitor outfits (LLM-783) — every name the engine resolves a visitor's sprite by
+// (sim.VisitorSpriteCatalogNames) is seeded by the migrations as exactly one
+// farmer_base rig sprite with the body as its first layer. A name in visitor.go
+// with no row would ship that visitor spriteless.
+func TestIntegration_Sprites_VisitorOutfits(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	// A stale row at a seeded id is put back by a rerun, not kept.
+	if _, err := f.Pool.Exec(ctx,
+		`UPDATE npc_sprite SET name = 'stale', layers = '[]' WHERE id = '783f0c01-0000-4000-8000-000000000001'`); err != nil {
+		t.Fatalf("stale the factor row: %v", err)
+	}
+	dir, err := findMigrationsDir()
+	if err != nil {
+		t.Fatalf("findMigrationsDir: %v", err)
+	}
+	up, err := os.ReadFile(filepath.Join(dir, "LLM-783-visitor-farmer-outfits_up.sql"))
+	if err != nil {
+		t.Fatalf("read up migration: %v", err)
+	}
+	if _, err := f.Pool.Exec(ctx, string(up)); err != nil {
+		t.Fatalf("rerun up migration: %v", err)
+	}
+
+	got, err := NewSpritesRepo(f.Pool).LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	byName := map[string][]*sim.Sprite{}
+	for _, s := range got {
+		byName[s.Name] = append(byName[s.Name], s)
+	}
+	seen := map[string]bool{}
+	for _, name := range sim.VisitorSpriteCatalogNames() {
+		if seen[name] {
+			t.Errorf("%q: named by two visitor classes, want one look each", name)
+		}
+		seen[name] = true
+		rows := byName[name]
+		if len(rows) != 1 {
+			t.Errorf("%q: %d sprite rows, want 1", name, len(rows))
+			continue
+		}
+		s := rows[0]
+		if s.Rig != "farmer_base" {
+			t.Errorf("%q: Rig = %q, want farmer_base", name, s.Rig)
+		}
+		var layers []struct {
+			Sheet string `json:"sheet"`
+		}
+		if err := json.Unmarshal(s.Layers, &layers); err != nil || len(layers) == 0 {
+			t.Errorf("%q: layers %s (%v), want a non-empty array", name, s.Layers, err)
+			continue
+		}
+		if layers[0].Sheet != s.Sheet {
+			t.Errorf("%q: first layer %q, want the body sheet %q", name, layers[0].Sheet, s.Sheet)
+		}
 	}
 }
 
