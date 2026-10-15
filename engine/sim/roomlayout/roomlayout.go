@@ -79,6 +79,9 @@ const UseDrink = "drink"
 // which nobody walks on; only someone asleep in the room is put there.
 const UseSleep = "sleep"
 
+// PoseSleep: how a bed's sleeper is drawn — the client's mark of a bed.
+const PoseSleep = "sleep"
+
 // has reports whether the station's Use names use.
 func (st *Station) has(use string) bool {
 	for _, u := range st.Use {
@@ -366,11 +369,18 @@ func (l *Layout) validate() error {
 	all = append(all, l.Stations...)
 	seen := map[Square]string{}
 	for _, st := range all {
-		// A bed stands on a bed square; everything else on open floor.
+		// A bed stands on a bed square; everything else on open floor. The
+		// client knows a bed by its "sleep" pose and finds its cover by its id,
+		// so a bed carries both and nothing else carries the pose.
 		if st.has(UseSleep) {
 			if !l.bedSquare(st.Square) {
 				return fmt.Errorf("room %s: bed %q at %v is not a bed square", l.label(), st.ID, st.Square)
 			}
+			if st.ID == "" || st.Pose != PoseSleep {
+				return fmt.Errorf("room %s: bed at %v needs an id and pose %q", l.label(), st.Square, PoseSleep)
+			}
+		} else if st.Pose == PoseSleep {
+			return fmt.Errorf("room %s: station %q is posed %q but is not a bed", l.label(), st.ID, PoseSleep)
 		} else if !l.Open(st.Square) {
 			return fmt.Errorf("room %s: station %q at %v is not an open square", l.label(), st.ID, st.Square)
 		}

@@ -56,6 +56,7 @@ func TestHomeSleepersTakeBedsThenTheLoft(t *testing.T) {
 	}
 
 	// The first two to sleep take the two beds, and the frames say so.
+	before := *family[0].RoomSquare
 	held := map[roomlayout.Square]bool{}
 	for _, a := range family[:2] {
 		*events = nil
@@ -76,11 +77,29 @@ func TestHomeSleepersTakeBedsThenTheLoft(t *testing.T) {
 		t.Errorf("the third sleeper holds %v, want none (the loft)", family[2].RoomSquare)
 	}
 
-	// Waking, a sleeper gets up out of bed onto the floor.
+	// While they sleep, someone takes the square they had.
+	taker := outdoors("hope", KindNPCStateful)
+	w.Actors[taker.ID] = taker
+	w.outdoorActors[taker.ID] = struct{}{}
+	setActorInsideStructure(w, taker, homeID)
+	if taker.RoomSquare != nil && *taker.RoomSquare != before {
+		if walkInRoom(w, taker, before) == nil {
+			t.Fatalf("harness: %s could not take %v", taker.ID, before)
+		}
+	}
+	if taker.RoomSquare == nil || *taker.RoomSquare != before {
+		t.Fatalf("harness: %s at %v, want the sleeper's old %v", taker.ID, taker.RoomSquare, before)
+	}
+
+	// Waking, a sleeper gets up out of bed onto the floor — a square of their
+	// own, not the one taken meanwhile.
 	*events = nil
 	wakeNPC(w, family[0])
 	if family[0].RoomSquare == nil || beds[*family[0].RoomSquare] {
 		t.Errorf("woken onto %v, want the floor", family[0].RoomSquare)
+	}
+	if family[0].RoomSquare != nil && *family[0].RoomSquare == *taker.RoomSquare {
+		t.Errorf("woken onto %v, which %s holds", *family[0].RoomSquare, taker.ID)
 	}
 	if !hasSquareChange(*events, family[0].ID, family[0].RoomSquare) {
 		t.Errorf("no get-up frame: %#v", *events)

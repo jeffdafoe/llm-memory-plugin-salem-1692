@@ -340,12 +340,15 @@ func TestBeds(t *testing.T) {
 
 func TestParseRejectsBadHomePlans(t *testing.T) {
 	home := `{"assets": ["Hut"], "art": "hut", "grid": ["..", ".b"], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 0], "at": [24, 14]}, "stations": [%s]}`
-	bed := `{"id": "bed", "square": [1, 1], "at": [24, 30], "use": ["sleep"]}`
+	bed := `{"id": "bed", "square": [1, 1], "at": [24, 30], "pose": "sleep", "use": ["sleep"]}`
 	cases := map[string]string{
 		"no art":             strings.Replace(strings.Replace(home, `"art": "hut", `, ``, 1), `%s`, bed, 1),
 		"structure and type": strings.Replace(strings.Replace(home, `{"assets"`, `{"structure_id": "s", "assets"`, 1), `%s`, bed, 1),
 		"bed on the floor":   strings.Replace(strings.Replace(home, `".b"`, `".."`, 1), `%s`, bed, 1),
 		"seat on a bed":      strings.Replace(home, `%s`, `{"id": "x", "square": [1, 1], "at": [24, 30]}`, 1),
+		"bed with no id":     strings.Replace(home, `%s`, `{"square": [1, 1], "at": [24, 30], "pose": "sleep", "use": ["sleep"]}`, 1),
+		"bed not posed":      strings.Replace(home, `%s`, `{"id": "bed", "square": [1, 1], "at": [24, 30], "use": ["sleep"]}`, 1),
+		"posed, not a bed":   strings.Replace(strings.Replace(home, `".b"`, `".."`, 1), `%s`, `{"id": "x", "square": [1, 1], "at": [24, 30], "pose": "sleep"}`, 1),
 	}
 	for name, room := range cases {
 		if _, err := Parse([]byte(`{"rooms": [` + room + `]}`)); err == nil {
