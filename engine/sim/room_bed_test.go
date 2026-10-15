@@ -20,9 +20,17 @@ func homeWorld(actors ...*Actor) (*World, *[]Event) {
 	w, events := squareWorld(actors...)
 	w.Assets = map[AssetID]*Asset{"red-medium": {ID: "red-medium", Name: "Red House (Medium)"}}
 	w.VillageObjects = map[VillageObjectID]*VillageObject{VillageObjectID(homeID): {ID: VillageObjectID(homeID), AssetID: "red-medium"}}
-	w.Structures = map[StructureID]*Structure{homeID: {ID: homeID, DisplayName: "Cole Residence"}}
+	// A home's common room, as the live seed gives every residence, and a
+	// private one for the upstairs case.
+	w.Structures = map[StructureID]*Structure{homeID: {ID: homeID, DisplayName: "Cole Residence", Rooms: []*Room{
+		{ID: homeCommonRoom, Kind: RoomKindCommon}, {ID: homePrivateRoom, Kind: RoomKindPrivate}}}}
 	return w, events
 }
+
+const (
+	homeCommonRoom  RoomID = 10
+	homePrivateRoom RoomID = 7
+)
 
 func bedSquares(plan *roomlayout.Layout) map[roomlayout.Square]bool {
 	beds := map[roomlayout.Square]bool{}
@@ -123,15 +131,41 @@ func TestHomeSleepersTakeBedsThenTheLoft(t *testing.T) {
 }
 
 // Someone asleep in a private room (a lodger, a keeper in their quarters) is
-// upstairs: no bed in the room below, even when one is free.
+// upstairs: no bed in the room below, even when one is free. Someone asleep
+// with the common room as their room — every live villager asleep at home
+// (LLM-782 live trigger: Trinity and Purity Fox, inside_room_id 10) — is in
+// this room and takes a bed.
 func TestPrivateRoomSleeperHoldsNoBed(t *testing.T) {
 	a := outdoors("ruth", KindNPCStateful)
 	w, _ := homeWorld(a)
 	setActorInsideStructure(w, a, homeID)
 	a.State = StateSleeping
-	a.InsideRoomID = 7
+	a.InsideRoomID = homePrivateRoom
 	if sq := pickRoomSquare(w, a, homeID); sq != nil {
 		t.Errorf("a sleeper in a private room got %v", *sq)
+	}
+	a.InsideRoomID = homeCommonRoom
+	if sq := pickRoomSquare(w, a, homeID); sq == nil || !roomPlan(w, homeID).IsBed(*sq) {
+		t.Errorf("a sleeper in the common room got %v, want a bed", sq)
+	}
+}
+
+// After a restart, villagers asleep at home with the common room as their room
+// are put in bed (the live seed shape).
+func TestPlaceRoomSquaresOnLoadCommonRoomSleepers(t *testing.T) {
+	trinity := &Actor{ID: "trinity", Kind: KindNPCStateful, InsideStructureID: homeID, InsideRoomID: homeCommonRoom, State: StateSleeping}
+	purity := &Actor{ID: "purity", Kind: KindNPCStateful, InsideStructureID: homeID, InsideRoomID: homeCommonRoom, State: StateSleeping}
+	w, _ := homeWorld(trinity, purity)
+	w.actorsByStructure[homeID] = map[ActorID]struct{}{"trinity": {}, "purity": {}}
+	w.placeRoomSquaresOnLoad()
+	plan := roomPlan(w, homeID)
+	for _, a := range []*Actor{trinity, purity} {
+		if a.RoomSquare == nil || !plan.IsBed(*a.RoomSquare) {
+			t.Errorf("%s asleep at %v after a restart, want a bed", a.ID, a.RoomSquare)
+		}
+	}
+	if trinity.RoomSquare != nil && purity.RoomSquare != nil && *trinity.RoomSquare == *purity.RoomSquare {
+		t.Error("two sleepers share a bed")
 	}
 }
 
