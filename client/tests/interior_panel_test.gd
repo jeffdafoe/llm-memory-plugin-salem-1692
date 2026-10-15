@@ -95,6 +95,7 @@ const TESTS := [
     "_test_tavern_serves_stew_at_the_bar",
     "_test_tavern_drink_at_the_bar",
     "_test_tavern_pack_guest_drinks_from_the_bar",
+    "_test_tavern_bar_reopen",
     "_test_stall_keeper_mends",
     "_test_pack_keeper_mends_by_stand_in",
     "_test_smithy_crew_leaves_off_to_mend",
@@ -3869,5 +3870,40 @@ func _test_tavern_pack_guest_drinks_from_the_bar() -> void:
         dipped = dipped or spr.position.y != rest
     _check("no pose for a pack sprite", spr.animation, stood)
     _check("the ale stays on the bar, and they dip toward it", [good.visible, dipped], [true, true])
+    _panel.close()
+    _done()
+
+
+## LLM-781 (code_review): reopening the window mid-drink leaves no hidden
+## tankard and no one stuck drinking (an ale is a moment, not a meal); a stew
+## still being eaten at the bar is laid again on the bar, marked as at the bar,
+## and its eater dips toward it.
+func _test_tavern_bar_reopen() -> void:
+    _tavern_with_guest(3, true)
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    _finish_handoff()
+    _panel._eat(0.01)
+    _check("drinking before the reopen", _anim(_panel._holder("guest")), &"east_drink")
+    _panel.close()
+    _panel.open(_sid)
+    _panel._eat(0.01)
+    var hidden: Array = _panel._handoff.get_children().filter(func(n): return n.has_meta("buyer") and not n.visible)
+    _check("reopened mid-drink: no hidden tankard, no one drinking", [hidden.size(), _anim(_panel._holder("guest"))], [0, &"east_idle"])
+
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.close()
+    _panel.open(_sid)
+    var spot: Dictionary = _panel._spot_of["guest"]
+    var dishes: Array = _panel._dishes()
+    _check("a running bar meal is laid again on the bar", dishes.size() == 1 and (dishes[0] as Node2D).position == _panel._cell_at(Vector2(spot["serve"]["x"], spot["serve"]["y"])), true)
+    _check("marked as at the bar", dishes.size() == 1 and (dishes[0] as Node2D).has_meta("at_bar"), true)
+    var spr: AnimatedSprite2D = _panel._sprite_of(_panel._holder("guest"))
+    var rest := spr.position.y
+    var dipped := false
+    for i in 40:
+        _panel._eat(0.05)
+        dipped = dipped or spr.position.y != rest
+    _check("eaten there: they dip toward it", dipped, true)
+    _world.meals = {}
     _panel.close()
     _done()
