@@ -648,6 +648,22 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.KnockUnansweredNarrated:
+		// LLM-784: the player's knock went unanswered — told on arrival, after
+		// the knock. PRIVATE + actor-scoped, the stall_condition carrier; the
+		// client also floats it over the house (spawn_structure_bubble).
+		if e.Text == "" {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   "",
+			Kind:        "knock_unanswered",
+			Text:        e.Text,
+			Private:     true,
+			StructureID: string(e.StructureID),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.AssetDoorOffsetChanged:
 		// LLM-263: an admin dragged the editor's door marker. x/y are the new tile
 		// offset from the asset anchor, or null when the door was cleared — the

@@ -103,7 +103,10 @@ func EnsureKnockServiceHuddle(actorID ActorID, structureID StructureID, now time
 
 			receivers := receptiveKnockReceivers(w, structureID)
 			if len(receivers) == 0 {
-				return nil, nil // the door goes unanswered — no lone-knocker huddle
+				// The door goes unanswered — no lone-knocker huddle; the knocker is
+				// told so now, after the knock (LLM-784).
+				narrateUnansweredKnock(w, actor, structureID, now)
+				return nil, nil
 			}
 
 			// Same scene anchoring as the other huddle bootstraps — the
@@ -138,6 +141,7 @@ func EnsureKnockServiceHuddle(actorID ActorID, structureID StructureID, now time
 			// Every receiver dropped out between the pre-check and its join
 			// (or all joins failed) — don't mint a lone-knocker huddle.
 			if joined == 0 {
+				narrateUnansweredKnock(w, actor, structureID, now)
 				return nil, nil
 			}
 			if _, err := JoinHuddle(actor.ID, structureID, sceneID, now).Fn(w); err != nil {
@@ -146,4 +150,32 @@ func EnsureKnockServiceHuddle(actorID ActorID, structureID StructureID, now time
 			return nil, nil
 		},
 	}
+}
+
+// knockUnansweredText is what a player hears when nobody comes to the door.
+const knockUnansweredText = "You knock, but the door is shut fast and no one answers."
+
+// KnockUnansweredNarrated tells a player their knock went unanswered
+// (LLM-784): emitted on ARRIVAL at the door, after the knock, when nobody inside
+// can answer — not at the click, when it would only be a guess about who will
+// be in by the time they get there. TranslateEvent sends it as a PRIVATE
+// room_event addressed to that player; the client renders it in the talk panel
+// and over the house.
+type KnockUnansweredNarrated struct {
+	EventBase
+	ActorID     ActorID
+	StructureID StructureID
+	Text        string
+	At          time.Time
+}
+
+func (KnockUnansweredNarrated) isSimEvent() {}
+
+// narrateUnansweredKnock emits KnockUnansweredNarrated for a player knocker.
+// A villager knocking needs no line; their next turn reads the closed door.
+func narrateUnansweredKnock(w *World, actor *Actor, structureID StructureID, now time.Time) {
+	if actor.Kind != KindPC {
+		return
+	}
+	w.emit(&KnockUnansweredNarrated{ActorID: actor.ID, StructureID: structureID, Text: knockUnansweredText, At: now})
 }

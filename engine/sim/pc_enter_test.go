@@ -117,9 +117,6 @@ func TestEnterOrKnock_StrangerKnocksKeeperInside(t *testing.T) {
 	if !out.Knocked {
 		t.Error("a non-member at an owner-only structure should knock")
 	}
-	if out.KnockNarration != "" {
-		t.Errorf("a receiver is in — narration should be empty (the arrival greet is the feedback); got %q", out.KnockNarration)
-	}
 	if !knockFlagOf(t, w, "stranger") {
 		t.Error("the knock walk should carry the Knock destination stamp")
 	}
@@ -133,8 +130,8 @@ func TestEnterOrKnock_StrangerKnocksKeeperInside(t *testing.T) {
 
 // TestEnterOrKnock_StrangerKnocksNoKeeper: a non-member knocking with no
 // receptive receiver inside still knocks (Knock stamp rides the walk — a
-// receiver who returns mid-walk answers on arrival), and the click-time
-// narration explains the likely-unanswered door.
+// receiver who returns mid-walk answers on arrival). Nothing is said at the
+// click: an unanswered door is told on arrival (LLM-784, knock_huddle_test).
 func TestEnterOrKnock_StrangerKnocksNoKeeper(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()
@@ -148,9 +145,6 @@ func TestEnterOrKnock_StrangerKnocksNoKeeper(t *testing.T) {
 	if !out.Knocked {
 		t.Error("a non-member at an owner-only structure should knock")
 	}
-	if out.KnockNarration == "" {
-		t.Error("an unanswered-looking knock should carry narration")
-	}
 	if !knockFlagOf(t, w, "stranger") {
 		t.Error("the Knock stamp should ride the walk even with no receiver at click time")
 	}
@@ -160,9 +154,8 @@ func TestEnterOrKnock_StrangerKnocksNoKeeper(t *testing.T) {
 }
 
 // TestEnterOrKnock_SleepingReceiverIsNoReceiver: a receiver who is asleep
-// inside does not answer — the click narrates the unanswered door, exactly as
-// if no one were in (receptiveKnockReceivers applies the same standard the
-// arrival join uses).
+// inside does not answer — the knock still goes ahead, exactly as if no one
+// were in; the unanswered door is told on arrival (LLM-784).
 func TestEnterOrKnock_SleepingReceiverIsNoReceiver(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()
@@ -180,9 +173,6 @@ func TestEnterOrKnock_SleepingReceiverIsNoReceiver(t *testing.T) {
 	out := res.(sim.EnterOrKnockResult)
 	if !out.Knocked {
 		t.Error("a non-member at an owner-only structure should knock")
-	}
-	if out.KnockNarration == "" {
-		t.Error("a sleeping receiver answers no knock — narration should say so")
 	}
 }
 
