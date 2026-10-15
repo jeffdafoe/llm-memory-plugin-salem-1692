@@ -58,6 +58,10 @@ extends CanvasLayer
 
 signal opened
 signal closed
+## The player closed the window (×, Esc, a click on the dimmed village) —
+## not a close because they walked away. main.gd walks them out of a room
+## (LLM-787); a stall has no inside to leave.
+signal dismissed(structure_id: String, stall: bool)
 signal person_clicked(npc_id: String)
 ## A tap on the floor or a free seat of a room the player's character is in
 ## (LLM-768): main.gd asks the engine to walk them there.
@@ -351,7 +355,7 @@ func _build_ui() -> void:
     close_button.add_theme_font_size_override("font_size", 24)
     close_button.custom_minimum_size = Vector2(44, 44)
     close_button.focus_mode = Control.FOCUS_NONE
-    close_button.pressed.connect(close)
+    close_button.pressed.connect(dismiss)
     head.add_child(close_button)
 
     stage = Control.new()
@@ -518,6 +522,16 @@ func open(sid: String) -> void:
 
 func is_stall() -> bool:
     return str(room.get("kind", "")) == "stall"
+
+
+## The player closes the window: hide it and say so (dismissed).
+func dismiss() -> void:
+    if not visible:
+        return
+    var sid := structure_id
+    var stall := is_stall()
+    close()
+    dismissed.emit(sid, stall)
 
 
 ## Hide the window. Idempotent.
@@ -1779,13 +1793,13 @@ func _place_tag() -> void:
 
 func _on_backdrop_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        close()
+        dismiss()
         get_viewport().set_input_as_handled()
 
 
 func _unhandled_input(event: InputEvent) -> void:
     if visible and event.is_action_pressed("ui_cancel"):
-        close()
+        dismiss()
         get_viewport().set_input_as_handled()
 
 

@@ -17,6 +17,8 @@ const CreditsScrollScript = preload("res://scripts/credits_scroll.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
 const DoorPanelScript = preload("res://scripts/door_panel.gd")
+## No tile to walk to (_walk_out_tile).
+const NO_TILE := Vector2i(-1000000, -1000000)
 const InteriorPanelScript = preload("res://scripts/interior_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
@@ -627,6 +629,7 @@ func _build_ui() -> void:
     interior_panel_layer.world = world
     interior_panel_layer.opened.connect(func(): _set_modal_blocker("interior", true))
     interior_panel_layer.closed.connect(func(): _set_modal_blocker("interior", false))
+    interior_panel_layer.dismissed.connect(_on_interior_dismissed)
     interior_panel_layer.person_clicked.connect(_on_interior_person_clicked)
     interior_panel_layer.floor_tapped.connect(_on_interior_floor_tapped)
     world.room_square_changed.connect(func(_id: String):
@@ -1258,47 +1261,7 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
             return
     if repair_panel_layer != null:
         repair_panel_layer.close()
-    if _pc_http_move == null:
-        _pc_http_move = HTTPRequest.new()
-        _pc_http_move.accept_gzip = false
-        add_child(_pc_http_move)
-        _pc_http_move.request_completed.connect(func(_r, c, _h, b):
-            Auth.check_response(c)
-            if c < 200 or c >= 300:
-                # Server rejected the move. Roll back any side-effects
-                # the in-flight click set up — today the only one is the
-                # ZBBS-112 pending-notice flag. Without this, a 4xx/5xx
-                # leaves the flag armed and the next unrelated PC arrival
-                # opens the panel for a stale board.
-                if _pc_move_purpose == "noticeboard":
-                    _pending_notice_object_id = ""
-                _pc_move_purpose = ""
-                return
-            _pc_move_purpose = ""
-            # Knock outcome (ZBBS-101 / ZBBS-HOME-445): the server resolved
-            # the structure click as a knock. The service huddle forms on
-            # ARRIVAL at the loiter slot (server-side), so all this handler
-            # does is arm the walk-then-knock flag — the PC's own
-            # npc_arrived refreshes the talk panel and auto-opens it once
-            # huddle_members populates. An unanswered knock is told on
-            # arrival, after the knock (a private knock_unanswered
-            # room_event, LLM-784), not here.
-            # Response ordering note: _pc_http_move is a single reused
-            # HTTPRequest with at most one request in flight (a click
-            # during an in-flight move gets ERR_BUSY below and never
-            # sends), so responses cannot arrive out of order — a
-            # knocked=false response here is always the NEWEST accepted
-            # move and rightly clears a prior knock (the server
-            # superseded that walk's MoveIntent, killing its Knock stamp).
-            var parsed = JSON.parse_string(b.get_string_from_utf8())
-            if parsed is Dictionary:
-                _pending_knock = bool(parsed.get("knocked", false))
-                _pending_knock_structure_id = _pc_move_target if _pending_knock else ""
-                # Already standing at that door (a click on the house from its
-                # doorstep): the zero-length walk's arrival may have beaten this
-                # answer, so ask now rather than wait for it.
-                _open_door_if_there()
-        )
+    _ensure_pc_http_move()
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)
     var payload: String
@@ -1367,6 +1330,82 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         _pending_notice_object_id = ""
         _pc_move_purpose = ""
         push_warning("PC move request failed: %s" % err)
+
+## The one reused move request, made on first use: its answer clears the
+## walk's side effects on a refusal and arms the walk-then-knock state.
+func _ensure_pc_http_move() -> void:
+    if _pc_http_move == null:
+        _pc_http_move = HTTPRequest.new()
+        _pc_http_move.accept_gzip = false
+        add_child(_pc_http_move)
+        _pc_http_move.request_completed.connect(func(_r, c, _h, b):
+            Auth.check_response(c)
+            if c < 200 or c >= 300:
+                # Server rejected the move. Roll back any side-effects
+                # the in-flight click set up — today the only one is the
+                # ZBBS-112 pending-notice flag. Without this, a 4xx/5xx
+                # leaves the flag armed and the next unrelated PC arrival
+                # opens the panel for a stale board.
+                if _pc_move_purpose == "noticeboard":
+                    _pending_notice_object_id = ""
+                _pc_move_purpose = ""
+                return
+            _pc_move_purpose = ""
+            # Knock outcome (ZBBS-101 / ZBBS-HOME-445): the server resolved
+            # the structure click as a knock. The service huddle forms on
+            # ARRIVAL at the loiter slot (server-side), so all this handler
+            # does is arm the walk-then-knock flag — the PC's own
+            # npc_arrived refreshes the talk panel and auto-opens it once
+            # huddle_members populates. An unanswered knock is told on
+            # arrival, after the knock (a private knock_unanswered
+            # room_event, LLM-784), not here.
+            # Response ordering note: _pc_http_move is a single reused
+            # HTTPRequest with at most one request in flight (a click
+            # during an in-flight move gets ERR_BUSY below and never
+            # sends), so responses cannot arrive out of order — a
+            # knocked=false response here is always the NEWEST accepted
+            # move and rightly clears a prior knock (the server
+            # superseded that walk's MoveIntent, killing its Knock stamp).
+            var parsed = JSON.parse_string(b.get_string_from_utf8())
+            if parsed is Dictionary:
+                _pending_knock = bool(parsed.get("knocked", false))
+                _pending_knock_structure_id = _pc_move_target if _pending_knock else ""
+                # Already standing at that door (a click on the house from its
+                # doorstep): the zero-length walk's arrival may have beaten this
+                # answer, so ask now rather than wait for it.
+                _open_door_if_there()
+        )
+
+## Where closing a room's window walks the player (LLM-787): the building's
+## loiter pin, just outside its door, in padded tiles (the wire unit) —
+## NO_TILE for a stall (no inside to leave) or a building not on the map.
+func _walk_out_tile(sid: String, stall: bool) -> Vector2i:
+    if stall or sid == "" or world == null:
+        return NO_TILE
+    var house = world.placed_objects.get(sid, null)
+    if house == null or not is_instance_valid(house):
+        return NO_TILE
+    var pin := StallScenes.pin_tile(house)
+    return VillageApi.world_to_tile_padded((Vector2(pin) + Vector2(0.5, 0.5)) * StallScenes.TILE)
+
+## The player closed a room's window (LLM-787): they leave — walk out the
+## door to just outside it (the building's loiter pin), as a click on the
+## ground there would. A stall has no inside, so its window just closes.
+func _on_interior_dismissed(sid: String, stall: bool) -> void:
+    var tile := _walk_out_tile(sid, stall)
+    if tile == NO_TILE:
+        return
+    _ensure_pc_http_move()
+    var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move", Auth.auth_headers(), HTTPClient.METHOD_POST,
+        JSON.stringify({"destination": {"kind": "position", "position": {"x": tile.x, "y": tile.y}}}))
+    if err == OK:
+        _pending_notice_object_id = ""
+        _pc_move_purpose = ""
+        _pc_move_target = ""
+        _pending_knock = false
+        _pending_knock_structure_id = ""
+    else:
+        push_warning("walk out of %s failed to send: %s" % [sid, err])
 
 ## Open the door popup for the pending knock when the character stands at that
 ## house's door (LLM-785) — called on their arrival and when the move's answer
