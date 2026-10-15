@@ -3,9 +3,10 @@ extends RefCounted
 ## The repair mini-games (LLM-690) — one per site kind, the rules only.
 ##
 ## A player mends the town's damage by playing: each won round is one
-## pc/repair/step. A miss costs time; the saw, the crate's lid and the shop's
-## ladder can fail a round outright (Result.FAIL: the saw sticks and the cut
-## starts over, LLM-716; the lid springs, the ladder falls, LLM-721).
+## pc/repair/step. A miss costs time; the saw, the crate's lid, the shop's
+## ladder and the fence's board can fail a round outright (Result.FAIL: the saw
+## sticks and the cut starts over, LLM-716; the lid springs, the ladder falls,
+## LLM-721; the board splits, LLM-786).
 ## These classes hold the game state and answer input; repair_stage.gd draws
 ## them in art pixels, and repair_panel.gd sends the steps. Kept free of nodes
 ## so tests can drive them with plain numbers.
@@ -157,9 +158,16 @@ class Windlass:
         return "Stop the peg in the gold"
 
 
-## HAMMER — nail heads rise from the board one at a time; tap each before it
-## sinks back. Each hit drives one nail. Harder: a nail stands for less time,
-## and a tap must land closer to its head.
+## HAMMER — the fence's board (LLM-786). Nails rise from the board one at a
+## time, leaning; each rocks upright, stands TRUE for a moment, then leans the
+## other way and sinks. Strike its HEAD while it stands true and it drives. A
+## strike while it leans, or a glancing one on its shank, BENDS it (the nail is
+## lost); a tap off every nail, or with none standing, DENTS the board. A bend
+## or a dent is a bad strike, and three in a row SPLIT the board
+## (Result.FAIL): its nails come out, the round starts over, and the hammer is
+## held SPLIT_TIME. A nail let sink costs only time. `nails_needed` driven
+## nails win the round. Harder: more nails, a shorter true moment, a tighter
+## head.
 class Hammer:
     extends Game
     const SLOTS := 6
@@ -167,34 +175,119 @@ class Hammer:
     const BOARD_Y := 32
     const BOARD_W := 144
     const BOARD_H := 14
-    const UP_TIME := 1.5  # seconds a nail stands before it sinks
-    const GAP_TIME := 0.35  # seconds between one nail sinking and the next rising
-    const HIT_SLACK := 6  # art px around a nail head that still counts
-    const HARD_UP_TIME := 0.85
-    const HARD_HIT_SLACK := 2
+    const NAILS := 3
+    const HARD_NAILS := 5
+    const STAND := 8  # art px of shank a nail stands proud
+    const HEAD_H := 3  # the head's rows at the top of nail.png
+    const LEAN := 3  # art px a leaning nail's head sits off upright
+    const RISE := 0.12
+    # The rock upright takes a random time in this span, so it cannot be
+    # counted.
+    const APPROACH_MIN := 0.35
+    const APPROACH_MAX := 0.9
+    const TRUE_TIME := 0.3
+    const HARD_TRUE_TIME := 0.12
+    const AWAY := 0.3  # seconds it takes to lean over the other way
+    const SINK := 0.35
+    const GAP_TIME := 0.35  # seconds between one nail going and the next rising
+    const HEAD_SLACK := 2  # art px around the head that still counts
+    const HARD_HEAD_SLACK := 1
+    const SPLIT_STRIKES := 3
+    const SPLIT_TIME := 1.0
     var driven: Array[bool] = []
     var up := -1  # the slot whose nail stands, or -1
     var up_t := 0.0
     var wait := 0.4
-    var up_time := UP_TIME
-    var hit_slack := HIT_SLACK
+    var side := 1  # the way the standing nail leans first, -1 or 1
+    var approach := APPROACH_MIN
+    var up_time := 0.0  # the standing nail's whole stand, rise to sunk
+    var nails := 0  # nails driven this round
+    var nails_needed := NAILS
+    var true_time := TRUE_TIME
+    var head_slack := HEAD_SLACK
+    var bad := 0  # bad strikes in a row
+    var clean := true  # no bad strike yet this round
+    var split_left := 0.0
+    var split_at := -1.0
+    ## The last strike, for the stage to swing at and show: its kind
+    ## ("drive", "bend" or "dent"), slot (-1 for a dent), board x, and the
+    ## nail's height and lean when struck.
+    var last_kind := ""
+    var last_slot := -1
+    var last_x := 0.0
+    var last_h := 0.0
+    var last_lean := 0
+    ## The last bent nail: {slot, h, lean, at}; empty for none.
+    var bent := {}
+    ## Dents in the board this round: Vector2(board x, game time).
+    var dents: Array[Vector2] = []
 
     func _init(r: RandomNumberGenerator, d := 0.0) -> void:
         super(r, d)
-        up_time = lerpf(UP_TIME, HARD_UP_TIME, d)
-        hit_slack = roundi(lerpf(HIT_SLACK, HARD_HIT_SLACK, d))
+        nails_needed = roundi(lerpf(NAILS, HARD_NAILS, d))
+        true_time = lerpf(TRUE_TIME, HARD_TRUE_TIME, d)
+        head_slack = roundi(lerpf(HEAD_SLACK, HARD_HEAD_SLACK, d))
         for i in SLOTS:
             driven.append(false)
 
     func slot_x(i: int) -> int:
         return BOARD_X + 12 + i * ((BOARD_W - 24) / (SLOTS - 1))
 
-    func nail_rect(i: int) -> Rect2:
-        return Rect2(slot_x(i) - 3, BOARD_Y - 10, 7, 10)
+    ## When the standing nail comes true and stops being true, in up_t.
+    func true_from() -> float:
+        return RISE + approach
+
+    func true_until() -> float:
+        return RISE + approach + true_time
+
+    func is_true() -> bool:
+        return up >= 0 and up_t >= true_from() and up_t < true_until()
+
+    ## How far the standing nail stands proud, whole art px: it rises fast,
+    ## stands, and sinks at the end.
+    func height() -> float:
+        if up < 0:
+            return 0.0
+        var rise := clampf(up_t / RISE, 0.0, 1.0)
+        var sink := clampf((up_t - (up_time - SINK)) / SINK, 0.0, 1.0)
+        return roundf(STAND * rise * (1.0 - sink))
+
+    ## How far the standing nail's head sits off upright, whole art px:
+    ## LEAN to 1 as it rocks upright, 0 while true, then 1 to LEAN the other
+    ## way.
+    func lean() -> int:
+        if up < 0 or is_true():
+            return 0
+        if up_t < true_from():
+            var u := clampf((up_t - RISE) / approach, 0.0, 1.0)
+            return side * clampi(ceili(LEAN * (1.0 - u)), 1, LEAN)
+        var v := (up_t - true_until()) / AWAY
+        return -side * clampi(1 + floori(v * LEAN), 1, LEAN)
+
+    ## The standing nail's head, play px, as drawn.
+    func head_rect() -> Rect2:
+        return Rect2(slot_x(up) - 3 + lean(), BOARD_Y - height() - HEAD_H, 7, HEAD_H)
+
+    ## The whole standing nail, head to board, leaning shank and all.
+    func nail_rect() -> Rect2:
+        var l := lean()
+        var h := height()
+        return Rect2(slot_x(up) - 3 + mini(l, 0), BOARD_Y - h - HEAD_H, 7 + absi(l), h + HEAD_H)
 
     func update(dt: float) -> void:
         super(dt)
         if holding:
+            return
+        if split_left > 0.0:
+            split_left -= dt
+            if split_left > 0.0:
+                return
+            split_left = 0.0
+            # The split board is set right: its nails are out.
+            for i in SLOTS:
+                driven[i] = false
+            dents.clear()
+            wait = GAP_TIME
             return
         if up >= 0:
             up_t += dt
@@ -211,33 +304,90 @@ class Hammer:
         for i in SLOTS:
             if not driven[i]:
                 free.append(i)
-        if free.is_empty():
-            # Every slot driven: a fresh board's worth of nails.
-            for i in SLOTS:
-                driven[i] = false
-                free.append(i)
         up = free[rng.randi_range(0, free.size() - 1)]
         up_t = 0.0
+        side = -1 if rng.randf() < 0.5 else 1
+        approach = rng.randf_range(APPROACH_MIN, APPROACH_MAX)
+        up_time = RISE + approach + true_time + AWAY + SINK
 
+    ## pos is a tap in play px, or null for a key press — a key strikes the
+    ## standing nail's head, so only its timing counts. A tap outside the play
+    ## area does nothing.
     func press(pos: Variant) -> Result:
-        if holding:
+        if holding or split_left > 0.0:
+            return Result.NONE
+        if pos is Vector2 and not Rect2(0, 0, PLAY_W, PLAY_H).has_point(pos):
             return Result.NONE
         if up < 0:
-            return Result.MISS
+            var x: float = pos.x if pos is Vector2 else BOARD_X + BOARD_W / 2.0
+            return _dent(x)
         if pos is Vector2:
-            if not nail_rect(up).grow(hit_slack).has_point(pos):
-                return Result.MISS
-        holding = true
+            if not nail_rect().grow(head_slack).has_point(pos):
+                return _dent(pos.x)
+            if not head_rect().grow(head_slack).has_point(pos):
+                return _bend()
+        if not is_true():
+            return _bend()
+        _strike("drive", up, slot_x(up))
         driven[up] = true
+        up = -1
+        wait = GAP_TIME
+        bad = 0
+        nails += 1
+        if nails < nails_needed:
+            return Result.PROGRESS
+        holding = true
         return Result.HIT
+
+    func _strike(kind: String, slot: int, x: float) -> void:
+        last_kind = kind
+        last_slot = slot
+        last_x = x
+        last_h = height()
+        last_lean = lean()
+
+    ## A strike on the leaning nail, or a glancing one on its shank: it
+    ## bends and is lost.
+    func _bend() -> Result:
+        _strike("bend", up, slot_x(up))
+        bent = {"slot": up, "h": last_h, "lean": last_lean if last_lean != 0 else side, "at": t}
+        up = -1
+        wait = GAP_TIME
+        return _bad()
+
+    ## A strike on the bare board.
+    func _dent(x: float) -> Result:
+        x = clampf(x, BOARD_X + 2, BOARD_X + BOARD_W - 2)
+        _strike("dent", -1, x)
+        dents.append(Vector2(x, t))
+        return _bad()
+
+    ## A bad strike; the third in a row splits the board.
+    func _bad() -> Result:
+        clean = false
+        bad += 1
+        if bad < SPLIT_STRIKES:
+            return Result.MISS
+        bad = 0
+        nails = 0
+        up = -1
+        split_left = SPLIT_TIME
+        split_at = t
+        return Result.FAIL
 
     func release() -> void:
         super()
         up = -1
         wait = GAP_TIME
+        nails = 0
+        bad = 0
+        clean = true
+        for i in SLOTS:
+            driven[i] = false
+        dents.clear()
 
     func hint() -> String:
-        return "Strike each nail before it sinks"
+        return "Strike each nail on the head as it stands straight"
 
 
 ## SAW — keep the beat (LLM-716). The blade strokes across the log on its own,
