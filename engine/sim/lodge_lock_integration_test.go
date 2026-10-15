@@ -2,7 +2,6 @@ package sim_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -98,9 +97,6 @@ func TestEnterOrKnock_LockedLodge_PCKnocksDoorShut(t *testing.T) {
 	out := res.(sim.EnterOrKnockResult)
 	if !out.Knocked {
 		t.Error("want Knocked=true — a locked lodge turns the PC's entry into a knock")
-	}
-	if !strings.Contains(out.KnockNarration, "shut fast") {
-		t.Errorf("KnockNarration = %q, want the door-shut message (keeper asleep, no answer)", out.KnockNarration)
 	}
 
 	// The click-time knock must not wake the sleeping keeper.

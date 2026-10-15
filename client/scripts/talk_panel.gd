@@ -1730,8 +1730,9 @@ func _on_room_event(data: Dictionary) -> void:
     # about the PC's body, not a place. Filter via kind + structure_id.
     # A broken well (LLM-654, object_condition) floats its thought over the
     # well the same way — structure_id carries the well's object id, and
-    # spawn_structure_bubble looks up placed objects by that id.
-    if private_event and (kind == "closed_business_arrival" or kind == "object_condition"):
+    # spawn_structure_bubble looks up placed objects by that id. An
+    # unanswered knock (LLM-784) floats over the house knocked on.
+    if private_event and (kind == "closed_business_arrival" or kind == "object_condition" or kind == "knock_unanswered"):
         var event_structure_id := str(data.get("structure_id", ""))
         if event_structure_id != "":
             var world_node := get_node_or_null("/root/Main/World")

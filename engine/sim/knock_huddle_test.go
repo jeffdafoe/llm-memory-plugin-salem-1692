@@ -227,3 +227,60 @@ func TestKnockWalk_ArrivedEventCarriesKnocked(t *testing.T) {
 		t.Errorf("ActorArrived{walker, Knocked, dest=cottage, outside} count = %d, want 1", arrived)
 	}
 }
+
+// LLM-784: an unanswered knock is told on ARRIVAL, after the knock — a private
+// KnockUnansweredNarrated to the knocking player — not at the click. An
+// answered knock, and a villager knocking, get no such line.
+func TestEnsureKnockServiceHuddle_UnansweredTellsThePlayerOnArrival(t *testing.T) {
+	cases := []struct {
+		name     string
+		player   bool
+		answered bool
+		want     int
+	}{
+		{"player, nobody in", true, false, 1},
+		{"player, answered", true, true, 0},
+		{"villager, nobody in", false, false, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, cancel := buildMembershipTestWorld(t)
+			defer cancel()
+			now := time.Now().UTC()
+			var told []*sim.KnockUnansweredNarrated
+			mutate(t, w, func(world *sim.World) {
+				if c.player {
+					world.Actors["stranger"].Kind = sim.KindPC
+					world.Actors["stranger"].LastPCSeenAt = &now
+				}
+				world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, e sim.Event) {
+					if k, ok := e.(*sim.KnockUnansweredNarrated); ok {
+						told = append(told, k)
+					}
+				}))
+			})
+			if c.answered {
+				setInside(t, w, "servant", "cottage")
+			}
+			// The click says nothing either way.
+			res, err := w.Send(sim.EnterOrKnock("stranger", "cottage", true, now))
+			if err != nil {
+				t.Fatalf("EnterOrKnock: %v", err)
+			}
+			if !res.(sim.EnterOrKnockResult).Knocked || len(told) != 0 {
+				t.Fatalf("at the click: knocked %v, told %d — want a knock and no line yet", res.(sim.EnterOrKnockResult).Knocked, len(told))
+			}
+			// The walk arrives: the knock lands at the door.
+			mutate(t, w, func(world *sim.World) { world.Actors["stranger"].MoveIntent = nil })
+			if _, err := w.Send(sim.EnsureKnockServiceHuddle("stranger", "cottage", now)); err != nil {
+				t.Fatalf("EnsureKnockServiceHuddle: %v", err)
+			}
+			if len(told) != c.want {
+				t.Fatalf("on arrival: %d unanswered lines, want %d", len(told), c.want)
+			}
+			if c.want == 1 && (told[0].ActorID != "stranger" || told[0].StructureID != "cottage" || told[0].Text == "") {
+				t.Errorf("unanswered line %+v", told[0])
+			}
+		})
+	}
+}

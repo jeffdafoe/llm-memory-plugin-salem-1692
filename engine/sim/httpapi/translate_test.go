@@ -1365,3 +1365,19 @@ func TestTranslateEvent_RoomSquares(t *testing.T) {
 		t.Errorf("square walked to = %s, want %s", b, want)
 	}
 }
+
+// LLM-784: an unanswered knock reaches only the knocking player, as a private
+// knock_unanswered room_event naming the house.
+func TestTranslateEvent_KnockUnanswered(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.KnockUnansweredNarrated{ActorID: "pc", StructureID: "cottage", Text: "You knock, but no one answers."})
+	if !ok || frame.Type != "room_event" {
+		t.Fatalf("KnockUnansweredNarrated -> %+v %v, want a room_event", frame, ok)
+	}
+	d := frame.Data.(roomEventWireDTO)
+	if d.Kind != "knock_unanswered" || !d.Private || d.ActorID != "pc" || d.ActorName != "" || d.StructureID != "cottage" || d.Text == "" {
+		t.Errorf("knock_unanswered frame = %+v", d)
+	}
+	if _, ok := TranslateEvent(&sim.KnockUnansweredNarrated{ActorID: "pc"}); ok {
+		t.Error("an empty line was sent")
+	}
+}

@@ -1261,10 +1261,9 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
             # ARRIVAL at the loiter slot (server-side), so all this handler
             # does is arm the walk-then-knock flag — the PC's own
             # npc_arrived refreshes the talk panel and auto-opens it once
-            # huddle_members populates. Narration, when present, explains a
-            # knock that looks like it will go unanswered (no receptive
-            # receiver inside at click time); the flag stays armed anyway
-            # since a receiver who returns mid-walk still answers.
+            # huddle_members populates. An unanswered knock is told on
+            # arrival, after the knock (a private knock_unanswered
+            # room_event, LLM-784), not here.
             # Response ordering note: _pc_http_move is a single reused
             # HTTPRequest with at most one request in flight (a click
             # during an in-flight move gets ERR_BUSY below and never
@@ -1275,10 +1274,6 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
             var parsed = JSON.parse_string(b.get_string_from_utf8())
             if parsed is Dictionary:
                 _pending_knock = bool(parsed.get("knocked", false))
-                if _pending_knock:
-                    var narration: String = str(parsed.get("knock_narration", ""))
-                    if narration != "" and talk_panel_layer != null and talk_panel_layer.has_method("append_local_narration"):
-                        talk_panel_layer.append_local_narration(narration)
         )
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)

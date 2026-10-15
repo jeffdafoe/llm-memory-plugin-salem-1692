@@ -9,8 +9,9 @@ import (
 // EnterOrKnockResult is the outcome of an EnterOrKnock command. It embeds the
 // MoveActorResult for the walk that was started — to the door tile when the
 // actor may enter, or to a loiter slot when they may not — and adds the
-// knock-specific signals the PC client renders (it reads knocked /
-// knock_narration off the /pc/move response).
+// knock signal the PC client reads off the /pc/move response (knocked). An
+// unanswered knock is told on arrival, after the knock (KnockUnansweredNarrated,
+// LLM-784), not here.
 type EnterOrKnockResult struct {
 	MoveActorResult
 	// Knocked is true when the actor was turned away from an owner-only
@@ -19,11 +20,6 @@ type EnterOrKnockResult struct {
 	// on ARRIVAL at the slot, not now (ZBBS-HOME-445) — the client polls its
 	// huddle state to open the talk panel once the door is answered.
 	Knocked bool
-	// KnockNarration is a short line rendered in the talk panel when the
-	// knock looks like it will go unanswered (no receiver inside at click
-	// time). Empty when the actor entered normally or a receiver is in —
-	// there the arrival-time hospitality greet is the feedback.
-	KnockNarration string
 }
 
 // EnterOrKnock resolves a deliberate "go to this structure" request the way v1's
@@ -113,24 +109,7 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 				return EnterOrKnockResult{}, fmt.Errorf("EnterOrKnock: unexpected move result type %T", raw)
 			}
 
-			out := EnterOrKnockResult{MoveActorResult: moveRes, Knocked: knocked}
-			if !knocked {
-				return out, nil
-			}
-
-			// Click-time narration covers only the unanswered-looking case: no
-			// receptive receiver inside right now, so the player learns why
-			// the click will probably go nowhere. Predictive by nature — a
-			// receiver who returns home (or wakes) mid-walk still answers on
-			// arrival (EnsureKnockServiceHuddle re-checks live state). When
-			// someone IS in, say nothing here: the arrival-time hospitality
-			// greet is the "door answered" feedback, and a click-time "you are
-			// bid to wait" would be the same premature speech this ticket
-			// removed.
-			if len(receptiveKnockReceivers(w, structureID)) == 0 {
-				out.KnockNarration = "You knock, but the door is shut fast and no one answers."
-			}
-			return out, nil
+			return EnterOrKnockResult{MoveActorResult: moveRes, Knocked: knocked}, nil
 		},
 	}
 }
