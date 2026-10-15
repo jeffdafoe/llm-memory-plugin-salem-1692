@@ -496,14 +496,15 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		// the bake annotation from THIS observer's co-present view; the housemate
 		// stays present and greetable, and any observer not under seek-work still
 		// reads them as baking. The other kinds (repair/stoke/gather) stand — they
-		// don't invite joining, so they set no trap. CoPresent is the only view that
-		// renders busyActivityPhrase (renderHuddleMember carries no busy annotation),
-		// so this is the whole surface.
-		for i := range p.Surroundings.CoPresent {
-			if m := &p.Surroundings.CoPresent[i]; m.SourceActivityKind == sim.SourceActivityBake {
-				m.SourceActivityBusy = false
-				m.SourceActivityKind = ""
-				m.SourceActivityLabel = ""
+		// don't invite joining, so they set no trap. busyActivityPhrase renders in both
+		// the co-present line and the huddle roster (LLM-779), so strip both views.
+		for _, members := range [][]HuddleMember{p.Surroundings.CoPresent, p.Surroundings.HuddleMembers} {
+			for i := range members {
+				if m := &members[i]; m.SourceActivityKind == sim.SourceActivityBake {
+					m.SourceActivityBusy = false
+					m.SourceActivityKind = ""
+					m.SourceActivityLabel = ""
+				}
 			}
 		}
 	}
@@ -1624,6 +1625,7 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 			m.SourceActivityBusy = true
 			m.SourceActivityKind = peer.SourceActivityKind
 			m.SourceActivityLabel = resolveDwellPinLabel(snap, peer.SourceActivityObjectID)
+			m.SourceActivityNoAnswer = peer.Kind != sim.KindPC && peer.SourceActivityKind != sim.SourceActivityBake
 		}
 		// LLM-370: a co-present transient traveler is named by archetype + origin in
 		// "## Around you" while the observer doesn't yet know them by name.

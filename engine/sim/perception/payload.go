@@ -2147,10 +2147,17 @@ type HuddleMember struct {
 	// Eating (LLM-416) and Laboring (LLM-231) give their own states. Sourced from
 	// the peer's BusyAtSource-gated SourceActivityKind projection, so it clears the
 	// moment the window completes. Like Eating and unlike Laboring it does NOT gate
-	// the seller offer/quote cue or drop the member from the speech audience — a
-	// keeper mid-repair can still sell and still answer if spoken to. LLM-440.
+	// the seller offer/quote cue or drop the member from the speech audience — the
+	// member stays addressable. LLM-440.
 	SourceActivityBusy bool
 	SourceActivityKind sim.SourceActivityKind
+
+	// SourceActivityNoAnswer marks a busy member whose replies to NPC speech the
+	// reactor shelves for the window (reactor.go, the SourceActivity gate): an NPC
+	// mid repair/stoke/gather. Render closes the busy note with "may not answer you
+	// until done". False for a PC (a player answers whenever they like) and for a
+	// baker (bakeReplyDue answers). LLM-779.
+	SourceActivityNoAnswer bool
 
 	// SourceActivityLabel is the display label of the place the activity is bound to
 	// (the business being mended, the hearth's structure), woven into the repair

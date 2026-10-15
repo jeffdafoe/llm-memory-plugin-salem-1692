@@ -87,6 +87,51 @@ func TestBuildCoPresentBakeAnnotationSuppressedBySeekWork(t *testing.T) {
 	}
 }
 
+// TestBuildHuddleBakeAnnotationSuppressedBySeekWork is the huddle arm of the strip
+// above: since LLM-779 the huddle roster renders busyActivityPhrase too, so a seek-work
+// observer HUDDLED with a baking housemate must lose the bake annotation the same way a
+// merely co-present one does. Positive control first, for the same vacuity reason.
+func TestBuildHuddleBakeAnnotationSuppressedBySeekWork(t *testing.T) {
+	huddled := func(coins int) (*sim.Snapshot, sim.ActorID) {
+		snap, actorID, _ := seekingWorkerHomeSceneHidesHousemateBake()
+		const lewisID = sim.ActorID("lewis")
+		const huddleID = sim.HuddleID("walker_kitchen")
+		snap.Actors[actorID].Coins = coins
+		snap.Actors[actorID].ColocatedAudienceIDs = nil
+		snap.Actors[actorID].CurrentHuddleID = huddleID
+		snap.Actors[lewisID].CurrentHuddleID = huddleID
+		snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{actorID: {}, lewisID: {}}},
+		}
+		return snap, actorID
+	}
+
+	snap, actorID := huddled(40)
+	p := Build(snap, actorID, nil)
+	if len(p.Surroundings.HuddleMembers) != 1 {
+		t.Fatalf("comfortable observer: HuddleMembers = %v, want the one baking housemate", p.Surroundings.HuddleMembers)
+	}
+	if !strings.Contains(aroundYouSection(combinedPrompt(Render(p, DefaultRenderConfig()))), "baking just now") {
+		t.Fatal("comfortable observer huddled with a baking housemate: annotation absent from ## Around you — " +
+			"the positive control for the suppression below is broken, so the negative case proves nothing")
+	}
+
+	snap, actorID = huddled(8)
+	p = Build(snap, actorID, nil)
+	if len(p.SeekWorkPlaces) == 0 {
+		t.Fatal("below-ceiling workless worker: got no seek-work directory, want one — the huddled scene " +
+			"no longer reproduces the LLM-562 conflict, so the suppression below is untested")
+	}
+	if len(p.Surroundings.HuddleMembers) != 1 {
+		t.Fatalf("seek-work observer: HuddleMembers = %v, want the housemate still in the huddle", p.Surroundings.HuddleMembers)
+	}
+	if m := p.Surroundings.HuddleMembers[0]; m.SourceActivityBusy || m.SourceActivityKind != "" || m.SourceActivityLabel != "" {
+		t.Errorf("seek-work observer huddled with a baking housemate: annotation fields still set "+
+			"(busy=%v kind=%q label=%q), want all cleared (LLM-562 / LLM-779)",
+			m.SourceActivityBusy, m.SourceActivityKind, m.SourceActivityLabel)
+	}
+}
+
 // TestNoSeekWorkPromptDepictsHousemateBake is the LLM-562 corpus invariant, the scene
 // sibling of TestNoPromptOffersBakeAndSeekWorkTogether below: across every scenario
 // the matrix renders, no single prompt may carry both the seek-work go-coda and the
