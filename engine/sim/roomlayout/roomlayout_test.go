@@ -81,13 +81,54 @@ func TestPlaceSpreadsGuests(t *testing.T) {
 	}
 }
 
+// LLM-781: guests take the Tavern's seats and its two bar places before the
+// hearth (the keeper's work place, in the middle of the room) — whatever their
+// id hashes to — and the hearth only once those are full.
+func TestPlaceGuestsSeatsAndBarBeforeTheHearth(t *testing.T) {
+	l := For(tavern)
+	hearth := l.StationFor(UseStoke)
+	if hearth == nil {
+		t.Fatal("the Tavern has no hearth station")
+	}
+	bar := 0
+	for _, st := range l.Stations {
+		if st.has(UseDrink) {
+			bar++
+			if st.Serve == nil || st.Facing != "east" {
+				t.Errorf("bar place %q: serve %v facing %q, want a serve point and facing the bar (east)", st.ID, st.Serve, st.Facing)
+			}
+		}
+	}
+	if bar != 2 {
+		t.Fatalf("the Tavern has %d bar places, want 2", bar)
+	}
+	for i := 0; i < 50; i++ {
+		id := "guest" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		if s, _ := l.Place(RoleGuest, id, map[Square]bool{}); s == hearth.Square {
+			t.Fatalf("guest %q alone in the room was put at the hearth", id)
+		}
+	}
+	taken := map[Square]bool{}
+	for i := 0; i < len(l.Stations)-1; i++ {
+		s, ok := l.Place(RoleGuest, "g"+string(rune('a'+i)), taken)
+		if !ok || s == hearth.Square {
+			t.Fatalf("guest %d went to %v %v before the other stations were full", i, s, ok)
+		}
+		taken[s] = true
+	}
+	if s, ok := l.Place(RoleGuest, "last", taken); !ok || s != hearth.Square {
+		t.Errorf("the other stations full: a guest went to %v %v, want the hearth %v", s, ok, hearth.Square)
+	}
+}
+
 func TestParseRejectsBadPlans(t *testing.T) {
 	good := `{"structure_id": "s", "grid": ["..", ".."], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 0], "at": [24, 14]}, "stations": [%s]}`
 	cases := map[string]string{
-		"ragged grid":       `{"structure_id": "s", "grid": ["..", "."], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 0], "at": [24, 14]}, "stations": []}`,
-		"station on a wall": strings.Replace(good, `[%s]`, `[{"id": "x", "square": [0, 0], "at": [8, 14]}]`, 1),
-		"shared square":     strings.Replace(good, `[%s]`, `[{"id": "x", "square": [0, 1], "at": [8, 14]}]`, 1),
-		"drawn outside":     strings.Replace(good, `[%s]`, `[{"id": "x", "square": [1, 1], "at": [40, 14]}]`, 1),
+		"ragged grid":        `{"structure_id": "s", "grid": ["..", "."], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [1, 0], "at": [24, 14]}, "stations": []}`,
+		"station on a wall":  strings.Replace(good, `[%s]`, `[{"id": "x", "square": [0, 0], "at": [8, 14]}]`, 1),
+		"shared square":      strings.Replace(good, `[%s]`, `[{"id": "x", "square": [0, 1], "at": [8, 14]}]`, 1),
+		"drawn outside":      strings.Replace(good, `[%s]`, `[{"id": "x", "square": [1, 1], "at": [40, 14]}]`, 1),
+		"bar place unserved": strings.Replace(good, `[%s]`, `[{"id": "x", "square": [1, 1], "at": [24, 30], "use": ["drink"]}]`, 1),
 	}
 	cases["station on a wall"] = strings.Replace(cases["station on a wall"], `["..", ".."]`, `["#.", ".."]`, 1)
 	for name, room := range cases {

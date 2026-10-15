@@ -53,8 +53,9 @@ type Point = Square
 
 // Station is a square with a purpose and where a person there is drawn: At is
 // where their feet go in room art pixels, Facing and Pose how they stand or
-// sit, Serve (seats at a table) where a meal set before them lands. Use names
-// the work done there ("stoke": the hearth), which sends a worker to it.
+// sit, Serve (a seat at a table, a place at the bar) where an order set before
+// them lands. Use names the work done there ("stoke": the hearth), which sends
+// a worker to it, or "drink": a place at the bar.
 type Station struct {
 	ID     string   `json:"id,omitempty"`
 	Kind   string   `json:"kind,omitempty"`
@@ -68,6 +69,20 @@ type Station struct {
 
 // UseStoke: the station where the room's fire is fed.
 const UseStoke = "stoke"
+
+// UseDrink: a place to stand at the bar (LLM-781). It carries a Serve point
+// on the bar top, so an order is set down in front of the guest there.
+const UseDrink = "drink"
+
+// has reports whether the station's Use names use.
+func (st *Station) has(use string) bool {
+	for _, u := range st.Use {
+		if u == use {
+			return true
+		}
+	}
+	return false
+}
 
 // Layout is one room's plan. Grid rows are top to bottom, '.' a square that
 // can be stood on, 'k' the keeper's way out from behind their counter (theirs
@@ -227,8 +242,10 @@ const (
 // a player's character the door, when free; otherwise — and for everyone
 // else — a free station, starting from the one the id hashes to so people do
 // not all pile onto the first, then the first free plain square in reading
-// order. Guests are never put on the door, the keeper's place or the keeper's
-// way in.
+// order. A station where the keeper works (the hearth they stoke) is taken
+// only when every other station is full, so guests sit or stand at the bar
+// before they stand in the middle of the room (LLM-781). Guests are never put
+// on the door, the keeper's place or the keeper's way in.
 func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, bool) {
 	switch role {
 	case RoleKeeper:
@@ -244,10 +261,12 @@ func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, boo
 		h := fnv.New32a()
 		h.Write([]byte(id))
 		start := int(h.Sum32() % uint32(n))
-		for i := 0; i < n; i++ {
-			st := l.Stations[(start+i)%n]
-			if !taken[st.Square] {
-				return st.Square, true
+		for _, work := range []bool{false, true} {
+			for i := 0; i < n; i++ {
+				st := &l.Stations[(start+i)%n]
+				if st.has(UseStoke) == work && !taken[st.Square] {
+					return st.Square, true
+				}
 			}
 		}
 	}
@@ -292,6 +311,9 @@ func (l *Layout) validate() error {
 	}
 	// A player walks from the door to any seat or standing place.
 	for _, st := range l.Stations {
+		if st.has(UseDrink) && st.Serve == nil {
+			return fmt.Errorf("room %s: bar place %q has no serve point on the bar", l.StructureID, st.ID)
+		}
 		if l.Path(l.Door.Square, st.Square) == nil {
 			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the door", l.StructureID, st.ID, st.Square)
 		}

@@ -88,7 +88,7 @@ static func has_room(structure_id: String) -> bool:
 
 ## The room's art with the engine's floor plan merged in as spots — `door`,
 ## `keeper`, `keeper_door` (when the plan has one) and `spots` (the stations) —
-## each {x, y, facing, pose, square[, serve {x, y}]}: x/y where the feet go in
+## each {x, y, facing, pose, square[, serve {x, y}][, use]}: x/y where the feet go in
 ## room art pixels, square the plan's [x, y]. Without a plan the art comes
 ## back as it is, with no spots: nobody is drawn until the plan lands.
 static func with_layout(art: Dictionary, plan: Dictionary) -> Dictionary:
@@ -290,6 +290,8 @@ static func _spot(station: Dictionary) -> Dictionary:
     var serve := square_of(station.get("serve", null))
     if serve != Vector2i(-1, -1):
         spot["serve"] = {"x": serve.x, "y": serve.y}
+    if station.get("use", null) is Array:
+        spot["use"] = (station["use"] as Array).duplicate()
     return spot
 
 ## Spread people over a stall's spots — its customers, the hands beside its

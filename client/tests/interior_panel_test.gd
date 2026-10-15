@@ -91,6 +91,10 @@ const TESTS := [
     "_test_room_walk",
     "_test_keeper_walks_to_the_hearth",
     "_test_tap_on_furniture",
+    "_test_tavern_bar_places",
+    "_test_tavern_serves_stew_at_the_bar",
+    "_test_tavern_drink_at_the_bar",
+    "_test_tavern_pack_guest_drinks_from_the_bar",
     "_test_stall_keeper_mends",
     "_test_pack_keeper_mends_by_stand_in",
     "_test_smithy_crew_leaves_off_to_mend",
@@ -2838,9 +2842,9 @@ func _spot_point_of(spot: Dictionary) -> Vector2:
 
 
 func _test_tavern_serves_standing_and_at_the_door() -> void:
-    _tavern_with_guest(2)
+    _tavern_with_guest(4)
     var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
-    var standing := Vector2(_panel.room["spots"][2]["x"], _panel.room["spots"][2]["y"] - 6)
+    var standing := Vector2(_panel.room["spots"][4]["x"], _panel.room["spots"][4]["y"] - 6)
     var serve: Dictionary = _panel._serve_to("guest", bar, true)
     _check("a standing guest: most of the way to them, then gone", serve, {"to": bar.lerp(standing, 0.6).round(), "stay": false})
     _person("pc", _farmer(), _sid)
@@ -3493,10 +3497,13 @@ func _test_keeper_walks_to_the_hearth() -> void:
 ## table its nearer chair; past TAP_REACH (high on the wall) nothing.
 func _test_tap_on_furniture() -> void:
     var room := InteriorRooms.with_layout(InteriorRooms.room_for(_sid), _catalog().rooms[_sid])
-    var counter := Vector2(100, 92)
+    # Low on the counter's front: the lower bar place (LLM-781 put a second one
+    # above it, which a tap high on the counter's side reaches).
+    var counter := Vector2(100, 100)
     _check("the counter is not floor", InteriorRooms.walkable(room, Vector2i(6, 5)), false)
     _check("a tap on the counter: the bar", InteriorRooms.square_at(room, counter), Vector2i(4, 5))
     _check("the bar held: the next place within reach", InteriorRooms.square_at(room, counter, {Vector2i(4, 5): true}), Vector2i(4, 4))
+    _check("a tap high on the counter: the upper bar place", InteriorRooms.square_at(room, Vector2(96, 74)), Vector2i(4, 4))
     _check("a tap on the table: the nearer chair", InteriorRooms.square_at(room, Vector2(32, 88)), Vector2i(1, 6))
     _check("high on the wall: nothing", InteriorRooms.square_at(room, Vector2(40, 20)), Vector2i(-1, -1))
 
@@ -3754,4 +3761,113 @@ func _test_mender_speech_hold_outlasts_a_redraw() -> void:
     _panel.sound_hook = Callable()
     _panel.close()
     _panel.wares_hook = Callable()
+    _done()
+
+
+## LLM-781: the Tavern's plan has two places at the bar, facing it, each with
+## a serve point on the bar top; the hearth is not one.
+func _test_tavern_bar_places() -> void:
+    _tavern_with_guest(0)
+    var spots: Array = _panel.room["spots"]
+    var bar: Array = []
+    for spot in spots:
+        if _panel._bar_place(spot):
+            bar.append(spot)
+    _check("two bar places", bar.size(), 2)
+    for spot in bar:
+        _check("a bar place faces the bar, with a serve point", [str(spot["facing"]), spot.has("serve")], ["east", true])
+    _check("the hearth is no bar place", _panel._bar_place(spots[4]), false)
+    _panel.close()
+    _done()
+
+
+## LLM-781: stew for a guest at the bar is set across the bar in front of them
+## (not carried round it), stays while they eat, and is cleared from behind
+## the bar.
+func _test_tavern_serves_stew_at_the_bar() -> void:
+    _tavern_with_guest(2, true)
+    var keeper: Node2D = _panel._tending()
+    var spot: Dictionary = _panel.room["spots"][2]
+    var at := Vector2(spot["serve"]["x"], spot["serve"]["y"])
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    _check("served across the bar, not carried round it", _panel._waiter_target(), {})
+    var good: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    _check("on the bar in front of them, staying", [good.position, good.is_queued_for_deletion(), good.has_meta("at_bar")], [_panel._cell_at(at), false, true])
+    _check("the bar is free for the next", _panel._handoff_now, {})
+    var guest: Node2D = _panel._holder("guest")
+    var spr: AnimatedSprite2D = _panel._sprite_of(guest)
+    var dipped := false
+    var rest := spr.position.y
+    for i in 40:
+        _panel._eat(0.05)
+        dipped = dipped or spr.position.y != rest
+    _check("eaten there: they dip toward it", dipped, true)
+    _world.apply_npc_meal_ended({"id": "guest", "item": "stew", "structure_id": _sid})
+    _check("the meal over: cleared from behind the bar", [good.has_meta("clearing"), bool(_panel._handoff_now.get("fetch", false))], [true, false])
+    _finish_walk(keeper)
+    if good.has_meta("tween"):
+        (good.get_meta("tween") as Tween).custom_step(60.0)
+    _check("gone", good.is_queued_for_deletion(), true)
+    _panel.close()
+    _done()
+
+
+## LLM-781: ale for a farmer-base guest at the bar is in their hand — the
+## drink-standing pose facing the bar, the tankard off the bar — until it is
+## done; then they stand and the empty tankard is left on the bar.
+func _test_tavern_drink_at_the_bar() -> void:
+    _tavern_with_guest(3, true)
+    var spot: Dictionary = _panel.room["spots"][3]
+    var at := Vector2(spot["serve"]["x"], spot["serve"]["y"])
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    var good: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    _check("the ale on the bar in front of them", [good.position, good.is_queued_for_deletion()], [_panel._cell_at(at), false])
+    _panel._eat(0.01)
+    var guest: Node2D = _panel._holder("guest")
+    _check("drinking: the pose, facing the bar", _anim(guest), &"east_drink")
+    _check("the tankard in hand, not on the bar", good.visible, false)
+    _check("no dip while drinking", _panel._sprite_of(guest).position.y, float(_panel._sprite_of(guest).get_meta("rest_y")))
+    # A redraw keeps them at it.
+    _toggle_pc()
+    guest = _panel._holder("guest")
+    _panel._eat(0.01)
+    _check("a redraw: still drinking", [_anim(guest), good.visible], [&"east_drink", false])
+    (good.get_meta("tween") as Tween).custom_step(_panel.TABLE_SECONDS + 1.0)
+    _panel._eat(0.01)
+    var empty := StallScenes.cell_rect(2 * StallScenes.goods_index("ale_empty"))
+    _check("done: they stand, facing the bar", _anim(guest), &"east_idle")
+    _check("the empty on the bar for the keeper", [good.visible, good.has_meta("clearing"), (good.get_child(0).texture as AtlasTexture).region], [true, true, empty])
+    _panel.close()
+    _done()
+
+
+## LLM-781: a one-sheet pack sprite at the bar has no drinking pose: the ale
+## stays on the bar in front of them and they dip toward it, as with stew.
+func _test_tavern_pack_guest_drinks_from_the_bar() -> void:
+    _clear_people()
+    _panel.close()
+    _world.meals = {}
+    _person("keeper", _farmer(), _sid, {"work_structure_id": _sid})
+    _person("guest", _pack(), _sid)
+    _panel.open(_sid)
+    _seat("guest", 2)
+    _panel._signature = ""
+    _panel.refresh()
+    _panel.on_pay_resolved(_sale("keeper", "guest", "ale", "accepted", 1, true))
+    var good: Node2D = _panel._handoff_now["good"]
+    _finish_handoff()
+    var guest: Node2D = _panel._holder("guest")
+    var spr: AnimatedSprite2D = _panel._sprite_of(guest)
+    var stood := spr.animation
+    var dipped := false
+    var rest := spr.position.y
+    for i in 40:
+        _panel._eat(0.05)
+        dipped = dipped or spr.position.y != rest
+    _check("no pose for a pack sprite", spr.animation, stood)
+    _check("the ale stays on the bar, and they dip toward it", [good.visible, dipped], [true, true])
+    _panel.close()
     _done()
