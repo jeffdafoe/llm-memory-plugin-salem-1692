@@ -257,9 +257,10 @@ const (
 // false when every square is taken. The keeper takes the keeper's place and
 // a player's character the door, when free; otherwise — and for everyone
 // else — a free station, starting from the one the id hashes to so people do
-// not all pile onto the first, then the first free plain square in reading
-// order. A station where the keeper works (the hearth they stoke) is taken
-// only when every other station is full, so guests sit or stand at the bar
+// not all pile onto the first, then the free plain square with the most room
+// round it (Roomiest, LLM-788), so people do not stand on top of each other.
+// A station where the keeper works (the hearth they stoke) is taken only when
+// every other station is full, so guests sit or stand at the bar
 // before they stand in the middle of the room (LLM-781). Guests are never put
 // on the door, the keeper's place or the keeper's way in.
 func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, bool) {
@@ -289,16 +290,67 @@ func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, boo
 			}
 		}
 	}
+	// Plain floor: the free square farthest from everyone already in the room,
+	// so people do not stand on top of each other (LLM-788); ties go to the
+	// first in reading order.
 	reserved := l.reserved()
+	var free []Square
 	for y := range l.Grid {
 		for x := range l.Grid[y] {
 			s := Square{x, y}
 			if l.Open(s) && !reserved[s] && !taken[s] {
-				return s, true
+				free = append(free, s)
 			}
 		}
 	}
-	return Square{}, false
+	if len(free) == 0 {
+		return Square{}, false
+	}
+	return Roomiest(free, taken), true
+}
+
+// Roomiest picks, of candidates, the square whose nearest taken square is
+// farthest away (Chebyshev: a diagonal neighbour is as close as a side one) —
+// the one with the most room round it. Ties go to the earliest candidate.
+// With nothing taken, the first candidate.
+func Roomiest(candidates []Square, taken map[Square]bool) Square {
+	best := candidates[0]
+	bestRoom := -1
+	for _, s := range candidates {
+		if room := Room(s, taken); room > bestRoom {
+			best, bestRoom = s, room
+		}
+	}
+	return best
+}
+
+// Room is how far s is from the nearest taken square (Chebyshev): 1 when
+// someone stands right beside it, diagonals included. Large when nothing is
+// taken.
+func Room(s Square, taken map[Square]bool) int {
+	room := 1 << 30
+	for t, held := range taken {
+		if held && t != s {
+			if d := chebyshev(s, t); d < room {
+				room = d
+			}
+		}
+	}
+	return room
+}
+
+func chebyshev(a, b Square) int {
+	dx, dy := a.X-b.X, a.Y-b.Y
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	if dx > dy {
+		return dx
+	}
+	return dy
 }
 
 // Bed picks a free bed for someone going to sleep in the room, starting from

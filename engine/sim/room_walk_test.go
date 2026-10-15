@@ -268,3 +268,51 @@ func TestNoRoomWalkOnTheWayOut(t *testing.T) {
 		t.Errorf("walked while leaving: %d walks, keeper %v, diner %v", walkCount(*events), keeper.RoomSquare, diner.RoomSquare)
 	}
 }
+
+// LLM-788 (live: Silence and Patience Walker one square apart in a column):
+// idle drift never steps up beside someone else — a step goes to a square with
+// nobody on the eight round it, or, for someone already crowded, to more room
+// than they had.
+func TestDriftNeverStepsBesideSomeone(t *testing.T) {
+	silence := outdoors("silence", KindNPCStateful)
+	patience := outdoors("patience", KindNPCStateful)
+	anne := outdoors("anne", KindNPCStateful)
+	w, events := homeWorld(silence, patience, anne)
+	family := []*Actor{silence, patience, anne}
+	for _, a := range family {
+		setActorInsideStructure(w, a, homeID)
+	}
+	rng := rand.New(rand.NewSource(7))
+	at := time.Date(2026, 10, 15, 14, 0, 0, 0, time.UTC)
+	DriftInRooms(at, rng).Fn(w) // sets each one's time
+	walks := 0
+	for i := 0; i < 80; i++ {
+		at = at.Add(roomDriftMax + time.Second)
+		before := map[ActorID]roomlayout.Square{}
+		for _, a := range family {
+			before[a.ID] = *a.RoomSquare
+		}
+		*events = nil
+		DriftInRooms(at, rng).Fn(w)
+		for _, a := range family {
+			if *a.RoomSquare == before[a.ID] {
+				continue
+			}
+			walks++
+			others := takenRoomSquares(w, homeID, a.ID)
+			had := map[roomlayout.Square]bool{}
+			for id, s := range before {
+				if id != a.ID {
+					had[s] = true
+				}
+			}
+			now, was := roomlayout.Room(*a.RoomSquare, others), roomlayout.Room(before[a.ID], had)
+			if now <= 1 && now <= was {
+				t.Fatalf("turn %d: %s stepped from %v to %v, beside someone (room %d, had %d)", i, a.ID, before[a.ID], *a.RoomSquare, now, was)
+			}
+		}
+	}
+	if walks == 0 {
+		t.Fatal("harness: nobody ever drifted")
+	}
+}

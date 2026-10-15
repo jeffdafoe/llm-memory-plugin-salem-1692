@@ -364,3 +364,27 @@ func TestParseRejectsBadHomePlans(t *testing.T) {
 		t.Error("a house type listed twice parsed")
 	}
 }
+
+// LLM-788: on plain floor a newcomer takes the square with the most room round
+// it — not the next one along, beside whoever came in first.
+func TestPlaceSpreadsOnPlainFloor(t *testing.T) {
+	room := `{"structure_id": "s", "grid": [".......", "......."], "door": {"square": [0, 1], "at": [8, 30]}, "keeper": {"square": [6, 1], "at": [104, 30]}, "stations": []}`
+	plans, err := Parse([]byte(`{"rooms": [` + room + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := plans["s"]
+	taken := map[Square]bool{}
+	first, _ := l.Place(RoleGuest, "a", taken)
+	taken[first] = true
+	second, _ := l.Place(RoleGuest, "b", taken)
+	if Room(second, map[Square]bool{first: true}) < 3 {
+		t.Errorf("second guest at %v, beside the first at %v; want room between them", second, first)
+	}
+	if got := Room(Square{X: 2, Y: 0}, map[Square]bool{{X: 3, Y: 1}: true}); got != 1 {
+		t.Errorf("a diagonal neighbour is right beside: Room = %d, want 1", got)
+	}
+	if got := Roomiest([]Square{{X: 1, Y: 0}, {X: 5, Y: 0}}, map[Square]bool{{X: 0, Y: 0}: true}); got != (Square{X: 5, Y: 0}) {
+		t.Errorf("Roomiest = %v, want the far square", got)
+	}
+}
