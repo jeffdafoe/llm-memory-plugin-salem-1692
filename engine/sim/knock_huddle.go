@@ -1,6 +1,8 @@
 package sim
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -178,4 +180,73 @@ func narrateUnansweredKnock(w *World, actor *Actor, structureID StructureID, now
 		return
 	}
 	w.emit(&KnockUnansweredNarrated{ActorID: actor.ID, StructureID: structureID, Text: knockUnansweredText, At: now})
+}
+
+// ErrKnockRefused: a knock that cannot happen — the caller is not standing at
+// that door, may walk straight in, or the structure has no door to knock on.
+var ErrKnockRefused = errors.New("you cannot knock here")
+
+// KnockResult answers KnockAtDoor: whether someone came to the door.
+type KnockResult struct {
+	Answered bool
+}
+
+// KnockAtDoor is the player's knock (LLM-785, the door popup's Knock button →
+// POST /pc/knock). The click on a house they may not enter only walks them to
+// its door; standing there, they choose to knock. Then it goes as the knock
+// always has: whoever inside is awake comes to the door (the doorway
+// conversation, EnsureKnockServiceHuddle) or nobody does
+// (KnockUnansweredNarrated).
+//
+// Refused (ErrKnockRefused) unless the player is outdoors and still at the
+// door of structureID (AtDoorOf, not walking), and it is a door they would
+// have to knock on — owner-only, they are not a member, and it has a door
+// (EnterOrKnock's own test). A player already in another conversation leaves
+// it to knock; one already in the doorway conversation has been answered.
+func KnockAtDoor(actorID ActorID, structureID StructureID, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			actor := w.Actors[actorID]
+			if actor == nil || actor.Kind != KindPC {
+				return nil, fmt.Errorf("KnockAtDoor: %q is not a player's character", actorID)
+			}
+			vobj, _, ok := villageObjectForStructure(w, structureID)
+			if _, isStructure := w.Structures[structureID]; !ok || !isStructure {
+				return nil, fmt.Errorf("%w: there is no such house", ErrKnockRefused)
+			}
+			_, hasDoor := structureEntryTile(w, structureID)
+			if !hasDoor || effectiveEntryPolicy(w, structureID, vobj, now) != EntryPolicyOwner ||
+				structureMembershipAllows(w, actor, structureID, now) {
+				return nil, fmt.Errorf("%w: this is not a door to knock on", ErrKnockRefused)
+			}
+			if actor.MoveIntent != nil || !AtDoorOf(w.VillageObjects, w.Assets, actor.InsideStructureID, actor.Pos, structureID) {
+				return nil, fmt.Errorf("%w: you are not at that door", ErrKnockRefused)
+			}
+			if actorInActiveHuddle(w, actor) {
+				if doorConversationAt(w, actor, structureID) {
+					return KnockResult{Answered: true}, nil
+				}
+				leaveCurrentHuddle(w, actor, now)
+			}
+			if _, err := EnsureKnockServiceHuddle(actorID, structureID, now).Fn(w); err != nil {
+				return nil, err
+			}
+			return KnockResult{Answered: actor.CurrentHuddleID != ""}, nil
+		},
+	}
+}
+
+// doorConversationAt reports whether actor's conversation already has someone
+// of structureID inside it — the door was answered.
+func doorConversationAt(w *World, actor *Actor, structureID StructureID) bool {
+	h := w.Huddles[actor.CurrentHuddleID]
+	if h == nil {
+		return false
+	}
+	for id := range h.Members {
+		if other := w.Actors[id]; other != nil && id != actor.ID && other.InsideStructureID == structureID {
+			return true
+		}
+	}
+	return false
 }

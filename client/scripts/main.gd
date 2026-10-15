@@ -16,6 +16,7 @@ const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const CreditsScrollScript = preload("res://scripts/credits_scroll.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
+const DoorPanelScript = preload("res://scripts/door_panel.gd")
 const InteriorPanelScript = preload("res://scripts/interior_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
@@ -45,6 +46,9 @@ var inventory_panel_layer: CanvasLayer = null
 ## The town's repair work for the player (LLM-690): offer dialog + mini-game.
 ## See client/scripts/repair_panel.gd.
 var repair_panel_layer: CanvasLayer = null
+## The door popup (LLM-785): at the door of a house the player may not walk
+## into, Knock or Leave.
+var door_panel_layer: CanvasLayer = null
 ## The room of the building the player's character is in (LLM-750).
 ## See client/scripts/interior_panel.gd.
 var interior_panel_layer: CanvasLayer = null
@@ -169,6 +173,11 @@ var _pending_notice_object_id: String = ""
 # successful non-knock move clears it (the walk that carried the knock
 # was superseded server-side along with its MoveIntent).
 var _pending_knock: bool = false
+# The house that walk is going to (LLM-785): the door popup opens for it on
+# arrival. _pc_move_target is the structure the in-flight move request names.
+var _pending_knock_structure_id := ""
+var _pc_move_target := ""
+var _pc_http_knock: HTTPRequest = null
 
 # Discriminator for the in-flight /pc/move so the shared completion
 # handler can decide which side-effects to roll back on a non-2xx.
@@ -597,6 +606,16 @@ func _build_ui() -> void:
             talk_panel_layer._refresh_state())
     if talk_panel_layer.has_signal("repair_offered"):
         talk_panel_layer.repair_offered.connect(repair_panel_layer.show_offer)
+
+    # Door popup (LLM-785) — at the door of a house the player may not walk
+    # into: Knock or Leave. Modal tier, like the repair panel.
+    door_panel_layer = CanvasLayer.new()
+    door_panel_layer.name = "DoorPanelLayer"
+    door_panel_layer.set_script(DoorPanelScript)
+    add_child(door_panel_layer)
+    door_panel_layer.opened.connect(func(): _set_modal_blocker("door", true))
+    door_panel_layer.closed.connect(func(): _set_modal_blocker("door", false))
+    door_panel_layer.knocked.connect(_on_door_knocked)
 
     # Interior window (LLM-750): opens when the player's character goes into
     # a building that has a room; modal like the repair panel.
@@ -1274,11 +1293,19 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
             var parsed = JSON.parse_string(b.get_string_from_utf8())
             if parsed is Dictionary:
                 _pending_knock = bool(parsed.get("knocked", false))
+                _pending_knock_structure_id = _pc_move_target if _pending_knock else ""
+                # Already standing at that door (a click on the house from its
+                # doorstep): the zero-length walk's arrival may have beaten this
+                # answer, so ask now rather than wait for it.
+                _open_door_if_there()
         )
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)
     var payload: String
     var hit_id: String = str(hit.get("id", "")) if hit.has("id") else ""
+    # The house this walk names (LLM-785), kept for its answer only once the
+    # request is really sent — see below.
+    var move_target := ""
 
     # Walk-then-read state machine (ZBBS-112). Any new walk closes a
     # currently-open notice panel — clicking elsewhere mid-read IS the
@@ -1306,6 +1333,7 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         # through structure_enter → object_visit; misdispatching on a bare
         # object 404s, so the client must pick the right kind here.
         if bool(hit.get("has_interior", false)):
+            move_target = hit_id
             payload = JSON.stringify({
                 "destination": {"kind": "structure_enter", "structure_id": hit_id},
             })
@@ -1324,6 +1352,14 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         })
     var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move",
         headers, HTTPClient.METHOD_POST, payload)
+    if err == OK:
+        # Sent: this is now the one move in flight (a click while another is in
+        # flight never sends — ERR_BUSY — so it must not touch the answer's
+        # target or the pending knock of the walk still under way). A new walk
+        # drops any knock still pending from the last one.
+        _pc_move_target = move_target
+        _pending_knock = false
+        _pending_knock_structure_id = ""
     if err != OK:
         # Local request failure — never reached the server. Clear the
         # pending notice flag and the purpose discriminator so a later
@@ -1331,6 +1367,57 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         _pending_notice_object_id = ""
         _pc_move_purpose = ""
         push_warning("PC move request failed: %s" % err)
+
+## Open the door popup for the pending knock when the character stands at that
+## house's door (LLM-785) — called on their arrival and when the move's answer
+## arms the knock, whichever comes last.
+func _open_door_if_there() -> void:
+    if not _pending_knock or _pending_knock_structure_id == "" or door_panel_layer == null or _pc_actor_id == "":
+        return
+    var sid := _pending_knock_structure_id
+    if not DoorPanelScript.at_door(world.placed_npcs.get(_pc_actor_id, null), world.placed_objects.get(sid, null)):
+        return
+    _pending_knock = false
+    _pending_knock_structure_id = ""
+    door_panel_layer.open(sid, _place_title(sid))
+
+## A placed building's name, for the door popup's title ("" when unknown).
+func _place_title(sid: String) -> String:
+    var node = world.placed_objects.get(sid, null) if world != null else null
+    if node == null or not is_instance_valid(node):
+        return ""
+    return str(node.get_meta("display_name", ""))
+
+## The door popup's Knock (LLM-785): the knock sounds at once, and the engine
+## knocks (POST pc/knock). Answered → the doorway conversation: refresh the
+## talk panel and open it. Unanswered → the engine's private knock_unanswered
+## line says so. A refused knock (walked off meanwhile) only logs.
+func _on_door_knocked(sid: String) -> void:
+    var sound := get_node_or_null("/root/Sound")
+    if sound != null:
+        sound.play("knock")
+    if _pc_http_knock == null:
+        _pc_http_knock = HTTPRequest.new()
+        _pc_http_knock.accept_gzip = false
+        add_child(_pc_http_knock)
+        _pc_http_knock.request_completed.connect(_on_knock_response)
+    _pc_http_knock.cancel_request()
+    var err := _pc_http_knock.request(Auth.api_base + "/api/village/pc/knock",
+        Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"structure_id": sid}))
+    if err != OK:
+        push_warning("knock request failed: %s" % err)
+
+func _on_knock_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+    Auth.check_response(code)
+    if code < 200 or code >= 300:
+        push_warning("knock refused (%d): %s" % [code, body.get_string_from_utf8()])
+        return
+    var parsed = JSON.parse_string(body.get_string_from_utf8())
+    if parsed is Dictionary and bool(parsed.get("answered", false)) and talk_panel_layer != null:
+        if talk_panel_layer.has_method("_refresh_state"):
+            talk_panel_layer._refresh_state()
+        if talk_panel_layer.has_method("force_open_after_refresh"):
+            talk_panel_layer.force_open_after_refresh()
 
 ## Modal blocker helper — flips camera.modal_open based on the OR of
 ## currently-open modals. Every modal (config, asset popup, sprite
@@ -1445,22 +1532,15 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     # A stall's counter is reached by walking, with no inside flip (LLM-753).
     if _pc_actor_id != "" and npc_id == _pc_actor_id:
         _sync_interior()
-    # Walk-then-knock (ZBBS-HOME-445): the server formed the service huddle
-    # as part of this arrival (when someone was in to answer). Refresh the
-    # talk panel now rather than waiting up to 10s for the periodic tick,
-    # and auto-open it once huddle_members populates. An unanswered knock
-    # degrades to a no-op: force_open_after_refresh only fires on a
-    # non-empty huddle.
-    if _pending_knock and _pc_actor_id != "" and npc_id == _pc_actor_id:
-        _pending_knock = false
-        # The knock itself (LLM-20), answered or not.
-        var sound := get_node_or_null("/root/Sound")
-        if sound != null:
-            sound.play("knock")
-        if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
-            talk_panel_layer._refresh_state()
-        if talk_panel_layer != null and talk_panel_layer.has_method("force_open_after_refresh"):
-            talk_panel_layer.force_open_after_refresh()
+    # Walk-then-knock (ZBBS-HOME-445, LLM-785): at the door of a house they
+    # may not walk into, the player is asked whether to knock — the knock
+    # waits for the popup's Knock button (_on_door_knocked).
+    # The move's answer and the arrival come by different channels, so an
+    # arrival is matched to the pending house by where the character now
+    # stands: only at that house's door does the popup open, and an arrival
+    # from an earlier walk leaves the knock pending for its own arrival.
+    if _pc_actor_id != "" and npc_id == _pc_actor_id:
+        _open_door_if_there()
     if _pending_notice_object_id == "":
         return
     if _pc_actor_id == "" or npc_id != _pc_actor_id:

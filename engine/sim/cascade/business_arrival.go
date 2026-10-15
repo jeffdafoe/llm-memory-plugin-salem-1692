@@ -33,12 +33,13 @@ func handleBusinessArrival(w *sim.World, evt sim.Event) {
 		return
 	}
 	if arrived.FinalStructureID == "" {
-		// Outdoor arrival. A knock (ZBBS-HOME-445) lands here by definition —
-		// the knocker stops at the loiter slot, outside — and DestStructureID
-		// names the knocked structure; the knock bootstrap forms the
-		// across-the-doorway service huddle.
-		if arrived.Knocked && arrived.DestStructureID != "" {
-			_, _ = sim.EnsureKnockServiceHuddle(arrived.ActorID, arrived.DestStructureID, arrived.At).Fn(w)
+		// Outdoor arrival. A walk to a door the walker may not go through
+		// (Knocked, ZBBS-HOME-445) stops at the loiter slot, outside. The
+		// knock itself is the player's choice at the door (LLM-785: the door
+		// popup → POST /pc/knock → sim.KnockAtDoor), so nothing is done here —
+		// and no hospitality huddle either, for a door that has not been
+		// knocked on.
+		if arrived.Knocked {
 			return
 		}
 		// LLM-384: a non-knock arrival that walked to a structure as a VISIT
