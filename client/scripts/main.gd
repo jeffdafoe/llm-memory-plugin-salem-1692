@@ -1458,6 +1458,10 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     # non-empty huddle.
     if _pending_knock and _pc_actor_id != "" and npc_id == _pc_actor_id:
         _pending_knock = false
+        # The knock itself (LLM-20), answered or not.
+        var sound := get_node_or_null("/root/Sound")
+        if sound != null:
+            sound.play("knock")
         if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
             talk_panel_layer._refresh_state()
         if talk_panel_layer != null and talk_panel_layer.has_method("force_open_after_refresh"):

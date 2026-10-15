@@ -246,6 +246,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	if p.EquipmentService != nil && p.EquipmentService.WrightID != "" {
 		p.HireableWorkers = withoutActor(p.HireableWorkers, p.EquipmentService.WrightID)
 	}
+	// LLM-20: who is at the door of the subject's home. One slice for the cue,
+	// the company-line flag and the let_in gate.
+	p.AtYourDoor = buildAtYourDoor(snap, actorID, actorSnap, p.Surroundings)
+	markAtYourDoor(p.Surroundings.HuddleMembers, p.AtYourDoor)
 	// Resolved last among the name-bearing views, because HireableWorkers is the
 	// newest of them and the offer_work cue must render real names — a "someone
 	// takes work for pay" line names a target offer_work cannot resolve.
@@ -6074,6 +6078,50 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 		return false
 	}
 	return !householdOrCrew(subject, other)
+}
+
+// buildAtYourDoor lists who the subject could let in (LLM-20): the subject is
+// inside an owner-only home that is theirs (they live there or own it), and a
+// member of their conversation stands outdoors at its door (sim.AtDoorOf — the
+// knock's stopping place) and is not of the household. Every clause mirrors
+// sim.LetIn, so a named visitor is one let_in accepts. Sorted by display name.
+func buildAtYourDoor(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, surr SurroundingsView) []sim.ActorID {
+	if snap == nil || subject == nil || subject.InsideStructureID == "" {
+		return nil
+	}
+	sid := subject.InsideStructureID
+	vobj := snap.VillageObjects[sim.VillageObjectID(sid)]
+	if vobj == nil || vobj.EntryPolicy != sim.EntryPolicyOwner {
+		return nil
+	}
+	if subject.HomeStructureID != sid && vobj.OwnerActorID != subjectID {
+		return nil
+	}
+	var out []sim.ActorID
+	for _, m := range surr.HuddleMembers {
+		other := snap.Actors[m.ID]
+		if m.ID == subjectID || other == nil || other.HomeStructureID == sid || vobj.OwnerActorID == m.ID {
+			continue
+		}
+		if sim.AtDoorOf(snap.VillageObjects, snap.Assets, other.InsideStructureID, other.Pos, sid) {
+			out = append(out, m.ID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return snap.Actors[out[i]].DisplayName < snap.Actors[out[j]].DisplayName
+	})
+	return out
+}
+
+// markAtYourDoor flags each conversation member who is at the door.
+func markAtYourDoor(members []HuddleMember, atDoor []sim.ActorID) {
+	for i := range members {
+		for _, id := range atDoor {
+			if members[i].ID == id {
+				members[i].AtYourDoor = true
+			}
+		}
+	}
 }
 
 // buildHireableWorkers lists the co-present actors the subject could offer an odd

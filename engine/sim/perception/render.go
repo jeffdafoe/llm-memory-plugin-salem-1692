@@ -307,6 +307,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// LLM-138: a gift offered TO this actor is the same "someone wants my answer"
 	// decision class as a pay offer, so it renders right alongside.
 	renderGiftsForMe(&ephemeral, p.GiftsForMe)
+	// LLM-20: someone at the door of the subject's home, waiting to be let in.
+	renderLetInAffordance(&ephemeral, p.AtYourDoor, p.Surroundings.HuddleMembers)
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
@@ -2224,7 +2226,42 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m) + eatingPhrase(m) + busyActivityPhrase(m)
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + atYourDoorPhrase(m) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m) + eatingPhrase(m) + busyActivityPhrase(m)
+}
+
+// atYourDoorPhrase places a knocker outside (LLM-20): a member of the
+// conversation at the door of the subject's home is not in the room.
+func atYourDoorPhrase(m HuddleMember) string {
+	if !m.AtYourDoor {
+		return ""
+	}
+	return " (at your door, outside)"
+}
+
+// renderLetInAffordance renders the door cue (LLM-20): someone is at the door
+// of the subject's home, and the subject may let them in. Content-gated on the
+// same Payload.AtYourDoor that gates let_in, so the cue and the tool surface
+// together or not at all. Names come from the company line's labels, so a
+// knocker the subject does not know reads as "a stranger" — let_in takes the
+// one at the door whatever name is given.
+func renderLetInAffordance(b *strings.Builder, atDoor []sim.ActorID, members []HuddleMember) {
+	if len(atDoor) == 0 {
+		return
+	}
+	var names []string
+	for _, m := range members {
+		if m.AtYourDoor {
+			names = append(names, sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)))
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	is := "is"
+	if len(names) > 1 {
+		is = "are"
+	}
+	fmt.Fprintf(b, "%s %s at your door, outside. To have them in, open the door with let_in.\n", joinNames(names), is)
 }
 
 // laboringPhrase renders the LLM-231 busy annotation for a co-present member who is

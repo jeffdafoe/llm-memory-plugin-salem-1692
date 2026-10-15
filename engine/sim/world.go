@@ -1185,6 +1185,13 @@ type World struct {
 	// lost offer is just a deal that didn't happen. See labor_ledger.go.
 	LaborLedger map[LaborID]*LaborOffer
 
+	// GuestPasses: who a resident has let into their home, and until when
+	// (LLM-20, let_in.go) — structure → guest → pass. A pass is one more leg of
+	// structureMembershipAllows. Memory only and restart-lossy: a lost pass is a
+	// guest who must knock again; nothing durable rides on it. Nil until the
+	// first let_in.
+	GuestPasses map[StructureID]map[ActorID]GuestPass
+
 	// ContactLedger is the per-pair conversational recency trail (LLM-547),
 	// keyed subject → peer → the times they were in a conversation together.
 	// Written on the Speak commit path for every huddle peer in both
