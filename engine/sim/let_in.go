@@ -68,8 +68,8 @@ func AtDoorOf(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*As
 
 // LetIn returns the Command for hostID letting visitorName in: the visitor
 // must be in the host's conversation, outdoors at the door of the home the
-// host is in, and not otherwise allowed in. They get a GuestPass and are
-// snapped onto the door tile, inside.
+// host is in. They are snapped onto the door tile, inside, and — unless already
+// allowed in — get a GuestPass. Nothing changes unless the step in succeeds.
 func LetIn(hostID ActorID, visitorName string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -92,25 +92,33 @@ func LetIn(hostID ActorID, visitorName string, now time.Time) Command {
 			if visitor == nil {
 				return nil, ModelFacingError{Msg: strings.TrimSpace(visitorName) + " is not at your door."}
 			}
-			if structureMembershipAllows(w, visitor, sid, now) && !guestPassAt(w, visitor.ID, sid, now) {
-				return nil, ModelFacingError{Msg: visitor.DisplayName + " may come in already."}
-			}
+			// Preflight before any change: the door tile must be inside this
+			// house, or the step in would leave the visitor outside.
 			entry, ok := structureEntryTile(w, sid)
 			if !ok {
 				return nil, fmt.Errorf("LetIn: structure %q has no door tile", sid)
 			}
-			if w.GuestPasses == nil {
-				w.GuestPasses = map[StructureID]map[ActorID]GuestPass{}
+			if at, inside := structureContainingTile(w, entry); !inside || at != sid {
+				return nil, fmt.Errorf("LetIn: the door tile of %q is not inside it", sid)
 			}
-			if w.GuestPasses[sid] == nil {
-				w.GuestPasses[sid] = map[ActorID]GuestPass{}
-			}
-			w.GuestPasses[sid][visitor.ID] = GuestPass{Host: host.ID, Until: now.Add(GuestPassDuration)}
+			// Someone already allowed in (staff, a lodger, a guest still on their
+			// pass) is simply stepped in; anyone else needs a pass. Decided before
+			// the step, which moves them.
+			needsPass := !structureMembershipAllows(w, visitor, sid, now)
 			if _, err := SetActorPosition(visitor.ID, entry, now).Fn(w); err != nil {
 				return nil, fmt.Errorf("LetIn: step %q in: %w", visitor.ID, err)
 			}
 			if visitor.InsideStructureID != sid {
 				return nil, fmt.Errorf("LetIn: %q is not inside %q after stepping in", visitor.ID, sid)
+			}
+			if needsPass {
+				if w.GuestPasses == nil {
+					w.GuestPasses = map[StructureID]map[ActorID]GuestPass{}
+				}
+				if w.GuestPasses[sid] == nil {
+					w.GuestPasses[sid] = map[ActorID]GuestPass{}
+				}
+				w.GuestPasses[sid][visitor.ID] = GuestPass{Host: host.ID, Until: now.Add(GuestPassDuration)}
 			}
 			return LetInResult{VisitorID: visitor.ID, VisitorName: visitor.DisplayName, StructureID: sid}, nil
 		},
@@ -119,25 +127,30 @@ func LetIn(hostID ActorID, visitorName string, now time.Time) Command {
 
 // doorstepVisitorNamed: of the members of host's active conversation standing
 // at the door of structureID, the one named name (case and outer spaces
-// ignored) — or, when exactly one stands there, that one whatever the name: a
-// resident who does not know the knocker sees "a stranger" at the door and has
-// no name to give. Nil when nobody matches.
+// ignored) when exactly one has that name — or, when exactly one stands there
+// at all, that one whatever the name: a resident who does not know the knocker
+// sees "a stranger" at the door and has no name to give. Nil otherwise (two at
+// the door sharing the name, or several and none named): the members map has
+// no order, so a pick among equals would be arbitrary.
 func doorstepVisitorNamed(w *World, host *Actor, structureID StructureID, name string) *Actor {
 	h, ok := w.Huddles[host.CurrentHuddleID]
 	if !ok || h.ConcludedAt != nil {
 		return nil
 	}
-	want := strings.ToLower(strings.TrimSpace(name))
-	var atDoor []*Actor
+	want := strings.TrimSpace(name)
+	var atDoor, named []*Actor
 	for id := range h.Members {
 		a := w.Actors[id]
 		if id == host.ID || a == nil || !AtDoorOf(w.VillageObjects, w.Assets, a.InsideStructureID, a.Pos, structureID) {
 			continue
 		}
-		if strings.ToLower(a.DisplayName) == want {
-			return a
-		}
 		atDoor = append(atDoor, a)
+		if strings.EqualFold(strings.TrimSpace(a.DisplayName), want) {
+			named = append(named, a)
+		}
+	}
+	if len(named) == 1 {
+		return named[0]
 	}
 	if len(atDoor) == 1 {
 		return atDoor[0]
