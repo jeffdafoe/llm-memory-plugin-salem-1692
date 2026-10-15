@@ -73,3 +73,56 @@ func (s *Server) handleUmbilicalDepartVisitor(w http.ResponseWriter, r *http.Req
 		ExpiresAt:   out.ExpiresAt,
 	})
 }
+
+// spawnVisitorRequest is the body of POST /api/village/umbilical/visitor/spawn
+// (LLM-790).
+type spawnVisitorRequest struct {
+	Kind string `json:"kind"` // "passer" (the default) | "buyer" | "seller"
+}
+
+type spawnVisitorResponse struct {
+	ActorID     string `json:"actor_id"`
+	DisplayName string `json:"display_name"`
+	Archetype   string `json:"archetype"`
+	Merchant    bool   `json:"merchant"`
+}
+
+// handleUmbilicalSpawnVisitor brings a visitor in now (sim.ForceVisitorSpawn).
+// 400 an unknown kind; 409 when no visitor could arrive.
+func (s *Server) handleUmbilicalSpawnVisitor(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req spawnVisitorRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	auditUmbilical(user.Username, "visitor.spawn", fmt.Sprintf("kind=%s", req.Kind))
+
+	res, err := s.world.SendContext(r.Context(), sim.ForceVisitorSpawn(req.Kind, time.Now().UTC(), nil))
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		case errors.Is(err, sim.ErrUnknownVisitorKind):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, sim.ErrVisitorNotSpawned):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "spawn failed")
+		}
+		return
+	}
+	out, ok := res.(sim.ForcedVisitor)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected spawn result")
+		return
+	}
+	writeJSON(w, spawnVisitorResponse{
+		ActorID:     string(out.ID),
+		DisplayName: out.DisplayName,
+		Archetype:   out.Archetype,
+		Merchant:    out.Merchant,
+	})
+}

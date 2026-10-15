@@ -121,3 +121,54 @@ func (s *Server) handleUmbilicalRoadDamage(w http.ResponseWriter, r *http.Reques
 	id, _ := res.(sim.VillageObjectID)
 	writeJSON(w, umbilicalRoadDamageResponse{ID: string(id)})
 }
+
+// umbilicalMinorDamageRequest is the body of POST
+// /api/village/umbilical/minor/damage (LLM-790).
+type umbilicalMinorDamageRequest struct {
+	ID   string `json:"id"`   // optional: this object
+	Form string `json:"form"` // optional: "fence" | "signpost" | "crate"
+}
+
+// umbilicalMinorDamageResponse names the minor work that broke, so the
+// operator can mend it through /object/damage {id, action: "repair"}.
+type umbilicalMinorDamageResponse struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Form  string `json:"form"`
+}
+
+// handleUmbilicalMinorDamage breaks a minor work now (sim.ForceMinorWork): no
+// roll and no open cap. 400 an unknown form; 404 an unknown id; 409 when
+// nothing (or not that object) can break into a minor work of the form.
+func (s *Server) handleUmbilicalMinorDamage(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalMinorDamageRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	auditUmbilical(user.Username, "minor.damage", "id="+id+" form="+req.Form)
+
+	res, err := s.world.SendContext(r.Context(), sim.ForceMinorWork(sim.VillageObjectID(id), req.Form, globalDamageRoller{}))
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return
+		case errors.Is(err, sim.ErrUnknownMinorForm):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, sim.ErrVillageObjectNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, sim.ErrNoMinorWorkSite), errors.Is(err, sim.ErrNotMinorWorkCandidate):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		}
+		return
+	}
+	out, _ := res.(sim.ForcedMinorWork)
+	writeJSON(w, umbilicalMinorDamageResponse{ID: string(out.ID), State: out.State, Form: out.Form})
+}

@@ -546,3 +546,58 @@ func TestMinorWorkArrivalOffersOnlyInReach(t *testing.T) {
 		t.Errorf("in reach: narration %+v, want the fence-2 offer", got)
 	}
 }
+
+// TestForceMinorWork — the operator's break (LLM-790): by form or id, past
+// the open cap and with no roll; refusals for an unknown form, an unknown
+// id, an object that cannot break, and a form nothing can take.
+func TestForceMinorWork(t *testing.T) {
+	w, cancel, _ := buildMinorWorksWorld(t)
+	defer cancel()
+	mustSend(t, w, func(world *sim.World) {
+		world.VillageObjects["crate"] = &sim.VillageObject{ID: "crate", AssetID: "crate-asset", CurrentState: "default", Pos: sim.TilePos{X: 80, Y: 10}.Center()}
+		world.Settings.MinorWorksOpenCap = 1
+		world.Settings.MinorWorksChancePermille = 0
+	})
+	force := func(id sim.VillageObjectID, form string) (sim.ForcedMinorWork, error) {
+		res, err := w.Send(sim.ForceMinorWork(id, form, &seqRoller{vals: []float64{0, 0}}))
+		out, _ := res.(sim.ForcedMinorWork)
+		return out, err
+	}
+	if _, err := force("", "gate"); !errors.Is(err, sim.ErrUnknownMinorForm) {
+		t.Errorf("form gate: err = %v, want ErrUnknownMinorForm", err)
+	}
+	if _, err := force("nowhere", ""); !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("unknown id: err = %v, want ErrVillageObjectNotFound", err)
+	}
+	if _, err := force("fence-lone", ""); !errors.Is(err, sim.ErrNotMinorWorkCandidate) {
+		t.Errorf("lone fence: err = %v, want ErrNotMinorWorkCandidate", err)
+	}
+	if _, err := force("crate", sim.MinorFormFence); !errors.Is(err, sim.ErrNotMinorWorkCandidate) {
+		t.Errorf("crate as a fence: err = %v, want ErrNotMinorWorkCandidate", err)
+	}
+	if _, err := force("", sim.MinorFormSignpost); !errors.Is(err, sim.ErrNoMinorWorkSite) {
+		t.Errorf("no signpost: err = %v, want ErrNoMinorWorkSite", err)
+	}
+	// The crate sorts before the fences, so a form-less pick at 0 would take
+	// it: the fence form must narrow the pick to fence-2.
+	got, err := force("", sim.MinorFormFence)
+	if err != nil || got.ID != "fence-2" || got.State != "h-broken-1" || got.Form != sim.MinorFormFence {
+		t.Fatalf("fence = %+v, %v; want fence-2 broken h-broken-1", got, err)
+	}
+	if s := minorFenceStates(t, w); s != [3]string{"h-broken-1-l", "h-broken-1", "h-broken-1-r"} {
+		t.Errorf("fence states = %v, want the three-cell break", s)
+	}
+	// Past the open cap of 1, by id.
+	got, err = force("crate", "")
+	if err != nil || got.ID != "crate" || got.State != "lid-loose" || got.Form != sim.MinorFormCrate {
+		t.Fatalf("crate = %+v, %v; want the loose lid past the cap", got, err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		if k := sim.PublicWorksKind(world.VillageObjects["crate"]); k != sim.PublicWorksMinor {
+			t.Errorf("crate kind = %q, want a minor work", k)
+		}
+	})
+	if _, err := force("", ""); !errors.Is(err, sim.ErrNoMinorWorkSite) {
+		t.Errorf("nothing left: err = %v, want ErrNoMinorWorkSite", err)
+	}
+}

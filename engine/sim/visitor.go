@@ -386,6 +386,10 @@ type VisitorCascadeTelemetry struct {
 type VisitorTickInputs struct {
 	Now  time.Time
 	Rand *rand.Rand
+	// force, when set, is the operator's spawn (ForceVisitorSpawn, LLM-790):
+	// this class arrives now, past the afternoon window, the concurrent cap,
+	// the rolls and the carter / peddler.
+	force *visitorSpawnRoll
 }
 
 // TickVisitorCascade returns a Command that runs the three inline visitor
@@ -591,6 +595,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	// The shortage record is revalidated every tick, not only when a peddler
 	// could spawn: the producer's trade cue reads it all day (LLM-658).
 	pruneResolvedShortages(w)
+	if inputs.force != nil {
+		spawnVisitor(w, inputs, t, inputsRandOrDefault(inputs.Rand), *inputs.force, nil, 0, -1, nil)
+		return
+	}
 	// Afternoon spawn window (LLM-455, narrowing the LLM-373 daytime gate): a merchant
 	// arrives in the afternoon — late enough that his evening at the tavern overlaps the dusk
 	// company, early enough to finish his trade before the day-shops shut at dusk. The window
@@ -667,7 +675,16 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		t.SpawnSkipReason = roll.Reason
 		return
 	}
+	spawnVisitor(w, inputs, t, r, roll, carterLegs, carterPurse, shortageIdx, shortageErrand)
+}
 
+// spawnVisitor brings in the visitor a spawn decision called for: persona,
+// errand, arrival target and edge tile, then the actor, its broadcast and its
+// walk in. carterLegs / carterPurse are a carter's route (nil for none);
+// shortageIdx and shortageErrand a shortage peddler's (-1 and nil for none).
+// Any bail-out (every persona already here, no destination, no edge tile) logs
+// and spawns nothing.
+func spawnVisitor(w *World, inputs VisitorTickInputs, t *VisitorCascadeTelemetry, r *rand.Rand, roll visitorSpawnRoll, carterLegs []CarterLeg, carterPurse, shortageIdx int, shortageErrand *TradeErrand) {
 	// Persona FIRST (moved ahead of the spatial picks): the class (merchant vs passer-through)
 	// and, for a merchant, the bound errand decide the name, archetype label, origin, pack, and
 	// arrival target (the errand counterparty, not the tavern), so they must be known before
