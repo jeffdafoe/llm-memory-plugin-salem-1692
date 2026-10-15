@@ -2224,7 +2224,7 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m) + eatingPhrase(m)
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted)) + laborTiePhrase(m.SolicitTie) + laboringPhrase(m) + eatingPhrase(m) + busyActivityPhrase(m)
 }
 
 // laboringPhrase renders the LLM-231 busy annotation for a co-present member who is
@@ -2268,9 +2268,16 @@ func eatingPhrase(m HuddleMember) string {
 // self-line uses, so the two can't drift; an unresolved label falls back to a
 // place-less phrase. Stoke, gather, and bake need no place — the fire, the forager,
 // and the home hearth are already at the observed spot. Empty for a member not mid a
-// source activity. Like eatingPhrase, purely a legibility beat: it gates neither
-// trade nor speech — and for bake it reads as "join her at the bread," not
-// "interrupt her" (LLM-454).
+// source activity. Gates neither trade nor speech; for bake it reads as "join her at
+// the bread," not "interrupt her" (LLM-454).
+//
+// Rendered in BOTH the co-present line and the huddle roster (LLM-779): a customer
+// who speaks to a mending keeper joins his huddle, and the note must not drop at the
+// moment it matters. Repair/stoke/gather carry busyNoAnswerTail because the reactor
+// shelves NPC speech to an actor mid a source activity (reactor.go, the
+// SourceActivity gate) — the tail states what will actually happen, so the customer
+// waits instead of re-asking a keeper who cannot answer. Bake carries no tail: the
+// baker's bakeReplyDue carve-out does answer.
 func busyActivityPhrase(m HuddleMember) string {
 	if !m.SourceActivityBusy {
 		return ""
@@ -2280,18 +2287,22 @@ func busyActivityPhrase(m HuddleMember) string {
 		// Sanitize before the emptiness check: a label that sanitizes down to nothing
 		// must fall back to the place-less phrase, not render "(mending at  just now)".
 		if label := sanitizeInline(m.SourceActivityLabel); label != "" {
-			return fmt.Sprintf(" (mending at %s just now)", label)
+			return fmt.Sprintf(" (mending at %s just now%s)", sim.WithDefiniteArticle(label), busyNoAnswerTail)
 		}
-		return " (mending just now)"
+		return " (mending just now" + busyNoAnswerTail + ")"
 	case sim.SourceActivityStoke:
-		return " (tending the fire just now)"
+		return " (tending the fire just now" + busyNoAnswerTail + ")"
 	case sim.SourceActivityHarvest:
-		return " (gathering just now)"
+		return " (gathering just now" + busyNoAnswerTail + ")"
 	case sim.SourceActivityBake:
 		return " (at the hearth, baking just now)"
 	}
 	return ""
 }
+
+// busyNoAnswerTail closes the busy note for the source activities that shelve NPC
+// speech. "May" because a red need or an operator nudge still ticks the actor.
+const busyNoAnswerTail = " — may not answer you until done"
 
 // laborTiePhrase names a co-present member's relationship to the subject —
 // housemate or workmate (LLM-157) — so a worker reads them as kin/crew rather than a

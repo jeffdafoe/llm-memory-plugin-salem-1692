@@ -4482,6 +4482,15 @@ var perceptionScenarios = []perceptionScenario{
 			"walking turn is noise the whole prompt pays for. Foil of keeper_off_post_buying_in_company.",
 		build: keeperOffPostBuyingAlone,
 	},
+	{
+		name: "customer_huddled_with_keeper_mid_repair",
+		summary: "LLM-779 (live 2026-10-14): Constance Scott is in the Tavern, in conversation with John Ellis while he " +
+			"mends it. The reactor shelves NPC speech to an actor mid a source activity, so he cannot answer her. The " +
+			"golden pins the busy note on the HUDDLE line — 'mending at the Tavern just now — may not answer you until " +
+			"done' — which before rendered only for an observer outside the conversation, so it dropped the moment she " +
+			"spoke to him and she asked twice into silence.",
+		build: customerHuddledWithKeeperMidRepair,
+	},
 }
 
 // estateRateSnapshot builds the shared constable-and-keeper fixture (LLM-557 origin,
@@ -20119,4 +20128,73 @@ func nightKeeperOffshiftJoinsBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 	a := snap.Actors[actorID]
 	a.ScheduleStartMin, a.ScheduleEndMin = &start, &end
 	return snap, actorID, warrants
+}
+
+// customerHuddledWithKeeperMidRepair is the LLM-779 live case (2026-10-14 19:39 UTC):
+// Constance Scott walks into the Tavern thirsty and speaks to John Ellis, who is mid a
+// timed repair of his own Tavern. Speaking put her in his huddle, and the huddle roster
+// carried no busy note, so her prompt read only "with John Ellis" and she waited on a
+// reply the reactor would never tick him to give. Fixed PublishedAt and minute of day;
+// no wall-clock reads.
+func customerHuddledWithKeeperMidRepair() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		constanceID = sim.ActorID("constance")
+		johnID      = sim.ActorID("john")
+		tavern      = sim.StructureID("tavern")
+		home        = sim.StructureID("scott_residence")
+		huddleID    = sim.HuddleID("tavern_huddle")
+	)
+	start, end := 900, 1380 // 15:00-23:00, the Tavern's hours
+	now := 940              // 15:40 — open, the keeper on shift
+	published := time.Date(2026, 10, 14, 19, 40, 0, 0, time.UTC)
+	constance := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Constance Scott",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 20, Y: 12},
+		HomeStructureID:   home,
+		InsideStructureID: tavern,
+		CurrentHuddleID:   huddleID,
+		Coins:             12,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"thread": 2},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 21, Y: 12},
+		WorkStructureID:   tavern,
+		InsideStructureID: tavern,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddleID,
+		Coins:             20,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"ale": 12},
+		// Mid a timed repair of his own Tavern (a structure-backed object shares its id).
+		SourceActivityKind:     sim.SourceActivityRepair,
+		SourceActivityObjectID: sim.VillageObjectID(tavern),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{constanceID: constance, johnID: john},
+		Structures: map[sim.StructureID]*sim.Structure{
+			tavern: plainStructure(tavern, "Tavern"),
+			home:   plainStructure(home, "Scott Residence"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{constanceID: {}, johnID: {}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"ale":    {Name: "ale", DisplayLabel: "ale", Category: sim.ItemCategoryDrink},
+			"thread": {Name: "thread", DisplayLabel: "spools of thread"},
+		},
+	}
+	return snap, constanceID, nil
 }
