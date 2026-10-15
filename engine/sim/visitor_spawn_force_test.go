@@ -80,3 +80,31 @@ func TestForceVisitorSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestForceVisitorSpawnSeller — with a distributor to sell to, a forced seller
+// arrives a merchant on a SELL errand to it, at night and with the trickle
+// off: the forced roll's class and direction reach the errand binding.
+func TestForceVisitorSpawnSeller(t *testing.T) {
+	vw := newVisitorWorld()
+	vw.seedTavern(t)
+	distID := vw.seedDistributor(t)
+	w, cancel := vw.load(t)
+	defer cancel()
+	res, err := w.Send(sim.ForceVisitorSpawn(sim.ForceVisitorSeller, visitorSpawnNight, rand.New(rand.NewSource(7))))
+	if err != nil {
+		t.Fatalf("ForceVisitorSpawn: %v", err)
+	}
+	got := res.(sim.ForcedVisitor)
+	if !got.Merchant {
+		t.Fatalf("seller = %+v, want a merchant", got)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		trade := world.Actors[got.ID].VisitorState.Trade
+		if trade == nil || trade.Direction != sim.TradeDirectionSell || trade.Counterparty != distID {
+			t.Errorf("trade = %+v, want a sell errand to %s", trade, distID)
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
