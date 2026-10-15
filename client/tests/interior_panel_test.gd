@@ -91,6 +91,11 @@ const TESTS := [
     "_test_room_walk",
     "_test_keeper_walks_to_the_hearth",
     "_test_tap_on_furniture",
+    "_test_stall_keeper_mends",
+    "_test_pack_keeper_mends_by_stand_in",
+    "_test_smithy_crew_leaves_off_to_mend",
+    "_test_tavern_keeper_mends_and_serves",
+    "_test_mender_speech_hold_outlasts_a_redraw",
 ]
 
 const STALL := "stall-1"
@@ -3516,4 +3521,237 @@ func _test_tap_on_furniture() -> void:
     _check("taps on the counter, free then held", tapped, [Vector2i(4, 5), Vector2i(4, 4)])
     _panel.floor_tapped.disconnect(on_tap)
     _panel.close()
+    _done()
+
+
+## Put `id` in (or out of) the engine's repair window on `object_id`, as the
+## npc_source_activity_changed frame leaves the world's container.
+func _set_mending(id: String, object_id: String) -> void:
+    var c: Node2D = _world.placed_npcs[id]
+    c.set_meta("source_activity_kind", "repair" if object_id != "" else "")
+    c.set_meta("source_activity_object_id", object_id)
+
+
+## Knocks heard through the panel's sound seam.
+var _knocks: Array = []
+
+
+func _listen() -> void:
+    _knocks = []
+    _panel.sound_hook = func(sound_name: String): _knocks.append(sound_name)
+
+
+func _chips_on(holder: Node2D) -> int:
+    var n := 0
+    for child in holder.get_children():
+        if child.get_script() == _panel.WorkChipsScript:
+            n += 1
+    return n
+
+
+## LLM-780: a farmer-base keeper mending their stall swings the hatchet
+## sideways where they stand (never north or south); each strike throws chips
+## and knocks; no bustle meanwhile; a word stops the work a while; the repair's
+## end stands them as before. A repair of something else is not this one.
+func _test_stall_keeper_mends() -> void:
+    _clear_people()
+    _place_stall()
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.open(STALL)
+    _listen()
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    var spr: AnimatedSprite2D = _panel._sprite_of(keeper)
+    var stood := spr.animation
+    _set_mending("keeper", "well")
+    _panel._mend(0.01)
+    _check("mending something else: not here", [keeper.has_meta("mend"), spr.animation], [false, stood])
+    _set_mending("keeper", STALL)
+    _panel._mend(0.01)
+    var side := "east" if keeper.position.x >= float(_panel.room["size"].x) / 2.0 else "west"
+    _check("mending the stall: the hatchet, swung to the nearer side", [keeper.has_meta("mend"), spr.animation], [true, StringName(side + "_chop")])
+    spr.frame = _panel.WorkAim.STRIKE_FRAME
+    _panel._mend(0.01)
+    _check("the strike: chips and a knock", [_chips_on(keeper), _knocks], [1, ["hammer_miss"]])
+    _panel._mend(0.01)
+    _check("one blow per strike", _knocks.size(), 1)
+    var at := keeper.position
+    for i in 5:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+    _check("no bustle while mending", [keeper.has_meta("walking"), keeper.position], [false, at])
+
+    # A word: they stop, facing the customers, then go back to it.
+    _panel.say("keeper", "A moment.")
+    _panel._mend(0.01)
+    _check("speaking: the work stops", spr.animation, &"south_idle")
+    _panel._mend(_panel.SPEAK_HOLD - 0.5)
+    _check("a while", spr.animation, &"south_idle")
+    _panel._mend(1.0)
+    _check("then back to it", spr.animation, StringName(side + "_chop"))
+
+    # A redraw (someone arrives) keeps them at it.
+    _at_tile("buyer", _farmer(), Vector2i(8, 21))
+    _panel.refresh()
+    keeper = _panel._staff.get_node("keeper")
+    spr = _panel._sprite_of(keeper)
+    _panel._mend(0.01)
+    _check("a redraw: still at it", spr.animation, StringName(side + "_chop"))
+
+    # The repair over: they stand as before, and bustle again.
+    _set_mending("keeper", "")
+    _panel._mend(0.01)
+    _check("done: standing as before", [keeper.has_meta("mend"), spr.animation], [false, stood])
+    _panel._bustle_left = 0.0
+    _panel._bustle(0.01)
+    _check("bustling again", keeper.has_meta("walking"), true)
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## LLM-780: a one-sheet pack sprite has no hatchet: it dips at each blow, on
+## its own beat, with chips and a knock, and stands back up when the repair
+## ends.
+func _test_pack_keeper_mends_by_stand_in() -> void:
+    _clear_people()
+    _place_stall()
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _pack(), STALL, {"work_structure_id": STALL})
+    _panel.open(STALL)
+    _listen()
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    var spr: AnimatedSprite2D = _panel._sprite_of(keeper)
+    var rest := spr.position.y
+    var stood := spr.animation
+    _set_mending("keeper", STALL)
+    var dips := 0
+    var step := 0.05
+    for i in int(round(_panel.MEND_PERIOD * 3.0 / step)):
+        _panel._mend(step)
+        if spr.position.y == rest + _panel.MEND_DIP:
+            dips += 1
+    _check("a pack keeper does not swing", [keeper.has_meta("mend"), spr.animation], [true, stood])
+    _check("dips at each blow", dips > 0, true)
+    _check("a knock a beat, three beats", _knocks.size(), 3)
+    _check("chips with each", _chips_on(keeper), 3)
+    _set_mending("keeper", "")
+    _panel._mend(step)
+    _check("done: stood back up", [keeper.has_meta("mend"), spr.position.y], [false, rest])
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## LLM-780: at a smithy, a repair calls the keeper back from the anvil and a
+## hand back from the bellows; each mends at their spot once there.
+func _test_smithy_crew_leaves_off_to_mend() -> void:
+    _open_smithy_crew(["hand"], [])
+    _listen()
+    var keeper: Node2D = _panel._tending()
+    var hand: Node2D = _panel._staff.get_node("hand")
+    var keeper_home: Vector2 = keeper.get_meta("home")
+    var hand_home: Vector2 = hand.get_meta("home")
+    _panel._bustle_rng.seed = 11
+    _check("the keeper off to the anvil", _send_to_anvil(keeper), true)
+    _check("the hand off to the bellows", _send_to_bellows(hand), true)
+    _finish_walk(hand)
+    _set_mending("keeper", STALL)
+    _set_mending("hand", STALL)
+    _panel._bustle(0.01)
+    _panel._hands_turn(0.01)
+    _check("both leave off and walk back", [keeper.has_meta("smithing"), keeper.has_meta("walking"), hand.has_meta("pulling"), hand.has_meta("walking")], [false, true, false, true])
+    _panel._mend(0.01)
+    _check("no work on the way", [keeper.has_meta("mend"), hand.has_meta("mend")], [false, false])
+    _finish_walk(keeper)
+    _finish_walk(hand)
+    _check("back at their spots", [keeper.position, hand.position], [keeper_home, hand_home])
+    _panel._mend(0.01)
+    _check("both mending there, swinging", [String(_anim(keeper)).ends_with("_chop"), String(_anim(hand)).ends_with("_chop")], [true, true])
+    for i in 60:
+        _panel._bustle_left = 0.0
+        _panel._bustle(0.01)
+        hand.set_meta("turn_left", 0.0)
+        _panel._hands_turn(0.01)
+    _check("no anvil, no bellows while mending", [keeper.has_meta("anvil_trip"), keeper.has_meta("smithing"), hand.has_meta("bellows")], [false, false, false])
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
+
+
+## LLM-780: a Tavern keeper mending swings behind the bar; a sale takes them
+## off it to serve (no swing while walking or handing over), and back at the
+## bar they go back to it.
+func _test_tavern_keeper_mends_and_serves() -> void:
+    _tavern_with_guest(0)
+    _listen()
+    var keeper: Node2D = _panel._tending()
+    _set_mending("keeper", _sid)
+    _panel._mend(0.01)
+    _check("mending behind the bar: swinging", String(_anim(keeper)).ends_with("_chop"), true)
+    _world.apply_npc_meal_started({"id": "guest", "item": "stew", "structure_id": _sid, "credits": 1})
+    _panel.on_pay_resolved(_sale("keeper", "guest", "stew", "accepted", 1, true))
+    _panel._mend(0.01)
+    _check("a sale: off to serve, the work stopped", [keeper.has_meta("walking"), keeper.has_meta("mend"), String(_anim(keeper)).ends_with("_chop")], [true, false, false])
+    _finish_walk(keeper)
+    _panel._mend(0.01)
+    _check("handing over: not yet", keeper.has_meta("mend"), false)
+    var good: Node2D = _panel._handoff.get_node_or_null("handoff_stew")
+    if good != null and good.has_meta("tween"):
+        (good.get_meta("tween") as Tween).custom_step(60.0)
+    _finish_walk(keeper)
+    _check("the handoff done", _panel._handoff_now, {})
+    _panel._mend(0.01)
+    _check("back to the work", [keeper.has_meta("mend"), String(_anim(keeper)).ends_with("_chop")], [true, true])
+    _set_mending("keeper", "")
+    _panel._mend(0.01)
+    _check("done: no swing", String(_anim(keeper)).ends_with("_chop"), false)
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _done()
+
+
+## LLM-780 (code_review): a word holds the work whether it comes before the
+## first mend frame or mid-swing, and a redraw during the hold does not cut it
+## short.
+func _test_mender_speech_hold_outlasts_a_redraw() -> void:
+    _clear_people()
+    _place_stall()
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    _person("keeper", _farmer(), STALL, {"work_structure_id": STALL})
+    _panel.open(STALL)
+    _listen()
+    var keeper: Node2D = _panel._staff.get_node("keeper")
+    # The repair arrives and the keeper speaks before any mend frame.
+    _set_mending("keeper", STALL)
+    _panel.say("keeper", "Just a moment.")
+    _panel._mend(0.01)
+    _check("spoke before the first frame: not swinging", String(_anim(keeper)).ends_with("_chop"), false)
+
+    # A redraw mid-hold: still standing.
+    _panel._mend(1.0)
+    _at_tile("buyer", _farmer(), Vector2i(8, 21))
+    _panel.refresh()
+    keeper = _panel._staff.get_node("keeper")
+    _panel._mend(0.01)
+    _check("a redraw mid-hold: still not swinging", String(_anim(keeper)).ends_with("_chop"), false)
+    _panel._mend(_panel.SPEAK_HOLD)
+    _check("the hold over: swinging", String(_anim(keeper)).ends_with("_chop"), true)
+
+    # Reopening the window forgets a hold.
+    _panel.say("keeper", "Once more.")
+    _panel.close()
+    _panel.open(STALL)
+    keeper = _panel._staff.get_node("keeper")
+    _panel._mend(0.01)
+    _check("reopened: no hold carried over", String(_anim(keeper)).ends_with("_chop"), true)
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _panel.wares_hook = Callable()
     _done()
