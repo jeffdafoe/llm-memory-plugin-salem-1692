@@ -56,6 +56,13 @@ const SOUNDS := {
         "files": ["saw_0.ogg", "saw_1.ogg", "saw_2.ogg", "saw_3.ogg", "saw_4.ogg", "saw_5.ogg"],
         "db": -14.0, "pitch": 0.04,
     },
+    # The fence's hammer (LLM-786): a nail folding over under a bad blow — a
+    # dull clang and the tin's ring — and the board splitting, a low creak.
+    "nail_bend": {
+        "files": ["impactTin_medium_000.ogg", "impactTin_medium_001.ogg", "impactTin_medium_002.ogg", "impactTin_medium_003.ogg", "impactTin_medium_004.ogg"],
+        "db": -14.0, "pitch": 0.06, "base": 0.7,
+    },
+    "board_split": {"files": ["creak1.ogg", "creak2.ogg", "creak3.ogg"], "db": -12.0, "pitch": 0.04, "base": 0.55},
     # A cut section of trunk dropping onto the verge — the board thud, lower.
     # The saw binding (LLM-716): the teeth dragging in the cut, and the blade
     # flexing; then, stuck, a clank and the log groaning on it.

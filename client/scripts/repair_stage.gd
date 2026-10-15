@@ -179,6 +179,11 @@ const HAMMER_REST := 3
 const SWING_DOWN := 0.06
 const SWING_HOLD := 0.06
 const SWING_UP := 0.21
+## Seconds a bent nail shows folded over before it is pulled (LLM-786).
+const BENT_SHOW := 0.6
+## The split board's crack: its rows below the line, along the board, uneven
+## so it reads as a break and not a pattern.
+const SPLIT_WANDER := [0, 0, 0, 1, 1, 2, 2, 2, 1, 1, 1, 1, 0, 0, 1, 2, 3, 3, 2, 2, 2, 1, 0, 0, 0, 0, 1, 1, 2, 1, 1, 0, 1, 2, 2, 3, 2, 1, 1, 0]
 
 # The bent saw blade (LLM-716): `saw-bend` is a strip of SAW_BEND_FRAMES
 # frames of SAW_BEND_W × SAW_BEND_H, one per whole pixel of bow from
@@ -246,6 +251,12 @@ var _swing_nail_h := 0.0
 ## The swing struck the wrong nail of the crate's lid: it springs when the
 ## hammer lands.
 var _swing_sprung := false
+## The fence's hammer (LLM-786): where the swing lands along the board (play
+## px), what the strike was (Hammer.last_kind), and whether it splits the
+## board when it lands.
+var _swing_x := 0.0
+var _swing_kind := ""
+var _swing_split := false
 ## The hammer blows heard so far from the ladder's work this round.
 var _ladder_blows := 0
 var _particles: Array = []  # {pos, vel, life, max_life, color, size}
@@ -548,6 +559,10 @@ func _play_h() -> int:
 func _handle_press(pos: Variant) -> void:
     if not playing or game == null:
         return
+    # The fence's hammer must land one strike before it can make the next
+    # (LLM-786): every strike the game judges is a swing the player sees land.
+    if game_kind == "hammer" and _swing_t >= 0.0 and _swing_t < SWING_DOWN:
+        return
     _apply(game.press(pos))
 
 
@@ -567,11 +582,13 @@ func _apply(r: int) -> void:
                     perfect = game.springs == 0
                 "ladder":
                     perfect = game.falls == 0
+                "hammer":
+                    perfect = game.clean
             _on_hit(perfect)
             round_won.emit(perfect)
         Games.Result.PROGRESS:
             match game_kind:
-                "crosswise":
+                "crosswise", "hammer":
                     _start_swing(true, false)
                 "ladder":
                     _on_nudge()
@@ -593,6 +610,10 @@ func _apply(r: int) -> void:
                     _swing_sprung = true
                 "ladder":
                     _on_fall()
+                "hammer":
+                    # The board splits as the hammer lands (_land_swing).
+                    _start_swing(false, false, true)
+                    _swing_split = true
                 _:
                     _on_stuck()
             missed.emit()
@@ -697,22 +718,28 @@ func _on_hit(perfect: bool) -> void:
         pop("Perfect!", at + Vector2(0, -10))
 
 
-## Swing the hammer down onto the nail standing (a hit) or the board (a
-## miss). A miss while a swing is under way leaves it be; a hit restarts it.
-func _start_swing(hit: bool, perfect: bool) -> void:
-    if _swing_t >= 0.0 and not hit:
+## Swing the hammer down onto the nail struck (a hit) or the board (a miss).
+## A miss while a swing is under way leaves it be, unless `force`; a hit
+## restarts it. The fence's hammer always swings anew: a strike is only taken
+## once the last has landed (_handle_press).
+func _start_swing(hit: bool, perfect: bool, force := false) -> void:
+    if _swing_t >= 0.0 and not hit and not force and game_kind != "hammer":
         return
     var g = game
     _swing_t = 0.0
     _swing_hit = hit
     _swing_perfect = perfect
     _swing_sprung = false
+    _swing_split = false
     if game_kind == "crosswise":
         _swing_slot = maxi(g.last, 0)
         _swing_nail_h = g.STAND
         return
-    _swing_slot = maxi(g.up, 0)
-    _swing_nail_h = _nail_height(g) if hit else 0.0
+    # The fence's hammer: the game kept the strike it just judged.
+    _swing_slot = maxi(g.last_slot, 0)
+    _swing_x = g.last_x
+    _swing_kind = g.last_kind
+    _swing_nail_h = g.last_h if hit or _swing_kind == "bend" else 0.0
 
 
 ## Where the hammer's face lands on a slot's nail: the board's top there, play
@@ -721,6 +748,14 @@ func _nail_surface(slot: int) -> Vector2:
     if game_kind == "crosswise":
         return game.nail_pos(slot)
     return Vector2(game.slot_x(slot), game.BOARD_Y)
+
+
+## Where the swing lands, play px: the nail it strikes, or for the fence's
+## hammer, the board wherever the strike fell.
+func _swing_surface() -> Vector2:
+    if game_kind == "hammer":
+        return Vector2(_swing_x, game.BOARD_Y)
+    return _nail_surface(_swing_slot)
 
 
 ## Where the swing is: the hammer frame to draw (0 = level, the strike;
@@ -744,7 +779,7 @@ func _land_swing() -> void:
         _swing_sprung = false
         _on_sprung()
         return
-    var at := _play_origin() + _nail_surface(_swing_slot) - Vector2(0, 2)
+    var at := _play_origin() + _swing_surface() - Vector2(0, 2)
     if _swing_hit:
         _sound("hammer_hit")
         _shake = 0.18
@@ -753,18 +788,32 @@ func _land_swing() -> void:
         if _swing_perfect:
             _flash = 0.6
             pop("Perfect!", at + Vector2(0, -10))
+    elif game_kind == "hammer" and _swing_kind == "bend":
+        # The nail folds over under the blow (LLM-786).
+        _sound("nail_bend")
+        _shake = maxf(_shake, 0.15)
+        _burst(at - Vector2(0, _swing_nail_h), 3, [C_IRON_LIGHT, Color.WHITE])
     else:
         _sound("hammer_miss")
         _shake = maxf(_shake, 0.12)
         _burst(at + Vector2(0, 2), 3, [C_WOOD_LIGHT, C_WOOD_HI])
+    if _swing_split:
+        _swing_split = false
+        _on_split()
 
 
-## How far the standing nail stands proud: it rises fast and sinks over the
-## last half second.
-static func _nail_height(g) -> float:
-    var rise: float = clampf(g.up_t / 0.12, 0.0, 1.0)
-    var sink: float = clampf((g.up_t - (g.up_time - 0.5)) / 0.5, 0.0, 1.0)
-    return roundf(8.0 * rise * (1.0 - sink))
+## The fence's board splits (LLM-786): a crack and a clatter, the round's
+## nails pop out, and the board is set right after Hammer.SPLIT_TIME.
+func _on_split() -> void:
+    _shake = 0.35
+    _sound("board_split")
+    _sound("hammer_miss")
+    var g = game
+    var o := _play_origin()
+    for i in g.popped:
+        _burst(o + Vector2(g.slot_x(i), g.BOARD_Y - 2), 3, [C_IRON_LIGHT, Color.WHITE])
+    _burst(o + Vector2(g.BOARD_X + g.BOARD_W / 2.0, g.BOARD_Y + 6), 8, [C_WOOD_HI, C_WOOD_LIGHT, C_WOOD_DARK])
+    pop("Split!", o + Vector2(Games.PLAY_W / 2.0, g.BOARD_Y - 14))
 
 
 func _on_stroke() -> void:
@@ -1304,31 +1353,76 @@ func _draw_windlass(o: Vector2) -> void:
         draw_texture_rect_region(wheel, Rect2(Vector2(bx + 4 - 11, by - 16 - 11), Vector2(23, 23)), Rect2(frame * 23, 0, 23, 23))
 
 
+## The fence's board (LLM-786): the plank with its dents (and its crack once
+## split), the nails driven flush, the one standing — leaning or true — and a
+## bent one folded over, then the hammer. Whatever a strike does shows when
+## the hammer lands on it.
 func _draw_hammer(o: Vector2) -> void:
     var g = game
     var top: float = o.y + g.BOARD_Y
     _tex("plank", Vector2(o.x + g.BOARD_X - 4, top))
+    var swinging := _swing_t >= 0.0 and _swing_t < SWING_DOWN
+    var split: bool = g.split_left > 0.0 and g.t - g.split_at >= SWING_DOWN
+    # The split's nails stay in until the hammer lands.
+    var popping: bool = g.split_left > 0.0 and not split
+    for dent in g.dents:
+        if g.t - dent.y >= SWING_DOWN:
+            draw_rect(Rect2(o.x + roundf(dent.x) - 1, top + 1, 3, 1), C_WOOD_DARK)
+            draw_rect(Rect2(o.x + roundf(dent.x) - 1, top + 2, 3, 1), C_SHADE)
+    if split:
+        # A crack along the grain, end to end, wandering up and down.
+        for x in range(g.BOARD_X - 2, g.BOARD_X + g.BOARD_W + 2):
+            var wander: int = SPLIT_WANDER[posmod(x, SPLIT_WANDER.size())]
+            draw_rect(Rect2(o.x + x, top + 5 + wander, 1, 1), C_OUTLINE)
     var nail := art("nail")
-    # The nail just hit still stands until the hammer comes down on it.
-    var struck := _swing_hit and _swing_t >= 0.0 and _swing_t < SWING_DOWN
+    if nail == null:
+        return
     for i in g.SLOTS:
         var x: float = o.x + g.slot_x(i)
-        var standing := -1.0
-        if struck and i == _swing_slot:
-            standing = _swing_nail_h
-        elif not g.driven[i] and i == g.up:
-            standing = _nail_height(g)
-        if standing >= 0.0 and nail != null:
-            # Standing proud: the head over as much shaft as stands.
-            draw_texture_rect_region(nail, Rect2(x - 3, top - standing - 3, 7, 3 + standing), Rect2(0, 0, 7, 3 + standing))
-            draw_rect(Rect2(x - 2, top, 5, 1), C_SHADE)
-        elif g.driven[i]:
+        if swinging and _swing_hit and i == _swing_slot:
+            # The nail just struck true stands until the hammer comes down.
+            _draw_nail(nail, x, top, _swing_nail_h, 0)
+        elif i == g.up:
+            _draw_nail(nail, x, top, g.height(), g.lean())
+        elif g.driven[i] or (popping and g.popped.has(i)):
             # Driven flush: just the head.
             _tex("nail-driven", Vector2(x - 3, top))
             draw_rect(Rect2(x - 3, top + 2, 7, 1), C_SHADE)
-    # The hammer hangs raised over the nail standing (or the last struck).
-    var slot := _swing_slot if _swing_t >= 0.0 else maxi(g.up, 0)
-    _draw_hammer_over(o + Vector2(g.slot_x(slot), g.BOARD_Y))
+    if not g.bent.is_empty():
+        var b: Dictionary = g.bent
+        var age: float = g.t - b["at"]
+        var bx: float = o.x + g.slot_x(b["slot"])
+        if age < SWING_DOWN:
+            _draw_nail(nail, bx, top, b["h"], b["lean"])
+        elif age < BENT_SHOW:
+            _draw_bent_nail(nail, bx, top, b["h"], signi(b["lean"]))
+    # The hammer hangs raised over the nail standing (or swings where struck).
+    var at: Vector2 = _swing_surface() if _swing_t >= 0.0 else Vector2(g.slot_x(maxi(g.up, 0)), g.BOARD_Y)
+    _draw_hammer_over(o + at)
+
+
+## A standing nail, `standing` px of shank proud of the board top at x, its
+## head `lean` px off upright: drawn a row at a time, each row shifted in
+## proportion to its height, so the shank slants in whole pixels.
+func _draw_nail(nail: Texture2D, x: float, top: float, standing: float, lean: int) -> void:
+    var rows := 3 + int(standing)
+    for r in rows:
+        var shift := lean if r < 3 else roundi(float(lean) * (rows - r) / rows)
+        draw_texture_rect_region(nail, Rect2(x - 3 + shift, top - rows + r, 7, 1), Rect2(0, r, 7, 1))
+    draw_rect(Rect2(x - 2, top, 5, 1), C_SHADE)
+
+
+## A bent nail: its shank kinks halfway up and the top half — head and all —
+## folds over toward `side`.
+func _draw_bent_nail(nail: Texture2D, x: float, top: float, standing: float, side: int) -> void:
+    var shank := int(standing)
+    var low := shank / 2
+    for r in low:
+        draw_texture_rect_region(nail, Rect2(x - 3, top - 1 - r, 7, 1), Rect2(0, 10 - r, 7, 1))
+    var fold := Vector2(x - 3 + side * 3, top - low - 1)
+    for r in 3:
+        draw_texture_rect_region(nail, Rect2(fold.x, fold.y - 2 + r, 7, 1), Rect2(0, r, 7, 1))
+    draw_rect(Rect2(x - 2, top, 5, 1), C_SHADE)
 
 
 ## The hammer, raised or swinging down about its grip. Its grip sits at the
