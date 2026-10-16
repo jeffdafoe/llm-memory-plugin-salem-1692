@@ -62,11 +62,19 @@ type pcMoveRequest struct {
 // pad — the same space the read surface emits for agent x/y, so the client
 // echoes back what it received with no conversion.
 type moveDestinationRequest struct {
-	Kind        string           `json:"kind"` // position | structure_enter | structure_visit | object_visit
+	Kind        string           `json:"kind"` // position | structure_enter | structure_visit | object_visit | livestock
 	Position    *positionRequest `json:"position,omitempty"`
 	StructureID string           `json:"structure_id,omitempty"`
 	ObjectID    string           `json:"object_id,omitempty"`
+	// ActorID is the animal for kind "livestock" (LLM-797): walk beside her,
+	// and she waits for you (sim.MoveToLivestock).
+	ActorID string `json:"actor_id,omitempty"`
 }
+
+// moveDestinationLivestock is the wire-only destination kind for a walk to an
+// animal (LLM-797). It is not a sim.MoveDestinationKind — the engine resolves
+// the animal's current tile to a tile beside her when the walk starts.
+const moveDestinationLivestock = "livestock"
 
 type positionRequest struct {
 	X int `json:"x"`
@@ -114,12 +122,6 @@ func (s *Server) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dest, status, msg := buildMoveDestination(req.Destination)
-	if msg != "" {
-		writeError(w, status, msg)
-		return
-	}
-
 	// PC click-moves always leave the current huddle: a deliberate navigation
 	// ends the current conversation (v1's service-huddle cleanup), and without
 	// it a PC already in a huddle could not move at all — MoveActor rejects a
@@ -130,12 +132,27 @@ func (s *Server) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	// the PC isn't a member of resolves to a loiter-slot knock (joining the
 	// keeper's huddle) rather than a 422 — v1 ZBBS-101 parity. dest.StructureID
 	// is non-nil here: buildMoveDestination rejects an empty structure_enter.
+	// A livestock walk (LLM-797, the walk to feed a cow) goes beside the animal
+	// and holds her; it leaves the huddle through MoveActor like any PC move.
 	// Every other destination kind keeps the plain move path.
 	var cmd sim.Command
-	if dest.Kind == sim.MoveDestinationStructureEnter {
-		cmd = enterOrKnockPCCommand(user.Username, *dest.StructureID, leaveHuddleFirst)
+	if req.Destination.Kind == moveDestinationLivestock {
+		if req.Destination.ActorID == "" || req.Destination.Position != nil || req.Destination.StructureID != "" || req.Destination.ObjectID != "" {
+			writeError(w, http.StatusBadRequest, "livestock destination takes an actor_id only")
+			return
+		}
+		cmd = moveToLivestockPCCommand(user.Username, sim.ActorID(req.Destination.ActorID))
 	} else {
-		cmd = movePCCommand(user.Username, dest, leaveHuddleFirst)
+		dest, status, msg := buildMoveDestination(req.Destination)
+		if msg != "" {
+			writeError(w, status, msg)
+			return
+		}
+		if dest.Kind == sim.MoveDestinationStructureEnter {
+			cmd = enterOrKnockPCCommand(user.Username, *dest.StructureID, leaveHuddleFirst)
+		} else {
+			cmd = movePCCommand(user.Username, dest, leaveHuddleFirst)
+		}
 	}
 
 	res, err := s.world.SendContext(r.Context(), cmd)
@@ -278,6 +295,22 @@ func buildMoveDestination(d moveDestinationRequest) (sim.MoveDestination, int, s
 // The move timestamp is captured INSIDE the Fn (not at request receipt) so the
 // stamped MoveIntent + the ActorMoveStarted it emits reflect the command's
 // execution time, not how long it sat in a backed-up command channel.
+// moveToLivestockPCCommand walks the caller's PC beside an animal (LLM-797).
+// Same identity and input-cursor rules as movePCCommand.
+func moveToLivestockPCCommand(username string, animalID sim.ActorID) sim.Command {
+	return sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			actorID, ok := findPCByLogin(world, username)
+			if !ok {
+				return sim.MoveActorResult{}, errPCNotFound
+			}
+			now := time.Now().UTC()
+			sim.TouchPCInput(world, actorID, now)
+			return sim.MoveToLivestock(actorID, animalID, now).Fn(world)
+		},
+	}
+}
+
 func movePCCommand(username string, dest sim.MoveDestination, leaveHuddleFirst bool) sim.Command {
 	return sim.Command{
 		Fn: func(world *sim.World) (any, error) {

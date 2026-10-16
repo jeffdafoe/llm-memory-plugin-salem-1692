@@ -560,6 +560,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Kind:       string(e.Kind),
 			SourceName: e.SourceName,
 			ObjectID:   string(e.ObjectID),
+			AnimalID:   string(e.AnimalID),
 			Beat:       e.Beat,
 		}
 		if e.Target != nil {
@@ -577,6 +578,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		}
 		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
 			ID: string(e.ActorID),
+		}}, true
+	case *sim.LivestockFed:
+		// LLM-797: an animal was fed — by a player's click or an NPC at the end
+		// of a milking. The client moos when the animal is on screen.
+		return WireFrame{Type: "livestock_fed", Data: livestockFedWireDTO{
+			ID: string(e.AnimalID),
 		}}, true
 	case *sim.SourceActivityCancelled:
 		// Clear on abandonment (today: a committed move off the source). Same gate.
@@ -1065,6 +1072,8 @@ type sourceActivityChangedWireDTO struct {
 	SourceName string `json:"source_name,omitempty"`
 	// ObjectID is the object being worked (LLM-743); empty on a clear.
 	ObjectID string `json:"object_id,omitempty"`
+	// AnimalID is the animal being milked (LLM-797); empty otherwise.
+	AnimalID string `json:"animal_id,omitempty"`
 	// Beat and Target ride a camp beat (LLM-798): the piece being pitched or
 	// struck ("tent", "fire", "stool", "woodpile") and where it stands, so the
 	// client turns the player toward it and picks the motion.
@@ -1078,6 +1087,11 @@ type campTargetWireDTO struct {
 	Y float64 `json:"y"`
 }
 
+// livestockFedWireDTO is the livestock_fed payload (LLM-797): the animal fed.
+type livestockFedWireDTO struct {
+	ID string `json:"id"`
+}
+
 // renderedSourceActivityKind reports whether a source-activity kind reaches the
 // client: the three "work" kinds (LLM-441 tooltip), refresh (LLM-719, the
 // eating and drinking animations) and a player pitching or striking a camp
@@ -1088,7 +1102,7 @@ type campTargetWireDTO struct {
 func renderedSourceActivityKind(k sim.SourceActivityKind) bool {
 	switch k {
 	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh,
-		sim.SourceActivityPitch, sim.SourceActivityStrike:
+		sim.SourceActivityPitch, sim.SourceActivityStrike, sim.SourceActivityMilk:
 		return true
 	}
 	return false

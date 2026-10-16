@@ -2307,6 +2307,22 @@ var perceptionScenarios = []perceptionScenario{
 		build: herbalistRangedWildForage,
 	},
 	{
+		name: "dairy_keeper_cows_want_milking",
+		summary: "LLM-797: milk comes from the cows. Elizabeth gathers milk (forage entry, cap 30) and is down to 2, " +
+			"at her farm far from the pen. Cow, Cow 2 and Cow 4 are full, Cow 3 is milked dry, and the heifer gives " +
+			"nothing. The golden pins '## Your cows' naming the three ready cows exactly (not Cow 3, not the heifer), " +
+			"the quiet tier (not every cow is full), and a move_to handle by the nearest ready cow's name — move_to " +
+			"ONLY, no gather tool (the LLM-59 posture: gather is not callable until she stands beside one).",
+		build: dairyKeeperCowsWantMilking,
+	},
+	{
+		name: "dairy_keeper_beside_full_cow",
+		summary: "LLM-797: the same herd with Elizabeth standing beside Cow 2. The at-animal cue says she is beside " +
+			"Cow 2 and can gather milk from her, the gather tool is offered, and '## Your cows' says she stands " +
+			"beside Cow 2 instead of naming a walk.",
+		build: dairyKeeperBesideFullCow,
+	},
+	{
 		name: "untagged_forager_no_ranged_wild_forage",
 		summary: "The tag gate for the LLM-253 ranged forage cue: the SAME fixture as herbalist_ranged_wild_forage " +
 			"(low on sage, unowned distant Sage Bush) but the forager does NOT carry sim.AttrForageRange. The golden " +
@@ -19575,8 +19591,18 @@ func TestGoldensNeverOfferAGatherWithoutTheTrade(t *testing.T) {
 				sim.LowForageItems(a.RestockPolicy, a.Inventory, snap.RestockReorderPct),
 				sim.ForageItems(a.RestockPolicy))
 			if row == nil {
-				t.Fatalf("cue offers %q but the shared resolution finds no source — cue and command have diverged",
-					p.Surroundings.GatherableItem)
+				// No object source: the only other gather is a milking animal
+				// (LLM-797), resolved by the command's own fallback pick, which
+				// admits only a yield the subject holds a forage entry for.
+				c, ok := sim.PickLivestockSource(sim.SnapshotLivestock(snap), a.Pos, a.HerdTargetID, sim.ForageItems(a.RestockPolicy))
+				if !ok || !c.Yield.HasStock() || c.Yield.Item() != p.Surroundings.GatherableItem {
+					t.Fatalf("cue offers %q but neither the shared resolution nor the livestock pick finds that source — cue and command have diverged",
+						p.Surroundings.GatherableItem)
+				}
+				if !sim.ForageItems(a.RestockPolicy)[c.Yield.Item()] {
+					t.Errorf("scene offers %q from %q without the trade", p.Surroundings.GatherableItem, c.Name)
+				}
+				return
 			}
 			if !sim.MayGatherSource(obj, row, actorID, sim.ForageItems(a.RestockPolicy)) {
 				t.Errorf("scene offers a gather of %q from %q the subject may not take: yield-only=%v, owner=%q, forage set=%v",
@@ -20228,4 +20254,77 @@ func customerHuddledWithKeeperMidRepair() (*sim.Snapshot, sim.ActorID, []sim.War
 		},
 	}
 	return snap, constanceID, nil
+}
+
+// dairyScenario is the LLM-797 fixture: Elizabeth Ellis gathers milk from the
+// cows (a forage entry, cap 30) and has 2 on hand — below the reorder line. The
+// pen holds four cows (Cow, Cow 2 and Cow 4 full; Cow 3 milked dry) and a heifer
+// that gives nothing. beside puts her one tile from Cow 2; otherwise she is at
+// her farm, far from the pen. On shift, no orders → byte-stable.
+func dairyScenario(beside bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const elizabethID = sim.ActorID("elizabeth")
+	start, end := 360, 1080 // 06:00–18:00
+	now := 600              // 10:00 — on shift
+	cowYield := func(avail int) *sim.LivestockYield {
+		max, period := 4, 12
+		return &sim.LivestockYield{Row: sim.ObjectRefresh{
+			GatherItem: "milk", AvailableQuantity: &avail, MaxQuantity: &max,
+			RefreshMode: sim.RefreshModePeriodic, RefreshPeriodHours: &period,
+		}}
+	}
+	pen := sim.TilePos{X: 140, Y: 92}
+	cow := func(name string, dx, dy, avail int) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind: sim.KindDecorative, DisplayName: name, State: sim.StateIdle,
+			Pos: sim.TilePos{X: pen.X + dx, Y: pen.Y + dy}, Needs: map[sim.NeedKey]int{},
+			Yield: cowYield(avail),
+		}
+	}
+	pos := sim.TilePos{X: 40, Y: 39} // Ellis Farm
+	if beside {
+		pos = sim.TilePos{X: pen.X + 3, Y: pen.Y + 1} // one tile from Cow 2
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:             sim.KindNPCShared,
+		DisplayName:      "Elizabeth Ellis",
+		Role:             "dairykeeper",
+		State:            sim.StateIdle,
+		Pos:              pos,
+		ScheduleStartMin: &start,
+		ScheduleEndMin:   &end,
+		Coins:            81,
+		Needs:            map[sim.NeedKey]int{},
+		Inventory:        map[sim.ItemKind]int{"milk": 2, "sage": 1},
+		RestockPolicy: &sim.RestockPolicy{Restock: []sim.RestockEntry{
+			{Item: "milk", Source: sim.RestockSourceForage, Max: 30},
+		}},
+	}
+	heifer := &sim.ActorSnapshot{
+		Kind: sim.KindDecorative, DisplayName: "Heifer", State: sim.StateIdle,
+		Pos: sim.TilePos{X: pen.X + 4, Y: pen.Y + 1}, Needs: map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay:  &now,
+		NeedThresholds:    sim.NeedThresholds{},
+		Assets:            emptyAssetSet,
+		RestockReorderPct: 25,
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			elizabethID: elizabeth,
+			"cow1":      cow("Cow", 0, 0, 4),
+			"cow2":      cow("Cow 2", 2, 0, 4),
+			"cow3":      cow("Cow 3", -2, 1, 0),
+			"cow4":      cow("Cow 4", 0, 3, 4),
+			"heifer":    heifer,
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{},
+	}
+	return snap, elizabethID, nil
+}
+
+func dairyKeeperCowsWantMilking() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return dairyScenario(false)
+}
+
+func dairyKeeperBesideFullCow() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return dairyScenario(true)
 }

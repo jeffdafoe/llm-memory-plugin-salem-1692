@@ -790,7 +790,24 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
     container.set_meta("source_activity_kind", str(data.get("kind", "")))
     container.set_meta("source_activity_label", str(data.get("source_name", "")))
     container.set_meta("source_activity_object_id", str(data.get("object_id", "")))
+    container.set_meta("source_activity_animal_id", str(data.get("animal_id", "")))
     _apply_activity_animation(container)
+
+## Apply a livestock_fed broadcast (LLM-797): an animal was fed — by a player's
+## click or by her milker — and she moos. Sound is not positional, so only a cow
+## on screen is heard, and not from indoors.
+func apply_livestock_fed(data: Dictionary) -> void:
+    var container: Node2D = placed_npcs.get(str(data.get("id", "")), null)
+    if container == null or not is_instance_valid(container) or not container.visible:
+        return
+    if Sound.indoors or not on_screen(container):
+        return
+    Sound.play("cow_moo")
+
+## Whether node's origin is inside the visible viewport.
+func on_screen(node: Node2D) -> bool:
+    var at := node.get_global_transform_with_canvas().origin
+    return get_viewport().get_visible_rect().has_point(at)
 
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
@@ -947,6 +964,8 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("source_activity_kind", npc.get("source_activity_kind", ""))
     container.set_meta("source_activity_label", npc.get("source_activity_label", ""))
     container.set_meta("source_activity_object_id", npc.get("source_activity_object_id", ""))
+    container.set_meta("source_activity_animal_id", npc.get("source_activity_animal_id", ""))
+    container.set_meta("livestock", npc.get("livestock", {}))
     # Worker work-window (ZBBS-071) — carry only when both are set so the
     # editor panel can distinguish "NULL inherits dawn/dusk" from the
     # 0/0 minute literal.
@@ -1052,7 +1071,7 @@ func play_npc_animation(container: Node2D, facing: String, kind: String) -> void
 ## picks its motion by the crop (HARVEST_ANIMATIONS, else pick); eating at a
 ## source picks and drinking drinks; a villager on a break, or anyone stopped
 ## at an outdoor rest spot, sits (LLM-765).
-const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "sit"]
+const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "sit", "milk"]
 const HARVEST_ANIMATIONS := {"wheat": "scythe", "carrots": "pull"}
 ## The need a rest spot (the Picnic Area, a Shade Tree) eases.
 const REST_NEED := "tiredness"
@@ -1067,6 +1086,8 @@ func _work_animation(container: Node2D) -> String:
             return "chop"
         "harvest":
             return str(HARVEST_ANIMATIONS.get(_worked_refresh(container, "gather_item"), "pick"))
+        "milk":
+            return "milk"
         "refresh":
             var need := _worked_refresh(container, "attribute")
             if need == REST_NEED:
@@ -1140,6 +1161,19 @@ func _apply_activity_animation(container: Node2D) -> void:
     if work == "sit" and sprite.animation.ends_with("_walk"):
         # A walk owns the sprite; a rest flag that has not caught up never sits a walker.
         return
+    if work == "milk":
+        # LLM-797: the pose is drawn side-on only (east, and west mirrored), so
+        # kneel toward the cow's side — whichever way she stands from the milker.
+        var cow: Node2D = placed_npcs.get(str(container.get_meta("source_activity_animal_id", "")), null)
+        if cow != null and is_instance_valid(cow):
+            facing = "west" if cow.position.x < container.position.x else "east"
+        elif facing != "west":
+            facing = "east"
+        if sprite.sprite_frames.has_animation(facing + "_milk"):
+            container.set_meta("facing", facing)
+            play_npc_animation(container, facing, "milk")
+            _step_work_sprite(sprite, Vector2.ZERO)
+            return
     if work != "" and work != "chop" and sprite.sprite_frames.has_animation(facing + "_" + work):
         # Face the worked object, or the rest spot (a break away from one keeps
         # its facing). Only the chop steps in to land its blow.

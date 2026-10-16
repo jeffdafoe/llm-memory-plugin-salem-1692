@@ -24,6 +24,7 @@ const InteriorPanelScript = preload("res://scripts/interior_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
 const CandlePromptScript = preload("res://scripts/candle_prompt.gd")
+const FeedPromptScript = preload("res://scripts/feed_prompt.gd")
 const ActivityReporterScript = preload("res://scripts/activity_reporter.gd")
 const StormFXScript = preload("res://scripts/storm_fx.gd")
 const FootstepsScript = preload("res://scripts/footsteps.gd")
@@ -220,6 +221,15 @@ var _modal_blockers: Dictionary = {}
 const _PC_CLICK_DRAG_THRESHOLD: float = 10.0
 var _pc_walk_pending: bool = false
 var _pc_walk_press_screen: Vector2 = Vector2.ZERO
+## The animal a press landed on, until its release (LLM-797): a click on a
+## milking animal offers a player holding the feed the feed prompt.
+var _pc_actor_press: Node2D = null
+## The animal to feed once the walk over to her ends (LLM-797).
+var _pending_feed_animal_id := ""
+## The player's pack as the talk panel last reported it (LLM-797).
+var _pc_items: Array = []
+var _pc_http_feed: HTTPRequest = null
+var feed_prompt: CanvasLayer = null
 var _pc_http_move: HTTPRequest = null
 
 func _ready() -> void:
@@ -683,6 +693,7 @@ func _build_ui() -> void:
         )
     if talk_panel_layer.has_signal("inventory_changed"):
         talk_panel_layer.inventory_changed.connect(inventory_panel.set_inventory)
+        talk_panel_layer.inventory_changed.connect(func(items: Array): _pc_items = items)
 
     # Village ticker — thin marquee band below the top bar, scrolling the
     # village's current atmosphere prose. Lives on the editor CanvasLayer
@@ -710,6 +721,12 @@ func _build_ui() -> void:
     candle_prompt.set_script(CandlePromptScript)
     add_child(candle_prompt)
     candle_prompt.trimmed.connect(_on_candle_trimmed)
+
+    # Feed prompt (LLM-797): a click on a milking animal while holding the feed.
+    feed_prompt = CanvasLayer.new()
+    feed_prompt.set_script(FeedPromptScript)
+    add_child(feed_prompt)
+    feed_prompt.answered.connect(_on_feed_answered)
 
     # Activity heartbeat (LLM-470). A plain Node, not a CanvasLayer — it renders
     # nothing and only listens. Added as a sibling so its ungated _input sees
@@ -1223,12 +1240,21 @@ func _input(event: InputEvent) -> void:
                 return
             # Skip clicks that landed on an actor sprite — those are
             # "who is this" identification clicks handled by
-            # actor_tooltip.gd, not walk targets.
+            # actor_tooltip.gd, not walk targets. The actor is kept so its
+            # release can offer the feed prompt on a milking animal (LLM-797).
             if actor_tooltip != null and actor_tooltip.is_press_over_actor(event.position):
+                _pc_actor_press = actor_tooltip.actor_at(event.position)
+                _pc_walk_press_screen = event.position
                 return
             _pc_walk_pending = true
             _pc_walk_press_screen = event.position
         else:
+            if _pc_actor_press != null:
+                var pressed_actor := _pc_actor_press
+                _pc_actor_press = null
+                if not (camera != null and camera.touch_gesture_was_pinch) and is_instance_valid(pressed_actor):
+                    _on_actor_clicked(pressed_actor)
+                return
             # Release. If the press wasn't cancelled by a drag or a
             # two-finger pinch, fire walk.
             if _pc_walk_pending:
@@ -1237,9 +1263,106 @@ func _input(event: InputEvent) -> void:
                     return
                 _post_pc_move_to_screen(event.position)
     elif event is InputEventMouseMotion:
-        if _pc_walk_pending:
+        if _pc_walk_pending or _pc_actor_press != null:
             if event.position.distance_to(_pc_walk_press_screen) > _PC_CLICK_DRAG_THRESHOLD:
                 _pc_walk_pending = false
+                _pc_actor_press = null
+
+## A click on an actor (LLM-797): a milking animal, with the feed in the
+## player's pack, asks whether to feed her. Anyone else is the identification
+## click it always was, and does nothing here.
+func _on_actor_clicked(node: Node2D) -> void:
+    if feed_prompt == null:
+        return
+    var livestock = node.get_meta("livestock", {})
+    if not (livestock is Dictionary) or livestock.is_empty():
+        return
+    var feed := str(livestock.get("feed", ""))
+    var label := _pc_item_label(feed)
+    if feed == "" or label == "":
+        return
+    feed_prompt.open(str(node.get_meta("npc_id", "")), str(node.get_meta("display_name", "")), label)
+    _set_modal_blocker("feed_prompt", true)
+
+## The pack's label for item_kind in lower case ("sage"), or "" when the player
+## holds none of it.
+func _pc_item_label(item_kind: String) -> String:
+    for entry in _pc_items:
+        if entry is Dictionary and str(entry.get("item_kind", "")) == item_kind and int(entry.get("quantity", 0)) > 0:
+            return str(entry.get("display_label", item_kind)).to_lower()
+    return ""
+
+## The feed prompt's answer. Yes beside her feeds now; from further off the
+## player walks over to her tile and feeds on arrival.
+func _on_feed_answered(animal_id: String, feed: bool) -> void:
+    _set_modal_blocker("feed_prompt", false)
+    if not feed or animal_id == "" or world == null:
+        return
+    var animal: Node2D = world.placed_npcs.get(animal_id, null)
+    var me: Node2D = world.placed_npcs.get(_pc_actor_id, null)
+    if animal == null or me == null:
+        return
+    var at: Vector2i = VillageApi.world_to_tile_padded(animal.position)
+    var from: Vector2i = VillageApi.world_to_tile_padded(me.position)
+    if maxi(absi(at.x - from.x), absi(at.y - from.y)) <= 1:
+        _post_pc_feed(animal_id)
+        return
+    # The engine picks the tile beside her and holds her while the player walks
+    # (the livestock destination), so she is still there on arrival.
+    _ensure_pc_http_move()
+    _pending_notice_object_id = ""
+    var payload := JSON.stringify({"destination": {"kind": "livestock", "actor_id": animal_id}})
+    if _pc_http_move.request(Auth.api_base + "/api/village/pc/move", Auth.auth_headers(), HTTPClient.METHOD_POST, payload) == OK:
+        _pc_move_purpose = "feed"
+        _pending_feed_animal_id = animal_id
+    else:
+        Toast.warning("You cannot walk over just now — try again in a moment.")
+
+## True while a feed request is in flight: one at a time, so a second click
+## never meets a busy request and vanishes.
+var _pc_feed_in_flight := false
+
+func _post_pc_feed(animal_id: String) -> void:
+    if _pc_feed_in_flight:
+        Toast.warning("One moment — she is still taking the last handful.")
+        return
+    if _pc_http_feed == null:
+        _pc_http_feed = HTTPRequest.new()
+        _pc_http_feed.accept_gzip = false
+        add_child(_pc_http_feed)
+        _pc_http_feed.request_completed.connect(func(_r, c, _h, b):
+            _pc_feed_in_flight = false
+            Auth.check_response(c)
+            var parsed = JSON.parse_string(b.get_string_from_utf8())
+            if c >= 200 and c < 300:
+                # The cow's moo (livestock_fed) is the answer. Spend the feed in
+                # the cached pack now, so the next click does not offer feed
+                # the player no longer holds before /pc/me catches up.
+                if parsed is Dictionary:
+                    _spend_cached_item(str(parsed.get("item", "")))
+                return
+            var msg := str(parsed.get("error", "")) if parsed is Dictionary else ""
+            Toast.warning(msg if msg != "" else "She would not take it just now."))
+    var err := _pc_http_feed.request(Auth.api_base + "/api/village/pc/feed", Auth.auth_headers(),
+        HTTPClient.METHOD_POST, JSON.stringify({"actor_id": animal_id}))
+    if err != OK:
+        Toast.warning("Could not reach the village just now — try again.")
+        return
+    _pc_feed_in_flight = true
+
+## Take one of item_kind out of the cached pack (_pc_items).
+func _spend_cached_item(item_kind: String) -> void:
+    for i in range(_pc_items.size()):
+        var entry = _pc_items[i]
+        if entry is Dictionary and str(entry.get("item_kind", "")) == item_kind:
+            var left := int(entry.get("quantity", 0)) - 1
+            if left <= 0:
+                _pc_items.remove_at(i)
+            else:
+                var copy: Dictionary = entry.duplicate()
+                copy["quantity"] = left
+                _pc_items[i] = copy
+            return
 
 ## Convert the screen-space click into a walk request. Two payloads:
 ##
@@ -1258,6 +1381,8 @@ func _input(event: InputEvent) -> void:
 func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -> void:
     if world == null:
         return
+    # A new walk is a change of mind: no feeding at the end of it (LLM-797).
+    _pending_feed_animal_id = ""
     # A click on the building the character is already in reopens its room
     # (LLM-750), and on the stall they stand at its counter (LLM-753) — the ✕
     # only hid it.
@@ -1374,6 +1499,13 @@ func _ensure_pc_http_move() -> void:
                 # A refused walk-out leaves them inside: the room comes back.
                 if _pc_move_purpose == "leave":
                     _reopen_room(_leave_sid)
+                # A refused walk to a cow (LLM-797) — most often because she has
+                # ambled up beside the player already — tries the feed where the
+                # player stands; the engine says if she is out of reach.
+                if _pc_move_purpose == "feed" and _pending_feed_animal_id != "":
+                    var animal_id := _pending_feed_animal_id
+                    _pending_feed_animal_id = ""
+                    _post_pc_feed(animal_id)
                 _pc_move_purpose = ""
                 return
             _pc_move_purpose = ""
@@ -1677,6 +1809,11 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     # from an earlier walk leaves the knock pending for its own arrival.
     if _pc_actor_id != "" and npc_id == _pc_actor_id:
         _open_door_if_there()
+    # Walk-then-feed (LLM-797): the player said Yes from further off.
+    if _pc_actor_id != "" and npc_id == _pc_actor_id and _pending_feed_animal_id != "":
+        var animal_id := _pending_feed_animal_id
+        _pending_feed_animal_id = ""
+        _post_pc_feed(animal_id)
     if _pending_notice_object_id == "":
         return
     if _pc_actor_id == "" or npc_id != _pc_actor_id:

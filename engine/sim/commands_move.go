@@ -239,6 +239,7 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				w.emit(&SourceActivityCancelled{
 					ActorID:  actor.ID,
 					ObjectID: cancelled.ObjectID,
+					AnimalID: cancelled.AnimalID,
 					Kind:     cancelled.Kind,
 					At:       time.Now().UTC(),
 				})
@@ -267,6 +268,9 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			// this clear and the next arrival — and every arrival re-stamps the field.
 			// The only case it changes is the stale one it exists for.
 			actor.GatherTargetObjectID = ""
+			// The herd target (LLM-797) means the same thing for an animal: the one
+			// she walked to. move_to re-stamps it after this commit.
+			actor.HerdTargetID = ""
 
 			// Step 6 — supersede any in-flight intent. The old attempt
 			// dies silently; no ActorMoveStopped is emitted.

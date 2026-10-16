@@ -25,6 +25,7 @@ const TESTS := [
     "_test_world_builds_doll",
     "_test_world_activity_animation",
     "_test_world_rest_spot_sits",
+    "_test_world_milking_faces_the_cow",
     "_test_world_swap_partial_sheets",
     "_test_world_load_sheets_settles",
 ]
@@ -401,6 +402,43 @@ func _test_world_activity_animation() -> void:
     _world._apply_activity_animation(pack)
     _check("pack sprite keeps idle", spr.animation, &"south_idle")
     pack.free()
+    _world._npc_sheets.clear()
+    _done()
+
+
+## LLM-797: milking kneels toward the cow. The pose is drawn side-on only, so a
+## cow to the west mirrors it and a cow above or below still gets a side pose;
+## with the cow not drawn the milker kneels east. Ending it stands her up.
+func _test_world_milking_faces_the_cow() -> void:
+    _world._npc_sheets = _sheets()
+    var anims := FarmerDoll.rig_animations()
+    _check("milk drawn east", anims.has("east_milk"), true)
+    _check("milk mirrored west", anims.has("west_milk"), true)
+    _check("no north milk", anims.has("north_milk"), false)
+    var c := Node2D.new()
+    var doll: AnimatedSprite2D = _world._build_character_sprite(_sprite_data(_three_layers()))
+    c.add_child(doll)
+    c.set_meta("facing", "north")
+    doll.play("north_idle")
+    var cow := Node2D.new()
+    cow.position = Vector2(-40, 0)
+    _world.placed_npcs["cow2"] = cow
+    c.set_meta("source_activity_kind", "milk")
+    c.set_meta("source_activity_animal_id", "cow2")
+    _world._apply_activity_animation(c)
+    _check("cow to the west: kneels west", doll.animation, &"west_milk")
+    cow.position = Vector2(40, 0)
+    _world._apply_activity_animation(c)
+    _check("cow to the east: kneels east", doll.animation, &"east_milk")
+    _world.placed_npcs.erase("cow2")
+    c.set_meta("facing", "south")
+    _world._apply_activity_animation(c)
+    _check("cow not drawn: kneels east", doll.animation, &"east_milk")
+    c.set_meta("source_activity_kind", "")
+    _world._apply_activity_animation(c)
+    _check("milking over: idle", doll.animation, &"east_idle")
+    c.free()
+    cow.free()
     _world._npc_sheets.clear()
     _done()
 

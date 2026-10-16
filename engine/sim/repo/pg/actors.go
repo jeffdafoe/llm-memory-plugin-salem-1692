@@ -117,7 +117,8 @@ SELECT
     town_repair_object_id,
     town_repair_bounty,
     town_repair_started_at,
-    town_repair_until
+    town_repair_until,
+    livestock_yield
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -160,7 +161,8 @@ INSERT INTO actor (
     snapshot_gen, move_destination,
     production_item, production_batch_qty, production_remaining_seconds,
     estate_rate_assessed_at,
-    town_repair_object_id, town_repair_bounty, town_repair_started_at, town_repair_until
+    town_repair_object_id, town_repair_bounty, town_repair_started_at, town_repair_until,
+    livestock_yield
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -173,7 +175,8 @@ INSERT INTO actor (
     $23, $24,
     $25, $26, $27,
     $28,
-    $29, $30, $31, $32
+    $29, $30, $31, $32,
+    $33
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -206,7 +209,8 @@ ON CONFLICT (id) DO UPDATE SET
     town_repair_object_id  = EXCLUDED.town_repair_object_id,
     town_repair_bounty     = EXCLUDED.town_repair_bounty,
     town_repair_started_at = EXCLUDED.town_repair_started_at,
-    town_repair_until      = EXCLUDED.town_repair_until`
+    town_repair_until      = EXCLUDED.town_repair_until,
+    livestock_yield        = EXCLUDED.livestock_yield`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -552,6 +556,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			townRepairBounty     int
 			townRepairStartedAt  *time.Time
 			townRepairUntil      *time.Time
+			livestockYield       []byte
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -566,6 +571,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&isAdmin, &moveDestination,
 			&productionItem, &productionBatchQty, &productionRemaining,
 			&townRepairObjectID, &townRepairBounty, &townRepairStartedAt, &townRepairUntil,
+			&livestockYield,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -605,8 +611,17 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			roomID = sim.RoomID(*insideRoomID)
 		}
 
+		yield, err := decodeLivestockYield(livestockYield)
+		if err != nil {
+			// Same posture as move_destination: a bad blob costs this animal its
+			// milk until an operator re-sets it, never the world load.
+			log.Printf("pg actors LoadAll: actor %s: dropping malformed livestock_yield: %v", id, err)
+			yield = nil
+		}
+
 		a := &sim.Actor{
 			ID:                   sim.ActorID(id),
+			Yield:                yield,
 			DisplayName:          displayName,
 			Kind:                 sim.ClassifyActorKind(deref(loginUsername), deref(llmMemoryAgent)),
 			Pos:                  sim.TilePos{X: currentX, Y: currentY},
@@ -1593,6 +1608,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			townRepairBountyArg(a.SourceActivity),        // $30 town_repair_bounty
 			townRepairStartedAtArg(a.SourceActivity),     // $31 town_repair_started_at
 			townRepairUntilArg(a.SourceActivity),         // $32 town_repair_until
+			encodeLivestockYield(a.Yield),                // $33 livestock_yield (LLM-797)
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

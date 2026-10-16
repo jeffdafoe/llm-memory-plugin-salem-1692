@@ -411,6 +411,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/wake", s.requireAuth(s.handlePCWake))
 	mux.HandleFunc("POST /api/village/pc/attend", s.requireAuth(s.handlePCAttend)) // LLM-466: candle-prompt ack
 	mux.HandleFunc("POST /api/village/pc/gather", s.requireAuth(s.handlePCGather)) // ZBBS-WORK-328
+	mux.HandleFunc("POST /api/village/pc/feed", s.requireAuth(s.handlePCFeed))     // LLM-797
 	// The town's repair work for players (LLM-690) — see pc_repair.go.
 	mux.HandleFunc("GET /api/village/pc/repair/offer", s.requireAuth(s.handlePCRepairOffer))
 	mux.HandleFunc("POST /api/village/pc/repair/start", s.requireAuth(s.handlePCRepairStart))
@@ -665,6 +666,8 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			SourceActivityKind:     saKind,
 			SourceActivityLabel:    saLabel,
 			SourceActivityObjectID: saObject,
+			SourceActivityAnimalID: snapshotSourceActivityAnimal(a),
+			Livestock:              livestockDTO(a),
 			SourceActivityBeat:     saBeat,
 			SourceActivityTarget:   saTarget,
 		})
@@ -691,6 +694,23 @@ func snapshotSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) (kind, lab
 		label = sourceActivityLabel(snap, a.SourceActivityObjectID)
 	}
 	return kind, label, objectID
+}
+
+// snapshotSourceActivityAnimal is the animal a rendered milking window draws
+// from (LLM-797), "" otherwise.
+func snapshotSourceActivityAnimal(a *sim.ActorSnapshot) string {
+	if !renderedSourceActivityKind(a.SourceActivityKind) {
+		return ""
+	}
+	return string(a.SourceActivityAnimalID)
+}
+
+// livestockDTO projects a milking animal's yield for the client (LLM-797).
+func livestockDTO(a *sim.ActorSnapshot) *LivestockDTO {
+	if a.Yield == nil {
+		return nil
+	}
+	return &LivestockDTO{Item: string(a.Yield.Item()), Feed: string(sim.LivestockFeedItem)}
 }
 
 // sourceActivityLabel resolves an in-flight source-activity object's display

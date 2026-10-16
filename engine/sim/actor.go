@@ -1357,6 +1357,21 @@ type Actor struct {
 	// time, so a lingering id is harmless.
 	GatherTargetObjectID VillageObjectID
 
+	// Yield is the gather row a milking animal carries (LLM-797) — a cow is a
+	// berry bush that walks. nil for everyone else. Checkpointed
+	// (actor.livestock_yield).
+	Yield *LivestockYield
+
+	// HerdTargetID is the animal this actor walked over to milk (stamped by
+	// move_to and by a milking start), so the animal waits for her and a later
+	// gather prefers it. Cleared by committing any move, like
+	// GatherTargetObjectID. Transient.
+	HerdTargetID ActorID
+	// HerdHoldUntil bounds how long the animal waits once this actor has
+	// arrived beside her (handleHerdTargetOnArrival, HerdArrivalHold).
+	// Transient.
+	HerdHoldUntil time.Time
+
 	// ProductionActivity is the actor's ONE in-flight production cycle
 	// (LLM-319): a `produce` call consumed the recipe inputs and opened this
 	// window; the batch lands when the remaining work reaches zero. Progress
@@ -1498,6 +1513,7 @@ func CloneActor(a *Actor) *Actor {
 	// would land in the live actor while the world was reading him.
 	cp.ScheduleStartMin = copyIntPtr(a.ScheduleStartMin)
 	cp.ScheduleEndMin = copyIntPtr(a.ScheduleEndMin)
+	cp.Yield = cloneLivestockYield(a.Yield)
 
 	if a.Needs != nil {
 		cp.Needs = make(map[NeedKey]int, len(a.Needs))
@@ -1901,6 +1917,16 @@ type ActorSnapshot struct {
 	// CurrentLoiterObjectID).
 	GatherTargetObjectID VillageObjectID
 
+	// Yield / HerdTargetID mirror the live actor's (LLM-797): the animal's gather
+	// row (a deep copy) for the herd and at-animal cues, and the walker's herd
+	// target so the cue prefers the animal she walked to, like the command does.
+	Yield        *LivestockYield
+	HerdTargetID ActorID
+
+	// SourceActivityAnimalID is the animal a milking window draws from
+	// (SourceActivity.AnimalID); "" for every other kind.
+	SourceActivityAnimalID ActorID
+
 	// SourceActivityKind / SourceActivityObjectID / SourceActivityAttribute are
 	// the read-path projection of an in-flight timed eat/drink/harvest at a
 	// source (Actor.SourceActivity, LLM-54). Kind == "" when the actor is not
@@ -2118,6 +2144,7 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 		return nil
 	}
 	cp := *s
+	cp.Yield = cloneLivestockYield(s.Yield)
 	if s.Needs != nil {
 		cp.Needs = make(map[NeedKey]int, len(s.Needs))
 		for k, v := range s.Needs {

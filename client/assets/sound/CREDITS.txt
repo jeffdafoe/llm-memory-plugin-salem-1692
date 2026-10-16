@@ -16,3 +16,4 @@ Freesound (freesound.org), CC0, cut from the HQ previews with ffmpeg:
   thunder_far.ogg   — 744722 "Thunder 07" by Emulius. Lead silence trimmed, tail faded.
   saw_0-5.ogg       — 760611 "Hand saw" by SoundsLikeYukon. Six single strokes (3.0-4.5 s, 7.4-8.9 s), mono.
   knock.ogg         — 629987 "Knocking on Wood Door (1)" by Flem0527. Three knocks, trimmed to the knock, mono (LLM-20).
+  cow_moo.ogg       — 700379 "Moo 2 - Moo Moo the Cow" by manofham. One moo, 0-2.65 s, 3 dB down, faded, mono (LLM-797).
