@@ -25,6 +25,7 @@ const TESTS := [
     "_test_older_poll_does_not_undo_the_answer",
     "_test_ui_panel_covers_the_popover",
     "_test_own_duck_quacks_on_arrival",
+    "_test_own_duck_quacks_when_you_set_off",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
 ]
@@ -273,10 +274,40 @@ func _test_own_duck_quacks_on_arrival() -> void:
     duck.remove_meta("walking")
     q._process(0.1)
     _check("comes to rest beside: one quack", log.size(), 1)
-    q._process(5.0)
-    _check("not again at once", log.size(), 1)
     q._process(100.0)
-    _check("again after the gap", log.size(), 2)
+    _check("standing together: no more quacks (LLM-804, no timer)", log.size(), 1)
+    q.free()
+    w.free()
+    _done()
+
+
+## LLM-804: the duck quacks when the player sets off with it beside them, once
+## per set-off, never twice inside MIN_GAP, and not when it is out of reach.
+func _test_own_duck_quacks_when_you_set_off() -> void:
+    var w := _world()
+    var pc := _actor(w, "pc", Vector2(1000, 1000))
+    var duck := _actor(w, "fam-1", Vector2(1040, 1000), "pc")
+    var log: Array = []
+    var q := _quacker(w, "pc", log)
+    q._process(0.1)
+    _check("arrival quack", log.size(), 1)
+    q._process(5.0)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    _check("sets off: a quack", log.size(), 2)
+    q._process(0.5)
+    _check("still walking: no more", log.size(), 2)
+    pc.remove_meta("walking")
+    q._process(0.5)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    _check("sets off again within MIN_GAP: quiet", log.size(), 2)
+    pc.remove_meta("walking")
+    q._process(5.0)
+    duck.position = Vector2(2000, 1000)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    _check("sets off with the duck far behind: quiet", log.size(), 2)
     q.free()
     w.free()
     _done()
