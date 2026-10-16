@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -111,7 +112,9 @@ func noteKitLack(w *World, a *Actor) string {
 		pronoun = "them"
 	}
 	seller := DistributorSteerLabel(w.VillageObjects, w.Actors)
-	seller = strings.ToUpper(seller[:1]) + seller[1:]
+	if r, size := utf8.DecodeRuneInString(seller); r != utf8.RuneError {
+		seller = string(unicode.ToUpper(r)) + seller[size:]
+	}
 	return fmt.Sprintf("You need %s to leave a note. %s has %s for sale.", strings.Join(missing, " and "), seller, pronoun)
 }
 
