@@ -1918,6 +1918,12 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		b.WriteString("\n")
 	}
 
+	// A player's camp in view (LLM-798), part of the ambient scene.
+	for _, c := range s.Camps {
+		b.WriteString(campSightProse(c))
+		b.WriteString("\n")
+	}
+
 	// ZBBS-WORK-374: the LLM-authored literary atmosphere line (ZBBS-WORK-327,
 	// "The night abideth over the village in a sober hush…") is NOT rendered into
 	// the decision prompt — ~45 words of restart-lossy scene prose irrelevant to
@@ -5157,4 +5163,22 @@ func capBytes(s string, maxBytes int) (string, bool) {
 		n = i
 	}
 	return s[:n] + marker, true
+}
+
+// campSightProse is the scene line for a player's camp in an outdoor actor's
+// view (LLM-798): whose tent, and its fire as you would see it — burning, burning
+// low, or a cold ring.
+func campSightProse(c CampSight) string {
+	owner := sim.Possessive(sanitizeInline(c.OwnerLabel))
+	if owner == "" {
+		owner = "someone's"
+	}
+	owner = strings.ToUpper(owner[:1]) + owner[1:]
+	switch c.Fire {
+	case sim.CampFireStateBurning:
+		return owner + " tent is pitched nearby, a fire burning before it."
+	case sim.CampFireStateDying:
+		return owner + " tent is pitched nearby, the fire before it burning low."
+	}
+	return owner + " tent is pitched nearby, its fire ring cold."
 }

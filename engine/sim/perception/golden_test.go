@@ -2102,6 +2102,22 @@ var perceptionScenarios = []perceptionScenario{
 		build: turnedAwayOutdoorsAtShutTavern,
 	},
 	{
+		name: "outdoors_near_a_pc_camp_fire_lit",
+		summary: "LLM-798: a villager outdoors three tiles from a player's pitched tent, its camp fire burning. She knows " +
+			"the player, so '## Around you' carries the scene line 'Jefferey's tent is pitched nearby, a fire burning " +
+			"before it.' after the weather — a camp is part of the place, not a stat. Dropping buildCampSightings, or " +
+			"reading the fire off anything but its lit clock and sprite state, changes the line in the diff.",
+		build: outdoorsNearPCCampFireLit,
+	},
+	{
+		name: "outdoors_near_a_strangers_cold_camp",
+		summary: "LLM-798: the same villager beside a camp whose owner she has never met and whose fire has burned to " +
+			"ashes: 'A stranger's tent is pitched nearby, its fire ring cold.' A second tent twelve tiles off is out of " +
+			"sight (campSightTiles is 8) and renders nothing — the pair pins both the name-only-if-known rule and the " +
+			"sight radius.",
+		build: outdoorsNearStrangersColdCamp,
+	},
+	{
 		name: "turned_away_at_tavern_before_opening",
 		summary: "LLM-771, the live trigger (2026-10-14): Constable Gideon Marsh walked his round to the Tavern " +
 			"at midday, read 'The Tavern is shut — no one is tending it.', asked around and brought John Ellis before the " +
@@ -20327,4 +20343,98 @@ func dairyKeeperCowsWantMilking() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 
 func dairyKeeperBesideFullCow() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return dairyScenario(true)
+}
+
+// campSceneSnapshot is a midday village with Hannah Boggs outdoors at (100,130)
+// and Jefferey's pitched tent three tiles east, its fire `fire` (a state) lit
+// until `litUntil`. `knows` makes her acquainted with him. LLM-798.
+func campSceneSnapshot(knows bool, fire string, litUntil time.Time, extraTentAt *sim.TilePos) (*sim.Snapshot, sim.ActorID) {
+	const (
+		hannahID   = sim.ActorID("hannah")
+		jeffereyID = sim.ActorID("jefferey")
+		strangerID = sim.ActorID("drifter")
+	)
+	published := time.Date(2026, 10, 16, 16, 0, 0, 0, time.UTC)
+	midday := 720
+	at := func(t sim.TilePos) sim.WorldPos {
+		return sim.WorldPos{X: float64(t.X-sim.PadX) * sim.TileSize, Y: float64(t.Y-sim.PadY) * sim.TileSize}
+	}
+	hannah := &sim.ActorSnapshot{
+		Kind:        sim.KindNPCShared,
+		DisplayName: "Hannah Boggs",
+		State:       sim.StateIdle,
+		Pos:         sim.TilePos{X: 100, Y: 130},
+		Needs:       map[sim.NeedKey]int{},
+	}
+	if knows {
+		hannah.Acquaintances = map[string]sim.Acquaintance{"Jefferey": {}}
+	}
+	jefferey := &sim.ActorSnapshot{
+		Kind: sim.KindPC, DisplayName: "Jefferey", State: sim.StateIdle,
+		Pos: sim.TilePos{X: 110, Y: 140}, HomeStructureID: "tent-j", Needs: map[sim.NeedKey]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &midday,
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, jeffereyID: jefferey},
+		Structures:       map[sim.StructureID]*sim.Structure{"tent-j": plainStructure("tent-j", "Jefferey's Tent")},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"tent-j": {ID: "tent-j", AssetID: sim.TentAssetID, CurrentState: sim.TentStateClosed,
+				OwnerActorID: jeffereyID, EntryPolicy: sim.EntryPolicyOwner, Pos: at(sim.TilePos{X: 103, Y: 130})},
+			"fire-j": {ID: "fire-j", AssetID: sim.CampFireAssetID, CurrentState: fire,
+				OwnerActorID: jeffereyID, HearthLitUntil: litUntil, Pos: at(sim.TilePos{X: 105, Y: 132})},
+		},
+		Assets: map[sim.AssetID]*sim.Asset{
+			sim.TentAssetID:     {ID: sim.TentAssetID, Name: "Tent", Category: "structure", FootprintLeft: 1, FootprintRight: 2, FootprintTop: 3},
+			sim.CampFireAssetID: {ID: sim.CampFireAssetID, Name: "Camp Fire", Category: "camp"},
+		},
+	}
+	if extraTentAt != nil {
+		snap.Actors[strangerID] = &sim.ActorSnapshot{Kind: sim.KindPC, DisplayName: "Drifter", State: sim.StateIdle,
+			Pos: *extraTentAt, Needs: map[sim.NeedKey]int{}}
+		snap.VillageObjects["tent-d"] = &sim.VillageObject{ID: "tent-d", AssetID: sim.TentAssetID,
+			CurrentState: sim.TentStateClosed, OwnerActorID: strangerID, Pos: at(*extraTentAt)}
+		snap.Structures["tent-d"] = plainStructure("tent-d", "Drifter's Tent")
+	}
+	return snap, hannahID
+}
+
+func outdoorsNearPCCampFireLit() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id := campSceneSnapshot(true, sim.CampFireStateBurning, time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC), nil)
+	return snap, id, nil
+}
+
+func outdoorsNearStrangersColdCamp() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	far := sim.TilePos{X: 112, Y: 130}
+	snap, id := campSceneSnapshot(false, sim.CampFireStateAshes, time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC), &far)
+	return snap, id, nil
+}
+
+// TestGoldensCampLineIffCampInSight — LLM-798: an outdoor actor is told of every
+// other player's standing tent within campSightTiles (at most
+// maxCampSightings), and of no other. Counted from the snapshot itself, not the
+// payload, so it checks the build as well as the render.
+func TestGoldensCampLineIffCampInSight(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		snap, actorID, _ := sc.build()
+		a := snap.Actors[actorID]
+		want := 0
+		if a != nil && a.InsideStructureID == "" {
+			for _, o := range snap.VillageObjects {
+				if sim.IsTent(o) && o.OwnerActorID != "" && o.OwnerActorID != actorID &&
+					o.CurrentState != sim.TentStatePacked && snap.Actors[o.OwnerActorID] != nil &&
+					a.Pos.Chebyshev(o.Pos.Tile()) <= campSightTiles {
+					want++
+				}
+			}
+		}
+		if want > maxCampSightings {
+			want = maxCampSightings
+		}
+		prompt := renderScenario(sc)
+		if got := strings.Count(prompt, "tent is pitched nearby"); got != want {
+			t.Errorf("%s: %d camp lines, want %d", sc.name, got, want)
+		}
+	}
 }

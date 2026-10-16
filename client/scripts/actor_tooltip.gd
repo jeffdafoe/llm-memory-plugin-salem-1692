@@ -175,13 +175,14 @@ func _show_panel_for(node: Node2D, screen_pos: Vector2) -> void:
         _activity_label.visible = false
 
     # NPC vs PC: NPCs carry a non-empty llm_memory_agent meta. PCs are
-    # human players and have no agent link. The role/work/home lines
-    # are NPC-specific — for PCs we show the name alone.
+    # human players and have no agent link. The role and work lines
+    # are NPC-specific; the home line shows for both (a player's, LLM-798: their tent).
     var agent: String = str(node.get_meta("llm_memory_agent", ""))
     if agent == "":
         _role_label.visible = false
         _work_label.visible = false
-        _home_label.visible = false
+        # A player's home is shown when it is their tent (LLM-798).
+        _set_home_line(str(node.get_meta("home_structure_id", "")))
     else:
         var attrs = node.get_meta("attributes", [])
         var role: String = _format_role(attrs)
@@ -199,13 +200,7 @@ func _show_panel_for(node: Node2D, screen_pos: Vector2) -> void:
         else:
             _work_label.visible = false
 
-        var home_id: String = str(node.get_meta("home_structure_id", ""))
-        var home_name: String = _structure_name(home_id)
-        if home_name != "":
-            _home_label.text = "Lives at the " + home_name
-            _home_label.visible = true
-        else:
-            _home_label.visible = false
+        _set_home_line(str(node.get_meta("home_structure_id", "")))
 
     _shown_node = node
     _panel.visible = true
@@ -299,6 +294,19 @@ func _structure_name(structure_id: String) -> String:
     if node == null:
         return ""
     return str(node.get_meta("display_name", ""))
+
+## The tooltip's home line for home `home_id`: "Lives in a tent" for a
+## player's pitched tent (LLM-798), "Lives at the <name>" for a named home,
+## hidden otherwise.
+func _set_home_line(home_id: String) -> void:
+    var line := ""
+    var home = world.placed_objects.get(home_id, null) if world != null and home_id != "" else null
+    if home != null and str(home.get_meta("asset_id", "")) == Camp.TENT_ASSET_ID:
+        line = "Lives in a tent"
+    elif _structure_name(home_id) != "":
+        line = "Lives at the " + _structure_name(home_id)
+    _home_label.text = line
+    _home_label.visible = line != ""
 
 ## Hit-test placed_npcs (which holds both NPCs and PCs — see
 ## apply_pc_appeared in world.gd). Returns the closest container whose

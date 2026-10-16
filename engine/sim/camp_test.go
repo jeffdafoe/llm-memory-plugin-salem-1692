@@ -663,3 +663,29 @@ func TestCampItemActions_OnlyTheTentPitches(t *testing.T) {
 		t.Errorf("ItemActions(lean_to) = %v, want none", got)
 	}
 }
+
+// Pitching and striking tell every client the player's home changed (the
+// npc_home_structure_changed frame the tooltip reads, LLM-798 slice 3): the
+// tent's id when it stands, "" when it is struck.
+func TestCampWork_AnnouncesHome(t *testing.T) {
+	w := buildCampWorld(t, nil, nil)
+	var homes []string
+	mustSend(t, w, func(world *sim.World) {
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if e, ok := evt.(*sim.NPCHomeStructureChanged); ok && e.ActorID == "pc" {
+				homes = append(homes, e.StructureID)
+			}
+		}))
+	})
+	now := pitchAll(t, w)
+	tentID := string(readCamp(t, w).TentID)
+	if _, err := w.Send(sim.StrikeTent("pc", now)); err != nil {
+		t.Fatalf("StrikeTent: %v", err)
+	}
+	landBeats(t, w, now, 4)
+	var got []string
+	mustSend(t, w, func(*sim.World) { got = append(got, homes...) })
+	if len(got) != 2 || got[0] != tentID || got[1] != "" {
+		t.Errorf("home frames = %q, want [%q \"\"]", got, tentID)
+	}
+}
