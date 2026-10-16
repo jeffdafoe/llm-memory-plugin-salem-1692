@@ -98,3 +98,26 @@ func TestAgentsFromSnapshot_SourceActivity(t *testing.T) {
 		t.Errorf("idle actor DTO = (%q, %q, %q), want empty", d.SourceActivityKind, d.SourceActivityLabel, d.SourceActivityObjectID)
 	}
 }
+
+// LLM-798: a camp beat reaches the client with its piece and where it stands,
+// a mid-work completion sends nothing, and the last one clears the actor.
+func TestTranslateCampBeat(t *testing.T) {
+	target := sim.WorldPos{X: 96, Y: 160}
+	frame, ok := TranslateEvent(&sim.SourceActivityStarted{
+		ActorID: "pc", ObjectID: "tent", Kind: sim.SourceActivityPitch, Beat: sim.CampBeatFire, Target: &target,
+	})
+	if !ok {
+		t.Fatal("a pitch beat was not sent")
+	}
+	dto, isDTO := frame.Data.(sourceActivityChangedWireDTO)
+	if !isDTO || dto.Kind != "pitch" || dto.Beat != "fire" || dto.Target == nil || dto.Target.X != 96 || dto.Target.Y != 160 {
+		t.Fatalf("frame = %+v, want kind pitch, beat fire, target 96,160", frame.Data)
+	}
+	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "pc", Kind: sim.SourceActivityStrike, Continues: true}); ok {
+		t.Error("a mid-strike completion was sent, want none (the next beat follows at once)")
+	}
+	frame, ok = TranslateEvent(&sim.SourceActivityCompleted{ActorID: "pc", Kind: sim.SourceActivityStrike})
+	if dto, _ := frame.Data.(sourceActivityChangedWireDTO); !ok || dto.Kind != "" {
+		t.Errorf("last strike completion = %+v (sent %v), want a clear", frame.Data, ok)
+	}
+}
