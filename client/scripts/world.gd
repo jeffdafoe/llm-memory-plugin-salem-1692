@@ -33,6 +33,10 @@ const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
 const DoorPanelScript = preload("res://scripts/door_panel.gd")
 
+## When the player last knocked at each door (sid -> Time.get_ticks_msec()), set
+## by main.gd, so an unanswered knock's line waits from the knock (LLM-805).
+var knocked_at: Dictionary = {}
+
 const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
 var terrain_renderer: Node2D = null
@@ -3217,7 +3221,7 @@ func apply_room_event(data: Dictionary) -> void:
     var actor_name: String = str(data.get("actor_name", ""))
     if actor_name == "" and not private_event:
         return
-    var wait := room_event_delay(data)
+    var wait := room_event_delay(data, knocked_at, Time.get_ticks_msec())
     if wait > 0.0:
         get_tree().create_timer(wait).timeout.connect(func(): room_event.emit(data))
         return
@@ -3225,11 +3229,15 @@ func apply_room_event(data: Dictionary) -> void:
 
 
 ## Seconds to hold a room_event before it is shown. An unanswered knock
-## (LLM-805) waits until the knock has sounded and nobody came, so "No one
-## answers" does not float over the house while the knuckles are still on the
-## door; everything else shows at once.
-static func room_event_delay(data: Dictionary) -> float:
-    return DoorPanelScript.ANSWER_WAIT if str(data.get("kind", "")) == "knock_unanswered" else 0.0
+## (LLM-805) is held until ANSWER_WAIT after the player's own knock at that door
+## (knocked_at), so "No one answers" does not float over the house while the
+## knuckles are still on the door. A knock this client did not sound, and every
+## other event, shows at once.
+static func room_event_delay(data: Dictionary, knocks: Dictionary, now_msec: int) -> float:
+    var sid := str(data.get("structure_id", ""))
+    if str(data.get("kind", "")) != "knock_unanswered" or not knocks.has(sid):
+        return 0.0
+    return DoorPanelScript.answer_wait_left(int(knocks[sid]), now_msec)
 
 
 ## Public — spawn a SpeechBubble at the given structure's container so

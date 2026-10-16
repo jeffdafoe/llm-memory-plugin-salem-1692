@@ -25,6 +25,7 @@ const TESTS := [
     "_test_no_answer_without_anyone_offers_no_note",
     "_test_no_answer_without_the_kit_says_what_is_needed",
     "_test_no_answer_waits_for_the_knock",
+    "_test_gone_while_waiting_is_not_at_the_door",
 ]
 
 var _failures := 0
@@ -252,7 +253,30 @@ func _test_no_answer_waits_for_the_knock() -> void:
     _check("half a second on", is_equal_approx(P.answer_wait_left(1000, 1500), P.ANSWER_WAIT - 0.5), true)
     _check("a slow answer: nothing left to wait", P.answer_wait_left(1000, 9000), 0.0)
     var W = load(WORLD_PATH)
-    _check("knock_unanswered is held", W.room_event_delay({"kind": "knock_unanswered"}), P.ANSWER_WAIT)
-    _check("a note pinned is not", W.room_event_delay({"kind": "note_left"}), 0.0)
-    _check("an ordinary event is not", W.room_event_delay({"kind": "act"}), 0.0)
+    var knocks := {"walker-home": 1000}
+    var unanswered := {"kind": "knock_unanswered", "structure_id": "walker-home"}
+    _check("the line, as the knock lands: the whole wait", W.room_event_delay(unanswered, knocks, 1000), P.ANSWER_WAIT)
+    _check("the line, 1.5 s after the knock: only what is left", is_equal_approx(W.room_event_delay(unanswered, knocks, 2500), P.ANSWER_WAIT - 1.5), true)
+    _check("a knock this client did not sound: at once", W.room_event_delay({"kind": "knock_unanswered", "structure_id": "other-home"}, knocks, 1000), 0.0)
+    _check("a note pinned is not held", W.room_event_delay({"kind": "note_left", "structure_id": "walker-home"}, knocks, 1000), 0.0)
+    _check("an ordinary event is not held", W.room_event_delay({"kind": "act"}, knocks, 1000), 0.0)
+    _done()
+
+
+## LLM-805: after the wait, a player or house that has gone (freed) is "not at
+## the door", never an error.
+func _test_gone_while_waiting_is_not_at_the_door() -> void:
+    var P = load(PANEL_PATH)
+    var pc := Node2D.new()
+    var house := Node2D.new()
+    root.add_child(pc)
+    root.add_child(house)
+    var npcs := {"pc": pc}
+    var objects := {"walker-home": house}
+    _check("no such player", P.player_at_door({}, objects, "pc", "walker-home"), false)
+    _check("no such house", P.player_at_door(npcs, {}, "pc", "walker-home"), false)
+    house.free()
+    _check("the house freed while waiting", P.player_at_door(npcs, objects, "pc", "walker-home"), false)
+    pc.free()
+    _check("the player freed while waiting", P.player_at_door(npcs, objects, "pc", "walker-home"), false)
     _done()

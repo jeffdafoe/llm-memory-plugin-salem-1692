@@ -153,6 +153,18 @@ static func answer_wait_left(knocked_msec: int, now_msec: int) -> float:
     return maxf(0.0, ANSWER_WAIT - (now_msec - knocked_msec) / 1000.0)
 
 
+## Whether the player (pc_id in placed_npcs) still stands at the door of sid (in
+## placed_objects). Either may have gone (freed) while a knock's answer waited;
+## that is "no", checked before at_door, whose typed parameters a freed node
+## must not reach.
+static func player_at_door(placed_npcs: Dictionary, placed_objects: Dictionary, pc_id: String, sid: String) -> bool:
+    var person = placed_npcs.get(pc_id)
+    var house = placed_objects.get(sid)
+    if not is_instance_valid(person) or not is_instance_valid(house):
+        return false
+    return at_door(person, house)
+
+
 ## Ask at the door of `sid`, named `title` (the house's name). Opening again
 ## while open just retitles it.
 func open(sid: String, title: String) -> void:

@@ -1730,6 +1730,8 @@ func _on_door_knocked(sid: String) -> void:
     _knock_structure_id = sid
     _knock_msec = Time.get_ticks_msec()
     _knock_seq += 1
+    if world != null:
+        world.knocked_at[sid] = _knock_msec
     var err := _pc_http_knock.request(Auth.api_base + "/api/village/pc/knock",
         Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"structure_id": sid}))
     if err != OK:
@@ -1762,7 +1764,7 @@ func _on_knock_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
         await get_tree().create_timer(wait).timeout
     if seq != _knock_seq or door_panel_layer == null or world == null:
         return
-    if not DoorPanelScript.at_door(world.placed_npcs.get(_pc_actor_id, null), world.placed_objects.get(sid, null)):
+    if not DoorPanelScript.player_at_door(world.placed_npcs, world.placed_objects, _pc_actor_id, sid):
         return
     door_panel_layer.open_unanswered(sid, _place_title(sid), note_for, note_lack)
 
