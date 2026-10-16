@@ -57,6 +57,7 @@ func _process(delta: float) -> void:
         if _watch_in < 0.0 and _arrived and is_beside(duck.position, world.placed_npcs[pc_actor_id].position):
             _since_quack = 0.0
             quacked.emit("watch")
+            print("[familiar_quack] watch")
             Sound.play("quack_watch")
     var duck_id := str(duck.get_meta("npc_id", ""))
     if duck_id != _duck_id:
@@ -93,6 +94,7 @@ func _quack() -> void:
         return
     _since_quack = 0.0
     quacked.emit("quack")
+    print("[familiar_quack] quack")
     Sound.play("quack")
 
 

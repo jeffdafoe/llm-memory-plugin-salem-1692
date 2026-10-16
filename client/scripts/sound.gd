@@ -55,11 +55,11 @@ const SOUNDS := {
     # The player's own duck (LLM-800, familiar_quack.gd). One of three each time:
     # the quack, the same slowed to 0.85, or two in a row (Jeff). quack_alarm is
     # the irritated quack, kept for the duck's warning (not played yet).
-    "quack": {"files": ["duck_quack.ogg", "duck_quack_slow.ogg", "duck_quack_twice.ogg"], "db": -8.0, "pitch": 0.03},
+    "quack": {"files": ["duck_quack.ogg", "duck_quack_slow.ogg", "duck_quack_twice.ogg"], "db": -16.0, "pitch": 0.03},
     # Two quacks in a row: the duck keeping watch as the player rests or sleeps
     # (LLM-804).
-    "quack_watch": {"files": ["duck_quack_twice.ogg"], "db": -8.0, "pitch": 0.03},
-    "quack_alarm": {"files": ["duck_alarm_1.ogg", "duck_alarm_2.ogg"], "db": -8.0, "pitch": 0.04},
+    "quack_watch": {"files": ["duck_quack_twice.ogg"], "db": -16.0, "pitch": 0.03},
+    "quack_alarm": {"files": ["duck_alarm_1.ogg", "duck_alarm_2.ogg"], "db": -16.0, "pitch": 0.04},
     # A cow fed sage (LLM-797), heard from where she stands.
     "cow_moo": {"files": ["cow_moo.ogg"], "db": -16.0, "pitch": 0.06, "reach": 16.0},
     # A player in an outhouse (LLM-806): its door, and what goes on inside.

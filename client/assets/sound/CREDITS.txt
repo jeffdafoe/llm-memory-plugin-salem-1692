@@ -18,6 +18,7 @@ Freesound (freesound.org), CC0, cut from the HQ previews with ffmpeg:
   knock.ogg         — 629987 "Knocking on Wood Door (1)" by Flem0527. Three knocks, trimmed to the knock, mono (LLM-20).
   duck_quack.ogg    — 418509 "single quack from a duck" by Mikes-MultiMedia. Trimmed to the quack (0.24 s), tail faded, mono (LLM-800).
       duck_quack_slow: the same at 0.85 speed. duck_quack_twice: the quack twice, 0.09 s apart.
+      All five duck files are normalized to about -1 dB peak (LLM-808; the recordings were 22-25 dB down).
   duck_alarm_1-2.ogg — 456770 "Mallard Duck Quack Flying Away" by WavJunction.com. Two single quacks (7.33-7.60 s, 8.30-8.57 s), mono (LLM-800).
   cow_moo.ogg       — 700379 "Moo 2 - Moo Moo the Cow" by manofham. One moo, 0-2.65 s, 3 dB down, faded, mono (LLM-797).
   fart_1.ogg        — 840755 "Fart #005" by bassimat. Silence trimmed both ends, mono (LLM-806).
