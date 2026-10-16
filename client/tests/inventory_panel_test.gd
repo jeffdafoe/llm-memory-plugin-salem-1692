@@ -30,6 +30,7 @@ const TESTS := [
     "_test_agents_load_tags_the_own_duck",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
+    "_test_follow_reach_boundary",
     "_test_tent_rows",
 ]
 
@@ -466,6 +467,39 @@ func _test_is_beside() -> void:
     var Q = load(QUACK_PATH)
     _check("3 tiles: beside", Q.is_beside(Vector2(0, 0), Vector2(96, 96)), true)
     _check("4 tiles: not", Q.is_beside(Vector2(0, 0), Vector2(128, 0)), false)
+    _done()
+
+
+## LLM-813: the follow cut-off sits between 2 and 3 tiles. The engine potters the
+## duck on the ring exactly 2 out from a standing owner (FamiliarFollowRadius), so
+## 2 tiles must not count as "past its reach" and 3 must — on either axis and
+## the diagonal, statically and through _process (stop at 2: a potter, quiet;
+## stop at 3: a follow, a quack).
+func _test_follow_reach_boundary() -> void:
+    var Q = load(QUACK_PATH)
+    var o := Vector2(1000, 1000)
+    for step in [Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1), Vector2(1, 1), Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1)]:
+        _check("2 tiles %s: within reach" % step, Q.beyond_follow_reach(o, o + step * 64.0), false)
+        _check("3 tiles %s: past reach" % step, Q.beyond_follow_reach(o, o + step * 96.0), true)
+    for c in [[2, 0], [3, 1]]:
+        var w := _world()
+        var pc := _actor(w, "pc", Vector2(1000, 1000))
+        var duck := _actor(w, "fam-1", Vector2(1032, 1000), "pc")
+        var log: Array = []
+        var q := _quacker(w, "pc", log)
+        q._process(0.1)
+        q._process(5.0)
+        log.clear()
+        pc.set_meta("walking", {})
+        q._process(0.1)
+        pc.remove_meta("walking")
+        pc.position = duck.position + Vector2(int(c[0]) * 32.0, 0)
+        q._process(0.5)
+        duck.set_meta("walking", {})
+        q._process(0.1)
+        _check("stopped %d tiles from the duck, then it walks" % int(c[0]), log.size(), int(c[1]))
+        q.free()
+        w.free()
     _done()
 
 
