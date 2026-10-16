@@ -18368,6 +18368,8 @@ func TestSeekWorkDirectiveOnlyForWorklessWorker(t *testing.T) {
 		// the directory steps aside (hand_in_damaged_shop_offered_repair, absent).
 		"hand_hears_of_storm_damaged_shop":     true,
 		"hand_after_shop_mended_hears_nothing": true,
+		// The same workless Anne at home while another hand mends the store.
+		"hand_hears_nothing_of_shop_a_hand_is_mending": true,
 	}
 	for _, sc := range perceptionScenarios {
 		want := seekWorkScenarios[sc.name]

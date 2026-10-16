@@ -714,21 +714,30 @@ func RepairSiteViewAt(s *Snapshot, obj *VillageObject) *RepairSiteView {
 		Bounty:      bounty,
 		ChestCanPay: PublicWorksBountyOpen(s.Environment.TownChest, bounty, s.PublicWorksChestReserve),
 	}
-	// Whoever has the town's window on it — lowest id, as objectRepairer.
+	_, view.MenderName = SnapshotPublicWorksMender(s, site.ID, "")
+	return view
+}
+
+// SnapshotPublicWorksMender is objectRepairer over the snapshot: the actor with
+// a live town repair window on siteID, other than except (lowest id), and the
+// name to show for them — "", "" when nobody has one. The repair hover and the
+// town's-works cue both read it, so they name the same hand.
+func SnapshotPublicWorksMender(s *Snapshot, siteID VillageObjectID, except ActorID) (ActorID, string) {
 	var mender ActorID
+	var name string
 	for id, a := range s.Actors {
-		if a == nil || a.SourceActivityKind != SourceActivityRepair || !a.SourceActivityPublicWorks || a.SourceActivityObjectID != site.ID {
+		if id == except || a == nil || a.SourceActivityKind != SourceActivityRepair || !a.SourceActivityPublicWorks || a.SourceActivityObjectID != siteID {
 			continue
 		}
 		if mender == "" || id < mender {
 			mender = id
-			view.MenderName = a.DisplayName
-			if view.MenderName == "" {
-				view.MenderName = string(id)
+			name = a.DisplayName
+			if name == "" {
+				name = string(id)
 			}
 		}
 	}
-	return view
+	return mender, name
 }
 
 // PublicWorksMendVerb is what a hand does to a site of kind, third person —
