@@ -22,7 +22,7 @@ func init() {
 			build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return doorNoteScenario("inside") },
 		},
 		perceptionScenario{
-			name: "resident_at_own_door_finds_note",
+			name:    "resident_at_own_door_finds_note",
 			summary: "LLM-19: the same note; Silence stands outdoors at her own door, just come back. She finds it there.",
 			build:   func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) { return doorNoteScenario("at_door") },
 		},
