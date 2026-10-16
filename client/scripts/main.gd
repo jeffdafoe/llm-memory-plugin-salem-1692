@@ -179,9 +179,6 @@ var _pending_knock: bool = false
 # arrival. _pc_move_target is the structure the in-flight move request names.
 var _pending_knock_structure_id := ""
 var _pc_move_target := ""
-# The object the last walk was sent to ("" for a ground click): the arrival
-# thought opens the repair panel only for work the player walked to.
-var _walk_hit_id := ""
 var _pc_http_knock: HTTPRequest = null
 # A walk-out from a closed room (LLM-787): the room it leaves, and one that
 # waits for the move in flight to answer before it can be sent.
@@ -1329,7 +1326,6 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         # target or the pending knock of the walk still under way). A new walk
         # drops any knock still pending from the last one.
         _pc_move_target = move_target
-        _walk_hit_id = hit_id
         _pending_knock = false
         _pending_knock_structure_id = ""
     if err != OK:
@@ -1425,7 +1421,6 @@ func _leave_sent(sid: String, err: int) -> void:
         _pc_move_purpose = "leave"
         _leave_sid = sid
         _pc_move_target = ""
-        _walk_hit_id = ""
         _pending_knock = false
         _pending_knock_structure_id = ""
     elif err == ERR_BUSY:
@@ -1448,11 +1443,11 @@ func _reopen_room(sid: String) -> void:
         interior_panel_layer.open(sid)
 
 ## The arrival thought's repair offer (LLM-793): the panel opens only when the
-## walk was to that work. Work found near somewhere else the player went (a crate by the
-## stall they came to buy at) stays a floating thought; a click on it opens the
-## panel through the probe.
-func _on_repair_offered(o: Dictionary) -> void:
-    if RepairPanelScript.click_matches_offer(world, _walk_hit_id, o):
+## arrival's own walk (walked_to, from the engine) was to that work. Work found
+## near somewhere else the player went (a crate by the stall they came to buy
+## at) stays a floating thought; a click on it opens the panel through the probe.
+func _on_repair_offered(o: Dictionary, walked_to: String) -> void:
+    if RepairPanelScript.click_matches_offer(world, walked_to, o):
         repair_panel_layer.show_offer(o)
 
 ## Open the door popup for the pending knock when the character stands at that

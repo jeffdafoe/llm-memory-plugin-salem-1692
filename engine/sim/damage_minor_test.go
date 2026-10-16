@@ -370,6 +370,9 @@ func TestMinorWorkCrateFormAndNarration(t *testing.T) {
 	if got == nil || got.Offer == nil || got.Offer.Form != sim.MinorFormCrate || got.Offer.Bounty != 3 {
 		t.Fatalf("narration = %+v, want the crate offer for 3", got)
 	}
+	if got.WalkedTo != "" {
+		t.Errorf("walked to %q, want none — the arrival named no destination", got.WalkedTo)
+	}
 	if !strings.Contains(got.Text, "The lid of the crate has come loose") || !strings.Contains(got.Text, "3 coins") {
 		t.Errorf("narration text = %q", got.Text)
 	}

@@ -258,7 +258,8 @@ func TestEnterOrKnock_LeavesPriorHuddle(t *testing.T) {
 
 // TestEnterOrKnock_MarketStallIsAVisit: a market stall is owner-only and has a
 // door, but a stranger's click on it is a plain visit to its counter — no knock,
-// so no door popup; the keeper's huddle forms on arrival (LLM-384).
+// so no door popup. The arrival itself is covered end to end in
+// stall_click_realwalk_test.go.
 func TestEnterOrKnock_MarketStallIsAVisit(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()

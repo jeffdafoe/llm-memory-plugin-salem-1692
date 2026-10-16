@@ -734,9 +734,15 @@ func _test_click_matches_offer() -> void:
     _check("a fence diagonal to the break", PanelScript.click_matches_offer(w, "diag", fence_offer), false)
     _check("another asset nearby", PanelScript.click_matches_offer(w, "crate", fence_offer), false)
     _check("no offer", PanelScript.click_matches_offer(w, "mid", {}), false)
-    # The arrival thought opens the panel only for the walk's own object
-    # (main.gd _on_repair_offered): a walk to open ground names none.
+    # The arrival thought opens the panel only for its own walk's target
+    # (walked_to on the frame, main.gd _on_repair_offered, LLM-793): a walk to
+    # open ground names none, and a walk to the stall beside the crate is not
+    # a walk to the crate.
     _check("a walk to open ground", PanelScript.click_matches_offer(w, "", fence_offer), false)
+    _placed(w, "stall", "stall", Vector2(120, 80))
+    var crate_by_stall := {"object_id": "crate", "site_kind": "minor", "form": "crate"}
+    _check("a walk to the stall beside the crate", PanelScript.click_matches_offer(w, "stall", crate_by_stall), false)
+    _check("a walk to the crate", PanelScript.click_matches_offer(w, "crate", crate_by_stall), true)
     # Neighbour matching is for a fence break only: a crate's twin beside it
     # is other work.
     var crate_offer := {"object_id": "crate", "site_kind": "minor", "form": "crate"}

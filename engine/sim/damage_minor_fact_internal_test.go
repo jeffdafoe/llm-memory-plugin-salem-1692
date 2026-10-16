@@ -27,3 +27,23 @@ func TestMinorWorksFactCrateByLandmark(t *testing.T) {
 		t.Errorf("three crates: %q, want %q", got, want)
 	}
 }
+
+// TestArrivalWalkedTo: the object a walk was to, else its structure, else none
+// — what the client matches the arrival's repair offer against (LLM-793).
+func TestArrivalWalkedTo(t *testing.T) {
+	cases := []struct {
+		label string
+		evt   *ActorArrived
+		want  VillageObjectID
+	}{
+		{"no event", nil, ""},
+		{"a walk to a tile", &ActorArrived{}, ""},
+		{"a walk to an object", &ActorArrived{DestObjectID: "crate"}, "crate"},
+		{"a walk to a structure", &ActorArrived{DestStructureID: "smithy"}, "smithy"},
+	}
+	for _, c := range cases {
+		if got := arrivalWalkedTo(c.evt); got != c.want {
+			t.Errorf("%s: %q, want %q", c.label, got, c.want)
+		}
+	}
+}
