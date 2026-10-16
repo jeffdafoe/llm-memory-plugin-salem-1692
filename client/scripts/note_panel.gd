@@ -27,11 +27,16 @@ const BUTTON_PATH := "/tilesets/parchment-ui/brown-button.png"
 const QUILL_PATH := "/tilesets/parchment-ui/quill.png"
 
 ## The sheet's torn edges and curled corners, in art pixels, kept whole when it
-## stretches to fit the note (9-slice).
-const SHEET_MARGIN_LEFT := 44
-const SHEET_MARGIN_TOP := 30
-const SHEET_MARGIN_RIGHT := 44
-const SHEET_MARGIN_BOTTOM := 42
+## stretches to fit the note (9-slice): the roll at the top left is about 75 x
+## 50, the turned-up corner at the bottom right about 30 x 55.
+const SHEET_MARGIN_LEFT := 78
+const SHEET_MARGIN_TOP := 52
+const SHEET_MARGIN_RIGHT := 36
+const SHEET_MARGIN_BOTTOM := 58
+## Where the writing starts inside the sheet — within the slice margins, clear
+## of the torn edge; the centred title and buttons pass the curls.
+const SHEET_PAD_X := 32
+const SHEET_PAD_Y := 30
 const BUTTON_MARGIN := 10
 
 const SHEET_WIDTH := 480.0
@@ -392,10 +397,10 @@ func _apply_art() -> void:
         st.texture_margin_top = SHEET_MARGIN_TOP
         st.texture_margin_right = SHEET_MARGIN_RIGHT
         st.texture_margin_bottom = SHEET_MARGIN_BOTTOM
-        st.content_margin_left = SHEET_MARGIN_LEFT
-        st.content_margin_top = SHEET_MARGIN_TOP + 4
-        st.content_margin_right = SHEET_MARGIN_RIGHT
-        st.content_margin_bottom = SHEET_MARGIN_BOTTOM
+        st.content_margin_left = SHEET_PAD_X
+        st.content_margin_top = SHEET_PAD_Y
+        st.content_margin_right = SHEET_PAD_X
+        st.content_margin_bottom = SHEET_PAD_Y + 6
         sheet.add_theme_stylebox_override("panel", st)
     else:
         var flat := StyleBoxFlat.new()
@@ -442,6 +447,13 @@ func _apply_art() -> void:
             hover.set("bg_color", COLOR_BUTTON.lightened(0.12))
             down.set("bg_color", COLOR_BUTTON.darkened(0.15))
             off.set("bg_color", Color(COLOR_BUTTON, 0.5))
+        # The kit's button is a light parchment tab: ink on it, not cream.
+        var text_color := COLOR_INK if button_art != null else COLOR_BUTTON_TEXT
+        b.add_theme_color_override("font_color", text_color)
+        b.add_theme_color_override("font_hover_color", text_color.darkened(0.25) if button_art != null else Color(1, 0.97, 0.88))
+        b.add_theme_color_override("font_pressed_color", text_color)
+        b.add_theme_color_override("font_focus_color", text_color)
+        b.add_theme_color_override("font_disabled_color", Color(text_color, 0.45))
         b.add_theme_stylebox_override("normal", normal)
         b.add_theme_stylebox_override("hover", hover)
         b.add_theme_stylebox_override("pressed", down)

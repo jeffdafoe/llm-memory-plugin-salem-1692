@@ -3191,6 +3191,8 @@ const DOOR_NOTE_TILE := 32.0
 ## How far above the door tile's centre the paper sits, in world pixels — on
 ## the door's face rather than its threshold.
 const DOOR_NOTE_LIFT := 14.0
+## Art pixels to world pixels — the 2x the buildings are drawn at.
+const DOOR_NOTE_SCALE := 2.0
 
 static var _door_note_texture: Texture2D = null
 static var _door_note_fetching := false
@@ -3249,6 +3251,7 @@ func _draw_door_note(pinned: Node2D) -> void:
         var s := Sprite2D.new()
         s.texture = tex
         s.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+        s.scale = Vector2(DOOR_NOTE_SCALE, DOOR_NOTE_SCALE)
         pinned.add_child(s)
         return
     # Stand-in slip: cream paper, a darker edge, a pin.
