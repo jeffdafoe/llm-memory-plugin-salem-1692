@@ -643,6 +643,8 @@ func apply_npc_inside_change(data: Dictionary) -> void:
     container.visible = _compute_npc_visible(inside, inside_structure_id)
     _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     _set_room_square(container, data.get("room_square", null))
+    # Into or out of a building: its common room (LLM-801).
+    _set_room(container, "")
     # Buttons that depend on location (Go Home / Go to Work) refresh via
     # the metadata-changed path, so nudge the panel when inside flips.
     npc_metadata_changed.emit(npc_id)
@@ -659,6 +661,15 @@ func _set_room_square(container: Node2D, square) -> void:
     elif container.has_meta("room_square"):
         container.remove_meta("room_square")
 
+## Which room of the building they are in (LLM-801): meta `room` — the hall,
+## "bedroom_2", … — removed for the common room. The room window draws only
+## the people in the room it shows.
+func _set_room(container: Node2D, room: String) -> void:
+    if room != "":
+        container.set_meta("room", room)
+    elif container.has_meta("room"):
+        container.remove_meta("room")
+
 ## Apply a server-broadcast square change with no inside flip
 ## (npc_room_square_changed, LLM-768): given up on going to sleep, taken again
 ## on waking, or walked to — then `path` lists the squares walked, kept as meta
@@ -668,6 +679,7 @@ func apply_npc_room_square_change(data: Dictionary) -> void:
     var container: Node2D = placed_npcs.get(str(data.get("id", "")), null)
     if container == null:
         return
+    _set_room(container, str(data.get("room", "")))
     _set_room_square(container, data.get("square", null))
     var path = data.get("path", null)
     if path is Array and path.size() >= 2 and container.has_meta("room_square"):
@@ -999,6 +1011,7 @@ func _render_npc(npc: Dictionary) -> void:
     container.visible = _compute_npc_visible(inside, inside_structure_id)
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
     _set_room_square(container, npc.get("room_square", null))
+    _set_room(container, str(npc.get("room", "")))
     # Stand offset overrides the server-provided current_x/y when inside
     # a visible_when_inside structure — NPCs render behind the counter
     # rather than at the door tile they actually walked to.

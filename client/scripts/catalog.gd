@@ -54,6 +54,9 @@ var object_tags_loaded_flag: bool = false
 # /api/village/rooms: grid, door, keeper, keeper_door, stations — squares and
 # the art points people are drawn at. The room window reads them.
 var rooms: Dictionary = {}
+# The plans of rooms other than a structure's common room (LLM-801: the Inn's
+# upstairs hall and guest rooms), "<structure id>/<room>" -> plan.
+var room_plans: Dictionary = {}
 
 # Base URL for the Go API
 var api_base: String = ""
@@ -290,12 +293,27 @@ func _on_rooms_loaded(result: int, response_code: int, _headers: PackedStringArr
         return
     set_rooms(json["rooms"])
 
-## Keep the plans by structure id.
+## Keep the plans by structure id — a plan naming a `room` by structure and
+## room (LLM-801).
 func set_rooms(list: Array) -> void:
     rooms = {}
+    room_plans = {}
     for plan in list:
-        if plan is Dictionary:
-            rooms[str(plan.get("structure_id", ""))] = plan
+        if not plan is Dictionary:
+            continue
+        var sid := str(plan.get("structure_id", ""))
+        var room := str(plan.get("room", ""))
+        if room == "":
+            rooms[sid] = plan
+        else:
+            room_plans[sid + "/" + room] = plan
+
+## The plan of a room of the structure: its common room's for "", else that
+## room's; {} when it has none.
+func room_plan(structure_id: String, room: String) -> Dictionary:
+    if room == "":
+        return rooms.get(structure_id, {})
+    return room_plans.get(structure_id + "/" + room, {})
 
 ## Called from event_client when the WS asset_state_tags_updated event
 ## arrives. Updates our cached copy of the asset's state tags so downstream

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
 // pc_me.go — the PC bootstrap read. The v2 Godot client polls
@@ -128,6 +129,10 @@ type pcMeResponse struct {
 	// Camp is the PC's pitched camp (LLM-798) — the pack's "Tent — pitched by
 	// the Inn" row with its Strike button. Absent when the tent is in the pack.
 	Camp *pcCampDTO `json:"camp,omitempty"`
+	// VacantRooms names the bedrooms nobody has taken at the building the PC
+	// is in, when it has an upstairs hall the client draws (LLM-801) — those
+	// doors stand open. Absent anywhere else (and when every room is let).
+	VacantRooms []string `json:"vacant_rooms,omitempty"`
 }
 
 // pcCampDTO is a PC's pitched camp (LLM-798). Place is where it stands, for
@@ -305,6 +310,9 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 
 	resp.Lodging = pcLodgingSurface(snap, pc)
 	resp.Camp = pcCampSurface(snap, pcID)
+	if pc.InsideStructureID != "" && roomlayout.ForRoom(string(pc.InsideStructureID), sim.HallRoomName) != nil {
+		resp.VacantRooms = sim.VacantRooms(snap, pc.InsideStructureID)
+	}
 
 	writeJSON(w, resp)
 }
@@ -470,10 +478,11 @@ func pcAudienceRoom(snap *sim.Snapshot, pc *sim.ActorSnapshot) (string, bool) {
 		if rm == nil || rm.ID != pc.InsideRoomID {
 			continue
 		}
-		// Whitelist private/staff explicitly — an unrecognized kind (future
-		// enum addition, corrupt data) under-scopes to public rather than
-		// inventing a private bucket nobody can match. Mirrors v1's switch.
-		if rm.Kind == sim.RoomKindPrivate || rm.Kind == sim.RoomKindStaff {
+		// Whitelist the scoped kinds explicitly (sim.RoomKindScoped: private,
+		// staff, the upstairs hall) — an unrecognized kind (corrupt data)
+		// under-scopes to public rather than inventing a private bucket nobody
+		// can match. Mirrors v1's switch.
+		if sim.RoomKindScoped(rm.Kind) {
 			return strconv.FormatInt(int64(pc.InsideRoomID), 10), true
 		}
 		return "", false

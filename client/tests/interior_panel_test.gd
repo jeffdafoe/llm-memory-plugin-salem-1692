@@ -104,6 +104,7 @@ const TESTS := [
     "_test_home_rooms",
     "_test_home_sleepers_in_bed",
     "_test_dismiss_walks_out_of_a_room",
+    "_test_upstairs",
 ]
 
 const STALL := "stall-1"
@@ -256,6 +257,13 @@ func _load_room_plans() -> void:
                 home["structure_id"] = HOME + str(plan["art"])
                 home["name"] = "Test Home"
                 served.append(home)
+            elif (plan as Dictionary).has("rooms"):
+                # A plan for rooms upstairs (LLM-801) is served once per room,
+                # each copy naming its room.
+                for name in plan["rooms"]:
+                    var one: Dictionary = (plan as Dictionary).duplicate(true)
+                    one["room"] = str(name)
+                    served.append(one)
             else:
                 served.append(plan)
         _plans_as_loaded = served.duplicate(true)
@@ -4107,5 +4115,111 @@ func _test_dismiss_walks_out_of_a_room() -> void:
     _world.placed_objects.erase(_sid)
     house.free()
     main.free()
+    _clear_people()
+    _done()
+
+
+## LLM-801: the Inn upstairs. The hall (head-on) and a guest room are rooms of
+## the Inn with their own plans; the window shows the room the character is
+## in and only the people in it; a tap on a door or the stairs asks to go
+## through, a tap on the bed upstairs asks for bed; a vacant room's door
+## stands open; a refused door's line shows where it was tapped.
+func _test_upstairs() -> void:
+    _clear_people()
+    _panel.close()
+    _check("the hall's plan is the Inn's, by room", _catalog().room_plan(INN, "hall").get("art", ""), "inn_hall")
+    _check("a guest room's too", _catalog().room_plan(INN, "bedroom_3").get("art", ""), "inn_guest")
+    _check("the common room is still the Inn's own plan", _catalog().room_plan(INN, "").get("name", ""), "Inn entry hall")
+    _check("no plan for the keeper's quarters", _catalog().room_plan(INN, "keeper_quarters").is_empty(), true)
+
+    # Who is drawn where: the character in the hall, a villager downstairs.
+    var hall: Dictionary = _catalog().room_plan(INN, "hall")
+    var pc := _person("pc", _farmer(), INN)
+    pc.set_meta("room", "hall")
+    pc.set_meta("room_square", hall["door"]["square"])
+    _person("silas", _farmer(), INN)
+    _panel.open(INN, "hall")
+    _check("the window is the hall", [_panel.room_name, _panel.room.get("title", "")], ["hall", "Upstairs"])
+    var ids: Array = []
+    for e in _panel.occupants()["placed"]:
+        ids.append(str(e["id"]))
+    _check("upstairs: only who is upstairs", ids, ["pc"])
+    _panel.open(INN)
+    ids = []
+    for e in _panel.occupants()["placed"]:
+        ids.append(str(e["id"]))
+    _check("downstairs: not who is upstairs", ids, ["silas"])
+
+    # The stairs up from the entry hall, the doors and the stairs down.
+    _check("the entry hall's stairs lead up", InteriorRooms.way_at(_panel.room, Vector2(20, 30)), "hall")
+    _check("its floor leads nowhere", InteriorRooms.way_at(_panel.room, Vector2(90, 100)), "")
+    _panel.open(INN, "hall")
+    _check("a door leads to its room", InteriorRooms.way_at(_panel.room, Vector2(80, 30)), "bedroom_2")
+    _check("the keeper's door to her quarters", InteriorRooms.way_at(_panel.room, Vector2(128, 30)), "keeper_quarters")
+    _check("the stairwell leads down", InteriorRooms.way_at(_panel.room, Vector2(128, 110)), "common")
+    _check("the wall between doors leads nowhere", InteriorRooms.way_at(_panel.room, Vector2(56, 10)), "")
+
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    var went := []
+    var on_way := func(to: String): went.append(to)
+    _panel.room_tapped.connect(on_way)
+    var walked := []
+    var on_floor := func(sq: Vector2i): walked.append(sq)
+    _panel.floor_tapped.connect(on_floor)
+    var beds := []
+    var on_bed := func(): beds.append(true)
+    _panel.bed_tapped.connect(on_bed)
+    _panel._on_stage_input(_press(Vector2(176, 30) * 4))
+    _panel._on_stage_input(_press(Vector2(128, 110) * 4))
+    _panel._on_stage_input(_press(Vector2(200, 70) * 4))
+    _check("doors and stairs go through; the walkway walks", [went, walked], [["bedroom_3", "common"], [Vector2i(12, 4)]])
+
+    # A refused door says why, where it was tapped.
+    _panel._on_stage_input(_press(Vector2(32, 30) * 4))
+    _panel.show_line("That room is not yours. Ask the keeper for a room.")
+    _check("the line shows", [_panel.tag.visible, _panel.tag_name.text], [true, "That room is not yours. Ask the keeper for a room."])
+    _check("at the door", _panel._tag_on.get("at", Vector2.ZERO), Vector2(32, 30))
+    _panel.hide_tag()
+
+    # Vacant rooms stand open.
+    _panel.set_vacant_rooms(["bedroom_4", "bedroom_2"])
+    var open_at: Array = []
+    for child in _panel._anims.get_children():
+        if child is Sprite2D:
+            open_at.append((child as Sprite2D).position)
+    open_at.sort()
+    _check("the vacant rooms' doors stand open", open_at, [Vector2(64, 16), Vector2(208, 16)])
+    _panel.set_vacant_rooms([])
+    _check("let again: shut", _panel._anims.get_child_count(), 0)
+
+    # Their own room: the bed puts them to bed; the door back to the hall.
+    var guest: Dictionary = _catalog().room_plan(INN, "bedroom_2")
+    pc.set_meta("room", "bedroom_2")
+    pc.set_meta("room_square", guest["door"]["square"])
+    _panel.open(INN, "bedroom_2")
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _check("the window is their room", _panel.room.get("title", ""), "Your room")
+    went.clear()
+    _panel._on_stage_input(_press(Vector2(32, 66) * 4))
+    _panel._on_stage_input(_press(Vector2(82, 126) * 4))
+    _check("the bed is bed; the door the hall", [beds, went], [[true], ["hall"]])
+
+    # The world keeps who is in which room.
+    _world.apply_npc_room_square_change({"id": "silas", "structure_id": INN, "room": "hall", "square": hall["door"]["square"]})
+    _check("a frame names the room", _world.placed_npcs["silas"].get_meta("room", ""), "hall")
+    _world.apply_npc_room_square_change({"id": "silas", "structure_id": INN, "square": [2, 4]})
+    _check("no room on the frame: the common room", _world.placed_npcs["silas"].has_meta("room"), false)
+    _world.apply_npc_room_square_change({"id": "silas", "structure_id": INN, "room": "hall"})
+    _world.apply_npc_inside_change({"id": "silas", "inside": false})
+    _check("leaving the building drops the room", _world.placed_npcs["silas"].has_meta("room"), false)
+
+    _panel.room_tapped.disconnect(on_way)
+    _panel.floor_tapped.disconnect(on_floor)
+    _panel.bed_tapped.disconnect(on_bed)
+    _panel.close()
     _clear_people()
     _done()

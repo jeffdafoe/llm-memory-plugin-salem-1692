@@ -42,6 +42,11 @@ func handleLodgingMorningDescent(w *World, evt Event) {
 	if actor == nil || actor.Kind != KindPC {
 		return
 	}
+	// LLM-801: they woke in the room they slept in — a guest room at the Inn,
+	// where they get up beside their bed and stay (pcWakeRoom).
+	if actor.InsideRoomID == e.FromRoomID {
+		return
+	}
 	room := findRoom(w, e.FromRoomID)
 	if room == nil || room.Kind != RoomKindPrivate {
 		return
@@ -58,7 +63,7 @@ func handleLodgingMorningDescent(w *World, evt Event) {
 	if text == "" {
 		return
 	}
-	actor.InsideRoomID = common
+	setActorRoom(w, actor, common)
 	w.emit(&PCRelocatedToCommon{
 		ActorID:     e.ActorID,
 		StructureID: room.StructureID,
