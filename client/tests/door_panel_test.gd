@@ -22,6 +22,7 @@ const TESTS := [
     "_test_at_door_is_the_engines_door",
     "_test_no_answer_offers_a_note",
     "_test_no_answer_without_anyone_offers_no_note",
+    "_test_no_answer_without_the_kit_says_what_is_needed",
 ]
 
 var _failures := 0
@@ -202,6 +203,27 @@ func _test_no_answer_offers_a_note() -> void:
     p.open("walker-home", "Walker Residence")
     _check("reopened: the knock question", [p.prompt_label.text, p.knock_button.visible, p.note_button.visible],
         ["You stand at the door.", true, false])
+    p.free()
+    _done()
+
+
+## LLM-799: without a quill and ink and parchment, Leave a note still shows, but
+## pressing it puts the engine's line in the popup and asks for no note window.
+## The next opening forgets the lack.
+func _test_no_answer_without_the_kit_says_what_is_needed() -> void:
+    var log: Array = []
+    var p := _panel(log)
+    var people := [{"id": "anne", "name": "Anne Walker"}]
+    var lack := "You need a sheet of parchment to leave a note. Josiah Thorne has it for sale."
+    p.open_unanswered("walker-home", "Walker Residence", people, lack)
+    _check("lacking: note still offered", p.note_button.visible, true)
+    p.note_button.pressed.emit()
+    _check("lacking: says what is needed", [p.prompt_label.text, p.note_button.visible, p.is_open()], [lack, false, true])
+    _check("lacking: no note window asked for", log, ["opened"])
+    p.close()
+    p.open_unanswered("walker-home", "Walker Residence", people)
+    p.note_button.pressed.emit()
+    _check("with the kit: asks for the note", log, ["opened", "closed", "opened", "closed", "note:walker-home:Walker Residence:1"])
     p.free()
     _done()
 

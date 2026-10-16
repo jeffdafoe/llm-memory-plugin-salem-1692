@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -78,6 +79,45 @@ var ErrDoorNoteRefused = errors.New("you cannot leave a note here")
 // ErrDoorNoteText: the note's text is empty or too long.
 var ErrDoorNoteText = errors.New("the note must have between 1 and 200 characters")
 
+// The writing goods a note takes (LLM-799), sold at the distributor's store.
+// The quill and ink is held, not spent; each note pinned uses one sheet.
+const (
+	NoteQuillKind     = ItemKind("quill_and_ink")
+	NoteParchmentKind = ItemKind("parchment")
+)
+
+// IsNoteWritingGood reports whether kind is one of the writing goods a note
+// takes — like a wardrobe-only good, something only a player wants.
+func IsNoteWritingGood(kind ItemKind) bool {
+	return kind == NoteQuillKind || kind == NoteParchmentKind
+}
+
+// noteKitLack is the player's line for what they lack to write a note — "You
+// need a quill and ink and a sheet of parchment to leave a note. Josiah Thorne
+// has them for sale." — or "" when they hold both. The knock response carries
+// it for the door popup, and LeaveDoorNote refuses with it.
+func noteKitLack(w *World, a *Actor) string {
+	var missing []string
+	if a.Inventory[NoteQuillKind] <= 0 {
+		missing = append(missing, "a quill and ink")
+	}
+	if a.Inventory[NoteParchmentKind] <= 0 {
+		missing = append(missing, "a sheet of parchment")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	pronoun := "it"
+	if len(missing) > 1 {
+		pronoun = "them"
+	}
+	seller := DistributorSteerLabel(w.VillageObjects, w.Actors)
+	if r, size := utf8.DecodeRuneInString(seller); r != utf8.RuneError {
+		seller = string(unicode.ToUpper(r)) + seller[size:]
+	}
+	return fmt.Sprintf("You need %s to leave a note. %s has %s for sale.", strings.Join(missing, " and "), seller, pronoun)
+}
+
 func newDoorNoteID() DoorNoteID {
 	return DoorNoteID("note-" + randomHex(4))
 }
@@ -140,10 +180,11 @@ func mayKnockHere(w *World, actor *Actor, structureID StructureID, now time.Time
 // people (POST /pc/leave-note). Refused (ErrDoorNoteRefused) unless the player
 // could knock there now (mayKnockHere), nobody of the house is at the door with
 // them, nobody inside would answer a knock (receptiveKnockReceivers), and
-// recipientID is one of doorNoteRecipients. text must already be
-// validated as player text; it is trimmed and capped at MaxDoorNoteChars
-// (ErrDoorNoteText). A second unread note from the same author at the same door
-// replaces the first in place.
+// recipientID is one of doorNoteRecipients, and the player holds a quill and
+// ink and a sheet of parchment (noteKitLack); the note uses the sheet. text
+// must already be validated as player text; it is trimmed and capped at
+// MaxDoorNoteChars (ErrDoorNoteText). A second unread note from the same author
+// at the same door replaces the first in place, on a new sheet.
 func LeaveDoorNote(actorID ActorID, structureID StructureID, recipientID ActorID, text string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -176,6 +217,13 @@ func LeaveDoorNote(actorID ActorID, structureID StructureID, recipientID ActorID
 			}
 			if recipient == nil {
 				return nil, fmt.Errorf("%w: they do not live or keep here", ErrDoorNoteRefused)
+			}
+			if lack := noteKitLack(w, actor); lack != "" {
+				return nil, fmt.Errorf("%w: %s", ErrDoorNoteRefused, lack)
+			}
+			actor.Inventory[NoteParchmentKind]--
+			if actor.Inventory[NoteParchmentKind] <= 0 {
+				delete(actor.Inventory, NoteParchmentKind)
 			}
 			if w.DoorNotes == nil {
 				w.DoorNotes = make(map[DoorNoteID]*DoorNote)

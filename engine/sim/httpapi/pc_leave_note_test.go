@@ -79,6 +79,11 @@ func TestPCKnockResponse_NoteFor(t *testing.T) {
 	if got := string(b); got != `{"answered":true}` {
 		t.Errorf("answered = %s", got)
 	}
+	// LLM-799: what the player lacks to write one rides beside note_for.
+	b, _ = json.Marshal(pcKnockResponse{NoteFor: []pcKnockRecipientDTO{{ID: "spouse", Name: "Sarah Owen"}}, NoteLack: "You need a sheet of parchment to leave a note."})
+	if got := string(b); got != `{"answered":false,"note_for":[{"id":"spouse","name":"Sarah Owen"}],"note_lack":"You need a sheet of parchment to leave a note."}` {
+		t.Errorf("unanswered, lacking = %s", got)
+	}
 }
 
 // The author's confirmation is private to them; the door flag carries no text

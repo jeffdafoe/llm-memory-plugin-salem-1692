@@ -1520,10 +1520,12 @@ func _on_knock_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
             talk_panel_layer.force_open_after_refresh()
         return
     # Nobody came (LLM-19): the popup comes back with Leave a note, for the
-    # people of the house the engine named.
+    # people of the house the engine named, and what the player needs to write
+    # one (LLM-799).
     var note_for = parsed.get("note_for", []) if parsed is Dictionary else []
+    var note_lack := str(parsed.get("note_lack", "")) if parsed is Dictionary else ""
     if note_for is Array and not note_for.is_empty() and door_panel_layer != null and _knock_structure_id != "":
-        door_panel_layer.open_unanswered(_knock_structure_id, _place_title(_knock_structure_id), note_for)
+        door_panel_layer.open_unanswered(_knock_structure_id, _place_title(_knock_structure_id), note_for, note_lack)
 
 ## Leave a note (LLM-19): open the note window for the house.
 func _on_door_note_requested(sid: String, title: String, recipients: Array) -> void:

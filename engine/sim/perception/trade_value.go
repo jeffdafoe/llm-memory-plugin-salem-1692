@@ -584,7 +584,8 @@ func buildTradeValue(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		// twenty empty lines would ride every turn he spends in company. Held
 		// ones are priced by the walk below. A factor's pack is priced in its own
 		// section (buildPackGoods), so this does not blind him at the bale.
-		if sim.IsWardrobeOnlyGood(e.Item) {
+		// The note-writing goods (LLM-799) are player-only the same way.
+		if sim.IsWardrobeOnlyGood(e.Item) || sim.IsNoteWritingGood(e.Item) {
 			continue
 		}
 		// LLM-720: a good the keeper only uses (the wright's whetstone, mending

@@ -71,6 +71,7 @@ func TestKnockUnansweredNamesWhoANoteMayBeFor(t *testing.T) {
 	now := time.Now().UTC()
 	nameCottageFolk(t, w)
 	playerAtCottageDoor(t, w, now)
+	giveWritingKit(t, w, 5)
 	out, err := knock(t, w, now)
 	if err != nil || out.Answered {
 		t.Fatalf("knock with nobody in: %+v %v, want unanswered", out, err)
@@ -95,6 +96,7 @@ func TestLeaveDoorNoteAndReplace(t *testing.T) {
 	nameCottageFolk(t, w)
 	flags, told := pinnedEvents(t, w)
 	playerAtCottageDoor(t, w, now)
+	giveWritingKit(t, w, 5)
 	if err := leaveNote(w, "spouse", "  I came about the bread.  ", now); err != nil {
 		t.Fatalf("leave a note: %v", err)
 	}
@@ -139,6 +141,7 @@ func TestLeaveDoorNoteRefusals(t *testing.T) {
 		t.Errorf("away from the door: err %v, want ErrDoorNoteRefused", err)
 	}
 	playerAtCottageDoor(t, w, now)
+	giveWritingKit(t, w, 5)
 	if err := leaveNote(w, "servant", "hello", now); !errors.Is(err, sim.ErrDoorNoteRefused) {
 		t.Errorf("for the servant: err %v, want ErrDoorNoteRefused", err)
 	}
@@ -188,6 +191,7 @@ func TestDoorNoteReadOnlyWhenTheTurnAnswered(t *testing.T) {
 	nameCottageFolk(t, w)
 	flags, _ := pinnedEvents(t, w)
 	playerAtCottageDoor(t, w, now)
+	giveWritingKit(t, w, 5)
 	if err := leaveNote(w, "spouse", "I came about the bread.", now); err != nil {
 		t.Fatalf("leave a note: %v", err)
 	}
@@ -237,6 +241,7 @@ func TestDoorNoteReplacedMidTurnStaysUnread(t *testing.T) {
 	now := time.Now().UTC()
 	nameCottageFolk(t, w)
 	playerAtCottageDoor(t, w, now)
+	giveWritingKit(t, w, 5)
 	if err := leaveNote(w, "spouse", "I came about the bread.", now); err != nil {
 		t.Fatalf("leave a note: %v", err)
 	}
@@ -268,11 +273,114 @@ func TestLeaveDoorNoteRefusedWhileSomeoneWouldAnswer(t *testing.T) {
 	nameCottageFolk(t, w)
 	setInside(t, w, "spouse", "cottage")
 	playerAtCottageDoor(t, w, now)
+	giveWritingKit(t, w, 5)
 	if err := leaveNote(w, "spouse", "hello", now); !errors.Is(err, sim.ErrDoorNoteRefused) {
 		t.Fatalf("someone awake inside, no knock: err %v, want ErrDoorNoteRefused", err)
 	}
 	mutate(t, w, func(world *sim.World) { world.Actors["spouse"].State = sim.StateSleeping })
 	if err := leaveNote(w, "spouse", "hello", now); err != nil {
 		t.Errorf("everyone inside asleep: err %v, want accepted", err)
+	}
+}
+
+// giveWritingKit puts a quill and ink and `sheets` sheets of parchment in the
+// stranger's pack (LLM-799); sheets 0 gives the quill alone.
+func giveWritingKit(t *testing.T, w *sim.World, sheets int) {
+	t.Helper()
+	mutate(t, w, func(world *sim.World) {
+		a := world.Actors["stranger"]
+		if a.Inventory == nil {
+			a.Inventory = map[sim.ItemKind]int{}
+		}
+		a.Inventory[sim.NoteQuillKind] = 1
+		if sheets > 0 {
+			a.Inventory[sim.NoteParchmentKind] = sheets
+		} else {
+			delete(a.Inventory, sim.NoteParchmentKind)
+		}
+	})
+}
+
+// strangerHolds reads the stranger's count of kind.
+func strangerHolds(t *testing.T, w *sim.World, kind sim.ItemKind) int {
+	t.Helper()
+	var n int
+	mutate(t, w, func(world *sim.World) { n = world.Actors["stranger"].Inventory[kind] })
+	return n
+}
+
+// LLM-799: an unanswered knock says what the player lacks to write a note,
+// naming only what is missing; with both in hand it says nothing.
+func TestKnockUnansweredSaysWhatANoteNeeds(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	nameCottageFolk(t, w)
+	playerAtCottageDoor(t, w, now)
+
+	out, err := knock(t, w, now)
+	if err != nil || out.Answered {
+		t.Fatalf("knock: %+v %v, want unanswered", out, err)
+	}
+	if !strings.HasPrefix(out.NoteLack, "You need a quill and ink and a sheet of parchment to leave a note. ") ||
+		!strings.HasSuffix(out.NoteLack, " has them for sale.") {
+		t.Errorf("empty-handed NoteLack = %q", out.NoteLack)
+	}
+
+	giveWritingKit(t, w, 0)
+	out, _ = knock(t, w, now)
+	if !strings.HasPrefix(out.NoteLack, "You need a sheet of parchment to leave a note. ") ||
+		!strings.HasSuffix(out.NoteLack, " has it for sale.") {
+		t.Errorf("quill-only NoteLack = %q", out.NoteLack)
+	}
+
+	giveWritingKit(t, w, 1)
+	if out, _ = knock(t, w, now); out.NoteLack != "" {
+		t.Errorf("with both, NoteLack = %q, want empty", out.NoteLack)
+	}
+}
+
+// LLM-799: a note needs a quill and ink and a sheet of parchment; each note
+// pinned (a replacement too) uses a sheet, and the quill is kept.
+func TestLeaveDoorNoteNeedsTheKitAndUsesASheet(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	nameCottageFolk(t, w)
+	playerAtCottageDoor(t, w, now)
+
+	err := leaveNote(w, "spouse", "hello", now)
+	if !errors.Is(err, sim.ErrDoorNoteRefused) || !strings.Contains(err.Error(), "You need a quill and ink and a sheet of parchment") {
+		t.Fatalf("empty-handed note: %v, want refused naming both", err)
+	}
+	if n := len(doorNotes(t, w)); n != 0 {
+		t.Fatalf("%d notes after a refusal, want 0", n)
+	}
+
+	giveWritingKit(t, w, 2)
+	if err := leaveNote(w, "spouse", "I came about the bread.", now); err != nil {
+		t.Fatalf("note with the kit: %v", err)
+	}
+	if got := strangerHolds(t, w, sim.NoteParchmentKind); got != 1 {
+		t.Errorf("parchment after one note = %d, want 1", got)
+	}
+	if err := leaveNote(w, "spouse", "Never mind the bread.", now); err != nil {
+		t.Fatalf("replacing note: %v", err)
+	}
+	var held bool
+	mutate(t, w, func(world *sim.World) { _, held = world.Actors["stranger"].Inventory[sim.NoteParchmentKind] })
+	if held {
+		t.Error("the last sheet left a parchment entry in the pack, want it removed at zero")
+	}
+	if got := strangerHolds(t, w, sim.NoteQuillKind); got != 1 {
+		t.Errorf("quill and ink after two notes = %d, want 1 (kept)", got)
+	}
+
+	err = leaveNote(w, "spouse", "One more thing.", now)
+	if !errors.Is(err, sim.ErrDoorNoteRefused) || !strings.Contains(err.Error(), "You need a sheet of parchment") {
+		t.Fatalf("note with no sheet left: %v, want refused naming the parchment", err)
+	}
+	if notes := doorNotes(t, w); len(notes) != 1 || notes[0].Body != "Never mind the bread." {
+		t.Errorf("after the refusal: %+v, want the second note unchanged", notes)
 	}
 }
