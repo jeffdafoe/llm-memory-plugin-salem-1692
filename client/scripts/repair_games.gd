@@ -621,21 +621,24 @@ class Plumb:
 
 ## CROSSWISE — the crate's lid (LLM-721). Nails stand at the lid's corners, a
 ## back row and a front row. A round opens by showing the order to drive them:
-## a number lights on each nail in turn, all stay lit a moment, then they hide.
-## Strike the nails in that order; there is no hurry. A wrong nail springs the
-## lid (Result.FAIL) when the hammer lands on it, SPRING_AT later: the nails pop
-## out, and after SPRUNG_TIME the same order shows again. A tap off every nail,
-## or on one already driven, does nothing.
-## Harder: a third column of nails, a quicker show.
+## one number at a time lights on its nail and goes dark before the next, so
+## the whole order has to be remembered. Strike the nails in that order; there
+## is no hurry. A wrong nail springs the lid (Result.FAIL) when the hammer lands
+## on it, SPRING_AT later: the nails pop out, and after SPRUNG_TIME the same
+## order shows again at the same pace. A tap off every nail, or on one already
+## driven, does nothing.
+## The show quickens by SPEEDUP with every round won (the mend's steps done, so
+## a mend taken up again keeps its pace), never below MIN_SHOW_STEP.
+## Harder: a quicker show from the first round.
 class Crosswise:
     extends Game
     const ROWS := 2
-    const COLS := 2
-    const HARD_COLS := 3
-    const SHOW_STEP := 0.55  # seconds between one number lighting and the next
-    const HARD_SHOW_STEP := 0.3
-    const SHOW_HOLD := 1.0  # seconds all the numbers stay lit before they hide
-    const HARD_SHOW_HOLD := 0.35
+    const COLS := 3
+    const SHOW_STEP := 0.8  # seconds from one number lighting to the next, first round
+    const HARD_SHOW_STEP := 0.45
+    const SHOW_ON := 0.7  # of a step, the part its number stays lit; then dark
+    const SPEEDUP := 0.85
+    const MIN_SHOW_STEP := 0.25
     const SPRUNG_TIME := 1.0
     const SPRING_AT := 0.06  # the hammer's fall: repair_stage.gd's SWING_DOWN
     const STAND := 4  # art px a nail stands proud before it is driven
@@ -651,9 +654,8 @@ class Crosswise:
     const FRONT_X1 := 156
     const ROW_Y := [29, 42]
     const INSET := 0.12
-    var cols := COLS
-    var show_step := SHOW_STEP
-    var show_hold := SHOW_HOLD
+    var base_step := SHOW_STEP
+    var rounds_done := 0
     var order: Array[int] = []  # nail indices, in the order to drive them
     var driven: Array[bool] = []
     var next := 0  # how many of the order are driven
@@ -666,22 +668,27 @@ class Crosswise:
 
     func _init(r: RandomNumberGenerator, d := 0.0) -> void:
         super(r, d)
-        cols = HARD_COLS if d >= 0.5 else COLS
-        show_step = lerpf(SHOW_STEP, HARD_SHOW_STEP, d)
-        show_hold = lerpf(SHOW_HOLD, HARD_SHOW_HOLD, d)
+        base_step = lerpf(SHOW_STEP, HARD_SHOW_STEP, d)
         for i in count():
             driven.append(false)
         _new_order()
         _begin_show()
 
     func count() -> int:
-        return ROWS * cols
+        return ROWS * COLS
+
+    func set_progress(done: int, _total: int) -> void:
+        rounds_done = maxi(done, 0)
+
+    ## Seconds from one number lighting to the next, this round.
+    func show_step() -> float:
+        return maxf(MIN_SHOW_STEP, base_step * pow(SPEEDUP, rounds_done))
 
     ## Where a nail goes into the lid, play px. Nails are numbered in reading
     ## order: the back row left to right, then the front row.
     func nail_pos(i: int) -> Vector2:
-        var y: int = ROW_Y[i / cols]
-        var f := INSET + (1.0 - 2.0 * INSET) * float(i % cols) / (cols - 1)
+        var y: int = ROW_Y[i / COLS]
+        var f := INSET + (1.0 - 2.0 * INSET) * float(i % COLS) / (COLS - 1)
         var e := edge_x(y)
         return Vector2(roundf(lerpf(e.x, e.y, f)), y)
 
@@ -703,13 +710,18 @@ class Crosswise:
         return best
 
     func show_len() -> float:
-        return show_step * (count() - 1) + show_hold
+        return show_step() * count()
 
-    ## How many of the order's numbers are lit now.
-    func numbers_lit() -> int:
+    ## Which of the order's numbers is lit now (0 for the first), or -1 while
+    ## none is: between two numbers, and once the show is over.
+    func number_lit() -> int:
         if not showing:
-            return 0
-        return mini(count(), floori(show_t / show_step) + 1)
+            return -1
+        var step := show_step()
+        var n := floori(show_t / step)
+        if n >= count() or show_t - n * step >= step * SHOW_ON:
+            return -1
+        return n
 
     ## A fresh order, never the same as the one before when another exists.
     func _new_order() -> void:
