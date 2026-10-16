@@ -26,8 +26,8 @@ const PAPER_BORDER := 2
 const PAD_X := 24
 const PAD_Y := 10
 ## Vertical gaps in the text: before each section, and between two makers in one.
-const SECTION_GAP := 8.0
-const ENTRY_GAP := 4.0
+const SECTION_GAP := 4.0
+const ENTRY_GAP := 2.0
 const UNROLL_SEC := 0.45
 ## A press that moves further than this before it lifts is a drag, not a tap.
 const LINK_TAP_SLOP := 10.0
@@ -54,6 +54,10 @@ const CREDITS := [
         ]],
         ["Pixel Frog", "https://pixelfrog-assets.itch.io/", [
             [["Tiny Swords", "https://pixelfrog-assets.itch.io/tiny-swords"]],
+        ]],
+        # The kit's quill icon is Open Pixel Project's, credited on the same line.
+        ["The Bee's Knees", "https://the-bees-knees-games.itch.io/", [
+            [["Pixel Parchment UI Kit", "https://the-bees-knees-games.itch.io/pixel-parchment-ui-kit"], ["quill: Open Pixel Project", "https://openpixelproject.com/"]],
         ]],
     ]],
     ["Sound", [
