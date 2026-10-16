@@ -202,7 +202,8 @@ func reconcileFamiliar(w *World, owner *Actor, now time.Time, fromEdge bool) {
 
 // spawnFamiliar adds owner's duck to the world. fromEdge puts it on a map-edge
 // road tile walking in; otherwise (and when no edge tile can be had) it starts
-// beside the owner.
+// on a free tile beside the owner. With neither it is not spawned, and the
+// ticker's next pass tries again.
 func spawnFamiliar(w *World, owner *Actor, now time.Time, fromEdge bool) {
 	sprite := w.Sprites[familiarSpriteID]
 	if sprite == nil {
@@ -220,7 +221,7 @@ func spawnFamiliar(w *World, owner *Actor, now time.Time, fromEdge bool) {
 		pos, placed = pickFamiliarSpot(w, "", owner.Pos, owner.Pos)
 	}
 	if !placed {
-		pos = owner.Pos
+		return // no free tile beside them; the next pass tries again
 	}
 
 	id := ActorID("")

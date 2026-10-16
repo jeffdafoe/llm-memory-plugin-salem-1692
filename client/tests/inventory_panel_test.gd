@@ -21,6 +21,7 @@ const TESTS := [
     "_test_rows_draw_their_action_buttons",
     "_test_press_requests_and_waits",
     "_test_refusal_shows_under_the_list",
+    "_test_success_redraws_from_the_answer",
     "_test_own_duck_quacks_on_arrival",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
@@ -168,6 +169,22 @@ func _test_refusal_shows_under_the_list() -> void:
     _check("next press clears it", _note_text(p), "")
     p.action_finished("")
     p.close()
+    p.free()
+    _done()
+
+
+func _test_success_redraws_from_the_answer() -> void:
+    var log: Array = []
+    var p := _panel(log)
+    _button(p, "Duck pendant").pressed.emit()
+    var after: Array = ITEMS.duplicate(true)
+    after[1]["actions"] = ["remove"]
+    p.action_finished("", after)
+    _check("the row shows Remove at once", _rows(p).get("Duck pendant"), ["Remove"])
+    _check("and it is pressable", _button(p, "Duck pendant").disabled, false)
+    _button(p, "Duck pendant").pressed.emit()
+    _check("a second press asks to remove, not to wear again", log, ["duck_pendant:wear", "duck_pendant:remove"])
+    p.action_finished("", after)
     p.free()
     _done()
 

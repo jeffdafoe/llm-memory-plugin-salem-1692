@@ -242,8 +242,12 @@ func _on_action_pressed(item_kind: String, action: String) -> void:
 
 
 ## main.gd's answer to item_action_requested. message is "" on success, else
-## the line to show under the list. The list itself refreshes from /pc/me.
-func action_finished(message: String) -> void:
+## the line to show under the list. items, on success, is the pack as it now
+## stands (the route returns it), so the row shows its new button before the
+## buttons come back.
+func action_finished(message: String, items = null) -> void:
+    if items is Array:
+        _items = _sorted_items(items)
     _busy = false
     _message = message
     if visible:

@@ -9,8 +9,8 @@
 --      description. Every FK to item_kind.name is ON UPDATE CASCADE, so the
 --      price anchor follows. iron_ward had no holder, no factor source and no
 --      restock line (LLM-592 left it out), so nothing in the economy moves.
---      If a duck_pendant row already exists (an engine-minted discovery), the
---      rename is skipped and that row is corrected in place instead.
+--      Refuses if a duck_pendant row already exists (an engine-minted
+--      discovery), so the down can always turn it back into the iron ward.
 --   2. Adds the `wear` capability to the three pendants: duck_pendant,
 --      silver_locket, whalebone_charm (sim.CapabilityWear).
 --   3. actor.wearing — the item kinds an actor has on (sim.Actor.Wearing),
@@ -29,8 +29,10 @@ BEGIN
     IF EXISTS (SELECT 1 FROM actor_inventory WHERE item_kind = 'iron_ward') THEN
         RAISE EXCEPTION 'LLM-800: an actor holds an iron ward; renaming it to the duck pendant would hand them a duck';
     END IF;
-    IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'iron_ward')
-       AND NOT EXISTS (SELECT 1 FROM item_kind WHERE name = 'duck_pendant') THEN
+    IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'iron_ward') THEN
+        IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'duck_pendant') THEN
+            RAISE EXCEPTION 'LLM-800: both iron_ward and duck_pendant exist; remove the duck_pendant discovery row first';
+        END IF;
         UPDATE item_kind SET name = 'duck_pendant' WHERE name = 'iron_ward';
     END IF;
 END $$;

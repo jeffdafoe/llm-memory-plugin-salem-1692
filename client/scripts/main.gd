@@ -1566,8 +1566,9 @@ func _on_note_pinned(sid: String, recipient_id: String, text: String) -> void:
         http.queue_free()
         note_panel_layer.show_error("The note could not be sent.")
 
-## A Your Pack button (LLM-800): POST /pc/item/use, then refresh /pc/me so the
-## row shows its new button. A refusal's line goes under the list.
+## A Your Pack button (LLM-800): POST /pc/item/use. The answer carries the pack
+## as it now stands and the panel redraws from it; /pc/me is refreshed too so the
+## talk panel's copy catches up. A refusal's line goes under the list.
 func _on_item_action_requested(item_kind: String, action: String, panel: Control) -> void:
     var http := HTTPRequest.new()
     http.accept_gzip = false
@@ -1575,13 +1576,12 @@ func _on_item_action_requested(item_kind: String, action: String, panel: Control
     http.request_completed.connect(func(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray):
         http.queue_free()
         Auth.check_response(code)
-        var message := ""
-        if code < 200 or code >= 300:
-            var parsed = JSON.parse_string(body.get_string_from_utf8())
-            message = str(parsed.get("error", "")) if parsed is Dictionary else ""
-            if message == "":
-                message = "That did not work."
-        panel.action_finished(message)
+        var parsed = JSON.parse_string(body.get_string_from_utf8())
+        if code >= 200 and code < 300 and parsed is Dictionary and parsed.get("inventory") is Array:
+            panel.action_finished("", parsed["inventory"])
+        else:
+            var message := str(parsed.get("error", "")) if parsed is Dictionary else ""
+            panel.action_finished(message if message != "" else "That did not work.")
         if talk_panel_layer != null:
             talk_panel_layer._refresh_state())
     var err := http.request(Auth.api_base + "/api/village/pc/item/use",

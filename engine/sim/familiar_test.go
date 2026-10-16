@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -325,5 +326,42 @@ func TestPendantGoneTakesItOff(t *testing.T) {
 	}
 	if v.Count != 1 || !v.Moving || !nearMapEdge(v.MoveTo) {
 		t.Errorf("after the sale: %+v, want the duck walking to a map edge", v)
+	}
+}
+
+// No free tile beside the owner: no duck yet (never one on the owner's own
+// tile); it comes on the first pass after a tile frees up.
+func TestFamiliarWaitsForAFreeTile(t *testing.T) {
+	w := familiarWorld(t, []sim.ItemKind{sim.DuckPendantKind})
+	runWorld(t, w)
+	var blockers []sim.ActorID
+	runOn(t, w, func(world *sim.World) (any, error) {
+		r := sim.FamiliarFollowRadius
+		for dy := -r; dy <= r; dy++ {
+			for dx := -r; dx <= r; dx++ {
+				if dx == 0 && dy == 0 {
+					continue
+				}
+				id := sim.ActorID(fmt.Sprintf("blocker-%d-%d", dx, dy))
+				world.Actors[id] = &sim.Actor{
+					ID: id, DisplayName: "Post", Kind: sim.KindDecorative, State: sim.StateIdle,
+					Pos: sim.Position{X: familiarOwnerPos.X + dx, Y: familiarOwnerPos.Y + dy},
+				}
+				blockers = append(blockers, id)
+			}
+		}
+		return nil, nil
+	})
+	now := time.Now()
+	if v := familiarTick(t, w, now); v.Count != 0 {
+		t.Fatalf("familiars = %d with every tile beside the owner taken, want 0 (at %+v)", v.Count, v.Pos)
+	}
+	runOn(t, w, func(world *sim.World) (any, error) {
+		delete(world.Actors, blockers[0])
+		return nil, nil
+	})
+	v := familiarTick(t, w, now.Add(2*time.Second))
+	if v.Count != 1 || v.Pos == familiarOwnerPos || chebyshev(v.Pos, familiarOwnerPos) > sim.FamiliarFollowRadius {
+		t.Errorf("after a tile frees: %+v, want one duck beside its owner", v)
 	}
 }

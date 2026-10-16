@@ -13,8 +13,10 @@ BEGIN
     IF EXISTS (SELECT 1 FROM actor_inventory WHERE item_kind = 'duck_pendant') THEN
         RAISE EXCEPTION 'LLM-800 down: an actor holds a duck pendant; take it back first';
     END IF;
-    IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'duck_pendant')
-       AND NOT EXISTS (SELECT 1 FROM item_kind WHERE name = 'iron_ward') THEN
+    IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'duck_pendant') THEN
+        IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'iron_ward') THEN
+            RAISE EXCEPTION 'LLM-800 down: both duck_pendant and iron_ward exist; nothing to rename';
+        END IF;
         UPDATE item_kind SET name = 'iron_ward' WHERE name = 'duck_pendant';
     END IF;
 END $$;

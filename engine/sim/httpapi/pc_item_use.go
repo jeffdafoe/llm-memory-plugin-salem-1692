@@ -14,8 +14,8 @@ import (
 // pc_item_use.go — POST /api/village/pc/item/use (LLM-800): one item action
 // from the Your Pack list, e.g. {"item_kind":"duck_pendant","action":"wear"}.
 // The actions a row offers come from /pc/me (pcInventoryEntry.Actions);
-// sim.UseItem owns the checks and the effect. A refusal comes back 422 with a
-// message the pack shows as it is.
+// sim.UseItem owns the checks and the effect. Success returns the pack as it now
+// stands; a refusal comes back 422 with a message the pack shows as it is.
 
 const maxItemUseBodyBytes = 1 << 10
 
@@ -42,7 +42,7 @@ func (s *Server) handlePCItemUse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	_, err := s.world.SendContext(r.Context(), itemUsePCCommand(user.Username, sim.ItemKind(req.ItemKind), req.Action))
+	res, err := s.world.SendContext(r.Context(), itemUsePCCommand(user.Username, sim.ItemKind(req.ItemKind), req.Action))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
@@ -51,7 +51,14 @@ func (s *Server) handlePCItemUse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
-	writeJSON(w, map[string]bool{"ok": true})
+	writeJSON(w, pcItemUseResponse{OK: true, Inventory: res.([]pcInventoryEntry)})
+}
+
+// pcItemUseResponse carries the pack as it stands after the action, so the
+// Your Pack list redraws from it at once instead of waiting on /pc/me.
+type pcItemUseResponse struct {
+	OK        bool               `json:"ok"`
+	Inventory []pcInventoryEntry `json:"inventory"`
 }
 
 func itemUseErrorResponse(err error) (int, string) {
@@ -73,7 +80,11 @@ func itemUsePCCommand(username string, kind sim.ItemKind, action string) sim.Com
 			}
 			now := time.Now().UTC()
 			sim.TouchPCInput(world, actorID, now)
-			return sim.UseItem(actorID, kind, action, now).Fn(world)
+			if _, err := sim.UseItem(actorID, kind, action, now).Fn(world); err != nil {
+				return nil, err
+			}
+			a := world.Actors[actorID]
+			return pcInventoryEntries(a.Inventory, a.Wearing, world.ItemKinds), nil
 		},
 	}
 }
