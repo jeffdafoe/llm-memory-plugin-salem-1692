@@ -19,6 +19,7 @@ const TESTS := [
     "_test_fire_panel",
     "_test_tent_room",
     "_test_fire_panel_stale_answer",
+    "_test_tooltip_lives_in_a_tent",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -316,4 +317,45 @@ func _test_fire_panel_stale_answer() -> void:
     held[1].call(200, "{\"result\":\"ok\"}")
     _check("this opening's answer lights it", lit[0], 1)
     panel.queue_free()
+    _completed[_current] = true
+
+
+## The actor tooltip (LLM-798 slice 3): a player whose home is their tent reads
+## "Lives in a tent"; struck, the line goes; an NPC's named home still reads
+## "Lives at the …".
+func _test_tooltip_lives_in_a_tent() -> void:
+    var world = load("res://scripts/world.gd").new()
+    var tip := CanvasLayer.new()
+    tip.set_script(load("res://scripts/actor_tooltip.gd"))
+    root.add_child(tip)
+    tip.world = world
+    var tent := Node2D.new()
+    tent.set_meta("asset_id", Camp.TENT_ASSET_ID)
+    world.placed_objects["tent-1"] = tent
+    var house := Node2D.new()
+    house.set_meta("asset_id", "house")
+    house.set_meta("display_name", "Ward Residence")
+    world.placed_objects["house-1"] = house
+
+    var pc := Node2D.new()
+    pc.set_meta("display_name", "Jefferey")
+    pc.set_meta("home_structure_id", "tent-1")
+    tip._show_panel_for(pc, Vector2.ZERO)
+    _check("player in a tent: the line", tip._home_label.text, "Lives in a tent")
+    _check("player in a tent: shown", tip._home_label.visible, true)
+    pc.set_meta("home_structure_id", "")
+    tip._show_panel_for(pc, Vector2.ZERO)
+    _check("tent struck: no home line", tip._home_label.visible, false)
+
+    var npc := Node2D.new()
+    npc.set_meta("display_name", "Prudence Ward")
+    npc.set_meta("llm_memory_agent", "salem-vendor")
+    npc.set_meta("home_structure_id", "house-1")
+    tip._show_panel_for(npc, Vector2.ZERO)
+    _check("villager: lives at their house", tip._home_label.text, "Lives at the Ward Residence")
+
+    for n in [tent, house, pc, npc]:
+        n.free()
+    tip.free()
+    world.free()
     _completed[_current] = true

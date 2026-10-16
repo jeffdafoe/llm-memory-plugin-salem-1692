@@ -465,6 +465,8 @@ func raiseTent(w *World, actor *Actor, tent *VillageObject) {
 		}
 	}
 	actor.HomeStructureID = sid
+	// Every client's tooltip reads the home off this frame ("Lives in a tent").
+	w.emit(&NPCHomeStructureChanged{ActorID: actor.ID, StructureID: string(sid), At: time.Now().UTC()})
 	refreshStructureOccupancyState(w, sid)
 }
 
@@ -523,6 +525,7 @@ func dismantleCamp(w *World, ownerID ActorID, tentID VillageObjectID) {
 		for _, a := range w.Actors {
 			if a != nil && a.HomeStructureID == sid {
 				a.HomeStructureID = ""
+				w.emit(&NPCHomeStructureChanged{ActorID: a.ID, StructureID: "", At: now})
 			}
 		}
 		for id, n := range w.DoorNotes {

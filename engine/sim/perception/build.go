@@ -1477,6 +1477,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// at (a keeper at their own stall, a customer outside a shop), so Render
 		// can say "outdoors by the General Store" rather than dumping coords.
 		s.NearbyStructureName, curStructureID = findLoiterStructure(snap, a)
+		s.Camps = buildCampSightings(snap, actorID, a)
 	}
 	// LLM-154: a live dead-end read on the place the actor is physically at —
 	// e.g. standing at a business no keeper is tending. Recomputed cold each tick
@@ -6511,4 +6512,58 @@ func bringsGoodsTo(subj *sim.ActorSnapshot, memberID sim.ActorID) bool {
 		return false
 	}
 	return t.Keeper != "" && t.Keeper == memberID && subj.Inventory[t.Good] > 0
+}
+
+// campSightTiles is how far (king's move, in tiles) an outdoor actor sees a
+// player's pitched tent; maxCampSightings caps how many it is told of.
+const (
+	campSightTiles   = 8
+	maxCampSightings = 2
+)
+
+// buildCampSightings lists the players' standing tents within campSightTiles of
+// an actor outdoors (LLM-798), nearest first (lower id on a tie). A tent still
+// a bundle — being pitched or struck — is not yet a camp. The owner is named
+// only to an actor who knows them; the fire is read off its sprite state, which
+// the engine keeps on the clock (sim.UpdateCampFires), while it is still lit.
+func buildCampSightings(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSnapshot) []CampSight {
+	if a == nil || a.InsideStructureID != "" {
+		return nil
+	}
+	type seen struct {
+		tent *sim.VillageObject
+		dist int
+	}
+	var near []seen
+	for _, o := range snap.VillageObjects {
+		if !sim.IsTent(o) || o.OwnerActorID == "" || o.OwnerActorID == subjectID || o.CurrentState == sim.TentStatePacked {
+			continue
+		}
+		if d := a.Pos.Chebyshev(o.Pos.Tile()); d <= campSightTiles {
+			near = append(near, seen{o, d})
+		}
+	}
+	sort.Slice(near, func(i, j int) bool {
+		if near[i].dist != near[j].dist {
+			return near[i].dist < near[j].dist
+		}
+		return near[i].tent.ID < near[j].tent.ID
+	})
+	var out []CampSight
+	for _, n := range near {
+		if len(out) == maxCampSightings {
+			break
+		}
+		owner := snap.Actors[n.tent.OwnerActorID]
+		if owner == nil {
+			continue
+		}
+		_, acquainted := a.Acquaintances[owner.DisplayName]
+		sight := CampSight{OwnerLabel: descriptorLabel(owner.DisplayName, owner.Role, acquainted)}
+		if camp := sim.FindCamp(snap.VillageObjects, n.tent.OwnerActorID); camp != nil && sim.CampFireLit(camp.Fire, snap.PublishedAt) {
+			sight.Fire = camp.Fire.CurrentState
+		}
+		out = append(out, sight)
+	}
+	return out
 }

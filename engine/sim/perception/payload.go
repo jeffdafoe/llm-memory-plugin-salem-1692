@@ -1747,6 +1747,11 @@ type SurroundingsView struct {
 	// Store" instead of dumping raw "(94, 126)" coordinates (ZBBS-HOME-339).
 	NearbyStructureName string
 
+	// Camps are the players' pitched tents the actor can see from where it stands
+	// outdoors (LLM-798): within campSightTiles, nearest first, at most
+	// maxCampSightings. Empty indoors. Rendered as a scene line after the weather.
+	Camps []CampSight
+
 	// LocationDeadEnd names a live reason the place the actor is physically at
 	// can't serve them, or DeadEndNone when it can (LLM-154). A LIVE, situated
 	// read recomputed cold each tick from the snapshot — the NPC is standing
@@ -2430,4 +2435,13 @@ type Diff struct {
 	// AnyChange is the OR of every field above — the single value loop
 	// detection reads.
 	AnyChange bool
+}
+
+// CampSight is one player's pitched tent in an outdoor actor's view (LLM-798).
+// OwnerLabel is how the actor knows its owner — their name if acquainted, else
+// a descriptor ("a stranger"); Fire is the camp fire's state when it burns
+// ("burning", "dying"), "" when it is out or there is none.
+type CampSight struct {
+	OwnerLabel string
+	Fire       string
 }
