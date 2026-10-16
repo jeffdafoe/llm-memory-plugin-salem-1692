@@ -248,14 +248,15 @@ func campBeat(kind SourceActivityKind, step int) campPiece {
 	return campLayout[step]
 }
 
-// campBeatWindow builds the window for step of a pitch or strike on tent,
-// starting at now.
-func campBeatWindow(w *World, kind SourceActivityKind, tentID VillageObjectID, step int, now time.Time) *SourceActivity {
+// campBeatWindow builds the window for step of a pitch or strike on the tent
+// pitched from stand, starting at now.
+func campBeatWindow(w *World, kind SourceActivityKind, tentID VillageObjectID, stand TilePos, step int, now time.Time) *SourceActivity {
 	n := len(campLayout)
 	total, tentBeat := w.Settings.pitchTotal(), 0
 	if kind == SourceActivityStrike {
 		total, tentBeat = w.Settings.strikeTotal(), n-1
 	}
+	p := campBeat(kind, step)
 	return &SourceActivity{
 		Kind:      kind,
 		ObjectID:  tentID,
@@ -263,20 +264,21 @@ func campBeatWindow(w *World, kind SourceActivityKind, tentID VillageObjectID, s
 		Until:     now.Add(campBeatDuration(total, step, tentBeat, n)),
 		Steps:     n,
 		StepsDone: step,
+		Beat:      p.Beat,
+		Target:    campPiecePos(stand, p),
 	}
 }
 
 // emitCampBeatStarted announces a beat window: the piece it works on and where.
-func emitCampBeatStarted(w *World, actor *Actor, act *SourceActivity, stand TilePos, now time.Time) {
-	p := campBeat(act.Kind, act.StepsDone)
-	target := campPiecePos(stand, p)
+func emitCampBeatStarted(w *World, actor *Actor, act *SourceActivity, now time.Time) {
+	target := act.Target
 	w.emit(&SourceActivityStarted{
 		ActorID:  actor.ID,
 		ObjectID: act.ObjectID,
 		Kind:     act.Kind,
 		Until:    act.Until,
 		At:       now,
-		Beat:     p.Beat,
+		Beat:     act.Beat,
 		Target:   &target,
 	})
 }
@@ -341,9 +343,9 @@ func PitchTent(actorID ActorID, now time.Time) Command {
 			tent.EntryPolicy = EntryPolicyOwner
 			registerVillageObject(w, tent, tentAsset)
 
-			act := campBeatWindow(w, SourceActivityPitch, tent.ID, 0, now)
+			act := campBeatWindow(w, SourceActivityPitch, tent.ID, stand, 0, now)
 			actor.SourceActivity = act
-			emitCampBeatStarted(w, actor, act, stand, now)
+			emitCampBeatStarted(w, actor, act, now)
 			return CampStartResult{TentID: tent.ID, DoneAt: now.Add(w.Settings.pitchTotal())}, nil
 		},
 	}
@@ -373,9 +375,9 @@ func StrikeTent(actorID ActorID, now time.Time) Command {
 			if len(w.actorsByStructure[StructureID(camp.Tent.ID)]) > 0 {
 				return nil, ErrCampOccupied
 			}
-			act := campBeatWindow(w, SourceActivityStrike, camp.Tent.ID, 0, now)
+			act := campBeatWindow(w, SourceActivityStrike, camp.Tent.ID, stand, 0, now)
 			actor.SourceActivity = act
-			emitCampBeatStarted(w, actor, act, stand, now)
+			emitCampBeatStarted(w, actor, act, now)
 			return CampStartResult{TentID: camp.Tent.ID, DoneAt: now.Add(w.Settings.strikeTotal())}, nil
 		},
 	}
@@ -418,13 +420,13 @@ func landCampBeat(w *World, actor *Actor, act *SourceActivity, now time.Time) bo
 	if !more {
 		return true
 	}
-	nextAct := campBeatWindow(w, act.Kind, act.ObjectID, next, now)
+	nextAct := campBeatWindow(w, act.Kind, act.ObjectID, stand, next, now)
 	actor.SourceActivity = nextAct
 	// Striking: the tent drops to its bundle as its own beat begins.
 	if act.Kind == SourceActivityStrike && campBeat(act.Kind, next).Beat == CampBeatTent && tent.CurrentState != TentStatePacked {
 		setVillageObjectStateInline(w, tent, TentStatePacked)
 	}
-	emitCampBeatStarted(w, actor, nextAct, stand, now)
+	emitCampBeatStarted(w, actor, nextAct, now)
 	return true
 }
 
@@ -516,6 +518,7 @@ func dismantleCamp(w *World, ownerID ActorID, tentID VillageObjectID) {
 				setActorInsideStructure(w, a, "")
 			}
 		}
+		delete(w.actorsByStructure, sid)
 		for _, a := range w.Actors {
 			if a != nil && a.HomeStructureID == sid {
 				a.HomeStructureID = ""
@@ -583,7 +586,6 @@ func checkCampGround(w *World, actor *Actor, stand TilePos) error {
 	for _, t := range tiles {
 		occupied[t] = true
 	}
-	delete(occupied, stand)
 	for id := range w.outdoorActors {
 		if a := w.Actors[id]; a != nil && a.ID != actor.ID && occupied[a.Pos] {
 			return ErrCampBlocked

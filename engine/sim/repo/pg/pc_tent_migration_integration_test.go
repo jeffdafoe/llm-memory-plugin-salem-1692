@@ -84,8 +84,13 @@ func TestPCTentMigration_Integration(t *testing.T) {
 	exec(`INSERT INTO village_object (x, y, asset_id, owner_actor_id) VALUES (0, 0, '019e5f00-c401-7a10-9e00-000000798002', $1)`, player)
 	exec(`INSERT INTO structure (id, display_name) VALUES ($1, 'Jefferey''s Tent')`, tent)
 	exec(`UPDATE actor SET home_structure_id = $1, inside_structure_id = $1 WHERE id = $2`, tent, player)
+	exec(`INSERT INTO door_note (id, structure_id, recipient_actor_id, author_actor_id, author_name, body, left_at)
+	      VALUES ('note-0000798a', $1, $2, $3, 'Josiah', 'Called by.', now())`, tent, player, villager)
 
 	run("LLM-798-pc-tent_down.sql")
+	if n := count(`SELECT count(*) FROM door_note WHERE structure_id = $1`, tent); n != 0 {
+		t.Error("down left a door note at a tent that is gone")
+	}
 	if n := count(`SELECT count(*) FROM actor WHERE id = $1 AND home_structure_id IS NULL AND inside_structure_id IS NULL`, player); n != 1 {
 		t.Error("down left the player homed in, or inside, a tent that is gone")
 	}

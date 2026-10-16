@@ -12,6 +12,11 @@ UPDATE actor SET inside_structure_id = NULL, inside_room_id = NULL
  WHERE inside_structure_id IN (SELECT id::text FROM village_object
                                 WHERE asset_id = '019e5f00-c401-7a10-9e00-000000798001');
 
+-- door_note has no FK to structure; a note left at a tent goes with the tent.
+DELETE FROM door_note
+ WHERE structure_id IN (SELECT id::text FROM village_object
+                         WHERE asset_id = '019e5f00-c401-7a10-9e00-000000798001');
+
 DELETE FROM structure
  WHERE id IN (SELECT id::text FROM village_object
                WHERE asset_id = '019e5f00-c401-7a10-9e00-000000798001');

@@ -800,8 +800,8 @@ func placeVillageObject(w *World, assetID AssetID, asset *Asset, pos WorldPos, a
 }
 
 // newVillageObject builds a placement without adding it to the world, so a
-// caller can set what the created event should already carry (an owner, the
-// entry policy — LLM-798's tent) before registerVillageObject announces it.
+// caller can set its fields before registerVillageObject announces it — LLM-798's
+// tent goes out owner-only on its created event, never briefly open.
 func newVillageObject(assetID AssetID, asset *Asset, pos WorldPos, attachedTo VillageObjectID, placedBy, state string) *VillageObject {
 	entryPolicy := EntryPolicyClosed
 	if asset.DoorOffsetX != nil && asset.DoorOffsetY != nil {

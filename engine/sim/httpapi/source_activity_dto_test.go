@@ -121,3 +121,31 @@ func TestTranslateCampBeat(t *testing.T) {
 		t.Errorf("last strike completion = %+v (sent %v), want a clear", frame.Data, ok)
 	}
 }
+
+// LLM-798: a client loading mid-pitch gets the beat and where it stands, so it
+// can face the player the right way.
+func TestAgentsFromSnapshot_CampBeat(t *testing.T) {
+	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{
+		"pc": {
+			Kind:                   sim.KindPC,
+			SourceActivityKind:     sim.SourceActivityPitch,
+			SourceActivityObjectID: "tent",
+			SourceActivityBeat:     sim.CampBeatStool,
+			SourceActivityTarget:   sim.WorldPos{X: 128, Y: 192},
+		},
+		"npc": {Kind: sim.KindNPCShared, SourceActivityKind: sim.SourceActivityHarvest, SourceActivityObjectID: "bush"},
+	}}
+	agents := agentsFromSnapshot(snap, nil)
+	byID := map[string]AgentDTO{}
+	for _, a := range agents {
+		byID[a.ID] = a
+	}
+	pc := byID["pc"]
+	if pc.SourceActivityKind != "pitch" || pc.SourceActivityBeat != "stool" || pc.SourceActivityTarget == nil ||
+		pc.SourceActivityTarget.X != 128 || pc.SourceActivityTarget.Y != 192 {
+		t.Errorf("pc = kind %q beat %q target %+v, want pitch / stool / 128,192", pc.SourceActivityKind, pc.SourceActivityBeat, pc.SourceActivityTarget)
+	}
+	if npc := byID["npc"]; npc.SourceActivityBeat != "" || npc.SourceActivityTarget != nil {
+		t.Errorf("a harvest carries beat %q target %+v, want none", npc.SourceActivityBeat, npc.SourceActivityTarget)
+	}
+}

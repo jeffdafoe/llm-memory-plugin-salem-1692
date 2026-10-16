@@ -210,6 +210,11 @@ type AgentDTO struct {
 	// SourceActivityObjectID is the object being worked (LLM-743), so the client
 	// can turn a repairer toward it and land the swing on it. Omitted when idle.
 	SourceActivityObjectID string `json:"source_activity_object_id,omitempty"`
+	// SourceActivityBeat / SourceActivityTarget are a camp beat's piece and
+	// where it stands (LLM-798) — the same pair the npc_source_activity_changed
+	// frame carries, so a client loading mid-pitch faces the player right.
+	SourceActivityBeat   string             `json:"source_activity_beat,omitempty"`
+	SourceActivityTarget *campTargetWireDTO `json:"source_activity_target,omitempty"`
 }
 
 // AgentSpriteDTO is the resolved character sprite inlined onto an AgentDTO.

@@ -96,6 +96,11 @@ type SourceActivity struct {
 	// Difficulty is the player's game difficulty, 0..1, fixed at start from the
 	// purse (LLM-712) so a reload resumes the same game.
 	Difficulty float64
+	// Beat and Target are a camp beat's piece and where it stands (LLM-798),
+	// carried on the window so a reconnect mid-beat can face the player the
+	// right way. Empty Beat for every other kind.
+	Beat   string
+	Target WorldPos
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what

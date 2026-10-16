@@ -3059,6 +3059,8 @@ func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddle
 		sa.SourceActivityKind = act.Kind
 		sa.SourceActivityObjectID = act.ObjectID
 		sa.SourceActivityPublicWorks = act.PublicWorks
+		sa.SourceActivityBeat = act.Beat
+		sa.SourceActivityTarget = act.Target
 		if act.Kind == SourceActivityRefresh {
 			if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 				sa.SourceActivityAttribute = primaryRefreshNeed(obj)

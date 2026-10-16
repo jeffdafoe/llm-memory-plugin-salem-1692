@@ -179,6 +179,12 @@ func TestPitchTent_BuildsCampBeatByBeat(t *testing.T) {
 	if s.Fire != "" || s.Stool || s.Woodpile {
 		t.Fatalf("after the tent beat = %+v, want no props yet", s)
 	}
+	// A client loading now sees the beat under way and where it stands.
+	pcSnap := w.Published().Actors["pc"]
+	wantTarget := sim.TilePos{X: campStand.X + 2, Y: campStand.Y + 1}.Center()
+	if pcSnap.SourceActivityBeat != sim.CampBeatFire || pcSnap.SourceActivityTarget != wantTarget {
+		t.Fatalf("snapshot beat = %q at %+v, want fire at %+v", pcSnap.SourceActivityBeat, pcSnap.SourceActivityTarget, wantTarget)
+	}
 
 	landBeats(t, w, now, 3)
 	s = readCamp(t, w)
@@ -246,6 +252,15 @@ func TestPitchTent_RefusesBadGround(t *testing.T) {
 			name:  "inside a pen",
 			extra: penAround(campStand, 8),
 			want:  sim.ErrCampInPen,
+		},
+		{
+			name: "someone standing where the player pitches from",
+			setup: func(world *sim.World) {
+				world.Actors["idler"] = &sim.Actor{ID: "idler", DisplayName: "Idler", Kind: sim.KindNPCShared,
+					State: sim.StateIdle, Pos: campStand}
+				sim.RebuildIndicesForTest(world)
+			},
+			want: sim.ErrCampBlocked,
 		},
 		{
 			name: "indoors",
