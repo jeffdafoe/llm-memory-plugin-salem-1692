@@ -103,11 +103,14 @@ func TestCreatePC_FullLodged(t *testing.T) {
 		t.Errorf("InsideStructureID = %q, want inn", a.InsideStructureID)
 	}
 	if a.InsideRoomID != 0 {
-		t.Errorf("InsideRoomID = %d, want 0 (LLM-14: a fresh lodger is created awake in the common area with a room grant, not bedded into the bedroom)", a.InsideRoomID)
+		t.Errorf("InsideRoomID = %d, want 0 (created awake in the common room)", a.InsideRoomID)
 	}
-	ra, ok := a.RoomAccess[sim.RoomAccessKey{RoomID: 2, Source: sim.AccessSourceLedger}]
-	if !ok || ra == nil || !ra.Active {
-		t.Errorf("RoomAccess on room 2 = %+v, want an active ledger grant", ra)
+	// LLM-798: no free first night — the new player carries a tent instead.
+	if len(a.RoomAccess) != 0 {
+		t.Errorf("RoomAccess = %+v, want none (no starter bedroom)", a.RoomAccess)
+	}
+	if a.Inventory[sim.TentItemKind] != 1 {
+		t.Errorf("tents in pack = %d, want 1", a.Inventory[sim.TentItemKind])
 	}
 }
 

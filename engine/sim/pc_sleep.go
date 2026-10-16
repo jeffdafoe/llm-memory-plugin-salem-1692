@@ -105,7 +105,7 @@ func restartSeedPCInputStamps(w *World, now time.Time) int {
 // (pcCanSleepHere) but silently skips rather than erroring. LLM-14: the gate is
 // grant-based, so the message says a paid bedroom "here", not "be in" one — a
 // lodger can bed from the common floor as long as it holds a grant.
-var ErrPCCannotSleepHere = errors.New("you need a paid bedroom here to sleep")
+var ErrPCCannotSleepHere = errors.New("you need a paid bedroom here, or a home of your own, to sleep")
 
 // pcCanSleepHere reports whether PC may bed down where it currently stands and,
 // if so, the private bedroom it beds into. It must be inside a structure where
@@ -120,11 +120,20 @@ var ErrPCCannotSleepHere = errors.New("you need a paid bedroom here to sleep")
 // standing grant. The resolved room is what executePCSleep stamps as
 // InsideRoomID at bed-down. MUST be called from inside a Command.Fn (reads
 // w.Structures via findRoom).
+//
+// LLM-798: a PC also sleeps in its own home (today its pitched tent), with no
+// room — room 0, the home's single space, the way an NPC sleeps in a cottage.
 func pcCanSleepHere(w *World, pc *Actor, now time.Time) (RoomID, bool) {
 	if pc.InsideStructureID == "" {
 		return 0, false
 	}
-	return lodgerRoomAt(w, pc, pc.InsideStructureID, now)
+	if room, ok := lodgerRoomAt(w, pc, pc.InsideStructureID, now); ok {
+		return room, true
+	}
+	if pc.HomeStructureID != "" && pc.InsideStructureID == pc.HomeStructureID {
+		return 0, true
+	}
+	return 0, false
 }
 
 // executePCSleep beds a PC at now into roomID (the private bedroom resolved by
@@ -331,7 +340,9 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 				// rested PC would just re-bed it next tick (AutoBedOfflineLodgerPCs),
 				// spamming PCSleepStarted/Ended every minute. The other wake reasons
 				// (checkout / movedOut / the 12h cap) still fire.
-				rested := a.Needs["tiredness"] <= 0 &&
+				// LLM-798: rested means down to the rest floor — 0 in a bed, higher
+				// in a tent, where the player wakes stiff.
+				rested := a.Needs["tiredness"] <= pcRestFloor(w, a) &&
 					!PCPresenceStale(a.LastPCSeenAt, now, PCPresenceStaleAfter(w))
 				capped := !a.SleepingUntil.After(now)
 				checkedOut := !canSleepHere

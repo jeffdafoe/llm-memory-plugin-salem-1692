@@ -415,6 +415,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/pc/repair/offer", s.requireAuth(s.handlePCRepairOffer))
 	mux.HandleFunc("POST /api/village/pc/repair/start", s.requireAuth(s.handlePCRepairStart))
 	mux.HandleFunc("POST /api/village/pc/repair/step", s.requireAuth(s.handlePCRepairStep))
+	// LLM-798: the player's camp — pitch / strike the tent, light the fire.
+	mux.HandleFunc("POST /api/village/pc/camp/pitch", s.requireAuth(s.handlePCCampPitch))
+	mux.HandleFunc("POST /api/village/pc/camp/strike", s.requireAuth(s.handlePCCampStrike))
+	mux.HandleFunc("POST /api/village/pc/camp/light", s.requireAuth(s.handlePCCampLight))
 	// Admin world-config read (ZBBS-WORK-363) — the config panel's populate
 	// fetch. Admin-only despite being a GET: requireAuth + an in-command
 	// IsAdmin gate (adminCommand inside handleConfig), so it stays off the
@@ -629,6 +633,12 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 	for id, a := range s.Actors {
 		hunger, thirst, tiredness := sim.DisplayNeeds(a.Needs)
 		saKind, saLabel, saObject := snapshotSourceActivity(s, a)
+		var saBeat string
+		var saTarget *campTargetWireDTO
+		if saKind != "" && a.SourceActivityBeat != "" {
+			saBeat = a.SourceActivityBeat
+			saTarget = &campTargetWireDTO{X: a.SourceActivityTarget.X, Y: a.SourceActivityTarget.Y}
+		}
 		out = append(out, AgentDTO{
 			ID:                     string(id),
 			DisplayName:            a.DisplayName,
@@ -655,6 +665,8 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			SourceActivityKind:     saKind,
 			SourceActivityLabel:    saLabel,
 			SourceActivityObjectID: saObject,
+			SourceActivityBeat:     saBeat,
+			SourceActivityTarget:   saTarget,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

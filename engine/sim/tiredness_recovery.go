@@ -121,6 +121,11 @@ func RecoverTiredness(now time.Time) Command {
 				if units > 0 {
 					before := a.Needs["tiredness"]
 					after := ClampNeed(before - units)
+					// LLM-798: a player asleep in a tent rests only down to its
+					// floor (pcRestFloor) — never below it, and never raised to it.
+					if floor := pcRestFloor(w, a); after < floor {
+						after = min(before, floor)
+					}
 					a.Needs["tiredness"] = after
 
 					// Advance the cursor by exactly the time the whole units

@@ -1923,6 +1923,11 @@ type ActorSnapshot struct {
 	// damaged site (SourceActivity.PublicWorks, LLM-675) rather than a keeper's
 	// own nail-mend — the two can share an object at a damaged business.
 	SourceActivityPublicWorks bool
+	// SourceActivityBeat / SourceActivityTarget are a camp beat's piece and
+	// where it stands (SourceActivity.Beat / Target, LLM-798), so a client
+	// loading mid-pitch faces the player the right way. Empty Beat otherwise.
+	SourceActivityBeat   string
+	SourceActivityTarget WorldPos
 
 	// RouteLabel / RouteStopObjectID are the read-path projection of an in-flight
 	// scheduled NPC route the actor is walking (LLM-514) — today only the constable

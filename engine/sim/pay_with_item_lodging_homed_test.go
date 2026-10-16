@@ -125,3 +125,55 @@ func TestPayWithItem_Lodging_HomelessRenewer_NotBlocked(t *testing.T) {
 		t.Errorf("State = %q, want pending", result.State)
 	}
 }
+
+// TestPayWithItem_Lodging_TentHome_Rejected — LLM-798: a player whose pitched
+// tent is their home is told to strike it first, and where it stands.
+func TestPayWithItem_Lodging_TentHome_Rejected(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	mustSend(t, w, func(world *sim.World) {
+		world.VillageObjects["well-house"] = &sim.VillageObject{ID: "well-house", DisplayName: "Well House",
+			Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 4}.Center()}
+		world.Structures["well-house"] = &sim.Structure{ID: "well-house", DisplayName: "Well House"}
+		world.VillageObjects["alice-tent"] = &sim.VillageObject{ID: "alice-tent", AssetID: sim.TentAssetID,
+			OwnerActorID: "alice", Pos: sim.TilePos{X: sim.PadX + 6, Y: sim.PadY + 6}.Center()}
+		world.Structures["alice-tent"] = &sim.Structure{ID: "alice-tent", DisplayName: "Alice's Tent"}
+		world.Actors["alice"].HomeStructureID = "alice-tent"
+	})
+
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "your tent is pitched by the Well House") || !strings.Contains(err.Error(), "strike it") {
+		t.Fatalf("want the strike-your-tent reject naming where it stands, got %v", err)
+	}
+	if ledger := readPayLedger(t, w); len(ledger) != 0 {
+		t.Errorf("ledger has %d entries after rejected intake, want 0", len(ledger))
+	}
+}
+
+// TestGiveItems_TentRefused — LLM-798: a tent is a player's shelter and can't
+// be handed over.
+func TestGiveItems_TentRefused(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	mustSend(t, w, func(world *sim.World) {
+		world.ItemKinds[sim.TentItemKind] = &sim.ItemKindDef{Name: sim.TentItemKind, DisplayLabel: "Tent",
+			Capabilities: []string{sim.CapabilityShelter}}
+		world.Actors["alice"].Inventory = map[sim.ItemKind]int{sim.TentItemKind: 1}
+	})
+	_, err := w.Send(sim.GiveItems("alice", "Bob", []sim.PayItemInput{{Item: "tent", Qty: 1}}, "", time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "shelter") {
+		t.Fatalf("want the shelter refusal, got %v", err)
+	}
+	if snap := w.Published(); snap.Actors["alice"].Inventory[sim.TentItemKind] != 1 {
+		t.Errorf("alice's tent moved on a refused gift")
+	}
+}
