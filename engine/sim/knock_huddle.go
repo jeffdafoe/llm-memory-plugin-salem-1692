@@ -200,8 +200,8 @@ type KnockResult struct {
 //
 // Refused (ErrKnockRefused) unless the player is outdoors and still at the
 // door of structureID (AtDoorOf, not walking), and it is a door they would
-// have to knock on — owner-only, they are not a member, and it has a door
-// (EnterOrKnock's own test). A player already in another conversation leaves
+// have to knock on — owner-only, they are not a member, it has a door, and it
+// is not a market stall (mustKnockAt, EnterOrKnock's own test). A player already in another conversation leaves
 // it to knock; one already in the doorway conversation has been answered.
 func KnockAtDoor(actorID ActorID, structureID StructureID, now time.Time) Command {
 	return Command{
@@ -215,8 +215,8 @@ func KnockAtDoor(actorID ActorID, structureID StructureID, now time.Time) Comman
 				return nil, fmt.Errorf("%w: there is no such house", ErrKnockRefused)
 			}
 			_, hasDoor := structureEntryTile(w, structureID)
-			if !hasDoor || effectiveEntryPolicy(w, structureID, vobj, now) != EntryPolicyOwner ||
-				structureMembershipAllows(w, actor, structureID, now) {
+			if !mustKnockAt(vobj, effectiveEntryPolicy(w, structureID, vobj, now),
+				structureMembershipAllows(w, actor, structureID, now), hasDoor) {
 				return nil, fmt.Errorf("%w: this is not a door to knock on", ErrKnockRefused)
 			}
 			if actor.MoveIntent != nil || !AtDoorOf(w.VillageObjects, w.Assets, actor.InsideStructureID, actor.Pos, structureID) {

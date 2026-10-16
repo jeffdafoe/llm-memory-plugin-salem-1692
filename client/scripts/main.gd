@@ -179,6 +179,9 @@ var _pending_knock: bool = false
 # arrival. _pc_move_target is the structure the in-flight move request names.
 var _pending_knock_structure_id := ""
 var _pc_move_target := ""
+# The object the last walk was sent to ("" for a ground click): the arrival
+# thought opens the repair panel only for work the player walked to.
+var _walk_hit_id := ""
 var _pc_http_knock: HTTPRequest = null
 # A walk-out from a closed room (LLM-787): the room it leaves, and one that
 # waits for the move in flight to answer before it can be sent.
@@ -595,7 +598,8 @@ func _build_ui() -> void:
     top_bar.title_pressed.connect(credits_scroll_layer.open)
 
     # Repair panel (LLM-690) — the town's repair work: opens on the arrival
-    # thought's offer (talk panel) or on a click at a damaged object (the
+    # thought's offer (talk panel) when the walk was to that work
+    # (_on_repair_offered), or on a click at a damaged object (the
     # probe in _post_pc_move_to_screen). Modal tier, like the notice panel.
     repair_panel_layer = CanvasLayer.new()
     repair_panel_layer.name = "RepairPanelLayer"
@@ -611,7 +615,7 @@ func _build_ui() -> void:
         if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
             talk_panel_layer._refresh_state())
     if talk_panel_layer.has_signal("repair_offered"):
-        talk_panel_layer.repair_offered.connect(repair_panel_layer.show_offer)
+        talk_panel_layer.repair_offered.connect(_on_repair_offered)
 
     # Door popup (LLM-785) — at the door of a house the player may not walk
     # into: Knock or Leave. Modal tier, like the repair panel.
@@ -1325,6 +1329,7 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         # target or the pending knock of the walk still under way). A new walk
         # drops any knock still pending from the last one.
         _pc_move_target = move_target
+        _walk_hit_id = hit_id
         _pending_knock = false
         _pending_knock_structure_id = ""
     if err != OK:
@@ -1420,6 +1425,7 @@ func _leave_sent(sid: String, err: int) -> void:
         _pc_move_purpose = "leave"
         _leave_sid = sid
         _pc_move_target = ""
+        _walk_hit_id = ""
         _pending_knock = false
         _pending_knock_structure_id = ""
     elif err == ERR_BUSY:
@@ -1440,6 +1446,14 @@ func _send_queued_leave() -> void:
 func _reopen_room(sid: String) -> void:
     if sid != "" and interior_panel_layer != null and _local_pc_place() == sid:
         interior_panel_layer.open(sid)
+
+## The arrival thought's repair offer (LLM-793): the panel opens only when the
+## walk was to that work. Work found near somewhere else the player went (a crate by the
+## stall they came to buy at) stays a floating thought; a click on it opens the
+## panel through the probe.
+func _on_repair_offered(o: Dictionary) -> void:
+    if RepairPanelScript.click_matches_offer(world, _walk_hit_id, o):
+        repair_panel_layer.show_offer(o)
 
 ## Open the door popup for the pending knock when the character stands at that
 ## house's door (LLM-785) — called on their arrival and when the move's answer
