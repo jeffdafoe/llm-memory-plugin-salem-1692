@@ -42,6 +42,7 @@ func TestHandlePCOuthouse(t *testing.T) {
 	seedPC(t, w, "pc-other", "other", 30, 30)
 	seedOuthouse(t, w, "outhouse", 11, 10, true)
 	seedOuthouse(t, w, "barrel", 9, 10, false)
+	seedOuthouse(t, w, "outhouse2", 10, 11, true)
 	var used []*sim.OuthouseUsed
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, e sim.Event) {
@@ -82,6 +83,14 @@ func TestHandlePCOuthouse(t *testing.T) {
 	}
 	if len(used) != 1 || used[0].ObjectID != "outhouse" || used[0].ActorID != "pc-tester" || used[0].Stay != sim.OuthouseStay {
 		t.Fatalf("OuthouseUsed events = %+v, want one for pc-tester", used)
+	}
+
+	// One outhouse at a time: the tester stands at the door of a second one too.
+	if rec := post(t, srv, "/api/village/pc/outhouse", `{"object_id":"outhouse2"}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("a second outhouse during the stay: status = %d, want 422", rec.Code)
+	}
+	if _, err := w.Send(sim.UseOuthouse("pc-tester", "outhouse2", time.Now().UTC().Add(sim.OuthouseStay))); err != nil {
+		t.Errorf("a second outhouse after the stay: err = %v, want nil", err)
 	}
 
 	// The other player walks up while the tester is inside.

@@ -13,7 +13,9 @@ import (
 // outhouse sounds at the outhouse, quieter with distance.
 //
 // The hold is transient world state (outhouseVisits): a restart loses at most
-// one stay. NPCs neither use outhouses nor perceive a player in one.
+// one stay. Only the clients hide the player: in the sim they stay at the
+// door, so NPCs see them standing there, and the client ignores walk clicks
+// for the stay. NPCs do not use outhouses.
 
 // TagOuthouse is the per-instance tag that makes a placement an outhouse.
 const TagOuthouse = "outhouse"
@@ -70,6 +72,13 @@ func UseOuthouse(actorID ActorID, objectID VillageObjectID, now time.Time) Comma
 			}
 			if v, held := w.outhouseVisits[objectID]; held && now.Before(v.Until) {
 				return nil, ErrOuthouseInUse
+			}
+			// One outhouse at a time: a player at the doors of two is still in
+			// the first until its stay ends.
+			for _, v := range w.outhouseVisits {
+				if v.ActorID == actorID && now.Before(v.Until) {
+					return nil, ErrOuthouseInUse
+				}
 			}
 			if w.outhouseVisits == nil {
 				w.outhouseVisits = make(map[VillageObjectID]outhouseVisit)

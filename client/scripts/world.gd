@@ -51,6 +51,8 @@ const OUTHOUSE_UNHEARD_FART := 3.0
 
 ## The player's own actor id — where play_sound_at hears from. Set by main.gd.
 var pc_actor_id := ""
+## actor id -> the token of their latest outhouse stay (apply_outhouse_used).
+var _outhouse_visits := {}
 
 var terrain_renderer: Node2D = null
 @onready var objects_node: Node2D = $Objects
@@ -850,34 +852,41 @@ func apply_outhouse_used(data: Dictionary) -> void:
         return
     var seconds := maxf(float(data.get("seconds", 0.0)), 0.0)
     var at := house.global_position
-    var who: Node2D = placed_npcs.get(str(data.get("actor_id", "")), null)
-    # Each stay is told apart by when it started, so the end of an earlier one
-    # never shows a player who has gone back in.
+    var actor_id := str(data.get("actor_id", ""))
+    var who: Node2D = placed_npcs.get(actor_id, null)
+    # Each stay is told apart by when it started: an earlier stay's farts and
+    # its door stop once the player has gone back in, and its end never shows
+    # them.
     var visit := Time.get_ticks_usec()
+    _outhouse_visits[actor_id] = visit
     if who != null and is_instance_valid(who):
-        who.set_meta("outhouse_visit", visit)
         who.set_meta("outhouse_until_ms", Time.get_ticks_msec() + int(seconds * 1000.0))
         who.visible = false
     play_sound_at("outhouse_door", at)
     var farts_end := Time.get_ticks_msec() / 1000.0 + seconds - OUTHOUSE_EXIT_QUIET
-    get_tree().create_timer(OUTHOUSE_FIRST_FART).timeout.connect(_outhouse_fart.bind(at, farts_end))
+    get_tree().create_timer(OUTHOUSE_FIRST_FART).timeout.connect(_outhouse_fart.bind(at, farts_end, actor_id, visit))
     get_tree().create_timer(seconds).timeout.connect(func() -> void:
-        if who != null and is_instance_valid(who) and int(who.get_meta("outhouse_visit", 0)) == visit:
-            who.remove_meta("outhouse_visit")
+        if _outhouse_visits.get(actor_id, 0) != visit:
+            return
+        _outhouse_visits.erase(actor_id)
+        if who != null and is_instance_valid(who):
             who.remove_meta("outhouse_until_ms")
             who.visible = _compute_npc_visible(bool(who.get_meta("inside", false)), str(who.get_meta("inside_structure_id", "")))
         play_sound_at("outhouse_door", at))
 
 ## One fart, then the next after a pause, while there is still room before
-## farts_end (seconds on the ticks clock) for the shortest one. The file is
-## picked at random, so a long one started late can run past the door.
-func _outhouse_fart(at: Vector2, farts_end: float) -> void:
+## farts_end (seconds on the ticks clock) for the shortest one, and while the
+## stay is still the player's latest. The file is picked at random, so a long
+## one started late can run past the door.
+func _outhouse_fart(at: Vector2, farts_end: float, actor_id: String, visit: int) -> void:
+    if _outhouse_visits.get(actor_id, 0) != visit:
+        return
     var length := play_sound_at("fart", at)
     if length <= 0.0:
         length = OUTHOUSE_UNHEARD_FART
     var next := length + randf_range(OUTHOUSE_FART_GAP.x, OUTHOUSE_FART_GAP.y)
     if Time.get_ticks_msec() / 1000.0 + next + OUTHOUSE_SHORTEST_FART <= farts_end:
-        get_tree().create_timer(next).timeout.connect(_outhouse_fart.bind(at, farts_end))
+        get_tree().create_timer(next).timeout.connect(_outhouse_fart.bind(at, farts_end, actor_id, visit))
 
 ## Whether node is a player still inside an outhouse (LLM-806).
 func in_outhouse(node: Node2D) -> bool:

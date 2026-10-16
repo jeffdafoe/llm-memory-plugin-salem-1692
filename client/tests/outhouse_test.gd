@@ -51,6 +51,9 @@ func _run_once() -> void:
         quit(1)
         return
     _world = load("res://scripts/world.gd").new()
+    var objects := Node2D.new()
+    objects.name = "Objects"
+    _world.add_child(objects)
     root.add_child(_world)
     _check_test_list()
     for t in TESTS:
@@ -177,10 +180,13 @@ func _test_outhouse_stay() -> void:
     _world.apply_outhouse_used({"object_id": "oh", "actor_id": "pc-them", "seconds": STAY})
     await create_timer(STAY * 0.5).timeout
     _world.apply_outhouse_used({"object_id": "oh", "actor_id": "pc-them", "seconds": STAY})
+    before = _sound._next_voice
     await create_timer(STAY * 0.5 + 0.05).timeout
     _check("the first stay's end — still hidden for the second", not them.visible)
+    _check("the first stay's end — no door heard", _plays_since(before) == 0)
     await create_timer(STAY).timeout
     _check("the second stay over — shown", them.visible)
+    _check("the second stay over — the door heard once", _plays_since(before) == 1)
 
     # A broadcast for an outhouse this client has not placed changes nothing.
     _world.apply_outhouse_used({"object_id": "missing", "actor_id": "pc-them", "seconds": STAY})
