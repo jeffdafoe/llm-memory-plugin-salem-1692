@@ -677,6 +677,10 @@ func _build_ui() -> void:
     inventory_panel.set_script(InventoryPanelScript)
     inventory_panel_layer.add_child(inventory_panel)
     add_child(inventory_panel_layer)
+    # Register the popover (LLM-800): main.gd._input runs before GUI, so without
+    # this a press on a Wear / Remove button would also walk the player. The
+    # panel is hidden while closed, which is_visible_in_tree() already covers.
+    camera.register_ui_panel(inventory_panel.ui_panel())
     if top_bar != null and top_bar.has_signal("inventory_toggle_requested"):
         top_bar.inventory_toggle_requested.connect(func(rect: Rect2):
             if inventory_panel.visible:

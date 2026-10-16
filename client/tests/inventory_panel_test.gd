@@ -23,6 +23,7 @@ const TESTS := [
     "_test_refusal_shows_under_the_list",
     "_test_success_redraws_from_the_answer",
     "_test_older_poll_does_not_undo_the_answer",
+    "_test_ui_panel_covers_the_popover",
     "_test_own_duck_quacks_on_arrival",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
@@ -47,7 +48,7 @@ func _initialize() -> void:
 
 func _run_once() -> void:
     _check_test_list()
-    _run_all()
+    await _run_all()
     _check_all_tests_ran()
     print("\n[inventory_panel_test] %d checks, %d failure(s)" % [_checks, _failures])
     if _failures == 0:
@@ -66,7 +67,7 @@ func _check(label: String, got, want) -> void:
 func _run_all() -> void:
     for t in TESTS:
         _current = t
-        call(t)
+        await call(t)
 
 
 func _done() -> void:
@@ -205,6 +206,22 @@ func _test_older_poll_does_not_undo_the_answer() -> void:
     _check("a later poll lands", _rows(p).get("Duck pendant"), ["Wear"])
     p.set_inventory(after)
     _check("an unstamped update lands", _rows(p).get("Duck pendant"), ["Remove"])
+    p.free()
+    _done()
+
+
+## main.gd registers ui_panel() with the camera so a press on a row button is
+## not also a walk: it must cover the buttons while open and drop out closed.
+func _test_ui_panel_covers_the_popover() -> void:
+    var p := _panel([])
+    await process_frame
+    await process_frame
+    var ui: Control = p.ui_panel()
+    var b := _button(p, "Duck pendant")
+    _check("open: visible to the camera", ui.is_visible_in_tree(), true)
+    _check("open: covers a row button", ui.get_global_rect().has_point(b.get_global_rect().get_center()), true)
+    p.close()
+    _check("closed: out of the camera's way", ui.is_visible_in_tree(), false)
     p.free()
     _done()
 

@@ -96,6 +96,12 @@ func _ready() -> void:
     visible = false
 
 
+## The visible popover, for the camera's UI registry (main.gd), so a press on
+## it is never taken as a walk.
+func ui_panel() -> Control:
+    return _panel
+
+
 ## Show the panel anchored under the given screen-space rect (the
 ## inventory icon's global rect). Right edge of the panel aligns with
 ## the right edge of the icon, top edge sits a few pixels below the
