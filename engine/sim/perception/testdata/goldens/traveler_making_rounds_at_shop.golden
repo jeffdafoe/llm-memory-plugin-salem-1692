@@ -12,6 +12,7 @@ Coins in your purse: 90.
 ## Around you
 You are inside the Blacksmith, with the blacksmith.
 It is morning in the village.
+It is about 9 in the morning.
 
 ## Your rounds
 You're with Ezekiel Crane at Blacksmith — the one keeper you came to deal with. Buy the nail you're after: call pay_with_item with seller "Ezekiel Crane", item "nail", the quantity you want, consume_now false, coins in amount, and your words in say.

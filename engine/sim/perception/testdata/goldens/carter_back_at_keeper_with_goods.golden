@@ -13,6 +13,7 @@ You are carrying: sheaves of wheat (x25).
 ## Around you
 You are inside the Mill, with Joseph Scott.
 The afternoon wears on.
+It is about 4 in the afternoon.
 
 ## Your rounds
 You're with Joseph Scott at Mill — the keeper you've brought the wheat to, off Elizabeth Ellis's shelves, which their work has gone without. Offer it: call sell with item "wheat", qty 25, about 50 coin for the lot in amount, consume_now false, target_buyer "Joseph Scott", and your words in say. They may take it as offered, pay you in coin or in goods from their shelves, or name a lower figure.

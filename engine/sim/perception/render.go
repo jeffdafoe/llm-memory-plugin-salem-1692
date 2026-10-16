@@ -1517,6 +1517,23 @@ func timeOfDayProse(minute int) string {
 	}
 }
 
+// clockTimeProse renders the hour beside the felt band, in the same voice as
+// the shift lines ("you close at 9 in the evening"), so a keeper can compare
+// the two. The band alone spans hours: "Evening settles" at 6:30 read to Josiah
+// Thorne as his 9 o'clock close, and he shut the shop. The minute is floored to
+// the quarter hour — the line never names an hour that has not yet come — and
+// sits in the per-turn surroundings, not the cached prompt zone.
+func clockTimeProse(minute int) string {
+	if minute < 0 || minute > 1439 {
+		return ""
+	}
+	clock := sim.ClockHourProse(minute - minute%15)
+	if clock == "" {
+		return ""
+	}
+	return "It is about " + clock + "."
+}
+
 // weatherStormProse is the felt line an NPC reads when a storm is overhead — the
 // perception-side analogue of the client's rain / scene-darkening / lightning FX
 // (LLM-117). A plain scene, not a "weather: storm" stat: it hands the model
@@ -1866,6 +1883,10 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	// publish path always sets it, so the line is always present there.
 	if s.LocalMinuteOfDay != nil {
 		if prose := timeOfDayProse(*s.LocalMinuteOfDay); prose != "" {
+			b.WriteString(prose)
+			b.WriteString("\n")
+		}
+		if prose := clockTimeProse(*s.LocalMinuteOfDay); prose != "" {
 			b.WriteString(prose)
 			b.WriteString("\n")
 		}
