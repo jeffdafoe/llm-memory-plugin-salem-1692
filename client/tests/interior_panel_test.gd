@@ -105,6 +105,7 @@ const TESTS := [
     "_test_home_sleepers_in_bed",
     "_test_dismiss_walks_out_of_a_room",
     "_test_upstairs",
+    "_test_tent_bedroll_tap",
 ]
 
 const STALL := "stall-1"
@@ -4219,6 +4220,34 @@ func _test_upstairs() -> void:
 
     _panel.room_tapped.disconnect(on_way)
     _panel.floor_tapped.disconnect(on_floor)
+    _panel.bed_tapped.disconnect(on_bed)
+    _panel.close()
+    _clear_people()
+    _done()
+
+
+## LLM-798 (the live miss, 2026-10-16): in the player's own tent a tap on the
+## bedroll puts them to bed; in a tent that is not their home it does not. The
+## engine's own tent plan, served as a test home.
+func _test_tent_bedroll_tap() -> void:
+    _clear_people()
+    _panel.close()
+    var tent := HOME + "tent"
+    var pc := _person("pc", _farmer(), tent)
+    pc.set_meta("home_structure_id", tent)
+    _panel.open(tent)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    var beds := []
+    var on_bed := func(): beds.append(true)
+    _panel.bed_tapped.connect(on_bed)
+    _panel._on_stage_input(_press(Vector2(28, 80) * 4))
+    _check("own tent: the bedroll is bed", beds, [true])
+    beds.clear()
+    pc.set_meta("home_structure_id", "someone-elses-tent")
+    _panel._on_stage_input(_press(Vector2(28, 80) * 4))
+    _check("not their tent: no bed", beds, [])
     _panel.bed_tapped.disconnect(on_bed)
     _panel.close()
     _clear_people()
