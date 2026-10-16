@@ -64,6 +64,9 @@ var texture_hook: Callable
 
 var structure_id := ""
 var recipient_id := ""
+## Counts each opening, so an answer to a note sent from an earlier opening is
+## not applied to this one (answers_session).
+var session := 0
 
 var root: Control = null
 var backdrop: ColorRect = null
@@ -222,6 +225,7 @@ func _button(text: String, cb: Callable) -> Button:
 ## the people a note may be for. Opening again while open starts afresh.
 func open(sid: String, house: String, recipients: Array) -> void:
     structure_id = sid
+    session += 1
     recipient_id = ""
     _sending = false
     house_label.text = house
@@ -249,6 +253,12 @@ func close() -> void:
 
 func is_open() -> bool:
     return visible
+
+
+## Whether an answer to a note sent from opening `sent_session` still belongs
+## here: the same opening, still open.
+func answers_session(sent_session: int) -> bool:
+    return visible and sent_session == session
 
 
 ## The engine refused the note (or the request failed): say why and let the

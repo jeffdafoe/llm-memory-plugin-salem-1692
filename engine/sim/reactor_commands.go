@@ -286,7 +286,7 @@ type TickResult struct {
 	// actor. CompleteReactorTick marks them read only when the turn answered
 	// (terminalStatusAnswered), so a failed call leaves the note on the door.
 	// Set after Render, like DischargedSourceKeys.
-	ShownDoorNotes []DoorNoteID
+	ShownDoorNotes []DoorNoteSeen
 }
 
 // CompleteReactorTick returns a Command that records the completion of an

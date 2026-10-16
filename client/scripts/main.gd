@@ -187,6 +187,9 @@ var _pc_http_knock: HTTPRequest = null
 ## The house the last knock was at, for its answer (LLM-19).
 var _knock_structure_id := ""
 var _pc_http_leave_note: HTTPRequest = null
+## The note window's opening the note in flight was sent from (LLM-19), so its
+## answer is applied only to that opening.
+var _leave_note_session := -1
 # A walk-out from a closed room (LLM-787): the room it leaves, and one that
 # waits for the move in flight to answer before it can be sent.
 var _leave_sid := ""
@@ -1540,6 +1543,7 @@ func _on_note_pinned(sid: String, recipient_id: String, text: String) -> void:
         add_child(_pc_http_leave_note)
         _pc_http_leave_note.request_completed.connect(_on_leave_note_response)
     _pc_http_leave_note.cancel_request()
+    _leave_note_session = note_panel_layer.session if note_panel_layer != null else -1
     var err := _pc_http_leave_note.request(Auth.api_base + "/api/village/pc/leave-note",
         Auth.auth_headers(), HTTPClient.METHOD_POST,
         JSON.stringify({"structure_id": sid, "recipient_id": recipient_id, "text": text}))
@@ -1548,7 +1552,8 @@ func _on_note_pinned(sid: String, recipient_id: String, text: String) -> void:
 
 func _on_leave_note_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     Auth.check_response(code)
-    if note_panel_layer == null:
+    # An answer for a window since closed or reopened is not this window's.
+    if note_panel_layer == null or not note_panel_layer.answers_session(_leave_note_session):
         return
     if code >= 200 and code < 300:
         note_panel_layer.close()

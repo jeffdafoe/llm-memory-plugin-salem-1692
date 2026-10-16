@@ -31,7 +31,7 @@ func TestHarness_ReportsShownDoorNotes(t *testing.T) {
 	}})
 	h, _ := newTestHarness(t, client, 0, 0)
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
-	if len(result.ShownDoorNotes) != 1 || result.ShownDoorNotes[0] != "note-0000aa01" {
-		t.Errorf("ShownDoorNotes = %v, want [note-0000aa01]", result.ShownDoorNotes)
+	if len(result.ShownDoorNotes) != 1 || result.ShownDoorNotes[0].ID != "note-0000aa01" || !result.ShownDoorNotes[0].LeftAt.Equal(now.Add(-time.Hour)) {
+		t.Errorf("ShownDoorNotes = %v, want note-0000aa01 as left an hour ago", result.ShownDoorNotes)
 	}
 }

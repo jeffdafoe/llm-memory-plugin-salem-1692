@@ -168,7 +168,7 @@ func TestLeaveDoorNoteRefusals(t *testing.T) {
 
 // completeTurn runs a reactor-tick completion for actorID with the given
 // status and shown notes.
-func completeTurn(t *testing.T, w *sim.World, actorID sim.ActorID, status sim.TickTerminalStatus, shown []sim.DoorNoteID, now time.Time) {
+func completeTurn(t *testing.T, w *sim.World, actorID sim.ActorID, status sim.TickTerminalStatus, shown []sim.DoorNoteSeen, now time.Time) {
 	t.Helper()
 	mutate(t, w, func(world *sim.World) {
 		a := world.Actors[actorID]
@@ -191,20 +191,21 @@ func TestDoorNoteReadOnlyWhenTheTurnAnswered(t *testing.T) {
 	if err := leaveNote(w, "spouse", "I came about the bread.", now); err != nil {
 		t.Fatalf("leave a note: %v", err)
 	}
-	id := doorNotes(t, w)[0].ID
+	n0 := doorNotes(t, w)[0]
+	seen := []sim.DoorNoteSeen{{ID: n0.ID, LeftAt: n0.LeftAt}}
 	// A failed turn leaves it on the door.
-	completeTurn(t, w, "spouse", sim.TickStatusFailedAfterRender, []sim.DoorNoteID{id}, now)
+	completeTurn(t, w, "spouse", sim.TickStatusFailedAfterRender, seen, now)
 	if n := doorNotes(t, w)[0]; !n.Unread() {
 		t.Fatal("a failed turn marked the note read")
 	}
 	// Someone else's answered turn that somehow listed it reads nothing.
-	completeTurn(t, w, "homeowner", sim.TickStatusSuccess, []sim.DoorNoteID{id}, now)
+	completeTurn(t, w, "homeowner", sim.TickStatusSuccess, seen, now)
 	if n := doorNotes(t, w)[0]; !n.Unread() {
 		t.Fatal("another villager's turn marked the note read")
 	}
 	// The recipient's answered turn reads it; the paper comes down.
 	readAt := now.Add(time.Hour)
-	completeTurn(t, w, "spouse", sim.TickStatusSuccess, []sim.DoorNoteID{id}, readAt)
+	completeTurn(t, w, "spouse", sim.TickStatusSuccess, seen, readAt)
 	n := doorNotes(t, w)[0]
 	if n.Unread() || !n.ReadAt.Equal(readAt) {
 		t.Errorf("after the recipient's turn: %+v, want read at %v", n, readAt)
@@ -224,5 +225,53 @@ func TestDoorNoteReadOnlyWhenTheTurnAnswered(t *testing.T) {
 	}
 	if !found {
 		t.Error("no read_note trail entry for the reader")
+	}
+}
+
+// A note replaced while the recipient's turn was in flight is not marked read
+// by that turn: it showed the old text (code_review). The next turn, which
+// shows the new one, reads it.
+func TestDoorNoteReplacedMidTurnStaysUnread(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	nameCottageFolk(t, w)
+	playerAtCottageDoor(t, w, now)
+	if err := leaveNote(w, "spouse", "I came about the bread.", now); err != nil {
+		t.Fatalf("leave a note: %v", err)
+	}
+	old := doorNotes(t, w)[0]
+	shownOld := []sim.DoorNoteSeen{{ID: old.ID, LeftAt: old.LeftAt}}
+	// The player replaces it after the turn rendered the old one.
+	if err := leaveNote(w, "spouse", "Never mind the bread — the ale.", now.Add(time.Minute)); err != nil {
+		t.Fatalf("replace the note: %v", err)
+	}
+	completeTurn(t, w, "spouse", sim.TickStatusSuccess, shownOld, now.Add(2*time.Minute))
+	cur := doorNotes(t, w)[0]
+	if cur.ID != old.ID || !cur.Unread() || cur.Body != "Never mind the bread — the ale." {
+		t.Fatalf("after a turn that saw only the old text: %+v, want the new note still unread", cur)
+	}
+	completeTurn(t, w, "spouse", sim.TickStatusSuccess, []sim.DoorNoteSeen{{ID: cur.ID, LeftAt: cur.LeftAt}}, now.Add(3*time.Minute))
+	if doorNotes(t, w)[0].Unread() {
+		t.Error("a turn that showed the new text did not read it")
+	}
+}
+
+// A note is for a door nobody answers: with someone awake inside, it is
+// refused even without a knock first (code_review); once they are asleep it is
+// taken.
+func TestLeaveDoorNoteRefusedWhileSomeoneWouldAnswer(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	nameCottageFolk(t, w)
+	setInside(t, w, "spouse", "cottage")
+	playerAtCottageDoor(t, w, now)
+	if err := leaveNote(w, "spouse", "hello", now); !errors.Is(err, sim.ErrDoorNoteRefused) {
+		t.Fatalf("someone awake inside, no knock: err %v, want ErrDoorNoteRefused", err)
+	}
+	mutate(t, w, func(world *sim.World) { world.Actors["spouse"].State = sim.StateSleeping })
+	if err := leaveNote(w, "spouse", "hello", now); err != nil {
+		t.Errorf("everyone inside asleep: err %v, want accepted", err)
 	}
 }

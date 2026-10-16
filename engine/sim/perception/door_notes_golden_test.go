@@ -104,7 +104,7 @@ func keeperFindsNoteAtShopScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 // TestGoldensDoorNoteOnlyAtItsDoor — across the whole matrix, an unread note's
 // text renders exactly when the subject is its recipient AND is inside its
 // house or outdoors at its door (found by the test's own reading of the
-// snapshot, not buildDoorNotes), and ShownDoorNoteIDs lists exactly those.
+// snapshot, not buildDoorNotes), and ShownDoorNotes lists exactly those.
 // Vacuity-guarded both ways.
 func TestGoldensDoorNoteOnlyAtItsDoor(t *testing.T) {
 	sawShown, sawHidden := false, false
@@ -119,8 +119,8 @@ func TestGoldensDoorNoteOnlyAtItsDoor(t *testing.T) {
 			p := Build(snap, actorID, warrants)
 			out := combinedPrompt(Render(p, DefaultRenderConfig()))
 			shown := map[sim.DoorNoteID]bool{}
-			for _, id := range ShownDoorNoteIDs(p) {
-				shown[id] = true
+			for _, s := range ShownDoorNotes(p) {
+				shown[s.ID] = true
 			}
 			for id, n := range snap.DoorNotes {
 				pin, ok := sim.ObjectLoiterPin(snap.VillageObjects, snap.Assets, sim.VillageObjectID(n.StructureID))
@@ -135,7 +135,7 @@ func TestGoldensDoorNoteOnlyAtItsDoor(t *testing.T) {
 					t.Errorf("note %s for %s: rendered %v, want %v:\n%s", id, n.RecipientID, got, want, out)
 				}
 				if shown[id] != want {
-					t.Errorf("note %s: ShownDoorNoteIDs lists it %v, want %v", id, shown[id], want)
+					t.Errorf("note %s: ShownDoorNotes lists it %v, want %v", id, shown[id], want)
 				}
 			}
 		})

@@ -26,6 +26,7 @@ const TESTS := [
     "_test_close_paths",
     "_test_art_and_stand_in",
     "_test_door_note_sits_on_the_door",
+    "_test_an_old_answer_is_not_this_windows",
 ]
 
 var _failures := 0
@@ -257,4 +258,21 @@ func _test_door_note_sits_on_the_door() -> void:
     var want := Vector2(20 * tile + tile / 2.0, 21 * tile + tile / 2.0 - world_script.DOOR_NOTE_LIFT) - house_at
     _check("on the door tile, raised", at, want)
     _check("no door: no paper", world_script.door_note_local_position(house_at, {}), null)
+    _done()
+
+
+## An answer to a note sent from one opening is not applied to a later one, nor
+## to a window since closed (code_review: a slow reply closed a new window).
+func _test_an_old_answer_is_not_this_windows() -> void:
+    var log: Array = []
+    var p := _panel(log)
+    p.open("ward-home", "Ward Residence", [{"id": "prudence", "name": "Prudence Ward"}])
+    var sent: int = p.session
+    _check("its own opening", p.answers_session(sent), true)
+    p.close()
+    _check("closed: not its answer", p.answers_session(sent), false)
+    p.open("cole-home", "Cole Residence", [{"id": "nathaniel", "name": "Nathaniel Cole"}])
+    _check("reopened: the old answer is not this opening's", p.answers_session(sent), false)
+    _check("reopened: its own is", p.answers_session(p.session), true)
+    p.free()
     _done()

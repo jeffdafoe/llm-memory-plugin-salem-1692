@@ -12,7 +12,7 @@ import (
 // door_notes.go — LLM-19 perception: a note a player left at a door nobody
 // answered. The recipient finds it on their first turn at or inside that house
 // (inside it, or outdoors at its door) — found on the door, not carried to them
-// elsewhere. ShownDoorNoteIDs hands the harness what the prompt showed, and
+// elsewhere. ShownDoorNotes hands the harness what the prompt showed, and
 // CompleteReactorTick marks those read once the turn answered. No tool: the
 // villager acts on it with what they already have.
 
@@ -55,16 +55,17 @@ func buildDoorNotes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 	return out
 }
 
-// ShownDoorNoteIDs lists the notes the payload shows — what the turn read.
-func ShownDoorNoteIDs(p Payload) []sim.DoorNoteID {
+// ShownDoorNotes lists the notes the payload shows, each with the version it
+// shows — what the turn read.
+func ShownDoorNotes(p Payload) []sim.DoorNoteSeen {
 	if len(p.DoorNotes) == 0 {
 		return nil
 	}
-	ids := make([]sim.DoorNoteID, 0, len(p.DoorNotes))
+	seen := make([]sim.DoorNoteSeen, 0, len(p.DoorNotes))
 	for _, n := range p.DoorNotes {
-		ids = append(ids, n.ID)
+		seen = append(seen, sim.DoorNoteSeen{ID: n.ID, LeftAt: n.LeftAt})
 	}
-	return ids
+	return seen
 }
 
 // doorNoteAge says how long ago a note was left, as the reader would put it.

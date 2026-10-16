@@ -53,6 +53,14 @@ func (n *DoorNote) Clone() *DoorNote {
 	return &c
 }
 
+// DoorNoteSeen is a note as a turn's prompt showed it: the id and the version
+// (LeftAt — a replacement moves it). A note replaced while that turn was in
+// flight is not marked read by it.
+type DoorNoteSeen struct {
+	ID     DoorNoteID
+	LeftAt time.Time
+}
+
 // DoorNoteRecipient is one person a note at a door may be left for.
 type DoorNoteRecipient struct {
 	ID   ActorID
@@ -127,7 +135,8 @@ func mayKnockHere(w *World, actor *Actor, structureID StructureID, now time.Time
 // LeaveDoorNote pins a player's note to the door of structureID for one of its
 // people (POST /pc/leave-note). Refused (ErrDoorNoteRefused) unless the player
 // could knock there now (mayKnockHere), nobody of the house is at the door with
-// them, and recipientID is one of doorNoteRecipients. text must already be
+// them, nobody inside would answer a knock (receptiveKnockReceivers), and
+// recipientID is one of doorNoteRecipients. text must already be
 // validated as player text; it is trimmed and capped at MaxDoorNoteChars
 // (ErrDoorNoteText). A second unread note from the same author at the same door
 // replaces the first in place.
@@ -147,6 +156,11 @@ func LeaveDoorNote(actorID ActorID, structureID StructureID, recipientID ActorID
 			}
 			if actorInActiveHuddle(w, actor) && doorConversationAt(w, actor, structureID) {
 				return nil, fmt.Errorf("%w: someone has come to the door", ErrDoorNoteRefused)
+			}
+			// Someone inside would come to a knock: the note is for a door nobody
+			// answers, so the same receiver test as the knock (code_review).
+			if len(receptiveKnockReceivers(w, structureID)) > 0 {
+				return nil, fmt.Errorf("%w: someone is in — knock at the door", ErrDoorNoteRefused)
 			}
 			var recipient *DoorNoteRecipient
 			for _, r := range doorNoteRecipients(w, structureID) {
@@ -236,19 +250,19 @@ func StructureHasUnreadNote(notes map[DoorNoteID]*DoorNote, structureID Structur
 }
 
 // markDoorNotesRead stamps each shown note read for actorID — the turn that
-// showed them answered. A note addressed to someone else, or already read, is
-// left alone. Each read leaves a trail line and a durable row (so the night's
-// dream records it), and the door's pinned paper comes down once no unread note
-// is left there.
-func markDoorNotesRead(w *World, actorID ActorID, ids []DoorNoteID, now time.Time) {
+// showed them answered. A note addressed to someone else, already read, or
+// replaced since the turn saw it (LeftAt moved) is left alone. Each read leaves
+// a trail line and a durable row (so the night's dream records it), and the
+// door's pinned paper comes down once no unread note is left there.
+func markDoorNotesRead(w *World, actorID ActorID, seen []DoorNoteSeen, now time.Time) {
 	actor := w.Actors[actorID]
 	if actor == nil {
 		return
 	}
 	touched := map[StructureID]bool{}
-	for _, id := range ids {
-		n := w.DoorNotes[id]
-		if !n.Unread() || n.RecipientID != actorID {
+	for _, s := range seen {
+		n := w.DoorNotes[s.ID]
+		if !n.Unread() || n.RecipientID != actorID || !n.LeftAt.Equal(s.LeftAt) {
 			continue
 		}
 		n.ReadAt = now

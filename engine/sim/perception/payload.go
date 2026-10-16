@@ -606,7 +606,7 @@ type Payload struct {
 
 	// DoorNotes are the unread notes (LLM-19) left for the subject at the house
 	// they are in or at the door of — renderDoorNotes, and the harness marks
-	// them read once the turn answers (ShownDoorNoteIDs). Oldest first.
+	// them read once the turn answers (ShownDoorNotes). Oldest first.
 	DoorNotes []DoorNoteView
 
 	// SeekWorkPlaces are the town's businesses (village objects tagged
