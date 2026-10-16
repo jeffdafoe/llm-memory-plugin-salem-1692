@@ -20,6 +20,7 @@ const TESTS := [
     "_test_tent_room",
     "_test_fire_panel_stale_answer",
     "_test_tooltip_lives_in_a_tent",
+    "_test_tent_bed_is_yours_to_tap",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -357,5 +358,33 @@ func _test_tooltip_lives_in_a_tent() -> void:
     for n in [tent, house, pc, npc]:
         n.free()
     tip.free()
+    world.free()
+    _completed[_current] = true
+
+
+## The bedroll is a bed to tap in the player's own tent (the live miss,
+## 2026-10-16: a tap on it did nothing, as only an upstairs room's bed counted),
+## and not in someone else's.
+func _test_tent_bed_is_yours_to_tap() -> void:
+    var plan := {"structure_id": "tent-1", "art": "tent", "name": "Tent",
+        "door": {"square": [3, 6], "at": [56, 110], "facing": "north"},
+        "stations": [{"id": "bedroll", "kind": "bed", "square": [1, 5], "at": [28, 90], "facing": "south", "pose": "sleep", "use": ["sleep"]}]}
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for("tent-1", plan), plan)
+    _check("a tap on the bedroll is on the bed", InteriorRooms.bed_at(room, Vector2(28, 80)), true)
+    _check("a tap by the pack is not", InteriorRooms.bed_at(room, Vector2(72, 92)), false)
+
+    var world = load("res://scripts/world.gd").new()
+    var me := Node2D.new()
+    me.set_meta("home_structure_id", "tent-1")
+    world.placed_npcs["pc"] = me
+    var panel = load("res://scripts/interior_panel.gd").new()
+    panel.world = world
+    panel.pc_actor_id = "pc"
+    panel.structure_id = "tent-1"
+    _check("in your own tent", panel._in_own_home(), true)
+    panel.structure_id = "tent-2"
+    _check("in someone else's", panel._in_own_home(), false)
+    panel.free()
+    me.free()
     world.free()
     _completed[_current] = true

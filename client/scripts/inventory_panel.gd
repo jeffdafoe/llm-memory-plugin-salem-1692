@@ -39,9 +39,6 @@ var _items: Array = []
 var _icon_rect: Rect2 = Rect2()  # icon's global rect, for outside-click detection
 ## A /pc/item/use is in flight: the buttons stay disabled until it answers.
 var _busy: bool = false
-## The last refusal from /pc/item/use, shown under the list until the next
-## press or close.
-var _message: String = ""
 ## The talk panel's /pc/me count (me_sent_seq) when an item action's answer
 ## last replaced the rows: a /pc/me numbered at or below it was already sent
 ## and may predate the action.
@@ -133,7 +130,6 @@ func close() -> void:
     if not visible:
         return
     visible = false
-    _message = ""
     closed.emit()
 
 
@@ -202,16 +198,6 @@ func _rebuild() -> void:
             actions = []
         _content.add_child(_build_row(label_text, qty, str(entry.get("item_kind", "")), actions))
 
-    if _message != "":
-        var note := Label.new()
-        note.text = _message
-        note.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-        note.add_theme_font_override("font", _font)
-        note.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
-        note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-        note.custom_minimum_size = Vector2(PANEL_WIDTH - 2 * PANEL_PAD, 0)
-        _content.add_child(note)
-
 
 ## Each row: display label flush-left, quantity flush-right in the
 ## coin-chip gold so the eye groups them with the purse below the
@@ -257,21 +243,19 @@ func _on_action_pressed(item_kind: String, action: String) -> void:
     if _busy:
         return
     _busy = true
-    _message = ""
     _rebuild()
     item_action_requested.emit(item_kind, action)
 
 
-## main.gd's answer to item_action_requested. message is "" on success, else
-## the line to show under the list. items, on success, is the pack as it now
-## stands (the route returns it), so the row shows its new button before the
-## buttons come back. sent_seq is the talk panel's /pc/me count at that moment.
-func action_finished(message: String, items = null, sent_seq: int = -1) -> void:
+## main.gd's answer to item_action_requested. A refusal is not drawn here —
+## main.gd floats it as a notice (LLM-798). items, on success, is the pack as
+## it now stands (the route returns it), so the row shows its new button before
+## the buttons come back. sent_seq is the talk panel's /pc/me count at that moment.
+func action_finished(items = null, sent_seq: int = -1) -> void:
     if items is Array:
         _items = _sorted_items(items)
         _answered_seq = sent_seq
     _busy = false
-    _message = message
     if visible:
         _rebuild()
         _reposition()

@@ -1862,10 +1862,12 @@ func _on_item_action_requested(item_kind: String, action: String, panel: Control
         Auth.check_response(code)
         var parsed = JSON.parse_string(body.get_string_from_utf8())
         if code >= 200 and code < 300 and parsed is Dictionary and parsed.get("inventory") is Array:
-            panel.action_finished("", parsed["inventory"], talk_panel_layer.me_sent_seq if talk_panel_layer != null else -1)
+            panel.action_finished(parsed["inventory"], talk_panel_layer.me_sent_seq if talk_panel_layer != null else -1)
         else:
             var message := str(parsed.get("error", "")) if parsed is Dictionary else ""
-            panel.action_finished(message if message != "" else "That did not work.")
+            # A refusal pops up as a notice, not inside the pack (LLM-798).
+            Toast.notice(message if message != "" else "That did not work.")
+            panel.action_finished()
         if talk_panel_layer != null:
             talk_panel_layer._refresh_state())
     var err := http.request(Auth.api_base + "/api/village/pc/item/use",
@@ -1873,7 +1875,8 @@ func _on_item_action_requested(item_kind: String, action: String, panel: Control
         JSON.stringify({"item_kind": item_kind, "action": action}))
     if err != OK:
         http.queue_free()
-        panel.action_finished("That did not work.")
+        Toast.notice("That did not work.")
+        panel.action_finished()
 
 ## Modal blocker helper — flips camera.modal_open based on the OR of
 ## currently-open modals. Every modal (config, asset popup, sprite

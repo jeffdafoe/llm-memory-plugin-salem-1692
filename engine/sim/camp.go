@@ -118,7 +118,7 @@ var (
 	ErrCampBlocked        = errors.New("something is in the way here — find a clear patch of grass.")
 	ErrCampNearDoor       = errors.New("that is too close to a doorway — pitch a little way off.")
 	ErrCampInPen          = errors.New("you can't pitch a tent inside a pen.")
-	ErrCampNotAtTent      = errors.New("walk to the front of your tent first.")
+	ErrCampNotAtTent      = errors.New("walk up to your tent first.")
 	ErrCampOccupied       = errors.New("someone is inside your tent.")
 	ErrCampNoFire         = errors.New("there is no fire ring at your camp.")
 	ErrCampNotAtFire      = errors.New("walk to your fire first.")
@@ -369,13 +369,13 @@ func StrikeTent(actorID ActorID, now time.Time) Command {
 			if camp == nil {
 				return nil, ErrCampNotPitched
 			}
-			stand := campStandTile(camp.Tent)
-			if actor.Pos.Chebyshev(stand) > 1 {
+			if !nearTent(w, actor.Pos, camp.Tent) {
 				return nil, ErrCampNotAtTent
 			}
 			if len(w.actorsByStructure[StructureID(camp.Tent.ID)]) > 0 {
 				return nil, ErrCampOccupied
 			}
+			stand := campStandTile(camp.Tent)
 			act := campBeatWindow(w, SourceActivityStrike, camp.Tent.ID, stand, 0, now)
 			actor.SourceActivity = act
 			emitCampBeatStarted(w, actor, act, now)
@@ -887,4 +887,22 @@ func useCampItem(w *World, a *Actor, kind ItemKind, action string, now time.Time
 		return true, refuseItemAction(msg)
 	}
 	return true, nil
+}
+
+// campStrikeReach is how near the tent (king's move, in tiles, to any tile of
+// its footprint) a player stands to strike it.
+const campStrikeReach = 2
+
+// nearTent reports whether a player standing on `at` is near enough the tent to
+// strike it: within campStrikeReach of any tile it stands on — beside it, behind
+// it or at the flap, not one spot in front.
+func nearTent(w *World, at TilePos, tent *VillageObject) bool {
+	a := tent.Pos.Tile()
+	left, right, top, bottom := 0, 0, 0, 0
+	if asset := w.Assets[tent.AssetID]; asset != nil {
+		left, right, top, bottom = asset.FootprintLeft, asset.FootprintRight, asset.FootprintTop, asset.FootprintBottom
+	}
+	dx := max(a.X-left-at.X, at.X-(a.X+right), 0)
+	dy := max(a.Y-top-at.Y, at.Y-(a.Y+bottom), 0)
+	return max(dx, dy) <= campStrikeReach
 }

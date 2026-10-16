@@ -1685,12 +1685,21 @@ func _tap(local: Vector2) -> void:
             _way_tap = art
             room_tapped.emit(way)
             return
-        if room_name != "" and InteriorRooms.bed_at(room, art):
+        if (room_name != "" or _in_own_home()) and InteriorRooms.bed_at(room, art):
             bed_tapped.emit()
             return
         var square := InteriorRooms.square_at(room, art, _held_squares())
         if square != Vector2i(-1, -1):
             floor_tapped.emit(square)
+
+
+## Whether the room shown is the player's own home — their pitched tent
+## (LLM-798): its bed is theirs to sleep in, as their room upstairs at the inn is.
+func _in_own_home() -> bool:
+    if world == null or pc_actor_id == "" or structure_id == "":
+        return false
+    var me = world.placed_npcs.get(pc_actor_id, null)
+    return me != null and str(me.get_meta("home_structure_id", "")) == structure_id
 
 
 ## A door or stair that would not let them through says why (LLM-801): the
