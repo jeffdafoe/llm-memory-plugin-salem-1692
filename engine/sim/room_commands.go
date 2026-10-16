@@ -336,6 +336,10 @@ func RunRoomSweep(ctx context.Context, w *World) {
 			if _, err := w.SendContext(ctx, EvictExpiredOccupants(now)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/room_sweep: evict failed: %v", err)
 			}
+			// LLM-798: camp fires burn down by the clock — turn their sprites.
+			if _, err := w.SendContext(ctx, UpdateCampFires(now)); err != nil && ctx.Err() == nil {
+				log.Printf("sim/room_sweep: camp fires failed: %v", err)
+			}
 		}
 	}
 }

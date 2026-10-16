@@ -249,6 +249,8 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				if cancelled.Kind == SourceActivityBake {
 					concludeAbandonedBake(w, actor.ID, StructureID(cancelled.ObjectID))
 				}
+				// LLM-798: a half-pitched camp is taken down, a half-struck one stood back up.
+				undoCampWork(w, actor, cancelled, now)
 			}
 
 			// LLM-618: walking off also ends "the source I walked to". The gather

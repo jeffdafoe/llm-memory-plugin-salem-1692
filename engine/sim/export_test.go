@@ -15,6 +15,8 @@ import (
 // If you find yourself wanting one of these in a non-test production
 // caller, that's a signal you should be issuing a Command instead.
 var (
+	SettleUnfinishedCampsOnLoad = settleUnfinishedCampsOnLoad
+	PCRestFloor                 = pcRestFloor
 	BuildWalkGrid               = buildWalkGrid
 	BuildWaterfowlWalkGrid      = buildWaterfowlWalkGrid
 	BuildGrazerWalkGrid         = buildGrazerWalkGrid

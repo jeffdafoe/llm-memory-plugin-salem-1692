@@ -98,3 +98,54 @@ func TestAgentsFromSnapshot_SourceActivity(t *testing.T) {
 		t.Errorf("idle actor DTO = (%q, %q, %q), want empty", d.SourceActivityKind, d.SourceActivityLabel, d.SourceActivityObjectID)
 	}
 }
+
+// LLM-798: a camp beat reaches the client with its piece and where it stands,
+// a mid-work completion sends nothing, and the last one clears the actor.
+func TestTranslateCampBeat(t *testing.T) {
+	target := sim.WorldPos{X: 96, Y: 160}
+	frame, ok := TranslateEvent(&sim.SourceActivityStarted{
+		ActorID: "pc", ObjectID: "tent", Kind: sim.SourceActivityPitch, Beat: sim.CampBeatFire, Target: &target,
+	})
+	if !ok {
+		t.Fatal("a pitch beat was not sent")
+	}
+	dto, isDTO := frame.Data.(sourceActivityChangedWireDTO)
+	if !isDTO || dto.Kind != "pitch" || dto.Beat != "fire" || dto.Target == nil || dto.Target.X != 96 || dto.Target.Y != 160 {
+		t.Fatalf("frame = %+v, want kind pitch, beat fire, target 96,160", frame.Data)
+	}
+	if _, ok := TranslateEvent(&sim.SourceActivityCompleted{ActorID: "pc", Kind: sim.SourceActivityStrike, Continues: true}); ok {
+		t.Error("a mid-strike completion was sent, want none (the next beat follows at once)")
+	}
+	frame, ok = TranslateEvent(&sim.SourceActivityCompleted{ActorID: "pc", Kind: sim.SourceActivityStrike})
+	if dto, _ := frame.Data.(sourceActivityChangedWireDTO); !ok || dto.Kind != "" {
+		t.Errorf("last strike completion = %+v (sent %v), want a clear", frame.Data, ok)
+	}
+}
+
+// LLM-798: a client loading mid-pitch gets the beat and where it stands, so it
+// can face the player the right way.
+func TestAgentsFromSnapshot_CampBeat(t *testing.T) {
+	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{
+		"pc": {
+			Kind:                   sim.KindPC,
+			SourceActivityKind:     sim.SourceActivityPitch,
+			SourceActivityObjectID: "tent",
+			SourceActivityBeat:     sim.CampBeatStool,
+			SourceActivityTarget:   sim.WorldPos{X: 128, Y: 192},
+		},
+		"npc": {Kind: sim.KindNPCShared, SourceActivityKind: sim.SourceActivityHarvest, SourceActivityObjectID: "bush"},
+	}}
+	agents := agentsFromSnapshot(snap, nil)
+	byID := map[string]AgentDTO{}
+	for _, a := range agents {
+		byID[a.ID] = a
+	}
+	pc := byID["pc"]
+	if pc.SourceActivityKind != "pitch" || pc.SourceActivityBeat != "stool" || pc.SourceActivityTarget == nil ||
+		pc.SourceActivityTarget.X != 128 || pc.SourceActivityTarget.Y != 192 {
+		t.Errorf("pc = kind %q beat %q target %+v, want pitch / stool / 128,192", pc.SourceActivityKind, pc.SourceActivityBeat, pc.SourceActivityTarget)
+	}
+	if npc := byID["npc"]; npc.SourceActivityBeat != "" || npc.SourceActivityTarget != nil {
+		t.Errorf("a harvest carries beat %q target %+v, want none", npc.SourceActivityBeat, npc.SourceActivityTarget)
+	}
+}

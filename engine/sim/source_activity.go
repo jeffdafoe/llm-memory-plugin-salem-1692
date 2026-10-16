@@ -53,6 +53,11 @@ const (
 	// session initiator, mints a batch of loaves at completion. Flour is consumed at
 	// completion (not start) so a restart mid-bake forfeits nothing. See bake.go.
 	SourceActivityBake SourceActivityKind = "bake"
+	// SourceActivityPitch / SourceActivityStrike are a player putting up or taking
+	// down their camp (LLM-798, camp.go): one window per beat (the tent, then each
+	// prop), each landing its piece and arming the next. Walking off undoes it.
+	SourceActivityPitch  SourceActivityKind = "pitch"
+	SourceActivityStrike SourceActivityKind = "strike"
 )
 
 // Durations are tunable engine constants (Jeff approved eat ~3s / harvest ~5s
@@ -92,6 +97,11 @@ type SourceActivity struct {
 	// Difficulty is the player's game difficulty, 0..1, fixed at start from the
 	// purse (LLM-712) so a reload resumes the same game.
 	Difficulty float64
+	// Beat and Target are a camp beat's piece and where it stands (LLM-798),
+	// carried on the window so a reconnect mid-beat can face the player the
+	// right way. Empty Beat for every other kind.
+	Beat   string
+	Target WorldPos
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what
@@ -132,6 +142,11 @@ type SourceActivityStarted struct {
 	// empty for everything else. Resolved DisplayName-first (sourceActivityWireLabel),
 	// matching the AgentDTO snapshot + the LLM-440 perception line.
 	SourceName string
+	// Beat and Target name the piece a camp beat works on and where it stands
+	// (LLM-798): the client turns the player toward Target and picks the motion
+	// by Beat. Empty / nil for every other kind.
+	Beat   string
+	Target *WorldPos
 }
 
 func (SourceActivityStarted) isSimEvent() {}
@@ -735,6 +750,8 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			At:         now,
 		})
 		return true
+	case SourceActivityPitch, SourceActivityStrike:
+		return landCampBeat(w, actor, act, now)
 	}
 	return false // a kind with no case lands nothing
 }
@@ -847,6 +864,7 @@ func abandonSourceActivity(w *World, actor *Actor, now time.Time) *SourceActivit
 		Kind:     act.Kind,
 		At:       now,
 	})
+	undoCampWork(w, actor, act, now)
 	return act
 }
 
@@ -983,6 +1001,10 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 			unit = "loaf"
 		}
 		return fmt.Sprintf("You draw the bread from the oven — %d %s, warm and fragrant. There is more here than you'll eat yourself tonight.", qty, unit)
+	case SourceActivityPitch:
+		return "Your tent stands, the fire ring laid before it — your camp is made."
+	case SourceActivityStrike:
+		return "You strike your tent and roll it into your pack."
 	}
 	return ""
 }
