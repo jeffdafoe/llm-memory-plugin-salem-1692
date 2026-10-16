@@ -8,13 +8,16 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
-// room_go_test.go — LLM-801. The Inn's upstairs: a lodger climbs from the entry
-// hall to the hall and into their own room; nobody else may go up; doors to
-// rooms that are not theirs are refused with the right line; upstairs is out
-// of the building's conversation; going to bed — by hand or idle — puts them
-// in their bed upstairs, and they wake there.
+// room_go_test.go — LLM-801, LLM-807. The Inn's and the Tavern's upstairs: a
+// lodger climbs from the common room to the hall and into their own room;
+// nobody else may go up; doors to rooms that are not theirs are refused with
+// the right line; upstairs is out of the building's conversation; going to
+// bed — by hand or idle — puts them in their bed upstairs, and they wake there.
 
-const upInn StructureID = "019d98af-ac9b-7833-8e03-5a7015bb5b0c"
+const (
+	upInn    StructureID = "019d98af-ac9b-7833-8e03-5a7015bb5b0c"
+	upTavern StructureID = "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9" // LLM-807
+)
 
 const (
 	upCommon   RoomID = 1
@@ -29,17 +32,32 @@ const (
 // upstairsWorld: the Inn with its rooms as the live seed has them, the hall
 // included, and the actors outdoors.
 func upstairsWorld(actors ...*Actor) (*World, *[]Event) {
+	return upstairsWorldAt(upInn, actors...)
+}
+
+// upstairsWorldAt: upstairsWorld for the Inn or the Tavern, which have the
+// same rooms.
+func upstairsWorldAt(sid StructureID, actors ...*Actor) (*World, *[]Event) {
 	w, events := squareWorld(actors...)
-	w.Structures = map[StructureID]*Structure{upInn: {ID: upInn, DisplayName: "Inn", Rooms: []*Room{
-		{ID: upCommon, StructureID: upInn, Kind: RoomKindCommon, Name: "common"},
-		{ID: upBedroom1, StructureID: upInn, Kind: RoomKindPrivate, Name: "bedroom_1"},
-		{ID: upBedroom2, StructureID: upInn, Kind: RoomKindPrivate, Name: "bedroom_2"},
-		{ID: upBedroom3, StructureID: upInn, Kind: RoomKindPrivate, Name: "bedroom_3"},
-		{ID: upBedroom4, StructureID: upInn, Kind: RoomKindPrivate, Name: "bedroom_4"},
-		{ID: upQuarters, StructureID: upInn, Kind: RoomKindStaff, Name: "keeper_quarters"},
-		{ID: upHall, StructureID: upInn, Kind: RoomKindHall, Name: "hall"},
+	w.Structures = map[StructureID]*Structure{sid: {ID: sid, DisplayName: upInnNames[sid], Rooms: []*Room{
+		{ID: upCommon, StructureID: sid, Kind: RoomKindCommon, Name: "common"},
+		{ID: upBedroom1, StructureID: sid, Kind: RoomKindPrivate, Name: "bedroom_1"},
+		{ID: upBedroom2, StructureID: sid, Kind: RoomKindPrivate, Name: "bedroom_2"},
+		{ID: upBedroom3, StructureID: sid, Kind: RoomKindPrivate, Name: "bedroom_3"},
+		{ID: upBedroom4, StructureID: sid, Kind: RoomKindPrivate, Name: "bedroom_4"},
+		{ID: upQuarters, StructureID: sid, Kind: RoomKindStaff, Name: "keeper_quarters"},
+		{ID: upHall, StructureID: sid, Kind: RoomKindHall, Name: "hall"},
 	}}}
 	return w, events
+}
+
+var upInnNames = map[StructureID]string{upInn: "Inn", upTavern: "Tavern"}
+
+// eachInn runs an upstairs test at the Inn and at the Tavern (LLM-807).
+func eachInn(t *testing.T, test func(t *testing.T, sid StructureID)) {
+	for _, sid := range []StructureID{upInn, upTavern} {
+		t.Run(upInnNames[sid], func(t *testing.T) { test(t, sid) })
+	}
 }
 
 // upLodger: a player who holds bedroom 2 until `until`, outdoors.
@@ -66,10 +84,12 @@ func refusedLine(err error) string {
 	return line
 }
 
-func TestUpstairsPlansParse(t *testing.T) {
-	hall := roomlayout.ForRoom(string(upInn), "hall")
+func TestUpstairsPlansParse(t *testing.T) { eachInn(t, upstairsPlansParse) }
+
+func upstairsPlansParse(t *testing.T, sid StructureID) {
+	hall := roomlayout.ForRoom(string(sid), "hall")
 	if hall == nil || hall.Way("common") == nil {
-		t.Fatal("the Inn's hall has no plan, or no stairs down")
+		t.Fatal("the hall has no plan, or no stairs down")
 	}
 	for _, name := range []string{"bedroom_1", "bedroom_2", "bedroom_3", "bedroom_4", "keeper_quarters"} {
 		if hall.Way(name) == nil {
@@ -77,29 +97,33 @@ func TestUpstairsPlansParse(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"bedroom_1", "bedroom_2", "bedroom_3", "bedroom_4"} {
-		room := roomlayout.ForRoom(string(upInn), name)
+		room := roomlayout.ForRoom(string(sid), name)
 		if room == nil || room.Way("hall") == nil || room.StationFor(roomlayout.UseSleep) == nil || room.StationFor(roomlayout.UseRise) == nil {
 			t.Errorf("%s: no plan, or no door, bed or bedside", name)
 		}
 	}
-	if roomlayout.For(string(upInn)).Way("hall") == nil {
-		t.Error("the entry hall has no stairs up")
+	if roomlayout.For(string(sid)).Way("hall") == nil {
+		t.Error("the common room has no stairs up")
 	}
-	if roomlayout.ForRoom(string(upInn), "keeper_quarters") != nil {
+	if roomlayout.ForRoom(string(sid), "keeper_quarters") != nil {
 		t.Error("the keeper's quarters have a plan: nobody but the keeper is ever drawn there")
 	}
 }
 
 func TestLodgerGoesUpstairsAndIntoTheirRoom(t *testing.T) {
+	eachInn(t, lodgerGoesUpstairsAndIntoTheirRoom)
+}
+
+func lodgerGoesUpstairsAndIntoTheirRoom(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 21, 0, 0, 0, time.UTC)
 	jeff := upLodger("jeff", upBedroom2, now.Add(24*time.Hour))
 	other := upLodger("silas", upBedroom3, now.Add(24*time.Hour))
 	other.Kind = KindNPCStateful
-	w, events := upstairsWorld(jeff, other)
-	setActorInsideStructure(w, jeff, upInn)
+	w, events := upstairsWorldAt(sid, jeff, other)
+	setActorInsideStructure(w, jeff, sid)
 
 	res, err := goRoom(t, w, "jeff", "hall", now)
-	hall := roomlayout.ForRoom(string(upInn), "hall")
+	hall := roomlayout.ForRoom(string(sid), "hall")
 	if err != nil || res.Room != "hall" || jeff.InsideRoomID != upHall {
 		t.Fatalf("up the stairs: %+v %v, room %d", res, err, jeff.InsideRoomID)
 	}
@@ -126,7 +150,7 @@ func TestLodgerGoesUpstairsAndIntoTheirRoom(t *testing.T) {
 	}
 
 	res, err = goRoom(t, w, "jeff", "bedroom_2", now)
-	guest := roomlayout.ForRoom(string(upInn), "bedroom_2")
+	guest := roomlayout.ForRoom(string(sid), "bedroom_2")
 	if err != nil || jeff.InsideRoomID != upBedroom2 || res.Square == nil || *res.Square != guest.Door.Square {
 		t.Fatalf("into bedroom 2: %+v %v", res, err)
 	}
@@ -140,26 +164,28 @@ func TestLodgerGoesUpstairsAndIntoTheirRoom(t *testing.T) {
 		t.Errorf("out of bedroom 2: %+v %v, want their door %v", res, err, hall.Way("bedroom_2").Square)
 	}
 	res, err = goRoom(t, w, "jeff", "common", now)
-	stairFoot := roomlayout.For(string(upInn)).Way("hall").Square
+	stairFoot := roomlayout.For(string(sid)).Way("hall").Square
 	if err != nil || jeff.InsideRoomID != 0 || res.Room != "" || res.Square == nil || *res.Square != stairFoot {
 		t.Errorf("down the stairs: %+v %v, room %d, want the stair foot %v", res, err, jeff.InsideRoomID, stairFoot)
 	}
 }
 
-func TestOnlyGuestsAndTheKeeperGoUpstairs(t *testing.T) {
+func TestOnlyGuestsAndTheKeeperGoUpstairs(t *testing.T) { eachInn(t, onlyGuestsAndTheKeeperGoUpstairs) }
+
+func onlyGuestsAndTheKeeperGoUpstairs(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 21, 0, 0, 0, time.UTC)
 	visitor := outdoors("wendy", KindPC)
 	lapsed := upLodger("abe", upBedroom1, now.Add(-time.Hour))
-	w, _ := upstairsWorld(visitor, lapsed)
-	setActorInsideStructure(w, visitor, upInn)
-	setActorInsideStructure(w, lapsed, upInn)
+	w, _ := upstairsWorldAt(sid, visitor, lapsed)
+	setActorInsideStructure(w, visitor, sid)
+	setActorInsideStructure(w, lapsed, sid)
 	for _, id := range []ActorID{"wendy", "abe"} {
 		if _, err := goRoom(t, w, id, "hall", now); refusedLine(err) != roomRefusedHall {
 			t.Errorf("%s up the stairs: %v, want %q", id, err, roomRefusedHall)
 		}
 	}
 	keeper := outdoors("hannah", KindNPCShared)
-	keeper.WorkStructureID = upInn
+	keeper.WorkStructureID = sid
 	w.Actors["hannah"] = keeper
 	if !canEnterRoom(w, keeper, upHall, now) {
 		t.Error("the keeper may not go up her own stairs")
@@ -167,7 +193,7 @@ func TestOnlyGuestsAndTheKeeperGoUpstairs(t *testing.T) {
 
 	// The keeper upstairs, done stoking: the hall has no keeper's place to go
 	// back to, and nothing breaks for it (code_review).
-	setActorInsideStructure(w, keeper, upInn)
+	setActorInsideStructure(w, keeper, sid)
 	setActorRoom(w, keeper, upHall)
 	keeperBackToPlace(w, keeper)
 	if keeper.RoomSquareRoom != "hall" || keeper.RoomSquare == nil {
@@ -175,24 +201,26 @@ func TestOnlyGuestsAndTheKeeperGoUpstairs(t *testing.T) {
 	}
 }
 
-func TestUpstairsIsOutOfTheConversation(t *testing.T) {
+func TestUpstairsIsOutOfTheConversation(t *testing.T) { eachInn(t, upstairsIsOutOfTheConversation) }
+
+func upstairsIsOutOfTheConversation(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 21, 0, 0, 0, time.UTC)
 	jeff := upLodger("jeff", upBedroom2, now.Add(24*time.Hour))
 	jeff.LastPCSeenAt = &now
 	hannah := outdoors("hannah", KindNPCShared)
-	hannah.WorkStructureID = upInn
+	hannah.WorkStructureID = sid
 	silas := outdoors("silas", KindNPCStateful)
 	// A whole world, for huddles and the scene a building's conversation is
 	// anchored to (which needs the structure's placement — the Shared-Identity
 	// Bridge).
-	w, _ := upstairsWorld(jeff, hannah, silas)
+	w, _ := upstairsWorldAt(sid, jeff, hannah, silas)
 	w.Huddles = map[HuddleID]*Huddle{}
 	w.Scenes = map[SceneID]*Scene{}
 	w.actorsByHuddle = map[HuddleID]map[ActorID]struct{}{}
 	w.carryoverByStructure = map[StructureID]*conversationCarryover{}
-	w.VillageObjects = map[VillageObjectID]*VillageObject{VillageObjectID(upInn): {ID: VillageObjectID(upInn)}}
+	w.VillageObjects = map[VillageObjectID]*VillageObject{VillageObjectID(sid): {ID: VillageObjectID(sid)}}
 	for _, a := range []*Actor{jeff, hannah, silas} {
-		setActorInsideStructure(w, a, upInn)
+		setActorInsideStructure(w, a, sid)
 	}
 	if _, err := EnsureColocatedHuddle("hannah", now).Fn(w); err != nil || jeff.CurrentHuddleID == "" {
 		t.Fatalf("downstairs, Hannah's talk does not take Jeff in: %v", err)
@@ -203,7 +231,7 @@ func TestUpstairsIsOutOfTheConversation(t *testing.T) {
 	if jeff.CurrentHuddleID != "" {
 		t.Error("going upstairs left them in the conversation downstairs")
 	}
-	for _, id := range colocatedConversationalActors(w, silas, upInn, now) {
+	for _, id := range colocatedConversationalActors(w, silas, sid, now) {
 		if id == "jeff" {
 			t.Error("talk downstairs would draw in Jeff upstairs")
 		}
@@ -221,12 +249,14 @@ func TestUpstairsIsOutOfTheConversation(t *testing.T) {
 	}
 }
 
-func TestGoingToBedUpstairsAndWakingThere(t *testing.T) {
+func TestGoingToBedUpstairsAndWakingThere(t *testing.T) { eachInn(t, goingToBedUpstairsAndWakingThere) }
+
+func goingToBedUpstairsAndWakingThere(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	jeff := upLodger("jeff", upBedroom2, now.Add(24*time.Hour))
-	w, _ := upstairsWorld(jeff)
-	setActorInsideStructure(w, jeff, upInn)
-	guest := roomlayout.ForRoom(string(upInn), "bedroom_2")
+	w, _ := upstairsWorldAt(sid, jeff)
+	setActorInsideStructure(w, jeff, sid)
+	guest := roomlayout.ForRoom(string(sid), "bedroom_2")
 
 	// From the common room, as the bed tap and the idle arm both do.
 	if _, err := SleepPC("jeff", now).Fn(w); err != nil {
@@ -246,20 +276,24 @@ func TestGoingToBedUpstairsAndWakingThere(t *testing.T) {
 }
 
 func TestIdleLodgerIsBeddedUpstairsAndWakesThere(t *testing.T) {
+	eachInn(t, idleLodgerIsBeddedUpstairsAndWakesThere)
+}
+
+func idleLodgerIsBeddedUpstairsAndWakesThere(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	jeff := upLodger("jeff", upBedroom2, now.Add(24*time.Hour))
 	jeff.Needs["tiredness"] = 60
 	idleSince := now.Add(-time.Hour)
 	jeff.LastPCInputAt = &idleSince
 	jeff.LastPCSeenAt = &now
-	w, _ := upstairsWorld(jeff)
+	w, _ := upstairsWorldAt(sid, jeff)
 	RegisterLodgingMorningDescentSubscriber(w)
-	setActorInsideStructure(w, jeff, upInn)
+	setActorInsideStructure(w, jeff, sid)
 
 	if _, err := AutoBedIdleLodgerPCs(now).Fn(w); err != nil {
 		t.Fatal(err)
 	}
-	guest := roomlayout.ForRoom(string(upInn), "bedroom_2")
+	guest := roomlayout.ForRoom(string(sid), "bedroom_2")
 	if jeff.State != StateSleeping || jeff.RoomSquare == nil || !guest.IsBed(*jeff.RoomSquare) {
 		t.Fatalf("idle in the common room: state %s, square %v %q — want asleep in their bed", jeff.State, jeff.RoomSquare, jeff.RoomSquareRoom)
 	}
@@ -277,11 +311,13 @@ func TestIdleLodgerIsBeddedUpstairsAndWakesThere(t *testing.T) {
 	}
 }
 
-func TestStayRunsOutUpstairs(t *testing.T) {
+func TestStayRunsOutUpstairs(t *testing.T) { eachInn(t, stayRunsOutUpstairs) }
+
+func stayRunsOutUpstairs(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 21, 0, 0, 0, time.UTC)
 	jeff := upLodger("jeff", upBedroom2, now.Add(time.Hour))
-	w, _ := upstairsWorld(jeff)
-	setActorInsideStructure(w, jeff, upInn)
+	w, _ := upstairsWorldAt(sid, jeff)
+	setActorInsideStructure(w, jeff, sid)
 	if _, err := goRoom(t, w, "jeff", "hall", now); err != nil {
 		t.Fatal(err)
 	}
@@ -297,13 +333,15 @@ func TestStayRunsOutUpstairs(t *testing.T) {
 	}
 }
 
-func TestUpstairsSquaresAfterARestart(t *testing.T) {
+func TestUpstairsSquaresAfterARestart(t *testing.T) { eachInn(t, upstairsSquaresAfterARestart) }
+
+func upstairsSquaresAfterARestart(t *testing.T, sid StructureID) {
 	now := time.Date(2026, 10, 16, 21, 0, 0, 0, time.UTC)
 	jeff := upLodger("jeff", upBedroom2, now.Add(24*time.Hour))
 	silas := outdoors("silas", KindNPCStateful)
-	w, _ := upstairsWorld(jeff, silas)
-	setActorInsideStructure(w, jeff, upInn)
-	setActorInsideStructure(w, silas, upInn)
+	w, _ := upstairsWorldAt(sid, jeff, silas)
+	setActorInsideStructure(w, jeff, sid)
+	setActorInsideStructure(w, silas, sid)
 	if _, err := goRoom(t, w, "jeff", "hall", now); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +349,7 @@ func TestUpstairsSquaresAfterARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.placeRoomSquaresOnLoad()
-	guest := roomlayout.ForRoom(string(upInn), "bedroom_2")
+	guest := roomlayout.ForRoom(string(sid), "bedroom_2")
 	if jeff.RoomSquareRoom != "bedroom_2" || jeff.RoomSquare == nil || *jeff.RoomSquare != guest.Door.Square {
 		t.Errorf("after a restart Jeff is on %v in %q, want bedroom 2's door", jeff.RoomSquare, jeff.RoomSquareRoom)
 	}

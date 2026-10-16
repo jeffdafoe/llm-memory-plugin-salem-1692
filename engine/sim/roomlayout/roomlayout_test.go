@@ -169,9 +169,15 @@ func TestPathWalksTheFloor(t *testing.T) {
 	if got := l.Path(l.Door.Square, Square{2, 6}); got != nil {
 		t.Errorf("a path onto the table: %v", got)
 	}
-	inn := For(inn)
-	if got := inn.Path(inn.Door.Square, inn.KeeperDoor.Square); got != nil {
-		t.Errorf("a path up the keeper's stairs: %v", got)
+	for _, id := range []string{inn, tavern} {
+		l := For(id)
+		if got := l.Path(l.Door.Square, l.KeeperDoor.Square); got != nil {
+			t.Errorf("%s: a path up the keeper's stairs: %v", l.Name, got)
+		}
+		// The keeper's own way from the stairs to behind the counter.
+		if got := l.KeeperPath(l.KeeperDoor.Square, l.Keeper.Square); got == nil {
+			t.Errorf("%s: the keeper cannot walk from the stairs to their place", l.Name)
+		}
 	}
 }
 

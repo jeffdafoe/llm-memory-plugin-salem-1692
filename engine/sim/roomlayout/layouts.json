@@ -7,19 +7,21 @@
                 "########",
                 "########",
                 "########",
-                "########",
+                ".#######",
                 ".....###",
                 ".###.kk.",
                 "..#..###"
             ],
             "door": {"square": [4, 6], "at": [64, 111], "facing": "north"},
             "keeper": {"square": [7, 5], "at": [112, 80], "facing": "west"},
+            "keeper_door": {"square": [0, 3], "at": [14, 60], "facing": "south"},
             "stations": [
                 {"id": "seat_west", "kind": "seat", "square": [1, 6], "at": [16, 98], "facing": "east", "pose": "seat", "serve": [31, 87]},
                 {"id": "seat_east", "kind": "seat", "square": [3, 6], "at": [56, 98], "facing": "west", "pose": "seat", "serve": [39, 87]},
                 {"id": "bar", "kind": "stand", "square": [4, 5], "at": [76, 100], "facing": "east", "serve": [90, 92], "use": ["drink"]},
                 {"id": "bar_north", "kind": "stand", "square": [4, 4], "at": [76, 78], "facing": "east", "serve": [90, 78], "use": ["drink"]},
-                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [52, 68], "facing": "west", "use": ["stoke"]}
+                {"id": "hearth", "kind": "stand", "square": [3, 4], "at": [62, 68], "facing": "west", "use": ["stoke"]},
+                {"id": "stair_foot", "kind": "stand", "square": [0, 4], "at": [13, 68], "facing": "north", "leads": "hall", "tap": [0, 0, 28, 66]}
             ]
         },
         {
@@ -205,6 +207,52 @@
             "structure_id": "019d98af-ac9b-7833-8e03-5a7015bb5b0c",
             "rooms": ["bedroom_1", "bedroom_2", "bedroom_3", "bedroom_4"],
             "art": "inn_guest",
+            "name": "a guest room",
+            "grid": [
+                "#######",
+                "#######",
+                "#######",
+                "#bb#..#",
+                "#bb#..#",
+                "#bb..#.",
+                "###....",
+                "###...."
+            ],
+            "door": {"square": [4, 7], "at": [72, 124], "facing": "north", "leads": "hall", "tap": [60, 108, 24, 20]},
+            "stations": [
+                {"id": "bed", "kind": "bed", "square": [1, 4], "at": [32, 72], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "chair", "kind": "seat", "square": [5, 6], "at": [88, 104], "facing": "west", "pose": "seat"},
+                {"id": "bedside", "kind": "stand", "square": [3, 5], "at": [56, 94], "facing": "west", "use": ["rise"]}
+            ]
+        },
+        {
+            "structure_id": "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9",
+            "rooms": ["hall"],
+            "art": "tavern_hall",
+            "name": "the upstairs hall",
+            "grid": [
+                "################",
+                "################",
+                "################",
+                "................",
+                "................",
+                "################",
+                "################",
+                "################"
+            ],
+            "door": {"square": [7, 4], "at": [128, 78], "facing": "north", "leads": "common", "tap": [97, 80, 62, 48]},
+            "stations": [
+                {"id": "bedroom_1", "kind": "stand", "square": [2, 3], "at": [32, 60], "facing": "north", "leads": "bedroom_1", "tap": [14, 14, 36, 34]},
+                {"id": "bedroom_2", "kind": "stand", "square": [5, 3], "at": [80, 60], "facing": "north", "leads": "bedroom_2", "tap": [62, 14, 36, 34]},
+                {"id": "keeper_quarters", "kind": "stand", "square": [8, 3], "at": [128, 60], "facing": "north", "leads": "keeper_quarters", "tap": [110, 14, 36, 34]},
+                {"id": "bedroom_3", "kind": "stand", "square": [11, 3], "at": [176, 60], "facing": "north", "leads": "bedroom_3", "tap": [158, 14, 36, 34]},
+                {"id": "bedroom_4", "kind": "stand", "square": [14, 3], "at": [224, 60], "facing": "north", "leads": "bedroom_4", "tap": [206, 14, 36, 34]}
+            ]
+        },
+        {
+            "structure_id": "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9",
+            "rooms": ["bedroom_1", "bedroom_2", "bedroom_3", "bedroom_4"],
+            "art": "tavern_guest",
             "name": "a guest room",
             "grid": [
                 "#######",
