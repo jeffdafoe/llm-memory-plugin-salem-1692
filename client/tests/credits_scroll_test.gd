@@ -23,6 +23,10 @@ const TESTS := [
     "_test_link_opens_on_tap_not_drag",
     "_test_title_text_opens_credits",
     "_test_every_freesound_sound_is_credited",
+    "_test_rod_turns_and_loops",
+    "_test_rod_frame_follows_the_paper",
+    "_test_roll_up_rest_down_and_stop",
+    "_test_no_roll_when_it_fits",
 ]
 
 var _failures := 0
@@ -157,7 +161,9 @@ func _test_fits_design_canvas() -> void:
     print("[credits_scroll_test] view %s, scroll %s, content %s, room for text %s" % [
         view, column.size, content_height, scroll.body_scroll.size.y])
     _check("canvas is the design height", view.y, 720.0)
-    _check("every credit shows without scrolling", content_height <= scroll.body_scroll.size.y, true)
+    # Credits taller than the room scroll inside the paper and roll on open
+    # (LLM-802), so fitting is not required — only that the scroll itself fits.
+    _check("text fits, or the paper has room to roll", content_height <= scroll.body_scroll.size.y or scroll.roll_room() > 0.0, true)
     _check("scroll fits the canvas height", column.size.y <= view.y - 2.0 * scroll.VIEWPORT_MARGIN, true)
     _check("scroll fits the canvas width", column.size.x <= view.x, true)
     _check("rods are pixel art at an integer scale", scroll.top_rod.size, Vector2(scroll._rod_width_px, scroll.ROD_HEIGHT_PX) * scroll.ROD_PIXEL)
@@ -295,4 +301,110 @@ func _test_every_freesound_sound_is_credited() -> void:
         var url := "https://freesound.org/s/%s/" % m.get_string(1)
         _check("Freesound %s is on the scroll as %s" % [m.get_string(1), m.get_string(2)], shown.get(url, ""), m.get_string(2))
     _check("the Freesound sounds were read", found >= 5, true)
+    _done()
+
+
+## LLM-802: a turn moves the grain, never the outline or the silhouette, and a
+## whole turn comes back to the first picture.
+func _test_rod_turns_and_loops() -> void:
+    var script := _scroll_script()
+    var still: Image = script.rod_image(234, 16, 1692, 0.0)
+    var quarter: Image = script.rod_image(234, 16, 1692, TAU / 16.0)
+    var round_trip: Image = script.rod_image(234, 16, 1692, TAU)
+    _check("a sixteenth of a turn changes the grain", still.get_data() != quarter.get_data(), true)
+    var silhouette_same := true
+    var differ := 0
+    for y in 16:
+        for x in 234:
+            if still.get_pixel(x, y).a != quarter.get_pixel(x, y).a:
+                silhouette_same = false
+            if still.get_pixel(x, y) != round_trip.get_pixel(x, y):
+                differ += 1
+    _check("turning keeps the silhouette", silhouette_same, true)
+    _check("a whole turn comes back (float rounding aside)", differ < 234 * 16 / 100, true)
+    var frames: Array = script.rod_frames(40, 16, 7)
+    _check("one texture per frame", frames.size(), script.ROD_TURN_FRAMES)
+    _done()
+
+
+## LLM-802: the rod turns one frame per sixteenth of its circumference of paper,
+## forward as the paper winds up and back as it winds down.
+func _test_rod_frame_follows_the_paper() -> void:
+    var script := _scroll_script()
+    var turn_px: float = TAU * script.rod_body_radius(16) * script.ROD_PIXEL
+    var step: float = turn_px / script.ROD_TURN_FRAMES
+    _check("no paper moved: frame 0", script.rod_frame(0.0, 16), 0)
+    _check("one step: frame 1", script.rod_frame(step, 16), 1)
+    _check("a whole turn: frame 0 again", script.rod_frame(turn_px, 16), 0)
+    _check("winding back: the last frame", script.rod_frame(-step, 16), script.ROD_TURN_FRAMES - 1)
+    _done()
+
+
+## Open a scroll on the 1280 x 720 design canvas with `extra` px of filler under
+## the credits, its own _process off so the test drives the roll's clock. The
+## caller restores the window with _restore_canvas.
+var _saved_root_size := Vector2i.ZERO
+
+func _open_with_filler(extra: float) -> CanvasLayer:
+    _saved_root_size = root.size
+    root.size = Vector2i(1280, 720)
+    await process_frame
+    var scroll: CanvasLayer = _scroll_script().new()
+    root.add_child(scroll)
+    scroll.set_process(false)
+    if extra > 0.0:
+        var filler := Control.new()
+        filler.custom_minimum_size = Vector2(0, extra)
+        scroll.content.add_child(filler)
+    scroll.open()
+    await process_frame
+    await process_frame
+    return scroll
+
+
+func _test_roll_up_rest_down_and_stop() -> void:
+    var scroll: CanvasLayer = await _open_with_filler(400.0)
+    _check("taller text has room to roll", scroll.roll_room() > 100.0, true)
+    _check("rolling after open", scroll.is_rolling(), true)
+    var top_before: int = scroll._top_frames.find(scroll.top_rod.texture)
+    scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 0.01)
+    _check("still at the top after the lead", scroll.body_scroll.scroll_vertical, 0)
+    scroll._process(2.0)
+    _check("winds up at the roll speed", scroll.body_scroll.scroll_vertical, int(2.0 * scroll.ROLL_SPEED))
+    _check("the top rod turned with it", scroll._top_frames.find(scroll.top_rod.texture), scroll.rod_frame(float(scroll.body_scroll.scroll_vertical), scroll.ROD_HEIGHT_PX))
+    _check("to a new frame", scroll._top_frames.find(scroll.top_rod.texture) != top_before, true)
+    scroll._process(scroll.roll_room() / scroll.ROLL_SPEED)
+    var bottom: int = scroll.body_scroll.scroll_vertical
+    _check("reaches the end", float(bottom), roundf(scroll.roll_room()))
+    scroll._process(scroll.ROLL_PAUSE / 2.0)
+    _check("rests at the end", scroll.body_scroll.scroll_vertical, bottom)
+    scroll._process(scroll.ROLL_PAUSE)
+    scroll._process(1.0)
+    _check("winds back down after the rest", scroll.body_scroll.scroll_vertical < bottom, true)
+    var wheel := InputEventMouseButton.new()
+    wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+    wheel.pressed = true
+    scroll._input(wheel)
+    _check("a wheel turn takes the paper", scroll.is_rolling(), false)
+    var held: int = scroll.body_scroll.scroll_vertical
+    scroll._process(3.0)
+    _check("stopped stays put", scroll.body_scroll.scroll_vertical, held)
+    scroll.close()
+    scroll.queue_free()
+    root.size = _saved_root_size
+    await process_frame
+    _done()
+
+
+func _test_no_roll_when_it_fits() -> void:
+    var scroll: CanvasLayer = await _open_with_filler(0.0)
+    scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 0.01)
+    if scroll.roll_room() <= 0.0:
+        _check("text that fits does not roll", scroll.is_rolling(), false)
+    else:
+        _check("the credits overflow here, so it rolls", scroll.is_rolling(), true)
+    scroll.close()
+    scroll.queue_free()
+    root.size = _saved_root_size
+    await process_frame
     _done()
