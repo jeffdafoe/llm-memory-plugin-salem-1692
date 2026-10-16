@@ -21,6 +21,10 @@ const FONT_PATH := "res://assets/fonts/IMFellEnglish-Regular.ttf"
 const TAP_SIZE := Vector2(132, 44)
 const PROMPT := "You stand at the door."
 const NO_ANSWER := "No one answers."
+## Seconds from a knock to "No one answers." (LLM-805): the knock itself
+## (knock.ogg, 0.6 s) and a short silence while nobody comes. main.gd holds the
+## popup and world.gd the engine's knock_unanswered line until then.
+const ANSWER_WAIT := 1.8
 
 signal opened()
 signal closed()
@@ -141,6 +145,12 @@ static func at_door(person: Node2D, house: Node2D) -> bool:
     if person == null or house == null or not is_instance_valid(person) or not is_instance_valid(house):
         return false
     return StallScenes.at_pin(StallScenes.standing_tile(person), StallScenes.pin_tile(house))
+
+
+## Seconds still to wait before telling a knock made at knocked_msec (both
+## Time.get_ticks_msec()) that nobody came. 0 once ANSWER_WAIT has passed.
+static func answer_wait_left(knocked_msec: int, now_msec: int) -> float:
+    return maxf(0.0, ANSWER_WAIT - (now_msec - knocked_msec) / 1000.0)
 
 
 ## Ask at the door of `sid`, named `title` (the house's name). Opening again

@@ -31,6 +31,7 @@ const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
 const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
+const DoorPanelScript = preload("res://scripts/door_panel.gd")
 
 const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
@@ -3216,7 +3217,19 @@ func apply_room_event(data: Dictionary) -> void:
     var actor_name: String = str(data.get("actor_name", ""))
     if actor_name == "" and not private_event:
         return
+    var wait := room_event_delay(data)
+    if wait > 0.0:
+        get_tree().create_timer(wait).timeout.connect(func(): room_event.emit(data))
+        return
     room_event.emit(data)
+
+
+## Seconds to hold a room_event before it is shown. An unanswered knock
+## (LLM-805) waits until the knock has sounded and nobody came, so "No one
+## answers" does not float over the house while the knuckles are still on the
+## door; everything else shows at once.
+static func room_event_delay(data: Dictionary) -> float:
+    return DoorPanelScript.ANSWER_WAIT if str(data.get("kind", "")) == "knock_unanswered" else 0.0
 
 
 ## Public — spawn a SpeechBubble at the given structure's container so

@@ -203,6 +203,11 @@ var _pc_move_target := ""
 var _pc_http_knock: HTTPRequest = null
 ## The house the last knock was at, for its answer (LLM-19).
 var _knock_structure_id := ""
+## When the last knock sounded (Time.get_ticks_msec()) and how many there have
+## been, so a slow "nobody came" waits for the knock and a stale one is dropped
+## (LLM-805).
+var _knock_msec := 0
+var _knock_seq := 0
 # A walk-out from a closed room (LLM-787): the room it leaves, and one that
 # waits for the move in flight to answer before it can be sent.
 var _leave_sid := ""
@@ -1723,6 +1728,8 @@ func _on_door_knocked(sid: String) -> void:
         _pc_http_knock.request_completed.connect(_on_knock_response)
     _pc_http_knock.cancel_request()
     _knock_structure_id = sid
+    _knock_msec = Time.get_ticks_msec()
+    _knock_seq += 1
     var err := _pc_http_knock.request(Auth.api_base + "/api/village/pc/knock",
         Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"structure_id": sid}))
     if err != OK:
@@ -1742,11 +1749,22 @@ func _on_knock_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
         return
     # Nobody came (LLM-19): the popup comes back with Leave a note, for the
     # people of the house the engine named, and what the player needs to write
-    # one (LLM-799).
+    # one (LLM-799) — once the knock has sounded and nobody came (LLM-805), and
+    # only for the latest knock, with the player still at that door.
     var note_for = parsed.get("note_for", []) if parsed is Dictionary else []
     var note_lack := str(parsed.get("note_lack", "")) if parsed is Dictionary else ""
-    if note_for is Array and not note_for.is_empty() and door_panel_layer != null and _knock_structure_id != "":
-        door_panel_layer.open_unanswered(_knock_structure_id, _place_title(_knock_structure_id), note_for, note_lack)
+    if not (note_for is Array) or note_for.is_empty() or _knock_structure_id == "":
+        return
+    var sid := _knock_structure_id
+    var seq := _knock_seq
+    var wait := DoorPanelScript.answer_wait_left(_knock_msec, Time.get_ticks_msec())
+    if wait > 0.0:
+        await get_tree().create_timer(wait).timeout
+    if seq != _knock_seq or door_panel_layer == null or world == null:
+        return
+    if not DoorPanelScript.at_door(world.placed_npcs.get(_pc_actor_id, null), world.placed_objects.get(sid, null)):
+        return
+    door_panel_layer.open_unanswered(sid, _place_title(sid), note_for, note_lack)
 
 ## Leave a note (LLM-19): open the note window for the house.
 func _on_door_note_requested(sid: String, title: String, recipients: Array) -> void:

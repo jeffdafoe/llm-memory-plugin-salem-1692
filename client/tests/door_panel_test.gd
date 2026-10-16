@@ -13,6 +13,7 @@ extends SceneTree
 ## Exits 0 when every check passes, 1 if any check fails.
 
 const PANEL_PATH := "res://scripts/door_panel.gd"
+const WORLD_PATH := "res://scripts/world.gd"
 
 const TESTS := [
     "_test_open_shows_the_house_and_the_question",
@@ -23,6 +24,7 @@ const TESTS := [
     "_test_no_answer_offers_a_note",
     "_test_no_answer_without_anyone_offers_no_note",
     "_test_no_answer_without_the_kit_says_what_is_needed",
+    "_test_no_answer_waits_for_the_knock",
 ]
 
 var _failures := 0
@@ -237,4 +239,20 @@ func _test_no_answer_without_anyone_offers_no_note() -> void:
     p.note_button.pressed.emit()
     _check("a stray press asks for nothing", log, ["opened"])
     p.free()
+    _done()
+
+
+## LLM-805: "No one answers." waits for the knock. The popup is held for what
+## is left of ANSWER_WAIT, longer than the knock itself; the engine's
+## knock_unanswered line is held the whole wait, and nothing else is held.
+func _test_no_answer_waits_for_the_knock() -> void:
+    var P = load(PANEL_PATH)
+    _check("the wait outlasts the knock (0.6 s)", P.ANSWER_WAIT > 0.61, true)
+    _check("just knocked: the whole wait", P.answer_wait_left(1000, 1000), P.ANSWER_WAIT)
+    _check("half a second on", is_equal_approx(P.answer_wait_left(1000, 1500), P.ANSWER_WAIT - 0.5), true)
+    _check("a slow answer: nothing left to wait", P.answer_wait_left(1000, 9000), 0.0)
+    var W = load(WORLD_PATH)
+    _check("knock_unanswered is held", W.room_event_delay({"kind": "knock_unanswered"}), P.ANSWER_WAIT)
+    _check("a note pinned is not", W.room_event_delay({"kind": "note_left"}), 0.0)
+    _check("an ordinary event is not", W.room_event_delay({"kind": "act"}), 0.0)
     _done()
