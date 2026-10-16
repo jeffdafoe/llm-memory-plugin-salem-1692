@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -85,6 +86,17 @@ func TestHandlePCFeed(t *testing.T) {
 	}
 	if rec := post(t, srv, "/api/village/pc/feed", `{"actor_id":"cow2"}`); rec.Code != http.StatusOK {
 		t.Fatalf("feed: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// A second feed: the player is told, in the scene's words, that she is fed.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["pc-tester"].Inventory = map[sim.ItemKind]int{"sage": 1}
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := post(t, srv, "/api/village/pc/feed", `{"actor_id":"cow2"}`)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Cow 2 doesn't seem hungry") {
+		t.Errorf("second feed: status %d body %s, want 422 \"Cow 2 doesn't seem hungry\"", rec.Code, rec.Body.String())
 	}
 	if rec := post(t, srv, "/api/village/pc/feed", `{}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("no actor_id: status = %d, want 400", rec.Code)
