@@ -40,6 +40,15 @@ const ROD_TURN_FRAMES := 16
 ## The top roll fattens as the paper winds up onto it, the bottom one thins.
 const ROLL_STEPS := 3
 const COLOR_ROLL_EDGE := Color(0.55, 0.45, 0.29)
+## The rods are not drawn at runtime (a picture costs ~15 ms): every step and
+## turn of each rod is pre-rendered by tools/build_credit_rods.gd from rod_image
+## into one sheet per rod, the widest rod the layout makes (PAPER_WIDTH plus the
+## overhangs), one ROD_HEIGHT_PX row per picture, row = step * frames + frame.
+## A narrower rod is cut from it: its left half from the sheet's left end and
+## its right half from the right end, so both knobs survive.
+const ROD_SHEET_WIDTH := 234
+const ROD_SEEDS := [1692, 1693]
+const ROD_SHEET_PATHS := ["res://assets/ui/credits_rod_top.png", "res://assets/ui/credits_rod_bottom.png"]
 ## The roll on open (LLM-802), only when the credits run taller than the paper:
 ## after the unroll and ROLL_LEAD, the paper winds up at ROLL_SPEED, rests
 ## ROLL_PAUSE at each end, and winds back. Any press, wheel, touch or key stops it.
@@ -120,9 +129,9 @@ var _heading_font: FontVariation = null
 var _rod_width_px := 0
 var _paper_height := 0.0
 var _tween: Tween = null
-## Rod pictures made so far, by rod, roll step and turn frame (_rod_texture).
-## Cleared when the rods change width.
-var _rod_cache := {}
+## Each rod's pictures at the current width (0 top, 1 bottom), indexed
+## step * ROD_TURN_FRAMES + frame: regions of one texture cut from its sheet.
+var _rod_frames: Array = [[], []]
 ## Each rod's turn so far in radians, and the paper travel it was last turned
 ## to. The turn adds up step by step at the roll's current radius, so a change
 ## of thickness never jumps the picture.
@@ -417,24 +426,6 @@ func _process(delta: float) -> void:
     # The rolls' thickness follows the room left to scroll, which settles a
     # frame or two after open; keep the rods current while the scroll is up.
     _turn_rods()
-    _warm_rods()
-
-
-## Draw one rod picture not yet made, each frame while the scroll is up: a
-## picture costs ~15 ms on desktop and more in a browser, too much to draw the
-## moment the paper first turns a rod to it. The rolls' current thickness goes
-## first; all ROLL_STEPS x ROD_TURN_FRAMES x 2 are ready within a couple of
-## seconds, mostly during the unroll and the lead.
-func _warm_rods() -> void:
-    for which in 2:
-        var current := top_step if which == 0 else bottom_step
-        for step in [current, current - 1, current + 1, 0, 1, 2]:
-            if step < 0 or step >= ROLL_STEPS:
-                continue
-            for frame in ROD_TURN_FRAMES:
-                if not _rod_cache.has(Vector3i(which, step, frame)):
-                    _rod_texture(which, step, frame)
-                    return
 
 
 func _step_roll(delta: float) -> void:
@@ -485,7 +476,7 @@ func _input(event: InputEvent) -> void:
 ## Turn: paper winding up turns both rods so their faces move up; the bottom rod
 ## also turns as the paper comes off it in the unroll.
 func _turn_rods() -> void:
-    if _rod_width_px <= 0:
+    if _rod_frames[0].is_empty() or _rod_frames[1].is_empty():
         return
     var room := roll_room()
     var scrolled := float(body_scroll.scroll_vertical)
@@ -505,18 +496,49 @@ func _turn_rods() -> void:
     top_frame = rod_frame_at(_top_angle)
     bottom_frame = rod_frame_at(_bottom_angle)
 
-    top_rod.texture = _rod_texture(0, top_step, top_frame)
-    bottom_rod.texture = _rod_texture(1, bottom_step, bottom_frame)
+    top_rod.texture = rod_texture(0, top_step, top_frame)
+    bottom_rod.texture = rod_texture(1, bottom_step, bottom_frame)
 
 
-## The picture of one rod (0 top, 1 bottom) at a roll step and turn frame, made
-## on first use: a dozen or so are needed in a session, not all 96.
-func _rod_texture(which: int, step: int, frame: int) -> Texture2D:
-    var key := Vector3i(which, step, frame)
-    if not _rod_cache.has(key):
-        var image := rod_image(_rod_width_px, ROD_HEIGHT_PX, 1692 + which, TAU * frame / ROD_TURN_FRAMES, step)
-        _rod_cache[key] = ImageTexture.create_from_image(image)
-    return _rod_cache[key]
+## The picture of one rod (0 top, 1 bottom) at a roll step and turn frame.
+func rod_texture(which: int, step: int, frame: int) -> Texture2D:
+    return _rod_frames[which][step * ROD_TURN_FRAMES + frame]
+
+
+## Cut both rods at width_px (art pixels) out of their sheets: one composed
+## image per rod — two native blits — and a region of it per picture.
+func _build_rod_frames(width_px: int) -> void:
+    for which in 2:
+        _rod_frames[which] = []
+        var sheet_texture: Texture2D = load(ROD_SHEET_PATHS[which])
+        if sheet_texture == null:
+            push_error("credits_scroll: rod sheet %s missing — run tools/build_credit_rods.gd" % ROD_SHEET_PATHS[which])
+            continue
+        var rod := cut_rod_sheet(sheet_texture.get_image(), width_px)
+        var atlas := ImageTexture.create_from_image(rod)
+        for row in ROLL_STEPS * ROD_TURN_FRAMES:
+            var picture := AtlasTexture.new()
+            picture.atlas = atlas
+            picture.region = Rect2(0, row * ROD_HEIGHT_PX, width_px, ROD_HEIGHT_PX)
+            picture.filter_clip = true
+            _rod_frames[which].append(picture)
+
+
+## A rod sheet narrowed to width_px: the left half from the sheet's left end,
+## the right half from its right end, every row at once. A width at or over the
+## sheet's is the sheet.
+static func cut_rod_sheet(sheet: Image, width_px: int) -> Image:
+    if sheet.get_format() != Image.FORMAT_RGBA8:
+        sheet.convert(Image.FORMAT_RGBA8)
+    var full := sheet.get_width()
+    if width_px >= full:
+        return sheet
+    var tall := sheet.get_height()
+    var out := Image.create(width_px, tall, false, Image.FORMAT_RGBA8)
+    var left := (width_px + 1) / 2
+    out.blit_rect(sheet, Rect2i(0, 0, left, tall), Vector2i.ZERO)
+    out.blit_rect(sheet, Rect2i(full - (width_px - left), 0, width_px - left, tall), Vector2i(left, 0))
+    return out
 
 
 ## The roll step for a share (0..1) of the paper wound on a rod.
@@ -551,7 +573,7 @@ func _layout() -> void:
     if rod_width_px != _rod_width_px:
         _rod_width_px = rod_width_px
         var rod_size := Vector2(rod_width_px * ROD_PIXEL, ROD_HEIGHT_PX * ROD_PIXEL)
-        _rod_cache.clear()
+        _build_rod_frames(rod_width_px)
         top_rod.custom_minimum_size = rod_size
         bottom_rod.custom_minimum_size = rod_size
         _turn_rods()

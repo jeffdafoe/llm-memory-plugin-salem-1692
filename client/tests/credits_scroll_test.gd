@@ -25,6 +25,8 @@ const TESTS := [
     "_test_every_freesound_sound_is_credited",
     "_test_rod_turns_and_loops",
     "_test_rod_frame_follows_the_paper",
+    "_test_rod_sheets_match_the_generator",
+    "_test_narrow_rod_keeps_both_knobs",
     "_test_roll_up_rest_down_and_stop",
     "_test_pan_gesture_stops_the_roll",
     "_test_no_roll_when_it_fits",
@@ -394,7 +396,7 @@ func _test_roll_up_rest_down_and_stop() -> void:
     scroll._process(2.0)
     _check("winds up at the roll speed", scroll.body_scroll.scroll_vertical, int(2.0 * scroll.ROLL_SPEED))
     _check("the top rod turned with the paper", scroll.top_frame != top_before, true)
-    _check("showing that frame", scroll.top_rod.texture, scroll._rod_texture(0, scroll.top_step, scroll.top_frame))
+    _check("showing that frame", scroll.top_rod.texture, scroll.rod_texture(0, scroll.top_step, scroll.top_frame))
     scroll._process(scroll.roll_room() / scroll.ROLL_SPEED)
     var bottom: int = scroll.body_scroll.scroll_vertical
     _check("reaches the end", float(bottom), roundf(scroll.roll_room()))
@@ -448,4 +450,47 @@ func _test_no_roll_when_it_fits() -> void:
     scroll.queue_free()
     root.size = _saved_root_size
     await process_frame
+    _done()
+
+
+## LLM-802: the shipped rod sheets are rod_image's pictures, so a change to the
+## generator without rerunning tools/build_credit_rods.gd fails here.
+func _test_rod_sheets_match_the_generator() -> void:
+    var script := _scroll_script()
+    var frames: int = script.ROD_TURN_FRAMES
+    var tall: int = script.ROD_HEIGHT_PX
+    for which in 2:
+        var sheet: Image = (load(script.ROD_SHEET_PATHS[which]) as Texture2D).get_image()
+        sheet.convert(Image.FORMAT_RGBA8)
+        _check("sheet %d width" % which, sheet.get_width(), script.ROD_SHEET_WIDTH)
+        _check("sheet %d height" % which, sheet.get_height(), script.ROLL_STEPS * frames * tall)
+        for probe in [[0, 0], [1, 5], [2, 11]]:
+            var step: int = probe[0]
+            var frame: int = probe[1]
+            var want: Image = script.rod_image(script.ROD_SHEET_WIDTH, tall, script.ROD_SEEDS[which], TAU * frame / frames, step)
+            var got: Image = sheet.get_region(Rect2i(0, (step * frames + frame) * tall, script.ROD_SHEET_WIDTH, tall))
+            var worst := 0.0
+            for y in tall:
+                for x in script.ROD_SHEET_WIDTH:
+                    var a: Color = want.get_pixel(x, y)
+                    var b: Color = got.get_pixel(x, y)
+                    if a.a != b.a:
+                        worst = 1.0
+                    elif a.a > 0.0:
+                        worst = maxf(worst, maxf(absf(a.r - b.r), maxf(absf(a.g - b.g), absf(a.b - b.b))))
+            _check("sheet %d step %d frame %d is rod_image's" % [which, step, frame], worst <= 2.0 / 255.0, true)
+    _done()
+
+
+## A narrow window's rod is cut from the sheet's two ends: knobs at both.
+func _test_narrow_rod_keeps_both_knobs() -> void:
+    var script := _scroll_script()
+    var sheet: Image = (load(script.ROD_SHEET_PATHS[0]) as Texture2D).get_image()
+    var narrow: Image = script.cut_rod_sheet(sheet, 120)
+    _check("cut width", narrow.get_width(), 120)
+    _check("every picture kept", narrow.get_height(), sheet.get_height())
+    _check("left knob", narrow.get_pixel(8, 8).a, 1.0)
+    _check("right knob", narrow.get_pixel(111, 8).a, 1.0)
+    _check("past the right knob is clear", narrow.get_pixel(119, 0).a, 0.0)
+    _check("full width is the sheet itself", script.cut_rod_sheet(sheet, script.ROD_SHEET_WIDTH).get_width(), script.ROD_SHEET_WIDTH)
     _done()
