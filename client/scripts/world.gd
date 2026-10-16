@@ -39,6 +39,19 @@ var knocked_at: Dictionary = {}
 
 const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
+## A player in an outhouse (LLM-806, apply_outhouse_used), in seconds: the
+## first fart after the door shuts, the pause between farts, the quiet before
+## the door opens, the shortest fart file, and the length assumed for a fart
+## this client does not hear (out of reach) so the sequence still runs on.
+const OUTHOUSE_FIRST_FART := 1.5
+const OUTHOUSE_FART_GAP := Vector2(0.4, 1.4)
+const OUTHOUSE_EXIT_QUIET := 0.8
+const OUTHOUSE_SHORTEST_FART := 1.8
+const OUTHOUSE_UNHEARD_FART := 3.0
+
+## The player's own actor id — where play_sound_at hears from. Set by main.gd.
+var pc_actor_id := ""
+
 var terrain_renderer: Node2D = null
 @onready var objects_node: Node2D = $Objects
 
@@ -645,7 +658,7 @@ func apply_npc_inside_change(data: Dictionary) -> void:
         container.position = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
     container.set_meta("inside", inside)
     container.set_meta("inside_structure_id", inside_structure_id)
-    container.visible = _compute_npc_visible(inside, inside_structure_id)
+    container.visible = _compute_npc_visible(inside, inside_structure_id) and not in_outhouse(container)
     _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     _set_room_square(container, data.get("room_square", null))
     # Into or out of a building: its common room (LLM-801).
@@ -812,15 +825,63 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
     _apply_activity_animation(container)
 
 ## Apply a livestock_fed broadcast (LLM-797): an animal was fed — by a player's
-## click or by her milker — and she moos. Sound is not positional, so only a cow
-## on screen is heard, and not from indoors.
+## click or by her milker — and she moos, heard from where she stands.
 func apply_livestock_fed(data: Dictionary) -> void:
     var container: Node2D = placed_npcs.get(str(data.get("id", "")), null)
     if container == null or not is_instance_valid(container) or not container.visible:
         return
-    if Sound.indoors or not on_screen(container):
+    play_sound_at("cow_moo", container.global_position)
+
+## Play a sound made at a global position, heard from the player's own
+## character (LLM-806): quieter the further off, silent out of its reach.
+## Silent while this client has no character on the map.
+func play_sound_at(sound_name: String, at: Vector2) -> float:
+    var me: Node2D = placed_npcs.get(pc_actor_id, null)
+    if me == null or not is_instance_valid(me):
+        return 0.0
+    return Sound.play_at(sound_name, at, me.global_position)
+
+## Apply an outhouse_used broadcast (LLM-806): a player went into an outhouse.
+## They are hidden for the stay, the door creaks, the farts follow one after
+## another, and the door creaks again as they come out.
+func apply_outhouse_used(data: Dictionary) -> void:
+    var house: Node2D = placed_objects.get(str(data.get("object_id", "")), null)
+    if house == null or not is_instance_valid(house):
         return
-    Sound.play("cow_moo")
+    var seconds := maxf(float(data.get("seconds", 0.0)), 0.0)
+    var at := house.global_position
+    var who: Node2D = placed_npcs.get(str(data.get("actor_id", "")), null)
+    # Each stay is told apart by when it started, so the end of an earlier one
+    # never shows a player who has gone back in.
+    var visit := Time.get_ticks_usec()
+    if who != null and is_instance_valid(who):
+        who.set_meta("outhouse_visit", visit)
+        who.set_meta("outhouse_until_ms", Time.get_ticks_msec() + int(seconds * 1000.0))
+        who.visible = false
+    play_sound_at("outhouse_door", at)
+    var farts_end := Time.get_ticks_msec() / 1000.0 + seconds - OUTHOUSE_EXIT_QUIET
+    get_tree().create_timer(OUTHOUSE_FIRST_FART).timeout.connect(_outhouse_fart.bind(at, farts_end))
+    get_tree().create_timer(seconds).timeout.connect(func() -> void:
+        if who != null and is_instance_valid(who) and int(who.get_meta("outhouse_visit", 0)) == visit:
+            who.remove_meta("outhouse_visit")
+            who.remove_meta("outhouse_until_ms")
+            who.visible = _compute_npc_visible(bool(who.get_meta("inside", false)), str(who.get_meta("inside_structure_id", "")))
+        play_sound_at("outhouse_door", at))
+
+## One fart, then the next after a pause, while there is still room before
+## farts_end (seconds on the ticks clock) for the shortest one. The file is
+## picked at random, so a long one started late can run past the door.
+func _outhouse_fart(at: Vector2, farts_end: float) -> void:
+    var length := play_sound_at("fart", at)
+    if length <= 0.0:
+        length = OUTHOUSE_UNHEARD_FART
+    var next := length + randf_range(OUTHOUSE_FART_GAP.x, OUTHOUSE_FART_GAP.y)
+    if Time.get_ticks_msec() / 1000.0 + next + OUTHOUSE_SHORTEST_FART <= farts_end:
+        get_tree().create_timer(next).timeout.connect(_outhouse_fart.bind(at, farts_end))
+
+## Whether node is a player still inside an outhouse (LLM-806).
+func in_outhouse(node: Node2D) -> bool:
+    return int(node.get_meta("outhouse_until_ms", 0)) > Time.get_ticks_msec()
 
 ## Whether node's origin is inside the visible viewport.
 func on_screen(node: Node2D) -> bool:

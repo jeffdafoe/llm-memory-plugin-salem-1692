@@ -22,7 +22,8 @@ extends Node
 const DIR := "res://assets/sound/"
 
 ## name -> {files, db (gain), pitch (± random fraction, 0 = none), base
-## (optional fixed pitch scale, default 1.0)}.
+## (optional fixed pitch scale, default 1.0), reach (optional, tiles: how far
+## off play_at is heard, default DEFAULT_REACH_TILES)}.
 const SOUNDS := {
     "step_grass": {
         "files": ["footstep_grass_000.ogg", "footstep_grass_001.ogg", "footstep_grass_002.ogg", "footstep_grass_003.ogg", "footstep_grass_004.ogg"],
@@ -59,8 +60,11 @@ const SOUNDS := {
     # (LLM-804).
     "quack_watch": {"files": ["duck_quack_twice.ogg"], "db": -8.0, "pitch": 0.03},
     "quack_alarm": {"files": ["duck_alarm_1.ogg", "duck_alarm_2.ogg"], "db": -8.0, "pitch": 0.04},
-    # A cow fed sage (LLM-797). Played only for a cow on screen.
-    "cow_moo": {"files": ["cow_moo.ogg"], "db": -16.0, "pitch": 0.06},
+    # A cow fed sage (LLM-797), heard from where she stands.
+    "cow_moo": {"files": ["cow_moo.ogg"], "db": -16.0, "pitch": 0.06, "reach": 16.0},
+    # A player in an outhouse (LLM-806): its door, and what goes on inside.
+    "outhouse_door": {"files": ["creak1.ogg", "creak2.ogg", "creak3.ogg"], "db": -16.0, "pitch": 0.05, "base": 1.2, "reach": 12.0},
+    "fart": {"files": ["fart_1.ogg", "fart_2.ogg", "fart_3.ogg"], "db": -10.0, "pitch": 0.04, "reach": 20.0},
     "windlass_turn": {"files": ["creak1.ogg", "creak2.ogg", "creak3.ogg"], "db": -18.0, "pitch": 0.0},
     "saw_stroke": {
         "files": ["saw_0.ogg", "saw_1.ogg", "saw_2.ogg", "saw_3.ogg", "saw_4.ogg", "saw_5.ogg"],
@@ -118,6 +122,15 @@ const THUNDER_INDOOR_DB := -8.0
 ## which only a burst of hammer sparks and steps could ever reach.
 const VOICES := 8
 
+## Sounds in the world (LLM-806, play_at). Each player hears from where their
+## own character stands: at full gain within NEAR_TILES, fading to silence at
+## the row's reach. Indoors they are quieter, like the thunder. No stereo pan —
+## web samples do not take bus effects.
+const NEAR_TILES := 3.0
+const DEFAULT_REACH_TILES := 16.0
+const TILE_PX := 32.0
+const WORLD_INDOOR_DB := -8.0
+
 const SETTINGS_PATH := "user://sound.cfg"
 const DEFAULT_VOLUME := 0.8
 
@@ -157,16 +170,17 @@ func _ready() -> void:
 
 
 ## Play a sound from SOUNDS. An unknown name or a missing file is a no-op (with
-## a warning once per file), never an error.
-func play(sound_name: String, extra_db := 0.0) -> void:
+## a warning once per file), never an error. Returns the length in seconds of
+## the file played (pitch included), 0 when nothing played.
+func play(sound_name: String, extra_db := 0.0) -> float:
     var row: Dictionary = SOUNDS.get(sound_name, {})
     if row.is_empty():
         push_warning("sound: unknown sound " + sound_name)
-        return
+        return 0.0
     var files: Array = row["files"]
     var stream := _stream(files[_rng.randi_range(0, files.size() - 1)])
     if stream == null:
-        return
+        return 0.0
     var p := _voices[_next_voice]
     _next_voice = (_next_voice + 1) % _voices.size()
     p.stream = stream
@@ -174,6 +188,33 @@ func play(sound_name: String, extra_db := 0.0) -> void:
     var spread := float(row["pitch"])
     p.pitch_scale = float(row.get("base", 1.0)) * (1.0 + _rng.randf_range(-spread, spread))
     _start(p)
+    return stream.get_length() / p.pitch_scale
+
+
+## Play a sound from SOUNDS made at world_pos and heard at listener_pos (both
+## global positions — world.play_sound_at passes the player's own character),
+## at the gain the distance gives. Returns what play returns; 0 when out of
+## hearing.
+func play_at(sound_name: String, world_pos: Vector2, listener_pos: Vector2) -> float:
+    var row: Dictionary = SOUNDS.get(sound_name, {})
+    if row.is_empty():
+        push_warning("sound: unknown sound " + sound_name)
+        return 0.0
+    var tiles := listener_pos.distance_to(world_pos) / TILE_PX
+    var db := distance_db(tiles, float(row.get("reach", DEFAULT_REACH_TILES)))
+    if is_inf(db):
+        return 0.0
+    return play(sound_name, db + (WORLD_INDOOR_DB if indoors else 0.0))
+
+
+## The gain change for a sound tiles away: 0 dB within NEAR_TILES, then the
+## amplitude falls in a straight line to nothing at reach (-INF there and past).
+static func distance_db(tiles: float, reach: float) -> float:
+    if tiles <= NEAR_TILES:
+        return 0.0
+    if tiles >= reach:
+        return -INF
+    return linear_to_db(1.0 - (tiles - NEAR_TILES) / (reach - NEAR_TILES))
 
 
 ## Start a player — except under the headless Dummy driver (tests, CI), which

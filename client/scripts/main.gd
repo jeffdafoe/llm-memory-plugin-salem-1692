@@ -247,6 +247,9 @@ var _pc_walk_press_screen: Vector2 = Vector2.ZERO
 var _pc_actor_press: Node2D = null
 ## The animal to feed once the walk over to her ends (LLM-797).
 var _pending_feed_animal_id := ""
+## The outhouse to go into once the walk to it ends (LLM-806).
+var _pending_outhouse_id := ""
+var _pc_http_outhouse: HTTPRequest = null
 ## The player's pack as the talk panel last reported it (LLM-797).
 var _pc_items: Array = []
 var _pc_http_feed: HTTPRequest = null
@@ -1220,6 +1223,8 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
         familiar_quack.pc_actor_id = _pc_actor_id
     if actor_tooltip != null:
         actor_tooltip.pc_actor_id = _pc_actor_id
+    if world != null:
+        world.pc_actor_id = _pc_actor_id
     # A character already inside at login opens its room (LLM-750).
     _sync_interior()
     # Slide camera to the PC's actual position on the first /pc/me that
@@ -1406,6 +1411,34 @@ func _post_pc_feed(animal_id: String) -> void:
         return
     _pc_feed_in_flight = true
 
+## Whether object_id is a placed outhouse (the `outhouse` instance tag, LLM-806).
+func _is_outhouse(object_id: String) -> bool:
+    var node = world.placed_objects.get(object_id, null) if world != null else null
+    if node == null:
+        return false
+    var tags = node.get_meta("tags", [])
+    return tags is Array and tags.has("outhouse")
+
+## Go into an outhouse (LLM-806). The outhouse_used broadcast is the answer —
+## it hides the player and plays the sounds on every client; a refusal ("Someone
+## is in there.") comes back as a toast.
+func _post_pc_outhouse(object_id: String) -> void:
+    if _pc_http_outhouse == null:
+        _pc_http_outhouse = HTTPRequest.new()
+        _pc_http_outhouse.accept_gzip = false
+        add_child(_pc_http_outhouse)
+        _pc_http_outhouse.request_completed.connect(func(_r, c, _h, b):
+            Auth.check_response(c)
+            if c >= 200 and c < 300:
+                return
+            var parsed = JSON.parse_string(b.get_string_from_utf8())
+            var msg := str(parsed.get("error", "")) if parsed is Dictionary else ""
+            Toast.warning(msg if msg != "" else "The door will not open just now."))
+    _pc_http_outhouse.cancel_request()
+    if _pc_http_outhouse.request(Auth.api_base + "/api/village/pc/outhouse", Auth.auth_headers(),
+            HTTPClient.METHOD_POST, JSON.stringify({"object_id": object_id})) != OK:
+        Toast.warning("Could not reach the village just now — try again.")
+
 ## Take one of item_kind out of the cached pack (_pc_items).
 func _spend_cached_item(item_kind: String) -> void:
     for i in range(_pc_items.size()):
@@ -1437,8 +1470,14 @@ func _spend_cached_item(item_kind: String) -> void:
 func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -> void:
     if world == null:
         return
-    # A new walk is a change of mind: no feeding at the end of it (LLM-797).
+    # In an outhouse the player waits for the door (LLM-806).
+    var me: Node2D = world.placed_npcs.get(_pc_actor_id, null)
+    if me != null and world.in_outhouse(me):
+        return
+    # A new walk is a change of mind: no feeding at the end of it (LLM-797),
+    # and no outhouse (LLM-806).
     _pending_feed_animal_id = ""
+    _pending_outhouse_id = ""
     # A click on the building the character is already in reopens its room
     # (LLM-750), and on the stall they stand at its counter (LLM-753) — the ✕
     # only hid it.
@@ -1491,6 +1530,11 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
     if hit_id != "" and _is_readable_noticeboard(hit_id):
         _pending_notice_object_id = hit_id
         _pc_move_purpose = "noticeboard"
+    elif hit_id != "" and _is_outhouse(hit_id):
+        # Walk-then-go-in (LLM-806): the arrival posts /pc/outhouse.
+        _pending_notice_object_id = ""
+        _pending_outhouse_id = hit_id
+        _pc_move_purpose = "outhouse"
     else:
         _pending_notice_object_id = ""
         _pc_move_purpose = ""
@@ -1537,6 +1581,7 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         # pending notice flag and the purpose discriminator so a later
         # unrelated arrival or completion can't act on this aborted walk.
         _pending_notice_object_id = ""
+        _pending_outhouse_id = ""
         _pc_move_purpose = ""
         push_warning("PC move request failed: %s" % err)
 
@@ -1569,6 +1614,12 @@ func _ensure_pc_http_move() -> void:
                     var animal_id := _pending_feed_animal_id
                     _pending_feed_animal_id = ""
                     _post_pc_feed(animal_id)
+                # The same for an outhouse (LLM-806): a refused walk most often
+                # means the player is at its door already.
+                if _pc_move_purpose == "outhouse" and _pending_outhouse_id != "":
+                    var outhouse_id := _pending_outhouse_id
+                    _pending_outhouse_id = ""
+                    _post_pc_outhouse(outhouse_id)
                 _pc_move_purpose = ""
                 return
             _pc_move_purpose = ""
@@ -2009,6 +2060,11 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
         var animal_id := _pending_feed_animal_id
         _pending_feed_animal_id = ""
         _post_pc_feed(animal_id)
+    # Walk-then-go-in (LLM-806).
+    if _pc_actor_id != "" and npc_id == _pc_actor_id and _pending_outhouse_id != "":
+        var outhouse_id := _pending_outhouse_id
+        _pending_outhouse_id = ""
+        _post_pc_outhouse(outhouse_id)
     if _pending_notice_object_id == "":
         return
     if _pc_actor_id == "" or npc_id != _pc_actor_id:
