@@ -196,11 +196,10 @@ const LOG_STICK_BOTTOM_THRESHOLD: int = 24
 
 var refresh_timer: Timer
 var http_me: HTTPRequest
-## When the /pc/me request now in flight (or last answered) was sent, in
-## Time.get_ticks_msec(). One HTTPRequest carries one request at a time, so at
-## completion this is that answer's send time. The Your Pack list uses it to
-## drop an answer older than an item action's own (LLM-800).
-var me_sent_msec := 0
+## Counts /pc/me requests sent. One HTTPRequest carries one request at a time,
+## so at completion this numbers that answer. The Your Pack list uses it to drop
+## an answer sent before an item action's own answer arrived (LLM-800).
+var me_sent_seq := 0
 var http_speak: HTTPRequest
 
 var pc_exists := false
@@ -1062,7 +1061,7 @@ func _refresh_state() -> void:
     if err != OK:
         push_warning("TalkPanel pc/me request failed: %s" % err)
     else:
-        me_sent_msec = Time.get_ticks_msec()
+        me_sent_seq += 1
 
 
 func _on_me_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:

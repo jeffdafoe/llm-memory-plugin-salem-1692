@@ -699,7 +699,7 @@ func _build_ui() -> void:
                 inventory_panel.show_at(rect)
         )
     if talk_panel_layer.has_signal("inventory_changed"):
-        talk_panel_layer.inventory_changed.connect(func(items: Array): inventory_panel.set_inventory(items, talk_panel_layer.me_sent_msec))
+        talk_panel_layer.inventory_changed.connect(func(items: Array): inventory_panel.set_inventory(items, talk_panel_layer.me_sent_seq))
         talk_panel_layer.inventory_changed.connect(func(items: Array): _pc_items = items)
     inventory_panel.item_action_requested.connect(_on_item_action_requested.bind(inventory_panel))
 
@@ -1714,7 +1714,7 @@ func _on_item_action_requested(item_kind: String, action: String, panel: Control
         Auth.check_response(code)
         var parsed = JSON.parse_string(body.get_string_from_utf8())
         if code >= 200 and code < 300 and parsed is Dictionary and parsed.get("inventory") is Array:
-            panel.action_finished("", parsed["inventory"])
+            panel.action_finished("", parsed["inventory"], talk_panel_layer.me_sent_seq if talk_panel_layer != null else -1)
         else:
             var message := str(parsed.get("error", "")) if parsed is Dictionary else ""
             panel.action_finished(message if message != "" else "That did not work.")

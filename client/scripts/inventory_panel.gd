@@ -42,8 +42,10 @@ var _busy: bool = false
 ## The last refusal from /pc/item/use, shown under the list until the next
 ## press or close.
 var _message: String = ""
-## When an item action's answer last replaced the rows (Time.get_ticks_msec()).
-var _answered_msec := -1
+## The talk panel's /pc/me count (me_sent_seq) when an item action's answer
+## last replaced the rows: a /pc/me numbered at or below it was already sent
+## and may predate the action.
+var _answered_seq := -1
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -115,11 +117,11 @@ func show_at(icon_rect: Rect2) -> void:
 
 ## Update the inventory data. If the panel is open, it re-renders in
 ## place; if closed, the next show_at() will pick up the latest.
-## sent_msec is when the /pc/me that brought items was sent (-1: not known). An
-## answer sent before the last item action's answer was applied is older than
-## the rows on show, and is dropped (LLM-800).
-func set_inventory(items: Array, sent_msec: int = -1) -> void:
-    if sent_msec >= 0 and sent_msec < _answered_msec:
+## sent_seq numbers the /pc/me that brought items (-1: not known). One sent
+## before the last item action's answer arrived may be older than the rows on
+## show, and is dropped (LLM-800); the next poll brings the truth.
+func set_inventory(items: Array, sent_seq: int = -1) -> void:
+    if sent_seq >= 0 and sent_seq <= _answered_seq:
         return
     _items = _sorted_items(items)
     if visible:
@@ -257,11 +259,11 @@ func _on_action_pressed(item_kind: String, action: String) -> void:
 ## main.gd's answer to item_action_requested. message is "" on success, else
 ## the line to show under the list. items, on success, is the pack as it now
 ## stands (the route returns it), so the row shows its new button before the
-## buttons come back.
-func action_finished(message: String, items = null) -> void:
+## buttons come back. sent_seq is the talk panel's /pc/me count at that moment.
+func action_finished(message: String, items = null, sent_seq: int = -1) -> void:
     if items is Array:
         _items = _sorted_items(items)
-        _answered_msec = Time.get_ticks_msec()
+        _answered_seq = sent_seq
     _busy = false
     _message = message
     if visible:

@@ -195,14 +195,16 @@ func _test_success_redraws_from_the_answer() -> void:
 ## answer left them. A poll sent later still lands.
 func _test_older_poll_does_not_undo_the_answer() -> void:
     var p := _panel([])
-    var poll_sent := Time.get_ticks_msec()
+    # /pc/me number 5 is in flight when the Wear's answer arrives.
     _button(p, "Duck pendant").pressed.emit()
     var after: Array = ITEMS.duplicate(true)
     after[1]["actions"] = ["remove"]
-    p.action_finished("", after)
-    p.set_inventory(ITEMS, poll_sent)
-    _check("the older poll is dropped", _rows(p).get("Duck pendant"), ["Remove"])
-    p.set_inventory(ITEMS, p._answered_msec + 1)
+    p.action_finished("", after, 5)
+    p.set_inventory(ITEMS, 5)
+    _check("the poll already in flight is dropped", _rows(p).get("Duck pendant"), ["Remove"])
+    p.set_inventory(ITEMS, 4)
+    _check("an even older one too", _rows(p).get("Duck pendant"), ["Remove"])
+    p.set_inventory(ITEMS, 6)
     _check("a later poll lands", _rows(p).get("Duck pendant"), ["Wear"])
     p.set_inventory(after)
     _check("an unstamped update lands", _rows(p).get("Duck pendant"), ["Remove"])
