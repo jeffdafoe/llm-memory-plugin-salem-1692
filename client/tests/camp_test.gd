@@ -13,6 +13,7 @@ const TESTS := [
     "_test_tent_raised",
     "_test_world_faces_the_piece",
     "_test_beat_from_frame_and_dto",
+    "_test_home_chip",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -142,4 +143,22 @@ func _test_beat_from_frame_and_dto() -> void:
     _check("dto: target forwarded", agent.get("source_activity_target", null), {"x": 1.0, "y": 2.0})
     npc.queue_free()
     world.free()
+    _completed[_current] = true
+
+
+## The top bar's home chip: a paid room shows first, else a pitched tent.
+func _test_home_chip() -> void:
+    var bar: Control = load("res://scripts/top_bar.gd").new()
+    root.add_child(bar)
+    bar.set_camp(true, "by the Inn")
+    _check("tent pitched: home chip", bar.lodging_label.text, "Home: your tent")
+    _check("tent pitched: says where", bar.lodging_label.tooltip_text, "Your tent is pitched by the Inn.")
+    _check("tent pitched: shown", bar.lodging_label.visible, true)
+    bar.set_lodging("Inn", "")
+    _check("a room as well: the room shows", bar.lodging_label.text, "Lodged at Inn")
+    bar.set_lodging("", "")
+    _check("room gone: back to the tent", bar.lodging_label.text, "Home: your tent")
+    bar.set_camp(false, "")
+    _check("tent struck: hidden", bar.lodging_label.visible, false)
+    bar.queue_free()
     _completed[_current] = true

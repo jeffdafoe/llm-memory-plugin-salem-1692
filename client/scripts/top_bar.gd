@@ -529,19 +529,44 @@ func set_purse(coins: int, _inventory_lines: Array) -> void:
 ## inn_name means the PC holds no room — clear and hide the chip. Hidden while
 ## sleeping like the other per-PC chips; set_sleep_state restores it on wake.
 func set_lodging(inn_name: String, until_label: String) -> void:
+    _lodged_inn = inn_name
+    _lodged_until = until_label
+    _show_home_chip()
+
+
+## Drive the same chip from /pc/me's camp field (LLM-798): with no room, a
+## pitched tent reads "Home: your tent". place is where it stands ("by the Inn").
+func set_camp(pitched: bool, place: String) -> void:
+    _camp_pitched = pitched
+    _camp_place = place
+    _show_home_chip()
+
+
+var _lodged_inn := ""
+var _lodged_until := ""
+var _camp_pitched := false
+var _camp_place := ""
+
+
+## A paid room shows first ("Lodged at …"); else a pitched tent; else nothing.
+func _show_home_chip() -> void:
     if lodging_label == null:
         return
-    if inn_name == "":
+    if _lodged_inn != "":
+        lodging_label.text = "Lodged at %s" % _lodged_inn
+        if _lodged_until != "":
+            lodging_label.tooltip_text = "You have a room at %s, paid %s." % [_lodged_inn, _lodged_until]
+        else:
+            lodging_label.tooltip_text = "You have a room at %s." % _lodged_inn
+    elif _camp_pitched:
+        lodging_label.text = "Home: your tent"
+        lodging_label.tooltip_text = "Your tent is pitched %s." % _camp_place if _camp_place != "" else "Your tent is pitched."
+    else:
         # Clear so a stale value can't reappear when set_sleep_state restores
         # chips on wake.
         lodging_label.text = ""
         lodging_label.visible = false
         return
-    lodging_label.text = "Lodged at %s" % inn_name
-    if until_label != "":
-        lodging_label.tooltip_text = "You have a room at %s, paid %s." % [inn_name, until_label]
-    else:
-        lodging_label.tooltip_text = "You have a room at %s." % inn_name
     lodging_label.visible = not _sleeping
 
 

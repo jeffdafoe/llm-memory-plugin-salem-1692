@@ -551,6 +551,8 @@ func _build_ui() -> void:
     # PC's active lodging from /pc/me; top bar shows/hides the chip.
     if talk_panel_layer.has_signal("lodging_changed") and top_bar != null:
         talk_panel_layer.lodging_changed.connect(_on_pc_lodging_changed)
+    if talk_panel_layer.has_signal("camp_changed") and top_bar != null and top_bar.has_method("set_camp"):
+        talk_panel_layer.camp_changed.connect(top_bar.set_camp)
     # Pay modal blocks world input. Without this, a click on the
     # Confirm button propagates into the world's PC-walk handler and
     # the character starts walking under the open modal.

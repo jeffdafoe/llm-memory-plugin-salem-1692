@@ -133,6 +133,10 @@ var pc_inventory: Array = []
 ## expires_at}, or empty when the PC holds no room. Drives the top-bar chip and
 ## the pay modal's empty-state copy.
 var pc_lodging: Dictionary = {}
+## Last /pc/me snapshot of the PC's pitched camp (LLM-798): {tent_id, fire_id,
+## place}, or empty while the tent is in the pack. Drives the top-bar chip and
+## the click on the player's own fire.
+var pc_camp: Dictionary = {}
 ## Last /pc/me snapshot of needs (hunger / thirst / tiredness, each 0..24).
 ## Forwarded to the top-bar's HUD readout. Empty when no PC.
 var pc_needs: Dictionary = {}
@@ -175,6 +179,9 @@ signal dwelling_attributes_changed(attrs: PackedStringArray)
 ## until_label are empty when the PC holds no room. main.gd forwards to the top
 ## bar's "Lodged at …" chip.
 signal lodging_changed(inn_name: String, until_label: String)
+## Emitted when the PC's pitched camp changes (LLM-798). main.gd forwards to
+## the top bar's home chip.
+signal camp_changed(pitched: bool, place: String)
 
 ## Emitted when the pay modal opens/closes. main.gd forwards to
 ## camera.modal_open so world clicks (PC walk, pan, zoom) don't fire
@@ -1115,6 +1122,9 @@ func _apply_pc_state(data: Dictionary) -> void:
     # used for the Pay box's empty-state copy. Absent when the PC holds no room.
     var lodging_data = data.get("lodging", {})
     pc_lodging = lodging_data if typeof(lodging_data) == TYPE_DICTIONARY else {}
+    # The pitched camp (LLM-798) — absent while the tent is in the pack.
+    var camp_data = data.get("camp", {})
+    pc_camp = camp_data if typeof(camp_data) == TYPE_DICTIONARY else {}
     _push_lodging_to_top_bar()
 
     var prev_huddle_size: int = huddle_members.size()
@@ -1277,6 +1287,7 @@ func _set_no_pc_state() -> void:
     pc_inventory = []
     pc_needs = {}
     pc_lodging = {}
+    pc_camp = {}
     is_open = false
     sheet_anchor.visible = false
     talk_launcher.visible = false
@@ -1501,6 +1512,7 @@ func _push_purse_to_top_bar() -> void:
 ## (LLM-38). Empty strings (no PC, or an empty pc_lodging) hide the chip.
 func _push_lodging_to_top_bar() -> void:
     lodging_changed.emit(str(pc_lodging.get("inn_name", "")), str(pc_lodging.get("until_label", "")))
+    camp_changed.emit(str(pc_camp.get("tent_id", "")) != "", str(pc_camp.get("place", "")))
 
 
 ## Emit needs_changed so main.gd can update the top bar's HUD readout.
