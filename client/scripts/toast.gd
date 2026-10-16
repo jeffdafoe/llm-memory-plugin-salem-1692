@@ -1,7 +1,8 @@
 extends CanvasLayer
-## Autoloaded singleton — the admin UI's transient user-facing message surface
-## (LLM-250). Stacks short-lived banners at the top of the screen; each fades out
-## on its own, and a click dismisses it early.
+## Autoloaded singleton — the transient message surface: the admin UI's errors
+## (LLM-250) and a player's refused pack action (notice, LLM-798). Stacks short-lived
+## banners at the top of the screen; each fades out on its own, and a click
+## dismisses it early.
 ##
 ## This is NOT ErrorBeacon. ErrorBeacon POSTs runtime failures to the engine for
 ## an operator to read later; nothing about it ever reaches the person at the
@@ -42,6 +43,9 @@ const COLOR_ERROR_BG := Color(0.42, 0.11, 0.11, 0.96)
 const COLOR_ERROR_BORDER := Color(0.85, 0.28, 0.28)
 const COLOR_WARNING_BG := Color(0.40, 0.30, 0.06, 0.96)
 const COLOR_WARNING_BORDER := Color(0.90, 0.68, 0.20)
+# The period brown of the door and repair windows, for a line to the player.
+const COLOR_NOTICE_BG := Color(0.115, 0.085, 0.055, 0.95)
+const COLOR_NOTICE_BORDER := Color(0.55, 0.42, 0.24, 0.95)
 
 var _stack: VBoxContainer = null
 
@@ -70,6 +74,12 @@ func error(message: String) -> void:
 ## probably didn't intend.
 func warning(message: String) -> void:
     _post(message, COLOR_WARNING_BG, COLOR_WARNING_BORDER)
+
+## Tell the PLAYER something their own action could not do — a refused Your Pack
+## action ("Walk up to your tent first.", LLM-798). The same banner, in the
+## game's brown rather than an admin's alarm colours.
+func notice(message: String) -> void:
+    _post(message, COLOR_NOTICE_BG, COLOR_NOTICE_BORDER)
 
 func _post(message: String, bg: Color, border: Color) -> void:
     if message == "" or _stack == null:

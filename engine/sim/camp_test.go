@@ -643,7 +643,7 @@ func TestCampItemActions(t *testing.T) {
 	// Strike from across the camp: refused, as the pack shows it.
 	mustSend(t, w, func(world *sim.World) { world.Actors["pc"].Pos = sim.TilePos{X: campStand.X + 8, Y: campStand.Y} })
 	_, err := w.Send(sim.UseItem("pc", sim.TentItemKind, sim.ItemActionStrike, now))
-	if !errors.Is(err, sim.ErrItemAction) || err.Error() != "Walk to the front of your tent first." {
+	if !errors.Is(err, sim.ErrItemAction) || err.Error() != "Walk up to your tent first." {
 		t.Fatalf("strike away from the tent err = %v, want the item-action refusal", err)
 	}
 	mustSend(t, w, func(world *sim.World) { world.Actors["pc"].Pos = campStand })
@@ -687,5 +687,33 @@ func TestCampWork_AnnouncesHome(t *testing.T) {
 	mustSend(t, w, func(*sim.World) { got = append(got, homes...) })
 	if len(got) != 2 || got[0] != tentID || got[1] != "" {
 		t.Errorf("home frames = %q, want [%q \"\"]", got, tentID)
+	}
+}
+
+// Strike works from beside the tent, not one spot at the flap: the live case
+// (2026-10-16) was a player against the tent's east side, three tiles from the
+// stand tile, refused every time. Within campStrikeReach of the footprint is
+// enough; further off is refused.
+func TestStrikeTent_FromBesideTheTent(t *testing.T) {
+	w := buildCampWorld(t, nil, nil)
+	now := pitchAll(t, w)
+	// The tent's anchor is one tile north of the stand tile; its footprint runs
+	// two tiles east of the anchor. Three east of the anchor is just past it.
+	beside := sim.TilePos{X: campStand.X + 3, Y: campStand.Y - 1}
+	mustSend(t, w, func(world *sim.World) { world.Actors["pc"].Pos = beside })
+	if _, err := w.Send(sim.StrikeTent("pc", now)); err != nil {
+		t.Fatalf("strike from beside the tent: %v", err)
+	}
+	if s := readCamp(t, w); s.Working != sim.SourceActivityStrike {
+		t.Fatalf("after strike = %+v, want a strike under way", s)
+	}
+
+	w = buildCampWorld(t, nil, nil)
+	now = pitchAll(t, w)
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["pc"].Pos = sim.TilePos{X: campStand.X + 6, Y: campStand.Y - 1}
+	})
+	if _, err := w.Send(sim.StrikeTent("pc", now)); !errors.Is(err, sim.ErrCampNotAtTent) {
+		t.Fatalf("strike from four tiles past the tent err = %v, want ErrCampNotAtTent", err)
 	}
 }

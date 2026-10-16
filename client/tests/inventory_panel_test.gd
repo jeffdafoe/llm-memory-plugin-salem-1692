@@ -6,8 +6,8 @@ extends SceneTree
 ##
 ## Covers: a row with actions draws one button per action with its label and a
 ## row without draws none; a press emits item_action_requested and disables the
-## buttons until action_finished; a refusal's line shows under the list and goes
-## on the next press; the duck quacks once on coming to rest beside its owner,
+## buttons until action_finished; a refusal draws nothing in the pack (main.gd
+## pops it up as a notice, LLM-798); the duck quacks once on coming to rest beside its owner,
 ## not while walking, not for someone else's duck, not when the owner is indoors.
 ##
 ## Run headless (CI and local):
@@ -20,7 +20,7 @@ const QUACK_PATH := "res://scripts/familiar_quack.gd"
 const TESTS := [
     "_test_rows_draw_their_action_buttons",
     "_test_press_requests_and_waits",
-    "_test_refusal_shows_under_the_list",
+    "_test_refusal_is_not_drawn_in_the_pack",
     "_test_success_redraws_from_the_answer",
     "_test_older_poll_does_not_undo_the_answer",
     "_test_ui_panel_covers_the_popover",
@@ -158,21 +158,19 @@ func _test_press_requests_and_waits() -> void:
     _check("buttons wait while it is asked", _button(p, "Silver locket").disabled, true)
     _button(p, "Silver locket").pressed.emit()
     _check("a press while waiting asks nothing", log.size(), 1)
-    p.action_finished("")
+    p.action_finished()
     _check("answered: buttons back", _button(p, "Silver locket").disabled, false)
     _check("success: no line", _note_text(p), "")
     p.free()
     _done()
 
 
-func _test_refusal_shows_under_the_list() -> void:
+func _test_refusal_is_not_drawn_in_the_pack() -> void:
     var p := _panel([])
     _button(p, "Duck pendant").pressed.emit()
-    p.action_finished("You are not carrying that.")
-    _check("refusal line shows", _note_text(p), "You are not carrying that.")
-    _button(p, "Duck pendant").pressed.emit()
-    _check("next press clears it", _note_text(p), "")
-    p.action_finished("")
+    p.action_finished()
+    _check("refused: no line in the pack", _note_text(p), "")
+    _check("refused: buttons back", _button(p, "Duck pendant").disabled, false)
     p.close()
     p.free()
     _done()
@@ -184,12 +182,12 @@ func _test_success_redraws_from_the_answer() -> void:
     _button(p, "Duck pendant").pressed.emit()
     var after: Array = ITEMS.duplicate(true)
     after[1]["actions"] = ["remove"]
-    p.action_finished("", after)
+    p.action_finished(after)
     _check("the row shows Remove at once", _rows(p).get("Duck pendant"), ["Remove"])
     _check("and it is pressable", _button(p, "Duck pendant").disabled, false)
     _button(p, "Duck pendant").pressed.emit()
     _check("a second press asks to remove, not to wear again", log, ["duck_pendant:wear", "duck_pendant:remove"])
-    p.action_finished("", after)
+    p.action_finished(after)
     p.free()
     _done()
 
@@ -202,7 +200,7 @@ func _test_older_poll_does_not_undo_the_answer() -> void:
     _button(p, "Duck pendant").pressed.emit()
     var after: Array = ITEMS.duplicate(true)
     after[1]["actions"] = ["remove"]
-    p.action_finished("", after, 5)
+    p.action_finished(after, 5)
     p.set_inventory(ITEMS, 5)
     _check("the poll already in flight is dropped", _rows(p).get("Duck pendant"), ["Remove"])
     p.set_inventory(ITEMS, 4)
