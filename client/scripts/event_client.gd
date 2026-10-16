@@ -645,8 +645,14 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var node: Node2D = world.placed_objects[obj_id]
     var new_state: String = data.get("state", "")
     var asset_id: String = node.get_meta("asset_id", "")
+    var old_state := str(node.get_meta("current_state", ""))
     # The state the server says, kept even when it cannot be drawn below.
     node.set_meta("current_state", new_state)
+    if Camp.tent_raised(asset_id, old_state, new_state):
+        world.camp_tent_raised(node)
+        # The new tent is a structure now: its room plan is not in the set
+        # loaded at login.
+        Catalog.reload_rooms()
 
     var state_info = Catalog.get_state(asset_id, new_state)
     if state_info == null:

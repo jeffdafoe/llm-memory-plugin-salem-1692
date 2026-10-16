@@ -133,6 +133,10 @@ var pc_inventory: Array = []
 ## expires_at}, or empty when the PC holds no room. Drives the top-bar chip and
 ## the pay modal's empty-state copy.
 var pc_lodging: Dictionary = {}
+## Last /pc/me snapshot of the PC's pitched camp (LLM-798): {tent_id, fire_id,
+## place}, or empty while the tent is in the pack. Drives the top-bar chip and
+## the click on the player's own fire.
+var pc_camp: Dictionary = {}
 ## Last /pc/me snapshot of needs (hunger / thirst / tiredness, each 0..24).
 ## Forwarded to the top-bar's HUD readout. Empty when no PC.
 var pc_needs: Dictionary = {}
@@ -175,6 +179,9 @@ signal dwelling_attributes_changed(attrs: PackedStringArray)
 ## until_label are empty when the PC holds no room. main.gd forwards to the top
 ## bar's "Lodged at …" chip.
 signal lodging_changed(inn_name: String, until_label: String)
+## Emitted when the PC's pitched camp changes (LLM-798). main.gd forwards to
+## the top bar's home chip.
+signal camp_changed(pitched: bool, place: String)
 
 ## /pc/me's vacant_rooms (LLM-801): the bedrooms nobody has taken at the inn
 ## the PC is in. main.gd forwards them to the room window's hall.
@@ -1119,6 +1126,9 @@ func _apply_pc_state(data: Dictionary) -> void:
     # used for the Pay box's empty-state copy. Absent when the PC holds no room.
     var lodging_data = data.get("lodging", {})
     pc_lodging = lodging_data if typeof(lodging_data) == TYPE_DICTIONARY else {}
+    # The pitched camp (LLM-798) — absent while the tent is in the pack.
+    var camp_data = data.get("camp", {})
+    pc_camp = camp_data if typeof(camp_data) == TYPE_DICTIONARY else {}
     _push_lodging_to_top_bar()
     # The bedrooms nobody has taken where the PC is (LLM-801): their doors
     # stand open in the hall upstairs. Absent elsewhere.
@@ -1285,6 +1295,7 @@ func _set_no_pc_state() -> void:
     pc_inventory = []
     pc_needs = {}
     pc_lodging = {}
+    pc_camp = {}
     is_open = false
     sheet_anchor.visible = false
     talk_launcher.visible = false
@@ -1500,6 +1511,9 @@ func _push_purse_to_top_bar() -> void:
         if label != "" and qty > 0:
             lines.append("%s × %d" % [label, qty])
             structured.append(entry)
+        elif label != "" and bool(entry.get("pitched", false)):
+            # The pitched tent (LLM-798): out of the pack, but its row (Strike) stays.
+            structured.append(entry)
     purse_changed.emit(pc_coins, lines)
     inventory_changed.emit(structured)
     character_name_changed.emit(character_name)
@@ -1509,6 +1523,7 @@ func _push_purse_to_top_bar() -> void:
 ## (LLM-38). Empty strings (no PC, or an empty pc_lodging) hide the chip.
 func _push_lodging_to_top_bar() -> void:
     lodging_changed.emit(str(pc_lodging.get("inn_name", "")), str(pc_lodging.get("until_label", "")))
+    camp_changed.emit(str(pc_camp.get("tent_id", "")) != "", str(pc_camp.get("place", "")))
 
 
 ## Emit needs_changed so main.gd can update the top bar's HUD readout.

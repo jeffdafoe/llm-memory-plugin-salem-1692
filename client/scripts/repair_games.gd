@@ -55,6 +55,8 @@ static func make(kind: String, rng: RandomNumberGenerator, difficulty := 0.0) ->
             return Crosswise.new(rng, d)
         "ladder":
             return Ladder.new(rng, d)
+        "fire":
+            return Fire.new(rng, d)
     return Hammer.new(rng, d)
 
 
@@ -946,3 +948,143 @@ class Ladder:
 
     func hint() -> String:
         return "Keep the ladder upright — tap the other side"
+
+
+## FIRE — lighting the player's camp fire (LLM-798). Two phases. STRIKE: the
+## steel swings across the flint; a press while it crosses the flint's edge
+## throws a spark onto the tinder, and a press off the edge only costs time.
+## BLOW: the spark is an ember whose glow fades between breaths; each press is a
+## breath that brightens it. A breath that leaves the glow inside the gold band
+## counts; `breaths_needed` of them and the fire catches (Result.HIT). A breath
+## that drives the glow over the top blows the ember out, and an ember let fade
+## to nothing goes dark — either fails the round (Result.FAIL, from press or
+## from update): the tinder is spent, the game holds SPENT_TIME, then starts
+## again from the strike. Harder: a faster swing, a narrower band, a quicker
+## fade, more breaths.
+class Fire:
+    extends Game
+    enum Phase { STRIKE, BLOW, SPENT }
+    const BAR_X := 16
+    const BAR_W := 144
+    const EDGE := 72.0  # the flint's edge on the bar, art px
+    const EDGE_WINDOW := 14.0  # how near the edge a strike throws a spark
+    const HARD_EDGE_WINDOW := 8.0
+    const SWING := 110.0  # art px per second
+    const HARD_SWING := 190.0
+    const START_GLOW := 0.3
+    const BREATH := 0.22
+    const BAND_LO := 0.55
+    const BAND_HI := 0.82
+    const HARD_BAND_LO := 0.6
+    const HARD_BAND_HI := 0.76
+    const FADE := 0.22  # glow lost per second between breaths
+    const HARD_FADE := 0.34
+    const BREATHS := 4
+    const HARD_BREATHS := 6
+    const SPENT_TIME := 1.0
+    var phase := Phase.STRIKE
+    var steel := 0.0  # 0..BAR_W
+    var dir := 1.0
+    var swing := SWING
+    var window := EDGE_WINDOW
+    var glow := 0.0  # 0..1
+    var band_lo := BAND_LO
+    var band_hi := BAND_HI
+    var fade := FADE
+    var breaths_needed := BREATHS
+    var breaths := 0
+    var spent_left := 0.0
+    var blown_out := false  # how the last ember died: over the top, or dark
+    var spent := 0  # embers lost this round
+    var _events: Array = []
+
+    func _init(r: RandomNumberGenerator, d := 0.0) -> void:
+        super(r, d)
+        swing = lerpf(SWING, HARD_SWING, d)
+        window = lerpf(EDGE_WINDOW, HARD_EDGE_WINDOW, d)
+        band_lo = lerpf(BAND_LO, HARD_BAND_LO, d)
+        band_hi = lerpf(BAND_HI, HARD_BAND_HI, d)
+        fade = lerpf(FADE, HARD_FADE, d)
+        breaths_needed = roundi(lerpf(BREATHS, HARD_BREATHS, d))
+        steel = rng.randf_range(0.0, BAR_W)
+
+    func in_band() -> bool:
+        return glow >= band_lo and glow <= band_hi
+
+    func update(dt: float) -> void:
+        super(dt)
+        if holding:
+            return
+        match phase:
+            Phase.STRIKE:
+                steel += dir * swing * dt
+                if steel >= BAR_W:
+                    steel = BAR_W
+                    dir = -1.0
+                elif steel <= 0.0:
+                    steel = 0.0
+                    dir = 1.0
+            Phase.BLOW:
+                glow -= fade * dt
+                if glow <= 0.0:
+                    glow = 0.0
+                    blown_out = false
+                    _spend()
+                    _events.append(Result.FAIL)
+            Phase.SPENT:
+                spent_left -= dt
+                if spent_left <= 0.0:
+                    spent_left = 0.0
+                    phase = Phase.STRIKE
+
+    func _spend() -> void:
+        spent += 1
+        phase = Phase.SPENT
+        spent_left = SPENT_TIME
+        breaths = 0
+
+    func press(_pos: Variant) -> Result:
+        if holding:
+            return Result.NONE
+        match phase:
+            Phase.STRIKE:
+                if absf(steel - EDGE) > window:
+                    return Result.MISS
+                phase = Phase.BLOW
+                glow = START_GLOW
+                breaths = 0
+                return Result.PROGRESS
+            Phase.BLOW:
+                glow += BREATH
+                if glow >= 1.0:
+                    glow = 1.0
+                    blown_out = true
+                    _spend()
+                    return Result.FAIL
+                if in_band():
+                    breaths += 1
+                    if breaths >= breaths_needed:
+                        holding = true
+                        return Result.HIT
+                return Result.PROGRESS
+        return Result.NONE
+
+    func take_events() -> Array:
+        var out := _events
+        _events = []
+        return out
+
+    func release() -> void:
+        super()
+        _events.clear()
+        phase = Phase.STRIKE
+        glow = 0.0
+        breaths = 0
+
+    func hint() -> String:
+        match phase:
+            Phase.BLOW:
+                return "Blow on the ember — keep its glow in the gold"
+            Phase.SPENT:
+                return "The tinder is spent — strike again"
+        return "Strike the steel as it crosses the flint"
