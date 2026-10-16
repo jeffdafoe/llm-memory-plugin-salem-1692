@@ -27,6 +27,7 @@ const TESTS := [
     "_test_own_duck_quacks_on_arrival",
     "_test_own_duck_quacks_when_you_set_off",
     "_test_duck_keeps_watch_when_you_rest_or_sleep",
+    "_test_agents_load_tags_the_own_duck",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
     "_test_tent_rows",
@@ -353,6 +354,38 @@ func _test_duck_keeps_watch_when_you_rest_or_sleep() -> void:
     _check("duck far off: quiet", log.size(), 3)
     q.free()
     w.free()
+    _done()
+
+
+## LLM-810: the duck as the client really loads it — an /api/village/agents row
+## through VillageApi.normalize_agent and world._render_npc — keeps its owner, so
+## the player's own duck quacks. normalize_agent forwards a fixed list of fields,
+## and familiar_of was missing from it: every loaded duck had no owner.
+func _test_agents_load_tags_the_own_duck() -> void:
+    var world = load("res://scripts/world.gd").new()
+    var objects := Node2D.new()
+    objects.name = "Objects"
+    world.add_child(objects)
+    root.add_child(world)
+    var sheet := "tilesets/test/duck.png"
+    world._npc_sheets[sheet] = ImageTexture.create_from_image(Image.create(192, 352, false, Image.FORMAT_RGBA8))
+    var row := {"id": "fam-1", "display_name": "Jefferey's duck", "kind": "decorative", "state": "idle",
+        "x": 80, "y": 120, "facing": "south", "familiar_of": "pc",
+        "sprite": {"id": "s", "name": "Duck (mallard)", "sheet": sheet, "frame_width": 32, "frame_height": 32,
+            "render_scale": 1.0, "behaviors": ["waterfowl", "ambient"], "animations": []}}
+    world._render_npc(root.get_node("VillageApi").normalize_agent(row))
+    var duck: Node2D = world.placed_npcs.get("fam-1")
+    _check("the loaded duck knows its owner", str(duck.get_meta("familiar_of", "")) if duck != null else "<not rendered>", "pc")
+    var pc := Node2D.new()
+    pc.position = duck.position + Vector2(32, 0) if duck != null else Vector2.ZERO
+    world.add_child(pc)
+    world.placed_npcs["pc"] = pc
+    var log: Array = []
+    var q := _quacker(world, "pc", log)
+    q._process(0.1)
+    _check("and quacks beside its owner", log, ["quack"])
+    q.free()
+    world.free()
     _done()
 
 

@@ -159,6 +159,10 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         # every row read 0; forwarded here. Live updates arrive via the
         # npc_coins_changed WS event (apply_npc_coins_changed, LLM-71).
         "coins": int(dto.get("coins", 0)),
+        # A familiar's owner (LLM-800). Missed here at first (LLM-810), so every
+        # duck loaded from /agents had no owner and the player's own duck never
+        # quacked; only an npc_created broadcast, which skips this seam, had it.
+        "familiar_of": str(dto.get("familiar_of", "")),
         # In-flight source activity (LLM-441) — the tooltip's current-doing line for
         # an actor already mid repair/stoke/harvest when this client connects.
         # _render_npc seeds these as container meta; both keys are omitted from the
