@@ -420,7 +420,7 @@ func TestRouteStopEntersStructure_EntryGate(t *testing.T) {
 
 	t.Run("open_lodge_enters", func(t *testing.T) {
 		k := closeupKeeper("john")
-		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, k)
+		w := lodgeWorld(EntryPolicyOpen, []string{"business", "lodging"}, k)
 		placeInside(w, "tavern", "john") // keeper present & awake → not locked
 		if sid, enters := routeStopEntersStructure(w, constable, "tavern", now); !enters || sid != "tavern" {
 			t.Errorf("open lodge should admit the constable: got (%q, %v)", sid, enters)
@@ -429,8 +429,8 @@ func TestRouteStopEntersStructure_EntryGate(t *testing.T) {
 
 	t.Run("locked_lodge_loiters", func(t *testing.T) {
 		k := closeupKeeper("john")
-		w := lodgeWorld(EntryPolicyOpen, []string{"lodging"}, k)
-		abedInStaffRoom(w, k) // keeper abed → lodgeLocked → owner-only
+		w := lodgeWorld(EntryPolicyOpen, []string{"business", "lodging"}, k)
+		abedInStaffRoom(w, k) // keeper abed → businessLocked → owner-only
 		if _, enters := routeStopEntersStructure(w, constable, "tavern", now); enters {
 			t.Error("a lodge locked for the night must NOT admit a non-member constable — he loiters at the door")
 		}
