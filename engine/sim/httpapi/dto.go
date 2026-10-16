@@ -169,6 +169,10 @@ type AgentDTO struct {
 	// [x, y] (LLM-768) — asleep, their bed (LLM-782); absent outdoors, asleep
 	// with no bed in the room, or in a structure without one.
 	RoomSquare *roomlayout.Square `json:"room_square,omitempty"`
+	// Room names the room of the structure they are in (LLM-801): absent for
+	// the common room, else "hall", "bedroom_2", "keeper_quarters" — a room
+	// window draws only the people in its own room.
+	Room string `json:"room,omitempty"`
 
 	// Live needs (ZBBS-HOME-462) — current hunger/thirst/tiredness in [0, NeedMax].
 	// The editor's per-NPC needs readout renders these; v1's /npcs row carried them

@@ -299,7 +299,7 @@ func TestDriftNeverStepsBesideSomeone(t *testing.T) {
 				continue
 			}
 			walks++
-			others := takenRoomSquares(w, homeID, a.ID)
+			others := takenRoomSquares(w, homeID, "", a.ID)
 			had := map[roomlayout.Square]bool{}
 			for id, s := range before {
 				if id != a.ID {

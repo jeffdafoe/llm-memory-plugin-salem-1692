@@ -242,8 +242,9 @@ type EvictExpiredOccupantsResult struct {
 // this sweep relocates them.
 //
 // Filters to PCs (LoginUsername set) in private rooms with no active
-// access. NPCs aren't affected — staff hold permanent access via
-// WorkStructureID, owners via a different mechanism.
+// access, or in an upstairs hall they may no longer be in (LLM-801). NPCs
+// aren't affected — staff hold permanent access via WorkStructureID, owners
+// via a different mechanism.
 //
 // Each evictee is surfaced to its client via a PCRelocatedToCommon event
 // (translated to a private room_event narration frame), since v2 otherwise
@@ -264,16 +265,26 @@ func EvictExpiredOccupants(now time.Time) Command {
 					continue
 				}
 				room := findRoom(w, actor.InsideRoomID)
-				if room == nil || room.Kind != RoomKindPrivate {
+				if room == nil {
 					continue
 				}
-				key := RoomAccessKey{RoomID: actor.InsideRoomID, Source: AccessSourceLedger}
-				if ra, ok := actor.RoomAccess[key]; ok && ra.Active {
-					continue // still has access
+				switch room.Kind {
+				case RoomKindPrivate:
+					key := RoomAccessKey{RoomID: actor.InsideRoomID, Source: AccessSourceLedger}
+					if ra, ok := actor.RoomAccess[key]; ok && ra.Active {
+						continue // still has access
+					}
+				case RoomKindHall:
+					// LLM-801: upstairs on a stay that has run out.
+					if canEnterRoom(w, actor, room.ID, now) {
+						continue
+					}
+				default:
+					continue
 				}
 				common := commonRoomForStructure(w, room.StructureID)
 				fromRoom := actor.InsideRoomID
-				actor.InsideRoomID = common
+				setActorRoom(w, actor, common)
 				text := w.pickLodgingNarration(LodgingReasonCheckout)
 				evicted = append(evicted, EvictedOccupant{
 					ActorID:     actorID,

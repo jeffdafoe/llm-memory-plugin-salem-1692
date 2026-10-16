@@ -32,7 +32,7 @@ const (
 // awake in a room with a plan, are on their way out (MoveIntent), someone else
 // holds `to`, or there is no way.
 func walkInRoom(w *World, a *Actor, to roomlayout.Square) []roomlayout.Square {
-	layout := roomPlan(w, a.InsideStructureID)
+	layout := actorRoomPlan(w, a)
 	if layout == nil || a.InsideStructureID == "" || a.State == StateSleeping || a.MoveIntent != nil {
 		return nil
 	}
@@ -43,7 +43,7 @@ func walkInRoom(w *World, a *Actor, to roomlayout.Square) []roomlayout.Square {
 	// Only their own square is theirs to "walk" to while someone else holds
 	// it — not the door they start from when they have no square.
 	alreadyThere := a.RoomSquare != nil && *a.RoomSquare == to
-	if !alreadyThere && takenRoomSquares(w, a.InsideStructureID, a.ID)[to] {
+	if !alreadyThere && takenRoomSquares(w, a.InsideStructureID, actorPlanRoom(w, a), a.ID)[to] {
 		return nil
 	}
 	var path []roomlayout.Square
@@ -58,7 +58,8 @@ func walkInRoom(w *World, a *Actor, to roomlayout.Square) []roomlayout.Square {
 	if a.RoomSquare == nil || *a.RoomSquare != to {
 		sq := to
 		a.RoomSquare = &sq
-		w.emit(&ActorRoomSquareChanged{ActorID: a.ID, StructureID: a.InsideStructureID, Square: copyRoomSquare(&sq), Path: path})
+		a.RoomSquareRoom = actorPlanRoom(w, a)
+		w.emit(&ActorRoomSquareChanged{ActorID: a.ID, StructureID: a.InsideStructureID, Room: a.RoomSquareRoom, Square: copyRoomSquare(&sq), Path: path})
 	}
 	return path
 }
@@ -97,7 +98,7 @@ func walkToStoke(w *World, a *Actor) {
 	if a == nil {
 		return
 	}
-	layout := roomPlan(w, a.InsideStructureID)
+	layout := actorRoomPlan(w, a)
 	if layout == nil {
 		return
 	}
@@ -113,7 +114,7 @@ func keeperBackToPlace(w *World, a *Actor) {
 	if a == nil || a.MoveIntent != nil || roomRole(a, a.InsideStructureID) != roomlayout.RoleKeeper {
 		return
 	}
-	if layout := roomPlan(w, a.InsideStructureID); layout != nil {
+	if layout := actorRoomPlan(w, a); layout != nil {
 		walkInRoom(w, a, layout.Keeper.Square)
 	}
 }
@@ -126,11 +127,11 @@ func walkToSeat(w *World, a *Actor) {
 		roomRole(a, a.InsideStructureID) == roomlayout.RoleKeeper {
 		return
 	}
-	layout := roomPlan(w, a.InsideStructureID)
+	layout := actorRoomPlan(w, a)
 	if layout == nil {
 		return
 	}
-	taken := takenRoomSquares(w, a.InsideStructureID, a.ID)
+	taken := takenRoomSquares(w, a.InsideStructureID, actorPlanRoom(w, a), a.ID)
 	var best []roomlayout.Square
 	for _, st := range layout.Stations {
 		if st.Kind != "seat" {
@@ -172,8 +173,7 @@ func DriftInRooms(now time.Time, rng *rand.Rand) Command {
 			}
 			sort.Slice(sids, func(i, j int) bool { return sids[i] < sids[j] })
 			for _, sid := range sids {
-				layout := roomPlan(w, sid)
-				if layout == nil {
+				if roomPlan(w, sid) == nil {
 					continue
 				}
 				ids := make([]ActorID, 0, len(w.actorsByStructure[sid]))
@@ -184,6 +184,10 @@ func DriftInRooms(now time.Time, rng *rand.Rand) Command {
 				for _, id := range ids {
 					a := w.Actors[id]
 					if a == nil || !roomDriftIdle(a, sid) {
+						continue
+					}
+					layout := actorRoomPlan(w, a)
+					if layout == nil {
 						continue
 					}
 					if a.RoomDriftAt.IsZero() {
@@ -225,7 +229,7 @@ func roomDriftWait(rng *rand.Rand) time.Duration {
 // guest — never the door (stepping onto it reads as leaving), never right
 // beside someone else (LLM-788).
 func roomDriftSquare(w *World, a *Actor, layout *roomlayout.Layout, rng *rand.Rand) (roomlayout.Square, bool) {
-	taken := takenRoomSquares(w, a.InsideStructureID, a.ID)
+	taken := takenRoomSquares(w, a.InsideStructureID, actorPlanRoom(w, a), a.ID)
 	var near []roomlayout.Square
 	for y := 0; y < layout.Height(); y++ {
 		for x := 0; x < layout.Width(); x++ {

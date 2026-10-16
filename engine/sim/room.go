@@ -28,14 +28,36 @@ import "time"
 // RoomID is a per-instance room identifier (legacy: BIGSERIAL).
 type RoomID int64
 
-// RoomKind discriminates the three room categories.
+// RoomKind discriminates the room categories.
 type RoomKind string
 
 const (
 	RoomKindCommon  RoomKind = "common"
 	RoomKindPrivate RoomKind = "private"
 	RoomKindStaff   RoomKind = "staff"
+	// RoomKindHall: an inn's upstairs hall (LLM-801), the way to the bedrooms
+	// — its lodgers' and its keeper's, nobody else's.
+	RoomKindHall RoomKind = "hall"
 )
+
+// RoomKindScoped reports whether speech in a room of this kind stays in it —
+// the bedrooms, the keeper's quarters and the upstairs hall, as against the
+// common room everyone in the building hears.
+func RoomKindScoped(k RoomKind) bool {
+	return k == RoomKindPrivate || k == RoomKindStaff || k == RoomKindHall
+}
+
+// roomByName returns the structure's room with that name, or nil.
+func roomByName(w *World, structureID StructureID, name string) *Room {
+	if s := w.Structures[structureID]; s != nil {
+		for _, r := range s.Rooms {
+			if r != nil && r.Name == name {
+				return r
+			}
+		}
+	}
+	return nil
+}
 
 // Room is one per-instance room declaration. Lives as a child of Structure.
 type Room struct {
@@ -103,6 +125,7 @@ func commonRoomForStructure(w *World, structureID StructureID) RoomID {
 //   - common: always allow
 //   - private: require an unexpired Active RoomAccess row on actor
 //   - staff: require actor.WorkStructureID == room.StructureID
+//   - hall: the structure's keeper, or a lodger there (LLM-801)
 //   - unknown: fail closed
 //
 // MUST be called from inside a Command.Fn. Unexported by design.
@@ -136,6 +159,8 @@ func canEnterRoom(w *World, actor *Actor, roomID RoomID, now time.Time) bool {
 		return true
 	case RoomKindStaff:
 		return actor.WorkStructureID == room.StructureID
+	case RoomKindHall:
+		return actor.WorkStructureID == room.StructureID || actorIsLodgerAt(w, actor, room.StructureID, now)
 	default:
 		return false
 	}
