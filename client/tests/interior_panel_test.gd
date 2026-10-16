@@ -105,6 +105,7 @@ const TESTS := [
     "_test_home_sleepers_in_bed",
     "_test_dismiss_walks_out_of_a_room",
     "_test_upstairs",
+    "_test_tavern_upstairs",
     "_test_tent_bedroll_tap",
 ]
 
@@ -3357,8 +3358,8 @@ func _test_room_squares() -> void:
     var spot := InteriorRooms.spot_at(room, InteriorRooms.square_of(st["square"]))
     _check("a station's square is drawn at the station", [spot["x"], spot["y"], spot["pose"]], [int(st["at"][0]), int(st["at"][1]), st["pose"]])
     _check("the door's square at the door", InteriorRooms.spot_at(room, InteriorRooms.square_of(plan["door"]["square"])), room["door"])
-    var floor := InteriorRooms.spot_at(room, Vector2i(0, 4))
-    _check("a plain square at its middle, standing", [floor["x"], floor["y"], floor["pose"]], [8, 78, "stand"])
+    var floor := InteriorRooms.spot_at(room, Vector2i(1, 4))
+    _check("a plain square at its middle, standing", [floor["x"], floor["y"], floor["pose"]], [24, 78, "stand"])
     _check("off the grid: nowhere", InteriorRooms.spot_at(room, Vector2i(9, 9)), {})
     _check("no square: nowhere", InteriorRooms.spot_at(room, Vector2i(-1, -1)), {})
     _check("no plan merged: nowhere", InteriorRooms.spot_at(InteriorRooms.room_for(_sid), Vector2i(0, 4)), {})
@@ -3376,12 +3377,12 @@ func _test_room_squares() -> void:
     _check("no square: not drawn, counted", [_panel._people.get_node_or_null("unplaced") == null, _panel.more_label.text], [true, "and 1 more"])
 
     # The engine moves the guest: npc_room_square_changed.
-    _world.apply_npc_room_square_change({"id": "guest", "structure_id": _sid, "square": [0, 4]})
-    _check("the frame sets the square", _world.placed_npcs["guest"].get_meta("room_square"), [0, 4])
+    _world.apply_npc_room_square_change({"id": "guest", "structure_id": _sid, "square": [1, 4]})
+    _check("the frame sets the square", _world.placed_npcs["guest"].get_meta("room_square"), [1, 4])
     _panel.refresh()
     guest = _panel._people.get_node("guest")
     _finish_walk(guest)
-    _check("drawn on the new square", guest.position, Vector2(8, 78))
+    _check("drawn on the new square", guest.position, Vector2(24, 78))
     _world.apply_npc_room_square_change({"id": "guest", "structure_id": _sid})
     _check("a frame with no square takes it away", _world.placed_npcs["guest"].has_meta("room_square"), false)
     _world.apply_npc_inside_change({"id": "guest", "inside": true, "inside_structure_id": _sid, "room_square": [2, 4]})
@@ -4220,6 +4221,64 @@ func _test_upstairs() -> void:
 
     _panel.room_tapped.disconnect(on_way)
     _panel.floor_tapped.disconnect(on_floor)
+    _panel.bed_tapped.disconnect(on_bed)
+    _panel.close()
+    _clear_people()
+    _done()
+
+
+## LLM-807: the Tavern's upstairs, the Inn's plans in its own art — the stairs
+## at the back left of the common room (the keeper's way in too), the hall with
+## the stairs straight down from the gap, a shabbier guest room.
+func _test_tavern_upstairs() -> void:
+    _clear_people()
+    _panel.close()
+    _check("the Tavern's hall plan, by room", _catalog().room_plan(_sid, "hall").get("art", ""), "tavern_hall")
+    _check("its guest rooms' plan", _catalog().room_plan(_sid, "bedroom_4").get("art", ""), "tavern_guest")
+    _check("no plan for the keeper's quarters", _catalog().room_plan(_sid, "keeper_quarters").is_empty(), true)
+
+    _panel.open(_sid)
+    _check("the stairs at the back left lead up", InteriorRooms.way_at(_panel.room, Vector2(14, 30)), "hall")
+    _check("the hearth beside them leads nowhere", InteriorRooms.way_at(_panel.room, Vector2(50, 40)), "")
+    _check("the keeper comes and goes by the stairs", _panel.room.has("keeper_door"), true)
+
+    var hall: Dictionary = _catalog().room_plan(_sid, "hall")
+    var pc := _person("pc", _farmer(), _sid)
+    pc.set_meta("room", "hall")
+    pc.set_meta("room_square", hall["door"]["square"])
+    _panel.open(_sid, "hall")
+    _check("the window is the Tavern's hall", [_panel.room.get("title", ""), _panel.room.get("sheet", "")],
+        ["Upstairs", "/tilesets/interiors/tavern_hall_common.png"])
+    _check("a door leads to its room", InteriorRooms.way_at(_panel.room, Vector2(80, 30)), "bedroom_2")
+    _check("the stairs lead down", InteriorRooms.way_at(_panel.room, Vector2(128, 90)), "common")
+    _check("down where they spread", InteriorRooms.way_at(_panel.room, Vector2(102, 124)), "common")
+    _panel.set_vacant_rooms(["bedroom_1"])
+    var open_at: Array = []
+    for child in _panel._anims.get_children():
+        if child is Sprite2D:
+            open_at.append((child as Sprite2D).position)
+    _check("a vacant room's door stands open", open_at, [Vector2(16, 16)])
+    _panel.set_vacant_rooms([])
+
+    var guest: Dictionary = _catalog().room_plan(_sid, "bedroom_1")
+    pc.set_meta("room", "bedroom_1")
+    pc.set_meta("room_square", guest["door"]["square"])
+    _panel.open(_sid, "bedroom_1")
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _check("the window is their room", [_panel.room.get("title", ""), _panel.room.get("sheet", "")],
+        ["Your room", "/tilesets/interiors/tavern_guest_common.png"])
+    var went := []
+    var on_way := func(to: String): went.append(to)
+    _panel.room_tapped.connect(on_way)
+    var beds := []
+    var on_bed := func(): beds.append(true)
+    _panel.bed_tapped.connect(on_bed)
+    _panel._on_stage_input(_press(Vector2(32, 66) * 4))
+    _panel._on_stage_input(_press(Vector2(82, 126) * 4))
+    _check("the bed is bed; the door the hall", [beds, went], [[true], ["hall"]])
+    _panel.room_tapped.disconnect(on_way)
     _panel.bed_tapped.disconnect(on_bed)
     _panel.close()
     _clear_people()
