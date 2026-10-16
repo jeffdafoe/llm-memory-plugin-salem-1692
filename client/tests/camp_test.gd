@@ -18,6 +18,7 @@ const TESTS := [
     "_test_fire_helpers",
     "_test_fire_panel",
     "_test_tent_room",
+    "_test_fire_panel_stale_answer",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -289,4 +290,30 @@ func _test_tent_room() -> void:
     _check("the bedroll has a cover", room.get("covers", {}).has("bedroll"), true)
     _check("the bedroll is a bed", str(InteriorRooms.spot_at(room, Vector2i(1, 5)).get("pose", "")), "sleep")
     _check("no plan, no tent room", InteriorRooms.has_room("tent-1", {}), false)
+    _completed[_current] = true
+
+
+## An answer to an earlier opening's light is dropped: closed and opened again
+## meanwhile, the new window is not lit by it.
+func _test_fire_panel_stale_answer() -> void:
+    var panel: CanvasLayer = load("res://scripts/fire_panel.gd").new()
+    root.add_child(panel)
+    var lit := [0]
+    panel.lit.connect(func(): lit[0] += 1)
+    var held := []
+    panel.send_hook = func(done: Callable): held.append(done)
+    panel.open("fire-1")
+    panel._on_light_pressed()
+    panel._on_round_won(false)
+    _check("first light sent", held.size(), 1)
+    panel.close()
+    panel.open("fire-1")
+    held[0].call(200, "{\"result\":\"ok\"}")
+    _check("stale answer: not lit", lit[0], 0)
+    _check("stale answer: the new window still asks", panel.light_button.visible, true)
+    panel._on_light_pressed()
+    panel._on_round_won(false)
+    held[1].call(200, "{\"result\":\"ok\"}")
+    _check("this opening's answer lights it", lit[0], 1)
+    panel.queue_free()
     _completed[_current] = true

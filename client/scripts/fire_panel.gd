@@ -39,7 +39,9 @@ var light_button: Button = null
 var leave_button: Button = null
 
 var _font: Font = null
-var _http: HTTPRequest = null
+## Bumped on every open and close: a light answer carries the generation it
+## was sent in, and one from an earlier opening is dropped.
+var _gen := 0
 var _sending := false
 
 
@@ -158,6 +160,7 @@ static func fire_layers() -> Dictionary:
 
 ## Ask whether to light the player's fire, `fid`.
 func open(fid: String) -> void:
+    _gen += 1
     fire_id = fid
     prompt_label.text = Camp.FIRE_PROMPT
     prompt_label.visible = true
@@ -182,8 +185,7 @@ func close() -> void:
     set_process(false)
     if stage.game != null:
         stage.playing = false
-    if _http != null:
-        _http.cancel_request()
+    _gen += 1
     _sending = false
     closed.emit()
 
@@ -215,22 +217,27 @@ func _on_round_won(_perfect: bool) -> void:
         return
     _sending = true
     hint_label.text = ""
+    var gen := _gen
     if send_hook.is_valid():
-        send_hook.call(_on_light_response)
+        send_hook.call(func(code: int, body: String): _on_light_response(code, body, gen))
         return
-    if _http == null:
-        _http = HTTPRequest.new()
-        _http.accept_gzip = false
-        add_child(_http)
-        _http.request_completed.connect(func(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray):
-            _on_light_response(code, body.get_string_from_utf8()))
-    _http.cancel_request()
-    var err := _http.request(Auth.api_base + "/api/village/pc/camp/light", Auth.auth_headers(), HTTPClient.METHOD_POST, "")
+    # One request per light, freed when it answers, so an answer can only ever
+    # reach the opening that sent it.
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray):
+        http.queue_free()
+        _on_light_response(code, body.get_string_from_utf8(), gen))
+    var err := http.request(Auth.api_base + "/api/village/pc/camp/light", Auth.auth_headers(), HTTPClient.METHOD_POST, "")
     if err != OK:
-        _on_light_response(0, "")
+        http.queue_free()
+        _on_light_response(0, "", gen)
 
 
-func _on_light_response(code: int, body: String) -> void:
+func _on_light_response(code: int, body: String, gen: int) -> void:
+    if gen != _gen:
+        return
     _sending = false
     if not visible:
         return
