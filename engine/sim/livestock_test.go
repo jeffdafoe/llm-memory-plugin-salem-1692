@@ -421,3 +421,65 @@ func TestGrazer_ArrivalHoldLapses(t *testing.T) {
 		t.Error("cow still held after the arrival hold, with nobody milking her")
 	}
 }
+
+// code_review round 2: the hold end to end — a player's walk to a cow through the
+// real locomotion tick and ActorArrived subscriber, grazer ticks running all the
+// while. She holds through the walk and the arrival hold, then grazes again.
+func TestGrazer_HoldsThroughAPlayersWalkAndArrival(t *testing.T) {
+	w := buildDairyWorld(t)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.RegisterGatherTargetSubscriber(world)
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cowAt := dairyActor(t, w, milkCow).Pos
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.MoveToLivestock(dairyPC, milkCow, now)); err != nil {
+		t.Fatalf("walk to the cow: %v", err)
+	}
+	arrived := false
+	for i := 0; i < 2000 && !arrived; i++ {
+		now = now.Add(200 * time.Millisecond)
+		if _, err := w.Send(sim.EvaluateLocomotion(now)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Send(sim.EvaluateGrazerTick(now)); err != nil {
+			t.Fatal(err)
+		}
+		if pos := dairyActor(t, w, milkCow).Pos; pos != cowAt {
+			t.Fatalf("cow moved from %v to %v while the player walked over", cowAt, pos)
+		}
+		arrived = dairyActor(t, w, dairyPC).MoveIntent == nil
+	}
+	if !arrived {
+		t.Fatal("player never arrived")
+	}
+	pc := dairyActor(t, w, dairyPC)
+	if pc.Pos.Chebyshev(cowAt) > sim.MilkingReach {
+		t.Fatalf("player stopped at %v, not beside the cow at %v", pc.Pos, cowAt)
+	}
+	if pc.HerdHoldUntil.IsZero() {
+		t.Fatal("arrival did not start the hold (subscriber not run?)")
+	}
+	// Inside the hold: grazer decisions leave her be.
+	for end := now.Add(sim.HerdArrivalHold - 5*time.Second); now.Before(end); now = now.Add(3 * time.Second) {
+		if _, err := w.Send(sim.EvaluateGrazerTick(now)); err != nil {
+			t.Fatal(err)
+		}
+		if c := dairyActor(t, w, milkCow); c.MoveIntent != nil || c.Pos != cowAt {
+			t.Fatalf("cow moved during the arrival hold")
+		}
+	}
+	// After it, nobody milking her: she ambles off again.
+	freed := false
+	for end := now.Add(10 * time.Minute); now.Before(end) && !freed; now = now.Add(3 * time.Second) {
+		if _, err := w.Send(sim.EvaluateGrazerTick(now)); err != nil {
+			t.Fatal(err)
+		}
+		freed = dairyActor(t, w, milkCow).MoveIntent != nil
+	}
+	if !freed {
+		t.Error("cow never grazed again after the arrival hold")
+	}
+}

@@ -90,3 +90,30 @@ func TestHandlePCFeed(t *testing.T) {
 		t.Errorf("no actor_id: status = %d, want 400", rec.Code)
 	}
 }
+
+// code_review round 2 asked whether a player in a conversation can walk to a cow:
+// the livestock walk leaves the huddle like every other PC move (MoveActor with
+// leaveHuddleFirst true, inside moveToLivestockLabeled).
+func TestHandlePCMove_LivestockLeavesTheHuddle(t *testing.T) {
+	w := seededWorld(t)
+	seedPC(t, w, "pc-tester", "tester", 10, 10)
+	seedCow(t, w, "cow2", 16, 10, 4)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Huddles["h1"] = &sim.Huddle{ID: "h1", Members: map[sim.ActorID]struct{}{"pc-tester": {}, "bram": {}}}
+		world.Actors["pc-tester"].CurrentHuddleID = "h1"
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/pc/move", `{"destination":{"kind":"livestock","actor_id":"cow2"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	r, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return string(world.Actors["pc-tester"].CurrentHuddleID), nil
+	}})
+	if r.(string) != "" {
+		t.Errorf("still in huddle %q after walking to the cow", r)
+	}
+}
