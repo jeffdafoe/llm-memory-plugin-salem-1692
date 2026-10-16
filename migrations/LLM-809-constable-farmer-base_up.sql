@@ -17,9 +17,9 @@
 
 BEGIN;
 
-INSERT INTO public.npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, rig, layers)
+INSERT INTO public.npc_sprite (id, name, sheet, frame_width, frame_height, pack_id, behaviors, render_scale, anchor_y, rig, layers)
 VALUES ('809f0c01-0000-4000-8000-000000000001', 'Constable Gideon Marsh (farmer)',
-        '/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png', 64, 64, 'mana-seed-farmer', '[]', 2.0, 'farmer_base',
+        '/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png', 64, 64, 'mana-seed-farmer', '[]', 2.0, 0.9, 'farmer_base',
         '[
           {"sheet": "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png", "ramps": {"skin": 0}},
           {"sheet": "/tilesets/mana-seed/farmer/sheets/00undr/fbas_00undr_cloakwithmantleplain_00b.png", "ramps": {"c4": 37}, "behind": true},
@@ -35,7 +35,8 @@ ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name, sheet = EXCLUDED.sheet,
     frame_width = EXCLUDED.frame_width, frame_height = EXCLUDED.frame_height,
     pack_id = EXCLUDED.pack_id, behaviors = EXCLUDED.behaviors,
-    render_scale = EXCLUDED.render_scale, rig = EXCLUDED.rig, layers = EXCLUDED.layers;
+    render_scale = EXCLUDED.render_scale, anchor_y = EXCLUDED.anchor_y,
+    rig = EXCLUDED.rig, layers = EXCLUDED.layers;
 
 UPDATE public.actor
    SET sprite_id = '809f0c01-0000-4000-8000-000000000001'
