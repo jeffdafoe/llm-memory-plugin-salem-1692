@@ -109,6 +109,14 @@ func TestRenderSurroundings_TimeOfDay(t *testing.T) {
 		}
 	})
 
+	t.Run("band, then clock, then weather", func(t *testing.T) {
+		got := render(SurroundingsView{LocalMinuteOfDay: &evening, Weather: sim.WeatherStorm})
+		want := "Evening settles over the village.\nIt is about 7 in the evening.\n" + weatherStormProse + "\n"
+		if !strings.Contains(got, want) {
+			t.Errorf("want band, clock and weather lines in order, got: %q", got)
+		}
+	})
+
 	// (The former "time line precedes the atmosphere line" subtest was removed in
 	// ZBBS-WORK-374 — the literary atmosphere line is no longer rendered into the
 	// decision prompt, so there is no longer an ordering relationship to assert.
