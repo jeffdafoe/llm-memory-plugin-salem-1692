@@ -103,6 +103,8 @@ const (
 	// ForageGroundWild — the nearest unowned source with stock, for an actor
 	// carrying AttrForageRange ("## Free sources you can gather from"), LLM-253.
 	ForageGroundWild ForageGround = "wild"
+	// ForageGroundHerd — the milking animals ("## Your cows"), LLM-797.
+	ForageGroundHerd ForageGround = "herd"
 )
 
 func (RestockWarrantReason) isWarrantReason()           {}
@@ -397,6 +399,15 @@ func actorRemembersForageSource(a *Actor, w *World, item ItemKind) bool {
 // matched and the "## Free sources" cue rendered only on a turn woken for
 // something else.
 func forageGroundFor(a *Actor, w *World, item ItemKind) ForageGround {
+	// An item the cows give comes from the herd, whatever else is known (LLM-797)
+	// — buildForage renders the herd for it and nothing else, so the wake must
+	// name the same ground or point at a section that is not there.
+	if herdGives(w, item) {
+		if herdHasStock(w, item) {
+			return ForageGroundHerd
+		}
+		return ""
+	}
 	if actorRemembersForageSource(a, w, item) {
 		return ForageGroundOwn
 	}

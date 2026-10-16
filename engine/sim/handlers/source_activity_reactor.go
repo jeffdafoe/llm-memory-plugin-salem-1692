@@ -44,6 +44,9 @@ func handleSourceActivityCompletedWarrants(w *sim.World, evt sim.Event) {
 	if done.PublicWorks {
 		narration = sim.PublicWorksCompletionNarration(done.SiteKind, done.SourceName, done.Qty)
 	}
+	if done.Fed && narration != "" {
+		narration += " " + sim.LivestockFedNarration(done.SourceName)
+	}
 	if narration == "" {
 		// An unhandled kind/attribute combination — keep the event for audit/
 		// replay but don't mint a vague-fallback warrant. Breadcrumb so a real

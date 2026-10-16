@@ -53,6 +53,11 @@ const (
 	// session initiator, mints a batch of loaves at completion. Flour is consumed at
 	// completion (not start) so a restart mid-bake forfeits nothing. See bake.go.
 	SourceActivityBake SourceActivityKind = "bake"
+	// SourceActivityPitch / SourceActivityStrike are a player putting up or taking
+	// down their camp (LLM-798, camp.go): one window per beat (the tent, then each
+	// prop), each landing its piece and arming the next. Walking off undoes it.
+	SourceActivityPitch  SourceActivityKind = "pitch"
+	SourceActivityStrike SourceActivityKind = "strike"
 )
 
 // Durations are tunable engine constants (Jeff approved eat ~3s / harvest ~5s
@@ -70,9 +75,10 @@ const (
 type SourceActivity struct {
 	Kind      SourceActivityKind
 	ObjectID  VillageObjectID
+	AnimalID  ActorID // milk only (LLM-797): the animal drawn from; ObjectID is then ""
 	StartedAt time.Time
 	Until     time.Time
-	Qty       int // harvest only: units requested (clamped to stock at completion)
+	Qty       int // harvest/milk: units requested (clamped to stock at completion)
 	Bounty    int // public-works repair only (LLM-654): the bounty agreed at start, paid at completion
 	// PublicWorks marks a repair as the town's work on a damaged site (LLM-675).
 	// Set at start, read at completion: at a damaged business the keeper's own
@@ -91,6 +97,11 @@ type SourceActivity struct {
 	// Difficulty is the player's game difficulty, 0..1, fixed at start from the
 	// purse (LLM-712) so a reload resumes the same game.
 	Difficulty float64
+	// Beat and Target are a camp beat's piece and where it stands (LLM-798),
+	// carried on the window so a reconnect mid-beat can face the player the
+	// right way. Empty Beat for every other kind.
+	Beat   string
+	Target WorldPos
 }
 
 // SourceActivityStartResult is the Command reply for the START commands — what
@@ -119,6 +130,7 @@ type SourceActivityStarted struct {
 	EventBase
 	ActorID  ActorID
 	ObjectID VillageObjectID
+	AnimalID ActorID // milk only (LLM-797): the animal being milked
 	Kind     SourceActivityKind
 	Until    time.Time
 	At       time.Time
@@ -130,6 +142,11 @@ type SourceActivityStarted struct {
 	// empty for everything else. Resolved DisplayName-first (sourceActivityWireLabel),
 	// matching the AgentDTO snapshot + the LLM-440 perception line.
 	SourceName string
+	// Beat and Target name the piece a camp beat works on and where it stands
+	// (LLM-798): the client turns the player toward Target and picks the motion
+	// by Beat. Empty / nil for every other kind.
+	Beat   string
+	Target *WorldPos
 }
 
 func (SourceActivityStarted) isSimEvent() {}
@@ -148,6 +165,8 @@ type SourceActivityCompleted struct {
 	EventBase
 	ActorID        ActorID
 	ObjectID       VillageObjectID
+	AnimalID       ActorID // milk only (LLM-797): the animal milked
+	Fed            bool    // milk only: the milker fed the animal at the end of the milking
 	Kind           SourceActivityKind
 	Item           ItemKind // harvest only: the kind credited
 	Qty            int      // harvest only: units actually gathered
@@ -171,6 +190,7 @@ type SourceActivityCancelled struct {
 	EventBase
 	ActorID  ActorID
 	ObjectID VillageObjectID
+	AnimalID ActorID // milk only (LLM-797)
 	Kind     SourceActivityKind
 	At       time.Time
 }
@@ -333,7 +353,10 @@ func StartHarvest(actorID ActorID, qty int) Command {
 			}
 			objID, obj, row := findGatherableObjectNear(w, actor)
 			if row == nil {
-				return nil, fmt.Errorf("StartHarvest: %w", ErrNoGatherSource)
+				// No bush or well in reach — a cow beside her is a source too
+				// (LLM-797). Objects keep precedence so nothing that gathered
+				// before changes.
+				return startMilking(w, actorID, actor, now)
 			}
 			if obj.OwnedByOther(actorID) {
 				return nil, fmt.Errorf("StartHarvest: %w", ErrNotYourSource)
@@ -641,6 +664,8 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			At:             now,
 		})
 		return true
+	case SourceActivityMilk:
+		return completeMilking(w, actorID, actor, act, now)
 	case SourceActivityStoke:
 		// LLM-412: the stoke lands — the fire is fed. Bound to the object the
 		// window BEGAN at (act.ObjectID), for exactly the LLM-287 reason the
@@ -725,6 +750,8 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			At:         now,
 		})
 		return true
+	case SourceActivityPitch, SourceActivityStrike:
+		return landCampBeat(w, actor, act, now)
 	}
 	return false // a kind with no case lands nothing
 }
@@ -814,7 +841,7 @@ func completeIfDue(w *World, actorID ActorID, actor *Actor, now time.Time) bool 
 		// harvest minted nothing, the site was mended some other way), so no
 		// completion went out. The window is closed all the same: tell the
 		// client, or its activity marker and work animation (LLM-691) stay up.
-		w.emit(&SourceActivityCancelled{ActorID: actorID, ObjectID: act.ObjectID, Kind: act.Kind, At: now})
+		w.emit(&SourceActivityCancelled{ActorID: actorID, ObjectID: act.ObjectID, AnimalID: act.AnimalID, Kind: act.Kind, At: now})
 	}
 	return true
 }
@@ -833,9 +860,11 @@ func abandonSourceActivity(w *World, actor *Actor, now time.Time) *SourceActivit
 	w.emit(&SourceActivityCancelled{
 		ActorID:  actor.ID,
 		ObjectID: act.ObjectID,
+		AnimalID: act.AnimalID,
 		Kind:     act.Kind,
 		At:       now,
 	})
+	undoCampWork(w, actor, act, now)
 	return act
 }
 
@@ -935,6 +964,14 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 			return fmt.Sprintf("You finish gathering%s; you take all %d %s it had — it's bare now and will grow back in time. You now have %d %s in your pack.", at, qty, yield, qty, yield)
 		}
 		return fmt.Sprintf("You finish gathering%s; you now have %d %s in your pack.", at, qty, yield)
+	case SourceActivityMilk:
+		if qty <= 0 {
+			return ""
+		}
+		if sourceName == "" {
+			sourceName = "the cow"
+		}
+		return fmt.Sprintf("You finish milking %s; you now have %d %s more in your pail.", sourceName, qty, item)
 	case SourceActivityRefresh:
 		switch attribute {
 		case "hunger":
@@ -964,6 +1001,10 @@ func SourceActivityCompletionNarration(kind SourceActivityKind, item ItemKind, q
 			unit = "loaf"
 		}
 		return fmt.Sprintf("You draw the bread from the oven — %d %s, warm and fragrant. There is more here than you'll eat yourself tonight.", qty, unit)
+	case SourceActivityPitch:
+		return "Your tent stands, the fire ring laid before it — your camp is made."
+	case SourceActivityStrike:
+		return "You strike your tent and roll it into your pack."
 	}
 	return ""
 }

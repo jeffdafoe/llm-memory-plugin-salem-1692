@@ -15,6 +15,8 @@ import (
 // If you find yourself wanting one of these in a non-test production
 // caller, that's a signal you should be issuing a Command instead.
 var (
+	SettleUnfinishedCampsOnLoad = settleUnfinishedCampsOnLoad
+	PCRestFloor                 = pcRestFloor
 	BuildWalkGrid               = buildWalkGrid
 	BuildWaterfowlWalkGrid      = buildWaterfowlWalkGrid
 	BuildGrazerWalkGrid         = buildGrazerWalkGrid
@@ -33,6 +35,9 @@ var (
 	RegenObjectRefresh          = regenObjectRefresh
 	DrawDownStock               = drawDownStock
 	CompleteDueSourceActivities = completeDueSourceActivities
+	LivestockHeld               = livestockHeld
+	HandleHerdTargetOnArrival   = handleHerdTargetOnArrival
+	RegenLivestockYield         = regenLivestockYield
 	ExecutePCSleep              = executePCSleep
 	EmitDamagedObjectNarration  = emitDamagedObjectNarration
 

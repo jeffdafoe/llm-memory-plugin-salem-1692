@@ -412,10 +412,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/wake", s.requireAuth(s.handlePCWake))
 	mux.HandleFunc("POST /api/village/pc/attend", s.requireAuth(s.handlePCAttend)) // LLM-466: candle-prompt ack
 	mux.HandleFunc("POST /api/village/pc/gather", s.requireAuth(s.handlePCGather)) // ZBBS-WORK-328
+	mux.HandleFunc("POST /api/village/pc/feed", s.requireAuth(s.handlePCFeed))     // LLM-797
 	// The town's repair work for players (LLM-690) — see pc_repair.go.
 	mux.HandleFunc("GET /api/village/pc/repair/offer", s.requireAuth(s.handlePCRepairOffer))
 	mux.HandleFunc("POST /api/village/pc/repair/start", s.requireAuth(s.handlePCRepairStart))
 	mux.HandleFunc("POST /api/village/pc/repair/step", s.requireAuth(s.handlePCRepairStep))
+	// LLM-798: the player's camp — pitch / strike the tent, light the fire.
+	mux.HandleFunc("POST /api/village/pc/camp/pitch", s.requireAuth(s.handlePCCampPitch))
+	mux.HandleFunc("POST /api/village/pc/camp/strike", s.requireAuth(s.handlePCCampStrike))
+	mux.HandleFunc("POST /api/village/pc/camp/light", s.requireAuth(s.handlePCCampLight))
 	// Admin world-config read (ZBBS-WORK-363) — the config panel's populate
 	// fetch. Admin-only despite being a GET: requireAuth + an in-command
 	// IsAdmin gate (adminCommand inside handleConfig), so it stays off the
@@ -630,6 +635,12 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 	for id, a := range s.Actors {
 		hunger, thirst, tiredness := sim.DisplayNeeds(a.Needs)
 		saKind, saLabel, saObject := snapshotSourceActivity(s, a)
+		var saBeat string
+		var saTarget *campTargetWireDTO
+		if saKind != "" && a.SourceActivityBeat != "" {
+			saBeat = a.SourceActivityBeat
+			saTarget = &campTargetWireDTO{X: a.SourceActivityTarget.X, Y: a.SourceActivityTarget.Y}
+		}
 		out = append(out, AgentDTO{
 			ID:                     string(id),
 			DisplayName:            a.DisplayName,
@@ -657,6 +668,10 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			SourceActivityKind:     saKind,
 			SourceActivityLabel:    saLabel,
 			SourceActivityObjectID: saObject,
+			SourceActivityAnimalID: snapshotSourceActivityAnimal(a),
+			Livestock:              livestockDTO(a),
+			SourceActivityBeat:     saBeat,
+			SourceActivityTarget:   saTarget,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -681,6 +696,23 @@ func snapshotSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) (kind, lab
 		label = sourceActivityLabel(snap, a.SourceActivityObjectID)
 	}
 	return kind, label, objectID
+}
+
+// snapshotSourceActivityAnimal is the animal a rendered milking window draws
+// from (LLM-797), "" otherwise.
+func snapshotSourceActivityAnimal(a *sim.ActorSnapshot) string {
+	if !renderedSourceActivityKind(a.SourceActivityKind) {
+		return ""
+	}
+	return string(a.SourceActivityAnimalID)
+}
+
+// livestockDTO projects a milking animal's yield for the client (LLM-797).
+func livestockDTO(a *sim.ActorSnapshot) *LivestockDTO {
+	if a.Yield == nil {
+		return nil
+	}
+	return &LivestockDTO{Item: string(a.Yield.Item()), Feed: string(sim.LivestockFeedItem)}
 }
 
 // sourceActivityLabel resolves an in-flight source-activity object's display

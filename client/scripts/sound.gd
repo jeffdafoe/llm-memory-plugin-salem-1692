@@ -56,6 +56,8 @@ const SOUNDS := {
     # the irritated quack, kept for the duck's warning (not played yet).
     "quack": {"files": ["duck_quack.ogg", "duck_quack_slow.ogg", "duck_quack_twice.ogg"], "db": -8.0, "pitch": 0.03},
     "quack_alarm": {"files": ["duck_alarm_1.ogg", "duck_alarm_2.ogg"], "db": -8.0, "pitch": 0.04},
+    # A cow fed sage (LLM-797). Played only for a cow on screen.
+    "cow_moo": {"files": ["cow_moo.ogg"], "db": -16.0, "pitch": 0.06},
     "windlass_turn": {"files": ["creak1.ogg", "creak2.ogg", "creak3.ogg"], "db": -18.0, "pitch": 0.0},
     "saw_stroke": {
         "files": ["saw_0.ogg", "saw_1.ogg", "saw_2.ogg", "saw_3.ogg", "saw_4.ogg", "saw_5.ogg"],

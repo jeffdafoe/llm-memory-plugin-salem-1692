@@ -239,6 +239,7 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				w.emit(&SourceActivityCancelled{
 					ActorID:  actor.ID,
 					ObjectID: cancelled.ObjectID,
+					AnimalID: cancelled.AnimalID,
 					Kind:     cancelled.Kind,
 					At:       time.Now().UTC(),
 				})
@@ -248,6 +249,8 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				if cancelled.Kind == SourceActivityBake {
 					concludeAbandonedBake(w, actor.ID, StructureID(cancelled.ObjectID))
 				}
+				// LLM-798: a half-pitched camp is taken down, a half-struck one stood back up.
+				undoCampWork(w, actor, cancelled, now)
 			}
 
 			// LLM-618: walking off also ends "the source I walked to". The gather
@@ -265,6 +268,9 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			// this clear and the next arrival — and every arrival re-stamps the field.
 			// The only case it changes is the stale one it exists for.
 			actor.GatherTargetObjectID = ""
+			// The herd target (LLM-797) means the same thing for an animal: the one
+			// she walked to. move_to re-stamps it after this commit.
+			actor.HerdTargetID = ""
 
 			// Step 6 — supersede any in-flight intent. The old attempt
 			// dies silently; no ActorMoveStopped is emitted.

@@ -39,7 +39,8 @@ func KindBarterable(def *ItemKindDef) bool {
 	if def == nil {
 		return true
 	}
-	return !def.HasCapability("service") && !def.EatHereOnly()
+	// A shelter (LLM-798, the player's tent) is never traded either.
+	return !def.HasCapability("service") && !def.EatHereOnly() && !def.HasCapability(CapabilityShelter)
 }
 
 // kindSatisfiesHunger reports whether the kind is food — it carries a hunger

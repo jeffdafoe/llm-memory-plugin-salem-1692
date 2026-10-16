@@ -164,8 +164,8 @@ func handleKnownPlaceOnGather(w *World, evt Event) {
 		return
 	}
 	a := w.Actors[g.ActorID]
-	if a == nil || !isAgentNPC(a) {
-		return
+	if a == nil || !isAgentNPC(a) || g.ObjectID == "" {
+		return // a milked animal (LLM-797) is not a place
 	}
 	recordKnownPlace(a, PlaceRef(g.ObjectID), PlaceKindObject, "gather:"+string(g.Item), g.At)
 }

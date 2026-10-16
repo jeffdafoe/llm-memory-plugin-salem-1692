@@ -556,12 +556,18 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		if !renderedSourceActivityKind(e.Kind) {
 			return WireFrame{}, false
 		}
-		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
+		dto := sourceActivityChangedWireDTO{
 			ID:         string(e.ActorID),
 			Kind:       string(e.Kind),
 			SourceName: e.SourceName,
 			ObjectID:   string(e.ObjectID),
-		}}, true
+			AnimalID:   string(e.AnimalID),
+			Beat:       e.Beat,
+		}
+		if e.Target != nil {
+			dto.Target = &campTargetWireDTO{X: e.Target.X, Y: e.Target.Y}
+		}
+		return WireFrame{Type: "npc_source_activity_changed", Data: dto}, true
 	case *sim.SourceActivityCompleted:
 		// Clear the tooltip busy line when the window closes on its own. Same gate.
 		// An empty kind is the client's idle signal. A PC's auto-repeat bite
@@ -573,6 +579,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		}
 		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
 			ID: string(e.ActorID),
+		}}, true
+	case *sim.LivestockFed:
+		// LLM-797: an animal was fed — by a player's click or an NPC at the end
+		// of a milking. The client moos when the animal is on screen.
+		return WireFrame{Type: "livestock_fed", Data: livestockFedWireDTO{
+			ID: string(e.AnimalID),
 		}}, true
 	case *sim.SourceActivityCancelled:
 		// Clear on abandonment (today: a committed move off the source). Same gate.
@@ -1061,17 +1073,37 @@ type sourceActivityChangedWireDTO struct {
 	SourceName string `json:"source_name,omitempty"`
 	// ObjectID is the object being worked (LLM-743); empty on a clear.
 	ObjectID string `json:"object_id,omitempty"`
+	// AnimalID is the animal being milked (LLM-797); empty otherwise.
+	AnimalID string `json:"animal_id,omitempty"`
+	// Beat and Target ride a camp beat (LLM-798): the piece being pitched or
+	// struck ("tent", "fire", "stool", "woodpile") and where it stands, so the
+	// client turns the player toward it and picks the motion.
+	Beat   string             `json:"beat,omitempty"`
+	Target *campTargetWireDTO `json:"target,omitempty"`
+}
+
+// campTargetWireDTO is a camp beat's world-pixel target.
+type campTargetWireDTO struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// livestockFedWireDTO is the livestock_fed payload (LLM-797): the animal fed.
+type livestockFedWireDTO struct {
+	ID string `json:"id"`
 }
 
 // renderedSourceActivityKind reports whether a source-activity kind reaches the
-// client: the three "work" kinds (LLM-441 tooltip) and refresh (LLM-719, the
-// eating and drinking animations). Bake is left out (the baker is indoors and
-// never drawn), and an unhandled future kind stays silent rather than flagging
-// busy with no phrase. Shared by the event translator (busy/clear frames) and
-// the snapshot builder (agentsFromSnapshot).
+// client: the three "work" kinds (LLM-441 tooltip), refresh (LLM-719, the
+// eating and drinking animations) and a player pitching or striking a camp
+// (LLM-798). Bake is left out (the baker is indoors and never drawn), and an
+// unhandled future kind stays silent rather than flagging busy with no phrase.
+// Shared by the event translator (busy/clear frames) and the snapshot builder
+// (agentsFromSnapshot).
 func renderedSourceActivityKind(k sim.SourceActivityKind) bool {
 	switch k {
-	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh:
+	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh,
+		sim.SourceActivityPitch, sim.SourceActivityStrike, sim.SourceActivityMilk:
 		return true
 	}
 	return false

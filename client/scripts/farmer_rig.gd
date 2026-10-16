@@ -35,6 +35,10 @@ class_name FarmerRig
 ## guide, frames 1-2 sit at 13,10 and frames 3-5 at 25,10 — so the iron
 ## stays put on the anvil.
 ##
+## milk (LLM-797) = the guide's MILK COW, east only: kneeling, hands at the
+## udder (cells 110-111, 180 ms each). The guide draws the cow into the frame;
+## here the cow is her own actor beside the milker.
+##
 ## The dictionaries below are kept JSON-compatible (double quotes, no
 ## trailing commas) so offline tools can read this file as data.
 
@@ -131,6 +135,10 @@ const ANIMATIONS := {
         {"cell": 125, "ms": 100, "prop": {"pose": 51, "x": 25, "y": 10}},
         {"cell": 125, "ms": 100, "prop": {"pose": 52, "x": 25, "y": 10}},
         {"cell": 125, "ms": 100, "prop": {"pose": 53, "x": 25, "y": 10}}
+    ]},
+    "east_milk": {"frames": [
+        {"cell": 110, "ms": 180},
+        {"cell": 111, "ms": 180}
     ]},
     "south_seat": {"frames": [{"cell": 195, "ms": 0}]},
     "north_seat": {"frames": [{"cell": 211, "ms": 0}]},

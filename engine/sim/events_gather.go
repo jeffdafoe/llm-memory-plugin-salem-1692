@@ -29,6 +29,9 @@ type ItemGathered struct {
 	EventBase
 	ActorID  ActorID
 	ObjectID VillageObjectID
+	// AnimalID is set instead of ObjectID when the source was a milking animal
+	// (LLM-797).
+	AnimalID ActorID
 	Item     ItemKind
 	Qty      int
 	At       time.Time

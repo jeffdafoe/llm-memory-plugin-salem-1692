@@ -365,4 +365,5 @@ func RegisterGatherTargetSubscriber(w *World) {
 		panic("sim: RegisterGatherTargetSubscriber requires a non-nil world")
 	}
 	w.Subscribe(SubscriberFunc(handleGatherTargetOnArrival))
+	w.Subscribe(SubscriberFunc(handleHerdTargetOnArrival)) // LLM-797: the arrival hold on a cow
 }

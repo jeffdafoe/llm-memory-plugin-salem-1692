@@ -128,6 +128,10 @@ type VillageObject struct {
 	// no burn-down sweep; the fire goes out by the clock. Durable
 	// (checkpointed): village restarts are many-times-daily deploys, and every
 	// fire going out on each deploy would turn firewood into a restart tax.
+	//
+	// A player's camp fire (LLM-798, camp.go) reuses it as the instant the fire
+	// is out — burning, then dying down for its last stretch. The camp fire is
+	// not tagged TagHearth, so it warms nothing and no hearth rule reads it.
 	HearthLitUntil time.Time
 
 	// Refreshes — per-attribute need-decrement-on-arrival policies. Empty
@@ -790,6 +794,15 @@ func CreateVillageObject(assetID AssetID, x, y float64, attachedTo VillageObject
 // else closed. Emits VillageObjectCreated → object_created so every client
 // renders the new object.
 func placeVillageObject(w *World, assetID AssetID, asset *Asset, pos WorldPos, attachedTo VillageObjectID, placedBy, state string) *VillageObject {
+	obj := newVillageObject(assetID, asset, pos, attachedTo, placedBy, state)
+	registerVillageObject(w, obj, asset)
+	return obj
+}
+
+// newVillageObject builds a placement without adding it to the world, so a
+// caller can set its fields before registerVillageObject announces it — LLM-798's
+// tent goes out owner-only on its created event, never briefly open.
+func newVillageObject(assetID AssetID, asset *Asset, pos WorldPos, attachedTo VillageObjectID, placedBy, state string) *VillageObject {
 	entryPolicy := EntryPolicyClosed
 	if asset.DoorOffsetX != nil && asset.DoorOffsetY != nil {
 		entryPolicy = EntryPolicyOpen
@@ -809,23 +822,28 @@ func placeVillageObject(w *World, assetID AssetID, asset *Asset, pos WorldPos, a
 	// drops in working (a fresh full supply) instead of inert. nil/empty for
 	// the common non-refreshing asset — obj.Refreshes stays nil.
 	obj.Refreshes = seedRefreshesFromDefaults(asset.RefreshDefaults)
+	return obj
+}
+
+// registerVillageObject adds a built placement to the world and emits
+// VillageObjectCreated → object_created, then names a fresh source (LLM-398).
+func registerVillageObject(w *World, obj *VillageObject, asset *Asset) {
 	w.VillageObjects[obj.ID] = obj
 	w.emit(&VillageObjectCreated{
 		ObjectID:     obj.ID,
-		AssetID:      assetID,
+		AssetID:      obj.AssetID,
 		CurrentState: obj.CurrentState,
-		X:            pos.X,
-		Y:            pos.Y,
-		PlacedBy:     placedBy,
-		EntryPolicy:  entryPolicy,
-		AttachedTo:   attachedTo,
+		X:            obj.Pos.X,
+		Y:            obj.Pos.Y,
+		PlacedBy:     obj.PlacedBy,
+		EntryPolicy:  obj.EntryPolicy,
+		AttachedTo:   obj.AttachedTo,
 		At:           time.Now().UTC(),
 	})
 	// LLM-398: a placement the template just turned into a source must carry a
 	// name or the gather/eat resolvers can never reach it. Runs AFTER the
 	// created event so the client has the object before the name frame lands.
 	nameSourceFromAsset(w, obj, asset)
-	return obj
 }
 
 // DeleteObjectResult is the outcome of a DeleteVillageObject command.

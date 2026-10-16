@@ -154,6 +154,11 @@ func _update_hover(screen_pos: Vector2) -> void:
 func is_press_over_actor(screen_pos: Vector2) -> bool:
     return _find_actor_at(screen_pos) != null
 
+## The actor container at a screen position, or null (LLM-797: main.gd offers
+## the feed prompt on a milking animal).
+func actor_at(screen_pos: Vector2) -> Node2D:
+    return _find_actor_at(screen_pos)
+
 func _show_panel_for(node: Node2D, screen_pos: Vector2) -> void:
     var display_name: String = str(node.get_meta("display_name", ""))
     if display_name == "":
@@ -251,6 +256,8 @@ func _format_activity(node: Node2D) -> String:
             return "Tending the fire"
         "harvest":
             return "Gathering"
+        "milk":
+            return "Milking"
         "refresh":
             # world.gd stamps the worked object's need (LLM-719).
             match str(node.get_meta("source_activity_need", "")):

@@ -112,7 +112,7 @@ func _test_credit_links_are_https() -> void:
                 for work in line:
                     _check("%s link is https" % work[0], str(work[1]).begins_with("https://"), true)
                     links += 1
-    _check("every credit is listed", links, 25)
+    _check("every credit is listed", links, 26)
     _done()
 
 

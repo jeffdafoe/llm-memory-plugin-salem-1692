@@ -305,6 +305,16 @@ type WorldSettings struct {
 	// 0 or less keeps every game at its easiest.
 	PCRepairHardCoins int
 
+	// Player camp (LLM-798): how long pitching and striking take, the
+	// tiredness a night in a tent rests down to (lower with the camp fire lit
+	// at bed-down), and how long a lit camp fire burns and then dies down.
+	PitchSeconds         int
+	StrikeSeconds        int
+	TentRestFloor        int
+	TentRestFloorFire    int
+	CampFireBurnMinutes  int
+	CampFireDyingMinutes int
+
 	// Minor works (LLM-690): small damage for players only. Each pass of the
 	// minor-works ticker breaks one at this chance while fewer than the cap are
 	// open; an untaken one mends itself after the TTL. A cap or chance of 0
@@ -2231,6 +2241,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// deterministic under test. See restartSeedPCInputStamps.
 	restartSeedPCInputStamps(w, w.LoadedAt)
 
+	// Player camps a restart cut off mid-pitch or mid-strike (LLM-798): the
+	// beat windows are not checkpointed, so a half-done camp is settled here.
+	if n := settleUnfinishedCampsOnLoad(w); n > 0 {
+		log.Printf("sim: FinalizeLoad: settled %d unfinished camp(s)", n)
+	}
+
 	// No separate order sequence-counter floor: Orders adopt their LedgerID
 	// (ZBBS-HOME-394), so the payLedgerSeq floor above — seeded from the DB
 	// max — already covers every order id.
@@ -2943,6 +2959,8 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		Pos:                        a.Pos,
 		CurrentHuddleID:            a.CurrentHuddleID,
 		GatherTargetObjectID:       a.GatherTargetObjectID,
+		Yield:                      cloneLivestockYield(a.Yield),
+		HerdTargetID:               a.HerdTargetID,
 		SpriteID:                   a.SpriteID,
 		Facing:                     a.Facing,
 		MoveDestKind:               moveDestKind,
@@ -3049,7 +3067,10 @@ func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddle
 	if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
 		sa.SourceActivityKind = act.Kind
 		sa.SourceActivityObjectID = act.ObjectID
+		sa.SourceActivityAnimalID = act.AnimalID
 		sa.SourceActivityPublicWorks = act.PublicWorks
+		sa.SourceActivityBeat = act.Beat
+		sa.SourceActivityTarget = act.Target
 		if act.Kind == SourceActivityRefresh {
 			if obj := w.VillageObjects[act.ObjectID]; obj != nil {
 				sa.SourceActivityAttribute = primaryRefreshNeed(obj)

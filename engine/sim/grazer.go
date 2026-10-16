@@ -238,6 +238,14 @@ func evaluateGrazers(w *World, now time.Time) {
 		if !actorIsGrazer(w, a) {
 			continue
 		}
+		if livestockHeld(w, a, now) {
+			// Someone is milking her or walking over to (LLM-797): stand still,
+			// stopping a leg already under way.
+			if a.MoveIntent != nil {
+				_, _ = StopMove(id, now).Fn(w)
+			}
+			continue
+		}
 		if a.MoveIntent != nil {
 			continue // mid-leg; the locomotion tick owns it
 		}

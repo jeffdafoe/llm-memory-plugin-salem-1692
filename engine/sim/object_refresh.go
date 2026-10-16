@@ -605,71 +605,8 @@ func regenObjectRefresh(w *World, now time.Time) int {
 	touched := 0
 	for _, obj := range w.VillageObjects {
 		for _, r := range obj.Refreshes {
-			if !r.IsFinite() {
-				continue
-			}
-			if r.RefreshPeriodHours == nil || *r.RefreshPeriodHours <= 0 {
-				continue
-			}
-			if r.LastRefreshAt == nil {
-				// Just-edited or freshly-loaded — stamp the anchor on
-				// this pass, no regen until next.
-				t := now
-				r.LastRefreshAt = &t
-				continue
-			}
-			if *r.AvailableQuantity >= *r.MaxQuantity {
-				// Keep the anchor current while the source sits full so a later
-				// draw-down starts a fresh full-period regrow. Freezing it here let
-				// a long-idle finite source (anchor many periods in the past) refill
-				// straight to max on the FIRST tick after any harvest — a 6h wild
-				// bush, idle for days, never appeared to deplete (LLM-103).
-				t := now
-				r.LastRefreshAt = &t
-				continue // already full
-			}
-			elapsed := now.Sub(*r.LastRefreshAt)
-			if elapsed <= 0 {
-				continue
-			}
-			switch r.RefreshMode {
-			case RefreshModeContinuous:
-				// One unit every (period_hours / max_quantity) hours.
-				unitSeconds := float64(*r.RefreshPeriodHours) * 3600.0 / float64(*r.MaxQuantity)
-				if unitSeconds <= 0 {
-					continue
-				}
-				units := int(math.Floor(elapsed.Seconds() / unitSeconds))
-				if units <= 0 {
-					continue
-				}
-				room := *r.MaxQuantity - *r.AvailableQuantity
-				if units > room {
-					units = room
-				}
-				next := *r.AvailableQuantity + units
-				r.AvailableQuantity = &next
-				// Advance anchor by exactly the consumed time, keeping
-				// the sub-unit residual for the next tick.
-				adv := time.Duration(float64(units) * unitSeconds * float64(time.Second))
-				newAnchor := r.LastRefreshAt.Add(adv)
-				r.LastRefreshAt = &newAnchor
+			if regenRefreshRow(r, now) {
 				touched++
-			case RefreshModePeriodic:
-				if elapsed < time.Duration(*r.RefreshPeriodHours)*time.Hour {
-					continue
-				}
-				next := *r.MaxQuantity
-				r.AvailableQuantity = &next
-				// Advance anchor by exactly period_hours so a missed
-				// tick during a long outage doesn't compound multiple
-				// harvests.
-				newAnchor := r.LastRefreshAt.Add(time.Duration(*r.RefreshPeriodHours) * time.Hour)
-				r.LastRefreshAt = &newAnchor
-				touched++
-			default:
-				log.Printf("sim/object_refresh_regen: unknown mode %q on %s (skipped)",
-					r.RefreshMode, r.Attribute)
 			}
 		}
 		// Regrowth may have restocked a bush from empty — recompute its
@@ -681,7 +618,88 @@ func regenObjectRefresh(w *World, now time.Time) int {
 		// need a recompute on a tick rather than on an event.
 		refreshObjectBerryState(w, obj, now)
 	}
+	// A milking animal's row is a bush's row and regrows on the same tick
+	// (LLM-797); its feed bonus lands on the refill that brings it back to full.
+	for _, a := range w.Actors {
+		if a != nil && regenLivestockYield(a.Yield, now) {
+			touched++
+		}
+	}
 	return touched
+}
+
+// regenRefreshRow applies one regen step to a single finite row: continuous-mode
+// rows accrue units since LastRefreshAt; periodic-mode rows jump to MaxQuantity
+// once enough time has elapsed. Reports whether AvailableQuantity changed. Shared
+// by village objects and milking animals (LLM-797).
+func regenRefreshRow(r *ObjectRefresh, now time.Time) bool {
+	if r == nil || !r.IsFinite() {
+		return false
+	}
+	if r.RefreshPeriodHours == nil || *r.RefreshPeriodHours <= 0 {
+		return false
+	}
+	if r.LastRefreshAt == nil {
+		// Just-edited or freshly-loaded — stamp the anchor on
+		// this pass, no regen until next.
+		t := now
+		r.LastRefreshAt = &t
+		return false
+	}
+	if *r.AvailableQuantity >= *r.MaxQuantity {
+		// Keep the anchor current while the source sits full so a later
+		// draw-down starts a fresh full-period regrow. Freezing it here let
+		// a long-idle finite source (anchor many periods in the past) refill
+		// straight to max on the FIRST tick after any harvest — a 6h wild
+		// bush, idle for days, never appeared to deplete (LLM-103).
+		t := now
+		r.LastRefreshAt = &t
+		return false // already full
+	}
+	elapsed := now.Sub(*r.LastRefreshAt)
+	if elapsed <= 0 {
+		return false
+	}
+	switch r.RefreshMode {
+	case RefreshModeContinuous:
+		// One unit every (period_hours / max_quantity) hours.
+		unitSeconds := float64(*r.RefreshPeriodHours) * 3600.0 / float64(*r.MaxQuantity)
+		if unitSeconds <= 0 {
+			return false
+		}
+		units := int(math.Floor(elapsed.Seconds() / unitSeconds))
+		if units <= 0 {
+			return false
+		}
+		room := *r.MaxQuantity - *r.AvailableQuantity
+		if units > room {
+			units = room
+		}
+		next := *r.AvailableQuantity + units
+		r.AvailableQuantity = &next
+		// Advance anchor by exactly the consumed time, keeping
+		// the sub-unit residual for the next tick.
+		adv := time.Duration(float64(units) * unitSeconds * float64(time.Second))
+		newAnchor := r.LastRefreshAt.Add(adv)
+		r.LastRefreshAt = &newAnchor
+		return true
+	case RefreshModePeriodic:
+		if elapsed < time.Duration(*r.RefreshPeriodHours)*time.Hour {
+			return false
+		}
+		next := *r.MaxQuantity
+		r.AvailableQuantity = &next
+		// Advance anchor by exactly period_hours so a missed
+		// tick during a long outage doesn't compound multiple
+		// harvests.
+		newAnchor := r.LastRefreshAt.Add(time.Duration(*r.RefreshPeriodHours) * time.Hour)
+		r.LastRefreshAt = &newAnchor
+		return true
+	default:
+		log.Printf("sim/object_refresh_regen: unknown mode %q on %s (skipped)",
+			r.RefreshMode, r.Attribute)
+		return false
+	}
 }
 
 // ObjectRefreshRegenInterval is how often RunObjectRefreshRegen wakes.

@@ -685,6 +685,18 @@ func PayWithItem(
 				// is NOT a disqualifier — only a home is — so a homeless lodger
 				// renewing the next night (LLM-46/96) still books.
 				if buyer.HomeStructureID != "" {
+					// LLM-798: a pitched tent is the home a player gives up to take a
+					// room — say so, and where it stands.
+					if tent := w.VillageObjects[VillageObjectID(buyer.HomeStructureID)]; IsTent(tent) {
+						where := CampPlaceLabel(w.VillageObjects, w.Structures, tent)
+						if where != "" {
+							where = " " + where
+						}
+						return nil, fmt.Errorf(
+							"your tent is pitched%s — strike it and pack it away before you take a room.",
+							where,
+						)
+					}
 					if home, ok := w.Structures[buyer.HomeStructureID]; ok && home.DisplayName != "" {
 						return nil, fmt.Errorf(
 							"you already have a home (%s) — head there to sleep; you don't need to rent a room.",
@@ -2756,6 +2768,14 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 		if itemHasCapability(w, kind, "service") {
 			return nil, fmt.Errorf(
 				"%q is a service, not a carryable good — it can't be offered as payment. Pay with coins or physical goods.",
+				pi.Item,
+			)
+		}
+		// A player's tent is their shelter (LLM-798) — never handed over, in a
+		// payment, a barter or a gift. Both directions resolve through here.
+		if itemHasCapability(w, kind, CapabilityShelter) {
+			return nil, fmt.Errorf(
+				"%q is your shelter — it can't be traded or given away.",
 				pi.Item,
 			)
 		}

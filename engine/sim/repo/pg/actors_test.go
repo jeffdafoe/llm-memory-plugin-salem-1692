@@ -103,6 +103,7 @@ func actorParentColumns() []string {
 		"admin", "move_destination",
 		"production_item", "production_batch_qty", "production_remaining_seconds",
 		"town_repair_object_id", "town_repair_bounty", "town_repair_started_at", "town_repair_until",
+		"livestock_yield",
 		"wearing",
 	}
 }
@@ -158,7 +159,8 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*string)(nil), "south",
 		false, []byte(nil), "", 0, int64(0),
 		"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-		[]string{}, // wearing — nothing worn (LLM-800)
+		[]byte(nil), // livestock_yield — not an animal (LLM-797)
+		[]string{},  // wearing — nothing worn (LLM-800)
 	)
 }
 
@@ -326,6 +328,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`),
 				"horseshoe", 4, int64(900), // in-flight production cycle (LLM-319)
 				"00000000-0000-0000-0000-6666ffffffff", 25, &tsBreak, &tsSleep, // in-flight town repair (LLM-737)
+				[]byte(`{"gather_item":"milk","available_quantity":3,"max_quantity":4,"refresh_mode":"periodic","refresh_period_hours":12,"fed_bonus":4}`), // a milking animal's row (LLM-797)
 				[]string{"duck_pendant"}, // wearing (LLM-800)
 			).
 			AddRow(
@@ -340,7 +343,8 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*string)(nil), "south",
 				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
 				"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-				[]string{}, // wearing — nothing worn (LLM-800)
+				[]byte(nil), // livestock_yield — not an animal (LLM-797)
+				[]string{},  // wearing — nothing worn (LLM-800)
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -371,6 +375,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	a := got[actA]
 	if a == nil {
 		t.Fatal("actA missing")
+	}
+	if a.Yield == nil || *a.Yield.Row.AvailableQuantity != 3 || a.Yield.FedBonus != 4 || a.Yield.Row.GatherItem != "milk" {
+		t.Errorf("actA Yield = %+v, want 3 milk with a bonus of 4 (LLM-797)", a.Yield)
 	}
 	if a.DisplayName != "Mira" {
 		t.Errorf("actA DisplayName = %q", a.DisplayName)
@@ -624,6 +631,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -712,6 +720,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -855,6 +864,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -924,6 +934,7 @@ func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1248,7 +1259,8 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*string)(nil), "south",
 				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
 				"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-				[]string{}, // wearing — nothing worn (LLM-800)
+				[]byte(nil), // livestock_yield — not an animal (LLM-797)
+				[]string{},  // wearing — nothing worn (LLM-800)
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1450,6 +1462,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1556,6 +1569,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1734,6 +1748,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -2002,6 +2017,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			"stew", 5, int64(1800), // production_item / batch_qty / remaining_seconds — live cycle (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
+			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))

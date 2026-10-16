@@ -125,6 +125,34 @@ type pcMeResponse struct {
 	// empty quote list ("you already have a room…") instead of dead-ending.
 	// Absent (omitempty) when the PC holds no active ledger grant.
 	Lodging *pcLodgingDTO `json:"lodging,omitempty"`
+	// Camp is the PC's pitched camp (LLM-798) — the pack's "Tent — pitched by
+	// the Inn" row with its Strike button. Absent when the tent is in the pack.
+	Camp *pcCampDTO `json:"camp,omitempty"`
+}
+
+// pcCampDTO is a PC's pitched camp (LLM-798). Place is where it stands, for
+// the pack row ("by the Inn"; "" when there is no building to name it by).
+// FireID is the fire ring, absent while the camp is still going up.
+type pcCampDTO struct {
+	TentID string `json:"tent_id"`
+	FireID string `json:"fire_id,omitempty"`
+	Place  string `json:"place,omitempty"`
+}
+
+// pcCampSurface returns the PC's pitched camp, or nil when it has none.
+func pcCampSurface(snap *sim.Snapshot, pcID sim.ActorID) *pcCampDTO {
+	camp := sim.FindCamp(snap.VillageObjects, pcID)
+	if camp == nil {
+		return nil
+	}
+	out := &pcCampDTO{
+		TentID: string(camp.Tent.ID),
+		Place:  sim.CampPlaceLabel(snap.VillageObjects, snap.Structures, camp.Tent),
+	}
+	if camp.Fire != nil {
+		out.FireID = string(camp.Fire.ID)
+	}
+	return out
 }
 
 // pcLodgingDTO is the PC's active-lodging surface (LLM-38).
@@ -276,6 +304,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Lodging = pcLodgingSurface(snap, pc)
+	resp.Camp = pcCampSurface(snap, pcID)
 
 	writeJSON(w, resp)
 }

@@ -170,6 +170,11 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         "source_activity_label": str(dto.get("source_activity_label", "")),
         # The object being worked (LLM-743) — the swing turns toward it.
         "source_activity_object_id": str(dto.get("source_activity_object_id", "")),
+        # The animal being milked (LLM-797) — the milker turns toward her.
+        "source_activity_animal_id": str(dto.get("source_activity_animal_id", "")),
+        # What a milking animal gives and is fed (LLM-797), {} for everyone else;
+        # a click on her offers a player holding the feed the feed prompt.
+        "livestock": dto.get("livestock", {}) if dto.get("livestock", {}) is Dictionary else {},
         # Where the engine put the actor in the room they are in, [x, y]
         # (LLM-768); absent outdoors or asleep. _render_npc seeds the
         # room_square meta from it — dropped here, every room window read
