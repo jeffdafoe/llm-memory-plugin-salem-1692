@@ -39,6 +39,32 @@ func TestTimeOfDayProse(t *testing.T) {
 	}
 }
 
+// TestClockTimeProse pins the quarter-hour floor and the out-of-range guard.
+// The floor matters at a close: 20:59 must not read as 9 in the evening.
+func TestClockTimeProse(t *testing.T) {
+	cases := []struct {
+		minute int
+		want   string
+	}{
+		{0, "It is about midnight."},
+		{14, "It is about midnight."},
+		{15, "It is about 12:15 in the morning."},
+		{720, "It is about noon."},
+		{1108, "It is about 6:15 in the evening."},
+		{1110, "It is about 6:30 in the evening."},
+		{1259, "It is about 8:45 in the evening."},
+		{1260, "It is about 9 in the evening."},
+		{1439, "It is about 11:45 at night."},
+		{-1, ""},
+		{1440, ""},
+	}
+	for _, c := range cases {
+		if got := clockTimeProse(c.minute); got != c.want {
+			t.Errorf("clockTimeProse(%d) = %q, want %q", c.minute, got, c.want)
+		}
+	}
+}
+
 // TestRenderSurroundings_TimeOfDay confirms the time-of-day line renders when
 // the clock is known, is omitted when nil, and precedes the atmosphere line.
 // ZBBS-HOME-351.
@@ -54,6 +80,9 @@ func TestRenderSurroundings_TimeOfDay(t *testing.T) {
 		got := render(SurroundingsView{LocalMinuteOfDay: &evening})
 		if !strings.Contains(got, "Evening settles over the village.") {
 			t.Errorf("want evening time-of-day line, got: %q", got)
+		}
+		if !strings.Contains(got, "Evening settles over the village.\nIt is about 7 in the evening.\n") {
+			t.Errorf("want the clock line right after the band, got: %q", got)
 		}
 	})
 
@@ -74,6 +103,17 @@ func TestRenderSurroundings_TimeOfDay(t *testing.T) {
 			if strings.Contains(got, band) {
 				t.Errorf("want no time-of-day line for nil clock, found %q in: %q", band, got)
 			}
+		}
+		if strings.Contains(got, "It is about ") {
+			t.Errorf("want no clock line for nil clock, got: %q", got)
+		}
+	})
+
+	t.Run("band, then clock, then weather", func(t *testing.T) {
+		got := render(SurroundingsView{LocalMinuteOfDay: &evening, Weather: sim.WeatherStorm})
+		want := "Evening settles over the village.\nIt is about 7 in the evening.\n" + weatherStormProse + "\n"
+		if !strings.Contains(got, want) {
+			t.Errorf("want band, clock and weather lines in order, got: %q", got)
 		}
 	})
 

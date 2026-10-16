@@ -10,6 +10,7 @@ Coins in your purse: 6.
 ## Around you
 You are outdoors by the Tavern, with no one else here to hear you speak.
 It is midday.
+It is about 1 in the afternoon.
 
 ## How you can rest
 For a place you can go to now, call move_to with the destination listed for it.

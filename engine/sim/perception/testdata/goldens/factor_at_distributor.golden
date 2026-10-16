@@ -13,6 +13,7 @@ You are carrying: cloak (x3), coat (x3), silver_locket (x2).
 ## Around you
 You are inside The General Store, with the storekeeper.
 It is morning in the village.
+It is about 9 in the morning.
 
 ## Your rounds
 You're with Josiah Thorne at The General Store — the one keeper you came to deal with. Lay out the cloth, iron, and salt you carry from the city and let them buy what the village needs; a warm coat or a bar of iron is worth most just now. Buy their surplus in turn to carry off: call pay_with_item with seller "Josiah Thorne", the item, the quantity, consume_now false, coins in amount, and your words in say.

@@ -11,6 +11,7 @@ Coins in your purse: 6.
 You are inside the Tavern. the innkeeper is asleep and won't respond if you speak to them. There is no one awake here to hear you speak.
 The Tavern is shut — no one is tending it.
 It is midday.
+It is about 1 in the afternoon.
 
 ## How you can rest
 For a place you can go to now, call move_to with the destination listed for it.

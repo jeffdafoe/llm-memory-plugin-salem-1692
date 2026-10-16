@@ -11,5 +11,6 @@ Coins in your purse: 0 — you have no coins to spend, so you cannot pay for any
 ## Around you
 You are outdoors, with no one else here to hear you speak.
 It is morning in the village.
+It is about 10 in the morning.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

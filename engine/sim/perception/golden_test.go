@@ -2465,6 +2465,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperHomeMidShiftActionableRestock,
 	},
 	{
+		name: "keeper_at_post_evening_reads_the_clock_before_close",
+		summary: "The live 2026-10-15 Josiah Thorne early close. At his post at 18:28, alone, with a restock " +
+			"errand open elsewhere, he read 'Evening settles over the village.' against 'you close at 9 in the " +
+			"evening', said 'the evening's wearing on. Time to close up', and walked home two and a half hours " +
+			"early. The fetch steer he gets here drops 'stay and look after your work', so the hour is the only " +
+			"thing holding him. The golden pins the clock line 'It is about 6:15 in the evening.' right under the " +
+			"band — floored to the quarter hour, in the same voice as the close time beside it.",
+		build: keeperAtPostEveningWellBeforeClose,
+	},
+	{
 		name: "grower_stands_at_the_bush_the_cue_would_name",
 		summary: "LLM-617 steer arm — the live Moses James wedge. A wheat grower with an empty pack stands exactly on " +
 			"the loiter pin of his own RIPEST bush (9 units), with a second ripe bush (5) across the map. The " +
@@ -20107,6 +20117,18 @@ func keeperHomeMidShiftActionableRestock() (*sim.Snapshot, sim.ActorID, []sim.Wa
 		},
 	}
 	return snap, josiahID, nil
+}
+
+// keeperAtPostEveningWellBeforeClose is the 2026-10-15 live Josiah Thorne case: the
+// LLM-620 fixture moved to his post at 18:28, alone, with the restock errand still
+// open elsewhere. The fetch steer drops "stay", so the hour is all that keeps him.
+func keeperAtPostEveningWellBeforeClose() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := keeperHomeMidShiftActionableRestock()
+	now := 1108 // 18:28
+	snap.LocalMinuteOfDay = &now
+	snap.PublishedAt = time.Date(2026, 7, 1, 18, 28, 0, 0, time.UTC)
+	snap.Actors[actorID].InsideStructureID = snap.Actors[actorID].WorkStructureID
+	return snap, actorID, warrants
 }
 
 // scheduledKeeperPreshiftGetsNoBakeCue is the LLM-650 live case: the comfortable

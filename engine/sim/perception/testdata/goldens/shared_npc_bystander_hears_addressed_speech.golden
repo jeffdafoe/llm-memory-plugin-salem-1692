@@ -14,5 +14,6 @@ Coins in your purse: 22.
 ## Around you
 You are inside the Tavern, with the blacksmith, a stranger.
 Evening settles over the village.
+It is about 7:30 in the evening.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
