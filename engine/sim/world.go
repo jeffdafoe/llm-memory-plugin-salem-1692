@@ -3018,6 +3018,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 // the work afresh, and walked off a job 57 s from done (LLM-736).
 func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddles, commerceHuddles map[HuddleID]struct{}) *ActorSnapshot {
 	sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
+	sa.Room = actorPlanRoom(w, a)
 	// LLM-372: project a returner's durable continuity onto the snapshot here
 	// (not in snapshotActor, a *World-less free function) — buildReturnerSnapshot
 	// reads World.RecurringVisitors and needs the wall-clock now for recency.

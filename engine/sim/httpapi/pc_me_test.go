@@ -812,3 +812,28 @@ func TestRenderActionLogEntry(t *testing.T) {
 		})
 	}
 }
+
+// LLM-798: a pitched tent is a pack row — no count, labelled with where it
+// stands, its one action Strike — beside what the PC carries.
+func TestPCPackEntries_PitchedTent(t *testing.T) {
+	catalog := map[sim.ItemKind]*sim.ItemKindDef{
+		sim.TentItemKind: {Name: sim.TentItemKind, DisplayLabel: "Tent", Capabilities: []string{sim.CapabilityShelter}},
+	}
+	objects := map[sim.VillageObjectID]*sim.VillageObject{
+		"inn":  {ID: "inn", DisplayName: "Inn", Pos: sim.WorldPos{X: 0, Y: 0}},
+		"tent": {ID: "tent", AssetID: sim.TentAssetID, OwnerActorID: "pc", Pos: sim.WorldPos{X: 96, Y: 0}},
+	}
+	structures := map[sim.StructureID]*sim.Structure{"inn": {ID: "inn", DisplayName: "Inn"}, "tent": {ID: "tent", DisplayName: "Jefferey's Tent"}}
+
+	rows := pcPackEntries(map[sim.ItemKind]int{"bread": 2}, nil, catalog, objects, structures, "pc")
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want bread and the pitched tent", rows)
+	}
+	tent := rows[1]
+	if !tent.Pitched || tent.Quantity != 0 || tent.DisplayLabel != "Tent — pitched by the Inn" || len(tent.Actions) != 1 || tent.Actions[0] != sim.ItemActionStrike {
+		t.Errorf("pitched row = %+v, want quantity 0, pitched, labelled by the Inn, Strike", tent)
+	}
+	if rows := pcPackEntries(map[sim.ItemKind]int{sim.TentItemKind: 1}, nil, catalog, map[sim.VillageObjectID]*sim.VillageObject{}, structures, "pc"); len(rows) != 1 || rows[0].Actions[0] != sim.ItemActionPitch {
+		t.Errorf("carried tent rows = %+v, want one row offering Pitch", rows)
+	}
+}

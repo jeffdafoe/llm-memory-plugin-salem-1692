@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
 )
 
 // pc_me.go — the PC bootstrap read. The v2 Godot client polls
@@ -128,6 +129,10 @@ type pcMeResponse struct {
 	// Camp is the PC's pitched camp (LLM-798) — the pack's "Tent — pitched by
 	// the Inn" row with its Strike button. Absent when the tent is in the pack.
 	Camp *pcCampDTO `json:"camp,omitempty"`
+	// VacantRooms names the bedrooms nobody has taken at the building the PC
+	// is in, when it has an upstairs hall the client draws (LLM-801) — those
+	// doors stand open. Absent anywhere else (and when every room is let).
+	VacantRooms []string `json:"vacant_rooms,omitempty"`
 }
 
 // pcCampDTO is a PC's pitched camp (LLM-798). Place is where it stands, for
@@ -186,6 +191,9 @@ type pcInventoryEntry struct {
 	// Actions are the Your Pack buttons for this row (LLM-800): sim.ItemActions.
 	// Always present, [] when the good has none.
 	Actions []string `json:"actions"`
+	// Pitched marks the row for the PC's pitched tent (LLM-798): out of the pack
+	// (Quantity 0), shown without a count, its action Strike.
+	Pitched bool `json:"pitched,omitempty"`
 }
 
 // pcHuddleMember is one co-present actor in the PC's conversational scope.
@@ -283,7 +291,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, audienceStructureID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
 	resp.DormantMembers = pcDormantRoster(snap, pc, pcID, audienceStructureID)
 	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc, audienceStructureID)
-	resp.Inventory = pcInventoryEntries(pc.Inventory, pc.Wearing, s.world.ItemKinds)
+	resp.Inventory = pcPackEntries(pc.Inventory, pc.Wearing, s.world.ItemKinds, snap.VillageObjects, snap.Structures, pcID)
 
 	for k, v := range pc.Needs {
 		resp.Needs[string(k)] = v
@@ -305,6 +313,9 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 
 	resp.Lodging = pcLodgingSurface(snap, pc)
 	resp.Camp = pcCampSurface(snap, pcID)
+	if pc.InsideStructureID != "" && roomlayout.ForRoom(string(pc.InsideStructureID), sim.HallRoomName) != nil {
+		resp.VacantRooms = sim.VacantRooms(snap, pc.InsideStructureID)
+	}
 
 	writeJSON(w, resp)
 }
@@ -470,10 +481,11 @@ func pcAudienceRoom(snap *sim.Snapshot, pc *sim.ActorSnapshot) (string, bool) {
 		if rm == nil || rm.ID != pc.InsideRoomID {
 			continue
 		}
-		// Whitelist private/staff explicitly — an unrecognized kind (future
-		// enum addition, corrupt data) under-scopes to public rather than
-		// inventing a private bucket nobody can match. Mirrors v1's switch.
-		if rm.Kind == sim.RoomKindPrivate || rm.Kind == sim.RoomKindStaff {
+		// Whitelist the scoped kinds explicitly (sim.RoomKindScoped: private,
+		// staff, the upstairs hall) — an unrecognized kind (corrupt data)
+		// under-scopes to public rather than inventing a private bucket nobody
+		// can match. Mirrors v1's switch.
+		if sim.RoomKindScoped(rm.Kind) {
 			return strconv.FormatInt(int64(pc.InsideRoomID), 10), true
 		}
 		return "", false
@@ -980,4 +992,31 @@ func pcDwellingAttributes(pc *sim.ActorSnapshot, now time.Time) []string {
 	}
 	sort.Strings(attrs)
 	return attrs
+}
+
+// pcPackEntries is the Your Pack list: the carried goods (pcInventoryEntries)
+// and, while the PC's tent is pitched (LLM-798), a row for it — out of the pack,
+// so quantity 0 and Pitched, labelled with where it stands ("Tent — pitched by
+// the Inn"), its one action Strike.
+func pcPackEntries(inv map[sim.ItemKind]int, wearing []sim.ItemKind, catalog map[sim.ItemKind]*sim.ItemKindDef,
+	objects map[sim.VillageObjectID]*sim.VillageObject, structures map[sim.StructureID]*sim.Structure, pcID sim.ActorID) []pcInventoryEntry {
+	out := pcInventoryEntries(inv, wearing, catalog)
+	camp := sim.FindCamp(objects, pcID)
+	if camp == nil {
+		return out
+	}
+	label := "Tent"
+	if def := catalog[sim.TentItemKind]; def != nil && def.DisplayLabel != "" {
+		label = def.DisplayLabel
+	}
+	label += " — pitched"
+	if place := sim.CampPlaceLabel(objects, structures, camp.Tent); place != "" {
+		label += " " + place
+	}
+	return append(out, pcInventoryEntry{
+		ItemKind:     string(sim.TentItemKind),
+		DisplayLabel: label,
+		Actions:      []string{sim.ItemActionStrike},
+		Pitched:      true,
+	})
 }

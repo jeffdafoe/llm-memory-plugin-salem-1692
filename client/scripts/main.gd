@@ -17,6 +17,7 @@ const CreditsScrollScript = preload("res://scripts/credits_scroll.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
 const DoorPanelScript = preload("res://scripts/door_panel.gd")
+const FirePanelScript = preload("res://scripts/fire_panel.gd")
 const NotePanelScript = preload("res://scripts/note_panel.gd")
 ## No tile to walk to (_walk_out_tile).
 const NO_TILE := Vector2i(-1000000, -1000000)
@@ -54,6 +55,8 @@ var repair_panel_layer: CanvasLayer = null
 ## The door popup (LLM-785): at the door of a house the player may not walk
 ## into, Knock or Leave.
 var door_panel_layer: CanvasLayer = null
+## The camp fire window (LLM-798): light the player's own fire.
+var fire_panel_layer: CanvasLayer = null
 ## The note window (LLM-19): after a knock nobody answered, a note for one of
 ## the people of the house. See client/scripts/note_panel.gd.
 var note_panel_layer: CanvasLayer = null
@@ -64,6 +67,13 @@ var interior_panel_layer: CanvasLayer = null
 ## entry, so the ✕ keeps it shut until the character leaves and comes back
 ## (or the building is clicked).
 var _interior_structure_id := ""
+## The room of it the window last opened for (LLM-801): "" for the common
+## room, else the room upstairs the character is in.
+var _interior_room := ""
+## /pc/go_room and /pc/sleep POST helpers (LLM-801) — a tap on a door or the
+## stairs, on the bed.
+var _pc_go_room_http: HTTPRequest = null
+var _pc_sleep_http: HTTPRequest = null
 var village_ticker: PanelContainer = null
 ## Sleep-fade overlay (ZBBS-WORK-204 Stage B). CanvasLayer with a
 ## ColorRect that tweens to twilight while the local PC sleeps and
@@ -186,6 +196,9 @@ var _pending_knock: bool = false
 # The house that walk is going to (LLM-785): the door popup opens for it on
 # arrival. _pc_move_target is the structure the in-flight move request names.
 var _pending_knock_structure_id := ""
+## The player's own camp fire they clicked from too far to light (LLM-798):
+## the fire window opens when they arrive near it. "" when none.
+var _pending_fire_id := ""
 var _pc_move_target := ""
 var _pc_http_knock: HTTPRequest = null
 ## The house the last knock was at, for its answer (LLM-19).
@@ -551,6 +564,8 @@ func _build_ui() -> void:
     # PC's active lodging from /pc/me; top bar shows/hides the chip.
     if talk_panel_layer.has_signal("lodging_changed") and top_bar != null:
         talk_panel_layer.lodging_changed.connect(_on_pc_lodging_changed)
+    if talk_panel_layer.has_signal("camp_changed") and top_bar != null and top_bar.has_method("set_camp"):
+        talk_panel_layer.camp_changed.connect(top_bar.set_camp)
     # Pay modal blocks world input. Without this, a click on the
     # Confirm button propagates into the world's PC-walk handler and
     # the character starts walking under the open modal.
@@ -644,6 +659,17 @@ func _build_ui() -> void:
     door_panel_layer.knocked.connect(_on_door_knocked)
     door_panel_layer.note_requested.connect(_on_door_note_requested)
 
+    # Camp fire window (LLM-798) — light the player's own fire. Modal tier.
+    fire_panel_layer = CanvasLayer.new()
+    fire_panel_layer.name = "FirePanelLayer"
+    fire_panel_layer.set_script(FirePanelScript)
+    add_child(fire_panel_layer)
+    fire_panel_layer.opened.connect(func(): _set_modal_blocker("fire", true))
+    fire_panel_layer.closed.connect(func(): _set_modal_blocker("fire", false))
+    fire_panel_layer.lit.connect(func():
+        if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
+            talk_panel_layer._refresh_state())
+
     # Note window (LLM-19) — Leave a note after no answer. Modal tier.
     note_panel_layer = CanvasLayer.new()
     note_panel_layer.name = "NotePanelLayer"
@@ -666,7 +692,15 @@ func _build_ui() -> void:
     interior_panel_layer.dismissed.connect(_on_interior_dismissed)
     interior_panel_layer.person_clicked.connect(_on_interior_person_clicked)
     interior_panel_layer.floor_tapped.connect(_on_interior_floor_tapped)
-    world.room_square_changed.connect(func(_id: String):
+    interior_panel_layer.room_tapped.connect(_on_interior_room_tapped)
+    interior_panel_layer.bed_tapped.connect(_on_interior_bed_tapped)
+    if talk_panel_layer != null and talk_panel_layer.has_signal("vacant_rooms_changed"):
+        talk_panel_layer.vacant_rooms_changed.connect(interior_panel_layer.set_vacant_rooms)
+    world.room_square_changed.connect(func(id: String):
+        # The character went to another room of the building (LLM-801): the
+        # window follows them.
+        if _pc_actor_id != "" and id == _pc_actor_id:
+            _sync_interior()
         if interior_panel_layer.is_open():
             interior_panel_layer.refresh())
     world.npc_metadata_changed.connect(func(npc_id: String):
@@ -1409,6 +1443,13 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         if str(hit_here.get("id", "")) == place_sid:
             interior_panel_layer.open(place_sid)
             return
+    # The player's own camp fire, out (LLM-798): near it the fire window opens;
+    # from further off the walk there opens it on arrival (_open_fire_if_there).
+    _pending_fire_id = _own_fire_out_at(screen_pos)
+    if _pending_fire_id != "" and fire_panel_layer != null and _near_own_fire(_pending_fire_id):
+        fire_panel_layer.open(_pending_fire_id)
+        _pending_fire_id = ""
+        return
     # A click on an object first asks whether it is town's work the player
     # stands at (LLM-690): if so the repair panel opens and there is no walk;
     # otherwise the walk goes on as below. Ground clicks walk at once.
@@ -1628,6 +1669,39 @@ func _open_door_if_there() -> void:
     _pending_knock_structure_id = ""
     door_panel_layer.open(sid, _place_title(sid))
 
+## The player's own camp fire at screen_pos, when it is out (LLM-798) — the
+## only click that offers the fire game; "" for anything else.
+func _own_fire_out_at(screen_pos: Vector2) -> String:
+    if world == null or talk_panel_layer == null or not ("pc_camp" in talk_panel_layer):
+        return ""
+    var fid := str(talk_panel_layer.pc_camp.get("fire_id", ""))
+    if fid == "" or str(world.find_object_at(screen_pos).get("id", "")) != fid:
+        return ""
+    var node = world.placed_objects.get(fid, null)
+    if node == null or not is_instance_valid(node) or not Camp.fire_out(str(node.get_meta("current_state", ""))):
+        return ""
+    return fid
+
+## Whether the character stands near enough fid to light it (Camp.near_fire).
+func _near_own_fire(fid: String) -> bool:
+    var pc = world.placed_npcs.get(_pc_actor_id, null) if world != null else null
+    var node = world.placed_objects.get(fid, null) if world != null else null
+    if pc == null or node == null or not is_instance_valid(pc) or not is_instance_valid(node):
+        return false
+    var fire_tile := Vector2i(int(floor(node.position.x / StallScenes.TILE)), int(floor(node.position.y / StallScenes.TILE)))
+    return Camp.near_fire(StallScenes.standing_tile(pc), fire_tile)
+
+## Open the fire window for the fire the player walked to (LLM-798), once they
+## stand near it and it is still out.
+func _open_fire_if_there() -> void:
+    if _pending_fire_id == "" or fire_panel_layer == null or not _near_own_fire(_pending_fire_id):
+        return
+    var fid := _pending_fire_id
+    _pending_fire_id = ""
+    var node = world.placed_objects.get(fid, null)
+    if node != null and Camp.fire_out(str(node.get_meta("current_state", ""))):
+        fire_panel_layer.open(fid)
+
 ## A placed building's name, for the door popup's title ("" when unknown).
 func _place_title(sid: String) -> String:
     var node = world.placed_objects.get(sid, null) if world != null else null
@@ -1745,16 +1819,30 @@ func _sync_interior() -> void:
     if interior_panel_layer == null or world == null:
         return
     var sid := _local_pc_place()
+    var in_room := _local_pc_room(sid)
     # Before the same-structure return: a reconnect can bring a new actor id
     # while the character is still in the same room.
     interior_panel_layer.pc_actor_id = _pc_actor_id
-    if sid == _interior_structure_id:
+    if sid == _interior_structure_id and in_room == _interior_room:
         return
     _interior_structure_id = sid
+    _interior_room = in_room
     if sid != "":
-        interior_panel_layer.open(sid)
+        interior_panel_layer.open(sid, in_room)
     else:
         interior_panel_layer.close()
+
+## The room of `sid` the character is in, for the window (LLM-801): their
+## `room` meta when that room has a plan to draw it — the Inn's hall, their
+## guest room — else "" (the common room; asleep in a room with no plan,
+## they are not drawn in it).
+func _local_pc_room(sid: String) -> String:
+    if sid == "" or _pc_actor_id == "" or not world.placed_npcs.has(_pc_actor_id):
+        return ""
+    var in_room := str((world.placed_npcs[_pc_actor_id] as Node2D).get_meta("room", ""))
+    if in_room == "" or Catalog.room_plan(sid, in_room).is_empty():
+        return ""
+    return in_room
 
 ## Where the interior window belongs: the building the character is inside
 ## when it has a room, else the stall whose counter they stand at, else "".
@@ -1797,6 +1885,49 @@ func _on_interior_floor_tapped(square: Vector2i) -> void:
         Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"square": [square.x, square.y]}))
     if err != OK:
         push_warning("/pc/move_inside request failed: %s" % err)
+
+## A tap on a door or the stairs (LLM-801): ask the engine to take the
+## character through. The window follows them from the
+## npc_room_square_changed frame; a door that will not let them through
+## answers 403 with its own line ("The rooms upstairs are for guests."), shown
+## where they tapped.
+func _on_interior_room_tapped(to: String) -> void:
+    if not Auth.is_authenticated():
+        return
+    if _pc_go_room_http == null:
+        _pc_go_room_http = HTTPRequest.new()
+        add_child(_pc_go_room_http)
+        _pc_go_room_http.request_completed.connect(func(_r, code, _h, body: PackedByteArray):
+            if not Auth.check_response(code) or (code >= 200 and code < 300):
+                return
+            var json = JSON.parse_string(body.get_string_from_utf8())
+            if code == 403 and json is Dictionary and interior_panel_layer != null:
+                interior_panel_layer.show_line(str(json.get("error", "")))
+            else:
+                push_warning("/pc/go_room non-2xx: code=%s" % code))
+    _pc_go_room_http.cancel_request()
+    var err := _pc_go_room_http.request(Auth.api_base + "/api/village/pc/go_room",
+        Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"room": to}))
+    if err != OK:
+        push_warning("/pc/go_room request failed: %s" % err)
+
+## A tap on the bed of their room upstairs (LLM-801): the character goes to
+## bed in it. The sleep overlay comes from the pc_sleep_started frame, as for
+## the idle bed-down.
+func _on_interior_bed_tapped() -> void:
+    if not Auth.is_authenticated():
+        return
+    if _pc_sleep_http == null:
+        _pc_sleep_http = HTTPRequest.new()
+        add_child(_pc_sleep_http)
+        _pc_sleep_http.request_completed.connect(func(_r, code, _h, _b):
+            if Auth.check_response(code) and (code < 200 or code >= 300):
+                push_warning("/pc/sleep non-2xx: code=%s" % code))
+    _pc_sleep_http.cancel_request()
+    var err := _pc_sleep_http.request(Auth.api_base + "/api/village/pc/sleep",
+        Auth.auth_headers(), HTTPClient.METHOD_POST, "{}")
+    if err != OK:
+        push_warning("/pc/sleep request failed: %s" % err)
 
 ## The structure the player's character is inside, or "".
 func _local_pc_inside_structure_id() -> String:
@@ -1851,6 +1982,7 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     # from an earlier walk leaves the knock pending for its own arrival.
     if _pc_actor_id != "" and npc_id == _pc_actor_id:
         _open_door_if_there()
+        _open_fire_if_there()
     # Walk-then-feed (LLM-797): the player said Yes from further off.
     if _pc_actor_id != "" and npc_id == _pc_actor_id and _pending_feed_animal_id != "":
         var animal_id := _pending_feed_animal_id

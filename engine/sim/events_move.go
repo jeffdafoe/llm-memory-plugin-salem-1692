@@ -285,7 +285,11 @@ type ActorRoomSquareChanged struct {
 	EventBase
 	ActorID     ActorID
 	StructureID StructureID
-	Square      *roomlayout.Square // nil = no square
+	// Room is the room of the structure they are in now (LLM-801): "" for the
+	// common room, else its name — the square, when there is one, is that
+	// room's.
+	Room   string
+	Square *roomlayout.Square // nil = no square
 	// Path is the way walked to Square, both ends included, when they walked
 	// there (a player's tap); nil for a square given or taken in place.
 	Path []roomlayout.Square

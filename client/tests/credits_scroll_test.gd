@@ -23,6 +23,13 @@ const TESTS := [
     "_test_link_opens_on_tap_not_drag",
     "_test_title_text_opens_credits",
     "_test_every_freesound_sound_is_credited",
+    "_test_rod_turns_and_loops",
+    "_test_rod_frame_follows_the_paper",
+    "_test_rod_sheets_match_the_generator",
+    "_test_narrow_rod_keeps_both_knobs",
+    "_test_roll_up_rest_down_and_stop",
+    "_test_pan_gesture_stops_the_roll",
+    "_test_no_roll_when_it_fits",
 ]
 
 var _failures := 0
@@ -93,9 +100,9 @@ func _test_rod_image_shape() -> void:
     _check("body middle is solid", image.get_pixel(117, 8).a, 1.0)
     # Within one step of 8-bit storage, which truncates.
     var edge: Color = image.get_pixel(60, 3)
-    var outline: Color = script.COLOR_WOOD_OUTLINE
+    var outline: Color = script.COLOR_ROLL_EDGE
     var off := maxf(maxf(absf(edge.r - outline.r), absf(edge.g - outline.g)), absf(edge.b - outline.b))
-    _check("body top edge is the outline", off < 1.5 / 255.0, true)
+    _check("the roll's top edge is the paper edge line", off < 1.5 / 255.0, true)
     var other: Image = script.rod_image(234, 16, 1693)
     _check("a second seed grains differently", image.get_data() != other.get_data(), true)
     _done()
@@ -157,7 +164,9 @@ func _test_fits_design_canvas() -> void:
     print("[credits_scroll_test] view %s, scroll %s, content %s, room for text %s" % [
         view, column.size, content_height, scroll.body_scroll.size.y])
     _check("canvas is the design height", view.y, 720.0)
-    _check("every credit shows without scrolling", content_height <= scroll.body_scroll.size.y, true)
+    # Credits taller than the room scroll inside the paper and roll on open
+    # (LLM-802), so fitting is not required — only that the scroll itself fits.
+    _check("text fits, or the paper has room to roll", content_height <= scroll.body_scroll.size.y or scroll.roll_room() > 0.0, true)
     _check("scroll fits the canvas height", column.size.y <= view.y - 2.0 * scroll.VIEWPORT_MARGIN, true)
     _check("scroll fits the canvas width", column.size.x <= view.x, true)
     _check("rods are pixel art at an integer scale", scroll.top_rod.size, Vector2(scroll._rod_width_px, scroll.ROD_HEIGHT_PX) * scroll.ROD_PIXEL)
@@ -297,4 +306,193 @@ func _test_every_freesound_sound_is_credited() -> void:
         var url := "https://freesound.org/s/%s/" % m.get_string(1)
         _check("Freesound %s is on the scroll as %s" % [m.get_string(1), m.get_string(2)], shown.get(url, ""), m.get_string(2))
     _check("the Freesound sounds were read", found >= 5, true)
+    _done()
+
+
+## LLM-802: a turn moves the grain, never the outline or the silhouette, and a
+## whole turn comes back to the first picture.
+func _test_rod_turns_and_loops() -> void:
+    var script := _scroll_script()
+    var still: Image = script.rod_image(234, 16, 1692, 0.0)
+    var quarter: Image = script.rod_image(234, 16, 1692, TAU / 16.0)
+    var round_trip: Image = script.rod_image(234, 16, 1692, TAU)
+    _check("a sixteenth of a turn changes the grain", still.get_data() != quarter.get_data(), true)
+    var silhouette_same := true
+    var differ := 0
+    for y in 16:
+        for x in 234:
+            if still.get_pixel(x, y).a != quarter.get_pixel(x, y).a:
+                silhouette_same = false
+            if still.get_pixel(x, y) != round_trip.get_pixel(x, y):
+                differ += 1
+    _check("turning keeps the silhouette", silhouette_same, true)
+    _check("a whole turn comes back (float rounding aside)", differ < 234 * 16 / 100, true)
+    # Between the collars the rod shows wound parchment, not wood: the middle of
+    # the roll is paper-coloured (lit, so brighter or darker than COLOR_PAPER,
+    # but never the dark wood).
+    var mid: Color = still.get_pixel(117, 7)
+    var paper: Color = script.COLOR_PAPER
+    var wood: Color = script.COLOR_WOOD
+    _check("the roll is parchment, not wood", absf(mid.h - paper.h) < 0.05 and mid.v > wood.v + 0.15, true)
+    _check("even the shaded underside is lighter than the wood", still.get_pixel(117, 11).v > wood.v, true)
+    _check("the knobs are still wood", still.get_pixel(8, 8).v < paper.v - 0.2, true)
+    # Each step of wound paper fattens the roll by an art pixel above and below.
+    var thick: Image = script.rod_image(234, 16, 1692, 0.0, 2)
+    _check("a thin roll leaves the row above it clear", still.get_pixel(117, 2).a, 0.0)
+    _check("a fat roll fills it", thick.get_pixel(117, 2).a, 1.0)
+    _check("a fat roll fills the row below too", thick.get_pixel(117, 13).a, 1.0)
+    _check("the knobs do not grow", thick.get_pixel(0, 0).a, 0.0)
+    _done()
+
+
+## LLM-802: a turn frame per sixteenth of a turn, forward and back.
+func _test_rod_frame_follows_the_paper() -> void:
+    var script := _scroll_script()
+    var sixteenth: float = TAU / script.ROD_TURN_FRAMES
+    _check("no turn: frame 0", script.rod_frame_at(0.0), 0)
+    _check("a sixteenth: frame 1", script.rod_frame_at(sixteenth), 1)
+    _check("a whole turn: frame 0 again", script.rod_frame_at(TAU), 0)
+    _check("turned back: the last frame", script.rod_frame_at(-sixteenth), script.ROD_TURN_FRAMES - 1)
+    _check("no paper wound: thinnest roll", script.roll_step(0.0), 0)
+    _check("all of it wound: fattest roll", script.roll_step(1.0), script.ROLL_STEPS - 1)
+    _done()
+
+
+## Open a scroll on the 1280 x 720 design canvas with `extra` px of filler under
+## the credits (or one short line, `short`), its own _process off so the test
+## drives the roll's clock. The
+## caller restores the window with _restore_canvas.
+var _saved_root_size := Vector2i.ZERO
+
+func _open_with_filler(extra: float, short := false) -> CanvasLayer:
+    _saved_root_size = root.size
+    root.size = Vector2i(1280, 720)
+    await process_frame
+    var scroll: CanvasLayer = _scroll_script().new()
+    root.add_child(scroll)
+    scroll.set_process(false)
+    if short:
+        # A fixture that surely fits: one short line in place of the credits.
+        for child in scroll.content.get_children():
+            child.free()
+        scroll.content.add_child(Label.new())
+    if extra > 0.0:
+        var filler := Control.new()
+        filler.custom_minimum_size = Vector2(0, extra)
+        scroll.content.add_child(filler)
+    scroll.open()
+    # Let the unroll finish, so the bottom roll is not still holding paper.
+    await create_timer(scroll.UNROLL_SEC + 0.15).timeout
+    return scroll
+
+
+func _test_roll_up_rest_down_and_stop() -> void:
+    var scroll: CanvasLayer = await _open_with_filler(400.0)
+    _check("taller text has room to roll", scroll.roll_room() > 100.0, true)
+    _check("rolling after open", scroll.is_rolling(), true)
+    scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 0.01)
+    _check("still at the top after the lead", scroll.body_scroll.scroll_vertical, 0)
+    _check("at the top the top roll is thin", scroll.top_step, 0)
+    _check("and the bottom roll holds the rest", scroll.bottom_step, scroll.ROLL_STEPS - 1)
+    var top_before: int = scroll.top_frame
+    scroll._process(2.0)
+    _check("winds up at the roll speed", scroll.body_scroll.scroll_vertical, int(2.0 * scroll.ROLL_SPEED))
+    _check("the top rod turned with the paper", scroll.top_frame != top_before, true)
+    _check("showing that frame", scroll.top_rod.texture, scroll.rod_texture(0, scroll.top_step, scroll.top_frame))
+    scroll._process(scroll.roll_room() / scroll.ROLL_SPEED)
+    var bottom: int = scroll.body_scroll.scroll_vertical
+    _check("reaches the end", float(bottom), roundf(scroll.roll_room()))
+    _check("at the end the top roll holds it all", scroll.top_step, scroll.ROLL_STEPS - 1)
+    _check("and the bottom roll is thin", scroll.bottom_step, 0)
+    scroll._process(scroll.ROLL_PAUSE / 2.0)
+    _check("rests at the end", scroll.body_scroll.scroll_vertical, bottom)
+    scroll._process(scroll.ROLL_PAUSE)
+    scroll._process(1.0)
+    _check("winds back down after the rest", scroll.body_scroll.scroll_vertical < bottom, true)
+    var wheel := InputEventMouseButton.new()
+    wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+    wheel.pressed = true
+    scroll._input(wheel)
+    _check("a wheel turn takes the paper", scroll.is_rolling(), false)
+    var held: int = scroll.body_scroll.scroll_vertical
+    scroll._process(3.0)
+    _check("stopped stays put", scroll.body_scroll.scroll_vertical, held)
+    scroll.close()
+    scroll.queue_free()
+    root.size = _saved_root_size
+    await process_frame
+    _done()
+
+
+## code_review on LLM-802: a trackpad pan scrolls the paper too, so it must
+## take the paper from the roll. _input runs before the ScrollContainer's GUI
+## input, so the roll is off before the pan scrolls anything.
+func _test_pan_gesture_stops_the_roll() -> void:
+    var scroll: CanvasLayer = await _open_with_filler(400.0)
+    scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 1.0)
+    _check("rolling before the pan", scroll.is_rolling(), true)
+    var pan := InputEventPanGesture.new()
+    pan.delta = Vector2(0, 3)
+    scroll._input(pan)
+    _check("a trackpad pan takes the paper", scroll.is_rolling(), false)
+    scroll.close()
+    scroll.queue_free()
+    root.size = _saved_root_size
+    await process_frame
+    _done()
+
+
+func _test_no_roll_when_it_fits() -> void:
+    var scroll: CanvasLayer = await _open_with_filler(0.0, true)
+    scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 0.01)
+    _check("the short fixture fits", scroll.roll_room(), 0.0)
+    _check("text that fits does not roll", scroll.is_rolling(), false)
+    _check("both rolls thin when nothing is wound", [scroll.top_step, scroll.bottom_step], [0, 0])
+    scroll.close()
+    scroll.queue_free()
+    root.size = _saved_root_size
+    await process_frame
+    _done()
+
+
+## LLM-802: the shipped rod sheets are rod_image's pictures, so a change to the
+## generator without rerunning tools/build_credit_rods.gd fails here.
+func _test_rod_sheets_match_the_generator() -> void:
+    var script := _scroll_script()
+    var frames: int = script.ROD_TURN_FRAMES
+    var tall: int = script.ROD_HEIGHT_PX
+    for which in 2:
+        var sheet: Image = (load(script.ROD_SHEET_PATHS[which]) as Texture2D).get_image()
+        sheet.convert(Image.FORMAT_RGBA8)
+        _check("sheet %d width" % which, sheet.get_width(), script.ROD_SHEET_WIDTH)
+        _check("sheet %d height" % which, sheet.get_height(), script.ROLL_STEPS * frames * tall)
+        for probe in [[0, 0], [1, 5], [2, 11]]:
+            var step: int = probe[0]
+            var frame: int = probe[1]
+            var want: Image = script.rod_image(script.ROD_SHEET_WIDTH, tall, script.ROD_SEEDS[which], TAU * frame / frames, step)
+            var got: Image = sheet.get_region(Rect2i(0, (step * frames + frame) * tall, script.ROD_SHEET_WIDTH, tall))
+            var worst := 0.0
+            for y in tall:
+                for x in script.ROD_SHEET_WIDTH:
+                    var a: Color = want.get_pixel(x, y)
+                    var b: Color = got.get_pixel(x, y)
+                    if a.a != b.a:
+                        worst = 1.0
+                    elif a.a > 0.0:
+                        worst = maxf(worst, maxf(absf(a.r - b.r), maxf(absf(a.g - b.g), absf(a.b - b.b))))
+            _check("sheet %d step %d frame %d is rod_image's" % [which, step, frame], worst <= 2.0 / 255.0, true)
+    _done()
+
+
+## A narrow window's rod is cut from the sheet's two ends: knobs at both.
+func _test_narrow_rod_keeps_both_knobs() -> void:
+    var script := _scroll_script()
+    var sheet: Image = (load(script.ROD_SHEET_PATHS[0]) as Texture2D).get_image()
+    var narrow: Image = script.cut_rod_sheet(sheet, 120)
+    _check("cut width", narrow.get_width(), 120)
+    _check("every picture kept", narrow.get_height(), sheet.get_height())
+    _check("left knob", narrow.get_pixel(8, 8).a, 1.0)
+    _check("right knob", narrow.get_pixel(111, 8).a, 1.0)
+    _check("past the right knob is clear", narrow.get_pixel(119, 0).a, 0.0)
+    _check("full width is the sheet itself", script.cut_rod_sheet(sheet, script.ROD_SHEET_WIDTH).get_width(), script.ROD_SHEET_WIDTH)
     _done()

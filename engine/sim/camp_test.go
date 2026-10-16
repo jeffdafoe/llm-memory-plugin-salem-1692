@@ -598,3 +598,68 @@ func TestCampPlaceLabel(t *testing.T) {
 		}
 	})
 }
+
+// A player asleep in their tent lies on the bedroll — the tent's floor plan
+// (roomlayout, asset "Tent") — so the client tucks them in.
+func TestTentSleep_OnTheBedroll(t *testing.T) {
+	w := buildCampWorld(t, nil, nil)
+	now := pitchAll(t, w)
+	tentID := readCamp(t, w).TentID
+	mustSend(t, w, func(world *sim.World) {
+		pc := world.Actors["pc"]
+		pc.Needs["tiredness"] = 20
+		sim.SetActorInsideStructure(world, pc, sim.StructureID(tentID))
+	})
+	if _, err := w.Send(sim.SleepPC("pc", now)); err != nil {
+		t.Fatalf("SleepPC: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		sq := world.Actors["pc"].RoomSquare
+		if sq == nil || sq.X != 1 || sq.Y != 5 {
+			t.Errorf("sleeper's square = %+v, want the bedroll (1,5)", sq)
+		}
+	})
+}
+
+// LLM-798 on the LLM-800 item actions: the tent row offers Pitch, Pitch starts
+// the pitch, and Strike — on a tent out of the pack — starts the strike. A
+// refusal is an item-action refusal the pack shows.
+func TestCampItemActions(t *testing.T) {
+	def := &sim.ItemKindDef{Name: sim.TentItemKind, Capabilities: []string{sim.CapabilityShelter}}
+	if got := sim.ItemActions(def, false); len(got) != 1 || got[0] != sim.ItemActionPitch {
+		t.Fatalf("ItemActions(tent) = %v, want [pitch]", got)
+	}
+
+	w := buildCampWorld(t, nil, nil)
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.UseItem("pc", sim.TentItemKind, sim.ItemActionPitch, now)); err != nil {
+		t.Fatalf("UseItem pitch: %v", err)
+	}
+	if s := readCamp(t, w); s.Working != sim.SourceActivityPitch || s.Tents != 0 {
+		t.Fatalf("after Pitch = %+v, want a pitch under way and the tent out of the pack", s)
+	}
+	now = landBeats(t, w, now, 4)
+
+	// Strike from across the camp: refused, as the pack shows it.
+	mustSend(t, w, func(world *sim.World) { world.Actors["pc"].Pos = sim.TilePos{X: campStand.X + 8, Y: campStand.Y} })
+	_, err := w.Send(sim.UseItem("pc", sim.TentItemKind, sim.ItemActionStrike, now))
+	if !errors.Is(err, sim.ErrItemAction) || err.Error() != "Walk to the front of your tent first." {
+		t.Fatalf("strike away from the tent err = %v, want the item-action refusal", err)
+	}
+	mustSend(t, w, func(world *sim.World) { world.Actors["pc"].Pos = campStand })
+	if _, err := w.Send(sim.UseItem("pc", sim.TentItemKind, sim.ItemActionStrike, now)); err != nil {
+		t.Fatalf("UseItem strike: %v", err)
+	}
+	if s := readCamp(t, w); s.Working != sim.SourceActivityStrike {
+		t.Fatalf("after Strike = %+v, want a strike under way", s)
+	}
+}
+
+// Pitch is the tent's alone: another shelter-capable good offers no button the
+// camp cannot work (code_review).
+func TestCampItemActions_OnlyTheTentPitches(t *testing.T) {
+	other := &sim.ItemKindDef{Name: "lean_to", Capabilities: []string{sim.CapabilityShelter}}
+	if got := sim.ItemActions(other, false); len(got) != 0 {
+		t.Errorf("ItemActions(lean_to) = %v, want none", got)
+	}
+}

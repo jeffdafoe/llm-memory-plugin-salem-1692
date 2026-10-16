@@ -159,6 +159,40 @@ const ROOMS := {
             {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
+    # The Inn upstairs (LLM-801), keyed by the room plans' `art`. The hall is
+    # seen head-on: five doors in a row, a walkway behind the banister (a
+    # piece, so people on the walkway stand behind it), the stairs down below.
+    # A vacant room's door stands open: `door_open` is drawn over the closed
+    # door at its way's tap rect. Built by build_rooms.gd, which prints these.
+    "inn_hall": {
+        "title": "Upstairs",
+        "sheet": "/tilesets/interiors/inn_hall_common.png",
+        "pieces_sheet": "/tilesets/interiors/inn_hall_pieces.png",
+        "door_open": "/tilesets/interiors/inn_hall_door_open.png",
+        "size": Vector2i(256, 128),
+        "pieces": [
+            {"x": 0, "y": 63, "w": 115, "h": 19, "sort_y": 80},
+            {"x": 141, "y": 63, "w": 115, "h": 19, "sort_y": 80},
+        ],
+    },
+    # A guest room, overhead — one for all four. A tap on the bed puts the
+    # player's character to bed in it.
+    "inn_guest": {
+        "title": "Your room",
+        "sheet": "/tilesets/interiors/inn_guest_common.png",
+        "pieces_sheet": "/tilesets/interiors/inn_guest_pieces.png",
+        "size": Vector2i(112, 128),
+        "pieces": [
+            {"x": 16, "y": 44, "w": 32, "h": 44, "sort_y": 71},
+            {"x": 16, "y": 102, "w": 32, "h": 16, "sort_y": 117},
+            {"x": 48, "y": 32, "w": 16, "h": 36, "sort_y": 67},
+            {"x": 96, "y": 24, "w": 16, "h": 48, "sort_y": 71},
+            {"x": 81, "y": 80, "w": 14, "h": 27, "sort_y": 101},
+        ],
+        "covers": {
+            "bed": {"x": 16, "y": 56, "w": 32, "h": 32},
+        },
+    },
     "home_blue_small": {
         "sheet": "/tilesets/interiors/home_blue_small_common.png",
         "pieces_sheet": "/tilesets/interiors/home_blue_small_pieces.png",
@@ -181,6 +215,22 @@ const ROOMS := {
             {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
+    # The player's tent (LLM-798): the Traveler's Camp interior, the bedroll
+    # along the left (its front layer the sleeper's cover) and a small pack.
+    # Built by build_rooms.gd's _tent(), which prints these.
+    "tent": {
+        "sheet": "/tilesets/interiors/tent_common.png",
+        "pieces_sheet": "/tilesets/interiors/tent_pieces.png",
+        "size": Vector2i(96, 112),
+        "pieces": [
+            {"x": 13, "y": 58, "w": 29, "h": 42, "sort_y": 89},
+            {"x": 66, "y": 84, "w": 16, "h": 16, "sort_y": 99},
+        ],
+        "covers": {
+            "bedroll": {"x": 12, "y": 70, "w": 32, "h": 32},
+        },
+        "anims": [],
+    },
 }
 
 ## One art square: the room art is drawn one 16 px tile per footprint tile.
@@ -194,10 +244,14 @@ const TAP_REACH := 40.0
 
 ## The room's art: by the structure's id (the Tavern, the Inn), else by its
 ## plan's `art` (a home, LLM-782), titled with the plan's name — the home's.
-## {} when it has neither. `plan` is the structure's Catalog.rooms entry.
+## {} when it has neither. `plan` is the structure's Catalog.rooms entry — or,
+## for a room upstairs (LLM-801), that room's plan, whose `art` names it and
+## whose art carries its own title.
 static func room_for(structure_id: String, plan := {}) -> Dictionary:
     if structure_id == "":
         return {}
+    if str(plan.get("room", "")) != "":
+        return ROOMS.get(str(plan.get("art", "")), {})
     if ROOMS.has(structure_id):
         return ROOMS[structure_id]
     var art := str(plan.get("art", ""))
@@ -418,7 +472,36 @@ static func _spot(station: Dictionary) -> Dictionary:
         spot["use"] = (station["use"] as Array).duplicate()
     if station.has("id"):
         spot["id"] = str(station["id"])
+    # A door or stairs (LLM-801): the room it leads to, and the art it is
+    # drawn as, which a tap on means going through.
+    if str(station.get("leads", "")) != "":
+        spot["leads"] = str(station["leads"])
+    var tap = station.get("tap", null)
+    if tap is Array and tap.size() == 4:
+        spot["tap"] = Rect2(int(tap[0]), int(tap[1]), int(tap[2]), int(tap[3]))
     return spot
+
+## The room a tap at `art` (room art px) goes through to (LLM-801): a door or
+## the stairs — a spot that leads somewhere, whose drawn rect holds the tap.
+## "" for none.
+static func way_at(room: Dictionary, art: Vector2) -> String:
+    for spot in [room.get("door", {})] + room.get("spots", []):
+        var tap = spot.get("tap", null)
+        if tap is Rect2 and str(spot.get("leads", "")) != "" and (tap as Rect2).has_point(art):
+            return str(spot["leads"])
+    return ""
+
+## Whether a tap at `art` falls on one of the room's beds — its cover and the
+## pillow above it (LLM-801).
+static func bed_at(room: Dictionary, art: Vector2) -> bool:
+    var covers: Dictionary = room.get("covers", {})
+    for spot in room.get("spots", []):
+        if str(spot.get("pose", "")) != "sleep" or not covers.has(str(spot.get("id", ""))):
+            continue
+        var c: Dictionary = covers[str(spot["id"])]
+        if Rect2(int(c["x"]), int(c["y"]) - 12, int(c["w"]), int(c["h"]) + 12).has_point(art):
+            return true
+    return false
 
 ## Spread people over a stall's spots — its customers, the hands beside its
 ## keeper (a room's people stand on their engine squares). `present` lists the

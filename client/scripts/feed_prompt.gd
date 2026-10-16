@@ -9,6 +9,12 @@ extends CanvasLayer
 
 signal answered(animal_id: String, feed: bool)
 
+## Room between the frame and its contents, and the buttons' least width so
+## the two sit level.
+const PAD_X := 24
+const PAD_Y := 20
+const BUTTON_MIN_WIDTH := 120.0
+
 var _panel: PanelContainer = null
 var _label: Label = null
 var _animal_id := ""
@@ -36,9 +42,18 @@ func _ready() -> void:
     _panel.theme = PeriodTheme.build(font, size)
     center.add_child(_panel)
 
+    # Room inside the frame, as the Pay box has (a touch more: this panel is
+    # small and the frame sat right on the words and buttons).
+    var pad := MarginContainer.new()
+    for side in ["margin_left", "margin_right"]:
+        pad.add_theme_constant_override(side, PAD_X)
+    for side in ["margin_top", "margin_bottom"]:
+        pad.add_theme_constant_override(side, PAD_Y)
+    _panel.add_child(pad)
+
     var box := VBoxContainer.new()
-    box.add_theme_constant_override("separation", 14)
-    _panel.add_child(box)
+    box.add_theme_constant_override("separation", 18)
+    pad.add_child(box)
 
     _label = Label.new()
     _label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -46,15 +61,17 @@ func _ready() -> void:
 
     var row := HBoxContainer.new()
     row.alignment = BoxContainer.ALIGNMENT_CENTER
-    row.add_theme_constant_override("separation", 12)
+    row.add_theme_constant_override("separation", 16)
     box.add_child(row)
 
     var button_size := OrientationGuard.text_size(PeriodTheme.BUTTON_TEXT)
     var yes := PeriodTheme.button("Feed her", button_size)
+    yes.custom_minimum_size.x = BUTTON_MIN_WIDTH
     PeriodTheme.make_primary(yes)
     yes.pressed.connect(func(): _answer(true))
     row.add_child(yes)
     var no := PeriodTheme.button("Not now", button_size)
+    no.custom_minimum_size.x = BUTTON_MIN_WIDTH
     no.pressed.connect(func(): _answer(false))
     row.add_child(no)
 

@@ -584,6 +584,8 @@ func _apply(r: int) -> void:
                     perfect = game.falls == 0
                 "hammer":
                     perfect = game.clean
+                "fire":
+                    perfect = game.spent == 0
             _on_hit(perfect)
             round_won.emit(perfect)
         Games.Result.PROGRESS:
@@ -592,6 +594,8 @@ func _apply(r: int) -> void:
                     _start_swing(true, false)
                 "ladder":
                     _on_nudge()
+                "fire":
+                    _on_fire_progress()
                 _:
                     _on_stroke()
             stroke.emit()
@@ -614,6 +618,8 @@ func _apply(r: int) -> void:
                     # The board splits as the hammer lands (_land_swing).
                     _start_swing(false, false, true)
                     _swing_split = true
+                "fire":
+                    _on_fire_out()
                 _:
                     _on_stuck()
             missed.emit()
@@ -707,6 +713,12 @@ func _on_hit(perfect: bool) -> void:
             at = _anchor() + SIGN_HINGE + Vector2(2, 8)
             _burst(at, 7, [C_GOLD, Color.WHITE, C_IRON_LIGHT])
             _sound("hammer_hit")
+        "fire":
+            # The tinder catches: flame off the ember, and over the ring above.
+            at += FIRE_EMBER
+            _burst(at, 12, [C_FLAME, C_FLAME_HI, C_GOLD])
+            _burst(_obj_center(), 14, [C_FLAME, C_FLAME_HI, C_GOLD])
+            pop("It caught!", at + Vector2(0, -8))
         _:
             at += Vector2(Games.PLAY_W / 2.0, 20)
             _burst(at, 10, [C_WOOD_HI, C_WOOD_LIGHT])
@@ -820,6 +832,64 @@ func _on_stroke() -> void:
     var at := _play_origin() + Vector2(Games.PLAY_W / 2.0, 18)
     _burst(at, 3, [C_WOOD_HI, C_WOOD_LIGHT])
     _sound("saw_stroke")
+
+
+# The camp fire game (LLM-798): its colours, and where the ember sits in the
+# play area.
+const C_FLAME := Color8(232, 120, 40)
+const C_FLAME_HI := Color8(255, 210, 96)
+const C_EMBER_DARK := Color8(70, 24, 16)
+const C_FLINT := Color8(96, 98, 108)
+const FIRE_EMBER := Vector2(88, 13)
+const FIRE_BAR_Y := 32
+
+
+## A spark off the steel onto the tinder, or a breath brightening the ember.
+func _on_fire_progress() -> void:
+    var g = game
+    if g.breaths == 0 and g.glow == g.START_GLOW:
+        _burst(_play_origin() + Vector2(g.BAR_X + g.EDGE, FIRE_BAR_Y - 6), 6, [C_FLAME_HI, Color.WHITE, C_IRON_LIGHT])
+        _sound("hammer_hit")
+        return
+    _burst(_play_origin() + FIRE_EMBER, 3, [C_FLAME, C_FLAME_HI])
+
+
+## The ember died — blown out, or let go dark; the tinder is spent.
+func _on_fire_out() -> void:
+    _shake = 0.25
+    var at := _play_origin() + FIRE_EMBER
+    _burst(at, 6, [C_EMBER_DARK, Color8(120, 120, 120), Color8(90, 90, 90)])
+    pop("Blown out!" if game.blown_out else "It went dark!", at + Vector2(0, -6))
+
+
+## The fire game: the strike bar (flint edge, the gold window, the steel), then
+## the ember over its glow gauge (the gold band, a pip per breath that counted).
+func _draw_fire(o: Vector2) -> void:
+    var g = game
+    var ember: Vector2 = o + FIRE_EMBER
+    var bx: float = o.x + g.BAR_X
+    var by: float = o.y + FIRE_BAR_Y
+    if g.phase == Games.Fire.Phase.STRIKE:
+        draw_rect(Rect2(bx, by, g.BAR_W, 5), C_WOOD_DARK)
+        var wx: float = bx + g.EDGE - g.window
+        draw_rect(Rect2(wx, by + 1, g.window * 2.0, 3), C_ZONE)
+        draw_rect(Rect2(bx + g.EDGE - 3, by - 9, 6, 9), C_FLINT)
+        draw_rect(Rect2(bx + g.EDGE - 3, by - 9, 6, 1), C_IRON_LIGHT)
+        draw_rect(Rect2(floorf(bx + g.steel) - 2, by - 6, 4, 12), C_IRON_LIGHT)
+        draw_rect(Rect2(floorf(bx + g.steel) - 2, by - 6, 4, 1), Color.WHITE)
+        draw_rect(Rect2(ember - Vector2(3, 1), Vector2(6, 3)), C_WOOD_LIGHT)
+        return
+    var glow: float = g.glow
+    var col := C_EMBER_DARK.lerp(C_FLAME_HI, clampf(glow, 0.0, 1.0))
+    var r := 2.0 + roundf(glow * 3.0)
+    draw_rect(Rect2((ember - Vector2(r, r)).floor(), Vector2(r * 2.0, r * 2.0)), col)
+    draw_rect(Rect2(bx, by, g.BAR_W, 5), C_WOOD_DARK)
+    draw_rect(Rect2(bx + g.BAR_W * g.band_lo, by + 1, g.BAR_W * (g.band_hi - g.band_lo), 3), C_ZONE)
+    draw_rect(Rect2(bx, by + 2, floorf(g.BAR_W * glow), 1), col)
+    draw_rect(Rect2(floorf(bx + g.BAR_W * glow) - 1, by - 2, 2, 9), C_FLAME_HI if g.in_band() else C_TEXT)
+    for i in g.breaths_needed:
+        var pip := C_GOLD if i < g.breaths else Color(C_WOOD_DARK, 0.8)
+        draw_rect(Rect2(bx + g.BAR_W / 2.0 - g.breaths_needed * 4 + i * 8, by + 9, 5, 2), pip)
 
 
 ## Play a sound through the Sound autoload (LLM-703). Looked up by node path,
@@ -1320,6 +1390,8 @@ func _draw_play() -> void:
             _draw_lid(o)
         "ladder":
             _draw_ladder(o)
+        "fire":
+            _draw_fire(o)
         _:
             _draw_hammer(o)
 

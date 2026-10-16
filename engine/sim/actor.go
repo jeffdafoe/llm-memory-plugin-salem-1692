@@ -864,6 +864,10 @@ type Actor struct {
 	// outdoors, in a structure without a plan, asleep upstairs or in the loft, or
 	// with every square taken. Memory only — placed afresh at boot.
 	RoomSquare *roomlayout.Square
+	// RoomSquareRoom names the room RoomSquare is a square of (LLM-801): "" for
+	// the structure's common room, else the room's name ("hall", "bedroom_2").
+	// Set with RoomSquare, so a square never outlives a change of room.
+	RoomSquareRoom string
 	// RoomDriftAt: when an idle guest next drifts a step or three in the room
 	// (room_walk.go); zero until the drift sweep first sees them inside. Memory
 	// only, cleared on every inside change.
@@ -1761,6 +1765,10 @@ type ActorSnapshot struct {
 	CurrentHuddleID HuddleID
 	// RoomSquare: LLM-768; see Actor.RoomSquare.
 	RoomSquare *roomlayout.Square
+	// Room names the room of the structure the actor is in, for the room
+	// window (LLM-801): "" for the common room (or none), else its name — "hall",
+	// "bedroom_2", "keeper_quarters".
+	Room string
 	// ConversationLooping is set at publish (World.republish) when this actor's
 	// current huddle is in an armed conversational loop right now — the same
 	// huddleLoopArmed signal the loop sweep uses, surfaced per-tick so perception

@@ -266,6 +266,11 @@ func _format_activity(node: Node2D) -> String:
                 "tiredness":
                     return "Resting"
             return "Drinking"
+        # A player's camp (LLM-798).
+        "pitch":
+            return "Pitching a tent"
+        "strike":
+            return "Striking a tent"
     return ""
 
 ## Title-case the first attribute slug. Slugs are role identifiers

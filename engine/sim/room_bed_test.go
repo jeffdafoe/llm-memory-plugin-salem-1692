@@ -141,11 +141,11 @@ func TestPrivateRoomSleeperHoldsNoBed(t *testing.T) {
 	setActorInsideStructure(w, a, homeID)
 	a.State = StateSleeping
 	a.InsideRoomID = homePrivateRoom
-	if sq := pickRoomSquare(w, a, homeID); sq != nil {
+	if sq := pickRoomSquare(w, a, false); sq != nil {
 		t.Errorf("a sleeper in a private room got %v", *sq)
 	}
 	a.InsideRoomID = homeCommonRoom
-	if sq := pickRoomSquare(w, a, homeID); sq == nil || !roomPlan(w, homeID).IsBed(*sq) {
+	if sq := pickRoomSquare(w, a, false); sq == nil || !roomPlan(w, homeID).IsBed(*sq) {
 		t.Errorf("a sleeper in the common room got %v, want a bed", sq)
 	}
 }

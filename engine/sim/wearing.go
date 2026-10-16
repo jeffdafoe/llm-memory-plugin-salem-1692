@@ -23,6 +23,10 @@ const CapabilityWear = "wear"
 const (
 	ItemActionWear   = "wear"
 	ItemActionRemove = "remove"
+	// The player's tent (LLM-798, camp.go): pitched from the pack, struck from
+	// the pitched row.
+	ItemActionPitch  = "pitch"
+	ItemActionStrike = "strike"
 )
 
 // ErrItemAction is the base of every refused item action. The wrapped message
@@ -47,6 +51,11 @@ func ItemActions(def *ItemKindDef, wearing bool) []string {
 			actions = append(actions, ItemActionWear)
 		}
 	}
+	// Only the tent itself pitches: useCampItem and PitchTent work the canonical
+	// tent kind, so another shelter-capable good shows no button it cannot use.
+	if def.Name == TentItemKind && def.HasCapability(CapabilityShelter) {
+		actions = append(actions, ItemActionPitch)
+	}
 	return actions
 }
 
@@ -63,6 +72,9 @@ func UseItem(actorID ActorID, kind ItemKind, action string, now time.Time) Comma
 			a := w.Actors[actorID]
 			if a == nil {
 				return nil, ErrPCNotFound
+			}
+			if handled, err := useCampItem(w, a, kind, action, now); handled {
+				return nil, err
 			}
 			def := w.ItemKinds[kind]
 			if a.Inventory[kind] <= 0 || def == nil {

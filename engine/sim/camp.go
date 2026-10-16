@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -856,4 +857,31 @@ func settleUnfinishedCampsOnLoad(w *World) int {
 		settled++
 	}
 	return settled
+}
+
+// useCampItem runs the camp's Your Pack actions (the LLM-800 item actions):
+// Pitch on the carried tent, Strike on the pitched one. A pitched tent is out
+// of the pack, so this is answered before UseItem's carrying check. handled is
+// false for anything that is not a camp action; a refusal is an item-action
+// refusal the pack shows as it is.
+func useCampItem(w *World, a *Actor, kind ItemKind, action string, now time.Time) (handled bool, err error) {
+	if kind != TentItemKind {
+		return false, nil
+	}
+	switch action {
+	case ItemActionPitch:
+		_, err = PitchTent(a.ID, now).Fn(w)
+	case ItemActionStrike:
+		_, err = StrikeTent(a.ID, now).Fn(w)
+	default:
+		return false, nil
+	}
+	if err != nil {
+		msg := err.Error()
+		if msg != "" {
+			msg = strings.ToUpper(msg[:1]) + msg[1:]
+		}
+		return true, refuseItemAction(msg)
+	}
+	return true, nil
 }
