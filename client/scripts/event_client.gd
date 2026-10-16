@@ -650,6 +650,9 @@ func _on_object_state_changed(data: Dictionary) -> void:
     node.set_meta("current_state", new_state)
     if Camp.tent_raised(asset_id, old_state, new_state):
         world.camp_tent_raised(node)
+        # The new tent is a structure now: its room plan is not in the set
+        # loaded at login.
+        Catalog.reload_rooms()
 
     var state_info = Catalog.get_state(asset_id, new_state)
     if state_info == null:

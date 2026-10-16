@@ -17,6 +17,7 @@ const TESTS := [
     "_test_fire_game",
     "_test_fire_helpers",
     "_test_fire_panel",
+    "_test_tent_room",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -273,4 +274,19 @@ func _test_fire_panel() -> void:
     panel.close()
     _check("closed", panel.is_open(), false)
     panel.queue_free()
+    _completed[_current] = true
+
+
+## The tent's room: found by its plan's art, the bedroll a bed with its cover.
+func _test_tent_room() -> void:
+    var plan := {"structure_id": "tent-1", "art": "tent", "name": "Tent",
+        "door": {"square": [3, 6], "at": [56, 110], "facing": "north"},
+        "keeper": {"square": [4, 3], "at": [72, 62], "facing": "south"},
+        "stations": [{"id": "bedroll", "kind": "bed", "square": [1, 5], "at": [28, 90], "facing": "south", "pose": "sleep", "use": ["sleep"]}]}
+    _check("the tent has a room", InteriorRooms.has_room("tent-1", plan), true)
+    var room := InteriorRooms.with_layout(InteriorRooms.room_for("tent-1", plan), plan)
+    _check("titled from the plan", room.get("title", ""), "Tent")
+    _check("the bedroll has a cover", room.get("covers", {}).has("bedroll"), true)
+    _check("the bedroll is a bed", str(InteriorRooms.spot_at(room, Vector2i(1, 5)).get("pose", "")), "sleep")
+    _check("no plan, no tent room", InteriorRooms.has_room("tent-1", {}), false)
     _completed[_current] = true

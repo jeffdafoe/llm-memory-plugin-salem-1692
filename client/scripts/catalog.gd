@@ -268,6 +268,11 @@ func _on_object_tags_loaded(result: int, response_code: int, headers: PackedStri
     object_tags_loaded_flag = true
     object_tags_loaded.emit()
 
+## Fetch the room plans again — a structure that stands up after login (a
+## player's tent, LLM-798) has no plan in the set loaded then.
+func reload_rooms() -> void:
+    _load_rooms()
+
 func _load_rooms() -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false

@@ -176,6 +176,27 @@
                 {"id": "window", "kind": "stand", "square": [4, 3], "at": [72, 62], "facing": "north"},
                 {"id": "cupboard", "kind": "stand", "square": [1, 7], "at": [24, 126], "facing": "west"}
             ]
+        },
+        {
+            "assets": ["Tent"],
+            "art": "tent",
+            "name": "Tent",
+            "grid": [
+                "######",
+                "######",
+                "######",
+                "###..#",
+                "###..#",
+                "#b#..#",
+                "###.##"
+            ],
+            "door": {"square": [3, 6], "at": [56, 110], "facing": "north"},
+            "keeper": {"square": [4, 3], "at": [72, 62], "facing": "south"},
+            "stations": [
+                {"id": "bedroll", "kind": "bed", "square": [1, 5], "at": [28, 90], "facing": "south", "pose": "sleep", "use": ["sleep"]},
+                {"id": "pack", "kind": "stand", "square": [3, 5], "at": [56, 94], "facing": "east"},
+                {"id": "flap", "kind": "stand", "square": [4, 4], "at": [72, 78], "facing": "west"}
+            ]
         }
     ]
 }

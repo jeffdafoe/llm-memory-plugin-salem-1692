@@ -181,6 +181,22 @@ const ROOMS := {
             {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
+    # The player's tent (LLM-798): the Traveler's Camp interior, the bedroll
+    # along the left (its front layer the sleeper's cover) and a small pack.
+    # Built by build_rooms.gd's _tent(), which prints these.
+    "tent": {
+        "sheet": "/tilesets/interiors/tent_common.png",
+        "pieces_sheet": "/tilesets/interiors/tent_pieces.png",
+        "size": Vector2i(96, 112),
+        "pieces": [
+            {"x": 13, "y": 58, "w": 29, "h": 42, "sort_y": 89},
+            {"x": 66, "y": 84, "w": 16, "h": 16, "sort_y": 99},
+        ],
+        "covers": {
+            "bedroll": {"x": 12, "y": 70, "w": 32, "h": 32},
+        },
+        "anims": [],
+    },
 }
 
 ## One art square: the room art is drawn one 16 px tile per footprint tile.

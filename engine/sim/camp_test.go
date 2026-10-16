@@ -598,3 +598,25 @@ func TestCampPlaceLabel(t *testing.T) {
 		}
 	})
 }
+
+// A player asleep in their tent lies on the bedroll — the tent's floor plan
+// (roomlayout, asset "Tent") — so the client tucks them in.
+func TestTentSleep_OnTheBedroll(t *testing.T) {
+	w := buildCampWorld(t, nil, nil)
+	now := pitchAll(t, w)
+	tentID := readCamp(t, w).TentID
+	mustSend(t, w, func(world *sim.World) {
+		pc := world.Actors["pc"]
+		pc.Needs["tiredness"] = 20
+		sim.SetActorInsideStructure(world, pc, sim.StructureID(tentID))
+	})
+	if _, err := w.Send(sim.SleepPC("pc", now)); err != nil {
+		t.Fatalf("SleepPC: %v", err)
+	}
+	mustSend(t, w, func(world *sim.World) {
+		sq := world.Actors["pc"].RoomSquare
+		if sq == nil || sq.X != 1 || sq.Y != 5 {
+			t.Errorf("sleeper's square = %+v, want the bedroll (1,5)", sq)
+		}
+	})
+}
