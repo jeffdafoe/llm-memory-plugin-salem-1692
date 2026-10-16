@@ -117,7 +117,8 @@ SELECT
     town_repair_object_id,
     town_repair_bounty,
     town_repair_started_at,
-    town_repair_until
+    town_repair_until,
+    wearing
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -160,7 +161,8 @@ INSERT INTO actor (
     snapshot_gen, move_destination,
     production_item, production_batch_qty, production_remaining_seconds,
     estate_rate_assessed_at,
-    town_repair_object_id, town_repair_bounty, town_repair_started_at, town_repair_until
+    town_repair_object_id, town_repair_bounty, town_repair_started_at, town_repair_until,
+    wearing
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -173,7 +175,8 @@ INSERT INTO actor (
     $23, $24,
     $25, $26, $27,
     $28,
-    $29, $30, $31, $32
+    $29, $30, $31, $32,
+    $33
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -206,7 +209,8 @@ ON CONFLICT (id) DO UPDATE SET
     town_repair_object_id  = EXCLUDED.town_repair_object_id,
     town_repair_bounty     = EXCLUDED.town_repair_bounty,
     town_repair_started_at = EXCLUDED.town_repair_started_at,
-    town_repair_until      = EXCLUDED.town_repair_until`
+    town_repair_until      = EXCLUDED.town_repair_until,
+    wearing                = EXCLUDED.wearing`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -552,6 +556,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			townRepairBounty     int
 			townRepairStartedAt  *time.Time
 			townRepairUntil      *time.Time
+			wearing              []string
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -566,6 +571,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&isAdmin, &moveDestination,
 			&productionItem, &productionBatchQty, &productionRemaining,
 			&townRepairObjectID, &townRepairBounty, &townRepairStartedAt, &townRepairUntil,
+			&wearing,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -632,6 +638,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			IsAdmin:              isAdmin,
 			ProductionActivity:   productionActivity,
 			SourceActivity:       sourceActivity,
+			Wearing:              wearingFromSQL(wearing),
 			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
@@ -1049,6 +1056,28 @@ func townRepairUntilArg(act *sim.SourceActivity) *time.Time {
 	return &t
 }
 
+// wearingArg / wearingFromSQL map Actor.Wearing (LLM-800) to and from the
+// NOT NULL text[] actor.wearing column: nothing worn is the empty array, never
+// NULL.
+func wearingArg(kinds []sim.ItemKind) []string {
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, string(k))
+	}
+	return out
+}
+
+func wearingFromSQL(kinds []string) []sim.ItemKind {
+	if len(kinds) == 0 {
+		return nil
+	}
+	out := make([]sim.ItemKind, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, sim.ItemKind(k))
+	}
+	return out
+}
+
 // loadAllRoomAccess reads every room_access row and attaches it to the
 // owning actor's RoomAccess map (keyed by room+source). Orphan rows
 // return an error. Source is derived from granted_via_ledger_id:
@@ -1317,6 +1346,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 		}
 		if a.VisitorState != nil {
 			continue // visitor actors filtered — see header comment
+		}
+		if a.FamiliarOf != "" {
+			continue // a familiar (LLM-800) is rebuilt from its owner's Wearing, never stored
 		}
 		if strings.TrimSpace(string(a.ID)) == "" {
 			return fmt.Errorf("pg actors SaveSnapshot: empty ActorID (map key=%s)", key)
@@ -1593,6 +1625,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			townRepairBountyArg(a.SourceActivity),        // $30 town_repair_bounty
 			townRepairStartedAtArg(a.SourceActivity),     // $31 town_repair_started_at
 			townRepairUntilArg(a.SourceActivity),         // $32 town_repair_until
+			wearingArg(a.Wearing),                        // $33 wearing
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

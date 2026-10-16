@@ -293,6 +293,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Facing:            normalizeFacing(e.Facing),
 			Sprite:            agentSpriteDTOFromSprite(e.Sprite),
 			InsideStructureID: string(e.InsideStructureID),
+			FamiliarOf:        string(e.FamiliarOf),
 		}}, true
 	case *sim.ActorDeparted:
 		// An actor left World.Actors — admin delete (DeleteActor) or visitor

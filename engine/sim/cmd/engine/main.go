@@ -1048,6 +1048,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunReactorEvaluator(ctx, w)
 	go sim.RunLocomotionTicker(ctx, w)
 	go sim.RunWaterfowlTicker(ctx, w) // LLM-579: decorative duck swim/shore wander
+	go sim.RunFamiliarTicker(ctx, w)  // LLM-800: the duck that follows a duck-pendant wearer
 	go sim.RunGrazerTicker(ctx, w)    // LLM-639: decorative livestock graze/amble wander
 	go sim.RunPhaseTicker(ctx, w)
 	go sim.RunNeedsTicker(ctx, w)

@@ -294,6 +294,9 @@ func evaluateWaterfowl(w *World, now time.Time) {
 		if !actorIsWaterfowl(w, a) {
 			continue
 		}
+		if a.FamiliarOf != "" {
+			continue // a familiar follows its owner (familiar.go), not the pond
+		}
 		if a.MoveIntent != nil {
 			continue // mid-leg; the locomotion tick owns it
 		}

@@ -793,7 +793,9 @@ type NPCCreated struct {
 	// InsideStructureID is the structure the actor is inside when it appears
 	// (a new PC is lodged at the inn); empty for one placed outdoors.
 	InsideStructureID StructureID
-	At                time.Time
+	// FamiliarOf is the owner of a spawned familiar (LLM-800); empty otherwise.
+	FamiliarOf ActorID
+	At         time.Time
 }
 
 func (NPCCreated) isSimEvent() {}

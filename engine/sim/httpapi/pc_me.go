@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -154,6 +155,9 @@ type pcInventoryEntry struct {
 	Quantity     int      `json:"quantity"`
 	Category     string   `json:"category,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	// Actions are the Your Pack buttons for this row (LLM-800): sim.ItemActions.
+	// Always present, [] when the good has none.
+	Actions []string `json:"actions"`
 }
 
 // pcHuddleMember is one co-present actor in the PC's conversational scope.
@@ -251,7 +255,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, audienceStructureID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
 	resp.DormantMembers = pcDormantRoster(snap, pc, pcID, audienceStructureID)
 	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc, audienceStructureID)
-	resp.Inventory = pcInventoryEntries(pc.Inventory, s.world.ItemKinds)
+	resp.Inventory = pcInventoryEntries(pc.Inventory, pc.Wearing, s.world.ItemKinds)
 
 	for k, v := range pc.Needs {
 		resp.Needs[string(k)] = v
@@ -903,17 +907,19 @@ func formatCoins(n int) string {
 }
 
 // pcInventoryEntries maps the PC's item-kind→quantity map to enriched DTO
-// entries, joining the catalog for display label / category / capabilities. A
-// kind absent from the catalog still serializes (raw kind, no label). Sorted by
+// entries, joining the catalog for display label / category / capabilities, and
+// the item actions open on each (wearing: what the PC has on). A kind absent
+// from the catalog still serializes (raw kind, no label, no actions). Sorted by
 // item kind for a deterministic response; always non-nil so it's [] not null.
-func pcInventoryEntries(inv map[sim.ItemKind]int, catalog map[sim.ItemKind]*sim.ItemKindDef) []pcInventoryEntry {
+func pcInventoryEntries(inv map[sim.ItemKind]int, wearing []sim.ItemKind, catalog map[sim.ItemKind]*sim.ItemKindDef) []pcInventoryEntry {
 	out := make([]pcInventoryEntry, 0, len(inv))
 	for kind, qty := range inv {
-		e := pcInventoryEntry{ItemKind: string(kind), Quantity: qty}
+		e := pcInventoryEntry{ItemKind: string(kind), Quantity: qty, Actions: []string{}}
 		if def := catalog[kind]; def != nil {
 			e.DisplayLabel = def.DisplayLabel
 			e.Category = string(def.Category)
 			e.Capabilities = def.Capabilities
+			e.Actions = sim.ItemActions(def, slices.Contains(wearing, kind))
 		}
 		out = append(out, e)
 	}

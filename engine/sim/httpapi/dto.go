@@ -161,6 +161,10 @@ type AgentDTO struct {
 	CurrentHuddleID   string          `json:"current_huddle_id,omitempty"`
 	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
 
+	// FamiliarOf is the owner of a familiar (LLM-800) — the duck that follows a
+	// duck-pendant wearer. The client quacks only for the player's own duck.
+	FamiliarOf string `json:"familiar_of,omitempty"`
+
 	// RoomSquare is where the actor stands inside a room with a floor plan, as
 	// [x, y] (LLM-768) — asleep, their bed (LLM-782); absent outdoors, asleep
 	// with no bed in the room, or in a structure without one.
