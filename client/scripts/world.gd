@@ -791,6 +791,7 @@ func apply_npc_source_activity_changed(data: Dictionary) -> void:
     container.set_meta("source_activity_label", str(data.get("source_name", "")))
     container.set_meta("source_activity_object_id", str(data.get("object_id", "")))
     container.set_meta("source_activity_animal_id", str(data.get("animal_id", "")))
+    _set_camp_beat(container, str(data.get("beat", "")), data.get("target", null))
     _apply_activity_animation(container)
 
 ## Apply a livestock_fed broadcast (LLM-797): an animal was fed — by a player's
@@ -808,6 +809,23 @@ func apply_livestock_fed(data: Dictionary) -> void:
 func on_screen(node: Node2D) -> bool:
     var at := node.get_global_transform_with_canvas().origin
     return get_viewport().get_visible_rect().has_point(at)
+
+## Record a camp beat (LLM-798) on the container: the piece, where it stands and
+## when the beat began. The tent's beat turns its motion over part way
+## (Camp.TENT_SWITCH), so it is played again then — unless another beat, or the
+## end of the work, has come first.
+func _set_camp_beat(container: Node2D, beat: String, target) -> void:
+    container.set_meta("source_activity_beat", beat)
+    var at = null
+    if target is Dictionary and target.has("x") and target.has("y"):
+        at = Vector2(float(target["x"]), float(target["y"]))
+    container.set_meta("source_activity_target", at)
+    var began := Time.get_ticks_msec()
+    container.set_meta("source_activity_beat_msec", began)
+    if beat == "tent" and is_inside_tree():
+        get_tree().create_timer(Camp.TENT_SWITCH).timeout.connect(func():
+            if is_instance_valid(container) and int(container.get_meta("source_activity_beat_msec", -1)) == began:
+                _apply_activity_animation(container))
 
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
@@ -968,6 +986,7 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("source_activity_object_id", npc.get("source_activity_object_id", ""))
     container.set_meta("source_activity_animal_id", npc.get("source_activity_animal_id", ""))
     container.set_meta("livestock", npc.get("livestock", {}))
+    _set_camp_beat(container, str(npc.get("source_activity_beat", "")), npc.get("source_activity_target", null))
     # Worker work-window (ZBBS-071) — carry only when both are set so the
     # editor panel can distinguish "NULL inherits dawn/dusk" from the
     # 0/0 minute literal.
@@ -1095,6 +1114,10 @@ func _work_animation(container: Node2D) -> String:
             if need == REST_NEED:
                 return "sit"
             return "pick" if need == "hunger" else "drink"
+        "pitch", "strike":
+            var into := (Time.get_ticks_msec() - int(container.get_meta("source_activity_beat_msec", 0))) / 1000.0
+            return Camp.motion(str(container.get_meta("source_activity_kind", "")),
+                str(container.get_meta("source_activity_beat", "")), into)
     if str(container.get_meta("dormant", "")) == "resting":
         return "sit"
     if _rest_spot(container) != null:
@@ -1182,7 +1205,15 @@ func _apply_activity_animation(container: Node2D) -> void:
         var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
         if target == null and work == "sit":
             target = _rest_spot(container)
-        if target != null:
+        # A camp beat (LLM-798) faces the piece being set down or taken up,
+        # which may not be on the map yet.
+        var point = container.get_meta("source_activity_target") if container.has_meta("source_activity_target") else null
+        if point is Vector2 and Camp.is_camp_work(str(container.get_meta("source_activity_kind", ""))):
+            var toward := facing_from_vec(point - container.position)
+            if sprite.sprite_frames.has_animation(toward + "_" + work):
+                facing = toward
+                container.set_meta("facing", facing)
+        elif target != null:
             var rect := object_map_rect(target)
             var at := rect.get_center() if rect.has_area() else target.position
             var toward := facing_from_vec(at - container.position)
@@ -1300,6 +1331,19 @@ func _on_work_frame(container: Node2D, sprite: AnimatedSprite2D) -> void:
     chips.z_index = 1
     container.add_child(chips)
     chips.burst(WorkChipsScript.palette(_work_target_name(target)), -WorkAim.FACING_DIR.get(facing, Vector2.DOWN))
+    # Driving a tent peg (LLM-798) knocks.
+    if str(container.get_meta("source_activity_kind", "")) == "pitch":
+        Sound.play("hammer_miss")
+
+## A puff of dust off a tent as it stands up from its bundle (LLM-798).
+func camp_tent_raised(node: Node2D) -> void:
+    if not is_instance_valid(node):
+        return
+    for side in [Vector2.LEFT, Vector2.RIGHT]:
+        var puff := WorkChipsScript.new()
+        puff.z_index = 1
+        node.add_child(puff)
+        puff.burst(WorkChipsScript.DUST, side)
 
 ## The swing's target's name for the chip colours: storm debris is branches,
 ## worn debris split boards; anything else its display name, else its asset's.

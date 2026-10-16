@@ -11,6 +11,8 @@ const BARK := [Color8(92, 64, 40), Color8(124, 88, 52)]
 const LEAF := [Color8(86, 128, 52)]
 const STONE := [Color8(140, 140, 150), Color8(108, 108, 120)]
 const WOOD := [Color8(168, 124, 78), Color8(130, 92, 56), Color8(196, 160, 110)]
+## Dry earth and grass kicked up as a tent stands (LLM-798).
+const DUST := [Color8(176, 156, 112), Color8(150, 132, 96), Color8(118, 138, 74)]
 
 var _chips: Array = []  # {pos, vel, color, size}
 var _age := 0.0
