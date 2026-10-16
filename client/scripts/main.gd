@@ -64,6 +64,13 @@ var interior_panel_layer: CanvasLayer = null
 ## entry, so the ✕ keeps it shut until the character leaves and comes back
 ## (or the building is clicked).
 var _interior_structure_id := ""
+## The room of it the window last opened for (LLM-801): "" for the common
+## room, else the room upstairs the character is in.
+var _interior_room := ""
+## /pc/go_room and /pc/sleep POST helpers (LLM-801) — a tap on a door or the
+## stairs, on the bed.
+var _pc_go_room_http: HTTPRequest = null
+var _pc_sleep_http: HTTPRequest = null
 var village_ticker: PanelContainer = null
 ## Sleep-fade overlay (ZBBS-WORK-204 Stage B). CanvasLayer with a
 ## ColorRect that tweens to twilight while the local PC sleeps and
@@ -666,7 +673,15 @@ func _build_ui() -> void:
     interior_panel_layer.dismissed.connect(_on_interior_dismissed)
     interior_panel_layer.person_clicked.connect(_on_interior_person_clicked)
     interior_panel_layer.floor_tapped.connect(_on_interior_floor_tapped)
-    world.room_square_changed.connect(func(_id: String):
+    interior_panel_layer.room_tapped.connect(_on_interior_room_tapped)
+    interior_panel_layer.bed_tapped.connect(_on_interior_bed_tapped)
+    if talk_panel_layer != null and talk_panel_layer.has_signal("vacant_rooms_changed"):
+        talk_panel_layer.vacant_rooms_changed.connect(interior_panel_layer.set_vacant_rooms)
+    world.room_square_changed.connect(func(id: String):
+        # The character went to another room of the building (LLM-801): the
+        # window follows them.
+        if _pc_actor_id != "" and id == _pc_actor_id:
+            _sync_interior()
         if interior_panel_layer.is_open():
             interior_panel_layer.refresh())
     world.npc_metadata_changed.connect(func(npc_id: String):
@@ -1743,16 +1758,30 @@ func _sync_interior() -> void:
     if interior_panel_layer == null or world == null:
         return
     var sid := _local_pc_place()
+    var in_room := _local_pc_room(sid)
     # Before the same-structure return: a reconnect can bring a new actor id
     # while the character is still in the same room.
     interior_panel_layer.pc_actor_id = _pc_actor_id
-    if sid == _interior_structure_id:
+    if sid == _interior_structure_id and in_room == _interior_room:
         return
     _interior_structure_id = sid
+    _interior_room = in_room
     if sid != "":
-        interior_panel_layer.open(sid)
+        interior_panel_layer.open(sid, in_room)
     else:
         interior_panel_layer.close()
+
+## The room of `sid` the character is in, for the window (LLM-801): their
+## `room` meta when that room has a plan to draw it — the Inn's hall, their
+## guest room — else "" (the common room; asleep in a room with no plan,
+## they are not drawn in it).
+func _local_pc_room(sid: String) -> String:
+    if sid == "" or _pc_actor_id == "" or not world.placed_npcs.has(_pc_actor_id):
+        return ""
+    var in_room := str((world.placed_npcs[_pc_actor_id] as Node2D).get_meta("room", ""))
+    if in_room == "" or Catalog.room_plan(sid, in_room).is_empty():
+        return ""
+    return in_room
 
 ## Where the interior window belongs: the building the character is inside
 ## when it has a room, else the stall whose counter they stand at, else "".
@@ -1795,6 +1824,49 @@ func _on_interior_floor_tapped(square: Vector2i) -> void:
         Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"square": [square.x, square.y]}))
     if err != OK:
         push_warning("/pc/move_inside request failed: %s" % err)
+
+## A tap on a door or the stairs (LLM-801): ask the engine to take the
+## character through. The window follows them from the
+## npc_room_square_changed frame; a door that will not let them through
+## answers 403 with its own line ("The rooms upstairs are for guests."), shown
+## where they tapped.
+func _on_interior_room_tapped(to: String) -> void:
+    if not Auth.is_authenticated():
+        return
+    if _pc_go_room_http == null:
+        _pc_go_room_http = HTTPRequest.new()
+        add_child(_pc_go_room_http)
+        _pc_go_room_http.request_completed.connect(func(_r, code, _h, body: PackedByteArray):
+            if not Auth.check_response(code) or (code >= 200 and code < 300):
+                return
+            var json = JSON.parse_string(body.get_string_from_utf8())
+            if code == 403 and json is Dictionary and interior_panel_layer != null:
+                interior_panel_layer.show_line(str(json.get("error", "")))
+            else:
+                push_warning("/pc/go_room non-2xx: code=%s" % code))
+    _pc_go_room_http.cancel_request()
+    var err := _pc_go_room_http.request(Auth.api_base + "/api/village/pc/go_room",
+        Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"room": to}))
+    if err != OK:
+        push_warning("/pc/go_room request failed: %s" % err)
+
+## A tap on the bed of their room upstairs (LLM-801): the character goes to
+## bed in it. The sleep overlay comes from the pc_sleep_started frame, as for
+## the idle bed-down.
+func _on_interior_bed_tapped() -> void:
+    if not Auth.is_authenticated():
+        return
+    if _pc_sleep_http == null:
+        _pc_sleep_http = HTTPRequest.new()
+        add_child(_pc_sleep_http)
+        _pc_sleep_http.request_completed.connect(func(_r, code, _h, _b):
+            if Auth.check_response(code) and (code < 200 or code >= 300):
+                push_warning("/pc/sleep non-2xx: code=%s" % code))
+    _pc_sleep_http.cancel_request()
+    var err := _pc_sleep_http.request(Auth.api_base + "/api/village/pc/sleep",
+        Auth.auth_headers(), HTTPClient.METHOD_POST, "{}")
+    if err != OK:
+        push_warning("/pc/sleep request failed: %s" % err)
 
 ## The structure the player's character is inside, or "".
 func _local_pc_inside_structure_id() -> String:

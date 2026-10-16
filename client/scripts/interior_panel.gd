@@ -66,6 +66,12 @@ signal person_clicked(npc_id: String)
 ## A tap on the floor or a free seat of a room the player's character is in
 ## (LLM-768): main.gd asks the engine to walk them there.
 signal floor_tapped(square: Vector2i)
+## A tap on a door or the stairs (LLM-801): main.gd asks the engine to take the
+## player's character through to `to` ("hall", "bedroom_2", "common").
+signal room_tapped(to: String)
+## A tap on the bed of the room upstairs the player's character is in
+## (LLM-801): main.gd puts them to bed.
+signal bed_tapped
 
 const FONT_PATH := "res://assets/fonts/IMFellEnglish-Regular.ttf"
 const MAX_PIXEL_SCALE := 4
@@ -212,6 +218,15 @@ const TAG_TEXT_DIM := Color(0.63, 0.56, 0.44, 1.0)
 var world: Node2D = null
 var pc_actor_id := ""
 var structure_id := ""
+## The room of the structure shown (LLM-801): "" for its common room, else
+## "hall", "bedroom_2", … Only the people in it are drawn.
+var room_name := ""
+## The bedrooms nobody has taken, from /pc/me — their doors in the hall stand
+## open (LLM-801).
+var vacant_rooms: Array = []
+## Where the last tap on a door or the stairs fell (room art px): a refusal's
+## line is shown there.
+var _way_tap := Vector2.ZERO
 var room: Dictionary = {}
 var k := 1
 
@@ -461,12 +476,14 @@ func _label(font_size: int, color: Color) -> Label:
     return l
 
 
-## Show the room — or the stall — of `sid`. Anything else is a no-op.
-func open(sid: String) -> void:
-    var r := InteriorRooms.room_for(sid, Catalog.rooms.get(sid, {}))
+## Show the room — or the stall — of `sid`: its common room, or with `in_room`
+## one of its rooms upstairs (LLM-801). Anything else is a no-op.
+func open(sid: String, in_room := "") -> void:
+    var plan := Catalog.room_plan(sid, in_room)
+    var r := InteriorRooms.room_for(sid, plan)
     if not r.is_empty():
-        r = InteriorRooms.with_layout(r, Catalog.rooms.get(sid, {}))
-    if r.is_empty():
+        r = InteriorRooms.with_layout(r, plan)
+    if r.is_empty() and in_room == "":
         r = StallScenes.scene_for(world, Catalog.assets, sid)
     if r.is_empty():
         return
@@ -492,12 +509,13 @@ func open(sid: String) -> void:
     _mend_hold = {}
     _sheet_retries = 0
     _sheet_retry_left = SHEET_RETRY_SECONDS
-    if sid != structure_id:
+    if sid != structure_id or in_room != room_name:
         _assigned = {}
         _assigned_hands = {}
         _spot_of = {}
         _wares = []
     structure_id = sid
+    room_name = in_room
     room = r
     # Goods changing hands: at a stall under the customers in front of the
     # counter; in a room over everyone, as they lie on the bar and tables,
@@ -643,8 +661,8 @@ func occupants() -> Dictionary:
     if is_stall():
         return _stall_occupants()
     # The plan may land after the window opened.
-    if not room.has("door") and Catalog.rooms.has(structure_id):
-        room = InteriorRooms.with_layout(room, Catalog.rooms[structure_id])
+    if not room.has("door") and not Catalog.room_plan(structure_id, room_name).is_empty():
+        room = InteriorRooms.with_layout(room, Catalog.room_plan(structure_id, room_name))
     var keeper_id := ""
     var others: Array = []
     var pc_inside := false
@@ -655,6 +673,10 @@ func occupants() -> Dictionary:
         if not is_instance_valid(c):
             continue
         if not bool(c.get_meta("inside", false)) or str(c.get_meta("inside_structure_id", "")) != structure_id:
+            continue
+        # In another room of the building — upstairs, or downstairs when this
+        # is a room upstairs (LLM-801).
+        if str(c.get_meta("room", "")) != room_name:
             continue
         # Asleep: in a bed of this room (a home, LLM-782), else upstairs in a
         # bedroom or up in the loft — not in this room.
@@ -1655,9 +1677,40 @@ func _tap(local: Vector2) -> void:
     if str(thing.get("kind", "")) == "person":
         person_clicked.emit(str(thing["id"]))
     elif thing.is_empty() and not is_stall() and pc_actor_id != "" and _holder(pc_actor_id) != null:
-        var square := InteriorRooms.square_at(room, _art_at(local), _held_squares())
+        var art := _art_at(local)
+        # A door or the stairs takes them through (LLM-801); their own bed,
+        # upstairs, puts them to bed.
+        var way := InteriorRooms.way_at(room, art)
+        if way != "":
+            _way_tap = art
+            room_tapped.emit(way)
+            return
+        if room_name != "" and InteriorRooms.bed_at(room, art):
+            bed_tapped.emit()
+            return
+        var square := InteriorRooms.square_at(room, art, _held_squares())
         if square != Vector2i(-1, -1):
             floor_tapped.emit(square)
+
+
+## A door or stair that would not let them through says why (LLM-801): the
+## line shows a while, where they tapped.
+func show_line(text: String) -> void:
+    if text == "" or not visible:
+        return
+    _show_tag({"kind": "line", "text": text, "at": _way_tap}, TAG_SECONDS * 1.5)
+
+
+## The bedrooms nobody has taken (LLM-801): their doors stand open in the hall.
+## Redraws the room's furniture only when the list changed.
+func set_vacant_rooms(list: Array) -> void:
+    var sorted := list.duplicate()
+    sorted.sort()
+    if sorted == vacant_rooms:
+        return
+    vacant_rooms = sorted
+    if visible and not room.is_empty():
+        _draw_anims()
 
 
 ## The squares the people drawn in the room stand on, the player's character
@@ -1759,6 +1812,8 @@ func hide_tag() -> void:
 func tag_lines(thing: Dictionary) -> Array:
     if str(thing.get("kind", "")) == "good":
         return [good_label(str(thing["item"])), ""]
+    if str(thing.get("kind", "")) == "line":
+        return [str(thing.get("text", "")), ""]
     var c: Node2D = world.placed_npcs.get(str(thing.get("id", "")), null) if world != null else null
     if c == null:
         return ["", ""]
@@ -1803,6 +1858,8 @@ func _place_tag() -> void:
             return
         _tag_on["holder"] = holder
         anchor = holder.position + Vector2(0, HIT_BOX.position.y - 2)
+    elif str(_tag_on.get("kind", "")) == "line":
+        anchor = _tag_on.get("at", Vector2.ZERO)
     else:
         var node: Node2D = _tag_on.get("node", null)
         if not is_instance_valid(node) or node.is_queued_for_deletion():
@@ -1866,6 +1923,18 @@ func _draw_anims() -> void:
     for child in _people.get_children():
         if child.has_meta("bed"):
             _tuck_in(child)
+    # A vacant room's door stands open in the hall (LLM-801): the open door
+    # over the closed one, at its way's tap rect, part of the wall.
+    var open_door := _texture(str(room.get("door_open", ""))) if room.has("door_open") else null
+    if open_door != null:
+        for spot in room.get("spots", []):
+            var tap = spot.get("tap", null)
+            if tap is Rect2 and vacant_rooms.has(str(spot.get("leads", ""))):
+                var door := Sprite2D.new()
+                door.centered = false
+                door.texture = open_door
+                door.position = (tap as Rect2).position + Vector2(2, 2)
+                _anims.add_child(door)
     for anim in room.get("anims", []):
         var strip := _texture(str(anim.get("sheet", "")))
         if strip == null:
