@@ -28,6 +28,9 @@ signal quacked(kind: String)
 
 ## How near (tiles) the duck must be to count as beside the player.
 const NEAR_TILES := 3
+## How far (tiles) the player must be before the engine moves the duck after
+## them (familiar.go FamiliarFollowRadius); a potter stays within it.
+const FOLLOW_REACH := 2
 ## The fewest seconds between two quacks.
 const MIN_GAP := 3.0
 ## Seconds from lying down or starting to rest to the double quack.
@@ -88,7 +91,10 @@ func _process(delta: float) -> void:
     var outdoors := not bool(pc.get_meta("inside", false))
     if set_off and _arrived and outdoors and is_beside(duck.position, pc.position):
         _follow_left = FOLLOW_WINDOW
-    if duck_set_off and _follow_left > 0.0:
+    # A set-off inside the window is following only if the player is still
+    # walking or ended more than FOLLOW_REACH tiles from it: the engine follows
+    # only past that, and a potter stays inside it (LLM-812).
+    if duck_set_off and _follow_left > 0.0 and (pc_walking or beyond_follow_reach(duck.position, pc.position)):
         _follow_left = 0.0
         _quack()
         return
@@ -128,6 +134,13 @@ func set_dwelling(attrs: PackedStringArray) -> void:
     if attrs.has("tiredness") and not _dwelling.has("tiredness"):
         _watch_in = REST_DELAY
     _dwelling = attrs
+
+
+## Whether the player stands more than FOLLOW_REACH tiles from the duck (a tile
+## is 32 px; positions are tile centres, so half a tile of slack).
+static func beyond_follow_reach(duck: Vector2, pc: Vector2) -> bool:
+    var reach := (FOLLOW_REACH + 0.5) * 32.0
+    return absf(duck.x - pc.x) > reach or absf(duck.y - pc.y) > reach
 
 
 ## Whether two world positions are within NEAR_TILES tiles of each other.
