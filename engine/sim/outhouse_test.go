@@ -8,14 +8,16 @@ import (
 )
 
 // outhouse_test.go — LLM-811: the end of an outhouse stay eases the player's
-// tiredness, once per player every OuthouseReliefCooldown. The stay's timer is
-// driven by calling its callback (FinishOuthouseStay) at chosen instants.
+// tiredness, once per player every OuthouseReliefCooldown. No real timer is
+// armed (CaptureOuthouseTimersForTest); the stay's end is driven by calling
+// its callback (FinishOuthouseStay) at chosen instants.
 
 // outhouseWorld is a bare world with one PC at (10,10) and an outhouse whose
 // loiter pin is beside them.
 func outhouseWorld(t *testing.T, tiredness int) *sim.World {
 	t.Helper()
 	w := newBareWorld(t)
+	sim.CaptureOuthouseTimersForTest(t)
 	zero := 0
 	asset := &sim.Asset{ID: "asset-outhouse", Name: "Outhouse 1", Category: "prop"}
 	w.Assets[asset.ID] = asset
@@ -131,5 +133,19 @@ func TestOuthouse_RestedPlayerKeepsTheRelief(t *testing.T) {
 	until = goIn(t, w, until.Add(time.Minute))
 	if !finish(t, w, until, until) {
 		t.Error("the relief was spent by a stay that eased nothing")
+	}
+}
+
+// The stay's end is timed from its deadline, not from when the command ran: a
+// command that runs 3 s after its now ends the stay about 7 s later.
+func TestOuthouse_StayEndTimedFromTheDeadline(t *testing.T) {
+	w := outhouseWorld(t, 10)
+	delays := sim.CaptureOuthouseTimersForTest(t)
+	goIn(t, w, time.Now().UTC().Add(-3*time.Second))
+	if len(*delays) != 1 {
+		t.Fatalf("timers armed = %d, want 1", len(*delays))
+	}
+	if d := (*delays)[0]; d <= 0 || d > sim.OuthouseStay-2*time.Second {
+		t.Errorf("stay end in %v, want about %v (the deadline, not a fresh stay)", d, sim.OuthouseStay-3*time.Second)
 	}
 }

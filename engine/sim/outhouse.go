@@ -110,12 +110,17 @@ func UseOuthouse(actorID ActorID, objectID VillageObjectID, now time.Time) Comma
 	}
 }
 
-// armOuthouseStayEnd starts the one-shot timer that ends a stay. Mirrors
-// armEstablishmentCloseupEviction: a time.AfterFunc hops back onto the world
-// goroutine, guarded by LifecycleContext so a shutdown while armed aborts
-// cleanly. MUST be called from inside a Command.Fn.
+// outhouseAfterFunc schedules a stay's end. time.AfterFunc in production;
+// tests swap it to capture the delay instead of arming a real timer.
+var outhouseAfterFunc = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+
+// armOuthouseStayEnd starts the one-shot timer that ends a stay at until (not
+// a fresh OuthouseStay from now: the command may run after its now was taken).
+// Mirrors armEstablishmentCloseupEviction: the callback hops back onto the
+// world goroutine, guarded by LifecycleContext so a shutdown while armed
+// aborts. MUST be called from inside a Command.Fn.
 func armOuthouseStayEnd(w *World, objectID VillageObjectID, actorID ActorID, until time.Time) {
-	time.AfterFunc(OuthouseStay, func() {
+	outhouseAfterFunc(max(time.Until(until), 0), func() {
 		ctx := w.LifecycleContext()
 		if ctx.Err() != nil {
 			return
