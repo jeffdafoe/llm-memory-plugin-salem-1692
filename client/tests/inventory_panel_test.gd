@@ -478,7 +478,7 @@ func _test_is_beside() -> void:
 func _test_follow_reach_boundary() -> void:
     var Q = load(QUACK_PATH)
     var o := Vector2(1000, 1000)
-    for step in [Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1), Vector2(1, 1), Vector2(-1, -1)]:
+    for step in [Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1), Vector2(1, 1), Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1)]:
         _check("2 tiles %s: within reach" % step, Q.beyond_follow_reach(o, o + step * 64.0), false)
         _check("3 tiles %s: past reach" % step, Q.beyond_follow_reach(o, o + step * 96.0), true)
     for c in [[2, 0], [3, 1]]:
