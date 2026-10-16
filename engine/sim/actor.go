@@ -1367,6 +1367,10 @@ type Actor struct {
 	// gather prefers it. Cleared by committing any move, like
 	// GatherTargetObjectID. Transient.
 	HerdTargetID ActorID
+	// HerdHoldUntil bounds how long the animal waits once this actor has
+	// arrived beside her (handleHerdTargetOnArrival, HerdArrivalHold).
+	// Transient.
+	HerdHoldUntil time.Time
 
 	// ProductionActivity is the actor's ONE in-flight production cycle
 	// (LLM-319): a `produce` call consumed the recipe inputs and opened this

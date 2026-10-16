@@ -354,7 +354,7 @@ func TestGrazer_HoldsAnAnimalBeingMilked(t *testing.T) {
 		t.Errorf("cow moved while being milked: %v -> %v (intent %v)", before, after.Pos, after.MoveIntent)
 	}
 	held, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return sim.LivestockHeld(world, world.Actors[heiferID]), nil
+		return sim.LivestockHeld(world, world.Actors[heiferID], time.Now()), nil
 	}})
 	if held.(bool) {
 		t.Error("heifer (no yield) reported held")
@@ -392,5 +392,32 @@ func TestMoveTo_WalksToTheCowByName(t *testing.T) {
 	// The heifer gives nothing, so she is no destination.
 	if _, err := w.Send(sim.MoveToDestination(dairyID, "Heifer", nil, sim.RememberedPlaces{}, time.Now())); err == nil {
 		t.Error("move_to the heifer succeeded, want no such place")
+	}
+}
+
+// code_review on LLM-797: an actor who walks to a cow and then does nothing must
+// not pin her. The hold starts on arrival and lapses after HerdArrivalHold.
+func TestGrazer_ArrivalHoldLapses(t *testing.T) {
+	w := buildDairyWorld(t)
+	now := time.Now().UTC()
+	r, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		e := world.Actors[dairyID]
+		e.HerdTargetID = milkCow
+		sim.HandleHerdTargetOnArrival(world, &sim.ActorArrived{ActorID: dairyID, At: now})
+		cow := world.Actors[milkCow]
+		return []bool{
+			sim.LivestockHeld(world, cow, now.Add(time.Minute)),
+			sim.LivestockHeld(world, cow, now.Add(sim.HerdArrivalHold+time.Second)),
+		}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := r.([]bool)
+	if !held[0] {
+		t.Error("cow not held a minute after her milker arrived")
+	}
+	if held[1] {
+		t.Error("cow still held after the arrival hold, with nobody milking her")
 	}
 }

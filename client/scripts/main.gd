@@ -1307,27 +1307,62 @@ func _on_feed_answered(animal_id: String, feed: bool) -> void:
     if maxi(absi(at.x - from.x), absi(at.y - from.y)) <= 1:
         _post_pc_feed(animal_id)
         return
+    # The engine picks the tile beside her and holds her while the player walks
+    # (the livestock destination), so she is still there on arrival.
     _ensure_pc_http_move()
     _pending_notice_object_id = ""
-    _pc_move_purpose = ""
-    var payload := JSON.stringify({"destination": {"kind": "position", "position": {"x": at.x, "y": at.y}}})
+    var payload := JSON.stringify({"destination": {"kind": "livestock", "actor_id": animal_id}})
     if _pc_http_move.request(Auth.api_base + "/api/village/pc/move", Auth.auth_headers(), HTTPClient.METHOD_POST, payload) == OK:
+        _pc_move_purpose = "feed"
         _pending_feed_animal_id = animal_id
+    else:
+        Toast.warning("You cannot walk over just now — try again in a moment.")
+
+## True while a feed request is in flight: one at a time, so a second click
+## never meets a busy request and vanishes.
+var _pc_feed_in_flight := false
 
 func _post_pc_feed(animal_id: String) -> void:
+    if _pc_feed_in_flight:
+        Toast.warning("One moment — she is still taking the last handful.")
+        return
     if _pc_http_feed == null:
         _pc_http_feed = HTTPRequest.new()
         _pc_http_feed.accept_gzip = false
         add_child(_pc_http_feed)
         _pc_http_feed.request_completed.connect(func(_r, c, _h, b):
+            _pc_feed_in_flight = false
             Auth.check_response(c)
-            if c >= 200 and c < 300:
-                return  # the cow's moo (livestock_fed) is the answer
             var parsed = JSON.parse_string(b.get_string_from_utf8())
+            if c >= 200 and c < 300:
+                # The cow's moo (livestock_fed) is the answer. Spend the feed in
+                # the cached pack now, so the next click does not offer feed
+                # the player no longer holds before /pc/me catches up.
+                if parsed is Dictionary:
+                    _spend_cached_item(str(parsed.get("item", "")))
+                return
             var msg := str(parsed.get("error", "")) if parsed is Dictionary else ""
             Toast.warning(msg if msg != "" else "She would not take it just now."))
-    _pc_http_feed.request(Auth.api_base + "/api/village/pc/feed", Auth.auth_headers(),
+    var err := _pc_http_feed.request(Auth.api_base + "/api/village/pc/feed", Auth.auth_headers(),
         HTTPClient.METHOD_POST, JSON.stringify({"actor_id": animal_id}))
+    if err != OK:
+        Toast.warning("Could not reach the village just now — try again.")
+        return
+    _pc_feed_in_flight = true
+
+## Take one of item_kind out of the cached pack (_pc_items).
+func _spend_cached_item(item_kind: String) -> void:
+    for i in range(_pc_items.size()):
+        var entry = _pc_items[i]
+        if entry is Dictionary and str(entry.get("item_kind", "")) == item_kind:
+            var left := int(entry.get("quantity", 0)) - 1
+            if left <= 0:
+                _pc_items.remove_at(i)
+            else:
+                var copy: Dictionary = entry.duplicate()
+                copy["quantity"] = left
+                _pc_items[i] = copy
+            return
 
 ## Convert the screen-space click into a walk request. Two payloads:
 ##
@@ -1464,6 +1499,13 @@ func _ensure_pc_http_move() -> void:
                 # A refused walk-out leaves them inside: the room comes back.
                 if _pc_move_purpose == "leave":
                     _reopen_room(_leave_sid)
+                # A refused walk to a cow (LLM-797) — most often because she has
+                # ambled up beside the player already — tries the feed where the
+                # player stands; the engine says if she is out of reach.
+                if _pc_move_purpose == "feed" and _pending_feed_animal_id != "":
+                    var animal_id := _pending_feed_animal_id
+                    _pending_feed_animal_id = ""
+                    _post_pc_feed(animal_id)
                 _pc_move_purpose = ""
                 return
             _pc_move_purpose = ""

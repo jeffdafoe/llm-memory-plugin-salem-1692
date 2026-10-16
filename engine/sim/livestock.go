@@ -296,6 +296,9 @@ func startMilking(w *World, actorID ActorID, actor *Actor, now time.Time) (Sourc
 // whether SourceActivityCompleted was emitted.
 // MUST be called from inside a Command.Fn.
 func completeMilking(w *World, actorID ActorID, actor *Actor, act *SourceActivity, now time.Time) bool {
+	// The visit is over whatever lands: the animal is free to graze again.
+	actor.HerdTargetID = ""
+	actor.HerdHoldUntil = time.Time{}
 	animal := w.Actors[act.AnimalID]
 	if animal == nil || animal.Yield == nil || actor.Pos.Chebyshev(animal.Pos) > MilkingReach {
 		return false
@@ -422,12 +425,19 @@ func feedLivestock(w *World, feeder, animal *Actor, now time.Time) error {
 	return nil
 }
 
+// HerdArrivalHold is how long an animal waits for the actor who walked over to
+// her (move_to, or a player's walk to feed) once that actor arrives — time for
+// the arrival turn to start the milking or the feed. After it she grazes again,
+// so an actor who arrives and does nothing cannot pin her (code_review).
+const HerdArrivalHold = 2 * time.Minute
+
 // livestockHeld reports whether an animal must stand still: someone is milking
-// it, or is walking over to it (move_to stamped HerdTargetID) or standing beside
-// it having just arrived. Committing any other move clears HerdTargetID, so a
-// milker who walks away frees the animal.
+// her, is walking over to her (HerdTargetID with a walk in flight), or arrived
+// beside her less than HerdArrivalHold ago (HerdHoldUntil, stamped on arrival).
+// Committing any other move clears HerdTargetID, so a milker who walks away
+// frees her at once.
 // MUST be called from inside a Command.Fn.
-func livestockHeld(w *World, animal *Actor) bool {
+func livestockHeld(w *World, animal *Actor, now time.Time) bool {
 	if animal == nil || animal.Yield == nil {
 		return false
 	}
@@ -438,20 +448,62 @@ func livestockHeld(w *World, animal *Actor) bool {
 		if act := a.SourceActivity; act != nil && act.AnimalID == animal.ID {
 			return true
 		}
-		if a.HerdTargetID == animal.ID && (a.MoveIntent != nil || a.Pos.Chebyshev(animal.Pos) <= MilkingReach+1) {
+		if a.HerdTargetID != animal.ID {
+			continue
+		}
+		if a.MoveIntent != nil {
+			return true
+		}
+		if now.Before(a.HerdHoldUntil) && a.Pos.Chebyshev(animal.Pos) <= MilkingReach+1 {
 			return true
 		}
 	}
 	return false
 }
 
-// MoveToLivestock walks actorID to a walkable tile beside the named animal and
+// handleHerdTargetOnArrival starts the arrival hold for an actor who walked to
+// an animal (HerdTargetID is still set: committing the walk was the last move).
+// Every actor kind — a player walking over to feed is held for too.
+func handleHerdTargetOnArrival(w *World, evt Event) {
+	arr, ok := evt.(*ActorArrived)
+	if !ok {
+		return
+	}
+	if a := w.Actors[arr.ActorID]; a != nil && a.HerdTargetID != "" {
+		a.HerdHoldUntil = arr.At.Add(HerdArrivalHold)
+	}
+}
+
+// ErrNotLivestockDestination — the id names no animal that gives anything.
+var ErrNotLivestockDestination = errors.New("that is not an animal you can walk over to")
+
+// MoveToLivestock walks actorID to a tile beside the animal (the player's walk
+// to feed a cow, LLM-797) — the same walk, and the same hold on the animal, as
+// an NPC's move_to by her name.
+func MoveToLivestock(actorID, animalID ActorID, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if w.Actors[actorID] == nil {
+				return MoveActorResult{}, fmt.Errorf("MoveToLivestock: actor %q not in world", actorID)
+			}
+			animal := w.Actors[animalID]
+			if animal == nil || animal.Yield == nil {
+				return MoveActorResult{}, ErrNotLivestockDestination
+			}
+			return moveToLivestockLabeled(w, actorID, animal, "", now)
+		},
+	}
+}
+
+// moveToLivestockLabeled walks actorID to a walkable tile beside the animal and
 // stamps it as the actor's herd target, so the animal waits for her.
-// MUST be called from inside a Command.Fn (used by MoveToStructureByName).
+// MUST be called from inside a Command.Fn (used by MoveToStructureByName and
+// MoveToLivestock).
 func moveToLivestockLabeled(w *World, actorID ActorID, animal *Actor, spokenAs string, now time.Time) (any, error) {
 	a := w.Actors[actorID]
 	if a.Pos.Chebyshev(animal.Pos) <= MilkingReach {
 		a.HerdTargetID = animal.ID
+		a.HerdHoldUntil = now.Add(HerdArrivalHold)
 		return MoveActorResult{}, TerminalNoOpError{Msg: fmt.Sprintf(
 			"you are already beside %q — you're right where you meant to be.", moveToLabel(spokenAs, animal.DisplayName))}
 	}
