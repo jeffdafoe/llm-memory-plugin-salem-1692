@@ -26,6 +26,7 @@ const TESTS := [
     "_test_ui_panel_covers_the_popover",
     "_test_own_duck_quacks_on_arrival",
     "_test_own_duck_quacks_when_you_set_off",
+    "_test_duck_keeps_watch_when_you_rest_or_sleep",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
 ]
@@ -255,7 +256,7 @@ func _quacker(w: Node2D, pc_id: String, log: Array) -> Node:
     var q: Node = load(QUACK_PATH).new()
     q.world = w
     q.pc_actor_id = pc_id
-    q.quacked.connect(func(): log.append("quack"))
+    q.quacked.connect(func(kind: String): log.append(kind))
     return q
 
 
@@ -311,6 +312,44 @@ func _test_own_duck_quacks_when_you_set_off() -> void:
     duck.position = Vector2(1032, 1000)
     q._process(0.1)
     _check("the duck catches up mid-walk: still quiet (that set-off is spent)", log.size(), 2)
+    q.free()
+    w.free()
+    _done()
+
+
+## LLM-804: lying down (inn or tent) or starting to rest brings the double
+## quack after REST_DELAY, indoors too (the duck waits at the door); a rest
+## already under way does not repeat it, and a duck far off stays quiet.
+func _test_duck_keeps_watch_when_you_rest_or_sleep() -> void:
+    var w := _world()
+    var pc := _actor(w, "pc", Vector2(1000, 1000))
+    var duck := _actor(w, "fam-1", Vector2(1040, 1000), "pc")
+    var log: Array = []
+    var q := _quacker(w, "pc", log)
+    q._process(0.1)
+    _check("arrival", log, ["quack"])
+    pc.set_meta("inside", true)
+    q.pc_slept()
+    q._process(1.0)
+    _check("lying down: not yet", log, ["quack"])
+    q._process(1.5)
+    _check("lying down: the watch quack, indoors too", log, ["quack", "watch"])
+    q._process(10.0)
+    _check("only once", log.size(), 2)
+    pc.set_meta("inside", false)
+    q.set_dwelling(PackedStringArray(["tiredness"]))
+    q._process(2.5)
+    _check("starts to rest: the watch quack", log, ["quack", "watch", "watch"])
+    q.set_dwelling(PackedStringArray(["tiredness"]))
+    q._process(2.5)
+    _check("a rest under way: no repeat", log.size(), 3)
+    q.set_dwelling(PackedStringArray(["thirst"]))
+    q._process(2.5)
+    _check("drinking is not resting", log.size(), 3)
+    duck.position = Vector2(2000, 1000)
+    q.set_dwelling(PackedStringArray(["tiredness"]))
+    q._process(2.5)
+    _check("duck far off: quiet", log.size(), 3)
     q.free()
     w.free()
     _done()
