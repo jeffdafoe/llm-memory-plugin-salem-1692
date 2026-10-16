@@ -39,8 +39,10 @@ const (
 var (
 	// ErrNotLivestock — the animal carries no yield row (a heifer, a sheep).
 	ErrNotLivestock = errors.New("that animal gives nothing to take")
-	// ErrAlreadyFed — the animal's next refill is already boosted.
-	ErrAlreadyFed = errors.New("has had her feed already")
+	// ErrAlreadyFed — the animal's next refill is already boosted. Only a
+	// player meets it (an NPC milker checks first); the text is what they read,
+	// after the animal's name: "Cow 2 doesn't seem hungry".
+	ErrAlreadyFed = errors.New("doesn't seem hungry")
 	// ErrNoFeed — the feeder holds none of LivestockFeedItem.
 	ErrNoFeed = errors.New("you have nothing to feed her")
 	// ErrLivestockOutOfReach — the feeder is not beside the animal.

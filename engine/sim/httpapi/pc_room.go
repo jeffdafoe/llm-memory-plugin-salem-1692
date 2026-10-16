@@ -73,6 +73,82 @@ func (s *Server) handlePCMoveInside(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, pcMoveInsideResponse{Square: out.Square, Path: out.Path})
 }
 
+// pcGoRoomRequest: the room to go to through a door or the stairs of the room
+// the caller's PC is in — "common", "hall", "bedroom_2" (LLM-801).
+type pcGoRoomRequest struct {
+	Room string `json:"room"`
+}
+
+type pcGoRoomResponse struct {
+	Room   string             `json:"room"`
+	Square *roomlayout.Square `json:"square,omitempty"`
+}
+
+// handlePCGoRoom — POST /api/village/pc/go_room (LLM-801): the player taps a
+// door or the stairs and their character goes through. sim.MovePCToRoom owns
+// the checks and the change; every viewer learns of it from the
+// npc_room_square_changed frame, which names the room. 400 for a bad body,
+// 404 when the session has no PC, 403 with the door's own line when it will
+// not let them through ("The rooms upstairs are for guests."), 422 otherwise.
+func (s *Server) handlePCGoRoom(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxMoveInsideBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var req pcGoRoomRequest
+	if err := dec.Decode(&req); err != nil || req.Room == "" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	now := time.Now().UTC()
+	res, err := s.world.SendContext(r.Context(), sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			actorID, ok := findPCByLogin(world, user.Username)
+			if !ok {
+				return nil, errPCNotFound
+			}
+			// Asleep they are in bed: a tap on a door cannot reach them, and the
+			// input stamp would wake them (as move_inside).
+			if world.Actors[actorID].State == sim.StateSleeping {
+				return nil, sim.ErrRoomSquareRefused
+			}
+			sim.TouchPCInput(world, actorID, now)
+			return sim.MovePCToRoom(actorID, req.Room, now).Fn(world)
+		},
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errPCNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if line, ok := sim.IsRoomRefused(err); ok {
+			writeError(w, http.StatusForbidden, line)
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	out, ok := res.(sim.RoomGoResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected room result")
+		return
+	}
+	writeJSON(w, pcGoRoomResponse{Room: out.Room, Square: out.Square})
+}
+
 // moveInsidePCCommand resolves username → PC actor on the world goroutine and
 // delegates to sim.MovePCInRoom. A deliberate act, so it stamps the input
 // cursor first, like the other action routes — but a sleeping PC is refused

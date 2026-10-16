@@ -104,6 +104,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "npc_room_square_changed", Data: roomSquareChangedWireDTO{
 			ID:          string(e.ActorID),
 			StructureID: string(e.StructureID),
+			Room:        e.Room,
 			Square:      e.Square,
 			Path:        e.Path,
 		}}, true
@@ -829,9 +830,14 @@ type insideChangedWireDTO struct {
 // actor's square in a room changed without an inside flip — given up on going
 // to sleep (square absent), taken again on waking, or walked to (a player's
 // tap, with the path walked).
+//
+// Room names the room of the structure they are in now (LLM-801): absent for
+// the common room, else "hall", "bedroom_2", … — a change of room comes on this
+// frame too, square or none.
 type roomSquareChangedWireDTO struct {
 	ID          string             `json:"id"`
 	StructureID string             `json:"structure_id,omitempty"`
+	Room        string             `json:"room,omitempty"`
 	Square      *roomlayout.Square `json:"square,omitempty"`
 	// Path: the squares walked, both ends included, when they walked there.
 	Path []roomlayout.Square `json:"path,omitempty"`

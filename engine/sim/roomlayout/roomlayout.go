@@ -57,6 +57,11 @@ type Point = Square
 // sit, Serve (a seat at a table, a place at the bar) where an order set before
 // them lands. Use names the work done there ("stoke": the hearth), which sends
 // a worker to it, or "drink": a place at the bar.
+//
+// Leads names the room a step through the station takes you to (LLM-801): a
+// door or a staircase — "common", "hall", "bedroom_2". Tap is the art rect
+// [x, y, w, h] a tap on means the station, for a door or stairs drawn far
+// bigger than a person standing at them.
 type Station struct {
 	ID     string   `json:"id,omitempty"`
 	Kind   string   `json:"kind,omitempty"`
@@ -66,7 +71,13 @@ type Station struct {
 	Pose   string   `json:"pose,omitempty"`
 	Serve  *Point   `json:"serve,omitempty"`
 	Use    []string `json:"use,omitempty"`
+	Leads  string   `json:"leads,omitempty"`
+	Tap    *[4]int  `json:"tap,omitempty"`
 }
+
+// CommonRoom is what Leads calls a structure's common room — the room a plan
+// keyed by structure alone draws.
+const CommonRoom = "common"
 
 // UseStoke: the station where the room's fire is fed.
 const UseStoke = "stoke"
@@ -81,6 +92,10 @@ const UseSleep = "sleep"
 
 // PoseSleep: how a bed's sleeper is drawn — the client's mark of a bed.
 const PoseSleep = "sleep"
+
+// UseRise: where someone getting out of the room's bed stands (LLM-801) — by
+// the bed, not at the door they would otherwise be put at.
+const UseRise = "rise"
 
 // has reports whether the station's Use names use.
 func (st *Station) has(use string) bool {
@@ -102,14 +117,21 @@ func (st *Station) has(use string) bool {
 // one of Assets — a house type, so the homes of one size share a plan
 // (LLM-782). Art names the client's picture of the room when it is not keyed
 // by the structure.
+//
+// A plan with Rooms draws those rooms of its structure (LLM-801) — the Inn's
+// upstairs hall, or its four guest rooms on one plan — instead of the
+// structure's common room. Room is set only on the wire: which one of them a
+// copy is for (ForRoom). Such a plan may have no Keeper.
 type Layout struct {
 	StructureID string    `json:"structure_id"`
+	Rooms       []string  `json:"rooms,omitempty"`
+	Room        string    `json:"room,omitempty"`
 	Assets      []string  `json:"assets,omitempty"`
 	Art         string    `json:"art,omitempty"`
 	Name        string    `json:"name"`
 	Grid        []string  `json:"grid"`
 	Door        Station   `json:"door"`
-	Keeper      Station   `json:"keeper"`
+	Keeper      *Station  `json:"keeper,omitempty"`
 	KeeperDoor  *Station  `json:"keeper_door,omitempty"`
 	Stations    []Station `json:"stations"`
 }
@@ -126,7 +148,10 @@ func (l *Layout) Open(s Square) bool {
 // reserved: squares a guest is never put on as plain floor — the door, the
 // keeper's place, the keeper's way in, and every station.
 func (l *Layout) reserved() map[Square]bool {
-	out := map[Square]bool{l.Door.Square: true, l.Keeper.Square: true}
+	out := map[Square]bool{l.Door.Square: true}
+	if l.Keeper != nil {
+		out[l.Keeper.Square] = true
+	}
 	if l.KeeperDoor != nil {
 		out[l.KeeperDoor.Square] = true
 	}
@@ -139,10 +164,16 @@ func (l *Layout) reserved() map[Square]bool {
 // Walkable reports whether a guest or a player can walk on or to s: an open
 // square that is not the keeper's place or the keeper's way in.
 func (l *Layout) Walkable(s Square) bool {
-	if !l.Open(s) || s == l.Keeper.Square {
+	if !l.Open(s) || l.keeperPlace(s) {
 		return false
 	}
 	return l.KeeperDoor == nil || s != l.KeeperDoor.Square
+}
+
+// keeperPlace reports whether s is the keeper's place; a room with no keeper
+// has none.
+func (l *Layout) keeperPlace(s Square) bool {
+	return l.Keeper != nil && s == l.Keeper.Square
 }
 
 // Path is the shortest way from one square to another, stepping up, down,
@@ -161,14 +192,14 @@ func (l *Layout) keeperWay(s Square) bool {
 // keeperWalkable: what the room's keeper may walk on — any walkable square,
 // their own place, and the way out from behind their counter ('k').
 func (l *Layout) keeperWalkable(s Square) bool {
-	return l.Walkable(s) || s == l.Keeper.Square || l.keeperWay(s)
+	return l.Walkable(s) || l.keeperPlace(s) || l.keeperWay(s)
 }
 
 // keeperStep: in a room with a keeper's way, the keeper leaves and comes back
 // to their place only by it — never straight through the counter onto the
 // floor in front of it (the Inn's [2,5] below Hannah's place, behind the desk).
 func (l *Layout) keeperStep(at, next Square) bool {
-	if at != l.Keeper.Square && next != l.Keeper.Square {
+	if !l.keeperPlace(at) && !l.keeperPlace(next) {
 		return true
 	}
 	other := next
@@ -202,6 +233,23 @@ func (l *Layout) StationFor(use string) *Station {
 			if u == use {
 				return &l.Stations[i]
 			}
+		}
+	}
+	return nil
+}
+
+// Way returns the door or station that leads to the room named `to`, or nil —
+// the stairs up from the Inn's entry hall, a bedroom's door off the hall.
+func (l *Layout) Way(to string) *Station {
+	if to == "" {
+		return nil
+	}
+	if l.Door.Leads == to {
+		return &l.Door
+	}
+	for i := range l.Stations {
+		if l.Stations[i].Leads == to {
+			return &l.Stations[i]
 		}
 	}
 	return nil
@@ -266,7 +314,7 @@ const (
 func (l *Layout) Place(role Role, id string, taken map[Square]bool) (Square, bool) {
 	switch role {
 	case RoleKeeper:
-		if !taken[l.Keeper.Square] {
+		if l.Keeper != nil && !taken[l.Keeper.Square] {
 			return l.Keeper.Square, true
 		}
 	case RolePC:
@@ -391,8 +439,12 @@ func (l *Layout) bedSquare(s Square) bool {
 	return s.Y >= 0 && s.Y < len(l.Grid) && s.X >= 0 && s.X < len(l.Grid[s.Y]) && l.Grid[s.Y][s.X] == 'b'
 }
 
-// label names the plan in errors: its structure, or its house types.
+// label names the plan in errors: its structure (and rooms), or its house
+// types.
 func (l *Layout) label() string {
+	if l.StructureID != "" && len(l.Rooms) > 0 {
+		return fmt.Sprint(l.StructureID, l.Rooms)
+	}
 	if l.StructureID != "" {
 		return l.StructureID
 	}
@@ -409,12 +461,31 @@ func (l *Layout) validate() error {
 	if len(l.Assets) > 0 && l.Art == "" {
 		return fmt.Errorf("room %s: a house-type plan names its art", l.label())
 	}
+	if len(l.Rooms) > 0 && (len(l.Assets) > 0 || l.Art == "") {
+		return fmt.Errorf("room %s: a plan for rooms is one structure's and names its art", l.label())
+	}
+	for _, r := range l.Rooms {
+		if r == "" || r == CommonRoom {
+			return fmt.Errorf("room %s: %q is not a room a plan can be for — the common room is the structure's own plan", l.label(), r)
+		}
+	}
+	// A structure's common room and a home always have a keeper's place; an
+	// upstairs room may not.
+	if len(l.Rooms) == 0 && l.Keeper == nil {
+		return fmt.Errorf("room %s: no keeper's place", l.label())
+	}
+	if l.Room != "" {
+		return fmt.Errorf("room %s: room is set on the wire, not in the seed", l.label())
+	}
 	for i, row := range l.Grid {
 		if len(row) != len(l.Grid[0]) {
 			return fmt.Errorf("room %s: grid row %d is %d wide, row 0 is %d", l.label(), i, len(row), len(l.Grid[0]))
 		}
 	}
-	all := []Station{l.Door, l.Keeper}
+	all := []Station{l.Door}
+	if l.Keeper != nil {
+		all = append(all, *l.Keeper)
+	}
 	if l.KeeperDoor != nil {
 		all = append(all, *l.KeeperDoor)
 	}
@@ -458,7 +529,7 @@ func (l *Layout) validate() error {
 		}
 		// A station with work to do there is the keeper's too: they walk to it
 		// from behind their counter.
-		if len(st.Use) > 0 && l.KeeperPath(l.Keeper.Square, st.Square) == nil {
+		if len(st.Use) > 0 && l.Keeper != nil && l.KeeperPath(l.Keeper.Square, st.Square) == nil {
 			return fmt.Errorf("room %s: station %q at %v cannot be walked to from the keeper's place", l.label(), st.ID, st.Square)
 		}
 	}
@@ -469,6 +540,11 @@ func (l *Layout) validate() error {
 // ids.
 func assetKey(name string) string {
 	return "asset:" + name
+}
+
+// roomKey is the key a plan for one of a structure's rooms is kept under.
+func roomKey(structureID, room string) string {
+	return "room:" + structureID + "/" + room
 }
 
 // Parse reads and checks a seed: every row as wide as the first, every
@@ -488,7 +564,13 @@ func Parse(b []byte) (map[string]*Layout, error) {
 			return nil, fmt.Errorf("roomlayout: %w", err)
 		}
 		keys := []string{l.StructureID}
-		if l.StructureID == "" {
+		switch {
+		case len(l.Rooms) > 0:
+			keys = keys[:0]
+			for _, r := range l.Rooms {
+				keys = append(keys, roomKey(l.StructureID, r))
+			}
+		case l.StructureID == "":
 			keys = keys[:0]
 			for _, a := range l.Assets {
 				keys = append(keys, assetKey(a))
@@ -517,10 +599,27 @@ var layouts = func() map[string]*Layout {
 // For returns the plan of the structure's own room, or nil when it has none.
 // A home's plan is its house type's: see Resolve.
 func For(structureID string) *Layout {
-	if l := layouts[structureID]; l != nil && l.StructureID == structureID {
+	if l := layouts[structureID]; l != nil && l.StructureID == structureID && len(l.Rooms) == 0 {
 		return l
 	}
 	return nil
+}
+
+// ForRoom returns the plan of one of a structure's rooms by its name — the
+// Inn's "hall", "bedroom_2" — or nil when that room has none (LLM-801). The
+// common room is the structure's own plan (For, Resolve), not this.
+func ForRoom(structureID, room string) *Layout {
+	if structureID == "" || room == "" {
+		return nil
+	}
+	return layouts[roomKey(structureID, room)]
+}
+
+// InRoom is a room plan as one room's, for the wire: a copy naming the room.
+func (l *Layout) InRoom(room string) *Layout {
+	c := *l
+	c.Room = room
+	return &c
 }
 
 // Resolve returns the plan of a structure placed as house type `asset`: its

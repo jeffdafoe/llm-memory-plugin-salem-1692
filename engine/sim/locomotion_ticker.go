@@ -1134,7 +1134,8 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	//
 	// LLM-768: a square in the room entered (nil leaving, or for a structure
 	// without a floor plan), sent on the same frame.
-	actor.RoomSquare = pickRoomSquare(w, actor, structureID)
+	actor.RoomSquare = pickRoomSquare(w, actor, false)
+	actor.RoomSquareRoom = actorPlanRoom(w, actor)
 	actor.RoomDriftAt = time.Time{}
 	w.emit(&ActorInsideChanged{ActorID: actor.ID, InsideStructureID: structureID, X: actor.Pos.X, Y: actor.Pos.Y,
 		RoomSquare: copyRoomSquare(actor.RoomSquare)})

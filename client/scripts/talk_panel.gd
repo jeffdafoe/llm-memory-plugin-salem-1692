@@ -183,6 +183,10 @@ signal lodging_changed(inn_name: String, until_label: String)
 ## the top bar's home chip.
 signal camp_changed(pitched: bool, place: String)
 
+## /pc/me's vacant_rooms (LLM-801): the bedrooms nobody has taken at the inn
+## the PC is in. main.gd forwards them to the room window's hall.
+signal vacant_rooms_changed(rooms: Array)
+
 ## Emitted when the pay modal opens/closes. main.gd forwards to
 ## camera.modal_open so world clicks (PC walk, pan, zoom) don't fire
 ## while the modal is up — without this, a click on the Confirm
@@ -1126,6 +1130,10 @@ func _apply_pc_state(data: Dictionary) -> void:
     var camp_data = data.get("camp", {})
     pc_camp = camp_data if typeof(camp_data) == TYPE_DICTIONARY else {}
     _push_lodging_to_top_bar()
+    # The bedrooms nobody has taken where the PC is (LLM-801): their doors
+    # stand open in the hall upstairs. Absent elsewhere.
+    var vacant = data.get("vacant_rooms", [])
+    vacant_rooms_changed.emit(vacant if vacant is Array else [])
 
     var prev_huddle_size: int = huddle_members.size()
     var members = data.get("huddle_members", [])

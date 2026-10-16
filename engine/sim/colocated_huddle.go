@@ -85,6 +85,12 @@ func EnsureColocatedHuddle(actorID ActorID, now time.Time) Command {
 			if structureID == "" {
 				return nil, nil
 			}
+			// LLM-801: a player awake upstairs — in the hall, in their own room —
+			// is out of the building's conversation; the structure's huddle is
+			// the common room's.
+			if audienceRoomScope(w, actor) != 0 {
+				return nil, nil
+			}
 			others := colocatedConversationalActors(w, actor, structureID, now)
 			// ZBBS-HOME-363: the speaker must also join an ALREADY-ACTIVE
 			// structure huddle even when there are no UNHUDDLED co-located
@@ -338,6 +344,9 @@ func colocatedConversationalActors(w *World, self *Actor, structureID StructureI
 		if !colocatedConversational(a, now, staleAfter) {
 			continue
 		}
+		if audienceRoomScope(w, a) != 0 {
+			continue // upstairs (LLM-801): not in the common room to be drawn in
+		}
 		out = append(out, id)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
@@ -433,7 +442,8 @@ func pcBystanders(w *World, speaker *Actor, peerSet map[ActorID]struct{}) []Acto
 }
 
 // audienceRoomScope returns the room id that scopes an actor's speech
-// audience, or 0 for public scope. Only a private/staff room scopes — a
+// audience, or 0 for public scope. Only a scoped room (RoomKindScoped: a
+// bedroom, the keeper's quarters, the upstairs hall) scopes — a
 // common room, an unknown/stale room id, and outdoors all resolve to public
 // (0), so two actors in the same structure's public space match even when one
 // carries the common room's id and the other carries none. The live-world
@@ -452,7 +462,7 @@ func audienceRoomScope(w *World, a *Actor) RoomID {
 		if rm == nil || rm.ID != a.InsideRoomID {
 			continue
 		}
-		if rm.Kind == RoomKindPrivate || rm.Kind == RoomKindStaff {
+		if RoomKindScoped(rm.Kind) {
 			return a.InsideRoomID
 		}
 		return 0
@@ -520,7 +530,7 @@ func findOrCreateStructureScene(w *World, structureID StructureID, now time.Time
 // world goroutine.
 func colocatedAudienceIDs(w *World, speaker *Actor, now time.Time) []ActorID {
 	structureID := conversationalScopeStructure(w, speaker)
-	if structureID == "" {
+	if structureID == "" || audienceRoomScope(w, speaker) != 0 {
 		return nil
 	}
 	seen := make(map[ActorID]struct{})

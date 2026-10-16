@@ -399,6 +399,7 @@ func (s *Server) Handler() http.Handler {
 	// world command channel (see write_handlers.go).
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	mux.HandleFunc("POST /api/village/pc/move_inside", s.requireAuth(s.handlePCMoveInside)) // LLM-768
+	mux.HandleFunc("POST /api/village/pc/go_room", s.requireAuth(s.handlePCGoRoom))         // LLM-801
 	mux.HandleFunc("POST /api/village/pc/knock", s.requireAuth(s.handlePCKnock))            // LLM-785
 	mux.HandleFunc("POST /api/village/pc/leave-note", s.requireAuth(s.handlePCLeaveNote))   // LLM-19
 	mux.HandleFunc("POST /api/village/pc/item/use", s.requireAuth(s.handlePCItemUse))       // LLM-800
@@ -655,6 +656,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			CurrentHuddleID:        string(a.CurrentHuddleID),
 			FamiliarOf:             string(a.FamiliarOf),
 			RoomSquare:             a.RoomSquare,
+			Room:                   a.Room,
 			Sprite:                 resolveAgentSprite(a.SpriteID, sprites),
 			Hunger:                 hunger,
 			Thirst:                 thirst,
