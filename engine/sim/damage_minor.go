@@ -6,7 +6,7 @@ package sim
 // The big breaks (a well, a business, a road) come a few times a week and a
 // hand takes most of them within minutes, so a player would find almost no
 // work. Minor works are the frequent, low-stakes tier: a fence rail down, a
-// signpost arm hanging crooked, a crate lid knocked loose. A roll on a timer
+// signpost arm hanging crooked, a crate lid come loose. A roll on a timer
 // breaks one at a time up to an open cap; a player mends it by the same
 // stepped mini-game as a big break (pc_repair.go) for a small bounty; an
 // untaken one mends itself after a TTL.
@@ -472,9 +472,9 @@ func minorWorksFactCount(objects map[VillageObjectID]*VillageObject, structures 
 		return "The arm of the signpost" + by + " hangs crooked"
 	case MinorFormCrate:
 		if many {
-			return "The lids have been knocked loose on " + count + " crates" + by
+			return "The lids of " + count + " crates" + by + " have come loose"
 		}
-		return "The lid has been knocked loose on the crate" + by
+		return "The lid of the crate" + by + " has come loose"
 	}
 	if many {
 		return upperFirst(count) + " things want mending" + by

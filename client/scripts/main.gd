@@ -595,7 +595,8 @@ func _build_ui() -> void:
     top_bar.title_pressed.connect(credits_scroll_layer.open)
 
     # Repair panel (LLM-690) — the town's repair work: opens on the arrival
-    # thought's offer (talk panel) or on a click at a damaged object (the
+    # thought's offer (talk panel) when the walk was to that work
+    # (_on_repair_offered), or on a click at a damaged object (the
     # probe in _post_pc_move_to_screen). Modal tier, like the notice panel.
     repair_panel_layer = CanvasLayer.new()
     repair_panel_layer.name = "RepairPanelLayer"
@@ -611,7 +612,7 @@ func _build_ui() -> void:
         if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
             talk_panel_layer._refresh_state())
     if talk_panel_layer.has_signal("repair_offered"):
-        talk_panel_layer.repair_offered.connect(repair_panel_layer.show_offer)
+        talk_panel_layer.repair_offered.connect(_on_repair_offered)
 
     # Door popup (LLM-785) — at the door of a house the player may not walk
     # into: Knock or Leave. Modal tier, like the repair panel.
@@ -1440,6 +1441,14 @@ func _send_queued_leave() -> void:
 func _reopen_room(sid: String) -> void:
     if sid != "" and interior_panel_layer != null and _local_pc_place() == sid:
         interior_panel_layer.open(sid)
+
+## The arrival thought's repair offer (LLM-793): the panel opens only when the
+## arrival's own walk (walked_to, from the engine) was to that work. Work found
+## near somewhere else the player went (a crate by the stall they came to buy
+## at) stays a floating thought; a click on it opens the panel through the probe.
+func _on_repair_offered(o: Dictionary, walked_to: String) -> void:
+    if RepairPanelScript.click_matches_offer(world, walked_to, o):
+        repair_panel_layer.show_offer(o)
 
 ## Open the door popup for the pending knock when the character stands at that
 ## house's door (LLM-785) — called on their arrival and when the move's answer

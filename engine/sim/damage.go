@@ -548,6 +548,11 @@ type ObjectConditionNarrated struct {
 	ObjectID VillageObjectID
 	Text     string
 	Offer    *PCRepairOffer
+	// WalkedTo is what the arrival's walk was to — its object, else its
+	// structure; "" for a walk to open ground. The client opens the repair
+	// panel only when that is the work itself (LLM-793), so work found near
+	// some other destination stays a thought.
+	WalkedTo VillageObjectID
 	At       time.Time
 }
 
@@ -600,7 +605,20 @@ func emitDamagedObjectNarration(w *World, actor *Actor, arrivedEvt *ActorArrived
 	if PublicWorksBountyOpen(w.Environment.TownChest, bounty, w.Settings.PublicWorksChestReserve) {
 		text += " The town is paying " + coinsPhrase(bounty) + " to whoever " + PublicWorksMendVerb(kind) + " it."
 	}
-	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, Offer: offer, At: now})
+	w.emit(&ObjectConditionNarrated{ActorID: actor.ID, ObjectID: obj.ID, Text: text, Offer: offer, WalkedTo: arrivalWalkedTo(arrivedEvt), At: now})
+}
+
+// arrivalWalkedTo is the placement an arrival's walk was to: its object, else
+// its structure (a structure's id is its placement's id); "" when the walk was
+// to a tile.
+func arrivalWalkedTo(e *ActorArrived) VillageObjectID {
+	if e == nil {
+		return ""
+	}
+	if e.DestObjectID != "" {
+		return e.DestObjectID
+	}
+	return VillageObjectID(e.DestStructureID)
 }
 
 // DamageFact is the "what is broken" sentence opening for a damaged site —

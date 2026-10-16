@@ -614,6 +614,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.ObjectID),
 			At:          e.At.UTC().Format(time.RFC3339),
 			Repair:      repairOfferWire(e.Offer),
+			WalkedTo:    string(e.WalkedTo),
 		}}, true
 	case *sim.PCRepairNarrated:
 		// LLM-690: the player's own repair landed — the same private carrier as
@@ -1311,4 +1312,8 @@ type roomEventWireDTO struct {
 	// Repair is the town's repair work at the site, on an object_condition
 	// frame only (LLM-690) — the client opens its repair dialog from it.
 	Repair *repairOfferWireDTO `json:"repair,omitempty"`
+	// WalkedTo is the placement the arrival's walk was to, on an
+	// object_condition frame (LLM-793): the client opens the repair dialog
+	// only when the player walked to the work.
+	WalkedTo string `json:"walked_to,omitempty"`
 }

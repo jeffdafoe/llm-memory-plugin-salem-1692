@@ -116,3 +116,20 @@ func TestKnockAtDoorRefusals(t *testing.T) {
 		t.Error("a refused knock formed a conversation")
 	}
 }
+
+// TestKnockAtDoorRefusedAtMarketStall: a market stall has no door to knock on —
+// a patron at its counter is served there — so a knock there is refused.
+func TestKnockAtDoorRefusedAtMarketStall(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	setInside(t, w, "servant", "cottage")
+	mutate(t, w, func(world *sim.World) {
+		obj := world.VillageObjects["cottage"]
+		obj.Tags = append(obj.Tags, sim.TagMarketStall)
+	})
+	playerAtCottageDoor(t, w, now)
+	if _, err := knock(t, w, now); !errors.Is(err, sim.ErrKnockRefused) {
+		t.Errorf("knock at a market stall: err %v, want ErrKnockRefused", err)
+	}
+}

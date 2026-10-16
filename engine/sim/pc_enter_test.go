@@ -255,3 +255,28 @@ func TestEnterOrKnock_LeavesPriorHuddle(t *testing.T) {
 		t.Errorf("knocker should have left the prior huddle %q", prior)
 	}
 }
+
+// TestEnterOrKnock_MarketStallIsAVisit: a market stall is owner-only and has a
+// door, but a stranger's click on it is a plain visit to its counter — no knock,
+// so no door popup. The arrival itself is covered end to end in
+// stall_click_realwalk_test.go.
+func TestEnterOrKnock_MarketStallIsAVisit(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	mutate(t, w, func(world *sim.World) {
+		obj := world.VillageObjects["cottage"]
+		obj.Tags = append(obj.Tags, sim.TagMarketStall)
+	})
+
+	res, err := w.Send(sim.EnterOrKnock("stranger", "cottage", true, now))
+	if err != nil {
+		t.Fatalf("stranger EnterOrKnock: %v", err)
+	}
+	if res.(sim.EnterOrKnockResult).Knocked {
+		t.Error("a click on a market stall should not knock")
+	}
+	if knockFlagOf(t, w, "stranger") {
+		t.Error("the walk to a market stall should not carry the Knock stamp")
+	}
+}

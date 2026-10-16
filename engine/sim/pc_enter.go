@@ -88,7 +88,7 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 			// (stand beside a well), not a knock — no service huddle, no "the door
 			// is shut" narration. hasDoor is required so a doorless owner-only
 			// structure is a visit, matching the comment above and v1.
-			knocked := policy == EntryPolicyOwner && !member && hasDoor
+			knocked := mustKnockAt(vobj, policy, member, hasDoor)
 
 			var dest MoveDestination
 			if canEnter {
@@ -112,6 +112,14 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 			return EnterOrKnockResult{MoveActorResult: moveRes, Knocked: knocked}, nil
 		},
 	}
+}
+
+// mustKnockAt reports whether a walk to a structure ends at a door to knock on:
+// owner-only, the walker is not a member, and there is a door. A market stall
+// is never knocked at (LLM-793) — its counter faces the lane, and a patron standing there
+// is served across it (LLM-384, EnsureArrivalBusinessHuddle).
+func mustKnockAt(vobj *VillageObject, policy EntryPolicy, member, hasDoor bool) bool {
+	return policy == EntryPolicyOwner && !member && hasDoor && !vobj.HasTag(TagMarketStall)
 }
 
 // insideAssociatedActors returns the ids of actors physically inside structureID

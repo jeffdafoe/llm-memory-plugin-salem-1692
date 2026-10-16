@@ -189,6 +189,7 @@ func TestTranslateEvent_ObjectConditionCarriesTheRepairOffer(t *testing.T) {
 		ActorID: "pc", ObjectID: "well", Text: "This well is broken.",
 		Offer: &sim.PCRepairOffer{ObjectID: "well", SiteKind: sim.PublicWorksWell, Bounty: 12, ChestCanPay: true,
 			MenderName: "Anne Walker", Steps: 10, StepGap: 4 * time.Second},
+		WalkedTo: "well",
 	})
 	if !ok {
 		t.Fatal("ObjectConditionNarrated should translate")
@@ -196,6 +197,9 @@ func TestTranslateEvent_ObjectConditionCarriesTheRepairOffer(t *testing.T) {
 	d := frame.Data.(roomEventWireDTO)
 	if d.Kind != "object_condition" || d.Repair == nil {
 		t.Fatalf("frame = %+v, want object_condition with a repair offer", d)
+	}
+	if d.WalkedTo != "well" {
+		t.Errorf("walked_to = %q, want the walk's target", d.WalkedTo)
 	}
 	if d.Repair.Bounty != 12 || d.Repair.MenderName != "Anne Walker" || d.Repair.StepGapMs != 4000 {
 		t.Errorf("repair = %+v", d.Repair)
