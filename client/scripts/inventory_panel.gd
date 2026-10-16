@@ -7,12 +7,16 @@ extends Control
 ## Click-outside / Esc / icon re-click closes.
 ##
 ## Data shape: items is the raw pcInventoryEntry array from /pc/me — a
-## list of dicts with display_label / quantity / category / capabilities.
+## list of dicts with display_label / quantity / category / capabilities /
+## actions. Each action slug (LLM-800: wear, remove) is a button on its row;
+## a press emits item_action_requested and main.gd posts /pc/item/use.
 ## The panel renders flat-list (sorted by category then label) since v1
 ## inventories are short; categories are visible via the existing
 ## ordering rather than explicit headers.
 
 signal closed
+## A row's action button was pressed (LLM-800).
+signal item_action_requested(item_kind: String, action: String)
 
 const COLOR_BG = Color(0.05, 0.03, 0.02, 0.7)
 const COLOR_PANEL_BG = Color(0.12, 0.09, 0.07, 0.98)
@@ -21,15 +25,27 @@ const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 const COLOR_QTY = Color(0.92, 0.78, 0.42, 1.0)  # gold, matches coin chip
 
-const PANEL_WIDTH: float = 240.0
+const PANEL_WIDTH: float = 280.0
 const PANEL_PAD: float = 16.0
 const ROW_SEPARATION: int = 6
+
+## Button text per item-action slug. A slug missing here shows capitalized.
+const ACTION_LABELS := {"wear": "Wear", "remove": "Remove"}
 
 var _font: Font = null
 var _panel: PanelContainer = null
 var _content: VBoxContainer = null
 var _items: Array = []
 var _icon_rect: Rect2 = Rect2()  # icon's global rect, for outside-click detection
+## A /pc/item/use is in flight: the buttons stay disabled until it answers.
+var _busy: bool = false
+## The last refusal from /pc/item/use, shown under the list until the next
+## press or close.
+var _message: String = ""
+## The talk panel's /pc/me count (me_sent_seq) when an item action's answer
+## last replaced the rows: a /pc/me numbered at or below it was already sent
+## and may predate the action.
+var _answered_seq := -1
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -70,6 +86,9 @@ func _ready() -> void:
     panel_style.shadow_size = 8
     panel_style.shadow_offset = Vector2(0, 4)
     _panel.add_theme_stylebox_override("panel", panel_style)
+    # The period theme gives the action buttons the brown framed look; the
+    # panel's own stylebox override above still wins over the theme's.
+    _panel.theme = PeriodTheme.build(_font, OrientationGuard.text_size(14))
     add_child(_panel)
 
     _content = VBoxContainer.new()
@@ -77,6 +96,12 @@ func _ready() -> void:
     _panel.add_child(_content)
 
     visible = false
+
+
+## The visible popover, for the camera's UI registry (main.gd), so a press on
+## it is never taken as a walk.
+func ui_panel() -> Control:
+    return _panel
 
 
 ## Show the panel anchored under the given screen-space rect (the
@@ -92,7 +117,12 @@ func show_at(icon_rect: Rect2) -> void:
 
 ## Update the inventory data. If the panel is open, it re-renders in
 ## place; if closed, the next show_at() will pick up the latest.
-func set_inventory(items: Array) -> void:
+## sent_seq numbers the /pc/me that brought items (-1: not known). One sent
+## before the last item action's answer arrived may be older than the rows on
+## show, and is dropped (LLM-800); the next poll brings the truth.
+func set_inventory(items: Array, sent_seq: int = -1) -> void:
+    if sent_seq >= 0 and sent_seq <= _answered_seq:
+        return
     _items = _sorted_items(items)
     if visible:
         _rebuild()
@@ -103,6 +133,7 @@ func close() -> void:
     if not visible:
         return
     visible = false
+    _message = ""
     closed.emit()
 
 
@@ -165,14 +196,27 @@ func _rebuild() -> void:
         var qty := int(entry.get("quantity", 0))
         if label_text == "" or qty <= 0:
             continue
-        _content.add_child(_build_row(label_text, qty))
+        var actions = entry.get("actions", [])
+        if typeof(actions) != TYPE_ARRAY:
+            actions = []
+        _content.add_child(_build_row(label_text, qty, str(entry.get("item_kind", "")), actions))
+
+    if _message != "":
+        var note := Label.new()
+        note.text = _message
+        note.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        note.add_theme_font_override("font", _font)
+        note.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
+        note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        note.custom_minimum_size = Vector2(PANEL_WIDTH - 2 * PANEL_PAD, 0)
+        _content.add_child(note)
 
 
 ## Each row: display label flush-left, quantity flush-right in the
 ## coin-chip gold so the eye groups them with the purse below the
 ## title. Multiplication sign is the Latin-1 × (U+00D7), supported by
-## IMFellEnglish.
-func _build_row(label_text: String, qty: int) -> HBoxContainer:
+## IMFellEnglish. One button per item action follows the count (LLM-800).
+func _build_row(label_text: String, qty: int, item_kind: String, actions: Array) -> HBoxContainer:
     var row := HBoxContainer.new()
     row.add_theme_constant_override("separation", 12)
 
@@ -193,7 +237,38 @@ func _build_row(label_text: String, qty: int) -> HBoxContainer:
     qty_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     row.add_child(qty_label)
 
+    for action in actions:
+        var slug := str(action)
+        var b := PeriodTheme.button(str(ACTION_LABELS.get(slug, slug.capitalize())), OrientationGuard.text_size(14))
+        b.disabled = _busy or item_kind == ""
+        b.pressed.connect(_on_action_pressed.bind(item_kind, slug))
+        row.add_child(b)
+
     return row
+
+
+func _on_action_pressed(item_kind: String, action: String) -> void:
+    if _busy:
+        return
+    _busy = true
+    _message = ""
+    _rebuild()
+    item_action_requested.emit(item_kind, action)
+
+
+## main.gd's answer to item_action_requested. message is "" on success, else
+## the line to show under the list. items, on success, is the pack as it now
+## stands (the route returns it), so the row shows its new button before the
+## buttons come back. sent_seq is the talk panel's /pc/me count at that moment.
+func action_finished(message: String, items = null, sent_seq: int = -1) -> void:
+    if items is Array:
+        _items = _sorted_items(items)
+        _answered_seq = sent_seq
+    _busy = false
+    _message = message
+    if visible:
+        _rebuild()
+        _reposition()
 
 
 ## Place _panel so its right edge aligns with _last_anchor.x and its top

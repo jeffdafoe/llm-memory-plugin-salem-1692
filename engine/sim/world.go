@@ -1531,6 +1531,7 @@ type World struct {
 	reactorEval        reactorEvaluatorState
 	locomotionTick     locomotionTickerState
 	waterfowlTick      waterfowlTickerState
+	familiarTick       familiarTickerState
 	grazerTick         grazerTickerState
 	sceneQuoteSweep    sceneQuoteSweepState
 	payLedgerSweep     payLedgerSweepState
@@ -1549,6 +1550,10 @@ type World struct {
 	// grazers is the per-animal transient wander state for the grazer
 	// ticker (grazer.go) — same lifecycle rules as waterfowl above.
 	grazers map[ActorID]*grazerState
+
+	// familiars is the per-familiar transient state (LLM-800), keyed by the
+	// familiar actor's id — same lifecycle rules as waterfowl above.
+	familiars map[ActorID]*familiarState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first
@@ -2972,6 +2977,8 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		Inventory:                  inventoryCopy,
 		ToolWear:                   toolWearCopy,
 		GarmentWear:                garmentWearCopy,
+		Wearing:                    append([]ItemKind(nil), a.Wearing...),
+		FamiliarOf:                 a.FamiliarOf,
 		Coins:                      a.Coins,
 		Acquaintances:              cloneAcquaintances(a.Acquaintances),
 		Relationships:              cloneRelationships(a.Relationships),

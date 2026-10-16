@@ -401,6 +401,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/move_inside", s.requireAuth(s.handlePCMoveInside)) // LLM-768
 	mux.HandleFunc("POST /api/village/pc/knock", s.requireAuth(s.handlePCKnock))            // LLM-785
 	mux.HandleFunc("POST /api/village/pc/leave-note", s.requireAuth(s.handlePCLeaveNote))   // LLM-19
+	mux.HandleFunc("POST /api/village/pc/item/use", s.requireAuth(s.handlePCItemUse))       // LLM-800
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
 	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
 	mux.HandleFunc("POST /api/village/pc/give", s.requireAuth(s.handlePCGive)) // LLM-725
@@ -652,6 +653,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			Facing:                 normalizeFacing(a.Facing),
 			InsideStructureID:      string(a.InsideStructureID),
 			CurrentHuddleID:        string(a.CurrentHuddleID),
+			FamiliarOf:             string(a.FamiliarOf),
 			RoomSquare:             a.RoomSquare,
 			Sprite:                 resolveAgentSprite(a.SpriteID, sprites),
 			Hunger:                 hunger,

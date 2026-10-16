@@ -955,6 +955,8 @@ func _render_npc(npc: Dictionary) -> void:
     var attrs_raw = npc.get("attributes", [])
     container.set_meta("attributes", attrs_raw if attrs_raw is Array else [])
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
+    # A familiar's owner (LLM-800): the player's own duck quacks (familiar_quack.gd).
+    container.set_meta("familiar_of", str(npc.get("familiar_of", "")))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
     # In-flight source activity (LLM-441) — load-time value so an actor already

@@ -64,6 +64,7 @@ func RegisterCoreTickers(w *World) {
 	// from settings on each re-arm, not because the beat is event-driven.)
 	w.RegisterTicker("reactor", effectiveReactorEvaluatorCadence(w.Settings))
 	w.RegisterTicker("waterfowl", WaterfowlTickInterval)
+	w.RegisterTicker("familiar", FamiliarTickInterval)
 	w.RegisterTicker("grazer", GrazerTickInterval)
 	w.RegisterTicker("order_sweep", effectiveOrderSweepCadence(w.Settings))
 	w.RegisterTicker("pay_ledger_sweep", effectivePayLedgerSweepCadence(w.Settings))

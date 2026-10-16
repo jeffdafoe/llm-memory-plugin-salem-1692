@@ -919,6 +919,19 @@ type Actor struct {
 	// both), so wear dies with the stock that carries it.
 	GarmentWear map[ItemKind]int
 
+	// Wearing is the item kinds this actor has on (LLM-800) — a pendant put on
+	// with the Your Pack Wear button. Each kind at most once, and only a kind
+	// the actor holds: the familiar ticker drops a kind whose last unit has
+	// left the inventory. Not wear-and-tear (ToolWear / GarmentWear); this is
+	// what is worn. Checkpointed as actor.wearing.
+	Wearing []ItemKind
+
+	// FamiliarOf is the owner of a familiar (LLM-800) — the duck that follows
+	// a duck-pendant wearer. Set only on the engine-spawned familiar actor.
+	// A familiar is never checkpointed: it is rebuilt beside its owner from
+	// the owner's Wearing after a restart.
+	FamiliarOf ActorID
+
 	// Activity windows.
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
@@ -1539,6 +1552,7 @@ func CloneActor(a *Actor) *Actor {
 			cp.GarmentWear[k] = v
 		}
 	}
+	cp.Wearing = append([]ItemKind(nil), a.Wearing...)
 	if a.BreakUntil != nil {
 		t := *a.BreakUntil
 		cp.BreakUntil = &t
@@ -2078,6 +2092,14 @@ type ActorSnapshot struct {
 	// Empty/nil for actors that have never worn a garment.
 	GarmentWear map[ItemKind]int
 
+	// Wearing mirrors the live Actor's Wearing (LLM-800) so /pc/me can offer
+	// Wear or Remove per pack row. Copied by snapshotActor.
+	Wearing []ItemKind
+
+	// FamiliarOf mirrors the live Actor's FamiliarOf (LLM-800) for the /agents
+	// list, so the client knows a player's own duck.
+	FamiliarOf ActorID
+
 	// RestockPolicy mirrors the live Actor's RestockPolicy at snapshot time so
 	// the "## Restocking" perception section can surface a reseller's low
 	// `buy` stock + caps without a world-goroutine round trip. ALIASED, not
@@ -2176,6 +2198,7 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.AttributeSlugs != nil {
 		cp.AttributeSlugs = append([]string(nil), s.AttributeSlugs...)
 	}
+	cp.Wearing = append([]ItemKind(nil), s.Wearing...)
 	cp.ScheduleStartMin = copyIntPtr(s.ScheduleStartMin)
 	cp.ScheduleEndMin = copyIntPtr(s.ScheduleEndMin)
 	cp.PendingSummon = clonePendingSummon(s.PendingSummon)

@@ -28,6 +28,7 @@ const FeedPromptScript = preload("res://scripts/feed_prompt.gd")
 const ActivityReporterScript = preload("res://scripts/activity_reporter.gd")
 const StormFXScript = preload("res://scripts/storm_fx.gd")
 const FootstepsScript = preload("res://scripts/footsteps.gd")
+const FamiliarQuackScript = preload("res://scripts/familiar_quack.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -87,6 +88,8 @@ var _pc_attend_http: HTTPRequest = null
 var storm_fx: CanvasLayer = null
 ## The player's footsteps (LLM-703). See client/scripts/footsteps.gd.
 var footsteps: Node = null
+## The player's own duck quacking (LLM-800). See client/scripts/familiar_quack.gd.
+var familiar_quack: Node = null
 ## Dream-snippet rotator. While the local PC is sleeping, fires every
 ## DREAM_SNIPPET_INTERVAL_SEC and pushes one of DREAM_SNIPPETS into
 ## the village ticker so the top scroller carries flavor instead of
@@ -684,6 +687,10 @@ func _build_ui() -> void:
     inventory_panel.set_script(InventoryPanelScript)
     inventory_panel_layer.add_child(inventory_panel)
     add_child(inventory_panel_layer)
+    # Register the popover (LLM-800): main.gd._input runs before GUI, so without
+    # this a press on a Wear / Remove button would also walk the player. The
+    # panel is hidden while closed, which is_visible_in_tree() already covers.
+    camera.register_ui_panel(inventory_panel.ui_panel())
     if top_bar != null and top_bar.has_signal("inventory_toggle_requested"):
         top_bar.inventory_toggle_requested.connect(func(rect: Rect2):
             if inventory_panel.visible:
@@ -692,8 +699,9 @@ func _build_ui() -> void:
                 inventory_panel.show_at(rect)
         )
     if talk_panel_layer.has_signal("inventory_changed"):
-        talk_panel_layer.inventory_changed.connect(inventory_panel.set_inventory)
+        talk_panel_layer.inventory_changed.connect(func(items: Array): inventory_panel.set_inventory(items, talk_panel_layer.me_sent_seq))
         talk_panel_layer.inventory_changed.connect(func(items: Array): _pc_items = items)
+    inventory_panel.item_action_requested.connect(_on_item_action_requested.bind(inventory_panel))
 
     # Village ticker — thin marquee band below the top bar, scrolling the
     # village's current atmosphere prose. Lives on the editor CanvasLayer
@@ -759,6 +767,11 @@ func _build_ui() -> void:
     add_child(footsteps)
     footsteps.world = world
     footsteps.pc_actor_id = _pc_actor_id
+    familiar_quack = Node.new()
+    familiar_quack.set_script(FamiliarQuackScript)
+    add_child(familiar_quack)
+    familiar_quack.world = world
+    familiar_quack.pc_actor_id = _pc_actor_id
 
     # Wake-up button on the top bar emits wake_pressed; route to the
     # /pc/wake endpoint. The engine clears sleeping_until and
@@ -1162,6 +1175,8 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     _pc_actor_id = str(data.get("actor_id", ""))
     if footsteps != null:
         footsteps.pc_actor_id = _pc_actor_id
+    if familiar_quack != null:
+        familiar_quack.pc_actor_id = _pc_actor_id
     if actor_tooltip != null:
         actor_tooltip.pc_actor_id = _pc_actor_id
     # A character already inside at login opens its room (LLM-750).
@@ -1686,6 +1701,31 @@ func _on_note_pinned(sid: String, recipient_id: String, text: String) -> void:
     if err != OK:
         http.queue_free()
         note_panel_layer.show_error("The note could not be sent.")
+
+## A Your Pack button (LLM-800): POST /pc/item/use. The answer carries the pack
+## as it now stands and the panel redraws from it; /pc/me is refreshed too so the
+## talk panel's copy catches up. A refusal's line goes under the list.
+func _on_item_action_requested(item_kind: String, action: String, panel: Control) -> void:
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray):
+        http.queue_free()
+        Auth.check_response(code)
+        var parsed = JSON.parse_string(body.get_string_from_utf8())
+        if code >= 200 and code < 300 and parsed is Dictionary and parsed.get("inventory") is Array:
+            panel.action_finished("", parsed["inventory"], talk_panel_layer.me_sent_seq if talk_panel_layer != null else -1)
+        else:
+            var message := str(parsed.get("error", "")) if parsed is Dictionary else ""
+            panel.action_finished(message if message != "" else "That did not work.")
+        if talk_panel_layer != null:
+            talk_panel_layer._refresh_state())
+    var err := http.request(Auth.api_base + "/api/village/pc/item/use",
+        Auth.auth_headers(), HTTPClient.METHOD_POST,
+        JSON.stringify({"item_kind": item_kind, "action": action}))
+    if err != OK:
+        http.queue_free()
+        panel.action_finished("That did not work.")
 
 ## Modal blocker helper — flips camera.modal_open based on the OR of
 ## currently-open modals. Every modal (config, asset popup, sprite
