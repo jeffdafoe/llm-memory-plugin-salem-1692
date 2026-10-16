@@ -212,9 +212,13 @@ func TestGoldensSiteBeingMendedPostsNoBounty(t *testing.T) {
 			var sites []mended
 			for _, obj := range damagedSites(snap) {
 				for id, a := range snap.Actors {
-					if id != actorID && a != nil && a.SourceActivityKind == sim.SourceActivityRepair &&
+					if a != nil && a.SourceActivityKind == sim.SourceActivityRepair &&
 						a.SourceActivityPublicWorks && a.SourceActivityObjectID == obj.ID {
-						sites = append(sites, mended{sim.DamageSiteLabel(snap.VillageObjects, snap.Structures, snap.Assets, obj), a.DisplayName})
+						lead := a.DisplayName + " is"
+						if id == actorID {
+							lead = "You are"
+						}
+						sites = append(sites, mended{sim.DamageSiteLabel(snap.VillageObjects, snap.Structures, snap.Assets, obj), lead})
 					}
 				}
 			}
@@ -246,7 +250,7 @@ func TestGoldensSiteBeingMendedPostsNoBounty(t *testing.T) {
 						t.Errorf("%q hears %s offered while %s mends it:\n%s", subject.DisplayName, s.label, s.mender, section)
 					}
 				}
-				if audience != "hand" && !strings.Contains(section, s.mender+" is at the ") {
+				if audience != "hand" && !strings.Contains(section, s.mender+" at the ") {
 					t.Errorf("%q is not told %s is at the mending of %s:\n%s", subject.DisplayName, s.mender, s.label, section)
 				}
 			}
@@ -256,6 +260,33 @@ func TestGoldensSiteBeingMendedPostsNoBounty(t *testing.T) {
 		if !seen[who] {
 			t.Fatalf("invariant is vacuous: no scenario shows the %s a site another hand is mending", who)
 		}
+	}
+}
+
+// TestPublicWorksViewerIsTheMender — a constable or keeper who is also a hand
+// (MayTakePublicWorks reads only the worker attribute) may hold the town's
+// repair window on the site themselves. They read that they are at the
+// mending, never the site's open bounty.
+func TestPublicWorksViewerIsTheMender(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		subject sim.ActorID
+	}{{"constable", pwGideon}, {"keeper", pwJosiah}} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := damagedShopSnapshot(100, false, true)
+			a := snap.Actors[tc.subject]
+			a.AttributeSlugs = append(a.AttributeSlugs, sim.AttrWorker)
+			a.SourceActivityKind = sim.SourceActivityRepair
+			a.SourceActivityObjectID = "store"
+			a.SourceActivityPublicWorks = true
+			out := combinedPrompt(Render(Build(snap, tc.subject, nil), DefaultRenderConfig()))
+			if !strings.Contains(out, "You are at the mending just now") {
+				t.Errorf("%s mending the store is not told so:\n%s", a.DisplayName, out)
+			}
+			if strings.Contains(out, "has posted 25") || strings.Contains(out, "pays a hand 25") {
+				t.Errorf("%s mending the store reads its bounty as open:\n%s", a.DisplayName, out)
+			}
+		})
 	}
 }
 

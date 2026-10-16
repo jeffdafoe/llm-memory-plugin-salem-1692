@@ -56,8 +56,9 @@ type PublicWorksSite struct {
 	// the bearing when they are not ("a short walk to the north").
 	AtSite bool
 	Walk   string
-	// MendingBy names the hand at the town's mending of the site just now —
-	// the keeper's and constable's views only (a hand never sees such a site).
+	// MendingBy is who is at the town's mending of the site just now, as the
+	// sentence's subject and verb ("Patience Walker is", "You are") — the
+	// keeper's and constable's views only (a hand never sees such a site).
 	MendingBy string
 }
 
@@ -92,9 +93,18 @@ func siteUnderRepair(snap *sim.Snapshot, siteID sim.VillageObjectID, except sim.
 // withMender names the hand already at the site's mending, for the keeper and
 // the constable: they read who is at it instead of an open bounty. Live, a
 // keeper read "the town pays a hand 25 coins" an hour into another hand's
-// mending and paid a second hand 25 of her own for the same job.
-func withMender(snap *sim.Snapshot, s PublicWorksSite, except sim.ActorID) PublicWorksSite {
-	_, s.MendingBy = sim.SnapshotPublicWorksMender(snap, s.SiteID, except)
+// mending and paid a second hand 25 of her own for the same job. The subject
+// is not excluded: a keeper or constable who is also a hand (MayTakePublicWorks
+// reads only the worker attribute) may be the one mending.
+func withMender(snap *sim.Snapshot, s PublicWorksSite, subject sim.ActorID) PublicWorksSite {
+	id, name := sim.SnapshotPublicWorksMender(snap, s.SiteID, "")
+	switch {
+	case id == "":
+	case id == subject:
+		s.MendingBy = "You are"
+	default:
+		s.MendingBy = sanitizeInline(name) + " is"
+	}
 	return s
 }
 
@@ -242,7 +252,7 @@ func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {
 			anyOpen = anyOpen || s.BountyOpen
 			switch {
 			case s.MendingBy != "":
-				fmt.Fprintf(b, " %s is at %s just now, at the town's charge.\n", sanitizeInline(s.MendingBy), noun)
+				fmt.Fprintf(b, " %s at %s just now, at the town's charge.\n", s.MendingBy, noun)
 			case s.BountyOpen:
 				fmt.Fprintf(b, " The town has posted %s for %s; any hand seeking work may take it on.\n", coinsPhrase(s.Bounty), noun)
 			default:
@@ -274,7 +284,7 @@ func renderKeeperPublicWorks(b *strings.Builder, s PublicWorksSite) {
 	}
 	b.WriteString(" Until it is mended you can take in no new shelf stock, and your work goes slowly; you can still sell what's on hand.")
 	if s.MendingBy != "" {
-		fmt.Fprintf(b, " %s is at the mending just now, at the town's charge — the work is the town's, not yours. %s\n\n", sanitizeInline(s.MendingBy), publicWorksNoHireLine)
+		fmt.Fprintf(b, " %s at the mending just now, at the town's charge — the work is the town's, not yours. %s\n\n", s.MendingBy, publicWorksNoHireLine)
 		return
 	}
 	if s.BountyOpen {
