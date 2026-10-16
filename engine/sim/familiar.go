@@ -3,6 +3,7 @@ package sim
 import (
 	"context"
 	"log"
+	mathrand "math/rand/v2"
 	"time"
 )
 
@@ -19,6 +20,9 @@ import (
 //   - Following: when the duck is more than FamiliarFollowRadius tiles from its
 //     owner it walks to a free tile beside them. An owner indoors keeps the
 //     door tile as Pos, so the duck waits outside the door.
+//   - Pottering (LLM-812): while the owner stands still outdoors and awake, the
+//     duck walks round the edge of their space — a free tile on the ring
+//     FamiliarFollowRadius out — after each short dwell.
 //   - Take it off, or lose the last pendant: the duck walks to a map edge and
 //     is removed. Put it back on while it is still walking off and it turns
 //     around.
@@ -33,8 +37,14 @@ const (
 	FamiliarTickInterval = 2 * time.Second
 
 	// FamiliarFollowRadius is how near (Chebyshev tiles) the duck keeps to its
-	// owner. Within it the duck stays where it is.
+	// owner. Within it the duck follows no further; while the owner stands still
+	// outdoors it potters round the ring this far out (LLM-812).
 	FamiliarFollowRadius = 2
+
+	// FamiliarPotterDwell is the least the duck stands between two potters;
+	// familiarPotterDwell adds up to FamiliarPotterJitter more.
+	FamiliarPotterDwell  = 3 * time.Second
+	FamiliarPotterJitter = 6 * time.Second
 
 	// familiarSpriteID is the "Duck (mallard)" sprite (migration LLM-579).
 	familiarSpriteID SpriteID = "579d0c01-0000-4000-8000-000000000001"
@@ -56,6 +66,10 @@ type familiarState struct {
 	// first one. The duck keeps walking while Target stays near its owner.
 	Target    TilePos
 	HasTarget bool
+
+	// NextPotterAt is when the duck next potters round its standing owner; zero
+	// until it comes to rest beside them (LLM-812).
+	NextPotterAt time.Time
 }
 
 // RunFamiliarTicker owns the familiar ticker's periodic schedule. Same
@@ -278,8 +292,10 @@ func followOwner(w *World, d *Actor, st *familiarState, owner *Actor, now time.T
 	goal := owner.Pos
 	if d.MoveIntent == nil && chebyshevDistance(d.Pos, goal) <= FamiliarFollowRadius {
 		st.HasTarget = false
+		potterRoundOwner(w, d, st, owner, now)
 		return
 	}
+	st.NextPotterAt = time.Time{}
 	if d.MoveIntent != nil && st.HasTarget && chebyshevDistance(st.Target, goal) <= FamiliarFollowRadius {
 		return
 	}
@@ -295,6 +311,66 @@ func followOwner(w *World, d *Actor, st *familiarState, owner *Actor, now time.T
 	}
 	st.Target = spot
 	st.HasTarget = true
+}
+
+// potterRoundOwner walks a resting duck round the edge of its owner's space
+// while they stand still outdoors and awake (LLM-812): a short dwell, then a
+// free tile on the FamiliarFollowRadius ring, then another dwell. Indoors, asleep
+// or on the move, the owner gets no pottering.
+func potterRoundOwner(w *World, d *Actor, st *familiarState, owner *Actor, now time.Time) {
+	if owner.MoveIntent != nil || owner.InsideStructureID != "" || owner.SleepingUntil != nil {
+		st.NextPotterAt = time.Time{}
+		return
+	}
+	if st.NextPotterAt.IsZero() {
+		st.NextPotterAt = now.Add(familiarPotterDwell())
+		return
+	}
+	if now.Before(st.NextPotterAt) {
+		return
+	}
+	st.NextPotterAt = time.Time{}
+	spot, ok := pickPotterSpot(w, d, owner.Pos)
+	if !ok {
+		return
+	}
+	if _, err := MoveActor(d.ID, NewPositionDestination(spot), true, now).Fn(w); err != nil {
+		return
+	}
+	st.Target = spot
+	st.HasTarget = true
+}
+
+func familiarPotterDwell() time.Duration {
+	return FamiliarPotterDwell + time.Duration(mathrand.Int64N(int64(FamiliarPotterJitter)))
+}
+
+// pickPotterSpot picks a random free tile on the ring exactly
+// FamiliarFollowRadius from goal (Chebyshev) — the edge of the owner's space —
+// that the duck can stand on, not its own tile.
+func pickPotterSpot(w *World, d *Actor, goal TilePos) (TilePos, bool) {
+	grid, err := buildWaterfowlWalkGrid(w)
+	if err != nil {
+		return TilePos{}, false
+	}
+	r := FamiliarFollowRadius
+	var ring []TilePos
+	for dy := -r; dy <= r; dy++ {
+		for dx := -r; dx <= r; dx++ {
+			p := TilePos{X: goal.X + dx, Y: goal.Y + dy}
+			if chebyshevDistance(p, goal) != r || p == d.Pos {
+				continue
+			}
+			if !grid.CanWalk(p.X, p.Y) || tileOccupiedByRestingOtherActor(w, p, d.ID) {
+				continue
+			}
+			ring = append(ring, p)
+		}
+	}
+	if len(ring) == 0 {
+		return TilePos{}, false
+	}
+	return ring[mathrand.IntN(len(ring))], true
 }
 
 // pickFamiliarSpot picks the tile within FamiliarFollowRadius of goal (never
