@@ -4,8 +4,11 @@ extends Node
 ## only the player's own duck is heard — another player's would sound as loud.
 ##
 ## It quacks once when it first comes to rest beside the player (the walk in
-## from the map edge), then each time the player sets off with it beside them
-## outdoors (LLM-804). MIN_GAP keeps a burst of clicks from chaining quacks.
+## from the map edge), then each time it sets off after the player (LLM-812):
+## the player sets off outdoors with it beside them, and the duck starts walking
+## within FOLLOW_WINDOW. A potter round a standing player (the engine's, LLM-812)
+## has no set-off to follow and stays quiet. MIN_GAP keeps a burst of clicks
+## from chaining quacks.
 ##
 ## When the player lies down to sleep (inn or tent) or starts to rest (a
 ## tiredness dwell, e.g. in a tree's shade), it quacks twice after REST_DELAY:
@@ -25,10 +28,17 @@ signal quacked(kind: String)
 
 ## How near (tiles) the duck must be to count as beside the player.
 const NEAR_TILES := 3
+## How far (tiles) the player must be before the engine moves the duck after
+## them (familiar.go FamiliarFollowRadius); a potter stays within it.
+const FOLLOW_REACH := 2
 ## The fewest seconds between two quacks.
 const MIN_GAP := 3.0
 ## Seconds from lying down or starting to rest to the double quack.
 const REST_DELAY := 2.0
+## Seconds after the player sets off in which the duck starting to walk counts
+## as following them: the engine moves it once they are more than two tiles off,
+## on a two-second tick.
+const FOLLOW_WINDOW := 6.0
 
 var _duck_id := ""
 ## The duck has come to rest beside the player at least once.
@@ -37,6 +47,11 @@ var _arrived := false
 var _since_quack := MIN_GAP
 ## The player was walking on the last frame, so a set-off is the frame it starts.
 var _pc_was_walking := false
+## The duck was walking on the last frame, so its set-off is the frame it starts.
+var _duck_was_walking := false
+## Seconds left in which the duck setting off is following the player; 0 when
+## the player has not just set off.
+var _follow_left := 0.0
 ## Seconds left until the double quack; below 0 when none is due.
 var _watch_in := -1.0
 ## The last dwelling list from /pc/me, so a rest is the poll it starts.
@@ -45,11 +60,14 @@ var _dwelling: PackedStringArray = PackedStringArray()
 
 func _process(delta: float) -> void:
     _since_quack += delta
+    _follow_left = maxf(0.0, _follow_left - delta)
     var duck := _own_duck()
     if duck == null:
         _duck_id = ""
         _arrived = false
         _pc_was_walking = false
+        _duck_was_walking = false
+        _follow_left = 0.0
         _watch_in = -1.0
         return
     if _watch_in >= 0.0:
@@ -67,14 +85,21 @@ func _process(delta: float) -> void:
     var pc_walking := pc.has_meta("walking")
     var set_off := pc_walking and not _pc_was_walking
     _pc_was_walking = pc_walking
-    if bool(pc.get_meta("inside", false)) or not is_beside(duck.position, pc.position):
-        return
-    if not _arrived:
-        if duck.has_meta("walking"):
-            return
-        _arrived = true
+    var duck_walking := duck.has_meta("walking")
+    var duck_set_off := duck_walking and not _duck_was_walking
+    _duck_was_walking = duck_walking
+    var outdoors := not bool(pc.get_meta("inside", false))
+    if set_off and _arrived and outdoors and is_beside(duck.position, pc.position):
+        _follow_left = FOLLOW_WINDOW
+    # A set-off inside the window is following only if the player is still
+    # walking or ended more than FOLLOW_REACH tiles from it: the engine follows
+    # only past that, and a potter stays inside it (LLM-812).
+    if duck_set_off and _follow_left > 0.0 and (pc_walking or beyond_follow_reach(duck.position, pc.position)):
+        _follow_left = 0.0
         _quack()
-    elif set_off:
+        return
+    if not _arrived and outdoors and not duck_walking and is_beside(duck.position, pc.position):
+        _arrived = true
         _quack()
 
 
@@ -109,6 +134,13 @@ func set_dwelling(attrs: PackedStringArray) -> void:
     if attrs.has("tiredness") and not _dwelling.has("tiredness"):
         _watch_in = REST_DELAY
     _dwelling = attrs
+
+
+## Whether the player stands more than FOLLOW_REACH tiles from the duck (a tile
+## is 32 px; positions are tile centres, so half a tile of slack).
+static func beyond_follow_reach(duck: Vector2, pc: Vector2) -> bool:
+    var reach := (FOLLOW_REACH + 0.5) * 32.0
+    return absf(duck.x - pc.x) > reach or absf(duck.y - pc.y) > reach
 
 
 ## Whether two world positions are within NEAR_TILES tiles of each other.

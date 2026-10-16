@@ -365,3 +365,52 @@ func TestFamiliarWaitsForAFreeTile(t *testing.T) {
 		t.Errorf("after a tile frees: %+v, want one duck beside its owner", v)
 	}
 }
+
+// LLM-812: while the owner stands still outdoors and awake, the resting duck
+// potters — after a dwell it walks to a free tile on the FamiliarFollowRadius
+// ring round them. An owner indoors, asleep or on the move gets no pottering.
+func TestFamiliarPottersRoundAStandingOwner(t *testing.T) {
+	w := familiarWorld(t, []sim.ItemKind{sim.DuckPendantKind})
+	runWorld(t, w)
+	now := time.Now()
+	if v := familiarTick(t, w, now); v.Count != 1 || v.Moving {
+		t.Fatalf("setup: %+v, want one duck resting beside its owner", v)
+	}
+	// First pass at rest: the dwell starts, no walk yet.
+	if v := familiarTick(t, w, now.Add(time.Second)); v.Moving {
+		t.Fatalf("walked before the dwell: to %+v", v.MoveTo)
+	}
+	// Past the longest dwell: it potters to the ring.
+	late := now.Add(time.Second + sim.FamiliarPotterDwell + sim.FamiliarPotterJitter + time.Second)
+	v := familiarTick(t, w, late)
+	if !v.Moving || chebyshev(v.MoveTo, familiarOwnerPos) != sim.FamiliarFollowRadius || v.MoveTo == v.Pos {
+		t.Fatalf("after the dwell: moving=%v to %+v, want a walk to the ring %d out from %+v", v.Moving, v.MoveTo, sim.FamiliarFollowRadius, familiarOwnerPos)
+	}
+
+	for _, c := range []struct {
+		name string
+		set  func(o *sim.Actor)
+	}{
+		{"owner indoors", func(o *sim.Actor) { o.InsideStructureID = "inn" }},
+		{"owner asleep", func(o *sim.Actor) { until := time.Now().Add(time.Hour); o.SleepingUntil = &until }},
+		{"owner walking", func(o *sim.Actor) {
+			o.MoveIntent = &sim.MoveIntent{Destination: sim.NewPositionDestination(familiarOwnerPos)}
+		}},
+	} {
+		runOn(t, w, func(world *sim.World) (any, error) {
+			for _, a := range world.Actors {
+				if a.FamiliarOf == familiarOwnerID {
+					a.Pos, a.MoveIntent = v.MoveTo, nil
+				}
+			}
+			o := world.Actors[familiarOwnerID]
+			o.InsideStructureID, o.SleepingUntil, o.MoveIntent = "", nil, nil
+			c.set(o)
+			return nil, nil
+		})
+		familiarTick(t, w, late.Add(time.Minute))
+		if got := familiarTick(t, w, late.Add(time.Hour)); got.Moving {
+			t.Errorf("%s: the duck pottered to %+v", c.name, got.MoveTo)
+		}
+	}
+}

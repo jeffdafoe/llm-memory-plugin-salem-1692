@@ -282,8 +282,10 @@ func _test_own_duck_quacks_on_arrival() -> void:
     _done()
 
 
-## LLM-804: the duck quacks when the player sets off with it beside them, once
-## per set-off, never twice inside MIN_GAP, and not when it is out of reach.
+## LLM-812: the duck quacks when IT sets off after the player — the player sets
+## off with it beside them outdoors, and it starts walking within FOLLOW_WINDOW.
+## The player setting off alone is quiet; a potter while the player stands is
+## quiet; a duck that starts too late, or was far off, is quiet; MIN_GAP holds.
 func _test_own_duck_quacks_when_you_set_off() -> void:
     var w := _world()
     var pc := _actor(w, "pc", Vector2(1000, 1000))
@@ -295,31 +297,84 @@ func _test_own_duck_quacks_when_you_set_off() -> void:
     q._process(5.0)
     pc.set_meta("walking", {})
     q._process(0.1)
-    _check("sets off: a quack", log.size(), 2)
+    _check("the player sets off: the duck has not moved yet, quiet", log.size(), 1)
+    q._process(2.0)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("the duck sets off after him: a quack", log.size(), 2)
     q._process(0.5)
     _check("still walking: no more", log.size(), 2)
     pc.remove_meta("walking")
-    q._process(0.5)
+    duck.remove_meta("walking")
+    q._process(5.0)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("a potter while he stands: quiet", log.size(), 2)
+    duck.remove_meta("walking")
+    q._process(5.0)
     pc.set_meta("walking", {})
     q._process(0.1)
-    _check("sets off again within MIN_GAP: quiet", log.size(), 2)
+    q._process(q.FOLLOW_WINDOW + 1.0)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("the duck starts after the window: quiet", log.size(), 2)
     pc.remove_meta("walking")
+    duck.remove_meta("walking")
     q._process(5.0)
     duck.position = Vector2(2000, 1000)
     pc.set_meta("walking", {})
     q._process(0.1)
-    _check("sets off with the duck far behind: quiet", log.size(), 2)
-    duck.position = Vector2(1032, 1000)
+    duck.set_meta("walking", {})
     q._process(0.1)
-    _check("the duck catches up mid-walk: still quiet (that set-off is spent)", log.size(), 2)
+    _check("he sets off with the duck far off: quiet", log.size(), 2)
+    pc.remove_meta("walking")
+    duck.remove_meta("walking")
+    duck.position = Vector2(1040, 1000)
+    q._process(0.5)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("back beside him, he sets off and it follows: a quack", log.size(), 3)
+    pc.remove_meta("walking")
+    duck.remove_meta("walking")
+    q._process(0.5)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("again inside MIN_GAP: quiet", log.size(), 3)
+    # Code review: a short step that ends beside the duck, then a potter inside
+    # the window, is not a follow.
+    pc.remove_meta("walking")
+    duck.remove_meta("walking")
+    q._process(5.0)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    pc.remove_meta("walking")
+    pc.position = Vector2(1040 + 32, 1000)
+    q._process(0.5)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("a step then a potter inside the window: quiet", log.size(), 3)
+    # A walk that stops past FOLLOW_REACH: the duck sets off after the player
+    # has stopped, and that is following.
+    duck.remove_meta("walking")
+    pc.position = Vector2(1000, 1000)
+    q._process(5.0)
+    pc.set_meta("walking", {})
+    q._process(0.1)
+    pc.remove_meta("walking")
+    pc.position = Vector2(1040 + 4 * 32, 1000)
+    q._process(1.0)
+    duck.set_meta("walking", {})
+    q._process(0.1)
+    _check("he stops past its reach, then it follows: a quack", log.size(), 4)
     q.free()
     w.free()
     _done()
 
 
-## LLM-804: lying down (inn or tent) or starting to rest brings the double
-## quack after REST_DELAY, indoors too (the duck waits at the door); a rest
-## already under way does not repeat it, and a duck far off stays quiet.
 func _test_duck_keeps_watch_when_you_rest_or_sleep() -> void:
     var w := _world()
     var pc := _actor(w, "pc", Vector2(1000, 1000))
