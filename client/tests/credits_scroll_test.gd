@@ -112,7 +112,7 @@ func _test_credit_links_are_https() -> void:
                 for work in line:
                     _check("%s link is https" % work[0], str(work[1]).begins_with("https://"), true)
                     links += 1
-    _check("every credit is listed", links, 23)
+    _check("every credit is listed", links, 25)
     _done()
 
 
@@ -272,7 +272,9 @@ func _test_every_freesound_sound_is_credited() -> void:
     var start := text.find("Freesound (freesound.org)")
     _check("CREDITS.txt has its Freesound section", start >= 0, true)
     var shape := RegEx.new()
-    shape.compile("— ([0-9]+) \"[^\"]+\" by ([^.]+)\\.")
+    # The author runs to the first full stop that ends the sentence, so a name
+    # with a dot in it (WavJunction.com) stays whole.
+    shape.compile("— ([0-9]+) \"[^\"]+\" by (.+?)\\.( |$)")
     # Each scroll link and the name shown on it.
     var shown := {}
     for section in _scroll_script().CREDITS:

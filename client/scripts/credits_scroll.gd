@@ -67,8 +67,8 @@ const CREDITS := [
         # Each Freesound name opens the one sound of theirs the village plays
         # (see assets/sound/CREDITS.txt).
         ["Freesound", "https://freesound.org/", [
-            [["speakwithanimals", "https://freesound.org/s/525046/"], ["loganzsound", "https://freesound.org/s/840628/"]],
-            [["Emulius", "https://freesound.org/s/744722/"], ["SoundsLikeYukon", "https://freesound.org/s/760611/"], ["Flem0527", "https://freesound.org/s/629987/"]],
+            [["speakwithanimals", "https://freesound.org/s/525046/"], ["loganzsound", "https://freesound.org/s/840628/"], ["Mikes-MultiMedia", "https://freesound.org/s/418509/"]],
+            [["Emulius", "https://freesound.org/s/744722/"], ["SoundsLikeYukon", "https://freesound.org/s/760611/"], ["Flem0527", "https://freesound.org/s/629987/"], ["WavJunction.com", "https://freesound.org/s/456770/"]],
         ]],
     ]],
     ["Fonts", [
