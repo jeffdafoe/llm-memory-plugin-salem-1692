@@ -26,6 +26,7 @@ const TESTS := [
     "_test_rod_turns_and_loops",
     "_test_rod_frame_follows_the_paper",
     "_test_roll_up_rest_down_and_stop",
+    "_test_pan_gesture_stops_the_roll",
     "_test_no_roll_when_it_fits",
 ]
 
@@ -97,9 +98,9 @@ func _test_rod_image_shape() -> void:
     _check("body middle is solid", image.get_pixel(117, 8).a, 1.0)
     # Within one step of 8-bit storage, which truncates.
     var edge: Color = image.get_pixel(60, 3)
-    var outline: Color = script.COLOR_WOOD_OUTLINE
+    var outline: Color = script.COLOR_ROLL_EDGE
     var off := maxf(maxf(absf(edge.r - outline.r), absf(edge.g - outline.g)), absf(edge.b - outline.b))
-    _check("body top edge is the outline", off < 1.5 / 255.0, true)
+    _check("the roll's top edge is the paper edge line", off < 1.5 / 255.0, true)
     var other: Image = script.rod_image(234, 16, 1693)
     _check("a second seed grains differently", image.get_data() != other.get_data(), true)
     _done()
@@ -322,43 +323,62 @@ func _test_rod_turns_and_loops() -> void:
                 differ += 1
     _check("turning keeps the silhouette", silhouette_same, true)
     _check("a whole turn comes back (float rounding aside)", differ < 234 * 16 / 100, true)
-    var frames: Array = script.rod_frames(40, 16, 7)
-    _check("one texture per frame", frames.size(), script.ROD_TURN_FRAMES)
+    # Between the collars the rod shows wound parchment, not wood: the middle of
+    # the roll is paper-coloured (lit, so brighter or darker than COLOR_PAPER,
+    # but never the dark wood).
+    var mid: Color = still.get_pixel(117, 7)
+    var paper: Color = script.COLOR_PAPER
+    var wood: Color = script.COLOR_WOOD
+    _check("the roll is parchment, not wood", absf(mid.h - paper.h) < 0.05 and mid.v > wood.v + 0.15, true)
+    _check("even the shaded underside is lighter than the wood", still.get_pixel(117, 11).v > wood.v, true)
+    _check("the knobs are still wood", still.get_pixel(8, 8).v < paper.v - 0.2, true)
+    # Each step of wound paper fattens the roll by an art pixel above and below.
+    var thick: Image = script.rod_image(234, 16, 1692, 0.0, 2)
+    _check("a thin roll leaves the row above it clear", still.get_pixel(117, 2).a, 0.0)
+    _check("a fat roll fills it", thick.get_pixel(117, 2).a, 1.0)
+    _check("a fat roll fills the row below too", thick.get_pixel(117, 13).a, 1.0)
+    _check("the knobs do not grow", thick.get_pixel(0, 0).a, 0.0)
     _done()
 
 
-## LLM-802: the rod turns one frame per sixteenth of its circumference of paper,
-## forward as the paper winds up and back as it winds down.
+## LLM-802: a turn frame per sixteenth of a turn, forward and back.
 func _test_rod_frame_follows_the_paper() -> void:
     var script := _scroll_script()
-    var turn_px: float = TAU * script.rod_body_radius(16) * script.ROD_PIXEL
-    var step: float = turn_px / script.ROD_TURN_FRAMES
-    _check("no paper moved: frame 0", script.rod_frame(0.0, 16), 0)
-    _check("one step: frame 1", script.rod_frame(step, 16), 1)
-    _check("a whole turn: frame 0 again", script.rod_frame(turn_px, 16), 0)
-    _check("winding back: the last frame", script.rod_frame(-step, 16), script.ROD_TURN_FRAMES - 1)
+    var sixteenth: float = TAU / script.ROD_TURN_FRAMES
+    _check("no turn: frame 0", script.rod_frame_at(0.0), 0)
+    _check("a sixteenth: frame 1", script.rod_frame_at(sixteenth), 1)
+    _check("a whole turn: frame 0 again", script.rod_frame_at(TAU), 0)
+    _check("turned back: the last frame", script.rod_frame_at(-sixteenth), script.ROD_TURN_FRAMES - 1)
+    _check("no paper wound: thinnest roll", script.roll_step(0.0), 0)
+    _check("all of it wound: fattest roll", script.roll_step(1.0), script.ROLL_STEPS - 1)
     _done()
 
 
 ## Open a scroll on the 1280 x 720 design canvas with `extra` px of filler under
-## the credits, its own _process off so the test drives the roll's clock. The
+## the credits (or one short line, `short`), its own _process off so the test
+## drives the roll's clock. The
 ## caller restores the window with _restore_canvas.
 var _saved_root_size := Vector2i.ZERO
 
-func _open_with_filler(extra: float) -> CanvasLayer:
+func _open_with_filler(extra: float, short := false) -> CanvasLayer:
     _saved_root_size = root.size
     root.size = Vector2i(1280, 720)
     await process_frame
     var scroll: CanvasLayer = _scroll_script().new()
     root.add_child(scroll)
     scroll.set_process(false)
+    if short:
+        # A fixture that surely fits: one short line in place of the credits.
+        for child in scroll.content.get_children():
+            child.free()
+        scroll.content.add_child(Label.new())
     if extra > 0.0:
         var filler := Control.new()
         filler.custom_minimum_size = Vector2(0, extra)
         scroll.content.add_child(filler)
     scroll.open()
-    await process_frame
-    await process_frame
+    # Let the unroll finish, so the bottom roll is not still holding paper.
+    await create_timer(scroll.UNROLL_SEC + 0.15).timeout
     return scroll
 
 
@@ -366,16 +386,20 @@ func _test_roll_up_rest_down_and_stop() -> void:
     var scroll: CanvasLayer = await _open_with_filler(400.0)
     _check("taller text has room to roll", scroll.roll_room() > 100.0, true)
     _check("rolling after open", scroll.is_rolling(), true)
-    var top_before: int = scroll._top_frames.find(scroll.top_rod.texture)
     scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 0.01)
     _check("still at the top after the lead", scroll.body_scroll.scroll_vertical, 0)
+    _check("at the top the top roll is thin", scroll.top_step, 0)
+    _check("and the bottom roll holds the rest", scroll.bottom_step, scroll.ROLL_STEPS - 1)
+    var top_before: int = scroll.top_frame
     scroll._process(2.0)
     _check("winds up at the roll speed", scroll.body_scroll.scroll_vertical, int(2.0 * scroll.ROLL_SPEED))
-    _check("the top rod turned with it", scroll._top_frames.find(scroll.top_rod.texture), scroll.rod_frame(float(scroll.body_scroll.scroll_vertical), scroll.ROD_HEIGHT_PX))
-    _check("to a new frame", scroll._top_frames.find(scroll.top_rod.texture) != top_before, true)
+    _check("the top rod turned with the paper", scroll.top_frame != top_before, true)
+    _check("showing that frame", scroll.top_rod.texture, scroll._rod_texture(0, scroll.top_step, scroll.top_frame))
     scroll._process(scroll.roll_room() / scroll.ROLL_SPEED)
     var bottom: int = scroll.body_scroll.scroll_vertical
     _check("reaches the end", float(bottom), roundf(scroll.roll_room()))
+    _check("at the end the top roll holds it all", scroll.top_step, scroll.ROLL_STEPS - 1)
+    _check("and the bottom roll is thin", scroll.bottom_step, 0)
     scroll._process(scroll.ROLL_PAUSE / 2.0)
     _check("rests at the end", scroll.body_scroll.scroll_vertical, bottom)
     scroll._process(scroll.ROLL_PAUSE)
@@ -396,13 +420,30 @@ func _test_roll_up_rest_down_and_stop() -> void:
     _done()
 
 
+## code_review on LLM-802: a trackpad pan scrolls the paper too, so it must
+## take the paper from the roll. _input runs before the ScrollContainer's GUI
+## input, so the roll is off before the pan scrolls anything.
+func _test_pan_gesture_stops_the_roll() -> void:
+    var scroll: CanvasLayer = await _open_with_filler(400.0)
+    scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 1.0)
+    _check("rolling before the pan", scroll.is_rolling(), true)
+    var pan := InputEventPanGesture.new()
+    pan.delta = Vector2(0, 3)
+    scroll._input(pan)
+    _check("a trackpad pan takes the paper", scroll.is_rolling(), false)
+    scroll.close()
+    scroll.queue_free()
+    root.size = _saved_root_size
+    await process_frame
+    _done()
+
+
 func _test_no_roll_when_it_fits() -> void:
-    var scroll: CanvasLayer = await _open_with_filler(0.0)
+    var scroll: CanvasLayer = await _open_with_filler(0.0, true)
     scroll._process(scroll.UNROLL_SEC + scroll.ROLL_LEAD + 0.01)
-    if scroll.roll_room() <= 0.0:
-        _check("text that fits does not roll", scroll.is_rolling(), false)
-    else:
-        _check("the credits overflow here, so it rolls", scroll.is_rolling(), true)
+    _check("the short fixture fits", scroll.roll_room(), 0.0)
+    _check("text that fits does not roll", scroll.is_rolling(), false)
+    _check("both rolls thin when nothing is wound", [scroll.top_step, scroll.bottom_step], [0, 0])
     scroll.close()
     scroll.queue_free()
     root.size = _saved_root_size

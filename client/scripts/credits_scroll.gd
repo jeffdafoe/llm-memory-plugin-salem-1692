@@ -5,7 +5,8 @@ extends CanvasLayer
 ## when it opens: the build this client was exported from, then who made the
 ## art, sound and fonts. Every name is a link to the maker's work.
 ##
-## Layer 4 and the dismiss paths (Escape, the X, a click on the dim backdrop)
+## Layer 4 and the dismiss paths (Escape, a click on the dim backdrop — no X,
+## LLM-802: a click anywhere outside the scroll closes it)
 ## follow notice_panel.gd; main.gd holds camera.modal_open while it is up.
 
 const BuildInfo := preload("res://scripts/build_info.gd")
@@ -34,6 +35,11 @@ const LINK_TAP_SLOP := 10.0
 ## Drawn frames of one full turn of a rod (LLM-802). The rods turn with the
 ## paper: a frame per (one turn of paper / ROD_TURN_FRAMES) it moves.
 const ROD_TURN_FRAMES := 16
+## The parchment wound on each rod is drawn at ROLL_STEPS thicknesses: step 0
+## is a single wrap over the core, each step after adds one art pixel of radius.
+## The top roll fattens as the paper winds up onto it, the bottom one thins.
+const ROLL_STEPS := 3
+const COLOR_ROLL_EDGE := Color(0.55, 0.45, 0.29)
 ## The roll on open (LLM-802), only when the credits run taller than the paper:
 ## after the unroll and ROLL_LEAD, the paper winds up at ROLL_SPEED, rests
 ## ROLL_PAUSE at each end, and winds back. Any press, wheel, touch or key stops it.
@@ -105,7 +111,6 @@ var clipper: Control = null
 var paper: PanelContainer = null
 var body_scroll: ScrollContainer = null
 var content: VBoxContainer = null
-var close_label: Label = null
 var top_rod: TextureRect = null
 var bottom_rod: TextureRect = null
 
@@ -115,9 +120,21 @@ var _heading_font: FontVariation = null
 var _rod_width_px := 0
 var _paper_height := 0.0
 var _tween: Tween = null
-## One full turn of each rod, frame 0 first (rod_image with the turn stepped).
-var _top_frames: Array[Texture2D] = []
-var _bottom_frames: Array[Texture2D] = []
+## Rod pictures made so far, by rod, roll step and turn frame (_rod_texture).
+## Cleared when the rods change width.
+var _rod_cache := {}
+## Each rod's turn so far in radians, and the paper travel it was last turned
+## to. The turn adds up step by step at the roll's current radius, so a change
+## of thickness never jumps the picture.
+var _top_angle := 0.0
+var _bottom_angle := 0.0
+var _top_moved := 0.0
+var _bottom_moved := 0.0
+## What each rod shows now: its roll step and turn frame.
+var top_step := 0
+var bottom_step := 0
+var top_frame := 0
+var bottom_frame := 0
 
 enum Roll { OFF, LEAD, UP, REST_BOTTOM, DOWN, REST_TOP }
 var _roll: Roll = Roll.OFF
@@ -218,17 +235,6 @@ func _build_ui() -> void:
     _build_contents()
 
     paper_column.add_child(_make_curl())
-
-    close_label = _make_label("×", _font, 22, COLOR_WHAT)
-    close_label.mouse_filter = Control.MOUSE_FILTER_STOP
-    close_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-    close_label.mouse_entered.connect(func(): close_label.add_theme_color_override("font_color", COLOR_WHAT_HOVER))
-    close_label.mouse_exited.connect(func(): close_label.add_theme_color_override("font_color", COLOR_WHAT))
-    close_label.gui_input.connect(func(event: InputEvent):
-        if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-            close()
-            get_viewport().set_input_as_handled())
-    clipper.add_child(close_label)
 
 
 func _build_contents() -> void:
@@ -372,6 +378,10 @@ func open() -> void:
     _roll_pos = 0.0
     _roll = Roll.LEAD
     _roll_until = UNROLL_SEC + ROLL_LEAD
+    _top_angle = 0.0
+    _bottom_angle = 0.0
+    _top_moved = 0.0
+    _bottom_moved = 0.0
     _turn_rods()
 
 
@@ -400,8 +410,34 @@ func is_rolling() -> bool:
 ## Step the roll (LLM-802). Phases run on the roll's own clock: the lead after
 ## the unroll, up, a rest at the bottom, down, a rest at the top, and round.
 func _process(delta: float) -> void:
-    if not visible or _roll == Roll.OFF:
+    if not visible:
         return
+    if _roll != Roll.OFF:
+        _step_roll(delta)
+    # The rolls' thickness follows the room left to scroll, which settles a
+    # frame or two after open; keep the rods current while the scroll is up.
+    _turn_rods()
+    _warm_rods()
+
+
+## Draw one rod picture not yet made, each frame while the scroll is up: a
+## picture costs ~15 ms on desktop and more in a browser, too much to draw the
+## moment the paper first turns a rod to it. The rolls' current thickness goes
+## first; all ROLL_STEPS x ROD_TURN_FRAMES x 2 are ready within a couple of
+## seconds, mostly during the unroll and the lead.
+func _warm_rods() -> void:
+    for which in 2:
+        var current := top_step if which == 0 else bottom_step
+        for step in [current, current - 1, current + 1, 0, 1, 2]:
+            if step < 0 or step >= ROLL_STEPS:
+                continue
+            for frame in ROD_TURN_FRAMES:
+                if not _rod_cache.has(Vector3i(which, step, frame)):
+                    _rod_texture(which, step, frame)
+                    return
+
+
+func _step_roll(delta: float) -> void:
     _roll_clock += delta
     var room := roll_room()
     match _roll:
@@ -426,36 +462,76 @@ func _process(delta: float) -> void:
     body_scroll.scroll_vertical = int(roundf(_roll_pos))
 
 
-## The player takes the paper: a press, a wheel turn, a touch or a key stops
-## the roll. Only stops it — the event goes on to scroll, open a link or close.
+## The player takes the paper: a press, a wheel turn or trackpad pan, a touch,
+## a key, or a controller button stops the roll. Only stops it — the event goes
+## on to scroll, open a link or close.
 func _input(event: InputEvent) -> void:
     if not visible or _roll == Roll.OFF:
         return
     var takes: bool = (event is InputEventMouseButton and event.pressed) \
             or (event is InputEventScreenTouch and event.pressed) \
             or event is InputEventScreenDrag \
-            or (event is InputEventKey and event.pressed)
+            or event is InputEventPanGesture \
+            or (event is InputEventKey and event.pressed) \
+            or (event is InputEventJoypadButton and event.pressed) \
+            or (event is InputEventAction and event.pressed)
     if takes:
         _roll = Roll.OFF
 
 
-## Show each rod's frame for how far the paper has moved over it. Paper winding
-## up turns both rods so their faces move up; the bottom rod also turns back as
-## the paper comes off it in the unroll.
+## Dress both rods for where the paper is (LLM-802). Thickness: the paper
+## scrolled up is wound on the top roll, the paper still below on the bottom
+## one, and in the unroll the bottom roll still holds what has not come off it.
+## Turn: paper winding up turns both rods so their faces move up; the bottom rod
+## also turns as the paper comes off it in the unroll.
 func _turn_rods() -> void:
-    if _top_frames.is_empty() or _bottom_frames.is_empty():
+    if _rod_width_px <= 0:
         return
+    var room := roll_room()
     var scrolled := float(body_scroll.scroll_vertical)
-    var unrolled := clipper.custom_minimum_size.y
-    top_rod.texture = _top_frames[rod_frame(scrolled, ROD_HEIGHT_PX)]
-    bottom_rod.texture = _bottom_frames[rod_frame(scrolled - unrolled, ROD_HEIGHT_PX)]
+    var clip := clipper.custom_minimum_size.y
+    var up := clampf(scrolled / room, 0.0, 1.0) if room > 0.0 else 0.0
+    var still_below := 1.0 - up if room > 0.0 else 0.0
+    if _paper_height > 0.0:
+        still_below = maxf(still_below, 1.0 - clip / _paper_height)
+    top_step = roll_step(up)
+    bottom_step = roll_step(still_below)
+
+    _top_angle += (scrolled - _top_moved) / (ROD_PIXEL * roll_radius(top_step))
+    _top_moved = scrolled
+    var bottom_moved := scrolled - clip
+    _bottom_angle += (bottom_moved - _bottom_moved) / (ROD_PIXEL * roll_radius(bottom_step))
+    _bottom_moved = bottom_moved
+    top_frame = rod_frame_at(_top_angle)
+    bottom_frame = rod_frame_at(_bottom_angle)
+
+    top_rod.texture = _rod_texture(0, top_step, top_frame)
+    bottom_rod.texture = _rod_texture(1, bottom_step, bottom_frame)
 
 
-## The rod frame for paper moved `moved` screen pixels: the paper rolls without
-## slipping on the rod's body, one turn per body circumference.
-static func rod_frame(moved: float, height_px: int) -> int:
-    var turns := moved / float(ROD_PIXEL) / (TAU * rod_body_radius(height_px))
-    return posmod(roundi(turns * ROD_TURN_FRAMES), ROD_TURN_FRAMES)
+## The picture of one rod (0 top, 1 bottom) at a roll step and turn frame, made
+## on first use: a dozen or so are needed in a session, not all 96.
+func _rod_texture(which: int, step: int, frame: int) -> Texture2D:
+    var key := Vector3i(which, step, frame)
+    if not _rod_cache.has(key):
+        var image := rod_image(_rod_width_px, ROD_HEIGHT_PX, 1692 + which, TAU * frame / ROD_TURN_FRAMES, step)
+        _rod_cache[key] = ImageTexture.create_from_image(image)
+    return _rod_cache[key]
+
+
+## The roll step for a share (0..1) of the paper wound on a rod.
+static func roll_step(share: float) -> int:
+    return clampi(roundi(share * (ROLL_STEPS - 1)), 0, ROLL_STEPS - 1)
+
+
+## A roll's radius in art pixels at a step: the core wrap plus a pixel a step.
+static func roll_radius(step: int) -> float:
+    return rod_body_radius(ROD_HEIGHT_PX) + step
+
+
+## The turn frame for a rod turned `angle` radians.
+static func rod_frame_at(angle: float) -> int:
+    return posmod(roundi(angle / TAU * ROD_TURN_FRAMES), ROD_TURN_FRAMES)
 
 
 ## The rod body's radius in art pixels (between its outline rows).
@@ -475,8 +551,7 @@ func _layout() -> void:
     if rod_width_px != _rod_width_px:
         _rod_width_px = rod_width_px
         var rod_size := Vector2(rod_width_px * ROD_PIXEL, ROD_HEIGHT_PX * ROD_PIXEL)
-        _top_frames = rod_frames(rod_width_px, ROD_HEIGHT_PX, 1692)
-        _bottom_frames = rod_frames(rod_width_px, ROD_HEIGHT_PX, 1693)
+        _rod_cache.clear()
         top_rod.custom_minimum_size = rod_size
         bottom_rod.custom_minimum_size = rod_size
         _turn_rods()
@@ -490,7 +565,6 @@ func _layout() -> void:
     paper.position = Vector2.ZERO
     paper.size = Vector2(paper_width, _paper_height)
     clipper.custom_minimum_size = Vector2(paper_width, _paper_height)
-    close_label.position = Vector2(paper_width - 26.0, CURL_HEIGHT + 2.0)
 
 
 func _on_viewport_size_changed() -> void:
@@ -518,25 +592,20 @@ func _unhandled_input(event: InputEvent) -> void:
         get_viewport().set_input_as_handled()
 
 
-## One full turn of a rod, ROD_TURN_FRAMES frames.
-static func rod_frames(width_px: int, height_px: int, seed_value: int) -> Array[Texture2D]:
-    var frames: Array[Texture2D] = []
-    for i in ROD_TURN_FRAMES:
-        frames.append(ImageTexture.create_from_image(rod_image(width_px, height_px, seed_value, TAU * i / ROD_TURN_FRAMES)))
-    return frames
-
-
-## One turned rod as pixel art: a grained cylinder between two collars and two
-## round knobs, lit from the upper left. The grain is noise-warped bands that
-## run along the rod and bend around a single knot. seed_value varies the grain
-## so the two rods are not copies.
+## One scroll rod as pixel art, lit from the upper left: two round wooden knobs
+## and collars at the ends, and between them the parchment wound on the rod —
+## a roll of paper, not bare wood (LLM-802). seed_value varies the wood grain
+## and the paper's fibres so the two rods are not copies.
 ##
-## turn is how far the rod has turned about its long axis, in radians (LLM-802).
-## The grain lives on the wood, the light does not: each pixel's angle round the
-## cylinder (from its normal) plus turn picks its grain, sampled on a circle so
-## a whole turn comes back to the same picture, and the knot rolls round to the
-## back and out of sight. A turn moves the face of the rod up.
-static func rod_image(width_px: int, height_px: int, seed_value: int, turn := 0.0) -> Image:
+## turn is how far the rod has turned about its long axis, in radians. The
+## grain and fibres live on the surface, the light does not: each pixel's angle
+## round the cylinder (from its normal) plus turn picks its texture, sampled on
+## a circle so a whole turn comes back to the same picture. A turn moves the
+## face of the rod up.
+##
+## step (0 .. ROLL_STEPS - 1) is how much parchment is wound on: each step adds
+## an art pixel of radius to the roll, above and below.
+static func rod_image(width_px: int, height_px: int, seed_value: int, turn := 0.0, step := 0) -> Image:
     var image := Image.create(width_px, height_px, false, Image.FORMAT_RGBA8)
     var noise := FastNoiseLite.new()
     noise.seed = seed_value
@@ -549,16 +618,12 @@ static func rod_image(width_px: int, height_px: int, seed_value: int, turn := 0.
     var collar_width := 3
     var collar_top := 2
     var collar_bottom := height_px - 3
-    var body_top := 3
-    var body_bottom := height_px - 4
+    var wound := clampi(step, 0, ROLL_STEPS - 1)
+    var body_top := 3 - wound
+    var body_bottom := height_px - 4 + wound
     var body_left := knob_width + collar_width
     var body_right := width_px - 1 - knob_width - collar_width
-    var body_radius := rod_body_radius(height_px)
-    # The knot sits on the face at turn 0 and rolls with the wood: its angle
-    # from the viewer is -turn; past the edge of the face it is round the back.
-    var knot_angle := wrapf(-turn, -PI, PI)
-    var knot_shows := cos(knot_angle) > 0.2
-    var knot := Vector2(width_px * (0.45 + 0.2 * fposmod(seed_value * 0.37, 1.0)), (body_top + body_bottom) / 2.0 + sin(knot_angle) * body_radius)
+    var body_radius := rod_body_radius(height_px) + wound
 
     for y in height_px:
         for x in width_px:
@@ -580,16 +645,17 @@ static func rod_image(width_px: int, height_px: int, seed_value: int, turn := 0.
                 else:
                     color = _lit(COLOR_WOOD.darkened(0.12), _cylinder_normal(y, collar_top, collar_bottom), light)
             elif x >= body_left and x <= body_right and y >= body_top and y <= body_bottom:
+                # The wound parchment.
                 if y == body_top or y == body_bottom:
-                    color = COLOR_WOOD_OUTLINE
+                    color = COLOR_ROLL_EDGE
                 else:
                     var normal := _cylinder_normal(y, body_top, body_bottom)
-                    var to_knot := (px - knot) / Vector2(3.0, 1.2)
-                    var bend := 2.2 / (1.0 + to_knot.length_squared()) if knot_shows else 0.0
-                    var grain := _grain(noise, x, atan2(normal.y, normal.z) + turn + bend / body_radius, body_radius, seed_value)
-                    if knot_shows and to_knot.length() < 1.0:
-                        grain *= 0.62
-                    color = _lit(COLOR_WOOD, normal, light) * grain
+                    var fibres := _fibres(noise, x, atan2(normal.y, normal.z) + turn, body_radius, seed_value)
+                    # Paper takes a softer light than the wood: under the hard
+                    # wood shading its lower half went as dark as the knobs.
+                    var lambert := maxf(0.0, normal.dot(light))
+                    var shade := (0.68 + 0.42 * lambert) * fibres
+                    color = Color(COLOR_PAPER.r * shade, COLOR_PAPER.g * shade, COLOR_PAPER.b * shade, 1.0)
             color.a = 1.0 if color.a > 0.0 else 0.0
             image.set_pixel(x, y, color)
     return image
@@ -607,6 +673,17 @@ static func _lit(base: Color, normal: Vector3, light: Vector3) -> Color:
     if lambert > 0.93:
         shade += 0.12
     return Color(base.r * shade, base.g * shade, base.b * shade, 1.0)
+
+
+## A parchment multiplier at angle phi round a roll of radius r (art pixels):
+## a soft mottle and sparse darker flecks, read on the circle like the grain so
+## the turn frames loop. The flecks are what show the roll turning.
+static func _fibres(noise: FastNoiseLite, x: float, phi: float, r: float, seed_value: int) -> float:
+    var around := Vector2(cos(phi), sin(phi)) * r
+    var tone := 1.0 + noise.get_noise_3d(x * 0.25, around.x * 0.6, around.y * 0.6) * 0.07
+    if noise.get_noise_3d(x * 1.7 + seed_value, around.x * 2.2, around.y * 2.2) > 0.42:
+        tone *= 0.88
+    return tone
 
 
 ## A grain multiplier at angle phi round a cylinder of radius r (art pixels):
