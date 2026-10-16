@@ -185,6 +185,11 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			if objID, ok := resolveObjectByRememberedName(w, a, target, remembered.ObjectIDs); ok {
 				return moveToObjectLabeled(actorID, objID, target, now).Fn(w)
 			}
+			// A milking animal by name ("Cow 2", LLM-797): walk to a tile beside
+			// her wherever she is grazing, and she waits.
+			if animal, ok := resolveLivestockByName(w, target); ok {
+				return moveToLivestockLabeled(w, actorID, animal, target, now)
+			}
 			// LLM-212: reserved relationship keywords ("home"/"work" + synonyms), as a
 			// FALLBACK only — after no real structure or object matched the word, so a
 			// place actually named "home"/"my shop" wins the name and the keyword fires

@@ -2938,6 +2938,8 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		Pos:                        a.Pos,
 		CurrentHuddleID:            a.CurrentHuddleID,
 		GatherTargetObjectID:       a.GatherTargetObjectID,
+		Yield:                      cloneLivestockYield(a.Yield),
+		HerdTargetID:               a.HerdTargetID,
 		SpriteID:                   a.SpriteID,
 		Facing:                     a.Facing,
 		MoveDestKind:               moveDestKind,
@@ -3042,6 +3044,7 @@ func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddle
 	if act := a.SourceActivity; act != nil && a.BusyAtSource(now) {
 		sa.SourceActivityKind = act.Kind
 		sa.SourceActivityObjectID = act.ObjectID
+		sa.SourceActivityAnimalID = act.AnimalID
 		sa.SourceActivityPublicWorks = act.PublicWorks
 		if act.Kind == SourceActivityRefresh {
 			if obj := w.VillageObjects[act.ObjectID]; obj != nil {

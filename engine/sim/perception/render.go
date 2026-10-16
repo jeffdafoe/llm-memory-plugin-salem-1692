@@ -236,6 +236,14 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 			}
 			return false
 		}
+		if ground == sim.ForageGroundHerd {
+			for _, h := range p.Forage.Herd {
+				if h.kind == kind {
+					return true
+				}
+			}
+			return false
+		}
 		for _, it := range p.Forage.Items {
 			if it.kind == kind {
 				return true
@@ -1316,6 +1324,8 @@ func sourceActivityVerb(v InFlightSourceActivityView) string {
 	switch v.Kind {
 	case sim.SourceActivityHarvest:
 		return "gathering"
+	case sim.SourceActivityMilk:
+		return "milking"
 	case sim.SourceActivityRepair:
 		return "mending"
 	case sim.SourceActivityStoke:
@@ -1340,6 +1350,9 @@ func sourceActivityVerb(v InFlightSourceActivityView) string {
 func sourceActivityPhrase(v InFlightSourceActivityView) string {
 	verb := sourceActivityVerb(v)
 	if v.SourceLabel != "" {
+		if v.Kind == sim.SourceActivityMilk {
+			return verb + " " + sanitizeInline(v.SourceLabel) // "milking Cow 2"
+		}
 		return verb + " at " + sanitizeInline(v.SourceLabel)
 	}
 	return verb
@@ -1367,7 +1380,7 @@ func sourceActivityCompletionHorizon(kind sim.SourceActivityKind) string {
 	switch kind {
 	case sim.SourceActivityBake:
 		return "by dusk"
-	case sim.SourceActivityRefresh, sim.SourceActivityHarvest, sim.SourceActivityStoke, sim.SourceActivityRepair:
+	case sim.SourceActivityRefresh, sim.SourceActivityHarvest, sim.SourceActivityStoke, sim.SourceActivityRepair, sim.SourceActivityMilk:
 		return "shortly"
 	}
 	return "shortly"
@@ -1385,6 +1398,8 @@ func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 	switch v.Kind {
 	case sim.SourceActivityHarvest:
 		tail = "if you walk off now you abandon the pick and gather nothing"
+	case sim.SourceActivityMilk:
+		tail = "if you walk off now she is left half-milked and your pail stays empty"
 	case sim.SourceActivityRepair:
 		tail = "if you walk off now the mending is unfinished and the stall stays worn"
 		if v.PublicWorks {
@@ -1927,8 +1942,13 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if noun == "" {
 			noun = string(s.GatherableItem)
 		}
-		fmt.Fprintf(b, "You're at %s — you can gather %s here.\n",
-			source, sanitizeInline(noun))
+		if s.GatherableFromAnimal {
+			fmt.Fprintf(b, "You're beside %s, heavy with %s — you can gather it from her here.\n",
+				source, sanitizeInline(noun))
+		} else {
+			fmt.Fprintf(b, "You're at %s — you can gather %s here.\n",
+				source, sanitizeInline(noun))
+		}
 	}
 	b.WriteString("\n")
 }
@@ -2090,6 +2110,13 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but your shelves are bare — step out to gather what you need, then return to your post.\n\n", closeAt)
 			} else {
 				b.WriteString("It is your working hours and you are at your post, but your shelves are bare — step out to gather what you need, then return to your post.\n\n")
+			}
+			return
+		case ForageErrandHerd:
+			if closeAt != "" {
+				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s), but the cows want milking — step out to the pen, then return to your post.\n\n", closeAt)
+			} else {
+				b.WriteString("It is your working hours and you are at your post, but the cows want milking — step out to the pen, then return to your post.\n\n")
 			}
 			return
 		}
@@ -2356,6 +2383,11 @@ func busyActivityPhrase(m HuddleMember) string {
 		return " (tending the fire just now" + tail + ")"
 	case sim.SourceActivityHarvest:
 		return " (gathering just now" + tail + ")"
+	case sim.SourceActivityMilk:
+		if label := sanitizeInline(m.SourceActivityLabel); label != "" {
+			return fmt.Sprintf(" (milking %s just now%s)", label, tail)
+		}
+		return " (milking just now" + tail + ")"
 	case sim.SourceActivityBake:
 		return " (at the hearth, baking just now)"
 	}
@@ -5011,6 +5043,9 @@ func restockWarrantSection(r sim.RestockWarrantReason, forageShown func(sim.Fora
 	}
 	if ground == sim.ForageGroundWild {
 		return "Free sources you can gather from"
+	}
+	if ground == sim.ForageGroundHerd {
+		return "Your cows"
 	}
 	return "Your bushes to harvest"
 }

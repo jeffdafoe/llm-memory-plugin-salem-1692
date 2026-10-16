@@ -60,6 +60,8 @@ import (
 type ForageView struct {
 	Items       []ForageItemView
 	WildSources []WildForageItemView
+	// Herd — "## Your cows" (LLM-797): a low item the milking animals give.
+	Herd []HerdItemView
 }
 
 // ForageErrandKind names which side of the forage cue carries the ripe stock, and
@@ -77,6 +79,8 @@ const (
 	ForageErrandOwnBushes
 	// ForageErrandFreeSources: only unowned commons sources do.
 	ForageErrandFreeSources
+	// ForageErrandHerd: only the cows do (LLM-797).
+	ForageErrandHerd
 )
 
 // Errand reports whether the kind names an errand there is wording for. Written
@@ -89,7 +93,7 @@ const (
 // half-acting. Kept beside the constants so the two stay in view of each other.
 func (k ForageErrandKind) Errand() bool {
 	switch k {
-	case ForageErrandOwnBushes, ForageErrandFreeSources:
+	case ForageErrandOwnBushes, ForageErrandFreeSources, ForageErrandHerd:
 		return true
 	}
 	return false
@@ -119,6 +123,11 @@ func (v *ForageView) ActionableErrand() ForageErrandKind {
 	for _, w := range v.WildSources {
 		if w.RipeUnits > 0 {
 			return ForageErrandFreeSources
+		}
+	}
+	for _, h := range v.Herd {
+		if len(h.Ready) > 0 {
+			return ForageErrandHerd
 		}
 	}
 	return ForageErrandNone
@@ -215,10 +224,17 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 	tagged := hasForageRange(actorSnap)
 	var items []ForageItemView
 	var wild []WildForageItemView
+	var herd []HerdItemView
 	for _, e := range actorSnap.RestockPolicy.ForageEntries() {
 		cap := e.Cap()
 		current := actorSnap.Inventory[e.Item]
 		if !sim.RestockReorderThresholdMet(current, cap, pct, 0) { // forage stock is not a recipe input — cap fraction only
+			continue
+		}
+		// An item the cows give is fetched from the herd (LLM-797), never from a
+		// bush or a wild source — the same ground the forage wake names.
+		if hv, ok := buildHerdItem(snap, actorSnap, e.Item); ok {
+			herd = append(herd, hv)
 			continue
 		}
 		// Scan the grower's REMEMBERED gather bushes for this item (LLM-79): the
@@ -309,7 +325,7 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 			kind:       e.Item,
 		})
 	}
-	if len(items) == 0 && len(wild) == 0 {
+	if len(items) == 0 && len(wild) == 0 && len(herd) == 0 {
 		return nil
 	}
 	// Deterministic section order — by item label, then the underlying kind as a
@@ -327,7 +343,8 @@ func buildForage(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSn
 		}
 		return wild[i].kind < wild[j].kind
 	})
-	return &ForageView{Items: items, WildSources: wild}
+	sort.Slice(herd, func(i, j int) bool { return herd[i].ItemLabel < herd[j].ItemLabel })
+	return &ForageView{Items: items, WildSources: wild, Herd: herd}
 }
 
 // itemHasActionableForagePath reports whether the forage cue would name a RIPE
@@ -353,6 +370,11 @@ func itemHasActionableForagePath(snap *sim.Snapshot, actorID sim.ActorID, actorS
 	}
 	for _, w := range v.WildSources {
 		if w.kind == kind && w.RipeUnits > 0 {
+			return true
+		}
+	}
+	for _, h := range v.Herd {
+		if h.kind == kind && len(h.Ready) > 0 {
 			return true
 		}
 	}
@@ -416,7 +438,7 @@ func nearestWildForageSource(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, i
 // the on-hand/cap, the bush + ripe count, and the move_to handle to the ripest
 // bush.
 func renderForage(b *strings.Builder, v *ForageView) {
-	if v == nil || (len(v.Items) == 0 && len(v.WildSources) == 0) {
+	if v == nil || (len(v.Items) == 0 && len(v.WildSources) == 0 && len(v.Herd) == 0) {
 		return
 	}
 	if len(v.Items) > 0 {
@@ -474,6 +496,7 @@ func renderForage(b *strings.Builder, v *ForageView) {
 		}
 	}
 	renderWildForage(b, v.WildSources)
+	renderHerd(b, v.Herd)
 }
 
 // renderWildForage writes the "## Free sources you can gather from" section — the

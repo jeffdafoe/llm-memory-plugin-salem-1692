@@ -594,6 +594,9 @@ func handleGatheredActionLog(w *sim.World, evt sim.Event) {
 		huddleID = actor.CurrentHuddleID
 	}
 	sourceName := objectDisplayName(w, gathered.ObjectID)
+	if animal := w.Actors[gathered.AnimalID]; gathered.AnimalID != "" && animal != nil {
+		sourceName = animal.DisplayName
+	}
 	entry := sim.ActionLogEntry{
 		ActorID:          gathered.ActorID,
 		OccurredAt:       gathered.At,

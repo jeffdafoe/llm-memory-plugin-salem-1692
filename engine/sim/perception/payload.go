@@ -1879,6 +1879,9 @@ type SurroundingsView struct {
 	// woven into the "you can gather X here" cue ("raspberries", not the raw
 	// key). Empty when there is no cue; render falls back to the key string.
 	GatherableNoun string
+	// GatherableFromAnimal marks the source as a milking animal (LLM-797):
+	// GatherableSource is then her name, and render says she is beside you.
+	GatherableFromAnimal bool
 }
 
 // DeadEndReason enumerates the live reasons the actor's CURRENT location can't

@@ -33,6 +33,8 @@ var (
 	RegenObjectRefresh          = regenObjectRefresh
 	DrawDownStock               = drawDownStock
 	CompleteDueSourceActivities = completeDueSourceActivities
+	LivestockHeld               = livestockHeld
+	RegenLivestockYield         = regenLivestockYield
 	ExecutePCSleep              = executePCSleep
 	EmitDamagedObjectNarration  = emitDamagedObjectNarration
 

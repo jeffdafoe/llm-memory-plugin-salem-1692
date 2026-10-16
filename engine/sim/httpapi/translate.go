@@ -560,6 +560,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Kind:       string(e.Kind),
 			SourceName: e.SourceName,
 			ObjectID:   string(e.ObjectID),
+			AnimalID:   string(e.AnimalID),
 		}}, true
 	case *sim.SourceActivityCompleted:
 		// Clear the tooltip busy line when the window closes on its own. Same gate.
@@ -572,6 +573,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		}
 		return WireFrame{Type: "npc_source_activity_changed", Data: sourceActivityChangedWireDTO{
 			ID: string(e.ActorID),
+		}}, true
+	case *sim.LivestockFed:
+		// LLM-797: an animal was fed — by a player's click or an NPC at the end
+		// of a milking. The client moos when the animal is on screen.
+		return WireFrame{Type: "livestock_fed", Data: livestockFedWireDTO{
+			ID: string(e.AnimalID),
 		}}, true
 	case *sim.SourceActivityCancelled:
 		// Clear on abandonment (today: a committed move off the source). Same gate.
@@ -1060,6 +1067,13 @@ type sourceActivityChangedWireDTO struct {
 	SourceName string `json:"source_name,omitempty"`
 	// ObjectID is the object being worked (LLM-743); empty on a clear.
 	ObjectID string `json:"object_id,omitempty"`
+	// AnimalID is the animal being milked (LLM-797); empty otherwise.
+	AnimalID string `json:"animal_id,omitempty"`
+}
+
+// livestockFedWireDTO is the livestock_fed payload (LLM-797): the animal fed.
+type livestockFedWireDTO struct {
+	ID string `json:"id"`
 }
 
 // renderedSourceActivityKind reports whether a source-activity kind reaches the
@@ -1070,7 +1084,7 @@ type sourceActivityChangedWireDTO struct {
 // the snapshot builder (agentsFromSnapshot).
 func renderedSourceActivityKind(k sim.SourceActivityKind) bool {
 	switch k {
-	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh:
+	case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityRefresh, sim.SourceActivityMilk:
 		return true
 	}
 	return false

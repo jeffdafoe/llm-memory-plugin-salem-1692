@@ -210,6 +210,19 @@ type AgentDTO struct {
 	// SourceActivityObjectID is the object being worked (LLM-743), so the client
 	// can turn a repairer toward it and land the swing on it. Omitted when idle.
 	SourceActivityObjectID string `json:"source_activity_object_id,omitempty"`
+	// SourceActivityAnimalID is the animal being milked (LLM-797), so the client
+	// turns the milker toward her. Omitted otherwise.
+	SourceActivityAnimalID string `json:"source_activity_animal_id,omitempty"`
+	// Livestock marks an animal that gives something (LLM-797) — the client
+	// offers a player holding the feed the "feed her" prompt on a click. Omitted
+	// for every other actor.
+	Livestock *LivestockDTO `json:"livestock,omitempty"`
+}
+
+// LivestockDTO is what a milking animal gives and what she is fed.
+type LivestockDTO struct {
+	Item string `json:"item"`
+	Feed string `json:"feed"`
 }
 
 // AgentSpriteDTO is the resolved character sprite inlined onto an AgentDTO.

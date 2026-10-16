@@ -1135,6 +1135,18 @@ func computeHoursAwake(nowMin, startMin, endMin *int) *int {
 	return &hours
 }
 
+// sourceActivityLabelFor names an activity's source: the milked animal by name
+// (LLM-797), else the worked place.
+func sourceActivityLabelFor(snap *sim.Snapshot, objID sim.VillageObjectID, animalID sim.ActorID) string {
+	if animalID != "" {
+		if an := snap.Actors[animalID]; an != nil {
+			return an.DisplayName
+		}
+		return ""
+	}
+	return resolveDwellPinLabel(snap, objID)
+}
+
 // buildInFlightSourceActivity projects the subject's in-flight SourceActivity
 // (the read-path Kind/ObjectID/Attribute fields the snapshot carries while the
 // window is live) into a render-ready view, or nil when the actor isn't engaged
@@ -1151,7 +1163,7 @@ func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFl
 	}
 	return &InFlightSourceActivityView{
 		Kind:            a.SourceActivityKind,
-		SourceLabel:     resolveDwellPinLabel(snap, a.SourceActivityObjectID),
+		SourceLabel:     sourceActivityLabelFor(snap, a.SourceActivityObjectID, a.SourceActivityAnimalID),
 		Attribute:       a.SourceActivityAttribute,
 		PublicWorks:     publicWorks,
 		PublicWorksKind: kind,
@@ -1447,7 +1459,8 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		LocalMinuteOfDay:  snap.LocalMinuteOfDay,
 		OnRound:           actorOnRound(a),
 	}
-	if item, source, ok := findGatherableCue(snap, actorID, a); ok {
+	if item, source, animal, ok := findGatherableSourceCue(snap, actorID, a); ok {
+		s.GatherableFromAnimal = animal
 		s.GatherableItem = item
 		s.GatherableSource = source
 		s.GatherableNoun = itemPlural(snap, item)
@@ -1626,10 +1639,10 @@ func resolveCoPresentMember(snap *sim.Snapshot, subjectID sim.ActorID, subj *sim
 		// SourceActivityBusy and a rendered phrase in lockstep — a busy flag never renders
 		// silent (nor would a future unhandled kind).
 		switch peer.SourceActivityKind {
-		case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityBake:
+		case sim.SourceActivityRepair, sim.SourceActivityStoke, sim.SourceActivityHarvest, sim.SourceActivityBake, sim.SourceActivityMilk:
 			m.SourceActivityBusy = true
 			m.SourceActivityKind = peer.SourceActivityKind
-			m.SourceActivityLabel = resolveDwellPinLabel(snap, peer.SourceActivityObjectID)
+			m.SourceActivityLabel = sourceActivityLabelFor(snap, peer.SourceActivityObjectID, peer.SourceActivityAnimalID)
 			m.SourceActivityNoAnswer = peer.Kind != sim.KindPC && peer.SourceActivityKind != sim.SourceActivityBake
 		}
 		// LLM-370: a co-present transient traveler is named by archetype + origin in
@@ -1893,13 +1906,30 @@ func actorMidSourceActivity(a *sim.ActorSnapshot) bool {
 // (gateTools) reads this same SurroundingsView field, so suppressing un-advertises
 // gather. Owner-gate: LLM-50 D2.
 func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSnapshot) (sim.ItemKind, string, bool) {
+	item, source, _, ok := findGatherableSourceCue(snap, subjectID, a)
+	return item, source, ok
+}
+
+// findGatherableSourceCue is findGatherableCue that also reports whether the
+// source is a milking animal (LLM-797), so render can say "beside Cow 2".
+func findGatherableSourceCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSnapshot) (sim.ItemKind, string, bool, bool) {
 	if actorMidSourceActivity(a) {
-		return "", "", false // mid a source-activity window — a fresh gather bounces "already busy at the source"
+		return "", "", false, false // mid a source-activity window — a fresh gather bounces "already busy at the source"
 	}
 	low := sim.LowForageItems(a.RestockPolicy, a.Inventory, snap.RestockReorderPct)
 	_, obj, row := sim.ResolveGatherSource(snap.VillageObjects, snap.Assets, a.Pos, subjectID, a.GatherTargetObjectID, low, sim.ForageItems(a.RestockPolicy))
-	if obj == nil || row == nil || obj.OwnedByOther(subjectID) {
-		return "", "", false
+	if row == nil {
+		// No bush or well in reach — a cow beside her she may milk is a source
+		// too (LLM-797), resolved by the same pick StartHarvest falls back to,
+		// on the same row == nil condition, so cue and command agree.
+		c, ok := sim.PickLivestockSource(sim.SnapshotLivestock(snap), a.Pos, a.HerdTargetID, sim.ForageItems(a.RestockPolicy))
+		if !ok || !c.Yield.HasStock() {
+			return "", "", false, false
+		}
+		return c.Yield.Item(), c.Name, true, true
+	}
+	if obj == nil || obj.OwnedByOther(subjectID) {
+		return "", "", false, false
 	}
 	// Suppress the cue when the resolved source is depleted. In a sparse plot
 	// (bushes spaced wider than LoiterAttributionTiles) the only in-reach
@@ -1909,9 +1939,9 @@ func findGatherableCue(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorSn
 	// the cue here introduces no cue↔command divergence — it just stops the cue
 	// dangling a gather that can't succeed.
 	if !row.HasStock() || obj.Damaged() {
-		return "", "", false
+		return "", "", false, false
 	}
-	return sim.ItemKind(strings.TrimSpace(string(row.GatherItem))), obj.DisplayName, true
+	return sim.ItemKind(strings.TrimSpace(string(row.GatherItem))), obj.DisplayName, false, true
 }
 
 // findLoiterStructure returns the DisplayName and id of the structure whose
