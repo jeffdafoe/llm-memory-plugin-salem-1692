@@ -86,6 +86,16 @@ func buildConstableCascadeWorld(t *testing.T, extraConstables ...sim.ActorID) *s
 			ScheduleEndMin:    intp(1440),
 			Attributes:        map[string][]byte{sim.AttrConstable: {}},
 		},
+		// A keeper inside each business keeps it open (LLM-791: a walk-in
+		// business locks while no keeper is there), so the rounds enter them.
+		"store_keeper": {
+			ID: "store_keeper", DisplayName: "Josiah", Kind: sim.KindNPCStateful,
+			Pos: sim.TilePos{X: sim.PadX + 20, Y: sim.PadY + 10}, WorkStructureID: "store", InsideStructureID: "store",
+		},
+		"tavern_keeper": {
+			ID: "tavern_keeper", DisplayName: "John", Kind: sim.KindNPCStateful,
+			Pos: sim.TilePos{X: sim.PadX + 30, Y: sim.PadY + 10}, WorkStructureID: "tavern", InsideStructureID: "tavern",
+		},
 	}
 	for _, id := range extraConstables {
 		actorSeed[id] = &sim.Actor{

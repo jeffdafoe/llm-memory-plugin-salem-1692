@@ -289,7 +289,7 @@ func routeStopDestination(stop RouteStop) MoveDestination {
 // routeStopEntersStructure is the reusable enter-vs-loiter RULE (LLM-514): a route
 // visits objID by ENTERING it when the placement is structure-backed (its id also
 // names a Structure under the shared-identity bridge) AND actor can actually enter
-// it right now. Doorless / open placements (market stalls, farms, the mill), bare
+// it right now. Doorless placements (market stalls, farms), bare
 // props (lamps, boards, laundry lines), and structures the actor may NOT enter at
 // `now` all fall through — the caller stands at the loiter pin instead. Returns the
 // StructureID to enter and ok=true only for the enter case.
@@ -297,8 +297,8 @@ func routeStopDestination(stop RouteStop) MoveDestination {
 // The "can enter now" check reuses moveToCanEnter — the SAME gate MoveActor's
 // StructureEnter validation and the PC move-to derivation use (effectiveEntryPolicy
 // + membership + door). This is what keeps the constable OUT of a closed or locked
-// business: a lodge whose keeper is abed reads owner-only (lodgeLocked), and a
-// non-member constable resolves to a loiter stop at the door rather than an enter
+// business: a walk-in business with no keeper there reads owner-only (businessLocked),
+// and a non-member constable resolves to a loiter stop at the door rather than an enter
 // (LLM-514 fix #8 — John Ellis's tavern before he opens at 3pm). Never reimplement
 // the rule here, or the rounds gate drifts from the movement gate.
 //

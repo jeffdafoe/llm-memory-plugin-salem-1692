@@ -9,11 +9,11 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// lodge_lock_integration_test.go — LLM-130. The end-to-end PC knock against the
-// walkable world: a non-member who navigates to a lodge whose keeper has bedded
-// down for the night is routed to a knock, and because the keeper is asleep the
+// business_lock_integration_test.go — LLM-130 / LLM-791. The end-to-end PC knock
+// against the walkable world: a non-member who navigates to a lodge whose keeper
+// has bedded down for the night is routed to a knock, and because the keeper is asleep the
 // door goes unanswered ("the door is shut fast"). The decision logic is
-// unit-tested in package sim (lodge_lock_test.go); this proves the EnterOrKnock
+// unit-tested in package sim (business_lock_test.go); this proves the EnterOrKnock
 // site wires the lock through the real MoveActor/pathing flow a unit test can't
 // (no walk grid).
 
@@ -30,7 +30,7 @@ func buildLockedLodgeWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"inn": {
 			ID: "inn", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320},
-			Tags: []string{"lodging"}, EntryPolicy: sim.EntryPolicyOpen,
+			Tags: []string{"business", "lodging"}, EntryPolicy: sim.EntryPolicyOpen,
 		},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
@@ -65,8 +65,8 @@ func TestEnterOrKnock_LockedLodge_PCKnocksDoorShut(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	// Bed the keeper into its staff room — the LLM-29 bed-down state lodgeLocked
-	// keys off. (Set the businessowner marker here too so the inn reads as its
+	// Bed the keeper into its staff room — asleep, so no keeper is tending the inn
+	// (businessLocked). (Set the businessowner marker here too so the inn reads as its
 	// own keeper's establishment.)
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		k := world.Actors["keeper"]
@@ -81,8 +81,7 @@ func TestEnterOrKnock_LockedLodge_PCKnocksDoorShut(t *testing.T) {
 			}
 		}
 		k.State = sim.StateSleeping
-		// A future SleepingUntil so the keeper reads as abed (not awake on the
-		// floor) to the establishmentHasAwakeKeeperPresent gate in lodgeLocked.
+		// A future SleepingUntil, as executeNPCSleep stamps it.
 		until := now.Add(8 * time.Hour)
 		k.SleepingUntil = &until
 		return nil, nil
