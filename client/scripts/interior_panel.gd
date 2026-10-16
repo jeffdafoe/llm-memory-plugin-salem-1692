@@ -118,8 +118,10 @@ const SPEAK_HOLD := 4.0
 const HAND_CLEAR := 20.0
 ## A smithy's work area (LLM-764). When a hand would turn, BELLOWS_CHANCE of
 ## the time a farmer-base hand walks to the bellows instead and pulls for
-## PULL_MIN..PULL_MAX seconds, one hand at a time; each pull down flares the
-## fire, a glow that fades over FLARE_SECONDS. When the keeper would bustle,
+## PULL_MIN..PULL_MAX seconds, one hand at a time; each pull down presses the
+## bellows and flares the fire, a glow that fades over FLARE_SECONDS. Between
+## pulls the fire flickers, its glow FLICKER_MIN..FLICKER_MAX, a new one every
+## FLICKER_STEP_MIN..FLICKER_STEP_MAX seconds (LLM-795). When the keeper would bustle,
 ## SMITH_CHANCE of the time a farmer-base keeper walks to the anvil and
 ## hammers for SMITH_MIN..SMITH_MAX seconds. A sale or speech brings the
 ## keeper back; speech stops a hand's pull.
@@ -130,6 +132,10 @@ const FLARE_SECONDS := 0.7
 const FLARE_ALPHA := 0.6
 const FLARE_INNER := Color(1.0, 0.62, 0.22, 1.0)
 const FLARE_OUTER := Color(1.0, 0.36, 0.08, 0.0)
+const FLICKER_MIN := 0.12
+const FLICKER_MAX := 0.3
+const FLICKER_STEP_MIN := 0.08
+const FLICKER_STEP_MAX := 0.2
 const SMITH_CHANCE := 0.25
 const SMITH_MIN := 4.0
 const SMITH_MAX := 8.0
@@ -245,6 +251,12 @@ var _background: Sprite2D = null
 ## The glow over a smithy's forge fire, and how bright it is now (0..1).
 var _fire: Sprite2D = null
 var _flare := 0.0
+## The fire's glow between pulls, and how long until it changes.
+var _flicker := 0.0
+var _flicker_left := 0.0
+var _fire_rng := RandomNumberGenerator.new()
+## A smithy's bellows (`bellows_art`): frame 0 open, 1 pressed.
+var _bellows_art: Sprite2D = null
 ## Stall layers (empty for a room): floor piles, the keeper, the counter, the
 ## goods on it. A room's people all go in _people, as do a stall's customers.
 var _goods_back: Node2D = null
@@ -378,6 +390,11 @@ func _build_ui() -> void:
     _background = Sprite2D.new()
     _background.centered = false
     _scene.add_child(_background)
+    _bellows_art = Sprite2D.new()
+    _bellows_art.name = "Bellows"
+    _bellows_art.centered = false
+    _bellows_art.hframes = 2
+    _scene.add_child(_bellows_art)
     _fire = Sprite2D.new()
     _fire.name = "Fire"
     _fire.centered = false
@@ -567,16 +584,24 @@ func _process(delta: float) -> void:
         _bustle(delta)
         _hands_turn(delta)
         _flare = maxf(0.0, _flare - delta / FLARE_SECONDS)
-        _fire.modulate.a = _flare * FLARE_ALPHA
+        _flicker_left -= delta
+        if _flicker_left <= 0.0:
+            _flicker_left = _fire_rng.randf_range(FLICKER_STEP_MIN, FLICKER_STEP_MAX)
+            _flicker = _fire_rng.randf_range(FLICKER_MIN, FLICKER_MAX)
+        _fire.modulate.a = maxf(_flare * FLARE_ALPHA, _flicker)
     # After _eat: a mender's dip is set last.
     _mend(delta)
 
 
 ## A smithy's forge fire gets its glow: drawn in code, an art-pixel radial
-## gradient over the fire's rect, added onto it, dark until a pull flares it.
+## gradient over the fire's rect, added onto it, flickering low and flared by
+## a pull. Its bellows start open.
 func _lay_fire() -> void:
     _flare = 0.0
+    _flicker = 0.0
+    _flicker_left = 0.0
     _fire.modulate.a = 0.0
+    _bellows_art.frame = 0
     var rect = room.get("fire", null)
     _fire.visible = rect is Rect2i
     if not _fire.visible:
@@ -1221,11 +1246,12 @@ func _start_pull(hand: Node2D) -> void:
     spr.play(str(room.get("bellows", {}).get("facing", "north")) + "_pull")
 
 
-## Pulling: each pull down (the animation's second frame) flares the fire;
-## time up, back to their spot.
+## Pulling: each pull down (the animation's second frame) presses the bellows
+## and flares the fire; time up, back to their spot.
 func _pull(hand: Node2D, delta: float) -> void:
     var spr := _sprite_of(hand)
     if spr != null and str(spr.animation).ends_with("_pull"):
+        _bellows_art.frame = 1 if spr.frame == 1 else 0
         if spr.frame == 1 and int(hand.get_meta("pull_frame", -1)) != 1:
             _flare = 1.0
         hand.set_meta("pull_frame", spr.frame)
@@ -1245,6 +1271,7 @@ func _stop_pull(hand: Node2D) -> void:
         hand.remove_meta("walking")
     for key in ["pulling", "pull_frame", "bellows"]:
         hand.remove_meta(key)
+    _bellows_art.frame = 0
 
 
 ## The keeper sets off for the anvil (meta "anvil_trip" until they get there).
@@ -1808,6 +1835,9 @@ func _unhandled_input(event: InputEvent) -> void:
 ## sheet). A picture still downloading leaves its layer blank until it lands.
 func _apply_textures() -> void:
     _background.texture = _texture(str(room.get("sheet", "")))
+    var bellows: Dictionary = room.get("bellows_art", {})
+    _bellows_art.texture = _texture(str(bellows.get("sheet", "")))
+    _bellows_art.position = Vector2(int(bellows.get("x", 0)), int(bellows.get("y", 0)))
     _counter.texture = _texture(str(room.get("counter", ""))) if room.has("counter") else null
     _draw_anims()
 

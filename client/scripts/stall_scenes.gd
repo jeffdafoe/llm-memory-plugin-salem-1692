@@ -27,15 +27,18 @@ const SHEETS := {
 ## spot at the forge.
 ##
 ## Work spots in the work area (LLM-764), feet where the art puts them: a
-## farmer-base hand pulls the bellows' right rope at `bellows`, and the forge
-## fire in `fire` glows with each pull; a farmer-base keeper hammers at the
-## anvil from `anvil`, facing it.
+## farmer-base hand pulls the bellows' right rope at `bellows`, the bellows
+## (`bellows_art`) press down and the forge fire in `fire` flares with each
+## pull; a farmer-base keeper hammers at the anvil from `anvil`, facing it.
 const TRADES := {
     "smithy": {
         "size": Vector2i(192, 112),
         "bellows": {"x": 57, "y": 57, "facing": "north"},
         "anvil": {"x": 36, "y": 84, "facing": "west"},
         "fire": Rect2i(1, 32, 26, 19),
+        # The bellows, open and pressed (LLM-795), over the backdrop's own
+        # at the place build_stalls.gd cut them from.
+        "bellows_art": {"sheet": "/tilesets/interiors/stall_smithy_bellows.png", "x": 30, "y": 24},
         "counter": "/tilesets/interiors/stall_counter_smithy.png",
         "counter_from": 64,
         "keeper": {"x": 128, "y": 66, "facing": "south"},

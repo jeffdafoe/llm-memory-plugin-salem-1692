@@ -1665,6 +1665,9 @@ func _test_smithy_bellows() -> void:
     var bellows := Vector2(layout["bellows"]["x"], layout["bellows"]["y"])
     _check("the fire's glow laid over the fire, dark", [_panel._fire.visible, _panel._fire.position, _panel._fire.modulate.a], [true, Vector2(layout["fire"].position), 0.0])
     _check("the glow is the fire's size in art px", _panel._fire.texture.get_size(), Vector2(layout["fire"].size))
+    var art: Dictionary = layout["bellows_art"]
+    _check("the bellows drawn where they were cut, open", [_panel._bellows_art.texture != null, _panel._bellows_art.position, _panel._bellows_art.frame, _panel._bellows_art.hframes],
+        [true, Vector2(art["x"], art["y"]), 0, 2])
     _check("the staff are drawn in depth order", _panel._staff.y_sort_enabled, true)
     var hand: Node2D = _panel._staff.get_node("hand")
     var other: Node2D = _panel._staff.get_node("hand2")
@@ -1680,17 +1683,18 @@ func _test_smithy_bellows() -> void:
     # Each pull down flares the fire, once per stroke; it dies down after.
     _panel._sprite_of(hand).frame = 1
     _panel._hands_turn(0.01)
-    _check("the pull down flares the fire", _panel._flare, 1.0)
+    _check("the pull down flares the fire and presses the bellows", [_panel._flare, _panel._bellows_art.frame], [1.0, 1])
     _panel._flare = 0.5
     _panel._hands_turn(0.01)
     _check("once per stroke", _panel._flare, 0.5)
     _panel._sprite_of(hand).frame = 0
     _panel._hands_turn(0.01)
+    _check("the pull up opens the bellows", _panel._bellows_art.frame, 0)
     _panel._sprite_of(hand).frame = 1
     _panel._hands_turn(0.01)
     _check("the next stroke flares it again", _panel._flare, 1.0)
     _panel._process(_panel.FLARE_SECONDS / 2.0)
-    _check("the glow fading", [is_equal_approx(_panel._flare, 0.5), is_equal_approx(_panel._fire.modulate.a, 0.5 * _panel.FLARE_ALPHA)], [true, true])
+    _check("the glow fading, never under the flicker", [is_equal_approx(_panel._flare, 0.5), is_equal_approx(_panel._fire.modulate.a, maxf(0.5 * _panel.FLARE_ALPHA, _panel._flicker))], [true, true])
 
     # One hand at the bellows at a time.
     var went := false
@@ -1702,8 +1706,11 @@ func _test_smithy_bellows() -> void:
     _check("the other hand never goes while one pulls", went, false)
 
     # Time up: back to their spot, facing the customers.
+    _panel._sprite_of(hand).frame = 1
+    _panel._hands_turn(0.01)
+    _check("mid-stroke: the bellows pressed", _panel._bellows_art.frame, 1)
     _panel._hands_turn(_panel.PULL_MAX + 1.0)
-    _check("time up: walking back", [hand.has_meta("pulling"), hand.has_meta("bellows"), hand.has_meta("walking")], [false, false, true])
+    _check("time up: walking back, the bellows left open", [hand.has_meta("pulling"), hand.has_meta("bellows"), hand.has_meta("walking"), _panel._bellows_art.frame], [false, false, true, 0])
     _finish_walk(hand)
     _check("back at their spot facing the customers", [hand.position, _anim(hand)], [home, &"south_idle"])
 
@@ -1740,11 +1747,19 @@ func _test_smithy_bellows() -> void:
     _check("a pack hand cannot pull", _panel._can_work(pack, layout["bellows"], "pull"), false)
     pack.free()
     _open_smithy_crew([], [])
-    _check("nobody pulls: the fire stays still", [_panel._fire.visible, _panel._fire.modulate.a], [true, 0.0])
+    # Nobody pulls: the fire still flickers, low, the glow changing as it goes.
+    var seen := {}
+    var low := true
+    for i in 40:
+        _panel._process(_panel.FLICKER_STEP_MAX)
+        var a: float = _panel._fire.modulate.a
+        low = low and a >= _panel.FLICKER_MIN and a <= _panel.FLICKER_MAX
+        seen[snappedf(a, 0.001)] = true
+    _check("nobody pulls: the fire flickers low", [_panel._fire.visible, low, seen.size() > 5, _panel._bellows_art.frame], [true, true, true, 0])
     _world.placed_objects[STALL].set_meta("tags", [])
     _panel.close()
     _panel.open(STALL)
-    _check("a plain stall: no glow", _panel._fire.visible, false)
+    _check("a plain stall: no glow, no bellows", [_panel._fire.visible, _panel._bellows_art.texture == null], [false, true])
     _panel.close()
     _panel.wares_hook = Callable()
     _done()
