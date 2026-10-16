@@ -28,6 +28,7 @@ var (
 	WaterfowlShore              = waterfowlShore
 	EvaluateWaterfowl           = evaluateWaterfowl
 	MaxDwellMinutes             = maxDwellMinutes
+	FinishOuthouseStay          = finishOuthouseStay
 	CommonRoomForStructure      = commonRoomForStructure
 	CanEnterRoom                = canEnterRoom
 	DetermineTransitionFlips    = determineTransitionFlips
@@ -694,3 +695,13 @@ func SuppressArrivalWarrantForTest(w *World, actorID ActorID) bool {
 // cooldown stamp so sim_test can arrange cooldown scenarios without waiting
 // out the real strandedWarrantCooldown.
 func SetActorLastStrandedWarrantAt(a *Actor, at time.Time) { a.lastStrandedWarrantAt = at }
+
+// CaptureOuthouseTimersForTest replaces the outhouse stay timer with one that
+// records each delay and runs nothing, until the test ends.
+func CaptureOuthouseTimersForTest(t interface{ Cleanup(func()) }) *[]time.Duration {
+	var delays []time.Duration
+	prev := outhouseAfterFunc
+	outhouseAfterFunc = func(d time.Duration, _ func()) { delays = append(delays, d) }
+	t.Cleanup(func() { outhouseAfterFunc = prev })
+	return &delays
+}

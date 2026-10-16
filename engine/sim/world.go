@@ -1389,6 +1389,9 @@ type World struct {
 	// outhouseVisits holds each outhouse a player is in (LLM-806, outhouse.go).
 	// Transient and lazy-allocated; a restart loses at most one stay.
 	outhouseVisits map[VillageObjectID]outhouseVisit
+	// outhouseReliefAt is when each player last had an outhouse ease their
+	// tiredness (LLM-811). Transient and lazy-allocated.
+	outhouseReliefAt map[ActorID]time.Time
 
 	// ActionLog is the world-level append-only audit trail of
 	// committed agent + engine-source actions. Consumed by the
