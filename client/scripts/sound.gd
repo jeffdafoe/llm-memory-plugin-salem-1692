@@ -51,6 +51,10 @@ const SOUNDS := {
     "windlass_click": {"files": ["metalClick.ogg"], "db": -16.0, "pitch": 0.04},
     # Knuckles on a cottage door: the player's knock landing at a door (LLM-20).
     "knock": {"files": ["knock.ogg"], "db": -12.0, "pitch": 0.03},
+    # The player's own duck (LLM-800, familiar_quack.gd). quack_alarm is the
+    # irritated quack, kept for the duck's warning (not played yet).
+    "quack": {"files": ["duck_quack.ogg"], "db": -8.0, "pitch": 0.05},
+    "quack_alarm": {"files": ["duck_alarm_1.ogg", "duck_alarm_2.ogg"], "db": -8.0, "pitch": 0.04},
     "windlass_turn": {"files": ["creak1.ogg", "creak2.ogg", "creak3.ogg"], "db": -18.0, "pitch": 0.0},
     "saw_stroke": {
         "files": ["saw_0.ogg", "saw_1.ogg", "saw_2.ogg", "saw_3.ogg", "saw_4.ogg", "saw_5.ogg"],
