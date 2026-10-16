@@ -129,6 +129,9 @@ func TestBusinessLocked(t *testing.T) {
 		// Lewis's Workshop: Lewis works there (WorkStructureID) but carries the
 		// worker role, not businessowner. He is the place's keeper all the same.
 		lewis := liveInKeeper("lewis")
+		if lewis.BusinessownerState != nil {
+			t.Fatal("fixture: lewis must carry no businessowner marker")
+		}
 		w := lodgeWorld(EntryPolicyOpen, []string{"business"}, lewis)
 		placeInside(w, "tavern", "lewis")
 		if locked(w) {
