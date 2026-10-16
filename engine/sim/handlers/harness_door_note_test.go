@@ -18,7 +18,7 @@ func TestHarness_ReportsShownDoorNotes(t *testing.T) {
 	now := time.Now().UTC()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["alice"].InsideStructureID = "alice-home"
-		world.DoorNotes["note-0000aa01"] = &sim.DoorNote{ID: "note-0000aa01", StructureID: "alice-home",
+		world.DoorNotes["note-0000aa01"] = &sim.DoorNote{ID: "note-0000aa01", StructureID: "alice-home", Revision: 2,
 			RecipientID: "alice", AuthorID: "pc", AuthorName: "Jefferey", Body: "I came by.", LeftAt: now.Add(-time.Hour)}
 		world.DoorNotes["note-0000aa02"] = &sim.DoorNote{ID: "note-0000aa02", StructureID: "alice-home",
 			RecipientID: "someone-else", AuthorID: "pc", AuthorName: "Jefferey", Body: "Not yours.", LeftAt: now.Add(-time.Hour)}
@@ -31,7 +31,7 @@ func TestHarness_ReportsShownDoorNotes(t *testing.T) {
 	}})
 	h, _ := newTestHarness(t, client, 0, 0)
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
-	if len(result.ShownDoorNotes) != 1 || result.ShownDoorNotes[0].ID != "note-0000aa01" || !result.ShownDoorNotes[0].LeftAt.Equal(now.Add(-time.Hour)) {
-		t.Errorf("ShownDoorNotes = %v, want note-0000aa01 as left an hour ago", result.ShownDoorNotes)
+	if len(result.ShownDoorNotes) != 1 || result.ShownDoorNotes[0].ID != "note-0000aa01" || result.ShownDoorNotes[0].Revision != 2 {
+		t.Errorf("ShownDoorNotes = %v, want note-0000aa01 at revision 2", result.ShownDoorNotes)
 	}
 }

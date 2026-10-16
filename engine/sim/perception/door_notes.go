@@ -22,6 +22,7 @@ type DoorNoteView struct {
 	AuthorName string
 	Body       string
 	LeftAt     time.Time
+	Revision   int
 }
 
 // doorNoteBodyMaxBytes bounds a note in the prompt. A note is at most
@@ -44,7 +45,7 @@ func buildDoorNotes(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		if !atIt {
 			continue
 		}
-		out = append(out, DoorNoteView{ID: n.ID, AuthorName: n.AuthorName, Body: n.Body, LeftAt: n.LeftAt})
+		out = append(out, DoorNoteView{ID: n.ID, AuthorName: n.AuthorName, Body: n.Body, LeftAt: n.LeftAt, Revision: n.Revision})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].LeftAt.Equal(out[j].LeftAt) {
@@ -63,7 +64,7 @@ func ShownDoorNotes(p Payload) []sim.DoorNoteSeen {
 	}
 	seen := make([]sim.DoorNoteSeen, 0, len(p.DoorNotes))
 	for _, n := range p.DoorNotes {
-		seen = append(seen, sim.DoorNoteSeen{ID: n.ID, LeftAt: n.LeftAt})
+		seen = append(seen, sim.DoorNoteSeen{ID: n.ID, Revision: n.Revision})
 	}
 	return seen
 }

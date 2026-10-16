@@ -39,6 +39,10 @@ type DoorNote struct {
 	Body        string
 	LeftAt      time.Time
 	ReadAt      time.Time // zero while unread
+	// Revision counts replacements, so a turn that rendered one text never
+	// marks a later one read (DoorNoteSeen). In memory only: no turn outlives
+	// a restart, so a reloaded note starting again at 0 cannot be confused.
+	Revision int
 }
 
 // Unread reports whether the note still waits on the door.
@@ -53,12 +57,12 @@ func (n *DoorNote) Clone() *DoorNote {
 	return &c
 }
 
-// DoorNoteSeen is a note as a turn's prompt showed it: the id and the version
-// (LeftAt — a replacement moves it). A note replaced while that turn was in
-// flight is not marked read by it.
+// DoorNoteSeen is a note as a turn's prompt showed it: the id and the
+// revision. A note replaced while that turn was in flight is not marked read
+// by it.
 type DoorNoteSeen struct {
-	ID     DoorNoteID
-	LeftAt time.Time
+	ID       DoorNoteID
+	Revision int
 }
 
 // DoorNoteRecipient is one person a note at a door may be left for.
@@ -186,6 +190,8 @@ func LeaveDoorNote(actorID ActorID, structureID StructureID, recipientID ActorID
 			if note == nil {
 				note = &DoorNote{ID: newDoorNoteID(), StructureID: structureID, AuthorID: actorID}
 				w.DoorNotes[note.ID] = note
+			} else {
+				note.Revision++
 			}
 			note.RecipientID = recipient.ID
 			note.AuthorName = actor.DisplayName
@@ -251,7 +257,7 @@ func StructureHasUnreadNote(notes map[DoorNoteID]*DoorNote, structureID Structur
 
 // markDoorNotesRead stamps each shown note read for actorID — the turn that
 // showed them answered. A note addressed to someone else, already read, or
-// replaced since the turn saw it (LeftAt moved) is left alone. Each read leaves
+// replaced since the turn saw it (Revision moved) is left alone. Each read leaves
 // a trail line and a durable row (so the night's dream records it), and the
 // door's pinned paper comes down once no unread note is left there.
 func markDoorNotesRead(w *World, actorID ActorID, seen []DoorNoteSeen, now time.Time) {
@@ -262,7 +268,7 @@ func markDoorNotesRead(w *World, actorID ActorID, seen []DoorNoteSeen, now time.
 	touched := map[StructureID]bool{}
 	for _, s := range seen {
 		n := w.DoorNotes[s.ID]
-		if !n.Unread() || n.RecipientID != actorID || !n.LeftAt.Equal(s.LeftAt) {
+		if !n.Unread() || n.RecipientID != actorID || n.Revision != s.Revision {
 			continue
 		}
 		n.ReadAt = now

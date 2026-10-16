@@ -27,6 +27,7 @@ const TESTS := [
     "_test_art_and_stand_in",
     "_test_door_note_sits_on_the_door",
     "_test_an_old_answer_is_not_this_windows",
+    "_test_a_late_answer_cannot_touch_a_newer_note",
 ]
 
 var _failures := 0
@@ -274,5 +275,34 @@ func _test_an_old_answer_is_not_this_windows() -> void:
     p.open("cole-home", "Cole Residence", [{"id": "nathaniel", "name": "Nathaniel Cole"}])
     _check("reopened: the old answer is not this opening's", p.answers_session(sent), false)
     _check("reopened: its own is", p.answers_session(p.session), true)
+    p.free()
+    _done()
+
+
+## Note A is sent; the window is closed and reopened, and note B is sent. A's
+## answer (a refusal, or a success) arriving after B was sent must not touch B's
+## window; B's own answer does (code_review: one shared handler let A's reply
+## close B's window).
+func _test_a_late_answer_cannot_touch_a_newer_note() -> void:
+    var log: Array = []
+    var p := _panel(log)
+    var prudence := [{"id": "prudence", "name": "Prudence Ward"}]
+    p.open("ward-home", "Ward Residence", prudence)
+    _type(p, "note A")
+    p.pin_button.pressed.emit()
+    var a: int = p.session
+    p.close()
+    p.open("ward-home", "Ward Residence", prudence)
+    _type(p, "note B")
+    p.pin_button.pressed.emit()
+    var b: int = p.session
+    p.take_answer(a, 422, '{"error": "you cannot leave a note here: you are not at that door"}')
+    _check("A's refusal: B's window shows no error", p.error_label.visible, false)
+    p.take_answer(a, 200, '{"ok": true}')
+    _check("A's success: B's window stays open", p.is_open(), true)
+    p.take_answer(b, 422, '{"error": "you cannot leave a note here: someone is in — knock at the door"}')
+    _check("B's refusal: shown on B", [p.error_label.visible, p.error_label.text], [true, "Someone is in — knock at the door."])
+    p.take_answer(b, 200, '{"ok": true}')
+    _check("B's success: closes B", p.is_open(), false)
     p.free()
     _done()

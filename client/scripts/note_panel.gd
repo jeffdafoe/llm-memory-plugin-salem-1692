@@ -261,6 +261,19 @@ func answers_session(sent_session: int) -> bool:
     return visible and sent_session == session
 
 
+## The engine's answer to the note sent from opening `sent_session` (HTTP code
+## and body): pinned → close; refused → say why. An answer for an opening since
+## closed or replaced is dropped — it is not this window's.
+func take_answer(sent_session: int, code: int, body: String) -> void:
+    if not answers_session(sent_session):
+        return
+    if code >= 200 and code < 300:
+        close()
+        return
+    var parsed = JSON.parse_string(body)
+    show_error(refusal_line(str(parsed.get("error", "")) if parsed is Dictionary else ""))
+
+
 ## The engine refused the note (or the request failed): say why and let the
 ## player try again.
 func show_error(message: String) -> void:

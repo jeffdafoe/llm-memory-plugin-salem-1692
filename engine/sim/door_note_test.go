@@ -192,7 +192,7 @@ func TestDoorNoteReadOnlyWhenTheTurnAnswered(t *testing.T) {
 		t.Fatalf("leave a note: %v", err)
 	}
 	n0 := doorNotes(t, w)[0]
-	seen := []sim.DoorNoteSeen{{ID: n0.ID, LeftAt: n0.LeftAt}}
+	seen := []sim.DoorNoteSeen{{ID: n0.ID, Revision: n0.Revision}}
 	// A failed turn leaves it on the door.
 	completeTurn(t, w, "spouse", sim.TickStatusFailedAfterRender, seen, now)
 	if n := doorNotes(t, w)[0]; !n.Unread() {
@@ -241,9 +241,10 @@ func TestDoorNoteReplacedMidTurnStaysUnread(t *testing.T) {
 		t.Fatalf("leave a note: %v", err)
 	}
 	old := doorNotes(t, w)[0]
-	shownOld := []sim.DoorNoteSeen{{ID: old.ID, LeftAt: old.LeftAt}}
-	// The player replaces it after the turn rendered the old one.
-	if err := leaveNote(w, "spouse", "Never mind the bread — the ale.", now.Add(time.Minute)); err != nil {
+	shownOld := []sim.DoorNoteSeen{{ID: old.ID, Revision: old.Revision}}
+	// The player replaces it after the turn rendered the old one — at the same
+	// instant, so only the revision tells the two apart.
+	if err := leaveNote(w, "spouse", "Never mind the bread — the ale.", now); err != nil {
 		t.Fatalf("replace the note: %v", err)
 	}
 	completeTurn(t, w, "spouse", sim.TickStatusSuccess, shownOld, now.Add(2*time.Minute))
@@ -251,7 +252,7 @@ func TestDoorNoteReplacedMidTurnStaysUnread(t *testing.T) {
 	if cur.ID != old.ID || !cur.Unread() || cur.Body != "Never mind the bread — the ale." {
 		t.Fatalf("after a turn that saw only the old text: %+v, want the new note still unread", cur)
 	}
-	completeTurn(t, w, "spouse", sim.TickStatusSuccess, []sim.DoorNoteSeen{{ID: cur.ID, LeftAt: cur.LeftAt}}, now.Add(3*time.Minute))
+	completeTurn(t, w, "spouse", sim.TickStatusSuccess, []sim.DoorNoteSeen{{ID: cur.ID, Revision: cur.Revision}}, now.Add(3*time.Minute))
 	if doorNotes(t, w)[0].Unread() {
 		t.Error("a turn that showed the new text did not read it")
 	}

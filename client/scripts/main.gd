@@ -186,10 +186,6 @@ var _pc_move_target := ""
 var _pc_http_knock: HTTPRequest = null
 ## The house the last knock was at, for its answer (LLM-19).
 var _knock_structure_id := ""
-var _pc_http_leave_note: HTTPRequest = null
-## The note window's opening the note in flight was sent from (LLM-19), so its
-## answer is applied only to that opening.
-var _leave_note_session := -1
 # A walk-out from a closed room (LLM-787): the room it leaves, and one that
 # waits for the move in flight to answer before it can be sent.
 var _leave_sid := ""
@@ -1535,32 +1531,27 @@ func _on_door_note_requested(sid: String, title: String, recipients: Array) -> v
         note_panel_layer.open(sid, title, recipients)
 
 ## The note window's Pin: POST pc/leave-note. The engine's private note_left
-## line confirms it; a refusal comes back to the window.
+## line confirms it; a refusal comes back to the window. Each submission has its
+## own request, its callback bound to the window opening it came from, so a slow
+## answer can never land on a later note (take_answer drops it).
 func _on_note_pinned(sid: String, recipient_id: String, text: String) -> void:
-    if _pc_http_leave_note == null:
-        _pc_http_leave_note = HTTPRequest.new()
-        _pc_http_leave_note.accept_gzip = false
-        add_child(_pc_http_leave_note)
-        _pc_http_leave_note.request_completed.connect(_on_leave_note_response)
-    _pc_http_leave_note.cancel_request()
-    _leave_note_session = note_panel_layer.session if note_panel_layer != null else -1
-    var err := _pc_http_leave_note.request(Auth.api_base + "/api/village/pc/leave-note",
+    if note_panel_layer == null:
+        return
+    var sent_session: int = note_panel_layer.session
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray):
+        http.queue_free()
+        Auth.check_response(code)
+        if note_panel_layer != null:
+            note_panel_layer.take_answer(sent_session, code, body.get_string_from_utf8()))
+    var err := http.request(Auth.api_base + "/api/village/pc/leave-note",
         Auth.auth_headers(), HTTPClient.METHOD_POST,
         JSON.stringify({"structure_id": sid, "recipient_id": recipient_id, "text": text}))
-    if err != OK and note_panel_layer != null:
+    if err != OK:
+        http.queue_free()
         note_panel_layer.show_error("The note could not be sent.")
-
-func _on_leave_note_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
-    Auth.check_response(code)
-    # An answer for a window since closed or reopened is not this window's.
-    if note_panel_layer == null or not note_panel_layer.answers_session(_leave_note_session):
-        return
-    if code >= 200 and code < 300:
-        note_panel_layer.close()
-        return
-    var parsed = JSON.parse_string(body.get_string_from_utf8())
-    var message := str(parsed.get("error", "")) if parsed is Dictionary else ""
-    note_panel_layer.show_error(NotePanelScript.refusal_line(message))
 
 ## Modal blocker helper — flips camera.modal_open based on the OR of
 ## currently-open modals. Every modal (config, asset popup, sprite
