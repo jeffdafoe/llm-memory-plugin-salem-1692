@@ -913,6 +913,8 @@ func _on_event_pc_needs_changed(actor_id: String, needs: Dictionary) -> void:
 ## without a client-detected value decrease. Empty array clears any
 ## active pulse.
 func _on_pc_dwelling_attributes_changed(attrs: PackedStringArray) -> void:
+    if familiar_quack != null:
+        familiar_quack.set_dwelling(attrs)
     if top_bar == null or not top_bar.has_method("set_dwelling_attributes"):
         return
     top_bar.set_dwelling_attributes(attrs)
@@ -2134,6 +2136,8 @@ func _on_world_ready_watchdog() -> void:
 func _on_pc_sleep_started(actor_id: String, wake_at_iso: String) -> void:
     if _pc_actor_id == "" or actor_id != _pc_actor_id:
         return
+    if familiar_quack != null:
+        familiar_quack.pc_slept()
     _pc_sleep_structure_label = _resolve_local_pc_structure_label()
     if sleep_fade != null and sleep_fade.has_method("fade_to_sleep"):
         sleep_fade.fade_to_sleep()
