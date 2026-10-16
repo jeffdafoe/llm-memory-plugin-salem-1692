@@ -604,6 +604,11 @@ type Payload struct {
 	// company line reads them as outside. Ordered by display name.
 	AtYourDoor []sim.ActorID
 
+	// DoorNotes are the unread notes (LLM-19) left for the subject at the house
+	// they are in or at the door of — renderDoorNotes, and the harness marks
+	// them read once the turn answers (ShownDoorNotes). Oldest first.
+	DoorNotes []DoorNoteView
+
 	// SeekWorkPlaces are the town's businesses (village objects tagged
 	// sim.TagBusiness, resolved to their structure names), surfaced as move_to
 	// destinations when a broke worker is nudged to go earn. Build populates it

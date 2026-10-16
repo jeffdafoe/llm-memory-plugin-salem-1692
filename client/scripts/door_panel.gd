@@ -8,17 +8,26 @@ extends CanvasLayer
 ## knock_unanswered line). Leave, Esc or a click on the backdrop just closes
 ## it; the player stays at the door, and a click on the house brings it back.
 ##
+## After a knock nobody answers (LLM-19), main.gd reopens it as
+## open_unanswered: "No one answers." and [Leave a note] / [Leave]. Leave a note
+## emits note_requested with the people of the house a note may be for, and
+## main.gd opens the note window.
+##
 ## Layer 4, the modal tier, styled like the repair and notice panels; main.gd
 ## blocks world input while it is open (opened / closed).
 
 const FONT_PATH := "res://assets/fonts/IMFellEnglish-Regular.ttf"
 const TAP_SIZE := Vector2(132, 44)
 const PROMPT := "You stand at the door."
+const NO_ANSWER := "No one answers."
 
 signal opened()
 signal closed()
 ## The player chose to knock on structure_id's door.
 signal knocked(structure_id: String)
+## After no answer, the player chose to leave a note (LLM-19). recipients are
+## the knock response's note_for: [{id, name}].
+signal note_requested(structure_id: String, title: String, recipients: Array)
 
 var structure_id := ""
 
@@ -28,7 +37,11 @@ var sheet: PanelContainer = null
 var title_label: Label = null
 var prompt_label: Label = null
 var knock_button: Button = null
+var note_button: Button = null
 var leave_button: Button = null
+
+## The people a note may be for, while open after no answer; empty otherwise.
+var _recipients: Array = []
 
 var _font: Font = null
 
@@ -85,8 +98,11 @@ func _build_ui() -> void:
     buttons.add_theme_constant_override("separation", 12)
     vb.add_child(buttons)
     knock_button = _button("Knock", _on_knock_pressed)
+    note_button = _button("Leave a note", _on_note_pressed)
+    note_button.visible = false
     leave_button = _button("Leave", close)
     buttons.add_child(knock_button)
+    buttons.add_child(note_button)
     buttons.add_child(leave_button)
     _apply_theme()
 
@@ -125,9 +141,24 @@ static func at_door(person: Node2D, house: Node2D) -> bool:
 ## Ask at the door of `sid`, named `title` (the house's name). Opening again
 ## while open just retitles it.
 func open(sid: String, title: String) -> void:
+    _show(sid, title, PROMPT, [])
+
+
+## After a knock nobody answered at `sid` (LLM-19): "No one answers." and, when
+## the house has anyone a note may be for, Leave a note.
+func open_unanswered(sid: String, title: String, recipients: Array) -> void:
+    _show(sid, title, NO_ANSWER, recipients)
+
+
+func _show(sid: String, title: String, prompt: String, recipients: Array) -> void:
     structure_id = sid
+    _recipients = recipients.duplicate()
     title_label.text = title
     title_label.visible = title != ""
+    prompt_label.text = prompt
+    var unanswered := prompt == NO_ANSWER
+    knock_button.visible = not unanswered
+    note_button.visible = unanswered and not _recipients.is_empty()
     if visible:
         return
     visible = true
@@ -139,6 +170,7 @@ func close() -> void:
         return
     visible = false
     structure_id = ""
+    _recipients = []
     closed.emit()
 
 
@@ -151,6 +183,17 @@ func _on_knock_pressed() -> void:
     close()
     if sid != "":
         knocked.emit(sid)
+
+
+func _on_note_pressed() -> void:
+    if _recipients.is_empty():
+        return
+    var sid := structure_id
+    var title := title_label.text
+    var recipients := _recipients
+    close()
+    if sid != "" and not recipients.is_empty():
+        note_requested.emit(sid, title, recipients)
 
 
 func _on_backdrop_input(event: InputEvent) -> void:
@@ -184,7 +227,7 @@ func _apply_theme() -> void:
     st.shadow_size = 18
     st.shadow_offset = Vector2(0, 6)
     sheet.add_theme_stylebox_override("panel", st)
-    for b in [knock_button, leave_button]:
+    for b in [knock_button, note_button, leave_button]:
         var bs := StyleBoxFlat.new()
         bs.bg_color = Color(0.30, 0.20, 0.11, 1.0)
         bs.border_color = Color(0.62, 0.47, 0.26, 1.0)

@@ -23,8 +23,17 @@ type pcKnockRequest struct {
 	StructureID string `json:"structure_id"`
 }
 
+// pcKnockRecipientDTO is one person of the house a note may be left for.
+type pcKnockRecipientDTO struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// pcKnockResponse: answered, or — when nobody came — note_for, the people of
+// the house a note may be left for (LLM-19). Absent when answered.
 type pcKnockResponse struct {
-	Answered bool `json:"answered"`
+	Answered bool                  `json:"answered"`
+	NoteFor  []pcKnockRecipientDTO `json:"note_for,omitempty"`
 }
 
 // handlePCKnock knocks on a door for the caller's PC. 400 for a bad body, 404
@@ -62,7 +71,11 @@ func (s *Server) handlePCKnock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "unexpected knock result")
 		return
 	}
-	writeJSON(w, pcKnockResponse{Answered: out.Answered})
+	resp := pcKnockResponse{Answered: out.Answered}
+	for _, r := range out.NoteFor {
+		resp.NoteFor = append(resp.NoteFor, pcKnockRecipientDTO{ID: string(r.ID), Name: r.Name})
+	}
+	writeJSON(w, resp)
 }
 
 // knockErrorResponse maps a knock's error to its status and message: no PC →

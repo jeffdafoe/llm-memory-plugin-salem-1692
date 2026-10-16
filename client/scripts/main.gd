@@ -17,6 +17,7 @@ const CreditsScrollScript = preload("res://scripts/credits_scroll.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
 const DoorPanelScript = preload("res://scripts/door_panel.gd")
+const NotePanelScript = preload("res://scripts/note_panel.gd")
 ## No tile to walk to (_walk_out_tile).
 const NO_TILE := Vector2i(-1000000, -1000000)
 const InteriorPanelScript = preload("res://scripts/interior_panel.gd")
@@ -51,6 +52,9 @@ var repair_panel_layer: CanvasLayer = null
 ## The door popup (LLM-785): at the door of a house the player may not walk
 ## into, Knock or Leave.
 var door_panel_layer: CanvasLayer = null
+## The note window (LLM-19): after a knock nobody answered, a note for one of
+## the people of the house. See client/scripts/note_panel.gd.
+var note_panel_layer: CanvasLayer = null
 ## The room of the building the player's character is in (LLM-750).
 ## See client/scripts/interior_panel.gd.
 var interior_panel_layer: CanvasLayer = null
@@ -180,6 +184,8 @@ var _pending_knock: bool = false
 var _pending_knock_structure_id := ""
 var _pc_move_target := ""
 var _pc_http_knock: HTTPRequest = null
+## The house the last knock was at, for its answer (LLM-19).
+var _knock_structure_id := ""
 # A walk-out from a closed room (LLM-787): the room it leaves, and one that
 # waits for the move in flight to answer before it can be sent.
 var _leave_sid := ""
@@ -623,6 +629,16 @@ func _build_ui() -> void:
     door_panel_layer.opened.connect(func(): _set_modal_blocker("door", true))
     door_panel_layer.closed.connect(func(): _set_modal_blocker("door", false))
     door_panel_layer.knocked.connect(_on_door_knocked)
+    door_panel_layer.note_requested.connect(_on_door_note_requested)
+
+    # Note window (LLM-19) — Leave a note after no answer. Modal tier.
+    note_panel_layer = CanvasLayer.new()
+    note_panel_layer.name = "NotePanelLayer"
+    note_panel_layer.set_script(NotePanelScript)
+    add_child(note_panel_layer)
+    note_panel_layer.opened.connect(func(): _set_modal_blocker("note", true))
+    note_panel_layer.closed.connect(func(): _set_modal_blocker("note", false))
+    note_panel_layer.pinned.connect(_on_note_pinned)
 
     # Interior window (LLM-750): opens when the player's character goes into
     # a building that has a room; modal like the repair panel.
@@ -1473,7 +1489,8 @@ func _place_title(sid: String) -> String:
 ## The door popup's Knock (LLM-785): the knock sounds at once, and the engine
 ## knocks (POST pc/knock). Answered → the doorway conversation: refresh the
 ## talk panel and open it. Unanswered → the engine's private knock_unanswered
-## line says so. A refused knock (walked off meanwhile) only logs.
+## line says so, and the popup comes back with Leave a note (LLM-19,
+## _on_knock_response). A refused knock (walked off meanwhile) only logs.
 func _on_door_knocked(sid: String) -> void:
     var sound := get_node_or_null("/root/Sound")
     if sound != null:
@@ -1484,6 +1501,7 @@ func _on_door_knocked(sid: String) -> void:
         add_child(_pc_http_knock)
         _pc_http_knock.request_completed.connect(_on_knock_response)
     _pc_http_knock.cancel_request()
+    _knock_structure_id = sid
     var err := _pc_http_knock.request(Auth.api_base + "/api/village/pc/knock",
         Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"structure_id": sid}))
     if err != OK:
@@ -1500,6 +1518,40 @@ func _on_knock_response(_r: int, code: int, _h: PackedStringArray, body: PackedB
             talk_panel_layer._refresh_state()
         if talk_panel_layer.has_method("force_open_after_refresh"):
             talk_panel_layer.force_open_after_refresh()
+        return
+    # Nobody came (LLM-19): the popup comes back with Leave a note, for the
+    # people of the house the engine named.
+    var note_for = parsed.get("note_for", []) if parsed is Dictionary else []
+    if note_for is Array and not note_for.is_empty() and door_panel_layer != null and _knock_structure_id != "":
+        door_panel_layer.open_unanswered(_knock_structure_id, _place_title(_knock_structure_id), note_for)
+
+## Leave a note (LLM-19): open the note window for the house.
+func _on_door_note_requested(sid: String, title: String, recipients: Array) -> void:
+    if note_panel_layer != null:
+        note_panel_layer.open(sid, title, recipients)
+
+## The note window's Pin: POST pc/leave-note. The engine's private note_left
+## line confirms it; a refusal comes back to the window. Each submission has its
+## own request, its callback bound to the window opening it came from, so a slow
+## answer can never land on a later note (take_answer drops it).
+func _on_note_pinned(sid: String, recipient_id: String, text: String) -> void:
+    if note_panel_layer == null:
+        return
+    var sent_session: int = note_panel_layer.session
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray):
+        http.queue_free()
+        Auth.check_response(code)
+        if note_panel_layer != null:
+            note_panel_layer.take_answer(sent_session, code, body.get_string_from_utf8()))
+    var err := http.request(Auth.api_base + "/api/village/pc/leave-note",
+        Auth.auth_headers(), HTTPClient.METHOD_POST,
+        JSON.stringify({"structure_id": sid, "recipient_id": recipient_id, "text": text}))
+    if err != OK:
+        http.queue_free()
+        note_panel_layer.show_error("The note could not be sent.")
 
 ## Modal blocker helper — flips camera.modal_open based on the OR of
 ## currently-open modals. Every modal (config, asset popup, sprite

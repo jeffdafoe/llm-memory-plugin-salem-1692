@@ -293,6 +293,10 @@ func _handle_message(data: String) -> void:
         "noticeboard_content_changed":
             if world != null:
                 world.apply_object_content_changed(event_data)
+        "door_note_changed":
+            # LLM-19: a door gained or lost its unread note.
+            if world != null:
+                world.apply_door_note_changed(event_data)
         "damage_news_changed":
             damage_news_changed.emit()
         "object_loiter_offset_changed":

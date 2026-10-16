@@ -298,6 +298,11 @@ type ObjectDTO struct {
 	ContentText     string     `json:"content_text,omitempty"`
 	ContentPostedAt *time.Time `json:"content_posted_at,omitempty"`
 
+	// HasNote (LLM-19): an unread door note waits at this structure — the
+	// client pins a paper to its door. No text: every client reads it. Live
+	// changes ride door_note_changed.
+	HasNote bool `json:"has_note,omitempty"`
+
 	// Refreshes — the object's per-attribute need-decrement-on-arrival policies,
 	// surfaced for the editor's refresh panel (it has no standalone GET; the v2
 	// read path is here). Same wire shape the admin/object/set-refresh route

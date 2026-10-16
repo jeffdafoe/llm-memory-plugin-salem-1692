@@ -2231,6 +2231,10 @@ func _place_object(data: Dictionary) -> void:
         objects_node.add_child(container)
 
     placed_objects[obj_id] = container
+    # An unread door note (LLM-19) pins a paper to the door; live changes ride
+    # door_note_changed (apply_door_note_changed).
+    container.set_meta("has_note", bool(data.get("has_note", false)))
+    refresh_door_note(container)
     _reaim_work_on(obj_id)
     # A business's debris overlay arriving moves its worker's aim onto it.
     if attached_to != null and str(attached_to) != "":
@@ -3173,6 +3177,126 @@ func apply_object_content_changed(data: Dictionary) -> void:
     node.set_meta("content_text", content_text)
     node.set_meta("content_posted_at", content_posted_at)
     object_content_changed.emit(object_id, content_text, content_posted_at)
+
+## --- Door notes (LLM-19) -----------------------------------------------------
+## A note a player left at a door nobody answered shows as a small paper pinned
+## to that door until the recipient reads it. The paper is cut from the Mana
+## Seed notice boards, served from /tilesets/parchment-ui/; until it lands (or
+## if it never does) a plain cream slip stands in.
+
+const DOOR_NOTE_PATH := "/tilesets/parchment-ui/door-note.png"
+const DOOR_NOTE_NODE := "DoorNote"
+## World pixels per tile, for the door's tile offset (the editor's TILE_SIZE).
+const DOOR_NOTE_TILE := 32.0
+## How far above the door tile's centre the paper sits, in world pixels — on
+## the door's face rather than its threshold.
+const DOOR_NOTE_LIFT := 14.0
+## Art pixels to world pixels — the 2x the buildings are drawn at.
+const DOOR_NOTE_SCALE := 2.0
+
+static var _door_note_texture: Texture2D = null
+static var _door_note_fetching := false
+
+## WS door_note_changed {id, has_note}: pin or take down the paper.
+func apply_door_note_changed(data: Dictionary) -> void:
+    var object_id: String = str(data.get("id", ""))
+    if object_id == "" or not placed_objects.has(object_id):
+        return
+    var node: Node2D = placed_objects[object_id]
+    node.set_meta("has_note", bool(data.get("has_note", false)))
+    refresh_door_note(node)
+
+
+## The paper's place inside a building's container: its door tile (the asset's
+## door offset from the anchor tile, as the editor's door marker), raised onto
+## the door's face. null when the asset has no door.
+static func door_note_local_position(node_position: Vector2, asset: Dictionary):
+    var ox = asset.get("door_offset_x", null)
+    var oy = asset.get("door_offset_y", null)
+    if ox == null or oy == null:
+        return null
+    var tile := Vector2(floor(node_position.x / DOOR_NOTE_TILE) + int(ox), floor(node_position.y / DOOR_NOTE_TILE) + int(oy))
+    var centre := tile * DOOR_NOTE_TILE + Vector2(DOOR_NOTE_TILE / 2.0, DOOR_NOTE_TILE / 2.0 - DOOR_NOTE_LIFT)
+    return centre - node_position
+
+
+## Pin the paper to node's door while its has_note meta is set; take it down
+## otherwise.
+func refresh_door_note(node: Node2D) -> void:
+    if node == null or not is_instance_valid(node):
+        return
+    var pinned: Node2D = node.get_node_or_null(DOOR_NOTE_NODE)
+    var want := bool(node.get_meta("has_note", false))
+    var at = door_note_local_position(node.position, Catalog.assets.get(str(node.get_meta("asset_id", "")), {}))
+    if not want or at == null:
+        if pinned != null:
+            node.remove_child(pinned)
+            pinned.queue_free()
+        return
+    if pinned == null:
+        pinned = Node2D.new()
+        pinned.name = DOOR_NOTE_NODE
+        pinned.z_index = 1
+        node.add_child(pinned)
+    pinned.position = at
+    _draw_door_note(pinned)
+
+
+func _draw_door_note(pinned: Node2D) -> void:
+    for c in pinned.get_children():
+        pinned.remove_child(c)
+        c.queue_free()
+    var tex := _door_note_tex()
+    if tex != null:
+        var s := Sprite2D.new()
+        s.texture = tex
+        s.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+        s.scale = Vector2(DOOR_NOTE_SCALE, DOOR_NOTE_SCALE)
+        pinned.add_child(s)
+        return
+    # Stand-in slip: cream paper, a darker edge, a pin.
+    var edge := ColorRect.new()
+    edge.color = Color(0.45, 0.35, 0.22)
+    edge.size = Vector2(8, 10)
+    edge.position = Vector2(-4, -5)
+    pinned.add_child(edge)
+    var paper := ColorRect.new()
+    paper.color = Color(0.93, 0.87, 0.72)
+    paper.size = Vector2(6, 8)
+    paper.position = Vector2(-3, -4)
+    pinned.add_child(paper)
+
+
+func _door_note_tex() -> Texture2D:
+    if _door_note_texture != null:
+        return _door_note_texture
+    if not _door_note_fetching and is_inside_tree():
+        _door_note_fetching = true
+        var http := HTTPRequest.new()
+        http.accept_gzip = false
+        add_child(http)
+        http.request_completed.connect(func(result: int, code: int, _h, body: PackedByteArray):
+            http.queue_free()
+            _on_door_note_art(result, code, body))
+        if http.request(Auth.api_base + DOOR_NOTE_PATH) != OK:
+            http.queue_free()
+            _door_note_fetching = false
+    return null
+
+
+func _on_door_note_art(result: int, code: int, body: PackedByteArray) -> void:
+    if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+        push_warning("Door note art download failed: code=%d" % code)
+        return
+    var img := Image.new()
+    if img.load_png_from_buffer(body) != OK:
+        push_warning("Door note art is not a PNG")
+        return
+    _door_note_texture = ImageTexture.create_from_image(img)
+    for node in placed_objects.values():
+        if is_instance_valid(node) and bool(node.get_meta("has_note", false)):
+            refresh_door_note(node)
+
 
 func apply_object_tags_updated(data: Dictionary) -> void:
     var object_id: String = str(data.get("id", ""))

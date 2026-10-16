@@ -27,6 +27,7 @@ type Repository struct {
 	Visitors             VisitorsRepo
 	RecurringVisitors    RecurringVisitorsRepo
 	CourtCases           CourtCasesRepo
+	DoorNotes            DoorNotesRepo
 	Contacts             ContactsRepo
 	CoinRecords          CoinRecordsRepo
 
@@ -245,6 +246,15 @@ type RecurringVisitorsRepo interface {
 type CourtCasesRepo interface {
 	LoadAll(ctx context.Context) (map[CourtCaseID]*CourtCase, error)
 	SaveSnapshot(ctx context.Context, tx Tx, cases map[CourtCaseID]*CourtCase) error
+}
+
+// DoorNotesRepo loads and checkpoints the notes players left at doors (LLM-19).
+// Same posture as CourtCasesRepo: a per-row upsert with NO sweep — a read note
+// keeps its row, read_at set. LoadUnread returns only the notes still waiting
+// on a door; it runs at FinalizeLoad.
+type DoorNotesRepo interface {
+	LoadUnread(ctx context.Context) (map[DoorNoteID]*DoorNote, error)
+	SaveSnapshot(ctx context.Context, tx Tx, notes map[DoorNoteID]*DoorNote) error
 }
 
 // ContactsRepo loads + checkpoints the per-pair conversational recency trail

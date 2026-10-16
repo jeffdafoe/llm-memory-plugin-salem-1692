@@ -58,6 +58,9 @@ type CheckpointSnapshot struct {
 	// and upserted (NO sweep) by SaveWorld, in the same Tx as the actors, so a
 	// pay order's coin and the case's ruled status persist together.
 	CourtCases map[CourtCaseID]*CourtCase
+	// DoorNotes — every door note (LLM-19), read or not, cloned and upserted (NO
+	// sweep) by SaveWorld.
+	DoorNotes map[DoorNoteID]*DoorNote
 	// ContactPairs — the per-pair conversational recency trail (LLM-547),
 	// flattened to ordered-pair rows and upserted into actor_contact by
 	// SaveWorld. Like RecurringVisitors this is a plain upsert with NO
@@ -200,6 +203,12 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		cp.CourtCases = make(map[CourtCaseID]*CourtCase, len(w.CourtCases))
 		for id, c := range w.CourtCases {
 			cp.CourtCases[id] = c.Clone()
+		}
+	}
+	if len(w.DoorNotes) > 0 {
+		cp.DoorNotes = make(map[DoorNoteID]*DoorNote, len(w.DoorNotes))
+		for id, n := range w.DoorNotes {
+			cp.DoorNotes[id] = n.Clone()
 		}
 	}
 	// LLM-547: flatten the per-pair contact ledger. FlattenContactLedger copies

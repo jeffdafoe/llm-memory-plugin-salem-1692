@@ -186,9 +186,11 @@ func narrateUnansweredKnock(w *World, actor *Actor, structureID StructureID, now
 // that door, may walk straight in, or the structure has no door to knock on.
 var ErrKnockRefused = errors.New("you cannot knock here")
 
-// KnockResult answers KnockAtDoor: whether someone came to the door.
+// KnockResult answers KnockAtDoor: whether someone came to the door, and —
+// when nobody did — who of the house a note may be left for (LLM-19).
 type KnockResult struct {
 	Answered bool
+	NoteFor  []DoorNoteRecipient
 }
 
 // KnockAtDoor is the player's knock (LLM-785, the door popup's Knock button →
@@ -210,17 +212,8 @@ func KnockAtDoor(actorID ActorID, structureID StructureID, now time.Time) Comman
 			if actor == nil || actor.Kind != KindPC {
 				return nil, fmt.Errorf("KnockAtDoor: %q is not a player's character", actorID)
 			}
-			vobj, _, ok := villageObjectForStructure(w, structureID)
-			if _, isStructure := w.Structures[structureID]; !ok || !isStructure {
-				return nil, fmt.Errorf("%w: there is no such house", ErrKnockRefused)
-			}
-			_, hasDoor := structureEntryTile(w, structureID)
-			if !mustKnockAt(vobj, effectiveEntryPolicy(w, structureID, vobj, now),
-				structureMembershipAllows(w, actor, structureID, now), hasDoor) {
-				return nil, fmt.Errorf("%w: this is not a door to knock on", ErrKnockRefused)
-			}
-			if actor.MoveIntent != nil || !AtDoorOf(w.VillageObjects, w.Assets, actor.InsideStructureID, actor.Pos, structureID) {
-				return nil, fmt.Errorf("%w: you are not at that door", ErrKnockRefused)
+			if err := mayKnockHere(w, actor, structureID, now); err != nil {
+				return nil, err
 			}
 			if actorInActiveHuddle(w, actor) {
 				if doorConversationAt(w, actor, structureID) {
@@ -231,7 +224,10 @@ func KnockAtDoor(actorID ActorID, structureID StructureID, now time.Time) Comman
 			if _, err := EnsureKnockServiceHuddle(actorID, structureID, now).Fn(w); err != nil {
 				return nil, err
 			}
-			return KnockResult{Answered: actor.CurrentHuddleID != ""}, nil
+			if actor.CurrentHuddleID != "" {
+				return KnockResult{Answered: true}, nil
+			}
+			return KnockResult{NoteFor: doorNoteRecipients(w, structureID)}, nil
 		},
 	}
 }

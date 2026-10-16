@@ -31,6 +31,12 @@ type Snapshot struct {
 	// content yet.
 	NoticeboardContent map[VillageObjectID]*NoticeboardContent
 
+	// DoorNotes holds the UNREAD door notes (LLM-19), cloned by republish —
+	// perception shows a recipient theirs at the door, and the client reads the
+	// per-door pinned-paper flag (StructureHasUnreadNote). Read notes are left
+	// out.
+	DoorNotes map[DoorNoteID]*DoorNote
+
 	// Quotes is the published snapshot of World.Quotes — every scene
 	// quote in the world (active and terminal), deep-cloned via
 	// CloneSceneQuote so snapshot readers can't reach back into world

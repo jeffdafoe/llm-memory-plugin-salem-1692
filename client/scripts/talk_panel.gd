@@ -1732,7 +1732,7 @@ func _on_room_event(data: Dictionary) -> void:
     # well the same way — structure_id carries the well's object id, and
     # spawn_structure_bubble looks up placed objects by that id. An
     # unanswered knock (LLM-784) floats over the house knocked on.
-    if private_event and (kind == "closed_business_arrival" or kind == "object_condition" or kind == "knock_unanswered"):
+    if private_event and (kind == "closed_business_arrival" or kind == "object_condition" or kind == "knock_unanswered" or kind == "note_left"):
         var event_structure_id := str(data.get("structure_id", ""))
         if event_structure_id != "":
             var world_node := get_node_or_null("/root/Main/World")

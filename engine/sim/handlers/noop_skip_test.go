@@ -346,6 +346,17 @@ func TestShouldSkipNoop_SummonsPresent_DoesNotSkip(t *testing.T) {
 	// carries SummonsForYou=nil.
 }
 
+func TestShouldSkipNoop_DoorNotePresent_DoesNotSkip(t *testing.T) {
+	// LLM-19: a note found at the door waits until a turn that answers has read
+	// it. A quiet idle-backstop tick at home must still run, or the note stays
+	// unread while the reader sits indoors.
+	pl := quietPayload()
+	pl.DoorNotes = []perception.DoorNoteView{{ID: "note-0000aa01", AuthorName: "Jefferey", Body: "hello"}}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when payload carries a door note")
+	}
+}
+
 // TestShouldSkipNoop_EveningLeisureRenderOnlyVariants_Skip: only the INVITATION is a
 // standing actionable signal. The render-only variants are scenes the agent has nothing
 // to act on, so an idle-backstop tick under either must still skip — forcing the tick

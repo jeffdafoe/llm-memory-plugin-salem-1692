@@ -309,6 +309,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderGiftsForMe(&ephemeral, p.GiftsForMe)
 	// LLM-20: someone at the door of the subject's home, waiting to be let in.
 	renderLetInAffordance(&ephemeral, p.AtYourDoor, p.Surroundings.HuddleMembers)
+	renderDoorNotes(&ephemeral, p.DoorNotes, p.RenderedAt)
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
@@ -2838,6 +2839,12 @@ func selfActionLine(a SelfActionView) string {
 		return fmt.Sprintf("%d coins", n)
 	}
 	switch a.ActionType {
+	case sim.ActionTypeReadNote:
+		text, _ := sanitizeText(a.Text, doorNoteBodyMaxBytes)
+		if a.CounterpartyName == "" || text == "" {
+			return ""
+		}
+		return fmt.Sprintf("You read the note %s left at your door: %q", sanitizeInline(a.CounterpartyName), text)
 	case sim.ActionTypeSpoke:
 		text, _ := sanitizeText(a.Text, 0)
 		if text == "" {

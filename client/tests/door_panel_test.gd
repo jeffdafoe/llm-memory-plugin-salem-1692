@@ -20,6 +20,8 @@ const TESTS := [
     "_test_leave_esc_and_backdrop_close_without_knocking",
     "_test_reopen_retitles",
     "_test_at_door_is_the_engines_door",
+    "_test_no_answer_offers_a_note",
+    "_test_no_answer_without_anyone_offers_no_note",
 ]
 
 var _failures := 0
@@ -84,6 +86,7 @@ func _panel(log: Array) -> CanvasLayer:
     p.opened.connect(func(): log.append("opened"))
     p.closed.connect(func(): log.append("closed"))
     p.knocked.connect(func(sid: String): log.append("knocked:" + sid))
+    p.note_requested.connect(func(sid: String, title: String, recipients: Array): log.append("note:%s:%s:%d" % [sid, title, recipients.size()]))
     return p
 
 
@@ -96,6 +99,7 @@ func _test_open_shows_the_house_and_the_question() -> void:
     _check("the house's name", p.title_label.text, "Walker Residence")
     _check("the question", p.prompt_label.text, "You stand at the door.")
     _check("the buttons", [p.knock_button.text, p.leave_button.text], ["Knock", "Leave"])
+    _check("no note offered before a knock", p.note_button.visible, false)
     _check("opened once", log, ["opened"])
     p.open("walker-home", "")
     _check("no name: no title line", p.title_label.visible, false)
@@ -179,4 +183,36 @@ func _test_at_door_is_the_engines_door() -> void:
     _check("no house", script.at_door(person, null), false)
     house.free()
     person.free()
+    _done()
+
+
+## LLM-19: after a knock nobody answered, the popup comes back saying so, with
+## Leave a note (no Knock); Leave a note closes, then asks for the note window
+## with the house's people. A later plain open is the knock question again.
+func _test_no_answer_offers_a_note() -> void:
+    var log: Array = []
+    var p := _panel(log)
+    var people := [{"id": "silence", "name": "Silence Walker"}, {"id": "anne", "name": "Anne Walker"}]
+    p.open_unanswered("walker-home", "Walker Residence", people)
+    _check("no answer: says so", p.prompt_label.text, "No one answers.")
+    _check("no answer: knock hidden", p.knock_button.visible, false)
+    _check("no answer: note offered", [p.note_button.visible, p.note_button.text], [true, "Leave a note"])
+    p.note_button.pressed.emit()
+    _check("leave a note: closes, then asks for the note", log, ["opened", "closed", "note:walker-home:Walker Residence:2"])
+    p.open("walker-home", "Walker Residence")
+    _check("reopened: the knock question", [p.prompt_label.text, p.knock_button.visible, p.note_button.visible],
+        ["You stand at the door.", true, false])
+    p.free()
+    _done()
+
+
+func _test_no_answer_without_anyone_offers_no_note() -> void:
+    var log: Array = []
+    var p := _panel(log)
+    p.open_unanswered("walker-home", "Walker Residence", [])
+    _check("nobody to write to: no note button", p.note_button.visible, false)
+    _check("nobody to write to: leave stays", p.leave_button.visible, true)
+    p.note_button.pressed.emit()
+    _check("a stray press asks for nothing", log, ["opened"])
+    p.free()
     _done()

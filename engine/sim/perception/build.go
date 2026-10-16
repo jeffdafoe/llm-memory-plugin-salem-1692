@@ -250,6 +250,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// the company-line flag and the let_in gate.
 	p.AtYourDoor = buildAtYourDoor(snap, actorID, actorSnap, p.Surroundings)
 	markAtYourDoor(p.Surroundings.HuddleMembers, p.AtYourDoor)
+	p.DoorNotes = buildDoorNotes(snap, actorID, actorSnap)
 	// Resolved last among the name-bearing views, because HireableWorkers is the
 	// newest of them and the offer_work cue must render real names — a "someone
 	// takes work for pay" line names a target offer_work cannot resolve.
@@ -4330,6 +4331,7 @@ var selfActionTrailTypes = map[sim.ActionType]bool{
 	sim.ActionTypeOfferedWork:   true,
 	sim.ActionTypeHired:         true,
 	sim.ActionTypeCollected:     true,
+	sim.ActionTypeReadNote:      true,
 }
 
 // buildSelfActions projects the subject's own recent committed actions out of
