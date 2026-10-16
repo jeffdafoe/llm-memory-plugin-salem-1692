@@ -224,6 +224,8 @@ func _on_round_won(_perfect: bool) -> void:
     # One request per light, freed when it answers, so an answer can only ever
     # reach the opening that sent it.
     var http := HTTPRequest.new()
+    # A stalled request still answers (and frees itself) after this.
+    http.timeout = 15.0
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(func(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray):
