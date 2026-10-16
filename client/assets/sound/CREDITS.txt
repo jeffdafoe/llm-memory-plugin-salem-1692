@@ -21,3 +21,6 @@ Freesound (freesound.org), CC0, cut from the HQ previews with ffmpeg:
       All five duck files are normalized to about -1 dB peak (LLM-808; the recordings were 22-25 dB down).
   duck_alarm_1-2.ogg — 456770 "Mallard Duck Quack Flying Away" by WavJunction.com. Two single quacks (7.33-7.60 s, 8.30-8.57 s), mono (LLM-800).
   cow_moo.ogg       — 700379 "Moo 2 - Moo Moo the Cow" by manofham. One moo, 0-2.65 s, 3 dB down, faded, mono (LLM-797).
+  fart_1.ogg        — 840755 "Fart #005" by bassimat. Silence trimmed both ends, mono (LLM-806).
+  fart_2.ogg        — 777448 "WAV Fart Vegan 086" by frenkfurth. Silence trimmed both ends, 3 dB down, mono (LLM-806).
+  fart_3.ogg        — 183551 "Juicy Fart5" by Zott820. Silence trimmed both ends, 7 dB down to match the others, mono (LLM-806).
