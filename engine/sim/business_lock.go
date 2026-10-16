@@ -21,7 +21,10 @@ import "time"
 // until the Tavern opens at 3 PM — does not, so this also covers the night lock
 // lodges had before (LLM-130). A hired hand alone does NOT keep the place open:
 // keeperPresentAt answers the authority question (someone who can sell to you),
-// not businessTendedAt's presence question.
+// not businessTendedAt's presence question. The keeper is whoever works the
+// place (WorkStructureID), deliberately not narrowed to BusinessownerState:
+// Lewis Walker keeps his Workshop with the worker role and no businessowner
+// marker, so the narrower test would lock it for good.
 //
 // Lock only: nobody already inside is turned out when the keeper steps away. The
 // bedtime turn-out is the LLM-129 close-up, unchanged.

@@ -112,6 +112,30 @@ func TestBusinessLocked(t *testing.T) {
 		}
 	})
 
+	t.Run("keeper at the loiter pin -> open", func(t *testing.T) {
+		k := awayKeeper("john")
+		w := lodgeWorld(EntryPolicyOpen, walkInTags, k)
+		z := 0
+		vobj := w.VillageObjects["tavern"]
+		vobj.DisplayName = "Tavern" // an unnamed placement never resolves from its pin
+		vobj.LoiterOffsetX, vobj.LoiterOffsetY = &z, &z
+		k.Pos = vobj.Pos.Tile() // outdoors, standing at the place's pin
+		if locked(w) {
+			t.Error("want open — the keeper is at the door, minding the place")
+		}
+	})
+
+	t.Run("a worker with no businessowner marker keeps it open", func(t *testing.T) {
+		// Lewis's Workshop: Lewis works there (WorkStructureID) but carries the
+		// worker role, not businessowner. He is the place's keeper all the same.
+		lewis := liveInKeeper("lewis")
+		w := lodgeWorld(EntryPolicyOpen, []string{"business"}, lewis)
+		placeInside(w, "tavern", "lewis")
+		if locked(w) {
+			t.Error("want open — whoever works the place keeps it, marker or not")
+		}
+	})
+
 	t.Run("a co-keeper awake inside keeps it open", func(t *testing.T) {
 		bedded := closeupKeeper("john")
 		cokeeper := closeupKeeper("martha") // also works here, still awake
