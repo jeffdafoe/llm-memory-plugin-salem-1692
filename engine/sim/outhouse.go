@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -16,12 +17,28 @@ import (
 // one stay. Only the clients hide the player: in the sim they stay at the
 // door, so NPCs see them standing there, and the client ignores walk clicks
 // for the stay. NPCs do not use outhouses.
+//
+// LLM-811: when the stay ends (a timer armed by UseOuthouse) the player is a
+// little less weary — OuthouseTirednessRelief, once per player every
+// OuthouseReliefCooldown. The last relief per player is transient too
+// (outhouseReliefAt): a restart forgets it.
 
 // TagOuthouse is the per-instance tag that makes a placement an outhouse.
 const TagOuthouse = "outhouse"
 
 // OuthouseStay is how long a player is inside.
 const OuthouseStay = 10 * time.Second
+
+// OuthouseTirednessRelief is how much tiredness (0..NeedMax) the end of a stay
+// takes off — about 50 minutes of rest under a shade tree.
+const OuthouseTirednessRelief = 2
+
+// OuthouseReliefCooldown is how long a player waits between reliefs. A stay
+// inside it still plays out; it just does not ease tiredness.
+const OuthouseReliefCooldown = 4 * time.Hour
+
+// outhouseNeed is the need an outhouse stay eases.
+const outhouseNeed NeedKey = "tiredness"
 
 var (
 	// ErrNotOuthouse — the object is not tagged an outhouse.
@@ -51,7 +68,8 @@ func (OuthouseUsed) isSimEvent() {}
 
 // OuthouseResult is UseOuthouse's reply.
 type OuthouseResult struct {
-	Stay time.Duration
+	Stay  time.Duration
+	Until time.Time
 }
 
 // UseOuthouse puts actorID into the outhouse objectID for OuthouseStay.
@@ -83,9 +101,64 @@ func UseOuthouse(actorID ActorID, objectID VillageObjectID, now time.Time) Comma
 			if w.outhouseVisits == nil {
 				w.outhouseVisits = make(map[VillageObjectID]outhouseVisit)
 			}
-			w.outhouseVisits[objectID] = outhouseVisit{ActorID: actorID, Until: now.Add(OuthouseStay)}
+			until := now.Add(OuthouseStay)
+			w.outhouseVisits[objectID] = outhouseVisit{ActorID: actorID, Until: until}
 			w.emit(&OuthouseUsed{ObjectID: objectID, ActorID: actorID, Stay: OuthouseStay, At: now})
-			return OuthouseResult{Stay: OuthouseStay}, nil
+			armOuthouseStayEnd(w, objectID, actorID, until)
+			return OuthouseResult{Stay: OuthouseStay, Until: until}, nil
+		},
+	}
+}
+
+// armOuthouseStayEnd starts the one-shot timer that ends a stay. Mirrors
+// armEstablishmentCloseupEviction: a time.AfterFunc hops back onto the world
+// goroutine, guarded by LifecycleContext so a shutdown while armed aborts
+// cleanly. MUST be called from inside a Command.Fn.
+func armOuthouseStayEnd(w *World, objectID VillageObjectID, actorID ActorID, until time.Time) {
+	time.AfterFunc(OuthouseStay, func() {
+		ctx := w.LifecycleContext()
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := w.SendContext(ctx, finishOuthouseStay(objectID, actorID, until, time.Now().UTC())); err != nil && ctx.Err() == nil {
+			log.Printf("sim/outhouse: ending the stay of %s in %s failed: %v", actorID, objectID, err)
+		}
+	})
+}
+
+// finishOuthouseStay ends the stay it was armed for — a no-op when that visit
+// is gone or has been replaced — and eases the player's tiredness unless they
+// had the relief within OuthouseReliefCooldown. Returns whether tiredness moved.
+func finishOuthouseStay(objectID VillageObjectID, actorID ActorID, until, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			v, ok := w.outhouseVisits[objectID]
+			if !ok || v.ActorID != actorID || !v.Until.Equal(until) {
+				return false, nil
+			}
+			delete(w.outhouseVisits, objectID)
+			actor := w.Actors[actorID]
+			if actor == nil || actor.Needs[outhouseNeed] <= 0 {
+				return false, nil
+			}
+			if last, ok := w.outhouseReliefAt[actorID]; ok && now.Sub(last) < OuthouseReliefCooldown {
+				return false, nil
+			}
+			actor.Needs[outhouseNeed] = ClampNeed(actor.Needs[outhouseNeed] - OuthouseTirednessRelief)
+			if w.outhouseReliefAt == nil {
+				w.outhouseReliefAt = make(map[ActorID]time.Time)
+			}
+			w.outhouseReliefAt[actorID] = now
+			// Push the new value to the player's HUD at once, like eating in
+			// place (applyObjectRefreshEffect).
+			if actor.Kind == KindPC {
+				needs := make(map[NeedKey]int, len(actor.Needs))
+				for k, n := range actor.Needs {
+					needs[k] = n
+				}
+				w.emit(&PCNeedsChanged{ActorID: actorID, Needs: needs})
+			}
+			return true, nil
 		},
 	}
 }

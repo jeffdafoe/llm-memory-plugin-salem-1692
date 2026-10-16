@@ -28,6 +28,7 @@ var (
 	WaterfowlShore              = waterfowlShore
 	EvaluateWaterfowl           = evaluateWaterfowl
 	MaxDwellMinutes             = maxDwellMinutes
+	FinishOuthouseStay          = finishOuthouseStay
 	CommonRoomForStructure      = commonRoomForStructure
 	CanEnterRoom                = canEnterRoom
 	DetermineTransitionFlips    = determineTransitionFlips
