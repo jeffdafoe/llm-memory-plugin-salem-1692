@@ -66,6 +66,7 @@ const TESTS := [
     "_test_sign_stage_draws_the_arm_at_its_angle",
     "_test_crosswise_order_and_spring",
     "_test_crosswise_nails_sit_on_the_lid",
+    "_test_crosswise_show_quickens",
     "_test_ladder_tips_and_falls",
     "_test_ladder_steadied_wins_the_round",
     "_test_ladder_same_however_time_arrives",
@@ -173,16 +174,19 @@ func _test_game_kind() -> void:
 ## it and the same order shows again (LLM-721).
 func _test_crosswise_order_and_spring() -> void:
     var g = Games.make("crosswise", _rng())
-    _check("four nails at the easy end", g.count(), 4)
+    _check("six nails at the easy end", g.count(), 6)
     var sorted: Array = g.order.duplicate()
     sorted.sort()
-    _check("the order holds every nail once", sorted, [0, 1, 2, 3])
-    _check("the show opens with the first number", g.numbers_lit(), 1)
+    _check("the order holds every nail once", sorted, [0, 1, 2, 3, 4, 5])
+    var step: float = g.show_step()
+    _check("the show opens with the first number", g.number_lit(), 0)
     _check("no strike while it shows", g.press(g.order[0]), Games.Result.NONE)
-    g.update(g.show_step)
-    _check("the next number lights", g.numbers_lit(), 2)
+    g.update(step * g.SHOW_ON + 0.01)
+    _check("it goes dark before the next", [g.showing, g.number_lit()], [true, -1])
+    g.update(step * (1.0 - g.SHOW_ON))
+    _check("then only the next number lights", g.number_lit(), 1)
     g.update(g.show_len())
-    _check("then the numbers hide", [g.showing, g.numbers_lit()], [false, 0])
+    _check("then the numbers hide", [g.showing, g.number_lit()], [false, -1])
     var head: Vector2 = g.nail_pos(g.order[0]) - Vector2(0, g.STAND)
     _check("a tap on the first nail drives it", g.press(head), Games.Result.PROGRESS)
     _check("driven", g.driven[g.order[0]], true)
@@ -202,9 +206,9 @@ func _test_crosswise_order_and_spring() -> void:
     g.update(0.02)
     _check("the same order shows again", [g.showing, g.order == before], [true, true])
     g.update(g.show_len() + 0.01)
-    for n in 3:
+    for n in 5:
         _check("in order: nail %d" % n, g.press(g.order[n]), Games.Result.PROGRESS)
-    _check("the last nail wins the round", g.press(g.order[3]), Games.Result.HIT)
+    _check("the last nail wins the round", g.press(g.order[5]), Games.Result.HIT)
     _check("one spring this round", g.springs, 1)
     _check("held", g.press(g.order[0]), Games.Result.NONE)
     g.release()
@@ -223,9 +227,31 @@ func _test_crosswise_nails_sit_on_the_lid() -> void:
             _check("d%s nail %d: on the lid" % [d, i], p.x > e.x and p.x < e.y and p.y > g.BACK_Y and p.y < g.FRONT_Y, true)
             _check("d%s nail %d: a tap on its head picks it" % [d, i], g.nail_at(p - Vector2(0, g.STAND)), i)
             _check("d%s nail %d: the hammer clears the picture" % [d, i], p.y - 30 >= -StageScript.GAP, true)
+    _done()
+
+
+## The show quickens with every round done and with a fuller purse, never
+## below its floor; a sprung lid shows again at the same pace.
+func _test_crosswise_show_quickens() -> void:
+    var easy = Games.make("crosswise", _rng(), 0.0)
     var hard = Games.make("crosswise", _rng(), 1.0)
-    _check("hard: six nails", hard.count(), 6)
-    _check("hard: a quicker show", [hard.show_step, hard.show_hold], [Games.Crosswise.HARD_SHOW_STEP, Games.Crosswise.HARD_SHOW_HOLD])
+    _check("six nails at any purse", [easy.count(), hard.count()], [6, 6])
+    _check("first round, easy", easy.show_step(), Games.Crosswise.SHOW_STEP)
+    _check("first round, hard", is_equal_approx(hard.show_step(), Games.Crosswise.HARD_SHOW_STEP), true)
+    var before: float = easy.show_step()
+    easy.set_progress(2, 5)
+    _check("quicker after two rounds", is_equal_approx(easy.show_step(), before * pow(Games.Crosswise.SPEEDUP, 2)), true)
+    hard.set_progress(4, 5)
+    _check("never below the floor", hard.show_step(), Games.Crosswise.MIN_SHOW_STEP)
+    var resumed = Games.make("crosswise", _rng(), 0.0)
+    resumed.set_progress(2, 5)
+    _check("a mend taken up again keeps its pace", resumed.show_step(), easy.show_step())
+    var pace: float = easy.show_step()
+    easy.update(easy.show_len() + 0.01)
+    var wrong: int = easy.order[1]
+    easy.press(wrong)
+    easy.update(easy.SPRING_AT + easy.SPRUNG_TIME + 0.01)
+    _check("sprung: shown again at the same pace", [easy.showing, easy.show_step()], [true, pace])
     _done()
 
 

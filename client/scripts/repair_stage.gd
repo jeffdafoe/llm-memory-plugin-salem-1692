@@ -1440,8 +1440,8 @@ func _draw_hammer_over(surface: Vector2) -> void:
 
 ## The crate's lid (LLM-721), seen from the front and a little above: three
 ## boards narrowing to the back, its front edge below, the nails standing at
-## its corners or driven flush, and while the order shows, its numbers over
-## the nails — the newest lit gold. A sprung lid jumps up off the crate.
+## its corners or driven flush, and while the order shows, the number lit now
+## over its nail. A sprung lid jumps up off the crate.
 func _draw_lid(o: Vector2) -> void:
     var g = game
     var lift := 0.0
@@ -1480,14 +1480,13 @@ func _draw_lid(o: Vector2) -> void:
             draw_rect(Rect2(p.x - 2, p.y, 5, 1), C_SHADE)
         elif g.driven[i]:
             _tex("nail-driven", Vector2(p.x - 3, p.y - 1))
-    var lit: int = g.numbers_lit()
-    for n in lit:
-        var p: Vector2 = lo + g.nail_pos(g.order[n])
+    var lit: int = g.number_lit()
+    if lit >= 0:
+        var p: Vector2 = lo + g.nail_pos(g.order[lit])
         var badge := Rect2(p.x - 4, p.y - g.STAND - 13, 9, 10)
         draw_rect(badge, Color(C_OUTLINE, 0.85))
-        if n == lit - 1:
-            draw_rect(badge, C_GOLD, false, 1.0)
-        _draw_text_centered(str(n + 1), Vector2(p.x + 1, p.y - g.STAND - 5), C_GOLD if n == lit - 1 else C_TEXT)
+        draw_rect(badge, C_GOLD, false, 1.0)
+        _draw_text_centered(str(lit + 1), Vector2(p.x + 1, p.y - g.STAND - 5), C_GOLD)
     if not g.showing:
         var slot := _swing_slot if _swing_t >= 0.0 else maxi(g.last, 0)
         _draw_hammer_over(lo + g.nail_pos(slot))
