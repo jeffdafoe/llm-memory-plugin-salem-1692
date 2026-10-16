@@ -187,10 +187,12 @@ func narrateUnansweredKnock(w *World, actor *Actor, structureID StructureID, now
 var ErrKnockRefused = errors.New("you cannot knock here")
 
 // KnockResult answers KnockAtDoor: whether someone came to the door, and —
-// when nobody did — who of the house a note may be left for (LLM-19).
+// when nobody did — who of the house a note may be left for (LLM-19), and
+// what the player lacks to write one (LLM-799, "" when they hold both).
 type KnockResult struct {
 	Answered bool
 	NoteFor  []DoorNoteRecipient
+	NoteLack string
 }
 
 // KnockAtDoor is the player's knock (LLM-785, the door popup's Knock button →
@@ -227,7 +229,7 @@ func KnockAtDoor(actorID ActorID, structureID StructureID, now time.Time) Comman
 			if actor.CurrentHuddleID != "" {
 				return KnockResult{Answered: true}, nil
 			}
-			return KnockResult{NoteFor: doorNoteRecipients(w, structureID)}, nil
+			return KnockResult{NoteFor: doorNoteRecipients(w, structureID), NoteLack: noteKitLack(w, actor)}, nil
 		},
 	}
 }

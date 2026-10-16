@@ -30,10 +30,13 @@ type pcKnockRecipientDTO struct {
 }
 
 // pcKnockResponse: answered, or — when nobody came — note_for, the people of
-// the house a note may be left for (LLM-19). Absent when answered.
+// the house a note may be left for (LLM-19), and note_lack, the line saying
+// what the player needs to write one (LLM-799; absent when they hold both).
+// Both absent when answered.
 type pcKnockResponse struct {
 	Answered bool                  `json:"answered"`
 	NoteFor  []pcKnockRecipientDTO `json:"note_for,omitempty"`
+	NoteLack string                `json:"note_lack,omitempty"`
 }
 
 // handlePCKnock knocks on a door for the caller's PC. 400 for a bad body, 404
@@ -71,7 +74,7 @@ func (s *Server) handlePCKnock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "unexpected knock result")
 		return
 	}
-	resp := pcKnockResponse{Answered: out.Answered}
+	resp := pcKnockResponse{Answered: out.Answered, NoteLack: out.NoteLack}
 	for _, r := range out.NoteFor {
 		resp.NoteFor = append(resp.NoteFor, pcKnockRecipientDTO{ID: string(r.ID), Name: r.Name})
 	}

@@ -11,7 +11,8 @@ extends CanvasLayer
 ## After a knock nobody answers (LLM-19), main.gd reopens it as
 ## open_unanswered: "No one answers." and [Leave a note] / [Leave]. Leave a note
 ## emits note_requested with the people of the house a note may be for, and
-## main.gd opens the note window.
+## main.gd opens the note window — unless the player lacks a quill and ink or
+## parchment (LLM-799), when it says so instead.
 ##
 ## Layer 4, the modal tier, styled like the repair and notice panels; main.gd
 ## blocks world input while it is open (opened / closed).
@@ -42,6 +43,10 @@ var leave_button: Button = null
 
 ## The people a note may be for, while open after no answer; empty otherwise.
 var _recipients: Array = []
+## LLM-799: the knock response's note_lack — what the player needs to write a
+## note ("" when they hold a quill and ink and parchment). Leave a note shows
+## it in place of opening the note window.
+var _note_lack := ""
 
 var _font: Font = null
 
@@ -145,14 +150,16 @@ func open(sid: String, title: String) -> void:
 
 
 ## After a knock nobody answered at `sid` (LLM-19): "No one answers." and, when
-## the house has anyone a note may be for, Leave a note.
-func open_unanswered(sid: String, title: String, recipients: Array) -> void:
-    _show(sid, title, NO_ANSWER, recipients)
+## the house has anyone a note may be for, Leave a note. note_lack is what the
+## player needs to write one (LLM-799), "" when they hold it.
+func open_unanswered(sid: String, title: String, recipients: Array, note_lack: String = "") -> void:
+    _show(sid, title, NO_ANSWER, recipients, note_lack)
 
 
-func _show(sid: String, title: String, prompt: String, recipients: Array) -> void:
+func _show(sid: String, title: String, prompt: String, recipients: Array, note_lack: String = "") -> void:
     structure_id = sid
     _recipients = recipients.duplicate()
+    _note_lack = note_lack
     title_label.text = title
     title_label.visible = title != ""
     prompt_label.text = prompt
@@ -171,6 +178,7 @@ func close() -> void:
     visible = false
     structure_id = ""
     _recipients = []
+    _note_lack = ""
     closed.emit()
 
 
@@ -187,6 +195,10 @@ func _on_knock_pressed() -> void:
 
 func _on_note_pressed() -> void:
     if _recipients.is_empty():
+        return
+    if _note_lack != "":
+        prompt_label.text = _note_lack
+        note_button.visible = false
         return
     var sid := structure_id
     var title := title_label.text

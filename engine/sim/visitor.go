@@ -1918,15 +1918,25 @@ const factorSaltKind = ItemKind("salt")
 // must land a shipment.
 const factorThreadKind = MendThreadKind
 
+// The writing goods a door note takes (LLM-799) ride every factor pack so the
+// Store's shelf refills: a little parchment (one sheet per note) and one quill
+// and ink (held, not spent). Only players write notes, so fixed counts, not
+// settings.
+const (
+	factorParchmentUnits = 6
+	factorQuillUnits     = 1
+)
+
 // factorImportKinds names the strategic imports whose SUPPLY is deliberately owned by the
 // wholesale factor errand, where the operator tuning levers live (visitor_sell_weight_permille,
-// visitor_factor_iron_units / _salt_units / _thread_units). It is a policy list, not a runtime gate: no
+// visitor_factor_iron_units / _salt_units / _thread_units; the writing goods' counts are
+// constants). It is a policy list, not a runtime gate: no
 // production path consults it — its one consumer is the guard test that keeps these kinds out
 // of the generic passer-through pool, whose packs would put an import on display that the
 // actors demanding it cannot buy (LLM-567). Spawn is the path it covers, and it is the only
 // one that needs covering: the pack switch in dispatchVisitorSpawn is exhaustive on errand
 // direction, so a no-errand visitor can only ever draw from visitorWareKinds.
-var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind}
+var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind, NoteParchmentKind, NoteQuillKind}
 
 // seedFactorPack returns the pack (clothing/charm goods to sell, plus iron,
 // salt and thread shipments — LLM-442/LLM-444/LLM-625) and purse (a heavier
@@ -1935,7 +1945,9 @@ var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadK
 // factorWardrobeKindsPerVisit wardrobe goods drawn at random (LLM-710),
 // ironUnits bars of iron, saltUnits sacks of salt, and threadUnits spools of
 // thread, each plus a small jitter so
-// back-to-back factors don't carry identical bales; purse a uniform pull from
+// back-to-back factors don't carry identical bales, and the writing goods
+// (LLM-799: factorParchmentUnits..+2 sheets, factorQuillUnits quill and ink);
+// purse a uniform pull from
 // [purseMin, purseMax]. r is non-nil; the caller clamps unitsPerKind >= 1,
 // ironUnits >= 1, saltUnits >= 1, threadUnits >= 1, and purseMin <= purseMax.
 func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnits, purseMin, purseMax int) (map[ItemKind]int, int) {
@@ -1949,6 +1961,8 @@ func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnit
 	pack[factorIronKind] = ironUnits + r.Intn(3)     // ironUnits..ironUnits+2
 	pack[factorSaltKind] = saltUnits + r.Intn(3)     // saltUnits..saltUnits+2
 	pack[factorThreadKind] = threadUnits + r.Intn(3) // threadUnits..threadUnits+2
+	pack[NoteParchmentKind] = factorParchmentUnits + r.Intn(3)
+	pack[NoteQuillKind] = factorQuillUnits
 	purse := purseMin
 	if purseMax > purseMin {
 		purse = purseMin + r.Intn(purseMax-purseMin+1)
