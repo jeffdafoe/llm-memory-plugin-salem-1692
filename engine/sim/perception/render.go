@@ -5169,11 +5169,11 @@ func capBytes(s string, maxBytes int) (string, bool) {
 // view (LLM-798): whose tent, and its fire as you would see it — burning, burning
 // low, or a cold ring.
 func campSightProse(c CampSight) string {
-	owner := sim.Possessive(sanitizeInline(c.OwnerLabel))
-	if owner == "" {
-		owner = "someone's"
+	label := sanitizeInline(c.OwnerLabel)
+	if label == "" {
+		label = "someone"
 	}
-	owner = strings.ToUpper(owner[:1]) + owner[1:]
+	owner := capitalizeFirst(sim.Possessive(label))
 	switch c.Fire {
 	case sim.CampFireStateBurning:
 		return owner + " tent is pitched nearby, a fire burning before it."
