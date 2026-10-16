@@ -1730,12 +1730,13 @@ func _on_door_knocked(sid: String) -> void:
     _knock_structure_id = sid
     _knock_msec = Time.get_ticks_msec()
     _knock_seq += 1
-    if world != null:
-        world.knocked_at[sid] = _knock_msec
     var err := _pc_http_knock.request(Auth.api_base + "/api/village/pc/knock",
         Auth.auth_headers(), HTTPClient.METHOD_POST, JSON.stringify({"structure_id": sid}))
     if err != OK:
         push_warning("knock request failed: %s" % err)
+    elif world != null:
+        # Only a knock actually sent times its "No one answers" line.
+        world.knocked_at[sid] = _knock_msec
 
 func _on_knock_response(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
     Auth.check_response(code)
