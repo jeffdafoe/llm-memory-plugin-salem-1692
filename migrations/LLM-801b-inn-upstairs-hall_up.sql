@@ -25,7 +25,10 @@ BEGIN
         SELECT 1
         FROM pg_enum e
         JOIN pg_type t ON t.oid = e.enumtypid
-        WHERE t.typname = 'room_kind' AND e.enumlabel = 'hall'
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public'
+          AND t.typname = 'room_kind'
+          AND e.enumlabel = 'hall'
     ) THEN
         EXECUTE $insert$
             INSERT INTO structure_room (structure_id, kind, name)

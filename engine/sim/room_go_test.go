@@ -164,6 +164,15 @@ func TestOnlyGuestsAndTheKeeperGoUpstairs(t *testing.T) {
 	if !canEnterRoom(w, keeper, upHall, now) {
 		t.Error("the keeper may not go up her own stairs")
 	}
+
+	// The keeper upstairs, done stoking: the hall has no keeper's place to go
+	// back to, and nothing breaks for it (code_review).
+	setActorInsideStructure(w, keeper, upInn)
+	setActorRoom(w, keeper, upHall)
+	keeperBackToPlace(w, keeper)
+	if keeper.RoomSquareRoom != "hall" || keeper.RoomSquare == nil {
+		t.Errorf("the keeper in the hall is on %v in %q", keeper.RoomSquare, keeper.RoomSquareRoom)
+	}
 }
 
 func TestUpstairsIsOutOfTheConversation(t *testing.T) {

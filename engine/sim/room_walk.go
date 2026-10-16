@@ -114,7 +114,8 @@ func keeperBackToPlace(w *World, a *Actor) {
 	if a == nil || a.MoveIntent != nil || roomRole(a, a.InsideStructureID) != roomlayout.RoleKeeper {
 		return
 	}
-	if layout := actorRoomPlan(w, a); layout != nil {
+	// A room upstairs has no keeper's place (LLM-801): nowhere to go back to.
+	if layout := actorRoomPlan(w, a); layout != nil && layout.Keeper != nil {
 		walkInRoom(w, a, layout.Keeper.Square)
 	}
 }
