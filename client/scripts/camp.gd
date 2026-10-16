@@ -33,3 +33,23 @@ static func motion(kind: String, beat: String, into: float) -> String:
 ## moment for the dust puff.
 static func tent_raised(asset_id: String, from_state: String, to_state: String) -> bool:
     return asset_id == TENT_ASSET_ID and from_state == "packed" and to_state != "packed"
+
+
+## How near the fire, in tiles (king's move), the player stands to light it —
+## the engine's own reach (sim.LightCampFire).
+const FIRE_REACH := 2
+
+## The line the fire prompt opens with: why the player would light it.
+const FIRE_PROMPT := "Sleeping with a fire will give you better rest."
+
+
+## Whether a camp fire in `state` is out — unlit, or burnt to ashes — the only
+## times a click on it offers the fire game.
+static func fire_out(state: String) -> bool:
+    return state == "" or state == "unlit" or state == "ashes"
+
+
+## Whether a player standing on `tile` is near enough the fire anchored on
+## `fire_tile` to light it.
+static func near_fire(tile: Vector2i, fire_tile: Vector2i) -> bool:
+    return maxi(absi(tile.x - fire_tile.x), absi(tile.y - fire_tile.y)) <= FIRE_REACH

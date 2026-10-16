@@ -14,6 +14,9 @@ const TESTS := [
     "_test_world_faces_the_piece",
     "_test_beat_from_frame_and_dto",
     "_test_home_chip",
+    "_test_fire_game",
+    "_test_fire_helpers",
+    "_test_fire_panel",
 ]
 
 const BODY := "/tilesets/mana-seed/farmer/sheets/01body/fbas_01body_human_00.png"
@@ -161,4 +164,113 @@ func _test_home_chip() -> void:
     bar.set_camp(false, "")
     _check("tent struck: hidden", bar.lodging_label.visible, false)
     bar.queue_free()
+    _completed[_current] = true
+
+
+func _fire(d := 0.0):
+    var rng := RandomNumberGenerator.new()
+    rng.seed = 7
+    return load("res://scripts/repair_games.gd").make("fire", rng, d)
+
+
+## Strike the steel at the flint's edge.
+func _strike(g) -> int:
+    g.steel = g.EDGE
+    return g.press(null)
+
+
+func _test_fire_game() -> void:
+    var G = load("res://scripts/repair_games.gd")
+    var g = _fire()
+    _check("starts at the strike", g.phase, g.Phase.STRIKE)
+    g.steel = 0.0
+    _check("a strike off the edge misses", g.press(null), G.Result.MISS)
+    _check("a miss keeps striking", g.phase, g.Phase.STRIKE)
+    _check("a strike at the edge throws a spark", _strike(g), G.Result.PROGRESS)
+    _check("the spark is an ember", g.phase, g.Phase.BLOW)
+    _check("the ember starts low", g.glow, g.START_GLOW)
+
+    # Breathe it into the band, letting it fade between breaths.
+    var r = g.press(null)  # 0.52 — under the band
+    _check("a breath short of the band counts nothing", g.breaths, 0)
+    g.update(0.0)
+    r = g.press(null)  # 0.74 — in the band
+    _check("a breath into the band counts", g.breaths, 1)
+    for i in 3:
+        g.update(1.0)  # fades 0.22
+        r = g.press(null)
+    _check("the needed breaths catch it", r, G.Result.HIT)
+    _check("caught: holding", g.holding, true)
+    _check("clean: no ember lost", g.spent, 0)
+
+    # Blown out: breaths too fast.
+    g = _fire()
+    _strike(g)
+    for i in 4:
+        r = g.press(null)
+    _check("four quick breaths blow it out", r, G.Result.FAIL)
+    _check("blown out, not dark", g.blown_out, true)
+    _check("the tinder is spent", g.phase, g.Phase.SPENT)
+    _check("an ember lost", g.spent, 1)
+    _check("spent: a press does nothing", g.press(null), G.Result.NONE)
+    g.update(g.SPENT_TIME + 0.01)
+    _check("after the hold: strike again", g.phase, g.Phase.STRIKE)
+
+    # Let go dark: no breaths at all.
+    g = _fire()
+    _strike(g)
+    g.update(5.0)
+    _check("left alone it goes dark", g.take_events(), [G.Result.FAIL])
+    _check("dark, not blown out", g.blown_out, false)
+
+    # Harder: narrower band, quicker fade, more breaths, faster swing.
+    var easy = _fire(0.0)
+    var hard = _fire(1.0)
+    _check("harder: more breaths", hard.breaths_needed > easy.breaths_needed, true)
+    _check("harder: narrower band", hard.band_hi - hard.band_lo < easy.band_hi - easy.band_lo, true)
+    _check("harder: quicker fade", hard.fade > easy.fade, true)
+    _check("harder: faster swing", hard.swing > easy.swing, true)
+    _check("hint names the strike", easy.hint().begins_with("Strike"), true)
+    _completed[_current] = true
+
+
+func _test_fire_helpers() -> void:
+    _check("unlit is out", Camp.fire_out("unlit"), true)
+    _check("ashes is out", Camp.fire_out("ashes"), true)
+    _check("burning is not out", Camp.fire_out("burning"), false)
+    _check("dying is not out", Camp.fire_out("dying"), false)
+    _check("two tiles off: in reach", Camp.near_fire(Vector2i(2, 2), Vector2i(0, 0)), true)
+    _check("three tiles off: out of reach", Camp.near_fire(Vector2i(3, 0), Vector2i(0, 0)), false)
+    _completed[_current] = true
+
+
+func _test_fire_panel() -> void:
+    var panel: CanvasLayer = load("res://scripts/fire_panel.gd").new()
+    root.add_child(panel)
+    var lit := [0]
+    panel.lit.connect(func(): lit[0] += 1)
+    panel.open("fire-1")
+    _check("open: the prompt says why", panel.prompt_label.text, "Sleeping with a fire will give you better rest.")
+    _check("open: Light it offered", panel.light_button.visible, true)
+    _check("open: no game yet", panel.stage.visible, false)
+    panel._on_light_pressed()
+    _check("light: the game shows", panel.stage.visible, true)
+    _check("light: the fire game", panel.stage.game_kind, "fire")
+    _check("light: playing", panel.stage.playing, true)
+
+    # A win the engine refuses: its line shows, play stops.
+    panel.send_hook = func(done: Callable): done.call(422, "{\"error\":\"walk to your fire first.\"}")
+    panel._on_round_won(false)
+    _check("refused: the engine's line", panel.status_label.text, "Walk to your fire first.")
+    _check("refused: play stops", panel.stage.playing, false)
+    _check("refused: not lit", lit[0], 0)
+
+    # Again, and the engine lights it.
+    panel._on_light_pressed()
+    panel.send_hook = func(done: Callable): done.call(200, "{\"result\":\"ok\"}")
+    panel._on_round_won(true)
+    _check("lit: signalled", lit[0], 1)
+    panel.close()
+    _check("closed", panel.is_open(), false)
+    panel.queue_free()
     _completed[_current] = true

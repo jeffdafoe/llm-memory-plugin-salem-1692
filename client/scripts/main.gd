@@ -17,6 +17,7 @@ const CreditsScrollScript = preload("res://scripts/credits_scroll.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const RepairPanelScript = preload("res://scripts/repair_panel.gd")
 const DoorPanelScript = preload("res://scripts/door_panel.gd")
+const FirePanelScript = preload("res://scripts/fire_panel.gd")
 const NotePanelScript = preload("res://scripts/note_panel.gd")
 ## No tile to walk to (_walk_out_tile).
 const NO_TILE := Vector2i(-1000000, -1000000)
@@ -54,6 +55,8 @@ var repair_panel_layer: CanvasLayer = null
 ## The door popup (LLM-785): at the door of a house the player may not walk
 ## into, Knock or Leave.
 var door_panel_layer: CanvasLayer = null
+## The camp fire window (LLM-798): light the player's own fire.
+var fire_panel_layer: CanvasLayer = null
 ## The note window (LLM-19): after a knock nobody answered, a note for one of
 ## the people of the house. See client/scripts/note_panel.gd.
 var note_panel_layer: CanvasLayer = null
@@ -186,6 +189,9 @@ var _pending_knock: bool = false
 # The house that walk is going to (LLM-785): the door popup opens for it on
 # arrival. _pc_move_target is the structure the in-flight move request names.
 var _pending_knock_structure_id := ""
+## The player's own camp fire they clicked from too far to light (LLM-798):
+## the fire window opens when they arrive near it. "" when none.
+var _pending_fire_id := ""
 var _pc_move_target := ""
 var _pc_http_knock: HTTPRequest = null
 ## The house the last knock was at, for its answer (LLM-19).
@@ -645,6 +651,17 @@ func _build_ui() -> void:
     door_panel_layer.closed.connect(func(): _set_modal_blocker("door", false))
     door_panel_layer.knocked.connect(_on_door_knocked)
     door_panel_layer.note_requested.connect(_on_door_note_requested)
+
+    # Camp fire window (LLM-798) — light the player's own fire. Modal tier.
+    fire_panel_layer = CanvasLayer.new()
+    fire_panel_layer.name = "FirePanelLayer"
+    fire_panel_layer.set_script(FirePanelScript)
+    add_child(fire_panel_layer)
+    fire_panel_layer.opened.connect(func(): _set_modal_blocker("fire", true))
+    fire_panel_layer.closed.connect(func(): _set_modal_blocker("fire", false))
+    fire_panel_layer.lit.connect(func():
+        if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
+            talk_panel_layer._refresh_state())
 
     # Note window (LLM-19) — Leave a note after no answer. Modal tier.
     note_panel_layer = CanvasLayer.new()
@@ -1409,6 +1426,13 @@ func _post_pc_move_to_screen(screen_pos: Vector2, repair_probed: bool = false) -
         if str(hit_here.get("id", "")) == place_sid:
             interior_panel_layer.open(place_sid)
             return
+    # The player's own camp fire, out (LLM-798): near it the fire window opens;
+    # from further off the walk there opens it on arrival (_open_fire_if_there).
+    _pending_fire_id = _own_fire_out_at(screen_pos)
+    if _pending_fire_id != "" and fire_panel_layer != null and _near_own_fire(_pending_fire_id):
+        fire_panel_layer.open(_pending_fire_id)
+        _pending_fire_id = ""
+        return
     # A click on an object first asks whether it is town's work the player
     # stands at (LLM-690): if so the repair panel opens and there is no walk;
     # otherwise the walk goes on as below. Ground clicks walk at once.
@@ -1627,6 +1651,39 @@ func _open_door_if_there() -> void:
     _pending_knock = false
     _pending_knock_structure_id = ""
     door_panel_layer.open(sid, _place_title(sid))
+
+## The player's own camp fire at screen_pos, when it is out (LLM-798) — the
+## only click that offers the fire game; "" for anything else.
+func _own_fire_out_at(screen_pos: Vector2) -> String:
+    if world == null or talk_panel_layer == null or not ("pc_camp" in talk_panel_layer):
+        return ""
+    var fid := str(talk_panel_layer.pc_camp.get("fire_id", ""))
+    if fid == "" or str(world.find_object_at(screen_pos).get("id", "")) != fid:
+        return ""
+    var node = world.placed_objects.get(fid, null)
+    if node == null or not is_instance_valid(node) or not Camp.fire_out(str(node.get_meta("current_state", ""))):
+        return ""
+    return fid
+
+## Whether the character stands near enough fid to light it (Camp.near_fire).
+func _near_own_fire(fid: String) -> bool:
+    var pc = world.placed_npcs.get(_pc_actor_id, null) if world != null else null
+    var node = world.placed_objects.get(fid, null) if world != null else null
+    if pc == null or node == null or not is_instance_valid(pc) or not is_instance_valid(node):
+        return false
+    var fire_tile := Vector2i(int(floor(node.position.x / StallScenes.TILE)), int(floor(node.position.y / StallScenes.TILE)))
+    return Camp.near_fire(StallScenes.standing_tile(pc), fire_tile)
+
+## Open the fire window for the fire the player walked to (LLM-798), once they
+## stand near it and it is still out.
+func _open_fire_if_there() -> void:
+    if _pending_fire_id == "" or fire_panel_layer == null or not _near_own_fire(_pending_fire_id):
+        return
+    var fid := _pending_fire_id
+    _pending_fire_id = ""
+    var node = world.placed_objects.get(fid, null)
+    if node != null and Camp.fire_out(str(node.get_meta("current_state", ""))):
+        fire_panel_layer.open(fid)
 
 ## A placed building's name, for the door popup's title ("" when unknown).
 func _place_title(sid: String) -> String:
@@ -1851,6 +1908,7 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     # from an earlier walk leaves the knock pending for its own arrival.
     if _pc_actor_id != "" and npc_id == _pc_actor_id:
         _open_door_if_there()
+        _open_fire_if_there()
     # Walk-then-feed (LLM-797): the player said Yes from further off.
     if _pc_actor_id != "" and npc_id == _pc_actor_id and _pending_feed_animal_id != "":
         var animal_id := _pending_feed_animal_id
