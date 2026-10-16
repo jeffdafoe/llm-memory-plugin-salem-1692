@@ -1235,6 +1235,12 @@ type World struct {
 	// See court.go.
 	CourtCases map[CourtCaseID]*CourtCase
 
+	// DoorNotes are the notes players left at doors nobody answered (LLM-19).
+	// Durable: unread rows loaded from door_note at boot and every note upserted
+	// each checkpoint (no sweep). A read note keeps its ReadAt here until the
+	// next boot. See door_note.go.
+	DoorNotes map[DoorNoteID]*DoorNote
+
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
 	// map used by the businessowner cascade slice to suppress redundant
 	// engine-spoken hospitality lines (e.g. don't re-greet the same
@@ -1744,6 +1750,7 @@ func NewWorld(repo Repository) *World {
 		LaborLedger:          make(map[LaborID]*LaborOffer),
 		RecurringVisitors:    make(map[RecurringVisitorID]*RecurringVisitor),
 		CourtCases:           make(map[CourtCaseID]*CourtCase),
+		DoorNotes:            make(map[DoorNoteID]*DoorNote),
 		Assets:               make(map[AssetID]*Asset),
 		Sprites:              make(map[SpriteID]*Sprite),
 		AttributeDefinitions: make(map[string]*AttributeDefinition),
@@ -2047,6 +2054,10 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// nothing moved.
 	if err := w.rehydrateCourtCasesOnLoad(ctx); err != nil {
 		return fmt.Errorf("sim: FinalizeLoad: rehydrate court cases: %w", err)
+	}
+	// LLM-19: the unread door notes. Order-free.
+	if err := w.rehydrateDoorNotesOnLoad(ctx); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate door notes: %w", err)
 	}
 	// LLM-572: seed the per-pair coin tally from the durable action log. This one
 	// IS order-dependent — it resolves each historical row's recipient against
@@ -2671,6 +2682,14 @@ func (w *World) republish() {
 		}
 		nc := *n
 		snap.NoticeboardContent[id] = &nc
+	}
+	for id, n := range w.DoorNotes {
+		if n.Unread() {
+			if snap.DoorNotes == nil {
+				snap.DoorNotes = make(map[DoorNoteID]*DoorNote)
+			}
+			snap.DoorNotes[id] = n.Clone()
+		}
 	}
 	w.published.Store(snap)
 }

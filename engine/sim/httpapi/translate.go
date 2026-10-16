@@ -665,6 +665,23 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.DoorNoteLeft:
+		// LLM-19: the author's note is on the door — PRIVATE + actor-scoped,
+		// like knock_unanswered, and floated over the house.
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			Kind:        "note_left",
+			Text:        e.Text,
+			Private:     true,
+			StructureID: string(e.StructureID),
+			At:          e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.DoorNotePinned:
+		// LLM-19: a door gained or lost its unread note. No text — broadcast.
+		return WireFrame{Type: "door_note_changed", Data: doorNoteChangedWireDTO{
+			ID:      string(e.StructureID),
+			HasNote: e.HasNote,
+		}}, true
 	case *sim.AssetDoorOffsetChanged:
 		// LLM-263: an admin dragged the editor's door marker. x/y are the new tile
 		// offset from the asset anchor, or null when the door was cleared — the
@@ -897,6 +914,13 @@ type noticeboardContentChangedWireDTO struct {
 	ID              string    `json:"id"`
 	ContentText     string    `json:"content_text"`
 	ContentPostedAt time.Time `json:"content_posted_at"`
+}
+
+// doorNoteChangedWireDTO is the door_note_changed payload (LLM-19): whether
+// the structure id now has an unread note on its door.
+type doorNoteChangedWireDTO struct {
+	ID      string `json:"id"`
+	HasNote bool   `json:"has_note"`
 }
 
 // objectMovedWireDTO is the object_moved payload — a placed object repositioned

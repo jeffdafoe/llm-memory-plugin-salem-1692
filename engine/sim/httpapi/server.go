@@ -400,6 +400,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	mux.HandleFunc("POST /api/village/pc/move_inside", s.requireAuth(s.handlePCMoveInside)) // LLM-768
 	mux.HandleFunc("POST /api/village/pc/knock", s.requireAuth(s.handlePCKnock))            // LLM-785
+	mux.HandleFunc("POST /api/village/pc/leave-note", s.requireAuth(s.handlePCLeaveNote))   // LLM-19
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
 	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
 	mux.HandleFunc("POST /api/village/pc/give", s.requireAuth(s.handlePCGive)) // LLM-725
@@ -829,6 +830,7 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			postedAt := nc.PostedAt
 			dto.ContentPostedAt = &postedAt
 		}
+		dto.HasNote = sim.StructureHasUnreadNote(s.DoorNotes, sim.StructureID(id))
 		// Refresh policies for the editor panel (no standalone GET in v2).
 		// refreshRowsToWire returns a non-nil empty slice for no refreshes,
 		// which `omitempty` then drops from the wire.

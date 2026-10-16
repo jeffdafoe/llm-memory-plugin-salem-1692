@@ -281,6 +281,12 @@ type TickResult struct {
 	// tick that never rendered (noop-skip, failed-before-render) reports none.
 	// Speech-only today — see that collector for why.
 	DischargedSourceKeys []WarrantSourceKey
+
+	// ShownDoorNotes are the door notes (LLM-19) this turn's prompt showed the
+	// actor. CompleteReactorTick marks them read only when the turn answered
+	// (terminalStatusAnswered), so a failed call leaves the note on the door.
+	// Set after Render, like DischargedSourceKeys.
+	ShownDoorNotes []DoorNoteID
 }
 
 // CompleteReactorTick returns a Command that records the completion of an
@@ -330,6 +336,9 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 			// Apply the terminal-status warrant policy BEFORE clearing the
 			// in-flight markers — the policy reads inFlightSourceKeys.
 			applyTerminalWarrantPolicy(w, actor, result, now)
+			if terminalStatusAnswered(result.TerminalStatus) {
+				markDoorNotesRead(w, actorID, result.ShownDoorNotes, now)
+			}
 
 			actor.TickInFlight = false
 			actor.TickAttemptID = ""

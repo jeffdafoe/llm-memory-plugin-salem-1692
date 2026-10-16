@@ -229,6 +229,17 @@ const (
 	// complaint, brought_by, parties, words, text, …pay fields}. It is how the
 	// night's dream records a matter as closed rather than open.
 	ActionTypeRuled ActionType = "ruled"
+
+	// ActionTypeLeftNote — a player pinned a note to a door nobody answered
+	// (LLM-19, door_note.go LeaveDoorNote). DURABLE-ONLY: ActorID is the author;
+	// payload {note_id, structure_id, recipient, text}.
+	ActionTypeLeftNote ActionType = "left_note"
+
+	// ActionTypeReadNote — a villager read a note left at their door (LLM-19,
+	// door_note.go markDoorNotesRead). ActorID is the reader; Text is the note;
+	// CounterpartyName is its author. On the self-action trail, and durable
+	// {note_id, from, text, left_at} so the night's dream records it.
+	ActionTypeReadNote ActionType = "read_note"
 )
 
 // isNegotiationActionType reports whether t is one of the pay-ledger negotiation

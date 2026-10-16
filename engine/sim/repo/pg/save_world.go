@@ -160,6 +160,12 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 			return fmt.Errorf("pg SaveWorld: CourtCases.SaveSnapshot: %w", err)
 		}
 	}
+	// LLM-19: the door notes. Upsert-only; a read note keeps its row.
+	if repo.DoorNotes != nil {
+		if err := repo.DoorNotes.SaveSnapshot(ctx, tx, cp.DoorNotes); err != nil {
+			return fmt.Errorf("pg SaveWorld: DoorNotes.SaveSnapshot: %w", err)
+		}
+	}
 	// LLM-547: the per-pair conversational recency trail. Upsert plus a single
 	// horizon-predicate DELETE — NOT a generation-marker sweep (nothing is
 	// marked), but not upsert-only either: visitor ActorIDs are ephemeral, so
