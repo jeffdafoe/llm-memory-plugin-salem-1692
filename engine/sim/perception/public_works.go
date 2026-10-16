@@ -31,7 +31,8 @@ import (
 //
 // Silence when nothing is damaged, and for a hand when the chest cannot pay
 // (PublicWorksBountyOpen — the same predicate StartRepair gates on) or someone
-// is already at the mending.
+// is already at the mending. The keeper and the constable read who is at it in
+// place of the bounty (withMender).
 
 // PublicWorksSite is one damaged site as the subject sees it.
 type PublicWorksSite struct {
@@ -55,6 +56,9 @@ type PublicWorksSite struct {
 	// the bearing when they are not ("a short walk to the north").
 	AtSite bool
 	Walk   string
+	// MendingBy names the hand at the town's mending of the site just now —
+	// the keeper's and constable's views only (a hand never sees such a site).
+	MendingBy string
 }
 
 // PublicWorksView is "## The town's works" for one subject. Exactly one of
@@ -81,15 +85,17 @@ func damagedSites(snap *sim.Snapshot) []*sim.VillageObject {
 // mending of siteID in hand. A keeper's own nail-mend at the same shop is not
 // the town's work and does not count.
 func siteUnderRepair(snap *sim.Snapshot, siteID sim.VillageObjectID, except sim.ActorID) bool {
-	for id, a := range snap.Actors {
-		if id == except || a == nil {
-			continue
-		}
-		if a.SourceActivityKind == sim.SourceActivityRepair && a.SourceActivityPublicWorks && a.SourceActivityObjectID == siteID {
-			return true
-		}
-	}
-	return false
+	mender, _ := sim.SnapshotPublicWorksMender(snap, siteID, except)
+	return mender != ""
+}
+
+// withMender names the hand already at the site's mending, for the keeper and
+// the constable: they read who is at it instead of an open bounty. Live, a
+// keeper read "the town pays a hand 25 coins" an hour into another hand's
+// mending and paid a second hand 25 of her own for the same job.
+func withMender(snap *sim.Snapshot, s PublicWorksSite, except sim.ActorID) PublicWorksSite {
+	_, s.MendingBy = sim.SnapshotPublicWorksMender(snap, s.SiteID, except)
+	return s
 }
 
 // publicWorksSite projects one damaged object into the view's terms.
@@ -141,13 +147,13 @@ func buildPublicWorks(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 	if isConstableSnapshot(actorSnap) {
 		v := &PublicWorksView{Constable: true}
 		for _, obj := range damaged {
-			v.Sites = append(v.Sites, publicWorksSite(snap, obj))
+			v.Sites = append(v.Sites, withMender(snap, publicWorksSite(snap, obj), actorID))
 		}
 		return v
 	}
 	for _, obj := range damaged {
 		if obj.OwnerActorID == actorID && sim.PublicWorksKind(obj) == sim.PublicWorksBusiness {
-			return &PublicWorksView{Keeper: true, Sites: []PublicWorksSite{publicWorksSite(snap, obj)}}
+			return &PublicWorksView{Keeper: true, Sites: []PublicWorksSite{withMender(snap, publicWorksSite(snap, obj), actorID)}}
 		}
 	}
 	if !subjectIsWorker(actorSnap) || laboring {
@@ -233,10 +239,13 @@ func renderPublicWorks(b *strings.Builder, v *PublicWorksView) {
 		for _, s := range v.Sites {
 			b.WriteString(sanitizeInline(s.Fact) + publicWorksConsequence(s))
 			noun := sim.PublicWorksMendNoun(s.Kind)
-			if s.BountyOpen {
-				anyOpen = true
+			anyOpen = anyOpen || s.BountyOpen
+			switch {
+			case s.MendingBy != "":
+				fmt.Fprintf(b, " %s is at %s just now, at the town's charge.\n", sanitizeInline(s.MendingBy), noun)
+			case s.BountyOpen:
 				fmt.Fprintf(b, " The town has posted %s for %s; any hand seeking work may take it on.\n", coinsPhrase(s.Bounty), noun)
-			} else {
+			default:
 				fmt.Fprintf(b, " The town chest cannot pay for %s just now.\n", noun)
 			}
 		}
@@ -264,6 +273,10 @@ func renderKeeperPublicWorks(b *strings.Builder, s PublicWorksSite) {
 		fmt.Fprintf(b, "Boards have split and given way at your %s.", name)
 	}
 	b.WriteString(" Until it is mended you can take in no new shelf stock, and your work goes slowly; you can still sell what's on hand.")
+	if s.MendingBy != "" {
+		fmt.Fprintf(b, " %s is at the mending just now, at the town's charge — the work is the town's, not yours. %s\n\n", sanitizeInline(s.MendingBy), publicWorksNoHireLine)
+		return
+	}
 	if s.BountyOpen {
 		fmt.Fprintf(b, " The town pays a hand %s to mend it — the work is the town's, not yours. %s\n\n", coinsPhrase(s.Bounty), publicWorksNoHireLine)
 		return

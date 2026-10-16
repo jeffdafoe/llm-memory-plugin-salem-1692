@@ -123,7 +123,140 @@ func init() {
 				"contradict the unpaid site.",
 			build: constableOneBountyPostedOneUnpaidScenario,
 		},
+		perceptionScenario{
+			name: "keeper_of_damaged_shop_while_a_hand_mends_it",
+			summary: "Patience, a hand, has the town's mending of the storm-damaged General Store in hand, and Anne, " +
+				"another hand, waits on Josiah in the shop (live 10-14: Prudence read 'the town pays a hand 25 coins' an " +
+				"hour into Patience's mending of her Apothecary, hired Silence for it and paid her 25 of her own). Josiah " +
+				"reads that Patience is at the mending at the town's charge — no bounty — and the no-hire close.",
+			build: keeperOfDamagedShopWhileAHandMendsScenario,
+		},
+		perceptionScenario{
+			name: "constable_while_a_hand_mends_the_shop",
+			summary: "The mill well is broken and Patience is at the town's mending of the General Store. Gideon hears " +
+				"the well's posted bounty and, for the store, that Patience is at the mending just now — no second " +
+				"posting for a job already taken.",
+			build: constableWhileAHandMendsScenario,
+		},
+		perceptionScenario{
+			name: "hand_hears_nothing_of_shop_a_hand_is_mending",
+			summary: "The mill well is broken and Patience is at the town's mending of the General Store. Anne, another " +
+				"hand, hears only the well — the store's work is already taken.",
+			build: handWhileAnotherHandMendsScenario,
+		},
 	)
+}
+
+const pwPatience = sim.ActorID("patience")
+
+// patienceMendsStore adds Patience, a hand, inside the General Store with the
+// town's repair window on it — the state StartRepair leaves for a public-works
+// mending.
+func patienceMendsStore(snap *sim.Snapshot) {
+	start, end := 480, 1080
+	snap.Actors[pwPatience] = &sim.ActorSnapshot{
+		Kind:                      sim.KindNPCShared,
+		DisplayName:               "Patience Walker",
+		State:                     sim.StateIdle,
+		Pos:                       sim.WorldPos{X: 1600, Y: 1200}.Tile(),
+		InsideStructureID:         "store",
+		HomeStructureID:           "walker_home",
+		ScheduleStartMin:          &start,
+		ScheduleEndMin:            &end,
+		Coins:                     20,
+		Needs:                     map[sim.NeedKey]int{},
+		Inventory:                 map[sim.ItemKind]int{},
+		AttributeSlugs:            []string{sim.AttrWorker},
+		SourceActivityKind:        sim.SourceActivityRepair,
+		SourceActivityObjectID:    "store",
+		SourceActivityPublicWorks: true,
+	}
+}
+
+func keeperOfDamagedShopWhileAHandMendsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := damagedShopSnapshot(100, false, true)
+	patienceMendsStore(snap)
+	handInStoreWith(snap, pwJosiah)
+	return snap, pwJosiah, nil
+}
+
+func constableWhileAHandMendsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := damagedShopSnapshot(100, true, true)
+	patienceMendsStore(snap)
+	return snap, pwGideon, nil
+}
+
+func handWhileAnotherHandMendsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := damagedShopSnapshot(100, true, true)
+	patienceMendsStore(snap)
+	return snap, pwAnne, nil
+}
+
+// TestGoldensSiteBeingMendedPostsNoBounty — across the whole matrix, a damaged
+// site another actor has the town's repair window on is never offered as open
+// work: no line of "## The town's works" that names it posts or pays a bounty,
+// and the keeper and constable read who is at the mending. The mender is found
+// by its own scan of the snapshot, not the code under test. Vacuity-guarded on
+// each audience.
+func TestGoldensSiteBeingMendedPostsNoBounty(t *testing.T) {
+	seen := map[string]bool{}
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			snap, actorID, warrants := sc.build()
+			subject := snap.Actors[actorID]
+			if subject == nil {
+				return
+			}
+			type mended struct{ label, mender string }
+			var sites []mended
+			for _, obj := range damagedSites(snap) {
+				for id, a := range snap.Actors {
+					if id != actorID && a != nil && a.SourceActivityKind == sim.SourceActivityRepair &&
+						a.SourceActivityPublicWorks && a.SourceActivityObjectID == obj.ID {
+						sites = append(sites, mended{sim.DamageSiteLabel(snap.VillageObjects, snap.Structures, snap.Assets, obj), a.DisplayName})
+					}
+				}
+			}
+			if len(sites) == 0 {
+				return
+			}
+			p := Build(snap, actorID, warrants)
+			out := combinedPrompt(Render(p, DefaultRenderConfig()))
+			section := ""
+			if i := strings.Index(out, "## The town's works\n"); i >= 0 {
+				section = out[i:]
+				if j := strings.Index(section, "\n\n"); j >= 0 {
+					section = section[:j]
+				}
+			}
+			audience := "hand"
+			switch {
+			case isConstableSnapshot(subject):
+				audience = "constable"
+			case p.PublicWorks != nil && p.PublicWorks.Keeper:
+				audience = "keeper"
+			case !subjectIsWorker(subject):
+				return
+			}
+			seen[audience] = true
+			for _, s := range sites {
+				for _, line := range strings.Split(section, "\n") {
+					if strings.Contains(line, s.label) && (strings.Contains(line, "has posted") || strings.Contains(line, "The town pays")) {
+						t.Errorf("%q hears %s offered while %s mends it:\n%s", subject.DisplayName, s.label, s.mender, section)
+					}
+				}
+				if audience != "hand" && !strings.Contains(section, s.mender+" is at the ") {
+					t.Errorf("%q is not told %s is at the mending of %s:\n%s", subject.DisplayName, s.mender, s.label, section)
+				}
+			}
+		})
+	}
+	for _, who := range []string{"constable", "keeper", "hand"} {
+		if !seen[who] {
+			t.Fatalf("invariant is vacuous: no scenario shows the %s a site another hand is mending", who)
+		}
+	}
 }
 
 func constableOneBountyPostedOneUnpaidScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
