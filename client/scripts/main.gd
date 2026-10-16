@@ -685,7 +685,7 @@ func _build_ui() -> void:
                 inventory_panel.show_at(rect)
         )
     if talk_panel_layer.has_signal("inventory_changed"):
-        talk_panel_layer.inventory_changed.connect(inventory_panel.set_inventory)
+        talk_panel_layer.inventory_changed.connect(func(items: Array): inventory_panel.set_inventory(items, talk_panel_layer.me_sent_msec))
     inventory_panel.item_action_requested.connect(_on_item_action_requested.bind(inventory_panel))
 
     # Village ticker — thin marquee band below the top bar, scrolling the

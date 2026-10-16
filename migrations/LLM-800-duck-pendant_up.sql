@@ -9,8 +9,9 @@
 --      description. Every FK to item_kind.name is ON UPDATE CASCADE, so the
 --      price anchor follows. iron_ward had no holder, no factor source and no
 --      restock line (LLM-592 left it out), so nothing in the economy moves.
---      Refuses if a duck_pendant row already exists (an engine-minted
---      discovery), so the down can always turn it back into the iron ward.
+--      Refuses unless the catalog holds exactly the starting state — an
+--      iron_ward nobody holds and no duck_pendant (an engine-minted discovery
+--      would be one) — so the down is always its inverse.
 --   2. Adds the `wear` capability to the three pendants: duck_pendant,
 --      silver_locket, whalebone_charm (sim.CapabilityWear).
 --   3. actor.wearing — the item kinds an actor has on (sim.Actor.Wearing),
@@ -20,37 +21,35 @@
 -- -> start, the standard deploy order): the old binary's checkpoint does not
 -- write wearing and the new binary's does.
 --
--- Rerun-safe.
+-- Rerun-safe: actor.wearing is added in this same transaction, so its
+-- presence means the rename already happened and the checks are skipped.
 
 BEGIN;
 
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'actor' AND column_name = 'wearing') THEN
+        RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'duck_pendant') THEN
+        RAISE EXCEPTION 'LLM-800: duck_pendant already exists; remove that discovery row first';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM item_kind WHERE name = 'iron_ward') THEN
+        RAISE EXCEPTION 'LLM-800: iron_ward does not exist; nothing to turn into the duck pendant';
+    END IF;
     IF EXISTS (SELECT 1 FROM actor_inventory WHERE item_kind = 'iron_ward') THEN
         RAISE EXCEPTION 'LLM-800: an actor holds an iron ward; renaming it to the duck pendant would hand them a duck';
     END IF;
-    IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'iron_ward') THEN
-        IF EXISTS (SELECT 1 FROM item_kind WHERE name = 'duck_pendant') THEN
-            RAISE EXCEPTION 'LLM-800: both iron_ward and duck_pendant exist; remove the duck_pendant discovery row first';
-        END IF;
-        UPDATE item_kind SET name = 'duck_pendant' WHERE name = 'iron_ward';
-    END IF;
+    UPDATE item_kind SET name = 'duck_pendant' WHERE name = 'iron_ward';
 END $$;
 
-INSERT INTO item_kind
-    (name, display_label, display_label_singular, display_label_plural,
-     category, sort_order, capabilities, description)
-VALUES
-    ('duck_pendant', 'Duck pendant', 'duck pendant', 'duck pendants',
-     'charm', 330, '{}'::text[],
-     'A little duck carved from pale wood and hung on a cord, to be worn about the neck.')
-ON CONFLICT (name) DO UPDATE SET
-    display_label          = EXCLUDED.display_label,
-    display_label_singular = EXCLUDED.display_label_singular,
-    display_label_plural   = EXCLUDED.display_label_plural,
-    category               = EXCLUDED.category,
-    sort_order             = EXCLUDED.sort_order,
-    description            = EXCLUDED.description;
+UPDATE item_kind
+   SET display_label          = 'Duck pendant',
+       display_label_singular = 'duck pendant',
+       display_label_plural   = 'duck pendants',
+       description            = 'A little duck carved from pale wood and hung on a cord, to be worn about the neck.'
+ WHERE name = 'duck_pendant';
 
 UPDATE item_kind
    SET capabilities = array_append(capabilities, 'wear')

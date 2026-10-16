@@ -42,6 +42,8 @@ var _busy: bool = false
 ## The last refusal from /pc/item/use, shown under the list until the next
 ## press or close.
 var _message: String = ""
+## When an item action's answer last replaced the rows (Time.get_ticks_msec()).
+var _answered_msec := -1
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -107,7 +109,12 @@ func show_at(icon_rect: Rect2) -> void:
 
 ## Update the inventory data. If the panel is open, it re-renders in
 ## place; if closed, the next show_at() will pick up the latest.
-func set_inventory(items: Array) -> void:
+## sent_msec is when the /pc/me that brought items was sent (-1: not known). An
+## answer sent before the last item action's answer was applied is older than
+## the rows on show, and is dropped (LLM-800).
+func set_inventory(items: Array, sent_msec: int = -1) -> void:
+    if sent_msec >= 0 and sent_msec < _answered_msec:
+        return
     _items = _sorted_items(items)
     if visible:
         _rebuild()
@@ -248,6 +255,7 @@ func _on_action_pressed(item_kind: String, action: String) -> void:
 func action_finished(message: String, items = null) -> void:
     if items is Array:
         _items = _sorted_items(items)
+        _answered_msec = Time.get_ticks_msec()
     _busy = false
     _message = message
     if visible:

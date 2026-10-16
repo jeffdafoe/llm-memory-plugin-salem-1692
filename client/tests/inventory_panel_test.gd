@@ -22,6 +22,7 @@ const TESTS := [
     "_test_press_requests_and_waits",
     "_test_refusal_shows_under_the_list",
     "_test_success_redraws_from_the_answer",
+    "_test_older_poll_does_not_undo_the_answer",
     "_test_own_duck_quacks_on_arrival",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
@@ -185,6 +186,25 @@ func _test_success_redraws_from_the_answer() -> void:
     _button(p, "Duck pendant").pressed.emit()
     _check("a second press asks to remove, not to wear again", log, ["duck_pendant:wear", "duck_pendant:remove"])
     p.action_finished("", after)
+    p.free()
+    _done()
+
+
+## /pc/me sent before the Wear, answered after it: the rows stay as the Wear's
+## answer left them. A poll sent later still lands.
+func _test_older_poll_does_not_undo_the_answer() -> void:
+    var p := _panel([])
+    var poll_sent := Time.get_ticks_msec()
+    _button(p, "Duck pendant").pressed.emit()
+    var after: Array = ITEMS.duplicate(true)
+    after[1]["actions"] = ["remove"]
+    p.action_finished("", after)
+    p.set_inventory(ITEMS, poll_sent)
+    _check("the older poll is dropped", _rows(p).get("Duck pendant"), ["Remove"])
+    p.set_inventory(ITEMS, p._answered_msec + 1)
+    _check("a later poll lands", _rows(p).get("Duck pendant"), ["Wear"])
+    p.set_inventory(after)
+    _check("an unstamped update lands", _rows(p).get("Duck pendant"), ["Remove"])
     p.free()
     _done()
 
