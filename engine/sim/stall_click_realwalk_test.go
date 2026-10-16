@@ -110,3 +110,22 @@ func TestStallClick_KeeperAbedIsASilentVisit(t *testing.T) {
 		t.Fatalf("a stall with its keeper abed formed a conversation %q, want a silent visit", ph)
 	}
 }
+
+// The keeper awake but away from the stall (out on the lane, not inside it):
+// still a silent visit — WorkStructureID alone must not pull them in.
+func TestStallClick_KeeperAwayIsASilentVisit(t *testing.T) {
+	w, stop := buildStallClickWorld(t, sim.StateIdle)
+	defer stop()
+	setInside(t, w, "keeper", "")
+	mutate(t, w, func(world *sim.World) {
+		world.Actors["keeper"].Pos = sim.TilePos{X: sim.PadX + 40, Y: sim.PadY + 40}
+	})
+	clickStall(t, w, time.Now().UTC())
+
+	if ph := readHuddleOf(t, w, "player"); ph != "" {
+		t.Fatalf("a stall with its keeper away formed a conversation %q, want a silent visit", ph)
+	}
+	if kh := readHuddleOf(t, w, "keeper"); kh != "" {
+		t.Fatalf("the keeper away from the stall was pulled into conversation %q", kh)
+	}
+}
