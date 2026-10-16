@@ -84,7 +84,7 @@ func itemUsePCCommand(username string, kind sim.ItemKind, action string) sim.Com
 				return nil, err
 			}
 			a := world.Actors[actorID]
-			return pcInventoryEntries(a.Inventory, a.Wearing, world.ItemKinds), nil
+			return pcPackEntries(a.Inventory, a.Wearing, world.ItemKinds, world.VillageObjects, world.Structures, actorID), nil
 		},
 	}
 }

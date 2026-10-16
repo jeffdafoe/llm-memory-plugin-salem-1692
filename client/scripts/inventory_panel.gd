@@ -30,7 +30,7 @@ const PANEL_PAD: float = 16.0
 const ROW_SEPARATION: int = 6
 
 ## Button text per item-action slug. A slug missing here shows capitalized.
-const ACTION_LABELS := {"wear": "Wear", "remove": "Remove"}
+const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike"}
 
 var _font: Font = null
 var _panel: PanelContainer = null
@@ -194,7 +194,8 @@ func _rebuild() -> void:
     for entry in _items:
         var label_text := str(entry.get("display_label", entry.get("item_kind", "")))
         var qty := int(entry.get("quantity", 0))
-        if label_text == "" or qty <= 0:
+        # A pitched tent (LLM-798) is out of the pack: no count, but its row stays.
+        if label_text == "" or (qty <= 0 and not bool(entry.get("pitched", false))):
             continue
         var actions = entry.get("actions", [])
         if typeof(actions) != TYPE_ARRAY:
@@ -229,13 +230,8 @@ func _build_row(label_text: String, qty: int, item_kind: String, actions: Array)
     name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     row.add_child(name_label)
 
-    var qty_label := Label.new()
-    qty_label.text = "× %d" % qty
-    qty_label.add_theme_color_override("font_color", COLOR_QTY)
-    qty_label.add_theme_font_override("font", _font)
-    qty_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
-    qty_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    row.add_child(qty_label)
+    if qty > 0:
+        row.add_child(_qty_label(qty))
 
     for action in actions:
         var slug := str(action)
@@ -245,6 +241,16 @@ func _build_row(label_text: String, qty: int, item_kind: String, actions: Array)
         row.add_child(b)
 
     return row
+
+
+func _qty_label(qty: int) -> Label:
+    var qty_label := Label.new()
+    qty_label.text = "× %d" % qty
+    qty_label.add_theme_color_override("font_color", COLOR_QTY)
+    qty_label.add_theme_font_override("font", _font)
+    qty_label.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
+    qty_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    return qty_label
 
 
 func _on_action_pressed(item_kind: String, action: String) -> void:

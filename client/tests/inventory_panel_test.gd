@@ -27,6 +27,7 @@ const TESTS := [
     "_test_own_duck_quacks_on_arrival",
     "_test_no_quack_walking_indoors_or_for_another",
     "_test_is_beside",
+    "_test_tent_rows",
 ]
 
 const ITEMS := [
@@ -306,4 +307,31 @@ func _test_is_beside() -> void:
     var Q = load(QUACK_PATH)
     _check("3 tiles: beside", Q.is_beside(Vector2(0, 0), Vector2(96, 96)), true)
     _check("4 tiles: not", Q.is_beside(Vector2(0, 0), Vector2(128, 0)), false)
+    _done()
+
+
+## LLM-798: the carried tent offers Pitch; a pitched tent is a count-less row
+## that offers Strike and asks for it.
+func _test_tent_rows() -> void:
+    var log: Array = []
+    var p: Control = load(PANEL_PATH).new()
+    root.add_child(p)
+    p.item_action_requested.connect(func(kind: String, action: String): log.append("%s:%s" % [kind, action]))
+    p.set_inventory([{"item_kind": "tent", "display_label": "Tent", "quantity": 1, "capabilities": ["shelter"], "actions": ["pitch"]}])
+    p.show_at(Rect2(600, 0, 32, 32))
+    _check("carried tent: Pitch", _rows(p).get("Tent"), ["Pitch"])
+    p.set_inventory([{"item_kind": "tent", "display_label": "Tent — pitched by the Inn", "quantity": 0, "pitched": true, "actions": ["strike"]}])
+    _check("pitched tent: a row with Strike", _rows(p).get("Tent — pitched by the Inn"), ["Strike"])
+    var counts := 0
+    for child in p._content.get_children():
+        if child is HBoxContainer and not child.is_queued_for_deletion():
+            for c in child.get_children():
+                if c is Label and c.text.begins_with("×"):
+                    counts += 1
+    _check("pitched tent: no count", counts, 0)
+    _button(p, "Tent — pitched by the Inn").pressed.emit()
+    _check("Strike asks for strike", log, ["tent:strike"])
+    p.set_inventory([{"item_kind": "bread", "display_label": "Bread", "quantity": 0, "actions": []}])
+    _check("an empty row that is not a tent stays hidden", _rows(p).has("Bread"), false)
+    p.free()
     _done()

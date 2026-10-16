@@ -1503,6 +1503,9 @@ func _push_purse_to_top_bar() -> void:
         if label != "" and qty > 0:
             lines.append("%s × %d" % [label, qty])
             structured.append(entry)
+        elif label != "" and bool(entry.get("pitched", false)):
+            # The pitched tent (LLM-798): out of the pack, but its row (Strike) stays.
+            structured.append(entry)
     purse_changed.emit(pc_coins, lines)
     inventory_changed.emit(structured)
     character_name_changed.emit(character_name)
