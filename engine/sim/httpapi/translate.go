@@ -587,6 +587,14 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "livestock_fed", Data: livestockFedWireDTO{
 			ID: string(e.AnimalID),
 		}}, true
+	case *sim.OuthouseUsed:
+		// LLM-806: a player went into an outhouse. Every client hides them for
+		// the stay and plays the outhouse sounds at the outhouse.
+		return WireFrame{Type: "outhouse_used", Data: outhouseUsedWireDTO{
+			ObjectID: string(e.ObjectID),
+			ActorID:  string(e.ActorID),
+			Seconds:  e.Stay.Seconds(),
+		}}, true
 	case *sim.SourceActivityCancelled:
 		// Clear on abandonment (today: a committed move off the source). Same gate.
 		if !renderedSourceActivityKind(e.Kind) {
@@ -1097,6 +1105,13 @@ type campTargetWireDTO struct {
 // livestockFedWireDTO is the livestock_fed payload (LLM-797): the animal fed.
 type livestockFedWireDTO struct {
 	ID string `json:"id"`
+}
+
+// outhouseUsedWireDTO is the outhouse_used payload (LLM-806).
+type outhouseUsedWireDTO struct {
+	ObjectID string  `json:"object_id"`
+	ActorID  string  `json:"actor_id"`
+	Seconds  float64 `json:"seconds"`
 }
 
 // renderedSourceActivityKind reports whether a source-activity kind reaches the

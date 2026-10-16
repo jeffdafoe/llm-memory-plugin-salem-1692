@@ -93,6 +93,7 @@ const CREDITS := [
         ["Freesound", "https://freesound.org/", [
             [["speakwithanimals", "https://freesound.org/s/525046/"], ["loganzsound", "https://freesound.org/s/840628/"], ["manofham", "https://freesound.org/s/700379/"], ["Mikes-MultiMedia", "https://freesound.org/s/418509/"]],
             [["Emulius", "https://freesound.org/s/744722/"], ["SoundsLikeYukon", "https://freesound.org/s/760611/"], ["Flem0527", "https://freesound.org/s/629987/"], ["WavJunction.com", "https://freesound.org/s/456770/"]],
+            [["bassimat", "https://freesound.org/s/840755/"], ["frenkfurth", "https://freesound.org/s/777448/"], ["Zott820", "https://freesound.org/s/183551/"]],
         ]],
     ]],
     ["Fonts", [
