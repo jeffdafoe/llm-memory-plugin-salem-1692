@@ -93,13 +93,15 @@ const (
 	DefaultEstateRatePctPerDay = 5
 
 	// DefaultConstableWagePerDay is what the chest pays each constable per
-	// game-day. Sized on his own two weeks of living before the wage (2026-08-26
-	// → 09-09): the day's rate brought him 7–11 coins a day and he spent 5–11,
-	// on porridge, journeycake, ale and berries — a hot meal and a drink twice a
-	// day is 7 or 8. Eight keeps him eating as he does; five would put him back
-	// on berries. A non-positive value disables the wage (the off-switch); the
-	// chest's balance caps it regardless, so it never mints.
-	DefaultConstableWagePerDay = 8
+	// game-day. Sized on what he buys: a hot meal (fried meat at 6, stew), water
+	// and an apple come to about 8, and at a wage of exactly 8 he spent it all by
+	// noon every day and went hungry by afternoon (2026-10-15 → 10-20). Twelve
+	// leaves a few coins of reserve. Kept modest on purpose: the constable is
+	// exempt from the estate rate, so any wage he does not spend stays in his
+	// purse — the concentration the rate exists to undo. A non-positive value
+	// disables the wage (the off-switch); the chest's balance caps it
+	// regardless, so it never mints.
+	DefaultConstableWagePerDay = 12
 
 	// estateRateForText is the payment's stated purpose on the payer's records —
 	// the in-memory ring ("You paid Constable Gideon Marsh 38 coins for the rate on
