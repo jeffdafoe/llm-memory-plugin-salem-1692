@@ -263,6 +263,17 @@ func recordWindow(from, to string, now time.Time, loc *time.Location) (time.Time
 		if err != nil {
 			return time.Time{}, fmt.Errorf("%q is not a date — give it as YYYY-MM-DD", s)
 		}
+		// The village believes it is 1692, so a magistrate who stays in it writes
+		// that year, while the record is kept in real dates (LLM-818). Read an
+		// in-world year as the latest past occurrence of that month and day.
+		if t.Year() < 2000 {
+			today := day(now)
+			mapped := time.Date(today.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+			if mapped.After(today) {
+				mapped = time.Date(today.Year()-1, t.Month(), t.Day(), 0, 0, 0, 0, loc)
+			}
+			t = mapped
+		}
 		return t, nil
 	}
 	last := day(now)
