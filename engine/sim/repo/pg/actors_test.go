@@ -105,6 +105,7 @@ func actorParentColumns() []string {
 		"town_repair_object_id", "town_repair_bounty", "town_repair_started_at", "town_repair_until",
 		"livestock_yield",
 		"wearing",
+		"closed_until",
 	}
 }
 
@@ -159,8 +160,9 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*string)(nil), "south",
 		false, []byte(nil), "", 0, int64(0),
 		"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-		[]byte(nil), // livestock_yield — not an animal (LLM-797)
-		[]string{},  // wearing — nothing worn (LLM-800)
+		[]byte(nil),       // livestock_yield — not an animal (LLM-797)
+		[]string{},        // wearing — nothing worn (LLM-800)
+		(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 	)
 }
 
@@ -330,6 +332,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				"00000000-0000-0000-0000-6666ffffffff", 25, &tsBreak, &tsSleep, // in-flight town repair (LLM-737)
 				[]byte(`{"gather_item":"milk","available_quantity":3,"max_quantity":4,"refresh_mode":"periodic","refresh_period_hours":12,"fed_bonus":4}`), // a milking animal's row (LLM-797)
 				[]string{"duck_pendant"}, // wearing (LLM-800)
+				&tsSleep,                 // closed_until — closed early (LLM-817)
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -343,8 +346,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*string)(nil), "south",
 				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
 				"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-				[]byte(nil), // livestock_yield — not an animal (LLM-797)
-				[]string{},  // wearing — nothing worn (LLM-800)
+				[]byte(nil),       // livestock_yield — not an animal (LLM-797)
+				[]string{},        // wearing — nothing worn (LLM-800)
+				(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -420,6 +424,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if a.BreakUntil == nil || !a.BreakUntil.Equal(tsBreak) {
 		t.Errorf("BreakUntil = %v", a.BreakUntil)
+	}
+	if a.ClosedUntil == nil || !a.ClosedUntil.Equal(tsSleep) {
+		t.Errorf("ClosedUntil = %v", a.ClosedUntil)
 	}
 	if a.SleepingUntil == nil || !a.SleepingUntil.Equal(tsSleep) {
 		t.Errorf("SleepingUntil = %v", a.SleepingUntil)
@@ -633,6 +640,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
 			nil,        // livestock_yield — not an animal (LLM-797)
 			[]string{}, // wearing — nothing worn (LLM-800)
+			&tsSleep,   // closed_until — closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -679,6 +687,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			ScheduleEndMin:     &endMin,
 			LastTickedAt:       &tsTickedAt,
 			BreakUntil:         &tsBreak,
+			ClosedUntil:        &tsSleep,
 			SleepingUntil:      &tsSleep,
 			MoveAttemptCounter: 7,
 			State:              "working",
@@ -720,8 +729,9 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -864,8 +874,9 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -934,8 +945,9 @@ func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1259,8 +1271,9 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*string)(nil), "south",
 				false, []byte(nil), "", 0, int64(0), // idle production sentinel (LLM-319)
 				"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-				[]byte(nil), // livestock_yield — not an animal (LLM-797)
-				[]string{},  // wearing — nothing worn (LLM-800)
+				[]byte(nil),       // livestock_yield — not an animal (LLM-797)
+				[]string{},        // wearing — nothing worn (LLM-800)
+				(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1462,8 +1475,9 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1569,8 +1583,9 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1748,8 +1763,9 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			"", 0, int64(0), // production_item / batch_qty / remaining_seconds — idle sentinel (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -2017,8 +2033,9 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			"stew", 5, int64(1800), // production_item / batch_qty / remaining_seconds — live cycle (LLM-319)
 			(*time.Time)(nil),                           // estate_rate_assessed_at — never assessed
 			"", 0, (*time.Time)(nil), (*time.Time)(nil), // town_repair_* — idle sentinel (LLM-737)
-			nil,        // livestock_yield — not an animal (LLM-797)
-			[]string{}, // wearing — nothing worn (LLM-800)
+			nil,               // livestock_yield — not an animal (LLM-797)
+			[]string{},        // wearing — nothing worn (LLM-800)
+			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).

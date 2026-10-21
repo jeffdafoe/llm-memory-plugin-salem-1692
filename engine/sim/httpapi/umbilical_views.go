@@ -140,6 +140,9 @@ type UmbilicalAgentDTO struct {
 	BreakUntil    *time.Time `json:"break_until,omitempty"`
 	SleepingUntil *time.Time `json:"sleeping_until,omitempty"`
 
+	// ClosedUntil is a keeper's closed-early mark (LLM-817; nil = not closed).
+	ClosedUntil *time.Time `json:"closed_until,omitempty"`
+
 	// Source activity — an in-flight timed eat/drink/harvest at a village object
 	// (LLM-54; nil = not engaged). Like the rest windows, deliberately not on the
 	// published snapshot — surfaced here for operator inspection only.
@@ -233,6 +236,7 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			Coins:             a.Coins,
 			BreakUntil:        clonePtrTime(a.BreakUntil),
 			SleepingUntil:     clonePtrTime(a.SleepingUntil),
+			ClosedUntil:       clonePtrTime(a.ClosedUntil),
 			SourceActivity:    sourceActivityDTO(a.SourceActivity),
 			LastTickedAt:      clonePtrTime(a.LastTickedAt),
 			WarrantedSince:    clonePtrTime(a.WarrantedSince),

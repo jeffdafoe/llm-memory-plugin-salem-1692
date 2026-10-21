@@ -467,6 +467,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	hasUpkeepErrand := p.StallRepairBuy != nil || hasFarmUpkeepErrand
 	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking.Actionable(), p.Forage.ActionableErrand(), hasUpkeepErrand)
 	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
+	if p.Anchors != nil && p.DutySteer != nil && p.DutySteer.ClosedForDay {
+		p.Anchors.ClosedForDay = true
+	}
 	// LLM-149 (Lever 2): the evening "tavern's open" cue. Built off the same
 	// anchors; on the evening window it replaces the off-shift go-home steer
 	// buildDutySteer just suppressed. Placed before degeneracy thinning so a
@@ -2600,6 +2603,11 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	atHome := anchors.HomeID != "" && a.InsideStructureID == anchors.HomeID
 
 	switch {
+	case onShift && anchors.WorkID != "" && !atWork && closedForDay(snap, a):
+		// LLM-817: the keeper closed early, so nothing argues it back to its post.
+		// The status line agrees with shiftDutyTarget, which stamps no to-work duty.
+		startMin := start
+		return &DutySteerView{ClosedForDay: true, TargetLabel: anchors.WorkLabel, ShiftStartMin: &startMin}
 	case onShift && anchors.WorkID != "" && !atWork:
 		// ZBBS-HOME-400 Option B: don't yank an agent back to its post while it's
 		// mid-business — an active restock errand or a pending outgoing offer
@@ -3427,7 +3435,8 @@ func isShutBusiness(snap *sim.Snapshot, a *sim.ActorSnapshot, stID sim.Structure
 // whose stay_open commitment is unlapsed at `at` gets sim.ShiftWindowAllDay. A
 // zero `at` skips that check: the trail passes zero, because the snapshot holds
 // only OpenUntil, not when the commitment began, so a stay_open made after a walk
-// would otherwise be read back onto it.
+// would otherwise be read back onto it. The same zero skips the closed-early
+// mark (LLM-817), which marks a worker sim.ShiftWindow.ClosedToday.
 func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID, at time.Time) []sim.ShiftWindow {
 	if snap == nil || stID == "" {
 		return nil
@@ -3442,7 +3451,8 @@ func snapshotKeeperShiftWindows(snap *sim.Snapshot, stID sim.StructureID, at tim
 			continue
 		}
 		if start, end, ok := shiftWindowBounds(snap, w); ok {
-			out = append(out, sim.ShiftWindow{Start: start, End: end})
+			closed := !at.IsZero() && w.ClosedUntil != nil && w.ClosedUntil.After(at)
+			out = append(out, sim.ShiftWindow{Start: start, End: end, ClosedToday: closed})
 		}
 	}
 	return out
@@ -3667,7 +3677,19 @@ func buildDutyPending(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *Anchors
 	if !minuteInWindow(start, end, *snap.LocalMinuteOfDay) {
 		return false
 	}
+	// A keeper that closed early owes no duty (LLM-817); holding the gate open
+	// would tick it at every idle backstop, the cost the mark exists to remove.
+	if closedForDay(snap, a) {
+		return false
+	}
 	return anchors.WorkID != "" && a.InsideStructureID != anchors.WorkID
+}
+
+// closedForDay reports whether the actor's closed-early mark (LLM-817,
+// sim.Actor.ClosedUntil) is live at the snapshot's publish instant, the same
+// check shiftDutyTarget makes against the live actor.
+func closedForDay(snap *sim.Snapshot, a *sim.ActorSnapshot) bool {
+	return a.ClosedUntil != nil && a.ClosedUntil.After(snap.PublishedAt)
 }
 
 // windDownSuppressed reports whether the off-shift wind-down cue should be held

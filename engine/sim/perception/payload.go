@@ -2223,6 +2223,10 @@ type AnchorsView struct {
 	HomeLabel string
 	HomeID    sim.StructureID
 	SamePlace bool
+	// ClosedForDay mirrors DutySteer.ClosedForDay (LLM-817): the keeper closed
+	// early, so render drops the "head there whenever you wish" invitation to its
+	// post and keeps only the id.
+	ClosedForDay bool
 }
 
 // DutySteerView is the standing return-to-post / wind-down cue (ZBBS-HOME-352,
@@ -2271,8 +2275,18 @@ type DutySteerView struct {
 	// ToWork, AtPost, AwayFromPost and the wind-down.
 	PreShift bool
 
+	// ClosedForDay is the STATUS-ONLY arm for a keeper that closed early (LLM-817,
+	// sim.Actor.ClosedUntil): on shift, away from its post, and done for the day. It
+	// replaces the to-work yank and the AwayFromPost line, whose "you are away from
+	// your post" is what kept sending closed keepers back. It states that the place
+	// is closed and when it opens (ShiftStartMin): no destination id, no imperative.
+	// RENDER-ONLY like AtPost — excluded from shouldSkipNoop. Mutually exclusive
+	// with every other arm.
+	ClosedForDay bool
+
 	// ShiftStartMin is the shift's opening minute-of-day (0–1439), set only on the
-	// PreShift arm. nil → render omits the line. Voiced via sim.ClockHourProse.
+	// PreShift and ClosedForDay arms. nil → render omits the opening hour. Voiced via
+	// sim.ClockHourProse.
 	ShiftStartMin *int
 
 	// ShiftEndMin is the keeper's effective close time as a wall-clock

@@ -629,6 +629,32 @@ func TestGoldensNoDutySteerWhileOnRounds(t *testing.T) {
 	}
 }
 
+// TestGoldensNoDutySteerWhenClosedEarly is the cross-scenario invariant behind
+// LLM-817: a keeper holding a live closed-early mark is never told it is away from
+// its post. That line is what woke closed keepers into walking back and leaving
+// again. Applicability is decided from the built snapshot, outside the subtests,
+// and the invariant fails rather than passing vacuously when no scenario applies.
+func TestGoldensNoDutySteerWhenClosedEarly(t *testing.T) {
+	var closed []perceptionScenario
+	for _, sc := range perceptionScenarios {
+		snap, actorID, _ := sc.build()
+		if a := snap.Actors[actorID]; a != nil && a.ClosedUntil != nil && a.ClosedUntil.After(snap.PublishedAt) {
+			closed = append(closed, sc)
+		}
+	}
+	if len(closed) == 0 {
+		t.Fatal("no scenario holds a live closed-early mark — the LLM-817 invariant is vacuous")
+	}
+	for _, sc := range closed {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			if out := renderScenario(sc); strings.Contains(out, dutySteerToPostMarker) {
+				t.Errorf("scenario %q: the keeper closed early but the prompt still says %q (LLM-817)", sc.name, dutySteerToPostMarker)
+			}
+		})
+	}
+}
+
 // TestDutySteerToPostMarkerMatchesRender is the anchor for the invariant above: it
 // pins that renderDutySteer's to-work arm actually emits dutySteerToPostMarker. The
 // invariant asserts an ABSENCE, so on its own it would pass for the wrong reason if
@@ -2505,6 +2531,16 @@ var perceptionScenarios = []perceptionScenario{
 			"thing holding him. The golden pins the clock line 'It is about 6:15 in the evening.' right under the " +
 			"band — floored to the quarter hour, in the same voice as the close time beside it.",
 		build: keeperAtPostEveningWellBeforeClose,
+	},
+	{
+		name: "keeper_closed_early_at_home_stays_home",
+		summary: "LLM-817 — the live 2026-10-19 Josiah Thorne flip-flop. He went home at 19:25 with the store " +
+			"closing at 9, then got about eight check-in turns at home that each said 'you are away from your " +
+			"post', walked back at 20:04, and left again at 20:05. His move home stamped the closed-early mark, " +
+			"so at 19:30 the golden pins the status line 'You closed up early today. The General Store stays " +
+			"shut until it opens again at 6 in the morning.' and NO return-to-post line — nothing argues him " +
+			"back. No restock errand here, so without the mark this fixture renders the to-work yank.",
+		build: keeperClosedEarlyAtHome,
 	},
 	{
 		name: "grower_stands_at_the_bush_the_cue_would_name",
@@ -20172,6 +20208,21 @@ func keeperAtPostEveningWellBeforeClose() (*sim.Snapshot, sim.ActorID, []sim.War
 	snap.LocalMinuteOfDay = &now
 	snap.PublishedAt = time.Date(2026, 7, 1, 18, 28, 0, 0, time.UTC)
 	snap.Actors[actorID].InsideStructureID = snap.Actors[actorID].WorkStructureID
+	return snap, actorID, warrants
+}
+
+// keeperClosedEarlyAtHome is the LLM-817 live case: the LLM-620 Josiah fixture at
+// home at 19:30 with no restock errand (so the unmarked prompt would carry the
+// to-work yank), holding the closed-early mark his move home stamped.
+func keeperClosedEarlyAtHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := keeperHomeMidShiftActionableRestock()
+	now := 1170 // 19:30
+	snap.LocalMinuteOfDay = &now
+	snap.PublishedAt = time.Date(2026, 7, 1, 19, 30, 0, 0, time.UTC)
+	a := snap.Actors[actorID]
+	a.RestockPolicy = nil
+	until := time.Date(2026, 7, 1, 21, 0, 0, 0, time.UTC)
+	a.ClosedUntil = &until
 	return snap, actorID, warrants
 }
 

@@ -2002,6 +2002,10 @@ func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim
 			// ids — but dropping it removes the echo bait (HOME-349); the off-shift
 			// wind-down steer carries home's id when it is actually time to go.
 			fmt.Fprintf(b, "You keep your trade at %s (destination: %s); your home is at %s — head home after you close.\n\n", work, v.WorkID, home)
+		case insideHome && v.ClosedForDay:
+			// Closed early (LLM-817): the open invitation back to the post is the
+			// same pull the duty steer just stopped making, so it goes too.
+			fmt.Fprintf(b, "You're home. You keep your trade at %s (destination: %s).\n\n", work, v.WorkID)
 		case insideHome:
 			// Standing at home: its id is a no-op move target, so state it in-place and
 			// keep the workplace as the reachable anchor (LLM-214).
@@ -2028,6 +2032,8 @@ func renderAnchors(b *strings.Builder, v *AnchorsView, atPost bool, insideID sim
 	case v.WorkID != "":
 		if insideWork {
 			b.WriteString("You're at your workplace.\n\n")
+		} else if v.ClosedForDay {
+			fmt.Fprintf(b, "You keep your trade at %s (destination: %s).\n\n", work, v.WorkID)
 		} else {
 			fmt.Fprintf(b, "You keep your trade at %s (destination: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
 		}
@@ -2162,6 +2168,18 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 	if v.PreShift {
 		if v.ShiftStartMin != nil {
 			fmt.Fprintf(b, "Your working hours begin at %s.\n\n", sim.ClockHourProse(*v.ShiftStartMin))
+		}
+		return
+	}
+	// LLM-817 closed-for-the-day arm. A fact, not a steer: the keeper chose to
+	// close, and the line must not argue it back to its post.
+	if v.ClosedForDay {
+		place := capitalizeFirst(anchorPlace(v.TargetLabel, "your workplace"))
+		if v.ShiftStartMin != nil {
+			fmt.Fprintf(b, "You closed up early today. %s stays shut until it opens again at %s.\n\n",
+				place, sim.ClockHourProse(*v.ShiftStartMin))
+		} else {
+			fmt.Fprintf(b, "You closed up early today. %s stays shut for the rest of the day.\n\n", place)
 		}
 		return
 	}

@@ -1079,6 +1079,11 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	if old == structureID {
 		return
 	}
+	// A keeper that closed early and walks back into its own post has reopened
+	// (LLM-817).
+	if structureID != "" && structureID == actor.WorkStructureID {
+		actor.ClosedUntil = nil
+	}
 	if old != "" {
 		if members, ok := w.actorsByStructure[old]; ok {
 			delete(members, actor.ID)

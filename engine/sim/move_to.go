@@ -991,7 +991,11 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 			// duty warrant is level-triggered, so the model isn't yanked
 			// mid-sentence: it can keep talking over ticks and leaves the
 			// huddle cleanly only when it chooses to move.
-			return MoveActor(actorID, dest, true, now).Fn(w)
+			res, err := MoveActor(actorID, dest, true, now).Fn(w)
+			if err == nil {
+				markClosedEarly(w, a, structureID, now)
+			}
+			return res, err
 		},
 	}
 }
