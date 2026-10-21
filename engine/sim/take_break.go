@@ -215,7 +215,8 @@ func endBreak(w *World, a *Actor) {
 // inert once past (every reader gates on .After(now)), but clearing it here keeps
 // a non-nil OpenUntil meaning a LIVE commitment, so future code can treat
 // non-nil as "is committed" without re-checking expiry. No occupancy/state reset
-// is needed — unlike a break, OpenUntil stamps nothing else on the actor.
+// is needed — unlike a break, OpenUntil stamps nothing else on the actor. A
+// lapsed closed-early ClosedUntil (LLM-817) is cleared the same way.
 func ExpireEndedBreaks(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -223,6 +224,9 @@ func ExpireEndedBreaks(now time.Time) Command {
 			for _, a := range w.Actors {
 				if a.OpenUntil != nil && !a.OpenUntil.After(now) {
 					a.OpenUntil = nil
+				}
+				if a.ClosedUntil != nil && !a.ClosedUntil.After(now) {
+					a.ClosedUntil = nil
 				}
 				if a.BreakUntil == nil || a.BreakUntil.After(now) {
 					continue

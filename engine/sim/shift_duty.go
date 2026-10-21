@@ -138,10 +138,13 @@ func OnShiftAtMinute(startMin, endMin *int, nowMinute int) bool {
 }
 
 // ShiftWindow is a [Start, End) minute-of-day work window, wrap-aware as in
-// minuteInShiftWindow.
+// minuteInShiftWindow. ClosedToday marks a worker that closed early (LLM-817):
+// it is out of hours for the rest of today's window, and its next opening is
+// the next Start.
 type ShiftWindow struct {
-	Start int
-	End   int
+	Start       int
+	End         int
+	ClosedToday bool
 }
 
 // ShiftWindowAllDay returns the window of a keeper holding an unlapsed stay_open
@@ -172,7 +175,7 @@ func ShutHoursPhrase(windows []ShiftWindow, nowMinute int) string {
 		if sw.Start < 0 || sw.Start > 1439 || sw.End < 0 || sw.End > 1440 || sw.Start == sw.End {
 			continue
 		}
-		if minuteInShiftWindow(sw.Start, sw.End, nowMinute) {
+		if !sw.ClosedToday && minuteInShiftWindow(sw.Start, sw.End, nowMinute) {
 			return ""
 		}
 		wait := (sw.Start - nowMinute + 1440) % 1440
@@ -195,7 +198,8 @@ func ShutHoursPhrase(windows []ShiftWindow, nowMinute int) string {
 
 // keeperShiftWindows returns the effective shift window of every actor who works
 // structureID — the live-world input to ShutHoursPhrase — with ShiftWindowAllDay
-// for a worker whose stay_open commitment is unlapsed at now.
+// for a worker whose stay_open commitment is unlapsed at now, and ClosedToday
+// for one that closed early (LLM-817).
 func keeperShiftWindows(w *World, structureID StructureID, now time.Time) []ShiftWindow {
 	var out []ShiftWindow
 	for _, worker := range w.Actors {
@@ -207,7 +211,7 @@ func keeperShiftWindows(w *World, structureID StructureID, now time.Time) []Shif
 			continue
 		}
 		if start, end, ok := effectiveShiftWindow(w, worker); ok {
-			out = append(out, ShiftWindow{Start: start, End: end})
+			out = append(out, ShiftWindow{Start: start, End: end, ClosedToday: !now.IsZero() && ClosedForDay(worker, now)})
 		}
 	}
 	return out
@@ -415,6 +419,11 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	// self-renewing break was the LLM-62 suppressor that left an exhausted vendor
 	// never routed home to bed. Sleep (above) still suppresses unconditionally.
 	if onShift && a.BreakUntil != nil && a.BreakUntil.After(now) {
+		return "", false, false
+	}
+	// A keeper that closed early has no to-work duty for the rest of the shift
+	// (LLM-817): waking it to go back is what made it go back and forth.
+	if onShift && ClosedForDay(a, now) {
 		return "", false, false
 	}
 	// An actor mid scheduled-route (lamplighter / washerwoman / town_crier) is

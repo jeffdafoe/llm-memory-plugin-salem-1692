@@ -119,7 +119,8 @@ SELECT
     town_repair_started_at,
     town_repair_until,
     livestock_yield,
-    wearing
+    wearing,
+    closed_until
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -164,7 +165,8 @@ INSERT INTO actor (
     estate_rate_assessed_at,
     town_repair_object_id, town_repair_bounty, town_repair_started_at, town_repair_until,
     livestock_yield,
-    wearing
+    wearing,
+    closed_until
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -178,7 +180,7 @@ INSERT INTO actor (
     $25, $26, $27,
     $28,
     $29, $30, $31, $32,
-    $33, $34
+    $33, $34, $35
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -213,7 +215,8 @@ ON CONFLICT (id) DO UPDATE SET
     town_repair_started_at = EXCLUDED.town_repair_started_at,
     town_repair_until      = EXCLUDED.town_repair_until,
     livestock_yield        = EXCLUDED.livestock_yield,
-    wearing                = EXCLUDED.wearing`
+    wearing                = EXCLUDED.wearing,
+    closed_until           = EXCLUDED.closed_until`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -561,6 +564,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			townRepairUntil      *time.Time
 			livestockYield       []byte
 			wearing              []string
+			closedUntil          *time.Time
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -577,6 +581,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&townRepairObjectID, &townRepairBounty, &townRepairStartedAt, &townRepairUntil,
 			&livestockYield,
 			&wearing,
+			&closedUntil,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -653,6 +658,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			ProductionActivity:   productionActivity,
 			SourceActivity:       sourceActivity,
 			Wearing:              wearingFromSQL(wearing),
+			ClosedUntil:          closedUntil,
 			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
@@ -1641,6 +1647,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			townRepairUntilArg(a.SourceActivity),         // $32 town_repair_until
 			encodeLivestockYield(a.Yield),                // $33 livestock_yield (LLM-797)
 			wearingArg(a.Wearing),                        // $34 wearing
+			a.ClosedUntil,                                // $35 closed_until (LLM-817)
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

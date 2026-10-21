@@ -129,6 +129,7 @@ func buildSettingRegistry() []SettingSpec {
 
 		// --- shifts + sleep ------------------------------------------------
 		intSetting("shift_lateness_window_minutes", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.ShiftLatenessWindowMinutes }),
+		intSetting("close_early_window_minutes", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.CloseEarlyWindowMinutes }),
 		intSetting("npc_sleep_max_duration_hours", SettingEffectUnaudited, func(s *WorldSettings) *int { return &s.NPCSleepMaxDurationHours }),
 
 		// --- constable rounds (LLM-514) ------------------------------------

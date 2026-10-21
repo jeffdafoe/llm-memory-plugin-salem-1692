@@ -104,6 +104,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleActorLeftStructureActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleTookBreakActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleStayedOpenActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleClosedEarlyActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleSolicitedWorkActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleHiredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleLaborResolvedActionLog))
@@ -919,6 +920,43 @@ func handleStayedOpenActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
+		Source:      source,
+	})
+}
+
+// handleClosedEarlyActionLog appends a row when a keeper closes early (LLM-817):
+// its move_to home late in its shift stamped ClosedUntil. Text is the post it
+// closed. The durable payload carries the end of the shift it closed.
+func handleClosedEarlyActionLog(w *sim.World, evt sim.Event) {
+	closed, ok := evt.(*sim.ClosedEarly)
+	if !ok {
+		return
+	}
+	place := string(closed.WorkStructureID)
+	if st, ok := w.Structures[closed.WorkStructureID]; ok && st.DisplayName != "" {
+		place = st.DisplayName
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:    closed.ActorID,
+		OccurredAt: closed.At,
+		ActionType: sim.ActionTypeClosedEarly,
+		Text:       place,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append closed_early (actor %q event %d): %v",
+			closed.ActorID, closed.EventID(), err)
+		return
+	}
+	display, source := actorDisplayAndSource(w, closed.ActorID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:    closed.ActorID,
+		OccurredAt: closed.At,
+		ActionType: sim.ActionTypeClosedEarly,
+		Payload: map[string]any{
+			"structure":    place,
+			"closed_until": closed.ClosedUntil.UTC().Format(time.RFC3339),
+		},
+		SpeakerName: display,
 		Source:      source,
 	})
 }

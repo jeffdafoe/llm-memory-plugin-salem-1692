@@ -294,6 +294,18 @@ func TestShouldSkipNoop_PreShiftSteer_StillSkips(t *testing.T) {
 	}
 }
 
+func TestShouldSkipNoop_ClosedForDaySteer_StillSkips(t *testing.T) {
+	// LLM-817: a keeper that closed early owes nothing for the rest of the shift.
+	// The closed line is render-only, so an idle closed keeper skips its
+	// idle-backstops instead of being ticked toward the post it left.
+	pl := quietPayload()
+	start := 540
+	pl.DutySteer = &perception.DutySteerView{ClosedForDay: true, TargetLabel: "General Store", ShiftStartMin: &start}
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=true with a closed-for-the-day (render-only) duty steer")
+	}
+}
+
 func TestShouldSkipNoop_DutyPending_DoesNotSkip(t *testing.T) {
 	// ZBBS-HOME-442: an off-post on-shift keeper whose to-work steer is
 	// Option-B-suppressed by a MILD need carries DutyPending instead of a

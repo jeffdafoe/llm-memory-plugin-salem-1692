@@ -97,6 +97,11 @@ const (
 	// model-supplied reason; HuddleID is the keeper's huddle at append time.
 	ActionTypeStayedOpen ActionType = "stayed_open"
 
+	// ActionTypeClosedEarly — a keeper left for its own night place late in its
+	// shift and is closed for the day (LLM-817). ActorID is the keeper; Text is
+	// the work structure's name.
+	ActionTypeClosedEarly ActionType = "closed_early"
+
 	// ActionTypeSummoned — a summon messenger delivered a summons to the
 	// target (ZBBS-HOME-311). ActorID is the TARGET (the summons is the
 	// event that happened to them, not an action they took); Text is the

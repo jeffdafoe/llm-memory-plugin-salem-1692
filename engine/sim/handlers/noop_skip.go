@@ -188,10 +188,11 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	// those cases since HOME-400, turning every deferred yank into a pester tick.
 	// PreShift (LLM-707) is exempt the same way: a status line in the morning
 	// before work, where nothing is owed until the shift opens.
+	// ClosedForDay (LLM-817) is exempt too: the keeper closed, nothing is owed.
 	// DoorNotes (LLM-19) hold the gate open: a note found at the door is news,
 	// and it waits until a turn that answers has read it — skipping would leave
 	// it unread for good while the reader stays home.
-	if (payload.DutySteer != nil && !payload.DutySteer.AtPost && !payload.DutySteer.AwayFromPost && !payload.DutySteer.PreShift) || payload.DutyPending ||
+	if (payload.DutySteer != nil && !payload.DutySteer.AtPost && !payload.DutySteer.AwayFromPost && !payload.DutySteer.PreShift && !payload.DutySteer.ClosedForDay) || payload.DutyPending ||
 		payload.EveningLeisure.Invitation() || payload.SummonsForYou != nil || len(payload.DoorNotes) > 0 {
 		return false
 	}

@@ -295,6 +295,8 @@ func setActorStructure(id ActorID, structureID string, home bool) Command {
 				w.emit(&NPCHomeStructureChanged{ActorID: id, StructureID: trimmed, At: time.Now().UTC()})
 			} else {
 				a.WorkStructureID = newVal
+				// A closed-early mark belongs to the post and shift it closed (LLM-817).
+				a.ClosedUntil = nil
 				w.emit(&NPCWorkStructureChanged{ActorID: id, StructureID: trimmed, At: time.Now().UTC()})
 			}
 			return ActorStructureResult{ID: id, StructureID: trimmed}, nil
@@ -325,6 +327,7 @@ func SetActorSchedule(id ActorID, start, end *int) Command {
 			}
 			a.ScheduleStartMin = copyIntPtr(start)
 			a.ScheduleEndMin = copyIntPtr(end)
+			a.ClosedUntil = nil // the mark belongs to the shift it closed (LLM-817)
 			w.emit(&NPCScheduleChanged{
 				ActorID:          id,
 				ScheduleStartMin: copyIntPtr(start),

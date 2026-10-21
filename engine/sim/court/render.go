@@ -127,6 +127,12 @@ func renderEvent(e sim.SimDayEvent) string {
 		return withReason(who+" took a break", str(p, "reason"))
 	case sim.ActionTypeStayedOpen:
 		return withReason(who+" kept the shop open late", str(p, "reason"))
+	case sim.ActionTypeClosedEarly:
+		place := "the shop"
+		if s := str(p, "structure"); s != "" {
+			place = sim.WithDefiniteArticle(s)
+		}
+		return who + " closed " + place + " early for the day"
 	case sim.ActionTypeRepairing:
 		return who + " began mending " + orSomething(str(p, "business"))
 	case sim.ActionTypeCollected:

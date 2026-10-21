@@ -1009,6 +1009,21 @@ type Actor struct {
 	// needs-recovery process whose interruption is a real regression (WORK-410).
 	OpenUntil *time.Time
 
+	// ClosedUntil marks a keeper that closed early: it left for its own night
+	// place (home, or a lodger's room) late in its shift, so its working day is
+	// over until this instant, the end of that shift (LLM-817). The twin of
+	// OpenUntil. While live, the to-work duty is off (shiftDutyTarget), the duty
+	// steer renders a status line instead of the return-to-post yank
+	// (buildDutySteer), and the door counts the keeper out of hours
+	// (keeperShiftWindows). Without it a keeper who closed was woken and told to
+	// go back every turn until the close, and went back and forth.
+	//
+	// Set by markClosedEarly on a move_to commit; cleared when the keeper walks
+	// back inside its work structure (setActorInsideStructure: it reopened) or by
+	// ExpireEndedBreaks once lapsed. Checkpointed (actor.closed_until), unlike
+	// OpenUntil: a restart mid-evening must not bring the nagging back.
+	ClosedUntil *time.Time
+
 	// LastTirednessRecoveryAt is the cursor the tiredness-recovery sweep
 	// advances as it credits recovery while BreakUntil/SleepingUntil are
 	// open. It doubles as the fractional carry: the sweep advances it by
@@ -1578,6 +1593,10 @@ func CloneActor(a *Actor) *Actor {
 		t := *a.OpenUntil
 		cp.OpenUntil = &t
 	}
+	if a.ClosedUntil != nil {
+		t := *a.ClosedUntil
+		cp.ClosedUntil = &t
+	}
 	if a.LastTirednessRecoveryAt != nil {
 		t := *a.LastTirednessRecoveryAt
 		cp.LastTirednessRecoveryAt = &t
@@ -2074,6 +2093,11 @@ type ActorSnapshot struct {
 	// other *time.Time snapshot fields (the published snapshot is immutable, so
 	// no per-clone deep copy is needed). See Actor.OpenUntil.
 	OpenUntil *time.Time
+
+	// ClosedUntil mirrors the live Actor's closed-early mark (LLM-817) so
+	// buildDutySteer, buildDutyPending and the door lines agree with
+	// shiftDutyTarget. Readers gate on .After(PublishedAt). See Actor.ClosedUntil.
+	ClosedUntil *time.Time
 
 	// Inventory mirrors the live Actor's item-kind→quantity map at snapshot
 	// time so the read surface (httpapi pc/me) can serve a player's held

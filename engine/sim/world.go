@@ -107,6 +107,14 @@ type WorldSettings struct {
 	// shift_lateness_window_minutes. DB-configured only; no editor UI.
 	ShiftLatenessWindowMinutes int
 
+	// CloseEarlyWindowMinutes is how close to the end of its shift a keeper's
+	// move home counts as closing for the day (LLM-817, see markClosedEarly).
+	// Earlier in the shift a home trip is an errand or a meal, and the to-work
+	// duty still brings the keeper back. 0 falls back to
+	// DefaultCloseEarlyWindowMinutes; 1440 or more counts any time in the shift.
+	// Settings key: close_early_window_minutes.
+	CloseEarlyWindowMinutes int
+
 	// NPCSleepMaxDurationHours is the safety cap on an auto-bedded NPC's
 	// sleep — wakeExpiredNPCSleepers clears SleepingUntil at this cap or at
 	// shift-start, whichever comes first. Default 12.
@@ -2999,6 +3007,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		KnownPlaces:                cloneKnownPlaces(a.KnownPlaces),
 		RoomAccess:                 cloneRoomAccess(a.RoomAccess),
 		OpenUntil:                  copyTimePtr(a.OpenUntil),
+		ClosedUntil:                copyTimePtr(a.ClosedUntil),
 		RestockPolicy:              a.RestockPolicy,
 		ProductionItem:             productionItem,
 		ProductionBatchQty:         productionBatchQty,
