@@ -254,6 +254,10 @@ func TestRecordWindow(t *testing.T) {
 		{name: "eight days is too long", from: "2026-09-25", to: "2026-10-02", bad: true},
 		{name: "backwards", from: "2026-10-02", to: "2026-10-01", bad: true},
 		{name: "not a date", from: "last week", bad: true},
+		// LLM-818: an in-world 1692 date reads as the record's own.
+		{name: "in-world year", from: "1692-09-26", to: "1692-10-02", start: time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC), end: day(3)},
+		{name: "in-world year, from only", from: "1692-10-02", start: day(2), end: day(4)},
+		{name: "in-world date later in the year is last year's", from: "1692-12-30", to: "1692-12-31", start: time.Date(2025, 12, 30, 0, 0, 0, 0, time.UTC), end: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
