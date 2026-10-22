@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -230,10 +231,17 @@ func TestShutBusinessTrail_OutdoorArrivalAtShutTavernReadsAsDeadEnd(t *testing.T
 	// Both halves — the trail's section can sit in either, and which one is a
 	// history/ephemeral split decision this test has no stake in.
 	prompt := rendered.Text + "\n" + rendered.EphemeralText
-	const want = "You went to the Tavern but found it shut, no one tending it"
-	if !strings.Contains(prompt, want) {
-		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing: %q\ngot prompt:\n%s",
-			want, prompt)
+	// Since LLM-771 the line's ending depends on the wall clock, and this test
+	// runs on real time: inside the keeper's hours it reads "shut, no one
+	// tending it", outside them "shut for the day — it opens at …". Either
+	// complete form names the dead end; a bare "found it shut" does not pass.
+	// The opening time is sim.ClockHourProse's format.
+	const wantInHours = "You went to the Tavern but found it shut, no one tending it"
+	wantOutOfHours := regexp.MustCompile(`You went to the Tavern but found it shut for the day — it opens at ` +
+		`(midnight|noon|\d{1,2}(:\d{2})? (in the morning|in the afternoon|in the evening|at night))`)
+	if !strings.Contains(prompt, wantInHours) && !wantOutOfHours.MatchString(prompt) {
+		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing %q or matching %q\ngot prompt:\n%s",
+			wantInHours, wantOutOfHours, prompt)
 	}
 	if strings.Contains(prompt, "You arrived at the Tavern") {
 		t.Errorf("the shut trip still renders as a neutral arrival — the churn stays invisible to the model:\n%s",
