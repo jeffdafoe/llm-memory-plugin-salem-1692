@@ -230,13 +230,15 @@ func TestShutBusinessTrail_OutdoorArrivalAtShutTavernReadsAsDeadEnd(t *testing.T
 	// Both halves — the trail's section can sit in either, and which one is a
 	// history/ephemeral split decision this test has no stake in.
 	prompt := rendered.Text + "\n" + rendered.EphemeralText
-	// Only the dead-end part: since LLM-771 the rest of the line depends on the
-	// wall clock ("shut, no one tending it" in the keeper's hours, "shut for the
-	// day — it opens at …" outside them), and this test runs on real time.
-	const want = "You went to the Tavern but found it shut"
-	if !strings.Contains(prompt, want) {
-		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing: %q\ngot prompt:\n%s",
-			want, prompt)
+	// Since LLM-771 the line's ending depends on the wall clock, and this test
+	// runs on real time: inside the keeper's hours it reads "shut, no one
+	// tending it", outside them "shut for the day — it opens at …". Either
+	// complete form names the dead end; a bare "found it shut" does not pass.
+	const wantInHours = "You went to the Tavern but found it shut, no one tending it"
+	const wantOutOfHours = "You went to the Tavern but found it shut for the day — it opens at "
+	if !strings.Contains(prompt, wantInHours) && !strings.Contains(prompt, wantOutOfHours) {
+		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing %q or %q\ngot prompt:\n%s",
+			wantInHours, wantOutOfHours, prompt)
 	}
 	if strings.Contains(prompt, "You arrived at the Tavern") {
 		t.Errorf("the shut trip still renders as a neutral arrival — the churn stays invisible to the model:\n%s",

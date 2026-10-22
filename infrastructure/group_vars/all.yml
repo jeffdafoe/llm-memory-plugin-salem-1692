@@ -8,9 +8,9 @@ godot_version: "4.7.1"
 godot_bin: /usr/local/bin/godot
 
 # Go toolchain that builds the engine (roles/golang, applied on every deploy).
-# Keep it equal to the `toolchain` line in engine/go.mod: the deploy build runs
-# with GOTOOLCHAIN=local, so a go.mod that asks for a newer toolchain than this
-# fails the build instead of downloading one.
+# Must equal the `toolchain` line in engine/go.mod — deploy.yml checks this
+# before building, because the build runs with GOTOOLCHAIN=local and Go itself
+# would just use this version whatever go.mod suggests. Change both together.
 go_version: "1.27.3"
 go_install_dir: /usr/local/go
 
