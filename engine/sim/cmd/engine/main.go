@@ -9,7 +9,7 @@
 // leaving the engine running rather than rebooting the village onto a stale
 // checkpoint.
 //
-// The client-facing surface is served when PORT (→ HTTPAddr) is set: the REST
+// The client-facing surface is served on ENGINE_HOST:PORT (→ HTTPAddr): the REST
 // read endpoints plus the WS /events push channel (movement events today). An
 // empty HTTPAddr runs headless (used by the lifecycle test).
 package main
@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -152,6 +153,10 @@ func main() {
 	databaseURL := requireEnv("DATABASE_URL")
 	llmMemoryURL := getEnv("LLM_MEMORY_URL", "http://127.0.0.1:3100")
 	port := getEnv("PORT", "8080")
+	// Loopback by default: nginx is the only client and proxies to 127.0.0.1.
+	// ENGINE_HOST overrides it (e.g. 0.0.0.0) for a setup that reaches the engine
+	// directly. Not plain HOST: zsh and tcsh export that as the machine's hostname.
+	host := getEnv("ENGINE_HOST", "127.0.0.1")
 	// Every NPC tick's LLM call is authenticated as salem-engine on
 	// llm-memory-api; the cascades that author prose need the same client.
 	engineKey := requireEnv("LLM_MEMORY_ENGINE_KEY")
@@ -295,7 +300,7 @@ func main() {
 		// TickSink is the ring when the umbilical is enabled (set on repo above),
 		// otherwise the notImpl drop sink. The slot is always occupied.
 		TickSink: repo.TickTelemetry,
-		HTTPAddr: ":" + port,
+		HTTPAddr: net.JoinHostPort(host, port),
 		// Read-surface auth: verifies session tokens against llm-memory-api's
 		// /v1/auth/verify + the salem-realm gate, caching positive results.
 		Auth:                httpapi.NewTokenVerifier(llmMemoryURL, 0),
