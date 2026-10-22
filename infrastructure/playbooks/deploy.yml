@@ -9,6 +9,11 @@
     - name: Load secrets
       include_tasks: ../tasks/load-secrets.yml
 
+    # The rest of the postgresql role runs only from setup.yml; this part runs
+    # on every deploy so a server that already exists keeps the guard.
+    - name: Guard PostgreSQL against a missing conf.d
+      include_tasks: ../roles/postgresql/tasks/confd-guard.yml
+
   # Apply the pinned Godot on every deploy (LLM-505). The role is version-guarded:
   # when the installed binary already matches godot_version it runs a single
   # --version check and skips the download/install, so routine deploys pay nothing.
