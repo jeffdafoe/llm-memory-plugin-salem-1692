@@ -16,6 +16,8 @@
   # export silently kept building with the old engine (4.6.2 until 2026-07-21).
   roles:
     - role: ../roles/godot
+    # Same reason for the Go toolchain that builds the engine.
+    - role: ../roles/golang
 
   tasks:
     - name: Display deployment info
@@ -75,7 +77,11 @@
         cd {{ project_root }}/engine && go build -ldflags "-X github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/httpapi.BuildCommit={{ build_commit.stdout }}" -o salem.new ./sim/cmd/engine
       environment:
         GOPATH: /root/go
-        PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
+        PATH: "{{ go_install_dir }}/bin:/root/go/bin:{{ ansible_env.PATH }}"
+        # Build with the toolchain roles/golang installed; never fetch the
+        # one go.mod names. Before this, an old local Go plus `go 1.25.0` in
+        # go.mod meant every deploy downloaded and built with go1.25.0.
+        GOTOOLCHAIN: local
 
     # Environment file
     - name: Create env directory

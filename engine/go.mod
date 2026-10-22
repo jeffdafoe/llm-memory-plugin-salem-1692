@@ -2,6 +2,8 @@ module github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine
 
 go 1.25.0
 
+toolchain go1.27.3
+
 require (
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/gorilla/websocket v1.5.3
