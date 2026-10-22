@@ -230,7 +230,10 @@ func TestShutBusinessTrail_OutdoorArrivalAtShutTavernReadsAsDeadEnd(t *testing.T
 	// Both halves — the trail's section can sit in either, and which one is a
 	// history/ephemeral split decision this test has no stake in.
 	prompt := rendered.Text + "\n" + rendered.EphemeralText
-	const want = "You went to the Tavern but found it shut, no one tending it"
+	// Only the dead-end part: since LLM-771 the rest of the line depends on the
+	// wall clock ("shut, no one tending it" in the keeper's hours, "shut for the
+	// day — it opens at …" outside them), and this test runs on real time.
+	const want = "You went to the Tavern but found it shut"
 	if !strings.Contains(prompt, want) {
 		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing: %q\ngot prompt:\n%s",
 			want, prompt)
