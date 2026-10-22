@@ -71,7 +71,9 @@ func SharedVASlugs() []string {
 }
 
 // isSharedVAAgent reports whether an llm_memory_agent slug is one of the
-// shared switchboard VAs rather than an actor's own private VA.
+// shared switchboard VAs rather than an actor's own private VA. It also decides
+// memory-api history scope, through IsSceneScopedAgent: a slug added here gets
+// scene-scoped history with no change on the memory-api side.
 func isSharedVAAgent(agent string) bool {
 	switch agent {
 	case VendorAgentName, VisitorAgentName, GenericAgentName:
@@ -79,6 +81,16 @@ func isSharedVAAgent(agent string) bool {
 	default:
 		return false
 	}
+}
+
+// IsSceneScopedAgent reports whether calls to a VA slug must replay only the
+// current scene's chat history in memory-api (history_scope "scene", LLM-687),
+// not the agent-pair history a stateful NPC keeps as its continuity channel.
+// True for the shared switchboard VAs, where one VA backs many personas, and
+// for the court, where each session is its own case. The engine is the one
+// source of this classification; cmd/engine hands it to the memapi client.
+func IsSceneScopedAgent(agent string) bool {
+	return isSharedVAAgent(agent) || agent == CourtMagistrateModel
 }
 
 // ClassifyActorKind derives an actor's Kind from its persisted driver columns.

@@ -1163,3 +1163,49 @@ func TestFetchRateLimits_EmptyInputMakesNoCall(t *testing.T) {
 // scaffolding around for future tests.
 var _ = fmt.Sprintf
 var _ = strings.TrimRight
+
+func TestComplete_HistoryScopeFromClassifier(t *testing.T) {
+	// The classifier decides history_scope per target slug (LLM-687): "scene"
+	// for a slug it accepts, omitted from the wire for any other.
+	ts := newTestServer(t)
+	ts.pushResponse(okReply("a"))
+	ts.pushResponse(okReply("b"))
+	c := newTestClient(t, ts, WithSceneScopedAgents(func(agent string) bool {
+		return agent == "salem-vendor"
+	}))
+
+	for _, model := range []string{"salem-vendor", "zbbs-john-ellis"} {
+		_, err := c.Complete(context.Background(), llm.Request{
+			Model:    model,
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}},
+		})
+		if err != nil {
+			t.Fatalf("Complete(%s): %v", model, err)
+		}
+	}
+
+	recs := ts.recorded()
+	if got := recs[0].Body.HistoryScope; got != "scene" {
+		t.Errorf("salem-vendor history_scope = %q, want scene", got)
+	}
+	if strings.Contains(string(recs[1].RawBody), "history_scope") {
+		t.Errorf("zbbs-john-ellis body carries history_scope: %s", recs[1].RawBody)
+	}
+}
+
+func TestComplete_NoClassifierSendsNoHistoryScope(t *testing.T) {
+	ts := newTestServer(t)
+	ts.pushResponse(okReply("a"))
+	c := newTestClient(t, ts)
+
+	_, err := c.Complete(context.Background(), llm.Request{
+		Model:    "salem-vendor",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if raw := string(ts.recorded()[0].RawBody); strings.Contains(raw, "history_scope") {
+		t.Errorf("body carries history_scope with no classifier: %s", raw)
+	}
+}
