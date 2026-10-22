@@ -16,6 +16,8 @@ go_install_dir: /usr/local/go
 
 # Engine
 engine_port: 8090
+# Listen address; nginx proxies to 127.0.0.1, so nothing else needs the port.
+engine_host: 127.0.0.1
 
 # Umbilical debug/control surface (operator-gated on plugins/administer).
 # umbilical_enabled arms the read surface (telemetry + state); control adds the
