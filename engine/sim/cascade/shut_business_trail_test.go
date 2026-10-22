@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -234,10 +235,12 @@ func TestShutBusinessTrail_OutdoorArrivalAtShutTavernReadsAsDeadEnd(t *testing.T
 	// runs on real time: inside the keeper's hours it reads "shut, no one
 	// tending it", outside them "shut for the day — it opens at …". Either
 	// complete form names the dead end; a bare "found it shut" does not pass.
+	// The opening time is sim.ClockHourProse's format.
 	const wantInHours = "You went to the Tavern but found it shut, no one tending it"
-	const wantOutOfHours = "You went to the Tavern but found it shut for the day — it opens at "
-	if !strings.Contains(prompt, wantInHours) && !strings.Contains(prompt, wantOutOfHours) {
-		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing %q or %q\ngot prompt:\n%s",
+	wantOutOfHours := regexp.MustCompile(`You went to the Tavern but found it shut for the day — it opens at ` +
+		`(midnight|noon|\d{1,2}(:\d{2})? (in the morning|in the afternoon|in the evening|at night))`)
+	if !strings.Contains(prompt, wantInHours) && !wantOutOfHours.MatchString(prompt) {
+		t.Errorf("moses' self-trail does not name the dead end (LLM-463).\nwant a line containing %q or matching %q\ngot prompt:\n%s",
 			wantInHours, wantOutOfHours, prompt)
 	}
 	if strings.Contains(prompt, "You arrived at the Tavern") {
