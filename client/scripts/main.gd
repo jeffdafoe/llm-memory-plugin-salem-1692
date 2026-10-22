@@ -733,6 +733,9 @@ func _build_ui() -> void:
     # this a press on a Wear / Remove button would also walk the player. The
     # panel is hidden while closed, which is_visible_in_tree() already covers.
     camera.register_ui_panel(inventory_panel.ui_panel())
+    # Same gap for a toast banner (LLM-803): the click that dismisses it, such
+    # as a refused pack action's notice, must not also walk the player.
+    camera.register_ui_panel(Toast.ui_panel())
     if top_bar != null and top_bar.has_signal("inventory_toggle_requested"):
         top_bar.inventory_toggle_requested.connect(func(rect: Rect2):
             if inventory_panel.visible:

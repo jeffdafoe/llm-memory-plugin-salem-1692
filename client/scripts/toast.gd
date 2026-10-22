@@ -66,6 +66,13 @@ func _ready() -> void:
     _stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
     add_child(_stack)
 
+## The banner column, for main.gd to register with the camera (LLM-803):
+## main.gd._input runs before GUI, so without that a click that dismisses a
+## banner would also walk the player. The column shrinks to its banners, so
+## when none is up its rect is empty and blocks nothing.
+func ui_panel() -> Control:
+    return _stack
+
 ## Report a failed action to the admin — a rejected PATCH, a refused command.
 func error(message: String) -> void:
     _post(message, COLOR_ERROR_BG, COLOR_ERROR_BORDER)
