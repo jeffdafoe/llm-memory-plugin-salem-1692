@@ -49,10 +49,30 @@ type Client struct {
 	// so the engine can surface a live budget alarm (LLM-513). Optional — a nil
 	// observer disables the hook and Complete behaves exactly as before.
 	budgetObserver BudgetObserver
+
+	// sceneScoped, when set, reports whether a target VA slug must replay only
+	// the current scene's chat history; Complete then sends history_scope
+	// "scene" (LLM-687). Nil sends the field for no call.
+	sceneScoped func(agent string) bool
 }
+
+// historyScopeScene is the history_scope value memory-api accepts on
+// /v1/chat/send.
+const historyScopeScene = "scene"
 
 // Option configures a Client at construction time.
 type Option func(*Client)
+
+// WithSceneScopedAgents sets the classifier Complete uses to decide which calls
+// send history_scope "scene". cmd/engine passes sim.IsSceneScopedAgent; the
+// classifier is injected because memapi does not import sim. A nil fn is ignored.
+func WithSceneScopedAgents(fn func(agent string) bool) Option {
+	return func(c *Client) {
+		if fn != nil {
+			c.sceneScoped = fn
+		}
+	}
+}
 
 // BudgetObserver is notified by Complete of the target VA's cost-budget state at
 // the memory-api boundary: RecordBudgetExceeded when a call is refused with
@@ -181,6 +201,10 @@ type chatRequest struct {
 	// call acts on behalf of no single actor (village-level cascades). LLM-236.
 	SimActorID   string `json:"sim_actor_id,omitempty"`
 	SimActorName string `json:"sim_actor_name,omitempty"`
+	// HistoryScope "scene" tells memory-api to replay only this scene's chat
+	// history for the target VA (LLM-687). Omitted for every other call, which
+	// keeps the agent-pair history. Set by Complete from the sceneScoped classifier.
+	HistoryScope string `json:"history_scope,omitempty"`
 	Wait         bool   `json:"wait"`
 }
 
@@ -255,6 +279,11 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		}
 	}
 
+	historyScope := ""
+	if c.sceneScoped != nil && c.sceneScoped(req.Model) {
+		historyScope = historyScopeScene
+	}
+
 	body, err := json.Marshal(chatRequest{
 		ToAgents:         []string{req.Model},
 		Message:          message,
@@ -266,6 +295,7 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		StableContext:    req.StableContext,
 		SimActorID:       req.SimActorID,
 		SimActorName:     req.SimActorName,
+		HistoryScope:     historyScope,
 		Wait:             true,
 	})
 	if err != nil {

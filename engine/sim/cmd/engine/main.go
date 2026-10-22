@@ -283,7 +283,7 @@ func main() {
 
 	// LLM-156: one memapi client, shared by the runtime's LLMClient slot and the
 	// startup per-agent rate-limit query (installAgentRateLimits below).
-	llmClient := memapi.NewClient(llmMemoryURL, engineKey, memapi.WithBudgetObserver(vaBudgetHealth))
+	llmClient := newLLMClient(llmMemoryURL, engineKey, vaBudgetHealth)
 
 	rt := runtime{
 		World:          world,
@@ -398,6 +398,19 @@ func pacedCap(limit int) int {
 // already gated the moment its first NPC ticks.
 func sharedVASlugs() []string {
 	return sim.SharedVASlugs()
+}
+
+// newLLMClient builds the engine's one memapi client. It feeds the budget alarm
+// recorder (LLM-513) and classifies which VAs get scene-scoped chat history in
+// memory-api (LLM-687). The engine is the one source of that classification, so
+// a client built without sim.IsSceneScopedAgent sends no history_scope at all.
+func newLLMClient(baseURL, apiKey string, budget *sim.VABudgetHealth, opts ...memapi.Option) *memapi.Client {
+	all := []memapi.Option{
+		memapi.WithBudgetObserver(budget),
+		memapi.WithSceneScopedAgents(sim.IsSceneScopedAgent),
+	}
+	all = append(all, opts...)
+	return memapi.NewClient(baseURL, apiKey, all...)
 }
 
 // installAgentRateLimits queries memory-api for the effective rate limit of the

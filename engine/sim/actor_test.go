@@ -73,3 +73,19 @@ func TestSlugify(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSceneScopedAgent(t *testing.T) {
+	for _, slug := range SharedVASlugs() {
+		if !IsSceneScopedAgent(slug) {
+			t.Errorf("IsSceneScopedAgent(%q) = false, want true for a shared VA", slug)
+		}
+	}
+	if !IsSceneScopedAgent(CourtMagistrateModel) {
+		t.Errorf("IsSceneScopedAgent(%q) = false, want true for the court", CourtMagistrateModel)
+	}
+	for _, slug := range []string{"zbbs-john-ellis", "salem-news", ""} {
+		if IsSceneScopedAgent(slug) {
+			t.Errorf("IsSceneScopedAgent(%q) = true, want false", slug)
+		}
+	}
+}
