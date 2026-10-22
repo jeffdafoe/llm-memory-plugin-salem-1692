@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -935,5 +936,34 @@ func TestObjectsFromSnapshot_AttachedTo(t *testing.T) {
 	}
 	if got := byID["tavern"].AttachedTo; got != "" {
 		t.Errorf("root attached_to = %q, want omitted", got)
+	}
+}
+
+// The world read carries the village date and season (LLM-840) from the
+// snapshot's local date, in the year the village believes it is; a snapshot
+// with no village clock omits both.
+func TestWorldStateFromSnapshot_VillageDateAndSeason(t *testing.T) {
+	ends := time.Date(2026, 12, 2, 5, 0, 0, 0, time.UTC)
+	dto := worldStateFromSnapshot(&sim.Snapshot{LocalDateUTC: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), LocalDateEndsAt: ends})
+	if dto.VillageDate != "1692-12-01" {
+		t.Errorf("village_date = %q, want 1692-12-01", dto.VillageDate)
+	}
+	if dto.Season != "winter" {
+		t.Errorf("season = %q, want winter", dto.Season)
+	}
+	if dto.VillageDateEndsAt == nil || !dto.VillageDateEndsAt.Equal(ends) {
+		t.Errorf("village_date_ends_at = %v, want %s", dto.VillageDateEndsAt, ends)
+	}
+
+	bare := worldStateFromSnapshot(&sim.Snapshot{})
+	if bare.VillageDate != "" || bare.Season != "" || bare.VillageDateEndsAt != nil {
+		t.Errorf("no-clock snapshot: village_date = %q, season = %q, want both omitted", bare.VillageDate, bare.Season)
+	}
+	raw, err := json.Marshal(bare)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "village_date") || strings.Contains(string(raw), "season") {
+		t.Errorf("no-clock snapshot wire carries the date keys: %s", raw)
 	}
 }

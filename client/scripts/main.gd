@@ -455,6 +455,11 @@ func _build_ui() -> void:
     top_bar.config_pressed.connect(_on_config_pressed)
     top_bar.logout_pressed.connect(_on_logout)
     top_bar.dress_pressed.connect(_open_character_creator)
+    # The village date in the title (LLM-840). Seeded from the world's cache in
+    # case its first /api/village/world read landed before this connect.
+    if world != null:
+        world.village_date_changed.connect(top_bar.set_village_date)
+        top_bar.set_village_date(world.village_date, world.village_season)
 
     # Config panel — full-screen overlay on a higher CanvasLayer
     var config_layer = CanvasLayer.new()

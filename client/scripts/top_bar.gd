@@ -202,7 +202,7 @@ func _ready() -> void:
 
     # Title
     var title = Label.new()
-    title.text = "Salem \u2014 1692"
+    title.text = title_text("")
     title.add_theme_color_override("font_color", COLOR_TEXT)
     title.add_theme_font_override("font", _font)
     title.add_theme_font_size_override("font_size", OrientationGuard.text_size(22))
@@ -578,6 +578,26 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         inventory_toggle_requested.emit(inventory_icon.get_global_rect())
         get_viewport().set_input_as_handled()
+
+const MONTH_NAMES := ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"]
+
+## Show the village date in the title (LLM-840). village_date is the world
+## read's "1692-10-22"; season is not shown yet, the trees will carry it.
+func set_village_date(village_date: String, _season: String) -> void:
+    if title_label != null:
+        title_label.text = title_text(village_date)
+
+## "Salem — 22 October 1692" for a well-formed "YYYY-MM-DD" date; the plain
+## "Salem — 1692" when the date is missing or malformed.
+static func title_text(village_date: String) -> String:
+    var parts := village_date.split("-")
+    if parts.size() == 3 and parts[0].is_valid_int() and parts[1].is_valid_int() and parts[2].is_valid_int():
+        var month := int(parts[1])
+        var day := int(parts[2])
+        if month >= 1 and month <= 12 and day >= 1 and day <= 31:
+            return "Salem — %d %s %s" % [day, MONTH_NAMES[month - 1], parts[0]]
+    return "Salem — 1692"
 
 ## The title label fills the row's spare width, so only the text itself is the
 ## credits link: hover, the hand cursor and the click all stop at its end.

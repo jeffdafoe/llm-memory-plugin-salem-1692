@@ -541,6 +541,12 @@ func buildNoticeboardUserPrompt(snap sim.VillageContext, boardLabel, priorText s
 		fmt.Fprintf(&b, "Compose %d notices for the board: %s.\n\n", capacity, strings.TrimSpace(boardLabel))
 	}
 
+	// The date and season (LLM-840), so notices can fit the time of year.
+	if date := sim.VillageDateScene(snap.Month, snap.Day); date != "" {
+		b.WriteString(date)
+		b.WriteString("\n\n")
+	}
+
 	if len(snap.Visitors) > 0 {
 		b.WriteString("Visitors lately come to the village:\n")
 		for _, v := range snap.Visitors {
