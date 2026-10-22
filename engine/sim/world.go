@@ -2614,6 +2614,7 @@ func (w *World) republish() {
 		Phase:                         w.Phase,
 		LocalMinuteOfDay:              &localMin,
 		LocalDateUTC:                  orderDateUTC(now, w.Settings.Location),
+		LocalDateEndsAt:               VillageDateEndsAt(now, w.Settings.Location),
 		DawnMinute:                    dawnMin,
 		DuskMinute:                    duskMin,
 		DawnDuskMinuteOK:              dawnOK && duskOK,

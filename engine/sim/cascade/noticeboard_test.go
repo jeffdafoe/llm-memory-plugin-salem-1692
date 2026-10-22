@@ -414,3 +414,14 @@ func readBoardContent(t *testing.T, w *sim.World, id sim.VillageObjectID) *sim.N
 	}
 	return res.(*sim.NoticeboardContent)
 }
+
+func TestBuildNoticeboardPrompt_StatesTheDate(t *testing.T) {
+	snap := sim.VillageContext{Month: time.March, Day: 3}
+	user := buildNoticeboardPrompt(snap, "The Notice Board", "", 2)[1].Content
+	if !strings.Contains(user, sim.VillageDateScene(time.March, 3)) {
+		t.Errorf("user message missing the date line; got: %s", user)
+	}
+	if bare := buildNoticeboardPrompt(sim.VillageContext{}, "The Notice Board", "", 2)[1].Content; strings.Contains(bare, "It is ") {
+		t.Errorf("no-date context rendered a date line; got: %s", bare)
+	}
+}

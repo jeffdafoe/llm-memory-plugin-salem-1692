@@ -348,6 +348,11 @@ func buildAtmospherePrompt(c sim.AtmosphereContext) string {
 	var b strings.Builder
 	b.WriteString("You author the village's current atmosphere — weather, mood, ambient texture. There are no tools available for this turn; respond with prose only.\n\n")
 
+	// The date and season (LLM-840), so the mood line can carry the time of year.
+	if date := sim.VillageDateScene(c.Month, c.Day); date != "" {
+		b.WriteString(date)
+		b.WriteString(" ")
+	}
 	fmt.Fprintf(&b, "It is %s.", c.Phase)
 	// The sky, ALWAYS — clear included (LLM-399). LLM-117 deliberately rendered
 	// clear as NO weather line (byte-identical to the pre-weather-cascade

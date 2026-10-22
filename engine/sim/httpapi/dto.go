@@ -97,6 +97,17 @@ type WorldStateDTO struct {
 	// the boundaries didn't parse at snapshot publish (DawnDuskMinuteOK false).
 	DawnTime string `json:"dawn_time,omitempty"`
 	DuskTime string `json:"dusk_time,omitempty"`
+	// VillageDate is the village's calendar date, "YYYY-MM-DD" in the year the
+	// village believes it is (sim.VillageYear), e.g. "1692-10-22": the real local
+	// date in the village timezone at publish (Snapshot.LocalDateUTC). Season is
+	// its sim.SeasonOf ("winter" … "autumn"). Both omitted on a snapshot with no
+	// village clock. Additive — no contract_version bump (LLM-840).
+	VillageDate string `json:"village_date,omitempty"`
+	Season      string `json:"season,omitempty"`
+	// VillageDateEndsAt is when that date ends (the next local midnight, UTC
+	// instant), so the client re-reads the world then rather than polling.
+	// Omitted with VillageDate.
+	VillageDateEndsAt *time.Time `json:"village_date_ends_at,omitempty"`
 	// Camera zoom floors (min zoom-out) — different for admins vs regular
 	// users. Every client reads its floor from here; the admin config panel
 	// reads+writes them via GET/POST /api/village/config + /admin/zoom-settings.

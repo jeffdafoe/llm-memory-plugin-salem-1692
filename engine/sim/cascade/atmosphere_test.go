@@ -939,3 +939,16 @@ func TestDigestActorParts(t *testing.T) {
 		})
 	}
 }
+
+// The prompt carries the village date and season (LLM-840) ahead of the phase,
+// through the one shared sentence; a hand-built context with no date carries none.
+func TestBuildAtmospherePrompt_StatesTheDate(t *testing.T) {
+	got := buildAtmospherePrompt(sim.AtmosphereContext{Phase: sim.PhaseNight, Month: time.October, Day: 22})
+	want := sim.VillageDateScene(time.October, 22) + " It is night."
+	if !strings.Contains(got, want) {
+		t.Errorf("prompt missing %q\n--- prompt ---\n%s", want, got)
+	}
+	if bare := buildAtmospherePrompt(sim.AtmosphereContext{Phase: sim.PhaseNight}); strings.Contains(bare, "1692") {
+		t.Errorf("no-date context rendered a date\n--- prompt ---\n%s", bare)
+	}
+}

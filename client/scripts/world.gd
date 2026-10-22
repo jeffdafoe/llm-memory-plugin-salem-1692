@@ -24,6 +24,10 @@ signal npc_list_changed
 ## reset_world_state). ZBBS-HOME-210.
 signal world_ready
 
+## The village date ("1692-10-22") or season changed on a /api/village/world
+## read (LLM-840). The top bar shows the date in its title.
+signal village_date_changed(village_date: String, season: String)
+
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
@@ -171,6 +175,20 @@ var api_base: String = ""
 # panel renders before _on_world_phase_loaded completes.
 var dawn_time_str: String = "07:00"
 var dusk_time_str: String = "19:00"
+
+# The village date and season from the last /api/village/world read (LLM-840),
+# "" until the first read lands. Kept so a listener connected after that read
+# can still show them.
+var village_date: String = ""
+var village_season: String = ""
+
+# Re-reads the world when the village date ends (village_date_ends_at), so the
+# date turns over at midnight without polling.
+var _village_date_timer: Timer = null
+
+## Seconds past the date's end before the re-read, so it lands after the
+## engine's midnight rather than a hair before it.
+const VILLAGE_DATE_REFRESH_MARGIN_SEC := 2.0
 
 func _ready() -> void:
     if OS.has_feature("web"):
@@ -1870,10 +1888,34 @@ func sync_phase_from_world(phase: String, last_transition_iso: String, now_iso: 
 ## but silently accepting them would make malformed server data
 ## indistinguishable from valid UTC; code_review round 2). Garbage parses to
 ## 0; the caller snaps to the pole on any 0.0.
-func _iso_to_unix(iso: String) -> float:
+static func _iso_to_unix(iso: String) -> float:
     if iso.length() < 19 or not iso.ends_with("Z"):
         return 0.0
     return float(Time.get_unix_time_from_datetime_string(iso))
+
+## Arm (or re-arm) the one-shot re-read of /api/village/world for when the
+## village date ends. No-op when the read carried no end time.
+func _schedule_village_date_refresh(ends_iso: String, now_iso: String) -> void:
+    var wait := village_date_refresh_wait(ends_iso, now_iso)
+    if wait <= 0.0:
+        return
+    if _village_date_timer == null:
+        _village_date_timer = Timer.new()
+        _village_date_timer.one_shot = true
+        _village_date_timer.timeout.connect(_load_world_phase)
+        add_child(_village_date_timer)
+    _village_date_timer.start(wait)
+
+## Seconds until the village date ends, plus VILLAGE_DATE_REFRESH_MARGIN_SEC.
+## Both instants come from the engine, so the local clock's skew does not
+## matter. 0.0 when either is missing or unparseable; at least 1.0 otherwise,
+## so a date that has already ended re-reads soon instead of spinning.
+static func village_date_refresh_wait(ends_iso: String, now_iso: String) -> float:
+    var ends_unix := _iso_to_unix(ends_iso)
+    var now_unix := _iso_to_unix(now_iso)
+    if ends_unix <= 0.0 or now_unix <= 0.0:
+        return 0.0
+    return maxf(1.0, ends_unix - now_unix + VILLAGE_DATE_REFRESH_MARGIN_SEC)
 
 ## Apply a world weather change (LLM-117). "storm" raises the storm FX overlay
 ## (rain + darkening + lightning); anything else ("clear") tweens it back out.
@@ -1931,6 +1973,13 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     # schedule windows from the global defaults. Format is "HH:MM".
     dawn_time_str = json.get("dawn_time", dawn_time_str)
     dusk_time_str = json.get("dusk_time", dusk_time_str)
+
+    # The village date and season (LLM-840). The engine also says when the
+    # date ends, on its own clock, and the world is read again then.
+    village_date = str(json.get("village_date", ""))
+    village_season = str(json.get("season", ""))
+    village_date_changed.emit(village_date, village_season)
+    _schedule_village_date_refresh(str(json.get("village_date_ends_at", "")), str(json.get("now", "")))
 
     # Apply the zoom floor appropriate for this user's role. Admins get
     # the "admin" floor (typically lower, so they can see further out).

@@ -617,6 +617,16 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 		at := s.Environment.LastPhaseFlipAt.UTC()
 		dto.LastTransitionAt = &at
 	}
+	// LocalDateUTC is the village's local date as midnight UTC, so its UTC
+	// fields are the local year/month/day.
+	if !s.LocalDateUTC.IsZero() {
+		dto.VillageDate = fmt.Sprintf("%04d-%02d-%02d", sim.VillageYear, int(s.LocalDateUTC.Month()), s.LocalDateUTC.Day())
+		dto.Season = string(sim.SeasonOf(s.LocalDateUTC.Month()))
+		if !s.LocalDateEndsAt.IsZero() {
+			ends := s.LocalDateEndsAt.UTC()
+			dto.VillageDateEndsAt = &ends
+		}
+	}
 	// Dawn/dusk ride only when both boundaries parsed at publish — mirrors the
 	// DawnDuskMinuteOK guard perception uses, so a half-parsed config can't
 	// serve one real bound and one 00:00.

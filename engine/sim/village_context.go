@@ -122,6 +122,12 @@ type VillageContext struct {
 	// correct: the prose restored from the checkpoint predates this boot's sky.
 	WeatherChangedSinceAtmosphere bool
 
+	// Month / Day are the village's local calendar date at `at` (LLM-840),
+	// which the prompts render through VillageDateScene. Zero on a hand-built
+	// context, which renders no date line.
+	Month time.Month
+	Day   int
+
 	// Visitors carries every Actor with VisitorState != nil at
 	// snapshot time. Empty for villages with no current visitors.
 	Visitors []VisitorSummary
@@ -162,6 +168,7 @@ func FetchVillageContext(at time.Time) Command {
 				WeatherChangedSinceAtmosphere: !w.Environment.LastWeatherChangeAt.IsZero() &&
 					w.Environment.LastWeatherChangeAt.After(w.Environment.LastAtmosphereRefreshAt),
 			}
+			ctx.Month, ctx.Day = VillageMonthDay(w, at)
 
 			ctx.Roster = buildVillageContextRoster(w)
 			ctx.ActivityDigest = buildVillageContextActivityDigest(w)

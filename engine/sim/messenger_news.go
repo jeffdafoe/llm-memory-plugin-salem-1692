@@ -176,8 +176,5 @@ func cutPrefixFold(s, prefix string) (string, bool) {
 // MessengerNewsDate is the calendar day a messenger's news is written for: the
 // village's local date, carried back to 1692.
 func MessengerNewsDate(w *World, at time.Time) (time.Month, int) {
-	if loc := w.Settings.Location; loc != nil {
-		at = at.In(loc)
-	}
-	return at.Month(), at.Day()
+	return VillageMonthDay(w, at)
 }

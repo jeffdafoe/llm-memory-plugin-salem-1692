@@ -123,6 +123,13 @@ type Snapshot struct {
 	// host UTC day then.
 	LocalDateUTC time.Time
 
+	// LocalDateEndsAt is the instant the village's current calendar date ends —
+	// the next local midnight in WorldSettings.Location (LLM-840), computed at
+	// publish so a DST night is the right length. The world read hands it to
+	// the client, which re-reads the date then instead of polling. Zero on a
+	// hand-built snapshot.
+	LocalDateEndsAt time.Time
+
 	// DawnMinute / DuskMinute are the world's dawn/dusk boundary times as
 	// minute-of-day (e.g. 420 = 07:00, 1140 = 19:00), parsed once at publish
 	// from WorldSettings.DawnTime/DuskTime. They are the day-active window used
