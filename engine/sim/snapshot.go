@@ -137,7 +137,7 @@ type Snapshot struct {
 	VillageUTCOffsetSeconds *int
 
 	// VillageUTCOffsetUntil is when that offset next changes (a DST
-	// transition) if it does before the village date ends; zero otherwise.
+	// transition) if it does by the time the village date ends; zero otherwise.
 	VillageUTCOffsetUntil time.Time
 
 	// DawnMinute / DuskMinute are the world's dawn/dusk boundary times as

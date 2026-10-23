@@ -2587,7 +2587,7 @@ func (w *World) republish() {
 	now := time.Now()
 	localMin := localMinuteOfDay(w, now)
 	// The village's UTC offset at the same instant (LLM-854), for the client's
-	// clock, and when it next changes before the village date ends. nil / zero
+	// clock, and when it next changes by the time the village date ends. nil / zero
 	// without a Location (a hand-built world), so 0 stays real UTC.
 	var utcOffset *int
 	var utcOffsetUntil time.Time

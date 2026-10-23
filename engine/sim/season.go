@@ -74,10 +74,11 @@ func VillageUTCOffset(now time.Time, loc *time.Location) (offset int, ok bool) {
 	return offset, true
 }
 
-// VillageUTCOffsetChangesAt is the first instant after now and before until at
-// which loc's offset from UTC changes — a DST transition — or the zero time if
-// it does not change in that window (LLM-854). The client re-reads the world
-// then, so its village clock takes the new offset at the change.
+// VillageUTCOffsetChangesAt is the first instant after now, up to and
+// including until, at which loc's offset from UTC changes — a DST transition —
+// or the zero time if it does not change in that window (LLM-854). A change
+// exactly at until is reported as until; the client re-reads the world at the
+// earlier of this and the date's end, so that is the same single re-read.
 //
 // It steps an hour at a time (no zone changes its offset twice within an hour)
 // and then halves the step where the offset first differs, down to the second.

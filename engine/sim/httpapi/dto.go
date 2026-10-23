@@ -115,8 +115,8 @@ type WorldStateDTO struct {
 	// serializes. Additive — no contract_version bump.
 	VillageUTCOffsetSeconds *int `json:"village_utc_offset_seconds,omitempty"`
 	// VillageUTCOffsetUntil is when that offset changes (a DST transition), if
-	// it does before VillageDateEndsAt; the client re-reads the world at the
-	// earlier of the two. Omitted on every other day.
+	// it does by VillageDateEndsAt (possibly at that very instant); the client
+	// re-reads the world at the earlier of the two. Omitted on every other day.
 	VillageUTCOffsetUntil *time.Time `json:"village_utc_offset_until,omitempty"`
 	// Camera zoom floors (min zoom-out) — different for admins vs regular
 	// users. Every client reads its floor from here; the admin config panel
