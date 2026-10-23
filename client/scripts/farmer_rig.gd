@@ -25,7 +25,8 @@ class_name FarmerRig
 ## Work animations (LLM-719): scythe = the guide's backhand strike (overlay
 ## animations #01-03), pull, pick = the pick-up crouch and back up, drink =
 ## drink standing (mug #11 south, #12 east; north reuses south, as the guide
-## draws no back view), sit = sit on floor. seat = sit in a chair (LLM-750,
+## draws no back view), sit = sit on floor. kneel = the pick-up crouch held:
+## drinking from a well's bucket on the rim. seat = sit in a chair (LLM-750,
 ## the interior window), held. doze = the guide's SLEEP standing, eyes shut
 ## (LLM-782): only its head shows, on a bed's pillow under the cover.
 ##
@@ -126,6 +127,9 @@ const ANIMATIONS := {
         {"cell": 114, "ms": 1200, "prop": {"pose": 67, "x": 16, "y": 16}},
         {"cell": 115, "ms": 800, "prop": {"pose": 68, "x": 16, "y": 16}}
     ]},
+    "south_kneel": {"frames": [{"cell": 130, "ms": 0}]},
+    "north_kneel": {"frames": [{"cell": 146, "ms": 0}]},
+    "east_kneel": {"frames": [{"cell": 162, "ms": 0}]},
     "south_sit": {"frames": [{"cell": 197, "ms": 0}]},
     "north_sit": {"frames": [{"cell": 213, "ms": 0}]},
     "east_sit": {"frames": [{"cell": 229, "ms": 0}]},
