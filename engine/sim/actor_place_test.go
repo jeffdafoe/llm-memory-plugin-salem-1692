@@ -52,6 +52,55 @@ func TestIndoorMeal_PromptSaysEating(t *testing.T) {
 	}
 }
 
+// TestOutdoorCredit_EndsOnGoingInside: an actor holding a well's thirst credit
+// steps into the Tavern onto a tile still within one of the well's pin. Inside,
+// its place is the Tavern, so the next dwell tick ends the well credit as walked
+// away — the tick keeps only what perception renders. On the same tile
+// outdoors, the well still owns the tile and the credit stays.
+func TestOutdoorCredit_EndsOnGoingInside(t *testing.T) {
+	wellKey := sim.DwellCreditKey{ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject}
+	for _, tc := range []struct {
+		name     string
+		inside   bool
+		wantKept bool
+	}{
+		{"inside the Tavern", true, false},
+		{"same tile, outdoors", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildConsumeTestWorld(t,
+				[]consumeActorSpec{{
+					id:          "john",
+					displayName: "John",
+					needs:       map[sim.NeedKey]int{"thirst": 15},
+				}},
+				[]consumeObjectSpec{{id: "well", x: tavernKeeperX, y: tavernKeeperY - 1}},
+			)
+			defer stop()
+			seedLiveTavern(t, w, "john", tc.inside)
+			at := time.Now().UTC()
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				world.Actors["john"].DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+					wellKey: {
+						ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject,
+						LastCreditedAt: at, DwellDelta: -1, DwellPeriodMinutes: 1,
+					},
+				}
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("seed well credit: %v", err)
+			}
+			if _, err := w.Send(sim.ApplyDwellTick(at.Add(time.Minute))); err != nil {
+				t.Fatalf("ApplyDwellTick: %v", err)
+			}
+			_, kept := readLiveActor(t, w, "john").DwellCredits[wellKey]
+			if kept != tc.wantKept {
+				t.Errorf("well credit kept = %v, want %v", kept, tc.wantKept)
+			}
+		})
+	}
+}
+
 // TestArrivalStall_WalkIntoBusiness: a walk into a business carries no
 // destination object, so arrivalStall answers on where the arriver is. Inside
 // the Blacksmith, on its keeper tile four from the loiter pin (the live
