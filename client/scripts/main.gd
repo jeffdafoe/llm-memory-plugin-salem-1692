@@ -369,6 +369,10 @@ func _on_authenticated() -> void:
     # re-pull the saved terrain — covers the case where the boot-time
     # _load_terrain ran before the user authenticated.
     _flush_unsaved_terrain_or_reload()
+    # Same for the world read: the boot-time one got a 401 before a fresh
+    # login, leaving the season (summer ground), the date refresh and the
+    # role's zoom floor unset.
+    world._load_world_phase()
 
     # PC bootstrap (M6.7): check whether the player has a sprite assigned.
     # If not, pop the sprite picker so they enter the world with a chosen
