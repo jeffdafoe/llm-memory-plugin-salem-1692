@@ -72,24 +72,6 @@ func HasActiveItemDwell(credits map[DwellCreditKey]*DwellCredit) bool {
 	return false
 }
 
-// mealObjectAt returns the village object an eat-here meal is pinned to: the
-// building the actor is inside, else the named object whose loiter pin it
-// stands at (Chebyshev <= LoiterAttributionTiles). The pin sits OUTSIDE the
-// footprint, past the door, so an actor on an interior tile can be further from
-// it than the tolerance — John Ellis's keeper tile in the Tavern is two rows
-// from its pin — and the pin alone gave indoor eaters only the immediate bite.
-// Buildings share one id across Structures and VillageObjects, so the cast is
-// safe; an inside structure with no named placement falls back to the pin.
-func mealObjectAt(w *World, actor *Actor) (VillageObjectID, bool) {
-	if actor.InsideStructureID != "" {
-		id := VillageObjectID(actor.InsideStructureID)
-		if w.VillageObjects[id].Attributable() {
-			return id, true
-		}
-	}
-	return resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
-}
-
 // UpsertItemDwellCredits stamps source="item" dwell credit rows on the
 // actor for any satisfaction with a complete dwell triple, pinned to
 // the supplied structureID. Returns the list of credits that were

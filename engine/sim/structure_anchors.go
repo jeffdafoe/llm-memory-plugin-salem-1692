@@ -436,6 +436,30 @@ func resolveLoiteringObject(w *World, actorTile TilePos, maxCheb int) (VillageOb
 	return ResolveLoiteringObject(w.VillageObjects, w.Assets, actorTile, maxCheb)
 }
 
+// ActorPlace answers "which place is this actor at?" for an actor who may be
+// indoors: the building it is inside, else the named object whose loiter pin
+// owns its tile (ResolveLoiteringObject, LoiterAttributionTiles). The pin sits
+// OUTSIDE the footprint, past the door, and an interior tile can be further
+// from it than the tolerance — the Tavern's inside tiles are two from its pin,
+// the Blacksmith's four — so the pin alone never answers for someone inside.
+// InsideStructureID is the inside signal; buildings share one id across
+// Structures and VillageObjects, so it is returned as the object id.
+//
+// Pure over its inputs, like ResolveLoiteringObject, so the live world and a
+// published snapshot both call it.
+func ActorPlace(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, insideStructureID StructureID, actorTile TilePos) (VillageObjectID, bool) {
+	if insideStructureID != "" {
+		return VillageObjectID(insideStructureID), true
+	}
+	return ResolveLoiteringObject(objects, assets, actorTile, LoiterAttributionTiles)
+}
+
+// actorPlace is the live-world wrapper over ActorPlace. MUST be called from
+// inside a Command.Fn.
+func actorPlace(w *World, a *Actor) (VillageObjectID, bool) {
+	return ActorPlace(w.VillageObjects, w.Assets, a.InsideStructureID, a.Pos)
+}
+
 // structureEntryTile returns the tile an actor must reach to count as
 // "inside" structureID for a StructureEnter move: the structure's door
 // tile (placement anchor + the asset's door offset).

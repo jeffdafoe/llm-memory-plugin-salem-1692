@@ -310,10 +310,7 @@ func recordDegenVisit(w *World, a *Actor) {
 // bridge), so the cast is safe for both. Nothing dereferences the id through
 // w.Structures — it is an identity token only.
 func degenVisitScope(w *World, a *Actor) StructureID {
-	if a.InsideStructureID != "" {
-		return a.InsideStructureID
-	}
-	if objID, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, LoiterAttributionTiles); ok {
+	if objID, ok := actorPlace(w, a); ok {
 		return StructureID(objID)
 	}
 	return ""

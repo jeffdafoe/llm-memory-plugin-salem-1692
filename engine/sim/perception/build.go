@@ -1304,14 +1304,14 @@ func buildActiveDwellCredits(snap *sim.Snapshot, a *sim.ActorSnapshot) []DwellCr
 			continue
 		}
 		// Co-location gate (LLM-68): render a credit as an active dwell only
-		// while the actor is still at its pin. The credit lingers in the map
-		// until the next dwell-tick walk-away sweep deletes it; without this
-		// gate perception keeps asserting "you are resting at X" after the actor
-		// has walked off, steering the model to stay put and do nothing. Mirrors
-		// the dwell-tick walk-away check actorAtCreditObject (ok && id ==
-		// credit.ObjectID): an empty CurrentLoiterObjectID means the actor
-		// stands at no pin (resolver returned !ok), so every credit drops.
-		if a.CurrentLoiterObjectID == "" || c.ObjectID != a.CurrentLoiterObjectID {
+		// while the actor is still at its place (inside its building, or at its
+		// pin). The credit lingers in the map until the next dwell-tick walk-away
+		// sweep deletes it; without this gate perception keeps asserting "you are
+		// resting at X" after the actor has walked off, steering the model to stay
+		// put and do nothing. Mirrors the dwell-tick walk-away check
+		// actorAtCreditObject: an empty CurrentPlaceObjectID means the actor is
+		// at no place, so every credit drops.
+		if a.CurrentPlaceObjectID == "" || c.ObjectID != a.CurrentPlaceObjectID {
 			continue
 		}
 		// Satisfied-need gate (LLM-376): sibling of the co-location gate above,

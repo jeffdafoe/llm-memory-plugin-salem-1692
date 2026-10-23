@@ -9501,15 +9501,15 @@ func npcAtWellWithThirst(thirst int) (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 	now := 600              // 10:00 — on shift
 	wellTile := sim.WorldPos{X: 100 * 32, Y: 135 * 32}.Tile()
 	lewis := &sim.ActorSnapshot{
-		Kind:                  sim.KindNPCShared,
-		DisplayName:           "Lewis Walker",
-		State:                 sim.StateIdle,
-		Pos:                   wellTile, // standing ON the Well loiter pin
-		ScheduleStartMin:      &start,
-		ScheduleEndMin:        &end,
-		Coins:                 27,
-		Needs:                 map[sim.NeedKey]int{"thirst": thirst},
-		CurrentLoiterObjectID: "town_well", // co-location gate passes: on the Well pin
+		Kind:                 sim.KindNPCShared,
+		DisplayName:          "Lewis Walker",
+		State:                sim.StateIdle,
+		Pos:                  wellTile, // standing ON the Well loiter pin
+		ScheduleStartMin:     &start,
+		ScheduleEndMin:       &end,
+		Coins:                27,
+		Needs:                map[sim.NeedKey]int{"thirst": thirst},
+		CurrentPlaceObjectID: "town_well", // co-location gate passes: on the Well pin
 		DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 			{ObjectID: "town_well", Attribute: "thirst", Source: sim.DwellSourceObject}: {
 				ObjectID:           "town_well",
@@ -18869,7 +18869,7 @@ func dwellPinnedEaterInn(coda string, pinned bool, subjectID sim.ActorID) func()
 			// Standing on the Inn pin with an item dwell keyed to it — the
 			// co-location gate in buildActiveDwellCredits passes, so the eating
 			// self-cue renders and midItemDwell suppresses the leave coda.
-			lewis.CurrentLoiterObjectID = innPin
+			lewis.CurrentPlaceObjectID = innPin
 			lewis.DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: innPin, Attribute: "hunger", Source: sim.DwellSourceItem}: {
 					ObjectID:           innPin,

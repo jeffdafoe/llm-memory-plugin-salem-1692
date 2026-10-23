@@ -14,7 +14,7 @@ import (
 
 // dwellSnap builds a minimal *sim.Snapshot with one actor carrying the
 // supplied DwellCredits, plus optional structures and village objects for
-// label resolution. loiterObjID is the actor's CurrentLoiterObjectID — the pin
+// label resolution. loiterObjID is the actor's CurrentPlaceObjectID — the pin
 // it is co-located with — which buildActiveDwellCredits gates each credit on
 // (LLM-68); pass the credit's ObjectID to have it render, "" or a different id
 // to exercise the walk-away gate. Used by the perception-dwell tests below.
@@ -28,9 +28,9 @@ func dwellSnap(credits map[sim.DwellCreditKey]*sim.DwellCredit, structures map[s
 				// OBJECT dwell whose need is already at the floor out of the active-
 				// dwell projection, so these fixtures must keep the eased need > 0
 				// for the credit to render (which is what they exercise).
-				Needs:                 map[sim.NeedKey]int{"hunger": 12, "thirst": 12, "tiredness": 12},
-				DwellCredits:          credits,
-				CurrentLoiterObjectID: loiterObjID,
+				Needs:                map[sim.NeedKey]int{"hunger": 12, "thirst": 12, "tiredness": 12},
+				DwellCredits:         credits,
+				CurrentPlaceObjectID: loiterObjID,
 			},
 		},
 		Structures:     structures,
@@ -53,7 +53,7 @@ func TestBuildActorView_EmptyDwellCredits(t *testing.T) {
 // dwell-tick sweep that deletes it. During that window perception must NOT keep
 // rendering "you are resting at X" — that stale cue tells the actor to stay put
 // and do nothing. buildActiveDwellCredits gates each credit on
-// CurrentLoiterObjectID (the pin the actor is actually at), so a credit whose
+// CurrentPlaceObjectID (the pin the actor is actually at), so a credit whose
 // pin no longer matches drops immediately.
 func TestBuildActorView_StaleCreditGatedByColocation(t *testing.T) {
 	shadeOakCredit := func() map[sim.DwellCreditKey]*sim.DwellCredit {

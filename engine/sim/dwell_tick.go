@@ -321,22 +321,16 @@ func stampDwellEnd(w *World, actor *Actor, credit *DwellCredit, reason DwellEndR
 	})
 }
 
-// actorAtCreditObject returns whether the actor is still standing at the
-// credit's pinned object — i.e. resolveLoiteringObject attributes the
-// actor's current tile (Chebyshev <= 1) to that exact object. This is the
-// faithful v1 dwell check (resolveLoiteringStructure(actorPos) ==
-// credit.ObjectID): walking off the pin ends the dwell. Returns false if no
-// object owns the actor's tile, or a different one does.
-//
-// Being inside the credit's building also counts — the same inside-first rule
-// mealObjectAt stamps item credits with, or an indoor meal would end as walked
-// away on its first tick. Checked before the pin so no credit the pin test kept
-// is ended by it.
+// actorAtCreditObject returns whether the actor is still at the credit's
+// pinned place — actorPlace (the building it is inside, else the object whose
+// loiter pin owns its tile) is that exact object. Walking off the pin, or out
+// of the building, ends the dwell. The same single place is published as
+// CurrentPlaceObjectID, so the tick keeps exactly the credits perception
+// renders: an indoor meal stays, and an outdoor source's credit ends once the
+// actor goes inside, even into a building whose interior tile is within a tile
+// of that source's pin.
 func actorAtCreditObject(w *World, actor *Actor, credit *DwellCredit) bool {
-	if actor.InsideStructureID != "" && VillageObjectID(actor.InsideStructureID) == credit.ObjectID {
-		return true
-	}
-	id, ok := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
+	id, ok := actorPlace(w, actor)
 	return ok && id == credit.ObjectID
 }
 

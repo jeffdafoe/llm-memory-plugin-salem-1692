@@ -430,15 +430,17 @@ type StallConditionNarrated struct {
 func (StallConditionNarrated) isSimEvent() {}
 
 // arrivalStall resolves the worn-or-not market stall a just-arrived actor landed
-// at — the arrival's destination object, else the stall whose loiter pin the
-// actor now stands at — or nil when they didn't arrive at a wearable stall.
+// at — the arrival's destination object, else the place the actor is now at
+// (actorPlace: the business it walked into, or the stall whose loiter pin it
+// stands at) — or nil when they didn't arrive at a wearable stall. An entry
+// carries no DestObjectID, so walking into a business answers on the inside.
 func arrivalStall(w *World, actor *Actor, arrivedEvt *ActorArrived) *VillageObject {
 	if arrivedEvt != nil && arrivedEvt.DestObjectID != "" {
 		if o := w.VillageObjects[arrivedEvt.DestObjectID]; IsWearableStall(o) {
 			return o
 		}
 	}
-	if objID, ok := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles); ok {
+	if objID, ok := actorPlace(w, actor); ok {
 		if o := w.VillageObjects[objID]; IsWearableStall(o) {
 			return o
 		}
