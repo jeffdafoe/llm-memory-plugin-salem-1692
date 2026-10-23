@@ -3070,17 +3070,17 @@ func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddle
 			sa.ColocatedSleeperIDs = colocatedSleeperIDs(w, a, now)
 		}
 	}
-	// Co-location for active dwell credits (LLM-68): resolve the named
-	// object whose loiter pin owns the actor's tile so perception renders a
-	// "you are <verb> at X" self-state line only while the actor is still at
-	// the pin — not after a walk-away, when the credit lingers in the map
-	// until the next dwell-tick sweep deletes it. Same resolver + radius as
-	// the dwell-tick walk-away check (actorAtCreditObject) so the two agree.
-	// Only for credit-holders — the sole consumer — to skip the resolve for
-	// everyone else.
+	// Co-location for active dwell credits (LLM-68): resolve the place the
+	// actor is at — the building it is inside, else the object whose loiter pin
+	// owns its tile (actorPlace) — so perception renders a "you are <verb> at X"
+	// self-state line only while the actor is still there, not after a
+	// walk-away, when the credit lingers in the map until the next dwell-tick
+	// sweep deletes it. The inside-first rule is the one actorPlace stamps meal
+	// credits with and actorAtCreditObject keeps them by. Only for
+	// credit-holders — the sole consumer — to skip the resolve for everyone else.
 	if len(a.DwellCredits) > 0 {
-		if objID, ok := resolveLoiteringObject(w, a.Pos, LoiterAttributionTiles); ok {
-			sa.CurrentLoiterObjectID = objID
+		if objID, ok := actorPlace(w, a); ok {
+			sa.CurrentPlaceObjectID = objID
 		}
 	}
 	// In-flight timed source activity (LLM-69): project the live window so

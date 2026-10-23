@@ -56,15 +56,15 @@ func buildDwellTestWorld(t *testing.T, lastCreditedAt time.Time, actorX, actorY 
 	return w, cancel
 }
 
-// TestRepublish_StampsCurrentLoiterObjectID is the LLM-68 wiring test. The
+// TestRepublish_StampsCurrentPlaceObjectID is the LLM-68 wiring test. The
 // perception co-location gate (buildActiveDwellCredits) depends on republish()
-// stamping ActorSnapshot.CurrentLoiterObjectID from the actor's tile using the
+// stamping ActorSnapshot.CurrentPlaceObjectID from the actor's tile using the
 // SAME resolver + radius the dwell-tick walk-away check (actorAtCreditObject)
 // uses. The perception unit tests cover the builder in isolation; this drives
 // the real publish path so a missed stamp or a resolver/radius drift is caught.
 // A no-op command is the barrier: republish() runs after every command, so when
 // Send returns, Published() reflects the post-command stamp.
-func TestRepublish_StampsCurrentLoiterObjectID(t *testing.T) {
+func TestRepublish_StampsCurrentPlaceObjectID(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-5 * time.Minute) // credit present, not yet swept
 
@@ -82,8 +82,8 @@ func TestRepublish_StampsCurrentLoiterObjectID(t *testing.T) {
 		defer cancel()
 		barrier(t, w)
 		snap := w.Published().Actors["hannah"]
-		if snap.CurrentLoiterObjectID != "shade_tree" {
-			t.Errorf("CurrentLoiterObjectID = %q, want \"shade_tree\"", snap.CurrentLoiterObjectID)
+		if snap.CurrentPlaceObjectID != "shade_tree" {
+			t.Errorf("CurrentPlaceObjectID = %q, want \"shade_tree\"", snap.CurrentPlaceObjectID)
 		}
 	})
 
@@ -96,8 +96,8 @@ func TestRepublish_StampsCurrentLoiterObjectID(t *testing.T) {
 		defer cancel()
 		barrier(t, w)
 		snap := w.Published().Actors["hannah"]
-		if snap.CurrentLoiterObjectID != "" {
-			t.Errorf("CurrentLoiterObjectID = %q, want \"\" (actor off the pin)", snap.CurrentLoiterObjectID)
+		if snap.CurrentPlaceObjectID != "" {
+			t.Errorf("CurrentPlaceObjectID = %q, want \"\" (actor off the pin)", snap.CurrentPlaceObjectID)
 		}
 	})
 }

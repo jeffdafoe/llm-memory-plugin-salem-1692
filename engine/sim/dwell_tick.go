@@ -329,7 +329,7 @@ func stampDwellEnd(w *World, actor *Actor, credit *DwellCredit, reason DwellEndR
 // object owns the actor's tile, or a different one does.
 //
 // Being inside the credit's building also counts — the same inside-first rule
-// mealObjectAt stamps item credits with, or an indoor meal would end as walked
+// actorPlace stamps item credits with, or an indoor meal would end as walked
 // away on its first tick. Checked before the pin so no credit the pin test kept
 // is ended by it.
 func actorAtCreditObject(w *World, actor *Actor, credit *DwellCredit) bool {

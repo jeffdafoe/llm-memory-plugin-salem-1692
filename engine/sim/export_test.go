@@ -716,3 +716,9 @@ func CaptureOuthouseTimersForTest(t interface{ Cleanup(func()) }) *[]time.Durati
 	t.Cleanup(func() { outhouseAfterFunc = prev })
 	return &delays
 }
+
+// ArrivalStallForTest exposes arrivalStall for an arrival that carries no
+// destination object (a walk into a building). Call inside a Command.Fn.
+func ArrivalStallForTest(w *World, id ActorID) *VillageObject {
+	return arrivalStall(w, w.Actors[id], &ActorArrived{})
+}
