@@ -2029,19 +2029,34 @@ static func village_clock_from_read(now_iso: String, offset_seconds) -> float:
         return 0.0
     return now_unix + float(offset_seconds)
 
+## The instant to re-read the world at: the earlier of the date's end and the
+## offset change (village_utc_offset_until, a DST day only), so the clock takes
+## the new offset when it changes rather than at midnight (code_review,
+## LLM-854). "" when neither parses.
+static func village_refresh_at(ends_iso: String, offset_until_iso: String) -> String:
+    var ends_unix := _iso_to_unix(ends_iso)
+    var until_unix := _iso_to_unix(offset_until_iso)
+    if until_unix > 0.0 and (ends_unix <= 0.0 or until_unix < ends_unix):
+        return offset_until_iso
+    return ends_iso if ends_unix > 0.0 else ""
+
 ## Set the village clock from a world read and show its hour at once; a read
-## without the fields stops the clock and clears the hour.
+## without the fields stops the clock and its timer and clears the hour.
 func _set_village_clock(now_iso: String, offset_seconds) -> void:
     var local_unix := village_clock_from_read(now_iso, offset_seconds)
     _village_clock_ok = local_unix > 0.0
     _village_clock_local_unix = local_unix
     _village_clock_read_ms = Time.get_ticks_msec()
-    if _village_clock_ok and _village_hour_timer == null:
-        _village_hour_timer = Timer.new()
-        _village_hour_timer.wait_time = VILLAGE_HOUR_CHECK_SEC
-        _village_hour_timer.timeout.connect(_tick_village_hour)
-        add_child(_village_hour_timer)
-        _village_hour_timer.start()
+    if _village_clock_ok:
+        if _village_hour_timer == null:
+            _village_hour_timer = Timer.new()
+            _village_hour_timer.wait_time = VILLAGE_HOUR_CHECK_SEC
+            _village_hour_timer.timeout.connect(_tick_village_hour)
+            add_child(_village_hour_timer)
+        if _village_hour_timer.is_stopped():
+            _village_hour_timer.start()
+    elif _village_hour_timer != null:
+        _village_hour_timer.stop()
     _tick_village_hour()
 
 ## Recompute the hour; emit only when it turned.
@@ -2112,14 +2127,16 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     dusk_time_str = json.get("dusk_time", dusk_time_str)
 
     # The village date and season (LLM-840). The engine also says when the
-    # date ends, on its own clock, and the world is read again then.
+    # date ends, on its own clock, and the world is read again then — or
+    # sooner, when the village's UTC offset changes that day (LLM-854).
     village_date = str(json.get("village_date", ""))
     village_season = str(json.get("season", ""))
     village_date_changed.emit(village_date, village_season)
     _set_village_clock(str(json.get("now", "")), json.get("village_utc_offset_seconds", null))
     if terrain_renderer != null:
         terrain_renderer.set_season(village_season)
-    _schedule_village_date_refresh(str(json.get("village_date_ends_at", "")), str(json.get("now", "")))
+    var refresh_at := village_refresh_at(str(json.get("village_date_ends_at", "")), str(json.get("village_utc_offset_until", "")))
+    _schedule_village_date_refresh(refresh_at, str(json.get("now", "")))
 
     # Apply the zoom floor appropriate for this user's role. Admins get
     # the "admin" floor (typically lower, so they can see further out).

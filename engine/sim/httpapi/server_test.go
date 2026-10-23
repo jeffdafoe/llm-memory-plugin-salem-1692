@@ -991,7 +991,14 @@ func TestWorldStateFromSnapshot_VillageUTCOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(raw), "village_utc_offset_seconds") {
-		t.Errorf("no-clock snapshot wire carries the offset: %s", raw)
+	if strings.Contains(string(raw), "village_utc_offset") {
+		t.Errorf("no-clock snapshot wire carries the offset keys: %s", raw)
+	}
+
+	// The change instant rides only on a day the offset changes.
+	until := time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC)
+	dto := worldStateFromSnapshot(&sim.Snapshot{VillageUTCOffsetUntil: until})
+	if dto.VillageUTCOffsetUntil == nil || !dto.VillageUTCOffsetUntil.Equal(until) {
+		t.Errorf("village_utc_offset_until = %v, want %s", dto.VillageUTCOffsetUntil, until)
 	}
 }

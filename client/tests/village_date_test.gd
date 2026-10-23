@@ -16,6 +16,7 @@ const TESTS := [
     "_test_title_shows_the_season",
     "_test_title_shows_the_hour",
     "_test_village_clock_from_a_read",
+    "_test_refresh_at_the_offset_change",
     "_test_title_falls_back_without_a_date",
     "_test_ground_sheet_by_season",
     "_test_ground_fetch_timeout_frees_the_retry",
@@ -167,4 +168,17 @@ func _test_village_clock_from_a_read() -> void:
     _check("no offset", _world.village_clock_from_read("2026-10-23T19:40:12Z", null), 0.0)
     _check("no now", _world.village_clock_from_read("", -14400.0), 0.0)
     _check("offset not a number", _world.village_clock_from_read("2026-10-23T19:40:12Z", "-14400"), 0.0)
+    _done()
+
+
+# On a DST day the world is re-read when the offset changes, not at midnight,
+# so the hour is right from the change on (code_review, LLM-854).
+func _test_refresh_at_the_offset_change() -> void:
+    var ends := "2026-11-02T05:00:00Z"
+    var until := "2026-11-01T06:00:00Z"
+    _check("DST day: the change first", _world.village_refresh_at(ends, until), until)
+    _check("ordinary day: the date end", _world.village_refresh_at(ends, ""), ends)
+    _check("change after the date end", _world.village_refresh_at("2026-11-01T04:00:00Z", until), "2026-11-01T04:00:00Z")
+    _check("only the change", _world.village_refresh_at("", until), until)
+    _check("neither", _world.village_refresh_at("", ""), "")
     _done()

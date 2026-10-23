@@ -114,3 +114,56 @@ func TestVillageDateEndsAt(t *testing.T) {
 		t.Errorf("no-location ends = %s, want %s", got, want)
 	}
 }
+
+func TestVillageUTCOffset_FixedInstants(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tz data unavailable: %v", err)
+	}
+	if off, ok := VillageUTCOffset(time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC), loc); !ok || off != -5*3600 {
+		t.Errorf("January = %d ok=%v, want -18000 (EST)", off, ok)
+	}
+	if off, ok := VillageUTCOffset(time.Date(2027, 7, 15, 12, 0, 0, 0, time.UTC), loc); !ok || off != -4*3600 {
+		t.Errorf("July = %d ok=%v, want -14400 (EDT)", off, ok)
+	}
+	if _, ok := VillageUTCOffset(time.Now(), nil); ok {
+		t.Error("no Location: ok = true, want false")
+	}
+}
+
+// TestVillageUTCOffsetChangesAt finds each DST transition to the second inside
+// the village date it falls on, and nothing on an ordinary day.
+func TestVillageUTCOffsetChangesAt(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tz data unavailable: %v", err)
+	}
+	cases := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		// Fall back: 2am EDT on November 1, 2026 is 06:00 UTC.
+		{"fall back", time.Date(2026, 11, 1, 4, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC)},
+		// Spring forward: 2am EST on March 14, 2027 is 07:00 UTC.
+		{"spring forward", time.Date(2027, 3, 14, 5, 0, 0, 0, time.UTC), time.Date(2027, 3, 14, 7, 0, 0, 0, time.UTC)},
+		// A read 13 s before the change still lands on it.
+		{"just before", time.Date(2026, 11, 1, 5, 59, 47, 500, time.UTC), time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC)},
+		{"ordinary day", time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC), time.Time{}},
+		// After the change on the same date: nothing left to report.
+		{"after the change", time.Date(2026, 11, 1, 6, 0, 1, 0, time.UTC), time.Time{}},
+	}
+	for _, c := range cases {
+		got := VillageUTCOffsetChangesAt(c.now, VillageDateEndsAt(c.now, loc), loc)
+		if !got.Equal(c.want) {
+			t.Errorf("%s: changes at %s, want %s", c.name, got.UTC(), c.want)
+		}
+	}
+	now := time.Date(2026, 11, 1, 4, 0, 0, 0, time.UTC)
+	if got := VillageUTCOffsetChangesAt(now, now.Add(-time.Hour), loc); !got.IsZero() {
+		t.Errorf("window ending before now: %s, want zero", got)
+	}
+	if got := VillageUTCOffsetChangesAt(now, now.Add(24*time.Hour), nil); !got.IsZero() {
+		t.Errorf("no Location: %s, want zero", got)
+	}
+}

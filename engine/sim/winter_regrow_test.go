@@ -223,8 +223,9 @@ func TestWinterRegrowFactorsSetting_LiveWrite(t *testing.T) {
 }
 
 // TestPublishedSnapshot_CarriesVillageUTCOffset (LLM-854): the published
-// snapshot carries the village zone's UTC offset for the client's clock — New
-// York's at publish (-4 h in EDT, -5 h in EST) — and none without a Location.
+// snapshot carries the village zone's UTC offset for the client's clock —
+// VillageUTCOffset at its publish instant — and none without a Location. This
+// is the wiring; EDT vs EST is pinned at fixed instants in season_test.go.
 func TestPublishedSnapshot_CarriesVillageUTCOffset(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -246,16 +247,18 @@ func TestPublishedSnapshot_CarriesVillageUTCOffset(t *testing.T) {
 		if _, err := w.Send(sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}); err != nil {
 			t.Fatalf("send: %v", err)
 		}
-		got := w.Published().VillageUTCOffsetSeconds
+		snap := w.Published()
 		cancel()
+		got := snap.VillageUTCOffsetSeconds
 		if !withZone {
 			if got != nil {
 				t.Errorf("no Location: offset = %d, want none", *got)
 			}
 			continue
 		}
-		if got == nil || (*got != -4*3600 && *got != -5*3600) {
-			t.Errorf("New York: offset = %v, want -14400 or -18000", got)
+		want, _ := sim.VillageUTCOffset(snap.PublishedAt, loc)
+		if got == nil || *got != want {
+			t.Errorf("New York: offset = %v, want %d (VillageUTCOffset at publish)", got, want)
 		}
 	}
 }
