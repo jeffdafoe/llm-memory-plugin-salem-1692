@@ -356,8 +356,12 @@ func _test_world_activity_animation() -> void:
     c.set_meta("source_activity_kind", "refresh")
     field.set_meta("refreshes", [{"attribute": "", "gather_item": "water"}, {"attribute": "thirst", "gather_item": ""}])
     _world._apply_activity_animation(c)
-    _check("well: drink (the drink row, not the carry row)", doll.animation, &"north_drink")
+    # No art to stand a bucket on, so nobody hauls: kneel at the rim.
+    _check("well: kneel (the drink row, not the carry row)", doll.animation, &"north_kneel")
     _check("well: need for the tooltip", c.get_meta("source_activity_need"), "thirst")
+    field.set_meta("refreshes", [{"attribute": "thirst", "gather_item": ""}])
+    _world._apply_activity_animation(c)
+    _check("thirst with no pail (not a well): drink", doll.animation, &"north_drink")
     field.set_meta("refreshes", [{"attribute": "hunger", "gather_item": "blueberries"}])
     _world._apply_activity_animation(c)
     _check("eating at a bush: pick", doll.animation, &"north_pick")

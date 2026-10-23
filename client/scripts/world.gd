@@ -35,6 +35,7 @@ const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
 const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
+const WellBucket = preload("res://scripts/well_bucket.gd")
 const DoorPanelScript = preload("res://scripts/door_panel.gd")
 
 ## When the player last knocked at each door (sid -> Time.get_ticks_msec()), set
@@ -942,6 +943,9 @@ func remove_npc_by_id(npc_id: String) -> void:
     if container == null:
         return
     placed_npcs.erase(npc_id)
+    var well := str(container.get_meta("well_drink_at", ""))
+    if well != "":
+        _settle_well_bucket(well)
     container.queue_free()
     npc_list_changed.emit()
 
@@ -1196,9 +1200,10 @@ func play_npc_animation(container: Node2D, facing: String, kind: String) -> void
 ## every other sprite keeps standing through the work. A hand mending a well, a
 ## stall or a fence, or clearing a road, swings a hatchet (chop). A harvest
 ## picks its motion by the crop (HARVEST_ANIMATIONS, else pick); eating at a
-## source picks and drinking drinks; a villager on a break, or anyone stopped
+## source picks; drinking at a well hauls its bucket up (pull) or kneels at it on
+## the rim, and anywhere else drinks; a villager on a break, or anyone stopped
 ## at an outdoor rest spot, sits (LLM-765).
-const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "sit", "milk"]
+const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "kneel", "sit", "milk"]
 const HARVEST_ANIMATIONS := {"wheat": "scythe", "carrots": "pull"}
 ## The need a rest spot (the Picnic Area, a Shade Tree) eases.
 const REST_NEED := "tiredness"
@@ -1219,7 +1224,11 @@ func _work_animation(container: Node2D) -> String:
             var need := _worked_refresh(container, "attribute")
             if need == REST_NEED:
                 return "sit"
-            return "pick" if need == "hunger" else "drink"
+            if need == "hunger":
+                return "pick"
+            if container.has_meta("well_drink_at"):
+                return "pull" if Time.get_ticks_msec() < int(container.get_meta("well_haul_until_ms", 0)) else "kneel"
+            return "drink"
         "pitch", "strike":
             var into := (Time.get_ticks_msec() - int(container.get_meta("source_activity_beat_msec", 0))) / 1000.0
             return Camp.motion(str(container.get_meta("source_activity_kind", "")),
@@ -1276,6 +1285,78 @@ func _worked_refresh(container: Node2D, field: String) -> String:
             return str(row.get(field, ""))
     return ""
 
+## The well the container is drinking at, or "": a refresh at an object that
+## is a well (WellBucket.is_well) and eases thirst.
+func _well_drink_target(container: Node2D) -> String:
+    if str(container.get_meta("source_activity_kind", "")) != "refresh":
+        return ""
+    var id := str(container.get_meta("source_activity_object_id", ""))
+    var well: Node2D = placed_objects.get(id, null)
+    if well == null or not is_instance_valid(well) or not WellBucket.is_well(well):
+        return ""
+    return id if _worked_refresh(container, "attribute") == "thirst" else ""
+
+## Keep the container's place among a well's drinkers ("well_drink_at") in step
+## with its activity. The first to start drinking at a well whose bucket is down
+## hauls it up: they pull until "well_haul_until_ms", then kneel. A drinker who
+## stops, at the well they leave, lowers the bucket if they were the last.
+func _sync_well_drink(container: Node2D) -> void:
+    var was := str(container.get_meta("well_drink_at", ""))
+    var now := _well_drink_target(container)
+    if was == now:
+        return
+    if now == "":
+        container.remove_meta("well_drink_at")
+        container.remove_meta("well_haul_until_ms")
+    else:
+        container.set_meta("well_drink_at", now)
+    if was != "":
+        _settle_well_bucket(was)
+    if now == "":
+        return
+    var bucket = _well_bucket(now)
+    if bucket == null or not bucket.raise():
+        container.remove_meta("well_haul_until_ms")
+        return
+    var until := Time.get_ticks_msec() + int(WellBucket.HAUL * 1000.0)
+    container.set_meta("well_haul_until_ms", until)
+    if is_inside_tree():
+        get_tree().create_timer(WellBucket.HAUL).timeout.connect(func() -> void:
+            if is_instance_valid(container) and int(container.get_meta("well_haul_until_ms", 0)) == until:
+                _apply_activity_animation(container))
+
+## How many are drinking at the well.
+func _well_drinkers(well_id: String) -> int:
+    var n := 0
+    for npc_id in placed_npcs:
+        var c: Node2D = placed_npcs[npc_id]
+        if is_instance_valid(c) and str(c.get_meta("well_drink_at", "")) == well_id:
+            n += 1
+    return n
+
+## Lower the well's bucket once nobody is drinking there.
+func _settle_well_bucket(well_id: String) -> void:
+    var well: Node2D = placed_objects.get(well_id, null)
+    if well == null or not is_instance_valid(well):
+        return
+    var bucket = well.get_node_or_null("WellBucket")
+    if bucket != null:
+        bucket.check_drinkers()
+
+## The well's bucket, made the first time a drinker comes to it, with its sheet
+## loaded after if it is not on hand yet. null when the well has no art.
+func _well_bucket(well_id: String):
+    var well: Node2D = placed_objects.get(well_id, null)
+    if well == null or not is_instance_valid(well):
+        return null
+    var made := well.get_node_or_null("WellBucket") == null
+    var bucket = WellBucket.of(well, _well_drinkers.bind(well_id))
+    if bucket != null and made:
+        get_or_load_npc_sheet(WellBucket.SHEET, func(tex: Texture2D) -> void:
+            if is_instance_valid(bucket):
+                bucket.set_sheet(tex))
+    return bucket
+
 ## Play the work animation of the container's in-flight source activity (or
 ## its outdoor rest), or drop a finished one back to idle. The activity closes
 ## when its actor commits a move and the walk owns the sprite from then on, so a
@@ -1284,6 +1365,8 @@ func _worked_refresh(container: Node2D, field: String) -> String:
 func _apply_activity_animation(container: Node2D) -> void:
     # The tooltip's "Eating" / "Drinking" reads this, for every sprite.
     container.set_meta("source_activity_need", _worked_refresh(container, "attribute"))
+    # The well's bucket comes up for any drinker, whatever their sprite.
+    _sync_well_drink(container)
     var sprite := _npc_sprite(container)
     if sprite == null or sprite.sprite_frames == null:
         return
