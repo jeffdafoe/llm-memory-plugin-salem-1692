@@ -51,11 +51,11 @@ static func is_well(node: Node2D) -> bool:
 ## has no art to stand the bucket on, or is not on the map (its tweens and its
 ## checks run on the tree).
 static func of(well: Node2D, counter: Callable) -> Node:
+    if not well.is_inside_tree():
+        return null
     var have := well.get_node_or_null("WellBucket")
     if have != null:
         return have
-    if not well.is_inside_tree():
-        return null
     var art: Node2D = null
     for child in well.get_children():
         if child is Sprite2D or child is AnimatedSprite2D:
