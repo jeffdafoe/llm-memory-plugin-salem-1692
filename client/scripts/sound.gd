@@ -53,7 +53,7 @@ const SOUNDS := {
     # (LLM-857, interior_panel.gd).
     "anvil_strike": {
         "files": ["impactMetal_heavy_000.ogg", "impactMetal_heavy_001.ogg", "impactMetal_heavy_002.ogg", "impactMetal_heavy_003.ogg", "impactMetal_heavy_004.ogg"],
-        "db": -16.0, "pitch": 0.04,
+        "db": -16.0, "pitch": 0.04, "base": 1.25,
     },
     "windlass_click": {"files": ["metalClick.ogg"], "db": -16.0, "pitch": 0.04},
     # Knuckles on a cottage door: the player's knock landing at a door (LLM-20).
