@@ -52,6 +52,16 @@ func _run_once() -> void:
     quit(1 if _failures > 0 else 0)
 
 
+## A top bar in the tree (its _ready builds the title) showing a date,
+## season and hour. The caller frees it.
+func _bar_showing(village_date: String, season: String, hour: int) -> Control:
+    var bar: Control = _top_bar.new()
+    root.add_child(bar)
+    bar.set_village_date(village_date, season)
+    bar.set_village_hour(hour)
+    return bar
+
+
 func _check(label: String, got, want) -> void:
     _checks += 1
     if got == want:
@@ -82,24 +92,44 @@ func _check_test_list() -> void:
 
 
 func _test_title_shows_the_date() -> void:
-    _check("October 22", _top_bar.title_text("1692-10-22"), "Salem — 22 October 1692")
-    _check("January 1", _top_bar.title_text("1692-01-01"), "Salem — 1 January 1692")
-    _check("December 31", _top_bar.title_text("1692-12-31"), "Salem — 31 December 1692")
+    _check("October 22", _top_bar.date_line("1692-10-22"), "22 October")
+    _check("January 1", _top_bar.date_line("1692-01-01"), "1 January")
+    _check("December 31", _top_bar.date_line("1692-12-31"), "31 December")
+    var bar: Control = _bar_showing("1692-10-22", "", -1)
+    _check("the name keeps the year", bar.title_label.text, "Salem 1692")
+    _check("the date stack shows", bar._title_stack.visible, true)
+    _check("the date line", bar.date_label.text, "22 October")
+    _check("no hour or season: no second line", bar._title_when.visible, false)
+    bar.free()
     _done()
 
 
 func _test_title_shows_the_season() -> void:
-    _check("autumn", _top_bar.title_text("1692-10-22", "autumn"), "Salem — 22 October 1692 (Autumn)")
-    _check("winter", _top_bar.title_text("1692-03-31", "winter"), "Salem — 31 March 1692 (Winter)")
-    _check("no season", _top_bar.title_text("1692-10-22", ""), "Salem — 22 October 1692")
-    _check("unknown season", _top_bar.title_text("1692-10-22", "monsoon"), "Salem — 22 October 1692")
-    _check("no date, season ignored", _top_bar.title_text("", "autumn"), "Salem — 1692")
+    _check("autumn", _top_bar.season_name("autumn"), "Autumn")
+    _check("winter", _top_bar.season_name("winter"), "Winter")
+    _check("no season", _top_bar.season_name(""), "")
+    _check("unknown season", _top_bar.season_name("monsoon"), "")
+    var bar: Control = _bar_showing("1692-10-22", "autumn", -1)
+    _check("season name", bar.season_label.text, "Autumn")
+    _check("season icon is the leaf", bar.season_icon.text, String.chr(0xE2DE))
+    _check("no hour: hour hidden", bar.hour_label.visible, false)
+    bar.set_village_date("1692-10-22", "monsoon")
+    _check("unknown season: icon hidden", bar.season_icon.visible, false)
+    _check("unknown season: name hidden", bar.season_label.visible, false)
+    _check("unknown season, no hour: no second line", bar._title_when.visible, false)
+    bar.free()
     _done()
 
 
 func _test_title_falls_back_without_a_date() -> void:
     for bad in ["", "1692", "1692-13-01", "1692-00-10", "1692-10-00", "1692-10-xx", "not-a-date"]:
-        _check("fallback for %s" % bad, _top_bar.title_text(bad), "Salem — 1692")
+        _check("no date line for %s" % bad, _top_bar.date_line(bad), "")
+    var bar: Control = _bar_showing("", "autumn", 15)
+    _check("no date: the name alone", bar.title_label.text, "Salem 1692")
+    _check("no date: the stack hidden", bar._title_stack.visible, false)
+    bar.set_village_date("1692-10-22", "autumn")
+    _check("a date arrives: the stack shows", bar._title_stack.visible, true)
+    bar.free()
     _done()
 
 
@@ -147,10 +177,15 @@ func _test_ground_fetch_timeout_frees_the_retry() -> void:
 
 
 func _test_title_shows_the_hour() -> void:
-    _check("3pm", _top_bar.title_text("1692-10-23", "autumn", 15), "Salem — 23 October 1692, 3pm (Autumn)")
-    _check("no season", _top_bar.title_text("1692-10-23", "", 9), "Salem — 23 October 1692, 9am")
-    _check("unknown hour", _top_bar.title_text("1692-10-23", "autumn", -1), "Salem — 23 October 1692 (Autumn)")
-    _check("no date, hour ignored", _top_bar.title_text("", "autumn", 15), "Salem — 1692")
+    var bar: Control = _bar_showing("1692-10-23", "autumn", 15)
+    _check("3pm before the season", bar.hour_label.text, "3pm ·")
+    bar.set_village_date("1692-10-23", "")
+    _check("no season: no dot", bar.hour_label.text, "3pm")
+    bar.set_village_hour(9)
+    _check("the hour turns", bar.hour_label.text, "9am")
+    bar.set_village_hour(-1)
+    _check("unknown hour: hidden", bar.hour_label.visible, false)
+    bar.free()
     for pair in [[0, "12am"], [1, "1am"], [11, "11am"], [12, "12pm"], [13, "1pm"], [23, "11pm"], [-1, ""], [24, ""]]:
         _check("hour_text(%d)" % pair[0], _top_bar.hour_text(pair[0]), pair[1])
     _done()

@@ -1,6 +1,6 @@
 extends CanvasLayer
 
-## Credits scroll (LLM-777) — opened by a click on the "Salem — 1692" title in
+## Credits scroll (LLM-777) — opened by a click on the "Salem 1692" title in
 ## the top bar. A parchment sheet between two turned wooden rods, which unrolls
 ## when it opens: the build this client was exported from, then who made the
 ## art, sound and fonts. Every name is a link to the maker's work.
@@ -248,7 +248,7 @@ func _build_ui() -> void:
 
 
 func _build_contents() -> void:
-    content.add_child(_make_label("Salem — 1692", _font, 28, COLOR_TITLE))
+    content.add_child(_make_label("Salem 1692", _font, 28, COLOR_TITLE))
     content.add_child(_make_label("~ build %s ~" % BuildInfo.commit(), _italic, 14, COLOR_HEADING))
     content.add_child(_make_ornament())
     for section in CREDITS:
