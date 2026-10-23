@@ -244,12 +244,19 @@ var (
 	TransferItem    = transferItem
 	ResolveItemKind = resolveItemKind
 
-	// CropStageState is the LLM-576 growth-stage selection. Exposed because its
+	// CropStageStateAtPct is the LLM-576 growth-stage selection. Exposed because its
 	// edge branches (an overdue plant clamping to the last immature stage, a row
 	// with no regrow clock) are unreachable through the world: the regen sweep
 	// that would drive the clock also restocks the plant, which flips it ripe
 	// before the clamp can be observed.
-	CropStageState = cropStageState
+	CropStageStateAtPct = cropStageState
+	ScaledRegrowPeriod  = scaledRegrowPeriod
+
+	// CropStageState is CropStageStateAtPct with no regrow scaling, the shape
+	// the LLM-576 tests were written against.
+	CropStageState = func(asset *Asset, row *ObjectRefresh, hasStock bool, now time.Time) string {
+		return cropStageState(asset, row, hasStock, now, 100)
+	}
 )
 
 // ActorsInStructure returns the actor IDs the actorsByStructure secondary

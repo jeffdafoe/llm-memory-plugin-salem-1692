@@ -438,6 +438,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.VisitorCoinBandLow = parseIntSetting(values, "visitor_coin_band_low", 0)
 	s.VisitorCoinBandHigh = parseIntSetting(values, "visitor_coin_band_high", 0)
 	s.VisitorSellWeightPermille = parseIntSetting(values, "visitor_sell_weight_permille", sim.DefaultVisitorSellWeightPermille)
+	s.WinterRegrowFactors = parseWinterRegrowFactors(values)
 
 	// Businessowner cooldowns.
 	s.BusinessownerGreetCooldownMinutes = parseIntSetting(values, "businessowner_greet_cooldown_minutes",
@@ -553,6 +554,20 @@ func parseStringSetting(values map[string]string, key, def string) string {
 		return def
 	}
 	return v
+}
+
+// parseWinterRegrowFactors reads winter_regrow_factors (LLM-848). A missing or
+// malformed row logs and falls back to the default rather than to no factors, so
+// a bad edit cannot quietly turn the winter slowdown off.
+func parseWinterRegrowFactors(values map[string]string) map[sim.ItemKind]int {
+	raw := parseStringSetting(values, "winter_regrow_factors", sim.DefaultWinterRegrowFactors)
+	factors, err := sim.ParseWinterRegrowFactors(raw)
+	if err == nil {
+		return factors
+	}
+	log.Printf("repo/pg: setting winter_regrow_factors: %v; using default %q", err, sim.DefaultWinterRegrowFactors)
+	factors, _ = sim.ParseWinterRegrowFactors(sim.DefaultWinterRegrowFactors)
+	return factors
 }
 
 // parseIntSetting returns the kv value parsed as an int. Missing or

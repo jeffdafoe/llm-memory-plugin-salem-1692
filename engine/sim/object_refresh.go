@@ -605,7 +605,7 @@ func regenObjectRefresh(w *World, now time.Time) int {
 	touched := 0
 	for _, obj := range w.VillageObjects {
 		for _, r := range obj.Refreshes {
-			if regenRefreshRow(r, now) {
+			if regenRefreshRow(r, now, regrowPct(w, r, now)) {
 				touched++
 			}
 		}
@@ -632,11 +632,20 @@ func regenObjectRefresh(w *World, now time.Time) int {
 // rows accrue units since LastRefreshAt; periodic-mode rows jump to MaxQuantity
 // once enough time has elapsed. Reports whether AvailableQuantity changed. Shared
 // by village objects and milking animals (LLM-797).
-func regenRefreshRow(r *ObjectRefresh, now time.Time) bool {
+//
+// pct scales the stored period (100 = as stored): the winter regrow factor
+// (winter_regrow.go, LLM-848). The anchor arithmetic below works on the scaled
+// period, so a season boundary changes the pace from the next tick without
+// touching the anchor.
+func regenRefreshRow(r *ObjectRefresh, now time.Time, pct int) bool {
 	if r == nil || !r.IsFinite() {
 		return false
 	}
 	if r.RefreshPeriodHours == nil || *r.RefreshPeriodHours <= 0 {
+		return false
+	}
+	period, ok := scaledRegrowPeriod(*r.RefreshPeriodHours, pct)
+	if !ok {
 		return false
 	}
 	if r.LastRefreshAt == nil {
@@ -663,7 +672,7 @@ func regenRefreshRow(r *ObjectRefresh, now time.Time) bool {
 	switch r.RefreshMode {
 	case RefreshModeContinuous:
 		// One unit every (period_hours / max_quantity) hours.
-		unitSeconds := float64(*r.RefreshPeriodHours) * 3600.0 / float64(*r.MaxQuantity)
+		unitSeconds := period.Seconds() / float64(*r.MaxQuantity)
 		if unitSeconds <= 0 {
 			return false
 		}
@@ -684,15 +693,15 @@ func regenRefreshRow(r *ObjectRefresh, now time.Time) bool {
 		r.LastRefreshAt = &newAnchor
 		return true
 	case RefreshModePeriodic:
-		if elapsed < time.Duration(*r.RefreshPeriodHours)*time.Hour {
+		if elapsed < period {
 			return false
 		}
 		next := *r.MaxQuantity
 		r.AvailableQuantity = &next
-		// Advance anchor by exactly period_hours so a missed
+		// Advance anchor by exactly one period so a missed
 		// tick during a long outage doesn't compound multiple
 		// harvests.
-		newAnchor := r.LastRefreshAt.Add(time.Duration(*r.RefreshPeriodHours) * time.Hour)
+		newAnchor := r.LastRefreshAt.Add(period)
 		r.LastRefreshAt = &newAnchor
 		return true
 	default:

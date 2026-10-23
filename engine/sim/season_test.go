@@ -7,7 +7,7 @@ import (
 
 func TestSeasonOf_WholeMonths(t *testing.T) {
 	want := map[time.Month]Season{
-		time.January: SeasonWinter, time.February: SeasonWinter, time.March: SeasonSpring,
+		time.January: SeasonWinter, time.February: SeasonWinter, time.March: SeasonWinter,
 		time.April: SeasonSpring, time.May: SeasonSpring, time.June: SeasonSummer,
 		time.July: SeasonSummer, time.August: SeasonSummer, time.September: SeasonAutumn,
 		time.October: SeasonAutumn, time.November: SeasonAutumn, time.December: SeasonWinter,

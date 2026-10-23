@@ -1,7 +1,6 @@
 package sim
 
 import (
-	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,7 +74,7 @@ func refreshObjectBerryState(w *World, obj *VillageObject, now time.Time) {
 	target := ""
 	switch {
 	case len(growthStates(asset)) > 0:
-		target = cropStageState(asset, row, hasStock, now)
+		target = cropStageState(asset, row, hasStock, now, regrowPct(w, row, now))
 	default:
 		berriesState := asset.StateForTag(TagBerries)
 		bareState := asset.StateForTag(TagBare)
@@ -188,7 +187,11 @@ func growthStates(asset *Asset) []growthState {
 // each time the period is a stage older. Returns "" when there is nothing sane to
 // render (no stages, or a spent plant on a row with no regrow clock — leave the
 // visual alone rather than snapping it to a stage the clock can't justify).
-func cropStageState(asset *Asset, row *ObjectRefresh, hasStock bool, now time.Time) string {
+//
+// pct is the regrow scale regenRefreshRow applies to the same row (the winter
+// factor, LLM-848), so the stages stretch with the slower regrow and the plant
+// is not shown at its last stage for weeks before it ripens.
+func cropStageState(asset *Asset, row *ObjectRefresh, hasStock bool, now time.Time, pct int) string {
 	stages := growthStates(asset)
 	if len(stages) == 0 {
 		return ""
@@ -209,12 +212,9 @@ func cropStageState(asset *Asset, row *ObjectRefresh, hasStock bool, now time.Ti
 	// Bound the hours BEFORE converting: time.Duration is int64 nanoseconds, so
 	// anything past ~292 years wraps the multiply — and it can wrap onto a
 	// plausible POSITIVE value, which a post-hoc period <= 0 check would miss.
-	hours := *row.RefreshPeriodHours
-	if int64(hours) > int64(math.MaxInt64/int64(time.Hour)) {
-		return immature[0].state
-	}
-	period := time.Duration(hours) * time.Hour
-	if period <= 0 {
+	// scaledRegrowPeriod carries that bound.
+	period, ok := scaledRegrowPeriod(*row.RefreshPeriodHours, pct)
+	if !ok || period <= 0 {
 		return immature[0].state
 	}
 	elapsed := now.Sub(*row.LastRefreshAt)

@@ -304,6 +304,8 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("visitor_coin_band_low", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandLow }),
 		intSetting("visitor_coin_band_high", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorCoinBandHigh }),
 		intSetting("visitor_sell_weight_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VisitorSellWeightPermille }),
+		// --- seasons (LLM-848) ---------------------------------------------
+		winterRegrowFactorsSetting(),
 
 		// --- businessowner cooldowns / scene radius ------------------------
 		intSetting("businessowner_greet_cooldown_minutes", SettingEffectUnaudited, func(s *WorldSettings) *int { return &s.BusinessownerGreetCooldownMinutes }),
