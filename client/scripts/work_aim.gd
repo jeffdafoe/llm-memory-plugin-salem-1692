@@ -30,13 +30,23 @@ const AIM_FACINGS := ["south", "east", "west"]
 ## How far inside the target's visible box the blade lands, world px.
 const BITE := 4.0
 
+## A gatherer's fingertips on the reach (farmer_rig.gd *_reach, cell 40), in
+## body-cell px from the feet, measured from the body sheet. The pose is drawn
+## side-on only, so it is aimed east or west.
+const REACH := {
+    "east": Vector2(10.5, -15.0),
+    "west": Vector2(-10.5, -15.0),
+}
+const REACH_FACINGS := ["east", "west"]
 
-## The facing and drawn step (world px) that land the axe head on rect, for a
-## sprite drawn at draw_scale with its feet at feet. Each facing's step moves
-## its strike point to the nearest point of rect (inset by BITE); the shortest
-## step wins, a tie going to the facing that points at rect's centre. The step
-## is capped at max_step. {} for a rect with no area.
-static func aim(feet: Vector2, rect: Rect2, draw_scale: float, max_step: float) -> Dictionary:
+
+## The facing and drawn step (world px) that land the axe head (or the facing's
+## point in points) on rect, for a sprite drawn at draw_scale with its feet at
+## feet. Each facing's step moves its point to the nearest point of rect (inset
+## by BITE); the shortest step wins, a tie going to the facing that points at
+## rect's centre. The step is capped at max_step. {} for a rect with no area.
+static func aim(feet: Vector2, rect: Rect2, draw_scale: float, max_step: float,
+        points: Dictionary = STRIKE, facings: Array = AIM_FACINGS) -> Dictionary:
     if not rect.has_area():
         return {}
     var inner := rect.grow(-BITE)
@@ -46,8 +56,8 @@ static func aim(feet: Vector2, rect: Rect2, draw_scale: float, max_step: float) 
     var best := {}
     var best_len := INF
     var best_dot := -INF
-    for facing in AIM_FACINGS:
-        var strike: Vector2 = feet + STRIKE[facing] * draw_scale
+    for facing in facings:
+        var strike: Vector2 = feet + points[facing] * draw_scale
         var landed := Vector2(clampf(strike.x, inner.position.x, inner.end.x), clampf(strike.y, inner.position.y, inner.end.y))
         var step := landed - strike
         var dot: float = FACING_DIR[facing].dot(to_center)

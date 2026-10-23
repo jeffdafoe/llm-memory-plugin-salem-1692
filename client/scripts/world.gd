@@ -1214,12 +1214,14 @@ func play_npc_animation(container: Node2D, facing: String, kind: String) -> void
 ## Work animations (LLM-691, LLM-719). Only farmer-base sprites carry them;
 ## every other sprite keeps standing through the work. A hand mending a well, a
 ## stall or a fence, or clearing a road, swings a hatchet (chop). A harvest
-## picks its motion by the crop (HARVEST_ANIMATIONS, else pick); eating at a
-## source picks; drinking at a well hauls its bucket up (pull) or kneels at it on
+## picks its motion by the crop (HARVEST_ANIMATIONS, else pick); a bush or a
+## tree is reached into, and so is a bush eaten at — any other source eaten at
+## picks; drinking at a well hauls its bucket up (pull) or kneels at it on
 ## the rim, and anywhere else drinks; a villager on a break, or anyone stopped
 ## at an outdoor rest spot, sits (LLM-765).
-const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "drink", "kneel", "sit", "milk"]
-const HARVEST_ANIMATIONS := {"wheat": "scythe", "carrots": "pull"}
+const WORK_ANIMATIONS := ["chop", "scythe", "pull", "pick", "reach", "drink", "kneel", "sit", "milk"]
+const HARVEST_ANIMATIONS := {"wheat": "scythe", "carrots": "pull",
+    "blueberries": "reach", "raspberries": "reach", "sage": "reach", "apples": "reach"}
 ## The need a rest spot (the Picnic Area, a Shade Tree) eases.
 const REST_NEED := "tiredness"
 
@@ -1240,7 +1242,7 @@ func _work_animation(container: Node2D) -> String:
             if need == REST_NEED:
                 return "sit"
             if need == "hunger":
-                return "pick"
+                return "reach" if HARVEST_ANIMATIONS.get(_worked_refresh(container, "gather_item"), "") == "reach" else "pick"
             if container.has_meta("well_drink_at"):
                 return "pull" if Time.get_ticks_msec() < int(container.get_meta("well_haul_until_ms", 0)) else "kneel"
             return "drink"
@@ -1404,7 +1406,20 @@ func _apply_activity_animation(container: Node2D) -> void:
             play_npc_animation(container, facing, "milk")
             _step_work_sprite(sprite, Vector2.ZERO)
             return
-    if work != "" and work != "chop" and sprite.sprite_frames.has_animation(facing + "_" + work):
+    if work == "reach":
+        # Drawn side-on only: turn to the bush's side and step the drawn sprite
+        # in so the hands land on it. No bush on hand keeps a side facing.
+        if facing != "west":
+            facing = "east"
+        var reach := _work_aim(container, sprite, WorkAim.REACH, WorkAim.REACH_FACINGS)
+        if not reach.is_empty():
+            facing = str(reach["facing"])
+        if sprite.sprite_frames.has_animation(facing + "_reach"):
+            container.set_meta("facing", facing)
+            play_npc_animation(container, facing, "reach")
+            _step_work_sprite(sprite, reach.get("step", Vector2.ZERO))
+            return
+    if work != "" and work != "chop" and work != "reach" and sprite.sprite_frames.has_animation(facing + "_" + work):
         # Face the worked object, or the rest spot (a break away from one keeps
         # its facing). Only the chop steps in to land its blow.
         var target: Node2D = placed_objects.get(str(container.get_meta("source_activity_object_id", "")), null)
@@ -1455,14 +1470,16 @@ const WORK_STEP_TIME := 0.25
 ## The farthest a repairer is drawn from their stand tile, in tiles.
 const WORK_MAX_STEP_TILES := 1.5
 
-## The facing and drawn step that land this container's axe on the thing it is
-## working (WorkAim.aim), or {} when that is not on hand.
-func _work_aim(container: Node2D, sprite: AnimatedSprite2D) -> Dictionary:
+## The facing and drawn step that land this container's axe (or the facing's
+## point in points) on the thing it is working (WorkAim.aim), or {} when that
+## is not on hand.
+func _work_aim(container: Node2D, sprite: AnimatedSprite2D,
+        points: Dictionary = WorkAim.STRIKE, facings: Array = WorkAim.AIM_FACINGS) -> Dictionary:
     var target := _work_target(container)
     if target == null:
         return {}
     var rect := object_map_rect(target)
-    return WorkAim.aim(container.position, rect, sprite.scale.x, WORK_MAX_STEP_TILES * VillageApi.tile_size)
+    return WorkAim.aim(container.position, rect, sprite.scale.x, WORK_MAX_STEP_TILES * VillageApi.tile_size, points, facings)
 
 ## What the swing lands on: the worked object's debris overlay when it has one
 ## (a damaged business's storm branches or split boards, drawn attached to the

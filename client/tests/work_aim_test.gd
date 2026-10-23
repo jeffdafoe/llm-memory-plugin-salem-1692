@@ -19,6 +19,8 @@ const TESTS := [
     "_test_burst_throws_chips",
     "_test_world_wiring",
     "_test_debris_is_the_mark",
+    "_test_reach_is_side_on",
+    "_test_world_reach_steps_to_the_bush",
 ]
 
 const SCALE := 2.0
@@ -364,6 +366,83 @@ func _named_debris(state: String) -> Node2D:
     n.set_meta("current_state", state)
     n.queue_free()
     return n
+
+
+## A bush gather reaches side-on: the hands (21,-30 at scale 2) step to the
+## bush's near edge, and a bush above or below still gets an east or west reach.
+func _test_reach_is_side_on() -> void:
+    var east: Dictionary = _aim.aim(Vector2.ZERO, Rect2(60, -40, 30, 40), SCALE, MAX_STEP, _aim.REACH, _aim.REACH_FACINGS)
+    _check("bush to the east: reach east", east.get("facing"), "east")
+    _check("bush to the east: hands to its edge", east.get("step"), Vector2(43, 0))
+    var west: Dictionary = _aim.aim(Vector2.ZERO, Rect2(-90, -40, 30, 40), SCALE, MAX_STEP, _aim.REACH, _aim.REACH_FACINGS)
+    _check("bush to the west: reach west", west.get("facing"), "west")
+    _check("bush to the west: hands to its edge", west.get("step"), Vector2(-43, 0))
+    var facings := {}
+    for gx in range(-4, 5):
+        for gy in range(-4, 5):
+            var aim: Dictionary = _aim.aim(Vector2.ZERO, Rect2(gx * 40 - 10, gy * 40 - 10, 20, 20), SCALE, MAX_STEP, _aim.REACH, _aim.REACH_FACINGS)
+            facings[aim.get("facing", "")] = true
+    _check("every bush position: east or west only", facings.keys().all(func(f): return f in ["east", "west"]), true)
+    _check("default points are still the axe", _aim.aim(Vector2.ZERO, Rect2(-20, 30, 40, 30), SCALE, MAX_STEP).get("facing"), "south")
+    _check("reach mirrored west in the rig", FarmerDoll.rig_animations().has("west_reach"), true)
+    _done()
+
+
+## world.gd end to end: Ezekiel's complaint. A gatherer a tile off a berry bush
+## turns to it, reaches, and steps in so the hands land on it; done, he steps
+## back to his stand.
+func _test_world_reach_steps_to_the_bush() -> void:
+    var world = load("res://scripts/world.gd").new()
+    var blank := ImageTexture.create_from_image(Image.create(1024, 1024, false, Image.FORMAT_RGBA8))
+    var sheets := {BODY: blank}
+    for prop in FarmerRig.PROPS.values():
+        sheets[prop["sheet"]] = ImageTexture.create_from_image(Image.create(224, 32, false, Image.FORMAT_RGBA8))
+    var doll := FarmerDoll.new()
+    doll.setup({"id": "s1", "name": "Farmer", "sheet": BODY, "rig": "farmer_base",
+        "frame_width": 64, "frame_height": 64, "render_scale": 2.0,
+        "layers": [{"sheet": BODY, "ramps": {}}], "animations": []}, sheets)
+    doll.name = "CharacterSprite"
+    doll.scale = Vector2(2, 2)
+    var base := Vector2(-64, -82)
+    doll.position = base
+    var npc := Node2D.new()
+    npc.add_child(doll)
+    root.add_child(npc)
+    world.placed_npcs["n1"] = npc
+    npc.set_meta("facing", "south")
+    npc.set_meta("source_activity_kind", "harvest")
+    npc.set_meta("source_activity_object_id", "b1")
+
+    # A 40x40 bush drawn whole, anchored at (0.5, 0.85): at (-80, 0) it is
+    # (-100,-34)-(-60,6), inset (-96,-30)-(-64,2).
+    var img := Image.create(40, 40, false, Image.FORMAT_RGBA8)
+    img.fill(Color.WHITE)
+    var catalog: Node = root.get_node("Catalog")
+    catalog.sheet_cache["test://bush"] = ImageTexture.create_from_image(img)
+    catalog.assets["test-bush"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 1.0,
+        "states": [{"state": "default", "sheet": "test://bush", "src_x": 0, "src_y": 0, "src_w": 40, "src_h": 40}]}
+    world.objects_node = Node2D.new()
+    world._place_object({"id": "b1", "asset_id": "test-bush", "x": -80.0, "y": 0.0,
+        "refreshes": [{"attribute": "", "gather_item": "raspberries"}]})
+    _check("bush placed", world.placed_objects.has("b1"), true)
+    _check("bush appears: reaching west", doll.animation, &"west_reach")
+    _check("bush appears: turned west", npc.get_meta("facing"), "west")
+    await create_timer(0.35).timeout
+    # West hands at (-21,-30) land on the inset edge (-64,-30): a step of (-43, 0).
+    _check("stepped in: hands on the bush", doll.position.is_equal_approx(base + Vector2(-43, 0)), true)
+
+    npc.set_meta("source_activity_kind", "")
+    world._apply_activity_animation(npc)
+    _check("gather done: idle", doll.animation, &"west_idle")
+    await create_timer(0.35).timeout
+    _check("gather done: back on the stand", doll.position.is_equal_approx(base), true)
+
+    npc.queue_free()
+    world.objects_node.free()
+    catalog.assets.erase("test-bush")
+    catalog.sheet_cache.erase("test://bush")
+    world.free()
+    _done()
 
 
 ## LLM-747: whatever side the work is on, the aim is never the north chop.
