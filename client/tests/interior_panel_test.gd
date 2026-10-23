@@ -4227,29 +4227,23 @@ func _test_upstairs() -> void:
     _panel.set_vacant_rooms([])
     _check("let again: shut", _panel._anims.get_child_count(), 0)
 
-    # Their own room (LLM-847): a pulsing arrow on its door, and only there.
+    # Their own room (LLM-847): a pointer on its door (LLM-855), and only there.
     var arrow_hook: Callable = _panel.texture_hook
     _panel.texture_hook = func(path: String) -> Texture2D:
-        return _blank(28, 28) if path == _panel.MY_ROOM_ARROW else arrow_hook.call(path)
+        return _blank(11, 15) if path == _panel.Pointer.ART else arrow_hook.call(path)
     _panel.set_my_room("bedroom_2")
-    var arrows: Array = []
+    var tips: Array = []
     for child in _panel._anims.get_children():
-        if child.has_meta("arrow_y"):
-            arrows.append(Vector2((child as Sprite2D).position.x, float(child.get_meta("arrow_y"))))
-    _check("an arrow on their own door, centred on it", arrows, [Vector2(66, 15)])
-    _panel._anim_time = 0.0
-    _panel._animate(_panel.ARROW_PERIOD / 2.0)
-    var mark: Sprite2D = null
-    for child in _panel._anims.get_children():
-        if child.has_meta("arrow_y"):
-            mark = child
-    _check("half a pulse: down by whole pixels, faded", [mark.position.y, snappedf(mark.modulate.a, 0.01)], [17.0, _panel.ARROW_ALPHA_MIN])
+        if child.get_script() == _panel.Pointer:
+            tips.append([child.tip, child.position])
+    # Door 2's tap rect is (62, 14, 36, 34): its middle is (80, 31).
+    _check("a pointer on their own door, tip at its middle", tips, [[Vector2(80, 31), Vector2(80, 31)]])
     _panel.open(INN)
     var downstairs := 0
     for child in _panel._anims.get_children():
-        if child.has_meta("arrow_y"):
+        if child.get_script() == _panel.Pointer:
             downstairs += 1
-    _check("no arrow downstairs", downstairs, 0)
+    _check("no pointer downstairs", downstairs, 0)
     _panel.open(INN, "hall")
     _panel.set_my_room("")
     _check("no room: no arrow", _panel._anims.get_child_count(), 0)
