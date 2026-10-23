@@ -18,6 +18,26 @@ const MIN_SCREEN_OVERLAP: float = 1.5
 # Wang tileset texture — loaded from the atlas
 var wang_texture: Texture2D = null
 
+# The ground by season (LLM-834). Every Mana Seed season's forest wang sheet has
+# the summer sheet's 1024x512 layout, so a season is a texture swap with no
+# change to the terrain data. Summer and spring draw the built-in wang.png; the
+# others are fetched from the server's /tilesets/ like the catalog's sprite
+# sheets, so the export carries no extra art. The snowy winter sheet follows the
+# snow cover (LLM-850), not the season.
+const SEASON_WANG_SHEETS := {
+    "autumn": "/tilesets/mana-seed/autumn-forest/autumn sheets/autumn forest wang tiles.png",
+    "winter": "/tilesets/mana-seed/winter-forest/winter sheets/winter forest wang tiles (clean).png",
+}
+var _summer_wang: Texture2D = null
+var _season: String = ""
+var _season_wang_cache: Dictionary = {}
+# Paths being fetched: every world read (reconnect, the date change) calls
+# set_season again, and must not stack a second download of the same sheet.
+var _season_wang_pending: Dictionary = {}
+# HTTPRequest waits forever by default. A stalled fetch must end, or its path
+# stays pending and no later world read can retry it.
+const SEASON_WANG_TIMEOUT_SEC: float = 30.0
+
 # Water sparkle overlay — 3 rows x 4 columns = 12 total frames, 600ms each.
 # Each tile cycles through all 12 frames with a per-tile offset.
 var sparkle_texture: Texture2D = null
@@ -41,11 +61,60 @@ var pad_y: int = 0
 var _wang_seed_base: int = 7
 
 func _ready() -> void:
-    wang_texture = load("res://assets/tilesets/wang.png")
+    _summer_wang = load("res://assets/tilesets/wang.png")
+    if wang_texture == null:
+        wang_texture = _summer_wang
     # Load sparkle sheet if available (commercial asset, may not exist locally)
     var sparkle_path: String = "res://assets/tilesets/mana-seed/summer-forest/summer animations/summer water sparkles B 16x16.png"
     if ResourceLoader.exists(sparkle_path):
         sparkle_texture = load(sparkle_path)
+
+## The server path of the ground sheet for season, "" for the built-in summer
+## sheet (summer, spring, or a season the engine does not name).
+static func season_wang_path(season: String) -> String:
+    return SEASON_WANG_SHEETS.get(season, "")
+
+## Draw the ground for season (the world read's "autumn"). A sheet not yet
+## fetched keeps the current ground until it lands; a failed fetch keeps it too.
+func set_season(season: String) -> void:
+    _season = season
+    var path := season_wang_path(season)
+    if path == "":
+        if _summer_wang != null:
+            wang_texture = _summer_wang
+        return
+    if _season_wang_cache.has(path):
+        wang_texture = _season_wang_cache[path]
+        return
+    if _season_wang_pending.has(path):
+        return
+    _season_wang_pending[path] = true
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    http.timeout = SEASON_WANG_TIMEOUT_SEC
+    add_child(http)
+    http.request_completed.connect(_on_season_wang_downloaded.bind(http, path))
+    if http.request(Catalog.api_base + path) != OK:
+        push_warning("Season ground: request failed for " + path)
+        _season_wang_pending.erase(path)
+        http.queue_free()
+
+func _on_season_wang_downloaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, path: String) -> void:
+    http.queue_free()
+    _season_wang_pending.erase(path)
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_warning("Season ground: download failed for %s (code %d)" % [path, response_code])
+        return
+    var image := Image.new()
+    if image.load_png_from_buffer(body) != OK:
+        push_warning("Season ground: could not decode " + path)
+        return
+    var texture := ImageTexture.create_from_image(image)
+    _season_wang_cache[path] = texture
+    # The season may have changed while this was in flight; the current one
+    # decides, so a later read naming the same season still lands the sheet.
+    if season_wang_path(_season) == path:
+        wang_texture = texture
 
 func _process(delta: float) -> void:
     # Advance sparkle animation timer

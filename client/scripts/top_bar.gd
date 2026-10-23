@@ -582,21 +582,28 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
 const MONTH_NAMES := ["January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"]
 
-## Show the village date in the title (LLM-840). village_date is the world
-## read's "1692-10-22"; season is not shown yet, the trees will carry it.
-func set_village_date(village_date: String, _season: String) -> void:
-    if title_label != null:
-        title_label.text = title_text(village_date)
+## The seasons the world read can name (sim.SeasonOf).
+const SEASON_NAMES := ["winter", "spring", "summer", "autumn"]
 
-## "Salem — 22 October 1692" for a well-formed "YYYY-MM-DD" date; the plain
+## Show the village date and season in the title (LLM-840). village_date is
+## the world read's "1692-10-22", season its "autumn".
+func set_village_date(village_date: String, season: String) -> void:
+    if title_label != null:
+        title_label.text = title_text(village_date, season)
+
+## "Salem — 22 October 1692 (Autumn)" for a well-formed "YYYY-MM-DD" date. The
+## season is left off when it is missing or not one the engine names; the plain
 ## "Salem — 1692" when the date is missing or malformed.
-static func title_text(village_date: String) -> String:
+static func title_text(village_date: String, season: String = "") -> String:
     var parts := village_date.split("-")
     if parts.size() == 3 and parts[0].is_valid_int() and parts[1].is_valid_int() and parts[2].is_valid_int():
         var month := int(parts[1])
         var day := int(parts[2])
         if month >= 1 and month <= 12 and day >= 1 and day <= 31:
-            return "Salem — %d %s %s" % [day, MONTH_NAMES[month - 1], parts[0]]
+            var text := "Salem — %d %s %s" % [day, MONTH_NAMES[month - 1], parts[0]]
+            if season in SEASON_NAMES:
+                text += " (%s)" % season.capitalize()
+            return text
     return "Salem — 1692"
 
 ## The title label fills the row's spare width, so only the text itself is the

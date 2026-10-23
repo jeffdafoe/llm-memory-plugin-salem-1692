@@ -2063,6 +2063,8 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     village_date = str(json.get("village_date", ""))
     village_season = str(json.get("season", ""))
     village_date_changed.emit(village_date, village_season)
+    if terrain_renderer != null:
+        terrain_renderer.set_season(village_season)
     _schedule_village_date_refresh(str(json.get("village_date_ends_at", "")), str(json.get("now", "")))
 
     # Apply the zoom floor appropriate for this user's role. Admins get
