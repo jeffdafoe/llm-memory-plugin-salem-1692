@@ -163,3 +163,41 @@ func TestSellResult_NamesTheOfferItReplaced(t *testing.T) {
 		t.Errorf("sell result = %q, want %q", got, want)
 	}
 }
+
+// TestSellRefusedWords_StillNamesTheOfferItReplaced runs the real sell handler:
+// Bob answers Alice's bread offer with a lot of bread and ale, but his line is
+// addressed to Carol, who is not there, so the words are refused. The lot still
+// posts and still sets Alice's offer aside, so the result must still tell Bob —
+// or he would go on to answer an offer that is gone.
+func TestSellRefusedWords_StillNamesTheOfferItReplaced(t *testing.T) {
+	w := buildPayResponseWorld(t)
+	w.Actors["bob"].Inventory["ale"] = 3
+	w.Actors["carol"] = &sim.Actor{ID: "carol", DisplayName: "Carol", Kind: sim.KindNPCShared,
+		State: sim.StateIdle, RecentActions: sim.NewRingBuffer[sim.Action](4)}
+	ledgerID := placePendingBreadOffer(t, w, 2, time.Now().UTC())
+
+	args := SceneQuoteArgs{
+		Lines:  []SceneQuoteLineArg{{ItemKind: "bread", Qty: 1}, {ItemKind: "ale", Qty: 1}},
+		Amount: 5, ConsumeNow: false, TargetBuyer: "Alice",
+		Say: "Carol, a loaf and an ale for five.",
+	}
+	cmd, err := HandleSceneQuote(HandlerInput{ActorID: "bob", AttemptID: "tk-3", HasNewNews: true, Args: args})
+	if err != nil {
+		t.Fatalf("HandleSceneQuote: %v", err)
+	}
+	res, err := cmd.Fn(w)
+	if err != nil {
+		t.Fatalf("sell: %v", err)
+	}
+	created := res.(sim.SceneQuoteCreateResult)
+	if created.Announced || created.SayRefused == "" {
+		t.Fatalf("Announced = %v, SayRefused = %q — fixture did not refuse the words", created.Announced, created.SayRefused)
+	}
+	if got := w.PayLedger[ledgerID].State; got != sim.PayLedgerStateSupersededByLot {
+		t.Fatalf("Alice's offer state = %q, want superseded_by_lot", got)
+	}
+	content := commitResultContent(&ValidatedCall{Name: "sell", DecodedArgs: args}, res)
+	if want := "Your lot takes the place of Alice's offer for 1 bread; that offer is set aside."; !strings.Contains(content, want) {
+		t.Errorf("sell result = %q, want it to contain %q", content, want)
+	}
+}
