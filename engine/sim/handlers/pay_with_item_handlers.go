@@ -703,7 +703,10 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 				w, actorID, say, seller, hasNewNews, now,
 				fmt.Sprintf("pay_with_item placed offer %d", placed.LedgerID),
 			)
-			placed.DealWords = sim.DealWordsFor(w, placed.LedgerID, say)
+			// Only words that went out were spoken of; a refused line names nothing.
+			if placed.Announced {
+				placed.DealWords = sim.DealWordsFor(w, placed.LedgerID, say)
+			}
 		}
 		return placed, nil
 	}}), nil
@@ -802,7 +805,9 @@ func respondAndSpeak(
 			return out, nil
 		}
 		out.Announced, out.SayRefused = sim.SpeakAlongside(w, actorID, say, to, hasNewNews, now, act)
-		out.DealWords = sim.DealWordsFor(w, ledgerID, say)
+		if out.Announced {
+			out.DealWords = sim.DealWordsFor(w, ledgerID, say)
+		}
 		return out, nil
 	}}
 }

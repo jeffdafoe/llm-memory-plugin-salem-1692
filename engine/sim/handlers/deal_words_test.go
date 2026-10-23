@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,77 @@ func TestDealWordsNote_RidesEachResult(t *testing.T) {
 			got := commitResultContent(tc.vc, tc.result(water))
 			if got != plain+note {
 				t.Errorf("result = %q, want the plain result plus the note:\n%q", got, plain+note)
+			}
+		})
+	}
+}
+
+// TestDealWords_OnlyForWordsThatWentOut runs the real pay_with_item and
+// counter_pay handlers with a line naming ale, which Bob sells but the bread
+// deal does not carry. Addressed to Carol, who is not in the conversation, the
+// vocative gate refuses the words while the offer or counter still stands — and
+// a refused line spoke of nothing, so no DealWords. The same line without the
+// address goes out and names the ale.
+func TestDealWords_OnlyForWordsThatWentOut(t *testing.T) {
+	ale := sim.DealWords{Named: []string{"ale"}, Deal: "1 bread"}
+	setup := func(t *testing.T) *sim.World {
+		w := buildPayResponseWorld(t)
+		w.Actors["bob"].Inventory["ale"] = 3
+		w.Actors["carol"] = &sim.Actor{ID: "carol", DisplayName: "Carol", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, RecentActions: sim.NewRingBuffer[sim.Action](4)}
+		return w
+	}
+	for _, tc := range []struct {
+		name string
+		say  string
+		want sim.DealWords
+	}{
+		{"refused words", "Carol, a loaf of bread and an ale for four.", sim.DealWords{}},
+		{"words that went out", "A loaf of bread and an ale for four.", ale},
+	} {
+		t.Run("pay_with_item: "+tc.name, func(t *testing.T) {
+			w := setup(t)
+			cmd, err := HandlePayWithItem(HandlerInput{ActorID: "alice", AttemptID: "tk-1", HasNewNews: true,
+				Args: PayWithItemArgs{Seller: "Bob", Item: "bread", Qty: 1, Amount: 4, Say: tc.say}})
+			if err != nil {
+				t.Fatalf("HandlePayWithItem: %v", err)
+			}
+			res, err := cmd.Fn(w)
+			if err != nil {
+				t.Fatalf("pay_with_item: %v", err)
+			}
+			placed := res.(sim.PayWithItemResult)
+			if placed.State != sim.PayLedgerStatePending {
+				t.Fatalf("State = %q, want pending — the offer must stand either way", placed.State)
+			}
+			if placed.Announced != (len(tc.want.Named) > 0) {
+				t.Fatalf("Announced = %v (refused %q) — fixture did not drive the path under test", placed.Announced, placed.SayRefused)
+			}
+			if !reflect.DeepEqual(placed.DealWords, tc.want) {
+				t.Errorf("DealWords = %+v, want %+v", placed.DealWords, tc.want)
+			}
+		})
+		t.Run("counter_pay: "+tc.name, func(t *testing.T) {
+			w := setup(t)
+			ledgerID := placePendingBreadOffer(t, w, 2, time.Now().UTC())
+			cmd, err := HandleCounterPay(HandlerInput{ActorID: "bob", AttemptID: "tk-2", HasNewNews: true,
+				Args: CounterPayArgs{LedgerID: LenientID(ledgerID), Amount: 4, Say: tc.say}})
+			if err != nil {
+				t.Fatalf("HandleCounterPay: %v", err)
+			}
+			res, err := cmd.Fn(w)
+			if err != nil {
+				t.Fatalf("counter_pay: %v", err)
+			}
+			out := res.(payResponseResult)
+			if out.State != sim.PayLedgerStateCountered {
+				t.Fatalf("State = %q, want countered — the counter must stand either way", out.State)
+			}
+			if out.Announced != (len(tc.want.Named) > 0) {
+				t.Fatalf("Announced = %v (refused %q) — fixture did not drive the path under test", out.Announced, out.SayRefused)
+			}
+			if !reflect.DeepEqual(out.DealWords, tc.want) {
+				t.Errorf("DealWords = %+v, want %+v", out.DealWords, tc.want)
 			}
 		})
 	}

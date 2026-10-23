@@ -138,10 +138,12 @@ func goodTerms(w *World, kind ItemKind) []string {
 }
 
 // countedGood is "N <count noun>" for a deal line, falling back to the kind name.
+// Lowercased: a kind with no counting noun falls back to its title-case display
+// label ("Bread"), which reads wrong mid-sentence.
 func countedGood(w *World, kind ItemKind, qty int) string {
 	noun := strings.ReplaceAll(string(kind), "_", " ")
 	if def := w.ItemKinds[kind]; def != nil && def.CountNoun(qty) != "" {
-		noun = def.CountNoun(qty)
+		noun = strings.ToLower(def.CountNoun(qty))
 	}
 	return strconv.Itoa(qty) + " " + noun
 }
