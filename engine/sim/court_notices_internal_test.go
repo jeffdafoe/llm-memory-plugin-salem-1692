@@ -23,7 +23,7 @@ func TestCourtNoticeLines_HearingNoticeNamesThePartiesNotTheComplaint(t *testing
 	fileCase(t, w, "gideon", []string{"Josiah Thorne"}, courtMorning, false)
 	lines := CourtNoticeLines(w, courtMorning)
 	want := []string{
-		"A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon.",
+		"A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon on 3 October.",
 		"Their word will be posted here once given.",
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
@@ -31,6 +31,44 @@ func TestCourtNoticeLines_HearingNoticeNamesThePartiesNotTheComplaint(t *testing
 	}
 	if strings.Contains(strings.Join(lines, " "), "ledger") {
 		t.Fatalf("the complaint leaked onto the board: %q", lines)
+	}
+}
+
+// TestCourtHearingNotice_DateIsTheVillageDate — the board and the ticker name
+// the sitting's date in the village's calendar, not UTC's. An 11 PM sitting in
+// New York falls on the next UTC day, so a UTC date would read a day late.
+func TestCourtHearingNotice_DateIsTheVillageDate(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	w, _ := courtWorld()
+	w.Settings.Location = ny
+	w.Settings.CourtSittingTime = "23:00"
+	// 9 PM on 2 October in New York, 01:00 on 3 October UTC.
+	filed := time.Date(2026, 10, 3, 1, 0, 0, 0, time.UTC)
+	fileCase(t, w, "gideon", []string{"Josiah Thorne"}, filed, false)
+	want := "A matter concerning Josiah Thorne goes before the magistrates in Salem Town at 11 o'clock in the evening on 2 October."
+
+	if lines := CourtNoticeLines(w, filed); len(lines) != 2 || lines[0] != want {
+		t.Fatalf("board lines = %q, want first line %q", lines, want)
+	}
+	docket, _, _ := courtDocketForSnapshot(w, filed)
+	ticker := CourtTickerLines(&Snapshot{CourtDocket: docket, CourtSittingTime: w.Settings.CourtSittingTime})
+	if len(ticker) != 1 || ticker[0].Text != want {
+		t.Fatalf("ticker = %+v, want %q", ticker, want)
+	}
+}
+
+// TestCourtHearingNotice_FiledAfterTheSittingNamesTomorrow — a matter brought
+// after today's sitting is heard the next day, and the notice says so.
+func TestCourtHearingNotice_FiledAfterTheSittingNamesTomorrow(t *testing.T) {
+	w, _ := courtWorld()
+	afternoon := courtMorning.Add(6 * time.Hour)
+	fileCase(t, w, "gideon", []string{"Josiah Thorne"}, afternoon, false)
+	lines := CourtNoticeLines(w, afternoon)
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], " at noon on 4 October.") {
+		t.Fatalf("lines = %q, want the sitting on 4 October", lines)
 	}
 }
 
