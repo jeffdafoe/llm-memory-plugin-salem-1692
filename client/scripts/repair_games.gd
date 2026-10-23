@@ -187,8 +187,8 @@ class Hammer:
     # counted.
     const APPROACH_MIN := 0.35
     const APPROACH_MAX := 0.9
-    const TRUE_TIME := 0.3
-    const HARD_TRUE_TIME := 0.12
+    const TRUE_TIME := 0.45
+    const HARD_TRUE_TIME := 0.2
     const AWAY := 0.3  # seconds it takes to lean over the other way
     const SINK := 0.35
     const GAP_TIME := 0.35  # seconds between one nail going and the next rising
