@@ -52,8 +52,10 @@ func CourtNoticeLines(w *World, now time.Time) []string {
 		return ruled[i].ID < ruled[j].ID
 	})
 	var out []string
+	loc := worldLocation(w)
 	for _, c := range pending {
-		out = append(out, courtHearingNoticeLines(c, w.Settings.CourtSittingTime)...)
+		heard := NextCourtSittingAfter(w.Settings.CourtSittingTime, loc, c.FiledAt)
+		out = append(out, courtHearingNoticeLines(c, w.Settings.CourtSittingTime, heard)...)
 	}
 	for _, c := range ruled {
 		out = append(out, courtRulingNoticeLines(c)...)
@@ -67,9 +69,12 @@ func courtRulingStands(c *CourtCase, now time.Time) bool {
 	return c != nil && c.Status == CourtCaseStatusRuled && c.RuledAt.After(now.AddDate(0, 0, -CourtRulingNoticeDays))
 }
 
-func courtHearingNoticeLines(c *CourtCase, sittingSpec string) []string {
+// courtHearingNoticeLines names the sitting's date as well as its hour: a board
+// line stands for days, so "at noon" alone does not say which noon. heard must
+// be in the village's location (NextCourtSittingAfter returns it so).
+func courtHearingNoticeLines(c *CourtCase, sittingSpec string, heard time.Time) []string {
 	return []string{
-		"A matter concerning " + joinCourtNames(courtPartyNames(c.Parties)) + " goes before the magistrates in Salem Town at " + CourtSittingPhrase(sittingSpec) + ".",
+		"A matter concerning " + joinCourtNames(courtPartyNames(c.Parties)) + " goes before the magistrates in Salem Town at " + CourtSittingPhrase(sittingSpec) + " on " + heard.Format("2 January") + ".",
 		"Their word will be posted here once given.",
 	}
 }
@@ -108,7 +113,7 @@ type CourtTickerLine struct {
 func CourtTickerLines(s *Snapshot) []CourtTickerLine {
 	var out []CourtTickerLine
 	for _, e := range s.CourtDocket {
-		out = append(out, CourtTickerLine{CaseID: e.Case.ID, Text: courtHearingNoticeLines(e.Case, s.CourtSittingTime)[0]})
+		out = append(out, CourtTickerLine{CaseID: e.Case.ID, Text: courtHearingNoticeLines(e.Case, s.CourtSittingTime, e.HeardAt)[0]})
 	}
 	for _, r := range s.CourtRecentRulings {
 		lines := courtRulingNoticeLines(r.Case)

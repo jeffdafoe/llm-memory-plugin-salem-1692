@@ -113,12 +113,12 @@ func _test_world_read_parses_court() -> void:
     t._on_world_state_completed(0, 200, PackedStringArray(), _body({
         "damaged": [{"object_id": "w1", "text": "The windlass at the Well by the Mill is down."}],
         "court": [
-            {"case_id": "case-1", "text": "A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon."},
+            {"case_id": "case-1", "text": "A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon on 24 October."},
             {"case_id": "bad", "text": null},
         ],
     }))
     _check("court line follows the broken things", t._damage_line,
-        "The windlass at the Well by the Mill is down.   ~   A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon.")
+        "The windlass at the Well by the Mill is down.   ~   A matter concerning Josiah Thorne goes before the magistrates in Salem Town at noon on 24 October.")
     t._on_world_state_completed(0, 200, PackedStringArray(), _body({"court": [
         {"case_id": "case-1", "text": "The magistrates in Salem Town have ruled on the matter concerning Josiah Thorne. They found no case. The matter is closed."},
     ]}))
