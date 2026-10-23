@@ -16,10 +16,23 @@ signal inventory_toggle_requested(icon_rect: Rect2)
 signal wake_pressed
 ## Shirt icon clicked (LLM-691) — main.gd opens the character creator.
 signal dress_pressed
-## The "Salem — 1692" title clicked (LLM-777) — main.gd opens the credits scroll.
+## The "Salem 1692" title clicked (LLM-777) — main.gd opens the credits scroll.
 signal title_pressed
 
+const GAME_TITLE := "Salem 1692"
+
+## The game's name. Beside it, once the world read gives a date, the date
+## stacked over the hour and season.
 var title_label: Label = null
+var date_label: Label = null
+var hour_label: Label = null
+var season_icon: Label = null
+var season_label: Label = null
+## The whole title group, the credits link (LLM-777).
+var _title_box: Control = null
+var _title_row: HBoxContainer = null
+var _title_stack: PanelContainer = null
+var _title_when: HBoxContainer = null
 
 var edit_button: Button = null
 var config_button: Button = null
@@ -164,6 +177,13 @@ const ICON_CODEPOINT_VOLUME: int = 0xE1AB
 const ICON_CODEPOINT_VOLUME_X: int = 0xE1AC
 # Lucide "shirt" — the character creator (LLM-691).
 const ICON_CODEPOINT_SHIRT: int = 0xE1CA
+# Lucide season glyphs beside the season's name in the title.
+const SEASON_ICONS := {
+    "winter": 0xE165,  # snowflake
+    "spring": 0xE1EB,  # sprout
+    "summer": 0xE178,  # sun
+    "autumn": 0xE2DE,  # leaf
+}
 
 ## The speaker icon, and the popup it opens: a volume slider and a mute button.
 var sound_icon: Label = null
@@ -200,22 +220,60 @@ func _ready() -> void:
     hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     add_child(hbox)
 
-    # Title
-    var title = Label.new()
-    title.text = title_text("")
-    title.add_theme_color_override("font_color", COLOR_TEXT)
-    title.add_theme_font_override("font", _font)
-    title.add_theme_font_size_override("font_size", OrientationGuard.text_size(22))
-    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    # The title gives way first when the row is crowded (bigger text on a
-    # touch screen), so the purse, needs and buttons never overflow.
-    title.clip_text = true
-    title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    title.mouse_filter = Control.MOUSE_FILTER_STOP
-    title.gui_input.connect(_on_title_input)
-    title.mouse_exited.connect(func(): _set_title_hover(false))
-    title_label = title
-    hbox.add_child(title)
+    # Title: the name, then the date stacked over the hour and season. The box
+    # gives way first when the row is crowded (bigger text on a touch screen),
+    # so the purse, needs and buttons never overflow. It is a plain Control,
+    # not a container, so its minimum width is 0 and the row inside it clips.
+    _title_box = Control.new()
+    _title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _title_box.clip_contents = true
+    _title_box.mouse_filter = Control.MOUSE_FILTER_STOP
+    _title_box.gui_input.connect(_on_title_input)
+    _title_box.mouse_exited.connect(func(): _set_title_hover(false))
+    hbox.add_child(_title_box)
+
+    # Full height, left edge, as wide as its contents.
+    _title_row = HBoxContainer.new()
+    _title_row.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+    _title_row.add_theme_constant_override("separation", 12)
+    _title_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _title_box.add_child(_title_row)
+
+    title_label = _title_part(GAME_TITLE, 26, COLOR_TEXT)
+    _title_row.add_child(title_label)
+
+    # The divider is the stack's left border, so it is only as tall as the
+    # two lines, not the whole bar.
+    _title_stack = PanelContainer.new()
+    var divider := StyleBoxFlat.new()
+    divider.draw_center = false
+    divider.border_width_left = 1
+    divider.border_color = COLOR_BORDER
+    divider.content_margin_left = 12.0
+    _title_stack.add_theme_stylebox_override("panel", divider)
+    _title_stack.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+    _title_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _title_stack.visible = false
+    _title_row.add_child(_title_stack)
+
+    var lines := VBoxContainer.new()
+    lines.add_theme_constant_override("separation", -2)
+    lines.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _title_stack.add_child(lines)
+    date_label = _title_part("", 16, COLOR_TEXT)
+    lines.add_child(date_label)
+
+    _title_when = HBoxContainer.new()
+    _title_when.add_theme_constant_override("separation", 4)
+    _title_when.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    lines.add_child(_title_when)
+    hour_label = _title_part("", 14, COLOR_TEXT_DIM)
+    _title_when.add_child(hour_label)
+    season_icon = _title_part("", 12, COLOR_TEXT_DIM)
+    season_icon.add_theme_font_override("font", _icon_font)
+    _title_when.add_child(season_icon)
+    season_label = _title_part("", 14, COLOR_TEXT_DIM)
+    _title_when.add_child(season_label)
 
     # Right side container
     var right_box = HBoxContainer.new()
@@ -582,9 +640,6 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
 const MONTH_NAMES := ["January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"]
 
-## The seasons the world read can name (sim.SeasonOf).
-const SEASON_NAMES := ["winter", "spring", "summer", "autumn"]
-
 var _title_date: String = ""
 var _title_season: String = ""
 var _title_hour: int = -1
@@ -601,28 +656,40 @@ func set_village_hour(hour: int) -> void:
     _title_hour = hour
     _refresh_title()
 
+## The date over "5pm · <leaf> Autumn". The hour is left off when it is -1
+## (unknown), the season when it is missing or not one the engine names; the
+## whole stack is hidden when the date is missing or malformed, leaving only
+## the game's name.
 func _refresh_title() -> void:
-    if title_label != null:
-        title_label.text = title_text(_title_date, _title_season, _title_hour)
+    if _title_stack == null:
+        return
+    var date := date_line(_title_date)
+    _title_stack.visible = date != ""
+    date_label.text = date
+    var hour := hour_text(_title_hour)
+    var season := season_name(_title_season)
+    hour_label.text = hour + (" ·" if hour != "" and season != "" else "")
+    hour_label.visible = hour != ""
+    season_icon.text = String.chr(SEASON_ICONS[_title_season]) if season != "" else ""
+    season_icon.visible = season != ""
+    season_label.text = season
+    season_label.visible = season != ""
+    _title_when.visible = hour != "" or season != ""
 
-## "Salem — 22 October 1692, 3pm (Autumn)" for a well-formed "YYYY-MM-DD" date.
-## The hour is left off when it is -1 (unknown), the season when it is missing
-## or not one the engine names; the plain "Salem — 1692" when the date is
-## missing or malformed.
-static func title_text(village_date: String, season: String = "", hour: int = -1) -> String:
+## "22 October" for a well-formed "YYYY-MM-DD" date — the year is in the game's
+## name; "" when the date is missing or malformed.
+static func date_line(village_date: String) -> String:
     var parts := village_date.split("-")
     if parts.size() == 3 and parts[0].is_valid_int() and parts[1].is_valid_int() and parts[2].is_valid_int():
         var month := int(parts[1])
         var day := int(parts[2])
         if month >= 1 and month <= 12 and day >= 1 and day <= 31:
-            var text := "Salem — %d %s %s" % [day, MONTH_NAMES[month - 1], parts[0]]
-            var hour_label := hour_text(hour)
-            if hour_label != "":
-                text += ", " + hour_label
-            if season in SEASON_NAMES:
-                text += " (%s)" % season.capitalize()
-            return text
-    return "Salem — 1692"
+            return "%d %s" % [day, MONTH_NAMES[month - 1]]
+    return ""
+
+## "Autumn" for a season the engine names (sim.SeasonOf); "" otherwise.
+static func season_name(season: String) -> String:
+    return season.capitalize() if SEASON_ICONS.has(season) else ""
 
 ## "3pm" for hour 15, "12am" midnight, "12pm" noon; "" for an hour out of 0–23.
 static func hour_text(hour: int) -> String:
@@ -633,23 +700,40 @@ static func hour_text(hour: int) -> String:
         twelve = 12
     return "%d%s" % [twelve, "am" if hour < 12 else "pm"]
 
-## The title label fills the row's spare width, so only the text itself is the
+## The title box fills the row's spare width, so only the title itself is the
 ## credits link: hover, the hand cursor and the click all stop at its end.
 func _on_title_input(event: InputEvent) -> void:
     if not (event is InputEventMouse):
         return
-    var font: Font = title_label.get_theme_font("font")
-    var font_size := title_label.get_theme_font_size("font_size")
-    var text_width := font.get_string_size(title_label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-    var over_text: bool = event.position.x <= text_width
+    var over_text: bool = event.position.x <= _title_width()
     _set_title_hover(over_text)
     if over_text and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         title_pressed.emit()
         get_viewport().set_input_as_handled()
 
+## How far the name and, when shown, the date stack reach into the title box.
+func _title_width() -> float:
+    var last: Control = _title_stack if _title_stack.visible else title_label
+    return _title_row.position.x + last.position.x + last.size.x
+
 func _set_title_hover(on: bool) -> void:
-    title_label.add_theme_color_override("font_color", COLOR_TITLE_HOVER if on else COLOR_TEXT)
-    title_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if on else Control.CURSOR_ARROW
+    var color: Color = COLOR_TITLE_HOVER if on else COLOR_TEXT
+    title_label.add_theme_color_override("font_color", color)
+    date_label.add_theme_color_override("font_color", color)
+    _title_box.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if on else Control.CURSOR_ARROW
+
+## A title label: the village font at a touch-scaled size, no extra line gap,
+## centred in the bar, clicks passing to the title box.
+func _title_part(text: String, font_size: int, color: Color) -> Label:
+    var label := Label.new()
+    label.text = text
+    label.add_theme_color_override("font_color", color)
+    label.add_theme_font_override("font", _font)
+    label.add_theme_font_size_override("font_size", OrientationGuard.text_size(font_size))
+    label.add_theme_constant_override("line_spacing", 0)
+    label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    return label
 
 func _on_dress_icon_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:

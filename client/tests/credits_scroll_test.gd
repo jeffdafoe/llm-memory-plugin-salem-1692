@@ -259,14 +259,28 @@ func _test_title_text_opens_credits() -> void:
     click.position = Vector2(10, 10)
     bar._on_title_input(click)
     _check("a click on the title text opens the credits", pressed[0], 1)
-    _check("the title shows a hand over its text", bar.title_label.mouse_default_cursor_shape, Control.CURSOR_POINTING_HAND)
-    click.position = Vector2(bar.title_label.size.x - 2, 10)
+    _check("the title shows a hand over its text", bar._title_box.mouse_default_cursor_shape, Control.CURSOR_POINTING_HAND)
+    # With a date the stack is part of the link too.
+    bar.set_village_date("1692-10-23", "autumn")
+    bar.set_village_hour(15)
+    await process_frame
+    click.position = Vector2(bar._title_stack.position.x + 4, 10)
+    bar._on_title_input(click)
+    _check("a click on the date opens the credits", pressed[0], 2)
+    click.position = Vector2(bar._title_box.size.x - 2, 10)
     var beside := InputEventMouseMotion.new()
     beside.position = click.position
     bar._on_title_input(beside)
-    _check("no hand in the empty bar beside the title", bar.title_label.mouse_default_cursor_shape, Control.CURSOR_ARROW)
+    _check("no hand in the empty bar beside the title", bar._title_box.mouse_default_cursor_shape, Control.CURSOR_ARROW)
     bar._on_title_input(click)
-    _check("a click beside the title does nothing", pressed[0], 1)
+    _check("a click beside the title does nothing", pressed[0], 2)
+    # The date goes away: the link shrinks back to the name.
+    var stack_x: float = bar._title_stack.position.x + 4
+    bar.set_village_date("", "")
+    await process_frame
+    click.position = Vector2(stack_x, 10)
+    bar._on_title_input(click)
+    _check("no date: a click where the date was does nothing", pressed[0], 2)
     bar.free()
     _done()
 

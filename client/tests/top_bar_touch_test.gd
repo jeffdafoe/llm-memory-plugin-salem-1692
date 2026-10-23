@@ -141,7 +141,10 @@ func _test_touch_row_fits_design_width() -> void:
     _check("touch row fits the 1280 design width", width <= DESIGN_WIDTH, true)
     if width > DESIGN_WIDTH:
         printerr("       touch row min width %.0f" % width)
-    # Crowd the row past what its items need: the title must give way.
+    # Crowd the row past what its items need: the title, with its date stack
+    # showing (LLM-864), must give way.
+    bar.set_village_date("1692-10-23", "autumn")
+    bar.set_village_hour(17)
     bar.edit_button.visible = true
     bar.config_button.visible = true
     await process_frame
