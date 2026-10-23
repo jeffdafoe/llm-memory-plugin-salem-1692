@@ -39,6 +39,18 @@ const REACH := {
 }
 const REACH_FACINGS := ["east", "west"]
 
+## A drinker's face and hands at a well's rim on the kneel (farmer_rig.gd
+## *_kneel, cells 130 / 146 / 162), in body-cell px from the feet, measured
+## from the body sheet: the front of the crouch for each facing. The haul up
+## (pull) takes the same step, so the hauler is at the rim too.
+const KNEEL := {
+    "south": Vector2(0.0, 5.0),
+    "east": Vector2(16.0, -10.0),
+    "west": Vector2(-16.0, -10.0),
+    "north": Vector2(0.0, -18.0),
+}
+const KNEEL_FACINGS := ["south", "east", "west", "north"]
+
 
 ## The facing and drawn step (world px) that land the axe head (or the facing's
 ## point in points) on rect, for a sprite drawn at draw_scale with its feet at

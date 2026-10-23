@@ -961,6 +961,7 @@ func remove_npc_by_id(npc_id: String) -> void:
     var well := str(container.get_meta("well_drink_at", ""))
     if well != "":
         _settle_well_bucket(well)
+        _reaim_well_drinkers(well, null)
     container.queue_free()
     npc_list_changed.emit()
 
@@ -1329,8 +1330,10 @@ func _sync_well_drink(container: Node2D) -> void:
         container.set_meta("well_drink_at", now)
     if was != "":
         _settle_well_bucket(was)
+        _reaim_well_drinkers(was, container)
     if now == "":
         return
+    _reaim_well_drinkers(now, container)
     var bucket = _well_bucket(now)
     if bucket == null or not bucket.raise():
         container.remove_meta("well_haul_until_ms")
@@ -1342,6 +1345,34 @@ func _sync_well_drink(container: Node2D) -> void:
             if is_instance_valid(container) and not container.is_queued_for_deletion() \
                     and int(container.get_meta("well_haul_until_ms", 0)) == until:
                 _apply_activity_animation(container))
+
+## Re-aim everyone else drinking at the well: one who came or went may be the
+## drinker another stops behind (_well_step).
+func _reaim_well_drinkers(well_id: String, except: Node2D) -> void:
+    for npc_id in placed_npcs:
+        var c: Node2D = placed_npcs[npc_id]
+        if is_instance_valid(c) and c != except and str(c.get_meta("well_drink_at", "")) == well_id:
+            _apply_activity_animation(c)
+
+## The drawn step that takes a drinker from their stand in to the well's rim
+## (WorkAim.KNEEL), cut short so they stop a tile behind another drinker at the
+## same well who stands in the way: a queue stays a queue.
+func _well_step(container: Node2D, step: Vector2) -> Vector2:
+    var length := step.length()
+    if length == 0.0:
+        return step
+    var along := step / length
+    var well := str(container.get_meta("well_drink_at", ""))
+    var tile := float(VillageApi.tile_size)
+    for npc_id in placed_npcs:
+        var c: Node2D = placed_npcs[npc_id]
+        if not is_instance_valid(c) or c == container or str(c.get_meta("well_drink_at", "")) != well:
+            continue
+        var to := c.position - container.position
+        var ahead := to.dot(along)
+        if ahead > 0.0 and absf(to.cross(along)) < tile * 0.5:
+            length = minf(length, maxf(ahead - tile, 0.0))
+    return along * length
 
 ## How many are drinking at the well.
 func _well_drinkers(well_id: String) -> int:
@@ -1418,6 +1449,21 @@ func _apply_activity_animation(container: Node2D) -> void:
             container.set_meta("facing", facing)
             play_npc_animation(container, facing, "reach")
             _step_work_sprite(sprite, reach.get("step", Vector2.ZERO))
+            return
+    if (work == "kneel" or work == "pull") and container.has_meta("well_drink_at"):
+        # A drinker's stand can be a tile or two out from the well: haul and
+        # kneel at the rim, the drawn sprite stepped in so the face lands on it.
+        var at := _work_aim(container, sprite, WorkAim.KNEEL, WorkAim.KNEEL_FACINGS)
+        var well: Node2D = placed_objects.get(str(container.get_meta("well_drink_at")), null)
+        if not at.is_empty():
+            facing = str(at["facing"])
+        elif well != null:
+            # Nothing drawn to aim at yet: face the well and kneel where we stand.
+            facing = facing_from_vec(well.position - container.position)
+        if sprite.sprite_frames.has_animation(facing + "_" + work):
+            container.set_meta("facing", facing)
+            play_npc_animation(container, facing, work)
+            _step_work_sprite(sprite, _well_step(container, at.get("step", Vector2.ZERO)))
             return
     if work != "" and work != "chop" and work != "reach" and sprite.sprite_frames.has_animation(facing + "_" + work):
         # Face the worked object, or the rest spot (a break away from one keeps
