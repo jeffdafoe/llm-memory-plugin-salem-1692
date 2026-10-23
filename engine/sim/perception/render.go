@@ -3510,7 +3510,7 @@ func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
 
 // offerLotPointer closes "## Offers awaiting your decision" for a seller who can
 // quote: what a counter cannot do, and the tool that can.
-const offerLotPointer = "A counter changes only the price of the goods offered; it cannot add another good. To sell more than one kind of good together, offer them as one lot with sell instead, listing each good in lines.\n"
+const offerLotPointer = "A counter changes only the price of the goods offered; it cannot add another good. To sell more than one kind of good together, offer them as one lot with sell instead, listing each good in lines — the lot then takes the place of this offer.\n"
 
 // CanOfferLot reports whether the sell tool is advertised to the payload's
 // actor, so a cue may point at it. Mirrors the three gates that strip sell in
@@ -4917,6 +4917,15 @@ func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrant
 	case sim.PayTerminalStateCountered:
 		// Counter terms may be coins, goods (barter), or both (ZBBS-HOME-393).
 		return fmt.Sprintf("%d. %s countered: %s for %s.\n", n, seller, formatOfferPayment(r.CounterAmount, r.CounterPayItems), qty)
+	case sim.PayTerminalStateSupersededByLot:
+		// LLM-863: the seller answered with a lot that carries these goods; the
+		// lot's own cue carries its quote id, so this only says the old offer is
+		// gone and why. Message is the engine-authored lot terms.
+		lot, _ := sanitizeText(r.Message, maxTextBytes)
+		if lot == "" {
+			return fmt.Sprintf("%d. %s set your offer for %s aside and offers you a lot instead.\n", n, seller, qty)
+		}
+		return fmt.Sprintf("%d. %s set your offer for %s aside and offers you a lot instead: %s.\n", n, seller, qty, lot)
 	default:
 		return fmt.Sprintf("%d. Your offer to %s for %s fell through.\n", n, seller, qty)
 	}

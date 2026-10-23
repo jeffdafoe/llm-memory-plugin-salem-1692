@@ -51,8 +51,8 @@ import "time"
 // counter = max(checkpointed, max(IDs across entries)).
 type LedgerID uint64
 
-// PayLedgerState is the lifecycle state of a PayLedgerEntry. Nine-value
-// enum: one non-terminal (pending) plus eight terminal states (no
+// PayLedgerState is the lifecycle state of a PayLedgerEntry. Eleven-value
+// enum: one non-terminal (pending) plus ten terminal states (no
 // transitions out of any terminal). Locked at ledger-substrate-design § 3.
 //
 // No failed_stale: v1's stale-state was concurrency protection (Postgres
@@ -128,9 +128,14 @@ const (
 	// from catalog, consumers left the huddle, co-presence lost between
 	// offer creation and accept. Terminal.
 	PayLedgerStateFailedUnavailable PayLedgerState = "failed_unavailable"
+	// PayLedgerStateSupersededByLot — the seller answered the pending offer
+	// with a lot (sell, lines) carrying its goods, and the lot replaced it
+	// (setAsideOffersCoveredByLot, LLM-863). No goods or coins move; Message
+	// carries the lot's terms for the buyer's line. Terminal.
+	PayLedgerStateSupersededByLot PayLedgerState = "superseded_by_lot"
 )
 
-// PayTerminalState is PayLedgerState minus pending — the eight terminal
+// PayTerminalState is PayLedgerState minus pending — the ten terminal
 // values. Used on the PayWithItemResolved event's TerminalState field
 // so the type signature documents the invariant that the event never
 // carries pending. Same underlying string values as PayLedgerState; the
@@ -147,6 +152,7 @@ const (
 	PayTerminalStateFailedInsufficientStock PayTerminalState = "failed_insufficient_stock"
 	PayTerminalStateFailedInsufficientGoods PayTerminalState = "failed_insufficient_goods"
 	PayTerminalStateFailedUnavailable       PayTerminalState = "failed_unavailable"
+	PayTerminalStateSupersededByLot         PayTerminalState = "superseded_by_lot"
 )
 
 // PayLedgerTTLDefault is the default Time-To-Live for a pending entry

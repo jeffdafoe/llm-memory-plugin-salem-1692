@@ -151,3 +151,15 @@ func TestDealWords_OnlyForWordsThatWentOut(t *testing.T) {
 		})
 	}
 }
+
+// TestSellResult_NamesTheOfferItReplaced: the seller's sell result says which
+// buyer offer the new lot set aside, so it does not go on to answer it.
+func TestSellResult_NamesTheOfferItReplaced(t *testing.T) {
+	sell := &ValidatedCall{Name: "sell", DecodedArgs: SceneQuoteArgs{Amount: 8, ConsumeNow: true}}
+	plain := commitResultContent(sell, sim.SceneQuoteCreateResult{QuoteID: 3, Announced: true})
+	got := commitResultContent(sell, sim.SceneQuoteCreateResult{QuoteID: 3, Announced: true,
+		SetAside: []sim.SetAsideOffer{{LedgerID: 13294, BuyerID: "john", BuyerName: "John Ellis", Goods: "1 fried meat"}}})
+	if want := plain + " Your lot takes the place of John Ellis's offer for 1 fried meat; that offer is set aside."; got != want {
+		t.Errorf("sell result = %q, want %q", got, want)
+	}
+}

@@ -437,3 +437,32 @@ func TestRegisterPayWithItemHandlers_NilWorldPanics(t *testing.T) {
 	}()
 	handlers.RegisterPayWithItemHandlers(nil)
 }
+
+// TestSubscriber_PayWithItemResolved_StampsBuyerOnLotSetAside (LLM-863): Bob's
+// lot of stew and bread sets Alice's stew offer aside. Unlike her own withdraw,
+// she did not drive it, so she gets the PayResolved warrant, carrying the lot's
+// terms for her line.
+func TestSubscriber_PayWithItemResolved_StampsBuyerOnLotSetAside(t *testing.T) {
+	w, stop := buildReactorWorld(t, []reactorActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5, "bread": 5}},
+	})
+	defer stop()
+	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 0, 0, "", time.Now().UTC()))
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.SceneQuoteCreate("bob",
+		[]sim.QuoteLineInput{{ItemName: "stew", Qty: 1}, {ItemName: "bread", Qty: 1}}, 6, true, "Alice", nil, time.Now().UTC())); err != nil {
+		t.Fatalf("SceneQuoteCreate: %v", err)
+	}
+	meta, ok := firstByKind(readWarrants(t, w, "alice"), sim.WarrantKindPayResolved)
+	if !ok {
+		t.Fatal("the buyer was not told her offer was set aside")
+	}
+	reason := meta.Reason.(sim.PayResolvedWarrantReason)
+	if reason.TerminalState != sim.PayTerminalStateSupersededByLot || reason.LedgerID != ledgerID {
+		t.Fatalf("warrant = %+v, want superseded_by_lot for ledger %d", reason, ledgerID)
+	}
+	if reason.Message != "1 stew and 1 bread for 6 coins" {
+		t.Errorf("warrant Message = %q, want the lot's terms", reason.Message)
+	}
+}

@@ -1942,6 +1942,15 @@ func _on_pay_resolved(data: Dictionary) -> void:
             text = "The offer failed — %s is out of stock." % seller_name
         "failed_unavailable":
             text = "The offer failed — %s is unavailable." % item_phrase
+        # LLM-863: the seller answered with a lot that carries these goods; the
+        # message is the lot's terms.
+        "superseded_by_lot":
+            if pc_is_buyer:
+                text = "%s set your offer aside and offers you a lot instead." % seller_name
+            else:
+                text = "Your lot takes the place of %s's offer." % buyer_name
+            if not msg.is_empty():
+                text += " (%s)" % msg
         _:
             text = "The offer ended (%s)." % state
     # Seller's decline note / buyer's withdraw note rides the resolved frame.

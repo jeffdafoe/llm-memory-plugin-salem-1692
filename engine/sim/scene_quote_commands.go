@@ -56,6 +56,9 @@ type QuoteLineInput struct {
 type SceneQuoteCreateResult struct {
 	QuoteID   QuoteID
 	ExpiresAt time.Time
+	// SetAside lists the buyer offers this lot replaced (LLM-863), for the
+	// seller's tool feedback.
+	SetAside []SetAsideOffer
 	// EatHereClamped is true when the seller proposed take-home but the
 	// engine forced eat-here (non-portable consumable, ZBBS-WORK-405 —
 	// the seller-side mirror of the pay_with_item buyer clamp). Carried
@@ -433,9 +436,85 @@ func SceneQuoteCreate(
 				QuoteID:        id,
 				ExpiresAt:      expiresAt,
 				EatHereClamped: eatHereClamped,
+				SetAside:       setAsideOffersCoveredByLot(w, q, at),
 			}, nil
 		},
 	}
+}
+
+// SetAsideOffer is a buyer's pending offer a new lot replaced
+// (setAsideOffersCoveredByLot): who made it and for what, as prose.
+type SetAsideOffer struct {
+	LedgerID  LedgerID
+	BuyerID   ActorID
+	BuyerName string
+	Goods     string
+}
+
+// setAsideOffersCoveredByLot settles, as superseded_by_lot, each pending offer
+// the new lot q replaces. A counter can only re-price, so a seller who wants to
+// sell a buyer more than the buyer asked for answers with a lot (sell, lines) —
+// and the buyer's one-good offer would otherwise stay open for its whole TTL
+// beside it, so the seller could still accept it after the buyer took the lot
+// and charge for the goods twice (the 2026-10-23 Inn exchange, LLM-863).
+//
+// The lot's buyer is its TargetBuyer, else — for a lot offered to the room — the
+// one buyer with offers pending to this seller in the scene; with two or more
+// there is no telling whose offer the lot answers, so none is touched. An offer
+// is covered when the lot carries its good in at least its quantity. Gifts and
+// already-resolved entries are never touched. Runs after SceneQuoteCreated is
+// emitted, so the buyer's lot cue lands before the set-aside line. MUST be
+// called from inside a Command.Fn.
+func setAsideOffersCoveredByLot(w *World, q *SceneQuote, at time.Time) []SetAsideOffer {
+	pendingFrom := func(buyer ActorID) []*PayLedgerEntry {
+		var out []*PayLedgerEntry
+		for _, e := range w.PayLedger {
+			if e == nil || e.State != PayLedgerStatePending || e.IsGift || e.SellerID != q.SellerID || e.SceneID != q.SceneID {
+				continue
+			}
+			if buyer == "" || e.BuyerID == buyer {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	buyer := q.TargetBuyer
+	if buyer == "" {
+		buyers := map[ActorID]bool{}
+		for _, e := range pendingFrom("") {
+			buyers[e.BuyerID] = true
+		}
+		if len(buyers) != 1 {
+			return nil
+		}
+		for b := range buyers {
+			buyer = b
+		}
+	}
+	lotQty := map[ItemKind]int{}
+	for _, ln := range q.Lines {
+		lotQty[ln.ItemKind] += ln.Qty
+	}
+	entries := pendingFrom(buyer)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	var lotParts []string
+	for _, ln := range q.Lines {
+		lotParts = append(lotParts, countedGood(w, ln.ItemKind, ln.Qty))
+	}
+	lot := fmt.Sprintf("%s for %d coins", strings.Join(lotParts, " and "), q.Amount)
+	var out []SetAsideOffer
+	for _, e := range entries {
+		if e.ItemKind == "" || len(e.Lines) > 0 || lotQty[e.ItemKind] < e.Qty {
+			continue
+		}
+		finalizePayLedgerTerminal(w, e, PayTerminalStateSupersededByLot, lot, at)
+		name := ""
+		if a := w.Actors[e.BuyerID]; a != nil {
+			name = a.DisplayName
+		}
+		out = append(out, SetAsideOffer{LedgerID: e.ID, BuyerID: e.BuyerID, BuyerName: name, Goods: countedGood(w, e.ItemKind, e.Qty)})
+	}
+	return out
 }
 
 // resolveSellerScene picks the scene the seller's quote should anchor

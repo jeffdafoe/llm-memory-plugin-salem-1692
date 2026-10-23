@@ -1446,6 +1446,20 @@ func sayEcho(say string, announced bool, sayRefused string) string {
 
 // payResponseSayEcho is sayEcho over whichever of the three pay-response arg
 // types vc carries. Returns "" when the response was wordless.
+// setAsideNote tells the seller which buyer offers the new lot replaced
+// (sim.SetAsideOffer, LLM-863), so it does not go on to answer one of them.
+func setAsideNote(set []sim.SetAsideOffer) string {
+	var b strings.Builder
+	for _, s := range set {
+		who := s.BuyerName
+		if who == "" {
+			who = "the buyer"
+		}
+		fmt.Fprintf(&b, " Your lot takes the place of %s's offer for %s; that offer is set aside.", who, s.Goods)
+	}
+	return b.String()
+}
+
 // dealWordsNote voices sim.DealWords: the goods the spoken line named that the
 // deal does not carry, against what it does. "" when the words and the deal
 // agree. Fact only, no tool named — the pay tools end the turn, so the model
@@ -1739,11 +1753,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					}
 				}
 				return fmt.Sprintf(
-					"[ok] %sMind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
-					said, item, quoteSteer,
+					"[ok] %sMind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s%s",
+					said, item, quoteSteer, setAsideNote(r.SetAside),
 				)
 			}
-			return "[ok] " + said + "Your offer now stands. " + quoteSteer
+			return "[ok] " + said + "Your offer now stands. " + quoteSteer + setAsideNote(r.SetAside)
 		}
 		return "[ok] " + quoteSteer
 	}

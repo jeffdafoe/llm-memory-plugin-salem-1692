@@ -3911,6 +3911,15 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperWeighsOneGoodOfferInCompany,
 	},
 	{
+		name: "buyer_offer_set_aside_for_lot",
+		summary: "The other side of keeper_weighs_one_good_offer_in_company: Hannah Boggs answered John Ellis's offer for " +
+			"1 fried_meat with a lot — fried meat and water for 8 — which set his offer aside (superseded_by_lot, LLM-863). " +
+			"The golden pins his warrant line 'Hannah Boggs set your offer for fried_meat aside and offers you a lot instead: " +
+			"1 fried meat and 1 flask of water for 8 coins' beside the lot itself under the offers put to him, with its quote " +
+			"id — so he takes the lot, rather than re-offering for the meat alone or waiting on an offer that is gone.",
+		build: buyerOfferSetAsideForLot,
+	},
+	{
 		name: "employer_with_worker_on_job",
 		summary: "An employer (John Ellis the tavernkeeper) stands with a worker (Silence Walker) who is mid-contract " +
 			"for him — a Working labor offer, ~90 minutes left (the live LLM-202 case). The golden pins the new " +
@@ -6569,6 +6578,36 @@ func keeperWeighsOneGoodOfferInCompany() (*sim.Snapshot, sim.ActorID, []sim.Warr
 		},
 	}
 	return snap, hannahID, nil
+}
+
+// buyerOfferSetAsideForLot is John Ellis's turn after Hannah Boggs's lot set his
+// fried-meat offer aside: the targeted lot stands, the old offer is settled as
+// superseded_by_lot, and the PayResolved warrant carries the lot's terms.
+func buyerOfferSetAsideForLot() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, hannahID, _ := keeperWeighsOneGoodOfferInCompany()
+	const johnID = sim.ActorID("john")
+	offer := snap.PayLedger[13294]
+	offer.State = sim.PayLedgerStateSupersededByLot
+	offer.Message = "1 fried meat and 1 flask of water for 8 coins"
+	snap.Quotes[3] = &sim.SceneQuote{
+		ID: 3, SellerID: hannahID, TargetBuyer: johnID,
+		Lines:      []sim.QuoteLine{{ItemKind: "fried_meat", Qty: 1}, {ItemKind: "water", Qty: 1}},
+		Amount:     8,
+		ConsumeNow: true,
+		State:      sim.SceneQuoteStateActive,
+	}
+	snap.Actors[johnID].Acquaintances = map[string]sim.Acquaintance{"Hannah Boggs": {}}
+	snap.Actors[johnID].Needs = map[sim.NeedKey]int{"hunger": 12, "thirst": 12}
+	warrants := []sim.WarrantMeta{{
+		TriggerActorID: hannahID,
+		SourceActorID:  hannahID,
+		Reason: sim.PayResolvedWarrantReason{
+			LedgerID: 13294, Seller: hannahID, ItemKind: "fried_meat", Qty: 1, Amount: 5,
+			TerminalState: sim.PayTerminalStateSupersededByLot,
+			Message:       "1 fried meat and 1 flask of water for 8 coins",
+		},
+	}}
+	return snap, johnID, warrants
 }
 
 // sellerWithTakenQuoteAtPost is the LLM-189 perception regression fixture: a
