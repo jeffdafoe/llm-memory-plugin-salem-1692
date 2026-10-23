@@ -252,6 +252,10 @@ var (
 	CropStageStateAtPct = cropStageState
 	ScaledRegrowPeriod  = scaledRegrowPeriod
 
+	// The LLM-849 season art pick, for the month × tier × asset table.
+	SeasonLookChain = seasonLookChain
+	SeasonState     = seasonState
+
 	// CropStageState is CropStageStateAtPct with no regrow scaling, the shape
 	// the LLM-576 tests were written against.
 	CropStageState = func(asset *Asset, row *ObjectRefresh, hasStock bool, now time.Time) string {
