@@ -709,6 +709,8 @@ func _build_ui() -> void:
     interior_panel_layer.bed_tapped.connect(_on_interior_bed_tapped)
     if talk_panel_layer != null and talk_panel_layer.has_signal("vacant_rooms_changed"):
         talk_panel_layer.vacant_rooms_changed.connect(interior_panel_layer.set_vacant_rooms)
+    if talk_panel_layer != null and talk_panel_layer.has_signal("my_room_changed"):
+        talk_panel_layer.my_room_changed.connect(interior_panel_layer.set_my_room)
     world.room_square_changed.connect(func(id: String):
         # The character went to another room of the building (LLM-801): the
         # window follows them.

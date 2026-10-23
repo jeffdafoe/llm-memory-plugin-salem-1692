@@ -166,6 +166,7 @@ func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 		return false
 	}
 	abandonSourceActivity(w, pc, now)
+	fromRoom := pc.InsideRoomID
 	pc.InsideRoomID = roomID
 	wakeAt := now.Add(DefaultPCSleepMaxDurationHours * time.Hour)
 	pc.SleepingUntil = &wakeAt
@@ -174,6 +175,7 @@ func executePCSleep(w *World, pc *Actor, roomID RoomID, now time.Time) bool {
 	pc.State = StateSleeping
 	bedRoomSquare(w, pc)
 	w.emit(&PCSleepStarted{ActorID: pc.ID, WakeAt: wakeAt, At: now})
+	tracePCRoomChange(w, pc, fromRoom, pcRoomBedDown, now)
 	return true
 }
 
@@ -251,6 +253,7 @@ func SleepPC(actorID ActorID, now time.Time) Command {
 				return PCSleepResult{}, ErrPCCannotSleepHere
 			}
 			executePCSleep(w, pc, room, now)
+			tracePCSlept(w, pc, pcSleptBedTap, now)
 			return PCSleepResult{Bedded: true, WakeAt: *pc.SleepingUntil}, nil
 		},
 	}
@@ -268,12 +271,15 @@ func WakePC(actorID ActorID, now time.Time) Command {
 				return false, nil
 			}
 			fromRoom := pc.InsideRoomID
+			stale := PCPresenceStale(pc.LastPCSeenAt, now, PCPresenceStaleAfter(w))
 			// LLM-14: a player-driven wake drops the private-room scope itself
 			// (no morning-descent runs for "manual"/"input"), so an awake PC in
 			// the inn is public-scoped rather than stuck addressing its empty
 			// bedroom — unless the bedroom is one they can be in awake (LLM-801).
 			pcWakeRoom(w, pc, now)
 			wakePCActor(w, pc)
+			tracePCRoomChange(w, pc, fromRoom, pcRoomWake, now)
+			tracePCWoke(w, pc, pcWokeManual, fromRoom, stale, now)
 			w.emit(&PCSleepEnded{ActorID: actorID, Reason: "manual", FromRoomID: fromRoom, At: now})
 			return true, nil
 		},
@@ -296,6 +302,7 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 	if pc == nil || pc.Kind != KindPC {
 		return
 	}
+	staleBefore := PCPresenceStale(pc.LastPCSeenAt, now, PCPresenceStaleAfter(w))
 	stamp := now
 	pc.LastPCInputAt = &stamp
 	pc.LastPCSeenAt = &stamp
@@ -310,6 +317,8 @@ func TouchPCInput(w *World, actorID ActorID, now time.Time) {
 		fromRoom := pc.InsideRoomID
 		pcWakeRoom(w, pc, now) // LLM-14 / LLM-801: see WakePC
 		wakePCActor(w, pc)
+		tracePCRoomChange(w, pc, fromRoom, pcRoomWake, now)
+		tracePCWoke(w, pc, pcWokeInput, fromRoom, staleBefore, now)
 		w.emit(&PCSleepEnded{ActorID: actorID, Reason: "input", FromRoomID: fromRoom, At: now})
 	}
 }
@@ -362,8 +371,8 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 				// (checkout / movedOut / the 12h cap) still fire.
 				// LLM-798: rested means down to the rest floor — 0 in a bed, higher
 				// in a tent, where the player wakes stiff.
-				rested := a.Needs["tiredness"] <= pcRestFloor(w, a) &&
-					!PCPresenceStale(a.LastPCSeenAt, now, PCPresenceStaleAfter(w))
+				stale := PCPresenceStale(a.LastPCSeenAt, now, PCPresenceStaleAfter(w))
+				rested := a.Needs["tiredness"] <= pcRestFloor(w, a) && !stale
 				capped := !a.SleepingUntil.After(now)
 				checkedOut := !canSleepHere
 				// Defensive: a sleeping PC's InsideRoomID is its granted bedroom.
@@ -377,14 +386,23 @@ func WakeExpiredPCSleepers(now time.Time) Command {
 				// FromRoomID. Checkout keeps it for the eviction sweep. A PC who
 				// slept in their own room upstairs at the Inn wakes there and stays
 				// (LLM-801) — not one somehow moved out of it.
+				// The trace splits the wire's "auto" into the condition that fired.
+				reason := pcWokeRested
 				switch {
 				case checkedOut:
+					reason = pcWokeCheckout
 				case movedOut:
 					a.InsideRoomID = 0
+					reason = pcWokeMovedOut
 				default:
 					pcWakeRoom(w, a, now)
+					if capped {
+						reason = pcWokeCap
+					}
 				}
 				wakePCActor(w, a)
+				tracePCRoomChange(w, a, fromRoom, pcRoomWake, now)
+				tracePCWoke(w, a, reason, fromRoom, stale, now)
 				w.emit(&PCSleepEnded{ActorID: id, Reason: "auto", FromRoomID: fromRoom, At: now})
 				woken++
 			}
@@ -445,6 +463,7 @@ func AutoBedIdleLodgerPCs(now time.Time) Command {
 					continue // no active grant for a private bedroom here
 				}
 				if executePCSleep(w, a, room, now) {
+					tracePCSlept(w, a, pcSleptIdle, now)
 					bedded++
 				}
 			}
@@ -487,6 +506,7 @@ func AutoBedOfflineLodgerPCs(now time.Time) Command {
 					continue // no active grant for a private bedroom here
 				}
 				if executePCSleep(w, a, room, now) {
+					tracePCSlept(w, a, pcSleptOffline, now)
 					bedded++
 				}
 			}
@@ -515,6 +535,12 @@ func runPCSleepTick(ctx context.Context, w *World, now time.Time) {
 	if _, err := w.SendContext(ctx, AutoBedOfflineLodgerPCs(now)); err != nil {
 		if ctx.Err() == nil {
 			log.Printf("sim/pc_sleep: PC offline auto-bed sweep failed: %v", err)
+		}
+	}
+	// LLM-847: last, so a room change any sweep above recorded is not caught twice.
+	if _, err := w.SendContext(ctx, TracePCRooms(now)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/pc_sleep: PC room trace sweep failed: %v", err)
 		}
 	}
 }

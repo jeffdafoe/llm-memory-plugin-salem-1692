@@ -251,6 +251,8 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 					fromRoom := a.InsideRoomID
 					pcWakeRoom(w, a, now) // LLM-14, LLM-801: awake in a bedroom only one the room window draws
 					wakePCActor(w, a)
+					tracePCRoomChange(w, a, fromRoom, pcRoomWake, now)
+					tracePCWoke(w, a, pcWokeReconnect, fromRoom, true, now)
 					w.emit(&PCSleepEnded{ActorID: a.ID, Reason: "reconnect", FromRoomID: fromRoom, At: now})
 				}
 				a.LastPCSeenAt = &now

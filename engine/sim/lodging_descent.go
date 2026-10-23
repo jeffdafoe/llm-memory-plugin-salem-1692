@@ -63,7 +63,9 @@ func handleLodgingMorningDescent(w *World, evt Event) {
 	if text == "" {
 		return
 	}
+	fromRoom := actor.InsideRoomID
 	setActorRoom(w, actor, common)
+	tracePCRoomChange(w, actor, fromRoom, pcRoomMorningDescent, e.At)
 	w.emit(&PCRelocatedToCommon{
 		ActorID:     e.ActorID,
 		StructureID: room.StructureID,

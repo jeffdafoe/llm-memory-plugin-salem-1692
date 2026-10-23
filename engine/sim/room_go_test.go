@@ -135,10 +135,10 @@ func lodgerGoesUpstairsAndIntoTheirRoom(t *testing.T, sid StructureID) {
 		t.Errorf("the frame says room %q square %v", last.Room, last.Square)
 	}
 
-	// Doors that are not theirs.
+	// Doors that are not theirs — each says why, and which door is (LLM-847).
 	for _, c := range []struct{ to, line string }{
-		{"bedroom_3", roomRefusedLet},
-		{"bedroom_1", roomRefusedNotYours},
+		{"bedroom_3", "That room is let to another guest. Yours is number 2."},
+		{"bedroom_1", "That room is not yours. Yours is number 2."},
 		{"keeper_quarters", roomRefusedKeeper},
 	} {
 		if _, err := goRoom(t, w, "jeff", c.to, now); refusedLine(err) != c.line {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/roomlayout"
@@ -34,6 +35,8 @@ const (
 	roomRefusedLet      = "That room is let to another guest."
 	roomRefusedNotYours = "That room is not yours. Ask the keeper for a room."
 	roomRefusedKeeper   = "That is the keeper's own room."
+	// For a guest who holds another room here (LLM-847, roomRefusedLineFor).
+	roomRefusedNotYoursHeld = "That room is not yours."
 )
 
 // RoomGoResult answers MovePCToRoom: the room the player is in now ("" for the
@@ -72,7 +75,7 @@ func MovePCToRoom(actorID ActorID, to string, now time.Time) Command {
 					return nil, ErrRoomSquareRefused
 				}
 				if !canEnterRoom(w, a, rm.ID, now) {
-					return nil, &RoomRefusedError{Line: roomRefusedLine(w, rm, now)}
+					return nil, &RoomRefusedError{Line: roomRefusedLineFor(w, a, rm, now)}
 				}
 				target, name = rm.ID, rm.Name
 			}
@@ -86,7 +89,9 @@ func MovePCToRoom(actorID ActorID, to string, now time.Time) Command {
 			if a.CurrentHuddleID != "" {
 				leaveCurrentHuddle(w, a, now)
 			}
+			fromRoom := a.InsideRoomID
 			a.InsideRoomID = target
+			tracePCRoomChange(w, a, fromRoom, pcRoomGoRoom, now)
 			back := from
 			if back == "" {
 				back = roomlayout.CommonRoom
@@ -120,6 +125,36 @@ func roomRefusedLine(w *World, rm *Room, now time.Time) string {
 		return roomRefusedNotYours
 	}
 	return ErrRoomSquareRefused.Error()
+}
+
+// roomRefusedLineFor is roomRefusedLine for a player who may hold a room here
+// themselves (LLM-847): a guest tapping a bedroom door that is not theirs keeps
+// the reason and is told which one is — "That room is let to another guest.
+// Yours is number 1." — by the number plate the halls carry over each guest
+// door, the N of "bedroom_N". A vacant room's "Ask the keeper for a room" is
+// dropped for them: they have one. The keeper's door and the stairs keep their
+// own lines.
+func roomRefusedLineFor(w *World, a *Actor, rm *Room, now time.Time) string {
+	line := roomRefusedLine(w, rm, now)
+	if rm.Kind != RoomKindPrivate {
+		return line
+	}
+	own, ok := lodgerRoomAt(w, a, rm.StructureID, now)
+	if !ok || own == rm.ID {
+		return line
+	}
+	reason := roomRefusedLet
+	if line != roomRefusedLet {
+		reason = roomRefusedNotYoursHeld
+	}
+	ownRoom := findRoom(w, own)
+	if ownRoom == nil {
+		return reason
+	}
+	if n, found := strings.CutPrefix(ownRoom.Name, "bedroom_"); found && n != "" {
+		return reason + " Yours is number " + n + "."
+	}
+	return reason
 }
 
 // roomHeld reports whether anyone holds a live paid grant on the room.
@@ -156,6 +191,32 @@ func VacantRooms(snap *Snapshot, structureID StructureID) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// HeldRoomName names the bedroom of the structure the actor holds a live paid
+// grant on, "" when none — the door the client points out upstairs (LLM-847).
+// The lowest room id wins on the can't-normally-happen second grant, as
+// lodgerRoomAt does. Read over a published snapshot.
+func HeldRoomName(snap *Snapshot, a *ActorSnapshot, structureID StructureID) string {
+	st := snap.Structures[structureID]
+	if st == nil || a == nil {
+		return ""
+	}
+	name := ""
+	best := RoomID(0)
+	for _, rm := range st.Rooms {
+		if rm == nil || rm.Kind != RoomKindPrivate {
+			continue
+		}
+		ra := a.RoomAccess[RoomAccessKey{RoomID: rm.ID, Source: AccessSourceLedger}]
+		if !IsActiveLedgerGrant(ra, snap.PublishedAt) {
+			continue
+		}
+		if best == 0 || rm.ID < best {
+			best, name = rm.ID, rm.Name
+		}
+	}
+	return name
 }
 
 // IsRoomRefused reports whether err is a refused door or stair, and its line.

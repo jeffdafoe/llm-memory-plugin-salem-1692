@@ -285,6 +285,7 @@ func EvictExpiredOccupants(now time.Time) Command {
 				common := commonRoomForStructure(w, room.StructureID)
 				fromRoom := actor.InsideRoomID
 				setActorRoom(w, actor, common)
+				tracePCRoomChange(w, actor, fromRoom, pcRoomCheckout, now)
 				text := w.pickLodgingNarration(LodgingReasonCheckout)
 				evicted = append(evicted, EvictedOccupant{
 					ActorID:     actorID,

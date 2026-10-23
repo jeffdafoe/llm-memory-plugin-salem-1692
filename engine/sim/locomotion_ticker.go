@@ -1110,11 +1110,14 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	// room ref is the room/structure mismatch that validateActorStructureRefs
 	// treats as substrate corruption and hard-fails the next load on.
 	if actor.InsideRoomID != 0 {
+		fromRoom := actor.InsideRoomID
 		if structureID == "" {
 			actor.InsideRoomID = 0
 		} else if room := findRoom(w, actor.InsideRoomID); room == nil || room.StructureID != structureID {
 			actor.InsideRoomID = 0
 		}
+		// LLM-847: no caller passes a clock here, so the row takes the wall clock.
+		tracePCRoomChange(w, actor, fromRoom, pcRoomStructureChange, time.Now().UTC())
 	}
 
 	// Occupancy: the headcount of both the structure left and the one entered
