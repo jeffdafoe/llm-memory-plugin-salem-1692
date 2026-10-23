@@ -6139,14 +6139,16 @@ func isSolicitableEmployer(snap *sim.Snapshot, subjectID sim.ActorID, subject *s
 // inside an owner-only home that is theirs (they live there or own it), and a
 // member of their conversation stands outdoors at its door (sim.AtDoorOf — the
 // knock's stopping place) and is not of the household. Every clause mirrors
-// sim.LetIn, so a named visitor is one let_in accepts. Sorted by display name.
+// sim.LetIn, so a named visitor is one let_in accepts. A market stall's
+// customer at the loiter pin is at the counter, not the door. Sorted by display
+// name.
 func buildAtYourDoor(snap *sim.Snapshot, subjectID sim.ActorID, subject *sim.ActorSnapshot, surr SurroundingsView) []sim.ActorID {
 	if snap == nil || subject == nil || subject.InsideStructureID == "" {
 		return nil
 	}
 	sid := subject.InsideStructureID
 	vobj := snap.VillageObjects[sim.VillageObjectID(sid)]
-	if vobj == nil || vobj.EntryPolicy != sim.EntryPolicyOwner {
+	if vobj == nil || vobj.EntryPolicy != sim.EntryPolicyOwner || vobj.HasTag(sim.TagMarketStall) {
 		return nil
 	}
 	if subject.HomeStructureID != sid && vobj.OwnerActorID != subjectID {

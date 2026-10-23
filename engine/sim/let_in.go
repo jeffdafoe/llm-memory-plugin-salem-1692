@@ -47,15 +47,20 @@ func guestPassAt(w *World, actorID ActorID, structureID StructureID, now time.Ti
 
 // mayLetIn reports whether host may let people into structureID: they are
 // inside it, and it is their home or theirs to own. Staff, lodgers, hired
-// hands and guests may come and go but not open the door to others.
+// hands and guests may come and go but not open the door to others. A market
+// stall has no door to open: its customer is served across the counter, outside
+// (LLM-793, mustKnockAt).
 func mayLetIn(w *World, host *Actor, structureID StructureID) bool {
 	if host == nil || structureID == "" || host.InsideStructureID != structureID {
+		return false
+	}
+	vobj, _, ok := villageObjectForStructure(w, structureID)
+	if ok && vobj.HasTag(TagMarketStall) {
 		return false
 	}
 	if host.HomeStructureID == structureID {
 		return true
 	}
-	vobj, _, ok := villageObjectForStructure(w, structureID)
 	return ok && vobj.OwnerActorID != "" && vobj.OwnerActorID == host.ID
 }
 

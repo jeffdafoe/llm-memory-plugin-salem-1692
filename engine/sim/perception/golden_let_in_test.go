@@ -69,6 +69,33 @@ func knockAtHomeScenario(inside bool) (*sim.Snapshot, sim.ActorID, []sim.Warrant
 	return snap, letInHostID, nil
 }
 
+// customerAtStallCounterScenario: the same fixture as a market stall — Silence
+// keeps it (owns it, works it, lives elsewhere), Jefferey stands at its loiter
+// pin in her conversation: a customer at the counter (LLM-384), not a knocker.
+func customerAtStallCounterScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id, w := knockAtHomeScenario(false)
+	stall := snap.VillageObjects[sim.VillageObjectID(letInHomeID)]
+	stall.DisplayName = "Walker Stall"
+	stall.OwnerActorID = letInHostID
+	stall.Tags = []string{"business", "shop", sim.TagMarketStall}
+	snap.Structures[letInHomeID].DisplayName = "Walker Stall"
+	host := snap.Actors[letInHostID]
+	host.HomeStructureID = "walker-cottage"
+	host.WorkStructureID = letInHomeID
+	return snap, id, w
+}
+
+func init() {
+	perceptionScenarios = append(perceptionScenarios, perceptionScenario{
+		name: "stall_keeper_with_customer_at_counter",
+		summary: "LLM-20/793: Silence keeps a market stall and Jefferey stands at its loiter pin in her conversation. " +
+			"Live, every stall keeper read such a customer as '(at your door, outside)' and let them in with let_in, " +
+			"which put the player inside the stall and shut the stall window. The golden pins no door note and no " +
+			"let_in cue. Property guard: TestLetInCueAndDoorstep.",
+		build: customerAtStallCounterScenario,
+	})
+}
+
 // TestLetInCueAndDoorstep pins the property across the two shapes: someone at
 // the door ⇒ the outside note, the door cue and AtYourDoor (the let_in gate);
 // stepped inside ⇒ none of them.
@@ -106,5 +133,21 @@ func TestLetInCueAndDoorstep(t *testing.T) {
 	snap.Actors[letInHostID].HomeStructureID = "elsewhere"
 	if p = Build(snap, id, w); len(p.AtYourDoor) != 0 {
 		t.Errorf("not the subject's home: AtYourDoor = %v, want none", p.AtYourDoor)
+	}
+	// A market stall: the customer at the loiter pin is at the counter, and
+	// there is no door to open for them — even for a keeper who also lives there.
+	snap, id, w = customerAtStallCounterScenario()
+	p = Build(snap, id, w)
+	if len(p.AtYourDoor) != 0 {
+		t.Errorf("customer at a stall: AtYourDoor = %v, want none", p.AtYourDoor)
+	}
+	got = combinedPrompt(Render(p, DefaultRenderConfig()))
+	if strings.Contains(got, "at your door") || strings.Contains(got, "let_in") {
+		t.Error("customer at a stall: the prompt puts them at the door")
+	}
+	snap, id, w = customerAtStallCounterScenario()
+	snap.Actors[letInHostID].HomeStructureID = letInHomeID
+	if p = Build(snap, id, w); len(p.AtYourDoor) != 0 {
+		t.Errorf("customer at a stall its keeper lives in: AtYourDoor = %v, want none", p.AtYourDoor)
 	}
 }

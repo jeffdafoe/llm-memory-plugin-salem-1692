@@ -160,6 +160,28 @@ func TestLetInRefusals(t *testing.T) {
 	}
 }
 
+// A market stall has no door to open (LLM-793): its customer is served across
+// the counter, so even one who lives in it lets nobody in. The same shape as
+// TestLetInStepsTheKnockerInside, the cottage tagged a stall.
+func TestLetInRefusedAtAMarketStall(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	doorInside(t, w)
+	mutate(t, w, func(world *sim.World) {
+		world.VillageObjects["cottage"].Tags = append(world.VillageObjects["cottage"].Tags, sim.TagMarketStall)
+	})
+	setInside(t, w, "spouse", "cottage")
+	knockAt(t, w, "stranger", now)
+	refusedLetIn(t, w, "resident at a stall", "spouse", "stranger", now)
+	if got := insideOf(t, w, "stranger"); got != "" {
+		t.Errorf("the customer is inside %q, want outside at the counter", got)
+	}
+	if hasPass(t, w, "stranger") {
+		t.Error("a refusal at a stall left a pass behind")
+	}
+}
+
 // Two at the door sharing a name: which one is meant cannot be told, so
 // nobody is let in.
 func TestLetInTwoAtTheDoorOfOneName(t *testing.T) {
