@@ -1008,6 +1008,14 @@ type WorldSettings struct {
 	// to sit idle for an hour.
 	PCAudienceIdleAfter time.Duration
 
+	// WinterRegrowFactors is the winter regrow percentage per gather item
+	// (LLM-848, winter_regrow.go) — 200 doubles the regrow period while the village
+	// date is in winter. Items not listed regrow at their stored period all year.
+	// Seeded DefaultWinterRegrowFactors when the winter_regrow_factors key is
+	// absent. Replaced wholesale on a live write, never mutated in place: snapshots
+	// share this map.
+	WinterRegrowFactors map[ItemKind]int
+
 	// SettingWarnings records settings that were out of range at load and clamped
 	// to a safe bound (LLM-439). Populated by the pg settings loader — today the
 	// cold rate knobs, each of which must be >= 0 (a negative recovery rate would

@@ -11,8 +11,8 @@ import (
 // calendar date is the real local date in WorldSettings.Location, carried back
 // to VillageYear. The messenger news (messenger_news.go) and the court's date
 // reading (court/tools.go recordWindow) use the same date. The season follows
-// from it by whole months — winter is December to February — so it needs no
-// state of its own and no ticker.
+// from it by whole months — winter is December to March, the months the village's
+// trees stand bare (LLM-848) — so it needs no state of its own and no ticker.
 
 // VillageYear is the year the village believes it is.
 const VillageYear = 1692
@@ -31,9 +31,9 @@ const (
 // range (the zero month of a hand-built context included).
 func SeasonOf(m time.Month) Season {
 	switch m {
-	case time.December, time.January, time.February:
+	case time.December, time.January, time.February, time.March:
 		return SeasonWinter
-	case time.March, time.April, time.May:
+	case time.April, time.May:
 		return SeasonSpring
 	case time.June, time.July, time.August:
 		return SeasonSummer

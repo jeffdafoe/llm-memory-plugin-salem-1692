@@ -130,7 +130,7 @@ func regenLivestockYield(y *LivestockYield, now time.Time) bool {
 	}
 	r := &y.Row
 	wasBelowMax := r.AvailableQuantity != nil && r.MaxQuantity != nil && *r.AvailableQuantity < *r.MaxQuantity
-	changed := regenRefreshRow(r, now)
+	changed := regenRefreshRow(r, now, 100)
 	if changed && wasBelowMax && y.FedBonus > 0 && *r.AvailableQuantity >= *r.MaxQuantity {
 		next := *r.AvailableQuantity + y.FedBonus
 		r.AvailableQuantity = &next

@@ -57,6 +57,9 @@ func seedRoundTripSettings(t *testing.T, spec SettingSpec) WorldSettings {
 		if spec.Key == "world_timezone" {
 			seed = "America/New_York"
 		}
+		if spec.Key == "winter_regrow_factors" {
+			seed = "sage=150,wheat=300"
+		}
 	default:
 		t.Fatalf("unhandled setting kind %q", spec.Kind)
 	}
