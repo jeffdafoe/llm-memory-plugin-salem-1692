@@ -45,7 +45,7 @@ func _run_once() -> void:
     _check_test_list()
     for t in TESTS:
         _current = t
-        call(t)
+        await call(t)
     for t in TESTS:
         _check("harness — %s ran to completion" % t, _completed.has(t), true)
     _world.free()
@@ -161,8 +161,13 @@ func _test_bucket_places() -> void:
     var art: Sprite2D = well.get_child(0)
     _check("rim place in the well's coordinates", bucket._at(WellBucket.RIM), art.position + WellBucket.RIM * 2.0)
     var bare := Node2D.new()
+    root.add_child(bare)
     _check("no art: no bucket", WellBucket.of(bare, func() -> int: return 1), null)
     bare.free()
+    var off := _well()
+    root.remove_child(off)
+    _check("well not on the map: no bucket", WellBucket.of(off, func() -> int: return 1), null)
+    off.free()
     well.free()
     _done()
 
@@ -206,6 +211,15 @@ func _test_check_drinkers() -> void:
     count[0] = 0
     bucket.check_drinkers()
     _check("nobody: goes down", bucket.state, WellBucket.State.SINKING)
+
+    # The bucket's own Timer, unprompted: a drinker who vanishes without a clear
+    # (nothing calls check_drinkers) still lets the bucket down.
+    count[0] = 1
+    bucket.raise()
+    _finish(bucket)
+    count[0] = 0
+    await create_timer(WellBucket.CHECK * 2.0 + 0.2).timeout
+    _check("timer: nobody left, goes down unprompted", bucket.state != WellBucket.State.UP, true)
     well.free()
     _done()
 

@@ -1322,7 +1322,8 @@ func _sync_well_drink(container: Node2D) -> void:
     container.set_meta("well_haul_until_ms", until)
     if is_inside_tree():
         get_tree().create_timer(WellBucket.HAUL).timeout.connect(func() -> void:
-            if is_instance_valid(container) and int(container.get_meta("well_haul_until_ms", 0)) == until:
+            if is_instance_valid(container) and not container.is_queued_for_deletion() \
+                    and int(container.get_meta("well_haul_until_ms", 0)) == until:
                 _apply_activity_animation(container))
 
 ## How many are drinking at the well.
@@ -1353,7 +1354,7 @@ func _well_bucket(well_id: String):
     var bucket = WellBucket.of(well, _well_drinkers.bind(well_id))
     if bucket != null and made:
         get_or_load_npc_sheet(WellBucket.SHEET, func(tex: Texture2D) -> void:
-            if is_instance_valid(bucket):
+            if is_instance_valid(bucket) and not bucket.is_queued_for_deletion():
                 bucket.set_sheet(tex))
     return bucket
 

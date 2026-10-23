@@ -48,11 +48,14 @@ static func is_well(node: Node2D) -> bool:
 
 
 ## The bucket of well, made the first time it is asked for. null when the well
-## has no art to stand the bucket on.
+## has no art to stand the bucket on, or is not on the map (its tweens and its
+## checks run on the tree).
 static func of(well: Node2D, counter: Callable) -> Node:
     var have := well.get_node_or_null("WellBucket")
     if have != null:
         return have
+    if not well.is_inside_tree():
+        return null
     var art: Node2D = null
     for child in well.get_children():
         if child is Sprite2D or child is AnimatedSprite2D:
@@ -131,8 +134,6 @@ func _new_tween() -> void:
 
 
 func _start_checks() -> void:
-    if not is_inside_tree():
-        return
     if _check == null:
         _check = Timer.new()
         _check.wait_time = CHECK
