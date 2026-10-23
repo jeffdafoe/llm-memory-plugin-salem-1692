@@ -34,6 +34,9 @@ var _season_wang_cache: Dictionary = {}
 # Paths being fetched: every world read (reconnect, the date change) calls
 # set_season again, and must not stack a second download of the same sheet.
 var _season_wang_pending: Dictionary = {}
+# HTTPRequest waits forever by default. A stalled fetch must end, or its path
+# stays pending and no later world read can retry it.
+const SEASON_WANG_TIMEOUT_SEC: float = 30.0
 
 # Water sparkle overlay — 3 rows x 4 columns = 12 total frames, 600ms each.
 # Each tile cycles through all 12 frames with a per-tile offset.
@@ -88,6 +91,7 @@ func set_season(season: String) -> void:
     _season_wang_pending[path] = true
     var http := HTTPRequest.new()
     http.accept_gzip = false
+    http.timeout = SEASON_WANG_TIMEOUT_SEC
     add_child(http)
     http.request_completed.connect(_on_season_wang_downloaded.bind(http, path))
     if http.request(Catalog.api_base + path) != OK:
