@@ -6,9 +6,11 @@ extends Sprite2D
 ## ALPHA_MIN, and pokes in again.
 ##
 ## Make one with on() for the middle of the box of what it points at (a room
-## spot's tap rect, a map object's rect, a Control's rect), or with at() for an
-## exact point, in the coordinates of the node it is added to. art_scale draws it
-## bigger; the poke stays whole pixels of the art.
+## spot's tap rect, a map object's rect), or with at() for an exact point. The
+## box or point must already be in the coordinates of the node the pointer is
+## added to: neither converts. A Control's global rect, or one from another
+## CanvasLayer, needs converting first. art_scale draws it bigger; the poke stays
+## whole pixels of the art.
 
 const ART := "/tilesets/tiny-swords/ui/pointer.png"
 const PERIOD := 1.0

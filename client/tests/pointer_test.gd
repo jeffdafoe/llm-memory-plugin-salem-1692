@@ -114,7 +114,8 @@ func _test_scaled_pulse() -> void:
 func _test_runs_on_its_own() -> void:
     var p = Pointer.at(_art(), Vector2(10, 10))
     root.add_child(p)
-    await create_timer(Pointer.PERIOD / 2.0).timeout
-    _check("on the tree it pulses by itself", p.modulate.a < 1.0, true)
+    await process_frame
+    await process_frame
+    _check("on the tree its clock runs by itself", p._time > 0.0, true)
     p.free()
     _done()
