@@ -440,7 +440,7 @@ func TestSnappedTreeClosesAnEastWestRoad(t *testing.T) {
 		stumpDX, stumpDY int
 	}{
 		{"crown up-left", sim.FallenMapleAssetID, 1, 1, 1, 1, 2, 1},
-		{"crown down-left", sim.FallenMapleSouthAssetID, 2, 1, 1, 1, 2, -1},
+		{"crown down-left", sim.FallenMapleSouthAssetID, 1, 1, 1, 1, 2, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})

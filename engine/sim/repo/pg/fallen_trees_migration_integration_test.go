@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,8 +49,57 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 		flat      = "/tilesets/mana-seed/growable-trees/public-works-fallen-trees.png"
 		snapAsset = `SELECT count(*) FROM asset WHERE id::text LIKE '019e5f00-c401-7a10-9e00-000000789%'`
 	)
+	// The art's numbers (engine/sim/testdata, the tools/fallen-trees JSON).
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fallen-trees-snapped.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var art struct {
+		Tops []struct {
+			Species, Pose string
+			AnchorX       float64 `json:"anchor_x"`
+			AnchorY       float64 `json:"anchor_y"`
+			FL            int     `json:"footprint_left"`
+			FR            int     `json:"footprint_right"`
+			FT            int     `json:"footprint_top"`
+			FB            int     `json:"footprint_bottom"`
+			Frames        []struct {
+				State string
+				Rect  [4]int
+			}
+		}
+	}
+	if err := json.Unmarshal(raw, &art); err != nil {
+		t.Fatal(err)
+	}
+	assetOf := map[string]string{
+		"maple up": maple, "chestnut up": "019e5f00-c401-7a10-9e00-000000678002", "birch up": "019e5f00-c401-7a10-9e00-000000678003",
+		"maple down": mapleSW, "chestnut down": "019e5f00-c401-7a10-9e00-000000789002", "birch down": "019e5f00-c401-7a10-9e00-000000789003",
+	}
+	matchesArt := func() {
+		t.Helper()
+		if len(art.Tops) != len(assetOf) {
+			t.Fatalf("art has %d tops, want %d", len(art.Tops), len(assetOf))
+		}
+		for _, top := range art.Tops {
+			id := assetOf[top.Species+" "+top.Pose]
+			if n := count(`SELECT count(*) FROM asset WHERE id = $1 AND anchor_x = $2 AND anchor_y = $3
+			                AND footprint_left = $4 AND footprint_right = $5 AND footprint_top = $6 AND footprint_bottom = $7`,
+				id, top.AnchorX, top.AnchorY, top.FL, top.FR, top.FT, top.FB); n != 1 {
+				t.Errorf("%s %s: asset row does not match the art's anchor and footprint", top.Species, top.Pose)
+			}
+			for _, fr := range top.Frames {
+				if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = $3
+				                AND src_x = $4 AND src_y = $5 AND src_w = $6 AND src_h = $7`,
+					id, fr.State, snapped, fr.Rect[0], fr.Rect[1], fr.Rect[2], fr.Rect[3]); n != 1 {
+					t.Errorf("%s %s %s: frame does not match the art's rect", top.Species, top.Pose, fr.State)
+				}
+			}
+		}
+	}
 	upState := func() {
 		t.Helper()
+		matchesArt()
 		if n := count(snapAsset); n != 3 {
 			t.Errorf("SW-pose assets = %d, want 3", n)
 		}

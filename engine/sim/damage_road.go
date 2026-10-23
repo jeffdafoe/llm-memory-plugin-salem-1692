@@ -65,7 +65,9 @@ type roadObstacleVariant struct {
 	// for a variant with no stump. StumpDX/DY is the stump anchor's world offset
 	// from the top's anchor, measured off the art (llm-memory-village-tiles
 	// tilesets/growable-trees/public-works-fallen-trees-snapped.json, written by
-	// tools/fallen-trees) at render scale 2.
+	// tools/fallen-trees) at render scale 2. A copy of that JSON is
+	// testdata/fallen-trees-snapped.json; TestRoadVariantsMatchTheArt holds
+	// these numbers to it.
 	StumpState       string
 	StumpDX, StumpDY float64
 }
@@ -92,16 +94,16 @@ const (
 var roadObstacleVariants = []roadObstacleVariant{
 	{Asset: FallenMapleAssetID, State: "bare", Name: "Fallen maple", StumpState: "maple-bare", StumpDX: 67, StumpDY: 40},
 	{Asset: FallenMapleAssetID, State: "winter", Name: "Fallen maple", StumpState: "maple-winter", StumpDX: 67, StumpDY: 40},
-	{Asset: FallenMapleSouthAssetID, State: "bare", Name: "Fallen maple", StumpState: "maple-bare", StumpDX: 72, StumpDY: -24},
-	{Asset: FallenMapleSouthAssetID, State: "winter", Name: "Fallen maple", StumpState: "maple-winter", StumpDX: 72, StumpDY: -24},
+	{Asset: FallenMapleSouthAssetID, State: "bare", Name: "Fallen maple", StumpState: "maple-bare", StumpDX: 70, StumpDY: -32},
+	{Asset: FallenMapleSouthAssetID, State: "winter", Name: "Fallen maple", StumpState: "maple-winter", StumpDX: 70, StumpDY: -32},
 	{Asset: FallenChestnutAssetID, State: "bare", Name: "Fallen chestnut", StumpState: "chestnut-bare", StumpDX: 90, StumpDY: 72},
 	{Asset: FallenChestnutAssetID, State: "winter", Name: "Fallen chestnut", StumpState: "chestnut-winter", StumpDX: 90, StumpDY: 72},
-	{Asset: FallenChestnutSouthAssetID, State: "bare", Name: "Fallen chestnut", StumpState: "chestnut-bare", StumpDX: 111, StumpDY: -20},
-	{Asset: FallenChestnutSouthAssetID, State: "winter", Name: "Fallen chestnut", StumpState: "chestnut-winter", StumpDX: 111, StumpDY: -20},
+	{Asset: FallenChestnutSouthAssetID, State: "bare", Name: "Fallen chestnut", StumpState: "chestnut-bare", StumpDX: 103, StumpDY: -42},
+	{Asset: FallenChestnutSouthAssetID, State: "winter", Name: "Fallen chestnut", StumpState: "chestnut-winter", StumpDX: 103, StumpDY: -42},
 	{Asset: FallenBirchAssetID, State: "bare", Name: "Fallen birch", StumpState: "birch-bare", StumpDX: 80, StumpDY: 49},
 	{Asset: FallenBirchAssetID, State: "winter", Name: "Fallen birch", StumpState: "birch-winter", StumpDX: 80, StumpDY: 49},
-	{Asset: FallenBirchSouthAssetID, State: "bare", Name: "Fallen birch", StumpState: "birch-bare", StumpDX: 88, StumpDY: -28},
-	{Asset: FallenBirchSouthAssetID, State: "winter", Name: "Fallen birch", StumpState: "birch-winter", StumpDX: 88, StumpDY: -28},
+	{Asset: FallenBirchSouthAssetID, State: "bare", Name: "Fallen birch", StumpState: "birch-bare", StumpDX: 82, StumpDY: -38},
+	{Asset: FallenBirchSouthAssetID, State: "winter", Name: "Fallen birch", StumpState: "birch-winter", StumpDX: 82, StumpDY: -38},
 	{Asset: FallenTrunkAssetID, Name: "Fallen tree"},
 }
 
