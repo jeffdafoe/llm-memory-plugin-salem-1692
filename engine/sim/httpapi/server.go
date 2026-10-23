@@ -627,6 +627,10 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 			dto.VillageDateEndsAt = &ends
 		}
 	}
+	if s.VillageUTCOffsetSeconds != nil {
+		off := *s.VillageUTCOffsetSeconds
+		dto.VillageUTCOffsetSeconds = &off
+	}
 	// Dawn/dusk ride only when both boundaries parsed at publish — mirrors the
 	// DawnDuskMinuteOK guard perception uses, so a half-parsed config can't
 	// serve one real bound and one 00:00.

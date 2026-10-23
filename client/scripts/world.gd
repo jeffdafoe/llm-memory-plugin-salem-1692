@@ -28,6 +28,10 @@ signal world_ready
 ## read (LLM-840). The top bar shows the date in its title.
 signal village_date_changed(village_date: String, season: String)
 
+## The village's hour (0–23, -1 unknown) turned (LLM-854). The top bar shows it
+## in its title.
+signal village_hour_changed(hour: int)
+
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
@@ -186,6 +190,17 @@ var village_season: String = ""
 # Re-reads the world when the village date ends (village_date_ends_at), so the
 # date turns over at midnight without polling.
 var _village_date_timer: Timer = null
+
+# The village clock (LLM-854): the engine's `now` on the last world read moved
+# into the village zone by its village_utc_offset_seconds, advanced by this
+# client's monotonic clock since that read. The hour is the VILLAGE's, not the
+# player's own zone. village_hour is -1 until a read carries both fields.
+const VILLAGE_HOUR_CHECK_SEC: float = 15.0
+var village_hour: int = -1
+var _village_clock_ok: bool = false
+var _village_clock_local_unix: float = 0.0
+var _village_clock_read_ms: int = 0
+var _village_hour_timer: Timer = null
 
 ## Seconds past the date's end before the re-read, so it lands after the
 ## engine's midnight rather than a hair before it.
@@ -2001,6 +2016,44 @@ static func village_date_refresh_wait(ends_iso: String, now_iso: String) -> floa
         return 0.0
     return maxf(1.0, ends_unix - now_unix + VILLAGE_DATE_REFRESH_MARGIN_SEC)
 
+## The hour (0–23) of a wall-clock instant already moved into the village zone
+## (a unix time plus the zone's offset).
+static func village_hour_at(local_unix: float) -> int:
+    return int(fposmod(local_unix, 86400.0) / 3600.0)
+
+## The village's local unix time from a world read: the engine's now plus the
+## zone's offset. 0.0 (no clock) when either is missing or unparseable.
+static func village_clock_from_read(now_iso: String, offset_seconds) -> float:
+    var now_unix := _iso_to_unix(now_iso)
+    if now_unix <= 0.0 or not (offset_seconds is int or offset_seconds is float):
+        return 0.0
+    return now_unix + float(offset_seconds)
+
+## Set the village clock from a world read and show its hour at once; a read
+## without the fields stops the clock and clears the hour.
+func _set_village_clock(now_iso: String, offset_seconds) -> void:
+    var local_unix := village_clock_from_read(now_iso, offset_seconds)
+    _village_clock_ok = local_unix > 0.0
+    _village_clock_local_unix = local_unix
+    _village_clock_read_ms = Time.get_ticks_msec()
+    if _village_clock_ok and _village_hour_timer == null:
+        _village_hour_timer = Timer.new()
+        _village_hour_timer.wait_time = VILLAGE_HOUR_CHECK_SEC
+        _village_hour_timer.timeout.connect(_tick_village_hour)
+        add_child(_village_hour_timer)
+        _village_hour_timer.start()
+    _tick_village_hour()
+
+## Recompute the hour; emit only when it turned.
+func _tick_village_hour() -> void:
+    var hour := -1
+    if _village_clock_ok:
+        var elapsed := (Time.get_ticks_msec() - _village_clock_read_ms) / 1000.0
+        hour = village_hour_at(_village_clock_local_unix + elapsed)
+    if hour != village_hour:
+        village_hour = hour
+        village_hour_changed.emit(hour)
+
 ## Apply a world weather change (LLM-117). "storm" raises the storm FX overlay
 ## (rain + darkening + lightning); anything else ("clear") tweens it back out.
 ## Delegates to the storm_layer CanvasLayer main.gd injected. Null-guarded for a
@@ -2063,6 +2116,7 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     village_date = str(json.get("village_date", ""))
     village_season = str(json.get("season", ""))
     village_date_changed.emit(village_date, village_season)
+    _set_village_clock(str(json.get("now", "")), json.get("village_utc_offset_seconds", null))
     if terrain_renderer != null:
         terrain_renderer.set_season(village_season)
     _schedule_village_date_refresh(str(json.get("village_date_ends_at", "")), str(json.get("now", "")))

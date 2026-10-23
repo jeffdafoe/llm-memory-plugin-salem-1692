@@ -108,6 +108,12 @@ type WorldStateDTO struct {
 	// instant), so the client re-reads the world then rather than polling.
 	// Omitted with VillageDate.
 	VillageDateEndsAt *time.Time `json:"village_date_ends_at,omitempty"`
+	// VillageUTCOffsetSeconds is the village timezone's offset from UTC at
+	// `now` (Snapshot.VillageUTCOffsetSeconds), so the client shows the
+	// village's hour, not the player's own zone (LLM-854). Pointer + omitempty:
+	// omitted only on a snapshot with no village clock, so a real 0 still
+	// serializes. Additive — no contract_version bump.
+	VillageUTCOffsetSeconds *int `json:"village_utc_offset_seconds,omitempty"`
 	// Camera zoom floors (min zoom-out) — different for admins vs regular
 	// users. Every client reads its floor from here; the admin config panel
 	// reads+writes them via GET/POST /api/village/config + /admin/zoom-settings.

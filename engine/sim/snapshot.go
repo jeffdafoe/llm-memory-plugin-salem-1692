@@ -130,6 +130,12 @@ type Snapshot struct {
 	// hand-built snapshot.
 	LocalDateEndsAt time.Time
 
+	// VillageUTCOffsetSeconds is WorldSettings.Location's offset from UTC at
+	// publish (-14400 in EDT, -18000 in EST), so the client can show the
+	// village's hour without knowing its zone rules (LLM-854). nil on a
+	// hand-built snapshot with no Location.
+	VillageUTCOffsetSeconds *int
+
 	// DawnMinute / DuskMinute are the world's dawn/dusk boundary times as
 	// minute-of-day (e.g. 420 = 07:00, 1140 = 19:00), parsed once at publish
 	// from WorldSettings.DawnTime/DuskTime. They are the day-active window used

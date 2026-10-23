@@ -221,3 +221,41 @@ func TestWinterRegrowFactorsSetting_LiveWrite(t *testing.T) {
 		t.Errorf("a refused write changed the live value: %v", ws.WinterRegrowFactors)
 	}
 }
+
+// TestPublishedSnapshot_CarriesVillageUTCOffset (LLM-854): the published
+// snapshot carries the village zone's UTC offset for the client's clock — New
+// York's at publish (-4 h in EDT, -5 h in EST) — and none without a Location.
+func TestPublishedSnapshot_CarriesVillageUTCOffset(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tz data unavailable: %v", err)
+	}
+	for _, withZone := range []bool{true, false} {
+		repo, handles := mem.NewRepository()
+		settings := sim.WorldSettings{}
+		if withZone {
+			settings.Location = loc
+		}
+		handles.Environment.Seed(sim.WorldEnvironment{}, sim.PhaseDay, settings)
+		w, err := sim.LoadWorld(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("LoadWorld: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		go w.Run(ctx)
+		if _, err := w.Send(sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		got := w.Published().VillageUTCOffsetSeconds
+		cancel()
+		if !withZone {
+			if got != nil {
+				t.Errorf("no Location: offset = %d, want none", *got)
+			}
+			continue
+		}
+		if got == nil || (*got != -4*3600 && *got != -5*3600) {
+			t.Errorf("New York: offset = %v, want -14400 or -18000", got)
+		}
+	}
+}
