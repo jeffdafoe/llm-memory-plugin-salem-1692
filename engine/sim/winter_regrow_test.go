@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,35 @@ func TestRegen_WinterFactorScalesOnlyListedItems(t *testing.T) {
 	t.Run("summer", func(t *testing.T) { run(t, time.Date(2027, 7, 15, 16, 0, 0, 0, time.UTC), false) })
 	// April 1 in the village is spring: every row back at its stored period.
 	t.Run("first day of spring", func(t *testing.T) { run(t, time.Date(2027, 4, 1, 16, 0, 0, 0, time.UTC), false) })
+}
+
+// TestScaledRegrowPeriod_Bounds: scaling by 100% accepts every period an
+// unscaled one did, the largest product that fits succeeds exactly, and the next
+// hour up is refused rather than wrapping (code_review, LLM-848).
+func TestScaledRegrowPeriod_Bounds(t *testing.T) {
+	maxUnscaled := int(math.MaxInt64 / int64(time.Hour))
+	if got, ok := sim.ScaledRegrowPeriod(maxUnscaled, 100); !ok || got != time.Duration(maxUnscaled)*time.Hour {
+		t.Errorf("pct 100 at the unscaled max: got %v ok=%v, want %v", got, ok, time.Duration(maxUnscaled)*time.Hour)
+	}
+	const hundredthHour = time.Hour / 100
+	for _, pct := range []int{125, 200, 1000} {
+		limit := int(math.MaxInt64 / int64(hundredthHour) / int64(pct))
+		got, ok := sim.ScaledRegrowPeriod(limit, pct)
+		if want := time.Duration(limit) * hundredthHour * time.Duration(pct); !ok || got != want || got <= 0 {
+			t.Errorf("pct %d at the limit: got %v ok=%v, want %v", pct, got, ok, want)
+		}
+		if got, ok := sim.ScaledRegrowPeriod(limit+1, pct); ok {
+			t.Errorf("pct %d past the limit: accepted %v, want refused", pct, got)
+		}
+	}
+	if got, ok := sim.ScaledRegrowPeriod(168, 125); !ok || got != 210*time.Hour {
+		t.Errorf("168 h × 125%%: got %v ok=%v, want 210h", got, ok)
+	}
+	for _, in := range [][2]int{{0, 100}, {-1, 100}, {24, 0}} {
+		if _, ok := sim.ScaledRegrowPeriod(in[0], in[1]); ok {
+			t.Errorf("ScaledRegrowPeriod(%d, %d) accepted, want refused", in[0], in[1])
+		}
+	}
 }
 
 // TestCropStage_WinterFactorStretchesStages: a spent crop's growth stages are

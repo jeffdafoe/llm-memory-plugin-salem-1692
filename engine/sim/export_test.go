@@ -250,6 +250,7 @@ var (
 	// that would drive the clock also restocks the plant, which flips it ripe
 	// before the clamp can be observed.
 	CropStageStateAtPct = cropStageState
+	ScaledRegrowPeriod  = scaledRegrowPeriod
 
 	// CropStageState is CropStageStateAtPct with no regrow scaling, the shape
 	// the LLM-576 tests were written against.

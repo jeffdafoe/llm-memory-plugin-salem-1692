@@ -113,12 +113,17 @@ func regrowPct(w *World, r *ObjectRefresh, now time.Time) int {
 // scaledRegrowPeriod is hours×pct/100 as a Duration. ok is false for a
 // non-positive input or a product that would overflow time.Duration, which can
 // wrap onto a plausible POSITIVE value (the same guard cropStageState carries).
+//
+// It multiplies by a hundredth of an hour rather than dividing by 100 at the
+// end, so no intermediate is larger than the result: at pct 100 the longest
+// period accepted is the same ~292 years an unscaled period always allowed.
 func scaledRegrowPeriod(hours, pct int) (time.Duration, bool) {
 	if hours <= 0 || pct <= 0 {
 		return 0, false
 	}
-	if int64(hours) > math.MaxInt64/int64(time.Hour)/int64(pct) {
+	const hundredthHour = time.Hour / 100
+	if int64(hours) > math.MaxInt64/int64(hundredthHour)/int64(pct) {
 		return 0, false
 	}
-	return time.Duration(hours) * time.Hour * time.Duration(pct) / 100, true
+	return time.Duration(hours) * hundredthHour * time.Duration(pct), true
 }
