@@ -39,6 +39,7 @@ const TESTS := [
     "_test_smithy_bellows",
     "_test_smithy_anvil",
     "_test_smithy_anvil_interrupted",
+    "_test_smithy_anvil_rings",
     "_test_scrolling_stage",
     "_test_main_sync_stall",
     "_test_close_glyph_in_font",
@@ -1934,6 +1935,36 @@ func _toggle_pc() -> void:
     else:
         _at_tile("pc", _farmer(), Vector2i(8, 21))
     _panel.refresh()
+
+
+## LLM-857: each time the smith animation reaches the hammer on the iron the
+## anvil rings, once; no ring on the other frames, or once they leave off.
+func _test_smithy_anvil_rings() -> void:
+    _open_smithy_crew([], [])
+    var keeper: Node2D = _panel._tending()
+    _panel._bustle_rng.seed = 11
+    _check("the keeper goes to the anvil", _send_to_anvil(keeper), true)
+    _listen()
+    var spr: AnimatedSprite2D = _panel._sprite_of(keeper)
+    var heard: Array = []
+    for frame in [0, 1, 2, 2, 3, 4, 0, 1, 2]:
+        spr.frame = frame
+        _panel._bustle(0.01)
+        heard.append(_knocks.size())
+    _check("a ring on reaching the strike frame, not while on it or on the others",
+        heard, [0, 0, 1, 1, 1, 1, 1, 1, 2])
+    _check("the anvil's sound", _knocks, [_panel.SMITH_SOUND, _panel.SMITH_SOUND])
+    _panel._bustle(_panel.SMITH_MAX + 1.0)
+    _check("time up: off the anvil", keeper.has_meta("smithing"), false)
+    spr.frame = 1
+    _panel._bustle(0.01)
+    spr.frame = _panel.SMITH_STRIKE_FRAME
+    _panel._bustle(0.01)
+    _check("walking back: no ring", _knocks.size(), 2)
+    _panel.sound_hook = Callable()
+    _panel.close()
+    _panel.wares_hook = Callable()
+    _done()
 
 
 ## Run the keeper's bustle until they are at the anvil, hammering (bounded).

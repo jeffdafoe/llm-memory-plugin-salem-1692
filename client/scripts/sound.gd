@@ -49,6 +49,12 @@ const SOUNDS := {
         "files": ["impactPlank_medium_000.ogg", "impactPlank_medium_001.ogg", "impactPlank_medium_002.ogg", "impactPlank_medium_003.ogg", "impactPlank_medium_004.ogg"],
         "db": -18.0, "pitch": 0.05,
     },
+    # A smith's hammer landing on the iron at the anvil, in the smithy window
+    # (LLM-857, interior_panel.gd).
+    "anvil_strike": {
+        "files": ["impactMetal_heavy_000.ogg", "impactMetal_heavy_001.ogg", "impactMetal_heavy_002.ogg", "impactMetal_heavy_003.ogg", "impactMetal_heavy_004.ogg"],
+        "db": -16.0, "pitch": 0.04,
+    },
     "windlass_click": {"files": ["metalClick.ogg"], "db": -16.0, "pitch": 0.04},
     # Knuckles on a cottage door: the player's knock landing at a door (LLM-20).
     "knock": {"files": ["knock.ogg"], "db": -12.0, "pitch": 0.03},

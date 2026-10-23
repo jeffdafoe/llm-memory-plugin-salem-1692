@@ -136,8 +136,9 @@ const HAND_CLEAR := 20.0
 ## pulls the fire flickers, its glow FLICKER_MIN..FLICKER_MAX, a new one every
 ## FLICKER_STEP_MIN..FLICKER_STEP_MAX seconds (LLM-795). When the keeper would bustle,
 ## SMITH_CHANCE of the time a farmer-base keeper walks to the anvil and
-## hammers for SMITH_MIN..SMITH_MAX seconds. A sale or speech brings the
-## keeper back; speech stops a hand's pull.
+## hammers for SMITH_MIN..SMITH_MAX seconds, SMITH_SOUND each time the smith
+## animation reaches SMITH_STRIKE_FRAME, the hammer on the iron (LLM-857). A
+## sale or speech brings the keeper back; speech stops a hand's pull.
 const BELLOWS_CHANCE := 0.3
 const PULL_MIN := 3.0
 const PULL_MAX := 6.0
@@ -152,6 +153,8 @@ const FLICKER_STEP_MAX := 0.2
 const SMITH_CHANCE := 0.25
 const SMITH_MIN := 4.0
 const SMITH_MAX := 8.0
+const SMITH_STRIKE_FRAME := 2
+const SMITH_SOUND := "anvil_strike"
 ## Mending (LLM-780). The swing faces the nearer side of the scene, east or
 ## west: the pack's north chop reads as a swing the wrong way (LLM-747), and a
 ## south one would chop at the customers. A sprite with no chop dips MEND_DIP
@@ -1314,7 +1317,8 @@ func _to_anvil(keeper: Node2D) -> void:
         func(): _start_smith(keeper, _bustle_rng.randf_range(SMITH_MIN, SMITH_MAX)))
 
 
-## At the anvil: hammer for `seconds` (meta "smithing", seconds left).
+## At the anvil: hammer for `seconds` (meta "smithing", seconds left; meta
+## "smith_frame", the animation frame last seen).
 func _start_smith(keeper: Node2D, seconds: float) -> void:
     keeper.remove_meta("anvil_trip")
     var anvil: Dictionary = room.get("anvil", {})
@@ -1323,11 +1327,18 @@ func _start_smith(keeper: Node2D, seconds: float) -> void:
     if spr == null or spr.sprite_frames == null or not spr.sprite_frames.has_animation(anim):
         return
     keeper.set_meta("smithing", seconds)
+    keeper.set_meta("smith_frame", -1)
     spr.play(anim)
 
 
-## Hammering: time up, back to their spot behind the counter.
+## Hammering: a ring as the hammer lands; time up, back to their spot behind
+## the counter.
 func _hammer(keeper: Node2D, delta: float) -> void:
+    var spr := _sprite_of(keeper)
+    if spr != null:
+        if spr.frame == SMITH_STRIKE_FRAME and int(keeper.get_meta("smith_frame", -1)) != SMITH_STRIKE_FRAME:
+            _sound(SMITH_SOUND)
+        keeper.set_meta("smith_frame", spr.frame)
     var left := float(keeper.get_meta("smithing")) - delta
     if left > 0.0:
         keeper.set_meta("smithing", left)
