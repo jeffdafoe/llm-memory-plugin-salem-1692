@@ -99,6 +99,24 @@ func TestPerceptionGoldens(t *testing.T) {
 // looped on (Lewis Walker calling move_to{residence} every tick). Runs over the
 // whole matrix so a future cue can't reintroduce the current-home move target for
 // any situation, not just the one weary_resident_in_own_home scenario pins.
+// TestGoldensOfferLotPointerIffSellOnOffer: across every scenario, the line that
+// points a seller at sell-with-lines renders exactly when the offer section does
+// AND sell is advertised (CanOfferLot, pinned to the tool gate in handlers) — it
+// never names a stripped tool, and no seller who could quote a lot goes without it.
+func TestGoldensOfferLotPointerIffSellOnOffer(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		snap, actorID, warrants := sc.build()
+		p := Build(snap, actorID, warrants)
+		text := combinedPrompt(Render(p, DefaultRenderConfig()))
+		section := strings.Contains(text, "## Offers awaiting your decision")
+		pointer := strings.Contains(text, offerLotPointer)
+		if want := section && CanOfferLot(p); pointer != want {
+			t.Errorf("%s: offer-lot pointer rendered = %v, want %v (offer section %v, CanOfferLot %v)",
+				sc.name, pointer, want, section, CanOfferLot(p))
+		}
+	}
+}
+
 func TestGoldensNeverAdvertiseHomeAsMoveTargetWhenInside(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -3883,6 +3901,16 @@ var perceptionScenarios = []perceptionScenario{
 		build: offereeShortOfAskedGoodPending,
 	},
 	{
+		name: "keeper_weighs_one_good_offer_in_company",
+		summary: "The live 2026-10-23 Inn exchange: Hannah Boggs, in conversation with John Ellis, has his offer of 5 coins " +
+			"for 1 fried_meat to eat now — though his words asked for 'a fried meat and a flask of water'. She countered " +
+			"'the fried meat and the water together for eight' onto the meat-only offer, then charged the water again. " +
+			"The golden pins the line that closes '## Offers awaiting your decision' for a seller who can quote: a counter " +
+			"changes only the price and cannot add a good, and several goods together go as one lot with sell, listing " +
+			"each in lines. offeree_short_of_asked_good_pending (no conversation, so no sell) pins its absence.",
+		build: keeperWeighsOneGoodOfferInCompany,
+	},
+	{
 		name: "employer_with_worker_on_job",
 		summary: "An employer (John Ellis the tavernkeeper) stands with a worker (Silence Walker) who is mid-contract " +
 			"for him — a Working labor offer, ~90 minutes left (the live LLM-202 case). The golden pins the new " +
@@ -6471,6 +6499,76 @@ func offereeShortOfAskedGoodPending() (*sim.Snapshot, sim.ActorID, []sim.Warrant
 		},
 	}
 	return snap, elizabethID, nil
+}
+
+// keeperWeighsOneGoodOfferInCompany is the 2026-10-23 Inn fixture: Hannah Boggs
+// at her post, huddled with John Ellis, holding fried meat and water, with his
+// pending offer of 5 coins for 1 fried_meat to eat now.
+func keeperWeighsOneGoodOfferInCompany() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		hannahID = sim.ActorID("hannah")
+		johnID   = sim.ActorID("john")
+		inn      = sim.StructureID("inn")
+		huddleID = sim.HuddleID("inn_huddle")
+	)
+	start, end := 360, 1200 // 06:00-20:00
+	now := 900              // 15:00 — on shift, at the inn
+	published := time.Date(2026, 10, 23, 19, 2, 30, 0, time.UTC)
+	hannah := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Hannah Boggs",
+		Role:              "innkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 10, Y: 10},
+		WorkStructureID:   inn,
+		InsideStructureID: inn,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		CurrentHuddleID:   huddleID,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"fried_meat": 4, "water": 6},
+		Acquaintances:     map[string]sim.Acquaintance{"John Ellis": {}},
+	}
+	john := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "John Ellis",
+		Role:              "tavernkeeper",
+		State:             sim.StateIdle,
+		Pos:               sim.TilePos{X: 11, Y: 10},
+		InsideStructureID: inn,
+		CurrentHuddleID:   huddleID,
+		Coins:             247,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{},
+	}
+	pending := &sim.PayLedgerEntry{
+		ID: 13294, BuyerID: johnID, SellerID: hannahID,
+		ItemKind: "fried_meat", Qty: 1, Amount: 5, ConsumeNow: true,
+		State:     sim.PayLedgerStatePending,
+		ExpiresAt: published.Add(3 * time.Minute),
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{hannahID: hannah, johnID: john},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{13294: pending},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Structures:       map[sim.StructureID]*sim.Structure{inn: plainStructure(inn, "Inn")},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddleID: {ID: huddleID, Members: map[sim.ActorID]struct{}{hannahID: {}, johnID: {}}},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"fried_meat": {Name: "fried_meat", DisplayLabel: "Fried Meat", DisplayLabelSingular: "fried meat",
+				DisplayLabelPlural: "fried meat", Category: sim.ItemCategoryFood},
+			"water": {Name: "water", DisplayLabel: "Water", DisplayLabelSingular: "flask of water",
+				DisplayLabelPlural: "flasks of water", Category: sim.ItemCategoryDrink},
+		},
+	}
+	return snap, hannahID, nil
 }
 
 // sellerWithTakenQuoteAtPost is the LLM-189 perception regression fixture: a

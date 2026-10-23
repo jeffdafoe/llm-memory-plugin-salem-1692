@@ -1,0 +1,26 @@
+# Your turn
+
+
+
+## You
+Coins in your purse: 30.
+You are carrying: fried meat (x4), flasks of water (x6).
+
+## Around you
+You are inside the Inn, your workplace, with John Ellis.
+The afternoon wears on.
+It is about 3 in the afternoon.
+
+You're at your workplace.
+
+It is your working hours and you are at your post — stay and look after your work; you close at 8 in the evening.
+
+## Coin between you and those here, this past week
+- No coin has passed between you and John Ellis.
+
+## Offers awaiting your decision
+1. John Ellis offers 5 coins for 1 fried_meat to consume now (offer id 13294)
+Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.
+A counter changes only the price of the goods offered; it cannot add another good. To sell more than one kind of good together, offer them as one lot with sell instead, listing each good in lines.
+A buyer's offer awaits your answer — settle it first with accept_pay, decline_pay, or counter_pay, before tending to your own needs.
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
