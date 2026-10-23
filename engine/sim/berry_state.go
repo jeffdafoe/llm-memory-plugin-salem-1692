@@ -21,6 +21,10 @@ import (
 //   - BUSH (LLM-12): states tagged 'berries' + 'bare'. Binary — berries whenever
 //     there is stock.
 //
+// An asset with season art (season_art.go, LLM-849) also picks its season look
+// here: the bush's stock half and season half together, or the season look
+// alone for a tree or forest prop with no stock.
+//
 // Both derive RIPENESS from the same predicate (any finite gatherable row with
 // units left), which is what keeps "looks ready" and "can be gathered"
 // identical: an unripe crop has no stock, so ResolveGatherSource, the at-source
@@ -76,14 +80,26 @@ func refreshObjectBerryState(w *World, obj *VillageObject, now time.Time) {
 	case len(growthStates(asset)) > 0:
 		target = cropStageState(asset, row, hasStock, now, regrowPct(w, row, now))
 	default:
-		berriesState := asset.StateForTag(TagBerries)
-		bareState := asset.StateForTag(TagBare)
-		if berriesState == nil || bareState == nil {
-			return // not state-tracked
+		// The stock half: a bush with berries / bare states shows one or the
+		// other. stockTag stays "" for an asset that is not stock-tracked.
+		stockTag := ""
+		if asset.StateForTag(TagBerries) != nil && asset.StateForTag(TagBare) != nil {
+			stockTag = TagBare
+			if hasStock {
+				stockTag = TagBerries
+			}
 		}
-		target = bareState.State
-		if hasStock {
-			target = berriesState.State
+		// The season half (season_art.go): an asset with season art picks the
+		// stock and the season together. The snow tier is none until the snow
+		// cover lands (LLM-850).
+		switch {
+		case hasSeasonArt(asset):
+			month, _ := VillageMonthDay(w, now)
+			target = seasonState(asset, stockTag, seasonLookChain(month, SnowTierNone))
+		case stockTag != "":
+			target = asset.StateForTag(stockTag).State
+		default:
+			return // not state-tracked
 		}
 	}
 	if target == "" || obj.CurrentState == target {
