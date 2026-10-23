@@ -703,6 +703,10 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 				w, actorID, say, seller, hasNewNews, now,
 				fmt.Sprintf("pay_with_item placed offer %d", placed.LedgerID),
 			)
+			// Only words that went out were spoken of; a refused line names nothing.
+			if placed.Announced {
+				placed.DealWords = sim.DealWordsFor(w, placed.LedgerID, say)
+			}
 		}
 		return placed, nil
 	}}), nil
@@ -724,6 +728,8 @@ type payResponseResult struct {
 	State      sim.PayLedgerState
 	Announced  bool
 	SayRefused string
+	// DealWords: goods the say named that the deal does not carry (sim.DealWordsFor).
+	DealWords sim.DealWords
 }
 
 // payResponseState unwraps a pay-response commit result into the ledger state and
@@ -799,6 +805,9 @@ func respondAndSpeak(
 			return out, nil
 		}
 		out.Announced, out.SayRefused = sim.SpeakAlongside(w, actorID, say, to, hasNewNews, now, act)
+		if out.Announced {
+			out.DealWords = sim.DealWordsFor(w, ledgerID, say)
+		}
 		return out, nil
 	}}
 }
@@ -1055,6 +1064,7 @@ var counterPaySchema = json.RawMessage(`{
 
 const counterPayDescription = "Counter a pending offer with different terms. No coins or goods move. " +
 	"You propose new payment — coins (amount), goods you want instead (pay_items), or both — and the buyer can respond by calling pay_with_item with in_response_to set to this ledger's ID. " +
+	"A counter changes only the payment for the goods already offered; it cannot add another good. To sell more than one kind of good together, offer them as one lot with sell instead, listing each good in lines. " +
 	"Name your terms aloud in the same breath by passing `say` — do NOT reply with the speak tool, because speaking ends your turn and the offer would go unanswered."
 
 // DecodeCounterPayArgs parses raw args into a CounterPayArgs. `message` is

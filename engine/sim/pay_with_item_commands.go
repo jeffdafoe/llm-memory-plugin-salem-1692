@@ -198,6 +198,9 @@ type PayWithItemResult struct {
 	// echo prefers it over the original seller arg so "bide for their answer"
 	// names a person who can actually answer.
 	ReroutedSellerName string
+	// DealWords: goods the offer's say named that the deal does not carry
+	// (DealWordsFor). Stamped by the handler's say wrapper; empty when they agree.
+	DealWords DealWords
 }
 
 // PayWithItem returns the Command for the buyer-initiated pay-with-item

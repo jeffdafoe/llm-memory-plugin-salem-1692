@@ -1446,6 +1446,43 @@ func sayEcho(say string, announced bool, sayRefused string) string {
 
 // payResponseSayEcho is sayEcho over whichever of the three pay-response arg
 // types vc carries. Returns "" when the response was wordless.
+// setAsideNote tells the seller which buyer offers the new lot replaced
+// (sim.SetAsideOffer, LLM-863), so it does not go on to answer one of them.
+func setAsideNote(set []sim.SetAsideOffer) string {
+	var b strings.Builder
+	for _, s := range set {
+		who := s.BuyerName
+		if who == "" {
+			who = "the buyer"
+		}
+		fmt.Fprintf(&b, " Your lot takes the place of %s's offer for %s; that offer is set aside.", who, s.Goods)
+	}
+	return b.String()
+}
+
+// dealWordsNote voices sim.DealWords: the goods the spoken line named that the
+// deal does not carry, against what it does. "" when the words and the deal
+// agree. Fact only, no tool named — the pay tools end the turn, so the model
+// reads this in its history next turn, where the offer cue carries the steer.
+func dealWordsNote(dw sim.DealWords) string {
+	if len(dw.Named) == 0 || dw.Deal == "" {
+		return ""
+	}
+	named := dw.Named[0]
+	if n := len(dw.Named); n > 1 {
+		named = strings.Join(dw.Named[:n-1], ", ") + " and " + dw.Named[n-1]
+	}
+	return fmt.Sprintf(" Mind: you spoke of %s too, but this deal is for %s alone.", named, dw.Deal)
+}
+
+// payResponseDealNote is dealWordsNote for a pay response's result.
+func payResponseDealNote(cmdResult any) string {
+	if r, ok := cmdResult.(payResponseResult); ok {
+		return dealWordsNote(r.DealWords)
+	}
+	return ""
+}
+
 func payResponseSayEcho(vc *ValidatedCall, announced bool, sayRefused string) string {
 	switch args := vc.DecodedArgs.(type) {
 	case AcceptPayArgs:
@@ -1600,7 +1637,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	if vc.Name == "accept_pay" {
 		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			if state == sim.PayLedgerStateAccepted {
-				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ")
+				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ") + payResponseDealNote(cmdResult)
 			}
 			if msg, ok := paySettlementFellThroughContent(state); ok {
 				return msg
@@ -1619,14 +1656,14 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			switch state {
 			case sim.PayLedgerStateCountered:
-				return "[ok] Your counter stands. " + payResponseSayEcho(vc, announced, refused) + "They will answer on their turn."
+				return "[ok] Your counter stands. " + payResponseSayEcho(vc, announced, refused) + "They will answer on their turn." + payResponseDealNote(cmdResult)
 			// A non-increasing pure-coin counter coerces to an accept in
 			// sim.CounterPay (the "I'll let it go at your price" path), so the
 			// sale settles under the counter_pay name and would otherwise miss
 			// the handover steer accept_pay earns — the gap the HOME-473 ticket
 			// glossed (LLM-13). Voice the settle.
 			case sim.PayLedgerStateAccepted:
-				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ")
+				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ") + payResponseDealNote(cmdResult)
 			default:
 				// That same coercion can fail a gate at settle time (seller has
 				// no stock, buyer is short of coins, either party moved on, offer
@@ -1716,11 +1753,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					}
 				}
 				return fmt.Sprintf(
-					"[ok] %sMind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
-					said, item, quoteSteer,
+					"[ok] %sMind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s%s",
+					said, item, quoteSteer, setAsideNote(r.SetAside),
 				)
 			}
-			return "[ok] " + said + "Your offer now stands. " + quoteSteer
+			return "[ok] " + said + "Your offer now stands. " + quoteSteer + setAsideNote(r.SetAside)
 		}
 		return "[ok] " + quoteSteer
 	}
@@ -1745,6 +1782,11 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				" Mind: %s can't be carried away — this settles eat-here, taken on the spot.",
 				clampItem,
 			)
+		}
+		// The words named a good the offer does not carry — rides every result
+		// shape the clamp note does (pending, quote take, counter-response).
+		if r, ok := cmdResult.(sim.PayWithItemResult); ok {
+			clampNote += dealWordsNote(r.DealWords)
 		}
 		// A quote-take settles INSTANTLY (ZBBS-HOME-424): payment, goods,
 		// and any consume_now meal all land inside this one tool call. The
