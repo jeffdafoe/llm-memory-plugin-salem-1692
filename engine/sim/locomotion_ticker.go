@@ -1063,7 +1063,11 @@ func reconcileInsideAndNarrateDeparture(w *World, actor *Actor, now time.Time) {
 		w.emit(&ActorLeftStructure{ActorID: actor.ID, StructureID: old, At: now})
 		emitDepartureNarration(w, actor, old, now)
 	}
+	fromRoom := actor.InsideRoomID
 	setActorInsideStructure(w, actor, target)
+	if actor.InsideRoomID != fromRoom {
+		tracePCRoomChange(w, actor, fromRoom, pcRoomStructureChange, now) // LLM-847
+	}
 }
 
 // setActorInsideStructure sets actor.InsideStructureID AND the
@@ -1110,14 +1114,11 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	// room ref is the room/structure mismatch that validateActorStructureRefs
 	// treats as substrate corruption and hard-fails the next load on.
 	if actor.InsideRoomID != 0 {
-		fromRoom := actor.InsideRoomID
 		if structureID == "" {
 			actor.InsideRoomID = 0
 		} else if room := findRoom(w, actor.InsideRoomID); room == nil || room.StructureID != structureID {
 			actor.InsideRoomID = 0
 		}
-		// LLM-847: no caller passes a clock here, so the row takes the wall clock.
-		tracePCRoomChange(w, actor, fromRoom, pcRoomStructureChange, time.Now().UTC())
 	}
 
 	// Occupancy: the headcount of both the structure left and the one entered

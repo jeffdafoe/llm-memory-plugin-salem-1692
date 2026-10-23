@@ -146,20 +146,28 @@ func tracePCWoke(w *World, pc *Actor, reason string, fromRoom RoomID, presenceSt
 // current InsideRoomID for `cause`, and updates what the safety net last saw.
 // No row when the room did not really change (see pcTraceRoomKey). Call right
 // after the write to InsideRoomID.
+//
+// When the room the trace last recorded is not `from`, something moved the
+// player in between without a word: that gap is written first, as
+// "unattributed" — here and not only in the per-minute sweep, or a recorded
+// move landing before the sweep would swallow it (code_review).
 func tracePCRoomChange(w *World, a *Actor, from RoomID, cause string, now time.Time) {
 	if a == nil || a.Kind != KindPC {
 		return
 	}
 	fromKey := pcTraceRoomKey(w, from)
 	toKey := pcTraceRoomKey(w, a.InsideRoomID)
+	if a.TracedRoomSet && a.TracedRoomID != fromKey {
+		writePCRoomChanged(w, a, a.TracedRoomID, from, pcRoomUnattributed, now)
+	}
 	a.TracedRoomID, a.TracedRoomSet = toKey, true
 	if fromKey == toKey {
 		return
 	}
-	writePCRoomChanged(w, a, from, cause, now)
+	writePCRoomChanged(w, a, from, a.InsideRoomID, cause, now)
 }
 
-func writePCRoomChanged(w *World, a *Actor, from RoomID, cause string, now time.Time) {
+func writePCRoomChanged(w *World, a *Actor, from, to RoomID, cause string, now time.Time) {
 	structureID := a.InsideStructureID
 	if structureID == "" && from != 0 {
 		if rm := findRoom(w, from); rm != nil {
@@ -171,8 +179,8 @@ func writePCRoomChanged(w *World, a *Actor, from RoomID, cause string, now time.
 		"structure":    pcTraceStructureName(w, structureID),
 		"from_room_id": int64(from),
 		"from_room":    pcTraceRoomName(w, a, from),
-		"to_room_id":   int64(a.InsideRoomID),
-		"to_room":      pcTraceRoomName(w, a, a.InsideRoomID),
+		"to_room_id":   int64(to),
+		"to_room":      pcTraceRoomName(w, a, to),
 		"cause":        cause,
 	}, now)
 }
@@ -200,7 +208,7 @@ func TracePCRooms(now time.Time) Command {
 				}
 				from := a.TracedRoomID
 				a.TracedRoomID = key
-				writePCRoomChanged(w, a, from, pcRoomUnattributed, now)
+				writePCRoomChanged(w, a, from, a.InsideRoomID, pcRoomUnattributed, now)
 				caught++
 			}
 			return caught, nil

@@ -196,8 +196,12 @@ func TestPCTraceCheckoutAndMovedOutWakes(t *testing.T) {
 		if woke := onlyTraceRow(t, sink, ActionTypePCWoke); woke.Payload["reason"] != pcWokeMovedOut || woke.Payload["from_room"] != "bedroom_3" {
 			t.Errorf("pc_woke payload %v, want moved_out from bedroom_3", woke.Payload)
 		}
-		if moved := onlyTraceRow(t, sink, ActionTypePCRoomChanged); moved.Payload["cause"] != pcRoomWake || moved.Payload["to_room"] != "common" {
-			t.Errorf("pc_room_changed payload %v", moved.Payload)
+		// The silent move is named first, then the wake's own move.
+		rows := traceRows(sink, ActionTypePCRoomChanged)
+		if len(rows) != 2 ||
+			rows[0].Payload["cause"] != pcRoomUnattributed || rows[0].Payload["from_room"] != "bedroom_1" || rows[0].Payload["to_room"] != "bedroom_3" ||
+			rows[1].Payload["cause"] != pcRoomWake || rows[1].Payload["from_room"] != "bedroom_3" || rows[1].Payload["to_room"] != "common" {
+			t.Errorf("room rows %v, want unattributed bedroom_1 to bedroom_3, then wake bedroom_3 to common", rows)
 		}
 	})
 }
@@ -220,13 +224,62 @@ func TestPCTraceGoRoomAndLeavingTheBuilding(t *testing.T) {
 		}
 	}
 
+	// Out of the building straight from the room upstairs: this test world has no
+	// footprints, so every tile reads as outdoors and the walk's reconcile leaves.
 	sink.rows = nil
-	setActorInsideStructure(w, jeff, "")
+	later := traceNow.Add(time.Minute)
+	reconcileInsideAndNarrateDeparture(w, jeff, later)
 	moved := onlyTraceRow(t, sink, ActionTypePCRoomChanged)
 	if moved.Payload["cause"] != pcRoomStructureChange || moved.Payload["from_room"] != "bedroom_1" ||
-		moved.Payload["to_room"] != "outdoors" || moved.Payload["structure"] != "Tavern" {
-		t.Errorf("pc_room_changed payload %v, want structure_change from the Tavern's bedroom_1 to outdoors", moved.Payload)
+		moved.Payload["to_room"] != "outdoors" || moved.Payload["structure"] != "Tavern" || !moved.OccurredAt.Equal(later) {
+		t.Errorf("pc_room_changed %v at %v, want structure_change from the Tavern's bedroom_1 to outdoors at the walk's time", moved.Payload, moved.OccurredAt)
 	}
+	// Outdoors already: nothing to record.
+	sink.rows = nil
+	reconcileInsideAndNarrateDeparture(w, jeff, later)
+	if len(sink.rows) != 0 {
+		t.Errorf("a reconcile that changed no room wrote %v", sink.rows)
+	}
+}
+
+// A move nothing recorded, then a recorded one, before the per-minute sweep: the
+// gap is still named, first (code_review).
+func TestPCTraceUnrecordedMoveBeforeARecordedOne(t *testing.T) {
+	t.Run("then a recorded move", func(t *testing.T) {
+		w, jeff, sink := tavernLodger(t)
+		if _, err := goRoom(t, w, "jeff", "hall", traceNow); err != nil {
+			t.Fatal(err)
+		}
+		jeff.InsideRoomID = upBedroom3 // moved by a path that records nothing
+		sink.rows = nil
+		if _, err := goRoom(t, w, "jeff", "hall", traceNow); err != nil {
+			t.Fatal(err)
+		}
+		rows := traceRows(sink, ActionTypePCRoomChanged)
+		if len(rows) != 2 ||
+			rows[0].Payload["cause"] != pcRoomUnattributed || rows[0].Payload["from_room"] != "hall" || rows[0].Payload["to_room"] != "bedroom_3" ||
+			rows[1].Payload["cause"] != pcRoomGoRoom || rows[1].Payload["from_room"] != "bedroom_3" || rows[1].Payload["to_room"] != "hall" {
+			t.Fatalf("room rows %v, want unattributed hall to bedroom_3, then go_room bedroom_3 to hall", rows)
+		}
+		sink.rows = nil
+		TracePCRooms(traceNow.Add(time.Minute)).Fn(w)
+		if len(sink.rows) != 0 {
+			t.Errorf("the sweep caught it again: %v", sink.rows)
+		}
+	})
+	t.Run("then a recorded step that moves nothing", func(t *testing.T) {
+		w, jeff, sink := tavernLodger(t)
+		if _, err := goRoom(t, w, "jeff", "hall", traceNow); err != nil {
+			t.Fatal(err)
+		}
+		jeff.InsideRoomID = upCommon // moved by a path that records nothing
+		sink.rows = nil
+		tracePCRoomChange(w, jeff, jeff.InsideRoomID, pcRoomWake, traceNow)
+		moved := onlyTraceRow(t, sink, ActionTypePCRoomChanged)
+		if moved.Payload["cause"] != pcRoomUnattributed || moved.Payload["from_room"] != "hall" || moved.Payload["to_room"] != "common" {
+			t.Errorf("pc_room_changed payload %v, want unattributed hall to common", moved.Payload)
+		}
+	})
 }
 
 func TestPCTraceSafetyNet(t *testing.T) {
