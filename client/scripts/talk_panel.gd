@@ -1488,8 +1488,11 @@ func _on_speak_pressed() -> void:
 
 
 func _on_speech_input_gui_input(event: InputEvent) -> void:
-    if own_keyboard != null and event is InputEventMouseButton \
-            and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+    # A tap may reach the field as a touch, its emulated mouse press, or both;
+    # showing is idempotent.
+    var tapped: bool = (event is InputEventScreenTouch and event.pressed) \
+            or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed)
+    if own_keyboard != null and tapped:
         if system_keyboard:
             # The device keyboard may have been put away; a tap brings it back.
             _show_device_keyboard()
@@ -2310,13 +2313,15 @@ func _end_system_keyboard() -> void:
     _update_keyboard_button()
 
 
-# The same call TextEdit makes when it gains focus with its virtual keyboard
-# on; the field already has focus here, so it would not make it again.
+# TextEdit makes this call itself only when it gains focus, and the field
+# already has focus here. The caret goes in as both selection ends: a caret,
+# no selection.
 func _show_device_keyboard() -> void:
     if not DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
         return
+    var caret: int = own_keyboard.text_before_caret().length()
     DisplayServer.virtual_keyboard_show(speech_input.text, speech_input.get_global_rect(),
-            DisplayServer.KEYBOARD_TYPE_MULTILINE, -1, -1, own_keyboard.text_before_caret().length())
+            DisplayServer.KEYBOARD_TYPE_MULTILINE, -1, caret, caret)
 
 
 func _on_keyboard_button_pressed() -> void:

@@ -25,6 +25,8 @@ const TESTS := [
     "_test_second_finger_types",
     "_test_icons_are_drawn",
     "_test_world_tap_releases_text_focus",
+    "_test_talk_field_touch_opens_own_keyboard",
+    "_test_system_keyboard_round_trip",
 ]
 
 var _keyboard: VBoxContainer = null
@@ -230,4 +232,50 @@ func _test_world_tap_releases_text_focus() -> void:
     _check("a focused field: the tap takes the focus", load("res://scripts/main.gd").release_text_focus(root), true)
     _check("the field lost focus", _field.has_focus(), false)
     _check("nothing focused: the tap walks", load("res://scripts/main.gd").release_text_focus(root), false)
+    _done()
+
+
+## A talk panel built as on a touch device, so it has its own keyboard.
+func _touch_talk_panel() -> CanvasLayer:
+    var guard: Node = root.get_node("OrientationGuard")
+    guard._touch_text = true
+    var talk: CanvasLayer = load("res://scripts/talk_panel.gd").new()
+    root.add_child(talk)
+    guard._touch_text = false
+    return talk
+
+
+func _test_talk_field_touch_opens_own_keyboard() -> void:
+    var talk := _touch_talk_panel()
+    _check("touch device: the panel has its own keyboard", talk.own_keyboard != null, true)
+    _check("touch device: the field opens no system keyboard", talk.speech_input.virtual_keyboard_enabled, false)
+    _check("before a tap: ours is down", talk.own_keyboard.visible, false)
+    var touch := InputEventScreenTouch.new()
+    touch.pressed = true
+    talk.speech_input.gui_input.emit(touch)
+    _check("a touch on the field opens ours", talk.own_keyboard.visible, true)
+    talk._hide_own_keyboard()
+    var click := InputEventMouseButton.new()
+    click.button_index = MOUSE_BUTTON_LEFT
+    click.pressed = true
+    talk.speech_input.gui_input.emit(click)
+    _check("an emulated mouse press on the field opens ours", talk.own_keyboard.visible, true)
+    talk.free()
+    _done()
+
+
+func _test_system_keyboard_round_trip() -> void:
+    var talk := _touch_talk_panel()
+    talk._show_own_keyboard()
+    talk.own_keyboard.press("system")
+    _check("switch key: ours goes down", talk.own_keyboard.visible, false)
+    _check("switch key: system mode on", talk.system_keyboard, true)
+    _check("switch key: the field may open the device keyboard", talk.speech_input.virtual_keyboard_enabled, true)
+    talk._on_keyboard_button_pressed()
+    _check("Speak-row key: ours comes back", talk.own_keyboard.visible, true)
+    _check("Speak-row key: system mode ends", talk.system_keyboard, false)
+    _check("Speak-row key: the field opens no system keyboard", talk.speech_input.virtual_keyboard_enabled, false)
+    talk._on_keyboard_button_pressed()
+    _check("Speak-row key again: ours goes down", talk.own_keyboard.visible, false)
+    talk.free()
     _done()
