@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -965,5 +966,39 @@ func TestWorldStateFromSnapshot_VillageDateAndSeason(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "village_date") || strings.Contains(string(raw), "season") {
 		t.Errorf("no-clock snapshot wire carries the date keys: %s", raw)
+	}
+}
+
+// TestWorldStateFromSnapshot_VillageUTCOffset (LLM-854): the offset rides the
+// world read as published — EDT, EST, and a real 0 all serialize — and a
+// snapshot with no village clock omits the key.
+func TestWorldStateFromSnapshot_VillageUTCOffset(t *testing.T) {
+	for _, off := range []int{-14400, -18000, 0} {
+		o := off
+		dto := worldStateFromSnapshot(&sim.Snapshot{VillageUTCOffsetSeconds: &o})
+		if dto.VillageUTCOffsetSeconds == nil || *dto.VillageUTCOffsetSeconds != off {
+			t.Errorf("offset %d: dto = %v", off, dto.VillageUTCOffsetSeconds)
+		}
+		raw, err := json.Marshal(dto)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if want := fmt.Sprintf(`"village_utc_offset_seconds":%d`, off); !strings.Contains(string(raw), want) {
+			t.Errorf("offset %d: wire %s lacks %s", off, raw, want)
+		}
+	}
+	raw, err := json.Marshal(worldStateFromSnapshot(&sim.Snapshot{}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "village_utc_offset") {
+		t.Errorf("no-clock snapshot wire carries the offset keys: %s", raw)
+	}
+
+	// The change instant rides only on a day the offset changes.
+	until := time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC)
+	dto := worldStateFromSnapshot(&sim.Snapshot{VillageUTCOffsetUntil: until})
+	if dto.VillageUTCOffsetUntil == nil || !dto.VillageUTCOffsetUntil.Equal(until) {
+		t.Errorf("village_utc_offset_until = %v, want %s", dto.VillageUTCOffsetUntil, until)
 	}
 }

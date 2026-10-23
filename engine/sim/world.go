@@ -2586,6 +2586,15 @@ func (w *World) republish() {
 	// (a second time.Now() could straddle a minute/day boundary).
 	now := time.Now()
 	localMin := localMinuteOfDay(w, now)
+	// The village's UTC offset at the same instant (LLM-854), for the client's
+	// clock, and when it next changes by the time the village date ends. nil / zero
+	// without a Location (a hand-built world), so 0 stays real UTC.
+	var utcOffset *int
+	var utcOffsetUntil time.Time
+	if off, ok := VillageUTCOffset(now, w.Settings.Location); ok {
+		utcOffset = &off
+		utcOffsetUntil = VillageUTCOffsetChangesAt(now, VillageDateEndsAt(now, w.Settings.Location), w.Settings.Location)
+	}
 	// Day-active window (dawn/dusk) as minute-of-day — the shift fallback for an
 	// NPC with no explicit schedule (ZBBS-HOME-352). DawnDuskMinuteOK is true
 	// only when BOTH boundaries parse, so perception never derives a window from
@@ -2623,6 +2632,8 @@ func (w *World) republish() {
 		LocalMinuteOfDay:              &localMin,
 		LocalDateUTC:                  orderDateUTC(now, w.Settings.Location),
 		LocalDateEndsAt:               VillageDateEndsAt(now, w.Settings.Location),
+		VillageUTCOffsetSeconds:       utcOffset,
+		VillageUTCOffsetUntil:         utcOffsetUntil,
 		DawnMinute:                    dawnMin,
 		DuskMinute:                    duskMin,
 		DawnDuskMinuteOK:              dawnOK && duskOK,

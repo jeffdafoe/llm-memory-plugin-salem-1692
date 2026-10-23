@@ -1,8 +1,8 @@
 extends SceneTree
 
 ## Headless harness for LLM-840: the village date and season in the top bar
-## title, the ground sheet for each season (LLM-834), and the
-## re-read of the world when that date ends.
+## title, the village hour (LLM-854), the ground sheet for each season
+## (LLM-834), and the re-read of the world when that date ends.
 ##
 ## Run headless (CI and local):
 ##   godot --headless --path client --script res://tests/village_date_test.gd
@@ -14,6 +14,9 @@ extends SceneTree
 const TESTS := [
     "_test_title_shows_the_date",
     "_test_title_shows_the_season",
+    "_test_title_shows_the_hour",
+    "_test_village_clock_from_a_read",
+    "_test_refresh_at_the_offset_change",
     "_test_title_falls_back_without_a_date",
     "_test_ground_sheet_by_season",
     "_test_ground_fetch_timeout_frees_the_retry",
@@ -140,4 +143,42 @@ func _test_ground_fetch_timeout_frees_the_retry() -> void:
     _check("timeout caches nothing", renderer._season_wang_cache.has(path), false)
     _check("timeout keeps the current ground", renderer.wang_texture, null)
     renderer.free()
+    _done()
+
+
+func _test_title_shows_the_hour() -> void:
+    _check("3pm", _top_bar.title_text("1692-10-23", "autumn", 15), "Salem — 23 October 1692, 3pm (Autumn)")
+    _check("no season", _top_bar.title_text("1692-10-23", "", 9), "Salem — 23 October 1692, 9am")
+    _check("unknown hour", _top_bar.title_text("1692-10-23", "autumn", -1), "Salem — 23 October 1692 (Autumn)")
+    _check("no date, hour ignored", _top_bar.title_text("", "autumn", 15), "Salem — 1692")
+    for pair in [[0, "12am"], [1, "1am"], [11, "11am"], [12, "12pm"], [13, "1pm"], [23, "11pm"], [-1, ""], [24, ""]]:
+        _check("hour_text(%d)" % pair[0], _top_bar.hour_text(pair[0]), pair[1])
+    _done()
+
+
+# The hour is the village's: the engine's now moved by the zone's offset, never
+# the machine's own zone. The engine serializes now with fractional seconds.
+func _test_village_clock_from_a_read() -> void:
+    # 19:40 UTC on October 23 is 3:40pm in the village (EDT, -4 h).
+    var local: float = _world.village_clock_from_read("2026-10-23T19:40:12.123456789Z", -14400.0)
+    _check("EDT read", _world.village_hour_at(local), 15)
+    # 04:30 UTC on December 1 is 11:30pm on November 30 (EST, -5 h).
+    local = _world.village_clock_from_read("2026-12-01T04:30:00Z", -18000)
+    _check("EST read across midnight", _world.village_hour_at(local), 23)
+    _check("no offset", _world.village_clock_from_read("2026-10-23T19:40:12Z", null), 0.0)
+    _check("no now", _world.village_clock_from_read("", -14400.0), 0.0)
+    _check("offset not a number", _world.village_clock_from_read("2026-10-23T19:40:12Z", "-14400"), 0.0)
+    _done()
+
+
+# On a DST day the world is re-read when the offset changes, not at midnight,
+# so the hour is right from the change on (code_review, LLM-854).
+func _test_refresh_at_the_offset_change() -> void:
+    var ends := "2026-11-02T05:00:00Z"
+    var until := "2026-11-01T06:00:00Z"
+    _check("DST day: the change first", _world.village_refresh_at(ends, until), until)
+    _check("ordinary day: the date end", _world.village_refresh_at(ends, ""), ends)
+    _check("change after the date end", _world.village_refresh_at("2026-11-01T04:00:00Z", until), "2026-11-01T04:00:00Z")
+    _check("only the change", _world.village_refresh_at("", until), until)
+    _check("neither", _world.village_refresh_at("", ""), "")
     _done()

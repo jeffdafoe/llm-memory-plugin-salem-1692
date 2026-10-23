@@ -585,26 +585,53 @@ const MONTH_NAMES := ["January", "February", "March", "April", "May", "June",
 ## The seasons the world read can name (sim.SeasonOf).
 const SEASON_NAMES := ["winter", "spring", "summer", "autumn"]
 
+var _title_date: String = ""
+var _title_season: String = ""
+var _title_hour: int = -1
+
 ## Show the village date and season in the title (LLM-840). village_date is
 ## the world read's "1692-10-22", season its "autumn".
 func set_village_date(village_date: String, season: String) -> void:
-    if title_label != null:
-        title_label.text = title_text(village_date, season)
+    _title_date = village_date
+    _title_season = season
+    _refresh_title()
 
-## "Salem — 22 October 1692 (Autumn)" for a well-formed "YYYY-MM-DD" date. The
-## season is left off when it is missing or not one the engine names; the plain
-## "Salem — 1692" when the date is missing or malformed.
-static func title_text(village_date: String, season: String = "") -> String:
+## Show the village's hour in the title (LLM-854); -1 leaves it off.
+func set_village_hour(hour: int) -> void:
+    _title_hour = hour
+    _refresh_title()
+
+func _refresh_title() -> void:
+    if title_label != null:
+        title_label.text = title_text(_title_date, _title_season, _title_hour)
+
+## "Salem — 22 October 1692, 3pm (Autumn)" for a well-formed "YYYY-MM-DD" date.
+## The hour is left off when it is -1 (unknown), the season when it is missing
+## or not one the engine names; the plain "Salem — 1692" when the date is
+## missing or malformed.
+static func title_text(village_date: String, season: String = "", hour: int = -1) -> String:
     var parts := village_date.split("-")
     if parts.size() == 3 and parts[0].is_valid_int() and parts[1].is_valid_int() and parts[2].is_valid_int():
         var month := int(parts[1])
         var day := int(parts[2])
         if month >= 1 and month <= 12 and day >= 1 and day <= 31:
             var text := "Salem — %d %s %s" % [day, MONTH_NAMES[month - 1], parts[0]]
+            var hour_label := hour_text(hour)
+            if hour_label != "":
+                text += ", " + hour_label
             if season in SEASON_NAMES:
                 text += " (%s)" % season.capitalize()
             return text
     return "Salem — 1692"
+
+## "3pm" for hour 15, "12am" midnight, "12pm" noon; "" for an hour out of 0–23.
+static func hour_text(hour: int) -> String:
+    if hour < 0 or hour > 23:
+        return ""
+    var twelve := hour % 12
+    if twelve == 0:
+        twelve = 12
+    return "%d%s" % [twelve, "am" if hour < 12 else "pm"]
 
 ## The title label fills the row's spare width, so only the text itself is the
 ## credits link: hover, the hand cursor and the click all stop at its end.

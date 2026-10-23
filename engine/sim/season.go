@@ -64,6 +64,59 @@ func VillageDateEndsAt(now time.Time, loc *time.Location) time.Time {
 	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc)
 }
 
+// VillageUTCOffset is loc's offset from UTC at now, in seconds (-14400 in EDT,
+// -18000 in EST). ok is false without a Location (LLM-854).
+func VillageUTCOffset(now time.Time, loc *time.Location) (offset int, ok bool) {
+	if loc == nil {
+		return 0, false
+	}
+	_, offset = now.In(loc).Zone()
+	return offset, true
+}
+
+// VillageUTCOffsetChangesAt is the first instant after now, up to and
+// including until, at which loc's offset from UTC changes — a DST transition —
+// or the zero time if it does not change in that window (LLM-854). A change
+// exactly at until is reported as until; the client re-reads the world at the
+// earlier of this and the date's end, so that is the same single re-read.
+//
+// It steps an hour at a time (no zone changes its offset twice within an hour)
+// and then halves the step where the offset first differs, down to the second.
+func VillageUTCOffsetChangesAt(now, until time.Time, loc *time.Location) time.Time {
+	if loc == nil || !until.After(now) {
+		return time.Time{}
+	}
+	_, current := now.In(loc).Zone()
+	differs := func(t time.Time) bool {
+		_, off := t.In(loc).Zone()
+		return off != current
+	}
+	for lo := now; lo.Before(until); lo = lo.Add(time.Hour) {
+		hi := lo.Add(time.Hour)
+		if hi.After(until) {
+			hi = until
+		}
+		if !differs(hi) {
+			continue
+		}
+		for hi.Sub(lo) > time.Second {
+			mid := lo.Add(hi.Sub(lo) / 2)
+			if differs(mid) {
+				hi = mid
+			} else {
+				lo = mid
+			}
+		}
+		// Zone transitions fall on whole seconds; land on the first second
+		// with the new offset.
+		if at := hi.Truncate(time.Second); at.After(now) && differs(at) {
+			return at
+		}
+		return hi
+	}
+	return time.Time{}
+}
+
 // VillageDateScene is the one sentence every engine-authored prose prompt uses
 // to tell the model the date and season, so two surfaces cannot disagree about
 // the time of year: "It is October 22, 1692, in the autumn." "" for the zero
