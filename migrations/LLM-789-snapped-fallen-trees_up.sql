@@ -93,6 +93,7 @@ SELECT id, name, 'debris', 'bare', anchor_x, anchor_y, 'objects', 'mana-seed',
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name, category = EXCLUDED.category, default_state = EXCLUDED.default_state,
     anchor_x = EXCLUDED.anchor_x, anchor_y = EXCLUDED.anchor_y,
+    layer = EXCLUDED.layer, pack_id = EXCLUDED.pack_id, z_index = EXCLUDED.z_index,
     is_obstacle = EXCLUDED.is_obstacle,
     footprint_left = EXCLUDED.footprint_left, footprint_right = EXCLUDED.footprint_right,
     footprint_top = EXCLUDED.footprint_top, footprint_bottom = EXCLUDED.footprint_bottom,
@@ -112,6 +113,7 @@ BEGIN
     IF (SELECT count(*) FROM asset a JOIN llm789_top v ON v.id = a.id
          WHERE a.name = v.name AND a.source_file = v.source_file AND a.category = 'debris'
            AND a.default_state = 'bare' AND a.is_obstacle
+           AND a.layer = 'objects' AND a.pack_id = 'mana-seed' AND a.z_index = 10
            AND a.anchor_x = v.anchor_x AND a.anchor_y = v.anchor_y
            AND a.footprint_left = v.fl AND a.footprint_right = v.fr
            AND a.footprint_top = v.ft AND a.footprint_bottom = v.fb) <> 6 THEN
@@ -120,7 +122,7 @@ BEGIN
     IF (SELECT count(*) FROM asset_state s JOIN llm789_state v ON v.asset_id = s.asset_id AND v.state = s.state
          WHERE s.sheet = '/tilesets/mana-seed/growable-trees/public-works-fallen-trees-snapped.png'
            AND s.src_x = v.src_x AND s.src_y = v.src_y AND s.src_w = v.src_w AND s.src_h = v.src_h
-           AND s.frame_count = 1) <> 12 THEN
+           AND s.frame_count = 1 AND s.frame_rate = 0) <> 12 THEN
         RAISE EXCEPTION 'LLM-789: the snapped tops do not carry their 12 frames on the new sheet';
     END IF;
     IF EXISTS (SELECT 1 FROM asset_state s JOIN llm789_top t ON t.id = s.asset_id
