@@ -3655,7 +3655,7 @@ func commitPayTransfer(
 				buyer.Inventory[entry.ItemKind] += kept
 			}
 			applied := applyConsumeSatisfactions(consumer, def, eat)
-			structureID, _ := resolveLoiteringObject(w, consumer.Pos, LoiterAttributionTiles)
+			structureID, _ := mealObjectAt(w, consumer)
 			var stamped []DwellCreditSnapshot
 			if structureID != "" && def != nil {
 				stamped = UpsertItemDwellCredits(consumer, entry.ItemKind, def.Satisfies, structureID, at)
@@ -3912,7 +3912,7 @@ func deliverBundleLines(w *World, buyer, seller *Actor, entry *PayLedgerEntry, c
 					buyer.Inventory[ln.ItemKind] += sp.kept
 				}
 				applied := applyConsumeSatisfactions(sp.consumer, def, sp.eat)
-				structureID, _ := resolveLoiteringObject(w, sp.consumer.Pos, LoiterAttributionTiles)
+				structureID, _ := mealObjectAt(w, sp.consumer)
 				var stamped []DwellCreditSnapshot
 				if structureID != "" && def != nil {
 					stamped = UpsertItemDwellCredits(sp.consumer, ln.ItemKind, def.Satisfies, structureID, at)

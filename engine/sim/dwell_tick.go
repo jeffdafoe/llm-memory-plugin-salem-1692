@@ -327,7 +327,15 @@ func stampDwellEnd(w *World, actor *Actor, credit *DwellCredit, reason DwellEndR
 // faithful v1 dwell check (resolveLoiteringStructure(actorPos) ==
 // credit.ObjectID): walking off the pin ends the dwell. Returns false if no
 // object owns the actor's tile, or a different one does.
+//
+// Being inside the credit's building also counts — the same inside-first rule
+// mealObjectAt stamps item credits with, or an indoor meal would end as walked
+// away on its first tick. Checked before the pin so no credit the pin test kept
+// is ended by it.
 func actorAtCreditObject(w *World, actor *Actor, credit *DwellCredit) bool {
+	if actor.InsideStructureID != "" && VillageObjectID(actor.InsideStructureID) == credit.ObjectID {
+		return true
+	}
 	id, ok := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
 	return ok && id == credit.ObjectID
 }
