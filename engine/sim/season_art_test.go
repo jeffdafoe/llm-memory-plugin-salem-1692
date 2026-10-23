@@ -104,6 +104,31 @@ func TestSeasonState_MonthTable(t *testing.T) {
 	}
 }
 
+// TestSeasonState_DefaultCounterpartWins: with two states for one look and no
+// stock filter, the copy of the default state wins even when the other has the
+// lower id (code_review, LLM-849).
+func TestSeasonState_DefaultCounterpartWins(t *testing.T) {
+	asset := &sim.Asset{ID: "prop", DefaultState: "default", States: []sim.AssetState{
+		{ID: 1, State: "open", Tags: nil},
+		{ID: 2, State: "autumn-open", Tags: []string{sim.TagSeasonPrefix + "autumn"}},
+		{ID: 3, State: "default", Tags: nil},
+		{ID: 9, State: "autumn", Tags: []string{sim.TagSeasonPrefix + "autumn"}},
+	}}
+	if got := sim.SeasonState(asset, "", sim.SeasonLookChain(time.October, sim.SnowTierNone)); got != "autumn" {
+		t.Errorf("October: state = %q, want autumn (the default's copy)", got)
+	}
+	if got := sim.SeasonState(asset, "", sim.SeasonLookChain(time.July, sim.SnowTierNone)); got != "default" {
+		t.Errorf("July: state = %q, want default", got)
+	}
+	bush := &sim.Asset{ID: "bush", DefaultState: "berries", States: []sim.AssetState{
+		{ID: 1, State: "autumn-other", Tags: []string{sim.TagSeasonPrefix + "autumn"}},
+		{ID: 5, State: "autumn-berries", Tags: []string{sim.TagSeasonPrefix + "autumn"}},
+	}}
+	if got := sim.SeasonState(bush, "", sim.SeasonLookChain(time.October, sim.SnowTierNone)); got != "autumn-berries" {
+		t.Errorf("bush October: state = %q, want autumn-berries", got)
+	}
+}
+
 // TestSeasonArt_SweepFlipsObjects runs the real one-minute sweep: a tree turns
 // to its October art, a stocked bush to its autumn berries and, once picked
 // bare, to its autumn bare art; an asset with no season art keeps its state.

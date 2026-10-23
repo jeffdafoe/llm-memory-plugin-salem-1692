@@ -36,8 +36,11 @@
 -- {autumn,winter}-forest/...` and `/tilesets/tiny-swords/resources/trees/`).
 --
 -- ENGINE-OWNED reference data, read at boot; deploy.sh runs stop -> migrate ->
--- start. Rerun-safe: state rows NOT EXISTS-guarded on (asset_id, state), tag rows
--- ON CONFLICT DO NOTHING. Loud validation at the end where the catalog exists.
+-- start. Convergent: every state in the manifest (llm849_new) is upserted to its
+-- exact authored columns, and its tags and light rows are replaced with exactly
+-- the expected set, so a rerun or a hand-edited row ends in the same place.
+-- Validated at the end by comparing the full expected state and tag sets with
+-- the catalog in both directions.
 
 BEGIN;
 
@@ -120,66 +123,132 @@ SELECT s.asset_id, s.id, v.look, v.look,
                       'a726d5fd-a740-4f39-b9f8-dc9651609b09')   -- Tree 4
    AND s.state = 'default';
 
-INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate)
-SELECT n.asset_id, n.state, n.sheet, COALESCE(n.src_x, s.src_x), COALESCE(n.src_y, s.src_y),
+-- The exact rows every manifest state must end with.
+CREATE TEMP TABLE llm849_expect_state ON COMMIT DROP AS
+SELECT n.asset_id, n.state::varchar(30) AS state, n.sheet::varchar(200) AS sheet,
+       COALESCE(n.src_x, s.src_x) AS src_x, COALESCE(n.src_y, s.src_y) AS src_y,
        s.src_w, s.src_h, s.frame_count, s.frame_rate
   FROM llm849_new n
-  JOIN asset_state s ON s.id = n.src_state_id
- WHERE NOT EXISTS (SELECT 1 FROM asset_state d
-                    WHERE d.asset_id = n.asset_id AND d.state = n.state);
+  JOIN asset_state s ON s.id = n.src_state_id;
 
--- The look tag.
-INSERT INTO asset_state_tag (state_id, tag)
-SELECT d.id, 'season-' || n.look
+-- Its look tag plus the source state's own tags (the bushes' and the apple's
+-- berries / bare). The source is a summer state, so it carries no season tag.
+CREATE TEMP TABLE llm849_expect_tag ON COMMIT DROP AS
+SELECT n.asset_id, n.state::varchar(30) AS state, ('season-' || n.look)::varchar(50) AS tag
   FROM llm849_new n
-  JOIN asset_state d ON d.asset_id = n.asset_id AND d.state = n.state
+UNION
+SELECT n.asset_id, n.state, t.tag
+  FROM llm849_new n
+  JOIN asset_state_tag t ON t.state_id = n.src_state_id;
+
+INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate)
+SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate
+  FROM llm849_expect_state
+ON CONFLICT (asset_id, state) DO UPDATE
+   SET sheet = EXCLUDED.sheet, src_x = EXCLUDED.src_x, src_y = EXCLUDED.src_y,
+       src_w = EXCLUDED.src_w, src_h = EXCLUDED.src_h,
+       frame_count = EXCLUDED.frame_count, frame_rate = EXCLUDED.frame_rate;
+
+-- Tags: drop any tag on a manifest state that is not expected, then add the
+-- expected ones.
+DELETE FROM asset_state_tag t
+ USING asset_state d, llm849_new n
+ WHERE t.state_id = d.id
+   AND d.asset_id = n.asset_id AND d.state = n.state
+   AND NOT EXISTS (SELECT 1 FROM llm849_expect_tag e
+                    WHERE e.asset_id = d.asset_id AND e.state = d.state AND e.tag = t.tag);
+
+INSERT INTO asset_state_tag (state_id, tag)
+SELECT d.id, e.tag
+  FROM llm849_expect_tag e
+  JOIN asset_state d ON d.asset_id = e.asset_id AND d.state = e.state
 ON CONFLICT DO NOTHING;
 
--- The source state's own tags (the bushes' and the apple's berries / bare).
-INSERT INTO asset_state_tag (state_id, tag)
-SELECT d.id, t.tag
+-- Lights: a manifest state lights exactly as its source state does (none of the
+-- source states has a light row today).
+DELETE FROM asset_state_light l
+ USING asset_state d, llm849_new n
+ WHERE l.state_id = d.id
+   AND d.asset_id = n.asset_id AND d.state = n.state;
+
+INSERT INTO asset_state_light (state_id, color, radius, energy, offset_x, offset_y, flicker_amplitude, flicker_period_ms)
+SELECT d.id, l.color, l.radius, l.energy, l.offset_x, l.offset_y, l.flicker_amplitude, l.flicker_period_ms
   FROM llm849_new n
   JOIN asset_state d ON d.asset_id = n.asset_id AND d.state = n.state
-  JOIN asset_state_tag t ON t.state_id = n.src_state_id
-ON CONFLICT DO NOTHING;
+  JOIN asset_state_light l ON l.state_id = n.src_state_id;
 
--- Validate loud, only where the catalog exists (a schema-only harness has none).
+-- Validate loud. Every check holds trivially on a schema-only harness (no
+-- catalog rows, an empty manifest).
 DO $$
 DECLARE
-    missing integer;
+    bad integer;
 BEGIN
-    IF EXISTS (SELECT 1 FROM asset WHERE id = '630909ca-df4f-43ac-9fc4-5192ca44da73') THEN
-        -- Every summer-forest state has its autumn row.
-        SELECT count(*) INTO missing
-          FROM asset_state s
-         WHERE s.sheet LIKE '/tilesets/mana-seed/summer-forest/summer sheets/%'
-           AND NOT EXISTS (SELECT 1 FROM asset_state d
-                             JOIN asset_state_tag t ON t.state_id = d.id
-                            WHERE d.asset_id = s.asset_id AND t.tag LIKE 'season-autumn%');
-        IF missing > 0 THEN
-            RAISE EXCEPTION 'LLM-849: % summer-forest states have no autumn state', missing;
-        END IF;
-        -- The bushes have no winter rows; their stock tags came across.
-        IF EXISTS (SELECT 1 FROM asset_state d
-                     JOIN asset_state_tag t ON t.state_id = d.id
-                    WHERE d.asset_id IN ('630909ca-df4f-43ac-9fc4-5192ca44da73',
-                                         'db4b428c-9ab6-4457-85fb-3f85fe86c946',
-                                         'bad3e45f-3649-4cf2-b9b2-cda95b334113',
-                                         '019e5f00-c401-7a10-9e00-000000000623')
-                      AND t.tag LIKE 'season-winter%') THEN
-            RAISE EXCEPTION 'LLM-849: a bush or the apple tree got a winter state';
-        END IF;
-        IF (SELECT count(*) FROM asset_state d
-              JOIN asset_state_tag t ON t.state_id = d.id
-             WHERE d.state IN ('autumn-berries', 'autumn-bare')
-               AND t.tag IN ('berries', 'bare')) <> 6 THEN
-            RAISE EXCEPTION 'LLM-849: expected 6 stock-tagged autumn states (blueberry, raspberry, apple × berries/bare)';
-        END IF;
-        IF (SELECT count(*) FROM asset_state
-             WHERE asset_id IN ('f4376700-2b88-4a0e-8d4b-700063068c04', 'a726d5fd-a740-4f39-b9f8-dc9651609b09')
-               AND state IN ('autumn', 'winter', 'winter-snowy') AND frame_count = 8) <> 6 THEN
-            RAISE EXCEPTION 'LLM-849: Tree 3 / Tree 4 season states missing or not 8-frame';
-        END IF;
+    -- Every summer-forest state is a source in the manifest (a sheet name the
+    -- look table does not know would leave its states with no season art).
+    SELECT count(*) INTO bad
+      FROM asset_state s
+     WHERE s.sheet LIKE '/tilesets/mana-seed/summer-forest/summer sheets/%'
+       AND NOT EXISTS (SELECT 1 FROM llm849_new n WHERE n.src_state_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM asset_state_tag t WHERE t.state_id = s.id AND t.tag LIKE 'season-%');
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-849: % summer-forest states have no season states in the manifest', bad;
+    END IF;
+
+    -- The catalog's manifest states equal the expected rows, both directions.
+    SELECT count(*) INTO bad FROM (
+        (SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate FROM llm849_expect_state
+         EXCEPT
+         SELECT d.asset_id, d.state, d.sheet, d.src_x, d.src_y, d.src_w, d.src_h, d.frame_count, d.frame_rate
+           FROM asset_state d JOIN llm849_new n ON n.asset_id = d.asset_id AND n.state = d.state)
+        UNION ALL
+        (SELECT d.asset_id, d.state, d.sheet, d.src_x, d.src_y, d.src_w, d.src_h, d.frame_count, d.frame_rate
+           FROM asset_state d JOIN llm849_new n ON n.asset_id = d.asset_id AND n.state = d.state
+         EXCEPT
+         SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate FROM llm849_expect_state)
+    ) diff;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-849: % season state rows differ from the authored values', bad;
+    END IF;
+
+    -- Their tags equal the expected tags, both directions.
+    SELECT count(*) INTO bad FROM (
+        (SELECT asset_id, state, tag FROM llm849_expect_tag
+         EXCEPT
+         SELECT d.asset_id, d.state, t.tag
+           FROM asset_state d JOIN llm849_new n ON n.asset_id = d.asset_id AND n.state = d.state
+           JOIN asset_state_tag t ON t.state_id = d.id)
+        UNION ALL
+        (SELECT d.asset_id, d.state, t.tag
+           FROM asset_state d JOIN llm849_new n ON n.asset_id = d.asset_id AND n.state = d.state
+           JOIN asset_state_tag t ON t.state_id = d.id
+         EXCEPT
+         SELECT asset_id, state, tag FROM llm849_expect_tag)
+    ) diff;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-849: % season state tags differ from the expected set', bad;
+    END IF;
+
+    -- Exactly one season tag per manifest state (the engine reads one look per state).
+    SELECT count(*) INTO bad FROM (
+        SELECT d.id
+          FROM asset_state d JOIN llm849_new n ON n.asset_id = d.asset_id AND n.state = d.state
+          LEFT JOIN asset_state_tag t ON t.state_id = d.id AND t.tag LIKE 'season-%'
+         GROUP BY d.id
+        HAVING count(t.tag) <> 1
+    ) x;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-849: % season states do not carry exactly one season tag', bad;
+    END IF;
+
+    -- The bushes and the apple tree carry no winter art.
+    IF EXISTS (SELECT 1 FROM asset_state d
+                 JOIN asset_state_tag t ON t.state_id = d.id
+                WHERE d.asset_id IN ('630909ca-df4f-43ac-9fc4-5192ca44da73',
+                                     'db4b428c-9ab6-4457-85fb-3f85fe86c946',
+                                     'bad3e45f-3649-4cf2-b9b2-cda95b334113',
+                                     '019e5f00-c401-7a10-9e00-000000000623')
+                  AND t.tag LIKE 'season-winter%') THEN
+        RAISE EXCEPTION 'LLM-849: a bush or the apple tree has a winter state';
     END IF;
 END $$;
 

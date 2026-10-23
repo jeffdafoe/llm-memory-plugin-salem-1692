@@ -114,10 +114,12 @@ func hasSeasonArt(asset *Asset) bool {
 
 // seasonState is the state asset shows for chain: the first look in the chain
 // that has a state carrying stockTag (any state when stockTag is empty). Within a
-// look the asset's default state wins, then the lowest id, so the pick is stable.
-// "" when no state matches at all (a bush whose stock tag has no state).
+// look the season counterpart of the asset's default state wins (see
+// seasonCounterpart), then the lowest id, so the pick is stable. "" when no state
+// matches at all (a bush whose stock tag has no state).
 func seasonState(asset *Asset, stockTag string, chain []string) string {
 	for _, look := range chain {
+		preferred := seasonCounterpart(asset.DefaultState, look)
 		var best *AssetState
 		for i := range asset.States {
 			s := &asset.States[i]
@@ -127,7 +129,7 @@ func seasonState(asset *Asset, stockTag string, chain []string) string {
 			if stateLook(s) != look {
 				continue
 			}
-			if s.State == asset.DefaultState {
+			if s.State == preferred {
 				return s.State
 			}
 			if best == nil || s.ID < best.ID {
@@ -139,4 +141,18 @@ func seasonState(asset *Asset, stockTag string, chain []string) string {
 		}
 	}
 	return ""
+}
+
+// seasonCounterpart is the name the migration gives the look's copy of state
+// def: def itself for summer, the look alone for a `default` state, else
+// look-def (`autumn-berries`). The rule lives in LLM-849-season-art-states.
+func seasonCounterpart(def, look string) string {
+	switch {
+	case look == lookSummer:
+		return def
+	case def == "default":
+		return look
+	default:
+		return look + "-" + def
+	}
 }
