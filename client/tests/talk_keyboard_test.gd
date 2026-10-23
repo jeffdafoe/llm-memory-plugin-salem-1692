@@ -238,10 +238,11 @@ func _test_world_tap_releases_text_focus() -> void:
 ## A talk panel built as on a touch device, so it has its own keyboard.
 func _touch_talk_panel() -> CanvasLayer:
     var guard: Node = root.get_node("OrientationGuard")
+    var was_touch: bool = guard._touch_text
     guard._touch_text = true
     var talk: CanvasLayer = load("res://scripts/talk_panel.gd").new()
     root.add_child(talk)
-    guard._touch_text = false
+    guard._touch_text = was_touch
     return talk
 
 
