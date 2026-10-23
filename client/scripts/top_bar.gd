@@ -29,7 +29,8 @@ var hour_label: Label = null
 var season_icon: Label = null
 var season_label: Label = null
 ## The whole title group, the credits link (LLM-777).
-var _title_box: HBoxContainer = null
+var _title_box: Control = null
+var _title_row: HBoxContainer = null
 var _title_stack: PanelContainer = null
 var _title_when: HBoxContainer = null
 
@@ -221,18 +222,25 @@ func _ready() -> void:
 
     # Title: the name, then the date stacked over the hour and season. The box
     # gives way first when the row is crowded (bigger text on a touch screen),
-    # so the purse, needs and buttons never overflow.
-    _title_box = HBoxContainer.new()
+    # so the purse, needs and buttons never overflow. It is a plain Control,
+    # not a container, so its minimum width is 0 and the row inside it clips.
+    _title_box = Control.new()
     _title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _title_box.clip_contents = true
-    _title_box.add_theme_constant_override("separation", 12)
     _title_box.mouse_filter = Control.MOUSE_FILTER_STOP
     _title_box.gui_input.connect(_on_title_input)
     _title_box.mouse_exited.connect(func(): _set_title_hover(false))
     hbox.add_child(_title_box)
 
+    # Full height, left edge, as wide as its contents.
+    _title_row = HBoxContainer.new()
+    _title_row.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+    _title_row.add_theme_constant_override("separation", 12)
+    _title_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _title_box.add_child(_title_row)
+
     title_label = _title_part(GAME_TITLE, 26, COLOR_TEXT)
-    _title_box.add_child(title_label)
+    _title_row.add_child(title_label)
 
     # The divider is the stack's left border, so it is only as tall as the
     # two lines, not the whole bar.
@@ -246,7 +254,7 @@ func _ready() -> void:
     _title_stack.size_flags_vertical = Control.SIZE_SHRINK_CENTER
     _title_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _title_stack.visible = false
-    _title_box.add_child(_title_stack)
+    _title_row.add_child(_title_stack)
 
     var lines := VBoxContainer.new()
     lines.add_theme_constant_override("separation", -2)
@@ -706,7 +714,7 @@ func _on_title_input(event: InputEvent) -> void:
 ## How far the name and, when shown, the date stack reach into the title box.
 func _title_width() -> float:
     var last: Control = _title_stack if _title_stack.visible else title_label
-    return last.position.x + last.size.x
+    return _title_row.position.x + last.position.x + last.size.x
 
 func _set_title_hover(on: bool) -> void:
     var color: Color = COLOR_TITLE_HOVER if on else COLOR_TEXT

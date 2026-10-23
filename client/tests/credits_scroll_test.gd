@@ -274,6 +274,13 @@ func _test_title_text_opens_credits() -> void:
     _check("no hand in the empty bar beside the title", bar._title_box.mouse_default_cursor_shape, Control.CURSOR_ARROW)
     bar._on_title_input(click)
     _check("a click beside the title does nothing", pressed[0], 2)
+    # The date goes away: the link shrinks back to the name.
+    var stack_x: float = bar._title_stack.position.x + 4
+    bar.set_village_date("", "")
+    await process_frame
+    click.position = Vector2(stack_x, 10)
+    bar._on_title_input(click)
+    _check("no date: a click where the date was does nothing", pressed[0], 2)
     bar.free()
     _done()
 
