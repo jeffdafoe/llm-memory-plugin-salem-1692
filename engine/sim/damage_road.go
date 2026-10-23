@@ -10,15 +10,16 @@ package sim
 // PublicWorksKind reads it as PublicWorksRoad, so every public-works surface
 // (bounty, cue, boards, ticker, PC thought) covers it through the same loop.
 //
-// The look (LLM-678, roadObstacleVariants): a snapped tree — the bare or
-// winter top of a Growable Trees maple, chestnut or birch lying crown-west
-// across the road, with its stump standing on the grass at the cut end — or the
-// summer-forest broken trunk. The stump is its own 1-tile obstacle: clearing
+// The look (LLM-678/789, roadObstacleVariants): a snapped tree — the bare or
+// winter top of a Growable Trees maple, chestnut or birch lying on the
+// diagonal across the road, crown up-left or down-left, broken mid-trunk, with
+// its stump standing on the grass at the cut end — or the summer-forest broken
+// trunk. The stump is its own 1-tile obstacle: clearing
 // the road removes the top and starts the stump's clock (RoadStumpDays), and
 // RemoveExpiredObjects takes it at the daily boundary once that has run out.
 //
 // The effect is the detour. Every top is an obstacle with a footprint the size
-// of the drawn tree (migration LLM-678-fallen-trees), and the walk grid is
+// of the drawn tree (migrations LLM-678-fallen-trees, LLM-789-snapped-fallen-trees), and the walk grid is
 // rebuilt from live objects on every locomotion tick, so walkers route around
 // it on the next tick with no pathfinder change. Nobody is slowed; they walk
 // the long way.
@@ -31,9 +32,9 @@ package sim
 // building, fence or any other obstacle, or an object already standing there.
 // The site must be within damageSiteLandmarkTiles of a named building — the
 // obstacle is named by it ("Fallen maple by the Cole Residence") and lies where
-// people walk. A snapped tree's stump must stand off the road, in line with the
-// trunk past its cut end — so snapped trees fall across north-south roads, and
-// the stumpless trunk is the one that can close an east-west road.
+// people walk. A snapped tree's stump must stand off the road, past its cut
+// end; lying on the diagonal, its stump is off the anchor's row and column, so
+// a snapped tree can close a north-south or an east-west road.
 
 import (
 	"errors"
@@ -63,32 +64,44 @@ type roadObstacleVariant struct {
 	// StumpState is the StormStumpAssetID state that stands at the cut end; ""
 	// for a variant with no stump. StumpDX/DY is the stump anchor's world offset
 	// from the top's anchor, measured off the art (llm-memory-village-tiles
-	// tilesets/growable-trees/public-works-fallen-trees.json) at render scale 2.
+	// tilesets/growable-trees/public-works-fallen-trees-snapped.json, written by
+	// tools/fallen-trees) at render scale 2.
 	StumpState       string
 	StumpDX, StumpDY float64
 }
 
-// The road-obstacle catalog (migration LLM-678-fallen-trees). Ids are fixed; a
-// catalog without them (a test world, a fresh DB) places nothing.
+// The road-obstacle catalog (migrations LLM-678-fallen-trees and
+// LLM-789-snapped-fallen-trees). Each snapped species has one asset per pose,
+// since anchor and footprint are per asset: the LLM-678 ids lie crown up-left
+// (stump down-right), the LLM-789 ids crown down-left (stump up-right). Ids are
+// fixed; a catalog without them (a test world, a fresh DB) places nothing.
 const (
-	FallenMapleAssetID    AssetID = "019e5f00-c401-7a10-9e00-000000678001"
-	FallenChestnutAssetID AssetID = "019e5f00-c401-7a10-9e00-000000678002"
-	FallenBirchAssetID    AssetID = "019e5f00-c401-7a10-9e00-000000678003"
-	StormStumpAssetID     AssetID = "019e5f00-c401-7a10-9e00-000000678004"
-	FallenTrunkAssetID    AssetID = "019e5f00-c401-7a10-9e00-000000678005"
+	FallenMapleAssetID         AssetID = "019e5f00-c401-7a10-9e00-000000678001"
+	FallenChestnutAssetID      AssetID = "019e5f00-c401-7a10-9e00-000000678002"
+	FallenBirchAssetID         AssetID = "019e5f00-c401-7a10-9e00-000000678003"
+	StormStumpAssetID          AssetID = "019e5f00-c401-7a10-9e00-000000678004"
+	FallenTrunkAssetID         AssetID = "019e5f00-c401-7a10-9e00-000000678005"
+	FallenMapleSouthAssetID    AssetID = "019e5f00-c401-7a10-9e00-000000789001"
+	FallenChestnutSouthAssetID AssetID = "019e5f00-c401-7a10-9e00-000000789002"
+	FallenBirchSouthAssetID    AssetID = "019e5f00-c401-7a10-9e00-000000789003"
 )
 
-// roadObstacleVariants are the looks a road break picks from at random, all
-// lying crown-west (LLM-678): the bare and winter tops of the Growable Trees
-// maple, chestnut and birch, each snapped off its stump, and the summer-forest
-// broken trunk.
+// roadObstacleVariants are the looks a road break picks from at random: the
+// bare and winter tops of the Growable Trees maple, chestnut and birch in both
+// poses, each snapped off its stump, and the summer-forest broken trunk.
 var roadObstacleVariants = []roadObstacleVariant{
-	{Asset: FallenMapleAssetID, State: "bare", Name: "Fallen maple", StumpState: "maple-bare", StumpDX: 79, StumpDY: -5},
-	{Asset: FallenMapleAssetID, State: "winter", Name: "Fallen maple", StumpState: "maple-winter", StumpDX: 79, StumpDY: -5},
-	{Asset: FallenChestnutAssetID, State: "bare", Name: "Fallen chestnut", StumpState: "chestnut-bare", StumpDX: 111, StumpDY: 25},
-	{Asset: FallenChestnutAssetID, State: "winter", Name: "Fallen chestnut", StumpState: "chestnut-winter", StumpDX: 111, StumpDY: 25},
-	{Asset: FallenBirchAssetID, State: "bare", Name: "Fallen birch", StumpState: "birch-bare", StumpDX: 73, StumpDY: 17},
-	{Asset: FallenBirchAssetID, State: "winter", Name: "Fallen birch", StumpState: "birch-winter", StumpDX: 73, StumpDY: 17},
+	{Asset: FallenMapleAssetID, State: "bare", Name: "Fallen maple", StumpState: "maple-bare", StumpDX: 67, StumpDY: 40},
+	{Asset: FallenMapleAssetID, State: "winter", Name: "Fallen maple", StumpState: "maple-winter", StumpDX: 67, StumpDY: 40},
+	{Asset: FallenMapleSouthAssetID, State: "bare", Name: "Fallen maple", StumpState: "maple-bare", StumpDX: 72, StumpDY: -24},
+	{Asset: FallenMapleSouthAssetID, State: "winter", Name: "Fallen maple", StumpState: "maple-winter", StumpDX: 72, StumpDY: -24},
+	{Asset: FallenChestnutAssetID, State: "bare", Name: "Fallen chestnut", StumpState: "chestnut-bare", StumpDX: 90, StumpDY: 72},
+	{Asset: FallenChestnutAssetID, State: "winter", Name: "Fallen chestnut", StumpState: "chestnut-winter", StumpDX: 90, StumpDY: 72},
+	{Asset: FallenChestnutSouthAssetID, State: "bare", Name: "Fallen chestnut", StumpState: "chestnut-bare", StumpDX: 111, StumpDY: -20},
+	{Asset: FallenChestnutSouthAssetID, State: "winter", Name: "Fallen chestnut", StumpState: "chestnut-winter", StumpDX: 111, StumpDY: -20},
+	{Asset: FallenBirchAssetID, State: "bare", Name: "Fallen birch", StumpState: "birch-bare", StumpDX: 80, StumpDY: 49},
+	{Asset: FallenBirchAssetID, State: "winter", Name: "Fallen birch", StumpState: "birch-winter", StumpDX: 80, StumpDY: 49},
+	{Asset: FallenBirchSouthAssetID, State: "bare", Name: "Fallen birch", StumpState: "birch-bare", StumpDX: 88, StumpDY: -28},
+	{Asset: FallenBirchSouthAssetID, State: "winter", Name: "Fallen birch", StumpState: "birch-winter", StumpDX: 88, StumpDY: -28},
 	{Asset: FallenTrunkAssetID, Name: "Fallen tree"},
 }
 

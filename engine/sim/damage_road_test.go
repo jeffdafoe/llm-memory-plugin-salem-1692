@@ -51,8 +51,8 @@ func buildRoadDamageWorld(t *testing.T, paint roadTiles, landmark sim.TilePos) *
 			}
 		}
 		world.Terrain = &sim.Terrain{Data: data}
-		// The live Fallen Maple (3x3 footprint, stump two tiles east of the
-		// anchor) and the Storm Stump; the other variants are absent, so every
+		// A Fallen Maple (3x3 footprint, stump two tiles east and one south of
+		// the anchor) and the Storm Stump; the other variants are absent, so every
 		// break is a maple.
 		world.Assets[sim.FallenMapleAssetID] = &sim.Asset{ID: sim.FallenMapleAssetID, Name: "Fallen Maple", DefaultState: "bare",
 			IsObstacle: true, FootprintLeft: 1, FootprintRight: 1, FootprintTop: 1, FootprintBottom: 1,
@@ -151,8 +151,8 @@ func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 			}
 		}
 		a := o.Pos.Tile()
-		// Its stump stands two tiles east of the anchor, past the cut end, on
-		// grass — and blocks its own tile.
+		// Its stump stands two tiles east and one south of the anchor, past
+		// the cut end, on grass — and blocks its own tile.
 		stumps := stormStumps(world)
 		if len(stumps) != 1 {
 			t.Fatalf("storm stumps = %d, want 1", len(stumps))
@@ -162,8 +162,8 @@ func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 		if st.AssetID != sim.StormStumpAssetID || st.CurrentState != "maple-bare" || !st.ExpiresAt.IsZero() {
 			t.Errorf("stump = %+v, want a maple-bare Storm Stump with no expiry yet", st)
 		}
-		if stTile != (sim.TilePos{X: a.X + 2, Y: a.Y}) {
-			t.Errorf("stump tile %v, want %v — just past the cut end", stTile, sim.TilePos{X: a.X + 2, Y: a.Y})
+		if stTile != (sim.TilePos{X: a.X + 2, Y: a.Y + 1}) {
+			t.Errorf("stump tile %v, want %v — just past the cut end", stTile, sim.TilePos{X: a.X + 2, Y: a.Y + 1})
 		}
 		if b := world.Terrain.Data[stTile.Y*sim.MapW+stTile.X]; b == sim.TerrainDirt || b == sim.TerrainCobblestone {
 			t.Errorf("stump stands on the road at %v", stTile)
@@ -307,9 +307,8 @@ func TestRoadClearingByAHand(t *testing.T) {
 
 // TestRoadObstacleSiteRules — the snapped maple must cut a road, with open dry
 // ground around it, its stump off the road, and a named building near: a
-// north-south road up to three wide takes one; a wider road, water close by, no
-// landmark in range — or an east-west road, where the stump in line with the
-// trunk would stand on the road — takes none.
+// north-south road up to three wide takes one; a wider road, water close by or
+// no landmark in range takes none. (East-west roads: TestSnappedTreeClosesAnEastWestRoad.)
 func TestRoadObstacleSiteRules(t *testing.T) {
 	water := func(base roadTiles, wx int) roadTiles {
 		return func(x, y int) byte {
@@ -328,7 +327,6 @@ func TestRoadObstacleSiteRules(t *testing.T) {
 		{"north-south, 1 wide", northSouthRoad(100, 1), sim.TilePos{X: 106, Y: 45}, true},
 		{"north-south, 3 wide", northSouthRoad(100, 3), sim.TilePos{X: 106, Y: 45}, true},
 		{"north-south, 4 wide", northSouthRoad(100, 4), sim.TilePos{X: 106, Y: 45}, false},
-		{"east-west, 2 wide (stump would stand on the road)", eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46}, false},
 		{"water beside the road", water(northSouthRoad(100, 2), 103), sim.TilePos{X: 106, Y: 45}, false},
 		{"no building within range", northSouthRoad(100, 2), sim.TilePos{X: 150, Y: 150}, false},
 	}
@@ -407,7 +405,7 @@ func TestRoadClearingThatCannotLandPaysNothing(t *testing.T) {
 
 // TestRoadTrunkVariantHasNoStump — the broken-trunk variant (the summer-forest
 // Fallen Tree art) comes down with no stump, and, having none to keep off the
-// road, can close an east-west road the snapped trees cannot.
+// road, can close an east-west road.
 func TestRoadTrunkVariantHasNoStump(t *testing.T) {
 	w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})
 	mustSend(t, w, func(world *sim.World) {
@@ -428,6 +426,60 @@ func TestRoadTrunkVariantHasNoStump(t *testing.T) {
 			t.Errorf("storm stumps = %d, want none for the trunk", n)
 		}
 	})
+}
+
+// TestSnappedTreeClosesAnEastWestRoad (LLM-789) — lying on the diagonal, a
+// snapped top's stump is off the anchor's row, so either pose can come down
+// across an east-west road with its stump on the grass beside it.
+func TestSnappedTreeClosesAnEastWestRoad(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		asset            sim.AssetID
+		left, right      int
+		top, bottom      int
+		stumpDX, stumpDY int
+	}{
+		{"crown up-left", sim.FallenMapleAssetID, 1, 1, 1, 1, 2, 1},
+		{"crown down-left", sim.FallenMapleSouthAssetID, 2, 1, 1, 1, 2, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})
+			mustSend(t, w, func(world *sim.World) {
+				delete(world.Assets, sim.FallenMapleAssetID)
+				world.Assets[tc.asset] = &sim.Asset{ID: tc.asset, Name: "Fallen Maple", DefaultState: "bare", IsObstacle: true,
+					FootprintLeft: tc.left, FootprintRight: tc.right, FootprintTop: tc.top, FootprintBottom: tc.bottom,
+					States: []sim.AssetState{{ID: 40, State: "bare"}, {ID: 41, State: "winter"}}}
+			})
+			res, err := w.Send(sim.ForceRoadDamage(sim.DamageTriggerForce, &seqRoller{vals: []float64{0, 0.5}}))
+			if err != nil {
+				t.Fatalf("want the maple across the east-west road, got %v", err)
+			}
+			mustSend(t, w, func(world *sim.World) {
+				o := world.VillageObjects[res.(sim.VillageObjectID)]
+				if o.AssetID != tc.asset || o.DisplayName != "Fallen maple" {
+					t.Fatalf("obstacle = %+v, want the Fallen maple", o)
+				}
+				a := o.Pos.Tile()
+				// Both road rows lie inside the footprint: the road is cut.
+				for _, y := range []int{40, 41} {
+					if y < a.Y-tc.top || y > a.Y+tc.bottom {
+						t.Errorf("road row %d is outside the footprint rows %d-%d", y, a.Y-tc.top, a.Y+tc.bottom)
+					}
+				}
+				stumps := stormStumps(world)
+				if len(stumps) != 1 {
+					t.Fatalf("storm stumps = %d, want 1", len(stumps))
+				}
+				st := stumps[0].Pos.Tile()
+				if want := (sim.TilePos{X: a.X + tc.stumpDX, Y: a.Y + tc.stumpDY}); st != want {
+					t.Errorf("stump tile %v, want %v", st, want)
+				}
+				if b := world.Terrain.Data[st.Y*sim.MapW+st.X]; b == sim.TerrainDirt || b == sim.TerrainCobblestone {
+					t.Errorf("stump stands on the road at %v", st)
+				}
+			})
+		})
+	}
 }
 
 // TestStumpOutlivingItsTreeGetsAClock (code_review) — a top that leaves the road
