@@ -457,10 +457,9 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			}
 
 			// Stamp item-source dwell credits for satisfactions with a
-			// complete dwell triple. Pin to the named village object whose
-			// loiter pin the actor stands at (Chebyshev <= 1 tile) via
-			// resolveLoiteringObject — the v1 resolveLoiteringStructure
-			// attribution every reverse-lookup now shares. If no qualifying
+			// complete dwell triple. Pin to the building the actor is inside,
+			// else the named village object whose loiter pin it stands at
+			// (mealObjectAt). If no qualifying
 			// object (eating-while-walking far from any pin), structureID=""
 			// and UpsertItemDwellCredits silent-skips — matches v1 behavior
 			// where eat-while-walking gets only the immediate hit, not the
@@ -471,7 +470,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			// ("this stew looks really good — you'll need some time to
 			// enjoy it properly"). No event when nothing landed (skipped
 			// item, eat-while-walking, no dwell triples on satisfactions).
-			structureID, _ := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
+			structureID, _ := mealObjectAt(w, actor)
 			var stamped []DwellCreditSnapshot
 			if structureID != "" {
 				stamped = UpsertItemDwellCredits(actor, kind, def.Satisfies, structureID, at)
