@@ -36,6 +36,10 @@ class_name FarmerRig
 ## guide, frames 1-2 sit at 13,10 and frames 3-5 at 25,10 — so the iron
 ## stays put on the anvil.
 ##
+## reach = the guide's PUSH lean, east only (cell 40), back to idle: hands
+## into a bush or a tree's low boughs. A bush gather plays it in place of the
+## pick crouch, which read as squatting.
+##
 ## milk (LLM-797) = the guide's MILK COW, east only: kneeling, hands at the
 ## udder (cells 110-111, 180 ms each). The guide draws the cow into the frame;
 ## here the cow is her own actor beside the milker.
@@ -115,6 +119,7 @@ const ANIMATIONS := {
     "south_pick": {"frames": [{"cell": 130, "ms": 600}, {"cell": 0, "ms": 400}]},
     "north_pick": {"frames": [{"cell": 146, "ms": 600}, {"cell": 16, "ms": 400}]},
     "east_pick": {"frames": [{"cell": 162, "ms": 600}, {"cell": 32, "ms": 400}]},
+    "east_reach": {"frames": [{"cell": 40, "ms": 600}, {"cell": 32, "ms": 400}]},
     "south_drink": {"prop": "mug", "frames": [
         {"cell": 112, "ms": 1200, "prop": {"pose": 61, "x": 16, "y": 16}},
         {"cell": 113, "ms": 800, "prop": {"pose": 62, "x": 16, "y": 16}}
