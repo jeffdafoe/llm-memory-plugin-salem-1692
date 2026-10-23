@@ -136,3 +136,49 @@ func TestAcceptPay_ConsumeNow_IndoorMeal_DwellPinsToBuilding(t *testing.T) {
 		t.Fatalf("no meal credit at Tavern for the indoor buyer; credits %v", view.DwellCredits)
 	}
 }
+
+// TestPayWithItem_EatHereBundle_IndoorMeal_DwellPinsToBuilding: the per-line
+// bundle delivery path. An eat-here stew + bread bundle taken by a buyer inside
+// the Tavern pins the stew's dwell credit to the Tavern, and the first dwell
+// tick keeps it.
+func TestPayWithItem_EatHereBundle_IndoorMeal_DwellPinsToBuilding(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "john", displayName: "John", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 3, "bread": 3}},
+	})
+	defer stop()
+	seedLiveTavern(t, w, "alice", true)
+	at := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Needs = map[sim.NeedKey]int{"hunger": 20}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed needs: %v", err)
+	}
+	seedQuote(t, w, sim.SceneQuote{
+		ID:         9,
+		SceneID:    "sc1",
+		SellerID:   "john",
+		Lines:      []sim.QuoteLine{{ItemKind: "stew", Qty: 1}, {ItemKind: "bread", Qty: 1}},
+		Amount:     8,
+		ConsumeNow: true,
+		State:      sim.SceneQuoteStateActive,
+		ExpiresAt:  at.Add(10 * time.Minute),
+	})
+	res, err := w.Send(sim.PayWithItem("alice", "John", "stew", 1, 8, true, nil, nil, 9, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem (eat-here bundle): %v", err)
+	}
+	if out := res.(sim.PayWithItemResult); !out.FastPath || out.TookHome || out.BuyerAte != 2 {
+		t.Fatalf("result = %+v, want fast-path eat-here, both lines eaten", out)
+	}
+	if _, ok := readLiveActor(t, w, "alice").DwellCredits[tavernMealKey]; !ok {
+		t.Fatalf("no meal credit at Tavern for the indoor bundle buyer")
+	}
+	if _, err := w.Send(sim.ApplyDwellTick(at.Add(2 * time.Minute))); err != nil {
+		t.Fatalf("ApplyDwellTick: %v", err)
+	}
+	if _, ok := readLiveActor(t, w, "alice").DwellCredits[tavernMealKey]; !ok {
+		t.Fatalf("bundle meal credit ended on the first tick")
+	}
+}
