@@ -88,7 +88,11 @@ func SetActorPosition(actorID ActorID, target Position, now time.Time) Command {
 
 			from := actor.Pos
 			actor.Pos = target
+			fromRoom := actor.InsideRoomID
 			updateInsideStructureIDFromTileOwnership(w, actor)
+			if actor.InsideRoomID != fromRoom {
+				tracePCRoomChange(w, actor, fromRoom, pcRoomStructureChange, now) // LLM-847
+			}
 
 			w.emit(&ActorTeleported{
 				ActorID:           actor.ID,

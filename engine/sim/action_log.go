@@ -245,6 +245,19 @@ const (
 	// CounterpartyName is its author. On the self-action trail, and durable
 	// {note_id, from, text, left_at} so the night's dream records it.
 	ActionTypeReadNote ActionType = "read_note"
+
+	// ActionTypePCSlept, ActionTypePCWoke, ActionTypePCRoomChanged — a player's
+	// character went to bed, woke, or changed room inside a building (LLM-847,
+	// pc_trace.go). DURABLE-ONLY audit with no huddle id, so no reader of the
+	// table picks them up: they exist to answer "what happened to my character
+	// overnight" from SQL. Payloads: slept {structure_id, structure, room_id,
+	// room, how, tiredness, wake_cap_at}; woke {reason, from_room_id, from_room,
+	// to_room_id, to_room, tiredness, presence_stale}; room_changed
+	// {structure_id, structure, from_room_id, from_room, to_room_id, to_room,
+	// cause}.
+	ActionTypePCSlept       ActionType = "pc_slept"
+	ActionTypePCWoke        ActionType = "pc_woke"
+	ActionTypePCRoomChanged ActionType = "pc_room_changed"
 )
 
 // isNegotiationActionType reports whether t is one of the pay-ledger negotiation

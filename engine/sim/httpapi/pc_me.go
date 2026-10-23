@@ -133,6 +133,10 @@ type pcMeResponse struct {
 	// is in, when it has an upstairs hall the client draws (LLM-801) — those
 	// doors stand open. Absent anywhere else (and when every room is let).
 	VacantRooms []string `json:"vacant_rooms,omitempty"`
+	// MyRoom names the bedroom the PC holds at the building it is in, scoped
+	// like VacantRooms — the door the client marks with an arrow in the
+	// upstairs hall (LLM-847). Absent without a room there.
+	MyRoom string `json:"my_room,omitempty"`
 }
 
 // pcCampDTO is a PC's pitched camp (LLM-798). Place is where it stands, for
@@ -315,6 +319,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	resp.Camp = pcCampSurface(snap, pcID)
 	if pc.InsideStructureID != "" && roomlayout.ForRoom(string(pc.InsideStructureID), sim.HallRoomName) != nil {
 		resp.VacantRooms = sim.VacantRooms(snap, pc.InsideStructureID)
+		resp.MyRoom = sim.HeldRoomName(snap, pc, pc.InsideStructureID)
 	}
 
 	writeJSON(w, resp)

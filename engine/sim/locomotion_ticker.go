@@ -1063,7 +1063,11 @@ func reconcileInsideAndNarrateDeparture(w *World, actor *Actor, now time.Time) {
 		w.emit(&ActorLeftStructure{ActorID: actor.ID, StructureID: old, At: now})
 		emitDepartureNarration(w, actor, old, now)
 	}
+	fromRoom := actor.InsideRoomID
 	setActorInsideStructure(w, actor, target)
+	if actor.InsideRoomID != fromRoom {
+		tracePCRoomChange(w, actor, fromRoom, pcRoomStructureChange, now) // LLM-847
+	}
 }
 
 // setActorInsideStructure sets actor.InsideStructureID AND the

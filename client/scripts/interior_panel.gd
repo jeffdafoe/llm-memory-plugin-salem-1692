@@ -108,6 +108,13 @@ const WALK_OFF := 40.0
 const WALK_SPEED := 24.0
 const FADE_SECONDS := 0.5
 const LEAVING_PREFIX := "leaving_"
+## The arrow on the door of the player's own room upstairs (LLM-847): the
+## parchment kit's down arrow, bobbing ARROW_BOB px (whole pixels, so it stays
+## crisp) and fading to ARROW_ALPHA_MIN and back once every ARROW_PERIOD seconds.
+const MY_ROOM_ARROW := "/tilesets/parchment-ui/down-arrow.png"
+const ARROW_PERIOD := 1.0
+const ARROW_BOB := 2
+const ARROW_ALPHA_MIN := 0.55
 ## The one tending a stall bustles behind the counter (LLM-754): every
 ## BUSTLE_MIN..BUSTLE_MAX seconds a walk to a point up to BUSTLE_REACH either
 ## side of their spot (or back to it) at BUSTLE_SPEED, then a look at the
@@ -224,6 +231,9 @@ var room_name := ""
 ## The bedrooms nobody has taken, from /pc/me — their doors in the hall stand
 ## open (LLM-801).
 var vacant_rooms: Array = []
+## The bedroom the player holds here, from /pc/me (LLM-847): a pulsing arrow
+## marks its door in the hall. "" for none.
+var my_room := ""
 ## Where the last tap on a door or the stairs fell (room art px): a refusal's
 ## line is shown there.
 var _way_tap := Vector2.ZERO
@@ -1722,6 +1732,16 @@ func set_vacant_rooms(list: Array) -> void:
         _draw_anims()
 
 
+## The bedroom the player holds here (LLM-847): an arrow pulses on its door in
+## the hall. Redraws only when it changed.
+func set_my_room(room_name_held: String) -> void:
+    if room_name_held == my_room:
+        return
+    my_room = room_name_held
+    if visible and not room.is_empty():
+        _draw_anims()
+
+
 ## The squares the people drawn in the room stand on, the player's character
 ## left out — a tap on furniture walks to a free place beside it.
 func _held_squares() -> Dictionary:
@@ -1944,6 +1964,21 @@ func _draw_anims() -> void:
                 door.texture = open_door
                 door.position = (tap as Rect2).position + Vector2(2, 2)
                 _anims.add_child(door)
+    # The player's own room (LLM-847): a pulsing arrow on its door, under the
+    # number plate, so a guest finds it among the shut doors. Only a hall's
+    # doors lead to a bedroom, so it shows nowhere else.
+    var arrow := _texture(MY_ROOM_ARROW) if my_room != "" else null
+    if arrow != null:
+        for spot in room.get("spots", []):
+            var tap = spot.get("tap", null)
+            if tap is Rect2 and str(spot.get("leads", "")) == my_room:
+                var r := tap as Rect2
+                var mark := Sprite2D.new()
+                mark.centered = false
+                mark.texture = arrow
+                mark.position = Vector2(floorf(r.position.x + (r.size.x - arrow.get_width()) / 2.0), r.position.y + 1.0)
+                mark.set_meta("arrow_y", mark.position.y)
+                _anims.add_child(mark)
     for anim in room.get("anims", []):
         var strip := _texture(str(anim.get("sheet", "")))
         if strip == null:
@@ -1996,6 +2031,11 @@ func _animate(delta: float) -> void:
     for spr in _anims.get_children() + _people.get_children():
         if spr.has_meta("fps"):
             spr.frame = int(_anim_time * float(spr.get_meta("fps"))) % spr.hframes
+        elif spr.has_meta("arrow_y"):
+            # 0 → 1 → 0 over one period: down by whole pixels and fading, then back.
+            var wave := 0.5 - 0.5 * cos(fmod(_anim_time, ARROW_PERIOD) / ARROW_PERIOD * TAU)
+            spr.position.y = float(spr.get_meta("arrow_y")) + roundf(wave * ARROW_BOB)
+            spr.modulate.a = lerpf(1.0, ARROW_ALPHA_MIN, wave)
 
 
 ## The goods on the stall's shelf changed (or their sheet arrived): lay them

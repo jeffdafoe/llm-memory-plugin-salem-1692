@@ -884,6 +884,12 @@ type Actor struct {
 	// (room_walk.go); zero until the drift sweep first sees them inside. Memory
 	// only, cleared on every inside change.
 	RoomDriftAt time.Time
+	// TracedRoomID / TracedRoomSet: the room a player's character was last
+	// recorded in by the LLM-847 trace (pc_trace.go), so the per-minute safety
+	// net can tell a room change nothing recorded. Memory only: the first sweep
+	// after a boot records the restored room without a row.
+	TracedRoomID  RoomID
+	TracedRoomSet bool
 
 	// Render identity — client-facing only, the engine never branches on
 	// these. SpriteID references the npc_sprite catalog (World.Sprites) for
