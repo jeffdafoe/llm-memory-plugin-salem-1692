@@ -1316,6 +1316,8 @@ func _input(event: InputEvent) -> void:
             # piggyback on it rather than duplicating the rect math.
             if camera != null and camera._is_over_ui(event.position):
                 return
+            if _release_text_focus_on_touch():
+                return
             # Skip clicks that landed on an actor sprite — those are
             # "who is this" identification clicks handled by
             # actor_tooltip.gd, not walk targets. The actor is kept so its
@@ -1345,6 +1347,24 @@ func _input(event: InputEvent) -> void:
             if event.position.distance_to(_pc_walk_press_screen) > _PC_CLICK_DRAG_THRESHOLD:
                 _pc_walk_pending = false
                 _pc_actor_press = null
+
+## On a touch device, a tap on the village while a text field has focus only
+## takes the focus away, which puts the on-screen keyboard down; it does not
+## walk (LLM-828). Desktop keeps click-to-walk while typing.
+func _release_text_focus_on_touch() -> bool:
+    if not OrientationGuard.is_touch():
+        return false
+    return release_text_focus(get_viewport())
+
+## Take the focus from a focused text field in viewport. True if there was one.
+static func release_text_focus(viewport: Viewport) -> bool:
+    if viewport == null:
+        return false
+    var focused := viewport.gui_get_focus_owner()
+    if focused is TextEdit or focused is LineEdit:
+        focused.release_focus()
+        return true
+    return false
 
 ## A click on an actor (LLM-797): a milking animal, with the feed in the
 ## player's pack, asks whether to feed her. Anyone else is the identification
