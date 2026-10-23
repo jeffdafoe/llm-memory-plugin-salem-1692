@@ -20,6 +20,9 @@ extends CanvasLayer
 ##   - POST /api/village/pc/speak {text}  → broadcast (indoor: huddle scope; outdoor: proximity broadcast with speaker_x/speaker_y)
 
 const PayPanelScript = preload("res://scripts/pay_panel.gd")
+const TalkKeyboardScript = preload("res://scripts/talk_keyboard.gd")
+# Our keyboard (LLM-861) is about this share of the screen's height.
+const OWN_KEYBOARD_VH := 0.33
 
 const REFRESH_INTERVAL := 10.0
 # ZBBS-WORK-399: Village tab poll cadence. Runs only while the tab is the
@@ -265,6 +268,13 @@ var unread_count := 0
 var is_mobile := false
 var input_focused := false
 var _pending_focus := false
+# LLM-861, touch devices only: our keyboard under the Speak row, and the
+# Speak-row key that opens or hides it. system_keyboard is true while the
+# player has switched to the device's keyboard (voice typing); it ends on
+# send, on focus loss, or on that key.
+var own_keyboard: VBoxContainer = null
+var keyboard_button: Button = null
+var system_keyboard := false
 
 
 func _ready() -> void:
@@ -587,6 +597,8 @@ func _set_active_tab(village: bool) -> void:
     nearby_scroll.visible = not village
     if input_row != null:
         input_row.visible = not village
+    if village:
+        _hide_own_keyboard()
     village_scroll.visible = village
     _update_tab_buttons()
     # Poll lifecycle only reacts when the panel is actually open — open()
@@ -807,6 +819,30 @@ func _build_input(parent: Control) -> void:
     speak_button.add_theme_font_size_override("font_size", OrientationGuard.text_size(12))
     row.add_child(speak_button)
 
+    if OrientationGuard.is_touch():
+        _build_own_keyboard(parent, row)
+
+
+## LLM-861: on a touch device the field opens our keyboard, not the system
+## one, which covers half of a landscape tablet.
+func _build_own_keyboard(parent: Control, row: HBoxContainer) -> void:
+    speech_input.virtual_keyboard_enabled = false
+
+    keyboard_button = Button.new()
+    keyboard_button.focus_mode = Control.FOCUS_NONE
+    keyboard_button.mouse_filter = Control.MOUSE_FILTER_STOP
+    keyboard_button.custom_minimum_size = Vector2(48, 28)
+    keyboard_button.size_flags_vertical = Control.SIZE_FILL
+    keyboard_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    row.add_child(keyboard_button)
+    row.move_child(keyboard_button, speech_input.get_index() + 1)
+
+    own_keyboard = TalkKeyboardScript.new()
+    own_keyboard.target = speech_input
+    own_keyboard.visible = false
+    parent.add_child(own_keyboard)
+    _update_keyboard_button()
+
 
 # Top-left corner resize grip. Parented under `root` (a plain Control,
 # not a Container) so PanelContainer / MarginContainer layout passes
@@ -958,6 +994,10 @@ func _connect_signals() -> void:
     speech_input.focus_entered.connect(_on_input_focus_entered)
     speech_input.focus_exited.connect(_on_input_focus_exited)
     speech_input.gui_input.connect(_on_speech_input_gui_input)
+    if own_keyboard != null:
+        own_keyboard.send_pressed.connect(_send_current_text)
+        own_keyboard.system_pressed.connect(_start_system_keyboard)
+        keyboard_button.pressed.connect(_on_keyboard_button_pressed)
 
 
 func _connect_world_signal() -> void:
@@ -1034,6 +1074,8 @@ func open() -> void:
 func close() -> void:
     is_open = false
     user_closed = true
+    _hide_own_keyboard()
+    _end_system_keyboard()
     _stop_village_poll()
     sheet_anchor.visible = false
     _update_visibility_from_state()
@@ -1446,6 +1488,16 @@ func _on_speak_pressed() -> void:
 
 
 func _on_speech_input_gui_input(event: InputEvent) -> void:
+    # A tap may reach the field as a touch, its emulated mouse press, or both;
+    # showing is idempotent.
+    var tapped: bool = (event is InputEventScreenTouch and event.pressed) \
+            or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed)
+    if own_keyboard != null and tapped:
+        if system_keyboard:
+            # The device keyboard may have been put away; a tap brings it back.
+            _show_device_keyboard()
+        elif not own_keyboard.visible:
+            _show_own_keyboard()
     # Enter sends; Shift+Enter inserts a newline.
     if event is InputEventKey:
         var key := event as InputEventKey
@@ -1473,6 +1525,10 @@ func _send_current_text() -> void:
     # server-sourced lines.
     _append_log_line("You", text, "speech_player", false, Time.get_datetime_string_from_system(true))
     _post_speak(text)
+    # The device keyboard is for one message; the next tap opens ours.
+    _end_system_keyboard()
+    if own_keyboard != null:
+        own_keyboard.refresh_auto_shift()
     _refocus_if_open()
 
 
@@ -2215,6 +2271,75 @@ func _on_input_focus_entered() -> void:
 func _on_input_focus_exited() -> void:
     input_focused = false
     _update_responsive_layout()
+    _hide_own_keyboard()
+    _end_system_keyboard()
+
+
+func _show_own_keyboard() -> void:
+    if own_keyboard == null:
+        return
+    _end_system_keyboard()
+    own_keyboard.visible = true
+    own_keyboard.refresh_auto_shift()
+    _update_keyboard_button()
+    _scroll_log_to_bottom_deferred()
+
+
+func _hide_own_keyboard() -> void:
+    if own_keyboard == null:
+        return
+    own_keyboard.stop_repeat()
+    own_keyboard.visible = false
+    _update_keyboard_button()
+
+
+## Our keyboard's switch key: the device keyboard on the same field, with the
+## text kept, for voice typing and autocorrect.
+func _start_system_keyboard() -> void:
+    _hide_own_keyboard()
+    system_keyboard = true
+    speech_input.virtual_keyboard_enabled = true
+    _show_device_keyboard()
+    _update_keyboard_button()
+
+
+func _end_system_keyboard() -> void:
+    if not system_keyboard:
+        return
+    system_keyboard = false
+    speech_input.virtual_keyboard_enabled = false
+    if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+        DisplayServer.virtual_keyboard_hide()
+    _update_keyboard_button()
+
+
+# TextEdit makes this call itself only when it gains focus, and the field
+# already has focus here. The caret goes in as both selection ends: a caret,
+# no selection.
+func _show_device_keyboard() -> void:
+    if not DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+        return
+    var caret: int = own_keyboard.text_before_caret().length()
+    DisplayServer.virtual_keyboard_show(speech_input.text, speech_input.get_global_rect(),
+            DisplayServer.KEYBOARD_TYPE_MULTILINE, -1, caret, caret)
+
+
+func _on_keyboard_button_pressed() -> void:
+    if own_keyboard.visible:
+        _hide_own_keyboard()
+        return
+    _show_own_keyboard()
+    if not speech_input.has_focus():
+        speech_input.grab_focus()
+
+
+# The Speak-row key shows a keyboard when ours is down, an arrow to put it
+# away when it is up.
+func _update_keyboard_button() -> void:
+    if keyboard_button == null:
+        return
+    var kind := "hide" if own_keyboard.visible else "system"
+    keyboard_button.icon = TalkKeyboardScript.make_icon(kind, 2)
 
 
 func _mobile_refit_after_keyboard() -> void:
@@ -2286,6 +2411,10 @@ func _update_responsive_layout() -> void:
         talk_sheet.custom_minimum_size = sheet_size
 
         talk_launcher.custom_minimum_size = Vector2(150, 48)
+
+    if own_keyboard != null:
+        var key_height := (size.y * OWN_KEYBOARD_VH - TalkKeyboardScript.height_for(0.0)) / 4.0
+        own_keyboard.set_key_size(clampf(key_height, 34.0, 72.0), OrientationGuard.text_size(14))
 
     if resize_grip != null:
         resize_grip.visible = sheet_anchor.visible and not is_mobile
