@@ -3143,13 +3143,22 @@ func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddle
 		// in the seventh — and it must not be offered as the next one either.
 		// Anchoring on the cursor alone would do both for the moment between his
 		// arriving somewhere and the beat crediting it.
-		anchor := r.StopIdx
+		//
+		// Away from every stop there is no ground under his feet to leave out. The
+		// cursor is then the next place he owes (the advancer keeps it on an
+		// unvisited stop), so it is counted and named, not skipped: measuring past
+		// it said "seven more" to a man owing eight and named the stop after the
+		// right one, and with one stop left it said nothing at all (LLM-870).
+		nextIdx, hasNext := 0, false
 		if idx, atStop := r.stopIndexAt(w, a); atStop {
-			anchor = idx
 			sa.RouteStopObjectID = r.Stops[idx].ObjectID
+			sa.RouteStopsAhead = r.unvisitedExcluding(idx)
+			nextIdx, hasNext = r.nextUnvisitedFrom(idx)
+		} else {
+			sa.RouteStopsAhead = r.owedAwayFromStops()
+			nextIdx, hasNext = r.firstUnvisitedFrom(r.StopIdx)
 		}
-		sa.RouteStopsAhead = r.unvisitedExcluding(anchor)
-		if nextIdx, ok := r.nextUnvisitedFrom(anchor); ok {
+		if hasNext {
 			// The move_to token. The next place he still owes, computed the SAME
 			// way the beat advancer moves its cursor, so the cue and the record
 			// can never name different places (LLM-543).

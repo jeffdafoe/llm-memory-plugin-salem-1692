@@ -210,17 +210,27 @@ func RouteStopArrived(a *Actor, stop RouteStop) bool {
 // loiter pin for a loiter stop. The location question, asked of the shared
 // object-keyed predicate (LLM-550).
 //
-// The stop itself declares which posture counts, rather than this re-deriving it
-// from the asset. `resolveRouteStop` already made that judgement at build time via
-// moveToCanEnter: an open, enterable business became an ENTER stop, and a closed or
-// locked one was downgraded to a loiter stop precisely so the carrier stands at its
-// door instead. Re-deciding here could contradict the stop he was actually sent to.
+// The stop itself declares which posture counts. `resolveRouteStop` made that
+// judgement at build time via moveToCanEnter: an open, enterable business became an
+// ENTER stop, and only being inside it counts — standing at its door would credit a
+// shop he never entered. A closed or locked one was downgraded to a loiter stop, so
+// he stands at its door instead.
+//
+// A loiter stop also counts from INSIDE the structure the placement backs
+// (LLM-870). The build-time choice is frozen while the place's state moves on: live
+// 10-25 the round was built while the Tavern could not be entered, so its stop was a
+// door stop, and the constable walking into the open Tavern an hour later was not
+// credited — the round went on naming it as the place still owed. Being inside a
+// place is at least as much a call there as standing at its door.
 func ActorAtRouteStopPlace(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, a *Actor, stop RouteStop) bool {
 	if a == nil {
 		return false
 	}
 	if stop.EnterStructureID != "" {
 		return a.InsideStructureID == stop.EnterStructureID
+	}
+	if a.InsideStructureID != "" && a.InsideStructureID == StructureID(stop.ObjectID) {
+		return true
 	}
 	return ActorAtObjectPin(objects, assets, a.Pos, stop.ObjectID)
 }
@@ -456,6 +466,38 @@ func (r *NPCRoute) nextUnvisitedFrom(idx int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// firstUnvisitedFrom is nextUnvisitedFrom including idx itself: the stop at idx when
+// it is still owed, else the next owed one, wrapping. It answers "where next" for a
+// man standing at NO stop, measured from the cursor — which the beat advancer
+// always leaves on a stop he still owes, so starting one past it (nextUnvisitedFrom)
+// would skip exactly the place to go (LLM-870). An untracked route has no visited
+// record and keeps the cursor as the next stop.
+func (r *NPCRoute) firstUnvisitedFrom(idx int) (int, bool) {
+	if r == nil || len(r.Stops) == 0 || idx < 0 || idx >= len(r.Stops) {
+		return 0, false
+	}
+	if !r.tracksVisits() || !r.hasVisited(idx) {
+		return idx, true
+	}
+	return r.nextUnvisitedFrom(idx)
+}
+
+// owedAwayFromStops counts the stops he still owes when he stands at none of them:
+// every unvisited stop, the cursor's included (LLM-870). An untracked route counts
+// from the cursor to the end.
+func (r *NPCRoute) owedAwayFromStops() int {
+	if r == nil {
+		return 0
+	}
+	if !r.tracksVisits() {
+		if n := len(r.Stops) - r.StopIdx; n > 0 {
+			return n
+		}
+		return 0
+	}
+	return r.unvisitedCount()
 }
 
 // unvisitedExcluding counts the stops he still owes a visit, NOT counting the one at
