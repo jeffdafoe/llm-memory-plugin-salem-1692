@@ -64,6 +64,41 @@ func TestMoveToHome_LateInShiftClosesForTheDay(t *testing.T) {
 	}
 }
 
+// TestMoveToHome_ClosingEarlyEndsABeat is the LLM-866 live case end to end: the
+// constable carrying a part-walked beat walks home late in his shift, and the
+// close drops the beat so his prompt stops saying he is walking his rounds.
+func TestMoveToHome_ClosingEarlyEndsABeat(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+	seedWalkerKeeper(t, w)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if world.ActiveRoutes == nil {
+			world.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+		}
+		world.ActiveRoutes["walker"] = &sim.NPCRoute{NPCID: "walker", Label: sim.AttrConstable, Phase: sim.RoutePhaseBeat}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed beat: %v", err)
+	}
+
+	now := time.Date(2026, 10, 19, 19, 25, 29, 0, time.UTC)
+	if _, err := w.Send(sim.MoveToStructure("walker", "home", now)); err != nil {
+		t.Fatalf("move_to home: %v", err)
+	}
+	if got := closedUntilOf(t, w, "walker"); got == nil {
+		t.Fatal("ClosedUntil unset, want the close")
+	}
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.ActiveRoutes["walker"] != nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("read route: %v", err)
+	}
+	if res.(bool) {
+		t.Error("the beat survived the close")
+	}
+}
+
 func TestMoveToHome_MiddayDoesNotClose(t *testing.T) {
 	w, cancel, _ := buildMoveTestWorld(t)
 	defer cancel()

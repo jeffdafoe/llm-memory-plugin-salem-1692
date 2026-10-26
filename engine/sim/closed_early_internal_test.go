@@ -108,6 +108,34 @@ func TestMarkClosedEarly(t *testing.T) {
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
+// TestMarkClosedEarly_EndsABeat is LLM-866: closing early drops a part-walked
+// constable beat, and nothing else.
+func TestMarkClosedEarly_EndsABeat(t *testing.T) {
+	cases := []struct {
+		name      string
+		phase     RoutePhase
+		now       time.Time
+		wantRoute bool
+	}{
+		{name: "a beat ends with the close", phase: RoutePhaseBeat, now: eveningAt(19, 25), wantRoute: false},
+		{name: "outside the close window the beat stands", phase: RoutePhaseBeat, now: eveningAt(12, 8), wantRoute: true},
+		{name: "a dispatched route is not dropped", phase: RoutePhaseActive, now: eveningAt(19, 25), wantRoute: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := closedEarlyKeeper()
+			w := sleepTestWorld(a)
+			w.ActiveRoutes = map[ActorID]*NPCRoute{
+				a.ID: {NPCID: a.ID, Label: AttrConstable, Phase: c.phase},
+			}
+			markClosedEarly(w, a, "home", c.now)
+			if got := w.ActiveRoutes[a.ID] != nil; got != c.wantRoute {
+				t.Errorf("route kept = %v, want %v", got, c.wantRoute)
+			}
+		})
+	}
+}
+
 func TestShiftDutyTarget_ClosedEarlySuppressesToWork(t *testing.T) {
 	a := closedEarlyKeeper()
 	a.InsideStructureID = "home"
