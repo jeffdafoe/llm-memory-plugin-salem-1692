@@ -341,6 +341,55 @@ func TestSubscriber_ServeHandover_StampsSellerOnQuoteTake(t *testing.T) {
 	}
 }
 
+// LLM-867: a bundle take carries its lines onto BOTH warrants — the buyer's
+// accepted line and the seller's handover — since a bundle's ItemKind is empty.
+func TestSubscriber_BundleTake_StampsLinesOnBothWarrants(t *testing.T) {
+	w, stop := buildReactorWorld(t, []reactorActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5, "bread": 5}},
+	})
+	defer stop()
+	now := time.Now().UTC()
+	lines := []sim.QuoteLine{{ItemKind: "stew", Qty: 1}, {ItemKind: "bread", Qty: 1}}
+	seedActiveQuote(t, w, sim.SceneQuote{
+		ID: 20, SceneID: "sc1", SellerID: "bob", Lines: lines, Amount: 8, ConsumeNow: true,
+		State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute),
+	})
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 8, true, nil, nil, 20, 0, "", now))
+	if err != nil {
+		t.Fatalf("PayWithItem bundle take: %v", err)
+	}
+	if result := res.(sim.PayWithItemResult); !result.FastPath {
+		t.Fatalf("expected a fast-path take, got %+v", result)
+	}
+	sellerMeta, ok := firstByKind(readWarrants(t, w, "bob"), sim.WarrantKindServeHandover)
+	if !ok {
+		t.Fatalf("no ServeHandover warrant on seller bob")
+	}
+	if got := sellerMeta.Reason.(sim.ServeHandoverWarrantReason).Lines; !quoteLinesEqual(got, lines) {
+		t.Errorf("seller Lines = %+v, want %+v", got, lines)
+	}
+	buyerMeta, ok := firstByKind(readWarrants(t, w, "alice"), sim.WarrantKindPayResolved)
+	if !ok {
+		t.Fatalf("no PayResolved warrant on buyer alice")
+	}
+	if got := buyerMeta.Reason.(sim.PayResolvedWarrantReason).Lines; !quoteLinesEqual(got, lines) {
+		t.Errorf("buyer Lines = %+v, want %+v", got, lines)
+	}
+}
+
+func quoteLinesEqual(a, b []sim.QuoteLine) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // The headline case + the reason this is a separate subscriber: a PC takes the
 // keeper's quote. The buyer subscriber returns early for PC buyers, but the
 // seller must STILL be warranted to acknowledge the customer.

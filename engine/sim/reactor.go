@@ -487,6 +487,10 @@ type PayResolvedWarrantReason struct {
 	// terms. Lets the buyer's perception render the counter's goods
 	// without a ledger lookup.
 	CounterPayItems []ItemKindQty
+	// Lines are the goods of a bundle quote-take (LLM-101), copied from
+	// PayWithItemResolved.Lines; ItemKind is empty for a bundle, so the line
+	// names these instead (LLM-867). Empty for every single-item terminal.
+	Lines           []QuoteLine
 	ResolvedEventID EventID
 }
 
@@ -520,12 +524,15 @@ func (r PayResolvedWarrantReason) DedupDiscriminator() uint64 { return uint64(r.
 // PayResolvedWarrantReason — but a distinct WarrantKind, so the two stamps off
 // the one event don't collide.
 type ServeHandoverWarrantReason struct {
-	LedgerID        LedgerID
-	Buyer           ActorID
-	ItemKind        ItemKind
-	Qty             int
-	Amount          int
-	ConsumeNow      bool
+	LedgerID   LedgerID
+	Buyer      ActorID
+	ItemKind   ItemKind
+	Qty        int
+	Amount     int
+	ConsumeNow bool
+	// Lines are the goods of a bundle quote-take, as on
+	// PayResolvedWarrantReason.Lines (LLM-867).
+	Lines           []QuoteLine
 	ResolvedEventID EventID
 }
 

@@ -4899,16 +4899,26 @@ func formatQuoteLines(lines []sim.QuoteLine) string {
 	}
 }
 
+// warrantGoodsPhrase names the goods a pay warrant line is about: a bundle's
+// lines when the warrant carries them (LLM-867 — a bundle's ItemKind is empty, so
+// the line read "for ."), else the single item with its count above one.
+func warrantGoodsPhrase(item sim.ItemKind, qty int, lines []sim.QuoteLine) string {
+	if len(lines) > 0 {
+		return formatQuoteLines(lines)
+	}
+	name := sanitizeInline(string(item))
+	if qty > 1 {
+		return fmt.Sprintf("%d %s", qty, name)
+	}
+	return name
+}
+
 // renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved
 // their pay-with-item offer. Only the buyer-meaningful terminal states get a
 // bespoke line; the rest collapse to a neutral "fell through" so the buyer
 // stops waiting without the engine narrating internal ledger states.
 func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrantReason, maxTextBytes int) string {
-	item := sanitizeInline(string(r.ItemKind))
-	qty := item
-	if r.Qty > 1 {
-		qty = fmt.Sprintf("%d %s", r.Qty, item)
-	}
+	qty := warrantGoodsPhrase(r.ItemKind, r.Qty, r.Lines)
 	switch r.TerminalState {
 	case sim.PayTerminalStateAccepted:
 		return fmt.Sprintf("%d. %s accepted your offer of %d for %s.\n", n, seller, r.Amount, qty)
@@ -4949,11 +4959,7 @@ func renderServeHandoverWarrantLine(n int, buyer string, r sim.ServeHandoverWarr
 	if r.Amount == 1 {
 		unit = "coin"
 	}
-	item := sanitizeInline(string(r.ItemKind))
-	qty := item
-	if r.Qty > 1 {
-		qty = fmt.Sprintf("%d %s", r.Qty, item)
-	}
+	qty := warrantGoodsPhrase(r.ItemKind, r.Qty, r.Lines)
 	// ConsumeNow is the buyer's disposition term (ZBBS-WORK-402): when they're
 	// eating on the spot, say so, so the keeper's line fits a sit-down serve
 	// rather than a counter handoff.
