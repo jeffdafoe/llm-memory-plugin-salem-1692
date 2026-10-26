@@ -16,7 +16,8 @@ import "time"
 //
 // Only a move the keeper chose counts: markClosedEarly runs on the move_to
 // commit, not inside MoveActor, so an engine-driven walk (the red-tiredness
-// march home, a route) never closes a business.
+// march home, a route) never closes a business. Closing also ends a constable's
+// part-walked beat (LLM-866).
 
 // DefaultCloseEarlyWindowMinutes is the close window when
 // close_early_window_minutes is unset or 0: a move home counts as closing only
@@ -112,6 +113,16 @@ func markClosedEarly(w *World, a *Actor, target StructureID, now time.Time) {
 	}
 	until := shiftEndInstant(w, now, end)
 	a.ClosedUntil = &until
+	// A constable who closes early has ended his watch for the day (LLM-866), so
+	// the part-walked beat goes the way ClearBeatRouteIfOffShift sends it at the
+	// shift end. While it stood, his prompt at home still said he was walking his
+	// rounds, and buildDutySteer yields to a beat before it reaches the closed-for-
+	// the-day line, so nothing told him he had closed and he walked back (live
+	// 10-25: home and back three times in five minutes). A dispatched route is not
+	// his to drop here: only the beat, which he walks of his own will.
+	if route := w.ActiveRoutes[a.ID]; route != nil && route.Phase == RoutePhaseBeat {
+		clearActiveRoute(w, a.ID)
+	}
 	w.emit(&ClosedEarly{
 		ActorID:         a.ID,
 		WorkStructureID: a.WorkStructureID,

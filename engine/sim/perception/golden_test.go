@@ -2561,6 +2561,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: keeperClosedEarlyAtHome,
 	},
 	{
+		name: "constable_closed_early_at_home_stays_home",
+		summary: "LLM-866 — the live 2026-10-25 Gideon Marsh loop. At 17:07, with his watch ending at 6, he " +
+			"left an empty Meeting House for home, which stamped the closed-early mark. He was carrying a " +
+			"part-walked beat, so his prompt at home still read 'You are walking your rounds through the " +
+			"village.' and '…you can head there whenever you wish', and buildDutySteer yielded to the beat " +
+			"before reaching the closed line. He walked back three times in five minutes. The close now " +
+			"drops the beat, so this snapshot has no RouteLabel, and the golden pins the closed line, no " +
+			"rounds line and no 'head there' pull.",
+		build: constableClosedEarlyAtHome,
+	},
+	{
 		name: "grower_stands_at_the_bush_the_cue_would_name",
 		summary: "LLM-617 steer arm — the live Moses James wedge. A wheat grower with an empty pack stands exactly on " +
 			"the loiter pin of his own RIPEST bush (9 units), with a second ripe bush (5) across the map. The " +
@@ -20361,6 +20372,45 @@ func keeperClosedEarlyAtHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	until := time.Date(2026, 7, 1, 21, 0, 0, 0, time.UTC)
 	a.ClosedUntil = &until
 	return snap, actorID, warrants
+}
+
+// constableClosedEarlyAtHome is the LLM-866 live case: Gideon Marsh at home at 17:07
+// on a 06:00–18:00 watch, holding the closed-early mark his move home stamped. The
+// close dropped his part-walked beat, so the republish stamps no RouteLabel.
+func constableClosedEarlyAtHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		gideonID = sim.ActorID("gideon")
+		post     = sim.StructureID("meeting_house")
+		home     = sim.StructureID("marsh_residence")
+	)
+	start, end := 360, 1080 // 06:00–18:00
+	now := 1027             // 17:07
+	until := time.Date(2026, 10, 25, 22, 0, 0, 0, time.UTC)
+	gideon := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Gideon Marsh",
+		Role:              "constable",
+		State:             sim.StateIdle,
+		WorkStructureID:   post,
+		InsideStructureID: home,
+		HomeStructureID:   home,
+		ScheduleStartMin:  &start,
+		ScheduleEndMin:    &end,
+		Coins:             6,
+		Needs:             map[sim.NeedKey]int{},
+		ClosedUntil:       &until,
+	}
+	snap := &sim.Snapshot{
+		LocalMinuteOfDay: &now,
+		PublishedAt:      time.Date(2026, 10, 25, 21, 7, 41, 0, time.UTC),
+		NeedThresholds:   sim.NeedThresholds{},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{gideonID: gideon},
+		Structures: map[sim.StructureID]*sim.Structure{
+			post: plainStructure(post, "Meeting House"),
+			home: plainStructure(home, "Marsh Residence"),
+		},
+	}
+	return snap, gideonID, nil
 }
 
 // scheduledKeeperPreshiftGetsNoBakeCue is the LLM-650 live case: the comfortable
