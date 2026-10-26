@@ -954,7 +954,7 @@ func moveToObjectLabeled(actorID ActorID, objID VillageObjectID, spokenAs string
 			}
 			if _, ok := w.VillageObjects[objID]; !ok {
 				return MoveActorResult{}, fmt.Errorf(
-					"there is no place %q to walk to — name a destination you can see in your perception", objID)
+					"there is no place %q to walk to — name a building in the village, or a source (a well, a bush) you can see or have visited", objID)
 			}
 			if pin, ok := effectiveObjectLoiterTile(w, objID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
 				// LLM-209: a no-op walk — TerminalNoOpError so the harness ends the
@@ -1047,7 +1047,7 @@ func moveToStructureLabeled(actorID ActorID, structureID StructureID, spokenAs s
 					return moveToObjectLabeled(actorID, VillageObjectID(structureID), spokenAs, now).Fn(w)
 				}
 				return MoveActorResult{}, fmt.Errorf(
-					"there is no structure %q to walk to — name a destination you can see in your perception", structureID)
+					"there is no structure %q to walk to — name a building in the village, or a source (a well, a bush) you can see or have visited", structureID)
 			}
 			// A structure record with no backing VillageObject placement can't
 			// be walked to: moveToCanEnter would silently fall back to a visit

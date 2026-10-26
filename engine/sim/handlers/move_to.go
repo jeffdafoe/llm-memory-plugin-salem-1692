@@ -25,8 +25,9 @@ import (
 // MoveToArgs is the decoded shape of the move_to tool's arguments.
 //
 //   - destination: required, minLength 1, maxLength MaxMoveToDestinationChars.
-//     Where the NPC wants to walk — a place NAME it can see in perception ("the
-//     Tavern", "the Well"), a "home"/"work" keyword, or the id shown for a place
+//     Where the NPC wants to walk — any building's NAME, from anywhere (LLM-142;
+//     the text said "a place you can see" until LLM-869), a seen or visited free
+//     source ("the Well"), a "home"/"work" keyword, or the id shown for a place
 //     in a perception cue. The Command resolves id-first, else by name (LLM-320).
 //     The former split structure_id / structure_name fields collapsed into this
 //     one generic arg: varied models fumbled the two-field oneOf and the
@@ -51,7 +52,7 @@ var moveToSchema = json.RawMessage(`{
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "description": "Where to walk — a place you can see in your perception: your home or workplace, a shop, the meeting house, or a free source nearby like a well or fruit tree. Give the place's name (\"the Tavern\", \"the Well\"), or say simply \"home\" or \"work\" for your own; you can also use the id shown for a place in your perception. The engine handles pathfinding and decides whether you go inside or stand just outside."
+            "description": "Where to walk — any building in the village by its name, from wherever you stand (your home or workplace, a shop, the meeting house), or a free source like a well or fruit tree that you can see or have visited. Give the place's name (\"the Tavern\", \"the Blacksmith\"), or say simply \"home\" or \"work\" for your own; you can also use the id shown for a place in your perception. The engine handles pathfinding and decides whether you go inside or stand just outside."
         }
     },
     "required": ["destination"],
@@ -62,7 +63,7 @@ var moveToSchema = json.RawMessage(`{
 // schema's per-field description carries the arg guidance; this frames when to
 // reach for the tool and the two things the model must understand about it:
 // walking ends the turn, and it leaves any conversation.
-const moveToDescription = "Walk to a place you can see in your perception — your home, your workplace, a shop, the meeting house, or a free source nearby like a well or fruit tree. Give its destination — the place's name (e.g. \"the Tavern\", \"the Well\"), \"home\"/\"work\" for your own, or the id shown for it in your perception. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, and so does speaking, so you cannot do both in one turn: to leave with a parting word, speak now and walk on your next turn. If you are in a conversation, choosing to walk away leaves it."
+const moveToDescription = "Walk to a place in the village. You know every building by name and can walk to any of them from wherever you stand, indoors or out — your home, your workplace, any shop, the meeting house. A free source like a well or fruit tree you can reach once you can see it or have visited it. Give its destination — the place's name (e.g. \"the Tavern\", \"the Blacksmith\"), \"home\"/\"work\" for your own, or the id shown for it in your perception. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, and so does speaking, so you cannot do both in one turn: to leave with a parting word, speak now and walk on your next turn. If you are in a conversation, choosing to walk away leaves it."
 
 // DecodeMoveToArgs parses the raw tool-call arguments into a MoveToArgs.
 // Errors are typed validation failures the harness surfaces to the model as
