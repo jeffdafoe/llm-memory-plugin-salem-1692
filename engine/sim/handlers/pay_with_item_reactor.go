@@ -148,6 +148,7 @@ func handlePayResolvedWarrants(w *sim.World, evt sim.Event) {
 			Amount:          resolved.Amount,
 			TerminalState:   resolved.TerminalState,
 			Message:         resolved.Message,
+			Lines:           cloneQuoteLines(resolved.Lines),
 			ResolvedEventID: resolved.EventID(),
 		},
 		SourceEventID: resolved.EventID(),
@@ -273,6 +274,7 @@ func handleServeHandoverWarrants(w *sim.World, evt sim.Event) {
 			Qty:             resolved.QtyPerConsumer,
 			Amount:          resolved.Amount,
 			ConsumeNow:      resolved.ConsumeNow,
+			Lines:           cloneQuoteLines(resolved.Lines),
 			ResolvedEventID: resolved.EventID(),
 		},
 		SourceEventID: resolved.EventID(),
@@ -336,6 +338,15 @@ func cloneItemKindQtys(in []sim.ItemKindQty) []sim.ItemKindQty {
 		return nil
 	}
 	out := make([]sim.ItemKindQty, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneQuoteLines(in []sim.QuoteLine) []sim.QuoteLine {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]sim.QuoteLine, len(in))
 	copy(out, in)
 	return out
 }
