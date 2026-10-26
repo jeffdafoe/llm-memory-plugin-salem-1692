@@ -190,6 +190,12 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			if animal, ok := resolveLivestockByName(w, target); ok {
 				return moveToLivestockLabeled(w, actorID, animal, target, now)
 			}
+			// LLM-868: a place named by its keeper — "Ezekiel Crane's Blacksmith",
+			// the arrival line's own phrasing, or "Crane's Forge". After every real
+			// name, so a place or object actually called that still wins.
+			if structureID, ok := resolveStructureByKeeperName(w, target); ok {
+				return moveToStructureLabeled(actorID, structureID, target, now).Fn(w)
+			}
 			// LLM-212: reserved relationship keywords ("home"/"work" + synonyms), as a
 			// FALLBACK only — after no real structure or object matched the word, so a
 			// place actually named "home"/"my shop" wins the name and the keyword fires
@@ -231,7 +237,7 @@ func MoveToStructureByName(actorID ActorID, name string, shownObjects []VillageO
 			// valid target instead of mutating the same bad string. When the world
 			// has no public destination to name (a degenerate/minimal world), fall
 			// back to the original generic hint so the message stays coherent.
-			if names, more := namedVillageDestinations(w, a, moveToDestinationNameCap, now); len(names) > 0 {
+			if names, more := namedVillageDestinationsFor(w, a, target, moveToDestinationNameCap, now); len(names) > 0 {
 				// %q each name: a display name is admin/agent-authored, so escaping it
 				// (matching the target/id rendering in this file) keeps a stray newline
 				// or control char from forging the tool-feedback line, and reads to the
@@ -503,6 +509,99 @@ func resolveStructureByVillageName(w *World, a *Actor, name string) (StructureID
 	return bestID, true
 }
 
+// keeperPossessor returns the name before a possessive "'s" in a place name
+// ("Ezekiel Crane's Blacksmith" → "Ezekiel Crane"), or "" when there is none. A
+// curly apostrophe counts; the "'s" must end a word.
+func keeperPossessor(name string) string {
+	s := strings.ReplaceAll(stripLeadingArticle(strings.TrimSpace(name)), "’", "'")
+	i := strings.Index(s, "'s")
+	if i <= 0 {
+		return ""
+	}
+	if rest := s[i+2:]; rest != "" && rest[0] != ' ' {
+		return ""
+	}
+	return strings.TrimSpace(s[:i])
+}
+
+// keeperNameEndsWith reports whether display name ends with the words of short,
+// case-insensitively: "Constable Gideon Marsh" ends with "Gideon Marsh" and with
+// "Marsh". A whole-word match, so "Marsh" does not end "Marshall".
+func keeperNameEndsWith(display, short string) bool {
+	dw := strings.Fields(strings.ToLower(display))
+	sw := strings.Fields(strings.ToLower(short))
+	if len(sw) == 0 || len(sw) > len(dw) {
+		return false
+	}
+	for i, word := range sw {
+		if dw[len(dw)-len(sw)+i] != word {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveStructureByKeeperName resolves "<keeper>'s <anything>" to the keeper's
+// work structure (LLM-868). The arrival line names a place by whoever works
+// there — "You arrived at Ezekiel Crane's Blacksmith" (LLM-284, a keeper is any
+// actor whose WorkStructureID is the place) — so that phrasing, and a model's
+// own "Crane's Forge", must lead there. The keeper may be named in full or by
+// the end of the name (a surname). It resolves only when every actor so named
+// works at the SAME place: "Ellis's" names John's Tavern and Elizabeth's farm,
+// and resolves to neither. A place with no placement can't be walked to and is
+// skipped, like resolveStructureByVillageName. MUST be called from inside a
+// Command.Fn.
+func resolveStructureByKeeperName(w *World, name string) (StructureID, bool) {
+	possessor := keeperPossessor(name)
+	if possessor == "" {
+		return "", false
+	}
+	var found StructureID
+	for _, actor := range w.Actors {
+		if actor == nil || actor.WorkStructureID == "" || !keeperNameEndsWith(actor.DisplayName, possessor) {
+			continue
+		}
+		if _, ok := villageObjectForStructureOnly(w, actor.WorkStructureID); !ok {
+			continue
+		}
+		if found != "" && found != actor.WorkStructureID {
+			return "", false
+		}
+		found = actor.WorkStructureID
+	}
+	return found, found != ""
+}
+
+// keeperStructuresNamedIn returns the work structures of every actor whose
+// surname (the last word of its display name) is a word of query, for ranking
+// the unknown-place error (LLM-868): "Crane's Forge" puts Ezekiel Crane's
+// Blacksmith first. A shared surname ranks all its keepers' places. nil when
+// no keeper is named.
+func keeperStructuresNamedIn(w *World, query string) map[StructureID]bool {
+	words := make(map[string]bool)
+	for _, word := range strings.Fields(strings.ToLower(strings.ReplaceAll(query, "’", "'"))) {
+		word = strings.TrimSuffix(strings.Trim(word, ".,;:!?\"()"), "'s")
+		if word != "" {
+			words[word] = true
+		}
+	}
+	var hits map[StructureID]bool
+	for _, actor := range w.Actors {
+		if actor == nil || actor.WorkStructureID == "" {
+			continue
+		}
+		names := strings.Fields(strings.ToLower(actor.DisplayName))
+		if len(names) == 0 || !words[names[len(names)-1]] {
+			continue
+		}
+		if hits == nil {
+			hits = make(map[StructureID]bool)
+		}
+		hits[actor.WorkStructureID] = true
+	}
+	return hits
+}
+
 // moveToDestinationNameCap bounds how many real structure names the unknown-place
 // error lists (LLM-306). Weak-model prompt discipline: enough distinct names to
 // unstick a hallucinated destination without dumping the whole village directory
@@ -545,12 +644,22 @@ const moveToDestinationNameCap = 5
 // listed once. Deterministic for a fixed world + actor position, so the error
 // string is byte-stable. MUST be called from inside a Command.Fn.
 func namedVillageDestinations(w *World, a *Actor, limit int, now time.Time) (names []string, more bool) {
+	return namedVillageDestinationsFor(w, a, "", limit, now)
+}
+
+// namedVillageDestinationsFor is namedVillageDestinations for the name the model
+// tried: a business whose keeper's surname is a word of query is listed ahead of
+// the nearest-first rest (LLM-868, keeperStructuresNamedIn) — live, "Crane's
+// Forge" got five nearer places "(and more)" and never the Blacksmith.
+func namedVillageDestinationsFor(w *World, a *Actor, query string, limit int, now time.Time) (names []string, more bool) {
 	type candidate struct {
-		id   StructureID
-		name string
-		dist int
-		shut bool
+		id     StructureID
+		name   string
+		dist   int
+		shut   bool
+		keeper bool
 	}
+	keeperHits := keeperStructuresNamedIn(w, query)
 	candidates := make([]candidate, 0, len(w.Structures))
 	for structureID, st := range w.Structures {
 		if st == nil || strings.TrimSpace(st.DisplayName) == "" {
@@ -564,9 +673,10 @@ func namedVillageDestinations(w *World, a *Actor, limit int, now time.Time) (nam
 			continue // any business is a place to send a lost NPC; open/closed is discovered on arrival
 		}
 		candidates = append(candidates, candidate{
-			id:   structureID,
-			name: strings.TrimSpace(st.DisplayName),
-			dist: a.Pos.Chebyshev(vobj.Pos.Tile()),
+			id:     structureID,
+			name:   strings.TrimSpace(st.DisplayName),
+			dist:   a.Pos.Chebyshev(vobj.Pos.Tile()),
+			keeper: keeperHits[structureID],
 			// LLM-366: don't suggest a business the actor recently found shut (an
 			// active ObservedClosed within its 4h TTL). Their own experience, not
 			// omniscience — the same drop the seek-work directory already applies.
@@ -583,6 +693,9 @@ func namedVillageDestinations(w *World, a *Actor, limit int, now time.Time) (nam
 	// Nearest wins; equal distance breaks by lower structure_id, so the list is
 	// stable across map-iteration order (matching resolveStructureByVillageName).
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].keeper != candidates[j].keeper {
+			return candidates[i].keeper
+		}
 		if candidates[i].dist != candidates[j].dist {
 			return candidates[i].dist < candidates[j].dist
 		}
