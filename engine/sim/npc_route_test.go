@@ -1346,3 +1346,109 @@ func TestRouteStopReached_DecorativeCarrierStaysStrict(t *testing.T) {
 			"stop was bumped there, and the route must walk her back", reason)
 	}
 }
+
+// moveOffEveryStop parks the carrier far from every stop, with no move in flight.
+func moveOffEveryStop(t *testing.T, w *sim.World, id sim.ActorID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors[id]
+		a.Pos = sim.TilePos{X: sim.PadX + 40, Y: sim.PadY + 40}
+		a.InsideStructureID = ""
+		a.MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("moveOffEveryStop: %v", err)
+	}
+}
+
+// TestSnapshotProjection_AwayFromStopsCountsAndNamesTheCursor is LLM-870 A, the live
+// 10-25 shape: away from every stop, the count and the next name skipped the
+// cursor — the stop he owes next — so a man owing eight read "seven more" and was
+// pointed one stop too far, and with one stop left the cue said nothing at all.
+func TestSnapshotProjection_AwayFromStopsCountsAndNamesTheCursor(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+	startBeat(t, w, "lamp", threeLampCandidates())
+
+	standAtStop(t, w, "lamp", 0)
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	moveOffEveryStop(t, w, "lamp")
+	route := activeRouteOf(t, w, "lamp")
+	if route == nil || sim.RouteUnvisitedCount(route) != 2 {
+		t.Fatalf("fixture: want two stops owed after crediting stop 0, route = %+v", route)
+	}
+	cursorStop := route.Stops[route.StopIdx].ObjectID
+
+	snap := w.Published().Actors["lamp"]
+	if snap.RouteStopObjectID != "" {
+		t.Errorf("RouteStopObjectID = %q, want none — he stands at no stop", snap.RouteStopObjectID)
+	}
+	if snap.RouteStopsAhead != 2 {
+		t.Errorf("RouteStopsAhead = %d, want 2 — both owed stops lie ahead of a man at neither", snap.RouteStopsAhead)
+	}
+	if snap.RouteNextStopObjectID != cursorStop {
+		t.Errorf("RouteNextStopObjectID = %q, want the cursor's %q — the place he owes next", snap.RouteNextStopObjectID, cursorStop)
+	}
+
+	// One stop left: the cue must still count and name it.
+	standAtStop(t, w, "lamp", route.StopIdx)
+	if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	moveOffEveryStop(t, w, "lamp")
+	route = activeRouteOf(t, w, "lamp")
+	if route == nil || sim.RouteUnvisitedCount(route) != 1 {
+		t.Fatalf("fixture: want one stop owed, route = %+v", route)
+	}
+	last := route.Stops[route.StopIdx].ObjectID
+	snap = w.Published().Actors["lamp"]
+	if snap.RouteStopsAhead != 1 || snap.RouteNextStopObjectID != last {
+		t.Errorf("one owed: StopsAhead = %d next = %q, want 1 and %q — the bare rounds line left him nothing to walk to",
+			snap.RouteStopsAhead, snap.RouteNextStopObjectID, last)
+	}
+}
+
+// TestRouteStopReached_LoiterStopCountsFromInside is LLM-870 B: a stop built as a
+// door stop (the place could not be entered when the round was built) is reached
+// from INSIDE the structure the placement backs — live 10-25 the constable walked
+// into the open Tavern and the round went on naming it as owed. A dispatched
+// (decorative) route keeps its dispatch-only answer.
+func TestRouteStopReached_LoiterStopCountsFromInside(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+	startBeat(t, w, "lamp", sampleLampCandidates())
+
+	var beatInside, beatElsewhere, dispatchedInside bool
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route := world.ActiveRoutes["lamp"]
+		stop := route.Stops[0]
+		stop.ObjectID = "home" // a structure-backed placement
+		stop.EnterStructureID = ""
+		a := world.Actors["lamp"]
+		a.Pos = sim.TilePos{X: sim.PadX + 40, Y: sim.PadY + 40} // far from the pin
+		a.InsideStructureID = "home"
+		beatInside = sim.RouteStopReached(world, route, a, stop)
+		a.InsideStructureID = ""
+		beatElsewhere = sim.RouteStopReached(world, route, a, stop)
+
+		a.InsideStructureID = "home"
+		dispatched := *route
+		dispatched.Phase = sim.RoutePhaseActive
+		dispatched.Label = sim.AttrLamplighter
+		dispatchedInside = sim.RouteStopReached(world, &dispatched, a, stop)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("arrange: %v", err)
+	}
+	if !beatInside {
+		t.Error("inside the place a door stop names did not count as calling there")
+	}
+	if beatElsewhere {
+		t.Error("far from the pin and inside nothing still counted as at the stop")
+	}
+	if dispatchedInside {
+		t.Error("a dispatched route answered on location; it must keep its dispatch-only arrival")
+	}
+}
