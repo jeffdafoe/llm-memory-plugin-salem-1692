@@ -679,7 +679,8 @@ func TestUmbilical_State(t *testing.T) {
 
 // TestUmbilical_State_CoinSupply: the /state mapper carries the money-supply
 // gauge, excluding decoratives and splitting a transient visitor's purse out of
-// the resident total. Exercises the pure snapshot→DTO mapper directly.
+// the resident total, with the town chest beside the purses (LLM-873).
+// Exercises the pure snapshot→DTO mapper directly.
 func TestUmbilical_State_CoinSupply(t *testing.T) {
 	snap := &sim.Snapshot{
 		Actors: map[sim.ActorID]*sim.ActorSnapshot{
@@ -687,10 +688,18 @@ func TestUmbilical_State_CoinSupply(t *testing.T) {
 			"factor": {Kind: sim.KindNPCShared, Coins: 200, VisitorState: &sim.VisitorState{Archetype: "peddler"}},
 			"statue": {Kind: sim.KindDecorative, Coins: 999},
 		},
+		Environment: sim.WorldEnvironment{TownChest: 30},
 	}
 	out := umbilicalStateFromSnapshot(snap, telemetry.Stats{})
-	if out.CoinSupply != (sim.CoinSupply{Total: 240, Resident: 40, Visitor: 200, Holders: 2}) {
-		t.Errorf("coin_supply = %+v, want {Total:240 Resident:40 Visitor:200 Holders:2}", out.CoinSupply)
+	if out.CoinSupply != (sim.CoinSupply{Total: 240, Resident: 40, Visitor: 200, Holders: 2, Chest: 30}) {
+		t.Errorf("coin_supply = %+v, want {Total:240 Resident:40 Visitor:200 Holders:2 Chest:30}", out.CoinSupply)
+	}
+	raw, err := json.Marshal(out.CoinSupply)
+	if err != nil {
+		t.Fatalf("marshal coin_supply: %v", err)
+	}
+	if !strings.Contains(string(raw), `"chest":30`) {
+		t.Errorf("coin_supply wire = %s, want a chest key of 30", raw)
 	}
 }
 

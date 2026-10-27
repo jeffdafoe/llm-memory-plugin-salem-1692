@@ -29,6 +29,11 @@ type CoinSupply struct {
 	// participant headcount, distinct from counts.actors (which includes
 	// decoratives).
 	Holders int `json:"holders"`
+	// Chest is the town chest (WorldEnvironment.TownChest): coin the estate rate
+	// has taken out of resident purses and not yet paid back out as wages or
+	// bounties. Not part of Total, which counts purses only. Resident + Chest
+	// changes only by visitor trade, grants, and wages to visitors.
+	Chest int `json:"chest"`
 }
 
 // ComputeCoinSupply sums the on-map coin supply off a published snapshot,
@@ -39,6 +44,7 @@ func ComputeCoinSupply(s *Snapshot) CoinSupply {
 	if s == nil {
 		return cs
 	}
+	cs.Chest = s.Environment.TownChest
 	for _, a := range s.Actors {
 		if a == nil || a.Kind == KindDecorative {
 			continue

@@ -20,14 +20,16 @@ func TestComputeCoinSupply(t *testing.T) {
 			"statue": {Kind: KindDecorative, Coins: 999}, // scenery — excluded (LLM-410 req)
 			"ghost":  nil,                                // nil entry — skipped, no panic
 		},
+		Environment: WorldEnvironment{TownChest: 42},
 	}
 
 	got := ComputeCoinSupply(snap)
 	want := CoinSupply{
-		Total:    25 + 3 + 100 + 200, // statue's 999 excluded; pauper adds 0
+		Total:    25 + 3 + 100 + 200, // statue's 999 excluded; pauper adds 0; chest not a purse
 		Resident: 25 + 3 + 100,
 		Visitor:  200, // pauper the broke visitor contributes 0
 		Holders:  5,   // hannah, josiah, bram, factor, pauper — statue + nil ghost excluded
+		Chest:    42,
 	}
 	if got != want {
 		t.Errorf("ComputeCoinSupply = %+v, want %+v", got, want)
