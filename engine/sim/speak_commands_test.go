@@ -661,6 +661,54 @@ func TestSpeak_VocativeNonStale_PeerInHuddle(t *testing.T) {
 	}
 }
 
+// --- TestSpeak_VocativeNonStale_PeerSharesAbsenteeFirstName: a peer and
+// an absent actor share a first name (LLM-872: Nathaniel Pratt the carter
+// in the room, the resident Nathaniel Cole away). "Nathaniel, ..." is
+// answered by the peer, so it commits and resolves to the peer.
+func TestSpeak_VocativeNonStale_PeerSharesAbsenteeFirstName(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "pratt", displayName: "Nathaniel Pratt the carter", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "cole", displayName: "Nathaniel Cole", kind: sim.KindNPCShared}, // NOT in huddle
+	)
+	defer stop()
+
+	captured := captureSpoke(t, w)
+	if _, err := w.Send(sim.Speak("josiah", "Nathaniel, eleven coin is more than I can pay.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v (expected success — a present peer answers to the name)", err)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("Spoke events = %d, want 1", len(*captured))
+	}
+	if got := (*captured)[0].AddressedID; got != "pratt" {
+		t.Errorf("AddressedID = %q, want pratt", got)
+	}
+}
+
+// --- TestSpeak_VocativeStale_SharedFirstNameBothAbsent: when no peer
+// answers to the name, every absent namesake is still flagged.
+func TestSpeak_VocativeStale_SharedFirstNameBothAbsent(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "josiah", displayName: "Josiah Thorne", kind: sim.KindNPCStateful, huddleID: "h1"},
+		actorSpec{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "pratt", displayName: "Nathaniel Pratt the carter", kind: sim.KindNPCShared}, // NOT in huddle
+		actorSpec{id: "cole", displayName: "Nathaniel Cole", kind: sim.KindNPCShared},              // NOT in huddle
+	)
+	defer stop()
+
+	captured := captureSpoke(t, w)
+	_, err := w.Send(sim.Speak("josiah", "Nathaniel, eleven coin is more than I can pay.", time.Now().UTC()))
+	if err == nil {
+		t.Fatal("Speak: want error for vocative-stale, got nil")
+	}
+	if !strings.Contains(err.Error(), "Nathaniel Cole and Nathaniel Pratt the carter") {
+		t.Errorf("error should name both absent namesakes; got: %v", err)
+	}
+	if len(*captured) != 0 {
+		t.Errorf("Spoke emitted on rejected speak: %v", *captured)
+	}
+}
+
 // --- TestSpeak_VocativeNonStale_NonVocativeReference: mid-sentence
 // reference to an absent person is NOT vocative and should NOT reject.
 // "I told Ezekiel to be careful" passes; "Ezekiel, ..." would not.

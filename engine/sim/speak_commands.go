@@ -593,14 +593,15 @@ var vocativeCandidateRegex = regexp.MustCompile(`(?:^|[.!?]\s+)([A-Z][\p{Ll}\p{M
 // Empty list when no candidates match a known actor.
 //
 // Pattern: extract sentence-position candidate names via
-// vocativeCandidateRegex; for each non-speaker non-peer actor in the
-// world, check whether their first-name (the leading word of
-// DisplayName, before any space) is one of the candidates. Match is
-// case-sensitive — the regex already requires a capital initial.
+// vocativeCandidateRegex; drop every candidate that is a peer's first
+// name; then for each non-speaker non-peer actor in the world, check
+// whether their first-name (the leading word of DisplayName, before any
+// space) is one of the remaining candidates. Match is case-sensitive —
+// the regex already requires a capital initial.
 //
-// Cost: O(matches + N_actors) per speak — one regex pass plus a linear
-// scan of w.Actors with a map probe per actor. Village scale (~100
-// actors) is microseconds.
+// Cost: O(matches + N_peers + N_actors) per speak — one regex pass, one
+// pass over the peers, and a linear scan of w.Actors with a map probe per
+// actor. Village scale (~100 actors) is microseconds.
 //
 // Returned slice is sorted by DisplayName for deterministic test output
 // and reproducible error messages across runs.
@@ -615,6 +616,23 @@ func findVocativeAbsentees(text string, w *World, speakerID ActorID, peerSet map
 	candidates := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
 		candidates[m[1]] = struct{}{}
+	}
+	// A name a present peer answers to is not stale, even when an absent
+	// actor shares that first name (a visitor Nathaniel in the room, the
+	// resident Nathaniel away). vocativePeer resolves the same vocative to
+	// the peer, so dropping it here keeps the gate and the addressee
+	// resolution in agreement.
+	for pid := range peerSet {
+		a := w.Actors[pid]
+		if a == nil {
+			continue
+		}
+		if fields := strings.Fields(a.DisplayName); len(fields) > 0 {
+			delete(candidates, fields[0])
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
 	}
 
 	var absent []string
