@@ -55,6 +55,11 @@ type Server struct {
 	// beat, backing the operator-gated GET /umbilical/settlements audit route
 	// (LLM-105). nil → 503, same posture as transcript. Wired by SetSettlementStore.
 	settlements SettlementStore
+	// clientEvents stores and reads client-only events reported for statistics
+	// (LLM-880), backing POST /client-event and GET /umbilical/client-events. nil
+	// → both answer 503. Wired by SetClientEventStore whenever pg is present.
+	clientEvents       ClientEventStore
+	clientEventLimiter *clientLogRateLimiter
 	// routeForcer backs the operator-gated POST /umbilical/route control route.
 	// It returns a sim.Command that dispatches a schedule-driven NPC route
 	// (crier / washerwoman) immediately, bypassing the schedule-window gate. Held
@@ -123,12 +128,13 @@ func NewServer(w *sim.World, auth Authenticator) *Server {
 		panic("httpapi: NewServer requires a non-nil Authenticator")
 	}
 	return &Server{
-		world:            w,
-		auth:             auth,
-		errorLog:         newErrorRing(0),
-		clientLog:        newClientErrorRing(0),
-		clientLogLimiter: newClientLogRateLimiter(clientLogRateMax, clientLogRateWindow),
-		turnsClient:      &http.Client{Timeout: turnsUpstreamTimeout},
+		world:              w,
+		auth:               auth,
+		errorLog:           newErrorRing(0),
+		clientLog:          newClientErrorRing(0),
+		clientLogLimiter:   newClientLogRateLimiter(clientLogRateMax, clientLogRateWindow),
+		clientEventLimiter: newClientLogRateLimiter(clientEventRateMax, clientEventRateWindow),
+		turnsClient:        &http.Client{Timeout: turnsUpstreamTimeout},
 	}
 }
 
@@ -219,6 +225,15 @@ func (s *Server) SetTranscriptStore(store HuddleTranscriptStore) {
 // concurrently with serving.
 func (s *Server) SetSettlementStore(store SettlementStore) {
 	s.settlements = store
+}
+
+// SetClientEventStore attaches the durable store behind the client event beacon
+// (LLM-880): the authed POST /client-event write and the operator-gated GET
+// /umbilical/client-events read. Optional: when nil, both routes still register
+// but answer 503. Wiring-time-only — call before Handler, never concurrently
+// with serving.
+func (s *Server) SetClientEventStore(store ClientEventStore) {
+	s.clientEvents = store
 }
 
 // SetCheckpointHealth attaches the durable-checkpoint health recorder so the
@@ -386,6 +401,9 @@ func (s *Server) Handler() http.Handler {
 	// runtime failures the engine/nginx can't see into a pull-only ring surfaced
 	// via the umbilical. Untrusted — kept separate from the server-observed ring.
 	mux.HandleFunc("POST /api/village/client-log", s.requireAuth(s.handleClientLog))
+	// Client event beacon (client_event.go, LLM-880). Authed write; stores
+	// client-only events for statistics, durable, read via the umbilical.
+	mux.HandleFunc("POST /api/village/client-event", s.requireAuth(s.handleClientEvent))
 	// PC bootstrap read. POST to match the v1 verb + the client, but it's a
 	// pure snapshot read (no command channel) — see pc_me.go.
 	mux.HandleFunc("POST /api/village/pc/me", s.requireAuth(s.handlePCMe))

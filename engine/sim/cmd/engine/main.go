@@ -124,6 +124,11 @@ type runtime struct {
 	// the umbilical control surface is enabled. Nil in the headless lifecycle
 	// test (mem-backed, no pg) → the route answers 503.
 	RecipeWriter *pg.RecipesRepo
+	// ClientEvents is the durable client_event store behind the client event
+	// beacon (LLM-880): POST /client-event and GET /umbilical/client-events. run
+	// wires it via SetClientEventStore whenever pg is present. Nil in the headless
+	// lifecycle test (mem-backed, no pg) → both routes answer 503.
+	ClientEvents *pg.ClientEventsRepo
 	// SatisfiesWriter is the durable item_satisfies upsert behind the operator-
 	// gated /umbilical/item/set-satisfies route (LLM-119). run wires it via
 	// SetSatisfiesWriter when the umbilical control surface is enabled. Nil in the
@@ -307,6 +312,7 @@ func main() {
 		Umbilical:           umbilical,
 		UmbilicalControl:    umbilicalControl,
 		RecipeWriter:        pg.NewRecipesRepo(pool),
+		ClientEvents:        pg.NewClientEventsRepo(pool),
 		SatisfiesWriter:     pg.NewItemKindsRepo(pool),
 		ItemKindWriter:      pg.NewItemKindsRepo(pool),
 		AssetGeometryWriter: pg.NewAssetsRepo(pool),
@@ -720,6 +726,10 @@ func run(rt runtime, stop stopSignals) error {
 		// Backs the character creator's POST /pc/outfit (LLM-691). Same typed-nil guard.
 		if rt.SpriteWriter != nil {
 			server.SetSpriteWriter(rt.SpriteWriter)
+		}
+		// Backs the client event beacon (LLM-880). Same typed-nil guard.
+		if rt.ClientEvents != nil {
+			server.SetClientEventStore(rt.ClientEvents)
 		}
 		// Enables the operator-gated umbilical routes. Nil when UMBILICAL_ENABLED
 		// is unset → SetTelemetry not called → routes never registered.
