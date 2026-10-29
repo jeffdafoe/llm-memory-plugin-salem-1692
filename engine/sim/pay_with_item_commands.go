@@ -3514,6 +3514,7 @@ func commitPayTransfer(
 		}
 		seller.Inventory[m.kind] = m.sellerPostQty
 		recordVisitorProvenance(buyer, seller, m.kind, totals[m.kind])
+		creditSellErrand(buyer, seller, m.kind, totals[m.kind])
 	}
 
 	// LLM-138: a gift ends here. The PayItems swap above already moved the
