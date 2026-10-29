@@ -40,6 +40,7 @@ type WorldEnvironment struct {
 	LastBusinessRepairAt    time.Time       // the same anchor for business damage (LLM-675), kept apart so a well repair never holds off a shop break or the reverse. Transient.
 	LastRoadRepairAt        time.Time       // the same anchor for road damage (LLM-677). Transient.
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
+	Omens                   OmenRecord      // armed omens and each resident's last omen (omen.go, LLM-843). Durable — persisted in world_state.omens: the cooldown is counted in days and an armed omen waits up to a day for its moment, both across the village's restarts.
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -333,6 +334,13 @@ type WorldSettings struct {
 	PublicWorksMinorBounty   int
 	PCRepairMinorSteps       int
 	PCRepairMinorStepGapMs   int
+
+	// Omens (LLM-843): the per-game-day chance one is armed (0 turns omens off),
+	// the days a resident who had one is passed over, and the hours an armed omen
+	// waits for its moment before it lapses unseen.
+	OmenChancePermille int
+	OmenCooldownDays   int
+	OmenLapseHours     int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
@@ -2692,6 +2700,7 @@ func (w *World) republish() {
 	// stamps LastPeddlerAt through a pointer into it, so perception (LLM-658)
 	// reads its own copy.
 	snap.Environment.InputShortages = slices.Clone(w.Environment.InputShortages)
+	snap.Environment.Omens = w.Environment.Omens.Clone()
 	// LLM-309: the huddles in a silent transactional-futility loop, computed once
 	// per publish (a single O(ledger) pass) so the per-actor steer below is a map
 	// lookup rather than a per-member ledger walk in this hot, per-command path.

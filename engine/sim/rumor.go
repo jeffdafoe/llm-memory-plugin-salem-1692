@@ -18,7 +18,8 @@ import (
 //
 // v1 carries a single topic — short_on_coin — seeded from a witnessed
 // insufficient-funds settlement (the seller is told the buyer couldn't cover),
-// and escalated one rung per retelling. Propagation (speak-gated, active
+// and escalated one rung per retelling. LLM-843 adds one topic per omen
+// (omen.go), seeded where the omen happens. Propagation (speak-gated, active
 // conversants) and perception live alongside. The known-set is in-memory only:
 // carried through CloneActor and the published snapshot, but deliberately NOT
 // checkpointed — the same posture as other decaying per-actor state (Observed,
@@ -33,7 +34,24 @@ const (
 	// Seeded from a PayLedgerStateFailedInsufficientFunds settlement into the
 	// witnessing seller's known-set.
 	RumorTopicShortOnCoin RumorTopic = "short_on_coin"
+
+	// Omen topics (LLM-843) — the subject's omen happened (omen.go). Seeded
+	// first-hand into the witness and their conversation. Unlike every other
+	// topic an omen is something people tell about THEMSELVES and to the
+	// subject's face ("my milk turned", "I heard your milk turned"), so the
+	// self-holding and present-subject rules relax for these topics alone
+	// (RumorTopicSelfTellable).
+	RumorTopicOmenSourMilk     RumorTopic = "omen_sour_milk"
+	RumorTopicOmenColdHearth   RumorTopic = "omen_cold_hearth"
+	RumorTopicOmenFlatBread    RumorTopic = "omen_flat_bread"
+	RumorTopicOmenWitheredBush RumorTopic = "omen_withered_bush"
+	RumorTopicOmenFoulWell     RumorTopic = "omen_foul_well"
 )
+
+// omenRumorTopic maps an omen to its rumor topic.
+func omenRumorTopic(kind OmenKind) RumorTopic {
+	return RumorTopic("omen_" + string(kind))
+}
 
 // MaxRumorRung is the top of every ladder — the most embellished, least true
 // form of a rumor. Escalation clamps here.
@@ -78,10 +96,102 @@ var shortOnCoinLadder = [MaxRumorRung + 1]string{
 	"%s is ruined — in debt to half the village",
 }
 
+// The omen ladders (LLM-843) climb from the plain fact to dread: by the top
+// rung the house is "ill-wished". None of them says witchcraft — the village may
+// think it, the engine never writes it (TestOmenTextNeverSaysWitch). Each comes
+// in two forms: about the subject (%s is their name) and to the subject, for the
+// subject's own copy.
+var (
+	omenSourMilkLadder = [MaxRumorRung + 1]string{
+		"%s's milk turned sour in the pail",
+		"%s's milk spoils as soon as it is drawn",
+		"the milk has gone bad at %s's for days now",
+		"%s's household is ill-wished — the milk sours as it is drawn",
+	}
+	omenSourMilkSelfLadder = [MaxRumorRung + 1]string{
+		"your milk turned sour in the pail",
+		"your milk spoils as soon as it is drawn",
+		"the milk has gone bad at your place for days now",
+		"your household is ill-wished — the milk sours as it is drawn",
+	}
+	omenColdHearthLadder = [MaxRumorRung + 1]string{
+		"%s's hearth fire would not stay lit",
+		"the fire at %s's will not catch, however dry the wood",
+		"%s's hearth has been cold for days",
+		"%s's house is ill-wished — no fire will burn there",
+	}
+	omenColdHearthSelfLadder = [MaxRumorRung + 1]string{
+		"your hearth fire would not stay lit",
+		"the fire at your place will not catch, however dry the wood",
+		"your hearth has been cold for days",
+		"your house is ill-wished — no fire will burn there",
+	}
+	omenFlatBreadLadder = [MaxRumorRung + 1]string{
+		"%s's bread would not rise",
+		"%s's loaves come out flat and heavy as stone",
+		"nothing will rise in %s's oven",
+		"%s's house is ill-wished — no bread will rise there",
+	}
+	omenFlatBreadSelfLadder = [MaxRumorRung + 1]string{
+		"your bread would not rise",
+		"your loaves come out flat and heavy as stone",
+		"nothing will rise in your oven",
+		"your house is ill-wished — no bread will rise there",
+	}
+	omenWitheredBushLadder = [MaxRumorRung + 1]string{
+		"the berries withered on the bush when %s went to pick them",
+		"%s found a whole bush withered overnight",
+		"the bushes wither wherever %s goes to pick",
+		"%s is ill-wished — the fruit withers before it can be picked",
+	}
+	omenWitheredBushSelfLadder = [MaxRumorRung + 1]string{
+		"the berries withered on the bush when you went to pick them",
+		"you found a whole bush withered overnight",
+		"the bushes wither wherever you go to pick",
+		"you are ill-wished — the fruit withers before you can pick it",
+	}
+	omenFoulWellLadder = [MaxRumorRung + 1]string{
+		"the well water tasted of iron to %s",
+		"%s drew foul water from the well",
+		"the well water turned bad for %s and has not come right",
+		"%s is ill-wished — even the well water turns against them",
+	}
+	omenFoulWellSelfLadder = [MaxRumorRung + 1]string{
+		"the well water tasted of iron to you",
+		"you drew foul water from the well",
+		"the well water turned bad for you and has not come right",
+		"you are ill-wished — even the well water turns against you",
+	}
+)
+
 // ladders maps each topic to its escalation ladder. A topic with no ladder
 // renders no clause (defensive — every real topic has one).
 var ladders = map[RumorTopic]*[MaxRumorRung + 1]string{
-	RumorTopicShortOnCoin: &shortOnCoinLadder,
+	RumorTopicShortOnCoin:      &shortOnCoinLadder,
+	RumorTopicOmenSourMilk:     &omenSourMilkLadder,
+	RumorTopicOmenColdHearth:   &omenColdHearthLadder,
+	RumorTopicOmenFlatBread:    &omenFlatBreadLadder,
+	RumorTopicOmenWitheredBush: &omenWitheredBushLadder,
+	RumorTopicOmenFoulWell:     &omenFoulWellLadder,
+}
+
+// selfLadders holds the to-the-subject form of the topics a subject may carry
+// about themselves. Membership IS the self-tellable rule (RumorTopicSelfTellable).
+var selfLadders = map[RumorTopic]*[MaxRumorRung + 1]string{
+	RumorTopicOmenSourMilk:     &omenSourMilkSelfLadder,
+	RumorTopicOmenColdHearth:   &omenColdHearthSelfLadder,
+	RumorTopicOmenFlatBread:    &omenFlatBreadSelfLadder,
+	RumorTopicOmenWitheredBush: &omenWitheredBushSelfLadder,
+	RumorTopicOmenFoulWell:     &omenFoulWellSelfLadder,
+}
+
+// RumorTopicSelfTellable reports whether a topic is one people tell about
+// themselves and to the subject's face — the omens (LLM-843). For these the
+// subject may hold its own rumor, and the rumor is shared and shown even with
+// the subject present. Being short of coin keeps both rules: nobody gossips
+// that to your face.
+func RumorTopicSelfTellable(topic RumorTopic) bool {
+	return selfLadders[topic] != nil
 }
 
 // clampRung keeps a rung inside [0, MaxRumorRung].
@@ -106,6 +216,17 @@ func (r KnownRumor) Clause() string {
 		return ""
 	}
 	return fmt.Sprintf(ladder[clampRung(r.Rung)], r.SubjectName)
+}
+
+// ClauseFor renders the rumor as holder carries it: worded to the holder when
+// the holder is its subject (a self-tellable topic, LLM-843), else Clause.
+func (r KnownRumor) ClauseFor(holder ActorID) string {
+	if holder != "" && r.SubjectID == holder {
+		if self := selfLadders[r.Topic]; self != nil {
+			return self[clampRung(r.Rung)]
+		}
+	}
+	return r.Clause()
 }
 
 // Expired reports whether the rumor has aged past RumorTTL as of now.
@@ -147,10 +268,14 @@ func newShortOnCoinRumor(subjectID ActorID, subjectName string, now time.Time) K
 // same-provenance entries the higher rung wins (the telephone-game escalation,
 // which still climbs freely among the many non-witnesses). Prunes expired first,
 // then evicts the oldest over MaxKnownRumors. A self-rumor (subject is the
-// holder) is dropped. Returns true iff the held belief changed (gained, promoted
-// to first-hand, or raised a rung); a pure recency refresh returns false.
+// holder) is dropped, except for a self-tellable topic (an omen, LLM-843).
+// Returns true iff the held belief changed (gained, promoted to first-hand, or
+// raised a rung); a pure recency refresh returns false.
 func (a *Actor) learnRumor(r KnownRumor, now time.Time) bool {
-	if a == nil || r.SubjectID == "" || r.SubjectID == a.ID {
+	if a == nil || r.SubjectID == "" {
+		return false
+	}
+	if r.SubjectID == a.ID && !RumorTopicSelfTellable(r.Topic) {
 		return false
 	}
 	a.pruneExpiredRumors(now)
@@ -261,10 +386,50 @@ func seedShortOnCoinRumor(w *World, entry *PayLedgerEntry, at time.Time) {
 	}
 }
 
+// seedOmenRumor plants a just-happened omen (LLM-843) as first-hand knowledge in
+// the witness — who may be its subject — and in everyone in the witness's
+// conversation, who saw it too. The subject must be a resident NPC (the roll
+// only arms those). Social layer only. Runs on the world goroutine.
+func seedOmenRumor(w *World, kind OmenKind, witness *Actor, subjectID ActorID, at time.Time) {
+	if w == nil || witness == nil {
+		return
+	}
+	if !omenResident(w.Actors[subjectID]) {
+		return
+	}
+	subjectName := actorDisplayName(w, subjectID)
+	if subjectName == "" {
+		return
+	}
+	seed := KnownRumor{
+		Topic:       omenRumorTopic(kind),
+		SubjectID:   subjectID,
+		SubjectName: subjectName,
+		Rung:        0,
+		HeardAt:     at,
+		FirstHand:   true,
+	}
+	witness.learnRumor(seed, at)
+	h := w.Huddles[witness.CurrentHuddleID]
+	if h == nil {
+		return
+	}
+	for id := range h.Members {
+		if id == witness.ID {
+			continue
+		}
+		if other := w.Actors[id]; other != nil && other.Kind != KindDecorative {
+			other.learnRumor(seed, at)
+		}
+	}
+}
+
 // salientRumorToShare picks the one rumor this actor will pass along in a huddle:
 // the freshest live rumor whose subject is NOT a current member of the huddle
-// (nobody gossips about someone to their face). Prunes expired entries first.
-// ok is false when the actor holds nothing shareable here.
+// (nobody gossips about someone to their face) — except a self-tellable topic,
+// an omen, which people tell about themselves and to the subject (LLM-843).
+// Prunes expired entries first. ok is false when the actor holds nothing
+// shareable here.
 func (a *Actor) salientRumorToShare(h *Huddle, now time.Time) (KnownRumor, bool) {
 	if a == nil || h == nil {
 		return KnownRumor{}, false
@@ -272,7 +437,7 @@ func (a *Actor) salientRumorToShare(h *Huddle, now time.Time) (KnownRumor, bool)
 	a.pruneExpiredRumors(now)
 	best := -1
 	for i := range a.Rumors {
-		if _, present := h.Members[a.Rumors[i].SubjectID]; present {
+		if _, present := h.Members[a.Rumors[i].SubjectID]; present && !RumorTopicSelfTellable(a.Rumors[i].Topic) {
 			continue // don't spread gossip about someone standing right here
 		}
 		if best < 0 || a.Rumors[i].HeardAt.After(a.Rumors[best].HeardAt) {

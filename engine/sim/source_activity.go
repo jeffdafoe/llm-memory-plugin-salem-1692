@@ -176,6 +176,7 @@ type SourceActivityCompleted struct {
 	Continues      bool     // true when a refresh auto-repeat re-arms after this emit
 	PublicWorks    bool     // repair only: the town's repair of a damaged object (LLM-654); Qty then carries the bounty paid
 	SiteKind       string   // with PublicWorks: the site's PublicWorksKind, which picks the completion wording (LLM-675)
+	Omen           OmenKind // the omen that happened at this completion (LLM-843), "" for none; picks the witness line (OmenWitnessLine)
 	At             time.Time
 }
 
@@ -599,6 +600,12 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		if len(res.Hits) > 0 {
 			refreshAttr = res.Hits[0].Attribute
 		}
+		// LLM-843: the foul-well omen is a taste, nothing more — the drink above
+		// already eased the thirst, and water stays the free relief.
+		var omen OmenKind
+		if obj.HasTag(TagWell) && takeArmedOmen(w, OmenFoulWell, actorID, now) {
+			omen = OmenFoulWell
+		}
 		w.emit(&SourceActivityCompleted{
 			ActorID:    actorID,
 			ObjectID:   act.ObjectID,
@@ -606,8 +613,12 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Attribute:  refreshAttr,
 			SourceName: sourceActivityObjectName(w, obj),
 			Continues:  willRepeat,
+			Omen:       omen,
 			At:         now,
 		})
+		if omen != "" {
+			noticeOmen(w, omen, actor, actorID, now)
+		}
 		// Auto-repeat (LLM-55): keep eating a FINITE source while the actor is
 		// still in need and stock remains, so a bush is eaten berry-by-berry
 		// until full or picked clean — at which point applyObjectRefreshEffect
@@ -641,6 +652,26 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		if !ok {
 			return false
 		}
+		// LLM-843: the withered-bush omen. A bush with fruit on it is found withered
+		// on the stem: nothing is picked, and the bush is stripped to regrow as it
+		// would after any picking. Wells and other unlimited sources are never bushes.
+		if row.IsFinite() && *row.AvailableQuantity > 0 && !obj.HasTag(TagWell) &&
+			takeArmedOmen(w, OmenWitheredBush, actorID, now) {
+			drawDownStock(row, *row.AvailableQuantity, now)
+			refreshObjectBerryState(w, obj, now)
+			w.emit(&SourceActivityCompleted{
+				ActorID:        actorID,
+				ObjectID:       act.ObjectID,
+				Kind:           act.Kind,
+				Item:           kind,
+				SourceDepleted: true,
+				SourceName:     sourceActivityObjectName(w, obj),
+				Omen:           OmenWitheredBush,
+				At:             now,
+			})
+			noticeOmen(w, OmenWitheredBush, actor, actorID, now)
+			return true
+		}
 		// Stock may have drained during the window: ErrGatherableDepleted is a
 		// benign nothing-harvested completion (clamped to empty), so swallow it
 		// — but surface any OTHER failure (e.g. inventory overflow) rather than
@@ -652,6 +683,11 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			}
 			return false
 		}
+		// LLM-843: water drawn at a well may taste of iron — scene only.
+		var omen OmenKind
+		if obj.HasTag(TagWell) && takeArmedOmen(w, OmenFoulWell, actorID, now) {
+			omen = OmenFoulWell
+		}
 		w.emit(&SourceActivityCompleted{
 			ActorID:        actorID,
 			ObjectID:       act.ObjectID,
@@ -661,8 +697,12 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			SourceDepleted: res.SourceDepleted,
 			SourceName:     res.SourceName,
 			Continues:      false, // harvest never auto-repeats
+			Omen:           omen,
 			At:             now,
 		})
+		if omen != "" {
+			noticeOmen(w, omen, actor, actorID, now)
+		}
 		return true
 	case SourceActivityMilk:
 		return completeMilking(w, actorID, actor, act, now)
@@ -680,6 +720,16 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			return false
 		}
 		StokeFireOn(hearth, act.Qty, now, w.Settings.HearthBurnMinutesPerWood, w.Settings.HearthMaxBankMinutes)
+		// LLM-843: the cold-hearth omen is set against the hearth's OWNER, whoever
+		// stokes it. The wood is spent and the fire catches, then sinks: it burns
+		// only omenHearthGutter from now.
+		var omen OmenKind
+		if takeArmedOmen(w, OmenColdHearth, hearth.OwnerActorID, now) {
+			omen = OmenColdHearth
+			if gutter := now.Add(omenHearthGutter); hearth.HearthLitUntil.After(gutter) {
+				hearth.HearthLitUntil = gutter
+			}
+		}
 		w.emit(&SourceActivityCompleted{
 			ActorID:    actorID,
 			ObjectID:   act.ObjectID,
@@ -687,8 +737,12 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Qty:        act.Qty,
 			SourceName: sourceActivityObjectName(w, hearth),
 			Continues:  false,
+			Omen:       omen,
 			At:         now,
 		})
+		if omen != "" {
+			noticeOmen(w, omen, actor, hearth.OwnerActorID, now)
+		}
 		return true
 	case SourceActivityBake:
 		// LLM-454: the evening bake lands. For the session INITIATOR the shared
@@ -697,6 +751,17 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		// no batch of its own (minted == 0). Bound to the home the window began at
 		// (act.ObjectID == the home structure id, shared under the WORK-342 id bridge).
 		minted := completeHomeBake(w, actorID, actor, StructureID(act.ObjectID))
+		// LLM-843: the flat-bread omen takes a batch that landed — the flour is
+		// spent and the loaves that just minted are not fit to eat.
+		var omen OmenKind
+		if minted > 0 && takeArmedOmen(w, OmenFlatBread, actorID, now) {
+			omen = OmenFlatBread
+			actor.Inventory[BakeBreadItem] -= minted
+			if actor.Inventory[BakeBreadItem] <= 0 {
+				delete(actor.Inventory, BakeBreadItem)
+			}
+			minted = 0
+		}
 		w.emit(&SourceActivityCompleted{
 			ActorID:    actorID,
 			ObjectID:   act.ObjectID,
@@ -705,8 +770,12 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 			Qty:        minted,
 			SourceName: sourceActivityObjectName(w, w.VillageObjects[act.ObjectID]),
 			Continues:  false,
+			Omen:       omen,
 			At:         now,
 		})
+		if omen != "" {
+			noticeOmen(w, omen, actor, actorID, now)
+		}
 		return true
 	case SourceActivityRepair:
 		// LLM-118 (owner), LLM-271 (hired worker): the mending lands — wear cleared,

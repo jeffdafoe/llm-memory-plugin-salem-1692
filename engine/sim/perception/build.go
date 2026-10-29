@@ -368,7 +368,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// LLM-387: gossip the subject carries about people NOT in the scene, the
 	// absent-subject twin of Relationships. Built off Surroundings so present
 	// peers can be filtered (no gossiping to someone's face).
-	p.VillageWord = buildVillageWord(actorSnap, p.Surroundings, snap.PublishedAt)
+	p.VillageWord = buildVillageWord(actorID, actorSnap, p.Surroundings, snap.PublishedAt)
 	p.RecentConversation, p.ConveyedSpeech = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.SelfActions = buildSelfActions(snap, actorID, actorSnap)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
@@ -4082,7 +4082,11 @@ const maxRenderedVillageWord = 3
 // shareable here. Pure over the immutable snapshot: it reads the snapshot's own
 // Rumors copy and never mutates it (no in-place prune), so ordering the working
 // set is done on a local copy.
-func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) []VillageRumorView {
+//
+// An omen (LLM-843) is the exception to both filters: it may be about the
+// subject themselves, worded to them (KnownRumor.ClauseFor), and it shows with
+// its subject standing here, since people speak of an omen to the one it befell.
+func buildVillageWord(actorID sim.ActorID, a *sim.ActorSnapshot, s SurroundingsView, now time.Time) []VillageRumorView {
 	if a == nil || len(a.Rumors) == 0 {
 		return nil
 	}
@@ -4101,10 +4105,10 @@ func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) [
 		if r.Expired(now) {
 			continue
 		}
-		if present[r.SubjectID] {
+		if present[r.SubjectID] && !sim.RumorTopicSelfTellable(r.Topic) {
 			continue // don't voice gossip about someone standing right here
 		}
-		if r.Clause() == "" {
+		if r.ClauseFor(actorID) == "" {
 			continue // unknown topic or missing subject name — nothing to say
 		}
 		shareable = append(shareable, r)
@@ -4121,7 +4125,7 @@ func buildVillageWord(a *sim.ActorSnapshot, s SurroundingsView, now time.Time) [
 	}
 	out := make([]VillageRumorView, 0, len(shareable))
 	for _, r := range shareable {
-		out = append(out, VillageRumorView{Clause: r.Clause(), FirstHand: r.FirstHand})
+		out = append(out, VillageRumorView{Clause: r.ClauseFor(actorID), FirstHand: r.FirstHand})
 	}
 	return out
 }

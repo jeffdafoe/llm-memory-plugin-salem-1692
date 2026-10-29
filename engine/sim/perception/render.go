@@ -2695,7 +2695,9 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 
 // renderVillageWord writes the "## Word about the village" section (LLM-387): the
 // fallible gossip the subject has picked up about residents who are NOT present —
-// the word-of-mouth layer surfaced into perception. A first-hand line is framed
+// the word-of-mouth layer surfaced into perception. An omen (LLM-843) is the
+// exception: it may be about someone present, or about the subject, worded to them
+// (buildVillageWord filters, KnownRumor.ClauseFor words). A first-hand line is framed
 // as something the actor witnessed; a relayed line as talk going round Salem, so
 // the model can weigh its own certainty: a first-hand line is a fact the actor
 // witnessed and can trust, while a relayed line is marked as hearsay ("Word has

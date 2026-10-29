@@ -59,7 +59,7 @@ func NewEnvironmentRepo(pool Pool) *EnvironmentRepo {
 // world_state_singleton CHECK constraint.
 const loadWorldStateSQL = `
 SELECT phase, last_transition_at, last_rotation_at, weather, atmosphere, last_needs_tick_at,
-       town_chest_coins, input_shortages, last_carter_at
+       town_chest_coins, input_shortages, last_carter_at, omens
   FROM world_state
  WHERE id = 1`
 
@@ -80,9 +80,9 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
 const upsertWorldStateSQL = `
 INSERT INTO world_state (
     id, phase, last_transition_at, last_rotation_at,
-    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages, last_carter_at
+    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages, last_carter_at, omens
 ) VALUES (
-    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9
+    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10::jsonb
 )
 ON CONFLICT (id) DO UPDATE SET
     phase              = EXCLUDED.phase,
@@ -93,7 +93,8 @@ ON CONFLICT (id) DO UPDATE SET
     last_needs_tick_at = EXCLUDED.last_needs_tick_at,
     town_chest_coins   = EXCLUDED.town_chest_coins,
     input_shortages    = EXCLUDED.input_shortages,
-    last_carter_at     = EXCLUDED.last_carter_at`
+    last_carter_at     = EXCLUDED.last_carter_at,
+    omens              = EXCLUDED.omens`
 
 // Load reads the world_state singleton + every setting row, returning
 // a fully populated (env, phase, settings) triple. Missing setting rows
@@ -130,11 +131,12 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 		townChest           int
 		inputShortages      []byte
 		lastCarterAt        *time.Time
+		omens               []byte
 	)
 	err := r.pool.QueryRow(ctx, loadWorldStateSQL).Scan(
 		&phase, &lastTransitionAt, &lastRotationAt,
 		&weather, &atmosphere, &lastNeedsTickAt,
-		&townChest, &inputShortages, &lastCarterAt,
+		&townChest, &inputShortages, &lastCarterAt, &omens,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -168,6 +170,17 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 			log.Printf("pg environment Load: world_state.input_shortages unreadable (%v); starting with none", err)
 		} else {
 			env.InputShortages = shortages
+		}
+	}
+	// Omens (LLM-843): a jsonb object, '{}' when none. A malformed document (only
+	// reachable from an out-of-band edit) is logged and read as an empty record —
+	// the cost is a forgotten cooldown and an armed omen dropped, never a failed boot.
+	if len(omens) > 0 {
+		var record sim.OmenRecord
+		if err := json.Unmarshal(omens, &record); err != nil {
+			log.Printf("pg environment Load: world_state.omens unreadable (%v); starting with none", err)
+		} else {
+			env.Omens = record
 		}
 	}
 	// Now and LastAtmosphereRefreshAt are restart-lossy / live-clock —
@@ -306,6 +319,9 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.PublicWorksMinorBounty = parseIntSetting(values, "public_works_minor_bounty", sim.DefaultPublicWorksMinorBounty)
 	s.PCRepairMinorSteps = parseIntSetting(values, "pc_repair_minor_steps", sim.DefaultPCRepairMinorSteps)
 	s.PCRepairMinorStepGapMs = parseIntSetting(values, "pc_repair_minor_step_gap_ms", sim.DefaultPCRepairMinorStepGapMs)
+	s.OmenChancePermille = parseIntSetting(values, "omen_chance_permille", sim.DefaultOmenChancePermille)
+	s.OmenCooldownDays = parseIntSetting(values, "omen_cooldown_days", sim.DefaultOmenCooldownDays)
+	s.OmenLapseHours = parseIntSetting(values, "omen_lapse_hours", sim.DefaultOmenLapseHours)
 
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
@@ -746,6 +762,10 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 	if err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: encode input_shortages: %w", err)
 	}
+	omensJSON, err := json.Marshal(env.Omens)
+	if err != nil {
+		return fmt.Errorf("pg environment SaveSnapshot: encode omens: %w", err)
+	}
 	// Carter cooldown anchor (carter.go): zero = never, stored NULL.
 	var lastCarterArg any
 	if !env.LastCarterAt.IsZero() {
@@ -761,6 +781,7 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 		env.TownChest,         // $7 town_chest_coins (LLM-652)
 		string(shortagesJSON), // $8 input_shortages (LLM-656)
 		lastCarterArg,         // $9 last_carter_at (carter.go, nullable)
+		string(omensJSON),     // $10 omens (LLM-843)
 	); err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: upsert: %w", err)
 	}

@@ -201,6 +201,11 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("pc_repair_minor_steps", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairMinorSteps }),
 		intSetting("pc_repair_minor_step_gap_ms", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.PCRepairMinorStepGapMs }),
 
+		// --- omens (LLM-843) -----------------------------------------------
+		intSetting("omen_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenChancePermille }),
+		intSetting("omen_cooldown_days", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenCooldownDays }),
+		intSetting("omen_lapse_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenLapseHours }),
+
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute
 		// rate lookup.

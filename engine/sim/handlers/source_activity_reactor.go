@@ -44,6 +44,15 @@ func handleSourceActivityCompletedWarrants(w *sim.World, evt sim.Event) {
 	if done.PublicWorks {
 		narration = sim.PublicWorksCompletionNarration(done.SiteKind, done.SourceName, done.Qty)
 	}
+	// LLM-843: an omen replaces the usual line with what the witness found; the
+	// foul well only adds a taste to a drink that still did its work.
+	if line := sim.OmenWitnessLine(done.Omen, done.SourceName); line != "" {
+		if done.Omen == sim.OmenFoulWell && narration != "" {
+			narration += " " + line
+		} else {
+			narration = line
+		}
+	}
 	if done.Fed && narration != "" {
 		narration += " " + sim.LivestockFedNarration(done.SourceName)
 	}
