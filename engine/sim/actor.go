@@ -700,6 +700,23 @@ type VisitorState struct {
 	// sat inside one innkeeper's afternoon).
 	PayloadSharedWith []ActorID
 
+	// ReceivedFrom is where the goods in the traveler's pack came from in the
+	// village (LLM-875): per resident, per kind, how many units that resident
+	// has handed him this visit and not had back. recordVisitorProvenance keeps
+	// it at every place goods move between two actors — a sold good, barter
+	// payment goods, a gift, consume-now surplus — crediting a resident→visitor
+	// move and debiting a visitor→resident move of the same kind to the same
+	// resident (floor 0, delete-on-zero), so a stack he took and sold back
+	// reads as his own again. Visit-scoped by construction: a visitor's actor id
+	// is minted fresh at every spawn. The keeper's "## A trader's come to deal"
+	// cue reads its own row to say which of the pack's goods came off his own
+	// shelf — live, Josiah bought back the wheat, cheese and firewood he had
+	// paid the factor with an hour before, because nothing in the scene said so.
+	// Not the pay ledger: settled entries are reaped an hour after they resolve
+	// and the map is wiped on restart, and a visit outlives both. Persisted in
+	// the visitor.plan jsonb.
+	ReceivedFrom map[ActorID]map[ItemKind]int
+
 	// SpendBudget is the coin this traveler may still SPEND in the village —
 	// seeded equal to the purse at spawn and drawn down by every coin he pays
 	// out, by any door (LLM-644). Sale proceeds credit Coins as always but
@@ -814,9 +831,10 @@ type LoadedVisitor struct {
 
 // cloneVisitorState deep-copies a VisitorState pointer. The scalar fields
 // (string / time.Time / VisitorPhase) copy by value with the struct copy; the
-// VisitedBusinesses (LLM-373) and PayloadSharedWith (LLM-545) slices and the
-// Trade errand pointer (LLM-455) are deep-copied so a snapshot never aliases
-// the world's mutable rounds/errand/shared-word state.
+// VisitedBusinesses (LLM-373) and PayloadSharedWith (LLM-545) slices, the
+// ReceivedFrom maps (LLM-875) and the Trade errand pointer (LLM-455) are
+// deep-copied so a snapshot never aliases the world's mutable
+// rounds/errand/shared-word/provenance state.
 func cloneVisitorState(src *VisitorState) *VisitorState {
 	if src == nil {
 		return nil
@@ -827,6 +845,16 @@ func cloneVisitorState(src *VisitorState) *VisitorState {
 	}
 	if src.PayloadSharedWith != nil {
 		cp.PayloadSharedWith = append([]ActorID(nil), src.PayloadSharedWith...)
+	}
+	if src.ReceivedFrom != nil {
+		cp.ReceivedFrom = make(map[ActorID]map[ItemKind]int, len(src.ReceivedFrom))
+		for id, kinds := range src.ReceivedFrom {
+			row := make(map[ItemKind]int, len(kinds))
+			for kind, qty := range kinds {
+				row[kind] = qty
+			}
+			cp.ReceivedFrom[id] = row
+		}
 	}
 	if src.Trade != nil {
 		trade := *src.Trade

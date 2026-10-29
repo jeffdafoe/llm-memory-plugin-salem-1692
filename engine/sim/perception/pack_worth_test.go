@@ -98,6 +98,25 @@ func TestBuildPackGoods(t *testing.T) {
 		}
 	})
 
+	// LLM-875: FromKeeper reads THIS keeper's row of the trader's ReceivedFrom,
+	// capped at what he still holds; another resident's row and goods he brought
+	// leave it 0.
+	t.Run("provenance reads the keeper's own row, capped at holdings", func(t *testing.T) {
+		snap := packWorthSnap(published)
+		seller := &sim.ActorSnapshot{
+			Inventory: map[sim.ItemKind]int{"iron": 4, "salt": 5},
+			VisitorState: &sim.VisitorState{ReceivedFrom: map[sim.ActorID]map[sim.ItemKind]int{
+				keeperID: {"salt": 9}, // more than he holds now: cap at 5
+				"hannah": {"iron": 4}, // someone else's goods: not this keeper's
+			}},
+		}
+		got := buildPackGoods(snap, keeperID, seller)
+		if len(got) != 2 || got[0].Noun != "iron ingots" || got[0].FromKeeper != 0 ||
+			got[1].Noun != "salt" || got[1].FromKeeper != 5 {
+			t.Fatalf("got %+v, want iron FromKeeper 0 and salt FromKeeper 5", got)
+		}
+	})
+
 	t.Run("empty pack builds nothing", func(t *testing.T) {
 		snap := packWorthSnap(published)
 		if got := buildPackGoods(snap, keeperID, &sim.ActorSnapshot{}); got != nil {
@@ -145,6 +164,61 @@ func TestRenderPackGoodsProvenanceWording(t *testing.T) {
 	}
 	if !strings.Contains(unpriced.String(), "2 silver_locket") {
 		t.Errorf("all-unpriced pack render must still name the goods: %q", unpriced.String())
+	}
+}
+
+// TestRenderPackGoodsKeeperProvenance — LLM-875: a good that came off the
+// keeper's own shelf earlier in the visit says so, the whole stack ("the same
+// five") or part of it ("two of them"), in the same parenthesis as its price;
+// goods the trader brought get no clause.
+func TestRenderPackGoodsKeeperProvenance(t *testing.T) {
+	var b strings.Builder
+	renderPackGoods(&b, []PackGood{
+		{Noun: "cheeses", Qty: 4, Worth: 3, Source: worthFromSales, FromKeeper: 2},
+		{Noun: "cloaks", Qty: 2, Worth: 4, Source: worthFromCatalog},
+		{Noun: "sheaf of wheat", Qty: 1, FromKeeper: 1},
+		{Noun: "sheaves of wheat", Qty: 5, Worth: 2, Source: worthFromCatalog, FromKeeper: 5},
+	})
+	out := b.String()
+	for _, want := range []string{
+		"4 cheeses (two of them he had off you earlier; fetches about 3 each from your counter)",
+		"2 cloaks (the customary price is about 4)",
+		"1 sheaf of wheat (the same one he had off you earlier)",
+		"5 sheaves of wheat (the same five he had off you earlier; the customary price is about 2)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "he had off you") != 3 {
+		t.Errorf("provenance clause on the wrong goods (want exactly 3):\n%s", out)
+	}
+}
+
+// TestGoldensPackProvenanceOnlyForKeeperGoods — cross-scenario invariant
+// (LLM-875): the "he had off you" clause renders only when a co-present trader
+// actually holds goods the subject handed him this visit.
+func TestGoldensPackProvenanceOnlyForKeeperGoods(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			out := renderScenario(sc)
+			if !strings.Contains(out, "he had off you earlier") {
+				return
+			}
+			snap, actorID, _ := sc.build()
+			for _, a := range snap.Actors {
+				if a == nil || a.VisitorState == nil {
+					continue
+				}
+				for kind, qty := range a.VisitorState.ReceivedFrom[actorID] {
+					if qty > 0 && a.Inventory[kind] > 0 {
+						return
+					}
+				}
+			}
+			t.Errorf("scenario %q: provenance clause rendered with no trader holding the subject's goods", sc.name)
+		})
 	}
 }
 

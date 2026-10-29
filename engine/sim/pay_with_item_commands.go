@@ -3513,6 +3513,7 @@ func commitPayTransfer(
 			seller.Inventory = make(map[ItemKind]int)
 		}
 		seller.Inventory[m.kind] = m.sellerPostQty
+		recordVisitorProvenance(buyer, seller, m.kind, totals[m.kind])
 	}
 
 	// LLM-138: a gift ends here. The PayItems swap above already moved the
@@ -3657,6 +3658,7 @@ func commitPayTransfer(
 				// overflow if the total didn't.
 				buyer.Inventory[entry.ItemKind] += kept
 			}
+			recordConsumeNowProvenance(seller, buyer, consumer, entry.ItemKind, eat, kept)
 			applied := applyConsumeSatisfactions(consumer, def, eat)
 			structureID, _ := actorPlace(w, consumer)
 			var stamped []DwellCreditSnapshot
@@ -3914,6 +3916,7 @@ func deliverBundleLines(w *World, buyer, seller *Actor, entry *PayLedgerEntry, c
 					}
 					buyer.Inventory[ln.ItemKind] += sp.kept
 				}
+				recordConsumeNowProvenance(seller, buyer, sp.consumer, ln.ItemKind, sp.eat, sp.kept)
 				applied := applyConsumeSatisfactions(sp.consumer, def, sp.eat)
 				structureID, _ := actorPlace(w, sp.consumer)
 				var stamped []DwellCreditSnapshot

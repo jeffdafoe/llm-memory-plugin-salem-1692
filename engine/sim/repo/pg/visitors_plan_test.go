@@ -109,6 +109,53 @@ func TestVisitorPlanPeddlerErrandRoundTrip(t *testing.T) {
 	}
 }
 
+// TestVisitorPlanReceivedFromRoundTrip — the LLM-875 provenance rows ride the
+// plan jsonb, so a mid-visit deploy keeps the keeper's "the same five he had off
+// you" line. Out-of-band junk (a blank id or kind, a non-positive count) is
+// dropped on the way in and the rest kept.
+func TestVisitorPlanReceivedFromRoundTrip(t *testing.T) {
+	a := &sim.Actor{
+		ID: "vstr-0000fac0",
+		VisitorState: &sim.VisitorState{
+			ReceivedFrom: map[sim.ActorID]map[sim.ItemKind]int{
+				"josiah": {"wheat": 5, "cheese": 2},
+				"hannah": {"firewood": 1},
+			},
+		},
+	}
+	js, err := encodeVisitorPlan(a)
+	if err != nil {
+		t.Fatalf("encodeVisitorPlan: %v", err)
+	}
+	lv := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	if err := applyVisitorPlan([]byte(js), lv); err != nil {
+		t.Fatalf("applyVisitorPlan: %v", err)
+	}
+	got := lv.VisitorState.ReceivedFrom
+	if len(got) != 2 || got["josiah"]["wheat"] != 5 || got["josiah"]["cheese"] != 2 || got["hannah"]["firewood"] != 1 {
+		t.Errorf("ReceivedFrom round-trip = %v; want josiah{wheat:5 cheese:2} hannah{firewood:1}", got)
+	}
+
+	lv2 := &sim.LoadedVisitor{VisitorState: &sim.VisitorState{}}
+	raw := []byte(`{"received_from":{"":{"wheat":3},"josiah":{"":4,"wheat":0,"cheese":-2,"flour":6},"mary":{"salt":0}}}`)
+	if err := applyVisitorPlan(raw, lv2); err != nil {
+		t.Fatalf("applyVisitorPlan(junk): %v", err)
+	}
+	got2 := lv2.VisitorState.ReceivedFrom
+	if len(got2) != 1 || len(got2["josiah"]) != 1 || got2["josiah"]["flour"] != 6 {
+		t.Errorf("sanitized ReceivedFrom = %v; want only josiah{flour:6}", got2)
+	}
+
+	// No rows: the field is omitted, keeping every other visitor's document as it was.
+	empty, err := encodeVisitorPlan(&sim.Actor{ID: "vstr-0000eeee", VisitorState: &sim.VisitorState{}})
+	if err != nil {
+		t.Fatalf("encodeVisitorPlan(empty): %v", err)
+	}
+	if strings.Contains(empty, "received_from") {
+		t.Errorf("empty provenance encoded as %s; want the field omitted", empty)
+	}
+}
+
 // TestVisitorPlanPayloadSharedWithSanitized — the LLM-545 decode posture for
 // out-of-band plan data: duplicates and blank ids are dropped on the way in (the
 // engine-side writer keeps the set unique, so they can only come from an edited

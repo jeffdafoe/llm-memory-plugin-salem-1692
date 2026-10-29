@@ -40,7 +40,29 @@ func init() {
 				"has counter-pressure in the scene.",
 			build: distributorViewsFactorScenario,
 		},
+		perceptionScenario{
+			name: "distributor_views_factor_holding_his_own_goods",
+			summary: "LLM-875: the live Josiah/Tobias churn. Earlier in the visit the distributor paid the factor " +
+				"5 wheat and 2 cheese as barter goods; the factor still holds them beside his own Boston coats, " +
+				"cloaks and lockets. The pack line in '## A trader's come to deal' says the wheat and cheese are " +
+				"the same ones the factor had off him earlier; the Boston goods get no such clause.",
+			build: distributorViewsFactorHoldingHisOwnGoodsScenario,
+		},
 	)
+}
+
+// distributorViewsFactorHoldingHisOwnGoodsScenario is distributor_views_factor
+// after a barter leg: the factor's pack also holds 5 wheat and 2 cheese that
+// Josiah paid him with, recorded in the factor's ReceivedFrom (LLM-875).
+func distributorViewsFactorHoldingHisOwnGoodsScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, josiahID, warrants := distributorViewsFactorScenario()
+	factor := snap.Actors["vstr-0000fac0"]
+	factor.Inventory["wheat"] = 5
+	factor.Inventory["cheese"] = 2
+	factor.VisitorState.ReceivedFrom = map[sim.ActorID]map[sim.ItemKind]int{
+		josiahID: {"wheat": 5, "cheese": 2},
+	}
+	return snap, josiahID, warrants
 }
 
 // factorActor builds the standard factor subject snapshot used by the scenarios.

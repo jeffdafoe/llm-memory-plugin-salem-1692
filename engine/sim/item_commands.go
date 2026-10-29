@@ -88,6 +88,7 @@ func transferItem(_ *World, from, to *Actor, kind ItemKind, qty int) error {
 		to.Inventory = make(map[ItemKind]int)
 	}
 	to.Inventory[kind] += qty
+	recordVisitorProvenance(from, to, kind, qty)
 	// Credit a selling traveler's shipment as it reaches his errand counterparty (LLM-553).
 	// This is the one place goods change hands, so it is the one place that can distinguish
 	// stock he never sold from stock he sold and bought back — the distinction his errand
