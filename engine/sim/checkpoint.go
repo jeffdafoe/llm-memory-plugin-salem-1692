@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 	"time"
 )
@@ -181,6 +182,9 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 	// LLM-843: the omen record holds a map and a slice the world goroutine edits
 	// (takeArmedOmen), and SaveWorld encodes it off that goroutine — copy it.
 	cp.Environment.Omens = w.Environment.Omens.Clone()
+	// LLM-877: the shortage record is edited in place the same way (the
+	// LastPeddlerAt stamps, pruneResolvedShortages compacting it) — copy it.
+	cp.Environment.InputShortages = slices.Clone(w.Environment.InputShortages)
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so
 	// the checkpoint persists them. Authored kinds (food/drink/material/craft)
 	// stay reference data, never written by the loop — only discoveries are.
