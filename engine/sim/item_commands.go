@@ -89,22 +89,34 @@ func transferItem(_ *World, from, to *Actor, kind ItemKind, qty int) error {
 	}
 	to.Inventory[kind] += qty
 	recordVisitorProvenance(from, to, kind, qty)
-	// Credit a selling traveler's shipment as it reaches his errand counterparty (LLM-553).
-	// This is the one place goods change hands, so it is the one place that can distinguish
-	// stock he never sold from stock he sold and bought back — the distinction his errand
-	// settles on. Monotonic by construction: a later purchase is an inbound transfer and
-	// lands on the other side of this function, and qty is rejected above unless positive.
-	if tr := sellErrandCredit(from, to, kind); tr != nil {
-		// Saturate rather than wrap. A wrapped counter would go NEGATIVE and read as
-		// "delivered nothing", silently restoring the loop this fixes on a visitor whose
-		// persisted count was corrupt.
-		if tr.Delivered > math.MaxInt-qty {
-			tr.Delivered = math.MaxInt
-		} else {
-			tr.Delivered += qty
-		}
-	}
+	creditSellErrand(from, to, kind, qty)
 	return nil
+}
+
+// creditSellErrand credits a selling traveler's shipment as it reaches his errand
+// counterparty (LLM-553). Every goods move that can carry his errand good to the
+// counterparty calls it after the move commits: transferItem (a sale's delivery) and
+// the pay_items leg of commitPayTransfer (the errand good paid AS barter goods — live,
+// factors paid Josiah iron for his flour and wheat, and none of it counted, LLM-876).
+// It is the counter that distinguishes stock he never sold from stock he sold and
+// bought back — the distinction his errand settles on. Monotonic by construction: a
+// later purchase is an inbound move, which sellErrandCredit never matches.
+func creditSellErrand(from, to *Actor, kind ItemKind, qty int) {
+	if qty <= 0 {
+		return
+	}
+	tr := sellErrandCredit(from, to, kind)
+	if tr == nil {
+		return
+	}
+	// Saturate rather than wrap. A wrapped counter would go NEGATIVE and read as
+	// "delivered nothing", silently restoring the loop this fixes on a visitor whose
+	// persisted count was corrupt.
+	if tr.Delivered > math.MaxInt-qty {
+		tr.Delivered = math.MaxInt
+	} else {
+		tr.Delivered += qty
+	}
 }
 
 // sellErrandCredit returns the SELL errand this transfer should credit, or nil.
