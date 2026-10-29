@@ -689,11 +689,16 @@ func (v *ErrandVisitView) Offers(kind sim.ItemKind) bool {
 // not read back as a retail realization). Source worthNone means the good
 // doesn't price for him: the listing still names it, but no figure is attached —
 // silence, never a guessed number.
+//
+// FromKeeper is how many of the Qty came off THIS keeper's own shelf earlier in
+// the visit (LLM-875, VisitorState.ReceivedFrom), capped at Qty. 0 for goods he
+// brought with him.
 type PackGood struct {
-	Noun   string
-	Qty    int
-	Worth  int
-	Source worthSource
+	Noun       string
+	Qty        int
+	Worth      int
+	Source     worthSource
+	FromKeeper int
 }
 
 // buildErrandVisit returns the keeper-facing cue when the subject is a resident keeper and a
@@ -755,7 +760,7 @@ func buildErrandVisit(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			view.Carter = true
 			view.SourceLabel = carterLegHolderName(snap, t, leg)
 			view.ForLabel = keeperProductsUsing(snap, actorSnap, t.Good)
-			lot := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{t.Good: vs.Inventory[t.Good]}}
+			lot := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{t.Good: vs.Inventory[t.Good]}, VisitorState: vs.VisitorState}
 			view.Pack = buildPackGoods(snap, actorID, lot)
 			view.PackKinds = packKinds(lot)
 			return view
@@ -855,10 +860,15 @@ func bulkGoodLabel(def *sim.ItemKindDef, kind string) string {
 // first, so an import he retails is anchored at what it fetches from his counter,
 // which is the honest ceiling on what buying more of it is worth to him). A good
 // that resolves no price keeps Worth 0 and renders without a figure. Sorted by
-// noun (then kind) so the render is deterministic.
+// noun (then kind) so the render is deterministic. FromKeeper reads the keeper's
+// own row of the seller's ReceivedFrom (LLM-875).
 func buildPackGoods(snap *sim.Snapshot, keeperID sim.ActorID, seller *sim.ActorSnapshot) []PackGood {
 	if seller == nil || len(seller.Inventory) == 0 {
 		return nil
+	}
+	var fromKeeper map[sim.ItemKind]int
+	if seller.VisitorState != nil {
+		fromKeeper = seller.VisitorState.ReceivedFrom[keeperID]
 	}
 	type entry struct {
 		kind sim.ItemKind
@@ -874,11 +884,19 @@ func buildPackGoods(snap *sim.Snapshot, keeperID sim.ActorID, seller *sim.ActorS
 			noun = def.CountNoun(qty)
 		}
 		worth, source := offerItemUnitWorthSource(snap, keeperID, kind)
+		from := fromKeeper[kind]
+		if from > qty {
+			from = qty
+		}
+		if from < 0 {
+			from = 0
+		}
 		entries = append(entries, entry{kind: kind, g: PackGood{
-			Noun:   noun,
-			Qty:    qty,
-			Worth:  worth,
-			Source: source,
+			Noun:       noun,
+			Qty:        qty,
+			Worth:      worth,
+			Source:     source,
+			FromKeeper: from,
 		}})
 	}
 	if len(entries) == 0 {
@@ -960,7 +978,10 @@ func renderErrandVisit(b *strings.Builder, v *ErrandVisitView) {
 // a purchase-derived figure is only what he has been paying — for an import that
 // may be a past overpayment, so it renders as exactly that claim and no more; a
 // catalog figure is the going rate. Goods that don't price are named without a
-// figure. When at least one good priced, closes with the weigh-it counsel; an
+// figure. A good that came off the keeper's own shelf earlier in the visit says
+// so first, inside the same parenthesis (LLM-875, packProvenanceNote): the
+// buy-back temptation sits on this line, so this is where the history goes.
+// When at least one good priced, closes with the weigh-it counsel; an
 // all-unpriced pack gets the bare listing and no counsel — no figures to weigh
 // against. Writes nothing for an empty pack (the prose above already covers the
 // deal in general terms). Nouns come from the catalog via the view; sanitized here.
@@ -975,19 +996,25 @@ func renderPackGoods(b *strings.Builder, pack []PackGood) {
 			b.WriteString(", ")
 		}
 		fmt.Fprintf(b, "%d %s", g.Qty, sanitizeInline(g.Noun))
-		if g.Worth <= 0 {
-			continue
+		var notes []string
+		if from := packProvenanceNote(g); from != "" {
+			notes = append(notes, from)
 		}
-		switch g.Source {
-		case worthFromSales:
-			priced = true
-			fmt.Fprintf(b, " (fetches about %d each from your counter)", g.Worth)
-		case worthFromPurchases:
-			priced = true
-			fmt.Fprintf(b, " (you've been paying about %d each)", g.Worth)
-		case worthFromCatalog:
-			priced = true
-			fmt.Fprintf(b, " (the customary price is about %d)", g.Worth)
+		if g.Worth > 0 {
+			switch g.Source {
+			case worthFromSales:
+				priced = true
+				notes = append(notes, fmt.Sprintf("fetches about %d each from your counter", g.Worth))
+			case worthFromPurchases:
+				priced = true
+				notes = append(notes, fmt.Sprintf("you've been paying about %d each", g.Worth))
+			case worthFromCatalog:
+				priced = true
+				notes = append(notes, fmt.Sprintf("the customary price is about %d", g.Worth))
+			}
+		}
+		if len(notes) > 0 {
+			fmt.Fprintf(b, " (%s)", strings.Join(notes, "; "))
 		}
 	}
 	b.WriteString(".")
@@ -998,6 +1025,31 @@ func renderPackGoods(b *strings.Builder, pack []PackGood) {
 		// (code_review, round 2).
 		b.WriteString(" Weigh his asking prices against what you know of their prices — counter a dear ask or let it go rather than overpay; a bale bought above what it sells on for is coin lost.")
 	}
+}
+
+// packProvenanceNote says how much of a pack good came off the keeper's own
+// shelf earlier in the visit (LLM-875) — "the same five he had off you
+// earlier", or "two of them he had off you earlier" when the trader holds more
+// than came from him. "" for goods the trader brought with him. "had off you",
+// not "bought" or "took in payment": a coin sale, a barter leg and a gift all
+// land here, and the clause has to be true of each. "earlier", not "this
+// afternoon": the cue can still render at dusk.
+func packProvenanceNote(g PackGood) string {
+	if g.FromKeeper <= 0 {
+		return ""
+	}
+	if g.FromKeeper >= g.Qty {
+		return fmt.Sprintf("the same %s he had off you earlier", packCountWord(g.Qty))
+	}
+	return fmt.Sprintf("%s of them he had off you earlier", packCountWord(g.FromKeeper))
+}
+
+// packCountWord is countWord with "one" for a single unit.
+func packCountWord(n int) string {
+	if n == 1 {
+		return "one"
+	}
+	return countWord(n)
 }
 
 // structureSnapIsTavernOrInn reports whether a structure is a tavern or an inn (a "tavern" or

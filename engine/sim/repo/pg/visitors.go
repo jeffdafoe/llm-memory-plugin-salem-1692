@@ -100,6 +100,11 @@ type visitorPlanJSON struct {
 	// column itself is: a mid-visit deploy must not resurrect the word as unspent,
 	// or the traveler reopens a matter his listener already answered.
 	PayloadSharedWith []string `json:"payload_shared_with,omitempty"`
+	// Where the pack's goods came from in the village (LLM-875) —
+	// VisitorState.ReceivedFrom, resident id → item kind → units. Persisted so a
+	// mid-visit deploy doesn't erase the keeper's "the same five he had off you"
+	// line and reopen the buy-back it exists to stop.
+	ReceivedFrom map[string]map[string]int `json:"received_from,omitempty"`
 	// Trade — the merchant visitor's bound errand (LLM-455), generalizing the LLM-410
 	// DistributorOnly flag. nil for a passer-through. Rides the plan jsonb (no dedicated
 	// column) so a mid-visit redeploy resumes the traveler on the same errand rather than as
@@ -223,6 +228,19 @@ func encodeVisitorPlan(a *sim.Actor) (string, error) {
 	for _, aid := range vs.PayloadSharedWith {
 		plan.PayloadSharedWith = append(plan.PayloadSharedWith, string(aid))
 	}
+	for aid, kinds := range vs.ReceivedFrom {
+		if len(kinds) == 0 {
+			continue
+		}
+		if plan.ReceivedFrom == nil {
+			plan.ReceivedFrom = make(map[string]map[string]int, len(vs.ReceivedFrom))
+		}
+		row := make(map[string]int, len(kinds))
+		for kind, qty := range kinds {
+			row[string(kind)] = qty
+		}
+		plan.ReceivedFrom[string(aid)] = row
+	}
 	if len(a.Inventory) > 0 {
 		plan.Inventory = make(map[string]int, len(a.Inventory))
 		for kind, qty := range a.Inventory {
@@ -284,6 +302,29 @@ func applyVisitorPlan(raw []byte, lv *sim.LoadedVisitor) error {
 		}
 		seenShared[s] = true
 		lv.VisitorState.PayloadSharedWith = append(lv.VisitorState.PayloadSharedWith, sim.ActorID(s))
+	}
+	// Provenance rows (LLM-875). The writer keeps every count positive and every
+	// key non-blank, so a blank id or kind or a non-positive count is out-of-band
+	// data: dropped, the rest kept. An unknown id or kind is harmless — the cue
+	// reads only the co-present keeper's row, for goods still in the pack.
+	for aid, kinds := range plan.ReceivedFrom {
+		if aid == "" {
+			continue
+		}
+		for kind, qty := range kinds {
+			if kind == "" || qty <= 0 {
+				continue
+			}
+			if lv.VisitorState.ReceivedFrom == nil {
+				lv.VisitorState.ReceivedFrom = make(map[sim.ActorID]map[sim.ItemKind]int)
+			}
+			row := lv.VisitorState.ReceivedFrom[sim.ActorID(aid)]
+			if row == nil {
+				row = make(map[sim.ItemKind]int)
+				lv.VisitorState.ReceivedFrom[sim.ActorID(aid)] = row
+			}
+			row[sim.ItemKind(kind)] = qty
+		}
 	}
 	if plan.Trade != nil {
 		// Validate the persisted errand against the Go-owned allowlist before rebuilding it
