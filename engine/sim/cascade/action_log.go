@@ -108,6 +108,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleSolicitedWorkActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleHiredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleLaborResolvedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleOmenNoticedActionLog))
 	// Cadence contract, phase one — default now, settings-resolved interval once the
 	// goroutine can read it (LLM-395; see RegisterIdleBackstop).
 	w.RegisterTicker("action_log", defaultActionLogSweepInterval)
@@ -627,6 +628,51 @@ func handleGatheredActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
+		Source:      src,
+	})
+}
+
+// handleOmenNoticedActionLog appends the witness's row when an omen happens
+// (LLM-843): what they found, and whose omen it was when that is someone else.
+// The durable mirror carries the kind and the plain text for the dream
+// distiller, which narrates it as something the villager found.
+func handleOmenNoticedActionLog(w *sim.World, evt sim.Event) {
+	omen, ok := evt.(*sim.OmenNoticed)
+	if !ok {
+		return
+	}
+	text := sim.OmenLogText(omen.Kind)
+	subjectName := ""
+	if omen.SubjectID != omen.WitnessID {
+		if subject := w.Actors[omen.SubjectID]; subject != nil {
+			subjectName = subject.DisplayName
+		}
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:          omen.WitnessID,
+		OccurredAt:       omen.At,
+		ActionType:       sim.ActionTypeNoticedOmen,
+		Text:             text,
+		HuddleID:         omen.HuddleID,
+		CounterpartyName: subjectName,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append noticed_omen (actor %q event %d): %v",
+			omen.WitnessID, omen.EventID(), err)
+		return
+	}
+	display, src := actorDisplayAndSource(w, omen.WitnessID)
+	payload := map[string]any{"kind": string(omen.Kind), "text": text}
+	if subjectName != "" {
+		payload["subject"] = subjectName
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     omen.WitnessID,
+		OccurredAt:  omen.At,
+		ActionType:  sim.ActionTypeNoticedOmen,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    omen.HuddleID,
 		Source:      src,
 	})
 }

@@ -258,6 +258,13 @@ const (
 	ActionTypePCSlept       ActionType = "pc_slept"
 	ActionTypePCWoke        ActionType = "pc_woke"
 	ActionTypePCRoomChanged ActionType = "pc_room_changed"
+
+	// ActionTypeNoticedOmen — a villager found an omen (LLM-843, omen.go): the
+	// milk turned, the fire would not hold. ActorID is the witness; Text is what
+	// they found (OmenLogText); CounterpartyName is whose omen it was when that
+	// is someone else (a hearth stoked by a hired hand). Durable payload {kind,
+	// text, subject} so the night's dream and the day notes record it.
+	ActionTypeNoticedOmen ActionType = "noticed_omen"
 )
 
 // isNegotiationActionType reports whether t is one of the pay-ledger negotiation

@@ -43,7 +43,7 @@ func TestBuildVillageWordExcludesPresentAndExpired(t *testing.T) {
 		},
 	}
 	s := SurroundingsView{HuddleMembers: []HuddleMember{{ID: "present"}}}
-	got := buildVillageWord(a, s, now)
+	got := buildVillageWord("subject", a, s, now)
 	if len(got) != 1 {
 		t.Fatalf("got %d views, want 1 (absent only): %+v", len(got), got)
 	}
@@ -61,7 +61,7 @@ func TestBuildVillageWordCoPresentSubjectExcluded(t *testing.T) {
 		Rumors: []sim.KnownRumor{vwRumor("nearby", "Goodwife Alice", 0, now, false)},
 	}
 	s := SurroundingsView{CoPresent: []HuddleMember{{ID: "nearby"}}}
-	if got := buildVillageWord(a, s, now); got != nil {
+	if got := buildVillageWord("subject", a, s, now); got != nil {
 		t.Fatalf("a co-present subject should be filtered, got %+v", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestBuildVillageWordFreshestFirstAndCap(t *testing.T) {
 		rumors = append(rumors, vwRumor(id, name, 0, now.Add(time.Duration(i)*time.Minute), false))
 	}
 	a := &sim.ActorSnapshot{Kind: sim.KindNPCStateful, Rumors: rumors}
-	got := buildVillageWord(a, SurroundingsView{}, now)
+	got := buildVillageWord("subject", a, SurroundingsView{}, now)
 	if len(got) != maxRenderedVillageWord {
 		t.Fatalf("got %d views, want cap %d", len(got), maxRenderedVillageWord)
 	}
@@ -93,7 +93,7 @@ func TestBuildVillageWordSkipsNonGossipKinds(t *testing.T) {
 	rumors := []sim.KnownRumor{vwRumor("absent", "Ezekiel Crane", 0, now, true)}
 	for _, k := range []sim.ActorKind{sim.KindPC, sim.KindDecorative} {
 		a := &sim.ActorSnapshot{Kind: k, Rumors: rumors}
-		if got := buildVillageWord(a, SurroundingsView{}, now); got != nil {
+		if got := buildVillageWord("subject", a, SurroundingsView{}, now); got != nil {
 			t.Fatalf("kind %v should carry no village word, got %+v", k, got)
 		}
 	}

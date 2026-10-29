@@ -178,6 +178,9 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		Phase:           w.Phase,
 		MutableSettings: MutableWorldSettings{Rows: PersistableSettingRows(&w.Settings)},
 	}
+	// LLM-843: the omen record holds a map and a slice the world goroutine edits
+	// (takeArmedOmen), and SaveWorld encodes it off that goroutine — copy it.
+	cp.Environment.Omens = w.Environment.Omens.Clone()
 	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so
 	// the checkpoint persists them. Authored kinds (food/drink/material/craft)
 	// stay reference data, never written by the loop — only discoveries are.

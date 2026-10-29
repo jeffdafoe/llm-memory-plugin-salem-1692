@@ -37,7 +37,7 @@ func newMockPoolE(t *testing.T) (pgxmock.PgxPoolIface, *EnvironmentRepo) {
 var worldStateColumns = []string{
 	"phase", "last_transition_at", "last_rotation_at",
 	"weather", "atmosphere", "last_needs_tick_at",
-	"town_chest_coins", "input_shortages", "last_carter_at",
+	"town_chest_coins", "input_shortages", "last_carter_at", "omens",
 }
 
 // programWorldStateRow programs a single world_state row scan with
@@ -76,10 +76,25 @@ func programWorldStateRowFull(mock pgxmock.PgxPoolIface, phase sim.Phase,
 	inputShortages []byte,
 	lastCarterAt *time.Time,
 ) {
+	programWorldStateRowWithOmens(mock, phase, lastTransitionAt, lastRotationAt,
+		weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt, []byte("{}"))
+}
+
+// programWorldStateRowWithOmens is programWorldStateRowFull with the raw omens
+// jsonb document (LLM-843); the Full helper reads the empty record.
+func programWorldStateRowWithOmens(mock pgxmock.PgxPoolIface, phase sim.Phase,
+	lastTransitionAt, lastRotationAt time.Time,
+	weather, atmosphere string,
+	lastNeedsTickAt *time.Time,
+	townChest int,
+	inputShortages []byte,
+	lastCarterAt *time.Time,
+	omens []byte,
+) {
 	mock.ExpectQuery(`SELECT[\s\S]+FROM world_state[\s\S]+WHERE id = 1`).
 		WillReturnRows(pgxmock.NewRows(worldStateColumns).
 			AddRow(string(phase), lastTransitionAt, lastRotationAt,
-				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt))
+				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt, omens))
 }
 
 // programSettingsRows programs the setting kv query returning the
@@ -366,7 +381,7 @@ func TestEnvironmentRepo_SaveSnapshot_HappyPath(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON), nil /*no carter yet*/).
+		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON), nil /*no carter yet*/, "{}" /*no omens*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -467,7 +482,7 @@ func TestEnvironmentRepo_SaveSnapshot_ZeroLastNeedsTick_NULL(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/, nil /*no carter yet*/).
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/, nil /*no carter yet*/, "{}" /*no omens*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -909,12 +924,64 @@ func TestEnvironmentRepo_CarterAnchorRoundTrip(t *testing.T) {
 	mock, repo = newMockPoolE(t)
 	tx := fakeTx{mock: mock}
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, at, "", "", nil, 0, "[]", came).
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil, 0, "[]", came, "{}").
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	if err := repo.SaveSnapshot(context.Background(), tx, sim.WorldEnvironment{LastTransitionAt: at, LastRotationAt: at, LastCarterAt: came}, sim.PhaseDay); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
+	}
+}
+
+// --- Load: omens (LLM-843) ---------------------------------------------------
+
+// TestEnvironmentRepo_Load_Omens — the omen record rides world_state as a jsonb
+// object and comes back typed, so an armed omen and each resident's cooldown
+// survive a restart; the three knobs load from settings. A document that will
+// not decode reads as the empty record rather than failing the boot.
+func TestEnvironmentRepo_Load_Omens(t *testing.T) {
+	at := time.Date(2026, 10, 29, 4, 0, 0, 0, time.UTC)
+	doc := []byte(`{"armed":[{"kind":"sour_milk","subject_id":"elizabeth","armed_at":"2026-10-29T00:00:00Z","lapses_at":"2026-10-30T00:00:00Z"}],"last_at":{"john":"2026-10-25T07:00:00Z"}}`)
+
+	mock, repo := newMockPoolE(t)
+	programWorldStateRowWithOmens(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte("[]"), nil, doc)
+	programSettingsRows(mock, map[string]string{
+		"omen_chance_permille": "100",
+		"omen_cooldown_days":   "3",
+		"omen_lapse_hours":     "12",
+	})
+	env, _, settings, err := repo.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if a := env.Omens.Armed; len(a) != 1 || a[0].Kind != sim.OmenSourMilk || a[0].SubjectID != "elizabeth" ||
+		!a[0].LapsesAt.Equal(time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("Armed = %+v, want elizabeth's sour milk lapsing 10-30", a)
+	}
+	if !env.Omens.LastAt["john"].Equal(time.Date(2026, 10, 25, 7, 0, 0, 0, time.UTC)) {
+		t.Errorf("LastAt = %+v, want john's 10-25 omen", env.Omens.LastAt)
+	}
+	if settings.OmenChancePermille != 100 || settings.OmenCooldownDays != 3 || settings.OmenLapseHours != 12 {
+		t.Errorf("omen settings = %d / %d / %d, want 100 / 3 / 12",
+			settings.OmenChancePermille, settings.OmenCooldownDays, settings.OmenLapseHours)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+
+	mock, repo = newMockPoolE(t)
+	programWorldStateRowWithOmens(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte("[]"), nil, []byte(`["not","a record"]`))
+	programSettingsRows(mock, map[string]string{})
+	env, _, settings, err = repo.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load with malformed omens: %v", err)
+	}
+	if len(env.Omens.Armed) != 0 || len(env.Omens.LastAt) != 0 {
+		t.Errorf("malformed document: Omens = %+v, want empty", env.Omens)
+	}
+	if settings.OmenChancePermille != sim.DefaultOmenChancePermille || settings.OmenCooldownDays != sim.DefaultOmenCooldownDays ||
+		settings.OmenLapseHours != sim.DefaultOmenLapseHours {
+		t.Errorf("omen defaults = %d / %d / %d", settings.OmenChancePermille, settings.OmenCooldownDays, settings.OmenLapseHours)
 	}
 }

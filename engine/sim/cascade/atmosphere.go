@@ -558,6 +558,8 @@ var atmosphereDigestVerbs = map[sim.ActionType]string{
 	// (which filters to its own actor), so the verb is what makes a neighbour
 	// notice the hammer at all.
 	sim.ActionTypeRepairing: "mended",
+	// LLM-843: an omen the villager found — plain words, no verdict on what it was.
+	sim.ActionTypeNoticedOmen: "found something amiss",
 }
 
 // digestActorParts renders one actor's per-action-type counts as

@@ -586,4 +586,11 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: damage roll: %v", err)
 		}
 	}
+	// Omens (LLM-843): once per game-day, maybe arm one against a resident. Bound
+	// to the durable boundary for the damage roll's reasons.
+	if _, err := w.SendContext(ctx, RollDailyOmen(boundary, r)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: omen roll: %v", err)
+		}
+	}
 }

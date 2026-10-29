@@ -321,6 +321,28 @@ func completeMilking(w *World, actorID ActorID, actor *Actor, act *SourceActivit
 	if qty <= 0 || qty > avail {
 		qty = avail
 	}
+	// LLM-843: the sour-milk omen. The milk is drawn from the cow as usual, but it
+	// has turned in the pail — nothing reaches the milker's pack. The feeding habit
+	// below still happens; only the yield is lost.
+	if takeArmedOmen(w, OmenSourMilk, actorID, now) {
+		drawDownStock(row, qty, now)
+		fed := false
+		if actor.Kind != KindPC && actor.Inventory[LivestockFeedItem] > 0 && !animal.Yield.Fed() {
+			fed = feedLivestock(w, actor, animal, now) == nil
+		}
+		w.emit(&SourceActivityCompleted{
+			ActorID:    actorID,
+			AnimalID:   animal.ID,
+			Kind:       SourceActivityMilk,
+			Item:       kind,
+			SourceName: animal.DisplayName,
+			Fed:        fed,
+			Omen:       OmenSourMilk,
+			At:         now,
+		})
+		noticeOmen(w, OmenSourMilk, actor, actorID, now)
+		return true
+	}
 	cur := actor.Inventory[kind]
 	if cur > math.MaxInt-qty {
 		return false

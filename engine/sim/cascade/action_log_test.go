@@ -1726,3 +1726,51 @@ func TestHandlePaidActionLog_BarePayCarriesNoDueMarker(t *testing.T) {
 		}
 	})
 }
+
+// --- TestHandleOmenNoticedActionLog (LLM-843) ------------------------
+// An omen lands one row on the WITNESS: what they found, plus whose omen it was
+// when that is someone else (a hearth stoked by a hired hand). The durable mirror
+// carries the kind, the text and the subject for the dream distiller.
+func TestHandleOmenNoticedActionLog(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleOmenNoticedActionLog(world, &sim.OmenNoticed{
+			Kind: sim.OmenColdHearth, WitnessID: "bob", SubjectID: "hannah", HuddleID: "h1", At: at,
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	if got[0].ActorID != "bob" || got[0].ActionType != sim.ActionTypeNoticedOmen ||
+		got[0].Text != "found the hearth fire would not stay lit" || got[0].CounterpartyName != "Hannah" {
+		t.Errorf("row = %+v", got[0])
+	}
+	rows := rec.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.ActionType != sim.ActionTypeNoticedOmen || r.Payload["kind"] != "cold_hearth" ||
+		r.Payload["text"] != "found the hearth fire would not stay lit" || r.Payload["subject"] != "Hannah" {
+		t.Errorf("durable row = %+v", r)
+	}
+
+	// A villager's own omen names no one else.
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleOmenNoticedActionLog(world, &sim.OmenNoticed{
+			Kind: sim.OmenSourMilk, WitnessID: "hannah", SubjectID: "hannah", HuddleID: "h1", At: at,
+		})
+	})
+	if rows := rec.snapshot(); len(rows) != 2 || rows[1].Payload["subject"] != nil {
+		t.Errorf("own omen durable row = %+v, want no subject", rows)
+	}
+}
