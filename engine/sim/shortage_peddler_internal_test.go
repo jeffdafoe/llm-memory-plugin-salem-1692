@@ -2,6 +2,7 @@ package sim
 
 import (
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -359,5 +360,28 @@ func TestPruneResolvedShortagesRunsOutsideTheSpawnWindow(t *testing.T) {
 	}
 	if len(w.Environment.InputShortages) != 0 {
 		t.Errorf("resolved entry still stored after a morning tick: %+v, want dropped", w.Environment.InputShortages)
+	}
+}
+
+// TestCheckpointCopiesTheShortageRecord (LLM-877): SaveWorld encodes the
+// checkpoint off the world goroutine, while the world prunes the record in place
+// and stamps LastPeddlerAt through pointers into it. The checkpoint must hold its
+// own copy, or the encoder reads entries mid-edit.
+func TestCheckpointCopiesTheShortageRecord(t *testing.T) {
+	seen := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	w := shortageWorld()
+	w.Environment.InputShortages = []InputShortage{
+		{KeeperID: "hannah", Item: "milk", Days: 1, LastSeenAt: seen}, // no such keeper: pruned
+		{KeeperID: "john", Item: "meat", Days: 3, LastSeenAt: seen},
+	}
+	want := slices.Clone(w.Environment.InputShortages)
+	cp := w.BuildCheckpointSnapshot()
+	pruneResolvedShortages(w) // shifts john's entry down into slot 0
+	stampCarterShortages(w, []CarterLeg{{Keeper: "john", Good: "meat"}}, seen.Add(time.Hour))
+	if len(w.Environment.InputShortages) != 1 || w.Environment.InputShortages[0].LastPeddlerAt.IsZero() {
+		t.Fatalf("live record not edited as the test expects: %+v", w.Environment.InputShortages)
+	}
+	if !slices.Equal(cp.Environment.InputShortages, want) {
+		t.Errorf("checkpoint shares the live shortage record:\n got %+v\nwant %+v", cp.Environment.InputShortages, want)
 	}
 }
