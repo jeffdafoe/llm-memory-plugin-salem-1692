@@ -168,3 +168,18 @@ func TestTranslateEvent_ConfigFrames(t *testing.T) {
 		t.Errorf("agent-ticks data = %#v, want AgentTicksPaused=true", af.Data)
 	}
 }
+
+// TestTranslateSnowTierChanged: the snow tier reaches the client as its wire
+// name under the same key the /world read uses (LLM-850).
+func TestTranslateSnowTierChanged(t *testing.T) {
+	f, ok := TranslateEvent(&sim.SnowTierChanged{Tier: sim.SnowTierLight})
+	if !ok || f.Type != "snow_tier_changed" {
+		t.Fatalf("snow frame = %+v ok=%v, want snow_tier_changed", f, ok)
+	}
+	if d, ok := f.Data.(snowTierChangedWireDTO); !ok || d.SnowTier != "light" {
+		t.Errorf("snow data = %#v, want light", f.Data)
+	}
+	if got := worldStateFromSnapshot(&sim.Snapshot{SnowTier: sim.SnowTierDeep}).SnowTier; got != "deep" {
+		t.Errorf("world DTO snow_tier = %q, want deep", got)
+	}
+}

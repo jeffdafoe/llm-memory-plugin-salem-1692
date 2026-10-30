@@ -482,6 +482,17 @@ type WeatherChanged struct {
 
 func (WeatherChanged) isSimEvent() {}
 
+// SnowTierChanged is emitted when the snow cover's tier changes (snow.go,
+// LLM-850). The hub translates it to the snow_tier_changed frame, and the
+// client swaps the ground sheet and sets the snow shader from it.
+type SnowTierChanged struct {
+	EventBase
+	Tier SnowTier
+	At   time.Time
+}
+
+func (SnowTierChanged) isSimEvent() {}
+
 // AgentTicksPausedChanged is emitted by SetAgentTicksPaused when an admin
 // toggles the global LLM-agent-activity pause from the config panel. The hub
 // translates it to the agent_ticks_paused_changed frame so the config panel's

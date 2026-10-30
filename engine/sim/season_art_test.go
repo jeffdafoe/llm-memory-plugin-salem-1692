@@ -186,3 +186,73 @@ func TestSeasonArt_SweepFlipsObjects(t *testing.T) {
 		t.Errorf("picked-bare bush = %q, want autumn-bare", got)
 	}
 }
+
+// TestSeasonArt_SweepFollowsSnowCover: the sweep picks the art under the snow
+// lying now (LLM-850) — a January maple shows clean branches with no snow, snow
+// on its tops under a dusting and the full snowy art under light snow.
+func TestSeasonArt_SweepFollowsSnowCover(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Environment.Seed(sim.WorldEnvironment{}, sim.PhaseDay, sim.WorldSettings{
+		SnowTierDusting: sim.DefaultSnowTierDusting, SnowTierLight: sim.DefaultSnowTierLight, SnowTierDeep: sim.DefaultSnowTierDeep,
+	})
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"maple": seasonMaple})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"maple": {ID: "maple", AssetID: "maple", CurrentState: "default"},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	now := time.Date(2026, 1, 14, 15, 0, 0, 0, time.UTC)
+	stateUnder := func(cover int) string {
+		got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Environment.SnowCoverX100 = cover * 100
+			sim.RegenObjectRefresh(world, now)
+			return world.VillageObjects["maple"].CurrentState, nil
+		}})
+		return got.(string)
+	}
+	for _, c := range []struct {
+		cover int
+		want  string
+	}{{0, "winter-clean"}, {5, "winter-snowy-top"}, {45, "winter-snowy"}, {0, "winter-clean"}} {
+		if got := stateUnder(c.cover); got != c.want {
+			t.Errorf("cover %d: maple = %q, want %q", c.cover, got, c.want)
+		}
+	}
+}
+
+// TestSnowTier_LoadedTierSeedsTheFrameDedupe: a village loaded under a dusting
+// starts its frame dedupe at dusting — the tier its first world read carries —
+// so the first melt below it sends a frame to none rather than being swallowed
+// as "still none" (code_review, LLM-850).
+func TestSnowTier_LoadedTierSeedsTheFrameDedupe(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Environment.Seed(sim.WorldEnvironment{SnowCoverX100: 100}, sim.PhaseDay, sim.WorldSettings{
+		SnowTierDusting: sim.DefaultSnowTierDusting, SnowTierLight: sim.DefaultSnowTierLight, SnowTierDeep: sim.DefaultSnowTierDeep,
+		SnowMeltDayPerMinuteX100: sim.DefaultSnowMeltDayPerMinuteX100,
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if got := w.Environment.LastSnowTierEmitted; got != sim.SnowTierDusting {
+		t.Fatalf("LastSnowTierEmitted after load = %s, want dusting", got)
+	}
+	var frames []sim.SnowTier
+	w.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+		if e, ok := evt.(*sim.SnowTierChanged); ok {
+			frames = append(frames, e.Tier)
+		}
+	}))
+	if _, err := sim.AdjustSnow(1).Fn(w); err != nil {
+		t.Fatalf("AdjustSnow: %v", err)
+	}
+	if len(frames) != 1 || frames[0] != sim.SnowTierNone {
+		t.Errorf("frames after the first melt = %v, want [none]", frames)
+	}
+}

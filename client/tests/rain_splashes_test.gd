@@ -43,6 +43,8 @@ const TESTS := [
     "_test_a_stalled_frame_spawns_a_bounded_batch",
     "_test_splashes_stay_on_the_map",
     "_test_world_replays_known_weather_onto_a_fresh_splash_layer",
+    "_test_snowstorm_lands_snow_impacts_off_snowy_ground",
+    "_test_world_snowstorm_follows_season_and_snow_tier",
 ]
 
 const FRAME := Vector2i(16, 16)
@@ -139,7 +141,10 @@ func _setup_world() -> StubWorld:
     var stub := StubWorld.new()
     root.add_child(stub)
     _splashes.world = stub
-    _splashes._frames = _splashes._build_frames(_make_strip(FRAME_COUNT))
+    # set_storm picks the rain or the snow frames itself, so both are injected.
+    _splashes._rain_frames = _splashes._build_frames(_make_strip(FRAME_COUNT))
+    _splashes._snow_frames = _splashes._build_frames(_make_strip(FRAME_COUNT), _splashes.SNOW_FRAME_FPS)
+    _splashes._frames = _splashes._rain_frames
     return stub
 
 func _teardown_world(stub: StubWorld) -> void:
@@ -166,6 +171,49 @@ func _check(label: String, ok: bool) -> void:
         print("  FAIL: ", label)
 
 # --- tests -----------------------------------------------------------------------
+
+## LLM-850: a snowstorm lands the snow impact sheet at the artist's slower
+## cadence — but not once the ground is white (no snow drops on a snow-covered
+## floor), and a rain storm after it is rain again.
+func _test_snowstorm_lands_snow_impacts_off_snowy_ground() -> void:
+    var stub := _setup_world()
+    _splashes.set_storm(true, true, false)
+    _check("a snowstorm on clean ground spawns", _splashes.is_processing())
+    _check("a snowstorm uses the snow frames", _splashes._frames == _splashes._snow_frames)
+    _check("snow impacts run at 150 ms a frame",
+        is_equal_approx(_splashes._frames.get_animation_speed("default"), 1000.0 / 150.0))
+    _pump_spawns(10)
+    for child in _splashes.get_children():
+        _check("a spawned impact carries the snow frames", child.sprite_frames == _splashes._snow_frames)
+
+    _splashes.set_storm(true, true, true)
+    _check("a snowstorm over snowy ground spawns nothing", not _splashes.is_processing())
+
+    _splashes.set_storm(true, false, true)
+    _check("rain spawns over snowy ground", _splashes.is_processing())
+    _check("rain uses the rain frames", _splashes._frames == _splashes._rain_frames)
+    _teardown_world(stub)
+    _done()
+
+## LLM-850: world.gd turns a storm into snow in winter only, and stops snow
+## impacts once the tier puts the snowy ground down (light or deep, not a
+## dusting).
+func _test_world_snowstorm_follows_season_and_snow_tier() -> void:
+    var world: Node2D = load("res://scripts/world.gd").new()
+    world.village_season = "autumn"
+    world.set_weather("storm")
+    _check("an autumn storm is rain", not world.is_snowing())
+    world.village_season = "winter"
+    world.set_weather("storm")
+    _check("a winter storm is snow", world.is_snowing())
+    world.set_weather("clear")
+    _check("a clear winter sky is not snowing", not world.is_snowing())
+
+    for c in [["none", false], ["dusting", false], ["light", true], ["deep", true], ["bogus", false]]:
+        world.snow_tier = c[0] if c[0] != "bogus" else "none"
+        _check("snow tier %s puts the snowy ground down: %s" % c, world.snowy_ground() == c[1])
+    world.free()
+    _done()
 
 func _test_builds_frames_from_a_synthetic_sheet() -> void:
     var frames: SpriteFrames = _splashes._build_frames(_make_strip(FRAME_COUNT))
@@ -368,9 +416,12 @@ func _test_world_replays_known_weather_onto_a_fresh_splash_layer() -> void:
 ## must run without splashes rather than erroring every frame.
 func _test_artless_checkout_spawns_nothing() -> void:
     var stub := _setup_world()
-    _splashes._frames = null
+    _splashes._rain_frames = null
+    _splashes._snow_frames = null
 
     _splashes.set_storm(true)
+    _check("an artless storm never turns processing on", not _splashes.is_processing())
+    _splashes.set_storm(true, true)
     _check("an artless storm never turns processing on", not _splashes.is_processing())
     _check("an artless storm spawns nothing", _splashes.get_child_count() == 0)
     _splashes.set_storm(false)

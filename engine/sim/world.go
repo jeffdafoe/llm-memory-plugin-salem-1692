@@ -41,6 +41,8 @@ type WorldEnvironment struct {
 	LastRoadRepairAt        time.Time       // the same anchor for road damage (LLM-677). Transient.
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 	Omens                   OmenRecord      // armed omens and each resident's last omen (omen.go, LLM-843). Durable — persisted in world_state.omens: the cooldown is counted in days and an armed omen waits up to a day for its moment, both across the village's restarts.
+	SnowCoverX100           int             // the snow lying on the village, 0..SnowCoverMax×100 (snow.go, LLM-850). Durable — persisted in world_state.snow_cover_x100: a restart must not melt the snow.
+	LastSnowTierEmitted     SnowTier        // the tier the last SnowTierChanged carried, the emit dedupe (snow.go). Transient — FinalizeLoad sets it to the loaded cover's tier.
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -345,6 +347,16 @@ type WorldSettings struct {
 	OmenChancePermille int
 	OmenCooldownDays   int
 	OmenLapseHours     int
+
+	// Snow cover (LLM-850, snow.go): how fast it builds in a winter storm and
+	// melts by day and by night (×100 per minute), and the whole-unit cover at
+	// which each tier begins (0 leaves a tier out).
+	SnowBuildPerMinuteX100     int
+	SnowMeltDayPerMinuteX100   int
+	SnowMeltNightPerMinuteX100 int
+	SnowTierDusting            int
+	SnowTierLight              int
+	SnowTierDeep               int
 
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
@@ -2075,6 +2087,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// production (pg) booted with a zero stamp, verified live.
 	w.Environment.LastPhaseFlipAt = w.Environment.LastTransitionAt
 
+	// The snow tier the world read publishes from the first snapshot is the
+	// tier the frame dedupe starts from (LLM-850): booting it at none would let
+	// a village loaded under a dusting melt to none with no frame, leaving
+	// connected clients on the dusting.
+	w.Environment.LastSnowTierEmitted = SnowTierNow(w)
+
 	w.rebuildIndices()
 	// LLM-369: rehydrate in-flight visitors from their durable mirror into
 	// World.Actors — the reverse of the SaveSnapshot filter that keeps them out
@@ -2678,6 +2696,7 @@ func (w *World) republish() {
 		ZoomMinAdmin:                  w.Settings.ZoomMinAdmin,
 		ZoomMinRegular:                w.Settings.ZoomMinRegular,
 		NightColor:                    w.Settings.NightColor,
+		SnowTier:                      SnowTierNow(w),
 		// Resolved (default-applied) conversation turn-state windows, so
 		// perception build reads the same expiry the sim.Speak backstop uses.
 		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),

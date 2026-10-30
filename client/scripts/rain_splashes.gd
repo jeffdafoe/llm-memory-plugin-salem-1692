@@ -32,12 +32,19 @@ extends Node2D
 ## every other village sprite. The pack is purchased and gitignored, so a
 ## checkout without it is normal — CI runs that way. Missing art degrades to
 ## no splashes; the storm's rain, tint and lightning are untouched.
+##
+## In a snowstorm (LLM-850) the pack's snow impact sheet lands in place of the
+## rain's — but not on ground already white: the artist's note says no snow
+## drops on a snow-covered floor, so they stop once the snowy ground is down.
 
 const SPLASH_SHEET: String = "res://assets/tilesets/mana-seed/weather-effects/weather effects, rain impact anim 16x16.png"
+const SNOW_SPLASH_SHEET: String = "res://assets/tilesets/mana-seed/weather-effects/weather effects, snow impact anim 16x16.png"
 const FRAME_SIZE: Vector2i = Vector2i(16, 16)
 const FRAME_COUNT: int = 8
 ## Artist-suggested 75ms per frame, so one splash lives 0.6s.
 const FRAME_FPS: float = 1000.0 / 75.0
+## And 150ms for snow, so a snow impact lives 1.2s.
+const SNOW_FRAME_FPS: float = 1000.0 / 150.0
 
 ## Matches world.gd's default asset render scale — splash art pixels must be
 ## the same on-screen size as the village art they land next to.
@@ -75,6 +82,8 @@ const COVER_REFRESH_SECONDS: float = 1.0
 var world: Node2D = null
 
 var _frames: SpriteFrames = null
+var _rain_frames: SpriteFrames = null
+var _snow_frames: SpriteFrames = null
 var _active: bool = false
 var _spawn_accum: float = 0.0
 var _cover_rects: Array[Rect2] = []
@@ -83,17 +92,21 @@ var _cover_age: float = COVER_REFRESH_SECONDS  # expired, so first use gathers
 
 func _ready() -> void:
     z_index = SPLASH_Z
-    _frames = _load_frames(SPLASH_SHEET)
+    _rain_frames = _load_frames(SPLASH_SHEET, FRAME_FPS)
+    _snow_frames = _load_frames(SNOW_SPLASH_SHEET, SNOW_FRAME_FPS)
+    _frames = _rain_frames
     set_process(false)
 
 
 ## Start (active=true) or stop (active=false) splash spawning. Idempotent.
 ## Stopping doesn't clear live splashes — each finishes its 0.6s animation and
 ## frees itself, the same way clearing the storm lets in-flight rain particles
-## finish falling rather than vanishing mid-air.
-func set_storm(active: bool) -> void:
+## finish falling rather than vanishing mid-air. snow lands snow impacts in
+## place of rain; snowy_ground (the snowy ground sheet is down) stops them.
+func set_storm(active: bool, snow: bool = false, snowy_ground: bool = false) -> void:
     _active = active
-    set_process(active and _frames != null)
+    _frames = _snow_frames if snow else _rain_frames
+    set_process(active and _frames != null and not (snow and snowy_ground))
     if not active:
         _spawn_accum = 0.0
         _cover_age = COVER_REFRESH_SECONDS
@@ -127,18 +140,18 @@ func _process(delta: float) -> void:
 ## Load the impact sheet into a one-shot SpriteFrames animation. Missing art
 ## (gitignored purchased pack — CI's normal state) returns null and the node
 ## never spawns; the rest of the storm doesn't care.
-func _load_frames(path: String) -> SpriteFrames:
+func _load_frames(path: String, fps: float = FRAME_FPS) -> SpriteFrames:
     var sheet: Texture2D = load(path) if ResourceLoader.exists(path) else null
     if sheet == null:
         push_warning("rain_splashes: missing impact sheet " + path)
         return null
-    return _build_frames(sheet)
+    return _build_frames(sheet, fps)
 
 
 ## Cut a horizontal strip into a non-looping "default" animation. Stops at the
 ## last whole frame if the sheet is undersized (the shape a re-exported or
 ## wrong-sized replacement would have) rather than reading past the edge.
-func _build_frames(sheet: Texture2D) -> SpriteFrames:
+func _build_frames(sheet: Texture2D, fps: float = FRAME_FPS) -> SpriteFrames:
     var image: Image = sheet.get_image()
     if image == null:
         push_warning("rain_splashes: unreadable impact sheet")
@@ -146,7 +159,7 @@ func _build_frames(sheet: Texture2D) -> SpriteFrames:
     var frames := SpriteFrames.new()
     # SpriteFrames ships with a default animation already present.
     frames.set_animation_loop("default", false)
-    frames.set_animation_speed("default", FRAME_FPS)
+    frames.set_animation_speed("default", fps)
     for i in FRAME_COUNT:
         var region := Rect2i(Vector2i(i * FRAME_SIZE.x, 0), FRAME_SIZE)
         if not Rect2i(Vector2i.ZERO, image.get_size()).encloses(region):

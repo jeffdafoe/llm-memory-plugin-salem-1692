@@ -28,6 +28,11 @@ extends CanvasLayer
 ##
 ## Sound (LLM-703) rides the same calls: set_storm raises / clears the rain
 ## loop (Sound.set_rain) and each strike sends thunder after it (Sound.thunder).
+##
+## A winter storm is a snowstorm (LLM-850): set_storm(..., snow=true) draws the
+## pack's two snowfall sheets in place of the rain, at the artist's snow
+## cadences and a gentler wind, under the same tint — with no lightning, no
+## thunder and no rain sound.
 
 ## Storm tint — cool, desaturated slate. Alpha kept < 1.0 so the world bleeds
 ## through (darken, don't black out), matching the sleep-fade tone choice.
@@ -49,6 +54,10 @@ const FADE_OUT_DURATION: float = 2.0
 const WEATHER_DIR: String = "res://assets/tilesets/mana-seed/weather-effects/"
 const RAIN_LIGHT_SHEET: String = WEATHER_DIR + "weather effects, rain light anim 32x128.png"
 const RAIN_HEAVY_SHEET: String = WEATHER_DIR + "weather effects, rain heavy anim 32x128.png"
+## The snowfall sheets have the rain sheets' size and frame count, so they ride
+## the same two tiled layers.
+const SNOW_LIGHT_SHEET: String = WEATHER_DIR + "weather effects, snow light anim 32x128.png"
+const SNOW_HEAVY_SHEET: String = WEATHER_DIR + "weather effects, snow heavy anim 32x128.png"
 const LIGHTNING_SHEET: String = WEATHER_DIR + "weather effects, lightning full 32x128.png"
 
 ## Both rain sheets are 256x128 — 8 frames of one 32x128 tile, built to tile
@@ -64,6 +73,10 @@ const BOLT_VARIANT_COUNT: int = 2
 ## other and read as one flat sheet instead of depth.
 const RAIN_LIGHT_FRAME_SECONDS: float = 0.05
 const RAIN_HEAVY_FRAME_SECONDS: float = 0.10
+## The artist's snow cadences (same notes): slower than rain, and again
+## different from each other.
+const SNOW_LIGHT_FRAME_SECONDS: float = 0.175
+const SNOW_HEAVY_FRAME_SECONDS: float = 0.10
 
 ## Wind drift (LLM-632 follow-up). The frame animation moves the droplets but
 ## the tiled sheet itself is pinned, so without translation the rain reads as
@@ -75,6 +88,12 @@ const RAIN_HEAVY_FRAME_SECONDS: float = 0.10
 ## is 32 source px, so the light layer crosses a tile in ~3s.
 const RAIN_DRIFT_LIGHT_PPS: float = 10.0
 const RAIN_DRIFT_HEAVY_PPS: float = 6.0
+## Snow drifts on a lighter wind than rain — first guesses, tune by eye.
+const SNOW_DRIFT_LIGHT_PPS: float = 4.0
+const SNOW_DRIFT_HEAVY_PPS: float = 2.5
+## Snowflakes are white on a darkened sky and read stronger than rain at the
+## same alpha, but too faint a fall reads as dust — a first guess.
+const SNOW_TARGET_ALPHA: float = 0.7
 
 ## Village art is drawn at render_scale 2.0 by default (world.gd
 ## _asset_render_scale), so one source pixel of village art covers
@@ -121,9 +140,15 @@ var _tint_tween: Tween = null
 var _lightning_tween: Tween = null
 var _bolt_tween: Tween = null
 var _active: bool = false
+var _snow: bool = false
 
+## The frames the two layers draw now: the rain's or the snow's.
 var _rain_light_frames: Array[Texture2D] = []
 var _rain_heavy_frames: Array[Texture2D] = []
+var _rain_frames_light: Array[Texture2D] = []
+var _rain_frames_heavy: Array[Texture2D] = []
+var _snow_frames_light: Array[Texture2D] = []
+var _snow_frames_heavy: Array[Texture2D] = []
 var _bolt_variants: Array[Texture2D] = []
 var _rain_light_frame: int = 0
 var _rain_heavy_frame: int = 0
@@ -155,8 +180,12 @@ func _ready() -> void:
     add_child(_tint)
 
     # Heavy behind light — the artist's layering. Child order is draw order.
-    _rain_heavy_frames = _slice_sheet(RAIN_HEAVY_SHEET, RAIN_FRAME_SIZE, RAIN_FRAME_COUNT)
-    _rain_light_frames = _slice_sheet(RAIN_LIGHT_SHEET, RAIN_FRAME_SIZE, RAIN_FRAME_COUNT)
+    _rain_frames_heavy = _slice_sheet(RAIN_HEAVY_SHEET, RAIN_FRAME_SIZE, RAIN_FRAME_COUNT)
+    _rain_frames_light = _slice_sheet(RAIN_LIGHT_SHEET, RAIN_FRAME_SIZE, RAIN_FRAME_COUNT)
+    _snow_frames_heavy = _slice_sheet(SNOW_HEAVY_SHEET, RAIN_FRAME_SIZE, RAIN_FRAME_COUNT)
+    _snow_frames_light = _slice_sheet(SNOW_LIGHT_SHEET, RAIN_FRAME_SIZE, RAIN_FRAME_COUNT)
+    _rain_heavy_frames = _rain_frames_heavy
+    _rain_light_frames = _rain_frames_light
     _bolt_variants = _slice_sheet(LIGHTNING_SHEET, BOLT_FRAME_SIZE, BOLT_VARIANT_COUNT)
 
     _rain_heavy = _make_rain_rect(_rain_heavy_frames)
@@ -189,10 +218,12 @@ func _ready() -> void:
 ## Raise (active=true) or clear (active=false) the storm. Idempotent — calling
 ## with the current state just refreshes the in-flight tween cleanly. tween
 ## false applies instantly (used by the connect/reconnect DTO sync so the
-## scene doesn't flash clear before the first frame).
-func set_storm(active: bool, tween: bool = true) -> void:
+## scene doesn't flash clear before the first frame). snow draws the storm as
+## a snowstorm (LLM-850): snowfall, no lightning, no rain sound.
+func set_storm(active: bool, tween: bool = true, snow: bool = false) -> void:
     _active = active
-    Sound.set_rain(active, tween)
+    _set_snow(snow)
+    Sound.set_rain(active and not snow, tween)
 
     if active:
         # Re-layout on the way in: zoom or window size may have moved while the
@@ -203,7 +234,8 @@ func set_storm(active: bool, tween: bool = true) -> void:
 
     _kill_tint_tween()
     var tint_alpha: float = TINT_TARGET_ALPHA if active else 0.0
-    var rain_alpha: float = RAIN_TARGET_ALPHA if active else 0.0
+    var fall_alpha: float = SNOW_TARGET_ALPHA if snow else RAIN_TARGET_ALPHA
+    var rain_alpha: float = fall_alpha if active else 0.0
     if not tween:
         _tint.modulate.a = tint_alpha
         _rain_heavy.modulate.a = rain_alpha
@@ -221,7 +253,7 @@ func set_storm(active: bool, tween: bool = true) -> void:
             # Stop paying for two full-screen tiled draws once the rain is gone.
             _tint_tween.chain().tween_callback(_hide_rain)
 
-    if active:
+    if active and not snow:
         _schedule_lightning()
     else:
         _lightning_timer.stop()
@@ -232,6 +264,21 @@ func set_storm(active: bool, tween: bool = true) -> void:
         _lightning.modulate.a = 0.0
         _kill_bolt_tween()
         _bolt.visible = false
+
+
+## Point the two layers at the snow's frames or the rain's. A change restarts
+## the cycle at frame 0, so a layer never indexes past a shorter set (an
+## artless checkout has none).
+func _set_snow(snow: bool) -> void:
+    if snow == _snow:
+        return
+    _snow = snow
+    _rain_light_frames = _snow_frames_light if snow else _rain_frames_light
+    _rain_heavy_frames = _snow_frames_heavy if snow else _rain_frames_heavy
+    _rain_light_frame = 0
+    _rain_heavy_frame = 0
+    _rain_light.texture = null if _rain_light_frames.is_empty() else _rain_light_frames[0]
+    _rain_heavy.texture = null if _rain_heavy_frames.is_empty() else _rain_heavy_frames[0]
 
 
 func _process(delta: float) -> void:
@@ -368,26 +415,30 @@ func _advance_rain(delta: float) -> void:
     # Advance by ALL the intervals the delta spans, not one — a slow frame or
     # a resumed background tab hands a delta worth many frames, and advancing
     # one leaves the displayed phase behind the wrapped counter.
+    var light_seconds: float = SNOW_LIGHT_FRAME_SECONDS if _snow else RAIN_LIGHT_FRAME_SECONDS
+    var heavy_seconds: float = SNOW_HEAVY_FRAME_SECONDS if _snow else RAIN_HEAVY_FRAME_SECONDS
     _rain_light_elapsed += delta
-    if _rain_light_elapsed >= RAIN_LIGHT_FRAME_SECONDS:
-        var light_steps: int = floori(_rain_light_elapsed / RAIN_LIGHT_FRAME_SECONDS)
-        _rain_light_elapsed = fmod(_rain_light_elapsed, RAIN_LIGHT_FRAME_SECONDS)
+    if _rain_light_elapsed >= light_seconds:
+        var light_steps: int = floori(_rain_light_elapsed / light_seconds)
+        _rain_light_elapsed = fmod(_rain_light_elapsed, light_seconds)
         if not _rain_light_frames.is_empty():
             _rain_light_frame = (_rain_light_frame + light_steps) % _rain_light_frames.size()
             _rain_light.texture = _rain_light_frames[_rain_light_frame]
 
     _rain_heavy_elapsed += delta
-    if _rain_heavy_elapsed >= RAIN_HEAVY_FRAME_SECONDS:
-        var heavy_steps: int = floori(_rain_heavy_elapsed / RAIN_HEAVY_FRAME_SECONDS)
-        _rain_heavy_elapsed = fmod(_rain_heavy_elapsed, RAIN_HEAVY_FRAME_SECONDS)
+    if _rain_heavy_elapsed >= heavy_seconds:
+        var heavy_steps: int = floori(_rain_heavy_elapsed / heavy_seconds)
+        _rain_heavy_elapsed = fmod(_rain_heavy_elapsed, heavy_seconds)
         if not _rain_heavy_frames.is_empty():
             _rain_heavy_frame = (_rain_heavy_frame + heavy_steps) % _rain_heavy_frames.size()
             _rain_heavy.texture = _rain_heavy_frames[_rain_heavy_frame]
 
     # Wind: slide each sheet rightward, wrapping at one tile — the art tiles
     # seamlessly, so the wrap is invisible and the phase stays tiny.
-    _rain_light_drift = fmod(_rain_light_drift + delta * RAIN_DRIFT_LIGHT_PPS, float(RAIN_FRAME_SIZE.x))
-    _rain_heavy_drift = fmod(_rain_heavy_drift + delta * RAIN_DRIFT_HEAVY_PPS, float(RAIN_FRAME_SIZE.x))
+    var light_pps: float = SNOW_DRIFT_LIGHT_PPS if _snow else RAIN_DRIFT_LIGHT_PPS
+    var heavy_pps: float = SNOW_DRIFT_HEAVY_PPS if _snow else RAIN_DRIFT_HEAVY_PPS
+    _rain_light_drift = fmod(_rain_light_drift + delta * light_pps, float(RAIN_FRAME_SIZE.x))
+    _rain_heavy_drift = fmod(_rain_heavy_drift + delta * heavy_pps, float(RAIN_FRAME_SIZE.x))
     _apply_rain_drift()
 
 
@@ -412,7 +463,7 @@ func _schedule_lightning() -> void:
 
 
 func _on_lightning_timeout() -> void:
-    if not _active:
+    if not _active or _snow:
         return
     _flash()
     _strike()

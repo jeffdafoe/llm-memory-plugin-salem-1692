@@ -1573,16 +1573,17 @@ const weatherStormProse = sim.WeatherStormScene
 
 // weatherProse maps World.Environment.Weather to a felt ambient sentence — the
 // deterministic, in-world weather analogue of timeOfDayProse. Only the active
-// storm state renders (LLM-364); clear / empty (the calm default) render
+// storm state renders (LLM-364): rain, or snow in a winter month m (LLM-850,
+// the shared sim.WeatherScene wording). Clear / empty (the calm default) render
 // nothing, matching how the atmosphere prompt treats clear as "no weather line"
-// (cascade/atmosphere.go). An unrecognized future token (fog, snow) also renders
+// (cascade/atmosphere.go). An unrecognized future token (fog) also renders
 // nothing rather than leak a raw stat — additive by design: a new state surfaces
 // once its scene is added here, the same graceful-degradation posture as the
 // atmosphere digest's verb map.
-func weatherProse(weather string) string {
+func weatherProse(weather string, m time.Month) string {
 	switch strings.TrimSpace(weather) {
 	case sim.WeatherStorm:
-		return weatherStormProse
+		return sim.WeatherScene(weather, m)
 	default:
 		return ""
 	}
@@ -1922,7 +1923,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	// steady …"). Read from the live Environment.Weather snapshot, so — unlike the
 	// LLM-authored atmosphere line removed below — it's deterministic and never
 	// lags the sky. Clear / empty renders nothing.
-	if prose := weatherProse(s.Weather); prose != "" {
+	if prose := weatherProse(s.Weather, s.Month); prose != "" {
 		b.WriteString(prose)
 		b.WriteString("\n")
 	}

@@ -247,16 +247,37 @@ func TestSeedWeatherClear_AlreadyClearStampsWithoutEmitting(t *testing.T) {
 // exactly the bug this fixes (a prompt that says nothing about a calm sky lets
 // the model keep raining).
 func TestWeatherScene(t *testing.T) {
-	if got := WeatherScene(WeatherClear); got != WeatherClearScene {
+	if got := WeatherScene(WeatherClear, time.October); got != WeatherClearScene {
 		t.Errorf("WeatherScene(clear) = %q, want %q", got, WeatherClearScene)
 	}
-	if got := WeatherScene(""); got != WeatherClearScene {
+	if got := WeatherScene("", time.October); got != WeatherClearScene {
 		t.Errorf("WeatherScene(\"\") = %q, want the clear scene (empty reads as calm)", got)
 	}
-	if got := WeatherScene("  " + WeatherStorm + " "); got != WeatherStormScene {
+	if got := WeatherScene("  "+WeatherStorm+" ", time.October); got != WeatherStormScene {
 		t.Errorf("WeatherScene(storm) = %q, want %q (trims)", got, WeatherStormScene)
 	}
-	if got := WeatherScene("fog"); got != "" {
+	if got := WeatherScene("fog", time.October); got != "" {
 		t.Errorf("WeatherScene(fog) = %q, want \"\" — an unwritten future state renders nothing rather than leaking a raw stat", got)
+	}
+}
+
+// A winter storm is a snowstorm (LLM-850): December to March the storm scene is
+// snow, the rest of the year rain. The clear scene does not change, and the zero
+// month (no village clock) keeps the rain.
+func TestWeatherSceneWinterStormIsSnow(t *testing.T) {
+	for m := time.January; m <= time.December; m++ {
+		want := WeatherStormScene
+		if SeasonOf(m) == SeasonWinter {
+			want = WeatherSnowScene
+		}
+		if got := WeatherScene(WeatherStorm, m); got != want {
+			t.Errorf("WeatherScene(storm, %s) = %q, want %q", m, got, want)
+		}
+		if got := WeatherScene(WeatherClear, m); got != WeatherClearScene {
+			t.Errorf("WeatherScene(clear, %s) = %q, want the clear scene", m, got)
+		}
+	}
+	if got := WeatherScene(WeatherStorm, 0); got != WeatherStormScene {
+		t.Errorf("WeatherScene(storm, no month) = %q, want the rain scene", got)
 	}
 }

@@ -199,6 +199,21 @@ var dusk_time_str: String = "19:00"
 var village_date: String = ""
 var village_season: String = ""
 
+# How much snow lies on the village (LLM-850): "none" | "dusting" | "light" |
+# "deep", from the world read's snow_tier and the snow_tier_changed frame. It
+# picks the ground sheet and the snow on the top edges of placed objects.
+var snow_tier: String = "none"
+
+# The snow on top edges (snow_cover.gdshader): one material shared by every
+# placed sprite whose asset has no season art of its own, set on them only
+# while snow lies. The sprites are kept in SNOW_GROUP so a tier change reaches
+# each without walking the containers.
+const SnowCoverShader = preload("res://scripts/snow_cover.gdshader")
+const SNOW_GROUP := "snow_cover_sprites"
+# Texel rows of snow on a top edge by tier — first guesses, tune by eye.
+const SNOW_DEPTH := {"dusting": 1, "light": 2, "deep": 3}
+var _snow_material: ShaderMaterial = null
+
 # Re-reads the world when the village date ends (village_date_ends_at), so the
 # date turns over at midnight without polling.
 var _village_date_timer: Timer = null
@@ -274,7 +289,7 @@ func _create_rain_splashes() -> void:
     rain_splashes.set_script(RainSplashesScript)
     rain_splashes.world = self
     add_child(rain_splashes)
-    rain_splashes.set_storm(current_weather == "storm")
+    rain_splashes.set_storm(current_weather == "storm", is_snowing(), snowy_ground())
     _load_world_phase()  # Then sync modulate to the server's current phase
 
 ## Load placed objects from the API — called after catalog is ready.
@@ -2193,10 +2208,90 @@ func set_weather(weather: String, tween: bool = true) -> void:
     # Splashes are owned here, not injected, so they don't wait on main.gd's
     # wiring the way the overlay's null-guard below does.
     if rain_splashes != null:
-        rain_splashes.set_storm(weather == "storm")
+        rain_splashes.set_storm(weather == "storm", is_snowing(), snowy_ground())
     if storm_layer == null:
         return
-    storm_layer.set_storm(weather == "storm", tween)
+    storm_layer.set_storm(weather == "storm", tween, is_snowing())
+
+## A storm in winter is a snowstorm (LLM-850). The engine says the same
+## (sim.Snowing); the weather token stays "storm" either way.
+func is_snowing() -> bool:
+    return current_weather == "storm" and village_season == "winter"
+
+## The snowy ground sheet is down at light or deep snow; a dusting leaves the
+## ground clean (LLM-834 comment 15055).
+func snowy_ground() -> bool:
+    return snow_tier == "light" or snow_tier == "deep"
+
+## Apply the snow tier (LLM-850) from a world read or a snow_tier_changed
+## frame: the ground sheet, the splashes (no snow impacts on snowy ground) and
+## the snow on every top edge.
+func set_snow_tier(tier: String) -> void:
+    snow_tier = tier if SNOW_DEPTH.has(tier) else "none"
+    if terrain_renderer != null:
+        terrain_renderer.set_season(village_season, snowy_ground())
+    if rain_splashes != null:
+        rain_splashes.set_storm(current_weather == "storm", is_snowing(), snowy_ground())
+    if not is_inside_tree():
+        return
+    var material := _current_snow_material()
+    for sprite in get_tree().get_nodes_in_group(SNOW_GROUP):
+        _apply_snow(sprite, material)
+
+## Put material (null: no snow) on a snow sprite, with the top of its cell in
+## the sheet as the shader's per-instance region_top, so the shader never reads
+## the art of the cell above it (snow_cover.gdshader).
+func _apply_snow(sprite: Node2D, material: ShaderMaterial) -> void:
+    sprite.material = material
+    if material != null:
+        sprite.set_instance_shader_parameter("region_top", snow_region_top(_shown_texture(sprite)))
+
+## An animated snow sprite's frames may sit on different rows of its sheet.
+func _on_snow_sprite_frame(sprite: AnimatedSprite2D) -> void:
+    if sprite.material != null:
+        sprite.set_instance_shader_parameter("region_top", snow_region_top(_shown_texture(sprite)))
+
+## The texture a sprite draws now: a Sprite2D's, or an AnimatedSprite2D's
+## current frame.
+func _shown_texture(sprite: Node2D) -> Texture2D:
+    if sprite is AnimatedSprite2D:
+        var frames: SpriteFrames = sprite.sprite_frames
+        if frames == null or not frames.has_animation(sprite.animation):
+            return null
+        return frames.get_frame_texture(sprite.animation, sprite.frame)
+    if sprite is Sprite2D:
+        return sprite.texture
+    return null
+
+## The top of texture's cell in its sheet, in UV: an AtlasTexture's region top
+## over the sheet's height; 0 for a whole texture.
+static func snow_region_top(texture: Texture2D) -> float:
+    if texture is AtlasTexture and texture.atlas != null and texture.atlas.get_height() > 0:
+        return texture.region.position.y / float(texture.atlas.get_height())
+    return 0.0
+
+## The shared snow material at the current tier, or null when no snow lies.
+func _current_snow_material() -> ShaderMaterial:
+    var depth: int = SNOW_DEPTH.get(snow_tier, 0)
+    if depth == 0:
+        return null
+    if _snow_material == null:
+        _snow_material = ShaderMaterial.new()
+        _snow_material.shader = SnowCoverShader
+    _snow_material.set_shader_parameter("depth", depth)
+    return _snow_material
+
+## Whether asset carries season art (a `season-…` state tag, migration
+## LLM-849). Such assets show snow through their own snowy states, so the shader
+## leaves them alone.
+static func asset_has_season_art(asset: Dictionary) -> bool:
+    for s in asset.get("states", []):
+        var tags = s.get("tags", [])
+        if tags is Array:
+            for tag in tags:
+                if str(tag).begins_with("season-"):
+                    return true
+    return false
 
 ## Fetch the server's current world phase and sync CanvasModulate to match.
 ## Called once at build_terrain so clients opening the page at night don't
@@ -2228,12 +2323,6 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     sync_phase_from_world(phase, str(json.get("last_transition_at", "")), str(json.get("now", "")))
     apply_night_color(json)
 
-    # Weather (LLM-117) rides the same DTO + load path as phase, so a client
-    # connecting or reconnecting mid-storm renders the storm instead of clear.
-    # Instant (no tween) for the same reason set_phase is.
-    var weather: String = json.get("weather", "clear")
-    set_weather(weather, false)
-
     # Cache dawn/dusk so the editor panel can prepopulate empty NPC
     # schedule windows from the global defaults. Format is "HH:MM".
     dawn_time_str = json.get("dawn_time", dawn_time_str)
@@ -2246,10 +2335,18 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     village_season = str(json.get("season", ""))
     village_date_changed.emit(village_date, village_season)
     _set_village_clock(str(json.get("now", "")), json.get("village_utc_offset_seconds", null))
-    if terrain_renderer != null:
-        terrain_renderer.set_season(village_season)
+    # The snow tier sets the ground with the season (LLM-850), and the season
+    # turns a storm to snow — so both land before the weather below.
+    set_snow_tier(str(json.get("snow_tier", "none")))
     var refresh_at := village_refresh_at(str(json.get("village_date_ends_at", "")), str(json.get("village_utc_offset_until", "")))
     _schedule_village_date_refresh(refresh_at, str(json.get("now", "")))
+
+    # Weather (LLM-117) rides the same DTO + load path as phase, so a client
+    # connecting or reconnecting mid-storm renders the storm instead of clear.
+    # Instant (no tween) for the same reason set_phase is. After the season, so
+    # a winter storm comes up as snow.
+    var weather: String = json.get("weather", "clear")
+    set_weather(weather, false)
 
     # Apply the zoom floor appropriate for this user's role. Admins get
     # the "admin" floor (typically lower, so they can see further out).
@@ -2688,7 +2785,7 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("effective_loiter_offset_x", data.get("effective_loiter_offset_x", null))
     container.set_meta("effective_loiter_offset_y", data.get("effective_loiter_offset_y", null))
 
-    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset))
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset), asset)
     container.add_child(sprite_node)
     attach_state_light(container, state_info)
 
@@ -2739,8 +2836,18 @@ func _asset_render_scale(asset: Dictionary) -> float:
 ## Create the appropriate sprite node for an asset state.
 ## Returns AnimatedSprite2D for multi-frame states, Sprite2D for static ones.
 ## render_scale scales both the sprite and its anchor offset — the two must
-## move together or the ground anchor drifts as scale changes.
-func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float, render_scale: float = 2.0) -> Node2D:
+## move together or the ground anchor drifts as scale changes. asset, when
+## given, decides whether the sprite takes the snow on its top edges (LLM-850).
+func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float, render_scale: float = 2.0, asset: Dictionary = {}) -> Node2D:
+    var node: Node2D = _build_sprite_node(state_info, texture, anchor_x, anchor_y, render_scale)
+    if not asset.is_empty() and not asset_has_season_art(asset):
+        node.add_to_group(SNOW_GROUP)
+        if node is AnimatedSprite2D:
+            node.frame_changed.connect(_on_snow_sprite_frame.bind(node))
+        _apply_snow(node, _current_snow_material())
+    return node
+
+func _build_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float, render_scale: float) -> Node2D:
     var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state_info)
 
     if sprite_frames != null:
@@ -2812,7 +2919,7 @@ func add_attachment(overlay_asset_id: String, parent_node: Node2D) -> void:
     container.set_meta("display_name", "")
     container.set_meta("attached_to", str(parent_id))
 
-    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset))
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset), asset)
     container.add_child(sprite_node)
     attach_state_light(container, state_info)
     parent_node.add_child(container)
@@ -2861,7 +2968,7 @@ func add_object(asset_id: String, world_pos: Vector2) -> Node2D:
     container.set_meta("owner", "")
     container.set_meta("display_name", "")
 
-    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset))
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y, _asset_render_scale(asset), asset)
     container.add_child(sprite_node)
     attach_state_light(container, state_info)
     objects_node.add_child(container)

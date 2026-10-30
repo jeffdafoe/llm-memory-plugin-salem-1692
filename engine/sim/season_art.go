@@ -15,7 +15,7 @@ import (
 // state with no season tag is the summer look. Spring is summer art, so there is
 // no spring look.
 //
-// Each month (and, later, the snow cover) gives a look CHAIN, most wanted first.
+// Each month and snow tier gives a look CHAIN, most wanted first.
 // An object shows the first look in the chain its asset has art for. The chain is
 // what carries the per-asset rules without a per-asset table: a bush has no
 // winter states, so in winter its chain falls through to its autumn art, and a
@@ -23,8 +23,8 @@ import (
 // `winter-clean`.
 //
 // The pick runs in refreshObjectBerryState, on the one-minute regen sweep, so
-// boot, the date change, a new placement and (with the snow cover) a tier change
-// all show within a minute, with no ticker of its own. A stock-tracked bush
+// boot, the date change, a new placement and a snow tier change all show within
+// a minute, with no ticker of its own. A stock-tracked bush
 // picks the stock half (berries / bare) and the season half together.
 
 // TagSeasonPrefix marks a season art state: `season-autumn-leaves`, ...
@@ -45,8 +45,8 @@ const (
 	lookWinterSnowy    = "winter-snowy"
 )
 
-// SnowTier is how much snow lies on the village. The snow cover that sets it is
-// LLM-850; until then the art is always picked at SnowTierNone.
+// SnowTier is how much snow lies on the village, set by the snow cover
+// (snow.go).
 type SnowTier int
 
 const (

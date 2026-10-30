@@ -59,7 +59,7 @@ func NewEnvironmentRepo(pool Pool) *EnvironmentRepo {
 // world_state_singleton CHECK constraint.
 const loadWorldStateSQL = `
 SELECT phase, last_transition_at, last_rotation_at, weather, atmosphere, last_needs_tick_at,
-       town_chest_coins, input_shortages, last_carter_at, omens
+       town_chest_coins, input_shortages, last_carter_at, omens, snow_cover_x100
   FROM world_state
  WHERE id = 1`
 
@@ -80,9 +80,10 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
 const upsertWorldStateSQL = `
 INSERT INTO world_state (
     id, phase, last_transition_at, last_rotation_at,
-    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages, last_carter_at, omens
+    weather, atmosphere, last_needs_tick_at, town_chest_coins, input_shortages, last_carter_at, omens,
+    snow_cover_x100
 ) VALUES (
-    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10::jsonb
+    1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11
 )
 ON CONFLICT (id) DO UPDATE SET
     phase              = EXCLUDED.phase,
@@ -94,7 +95,8 @@ ON CONFLICT (id) DO UPDATE SET
     town_chest_coins   = EXCLUDED.town_chest_coins,
     input_shortages    = EXCLUDED.input_shortages,
     last_carter_at     = EXCLUDED.last_carter_at,
-    omens              = EXCLUDED.omens`
+    omens              = EXCLUDED.omens,
+    snow_cover_x100    = EXCLUDED.snow_cover_x100`
 
 // Load reads the world_state singleton + every setting row, returning
 // a fully populated (env, phase, settings) triple. Missing setting rows
@@ -132,11 +134,12 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 		inputShortages      []byte
 		lastCarterAt        *time.Time
 		omens               []byte
+		snowCoverX100       int
 	)
 	err := r.pool.QueryRow(ctx, loadWorldStateSQL).Scan(
 		&phase, &lastTransitionAt, &lastRotationAt,
 		&weather, &atmosphere, &lastNeedsTickAt,
-		&townChest, &inputShortages, &lastCarterAt, &omens,
+		&townChest, &inputShortages, &lastCarterAt, &omens, &snowCoverX100,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -152,6 +155,9 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 		Weather:          weather,
 		Atmosphere:       atmosphere,
 		TownChest:        townChest,
+		// The snow cover (LLM-850), clamped so an out-of-band edit cannot put more
+		// snow on the village than the sweep can ever melt off in a season.
+		SnowCoverX100: min(max(snowCoverX100, 0), sim.SnowCoverMax*100),
 	}
 	if lastNeedsTickAt != nil {
 		env.LastNeedsTickAt = *lastNeedsTickAt
@@ -323,6 +329,16 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.OmenChancePermille = parseIntSetting(values, "omen_chance_permille", sim.DefaultOmenChancePermille)
 	s.OmenCooldownDays = parseIntSetting(values, "omen_cooldown_days", sim.DefaultOmenCooldownDays)
 	s.OmenLapseHours = parseIntSetting(values, "omen_lapse_hours", sim.DefaultOmenLapseHours)
+
+	// Snow cover (LLM-850). Rates are clamped like the cold rates: a negative
+	// melt would be read as building. A tier threshold of 0 leaves that tier out,
+	// so 0 is in range there too.
+	s.SnowBuildPerMinuteX100 = clampNonNegSetting(values, "snow_build_per_minute_x100", sim.DefaultSnowBuildPerMinuteX100, &s.SettingWarnings)
+	s.SnowMeltDayPerMinuteX100 = clampNonNegSetting(values, "snow_melt_day_per_minute_x100", sim.DefaultSnowMeltDayPerMinuteX100, &s.SettingWarnings)
+	s.SnowMeltNightPerMinuteX100 = clampNonNegSetting(values, "snow_melt_night_per_minute_x100", sim.DefaultSnowMeltNightPerMinuteX100, &s.SettingWarnings)
+	s.SnowTierDusting = clampNonNegSetting(values, "snow_tier_dusting", sim.DefaultSnowTierDusting, &s.SettingWarnings)
+	s.SnowTierLight = clampNonNegSetting(values, "snow_tier_light", sim.DefaultSnowTierLight, &s.SettingWarnings)
+	s.SnowTierDeep = clampNonNegSetting(values, "snow_tier_deep", sim.DefaultSnowTierDeep, &s.SettingWarnings)
 
 	// Cold exposure + hearth (LLM-412). Every cold knob is a per-minute rate, a
 	// multiplier, or a percentage — all of which must be >= 0 (a negative recovery
@@ -796,6 +812,7 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 		string(shortagesJSON), // $8 input_shortages (LLM-656)
 		lastCarterArg,         // $9 last_carter_at (carter.go, nullable)
 		string(omensJSON),     // $10 omens (LLM-843)
+		env.SnowCoverX100,     // $11 snow_cover_x100 (LLM-850)
 	); err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: upsert: %w", err)
 	}

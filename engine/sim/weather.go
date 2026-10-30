@@ -56,6 +56,10 @@ const (
 	// mud) and lets the scene be the argument.
 	WeatherStormScene = "Rain falls steady over the village, and the lanes are turning to mud."
 
+	// WeatherSnowScene is the storm sky in winter (LLM-850): a winter storm is a
+	// snowstorm, so the same token renders as snow December to March.
+	WeatherSnowScene = "Snow falls over the village, and the lanes are going white."
+
 	// WeatherClearScene is the calm sky. Stated plainly and in the negative
 	// ("no rain") because the model's failure mode is inventing rain that
 	// isn't there, not omitting rain that is — an atmosphere prompt that says
@@ -64,14 +68,19 @@ const (
 	WeatherClearScene = "The sky is clear over the village, and no rain falls."
 )
 
-// WeatherScene renders World.Environment.Weather as its felt sentence. An
-// unrecognized future token (fog, snow) renders "" rather than leak a raw stat
-// — additive by design: a new state surfaces once its scene is written above,
-// the same graceful-degradation posture as the atmosphere digest's verb map.
-// Empty weather reads as clear (the calm default).
-func WeatherScene(weather string) string {
+// WeatherScene renders World.Environment.Weather as its felt sentence in the
+// village month m: a storm in winter is snow. An unrecognized future token (fog)
+// renders "" rather than leak a raw stat — additive by design: a new state
+// surfaces once its scene is written above, the same graceful-degradation
+// posture as the atmosphere digest's verb map. Empty weather reads as clear (the
+// calm default). The zero month (a context with no village clock) reads as no
+// winter, so a storm there is rain.
+func WeatherScene(weather string, m time.Month) string {
 	switch strings.TrimSpace(weather) {
 	case WeatherStorm:
+		if SeasonOf(m) == SeasonWinter {
+			return WeatherSnowScene
+		}
 		return WeatherStormScene
 	case WeatherClear, "":
 		return WeatherClearScene

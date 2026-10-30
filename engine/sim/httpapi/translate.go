@@ -279,6 +279,11 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "night_color_changed", Data: nightColorChangedWireDTO{
 			NightColor: e.NightColor,
 		}}, true
+	case *sim.SnowTierChanged:
+		// Same key as the public /world DTO's snow_tier (LLM-850).
+		return WireFrame{Type: "snow_tier_changed", Data: snowTierChangedWireDTO{
+			SnowTier: e.Tier.String(),
+		}}, true
 	case *sim.AgentTicksPausedChanged:
 		return WireFrame{Type: "agent_ticks_paused_changed", Data: agentTicksPausedChangedWireDTO{
 			AgentTicksPaused: e.Paused,
@@ -1047,6 +1052,11 @@ type objectDisplayNameChangedWireDTO struct {
 type zoomSettingsChangedWireDTO struct {
 	ZoomMinAdmin   float64 `json:"zoom_min_admin"`
 	ZoomMinRegular float64 `json:"zoom_min_regular"`
+}
+
+// snowTierChangedWireDTO is the snow_tier_changed payload (LLM-850).
+type snowTierChangedWireDTO struct {
+	SnowTier string `json:"snow_tier"`
 }
 
 // nightColorChangedWireDTO is the night_color_changed payload (LLM-842).
