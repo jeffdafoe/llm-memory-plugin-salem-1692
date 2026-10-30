@@ -270,6 +270,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ZoomMinAdmin:   e.ZoomMinAdmin,
 			ZoomMinRegular: e.ZoomMinRegular,
 		}}, true
+	case *sim.NightColorChanged:
+		// Same key as the public /world DTO, which the client's
+		// apply_night_color reads on load (world.gd).
+		return WireFrame{Type: "night_color_changed", Data: nightColorChangedWireDTO{
+			NightColor: e.NightColor,
+		}}, true
 	case *sim.AgentTicksPausedChanged:
 		return WireFrame{Type: "agent_ticks_paused_changed", Data: agentTicksPausedChangedWireDTO{
 			AgentTicksPaused: e.Paused,
@@ -1016,6 +1022,11 @@ type objectDisplayNameChangedWireDTO struct {
 type zoomSettingsChangedWireDTO struct {
 	ZoomMinAdmin   float64 `json:"zoom_min_admin"`
 	ZoomMinRegular float64 `json:"zoom_min_regular"`
+}
+
+// nightColorChangedWireDTO is the night_color_changed payload (LLM-842).
+type nightColorChangedWireDTO struct {
+	NightColor string `json:"night_color"`
 }
 
 // agentTicksPausedChangedWireDTO is the agent_ticks_paused_changed payload — the

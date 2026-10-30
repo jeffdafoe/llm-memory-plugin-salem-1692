@@ -337,6 +337,10 @@ type Snapshot struct {
 	ZoomMinAdmin   float64
 	ZoomMinRegular float64
 
+	// NightColor mirrors WorldSettings.NightColor for the same reason: the
+	// public /world read is lock-free off the snapshot (LLM-842).
+	NightColor string
+
 	// PCAwaitReplyWindow / NPCAwaitReplyWindow are the resolved conversation
 	// turn-state liveness windows (ZBBS-WORK-370), copied from WorldSettings at
 	// publish with the Default*AwaitReplyWindow fallback already applied (via

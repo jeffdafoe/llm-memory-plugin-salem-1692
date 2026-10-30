@@ -940,6 +940,25 @@ func TestObjectsFromSnapshot_AttachedTo(t *testing.T) {
 	}
 }
 
+// The world read carries the night tint (LLM-842) under the key the client's
+// apply_night_color reads; a snapshot without settings omits it.
+func TestWorldStateFromSnapshot_NightColor(t *testing.T) {
+	raw, err := json.Marshal(worldStateFromSnapshot(&sim.Snapshot{NightColor: "#101820"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"night_color":"#101820"`) {
+		t.Errorf("world wire lacks night_color: %s", raw)
+	}
+	bare, err := json.Marshal(worldStateFromSnapshot(&sim.Snapshot{}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(bare), "night_color") {
+		t.Errorf("snapshot without settings carries night_color: %s", bare)
+	}
+}
+
 // The world read carries the village date and season (LLM-840) from the
 // snapshot's local date, in the year the village believes it is; a snapshot
 // with no village clock omits both.

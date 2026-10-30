@@ -120,6 +120,7 @@ func buildSettingRegistry() []SettingSpec {
 		// --- client / operator toggles (live via the admin config panel) ----
 		floatSetting("world_zoom_min_admin", SettingEffectImmediate, func(s *WorldSettings) *float64 { return &s.ZoomMinAdmin }),
 		floatSetting("world_zoom_min_regular", SettingEffectImmediate, func(s *WorldSettings) *float64 { return &s.ZoomMinRegular }),
+		nightColorSetting(),
 		boolSetting("agent_ticks_paused", SettingEffectImmediate, func(s *WorldSettings) *bool { return &s.AgentTicksPaused }),
 
 		// --- lodging -------------------------------------------------------

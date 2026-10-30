@@ -333,6 +333,36 @@ func TestEnvironmentRepo_Load_InvalidTimezoneFallsBack(t *testing.T) {
 	}
 }
 
+// TestEnvironmentRepo_Load_NightColor — a valid row is read (upper-cased); a
+// malformed one, or none, gives the default (LLM-842).
+func TestEnvironmentRepo_Load_NightColor(t *testing.T) {
+	cases := []struct {
+		name string
+		rows map[string]string
+		want string
+	}{
+		{"valid", map[string]string{"world_night_color": "#1a2b3c"}, "#1A2B3C"},
+		{"malformed", map[string]string{"world_night_color": "midnight"}, sim.DefaultNightColor},
+		{"absent", map[string]string{}, sim.DefaultNightColor},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, repo := newMockPoolE(t)
+			at := time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC)
+			programWorldStateRow(mock, sim.PhaseDay, at, at, "", "", nil)
+			programSettingsRows(mock, tc.rows)
+
+			_, _, settings, err := repo.Load(context.Background())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if settings.NightColor != tc.want {
+				t.Errorf("NightColor = %q, want %q", settings.NightColor, tc.want)
+			}
+		})
+	}
+}
+
 // --- Load: malformed int value falls back ---------------------------------
 
 // TestEnvironmentRepo_Load_MalformedIntFallsBack — a non-numeric value
