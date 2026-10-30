@@ -6,7 +6,9 @@ extends SceneTree
 ##
 ##  1. The figure stands only beside a TREE that is in view and 10–18 tiles
 ##     from the player — never by a house, on water, under a roof, or off
-##     screen; with no such tree there is no spot.
+##     screen; with no such tree there is no spot. It stands in the open just
+##     left of the tree's own pixels at the figure's height, not under the
+##     canopy or in the shadow.
 ##  2. Every "when" condition refuses on its own: no player, indoors, storm,
 ##     day or late night, no focus, this dusk already rolled, the cooldown.
 ##  3. It goes for a walk toward it (not away), off screen, and by a fade
@@ -28,6 +30,7 @@ const DAY := 86400.0
 
 const TESTS := [
     "_test_spot_beside_a_tree_in_range_and_view",
+    "_test_spot_at_the_tree_edge_from_its_pixels",
     "_test_no_spot_without_a_tree_in_range",
     "_test_no_spot_off_screen",
     "_test_no_spot_on_water_or_under_a_roof",
@@ -217,8 +220,8 @@ func _test_spot_beside_a_tree_in_range_and_view() -> void:
     world.add_object("signpost", "signpost", Vector2(0, -448), Vector2(64, 96), false)
     for i in 30:
         var spot = f[1].pick_spot()
-        if spot == null or spot.distance_to(Vector2(448, 0)) > 50.0:
-            _check("every spot is beside the in-range tree (got %s)" % str(spot), false)
+        if spot == null or spot.distance_to(Vector2(448, 0)) > 60.0 or spot.x >= 448.0:
+            _check("every spot is left of the in-range tree (got %s)" % str(spot), false)
             _teardown(f)
             _done()
             return
@@ -227,7 +230,52 @@ func _test_spot_beside_a_tree_in_range_and_view() -> void:
             _teardown(f)
             _done()
             return
-    _check("30 picks: all beside the one tree in range, behind its base", true)
+    _check("30 picks: all just left of the one tree in range, behind its base", true)
+    _teardown(f)
+    _done()
+
+## A 40x60 tree drawn at scale 2, anchored at its base like a placed object:
+## trunk and canopy in columns 12..27, a wide crown in the top rows (above the
+## figure's head), and a faint shadow to the right near the base.
+func _pixel_tree() -> Sprite2D:
+    var img := Image.create(40, 60, false, Image.FORMAT_RGBA8)
+    img.fill(Color(0, 0, 0, 0))
+    for y in 60:
+        for x in range(12, 28):
+            img.set_pixel(x, y, Color(0.3, 0.5, 0.2, 1.0))
+    for y in 10:
+        for x in 40:
+            img.set_pixel(x, y, Color(0.3, 0.5, 0.2, 1.0))
+    for y in range(50, 60):
+        for x in range(28, 40):
+            img.set_pixel(x, y, Color(0, 0, 0, 0.3))
+    var atlas := AtlasTexture.new()
+    atlas.atlas = ImageTexture.create_from_image(img)
+    atlas.region = Rect2(0, 0, 40, 60)
+    var sprite := Sprite2D.new()
+    sprite.texture = atlas
+    sprite.centered = false
+    sprite.scale = Vector2(2, 2)
+    sprite.position = Vector2(-40, -114)
+    return sprite
+
+func _test_spot_at_the_tree_edge_from_its_pixels() -> void:
+    var f := _setup()
+    var world: StubWorld = f[0]
+    var tree: Node2D = world.placed_objects["oak"]
+    for child in tree.get_children():
+        child.free()
+    tree.add_child(_pixel_tree())
+    # Leftmost tree pixel at the figure's height: column 12 -> -40 + 24 = -16.
+    _check("the reach is read from the pixels at the figure's height, not the crown",
+        is_equal_approx(f[1]._tree_left_reach(tree), -16.0))
+    var ok := true
+    for i in 30:
+        var spot = f[1].pick_spot()
+        var right_edge: float = spot.x + TreelineFigure.FIGURE_RECT.end.x - 448.0 if spot != null else 999.0
+        if right_edge < -16.0 or right_edge > -10.0:
+            ok = false
+    _check("30 picks: the figure's right edge at the tree's left edge, reaching in at most 6 px", ok)
     _teardown(f)
     _done()
 
@@ -360,10 +408,10 @@ func _test_fades_after_its_time() -> void:
     var fade_at: float = f[1]._fade_at
     _check("the fade starts 60–90 s in", fade_at >= 60.0 and fade_at <= 90.0)
     f[1].tick_figure(fade_at - 1.0)
-    _check("before the fade it is at full strength", is_equal_approx(fig.modulate.a, TreelineFigure.FIGURE_COLOR.a))
+    _check("before the fade it is at full strength", is_equal_approx(fig.modulate.a, 1.0))
     f[1].tick_figure(6.0)
     _check("half way through the fade it is half as strong",
-        is_equal_approx(fig.modulate.a, TreelineFigure.FIGURE_COLOR.a * 0.5))
+        is_equal_approx(fig.modulate.a, 0.5))
     f[1].tick_figure(5.0)
     _check("after the fade it is gone", f[1].figure == null)
     _check("reported as faded", _last_report()[1].get("reason") == "faded")
@@ -488,6 +536,8 @@ func _test_body_retries_after_a_failed_download() -> void:
     var body: Node2D = fig._build_body()
     _check("once loaded, a still body facing the viewer",
         body != null and body.animation == "south_idle" and not body.is_playing())
+    _check("drawn by the figure shader",
+        body != null and body.material is ShaderMaterial and body.material.shader == TreelineFigure.FIGURE_SHADER)
     if body != null:
         body.free()
     _teardown(f)
