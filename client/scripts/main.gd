@@ -353,6 +353,8 @@ func _on_authenticated() -> void:
         event_client.pc_idle_prompt.connect(_on_pc_idle_prompt)
         event_client.pc_idle_prompt_cleared.connect(_on_pc_idle_prompt_cleared)
         event_client.damage_news_changed.connect(_on_damage_news_changed)
+        event_client.npc_walking.connect(world.treeline_figure.on_npc_walking)
+        event_client.register_client_trigger("treeline_figure", world.treeline_figure.force_show)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
