@@ -23,6 +23,9 @@ func packEatCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 		"ale": {Name: "ale", Category: sim.ItemCategoryDrink, Capabilities: []string{"portable"},
 			Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 15}}},
 		"raw_meat": {Name: "raw_meat", Category: sim.ItemCategoryFood},
+		// A belly-filling drink, hunger listed first.
+		"stout": {Name: "stout", Category: sim.ItemCategoryDrink, Capabilities: []string{"portable"},
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 10}, {Attribute: "thirst", Immediate: 10}}},
 	}
 }
 
@@ -53,6 +56,7 @@ func TestItemActionsFoodAndDrink(t *testing.T) {
 		"bread":    {sim.ItemActionEat},
 		"ale":      {sim.ItemActionDrink},
 		"raw_meat": {},
+		"stout":    {sim.ItemActionDrink},
 	}
 	for kind, want := range cases {
 		if got := sim.ItemActions(catalog[kind], false); !slices.Equal(got, want) {
@@ -102,6 +106,31 @@ func TestEatFromPack(t *testing.T) {
 	}
 	if _, held := a.Inventory["ale"]; held || a.Needs["thirst"] >= 40 {
 		t.Errorf("after drinking: ale held %v thirst %d, want gone and below 40", held, a.Needs["thirst"])
+	}
+}
+
+// A drink that eases hunger and thirst is drunk when either is felt, and
+// refused as a drink when neither is.
+func TestDrinkEasingTwoNeeds(t *testing.T) {
+	now := time.Now()
+	for _, need := range []sim.NeedKey{"hunger", "thirst"} {
+		w := packEatWorld(t, map[sim.NeedKey]int{need: 30})
+		w.Actors[packEaterID].Inventory["stout"] = 1
+		if _, err := sim.UseItem(packEaterID, "stout", sim.ItemActionDrink, now).Fn(w); err != nil {
+			t.Errorf("only %s felt: %v, want drunk", need, err)
+		}
+		if n := w.Actors[packEaterID].Inventory["stout"]; n != 0 {
+			t.Errorf("only %s felt: %d stout left, want 0", need, n)
+		}
+	}
+	w := packEatWorld(t, nil)
+	w.Actors[packEaterID].Inventory["stout"] = 1
+	_, err := sim.UseItem(packEaterID, "stout", sim.ItemActionDrink, now).Fn(w)
+	if !errors.Is(err, sim.ErrItemAction) || err.Error() != "You are not thirsty." {
+		t.Errorf("neither felt: err = %v, want \"You are not thirsty.\"", err)
+	}
+	if n := w.Actors[packEaterID].Inventory["stout"]; n != 1 {
+		t.Errorf("neither felt: %d stout left, want 1", n)
 	}
 }
 

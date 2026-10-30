@@ -107,9 +107,13 @@ func packGoodEasesANeed(a *Actor, def *ItemKindDef) bool {
 	return false
 }
 
-// notNeededLine is the refusal when nothing the good eases is felt, named by
-// the first need it eases.
+// notNeededLine is the refusal when nothing the good eases is felt: a drink
+// answers the Drink button with thirst even when it also fills the belly, food
+// by the first need it eases.
 func notNeededLine(def *ItemKindDef) string {
+	if def.IsDrink() {
+		return "You are not thirsty."
+	}
 	switch def.Satisfies[0].Attribute {
 	case "hunger":
 		return "You are not hungry."
