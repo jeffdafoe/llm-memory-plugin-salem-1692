@@ -1069,6 +1069,27 @@ func _test_main_sync_stall() -> void:
     pc.set_meta("walking", {"path": [Vector2(40 * 32, 40 * 32)]})
     main._sync_interior()
     _check("closes on walking away", _panel.is_open(), false)
+    # A shut stall — the map draws it unoccupied, its keeper gone — has no
+    # window; it opens when the stall does and closes when it shuts.
+    var catalog: Node = root.get_node("Catalog")
+    catalog.assets[STALL_ASSET]["states"] = [
+        {"state": "closed", "tags": ["unoccupied"]},
+        {"state": "open", "tags": ["occupied"]},
+    ]
+    var stall: Node2D = _world.placed_objects[STALL]
+    _check("a stall in no known state is not shut", StallScenes.shut(catalog.assets, stall), false)
+    stall.set_meta("current_state", "closed")
+    _check("the closed state is shut", StallScenes.shut(catalog.assets, stall), true)
+    pc.set_meta("walking", {"path": [Vector2(8 * 32 + 16, 20 * 32 + 16)], "finish_idle": true})
+    main._sync_interior()
+    _check("a shut stall opens nothing at its counter", _panel.is_open(), false)
+    stall.set_meta("current_state", "open")
+    main._sync_interior()
+    _check("it opens when the stall does", [_panel.is_open(), _panel.structure_id], [true, STALL])
+    stall.set_meta("current_state", "closed")
+    main._sync_interior()
+    _check("and closes when it shuts", _panel.is_open(), false)
+    catalog.assets[STALL_ASSET].erase("states")
     main.free()
     _panel.wares_hook = Callable()
     for id in _world.placed_objects.keys():
