@@ -38,6 +38,7 @@ const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
 const NightShadeScript = preload("res://scripts/night_shade.gd")
+const TreelineFigureScript = preload("res://scripts/treeline_figure.gd")
 const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
 const WellBucket = preload("res://scripts/well_bucket.gd")
@@ -124,6 +125,8 @@ var _phase_pos: float = 0.0
 var _night_color: Color = NIGHT_COLOR
 # The woods dark and the night-vision circle (LLM-842, night_shade.gd).
 var night_shade: Node2D = null
+# The figure at the treeline (LLM-844, treeline_figure.gd).
+var treeline_figure: Node = null
 
 # Layer baseline — terrain renders at z=0 (default), ground overlays sit at
 # asset.z_index = 1 (bridges, future road decals), everything else (objects,
@@ -243,6 +246,11 @@ func build_terrain() -> void:
     night_shade.set_script(NightShadeScript)
     night_shade.world = self
     add_child(night_shade)
+
+    treeline_figure = Node.new()
+    treeline_figure.set_script(TreelineFigureScript)
+    treeline_figure.world = self
+    add_child(treeline_figure)
 
     # Splash layer under the modulate too — ground contact darkens with the
     # world at night / in the storm tint, unlike the screen-space overlay.
