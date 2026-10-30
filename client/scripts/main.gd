@@ -347,7 +347,7 @@ func _on_authenticated() -> void:
         event_client.npc_walking.connect(func(npc_id: String):
             if _pc_actor_id != "" and npc_id == _pc_actor_id:
                 _sync_interior())
-        event_client.object_state_changed.connect(func(_obj_id: String): _sync_interior())
+        event_client.object_state_changed.connect(_on_event_object_state_changed)
         event_client.pc_sleep_started.connect(_on_pc_sleep_started)
         event_client.pc_sleep_ended.connect(_on_pc_sleep_ended)
         event_client.pc_needs_changed.connect(_on_event_pc_needs_changed)
@@ -1946,6 +1946,11 @@ func _sync_interior() -> void:
         interior_panel_layer.open(sid, in_room)
     else:
         interior_panel_layer.close()
+
+## A stall opening or shutting at the player's counter opens or closes its
+## window (LLM-885); any other object's change leaves the window as it is.
+func _on_event_object_state_changed(_obj_id: String) -> void:
+    _sync_interior()
 
 ## The room of `sid` the character is in, for the window (LLM-801): their
 ## `room` meta when that room has a plan to draw it — the Inn's hall, their

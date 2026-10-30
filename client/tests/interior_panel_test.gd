@@ -42,6 +42,7 @@ const TESTS := [
     "_test_smithy_anvil_rings",
     "_test_scrolling_stage",
     "_test_main_sync_stall",
+    "_test_main_sync_stall_on_state_events",
     "_test_close_glyph_in_font",
     "_test_walk_out",
     "_test_walk_in",
@@ -1091,6 +1092,48 @@ func _test_main_sync_stall() -> void:
     _check("and closes when it shuts", _panel.is_open(), false)
     catalog.assets[STALL_ASSET].erase("states")
     main.free()
+    _panel.wares_hook = Callable()
+    for id in _world.placed_objects.keys():
+        _world.placed_objects[id].free()
+    _world.placed_objects.clear()
+    _done()
+
+
+## LLM-885: the stall's state frame, through the event client, opens and
+## closes the window at the counter with no other sync; another object's frame
+## leaves a dismissed window shut.
+func _test_main_sync_stall_on_state_events() -> void:
+    _clear_people()
+    _place_stall()
+    _panel.close()
+    _panel.wares_hook = func(_s: String) -> Array: return []
+    var catalog: Node = root.get_node("Catalog")
+    catalog.assets[STALL_ASSET]["states"] = [
+        {"state": "closed", "tags": ["unoccupied"]},
+        {"state": "open", "tags": ["occupied"]},
+    ]
+    _world.placed_objects[STALL].set_meta("current_state", "closed")
+    var main: Node2D = load("res://scripts/main.gd").new()
+    main.world = _world
+    main.interior_panel_layer = _panel
+    main._pc_actor_id = "pc"
+    var events: Node = load("res://scripts/event_client.gd").new()
+    events.world = _world
+    events.object_state_changed.connect(main._on_event_object_state_changed)
+    _at_tile("pc", _farmer(), Vector2i(8, 22))
+    main._sync_interior()
+    _check("shut: nothing at the counter", _panel.is_open(), false)
+    events._on_object_state_changed({"id": STALL, "state": "open"})
+    _check("the stall's open frame opens it", [_panel.is_open(), _panel.structure_id], [true, STALL])
+    events._on_object_state_changed({"id": STALL, "state": "closed"})
+    _check("its closed frame closes it", _panel.is_open(), false)
+    events._on_object_state_changed({"id": STALL, "state": "open"})
+    _panel.close()
+    events._on_object_state_changed({"id": "well", "state": "default"})
+    _check("another object's frame keeps the ✕ shut", _panel.is_open(), false)
+    events.free()
+    main.free()
+    catalog.assets[STALL_ASSET].erase("states")
     _panel.wares_hook = Callable()
     for id in _world.placed_objects.keys():
         _world.placed_objects[id].free()
