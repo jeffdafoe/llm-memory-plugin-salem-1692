@@ -223,6 +223,28 @@ func createOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) Or
 	return id
 }
 
+// DeliverOrderResult is DeliverOrder's success result: what was handed over and
+// what was paid for it, so the seller's tool result can read as a settled deal
+// (LLM-887). A bare [ok] after a handover of a PREPAID order left the seller
+// thinking the deal was still open — live, Ezekiel delivered Elizabeth's
+// commissioned shovel, then named a price for it, and she paid a second time.
+type DeliverOrderResult struct {
+	OrderID   OrderID
+	BuyerName string
+	// Noun is the count-aware catalog noun for Total ("shovel", "bowls of stew").
+	Noun string
+	// Total is the units handed over across every consumer (Qty × consumers).
+	Total int
+	// PaidAtAccept is the coins taken when the order was struck — the full price,
+	// or the deposit of a partial-payment commission.
+	PaidAtAccept int
+	// BalancePaid is the coins settled at this handover (LLM-357); zero for a
+	// full-prepay order.
+	BalancePaid int
+	// Lodging is set when the handover granted a room rather than moving goods.
+	Lodging bool
+}
+
 // DeliverOrder returns a Command that finalizes an Order: validates
 // the 7-gate matrix, transfers goods to each consumer, writes
 // SalientFacts, flips state to Delivered, and emits OrderDelivered.
@@ -441,9 +463,21 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				log.Printf("sim.DeliverOrder: RecordInteraction buyer→seller: %v", err)
 			}
 
+			// Read before the terminal flip, which may prune the order.
+			total := o.Qty * len(o.ConsumerIDs)
+			result := DeliverOrderResult{
+				OrderID:      o.ID,
+				BuyerName:    buyerName,
+				Noun:         w.ItemKinds[o.Item].CountNoun(total),
+				Total:        total,
+				PaidAtAccept: orderAmountPaidAtAccept(o),
+				BalancePaid:  balanceDue,
+				Lodging:      itemHasCapability(w, o.Item, "lodging"),
+			}
+
 			// Terminal flip + OrderDelivered emit.
 			finalizeOrderTerminal(w, o, OrderStateDelivered, at)
-			return nil, nil
+			return result, nil
 		},
 	}
 }

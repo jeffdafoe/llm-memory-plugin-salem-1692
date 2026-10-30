@@ -616,6 +616,11 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// closes both. Recorded on first attempt regardless of outcome, like
 	// triedThisTick. The four tools therefore leave genericCallKey's allowlist.
 	resolvedLedgerThisTick := map[LenientID]struct{}{}
+	// deliveredOrdersThisTick holds every order this actor handed over this tick
+	// with a successful deliver_order. The within-tick re-perception drops them
+	// from the snapshot it renders from (LLM-887) — the turn-start snapshot still
+	// holds them as Ready.
+	deliveredOrdersThisTick := map[sim.OrderID]struct{}{}
 	// consumedNothingThisTick holds the item key of every consume this actor has
 	// made this tick that EASED NO NEED — the actor was already sated for what that
 	// item eases (ConsumeResult.EasedNeed == false; it still ate and wasted a unit,
@@ -1063,9 +1068,20 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// the offers this actor already answered this tick, so the post-accept
 				// re-render stops re-inviting a settlement that already happened (the
 				// subtractive complement to the LLM-104 resolvedLedgerThisTick reject).
-				if outcome.postSelfState != nil && selfStateChanged(lastSelf, outcome.postSelfState) {
+				//
+				// LLM-887: a deliver_order also forces the refresh, and the orders
+				// delivered this tick are dropped from the snapshot it renders from, so
+				// the order book stops showing a handed-over order as still owed. Forced
+				// because a room handover moves no goods or coins — the self-state gate
+				// alone would leave the delivered room on the books.
+				delivered := false
+				if id, ok := deliveredOrderID(vc); ok {
+					deliveredOrdersThisTick[id] = struct{}{}
+					delivered = true
+				}
+				if outcome.postSelfState != nil && (delivered || selfStateChanged(lastSelf, outcome.postSelfState)) {
 					refreshed := perception.Render(
-						perception.Build(snap.WithActor(job.actorID, outcome.postSelfState), job.actorID, job.warrants,
+						perception.Build(snap.WithActor(job.actorID, outcome.postSelfState).WithoutOrders(deliveredOrdersThisTick), job.actorID, job.warrants,
 							perception.WithResolvedPayOffers(resolvedPayOfferIDs(resolvedLedgerThisTick))),
 						h.renderConfig,
 					)
@@ -1553,6 +1569,14 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	if vc.Name == letInToolName {
 		if r, ok := cmdResult.(sim.LetInResult); ok {
 			return fmt.Sprintf("[ok] You open the door and %s steps inside.", r.VisitorName)
+		}
+	}
+	// deliver_order (LLM-887): a receipt, not a bare [ok] — the handover closes a
+	// deal already paid for. Live, Ezekiel handed Elizabeth her prepaid shovel,
+	// got [ok], then named a price for it, and she paid a second time.
+	if vc.Name == deliverOrderToolName {
+		if r, ok := cmdResult.(sim.DeliverOrderResult); ok {
+			return deliverOrderReceipt(r)
 		}
 	}
 	// A consume must tell the model what actually happened. A clamped consume
@@ -2382,6 +2406,21 @@ func ledgerResolutionID(vc *ValidatedCall) (LenientID, bool) {
 		}
 	}
 	return 0, false
+}
+
+// deliveredOrderID returns the order a deliver_order call handed over, and true;
+// any other call returns (0, false). Binds both the tool name and the decoded-arg
+// shape and fails closed on a mismatch, like ledgerResolutionID. Called only on
+// a successful commit, so the order really was delivered.
+func deliveredOrderID(vc *ValidatedCall) (sim.OrderID, bool) {
+	if vc == nil || vc.Name != deliverOrderToolName {
+		return 0, false
+	}
+	a, ok := vc.DecodedArgs.(DeliverOrderArgs)
+	if !ok {
+		return 0, false
+	}
+	return sim.OrderID(a.OrderID), true
 }
 
 // resolvedPayOfferIDs projects the resolvedLedgerThisTick guard set (keyed by

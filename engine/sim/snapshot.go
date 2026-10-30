@@ -412,3 +412,25 @@ func (s *Snapshot) WithActor(id ActorID, a *ActorSnapshot) *Snapshot {
 	cp.Actors[id] = a
 	return &cp
 }
+
+// WithoutOrders returns a shallow copy of the snapshot with the given orders
+// removed, leaving the shared published snapshot untouched (same contract as
+// WithActor). The tick harness uses it beside WithActor when re-perceiving after
+// a deliver_order (LLM-887): a delivered order is pruned from World.Orders, but
+// the turn-start snapshot still holds it as Ready, so without this the seller's
+// re-rendered order book shows the handed-over order as still owed — and, with
+// the goods now out of the pack, as "you've yet to make it". An empty set
+// returns s itself.
+func (s *Snapshot) WithoutOrders(ids map[OrderID]struct{}) *Snapshot {
+	if len(ids) == 0 {
+		return s
+	}
+	cp := *s
+	cp.Orders = make(map[OrderID]*Order, len(s.Orders))
+	for k, v := range s.Orders {
+		if _, gone := ids[k]; !gone {
+			cp.Orders[k] = v
+		}
+	}
+	return &cp
+}

@@ -463,8 +463,13 @@ func TestCommission_PartialPayment_DeliverCollectsBalance(t *testing.T) {
 	mustSend(t, w, func(world *sim.World) {
 		world.Actors["smith"].Inventory = map[sim.ItemKind]int{"nail": 1}
 	})
-	if _, err := w.Send(sim.DeliverOrder("smith", 1, at.Add(time.Hour))); err != nil {
+	res, err := w.Send(sim.DeliverOrder("smith", 1, at.Add(time.Hour)))
+	if err != nil {
 		t.Fatalf("DeliverOrder: %v", err)
+	}
+	// The receipt names both legs (LLM-887).
+	if r, ok := res.(sim.DeliverOrderResult); !ok || r.PaidAtAccept != 5 || r.BalancePaid != 10 {
+		t.Errorf("DeliverOrder result = %+v (ok=%v), want PaidAtAccept 5, BalancePaid 10", res, ok)
 	}
 	alice := readHoldings(t, w, "alice")
 	smith := readHoldings(t, w, "smith")

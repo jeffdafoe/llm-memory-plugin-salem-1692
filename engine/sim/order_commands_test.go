@@ -688,3 +688,26 @@ func TestDeliverOrder_AllGatesPassButSellerVanishes(t *testing.T) {
 		t.Errorf("err = %v, want 'not found'", err)
 	}
 }
+
+// TestDeliverOrder_ReturnsReceipt: a successful handover reports what went to
+// whom and what was paid at accept, for the seller's tool result (LLM-887). A
+// full-prepay order settles nothing at the handover.
+func TestDeliverOrder_ReturnsReceipt(t *testing.T) {
+	w, stop := buildOrderTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	id := mintReadyOrder(t, w, nil, 2, at)
+
+	res, err := w.Send(sim.DeliverOrder("hannah", id, at.Add(time.Second)))
+	if err != nil {
+		t.Fatalf("DeliverOrder: %v", err)
+	}
+	got, ok := res.(sim.DeliverOrderResult)
+	if !ok {
+		t.Fatalf("DeliverOrder returned %T, want sim.DeliverOrderResult", res)
+	}
+	want := sim.DeliverOrderResult{OrderID: id, BuyerName: "Jefferey", Noun: "stew", Total: 2, PaidAtAccept: 8}
+	if got != want {
+		t.Errorf("result = %+v, want %+v", got, want)
+	}
+}

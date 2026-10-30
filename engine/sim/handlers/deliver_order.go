@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -98,4 +99,34 @@ func HandleDeliverOrder(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, fmt.Errorf("deliver_order: handler received unexpected args type %T", in.Args)
 	}
 	return sim.DeliverOrder(in.ActorID, sim.OrderID(args.OrderID), time.Now().UTC()), nil
+}
+
+// deliverOrderReceipt is the seller's tool result for a successful handover
+// (LLM-887): what went to whom, and that the order was already paid, so the
+// seller does not price a deal that is closed.
+func deliverOrderReceipt(r sim.DeliverOrderResult) string {
+	var b strings.Builder
+	if r.Lodging {
+		fmt.Fprintf(&b, "[ok] %s has the room from order #%d now.", r.BuyerName, uint64(r.OrderID))
+	} else {
+		noun := r.Noun
+		if noun == "" {
+			noun = "goods"
+		}
+		if r.Total > 1 {
+			noun = fmt.Sprintf("%d %s", r.Total, noun)
+		}
+		fmt.Fprintf(&b, "[ok] You hand %s the %s from order #%d.", r.BuyerName, noun, uint64(r.OrderID))
+	}
+	switch {
+	case r.BalancePaid > 0:
+		fmt.Fprintf(&b, " %d coins were paid when the order was made and the other %d just now, so the deal is settled — nothing more is owed on it; do not ask for payment.",
+			r.PaidAtAccept, r.BalancePaid)
+	case r.PaidAtAccept > 0:
+		fmt.Fprintf(&b, " It was paid for when the order was made — %d coins — so the deal is settled: nothing more is owed on it; do not ask for payment.",
+			r.PaidAtAccept)
+	default:
+		b.WriteString(" Nothing is owed on it; do not ask for payment.")
+	}
+	return b.String()
 }
