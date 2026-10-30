@@ -12,8 +12,9 @@ extends Sprite2D
 const SHEET := "/tilesets/mana-seed/village-accessories/village accessories 16x16.png"
 ## The full bucket on the sheet.
 const REGION := Rect2(144, 32, 16, 16)
-## Hanging under the rope at the mouth of the shaft.
-const MOUTH := Vector2(16, 34)
+## Hanging on the rope in the mouth of the shaft, low enough that a drinker's
+## head at the rim meets its bottom rather than sitting under it (Jeff).
+const MOUTH := Vector2(16, 40)
 ## The shaft and the rim stones round it: a drinker kneels with their face on
 ## its edge (world.gd _well_aim), at the front rim just under the bucket.
 const LIP := Rect2(14, 38, 20, 18)
