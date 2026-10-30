@@ -233,6 +233,29 @@ func (r *triggerRecorder) Handle(_ *sim.World, evt sim.Event) {
 	}
 }
 
+// The route passes detail numbers through unchanged: a float64 round-trip would
+// turn 9007199254740993 into ...992 (code_review).
+func TestUmbilicalClientTrigger_DetailNumbersUnchanged(t *testing.T) {
+	_, h, w := clientTriggerServer(t)
+	rec := &triggerRecorder{}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(rec)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	resp := postReq(t, h, "/api/village/umbilical/client-trigger", "tok", `{"actor_id":"bram","kind":"treeline_figure","detail":{"id":9007199254740993,"f":0.5}}`)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("client-trigger = %d; body=%s", resp.Code, resp.Body.String())
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("emitted %d events, want 1", len(rec.events))
+	}
+	if got := string(rec.events[0].Detail); got != `{"f":0.5,"id":9007199254740993}` {
+		t.Errorf("detail = %s, want {\"f\":0.5,\"id\":9007199254740993}", got)
+	}
+}
+
 func TestUmbilicalClientTrigger_Statuses(t *testing.T) {
 	_, h, _ := clientTriggerServer(t)
 	big := `{"s":"` + strings.Repeat("x", sim.ClientTriggerMaxDetail) + `"}`

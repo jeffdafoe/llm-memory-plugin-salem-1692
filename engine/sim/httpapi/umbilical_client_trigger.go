@@ -115,8 +115,12 @@ func clientTriggerDetail(raw json.RawMessage) (map[string]any, bool) {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, true
 	}
+	// UseNumber keeps numbers as written; a float64 round-trip would change a
+	// large integer (9007199254740993 becomes ...992).
 	var obj map[string]any
-	if err := json.Unmarshal(trimmed, &obj); err != nil || obj == nil {
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	if err := dec.Decode(&obj); err != nil || obj == nil {
 		return nil, false
 	}
 	if _, err := sim.EncodeClientTriggerDetail(obj); err != nil {
