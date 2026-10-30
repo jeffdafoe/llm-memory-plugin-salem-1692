@@ -12,6 +12,8 @@ Freesound (freesound.org), CC0, cut from the HQ previews with ffmpeg:
   rain.ogg, rain_muffled.ogg — 525046 "Rain Slowly Passing TREATED LOOP" by speakwithanimals.
       rain: 90 s from 40-135 s, the last 5 s crossfaded into the head so it loops seamlessly.
       rain_muffled: rain.ogg low-passed (600 Hz 2-pole + 900 Hz) and narrowed — rain heard indoors.
+      Car horns patched out of both: 22.90-23.35 s replaced with rain from 12.05 s, 70.35-72.20 s
+      with rain from 59.05 s, 80 ms equal-power crossfades, re-encoded Vorbis q3.
   thunder_close.ogg — 840628 "Closeup Thunder Strike 01" by loganzsound. Lead silence trimmed, tail faded.
   thunder_far.ogg   — 744722 "Thunder 07" by Emulius. Lead silence trimmed, tail faded.
   saw_0-5.ogg       — 760611 "Hand saw" by SoundsLikeYukon. Six single strokes (3.0-4.5 s, 7.4-8.9 s), mono.
