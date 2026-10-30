@@ -1475,8 +1475,8 @@ func _apply_activity_animation(container: Node2D) -> void:
     if (work == "kneel" or work == "pull") and container.has_meta("well_drink_at"):
         # A drinker's stand can be a tile or two out from the well: haul and
         # kneel at the rim, the drawn sprite stepped in so the face lands on it.
-        var at := _work_aim(container, sprite, WorkAim.KNEEL, WorkAim.KNEEL_FACINGS)
         var well: Node2D = placed_objects.get(str(container.get_meta("well_drink_at")), null)
+        var at := _well_aim(container, sprite, well)
         if not at.is_empty():
             facing = str(at["facing"])
         elif well != null:
@@ -1548,6 +1548,19 @@ func _work_aim(container: Node2D, sprite: AnimatedSprite2D,
         return {}
     var rect := object_map_rect(target)
     return WorkAim.aim(container.position, rect, sprite.scale.x, WORK_MAX_STEP_TILES * VillageApi.tile_size, points, facings)
+
+## The farthest a well drinker is drawn from their stand tile, in tiles: the
+## stand ring round a well's loiter pin reaches past the chop's step.
+const WELL_MAX_STEP_TILES := 2.5
+
+## The facing and drawn step that put a drinker's face on the well's rim
+## (WellBucket.lip_rect): the kneel aimed at the shaft, not the whole well,
+## whose box runs down to the ground stones. {} when the well is not on hand.
+func _well_aim(container: Node2D, sprite: AnimatedSprite2D, well: Node2D) -> Dictionary:
+    if well == null or not is_instance_valid(well):
+        return {}
+    return WorkAim.aim(container.position, WellBucket.lip_rect(well), sprite.scale.x,
+        WELL_MAX_STEP_TILES * VillageApi.tile_size, WorkAim.KNEEL, WorkAim.KNEEL_FACINGS)
 
 ## What the swing lands on: the worked object's debris overlay when it has one
 ## (a damaged business's storm branches or split boards, drawn attached to the

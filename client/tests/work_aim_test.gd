@@ -474,9 +474,10 @@ func _test_kneel_lands_on_the_rim() -> void:
     _done()
 
 
-## world.gd end to end: Jeff knelt two tiles out from the well. A drinker
-## below the well steps in to its rim; a drinker straight behind them stops a
-## tile behind and steps in once the first is done.
+## world.gd end to end: Jeff knelt two tiles out from the well, at the foot of
+## its ground stones. A drinker below the well steps in until the face is on the
+## front rim (WellBucket.LIP), past the chop's 1.5-tile cap; a drinker straight
+## behind them stops a tile behind and steps in once the first is done.
 func _test_world_well_kneel_steps_in_and_queues() -> void:
     var world = load("res://scripts/world.gd").new()
     var blank := ImageTexture.create_from_image(Image.create(1024, 1024, false, Image.FORMAT_RGBA8))
@@ -504,15 +505,16 @@ func _test_world_well_kneel_steps_in_and_queues() -> void:
     var front: AnimatedSprite2D = people[0].get_node("CharacterSprite")
     var back: AnimatedSprite2D = people[1].get_node("CharacterSprite")
 
-    # A 40x40 well drawn whole, anchored at (0.5, 0.85): at (0, 0) it is
-    # (-20,-34)-(20,6). Off the map (objects_node is off the tree), so no
+    # A 48x80 well drawn whole at 2x, anchored at (0.5, 0.85): at (0, 0) its
+    # art is (-48,-136)-(48,24) and its lip (-20,-60)-(20,-24), inset
+    # (-16,-56)-(16,-28). Off the map (objects_node is off the tree), so no
     # bucket comes up and nobody hauls: both kneel.
-    var img := Image.create(40, 40, false, Image.FORMAT_RGBA8)
+    var img := Image.create(48, 80, false, Image.FORMAT_RGBA8)
     img.fill(Color.WHITE)
     var catalog: Node = root.get_node("Catalog")
     catalog.sheet_cache["test://well"] = ImageTexture.create_from_image(img)
-    catalog.assets["test-well"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 1.0,
-        "states": [{"state": "default", "sheet": "test://well", "src_x": 0, "src_y": 0, "src_w": 40, "src_h": 40}]}
+    catalog.assets["test-well"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 2.0,
+        "states": [{"state": "default", "sheet": "test://well", "src_x": 0, "src_y": 0, "src_w": 48, "src_h": 80}]}
     world.objects_node = Node2D.new()
     world._place_object({"id": "w1", "asset_id": "test-well", "x": 0.0, "y": 0.0, "display_name": "Well",
         "refreshes": [{"attribute": "thirst", "gather_item": ""}, {"attribute": "", "gather_item": "water"}]})
@@ -523,17 +525,18 @@ func _test_world_well_kneel_steps_in_and_queues() -> void:
     _check("front drinker kneels north", front.animation, &"north_kneel")
     _check("back drinker kneels north", back.animation, &"north_kneel")
     await create_timer(0.35).timeout
-    _check("front: stepped in, face on the rim", front.position.is_equal_approx(base + Vector2(0, -26)), true)
+    # North face (0,-36) from (0,64) is (0,28); the lip's inset front edge is y -28.
+    _check("front: stepped in, face on the rim", front.position.is_equal_approx(base + Vector2(0, -56)), true)
     _check("back: stops a tile behind the front drinker", back.position.is_equal_approx(base), true)
 
     # The front drinker is done: back to the stand, and the one behind steps
-    # in (the full 58 px is capped at 48).
+    # in (the full 88 px is capped at 2.5 tiles, 80).
     people[0].set_meta("source_activity_kind", "")
     people[0].set_meta("source_activity_object_id", "")
     world._apply_activity_animation(people[0])
     await create_timer(0.35).timeout
     _check("front done: back on the stand", front.position.is_equal_approx(base), true)
-    _check("back: now steps in, capped", back.position.is_equal_approx(base + Vector2(0, -48)), true)
+    _check("back: now steps in, capped", back.position.is_equal_approx(base + Vector2(0, -80)), true)
 
     # Removed, not cleared: the one behind still gets the way in.
     people[0].set_meta("source_activity_kind", "refresh")
@@ -543,7 +546,7 @@ func _test_world_well_kneel_steps_in_and_queues() -> void:
     _check("front back again: the one behind steps back", back.position.is_equal_approx(base), true)
     world.remove_npc_by_id("front")
     await create_timer(0.35).timeout
-    _check("front removed: the one behind steps in", back.position.is_equal_approx(base + Vector2(0, -48)), true)
+    _check("front removed: the one behind steps in", back.position.is_equal_approx(base + Vector2(0, -80)), true)
 
     people[1].queue_free()
     world.objects_node.free()

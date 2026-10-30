@@ -1,25 +1,26 @@
 extends Sprite2D
 ## A well's bucket: one per well, shared by everyone drinking there. The first
-## drinker hauls it up out of the shaft and sets it on the front rim; it stays
-## there while anyone drinks, and goes back down the shaft after the last one.
+## drinker hauls it up out of the shaft; it hangs at the mouth under the rope
+## while anyone drinks, and goes back down the shaft after the last one.
 ## world.gd keeps the count of drinkers and calls raise() and lower(); the bucket
 ## also checks that count itself while it is up, so a drinker the client lost
 ## track of (removed, re-rendered) never leaves it up for good.
 ##
 ## Places are in the well sprite's own pixels, measured against the Mana Seed
-## well (the framed and the roofed well share the base): hanging under the rope
-## at the mouth of the shaft, and standing on the front rim, right of the rope.
+## well (the framed and the roofed well share the base).
 
 const SHEET := "/tilesets/mana-seed/village-accessories/village accessories 16x16.png"
 ## The full bucket on the sheet.
 const REGION := Rect2(144, 32, 16, 16)
+## Hanging under the rope at the mouth of the shaft.
 const MOUTH := Vector2(16, 34)
-const RIM := Vector2(26, 46)
+## The shaft and the rim stones round it: a drinker kneels with their face on
+## its edge (world.gd _well_aim), at the front rim just under the bucket.
+const LIP := Rect2(14, 38, 20, 18)
 ## How far down the shaft the bucket comes up from, and goes back down to.
 const DEPTH := 6.0
-## Seconds the hauler pulls the bucket up to the mouth; then it is set on the rim.
+## Seconds the hauler pulls the bucket up to the mouth.
 const HAUL := 0.9
-const SET_DOWN := 0.25
 const LOWER := 0.5
 ## Seconds between a raised bucket's checks for drinkers.
 const CHECK := 0.5
@@ -56,11 +57,7 @@ static func of(well: Node2D, counter: Callable) -> Node:
     var have := well.get_node_or_null("WellBucket")
     if have != null:
         return have
-    var art: Node2D = null
-    for child in well.get_children():
-        if child is Sprite2D or child is AnimatedSprite2D:
-            art = child
-            break
+    var art := _art_of(well)
     if art == null:
         return null
     var bucket = load("res://scripts/well_bucket.gd").new()
@@ -91,7 +88,6 @@ func raise() -> bool:
     _new_tween()
     tween.tween_property(self, "position", _at(MOUTH), HAUL)
     tween.parallel().tween_property(self, "modulate:a", 1.0, HAUL)
-    tween.tween_property(self, "position", _at(RIM), SET_DOWN)
     tween.tween_callback(func() -> void: state = State.UP)
     return true
 
@@ -102,7 +98,6 @@ func lower() -> void:
         return
     state = State.SINKING
     _new_tween()
-    tween.tween_property(self, "position", _at(MOUTH), SET_DOWN)
     tween.tween_property(self, "position", _at(MOUTH + Vector2(0, DEPTH)), LOWER)
     tween.parallel().tween_property(self, "modulate:a", 0.0, LOWER)
     tween.tween_callback(func() -> void:
@@ -116,6 +111,23 @@ func lower() -> void:
 func check_drinkers() -> void:
     if (state == State.RISING or state == State.UP) and drinkers.is_valid() and int(drinkers.call()) == 0:
         lower()
+
+
+## The well's LIP in the coordinates the well is placed in (where actors
+## stand), or an empty Rect2 when the well has no art.
+static func lip_rect(well: Node2D) -> Rect2:
+    var art := _art_of(well)
+    if art == null:
+        return Rect2()
+    return Rect2(well.position + art.position + LIP.position * art.scale, LIP.size * art.scale)
+
+
+## The well's art: its first sprite, never the bucket drawn over it.
+static func _art_of(well: Node2D) -> Node2D:
+    for child in well.get_children():
+        if (child is Sprite2D or child is AnimatedSprite2D) and child.name != "WellBucket":
+            return child
+    return null
 
 
 func set_sheet(texture: Texture2D) -> void:
