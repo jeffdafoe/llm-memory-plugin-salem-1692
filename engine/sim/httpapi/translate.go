@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -41,7 +42,9 @@ import (
 // structure, restoring the v1 broadcast the rewrite dropped, ZBBS-WORK-373),
 // and MEALS (DwellStarted → npc_meal_started, item-source DwellEnded →
 // npc_meal_ended — the room window keeps a dish on the table while it is
-// eaten, LLM-758).
+// eaten, LLM-758), and CLIENT TRIGGERS (ClientTrigger → client_trigger, a
+// client-only effect for one player; the only frame with a Target, so the hub
+// sends it to that player's sockets alone, LLM-881).
 // Per-tile ActorMoved is deliberately NOT mapped — it stays internal; nor are
 // spawn/despawn or object create (no sim bus source until those write routes
 // exist). An unmapped event returns ok=false and is dropped, so adding cases
@@ -477,6 +480,21 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Reason:  e.Reason,
 			At:      e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.ClientTrigger:
+		// LLM-881: a client-only effect for ONE player. Target sends it only to
+		// that login's sockets. With no login there is no client to target, and
+		// an empty Target would broadcast it to everyone, so drop it.
+		if e.Login == "" {
+			return WireFrame{}, false
+		}
+		detail := e.Detail
+		if len(detail) == 0 {
+			detail = []byte("{}")
+		}
+		return WireFrame{Type: "client_trigger", Target: e.Login, Data: clientTriggerWireDTO{
+			Kind:   e.Kind,
+			Detail: detail,
+		}}, true
 	case *sim.PCIdlePromptShown:
 		// LLM-466: this PC's client has gone an hour without input, so it no
 		// longer counts as an audience. The client raises the candle overlay; a
@@ -765,6 +783,13 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 // tiredness). The client matches ActorID against its own PC and feeds Needs
 // straight into top_bar.set_needs, so a bite ticks the HUD without waiting on
 // the ~10s /pc/me poll.
+// clientTriggerWireDTO is the client_trigger frame (LLM-881): which client-only
+// effect to run and its detail object. Sent only to the target player.
+type clientTriggerWireDTO struct {
+	Kind   string          `json:"kind"`
+	Detail json.RawMessage `json:"detail"`
+}
+
 type pcNeedsChangedWireDTO struct {
 	ActorID string         `json:"actor_id"`
 	Needs   map[string]int `json:"needs"`

@@ -18,6 +18,17 @@ import (
 type WireFrame struct {
 	Type string `json:"type"`
 	Data any    `json:"data,omitempty"`
+	// Target is the login the frame is for (LLM-881). Empty = every client.
+	// Not on the wire: the hub delivers a targeted frame only to the sockets of
+	// that login.
+	Target string `json:"-"`
+}
+
+// hubFrame is one marshalled frame on its way to the hub goroutine, with the
+// login it is for ("" = every client).
+type hubFrame struct {
+	data   []byte
+	target string
 }
 
 // EventTranslator maps an in-world sim.Event to a client-facing WireFrame.
@@ -58,7 +69,7 @@ const (
 // goroutines that write to a socket, as gorilla requires.
 type Hub struct {
 	translate  EventTranslator
-	broadcast  chan []byte
+	broadcast  chan hubFrame
 	register   chan *client
 	unregister chan *client
 	// done is closed when Run returns. Read pumps select on it so a client
@@ -97,7 +108,7 @@ func NewHub(translate EventTranslator) *Hub {
 	}
 	return &Hub{
 		translate:       translate,
-		broadcast:       make(chan []byte, broadcastBuffer),
+		broadcast:       make(chan hubFrame, broadcastBuffer),
 		register:        make(chan *client, regBuffer),
 		unregister:      make(chan *client, regBuffer),
 		done:            make(chan struct{}),
@@ -172,7 +183,7 @@ func (h *Hub) Handle(_ *sim.World, evt sim.Event) {
 	default:
 	}
 	select {
-	case h.broadcast <- data:
+	case h.broadcast <- hubFrame{data: data, target: frame.Target}:
 		h.framesBroadcast.Add(1)
 	default:
 		h.framesDropped.Add(1)
@@ -180,7 +191,8 @@ func (h *Hub) Handle(_ *sim.World, evt sim.Event) {
 	}
 }
 
-// Run owns the client set and fans broadcasts out to it. Start it in a goroutine
+// Run owns the client set and fans broadcasts out to it. A targeted frame goes
+// only to the clients whose login matches (every socket of that login). Start it in a goroutine
 // BEFORE world.Run (the hub must also be Subscribed before Run). It returns when
 // ctx is cancelled, signalling its done channel and closing every client's send
 // channel so the write pumps emit a close frame and exit.
@@ -221,11 +233,14 @@ func (h *Hub) Run(ctx context.Context) {
 				h.untrackLogin(c.login)
 				h.clientsConnected.Store(int64(len(clients)))
 			}
-		case data := <-h.broadcast:
+		case f := <-h.broadcast:
 			evicted := false
 			for c := range clients {
+				if f.target != "" && c.login != f.target {
+					continue
+				}
 				select {
-				case c.send <- data:
+				case c.send <- f.data:
 				default:
 					// Slow consumer: evict. Closing send makes the write pump
 					// emit a close frame and exit; the read pump then errors and

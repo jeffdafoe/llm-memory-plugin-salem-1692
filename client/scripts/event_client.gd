@@ -95,6 +95,30 @@ var _last_process_ticks: int = 0
 # leaves the server logging spurious 401s.
 var _connected_token: String = ""
 
+# LLM-881: handlers for client_trigger frames, keyed by kind. The engine sends
+# a client_trigger only to this player's sockets, to run a client-only effect
+# (the figure at the treeline, LLM-844). A feature registers its handler with
+# register_client_trigger; a kind with no handler is ignored, so an older client
+# does not break on a newer kind.
+var _client_trigger_handlers: Dictionary = {}
+
+## Register handler(detail: Dictionary) for client_trigger frames of kind. A
+## second registration for the same kind replaces the first. The handler checks
+## its own preconditions and may refuse; with LLM-880 it reports the outcome.
+func register_client_trigger(kind: String, handler: Callable) -> void:
+    _client_trigger_handlers[kind] = handler
+
+func _on_client_trigger(data) -> void:
+    if not (data is Dictionary):
+        return
+    var kind := str(data.get("kind", ""))
+    var handler: Callable = _client_trigger_handlers.get(kind, Callable())
+    if not handler.is_valid():
+        push_warning("EventClient: client_trigger kind %s has no handler — ignored" % kind)
+        return
+    var detail = data.get("detail", {})
+    handler.call(detail if detail is Dictionary else {})
+
 func connect_to_server() -> void:
     # No token → no point connecting. Auth.session_expired handler will bring
     # us back here once the user re-authenticates.
@@ -337,6 +361,8 @@ func _handle_message(data: String) -> void:
         "zoom_settings_changed":
             if world != null:
                 world.apply_zoom_floor_from_config(event_data)
+        "client_trigger":
+            _on_client_trigger(event_data)
         "night_color_changed":
             if world != null:
                 world.apply_night_color(event_data)
