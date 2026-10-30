@@ -42,7 +42,7 @@ type WorldEnvironment struct {
 	LastCarterAt            time.Time       // when a carter last came on a residue run (carter.go), the cooldown anchor; zero = never. Durable — persisted in world_state.last_carter_at: the cooldown is counted in days and the village restarts several times a day, so an in-memory stamp would send one every restart.
 	Omens                   OmenRecord      // armed omens and each resident's last omen (omen.go, LLM-843). Durable — persisted in world_state.omens: the cooldown is counted in days and an armed omen waits up to a day for its moment, both across the village's restarts.
 	SnowCoverX100           int             // the snow lying on the village, 0..SnowCoverMax×100 (snow.go, LLM-850). Durable — persisted in world_state.snow_cover_x100: a restart must not melt the snow.
-	LastSnowTierEmitted     SnowTier        // the tier the last SnowTierChanged carried, the emit dedupe (snow.go). Transient — boots at none.
+	LastSnowTierEmitted     SnowTier        // the tier the last SnowTierChanged carried, the emit dedupe (snow.go). Transient — FinalizeLoad sets it to the loaded cover's tier.
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -2086,6 +2086,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 	// step is shared — the first cut patched only sim.LoadWorld and
 	// production (pg) booted with a zero stamp, verified live.
 	w.Environment.LastPhaseFlipAt = w.Environment.LastTransitionAt
+
+	// The snow tier the world read publishes from the first snapshot is the
+	// tier the frame dedupe starts from (LLM-850): booting it at none would let
+	// a village loaded under a dusting melt to none with no frame, leaving
+	// connected clients on the dusting.
+	w.Environment.LastSnowTierEmitted = SnowTierNow(w)
 
 	w.rebuildIndices()
 	// LLM-369: rehydrate in-flight visitors from their durable mirror into

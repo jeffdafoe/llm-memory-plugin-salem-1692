@@ -225,3 +225,34 @@ func TestSeasonArt_SweepFollowsSnowCover(t *testing.T) {
 		}
 	}
 }
+
+// TestSnowTier_LoadedTierSeedsTheFrameDedupe: a village loaded under a dusting
+// starts its frame dedupe at dusting — the tier its first world read carries —
+// so the first melt below it sends a frame to none rather than being swallowed
+// as "still none" (code_review, LLM-850).
+func TestSnowTier_LoadedTierSeedsTheFrameDedupe(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Environment.Seed(sim.WorldEnvironment{SnowCoverX100: 100}, sim.PhaseDay, sim.WorldSettings{
+		SnowTierDusting: sim.DefaultSnowTierDusting, SnowTierLight: sim.DefaultSnowTierLight, SnowTierDeep: sim.DefaultSnowTierDeep,
+		SnowMeltDayPerMinuteX100: sim.DefaultSnowMeltDayPerMinuteX100,
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if got := w.Environment.LastSnowTierEmitted; got != sim.SnowTierDusting {
+		t.Fatalf("LastSnowTierEmitted after load = %s, want dusting", got)
+	}
+	var frames []sim.SnowTier
+	w.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+		if e, ok := evt.(*sim.SnowTierChanged); ok {
+			frames = append(frames, e.Tier)
+		}
+	}))
+	if _, err := sim.AdjustSnow(1).Fn(w); err != nil {
+		t.Fatalf("AdjustSnow: %v", err)
+	}
+	if len(frames) != 1 || frames[0] != sim.SnowTierNone {
+		t.Errorf("frames after the first melt = %v, want [none]", frames)
+	}
+}

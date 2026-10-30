@@ -183,3 +183,22 @@ func equalTiers(a, b []SnowTier) bool {
 	}
 	return true
 }
+
+// Thresholds and rates as large as the registry accepts neither wrap the tier
+// comparison nor wrap the cover: a huge threshold leaves that tier out of reach,
+// a huge build rate fills the cover, a huge melt rate clears it (code_review).
+func TestSnow_HugeSettingsSaturate(t *testing.T) {
+	const huge = int(^uint(0) >> 1)
+	if got := SnowTierOf(100, WorldSettings{SnowTierDusting: 1, SnowTierDeep: huge}); got != SnowTierDusting {
+		t.Errorf("huge deep threshold: SnowTierOf(100) = %s, want dusting", got)
+	}
+	if got := moveSnowCover(4500, huge, 7); got != SnowCoverMax*100 {
+		t.Errorf("huge build rate: cover = %d, want the cap", got)
+	}
+	if got := moveSnowCover(4500, -huge, 7); got != 0 {
+		t.Errorf("huge melt rate: cover = %d, want 0", got)
+	}
+	if got := moveSnowCover(4500, 300, 1); got != 4800 {
+		t.Errorf("ordinary build: cover = %d, want 4800", got)
+	}
+}

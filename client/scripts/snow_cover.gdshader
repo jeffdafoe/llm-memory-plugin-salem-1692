@@ -13,16 +13,20 @@ shader_type canvas_item;
 // colours of the snowy ground sheet, the snowy trees and the snow-only roof
 // layers — with the bottom row one shade down as a lip.
 //
-// The test reads the texels above in the sheet the sprite is cut from. At the
-// top row of a cell that is the cell above it on the sheet; where that cell is
-// opaque there, the row gets no snow. Only a missing line of snow, never a
-// stray one.
+// The texels above are read in the sheet the sprite is cut from, so the walk
+// must stop at the top of the sprite's own cell: the cell above it on the sheet
+// is other art, and its texels could add snow or withhold it. world.gd sets the
+// cell's top (in UV) on each sprite as the per-instance region_top — per
+// instance so the material stays shared — and keeps it current as an animated
+// sprite changes frame. Above it reads as clear.
 
 uniform int depth : hint_range(0, 4) = 0;
 uniform vec4 snow_color : source_color = vec4(0.816, 0.847, 0.722, 1.0);   // #d0d8b8
 uniform vec4 snow_shade : source_color = vec4(0.722, 0.753, 0.69, 1.0);    // #b8c0b0
 // An edge texel darker than this is outline, and stays.
 uniform float outline_luma = 0.25;
+// The top of this sprite's cell in the sheet, in UV (0 = the whole sheet).
+instance uniform float region_top = 0.0;
 
 // The node's own modulate (a fade, a highlight) is kept from vertex() so it
 // still applies to a snowy sprite. Night and storm tint the whole canvas after
@@ -33,8 +37,10 @@ void vertex() {
     modulate_color = COLOR;
 }
 
-vec4 above(sampler2D tex, vec2 uv, int d, vec2 px) {
-    return texture(tex, uv - vec2(0.0, px.y * float(d)));
+// The texel d rows above uv, or clear when that is above the cell's top.
+vec4 above(sampler2D tex, vec2 uv, int d, vec2 px, float top) {
+    vec2 at = uv - vec2(0.0, px.y * float(d));
+    return at.y < top ? vec4(0.0) : texture(tex, at);
 }
 
 // How far up the walk looks for the clear texel, outline included.
@@ -58,7 +64,7 @@ void fragment() {
         int row = 0;
         int outline_rows = 0;
         for (int d = 1; d <= MAX_WALK; d++) {
-            vec4 a = above(TEXTURE, UV, d, TEXTURE_PIXEL_SIZE);
+            vec4 a = above(TEXTURE, UV, d, TEXTURE_PIXEL_SIZE, region_top);
             if (a.a < 0.5) {
                 row = d - outline_rows;
                 break;

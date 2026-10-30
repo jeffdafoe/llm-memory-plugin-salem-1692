@@ -22,6 +22,8 @@ const TESTS := [
     "_test_season_art_detection",
     "_test_only_assets_without_season_art_join_the_group",
     "_test_material_follows_the_tier",
+    "_test_region_top_bounds_the_cell",
+    "_test_animated_sprite_region_follows_its_frame",
 ]
 
 var _world: Node2D = null
@@ -103,12 +105,62 @@ func _sprite_for(asset: Dictionary) -> Node2D:
     _world.add_child(sprite)
     return sprite
 
+func _region_top(sprite: Node2D) -> float:
+    return float(sprite.get_instance_shader_parameter("region_top"))
+
+## A 32x32 sheet cut into four 16x16 cells, as an AtlasTexture on cell (x, y).
+func _cell(sheet: Texture2D, x: int, y: int) -> AtlasTexture:
+    var atlas := AtlasTexture.new()
+    atlas.atlas = sheet
+    atlas.region = Rect2(x * 16, y * 16, 16, 16)
+    return atlas
+
 func _depth(sprite: Node2D) -> int:
     if sprite.material == null:
         return 0
     return int(sprite.material.get_shader_parameter("depth"))
 
 # --- tests -----------------------------------------------------------------------
+
+## The shader reads the sheet a sprite is cut from, so each snow sprite carries
+## the top of its own cell as region_top (code_review, LLM-850): a cell on the
+## sheet's second row of two starts at UV 0.5, a whole texture at 0.
+func _test_region_top_bounds_the_cell() -> void:
+    var sheet := ImageTexture.create_from_image(Image.create(32, 32, false, Image.FORMAT_RGBA8))
+    _check("a lower cell starts half way down the sheet", is_equal_approx(_world.snow_region_top(_cell(sheet, 1, 1)), 0.5))
+    _check("a top cell starts at 0", is_equal_approx(_world.snow_region_top(_cell(sheet, 0, 0)), 0.0))
+    _check("a whole texture starts at 0", is_equal_approx(_world.snow_region_top(sheet), 0.0))
+
+    _world.set_snow_tier("light")
+    var sprite: Node2D = _world._create_sprite_node(_static_state(), _cell(sheet, 0, 1), 0.5, 0.85, 2.0, PLAIN_ASSET)
+    _world.add_child(sprite)
+    _check("a snowy sprite carries its cell's top", is_equal_approx(_region_top(sprite), 0.5))
+    _world.set_snow_tier("none")
+    sprite.free()
+    _done()
+
+## An animated snow sprite whose frames sit on different rows of the sheet
+## moves its region_top with the frame.
+func _test_animated_sprite_region_follows_its_frame() -> void:
+    var sheet := ImageTexture.create_from_image(Image.create(32, 32, false, Image.FORMAT_RGBA8))
+    var frames := SpriteFrames.new()
+    frames.add_frame("default", _cell(sheet, 0, 1))
+    frames.add_frame("default", _cell(sheet, 1, 0))
+    var anim := AnimatedSprite2D.new()
+    anim.sprite_frames = frames
+    anim.add_to_group(_world.SNOW_GROUP)
+    anim.frame_changed.connect(_world._on_snow_sprite_frame.bind(anim))
+    _world.add_child(anim)
+
+    _world.set_snow_tier("deep")
+    _check("frame 0 on the second row: 0.5", is_equal_approx(_region_top(anim), 0.5))
+    anim.frame = 1
+    _check("frame 1 on the first row: 0", is_equal_approx(_region_top(anim), 0.0))
+    anim.frame = 0
+    _check("back to frame 0: 0.5", is_equal_approx(_region_top(anim), 0.5))
+    _world.set_snow_tier("none")
+    anim.free()
+    _done()
 
 func _test_season_art_detection() -> void:
     _check("a plain asset has no season art", not _world.asset_has_season_art(PLAIN_ASSET))

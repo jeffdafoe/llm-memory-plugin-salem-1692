@@ -2223,7 +2223,39 @@ func set_snow_tier(tier: String) -> void:
         return
     var material := _current_snow_material()
     for sprite in get_tree().get_nodes_in_group(SNOW_GROUP):
-        sprite.material = material
+        _apply_snow(sprite, material)
+
+## Put material (null: no snow) on a snow sprite, with the top of its cell in
+## the sheet as the shader's per-instance region_top, so the shader never reads
+## the art of the cell above it (snow_cover.gdshader).
+func _apply_snow(sprite: Node2D, material: ShaderMaterial) -> void:
+    sprite.material = material
+    if material != null:
+        sprite.set_instance_shader_parameter("region_top", snow_region_top(_shown_texture(sprite)))
+
+## An animated snow sprite's frames may sit on different rows of its sheet.
+func _on_snow_sprite_frame(sprite: AnimatedSprite2D) -> void:
+    if sprite.material != null:
+        sprite.set_instance_shader_parameter("region_top", snow_region_top(_shown_texture(sprite)))
+
+## The texture a sprite draws now: a Sprite2D's, or an AnimatedSprite2D's
+## current frame.
+func _shown_texture(sprite: Node2D) -> Texture2D:
+    if sprite is AnimatedSprite2D:
+        var frames: SpriteFrames = sprite.sprite_frames
+        if frames == null or not frames.has_animation(sprite.animation):
+            return null
+        return frames.get_frame_texture(sprite.animation, sprite.frame)
+    if sprite is Sprite2D:
+        return sprite.texture
+    return null
+
+## The top of texture's cell in its sheet, in UV: an AtlasTexture's region top
+## over the sheet's height; 0 for a whole texture.
+static func snow_region_top(texture: Texture2D) -> float:
+    if texture is AtlasTexture and texture.atlas != null and texture.atlas.get_height() > 0:
+        return texture.region.position.y / float(texture.atlas.get_height())
+    return 0.0
 
 ## The shared snow material at the current tier, or null when no snow lies.
 func _current_snow_material() -> ShaderMaterial:
@@ -2797,7 +2829,9 @@ func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x
     var node: Node2D = _build_sprite_node(state_info, texture, anchor_x, anchor_y, render_scale)
     if not asset.is_empty() and not asset_has_season_art(asset):
         node.add_to_group(SNOW_GROUP)
-        node.material = _current_snow_material()
+        if node is AnimatedSprite2D:
+            node.frame_changed.connect(_on_snow_sprite_frame.bind(node))
+        _apply_snow(node, _current_snow_material())
     return node
 
 func _build_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float, render_scale: float) -> Node2D:

@@ -55,10 +55,12 @@ func (t SnowTier) String() string {
 }
 
 // SnowTierOf is the tier a cover of coverX100 shows under s. A threshold of 0 or
-// less leaves its tier out, so the cover falls to the tier below.
+// less leaves its tier out, so the cover falls to the tier below. The cover is
+// brought down to whole units rather than the threshold up to ×100, so no
+// threshold the registry accepts can overflow the comparison.
 func SnowTierOf(coverX100 int, s WorldSettings) SnowTier {
 	reaches := func(threshold int) bool {
-		return threshold > 0 && coverX100 >= threshold*100
+		return threshold > 0 && coverX100/100 >= threshold
 	}
 	switch {
 	case coverX100 <= 0:
@@ -111,11 +113,28 @@ func AdjustSnow(elapsedMinutes int) Command {
 // adjustSnow is AdjustSnow at the instant now, which dates the season.
 func adjustSnow(w *World, elapsedMinutes int, now time.Time) SnowTier {
 	if elapsedMinutes > 0 {
-		cover := w.Environment.SnowCoverX100 + snowRatePerMinuteX100(w, now)*elapsedMinutes
-		w.Environment.SnowCoverX100 = min(max(cover, 0), SnowCoverMax*100)
+		w.Environment.SnowCoverX100 = moveSnowCover(w.Environment.SnowCoverX100, snowRatePerMinuteX100(w, now), elapsedMinutes)
 		emitSnowTierIfChanged(w, now)
 	}
 	return SnowTierNow(w)
+}
+
+// moveSnowCover is cover moved by rate per minute for minutes (> 0), held to
+// 0..SnowCoverMax×100. It saturates before it multiplies, so a rate setting as
+// large as the registry accepts fills or clears the cover rather than wrapping.
+func moveSnowCover(cover, rate, minutes int) int {
+	cover = min(max(cover, 0), SnowCoverMax*100)
+	switch {
+	case rate > 0:
+		if room := SnowCoverMax*100 - cover; rate > room/minutes {
+			return SnowCoverMax * 100
+		}
+	case rate < 0:
+		if -rate > cover/minutes {
+			return 0
+		}
+	}
+	return min(max(cover+rate*minutes, 0), SnowCoverMax*100)
 }
 
 // SetSnowCover returns a Command that sets the cover to cover whole units (the
@@ -135,9 +154,8 @@ func SetSnowCover(cover int, at time.Time) Command {
 }
 
 // emitSnowTierIfChanged emits SnowTierChanged when the tier differs from the
-// last one emitted. The last-emitted tier is transient and boots at none, so a
-// village that boots under snow sends one frame on the first sweep — harmless,
-// the world read already carried the tier.
+// last one emitted. The last-emitted tier is transient; World.FinalizeLoad
+// sets it to the loaded cover's tier, the tier the first world read carries.
 func emitSnowTierIfChanged(w *World, at time.Time) {
 	tier := SnowTierNow(w)
 	if tier == w.Environment.LastSnowTierEmitted {

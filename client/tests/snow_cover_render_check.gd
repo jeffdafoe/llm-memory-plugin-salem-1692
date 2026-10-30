@@ -10,7 +10,13 @@ extends SceneTree
 ## depth (world.gd SNOW_DEPTH), at the village's 2x art scale. Then the deep
 ## scene again under a winter storm as storm_fx.gd draws it (tint + snowfall).
 ## Writes OUT_DIR/snow-tiers.png (the four tiers, 2x2) and
-## OUT_DIR/snow-storm.png, then quits.
+## OUT_DIR/snow-storm.png.
+##
+## Then a pass/fail check of the shader's cell bound (code_review, LLM-850): a
+## cell cut from a sheet whose cell above ends in a dark texel over a clear row
+## must draw exactly as the same cell on its own texture, once region_top bounds
+## the walk — and must draw differently with the bound off, or the check proves
+## nothing. Exits 0 when it passes, 1 when it fails.
 
 const TILES := "C:/dev/llm-memory-village-tiles/tilesets/"
 const OUT_DIR := "C:/tmp/llm/"
@@ -30,6 +36,7 @@ var _scene: Node2D = null
 var _shots: Array[Image] = []
 var _storm: CanvasLayer = null
 var _art := {}
+var _bound_check_at := 0
 
 func _initialize() -> void:
     get_root().size = VIEW
@@ -70,8 +77,68 @@ func _process(_delta: float) -> bool:
         _storm.call("set_storm", true, false, true)
     elif _frame == TIERS.size() * 3 + 20:
         _save(get_root().get_texture().get_image(), "snow-storm.png")
-        quit(0)
+        _storm.free()
+        _build_bound_check()
+        _bound_check_at = _frame + 4
+    elif _bound_check_at > 0 and _frame == _bound_check_at:
+        quit(_check_bound())
     return false
+
+const BOUND_SCALE := 8
+const BOUND_SPOTS := {"bounded": Vector2(100, 100), "alone": Vector2(400, 100), "unbounded": Vector2(700, 100)}
+
+## A 16x32 sheet of two cells. The top cell ends in a dark row (cols 4-11, row
+## 15) with clear above it; the bottom cell is a light block from its own top
+## row. Drawn three ways at depth 2: the bottom cell from the sheet with its
+## region_top, the bottom cell alone, and the bottom cell from the sheet with no
+## bound.
+func _build_bound_check() -> void:
+    _scene.free()
+    _scene = Node2D.new()
+    get_root().add_child(_scene)
+    var bg := ColorRect.new()
+    bg.color = Color(0.3, 0.1, 0.4)
+    bg.size = Vector2(VIEW)
+    _scene.add_child(bg)
+    var sheet_img := Image.create(16, 32, false, Image.FORMAT_RGBA8)
+    sheet_img.fill_rect(Rect2i(4, 15, 8, 1), Color(0.1, 0.1, 0.1, 1))
+    sheet_img.fill_rect(Rect2i(2, 16, 12, 12), Color(0.6, 0.45, 0.3, 1))
+    var sheet := ImageTexture.create_from_image(sheet_img)
+    var alone := ImageTexture.create_from_image(sheet_img.get_region(Rect2i(0, 16, 16, 16)))
+    var material := ShaderMaterial.new()
+    material.shader = SnowCoverShader
+    material.set_shader_parameter("depth", 2)
+    for name in BOUND_SPOTS:
+        var sprite := Sprite2D.new()
+        sprite.texture = alone if name == "alone" else _region(sheet, Rect2(0, 16, 16, 16))
+        sprite.centered = false
+        sprite.position = BOUND_SPOTS[name]
+        sprite.scale = Vector2(BOUND_SCALE, BOUND_SCALE)
+        sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+        sprite.material = material
+        _scene.add_child(sprite)
+        if name == "bounded":
+            sprite.set_instance_shader_parameter("region_top", 0.5)
+
+## Compare the three draws texel by texel (one sample at each texel's centre).
+func _check_bound() -> int:
+    var shot := get_root().get_texture().get_image()
+    _save(shot, "snow-bound-check.png")
+    var same_as_alone := true
+    var differs_unbounded := false
+    for y in 16:
+        for x in 16:
+            var offset := Vector2(x, y) * BOUND_SCALE + Vector2(BOUND_SCALE / 2, BOUND_SCALE / 2)
+            var a := shot.get_pixelv(Vector2i(BOUND_SPOTS["alone"] + offset))
+            var b := shot.get_pixelv(Vector2i(BOUND_SPOTS["bounded"] + offset))
+            var u := shot.get_pixelv(Vector2i(BOUND_SPOTS["unbounded"] + offset))
+            if not a.is_equal_approx(b):
+                same_as_alone = false
+                print("  bounded differs from alone at texel (%d,%d): %s vs %s" % [x, y, b.to_html(), a.to_html()])
+            if not a.is_equal_approx(u):
+                differs_unbounded = true
+    print("bound check — bounded draws as the cell alone: %s; unbounded differs (the check can fail): %s" % [same_as_alone, differs_unbounded])
+    return 0 if same_as_alone and differs_unbounded else 1
 
 func _build(tier: String) -> void:
     if _scene != null:
