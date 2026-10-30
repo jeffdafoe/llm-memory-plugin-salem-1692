@@ -46,3 +46,33 @@ func TestSnapshotWithActor(t *testing.T) {
 		t.Error("adding to the patched map must not leak into the source map")
 	}
 }
+
+// TestSnapshotWithoutOrders pins the deliver_order companion to WithActor
+// (LLM-887): the named orders are gone from the copy, the rest stay aliased, and
+// the shared source snapshot is untouched. An empty set returns the source.
+func TestSnapshotWithoutOrders(t *testing.T) {
+	kept := &sim.Order{ID: 1}
+	gone := &sim.Order{ID: 2}
+	orig := &sim.Snapshot{
+		AtTick: 7,
+		Orders: map[sim.OrderID]*sim.Order{1: kept, 2: gone},
+	}
+
+	if orig.WithoutOrders(nil) != orig {
+		t.Error("WithoutOrders(nil) must return the source snapshot")
+	}
+
+	pruned := orig.WithoutOrders(map[sim.OrderID]struct{}{2: {}, 99: {}})
+	if _, ok := pruned.Orders[2]; ok {
+		t.Error("WithoutOrders must drop the named order")
+	}
+	if pruned.Orders[1] != kept {
+		t.Error("WithoutOrders must keep other orders aliased")
+	}
+	if pruned.AtTick != orig.AtTick {
+		t.Errorf("WithoutOrders must shallow-copy scalar fields: AtTick got %d, want %d", pruned.AtTick, orig.AtTick)
+	}
+	if orig.Orders[2] != gone || len(orig.Orders) != 2 {
+		t.Error("WithoutOrders must not mutate the source snapshot's Orders map")
+	}
+}
