@@ -92,6 +92,7 @@ var _body_retry_at := 0.0
 var _rolled_dusk := ""
 var _last_figure_at := 0.0
 var _reach_cache: Dictionary = {}
+var _sheet_images: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
 
 func _ready() -> void:
@@ -276,8 +277,7 @@ func _spot_beside(tree: Node2D) -> Vector2:
     return tree.position + Vector2(x, -_rng.randf_range(BEHIND_PX.x, BEHIND_PX.y))
 
 ## The tree's leftmost drawn pixel over the rows the figure's body can cover,
-## as an x offset from the tree's base. Read once per art and placement shape
-## (the sheet's get_image is a copy), then cached.
+## as an x offset from the tree's base. Cached per art and placement shape.
 func _tree_left_reach(tree: Node2D) -> float:
     var sprite := _sprite_of(tree)
     var tex: Texture2D = null
@@ -296,10 +296,8 @@ func _tree_left_reach(tree: Node2D) -> float:
     if _reach_cache.has(key):
         return _reach_cache[key]
     var reach := -FALLBACK_REACH_PX
-    var image := source.get_image()
+    var image := _sheet_image(source)
     if image != null and sprite.scale.y > 0.0:
-        if image.is_compressed():
-            image.decompress()
         var band_top := -BEHIND_PX.y + FIGURE_RECT.position.y
         var band_bottom := -BEHIND_PX.x + FIGURE_RECT.end.y
         var row_from := maxi(int(floor((band_top - sprite.position.y) / sprite.scale.y)), 0)
@@ -314,6 +312,16 @@ func _tree_left_reach(tree: Node2D) -> float:
         reach = sprite.position.x + left * sprite.scale.x if left < int(region.size.x) else 0.0
     _reach_cache[key] = reach
     return reach
+
+## One CPU copy per sheet, shared by every tree cut from it.
+func _sheet_image(source: Texture2D) -> Image:
+    var id := source.get_instance_id()
+    if not _sheet_images.has(id):
+        var image := source.get_image()
+        if image != null and image.is_compressed():
+            image.decompress()
+        _sheet_images[id] = image
+    return _sheet_images[id]
 
 ## Rects of everything placed that is not a tree: no figure under a roof or
 ## inside a stall.

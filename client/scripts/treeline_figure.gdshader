@@ -19,6 +19,15 @@ uniform float alpha_high = 0.9;
 // Per showing, so two showings never move alike.
 uniform float phase = 0.0;
 
+// The node's modulate, taken in vertex(): in fragment() the incoming COLOR is
+// already multiplied by the texture at the unshifted UV, which would tint the
+// silhouette with the sheet's colours and clip the waver to the still outline.
+varying vec4 figure_modulate;
+
+void vertex() {
+    figure_modulate = COLOR;
+}
+
 void fragment() {
     float t = TIME + phase;
     float strength = 0.5 + 0.5 * sin(t * 0.37) * sin(t * 0.23 + 1.3);
@@ -26,6 +35,6 @@ void fragment() {
     float shift = sin(row * 0.45 - t * 2.1) * waver_px * strength;
     float shape = texture(TEXTURE, UV + vec2(shift * TEXTURE_PIXEL_SIZE.x, 0.0)).a;
     float breath = 0.5 + 0.25 * sin(t * 0.9) + 0.25 * sin(t * 1.7 + 2.0);
-    // COLOR comes in as the node's modulate: the fade-out rides on it.
-    COLOR = vec4(tint.rgb, shape * mix(alpha_low, alpha_high, breath)) * COLOR;
+    // The fade-out rides on the modulate.
+    COLOR = vec4(tint.rgb, shape * mix(alpha_low, alpha_high, breath)) * figure_modulate;
 }
