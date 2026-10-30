@@ -120,6 +120,65 @@ func TestHarness_DeliveredOrderRefreshesWithoutSelfStateChange(t *testing.T) {
 	}
 }
 
+// Only a SUCCESSFUL delivery drops the order: a deliver_order that bounces,
+// followed by a self-state-changing commit, must still show the order owed.
+func TestHarness_FailedDeliveryKeepsOrderOnRefresh(t *testing.T) {
+	r := NewRegistry()
+	failFn := func(HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(*sim.World) (any, error) {
+			return nil, sim.ModelFacingError{Msg: "bob is not here"}
+		}}, nil
+	}
+	if err := r.RegisterCommit(deliverOrderToolName, deliverOrderSchema, DecodeDeliverOrderArgs, failFn, false); err != nil {
+		t.Fatalf("register deliver_order: %v", err)
+	}
+	eatFn := func(in HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors[in.ActorID].Inventory["bread"]--
+			return sim.ConsumeResult{Kind: "bread", Requested: 1, Consumed: 1}, nil
+		}}, nil
+	}
+	if err := r.RegisterCommit("eat", json.RawMessage(`{"type":"object"}`), passthroughDecode, eatFn, false); err != nil {
+		t.Fatalf("register eat: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("register done: %v", err)
+	}
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, deliverOrderToolName, `{"order_id": 7}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "eat", `{}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
+	)
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	seedAliceOrder(t, f.world)
+	if _, err := f.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Inventory["bread"] = 2
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed bread: %v", err)
+	}
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+	if rec := f.waitForTerminalTelemetry(t); rec.Kind == "failed" || rec.Kind == "stale" {
+		t.Fatalf("tick did not complete cleanly: kind=%q", rec.Kind)
+	}
+	reqs := client.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests: got %d, want 3 (failed deliver, eat, done)", len(reqs))
+	}
+	if !strings.Contains(reqs[2].EphemeralContext, "bread (x1)") {
+		t.Fatalf("round 3 must be the refreshed body (bread x1), got:\n%s", reqs[2].EphemeralContext)
+	}
+	if !strings.Contains(reqs[2].EphemeralContext, "#7: shovel for bob") {
+		t.Errorf("round 3 must still show the undelivered order, got:\n%s", reqs[2].EphemeralContext)
+	}
+}
+
 func TestDeliverOrderReceipt(t *testing.T) {
 	cases := []struct {
 		name string
