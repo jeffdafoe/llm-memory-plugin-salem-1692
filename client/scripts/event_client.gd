@@ -337,6 +337,9 @@ func _handle_message(data: String) -> void:
         "zoom_settings_changed":
             if world != null:
                 world.apply_zoom_floor_from_config(event_data)
+        "night_color_changed":
+            if world != null:
+                world.apply_night_color(event_data)
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior

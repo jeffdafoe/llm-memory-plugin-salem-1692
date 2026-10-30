@@ -37,6 +37,7 @@ const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
+const NightShadeScript = preload("res://scripts/night_shade.gd")
 const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
 const WellBucket = preload("res://scripts/well_bucket.gd")
@@ -94,7 +95,10 @@ const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
 const GOLDEN_COLOR := Color(0.788, 0.753, 0.663, 1.0)  # #C9C0A9 — weak low sun through cloud, not golden
 const DUSK_COLOR := Color(0.561, 0.510, 0.463, 1.0)    # #8F8276 — smoky brown-grey, color draining (no salmon)
 const BLUE_HOUR_COLOR := Color(0.314, 0.365, 0.408, 1.0)  # #505D68 — cold slate, not fantasy violet
-const NIGHT_COLOR := Color(0.184, 0.227, 0.271, 1.0)   # #2F3A45 — cold damp dark, still navigable unlit (#202A35 is the darker dramatic option)
+# The night pole is the live setting world_night_color (LLM-842), read from
+# /world and the night_color_changed frame into _night_color. This is only the
+# fallback until that read lands, and matches the engine's default.
+const NIGHT_COLOR := Color(0.125, 0.165, 0.208, 1.0)   # #202A35
 const PHASE_TRANSITION_DURATION := 3600.0  # 60 minutes end-to-end, mid-latitude sunset pace
 
 # The one canonical sunset curve (LLM-578). Position 0.0 = full day, 1.0 = full
@@ -115,6 +119,11 @@ var _phase_tween: Tween = null
 # animates this scalar (via _apply_phase_pos), not the color directly, so the
 # current position is always known and a new phase event can start from it.
 var _phase_pos: float = 0.0
+# The last stop of the curve — PHASE_CURVE's NIGHT_COLOR replaced by the live
+# setting (apply_night_color).
+var _night_color: Color = NIGHT_COLOR
+# The woods dark and the night-vision circle (LLM-842, night_shade.gd).
+var night_shade: Node2D = null
 
 # Layer baseline — terrain renders at z=0 (default), ground overlays sit at
 # asset.z_index = 1 (bridges, future road decals), everything else (objects,
@@ -229,6 +238,11 @@ func build_terrain() -> void:
     canvas_modulate = CanvasModulate.new()
     canvas_modulate.color = DAY_COLOR
     add_child(canvas_modulate)
+
+    night_shade = Node2D.new()
+    night_shade.set_script(NightShadeScript)
+    night_shade.world = self
+    add_child(night_shade)
 
     # Splash layer under the modulate too — ground contact darkens with the
     # world at night / in the storm tint, unlike the screen-space overlay.
@@ -2009,14 +2023,28 @@ func _apply_phase_pos(pos: float) -> void:
     if canvas_modulate != null:
         canvas_modulate.color = _sample_phase_curve(_phase_pos)
 
-## Piecewise-linear sample of PHASE_CURVE at pos ∈ [0, 1].
+## Piecewise-linear sample of PHASE_CURVE at pos ∈ [0, 1], with the live
+## night colour as the last stop.
 func _sample_phase_curve(pos: float) -> Color:
     var segments := PHASE_CURVE.size() - 1
     var scaled := clampf(pos, 0.0, 1.0) * float(segments)
     var i := int(scaled)
     if i >= segments:
-        return PHASE_CURVE[segments]
-    return PHASE_CURVE[i].lerp(PHASE_CURVE[i + 1], scaled - float(i))
+        return _curve_stop(segments)
+    return _curve_stop(i).lerp(_curve_stop(i + 1), scaled - float(i))
+
+func _curve_stop(i: int) -> Color:
+    return _night_color if i == PHASE_CURVE.size() - 1 else PHASE_CURVE[i]
+
+## Take the night colour from a /world read or a night_color_changed frame
+## (LLM-842) and re-tint at once. A missing or unparseable value keeps the
+## current one.
+func apply_night_color(cfg: Dictionary) -> void:
+    var raw := str(cfg.get("night_color", ""))
+    if raw == "" or not Color.html_is_valid(raw):
+        return
+    _night_color = Color.html(raw)
+    _apply_phase_pos(_phase_pos)
 
 ## Position the curve from server truth on load/resync (LLM-578). The server's
 ## phase is binary, but the world DTO carries when the transition happened —
@@ -2177,6 +2205,7 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     # Position along the sunset curve from server truth instead of snapping to
     # the pole — runs on first load AND on every WS-reconnect resync (LLM-578).
     sync_phase_from_world(phase, str(json.get("last_transition_at", "")), str(json.get("now", "")))
+    apply_night_color(json)
 
     # Weather (LLM-117) rides the same DTO + load path as phase, so a client
     # connecting or reconnecting mid-storm renders the storm instead of clear.
