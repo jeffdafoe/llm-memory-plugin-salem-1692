@@ -341,6 +341,11 @@ type Snapshot struct {
 	// public /world read is lock-free off the snapshot (LLM-842).
 	NightColor string
 
+	// SnowTier is the tier the snow cover shows at publish (snow.go, LLM-850),
+	// resolved here because the thresholds are settings the lock-free /world
+	// read cannot reach.
+	SnowTier SnowTier
+
 	// PCAwaitReplyWindow / NPCAwaitReplyWindow are the resolved conversation
 	// turn-state liveness windows (ZBBS-WORK-370), copied from WorldSettings at
 	// publish with the Default*AwaitReplyWindow fallback already applied (via

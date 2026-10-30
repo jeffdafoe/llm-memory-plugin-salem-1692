@@ -427,14 +427,21 @@ func TestGoldensRainLineIffStorm(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			snap, _, _ := sc.build()
-			// Compute "should this scenario show rain?" through weatherProse itself
-			// rather than restating the token check — the invariant then matches
-			// production exactly and won't drift when future tokens (fog/snow) gain
-			// their own prose (code_review, LLM-364).
-			wantRain := weatherProse(snap.Environment.Weather) == weatherStormProse
-			hasRain := strings.Contains(renderScenario(sc), weatherStormProse)
-			if wantRain != hasRain {
-				t.Errorf("scenario %q: storm=%v but rain line present=%v — the felt rain line must render iff a storm is overhead (LLM-364)", sc.name, wantRain, hasRain)
+			// Compute "which sky line should this scenario show?" through
+			// weatherProse itself rather than restating the token check — the
+			// invariant then matches production exactly and won't drift when future
+			// tokens (fog) gain their own prose (code_review, LLM-364). A storm
+			// renders rain, or snow in a winter month (LLM-850) — never both.
+			var month time.Month
+			if !snap.LocalDateUTC.IsZero() {
+				month = snap.LocalDateUTC.Month()
+			}
+			want := weatherProse(snap.Environment.Weather, month)
+			out := renderScenario(sc)
+			for _, line := range []string{weatherStormProse, sim.WeatherSnowScene} {
+				if (line == want) != strings.Contains(out, line) {
+					t.Errorf("scenario %q: storm=%v month=%s but %q present=%v — the felt sky line must render iff a storm is overhead, as snow in winter and rain otherwise (LLM-364, LLM-850)", sc.name, snap.Environment.Weather == sim.WeatherStorm, month, line, strings.Contains(out, line))
+				}
 			}
 		})
 	}
@@ -1941,6 +1948,20 @@ var perceptionScenarios = []perceptionScenario{
 		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 			snap, actorID, warrants := keeperAloneAtPostOnShift()
 			snap.Environment.Weather = sim.WeatherStorm
+			return snap, actorID, warrants
+		},
+	},
+	{
+		name: "snowstorm_over_keeper_at_post",
+		summary: "LLM-850: storm_weather_over_keeper_at_post in January. A winter storm is a snowstorm, so the " +
+			"felt sky line is the snow scene — \"Snow falls over the village, and the lanes are going white.\" — " +
+			"in place of the rain line, the same sim.WeatherScene sentence the atmosphere prompt is told to write " +
+			"to. The diff against storm_weather_over_keeper_at_post is exactly that one line (matrix guard: " +
+			"TestGoldensRainLineIffStorm).",
+		build: func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+			snap, actorID, warrants := keeperAloneAtPostOnShift()
+			snap.Environment.Weather = sim.WeatherStorm
+			snap.LocalDateUTC = time.Date(1692, time.January, 14, 0, 0, 0, 0, time.UTC)
 			return snap, actorID, warrants
 		},
 	},

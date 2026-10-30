@@ -207,6 +207,14 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("omen_cooldown_days", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenCooldownDays }),
 		intSetting("omen_lapse_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenLapseHours }),
 
+		// --- snow cover (LLM-850) -------------------------------------------
+		intSetting("snow_build_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowBuildPerMinuteX100 }),
+		intSetting("snow_melt_day_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowMeltDayPerMinuteX100 }),
+		intSetting("snow_melt_night_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowMeltNightPerMinuteX100 }),
+		intSetting("snow_tier_dusting", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowTierDusting }),
+		intSetting("snow_tier_light", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowTierLight }),
+		intSetting("snow_tier_deep", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowTierDeep }),
+
 		// --- cold exposure + hearth (LLM-412) ------------------------------
 		// cold.go reads every one of these off w.Settings inside the per-minute
 		// rate lookup.

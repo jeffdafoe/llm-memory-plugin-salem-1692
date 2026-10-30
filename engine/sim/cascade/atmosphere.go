@@ -211,7 +211,7 @@ func runOneAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client)
 	// incoherent mood line propagates into engine-authored content.
 	if phrase := weatherContradiction(actx.Weather, text); phrase != "" {
 		log.Printf("cascade/atmosphere: reply says %q under weather=%q; correcting once", phrase, actx.Weather)
-		retry, retryOK := completeAtmosphere(ctx, client, prompt+"\n\n"+atmosphereCorrection(actx.Weather))
+		retry, retryOK := completeAtmosphere(ctx, client, prompt+"\n\n"+atmosphereCorrection(actx.Weather, actx.Month))
 		if !retryOK {
 			return
 		}
@@ -220,7 +220,7 @@ func runOneAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client)
 			// scene — thin as a mood line, but true, and it breaks the loop that
 			// kept the contradiction alive: the next sweep gets THIS as its
 			// prior instead of being re-anchored on the rain.
-			fallback := sim.WeatherScene(actx.Weather)
+			fallback := sim.WeatherScene(actx.Weather, actx.Month)
 			if fallback == "" {
 				log.Printf("cascade/atmosphere: reply says %q under weather=%q on retry, and no scene to fall back to; skipping write", phrase, actx.Weather)
 				return
@@ -361,7 +361,7 @@ func buildAtmospherePrompt(c sim.AtmosphereContext) string {
 	// nothing and shown rain, it kept the rain: a cleared storm went on falling
 	// in the mood line for hours ("The rain YET falleth…" — a continuation
 	// clause, not a fresh scene). The calm sky has to be stated to be believed.
-	if scene := sim.WeatherScene(c.Weather); scene != "" {
+	if scene := sim.WeatherScene(c.Weather, c.Month); scene != "" {
 		b.WriteString(" ")
 		b.WriteString(scene)
 	}
@@ -528,9 +528,10 @@ func wetMentionAssertsRain(text string, start, end int) bool {
 // atmosphereCorrection is appended to the prompt for the single retry after a
 // reply contradicted the sky. Restates the weather as a direct instruction
 // rather than as scene-setting — the scene evidently didn't land, so the retry
-// stops being subtle about it.
-func atmosphereCorrection(weather string) string {
-	scene := sim.WeatherScene(weather)
+// stops being subtle about it. m is the village month, so a winter storm is
+// restated as snow.
+func atmosphereCorrection(weather string, m time.Month) string {
+	scene := sim.WeatherScene(weather, m)
 	if scene == "" {
 		return ""
 	}

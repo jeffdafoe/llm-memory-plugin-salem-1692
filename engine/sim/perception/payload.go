@@ -1862,6 +1862,10 @@ type SurroundingsView struct {
 	// line, WORK-374) is what puts the weather in front of a deciding NPC. LLM-364.
 	Weather string
 
+	// Month is the village month (Snapshot.LocalDateUTC), zero with no village
+	// date. weatherProse reads a storm in winter as snow (LLM-850).
+	Month time.Month
+
 	// LocalMinuteOfDay is the village wall-clock minute (0–1439), copied from
 	// Snapshot.LocalMinuteOfDay, or nil when the clock isn't established.
 	// renderSurroundings turns it into a time-of-day prose line (timeOfDayProse).

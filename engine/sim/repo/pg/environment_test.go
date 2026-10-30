@@ -38,6 +38,7 @@ var worldStateColumns = []string{
 	"phase", "last_transition_at", "last_rotation_at",
 	"weather", "atmosphere", "last_needs_tick_at",
 	"town_chest_coins", "input_shortages", "last_carter_at", "omens",
+	"snow_cover_x100",
 }
 
 // programWorldStateRow programs a single world_state row scan with
@@ -91,10 +92,26 @@ func programWorldStateRowWithOmens(mock pgxmock.PgxPoolIface, phase sim.Phase,
 	lastCarterAt *time.Time,
 	omens []byte,
 ) {
+	programWorldStateRowWithSnow(mock, phase, lastTransitionAt, lastRotationAt,
+		weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt, omens, 0)
+}
+
+// programWorldStateRowWithSnow is programWorldStateRowWithOmens with the snow
+// cover (LLM-850); the Omens helper reads no snow.
+func programWorldStateRowWithSnow(mock pgxmock.PgxPoolIface, phase sim.Phase,
+	lastTransitionAt, lastRotationAt time.Time,
+	weather, atmosphere string,
+	lastNeedsTickAt *time.Time,
+	townChest int,
+	inputShortages []byte,
+	lastCarterAt *time.Time,
+	omens []byte,
+	snowCoverX100 int,
+) {
 	mock.ExpectQuery(`SELECT[\s\S]+FROM world_state[\s\S]+WHERE id = 1`).
 		WillReturnRows(pgxmock.NewRows(worldStateColumns).
 			AddRow(string(phase), lastTransitionAt, lastRotationAt,
-				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt, omens))
+				weather, atmosphere, lastNeedsTickAt, townChest, inputShortages, lastCarterAt, omens, snowCoverX100))
 }
 
 // programSettingsRows programs the setting kv query returning the
@@ -402,6 +419,7 @@ func TestEnvironmentRepo_SaveSnapshot_HappyPath(t *testing.T) {
 		Weather:          "clear",
 		Atmosphere:       "morning fog",
 		TownChest:        69,
+		SnowCoverX100:    4500,
 		// A standing shortage (LLM-656) rides the same upsert as a jsonb document.
 		InputShortages: []sim.InputShortage{{KeeperID: "john", Item: "meat", Days: 2, LastSeenAt: rotation}},
 	}
@@ -411,7 +429,7 @@ func TestEnvironmentRepo_SaveSnapshot_HappyPath(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON), nil /*no carter yet*/, "{}" /*no omens*/).
+		WithArgs(string(sim.PhaseDay), at, rotation, "clear", "morning fog", needs, 69, string(shortagesJSON), nil /*no carter yet*/, "{}" /*no omens*/, 4500 /*snow cover*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -512,7 +530,7 @@ func TestEnvironmentRepo_SaveSnapshot_ZeroLastNeedsTick_NULL(t *testing.T) {
 	}
 
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/, nil /*no carter yet*/, "{}" /*no omens*/).
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil /*last_needs_tick_at NULL*/, 0, "[]" /*no shortages*/, nil /*no carter yet*/, "{}" /*no omens*/, 0 /*no snow*/).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	if err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay); err != nil {
@@ -954,7 +972,7 @@ func TestEnvironmentRepo_CarterAnchorRoundTrip(t *testing.T) {
 	mock, repo = newMockPoolE(t)
 	tx := fakeTx{mock: mock}
 	mock.ExpectExec(`INSERT INTO world_state`).
-		WithArgs(string(sim.PhaseDay), at, at, "", "", nil, 0, "[]", came, "{}").
+		WithArgs(string(sim.PhaseDay), at, at, "", "", nil, 0, "[]", came, "{}", 0).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	if err := repo.SaveSnapshot(context.Background(), tx, sim.WorldEnvironment{LastTransitionAt: at, LastRotationAt: at, LastCarterAt: came}, sim.PhaseDay); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -1013,5 +1031,40 @@ func TestEnvironmentRepo_Load_Omens(t *testing.T) {
 	if settings.OmenChancePermille != sim.DefaultOmenChancePermille || settings.OmenCooldownDays != sim.DefaultOmenCooldownDays ||
 		settings.OmenLapseHours != sim.DefaultOmenLapseHours {
 		t.Errorf("omen defaults = %d / %d / %d", settings.OmenChancePermille, settings.OmenCooldownDays, settings.OmenLapseHours)
+	}
+}
+
+// --- Load: snow cover (LLM-850) ----------------------------------------------
+
+// TestEnvironmentRepo_Load_SnowCover — the snow cover rides world_state, so a
+// restart does not melt the snow; the six knobs load from settings with their
+// compiled defaults; a cover out of range (only reachable from an out-of-band
+// edit) is clamped into 0..SnowCoverMax×100.
+func TestEnvironmentRepo_Load_SnowCover(t *testing.T) {
+	at := time.Date(2026, 1, 14, 4, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ stored, want int }{
+		{4500, 4500},
+		{-7, 0},
+		{sim.SnowCoverMax*100 + 1, sim.SnowCoverMax * 100},
+	} {
+		mock, repo := newMockPoolE(t)
+		programWorldStateRowWithSnow(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte("[]"), nil, []byte("{}"), c.stored)
+		programSettingsRows(mock, map[string]string{"snow_tier_light": "30"})
+		env, _, settings, err := repo.Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if env.SnowCoverX100 != c.want {
+			t.Errorf("stored %d: SnowCoverX100 = %d, want %d", c.stored, env.SnowCoverX100, c.want)
+		}
+		if settings.SnowTierLight != 30 || settings.SnowTierDusting != sim.DefaultSnowTierDusting ||
+			settings.SnowTierDeep != sim.DefaultSnowTierDeep || settings.SnowBuildPerMinuteX100 != sim.DefaultSnowBuildPerMinuteX100 ||
+			settings.SnowMeltDayPerMinuteX100 != sim.DefaultSnowMeltDayPerMinuteX100 ||
+			settings.SnowMeltNightPerMinuteX100 != sim.DefaultSnowMeltNightPerMinuteX100 {
+			t.Errorf("snow settings = %+v", settings)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
 	}
 }

@@ -186,3 +186,42 @@ func TestSeasonArt_SweepFlipsObjects(t *testing.T) {
 		t.Errorf("picked-bare bush = %q, want autumn-bare", got)
 	}
 }
+
+// TestSeasonArt_SweepFollowsSnowCover: the sweep picks the art under the snow
+// lying now (LLM-850) — a January maple shows clean branches with no snow, snow
+// on its tops under a dusting and the full snowy art under light snow.
+func TestSeasonArt_SweepFollowsSnowCover(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Environment.Seed(sim.WorldEnvironment{}, sim.PhaseDay, sim.WorldSettings{
+		SnowTierDusting: sim.DefaultSnowTierDusting, SnowTierLight: sim.DefaultSnowTierLight, SnowTierDeep: sim.DefaultSnowTierDeep,
+	})
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"maple": seasonMaple})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"maple": {ID: "maple", AssetID: "maple", CurrentState: "default"},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	now := time.Date(2026, 1, 14, 15, 0, 0, 0, time.UTC)
+	stateUnder := func(cover int) string {
+		got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Environment.SnowCoverX100 = cover * 100
+			sim.RegenObjectRefresh(world, now)
+			return world.VillageObjects["maple"].CurrentState, nil
+		}})
+		return got.(string)
+	}
+	for _, c := range []struct {
+		cover int
+		want  string
+	}{{0, "winter-clean"}, {5, "winter-snowy-top"}, {45, "winter-snowy"}, {0, "winter-clean"}} {
+		if got := stateUnder(c.cover); got != c.want {
+			t.Errorf("cover %d: maple = %q, want %q", c.cover, got, c.want)
+		}
+	}
+}

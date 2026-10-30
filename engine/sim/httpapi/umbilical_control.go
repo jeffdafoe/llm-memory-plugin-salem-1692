@@ -261,6 +261,51 @@ func (s *Server) handleUmbilicalWeather(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, umbilicalWeatherResponse{Weather: weather, Changed: changed})
 }
 
+// umbilicalSnowRequest is the POST /api/village/umbilical/snow body: the snow
+// cover in whole units, 0 (none) to sim.SnowCoverMax.
+type umbilicalSnowRequest struct {
+	Cover *int `json:"cover"`
+}
+
+// umbilicalSnowResponse reports the cover set and the tier it shows.
+type umbilicalSnowResponse struct {
+	Cover    int    `json:"cover"`
+	SnowTier string `json:"snow_tier"`
+}
+
+// handleUmbilicalSnow sets the snow cover (LLM-850), so the snowy ground, the
+// snowy trees and the snow shader can be seen out of winter. The cover then
+// builds and melts on its own like any other snow. 400 on a missing or
+// out-of-range cover.
+func (s *Server) handleUmbilicalSnow(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalSnowRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.Cover == nil || *req.Cover < 0 || *req.Cover > sim.SnowCoverMax {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("cover must be a whole number from 0 to %d", sim.SnowCoverMax))
+		return
+	}
+
+	auditUmbilical(user.Username, "snow", fmt.Sprintf("cover=%d", *req.Cover))
+
+	res, err := s.world.SendContext(r.Context(), sim.SetSnowCover(*req.Cover, time.Now().UTC()))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	tier, _ := res.(sim.SnowTier)
+	writeJSON(w, umbilicalSnowResponse{Cover: *req.Cover, SnowTier: tier.String()})
+}
+
 // umbilicalSettleRequest is the POST /api/village/umbilical/settle body: which
 // actor to clear the pending warrant cycle for.
 type umbilicalSettleRequest struct {

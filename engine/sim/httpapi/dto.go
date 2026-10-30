@@ -128,6 +128,10 @@ type WorldStateDTO struct {
 	// settings; the client then keeps its built-in fallback. Additive — no
 	// contract_version bump.
 	NightColor string `json:"night_color,omitempty"`
+	// SnowTier is how much snow lies on the village: "none" | "dusting" |
+	// "light" | "deep" (LLM-850). Live changes ride the snow_tier_changed frame.
+	// Additive — no contract_version bump.
+	SnowTier string `json:"snow_tier"`
 }
 
 // WorldConfigDTO is the GET /api/village/config response — the admin-only

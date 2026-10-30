@@ -348,13 +348,16 @@ func TestWeatherContradiction(t *testing.T) {
 // rejects would be an engine that contradicts itself — and it nearly was: the
 // clear scene says "no rain falls", which a bare keyword match reads as rain.
 func TestWeatherScenesSurviveTheirOwnGuard(t *testing.T) {
-	for _, weather := range []string{sim.WeatherClear, sim.WeatherStorm} {
-		scene := sim.WeatherScene(weather)
-		if scene == "" {
-			t.Fatalf("weather %q has no scene", weather)
-		}
-		if phrase := weatherContradiction(weather, scene); phrase != "" {
-			t.Errorf("the %q scene contradicts its own weather on %q\n--- scene ---\n%s", weather, phrase, scene)
+	// October and January: a storm is rain in one and snow in the other (LLM-850).
+	for _, month := range []time.Month{time.October, time.January} {
+		for _, weather := range []string{sim.WeatherClear, sim.WeatherStorm} {
+			scene := sim.WeatherScene(weather, month)
+			if scene == "" {
+				t.Fatalf("weather %q in %s has no scene", weather, month)
+			}
+			if phrase := weatherContradiction(weather, scene); phrase != "" {
+				t.Errorf("the %q scene in %s contradicts its own weather on %q\n--- scene ---\n%s", weather, month, phrase, scene)
+			}
 		}
 	}
 }

@@ -233,7 +233,8 @@ const ColdTickerInterval = time.Minute
 // RunColdTicker owns the cold-sweep goroutine. Wakes every ColdTickerInterval
 // and applies exactly one minute of exposure — no catch-up across a stall
 // (the sweep resumes rather than shock-applying a backlog, the same posture
-// as the needs ticker's LLM-393 gap rule).
+// as the needs ticker's LLM-393 gap rule). The snow cover (snow.go) moves on
+// the same minute: it is the other per-minute weather exposure.
 func RunColdTicker(ctx context.Context, w *World) {
 	t := time.NewTicker(ColdTickerInterval)
 	defer t.Stop()
@@ -245,6 +246,9 @@ func RunColdTicker(ctx context.Context, w *World) {
 			w.beatTicker("cold")
 			if _, err := w.SendContext(ctx, AdjustCold(1)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/cold: exposure tick failed: %v", err)
+			}
+			if _, err := w.SendContext(ctx, AdjustSnow(1)); err != nil && ctx.Err() == nil {
+				log.Printf("sim/cold: snow tick failed: %v", err)
 			}
 		}
 	}

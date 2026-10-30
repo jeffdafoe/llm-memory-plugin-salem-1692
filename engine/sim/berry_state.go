@@ -90,12 +90,11 @@ func refreshObjectBerryState(w *World, obj *VillageObject, now time.Time) {
 			}
 		}
 		// The season half (season_art.go): an asset with season art picks the
-		// stock and the season together. The snow tier is none until the snow
-		// cover lands (LLM-850).
+		// stock and the season together, under the snow that lies now.
 		switch {
 		case hasSeasonArt(asset):
 			month, _ := VillageMonthDay(w, now)
-			target = seasonState(asset, stockTag, seasonLookChain(month, SnowTierNone))
+			target = seasonState(asset, stockTag, seasonLookChain(month, SnowTierNow(w)))
 		case stockTag != "":
 			target = asset.StateForTag(stockTag).State
 		default:
