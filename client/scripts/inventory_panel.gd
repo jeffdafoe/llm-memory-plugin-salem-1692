@@ -4,11 +4,11 @@ extends Control
 ## Lifecycle: lives on its own CanvasLayer (mounted in main.gd) above the
 ## talk panel so a player can open it mid-conversation. The top bar emits
 ## a signal with the icon's global rect; main.gd forwards to show_at().
-## Click-outside / Esc / icon re-click closes.
+## The × button / click-outside / Esc / icon re-click closes.
 ##
 ## Data shape: items is the raw pcInventoryEntry array from /pc/me — a
 ## list of dicts with display_label / quantity / category / capabilities /
-## actions. Each action slug (LLM-800: wear, remove) is a button on its row;
+## actions. Each action slug (LLM-800: wear, remove; LLM-888: eat, drink) is a button on its row;
 ## a press emits item_action_requested and main.gd posts /pc/item/use.
 ## The panel renders flat-list (sorted by category then label) since v1
 ## inventories are short; categories are visible via the existing
@@ -30,7 +30,7 @@ const PANEL_PAD: float = 16.0
 const ROW_SEPARATION: int = 6
 
 ## Button text per item-action slug. A slug missing here shows capitalized.
-const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike"}
+const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike", "eat": "Eat", "drink": "Drink"}
 
 var _font: Font = null
 var _panel: PanelContainer = null
@@ -157,13 +157,27 @@ func _rebuild() -> void:
     for child in _content.get_children():
         child.queue_free()
 
+    # Header row: the title centred, the close button on the right (LLM-888 —
+    # on a tablet there is no Esc). A spacer as wide as the button keeps the
+    # title centred on the panel.
+    var header_row := HBoxContainer.new()
+    var close_button := PeriodTheme.button("×", OrientationGuard.text_size(14))
+    close_button.custom_minimum_size = Vector2(PeriodTheme.TAP_H, PeriodTheme.TAP_H)
+    close_button.pressed.connect(close)
+    var spacer := Control.new()
+    spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    spacer.custom_minimum_size = Vector2(PeriodTheme.TAP_H, 0)
+    header_row.add_child(spacer)
     var header := Label.new()
     header.text = "Your Pack"
     header.add_theme_color_override("font_color", COLOR_TEXT)
     header.add_theme_font_override("font", _font)
     header.add_theme_font_size_override("font_size", OrientationGuard.text_size(18))
     header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    _content.add_child(header)
+    header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header_row.add_child(header)
+    header_row.add_child(close_button)
+    _content.add_child(header_row)
 
     # Hairline divider under the header. ColorRect with custom min height
     # reads as a thin gold rule; matches the bar's bottom border weight.
