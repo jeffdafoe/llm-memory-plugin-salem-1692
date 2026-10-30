@@ -43,6 +43,9 @@ const TESTS := [
     "_test_no_spot_keeps_the_roll",
     "_test_forced_writes_nothing",
     "_test_forced_with_no_tree_reports_skipped",
+    "_test_unwritable_omens_still_rolls_once",
+    "_test_unwritable_omens_still_cools_down",
+    "_test_body_retries_after_a_failed_download",
 ]
 
 var _failures := 0
@@ -62,6 +65,8 @@ class StubWorld:
     var current_weather := "clear"
     var village_date := "1692-10-30"
     var water: Array[Rect2] = []
+    var _npc_sheets: Dictionary = {}
+    var sheet_requests: Array = []
 
     func _init() -> void:
         add_child(objects_node)
@@ -88,6 +93,17 @@ class StubWorld:
     func compute_object_hit_rect(container: Node2D, _sprite: Node2D) -> Rect2:
         var size: Vector2 = container.get_meta("size")
         return Rect2(container.position - Vector2(size.x * 0.5, size.y * 0.95), size)
+
+    ## Records the request; the test completes it by calling one callback.
+    func get_or_load_npc_sheet(path: String, loaded: Callable, failed: Callable) -> void:
+        sheet_requests.append([path, loaded, failed])
+
+    func _build_character_sprite(_sprite_data: Dictionary) -> AnimatedSprite2D:
+        var sprite := AnimatedSprite2D.new()
+        sprite.sprite_frames = SpriteFrames.new()
+        sprite.sprite_frames.add_animation("south_idle")
+        sprite.sprite_frames.add_frame("south_idle", PlaceholderTexture2D.new())
+        return sprite
 
     func terrain_at(pos: Vector2) -> int:
         for r in water:
@@ -144,6 +160,7 @@ func _check(label: String, ok: bool) -> void:
 
 var _reports: Array = []
 var _roll_result := true
+var _now := NOW
 
 ## The player at the origin, one tree 14 tiles east, the view wide open, a
 ## fresh omens file, and a clean report log.
@@ -151,6 +168,7 @@ func _setup() -> Array:
     DirAccess.remove_absolute(ProjectSettings.globalize_path(OMENS))
     _reports = []
     _roll_result = true
+    _now = NOW
     var world := StubWorld.new()
     root.add_child(world)
     world.add_pc(Vector2.ZERO)
@@ -158,7 +176,7 @@ func _setup() -> Array:
     var figure: Node = TreelineFigure.new()
     figure.world = world
     figure.omens_path = OMENS
-    figure.now_unix = func() -> float: return NOW
+    figure.now_unix = func() -> float: return _now
     figure.visible_rect = func() -> Rect2: return Rect2(-1000, -1000, 2000, 2000)
     figure.is_indoors = func() -> bool: return false
     figure.is_tree = func(asset_id: String) -> bool: return asset_id.begins_with("tree")
@@ -416,5 +434,61 @@ func _test_forced_with_no_tree_reports_skipped() -> void:
     f[1].is_indoors = func() -> bool: return true
     f[1].force_show({})
     _check("indoors is reported skipped, indoors", _last_report()[1].reason == "indoors")
+    _teardown(f)
+    _done()
+
+# --- resilience (code_review) -----------------------------------------------------
+
+const UNWRITABLE := "user://no_such_dir/omens.cfg"
+
+func _test_unwritable_omens_still_rolls_once() -> void:
+    var f := _setup()
+    f[1].omens_path = UNWRITABLE
+    _roll_result = false
+    f[1].try_show()
+    _roll_result = true
+    f[1].try_show()
+    _check("a failed roll is remembered when the file cannot be written", f[1].figure == null)
+    _check("refused as rolled", f[1].refusal(false) == "rolled")
+    _teardown(f)
+    _done()
+
+func _test_unwritable_omens_still_cools_down() -> void:
+    var f := _setup()
+    var world: StubWorld = f[0]
+    f[1].omens_path = UNWRITABLE
+    f[1].try_show()
+    _check("it shows", f[1].figure != null)
+    f[1].remove("walked")
+    world.village_date = "1692-10-31"
+    _now = NOW + DAY
+    f[1].try_show()
+    _check("the next dusk it does not show again", f[1].figure == null)
+    _check("refused by the cooldown", f[1].refusal(false) == "cooldown")
+    _teardown(f)
+    _done()
+
+func _test_body_retries_after_a_failed_download() -> void:
+    var f := _setup()
+    var world: StubWorld = f[0]
+    var fig: Node = f[1]
+    _check("no sheet: no body", fig._build_body() == null)
+    _check("one download asked for", world.sheet_requests.size() == 1)
+    fig._build_body()
+    _check("not asked again while in flight", world.sheet_requests.size() == 1)
+    world.sheet_requests[0][2].call()
+    _now = NOW + 30.0
+    fig._build_body()
+    _check("not asked again within the retry wait", world.sheet_requests.size() == 1)
+    _now = NOW + 61.0
+    fig._build_body()
+    _check("asked again after it", world.sheet_requests.size() == 2)
+    world._npc_sheets[TreelineFigure.BODY_SHEET] = PlaceholderTexture2D.new()
+    world.sheet_requests[1][1].call(world._npc_sheets[TreelineFigure.BODY_SHEET])
+    var body: Node2D = fig._build_body()
+    _check("once loaded, a still body facing the viewer",
+        body != null and body.animation == "south_idle" and not body.is_playing())
+    if body != null:
+        body.free()
     _teardown(f)
     _done()

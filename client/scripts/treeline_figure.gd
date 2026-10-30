@@ -52,6 +52,8 @@ const ROLL_CHANCE := 0.25
 const CHECK_SECONDS := 5.0
 const SHOW_SECONDS := Vector2(60.0, 90.0)
 const FADE_SECONDS := 10.0
+## After a failed body download, wait this long before asking again.
+const BODY_RETRY_SECONDS := 60.0
 
 const OMENS_PATH := "user://omens.cfg"
 const SECTION := "treeline_figure"
@@ -79,6 +81,9 @@ var _fade_at := 0.0
 var _check_left := CHECK_SECONDS
 var _focused := true
 var _body_requested := false
+var _body_retry_at := 0.0
+var _rolled_dusk := ""
+var _last_figure_at := 0.0
 var _rng := RandomNumberGenerator.new()
 
 func _ready() -> void:
@@ -122,9 +127,10 @@ func refusal(forced: bool) -> String:
     if str(world.village_date) == "":
         return "no_date"
     var omens := _load_omens()
-    if str(omens.get_value(SECTION, "rolled_dusk", "")) == str(world.village_date):
+    var dusk := str(world.village_date)
+    if _rolled_dusk == dusk or str(omens.get_value(SECTION, "rolled_dusk", "")) == dusk:
         return "rolled"
-    var last := float(omens.get_value(SECTION, "last_figure_at", 0.0))
+    var last := maxf(_last_figure_at, float(omens.get_value(SECTION, "last_figure_at", 0.0)))
     if last > 0.0 and now_unix.call() - last < COOLDOWN_SECONDS:
         return "cooldown"
     return ""
@@ -167,14 +173,18 @@ func try_show() -> void:
     var body: Node2D = build_body.call()
     if body == null:
         return
+    # Kept in memory as well as in the file, so a file that cannot be written
+    # still gives one roll per dusk and one showing per cooldown this session.
+    _rolled_dusk = str(world.village_date)
     var omens := _load_omens()
-    omens.set_value(SECTION, "rolled_dusk", str(world.village_date))
+    omens.set_value(SECTION, "rolled_dusk", _rolled_dusk)
     if not roll.call():
-        omens.save(omens_path)
+        _save_omens(omens)
         body.free()
         return
-    omens.set_value(SECTION, "last_figure_at", now_unix.call())
-    omens.save(omens_path)
+    _last_figure_at = now_unix.call()
+    omens.set_value(SECTION, "last_figure_at", _last_figure_at)
+    _save_omens(omens)
     _show(spot, body, false)
 
 ## The operator trigger (client_trigger kind treeline_figure).
@@ -290,13 +300,19 @@ func _load_omens() -> ConfigFile:
     omens.load(omens_path)  # a missing file leaves it empty: never shown
     return omens
 
+func _save_omens(omens: ConfigFile) -> void:
+    var err := omens.save(omens_path)
+    if err != OK:
+        push_warning("treeline_figure: cannot save %s (error %d)" % [omens_path, err])
+
 ## A bare human body, still and facing the viewer. Null until its sheet is
-## cached; the first call starts the download.
+## cached; a call starts the download unless one is in flight or a failed one
+## is still within BODY_RETRY_SECONDS.
 func _build_body() -> Node2D:
     if not world._npc_sheets.has(BODY_SHEET):
-        if not _body_requested:
+        if not _body_requested and now_unix.call() >= _body_retry_at:
             _body_requested = true
-            world.get_or_load_npc_sheet(BODY_SHEET, func(_tex): pass)
+            world.get_or_load_npc_sheet(BODY_SHEET, _on_body_loaded, _on_body_failed)
         return null
     var body: AnimatedSprite2D = world._build_character_sprite(BODY_SPRITE)
     if body == null:
@@ -305,6 +321,13 @@ func _build_body() -> Node2D:
     body.frame = 0
     body.stop()
     return body
+
+func _on_body_loaded(_tex: Texture2D) -> void:
+    _body_requested = false
+
+func _on_body_failed() -> void:
+    _body_requested = false
+    _body_retry_at = now_unix.call() + BODY_RETRY_SECONDS
 
 func _viewport_world_rect() -> Rect2:
     var viewport: Viewport = world.get_viewport()
