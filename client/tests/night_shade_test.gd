@@ -34,6 +34,7 @@ const TESTS := [
     "_test_a_moved_tree_rebuilds_the_mask",
     "_test_woods_light_subtracts_a_share_of_the_tint",
     "_test_vision_light_on_own_character_only",
+    "_test_vision_light_follows_a_replaced_character",
     "_test_vision_light_off_by_day",
     "_test_night_color_replaces_the_last_curve_stop",
     "_test_bad_night_color_is_ignored",
@@ -209,8 +210,9 @@ func _test_refresh_builds_and_places_the_mask() -> void:
     var stub := _setup_world()
     stub.add_object("t1", "oak", Vector2(0.0, 0.0))
     _shade.refresh_woods()
+    _shade._apply_woods(1.0)
     var light: PointLight2D = _shade.woods_light
-    _check("the woods light is on", light.enabled)
+    _check("the woods light is on at night", light.enabled)
     _check("its texture is the map, one pixel per tile",
         light.texture != null and light.texture.get_width() == stub.map_width and light.texture.get_height() == stub.map_height)
     _check("each pixel covers one tile", is_equal_approx(light.texture_scale, NightShade.TILE))
@@ -227,7 +229,8 @@ func _test_refresh_with_no_trees_turns_the_woods_off() -> void:
     var stub := _setup_world()
     stub.add_object("w1", "well", Vector2(0.0, 0.0))
     _shade.refresh_woods()
-    _check("no trees means no woods light", not _shade.woods_light.enabled)
+    _shade._apply_woods(1.0)
+    _check("no trees means no woods light, even at night", not _shade.woods_light.enabled)
     _teardown_world(stub)
     _done()
 
@@ -255,7 +258,9 @@ func _test_woods_light_subtracts_a_share_of_the_tint() -> void:
     _check("at night it takes WOODS_DARKEN of the tint",
         _shade.woods_light.color.is_equal_approx(Color(want.r, want.g, want.b)) and is_equal_approx(_shade.woods_light.energy, 1.0))
     _shade._apply_woods(0.0)
-    _check("by day it takes nothing", is_zero_approx(_shade.woods_light.energy))
+    _check("by day the light is off, not just at zero energy", not _shade.woods_light.enabled)
+    _shade._apply_woods(1.0)
+    _check("and it comes back on at night", _shade.woods_light.enabled)
     _teardown_world(stub)
     _done()
 
@@ -273,6 +278,26 @@ func _test_vision_light_on_own_character_only() -> void:
     _shade._apply_vision(1.0)
     _check("a second frame does not add a second light",
         pc.get_children().filter(func(n): return n is PointLight2D).size() == 1)
+    _teardown_world(stub)
+    _done()
+
+## code_review: the character leaves the lookup while its old node stands
+## (a resync), then a new node replaces it.
+func _test_vision_light_follows_a_replaced_character() -> void:
+    var stub := _setup_world()
+    var old_pc := stub.add_npc("pc")
+    _shade._apply_vision(1.0)
+    stub.placed_npcs.erase("pc")
+    _shade._apply_vision(1.0)
+    var on_old := old_pc.get_children().filter(func(n): return n is PointLight2D)
+    _check("while the character is out of the lookup, its old light is off",
+        on_old.size() == 1 and not on_old[0].enabled)
+    var new_pc := stub.add_npc("pc")
+    _shade._apply_vision(1.0)
+    var lit_new := new_pc.get_children().filter(func(n): return n is PointLight2D and n.enabled)
+    var lit_old := old_pc.get_children().filter(func(n): return n is PointLight2D and is_instance_valid(n) and not n.is_queued_for_deletion() and n.enabled)
+    _check("the replacement carries the one lit light", lit_new.size() == 1)
+    _check("the old node carries no lit light", lit_old.is_empty())
     _teardown_world(stub)
     _done()
 

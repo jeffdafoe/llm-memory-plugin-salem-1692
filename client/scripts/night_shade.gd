@@ -102,7 +102,6 @@ func refresh_woods() -> void:
     woods_light.position = Vector2(
         (world.map_width * 0.5 - world.pad_x) * TILE,
         (world.map_height * 0.5 - world.pad_y) * TILE)
-    woods_light.enabled = true
 
 ## One pixel per tile: white, alpha 1 within WOODS_CORE_TILES of a tree,
 ## fading to 0 at WOODS_RADIUS_TILES. Overlapping trees take the strongest
@@ -128,8 +127,10 @@ static func build_woods_mask(tiles: Array[Vector2i], width: int, height: int) ->
 
 ## The woods take away a share of the current tint, so they darken in step
 ## with the night instead of by a fixed amount that would be black at night
-## and nothing at dusk.
+## and nothing at dusk. Off outright by day: a map-sized light costs on every
+## item it covers even at zero energy.
 func _apply_woods(night: float) -> void:
+    woods_light.enabled = woods_light.texture != null and night > 0.0
     if not woods_light.enabled:
         return
     var tint: Color = world.canvas_modulate.color if world.canvas_modulate != null else Color.WHITE
@@ -141,6 +142,10 @@ func _apply_woods(night: float) -> void:
 func _apply_vision(night: float) -> void:
     var pc: Node2D = world.placed_npcs.get(world.pc_actor_id, null)
     if pc == null or not is_instance_valid(pc):
+        # The character is gone from the lookup (a resync, a re-render) while
+        # its old node may still stand: no glow on it meanwhile.
+        if vision_light != null and is_instance_valid(vision_light):
+            vision_light.enabled = false
         return
     if vision_light == null or not is_instance_valid(vision_light) or vision_light.get_parent() != pc:
         if vision_light != null and is_instance_valid(vision_light):
