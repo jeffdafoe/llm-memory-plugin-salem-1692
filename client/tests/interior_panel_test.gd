@@ -109,6 +109,7 @@ const TESTS := [
     "_test_upstairs",
     "_test_tavern_upstairs",
     "_test_tent_bedroll_tap",
+    "_test_sleep_tint",
 ]
 
 const STALL := "stall-1"
@@ -4426,5 +4427,59 @@ func _test_tent_bedroll_tap() -> void:
     _check("not their tent: no bed", beds, [])
     _panel.bed_tapped.disconnect(on_bed)
     _panel.close()
+    _clear_people()
+    _done()
+
+
+## LLM-890 (Jeff asleep in his tent, 2026-10-30): the world went to the sleep
+## twilight, the tent's window stayed bright over it. Through main.gd's own
+## sleep handlers: the window fades with the world over its sheet, brightens
+## on wake, and one opened while asleep comes up dark at once. Another
+## character's sleep leaves it alone.
+func _test_sleep_tint() -> void:
+    _clear_people()
+    _panel.close()
+    var fade := load("res://scripts/sleep_fade.gd")
+    var main: Node2D = load("res://scripts/main.gd").new()
+    main.world = _world
+    main.interior_panel_layer = _panel
+    main._pc_actor_id = "pc"
+    var tent := HOME + "tent"
+    _person("pc", _farmer(), tent)
+    var tint: ColorRect = _panel._sleep_tint
+    _panel.open(tent)
+    _check("awake: no tint", tint.modulate.a, 0.0)
+    _check("the world's twilight", tint.color, fade.FADE_COLOR)
+    _check("clicks pass through", tint.mouse_filter, Control.MOUSE_FILTER_IGNORE)
+    _check("over the room", tint.get_index(), _panel.root.get_child_count() - 1)
+    _panel.sheet.global_position = Vector2(30, 40)
+    _check("the sheet has a size", _panel.sheet.size.x > 0.0 and _panel.sheet.size.y > 0.0, true)
+    _check("over the sheet only", tint.get_global_rect(), _panel.sheet.get_global_rect())
+
+    main._on_pc_sleep_started("someone-else", "")
+    _check("another's sleep: no tint", _panel._sleep_tween == null and tint.modulate.a == 0.0, true)
+
+    main._on_pc_sleep_started("pc", "")
+    _check("sleep: fading in, not a cut", tint.modulate.a, 0.0)
+    _panel._sleep_tween.custom_step(fade.FADE_IN_DURATION / 2.0)
+    _check("sleep: halfway dark halfway in", tint.modulate.a > 0.2 and tint.modulate.a < 0.8, true)
+    _panel._sleep_tween.custom_step(fade.FADE_IN_DURATION)
+    _check("sleep: dark as the world", is_equal_approx(tint.modulate.a, 1.0), true)
+
+    main._on_pc_sleep_ended("pc", "manual")
+    _panel._sleep_tween.custom_step(fade.FADE_OUT_DURATION / 2.0)
+    _check("wake: brightening", tint.modulate.a > 0.2 and tint.modulate.a < 0.8, true)
+    _panel._sleep_tween.custom_step(fade.FADE_OUT_DURATION)
+    _check("wake: bright", is_equal_approx(tint.modulate.a, 0.0), true)
+
+    _panel.close()
+    main._on_pc_sleep_started("pc", "")
+    _panel.open(tent)
+    _check("opened while asleep: dark at once", tint.modulate.a, 1.0)
+    _panel.close()
+    main._on_pc_sleep_ended("pc", "input")
+    _check("woken with the window closed: bright at once", tint.modulate.a, 0.0)
+
+    main.free()
     _clear_people()
     _done()

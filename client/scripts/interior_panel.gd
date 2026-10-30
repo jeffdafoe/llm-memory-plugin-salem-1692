@@ -98,6 +98,7 @@ const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
 const Pointer = preload("res://scripts/pointer.gd")
+const SleepFade = preload("res://scripts/sleep_fade.gd")
 const BUBBLE_NODE := "SpeechBubble"
 const BUBBLE_ANCHOR_Y := -36.0
 ## How often an open stall re-reads its shelf.
@@ -331,6 +332,12 @@ var tag_name: Label = null
 var tag_role: Label = null
 var _tag_on: Dictionary = {}
 var _tag_left := 0.0
+## The sleep twilight over the window (LLM-890). The world's fade
+## (sleep_fade.gd) is on layer 0, under this window; this tint follows it with
+## the same colour and timings, over the sheet only, so the dimmed village
+## around the window is not darkened twice.
+var _sleep_tint: ColorRect = null
+var _sleep_tween: Tween = null
 
 
 func _ready() -> void:
@@ -474,6 +481,14 @@ func _build_ui() -> void:
     tag_box.add_child(tag_role)
     root.add_child(tag)
 
+    _sleep_tint = ColorRect.new()
+    _sleep_tint.name = "SleepTint"
+    _sleep_tint.color = SleepFade.FADE_COLOR
+    _sleep_tint.modulate.a = 0.0
+    _sleep_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    root.add_child(_sleep_tint)
+    sheet.item_rect_changed.connect(_fit_sleep_tint)
+
 
 func _label(font_size: int, color: Color) -> Label:
     var l := Label.new()
@@ -588,6 +603,28 @@ func close() -> void:
 
 func is_open() -> bool:
     return visible
+
+
+## The player's character lies down (true) or wakes (false): main.gd calls
+## this with sleep_fade.gd's fade, and the window fades with the world. A
+## closed window takes the change at once, so one opened while asleep comes up
+## dark with no fade-in.
+func set_asleep(asleep: bool) -> void:
+    if _sleep_tween != null and _sleep_tween.is_valid():
+        _sleep_tween.kill()
+    _sleep_tween = null
+    var to := 1.0 if asleep else 0.0
+    if not visible:
+        _sleep_tint.modulate.a = to
+        return
+    var seconds := SleepFade.FADE_IN_DURATION if asleep else SleepFade.FADE_OUT_DURATION
+    _sleep_tween = create_tween()
+    _sleep_tween.tween_property(_sleep_tint, "modulate:a", to, seconds)
+
+
+func _fit_sleep_tint() -> void:
+    _sleep_tint.global_position = sheet.global_position
+    _sleep_tint.size = sheet.size
 
 
 func _process(delta: float) -> void:
