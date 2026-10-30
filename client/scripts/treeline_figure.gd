@@ -1,7 +1,7 @@
 extends Node
 
-## Someone at the treeline (LLM-844, omens slice 3). Rarely, at dusk, a still
-## dark figure stands beside a tree some way off. Walk toward it and it is
+## Someone at the treeline (LLM-844, omens slice 3). Rarely, at dusk, a
+## colourless grey figure stands beside a tree some way off. Walk toward it and it is
 ## gone; pan away and it is gone; leave it and it fades.
 ##
 ## Client-only and private: this client decides, places, removes and
@@ -375,7 +375,7 @@ func _build_body() -> Node2D:
     body.animation = "south_idle"
     body.frame = 0
     body.stop()
-    # Replaces the doll's palette swap: a silhouette needs only the shape.
+    # Replaces the doll's palette swap: the figure is the body's own shading in grey.
     var material := ShaderMaterial.new()
     material.shader = FIGURE_SHADER
     material.set_shader_parameter("phase", _rng.randf_range(0.0, 100.0))

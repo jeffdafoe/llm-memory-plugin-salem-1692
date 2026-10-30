@@ -8,9 +8,13 @@ extends SceneTree
 ##
 ## A bright red 16x16 square with 8 px of transparent padding, drawn through
 ## the shader with a mid-grey tint at scale 8 on white, sampled over 4 s:
-##  - every drawn pixel is the tint, with no red from the sheet;
-##  - the waver draws some pixels outside the still square;
+##  - every drawn pixel is grey (the sheet's luminance on the tint), with no
+##    red from the sheet;
+##  - the sway draws some pixels outside the still square;
 ##  - modulate alpha 0 draws nothing (the fade-out).
+## A second sprite, two opaque patches of dark and light grey source with no
+## sway: their outputs differ in the same frame and both stay grey (the
+## sheet's shading is kept).
 ## Both checks on colour and outline failed against the first shader, which
 ## multiplied by the fragment COLOR (texture colour at the unshifted UV).
 
@@ -18,6 +22,7 @@ const TreelineFigure = preload("res://scripts/treeline_figure.gd")
 const SCALE := 8
 
 var _sprite: Sprite2D
+var _patches: Sprite2D
 var _fails := 0
 
 func _initialize() -> void:
@@ -42,11 +47,25 @@ func _initialize() -> void:
     _sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
     var mat := ShaderMaterial.new()
     mat.shader = TreelineFigure.FIGURE_SHADER
-    mat.set_shader_parameter("waver_px", 2.0)
+    mat.set_shader_parameter("sway_px", 1.0)
     # Mid grey, so a red cast from the sheet would show.
     mat.set_shader_parameter("tint", Color(0.5, 0.5, 0.5))
     _sprite.material = mat
     get_root().add_child(_sprite)
+    var patch_img := Image.create(16, 8, false, Image.FORMAT_RGBA8)
+    patch_img.fill_rect(Rect2i(0, 0, 8, 8), Color(0.2, 0.2, 0.2, 1))
+    patch_img.fill_rect(Rect2i(8, 0, 8, 8), Color(0.9, 0.9, 0.9, 1))
+    _patches = Sprite2D.new()
+    _patches.texture = ImageTexture.create_from_image(patch_img)
+    _patches.centered = false
+    _patches.scale = Vector2(SCALE, SCALE)
+    _patches.position = Vector2(500, 100)
+    _patches.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+    var patch_mat := ShaderMaterial.new()
+    patch_mat.shader = TreelineFigure.FIGURE_SHADER
+    patch_mat.set_shader_parameter("sway_px", 0.0)
+    _patches.material = patch_mat
+    get_root().add_child(_patches)
     _run()
 
 func _check(label: String, ok: bool) -> void:
@@ -76,7 +95,12 @@ func _run() -> void:
                     outside += 1
     _check("something was drawn (%d samples)" % drawn, drawn > 0)
     _check("no drawn pixel keeps the source red (%d)" % reddish, reddish == 0)
-    _check("the waver draws outside the still shape (%d samples)" % outside, outside > 0)
+    _check("the sway draws outside the still shape (%d samples)" % outside, outside > 0)
+    var frame := get_root().get_texture().get_image()
+    var dark := frame.get_pixel(500 + 4 * SCALE, 100 + 4 * SCALE)
+    var light := frame.get_pixel(500 + 12 * SCALE, 100 + 4 * SCALE)
+    _check("light and dark source differ (%.2f vs %.2f)" % [dark.g, light.g], light.g - dark.g > 0.1)
+    _check("both stay grey", absf(dark.r - dark.g) < 0.05 and absf(light.r - light.g) < 0.05)
     _sprite.modulate.a = 0.0
     await create_timer(0.1).timeout
     await RenderingServer.frame_post_draw
