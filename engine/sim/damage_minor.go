@@ -80,7 +80,7 @@ const (
 	DefaultMinorWorksOpenCap        = 4
 	DefaultMinorWorksTTLHours       = 24
 	DefaultPublicWorksMinorBounty   = 3
-	DefaultPCRepairMinorSteps       = 5
+	DefaultPCRepairMinorSteps       = 3
 	DefaultPCRepairMinorStepGapMs   = 3000
 )
 

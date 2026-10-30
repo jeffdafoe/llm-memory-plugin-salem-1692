@@ -174,10 +174,10 @@ func _test_game_kind() -> void:
 ## it and the same order shows again (LLM-721).
 func _test_crosswise_order_and_spring() -> void:
     var g = Games.make("crosswise", _rng())
-    _check("six nails at the easy end", g.count(), 6)
+    _check("four nails at the easy end", g.count(), 4)
     var sorted: Array = g.order.duplicate()
     sorted.sort()
-    _check("the order holds every nail once", sorted, [0, 1, 2, 3, 4, 5])
+    _check("the order holds every nail once", sorted, [0, 1, 2, 3])
     var step: float = g.show_step()
     _check("the show opens with the first number", g.number_lit(), 0)
     _check("no strike while it shows", g.press(g.order[0]), Games.Result.NONE)
@@ -206,9 +206,9 @@ func _test_crosswise_order_and_spring() -> void:
     g.update(0.02)
     _check("the same order shows again", [g.showing, g.order == before], [true, true])
     g.update(g.show_len() + 0.01)
-    for n in 5:
+    for n in 3:
         _check("in order: nail %d" % n, g.press(g.order[n]), Games.Result.PROGRESS)
-    _check("the last nail wins the round", g.press(g.order[5]), Games.Result.HIT)
+    _check("the last nail wins the round", g.press(g.order[3]), Games.Result.HIT)
     _check("one spring this round", g.springs, 1)
     _check("held", g.press(g.order[0]), Games.Result.NONE)
     g.release()
@@ -235,7 +235,7 @@ func _test_crosswise_nails_sit_on_the_lid() -> void:
 func _test_crosswise_show_quickens() -> void:
     var easy = Games.make("crosswise", _rng(), 0.0)
     var hard = Games.make("crosswise", _rng(), 1.0)
-    _check("six nails at any purse", [easy.count(), hard.count()], [6, 6])
+    _check("four nails at any purse", [easy.count(), hard.count()], [4, 4])
     _check("first round, easy", easy.show_step(), Games.Crosswise.SHOW_STEP)
     _check("first round, hard", is_equal_approx(hard.show_step(), Games.Crosswise.HARD_SHOW_STEP), true)
     var before: float = easy.show_step()
