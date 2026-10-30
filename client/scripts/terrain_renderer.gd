@@ -23,13 +23,16 @@ var wang_texture: Texture2D = null
 # change to the terrain data. Summer and spring draw the built-in wang.png; the
 # others are fetched from the server's /tilesets/ like the catalog's sprite
 # sheets, so the export carries no extra art. The snowy winter sheet follows the
-# snow cover (LLM-850), not the season.
+# snow cover (LLM-850), not the season: at light or deep snow it is the ground
+# in any season.
 const SEASON_WANG_SHEETS := {
     "autumn": "/tilesets/mana-seed/autumn-forest/autumn sheets/autumn forest wang tiles.png",
     "winter": "/tilesets/mana-seed/winter-forest/winter sheets/winter forest wang tiles (clean).png",
 }
+const SNOWY_WANG_SHEET := "/tilesets/mana-seed/winter-forest/winter sheets/winter forest wang tiles (snowy).png"
 var _summer_wang: Texture2D = null
 var _season: String = ""
+var _snowy: bool = false
 var _season_wang_cache: Dictionary = {}
 # Paths being fetched: every world read (reconnect, the date change) calls
 # set_season again, and must not stack a second download of the same sheet.
@@ -70,15 +73,20 @@ func _ready() -> void:
         sparkle_texture = load(sparkle_path)
 
 ## The server path of the ground sheet for season, "" for the built-in summer
-## sheet (summer, spring, or a season the engine does not name).
-static func season_wang_path(season: String) -> String:
+## sheet (summer, spring, or a season the engine does not name). snowy (snow
+## lies light or deep) is the snowy winter sheet whatever the season.
+static func season_wang_path(season: String, snowy: bool = false) -> String:
+    if snowy:
+        return SNOWY_WANG_SHEET
     return SEASON_WANG_SHEETS.get(season, "")
 
-## Draw the ground for season (the world read's "autumn"). A sheet not yet
-## fetched keeps the current ground until it lands; a failed fetch keeps it too.
-func set_season(season: String) -> void:
+## Draw the ground for season (the world read's "autumn"), or snowy. A sheet
+## not yet fetched keeps the current ground until it lands; a failed fetch keeps
+## it too.
+func set_season(season: String, snowy: bool = false) -> void:
     _season = season
-    var path := season_wang_path(season)
+    _snowy = snowy
+    var path := season_wang_path(season, snowy)
     if path == "":
         if _summer_wang != null:
             wang_texture = _summer_wang
@@ -111,9 +119,10 @@ func _on_season_wang_downloaded(result: int, response_code: int, _headers: Packe
         return
     var texture := ImageTexture.create_from_image(image)
     _season_wang_cache[path] = texture
-    # The season may have changed while this was in flight; the current one
-    # decides, so a later read naming the same season still lands the sheet.
-    if season_wang_path(_season) == path:
+    # The season or the snow may have changed while this was in flight; the
+    # current ones decide, so a later read naming the same ground still lands
+    # the sheet.
+    if season_wang_path(_season, _snowy) == path:
         wang_texture = texture
 
 func _process(delta: float) -> void:

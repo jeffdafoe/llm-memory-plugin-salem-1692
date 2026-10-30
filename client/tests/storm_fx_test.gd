@@ -43,6 +43,7 @@ const TESTS := [
     "_test_a_long_delta_advances_all_its_frames",
     "_test_rain_scale_snaps_to_whole_numbers",
     "_test_drift_uses_the_drawn_scale_not_the_live_camera",
+    "_test_snowstorm_draws_snow_without_lightning",
 ]
 
 const FRAME := Vector2i(32, 128)
@@ -245,6 +246,52 @@ func _test_storm_cycle_without_art() -> void:
     _fx._rain_light_frames = light
     _fx._rain_heavy_frames = heavy
     _fx._bolt_variants = bolts
+    _done()
+
+## LLM-850: a winter storm is a snowstorm — the two layers draw the snow
+## frames at the snow cadence and alpha, no strike is scheduled or flashes, and
+## the next rain storm is rain again with its lightning.
+func _test_snowstorm_draws_snow_without_lightning() -> void:
+    var saved := [_fx._rain_frames_light, _fx._rain_frames_heavy, _fx._snow_frames_light, _fx._snow_frames_heavy]
+    var rain_light: Array[Texture2D] = []
+    var rain_heavy: Array[Texture2D] = []
+    var snow_light: Array[Texture2D] = []
+    var snow_heavy: Array[Texture2D] = []
+    rain_light.assign(_fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT))
+    rain_heavy.assign(_fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT))
+    snow_light.assign(_fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT))
+    snow_heavy.assign(_fx._slice_texture(_make_strip(FRAME, FRAME_COUNT), FRAME, FRAME_COUNT))
+    _fx._rain_frames_light = rain_light
+    _fx._rain_frames_heavy = rain_heavy
+    _fx._snow_frames_light = snow_light
+    _fx._snow_frames_heavy = snow_heavy
+
+    _fx.set_storm(true, false, true)
+    _check("a snowstorm draws the snow frames",
+        _fx._rain_light_frames == snow_light and _fx._rain_heavy_frames == snow_heavy)
+    _check("a snowstorm shows its first snow frame", _fx._rain_light.texture == snow_light[0])
+    _check("a snowstorm falls at the snow alpha", is_equal_approx(_fx._rain_light.modulate.a, _fx.SNOW_TARGET_ALPHA))
+    _check("a snowstorm keeps the tint", is_equal_approx(_fx._tint.modulate.a, _fx.TINT_TARGET_ALPHA))
+    _check("a snowstorm schedules no lightning", _fx._lightning_timer.is_stopped())
+    _fx._on_lightning_timeout()
+    _check("a stray strike timeout in snow flashes nothing", _fx._lightning_tween == null)
+
+    _fx._rain_light_frame = 0
+    _fx._rain_light_elapsed = 0.0
+    _fx._advance_rain(0.18)
+    _check("light snow steps once in 0.18 s (175 ms a frame, not rain's 50)", _fx._rain_light_frame == 1)
+
+    _fx.set_storm(true, false, false)
+    _check("a rain storm after snow draws the rain frames", _fx._rain_light_frames == rain_light)
+    _check("a rain storm schedules lightning again", not _fx._lightning_timer.is_stopped())
+    _fx.set_storm(false, false)
+
+    _fx._rain_frames_light = saved[0]
+    _fx._rain_frames_heavy = saved[1]
+    _fx._snow_frames_light = saved[2]
+    _fx._snow_frames_heavy = saved[3]
+    _fx._set_snow(true)
+    _fx._set_snow(false)
     _done()
 
 ## An instant clear (the connect/reconnect DTO sync path) must leave the rain

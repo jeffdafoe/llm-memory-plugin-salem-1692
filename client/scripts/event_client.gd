@@ -366,6 +366,10 @@ func _handle_message(data: String) -> void:
         "night_color_changed":
             if world != null:
                 world.apply_night_color(event_data)
+        "snow_tier_changed":
+            # The snow lying on the village changed tier (LLM-850).
+            if world != null:
+                world.set_snow_tier(str(event_data.get("snow_tier", "none")))
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior
@@ -711,7 +715,7 @@ func _on_object_state_changed(data: Dictionary) -> void:
         if child is Sprite2D or child is AnimatedSprite2D:
             child.queue_free()
 
-    var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y, world._asset_render_scale(asset))
+    var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y, world._asset_render_scale(asset), asset)
     node.add_child(new_sprite)
 
     # State flipped — update the light to match. Lit states get a glow, unlit
