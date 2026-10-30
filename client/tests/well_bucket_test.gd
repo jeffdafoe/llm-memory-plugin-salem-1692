@@ -198,9 +198,12 @@ func _test_raise_and_lower() -> void:
     _check("sinking", bucket.state, WellBucket.State.SINKING)
     _check("raise while sinking: hauled again", bucket.raise(), true)
     _check("rising again", bucket.state, WellBucket.State.RISING)
+    var mid: Vector2 = bucket.position
     bucket.lower()
+    _check("lowered mid-haul: sinks from where it was", bucket.position, mid)
     _finish(bucket)
     _check("down", bucket.state, WellBucket.State.DOWN)
+    _check("down the shaft, not off to the side", bucket.position, bucket._at(WellBucket.MOUTH + Vector2(0, WellBucket.DEPTH)))
     _check("down: hidden again", bucket.visible, false)
     bucket.lower()
     _check("lower while down: stays down", bucket.state, WellBucket.State.DOWN)
