@@ -8,8 +8,10 @@ extends Node
 ## remembers. The engine, the action log and the villagers know nothing; the
 ## only trace is the statistics rows sent through ClientEvents (LLM-880).
 ##
-## Where it stands: beside a tree, its feet a little above the tree's base so
-## the y-sort draws the trunk over part of it. Trees, not dark-grass terrain:
+## Where it stands: in the open just left of a tree, its edge against the
+## tree's own pixels at the figure's height. Left, because the tree shadows
+## fall to the right; in the open, because under a canopy or in a shadow a
+## dark figure reads as more shadow and nobody sees it. Trees, not dark-grass terrain:
 ## on the live map dark grass is scattered over a third of the map, village
 ## included, so a dark-grass edge can be an open field (the woods dark of
 ## LLM-842 is built from trees for the same reason).
@@ -32,7 +34,9 @@ const BODY_SPRITE := {
     "frame_height": 64,
     "layers": [{"sheet": BODY_SHEET, "ramps": {"skin": 0}}],
 }
-const FIGURE_COLOR := Color(0.06, 0.06, 0.07, 0.85)
+## The figure shader (waver and breathing alpha) colours the body; the
+## container's modulate alpha carries only the final fade.
+const FIGURE_SHADER := preload("res://scripts/treeline_figure.gdshader")
 ## The body's drawn pixels around its feet point (rig rows 9..43 at scale 2).
 const FIGURE_RECT := Rect2(-16, -64, 32, 68)
 
@@ -41,9 +45,12 @@ const MIN_TILES := 10.0
 const MAX_TILES := 18.0
 ## Feet this many px above the tree's base, so the tree sorts in front.
 const BEHIND_PX := Vector2(4, 12)
-## Sideways from the trunk, in px. Closer and the canopy hides nearly all of
-## it; a share of the sprite width overshoots on the wide tiny-swords sheets.
-const BESIDE_PX := Vector2(32, 48)
+## How far the figure's edge may reach in behind the tree's edge, in px.
+const OVERLAP_PX := Vector2(0, 6)
+## A tree pixel at least this opaque is tree (or its shadow): not open ground.
+const TREE_ALPHA := 0.1
+## The tree's left reach when its pixels cannot be read.
+const FALLBACK_REACH_PX := 40.0
 
 ## _phase_pos runs 0..1 over the 60-minute sweep; 0.5 is 30 minutes after dusk.
 const DUSK_WINDOW := 0.5
@@ -84,6 +91,7 @@ var _body_requested := false
 var _body_retry_at := 0.0
 var _rolled_dusk := ""
 var _last_figure_at := 0.0
+var _reach_cache: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
 
 func _ready() -> void:
@@ -210,7 +218,6 @@ func _show(spot: Vector2, body: Node2D, forced: bool) -> void:
     figure.name = "TreelineFigure"
     figure.position = spot
     figure.z_index = 10
-    figure.modulate = FIGURE_COLOR
     figure.add_child(body)
     world.objects_node.add_child(figure)
     _forced = forced
@@ -232,7 +239,7 @@ func tick_figure(delta: float) -> void:
     elif _shown_for >= _fade_at + FADE_SECONDS:
         remove("faded")
     elif _shown_for >= _fade_at:
-        figure.modulate.a = FIGURE_COLOR.a * (1.0 - (_shown_for - _fade_at) / FADE_SECONDS)
+        figure.modulate.a = 1.0 - (_shown_for - _fade_at) / FADE_SECONDS
 
 ## The player started a walk: gone if it ends closer to the figure than the
 ## player stands now. event_client has snapped the character to the walk's
@@ -262,11 +269,51 @@ func remove(reason: String) -> void:
     figure = null
     _check_left = CHECK_SECONDS
 
+## Just left of the tree: the figure's right edge at the tree's leftmost
+## pixel, reaching in by up to OVERLAP_PX.
 func _spot_beside(tree: Node2D) -> Vector2:
-    var side := -1.0 if _rng.randf() < 0.5 else 1.0
-    return tree.position + Vector2(
-        side * _rng.randf_range(BESIDE_PX.x, BESIDE_PX.y),
-        -_rng.randf_range(BEHIND_PX.x, BEHIND_PX.y))
+    var x := _tree_left_reach(tree) - FIGURE_RECT.end.x + _rng.randf_range(OVERLAP_PX.x, OVERLAP_PX.y)
+    return tree.position + Vector2(x, -_rng.randf_range(BEHIND_PX.x, BEHIND_PX.y))
+
+## The tree's leftmost drawn pixel over the rows the figure's body can cover,
+## as an x offset from the tree's base. Read once per art and placement shape
+## (the sheet's get_image is a copy), then cached.
+func _tree_left_reach(tree: Node2D) -> float:
+    var sprite := _sprite_of(tree)
+    var tex: Texture2D = null
+    if sprite is Sprite2D:
+        tex = sprite.texture
+    elif sprite is AnimatedSprite2D and sprite.sprite_frames != null:
+        tex = sprite.sprite_frames.get_frame_texture(sprite.animation, sprite.frame)
+    if tex == null:
+        return -FALLBACK_REACH_PX
+    var source: Texture2D = tex
+    var region := Rect2(Vector2.ZERO, tex.get_size())
+    if tex is AtlasTexture and tex.atlas != null:
+        source = tex.atlas
+        region = tex.region
+    var key := "%d|%s|%s|%s" % [source.get_instance_id(), region, sprite.position, sprite.scale]
+    if _reach_cache.has(key):
+        return _reach_cache[key]
+    var reach := -FALLBACK_REACH_PX
+    var image := source.get_image()
+    if image != null and sprite.scale.y > 0.0:
+        if image.is_compressed():
+            image.decompress()
+        var band_top := -BEHIND_PX.y + FIGURE_RECT.position.y
+        var band_bottom := -BEHIND_PX.x + FIGURE_RECT.end.y
+        var row_from := maxi(int(floor((band_top - sprite.position.y) / sprite.scale.y)), 0)
+        var row_to := mini(int(ceil((band_bottom - sprite.position.y) / sprite.scale.y)), int(region.size.y))
+        var left := int(region.size.x)
+        for row in range(row_from, row_to):
+            for col in left:
+                if image.get_pixel(int(region.position.x) + col, int(region.position.y) + row).a >= TREE_ALPHA:
+                    left = col
+                    break
+        # Nothing drawn at the figure's height: stand at the base.
+        reach = sprite.position.x + left * sprite.scale.x if left < int(region.size.x) else 0.0
+    _reach_cache[key] = reach
+    return reach
 
 ## Rects of everything placed that is not a tree: no figure under a roof or
 ## inside a stall.
@@ -320,6 +367,11 @@ func _build_body() -> Node2D:
     body.animation = "south_idle"
     body.frame = 0
     body.stop()
+    # Replaces the doll's palette swap: a silhouette needs only the shape.
+    var material := ShaderMaterial.new()
+    material.shader = FIGURE_SHADER
+    material.set_shader_parameter("phase", _rng.randf_range(0.0, 100.0))
+    body.material = material
     return body
 
 func _on_body_loaded(_tex: Texture2D) -> void:
