@@ -27,6 +27,10 @@ const (
 	// the pitched row.
 	ItemActionPitch  = "pitch"
 	ItemActionStrike = "strike"
+	// Food and drink (LLM-888): one unit from the pack, through Consume. A good
+	// offers the one its ConsumeVerb names.
+	ItemActionEat   = "eat"
+	ItemActionDrink = "drink"
 )
 
 // ErrItemAction is the base of every refused item action. The wrapped message
@@ -56,7 +60,67 @@ func ItemActions(def *ItemKindDef, wearing bool) []string {
 	if def.Name == TentItemKind && def.HasCapability(CapabilityShelter) {
 		actions = append(actions, ItemActionPitch)
 	}
+	if def.Consumable() {
+		if def.IsDrink() {
+			actions = append(actions, ItemActionDrink)
+		} else {
+			actions = append(actions, ItemActionEat)
+		}
+	}
 	return actions
+}
+
+// eatFromPack consumes one unit of a pack good for a player (LLM-888). The
+// refusals come first so Consume never sees a walking actor (its error is
+// worded for an NPC's tool call) and a sated one never wastes a unit — a
+// one-unit Consume eats it even at zero need.
+func eatFromPack(w *World, a *Actor, def *ItemKindDef, kind ItemKind, now time.Time) error {
+	verb := ConsumeVerb(def)
+	if a.MoveIntent != nil {
+		return refuseItemAction("Stop walking to " + verb + ".")
+	}
+	if !packGoodEasesANeed(a, def) {
+		return refuseItemAction(notNeededLine(def))
+	}
+	if _, err := Consume(a.ID, string(kind), 1, now).Fn(w); err != nil {
+		return err
+	}
+	// Push the new needs to the player's top bar at once, like eating in place
+	// (applyObjectRefreshEffect).
+	if a.Kind == KindPC {
+		needs := make(map[NeedKey]int, len(a.Needs))
+		for k, n := range a.Needs {
+			needs[k] = n
+		}
+		w.emit(&PCNeedsChanged{ActorID: a.ID, Needs: needs})
+	}
+	return nil
+}
+
+// packGoodEasesANeed reports whether any need the good satisfies is above zero.
+func packGoodEasesANeed(a *Actor, def *ItemKindDef) bool {
+	for _, s := range def.Satisfies {
+		if a.Needs[s.Attribute] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// notNeededLine is the refusal when nothing the good eases is felt: a drink
+// answers the Drink button with thirst even when it also fills the belly, food
+// by the first need it eases.
+func notNeededLine(def *ItemKindDef) string {
+	if def.IsDrink() {
+		return "You are not thirsty."
+	}
+	switch def.Satisfies[0].Attribute {
+	case "hunger":
+		return "You are not hungry."
+	case "thirst":
+		return "You are not thirsty."
+	}
+	return "You have no need of it now."
 }
 
 // actorWears reports whether a has kind on.
@@ -84,6 +148,8 @@ func UseItem(actorID ActorID, kind ItemKind, action string, now time.Time) Comma
 				return nil, refuseItemAction("You cannot do that with it.")
 			}
 			switch action {
+			case ItemActionEat, ItemActionDrink:
+				return nil, eatFromPack(w, a, def, kind, now)
 			case ItemActionWear:
 				a.Wearing = append(a.Wearing, kind)
 			case ItemActionRemove:

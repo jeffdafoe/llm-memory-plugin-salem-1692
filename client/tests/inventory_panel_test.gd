@@ -32,6 +32,8 @@ const TESTS := [
     "_test_is_beside",
     "_test_follow_reach_boundary",
     "_test_tent_rows",
+    "_test_food_and_drink_rows",
+    "_test_close_button_closes",
 ]
 
 const ITEMS := [
@@ -126,8 +128,14 @@ func _button(p: Control, row_label: String) -> Button:
     for child in p._content.get_children():
         if child.is_queued_for_deletion() or not (child is HBoxContainer):
             continue
+        # The row's first Label is its name; the pack header leads with a spacer.
         var children: Array = child.get_children()
-        if children.size() > 0 and children[0] is Label and children[0].text == row_label:
+        var name_label: Label = null
+        for c in children:
+            if c is Label:
+                name_label = c
+                break
+        if name_label != null and name_label.text == row_label:
             for c in children:
                 if c is Button:
                     return c
@@ -527,4 +535,46 @@ func _test_tent_rows() -> void:
     p.set_inventory([{"item_kind": "bread", "display_label": "Bread", "quantity": 0, "actions": []}])
     _check("an empty row that is not a tent stays hidden", _rows(p).has("Bread"), false)
     p.free()
+    _done()
+
+
+## LLM-888: food offers Eat, a drink Drink, and each press asks for it.
+func _test_food_and_drink_rows() -> void:
+    var log: Array = []
+    var p: Control = load(PANEL_PATH).new()
+    root.add_child(p)
+    p.item_action_requested.connect(func(kind: String, action: String): log.append("%s:%s" % [kind, action]))
+    p.set_inventory([
+        {"item_kind": "bread", "display_label": "Bread", "quantity": 2, "category": "food", "actions": ["eat"]},
+        {"item_kind": "ale", "display_label": "Ale", "quantity": 1, "category": "drink", "actions": ["drink"]},
+    ])
+    p.show_at(Rect2(600, 0, 32, 32))
+    _check("bread: Eat", _rows(p).get("Bread"), ["Eat"])
+    _check("ale: Drink", _rows(p).get("Ale"), ["Drink"])
+    _button(p, "Bread").pressed.emit()
+    p.action_finished()
+    _button(p, "Ale").pressed.emit()
+    _check("presses ask to eat and to drink", log, ["bread:eat", "ale:drink"])
+    p.action_finished()
+    p.free()
+    _done()
+
+
+## LLM-888: the header's × closes the pack, empty or not.
+func _test_close_button_closes() -> void:
+    for items in [ITEMS, []]:
+        var p: Control = load(PANEL_PATH).new()
+        root.add_child(p)
+        var closed := [0]
+        p.closed.connect(func(): closed[0] += 1)
+        p.set_inventory(items)
+        p.show_at(Rect2(600, 0, 32, 32))
+        var x := _button(p, "Your Pack")
+        _check("%d rows: the header has a button" % items.size(), x != null, true)
+        if x != null:
+            _check("%d rows: it reads ×" % items.size(), x.text, "×")
+            x.pressed.emit()
+        _check("%d rows: the press closes the pack" % items.size(), p.visible, false)
+        _check("%d rows: closed once" % items.size(), closed[0], 1)
+        p.free()
     _done()
