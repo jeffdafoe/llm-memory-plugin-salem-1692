@@ -185,10 +185,10 @@ class Hammer:
     const RISE := 0.12
     # The rock upright takes a random time in this span, so it cannot be
     # counted.
-    const APPROACH_MIN := 0.35
-    const APPROACH_MAX := 0.9
-    const TRUE_TIME := 0.45
-    const HARD_TRUE_TIME := 0.2
+    const APPROACH_MIN := 0.8
+    const APPROACH_MAX := 1.4
+    const TRUE_TIME := 0.6
+    const HARD_TRUE_TIME := 0.25
     const AWAY := 0.3  # seconds it takes to lean over the other way
     const SINK := 0.35
     const GAP_TIME := 0.35  # seconds between one nail going and the next rising
@@ -635,7 +635,7 @@ class Plumb:
 class Crosswise:
     extends Game
     const ROWS := 2
-    const COLS := 3
+    const COLS := 2
     const SHOW_STEP := 0.8  # seconds from one number lighting to the next, first round
     const HARD_SHOW_STEP := 0.45
     const SHOW_ON := 0.7  # of a step, the part its number stays lit; then dark
