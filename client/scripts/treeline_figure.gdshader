@@ -6,6 +6,9 @@ shader_type canvas_item;
 // Colour: the body sheet's own shading turned to grey (tint + luminance *
 // lift), so the outline of head, arms and legs still reads as a person. A
 // flat fill read as a dark blob, and near black sank into the dusk grass.
+// The luminance is of the sheet as drawn, in the palette-swap placeholder
+// colours (the swap material is replaced): a change to those placeholders
+// changes the figure's shading.
 // Sway: the whole body bends sideways by up to sway_px on a long, slow wave.
 // A short wave that moved each row on its own broke the outline apart.
 // Breathing: the opacity drifts between alpha_low and alpha_high on two sines
