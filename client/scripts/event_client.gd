@@ -16,6 +16,9 @@ signal npc_arrived(npc_id: String, x: float, y: float, facing: String)
 ## An actor set off on a walk (LLM-753) — main.gd closes the stall window when
 ## the player's character walks away from the counter.
 signal npc_walking(npc_id: String)
+## An object's state changed — main.gd opens or closes the stall window when
+## the stall at the player's counter opens or shuts.
+signal object_state_changed(obj_id: String)
 
 ## Sleep lifecycle (ZBBS-WORK-204 Stage B). Engine broadcasts
 ## pc_sleep_started when /pc/sleep or auto-bed transitions a PC into
@@ -680,6 +683,7 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var old_state := str(node.get_meta("current_state", ""))
     # The state the server says, kept even when it cannot be drawn below.
     node.set_meta("current_state", new_state)
+    object_state_changed.emit(str(obj_id))
     if Camp.tent_raised(asset_id, old_state, new_state):
         world.camp_tent_raised(node)
         # The new tent is a structure now: its room plan is not in the set

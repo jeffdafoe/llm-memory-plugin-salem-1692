@@ -136,6 +136,19 @@ static func sheet_for(assets: Dictionary, node: Node2D) -> String:
     return str(SHEETS.get(str(asset.get("name", "")), ""))
 
 
+## Whether the stall is shut: the map draws it in its `unoccupied` state, the
+## one the engine's occupancy puts it in when nobody stands in it. A shut stall
+## has no window.
+static func shut(assets: Dictionary, node: Node2D) -> bool:
+    var asset: Dictionary = assets.get(str(node.get_meta("asset_id", "")), {})
+    var state := str(node.get_meta("current_state", ""))
+    for s in asset.get("states", []):
+        if s is Dictionary and str(s.get("state", "")) == state:
+            var tags = s.get("tags", [])
+            return tags is Array and tags.has("unoccupied")
+    return false
+
+
 ## The stall's trade, from the tags set on it in the editor: the first of
 ## TRADES it carries, or "".
 static func trade_of(node: Node2D) -> String:

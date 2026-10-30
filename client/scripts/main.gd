@@ -347,6 +347,7 @@ func _on_authenticated() -> void:
         event_client.npc_walking.connect(func(npc_id: String):
             if _pc_actor_id != "" and npc_id == _pc_actor_id:
                 _sync_interior())
+        event_client.object_state_changed.connect(_on_event_object_state_changed)
         event_client.pc_sleep_started.connect(_on_pc_sleep_started)
         event_client.pc_sleep_ended.connect(_on_pc_sleep_ended)
         event_client.pc_needs_changed.connect(_on_event_pc_needs_changed)
@@ -1946,6 +1947,11 @@ func _sync_interior() -> void:
     else:
         interior_panel_layer.close()
 
+## A stall opening or shutting at the player's counter opens or closes its
+## window (LLM-885); any other object's change leaves the window as it is.
+func _on_event_object_state_changed(_obj_id: String) -> void:
+    _sync_interior()
+
 ## The room of `sid` the character is in, for the window (LLM-801): their
 ## `room` meta when that room has a plan to draw it — the Inn's hall, their
 ## guest room — else "" (the common room; asleep in a room with no plan,
@@ -1959,14 +1965,18 @@ func _local_pc_room(sid: String) -> String:
     return in_room
 
 ## Where the interior window belongs: the building the character is inside
-## when it has a room, else the stall whose counter they stand at, else "".
+## when it has a room, else the stall whose counter they stand at while it is
+## open, else "".
 func _local_pc_place() -> String:
     var inside_sid := _local_pc_inside_structure_id()
     if InteriorRooms.has_room(inside_sid, Catalog.rooms.get(inside_sid, {})):
         return inside_sid
     if inside_sid != "" or _pc_actor_id == "" or not world.placed_npcs.has(_pc_actor_id):
         return ""
-    return StallScenes.stall_at(world, Catalog.assets, StallScenes.standing_tile(world.placed_npcs[_pc_actor_id]))
+    var stall := StallScenes.stall_at(world, Catalog.assets, StallScenes.standing_tile(world.placed_npcs[_pc_actor_id]))
+    if stall != "" and StallScenes.shut(Catalog.assets, world.placed_objects[stall]):
+        return ""
+    return stall
 
 ## Put the room one layer under the talk panel (which sets its own layer in
 ## _ready), so talk opened from the room comes up in front of it and the room
