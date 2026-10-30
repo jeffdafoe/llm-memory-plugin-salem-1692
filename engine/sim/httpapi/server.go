@@ -619,6 +619,7 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 		Atmosphere:     s.Environment.Atmosphere,
 		ZoomMinAdmin:   s.ZoomMinAdmin,
 		ZoomMinRegular: s.ZoomMinRegular,
+		NightColor:     s.NightColor,
 		Build:          BuildCommit,
 	}
 	for _, line := range sim.DamageTickerLines(s) {

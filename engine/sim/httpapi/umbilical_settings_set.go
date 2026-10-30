@@ -99,6 +99,9 @@ func (s *Server) handleUmbilicalSettingSet(w http.ResponseWriter, r *http.Reques
 		// A bounty or reserve change can alter the posted public-works notices
 		// (LLM-654); a no-op for every other key.
 		sim.SyncPublicWorksNews(world, time.Now().UTC())
+		// A setting the client renders live (the night tint, LLM-842) is
+		// pushed to connected clients; a no-op for every other key.
+		sim.SettingWritten(world, spec.Key)
 		return umbilicalSettingSetResponse{
 			Key:         spec.Key,
 			Kind:        string(spec.Kind),

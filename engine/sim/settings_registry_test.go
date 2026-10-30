@@ -60,6 +60,9 @@ func seedRoundTripSettings(t *testing.T, spec SettingSpec) WorldSettings {
 		if spec.Key == "winter_regrow_factors" {
 			seed = "sage=150,wheat=300"
 		}
+		if spec.Key == NightColorSettingKey {
+			seed = "#101820"
+		}
 	default:
 		t.Fatalf("unhandled setting kind %q", spec.Kind)
 	}
@@ -124,6 +127,11 @@ func TestSettingRegistryRejectsBadValues(t *testing.T) {
 		{"hunger_red_threshold", "-1", "0 or greater"},
 		{"world_dusk_time", "   ", "cannot be empty"},
 		{"world_timezone", "Mars/Olympus_Mons", "not a known timezone"},
+		// The client parses the night tint straight into a Color (LLM-842).
+		{"world_night_color", "202A35", "colour like #202A35"},
+		{"world_night_color", "#202A3", "colour like #202A35"},
+		{"world_night_color", "#20GA35", "colour like #202A35"},
+		{"world_night_color", "dark blue", "colour like #202A35"},
 		// Negative durations would produce tight loops or immediate expiry, the
 		// same reason the loader refuses them.
 		{"eco_social_gap_seconds", "-5", "0 or greater"},

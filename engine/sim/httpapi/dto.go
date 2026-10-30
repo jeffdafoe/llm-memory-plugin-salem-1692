@@ -123,6 +123,11 @@ type WorldStateDTO struct {
 	// reads+writes them via GET/POST /api/village/config + /admin/zoom-settings.
 	ZoomMinAdmin   float64 `json:"zoom_min_admin"`
 	ZoomMinRegular float64 `json:"zoom_min_regular"`
+	// NightColor is the night pole of the client's day/night tint, "#RRGGBB"
+	// (setting world_night_color, LLM-842). Omitted on a snapshot built without
+	// settings; the client then keeps its built-in fallback. Additive — no
+	// contract_version bump.
+	NightColor string `json:"night_color,omitempty"`
 }
 
 // WorldConfigDTO is the GET /api/village/config response — the admin-only

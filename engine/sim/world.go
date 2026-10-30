@@ -62,6 +62,10 @@ type WorldSettings struct {
 	ZoomMinAdmin   float64
 	ZoomMinRegular float64
 
+	// NightColor is the client's night tint, "#RRGGBB" (LLM-842, night_color.go).
+	// Pure UI config like the zoom floors.
+	NightColor string
+
 	// AgentTicksPaused, when true, suppresses LLM agent activity globally —
 	// reactive NPC ticks and chronicler fires both gated. Worker schedulers,
 	// social hours, lamplighter, and rotation continue running. Used to halt
@@ -2673,6 +2677,7 @@ func (w *World) republish() {
 		Assets:                        w.Assets,
 		ZoomMinAdmin:                  w.Settings.ZoomMinAdmin,
 		ZoomMinRegular:                w.Settings.ZoomMinRegular,
+		NightColor:                    w.Settings.NightColor,
 		// Resolved (default-applied) conversation turn-state windows, so
 		// perception build reads the same expiry the sim.Speak backstop uses.
 		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),

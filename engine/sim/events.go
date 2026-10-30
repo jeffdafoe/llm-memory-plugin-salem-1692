@@ -451,6 +451,16 @@ type ZoomSettingsChanged struct {
 
 func (ZoomSettingsChanged) isSimEvent() {}
 
+// NightColorChanged is emitted by SettingWritten when world_night_color is
+// written (LLM-842). The hub translates it to the night_color_changed frame so
+// connected clients re-tint the night pole without a reload.
+type NightColorChanged struct {
+	EventBase
+	NightColor string
+}
+
+func (NightColorChanged) isSimEvent() {}
+
 // WeatherChanged is emitted by ApplyWeatherChange on every real weather
 // transition (LLM-117 Half A). The httpapi hub translates it to the
 // weather_changed client frame so connected clients raise / tween out the

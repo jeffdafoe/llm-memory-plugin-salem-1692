@@ -236,6 +236,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 
 	s.ZoomMinAdmin = parseFloatSetting(values, "world_zoom_min_admin", sim.DefaultZoomMinAdmin)
 	s.ZoomMinRegular = parseFloatSetting(values, "world_zoom_min_regular", sim.DefaultZoomMinRegular)
+	s.NightColor = parseNightColor(values)
 
 	s.AgentTicksPaused = parseBoolSetting(values, "agent_ticks_paused", false)
 
@@ -584,6 +585,19 @@ func parseWinterRegrowFactors(values map[string]string) map[sim.ItemKind]int {
 	log.Printf("repo/pg: setting winter_regrow_factors: %v; using default %q", err, sim.DefaultWinterRegrowFactors)
 	factors, _ = sim.ParseWinterRegrowFactors(sim.DefaultWinterRegrowFactors)
 	return factors
+}
+
+// parseNightColor reads world_night_color (LLM-842). A malformed row logs and
+// falls back to the default, like winter_regrow_factors, so a bad edit cannot
+// hand the client a colour it cannot parse.
+func parseNightColor(values map[string]string) string {
+	raw := parseStringSetting(values, "world_night_color", sim.DefaultNightColor)
+	v, err := sim.NormalizeNightColor(raw)
+	if err == nil {
+		return v
+	}
+	log.Printf("repo/pg: setting world_night_color: %v; using default %q", err, sim.DefaultNightColor)
+	return sim.DefaultNightColor
 }
 
 // parseIntSetting returns the kv value parsed as an int. Missing or

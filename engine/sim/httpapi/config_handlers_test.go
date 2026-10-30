@@ -151,6 +151,14 @@ func TestTranslateEvent_ConfigFrames(t *testing.T) {
 		t.Errorf("zoom data = %#v, want 0.1/0.2", zf.Data)
 	}
 
+	nf, ok := TranslateEvent(&sim.NightColorChanged{NightColor: "#101820"})
+	if !ok || nf.Type != "night_color_changed" {
+		t.Fatalf("night frame = %+v ok=%v, want night_color_changed", nf, ok)
+	}
+	if nd, ok := nf.Data.(nightColorChangedWireDTO); !ok || nd.NightColor != "#101820" {
+		t.Errorf("night data = %#v, want #101820", nf.Data)
+	}
+
 	af, ok := TranslateEvent(&sim.AgentTicksPausedChanged{Paused: true})
 	if !ok || af.Type != "agent_ticks_paused_changed" {
 		t.Fatalf("agent-ticks frame = %+v ok=%v, want agent_ticks_paused_changed", af, ok)
