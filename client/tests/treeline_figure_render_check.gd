@@ -8,8 +8,9 @@ extends SceneTree
 ##
 ## A bright red 16x16 square with 8 px of transparent padding, drawn through
 ## the shader with a mid-grey tint at scale 8 on white, sampled over 4 s:
-##  - every drawn pixel is the tint, with no red from the sheet;
-##  - the waver draws some pixels outside the still square;
+##  - every drawn pixel is grey (the sheet's luminance on the tint), with no
+##    red from the sheet;
+##  - the sway draws some pixels outside the still square;
 ##  - modulate alpha 0 draws nothing (the fade-out).
 ## Both checks on colour and outline failed against the first shader, which
 ## multiplied by the fragment COLOR (texture colour at the unshifted UV).
@@ -42,7 +43,7 @@ func _initialize() -> void:
     _sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
     var mat := ShaderMaterial.new()
     mat.shader = TreelineFigure.FIGURE_SHADER
-    mat.set_shader_parameter("waver_px", 2.0)
+    mat.set_shader_parameter("sway_px", 1.0)
     # Mid grey, so a red cast from the sheet would show.
     mat.set_shader_parameter("tint", Color(0.5, 0.5, 0.5))
     _sprite.material = mat
@@ -76,7 +77,7 @@ func _run() -> void:
                     outside += 1
     _check("something was drawn (%d samples)" % drawn, drawn > 0)
     _check("no drawn pixel keeps the source red (%d)" % reddish, reddish == 0)
-    _check("the waver draws outside the still shape (%d samples)" % outside, outside > 0)
+    _check("the sway draws outside the still shape (%d samples)" % outside, outside > 0)
     _sprite.modulate.a = 0.0
     await create_timer(0.1).timeout
     await RenderingServer.frame_post_draw
