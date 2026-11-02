@@ -2270,6 +2270,9 @@ func _on_pc_sleep_started(actor_id: String, wake_at_iso: String) -> void:
     _pc_sleep_structure_label = _resolve_local_pc_structure_label()
     if sleep_fade != null and sleep_fade.has_method("fade_to_sleep"):
         sleep_fade.fade_to_sleep()
+    # The room window sits above the fade's layer; it darkens itself (LLM-890).
+    if interior_panel_layer != null:
+        interior_panel_layer.set_asleep(true)
     if top_bar != null and top_bar.has_method("set_sleep_state"):
         top_bar.set_sleep_state(true, _pc_sleep_structure_label, wake_at_iso)
     # Collapse the talk panel to its launcher chip — no one's going to
@@ -2297,6 +2300,8 @@ func _on_pc_sleep_ended(actor_id: String, _reason: String) -> void:
         return
     if sleep_fade != null and sleep_fade.has_method("fade_to_awake"):
         sleep_fade.fade_to_awake()
+    if interior_panel_layer != null:
+        interior_panel_layer.set_asleep(false)
     if top_bar != null and top_bar.has_method("set_sleep_state"):
         top_bar.set_sleep_state(false, "", "")
     if _dream_snippet_timer != null:
