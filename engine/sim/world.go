@@ -58,6 +58,11 @@ type WorldSettings struct {
 	Timezone     string
 	Location     *time.Location
 
+	// VillageMonthOverride, 1–12, makes the village believe it is that month
+	// (LLM-889): an operator test tool for seeing a season's look and weather
+	// out of season. 0 is off. See VillageMonthDay for what it reaches.
+	VillageMonthOverride int
+
 	// Client-side zoom floors — different for admins vs regular users.
 	// Pure UI config; the sim package carries the values so admin endpoints
 	// have one place to read/write.
@@ -2661,6 +2666,7 @@ func (w *World) republish() {
 		Phase:                         w.Phase,
 		LocalMinuteOfDay:              &localMin,
 		LocalDateUTC:                  orderDateUTC(now, w.Settings.Location),
+		VillageMonthOverride:          w.Settings.VillageMonthOverride,
 		LocalDateEndsAt:               VillageDateEndsAt(now, w.Settings.Location),
 		VillageUTCOffsetSeconds:       utcOffset,
 		VillageUTCOffsetUntil:         utcOffsetUntil,

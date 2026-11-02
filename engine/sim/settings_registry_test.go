@@ -43,6 +43,9 @@ func seedRoundTripSettings(t *testing.T, spec SettingSpec) WorldSettings {
 	switch spec.Kind {
 	case SettingKindInt:
 		seed = "37"
+		if spec.Key == "village_month_override" {
+			seed = "7"
+		}
 	case SettingKindDuration:
 		seed = "90"
 	case SettingKindBool:
@@ -125,6 +128,10 @@ func TestSettingRegistryRejectsBadValues(t *testing.T) {
 		{"visitor_passer_spawn_chance_permille", "-5", "0 or greater"},
 		{"tick_worker_count", "-2", "0 or greater"},
 		{"hunger_red_threshold", "-1", "0 or greater"},
+		// A calendar month or 0 (LLM-889).
+		{"village_month_override", "13", "month 1–12"},
+		{"village_month_override", "-1", "0 or greater"},
+		{"village_month_override", "jan", "whole number"},
 		{"world_dusk_time", "   ", "cannot be empty"},
 		{"world_timezone", "Mars/Olympus_Mons", "not a known timezone"},
 		// The client parses the night tint straight into a Color (LLM-842).

@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -140,5 +141,23 @@ func TestBuildSurroundings_TimeOfDay(t *testing.T) {
 	stBare := buildSurroundings(bare, "a1", bare.Actors["a1"])
 	if stBare.LocalMinuteOfDay != nil {
 		t.Errorf("LocalMinuteOfDay = %v, want nil when the snapshot has no clock", stBare.LocalMinuteOfDay)
+	}
+}
+
+// The weather month in perception follows the operator month override, so a
+// storm under a January override reads as snow in October (LLM-889).
+func TestBuildSurroundings_MonthOverride(t *testing.T) {
+	october := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	snap := &sim.Snapshot{
+		LocalDateUTC:         october,
+		VillageMonthOverride: 1,
+		Actors:               map[sim.ActorID]*sim.ActorSnapshot{"a1": {}},
+	}
+	if st := buildSurroundings(snap, "a1", snap.Actors["a1"]); st.Month != time.January {
+		t.Errorf("Month = %s, want January under the override", st.Month)
+	}
+	snap.VillageMonthOverride = 0
+	if st := buildSurroundings(snap, "a1", snap.Actors["a1"]); st.Month != time.October {
+		t.Errorf("Month = %s, want October with the override off", st.Month)
 	}
 }

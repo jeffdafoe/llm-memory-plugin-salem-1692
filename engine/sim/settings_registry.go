@@ -191,6 +191,21 @@ func pctSetting(key string, effect SettingEffect, field func(*WorldSettings) *in
 	return spec
 }
 
+// monthSetting is intSetting bounded to 0–12: a calendar month, or 0 for off
+// (LLM-889).
+func monthSetting(key string, effect SettingEffect, field func(*WorldSettings) *int) SettingSpec {
+	spec := intSetting(key, effect, field)
+	setInt := spec.set
+	spec.set = func(ws *WorldSettings, raw string) error {
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err == nil && n > 12 {
+			return fmt.Errorf("%s must be a month 1–12, or 0 for off, got %q", key, raw)
+		}
+		return setInt(ws, raw)
+	}
+	return spec
+}
+
 // durationSetting stores and reports the SCALAR (e.g. 90 for
 // max_warrant_age_seconds), matching the setting table. The unit comes from the
 // key suffix, so a key without one is a programming error and is rejected at

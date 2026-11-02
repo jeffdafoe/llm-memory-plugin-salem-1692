@@ -1462,11 +1462,10 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		LocalMinuteOfDay:  snap.LocalMinuteOfDay,
 		OnRound:           actorOnRound(a),
 	}
-	// The village month, so a winter storm reads as snow (LLM-850). A snapshot
-	// with no village date leaves it zero, and a storm there is rain.
-	if !snap.LocalDateUTC.IsZero() {
-		s.Month = snap.LocalDateUTC.Month()
-	}
+	// The village month, so a winter storm reads as snow (LLM-850), with the
+	// operator month override applied (LLM-889). A snapshot with no village
+	// date leaves it zero, and a storm there is rain.
+	s.Month, _ = snap.VillageMonthDay()
 	if item, source, animal, ok := findGatherableSourceCue(snap, actorID, a); ok {
 		s.GatherableFromAnimal = animal
 		s.GatherableItem = item

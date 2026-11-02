@@ -468,7 +468,7 @@ func _build_ui() -> void:
     if world != null:
         world.village_date_changed.connect(top_bar.set_village_date)
         world.village_hour_changed.connect(top_bar.set_village_hour)
-        top_bar.set_village_date(world.village_date, world.village_season)
+        top_bar.set_village_date(world.village_date, world.village_season, world.village_month_overridden)
         top_bar.set_village_hour(world.village_hour)
 
     # Config panel — full-screen overlay on a higher CanvasLayer
