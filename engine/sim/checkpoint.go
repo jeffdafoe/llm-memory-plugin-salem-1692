@@ -62,6 +62,9 @@ type CheckpointSnapshot struct {
 	// DoorNotes — every door note (LLM-19), read or not, cloned and upserted (NO
 	// sweep) by SaveWorld.
 	DoorNotes map[DoorNoteID]*DoorNote
+	// StoryProgress — each player's story beats (LLM-892), deep-cloned and
+	// written with the generation-marker sweep by SaveWorld.
+	StoryProgress map[ActorID]map[StoryMissionID]*StoryProgress
 	// ContactPairs — the per-pair conversational recency trail (LLM-547),
 	// flattened to ordered-pair rows and upserted into actor_contact by
 	// SaveWorld. Like RecurringVisitors this is a plain upsert with NO
@@ -218,6 +221,7 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			cp.DoorNotes[id] = n.Clone()
 		}
 	}
+	cp.StoryProgress = CloneStoryProgress(w.StoryProgress)
 	// LLM-547: flatten the per-pair contact ledger. FlattenContactLedger copies
 	// every trail slice, so the durable write off the world goroutine can never
 	// walk a slice a later Speak is appending to.

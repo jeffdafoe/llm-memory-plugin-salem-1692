@@ -28,6 +28,7 @@ type Repository struct {
 	RecurringVisitors    RecurringVisitorsRepo
 	CourtCases           CourtCasesRepo
 	DoorNotes            DoorNotesRepo
+	Story                StoryRepo
 	Contacts             ContactsRepo
 	CoinRecords          CoinRecordsRepo
 
@@ -255,6 +256,17 @@ type CourtCasesRepo interface {
 type DoorNotesRepo interface {
 	LoadUnread(ctx context.Context) (map[DoorNoteID]*DoorNote, error)
 	SaveSnapshot(ctx context.Context, tx Tx, notes map[DoorNoteID]*DoorNote) error
+}
+
+// StoryRepo loads the story catalog and loads + checkpoints each player's
+// story progress (LLM-892). LoadMissions reads story_mission, reference data
+// the engine never writes. SaveSnapshot writes pc_story_mission with the
+// generation-marker sweep, so a player's rows dropped by a reset are deleted.
+// Both loads run at FinalizeLoad.
+type StoryRepo interface {
+	LoadMissions(ctx context.Context) (map[StoryMissionID]*StoryMission, error)
+	LoadProgress(ctx context.Context) (map[ActorID]map[StoryMissionID]*StoryProgress, error)
+	SaveSnapshot(ctx context.Context, tx Tx, progress map[ActorID]map[StoryMissionID]*StoryProgress) error
 }
 
 // ContactsRepo loads + checkpoints the per-pair conversational recency trail

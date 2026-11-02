@@ -500,6 +500,13 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Kind:   e.Kind,
 			Detail: detail,
 		}}, true
+	case *sim.StoryChanged:
+		// LLM-892: a player's whole story view, to that player's sockets only.
+		// Same no-login drop as client_trigger: an empty Target broadcasts.
+		if e.Login == "" {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "story_changed", Target: e.Login, Data: storyWire(e.View)}, true
 	case *sim.PCIdlePromptShown:
 		// LLM-466: this PC's client has gone an hour without input, so it no
 		// longer counts as an audience. The client raises the candle overlay; a

@@ -31,6 +31,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	recurringVisitors := NewRecurringVisitorsRepo()
 	courtCases := NewCourtCasesRepo()
 	doorNotes := NewDoorNotesRepo()
+	story := NewStoryRepo()
 	contacts := NewContactsRepo()
 	h := &Handles{
 		Actors:               actors,
@@ -51,6 +52,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		RecurringVisitors:    recurringVisitors,
 		CourtCases:           courtCases,
 		DoorNotes:            doorNotes,
+		Story:                story,
 		Contacts:             contacts,
 	}
 	return sim.Repository{
@@ -72,6 +74,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		RecurringVisitors:    recurringVisitors,
 		CourtCases:           courtCases,
 		DoorNotes:            doorNotes,
+		Story:                story,
 		Contacts:             contacts,
 		ActionLog:            noopActionLog{},
 		TickTelemetry:        noopTickTelemetry{},
@@ -104,6 +107,7 @@ type Handles struct {
 	RecurringVisitors    *RecurringVisitorsRepo
 	CourtCases           *CourtCasesRepo
 	DoorNotes            *DoorNotesRepo
+	Story                *StoryRepo
 	Contacts             *ContactsRepo
 }
 

@@ -129,6 +129,10 @@ type pcMeResponse struct {
 	// Camp is the PC's pitched camp (LLM-798) — the pack's "Tent — pitched by
 	// the Inn" row with its Strike button. Absent when the tent is in the pack.
 	Camp *pcCampDTO `json:"camp,omitempty"`
+	// Story is the player's story (LLM-892): Standing, rank, the open beat and
+	// the popups not yet closed. Same shape as the story_changed frame. Absent
+	// when the player has no story rows.
+	Story *storyWireDTO `json:"story,omitempty"`
 	// VacantRooms names the bedrooms nobody has taken at the building the PC
 	// is in, when it has an upstairs hall the client draws (LLM-801) — those
 	// doors stand open. Absent anywhere else (and when every room is let).
@@ -317,6 +321,9 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 
 	resp.Lodging = pcLodgingSurface(snap, pc)
 	resp.Camp = pcCampSurface(snap, pcID)
+	if view, ok := snap.StoryViews[pcID]; ok {
+		resp.Story = storyWire(view)
+	}
 	if pc.InsideStructureID != "" && roomlayout.ForRoom(string(pc.InsideStructureID), sim.HallRoomName) != nil {
 		resp.VacantRooms = sim.VacantRooms(snap, pc.InsideStructureID)
 		resp.MyRoom = sim.HeldRoomName(snap, pc, pc.InsideStructureID)

@@ -441,6 +441,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/camp/pitch", s.requireAuth(s.handlePCCampPitch))
 	mux.HandleFunc("POST /api/village/pc/camp/strike", s.requireAuth(s.handlePCCampStrike))
 	mux.HandleFunc("POST /api/village/pc/camp/light", s.requireAuth(s.handlePCCampLight))
+	// LLM-892: the player closed a story popup.
+	mux.HandleFunc("POST /api/village/pc/story/seen", s.requireAuth(s.handlePCStorySeen))
 	// Admin world-config read (ZBBS-WORK-363) — the config panel's populate
 	// fetch. Admin-only despite being a GET: requireAuth + an in-command
 	// IsAdmin gate (adminCommand inside handleConfig), so it stays off the

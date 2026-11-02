@@ -37,6 +37,11 @@ type Snapshot struct {
 	// out.
 	DoorNotes map[DoorNoteID]*DoorNote
 
+	// StoryViews is each player's story view (LLM-892), built fresh by
+	// republish with BuildStoryView, so /pc/me reads it as is. Only players
+	// with a login and at least one story row appear.
+	StoryViews map[ActorID]StoryView
+
 	// Quotes is the published snapshot of World.Quotes — every scene
 	// quote in the world (active and terminal), deep-cloned via
 	// CloneSceneQuote so snapshot readers can't reach back into world
