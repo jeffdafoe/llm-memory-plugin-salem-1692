@@ -123,6 +123,11 @@ type Snapshot struct {
 	// host UTC day then.
 	LocalDateUTC time.Time
 
+	// VillageMonthOverride is WorldSettings.VillageMonthOverride at publish
+	// (LLM-889), 0 when off. Read the village month through VillageMonthDay,
+	// not LocalDateUTC.Month(), so the override reaches it.
+	VillageMonthOverride int
+
 	// LocalDateEndsAt is the instant the village's current calendar date ends —
 	// the next local midnight in WorldSettings.Location (LLM-840), computed at
 	// publish so a DST night is the right length. The world read hands it to
@@ -393,6 +398,16 @@ type Snapshot struct {
 	// (InstallSprite), never by writing the published one. nil only before the
 	// first LoadWorld.
 	Sprites map[SpriteID]*Sprite
+}
+
+// VillageMonthDay is the village's calendar month and day at publish, with the
+// operator month override applied (LLM-889); the snapshot form of the World's
+// VillageMonthDay. Zero month on a snapshot with no LocalDateUTC.
+func (s *Snapshot) VillageMonthDay() (time.Month, int) {
+	if s.LocalDateUTC.IsZero() {
+		return 0, 0
+	}
+	return OverrideVillageMonth(s.LocalDateUTC.Month(), s.LocalDateUTC.Day(), s.VillageMonthOverride)
 }
 
 // WithActor returns a shallow copy of the snapshot with one actor's entry

@@ -642,13 +642,16 @@ const MONTH_NAMES := ["January", "February", "March", "April", "May", "June",
 
 var _title_date: String = ""
 var _title_season: String = ""
+var _title_month_overridden: bool = false
 var _title_hour: int = -1
 
 ## Show the village date and season in the title (LLM-840). village_date is
-## the world read's "1692-10-22", season its "autumn".
-func set_village_date(village_date: String, season: String) -> void:
+## the world read's "1692-10-22", season its "autumn". month_overridden marks
+## the date while the operator month override is on (LLM-889).
+func set_village_date(village_date: String, season: String, month_overridden: bool = false) -> void:
     _title_date = village_date
     _title_season = season
+    _title_month_overridden = month_overridden
     _refresh_title()
 
 ## Show the village's hour in the title (LLM-854); -1 leaves it off.
@@ -665,6 +668,8 @@ func _refresh_title() -> void:
         return
     var date := date_line(_title_date)
     _title_stack.visible = date != ""
+    if date != "" and _title_month_overridden:
+        date += " (override)"
     date_label.text = date
     var hour := hour_text(_title_hour)
     var season := season_name(_title_season)

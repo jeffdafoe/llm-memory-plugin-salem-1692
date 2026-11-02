@@ -104,6 +104,11 @@ type WorldStateDTO struct {
 	// village clock. Additive — no contract_version bump (LLM-840).
 	VillageDate string `json:"village_date,omitempty"`
 	Season      string `json:"season,omitempty"`
+	// VillageMonthOverridden is true while the operator month override is on
+	// (LLM-889); VillageDate and Season then carry the override month, and the
+	// client marks the title date so the override is not left on unseen.
+	// Omitted when off. Additive — no contract_version bump.
+	VillageMonthOverridden bool `json:"village_month_overridden,omitempty"`
 	// VillageDateEndsAt is when that date ends (the next local midnight, UTC
 	// instant), so the client re-reads the world then rather than polling.
 	// Omitted with VillageDate.

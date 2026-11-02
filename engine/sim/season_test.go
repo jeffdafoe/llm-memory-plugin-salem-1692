@@ -49,6 +49,88 @@ func TestVillageMonthDay_NoLocationReadsTheInstant(t *testing.T) {
 	}
 }
 
+func TestOverrideVillageMonth(t *testing.T) {
+	cases := []struct {
+		name     string
+		month    time.Month
+		day      int
+		override int
+		wantM    time.Month
+		wantDay  int
+	}{
+		{"off", time.October, 31, 0, time.October, 31},
+		{"January", time.November, 2, 1, time.January, 2},
+		{"day kept when it fits", time.October, 30, 12, time.December, 30},
+		{"day cut to the month's end", time.October, 31, 11, time.November, 30},
+		{"1692 is a leap year", time.October, 31, 2, time.February, 29},
+		{"out of range reads as off", time.October, 22, 13, time.October, 22},
+		{"negative reads as off", time.October, 22, -1, time.October, 22},
+	}
+	for _, tc := range cases {
+		m, day := OverrideVillageMonth(tc.month, tc.day, tc.override)
+		if m != tc.wantM || day != tc.wantDay {
+			t.Errorf("%s: OverrideVillageMonth(%s %d, %d) = %s %d, want %s %d",
+				tc.name, tc.month, tc.day, tc.override, m, day, tc.wantM, tc.wantDay)
+		}
+	}
+}
+
+// The override reaches every World-side reader of the village month: here the
+// date the prose prompts are written with (LLM-889).
+func TestVillageMonthDay_OverrideReachesTheProseDate(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tz data unavailable: %v", err)
+	}
+	w := newAtmosphereTestWorld(t)
+	w.Settings.Location = loc
+	w.Settings.VillageMonthOverride = 1
+	v := runAtmosphereCmd(t, w, FetchVillageContext(time.Date(2026, 10, 23, 2, 0, 0, 0, time.UTC)))
+	ctx, ok := v.(VillageContext)
+	if !ok {
+		t.Fatalf("FetchVillageContext returned %T, want VillageContext", v)
+	}
+	if ctx.Month != time.January || ctx.Day != 22 {
+		t.Errorf("context date = %s %d, want January 22 (override month, village-local day)", ctx.Month, ctx.Day)
+	}
+}
+
+// The snapshot carries the override beside the real date: the village month
+// follows the override, LocalDateUTC (the order book's "today") does not.
+func TestSnapshotVillageMonthDay(t *testing.T) {
+	realDate := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		snap    Snapshot
+		wantM   time.Month
+		wantDay int
+	}{
+		{"no village clock", Snapshot{VillageMonthOverride: 1}, 0, 0},
+		{"off", Snapshot{LocalDateUTC: realDate}, time.October, 31},
+		{"February", Snapshot{LocalDateUTC: realDate, VillageMonthOverride: 2}, time.February, 29},
+	}
+	for _, tc := range cases {
+		m, day := tc.snap.VillageMonthDay()
+		if m != tc.wantM || day != tc.wantDay {
+			t.Errorf("%s: VillageMonthDay = %s %d, want %s %d", tc.name, m, day, tc.wantM, tc.wantDay)
+		}
+	}
+
+	w := newAtmosphereTestWorld(t)
+	w.Settings.VillageMonthOverride = 1
+	w.republish()
+	snap := w.Published()
+	if snap.VillageMonthOverride != 1 {
+		t.Errorf("published VillageMonthOverride = %d, want 1", snap.VillageMonthOverride)
+	}
+	if m, _ := snap.VillageMonthDay(); m != time.January {
+		t.Errorf("published village month = %s, want January", m)
+	}
+	if got, want := snap.LocalDateUTC, orderDateUTC(snap.PublishedAt, w.Settings.Location); !got.Equal(want) {
+		t.Errorf("LocalDateUTC = %s, want the real date %s", got, want)
+	}
+}
+
 func TestVillageDateScene(t *testing.T) {
 	cases := []struct {
 		month time.Month

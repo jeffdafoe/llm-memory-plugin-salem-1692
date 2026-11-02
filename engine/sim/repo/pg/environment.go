@@ -239,6 +239,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 		s.Timezone = sim.DefaultTimezone
 		s.Location, _ = time.LoadLocation(sim.DefaultTimezone)
 	}
+	s.VillageMonthOverride = parseIntSetting(values, "village_month_override", 0)
 
 	s.ZoomMinAdmin = parseFloatSetting(values, "world_zoom_min_admin", sim.DefaultZoomMinAdmin)
 	s.ZoomMinRegular = parseFloatSetting(values, "world_zoom_min_regular", sim.DefaultZoomMinRegular)

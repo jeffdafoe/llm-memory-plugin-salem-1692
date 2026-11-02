@@ -13,6 +13,7 @@ extends SceneTree
 
 const TESTS := [
     "_test_title_shows_the_date",
+    "_test_title_marks_the_month_override",
     "_test_title_shows_the_season",
     "_test_title_shows_the_hour",
     "_test_village_clock_from_a_read",
@@ -100,6 +101,22 @@ func _test_title_shows_the_date() -> void:
     _check("the date stack shows", bar._title_stack.visible, true)
     _check("the date line", bar.date_label.text, "22 October")
     _check("no hour or season: no second line", bar._title_when.visible, false)
+    bar.free()
+    _done()
+
+
+## While the operator month override is on (LLM-889) the date line says so,
+## so the override is not left on unseen; off again, the mark goes.
+func _test_title_marks_the_month_override() -> void:
+    var bar: Control = _top_bar.new()
+    root.add_child(bar)
+    bar.set_village_date("1692-01-02", "winter", true)
+    _check("marked while overridden", bar.date_label.text, "2 January (override)")
+    bar.set_village_date("1692-11-02", "autumn", false)
+    _check("unmarked when off", bar.date_label.text, "2 November")
+    bar.set_village_date("", "winter", true)
+    _check("no date, no mark", bar.date_label.text, "")
+    _check("no date, stack hidden", bar._title_stack.visible, false)
     bar.free()
     _done()
 

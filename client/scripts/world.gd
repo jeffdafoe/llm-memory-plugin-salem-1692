@@ -25,8 +25,9 @@ signal npc_list_changed
 signal world_ready
 
 ## The village date ("1692-10-22") or season changed on a /api/village/world
-## read (LLM-840). The top bar shows the date in its title.
-signal village_date_changed(village_date: String, season: String)
+## read (LLM-840). The top bar shows the date in its title, marked while the
+## operator month override is on (month_overridden, LLM-889).
+signal village_date_changed(village_date: String, season: String, month_overridden: bool)
 
 ## The village's hour (0–23, -1 unknown) turned (LLM-854). The top bar shows it
 ## in its title.
@@ -198,6 +199,7 @@ var dusk_time_str: String = "19:00"
 # can still show them.
 var village_date: String = ""
 var village_season: String = ""
+var village_month_overridden: bool = false
 
 # How much snow lies on the village (LLM-850): "none" | "dusting" | "light" |
 # "deep", from the world read's snow_tier and the snow_tier_changed frame. It
@@ -2333,7 +2335,8 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     # sooner, when the village's UTC offset changes that day (LLM-854).
     village_date = str(json.get("village_date", ""))
     village_season = str(json.get("season", ""))
-    village_date_changed.emit(village_date, village_season)
+    village_month_overridden = json.get("village_month_overridden", false) == true
+    village_date_changed.emit(village_date, village_season, village_month_overridden)
     _set_village_clock(str(json.get("now", "")), json.get("village_utc_offset_seconds", null))
     # The snow tier sets the ground with the season (LLM-850), and the season
     # turns a storm to snow — so both land before the weather below.
