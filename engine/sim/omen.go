@@ -142,10 +142,15 @@ type ArmedOmen struct {
 // Popups are the omens a player has met and not yet closed in the story popup
 // (LLM-845): kept here, in the same checkpoint as the omen, so a player who
 // left sees them at the next login.
+//
+// LastKind is the kind of each subject's latest omen (LLM-897), so the
+// household's want for a ward can say what went wrong. A subject stamped before
+// it existed has a LastAt and no LastKind; readers fall back to a plain line.
 type OmenRecord struct {
-	Armed  []ArmedOmen             `json:"armed,omitempty"`
-	LastAt map[ActorID]time.Time   `json:"last_at,omitempty"`
-	Popups map[ActorID][]OmenPopup `json:"popups,omitempty"`
+	Armed    []ArmedOmen             `json:"armed,omitempty"`
+	LastAt   map[ActorID]time.Time   `json:"last_at,omitempty"`
+	LastKind map[ActorID]OmenKind    `json:"last_kind,omitempty"`
+	Popups   map[ActorID][]OmenPopup `json:"popups,omitempty"`
 }
 
 // OmenPopup is one omen a player met, as their story popup shows it.
@@ -158,7 +163,7 @@ type OmenPopup struct {
 // Clone returns a deep copy, so a published snapshot never aliases the world's
 // record.
 func (r OmenRecord) Clone() OmenRecord {
-	out := OmenRecord{Armed: slices.Clone(r.Armed), LastAt: maps.Clone(r.LastAt)}
+	out := OmenRecord{Armed: slices.Clone(r.Armed), LastAt: maps.Clone(r.LastAt), LastKind: maps.Clone(r.LastKind)}
 	if len(r.Popups) > 0 {
 		out.Popups = make(map[ActorID][]OmenPopup, len(r.Popups))
 		for id, list := range r.Popups {
@@ -455,7 +460,7 @@ func takeArmedOmen(w *World, kind OmenKind, subject ActorID, now time.Time) bool
 		return false
 	}
 	if storyOmenDue(w, subject, kind) {
-		stampOmenLastAt(w, subject, now)
+		stampOmenLastAt(w, subject, kind, now)
 		return true
 	}
 	chance := w.Settings.OmenChancePermille
@@ -471,17 +476,21 @@ func takeArmedOmen(w *World, kind OmenKind, subject ActorID, now time.Time) bool
 			continue
 		}
 		w.Environment.Omens.Armed = append(w.Environment.Omens.Armed[:i], w.Environment.Omens.Armed[i+1:]...)
-		stampOmenLastAt(w, subject, now)
+		stampOmenLastAt(w, subject, kind, now)
 		return true
 	}
 	return false
 }
 
-func stampOmenLastAt(w *World, subject ActorID, now time.Time) {
+func stampOmenLastAt(w *World, subject ActorID, kind OmenKind, now time.Time) {
 	if w.Environment.Omens.LastAt == nil {
 		w.Environment.Omens.LastAt = map[ActorID]time.Time{}
 	}
 	w.Environment.Omens.LastAt[subject] = now
+	if w.Environment.Omens.LastKind == nil {
+		w.Environment.Omens.LastKind = map[ActorID]OmenKind{}
+	}
+	w.Environment.Omens.LastKind[subject] = kind
 }
 
 // noticeOmen records an omen that just happened: the first-hand rumor for the

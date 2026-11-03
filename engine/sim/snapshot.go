@@ -246,6 +246,10 @@ type Snapshot struct {
 	StallWearRepairThreshold  int
 	StallWearDegradeThreshold int
 	StallNailsPerRepair       int
+	// OmenWardWantDays mirrors the WorldSettings knob (LLM-897) so the ward
+	// cue reads the same window the setting holds; perception resolves it
+	// through OmenWardWantWindow (0 or less → the default).
+	OmenWardWantDays int
 	// EquipmentServiceDueThreshold is the LLM-648 due level for the wright's
 	// equipment service; 0 = the mechanism is off (nothing is ever due).
 	EquipmentServiceDueThreshold int

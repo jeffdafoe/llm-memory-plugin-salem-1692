@@ -265,6 +265,12 @@ const (
 	// is someone else (a hearth stoked by a hired hand). Durable payload {kind,
 	// text, subject} so the night's dream and the day notes record it.
 	ActionTypeNoticedOmen ActionType = "noticed_omen"
+
+	// ActionTypePlacedWard — a villager put a ward up at home (LLM-897,
+	// ward_household.go): the horseshoe over the door. ActorID is the villager;
+	// Text is what they did (WardLogText). Durable payload {item, text} so the
+	// night's dream records it. Players' wards write no row.
+	ActionTypePlacedWard ActionType = "placed_ward"
 )
 
 // isNegotiationActionType reports whether t is one of the pay-ledger negotiation

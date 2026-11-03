@@ -157,6 +157,10 @@ func TestTakeArmedOmen(t *testing.T) {
 	if !w.Environment.Omens.LastAt["elizabeth"].Equal(now) {
 		t.Errorf("cooldown stamp = %v, want %v", w.Environment.Omens.LastAt["elizabeth"], now)
 	}
+	// LLM-897: the kind is kept beside the stamp, for the household's want.
+	if got := w.Environment.Omens.LastKind["elizabeth"]; got != OmenSourMilk {
+		t.Errorf("last kind = %q, want %q", got, OmenSourMilk)
+	}
 	if takeArmedOmen(w, OmenFoulWell, "john", now.Add(2*time.Hour)) {
 		t.Error("claimed a lapsed omen")
 	}
@@ -164,13 +168,15 @@ func TestTakeArmedOmen(t *testing.T) {
 
 func TestOmenRecordCloneIsDeep(t *testing.T) {
 	src := OmenRecord{
-		Armed:  []ArmedOmen{{Kind: OmenSourMilk, SubjectID: "elizabeth"}},
-		LastAt: map[ActorID]time.Time{"john": time.Unix(1, 0)},
+		Armed:    []ArmedOmen{{Kind: OmenSourMilk, SubjectID: "elizabeth"}},
+		LastAt:   map[ActorID]time.Time{"john": time.Unix(1, 0)},
+		LastKind: map[ActorID]OmenKind{"john": OmenFoulWell},
 	}
 	cp := src.Clone()
 	src.Armed[0].SubjectID = "changed"
 	src.LastAt["john"] = time.Unix(2, 0)
-	if cp.Armed[0].SubjectID != "elizabeth" || !cp.LastAt["john"].Equal(time.Unix(1, 0)) {
+	src.LastKind["john"] = OmenSourMilk
+	if cp.Armed[0].SubjectID != "elizabeth" || !cp.LastAt["john"].Equal(time.Unix(1, 0)) || cp.LastKind["john"] != OmenFoulWell {
 		t.Fatalf("clone aliases the source: %+v", cp)
 	}
 }
@@ -256,11 +262,11 @@ func TestOmenTextNeverSaysWitch(t *testing.T) {
 // them, and the checkpoint persists them.
 func TestOmenSettingsOnTheUmbilical(t *testing.T) {
 	ws := &WorldSettings{OmenChancePermille: 250, OmenCooldownDays: 7, OmenLapseHours: 24,
-		OmenPCChancePermille: 150, OmenWardHorseshoePermille: 500, OmenWardWitchBottlePermille: 500}
+		OmenPCChancePermille: 150, OmenWardHorseshoePermille: 500, OmenWardWitchBottlePermille: 500, OmenWardWantDays: 7}
 	all := ReadAllSettings(ws)
 	persisted := PersistableSettingRows(ws)
 	for key, want := range map[string]string{"omen_chance_permille": "250", "omen_cooldown_days": "7", "omen_lapse_hours": "24",
-		"omen_pc_chance_permille": "150", "omen_ward_horseshoe_permille": "500", "omen_ward_witch_bottle_permille": "500"} {
+		"omen_pc_chance_permille": "150", "omen_ward_horseshoe_permille": "500", "omen_ward_witch_bottle_permille": "500", "omen_ward_want_days": "7"} {
 		if all[key] != want {
 			t.Errorf("settings `all`[%s] = %q, want %q", key, all[key], want)
 		}

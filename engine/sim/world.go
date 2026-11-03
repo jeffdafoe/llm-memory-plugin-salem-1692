@@ -362,6 +362,10 @@ type WorldSettings struct {
 	OmenPCChancePermille        int
 	OmenWardHorseshoePermille   int
 	OmenWardWitchBottlePermille int
+	// OmenWardWantDays (LLM-897): how many days after its latest omen a
+	// villager household wants a ward for the house (0 or less keeps the
+	// default; ward_household.go).
+	OmenWardWantDays int
 
 	// Snow cover (LLM-850, snow.go): how fast it builds in a winter storm and
 	// melts by day and by night (×100 per minute), and the whole-unit cover at
@@ -2718,6 +2722,7 @@ func (w *World) republish() {
 		StallWearDegradeThreshold:     w.Settings.StallWearDegradeThreshold,
 		EquipmentServiceDueThreshold:  w.Settings.EquipmentServiceDueThreshold,
 		StallNailsPerRepair:           w.Settings.StallNailsPerRepair,
+		OmenWardWantDays:              w.Settings.OmenWardWantDays,
 		StallDegradedProducePct:       w.Settings.StallDegradedProducePct,
 		HearthLowMinutes:              w.Settings.HearthLowMinutes,
 		StokeWoodPerStoke:             w.Settings.StokeWoodPerStoke,

@@ -109,6 +109,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleHiredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleLaborResolvedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOmenNoticedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleWardPlacedActionLog))
 	// Cadence contract, phase one — default now, settings-resolved interval once the
 	// goroutine can read it (LLM-395; see RegisterIdleBackstop).
 	w.RegisterTicker("action_log", defaultActionLogSweepInterval)
@@ -673,6 +674,44 @@ func handleOmenNoticedActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    omen.HuddleID,
+		Source:      src,
+	})
+}
+
+// handleWardPlacedActionLog appends a villager's row when they put a ward up at
+// home (LLM-897). A player's ward (placed from Your Pack at a tent) writes none:
+// the story beat is that path's record.
+func handleWardPlacedActionLog(w *sim.World, evt sim.Event) {
+	placed, ok := evt.(*sim.WardPlaced)
+	if !ok {
+		return
+	}
+	actor := w.Actors[placed.ActorID]
+	if actor == nil || actor.Kind == sim.KindPC {
+		return
+	}
+	text := sim.WardLogText(placed.Item)
+	if text == "" {
+		return
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:    placed.ActorID,
+		OccurredAt: placed.At,
+		ActionType: sim.ActionTypePlacedWard,
+		Text:       text,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append placed_ward (actor %q event %d): %v",
+			placed.ActorID, placed.EventID(), err)
+		return
+	}
+	display, src := actorDisplayAndSource(w, placed.ActorID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     placed.ActorID,
+		OccurredAt:  placed.At,
+		ActionType:  sim.ActionTypePlacedWard,
+		Payload:     map[string]any{"item": string(placed.Item), "text": text},
+		SpeakerName: display,
 		Source:      src,
 	})
 }
