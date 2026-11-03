@@ -35,6 +35,8 @@ const TESTS := [
     "_test_food_and_drink_rows",
     "_test_lantern_rows",
     "_test_close_button_closes",
+    "_test_description_box",
+    "_test_description_box_real_clicks",
 ]
 
 const ITEMS := [
@@ -606,3 +608,102 @@ func _test_close_button_closes() -> void:
         _check("%d rows: closed once" % items.size(), closed[0], 1)
         p.free()
     _done()
+
+
+## The description boxes on the panel, in order: their texts.
+func _descriptions(p: Control) -> Array:
+    var out: Array = []
+    for child in p._content.get_children():
+        if child.is_queued_for_deletion() or not (child is PanelContainer):
+            continue
+        out.append((child.get_child(0) as Label).text)
+    return out
+
+
+## The name Label of the row whose name is row_label, or null.
+func _name_label(p: Control, row_label: String) -> Label:
+    for child in p._content.get_children():
+        if child.is_queued_for_deletion() or not (child is HBoxContainer):
+            continue
+        for c in child.get_children():
+            if c is Label:
+                if c.text == row_label:
+                    return c
+                break
+    return null
+
+
+## LLM-894: a tap on a described good's name opens its description under the
+## row; a second tap closes it, a tap on another opens that one instead, and it
+## stays open across a poll. A good with no description has no tappable name.
+func _test_description_box() -> void:
+    var p: Control = load(PANEL_PATH).new()
+    root.add_child(p)
+    var items := [
+        {"item_kind": "bread", "display_label": "Bread", "quantity": 2, "category": "food", "actions": ["eat"],
+            "description": "A round loaf."},
+        {"item_kind": "tent", "display_label": "Tent", "quantity": 1, "category": "gear", "actions": ["pitch"],
+            "description": "A canvas tent."},
+        {"item_kind": "nail", "display_label": "Nails", "quantity": 3, "category": "tool", "actions": []},
+    ]
+    p.set_inventory(items)
+    p.show_at(Rect2(600, 0, 32, 32))
+    _check("closed at first", _descriptions(p), [])
+    _check("a described name takes taps", _name_label(p, "Bread").mouse_filter, Control.MOUSE_FILTER_STOP)
+    _check("a name with no description does not", _name_label(p, "Nails").mouse_filter, Control.MOUSE_FILTER_IGNORE)
+
+    var tap := InputEventMouseButton.new()
+    tap.button_index = MOUSE_BUTTON_LEFT
+    tap.pressed = true
+    _name_label(p, "Bread").gui_input.emit(tap)
+    _check("a tap opens it", _descriptions(p), ["A round loaf."])
+    _check("the box sits under its row", p._content.get_child(p._content.get_children().find(_name_label(p, "Bread").get_parent()) + 1) is PanelContainer, true)
+    _check("the rows keep their buttons", _rows(p).get("Bread"), ["Eat"])
+    _name_label(p, "Tent").gui_input.emit(tap)
+    _check("a tap on another opens that one instead", _descriptions(p), ["A canvas tent."])
+    p.set_inventory(items)
+    _check("a poll keeps it open", _descriptions(p), ["A canvas tent."])
+    _name_label(p, "Tent").gui_input.emit(tap)
+    _check("a second tap closes it", _descriptions(p), [])
+    _name_label(p, "Bread").gui_input.emit(tap)
+    p.close()
+    p.show_at(Rect2(600, 0, 32, 32))
+    _check("closing the pack closes it", _descriptions(p), [])
+    p.free()
+    _done()
+
+
+## LLM-894: real clicks through the viewport's GUI dispatch. The tapped name
+## is freed by the rebuild its own click starts; the next click must find the
+## rebuilt name and close the box, without an engine error or a close of the
+## pack.
+func _test_description_box_real_clicks() -> void:
+    var p: Control = load(PANEL_PATH).new()
+    root.add_child(p)
+    p.set_inventory([{"item_kind": "bread", "display_label": "Bread", "quantity": 2, "category": "food",
+        "actions": ["eat"], "description": "A round loaf."}])
+    p.show_at(Rect2(600, 0, 32, 32))
+    await process_frame
+    await process_frame
+    _click(_name_label(p, "Bread").get_global_rect().get_center())
+    await process_frame
+    await process_frame
+    _check("a real click opens it", _descriptions(p), ["A round loaf."])
+    _check("the pack stays open", p.visible, true)
+    _click(_name_label(p, "Bread").get_global_rect().get_center())
+    await process_frame
+    await process_frame
+    _check("a second real click on the rebuilt name closes it", _descriptions(p), [])
+    _check("the pack still stays open", p.visible, true)
+    p.free()
+    _done()
+
+
+func _click(at: Vector2) -> void:
+    for pressed in [true, false]:
+        var ev := InputEventMouseButton.new()
+        ev.button_index = MOUSE_BUTTON_LEFT
+        ev.pressed = pressed
+        ev.position = at
+        ev.global_position = at
+        root.push_input(ev, true)

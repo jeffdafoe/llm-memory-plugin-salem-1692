@@ -204,6 +204,9 @@ type pcInventoryEntry struct {
 	// CandleLeftMinutes is the part-burned candle kept by Put out (LLM-846), on
 	// the lantern's row only, rounded up so any stub shows; omitted when none.
 	CandleLeftMinutes int `json:"candle_left_minutes,omitempty"`
+	// Description is the good's catalog prose (item_kind.description), shown
+	// when the player taps the row (LLM-894); omitted when the good has none.
+	Description string `json:"description,omitempty"`
 }
 
 // pcHuddleMember is one co-present actor in the PC's conversational scope.
@@ -976,6 +979,7 @@ func pcInventoryEntries(st sim.PackState, catalog map[sim.ItemKind]*sim.ItemKind
 			e.Category = string(def.Category)
 			e.Capabilities = def.Capabilities
 			e.Actions = sim.ItemActions(def, st, now)
+			e.Description = def.Description
 		}
 		if kind == sim.HornLanternKind && st.LanternCandleLeft > 0 {
 			e.CandleLeftMinutes = int((st.LanternCandleLeft + time.Minute - 1) / time.Minute)
@@ -1024,8 +1028,12 @@ func pcPackEntries(st sim.PackState, catalog map[sim.ItemKind]*sim.ItemKindDef,
 		return out
 	}
 	label := "Tent"
-	if def := catalog[sim.TentItemKind]; def != nil && def.DisplayLabel != "" {
-		label = def.DisplayLabel
+	description := ""
+	if def := catalog[sim.TentItemKind]; def != nil {
+		if def.DisplayLabel != "" {
+			label = def.DisplayLabel
+		}
+		description = def.Description
 	}
 	label += " — pitched"
 	if place := sim.CampPlaceLabel(objects, structures, camp.Tent); place != "" {
@@ -1036,5 +1044,6 @@ func pcPackEntries(st sim.PackState, catalog map[sim.ItemKind]*sim.ItemKindDef,
 		DisplayLabel: label,
 		Actions:      []string{sim.ItemActionStrike},
 		Pitched:      true,
+		Description:  description,
 	})
 }

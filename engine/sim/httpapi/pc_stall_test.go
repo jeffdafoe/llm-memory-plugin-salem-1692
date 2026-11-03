@@ -19,7 +19,7 @@ func stallWorld(t *testing.T) *sim.World {
 	w := seededWorld(t)
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
-			"nail":    {Name: "nail", DisplayLabel: "Nails"},
+			"nail":    {Name: "nail", DisplayLabel: "Nails", Description: "Square iron nails."},
 			"sage":    {Name: "sage"},
 			"skillet": {Name: "skillet", DisplayLabel: "Skillet"},
 			"flour":   {Name: "flour", DisplayLabel: "Flour"},
@@ -59,8 +59,9 @@ func TestHandlePCStall_ShelfTiersAndOrder(t *testing.T) {
 		t.Errorf("structure_id = %q, want stall", res.StructureID)
 	}
 	// Sorted by label; sage has no catalog label and falls back to its kind.
+	// Only the nail has a description (LLM-894); the rest carry none.
 	want := []pcStallWareDTO{
-		{Item: "nail", DisplayLabel: "Nails", Stock: stallStockPlenty},
+		{Item: "nail", DisplayLabel: "Nails", Stock: stallStockPlenty, Description: "Square iron nails."},
 		{Item: "skillet", DisplayLabel: "Skillet", Stock: stallStockOne},
 		{Item: "sage", DisplayLabel: "sage", Stock: stallStockFew},
 	}

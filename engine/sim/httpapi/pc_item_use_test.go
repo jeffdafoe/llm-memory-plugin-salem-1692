@@ -37,6 +37,22 @@ func TestPCInventoryEntriesActions(t *testing.T) {
 	}
 }
 
+// LLM-894: a pack row carries its good's catalog description, and none for a
+// good without one or a kind missing from the catalog.
+func TestPCInventoryEntriesDescription(t *testing.T) {
+	catalog := map[sim.ItemKind]*sim.ItemKindDef{
+		"bread":  {Name: "bread", Description: "A round loaf."},
+		"cheese": {Name: "cheese"},
+	}
+	inv := map[sim.ItemKind]int{"bread": 1, "cheese": 1, "mystery": 1}
+	want := map[string]string{"bread": "A round loaf.", "cheese": "", "mystery": ""}
+	for _, e := range pcInventoryEntries(sim.PackState{Inventory: inv}, catalog, time.Now()) {
+		if e.Description != want[e.ItemKind] {
+			t.Errorf("%s description = %q, want %q", e.ItemKind, e.Description, want[e.ItemKind])
+		}
+	}
+}
+
 // A refusal is a 422 carrying the engine's own line for the pack.
 func TestItemUseErrorResponse(t *testing.T) {
 	status, msg := itemUseErrorResponse(errors.New("boom"))

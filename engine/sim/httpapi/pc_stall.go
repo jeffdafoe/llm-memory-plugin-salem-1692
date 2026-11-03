@@ -29,6 +29,9 @@ type pcStallWareDTO struct {
 	Item         string `json:"item"`
 	DisplayLabel string `json:"display_label"`
 	Stock        string `json:"stock"`
+	// Description is the good's catalog prose, shown on the card a tap opens
+	// (LLM-894); omitted when the good has none.
+	Description string `json:"description,omitempty"`
 }
 
 type pcStallResponse struct {
@@ -62,13 +65,18 @@ func (s *Server) handlePCStall(w http.ResponseWriter, r *http.Request) {
 	resp := pcStallResponse{StructureID: string(structureID), Wares: []pcStallWareDTO{}}
 	for _, ware := range sim.StallWares(snap, structureID) {
 		label := string(ware.Kind)
-		if def := snap.ItemKinds[ware.Kind]; def != nil && def.DisplayLabel != "" {
-			label = def.DisplayLabel
+		description := ""
+		if def := snap.ItemKinds[ware.Kind]; def != nil {
+			if def.DisplayLabel != "" {
+				label = def.DisplayLabel
+			}
+			description = def.Description
 		}
 		resp.Wares = append(resp.Wares, pcStallWareDTO{
 			Item:         string(ware.Kind),
 			DisplayLabel: label,
 			Stock:        stallStockTier(ware.Spare),
+			Description:  description,
 		})
 	}
 	sort.SliceStable(resp.Wares, func(i, j int) bool {
