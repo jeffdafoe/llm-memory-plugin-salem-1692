@@ -40,7 +40,131 @@ func init() {
 				"enough) — no '## A ward for the house' section, though the omen is still inside the window.",
 			build: householdWardAlreadyUp,
 		},
+		perceptionScenario{
+			name: "outdoors_near_a_warded_house",
+			summary: "LLM-900: Sarah Walker outdoors among the houses. The Ellis House, four tiles off, has a horseshoe " +
+				"over its door: '## Around you' carries 'A horseshoe is nailed over the door of the Ellis House.' Her " +
+				"own Walker House is warded too and says nothing (the household want speaks for a home). The James " +
+				"Farm has only a buried witch bottle (never seen), the Crane Cottage no ward, and the warded Thorne " +
+				"Cottage is fifteen tiles off, out of sight (campSightTiles is 8) — none renders a line.",
+			build: outdoorsNearAWardedHouse,
+		},
 	)
+}
+
+// outdoorsNearAWardedHouse: Sarah Walker outdoors at midday beside five houses;
+// only the Ellis House is a neighbour's, in sight, with a horseshoe up.
+func outdoorsNearAWardedHouse() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const sarahID = sim.ActorID("sarah")
+	midday := 720
+	at := func(t sim.TilePos) sim.WorldPos {
+		return sim.WorldPos{X: float64(t.X-sim.PadX) * sim.TileSize, Y: float64(t.Y-sim.PadY) * sim.TileSize}
+	}
+	sarah := &sim.ActorSnapshot{
+		Kind:            sim.KindNPCStateful,
+		DisplayName:     "Sarah Walker",
+		Role:            "weaver",
+		State:           sim.StateIdle,
+		Pos:             sim.TilePos{X: 100, Y: 130},
+		HomeStructureID: "walker_house",
+		Needs:           map[sim.NeedKey]int{},
+		Inventory:       map[sim.ItemKind]int{},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      time.Date(2026, 10, 20, 16, 0, 0, 0, time.UTC),
+		LocalMinuteOfDay: &midday,
+		NeedThresholds:   sim.NeedThresholds{},
+		Assets:           emptyAssetSet,
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{sarahID: sarah},
+		Structures:       map[sim.StructureID]*sim.Structure{},
+		VillageObjects:   map[sim.VillageObjectID]*sim.VillageObject{},
+	}
+	house := func(id sim.StructureID, name string, tile sim.TilePos, tags ...string) {
+		snap.Structures[id] = plainStructure(id, name)
+		snap.VillageObjects[sim.VillageObjectID(id)] = &sim.VillageObject{
+			ID: sim.VillageObjectID(id), DisplayName: name, Pos: at(tile), Tags: tags}
+	}
+	house("walker_house", "Walker House", sim.TilePos{X: 101, Y: 130}, sim.TagWardHorseshoe)
+	house("ellis_house", "Ellis House", sim.TilePos{X: 104, Y: 130}, sim.TagWardHorseshoe, sim.TagWardWitchBottle)
+	house("james_farm", "James Farm", sim.TilePos{X: 103, Y: 128}, sim.TagWardWitchBottle)
+	house("crane_cottage", "Crane Cottage", sim.TilePos{X: 102, Y: 132})
+	house("thorne_cottage", "Thorne Cottage", sim.TilePos{X: 115, Y: 130}, sim.TagWardHorseshoe)
+	return snap, sarahID, nil
+}
+
+// TestGoldensHouseWardLineIffWardedHouseInSight — LLM-900: an outdoor actor is
+// told of every house in sight with a horseshoe over the door (at most
+// maxCampSightings), never their own home and never otherwise. Counted from the
+// snapshot itself, with the same sight rule as the camp line, so it checks the
+// build as well as the render. The vacuity floor is outdoors_near_a_warded_house.
+func TestGoldensHouseWardLineIffWardedHouseInSight(t *testing.T) {
+	sawLine := false
+	for _, sc := range perceptionScenarios {
+		snap, actorID, _ := sc.build()
+		a := snap.Actors[actorID]
+		want := 0
+		if a != nil && a.InsideStructureID == "" {
+			for _, o := range snap.VillageObjects {
+				st := snap.Structures[sim.StructureID(o.ID)]
+				if !sim.IsTent(o) && o.HasTag(sim.TagWardHorseshoe) && o.ID != sim.VillageObjectID(a.HomeStructureID) &&
+					st != nil && st.DisplayName != "" && a.Pos.Chebyshev(o.Pos.Tile()) <= campSightTiles {
+					want++
+				}
+			}
+		}
+		if want > maxCampSightings {
+			want = maxCampSightings
+		}
+		prompt := renderScenario(sc)
+		got := strings.Count(prompt, houseWardSightLead)
+		if got != want {
+			t.Errorf("%s: %d warded-house lines, want %d", sc.name, got, want)
+		}
+		if a != nil && a.HomeStructureID != "" {
+			if home := snap.Structures[a.HomeStructureID]; home != nil && home.DisplayName != "" &&
+				strings.Contains(prompt, houseWardSightProse(home.DisplayName)) {
+				t.Errorf("%s: the actor is told of the horseshoe over their own door", sc.name)
+			}
+		}
+		if got > 0 {
+			sawLine = true
+		}
+	}
+	if !sawLine {
+		t.Error("no scenario renders a warded-house line — the invariant checked nothing")
+	}
+}
+
+func TestBuildWardedHouseSightings(t *testing.T) {
+	snap, id, _ := outdoorsNearAWardedHouse()
+	a := snap.Actors[id]
+	if got := buildWardedHouseSightings(snap, a); len(got) != 1 || got[0] != "Ellis House" {
+		t.Fatalf("sightings = %v, want [Ellis House]", got)
+	}
+
+	// Two more warded houses in sight, both nearer: the cap keeps the nearest two.
+	snap.VillageObjects["crane_cottage"].Tags = []string{sim.TagWardHorseshoe}
+	snap.VillageObjects["james_farm"].Tags = []string{sim.TagWardHorseshoe}
+	if got := buildWardedHouseSightings(snap, a); len(got) != 2 || got[0] != "Crane Cottage" || got[1] != "James Farm" {
+		t.Errorf("capped sightings = %v, want [Crane Cottage James Farm]", got)
+	}
+
+	// A warded tent is the camp line's, not this one's.
+	snap2, _, _ := outdoorsNearAWardedHouse()
+	snap2.VillageObjects["ellis_house"].AssetID = sim.TentAssetID
+	if got := buildWardedHouseSightings(snap2, snap2.Actors[id]); len(got) != 0 {
+		t.Errorf("sightings with the house a tent = %v, want none", got)
+	}
+
+	// Indoors, nothing is seen.
+	a.InsideStructureID = "walker_house"
+	if got := buildWardedHouseSightings(snap, a); got != nil {
+		t.Errorf("sightings indoors = %v, want nil", got)
+	}
+
+	if got, want := houseWardSightProse("Ellis Farm"), "A horseshoe is nailed over the door of the Ellis Farm."; got != want {
+		t.Errorf("prose = %q, want %q", got, want)
+	}
 }
 
 const (

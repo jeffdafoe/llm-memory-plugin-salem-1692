@@ -1934,6 +1934,10 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		b.WriteString(campSightProse(c))
 		b.WriteString("\n")
 	}
+	for _, name := range s.WardedHouses {
+		b.WriteString(houseWardSightProse(name))
+		b.WriteString("\n")
+	}
 
 	// ZBBS-WORK-374: the LLM-authored literary atmosphere line (ZBBS-WORK-327,
 	// "The night abideth over the village in a sober hush…") is NOT rendered into

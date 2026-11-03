@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -212,4 +213,57 @@ func renderWard(b *strings.Builder, want *WardWantView, place *WardPlaceView) {
 		renderWalkToVendors(b, want.Vendors)
 		b.WriteString("\n")
 	}
+}
+
+// buildWardedHouseSightings lists the houses within campSightTiles of an actor
+// outdoors that have a horseshoe over the door (LLM-900), by the house's name,
+// nearest first (lower id on a tie), at most maxCampSightings. The house name
+// already carries the family ("Ellis Farm") and every villager knows it, so no
+// acquaintance rule applies. The actor's own home is left out: the household
+// want speaks for it. A buried witch bottle is not seen.
+func buildWardedHouseSightings(snap *sim.Snapshot, a *sim.ActorSnapshot) []string {
+	if a == nil || a.InsideStructureID != "" {
+		return nil
+	}
+	type seen struct {
+		id   sim.VillageObjectID
+		name string
+		dist int
+	}
+	var near []seen
+	for _, o := range snap.VillageObjects {
+		if sim.IsTent(o) || !o.HasTag(sim.TagWardHorseshoe) || o.ID == sim.VillageObjectID(a.HomeStructureID) {
+			continue
+		}
+		st := snap.Structures[sim.StructureID(o.ID)]
+		if st == nil || st.DisplayName == "" {
+			continue
+		}
+		if d := a.Pos.Chebyshev(o.Pos.Tile()); d <= campSightTiles {
+			near = append(near, seen{o.ID, st.DisplayName, d})
+		}
+	}
+	sort.Slice(near, func(i, j int) bool {
+		if near[i].dist != near[j].dist {
+			return near[i].dist < near[j].dist
+		}
+		return near[i].id < near[j].id
+	})
+	if len(near) > maxCampSightings {
+		near = near[:maxCampSightings]
+	}
+	var out []string
+	for _, n := range near {
+		out = append(out, n.name)
+	}
+	return out
+}
+
+// houseWardSightLead opens the scene line for a warded house in view.
+const houseWardSightLead = "A horseshoe is nailed over the door of "
+
+// houseWardSightProse is the scene line for a neighbour's warded house (LLM-900):
+// the fact, no judgement, like the tent's (campHorseshoeLine).
+func houseWardSightProse(name string) string {
+	return houseWardSightLead + sim.WithDefiniteArticle(sanitizeInline(name)) + "."
 }

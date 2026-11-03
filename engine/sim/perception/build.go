@@ -1495,6 +1495,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// can say "outdoors by the General Store" rather than dumping coords.
 		s.NearbyStructureName, curStructureID = findLoiterStructure(snap, a)
 		s.Camps = buildCampSightings(snap, actorID, a)
+		s.WardedHouses = buildWardedHouseSightings(snap, a)
 	}
 	// LLM-154: a live dead-end read on the place the actor is physically at —
 	// e.g. standing at a business no keeper is tending. Recomputed cold each tick
