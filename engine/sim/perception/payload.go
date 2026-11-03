@@ -1764,6 +1764,12 @@ type SurroundingsView struct {
 	// maxCampSightings. Empty indoors. Rendered as a scene line after the weather.
 	Camps []CampSight
 
+	// WardedHouses are the names of the houses in the actor's sight outdoors
+	// with a horseshoe over the door (LLM-900): within campSightTiles, nearest
+	// first, at most maxCampSightings, never the actor's own home. Empty indoors.
+	// Rendered as a scene line after the camps.
+	WardedHouses []string
+
 	// LocationDeadEnd names a live reason the place the actor is physically at
 	// can't serve them, or DeadEndNone when it can (LLM-154). A LIVE, situated
 	// read recomputed cold each tick from the snapshot — the NPC is standing
