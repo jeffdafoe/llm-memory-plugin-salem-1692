@@ -1934,6 +1934,10 @@ const (
 	factorCandleUnits  = 6
 )
 
+// One witch bottle rides every factor pack (LLM-845): a ward for players, so a
+// fixed count; dearer and rarer than the smith's horseshoe.
+const factorWitchBottleUnits = 1
+
 // factorImportKinds names the strategic imports whose SUPPLY is deliberately owned by the
 // wholesale factor errand, where the operator tuning levers live (visitor_sell_weight_permille,
 // visitor_factor_iron_units / _salt_units / _thread_units; the writing goods' and the
@@ -1943,7 +1947,7 @@ const (
 // actors demanding it cannot buy (LLM-567). Spawn is the path it covers, and it is the only
 // one that needs covering: the pack switch in dispatchVisitorSpawn is exhaustive on errand
 // direction, so a no-errand visitor can only ever draw from visitorWareKinds.
-var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind, NoteParchmentKind, NoteQuillKind, HornLanternKind, TallowCandleKind}
+var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind, NoteParchmentKind, NoteQuillKind, HornLanternKind, TallowCandleKind, WitchBottleKind}
 
 // seedFactorPack returns the pack (clothing/charm goods to sell, plus iron,
 // salt and thread shipments — LLM-442/LLM-444/LLM-625) and purse (a heavier
@@ -1954,7 +1958,8 @@ var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadK
 // thread, each plus a small jitter so
 // back-to-back factors don't carry identical bales, and the writing goods
 // (LLM-799: factorParchmentUnits..+2 sheets, factorQuillUnits quill and ink), the
-// lantern goods (LLM-846: factorLanternUnits lantern, factorCandleUnits..+2 candles);
+// lantern goods (LLM-846: factorLanternUnits lantern, factorCandleUnits..+2 candles),
+// factorWitchBottleUnits witch bottle (LLM-845);
 // purse a uniform pull from
 // [purseMin, purseMax]. r is non-nil; the caller clamps unitsPerKind >= 1,
 // ironUnits >= 1, saltUnits >= 1, threadUnits >= 1, and purseMin <= purseMax.
@@ -1973,6 +1978,7 @@ func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnit
 	pack[NoteQuillKind] = factorQuillUnits
 	pack[HornLanternKind] = factorLanternUnits
 	pack[TallowCandleKind] = factorCandleUnits + r.Intn(3)
+	pack[WitchBottleKind] = factorWitchBottleUnits
 	purse := purseMin
 	if purseMax > purseMin {
 		purse = purseMin + r.Intn(purseMax-purseMin+1)

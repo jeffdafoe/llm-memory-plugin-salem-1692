@@ -1022,7 +1022,7 @@ func pcDwellingAttributes(pc *sim.ActorSnapshot, now time.Time) []string {
 // the Inn"), its one action Strike.
 func pcPackEntries(st sim.PackState, catalog map[sim.ItemKind]*sim.ItemKindDef,
 	objects map[sim.VillageObjectID]*sim.VillageObject, structures map[sim.StructureID]*sim.Structure, pcID sim.ActorID, now time.Time) []pcInventoryEntry {
-	out := pcInventoryEntries(st, catalog, now)
+	out := pcInventoryEntries(st.WithCamp(objects, pcID), catalog, now)
 	camp := sim.FindCamp(objects, pcID)
 	if camp == nil {
 		return out

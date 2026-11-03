@@ -35,6 +35,7 @@ const TESTS := [
     "_test_food_and_drink_rows",
     "_test_lantern_rows",
     "_test_close_button_closes",
+    "_test_ward_rows",
     "_test_description_box",
     "_test_description_box_real_clicks",
 ]
@@ -707,3 +708,22 @@ func _click(at: Vector2) -> void:
         ev.position = at
         ev.global_position = at
         root.push_input(ev, true)
+
+
+## LLM-845: the ward goods' buttons read as what the player does with them.
+func _test_ward_rows() -> void:
+    var log: Array = []
+    var p: Control = load(PANEL_PATH).new()
+    root.add_child(p)
+    p.item_action_requested.connect(func(kind: String, action: String): log.append("%s:%s" % [kind, action]))
+    p.set_inventory([
+        {"item_kind": "horseshoe", "display_label": "Horseshoe", "quantity": 1, "category": "tool", "actions": ["hang"]},
+        {"item_kind": "witch_bottle", "display_label": "Witch bottle", "quantity": 1, "category": "charm", "actions": ["bury"]},
+    ])
+    p.show_at(Rect2(600, 0, 32, 32))
+    _check("horseshoe: Hang over the door", _rows(p).get("Horseshoe"), ["Hang over the door"])
+    _check("witch bottle: Bury by the hearth", _rows(p).get("Witch bottle"), ["Bury by the hearth"])
+    _button(p, "Horseshoe").pressed.emit()
+    _check("Hang asks for hang", log, ["horseshoe:hang"])
+    p.free()
+    _done()

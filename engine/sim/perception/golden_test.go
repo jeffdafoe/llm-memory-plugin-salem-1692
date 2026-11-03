@@ -2183,6 +2183,13 @@ var perceptionScenarios = []perceptionScenario{
 		build: outdoorsNearStrangersColdCamp,
 	},
 	{
+		name: "outdoors_near_a_warded_pc_camp",
+		summary: "LLM-845: the same villager beside Jefferey's camp after he has hung a horseshoe over the tent door " +
+			"and buried a witch bottle by the fire: 'A horseshoe is nailed over its door.' follows the camp line. The " +
+			"buried bottle is not seen and renders nothing; no engine text says what a horseshoe is for.",
+		build: outdoorsNearWardedPCCamp,
+	},
+	{
 		name: "turned_away_at_tavern_before_opening",
 		summary: "LLM-771, the live trigger (2026-10-14): Constable Gideon Marsh walked his round to the Tavern " +
 			"at midday, read 'The Tavern is shut — no one is tending it.', asked around and brought John Ellis before the " +
@@ -20668,6 +20675,56 @@ func outdoorsNearStrangersColdCamp() (*sim.Snapshot, sim.ActorID, []sim.WarrantM
 	far := sim.TilePos{X: 112, Y: 130}
 	snap, id := campSceneSnapshot(false, sim.CampFireStateAshes, time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC), &far)
 	return snap, id, nil
+}
+
+func outdoorsNearWardedPCCamp() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, id := campSceneSnapshot(true, sim.CampFireStateBurning, time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC), nil)
+	snap.VillageObjects["tent-j"].Tags = []string{sim.TagWardHorseshoe, sim.TagWardWitchBottle}
+	return snap, id, nil
+}
+
+// TestGoldensHorseshoeLineIffWardedTentInSight — LLM-845: the horseshoe line
+// appears once for every tent in sight that carries the horseshoe tag, and
+// never otherwise; the witch bottle is never mentioned. Counted from the
+// snapshot, with the same sight rule as the camp line.
+func TestGoldensHorseshoeLineIffWardedTentInSight(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		snap, actorID, _ := sc.build()
+		a := snap.Actors[actorID]
+		type seen struct {
+			id   sim.VillageObjectID
+			dist int
+		}
+		var near []seen
+		if a != nil && a.InsideStructureID == "" {
+			for _, o := range snap.VillageObjects {
+				if sim.IsTent(o) && o.OwnerActorID != "" && o.OwnerActorID != actorID &&
+					o.CurrentState != sim.TentStatePacked && snap.Actors[o.OwnerActorID] != nil &&
+					a.Pos.Chebyshev(o.Pos.Tile()) <= campSightTiles {
+					near = append(near, seen{o.ID, a.Pos.Chebyshev(o.Pos.Tile())})
+				}
+			}
+		}
+		sort.Slice(near, func(i, j int) bool {
+			if near[i].dist != near[j].dist {
+				return near[i].dist < near[j].dist
+			}
+			return near[i].id < near[j].id
+		})
+		want := 0
+		for i, n := range near {
+			if i < maxCampSightings && snap.VillageObjects[n.id].HasTag(sim.TagWardHorseshoe) {
+				want++
+			}
+		}
+		prompt := renderScenario(sc)
+		if got := strings.Count(prompt, campHorseshoeLine); got != want {
+			t.Errorf("%s: %d horseshoe lines, want %d", sc.name, got, want)
+		}
+		if strings.Contains(strings.ToLower(prompt), "witch bottle") {
+			t.Errorf("%s: a buried witch bottle is never seen", sc.name)
+		}
+	}
 }
 
 // TestGoldensCampLineIffCampInSight — LLM-798: an outdoor actor is told of every

@@ -53,6 +53,36 @@ func TestPCInventoryEntriesDescription(t *testing.T) {
 	}
 }
 
+// LLM-845: a ward row offers its action once the tent stands, and not while
+// the tent carries one already.
+func TestPCPackEntries_WardActions(t *testing.T) {
+	catalog := map[sim.ItemKind]*sim.ItemKindDef{
+		sim.HorseshoeKind:   {Name: sim.HorseshoeKind, Capabilities: []string{sim.CapabilityWard}},
+		sim.WitchBottleKind: {Name: sim.WitchBottleKind, Capabilities: []string{sim.CapabilityWard}},
+	}
+	tent := &sim.VillageObject{ID: "tent", AssetID: sim.TentAssetID, OwnerActorID: "pc", CurrentState: sim.TentStateClosed}
+	objects := map[sim.VillageObjectID]*sim.VillageObject{"tent": tent}
+	st := sim.PackState{Inventory: map[sim.ItemKind]int{sim.HorseshoeKind: 1, sim.WitchBottleKind: 1}}
+	actions := func(objs map[sim.VillageObjectID]*sim.VillageObject) map[string][]string {
+		out := map[string][]string{}
+		for _, e := range pcPackEntries(st, catalog, objs, nil, "pc", time.Now()) {
+			out[e.ItemKind] = e.Actions
+		}
+		return out
+	}
+	if got := actions(map[sim.VillageObjectID]*sim.VillageObject{}); len(got["horseshoe"]) != 0 {
+		t.Errorf("no tent: %v", got)
+	}
+	got := actions(objects)
+	if !slices.Equal(got["horseshoe"], []string{sim.ItemActionHang}) || !slices.Equal(got["witch_bottle"], []string{sim.ItemActionBury}) {
+		t.Errorf("tent standing: %v", got)
+	}
+	tent.Tags = []string{sim.TagWardHorseshoe}
+	if got := actions(objects); len(got["horseshoe"]) != 0 || len(got["witch_bottle"]) != 1 {
+		t.Errorf("horseshoe hung: %v", got)
+	}
+}
+
 // A refusal is a 422 carrying the engine's own line for the pack.
 func TestItemUseErrorResponse(t *testing.T) {
 	status, msg := itemUseErrorResponse(errors.New("boom"))

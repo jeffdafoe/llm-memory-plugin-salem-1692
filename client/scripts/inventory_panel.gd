@@ -37,7 +37,7 @@ const PANEL_PAD: float = 16.0
 const ROW_SEPARATION: int = 6
 
 ## Button text per item-action slug. A slug missing here shows capitalized.
-const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike", "eat": "Eat", "drink": "Drink", "light": "Light", "put_out": "Put out"}
+const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike", "eat": "Eat", "drink": "Drink", "light": "Light", "put_out": "Put out", "hang": "Hang over the door", "bury": "Bury by the hearth"}
 ## The Light button when Put out kept part of a candle (LLM-846).
 const LIGHT_PART_BURNED_LABEL := "Light (candle part burned)"
 
