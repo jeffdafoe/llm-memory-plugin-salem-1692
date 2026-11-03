@@ -418,7 +418,13 @@ func TestBuild_AllSceneReferencesStale_NoScene(t *testing.T) {
 
 func TestBuild_SurroundingsHuddleMembersSortedAndSelfExcluded(t *testing.T) {
 	snap := &sim.Snapshot{
-		Actors: map[sim.ActorID]*sim.ActorSnapshot{"alice": actorSnap(sim.StateIdle, "tavern", 0, 0, "h1", 0)},
+		// Every member needs an actor: a member with none has left the world and
+		// is not rendered (LLM-901).
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"alice": actorSnap(sim.StateIdle, "tavern", 0, 0, "h1", 0),
+			"bob":   actorSnap(sim.StateIdle, "tavern", 0, 0, "h1", 0),
+			"carol": actorSnap(sim.StateIdle, "tavern", 0, 0, "h1", 0),
+		},
 		Structures: map[sim.StructureID]*sim.Structure{
 			"tavern": {ID: "tavern", DisplayName: "The Prancing Pony"},
 		},

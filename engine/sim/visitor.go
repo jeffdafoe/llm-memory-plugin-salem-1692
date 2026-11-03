@@ -547,6 +547,11 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 			w.scheduleReturnerDeparture(RecurringVisitorID(actor.VisitorState.RecurringID),
 				now, r, w.Settings.VisitorReturnMinDays, w.Settings.VisitorReturnMaxDays)
 		}
+		// LLM-901: a visitor can still be in a huddle here although his despawn
+		// walk left one (live: the messenger was eating breakfast at the Inn when
+		// cleanup ran). He must leave it properly, or he stays in Members as
+		// "a stranger" to everyone present.
+		leaveHuddleBeforeRemoval(w, actor, now)
 		// Capture before-removal state for the event.
 		evt := &ActorDeparted{
 			ActorID:               id,
@@ -564,16 +569,7 @@ func dispatchVisitorCleanup(w *World, inputs VisitorTickInputs, t *VisitorCascad
 		w.emit(evt)
 		// Remove from secondary indices. setActorInsideStructure handles
 		// outdoorActors / actorsByStructure transitions when we drop the
-		// actor's inside flag; the actorsByHuddle index doesn't have a
-		// removal helper, so detach inline.
-		if actor.CurrentHuddleID != "" {
-			if members, ok := w.actorsByHuddle[actor.CurrentHuddleID]; ok {
-				delete(members, id)
-				if len(members) == 0 {
-					delete(w.actorsByHuddle, actor.CurrentHuddleID)
-				}
-			}
-		}
+		// actor's inside flag; huddle membership was already left above.
 		setActorInsideStructure(w, actor, "")
 		delete(w.outdoorActors, id)
 		delete(w.Actors, id)

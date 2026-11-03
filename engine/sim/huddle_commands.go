@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -731,6 +732,10 @@ func leaveCurrentHuddleAs(w *World, actor *Actor, now time.Time, peerKind Warran
 			delete(w.actorsByHuddle, huddleID)
 		}
 	}
+	// LLM-901: clear any member that no longer exists before the remaining set
+	// is computed, so neither the leaver's HuddleLeft nor the peer warrants
+	// name a ghost, and a huddle left holding only ghosts concludes below.
+	pruneDepartedMembers(w, huddle, now)
 
 	remaining := make([]ActorID, 0, len(huddle.Members))
 	for id := range huddle.Members {
@@ -851,6 +856,80 @@ func leaveCurrentHuddleAs(w *World, actor *Actor, now time.Time, peerKind Warran
 		HuddleID:         huddleID,
 		Concluded:        concluded,
 		RemainingMembers: remaining,
+	}
+}
+
+// leaveHuddleBeforeRemoval takes an actor that is about to be deleted from
+// w.Actors out of its huddle through the ordinary leave (LLM-901), so the
+// remaining members get the HuddleLeft / peer-left warrant a real departure
+// gives them and the huddle concludes if the actor was its last member. Every
+// path that deletes an actor (visitor cleanup, familiar removal, the editor's
+// DeleteActor) calls this BEFORE the delete, while the actor still resolves for
+// the HuddleLeft subscribers.
+//
+// Without it the id stayed in Huddle.Members after the actor was gone: every
+// co-present NPC was shown "a stranger" who never answered, and a non-visitor
+// ghost would be checkpointed into huddle_member and fail the next boot's
+// actor-huddle reconciliation.
+//
+// The index cleanup after the leave covers a stale back-ref (CurrentHuddleID
+// naming a huddle that no longer exists), which leaveCurrentHuddle clears
+// without touching actorsByHuddle. No-op for an actor in no huddle.
+func leaveHuddleBeforeRemoval(w *World, actor *Actor, now time.Time) {
+	huddleID := actor.CurrentHuddleID
+	if huddleID == "" {
+		return
+	}
+	leaveCurrentHuddle(w, actor, now)
+	if members, ok := w.actorsByHuddle[huddleID]; ok {
+		delete(members, actor.ID)
+		if len(members) == 0 {
+			delete(w.actorsByHuddle, huddleID)
+		}
+	}
+}
+
+// pruneDepartedMembers drops every member of huddle that no longer exists in
+// w.Actors (LLM-901), emitting HuddleLeft for each so membership accounting
+// stays consistent for subscribers. It is the backstop to
+// leaveHuddleBeforeRemoval: should any future removal path skip the leave, the
+// ghost is cleared at the next ordinary departure from the huddle rather than
+// lingering until it is the last member. Ghosts are pruned in sorted id order
+// so the event sequence is deterministic. MUST run on the world goroutine.
+func pruneDepartedMembers(w *World, huddle *Huddle, now time.Time) {
+	var ghosts []ActorID
+	for id := range huddle.Members {
+		if a, ok := w.Actors[id]; !ok || a == nil {
+			ghosts = append(ghosts, id)
+		}
+	}
+	if len(ghosts) == 0 {
+		return
+	}
+	sort.Slice(ghosts, func(i, j int) bool { return ghosts[i] < ghosts[j] })
+	// Remove every ghost before emitting, so no event names another ghost as a
+	// remaining member (code_review).
+	for _, id := range ghosts {
+		delete(huddle.Members, id)
+		if members, ok := w.actorsByHuddle[huddle.ID]; ok {
+			delete(members, id)
+			if len(members) == 0 {
+				delete(w.actorsByHuddle, huddle.ID)
+			}
+		}
+	}
+	for _, id := range ghosts {
+		remaining := make([]ActorID, 0, len(huddle.Members))
+		for m := range huddle.Members {
+			remaining = append(remaining, m)
+		}
+		w.emit(&HuddleLeft{
+			ActorID:          id,
+			HuddleID:         huddle.ID,
+			StructureID:      huddle.StructureID,
+			RemainingMembers: remaining,
+			At:               now,
+		})
 	}
 }
 
