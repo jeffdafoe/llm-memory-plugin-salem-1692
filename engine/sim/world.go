@@ -339,12 +339,6 @@ type WorldSettings struct {
 	CampFireBurnMinutes  int
 	CampFireDyingMinutes int
 
-	// Story Standing ranks (LLM-892): the Standing at which a player becomes a
-	// Sojourner, an Inhabitant and a Freeman. 0 or less keeps the default.
-	StandingRankSojourner  int
-	StandingRankInhabitant int
-	StandingRankFreeman    int
-
 	// Minor works (LLM-690): small damage for players only. Each pass of the
 	// minor-works ticker breaks one at this chance while fewer than the cap are
 	// open; an untaken one mends itself after the TTL. A cap or chance of 0
@@ -1312,6 +1306,13 @@ type World struct {
 	// per beat, checkpointed (pc_story_mission). See story.go.
 	StoryMissions map[StoryMissionID]*StoryMission
 	StoryProgress map[ActorID]map[StoryMissionID]*StoryProgress
+	// StandingRanks is the Standing ladder (LLM-895), loaded from
+	// standing_rank at FinalizeLoad and normalized (NormalizeStandingRanks),
+	// lowest first. Replaced whole, never edited in place, when the operator
+	// moves a threshold (SetStandingRankThreshold), so a copy handed out stays
+	// valid. Empty in a world that loaded none: standingRanks() then gives the
+	// bottom rank alone.
+	StandingRanks []StandingRank
 
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
 	// map used by the businessowner cascade slice to suppress redundant
@@ -2812,7 +2813,7 @@ func (w *World) republish() {
 		}
 	}
 	if len(w.StoryProgress) > 0 {
-		ranks := w.Settings.standingRanks()
+		ranks := w.standingRanks()
 		for actorID, rows := range w.StoryProgress {
 			actor := storyPlayer(w, actorID)
 			if actor == nil || len(rows) == 0 {

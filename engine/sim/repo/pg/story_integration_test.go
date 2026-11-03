@@ -49,8 +49,8 @@ func TestIntegration_Story_ChapterOneIsSeeded(t *testing.T) {
 	if missions["arrival-1"].AlreadyText == "" || missions["arrival-2"].AlreadyText == "" {
 		t.Error("the state-checked beats carry their catch-up clause")
 	}
-	if total != sim.DefaultStandingRankSojourner {
-		t.Errorf("chapter 1 gives %d Standing, want exactly Sojourner (%d)", total, sim.DefaultStandingRankSojourner)
+	if total != 50 {
+		t.Errorf("chapter 1 gives %d Standing, want exactly Sojourner (50)", total)
 	}
 }
 
@@ -64,7 +64,7 @@ func TestIntegration_Story_ProgressRoundTripAndSweep(t *testing.T) {
 	w := checkpointableWorld(repo)
 	w.Actors = map[sim.ActorID]*sim.Actor{
 		pcID: {ID: pcID, DisplayName: "Jefferey", Kind: sim.KindPC, LoginUsername: "jeff", State: sim.StateIdle,
-			Inventory: map[sim.ItemKind]int{}, Standing: 10, StandingRankSeen: 0},
+			Inventory: map[sim.ItemKind]int{}, Standing: 10, StandingRankSeen: "stranger"},
 	}
 	w.StoryProgress = map[sim.ActorID]map[sim.StoryMissionID]*sim.StoryProgress{
 		pcID: {

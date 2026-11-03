@@ -1078,11 +1078,13 @@ type Actor struct {
 	// OpenUntil: a restart mid-evening must not bring the nagging back.
 	ClosedUntil *time.Time
 
-	// Standing is a player's Standing from story beats (LLM-892), and
-	// StandingRankSeen the index of the highest rank whose popup the player has
-	// closed. Players only; checkpointed (actor.standing, actor.standing_rank_seen).
+	// Standing is a player's Standing (LLM-892), raised by story beats and
+	// moved either way by adjustStanding (LLM-895). StandingRankSeen is the id
+	// of the last rank announced to the player ("" reads as the bottom rank);
+	// the rank they hold now differs from it while a rank-up or rank-down popup
+	// waits. Players only; checkpointed (actor.standing, actor.standing_rank_seen).
 	Standing         int
-	StandingRankSeen int
+	StandingRankSeen string
 
 	// LastTirednessRecoveryAt is the cursor the tiredness-recovery sweep
 	// advances as it credits recovery while BreakUntil/SleepingUntil are
@@ -2163,7 +2165,7 @@ type ActorSnapshot struct {
 	// Standing / StandingRankSeen mirror the live Actor's (LLM-892) for the
 	// story view on /pc/me.
 	Standing         int
-	StandingRankSeen int
+	StandingRankSeen string
 
 	// Inventory mirrors the live Actor's item-kind→quantity map at snapshot
 	// time so the read surface (httpapi pc/me) can serve a player's held

@@ -3,9 +3,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -264,5 +266,247 @@ func TestPCStorySeen_BodyBounds(t *testing.T) {
 		if resp := postReq(t, h, "/api/village/pc/story/seen", "alice", body); resp.Code != http.StatusBadRequest {
 			t.Errorf("%s = %d, want 400", label, resp.Code)
 		}
+	}
+}
+
+// fakeRankWriter is standing_rank in memory: SetStandingRankThreshold edits a
+// row (refusing the bottom rank and unknown ids, as the SQL does) and LoadRanks
+// reads them back. gate, when set, holds the first write until it is closed.
+type fakeRankWriter struct {
+	mu      sync.Mutex
+	rows    []sim.StandingRank
+	calls   []string
+	gate    chan struct{}
+	entered chan struct{}
+	// afterWrite, when set, runs once the write has committed.
+	afterWrite func()
+}
+
+func (f *fakeRankWriter) SetStandingRankThreshold(_ context.Context, id string, at int) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, fmt.Sprintf("%s=%d", id, at))
+	gate, entered := f.gate, f.entered
+	f.gate = nil
+	f.mu.Unlock()
+	if gate != nil {
+		close(entered)
+		<-gate
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == id && f.rows[i].At > 0 {
+			f.rows[i].At = at
+			if f.afterWrite != nil {
+				f.afterWrite()
+			}
+			return nil
+		}
+	}
+	return sim.ErrStandingRankUnknown
+}
+
+// LoadRanks honours a cancelled context, as the pg pool does.
+func (f *fakeRankWriter) LoadRanks(ctx context.Context) ([]sim.StandingRank, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sim.StandingRank(nil), f.rows...), nil
+}
+
+func (f *fakeRankWriter) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// LLM-895: the operator moves a player's Standing; the rank follows, and the
+// read shows the ladder.
+func TestUmbilicalStory_StandingAndLadder(t *testing.T) {
+	h, w := storyOperatorServer(t)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.StandingRanks = sim.NormalizeStandingRanks([]sim.StandingRank{
+			{ID: "stranger", Name: "Stranger"},
+			{ID: "sojourner", Name: "Sojourner", At: 50, Text: "up", DownText: "down"},
+		})
+		return nil, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postReq(t, h, "/api/village/umbilical/story/standing", "tok", `{"actor_id":"bram","delta":60,"reason":"test"}`)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("standing = %d; body=%s", resp.Code, resp.Body.String())
+	}
+	var out umbilicalStoryStandingResponse
+	_ = json.Unmarshal(resp.Body.Bytes(), &out)
+	if out.Applied != 60 || out.Story == nil || out.Story.Rank.ID != "sojourner" {
+		t.Fatalf("after +60: %+v", out)
+	}
+	resp = postReq(t, h, "/api/village/umbilical/story/standing", "tok", `{"actor_id":"bram","delta":-100}`)
+	_ = json.Unmarshal(resp.Body.Bytes(), &out)
+	if out.Applied != -60 || out.Story.Standing != 0 {
+		t.Errorf("after -100: applied %d standing %d, want -60 and 0", out.Applied, out.Story.Standing)
+	}
+	for body, want := range map[string]int{
+		`{"delta":5}`:                     http.StatusBadRequest,
+		`{"actor_id":"bram","delta":0}`:   http.StatusBadRequest,
+		`{"actor_id":"hannah","delta":5}`: http.StatusUnprocessableEntity,
+		`{"actor_id":"ghost","delta":5}`:  http.StatusNotFound,
+	} {
+		if resp := postReq(t, h, "/api/village/umbilical/story/standing", "tok", body); resp.Code != want {
+			t.Errorf("%s = %d, want %d", body, resp.Code, want)
+		}
+	}
+
+	resp = getAs(t, h, "/api/village/umbilical/story", "tok")
+	var read umbilicalStoryResponse
+	_ = json.Unmarshal(resp.Body.Bytes(), &read)
+	if len(read.Ranks) != 2 || read.Ranks[1].ID != "sojourner" || read.Ranks[1].DownText != "down" || read.Ranks[0].Prose == nil {
+		t.Errorf("ladder = %+v", read.Ranks)
+	}
+}
+
+// LLM-895: a threshold edit writes the table, reads it back and rebuilds the
+// live ladder from it; it answers 503 unwired, 404 for the bottom or an
+// unknown rank.
+func TestUmbilicalStory_RankSet(t *testing.T) {
+	w := storyWorld(t)
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	srv.SetControlEnabled(true)
+	h := srv.Handler()
+
+	if resp := postReq(t, h, "/api/village/umbilical/story/rank/set", "tok", `{"id":"sojourner","at":80}`); resp.Code != http.StatusServiceUnavailable {
+		t.Errorf("unwired = %d, want 503", resp.Code)
+	}
+	wr := &fakeRankWriter{rows: []sim.StandingRank{
+		{ID: "stranger", Name: "Stranger"}, {ID: "sojourner", Name: "Sojourner", At: 50},
+		{ID: "inhabitant", Name: "Inhabitant", At: 150},
+	}}
+	srv.SetStandingRankWriter(wr)
+	h = srv.Handler()
+	var ladder []umbilicalStoryRankDTO
+	// Two edits that collide: the live ladder ends as a load of the rows would.
+	for _, body := range []string{`{"id":"sojourner","at":150}`, `{"id":"inhabitant","at":200}`} {
+		resp := postReq(t, h, "/api/village/umbilical/story/rank/set", "tok", body)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("%s = %d; body=%s", body, resp.Code, resp.Body.String())
+		}
+		_ = json.Unmarshal(resp.Body.Bytes(), &ladder)
+	}
+	rows, _ := wr.LoadRanks(context.Background())
+	want := sim.NormalizeStandingRanks(rows)
+	if len(ladder) != len(want) {
+		t.Fatalf("ladder %+v, want %+v", ladder, want)
+	}
+	for i := range want {
+		if ladder[i].ID != want[i].ID || ladder[i].At != want[i].At {
+			t.Errorf("ladder[%d] = %s at %d, a load gives %s at %d", i, ladder[i].ID, ladder[i].At, want[i].ID, want[i].At)
+		}
+	}
+	for body, code := range map[string]int{
+		`{"at":80}`:                 http.StatusBadRequest,
+		`{"id":"sojourner","at":0}`: http.StatusBadRequest,
+		`{"id":"stranger","at":5}`:  http.StatusNotFound,
+		`{"id":"nobody","at":5}`:    http.StatusNotFound,
+	} {
+		if resp := postReq(t, h, "/api/village/umbilical/story/rank/set", "tok", body); resp.Code != code {
+			t.Errorf("%s = %d, want %d", body, resp.Code, code)
+		}
+	}
+}
+
+// LLM-895 (code_review R1): two edits cannot interleave. The first is held
+// inside its durable write; the second must not reach the table until the
+// first has applied, and the live ladder ends as the table says.
+func TestUmbilicalStory_RankSetSerialized(t *testing.T) {
+	w := storyWorld(t)
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	srv.SetControlEnabled(true)
+	wr := &fakeRankWriter{
+		rows:    []sim.StandingRank{{ID: "stranger", Name: "Stranger"}, {ID: "sojourner", Name: "Sojourner", At: 50}},
+		gate:    make(chan struct{}),
+		entered: make(chan struct{}),
+	}
+	gate := wr.gate
+	srv.SetStandingRankWriter(wr)
+	h := srv.Handler()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		postReq(t, h, "/api/village/umbilical/story/rank/set", "tok", `{"id":"sojourner","at":80}`)
+	}()
+	<-wr.entered
+	go func() {
+		defer wg.Done()
+		postReq(t, h, "/api/village/umbilical/story/rank/set", "tok", `{"id":"sojourner","at":90}`)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if n := wr.callCount(); n != 1 {
+		t.Errorf("the second edit reached the table while the first was held: %d writes", n)
+	}
+	close(gate)
+	wg.Wait()
+
+	res, err := w.Send(sim.StoryReadout(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ranks := res.(sim.StoryReadoutResult).Ranks
+	if len(ranks) != 2 || ranks[1].At != 90 {
+		t.Errorf("live ladder %+v, want Sojourner at 90 as the table holds", ranks)
+	}
+}
+
+// LLM-895 (code_review R2): a client that goes away after the write commits
+// does not leave the live ladder behind the table.
+func TestUmbilicalStory_RankSetFinishesAfterTheClientLeaves(t *testing.T) {
+	w := storyWorld(t)
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	srv.SetControlEnabled(true)
+	wr := &fakeRankWriter{rows: []sim.StandingRank{{ID: "stranger", Name: "Stranger"}, {ID: "sojourner", Name: "Sojourner", At: 50}}}
+	srv.SetStandingRankWriter(wr)
+	h := srv.Handler()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wr.afterWrite = cancel
+	r := httptest.NewRequest(http.MethodPost, "/api/village/umbilical/story/rank/set", strings.NewReader(`{"id":"sojourner","at":70}`)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer tok")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	res, err := w.Send(sim.StoryReadout(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ranks := res.(sim.StoryReadoutResult).Ranks; len(ranks) != 2 || ranks[1].At != 70 {
+		t.Errorf("live ladder %+v, want Sojourner at 70 as the table holds", ranks)
+	}
+}
+
+// LLM-895 (code_review R2): an edit whose ties would push a rank past the most
+// Standing a player can hold is refused before anything is written.
+func TestUmbilicalStory_RankSetRefusesALadderThatDoesNotFit(t *testing.T) {
+	w := storyWorld(t)
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	srv.SetControlEnabled(true)
+	wr := &fakeRankWriter{rows: []sim.StandingRank{
+		{ID: "stranger", Name: "Stranger"}, {ID: "sojourner", Name: "Sojourner", At: 50},
+		{ID: "selectman", Name: "Selectman", At: sim.MaxStanding},
+	}}
+	srv.SetStandingRankWriter(wr)
+	body := fmt.Sprintf(`{"id":"sojourner","at":%d}`, sim.MaxStanding)
+	if resp := postReq(t, srv.Handler(), "/api/village/umbilical/story/rank/set", "tok", body); resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("= %d, want 422; body=%s", resp.Code, resp.Body.String())
+	}
+	if n := wr.callCount(); n != 0 {
+		t.Errorf("%d writes, want none", n)
 	}
 }

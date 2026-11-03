@@ -262,8 +262,10 @@ type DoorNotesRepo interface {
 // story progress (LLM-892). LoadMissions reads story_mission, reference data
 // the engine never writes. SaveSnapshot writes pc_story_mission with the
 // generation-marker sweep, so a player's rows dropped by a reset are deleted.
-// Both loads run at FinalizeLoad.
+// Both loads run at FinalizeLoad. LoadRanks reads the Standing ladder
+// (standing_rank, LLM-895), in any order; the world normalizes it.
 type StoryRepo interface {
+	LoadRanks(ctx context.Context) ([]StandingRank, error)
 	LoadMissions(ctx context.Context) (map[StoryMissionID]*StoryMission, error)
 	LoadProgress(ctx context.Context) (map[ActorID]map[StoryMissionID]*StoryProgress, error)
 	SaveSnapshot(ctx context.Context, tx Tx, progress map[ActorID]map[StoryMissionID]*StoryProgress) error

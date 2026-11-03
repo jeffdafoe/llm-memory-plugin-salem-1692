@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -14,13 +15,16 @@ import (
 // through story beats (missions) grouped in chapters. Each beat has a finish
 // condition the engine watches for (the story watcher below, a bus subscriber),
 // gives Standing when done, and offers the next beat. Standing climbs through
-// named ranks (Stranger, Sojourner, Inhabitant, Freeman).
+// named ranks (World.StandingRanks, from standing_rank — LLM-895), and falls
+// when the engine takes some away (AdjustStanding); the rank follows it both
+// ways, and each change of rank is announced once.
 //
 // The catalog (World.StoryMissions) is authored reference data loaded from
-// story_mission at FinalizeLoad and never written. Progress
-// (World.StoryProgress) and actor.Standing / actor.StandingRankSeen are world
-// state saved by the checkpoint, so a finish and its Standing land in the same
-// snapshot transaction.
+// story_mission at FinalizeLoad and never written; the ladder likewise, except
+// that the operator can move a threshold live (SetStandingRankThreshold).
+// Progress (World.StoryProgress) and actor.Standing / actor.StandingRankSeen
+// are world state saved by the checkpoint, so a finish and its Standing land in
+// the same snapshot transaction.
 //
 // A beat can be finished two ways. Live, from the event that completes it (the
 // player pitches the tent): the player sees a "finish" popup. Or by a state
@@ -124,64 +128,94 @@ func CloneStoryProgress(in map[ActorID]map[StoryMissionID]*StoryProgress) map[Ac
 // Standing ranks
 // ---------------------------------------------------------------------------
 
-const (
-	DefaultStandingRankSojourner  = 50
-	DefaultStandingRankInhabitant = 200
-	DefaultStandingRankFreeman    = 600
-)
+// StandingRankStranger is the bottom rank's id: every player starts there,
+// and a ladder that lacks it gets it (NormalizeStandingRanks).
+const StandingRankStranger = "stranger"
 
-// StandingRank is one rung of the Standing ladder.
+// StandingRank is one rung of the Standing ladder (a standing_rank row).
 type StandingRank struct {
 	ID   string
 	Name string
 	At   int
-	// Text is the rank-up popup's line.
+	// Text is the rank-up popup's line; empty for the bottom rank.
 	Text string
+	// DownText is the popup's line when a player falls below this rank ("The
+	// town no longer counts you a Freeman."); empty for the bottom rank.
+	DownText string
 	// Prose is the hover line by how full the bar to the next rank is: the
 	// first entry for the first third, and so on. The top rank has one line.
 	Prose []string
 }
 
-// standingRanks is the ladder with the live thresholds. A threshold set at or
-// below the rank before it is lifted to one above it, so the ladder stays
-// strictly ascending whatever the settings say.
-func (s *WorldSettings) standingRanks() []StandingRank {
-	ranks := []StandingRank{
-		{ID: "stranger", Name: "Stranger", At: 0, Prose: []string{
-			"No one here knows your name.",
-			"A few villagers have started to know your face.",
-			"People nod to you on the road now.",
-		}},
-		{ID: "sojourner", Name: "Sojourner", At: settingOr(s.StandingRankSojourner, DefaultStandingRankSojourner),
-			Text: "The town has marked you a Sojourner.", Prose: []string{
-				"The village tolerates you, for now.",
-				"Folk have started to ask after you.",
-				"You are spoken of as one who may stay.",
-			}},
-		{ID: "inhabitant", Name: "Inhabitant", At: settingOr(s.StandingRankInhabitant, DefaultStandingRankInhabitant),
-			Text: "The town has admitted you as an Inhabitant.", Prose: []string{
-				"You are counted among the town's people.",
-				"Your word carries some weight at the well.",
-				"Men of standing greet you by name.",
-			}},
-		{ID: "freeman", Name: "Freeman", At: settingOr(s.StandingRankFreeman, DefaultStandingRankFreeman),
-			Text: "The town has made you a Freeman, with a voice at town meeting.", Prose: []string{
-				"You have a voice at town meeting.",
-			}},
-	}
-	for i := 1; i < len(ranks); i++ {
-		if ranks[i].At <= ranks[i-1].At {
-			ranks[i].At = ranks[i-1].At + 1
-		}
+// NormalizeStandingRanks orders the ladder by threshold and makes it usable
+// whatever the table holds: a rank at 0 named Stranger is added when none is
+// at 0 or below, the bottom rank is pinned to 0, and a threshold at or below
+// the rank before it is lifted to one above it, so the ladder stays strictly
+// ascending. Ties sort by id, never by map or row order. A rank that would be
+// lifted past MaxStanding could never be reached, so it is left out and logged
+// (StandingRanksFit tells an edit in advance).
+func NormalizeStandingRanks(in []StandingRank) []StandingRank {
+	ranks, dropped := normalizeStandingRanks(in)
+	for _, id := range dropped {
+		log.Printf("sim: story: rank %s does not fit below MaxStanding; left out of the ladder", id)
 	}
 	return ranks
 }
 
-func settingOr(v, def int) int {
-	if v <= 0 {
-		return def
+// StandingRanksFit reports whether every rank in raw keeps a place in the
+// normalized ladder: false when resolving ties would push one past
+// MaxStanding. The threshold edit refuses such an edit before writing it.
+func StandingRanksFit(raw []StandingRank) bool {
+	_, dropped := normalizeStandingRanks(raw)
+	return len(dropped) == 0
+}
+
+func normalizeStandingRanks(in []StandingRank) ([]StandingRank, []string) {
+	ranks := make([]StandingRank, len(in))
+	copy(ranks, in)
+	sort.SliceStable(ranks, func(i, j int) bool {
+		if ranks[i].At != ranks[j].At {
+			return ranks[i].At < ranks[j].At
+		}
+		return ranks[i].ID < ranks[j].ID
+	})
+	if len(ranks) == 0 || ranks[0].At > 0 {
+		ranks = append([]StandingRank{{ID: StandingRankStranger, Name: "Stranger"}}, ranks...)
 	}
-	return v
+	ranks[0].At = 0
+	out := ranks[:1]
+	var dropped []string
+	for _, r := range ranks[1:] {
+		prev := out[len(out)-1].At
+		if r.At <= prev {
+			if prev >= MaxStanding {
+				dropped = append(dropped, r.ID)
+				continue
+			}
+			r.At = prev + 1
+		}
+		out = append(out, r)
+	}
+	return out, dropped
+}
+
+// standingRanks is the live ladder; a world that loaded none (a test world)
+// has the bottom rank alone.
+func (w *World) standingRanks() []StandingRank {
+	if len(w.StandingRanks) == 0 {
+		return NormalizeStandingRanks(nil)
+	}
+	return w.StandingRanks
+}
+
+// standingRankIndexByID is the index of the rank with id, or -1.
+func standingRankIndexByID(ranks []StandingRank, id string) int {
+	for i, r := range ranks {
+		if r.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // standingRankIndex is the index of the highest rank whose threshold standing
@@ -225,7 +259,10 @@ const (
 	StoryUnseenCatchUp = "catch_up"
 	StoryUnseenFinish  = "finish"
 	StoryUnseenRank    = "rank"
-	StoryUnseenOffer   = "offer"
+	// StoryUnseenRankDown: the player fell to a lower rank (LLM-895). Its key
+	// names the rank they are at now, like a rank-up's.
+	StoryUnseenRankDown = "rank_down"
+	StoryUnseenOffer    = "offer"
 )
 
 // StoryView is one player's story as the client sees it.
@@ -274,7 +311,13 @@ func storyMissionLess(a, b *StoryMission) bool {
 
 // BuildStoryView derives a player's view from the catalog, their progress rows,
 // Standing and rank-seen mark. Pure; World and Snapshot both feed it.
-func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMissionID]*StoryProgress, standing, rankSeen int, ranks []StandingRank) StoryView {
+//
+// rankSeen is the id of the last rank announced to the player. A current rank
+// above it is a rank-up popup, below it a rank-down popup. An empty id reads as
+// the bottom rank. An id the ladder no longer has reads as the current rank, so
+// a removed rank never shows a popup by itself; the world rebases such a mark
+// to a real rank at load and when the ladder is replaced (rebaseRankSeen).
+func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMissionID]*StoryProgress, standing int, rankSeen string, ranks []StandingRank) StoryView {
 	idx := standingRankIndex(ranks, standing)
 	v := StoryView{
 		Standing: standing,
@@ -369,11 +412,26 @@ func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMis
 			latestFinish = e.p.FinishedAt
 		}
 	}
-	if idx > 0 && idx > rankSeen {
-		r := ranks[idx]
+	seenIdx := 0
+	if rankSeen != "" {
+		seenIdx = standingRankIndexByID(ranks, rankSeen)
+		if seenIdx < 0 {
+			seenIdx = idx
+		}
+	}
+	r := ranks[idx]
+	switch {
+	case idx > seenIdx:
 		v.Unseen = append(v.Unseen, StoryUnseenItem{
 			Key: StoryUnseenRank + ":" + r.ID, Kind: StoryUnseenRank,
 			Title: r.Name, Text: r.Text, At: latestFinish,
+		})
+	case idx < seenIdx:
+		// The line is the rank lost: a fall of two ranks at once reads as the
+		// loss of the one the player last heard they held.
+		v.Unseen = append(v.Unseen, StoryUnseenItem{
+			Key: StoryUnseenRankDown + ":" + r.ID, Kind: StoryUnseenRankDown,
+			Title: r.Name, Text: ranks[seenIdx].DownText, At: latestFinish,
 		})
 	}
 	for _, e := range open {
@@ -401,7 +459,7 @@ func joinClauses(c []string) string {
 
 // storyViewFor builds a live actor's view off the world.
 func (w *World) storyViewFor(actor *Actor) StoryView {
-	return BuildStoryView(w.StoryMissions, w.StoryProgress[actor.ID], actor.Standing, actor.StandingRankSeen, w.Settings.standingRanks())
+	return BuildStoryView(w.StoryMissions, w.StoryProgress[actor.ID], actor.Standing, actor.StandingRankSeen, w.standingRanks())
 }
 
 // StoryChanged carries a player's whole story view after anything in it
@@ -482,7 +540,7 @@ func (w *World) offerStoryMission(actor *Actor, m *StoryMission, now time.Time) 
 func (w *World) finishStoryMission(actor *Actor, m *StoryMission, p *StoryProgress, now time.Time, caughtUp bool) {
 	p.FinishedAt = now
 	p.CaughtUp = caughtUp
-	actor.Standing += m.StandingReward
+	actor.Standing = addStanding(actor.Standing, m.StandingReward)
 	if m.NextID == "" {
 		return
 	}
@@ -707,21 +765,17 @@ func (w *World) markStorySeen(actor *Actor, key string, now time.Time) (bool, er
 			return true, nil
 		}
 		return false, nil
-	case StoryUnseenRank:
-		ranks := w.Settings.standingRanks()
-		reached := standingRankIndex(ranks, actor.Standing)
-		for i, r := range ranks {
-			if r.ID == id {
-				// A rank not reached yet must not move the mark, or its popup
-				// would never show.
-				if i > actor.StandingRankSeen && i <= reached {
-					actor.StandingRankSeen = i
-					return true, nil
-				}
-				return false, nil
-			}
+	case StoryUnseenRank, StoryUnseenRankDown:
+		// Only the rank the player holds now moves the mark. A key for any
+		// other (a popup closed after Standing moved again) is a no-op, and
+		// the view shows the popup for where they stand now.
+		ranks := w.standingRanks()
+		current := ranks[standingRankIndex(ranks, actor.Standing)].ID
+		if id != current || actor.StandingRankSeen == current {
+			return false, nil
 		}
-		return false, nil
+		actor.StandingRankSeen = current
+		return true, nil
 	}
 	return false, fmt.Errorf("%w: %q", ErrStoryBadKey, key)
 }
@@ -742,6 +796,11 @@ func (w *World) rehydrateStoryOnLoad(ctx context.Context, now time.Time) error {
 	if w.repo.Story == nil {
 		return nil
 	}
+	ranks, err := w.repo.Story.LoadRanks(ctx)
+	if err != nil {
+		return fmt.Errorf("load ranks: %w", err)
+	}
+	w.StandingRanks = NormalizeStandingRanks(ranks)
 	missions, err := w.repo.Story.LoadMissions(ctx)
 	if err != nil {
 		return fmt.Errorf("load missions: %w", err)
@@ -768,15 +827,9 @@ func (w *World) rehydrateStoryOnLoad(ctx context.Context, now time.Time) error {
 		}
 		w.StoryProgress[actorID] = kept
 	}
-	ids := make([]ActorID, 0, len(w.Actors))
-	for id := range w.Actors {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	for _, id := range ids {
-		if actor := storyPlayer(w, id); actor != nil {
-			w.startStory(actor, now)
-		}
+	for _, actor := range w.sortedStoryPlayers() {
+		w.rebaseRankSeen(actor)
+		w.startStory(actor, now)
 	}
 	return nil
 }
@@ -795,13 +848,20 @@ type StoryReadoutEntry struct {
 	ActorID          ActorID
 	Name             string
 	Login            string
-	StandingRankSeen int
+	StandingRankSeen string
 	View             StoryView
 	Rows             []StoryProgress // by OfferedAt, then mission id
 }
 
-// StoryReadout returns the story of one player (actorID set) or of every
-// player with a login (actorID empty), by name.
+// StoryReadoutResult is StoryReadout's answer: the live ladder (LLM-895) and
+// the players.
+type StoryReadoutResult struct {
+	Ranks   []StandingRank
+	Players []StoryReadoutEntry
+}
+
+// StoryReadout returns the ladder and the story of one player (actorID set) or
+// of every player with a login (actorID empty), by name.
 func StoryReadout(actorID ActorID) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -838,7 +898,9 @@ func StoryReadout(actorID ActorID) Command {
 				})
 				out = append(out, e)
 			}
-			return out, nil
+			ranks := make([]StandingRank, len(w.standingRanks()))
+			copy(ranks, w.standingRanks())
+			return StoryReadoutResult{Ranks: ranks, Players: out}, nil
 		},
 	}
 }
@@ -858,10 +920,130 @@ func ResetStory(actorID ActorID, now time.Time) Command {
 			}
 			delete(w.StoryProgress, a.ID)
 			a.Standing = 0
-			a.StandingRankSeen = 0
+			a.StandingRankSeen = ""
 			w.startStory(a, now)
 			w.emitStoryChanged(a, now)
 			return w.storyViewFor(a), nil
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Standing up and down (LLM-895)
+// ---------------------------------------------------------------------------
+
+// ErrStandingRankUnknown is a threshold edit on a rank the ladder lacks, or on
+// the bottom rank, which is always at 0.
+var ErrStandingRankUnknown = errors.New("no such rank above the bottom of the ladder")
+
+// MaxStanding is the most Standing a player can hold: actor.standing is a
+// Postgres integer. Every rise saturates here (addStanding), so no sum wraps.
+const MaxStanding = math.MaxInt32
+
+// addStanding is standing + delta held within [0, MaxStanding], checked before
+// adding so a large delta can never wrap.
+func addStanding(standing, delta int) int {
+	switch {
+	case delta > 0 && delta > MaxStanding-standing:
+		return MaxStanding
+	case delta < 0 && delta < -standing:
+		return 0
+	}
+	return standing + delta
+}
+
+// adjustStanding moves a player's Standing by delta, within [0, MaxStanding],
+// and emits StoryChanged when it moved. The rank follows (BuildStoryView
+// announces the change). Returns the change applied. Every cause of a rise or
+// fall outside a story beat goes through here; reason is for the log.
+func (w *World) adjustStanding(actor *Actor, delta int, reason string, now time.Time) int {
+	next := addStanding(actor.Standing, delta)
+	applied := next - actor.Standing
+	if applied == 0 {
+		return 0
+	}
+	actor.Standing = next
+	log.Printf("sim: story: %s Standing %+d to %d (%s)", actor.ID, applied, next, reason)
+	w.emitStoryChanged(actor, now)
+	return applied
+}
+
+// StandingAdjusted is AdjustStanding's answer: the change applied (smaller
+// than asked when Standing would have gone below 0 or above MaxStanding) and
+// the view after it.
+type StandingAdjusted struct {
+	Applied int
+	View    StoryView
+}
+
+// AdjustStanding moves a player's Standing by delta (negative to lower it),
+// within [0, MaxStanding]. For the operator today; the engine's own causes
+// (reputation, a court ruling) call adjustStanding directly.
+func AdjustStanding(actorID ActorID, delta int, reason string, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if w.Actors[actorID] == nil {
+				return nil, ErrActorNotFound
+			}
+			a := storyPlayer(w, actorID)
+			if a == nil {
+				return nil, ErrStoryNotPlayer
+			}
+			applied := w.adjustStanding(a, delta, reason, now)
+			return StandingAdjusted{Applied: applied, View: w.storyViewFor(a)}, nil
+		},
+	}
+}
+
+// rebaseRankSeen quietly sets a player's rank-seen mark to the rank they hold
+// now when the mark names a rank the ladder no longer has, so later changes
+// are announced against a rank that exists. Announces nothing. Runs after the
+// ladder is loaded or replaced, never inside BuildStoryView (which stays pure).
+func (w *World) rebaseRankSeen(actor *Actor) {
+	ranks := w.standingRanks()
+	if actor.StandingRankSeen == "" || standingRankIndexByID(ranks, actor.StandingRankSeen) >= 0 {
+		return
+	}
+	current := ranks[standingRankIndex(ranks, actor.Standing)].ID
+	log.Printf("sim: story: %s rank-seen %q is not in the ladder; set to %q", actor.ID, actor.StandingRankSeen, current)
+	actor.StandingRankSeen = current
+}
+
+// sortedStoryPlayers is every player with a login, by id.
+func (w *World) sortedStoryPlayers() []*Actor {
+	ids := make([]ActorID, 0, len(w.Actors))
+	for id := range w.Actors {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	var out []*Actor
+	for _, id := range ids {
+		if a := storyPlayer(w, id); a != nil {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// ReplaceStandingRanks swaps in the ladder built from raw (standing_rank as it
+// is now — the caller has just written a threshold and read the table back),
+// normalized exactly as a load would, so the live ladder and the next boot's
+// always agree. Rebases any rank-seen mark the new ladder lacks, and sends
+// every player with a story their view again, since a rank may have changed
+// under them. Returns the ladder.
+func ReplaceStandingRanks(raw []StandingRank, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			w.StandingRanks = NormalizeStandingRanks(raw)
+			for _, a := range w.sortedStoryPlayers() {
+				w.rebaseRankSeen(a)
+				if len(w.StoryProgress[a.ID]) > 0 {
+					w.emitStoryChanged(a, now)
+				}
+			}
+			out := make([]StandingRank, len(w.StandingRanks))
+			copy(out, w.StandingRanks)
+			return out, nil
 		},
 	}
 }
