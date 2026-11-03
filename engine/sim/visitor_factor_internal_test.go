@@ -105,10 +105,11 @@ func TestInAfternoonSpawnWindow(t *testing.T) {
 // TestSeedFactorPack — a factor carries every factorWareKind (unitsPerKind..+1 of each),
 // factorWardrobeKindsPerVisit wardrobe goods (1..2 of each — LLM-710),
 // an iron shipment (ironUnits..+2 — LLM-442), a salt shipment (saltUnits..+2 — LLM-444),
-// a thread shipment (threadUnits..+2 — LLM-625), and a purse inside the configured
+// a thread shipment (threadUnits..+2 — LLM-625), the writing goods (LLM-799), the lantern
+// goods (LLM-846), and a purse inside the configured
 // [min,max]; a min==max range gives a fixed purse.
 func TestSeedFactorPack(t *testing.T) {
-	valid := map[ItemKind]bool{factorIronKind: true, factorSaltKind: true, factorThreadKind: true, NoteParchmentKind: true, NoteQuillKind: true}
+	valid := map[ItemKind]bool{factorIronKind: true, factorSaltKind: true, factorThreadKind: true, NoteParchmentKind: true, NoteQuillKind: true, HornLanternKind: true, TallowCandleKind: true}
 	for _, k := range factorWareKinds {
 		valid[k] = true
 	}
@@ -118,8 +119,8 @@ func TestSeedFactorPack(t *testing.T) {
 	}
 	for seed := int64(0); seed < 50; seed++ {
 		pack, purse := seedFactorPack(rand.New(rand.NewSource(seed)), 2, 10, 12, 12, 120, 200)
-		if want := len(factorWareKinds) + 5 + factorWardrobeKindsPerVisit; len(pack) != want {
-			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind, iron, salt, thread, parchment and quill and ink, and %d wardrobe goods)", seed, len(pack), want, factorWardrobeKindsPerVisit)
+		if want := len(factorWareKinds) + 7 + factorWardrobeKindsPerVisit; len(pack) != want {
+			t.Fatalf("seed %d: pack has %d kinds, want %d (one per factorWareKind, iron, salt, thread, parchment, quill and ink, horn lantern and tallow candle, and %d wardrobe goods)", seed, len(pack), want, factorWardrobeKindsPerVisit)
 		}
 		for kind, qty := range pack {
 			if wardrobe[kind] {
@@ -146,6 +147,18 @@ func TestSeedFactorPack(t *testing.T) {
 			if kind == NoteQuillKind {
 				if qty != factorQuillUnits {
 					t.Errorf("seed %d: quill and ink qty %d, want %d", seed, qty, factorQuillUnits)
+				}
+				continue
+			}
+			if kind == HornLanternKind {
+				if qty != factorLanternUnits {
+					t.Errorf("seed %d: horn lantern qty %d, want %d", seed, qty, factorLanternUnits)
+				}
+				continue
+			}
+			if kind == TallowCandleKind {
+				if qty < factorCandleUnits || qty > factorCandleUnits+2 {
+					t.Errorf("seed %d: tallow candle qty %d out of [%d,%d]", seed, qty, factorCandleUnits, factorCandleUnits+2)
 				}
 				continue
 			}

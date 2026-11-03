@@ -147,13 +147,13 @@ func familiarTick(t *testing.T, w *sim.World, now time.Time) familiarView {
 func TestItemActions(t *testing.T) {
 	pendant := &sim.ItemKindDef{Name: "silver_locket", Capabilities: []string{sim.CapabilityWear}}
 	bread := &sim.ItemKindDef{Name: "bread", Capabilities: []string{"portable"}}
-	if got := sim.ItemActions(pendant, false); !slices.Equal(got, []string{sim.ItemActionWear}) {
+	if got := sim.ItemActions(pendant, sim.PackState{}, time.Now()); !slices.Equal(got, []string{sim.ItemActionWear}) {
 		t.Errorf("pendant, not worn: %v, want [wear]", got)
 	}
-	if got := sim.ItemActions(pendant, true); !slices.Equal(got, []string{sim.ItemActionRemove}) {
+	if got := sim.ItemActions(pendant, sim.PackState{Wearing: []sim.ItemKind{pendant.Name}}, time.Now()); !slices.Equal(got, []string{sim.ItemActionRemove}) {
 		t.Errorf("pendant, worn: %v, want [remove]", got)
 	}
-	if got := sim.ItemActions(bread, false); got == nil || len(got) != 0 {
+	if got := sim.ItemActions(bread, sim.PackState{}, time.Now()); got == nil || len(got) != 0 {
 		t.Errorf("bread: %v, want empty non-nil", got)
 	}
 }

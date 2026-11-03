@@ -369,6 +369,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.HearthLowMinutes = parseIntSetting(values, "hearth_low_minutes", sim.DefaultHearthLowMinutes)
 	s.StokeWoodPerStoke = parseIntSetting(values, "stoke_wood_per_stoke", sim.DefaultStokeWoodPerStoke)
 	s.StokeDurationSeconds = parseIntSetting(values, "stoke_duration_seconds", sim.DefaultStokeDurationSeconds)
+	s.LanternCandleMinutes = parseIntSetting(values, "lantern_candle_minutes", sim.DefaultLanternCandleMinutes)
 
 	// Garment wear (LLM-422).
 	s.GarmentWearPerMinute = parseIntSetting(values, "garment_wear_per_minute", sim.DefaultGarmentWearPerMinute)

@@ -20,7 +20,7 @@ func TestPCInventoryEntriesActions(t *testing.T) {
 		"bread":         {Name: "bread", Capabilities: []string{"portable"}},
 	}
 	inv := map[sim.ItemKind]int{"duck_pendant": 1, "silver_locket": 2, "bread": 3, "mystery": 1}
-	got := pcInventoryEntries(inv, []sim.ItemKind{"duck_pendant"}, catalog)
+	got := pcInventoryEntries(sim.PackState{Inventory: inv, Wearing: []sim.ItemKind{"duck_pendant"}}, catalog, time.Now())
 	want := map[string][]string{
 		"bread":         {},
 		"duck_pendant":  {sim.ItemActionRemove},

@@ -982,6 +982,14 @@ type Actor struct {
 	// the owner's Wearing after a restart.
 	FamiliarOf ActorID
 
+	// LanternLitUntil is when this actor's horn lantern burns out (LLM-846,
+	// lantern.go); lit means the time is in the future, zero is never lit.
+	// LanternCandleLeft is the rest of a candle kept by Put out, used first on
+	// the next Light. Checkpointed as actor.lantern_lit_until and
+	// actor.lantern_candle_left_seconds.
+	LanternLitUntil   time.Time
+	LanternCandleLeft time.Duration
+
 	// Activity windows.
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
@@ -2189,6 +2197,11 @@ type ActorSnapshot struct {
 	// FamiliarOf mirrors the live Actor's FamiliarOf (LLM-800) for the /agents
 	// list, so the client knows a player's own duck.
 	FamiliarOf ActorID
+
+	// LanternLitUntil / LanternCandleLeft mirror the live Actor's (LLM-846) for
+	// the /agents light and the pack's Light / Put out buttons.
+	LanternLitUntil   time.Time
+	LanternCandleLeft time.Duration
 
 	// RestockPolicy mirrors the live Actor's RestockPolicy at snapshot time so
 	// the "## Restocking" perception section can surface a reseller's low

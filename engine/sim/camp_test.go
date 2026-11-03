@@ -626,7 +626,7 @@ func TestTentSleep_OnTheBedroll(t *testing.T) {
 // refusal is an item-action refusal the pack shows.
 func TestCampItemActions(t *testing.T) {
 	def := &sim.ItemKindDef{Name: sim.TentItemKind, Capabilities: []string{sim.CapabilityShelter}}
-	if got := sim.ItemActions(def, false); len(got) != 1 || got[0] != sim.ItemActionPitch {
+	if got := sim.ItemActions(def, sim.PackState{}, time.Now()); len(got) != 1 || got[0] != sim.ItemActionPitch {
 		t.Fatalf("ItemActions(tent) = %v, want [pitch]", got)
 	}
 
@@ -659,7 +659,7 @@ func TestCampItemActions(t *testing.T) {
 // camp cannot work (code_review).
 func TestCampItemActions_OnlyTheTentPitches(t *testing.T) {
 	other := &sim.ItemKindDef{Name: "lean_to", Capabilities: []string{sim.CapabilityShelter}}
-	if got := sim.ItemActions(other, false); len(got) != 0 {
+	if got := sim.ItemActions(other, sim.PackState{}, time.Now()); len(got) != 0 {
 		t.Errorf("ItemActions(lean_to) = %v, want none", got)
 	}
 }

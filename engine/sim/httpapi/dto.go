@@ -200,6 +200,11 @@ type AgentDTO struct {
 	// duck-pendant wearer. The client quacks only for the player's own duck.
 	FamiliarOf string `json:"familiar_of,omitempty"`
 
+	// LanternLitUntil is when the actor's lit lantern burns out (LLM-846),
+	// RFC3339; omitted when it is not lit. A client that connects late draws
+	// lights already burning; live changes ride npc_lantern_changed.
+	LanternLitUntil string `json:"lantern_lit_until,omitempty"`
+
 	// RoomSquare is where the actor stands inside a room with a floor plan, as
 	// [x, y] (LLM-768) — asleep, their bed (LLM-782); absent outdoors, asleep
 	// with no bed in the room, or in a structure without one.

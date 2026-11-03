@@ -244,6 +244,10 @@ type WorldSettings struct {
 	StokeWoodPerStoke        int
 	StokeDurationSeconds     int
 
+	// LanternCandleMinutes is how long one tallow candle burns in a lit horn
+	// lantern (LLM-846; lantern.go). 0 or less keeps the default.
+	LanternCandleMinutes int
+
 	// Farm upkeep wealth tax (LLM-215). Each game-day a farm-tagged producer's
 	// owner owes one upkeep shovel per FarmUpkeepCoinsPerShovel coins held above
 	// FarmUpkeepFloor, bought from the smith (the LLM-83 circulation lever). Stock-
@@ -3087,6 +3091,8 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		GarmentWear:                garmentWearCopy,
 		Wearing:                    append([]ItemKind(nil), a.Wearing...),
 		FamiliarOf:                 a.FamiliarOf,
+		LanternLitUntil:            a.LanternLitUntil,
+		LanternCandleLeft:          a.LanternCandleLeft,
 		Coins:                      a.Coins,
 		Acquaintances:              cloneAcquaintances(a.Acquaintances),
 		Relationships:              cloneRelationships(a.Relationships),

@@ -122,7 +122,9 @@ SELECT
     wearing,
     closed_until,
     standing,
-    standing_rank_seen
+    standing_rank_seen,
+    lantern_lit_until,
+    lantern_candle_left_seconds
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -169,7 +171,8 @@ INSERT INTO actor (
     livestock_yield,
     wearing,
     closed_until,
-    standing, standing_rank_seen
+    standing, standing_rank_seen,
+    lantern_lit_until, lantern_candle_left_seconds
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -184,7 +187,8 @@ INSERT INTO actor (
     $28,
     $29, $30, $31, $32,
     $33, $34, $35,
-    $36, $37
+    $36, $37,
+    $38, $39
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -222,7 +226,9 @@ ON CONFLICT (id) DO UPDATE SET
     wearing                = EXCLUDED.wearing,
     closed_until           = EXCLUDED.closed_until,
     standing               = EXCLUDED.standing,
-    standing_rank_seen     = EXCLUDED.standing_rank_seen`
+    standing_rank_seen     = EXCLUDED.standing_rank_seen,
+    lantern_lit_until      = EXCLUDED.lantern_lit_until,
+    lantern_candle_left_seconds = EXCLUDED.lantern_candle_left_seconds`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -573,6 +579,8 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			closedUntil          *time.Time
 			standing             int
 			standingRankSeen     int
+			lanternLitUntil      *time.Time
+			lanternCandleLeft    int
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -591,6 +599,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&wearing,
 			&closedUntil,
 			&standing, &standingRankSeen,
+			&lanternLitUntil, &lanternCandleLeft,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -670,6 +679,8 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			ClosedUntil:          closedUntil,
 			Standing:             standing,
 			StandingRankSeen:     standingRankSeen,
+			LanternLitUntil:      derefTime(lanternLitUntil),
+			LanternCandleLeft:    time.Duration(lanternCandleLeft) * time.Second,
 			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
@@ -1661,6 +1672,8 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			a.ClosedUntil,                                // $35 closed_until (LLM-817)
 			a.Standing,                                   // $36 standing (LLM-892)
 			a.StandingRankSeen,                           // $37 standing_rank_seen (LLM-892)
+			nilOnZeroTime(a.LanternLitUntil),             // $38 lantern_lit_until (LLM-846)
+			int(a.LanternCandleLeft/time.Second),         // $39 lantern_candle_left_seconds (LLM-846)
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

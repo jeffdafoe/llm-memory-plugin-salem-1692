@@ -825,7 +825,7 @@ func TestPCPackEntries_PitchedTent(t *testing.T) {
 	}
 	structures := map[sim.StructureID]*sim.Structure{"inn": {ID: "inn", DisplayName: "Inn"}, "tent": {ID: "tent", DisplayName: "Jefferey's Tent"}}
 
-	rows := pcPackEntries(map[sim.ItemKind]int{"bread": 2}, nil, catalog, objects, structures, "pc")
+	rows := pcPackEntries(sim.PackState{Inventory: map[sim.ItemKind]int{"bread": 2}}, catalog, objects, structures, "pc", time.Now())
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v, want bread and the pitched tent", rows)
 	}
@@ -833,7 +833,7 @@ func TestPCPackEntries_PitchedTent(t *testing.T) {
 	if !tent.Pitched || tent.Quantity != 0 || tent.DisplayLabel != "Tent — pitched by the Inn" || len(tent.Actions) != 1 || tent.Actions[0] != sim.ItemActionStrike {
 		t.Errorf("pitched row = %+v, want quantity 0, pitched, labelled by the Inn, Strike", tent)
 	}
-	if rows := pcPackEntries(map[sim.ItemKind]int{sim.TentItemKind: 1}, nil, catalog, map[sim.VillageObjectID]*sim.VillageObject{}, structures, "pc"); len(rows) != 1 || rows[0].Actions[0] != sim.ItemActionPitch {
+	if rows := pcPackEntries(sim.PackState{Inventory: map[sim.ItemKind]int{sim.TentItemKind: 1}}, catalog, map[sim.VillageObjectID]*sim.VillageObject{}, structures, "pc", time.Now()); len(rows) != 1 || rows[0].Actions[0] != sim.ItemActionPitch {
 		t.Errorf("carried tent rows = %+v, want one row offering Pitch", rows)
 	}
 }

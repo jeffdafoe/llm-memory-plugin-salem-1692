@@ -3,7 +3,6 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -202,6 +201,9 @@ type pcInventoryEntry struct {
 	// Pitched marks the row for the PC's pitched tent (LLM-798): out of the pack
 	// (Quantity 0), shown without a count, its action Strike.
 	Pitched bool `json:"pitched,omitempty"`
+	// CandleLeftMinutes is the part-burned candle kept by Put out (LLM-846), on
+	// the lantern's row only, rounded up so any stub shows; omitted when none.
+	CandleLeftMinutes int `json:"candle_left_minutes,omitempty"`
 }
 
 // pcHuddleMember is one co-present actor in the PC's conversational scope.
@@ -299,7 +301,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, audienceStructureID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
 	resp.DormantMembers = pcDormantRoster(snap, pc, pcID, audienceStructureID)
 	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc, audienceStructureID)
-	resp.Inventory = pcPackEntries(pc.Inventory, pc.Wearing, s.world.ItemKinds, snap.VillageObjects, snap.Structures, pcID)
+	resp.Inventory = pcPackEntries(pc.PackState(), s.world.ItemKinds, snap.VillageObjects, snap.Structures, pcID, time.Now().UTC())
 
 	for k, v := range pc.Needs {
 		resp.Needs[string(k)] = v
@@ -961,18 +963,22 @@ func formatCoins(n int) string {
 
 // pcInventoryEntries maps the PC's item-kind→quantity map to enriched DTO
 // entries, joining the catalog for display label / category / capabilities, and
-// the item actions open on each (wearing: what the PC has on). A kind absent
-// from the catalog still serializes (raw kind, no label, no actions). Sorted by
-// item kind for a deterministic response; always non-nil so it's [] not null.
-func pcInventoryEntries(inv map[sim.ItemKind]int, wearing []sim.ItemKind, catalog map[sim.ItemKind]*sim.ItemKindDef) []pcInventoryEntry {
-	out := make([]pcInventoryEntry, 0, len(inv))
-	for kind, qty := range inv {
+// the item actions open on each (st: what the PC has on, its lantern). A kind
+// absent from the catalog still serializes (raw kind, no label, no actions).
+// Sorted by item kind for a deterministic response; always non-nil so it's []
+// not null.
+func pcInventoryEntries(st sim.PackState, catalog map[sim.ItemKind]*sim.ItemKindDef, now time.Time) []pcInventoryEntry {
+	out := make([]pcInventoryEntry, 0, len(st.Inventory))
+	for kind, qty := range st.Inventory {
 		e := pcInventoryEntry{ItemKind: string(kind), Quantity: qty, Actions: []string{}}
 		if def := catalog[kind]; def != nil {
 			e.DisplayLabel = def.DisplayLabel
 			e.Category = string(def.Category)
 			e.Capabilities = def.Capabilities
-			e.Actions = sim.ItemActions(def, slices.Contains(wearing, kind))
+			e.Actions = sim.ItemActions(def, st, now)
+		}
+		if kind == sim.HornLanternKind && st.LanternCandleLeft > 0 {
+			e.CandleLeftMinutes = int((st.LanternCandleLeft + time.Minute - 1) / time.Minute)
 		}
 		out = append(out, e)
 	}
@@ -1010,9 +1016,9 @@ func pcDwellingAttributes(pc *sim.ActorSnapshot, now time.Time) []string {
 // and, while the PC's tent is pitched (LLM-798), a row for it — out of the pack,
 // so quantity 0 and Pitched, labelled with where it stands ("Tent — pitched by
 // the Inn"), its one action Strike.
-func pcPackEntries(inv map[sim.ItemKind]int, wearing []sim.ItemKind, catalog map[sim.ItemKind]*sim.ItemKindDef,
-	objects map[sim.VillageObjectID]*sim.VillageObject, structures map[sim.StructureID]*sim.Structure, pcID sim.ActorID) []pcInventoryEntry {
-	out := pcInventoryEntries(inv, wearing, catalog)
+func pcPackEntries(st sim.PackState, catalog map[sim.ItemKind]*sim.ItemKindDef,
+	objects map[sim.VillageObjectID]*sim.VillageObject, structures map[sim.StructureID]*sim.Structure, pcID sim.ActorID, now time.Time) []pcInventoryEntry {
+	out := pcInventoryEntries(st, catalog, now)
 	camp := sim.FindCamp(objects, pcID)
 	if camp == nil {
 		return out

@@ -473,6 +473,15 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Reason:      e.Reason.String(),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.LanternChanged:
+		// LLM-846: a lantern lit or put out. Every viewer draws the light, so
+		// the frame is not login-scoped. Burning out on the clock sends
+		// nothing; the client removes the light at lit_until.
+		return WireFrame{Type: "npc_lantern_changed", Data: lanternChangedWireDTO{
+			ID:       string(e.ActorID),
+			LitUntil: lanternLitUntilWire(e.LitUntil, e.At),
+			At:       e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.PCSleepStarted:
 		return WireFrame{Type: "pc_sleep_started", Data: pcSleepStartedWireDTO{
 			ActorID: string(e.ActorID),
@@ -1369,6 +1378,23 @@ type payLineWireDTO struct {
 // is over when that many have ended. A second helping of the same good
 // refreshes the credits and sends this frame again, so the client sets the
 // count, never adds to it.
+// lanternChangedWireDTO is the npc_lantern_changed payload (LLM-846). lit_until
+// is when the lantern burns out, omitted when it was put out.
+type lanternChangedWireDTO struct {
+	ID       string `json:"id"`
+	LitUntil string `json:"lit_until,omitempty"`
+	At       string `json:"at"`
+}
+
+// lanternLitUntilWire is the RFC3339 burn-out time of a lantern lit as of now,
+// or "" when it is out.
+func lanternLitUntilWire(litUntil, now time.Time) string {
+	if !litUntil.After(now) {
+		return ""
+	}
+	return litUntil.UTC().Format(time.RFC3339)
+}
+
 type mealStartedWireDTO struct {
 	ID          string `json:"id"`
 	Item        string `json:"item"`
