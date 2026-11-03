@@ -527,6 +527,8 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		// Player story missions (LLM-892).
 		{http.MethodGet, umbilicalBasePath + "/story", "Player story missions (LLM-892): each player's Standing, rank, the story view the client gets (open beat + popups not yet closed, same shape as /pc/me story) and the raw pc_story_mission rows. Every player with a login by name, or one with ?id=<actor>.", false, s.handleUmbilicalStory},
 		{http.MethodPost, umbilicalBasePath + "/story/reset", "Wipe one player's story (rows, Standing, rank-seen mark) and start it again (LLM-892): the start beats are offered, and what the world already shows done (a pitched tent, a lit fire) is caught up at once. For testing. The next checkpoint sweeps the old rows. Body: {actor_id}.", true, s.handleUmbilicalStoryReset},
+		{http.MethodPost, umbilicalBasePath + "/story/standing", "Move one player's Standing up or down (LLM-895): delta is added (negative lowers it), never below 0. The rank follows, and the player sees a rank-up or rank-down popup. Audited. Body: {actor_id, delta, reason?}. Answers {applied, story}: applied is smaller than delta when Standing would have gone below 0.", true, s.handleUmbilicalStoryStanding},
+		{http.MethodPost, umbilicalBasePath + "/story/rank/set", "Move one rank's Standing threshold live (LLM-895): writes standing_rank, then the live ladder (renormalized — a threshold moved past another rank reorders them), and every player gets their story again. The bottom rank stays at 0. Body: {id, at>=1}. Answers the ladder. 404 no such rank above the bottom; 503 when not wired.", true, s.handleUmbilicalStoryRankSet},
 
 		// The magistrates (LLM-695): the docket and rulings, seeding a case, and
 		// hearing every pending case now.

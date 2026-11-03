@@ -99,6 +99,12 @@ type Server struct {
 	// checkpoint path, so this direct write is the edit's durable half. Nil when
 	// unwired → the /item/set handler answers 503.
 	itemKindWriter ItemKindWriter
+	// standingRankWriter backs POST /umbilical/story/rank/set (LLM-895): the
+	// durable standing_rank threshold write. Nil when unwired → 503.
+	standingRankWriter StandingRankWriter
+	// rankEditMu serializes a threshold edit's durable write, read-back and
+	// live swap, so two edits cannot interleave (LLM-895).
+	rankEditMu sync.Mutex
 	// assetGeometryWriter backs the admin-gated PATCH /api/assets/{id}/door
 	// | /footprint | /stand editor routes (LLM-263) — the durable asset-geometry
 	// UPDATE. Injected (set by cmd/engine via SetAssetGeometryWriter) so httpapi
@@ -320,6 +326,13 @@ func (s *Server) SetSatisfiesWriter(wr SatisfiesWriter) {
 // SetRecipeWriter — call before Handler, never concurrently with serving.
 func (s *Server) SetItemKindWriter(wr ItemKindWriter) {
 	s.itemKindWriter = wr
+}
+
+// SetStandingRankWriter wires the durable standing_rank threshold write behind
+// POST /umbilical/story/rank/set (LLM-895). Same wiring-time-only contract as
+// SetItemKindWriter.
+func (s *Server) SetStandingRankWriter(wr StandingRankWriter) {
+	s.standingRankWriter = wr
 }
 
 // SetAssetGeometryWriter injects the durable asset-geometry UPDATE behind the

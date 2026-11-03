@@ -58,6 +58,54 @@ const nextGenStoryProgressSQL = `SELECT nextval('pc_story_mission_snapshot_gen_s
 
 const advisoryLockStoryProgressSQL = `SELECT pg_advisory_xact_lock(hashtext('pc_story_mission_snapshot'), 0)`
 
+const loadStandingRanksSQL = `
+SELECT id, name, at_standing, up_text, down_text, prose
+  FROM standing_rank`
+
+// The bottom rank (at_standing 0) is never moved: the ladder pins it at 0.
+const updateStandingRankThresholdSQL = `
+UPDATE standing_rank SET at_standing = $2 WHERE id = $1 AND at_standing > 0`
+
+// LoadRanks loads the Standing ladder (LLM-895); the world normalizes it.
+func (r *StoryRepo) LoadRanks(ctx context.Context) ([]sim.StandingRank, error) {
+	rows, err := r.pool.Query(ctx, loadStandingRanksSQL)
+	if err != nil {
+		return nil, fmt.Errorf("pg story LoadRanks query: %w", err)
+	}
+	defer rows.Close()
+	var out []sim.StandingRank
+	for rows.Next() {
+		var (
+			id, name, upText, downText string
+			at                         int
+			prose                      []string
+		)
+		if err := rows.Scan(&id, &name, &at, &upText, &downText, &prose); err != nil {
+			return nil, fmt.Errorf("pg story LoadRanks scan: %w", err)
+		}
+		out = append(out, sim.StandingRank{ID: id, Name: name, At: at, Text: upText, DownText: downText, Prose: prose})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg story LoadRanks iter: %w", err)
+	}
+	return out, nil
+}
+
+// SetStandingRankThreshold is the durable half of the operator's threshold
+// edit (POST /umbilical/story/rank/set): standing_rank is reference data with
+// no checkpoint path. sim.ErrStandingRankUnknown when no rank above the bottom
+// has that id.
+func (r *StoryRepo) SetStandingRankThreshold(ctx context.Context, id string, at int) error {
+	tag, err := r.pool.Exec(ctx, updateStandingRankThresholdSQL, id, at)
+	if err != nil {
+		return fmt.Errorf("pg story SetStandingRankThreshold: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return sim.ErrStandingRankUnknown
+	}
+	return nil
+}
+
 // LoadMissions loads the whole catalog.
 func (r *StoryRepo) LoadMissions(ctx context.Context) (map[sim.StoryMissionID]*sim.StoryMission, error) {
 	rows, err := r.pool.Query(ctx, loadStoryMissionsSQL)

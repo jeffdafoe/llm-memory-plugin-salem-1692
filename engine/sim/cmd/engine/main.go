@@ -141,6 +141,10 @@ type runtime struct {
 	// umbilical control surface is enabled. Nil in the headless lifecycle test
 	// (mem-backed, no pg) → the route answers 503.
 	ItemKindWriter *pg.ItemKindsRepo
+	// StandingRankWriter is the durable standing_rank threshold write behind
+	// /umbilical/story/rank/set (LLM-895). Nil in the headless lifecycle test
+	// → the route answers 503.
+	StandingRankWriter *pg.StoryRepo
 	// AssetGeometryWriter is the durable asset-geometry UPDATE behind the admin
 	// PATCH /api/assets/{id}/door | /footprint | /stand editor routes (LLM-263).
 	// Unlike the item/recipe writers this is wired whenever pg is present (not
@@ -315,6 +319,7 @@ func main() {
 		ClientEvents:        pg.NewClientEventsRepo(pool),
 		SatisfiesWriter:     pg.NewItemKindsRepo(pool),
 		ItemKindWriter:      pg.NewItemKindsRepo(pool),
+		StandingRankWriter:  pg.NewStoryRepo(pool),
 		AssetGeometryWriter: pg.NewAssetsRepo(pool),
 		SpriteWriter:        pg.NewSpritesRepo(pool),
 		PromptRing:          promptRing,
@@ -762,6 +767,9 @@ func run(rt runtime, stop stopSignals) error {
 				}
 				if rt.ItemKindWriter != nil {
 					server.SetItemKindWriter(rt.ItemKindWriter) // backs /umbilical/item/set (LLM-200) — durable item_kind upsert
+				}
+				if rt.StandingRankWriter != nil {
+					server.SetStandingRankWriter(rt.StandingRankWriter) // backs /umbilical/story/rank/set (LLM-895)
 				}
 			}
 		}
