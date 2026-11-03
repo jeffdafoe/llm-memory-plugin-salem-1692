@@ -482,9 +482,11 @@ func (w *World) finishStoryMission(actor *Actor, m *StoryMission, p *StoryProgre
 	w.offerStoryMission(actor, next, now)
 }
 
-// startStory offers every start beat the player has no row for, and finishes
-// as caught up any open beat the world already shows done (a finish a crash
-// lost before the checkpoint). Reports whether anything changed.
+// startStory offers every start beat the player has no row for, offers the
+// next beat of a finished one that has no row (a chapter appended to the
+// catalog after the player finished the last beat), and finishes as caught up
+// any open beat the world already shows done (a finish a crash lost before the
+// checkpoint). Reports whether anything changed.
 func (w *World) startStory(actor *Actor, now time.Time) bool {
 	changed := false
 	for _, m := range w.storyStartMissions() {
@@ -495,11 +497,17 @@ func (w *World) startStory(actor *Actor, now time.Time) bool {
 	for _, id := range sortedStoryIDs(w.StoryProgress[actor.ID]) {
 		p := w.StoryProgress[actor.ID][id]
 		m := w.StoryMissions[id]
-		if m == nil || !p.Open() {
+		if m == nil {
 			continue
 		}
-		if storyStateHolds(w, actor, m, now) {
-			w.finishStoryMission(actor, m, p, now, true)
+		if p.Open() {
+			if storyStateHolds(w, actor, m, now) {
+				w.finishStoryMission(actor, m, p, now, true)
+				changed = true
+			}
+			continue
+		}
+		if next := w.StoryMissions[m.NextID]; next != nil && w.offerStoryMission(actor, next, now) {
 			changed = true
 		}
 	}

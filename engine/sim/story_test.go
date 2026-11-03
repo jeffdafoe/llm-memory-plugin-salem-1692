@@ -383,3 +383,25 @@ func TestStoryNoCatalogIsInert(t *testing.T) {
 		t.Error("with no catalog the story does nothing")
 	}
 }
+
+// A chapter appended after a player finished the last beat reaches them at the
+// next load: the finished beat's new next beat is offered.
+func TestStoryStartOffersANextBeatAddedLater(t *testing.T) {
+	w, pc, _ := storyTestWorld(t)
+	w.StoryMissions = map[StoryMissionID]*StoryMission{
+		"arrival-5": {ID: "arrival-5", Chapter: "Arrival", Seq: 5, Trigger: StoryTriggerSpokeWithVillager, StandingReward: 10, NextID: "parish-1"},
+		"parish-1":  {ID: "parish-1", Chapter: "Parish", Seq: 1, Trigger: StoryTriggerSpokeWithVillager, StandingReward: 10},
+	}
+	w.StoryProgress[pc.ID] = map[StoryMissionID]*StoryProgress{
+		"arrival-5": {MissionID: "arrival-5", OfferedAt: storyNow.Add(-time.Hour), FinishedAt: storyNow.Add(-time.Minute), FinishSeenAt: storyNow},
+	}
+	if !w.startStory(pc, storyNow) {
+		t.Fatal("startStory should report the new offer")
+	}
+	if p := w.StoryProgress[pc.ID]["parish-1"]; p == nil || !p.Open() {
+		t.Fatalf("parish-1 = %+v, want offered", p)
+	}
+	if w.startStory(pc, storyNow) {
+		t.Error("a second pass changes nothing")
+	}
+}
