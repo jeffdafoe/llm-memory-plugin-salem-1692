@@ -2462,4 +2462,7 @@ type Diff struct {
 type CampSight struct {
 	OwnerLabel string
 	Fire       string
+	// Horseshoe: a horseshoe hangs over the tent door (LLM-845, the
+	// ward_horseshoe tag). A buried witch bottle is not seen.
+	Horseshoe bool
 }

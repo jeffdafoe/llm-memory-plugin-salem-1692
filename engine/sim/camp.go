@@ -537,7 +537,8 @@ func dismantleCamp(w *World, ownerID ActorID, tentID VillageObjectID) {
 		delete(w.carryoverByStructure, sid)
 		delete(w.Structures, sid)
 	}
-	if _, ok := w.VillageObjects[tentID]; ok {
+	if tent, ok := w.VillageObjects[tentID]; ok {
+		returnTentWards(w, ownerID, tent)
 		removeCampObject(w, tentID, now)
 	}
 }

@@ -6591,7 +6591,8 @@ func buildCampSightings(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorS
 			continue
 		}
 		_, acquainted := a.Acquaintances[owner.DisplayName]
-		sight := CampSight{OwnerLabel: descriptorLabel(owner.DisplayName, owner.Role, acquainted)}
+		sight := CampSight{OwnerLabel: descriptorLabel(owner.DisplayName, owner.Role, acquainted),
+			Horseshoe: n.tent.HasTag(sim.TagWardHorseshoe)}
 		if camp := sim.FindCamp(snap.VillageObjects, n.tent.OwnerActorID); camp != nil && sim.CampFireLit(camp.Fire, snap.PublishedAt) {
 			sight.Fire = camp.Fire.CurrentState
 		}

@@ -46,12 +46,16 @@ func refuseItemAction(msg string) error { return &itemActionError{msg: msg} }
 
 // PackState is the actor state the pack's item actions read beyond the catalog
 // entry: what is held, what is worn (LLM-800) and the lantern (LLM-846). Built
-// from a live Actor or an ActorSnapshot.
+// from a live Actor or an ActorSnapshot. TentPitched and TentWards (LLM-845)
+// are the player's camp, filled by WithCamp where the objects are at hand;
+// without it no ward action is offered.
 type PackState struct {
 	Inventory         map[ItemKind]int
 	Wearing           []ItemKind
 	LanternLitUntil   time.Time
 	LanternCandleLeft time.Duration
+	TentPitched       bool
+	TentWards         map[ItemKind]bool
 }
 
 // PackState returns the actor's pack state.
@@ -93,6 +97,9 @@ func ItemActions(def *ItemKindDef, st PackState, now time.Time) []string {
 		} else if st.LanternCandleLeft > 0 || st.Inventory[TallowCandleKind] > 0 {
 			actions = append(actions, ItemActionLight)
 		}
+	}
+	if act := wardAction(def, st); act != "" {
+		actions = append(actions, act)
 	}
 	return actions
 }
@@ -171,10 +178,12 @@ func UseItem(actorID ActorID, kind ItemKind, action string, now time.Time) Comma
 			if a.Inventory[kind] <= 0 || def == nil {
 				return nil, refuseItemAction("You are not carrying that.")
 			}
-			if !slices.Contains(ItemActions(def, a.PackState(), now), action) {
+			if !slices.Contains(ItemActions(def, a.PackState().WithCamp(w.VillageObjects, a.ID), now), action) {
 				return nil, refuseItemAction("You cannot do that with it.")
 			}
 			switch action {
+			case ItemActionHang, ItemActionBury:
+				return nil, placeWard(w, a, kind, now)
 			case ItemActionEat, ItemActionDrink:
 				return nil, eatFromPack(w, a, def, kind, now)
 			case ItemActionLight:

@@ -5236,11 +5236,21 @@ func campSightProse(c CampSight) string {
 		label = "someone"
 	}
 	owner := capitalizeFirst(sim.Possessive(label))
+	var line string
 	switch c.Fire {
 	case sim.CampFireStateBurning:
-		return owner + " tent is pitched nearby, a fire burning before it."
+		line = owner + " tent is pitched nearby, a fire burning before it."
 	case sim.CampFireStateDying:
-		return owner + " tent is pitched nearby, the fire before it burning low."
+		line = owner + " tent is pitched nearby, the fire before it burning low."
+	default:
+		line = owner + " tent is pitched nearby, its fire ring cold."
 	}
-	return owner + " tent is pitched nearby, its fire ring cold."
+	if c.Horseshoe {
+		line += " " + campHorseshoeLine
+	}
+	return line
 }
+
+// campHorseshoeLine is what a villager sees of a warded tent (LLM-845): the
+// fact, no judgement — what it means is the village's own talk.
+const campHorseshoeLine = "A horseshoe is nailed over its door."
