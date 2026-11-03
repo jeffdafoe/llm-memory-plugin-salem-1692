@@ -46,6 +46,9 @@ const (
 	RumorTopicOmenFlatBread    RumorTopic = "omen_flat_bread"
 	RumorTopicOmenWitheredBush RumorTopic = "omen_withered_bush"
 	RumorTopicOmenFoulWell     RumorTopic = "omen_foul_well"
+	// The players' own omens (LLM-845).
+	RumorTopicOmenCampFireGutters RumorTopic = "omen_camp_fire_gutters"
+	RumorTopicOmenLanternGutters  RumorTopic = "omen_lantern_gutters"
 )
 
 // omenRumorTopic maps an omen to its rumor topic.
@@ -162,27 +165,55 @@ var (
 		"the well water turned bad for you and has not come right",
 		"you are ill-wished — even the well water turns against you",
 	}
+	omenCampFireGuttersLadder = [MaxRumorRung + 1]string{
+		"%s's camp fire would not stay lit",
+		"the fire at %s's camp sinks as soon as it catches",
+		"no fire will burn at %s's camp, however dry the wood",
+		"%s's camp is ill-wished — no fire will burn there",
+	}
+	omenCampFireGuttersSelfLadder = [MaxRumorRung + 1]string{
+		"your camp fire would not stay lit",
+		"the fire at your camp sinks as soon as it catches",
+		"no fire will burn at your camp, however dry the wood",
+		"your camp is ill-wished — no fire will burn there",
+	}
+	omenLanternGuttersLadder = [MaxRumorRung + 1]string{
+		"%s's lantern candle guttered out as soon as it was lit",
+		"%s cannot keep a candle burning in that lantern",
+		"every light %s carries goes out in minutes",
+		"%s is ill-wished — no light will burn for them",
+	}
+	omenLanternGuttersSelfLadder = [MaxRumorRung + 1]string{
+		"your lantern candle guttered out as soon as it was lit",
+		"you cannot keep a candle burning in your lantern",
+		"every light you carry goes out in minutes",
+		"you are ill-wished — no light will burn for you",
+	}
 )
 
 // ladders maps each topic to its escalation ladder. A topic with no ladder
 // renders no clause (defensive — every real topic has one).
 var ladders = map[RumorTopic]*[MaxRumorRung + 1]string{
-	RumorTopicShortOnCoin:      &shortOnCoinLadder,
-	RumorTopicOmenSourMilk:     &omenSourMilkLadder,
-	RumorTopicOmenColdHearth:   &omenColdHearthLadder,
-	RumorTopicOmenFlatBread:    &omenFlatBreadLadder,
-	RumorTopicOmenWitheredBush: &omenWitheredBushLadder,
-	RumorTopicOmenFoulWell:     &omenFoulWellLadder,
+	RumorTopicShortOnCoin:         &shortOnCoinLadder,
+	RumorTopicOmenSourMilk:        &omenSourMilkLadder,
+	RumorTopicOmenColdHearth:      &omenColdHearthLadder,
+	RumorTopicOmenFlatBread:       &omenFlatBreadLadder,
+	RumorTopicOmenWitheredBush:    &omenWitheredBushLadder,
+	RumorTopicOmenFoulWell:        &omenFoulWellLadder,
+	RumorTopicOmenCampFireGutters: &omenCampFireGuttersLadder,
+	RumorTopicOmenLanternGutters:  &omenLanternGuttersLadder,
 }
 
 // selfLadders holds the to-the-subject form of the topics a subject may carry
 // about themselves. Membership IS the self-tellable rule (RumorTopicSelfTellable).
 var selfLadders = map[RumorTopic]*[MaxRumorRung + 1]string{
-	RumorTopicOmenSourMilk:     &omenSourMilkSelfLadder,
-	RumorTopicOmenColdHearth:   &omenColdHearthSelfLadder,
-	RumorTopicOmenFlatBread:    &omenFlatBreadSelfLadder,
-	RumorTopicOmenWitheredBush: &omenWitheredBushSelfLadder,
-	RumorTopicOmenFoulWell:     &omenFoulWellSelfLadder,
+	RumorTopicOmenSourMilk:        &omenSourMilkSelfLadder,
+	RumorTopicOmenColdHearth:      &omenColdHearthSelfLadder,
+	RumorTopicOmenFlatBread:       &omenFlatBreadSelfLadder,
+	RumorTopicOmenWitheredBush:    &omenWitheredBushSelfLadder,
+	RumorTopicOmenFoulWell:        &omenFoulWellSelfLadder,
+	RumorTopicOmenCampFireGutters: &omenCampFireGuttersSelfLadder,
+	RumorTopicOmenLanternGutters:  &omenLanternGuttersSelfLadder,
 }
 
 // RumorTopicSelfTellable reports whether a topic is one people tell about
@@ -388,13 +419,14 @@ func seedShortOnCoinRumor(w *World, entry *PayLedgerEntry, at time.Time) {
 
 // seedOmenRumor plants a just-happened omen (LLM-843) as first-hand knowledge in
 // the witness — who may be its subject — and in everyone in the witness's
-// conversation, who saw it too. The subject must be a resident NPC (the roll
-// only arms those). Social layer only. Runs on the world goroutine.
+// conversation, who saw it too. The subject is a resident NPC or a player
+// (LLM-845), the only actors an omen is set against. Social layer only. Runs
+// on the world goroutine.
 func seedOmenRumor(w *World, kind OmenKind, witness *Actor, subjectID ActorID, at time.Time) {
 	if w == nil || witness == nil {
 		return
 	}
-	if !omenResident(w.Actors[subjectID]) {
+	if subject := w.Actors[subjectID]; !omenResident(subject) && (subject == nil || subject.Kind != KindPC) {
 		return
 	}
 	subjectName := actorDisplayName(w, subjectID)

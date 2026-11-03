@@ -516,7 +516,7 @@ func TestRankSeenIsAnID(t *testing.T) {
 	ladder := storyTestLadder()
 	view := func(standing int, seen string, ranks []StandingRank) []string {
 		var out []string
-		for _, u := range BuildStoryView(nil, nil, standing, seen, ranks).Unseen {
+		for _, u := range BuildStoryView(nil, nil, standing, seen, ranks, nil).Unseen {
 			out = append(out, u.Key)
 		}
 		return out
@@ -688,7 +688,7 @@ func TestStoryViewOrderIsDeterministic(t *testing.T) {
 	}
 	ranks := storyTestLadder()
 	for i := 0; i < 50; i++ {
-		v := BuildStoryView(missions, rows, 0, "", ranks)
+		v := BuildStoryView(missions, rows, 0, "", ranks, nil)
 		if v.Mission == nil || v.Mission.ID != "a-2" {
 			t.Fatalf("run %d: open mission = %+v, want a-2", i, v.Mission)
 		}

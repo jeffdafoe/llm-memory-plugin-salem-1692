@@ -30,6 +30,13 @@ func init() {
 				"word renders: 'Word has it that Elizabeth Ellis's milk spoils as soon as it is drawn.'",
 			build: omenWordWithSubjectPresentScenario,
 		},
+		perceptionScenario{
+			name: "omen_word_about_a_player_camp_fire",
+			summary: "LLM-845: players have omens too. John Ellis heard that the fire at the player Jefferey's camp " +
+				"sinks as soon as it catches, and Jefferey is in his conversation. Like any omen it is spoken in its " +
+				"subject's presence: 'Word has it that the fire at Jefferey's camp sinks as soon as it catches.'",
+			build: omenWordAboutAPlayerScenario,
+		},
 	)
 }
 
@@ -92,6 +99,27 @@ func omenWordWithSubjectPresentScenario() (*sim.Snapshot, sim.ActorID, []sim.War
 	snap := omenFarmSnapshot(true)
 	snap.Actors[omenJohnID].Rumors = []sim.KnownRumor{{
 		Topic: sim.RumorTopicOmenSourMilk, SubjectID: omenElizabethID, SubjectName: "Elizabeth Ellis",
+		Rung: 1, HeardAt: snap.PublishedAt.Add(-30 * time.Minute),
+	}}
+	return snap, omenJohnID, nil
+}
+
+const omenJeffereyID = sim.ActorID("jefferey")
+
+func omenWordAboutAPlayerScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap := omenFarmSnapshot(false)
+	delete(snap.Actors, omenElizabethID)
+	snap.Actors[omenJohnID].CurrentHuddleID = "h-farm"
+	snap.Actors[omenJohnID].Acquaintances = map[string]sim.Acquaintance{"Jefferey": {}}
+	snap.Actors[omenJeffereyID] = &sim.ActorSnapshot{
+		Kind: sim.KindPC, DisplayName: "Jefferey", State: sim.StateIdle,
+		Pos: sim.TilePos{X: 41, Y: 41}, CurrentHuddleID: "h-farm", Needs: map[sim.NeedKey]int{},
+	}
+	snap.Huddles = map[sim.HuddleID]*sim.Huddle{
+		"h-farm": {Members: map[sim.ActorID]struct{}{omenJohnID: {}, omenJeffereyID: {}}},
+	}
+	snap.Actors[omenJohnID].Rumors = []sim.KnownRumor{{
+		Topic: sim.RumorTopicOmenCampFireGutters, SubjectID: omenJeffereyID, SubjectName: "Jefferey",
 		Rung: 1, HeardAt: snap.PublishedAt.Add(-30 * time.Minute),
 	}}
 	return snap, omenJohnID, nil

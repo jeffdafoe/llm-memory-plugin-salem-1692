@@ -1381,3 +1381,19 @@ func TestTranslateEvent_KnockUnanswered(t *testing.T) {
 		t.Error("an empty line was sent")
 	}
 }
+
+// LLM-845: an omen that happens to a player reaches only that player, as a
+// private omen room_event with no structure (it may happen outdoors).
+func TestTranslateEvent_PCOmenNarrated(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.PCOmenNarrated{ActorID: "pc", Kind: sim.OmenFoulWell, Text: sim.OmenWitnessLine(sim.OmenFoulWell, "")})
+	if !ok || frame.Type != "room_event" {
+		t.Fatalf("PCOmenNarrated -> %+v %v, want a room_event", frame, ok)
+	}
+	d := frame.Data.(roomEventWireDTO)
+	if d.Kind != "omen" || !d.Private || d.ActorID != "pc" || d.ActorName != "" || d.StructureID != "" || d.Text == "" {
+		t.Errorf("omen frame = %+v", d)
+	}
+	if _, ok := TranslateEvent(&sim.PCOmenNarrated{ActorID: "pc"}); ok {
+		t.Error("an empty line was sent")
+	}
+}

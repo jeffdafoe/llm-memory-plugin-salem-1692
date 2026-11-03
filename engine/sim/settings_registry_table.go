@@ -210,6 +210,9 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("omen_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenChancePermille }),
 		intSetting("omen_cooldown_days", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenCooldownDays }),
 		intSetting("omen_lapse_hours", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenLapseHours }),
+		intSetting("omen_pc_chance_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenPCChancePermille }),
+		intSetting("omen_ward_horseshoe_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenWardHorseshoePermille }),
+		intSetting("omen_ward_witch_bottle_permille", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.OmenWardWitchBottlePermille }),
 
 		// --- snow cover (LLM-850) -------------------------------------------
 		intSetting("snow_build_per_minute_x100", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.SnowBuildPerMinuteX100 }),

@@ -231,7 +231,7 @@ func TestSeedOmenRumorReachesTheHuddle(t *testing.T) {
 // writes for an omen: the witness line, the log text, and both ladders.
 func TestOmenTextNeverSaysWitch(t *testing.T) {
 	var texts []string
-	for _, k := range omenKinds {
+	for _, k := range AllOmenKinds {
 		texts = append(texts, OmenWitnessLine(k, "the well"), OmenWitnessLine(k, ""), OmenLogText(k))
 		topic := omenRumorTopic(k)
 		if ladders[topic] == nil || selfLadders[topic] == nil {
@@ -255,10 +255,12 @@ func TestOmenTextNeverSaysWitch(t *testing.T) {
 // /umbilical/settings reports them under `all`, POST /settings/set can change
 // them, and the checkpoint persists them.
 func TestOmenSettingsOnTheUmbilical(t *testing.T) {
-	ws := &WorldSettings{OmenChancePermille: 250, OmenCooldownDays: 7, OmenLapseHours: 24}
+	ws := &WorldSettings{OmenChancePermille: 250, OmenCooldownDays: 7, OmenLapseHours: 24,
+		OmenPCChancePermille: 150, OmenWardHorseshoePermille: 500, OmenWardWitchBottlePermille: 500}
 	all := ReadAllSettings(ws)
 	persisted := PersistableSettingRows(ws)
-	for key, want := range map[string]string{"omen_chance_permille": "250", "omen_cooldown_days": "7", "omen_lapse_hours": "24"} {
+	for key, want := range map[string]string{"omen_chance_permille": "250", "omen_cooldown_days": "7", "omen_lapse_hours": "24",
+		"omen_pc_chance_permille": "150", "omen_ward_horseshoe_permille": "500", "omen_ward_witch_bottle_permille": "500"} {
 		if all[key] != want {
 			t.Errorf("settings `all`[%s] = %q, want %q", key, all[key], want)
 		}

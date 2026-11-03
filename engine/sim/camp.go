@@ -712,9 +712,20 @@ func LightCampFire(actorID ActorID, now time.Time) Command {
 			}
 			burn, dying := w.Settings.campFireMinutes()
 			out := now.Add(burn + dying)
+			burnsUntil := out.Add(-dying)
+			// LLM-845: the camp-fire omen. The fire catches, then sinks: it is
+			// out in omenCampFireGutter, dying down from the start.
+			omen := takeArmedOmen(w, OmenCampFireGutters, actorID, now)
+			if omen {
+				out = now.Add(omenCampFireGutter)
+				burnsUntil = now
+			}
 			camp.Fire.HearthLitUntil = out
 			setCampFireState(w, camp.Fire, now)
-			return LightCampFireResult{FireID: camp.Fire.ID, BurnsUntil: out.Add(-dying), OutAt: out}, nil
+			if omen {
+				noticeOmen(w, OmenCampFireGutters, actor, actorID, now)
+			}
+			return LightCampFireResult{FireID: camp.Fire.ID, BurnsUntil: burnsUntil, OutAt: out}, nil
 		},
 	}
 }
