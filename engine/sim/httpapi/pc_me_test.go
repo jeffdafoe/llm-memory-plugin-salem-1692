@@ -817,7 +817,7 @@ func TestRenderActionLogEntry(t *testing.T) {
 // stands, its one action Strike — beside what the PC carries.
 func TestPCPackEntries_PitchedTent(t *testing.T) {
 	catalog := map[sim.ItemKind]*sim.ItemKindDef{
-		sim.TentItemKind: {Name: sim.TentItemKind, DisplayLabel: "Tent", Capabilities: []string{sim.CapabilityShelter}},
+		sim.TentItemKind: {Name: sim.TentItemKind, DisplayLabel: "Tent", Capabilities: []string{sim.CapabilityShelter}, Description: "A canvas tent."},
 	}
 	objects := map[sim.VillageObjectID]*sim.VillageObject{
 		"inn":  {ID: "inn", DisplayName: "Inn", Pos: sim.WorldPos{X: 0, Y: 0}},
@@ -832,6 +832,9 @@ func TestPCPackEntries_PitchedTent(t *testing.T) {
 	tent := rows[1]
 	if !tent.Pitched || tent.Quantity != 0 || tent.DisplayLabel != "Tent — pitched by the Inn" || len(tent.Actions) != 1 || tent.Actions[0] != sim.ItemActionStrike {
 		t.Errorf("pitched row = %+v, want quantity 0, pitched, labelled by the Inn, Strike", tent)
+	}
+	if tent.Description != "A canvas tent." {
+		t.Errorf("pitched row description = %q, want the tent's catalog description (LLM-894)", tent.Description)
 	}
 	if rows := pcPackEntries(sim.PackState{Inventory: map[sim.ItemKind]int{sim.TentItemKind: 1}}, catalog, map[sim.VillageObjectID]*sim.VillageObject{}, structures, "pc", time.Now()); len(rows) != 1 || rows[0].Actions[0] != sim.ItemActionPitch {
 		t.Errorf("carried tent rows = %+v, want one row offering Pitch", rows)

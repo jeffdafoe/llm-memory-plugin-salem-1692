@@ -13,6 +13,10 @@ extends Control
 ## The panel renders flat-list (sorted by category then label) since v1
 ## inventories are short; categories are visible via the existing
 ## ordering rather than explicit headers.
+##
+## A row whose good has a description (LLM-894) has a tappable name: a tap
+## opens the description in a box under the row, a second tap or a tap on
+## another name closes it. One box is open at a time.
 
 signal closed
 ## A row's action button was pressed (LLM-800).
@@ -24,6 +28,9 @@ const COLOR_BORDER = Color(0.45, 0.35, 0.22, 1.0)
 const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 const COLOR_QTY = Color(0.92, 0.78, 0.42, 1.0)  # gold, matches coin chip
+## The description box (LLM-894): the shop's name-tag colours.
+const COLOR_CARD_BG = Color(0.10, 0.08, 0.06, 0.92)
+const COLOR_CARD_BORDER = Color(0.45, 0.35, 0.22, 0.8)
 
 const PANEL_WIDTH: float = 280.0
 const PANEL_PAD: float = 16.0
@@ -45,6 +52,8 @@ var _busy: bool = false
 ## last replaced the rows: a /pc/me numbered at or below it was already sent
 ## and may predate the action.
 var _answered_seq := -1
+## The item kind whose description box is open (LLM-894), "" for none.
+var _open_kind := ""
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -132,6 +141,7 @@ func close() -> void:
     if not visible:
         return
     visible = false
+    _open_kind = ""
     closed.emit()
 
 
@@ -212,7 +222,14 @@ func _rebuild() -> void:
         var actions = entry.get("actions", [])
         if typeof(actions) != TYPE_ARRAY:
             actions = []
-        _content.add_child(_build_row(label_text, qty, str(entry.get("item_kind", "")), actions, int(entry.get("candle_left_minutes", 0))))
+        var item_kind := str(entry.get("item_kind", ""))
+        var description := str(entry.get("description", "")).strip_edges()
+        var row := _build_row(label_text, qty, item_kind, actions, int(entry.get("candle_left_minutes", 0)))
+        _content.add_child(row)
+        if description != "" and item_kind != "":
+            _make_name_tappable(row, item_kind)
+            if item_kind == _open_kind:
+                _content.add_child(_description_box(description))
 
 
 ## Each row: display label flush-left, quantity flush-right in the
@@ -246,6 +263,54 @@ func _build_row(label_text: String, qty: int, item_kind: String, actions: Array,
         row.add_child(b)
 
     return row
+
+
+## A Label ignores the mouse by default; the name takes taps here so a tap
+## opens or closes the row's description box.
+func _make_name_tappable(row: HBoxContainer, item_kind: String) -> void:
+    var name_label: Label = row.get_child(0)
+    name_label.mouse_filter = Control.MOUSE_FILTER_STOP
+    name_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+    name_label.gui_input.connect(_on_name_input.bind(item_kind))
+
+
+func _on_name_input(event: InputEvent, item_kind: String) -> void:
+    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        toggle_description(item_kind)
+        get_viewport().set_input_as_handled()
+
+
+## Open item_kind's description box, or close it when it is the one open.
+func toggle_description(item_kind: String) -> void:
+    if _open_kind == item_kind:
+        _open_kind = ""
+    else:
+        _open_kind = item_kind
+    _rebuild()
+    _reposition()
+
+
+func _description_box(text: String) -> PanelContainer:
+    var box := PanelContainer.new()
+    box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    var style := StyleBoxFlat.new()
+    style.bg_color = COLOR_CARD_BG
+    style.set_border_width_all(1)
+    style.border_color = COLOR_CARD_BORDER
+    style.set_corner_radius_all(4)
+    style.content_margin_left = 8.0
+    style.content_margin_right = 8.0
+    style.content_margin_top = 4.0
+    style.content_margin_bottom = 4.0
+    box.add_theme_stylebox_override("panel", style)
+    var label := Label.new()
+    label.text = text
+    label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    label.add_theme_font_override("font", _font)
+    label.add_theme_font_size_override("font_size", OrientationGuard.text_size(14))
+    box.add_child(label)
+    return box
 
 
 func _qty_label(qty: int) -> Label:

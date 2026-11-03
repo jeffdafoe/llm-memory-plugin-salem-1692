@@ -1434,7 +1434,8 @@ func _test_name_tags() -> void:
     var pin := Vector2i(8, 21)
     _panel.close()
     _panel.wares_hook = func(_s: String) -> Array:
-        return [{"item": "horseshoe", "display_label": "Horseshoe", "stock": "plenty"},
+        return [{"item": "horseshoe", "display_label": "Horseshoe", "stock": "plenty",
+                "description": "A horseshoe of wrought iron."},
             {"item": "nail", "display_label": "Nails", "stock": "few"}]
     _person("keeper", _farmer(), STALL, {"work_structure_id": STALL, "display_name": "Ezekiel Crane",
         "llm_memory_agent": "salem-vendor", "attributes": ["blacksmith", "businessowner"]})
@@ -1459,6 +1460,7 @@ func _test_name_tags() -> void:
     var pile: Node2D = _panel._goods_back.get_child(0)
     _panel._on_stage_input(_motion(_at_art(pile.position + Vector2(8, 20))))
     _check("hovering a pile on the floor: its name", _tag_text(), [true, "Horseshoe", ""])
+    _check("hovering a good: no description (LLM-894)", _panel.tag_text.visible, false)
     var nails: Node2D = _panel._goods_front.get_child(0)
     var on_nails := nails.position + Vector2(8, 18)
     _panel._on_stage_input(_motion(_at_art(on_nails)))
@@ -1494,6 +1496,34 @@ func _test_name_tags() -> void:
     _check("a tap on a good: its tag, no talk", [_panel.tag_name.text, clicked.size()], ["Nails", 1])
     _panel._on_stage_input(_press(_at_art(Vector2(64, 4))))
     _check("a tap on nothing takes a tapped tag down", _panel.tag.visible, false)
+    _check("a good with no description: none shown", _panel.tag_text.visible, false)
+
+    # LLM-894: a tap on a good with a description shows it under the name, and
+    # the tag stays past its time and as the pointer moves, until the next tap.
+    _panel._on_stage_input(_press(_at_art(pile.position + Vector2(8, 20))))
+    _check("a tap on a described good: its description",
+        [_panel.tag_name.text, _panel.tag_text.visible, _panel.tag_text.text], ["Horseshoe", true, "A horseshoe of wrought iron."])
+    _panel._update_tag(_panel.TAG_SECONDS + 0.1)
+    _panel._on_stage_input(_motion(_at_art(keeper.position + Vector2(0, -10))))
+    _check("the description stays past the tag's time and as the pointer moves",
+        [_panel.tag.visible, _panel.tag_name.text], [true, "Horseshoe"])
+    _panel._on_stage_input(_press(_at_art(Vector2(64, 4))))
+    _check("a tap on nothing takes the description down", _panel.tag.visible, false)
+    _panel._on_stage_input(_press(_at_art(pile.position + Vector2(8, 20))))
+    _panel._request_wares()
+    _panel._update_tag(0.01)
+    _check("a wares read redraws the shelf and the description stays",
+        [_panel.tag.visible, _panel.tag_text.visible, is_instance_valid(_panel._tag_on.get("node"))], [true, true, true])
+    # The pile was redrawn: the tap needs its new drawing.
+    pile = _panel._goods_back.get_child(0)
+    _panel._on_stage_input(_press(_at_art(Vector2(64, 4))))
+    _check("after a redraw, a tap on nothing still takes it down", _panel.tag.visible, false)
+    _panel._on_stage_input(_press(_at_art(pile.position + Vector2(8, 20))))
+    _check("the redrawn good opens its description", _panel.tag_text.visible, true)
+    _panel.set_wares([{"item": "nail", "display_label": "Nails", "stock": "few"}])
+    _panel._update_tag(0.01)
+    _check("the good sold out: the description goes", _panel.tag.visible, false)
+    _panel._request_wares()
     # A touch screen sends motion with the tap: the tag still runs its time out.
     _panel._on_stage_input(_press(_at_art(hand.position + Vector2(0, -10))))
     _panel._on_stage_input(_motion(_at_art(hand.position + Vector2(0, -10))))

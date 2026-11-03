@@ -213,7 +213,10 @@ const EMPTY_DISH := {"porridge": "porridge_empty", "stew": "stew_empty",
 ## A name tag (LLM-761): hovering a person shows their name and role (the
 ## village popup's colours), hovering a good its name; a tap shows it
 ## TAG_SECONDS. A good's hit box is the lower GOOD_BOX of its cell.
+## A tap on a good with a description (LLM-894) adds the description,
+## wrapped to TAG_TEXT_WIDTH, and the tag stays until the next tap.
 const TAG_SECONDS := 2.5
+const TAG_TEXT_WIDTH := 200.0
 const GOOD_BOX := Rect2(0, 12, 16, 20)
 const TAG_BG := Color(0.10, 0.08, 0.06, 0.92)
 const TAG_BORDER := Color(0.45, 0.35, 0.22, 0.8)
@@ -330,6 +333,8 @@ var _bustle_rng := RandomNumberGenerator.new()
 var tag: PanelContainer = null
 var tag_name: Label = null
 var tag_role: Label = null
+## A tapped good's description (LLM-894), wrapped under its name.
+var tag_text: Label = null
 var _tag_on: Dictionary = {}
 var _tag_left := 0.0
 ## The sleep twilight over the window (LLM-890). The world's fade
@@ -479,6 +484,11 @@ func _build_ui() -> void:
     tag_box.add_child(tag_name)
     tag_role = _label(12, TAG_TEXT_DIM)
     tag_box.add_child(tag_role)
+    tag_text = _label(12, TAG_TEXT_DIM)
+    tag_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    tag_text.custom_minimum_size = Vector2(TAG_TEXT_WIDTH, 0)
+    tag_text.visible = false
+    tag_box.add_child(tag_text)
     root.add_child(tag)
 
     _sleep_tint = ColorRect.new()
@@ -1863,6 +1873,14 @@ func _show_tag(thing: Dictionary, seconds: float) -> void:
     tag_name.text = str(lines[0])
     tag_role.text = str(lines[1])
     tag_role.visible = str(lines[1]) != ""
+    # Only a tap opens a good's description; a hover shows its name alone.
+    var description := ""
+    if seconds > 0.0 and str(thing.get("kind", "")) == "good":
+        description = good_description(str(thing["item"]))
+    tag_text.text = description
+    tag_text.visible = description != ""
+    if description != "":
+        seconds = INF
     _tag_on = thing
     _tag_left = seconds
     tag.visible = true
@@ -1906,6 +1924,25 @@ func good_label(item: String) -> String:
     return words.substr(0, 1).to_upper() + words.substr(1)
 
 
+## The first drawing of `item` on the shelf, or null when it is not drawn.
+func _good_node(item: String) -> Node2D:
+    if item == "":
+        return null
+    for layer in [_goods_back, _goods_front]:
+        for node in layer.get_children():
+            if str(node.get_meta("item", "")) == item and not node.is_queued_for_deletion():
+                return node
+    return null
+
+
+## A good's description from the stall's shelf (LLM-894), "" when it has none.
+func good_description(item: String) -> String:
+    for w in _wares:
+        if str(w.get("item", "")) == item:
+            return str(w.get("description", "")).strip_edges()
+    return ""
+
+
 ## Keep the tag over what it is on — a person may be walking — and take a
 ## tap's tag down when its time is up, or when its person or good is gone.
 func _update_tag(delta: float) -> void:
@@ -1932,10 +1969,19 @@ func _place_tag() -> void:
     elif str(_tag_on.get("kind", "")) == "line":
         anchor = _tag_on.get("at", Vector2.ZERO)
     else:
-        var node: Node2D = _tag_on.get("node", null)
-        if not is_instance_valid(node) or node.is_queued_for_deletion():
-            hide_tag()
-            return
+        # Untyped first: a typed variable refuses a freed instance.
+        var held = _tag_on.get("node", null)
+        var node: Node2D = null
+        if is_instance_valid(held) and not held.is_queued_for_deletion():
+            node = held
+        if node == null:
+            # The shelf is redrawn on every wares read: a tag on a good still
+            # sold moves to its new drawing, so an open description stays.
+            node = _good_node(str(_tag_on.get("item", "")))
+            if node == null:
+                hide_tag()
+                return
+            _tag_on["node"] = node
         anchor = node.position + Vector2(GOOD_BOX.size.x / 2.0, GOOD_BOX.position.y - 2)
     # Canvas coordinates throughout: the scene's point, the clamp to the
     # screen, and the tag's own global position.
