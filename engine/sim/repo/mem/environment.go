@@ -68,6 +68,7 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			HearthLowMinutes:           sim.DefaultHearthLowMinutes,
 			StokeWoodPerStoke:          sim.DefaultStokeWoodPerStoke,
 			StokeDurationSeconds:       sim.DefaultStokeDurationSeconds,
+			LanternCandleMinutes:       sim.DefaultLanternCandleMinutes,
 			// Garment wear (LLM-422) — mirror the pg parse fallbacks.
 			GarmentWearPerMinute:          sim.DefaultGarmentWearPerMinute,
 			GarmentThreadbareFractionX100: sim.DefaultGarmentThreadbareFractionX100,

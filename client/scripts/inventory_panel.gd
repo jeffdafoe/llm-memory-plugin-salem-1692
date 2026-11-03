@@ -30,7 +30,9 @@ const PANEL_PAD: float = 16.0
 const ROW_SEPARATION: int = 6
 
 ## Button text per item-action slug. A slug missing here shows capitalized.
-const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike", "eat": "Eat", "drink": "Drink"}
+const ACTION_LABELS := {"wear": "Wear", "remove": "Remove", "pitch": "Pitch", "strike": "Strike", "eat": "Eat", "drink": "Drink", "light": "Light", "put_out": "Put out"}
+## The Light button when Put out kept part of a candle (LLM-846).
+const LIGHT_PART_BURNED_LABEL := "Light (candle part burned)"
 
 var _font: Font = null
 var _panel: PanelContainer = null
@@ -210,14 +212,14 @@ func _rebuild() -> void:
         var actions = entry.get("actions", [])
         if typeof(actions) != TYPE_ARRAY:
             actions = []
-        _content.add_child(_build_row(label_text, qty, str(entry.get("item_kind", "")), actions))
+        _content.add_child(_build_row(label_text, qty, str(entry.get("item_kind", "")), actions, int(entry.get("candle_left_minutes", 0))))
 
 
 ## Each row: display label flush-left, quantity flush-right in the
 ## coin-chip gold so the eye groups them with the purse below the
 ## title. Multiplication sign is the Latin-1 × (U+00D7), supported by
 ## IMFellEnglish. One button per item action follows the count (LLM-800).
-func _build_row(label_text: String, qty: int, item_kind: String, actions: Array) -> HBoxContainer:
+func _build_row(label_text: String, qty: int, item_kind: String, actions: Array, candle_left_minutes: int = 0) -> HBoxContainer:
     var row := HBoxContainer.new()
     row.add_theme_constant_override("separation", 12)
 
@@ -235,7 +237,10 @@ func _build_row(label_text: String, qty: int, item_kind: String, actions: Array)
 
     for action in actions:
         var slug := str(action)
-        var b := PeriodTheme.button(str(ACTION_LABELS.get(slug, slug.capitalize())), OrientationGuard.text_size(14))
+        var text := str(ACTION_LABELS.get(slug, slug.capitalize()))
+        if slug == "light" and candle_left_minutes > 0:
+            text = LIGHT_PART_BURNED_LABEL
+        var b := PeriodTheme.button(text, OrientationGuard.text_size(14))
         b.disabled = _busy or item_kind == ""
         b.pressed.connect(_on_action_pressed.bind(item_kind, slug))
         row.add_child(b)

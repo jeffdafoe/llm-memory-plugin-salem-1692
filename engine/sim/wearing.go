@@ -44,12 +44,32 @@ func (e *itemActionError) Unwrap() error { return ErrItemAction }
 
 func refuseItemAction(msg string) error { return &itemActionError{msg: msg} }
 
+// PackState is the actor state the pack's item actions read beyond the catalog
+// entry: what is held, what is worn (LLM-800) and the lantern (LLM-846). Built
+// from a live Actor or an ActorSnapshot.
+type PackState struct {
+	Inventory         map[ItemKind]int
+	Wearing           []ItemKind
+	LanternLitUntil   time.Time
+	LanternCandleLeft time.Duration
+}
+
+// PackState returns the actor's pack state.
+func (a *Actor) PackState() PackState {
+	return PackState{Inventory: a.Inventory, Wearing: a.Wearing, LanternLitUntil: a.LanternLitUntil, LanternCandleLeft: a.LanternCandleLeft}
+}
+
+// PackState returns the snapshot's pack state.
+func (s *ActorSnapshot) PackState() PackState {
+	return PackState{Inventory: s.Inventory, Wearing: s.Wearing, LanternLitUntil: s.LanternLitUntil, LanternCandleLeft: s.LanternCandleLeft}
+}
+
 // ItemActions lists the actions open on one pack row: the good's catalog
-// entry and whether the actor has it on. Never nil, so the wire carries [].
-func ItemActions(def *ItemKindDef, wearing bool) []string {
+// entry and the actor's pack state as of now. Never nil, so the wire carries [].
+func ItemActions(def *ItemKindDef, st PackState, now time.Time) []string {
 	actions := []string{}
 	if def.HasCapability(CapabilityWear) {
-		if wearing {
+		if slices.Contains(st.Wearing, def.Name) {
 			actions = append(actions, ItemActionRemove)
 		} else {
 			actions = append(actions, ItemActionWear)
@@ -65,6 +85,13 @@ func ItemActions(def *ItemKindDef, wearing bool) []string {
 			actions = append(actions, ItemActionDrink)
 		} else {
 			actions = append(actions, ItemActionEat)
+		}
+	}
+	if isLantern(def) {
+		if st.LanternLitUntil.After(now) {
+			actions = append(actions, ItemActionPutOut)
+		} else if st.LanternCandleLeft > 0 || st.Inventory[TallowCandleKind] > 0 {
+			actions = append(actions, ItemActionLight)
 		}
 	}
 	return actions
@@ -144,12 +171,17 @@ func UseItem(actorID ActorID, kind ItemKind, action string, now time.Time) Comma
 			if a.Inventory[kind] <= 0 || def == nil {
 				return nil, refuseItemAction("You are not carrying that.")
 			}
-			if !slices.Contains(ItemActions(def, actorWears(a, kind)), action) {
+			if !slices.Contains(ItemActions(def, a.PackState(), now), action) {
 				return nil, refuseItemAction("You cannot do that with it.")
 			}
 			switch action {
 			case ItemActionEat, ItemActionDrink:
 				return nil, eatFromPack(w, a, def, kind, now)
+			case ItemActionLight:
+				return nil, lightLantern(w, a, now)
+			case ItemActionPutOut:
+				putOutLantern(w, a, now)
+				return nil, nil
 			case ItemActionWear:
 				a.Wearing = append(a.Wearing, kind)
 			case ItemActionRemove:

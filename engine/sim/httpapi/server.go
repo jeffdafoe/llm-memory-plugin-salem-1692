@@ -699,6 +699,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			InsideStructureID:      string(a.InsideStructureID),
 			CurrentHuddleID:        string(a.CurrentHuddleID),
 			FamiliarOf:             string(a.FamiliarOf),
+			LanternLitUntil:        lanternLitUntilWire(a.LanternLitUntil, s.PublishedAt),
 			RoomSquare:             a.RoomSquare,
 			Room:                   a.Room,
 			Sprite:                 resolveAgentSprite(a.SpriteID, sprites),

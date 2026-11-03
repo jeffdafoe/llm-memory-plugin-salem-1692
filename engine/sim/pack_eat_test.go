@@ -59,7 +59,7 @@ func TestItemActionsFoodAndDrink(t *testing.T) {
 		"stout":    {sim.ItemActionDrink},
 	}
 	for kind, want := range cases {
-		if got := sim.ItemActions(catalog[kind], false); !slices.Equal(got, want) {
+		if got := sim.ItemActions(catalog[kind], sim.PackState{}, time.Now()); !slices.Equal(got, want) {
 			t.Errorf("ItemActions(%s) = %v, want %v", kind, got, want)
 		}
 	}

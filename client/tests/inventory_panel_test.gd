@@ -33,6 +33,7 @@ const TESTS := [
     "_test_follow_reach_boundary",
     "_test_tent_rows",
     "_test_food_and_drink_rows",
+    "_test_lantern_rows",
     "_test_close_button_closes",
 ]
 
@@ -556,6 +557,33 @@ func _test_food_and_drink_rows() -> void:
     _button(p, "Ale").pressed.emit()
     _check("presses ask to eat and to drink", log, ["bread:eat", "ale:drink"])
     p.action_finished()
+    p.free()
+    _done()
+
+
+## LLM-846: Light and Put out on the lantern; a part-burned candle says so.
+func _test_lantern_rows() -> void:
+    var log: Array = []
+    var p: Control = load(PANEL_PATH).new()
+    root.add_child(p)
+    p.item_action_requested.connect(func(kind: String, action: String): log.append("%s:%s" % [kind, action]))
+    p.set_inventory([
+        {"item_kind": "horn_lantern", "display_label": "Horn lantern", "quantity": 1, "category": "gear", "actions": ["light"]},
+        {"item_kind": "tallow_candle", "display_label": "Tallow candle", "quantity": 2, "category": "gear", "actions": []},
+    ])
+    p.show_at(Rect2(600, 0, 32, 32))
+    _check("lantern: Light", _rows(p).get("Horn lantern"), ["Light"])
+    _check("candle: no buttons", _rows(p).get("Tallow candle"), [])
+    _button(p, "Horn lantern").pressed.emit()
+    _check("press asks to light", log, ["horn_lantern:light"])
+    p.action_finished([
+        {"item_kind": "horn_lantern", "display_label": "Horn lantern", "quantity": 1, "category": "gear", "actions": ["put_out"]},
+    ])
+    _check("lit lantern: Put out", _rows(p).get("Horn lantern"), ["Put out"])
+    p.set_inventory([
+        {"item_kind": "horn_lantern", "display_label": "Horn lantern", "quantity": 1, "category": "gear", "actions": ["light"], "candle_left_minutes": 150},
+    ])
+    _check("part-burned candle: says so", _rows(p).get("Horn lantern"), ["Light (candle part burned)"])
     p.free()
     _done()
 

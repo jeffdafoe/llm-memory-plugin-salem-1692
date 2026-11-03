@@ -1927,16 +1927,23 @@ const (
 	factorQuillUnits     = 1
 )
 
+// The horn lantern and its candles (LLM-846) ride every factor pack the same
+// way: players only, so fixed counts. A lantern lasts; candles burn down.
+const (
+	factorLanternUnits = 1
+	factorCandleUnits  = 6
+)
+
 // factorImportKinds names the strategic imports whose SUPPLY is deliberately owned by the
 // wholesale factor errand, where the operator tuning levers live (visitor_sell_weight_permille,
-// visitor_factor_iron_units / _salt_units / _thread_units; the writing goods' counts are
-// constants). It is a policy list, not a runtime gate: no
+// visitor_factor_iron_units / _salt_units / _thread_units; the writing goods' and the
+// lantern goods' counts are constants). It is a policy list, not a runtime gate: no
 // production path consults it — its one consumer is the guard test that keeps these kinds out
 // of the generic passer-through pool, whose packs would put an import on display that the
 // actors demanding it cannot buy (LLM-567). Spawn is the path it covers, and it is the only
 // one that needs covering: the pack switch in dispatchVisitorSpawn is exhaustive on errand
 // direction, so a no-errand visitor can only ever draw from visitorWareKinds.
-var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind, NoteParchmentKind, NoteQuillKind}
+var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadKind, NoteParchmentKind, NoteQuillKind, HornLanternKind, TallowCandleKind}
 
 // seedFactorPack returns the pack (clothing/charm goods to sell, plus iron,
 // salt and thread shipments — LLM-442/LLM-444/LLM-625) and purse (a heavier
@@ -1946,7 +1953,8 @@ var factorImportKinds = []ItemKind{factorIronKind, factorSaltKind, factorThreadK
 // ironUnits bars of iron, saltUnits sacks of salt, and threadUnits spools of
 // thread, each plus a small jitter so
 // back-to-back factors don't carry identical bales, and the writing goods
-// (LLM-799: factorParchmentUnits..+2 sheets, factorQuillUnits quill and ink);
+// (LLM-799: factorParchmentUnits..+2 sheets, factorQuillUnits quill and ink), the
+// lantern goods (LLM-846: factorLanternUnits lantern, factorCandleUnits..+2 candles);
 // purse a uniform pull from
 // [purseMin, purseMax]. r is non-nil; the caller clamps unitsPerKind >= 1,
 // ironUnits >= 1, saltUnits >= 1, threadUnits >= 1, and purseMin <= purseMax.
@@ -1963,6 +1971,8 @@ func seedFactorPack(r *rand.Rand, unitsPerKind, ironUnits, saltUnits, threadUnit
 	pack[factorThreadKind] = threadUnits + r.Intn(3) // threadUnits..threadUnits+2
 	pack[NoteParchmentKind] = factorParchmentUnits + r.Intn(3)
 	pack[NoteQuillKind] = factorQuillUnits
+	pack[HornLanternKind] = factorLanternUnits
+	pack[TallowCandleKind] = factorCandleUnits + r.Intn(3)
 	purse := purseMin
 	if purseMax > purseMin {
 		purse = purseMin + r.Intn(purseMax-purseMin+1)

@@ -39,6 +39,7 @@ const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
 const NightShadeScript = preload("res://scripts/night_shade.gd")
+const LanternLightsScript = preload("res://scripts/lantern_lights.gd")
 const TreelineFigureScript = preload("res://scripts/treeline_figure.gd")
 const WorkAim = preload("res://scripts/work_aim.gd")
 const WorkChipsScript = preload("res://scripts/work_chips.gd")
@@ -126,6 +127,8 @@ var _phase_pos: float = 0.0
 var _night_color: Color = NIGHT_COLOR
 # The woods dark and the night-vision circle (LLM-842, night_shade.gd).
 var night_shade: Node2D = null
+# Carried lantern lights (LLM-846, lantern_lights.gd).
+var lantern_lights: Node = null
 # The figure at the treeline (LLM-844, treeline_figure.gd).
 var treeline_figure: Node = null
 
@@ -229,6 +232,10 @@ var village_hour: int = -1
 var _village_clock_ok: bool = false
 var _village_clock_local_unix: float = 0.0
 var _village_clock_read_ms: int = 0
+# The engine's clock as of the last world read (LLM-846): its unix time and the
+# local ticks then. 0.0 until a read carries it.
+var _engine_clock_unix: float = 0.0
+var _engine_clock_read_ms: int = 0
 var _village_hour_timer: Timer = null
 
 ## Seconds past the date's end before the re-read, so it lands after the
@@ -268,6 +275,11 @@ func build_terrain() -> void:
     treeline_figure.set_script(TreelineFigureScript)
     treeline_figure.world = self
     add_child(treeline_figure)
+
+    lantern_lights = Node.new()
+    lantern_lights.set_script(LanternLightsScript)
+    lantern_lights.world = self
+    add_child(lantern_lights)
 
     # Splash layer under the modulate too — ground contact darkens with the
     # world at night / in the storm tint, unlike the screen-space overlay.
@@ -382,20 +394,26 @@ func _load_npcs() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_npcs_loaded.bind(http))
+    if lantern_lights != null:
+        lantern_lights.begin_agents_load()
     var headers: PackedStringArray = Auth.auth_headers(false)
     # v2: renderable actors come from /api/village/agents (v1 used /npcs). The
     # response is normalized through VillageApi in _on_npcs_loaded.
-    http.request(api_base + "/api/village/agents", headers)
+    if http.request(api_base + "/api/village/agents", headers) != OK and lantern_lights != null:
+        lantern_lights.end_agents_load()
 
 func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
     if not Auth.check_response(response_code):
+        _end_lantern_load()
         return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_warning("NPC load failed: " + str(response_code))
+        _end_lantern_load()
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
     if json == null or not (json is Array):
+        _end_lantern_load()
         return
 
     # v2: each entry is an AgentDTO (tile coords, leaner shape). Normalize to
@@ -404,6 +422,8 @@ func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArra
     var npcs: Array = []
     for dto in json:
         npcs.append(VillageApi.normalize_agent(dto))
+    if lantern_lights != null:
+        lantern_lights.load_agents(json)
 
     # Collect unique sheet paths across all NPCs, kick off one download per sheet.
     # A farmer-base sprite (LLM-691) needs several: its layers and the props.
@@ -2172,6 +2192,10 @@ static func village_refresh_at(ends_iso: String, offset_until_iso: String) -> St
 ## Set the village clock from a world read and show its hour at once; a read
 ## without the fields stops the clock and its timer and clears the hour.
 func _set_village_clock(now_iso: String, offset_seconds) -> void:
+    var engine_unix := _iso_to_unix(now_iso)
+    if engine_unix > 0.0:
+        _engine_clock_unix = engine_unix
+        _engine_clock_read_ms = Time.get_ticks_msec()
     var local_unix := village_clock_from_read(now_iso, offset_seconds)
     _village_clock_ok = local_unix > 0.0
     _village_clock_local_unix = local_unix
@@ -2187,6 +2211,14 @@ func _set_village_clock(now_iso: String, offset_seconds) -> void:
     elif _village_hour_timer != null:
         _village_hour_timer.stop()
     _tick_village_hour()
+
+## The engine's unix time now: the last world read's clock plus the time
+## since, so a lantern goes out when the engine says, whatever this machine's
+## clock. 0.0 before the first read.
+func engine_now_unix() -> float:
+    if _engine_clock_unix <= 0.0:
+        return 0.0
+    return _engine_clock_unix + (Time.get_ticks_msec() - _engine_clock_read_ms) / 1000.0
 
 ## Recompute the hour; emit only when it turned.
 func _tick_village_hour() -> void:
@@ -3632,6 +3664,17 @@ signal npc_meal_ended(actor_id: String, item: String)
 
 var meals: Dictionary = {}
 
+
+## An /agents read that brought no answer: the lanterns stay as the frames left
+## them (LLM-846).
+func _end_lantern_load() -> void:
+    if lantern_lights != null:
+        lantern_lights.end_agents_load()
+
+## An npc_lantern_changed frame (LLM-846): a lantern lit or put out.
+func apply_npc_lantern_changed(data: Dictionary) -> void:
+    if lantern_lights != null:
+        lantern_lights.apply_changed(data)
 
 func apply_npc_meal_started(data: Dictionary) -> void:
     var id := str(data.get("id", ""))

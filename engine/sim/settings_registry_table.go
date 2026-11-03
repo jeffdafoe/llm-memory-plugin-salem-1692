@@ -244,6 +244,7 @@ func buildSettingRegistry() []SettingSpec {
 		intSetting("hearth_low_minutes", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.HearthLowMinutes }),
 		intSetting("stoke_wood_per_stoke", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.StokeWoodPerStoke }),
 		intSetting("stoke_duration_seconds", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.StokeDurationSeconds }),
+		intSetting("lantern_candle_minutes", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.LanternCandleMinutes }),
 
 		// --- garment wear (LLM-422) ----------------------------------------
 		intSetting("garment_wear_per_minute", SettingEffectUnaudited, func(s *WorldSettings) *int { return &s.GarmentWearPerMinute }),

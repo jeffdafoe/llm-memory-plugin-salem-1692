@@ -125,10 +125,14 @@ func EvaluateFamiliarTick(now time.Time) Command {
 }
 
 // evaluateFamiliars runs one pass: take off pendants no longer held, give each
-// wearer without a duck one beside them, and move every duck along.
+// wearer without a duck one beside them, and move every duck along. The same
+// pass puts out a lit lantern its carrier no longer holds (LLM-846).
 // MUST be called from inside a Command.Fn.
 func evaluateFamiliars(w *World, now time.Time) {
 	for _, a := range w.Actors {
+		if LanternLit(a, now) {
+			putOutUnheldLantern(w, a, now)
+		}
 		if a.FamiliarOf != "" || len(a.Wearing) == 0 {
 			continue
 		}

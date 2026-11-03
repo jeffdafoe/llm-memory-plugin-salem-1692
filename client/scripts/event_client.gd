@@ -416,6 +416,9 @@ func _handle_message(data: String) -> void:
         "npc_meal_started":
             if world != null:
                 world.apply_npc_meal_started(event_data)
+        "npc_lantern_changed":
+            if world != null:
+                world.apply_npc_lantern_changed(event_data)
         "npc_meal_ended":
             if world != null:
                 world.apply_npc_meal_ended(event_data)
