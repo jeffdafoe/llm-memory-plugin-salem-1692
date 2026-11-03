@@ -1536,6 +1536,12 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 				if memberID == actorID {
 					continue
 				}
+				// LLM-901: a member with no actor behind it has left the world;
+				// it is nobody to greet or sell to, so it never renders (it would
+				// otherwise read as "a stranger" who never answers).
+				if snap.Actors[memberID] == nil {
+					continue
+				}
 				m := resolveCoPresentMember(snap, actorID, a, memberID)
 				if peer := snap.Actors[memberID]; staleAfter > 0 && peer != nil && peer.Kind == sim.KindPC &&
 					sim.PCPresenceStale(peer.LastPCSeenAt, snap.PublishedAt, staleAfter) {

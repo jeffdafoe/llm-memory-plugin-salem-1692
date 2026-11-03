@@ -430,6 +430,9 @@ func beginFamiliarDeparture(w *World, d *Actor, st *familiarState, now time.Time
 // removeFamiliar takes d out of the world, as DeleteActor does an editor NPC:
 // ActorDeparted first (the hub turns it into npc_deleted), then the indexes.
 func removeFamiliar(w *World, d *Actor, now time.Time) {
+	// A familiar is decorative and no join path admits one, so this is a no-op
+	// today; it keeps every actor-removal path the same shape (LLM-901).
+	leaveHuddleBeforeRemoval(w, d, now)
 	w.emit(&ActorDeparted{
 		ActorID:               d.ID,
 		DisplayName:           d.DisplayName,
@@ -437,14 +440,6 @@ func removeFamiliar(w *World, d *Actor, now time.Time) {
 		LastPosition:          d.Pos,
 		At:                    now.UTC(),
 	})
-	if d.CurrentHuddleID != "" {
-		if members, ok := w.actorsByHuddle[d.CurrentHuddleID]; ok {
-			delete(members, d.ID)
-			if len(members) == 0 {
-				delete(w.actorsByHuddle, d.CurrentHuddleID)
-			}
-		}
-	}
 	setActorInsideStructure(w, d, "")
 	delete(w.outdoorActors, d.ID)
 	delete(w.Actors, d.ID)

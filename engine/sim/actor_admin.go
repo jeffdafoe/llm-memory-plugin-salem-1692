@@ -360,21 +360,18 @@ func DeleteActor(id ActorID) Command {
 			if err != nil {
 				return nil, err
 			}
+			now := time.Now().UTC()
+			// LLM-901: leave the huddle properly first. A deleted NPC left in
+			// Members is a ghost to everyone present, and the checkpoint would
+			// write it to huddle_member, failing the next boot's reconciliation.
+			leaveHuddleBeforeRemoval(w, a, now)
 			w.emit(&ActorDeparted{
 				ActorID:               id,
 				DisplayName:           a.DisplayName,
 				LastInsideStructureID: a.InsideStructureID,
 				LastPosition:          a.Pos,
-				At:                    time.Now().UTC(),
+				At:                    now,
 			})
-			if a.CurrentHuddleID != "" {
-				if members, ok := w.actorsByHuddle[a.CurrentHuddleID]; ok {
-					delete(members, id)
-					if len(members) == 0 {
-						delete(w.actorsByHuddle, a.CurrentHuddleID)
-					}
-				}
-			}
 			setActorInsideStructure(w, a, "")
 			delete(w.outdoorActors, id)
 			delete(w.Actors, id)
