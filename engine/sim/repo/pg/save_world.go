@@ -166,6 +166,13 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 			return fmt.Errorf("pg SaveWorld: DoorNotes.SaveSnapshot: %w", err)
 		}
 	}
+	// LLM-892: each player's story progress, swept. Same Tx as the actors, so a
+	// finished beat and its actor.standing persist together.
+	if repo.Story != nil {
+		if err := repo.Story.SaveSnapshot(ctx, tx, cp.StoryProgress); err != nil {
+			return fmt.Errorf("pg SaveWorld: Story.SaveSnapshot: %w", err)
+		}
+	}
 	// LLM-547: the per-pair conversational recency trail. Upsert plus a single
 	// horizon-predicate DELETE — NOT a generation-marker sweep (nothing is
 	// marked), but not upsert-only either: visitor ActorIDs are ephemeral, so

@@ -142,6 +142,9 @@ func CreatePC(loginUsername, characterName, spriteID string, now time.Time) Comm
 				}
 			}
 
+			// LLM-892: the first story beat.
+			w.StartStoryForPC(actor, now)
+
 			return result, nil
 		},
 	}

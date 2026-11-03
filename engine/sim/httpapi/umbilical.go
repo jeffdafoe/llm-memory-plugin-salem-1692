@@ -524,6 +524,10 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/road/damage", "Bring a tree down across a road now (LLM-677): a random fallen-tree asset at a random site that cuts a road with open ground around it. No roll and no guards beyond a free site. Returns the obstacle id; mend it via /object/damage. Body: {action: \"damage\"|\"storm\"}.", true, s.handleUmbilicalRoadDamage},
 		{http.MethodPost, umbilicalBasePath + "/minor/damage", "Break a minor work NOW (LLM-790): a fence rail down, a signpost arm crooked, or a crate lid loose. No roll and no open cap. With id, that object (it must be able to break now — a fence needs sound neighbours to sag into); else a random candidate, narrowed by form. 400 an unknown form, 404 an unknown id, 409 when nothing (or not that object) can break into that form now. Mend it via /object/damage. Body: {id?, form?: \"fence\"|\"signpost\"|\"crate\"}. Response: {id, state, form}.", true, s.handleUmbilicalMinorDamage},
 
+		// Player story missions (LLM-892).
+		{http.MethodGet, umbilicalBasePath + "/story", "Player story missions (LLM-892): each player's Standing, rank, the story view the client gets (open beat + popups not yet closed, same shape as /pc/me story) and the raw pc_story_mission rows. Every player with a login by name, or one with ?id=<actor>.", false, s.handleUmbilicalStory},
+		{http.MethodPost, umbilicalBasePath + "/story/reset", "Wipe one player's story (rows, Standing, rank-seen mark) and start it again (LLM-892): the start beats are offered, and what the world already shows done (a pitched tent, a lit fire) is caught up at once. For testing. The next checkpoint sweeps the old rows. Body: {actor_id}.", true, s.handleUmbilicalStoryReset},
+
 		// The magistrates (LLM-695): the docket and rulings, seeding a case, and
 		// hearing every pending case now.
 		{http.MethodGet, umbilicalBasePath + "/court/cases", "The magistrates' docket and rulings (LLM-695), newest first: who brought each matter, the parties, the complaint, and for a ruled case the result, any pay order (ordered vs paid) and the magistrate's words.", false, s.handleUmbilicalCourtCases},

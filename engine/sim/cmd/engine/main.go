@@ -588,6 +588,7 @@ func run(rt runtime, stop stopSignals) error {
 	sim.RegisterGatherTargetSubscriber(rt.World)          // LLM-93: remember the bush an NPC walked to, so gather prefers it over the nearest
 	sim.RegisterLaborArrivalSubscriber(rt.World)          // LLM-229: start a hired worker's job when they (and the owner) reach the employer's workplace
 	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
+	sim.RegisterStoryWatcher(rt.World)                    // LLM-892: finish a player's story beat from the event that completes it
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
 	// LLM-695: the magistrates' sittings. Reads the durable record through the

@@ -1070,6 +1070,12 @@ type Actor struct {
 	// OpenUntil: a restart mid-evening must not bring the nagging back.
 	ClosedUntil *time.Time
 
+	// Standing is a player's Standing from story beats (LLM-892), and
+	// StandingRankSeen the index of the highest rank whose popup the player has
+	// closed. Players only; checkpointed (actor.standing, actor.standing_rank_seen).
+	Standing         int
+	StandingRankSeen int
+
 	// LastTirednessRecoveryAt is the cursor the tiredness-recovery sweep
 	// advances as it credits recovery while BreakUntil/SleepingUntil are
 	// open. It doubles as the fractional carry: the sweep advances it by
@@ -2145,6 +2151,11 @@ type ActorSnapshot struct {
 	// buildDutySteer, buildDutyPending and the door lines agree with
 	// shiftDutyTarget. Readers gate on .After(PublishedAt). See Actor.ClosedUntil.
 	ClosedUntil *time.Time
+
+	// Standing / StandingRankSeen mirror the live Actor's (LLM-892) for the
+	// story view on /pc/me.
+	Standing         int
+	StandingRankSeen int
 
 	// Inventory mirrors the live Actor's item-kind→quantity map at snapshot
 	// time so the read surface (httpapi pc/me) can serve a player's held

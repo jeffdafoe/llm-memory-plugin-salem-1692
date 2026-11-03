@@ -335,6 +335,12 @@ type WorldSettings struct {
 	CampFireBurnMinutes  int
 	CampFireDyingMinutes int
 
+	// Story Standing ranks (LLM-892): the Standing at which a player becomes a
+	// Sojourner, an Inhabitant and a Freeman. 0 or less keeps the default.
+	StandingRankSojourner  int
+	StandingRankInhabitant int
+	StandingRankFreeman    int
+
 	// Minor works (LLM-690): small damage for players only. Each pass of the
 	// minor-works ticker breaks one at this chance while fewer than the cap are
 	// open; an untaken one mends itself after the TTL. A cap or chance of 0
@@ -1296,6 +1302,13 @@ type World struct {
 	// next boot. See door_note.go.
 	DoorNotes map[DoorNoteID]*DoorNote
 
+	// StoryMissions is the story catalog (LLM-892): authored reference data
+	// loaded from story_mission at FinalizeLoad, never written. Same
+	// immutability contract as ItemKinds. StoryProgress is each player's record
+	// per beat, checkpointed (pc_story_mission). See story.go.
+	StoryMissions map[StoryMissionID]*StoryMission
+	StoryProgress map[ActorID]map[StoryMissionID]*StoryProgress
+
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
 	// map used by the businessowner cascade slice to suppress redundant
 	// engine-spoken hospitality lines (e.g. don't re-greet the same
@@ -1818,6 +1831,8 @@ func NewWorld(repo Repository) *World {
 		RecurringVisitors:    make(map[RecurringVisitorID]*RecurringVisitor),
 		CourtCases:           make(map[CourtCaseID]*CourtCase),
 		DoorNotes:            make(map[DoorNoteID]*DoorNote),
+		StoryMissions:        make(map[StoryMissionID]*StoryMission),
+		StoryProgress:        make(map[ActorID]map[StoryMissionID]*StoryProgress),
 		Assets:               make(map[AssetID]*Asset),
 		Sprites:              make(map[SpriteID]*Sprite),
 		AttributeDefinitions: make(map[string]*AttributeDefinition),
@@ -2305,6 +2320,12 @@ func (w *World) FinalizeLoad(ctx context.Context) error {
 		log.Printf("sim: FinalizeLoad: settled %d unfinished camp(s)", n)
 	}
 
+	// LLM-892: the story catalog and each player's progress. After the camps are
+	// settled, so the catch-up state checks read a whole camp.
+	if err := w.rehydrateStoryOnLoad(ctx, w.LoadedAt); err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: rehydrate story: %w", err)
+	}
+
 	// No separate order sequence-counter floor: Orders adopt their LedgerID
 	// (ZBBS-HOME-394), so the payLedgerSeq floor above — seeded from the DB
 	// max — already covers every order id.
@@ -2786,6 +2807,19 @@ func (w *World) republish() {
 			snap.DoorNotes[id] = n.Clone()
 		}
 	}
+	if len(w.StoryProgress) > 0 {
+		ranks := w.Settings.standingRanks()
+		for actorID, rows := range w.StoryProgress {
+			actor := storyPlayer(w, actorID)
+			if actor == nil || len(rows) == 0 {
+				continue
+			}
+			if snap.StoryViews == nil {
+				snap.StoryViews = make(map[ActorID]StoryView, len(w.StoryProgress))
+			}
+			snap.StoryViews[actorID] = BuildStoryView(w.StoryMissions, rows, actor.Standing, actor.StandingRankSeen, ranks)
+		}
+	}
 	w.published.Store(snap)
 }
 
@@ -3067,6 +3101,8 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		RoomAccess:                 cloneRoomAccess(a.RoomAccess),
 		OpenUntil:                  copyTimePtr(a.OpenUntil),
 		ClosedUntil:                copyTimePtr(a.ClosedUntil),
+		Standing:                   a.Standing,
+		StandingRankSeen:           a.StandingRankSeen,
 		RestockPolicy:              a.RestockPolicy,
 		ProductionItem:             productionItem,
 		ProductionBatchQty:         productionBatchQty,
