@@ -114,6 +114,10 @@ func buildSettingRegistry() []SettingSpec {
 		stringSetting("world_dusk_time", SettingEffectImmediate, func(s *WorldSettings) *string { return &s.DuskTime }),
 		stringSetting("world_rotation_time", SettingEffectUnaudited, func(s *WorldSettings) *string { return &s.RotationTime }),
 		timezoneSetting(),
+		// Every reader goes through VillageMonthDay (World or Snapshot) at the
+		// point of use: the snow and art sweeps on their next pass, the world
+		// read and perception on the next snapshot (LLM-889).
+		monthSetting("village_month_override", SettingEffectImmediate, func(s *WorldSettings) *int { return &s.VillageMonthOverride }),
 
 		durationSetting("checkpoint_interval_seconds", SettingEffectOnRestart, func(s *WorldSettings) *time.Duration { return &s.CheckpointInterval }),
 

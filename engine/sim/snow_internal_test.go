@@ -99,6 +99,24 @@ func TestAdjustSnow_AutumnStormMelts(t *testing.T) {
 	}
 }
 
+// Under a winter month override an October storm is snow, and turning the
+// override off makes the same storm rain again (LLM-889).
+func TestAdjustSnow_MonthOverrideMakesAStormSnow(t *testing.T) {
+	w := snowTestWorld(t)
+	w.Environment.Weather = WeatherStorm
+	w.Settings.VillageMonthOverride = 1
+	adjustSnow(w, 10, snowOctober)
+	if want := 10 * DefaultSnowBuildPerMinuteX100; w.Environment.SnowCoverX100 != want {
+		t.Fatalf("cover under a January override = %d, want %d", w.Environment.SnowCoverX100, want)
+	}
+	w.Settings.VillageMonthOverride = 0
+	before := w.Environment.SnowCoverX100
+	adjustSnow(w, 10, snowOctober)
+	if w.Environment.SnowCoverX100 >= before {
+		t.Errorf("cover with the override off = %d, want it melting from %d", w.Environment.SnowCoverX100, before)
+	}
+}
+
 // A clear sky melts the snow, faster by day than at night, and never below 0.
 func TestAdjustSnow_MeltsFasterByDay(t *testing.T) {
 	day := snowTestWorld(t)

@@ -975,6 +975,10 @@ func TestWorldStateFromSnapshot_VillageDateAndSeason(t *testing.T) {
 		t.Errorf("village_date_ends_at = %v, want %s", dto.VillageDateEndsAt, ends)
 	}
 
+	if dto.VillageMonthOverridden {
+		t.Errorf("village_month_overridden = true with no override")
+	}
+
 	bare := worldStateFromSnapshot(&sim.Snapshot{})
 	if bare.VillageDate != "" || bare.Season != "" || bare.VillageDateEndsAt != nil {
 		t.Errorf("no-clock snapshot: village_date = %q, season = %q, want both omitted", bare.VillageDate, bare.Season)
@@ -985,6 +989,41 @@ func TestWorldStateFromSnapshot_VillageDateAndSeason(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "village_date") || strings.Contains(string(raw), "season") {
 		t.Errorf("no-clock snapshot wire carries the date keys: %s", raw)
+	}
+}
+
+// Under the operator month override (LLM-889) the world read's date and season
+// carry the override month, the day cut to fit it, and the flag marks it; off,
+// the flag is left off the wire.
+func TestWorldStateFromSnapshot_MonthOverride(t *testing.T) {
+	dto := worldStateFromSnapshot(&sim.Snapshot{
+		LocalDateUTC:         time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC),
+		VillageMonthOverride: 2,
+	})
+	if dto.VillageDate != "1692-02-29" {
+		t.Errorf("village_date = %q, want 1692-02-29", dto.VillageDate)
+	}
+	if dto.Season != "winter" {
+		t.Errorf("season = %q, want winter", dto.Season)
+	}
+	if !dto.VillageMonthOverridden {
+		t.Errorf("village_month_overridden = false, want true")
+	}
+	raw, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"village_month_overridden":true`) {
+		t.Errorf("wire is missing village_month_overridden: %s", raw)
+	}
+
+	off := worldStateFromSnapshot(&sim.Snapshot{LocalDateUTC: time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)})
+	raw, err = json.Marshal(off)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "village_month_overridden") {
+		t.Errorf("override off, wire still carries the flag: %s", raw)
 	}
 }
 

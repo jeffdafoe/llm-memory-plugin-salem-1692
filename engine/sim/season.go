@@ -45,11 +45,40 @@ func SeasonOf(m time.Month) Season {
 
 // VillageMonthDay is the village's local calendar month and day at the instant
 // at. Without a Location (a hand-built world) it reads at in its own zone.
+//
+// The operator month override (WorldSettings.VillageMonthOverride, LLM-889)
+// replaces the month here, so everything that reads the village month follows
+// it: the season art, the snow, the weather line, the winter regrow, the prose
+// date. The real date stays on Snapshot.LocalDateUTC, which the order book,
+// memory stamps and court records keep using.
 func VillageMonthDay(w *World, at time.Time) (time.Month, int) {
 	if loc := w.Settings.Location; loc != nil {
 		at = at.In(loc)
 	}
-	return at.Month(), at.Day()
+	return OverrideVillageMonth(at.Month(), at.Day(), w.Settings.VillageMonthOverride)
+}
+
+// MonthOverrideOn reports whether a VillageMonthOverride value names a month.
+// The setter refuses anything else, but a hand-edited setting row can still
+// hold one, and it reads as off.
+func MonthOverrideOn(override int) bool {
+	return override >= 1 && override <= 12
+}
+
+// OverrideVillageMonth puts month override (1–12) in place of m, and cuts day
+// to that month's last day in VillageYear, so October 31 under a February
+// override is February 29 (1692 is a leap year), never an impossible date. An
+// override out of 1–12 (0 is off) leaves m and day as they are.
+func OverrideVillageMonth(m time.Month, day, override int) (time.Month, int) {
+	if !MonthOverrideOn(override) {
+		return m, day
+	}
+	m = time.Month(override)
+	// Day 0 of the next month is the last day of this one.
+	if last := time.Date(VillageYear, m+1, 0, 0, 0, 0, 0, time.UTC).Day(); day > last {
+		day = last
+	}
+	return m, day
 }
 
 // VillageDateEndsAt is the instant the village date holding at now ends: the

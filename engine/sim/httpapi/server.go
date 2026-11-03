@@ -640,10 +640,13 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 		dto.LastTransitionAt = &at
 	}
 	// LocalDateUTC is the village's local date as midnight UTC, so its UTC
-	// fields are the local year/month/day.
+	// fields are the local year/month/day; VillageMonthDay applies the operator
+	// month override (LLM-889) on top.
 	if !s.LocalDateUTC.IsZero() {
-		dto.VillageDate = fmt.Sprintf("%04d-%02d-%02d", sim.VillageYear, int(s.LocalDateUTC.Month()), s.LocalDateUTC.Day())
-		dto.Season = string(sim.SeasonOf(s.LocalDateUTC.Month()))
+		month, day := s.VillageMonthDay()
+		dto.VillageDate = fmt.Sprintf("%04d-%02d-%02d", sim.VillageYear, int(month), day)
+		dto.Season = string(sim.SeasonOf(month))
+		dto.VillageMonthOverridden = sim.MonthOverrideOn(s.VillageMonthOverride)
 		if !s.LocalDateEndsAt.IsZero() {
 			ends := s.LocalDateEndsAt.UTC()
 			dto.VillageDateEndsAt = &ends
