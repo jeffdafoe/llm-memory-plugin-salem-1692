@@ -356,6 +356,12 @@ type WorldSettings struct {
 	OmenChancePermille int
 	OmenCooldownDays   int
 	OmenLapseHours     int
+	// Player omens (LLM-845): each open player's per-game-day chance (0 turns
+	// them off), and how much of a household's chance a horseshoe and a witch
+	// bottle at its home keep (0 or less keeps the default; omen.go).
+	OmenPCChancePermille        int
+	OmenWardHorseshoePermille   int
+	OmenWardWitchBottlePermille int
 
 	// Snow cover (LLM-850, snow.go): how fast it builds in a winter storm and
 	// melts by day and by night (×100 per minute), and the whole-unit cover at
@@ -2822,7 +2828,7 @@ func (w *World) republish() {
 			if snap.StoryViews == nil {
 				snap.StoryViews = make(map[ActorID]StoryView, len(w.StoryProgress))
 			}
-			snap.StoryViews[actorID] = BuildStoryView(w.StoryMissions, rows, actor.Standing, actor.StandingRankSeen, ranks)
+			snap.StoryViews[actorID] = BuildStoryView(w.StoryMissions, rows, actor.Standing, actor.StandingRankSeen, ranks, w.Environment.Omens.Popups[actorID])
 		}
 	}
 	w.published.Store(snap)

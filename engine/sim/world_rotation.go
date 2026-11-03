@@ -593,4 +593,11 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 			log.Printf("sim/world_rotation: omen roll: %v", err)
 		}
 	}
+	// Player omens (LLM-845): each player past the story's chapter 2 rolls on
+	// their own, at the same boundary.
+	if _, err := w.SendContext(ctx, RollDailyPCOmens(boundary, r)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/world_rotation: player omen roll: %v", err)
+		}
+	}
 }

@@ -990,7 +990,8 @@ func TestEnvironmentRepo_CarterAnchorRoundTrip(t *testing.T) {
 // not decode reads as the empty record rather than failing the boot.
 func TestEnvironmentRepo_Load_Omens(t *testing.T) {
 	at := time.Date(2026, 10, 29, 4, 0, 0, 0, time.UTC)
-	doc := []byte(`{"armed":[{"kind":"sour_milk","subject_id":"elizabeth","armed_at":"2026-10-29T00:00:00Z","lapses_at":"2026-10-30T00:00:00Z"}],"last_at":{"john":"2026-10-25T07:00:00Z"}}`)
+	doc := []byte(`{"armed":[{"kind":"sour_milk","subject_id":"elizabeth","armed_at":"2026-10-29T00:00:00Z","lapses_at":"2026-10-30T00:00:00Z"}],"last_at":{"john":"2026-10-25T07:00:00Z"},` +
+		`"popups":{"pc":[{"kind":"foul_well","text":"The water tastes of iron.","at":"2026-10-29T03:00:00Z"}]}}`)
 
 	mock, repo := newMockPoolE(t)
 	programWorldStateRowWithOmens(mock, sim.PhaseNight, at, at, "", "", nil, 0, []byte("[]"), nil, doc)
@@ -1009,6 +1010,10 @@ func TestEnvironmentRepo_Load_Omens(t *testing.T) {
 	}
 	if !env.Omens.LastAt["john"].Equal(time.Date(2026, 10, 25, 7, 0, 0, 0, time.UTC)) {
 		t.Errorf("LastAt = %+v, want john's 10-25 omen", env.Omens.LastAt)
+	}
+	if p := env.Omens.Popups["pc"]; len(p) != 1 || p[0].Kind != sim.OmenFoulWell || p[0].Text == "" ||
+		!p[0].At.Equal(time.Date(2026, 10, 29, 3, 0, 0, 0, time.UTC)) {
+		t.Errorf("Popups = %+v, want the player's foul well (LLM-845)", env.Omens.Popups)
 	}
 	if settings.OmenChancePermille != 100 || settings.OmenCooldownDays != 3 || settings.OmenLapseHours != 12 {
 		t.Errorf("omen settings = %d / %d / %d, want 100 / 3 / 12",
@@ -1031,6 +1036,10 @@ func TestEnvironmentRepo_Load_Omens(t *testing.T) {
 	if settings.OmenChancePermille != sim.DefaultOmenChancePermille || settings.OmenCooldownDays != sim.DefaultOmenCooldownDays ||
 		settings.OmenLapseHours != sim.DefaultOmenLapseHours {
 		t.Errorf("omen defaults = %d / %d / %d", settings.OmenChancePermille, settings.OmenCooldownDays, settings.OmenLapseHours)
+	}
+	if settings.OmenPCChancePermille != sim.DefaultOmenPCChancePermille || settings.OmenWardHorseshoePermille != sim.DefaultOmenWardHorseshoePermille ||
+		settings.OmenWardWitchBottlePermille != sim.DefaultOmenWardWitchBottlePermille {
+		t.Errorf("player omen defaults = %d / %d / %d", settings.OmenPCChancePermille, settings.OmenWardHorseshoePermille, settings.OmenWardWitchBottlePermille)
 	}
 }
 

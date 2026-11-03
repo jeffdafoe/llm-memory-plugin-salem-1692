@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,12 +59,27 @@ const (
 	StoryTriggerMealAt StoryTriggerKind = "meal_at"
 	// StoryTriggerSpokeWithVillager: the player speaks and an agent NPC hears it.
 	StoryTriggerSpokeWithVillager StoryTriggerKind = "spoke_with_villager"
+	// StoryTriggerOmenWitnessed: an omen happens to the player (LLM-845). The
+	// open beat is itself the arming: the player's first moment for a kind in
+	// TriggerArgs.Omens brings the omen on (storyOmenDue), whatever the settings.
+	StoryTriggerOmenWitnessed StoryTriggerKind = "omen_witnessed"
+	// StoryTriggerItemAcquired: the player holds TriggerArgs.Item after a buy, a
+	// barter, a delivery or a gather (LLM-845).
+	StoryTriggerItemAcquired StoryTriggerKind = "item_acquired"
+	// StoryTriggerWardPlaced: the player places a ward at their tent —
+	// TriggerArgs.Item when set, else any ward (LLM-845).
+	StoryTriggerWardPlaced StoryTriggerKind = "ward_placed"
 )
 
 // StoryTriggerArgs are a beat's trigger parameters (story_mission.trigger_args).
 type StoryTriggerArgs struct {
 	// Tag (meal_at): the village_object tag the eating place must carry.
 	Tag string `json:"tag,omitempty"`
+	// Item (item_acquired, ward_placed): the good.
+	Item ItemKind `json:"item,omitempty"`
+	// Omens (omen_witnessed): the kinds the open beat brings on. Empty brings
+	// none on and finishes on any omen.
+	Omens []OmenKind `json:"omens,omitempty"`
 }
 
 // StoryMission is one authored story beat. Immutable once loaded.
@@ -263,6 +280,9 @@ const (
 	// names the rank they are at now, like a rank-up's.
 	StoryUnseenRankDown = "rank_down"
 	StoryUnseenOffer    = "offer"
+	// StoryUnseenOmen: an omen happened to the player (LLM-845). No title; the
+	// text is the scene. Its key is "omen:<unix nanoseconds of At>".
+	StoryUnseenOmen = "omen"
 )
 
 // StoryView is one player's story as the client sees it.
@@ -310,14 +330,15 @@ func storyMissionLess(a, b *StoryMission) bool {
 }
 
 // BuildStoryView derives a player's view from the catalog, their progress rows,
-// Standing and rank-seen mark. Pure; World and Snapshot both feed it.
+// Standing, rank-seen mark and unseen omen popups. Pure; World and Snapshot
+// both feed it.
 //
 // rankSeen is the id of the last rank announced to the player. A current rank
 // above it is a rank-up popup, below it a rank-down popup. An empty id reads as
 // the bottom rank. An id the ladder no longer has reads as the current rank, so
 // a removed rank never shows a popup by itself; the world rebases such a mark
 // to a real rank at load and when the ladder is replaced (rebaseRankSeen).
-func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMissionID]*StoryProgress, standing int, rankSeen string, ranks []StandingRank) StoryView {
+func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMissionID]*StoryProgress, standing int, rankSeen string, ranks []StandingRank, omens []OmenPopup) StoryView {
 	idx := standingRankIndex(ranks, standing)
 	v := StoryView{
 		Standing: standing,
@@ -402,6 +423,12 @@ func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMis
 		v.Unseen = append(v.Unseen, item)
 		latestFinish = item.At
 	}
+	// An omen comes before the beat it finishes: the scene, then what it meant.
+	for _, o := range omens {
+		v.Unseen = append(v.Unseen, StoryUnseenItem{
+			Key: omenPopupKey(o), Kind: StoryUnseenOmen, Text: o.Text, At: o.At,
+		})
+	}
 	for _, e := range finished {
 		v.Unseen = append(v.Unseen, StoryUnseenItem{
 			Key: StoryUnseenFinish + ":" + string(e.m.ID), Kind: StoryUnseenFinish,
@@ -446,6 +473,12 @@ func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMis
 	return v
 }
 
+// omenPopupKey is the popup key of an omen: its time, unique per player (an
+// omen is one world command).
+func omenPopupKey(o OmenPopup) string {
+	return StoryUnseenOmen + ":" + strconv.FormatInt(o.At.UnixNano(), 10)
+}
+
 // joinClauses writes "a", "a and b", "a, b and c".
 func joinClauses(c []string) string {
 	switch len(c) {
@@ -459,7 +492,7 @@ func joinClauses(c []string) string {
 
 // storyViewFor builds a live actor's view off the world.
 func (w *World) storyViewFor(actor *Actor) StoryView {
-	return BuildStoryView(w.StoryMissions, w.StoryProgress[actor.ID], actor.Standing, actor.StandingRankSeen, w.standingRanks())
+	return BuildStoryView(w.StoryMissions, w.StoryProgress[actor.ID], actor.Standing, actor.StandingRankSeen, w.standingRanks(), w.Environment.Omens.Popups[actor.ID])
 }
 
 // StoryChanged carries a player's whole story view after anything in it
@@ -502,6 +535,47 @@ func storyStateHolds(w *World, actor *Actor, m *StoryMission, now time.Time) boo
 	case StoryTriggerCampFireLit:
 		camp := FindCamp(w.VillageObjects, actor.ID)
 		return camp != nil && CampFireLit(camp.Fire, now)
+	case StoryTriggerItemAcquired:
+		// A ward already hung counts as the good acquired.
+		item := m.TriggerArgs.Item
+		return item != "" && (actor.Inventory[item] > 0 || storyTentWard(w, actor, item))
+	case StoryTriggerWardPlaced:
+		return storyTentWard(w, actor, m.TriggerArgs.Item)
+	}
+	return false
+}
+
+// storyTentWard reports whether the player's standing tent carries the ward of
+// item, or any ward when item is "".
+func storyTentWard(w *World, actor *Actor, item ItemKind) bool {
+	camp := FindCamp(w.VillageObjects, actor.ID)
+	if camp == nil || camp.Tent == nil || camp.Tent.CurrentState == TentStatePacked {
+		return false
+	}
+	for _, wk := range WardKinds {
+		if (item == "" || wk.Item == item) && camp.Tent.HasTag(wk.Tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// storyOmenDue reports whether the player has an open omen_witnessed beat that
+// brings on kind (LLM-845): the beat is the arming, so the omen happens at the
+// player's next moment for it, and the first kind to happen finishes the beat
+// and so disarms the others.
+func storyOmenDue(w *World, subject ActorID, kind OmenKind) bool {
+	if storyPlayer(w, subject) == nil {
+		return false
+	}
+	for id, p := range w.StoryProgress[subject] {
+		m := w.StoryMissions[id]
+		if m == nil || !p.Open() || m.Trigger != StoryTriggerOmenWitnessed {
+			continue
+		}
+		if slices.Contains(m.TriggerArgs.Omens, kind) {
+			return true
+		}
 	}
 	return false
 }
@@ -677,12 +751,55 @@ func handleStoryEvent(w *World, evt Event) {
 				return
 			}
 		}
+	case *OmenNoticed:
+		// It happened to the player before their eyes. noticeOmen kept the
+		// popup; when no beat finishes, the view still goes out so it shows.
+		actor := storyPlayer(w, e.WitnessID)
+		if actor == nil || e.SubjectID != e.WitnessID {
+			return
+		}
+		finished := w.finishStoryBeatsByTrigger(actor, StoryTriggerOmenWitnessed, func(m *StoryMission) bool {
+			return len(m.TriggerArgs.Omens) == 0 || slices.Contains(m.TriggerArgs.Omens, e.Kind)
+		}, e.At)
+		if !finished {
+			w.emitStoryChanged(actor, e.At)
+		}
+	case *PayWithItemResolved:
+		if e.TerminalState == PayTerminalStateAccepted {
+			w.finishStoryItemAcquired(e.BuyerID, e.At)
+			w.finishStoryItemAcquired(e.SellerID, e.At)
+		}
+	case *OrderDelivered:
+		w.finishStoryItemAcquired(e.BuyerID, e.At)
+	case *ItemGathered:
+		w.finishStoryItemAcquired(e.ActorID, e.At)
+	case *WardPlaced:
+		if actor := storyPlayer(w, e.ActorID); actor != nil {
+			w.finishStoryBeatsByTrigger(actor, StoryTriggerWardPlaced, func(m *StoryMission) bool {
+				return m.TriggerArgs.Item == "" || m.TriggerArgs.Item == e.Item
+			}, e.At)
+		}
 	}
 }
 
+// finishStoryItemAcquired finishes the player's open item_acquired beats whose
+// good they now hold. Goods change hands on several paths (a buy, a barter, a
+// delivery, a gather), so the beat reads the pack after any of them rather
+// than each event's lines.
+func (w *World) finishStoryItemAcquired(id ActorID, now time.Time) {
+	actor := storyPlayer(w, id)
+	if actor == nil {
+		return
+	}
+	w.finishStoryBeatsByTrigger(actor, StoryTriggerItemAcquired, func(m *StoryMission) bool {
+		return m.TriggerArgs.Item != "" && actor.Inventory[m.TriggerArgs.Item] > 0
+	}, now)
+}
+
 // finishStoryBeatsByTrigger finishes every open beat of the given kind that
-// match accepts (nil accepts all), then emits one StoryChanged.
-func (w *World) finishStoryBeatsByTrigger(actor *Actor, kind StoryTriggerKind, match func(*StoryMission) bool, now time.Time) {
+// match accepts (nil accepts all), then emits one StoryChanged. Reports whether
+// any beat finished.
+func (w *World) finishStoryBeatsByTrigger(actor *Actor, kind StoryTriggerKind, match func(*StoryMission) bool, now time.Time) bool {
 	rows := w.StoryProgress[actor.ID]
 	changed := false
 	for _, id := range sortedStoryIDs(rows) {
@@ -700,6 +817,7 @@ func (w *World) finishStoryBeatsByTrigger(actor *Actor, kind StoryTriggerKind, m
 	if changed {
 		w.emitStoryChanged(actor, now)
 	}
+	return changed
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +880,21 @@ func (w *World) markStorySeen(actor *Actor, key string, now time.Time) (bool, er
 		}
 		if !p.Open() && p.FinishSeenAt.IsZero() {
 			p.FinishSeenAt = now
+			return true, nil
+		}
+		return false, nil
+	case StoryUnseenOmen:
+		list := w.Environment.Omens.Popups[actor.ID]
+		for i, o := range list {
+			if omenPopupKey(o) != key {
+				continue
+			}
+			list = append(list[:i:i], list[i+1:]...)
+			if len(list) == 0 {
+				delete(w.Environment.Omens.Popups, actor.ID)
+			} else {
+				w.Environment.Omens.Popups[actor.ID] = list
+			}
 			return true, nil
 		}
 		return false, nil

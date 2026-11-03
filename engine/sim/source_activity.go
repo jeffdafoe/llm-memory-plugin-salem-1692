@@ -582,6 +582,28 @@ func applyCompletedSourceActivity(w *World, actorID ActorID, actor *Actor, act *
 		if obj == nil || objID != act.ObjectID || obj.OwnedByOther(actorID) {
 			return false
 		}
+		// LLM-845: a player meets a bush by eating there, so their withered-bush
+		// omen takes the bite: nothing is eaten, and the bush is stripped to
+		// regrow as it would after any picking. Players only — a villager's
+		// comes at their harvest.
+		if actor.Kind == KindPC && !obj.HasTag(TagWell) {
+			if row, hasStock := gatherableSupply(obj); row != nil && hasStock &&
+				takeArmedOmen(w, OmenWitheredBush, actorID, now) {
+				drawDownStock(row, *row.AvailableQuantity, now)
+				refreshObjectBerryState(w, obj, now)
+				w.emit(&SourceActivityCompleted{
+					ActorID:        actorID,
+					ObjectID:       act.ObjectID,
+					Kind:           act.Kind,
+					SourceDepleted: true,
+					SourceName:     sourceActivityObjectName(w, obj),
+					Omen:           OmenWitheredBush,
+					At:             now,
+				})
+				noticeOmen(w, OmenWitheredBush, actor, actorID, now)
+				return true
+			}
+		}
 		res := applyObjectRefreshEffect(w, actorID, objID, obj, now)
 		// Compute the repeat decision BEFORE emitting so the completion event
 		// can flag a non-terminal bite (Continues): the perception subscriber

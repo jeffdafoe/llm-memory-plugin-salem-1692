@@ -1,8 +1,9 @@
 package pg
 
-// Real-pg integration tests for story missions (LLM-892): the migration seeds
-// chapter 1, progress and Standing round-trip through SaveWorld → LoadWorld,
-// and a player's rows dropped from the world are swept at the next checkpoint.
+// Real-pg integration tests for story missions (LLM-892): the migrations seed
+// chapters 1 and 2 (LLM-898), progress and Standing round-trip through
+// SaveWorld → LoadWorld, and a player's rows dropped from the world are swept
+// at the next checkpoint.
 
 import (
 	"testing"
@@ -11,7 +12,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-func TestIntegration_Story_ChapterOneIsSeeded(t *testing.T) {
+func TestIntegration_Story_ChaptersAreSeeded(t *testing.T) {
 	f := newFixture(t)
 	repo := NewRepository(f.Pool)
 	missions, err := repo.Story.LoadMissions(t.Context())
@@ -19,27 +20,42 @@ func TestIntegration_Story_ChapterOneIsSeeded(t *testing.T) {
 		t.Fatalf("LoadMissions: %v", err)
 	}
 	want := map[sim.StoryMissionID]struct {
+		chapter string
 		trigger sim.StoryTriggerKind
 		next    sim.StoryMissionID
 	}{
-		"arrival-1": {sim.StoryTriggerCampPitched, "arrival-2"},
-		"arrival-2": {sim.StoryTriggerCampFireLit, "arrival-3"},
-		"arrival-3": {sim.StoryTriggerSleptAtHome, "arrival-4"},
-		"arrival-4": {sim.StoryTriggerMealAt, "arrival-5"},
-		"arrival-5": {sim.StoryTriggerSpokeWithVillager, ""},
+		"arrival-1": {"Arrival", sim.StoryTriggerCampPitched, "arrival-2"},
+		"arrival-2": {"Arrival", sim.StoryTriggerCampFireLit, "arrival-3"},
+		"arrival-3": {"Arrival", sim.StoryTriggerSleptAtHome, "arrival-4"},
+		"arrival-4": {"Arrival", sim.StoryTriggerMealAt, "arrival-5"},
+		"arrival-5": {"Arrival", sim.StoryTriggerSpokeWithVillager, "signs-1"},
+		"signs-1":   {"Signs", sim.StoryTriggerOmenWitnessed, "signs-2"},
+		"signs-2":   {"Signs", sim.StoryTriggerSpokeWithVillager, "signs-3"},
+		"signs-3":   {"Signs", sim.StoryTriggerItemAcquired, "signs-4"},
+		"signs-4":   {"Signs", sim.StoryTriggerWardPlaced, ""},
 	}
 	if len(missions) != len(want) {
 		t.Fatalf("loaded %d missions, want %d", len(missions), len(want))
 	}
-	total := 0
+	totals := map[string]int{}
 	for id, w := range want {
 		m := missions[id]
-		if m == nil || m.Trigger != w.trigger || m.NextID != w.next || m.Chapter != "Arrival" || m.Title == "" || m.OfferText == "" || m.DoneText == "" {
+		if m == nil || m.Trigger != w.trigger || m.NextID != w.next || m.Chapter != w.chapter || m.Title == "" || m.OfferText == "" || m.DoneText == "" {
 			t.Errorf("%s = %+v", id, m)
 			continue
 		}
-		total += m.StandingReward
+		totals[m.Chapter] += m.StandingReward
 	}
+	if got := missions["signs-1"].TriggerArgs.Omens; len(got) != 2 || got[0] != sim.OmenCampFireGutters || got[1] != sim.OmenFoulWell {
+		t.Errorf("signs-1 brings on %v, want the camp fire and the well", got)
+	}
+	if missions["signs-3"].TriggerArgs.Item != sim.HorseshoeKind || missions["signs-4"].TriggerArgs.Item != sim.HorseshoeKind {
+		t.Error("signs-3 and signs-4 name the horseshoe")
+	}
+	if totals["Signs"] != 50 {
+		t.Errorf("chapter 2 gives %d Standing, want 50", totals["Signs"])
+	}
+	total := totals["Arrival"]
 	if !missions["arrival-1"].IsStart || missions["arrival-2"].IsStart {
 		t.Error("only arrival-1 starts the chapter")
 	}
@@ -83,8 +99,8 @@ func TestIntegration_Story_ProgressRoundTripAndSweep(t *testing.T) {
 	if got := loaded.Actors[pcID].Standing; got != 10 {
 		t.Errorf("Standing = %d, want 10", got)
 	}
-	if len(loaded.StoryMissions) != 5 {
-		t.Errorf("loaded %d missions, want the 5 seeded", len(loaded.StoryMissions))
+	if len(loaded.StoryMissions) != 9 {
+		t.Errorf("loaded %d missions, want the 9 seeded (chapters 1 and 2)", len(loaded.StoryMissions))
 	}
 	rows := loaded.StoryProgress[pcID]
 	if len(rows) != 2 {

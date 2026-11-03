@@ -716,6 +716,21 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			StructureID: string(e.StructureID),
 			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
+	case *sim.PCOmenNarrated:
+		// LLM-845: an omen happened to the player — the scene, second person,
+		// as the record of what the story popup shows. PRIVATE + actor-scoped,
+		// the stall_condition carrier; no structure (it may happen outdoors).
+		if e.Text == "" {
+			return WireFrame{}, false
+		}
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:   string(e.ActorID),
+			ActorName: "",
+			Kind:      "omen",
+			Text:      e.Text,
+			Private:   true,
+			At:        e.At.UTC().Format(time.RFC3339),
+		}}, true
 	case *sim.KnockUnansweredNarrated:
 		// LLM-784: the player's knock went unanswered — told on arrival, after
 		// the knock. PRIVATE + actor-scoped, the stall_condition carrier; the

@@ -88,8 +88,17 @@ func lightLantern(w *World, a *Actor, now time.Time) error {
 			delete(a.Inventory, TallowCandleKind)
 		}
 	}
+	// LLM-845: the lantern omen. The candle is spent all the same, but it burns
+	// out in omenLanternGutter.
+	omen := takeArmedOmen(w, OmenLanternGutters, a.ID, now)
+	if omen && burn > omenLanternGutter {
+		burn = omenLanternGutter
+	}
 	a.LanternLitUntil = now.Add(burn)
 	w.emit(&LanternChanged{ActorID: a.ID, LitUntil: a.LanternLitUntil, At: now})
+	if omen {
+		noticeOmen(w, OmenLanternGutters, a, a.ID, now)
+	}
 	return nil
 }
 
