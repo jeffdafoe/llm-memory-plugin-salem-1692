@@ -1571,6 +1571,13 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			return fmt.Sprintf("[ok] You open the door and %s steps inside.", r.VisitorName)
 		}
 	}
+	// place_ward (LLM-897): say the ward is up, so the model does not read a bare
+	// [ok] as nothing done and put it up again.
+	if vc.Name == placeWardToolName {
+		if r, ok := cmdResult.(sim.HomeWardPlacedResult); ok {
+			return "[ok] " + r.Text
+		}
+	}
 	// deliver_order (LLM-887): a receipt, not a bare [ok] — the handover closes a
 	// deal already paid for. Live, Ezekiel handed Elizabeth her prepaid shovel,
 	// got [ok], then named a price for it, and she paid a second time.

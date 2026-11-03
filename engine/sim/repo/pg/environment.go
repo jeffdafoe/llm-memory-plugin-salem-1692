@@ -333,6 +333,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.OmenPCChancePermille = parseIntSetting(values, "omen_pc_chance_permille", sim.DefaultOmenPCChancePermille)
 	s.OmenWardHorseshoePermille = parseIntSetting(values, "omen_ward_horseshoe_permille", sim.DefaultOmenWardHorseshoePermille)
 	s.OmenWardWitchBottlePermille = parseIntSetting(values, "omen_ward_witch_bottle_permille", sim.DefaultOmenWardWitchBottlePermille)
+	s.OmenWardWantDays = parseIntSetting(values, "omen_ward_want_days", sim.DefaultOmenWardWantDays)
 
 	// Snow cover (LLM-850). Rates are clamped like the cold rates: a negative
 	// melt would be read as building. A tier threshold of 0 leaves that tier out,

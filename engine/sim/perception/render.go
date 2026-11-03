@@ -289,6 +289,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderEveningLeisure(&ephemeral, p.EveningLeisure)
 	renderBakeChoice(&ephemeral, p.BakeChoice)
+	renderWard(&ephemeral, p.WardWant, p.WardPlace)
 	renderRelationships(&ephemeral, p.Relationships)
 	// LLM-572: the counted record, immediately after the impression distilled from
 	// it. The adjacency IS the fix — a money claim and the ground truth about that

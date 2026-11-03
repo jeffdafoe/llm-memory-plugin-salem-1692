@@ -476,6 +476,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// flagged actor's movement invitation is stripped in lockstep with the steers.
 	p.EveningLeisure = buildEveningLeisure(snap, actorSnap, p.Anchors)
 	p.BakeChoice = buildBakeChoice(snap, actorSnap)
+	// LLM-897: a household's want for a ward after an omen — the buy errand away
+	// from home, the place choice inside it (one view or the other: holding the
+	// horseshoe ends the buy errand).
+	wardWant := buildHouseholdWardWant(snap, actorSnap)
+	p.WardWant = buildWardWant(snap, actorID, actorSnap, wardWant)
+	p.WardPlace = buildWardPlaceChoice(actorSnap, wardWant, snap)
 	// LLM-459: the bake affordance yields to an active seek-work directive. LLM-454
 	// built bake for the villagers who are home BECAUSE they have no reason to seek
 	// work — the homebodies who otherwise narrate "let's make bread" for an hour
@@ -542,6 +548,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.StallRepairBuy = nil
 		p.Forage = nil
 		p.WorkClothes = nil
+		p.WardWant = nil
 	}
 	// LLM-414: a live summons also silences the walk-away work-errand cues,
 	// the same subtractive treatment the settled-evening block above applies —
@@ -556,6 +563,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.StallRepairBuy = nil
 		p.Forage = nil
 		p.WorkClothes = nil
+		p.WardWant = nil
 	}
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
@@ -755,6 +763,8 @@ func thinDegenerateSteer(p *Payload) {
 	// flagged actor, so it goes too.
 	p.EveningLeisure = nil
 	p.BakeChoice = nil
+	// The ward buy errand names a shop to walk to — the same movement-steer class.
+	p.WardWant = nil
 	if p.DutySteer == nil {
 		return
 	}

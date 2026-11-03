@@ -324,6 +324,13 @@ const stokeToolName = "stoke"
 // drift (discussion-109). sim.StartOrJoinBake stays the authoritative gate.
 const bakeToolName = "bake"
 
+// placeWardToolName — put a ward up at home (LLM-897). Advertised ONLY when the
+// place choice is present (payload.WardPlace non-nil): a resident inside its own
+// home, holding a horseshoe, while the household wants a ward. The same signal
+// renderWard reads, so tool and cue can't drift. sim.PlaceHomeWard stays the
+// authoritative gate.
+const placeWardToolName = "place_ward"
+
 // turnInToolName — the voluntary bed-down tool (LLM-447). Advertised ONLY when the
 // evening bed-down cue is present (payload.TurnInChoice non-nil) — an off-shift
 // actor settled where it sleeps (its own home, or the inn it rents) with the
@@ -490,6 +497,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	offerRepair := payload.StallRepair != nil || payload.PublicWorks.OffersRepair()
 	offerStoke := payload.Hearth != nil
 	offerBake := payload.BakeChoice != nil
+	offerPlaceWard := payload.WardPlace != nil
 	offerTurnIn := payload.TurnInChoice != nil
 	offerCourtFiling := payload.Court.OffersFiling()
 	hasLaborOffer := len(perception.PendingLaborOffers(payload)) > 0
@@ -638,6 +646,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// situation (payload.BakeChoice non-nil), the same signal the bake cue renders
 		// from, so tool and cue can't drift. sim.StartOrJoinBake stays authoritative.
 		if spec.Name == bakeToolName && !offerBake {
+			continue
+		}
+		// place_ward consumer (LLM-897): advertise only with the place choice
+		// (payload.WardPlace non-nil), the signal the ward cue renders from.
+		if spec.Name == placeWardToolName && !offerPlaceWard {
 			continue
 		}
 		// turn_in consumer (LLM-447): advertise only in the evening bed-down

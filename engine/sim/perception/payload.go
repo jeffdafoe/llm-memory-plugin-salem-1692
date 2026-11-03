@@ -170,6 +170,18 @@ type Payload struct {
 	// actor is home. See buildBakeChoice.
 	BakeChoice *BakeChoiceView
 
+	// WardWant is a household's want for a ward after an omen (LLM-897): the
+	// felt line and the walk-to / buy-here errand for a horseshoe. A walk-away
+	// errand like the nail and shovel buys, so it yields to the settled evening,
+	// a summons and degeneracy thinning. See buildWardWant.
+	WardWant *WardWantView
+	// WardPlace is the place choice for a resident at home holding a horseshoe
+	// while the household wants a ward (LLM-897). The single signal that gates
+	// the place_ward tool and its cue, so they can't drift. Like the bake choice
+	// it does not hold the noop-skip gate open: coming home is a tick of its own,
+	// and that tick reads it. See buildWardPlaceChoice.
+	WardPlace *WardPlaceView
+
 	// TurnInChoice is the voluntary bed-down affordance (LLM-447): non-nil when
 	// the actor is settled where it sleeps — its own home, or the inn it rents —
 	// off-shift, and the village clock has reached the evening. The single signal

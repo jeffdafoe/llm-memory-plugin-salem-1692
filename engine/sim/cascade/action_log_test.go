@@ -1774,3 +1774,40 @@ func TestHandleOmenNoticedActionLog(t *testing.T) {
 		t.Errorf("own omen durable row = %+v, want no subject", rows)
 	}
 }
+
+// TestHandleWardPlacedActionLog — LLM-897: a villager who puts a ward up at home
+// gets a placed_ward row (in memory and durable); a player's ward writes none.
+func TestHandleWardPlacedActionLog(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+	})
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleWardPlacedActionLog(world, &sim.WardPlaced{ActorID: "bob", Item: sim.HorseshoeKind, ObjectID: "home", At: at})
+	})
+	got := readActionLog(t, w)
+	if len(got) != 1 || got[0].ActorID != "bob" || got[0].ActionType != sim.ActionTypePlacedWard ||
+		got[0].Text != "nailed a horseshoe over the door at home" {
+		t.Fatalf("rows = %+v, want bob's placed_ward", got)
+	}
+	rows := rec.snapshot()
+	if len(rows) != 1 || rows[0].ActionType != sim.ActionTypePlacedWard || rows[0].Payload["item"] != "horseshoe" ||
+		rows[0].Payload["text"] != "nailed a horseshoe over the door at home" {
+		t.Fatalf("durable rows = %+v", rows)
+	}
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.Actors["hannah"].Kind = sim.KindPC
+		handleWardPlacedActionLog(world, &sim.WardPlaced{ActorID: "hannah", Item: sim.HorseshoeKind, ObjectID: "tent", At: at})
+	})
+	if got := readActionLog(t, w); len(got) != 1 {
+		t.Errorf("a player's ward wrote a row: %+v", got)
+	}
+	if rows := rec.snapshot(); len(rows) != 1 {
+		t.Errorf("a player's ward wrote a durable row: %+v", rows)
+	}
+}
