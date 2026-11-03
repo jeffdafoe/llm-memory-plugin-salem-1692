@@ -276,7 +276,7 @@ func TestStoryRankUpAndSeen(t *testing.T) {
 	pc.InsideStructureID = pc.HomeStructureID
 	w.emit(&PCSleepStarted{ActorID: pc.ID, At: storyNow.Add(time.Hour)})
 	w.VillageObjects["inn"] = &VillageObject{ID: "inn", Tags: []string{"lodging"}}
-	w.emit(&DwellStarted{ActorID: pc.ID, StructureID: "inn", At: storyNow.Add(2 * time.Hour)})
+	w.emit(&DwellStarted{ActorID: pc.ID, Kind: "stew", StructureID: "inn", At: storyNow.Add(2 * time.Hour)})
 	w.emit(&Spoke{SpeakerID: pc.ID, RecipientIDs: []ActorID{"npc"}, At: storyNow.Add(3 * time.Hour)})
 
 	if pc.Standing != 50 {
@@ -403,5 +403,46 @@ func TestStoryStartOffersANextBeatAddedLater(t *testing.T) {
 	}
 	if w.startStory(pc, storyNow) {
 		t.Error("a second pass changes nothing")
+	}
+}
+
+// A dwell with no item is not a meal (code_review; no emitter sends one today).
+func TestStoryMealNeedsAnItem(t *testing.T) {
+	w, pc, _ := storyTestWorld(t)
+	w.StoryProgress[pc.ID] = map[StoryMissionID]*StoryProgress{"arrival-4": {MissionID: "arrival-4", OfferedAt: storyNow}}
+	w.VillageObjects["inn"] = &VillageObject{ID: "inn", Tags: []string{"lodging"}}
+	w.emit(&DwellStarted{ActorID: pc.ID, StructureID: "inn", At: storyNow})
+	if !w.StoryProgress[pc.ID]["arrival-4"].Open() {
+		t.Error("a dwell with no item kind should not finish the meal beat")
+	}
+}
+
+// Two chapters with equal seq and equal timestamps order the same way every
+// time: by chapter, then seq, then id (code_review).
+func TestStoryViewOrderIsDeterministic(t *testing.T) {
+	missions := map[StoryMissionID]*StoryMission{
+		"b-1": {ID: "b-1", Chapter: "Bridge", Seq: 1, Title: "B one", AlreadyText: "b"},
+		"a-1": {ID: "a-1", Chapter: "Arrival", Seq: 1, Title: "A one", AlreadyText: "a"},
+		"b-2": {ID: "b-2", Chapter: "Bridge", Seq: 2, Title: "B two"},
+		"a-2": {ID: "a-2", Chapter: "Arrival", Seq: 2, Title: "A two"},
+	}
+	rows := map[StoryMissionID]*StoryProgress{
+		"a-1": {MissionID: "a-1", OfferedAt: storyNow, FinishedAt: storyNow, CaughtUp: true},
+		"b-1": {MissionID: "b-1", OfferedAt: storyNow, FinishedAt: storyNow, CaughtUp: true},
+		"a-2": {MissionID: "a-2", OfferedAt: storyNow},
+		"b-2": {MissionID: "b-2", OfferedAt: storyNow},
+	}
+	ranks := (&WorldSettings{}).standingRanks()
+	for i := 0; i < 50; i++ {
+		v := BuildStoryView(missions, rows, 0, 0, ranks)
+		if v.Mission == nil || v.Mission.ID != "a-2" {
+			t.Fatalf("run %d: open mission = %+v, want a-2", i, v.Mission)
+		}
+		if got := unseenKeys(v); !reflect.DeepEqual(got, []string{"catch_up", "offer:a-2", "offer:b-2"}) {
+			t.Fatalf("run %d: unseen = %v", i, got)
+		}
+		if !reflect.DeepEqual(v.Unseen[0].Titles, []string{"A one", "B one"}) {
+			t.Fatalf("run %d: catch-up titles = %v", i, v.Unseen[0].Titles)
+		}
 	}
 }

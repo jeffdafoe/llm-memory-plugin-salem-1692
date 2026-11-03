@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
@@ -192,5 +195,74 @@ func TestUmbilicalStory_ReadAndReset(t *testing.T) {
 	}
 	if resp := postReq(t, h, "/api/village/umbilical/story/reset", "tok", `{}`); resp.Code != http.StatusBadRequest {
 		t.Errorf("reset with no actor = %d, want 400", resp.Code)
+	}
+}
+
+// story_changed goes through the hub to every socket of the owner's login and
+// to no other player's socket (code_review).
+func TestStoryChanged_ReachesOnlyTheOwner(t *testing.T) {
+	w := storyWorld(t)
+	hub := NewHub(sentinelTranslator)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(hub)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("subscribe hub: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go hub.Run(ctx)
+	srv := NewServer(w, loginAuth{})
+	srv.SetEventsHub(hub)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	alice1 := dialEventsAs(t, ts, "alice")
+	alice2 := dialEventsAs(t, ts, "alice")
+	bob := dialEventsAs(t, ts, "bob")
+	waitConnected(t, hub, 3)
+
+	if _, err := w.Send(sim.ResetStory("bram", time.Now().UTC())); err != nil {
+		t.Fatalf("ResetStory: %v", err)
+	}
+	hub.Handle(nil, nil) // sentinel, broadcast to all
+
+	for name, conn := range map[string]*websocket.Conn{"alice socket 1": alice1, "alice socket 2": alice2} {
+		if n := countType(framesUntilSentinel(t, conn), "story_changed"); n != 1 {
+			t.Errorf("%s got %d story_changed frames, want 1", name, n)
+		}
+	}
+	if n := countType(framesUntilSentinel(t, bob), "story_changed"); n != 0 {
+		t.Errorf("bob got %d story_changed frames, want 0", n)
+	}
+}
+
+// One player's seen POST never touches another player's story (code_review).
+func TestPCStorySeen_OnlyTheCallersStory(t *testing.T) {
+	w := storyWorld(t)
+	h := NewServer(w, loginAuth{}).Handler()
+
+	// bob (cara) has no story rows; alice's key is a no-op for him.
+	if resp := postReq(t, h, "/api/village/pc/story/seen", "bob", `{"key":"offer:arrival-1"}`); resp.Code != http.StatusOK {
+		t.Fatalf("bob seen = %d; body=%s", resp.Code, resp.Body.String())
+	}
+	body := postReq(t, h, "/api/village/pc/me", "alice", "").Body.String()
+	if !strings.Contains(body, `"key":"offer:arrival-1"`) {
+		t.Errorf("alice's offer should still be unseen: %s", body)
+	}
+}
+
+// The seen route refuses an oversized body and trailing JSON (code_review).
+func TestPCStorySeen_BodyBounds(t *testing.T) {
+	w := storyWorld(t)
+	h := NewServer(w, loginAuth{}).Handler()
+	big := `{"key":"` + strings.Repeat("x", maxStorySeenBodyBytes) + `"}`
+	for label, body := range map[string]string{
+		"oversized": big,
+		"trailing":  `{"key":"offer:arrival-1"}{"key":"catch_up"}`,
+	} {
+		if resp := postReq(t, h, "/api/village/pc/story/seen", "alice", body); resp.Code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", label, resp.Code)
+		}
 	}
 }

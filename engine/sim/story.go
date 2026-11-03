@@ -260,6 +260,18 @@ type StoryUnseenItem struct {
 	At           time.Time
 }
 
+// storyMissionLess orders beats by chapter, then seq, then id, so ties never
+// fall to map order.
+func storyMissionLess(a, b *StoryMission) bool {
+	if a.Chapter != b.Chapter {
+		return a.Chapter < b.Chapter
+	}
+	if a.Seq != b.Seq {
+		return a.Seq < b.Seq
+	}
+	return a.ID < b.ID
+}
+
 // BuildStoryView derives a player's view from the catalog, their progress rows,
 // Standing and rank-seen mark. Pure; World and Snapshot both feed it.
 func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMissionID]*StoryProgress, standing, rankSeen int, ranks []StandingRank) StoryView {
@@ -287,7 +299,7 @@ func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMis
 		entries = append(entries, entry{m, p})
 	}
 
-	// The open beat: the earliest offered, then by chapter order.
+	// The open beat: the earliest offered, then by catalog order.
 	var open []entry
 	for _, e := range entries {
 		if e.p.Open() {
@@ -298,7 +310,7 @@ func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMis
 		if !open[i].p.OfferedAt.Equal(open[j].p.OfferedAt) {
 			return open[i].p.OfferedAt.Before(open[j].p.OfferedAt)
 		}
-		return open[i].m.Seq < open[j].m.Seq
+		return storyMissionLess(open[i].m, open[j].m)
 	})
 	if len(open) > 0 {
 		m, p := open[0].m, open[0].p
@@ -321,7 +333,7 @@ func BuildStoryView(missions map[StoryMissionID]*StoryMission, rows map[StoryMis
 			if !list[i].p.FinishedAt.Equal(list[j].p.FinishedAt) {
 				return list[i].p.FinishedAt.Before(list[j].p.FinishedAt)
 			}
-			return list[i].m.Seq < list[j].m.Seq
+			return storyMissionLess(list[i].m, list[j].m)
 		})
 	}
 	byFinish(caught)
@@ -522,12 +534,7 @@ func (w *World) storyStartMissions() []*StoryMission {
 			out = append(out, m)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Chapter != out[j].Chapter {
-			return out[i].Chapter < out[j].Chapter
-		}
-		return out[i].Seq < out[j].Seq
-	})
+	sort.Slice(out, func(i, j int) bool { return storyMissionLess(out[i], out[j]) })
 	return out
 }
 
@@ -587,8 +594,11 @@ func handleStoryEvent(w *World, evt Event) {
 		}
 		w.finishStoryBeatsByTrigger(actor, StoryTriggerSleptAtHome, nil, e.At)
 	case *DwellStarted:
+		// Every DwellStarted today is an item consumed (the three emitters in
+		// item_commands.go and pay_with_item_commands.go set Kind); a dwell with
+		// no item is not a meal.
 		actor := storyPlayer(w, e.ActorID)
-		if actor == nil {
+		if actor == nil || e.Kind == "" {
 			return
 		}
 		place := w.VillageObjects[e.StructureID]
