@@ -161,6 +161,14 @@ type PayWithItemResult struct {
 	// harness settle feedback names the whole bundle rather than just the
 	// representative first line the buyer echoed. Empty for a single-item take.
 	Lines []QuoteLine
+	// SellerName / ItemKind / Qty are the resolved terms of a fast-path take
+	// (LLM-905). A quote take may leave seller, item and qty out of its args, so
+	// the settle feedback and the say addressee read them from here. ItemKind and
+	// Qty are the single good taken, or the first line of a bundle (Lines names
+	// the whole bundle). Zero for slow-path (pending) entries.
+	SellerName string
+	ItemKind   ItemKind
+	Qty        int
 	// Fast-path settle summary (ZBBS-HOME-436). A quote-take settles, pays,
 	// and (consume_now) feeds the buyer inside this one tool call, but the
 	// buyer's feedback was a bare [ok] — and the within-tick perception body
@@ -260,6 +268,22 @@ func PayWithItem(
 ) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
+			// LLM-905: a quote_id names the whole deal. Fill what the buyer left
+			// out from the quote itself, before anything below reads it. The
+			// caller's own qty is bounds-checked first: a bundle replaces it, and
+			// an out-of-range value must still reject (zero means "left out").
+			var quoteSellerID ActorID
+			if quoteID != 0 {
+				if qty < 0 || qty > MaxPayWithItemQty {
+					return nil, fmt.Errorf("PayWithItem: qty out of range (got %d, max %d)", qty, MaxPayWithItemQty)
+				}
+				var err error
+				sellerName, itemName, qty, quoteSellerID, err = quoteTakeTerms(w, quoteID, sellerName, itemName, qty)
+				if err != nil {
+					return nil, err
+				}
+			}
+
 			// Numeric defense. PayWithItem is exported — non-handler
 			// callers could pass shapes the decode side rejects.
 			//
@@ -342,7 +366,20 @@ func PayWithItem(
 			// Resolve seller against huddle peers — tight scope (same
 			// huddle, case-insensitive, ambiguity reject). Mirrors PR B's
 			// Pay.
-			sellerID, ok, ambiguous := findHuddlePeerByDisplayName(w, buyerID, buyer.CurrentHuddleID, sellerName)
+			var sellerID ActorID
+			var ambiguous bool
+			if quoteSellerID != "" {
+				// LLM-905: the buyer left the seller out, so the quote names them
+				// by ID — no display-name lookup to go ambiguous on a shared name.
+				// Co-presence is checked here, ahead of the gates below, so a seller
+				// who walked off gets the fast path's own message, not a gate's.
+				if peer := w.Actors[quoteSellerID]; peer == nil || peer.CurrentHuddleID != buyer.CurrentHuddleID {
+					return nil, fmt.Errorf("need to be in %s's huddle to take quote %d", sellerName, quoteID)
+				}
+				sellerID, ok = quoteSellerID, true
+			} else {
+				sellerID, ok, ambiguous = findHuddlePeerByDisplayName(w, buyerID, buyer.CurrentHuddleID, sellerName)
+			}
 			if ambiguous {
 				return nil, fmt.Errorf(
 					"more than one person named %q is in this conversation — use a unique full name before offering.",
@@ -1148,6 +1185,58 @@ func stampEatHereClamped(res any, clamped bool) any {
 	return res
 }
 
+// quoteTakeTerms fills the seller, item and qty of a quote take from the quote
+// (LLM-905). The quote cue tells the buyer to send only quote_id and amount for
+// a bundle, and quote_id, item, qty and amount for a single good; the quote
+// already holds the seller and the goods, so a take that leaves them out is
+// complete.
+//
+//   - Seller: an empty name becomes the quote's seller, and that seller's ID is
+//     returned so the caller resolves them by ID rather than by a display name
+//     two people might share. A named seller is kept (returned ID empty), so a
+//     take aimed at the wrong person still gets the fast path's different-seller
+//     reject.
+//   - Bundle: item and qty always become the first line's. The fast path takes
+//     a bundle whole and ignores the buyer's item and qty (LLM-101), so the
+//     buyer's values only ever fed the gates in front of it — and a name that
+//     was not a real kind ("bundle") failed those gates on a take that was
+//     otherwise good.
+//   - Single good: empty item / zero qty become the line's. Named ones are
+//     kept, so a misread still gets the LLM-172 exact-match reject naming the
+//     right terms.
+//
+// A quote that does not exist is reported here only when the take depends on
+// it for a seller or an item; otherwise the fast path reports it as before.
+func quoteTakeTerms(w *World, quoteID QuoteID, sellerName, itemName string, qty int) (string, string, int, ActorID, error) {
+	quote, ok := w.Quotes[quoteID]
+	if !ok || quote == nil || len(quote.Lines) == 0 {
+		if sellerName == "" || itemName == "" {
+			return sellerName, itemName, qty, "", fmt.Errorf("quote %d not available", quoteID)
+		}
+		return sellerName, itemName, qty, "", nil
+	}
+	var sellerID ActorID
+	if sellerName == "" {
+		seller, ok := w.Actors[quote.SellerID]
+		if !ok || seller == nil {
+			return sellerName, itemName, qty, "", fmt.Errorf("quote %d not available — its seller is gone", quoteID)
+		}
+		sellerName = seller.DisplayName
+		sellerID = seller.ID
+	}
+	first := quote.Lines[0]
+	if len(quote.Lines) > 1 {
+		return sellerName, string(first.ItemKind), first.Qty, sellerID, nil
+	}
+	if itemName == "" {
+		itemName = string(first.ItemKind)
+	}
+	if qty == 0 {
+		qty = first.Qty
+	}
+	return sellerName, itemName, qty, sellerID, nil
+}
+
 // runPayWithItemFastPath validates the six fast-path predicates and, on
 // all-pass, mints the entry directly in Accepted state + commits the
 // atomic transfer + emits PayWithItemResolved{Accepted}. Any predicate
@@ -1535,6 +1624,9 @@ func runPayWithItemFastPath(
 		State:           PayLedgerStateAccepted,
 		FastPath:        true,
 		Lines:           cloneQuoteLines(entryLines),
+		SellerName:      seller.DisplayName,
+		ItemKind:        deliverLines[0].ItemKind,
+		Qty:             deliverLines[0].Qty,
 		BuyerAte:        out.buyerAte,
 		KeptToInventory: out.keptToInventory,
 		TookHome:        out.tookHome,
