@@ -1807,6 +1807,9 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
 				if it := strings.ToLower(strings.Join(strings.Fields(args.Item), " ")); it != "" {
 					clampItem = it
+				} else if r.ItemKind != "" {
+					// LLM-905: a quote take may leave item out.
+					clampItem = string(r.ItemKind)
 				}
 			}
 			clampNote = fmt.Sprintf(
@@ -2065,7 +2068,14 @@ func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote 
 	// rather than voice a nonsensical settle ("0 meat", a negative price
 	// normalized into a free purchase). Same no-claims-without-evidence
 	// rule as the nil-result path (code_review).
-	if args.Qty <= 0 || args.Amount < 0 {
+	//
+	// LLM-905: a quote take may leave seller, item and qty out of its args;
+	// the result carries the terms the quote supplied.
+	qty := args.Qty
+	if qty <= 0 {
+		qty = r.Qty
+	}
+	if qty <= 0 || args.Amount < 0 {
 		if clampNote != "" {
 			return "[ok]" + clampNote
 		}
@@ -2073,9 +2083,15 @@ func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote 
 	}
 	item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
 	if item == "" {
+		item = string(r.ItemKind)
+	}
+	if item == "" {
 		item = "those goods"
 	}
 	seller := strings.TrimSpace(args.Seller)
+	if seller == "" {
+		seller = r.SellerName
+	}
 	if seller == "" {
 		seller = "them"
 	}
@@ -2083,7 +2099,7 @@ func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote 
 	// raspberries"); a single-item take keeps "<qty> <item>". args.Item/Qty are
 	// only the representative first line on a bundle, so the result's Lines are
 	// authoritative when present.
-	goods := fmt.Sprintf("%d %s", args.Qty, item)
+	goods := fmt.Sprintf("%d %s", qty, item)
 	if len(r.Lines) > 0 {
 		goods = formatBundleGoods(r.Lines)
 	}

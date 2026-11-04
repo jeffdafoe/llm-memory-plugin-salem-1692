@@ -260,7 +260,8 @@ const payItemsSchemaFragment = `{
 // follow-up) are both optional uint64 IDs — zero means "not present,"
 // matching LedgerID(0) / QuoteID(0) sentinel semantics in the substrate.
 //
-// Schema-enforced constraints:
+// Schema-enforced constraints (seller, item and qty may be omitted on a
+// quote_id take, LLM-905 — sim.PayWithItem fills them from the quote):
 //
 //   - seller:         minLength 1, maxLength MaxPayWithItemNameChars
 //   - item:           minLength 1, maxLength MaxPayWithItemItemChars
@@ -303,19 +304,19 @@ var payWithItemSchema = json.RawMessage(`{
             "type": "string",
             "minLength": 1,
             "maxLength": 100,
-            "description": "Display name of the person in your conversation you want to offer to."
+            "description": "Display name of the person in your conversation you want to offer to. Required unless you pass quote_id — the quote names its seller."
         },
         "item": {
             "type": "string",
             "minLength": 1,
             "maxLength": 64,
-            "description": "Canonical item kind to buy from the seller (e.g. 'ale', 'stew', 'bread')."
+            "description": "Canonical item kind to buy from the seller (e.g. 'ale', 'stew', 'bread'). Required unless you pass quote_id — the quote names its goods."
         },
         "qty": {
             "type": "integer",
             "minimum": 1,
             "maximum": 2147483647,
-            "description": "Quantity per consumer in the bundle."
+            "description": "Quantity per consumer in the bundle. Required unless you pass quote_id — the quote names its quantity."
         },
         "amount": {
             "type": "integer",
@@ -341,7 +342,7 @@ var payWithItemSchema = json.RawMessage(`{
         "quote_id": {
             "type": "integer",
             "minimum": 1,
-            "description": "Optional. Take a posted quote by ID. All terms (item, qty, consume_now, consumers) must match the quote exactly; amount must be at least the quote's amount. Strict-reject on any mismatch. Cannot be combined with pay_items (a quote is a coin price)."
+            "description": "Optional. Take a posted quote by ID; amount must be at least the quote's amount. seller, item and qty may be left out — the quote supplies them. A quote of several goods is taken whole. If you do name item and qty on a one-good quote, they must match it (strict reject on a mismatch). Cannot be combined with pay_items (a quote is a coin price)."
         },
         "in_response_to": {
             "type": "integer",
@@ -371,7 +372,7 @@ var payWithItemSchema = json.RawMessage(`{
             "description": "What you say aloud as you make the offer, in your own voice (e.g. 'Four coins for a bowl of your stew, if you'll have it.'). Spoken to the seller. Optional: omit to offer without a word."
         }
     },
-    "required": ["seller", "item", "qty", "consume_now"],
+    "required": ["consume_now"],
     "additionalProperties": false
 }`)
 
@@ -380,7 +381,7 @@ const payWithItemDescription = "Offer to buy items from another villager in your
 	"Paying with goods is barter: the seller weighs your goods just like a coin offer. " +
 	"By default this creates a pending offer the seller must accept, decline, or counter. " +
 	"Say your piece in the same breath by passing `say` — do NOT speak first and then call this, because speaking ends your turn and the offer would never be made. " +
-	"If you pass quote_id, the deal closes instantly when terms match (strict reject on any mismatch — no silent fall-through). " +
+	"If you pass quote_id, the deal closes instantly — the quote supplies the seller and the goods, so quote_id and amount are enough (strict reject on any mismatch — no silent fall-through). " +
 	"If you pass in_response_to, you're following up on a counter the seller made on a previous offer of yours."
 
 // DecodePayWithItemArgs parses the raw tool-call arguments into a
@@ -389,7 +390,8 @@ const payWithItemDescription = "Offer to buy items from another villager in your
 //
 // What's checked here:
 //   - JSON parses, no trailing data, no unknown fields
-//   - required fields present (seller, item, qty, amount, consume_now)
+//   - required fields present (seller, item, qty — all three optional on a
+//     quote_id take, LLM-905)
 //   - numeric bounds (qty / amount / quote_id / in_response_to)
 //   - rune-length caps (seller, item, consumers[i], for)
 //   - consumers[] length cap
@@ -454,7 +456,10 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 		Say:          wire.Say,
 	}
 
-	if args.Seller == "" {
+	// LLM-905: a quote take may leave seller, item and qty out — the quote
+	// holds them, and sim.PayWithItem fills them from it.
+	quoteTake := args.QuoteID != 0
+	if args.Seller == "" && !quoteTake {
 		return nil, modelSafef("pay_with_item: seller is required")
 	}
 	if n := utf8.RuneCountInString(args.Seller); n > MaxPayWithItemNameChars {
@@ -463,7 +468,7 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 			MaxPayWithItemNameChars, n,
 		)
 	}
-	if args.Item == "" {
+	if args.Item == "" && !quoteTake {
 		return nil, modelSafef("pay_with_item: item is required")
 	}
 	if n := utf8.RuneCountInString(args.Item); n > MaxPayWithItemItemChars {
@@ -472,7 +477,7 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 			MaxPayWithItemItemChars, n,
 		)
 	}
-	if args.Qty < 1 {
+	if args.Qty < 1 && !(quoteTake && args.Qty == 0) {
 		return nil, modelSafef("pay_with_item: qty must be at least 1 (got %d)", args.Qty)
 	}
 	if args.Qty > sim.MaxPayWithItemQty {
@@ -553,8 +558,10 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, fmt.Errorf("pay_with_item: handler received unexpected args type %T", in.Args)
 	}
 
+	// LLM-905: on a quote take an empty seller / item is filled from the quote.
+	quoteTake := args.QuoteID != 0
 	seller := strings.TrimSpace(args.Seller)
-	if seller == "" {
+	if seller == "" && !quoteTake {
 		return sim.Command{}, modelSafef("pay_with_item: seller is empty after trim")
 	}
 	if i := indexStrictControlChar(seller); i >= 0 {
@@ -563,7 +570,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 	}
 
 	item := strings.TrimSpace(args.Item)
-	if item == "" {
+	if item == "" && !quoteTake {
 		return sim.Command{}, modelSafef("pay_with_item: item is empty after trim")
 	}
 	if i := indexStrictControlChar(item); i >= 0 {
@@ -588,7 +595,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		}
 		if args.QuoteID != 0 {
 			return sim.Command{}, modelSafef(
-				"pay_with_item: quote_id %d names goods to receive — coins are the payment amount, not the item. Call pay_with_item with quote_id %d, the quoted item name, and your coins in amount.",
+				"pay_with_item: quote_id %d names goods to receive — coins are the payment amount, not the item. Call pay_with_item with quote_id %d and your coins in amount; leave item out, the quote names the goods.",
 				args.QuoteID, args.QuoteID)
 		}
 		return sim.Command{}, modelSafef(
@@ -699,8 +706,13 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		switch placed.State {
 		case sim.PayLedgerStatePending, sim.PayLedgerStateAccepted:
 			// The offer names one seller, so the buyer's line is spoken to them.
+			// A quote take may leave the seller out; the settle names them.
+			to := seller
+			if to == "" {
+				to = placed.SellerName
+			}
 			placed.Announced, placed.SayRefused = sim.SpeakAlongside(
-				w, actorID, say, seller, hasNewNews, now,
+				w, actorID, say, to, hasNewNews, now,
 				fmt.Sprintf("pay_with_item placed offer %d", placed.LedgerID),
 			)
 			// Only words that went out were spoken of; a refused line names nothing.
