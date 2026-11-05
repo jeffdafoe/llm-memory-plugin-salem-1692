@@ -262,7 +262,9 @@ report="$(mktemp)"
 {
     echo "## $ISSUE_TITLE"
     echo
-    if [ "${#findings[@]}" -eq 0 ]; then
+    if [ "${#findings[@]}" -eq 0 ] && [ "${#errors[@]}" -gt 0 ]; then
+        echo "No stale pins in the checks that completed."
+    elif [ "${#findings[@]}" -eq 0 ]; then
         echo "All pins are current."
     else
         echo "These pins are behind and need a person to update them."
