@@ -21,6 +21,10 @@
 # Needs bash, curl, jq, GNU date/sed/sort and an authenticated gh (GH_TOKEN).
 
 set -euo pipefail
+# An unexpected exit under set -e would end the run with no report and no
+# reason. Say so on the way out. REPORT_PRINTED is set once the report is out.
+REPORT_PRINTED=""
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -z "$REPORT_PRINTED" ]; then echo "stale-pins.sh: stopped with exit $rc before the report was printed" >&2; fi' EXIT
 
 MODE="${1:-report}"
 case "$MODE" in
@@ -130,7 +134,9 @@ check_eol() {
     compare_pins "$name major" "" "$@"
 
     local majors major json eol
-    majors="$(for pin in "$@"; do printf '%s\n' "${pin#*=}"; done | grep . | sort -u)"
+    # sed, not grep: grep exits 1 when every pin is unreadable, and under
+    # pipefail that would end the script before the report is printed.
+    majors="$(for pin in "$@"; do printf '%s\n' "${pin#*=}"; done | sed '/^$/d' | sort -u)"
     for major in $majors; do
         # Anything but a boolean or a real YYYY-MM-DD date is an error. A
         # missing or null eol must not read as "still supported".
@@ -256,7 +262,9 @@ report="$(mktemp)"
 {
     echo "## $ISSUE_TITLE"
     echo
-    if [ "${#findings[@]}" -eq 0 ]; then
+    if [ "${#findings[@]}" -eq 0 ] && [ "${#errors[@]}" -gt 0 ]; then
+        echo "No stale pins in the checks that completed."
+    elif [ "${#findings[@]}" -eq 0 ]; then
         echo "All pins are current."
     else
         echo "These pins are behind and need a person to update them."
@@ -279,6 +287,7 @@ report="$(mktemp)"
 } > "$report"
 
 cat "$report"
+REPORT_PRINTED=1
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     cat "$report" >> "$GITHUB_STEP_SUMMARY"
 fi
