@@ -201,14 +201,23 @@
     # one: one psql -f per file, in order, each file committing its own
     # transaction. So the dry run is the real apply — a file that needs an
     # earlier pending file's table (LLM-911), deferred constraint checks at each
-    # COMMIT, ON COMMIT DROP temp tables, SET LOCAL, RAISE guards — and nothing
-    # a migration does, including a stray COMMIT, can reach the live data.
+    # COMMIT, ON COMMIT DROP temp tables, SET LOCAL, RAISE guards — and a stray
+    # COMMIT in a file commits only the copy. The copy is in the same cluster and
+    # the files run as postgres, as in the real apply, so a file that reconnects
+    # (\connect) or changes something cluster-wide (ALTER ROLE) still reaches the
+    # live cluster. Migrations do neither.
+    #
+    # The copy has what the dump carries (objects, owners, grants) and the
+    # cluster's defaults otherwise. The live database has no ALTER DATABASE /
+    # ALTER ROLE ... IN DATABASE settings and the cluster's encoding and locale;
+    # a setting added there later would need copying here too.
     #
     # The live database is only read: pg_dump takes ACCESS SHARE locks, which
     # the running engine's reads and writes do not wait on. The copy needs free
     # disk for a second copy of the database while it exists, and it is dropped
     # whether the dry run passes or fails. A copy left by an interrupted run is
-    # dropped before the next one is made.
+    # dropped before the next one is made; the fixed name is safe because
+    # deploy.sh holds a lock, so only one deploy runs at a time.
     #
     # ON_ERROR_STOP on the restore makes a copy that did not restore cleanly
     # fail the deploy, rather than give a false pass or fail on a partial copy.

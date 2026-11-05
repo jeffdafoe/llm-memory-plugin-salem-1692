@@ -12,6 +12,15 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# One deploy at a time: two would race on the engine stop/start, the migrations
+# and the dry-run copy of the database (deploy.yml). The lock is released when
+# this script exits.
+exec 9>/run/salem-deploy.lock
+if ! flock -n 9; then
+    echo "Another salem deploy is running"
+    exit 1
+fi
+
 # Pull latest
 echo -e "\033[1m[1/3] Pulling latest code...\033[0m"
 cd /opt/llm-memory-salem-1692
