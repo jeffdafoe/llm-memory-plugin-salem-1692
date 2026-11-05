@@ -153,6 +153,37 @@
       changed_when: false
       when: salem_engine_unit.stat.exists
 
+    # --- One-time database rename (LLM-912) -----------------------------------
+    # The inventory names the database and login (database_name / database_user)
+    # and, while a rename is pending, the old names (database_rename_from /
+    # database_user_rename_from). When only the old database exists, the steps
+    # before the engine stop read it under its old name, and the rename runs
+    # right after the stop, before migrations; the engine then starts on the new
+    # DATABASE_URL. Once the new name exists every step here is a no-op. A
+    # server where BOTH names exist stops here: the engine would come up on
+    # whichever database the new name points at, which may be empty.
+    - name: Find which database names exist
+      shell: |
+        sudo -u postgres psql -t -A -c "SELECT datname FROM pg_database WHERE datname IN ('{{ database_name }}', '{{ database_rename_from | default('') }}');"
+      register: database_names_present
+      changed_when: false
+
+    - name: Decide whether this deploy renames the database
+      set_fact:
+        database_rename_pending: "{{ (database_rename_from | default('')) | length > 0 and database_rename_from in database_names_present.stdout_lines and database_name not in database_names_present.stdout_lines }}"
+
+    - name: Stop if both the old and the new database exist
+      fail:
+        msg: "Both {{ database_rename_from }} and {{ database_name }} exist. Decide by hand which one the engine should use, drop or rename the other, and deploy again."
+      when:
+        - (database_rename_from | default('')) | length > 0
+        - database_rename_from in database_names_present.stdout_lines
+        - database_name in database_names_present.stdout_lines
+
+    - name: Name the database the engine uses until the rename
+      set_fact:
+        live_database_name: "{{ database_rename_from if database_rename_pending | bool else database_name }}"
+
     # --- Pre-stop migration dry run (LLM-495) ---------------------------------
     # Dry-run every pending migration on a copy of the live database, BEFORE the engine
     # stop below, so a migration whose guard RAISEs (or errors any other way) fails
@@ -180,7 +211,7 @@
 
     - name: Check which migrations have been applied (dry run)
       shell: |
-        sudo -u postgres psql -d {{ database_name }} -t -A -c "SELECT migration_name FROM migrations_applied;"
+        sudo -u postgres psql -d {{ live_database_name }} -t -A -c "SELECT migration_name FROM migrations_applied;"
       register: dryrun_applied
       changed_when: false
       when:
@@ -234,7 +265,7 @@
             set -eu -o pipefail
             sudo -u postgres dropdb --if-exists {{ dryrun_database }}
             sudo -u postgres createdb {{ dryrun_database }}
-            sudo -u postgres pg_dump {{ database_name }} \
+            sudo -u postgres pg_dump {{ live_database_name }} \
               | sudo -u postgres psql -q -d {{ dryrun_database }} -v ON_ERROR_STOP=1 > /dev/null
           args:
             executable: /bin/bash
@@ -399,6 +430,20 @@
         - not (allow_migrate_after_unclean_engine_stop | default(false) | bool)
         - "'final=ok' not in ((engine_shutdown_summary | default({})).stdout | default(''))"
         - "'gate=ok' not in ((engine_shutdown_summary | default({})).stdout | default(''))"
+
+    # The engine is down, so nothing of its own holds the old database open.
+    # Any other session on it (a psql left open, a backup) would block the
+    # rename, so those are ended first. Both renames run in one transaction:
+    # either both names change or neither does. A SCRAM password survives a
+    # role rename (only MD5 passwords are cleared), so DATABASE_URL keeps
+    # working with the new user name.
+    - name: Rename the database and its login (LLM-912)
+      shell: |
+        sudo -u postgres psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{{ database_rename_from }}' AND pid <> pg_backend_pid();"
+        sudo -u postgres psql -v ON_ERROR_STOP=1 --single-transaction \
+          -c 'ALTER DATABASE {{ database_rename_from }} RENAME TO {{ database_name }};' \
+          -c 'ALTER ROLE {{ database_user_rename_from }} RENAME TO {{ database_user }};'
+      when: database_rename_pending | bool
 
     # Migrations
     # On a fresh database, load the schema baseline (schema.sql) before running
