@@ -60,7 +60,7 @@ func TestFinalizeLoad_ResumesInWindowVisitor(t *testing.T) {
 		t.Fatal("in-window visitor not rehydrated into World.Actors")
 	}
 	if a.Kind != sim.KindNPCShared || a.LLMAgent != sim.VisitorAgentName || a.State != sim.StateIdle {
-		t.Errorf("rehydrated identity = kind=%q agent=%q state=%q; want shared / visitor-VA / idle", a.Kind, a.LLMAgent, a.State)
+		t.Errorf("rehydrated identity = kind=%v agent=%q state=%q; want shared / visitor-VA / idle", a.Kind, a.LLMAgent, a.State)
 	}
 	if a.VisitorState == nil {
 		t.Fatal("rehydrated actor has nil VisitorState")
