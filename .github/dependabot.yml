@@ -17,3 +17,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # codeql-action is pinned to the moving @v4 tag, which picks up every 4.x
+    # release by itself. In 2026-08 Dependabot rewrote @v4 to an exact 4.x pin
+    # (#1029), and every CodeQL release then needed a workflow-file PR (LLM-916).
+    # Majors still get a PR.
+    ignore:
+      - dependency-name: github/codeql-action
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
