@@ -154,7 +154,7 @@
       when: salem_engine_unit.stat.exists
 
     # --- Pre-stop migration dry run (LLM-495) ---------------------------------
-    # Dry-run every pending migration against the LIVE database, BEFORE the engine
+    # Dry-run every pending migration on a copy of the live database, BEFORE the engine
     # stop below, so a migration whose guard RAISEs (or errors any other way) fails
     # the deploy HERE — while the village is still serving — instead of after the
     # stop, which is what left the LLM-493 deploy with the engine down, the schema
@@ -194,86 +194,54 @@
         - run_migrations | default(false) | bool
         - (engine_was_running | default({})).rc | default(1) == 0
 
-    # Each migration file is a single BEGIN;/COMMIT; transaction with the
-    # terminators alone on their lines (asserted per-file below). All pending
-    # files run in ONE transaction, in apply order, with their own BEGIN;/COMMIT;
-    # lines removed, and that transaction is rolled back at the end. This runs
-    # the REAL migrations — DDL, backfill, RAISE guards, constraints — and each
-    # file sees the schema the files before it create, as in the real apply (a
-    # file that alters a table an earlier pending file creates fails when each
-    # file is dry-run alone). Postgres has transactional DDL, so ALTER TABLE /
-    # ADD CONSTRAINT and CREATE TEMP TABLE ... ON COMMIT DROP all roll back
-    # cleanly, and every RAISE fires exactly as it would for the real apply.
-    # psql's line numbers count the joined stream; the \echo line before each
-    # file names the file that was running when one fails.
+    # The dry run applies the pending migrations to a THROWAWAY COPY of the
+    # database, never to the live one. The copy is a pg_dump of the live
+    # database restored into dryrun_database, and each pending file is applied
+    # to it exactly as "Run pending migrations" below applies it to the real
+    # one: one psql -f per file, in order, each file committing its own
+    # transaction. So the dry run is the real apply — a file that needs an
+    # earlier pending file's table (LLM-911), deferred constraint checks at each
+    # COMMIT, ON COMMIT DROP temp tables, SET LOCAL, RAISE guards — and nothing
+    # a migration does, including a stray COMMIT, can reach the live data.
     #
-    # Each removed COMMIT is replaced by DRYRUN_FILE_BOUNDARY, which does what a
-    # COMMIT does to constraints. SET CONSTRAINTS ALL IMMEDIATE runs the deferred
-    # checks the file left pending: without it, a later file's ALTER TABLE on that
-    # table fails with "pending trigger events", and a deferred violation is never
-    # checked at all (the final ROLLBACK checks nothing). It then defers again
-    # exactly the constraints declared INITIALLY DEFERRED, so the next file starts
-    # with each constraint in the mode a fresh transaction gives it.
+    # The live database is only read: pg_dump takes ACCESS SHARE locks, which
+    # the running engine's reads and writes do not wait on. The copy needs free
+    # disk for a second copy of the database while it exists, and it is dropped
+    # whether the dry run passes or fails. A copy left by an interrupted run is
+    # dropped before the next one is made.
     #
-    # The per-file BEGIN/COMMIT assertion is load-bearing: a file with a second
-    # COMMIT would end the outer transaction, and the rest of the "dry" run would
-    # COMMIT for real against the live database. All files are checked before
-    # any of them runs.
-    # So a file that does not fit the shape FAILS the deploy rather than running —
-    # the ticket's "a non-transactional migration needs an explicit opt-out"
-    # caveat, enforced fail-closed. CREATE INDEX CONCURRENTLY / VACUUM cannot live
-    # inside a BEGIN/COMMIT file, so such a migration trips this guard and a human
-    # decides how to handle it.
-    #
-    # lock_timeout/statement_timeout bound the blast radius: the dry run takes the
-    # same locks the real migration would, and a large backfill UPDATE would hold
-    # row locks against the live engine's writes. Capping them means the dry run
-    # fails fast instead of ever wedging production. One transaction holds every
-    # file's locks until the final ROLLBACK. NOTE: nextval does NOT roll back, so
-    # a future migration using a sequence would burn ids on each dry run.
-    - name: Dry-run pending migrations against the live database
-      shell: |
-        migrations="{{ dryrun_pending | map(attribute='path') | join(' ') }}"
-        for migration in $migrations; do
-            begins=$(grep -c '^BEGIN;$' "$migration")
-            commits=$(grep -c '^COMMIT;$' "$migration")
-            if [ "$begins" != "1" ] || [ "$commits" != "1" ]; then
-                echo "cannot safely dry-run $(basename "$migration"): not a single BEGIN;/COMMIT; transaction (found $begins BEGIN line(s), $commits COMMIT line(s)). A non-transactional migration needs an explicit opt-out here before it can deploy." >&2
-                exit 1
-            fi
-        done
-        {
-            echo 'BEGIN;'
-            for migration in $migrations; do
-                printf '\\echo dry-run: %s\n' "$(basename "$migration")"
-                grep -v -e '^BEGIN;$' -e '^COMMIT;$' "$migration"
-                printf '%s\n' "$DRYRUN_FILE_BOUNDARY"
-            done
-            echo 'ROLLBACK;'
-        } | sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 \
-              -c "SET lock_timeout = '5s'; SET statement_timeout = '60s';" -f -
-      environment:
-        DRYRUN_FILE_BOUNDARY: |
-          SET CONSTRAINTS ALL IMMEDIATE;
-          DO $dryrun$
-          DECLARE
-              initially_deferred text;
-          BEGIN
-              SELECT string_agg(format('%I.%I', n.nspname, c.conname), ', ')
-                INTO initially_deferred
-                FROM pg_constraint c
-                JOIN pg_namespace n ON n.oid = c.connamespace
-               WHERE c.condeferred;
-              IF initially_deferred IS NOT NULL THEN
-                  EXECUTE 'SET CONSTRAINTS ' || initially_deferred || ' DEFERRED';
-              END IF;
-          END
-          $dryrun$;
-      changed_when: false
+    # ON_ERROR_STOP on the restore makes a copy that did not restore cleanly
+    # fail the deploy, rather than give a false pass or fail on a partial copy.
+    - name: Dry-run pending migrations on a throwaway copy of the database
+      vars:
+        dryrun_database: "{{ database_name }}_deploy_dryrun"
       when:
         - run_migrations | default(false) | bool
         - (engine_was_running | default({})).rc | default(1) == 0
         - dryrun_pending | default([]) | length > 0
+      block:
+        - name: Copy the live database for the dry run
+          shell: |
+            set -eu -o pipefail
+            sudo -u postgres dropdb --if-exists {{ dryrun_database }}
+            sudo -u postgres createdb {{ dryrun_database }}
+            sudo -u postgres pg_dump {{ database_name }} \
+              | sudo -u postgres psql -q -d {{ dryrun_database }} -v ON_ERROR_STOP=1 > /dev/null
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: Apply pending migrations to the copy
+          shell: |
+            sudo -u postgres psql -d {{ dryrun_database }} -v ON_ERROR_STOP=1 -f "{{ item.path }}"
+          loop: "{{ dryrun_pending }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+          changed_when: false
+      always:
+        - name: Drop the dry-run copy
+          command: sudo -u postgres dropdb --if-exists {{ dryrun_database }}
+          changed_when: false
     # --- end pre-stop migration dry run ---------------------------------------
 
     # Journal CURSOR (not a timestamp) for this stop attempt, so every check below
