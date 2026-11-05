@@ -94,7 +94,7 @@ func TestIntegration_Visitor_RoundTrip(t *testing.T) {
 		t.Fatal("in-window visitor not rehydrated into loaded actors")
 	}
 	if v.VisitorState.Origin != "Boston" || v.Kind != sim.KindNPCShared || v.State != sim.StateIdle {
-		t.Errorf("rehydrated visitor = origin %q kind %q state %q", v.VisitorState.Origin, v.Kind, v.State)
+		t.Errorf("rehydrated visitor = origin %q kind %v state %q", v.VisitorState.Origin, v.Kind, v.State)
 	}
 	if loaded.Actors["dddddddd-0000-0000-0000-000000000369"] == nil {
 		t.Error("normal npc missing — the actor aggregate should have persisted it")

@@ -81,6 +81,15 @@ jobs:
             - name: Vet
               run: go vet ./...
 
+            - name: Vulnerability check
+              # Known vulnerabilities in the toolchain go.mod pins and in the
+              # required modules, reported only where the engine reaches them.
+              # govulncheck is a `tool` in go.mod, so Dependabot's gomod
+              # updates bump it. A new Go security release turns this red,
+              # which is the signal to raise the toolchain line (and
+              # go_version in infrastructure/group_vars/all.yml with it).
+              run: go tool govulncheck ./...
+
             - name: Test
               # -count=1 disables Go's test result cache. The cache keys on file
               # and env inputs, which cannot see the embedded-postgres server the
