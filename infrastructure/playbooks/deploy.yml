@@ -154,7 +154,7 @@
       when: salem_engine_unit.stat.exists
 
     # --- Pre-stop migration dry run (LLM-495) ---------------------------------
-    # Dry-run every pending migration against the LIVE database, BEFORE the engine
+    # Dry-run every pending migration on a copy of the live database, BEFORE the engine
     # stop below, so a migration whose guard RAISEs (or errors any other way) fails
     # the deploy HERE — while the village is still serving — instead of after the
     # stop, which is what left the LLM-493 deploy with the engine down, the schema
@@ -194,46 +194,63 @@
         - run_migrations | default(false) | bool
         - (engine_was_running | default({})).rc | default(1) == 0
 
-    # Each migration file is a single BEGIN;/COMMIT; transaction with the
-    # terminators alone on their lines (asserted per-file below). Swapping the
-    # terminating COMMIT for ROLLBACK runs the REAL migration — DDL, backfill,
-    # RAISE guards, constraints — inside a transaction that is then discarded.
-    # Postgres has transactional DDL, so ALTER TABLE / ADD CONSTRAINT and
-    # CREATE TEMP TABLE ... ON COMMIT DROP all roll back cleanly, and every RAISE
-    # fires exactly as it would for the real apply.
+    # The dry run applies the pending migrations to a THROWAWAY COPY of the
+    # database, never to the live one. The copy is a pg_dump of the live
+    # database restored into dryrun_database, and each pending file is applied
+    # to it exactly as "Run pending migrations" below applies it to the real
+    # one: one psql -f per file, in order, each file committing its own
+    # transaction. So the dry run is the real apply — a file that needs an
+    # earlier pending file's table (LLM-911), deferred constraint checks at each
+    # COMMIT, ON COMMIT DROP temp tables, SET LOCAL, RAISE guards — and a stray
+    # COMMIT in a file commits only the copy. The copy is in the same cluster and
+    # the files run as postgres, as in the real apply, so a file that reconnects
+    # (\connect) or changes something cluster-wide (ALTER ROLE) still reaches the
+    # live cluster. Migrations do neither.
     #
-    # The per-file BEGIN/COMMIT assertion is load-bearing: without a single COMMIT
-    # line to swap, the "dry" run would COMMIT for real against the live database.
-    # So a file that does not fit the shape FAILS the deploy rather than running —
-    # the ticket's "a non-transactional migration needs an explicit opt-out"
-    # caveat, enforced fail-closed. CREATE INDEX CONCURRENTLY / VACUUM cannot live
-    # inside a BEGIN/COMMIT file, so such a migration trips this guard and a human
-    # decides how to handle it.
+    # The copy has what the dump carries (objects, owners, grants) and the
+    # cluster's defaults otherwise. The live database has no ALTER DATABASE /
+    # ALTER ROLE ... IN DATABASE settings and the cluster's encoding and locale;
+    # a setting added there later would need copying here too.
     #
-    # lock_timeout/statement_timeout bound the blast radius: the dry run takes the
-    # same locks the real migration would, and a large backfill UPDATE would hold
-    # row locks against the live engine's writes. Capping them means the dry run
-    # fails fast instead of ever wedging production. NOTE: nextval does NOT roll
-    # back, so a future migration using a sequence would burn ids on each dry run.
-    - name: Dry-run pending migrations against the live database
-      shell: |
-        migration="{{ item.path }}"
-        begins=$(grep -c '^BEGIN;$' "$migration")
-        commits=$(grep -c '^COMMIT;$' "$migration")
-        if [ "$begins" != "1" ] || [ "$commits" != "1" ]; then
-            echo "cannot safely dry-run $(basename "$migration"): not a single BEGIN;/COMMIT; transaction (found $begins BEGIN line(s), $commits COMMIT line(s)). A non-transactional migration needs an explicit opt-out here before it can deploy." >&2
-            exit 1
-        fi
-        sed 's/^COMMIT;$/ROLLBACK;/' "$migration" \
-          | sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 \
-              -c "SET lock_timeout = '5s'; SET statement_timeout = '60s';" -f -
-      loop: "{{ dryrun_pending | default([]) }}"
-      loop_control:
-        label: "{{ item.path | basename }}"
-      changed_when: false
+    # The live database is only read: pg_dump takes ACCESS SHARE locks, which
+    # the running engine's reads and writes do not wait on. The copy needs free
+    # disk for a second copy of the database while it exists, and it is dropped
+    # whether the dry run passes or fails. A copy left by an interrupted run is
+    # dropped before the next one is made; the fixed name is safe because
+    # deploy.sh holds a lock, so only one deploy runs at a time.
+    #
+    # ON_ERROR_STOP on the restore makes a copy that did not restore cleanly
+    # fail the deploy, rather than give a false pass or fail on a partial copy.
+    - name: Dry-run pending migrations on a throwaway copy of the database
+      vars:
+        dryrun_database: "{{ database_name }}_deploy_dryrun"
       when:
         - run_migrations | default(false) | bool
         - (engine_was_running | default({})).rc | default(1) == 0
+        - dryrun_pending | default([]) | length > 0
+      block:
+        - name: Copy the live database for the dry run
+          shell: |
+            set -eu -o pipefail
+            sudo -u postgres dropdb --if-exists {{ dryrun_database }}
+            sudo -u postgres createdb {{ dryrun_database }}
+            sudo -u postgres pg_dump {{ database_name }} \
+              | sudo -u postgres psql -q -d {{ dryrun_database }} -v ON_ERROR_STOP=1 > /dev/null
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: Apply pending migrations to the copy
+          shell: |
+            sudo -u postgres psql -d {{ dryrun_database }} -v ON_ERROR_STOP=1 -f "{{ item.path }}"
+          loop: "{{ dryrun_pending }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+          changed_when: false
+      always:
+        - name: Drop the dry-run copy
+          command: sudo -u postgres dropdb --if-exists {{ dryrun_database }}
+          changed_when: false
     # --- end pre-stop migration dry run ---------------------------------------
 
     # Journal CURSOR (not a timestamp) for this stop attempt, so every check below
