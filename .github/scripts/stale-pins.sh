@@ -132,7 +132,11 @@ check_eol() {
     local majors major json eol
     majors="$(for pin in "$@"; do printf '%s\n' "${pin#*=}"; done | grep . | sort -u)"
     for major in $majors; do
-        if ! json="$(fetch "https://endoflife.date/api/$product/$major.json")" || ! eol="$(printf '%s' "$json" | jq -r '.eol')"; then
+        # Anything but a boolean or a real YYYY-MM-DD date is an error. A
+        # missing or null eol must not read as "still supported".
+        if ! json="$(fetch "https://endoflife.date/api/$product/$major.json")" \
+            || ! eol="$(printf '%s' "$json" | jq -er '.eol | if type == "boolean" then tostring elif type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") then . else error("bad eol") end')" \
+            || { [ "$eol" != "true" ] && [ "$eol" != "false" ] && [ "$(date -u -d "$eol" +%F 2>/dev/null)" != "$eol" ]; }; then
             error "$name: could not read the end-of-life date of $major from endoflife.date."
             continue
         fi
@@ -156,12 +160,19 @@ check_postgres() {
 }
 
 check_dependabot_prs() {
-    local cutoff prs
+    local cutoff prs limit=200
     cutoff="$(date -u -d "-${DEPENDABOT_MAX_AGE_DAYS} days" +%FT%TZ)"
-    if ! prs="$(gh pr list -R "$REPO" --author app/dependabot --state open --limit 100 \
-        --json number,title,createdAt,url \
-        --jq ".[] | select(.createdAt < \"$cutoff\") | \"[#\(.number)](\(.url)) \(.title) (open since \(.createdAt[0:10]))\"")"; then
+    # The age filter runs on the server, so the limit applies only to old PRs.
+    # dependabot.yml caps open PRs far below it; a full page still means the
+    # list may be cut short, and that is an error rather than a clean result.
+    if ! prs="$(gh pr list -R "$REPO" --author app/dependabot --state open --limit "$limit" \
+        --search "created:<$cutoff" --json number,title,createdAt,url \
+        --jq ".[] | \"[#\(.number)](\(.url)) \(.title) (open since \(.createdAt[0:10]))\"")"; then
         error "Dependabot: could not list open pull requests."
+        return
+    fi
+    if [ "$(printf '%s\n' "$prs" | grep -c .)" -ge "$limit" ]; then
+        error "Dependabot: $limit or more old PRs are open, so the list may be incomplete."
         return
     fi
     local pr
@@ -200,7 +211,7 @@ next_major_path() {
 
 # check_go_majors GO_MOD
 # Asks the module proxy whether the next major path has a tagged stable release.
-# Checking one major ahead is enough: if v7 exists, v6 does too.
+# Only N+1 is probed. A module that skips a major (v5 straight to v7) is missed.
 check_go_majors() {
     local gomod="$1" path version next escaped code stable
     local body
@@ -212,7 +223,12 @@ check_go_majors() {
         fi
         # The proxy wants upper-case letters escaped as "!" plus lower case.
         escaped="$(printf '%s' "$next" | sed -E 's/([A-Z])/!\L\1/g')"
-        code="$(curl -sS -o "$body" -w '%{http_code}' --retry 2 --max-time 30 "https://proxy.golang.org/$escaped/@v/list" || true)"
+        # Without -f, curl exits non-zero only when the transfer itself fails.
+        # That can happen after a 200 header, and a cut-off list must not pass.
+        if ! code="$(curl -sS -o "$body" -w '%{http_code}' --retry 2 --max-time 30 "https://proxy.golang.org/$escaped/@v/list")"; then
+            error "Go modules: could not download the version list for \`$next\`."
+            continue
+        fi
         case "$code" in
             200)
                 stable="$(grep -v -- '-' "$body" | sort -V | tail -n 1 || true)"
