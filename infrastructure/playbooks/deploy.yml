@@ -195,15 +195,30 @@
         - (engine_was_running | default({})).rc | default(1) == 0
 
     # Each migration file is a single BEGIN;/COMMIT; transaction with the
-    # terminators alone on their lines (asserted per-file below). Swapping the
-    # terminating COMMIT for ROLLBACK runs the REAL migration — DDL, backfill,
-    # RAISE guards, constraints — inside a transaction that is then discarded.
-    # Postgres has transactional DDL, so ALTER TABLE / ADD CONSTRAINT and
-    # CREATE TEMP TABLE ... ON COMMIT DROP all roll back cleanly, and every RAISE
-    # fires exactly as it would for the real apply.
+    # terminators alone on their lines (asserted per-file below). All pending
+    # files run in ONE transaction, in apply order, with their own BEGIN;/COMMIT;
+    # lines removed, and that transaction is rolled back at the end. This runs
+    # the REAL migrations — DDL, backfill, RAISE guards, constraints — and each
+    # file sees the schema the files before it create, as in the real apply (a
+    # file that alters a table an earlier pending file creates fails when each
+    # file is dry-run alone). Postgres has transactional DDL, so ALTER TABLE /
+    # ADD CONSTRAINT and CREATE TEMP TABLE ... ON COMMIT DROP all roll back
+    # cleanly, and every RAISE fires exactly as it would for the real apply.
+    # psql's line numbers count the joined stream; the \echo line before each
+    # file names the file that was running when one fails.
     #
-    # The per-file BEGIN/COMMIT assertion is load-bearing: without a single COMMIT
-    # line to swap, the "dry" run would COMMIT for real against the live database.
+    # Each removed COMMIT is replaced by DRYRUN_FILE_BOUNDARY, which does what a
+    # COMMIT does to constraints. SET CONSTRAINTS ALL IMMEDIATE runs the deferred
+    # checks the file left pending: without it, a later file's ALTER TABLE on that
+    # table fails with "pending trigger events", and a deferred violation is never
+    # checked at all (the final ROLLBACK checks nothing). It then defers again
+    # exactly the constraints declared INITIALLY DEFERRED, so the next file starts
+    # with each constraint in the mode a fresh transaction gives it.
+    #
+    # The per-file BEGIN/COMMIT assertion is load-bearing: a file with a second
+    # COMMIT would end the outer transaction, and the rest of the "dry" run would
+    # COMMIT for real against the live database. All files are checked before
+    # any of them runs.
     # So a file that does not fit the shape FAILS the deploy rather than running —
     # the ticket's "a non-transactional migration needs an explicit opt-out"
     # caveat, enforced fail-closed. CREATE INDEX CONCURRENTLY / VACUUM cannot live
@@ -213,27 +228,52 @@
     # lock_timeout/statement_timeout bound the blast radius: the dry run takes the
     # same locks the real migration would, and a large backfill UPDATE would hold
     # row locks against the live engine's writes. Capping them means the dry run
-    # fails fast instead of ever wedging production. NOTE: nextval does NOT roll
-    # back, so a future migration using a sequence would burn ids on each dry run.
+    # fails fast instead of ever wedging production. One transaction holds every
+    # file's locks until the final ROLLBACK. NOTE: nextval does NOT roll back, so
+    # a future migration using a sequence would burn ids on each dry run.
     - name: Dry-run pending migrations against the live database
       shell: |
-        migration="{{ item.path }}"
-        begins=$(grep -c '^BEGIN;$' "$migration")
-        commits=$(grep -c '^COMMIT;$' "$migration")
-        if [ "$begins" != "1" ] || [ "$commits" != "1" ]; then
-            echo "cannot safely dry-run $(basename "$migration"): not a single BEGIN;/COMMIT; transaction (found $begins BEGIN line(s), $commits COMMIT line(s)). A non-transactional migration needs an explicit opt-out here before it can deploy." >&2
-            exit 1
-        fi
-        sed 's/^COMMIT;$/ROLLBACK;/' "$migration" \
-          | sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 \
+        migrations="{{ dryrun_pending | map(attribute='path') | join(' ') }}"
+        for migration in $migrations; do
+            begins=$(grep -c '^BEGIN;$' "$migration")
+            commits=$(grep -c '^COMMIT;$' "$migration")
+            if [ "$begins" != "1" ] || [ "$commits" != "1" ]; then
+                echo "cannot safely dry-run $(basename "$migration"): not a single BEGIN;/COMMIT; transaction (found $begins BEGIN line(s), $commits COMMIT line(s)). A non-transactional migration needs an explicit opt-out here before it can deploy." >&2
+                exit 1
+            fi
+        done
+        {
+            echo 'BEGIN;'
+            for migration in $migrations; do
+                printf '\\echo dry-run: %s\n' "$(basename "$migration")"
+                grep -v -e '^BEGIN;$' -e '^COMMIT;$' "$migration"
+                printf '%s\n' "$DRYRUN_FILE_BOUNDARY"
+            done
+            echo 'ROLLBACK;'
+        } | sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 \
               -c "SET lock_timeout = '5s'; SET statement_timeout = '60s';" -f -
-      loop: "{{ dryrun_pending | default([]) }}"
-      loop_control:
-        label: "{{ item.path | basename }}"
+      environment:
+        DRYRUN_FILE_BOUNDARY: |
+          SET CONSTRAINTS ALL IMMEDIATE;
+          DO $dryrun$
+          DECLARE
+              initially_deferred text;
+          BEGIN
+              SELECT string_agg(format('%I.%I', n.nspname, c.conname), ', ')
+                INTO initially_deferred
+                FROM pg_constraint c
+                JOIN pg_namespace n ON n.oid = c.connamespace
+               WHERE c.condeferred;
+              IF initially_deferred IS NOT NULL THEN
+                  EXECUTE 'SET CONSTRAINTS ' || initially_deferred || ' DEFERRED';
+              END IF;
+          END
+          $dryrun$;
       changed_when: false
       when:
         - run_migrations | default(false) | bool
         - (engine_was_running | default({})).rc | default(1) == 0
+        - dryrun_pending | default([]) | length > 0
     # --- end pre-stop migration dry run ---------------------------------------
 
     # Journal CURSOR (not a timestamp) for this stop attempt, so every check below
