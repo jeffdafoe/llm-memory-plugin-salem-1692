@@ -11,7 +11,4 @@ all:
     deploy_branch: main
     database_name: salem
     database_user: salem
-    # One-time rename (LLM-912): the deploy renames these to the names above.
-    database_rename_from: zbbs
-    database_user_rename_from: zbbs
     llm_memory_api_url: "http://127.0.0.1:3100"
