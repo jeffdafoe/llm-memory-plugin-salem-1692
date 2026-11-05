@@ -101,21 +101,6 @@
         # go.mod meant every deploy downloaded and built with go1.25.0.
         GOTOOLCHAIN: local
 
-    # Environment file
-    - name: Create env directory
-      file:
-        path: /etc/salem-1692
-        state: directory
-        mode: "0750"
-
-    - name: Deploy environment file
-      template:
-        src: ../templates/salem-env.j2
-        dest: /etc/salem-1692/env
-        mode: "0640"
-        owner: root
-        group: "{{ app_user }}"
-
     # Stop the engine before migrations run. village_object, actor, structure,
     # scene, huddle, order and environment rows are held in memory by the running
     # engine and written back to Postgres by its periodic/shutdown SaveWorld
@@ -439,11 +424,30 @@
     # working with the new user name.
     - name: Rename the database and its login (LLM-912)
       shell: |
+        set -e
         sudo -u postgres psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{{ database_rename_from }}' AND pid <> pg_backend_pid();"
         sudo -u postgres psql -v ON_ERROR_STOP=1 --single-transaction \
           -c 'ALTER DATABASE {{ database_rename_from }} RENAME TO {{ database_name }};' \
           -c 'ALTER ROLE {{ database_user_rename_from }} RENAME TO {{ database_user }};'
       when: database_rename_pending | bool
+
+    # Environment file. Written here, with the engine stopped and after any
+    # database rename, so the file always names a database that exists: a
+    # deploy that fails earlier (dry run, stop guards) leaves the old file,
+    # which still matches the database and the running engine.
+    - name: Create env directory
+      file:
+        path: /etc/salem-1692
+        state: directory
+        mode: "0750"
+
+    - name: Deploy environment file
+      template:
+        src: ../templates/salem-env.j2
+        dest: /etc/salem-1692/env
+        mode: "0640"
+        owner: root
+        group: "{{ app_user }}"
 
     # Migrations
     # On a fresh database, load the schema baseline (schema.sql) before running
