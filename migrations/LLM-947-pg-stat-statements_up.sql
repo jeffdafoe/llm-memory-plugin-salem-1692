@@ -1,0 +1,14 @@
+-- LLM-947: pg_stat_statements in the salem database.
+--
+-- The PostgreSQL cluster is shared with llm-memory-api, which owns the server
+-- config: conf.d/50-llm-memory-tuning.conf (llm-memory-api
+-- roles/postgresql/tasks/tuning.yml) loads the library at server start via
+-- shared_preload_libraries. Until that restart the extension exists but its
+-- view raises an error when read. The engine never reads it.
+--
+-- The view covers every database on the cluster (filter on dbid). Read it as
+-- postgres to see every role's query text: sudo -u postgres psql salem.
+--
+-- Not trusted, so CREATE needs a superuser: the deploy runs migrations as
+-- postgres.
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
