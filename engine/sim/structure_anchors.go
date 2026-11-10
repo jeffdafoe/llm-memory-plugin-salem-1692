@@ -3,6 +3,7 @@ package sim
 import (
 	"hash/fnv"
 	"log"
+	"sort"
 )
 
 // structure_anchors.go — PR 4 structure-anchor layer.
@@ -560,7 +561,7 @@ func pickVisitorSlot(w *World, structureID StructureID, actor *Actor, grid *Walk
 	// tile or corridor, the only walkable ones) would attribute the visitor as
 	// inside the building it was turned away from.
 	inside := func(p Position) bool { return footprintContains(vobj, asset, p) }
-	return pickVisitorSlotAtPin(w, computeLoiterTile(vobj, asset), actor, grid, nil, inside, string(structureID))
+	return pickVisitorSlotAtPin(w, computeLoiterTile(vobj, asset), actor, grid, nil, inside, nil, string(structureID))
 }
 
 // pickObjectVisitorSlot is the object-keyed sibling of pickVisitorSlot: it
@@ -614,7 +615,12 @@ func pickObjectVisitorSlotAvoiding(w *World, objID VillageObjectID, actor *Actor
 		return Position{}, false
 	}
 	pin := computeLoiterTile(vobj, asset)
-	return pickVisitorSlotAtPin(w, pin, actor, grid, reserved, nil, string(objID))
+	// Prefer the ring slots nearest the object itself. The default pin sits two
+	// tiles below the object, so its ring spans three rows; without this an
+	// actor's hash could put it on the far row, across whatever lies between
+	// (a moat, a stream) from the thing it came to use (LLM-944).
+	anchor := vobj.Pos.Tile()
+	return pickVisitorSlotAtPin(w, pin, actor, grid, reserved, nil, &anchor, string(objID))
 }
 
 // pickVisitorSlotAtPin is the shared ring-scan core behind pickVisitorSlot
@@ -638,13 +644,30 @@ func pickObjectVisitorSlotAvoiding(w *World, objID VillageObjectID, actor *Actor
 // excluded, when non-nil, rejects any candidate (the pin fallback included) it
 // reports true for — a structure visit excludes the structure's own footprint.
 //
+// toward, when non-nil, orders the eight slots nearest-first by Chebyshev
+// distance to that tile before the scan; the hash rotation still breaks ties,
+// so actors spread across slots at the same distance. An object visit passes
+// the object's anchor tile (pickObjectVisitorSlotAvoiding). nil keeps the plain
+// hash order (structure visits).
+//
 // MUST be called from inside a Command.Fn. Unexported by design.
-func pickVisitorSlotAtPin(w *World, pin Position, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}, excluded func(Position) bool, label string) (Position, bool) {
+func pickVisitorSlotAtPin(w *World, pin Position, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}, excluded func(Position) bool, toward *Position, label string) (Position, bool) {
 	n := len(visitorSlotOffsets)
 	start := int(hashActorID(actor.ID) % uint32(n))
+	// The candidate slots in the actor's hash-rotated order.
+	slots := make([]Position, n)
 	for i := 0; i < n; i++ {
 		off := visitorSlotOffsets[(start+i)%n]
-		slot := Position{X: pin.X + off.X, Y: pin.Y + off.Y}
+		slots[i] = Position{X: pin.X + off.X, Y: pin.Y + off.Y}
+	}
+	if toward != nil {
+		// SliceStable keeps the hash order among slots at the same distance,
+		// so the tie-break is still per actor.
+		sort.SliceStable(slots, func(i, j int) bool {
+			return slots[i].Chebyshev(*toward) < slots[j].Chebyshev(*toward)
+		})
+	}
+	for _, slot := range slots {
 		if !grid.CanWalk(slot.X, slot.Y) {
 			continue
 		}
