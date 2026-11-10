@@ -4,7 +4,7 @@ package pg
 //
 // pgxmock (used by the *_test.go unit tests) matches SQL strings against
 // expectations but never executes real Postgres. This file stands up a
-// real, throwaway PostgreSQL via fergusstrange/embedded-postgres so the
+// real, throwaway PostgreSQL via fergusstrange/embedded-postgres/v2 so the
 // substrate semantics pgxmock can't validate — advisory locks, CHECK
 // constraints, FK CASCADE, partial unique indexes, ON CONFLICT inference,
 // array casts, nextval-in-Tx, gen-marker resulting state — get exercised
@@ -29,7 +29,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -39,7 +38,7 @@ import (
 	"sync"
 	"testing"
 
-	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+	embeddedpostgres "github.com/fergusstrange/embedded-postgres/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,13 +48,11 @@ const (
 )
 
 var (
-	epgOnce        sync.Once
-	epgErr         error
-	epg            *embeddedpostgres.EmbeddedPostgres
-	adminDSN       string // points at the server's default "postgres" db
-	templateDB     string // pre-migrated template cloned per test
-	epgDataPath    string // fresh per-process cluster dir (removed at teardown)
-	epgRuntimePath string // fresh per-process binary-extraction dir (removed at teardown)
+	epgOnce    sync.Once
+	epgErr     error
+	epg        *embeddedpostgres.EmbeddedPostgres
+	adminDSN   string // points at the server's default "postgres" db
+	templateDB string // pre-migrated template cloned per test
 )
 
 // requireIntegration skips under `go test -short`, otherwise lazily boots
@@ -74,96 +71,59 @@ func requireIntegration(t *testing.T) {
 
 // TestMain stops the embedded server after the package's tests finish, but
 // only if a test actually started it (lazy: -short or unit-only runs never
-// boot it, so there's nothing to stop).
+// boot it, so there's nothing to stop). Close removes the instance's
+// workspace and data with it.
+//
+// If the test process dies before this runs (panic, -timeout kill, Ctrl-C),
+// v2's supervisor, a separate process that watches this one, stops postgres.
+// The instance's workspace (about 70 MB under the OS temp directory) stays
+// behind; only Close removes it, and OS temp cleanup reclaims it later.
+// Each instance gets its own uniquely named workspace, so a leftover cannot
+// block the next run. (v1 shared one extraction directory and erased it on
+// every start, so an orphaned postgres holding a file open there wedged
+// every later run.)
+//
+// eptest.Run is v2's TestMain helper, but it starts the server eagerly; the
+// lazy start here keeps -short and unit-only runs free of it.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if epg != nil {
-		_ = epg.Stop()
-	}
-	if epgDataPath != "" {
-		_ = os.RemoveAll(epgDataPath)
-	}
-	if epgRuntimePath != "" {
-		_ = os.RemoveAll(epgRuntimePath)
+		_ = epg.Close()
 	}
 	os.Exit(code)
 }
 
 func startEmbeddedPostgres() {
-	port, err := freeLoopbackPort()
-	if err != nil {
-		epgErr = fmt.Errorf("allocate loopback port: %w", err)
-		return
-	}
-
-	// Fresh per-process cluster dir so initdb actually re-runs with our
-	// encoding/locale (a reused data dir would keep its original encoding).
-	epgDataPath, err = os.MkdirTemp("", "salem-smoke-pgdata-")
-	if err != nil {
-		epgErr = fmt.Errorf("temp data dir: %w", err)
-		return
-	}
-
-	// Fresh per-process binary-extraction dir (RuntimePath). embedded-postgres
-	// extracts the cached archive here and, on Start, FIRST does
-	// os.RemoveAll(runtimePath) (embedded_postgres.go:95). The default
-	// RuntimePath is the SHARED ~/.embedded-postgres-go/extracted — so if a
-	// prior test-binary process exited abnormally (panic, Ctrl-C, -timeout
-	// kill, or a hard kill) before TestMain's epg.Stop() ran, its orphaned
-	// postgres.exe keeps a DLL open in that shared dir and the RemoveAll fails
-	// ("Access is denied"), wedging EVERY subsequent integration run on the
-	// machine until someone manually kills the orphan. Isolating RuntimePath
-	// per-process means a stale orphan lives in a different dir and can never
-	// block a fresh run. The download cache (CachePath) is computed
-	// independently of RuntimePath (embedded_postgres.go:85, before the
-	// RuntimePath defaulting at :87), so it stays at its shared default and the
-	// archive is NOT re-downloaded — only re-extracted, once per process.
-	// Tradeoff: an abnormal exit now also leaks this temp dir (benign — OS temp
-	// cleanup reclaims it; a blind startup sweep was rejected because it could
-	// delete a concurrent run's live RuntimePath).
-	epgRuntimePath, err = os.MkdirTemp("", "salem-smoke-pgruntime-")
-	if err != nil {
-		// Don't leak the data dir created just above on this early return
-		// (TestMain cleanup only runs on a normal m.Run() return; this is
-		// startEmbeddedPostgres's own failure path). code_review #6.
-		_ = os.RemoveAll(epgDataPath)
-		epgDataPath = ""
-		epgErr = fmt.Errorf("temp runtime dir: %w", err)
-		return
-	}
-
 	// Target PostgreSQL 17 to match the production baseline dump
 	// (migrations/schema.sql is pg_dump from prod 17.10, and uses pg17
-	// features like the \restrict guard).
+	// features like the \restrict guard). v2's default is 18.
 	//
 	// Encoding UTF8 + Locale C: the Windows initdb default is WIN1252,
 	// which can't store UTF-8 content the migrations carry (e.g. "→" in
 	// comments). Prod is UTF8; the C locale pairs with any encoding and
 	// avoids Windows locale-name quirks. Collation/locale parity is
-	// explicitly out of scope for this smoke harness.
+	// explicitly out of scope for this smoke harness. (These are also v2's
+	// defaults; they stay explicit because the harness depends on them.)
+	//
+	// Port(0) lets the server pick a free loopback port; ConnectionURL()
+	// reports it after Start. No DataPath: the cluster lives in the
+	// instance's workspace, so initdb runs fresh with these settings and
+	// Close removes it.
 	cfg := embeddedpostgres.DefaultConfig().
 		Version(embeddedpostgres.V17).
-		Port(uint32(port)).
+		Port(0).
 		Encoding("UTF8").
-		Locale("C").
-		DataPath(epgDataPath).
-		RuntimePath(epgRuntimePath)
+		Locale("C")
 	epg = embeddedpostgres.NewDatabase(cfg)
 	if err := epg.Start(); err != nil {
-		// Remove both temp dirs now so repeated failed starts don't
-		// accumulate junk (TestMain won't reach them via epg.Stop — epg is
-		// nilled — and the dir vars are cleared so its os.RemoveAll guards
-		// no-op). code_review #6.
-		_ = os.RemoveAll(epgDataPath)
-		_ = os.RemoveAll(epgRuntimePath)
-		epgDataPath = ""
-		epgRuntimePath = ""
+		// A failed Start cleans up its own workspace. TestMain skips a nil
+		// epg, so there is nothing left for it to stop.
 		epgErr = fmt.Errorf("embedded-postgres start: %w", err)
 		epg = nil
 		return
 	}
 
-	adminDSN = fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/postgres?sslmode=disable", port)
+	adminDSN = epg.ConnectionURL()
 
 	templateDB = integrationTemplatePrefix + randomHex16()
 	if err := createTemplate(context.Background(), templateDB); err != nil {
@@ -386,6 +346,9 @@ func dsnForDB(name string) string {
 		return adminDSN
 	}
 	u.Path = "/" + name
+	// ConnectionURL sets an escaped path; clear it so String() encodes the
+	// new Path instead of keeping the old database name.
+	u.RawPath = ""
 	return u.String()
 }
 
@@ -394,15 +357,6 @@ func dsnForDB(name string) string {
 // already restricted to [a-z0-9_], so this is belt-and-suspenders.
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-func freeLoopbackPort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 func randomHex16() string {
