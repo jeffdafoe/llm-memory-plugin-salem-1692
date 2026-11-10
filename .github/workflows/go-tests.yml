@@ -8,7 +8,7 @@ name: "Go engine tests"
 # The suite has two tiers and this workflow gates on BOTH:
 #   - unit: pgxmock-backed, no external deps, a few seconds
 #   - integration: sim/repo/pg/*_integration_test.go, which stand up a real
-#     PostgreSQL 17 in-process via fergusstrange/embedded-postgres and apply the
+#     PostgreSQL 17 in-process via fergusstrange/embedded-postgres/v2 and apply the
 #     production schema baseline + migrations (see sim/repo/pg/integration_test.go)
 #
 # The integration tier needs no service container — embedded-postgres runs its
@@ -52,17 +52,20 @@ jobs:
                   cache-dependency-path: engine/go.sum
 
             - name: Cache embedded-postgres binaries
-              # The integration tier downloads a ~100MB PostgreSQL archive on
-              # first use and caches it at ~/.embedded-postgres-go (see
-              # cache_locator.go). Without this the download repeats every run.
-              # Keyed on go.sum because the bundled default Postgres patch
-              # version moves with the embedded-postgres module version.
+              # On first use the integration tier downloads the PostgreSQL
+              # bundle (pinned by SHA-256 in the module's manifest) and the
+              # matching supervisor executable (from the library's GitHub
+              # release, checked against its checksums.txt), and keeps both
+              # under os.UserCacheDir()/embedded-postgres/v2, which is
+              # ~/.cache/embedded-postgres/v2 on Linux. Without this the
+              # downloads repeat every run. Keyed on go.sum because the
+              # module version fixes both the bundle and the supervisor.
               uses: actions/cache@v6
               with:
-                  path: ~/.embedded-postgres-go
-                  key: embedded-postgres-${{ runner.os }}-${{ hashFiles('engine/go.sum') }}
+                  path: ~/.cache/embedded-postgres/v2
+                  key: embedded-postgres-v2-${{ runner.os }}-${{ hashFiles('engine/go.sum') }}
                   restore-keys: |
-                      embedded-postgres-${{ runner.os }}-
+                      embedded-postgres-v2-${{ runner.os }}-
 
             - name: Check formatting
               # `gofmt -l` lists offenders but still exits 0, so the exit status
