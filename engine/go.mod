@@ -2,7 +2,7 @@ module github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine
 
 go 1.26.0
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/fergusstrange/embedded-postgres/v2 v2.0.1
