@@ -4,7 +4,7 @@
 postgresql_version: "17"
 
 # Godot (for client export)
-godot_version: "4.7.1"
+godot_version: "4.7.2"
 godot_bin: /usr/local/bin/godot
 
 # Go toolchain that builds the engine (roles/golang, applied on every deploy).

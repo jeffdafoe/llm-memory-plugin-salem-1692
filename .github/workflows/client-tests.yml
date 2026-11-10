@@ -47,21 +47,21 @@ jobs:
               uses: actions/cache@v6
               with:
                   path: ~/.cache/godot-download
-                  key: godot-${{ runner.os }}-4.7.1-stable
+                  key: godot-${{ runner.os }}-4.7.2-stable
 
-            - name: Install Godot 4.7.1 (headless)
+            - name: Install Godot 4.7.2 (headless)
               # Pin the release checksum — a downloaded binary is executed below.
               # Must match infrastructure/group_vars/all.yml godot_version: the
               # production client is exported by that version on the VPS, so a
               # skew here means CI tests a different engine than ships.
               run: |
                   set -euo pipefail
-                  ASSET="Godot_v4.7.1-stable_linux.x86_64"
-                  EXPECTED_SHA512="4ccdab7a48eeccbe8819a2fc1f6262f8d72065d98601bcb3743fcbd7ebd39f373758a788ee3293a05ec5b2c48538266c437404312e372225cd2df273945a2de9"
+                  ASSET="Godot_v4.7.2-stable_linux.x86_64"
+                  EXPECTED_SHA512="9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65"
                   CACHE_DIR="${HOME}/.cache/godot-download"
                   mkdir -p "${CACHE_DIR}"
                   if [ ! -f "${CACHE_DIR}/godot.zip" ]; then
-                      curl -fsSL -o "${CACHE_DIR}/godot.zip" "https://github.com/godotengine/godot/releases/download/4.7.1-stable/${ASSET}.zip"
+                      curl -fsSL -o "${CACHE_DIR}/godot.zip" "https://github.com/godotengine/godot/releases/download/4.7.2-stable/${ASSET}.zip"
                   fi
                   # Verify on EVERY run, cache hit or miss. Caching the zip must
                   # not cache away the checksum gate — a truncated or tampered
