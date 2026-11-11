@@ -16,6 +16,7 @@ const TESTS := [
     "_test_full_tiles_vary_by_position",
     "_test_every_pack_cell_is_on_its_sheet",
     "_test_a_painted_cell_redoes_its_four_tiles",
+    "_test_a_same_size_map_rebuilds_every_tile",
 ]
 
 var _terrain: GDScript = null
@@ -204,5 +205,26 @@ func _test_a_painted_cell_redoes_its_four_tiles() -> void:
     _check("the water corner sparkles", after[2 * 5 + 2][1] >= 0, true)
     _check("a tile off the cell is unchanged", after[0], before[0])
     painted.free()
+    fresh.free()
+    _done()
+
+
+# Another client's terrain save reloads a map of the same size into map_data,
+# then world.gd calls rebuild (code_review, LLM-967). The cache size still
+# matches, so only rebuild can drop the old tiles: after it, every tile must
+# match a fresh renderer's, and differ from the old map's.
+func _test_a_same_size_map_rebuilds_every_tile() -> void:
+    var map_data := _uniform_map(2)
+    var renderer := _renderer_on(map_data)
+    var before: Array = _all_tiles(renderer)
+    for y in 5:
+        for x in 5:
+            map_data[y][x] = 5 if (x + y) % 2 == 0 else 1
+    renderer.rebuild()
+    var after: Array = _all_tiles(renderer)
+    var fresh := _renderer_on(map_data)
+    _check("rebuild equals a fresh renderer", after, _all_tiles(fresh))
+    _check("the far corner tile changed", after[24] != before[24], true)
+    renderer.free()
     fresh.free()
     _done()
