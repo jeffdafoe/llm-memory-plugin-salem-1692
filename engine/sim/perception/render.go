@@ -3703,7 +3703,8 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 // same LaboringView predicate, so cue and tool can't drift. The employer-away
 // (accompany) case takes precedence: if the employer has left, there is no held
 // post to return to, so "head back" would be wrong. A Free job (post-less
-// employer) drops the "stay with it" — the job holds her nowhere.
+// employer) drops the "stay with it" — the job holds her nowhere, and the line
+// says there is no place to go for it.
 func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf func(sim.ActorID) string, renderedAt time.Time) {
 	if laboring == nil {
 		return
@@ -3734,7 +3735,15 @@ func renderLaborSelfState(b *strings.Builder, laboring *LaboringView, nameOf fun
 		return
 	}
 	if laboring.Free {
-		fmt.Fprintf(b, "You are doing a job for %s — about %s left; you are paid when it is done. The work does not hold you in one place; go where you need to.\n",
+		// A post-less hire's task is fiction (LLM-749): the job is time that passes
+		// wherever she is. The line says outright that there is no place to report
+		// to, because "go where you need to" alone sent workers hunting for the
+		// employer's place by move_to and recall, waking again on every arrival
+		// (LLM-982). It does not use the employer's name as a sentence subject:
+		// nameOf falls back to "someone" (or an acquaintance-gated label) when the
+		// employer is unresolved. "Free to see to your own affairs" keeps the
+		// LLM-749 freedom: she still moves, eats and trades.
+		fmt.Fprintf(b, "You are doing a job for %s — about %s left, and you are paid when it is done. There is no shop or yard to report to for this job: the work goes on wherever you are, there is no place you need to go for it, and you are free to see to your own affairs meanwhile.\n",
 			employer, humanizeWorkMinutes(mins))
 		return
 	}
