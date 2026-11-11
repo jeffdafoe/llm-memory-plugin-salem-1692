@@ -15,6 +15,7 @@ const TESTS := [
     "_test_three_terrains_nest",
     "_test_full_tiles_vary_by_position",
     "_test_every_pack_cell_is_on_its_sheet",
+    "_test_a_painted_cell_redoes_its_four_tiles",
 ]
 
 var _terrain: GDScript = null
@@ -150,4 +151,58 @@ func _test_every_pack_cell_is_on_its_sheet() -> void:
     if sparkle != null:
         _check("sparkle sheet holds every frame", Vector2i(sparkle.get_width(), sparkle.get_height()),
             Vector2i(_pack.SPARKLE_COLS * _pack.SRC_TILE_SIZE, _pack.SPARKLE_ROWS * _pack.SRC_TILE_SIZE))
+    _done()
+
+
+# A renderer with a 5x5 map of one terrain, its tiles built. Out of the tree:
+# _ready never runs. The caller frees it.
+func _renderer_on(map_data: Array) -> Node2D:
+    var renderer: Node2D = _terrain.new()
+    renderer.map_data = map_data
+    renderer.map_width = 5
+    renderer.map_height = 5
+    renderer.rebuild()
+    return renderer
+
+
+func _uniform_map(terrain: int) -> Array:
+    var map_data: Array = []
+    for y in 5:
+        var row: Array = []
+        row.resize(5)
+        row.fill(terrain)
+        map_data.append(row)
+    return map_data
+
+
+# Every tile's rects and sparkle offset, built on demand.
+func _all_tiles(renderer: Node2D) -> Array:
+    var tiles: Array = []
+    for y in 5:
+        for x in 5:
+            tiles.append([renderer.tile_rects(x, y), renderer._sparkle_offset[y * 5 + x]])
+    return tiles
+
+
+# Water painted into the middle of a grass field changes the four tiles that
+# have that cell as a corner; after refresh_cell every tile must match a fresh
+# renderer, and the four tiles must really have changed (or the check proves
+# nothing).
+func _test_a_painted_cell_redoes_its_four_tiles() -> void:
+    var map_data := _uniform_map(2)
+    var painted := _renderer_on(map_data)
+    var before: Array = _all_tiles(painted)
+    map_data[2][2] = 6
+    painted.refresh_cell(2, 2)
+    var after: Array = _all_tiles(painted)
+    var fresh := _renderer_on(map_data)
+    _check("refresh equals a fresh renderer", after, _all_tiles(fresh))
+    for tile in [Vector2i(2, 2), Vector2i(3, 2), Vector2i(2, 3), Vector2i(3, 3)]:
+        var index: int = tile.y * 5 + tile.x
+        _check("tile %s changed" % tile, after[index] != before[index], true)
+        _check("tile %s has a full tile and an edge" % tile, after[index][0].size(), 2)
+    _check("the water corner sparkles", after[2 * 5 + 2][1] >= 0, true)
+    _check("a tile off the cell is unchanged", after[0], before[0])
+    painted.free()
+    fresh.free()
     _done()
