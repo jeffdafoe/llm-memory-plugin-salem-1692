@@ -1,55 +1,40 @@
 extends Node2D
-## Custom terrain renderer — draws wang tiles every frame with 1px overlap
-## to prevent sub-pixel seams. Replaces TileMapLayer which caches tiles
-## and produces visible gaps at fractional zoom levels.
+## Custom terrain renderer — draws the ground every frame as layered corner
+## autotiles, with a little overlap to prevent sub-pixel seams. Replaces
+## TileMapLayer, which caches tiles and produces visible gaps at fractional
+## zoom levels.
+##
+## Each drawn tile sits on the corner where four map cells meet (a dual grid),
+## so its four corners are those cells' terrains. The terrains are layers,
+## bottom to top in the pack's LAYER_ORDER. A tile draws the full tile of its
+## lowest corner terrain, then one edge tile for each higher layer, picked by a
+## 4-bit mask of which corners are that layer or above (TL=1, TR=2, BR=4, BL=8).
+## Any mix of terrains draws with one edge set per terrain, so a pack does not
+## need a tile for every pair of terrains (LLM-967).
 ##
 ## Only draws tiles visible in the current viewport (culling).
-## Each tile is drawn 1px larger than its cell to overlap neighbors.
 
-const WangLookup = preload("res://scripts/wang_lookup.gd")
+const TerrainPack = preload("res://scripts/terrain_pack.gd")
 
-# Native tile size in the wang atlas (16px Mana Seed tiles)
-const SRC_TILE_SIZE: int = 16
-# Rendered tile size in world space (2x native)
+# Rendered tile size in world space
 const TILE_SIZE: int = 32
 # Minimum screen pixels of overlap to prevent seams at any zoom level
 const MIN_SCREEN_OVERLAP: float = 1.5
 
-# Wang tileset texture — loaded from the atlas
-var wang_texture: Texture2D = null
+# The ground sheet being drawn — the season's (LLM-834) or the snowy one.
+var ground_texture: Texture2D = null
+var _sheet_cache: Dictionary = {}
 
-# The ground by season (LLM-834). Every Mana Seed season's forest wang sheet has
-# the summer sheet's 1024x512 layout, so a season is a texture swap with no
-# change to the terrain data. Summer and spring draw the built-in wang.png; the
-# others are fetched from the server's /tilesets/ like the catalog's sprite
-# sheets, so the export carries no extra art. The snowy winter sheet follows the
-# snow cover (LLM-850), not the season: at light or deep snow it is the ground
-# in any season.
-const SEASON_WANG_SHEETS := {
-    "autumn": "/tilesets/mana-seed/autumn-forest/autumn sheets/autumn forest wang tiles.png",
-    "winter": "/tilesets/mana-seed/winter-forest/winter sheets/winter forest wang tiles (clean).png",
-}
-const SNOWY_WANG_SHEET := "/tilesets/mana-seed/winter-forest/winter sheets/winter forest wang tiles (snowy).png"
-var _summer_wang: Texture2D = null
-var _season: String = ""
-var _snowy: bool = false
-var _season_wang_cache: Dictionary = {}
-# Paths being fetched: every world read (reconnect, the date change) calls
-# set_season again, and must not stack a second download of the same sheet.
-var _season_wang_pending: Dictionary = {}
-# HTTPRequest waits forever by default. A stalled fetch must end, or its path
-# stays pending and no later world read can retry it.
-const SEASON_WANG_TIMEOUT_SEC: float = 30.0
-
-# Water sparkle overlay — 3 rows x 4 columns = 12 total frames, 600ms each.
-# Each tile cycles through all 12 frames with a per-tile offset.
+# Water sparkle overlay. Each water tile cycles through every frame with a
+# per-tile offset, so the tiles do not glint in step.
 var sparkle_texture: Texture2D = null
 var _sparkle_frame: int = 0
 var _sparkle_timer: float = 0.0
-const SPARKLE_FRAME_DURATION: float = 0.6
-const SPARKLE_COLS: int = 4
-const SPARKLE_ROWS: int = 3
-const SPARKLE_TOTAL_FRAMES: int = 12  # 3 rows x 4 cols
+var _sparkle_frames: int = TerrainPack.SPARKLE_COLS * TerrainPack.SPARKLE_ROWS
+
+# Layer rank per terrain id (index = terrain id); -1 for an id the pack does
+# not draw. Built from TerrainPack.LAYER_ORDER.
+var _rank_of: PackedInt32Array = PackedInt32Array()
 
 # Map data reference — set by world.gd via _sync_renderer
 var map_data: Array = []
@@ -60,82 +45,97 @@ var map_height: int = 180
 var pad_x: int = 0
 var pad_y: int = 0
 
-# Seeded PRNG for wang tile variant selection (must match world.gd)
-var _wang_seed_base: int = 7
-
 func _ready() -> void:
-    _summer_wang = load("res://assets/tilesets/wang.png")
-    if wang_texture == null:
-        wang_texture = _summer_wang
-    # Load sparkle sheet if available (commercial asset, may not exist locally)
-    var sparkle_path: String = "res://assets/tilesets/mana-seed/summer-forest/summer animations/summer water sparkles B 16x16.png"
-    if ResourceLoader.exists(sparkle_path):
-        sparkle_texture = load(sparkle_path)
+    _rank_of = rank_table()
+    if ground_texture == null:
+        ground_texture = _sheet(ground_sheet_path(""))
+    if ResourceLoader.exists(TerrainPack.SPARKLE_SHEET):
+        sparkle_texture = load(TerrainPack.SPARKLE_SHEET)
 
-## The server path of the ground sheet for season, "" for the built-in summer
-## sheet (summer, spring, or a season the engine does not name). snowy (snow
-## lies light or deep) is the snowy winter sheet whatever the season.
-static func season_wang_path(season: String, snowy: bool = false) -> String:
-    if snowy:
-        return SNOWY_WANG_SHEET
-    return SEASON_WANG_SHEETS.get(season, "")
+## Layer rank per terrain id, from the pack's LAYER_ORDER.
+static func rank_table() -> PackedInt32Array:
+    var top_id: int = 0
+    for terrain in TerrainPack.LAYER_ORDER:
+        top_id = maxi(top_id, terrain)
+    var table := PackedInt32Array()
+    table.resize(top_id + 1)
+    table.fill(-1)
+    for rank in TerrainPack.LAYER_ORDER.size():
+        table[TerrainPack.LAYER_ORDER[rank]] = rank
+    return table
 
-## Draw the ground for season (the world read's "autumn"), or snowy. A sheet
-## not yet fetched keeps the current ground until it lands; a failed fetch keeps
-## it too.
+## The ground sheet for season. snowy (snow lies light or deep) is the snowy
+## sheet whatever the season; a season the pack does not name draws summer.
+static func ground_sheet_path(season: String, snowy: bool = false) -> String:
+    if snowy and TerrainPack.SHEETS.has("snowy"):
+        return TerrainPack.SHEETS["snowy"]
+    return TerrainPack.SHEETS.get(season, TerrainPack.SHEETS["summer"])
+
+## Draw the ground for season (the world read's "autumn"), or snowy.
 func set_season(season: String, snowy: bool = false) -> void:
-    _season = season
-    _snowy = snowy
-    var path := season_wang_path(season, snowy)
-    if path == "":
-        if _summer_wang != null:
-            wang_texture = _summer_wang
-        return
-    if _season_wang_cache.has(path):
-        wang_texture = _season_wang_cache[path]
-        return
-    if _season_wang_pending.has(path):
-        return
-    _season_wang_pending[path] = true
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    http.timeout = SEASON_WANG_TIMEOUT_SEC
-    add_child(http)
-    http.request_completed.connect(_on_season_wang_downloaded.bind(http, path))
-    if http.request(Catalog.api_base + path) != OK:
-        push_warning("Season ground: request failed for " + path)
-        _season_wang_pending.erase(path)
-        http.queue_free()
+    var texture := _sheet(ground_sheet_path(season, snowy))
+    if texture != null:
+        ground_texture = texture
 
-func _on_season_wang_downloaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, path: String) -> void:
-    http.queue_free()
-    _season_wang_pending.erase(path)
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        push_warning("Season ground: download failed for %s (code %d)" % [path, response_code])
-        return
-    var image := Image.new()
-    if image.load_png_from_buffer(body) != OK:
-        push_warning("Season ground: could not decode " + path)
-        return
-    var texture := ImageTexture.create_from_image(image)
-    _season_wang_cache[path] = texture
-    # The season or the snow may have changed while this was in flight; the
-    # current ones decide, so a later read naming the same ground still lands
-    # the sheet.
-    if season_wang_path(_season, _snowy) == path:
-        wang_texture = texture
+func _sheet(path: String) -> Texture2D:
+    if not _sheet_cache.has(path):
+        _sheet_cache[path] = load(path)
+    return _sheet_cache[path]
+
+## The tiles that draw one corner, bottom to top, from the layer ranks of its
+## four corner cells. Each entry is [rank, mask]; the first is the full tile of
+## the lowest rank (mask 15). A layer whose mask equals the next layer's is
+## left out: the layer above covers it exactly, so drawing it would only cost
+## a draw (or, with a pack whose edges differ per terrain, show a sliver).
+static func corner_layers(tl: int, tr: int, br: int, bl: int) -> Array:
+    var low: int = mini(mini(tl, tr), mini(br, bl))
+    var high: int = maxi(maxi(tl, tr), maxi(br, bl))
+    var layers: Array = [[low, 15]]
+    for rank in range(low + 1, high + 1):
+        var mask: int = corner_mask(rank, tl, tr, br, bl)
+        var above: int = corner_mask(rank + 1, tl, tr, br, bl) if rank < high else 0
+        if mask != above:
+            layers.append([rank, mask])
+    return layers
+
+## Which corners are at rank or above (TL=1, TR=2, BR=4, BL=8).
+static func corner_mask(rank: int, tl: int, tr: int, br: int, bl: int) -> int:
+    var mask: int = 0
+    if tl >= rank:
+        mask |= 1
+    if tr >= rank:
+        mask |= 2
+    if br >= rank:
+        mask |= 4
+    if bl >= rank:
+        mask |= 8
+    return mask
+
+## Source cell in the sheet for a layer at a corner, or (-1, -1) when the pack
+## has no tile for it. Full tiles vary by map position, the same each frame.
+static func source_cell(terrain: int, mask: int, x: int, y: int) -> Vector2i:
+    if mask == 15:
+        var fills: Array = TerrainPack.FILLS.get(terrain, [])
+        if fills.is_empty():
+            return Vector2i(-1, -1)
+        var hash: int = absi(((x * 16807) + (y * 48271)) % 2147483647)
+        return fills[hash % fills.size()]
+    var edges: Array = TerrainPack.EDGES.get(terrain, [])
+    if mask >= edges.size():
+        return Vector2i(-1, -1)
+    return edges[mask]
 
 func _process(delta: float) -> void:
     # Advance sparkle animation timer
     _sparkle_timer += delta
-    if _sparkle_timer >= SPARKLE_FRAME_DURATION:
-        _sparkle_timer -= SPARKLE_FRAME_DURATION
-        _sparkle_frame = (_sparkle_frame + 1) % SPARKLE_TOTAL_FRAMES
+    if _sparkle_timer >= TerrainPack.SPARKLE_FRAME_SECONDS:
+        _sparkle_timer -= TerrainPack.SPARKLE_FRAME_SECONDS
+        _sparkle_frame = (_sparkle_frame + 1) % _sparkle_frames
     # Redraw every frame so tiles are always at correct screen positions
     queue_redraw()
 
 func _draw() -> void:
-    if wang_texture == null or map_data.is_empty():
+    if ground_texture == null or map_data.is_empty():
         return
 
     # Get the visible rect in world coordinates
@@ -158,89 +158,61 @@ func _draw() -> void:
     var end_x: int = clampi(int(ceil(bottom_right.x / TILE_SIZE)) + pad_x + 1, 0, map_width - 1)
     var end_y: int = clampi(int(ceil(bottom_right.y / TILE_SIZE)) + pad_y + 1, 0, map_height - 1)
 
+    var src_size: int = TerrainPack.SRC_TILE_SIZE
+
     # Draw visible tiles with zoom-adjusted overlap
     for y in range(start_y, end_y + 1):
         for x in range(start_x, end_x + 1):
-            var wang_pos: Vector2i = _get_wang_tile(x, y)
-
-            # Source rect in the wang atlas (16x16 native tiles in 1024x512 texture)
-            var src_rect: Rect2 = Rect2(
-                wang_pos.x * SRC_TILE_SIZE,
-                wang_pos.y * SRC_TILE_SIZE,
-                SRC_TILE_SIZE,
-                SRC_TILE_SIZE
-            )
-
-            # Destination in world space — 2x scale + zoom-adjusted overlap
             var world_x: float = (x - pad_x) * TILE_SIZE
             var world_y: float = (y - pad_y) * TILE_SIZE
-            var dst_rect: Rect2 = Rect2(
-                world_x,
-                world_y,
-                TILE_SIZE + overlap,
-                TILE_SIZE + overlap
-            )
-
-            draw_texture_rect_region(wang_texture, dst_rect, src_rect)
+            var dst_rect: Rect2 = Rect2(world_x, world_y, TILE_SIZE + overlap, TILE_SIZE + overlap)
+            var tl: int = _get_rank(x - 1, y - 1)
+            var tr: int = _get_rank(x, y - 1)
+            var br: int = _get_rank(x, y)
+            var bl: int = _get_rank(x - 1, y)
+            # Most corners are one terrain: one full tile, no layer list.
+            if tl == tr and tr == br and br == bl:
+                var fill: Vector2i = source_cell(TerrainPack.LAYER_ORDER[tl], 15, x, y)
+                if fill.x >= 0:
+                    draw_texture_rect_region(ground_texture, dst_rect, Rect2(fill.x * src_size, fill.y * src_size, src_size, src_size))
+                continue
+            for layer in corner_layers(tl, tr, br, bl):
+                var terrain: int = TerrainPack.LAYER_ORDER[layer[0]]
+                var cell: Vector2i = source_cell(terrain, layer[1], x, y)
+                if cell.x < 0:
+                    continue
+                var src_rect: Rect2 = Rect2(cell.x * src_size, cell.y * src_size, src_size, src_size)
+                draw_texture_rect_region(ground_texture, dst_rect, src_rect)
 
     # Draw water sparkle overlays on water tiles
     if sparkle_texture != null:
         for y in range(start_y, end_y + 1):
             for x in range(start_x, end_x + 1):
-                var terrain_type: int = _get_terrain(x, y)
-                # Terrain types 5 (shallow water) and 6 (deep water)
-                if terrain_type == 5 or terrain_type == 6:
-                    # Per-tile frame offset so tiles don't all animate in sync
-                    var tile_hash: int = ((x * 31337) + (y * 65539)) % 2147483647
-                    if tile_hash < 0:
-                        tile_hash = -tile_hash
-                    var frame_offset: int = tile_hash % SPARKLE_TOTAL_FRAMES
-                    var frame: int = (_sparkle_frame + frame_offset) % SPARKLE_TOTAL_FRAMES
+                if not TerrainPack.SPARKLE_TERRAINS.has(_get_terrain(x, y)):
+                    continue
+                # Per-tile frame offset so tiles don't all animate in sync
+                var tile_hash: int = absi(((x * 31337) + (y * 65539)) % 2147483647)
+                var frame: int = (_sparkle_frame + tile_hash % _sparkle_frames) % _sparkle_frames
 
-                    # Convert linear frame index to row (variant) and column
-                    var col: int = frame % SPARKLE_COLS
-                    var row: int = frame / SPARKLE_COLS
+                var col: int = frame % TerrainPack.SPARKLE_COLS
+                var row: int = frame / TerrainPack.SPARKLE_COLS
+                var spark_src: Rect2 = Rect2(col * src_size, row * src_size, src_size, src_size)
 
-                    var spark_src: Rect2 = Rect2(
-                        col * SRC_TILE_SIZE,
-                        row * SRC_TILE_SIZE,
-                        SRC_TILE_SIZE,
-                        SRC_TILE_SIZE
-                    )
+                var world_x: float = (x - pad_x) * TILE_SIZE
+                var world_y: float = (y - pad_y) * TILE_SIZE
+                # No overlap on sparkles — they're transparent overlays,
+                # overlap would stretch dots into neighboring grass tiles
+                var spark_dst: Rect2 = Rect2(world_x, world_y, TILE_SIZE, TILE_SIZE)
 
-                    var world_x: float = (x - pad_x) * TILE_SIZE
-                    var world_y: float = (y - pad_y) * TILE_SIZE
-                    # No overlap on sparkles — they're transparent overlays,
-                    # overlap would stretch dots into neighboring grass tiles
-                    var spark_dst: Rect2 = Rect2(
-                        world_x, world_y,
-                        TILE_SIZE,
-                        TILE_SIZE
-                    )
+                draw_texture_rect_region(sparkle_texture, spark_dst, spark_src)
 
-                    draw_texture_rect_region(sparkle_texture, spark_dst, spark_src)
-
-## Wang tile lookup — same logic as world.gd but self-contained.
-func _get_wang_tile(x: int, y: int) -> Vector2i:
-    var tl: int = _get_terrain(x - 1, y - 1)
-    var tr: int = _get_terrain(x, y - 1)
-    var br: int = _get_terrain(x, y)
-    var bl: int = _get_terrain(x - 1, y)
-
-    var key: String = "%d,%d,%d,%d" % [tl, tr, br, bl]
-
-    if WangLookup.WANG_LOOKUP.has(key):
-        var options: Array = WangLookup.WANG_LOOKUP[key]
-        # Deterministic variant based on position (same seed as world.gd)
-        var hash: int = ((x * 16807) + (y * 48271)) % 2147483647
-        var idx: int = hash % options.size()
-        if idx < 0:
-            idx = -idx
-        var tile = options[idx]
-        return Vector2i(tile[0], tile[1])
-
-    # Fallback — solid light grass
-    return Vector2i(1, 2)
+## Layer rank of a map cell. A terrain id the pack does not draw takes the
+## lowest layer, so the cell still shows ground.
+func _get_rank(x: int, y: int) -> int:
+    var terrain: int = _get_terrain(x, y)
+    if terrain < 0 or terrain >= _rank_of.size() or _rank_of[terrain] < 0:
+        return 0
+    return _rank_of[terrain]
 
 func _get_terrain(x: int, y: int) -> int:
     x = clampi(x, 0, map_width - 1)

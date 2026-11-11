@@ -9,7 +9,7 @@ extends SceneTree
 ## Exits 0 when every check passes, 1 if any check fails.
 ##
 ## The helpers are static, so most scripts are loaded but never instanced; the
-## ground-fetch test instances the terrain renderer outside the tree.
+## season-swap test instances the terrain renderer outside the tree.
 
 const TESTS := [
     "_test_title_shows_the_date",
@@ -20,7 +20,7 @@ const TESTS := [
     "_test_refresh_at_the_offset_change",
     "_test_title_falls_back_without_a_date",
     "_test_ground_sheet_by_season",
-    "_test_ground_fetch_timeout_frees_the_retry",
+    "_test_set_season_swaps_the_sheet",
     "_test_refresh_wait_measures_engine_time",
     "_test_refresh_wait_without_times",
 ]
@@ -167,28 +167,26 @@ func _test_refresh_wait_without_times() -> void:
 
 
 func _test_ground_sheet_by_season() -> void:
-    _check("autumn", _terrain.season_wang_path("autumn"), "/tilesets/mana-seed/autumn-forest/autumn sheets/autumn forest wang tiles.png")
-    _check("winter", _terrain.season_wang_path("winter"), "/tilesets/mana-seed/winter-forest/winter sheets/winter forest wang tiles (clean).png")
-    for built_in in ["summer", "spring", "", "monsoon"]:
-        _check("built-in for %s" % built_in, _terrain.season_wang_path(built_in), "")
+    _check("summer", _terrain.ground_sheet_path("summer"), "res://assets/terrain/ground-summer.png")
+    _check("autumn", _terrain.ground_sheet_path("autumn"), "res://assets/terrain/ground-autumn.png")
+    _check("winter", _terrain.ground_sheet_path("winter"), "res://assets/terrain/ground-winter.png")
+    _check("snow in winter", _terrain.ground_sheet_path("winter", true), "res://assets/terrain/ground-snowy.png")
+    _check("snow in autumn", _terrain.ground_sheet_path("autumn", true), "res://assets/terrain/ground-snowy.png")
+    for summer_like in ["spring", "", "monsoon"]:
+        _check("summer for %s" % summer_like, _terrain.ground_sheet_path(summer_like), "res://assets/terrain/ground-summer.png")
     _done()
 
 
-# A stalled fetch ends at the request timeout, and its completion clears the
-# pending mark, so the next world read can fetch the sheet again (code_review,
-# LLM-852). The renderer stays out of the tree: _ready (which loads the
-# purchased wang.png) never runs.
-func _test_ground_fetch_timeout_frees_the_retry() -> void:
-    _check("the fetch has a timeout", _terrain.SEASON_WANG_TIMEOUT_SEC > 0.0, true)
+# set_season swaps the drawn sheet, and the snow decides over the season. The
+# renderer stays out of the tree: _ready never runs.
+func _test_set_season_swaps_the_sheet() -> void:
     var renderer: Node2D = _terrain.new()
-    var path: String = _terrain.season_wang_path("autumn")
-    renderer._season = "autumn"
-    renderer._season_wang_pending[path] = true
-    var http := HTTPRequest.new()
-    renderer._on_season_wang_downloaded(HTTPRequest.RESULT_TIMEOUT, 0, PackedStringArray(), PackedByteArray(), http, path)
-    _check("timeout clears pending", renderer._season_wang_pending.has(path), false)
-    _check("timeout caches nothing", renderer._season_wang_cache.has(path), false)
-    _check("timeout keeps the current ground", renderer.wang_texture, null)
+    renderer.set_season("autumn")
+    _check("autumn sheet", renderer.ground_texture, load("res://assets/terrain/ground-autumn.png"))
+    renderer.set_season("autumn", true)
+    _check("snowy sheet", renderer.ground_texture, load("res://assets/terrain/ground-snowy.png"))
+    renderer.set_season("spring")
+    _check("spring draws summer", renderer.ground_texture, load("res://assets/terrain/ground-summer.png"))
     renderer.free()
     _done()
 

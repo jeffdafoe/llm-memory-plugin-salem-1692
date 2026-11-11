@@ -1,6 +1,6 @@
 extends Node2D
 ## World — manages terrain and placed objects.
-## Generates terrain procedurally, renders using custom wang tile renderer
+## Generates terrain procedurally, renders it with the custom layered-autotile renderer
 ## (with 1px overlap to prevent seams), and loads placed objects from the Go API.
 
 ## Emitted after an NPC's metadata is updated from a WS broadcast. Listeners
@@ -34,7 +34,6 @@ signal village_date_changed(village_date: String, season: String, month_overridd
 signal village_hour_changed(hour: int)
 
 const MapGenerator = preload("res://scripts/map_generator.gd")
-const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
