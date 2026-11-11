@@ -4018,6 +4018,17 @@ var perceptionScenarios = []perceptionScenario{
 		build: laboringWorkerPostLessHire,
 	},
 	{
+		name: "laboring_worker_post_less_hire_arrived_home",
+		summary: "LLM-982, the live Anne Walker case of 2026-11-11: Nathaniel Cole hired her at the Inn for four hours " +
+			"'helping with the baking'. Told only that the work did not hold her and to go where she needed to, she spent " +
+			"half an hour hunting for 'Nathaniel Cole's place' — rejected move_to after rejected move_to, home and the Mill " +
+			"over and over, every arrival waking her again — and ended one tick at home, the sleeping Lewis her only " +
+			"company, on nine recalls of where Nathaniel lives. The golden pins her self-state line as she walks in the " +
+			"door: there is no shop or yard to report to, the work goes on wherever she is, there is no place she needs " +
+			"to go for it, and she is free to see to her own affairs.",
+		build: laboringWorkerPostLessHireArrivedHome,
+	},
+	{
 		name: "constable_at_farm_worked_by_hired_hand",
 		summary: "LLM-527: the constable stops at the Ellis Farm on his rounds while Abraham Warren — a free laborer with no " +
 			"workplace of his own — works it and Elizabeth is across the village. The shut cue and the co-presence line both " +
@@ -15062,6 +15073,86 @@ func laboringWorkerPostLessHire() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta
 		ItemKinds: foodDrinkCatalog(),
 	}
 	return snap, anneID, nil
+}
+
+// laboringWorkerPostLessHireArrivedHome is the LLM-982 scene: Anne Walker on a
+// post-less hire for Nathaniel Cole has just walked in to her own home, where the
+// only other soul is her sleeping housemate Lewis. The arrival warrant is the one
+// that kept re-waking her through the live hunt for Nathaniel's (nonexistent)
+// workplace, so this is the exact prompt the new self-state line has to steady.
+func laboringWorkerPostLessHireArrivedHome() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		anneID      = sim.ActorID("anne")
+		lewisID     = sim.ActorID("lewis")
+		nathanielID = sim.ActorID("nathaniel")
+		home        = sim.StructureID("walker-residence")
+		inn         = sim.StructureID("inn")
+	)
+	published := time.Date(2026, 11, 11, 12, 46, 36, 0, time.UTC)
+	workingUntil := published.Add(211 * time.Minute)
+	acceptedAt := published.Add(-29 * time.Minute)
+	nathaniel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Nathaniel Cole",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: inn,
+		Coins:             30,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	lewis := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Lewis Walker",
+		Role:              "laborer",
+		State:             sim.StateSleeping,
+		InsideStructureID: home,
+		HomeStructureID:   home,
+		Needs:             map[sim.NeedKey]int{},
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "laborer",
+		State:             sim.StateLaboring,
+		InsideStructureID: home,
+		HomeStructureID:   home,
+		Coins:             39,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Nathaniel Cole": {}, "Lewis Walker": {}},
+		// Computed world-side in a live snapshot; set by hand so the sleeping
+		// Lewis renders as he did in the live prompt.
+		ColocatedSleeperIDs: []sim.ActorID{lewisID},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{anneID: anne, lewisID: lewis, nathanielID: nathaniel},
+		Structures: map[sim.StructureID]*sim.Structure{
+			home: plainStructure(home, "Walker Residence"),
+			inn:  plainStructure(inn, "Inn"),
+		},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			231: {
+				ID:           231,
+				WorkerID:     anneID,
+				EmployerID:   nathanielID,
+				Reward:       4,
+				DurationMin:  240,
+				State:        sim.LaborStateWorking,
+				AcceptedAt:   &acceptedAt,
+				WorkingUntil: &workingUntil,
+			},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	warrants := []sim.WarrantMeta{
+		{
+			TriggerActorID: anneID,
+			Reason:         sim.ArrivalWarrantReason{AtStructureID: home},
+			SourceEventID:  1,
+		},
+	}
+	return snap, anneID, warrants
 }
 
 // longHeardUtterance is a 372-rune line — the actual utterance Silence Walker
