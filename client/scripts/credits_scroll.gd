@@ -73,9 +73,6 @@ const COLOR_WOOD_OUTLINE := Color(0.18, 0.11, 0.055)
 ## is a list of [work, work_url] shown on one row, joined by middle dots.
 const CREDITS := [
     ["Artwork", [
-        ["Seliel the Shaper", "https://seliel-the-shaper.itch.io/", [
-            [["the Mana Seed collection", "https://seliel-the-shaper.itch.io/"]],
-        ]],
         ["Pixel Frog", "https://pixelfrog-assets.itch.io/", [
             [["Tiny Swords", "https://pixelfrog-assets.itch.io/tiny-swords"]],
         ]],
