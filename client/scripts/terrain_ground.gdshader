@@ -100,9 +100,12 @@ float hash01(ivec2 p) {
 //   w: a grass rank whose blade tip reaches this pixel, or -1
 // with_tips false skips the blade tips: the shadow and shore queries need
 // only the rank drawn.
-// water: where a water rank lies over the base water rank in this tile, x is
-// that upper rank's field with no wobble (-0.5 .. 0.5), y the base rank, z the
-// upper rank; x is NO_WATER_BLEND otherwise.
+// water: when the tile's base is a water rank and the rank above it is water
+// too, x is the field of the corners at that upper rank or higher (land
+// counts), with no wobble (-0.5 .. 0.5); y is the base rank, z the upper one.
+// It is computed whether or not the upper rank is at any corner, so two tiles
+// sharing an edge agree on the fade along it (code_review). x is
+// NO_WATER_BLEND otherwise.
 vec4 ground_at(ivec2 p, bool with_tips, out vec3 water) {
     ivec2 t = ivec2(floor(vec2(p) / float(tile_px)));
     ivec2 tile = t + pad;
@@ -119,6 +122,9 @@ vec4 ground_at(ivec2 p, bool with_tips, out vec3 water) {
     vec2 uv = (vec2(p - t * tile_px) + 0.5) / float(tile_px);
     ivec2 np = ivec2(wrap(p.x, texture_px), wrap(p.y, texture_px));
     float n = (texelFetch(edge_noise, np, 0).r - 0.5) * edge_wobble;
+    if (has_bit(water_ranks, lo) && has_bit(water_ranks, lo + 1)) {
+        water = vec3(corner_blend(corner_mask(lo + 1, tl, tr, br, bl), uv) - 0.5, float(lo), float(lo + 1));
+    }
     int top = lo;
     int under = -1;
     float field = 1.0;
@@ -129,11 +135,7 @@ vec4 ground_at(ivec2 p, bool with_tips, out vec3 water) {
         if (mask == above) {
             continue;
         }
-        float blend = corner_blend(mask, uv);
-        if (water.x == NO_WATER_BLEND && has_bit(water_ranks, lo) && has_bit(water_ranks, r)) {
-            water = vec3(blend - 0.5, float(lo), float(r));
-        }
-        float g = blend + n - 0.5;
+        float g = corner_blend(mask, uv) + n - 0.5;
         if (g > 0.0) {
             under = top;
             top = r;

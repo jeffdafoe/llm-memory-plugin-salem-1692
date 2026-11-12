@@ -17,6 +17,7 @@ const TESTS := [
     "_test_a_same_size_map_rebuilds_every_rank",
     "_test_snow_softens_the_land_edges",
     "_test_the_pack_files_fit_its_layout",
+    "_test_water_fade_agrees_across_a_tile_edge",
 ]
 
 var _terrain: GDScript = null
@@ -237,4 +238,60 @@ func _test_the_pack_files_fit_its_layout() -> void:
         Vector2i(_pack.SPARKLE_COLS * _pack.TILE_PX, _pack.SPARKLE_ROWS * _pack.TILE_PX))
     _check("tile size matches the renderer", _pack.TILE_PX, _terrain.TILE_SIZE)
     _check("a default soft-edge set", _pack.SOFT_EDGE_TERRAINS.has("default"), true)
+    _done()
+
+
+# Two tiles share an edge between deep water and land; shallow water is at a
+# corner of only one of them, off that edge (code_review, LLM-967). Along the
+# edge both tiles must fade deep toward shallow alike, or a line shows. The
+# shader is drawn in a SubViewport with flat colours (deep black, shallow
+# white, no wobble, no glints), so a pixel's red is the fade itself. The
+# headless renderer draws nothing: this runs only in a windowed run.
+func _test_water_fade_agrees_across_a_tile_edge() -> void:
+    if DisplayServer.get_name() == "headless":
+        _done()
+        return
+    var map_data: Array = []
+    for y in 6:
+        var row: Array = []
+        row.resize(6)
+        row.fill(6)
+        map_data.append(row)
+    # Tile (2, 2) has corners (1, 1) (2, 1) (2, 2) (1, 2); tile (3, 2) has
+    # (2, 1) (3, 1) (3, 2) (2, 2). They share the edge (2, 1)-(2, 2), at world
+    # x = 96 for y 64..95.
+    map_data[1][1] = 5
+    map_data[2][2] = 1
+    var renderer: Node2D = _terrain.new()
+    renderer.map_data = map_data
+    renderer.map_width = 6
+    renderer.map_height = 6
+    var viewport := SubViewport.new()
+    viewport.size = Vector2i(192, 192)
+    viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+    root.add_child(viewport)
+    viewport.add_child(renderer)
+    var size: int = _pack.TEXTURE_PX
+    var cols: int = _pack.ATLAS_COLS
+    var atlas := Image.create(cols * size, 2 * size, false, Image.FORMAT_RGB8)
+    atlas.fill(Color(0.5, 0.2, 0.2))
+    for pair in [[_rank(6), Color.BLACK], [_rank(5), Color.WHITE]]:
+        var r: int = pair[0]
+        atlas.fill_rect(Rect2i((r % cols) * size, (r / cols) * size, size, size), pair[1])
+    var material: ShaderMaterial = renderer.material
+    material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
+    material.set_shader_parameter("edge_wobble", 0.0)
+    material.set_shader_parameter("sparkle_ranks", 0)
+    for i in 4:
+        await RenderingServer.frame_post_draw
+    var shot: Image = viewport.get_texture().get_image()
+    # Above the land and its shore line (land starts at y 80 on this edge).
+    var worst := 0.0
+    for y in range(70, 78):
+        worst = maxf(worst, absf(shot.get_pixel(95, y).r - shot.get_pixel(96, y).r))
+    _check("the fade has no step at the edge (largest %.3f)" % worst, worst < 0.06, true)
+    # The edge really fades here, or the check above proves nothing.
+    _check("the edge is part way to shallow", shot.get_pixel(96, 76).r > 0.2, true)
+    viewport.queue_free()
+    await process_frame
     _done()
