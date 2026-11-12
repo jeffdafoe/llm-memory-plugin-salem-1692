@@ -27,6 +27,8 @@ var _rank_of: PackedInt32Array = PackedInt32Array()
 # Layer rank per map cell, and the texture the shader reads it from.
 var _ranks_image: Image = null
 var _ranks_texture: ImageTexture = null
+# A painted cell is in _ranks_image but not yet in _ranks_texture.
+var _upload_pending: bool = false
 
 # Map data reference — set by world.gd via _sync_renderer
 var map_data: Array = []
@@ -38,7 +40,8 @@ var pad_x: int = 0
 var pad_y: int = 0
 
 func _ready() -> void:
-    set_process(false)
+    # A cell painted before the renderer entered the tree still needs its upload.
+    set_process(_upload_pending)
     _ensure_material()
     if ground_texture == null:
         _set_ground(_sheet(ground_sheet_path("")))
@@ -135,6 +138,7 @@ func rebuild() -> void:
     _material.set_shader_parameter("ranks", _ranks_texture)
     _material.set_shader_parameter("map_size", Vector2i(map_width, map_height))
     _material.set_shader_parameter("pad", Vector2i(pad_x, pad_y))
+    _upload_pending = false
     set_process(false)
     queue_redraw()
 
@@ -145,10 +149,12 @@ func refresh_cell(x: int, y: int) -> void:
         rebuild()
         return
     _ranks_image.set_pixel(x, y, Color8(_rank_for(map_data[y][x]), 0, 0))
+    _upload_pending = true
     set_process(true)
 
 func _process(_delta: float) -> void:
     _ranks_texture.update(_ranks_image)
+    _upload_pending = false
     set_process(false)
 
 ## Layer rank of a terrain id. An id the pack does not draw takes the lowest

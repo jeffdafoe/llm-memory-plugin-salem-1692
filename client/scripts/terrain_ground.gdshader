@@ -93,7 +93,9 @@ float hash01(ivec2 p) {
 //   y: the rank under it, or -1; -2 when the whole tile is one terrain
 //   z: how far inside its edge the drawn rank is (its field)
 //   w: a grass rank whose blade tip reaches this pixel, or -1
-vec4 ground_at(ivec2 p) {
+// with_tips false skips the blade tips: the shadow and shore queries need
+// only the rank drawn.
+vec4 ground_at(ivec2 p, bool with_tips) {
     ivec2 t = ivec2(floor(vec2(p) / float(tile_px)));
     ivec2 tile = t + pad;
     int tl = rank_at(tile + ivec2(-1, -1));
@@ -123,7 +125,7 @@ vec4 ground_at(ivec2 p) {
             under = top;
             top = r;
             field = g;
-        } else if (has_bit(grass_ranks, r) && g > -FRINGE_REACH && hash01(p) < FRINGE_CHANCE) {
+        } else if (with_tips && has_bit(grass_ranks, r) && g > -FRINGE_REACH && hash01(p) < FRINGE_CHANCE) {
             fringe = r;
         }
     }
@@ -137,7 +139,7 @@ vec3 texel(int r, ivec2 tp) {
 
 void fragment() {
     ivec2 p = ivec2(floor(world));
-    vec4 here = ground_at(p);
+    vec4 here = ground_at(p, true);
     int top = int(here.x);
     int under = int(here.y);
     int fringe = int(here.w);
@@ -157,7 +159,7 @@ void fragment() {
     bool interior = under == -2 && all(greaterThanEqual(local, ivec2(STEP))) && all(lessThan(local, ivec2(tile_px - STEP)));
     if (!interior) {
         // Higher ground up and to the left casts a shadow, except soft on soft.
-        int caster = int(ground_at(p - ivec2(STEP)).x);
+        int caster = int(ground_at(p - ivec2(STEP), false).x);
         if (caster > top && !(has_bit(soft_ranks, caster) && has_bit(soft_ranks, top))) {
             k *= SHADOW;
         }
@@ -165,7 +167,7 @@ void fragment() {
             // Water meeting land: a pale line on the water.
             ivec2 sides[4] = ivec2[](ivec2(0, -STEP), ivec2(-STEP, 0), ivec2(STEP, 0), ivec2(0, STEP));
             for (int i = 0; i < 4; i++) {
-                if (!has_bit(water_ranks, int(ground_at(p + sides[i]).x))) {
+                if (!has_bit(water_ranks, int(ground_at(p + sides[i], false).x))) {
                     col = col * 0.55 + vec3(0.9) * 0.45;
                     break;
                 }

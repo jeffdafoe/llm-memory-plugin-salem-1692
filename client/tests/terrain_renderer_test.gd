@@ -13,6 +13,7 @@ const TESTS := [
     "_test_rank_bits_mark_the_named_terrains",
     "_test_rebuild_writes_a_rank_per_cell",
     "_test_a_painted_cell_changes_one_rank",
+    "_test_a_cell_painted_before_the_tree_still_uploads",
     "_test_a_same_size_map_rebuilds_every_rank",
     "_test_snow_softens_the_land_edges",
     "_test_the_pack_files_fit_its_layout",
@@ -158,6 +159,29 @@ func _test_a_painted_cell_changes_one_rank() -> void:
     renderer._process(0.0)
     _check("idle after the upload", renderer.is_processing(), false)
     renderer.free()
+    _done()
+
+
+# A cell painted before the renderer enters the tree (code_review, LLM-967):
+# entering the tree must keep the pending upload, and the next frame must put
+# the edit in the texture the shader reads, not only in the CPU image.
+func _test_a_cell_painted_before_the_tree_still_uploads() -> void:
+    var map_data := _uniform_map(2)
+    var renderer := _renderer_on(map_data)
+    map_data[1][1] = 6
+    renderer.refresh_cell(1, 1)
+    root.add_child(renderer)
+    _check("still waiting to upload in the tree", renderer.is_processing(), true)
+    await process_frame
+    await process_frame
+    _check("uploaded", renderer.is_processing(), false)
+    # The headless renderer ignores texture updates, so the texture's content
+    # is checked only in a windowed run (by hand); CI checks the flag cycle.
+    if DisplayServer.get_name() != "headless":
+        var uploaded: Image = renderer._ranks_texture.get_image()
+        _check("the texture holds the painted rank", uploaded.get_pixel(1, 1).r8, _rank(6))
+    renderer.queue_free()
+    await process_frame
     _done()
 
 
