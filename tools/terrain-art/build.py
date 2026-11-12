@@ -142,6 +142,11 @@ def blades(cv, rnd, count, length, lean, width, dark, mid, light, tones):
     d = ImageDraw.Draw(lay)
     roots = sorted(((rnd.uniform(0, W), rnd.uniform(0, W)) for _ in range(count)), key=lambda p: p[1])
     lit_px = tones.load()
+    # Every copy of a blade, wrapped ones included, as (root y, root x, draw).
+    # They are drawn in order of their own root y: a copy wrapped across the
+    # bottom edge must cover the blades above it, as it would on the next
+    # repeat of the texture, or the texture shows a seam where it wraps.
+    copies = []
     for x, y in roots:
         L = rnd.uniform(*length)
         a = math.radians(rnd.uniform(-lean, lean))
@@ -159,7 +164,9 @@ def blades(cv, rnd, count, length, lean, width, dark, mid, light, tones):
             dr.polygon([(bx - w / 2, by), (bx + w / 2, by), (bx + mx + w * 0.3, by + my), (bx + mx - w * 0.3, by + my)], fill=root)
             dr.polygon([(bx + mx - w * 0.3, by + my), (bx + mx + w * 0.3, by + my), (bx + tx, by + ty)], fill=tip)
 
-        cv.wrap_draw(d, draw_blade, x, y, L + w)
+        cv.wrap_draw(None, lambda _d, bx, by, fn=draw_blade: copies.append((by, bx, fn)), x, y, L + w)
+    for by, bx, fn in sorted(copies, key=lambda c: c[0]):
+        fn(d, bx, by)
     cv.blend(lay)
 
 
