@@ -158,9 +158,12 @@ void fragment() {
     ivec2 local = p - ivec2(floor(vec2(p) / float(tile_px))) * tile_px;
     bool interior = under == -2 && all(greaterThanEqual(local, ivec2(STEP))) && all(lessThan(local, ivec2(tile_px - STEP)));
     if (!interior) {
-        // Higher ground up and to the left casts a shadow, except soft on soft.
+        // Higher ground up and to the left casts a shadow, except soft on soft
+        // and water on water (shallows over the deep are not raised).
         int caster = int(ground_at(p - ivec2(STEP), false).x);
-        if (caster > top && !(has_bit(soft_ranks, caster) && has_bit(soft_ranks, top))) {
+        bool both_soft = has_bit(soft_ranks, caster) && has_bit(soft_ranks, top);
+        bool both_water = has_bit(water_ranks, caster) && has_bit(water_ranks, top);
+        if (caster > top && !both_soft && !both_water) {
             k *= SHADOW;
         }
         if (has_bit(water_ranks, top)) {

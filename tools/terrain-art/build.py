@@ -325,44 +325,136 @@ def paint_dirt(seed, pal):
     return cv.img
 
 
+def _clip(poly, nx, ny, limit):
+    """Sutherland-Hodgman: keep the part of poly where x*nx + y*ny <= limit."""
+    out = []
+    for i in range(len(poly)):
+        ax, ay = poly[i]
+        bx, by = poly[(i + 1) % len(poly)]
+        da = ax * nx + ay * ny - limit
+        db = bx * nx + by * ny - limit
+        if da <= 0:
+            out.append((ax, ay))
+        if (da <= 0) != (db <= 0):
+            t = da / (da - db)
+            out.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+    return out
+
+
+def _chaikin(poly, rounds):
+    """Round a polygon's corners by corner cutting."""
+    for _ in range(rounds):
+        out = []
+        for i in range(len(poly)):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % len(poly)]
+            out.append((ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25))
+            out.append((ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75))
+        poly = out
+    return poly
+
+
+def _stone_sites(rnd, rmin, rmax, tries):
+    """Stone centres by dart throwing on the wrapping canvas: each stone has
+    its own size, and no two sit closer than their sizes allow, so big and
+    small stones pack together with no rows."""
+    cell = 2 * rmax
+    n = int(W // cell)
+    grid = {}
+    sites = []
+    for _ in range(tries):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        r = rnd.uniform(rmin, rmax)
+        gx = int(x // cell) % n
+        gy = int(y // cell) % n
+        ok = True
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get(((gx + dx) % n, (gy + dy) % n), ()):
+                    sx, sy, sr = sites[j]
+                    ddx = (x - sx + W / 2) % W - W / 2
+                    ddy = (y - sy + W / 2) % W - W / 2
+                    if math.hypot(ddx, ddy) < (r + sr) * 0.92:
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if not ok:
+                break
+        if ok:
+            grid.setdefault((gx, gy), []).append(len(sites))
+            sites.append((x, y, r))
+    return sites, grid, cell, n
+
+
 def paint_cobble(seed, pal):
+    """Cobbles packed tight: each stone is its centre's Voronoi cell, pulled
+    in from its neighbours by the joint and rounded, so stones of mixed sizes
+    fit together with thin earthy joints. Shading is soft: a dark lower-right
+    edge, a gentle sheen up-left, and a shadow into the joint."""
     rnd = random.Random(seed)
     cv = Canvas(pal["gap"])
     speckle(cv, rnd, [pal["gap_dark"], pal["moss"]], 9000, 3, 7)
-    step = 60
-    n = W // step
-    lay_shadow = cv.layer()
-    lay = cv.layer()
-    ds = ImageDraw.Draw(lay_shadow)
-    d = ImageDraw.Draw(lay)
-    for gy in range(n):
-        for gx in range(n):
-            x = (gx + 0.5) * step + rnd.uniform(-12, 12) + (step / 2 if gy % 2 else 0)
-            y = (gy + 0.5) * step + rnd.uniform(-8, 8)
-            r = step * rnd.uniform(0.40, 0.50)
-            k = rnd.randint(7, 10)
-            pts = []
-            for i in range(k):
-                a = math.tau * i / k + rnd.uniform(-0.2, 0.2)
-                rr = r * rnd.uniform(0.82, 1.05)
-                pts.append((math.cos(a) * rr * 1.1, math.sin(a) * rr * 0.9))
-            col = mix(rgb(rnd.choice(pal["stones"])), rgb(pal["warm"]), rnd.uniform(0, 0.25))
-            lit = mix(col, rgb(pal["lit"]), 0.55)
-            dark = mix(col, rgb(pal["gap_dark"]), 0.45)
-            cap = rgb(pal["cap"]) if pal.get("cap") else lit
+    gap = 5.0
+    sites, grid, cell, n = _stone_sites(rnd, 17, 30, 60000)
+    shadow = cv.layer()
+    body = cv.layer()
+    sheen = cv.layer()
+    ds = ImageDraw.Draw(shadow)
+    db = ImageDraw.Draw(body)
+    dh = ImageDraw.Draw(sheen)
+    for i, (x, y, r) in enumerate(sites):
+        reach = 4 * r
+        poly = [(-reach, -reach), (reach, -reach), (reach, reach), (-reach, reach)]
+        gx = int(x // cell) % n
+        gy = int(y // cell) % n
+        for dx in (-2, -1, 0, 1, 2):
+            for dy in (-2, -1, 0, 1, 2):
+                for j in grid.get(((gx + dx) % n, (gy + dy) % n), ()):
+                    if j == i or not poly:
+                        continue
+                    sx, sy, _ = sites[j]
+                    vx = (sx - x + W / 2) % W - W / 2
+                    vy = (sy - y + W / 2) % W - W / 2
+                    dist = math.hypot(vx, vy)
+                    if dist == 0 or dist > reach * 2:
+                        continue
+                    # The bisector, moved toward this stone by half the joint.
+                    poly = _clip(poly, vx / dist, vy / dist, dist / 2 - gap / 2)
+        if len(poly) < 3:
+            continue
+        poly = _chaikin(poly, 2)
+        size = max(math.hypot(px, py) for px, py in poly)
+        tone = rnd.uniform(-0.08, 0.08)
+        base = mix(rgb(rnd.choice(pal["stones"])), rgb(pal["warm"]), rnd.uniform(0, 0.3))
+        base = tuple(max(0, min(255, int(c * (1 + tone)))) for c in base[:3]) + (255,)
+        edge = mix(base, rgb(pal["gap_dark"]), 0.35)
+        if pal.get("cap"):
+            lit, lit_scale, lit_shift = rgb(pal["cap"]), 0.68, 0.18
+        else:
+            lit, lit_scale, lit_shift = mix(base, rgb(pal["lit"]), 0.22), 0.6, 0.16
 
-            def stone(dr, bx, by, pts=pts, col=col, cap=cap, dark=dark):
-                dr.polygon([(bx + px, by + py) for px, py in pts], fill=dark)
-                dr.polygon([(bx + px * 0.9 - 3, by + py * 0.88 - 3) for px, py in pts], fill=col)
-                # Lit top, or under snow a cap of snow on each stone.
-                scale_x, scale_y = (0.75, 0.6) if pal.get("cap") else (0.55, 0.45)
-                dr.polygon([(bx + px * scale_x - 9, by + py * scale_y - 10) for px, py in pts], fill=cap)
+        def draw_shadow(dr, bx, by, poly=poly):
+            dr.polygon([(bx + px + 4, by + py + 5) for px, py in poly], fill=rgb(pal["gap_dark"], 150))
 
-            cv.wrap_draw(ds, lambda dr, bx, by, pts=pts: dr.polygon([(bx + px + 6, by + py + 8) for px, py in pts], fill=rgb(pal["gap_dark"], 170)), x, y, r + 12)
-            cv.wrap_draw(d, stone, x, y, r + 12)
-    cv.blend(lay_shadow, 4)
-    cv.blend(lay)
-    speckle(cv, rnd, [pal["gap_dark"]], 3000, 1.5, 3, 140)
+        def draw_body(dr, bx, by, poly=poly, base=base, edge=edge):
+            # The edge shows only along the lower right: the body sits up-left on it.
+            dr.polygon([(bx + px, by + py) for px, py in poly], fill=edge)
+            dr.polygon([(bx + px * 0.93 - 3, by + py * 0.93 - 3) for px, py in poly], fill=base)
+
+        def draw_sheen(dr, bx, by, poly=poly, lit=lit, s=lit_scale, k=lit_shift, size=size):
+            dr.polygon([(bx + px * s - size * k, by + py * s - size * k) for px, py in poly], fill=lit)
+
+        cv.wrap_draw(ds, draw_shadow, x, y, size + 8)
+        cv.wrap_draw(db, draw_body, x, y, size + 4)
+        cv.wrap_draw(dh, draw_sheen, x, y, size)
+    cv.blend(shadow, 3)
+    cv.blend(body)
+    # Flat tones, not a blur: a smooth gradient bands into rings when the
+    # texture is cut to a few colours.
+    cv.blend(sheen)
+    speckle(cv, rnd, [pal["gap_dark"], pal["lit"]], 7000, 1.5, 3, 70)
     if pal.get("leaves"):
         fallen_leaves(cv, random.Random(seed + 500), 260, pal["leaves"], pal["gap_dark"])
     return cv.img
@@ -412,10 +504,11 @@ SUMMER = {
                      clover="5e9140", petals=["eae6d8"], centre="d4a83a"),
     DIRT: dict(base="7d6044", damp="634a34", dry="94765a", dark="533d2a", light="a3876a",
                stones=["8d8274", "9a8f80", "7e7466"], stone_lit="bdb3a3"),
-    COBBLESTONE: dict(gap="4a4036", gap_dark="2f2922", moss="4f5a33", stones=["8b877f", "9a958c", "7f7a72", "a39d92"],
+    COBBLESTONE: dict(gap="4a4036", gap_dark="2f2922", moss="4f5a33",
+                      stones=["8b877f", "9a958c", "7f7a72", "a39d92", "7d8288", "8f7e6a", "968a78"],
                       warm="9a8466", lit="c9c3b6"),
     SHALLOW_WATER: dict(base="4b8a98", deep="3c7584", lit="62a2ac", light="a6d6db", glint="e8f6f6", bed="6b8c80", bed_lit="8eab9c"),
-    DEEP_WATER: dict(base="2b5a72", deep="224b62", lit="356a83", light="5f93aa", glint="b9dbe6"),
+    DEEP_WATER: dict(base="3d7888", deep="336b7b", lit="478394", light="7fb3c0", glint="cfe8ee"),
 }
 
 LEAVES = ["c8702a", "d99a3a", "a8452a", "8f5b2a", "b8862e"]
@@ -428,7 +521,7 @@ AUTUMN = {
     DIRT: dict(SUMMER[DIRT], base="76593f", damp="5d4532", dry="8b6d50", dark="4d3826", light="9c7f62", leaves=LEAVES),
     COBBLESTONE: dict(SUMMER[COBBLESTONE], moss="5a5a33", leaves=LEAVES),
     SHALLOW_WATER: dict(SUMMER[SHALLOW_WATER], base="4c8592", deep="3d717e", lit="5f9ba5"),
-    DEEP_WATER: dict(SUMMER[DEEP_WATER], base="2c566c", deep="23485c"),
+    DEEP_WATER: dict(SUMMER[DEEP_WATER], base="3c7483", deep="336777", lit="457e8c"),
 }
 
 WINTER = {
@@ -438,7 +531,7 @@ WINTER = {
                stones=["858078", "918b82", "79746c"], stone_lit="b0aaa0"),
     COBBLESTONE: dict(SUMMER[COBBLESTONE], gap="433b33", moss="4a4e36", stones=["86847f", "94918b", "7a7874", "9c9993"], warm="8a7d6c"),
     SHALLOW_WATER: dict(base="4f7a87", deep="416a77", lit="618b96", light="9cc0c8", glint="dff0f2", bed="627a74", bed_lit="7f9389"),
-    DEEP_WATER: dict(base="2b4f63", deep="233f52", lit="33596e", light="557f92", glint="aacbd6"),
+    DEEP_WATER: dict(base="416d7a", deep="39616e", lit="4a7784", light="7fa3ae", glint="c9dde3"),
 }
 
 SNOW = dict(base="e6ecf1", shadow="c7d2dd", deep_shadow="a9b8c7", light="f6f9fc", glint="ffffff")
