@@ -1,6 +1,6 @@
 extends Node
-## Terrain types — wang terrain indices matching the Mana Seed wang tile definitions.
-## The 6 ground textures in the wang tileset.
+## Terrain types — the ground ids stored in village_terrain. The ground pack
+## (terrain_pack.gd) maps each id to its tiles.
 
 const DIRT: int = 1
 const LIGHT_GRASS: int = 2

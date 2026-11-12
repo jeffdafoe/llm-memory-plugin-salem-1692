@@ -1,6 +1,6 @@
 extends Node2D
 ## World — manages terrain and placed objects.
-## Generates terrain procedurally, renders using custom wang tile renderer
+## Generates terrain procedurally, renders it with the custom layered-autotile renderer
 ## (with 1px overlap to prevent seams), and loads placed objects from the Go API.
 
 ## Emitted after an NPC's metadata is updated from a WS broadcast. Listeners
@@ -34,7 +34,6 @@ signal village_date_changed(village_date: String, season: String, month_overridd
 signal village_hour_changed(hour: int)
 
 const MapGenerator = preload("res://scripts/map_generator.gd")
-const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
 const RainSplashesScript = preload("res://scripts/rain_splashes.gd")
@@ -1923,8 +1922,8 @@ func _tick_npc_walk(container: Node2D) -> void:
         # Parked at a rest spot sits (LLM-765).
         _apply_activity_animation(container)
 
-## Paint a terrain cell. The custom renderer reads map_data directly
-## and redraws every frame, so we just update the data.
+## Paint a terrain cell. The renderer shares map_data; it redoes the tiles
+## around the cell.
 func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
     var ax: int = tile_x + pad_x
     var ay: int = tile_y + pad_y
@@ -1933,6 +1932,8 @@ func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
         return
 
     map_data[ay][ax] = terrain_type
+    if terrain_renderer != null:
+        terrain_renderer.refresh_cell(ax, ay)
 
 ## Save the current terrain to the server. Caches the payload to localStorage
 ## first so an unsent / failed save survives a refresh — main.gd flushes the
@@ -2652,6 +2653,7 @@ func _sync_renderer() -> void:
     terrain_renderer.map_height = map_height
     terrain_renderer.pad_x = pad_x
     terrain_renderer.pad_y = pad_y
+    terrain_renderer.rebuild()
 
 func _load_village() -> void:
     var http = HTTPRequest.new()
