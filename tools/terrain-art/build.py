@@ -1,7 +1,7 @@
 """Paints salem's ground (LLM-967): every pixel is drawn here, no pack art.
 
     python tools/terrain-art/build.py
-    python tools/terrain-art/build.py --check   # cobble cells exact
+    python tools/terrain-art/build.py --check   # cobble cells exact, no wrap seams
 
 Writes, under client/assets/terrain/:
   ground-<season>.png  one atlas per season (summer, autumn, winter, snowy):
@@ -142,6 +142,11 @@ def blades(cv, rnd, count, length, lean, width, dark, mid, light, tones):
     d = ImageDraw.Draw(lay)
     roots = sorted(((rnd.uniform(0, W), rnd.uniform(0, W)) for _ in range(count)), key=lambda p: p[1])
     lit_px = tones.load()
+    # Every copy of a blade, wrapped ones included, as (root y, root x, draw).
+    # They are drawn in order of their own root y: a copy wrapped across the
+    # bottom edge must cover the blades above it, as it would on the next
+    # repeat of the texture, or the texture shows a seam where it wraps.
+    copies = []
     for x, y in roots:
         L = rnd.uniform(*length)
         a = math.radians(rnd.uniform(-lean, lean))
@@ -159,7 +164,9 @@ def blades(cv, rnd, count, length, lean, width, dark, mid, light, tones):
             dr.polygon([(bx - w / 2, by), (bx + w / 2, by), (bx + mx + w * 0.3, by + my), (bx + mx - w * 0.3, by + my)], fill=root)
             dr.polygon([(bx + mx - w * 0.3, by + my), (bx + mx + w * 0.3, by + my), (bx + tx, by + ty)], fill=tip)
 
-        cv.wrap_draw(d, draw_blade, x, y, L + w)
+        cv.wrap_draw(None, lambda _d, bx, by, fn=draw_blade: copies.append((by, bx, fn)), x, y, L + w)
+    for by, bx, fn in sorted(copies, key=lambda c: c[0]):
+        fn(d, bx, by)
     cv.blend(lay)
 
 
@@ -772,9 +779,38 @@ def check_cobble_cells():
     return worst < 1e-6
 
 
+def check_wrap_seams():
+    """The built atlases wrap with no seam: in every texture, the brightness
+    step between the last 8 rows (columns) and the first 8 is no larger than
+    the largest step between two neighbouring 8-row bands inside the texture.
+    A seam fails it: the grass blades drawn out of order across the wrap
+    stepped 9.4 against at most 2.5 inside (code_review, LLM-967)."""
+    band = 8
+    ok = True
+    for season in SEASONS:
+        atlas = Image.open(os.path.join(ASSET_DIR, "ground-%s.png" % season)).convert("L")
+        for rank, terrain in enumerate(LAYER_ORDER):
+            tex = atlas.crop(((rank % ATLAS_COLS) * TEX, (rank // ATLAS_COLS) * TEX, (rank % ATLAS_COLS + 1) * TEX, (rank // ATLAS_COLS + 1) * TEX))
+            for axis, means in (("rows", tex.resize((1, TEX), Image.BOX)), ("columns", tex.resize((TEX, 1), Image.BOX))):
+                line = list(means.tobytes())
+
+                def mean(i):
+                    return sum(line[(i + k) % TEX] for k in range(band)) / band
+
+                wrap = abs(mean(0) - mean(TEX - band))
+                inside = max(abs(mean(i) - mean(i - band)) for i in range(2 * band, TEX - 2 * band))
+                if wrap > inside:
+                    print("seam: %s terrain %d %s, step %.1f at the wrap, at most %.1f inside" % (season, terrain, axis, wrap, inside))
+                    ok = False
+    print("wrap seams: %s" % ("none" if ok else "found"))
+    return ok
+
+
 def main():
     if "--check" in sys.argv:
-        sys.exit(0 if check_cobble_cells() else 1)
+        cobbles_ok = check_cobble_cells()
+        seams_ok = check_wrap_seams()
+        sys.exit(0 if cobbles_ok and seams_ok else 1)
     os.makedirs(ASSET_DIR, exist_ok=True)
     for name in os.listdir(ASSET_DIR):
         # The tile sheets of the earlier 16 px layout are replaced by atlases.
