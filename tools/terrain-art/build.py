@@ -1,7 +1,7 @@
 """Paints salem's ground (LLM-967): every pixel is drawn here, no pack art.
 
     python tools/terrain-art/build.py
-    python tools/terrain-art/build.py --check   # cobble cells exact, no wrap seams
+    python tools/terrain-art/build.py --check   # cobble cells exact, no wrap seams, leaves keep colour
 
 Writes, under client/assets/terrain/:
   ground-<season>.png  one atlas per season (summer, autumn, winter, snowy):
@@ -834,11 +834,27 @@ def check_wrap_seams():
     return ok
 
 
+def check_leaf_cover():
+    """A pixel half covered by a leaf keeps that leaf's colour through
+    shrink(), which relies on Pillow averaging RGBA with premultiplied alpha.
+    Blended toward the transparent black instead, a half-covered orange pixel
+    would snap to the red leaf colour (code_review, LLM-967)."""
+    ground = Image.new("RGBA", (W, W), rgb(AUTUMN[DARK_GRASS]["base"]))
+    leaves = Canvas.layer()
+    # The left half of the 4x4 canvas block that shrinks to texture pixel (0, 0).
+    ImageDraw.Draw(leaves).rectangle((0, 0, 1, 3), fill=rgb(LEAVES[0]))
+    got = shrink(ground, leaves).getpixel((0, 0))
+    want = rgb(LEAVES[0])[:3]
+    print("leaf cover: half-covered pixel %s, want %s" % ("%02x%02x%02x" % got, LEAVES[0]))
+    return got == want
+
+
 def main():
     if "--check" in sys.argv:
         cobbles_ok = check_cobble_cells()
         seams_ok = check_wrap_seams()
-        sys.exit(0 if cobbles_ok and seams_ok else 1)
+        leaves_ok = check_leaf_cover()
+        sys.exit(0 if cobbles_ok and seams_ok and leaves_ok else 1)
     os.makedirs(ASSET_DIR, exist_ok=True)
     for name in os.listdir(ASSET_DIR):
         # The tile sheets of the earlier 16 px layout are replaced by atlases.
