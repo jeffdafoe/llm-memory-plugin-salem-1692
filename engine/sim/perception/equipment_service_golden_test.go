@@ -28,7 +28,8 @@ func init() {
 		perceptionScenario{
 			name: "owner_equipment_wright_copresent",
 			summary: "LLM-648: same due mill, but Lewis the wright shares the huddle. The cue escalates to the " +
-				"act-now imperative naming pay_with_item (seller Lewis, item equipment_service) with his ~10-coin rate.",
+				"act-now imperative naming pay_with_item (seller Lewis, item equipment_service). It names NO rate (LLM-984): " +
+				"the rate is the wright's to say, and the owner asks him for it if he has not.",
 			build: ownerEquipmentWrightCopresentScenario,
 		},
 		perceptionScenario{
@@ -116,6 +117,19 @@ func init() {
 				"stays the standing fact — no pay_with_item imperative beside 'don't pay again by hand' — and the " +
 				"offer_work cue does not name him. The service keeps until the contract settles.",
 			build: ownerWithWrightOnTheJobScenario,
+		},
+		perceptionScenario{
+			name: "wright_rounds_copresent_stone_dear",
+			summary: "LLM-984: Lewis co-present with Joseph, mill due, and his stones have lately cost him 7 coins " +
+				"against a catalog 4 while the work brought him about 8. The rounds cue states the stone's cost and " +
+				"the recent rate, then the ask LAST: 13 coins or more (stone 7 + the catalog margin 6).",
+			build: wrightRoundsCopresentStoneDearScenario,
+		},
+		perceptionScenario{
+			name: "wright_rounds_walk_stone_dear",
+			summary: "LLM-984: the same dear stones with the mill across the village and no service sale on record. " +
+				"The walk steer carries the cost and the ask (no recent-rate clause) so he arrives with his rate in mind.",
+			build: wrightRoundsWalkStoneDearScenario,
 		},
 	)
 }
@@ -699,5 +713,145 @@ func TestGoldensEquipmentPayImperativeNeedsWright(t *testing.T) {
 				t.Errorf("scenario %q: the pay imperative rendered with no wright co-present", sc.name)
 			}
 		})
+	}
+}
+
+// addStoneCostHistory gives the fixture the two ledgers the LLM-984 ask reads:
+// Lewis's coin purchases of whetstones (one unit each, from Ezekiel) and his
+// coin sales of the service (to Joseph). It also seeds the whetstone recipe,
+// whose retail sets the catalog margin (10 − 4 = 6).
+func addStoneCostHistory(snap *sim.Snapshot, stonePaid, serviceSold []int) {
+	published := time.Date(2026, time.November, 12, 15, 0, 0, 0, time.UTC)
+	snap.PublishedAt = published
+	if snap.Recipes[sim.WhetstoneKind] == nil {
+		snap.Recipes[sim.WhetstoneKind] = &sim.ItemRecipe{OutputItem: sim.WhetstoneKind, OutputQty: 1, RateQty: 1,
+			RatePerHours: 1, WholesalePrice: 2, RetailPrice: 4}
+	}
+	if snap.PriceBook == nil {
+		snap.PriceBook = map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{}
+	}
+	buys := sim.NewRingBuffer[sim.PriceObservation](8)
+	for i, amount := range stonePaid {
+		buys.Push(sim.PriceObservation{BuyerID: "lewis", Amount: amount, Qty: 1, Consumers: 1,
+			At: published.Add(-time.Duration(i+1) * 24 * time.Hour)})
+	}
+	snap.PriceBook[sim.PriceBookKey{SellerID: "ezekiel", Item: sim.WhetstoneKind}] = buys
+	sales := sim.NewRingBuffer[sim.PriceObservation](8)
+	for i, amount := range serviceSold {
+		sales.Push(sim.PriceObservation{BuyerID: "joseph", Amount: amount, Qty: 1, Consumers: 1,
+			At: published.Add(-time.Duration(i+1) * 24 * time.Hour)})
+	}
+	snap.PriceBook[sim.PriceBookKey{SellerID: "lewis", Item: "equipment_service"}] = sales
+}
+
+func wrightRoundsCopresentStoneDearScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, _ := equipmentScenarioBase(150, 2, "h1")
+	addStoneCostHistory(snap, []int{7, 7}, []int{10, 6})
+	return snap, "lewis", nil
+}
+
+func wrightRoundsWalkStoneDearScenario() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actors := equipmentScenarioBase(200, 2, "")
+	actors["lewis"].Pos = sim.TilePos{X: 90, Y: 90}
+	addStoneCostHistory(snap, []int{7, 7}, nil)
+	return snap, "lewis", nil
+}
+
+// TestWrightServiceAsk tables the LLM-984 ask: stone cost plus the catalog
+// margin, never below service retail, and silent whenever there is no honest
+// figure to give or the wright already charges it.
+func TestWrightServiceAsk(t *testing.T) {
+	cases := []struct {
+		name               string
+		stonePaid, sold    []int
+		mutate             func(*sim.Snapshot)
+		wantCost, wantRate int
+		wantAsk            int
+	}{
+		{name: "dear stone, underselling", stonePaid: []int{7, 7}, sold: []int{10, 6}, wantCost: 7, wantRate: 8, wantAsk: 13},
+		{name: "dear stone, no sale yet", stonePaid: []int{7}, wantCost: 7, wantAsk: 13},
+		{name: "catalog-priced stone keeps the designed 10", stonePaid: []int{4}, sold: []int{6}, wantCost: 4, wantRate: 6, wantAsk: 10},
+		{name: "cheap stone never asks under retail", stonePaid: []int{2}, sold: []int{4}, wantCost: 2, wantRate: 4, wantAsk: 10},
+		{name: "already charging the ask is silent", stonePaid: []int{7}, sold: []int{13, 14}},
+		{name: "no stone purchase on record is silent"},
+		{name: "no whetstone recipe is silent", stonePaid: []int{7}, mutate: func(s *sim.Snapshot) {
+			delete(s.Recipes, sim.WhetstoneKind)
+		}},
+		{name: "no catalog margin is silent", stonePaid: []int{7}, mutate: func(s *sim.Snapshot) {
+			s.Recipes[sim.WhetstoneKind].RetailPrice = 10
+		}},
+	}
+	for _, c := range cases {
+		snap, _ := equipmentScenarioBase(150, 2, "h1")
+		addStoneCostHistory(snap, c.stonePaid, c.sold)
+		if c.mutate != nil {
+			c.mutate(snap)
+		}
+		cost, rate, ask := wrightServiceAsk(snap, "lewis")
+		if cost != c.wantCost || rate != c.wantRate || ask != c.wantAsk {
+			t.Errorf("%s: got cost=%d rate=%d ask=%d, want cost=%d rate=%d ask=%d",
+				c.name, cost, rate, ask, c.wantCost, c.wantRate, c.wantAsk)
+		}
+	}
+}
+
+// TestWrightAskRendersOnEveryArm pins the LLM-984 sentence by its load-bearing
+// tokens on the co-present arm and the walk arm, and its absence when the
+// builder stayed silent.
+func TestWrightAskRendersOnEveryArm(t *testing.T) {
+	render := func(build func() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta)) string {
+		snap, actorID, warrants := build()
+		var b strings.Builder
+		renderWrightRounds(&b, Build(snap, actorID, warrants).WrightRounds)
+		return b.String()
+	}
+	co := render(wrightRoundsCopresentStoneDearScenario)
+	want := "The stone for the work cost you about 7 coins, and of late the work has brought you about 8 coins — ask 13 coins or more. Offer your service"
+	if !strings.Contains(co, want) {
+		t.Errorf("co-present arm lacks the ask before the offer imperative:\n%s", co)
+	}
+	walk := render(wrightRoundsWalkStoneDearScenario)
+	if !strings.Contains(walk, "offer Joseph Scott your service. The stone for the work cost you about 7 coins — ask 13 coins or more.") {
+		t.Errorf("walk arm lacks the ask after the steer:\n%s", walk)
+	}
+	for name, plain := range map[string]string{
+		"co-present": render(wrightRoundsCopresentScenario),
+		"walk":       render(wrightRoundsWalkScenario),
+	} {
+		if strings.Contains(plain, "ask ") || strings.Contains(plain, "cost you") {
+			t.Errorf("%s arm with no stone purchase on record still carries an ask:\n%s", name, plain)
+		}
+	}
+}
+
+// TestGoldensOwnerEquipmentCueNamesNoRate — LLM-984 cross-scenario invariant:
+// the owner-side pay imperative never quotes a figure for the service. The
+// rate is the wright's to name; a number on the owner's page had the owner
+// setting the price. Vacuity-guarded on the imperative rendering at all.
+func TestGoldensOwnerEquipmentCueNamesNoRate(t *testing.T) {
+	seen := 0
+	for _, sc := range perceptionScenarios {
+		out := renderScenario(sc)
+		i := strings.Index(out, "## Your equipment")
+		if i < 0 {
+			continue
+		}
+		section := out[i:]
+		if j := strings.Index(section[1:], "\n## "); j >= 0 {
+			section = section[:j+1]
+		}
+		if !strings.Contains(section, "have him see to it") {
+			continue
+		}
+		seen++
+		if strings.Contains(section, "rate is about") {
+			t.Errorf("scenario %q: the owner's pay imperative quotes a rate (LLM-984):\n%s", sc.name, section)
+		}
+		if !strings.Contains(section, "The rate is his to name") {
+			t.Errorf("scenario %q: the owner's pay imperative does not hand the rate to the wright:\n%s", sc.name, section)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no scenario renders the owner's pay imperative — the invariant is vacuous (LLM-984)")
 	}
 }
