@@ -305,6 +305,22 @@ func homeBakesActiveSet(w *World) map[StructureID]bool {
 	return out
 }
 
+// homeBakeInitiatorSet projects who started each in-progress home bake (nil when
+// none) — the read side of HomeBake.InitiatorID, for the perception scene that
+// tells a baker what her own leaving would cost (LLM-983).
+func homeBakeInitiatorSet(w *World) map[StructureID]ActorID {
+	if len(w.HomeBakes) == 0 {
+		return nil
+	}
+	out := make(map[StructureID]ActorID, len(w.HomeBakes))
+	for id, session := range w.HomeBakes {
+		if session != nil {
+			out[id] = session.InitiatorID
+		}
+	}
+	return out
+}
+
 // BakeRefusedShiftStartsBeforeDusk is the model-facing refusal when a bake would
 // run into the actor's own shift (LLM-650). Exported so the tests pin the reason,
 // not just the refusal.

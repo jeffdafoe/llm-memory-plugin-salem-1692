@@ -421,3 +421,29 @@ func TestShiftStartsBeforeDusk(t *testing.T) {
 		}
 	}
 }
+
+// TestHomeBakeInitiatorOnSnapshot — LLM-983. The published snapshot names who
+// started each live home bake, keyed like HomeBakesActive, and the entry goes
+// with the session. Perception reads it to tell a helper (whose leaving costs
+// the batch nothing) from the baker who carries the flour and the yield.
+func TestHomeBakeInitiatorOnSnapshot(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if got := w.Published().HomeBakeInitiators; got != nil {
+		t.Fatalf("no bake running: want nil, got %v", got)
+	}
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("alice starts: %v", err)
+	}
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err != nil {
+		t.Fatalf("bob joins: %v", err)
+	}
+	snap := w.Published()
+	if got := snap.HomeBakeInitiators["home"]; got != "alice" {
+		t.Errorf("initiator on the snapshot = %q, want alice (bob only joined)", got)
+	}
+	if !snap.HomeBakesActive["home"] {
+		t.Error("HomeBakesActive lost the home the initiator map names")
+	}
+}

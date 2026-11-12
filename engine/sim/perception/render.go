@@ -821,12 +821,41 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// must not render the act-now coda and steer the model into a move that
 		// abandons the pick. Make finishing the legible default; responding stays
 		// available when what the tick surfaced gives real cause.
-		fmt.Fprintf(b,
-			"You are %s and it will finish on its own %s. Weigh what's above — "+
-				"answer anyone who needs you, but do not walk away without real cause: "+
-				"leaving now abandons it. Otherwise call done() and let it finish.\n",
-			sourceActivityPhrase(*inFlightSourceActivity),
-			sourceActivityCompletionHorizon(inFlightSourceActivity.Kind))
+		//
+		// The bake has two exceptions (LLM-983). A baker with a red hunger,
+		// thirst or cold HAS real cause, and the tool gate has already kept
+		// move_to for her — so the coda must send her, not hold her: live, Anne
+		// Walker read "leaving now abandons it" as the stake, decided hunger was
+		// not cause enough, and sat parched at the hearth with the Inn listed
+		// on her own page. And a helper is never told that leaving abandons the
+		// bread, because for her it does not.
+		phrase := sourceActivityPhrase(*inFlightSourceActivity)
+		horizon := sourceActivityCompletionHorizon(inFlightSourceActivity.Kind)
+		switch {
+		case inFlightSourceActivity.Kind == sim.SourceActivityBake && inFlightSourceActivity.MayStepOut:
+			// Only the helper is promised the bread on her return: the batch
+			// belongs to whoever started it and ends when that baker leaves.
+			back := ""
+			if inFlightSourceActivity.BakeHelper {
+				back = " The bread will be here when you are back."
+			}
+			fmt.Fprintf(b,
+				"You are %s and it will finish on its own %s — but your need is real cause to leave it. "+
+					"Go and see to yourself now: use move_to for a place named above.%s\n",
+				phrase, horizon, back)
+		case inFlightSourceActivity.Kind == sim.SourceActivityBake && inFlightSourceActivity.BakeHelper:
+			fmt.Fprintf(b,
+				"You are %s and it will finish on its own %s. Weigh what's above — "+
+					"answer anyone who needs you, but do not walk away without real cause. "+
+					"Otherwise call done() and let it finish.\n",
+				phrase, horizon)
+		default:
+			fmt.Fprintf(b,
+				"You are %s and it will finish on its own %s. Weigh what's above — "+
+					"answer anyone who needs you, but do not walk away without real cause: "+
+					"leaving now abandons it. Otherwise call done() and let it finish.\n",
+				phrase, horizon)
+		}
 	case inFlightMove != nil:
 		// Mid-walk coda (ZBBS-HOME-439) — the walking analogue of WORK-370's
 		// awaiting-reply swap. A tick that fires while the actor has a
@@ -1430,6 +1459,25 @@ func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 		// say "stay put." A committed move still abandons the bread, so hold her at the
 		// hearth. Returned whole (not via the "stay where you are" template) so the
 		// speech-permissive framing replaces it.
+		//
+		// LLM-983: that hold is true only for the baker who started the batch,
+		// and it must give way to a red need. Four lines, by who she is to the
+		// bread and whether a need has gone red:
+		//   - a helper's leaving costs the batch nothing (concludeAbandonedBake
+		//     is a no-op for her), so she is never told the bread goes unfinished;
+		//   - a red hunger/thirst/cold outranks the bake, as the tool gate and
+		//     the reactor already hold — the line says so and sends her;
+		//   - the initiator with a red need is told the honest cost (this batch
+		//     ends; the flour is only spent at completion, so it keeps) and is
+		//     still sent, because a need that cannot wait till dusk is cause.
+		switch {
+		case v.MayStepOut && v.BakeHelper:
+			return "at the hearth, lending a hand with the household's bread — but your own need will not keep till dusk. The bread is in other hands and loses nothing if you step out; go and see to yourself, and lend a hand again when you are back"
+		case v.MayStepOut:
+			return "at the hearth with the household's bread — but your own need will not keep till dusk. If you walk off, this batch ends, though the flour keeps and you can set the bread going again if there is day enough left; go and see to yourself"
+		case v.BakeHelper:
+			return "at the hearth, lending a hand with the household's bread — a word to those about you is fine, but stay with it till the loaves are done"
+		}
 		return "at the hearth with the household's bread — a word to those about you is fine, but stay with it; if you walk off now the bread won't be finished"
 	}
 	return fmt.Sprintf("%s — stay where you are; %s", sourceActivityPhrase(v), tail)
