@@ -65,6 +65,11 @@ func TestGoldensBakeSceneYieldsToRedNeed(t *testing.T) {
 		if !strings.Contains(out, "your need is real cause to leave it") || !strings.Contains(out, "move_to") {
 			t.Errorf("scenario %q: a baker with a red need is not sent to tend it (LLM-983):\n%s", sc.name, out)
 		}
+		// Being sent is worth little with nowhere to go: the scenario must
+		// render a real destination for her to hand to move_to (code_review).
+		if !strings.Contains(out, "(destination: ") {
+			t.Errorf("scenario %q: a baker is sent out with no destination on her page (LLM-983)", sc.name)
+		}
 	}
 	if seen == 0 {
 		t.Fatal("no scenario puts a red need on a baker — the invariant is vacuous (LLM-983)")
@@ -113,11 +118,13 @@ func TestBakeSceneFourWays(t *testing.T) {
 		}},
 		{"helper, red need", helperMidBakeRedHungerThirst, true, true, []string{
 			"your own need will not keep till dusk. The bread is in other hands and loses nothing if you step out",
-			"your need is real cause to leave it. Go and see to yourself now: use move_to for a place named above. The bread will be here when you are back.",
+			"your need is real cause to leave it. Go and see to yourself now — use move_to to go where you can tend it. The bread will be here when you are back.",
+			"(destination: village_well)",
 		}},
 		{"lead, red need", bakerMidBakeRedHunger, false, true, []string{
-			"If you walk off, this batch ends, though the flour keeps",
-			"your need is real cause to leave it. Go and see to yourself now: use move_to for a place named above.\n",
+			"If you walk off, this batch ends, though the flour keeps; once your need is tended, you may be able to start again if you have enough flour and daylight",
+			"your need is real cause to leave it. Go and see to yourself now — use move_to to go where you can tend it.\n",
+			"(destination: village_well)",
 		}},
 	}
 	for _, c := range cases {

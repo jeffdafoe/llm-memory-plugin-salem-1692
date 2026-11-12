@@ -21,4 +21,8 @@ It is about 9 in the morning.
 
 You're home.
 
-You are baking bread at Walker Residence and it will finish on its own by dusk — but your need is real cause to leave it. Go and see to yourself now: use move_to for a place named above. The bread will be here when you are back.
+## What you can eat or drink
+Free to drink nearby:
+- Well — a deep drink, free, a long walk southeast (destination: village_well)
+
+You are baking bread at Walker Residence and it will finish on its own by dusk — but your need is real cause to leave it. Go and see to yourself now — use move_to to go where you can tend it. The bread will be here when you are back.

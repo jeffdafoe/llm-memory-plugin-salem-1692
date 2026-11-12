@@ -835,13 +835,16 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		case inFlightSourceActivity.Kind == sim.SourceActivityBake && inFlightSourceActivity.MayStepOut:
 			// Only the helper is promised the bread on her return: the batch
 			// belongs to whoever started it and ends when that baker leaves.
+			// The line names move_to but points at no list: where she can eat
+			// or drink is the recovery cue's to say, and this coda renders
+			// whether or not that cue found anywhere (code_review).
 			back := ""
 			if inFlightSourceActivity.BakeHelper {
 				back = " The bread will be here when you are back."
 			}
 			fmt.Fprintf(b,
 				"You are %s and it will finish on its own %s — but your need is real cause to leave it. "+
-					"Go and see to yourself now: use move_to for a place named above.%s\n",
+					"Go and see to yourself now — use move_to to go where you can tend it.%s\n",
 				phrase, horizon, back)
 		case inFlightSourceActivity.Kind == sim.SourceActivityBake && inFlightSourceActivity.BakeHelper:
 			fmt.Fprintf(b,
@@ -1474,7 +1477,9 @@ func renderInFlightSourceActivity(v InFlightSourceActivityView) string {
 		case v.MayStepOut && v.BakeHelper:
 			return "at the hearth, lending a hand with the household's bread — but your own need will not keep till dusk. The bread is in other hands and loses nothing if you step out; go and see to yourself, and lend a hand again when you are back"
 		case v.MayStepOut:
-			return "at the hearth with the household's bread — but your own need will not keep till dusk. If you walk off, this batch ends, though the flour keeps and you can set the bread going again if there is day enough left; go and see to yourself"
+			// "may be able to": a fresh start has its own gate (two flour in
+			// hand, no red need, day enough left), so the line promises none of it.
+			return "at the hearth with the household's bread — but your own need will not keep till dusk. If you walk off, this batch ends, though the flour keeps; once your need is tended, you may be able to start again if you have enough flour and daylight. Go and see to yourself"
 		case v.BakeHelper:
 			return "at the hearth, lending a hand with the household's bread — a word to those about you is fine, but stay with it till the loaves are done"
 		}

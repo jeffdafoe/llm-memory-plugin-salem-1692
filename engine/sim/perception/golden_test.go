@@ -3683,7 +3683,7 @@ var perceptionScenarios = []perceptionScenario{
 	},
 	{
 		name: "baker_mid_bake_red_hunger",
-		summary: "LLM-983: the baker who STARTED the batch, red on hunger. Her leaving does end it, and the line says " +
+		summary: "LLM-983: the baker who STARTED the batch, red on hunger and thirst. Her leaving does end it, and the line says " +
 			"so honestly (this batch ends; the flour keeps) — and still sends her, because a need that cannot wait till " +
 			"dusk is real cause. The coda does not promise the bread will be there on her return.",
 		build: bakerMidBakeRedHunger,
@@ -20884,7 +20884,19 @@ func helperMidBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 func helperMidBakeRedHungerThirst() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap, actorID, warrants := helperMidBake()
 	snap.Actors[actorID].Needs = map[sim.NeedKey]int{"hunger": 22, "thirst": 20}
+	addVillageWell(snap)
 	return snap, actorID, warrants
+}
+
+// addVillageWell gives a bake fixture somewhere to go: a sound well, so the
+// recovery cue renders a real destination beside the line that sends the baker
+// out (code_review, LLM-983 — "go and tend it" with nowhere named proves little).
+func addVillageWell(snap *sim.Snapshot) {
+	zero := 0
+	snap.VillageObjects["village_well"] = &sim.VillageObject{ID: "village_well", DisplayName: "Well",
+		Pos: sim.WorldPos{X: 800, Y: 800}, Tags: []string{sim.TagWell},
+		LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -8}}}
 }
 
 // bakerMidBakeRedHunger is the initiator of the batch with a red hunger: her
@@ -20894,6 +20906,7 @@ func bakerMidBakeRedHunger() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	home := sim.StructureID(snap.Actors[actorID].SourceActivityObjectID)
 	snap.HomeBakesActive = map[sim.StructureID]bool{home: true}
 	snap.HomeBakeInitiators = map[sim.StructureID]sim.ActorID{home: actorID}
-	snap.Actors[actorID].Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}
+	snap.Actors[actorID].Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold, "thirst": sim.DefaultThirstRedThreshold}
+	addVillageWell(snap)
 	return snap, actorID, warrants
 }
