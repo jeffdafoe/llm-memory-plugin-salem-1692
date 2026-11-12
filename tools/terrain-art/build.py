@@ -1,6 +1,7 @@
 """Paints salem's ground (LLM-967): every pixel is drawn here, no pack art.
 
     python tools/terrain-art/build.py
+    python tools/terrain-art/build.py --check   # cobble cells exact
 
 Writes, under client/assets/terrain/:
   ground-<season>.png  one atlas per season (summer, autumn, winter, snowy):
@@ -24,6 +25,7 @@ tiles); the shader samples it by world position, so tiles show no grid.
 import math
 import os
 import random
+import sys
 
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -36,6 +38,9 @@ TEX = 512         # texture size: 16 tiles of 32 px
 TILE_PX = 32
 ATLAS_COLS = 3
 COLOURS = 16
+# Scale of the cobble pattern: stone size, joints and shading offsets.
+STONE = 0.75
+COBBLE_SEED = 4
 
 # terrain.gd ids
 DIRT, LIGHT_GRASS, DARK_GRASS, COBBLESTONE, SHALLOW_WATER, DEEP_WATER = 1, 2, 3, 4, 5, 6
@@ -388,16 +393,53 @@ def _stone_sites(rnd, rmin, rmax, tries):
     return sites, grid, cell, n
 
 
+def _stone_cell(i, sites, grid, cell, n, gap):
+    """Stone i's Voronoi cell around its centre, each bisector moved in by
+    half the joint. Clips against the 5x5 grid block first; that block holds
+    every centre within 2 * cell, and a centre farther than twice the cell's
+    reach plus the joint cannot cut it. If the cell reaches farther than the
+    block guarantees, it is clipped again against every centre, so the cell
+    is exact however sparse the stones."""
+    x, y, r = sites[i]
+
+    def clip_against(candidates, reach):
+        poly = [(-reach, -reach), (reach, -reach), (reach, reach), (-reach, reach)]
+        for j in candidates:
+            if j == i or not poly:
+                continue
+            sx, sy, _ = sites[j]
+            vx = (sx - x + W / 2) % W - W / 2
+            vy = (sy - y + W / 2) % W - W / 2
+            dist = math.hypot(vx, vy)
+            if dist == 0:
+                continue
+            poly = _clip(poly, vx / dist, vy / dist, dist / 2 - gap / 2)
+        return poly
+
+    gx = int(x // cell) % n
+    gy = int(y // cell) % n
+    block = [j for dx in (-2, -1, 0, 1, 2) for dy in (-2, -1, 0, 1, 2) for j in grid.get(((gx + dx) % n, (gy + dy) % n), ())]
+    poly = clip_against(block, 4 * r)
+    reach = max((math.hypot(px, py) for px, py in poly), default=0.0)
+    if 2 * reach + gap > 2 * cell:
+        poly = clip_against(range(len(sites)), W / 2)
+    return poly
+
+
 def paint_cobble(seed, pal):
     """Cobbles packed tight: each stone is its centre's Voronoi cell, pulled
     in from its neighbours by the joint and rounded, so stones of mixed sizes
-    fit together with thin earthy joints. Shading is soft: a dark lower-right
-    edge, a gentle sheen up-left, and a shadow into the joint."""
+    fit together with thin earthy joints. Three flat tones per stone: a dark
+    lower-right edge, the body, a lighter patch up-left (a blur would band
+    into rings once cut to a few colours), and a shadow into the joint.
+    STONE scales the whole pattern; Jeff, 2026-11-11: a quarter smaller."""
+    s = STONE
     rnd = random.Random(seed)
     cv = Canvas(pal["gap"])
-    speckle(cv, rnd, [pal["gap_dark"], pal["moss"]], 9000, 3, 7)
-    gap = 5.0
-    sites, grid, cell, n = _stone_sites(rnd, 17, 30, 60000)
+    speckle(cv, rnd, [pal["gap_dark"], pal["moss"]], int(9000 / (s * s)), 3 * s, 7 * s)
+    gap = 5.0 * s
+    # The centres have their own seed, so --check can rebuild them.
+    sites, grid, cell, n = _stone_sites(random.Random(seed + 1000), 17 * s, 30 * s, int(60000 / (s * s)))
     shadow = cv.layer()
     body = cv.layer()
     sheen = cv.layer()
@@ -405,23 +447,7 @@ def paint_cobble(seed, pal):
     db = ImageDraw.Draw(body)
     dh = ImageDraw.Draw(sheen)
     for i, (x, y, r) in enumerate(sites):
-        reach = 4 * r
-        poly = [(-reach, -reach), (reach, -reach), (reach, reach), (-reach, reach)]
-        gx = int(x // cell) % n
-        gy = int(y // cell) % n
-        for dx in (-2, -1, 0, 1, 2):
-            for dy in (-2, -1, 0, 1, 2):
-                for j in grid.get(((gx + dx) % n, (gy + dy) % n), ()):
-                    if j == i or not poly:
-                        continue
-                    sx, sy, _ = sites[j]
-                    vx = (sx - x + W / 2) % W - W / 2
-                    vy = (sy - y + W / 2) % W - W / 2
-                    dist = math.hypot(vx, vy)
-                    if dist == 0 or dist > reach * 2:
-                        continue
-                    # The bisector, moved toward this stone by half the joint.
-                    poly = _clip(poly, vx / dist, vy / dist, dist / 2 - gap / 2)
+        poly = _stone_cell(i, sites, grid, cell, n, gap)
         if len(poly) < 3:
             continue
         poly = _chaikin(poly, 2)
@@ -436,25 +462,23 @@ def paint_cobble(seed, pal):
             lit, lit_scale, lit_shift = mix(base, rgb(pal["lit"]), 0.22), 0.6, 0.16
 
         def draw_shadow(dr, bx, by, poly=poly):
-            dr.polygon([(bx + px + 4, by + py + 5) for px, py in poly], fill=rgb(pal["gap_dark"], 150))
+            dr.polygon([(bx + px + 4 * s, by + py + 5 * s) for px, py in poly], fill=rgb(pal["gap_dark"], 150))
 
         def draw_body(dr, bx, by, poly=poly, base=base, edge=edge):
             # The edge shows only along the lower right: the body sits up-left on it.
             dr.polygon([(bx + px, by + py) for px, py in poly], fill=edge)
-            dr.polygon([(bx + px * 0.93 - 3, by + py * 0.93 - 3) for px, py in poly], fill=base)
+            dr.polygon([(bx + px * 0.93 - 3 * s, by + py * 0.93 - 3 * s) for px, py in poly], fill=base)
 
-        def draw_sheen(dr, bx, by, poly=poly, lit=lit, s=lit_scale, k=lit_shift, size=size):
-            dr.polygon([(bx + px * s - size * k, by + py * s - size * k) for px, py in poly], fill=lit)
+        def draw_sheen(dr, bx, by, poly=poly, lit=lit, sc=lit_scale, k=lit_shift, size=size):
+            dr.polygon([(bx + px * sc - size * k, by + py * sc - size * k) for px, py in poly], fill=lit)
 
         cv.wrap_draw(ds, draw_shadow, x, y, size + 8)
         cv.wrap_draw(db, draw_body, x, y, size + 4)
         cv.wrap_draw(dh, draw_sheen, x, y, size)
-    cv.blend(shadow, 3)
+    cv.blend(shadow, 3 * s)
     cv.blend(body)
-    # Flat tones, not a blur: a smooth gradient bands into rings when the
-    # texture is cut to a few colours.
     cv.blend(sheen)
-    speckle(cv, rnd, [pal["gap_dark"], pal["lit"]], 7000, 1.5, 3, 70)
+    speckle(cv, rnd, [pal["gap_dark"], pal["lit"]], int(7000 / (s * s)), 1.5 * s, 3 * s, 70)
     if pal.get("leaves"):
         fallen_leaves(cv, random.Random(seed + 500), 260, pal["leaves"], pal["gap_dark"])
     return cv.img
@@ -508,7 +532,7 @@ SUMMER = {
                       stones=["8b877f", "9a958c", "7f7a72", "a39d92", "7d8288", "8f7e6a", "968a78"],
                       warm="9a8466", lit="c9c3b6"),
     SHALLOW_WATER: dict(base="4b8a98", deep="3c7584", lit="62a2ac", light="a6d6db", glint="e8f6f6", bed="6b8c80", bed_lit="8eab9c"),
-    DEEP_WATER: dict(base="3d7888", deep="336b7b", lit="478394", light="7fb3c0", glint="cfe8ee"),
+    DEEP_WATER: dict(base="336a7d", deep="2c5e70", lit="3d778a", light="76a9b7", glint="cbe5ec"),
 }
 
 LEAVES = ["c8702a", "d99a3a", "a8452a", "8f5b2a", "b8862e"]
@@ -564,7 +588,7 @@ def paint(terrain, season):
     if terrain == DIRT:
         return paint_dirt(3, pal)
     if terrain == COBBLESTONE:
-        return paint_cobble(4, pal)
+        return paint_cobble(COBBLE_SEED, pal)
     if terrain == SHALLOW_WATER:
         return paint_water(5, pal, True)
     return paint_water(6, pal, False)
@@ -711,7 +735,46 @@ def write_pack_script():
         f.write("\n".join(lines))
 
 
+def check_cobble_cells():
+    """Every cobble cell from the grid search equals the cell clipped against
+    every centre, for the production seed (code_review, LLM-967). Run with
+    --check after changing the stone sizes or the search."""
+    gap = 5.0 * STONE
+    sites, grid, cell, n = _stone_sites(random.Random(COBBLE_SEED + 1000), 17 * STONE, 30 * STONE, int(60000 / (STONE * STONE)))
+    worst = 0.0
+    for i in range(len(sites)):
+        fast = _stone_cell(i, sites, grid, cell, n, gap)
+        x, y, _ = sites[i]
+        full = [(-W / 2, -W / 2), (W / 2, -W / 2), (W / 2, W / 2), (-W / 2, W / 2)]
+        for j in range(len(sites)):
+            if j == i or not full:
+                continue
+            sx, sy, _ = sites[j]
+            vx = (sx - x + W / 2) % W - W / 2
+            vy = (sy - y + W / 2) % W - W / 2
+            dist = math.hypot(vx, vy)
+            full = _clip(full, vx / dist, vy / dist, dist / 2 - gap / 2)
+        # The two lists may start at different corners: compare the shapes,
+        # each corner against the nearest corner of the other cell, both ways,
+        # and the areas.
+        def apart(a, b):
+            return max(min(math.hypot(ax - bx, ay - by) for bx, by in b) for ax, ay in a)
+
+        def area(poly):
+            return abs(sum(poly[k][0] * poly[k - 1][1] - poly[k - 1][0] * poly[k][1] for k in range(len(poly)))) / 2
+
+        if not fast or not full:
+            if fast or full:
+                worst = float("inf")
+            continue
+        worst = max(worst, apart(fast, full), apart(full, fast), abs(area(fast) - area(full)))
+    print("cobble cells: %d stones, largest difference %.6f px" % (len(sites), worst))
+    return worst < 1e-6
+
+
 def main():
+    if "--check" in sys.argv:
+        sys.exit(0 if check_cobble_cells() else 1)
     os.makedirs(ASSET_DIR, exist_ok=True)
     for name in os.listdir(ASSET_DIR):
         # The tile sheets of the earlier 16 px layout are replaced by atlases.

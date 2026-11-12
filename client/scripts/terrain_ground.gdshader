@@ -43,6 +43,11 @@ const float RIM = 0.85;
 const float TIP = 0.82;
 const float FRINGE_REACH = 0.09;
 const float FRINGE_CHANCE = 0.45;
+// Shallow and deep water fade into each other over this much of a tile either
+// side of their boundary. Under 0.5, so the fade is done before a tile edge
+// whose corners are one depth, and tiles join.
+const float WATER_FADE = 0.45;
+const float NO_WATER_BLEND = 9.0;
 
 varying vec2 world;
 
@@ -95,7 +100,10 @@ float hash01(ivec2 p) {
 //   w: a grass rank whose blade tip reaches this pixel, or -1
 // with_tips false skips the blade tips: the shadow and shore queries need
 // only the rank drawn.
-vec4 ground_at(ivec2 p, bool with_tips) {
+// water: where a water rank lies over the base water rank in this tile, x is
+// that upper rank's field with no wobble (-0.5 .. 0.5), y the base rank, z the
+// upper rank; x is NO_WATER_BLEND otherwise.
+vec4 ground_at(ivec2 p, bool with_tips, out vec3 water) {
     ivec2 t = ivec2(floor(vec2(p) / float(tile_px)));
     ivec2 tile = t + pad;
     int tl = rank_at(tile + ivec2(-1, -1));
@@ -104,6 +112,7 @@ vec4 ground_at(ivec2 p, bool with_tips) {
     int bl = rank_at(tile + ivec2(-1, 0));
     int lo = min(min(tl, tr), min(br, bl));
     int hi = max(max(tl, tr), max(br, bl));
+    water = vec3(NO_WATER_BLEND, 0.0, 0.0);
     if (lo == hi) {
         return vec4(float(lo), -2.0, 1.0, -1.0);
     }
@@ -120,7 +129,11 @@ vec4 ground_at(ivec2 p, bool with_tips) {
         if (mask == above) {
             continue;
         }
-        float g = corner_blend(mask, uv) + n - 0.5;
+        float blend = corner_blend(mask, uv);
+        if (water.x == NO_WATER_BLEND && has_bit(water_ranks, lo) && has_bit(water_ranks, r)) {
+            water = vec3(blend - 0.5, float(lo), float(r));
+        }
+        float g = blend + n - 0.5;
         if (g > 0.0) {
             under = top;
             top = r;
@@ -139,7 +152,8 @@ vec3 texel(int r, ivec2 tp) {
 
 void fragment() {
     ivec2 p = ivec2(floor(world));
-    vec4 here = ground_at(p, true);
+    vec3 water;
+    vec4 here = ground_at(p, true, water);
     int top = int(here.x);
     int under = int(here.y);
     int fringe = int(here.w);
@@ -150,6 +164,11 @@ void fragment() {
         // A blade tip past the grass edge; shaded, unless the ground under it
         // is soft too (it would draw a line through snow).
         col = texel(fringe, tp) * (has_bit(soft_ranks, top) ? 1.0 : TIP);
+    } else if (has_bit(water_ranks, top) && water.x != NO_WATER_BLEND) {
+        // Deep shades into shallow: no line between them. The fade follows the
+        // corners only (no wobble), so it is continuous from tile to tile.
+        float t = smoothstep(-WATER_FADE, WATER_FADE, water.x);
+        col = mix(texel(int(water.y), tp), texel(int(water.z), tp), t);
     }
     float k = 1.0;
 
@@ -160,7 +179,8 @@ void fragment() {
     if (!interior) {
         // Higher ground up and to the left casts a shadow, except soft on soft
         // and water on water (shallows over the deep are not raised).
-        int caster = int(ground_at(p - ivec2(STEP), false).x);
+        vec3 unused;
+        int caster = int(ground_at(p - ivec2(STEP), false, unused).x);
         bool both_soft = has_bit(soft_ranks, caster) && has_bit(soft_ranks, top);
         bool both_water = has_bit(water_ranks, caster) && has_bit(water_ranks, top);
         if (caster > top && !both_soft && !both_water) {
@@ -170,7 +190,7 @@ void fragment() {
             // Water meeting land: a pale line on the water.
             ivec2 sides[4] = ivec2[](ivec2(0, -STEP), ivec2(-STEP, 0), ivec2(STEP, 0), ivec2(0, STEP));
             for (int i = 0; i < 4; i++) {
-                if (!has_bit(water_ranks, int(ground_at(p + sides[i], false).x))) {
+                if (!has_bit(water_ranks, int(ground_at(p + sides[i], false, unused).x))) {
                     col = col * 0.55 + vec3(0.9) * 0.45;
                     break;
                 }
