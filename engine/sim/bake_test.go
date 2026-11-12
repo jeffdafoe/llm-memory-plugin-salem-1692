@@ -421,3 +421,60 @@ func TestShiftStartsBeforeDusk(t *testing.T) {
 		}
 	}
 }
+
+// TestHomeBakeInitiatorOnSnapshot — LLM-983. The published snapshot names who
+// started each live home bake, keyed like HomeBakesActive, and the entry goes
+// with the session. Perception reads it to tell a helper (whose leaving costs
+// the batch nothing) from the baker who carries the flour and the yield.
+func TestHomeBakeInitiatorOnSnapshot(t *testing.T) {
+	w, cancel, now := buildBakeTestWorld(t)
+	defer cancel()
+
+	if got := w.Published().HomeBakeInitiators; got != nil {
+		t.Fatalf("no bake running: want nil, got %v", got)
+	}
+	if _, err := w.Send(sim.StartOrJoinBake("alice", "", false, now)); err != nil {
+		t.Fatalf("alice starts: %v", err)
+	}
+	if _, err := w.Send(sim.StartOrJoinBake("bob", "", false, now.Add(time.Minute))); err != nil {
+		t.Fatalf("bob joins: %v", err)
+	}
+	snap := w.Published()
+	if got := snap.HomeBakeInitiators["home"]; got != "alice" {
+		t.Errorf("initiator on the snapshot = %q, want alice (bob only joined)", got)
+	}
+	if !snap.HomeBakesActive["home"] {
+		t.Error("HomeBakesActive lost the home the initiator map names")
+	}
+
+	// The key perception looks the initiator up by is each baker's own
+	// SourceActivity.ObjectID — the same value the move-cancel path hands
+	// concludeAbandonedBake. It must be the home id for starter and joiner alike.
+	for _, id := range []sim.ActorID{"alice", "bob"} {
+		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors[id]
+			if a == nil || a.SourceActivity == nil {
+				return sim.VillageObjectID(""), nil
+			}
+			return a.SourceActivity.ObjectID, nil
+		}})
+		if err != nil {
+			t.Fatalf("read %s activity: %v", id, err)
+		}
+		if got := res.(sim.VillageObjectID); got != "home" {
+			t.Errorf("%s bake window ObjectID = %q, want the home id the session is keyed by", id, got)
+		}
+	}
+
+	// A helper's window ending leaves the session, and so the entry, in place.
+	mustSend(t, w, func(world *sim.World) { world.Actors["bob"].SourceActivity = nil })
+	if got := w.Published().HomeBakeInitiators["home"]; got != "alice" {
+		t.Errorf("after the helper left: initiator = %q, want alice still", got)
+	}
+	// The entry goes with the session: once it is gone (the initiator's
+	// departure deletes it), the next snapshot names nobody.
+	mustSend(t, w, func(world *sim.World) { delete(world.HomeBakes, "home") })
+	if got := w.Published().HomeBakeInitiators; got != nil {
+		t.Errorf("after the session ended: want nil, got %v", got)
+	}
+}

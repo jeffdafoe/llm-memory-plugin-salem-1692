@@ -1680,6 +1680,22 @@ type InFlightSourceActivityView struct {
 	// whether that is a well or a damaged business (LLM-675).
 	PublicWorks     bool
 	PublicWorksKind string
+
+	// The two facts the bake scene turns on (LLM-983); both false for every
+	// other kind.
+	//
+	// BakeHelper: a bake is live at the subject's hearth and someone ELSE
+	// started it. A helper's leaving costs the batch nothing, so her scene must
+	// not say the bread will go unfinished. False for the initiator, and false
+	// when no live session is known — the conservative reading, since only an
+	// initiator has anything to lose.
+	//
+	// MayStepOut: the subject has a red need that the bake shelve leaves
+	// actionable — any need but tiredness. The same condition under which the
+	// tool gate keeps move_to (handlers.laboringMayBreakOffToEat) and the
+	// reactor ticks her through the shelve, so scene, tool and tick agree.
+	BakeHelper bool
+	MayStepOut bool
 }
 
 // InFlightProductionView is the perception-side projection of the subject's

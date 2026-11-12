@@ -228,6 +228,14 @@ type Snapshot struct {
 	// when no bake is running.
 	HomeBakesActive map[StructureID]bool
 
+	// HomeBakeInitiators names who STARTED each live home bake, keyed like
+	// HomeBakesActive (LLM-983). Only the initiator carries the flour and the
+	// yield: when she walks off the batch ends (concludeAbandonedBake), while a
+	// joiner's departure costs it nothing. Perception reads this so the "stay
+	// with the bread" scene tells each baker the truth about her own leaving.
+	// nil when no bake is running.
+	HomeBakeInitiators map[StructureID]ActorID
+
 	// RestockReorderPct mirrors WorldSettings.RestockReorderPct — the reorder
 	// threshold (whole percent of cap) for buy-side restock. Carried so the
 	// "## Restocking" perception section can gate on the same boundary the

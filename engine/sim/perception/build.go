@@ -1053,7 +1053,7 @@ func buildActorView(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		NeedThresholds:         snap.NeedThresholds,
 		ActiveDwellCredits:     buildActiveDwellCredits(snap, a),
 		InFlightMove:           buildInFlightMove(snap, a),
-		InFlightSourceActivity: buildInFlightSourceActivity(snap, a),
+		InFlightSourceActivity: buildInFlightSourceActivity(snap, actorID, a),
 		Rounds:                 buildRounds(snap, a),
 		Inventory:              buildInventoryView(snap, a),
 		PackBoundHome:          travelerPackBoundHome(snap, a),
@@ -1165,9 +1165,21 @@ func sourceActivityLabelFor(snap *sim.Snapshot, objID sim.VillageObjectID, anima
 // window is live) into a render-ready view, or nil when the actor isn't engaged
 // at a source. SourceLabel resolves the same way dwell-pin and move labels do
 // (resolveDwellPinLabel against snap.Structures / snap.VillageObjects). LLM-69.
-func buildInFlightSourceActivity(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightSourceActivityView {
+func buildInFlightSourceActivity(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) *InFlightSourceActivityView {
 	if !actorMidSourceActivity(a) {
 		return nil
+	}
+	if a.SourceActivityKind == sim.SourceActivityBake {
+		// LLM-983: the bake scene depends on who she is to the batch and on
+		// whether a need has gone red — see the view's field comments.
+		initiator, live := snap.HomeBakeInitiators[sim.StructureID(a.SourceActivityObjectID)]
+		return &InFlightSourceActivityView{
+			Kind:        a.SourceActivityKind,
+			SourceLabel: sourceActivityLabelFor(snap, a.SourceActivityObjectID, a.SourceActivityAnimalID),
+			Attribute:   a.SourceActivityAttribute,
+			BakeHelper:  live && initiator != "" && initiator != actorID,
+			MayStepOut:  hasRedNeedBesidesTiredness(a, snap),
+		}
 	}
 	publicWorks := a.SourceActivityKind == sim.SourceActivityRepair && a.SourceActivityPublicWorks
 	kind := ""
@@ -3807,6 +3819,29 @@ func hasRedNeed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
 	}
 	for _, n := range sim.Needs {
 		if a.Needs[n.Key] >= snap.NeedThresholds.Get(n.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRedNeedBesidesTiredness reports whether a need other than tiredness is at
+// or over its red threshold. It is the perception-side twin of
+// handlers.laboringMayBreakOffToEat, which keeps move_to for a baker or a
+// laborer in exactly this state, and of the reactor's
+// hasBreakInterruptingNeedWarrant, which ticks her for it. Tiredness is left
+// out for the reason both give: rest cures it, so it never justifies leaving
+// the work. NeedLabelTier >= NeedRed catches the peak tier too, as the tool
+// gate does. If a need is ever added, all three move together. LLM-983.
+func hasRedNeedBesidesTiredness(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
+	if a == nil || snap == nil {
+		return false
+	}
+	for need, level := range a.Needs {
+		if need == "tiredness" {
+			continue
+		}
+		if sim.NeedLabelTier(level, snap.NeedThresholds.Get(need)) >= sim.NeedRed {
 			return true
 		}
 	}

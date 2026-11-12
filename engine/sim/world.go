@@ -2716,6 +2716,7 @@ func (w *World) republish() {
 		LodgingDefaultWeeklyRate:      w.Settings.LodgingDefaultWeeklyRate,
 		LodgingBedtimeMinute:          lodgerBedtimeMinute(w),
 		HomeBakesActive:               homeBakesActiveSet(w),
+		HomeBakeInitiators:            homeBakeInitiatorSet(w),
 		LodgingCheckOutMinute:         w.Settings.LodgingCheckOutHour * 60,
 		RestockReorderPct:             w.Settings.RestockReorderPct,
 		StallWearRepairThreshold:      w.Settings.StallWearRepairThreshold,

@@ -3666,6 +3666,29 @@ var perceptionScenarios = []perceptionScenario{
 		build: comfortableHomebodySeesHousemateBake,
 	},
 	{
+		name: "helper_mid_bake_red_hunger_thirst",
+		summary: "LLM-983, the live Anne Walker case (2026-11-12): a HELPER at the household bake — Silence started the " +
+			"batch — red on hunger and thirst. The standing line and the coda both send her: her need will not keep till " +
+			"dusk, the bread is in other hands and loses nothing if she steps out. Neither says the bread goes unfinished " +
+			"or that leaving abandons it. Before the fix both lines held her at the hearth while the tool gate offered " +
+			"move_to, and she sat parched for the morning with the Inn listed on her own page.",
+		build: helperMidBakeRedHungerThirst,
+	},
+	{
+		name: "helper_mid_bake",
+		summary: "LLM-983: the same helper with no pressing need. She is still held at the hearth (the bake exists to " +
+			"occupy the household), but the hold names no false stake: 'stay with it till the loaves are done', and the " +
+			"coda drops 'leaving now abandons it' — her leaving would cost the batch nothing.",
+		build: helperMidBake,
+	},
+	{
+		name: "baker_mid_bake_red_hunger",
+		summary: "LLM-983: the baker who STARTED the batch, red on hunger and thirst. Her leaving does end it, and the line says " +
+			"so honestly (this batch ends; the flour keeps) — and still sends her, because a need that cannot wait till " +
+			"dusk is real cause. The coda does not promise the bread will be there on her return.",
+		build: bakerMidBakeRedHunger,
+	},
+	{
 		name: "homebody_mid_bake",
 		summary: "LLM-464: the comfortable_homebody_bakes homebody one step later — at the hearth with her bake window " +
 			"live. Pins the mid-activity triage coda, whose completion horizon reads 'by dusk' for a bake instead of the " +
@@ -20844,4 +20867,46 @@ func TestGoldensCampLineIffCampInSight(t *testing.T) {
 			t.Errorf("%s: %d camp lines, want %d", sc.name, got, want)
 		}
 	}
+}
+
+// helperMidBake is homebody_mid_bake with the batch started by a housemate:
+// Anne lends a hand at a bake Silence leads (LLM-983).
+func helperMidBake() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := homebodyMidBake()
+	home := sim.StructureID(snap.Actors[actorID].SourceActivityObjectID)
+	snap.HomeBakesActive = map[sim.StructureID]bool{home: true}
+	snap.HomeBakeInitiators = map[sim.StructureID]sim.ActorID{home: "silence_the_baker"}
+	return snap, actorID, warrants
+}
+
+// helperMidBakeRedHungerThirst is the live LLM-983 case: Anne Walker, a helper,
+// at hunger 22 (red at 18) and thirst 20 (red at 12).
+func helperMidBakeRedHungerThirst() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := helperMidBake()
+	snap.Actors[actorID].Needs = map[sim.NeedKey]int{"hunger": 22, "thirst": 20}
+	addVillageWell(snap)
+	return snap, actorID, warrants
+}
+
+// addVillageWell gives a bake fixture somewhere to go: a sound well, so the
+// recovery cue renders a real destination beside the line that sends the baker
+// out (code_review, LLM-983 — "go and tend it" with nowhere named proves little).
+func addVillageWell(snap *sim.Snapshot) {
+	zero := 0
+	snap.VillageObjects["village_well"] = &sim.VillageObject{ID: "village_well", DisplayName: "Well",
+		Pos: sim.WorldPos{X: 800, Y: 800}, Tags: []string{sim.TagWell},
+		LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -8}}}
+}
+
+// bakerMidBakeRedHunger is the initiator of the batch with a red hunger: her
+// leaving ends it, and she is told so and sent anyway (LLM-983).
+func bakerMidBakeRedHunger() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := homebodyMidBake()
+	home := sim.StructureID(snap.Actors[actorID].SourceActivityObjectID)
+	snap.HomeBakesActive = map[sim.StructureID]bool{home: true}
+	snap.HomeBakeInitiators = map[sim.StructureID]sim.ActorID{home: actorID}
+	snap.Actors[actorID].Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold, "thirst": sim.DefaultThirstRedThreshold}
+	addVillageWell(snap)
+	return snap, actorID, warrants
 }
