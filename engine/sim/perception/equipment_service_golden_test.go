@@ -795,6 +795,60 @@ func TestWrightServiceAsk(t *testing.T) {
 	}
 }
 
+// TestWrightServiceAskRoundingAndWindow covers the edges the whole-coin table
+// above cannot reach (code_review): nearest-coin rounding of a fractional stone
+// average, the cover test at and just under the ask, a bulk purchase priced per
+// unit, and a purchase older than the window.
+func TestWrightServiceAskRoundingAndWindow(t *testing.T) {
+	published := time.Date(2026, time.November, 12, 15, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	obs := func(buyer sim.ActorID, amount, qty int, age time.Duration) sim.PriceObservation {
+		return sim.PriceObservation{BuyerID: buyer, Amount: amount, Qty: qty, Consumers: 1, At: published.Add(-age)}
+	}
+	cases := []struct {
+		name               string
+		buys, sales        []sim.PriceObservation
+		wantCost, wantRate int
+		wantAsk            int
+	}{
+		// 32 coins for 5 stones = 6.4 each: rounds down to 6, ask 12.
+		{name: "6.4 a stone rounds to 6", buys: []sim.PriceObservation{obs("lewis", 32, 5, day)}, wantCost: 6, wantAsk: 12},
+		// 13 coins for 2 stones = 6.5 each: rounds up to 7, ask 13.
+		{name: "6.5 a stone rounds to 7", buys: []sim.PriceObservation{obs("lewis", 13, 2, day)}, wantCost: 7, wantAsk: 13},
+		// One purchase of 3 stones for 21 is 7 each, not 21 a stone.
+		{name: "bulk purchase is priced per unit", buys: []sim.PriceObservation{obs("lewis", 21, 3, day)}, wantCost: 7, wantAsk: 13},
+		// Realized 129 over 10 services = 12.9: still under the ask of 13.
+		{name: "12.9 realized keeps the nudge", buys: []sim.PriceObservation{obs("lewis", 7, 1, day)},
+			sales: []sim.PriceObservation{obs("joseph", 129, 10, day)}, wantCost: 7, wantRate: 13, wantAsk: 13},
+		// Realized exactly 13: covered, silent.
+		{name: "13.0 realized is silent", buys: []sim.PriceObservation{obs("lewis", 7, 1, day)},
+			sales: []sim.PriceObservation{obs("joseph", 130, 10, day)}},
+		// The only purchase is eight days old: outside the seven-day window.
+		{name: "a purchase outside the window is silent", buys: []sim.PriceObservation{obs("lewis", 7, 1, 8*day)}},
+		// Another buyer's purchase from the same smith is not his cost.
+		{name: "another buyer's stone is not his cost", buys: []sim.PriceObservation{obs("joseph", 7, 1, day)}},
+	}
+	for _, c := range cases {
+		snap, _ := equipmentScenarioBase(150, 2, "h1")
+		addStoneCostHistory(snap, nil, nil)
+		buys := sim.NewRingBuffer[sim.PriceObservation](8)
+		for _, o := range c.buys {
+			buys.Push(o)
+		}
+		snap.PriceBook[sim.PriceBookKey{SellerID: "ezekiel", Item: sim.WhetstoneKind}] = buys
+		sales := sim.NewRingBuffer[sim.PriceObservation](8)
+		for _, o := range c.sales {
+			sales.Push(o)
+		}
+		snap.PriceBook[sim.PriceBookKey{SellerID: "lewis", Item: "equipment_service"}] = sales
+		cost, rate, ask := wrightServiceAsk(snap, "lewis")
+		if cost != c.wantCost || rate != c.wantRate || ask != c.wantAsk {
+			t.Errorf("%s: got cost=%d rate=%d ask=%d, want cost=%d rate=%d ask=%d",
+				c.name, cost, rate, ask, c.wantCost, c.wantRate, c.wantAsk)
+		}
+	}
+}
+
 // TestWrightAskRendersOnEveryArm pins the LLM-984 sentence by its load-bearing
 // tokens on the co-present arm and the walk arm, and its absence when the
 // builder stayed silent.

@@ -280,8 +280,10 @@ func renderEquipmentService(b *strings.Builder, v *EquipmentServiceView) {
 		name := sanitizeInline(v.WrightName)
 		// No figure (LLM-984): the wright names his own rate, and the owner
 		// pays what he names. The speak step covers the tick where the owner's
-		// page renders before the wright has spoken.
-		fmt.Fprintf(b, " %s is here now with his stones — have him see to it. The rate is his to name: if he has not said it yet, ask him (speak). Then pay it: pay_with_item (seller \"%s\", item \"%s\", qty 1, consume_now false, the rate he named as the coins in amount).\n\n", name, name, v.ServiceItem)
+		// page renders before the wright has spoken; "wait for his answer"
+		// keeps the pay from reading as a second action in the same turn, when
+		// there is no rate yet to pay (code_review).
+		fmt.Fprintf(b, " %s is here now with his stones — have him see to it. The rate is his to name. If you have not heard his rate, ask him (speak) and wait for his answer. Once he has named it, pay that rate: pay_with_item (seller \"%s\", item \"%s\", qty 1, consume_now false, the rate he named as the coins in amount).\n\n", name, name, v.ServiceItem)
 		return
 	}
 	b.WriteString(" It will keep until the wright calls.\n\n")
