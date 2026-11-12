@@ -16,9 +16,10 @@ them with the PNGs.
 
 How a texture is made: each terrain is painted on a 2048x2048 canvas with real
 shapes (tapered grass blades, clover, flowers, shaded pebbles, cobbles lit from
-the upper left, ripples), shrunk by area average to 512x512, and reduced to 14
-colours. Every shape near a canvas edge is drawn again across the edge, and the
-shrink factor is exact, so the texture wraps. It repeats every 16 tiles (32 px
+the upper left, ripples), shrunk by area average to 512x512, and reduced to 16
+colours. Autumn leaves are painted on a layer of their own and laid on after
+the reduction, in their own colours. Every shape near a canvas edge is drawn
+again across the edge, and the shrink factor is exact, so the texture wraps. It repeats every 16 tiles (32 px
 tiles); the shader samples it by world position, so tiles show no grid.
 """
 
@@ -210,9 +211,11 @@ def flowers(cv, rnd, count, petals, centre):
     cv.blend(lay)
 
 
-def fallen_leaves(cv, rnd, count, colours, shadow):
-    """Autumn: small leaves lying flat, each with a soft shadow."""
-    lay = cv.layer()
+def fallen_leaves(rnd, count, colours):
+    """Autumn: small leaves lying flat, alone on a transparent layer. shrink()
+    lays them over the ground after the ground's colours are reduced; drawn into
+    the ground, every leaf shared one muddy brown and read as litter."""
+    lay = Canvas.layer()
     d = ImageDraw.Draw(lay)
     for _ in range(count):
         x = rnd.uniform(0, W)
@@ -224,11 +227,10 @@ def fallen_leaves(cv, rnd, count, colours, shadow):
                (math.cos(a + math.pi) * r, math.sin(a + math.pi) * r), (math.cos(a - 1.7) * r * 0.45, math.sin(a - 1.7) * r * 0.45)]
 
         def draw_leaf(dr, bx, by, pts=pts, col=col):
-            dr.polygon([(bx + px + 3, by + py + 4) for px, py in pts], fill=rgb(shadow, 120))
             dr.polygon([(bx + px, by + py) for px, py in pts], fill=rgb(col))
 
-        cv.wrap_draw(d, draw_leaf, x, y, r + 6)
-    cv.blend(lay)
+        Canvas.wrap_draw(d, draw_leaf, x, y, r)
+    return lay
 
 
 def tufts(cv, rnd, count, dark, light, shadow):
@@ -319,8 +321,6 @@ def paint_grass(seed, pal, dense):
     flower_rnd = random.Random(seed + 500)
     if pal.get("petals"):
         flowers(cv, flower_rnd, 20 if dense else 70, pal["petals"], pal["centre"])
-    if pal.get("leaves"):
-        fallen_leaves(cv, flower_rnd, 850 if dense else 1100, pal["leaves"], pal["dark"])
     return cv.img
 
 
@@ -332,8 +332,6 @@ def paint_dirt(seed, pal):
     cracks(cv, rnd, 60, pal["dark"])
     pebbles(cv, rnd, 900, 7, 16, pal["stones"], pal["stone_lit"], pal["dark"])
     pebbles(cv, rnd, 90, 16, 28, pal["stones"], pal["stone_lit"], pal["dark"])
-    if pal.get("leaves"):
-        fallen_leaves(cv, random.Random(seed + 500), 500, pal["leaves"], pal["dark"])
     return cv.img
 
 
@@ -486,8 +484,6 @@ def paint_cobble(seed, pal):
     cv.blend(body)
     cv.blend(sheen)
     speckle(cv, rnd, [pal["gap_dark"], pal["lit"]], int(7000 / (s * s)), 1.5 * s, 3 * s, 70)
-    if pal.get("leaves"):
-        fallen_leaves(cv, random.Random(seed + 500), 310, pal["leaves"], pal["gap_dark"])
     return cv.img
 
 
@@ -542,7 +538,13 @@ SUMMER = {
     DEEP_WATER: dict(base="336a7d", deep="2c5e70", lit="3d778a", light="76a9b7", glint="cbe5ec"),
 }
 
-LEAVES = ["c8702a", "d99a3a", "a8452a", "8f5b2a", "b8862e"]
+# Autumn leaf colours: orange, gold, red, tan. No dull brown: a brown leaf
+# read as a dropping (Jeff, 2026-11-12).
+LEAVES = ["c8702a", "d99a3a", "a8452a", "b8862e"]
+# Leaves per texture. A third of the first counts (1100 / 850 / 500 / 310),
+# which littered the ground (Jeff, 2026-11-12).
+LEAF_COUNTS = {LIGHT_GRASS: 370, DARK_GRASS: 280, DIRT: 170, COBBLESTONE: 100}
+LEAF_SEED = 500
 
 AUTUMN = {
     LIGHT_GRASS: dict(base="84863d", shade="6d6f36", lit="9e9c48", dark="595a2c", mid="8e8f42", light="bab25a",
@@ -583,7 +585,16 @@ PALETTES = {"summer": SUMMER, "autumn": AUTUMN, "winter": WINTER, "snowy": SNOWY
 
 
 def paint(terrain, season):
+    """The terrain's ground canvas, and its autumn leaves on a layer of their
+    own, or None in a season with no leaves."""
     pal = PALETTES[season][terrain]
+    leaves = None
+    if pal.get("leaves"):
+        leaves = fallen_leaves(random.Random(LEAF_SEED + terrain), LEAF_COUNTS[terrain], pal["leaves"])
+    return paint_ground(terrain, season, pal), leaves
+
+
+def paint_ground(terrain, season, pal):
     if season == "snowy" and terrain in (LIGHT_GRASS, DARK_GRASS):
         return paint_snow(20, pal)
     if season == "snowy" and terrain == DIRT:
@@ -601,18 +612,35 @@ def paint(terrain, season):
     return paint_water(6, pal, False)
 
 
-def shrink(img):
+def shrink(img, leaves=None):
     """Area-average to TEX (an exact factor, so the texture still wraps), then
-    reduce to a small palette with no dither."""
+    reduce to a small palette with no dither. leaves, if given, is shrunk the
+    same way and laid on after the reduction: a pixel at least half covered by
+    leaf takes the nearest LEAVES colour, so the leaves never share the
+    ground's palette."""
     small = img.resize((TEX, TEX), Image.BOX).convert("RGB")
-    return small.quantize(colors=COLOURS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert("RGB")
+    small = small.quantize(colors=COLOURS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert("RGB")
+    if leaves is None:
+        return small
+    # Pillow averages an RGBA image with premultiplied alpha, so a part-covered
+    # pixel keeps the leaf's colour, not a blend with the transparent black.
+    cover = leaves.resize((TEX, TEX), Image.BOX)
+    colours = [rgb(h)[:3] for h in LEAVES]
+    src = cover.load()
+    dst = small.load()
+    for y in range(TEX):
+        for x in range(TEX):
+            r, g, b, a = src[x, y]
+            if a >= 128:
+                dst[x, y] = min(colours, key=lambda c: (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2)
+    return small
 
 
 def build_atlas(season):
     rows = (len(LAYER_ORDER) + ATLAS_COLS - 1) // ATLAS_COLS
     atlas = Image.new("RGB", (ATLAS_COLS * TEX, rows * TEX))
     for rank, terrain in enumerate(LAYER_ORDER):
-        atlas.paste(shrink(paint(terrain, season)), ((rank % ATLAS_COLS) * TEX, (rank // ATLAS_COLS) * TEX))
+        atlas.paste(shrink(*paint(terrain, season)), ((rank % ATLAS_COLS) * TEX, (rank // ATLAS_COLS) * TEX))
     return atlas
 
 
