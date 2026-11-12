@@ -313,7 +313,7 @@ def paint_grass(seed, pal, dense):
     if pal.get("petals"):
         flowers(cv, flower_rnd, 20 if dense else 70, pal["petals"], pal["centre"])
     if pal.get("leaves"):
-        fallen_leaves(cv, flower_rnd, 700 if dense else 900, pal["leaves"], pal["dark"])
+        fallen_leaves(cv, flower_rnd, 850 if dense else 1100, pal["leaves"], pal["dark"])
     return cv.img
 
 
@@ -326,7 +326,7 @@ def paint_dirt(seed, pal):
     pebbles(cv, rnd, 900, 7, 16, pal["stones"], pal["stone_lit"], pal["dark"])
     pebbles(cv, rnd, 90, 16, 28, pal["stones"], pal["stone_lit"], pal["dark"])
     if pal.get("leaves"):
-        fallen_leaves(cv, random.Random(seed + 500), 420, pal["leaves"], pal["dark"])
+        fallen_leaves(cv, random.Random(seed + 500), 500, pal["leaves"], pal["dark"])
     return cv.img
 
 
@@ -480,7 +480,7 @@ def paint_cobble(seed, pal):
     cv.blend(sheen)
     speckle(cv, rnd, [pal["gap_dark"], pal["lit"]], int(7000 / (s * s)), 1.5 * s, 3 * s, 70)
     if pal.get("leaves"):
-        fallen_leaves(cv, random.Random(seed + 500), 260, pal["leaves"], pal["gap_dark"])
+        fallen_leaves(cv, random.Random(seed + 500), 310, pal["leaves"], pal["gap_dark"])
     return cv.img
 
 
@@ -538,10 +538,10 @@ SUMMER = {
 LEAVES = ["c8702a", "d99a3a", "a8452a", "8f5b2a", "b8862e"]
 
 AUTUMN = {
-    LIGHT_GRASS: dict(base="7c853f", shade="676f37", lit="959b4a", dark="535a2d", mid="868f44", light="b2b05c",
-                      clover="8a9346", leaves=LEAVES),
-    DARK_GRASS: dict(base="647038", shade="535d2f", lit="7a8540", dark="434b27", mid="6e7a3c", light="979c50",
-                     clover="76823f", leaves=LEAVES),
+    LIGHT_GRASS: dict(base="84863d", shade="6d6f36", lit="9e9c48", dark="595a2c", mid="8e8f42", light="bab25a",
+                      clover="909345", leaves=LEAVES),
+    DARK_GRASS: dict(base="6b7137", shade="595e2e", lit="81853f", dark="484c26", mid="757a3b", light="9f9d4e",
+                     clover="7c823e", leaves=LEAVES),
     DIRT: dict(SUMMER[DIRT], base="76593f", damp="5d4532", dry="8b6d50", dark="4d3826", light="9c7f62", leaves=LEAVES),
     COBBLESTONE: dict(SUMMER[COBBLESTONE], moss="5a5a33", leaves=LEAVES),
     SHALLOW_WATER: dict(SUMMER[SHALLOW_WATER], base="4c8592", deep="3d717e", lit="5f9ba5"),
