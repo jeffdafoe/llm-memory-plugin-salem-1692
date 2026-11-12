@@ -545,7 +545,7 @@ AUTUMN = {
     DIRT: dict(SUMMER[DIRT], base="76593f", damp="5d4532", dry="8b6d50", dark="4d3826", light="9c7f62", leaves=LEAVES),
     COBBLESTONE: dict(SUMMER[COBBLESTONE], moss="5a5a33", leaves=LEAVES),
     SHALLOW_WATER: dict(SUMMER[SHALLOW_WATER], base="4c8592", deep="3d717e", lit="5f9ba5"),
-    DEEP_WATER: dict(SUMMER[DEEP_WATER], base="3c7483", deep="336777", lit="457e8c"),
+    DEEP_WATER: dict(SUMMER[DEEP_WATER], base="336473", deep="2c5868", lit="3d6f80"),
 }
 
 WINTER = {
@@ -555,7 +555,7 @@ WINTER = {
                stones=["858078", "918b82", "79746c"], stone_lit="b0aaa0"),
     COBBLESTONE: dict(SUMMER[COBBLESTONE], gap="433b33", moss="4a4e36", stones=["86847f", "94918b", "7a7874", "9c9993"], warm="8a7d6c"),
     SHALLOW_WATER: dict(base="4f7a87", deep="416a77", lit="618b96", light="9cc0c8", glint="dff0f2", bed="627a74", bed_lit="7f9389"),
-    DEEP_WATER: dict(base="416d7a", deep="39616e", lit="4a7784", light="7fa3ae", glint="c9dde3"),
+    DEEP_WATER: dict(base="385e6b", deep="30535f", lit="416977", light="7099a5", glint="c9dde3"),
 }
 
 SNOW = dict(base="e6ecf1", shadow="c7d2dd", deep_shadow="a9b8c7", light="f6f9fc", glint="ffffff")
