@@ -1,117 +1,509 @@
-"""Builds salem's ground sheets (LLM-967): every pixel is drawn here, no pack art.
+"""Paints salem's ground (LLM-967): every pixel is drawn here, no pack art.
 
     python tools/terrain-art/build.py
 
-Writes client/assets/terrain/ground-<season>.png, client/assets/terrain/
-water-sparkles.png and client/scripts/terrain_pack.gd (the layout the terrain
-renderer reads). Rerunning writes the same files. After a change, open the
-client project once (godot --headless --editor --quit) so Godot writes the
-.import sidecars, and commit them with the PNGs.
+Writes, under client/assets/terrain/:
+  ground-<season>.png  one atlas per season (summer, autumn, winter, snowy):
+                       a 512x512 texture per terrain, in LAYER_ORDER, 3 across
+  edge-noise.png       the wobble on every terrain edge (grey, 128 = none)
+  water-sparkles.png   12 glint frames, 32x32, 4 across
+and client/scripts/terrain_pack.gd (the layout the renderer reads).
 
-The renderer draws the ground as layered corner autotiles: each terrain is a
-layer, bottom to top in LAYER_ORDER, and each drawn tile sits on the corner
-where four map cells meet. A layer's tile is picked by a 4-bit mask of which
-corners are that terrain or a terrain above it (TL=1, TR=2, BR=4, BL=8).
+Rerunning writes the same files. After a change, run `godot --headless
+--editor --quit` in client/ so Godot writes the .import sidecars, and commit
+them with the PNGs.
 
-Sheet layout: one row per terrain (terrain id - 1). Columns 1-14 hold the edge
-tiles for masks 1-14 (transparent outside the terrain); column 15 and up hold
-the full tiles (mask 15), the plain one first, then the ones with detail.
-
-Edges stay seamless between neighbouring tiles because the boundary is a
-function of the corner values plus one noise field that repeats every tile:
-along a shared tile border both tiles see the same two corners and the same
-noise, so the line crosses the border in the same place. Every terrain uses the
-same noise, so two layers with the same mask have the same outline and the
-upper one hides the lower one exactly.
+How a texture is made: each terrain is painted on a 2048x2048 canvas with real
+shapes (tapered grass blades, clover, flowers, shaded pebbles, cobbles lit from
+the upper left, ripples), shrunk by area average to 512x512, and reduced to 14
+colours. Every shape near a canvas edge is drawn again across the edge, and the
+shrink factor is exact, so the texture wraps. It repeats every 16 tiles (32 px
+tiles); the shader samples it by world position, so tiles show no grid.
 """
 
 import math
 import os
 import random
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 ASSET_DIR = os.path.join(ROOT, "client", "assets", "terrain")
 PACK_SCRIPT = os.path.join(ROOT, "client", "scripts", "terrain_pack.gd")
 
-T = 16  # source tile size in pixels
-FILL_COL = 15
-FILL_VARIANTS = 7  # plain + 6 with detail
+W = 2048          # painting canvas
+TEX = 512         # texture size: 16 tiles of 32 px
+TILE_PX = 32
+ATLAS_COLS = 3
+COLOURS = 16
 
 # terrain.gd ids
 DIRT, LIGHT_GRASS, DARK_GRASS, COBBLESTONE, SHALLOW_WATER, DEEP_WATER = 1, 2, 3, 4, 5, 6
-TERRAINS = [DIRT, LIGHT_GRASS, DARK_GRASS, COBBLESTONE, SHALLOW_WATER, DEEP_WATER]
-# Bottom to top. Land overlaps water, dark grass grows over light, the cobbled
+# Bottom to top: land overlaps water, dark grass grows over light, the cobbled
 # paths lie on everything.
 LAYER_ORDER = [DEEP_WATER, SHALLOW_WATER, DIRT, LIGHT_GRASS, DARK_GRASS, COBBLESTONE]
-
 SEASONS = ["summer", "autumn", "winter", "snowy"]
 
 
-def hexrgb(h):
-    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+def rgb(h, a=255):
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), a)
 
 
-def ramp(base, dark, light, outline, extra=None):
-    out = {"base": hexrgb(base), "dark": hexrgb(dark), "light": hexrgb(light), "outline": hexrgb(outline)}
-    if extra:
-        out.update({k: hexrgb(v) for k, v in extra.items()})
-    return out
+def mix(c1, c2, t):
+    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3)) + (255,)
 
 
-# Each season's colours per terrain. base is the flat ground, dark and light
-# draw the detail, outline is the rim where the terrain ends over a lower one.
-PALETTES = {
-    "summer": {
-        DIRT: ramp("8a6643", "6b4d33", "a8825a", "5a3f2a"),
-        LIGHT_GRASS: ramp("7fb356", "62963f", "a0cd6e", "557f3a"),
-        DARK_GRASS: ramp("559444", "3f7633", "6eab57", "36652c"),
-        COBBLESTONE: ramp("9a968e", "77736c", "b8b4ab", "4d4a45", {"mortar": "605c56", "alt": "8c8880"}),
-        SHALLOW_WATER: ramp("56a5ca", "4690b6", "93d3e8", "7cc4dc"),
-        DEEP_WATER: ramp("32739f", "2a648d", "4f93bd", "2a648d"),
-    },
-    "autumn": {
-        DIRT: ramp("86603f", "684a30", "a37c55", "573c28"),
-        LIGHT_GRASS: ramp("a5aa53", "878d3f", "c4c56c", "6f7534"),
-        DARK_GRASS: ramp("879244", "6d7735", "a5ae58", "5c652d"),
-        COBBLESTONE: ramp("9a968e", "77736c", "b8b4ab", "4d4a45", {"mortar": "605c56", "alt": "8c8880"}),
-        SHALLOW_WATER: ramp("549dbf", "468aad", "8ccbe0", "78bcd3"),
-        DEEP_WATER: ramp("316e97", "2a6087", "4c8db5", "2a6087"),
-    },
-    "winter": {
-        DIRT: ramp("776150", "5e4b3e", "907865", "4f3f34"),
-        LIGHT_GRASS: ramp("92a173", "77875c", "aab58a", "66744f"),
-        DARK_GRASS: ramp("768a5f", "60714d", "8d9f74", "53633f"),
-        COBBLESTONE: ramp("94928e", "73716d", "aeaca7", "4b4a47", {"mortar": "5d5b58", "alt": "878581"}),
-        SHALLOW_WATER: ramp("5c90ad", "4e7f9b", "8dbad0", "7eaec6"),
-        DEEP_WATER: ramp("33607e", "2b536e", "4a7896", "2b536e"),
-    },
-    "snowy": {
-        DIRT: ramp("d9e1e8", "bccad6", "f0f4f8", "a3b2c1"),
-        LIGHT_GRASS: ramp("edf2f6", "d0dbe4", "ffffff", "b4c3d1"),
-        # Snow hides where light grass ends and dark begins: no rim, one white.
-        DARK_GRASS: ramp("edf2f6", "d0dbe4", "ffffff", "edf2f6"),
-        COBBLESTONE: ramp("c6cbd0", "a3abb3", "e6ebef", "7d868f", {"mortar": "8f98a1", "alt": "b7bec5"}),
-        SHALLOW_WATER: ramp("a9cfe0", "93bfd3", "dcedf5", "e8f3f8"),
-        DEEP_WATER: ramp("5f8aa6", "537b95", "7ea5be", "537b95"),
-    },
+# ---------------------------------------------------------------- canvas
+
+class Canvas:
+    def __init__(self, base):
+        self.img = Image.new("RGBA", (W, W), rgb(base))
+
+    @staticmethod
+    def layer():
+        return Image.new("RGBA", (W, W), (0, 0, 0, 0))
+
+    @staticmethod
+    def wrap_draw(draw, fn, x, y, r):
+        """fn(draw, x, y), plus a copy across every canvas edge the shape touches."""
+        xs = [x] + ([x + W] if x - r < 0 else []) + ([x - W] if x + r > W else [])
+        ys = [y] + ([y + W] if y - r < 0 else []) + ([y - W] if y + r > W else [])
+        for xx in xs:
+            for yy in ys:
+                fn(draw, xx, yy)
+
+    def blend(self, layer, blur=0):
+        if blur:
+            layer = wrap_blur(layer, blur)
+        self.img = Image.alpha_composite(self.img, layer)
+
+
+def wrap_blur(layer, radius):
+    """Gaussian blur that wraps at the canvas edges."""
+    pad = int(radius * 3)
+    big = Image.new("RGBA", (W + 2 * pad, W + 2 * pad))
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            big.paste(layer, (pad + dx * W, pad + dy * W))
+    big = big.filter(ImageFilter.GaussianBlur(radius))
+    return big.crop((pad, pad, pad + W, pad + W))
+
+
+def tone_blobs(cv, rnd, colors, count, rmin, rmax, alpha, blur):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        r = rnd.uniform(rmin, rmax)
+        rx = r * rnd.uniform(0.7, 1.3)
+        col = rnd.choice(colors)
+        cv.wrap_draw(d, lambda dr, xx, yy: dr.ellipse((xx - rx, yy - r, xx + rx, yy + r), fill=rgb(col, alpha)), x, y, max(r, rx))
+    cv.blend(lay, blur)
+
+
+def speckle(cv, rnd, colors, count, rmin, rmax, alpha=255):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        r = rnd.uniform(rmin, rmax)
+        col = rnd.choice(colors)
+        cv.wrap_draw(d, lambda dr, xx, yy: dr.ellipse((xx - r, yy - r, xx + r, yy + r), fill=rgb(col, alpha)), x, y, r)
+    cv.blend(lay)
+
+
+def tone_map(rnd):
+    """Grey map of where turf is lit (bright) or shaded; wraps."""
+    cv = Canvas("808080")
+    d = ImageDraw.Draw(cv.img)
+    for _ in range(140):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        r = rnd.uniform(90, 260)
+        v = rnd.choice((40, 70, 190, 230))
+        cv.wrap_draw(d, lambda dr, xx, yy: dr.ellipse((xx - r, yy - r * 0.8, xx + r, yy + r * 0.8), fill=(v, v, v, 90)), x, y, r)
+    return wrap_blur(cv.img, 60)
+
+
+# ---------------------------------------------------------------- details
+
+def blades(cv, rnd, count, length, lean, width, dark, mid, light, tones):
+    """Grass blades, back to front so lower blades overlap upper ones. Each is
+    a tapered quad: a shaded root, a lit tip. tones brightens blades where the
+    turf is lit."""
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    roots = sorted(((rnd.uniform(0, W), rnd.uniform(0, W)) for _ in range(count)), key=lambda p: p[1])
+    lit_px = tones.load()
+    for x, y in roots:
+        L = rnd.uniform(*length)
+        a = math.radians(rnd.uniform(-lean, lean))
+        w = rnd.uniform(*width)
+        lit = lit_px[int(x) % W, int(y) % W][0] / 255.0
+        t = min(1.0, max(0.0, lit * 0.8 + rnd.uniform(-0.25, 0.35)))
+        root = mix(rgb(dark), rgb(mid), t * 0.6)
+        tip = mix(rgb(mid), rgb(light), t)
+        tx = math.sin(a) * L
+        ty = -math.cos(a) * L
+
+        def draw_blade(dr, bx, by, tx=tx, ty=ty, w=w, root=root, tip=tip):
+            mx = tx * 0.5
+            my = ty * 0.5
+            dr.polygon([(bx - w / 2, by), (bx + w / 2, by), (bx + mx + w * 0.3, by + my), (bx + mx - w * 0.3, by + my)], fill=root)
+            dr.polygon([(bx + mx - w * 0.3, by + my), (bx + mx + w * 0.3, by + my), (bx + tx, by + ty)], fill=tip)
+
+        cv.wrap_draw(d, draw_blade, x, y, L + w)
+    cv.blend(lay)
+
+
+def clover(cv, rnd, count, leaf, dark):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        cx = rnd.uniform(0, W)
+        cy = rnd.uniform(0, W)
+        for _ in range(rnd.randint(3, 7)):
+            x = cx + rnd.uniform(-40, 40)
+            y = cy + rnd.uniform(-30, 30)
+
+            def draw_leaf(dr, bx, by):
+                for ang in (90, 210, 330):
+                    ox = math.cos(math.radians(ang)) * 7
+                    oy = -math.sin(math.radians(ang)) * 7
+                    dr.ellipse((bx + ox - 7, by + oy - 7, bx + ox + 7, by + oy + 7), fill=rgb(leaf))
+                dr.ellipse((bx - 3, by + 4, bx + 3, by + 10), fill=rgb(dark))
+
+            cv.wrap_draw(d, draw_leaf, x, y, 20)
+    cv.blend(lay)
+
+
+def flowers(cv, rnd, count, petals, centre):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        cx = rnd.uniform(0, W)
+        cy = rnd.uniform(0, W)
+        col = rnd.choice(petals)
+        for _ in range(rnd.randint(1, 4)):
+            x = cx + rnd.uniform(-50, 50)
+            y = cy + rnd.uniform(-40, 40)
+
+            def draw_flower(dr, bx, by, col=col):
+                dr.ellipse((bx - 9, by - 9, bx + 9, by + 9), fill=rgb(col))
+                dr.ellipse((bx - 4, by - 4, bx + 4, by + 4), fill=rgb(centre))
+
+            cv.wrap_draw(d, draw_flower, x, y, 12)
+    cv.blend(lay)
+
+
+def fallen_leaves(cv, rnd, count, colours, shadow):
+    """Autumn: small leaves lying flat, each with a soft shadow."""
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        r = rnd.uniform(11, 17)
+        a = rnd.uniform(0, math.tau)
+        col = rnd.choice(colours)
+        pts = [(math.cos(a) * r, math.sin(a) * r), (math.cos(a + 1.7) * r * 0.45, math.sin(a + 1.7) * r * 0.45),
+               (math.cos(a + math.pi) * r, math.sin(a + math.pi) * r), (math.cos(a - 1.7) * r * 0.45, math.sin(a - 1.7) * r * 0.45)]
+
+        def draw_leaf(dr, bx, by, pts=pts, col=col):
+            dr.polygon([(bx + px + 3, by + py + 4) for px, py in pts], fill=rgb(shadow, 120))
+            dr.polygon([(bx + px, by + py) for px, py in pts], fill=rgb(col))
+
+        cv.wrap_draw(d, draw_leaf, x, y, r + 6)
+    cv.blend(lay)
+
+
+def tufts(cv, rnd, count, dark, light, shadow):
+    """Small clumps of a few short blades, each with a soft shadow at its foot."""
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        shapes = []
+        for _ in range(rnd.randint(3, 6)):
+            a = math.radians(rnd.uniform(-35, 35))
+            L = rnd.uniform(14, 26)
+            ox = rnd.uniform(-8, 8)
+            shapes.append((ox, math.sin(a) * L, -math.cos(a) * L, rnd.choice((dark, light))))
+
+        def draw_tuft(dr, bx, by, shapes=shapes):
+            dr.ellipse((bx - 16, by - 4, bx + 16, by + 6), fill=rgb(shadow, 160))
+            for ox, tx, ty, col in shapes:
+                dr.polygon([(bx + ox - 3, by), (bx + ox + 3, by), (bx + ox + tx, by + ty)], fill=rgb(col))
+
+        cv.wrap_draw(d, draw_tuft, x, y, 40)
+    cv.blend(lay)
+
+
+def pebbles(cv, rnd, count, rmin, rmax, stones, lit, shadow):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        r = rnd.uniform(rmin, rmax)
+        ry = r * rnd.uniform(0.6, 0.9)
+        col = rnd.choice(stones)
+
+        def draw_pebble(dr, bx, by, r=r, ry=ry, col=col):
+            dr.ellipse((bx - r + 4, by - ry + 6, bx + r + 4, by + ry + 6), fill=rgb(shadow, 150))
+            dr.ellipse((bx - r, by - ry, bx + r, by + ry), fill=rgb(col))
+            dr.ellipse((bx - r * 0.7, by - ry * 0.85, bx + r * 0.2, by - ry * 0.1), fill=rgb(lit))
+
+        cv.wrap_draw(d, draw_pebble, x, y, r + 8)
+    cv.blend(lay)
+
+
+def cracks(cv, rnd, count, col):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        pts = [(0.0, 0.0)]
+        ang = rnd.uniform(0, math.tau)
+        for _ in range(rnd.randint(3, 7)):
+            ang += rnd.uniform(-0.8, 0.8)
+            step = rnd.uniform(12, 30)
+            pts.append((pts[-1][0] + math.cos(ang) * step, pts[-1][1] + math.sin(ang) * step))
+        cv.wrap_draw(d, lambda dr, bx, by, pts=pts: dr.line([(bx + px, by + py) for px, py in pts], fill=rgb(col, 200), width=5), x, y, 200)
+    cv.blend(lay)
+
+
+def ripples(cv, rnd, count, col, alpha, size):
+    lay = cv.layer()
+    d = ImageDraw.Draw(lay)
+    for _ in range(count):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(0, W)
+        w = rnd.uniform(*size)
+        h = w * rnd.uniform(0.25, 0.4)
+        start = rnd.uniform(190, 220)
+        end = rnd.uniform(320, 350)
+        cv.wrap_draw(d, lambda dr, bx, by, w=w, h=h, s=start, e=end: dr.arc((bx - w, by - h, bx + w, by + h), s, e, fill=rgb(col, alpha), width=5), x, y, w)
+    cv.blend(lay)
+
+
+# ---------------------------------------------------------------- terrains
+# Each painter takes the season's palette dict and a seed. The seed is the
+# terrain's, not the season's, so shapes sit in the same places in every
+# season and a season change only recolours the ground.
+
+def paint_grass(seed, pal, dense):
+    rnd = random.Random(seed)
+    tones = tone_map(rnd)
+    cv = Canvas(pal["base"])
+    tone_blobs(cv, rnd, [pal["shade"], pal["lit"]], 160, 80, 240, 70, 50)
+    blades(cv, rnd, 52000 if dense else 40000, (26, 54) if dense else (20, 44), 28, (6, 9), pal["dark"], pal["mid"], pal["light"], tones)
+    clover(cv, rnd, 18 if dense else 40, pal["clover"], pal["dark"])
+    blades(cv, rnd, 9000, (16, 30), 30, (5, 7), pal["dark"], pal["mid"], pal["light"], tones)
+    flower_rnd = random.Random(seed + 500)
+    if pal.get("petals"):
+        flowers(cv, flower_rnd, 20 if dense else 70, pal["petals"], pal["centre"])
+    if pal.get("leaves"):
+        fallen_leaves(cv, flower_rnd, 700 if dense else 900, pal["leaves"], pal["dark"])
+    return cv.img
+
+
+def paint_dirt(seed, pal):
+    rnd = random.Random(seed)
+    cv = Canvas(pal["base"])
+    tone_blobs(cv, rnd, [pal["damp"], pal["dry"], pal["dry"]], 220, 60, 220, 80, 45)
+    speckle(cv, rnd, [pal["dark"], pal["light"], pal["damp"]], 26000, 2.5, 5)
+    cracks(cv, rnd, 60, pal["dark"])
+    pebbles(cv, rnd, 900, 7, 16, pal["stones"], pal["stone_lit"], pal["dark"])
+    pebbles(cv, rnd, 90, 16, 28, pal["stones"], pal["stone_lit"], pal["dark"])
+    if pal.get("leaves"):
+        fallen_leaves(cv, random.Random(seed + 500), 420, pal["leaves"], pal["dark"])
+    return cv.img
+
+
+def paint_cobble(seed, pal):
+    rnd = random.Random(seed)
+    cv = Canvas(pal["gap"])
+    speckle(cv, rnd, [pal["gap_dark"], pal["moss"]], 9000, 3, 7)
+    step = 60
+    n = W // step
+    lay_shadow = cv.layer()
+    lay = cv.layer()
+    ds = ImageDraw.Draw(lay_shadow)
+    d = ImageDraw.Draw(lay)
+    for gy in range(n):
+        for gx in range(n):
+            x = (gx + 0.5) * step + rnd.uniform(-12, 12) + (step / 2 if gy % 2 else 0)
+            y = (gy + 0.5) * step + rnd.uniform(-8, 8)
+            r = step * rnd.uniform(0.40, 0.50)
+            k = rnd.randint(7, 10)
+            pts = []
+            for i in range(k):
+                a = math.tau * i / k + rnd.uniform(-0.2, 0.2)
+                rr = r * rnd.uniform(0.82, 1.05)
+                pts.append((math.cos(a) * rr * 1.1, math.sin(a) * rr * 0.9))
+            col = mix(rgb(rnd.choice(pal["stones"])), rgb(pal["warm"]), rnd.uniform(0, 0.25))
+            lit = mix(col, rgb(pal["lit"]), 0.55)
+            dark = mix(col, rgb(pal["gap_dark"]), 0.45)
+            cap = rgb(pal["cap"]) if pal.get("cap") else lit
+
+            def stone(dr, bx, by, pts=pts, col=col, cap=cap, dark=dark):
+                dr.polygon([(bx + px, by + py) for px, py in pts], fill=dark)
+                dr.polygon([(bx + px * 0.9 - 3, by + py * 0.88 - 3) for px, py in pts], fill=col)
+                # Lit top, or under snow a cap of snow on each stone.
+                scale_x, scale_y = (0.75, 0.6) if pal.get("cap") else (0.55, 0.45)
+                dr.polygon([(bx + px * scale_x - 9, by + py * scale_y - 10) for px, py in pts], fill=cap)
+
+            cv.wrap_draw(ds, lambda dr, bx, by, pts=pts: dr.polygon([(bx + px + 6, by + py + 8) for px, py in pts], fill=rgb(pal["gap_dark"], 170)), x, y, r + 12)
+            cv.wrap_draw(d, stone, x, y, r + 12)
+    cv.blend(lay_shadow, 4)
+    cv.blend(lay)
+    speckle(cv, rnd, [pal["gap_dark"]], 3000, 1.5, 3, 140)
+    if pal.get("leaves"):
+        fallen_leaves(cv, random.Random(seed + 500), 260, pal["leaves"], pal["gap_dark"])
+    return cv.img
+
+
+def paint_water(seed, pal, shallow):
+    rnd = random.Random(seed)
+    cv = Canvas(pal["base"])
+    tone_blobs(cv, rnd, [pal["deep"], pal["lit"]], 160, 90, 260, 90, 60)
+    if shallow:
+        # The bed shows through: soft stones under the water.
+        pebbles(cv, rnd, 500, 8, 20, [pal["bed"]], pal["bed_lit"], pal["deep"])
+        flat = Image.new("RGBA", (W, W), rgb(pal["base"]))
+        cv.img = Image.blend(flat, cv.img, 0.55)
+    ripples(cv, rnd, 1400, pal["deep"], 150, (24, 60))
+    ripples(cv, rnd, 1100, pal["light"], 200, (18, 46))
+    speckle(cv, rnd, [pal["glint"]], 160, 3, 5)
+    return cv.img
+
+
+def paint_snow(seed, pal):
+    """Snow over any land: drifts with blue shadows, glints, and whatever
+    pokes through (grass tips, mud, stones) per pal["through"]."""
+    rnd = random.Random(seed)
+    cv = Canvas(pal["base"])
+    tone_blobs(cv, rnd, [pal["shadow"], pal["light"], pal["light"]], 200, 70, 230, 90, 55)
+    # Drifts: soft shadows on the lee side of low mounds.
+    tone_blobs(cv, rnd, [pal["deep_shadow"]], 90, 40, 110, 45, 30)
+    through = pal.get("through")
+    if through == "grass":
+        # A few tufts of dead grass stick up through the snow.
+        tufts(cv, rnd, 170, pal["poke_dark"], pal["poke"], pal["shadow"])
+    elif through == "mud":
+        tone_blobs(cv, rnd, [pal["mud"]], 80, 30, 80, 70, 25)
+        speckle(cv, rnd, [pal["mud_dark"], pal["shadow"]], 5000, 2.5, 4.5)
+        pebbles(cv, rnd, 160, 7, 14, [pal["mud_dark"]], pal["mud"], pal["deep_shadow"])
+    speckle(cv, rnd, [pal["glint"]], 2200, 2, 4)
+    return cv.img
+
+
+# ---------------------------------------------------------------- palettes
+
+SUMMER = {
+    LIGHT_GRASS: dict(base="5f8a3a", shade="4d7432", lit="7a9f45", dark="3e6129", mid="6a9440", light="9cbf5a",
+                      clover="76a64a", petals=["f2eee0", "f4d65a", "e9e4f2"], centre="e0b23a"),
+    DARK_GRASS: dict(base="456f31", shade="375c29", lit="5a8139", dark="2c4d23", mid="4f7a35", light="7aa24a",
+                     clover="5e9140", petals=["eae6d8"], centre="d4a83a"),
+    DIRT: dict(base="7d6044", damp="634a34", dry="94765a", dark="533d2a", light="a3876a",
+               stones=["8d8274", "9a8f80", "7e7466"], stone_lit="bdb3a3"),
+    COBBLESTONE: dict(gap="4a4036", gap_dark="2f2922", moss="4f5a33", stones=["8b877f", "9a958c", "7f7a72", "a39d92"],
+                      warm="9a8466", lit="c9c3b6"),
+    SHALLOW_WATER: dict(base="4b8a98", deep="3c7584", lit="62a2ac", light="a6d6db", glint="e8f6f6", bed="6b8c80", bed_lit="8eab9c"),
+    DEEP_WATER: dict(base="2b5a72", deep="224b62", lit="356a83", light="5f93aa", glint="b9dbe6"),
 }
 
+LEAVES = ["c8702a", "d99a3a", "a8452a", "8f5b2a", "b8862e"]
 
-# ---------------------------------------------------------------- noise
+AUTUMN = {
+    LIGHT_GRASS: dict(base="7c853f", shade="676f37", lit="959b4a", dark="535a2d", mid="868f44", light="b2b05c",
+                      clover="8a9346", leaves=LEAVES),
+    DARK_GRASS: dict(base="647038", shade="535d2f", lit="7a8540", dark="434b27", mid="6e7a3c", light="979c50",
+                     clover="76823f", leaves=LEAVES),
+    DIRT: dict(SUMMER[DIRT], base="76593f", damp="5d4532", dry="8b6d50", dark="4d3826", light="9c7f62", leaves=LEAVES),
+    COBBLESTONE: dict(SUMMER[COBBLESTONE], moss="5a5a33", leaves=LEAVES),
+    SHALLOW_WATER: dict(SUMMER[SHALLOW_WATER], base="4c8592", deep="3d717e", lit="5f9ba5"),
+    DEEP_WATER: dict(SUMMER[DEEP_WATER], base="2c566c", deep="23485c"),
+}
 
-def _lattice(period, seed):
+WINTER = {
+    LIGHT_GRASS: dict(base="7c7d57", shade="686a49", lit="908f68", dark="56583d", mid="838561", light="a5a179", clover="7d835e"),
+    DARK_GRASS: dict(base="646b48", shade="535a3c", lit="787d56", dark="454b33", mid="6c734e", light="8b8e66", clover="6f7652"),
+    DIRT: dict(SUMMER[DIRT], base="6c5644", damp="574536", dry="7f6853", dark="4a3a2d", light="917b66",
+               stones=["858078", "918b82", "79746c"], stone_lit="b0aaa0"),
+    COBBLESTONE: dict(SUMMER[COBBLESTONE], gap="433b33", moss="4a4e36", stones=["86847f", "94918b", "7a7874", "9c9993"], warm="8a7d6c"),
+    SHALLOW_WATER: dict(base="4f7a87", deep="416a77", lit="618b96", light="9cc0c8", glint="dff0f2", bed="627a74", bed_lit="7f9389"),
+    DEEP_WATER: dict(base="2b4f63", deep="233f52", lit="33596e", light="557f92", glint="aacbd6"),
+}
+
+SNOW = dict(base="e6ecf1", shadow="c7d2dd", deep_shadow="a9b8c7", light="f6f9fc", glint="ffffff")
+
+SNOWY = {
+    LIGHT_GRASS: dict(SNOW, through="grass", poke="7d8263", poke_dark="5c6149"),
+    # The same seed as light grass under snow: the two grasses look alike, so
+    # the patches of dark grass disappear under the snow.
+    DARK_GRASS: dict(SNOW, through="grass", poke="7d8263", poke_dark="5c6149"),
+    DIRT: dict(SNOW, base="d8dfe5", through="mud", mud="9c9188", mud_dark="6f645b"),
+    COBBLESTONE: dict(SUMMER[COBBLESTONE], gap="b9c4ce", gap_dark="8d99a5", moss="c9d3dc", cap="eef3f7",
+                      stones=["8e8c88", "9c9995", "84827e"], warm="8e857a"),
+    SHALLOW_WATER: WINTER[SHALLOW_WATER],
+    DEEP_WATER: WINTER[DEEP_WATER],
+}
+
+PALETTES = {"summer": SUMMER, "autumn": AUTUMN, "winter": WINTER, "snowy": SNOWY}
+
+
+def paint(terrain, season):
+    pal = PALETTES[season][terrain]
+    if season == "snowy" and terrain in (LIGHT_GRASS, DARK_GRASS):
+        return paint_snow(20, pal)
+    if season == "snowy" and terrain == DIRT:
+        return paint_snow(21, pal)
+    if terrain == LIGHT_GRASS:
+        return paint_grass(1, pal, False)
+    if terrain == DARK_GRASS:
+        return paint_grass(2, pal, True)
+    if terrain == DIRT:
+        return paint_dirt(3, pal)
+    if terrain == COBBLESTONE:
+        return paint_cobble(4, pal)
+    if terrain == SHALLOW_WATER:
+        return paint_water(5, pal, True)
+    return paint_water(6, pal, False)
+
+
+def shrink(img):
+    """Area-average to TEX (an exact factor, so the texture still wraps), then
+    reduce to a small palette with no dither."""
+    small = img.resize((TEX, TEX), Image.BOX).convert("RGB")
+    return small.quantize(colors=COLOURS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert("RGB")
+
+
+def build_atlas(season):
+    rows = (len(LAYER_ORDER) + ATLAS_COLS - 1) // ATLAS_COLS
+    atlas = Image.new("RGB", (ATLAS_COLS * TEX, rows * TEX))
+    for rank, terrain in enumerate(LAYER_ORDER):
+        atlas.paste(shrink(paint(terrain, season)), ((rank % ATLAS_COLS) * TEX, (rank // ATLAS_COLS) * TEX))
+    return atlas
+
+
+# ---------------------------------------------------------------- edge noise
+
+def _lattice(n, seed):
     rnd = random.Random(seed)
-    return [[rnd.uniform(-1.0, 1.0) for _ in range(period)] for _ in range(period)]
+    return [[rnd.random() for _ in range(n)] for _ in range(n)]
 
 
 def _smooth(t):
-    return t * t * (3.0 - 2.0 * t)
+    return t * t * (3 - 2 * t)
 
 
-def _value_noise(lat, x, y):
-    """Periodic value noise; x and y in lattice cells, wrapping at the lattice size."""
+def _vnoise(lat, x, y):
     n = len(lat)
     x0 = math.floor(x)
     y0 = math.floor(y)
@@ -126,176 +518,21 @@ def _value_noise(lat, x, y):
     return a + (b - a) * fy
 
 
-EDGE_LAT_COARSE = _lattice(2, 11)
-EDGE_LAT_FINE = _lattice(4, 12)
-
-
-def edge_noise(px, py):
-    """The shared wobble on every terrain edge; px, py in tile pixels, period one tile."""
-    return 0.13 * _value_noise(EDGE_LAT_COARSE, px / 8.0, py / 8.0) + 0.06 * _value_noise(EDGE_LAT_FINE, px / 4.0, py / 4.0)
-
-
-def edge_field(mask, px, py):
-    """Above 0 inside the terrain. px, py are tile pixels and may run past the tile."""
-    u = px / T
-    v = py / T
-    tl = 1.0 if mask & 1 else 0.0
-    tr = 1.0 if mask & 2 else 0.0
-    br = 1.0 if mask & 4 else 0.0
-    bl = 1.0 if mask & 8 else 0.0
-    f = tl * (1 - u) * (1 - v) + tr * u * (1 - v) + br * u * v + bl * (1 - u) * v
-    return f + edge_noise(px, py) - 0.5
-
-
-# ---------------------------------------------------------------- ground texture
-
-def cobble_cells():
-    """Stone centres for the cobbles: a jittered 3x3 grid that repeats every tile."""
-    rnd = random.Random(41)
-    cells = []
-    step = T / 3.0
-    for gy in range(3):
-        for gx in range(3):
-            cells.append(((gx + 0.5) * step + rnd.uniform(-1.2, 1.2), (gy + 0.5) * step + rnd.uniform(-1.2, 1.2), rnd.random()))
-    return cells
-
-
-COBBLE_CELLS = cobble_cells()
-
-
-def _cobble_at(px, py):
-    """(nearest stone, gap to the second nearest) at a pixel centre, wrapping per tile."""
-    best = (1e9, None)
-    second = 1e9
-    for cx, cy, shade in COBBLE_CELLS:
-        for ox in (-T, 0, T):
-            for oy in (-T, 0, T):
-                d = math.hypot(px - (cx + ox), py - (cy + oy))
-                if d < best[0]:
-                    second = best[0]
-                    best = (d, shade)
-                elif d < second:
-                    second = d
-    return best[1], second - best[0]
-
-
-def ground_pixel(terrain, pal, x, y):
-    """The terrain's ground at tile pixel (x, y), the same in every tile so tiles join."""
-    if terrain != COBBLESTONE:
-        return pal["base"]
-    shade, gap = _cobble_at(x + 0.5, y + 0.5)
-    if gap < 1.1:
-        return pal["mortar"]
-    # Light on a stone's top edge, dark on its bottom edge.
-    _, gap_up = _cobble_at(x + 0.5, y - 0.5)
-    _, gap_down = _cobble_at(x + 0.5, y + 1.5)
-    if gap_up < 1.1:
-        return pal["light"]
-    if gap_down < 1.1:
-        return pal["dark"]
-    return pal["base"] if shade < 0.55 else pal["alt"]
-
-
-# ---------------------------------------------------------------- tiles
-
-def edge_tile(terrain, pal, mask):
-    img = Image.new("RGBA", (T, T), (0, 0, 0, 0))
-    for y in range(T):
-        for x in range(T):
-            cx = x + 0.5
-            cy = y + 0.5
-            g = edge_field(mask, cx, cy)
-            if g <= 0:
-                continue
-            # One pixel of rim: the field's rise across one pixel.
-            gx = (edge_field(mask, cx + 0.5, cy) - edge_field(mask, cx - 0.5, cy))
-            gy = (edge_field(mask, cx, cy + 0.5) - edge_field(mask, cx, cy - 0.5))
-            if g < math.hypot(gx, gy):
-                img.putpixel((x, y), pal["outline"])
-            else:
-                img.putpixel((x, y), ground_pixel(terrain, pal, x, y))
+def build_edge_noise():
+    """fBm in tile units that wraps every 16 tiles (the TEX period), as grey;
+    128 is no shift. Smooth, so the PNG stays small."""
+    tiles = TEX // TILE_PX
+    octaves = [(_lattice(tiles * f, 71 + i), f, w) for i, (f, w) in enumerate(((2, 1.0), (4, 0.55), (8, 0.3)))]
+    total = sum(w for _, _, w in octaves)
+    img = Image.new("L", (TEX, TEX))
+    px = img.load()
+    for y in range(TEX):
+        for x in range(TEX):
+            wx = (x + 0.5) / TILE_PX
+            wy = (y + 0.5) / TILE_PX
+            v = sum(w * _vnoise(lat, wx * f, wy * f) for lat, f, w in octaves) / total
+            px[x, y] = int(round(v * 255))
     return img
-
-
-def _put(img, x, y, colour):
-    if 0 <= x < T and 0 <= y < T:
-        img.putpixel((x, y), colour)
-
-
-def _grass_detail(img, pal, rnd):
-    for _ in range(rnd.randint(2, 4)):
-        x = rnd.randint(1, T - 4)
-        y = rnd.randint(2, T - 2)
-        # A tuft: two dark blades with a light one between.
-        _put(img, x, y, pal["dark"])
-        _put(img, x + 2, y, pal["dark"])
-        _put(img, x + 1, y - 1, pal["light"])
-    for _ in range(rnd.randint(1, 3)):
-        _put(img, rnd.randint(1, T - 2), rnd.randint(1, T - 2), pal["light"])
-
-
-def _dirt_detail(img, pal, rnd):
-    for _ in range(rnd.randint(2, 4)):
-        x = rnd.randint(1, T - 2)
-        y = rnd.randint(1, T - 3)
-        # A pebble: lit top, shadow under it.
-        _put(img, x, y, pal["light"])
-        _put(img, x, y + 1, pal["dark"])
-    if rnd.random() < 0.6:
-        x = rnd.randint(1, T - 4)
-        y = rnd.randint(1, T - 2)
-        _put(img, x, y, pal["dark"])
-        _put(img, x + 1, y, pal["dark"])
-
-
-def _water_detail(img, pal, rnd):
-    for _ in range(rnd.randint(1, 2)):
-        x = rnd.randint(1, T - 5)
-        y = rnd.randint(2, T - 2)
-        # A ripple: a low arc of four pixels.
-        _put(img, x, y, pal["light"])
-        _put(img, x + 1, y - 1, pal["light"])
-        _put(img, x + 2, y - 1, pal["light"])
-        _put(img, x + 3, y, pal["light"])
-
-
-DETAIL = {
-    DIRT: _dirt_detail,
-    LIGHT_GRASS: _grass_detail,
-    DARK_GRASS: _grass_detail,
-    SHALLOW_WATER: _water_detail,
-    DEEP_WATER: _water_detail,
-}
-
-
-def fill_tile(terrain, pal, variant):
-    img = Image.new("RGBA", (T, T))
-    for y in range(T):
-        for x in range(T):
-            img.putpixel((x, y), ground_pixel(terrain, pal, x, y))
-    if variant > 0 and terrain in DETAIL:
-        # Seeded by terrain and variant only, so a detail sits in the same spot
-        # in every season and a season change does not shuffle the ground.
-        DETAIL[terrain](img, pal, random.Random(terrain * 100 + variant))
-    return img
-
-
-def fill_variants(terrain):
-    # Cobbles have no detail to vary: one tile.
-    return 1 if terrain == COBBLESTONE else FILL_VARIANTS
-
-
-def build_sheet(season):
-    cols = FILL_COL + FILL_VARIANTS
-    sheet = Image.new("RGBA", (cols * T, len(TERRAINS) * T), (0, 0, 0, 0))
-    for terrain in TERRAINS:
-        pal = PALETTES[season][terrain]
-        row = terrain - 1
-        for mask in range(1, 15):
-            sheet.paste(edge_tile(terrain, pal, mask), (mask * T, row * T))
-        for variant in range(fill_variants(terrain)):
-            sheet.paste(fill_tile(terrain, pal, variant), ((FILL_COL + variant) * T, row * T))
-    return sheet
 
 
 # ---------------------------------------------------------------- sparkles
@@ -305,82 +542,72 @@ SPARKLE_ROWS = 3
 
 
 def build_sparkles():
-    """12 frames, read left to right then down. Each tile starts at its own frame."""
-    sheet = Image.new("RGBA", (SPARKLE_COLS * T, SPARKLE_ROWS * T), (0, 0, 0, 0))
+    """12 frames of 32x32, read left to right then down. Two glints a cycle,
+    each three frames: a dot, a small cross, a dot."""
+    sheet = Image.new("RGBA", (SPARKLE_COLS * TILE_PX, SPARKLE_ROWS * TILE_PX), (0, 0, 0, 0))
     white = (255, 255, 255, 230)
     soft = (220, 240, 250, 150)
     rnd = random.Random(77)
     frames = SPARKLE_COLS * SPARKLE_ROWS
-    # Two glints a cycle, each three frames: a dot, a small cross, a dot.
     for start in (1, 7):
-        x = rnd.randint(3, T - 4)
-        y = rnd.randint(3, T - 4)
+        x = rnd.randint(5, TILE_PX - 6)
+        y = rnd.randint(5, TILE_PX - 6)
         for step, shape in enumerate(("dot", "cross", "dot")):
             frame = (start + step) % frames
-            ox = (frame % SPARKLE_COLS) * T
-            oy = (frame // SPARKLE_COLS) * T
+            ox = (frame % SPARKLE_COLS) * TILE_PX
+            oy = (frame // SPARKLE_COLS) * TILE_PX
             sheet.putpixel((ox + x, oy + y), white)
             if shape == "cross":
-                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (-2, 0)):
                     sheet.putpixel((ox + x + dx, oy + y + dy), soft)
     return sheet
 
 
 # ---------------------------------------------------------------- pack script
 
-def gd_coords(col, row):
-    return "Vector2i(%d, %d)" % (col, row)
-
-
 def write_pack_script():
     lines = [
         "extends RefCounted",
-        "## The ground pack the terrain renderer draws (LLM-967). Generated by",
+        "## The ground the terrain renderer draws (LLM-967). Generated by",
         "## tools/terrain-art/build.py; edit that script and rerun it, not this file.",
-        "## A purchased pack gets a file of the same shape, written by hand.",
         "",
-        "## Source tile size in the sheets.",
-        "const SRC_TILE_SIZE: int = %d" % T,
+        "## World pixels per map tile; the textures are drawn one texel per world pixel.",
+        "const TILE_PX: int = %d" % TILE_PX,
+        "## Each terrain's texture is TEXTURE_PX square and wraps.",
+        "const TEXTURE_PX: int = %d" % TEX,
+        "## Textures sit in the atlas in LAYER_ORDER, ATLAS_COLS across.",
+        "const ATLAS_COLS: int = %d" % ATLAS_COLS,
         "",
         "## terrain.gd ids, drawn bottom to top.",
         "const LAYER_ORDER: Array[int] = [%s]" % ", ".join(str(t) for t in LAYER_ORDER),
         "",
-        "## The ground sheet per season, all in one layout. A season not named here",
-        "## draws summer. snowy is the ground under light or deep snow, any season.",
+        "## The ground atlas per season. A season not named here draws summer.",
+        "## snowy is the ground under light or deep snow, any season.",
         "const SHEETS: Dictionary = {",
     ]
-    for season in SEASONS:
-        lines.append('    "%s": "res://assets/terrain/ground-%s.png",' % (season, season))
+    lines += ['    "%s": "res://assets/terrain/ground-%s.png",' % (s, s) for s in SEASONS]
     lines += [
         "}",
         "",
-        "## Edge tiles per terrain, indexed by corner mask (TL=1, TR=2, BR=4, BL=8).",
-        "## Index 0 and 15 are unused (an empty and a full corner set); a",
-        "## Vector2i(-1, -1) entry is a mask the pack does not draw.",
-        "const EDGES: Dictionary = {",
-    ]
-    for terrain in TERRAINS:
-        row = terrain - 1
-        cells = [gd_coords(-1, -1)] + [gd_coords(mask, row) for mask in range(1, 15)] + [gd_coords(-1, -1)]
-        lines.append("    %d: [%s]," % (terrain, ", ".join(cells)))
-    lines += [
-        "}",
+        "## The wobble on every terrain edge, grey; 128 is no shift.",
+        'const EDGE_NOISE: String = "res://assets/terrain/edge-noise.png"',
+        "## How far the wobble moves an edge, as a fraction of a tile.",
+        "const EDGE_WOBBLE: float = 0.6",
         "",
-        "## Full tiles per terrain. The renderer picks one by map position; the plain",
-        "## tile is listed twice so it comes up more often than any detailed one.",
-        "const FILLS: Dictionary = {",
-    ]
-    for terrain in TERRAINS:
-        row = terrain - 1
-        count = fill_variants(terrain)
-        cells = [gd_coords(FILL_COL, row)]
-        cells += [gd_coords(FILL_COL + v, row) for v in range(count)]
-        lines.append("    %d: [%s]," % (terrain, ", ".join(cells)))
-    lines += [
+        "## Terrains whose blade tips reach past their edge.",
+        "const FRINGE_TERRAINS: Array[int] = [%d, %d]" % (LIGHT_GRASS, DARK_GRASS),
+        "## Terrains that meet with no shadow or dark rim between them, per",
+        "## season (default for a season not named). Under snow the land types",
+        "## all look alike, so only cobbles and water keep their edges.",
+        "const SOFT_EDGE_TERRAINS: Dictionary = {",
+        '    "default": [%d, %d],' % (LIGHT_GRASS, DARK_GRASS),
+        '    "snowy": [%d, %d, %d],' % (DIRT, LIGHT_GRASS, DARK_GRASS),
         "}",
+        "## Water: no edge shading of its own, and a pale line where it meets land.",
+        "const WATER_TERRAINS: Array[int] = [%d, %d]" % (SHALLOW_WATER, DEEP_WATER),
         "",
         "## Animated glints drawn over water: frames read left to right, then down.",
-        "const SPARKLE_SHEET: String = \"res://assets/terrain/water-sparkles.png\"",
+        'const SPARKLE_SHEET: String = "res://assets/terrain/water-sparkles.png"',
         "const SPARKLE_COLS: int = %d" % SPARKLE_COLS,
         "const SPARKLE_ROWS: int = %d" % SPARKLE_ROWS,
         "const SPARKLE_FRAME_SECONDS: float = 0.6",
@@ -393,8 +620,14 @@ def write_pack_script():
 
 def main():
     os.makedirs(ASSET_DIR, exist_ok=True)
+    for name in os.listdir(ASSET_DIR):
+        # The tile sheets of the earlier 16 px layout are replaced by atlases.
+        if name.startswith("ground-") and name.split(".")[0][len("ground-"):] not in SEASONS:
+            os.remove(os.path.join(ASSET_DIR, name))
     for season in SEASONS:
-        build_sheet(season).save(os.path.join(ASSET_DIR, "ground-%s.png" % season))
+        build_atlas(season).save(os.path.join(ASSET_DIR, "ground-%s.png" % season))
+        print("painted", season)
+    build_edge_noise().save(os.path.join(ASSET_DIR, "edge-noise.png"))
     build_sparkles().save(os.path.join(ASSET_DIR, "water-sparkles.png"))
     write_pack_script()
     print("wrote", ASSET_DIR, "and", PACK_SCRIPT)
