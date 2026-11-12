@@ -24,6 +24,13 @@ import (
 // pay_with_item; the wright's job is to show up and name his rate — the two
 // cues split the deal the way the trader-visit cue splits the factor's.
 //
+// The RATE is the wright's to name (LLM-984). His cue carries what the stone
+// cost him and a cost-anchored ask; the owner's cue names no figure and pays
+// what he names. Before LLM-984 the owner's page quoted the catalog retail
+// ("his rate is about 10") while the wright's page gave no number at all, so
+// the owner set the price and the wright accepted it — live, Lewis sold the
+// service at or under the price of the stone it consumed and reached 0 coins.
+//
 // Slice 1 gates nothing: no penalty rides the counter, so both cues are pure
 // steering (the LLM-648 observe-compliance decision).
 
@@ -44,10 +51,10 @@ type EquipmentServiceView struct {
 	WrightName string
 	WrightID   sim.ActorID
 	// ServiceItem is the catalog kind the imperative names (resolved by
-	// capability, not hardcoded); Price its retail rate, 0 = unpriced (the
-	// imperative renders without a figure).
+	// capability, not hardcoded). The view carries no price on purpose
+	// (LLM-984): the rate is the wright's to name, and a catalog figure here
+	// had the owner offering it before the wright spoke.
 	ServiceItem sim.ItemKind
-	Price       int
 }
 
 // WrightRoundsView is the wright-side cue: where the trade wants him next.
@@ -66,6 +73,14 @@ type WrightRoundsView struct {
 	// Walk is the bearing phrase ("a fair walk east"); "" when co-present or
 	// coincident.
 	Walk string
+
+	// The cost-anchored ask (LLM-984), all three 0 when there is nothing to say
+	// (see wrightServiceAsk). StoneCost is what the stones for one service
+	// lately cost him, RecentRate what a service has lately brought him (0 with
+	// no coin sale on record), Ask the rate the cue tells him to name.
+	StoneCost  int
+	RecentRate int
+	Ask        int
 
 	// The NoStone resupply (LLM-717), resolved by the same seller rule the
 	// nail and shovel buy cues and "## Restocking" run (findItemVendors /
@@ -169,7 +184,7 @@ func buildEquipmentService(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 	if stall == nil {
 		return nil
 	}
-	kind, price := equipmentServiceItemKind(snap)
+	kind, _ := equipmentServiceItemKind(snap)
 	if kind == "" {
 		return nil // no service item in the catalog — nothing purchasable to cue
 	}
@@ -182,7 +197,6 @@ func buildEquipmentService(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *s
 		Gear:        equipmentGearPhrase(stall),
 		Overdue:     equipmentOverdue(stall.EquipmentUse, threshold),
 		ServiceItem: kind,
-		Price:       price,
 	}
 	for _, m := range members {
 		ms := snap.Actors[m.ID]
@@ -264,11 +278,12 @@ func renderEquipmentService(b *strings.Builder, v *EquipmentServiceView) {
 	}
 	if v.WrightName != "" {
 		name := sanitizeInline(v.WrightName)
-		fmt.Fprintf(b, " %s is here now with his stones — have him see to it: pay_with_item (seller \"%s\", item \"%s\", qty 1, consume_now false, coins in amount", name, name, v.ServiceItem)
-		if v.Price > 0 {
-			fmt.Fprintf(b, " — his rate is about %d", v.Price)
-		}
-		b.WriteString(").\n\n")
+		// No figure (LLM-984): the wright names his own rate, and the owner
+		// pays what he names. The speak step covers the tick where the owner's
+		// page renders before the wright has spoken; "wait for his answer"
+		// keeps the pay from reading as a second action in the same turn, when
+		// there is no rate yet to pay (code_review).
+		fmt.Fprintf(b, " %s is here now with his stones — have him see to it. The rate is his to name. If you have not heard his rate, ask him (speak) and wait for his answer. Once he has named it, pay that rate: pay_with_item (seller \"%s\", item \"%s\", qty 1, consume_now false, the rate he named as the coins in amount).\n\n", name, name, v.ServiceItem)
 		return
 	}
 	b.WriteString(" It will keep until the wright calls.\n\n")
@@ -331,6 +346,7 @@ func buildWrightRounds(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.A
 		Gear:      equipmentGearPhrase(best),
 		Overdue:   equipmentOverdue(best.EquipmentUse, threshold),
 	}
+	v.StoneCost, v.RecentRate, v.Ask = wrightServiceAsk(snap, actorID)
 	for _, m := range members {
 		if m.ID == best.OwnerActorID {
 			v.CoPresent = true
@@ -347,6 +363,76 @@ func buildWrightRounds(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.A
 		v.Walk = qualitativeDistance(dist) + " " + dir
 	}
 	return v
+}
+
+// wrightServiceAsk is the cost-anchored ask for one service (LLM-984): what the
+// stones for it lately cost the wright, what a service has lately brought him,
+// and the rate he should name. All three are 0 when the cue should stay silent.
+//
+// The ask is stone cost PLUS THE CATALOG'S OWN MARGIN — service retail less
+// whetstone retail (10 − 4 = 6 as seeded) — never below service retail. It is
+// not the reseller's cost-plus-a-quarter (TradeValueItem.AskUnit): a reseller
+// sells the good it bought, the wright sells his labour, and a quarter of a
+// stone does not pay for a call. Keeping the designed margin means a rise in
+// the stone's price passes through to the owners, who are the coin pools the
+// service exists to tap (LLM-648). The margin is read from the catalog, so an
+// umbilical recipe/set reprice of either good moves it with no code change.
+//
+// The service recipe has no inputs (the stone is drawn at delivery, not by a
+// batch), so the makings ask (MakingsAskUnit) never sees this cost; and the
+// stone is a reserved makings line with no price (LLM-720), so the resale ask
+// never sees it either. This is the one place the wright's margin is stated.
+//
+// Silent when: the catalog gives no positive margin; he has no coin purchase
+// of a stone in the window (a barter leg files no price observation, so it is
+// neither a cost nor a dilution); or his realized rate already covers the ask
+// — the LLM-475/627 rule that the phrase's presence is itself the signal, so a
+// winning line carries no nudge. The cover test divides, as AskUnit's does.
+func wrightServiceAsk(snap *sim.Snapshot, actorID sim.ActorID) (stoneCost, recentRate, ask int) {
+	kind, retail := equipmentServiceItemKind(snap)
+	stone := snap.Recipes[sim.WhetstoneKind]
+	if kind == "" || retail <= 0 || stone == nil || stone.RetailPrice <= 0 {
+		return 0, 0, 0
+	}
+	margin := retail - stone.RetailPrice*sim.WhetstonesPerService
+	if margin <= 0 {
+		return 0, 0, 0
+	}
+	units, coins := buyerRecentPurchases(snap, actorID, sim.WhetstoneKind, restockSalesWindow)
+	if units <= 0 || coins <= 0 {
+		return 0, 0, 0
+	}
+	// Nearest coin, the rounding the wares cue displays, so the figure he is
+	// shown and the sum built on it agree (7 + 6 = 13 on his own page).
+	stoneCost = (coins + units/2) / units * sim.WhetstonesPerService
+	ask = stoneCost + margin
+	if ask < retail {
+		ask = retail
+	}
+	if soldUnits, soldCoins := sellerRecentSales(snap, actorID, kind, restockSalesWindow); soldUnits > 0 {
+		if soldCoins/soldUnits >= ask {
+			return 0, 0, 0
+		}
+		recentRate = (soldCoins + soldUnits/2) / soldUnits
+	}
+	return stoneCost, recentRate, ask
+}
+
+// wrightAskClause is the render half of wrightServiceAsk: one sentence carrying
+// the cost, the recent rate when there is one, and the ask last — the directive
+// with a number is the final word against the trailing-rate self-anchor
+// (LLM-627). "" when the view carries no ask.
+func wrightAskClause(v *WrightRoundsView) string {
+	if v == nil || v.Ask <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "The stone for the work cost you about %s", coinsPhrase(v.StoneCost))
+	if v.RecentRate > 0 {
+		fmt.Fprintf(&b, ", and of late the work has brought you about %s", coinsPhrase(v.RecentRate))
+	}
+	fmt.Fprintf(&b, " — ask %s or more.", coinsPhrase(v.Ask))
+	return b.String()
 }
 
 // buildWrightStoneBuy is the NoStone arm of the rounds cue (LLM-717). A bare
@@ -424,13 +510,25 @@ func renderWrightRounds(b *strings.Builder, v *WrightRoundsView) {
 	if v.Overdue {
 		urgency = "long past due — they'll be feeling it in every batch"
 	}
+	// The ask rides every arm (LLM-984): before the offer imperative when he is
+	// with the owner, after the walk steer when he is not, so he arrives with
+	// his rate already in mind. "" when wrightServiceAsk stayed silent.
+	ask := wrightAskClause(v)
 	if v.CoPresent {
-		fmt.Fprintf(b, "You're with %s now, and the %s at %s are %s. Offer your service — tell them your rate and that your stone is ready (speak).\n\n", owner, gear, business, urgency)
+		fmt.Fprintf(b, "You're with %s now, and the %s at %s are %s. ", owner, gear, business, urgency)
+		if ask != "" {
+			b.WriteString(ask + " ")
+		}
+		b.WriteString("Offer your service — tell them your rate and that your stone is ready (speak).\n\n")
 		return
 	}
 	if v.Walk != "" {
-		fmt.Fprintf(b, "The %s at %s are %s — %s. Head there (move_to \"%s\") and offer %s your service.\n\n", gear, business, urgency, v.Walk, business, owner)
-		return
+		fmt.Fprintf(b, "The %s at %s are %s — %s. Head there (move_to \"%s\") and offer %s your service.", gear, business, urgency, v.Walk, business, owner)
+	} else {
+		fmt.Fprintf(b, "The %s at %s are %s. Head there (move_to \"%s\") and offer %s your service.", gear, business, urgency, business, owner)
 	}
-	fmt.Fprintf(b, "The %s at %s are %s. Head there (move_to \"%s\") and offer %s your service.\n\n", gear, business, urgency, business, owner)
+	if ask != "" {
+		b.WriteString(" " + ask)
+	}
+	b.WriteString("\n\n")
 }
