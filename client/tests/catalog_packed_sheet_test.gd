@@ -3,8 +3,9 @@ extends SceneTree
 ## Headless harness for LLM-967: catalog sheets packed into the client. A
 ## catalog state whose sheet is a res://assets/ path loads from the package
 ## with no request; anything else under res:// is refused; either way the
-## catalog still finishes loading. And the maple sheet the migration points
-## at is packed, at the size its rects assume.
+## catalog still finishes loading. And the three maple sheets the migration
+## points at are packed, at the size its rects assume, and a leafy look
+## slices into its animated loop the way the catalog serves it.
 ##
 ## Run headless (CI and local):
 ##   godot --headless --path client --import
@@ -20,12 +21,17 @@ const TESTS := [
     "_test_a_res_path_outside_assets_is_refused",
     "_test_a_path_climbing_out_of_assets_is_refused_before_loading",
     "_test_only_a_png_inside_assets_is_a_packed_sheet",
-    "_test_the_maple_sheet_fits_the_migration_rects",
+    "_test_the_maple_sheets_fit_the_migration_rects",
+    "_test_a_leafy_look_slices_into_its_loop",
 ]
 
-const MAPLE := "res://assets/trees/maple.png"
-# migrations/LLM-967-painted-maple_up.sql: eight 80x112 frames in a row.
-const MAPLE_FRAMES := 8
+const MAPLE := "res://assets/trees/maple-1.png"
+const MAPLES := ["res://assets/trees/maple-1.png", "res://assets/trees/maple-2.png", "res://assets/trees/maple-3.png"]
+# migrations/LLM-967b-maple-variants_up.sql: eight looks, one 112-high row
+# each; the leafy rows 36 frames of 80 at 6 fps, the bare rows one frame.
+const LOOKS := 8
+const LOOP_FRAMES := 36
+const LOOP_FPS := 6.0
 const FRAME_W := 80
 const FRAME_H := 112
 
@@ -156,16 +162,39 @@ func _test_a_path_climbing_out_of_assets_is_refused_before_loading() -> void:
 func _test_only_a_png_inside_assets_is_a_packed_sheet() -> void:
     var catalog_script: GDScript = load("res://scripts/catalog.gd")
     _check("the maple sheet is one", catalog_script.packed_sheet_path(MAPLE) == MAPLE)
-    _check("a dotted path inside assets normalises", catalog_script.packed_sheet_path("res://assets/trees/./maple.png") == MAPLE)
+    _check("a dotted path inside assets normalises", catalog_script.packed_sheet_path("res://assets/trees/./maple-1.png") == MAPLE)
     _check("a PNG climbing out of assets is not", catalog_script.packed_sheet_path("res://assets/../icon.png") == "")
     _check("a script is not", catalog_script.packed_sheet_path("res://assets/trees/build.gd") == "")
     _check("a PNG outside assets is not", catalog_script.packed_sheet_path("res://scripts/x.png") == "")
     _done()
 
 
-func _test_the_maple_sheet_fits_the_migration_rects() -> void:
-    var texture := load(MAPLE) as Texture2D
-    _check("the maple sheet is packed", texture != null)
-    if texture != null:
-        _check("eight 80x112 frames in a row", texture.get_width() == MAPLE_FRAMES * FRAME_W and texture.get_height() == FRAME_H)
+func _test_the_maple_sheets_fit_the_migration_rects() -> void:
+    for path in MAPLES:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is eight rows of up to 36 frames" % path,
+                texture.get_width() == LOOP_FRAMES * FRAME_W and texture.get_height() == LOOKS * FRAME_H)
+    _done()
+
+
+## The autumn-leaves row of maple-2 as the catalog serves it (the migration's
+## rect): get_sprite_frames slices it into the 36-frame loop at 6 fps, every
+## frame the next 80 px to the right on that row.
+func _test_a_leafy_look_slices_into_its_loop() -> void:
+    var catalog: Node = load("res://scripts/catalog.gd").new()
+    var path: String = MAPLES[1]
+    catalog.set("_pending_sheets", 1)
+    catalog.call("_download_sheet", path)
+    var state := {"sheet": path, "src_x": 0, "src_y": 2 * FRAME_H, "src_w": FRAME_W, "src_h": FRAME_H,
+                  "frame_count": LOOP_FRAMES, "frame_rate": LOOP_FPS}
+    var frames: SpriteFrames = catalog.get_sprite_frames(state)
+    _check("the look animates", frames != null)
+    if frames != null:
+        _check("36 frames", frames.get_frame_count("default") == LOOP_FRAMES)
+        _check("at 6 fps, looping", is_equal_approx(frames.get_animation_speed("default"), LOOP_FPS) and frames.get_animation_loop("default"))
+        var last := frames.get_frame_texture("default", LOOP_FRAMES - 1) as AtlasTexture
+        _check("the last frame is the row's 36th", last != null and last.region == Rect2((LOOP_FRAMES - 1) * FRAME_W, 2 * FRAME_H, FRAME_W, FRAME_H))
+    catalog.free()
     _done()
