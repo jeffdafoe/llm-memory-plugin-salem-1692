@@ -605,6 +605,14 @@ func regenObjectRefresh(w *World, now time.Time) int {
 	touched := 0
 	for _, obj := range w.VillageObjects {
 		for _, r := range obj.Refreshes {
+			// An item with none in winter (factor 0, winter_regrow.go) is held
+			// empty instead of regrown.
+			if winterDormant(w, r, now) {
+				if holdDormantRow(r, now) {
+					touched++
+				}
+				continue
+			}
 			if regenRefreshRow(r, now, regrowPct(w, r, now)) {
 				touched++
 			}
