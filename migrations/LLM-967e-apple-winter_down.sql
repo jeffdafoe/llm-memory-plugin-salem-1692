@@ -16,7 +16,7 @@ DECLARE
     winter CONSTANT text[] := ARRAY['winter-clean', 'winter-leaves', 'winter-snowy-top', 'winter-snowy'];
 BEGIN
     UPDATE setting
-       SET value = regexp_replace(value, '(^|,)\s*apples\s*=\s*0\s*(,|$)', '\1apples=125\2', 'i')
+       SET value = regexp_replace(value, '(^|,)\s*apples\s*=\s*[+-]?0+\s*(,|$)', '\1apples=125\2', 'i')
      WHERE key = 'winter_regrow_factors';
 
     UPDATE village_object SET current_state = 'autumn-bare'

@@ -36,8 +36,9 @@ DECLARE
     apple CONSTANT uuid := '019e5f00-c401-7a10-9e00-000000000623';
     apple2 CONSTANT uuid := '48f8b1e5-a9e6-45d7-87f9-acbbf83fcc61';
     apple3 CONSTANT uuid := 'e8d24766-7ef7-4380-8ff4-0e4de2d9cb05';
-    -- one apples entry in an item=percent list, anywhere in it
-    apples_entry CONSTANT text := '(^|,)\s*apples\s*=\s*[0-9]+\s*(,|$)';
+    -- one apples entry in an item=percent list, anywhere in it; the engine
+    -- reads the number with strconv.Atoi, which takes a sign (apples=+125)
+    apples_entry CONSTANT text := '(^|,)\s*apples\s*=\s*[+-]?[0-9]+\s*(,|$)';
     stored text;
     bad integer;
 BEGIN
@@ -52,9 +53,11 @@ BEGIN
             stored := stored || ',apples=0';
         END IF;
         UPDATE setting SET value = stored WHERE key = 'winter_regrow_factors';
-        IF NOT EXISTS (SELECT 1 FROM setting WHERE key = 'winter_regrow_factors'
-                         AND value ~* '(^|,)\s*apples\s*=\s*0\s*(,|$)') THEN
-            RAISE EXCEPTION 'LLM-967e: winter_regrow_factors does not say apples=0: %', stored;
+        -- Exactly one apples entry, and it is 0: a second one would make the
+        -- engine reject the whole setting and fall back to its default.
+        IF stored !~* '(^|,)\s*apples\s*=\s*0\s*(,|$)'
+           OR (SELECT count(*) FROM regexp_matches(stored, '(^|,)\s*apples\s*=', 'gi')) <> 1 THEN
+            RAISE EXCEPTION 'LLM-967e: winter_regrow_factors does not say apples=0 exactly once: %', stored;
         END IF;
     END IF;
 
