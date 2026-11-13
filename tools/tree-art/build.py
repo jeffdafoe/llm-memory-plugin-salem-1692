@@ -68,7 +68,7 @@ import os
 import random
 import sys
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUT_DIR = os.path.join(ROOT, "client", "assets", "trees")
@@ -314,6 +314,8 @@ SPECIES = {
         fallen=["d99a3a", "b8862e"],
         fruit=dict(per_pad=1, share=0.42, spread=2.0, drop=(0.8, 2.4), r=1.6, ramps=[APPLE_RED, APPLE_RED, APPLE_GOLD]),
         fruit_looks=("berries", "autumn-berries"),
+        # each fruit look's picked look: the same frames without the fruit
+        picked={"berries": "bare", "autumn-berries": "autumn-bare"},
         # picked or not, the same leaves lie under it in autumn
         foot={"autumn-berries": 10, "autumn-bare": 10},
     ),
@@ -729,7 +731,7 @@ def flipper(sp, gust, look, seed):
     return flip
 
 
-def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None):
+def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None, fruit=True):
     """Deep foliage inside the crown, the limbs showing through it, then the
     pads, higher first so lower pads overlap them. bole, if given, draws the
     trunk again over the limbs and under the pads: a thick first limb would
@@ -778,7 +780,7 @@ def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None):
                 dx = S
         draw_pad(d, sp, rnd, x + dx, y, ramp_a, ramp_b, hue_of(patches(x, y)), light, still_x=x,
                  flip=None if gust is None else flipper(sp, gust[:2], look, seed), pad=k)
-        if look in sp.fruit_looks:
+        if fruit and look in sp.fruit_looks:
             draw_fruit(d, sp, seed, k, x + dx, y)
     return Image.alpha_composite(body, lay), lay.split()[3], (ramp_a, ramp_b)
 
@@ -833,10 +835,10 @@ def cast_shadow(sp, body):
 
 # ---------------------------------------------------------------- one look
 
-def paint(sp, look, seed, branches, twigs, gust=None):
+def paint(sp, look, seed, branches, twigs, gust=None, fruit=True):
     """One frame of one look. gust = (frame within the puff, how many leaf
     clusters stir 0..1, how far the crown leans), or None for the still
-    tree."""
+    tree. fruit=False paints a fruit look without its fruit."""
     leafy = look in sp.leafy
     body = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(body)
@@ -867,7 +869,8 @@ def paint(sp, look, seed, branches, twigs, gust=None):
     crown_mask, ramps = None, None
     if leafy:
         body, crown_mask, ramps = draw_crown(sp, body, seed + 1, branches, twigs, look, gust,
-                                             bole=bole if getattr(sp, "bole_over_limbs", False) else None)
+                                             bole=bole if getattr(sp, "bole_over_limbs", False) else None,
+                                             fruit=fruit)
         d = ImageDraw.Draw(body)
     shadow = cast_shadow(sp, body)
     if look in sp.foot:
@@ -916,8 +919,6 @@ def shrink(sp, look, body, shadow, crown_mask, ramps):
         crown_pal = [rgb(h)[:3] for h in a + b] + [mix(rgb(a[i]), rgb(b[i]), 0.5)[:3] for i in range(min(len(a), len(b)))]
         crown_pal += [rgb(h)[:3] for h in sp.crown_bark]
         crown_pal += [rgb(h)[:3] for h in sp.underside.get(look, [])]
-        if look in sp.fruit_looks:
-            crown_pal += [rgb(h)[:3] for cols in sp.fruit["ramps"] for h in cols]
     out = Image.new("RGBA", (FW, FH), (0, 0, 0, 0))
     op = out.load()
     for y in range(FH):
@@ -937,18 +938,49 @@ def frame_count(sp, look):
     return FRAMES if look in sp.leafy else 1
 
 
+def add_fruit(frame, bare, fruited, sp):
+    """Lay a fruit look's fruit on its frame, which was shrunk from the same
+    tree painted without fruit, so every other pixel is the picked look's
+    own. The fruit is what the two paintings differ by (an apple behind a
+    later pad is hidden in both); a frame pixel at least half fruit takes
+    the fruit's average colour there, snapped to the fruit colours."""
+    diff = ImageChops.difference(bare, fruited).convert("L").point(lambda v: 255 if v else 0)
+    only = Image.new("RGBA", fruited.size, (0, 0, 0, 0))
+    only.paste(fruited, (0, 0), diff)
+    # Pillow averages RGBA with premultiplied alpha: colour is the fruit's
+    # own mean, alpha its share of the frame pixel.
+    small = only.resize((FW, FH), Image.BOX).load()
+    pal = [rgb(h)[:3] for cols in sp.fruit["ramps"] for h in cols]
+    out = frame.copy()
+    op = out.load()
+    for y in range(FH):
+        for x in range(FW):
+            c = small[x, y]
+            if c[3] >= 128:
+                op[x, y] = nearest(c[:3], pal) + (255,)
+    return out
+
+
 def look_frames(sp, look, seed, branches, twigs):
     """A look's frames. A leafy look is the still tree, then the puff at the
     end of the loop; the shadow stays the still tree's, so the ground under
-    it does not flicker."""
-    body, shadow, mask, ramps = paint(sp, look, seed, branches, twigs)
-    still = shrink(sp, look, body, shadow, mask, ramps)
+    it does not flicker. A fruit look is its picked look's frames with the
+    fruit laid on (add_fruit), so picking changes no other pixel."""
+    fruity = look in sp.fruit_looks
+
+    def frame(gust, shadow=None):
+        body, sh, mask, ramps = paint(sp, look, seed, branches, twigs, gust=gust, fruit=not fruity)
+        out = shrink(sp, look, body, shadow if shadow is not None else sh, mask, ramps)
+        if fruity:
+            fruited = paint(sp, look, seed, branches, twigs, gust=gust)[0]
+            out = add_fruit(out, body, fruited, sp)
+        return out, sh
+    still, shadow = frame(None)
     if look not in sp.leafy:
         return [still]
     frames = [still] * FRAMES
     for i, (stir, lean) in enumerate(zip(PUFF, LEAN)):
-        g_body, _, g_mask, g_ramps = paint(sp, look, seed, branches, twigs, gust=(i, stir, lean))
-        frames[PUFF_AT + i] = shrink(sp, look, g_body, shadow, g_mask, g_ramps)
+        frames[PUFF_AT + i] = frame((i, stir, lean), shadow)[0]
     return frames
 
 
@@ -993,6 +1025,17 @@ def check_frames(out_dir, species):
                 ok = ok and not bad
                 print("%-10s %-17s %2d frame(s)%s" % (name, look, frame_count(sp, look),
                                                      "" if not bad else "  <- off the anchor or on the frame edge: %s" % bad))
+            # Picking changes nothing but the fruit: a fruit look's frames
+            # differ from its picked look's only where they show fruit.
+            fruit_pal = {rgb(h) for cols in sp.fruit["ramps"] for h in cols} if sp.fruit else set()
+            for look, picked in getattr(sp, "picked", {}).items():
+                r1, r2 = sp.looks.index(look), sp.looks.index(picked)
+                stray = sum(1 for y in range(FH) for x in range(FW * FRAMES)
+                            if sheet.getpixel((x, r1 * FH + y)) != sheet.getpixel((x, r2 * FH + y))
+                            and sheet.getpixel((x, r1 * FH + y)) not in fruit_pal)
+                ok = ok and not stray
+                print("%-10s %-17s picked is %s%s" % (name, look, picked,
+                                                     "" if not stray else "  <- %d pixels other than fruit differ" % stray))
     return ok
 
 
