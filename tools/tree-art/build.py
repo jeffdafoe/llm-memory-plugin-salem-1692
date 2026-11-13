@@ -944,7 +944,13 @@ def add_fruit(frame, bare, fruited, sp):
     own. The fruit is what the two paintings differ by (an apple behind a
     later pad is hidden in both); a frame pixel at least half fruit takes
     the fruit's average colour there, snapped to the fruit colours."""
-    diff = ImageChops.difference(bare, fruited).convert("L").point(lambda v: 255 if v else 0)
+    # any channel differing, alpha included (a grey conversion would round
+    # a one-level difference away)
+    bands = ImageChops.difference(bare, fruited).split()
+    diff = bands[0]
+    for band in bands[1:]:
+        diff = ImageChops.lighter(diff, band)
+    diff = diff.point(lambda v: 255 if v else 0)
     only = Image.new("RGBA", fruited.size, (0, 0, 0, 0))
     only.paste(fruited, (0, 0), diff)
     # Pillow averages RGBA with premultiplied alpha: colour is the fruit's
