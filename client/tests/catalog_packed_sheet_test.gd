@@ -3,8 +3,8 @@ extends SceneTree
 ## Headless harness for LLM-967: catalog sheets packed into the client. A
 ## catalog state whose sheet is a res://assets/ path loads from the package
 ## with no request; anything else under res:// is refused; either way the
-## catalog still finishes loading. And the three maple sheets the migration
-## points at are packed, at the size its rects assume, and a leafy look
+## catalog still finishes loading. And the nine tree sheets the migrations
+## point at (three maples, chestnuts and birches) are packed, at the size its rects assume, and a leafy look
 ## slices into its animated loop the way the catalog serves it.
 ##
 ## Run headless (CI and local):
@@ -21,14 +21,19 @@ const TESTS := [
     "_test_a_res_path_outside_assets_is_refused",
     "_test_a_path_climbing_out_of_assets_is_refused_before_loading",
     "_test_only_a_png_inside_assets_is_a_packed_sheet",
-    "_test_the_maple_sheets_fit_the_migration_rects",
+    "_test_the_tree_sheets_fit_the_migration_rects",
     "_test_a_leafy_look_slices_into_its_loop",
 ]
 
 const MAPLE := "res://assets/trees/maple-1.png"
 const MAPLES := ["res://assets/trees/maple-1.png", "res://assets/trees/maple-2.png", "res://assets/trees/maple-3.png"]
-# migrations/LLM-967b-maple-variants_up.sql: eight looks, one 112-high row
-# each; the leafy rows 36 frames of 80 at 6 fps, the bare rows one frame.
+const TREES := MAPLES + [
+    "res://assets/trees/chestnut-1.png", "res://assets/trees/chestnut-2.png", "res://assets/trees/chestnut-3.png",
+    "res://assets/trees/birch-1.png", "res://assets/trees/birch-2.png", "res://assets/trees/birch-3.png",
+]
+# migrations/LLM-967b-maple-variants_up.sql and LLM-967c-chestnut-birch_up.sql:
+# eight looks, one 112-high row each; the leafy rows 36 frames of 80 at
+# 6 fps, the bare rows one frame.
 const LOOKS := 8
 const LOOP_FRAMES := 36
 const LOOP_FPS := 6.0
@@ -169,8 +174,8 @@ func _test_only_a_png_inside_assets_is_a_packed_sheet() -> void:
     _done()
 
 
-func _test_the_maple_sheets_fit_the_migration_rects() -> void:
-    for path in MAPLES:
+func _test_the_tree_sheets_fit_the_migration_rects() -> void:
+    for path in TREES:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
         if texture != null:
