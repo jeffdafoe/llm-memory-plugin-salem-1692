@@ -5,17 +5,19 @@
     python tools/tree-art/build.py --check   # every frame on its anchor, inside its frame
 
 Writes client/assets/trees/<species>-1.png, -2, -3 for every species in
-SPECIES (maple, chestnut, birch): three trees each, grown from different seeds,
-so no two neighbours share a fork. Each sheet has one row per look, in LOOKS
-order, top to bottom; a row is the look's frames, 80x112 each, left to right.
-The leafy looks are a FRAMES-long loop at FPS with one light-wind puff in it;
-the bare looks are one frame. The catalog's trees point at them (migrations
-LLM-967b-maple-variants, LLM-967c-chestnut-birch). After a change, run
+SPECIES (maple, chestnut, birch, apple): three trees each, grown from
+different seeds, so no two neighbours share a fork. Each sheet has one row per
+look, in the species' looks order (LOOKS for the big trees), top to bottom; a
+row is the look's frames, left to right, at the species' frame size (80x112;
+the apple tree 48x64). The leafy looks are a FRAMES-long loop at FPS with one
+light-wind puff in it; the bare looks are one frame. The catalog's trees point
+at them (migrations LLM-967b-maple-variants, LLM-967c-chestnut-birch,
+LLM-967d-apple-tree). After a change, run
 `godot --headless --editor --quit` in client/ so Godot writes the .import
 sidecars, and commit them.
 
 How a tree is made, from photographs (sugar maple; American and sweet
-chestnut; paper and gray birch):
+chestnut; paper and gray birch; orchard apple trees):
 - The branches are grown by space colonization: target points fill the
   species' crown, and from the trunk top each node grows a step toward the
   targets nearest it, using them up as it reaches them. Limbs fork and reach
@@ -50,6 +52,12 @@ What makes each species its own (Species):
   light-green pads with sky between them; black dashes and dark chevrons on
   the bark, a darker foot; dark fine twigs that hang at their tips. Autumn is
   clear gold.
+- Apple: a short leaning trunk that forks low into crooked, spreading limbs;
+  a low, broad, rounded crown of dull mid-green with grey-green undersides,
+  turning yellow-olive in patches in autumn. Its looks are the catalog's
+  fruit states: with apples (red and red-gold, hung under the leaf pads) and
+  picked, the same tree leaf for leaf; the same fallen leaves lie under both
+  in autumn.
 
 Rerunning writes the same files (every random draw comes from a fixed seed).
 """
@@ -60,7 +68,7 @@ import os
 import random
 import sys
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUT_DIR = os.path.join(ROOT, "client", "assets", "trees")
@@ -95,6 +103,17 @@ LOOKS = [
     "winter-snowy",      # snow lying on the limbs and at the foot
 ]
 LEAFY = ("default", "autumn-clean", "autumn-leaves")
+
+
+def use_frame(sp):
+    """Point the frame globals (FW, FH, W, H, ANCHOR_Y, BASE_Y) at a species'
+    frame before painting or checking it: the big trees are 80x112 on anchor
+    0.93, the apple tree 48x64 on 0.85. Everything below reads them at call
+    time."""
+    global FW, FH, W, H, ANCHOR_Y, BASE_Y
+    FW, FH, ANCHOR_Y = sp.frame
+    W, H = FW * S, FH * S
+    BASE_Y = H * ANCHOR_Y
 
 
 def rgb(h, a=255):
@@ -138,6 +157,14 @@ BIRCH_GREEN = ["22381a", "32521f", "467026", "5e8e2c", "7caa36", "a0c44a", "c6de
 BIRCH_LIME = ["2c3a14", "42561a", "5c7420", "789228", "98b034", "bccc4a", "dce670"]
 BIRCH_GOLD = ["4e3a0c", "806010", "b08a16", "d8b024", "f0d03c", "fae678"]
 BIRCH_AMBER = ["50300c", "845010", "b4741a", "d89628", "eeb63c", "f8d066"]
+# Apple: flaky grey-brown bark; a dull mid-green and a greyer green (the
+# leaves are downy, paler beneath); red apples and red-flushed gold ones.
+APPLE_BARK = ["241e18", "40362c", "5e5042", "7c6c5a", "9a8a74"]
+APPLE_GREEN = ["1e3418", "2c4c24", "3e682e", "548638", "6ea240", "90bc56", "b6d478"]
+APPLE_GREY = ["20341f", "30482e", "44623e", "5c7e4c", "789a5c", "98b674", "bcd094"]
+APPLE_TURNING = ["3a3412", "5a5018", "7e7020", "a08c2c", "bea840", "d6c460", "e8da84"]
+APPLE_RED = ["4e100c", "9a1e14", "c8341e", "f08a5c"]
+APPLE_GOLD = ["6a3a10", "b8481c", "d8862c", "f4cc70"]
 # Fallen leaves: the ground's autumn leaf colours (terrain-art LEAVES), and
 # the browner dry leaves of December.
 LEAVES = ["c8702a", "d99a3a", "a8452a", "b8862e"]
@@ -155,6 +182,13 @@ class Species:
     the same random draws for it as before, so its sheets do not change."""
 
     def __init__(self, **kw):
+        # The big trees' frame and looks; a species may give its own.
+        self.frame = (80, 112, 0.93)
+        self.looks, self.leafy = LOOKS, LEAFY
+        # Fruit hung under the leaf pads, in fruit_looks only (fruit, below).
+        self.fruit, self.fruit_looks = None, ()
+        # Fallen leaves at the foot, by look: how many.
+        self.foot = {"autumn-leaves": 22, "autumn-bare": 14}
         self.__dict__.update(kw)
 
 
@@ -249,6 +283,41 @@ SPECIES = {
                    "autumn-clean": ["b8c47a", "dccf7a", "e8dc96"],
                    "autumn-leaves": ["f0d878", "f4e28e", "f8eaa8"]},
         fallen=["d99a3a", "b8862e"],
+    ),
+    "apple": Species(
+        # The catalog's Apple Tree: a 48x64 frame on anchor 0.85, four looks
+        # (with apples / picked, summer / autumn), all leafy.
+        frame=(48, 64, 0.85),
+        looks=["berries", "bare", "autumn-berries", "autumn-bare"],
+        leafy=("berries", "bare", "autumn-berries", "autumn-bare"),
+        variants=[("apple-1", 2), ("apple-2", 12), ("apple-3", 27)],
+        # A low, broad, rounded crown on a short trunk that forks low.
+        crown=(48 * S * 0.5, 64 * S * 0.40, 48 * S * 0.42, 64 * S * 0.27),
+        lobes=None,
+        trunk_top=64 * S * 0.62, trunk_w=(8 * S, 6 * S), lean=1.5 * S,
+        trunk_nodes=6, branch_nodes=2, target_floor=64 * S * 0.62 - 2 * S,
+        n_targets=450, bias=0.05, wander=0.25, limb_w=9 * S,
+        bark=APPLE_BARK, twig=APPLE_BARK, crown_bark=APPLE_BARK, extra_bark=[],
+        furrows="straight", root_scale=0.6,
+        haze=dict(tries=2, skip=0.45, turn=(0.5, 1.0), length=(2.0, 4.0), colour=APPLE_BARK, shade=(0.3, 0.6), droop=0.0),
+        deep_fill=True, light=0.66, pad_spacing=3.0,
+        pad_rx=(3.5, 5.0), pad_ry=(0.55, 0.68), marks=0.7, mark_size=(1.1, 1.5), mark_shape=(1.1, 0.65),
+        rim_size=(1.0, 1.4), rim_reach=2.4,
+        ramps={"berries": (APPLE_GREEN, APPLE_GREY, lambda p: p * 0.6),
+               "bare": (APPLE_GREEN, APPLE_GREY, lambda p: p * 0.6),
+               "autumn-berries": (APPLE_GREEN, APPLE_TURNING, lambda p: max(0.0, min(1.0, (p - 0.15) * 1.6))),
+               "autumn-bare": (APPLE_GREEN, APPLE_TURNING, lambda p: max(0.0, min(1.0, (p - 0.15) * 1.6)))},
+        underside={"berries": ["98a88a", "acba9e", "c0cab2"],
+                   "bare": ["98a88a", "acba9e", "c0cab2"],
+                   "autumn-berries": ["aeae86", "c2bf98", "d2ceac"],
+                   "autumn-bare": ["aeae86", "c2bf98", "d2ceac"]},
+        fallen=["d99a3a", "b8862e"],
+        fruit=dict(per_pad=1, share=0.42, spread=2.0, drop=(0.8, 2.4), r=1.6, ramps=[APPLE_RED, APPLE_RED, APPLE_GOLD]),
+        fruit_looks=("berries", "autumn-berries"),
+        # each fruit look's picked look: the same frames without the fruit
+        picked={"berries": "bare", "autumn-berries": "autumn-bare"},
+        # picked or not, the same leaves lie under it in autumn
+        foot={"autumn-berries": 10, "autumn-bare": 10},
     ),
 }
 
@@ -662,7 +731,7 @@ def flipper(sp, gust, look, seed):
     return flip
 
 
-def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None):
+def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None, fruit=True):
     """Deep foliage inside the crown, the limbs showing through it, then the
     pads, higher first so lower pads overlap them. bole, if given, draws the
     trunk again over the limbs and under the pads: a thick first limb would
@@ -711,7 +780,30 @@ def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None):
                 dx = S
         draw_pad(d, sp, rnd, x + dx, y, ramp_a, ramp_b, hue_of(patches(x, y)), light, still_x=x,
                  flip=None if gust is None else flipper(sp, gust[:2], look, seed), pad=k)
+        if fruit and look in sp.fruit_looks:
+            draw_fruit(d, sp, seed, k, x + dx, y)
     return Image.alpha_composite(body, lay), lay.split()[3], (ramp_a, ramp_b)
+
+
+def draw_fruit(d, sp, seed, k, x, y):
+    """Fruit hanging under leaf pad k. Where and which colour come from
+    hashes of seed and pad, not the crown's generator, so the picked look
+    (no fruit) is the same tree leaf for leaf, and a pad's fruit leans with
+    it in the puff. A fruit is a round of its ramp's middle with a shaded
+    lower right and a lit spot at the upper left."""
+    fr = sp.fruit
+    for j in range(fr["per_pad"]):
+        h = _hash(seed, k, j, 41)
+        if (h & 0xFF) >= fr["share"] * 256:
+            continue
+        fx = x + (((h >> 8) & 0xFF) / 255.0 * 2 - 1) * fr["spread"] * S
+        fy = y + (fr["drop"][0] + ((h >> 16) & 0xFF) / 255.0 * (fr["drop"][1] - fr["drop"][0])) * S
+        cols = fr["ramps"][(h >> 24) % len(fr["ramps"])]
+        r = fr["r"] * S
+        fx = max(r + 1.5 * S, min(W - r - 1.5 * S, fx))     # inside the frame
+        d.ellipse((fx - r, fy - r, fx + r, fy + r), fill=rgb(cols[1]))
+        d.ellipse((fx - r, fy - r, fx + r * 0.55, fy + r * 0.55), fill=rgb(cols[2]))
+        d.ellipse((fx - r * 0.7, fy - r * 0.75, fx - r * 0.05, fy - r * 0.1), fill=rgb(cols[3]))
 
 
 # ---------------------------------------------------------------- ground bits
@@ -743,11 +835,11 @@ def cast_shadow(sp, body):
 
 # ---------------------------------------------------------------- one look
 
-def paint(sp, look, seed, branches, twigs, gust=None):
+def paint(sp, look, seed, branches, twigs, gust=None, fruit=True):
     """One frame of one look. gust = (frame within the puff, how many leaf
     clusters stir 0..1, how far the crown leans), or None for the still
-    tree."""
-    leafy = look in LEAFY
+    tree. fruit=False paints a fruit look without its fruit."""
+    leafy = look in sp.leafy
     body = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(body)
     trunk = Branch(W * 0.5, BASE_Y, W * 0.5 + sp.lean, getattr(sp, "bole_top", sp.trunk_top), sp.trunk_w[0], sp.trunk_w[1], 0)
@@ -777,11 +869,12 @@ def paint(sp, look, seed, branches, twigs, gust=None):
     crown_mask, ramps = None, None
     if leafy:
         body, crown_mask, ramps = draw_crown(sp, body, seed + 1, branches, twigs, look, gust,
-                                             bole=bole if getattr(sp, "bole_over_limbs", False) else None)
+                                             bole=bole if getattr(sp, "bole_over_limbs", False) else None,
+                                             fruit=fruit)
         d = ImageDraw.Draw(body)
     shadow = cast_shadow(sp, body)
-    if look in ("autumn-leaves", "autumn-bare"):
-        foot_leaves(d, random.Random(seed + 3), 22 if look == "autumn-leaves" else 14, sp.fallen)
+    if look in sp.foot:
+        foot_leaves(d, random.Random(seed + 3), sp.foot[look], sp.fallen)
     if look == "winter-leaves":
         foot_leaves(d, random.Random(seed + 4), 16, DRY_LEAVES)
     if look == "winter-snowy":
@@ -815,7 +908,7 @@ def shrink(sp, look, body, shadow, crown_mask, ramps):
             outline[(x, y)] = 0.55
         elif (x, y + 2) not in covered and cm is not None and cm[x, y] >= 128:
             outline[(x, y)] = 0.32
-    ground = (LEAVES if look in ("autumn-leaves", "autumn-bare") else []) + \
+    ground = (LEAVES if look in sp.foot else []) + \
              (DRY_LEAVES if look == "winter-leaves" else []) + \
              (SNOW if look.startswith("winter-snowy") else [])
     bark_pal = [rgb(h)[:3] for h in sp.bark + sp.extra_bark + ground]
@@ -841,29 +934,67 @@ def shrink(sp, look, body, shadow, crown_mask, ramps):
     return out
 
 
-def frame_count(look):
-    return FRAMES if look in LEAFY else 1
+def frame_count(sp, look):
+    return FRAMES if look in sp.leafy else 1
+
+
+def add_fruit(frame, bare, fruited, sp):
+    """Lay a fruit look's fruit on its frame, which was shrunk from the same
+    tree painted without fruit, so every other pixel is the picked look's
+    own. The fruit is what the two paintings differ by (an apple behind a
+    later pad is hidden in both); a frame pixel at least half fruit takes
+    the fruit's average colour there, snapped to the fruit colours."""
+    # any channel differing, alpha included (a grey conversion would round
+    # a one-level difference away)
+    bands = ImageChops.difference(bare, fruited).split()
+    diff = bands[0]
+    for band in bands[1:]:
+        diff = ImageChops.lighter(diff, band)
+    diff = diff.point(lambda v: 255 if v else 0)
+    only = Image.new("RGBA", fruited.size, (0, 0, 0, 0))
+    only.paste(fruited, (0, 0), diff)
+    # Pillow averages RGBA with premultiplied alpha: colour is the fruit's
+    # own mean, alpha its share of the frame pixel.
+    small = only.resize((FW, FH), Image.BOX).load()
+    pal = [rgb(h)[:3] for cols in sp.fruit["ramps"] for h in cols]
+    out = frame.copy()
+    op = out.load()
+    for y in range(FH):
+        for x in range(FW):
+            c = small[x, y]
+            if c[3] >= 128:
+                op[x, y] = nearest(c[:3], pal) + (255,)
+    return out
 
 
 def look_frames(sp, look, seed, branches, twigs):
     """A look's frames. A leafy look is the still tree, then the puff at the
     end of the loop; the shadow stays the still tree's, so the ground under
-    it does not flicker."""
-    body, shadow, mask, ramps = paint(sp, look, seed, branches, twigs)
-    still = shrink(sp, look, body, shadow, mask, ramps)
-    if look not in LEAFY:
+    it does not flicker. A fruit look is its picked look's frames with the
+    fruit laid on (add_fruit), so picking changes no other pixel."""
+    fruity = look in sp.fruit_looks
+
+    def frame(gust, shadow=None):
+        body, sh, mask, ramps = paint(sp, look, seed, branches, twigs, gust=gust, fruit=not fruity)
+        out = shrink(sp, look, body, shadow if shadow is not None else sh, mask, ramps)
+        if fruity:
+            fruited = paint(sp, look, seed, branches, twigs, gust=gust)[0]
+            out = add_fruit(out, body, fruited, sp)
+        return out, sh
+    still, shadow = frame(None)
+    if look not in sp.leafy:
         return [still]
     frames = [still] * FRAMES
     for i, (stir, lean) in enumerate(zip(PUFF, LEAN)):
-        g_body, _, g_mask, g_ramps = paint(sp, look, seed, branches, twigs, gust=(i, stir, lean))
-        frames[PUFF_AT + i] = shrink(sp, look, g_body, shadow, g_mask, g_ramps)
+        frames[PUFF_AT + i] = frame((i, stir, lean), shadow)[0]
     return frames
 
 
 def build_sheet(sp, seed):
+    use_frame(sp)
     branches, twigs = colonize(sp, seed)
-    sheet = Image.new("RGBA", (FW * FRAMES, FH * len(LOOKS)), (0, 0, 0, 0))
-    for row, look in enumerate(LOOKS):
+    sheet = Image.new("RGBA", (FW * FRAMES, FH * len(sp.looks)), (0, 0, 0, 0))
+    for row, look in enumerate(sp.looks):
         for col, frame in enumerate(look_frames(sp, look, seed, branches, twigs)):
             sheet.paste(frame, (col * FW, row * FH))
     return sheet
@@ -879,16 +1010,18 @@ def check_frames(out_dir, species):
     the look's still tree, as the bare looks' only frame is."""
     ok = True
     for sp_name in species:
-        for name, _seed in SPECIES[sp_name].variants:
+        sp = SPECIES[sp_name]
+        use_frame(sp)
+        for name, _seed in sp.variants:
             sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
-            if sheet.size != (FW * FRAMES, FH * len(LOOKS)):
-                print("%s: sheet is %dx%d, want %dx%d" % (name, sheet.size[0], sheet.size[1], FW * FRAMES, FH * len(LOOKS)))
+            if sheet.size != (FW * FRAMES, FH * len(sp.looks)):
+                print("%s: sheet is %dx%d, want %dx%d" % (name, sheet.size[0], sheet.size[1], FW * FRAMES, FH * len(sp.looks)))
                 ok = False
                 continue
             row = round(FH * ANCHOR_Y) - 1
-            for r, look in enumerate(LOOKS):
+            for r, look in enumerate(sp.looks):
                 bad = []
-                for col in range(frame_count(look)):
+                for col in range(frame_count(sp, look)):
                     x0, y0 = col * FW, r * FH
                     solid = all(sheet.getpixel((x0 + x, y0 + row))[3] == 255 for x in range(FW // 2 - 3, FW // 2 + 4))
                     edge = any(sheet.getpixel((x0 + x, y0 + y))[3] == 255 for y in range(FH) for x in (0, FW - 1)) or \
@@ -896,8 +1029,19 @@ def check_frames(out_dir, species):
                     if not solid or edge:
                         bad.append(col)
                 ok = ok and not bad
-                print("%-10s %-17s %2d frame(s)%s" % (name, look, frame_count(look),
+                print("%-10s %-17s %2d frame(s)%s" % (name, look, frame_count(sp, look),
                                                      "" if not bad else "  <- off the anchor or on the frame edge: %s" % bad))
+            # Picking changes nothing but the fruit: a fruit look's frames
+            # differ from its picked look's only where they show fruit.
+            fruit_pal = {rgb(h) for cols in sp.fruit["ramps"] for h in cols} if sp.fruit else set()
+            for look, picked in getattr(sp, "picked", {}).items():
+                r1, r2 = sp.looks.index(look), sp.looks.index(picked)
+                stray = sum(1 for y in range(FH) for x in range(FW * FRAMES)
+                            if sheet.getpixel((x, r1 * FH + y)) != sheet.getpixel((x, r2 * FH + y))
+                            and sheet.getpixel((x, r1 * FH + y)) not in fruit_pal)
+                ok = ok and not stray
+                print("%-10s %-17s picked is %s%s" % (name, look, picked,
+                                                     "" if not stray else "  <- %d pixels other than fruit differ" % stray))
     return ok
 
 

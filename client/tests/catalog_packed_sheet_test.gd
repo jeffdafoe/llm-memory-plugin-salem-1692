@@ -3,8 +3,8 @@ extends SceneTree
 ## Headless harness for LLM-967: catalog sheets packed into the client. A
 ## catalog state whose sheet is a res://assets/ path loads from the package
 ## with no request; anything else under res:// is refused; either way the
-## catalog still finishes loading. And the nine tree sheets the migrations
-## point at (three maples, chestnuts and birches) are packed, at the size its rects assume, and a leafy look
+## catalog still finishes loading. And the twelve tree sheets the migrations
+## point at (three maples, chestnuts, birches and apple trees) are packed, at the size its rects assume, and a leafy look
 ## slices into its animated loop the way the catalog serves it.
 ##
 ## Run headless (CI and local):
@@ -39,6 +39,12 @@ const LOOP_FRAMES := 36
 const LOOP_FPS := 6.0
 const FRAME_W := 80
 const FRAME_H := 112
+# migrations/LLM-967d-apple-tree_up.sql: the apple tree's four looks, all
+# leafy, 36 frames of 48x64 each.
+const APPLES := ["res://assets/trees/apple-1.png", "res://assets/trees/apple-2.png", "res://assets/trees/apple-3.png"]
+const APPLE_LOOKS := 4
+const APPLE_W := 48
+const APPLE_H := 64
 
 var _failures := 0
 var _checks := 0
@@ -181,6 +187,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is eight rows of up to 36 frames" % path,
                 texture.get_width() == LOOP_FRAMES * FRAME_W and texture.get_height() == LOOKS * FRAME_H)
+    for path in APPLES:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is four rows of 36 frames" % path,
+                texture.get_width() == LOOP_FRAMES * APPLE_W and texture.get_height() == APPLE_LOOKS * APPLE_H)
     _done()
 
 
