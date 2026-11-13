@@ -1,6 +1,7 @@
 extends Node
 ## Autoloaded singleton — loads the asset catalog from the Go API.
-## Downloads spritesheets via HTTP and caches them as textures.
+## Downloads spritesheets via HTTP (or loads them from the package, for our
+## own res:// art) and caches them as textures.
 ## Other scripts access it via the global `Catalog` name.
 
 signal catalog_loaded
@@ -147,6 +148,11 @@ func _on_catalog_loaded(result: int, response_code: int, headers: PackedStringAr
         _download_sheet(sheet_path)
 
 func _download_sheet(sheet_path: String) -> void:
+    # Our own art (LLM-967, tools/tree-art) is packed into the client, so a
+    # res:// sheet is loaded from the package, not requested.
+    if sheet_path.begins_with("res://"):
+        _load_packed_sheet(sheet_path)
+        return
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
@@ -184,6 +190,33 @@ func _on_sheet_downloaded(result: int, response_code: int, headers: PackedString
 
     _pending_sheets -= 1
     _check_all_sheets_loaded()
+
+## A sheet packed into the client. Only a PNG under res://assets/ is art: the
+## catalog names the path, so it is normalised first (an "assets/../" would
+## otherwise reach outside) and checked BEFORE load(), which would load any
+## resource type. Cached under the catalog's own path. Imported lossless, so
+## get_image() reads its pixels back for hit-testing as it does for a
+## downloaded sheet.
+func _load_packed_sheet(sheet_path: String) -> void:
+    var path := packed_sheet_path(sheet_path)
+    if path == "":
+        push_error("Invalid packed sheet: " + sheet_path)
+    else:
+        var texture := load(path) as Texture2D
+        if texture == null:
+            push_error("Packed sheet not found: " + sheet_path)
+        else:
+            sheet_cache[sheet_path] = texture
+    _pending_sheets -= 1
+    _check_all_sheets_loaded()
+
+## The package path a catalog res:// sheet may load from: normalised, a PNG,
+## under res://assets/; "" when it is not one.
+static func packed_sheet_path(sheet_path: String) -> String:
+    var path := sheet_path.simplify_path()
+    if not path.begins_with("res://assets/") or path.get_extension().to_lower() != "png":
+        return ""
+    return path
 
 func _check_all_sheets_loaded() -> void:
     if _pending_sheets <= 0:
