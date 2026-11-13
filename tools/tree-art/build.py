@@ -54,6 +54,7 @@ What makes each species its own (Species):
 Rerunning writes the same files (every random draw comes from a fixed seed).
 """
 
+import argparse
 import math
 import os
 import random
@@ -900,17 +901,18 @@ def check_frames(out_dir, species):
     return ok
 
 
-def arg(flag, default):
-    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else default
-
-
 def main():
-    out_dir = arg("--out", OUT_DIR)
-    species = arg("--species", ",".join(SPECIES)).split(",")
+    parser = argparse.ArgumentParser(description="Paint salem's trees.")
+    parser.add_argument("--species", default=",".join(SPECIES), help="comma-separated, of: " + ", ".join(SPECIES))
+    parser.add_argument("--out", default=OUT_DIR, help="where the sheets go (default client/assets/trees)")
+    parser.add_argument("--check", action="store_true", help="check the sheets instead of painting them")
+    args = parser.parse_args()
+    out_dir = args.out
+    species = args.species.split(",")
     for name in species:
         if name not in SPECIES:
-            sys.exit("unknown species %r (have %s)" % (name, ", ".join(SPECIES)))
-    if "--check" in sys.argv:
+            parser.error("unknown species %r (have %s)" % (name, ", ".join(SPECIES)))
+    if args.check:
         sys.exit(0 if check_frames(out_dir, species) else 1)
     os.makedirs(out_dir, exist_ok=True)
     for sp_name in species:
