@@ -16,7 +16,7 @@ func TestParseWinterRegrowFactors_DefaultRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default does not parse: %v", err)
 	}
-	want := map[sim.ItemKind]int{"apples": 125, "blueberries": 200, "carrots": 150, "raspberries": 200, "sage": 200, "wheat": 200}
+	want := map[sim.ItemKind]int{"apples": 0, "blueberries": 200, "carrots": 150, "raspberries": 200, "sage": 200, "wheat": 200}
 	if len(factors) != len(want) {
 		t.Fatalf("factors = %v, want %v", factors, want)
 	}
@@ -31,12 +31,15 @@ func TestParseWinterRegrowFactors_DefaultRoundTrips(t *testing.T) {
 }
 
 func TestParseWinterRegrowFactors_TrimsAndFolds(t *testing.T) {
-	factors, err := sim.ParseWinterRegrowFactors(" Sage = 300 ,, apples=100 ")
+	factors, err := sim.ParseWinterRegrowFactors(" Sage = 300 ,, apples=100 , Wheat=0")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if factors["sage"] != 300 || factors["apples"] != 100 || len(factors) != 2 {
-		t.Errorf("factors = %v, want sage 300, apples 100", factors)
+	if factors["sage"] != 300 || factors["apples"] != 100 || len(factors) != 3 {
+		t.Errorf("factors = %v, want sage 300, apples 100, wheat 0", factors)
+	}
+	if pct, ok := factors["wheat"]; !ok || pct != 0 {
+		t.Errorf("wheat = %d (listed %v), want 0: none in winter", pct, ok)
 	}
 }
 
@@ -46,6 +49,8 @@ func TestParseWinterRegrowFactors_Rejects(t *testing.T) {
 		"=200",              // no item
 		"sage=abc",          // not a number
 		"sage=99",           // winter never speeds a regrow
+		"sage=50",           // between none (0) and unchanged (100)
+		"sage=-1",           // negative
 		"sage=1001",         // past the cap
 		"sage=200,sage=300", // named twice
 	} {
@@ -88,7 +93,7 @@ func TestRegen_WinterFactorScalesOnlyListedItems(t *testing.T) {
 		{id: "blueberry-carry", row: periodic("blueberries", "", 168, 10), elapsed: 200 * time.Hour, wantSummer: 10, wantWinter: 0},
 		// Blueberry eat row: the hunger row yields the same item, so it is scaled too.
 		{id: "blueberry-eat", row: periodic("blueberries", "hunger", 24, 3), elapsed: 30 * time.Hour, wantSummer: 3, wantWinter: 0},
-		// Apple: 168 h × 1.25 = 210 h.
+		// Apple: none in winter (factor 0), so it is held empty (LLM-967e).
 		{id: "apple", row: periodic("apples", "", 168, 3), elapsed: 200 * time.Hour, wantSummer: 3, wantWinter: 0},
 		// Carrots: 168 h × 1.5 = 252 h.
 		{id: "carrot", row: periodic("carrots", "", 168, 2), elapsed: 240 * time.Hour, wantSummer: 2, wantWinter: 0},

@@ -12,7 +12,7 @@ row is the look's frames, left to right, at the species' frame size (80x112;
 the apple tree 48x64). The leafy looks are a FRAMES-long loop at FPS with one
 light-wind puff in it; the bare looks are one frame. The catalog's trees point
 at them (migrations LLM-967b-maple-variants, LLM-967c-chestnut-birch,
-LLM-967d-apple-tree). After a change, run
+LLM-967d-apple-tree, LLM-967e-apple-winter). After a change, run
 `godot --headless --editor --quit` in client/ so Godot writes the .import
 sidecars, and commit them.
 
@@ -285,10 +285,13 @@ SPECIES = {
         fallen=["d99a3a", "b8862e"],
     ),
     "apple": Species(
-        # The catalog's Apple Tree: a 48x64 frame on anchor 0.85, four looks
-        # (with apples / picked, summer / autumn), all leafy.
+        # The catalog's Apple Tree: a 48x64 frame on anchor 0.85, four leafy
+        # looks (with apples / picked, summer / autumn), then the big trees'
+        # four bare winter looks. Apples are none in winter (the engine holds
+        # the trees empty), so there are no winter looks with fruit.
         frame=(48, 64, 0.85),
-        looks=["berries", "bare", "autumn-berries", "autumn-bare"],
+        looks=["berries", "bare", "autumn-berries", "autumn-bare",
+               "winter-clean", "winter-leaves", "winter-snowy-top", "winter-snowy"],
         leafy=("berries", "bare", "autumn-berries", "autumn-bare"),
         variants=[("apple-1", 2), ("apple-2", 12), ("apple-3", 27)],
         # A low, broad, rounded crown on a short trunk that forks low.
@@ -878,7 +881,8 @@ def paint(sp, look, seed, branches, twigs, gust=None, fruit=True):
     if look == "winter-leaves":
         foot_leaves(d, random.Random(seed + 4), 16, DRY_LEAVES)
     if look == "winter-snowy":
-        d.ellipse((W * 0.5 - 15 * S, BASE_Y - 3 * S, W * 0.5 + 17 * S, BASE_Y + 3.5 * S), fill=rgb("eef3f7"))
+        k = FW / 80     # the drift scales with the frame (1 on the big trees)
+        d.ellipse((W * 0.5 - 15 * S * k, BASE_Y - 3 * S, W * 0.5 + 17 * S * k, BASE_Y + 3.5 * S), fill=rgb("eef3f7"))
     return body, shadow, crown_mask, ramps
 
 

@@ -39,10 +39,10 @@ const LOOP_FRAMES := 36
 const LOOP_FPS := 6.0
 const FRAME_W := 80
 const FRAME_H := 112
-# migrations/LLM-967d-apple-tree_up.sql: the apple tree's four looks, all
-# leafy, 36 frames of 48x64 each.
+# migrations/LLM-967d-apple-tree_up.sql and LLM-967e-apple-winter_up.sql: four
+# leafy looks of 36 frames, then four one-frame winter looks, all 48x64.
 const APPLES := ["res://assets/trees/apple-1.png", "res://assets/trees/apple-2.png", "res://assets/trees/apple-3.png"]
-const APPLE_LOOKS := 4
+const APPLE_LOOKS := 8  # four leafy fruit looks, four bare winter looks (LLM-967e)
 const APPLE_W := 48
 const APPLE_H := 64
 

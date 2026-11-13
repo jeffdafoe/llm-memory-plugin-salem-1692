@@ -23,20 +23,30 @@ import (
 // (the hunger row and the carry row) yield the same item, and a new asset that
 // yields the same item is covered with no change here. A row with no gather item
 // (a shade tree's rest row) and a milking animal's row are never scaled.
+//
+// A factor of 0 means NONE in winter (LLM-967e, Jeff 2026-11-13: apples pause
+// in winter). Such a row is held empty for the whole of winter rather than slowed
+// down: winterDormant picks it out and holdDormantRow, on the regen tick, takes
+// whatever stock is left on December 1 and keeps the regrow anchor at now, so in
+// April it starts a full fresh period. Because stock is the one predicate behind
+// both the art (berry_state.go) and gathering, the tree shows bare and nobody can
+// pick it, for the same reason a picked-clean tree refuses mid-week. It is not the
+// absorbing state the cap below rules out: the hold ends with winter.
 
 // DefaultWinterRegrowFactors is the seed for the winter_regrow_factors setting:
-// item=percent pairs, 100 meaning unchanged. Jeff 2026-10-23, from the live
-// picking rates of the week to 10-23 (LLM-834 comment 15052, LLM-848).
-const DefaultWinterRegrowFactors = "apples=125,blueberries=200,carrots=150,raspberries=200,sage=200,wheat=200"
+// item=percent pairs, 100 meaning unchanged, 0 none in winter. Jeff 2026-10-23,
+// from the live picking rates of the week to 10-23 (LLM-834 comment 15052,
+// LLM-848); apples 0 from 2026-11-13 (LLM-967e).
+const DefaultWinterRegrowFactors = "apples=0,blueberries=200,carrots=150,raspberries=200,sage=200,wheat=200"
 
 // winterRegrowMaxPct bounds a factor at ten times the period. Higher is not a
 // harder winter but a source that never comes back within a season, which is the
 // absorbing state the epic rules out.
 const winterRegrowMaxPct = 1000
 
-// ParseWinterRegrowFactors parses "item=percent,item=percent". Each percent is a
-// whole number from 100 (unchanged) to winterRegrowMaxPct — winter never speeds a
-// regrow. Whitespace around items and numbers is ignored; an item named twice is
+// ParseWinterRegrowFactors parses "item=percent,item=percent". Each percent is 0
+// (none in winter) or a whole number from 100 (unchanged) to winterRegrowMaxPct —
+// winter never speeds a regrow. Whitespace around items and numbers is ignored; an item named twice is
 // an error rather than a silent last-wins. The error is operator-facing.
 func ParseWinterRegrowFactors(raw string) (map[ItemKind]int, error) {
 	out := map[ItemKind]int{}
@@ -51,8 +61,8 @@ func ParseWinterRegrowFactors(raw string) (map[ItemKind]int, error) {
 			return nil, fmt.Errorf("winter_regrow_factors: %q is not item=percent", part)
 		}
 		pct, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || pct < 100 || pct > winterRegrowMaxPct {
-			return nil, fmt.Errorf("winter_regrow_factors: %q needs a whole percent from 100 to %d", part, winterRegrowMaxPct)
+		if err != nil || (pct != 0 && (pct < 100 || pct > winterRegrowMaxPct)) {
+			return nil, fmt.Errorf("winter_regrow_factors: %q needs 0 (none in winter) or a whole percent from 100 to %d", part, winterRegrowMaxPct)
 		}
 		if _, dup := out[item]; dup {
 			return nil, fmt.Errorf("winter_regrow_factors: %q is named twice", item)
@@ -95,16 +105,50 @@ func winterRegrowFactorsSetting() SettingSpec {
 	}
 }
 
-// regrowPct is the percentage of its stored period a refresh row takes to regrow
-// at now: the row's winter factor in winter, 100 otherwise.
-func regrowPct(w *World, r *ObjectRefresh, now time.Time) int {
+// winterFactor is r's winter factor when the village is in winter at now and
+// r's gather item is listed; ok is false otherwise (no factor applies).
+func winterFactor(w *World, r *ObjectRefresh, now time.Time) (pct int, ok bool) {
 	if w == nil || r == nil || !r.IsGatherable() {
-		return 100
+		return 0, false
 	}
 	if month, _ := VillageMonthDay(w, now); SeasonOf(month) != SeasonWinter {
-		return 100
+		return 0, false
 	}
-	if pct, ok := w.Settings.WinterRegrowFactors[ItemKind(strings.ToLower(strings.TrimSpace(string(r.GatherItem))))]; ok && pct > 0 {
+	pct, ok = w.Settings.WinterRegrowFactors[ItemKind(strings.ToLower(strings.TrimSpace(string(r.GatherItem))))]
+	return pct, ok
+}
+
+// winterDormant reports whether r takes no stock at all at now: winter, and its
+// item's factor is 0.
+func winterDormant(w *World, r *ObjectRefresh, now time.Time) bool {
+	pct, ok := winterFactor(w, r, now)
+	return ok && pct == 0
+}
+
+// holdDormantRow is the regen step for a dormant row (winterDormant): a finite
+// row loses any stock left on it and its anchor is kept at now, so the regrow
+// that follows winter is a full period from the day winter ends rather than one
+// backdated to the last picking. Reports whether the stock changed.
+func holdDormantRow(r *ObjectRefresh, now time.Time) bool {
+	if r == nil || !r.IsFinite() {
+		return false
+	}
+	t := now
+	r.LastRefreshAt = &t
+	if *r.AvailableQuantity == 0 {
+		return false
+	}
+	zero := 0
+	r.AvailableQuantity = &zero
+	return true
+}
+
+// regrowPct is the percentage of its stored period a refresh row takes to regrow
+// at now: the row's winter factor in winter, 100 otherwise. A dormant row's 0
+// never reaches a period (regenObjectRefresh holds it instead), so it reads 100
+// here too.
+func regrowPct(w *World, r *ObjectRefresh, now time.Time) int {
+	if pct, ok := winterFactor(w, r, now); ok && pct > 0 {
 		return pct
 	}
 	return 100
