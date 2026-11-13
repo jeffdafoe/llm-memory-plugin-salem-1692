@@ -18,6 +18,8 @@ const TESTS := [
     "_test_a_packed_sheet_loads_without_a_request",
     "_test_a_missing_packed_sheet_still_finishes_the_load",
     "_test_a_res_path_outside_assets_is_refused",
+    "_test_a_path_climbing_out_of_assets_is_refused_before_loading",
+    "_test_only_a_png_inside_assets_is_a_packed_sheet",
     "_test_the_maple_sheet_fits_the_migration_rects",
 ]
 
@@ -127,6 +129,37 @@ func _test_a_res_path_outside_assets_is_refused() -> void:
     _check("no HTTPRequest was made for it", catalog.get_child_count() == 0)
     _check("the catalog still finishes loading", catalog.loaded and fired[0] == 1)
     catalog.free()
+    _done()
+
+
+## "assets/../" passes a raw prefix check. The target must be refused before
+## load(): a loaded script would also fail the texture cast and leave the
+## cache empty, so the check is that the resource was never loaded at all.
+## terrain_pack.gd is a script nothing in this suite loads.
+func _test_a_path_climbing_out_of_assets_is_refused_before_loading() -> void:
+    var target := "res://scripts/terrain_pack.gd"
+    _check("the target is not loaded before the test", not ResourceLoader.has_cached(target))
+    var fired := [0]
+    var catalog := _catalog(1, fired)
+    catalog.call("_download_sheet", "res://assets/../scripts/terrain_pack.gd")
+    _check("the climbing path never loads its target", not ResourceLoader.has_cached(target))
+    _check("nothing is cached for it", catalog.sheet_cache.is_empty())
+    _check("the catalog still finishes loading", catalog.loaded and fired[0] == 1)
+    catalog.free()
+    _done()
+
+
+## The guard itself, path by path. The climbing PNG is the case only the
+## normalising catches: it ends in .png and its raw text starts with
+## res://assets/, but it resolves outside. (No PNG sits outside assets/ in
+## the package today, so a load-based test cannot see this.)
+func _test_only_a_png_inside_assets_is_a_packed_sheet() -> void:
+    var catalog_script: GDScript = load("res://scripts/catalog.gd")
+    _check("the maple sheet is one", catalog_script.packed_sheet_path(MAPLE) == MAPLE)
+    _check("a dotted path inside assets normalises", catalog_script.packed_sheet_path("res://assets/trees/./maple.png") == MAPLE)
+    _check("a PNG climbing out of assets is not", catalog_script.packed_sheet_path("res://assets/../icon.png") == "")
+    _check("a script is not", catalog_script.packed_sheet_path("res://assets/trees/build.gd") == "")
+    _check("a PNG outside assets is not", catalog_script.packed_sheet_path("res://scripts/x.png") == "")
     _done()
 
 

@@ -191,21 +191,32 @@ func _on_sheet_downloaded(result: int, response_code: int, headers: PackedString
     _pending_sheets -= 1
     _check_all_sheets_loaded()
 
-## A sheet packed into the client. Only res://assets/ is art: the catalog
-## names the path, and nothing else in the package is a sheet. Imported
-## lossless, so get_image() reads its pixels back for hit-testing as it does
-## for a downloaded sheet.
+## A sheet packed into the client. Only a PNG under res://assets/ is art: the
+## catalog names the path, so it is normalised first (an "assets/../" would
+## otherwise reach outside) and checked BEFORE load(), which would load any
+## resource type. Cached under the catalog's own path. Imported lossless, so
+## get_image() reads its pixels back for hit-testing as it does for a
+## downloaded sheet.
 func _load_packed_sheet(sheet_path: String) -> void:
-    if not sheet_path.begins_with("res://assets/"):
-        push_error("Packed sheet outside res://assets/: " + sheet_path)
+    var path := packed_sheet_path(sheet_path)
+    if path == "":
+        push_error("Invalid packed sheet: " + sheet_path)
     else:
-        var texture := load(sheet_path) as Texture2D
+        var texture := load(path) as Texture2D
         if texture == null:
             push_error("Packed sheet not found: " + sheet_path)
         else:
             sheet_cache[sheet_path] = texture
     _pending_sheets -= 1
     _check_all_sheets_loaded()
+
+## The package path a catalog res:// sheet may load from: normalised, a PNG,
+## under res://assets/; "" when it is not one.
+static func packed_sheet_path(sheet_path: String) -> String:
+    var path := sheet_path.simplify_path()
+    if not path.begins_with("res://assets/") or path.get_extension().to_lower() != "png":
+        return ""
+    return path
 
 func _check_all_sheets_loaded() -> void:
     if _pending_sheets <= 0:
