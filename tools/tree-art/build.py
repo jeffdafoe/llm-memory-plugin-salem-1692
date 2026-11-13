@@ -1,12 +1,16 @@
-"""Paints salem's maple (LLM-967): every pixel is drawn here, no pack art.
+"""Paints salem's maples (LLM-967): every pixel is drawn here, no pack art.
 
     python tools/tree-art/build.py
-    python tools/tree-art/build.py --check   # every look on its anchor, inside its frame
+    python tools/tree-art/build.py --check   # every frame on its anchor, inside its frame
 
-Writes client/assets/trees/maple.png: one 80x112 frame per look, in LOOKS
-order, left to right. The catalog's Maple Tree states point at it (migration
-LLM-967-painted-maple). After a change, run `godot --headless --editor --quit`
-in client/ so Godot writes the .import sidecar, and commit it with the PNG.
+Writes client/assets/trees/maple-1.png, -2, -3: three maples grown from
+different seeds (VARIANTS), so no two neighbours share a fork. Each sheet has
+one row per look, in LOOKS order, top to bottom; a row is the look's frames,
+80x112 each, left to right. The leafy looks are a FRAMES-long loop at FPS
+with one light-wind puff in it; the bare looks are one frame. The catalog's
+Maple Tree, Maple Tree 2 and Maple Tree 3 states point at them (migration
+LLM-967b-maple-variants). After a change, run `godot --headless --editor
+--quit` in client/ so Godot writes the .import sidecars, and commit them.
 
 How the tree is made, from photographs of sugar maples:
 - The branches are grown by space colonization: target points fill an upright
@@ -24,8 +28,15 @@ How the tree is made, from photographs of sugar maples:
   the crown off the grass. The shadow is the tree's own shape squashed onto
   the ground under it, pushed right: light comes from the upper left, as on
   the ground.
+- The puff (iterated with Jeff, 2026-11-13; a whole-tree wind tunnel study
+  and game practice agree that light-wind foliage motion is individual leaf
+  flutter, not a front crossing the crown): small leaf clusters all over the
+  crown turn to show paler undersides, each on its own beat; and the crown
+  bends by leaf pads leaning one whole pixel, the top first and longest. The
+  client starts every placed tree at a random frame and speed, so no two
+  trees rustle together.
 
-Rerunning writes the same file (every random draw comes from a fixed seed).
+Rerunning writes the same files (every random draw comes from a fixed seed).
 """
 
 import math
@@ -36,7 +47,10 @@ import sys
 from PIL import Image, ImageDraw
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-OUT = os.path.join(ROOT, "client", "assets", "trees", "maple.png")
+OUT_DIR = os.path.join(ROOT, "client", "assets", "trees")
+# The maples: sheet name and seed. Seed 21 is the one Jeff first approved;
+# 8 and 55 were picked from candidates as the least like it.
+VARIANTS = [("maple-1", 21), ("maple-2", 8), ("maple-3", 55)]
 
 S = 4                      # painting scale
 FW, FH = 80, 112           # frame, the catalog's Maple Tree size
@@ -46,9 +60,18 @@ ANCHOR_Y = 0.93            # the catalog anchor: the foot's row, as a share of F
 BASE_Y = H * ANCHOR_Y
 CROWN = (W * 0.5, H * 0.37, W * 0.44, H * 0.34)   # upright oval: centre, radii
 TRUNK_TOP = H * 0.72
-SEED = 21
+MAX_GUST = 1.0     # frame px a leaf pad may lean in a puff
 
-# The catalog state each frame serves, left to right. Every look is the same
+# The leafy looks' loop: FRAMES at FPS, still but for one puff at its end.
+# PUFF is how many leaf clusters stir, frame by frame; LEAN how far the
+# crown bends (times a pad's height, against the pad's own threshold).
+FPS = 6
+FRAMES = 36
+PUFF = [0.35, 0.6, 0.85, 1.0, 1.0, 1.0, 0.85, 0.6, 0.35]
+LEAN = [0.2, 0.45, 0.75, 1.0, 1.2, 0.9, 0.5, -0.15, -0.1]
+PUFF_AT = FRAMES - len(PUFF)
+
+# The catalog state each row serves, top to bottom. Every look is the same
 # tree: one skeleton, one seed.
 LOOKS = [
     "default",           # summer
@@ -267,12 +290,18 @@ def draw_twig_haze(d, rnd, branches):
             L = rnd.uniform(2.5, 5.5) * S
             x1, y1 = b.x1 + math.sin(a) * L, b.y1 - math.cos(a) * L
             col = ramp(BARK, rnd.uniform(0.35, 0.6))
-            d.line([(b.x1, b.y1), (x1, y1)], fill=col, width=max(2, int(0.9 * S)))
+            # A twig that would cross the frame's side or top is not drawn
+            # (its draws are still taken, so the rest of the haze is the same).
+            inside = lambda px, py: 1.5 * S <= px <= W - 1.5 * S and py >= 1.5 * S
+            if inside(x1, y1):
+                d.line([(b.x1, b.y1), (x1, y1)], fill=col, width=max(2, int(0.9 * S)))
             for s2 in (-1, 1):
                 if rnd.random() < 0.5:
                     a2 = a + s2 * rnd.uniform(0.35, 0.6)
                     L2 = L * rnd.uniform(0.4, 0.7)
-                    d.line([(x1, y1), (x1 + math.sin(a2) * L2, y1 - math.cos(a2) * L2)], fill=col, width=max(2, int(0.8 * S)))
+                    x2, y2 = x1 + math.sin(a2) * L2, y1 - math.cos(a2) * L2
+                    if inside(x1, y1) and inside(x2, y2):
+                        d.line([(x1, y1), (x2, y2)], fill=col, width=max(2, int(0.8 * S)))
 
 
 def draw_snow_on(d, b, scale=1.0):
@@ -317,20 +346,33 @@ def pad_points(rnd, twigs):
     return pts
 
 
-def draw_pad(d, rnd, x, y, ramp_a, ramp_b, hue, light):
+def draw_pad(d, rnd, x, y, ramp_a, ramp_b, hue, light, still_x=None, flip=None, pad=0):
     """A pad of leaves, wider than tall: a dark underside, leaf marks lit from
     the top (each with its own small shadow), ragged leaves at its rim."""
     rx = rnd.uniform(6.5, 9.5) * S
     ry = rx * rnd.uniform(0.5, 0.62)
     # Keep the pad, and the ragged leaves at its rim, a pixel inside the
-    # frame: a crown cut by the frame edge shows a flat side.
-    room = min(x, W - x) - 1 * S - 2.7 * S
+    # frame: a crown cut by the frame edge shows a flat side. Measured from
+    # the pad's still position, so a gust moves the pad without changing its
+    # size or any random draw after it.
+    sx = x if still_x is None else still_x
+    room = min(sx, W - sx) - 1 * S - 2.7 * S - MAX_GUST * S
     rx = max(2 * S, min(rx, room / 1.05))
+    n = int(rx * ry / (S * S) * 0.55)
+    # And a pixel below the frame's top: the pad's leaf marks reach up about
+    # 1.15 ry plus a leaf. Scaled after n is counted, so a pad squeezed
+    # under the top takes the same number of draws and no later pad changes.
+    room_up = y - 1 * S - 2.7 * S
+    if ry * 1.15 > room_up:
+        squeeze = max(2 * S, room_up / 1.15) / ry
+        rx, ry = rx * squeeze, ry * squeeze
+        # a pad on a twig too near the top for even its smallest size sits
+        # a little lower instead
+        y = max(y, 1 * S + 2.7 * S + ry * 1.15)
 
     def tone(v):
         return mix(ramp(ramp_a, v), ramp(ramp_b, v), hue)
     d.ellipse((x - rx, y - ry * 0.6, x + rx, y + ry * 1.25), fill=tone(light - 0.4))
-    n = int(rx * ry / (S * S) * 0.55)
     marks = []
     for _ in range(n):
         a = rnd.uniform(0, math.tau)
@@ -338,12 +380,13 @@ def draw_pad(d, rnd, x, y, ramp_a, ramp_b, hue, light):
         px, py = x + math.cos(a) * rx * rr, y + math.sin(a) * ry * rr - ry * 0.15
         top = -(py - y) / ry                      # +1 at the top of the pad
         v = light + top * 0.22 + rnd.uniform(-0.12, 0.12)
-        marks.append((py, px, v, rnd.uniform(0, math.tau), rnd.uniform(1.8, 2.6) * S))
-    for py, px, v, ang, s in sorted(marks):
+        marks.append((py, px, v, rnd.uniform(0, math.tau), rnd.uniform(1.8, 2.6) * S, int(a / (math.tau / 3))))
+    for py, px, v, ang, s, sector in sorted(marks):
         pts = [(px + math.cos(ang + k * 2.2) * s * (1 if k == 0 else 0.7),
                 py + math.sin(ang + k * 2.2) * s * (0.8 if k == 0 else 0.6)) for k in range(3)]
         d.polygon([(qx + 0.5 * S, qy + 0.8 * S) for qx, qy in pts], fill=tone(v - 0.3))
-        d.polygon(pts, fill=tone(v))
+        under = flip(pad, sector, px, py) if flip is not None else None
+        d.polygon(pts, fill=under if under is not None else tone(v))
     for _ in range(5):
         a = rnd.uniform(math.pi * 1.05, math.pi * 1.95) if rnd.random() < 0.7 else rnd.uniform(0, math.pi)
         px, py = x + math.cos(a) * rx * 1.05, y + math.sin(a) * ry * 1.05
@@ -364,7 +407,51 @@ def crown_ramps(look):
     return YELLOW, RED, lambda p: p
 
 
-def draw_crown(body, seed, branches, twigs, look):
+# Leaf undersides: paler than the tops. In a light wind leaves turn over and
+# flash these, a small cluster at a time (flipper).
+UNDERSIDE = {"default": ["7ea46a", "93b47c", "a6c38e"],
+             "autumn-clean": ["93b07a", "c8bf72", "d8cf8a"],
+             "autumn-leaves": ["e0a85a", "e8bc72", "eecb8c"]}
+
+
+def _hash(*parts):
+    h = 2166136261
+    for p in parts:
+        h = ((h ^ (int(p) & 0xFFFFFFFF)) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def flipper(gust, look, seed):
+    """Which leaf marks show their undersides in this frame. In a light wind
+    each small cluster of leaves flutters on its own (a whole-tree wind
+    tunnel study: low-speed foliage motion is individual leaf flutter;
+    Crytek gives every leaf its own phase), so there is no front crossing
+    the crown. A cluster is a third of a pad (by the mark's angle in it).
+    Each cluster has its own period (4-6 frames, about a second) and phase,
+    and shows its undersides for one frame of its period; only some
+    clusters are stirring at all, more as the puff strengthens, and only
+    part of a turned cluster turns. gust = (frame within the puff,
+    strength 0..1). Hashes, not the crown's generator, so the crown's own
+    draws are the same in every frame."""
+    t, strength = gust
+    cols = [rgb(h) for h in UNDERSIDE[look]]
+
+    def flip(pad, sector, px, py):
+        h = _hash(seed, pad, sector, 17)
+        if (h & 0xFFFF) / 65535.0 > strength * 0.5:
+            return None                          # this cluster is not stirring
+        period = 4 + (h >> 16) % 3
+        phase = (h >> 20) % period
+        if (t + phase) % period != 0:
+            return None
+        m = _hash(int(px), int(py), 31)
+        if (m & 0xFF) > 150:
+            return None                          # not every leaf in it turns
+        return cols[(m >> 8) % len(cols)]
+    return flip
+
+
+def draw_crown(body, seed, branches, twigs, look, gust=None):
     """Deep foliage inside the crown, the limbs showing through it, then the
     pads, higher first so lower pads overlap them."""
     rnd = random.Random(seed)
@@ -377,12 +464,26 @@ def draw_crown(body, seed, branches, twigs, look):
     for b in sorted(branches, key=lambda b: b.w1):
         if b.depth >= 1 and b.w1 > 2 * S:
             draw_branch(d, b)
-    for x, y in sorted(pad_points(rnd, twigs), key=lambda p: p[1]):
+    for k, (x, y) in enumerate(sorted(pad_points(rnd, twigs), key=lambda p: p[1])):
         gx, gy = (x - cx) / rx, (y - cy) / ry
         # even light: a gentle lift toward the upper left, the lowest pads a
         # little darker where the crown shades itself
         light = 0.62 - (gx * LIGHT[0] + gy * LIGHT[1]) * 0.08 - max(0.0, gy - 0.6) * 0.25 + rnd.uniform(-0.05, 0.05)
-        draw_pad(d, rnd, x, y, ramp_a, ramp_b, hue_of(patches(x, y)), light)
+        # The crown bends: leaf pads lean one whole frame pixel (exactly S
+        # canvas px, so a pad's texture survives the shrink unchanged), the
+        # way pixel artists move balls of leaves. A pad leans once the lean
+        # times its height in the crown passes its own threshold, so the
+        # top leans first and longest, pads lower down join only at the
+        # peak, and the line between moved and still is the ragged edge of
+        # the clusters, never a row.
+        dx = 0.0
+        if gust is not None:
+            h = max(0.0, min(1.0, (cy + ry - y) / (2 * ry)))
+            threshold = 0.35 + 0.55 * (_hash(seed, k, 5) & 0xFFFF) / 65535.0
+            if gust[2] * h >= threshold:
+                dx = S
+        draw_pad(d, rnd, x + dx, y, ramp_a, ramp_b, hue_of(patches(x, y)), light, still_x=x,
+                 flip=None if gust is None else flipper(gust[:2], look, seed), pad=k)
     return Image.alpha_composite(body, lay), lay.split()[3], (ramp_a, ramp_b)
 
 
@@ -415,18 +516,21 @@ def cast_shadow(body):
 
 # ---------------------------------------------------------------- one look
 
-def paint(look, branches, twigs):
+def paint(look, seed, branches, twigs, gust=None):
+    """One frame of one look. gust = (frame within the puff, how many leaf
+    clusters stir 0..1, how far the crown leans), or None for the still
+    tree."""
     leafy = look in LEAFY
     body = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(body)
     trunk = Branch(W * 0.5, BASE_Y, W * 0.5 + 1 * S, TRUNK_TOP, 14 * S, 11 * S, 0)
     if not leafy:
-        draw_twig_haze(d, random.Random(SEED + 7), branches)
+        draw_twig_haze(d, random.Random(seed + 7), branches)
         for b in sorted(branches, key=lambda b: b.w1):   # thin first: limbs over twigs
             if b.depth > 0:
                 draw_branch(d, b)
     draw_branch(d, trunk)
-    draw_furrows(d, random.Random(SEED + 5), trunk)
+    draw_furrows(d, random.Random(seed + 5), trunk)
     draw_roots(d, trunk)
     if look == "winter-snowy":
         for b in branches:
@@ -438,13 +542,13 @@ def paint(look, branches, twigs):
                 draw_snow_on(d, b, 0.6)
     crown_mask, ramps = None, None
     if leafy:
-        body, crown_mask, ramps = draw_crown(body, SEED + 1, branches, twigs, look)
+        body, crown_mask, ramps = draw_crown(body, seed + 1, branches, twigs, look, gust)
         d = ImageDraw.Draw(body)
     shadow = cast_shadow(body)
     if look in ("autumn-leaves", "autumn-bare"):
-        foot_leaves(d, random.Random(SEED + 3), 22 if look == "autumn-leaves" else 14, LEAVES)
+        foot_leaves(d, random.Random(seed + 3), 22 if look == "autumn-leaves" else 14, LEAVES)
     if look == "winter-leaves":
-        foot_leaves(d, random.Random(SEED + 4), 16, DRY_LEAVES)
+        foot_leaves(d, random.Random(seed + 4), 16, DRY_LEAVES)
     if look == "winter-snowy":
         d.ellipse((W * 0.5 - 15 * S, BASE_Y - 3 * S, W * 0.5 + 17 * S, BASE_Y + 3.5 * S), fill=rgb("eef3f7"))
     return body, shadow, crown_mask, ramps
@@ -486,6 +590,7 @@ def shrink(look, body, shadow, crown_mask, ramps):
         a, b = ramps
         crown_pal = [rgb(h)[:3] for h in a + b] + [mix(rgb(a[i]), rgb(b[i]), 0.5)[:3] for i in range(min(len(a), len(b)))]
         crown_pal += [rgb(h)[:3] for h in BARK[:3]]
+        crown_pal += [rgb(h)[:3] for h in UNDERSIDE.get(look, [])]
     out = Image.new("RGBA", (FW, FH), (0, 0, 0, 0))
     op = out.load()
     for y in range(FH):
@@ -501,42 +606,72 @@ def shrink(look, body, shadow, crown_mask, ramps):
     return out
 
 
-def build_sheet():
-    branches, twigs = colonize(SEED, 900)
-    sheet = Image.new("RGBA", (FW * len(LOOKS), FH), (0, 0, 0, 0))
-    for i, look in enumerate(LOOKS):
-        sheet.paste(shrink(look, *paint(look, branches, twigs)), (i * FW, 0))
-        print("painted", look)
+def frame_count(look):
+    return FRAMES if look in LEAFY else 1
+
+
+def look_frames(look, seed, branches, twigs):
+    """A look's frames. A leafy look is the still tree, then the puff at the
+    end of the loop; the shadow stays the still tree's, so the ground under
+    it does not flicker."""
+    body, shadow, mask, ramps = paint(look, seed, branches, twigs)
+    still = shrink(look, body, shadow, mask, ramps)
+    if look not in LEAFY:
+        return [still]
+    frames = [still] * FRAMES
+    for i, (stir, lean) in enumerate(zip(PUFF, LEAN)):
+        g_body, _, g_mask, g_ramps = paint(look, seed, branches, twigs, gust=(i, stir, lean))
+        frames[PUFF_AT + i] = shrink(look, g_body, shadow, g_mask, g_ramps)
+    return frames
+
+
+def build_sheet(seed):
+    branches, twigs = colonize(seed, 900)
+    sheet = Image.new("RGBA", (FW * FRAMES, FH * len(LOOKS)), (0, 0, 0, 0))
+    for row, look in enumerate(LOOKS):
+        for col, frame in enumerate(look_frames(look, seed, branches, twigs)):
+            sheet.paste(frame, (col * FW, row * FH))
     return sheet
 
 
 def check_frames():
-    """Every look stands on the catalog anchor and fits its frame: the bole's
-    last solid row (just above the anchor row, which the bark only partly
-    covers) is solid across the middle columns, and nothing opaque touches
-    the frame's left, right or top edge, where it would be cut off flat.
-    (Roots and fallen leaves reach below the anchor row, as the art it
-    replaces does.)"""
-    sheet = Image.open(OUT).convert("RGBA")
-    row = round(FH * ANCHOR_Y) - 1
+    """Every frame of every look stands on the catalog anchor and fits its
+    frame: the bole's last solid row (just above the anchor row, which the
+    bark only partly covers) is solid across the middle columns, and nothing
+    opaque touches the frame's left, right or top edge, where it would be
+    cut off flat. (Roots and fallen leaves reach below the anchor row, as
+    the art it replaces does.) A leafy loop starts still: its first frame is
+    the look's still tree, as the bare looks' only frame is."""
     ok = True
-    for i, look in enumerate(LOOKS):
-        x0 = i * FW
-        solid = all(sheet.getpixel((x0 + x, row))[3] == 255 for x in range(FW // 2 - 3, FW // 2 + 4))
-        edge = [(x, y) for y in range(FH) for x in (0, FW - 1) if sheet.getpixel((x0 + x, y))[3] == 255] + \
-               [(x, 0) for x in range(FW) if sheet.getpixel((x0 + x, 0))[3] == 255]
-        good = solid and not edge
-        ok = ok and good
-        print("%-17s trunk on the anchor: %s, pixels on the frame edge: %d" % (look, "yes" if solid else "NO", len(edge)))
+    for name, _seed in VARIANTS:
+        sheet = Image.open(os.path.join(OUT_DIR, name + ".png")).convert("RGBA")
+        if sheet.size != (FW * FRAMES, FH * len(LOOKS)):
+            print("%s: sheet is %dx%d, want %dx%d" % (name, sheet.size[0], sheet.size[1], FW * FRAMES, FH * len(LOOKS)))
+            ok = False
+            continue
+        row = round(FH * ANCHOR_Y) - 1
+        for r, look in enumerate(LOOKS):
+            bad = []
+            for col in range(frame_count(look)):
+                x0, y0 = col * FW, r * FH
+                solid = all(sheet.getpixel((x0 + x, y0 + row))[3] == 255 for x in range(FW // 2 - 3, FW // 2 + 4))
+                edge = any(sheet.getpixel((x0 + x, y0 + y))[3] == 255 for y in range(FH) for x in (0, FW - 1)) or \
+                    any(sheet.getpixel((x0 + x, y0))[3] == 255 for x in range(FW))
+                if not solid or edge:
+                    bad.append(col)
+            ok = ok and not bad
+            print("%s %-17s %2d frame(s)%s" % (name, look, frame_count(look),
+                                              "" if not bad else "  <- off the anchor or on the frame edge: %s" % bad))
     return ok
 
 
 def main():
     if "--check" in sys.argv:
         sys.exit(0 if check_frames() else 1)
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    build_sheet().save(OUT)
-    print("wrote", OUT)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    for name, seed in VARIANTS:
+        build_sheet(seed).save(os.path.join(OUT_DIR, name + ".png"))
+        print("painted", name)
 
 
 if __name__ == "__main__":
