@@ -72,7 +72,19 @@ BEGIN
            m.visible_when_inside, m.stand_offset_x, m.stand_offset_y, m.occupied_min_count, m.occupied_night_only, m.render_scale
       FROM asset m, llm967v_asset v
      WHERE m.id = maple AND v.asset_id <> maple
-    ON CONFLICT (id) DO NOTHING;
+    ON CONFLICT (id) DO UPDATE
+       SET name = EXCLUDED.name, category = EXCLUDED.category, default_state = EXCLUDED.default_state,
+           anchor_x = EXCLUDED.anchor_x, anchor_y = EXCLUDED.anchor_y, layer = EXCLUDED.layer,
+           pack_id = EXCLUDED.pack_id, interior = EXCLUDED.interior, fits_slot = EXCLUDED.fits_slot,
+           source_file = EXCLUDED.source_file, rotation_algo = EXCLUDED.rotation_algo,
+           transition_spread_seconds = EXCLUDED.transition_spread_seconds, is_obstacle = EXCLUDED.is_obstacle,
+           is_passage = EXCLUDED.is_passage, z_index = EXCLUDED.z_index,
+           footprint_left = EXCLUDED.footprint_left, footprint_right = EXCLUDED.footprint_right,
+           footprint_top = EXCLUDED.footprint_top, footprint_bottom = EXCLUDED.footprint_bottom,
+           door_offset_x = EXCLUDED.door_offset_x, door_offset_y = EXCLUDED.door_offset_y,
+           visible_when_inside = EXCLUDED.visible_when_inside, stand_offset_x = EXCLUDED.stand_offset_x,
+           stand_offset_y = EXCLUDED.stand_offset_y, occupied_min_count = EXCLUDED.occupied_min_count,
+           occupied_night_only = EXCLUDED.occupied_night_only, render_scale = EXCLUDED.render_scale;
 
     -- 1 and 2. Every look of every maple on its sheet, in its row.
     INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate)
@@ -91,14 +103,15 @@ BEGIN
      WHERE ms.asset_id = maple
     ON CONFLICT DO NOTHING;
 
-    -- Its rest default, for new placements of the new assets.
+    -- Its rest default, for new placements of the new assets: the variants'
+    -- rows are replaced by a fresh copy, so a rerun repairs a hand edit.
+    DELETE FROM asset_refresh_default WHERE asset_id IN (maple2, maple3);
     INSERT INTO asset_refresh_default (asset_id, attribute, amount, available_quantity, max_quantity, refresh_mode,
                                        refresh_period_hours, dwell_amount, dwell_period_minutes, gather_item)
     SELECT v.asset_id, d.attribute, d.amount, d.available_quantity, d.max_quantity, d.refresh_mode,
            d.refresh_period_hours, d.dwell_amount, d.dwell_period_minutes, d.gather_item
       FROM asset_refresh_default d, llm967v_asset v
-     WHERE d.asset_id = maple AND v.asset_id <> maple
-       AND NOT EXISTS (SELECT 1 FROM asset_refresh_default e WHERE e.asset_id = v.asset_id);
+     WHERE d.asset_id = maple AND v.asset_id <> maple;
 
     -- 3. The placed maples, each to its maple. Ordered by position, west to east.
     CREATE TEMP TABLE llm967v_place (object_id uuid PRIMARY KEY, variant integer NOT NULL) ON COMMIT DROP;
@@ -182,13 +195,47 @@ BEGIN
         RAISE EXCEPTION 'LLM-967: % placed maples are not on their variant', bad;
     END IF;
 
-    -- The new maples rest like the old one.
-    SELECT count(*) INTO bad FROM llm967v_asset v
-     WHERE v.asset_id <> maple
-       AND (SELECT count(*) FROM asset_refresh_default WHERE asset_id = v.asset_id)
-        <> (SELECT count(*) FROM asset_refresh_default WHERE asset_id = maple);
+    -- The new maples are the Maple Tree in every copied column (null-safe).
+    SELECT count(*) INTO bad
+      FROM asset a, asset m
+     WHERE m.id = maple AND a.id IN (maple2, maple3)
+       AND (a.category, a.default_state, a.anchor_x, a.anchor_y, a.layer, a.pack_id, a.interior, a.fits_slot,
+            a.source_file, a.rotation_algo, a.transition_spread_seconds, a.is_obstacle, a.is_passage, a.z_index,
+            a.footprint_left, a.footprint_right, a.footprint_top, a.footprint_bottom, a.door_offset_x, a.door_offset_y,
+            a.visible_when_inside, a.stand_offset_x, a.stand_offset_y, a.occupied_min_count, a.occupied_night_only,
+            a.render_scale)
+           IS DISTINCT FROM
+           (m.category, m.default_state, m.anchor_x, m.anchor_y, m.layer, m.pack_id, m.interior, m.fits_slot,
+            m.source_file, m.rotation_algo, m.transition_spread_seconds, m.is_obstacle, m.is_passage, m.z_index,
+            m.footprint_left, m.footprint_right, m.footprint_top, m.footprint_bottom, m.door_offset_x, m.door_offset_y,
+            m.visible_when_inside, m.stand_offset_x, m.stand_offset_y, m.occupied_min_count, m.occupied_night_only,
+            m.render_scale);
+    IF bad > 0 OR (SELECT count(*) FROM asset WHERE id IN (maple2, maple3)) <> 2 THEN
+        RAISE EXCEPTION 'LLM-967: % maple variants differ from the Maple Tree''s asset columns', bad;
+    END IF;
+
+    -- And rest like it: the same refresh-default rows, both directions.
+    SELECT count(*) INTO bad FROM (
+        (SELECT v.asset_id, d.attribute, d.amount, d.available_quantity, d.max_quantity, d.refresh_mode,
+                d.refresh_period_hours, d.dwell_amount, d.dwell_period_minutes, d.gather_item
+           FROM asset_refresh_default d, llm967v_asset v
+          WHERE d.asset_id = maple AND v.asset_id <> maple
+         EXCEPT
+         SELECT asset_id, attribute, amount, available_quantity, max_quantity, refresh_mode,
+                refresh_period_hours, dwell_amount, dwell_period_minutes, gather_item
+           FROM asset_refresh_default WHERE asset_id IN (maple2, maple3))
+        UNION ALL
+        (SELECT asset_id, attribute, amount, available_quantity, max_quantity, refresh_mode,
+                refresh_period_hours, dwell_amount, dwell_period_minutes, gather_item
+           FROM asset_refresh_default WHERE asset_id IN (maple2, maple3)
+         EXCEPT
+         SELECT v.asset_id, d.attribute, d.amount, d.available_quantity, d.max_quantity, d.refresh_mode,
+                d.refresh_period_hours, d.dwell_amount, d.dwell_period_minutes, d.gather_item
+           FROM asset_refresh_default d, llm967v_asset v
+          WHERE d.asset_id = maple AND v.asset_id <> maple)
+    ) diff;
     IF bad > 0 THEN
-        RAISE EXCEPTION 'LLM-967: % maple variants lack the Maple Tree''s rest default', bad;
+        RAISE EXCEPTION 'LLM-967: % rest-default rows differ between the Maple Tree and its variants', bad;
     END IF;
 END $$;
 
