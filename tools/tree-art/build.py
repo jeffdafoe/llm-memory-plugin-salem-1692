@@ -5,17 +5,19 @@
     python tools/tree-art/build.py --check   # every frame on its anchor, inside its frame
 
 Writes client/assets/trees/<species>-1.png, -2, -3 for every species in
-SPECIES (maple, chestnut, birch): three trees each, grown from different seeds,
-so no two neighbours share a fork. Each sheet has one row per look, in LOOKS
-order, top to bottom; a row is the look's frames, 80x112 each, left to right.
-The leafy looks are a FRAMES-long loop at FPS with one light-wind puff in it;
-the bare looks are one frame. The catalog's trees point at them (migrations
-LLM-967b-maple-variants, LLM-967c-chestnut-birch). After a change, run
+SPECIES (maple, chestnut, birch, apple): three trees each, grown from
+different seeds, so no two neighbours share a fork. Each sheet has one row per
+look, in the species' looks order (LOOKS for the big trees), top to bottom; a
+row is the look's frames, left to right, at the species' frame size (80x112;
+the apple tree 48x64). The leafy looks are a FRAMES-long loop at FPS with one
+light-wind puff in it; the bare looks are one frame. The catalog's trees point
+at them (migrations LLM-967b-maple-variants, LLM-967c-chestnut-birch,
+LLM-967d-apple-tree). After a change, run
 `godot --headless --editor --quit` in client/ so Godot writes the .import
 sidecars, and commit them.
 
 How a tree is made, from photographs (sugar maple; American and sweet
-chestnut; paper and gray birch):
+chestnut; paper and gray birch; orchard apple trees):
 - The branches are grown by space colonization: target points fill the
   species' crown, and from the trunk top each node grows a step toward the
   targets nearest it, using them up as it reaches them. Limbs fork and reach
@@ -50,6 +52,12 @@ What makes each species its own (Species):
   light-green pads with sky between them; black dashes and dark chevrons on
   the bark, a darker foot; dark fine twigs that hang at their tips. Autumn is
   clear gold.
+- Apple: a short leaning trunk that forks low into crooked, spreading limbs;
+  a low, broad, rounded crown of dull mid-green with grey-green undersides,
+  turning yellow-olive in patches in autumn. Its looks are the catalog's
+  fruit states: with apples (red and red-gold, hung under the leaf pads) and
+  picked, the same tree leaf for leaf; the same fallen leaves lie under both
+  in autumn.
 
 Rerunning writes the same files (every random draw comes from a fixed seed).
 """
