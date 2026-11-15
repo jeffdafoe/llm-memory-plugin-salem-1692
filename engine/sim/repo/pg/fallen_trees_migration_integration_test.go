@@ -9,10 +9,13 @@ import (
 	"testing"
 )
 
-// TestSnappedFallenTreesMigration_Integration replays LLM-789: the up moves the
-// LLM-678 tops to the snapped sheet and adds the SW-pose assets; the down
-// refuses while a SW top is placed, then puts the flat tops back; a second up
-// converges.
+// TestSnappedFallenTreesMigration_Integration replays the fallen trees'
+// migrations. The fixture ran every up, so it starts on the painted art
+// (LLM-967f), which must match tools/tree-art/fallen.py's geometry
+// (testdata/fallen-trees-snapped.json). LLM-967f's down puts back the LLM-789
+// snapped pack art. Then LLM-789: its down refuses while a SW top is placed,
+// then puts the flat tops back, and its up converges. LLM-967f's up then
+// paints them again, twice, to the same place.
 func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -45,16 +48,31 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 	const (
 		maple     = "019e5f00-c401-7a10-9e00-000000678001"
 		mapleSW   = "019e5f00-c401-7a10-9e00-000000789001"
+		stump     = "019e5f00-c401-7a10-9e00-000000678004"
+		trunk     = "019e5f00-c401-7a10-9e00-000000678005"
 		snapped   = "/tilesets/mana-seed/growable-trees/public-works-fallen-trees-snapped.png"
 		flat      = "/tilesets/mana-seed/growable-trees/public-works-fallen-trees.png"
+		painted   = "res://assets/trees/fallen-tops.png"
 		snapAsset = `SELECT count(*) FROM asset WHERE id::text LIKE '019e5f00-c401-7a10-9e00-000000789%'`
 	)
-	// The art's numbers (engine/sim/testdata, the tools/fallen-trees JSON).
+	// The painted art's numbers (engine/sim/testdata, written by tools/tree-art/fallen.py).
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fallen-trees-snapped.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var art struct {
+		Stumps []struct {
+			State   string
+			Rect    [4]int
+			AnchorX float64 `json:"anchor_x"`
+			AnchorY float64 `json:"anchor_y"`
+		}
+		Trunk struct {
+			Looks []struct {
+				State string
+				Rect  [4]int
+			}
+		}
 		Tops []struct {
 			Species, Pose string
 			AnchorX       float64 `json:"anchor_x"`
@@ -91,15 +109,38 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 			for _, fr := range top.Frames {
 				if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = $3
 				                AND src_x = $4 AND src_y = $5 AND src_w = $6 AND src_h = $7`,
-					id, fr.State, snapped, fr.Rect[0], fr.Rect[1], fr.Rect[2], fr.Rect[3]); n != 1 {
+					id, fr.State, painted, fr.Rect[0], fr.Rect[1], fr.Rect[2], fr.Rect[3]); n != 1 {
 					t.Errorf("%s %s %s: frame does not match the art's rect", top.Species, top.Pose, fr.State)
 				}
 			}
 		}
+		for _, st := range art.Stumps {
+			if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = 'res://assets/trees/storm-stumps.png'
+			                AND src_x = $3 AND src_y = $4 AND src_w = $5 AND src_h = $6`,
+				stump, st.State, st.Rect[0], st.Rect[1], st.Rect[2], st.Rect[3]); n != 1 {
+				t.Errorf("stump %s: frame does not match the art's rect", st.State)
+			}
+			if n := count(`SELECT count(*) FROM asset WHERE id = $1 AND anchor_x = $2 AND anchor_y = $3`, stump, st.AnchorX, st.AnchorY); n != 1 {
+				t.Errorf("stump %s: the Storm Stump is not anchored where the art's foot is", st.State)
+			}
+		}
+		for _, lk := range art.Trunk.Looks {
+			if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = 'res://assets/trees/fallen-trunk.png'
+			                AND src_x = $3 AND src_y = $4 AND src_w = $5 AND src_h = $6`,
+				trunk, lk.State, lk.Rect[0], lk.Rect[1], lk.Rect[2], lk.Rect[3]); n != 1 {
+				t.Errorf("log %s: frame does not match the art's rect", lk.State)
+			}
+		}
+		if len(art.Stumps) != 6 || len(art.Trunk.Looks) != 6 {
+			t.Errorf("art has %d stumps and %d log looks, want 6 and 6", len(art.Stumps), len(art.Trunk.Looks))
+		}
+		if n := count(`SELECT count(*) FROM asset_state WHERE asset_id IN ($1, $2) AND sheet LIKE '/tilesets/%'`, stump, trunk); n != 0 {
+			t.Errorf("%d stump or log states are still on pack art", n)
+		}
 	}
+	// The LLM-789 state: the pack's snapped tops (numbers from that migration).
 	upState := func() {
 		t.Helper()
-		matchesArt()
 		if n := count(snapAsset); n != 3 {
 			t.Errorf("SW-pose assets = %d, want 3", n)
 		}
@@ -120,8 +161,13 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 		}
 	}
 
-	// The fixture already ran every up.
+	// The fixture already ran every up: the painted art.
+	matchesArt()
+	run("LLM-967f-fallen-trees_down.sql")
 	upState()
+	if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND sheet LIKE '/tilesets/mana-seed/%'`, trunk); n != 6 {
+		t.Errorf("LLM-967f down left %d log states on the pack sheets, want 6", n)
+	}
 
 	// A SW top in the road holds the down back.
 	if _, err := f.Pool.Exec(ctx, `INSERT INTO village_object (x, y, asset_id) VALUES (0, 0, $1)`, mapleSW); err != nil {
@@ -158,4 +204,9 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 	upState()
 	run("LLM-789-snapped-fallen-trees_up.sql")
 	upState()
+
+	run("LLM-967f-fallen-trees_up.sql")
+	matchesArt()
+	run("LLM-967f-fallen-trees_up.sql")
+	matchesArt()
 }

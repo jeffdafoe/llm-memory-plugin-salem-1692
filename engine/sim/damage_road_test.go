@@ -51,11 +51,11 @@ func buildRoadDamageWorld(t *testing.T, paint roadTiles, landmark sim.TilePos) *
 			}
 		}
 		world.Terrain = &sim.Terrain{Data: data}
-		// A Fallen Maple (3x3 footprint, stump two tiles east and one south of
-		// the anchor) and the Storm Stump; the other variants are absent, so every
-		// break is a maple.
+		// A Fallen Maple (the painted art's footprint, 3 wide and 4 deep; stump
+		// two tiles east and two south of the anchor) and the Storm Stump; the
+		// other variants are absent, so every break is a maple.
 		world.Assets[sim.FallenMapleAssetID] = &sim.Asset{ID: sim.FallenMapleAssetID, Name: "Fallen Maple", DefaultState: "bare",
-			IsObstacle: true, FootprintLeft: 1, FootprintRight: 1, FootprintTop: 1, FootprintBottom: 1,
+			IsObstacle: true, FootprintLeft: 1, FootprintRight: 1, FootprintTop: 1, FootprintBottom: 2,
 			States: []sim.AssetState{{ID: 40, State: "bare"}, {ID: 41, State: "winter"}}}
 		world.Assets[sim.StormStumpAssetID] = &sim.Asset{ID: sim.StormStumpAssetID, Name: "Storm Stump", DefaultState: "maple-bare",
 			IsObstacle: true, States: []sim.AssetState{{ID: 42, State: "maple-bare"}, {ID: 43, State: "maple-winter"}}}
@@ -92,11 +92,12 @@ func roadObstacles(world *sim.World) []*sim.VillageObject {
 	return out
 }
 
-// footprintTiles lists the tiles the Fallen Maple's 3x3 footprint covers.
+// footprintTiles lists the tiles the Fallen Maple's footprint covers: one
+// tile left, right and up of the anchor, two down.
 func footprintTiles(o *sim.VillageObject) []sim.TilePos {
 	a := o.Pos.Tile()
 	var out []sim.TilePos
-	for y := a.Y - 1; y <= a.Y+1; y++ {
+	for y := a.Y - 1; y <= a.Y+2; y++ {
 		for x := a.X - 1; x <= a.X+1; x++ {
 			out = append(out, sim.TilePos{X: x, Y: y})
 		}
@@ -151,7 +152,7 @@ func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 			}
 		}
 		a := o.Pos.Tile()
-		// Its stump stands two tiles east and one south of the anchor, past
+		// Its stump stands two tiles east and two south of the anchor, past
 		// the cut end, on grass — and blocks its own tile.
 		stumps := stormStumps(world)
 		if len(stumps) != 1 {
@@ -162,8 +163,8 @@ func TestRoadDamagePlacesAFallenTreeAcrossTheRoad(t *testing.T) {
 		if st.AssetID != sim.StormStumpAssetID || st.CurrentState != "maple-bare" || !st.ExpiresAt.IsZero() {
 			t.Errorf("stump = %+v, want a maple-bare Storm Stump with no expiry yet", st)
 		}
-		if stTile != (sim.TilePos{X: a.X + 2, Y: a.Y + 1}) {
-			t.Errorf("stump tile %v, want %v — just past the cut end", stTile, sim.TilePos{X: a.X + 2, Y: a.Y + 1})
+		if stTile != (sim.TilePos{X: a.X + 2, Y: a.Y + 2}) {
+			t.Errorf("stump tile %v, want %v — just past the cut end", stTile, sim.TilePos{X: a.X + 2, Y: a.Y + 2})
 		}
 		if b := world.Terrain.Data[stTile.Y*sim.MapW+stTile.X]; b == sim.TerrainDirt || b == sim.TerrainCobblestone {
 			t.Errorf("stump stands on the road at %v", stTile)
@@ -244,10 +245,10 @@ func TestRoadClearingByAHand(t *testing.T) {
 		if o.AssetID != sim.FallenMapleAssetID || o.CurrentState != "winter" {
 			t.Fatalf("obstacle = %+v, want the winter Fallen maple", o)
 		}
-		// The loiter pin is two tiles below the footprint (bottom 1) — where
+		// The loiter pin is two tiles below the footprint (bottom 2) — where
 		// move_to parks a hand.
 		a := o.Pos.Tile()
-		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 3}
+		world.Actors["anne"].Pos = sim.TilePos{X: a.X, Y: a.Y + 4}
 	})
 	if _, err := w.Send(sim.StartRepair("anne")); err != nil {
 		t.Fatalf("StartRepair at the fallen tree: %v", err)
@@ -439,8 +440,9 @@ func TestSnappedTreeClosesAnEastWestRoad(t *testing.T) {
 		top, bottom      int
 		stumpDX, stumpDY int
 	}{
-		{"crown up-left", sim.FallenMapleAssetID, 1, 1, 1, 1, 2, 1},
-		{"crown down-left", sim.FallenMapleSouthAssetID, 1, 1, 1, 1, 2, -1},
+		// The painted art's footprints and stump tiles (testdata/fallen-trees-snapped.json).
+		{"crown up-left", sim.FallenMapleAssetID, 1, 1, 1, 2, 2, 2},
+		{"crown down-left", sim.FallenMapleSouthAssetID, 1, 2, 1, 1, 2, -2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := buildRoadDamageWorld(t, eastWestRoad(40, 2), sim.TilePos{X: 100, Y: 46})

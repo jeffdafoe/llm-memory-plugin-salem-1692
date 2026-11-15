@@ -45,6 +45,13 @@ const APPLES := ["res://assets/trees/apple-1.png", "res://assets/trees/apple-2.p
 const APPLE_LOOKS := 8  # four leafy fruit looks, four bare winter looks (LLM-967e)
 const APPLE_W := 48
 const APPLE_H := 64
+# migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
+# storm damage's sheets, each the size its last rect ends at.
+const FALLEN := {
+    "res://assets/trees/fallen-tops.png": Vector2i(160, 464),
+    "res://assets/trees/storm-stumps.png": Vector2i(174, 24),
+    "res://assets/trees/fallen-trunk.png": Vector2i(192, 32),
+}
 
 var _failures := 0
 var _checks := 0
@@ -191,8 +198,14 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
         if texture != null:
-            _check("%s is four rows of 36 frames" % path,
+            _check("%s is eight rows of up to 36 frames" % path,
                 texture.get_width() == LOOP_FRAMES * APPLE_W and texture.get_height() == APPLE_LOOKS * APPLE_H)
+    for path in FALLEN:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, FALLEN[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == FALLEN[path])
     _done()
 
 
