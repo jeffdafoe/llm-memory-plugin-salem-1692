@@ -24,7 +24,12 @@
 --      winter states at their frames;
 --   2. points the Storm Stump's six states at their frames, anchored at the foot;
 --   3. points the Fallen Trunk's six season states at their frames. Their
---      season tags are untouched.
+--      season tags are untouched;
+--   4. moves the stump of any tree still lying in a road (its top placed, the
+--      stump standing at the pack art's offset from it, no expiry yet) to the
+--      painted art's offset (64, +-64), so it stands at the new butt end and
+--      on the tile the engine looks for it (top tile + stumpOffset). A stump
+--      left after a clearing has its own expiry and stays where it is.
 -- Placed stumps and tops keep their state, so they redraw in the new art.
 -- Then every row must hold exactly, or the migration fails.
 --
@@ -100,6 +105,31 @@ BEGIN
            frame_count = 1, frame_rate = 0
       FROM llm967f_state n
      WHERE s.asset_id = n.asset_id AND s.state = n.state;
+
+    -- 4. Each top pose's stump offset, pack art -> painted art (world px; the
+    -- engine's road variants, before and after).
+    CREATE TEMP TABLE llm967f_offset (
+        asset_id uuid PRIMARY KEY, old_dx double precision NOT NULL, old_dy double precision NOT NULL,
+        new_dx double precision NOT NULL, new_dy double precision NOT NULL) ON COMMIT DROP;
+    INSERT INTO llm967f_offset VALUES
+        ('019e5f00-c401-7a10-9e00-000000678001', 67, 40, 64, 64),
+        ('019e5f00-c401-7a10-9e00-000000789001', 70, -32, 64, -64),
+        ('019e5f00-c401-7a10-9e00-000000678002', 90, 72, 64, 64),
+        ('019e5f00-c401-7a10-9e00-000000789002', 103, -42, 64, -64),
+        ('019e5f00-c401-7a10-9e00-000000678003', 80, 49, 64, 64),
+        ('019e5f00-c401-7a10-9e00-000000789003', 82, -38, 64, -64);
+    UPDATE village_object s
+       SET x = t.x + o.new_dx, y = t.y + o.new_dy
+      FROM village_object t JOIN llm967f_offset o ON o.asset_id = t.asset_id
+     WHERE s.asset_id = stump AND s.expires_at IS NULL
+       AND s.x = t.x + o.old_dx AND s.y = t.y + o.old_dy;
+    SELECT count(*) INTO bad
+      FROM village_object s, village_object t JOIN llm967f_offset o ON o.asset_id = t.asset_id
+     WHERE s.asset_id = stump AND s.expires_at IS NULL
+       AND s.x = t.x + o.old_dx AND s.y = t.y + o.old_dy;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-967f: % stumps still stand at the pack art''s offset from their tree', bad;
+    END IF;
 
     -- Every state as authored, and none of these assets left on pack art.
     SELECT count(*) INTO bad

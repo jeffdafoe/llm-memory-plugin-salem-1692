@@ -1,8 +1,10 @@
 -- LLM-967f down: the storm damage back on the Mana Seed pack art. Each top
 -- asset's anchor, footprint and frames, the Storm Stump's frames and anchor,
 -- and the Fallen Trunk's season sheets return to their LLM-678 / LLM-789 /
--- LLM-849 values (as live before LLM-967f). Run this BEFORE reverting the
--- engine: its road variants carry the stump offsets of the art in use.
+-- LLM-849 values (as live before LLM-967f). The stump of a tree still lying
+-- in a road moves back to the pack art's offset from its top. Run this BEFORE
+-- reverting the engine: its road variants carry the stump offsets of the art
+-- in use.
 
 BEGIN;
 
@@ -56,6 +58,23 @@ BEGIN
                    ('winter-snowy', '/tilesets/mana-seed/winter-forest/winter sheets/winter (snowy) 32x32.png'),
                    ('winter-snowy-top', '/tilesets/mana-seed/winter-forest/winter sheets/winter (snowy top) 32x32.png')) o(state, sheet)
      WHERE s.asset_id = trunk AND s.state = o.state;
+
+    -- A tree still in a road: its stump from the painted offset back to the pack's.
+    CREATE TEMP TABLE llm967f_old_offset (
+        asset_id uuid PRIMARY KEY, old_dx double precision NOT NULL, old_dy double precision NOT NULL,
+        new_dx double precision NOT NULL, new_dy double precision NOT NULL) ON COMMIT DROP;
+    INSERT INTO llm967f_old_offset VALUES
+        ('019e5f00-c401-7a10-9e00-000000678001', 67, 40, 64, 64),
+        ('019e5f00-c401-7a10-9e00-000000789001', 70, -32, 64, -64),
+        ('019e5f00-c401-7a10-9e00-000000678002', 90, 72, 64, 64),
+        ('019e5f00-c401-7a10-9e00-000000789002', 103, -42, 64, -64),
+        ('019e5f00-c401-7a10-9e00-000000678003', 80, 49, 64, 64),
+        ('019e5f00-c401-7a10-9e00-000000789003', 82, -38, 64, -64);
+    UPDATE village_object s
+       SET x = t.x + o.old_dx, y = t.y + o.old_dy
+      FROM village_object t JOIN llm967f_old_offset o ON o.asset_id = t.asset_id
+     WHERE s.asset_id = stump AND s.expires_at IS NULL
+       AND s.x = t.x + o.new_dx AND s.y = t.y + o.new_dy;
 
     IF EXISTS (SELECT 1 FROM asset_state
                 WHERE asset_id IN (SELECT asset_id FROM llm967f_old_top UNION ALL SELECT stump UNION ALL SELECT trunk)

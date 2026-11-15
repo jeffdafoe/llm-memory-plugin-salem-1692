@@ -55,12 +55,11 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 		painted   = "res://assets/trees/fallen-tops.png"
 		snapAsset = `SELECT count(*) FROM asset WHERE id::text LIKE '019e5f00-c401-7a10-9e00-000000789%'`
 	)
-	// The painted art's numbers (engine/sim/testdata, written by tools/tree-art/fallen.py).
-	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fallen-trees-snapped.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var art struct {
+	// The art's numbers: the painted art (testdata/fallen-trees-snapped.json,
+	// written by tools/tree-art/fallen.py) and, frozen, the pack art LLM-789
+	// placed (testdata/fallen-trees-snapped-llm789.json, written by the tiles
+	// repo's tools/fallen-trees).
+	type artFile struct {
 		Stumps []struct {
 			State   string
 			Rect    [4]int
@@ -87,43 +86,60 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 			}
 		}
 	}
-	if err := json.Unmarshal(raw, &art); err != nil {
-		t.Fatal(err)
+	load := func(name string) artFile {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var a artFile
+		if err := json.Unmarshal(raw, &a); err != nil {
+			t.Fatal(err)
+		}
+		return a
 	}
+	art, pack := load("fallen-trees-snapped.json"), load("fallen-trees-snapped-llm789.json")
 	assetOf := map[string]string{
 		"maple up": maple, "chestnut up": "019e5f00-c401-7a10-9e00-000000678002", "birch up": "019e5f00-c401-7a10-9e00-000000678003",
 		"maple down": mapleSW, "chestnut down": "019e5f00-c401-7a10-9e00-000000789002", "birch down": "019e5f00-c401-7a10-9e00-000000789003",
 	}
-	matchesArt := func() {
+	// topsMatch: every top asset carries a's anchor and footprint, and every
+	// frame a's rect on sheet; and the stumps a's rects on stumpSheet, the
+	// Storm Stump a's anchor.
+	topsMatch := func(a artFile, sheet, stumpSheet, label string) {
 		t.Helper()
-		if len(art.Tops) != len(assetOf) {
-			t.Fatalf("art has %d tops, want %d", len(art.Tops), len(assetOf))
+		if len(a.Tops) != len(assetOf) || len(a.Stumps) != 6 {
+			t.Fatalf("%s art has %d tops and %d stumps, want %d and 6", label, len(a.Tops), len(a.Stumps), len(assetOf))
 		}
-		for _, top := range art.Tops {
+		for _, top := range a.Tops {
 			id := assetOf[top.Species+" "+top.Pose]
 			if n := count(`SELECT count(*) FROM asset WHERE id = $1 AND anchor_x = $2 AND anchor_y = $3
 			                AND footprint_left = $4 AND footprint_right = $5 AND footprint_top = $6 AND footprint_bottom = $7`,
 				id, top.AnchorX, top.AnchorY, top.FL, top.FR, top.FT, top.FB); n != 1 {
-				t.Errorf("%s %s: asset row does not match the art's anchor and footprint", top.Species, top.Pose)
+				t.Errorf("%s %s %s: asset row does not match the art's anchor and footprint", label, top.Species, top.Pose)
 			}
 			for _, fr := range top.Frames {
 				if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = $3
 				                AND src_x = $4 AND src_y = $5 AND src_w = $6 AND src_h = $7`,
-					id, fr.State, painted, fr.Rect[0], fr.Rect[1], fr.Rect[2], fr.Rect[3]); n != 1 {
-					t.Errorf("%s %s %s: frame does not match the art's rect", top.Species, top.Pose, fr.State)
+					id, fr.State, sheet, fr.Rect[0], fr.Rect[1], fr.Rect[2], fr.Rect[3]); n != 1 {
+					t.Errorf("%s %s %s %s: frame does not match the art's rect", label, top.Species, top.Pose, fr.State)
 				}
 			}
 		}
-		for _, st := range art.Stumps {
-			if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = 'res://assets/trees/storm-stumps.png'
-			                AND src_x = $3 AND src_y = $4 AND src_w = $5 AND src_h = $6`,
-				stump, st.State, st.Rect[0], st.Rect[1], st.Rect[2], st.Rect[3]); n != 1 {
-				t.Errorf("stump %s: frame does not match the art's rect", st.State)
+		for _, st := range a.Stumps {
+			if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = $3
+			                AND src_x = $4 AND src_y = $5 AND src_w = $6 AND src_h = $7`,
+				stump, st.State, stumpSheet, st.Rect[0], st.Rect[1], st.Rect[2], st.Rect[3]); n != 1 {
+				t.Errorf("%s stump %s: frame does not match the art's rect", label, st.State)
 			}
 			if n := count(`SELECT count(*) FROM asset WHERE id = $1 AND anchor_x = $2 AND anchor_y = $3`, stump, st.AnchorX, st.AnchorY); n != 1 {
-				t.Errorf("stump %s: the Storm Stump is not anchored where the art's foot is", st.State)
+				t.Errorf("%s stump %s: the Storm Stump is not anchored where the art's foot is", label, st.State)
 			}
 		}
+	}
+	matchesArt := func() {
+		t.Helper()
+		topsMatch(art, painted, "res://assets/trees/storm-stumps.png", "painted")
 		for _, lk := range art.Trunk.Looks {
 			if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND state = $2 AND sheet = 'res://assets/trees/fallen-trunk.png'
 			                AND src_x = $3 AND src_y = $4 AND src_w = $5 AND src_h = $6`,
@@ -131,16 +147,18 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 				t.Errorf("log %s: frame does not match the art's rect", lk.State)
 			}
 		}
-		if len(art.Stumps) != 6 || len(art.Trunk.Looks) != 6 {
-			t.Errorf("art has %d stumps and %d log looks, want 6 and 6", len(art.Stumps), len(art.Trunk.Looks))
+		if len(art.Trunk.Looks) != 6 {
+			t.Errorf("art has %d log looks, want 6", len(art.Trunk.Looks))
 		}
 		if n := count(`SELECT count(*) FROM asset_state WHERE asset_id IN ($1, $2) AND sheet LIKE '/tilesets/%'`, stump, trunk); n != 0 {
 			t.Errorf("%d stump or log states are still on pack art", n)
 		}
 	}
-	// The LLM-789 state: the pack's snapped tops (numbers from that migration).
+	// The LLM-789 state: the pack's snapped tops, every one as the frozen art
+	// has it, and the stumps on the flat sheet.
 	upState := func() {
 		t.Helper()
+		topsMatch(pack, snapped, flat, "pack")
 		if n := count(snapAsset); n != 3 {
 			t.Errorf("SW-pose assets = %d, want 3", n)
 		}
@@ -167,6 +185,53 @@ func TestSnappedFallenTreesMigration_Integration(t *testing.T) {
 	upState()
 	if n := count(`SELECT count(*) FROM asset_state WHERE asset_id = $1 AND sheet LIKE '/tilesets/mana-seed/%'`, trunk); n != 6 {
 		t.Errorf("LLM-967f down left %d log states on the pack sheets, want 6", n)
+	}
+
+	// A tree in the road across the art change: a maple (crown up-left) with
+	// its stump at the pack art's offset (67, 40) moves with LLM-967f to the
+	// painted art's (64, 64), and back on the down. A stump already cleared
+	// (it has an expiry) stays put, though it stands at a pack offset from
+	// another tree (a chestnut, crown down-left: 103, -42).
+	place := func(x, y float64, asset, state string, expires bool) string {
+		t.Helper()
+		var id string
+		q := `INSERT INTO village_object (x, y, asset_id, current_state, expires_at)
+		      VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() + interval '7 days' END) RETURNING id::text`
+		if err := f.Pool.QueryRow(ctx, q, x, y, asset, state, expires).Scan(&id); err != nil {
+			t.Fatalf("place %s: %v", asset, err)
+		}
+		return id
+	}
+	pos := func(id string) (x, y float64) {
+		t.Helper()
+		if err := f.Pool.QueryRow(ctx, `SELECT x, y FROM village_object WHERE id = $1`, id).Scan(&x, &y); err != nil {
+			t.Fatal(err)
+		}
+		return x, y
+	}
+	const chestnutSW = "019e5f00-c401-7a10-9e00-000000789002"
+	place(1008, 2016, maple, "bare", false)
+	linked := place(1008+67, 2016+40, stump, "maple-bare", false)
+	place(3024, 3024, chestnutSW, "winter", false)
+	cleared := place(3024+103, 3024-42, stump, "chestnut-winter", true)
+	run("LLM-967f-fallen-trees_up.sql")
+	if x, y := pos(linked); x != 1008+64 || y != 2016+64 {
+		t.Errorf("up: the maple's stump stands at (%v, %v), want the painted offset (%v, %v)", x, y, 1008+64, 2016+64)
+	}
+	if x, y := pos(cleared); x != 3024+103 || y != 3024-42 {
+		t.Errorf("up: the cleared stump moved to (%v, %v)", x, y)
+	}
+	matchesArt()
+	run("LLM-967f-fallen-trees_down.sql")
+	if x, y := pos(linked); x != 1008+67 || y != 2016+40 {
+		t.Errorf("down: the maple's stump stands at (%v, %v), want the pack offset (%v, %v)", x, y, 1008+67, 2016+40)
+	}
+	if x, y := pos(cleared); x != 3024+103 || y != 3024-42 {
+		t.Errorf("down: the cleared stump moved to (%v, %v)", x, y)
+	}
+	upState()
+	if _, err := f.Pool.Exec(ctx, `DELETE FROM village_object WHERE asset_id IN ($1, $2, $3)`, maple, chestnutSW, stump); err != nil {
+		t.Fatal(err)
 	}
 
 	// A SW top in the road holds the down back.
