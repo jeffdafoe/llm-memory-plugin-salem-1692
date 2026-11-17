@@ -1,301 +1,359 @@
 {
-  "source": "tilesets/growable-trees/public-works-fallen-trees.png",
+  "source": "tools/tree-art/fallen.py",
   "stumps": [
     {
       "state": "maple-bare",
       "rect": [
         0,
-        66,
-        36,
-        32
+        0,
+        29,
+        24
       ],
-      "anchor_x": 0.4861111111111111,
-      "anchor_y": 0.890625
+      "anchor_x": 0.517241,
+      "anchor_y": 0.84
     },
     {
       "state": "maple-winter",
       "rect": [
-        36,
-        66,
-        36,
-        32
+        29,
+        0,
+        29,
+        24
       ],
-      "anchor_x": 0.4861111111111111,
-      "anchor_y": 0.890625
+      "anchor_x": 0.517241,
+      "anchor_y": 0.84
     },
     {
       "state": "chestnut-bare",
       "rect": [
-        72,
-        66,
-        36,
-        32
+        58,
+        0,
+        29,
+        24
       ],
-      "anchor_x": 0.4861111111111111,
-      "anchor_y": 0.890625
+      "anchor_x": 0.517241,
+      "anchor_y": 0.84
     },
     {
       "state": "chestnut-winter",
       "rect": [
-        108,
-        66,
-        36,
-        32
+        87,
+        0,
+        29,
+        24
       ],
-      "anchor_x": 0.4861111111111111,
-      "anchor_y": 0.890625
+      "anchor_x": 0.517241,
+      "anchor_y": 0.84
     },
     {
       "state": "birch-bare",
       "rect": [
-        144,
-        66,
-        36,
-        32
+        116,
+        0,
+        29,
+        24
       ],
-      "anchor_x": 0.4861111111111111,
-      "anchor_y": 0.890625
+      "anchor_x": 0.517241,
+      "anchor_y": 0.84
     },
     {
       "state": "birch-winter",
       "rect": [
-        180,
-        66,
-        36,
-        32
+        145,
+        0,
+        29,
+        24
       ],
-      "anchor_x": 0.4861111111111111,
-      "anchor_y": 0.890625
+      "anchor_x": 0.517241,
+      "anchor_y": 0.84
     }
   ],
   "tops": [
     {
       "species": "maple",
       "pose": "up",
-      "anchor_x": 0.5797101449275363,
-      "anchor_y": 0.5555555555555556,
+      "anchor_x": 0.5,
+      "anchor_y": 0.5,
       "footprint_left": 1,
       "footprint_right": 1,
       "footprint_top": 1,
-      "footprint_bottom": 1,
+      "footprint_bottom": 2,
       "stump_tile_dx": 2,
-      "stump_tile_dy": 1,
+      "stump_tile_dy": 2,
       "frames": [
         {
           "state": "bare",
           "rect": [
             0,
             0,
-            69,
-            72
+            80,
+            80
           ],
           "stump_state": "maple-bare",
-          "stump_world_dx": 67,
-          "stump_world_dy": 40
+          "stump_world_dx": 64,
+          "stump_world_dy": 64
         },
         {
           "state": "winter",
           "rect": [
-            71,
+            80,
             0,
-            69,
-            72
+            80,
+            80
           ],
           "stump_state": "maple-winter",
-          "stump_world_dx": 67,
-          "stump_world_dy": 40
+          "stump_world_dx": 64,
+          "stump_world_dy": 64
         }
       ]
     },
     {
       "species": "maple",
       "pose": "down",
-      "anchor_x": 0.5714285714285714,
-      "anchor_y": 0.42857142857142855,
+      "anchor_x": 0.5,
+      "anchor_y": 0.5,
+      "footprint_left": 1,
+      "footprint_right": 2,
+      "footprint_top": 1,
+      "footprint_bottom": 1,
+      "stump_tile_dx": 2,
+      "stump_tile_dy": -2,
+      "frames": [
+        {
+          "state": "bare",
+          "rect": [
+            0,
+            80,
+            80,
+            80
+          ],
+          "stump_state": "maple-bare",
+          "stump_world_dx": 64,
+          "stump_world_dy": -64
+        },
+        {
+          "state": "winter",
+          "rect": [
+            80,
+            80,
+            80,
+            80
+          ],
+          "stump_state": "maple-winter",
+          "stump_world_dx": 64,
+          "stump_world_dy": -64
+        }
+      ]
+    },
+    {
+      "species": "chestnut",
+      "pose": "up",
+      "anchor_x": 0.375,
+      "anchor_y": 0.375,
+      "footprint_left": 1,
+      "footprint_right": 1,
+      "footprint_top": 1,
+      "footprint_bottom": 2,
+      "stump_tile_dx": 2,
+      "stump_tile_dy": 2,
+      "frames": [
+        {
+          "state": "bare",
+          "rect": [
+            0,
+            160,
+            64,
+            64
+          ],
+          "stump_state": "chestnut-bare",
+          "stump_world_dx": 64,
+          "stump_world_dy": 64
+        },
+        {
+          "state": "winter",
+          "rect": [
+            64,
+            160,
+            64,
+            64
+          ],
+          "stump_state": "chestnut-winter",
+          "stump_world_dx": 64,
+          "stump_world_dy": 64
+        }
+      ]
+    },
+    {
+      "species": "chestnut",
+      "pose": "down",
+      "anchor_x": 0.375,
+      "anchor_y": 0.5,
+      "footprint_left": 1,
+      "footprint_right": 2,
+      "footprint_top": 1,
+      "footprint_bottom": 1,
+      "stump_tile_dx": 2,
+      "stump_tile_dy": -2,
+      "frames": [
+        {
+          "state": "bare",
+          "rect": [
+            0,
+            224,
+            64,
+            80
+          ],
+          "stump_state": "chestnut-bare",
+          "stump_world_dx": 64,
+          "stump_world_dy": -64
+        },
+        {
+          "state": "winter",
+          "rect": [
+            64,
+            224,
+            64,
+            80
+          ],
+          "stump_state": "chestnut-winter",
+          "stump_world_dx": 64,
+          "stump_world_dy": -64
+        }
+      ]
+    },
+    {
+      "species": "birch",
+      "pose": "up",
+      "anchor_x": 0.5,
+      "anchor_y": 0.5,
       "footprint_left": 1,
       "footprint_right": 1,
       "footprint_top": 1,
       "footprint_bottom": 1,
       "stump_tile_dx": 2,
-      "stump_tile_dy": -1,
-      "frames": [
-        {
-          "state": "bare",
-          "rect": [
-            142,
-            0,
-            70,
-            56
-          ],
-          "stump_state": "maple-bare",
-          "stump_world_dx": 70,
-          "stump_world_dy": -32
-        },
-        {
-          "state": "winter",
-          "rect": [
-            214,
-            0,
-            70,
-            56
-          ],
-          "stump_state": "maple-winter",
-          "stump_world_dx": 70,
-          "stump_world_dy": -32
-        }
-      ]
-    },
-    {
-      "species": "chestnut",
-      "pose": "up",
-      "anchor_x": 0.5194805194805194,
-      "anchor_y": 0.5063291139240507,
-      "footprint_left": 2,
-      "footprint_right": 2,
-      "footprint_top": 2,
-      "footprint_bottom": 2,
-      "stump_tile_dx": 3,
       "stump_tile_dy": 2,
       "frames": [
         {
           "state": "bare",
           "rect": [
             0,
-            74,
-            77,
-            79
+            304,
+            80,
+            80
           ],
-          "stump_state": "chestnut-bare",
-          "stump_world_dx": 90,
-          "stump_world_dy": 72
+          "stump_state": "birch-bare",
+          "stump_world_dx": 64,
+          "stump_world_dy": 64
         },
         {
           "state": "winter",
           "rect": [
-            79,
-            74,
-            77,
-            79
+            80,
+            304,
+            80,
+            80
           ],
-          "stump_state": "chestnut-winter",
-          "stump_world_dx": 90,
-          "stump_world_dy": 72
-        }
-      ]
-    },
-    {
-      "species": "chestnut",
-      "pose": "down",
-      "anchor_x": 0.49382716049382713,
-      "anchor_y": 0.4878048780487805,
-      "footprint_left": 2,
-      "footprint_right": 2,
-      "footprint_top": 1,
-      "footprint_bottom": 2,
-      "stump_tile_dx": 3,
-      "stump_tile_dy": -1,
-      "frames": [
-        {
-          "state": "bare",
-          "rect": [
-            158,
-            74,
-            81,
-            82
-          ],
-          "stump_state": "chestnut-bare",
-          "stump_world_dx": 103,
-          "stump_world_dy": -42
-        },
-        {
-          "state": "winter",
-          "rect": [
-            241,
-            74,
-            81,
-            82
-          ],
-          "stump_state": "chestnut-winter",
-          "stump_world_dx": 103,
-          "stump_world_dy": -42
+          "stump_state": "birch-winter",
+          "stump_world_dx": 64,
+          "stump_world_dy": 64
         }
       ]
     },
     {
       "species": "birch",
-      "pose": "up",
-      "anchor_x": 0.5063291139240507,
-      "anchor_y": 0.4528301886792453,
+      "pose": "down",
+      "anchor_x": 0.5,
+      "anchor_y": 0.5,
       "footprint_left": 1,
-      "footprint_right": 2,
+      "footprint_right": 1,
       "footprint_top": 1,
       "footprint_bottom": 1,
-      "stump_tile_dx": 3,
-      "stump_tile_dy": 2,
+      "stump_tile_dx": 2,
+      "stump_tile_dy": -2,
       "frames": [
         {
           "state": "bare",
           "rect": [
             0,
-            158,
-            79,
-            53
+            384,
+            80,
+            80
           ],
           "stump_state": "birch-bare",
-          "stump_world_dx": 80,
-          "stump_world_dy": 49
+          "stump_world_dx": 64,
+          "stump_world_dy": -64
         },
         {
           "state": "winter",
           "rect": [
-            81,
-            158,
-            79,
-            53
+            80,
+            384,
+            80,
+            80
           ],
           "stump_state": "birch-winter",
-          "stump_world_dx": 80,
-          "stump_world_dy": 49
-        }
-      ]
-    },
-    {
-      "species": "birch",
-      "pose": "down",
-      "anchor_x": 0.5063291139240507,
-      "anchor_y": 0.4528301886792453,
-      "footprint_left": 1,
-      "footprint_right": 2,
-      "footprint_top": 1,
-      "footprint_bottom": 1,
-      "stump_tile_dx": 3,
-      "stump_tile_dy": -1,
-      "frames": [
-        {
-          "state": "bare",
-          "rect": [
-            162,
-            158,
-            79,
-            53
-          ],
-          "stump_state": "birch-bare",
-          "stump_world_dx": 82,
-          "stump_world_dy": -38
-        },
-        {
-          "state": "winter",
-          "rect": [
-            243,
-            158,
-            79,
-            53
-          ],
-          "stump_state": "birch-winter",
-          "stump_world_dx": 82,
-          "stump_world_dy": -38
+          "stump_world_dx": 64,
+          "stump_world_dy": -64
         }
       ]
     }
-  ]
+  ],
+  "trunk": {
+    "looks": [
+      {
+        "state": "default",
+        "rect": [
+          0,
+          0,
+          32,
+          32
+        ]
+      },
+      {
+        "state": "autumn",
+        "rect": [
+          32,
+          0,
+          32,
+          32
+        ]
+      },
+      {
+        "state": "winter-clean",
+        "rect": [
+          64,
+          0,
+          32,
+          32
+        ]
+      },
+      {
+        "state": "winter-leaves",
+        "rect": [
+          96,
+          0,
+          32,
+          32
+        ]
+      },
+      {
+        "state": "winter-snowy-top",
+        "rect": [
+          128,
+          0,
+          32,
+          32
+        ]
+      },
+      {
+        "state": "winter-snowy",
+        "rect": [
+          160,
+          0,
+          32,
+          32
+        ]
+      }
+    ]
+  }
 }
