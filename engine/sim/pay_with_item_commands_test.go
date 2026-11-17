@@ -2719,3 +2719,167 @@ func TestPayWithItem_NPCBuyerEatHereClamped(t *testing.T) {
 		t.Error("NPC result EatHereClamped = false, want true")
 	}
 }
+
+// heldJobSnapshot is everything about a held worker's job that a purchase must
+// leave alone: where she stands, her labor state and window, and the Working
+// offer that holds her.
+type heldJobSnapshot struct {
+	state        sim.ActorState
+	until        time.Time
+	inside       sim.StructureID
+	pos          sim.TilePos
+	moving       bool
+	offerState   sim.LaborLedgerState
+	workingUntil time.Time
+}
+
+func readHeldJob(t *testing.T, w *sim.World, worker sim.ActorID, laborID sim.LaborID) heldJobSnapshot {
+	t.Helper()
+	var got heldJobSnapshot
+	mustSend(t, w, func(world *sim.World) {
+		a := world.Actors[worker]
+		got.state = a.State
+		if a.LaboringUntil != nil {
+			got.until = *a.LaboringUntil
+		}
+		got.inside = a.InsideStructureID
+		got.pos = a.Pos
+		got.moving = a.MoveIntent != nil
+		if o := world.LaborLedger[laborID]; o != nil {
+			got.offerState = o.State
+			if o.WorkingUntil != nil {
+				got.workingUntil = *o.WorkingUntil
+			}
+		}
+	})
+	return got
+}
+
+// holdAliceAtBobsPost turns the fast-path fixture into the LLM-986 shape: bob has
+// a work post (so sim.LaborHoldsWorker is true for his hires), both stand inside
+// it, and alice is mid a Working LaborOffer for him. Returns the job as it stood
+// before any purchase.
+func holdAliceAtBobsPost(t *testing.T, w *sim.World, at time.Time) heldJobSnapshot {
+	t.Helper()
+	const (
+		post    = sim.StructureID("smithy")
+		laborID = sim.LaborID(7)
+	)
+	until := at.Add(45 * time.Minute)
+	mustSend(t, w, func(world *sim.World) {
+		bob, alice := world.Actors["bob"], world.Actors["alice"]
+		bob.WorkStructureID = post
+		bob.InsideStructureID = post
+		alice.InsideStructureID = post
+		alice.State = sim.StateLaboring
+		alice.LaboringUntil = &until
+		if world.LaborLedger == nil {
+			world.LaborLedger = map[sim.LaborID]*sim.LaborOffer{}
+		}
+		world.LaborLedger[laborID] = &sim.LaborOffer{
+			ID: laborID, WorkerID: "alice", EmployerID: "bob",
+			State: sim.LaborStateWorking, Reward: 4, DurationMin: 240,
+			WorkingUntil: &until,
+		}
+	})
+	var held bool
+	mustSend(t, w, func(world *sim.World) {
+		o := sim.WorkerWorkingOffer(world.LaborLedger, "alice")
+		held = o != nil && sim.LaborHoldsWorker(world.Actors[o.EmployerID].WorkStructureID)
+	})
+	if !held {
+		t.Fatal("fixture: alice must be on a Working hire whose employer has a post (a HELD worker)")
+	}
+	return readHeldJob(t, w, "alice", laborID)
+}
+
+// TestPayWithItem_HeldWorkerBuysAndStaysOnTheJob is the substrate half of LLM-986.
+// The laboring tool surface now leaves pay_with_item with a hand held at her
+// employer's post, so a purchase by that worker must settle like any other and
+// leave the job exactly as it was — where she stands, her labor state and window,
+// and the Working offer. Buying a drink where she stands is not a way off the job.
+// Covers both shapes she can use: taking a standing quote (fast path, eat-here and
+// takeaway) and posting her own offer that the seller then accepts (slow path),
+// with the job checked after the offer is placed AND after it is accepted.
+func TestPayWithItem_HeldWorkerBuysAndStaysOnTheJob(t *testing.T) {
+	assertJobUntouched := func(t *testing.T, when string, before, after heldJobSnapshot) {
+		t.Helper()
+		if after != before {
+			t.Errorf("%s: the held worker's job changed\n before: %+v\n after:  %+v", when, before, after)
+		}
+	}
+
+	for _, consumeNow := range []bool{true, false} {
+		consumeNow := consumeNow
+		name := "quote_take_takeaway"
+		if consumeNow {
+			name = "quote_take_consume_now"
+		}
+		t.Run(name, func(t *testing.T) {
+			w, stop, at := buildFastPathFixture(t, 7)
+			defer stop()
+			before := holdAliceAtBobsPost(t, w, at)
+
+			item, quoteID := "stew", sim.QuoteID(7) // the fixture's quote 7
+			if consumeNow {
+				mustSend(t, w, func(world *sim.World) {
+					world.Quotes[7].ConsumeNow = true
+				})
+			} else {
+				// Takeaway needs a portable kind (ZBBS-WORK-405): bread.
+				item, quoteID = "bread", 8
+				mustSend(t, w, func(world *sim.World) {
+					world.Actors["bob"].Inventory["bread"] = 5
+				})
+				seedQuote(t, w, sim.SceneQuote{
+					ID: 8, SceneID: "sc1", SellerID: "bob",
+					Lines: []sim.QuoteLine{{ItemKind: "bread", Qty: 1}}, Amount: 4, State: sim.SceneQuoteStateActive,
+					CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+				})
+			}
+
+			res, err := w.Send(sim.PayWithItem("alice", "Bob", item, 1, 4, consumeNow, nil, nil, quoteID, 0, "", at))
+			if err != nil {
+				t.Fatalf("held worker's quote-take rejected: %v", err)
+			}
+			if result := res.(sim.PayWithItemResult); !result.FastPath || result.State != sim.PayLedgerStateAccepted {
+				t.Fatalf("want an accepted fast-path settle, got %+v", result)
+			}
+			if got := w.Published().Actors["alice"].Coins; got != 46 {
+				t.Errorf("alice.Coins = %d, want 46 (the 4 coins moved)", got)
+			}
+			assertJobUntouched(t, "after the quote-take", before, readHeldJob(t, w, "alice", 7))
+		})
+	}
+
+	t.Run("own_offer_then_seller_accepts", func(t *testing.T) {
+		w, stop, at := buildFastPathFixture(t, 7)
+		defer stop()
+		before := holdAliceAtBobsPost(t, w, at)
+		mustSend(t, w, func(world *sim.World) {
+			world.Actors["bob"].Inventory["bread"] = 5
+		})
+
+		// No quote_id: she posts her own offer; the seller answers on his turn.
+		res, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 3, false, nil, nil, 0, 0, "", at))
+		if err != nil {
+			t.Fatalf("held worker's own offer rejected: %v", err)
+		}
+		result := res.(sim.PayWithItemResult)
+		if result.FastPath || result.State != sim.PayLedgerStatePending {
+			t.Fatalf("want a pending slow-path offer, got %+v", result)
+		}
+		assertJobUntouched(t, "after placing the offer", before, readHeldJob(t, w, "alice", 7))
+
+		if _, err := w.Send(sim.AcceptPay("bob", result.LedgerID, at.Add(time.Second))); err != nil {
+			t.Fatalf("seller's accept rejected: %v", err)
+		}
+		if got := w.Published().Actors["alice"].Coins; got != 47 {
+			t.Errorf("alice.Coins = %d, want 47 (the 3 coins moved at accept)", got)
+		}
+		if got := readHoldings(t, w, "alice").inv["bread"]; got != 1 {
+			t.Errorf("alice.bread = %d, want 1 (delivered at accept)", got)
+		}
+		assertJobUntouched(t, "after the seller accepts", before, readHeldJob(t, w, "alice", 7))
+	})
+}

@@ -353,7 +353,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// posted in THIS subject's name that are still hers to take. Sits with the
 	// seller pair so the three read as one ledger of open quotes: what I've put
 	// out, what fell through, what has been put to me.
-	renderStandingQuotesToMe(&ephemeral, p.StandingQuotesToMe, buyRedundancy)
+	renderStandingQuotesToMe(&ephemeral, p.StandingQuotesToMe, buyRedundancy, CanOfferTrade(p))
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
@@ -421,7 +421,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, p.RenderedAt, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, CanOfferTrade(p), p.RenderedAt, cfg, &out)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -3579,6 +3579,26 @@ const offerLotPointer = "A counter changes only the price of the goods offered; 
 // work (laborAbandonTools) and a merchant visitor off his commerce places
 // (visitorTalkOnlyTools). handlers' TestCanOfferLotMatchesSellGate pins the two
 // together.
+// CanOfferTrade reports whether the offer_trade tool is advertised to the
+// payload's actor, so a cue may point at it (LLM-986: the quote take-instruction's
+// barter fallback). Mirrors the payload-borne gates that strip offer_trade in
+// handlers/tool_gating.go: a held hired hand at work (laborAbandonTools), a baker
+// mid the evening bake (bakeAbandonsTool) and a merchant visitor off his commerce
+// places (visitorTalkOnlyTools). offer_trade is not a huddle-gated pay verb, so
+// unlike CanOfferLot there is no huddle clause. handlers'
+// TestCanOfferTradeMatchesOfferTradeGate pins the two together.
+func CanOfferTrade(p Payload) bool {
+	if p.VisitorCommerceStripped {
+		return false
+	}
+	if p.Laboring != nil && !p.Laboring.Free {
+		return false
+	}
+	baking := p.Actor.InFlightSourceActivity != nil &&
+		p.Actor.InFlightSourceActivity.Kind == sim.SourceActivityBake
+	return !baking
+}
+
 func CanOfferLot(p Payload) bool {
 	if len(p.Surroundings.HuddleMembers) == 0 || p.VisitorCommerceStripped {
 		return false
@@ -4135,6 +4155,7 @@ func renderStandingQuotesToMe(
 	b *strings.Builder,
 	quotes []StandingQuoteToMeView,
 	buyRedundancy func(sim.ItemKind) (produced, atCap bool),
+	canBarter bool,
 ) {
 	if len(quotes) == 0 {
 		return
@@ -4153,7 +4174,7 @@ func renderStandingQuotesToMe(
 		if q.EatHere {
 			disposition = ", to eat here (it can't be carried away)"
 		}
-		take := quoteTakeInstruction(q.QuoteID, q.Lines, q.Amount)
+		take := quoteTakeInstruction(q.QuoteID, q.Lines, q.Amount, canBarter)
 		switch buyQuoteRedundancyReason(q.Lines, buyRedundancy) {
 		case "produced":
 			take = " But these are wares you make yourself — there's no reason to buy them. Decline and tend to your own work."
@@ -4339,7 +4360,7 @@ func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	}
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, canBarter bool, renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
 	// a nil here must degrade to "no eat-here tag", not panic (code_review).
@@ -4401,7 +4422,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, canBarter, cfg.MaxBytesPerWarrant)
 		// Interval-stamp each signal against the render clock (LLM-316), the
 		// LLM-217 treatment the conversation ring and self-action trail already
 		// get: a carried-forward or shelve-delayed warrant renders honestly as
@@ -4441,7 +4462,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, canBarter bool, maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -4537,7 +4558,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// take and steer them off it. A mixed bundle (≥1 genuinely wanted good)
 		// renders with its normal take.
 		redundancy := buyQuoteRedundancyReason(r.Lines, buyRedundancy)
-		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere, redundancy), false
+		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere, redundancy, canBarter), false
 	case sim.PayResolvedWarrantReason:
 		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
 	case sim.ServeHandoverWarrantReason:
@@ -4849,7 +4870,7 @@ func buyQuoteRedundancyReason(lines []sim.QuoteLine, redundant func(sim.ItemKind
 // steer: "produced" — the buyer makes these wares itself; "atcap" — it already
 // holds all of these it can carry. Either way there is no reason to buy, so the
 // quote_id take is withheld and the line tells the buyer to decline.
-func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool, redundancy string) string {
+func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool, redundancy string, canBarter bool) string {
 	unit := "coins"
 	if r.Amount == 1 {
 		unit = "coin"
@@ -4886,7 +4907,7 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 	// livelocks re-announcing the same deal (Nathaniel Cole ↔ John Ellis, porridge
 	// quote open ~13m, 2026-07-17). Folding the utterance into pay's say is the one
 	// move that both speaks and settles.
-	take := quoteTakeInstruction(r.QuoteID, r.Lines, r.Amount)
+	take := quoteTakeInstruction(r.QuoteID, r.Lines, r.Amount, canBarter)
 	// LLM-171: the buyer makes or is at cap on every quoted good — withhold the
 	// take entirely and steer them to decline, so a mis-pitched quote can't drive
 	// a buy-back of their own ware or an over-cap purchase.
@@ -4908,8 +4929,9 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 
 // quoteTakeInstruction builds the "here is how you take it" sentence appended to
 // a quote the buyer can act on — the quote_id-bearing pay_with_item call, the
-// anti-speak-first guard, and (single-item only) the barter fallback. Leading
-// space included; the caller concatenates it onto its own line.
+// anti-speak-first guard, and (single-item only, and only when canBarter says
+// offer_trade is advertised to this buyer) the barter fallback. Leading space
+// included; the caller concatenates it onto its own line.
 //
 // Extracted from renderQuoteWarrantLine (LLM-551) so the one-shot warrant line
 // and the standing "## Offers made to you" section emit the SAME instruction.
@@ -4917,7 +4939,7 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 // (ZBBS-HOME-424 — without it the buyer answers a standing quote with a bare
 // pay_with_item and mints a crossing offer that deadlocks against the quote),
 // and a second copy of this text is a second place for it to go missing.
-func quoteTakeInstruction(quoteID sim.QuoteID, lines []sim.QuoteLine, amount int) string {
+func quoteTakeInstruction(quoteID sim.QuoteID, lines []sim.QuoteLine, amount int, canBarter bool) string {
 	switch {
 	case len(lines) > 1:
 		// LLM-561: the bundle arm needs its own way out. Before this it ended at
@@ -4932,6 +4954,11 @@ func quoteTakeInstruction(quoteID sim.QuoteID, lines []sim.QuoteLine, amount int
 		// path the seller-side machinery already settles.
 		return fmt.Sprintf(" To take the whole bundle, call pay_with_item with quote_id %d and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. If you want only part of the bundle, or at another price, don't use that quote_id — make your own offer instead: call pay_with_item with no quote_id, naming the one good you want, its qty, and your coins, one good at a time; they can accept or counter.", quoteID, amount)
 	case len(lines) == 1:
+		if !canBarter {
+			// LLM-986: offer_trade is stripped from this buyer (CanOfferTrade), so the
+			// barter fallback would name a tool she does not have. The coin take stands.
+			return fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id.", quoteID, string(lines[0].ItemKind), lines[0].Qty, amount)
+		}
 		return fmt.Sprintf(" To take this coin quote, call pay_with_item with quote_id %d, item %q, qty %d, and amount %d — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id; if you lack coins but have goods to offer, propose a separate trade instead — call offer_trade with the goods you'll give and want_item %q; they can accept or counter.", quoteID, string(lines[0].ItemKind), lines[0].Qty, amount, string(lines[0].ItemKind))
 	default:
 		// Defensive (code_review): a quote with zero lines shouldn't reach here —

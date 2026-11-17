@@ -1,0 +1,30 @@
+## Who you are
+You are Anne Walker.
+
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Address now: thirst. You feel parched.
+Coins in your purse: 22.
+
+You are working a job for Ezekiel Crane — about 45 minutes of work left. Stay with it until it's done; you are paid when you finish.
+## Around you
+You are inside the Blacksmith, with Ezekiel Crane.
+It is morning in the village.
+It is about 10:45 in the morning.
+
+## Coin between you and those here, this past week
+- No coin has passed between you and Ezekiel Crane.
+
+## Offers made to you
+1. Ezekiel Crane has water set out for you at 1 coin — it still stands. To take this coin quote, call pay_with_item with quote_id 14, item "water", qty 1, and amount 1 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id.
+## What you can eat or drink
+Ezekiel Crane is here with you, carrying water (a deep drink) — you could offer to buy it from them now with pay_with_item, paying with coins or goods you carry (pay_items). No need to walk anywhere.
+Nearby to buy (thirst):
+- Blacksmith — buy water (a deep drink), ask the seller (destination: blacksmith)
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.
