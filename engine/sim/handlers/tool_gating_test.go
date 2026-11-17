@@ -633,7 +633,7 @@ func TestGateTools_Summon_Advertised(t *testing.T) {
 //
 // Also asserts the strip itself still bites on the same payload — otherwise a regression
 // that emptied laborAbandonTools would leave this passing while silently letting a
-// mid-job worker start new trades.
+// mid-job worker start trades of her own.
 func TestGateTools_LaboringWorkerKeepsPayResponseTools(t *testing.T) {
 	r := gatingTestRegistry(t)
 	p := payOfferPayload(1)
@@ -648,11 +648,11 @@ func TestGateTools_LaboringWorkerKeepsPayResponseTools(t *testing.T) {
 		}
 	}
 	// The strip must still apply to the tools that WOULD walk her off the job.
-	for _, gone := range []string{"pay_with_item", "offer_trade", "sell"} {
+	for _, gone := range []string{"offer_trade", "sell"} {
 		if names[gone] > 0 {
 			t.Errorf("laboring worker: %q advertised, want stripped — laborAbandonTools keeps a "+
-				"worker mid-job from starting new commerce; only ANSWERING an offer staked against "+
-				"her is allowed (LLM-230/LLM-460)", gone)
+				"worker mid-job from starting trade of her own; answering an offer staked against "+
+				"her, or buying from someone in the room (LLM-986), is allowed (LLM-230/LLM-460)", gone)
 		}
 	}
 }

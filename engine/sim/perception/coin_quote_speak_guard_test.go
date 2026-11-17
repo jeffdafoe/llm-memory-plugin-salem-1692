@@ -31,7 +31,7 @@ func TestRenderQuoteWarrantLineEachBranchCarriesGuard(t *testing.T) {
 				Lines:   tc.lines,
 				Amount:  4,
 			}
-			got := renderQuoteWarrantLine(1, "John Ellis", r, false, "")
+			got := renderQuoteWarrantLine(1, "John Ellis", r, false, "", true)
 			// Sanity: a "" redundancy + non-empty amount must land on a take-line, not
 			// a decline branch — otherwise the guard assertion below is vacuous.
 			if !strings.Contains(got, "call pay_with_item") {

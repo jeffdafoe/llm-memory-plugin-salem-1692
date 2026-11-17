@@ -233,12 +233,13 @@ func TestGateTools_Laboring_SpeakOnlySurface(t *testing.T) {
 	r := laborSpeakOnlyRegistry(t)
 	names := specNameSet(gateTools(r, laboringPayload(false), nil))
 
-	for _, gated := range []string{"pay_with_item", "offer_trade", "sell", "move_to"} {
+	for _, gated := range []string{"offer_trade", "sell", "move_to"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a laboring worker; want it stripped (speak-only surface, LLM-230)", gated)
 		}
 	}
-	for _, keep := range []string{"speak", "consume", "done"} {
+	// pay_with_item stays (LLM-986): buying from someone in the room settles in place.
+	for _, keep := range []string{"speak", "consume", "done", "pay_with_item"} {
 		if names[keep] != 1 {
 			t.Errorf("%q should stay advertised to a laboring worker; count %d", keep, names[keep])
 		}
@@ -254,9 +255,9 @@ func TestGateTools_LaboringWithRedNeed_KeepsMoveTo(t *testing.T) {
 	if names["move_to"] != 1 {
 		t.Errorf("move_to should stay for a laboring worker with a red hunger need (break off to eat); count %d", names["move_to"])
 	}
-	// The commerce tools stay stripped even then — a starving worker eats, she
-	// doesn't trade.
-	for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
+	// Her own trade stays stripped even then — a starving worker may buy a meal
+	// (pay_with_item, LLM-986), she doesn't sell or barter.
+	for _, gated := range []string{"offer_trade", "sell"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a laboring worker even with a red need; want it stripped", gated)
 		}
@@ -294,7 +295,7 @@ func TestGateTools_LaboringOffPost_KeepsMoveTo(t *testing.T) {
 	if names["move_to"] != 1 {
 		t.Errorf("move_to should be re-granted to an off-post laboring worker (walk back, LLM-268); count %d", names["move_to"])
 	}
-	for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
+	for _, gated := range []string{"offer_trade", "sell"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to an off-post laboring worker; commerce stays stripped", gated)
 		}
@@ -309,7 +310,7 @@ func TestGateTools_LaboringEmployerAway_KeepsMoveTo(t *testing.T) {
 	if names["move_to"] != 1 {
 		t.Errorf("move_to should be re-granted so the worker can follow an away employer (LLM-268); count %d", names["move_to"])
 	}
-	for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
+	for _, gated := range []string{"offer_trade", "sell"} {
 		if names[gated] != 0 {
 			t.Errorf("%q advertised to a laboring worker with an away employer; commerce stays stripped", gated)
 		}
@@ -319,7 +320,8 @@ func TestGateTools_LaboringEmployerAway_KeepsMoveTo(t *testing.T) {
 // TestGateTools_Laboring_MoveToInvariant is the LLM-268 cross-condition invariant:
 // for a laboring worker, move_to is advertised IFF at least one of {red
 // hunger/thirst, off-post, employer-away} holds, and stripped when none do (the
-// LLM-230 committed case). Commerce tools stay stripped in every laboring case.
+// LLM-230 committed case). The worker's own trade (offer_trade, sell) stays stripped
+// in every laboring case, and pay_with_item stays advertised in every one (LLM-986).
 func TestGateTools_Laboring_MoveToInvariant(t *testing.T) {
 	r := laborSpeakOnlyRegistry(t)
 	for _, tc := range []struct {
@@ -341,10 +343,13 @@ func TestGateTools_Laboring_MoveToInvariant(t *testing.T) {
 			if got != wantMove {
 				t.Errorf("move_to advertised=%v, want %v (red=%v off=%v away=%v)", got, wantMove, tc.redNeed, tc.offPost, tc.employerAway)
 			}
-			for _, gated := range []string{"pay_with_item", "offer_trade", "sell"} {
+			for _, gated := range []string{"offer_trade", "sell"} {
 				if names[gated] != 0 {
 					t.Errorf("%q advertised to a laboring worker; commerce stays stripped in all cases", gated)
 				}
+			}
+			if names["pay_with_item"] != 1 {
+				t.Errorf("pay_with_item count %d, want 1: a held worker can buy from someone in the room in every case (LLM-986)", names["pay_with_item"])
 			}
 		})
 	}
@@ -363,5 +368,25 @@ func TestGateTools_FreeLaboring_StripsNothing(t *testing.T) {
 		if names[keep] != 1 {
 			t.Errorf("%q should stay advertised on a post-less hire; count %d", keep, names[keep])
 		}
+	}
+}
+
+// TestGateTools_HeldLaboring_KeepsPayWithItem is the LLM-986 regression: a hand held
+// at her employer's post keeps pay_with_item, so the buy cues that name it (the
+// quote line, "Offers made to you", the co-present buy hint, the restock line) point
+// at a tool she really has. Live: Anne Walker, working for Ezekiel Crane at the
+// Blacksmith, was quoted water four times and could only say "here's your coin".
+// The pay verb still needs a huddle peer — with no one to buy from it stays gated.
+func TestGateTools_HeldLaboring_KeepsPayWithItem(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	held := laboringPayload(false)
+	if got := specNameSet(gateTools(r, held, nil))["pay_with_item"]; got != 1 {
+		t.Errorf("pay_with_item count %d for a held worker in a huddle, want 1", got)
+	}
+
+	alone := laboringPayload(false)
+	alone.Surroundings = perception.SurroundingsView{}
+	if got := specNameSet(gateTools(r, alone, nil))["pay_with_item"]; got != 0 {
+		t.Errorf("pay_with_item count %d for a held worker with no huddle peer, want 0 (payVerbTools)", got)
 	}
 }

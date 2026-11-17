@@ -58,9 +58,9 @@ var laborResponseTools = map[string]struct{}{
 }
 
 // laborAbandonTools are the commerce/trade tools stripped from a LABORING
-// worker's advertised set (LLM-230): each would walk her off the job she
-// committed to, and none serves a survival need (a starving worker eats via
-// consume, not a trade). Leaving speak (+ consume/done) makes the reply a
+// worker's advertised set (LLM-230): each would turn her from the job she
+// committed to toward trade of her own (selling, bartering, hiring), and none
+// serves a survival need. Leaving speak (+ consume/done) makes the reply a
 // "can't stop just now, I'm minding the shelves," anchored by the standing
 // renderLaborSelfState line, instead of silence or job abandonment. move_to is
 // handled separately (it stays when a red hunger/thirst need needs walking to
@@ -78,11 +78,37 @@ var laborResponseTools = map[string]struct{}{
 // a hand mid-job subcontracting the shelves to a passer-by is exactly the kind of
 // commerce this set exists to strip. The employer's own commitment, not the
 // target's, is what disqualifies the call.
+//
+// pay_with_item is NOT listed (LLM-986). It needs a huddle peer (payVerbTools), so
+// the seller is already in the room: the purchase settles where she stands and ends
+// her turn, and walks her nowhere. Stripping it left a held hand unable to buy a
+// drink from the employer beside her while every buy cue (the quote line, "Offers
+// made to you", the co-present buy hint, the restock line) still told her to call
+// it — the model then spoke "here's your coin" turn after turn and no sale
+// happened. The reactor's laboring shelve is unchanged, so she still wakes only
+// for its carve-outs (actorCanReactNow in reactor.go) and keeping the
+// tool does not turn the job into a shopping trip. offer_trade stays stripped, so
+// the quote cue drops its barter fallback for her (perception.CanOfferTrade). A
+// baker keeps the stricter surface: see bakeAbandonsTool.
 var laborAbandonTools = map[string]struct{}{
-	"pay_with_item": {},
-	"offer_trade":   {},
-	"sell":          {}, // the seller quote tool's model-facing name (scene_quote, renamed in LLM-184)
-	"offer_work":    {}, // LLM-346: a worker mid-job does not take on hired help of her own
+	"offer_trade": {},
+	"sell":        {}, // the seller quote tool's model-facing name (scene_quote, renamed in LLM-184)
+	"offer_work":  {}, // LLM-346: a worker mid-job does not take on hired help of her own
+}
+
+// payWithItemToolName is the buyer's purchase tool, named here because the bake
+// strip drops it while the labor strip keeps it (LLM-986).
+const payWithItemToolName = "pay_with_item"
+
+// bakeAbandonsTool reports whether a baker mid the evening bake loses this tool
+// (LLM-454): everything the labor strip drops, plus pay_with_item. LLM-986 changed
+// the hired hand's surface only; this keeps the baker's as it was.
+func bakeAbandonsTool(name string) bool {
+	if name == payWithItemToolName {
+		return true
+	}
+	_, gated := laborAbandonTools[name]
+	return gated
 }
 
 // visitorTalkOnlyTools are the commerce tools stripped from a merchant visitor on his rounds
@@ -724,7 +750,8 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// employer having left it (follow along). speak / consume / done stay, so she
 		// answers "can't stop just now" — or, when one of those holds, walks. The
 		// commerce tools (laborAbandonTools) never serve any of those, so they go
-		// unconditionally.
+		// unconditionally. pay_with_item is not among them (LLM-986): buying from
+		// someone in the room settles in place.
 		if laboring {
 			if _, gated := laborAbandonTools[spec.Name]; gated {
 				continue
@@ -734,12 +761,13 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 			}
 		}
 		// LLM-454 baking speak-only surface — see `baking` above. Mirrors the
-		// laboring strip: the commerce tools (laborAbandonTools) that would walk her
-		// off the bread go unconditionally, and move_to unless a red hunger/thirst
-		// need justifies breaking off to eat. speak / consume / done stay, so the one
-		// housemate reply the reactor ticks her for lands without abandoning the bake.
+		// laboring strip: the commerce tools (bakeAbandonsTool — the labor set plus
+		// pay_with_item) go unconditionally, and move_to unless a red hunger/thirst
+		// need justifies breaking off to eat.
+		// speak / consume / done stay, so the one housemate reply the reactor ticks
+		// her for lands without abandoning the bake.
 		if baking {
-			if _, gated := laborAbandonTools[spec.Name]; gated {
+			if bakeAbandonsTool(spec.Name) {
 				continue
 			}
 			if spec.Name == moveToToolName && !bakingMayMove {

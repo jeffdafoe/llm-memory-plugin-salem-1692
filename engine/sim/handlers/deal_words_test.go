@@ -201,3 +201,33 @@ func TestSellRefusedWords_StillNamesTheOfferItReplaced(t *testing.T) {
 		t.Errorf("sell result = %q, want it to contain %q", content, want)
 	}
 }
+
+// TestCanOfferTradeMatchesOfferTradeGate pins perception.CanOfferTrade — which
+// decides whether the quote take-instruction may offer the offer_trade barter
+// fallback (LLM-986) — to gateTools' own offer_trade decision, for every
+// payload-borne condition that strips it. A drift here would have the cue name a
+// tool the buyer does not have.
+func TestCanOfferTradeMatchesOfferTradeGate(t *testing.T) {
+	r := laborSpeakOnlyRegistry(t)
+	for _, tc := range []struct {
+		name    string
+		payload perception.Payload
+	}{
+		{"in company", perception.Payload{ActorID: "hannah", Surroundings: speakAudience()}},
+		{"no huddle peer", perception.Payload{ActorID: "hannah"}},
+		{"held hired hand at work", perception.Payload{ActorID: "hannah", Surroundings: speakAudience(),
+			Laboring: &perception.LaboringView{Employer: "john", Until: time.Now().Add(time.Hour)}}},
+		{"free hired hand", perception.Payload{ActorID: "hannah", Surroundings: speakAudience(),
+			Laboring: &perception.LaboringView{Employer: "john", Free: true, Until: time.Now().Add(time.Hour)}}},
+		{"visitor off his rounds' commerce places", perception.Payload{ActorID: "hannah", Surroundings: speakAudience(),
+			VisitorCommerceStripped: true}},
+		{"baker mid the bake", bakingPayload()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			advertised := specNameSet(gateTools(r, tc.payload, nil))["offer_trade"] == 1
+			if got := perception.CanOfferTrade(tc.payload); got != advertised {
+				t.Errorf("CanOfferTrade = %v, but gateTools advertises offer_trade = %v", got, advertised)
+			}
+		})
+	}
+}

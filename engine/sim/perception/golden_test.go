@@ -3007,6 +3007,18 @@ var perceptionScenarios = []perceptionScenario{
 		build: buyerSeesStandingQuoteAfterWarrantSpent,
 	},
 	{
+		name: "held_worker_sees_employer_water_quote",
+		summary: "LLM-986: Anne Walker is mid-job for Ezekiel Crane at his Blacksmith (a Working LaborOffer whose " +
+			"employer has a post, so the hire HOLDS her), parched, carrying no water, and Ezekiel's targeted 1-coin water " +
+			"quote stands in her name. The live shape: she was quoted four times in 90 minutes and answered every turn " +
+			"with speak ('here's your coin') because the laboring tool strip had removed pay_with_item while this very " +
+			"prompt told her to call it. The golden pins what a held worker is TOLD: the job self-state line and the " +
+			"'## Offers made to you' take-instruction naming pay_with_item with the quote_id. The tool half — that " +
+			"gateTools now advertises pay_with_item to her — is handlers' TestGateTools_HeldLaboring_KeepsPayWithItem; " +
+			"the two together are the tool-cue lockstep this ticket restores.",
+		build: heldWorkerSeesEmployerWaterQuote,
+	},
+	{
 		name: "dairy_choosing_at_farm",
 		summary: "LLM-144: a NON-smith multi-output producer (Elizabeth Ellis at Ellis Farm: milk + meat + cheese) stands " +
 			"IDLE at her own workplace on shift — the same production-choice state smith_choosing_at_forge pins for the " +
@@ -20909,4 +20921,99 @@ func bakerMidBakeRedHunger() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	snap.Actors[actorID].Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold, "thirst": sim.DefaultThirstRedThreshold}
 	addVillageWell(snap)
 	return snap, actorID, warrants
+}
+
+// heldWorkerSeesEmployerWaterQuote builds the LLM-986 fixture from the live
+// Blacksmith loop of 2026-11-17. Anne Walker is the SUBJECT: a hand working a job
+// for Ezekiel Crane at his own post (so sim.LaborHoldsWorker is true and the
+// laboring surface applies), thirsty, with coins and no water. Ezekiel carries
+// water and his 1-coin quote in her name is active. warrants is nil — the quote's
+// one-shot warrant was spent on an earlier turn, the ordinary live case.
+func heldWorkerSeesEmployerWaterQuote() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		anneID     = sim.ActorID("anne")
+		ezekielID  = sim.ActorID("ezekiel")
+		blacksmith = sim.StructureID("blacksmith")
+		huddle     = sim.HuddleID("h1")
+	)
+	now := 645 // 10:45, the hour the live scene ran
+	published := time.Date(2026, 11, 17, 15, 45, 0, 0, time.UTC)
+	workingUntil := published.Add(45 * time.Minute)
+	standing := &sim.SceneQuote{
+		ID: 14, SellerID: ezekielID, TargetBuyer: anneID,
+		Lines: []sim.QuoteLine{{ItemKind: "water", Qty: 1}}, Amount: 1,
+		State: sim.SceneQuoteStateActive,
+	}
+	anne := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "goodwife",
+		State:             sim.StateLaboring,
+		InsideStructureID: blacksmith,
+		CurrentHuddleID:   huddle,
+		Coins:             22,
+		Needs:             map[sim.NeedKey]int{"hunger": 3, "thirst": 12, "tiredness": 4},
+		Inventory:         map[sim.ItemKind]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: blacksmith,
+		WorkStructureID:   blacksmith,
+		CurrentHuddleID:   huddle,
+		Needs:             map[sim.NeedKey]int{},
+		Inventory:         map[sim.ItemKind]int{"water": 8},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:      published,
+		LocalMinuteOfDay: &now,
+		NeedThresholds:   sim.NeedThresholds{"hunger": 18, "thirst": 12, "tiredness": 16},
+		Actors:           map[sim.ActorID]*sim.ActorSnapshot{anneID: anne, ezekielID: ezekiel},
+		Quotes:           map[sim.QuoteID]*sim.SceneQuote{14: standing},
+		PayLedger:        map[sim.LedgerID]*sim.PayLedgerEntry{},
+		Scenes:           map[sim.SceneID]*sim.Scene{},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			huddle: {ID: huddle, Members: map[sim.ActorID]struct{}{anneID: {}, ezekielID: {}}},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{blacksmith: plainStructure(blacksmith, "Blacksmith")},
+		LaborLedger: map[sim.LaborID]*sim.LaborOffer{
+			7: {
+				ID: 7, WorkerID: anneID, EmployerID: ezekielID,
+				State: sim.LaborStateWorking, Reward: 4, DurationMin: 240,
+				WorkingUntil: &workingUntil, HuddleID: huddle,
+			},
+		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"water": {Name: "water", Capabilities: []string{"portable"}, DisplayLabel: "water", Category: sim.ItemCategoryDrink,
+				Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 8}}},
+		},
+	}
+	return snap, anneID, nil
+}
+
+// TestHeldWorkerQuoteFixtureIsHeld guards the LLM-986 fixture against drifting into
+// a case that proves nothing: the subject must be on a hire that HOLDS her (not
+// LaboringView.Free, which never had the strip), in a huddle with the seller, and
+// her prompt must carry the pay_with_item take-instruction.
+func TestHeldWorkerQuoteFixtureIsHeld(t *testing.T) {
+	snap, actorID, warrants := heldWorkerSeesEmployerWaterQuote()
+	p := Build(snap, actorID, warrants)
+	if p.Laboring == nil || p.Laboring.Free {
+		t.Fatalf("subject must be a HELD laboring worker; Laboring=%+v", p.Laboring)
+	}
+	if len(p.Surroundings.HuddleMembers) == 0 {
+		t.Fatal("subject must share a huddle with the seller (pay verbs need a huddle peer)")
+	}
+	prompt := combinedPrompt(Render(p, DefaultRenderConfig()))
+	if !strings.Contains(prompt, "call pay_with_item with quote_id 14") {
+		t.Errorf("prompt should carry the quote take-instruction; got:\n%s", prompt)
+	}
+	// offer_trade stays stripped for a held worker, so no line may name it
+	// (code_review: the take-instruction's barter fallback did).
+	if strings.Contains(prompt, "offer_trade") {
+		t.Errorf("prompt names offer_trade, a tool a held worker does not have; got:\n%s", prompt)
+	}
 }
