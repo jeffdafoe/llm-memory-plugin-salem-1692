@@ -80,14 +80,15 @@ server {
     # Cache-Control a browser keeps a sheet by heuristic for hours, so art
     # installed on the VPS did not show — a new client drew cells the cached
     # old sheet does not have as blank (LLM-774). The add_header here drops the
-    # server-level ones, so the security headers are repeated.
+    # server-level ones, so the security headers are repeated. No try_files
+    # here: alias together with try_files hits CVE-2026-125283 in nginx before
+    # 1.30.7, and the alias alone already serves the file or a 404.
     location /tilesets/ {
         alias {{ project_root }}/tilesets/;
         add_header Cache-Control "no-cache, must-revalidate" always;
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-XSS-Protection "1; mode=block" always;
-        try_files $uri =404;
     }
 
     # Godot build artifacts — the browser keeps a copy but revalidates it on
