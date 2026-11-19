@@ -34,10 +34,13 @@ server {
         return 301 /api/;
     }
 
+    # Locations with alias do not use try_files: the two together hit
+    # CVE-2026-125283 in nginx before 1.30.7. A plain alias location already
+    # serves the file, the directory index, or a 404.
+
     # Terminal client
     location /terminal/ {
         alias {{ project_root }}/clients/terminal/dist/;
-        try_files $uri $uri/ =404;
     }
 
     location = /terminal {
@@ -47,17 +50,16 @@ server {
     # Admin pages
     location /admin/assets/ {
         alias {{ project_root }}/clients/admin/assets/;
-        try_files $uri $uri/ =404;
     }
 
     location = /admin/assets {
         return 301 /admin/assets/;
     }
 
-    # Village client
+    # Village client. SPA fallback: a missing file gets index.html with 200.
     location /village/ {
         alias {{ project_root }}/clients/village/dist/;
-        try_files $uri $uri/ /village/index.html;
+        error_page 404 = /village/index.html;
     }
 
     location = /village {

@@ -26,7 +26,6 @@ server {
     # Terminal client
     location /terminal/ {
         alias {{ project_root }}/clients/terminal/dist/;
-        try_files $uri $uri/ =404;
     }
 
     location = /terminal {
