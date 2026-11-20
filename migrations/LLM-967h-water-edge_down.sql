@@ -30,7 +30,7 @@ DECLARE
     snowytop32 CONSTANT text := '/tilesets/mana-seed/winter-forest/winter sheets/winter (snowy top) 32x32.png';
     snowy32 CONSTANT text := '/tilesets/mana-seed/winter-forest/winter sheets/winter (snowy) 32x32.png';
     accessories16 CONSTANT text := '/tilesets/mana-seed/village-accessories/village accessories 16x16.png';
-    good integer;
+    bad integer;
 BEGIN
     -- A database with none of the pieces has no catalog (the up did nothing).
     IF NOT EXISTS (SELECT 1 FROM asset WHERE id IN (cattails, water_plant, lily_pad, light_lily_pad, small_lily_pad,
@@ -70,13 +70,25 @@ BEGIN
       FROM llm967h_down d
      WHERE s.asset_id = d.asset_id AND s.state = d.state;
 
-    -- Every piece that exists is back on Mana Seed, and no copy is left.
-    SELECT count(*) INTO good
-      FROM asset_state s JOIN llm967h_down d ON d.asset_id = s.asset_id AND d.state = s.state
-     WHERE s.sheet = d.sheet AND s.src_x = d.src_x AND s.src_y = d.src_y AND s.src_w = d.size
-       AND s.src_h = d.size AND s.frame_count = 1 AND s.frame_rate = 0;
-    IF good <> (SELECT count(*) FROM llm967h_down d JOIN asset_state s ON s.asset_id = d.asset_id AND s.state = d.state) THEN
-        RAISE EXCEPTION 'LLM-967h down: only % water-edge states are back on Mana Seed', good;
+    -- Every piece that exists has exactly its Mana Seed states again: no
+    -- state missing, none extra, every value as before LLM-967h.
+    DELETE FROM llm967h_down d WHERE NOT EXISTS (SELECT 1 FROM asset WHERE id = d.asset_id);
+    SELECT count(*) INTO bad FROM (
+        (SELECT asset_id, state, sheet, src_x, src_y, size AS src_w, size AS src_h, 1 AS frame_count,
+                0::double precision AS frame_rate
+           FROM llm967h_down
+         EXCEPT
+         SELECT s.asset_id, s.state, s.sheet, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count, s.frame_rate
+           FROM asset_state s WHERE s.asset_id IN (SELECT asset_id FROM llm967h_down))
+        UNION ALL
+        (SELECT s.asset_id, s.state, s.sheet, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count, s.frame_rate
+           FROM asset_state s WHERE s.asset_id IN (SELECT asset_id FROM llm967h_down)
+         EXCEPT
+         SELECT asset_id, state, sheet, src_x, src_y, size, size, 1, 0::double precision
+           FROM llm967h_down)
+    ) diff;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-967h down: % water-edge state rows differ from the Mana Seed rects', bad;
     END IF;
     IF EXISTS (SELECT 1 FROM asset WHERE id = ANY (copies))
        OR EXISTS (SELECT 1 FROM village_object WHERE asset_id = ANY (copies)) THEN

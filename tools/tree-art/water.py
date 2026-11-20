@@ -121,12 +121,13 @@ PIECES = {
 
 
 def use_frame(fw, fh):
-    """build.py's painters read the frame from its module globals."""
+    """This module's frame globals for one piece. The build.py helpers used
+    here (rgb, mix, ramp, nearest, _hash) read no frame, so build's own
+    globals are left alone."""
     global FW, FH, W, H, BASE_Y
     FW, FH = fw, fh
     W, H = fw * S, fh * S
     BASE_Y = H * ANCHOR_Y
-    B.FW, B.FH, B.W, B.H = FW, FH, W, H
 
 
 def seeds(piece, name):
