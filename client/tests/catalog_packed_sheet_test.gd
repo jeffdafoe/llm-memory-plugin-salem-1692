@@ -91,6 +91,19 @@ const ROCKS := {
     "res://assets/trees/small-rock.png": [32, 1],
     "res://assets/trees/river-rock.png": [32, 12],
 }
+# migrations/LLM-967j-stumps_up.sql (tools/tree-art/stumps.py): one still
+# frame per look, four looks for the forest pieces, one for the sawn stumps
+# and the camp's seat. Sheet path -> [frame width, frame height, looks].
+const STUMPS := {
+    "res://assets/trees/big-stump.png": [48, 32, 4],
+    "res://assets/trees/fallen-log.png": [48, 32, 4],
+    "res://assets/trees/birch-log.png": [48, 32, 4],
+    "res://assets/trees/tree-stump.png": [32, 32, 4],
+    "res://assets/trees/broken-trunk.png": [32, 32, 4],
+    "res://assets/trees/small-stump.png": [32, 32, 1],
+    "res://assets/trees/axe-stump.png": [32, 32, 1],
+    "res://assets/trees/camp-stump.png": [16, 16, 1],
+}
 # migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
 # storm damage's sheets, each the size its last rect ends at.
 const FALLEN := {
@@ -267,6 +280,13 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is 4 rows of %d frames of %dx%d" % [path, size[1], size[0], size[0]],
                 texture.get_width() == size[1] * size[0] and texture.get_height() == 4 * size[0])
+    for path in STUMPS:
+        var texture := load(path) as Texture2D
+        var size: Array = STUMPS[path]
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %d rows of one %dx%d frame" % [path, size[2], size[0], size[1]],
+                texture.get_width() == size[0] and texture.get_height() == size[2] * size[1])
     for path in FALLEN:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
