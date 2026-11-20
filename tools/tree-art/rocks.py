@@ -20,13 +20,15 @@ way the trees and the water edge are: at build.S times size, area-averaged
 down, every pixel snapped to the look's own colours.
 
 How a stone is made, from New England fieldstone: a rounded, lumpy outline
-(flat where it sits on the ground), dark on its lower right, a lit top face
-with a bright patch to the upper left, a ridge where the top turns down, a
+(flat where it sits on the ground), dark on its lower right and shading off
+from there, a lit top face with a bright patch to the upper left whose lower
+edge curves and breaks up into a middle tone where the top turns down, a
 crack or two, granite flecks, and moss on the top. Autumn turns the moss
 rust and drops a few leaves at the foot; winter cools the stone and dulls the
 moss; snow caps the top face only, with nothing heaped at the foot. The river
-rock stands in the water: wet and dark at the waterline, a pale ring round
-its foot, and two rings spreading out from it in turn.
+rock stands in the water, its foot SINK pixels under it: cut off and wet and
+dark at the waterline, a pale ring round it, and two rings spreading out
+from it in turn.
 """
 
 import argparse
@@ -45,6 +47,9 @@ LOOKS = ["summer", "autumn", "winter", "winter-snowy"]
 ANCHOR_Y = 0.85
 RIPPLE_FRAMES = 12
 RIPPLE_FPS = 6
+# How far the river rock's stone sits below the waterline, in frame pixels:
+# that much of its foot is under the water.
+SINK = 2.5
 
 # ---------------------------------------------------------------- colours
 
@@ -133,8 +138,10 @@ def scaled(poly, sx, sy, ox, oy, cx, cy):
     return [(cx + (x - cx) * sx + ox, cy + (y - cy) * sy + oy) for x, y in poly]
 
 
-def draw_stone(lay, rnd, cx, base, w, h, look, flat=False, wet=False):
-    """One stone on its own layer, cut to its outline, then laid on lay."""
+def draw_stone(lay, rnd, cx, base, w, h, look, flat=False, waterline=None):
+    """One stone on its own layer, cut to its outline, then laid on lay. With
+    a waterline, the stone stands in water: it is cut off there, and is wet
+    and dark just above it."""
     cols = stone_ramp(look)
     moss = MOSS[look]
     poly = outline(rnd, cx, base, w, h, flat)
@@ -145,19 +152,37 @@ def draw_stone(lay, rnd, cx, base, w, h, look, flat=False, wet=False):
     own = Image.new("RGBA", lay.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(own)
     tone = rnd.uniform(-0.05, 0.05)
-    # Body: dark all over, then the lit mass up and to the left of it, so a
-    # dark band stays along the lower right.
+    # Body: dark all over, then the lit mass up and to the left of it in two
+    # steps, so the dark side along the lower right shades off into it.
     d.polygon(poly, fill=B.ramp(cols, 0.18 + tone))
+    d.polygon(scaled(poly, 0.97, 0.96, -0.025 * w, -0.035 * h, mcx, mcy), fill=B.ramp(cols, 0.29 + tone))
     d.polygon(scaled(poly, 0.94, 0.92, -0.05 * w, -0.07 * h, mcx, mcy), fill=B.ramp(cols, 0.4 + tone))
-    # The top face: a lumpy cap over the upper part, lit.
+    # The top face: a lumpy cap over the upper part, lit, with a band of
+    # middle tone round it where the top turns down, so it rounds over
+    # rather than ending on a line.
     face_h = (base - top) * (0.62 if flat else 0.42)
-    face = [(x, y) for x, y in scaled(poly, 0.86, 0.6 if not flat else 0.8, -0.04 * w, 0, mcx, top)]
-    face = [(x, min(y, top + face_h)) for x, y in face]
+    # The face's lower edge curves down in the middle, as the line between
+    # light and shade does on a dome, and wanders a little: a level, straight
+    # edge read as a hard stripe across a big stone.
+    sag = [rnd.uniform(-0.08, 0.08) for _ in range(5)]
+
+    def edge(x, reach):
+        u = max(-1.0, min(1.0, (x - mcx) / (0.5 * w)))
+        k = min(4, int((u + 1) * 2.5))
+        return top + face_h * reach * (0.85 + 0.3 * (1 - u * u) + sag[k])
+
+    def face_of(reach, sy):
+        return [(x, min(y, edge(x, reach)))
+                for x, y in scaled(poly, 0.86 + (reach - 1) * 0.3, sy, -0.04 * w, 0, mcx, top)]
+    d.polygon(face_of(1.3, (0.6 if not flat else 0.8) * 1.3), fill=B.ramp(cols, 0.53 + tone))
+    face = face_of(1.0, 0.6 if not flat else 0.8)
     d.polygon(face, fill=B.ramp(cols, 0.66 + tone))
-    # The ridge where the top turns down: a darker line under the face.
-    ridge = sorted([p for p in face if p[1] >= top + face_h - 0.5], key=lambda p: p[0])
-    if len(ridge) >= 2:
-        d.line(ridge, fill=B.ramp(cols, 0.36 + tone), width=max(1, int(0.5 * S)))
+    # Patches of the middle tone across the edge, so it breaks up.
+    for _ in range(0 if w < 7 * S else int(w / (2.5 * S))):
+        px = rnd.uniform(mcx - w * 0.38, mcx + w * 0.38)
+        py = edge(px, 1.0) + rnd.uniform(-0.6, 0.4) * S
+        r = rnd.uniform(0.6, 1.1) * S
+        d.ellipse((px - r, py - r * 0.6, px + r, py + r * 0.6), fill=B.ramp(cols, rnd.choice((0.53, 0.6)) + tone))
     # The bright patch, upper left.
     hx, hy = mcx - w * 0.16, top + face_h * 0.45
     d.ellipse((hx - w * 0.16, hy - face_h * 0.28, hx + w * 0.1, hy + face_h * 0.22), fill=B.ramp(cols, 0.86 + tone))
@@ -186,10 +211,10 @@ def draw_stone(lay, rnd, cx, base, w, h, look, flat=False, wet=False):
         r = rnd.uniform(0.6, 0.9) * S
         d.ellipse((mx - r, my - r * 0.7, mx + r, my + r * 0.7), fill=B.ramp(moss, 0.35))
         d.ellipse((mx - r * 0.7, my - r * 0.6, mx + r * 0.2, my), fill=B.ramp(moss, 0.85))
-    if wet:
+    if waterline is not None:
         # Wet and dark where the water laps it.
-        d.rectangle((min(xs), base - 1.6 * S, max(xs), base), fill=B.ramp(cols, 0.12))
-        d.rectangle((min(xs), base - 2.4 * S, max(xs), base - 1.6 * S), fill=B.ramp(cols, 0.28))
+        d.rectangle((min(xs), waterline - 1.6 * S, max(xs), waterline), fill=B.ramp(cols, 0.12))
+        d.rectangle((min(xs), waterline - 2.4 * S, max(xs), waterline - 1.6 * S), fill=B.ramp(cols, 0.28))
     if look == "winter-snowy":
         # Snow on the top face only: a cap a little inside it, its lower
         # edge in shadow, and a bright crest.
@@ -198,7 +223,10 @@ def draw_stone(lay, rnd, cx, base, w, h, look, flat=False, wet=False):
         d.polygon(cap, fill=B.rgb(B.SNOW[1]))
         d.ellipse((hx - w * 0.2, hy - face_h * 0.35, hx + w * 0.12, hy + face_h * 0.1), fill=B.rgb(B.SNOW[2]))
     mask = Image.new("L", lay.size, 0)
-    ImageDraw.Draw(mask).polygon(poly, fill=255)
+    md = ImageDraw.Draw(mask)
+    md.polygon(poly, fill=255)
+    if waterline is not None:
+        md.rectangle((0, waterline, lay.size[0], lay.size[1]), fill=0)
     own.putalpha(ImageChops.multiply(own.getchannel("A"), mask))
     lay.alpha_composite(own)
 
@@ -243,13 +271,16 @@ def paint(piece, look, frame):
         for k in range(2):
             t = ((frame / RIPPLE_FRAMES) + k * 0.5) % 1.0
             ring(d, cx, BASE_Y, rx0 + t * span * 1.6, ry0 + t * span * 0.25, cols, t, front=False)
-        ring(d, cx, BASE_Y, rx0 * 0.86, ry0 * 0.9, cols, 0.0, front=False)
+        ring(d, cx, BASE_Y, rx0 * 0.96, ry0 * 0.9, cols, 0.0, front=False)
     for dx, dy, w, h in stones:
-        draw_stone(lay, rnd, cx + dx * S, BASE_Y - dy * S, w * S, h * S, look,
-                   flat=getattr(piece, "flat", False), wet=piece.water)
+        base = BASE_Y - dy * S
+        if piece.water:
+            base = BASE_Y + SINK * S
+        draw_stone(lay, rnd, cx + dx * S, base, w * S, h * S, look,
+                   flat=getattr(piece, "flat", False), waterline=BASE_Y if piece.water else None)
     d = ImageDraw.Draw(lay)
     if piece.water:
-        ring(d, cx, BASE_Y, rx0 * 0.86, ry0 * 0.9, cols, 0.0, front=True)
+        ring(d, cx, BASE_Y, rx0 * 0.96, ry0 * 0.9, cols, 0.0, front=True)
         for k in range(2):
             t = ((frame / RIPPLE_FRAMES) + k * 0.5) % 1.0
             ring(d, cx, BASE_Y, rx0 + t * span * 1.6, ry0 + t * span * 0.25, cols, t, front=True)
