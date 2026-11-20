@@ -78,6 +78,19 @@ const WATER_EDGE := {
     "res://assets/trees/water-vine.png": [16, 16, 4, 1],
     "res://assets/trees/sunk-barrel.png": [16, 16, 1, 1],
 }
+# migrations/LLM-967i-rocks_up.sql (tools/tree-art/rocks.py): four looks
+# (summer, autumn, winter, winter-snowy), the river rock 12 frames (its
+# ripples), the rest one. Sheet path -> [frame size, frames].
+const ROCKS := {
+    "res://assets/trees/pebble.png": [16, 1],
+    "res://assets/trees/tiny-rock.png": [16, 1],
+    "res://assets/trees/medium-rocks.png": [16, 1],
+    "res://assets/trees/large-rocks.png": [16, 1],
+    "res://assets/trees/boulder-pair.png": [16, 1],
+    "res://assets/trees/flat-rock.png": [16, 1],
+    "res://assets/trees/small-rock.png": [32, 1],
+    "res://assets/trees/river-rock.png": [32, 12],
+}
 # migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
 # storm damage's sheets, each the size its last rect ends at.
 const FALLEN := {
@@ -247,6 +260,13 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %d rows of %d frames of %dx%d" % [path, size[2], size[3], size[0], size[1]],
                 texture.get_width() == size[3] * size[0] and texture.get_height() == size[2] * size[1])
+    for path in ROCKS:
+        var texture := load(path) as Texture2D
+        var size: Array = ROCKS[path]
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is 4 rows of %d frames of %dx%d" % [path, size[1], size[0], size[0]],
+                texture.get_width() == size[1] * size[0] and texture.get_height() == 4 * size[0])
     for path in FALLEN:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
