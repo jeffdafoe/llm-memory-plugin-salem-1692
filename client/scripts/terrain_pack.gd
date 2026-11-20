@@ -35,8 +35,13 @@ const SOFT_EDGE_TERRAINS: Dictionary = {
     "default": [2, 3],
     "snowy": [1, 2, 3],
 }
-## Water: no edge shading of its own, and a pale line where it meets land.
+## Water: no edge shading of its own; it lies below the land, with a
+## bank face, a shaded margin and a broken line of foam at the shore.
 const WATER_TERRAINS: Array[int] = [5, 6]
+## The bank faces, one band per season, BANK_ROWS tall, in BANK_BANDS order.
+const BANK_SHEET: String = "res://assets/terrain/water-banks.png"
+const BANK_ROWS: int = 7
+const BANK_BANDS: Array[String] = ["summer", "autumn", "winter", "snowy"]
 
 ## Animated glints drawn over water: frames read left to right, then down.
 const SPARKLE_SHEET: String = "res://assets/terrain/water-sparkles.png"

@@ -18,6 +18,7 @@ const TESTS := [
     "_test_snow_softens_the_land_edges",
     "_test_the_pack_files_fit_its_layout",
     "_test_water_fade_agrees_across_a_tile_edge",
+    "_test_a_shore_below_land_shows_its_bank",
 ]
 
 var _terrain: GDScript = null
@@ -215,8 +216,11 @@ func _test_snow_softens_the_land_edges() -> void:
     renderer.set_season("autumn", true)
     _check("snow: dirt edges soft", material.get_shader_parameter("soft_ranks") & dirt_bit, dirt_bit)
     _check("snowy atlas", material.get_shader_parameter("ground"), load(_pack.SHEETS["snowy"]))
+    _check("snowy bank", material.get_shader_parameter("bank_band"), _pack.BANK_BANDS.find("snowy"))
     renderer.set_season("winter")
     _check("winter without snow: dirt keeps its edges", material.get_shader_parameter("soft_ranks") & dirt_bit, 0)
+    _check("winter bank", material.get_shader_parameter("bank_band"), _pack.BANK_BANDS.find("winter"))
+    _check("a season with no bank of its own draws summer's", _terrain.bank_band("spring"), _pack.BANK_BANDS.find("summer"))
     renderer.free()
     _done()
 
@@ -236,6 +240,11 @@ func _test_the_pack_files_fit_its_layout() -> void:
     var sparkle: Texture2D = load(_pack.SPARKLE_SHEET)
     _check("sparkle sheet holds every frame", Vector2i(sparkle.get_width(), sparkle.get_height()),
         Vector2i(_pack.SPARKLE_COLS * _pack.TILE_PX, _pack.SPARKLE_ROWS * _pack.TILE_PX))
+    var banks: Texture2D = load(_pack.BANK_SHEET)
+    _check("bank sheet holds a band per season", Vector2i(banks.get_width(), banks.get_height()),
+        Vector2i(size, _pack.BANK_ROWS * _pack.BANK_BANDS.size()))
+    for season in _pack.SHEETS:
+        _check("%s has a bank band" % season, _pack.BANK_BANDS.has(season), true)
     _check("tile size matches the renderer", _pack.TILE_PX, _terrain.TILE_SIZE)
     _check("a default soft-edge set", _pack.SOFT_EDGE_TERRAINS.has("default"), true)
     _done()
@@ -295,3 +304,80 @@ func _test_water_fade_agrees_across_a_tile_edge() -> void:
     viewport.queue_free()
     await process_frame
     _done()
+
+
+# Grass above deep water on screen: the bank's earth face hangs below the
+# grass, ends on its wet line, and shades the water at its foot. The shader
+# is drawn in a SubViewport with flat colours (grass green, deep water grey,
+# the bank face red with a blue wet line, no wobble, no glints), so each
+# pixel names what drew it. The headless renderer draws nothing: this runs
+# only in a windowed run.
+func _test_a_shore_below_land_shows_its_bank() -> void:
+    if DisplayServer.get_name() == "headless":
+        _done()
+        return
+    var map_data: Array = []
+    for y in 6:
+        var row: Array = []
+        row.resize(6)
+        row.fill(2 if y <= 2 else 6)
+        map_data.append(row)
+    var renderer: Node2D = _terrain.new()
+    renderer.map_data = map_data
+    renderer.map_width = 6
+    renderer.map_height = 6
+    var viewport := SubViewport.new()
+    viewport.size = Vector2i(192, 192)
+    viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+    root.add_child(viewport)
+    viewport.add_child(renderer)
+    var size: int = _pack.TEXTURE_PX
+    var cols: int = _pack.ATLAS_COLS
+    var atlas := Image.create(cols * size, 2 * size, false, Image.FORMAT_RGB8)
+    atlas.fill(Color(0.5, 0.2, 0.2))
+    for pair in [[_rank(2), Color.GREEN], [_rank(6), Color(0.5, 0.5, 0.5)]]:
+        var r: int = pair[0]
+        atlas.fill_rect(Rect2i((r % cols) * size, (r / cols) * size, size, size), pair[1])
+    var rows: int = _pack.BANK_ROWS
+    var banks := Image.create(size, rows * _pack.BANK_BANDS.size(), false, Image.FORMAT_RGB8)
+    banks.fill(Color.RED)
+    for band in _pack.BANK_BANDS.size():
+        banks.fill_rect(Rect2i(0, band * rows + rows - 1, size, 1), Color.BLUE)
+    var material: ShaderMaterial = renderer.material
+    material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
+    material.set_shader_parameter("banks", ImageTexture.create_from_image(banks))
+    material.set_shader_parameter("edge_wobble", 0.0)
+    material.set_shader_parameter("sparkle_ranks", 0)
+    for i in 4:
+        await RenderingServer.frame_post_draw
+    var shot: Image = viewport.get_texture().get_image()
+    # Cells in row 2 are grass, row 3 water: with no wobble the shore is the
+    # middle of tile row 3, world y 112. Columns across two tiles, away from
+    # the map's side edges.
+    var faces := 0
+    for x in range(40, 150, 7):
+        _check("x %d: the grass's last pixel is unshaded" % x, shot.get_pixel(x, 111), Color.GREEN)
+        _check("x %d: the face starts at the shore" % x, shot.get_pixel(x, 112), Color.RED)
+        var wet := -1
+        for y in range(112, 112 + rows + 1):
+            if shot.get_pixel(x, y) == Color.BLUE:
+                wet = y
+                break
+        _check("x %d: the face ends on its wet line, 4 to %d tall" % [x, rows], wet >= 115 and wet <= 111 + rows, true)
+        if wet < 0:
+            continue
+        faces += 1
+        _check("x %d: the face is solid down to the wet line" % x, _all_red(shot, x, 112, wet), true)
+        _check("x %d: the water at its foot is shaded" % x, shot.get_pixel(x, wet + 1).r < 0.45, true)
+        _check("x %d: open water further out is not" % x, absf(shot.get_pixel(x, wet + 12).r - 0.5) < 0.02, true)
+    _check("every column has a face", faces, 16)
+    viewport.queue_free()
+    await process_frame
+    _done()
+
+
+func _all_red(shot: Image, x: int, from_y: int, to_y: int) -> bool:
+    for y in range(from_y, to_y):
+        if shot.get_pixel(x, y) != Color.RED:
+            return false
+    return true

@@ -8,6 +8,7 @@ Writes, under client/assets/terrain/:
                        a 512x512 texture per terrain, in LAYER_ORDER, 3 across
   edge-noise.png       the wobble on every terrain edge (grey, 128 = none)
   water-sparkles.png   12 glint frames, 32x32, 4 across
+  water-banks.png      the earth face of a pond's bank, a 512-wide band per season
 and client/scripts/terrain_pack.gd (the layout the renderer reads).
 
 Rerunning writes the same files. After a change, run `godot --headless
@@ -715,6 +716,90 @@ def build_sparkles():
     return sheet
 
 
+# ---------------------------------------------------------------- banks
+
+# The earth face a pond's bank shows where land lies above the water on
+# screen: the side of the bank that faces the camera. One band per season,
+# BANK_ROWS tall and TEX wide (it wraps across); row 0 is the lip under the
+# grass, the last row the wet line at the water. The shader draws a face 4 to
+# BANK_ROWS pixels tall and always ends it on the last row.
+BANK_ROWS = 7
+BANK_SEED = 31
+
+EARTH = dict(top="806146", bottom="4f3a29", band="694f39", lit="9a7a5a", roots="3b2b1e",
+             stones=["8d8274", "9a8f80", "7e7466"], stone_lit="bdb3a3", wet="2e3631")
+BANKS = {
+    "summer": dict(EARTH, lip="3e6129", lip_lit="4d7432"),
+    "autumn": dict(EARTH, top="7a5a40", lip="595a2c", lip_lit="6d6f36"),
+    "winter": dict(EARTH, top="6f5845", bottom="463729", band="5e4a3a", lit="86705c", lip="56583d", lip_lit="686a49",
+                   stones=["858078", "918b82", "79746c"], stone_lit="b0aaa0", wet="2f3a3d"),
+    # Snow lies on the lip and the stones; the face itself is too steep to hold it.
+    "snowy": dict(EARTH, top="6f5845", bottom="463729", band="5e4a3a", lit="86705c", lip="dfe6ec", lip_lit="f6f9fc",
+                  stones=["858078", "918b82", "79746c"], stone_lit="eef3f7", wet="2f3a3d"),
+}
+
+
+def paint_bank(pal):
+    s = W // TEX
+    h = BANK_ROWS * s
+    rnd = random.Random(BANK_SEED)
+    img = Image.new("RGBA", (W, h))
+    d = ImageDraw.Draw(img)
+    top, bottom = rgb(pal["top"]), rgb(pal["bottom"])
+    for y in range(h):
+        d.line([(0, y), (W, y)], fill=mix(top, bottom, (y / (h - 1)) ** 1.4))
+
+    def wrapped(fn, x, r):
+        for xx in [x] + ([x + W] if x - r < 0 else []) + ([x - W] if x + r > W else []):
+            fn(xx)
+
+    # Layers in the earth: long thin lighter and darker streaks.
+    for _ in range(170):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(s * 1.5, h - s * 1.5)
+        w = rnd.uniform(30, 140)
+        t = rnd.uniform(1.5, 3)
+        col = rgb(rnd.choice((pal["band"], pal["band"], pal["lit"])), 170)
+        wrapped(lambda xx, y=y, w=w, t=t, col=col: d.ellipse((xx - w, y - t, xx + w, y + t), fill=col), x, w)
+    # Stones set in the face, lit from above.
+    for _ in range(60):
+        x = rnd.uniform(0, W)
+        y = rnd.uniform(s * 2, h - s * 1.5)
+        r = rnd.uniform(3, 6)
+        col = rgb(rnd.choice(pal["stones"]))
+        lit = rgb(pal["stone_lit"])
+        wrapped(lambda xx, y=y, r=r, col=col, lit=lit: (d.ellipse((xx - r, y - r * 0.8, xx + r, y + r * 0.8), fill=col),
+                                                       d.ellipse((xx - r * 0.6, y - r * 0.8, xx + r * 0.4, y - r * 0.1), fill=lit)), x, r)
+    # Roots hanging from the turf.
+    for _ in range(90):
+        x = rnd.uniform(0, W)
+        length = rnd.uniform(s * 2, h * 0.75)
+        pts = [(x, 0.0)]
+        while pts[-1][1] < length:
+            px, py = pts[-1]
+            pts.append((px + rnd.uniform(-3, 3), py + rnd.uniform(3, 6)))
+        wrapped(lambda xx, pts=pts, x=x: d.line([(xx + px - x, py) for px, py in pts], fill=rgb(pal["roots"]), width=2), x, 12)
+    # The lip: turf (or snow) hanging over the top edge, ragged underneath.
+    for x in range(0, W, 3):
+        depth = s * rnd.uniform(0.9, 1.6)
+        d.line([(x, 0), (x, depth)], fill=rgb(pal["lip"]), width=3)
+        d.line([(x, 0), (x, s * 0.4)], fill=rgb(pal["lip_lit"]), width=3)
+    # The wet line at the water, ragged on top.
+    for x in range(0, W, 3):
+        d.line([(x, h - s * rnd.uniform(0.9, 1.4)), (x, h)], fill=rgb(pal["wet"]), width=3)
+    return img
+
+
+def build_banks():
+    """Every season's bank face, one BANK_ROWS band each, in SEASONS order."""
+    sheet = Image.new("RGB", (TEX, BANK_ROWS * len(SEASONS)))
+    for i, season in enumerate(SEASONS):
+        band = paint_bank(BANKS[season]).resize((TEX, BANK_ROWS), Image.BOX).convert("RGB")
+        band = band.quantize(colors=10, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert("RGB")
+        sheet.paste(band, (0, i * BANK_ROWS))
+    return sheet
+
+
 # ---------------------------------------------------------------- pack script
 
 def write_pack_script():
@@ -755,8 +840,13 @@ def write_pack_script():
         '    "default": [%d, %d],' % (LIGHT_GRASS, DARK_GRASS),
         '    "snowy": [%d, %d, %d],' % (DIRT, LIGHT_GRASS, DARK_GRASS),
         "}",
-        "## Water: no edge shading of its own, and a pale line where it meets land.",
+        "## Water: no edge shading of its own; it lies below the land, with a",
+        "## bank face, a shaded margin and a broken line of foam at the shore.",
         "const WATER_TERRAINS: Array[int] = [%d, %d]" % (SHALLOW_WATER, DEEP_WATER),
+        "## The bank faces, one band per season, BANK_ROWS tall, in BANK_BANDS order.",
+        'const BANK_SHEET: String = "res://assets/terrain/water-banks.png"',
+        "const BANK_ROWS: int = %d" % BANK_ROWS,
+        "const BANK_BANDS: Array[String] = [%s]" % ", ".join('"%s"' % s for s in SEASONS),
         "",
         "## Animated glints drawn over water: frames read left to right, then down.",
         'const SPARKLE_SHEET: String = "res://assets/terrain/water-sparkles.png"',
@@ -865,6 +955,7 @@ def main():
         print("painted", season)
     build_edge_noise().save(os.path.join(ASSET_DIR, "edge-noise.png"))
     build_sparkles().save(os.path.join(ASSET_DIR, "water-sparkles.png"))
+    build_banks().save(os.path.join(ASSET_DIR, "water-banks.png"))
     write_pack_script()
     print("wrote", ASSET_DIR, "and", PACK_SCRIPT)
 
