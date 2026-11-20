@@ -21,6 +21,7 @@ const TESTS := [
     "_test_a_shore_below_land_shows_its_bank",
     "_test_no_foam_on_the_margin_beside_land",
     "_test_a_diagonal_road_step_joins",
+    "_test_a_joined_road_by_water_keeps_its_shore",
 ]
 
 var _terrain: GDScript = null
@@ -497,6 +498,85 @@ func _test_a_diagonal_road_step_joins() -> void:
             if _hue(shot.get_pixel(x, 96 + d)) != c[4]:
                 wrong += 1
         _check("%s step of %d over %d, noise %.0f: drawn along the diagonal (%d px wrong)" % [c[3], step, other, c[2], wrong], wrong, 0)
+        viewport.queue_free()
+        await process_frame
+    _done()
+
+
+# Cobbles on one diagonal of a tile, grass and water on the other: the joined
+# cobbles reach past the field of all the land corners (code_review, LLM-990),
+# and the shore scans must see that land where it is drawn. Every water pixel
+# with land just above it shows the bank's face, and every face pixel hangs
+# from land. All four rotations. Flat colours (grass green, cobbles yellow,
+# deep water grey, the face red with a blue wet line), no wobble, no blade
+# tips; the headless renderer draws nothing: this runs only in a windowed run.
+func _test_a_joined_road_by_water_keeps_its_shore() -> void:
+    if DisplayServer.get_name() == "headless":
+        _done()
+        return
+    # Tile (3, 3)'s corners as map_data [row][col]: TL, TR, BR, BL.
+    var corners := [[2, 2], [2, 3], [3, 3], [3, 2]]
+    for water in 4:
+        var map_data: Array = []
+        for y in 6:
+            var row: Array = []
+            row.resize(6)
+            row.fill(2)
+            map_data.append(row)
+        # The diagonal without the water corner is cobbles; the corner
+        # opposite the water stays grass.
+        for c in 4:
+            var cell: Array = corners[c]
+            if c == water:
+                map_data[cell[0]][cell[1]] = 6
+            elif c != (water + 2) % 4:
+                map_data[cell[0]][cell[1]] = 4
+        var renderer: Node2D = _terrain.new()
+        renderer.map_data = map_data
+        renderer.map_width = 6
+        renderer.map_height = 6
+        var viewport := SubViewport.new()
+        viewport.size = Vector2i(192, 192)
+        viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+        root.add_child(viewport)
+        viewport.add_child(renderer)
+        _flat_shore_colours(renderer)
+        var size: int = _pack.TEXTURE_PX
+        var cols: int = _pack.ATLAS_COLS
+        var atlas: Image = renderer.material.get_shader_parameter("ground").get_image()
+        var cobble: int = _rank(4)
+        atlas.fill_rect(Rect2i((cobble % cols) * size, (cobble / cols) * size, size, size), Color.YELLOW)
+        renderer.material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
+        renderer.material.set_shader_parameter("grass_ranks", 0)
+        for i in 4:
+            await RenderingServer.frame_post_draw
+        var shot: Image = viewport.get_texture().get_image()
+        # The face is drawn unshaded, so it is the exact colour. The water
+        # fades toward the atlas's untouched shallow-water fill, so anything
+        # neither land nor face is water.
+        var land := [Color.GREEN, Color.YELLOW]
+        var face := [Color.RED, Color.BLUE]
+        var bare := 0
+        var hanging := 0
+        var faces := 0
+        for y in range(64, 160):
+            for x in range(64, 160):
+                var colour := shot.get_pixel(x, y)
+                var is_face: bool = colour in face
+                var is_land: bool = not is_face and _hue(colour) in land
+                var above := shot.get_pixel(x, y - 1)
+                if not is_face and not is_land and not (above in face) and _hue(above) in land:
+                    bare += 1
+                if is_face:
+                    faces += 1
+                    var up := y - 1
+                    while shot.get_pixel(x, up) in face:
+                        up -= 1
+                    if not _hue(shot.get_pixel(x, up)) in land:
+                        hanging += 1
+        _check("water at corner %d: no water pixel right under land without a face (%d)" % [water, bare], bare, 0)
+        _check("water at corner %d: every face hangs from land (%d)" % [water, hanging], hanging, 0)
+        _check("water at corner %d: there is a shore to check" % water, faces > 0, true)
         viewport.queue_free()
         await process_frame
     _done()

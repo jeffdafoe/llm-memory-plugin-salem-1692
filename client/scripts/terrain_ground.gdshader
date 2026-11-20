@@ -12,8 +12,9 @@ shader_type canvas_item;
 //
 // Each terrain's texture is sampled by world position and wraps, so tiles
 // show no grid. A road that steps diagonally from cell to cell always joins
-// across the corner the two cells share (saddle_pull). Edges get blade tips past grass, a shadow cast down and to the
-// right by higher ground, and a darker outermost pixel. Water lies below the
+// across the corner the two cells share (saddle_pull). Edges get blade tips
+// past grass, a shadow cast down and to the right by higher ground, and a
+// darker outermost pixel. Water lies below the
 // land: under a shore with land above it on screen, the bank's earth face
 // shows (banks, a painted strip) and shades the water at its foot; every
 // shore gets a darker margin and a broken line of foam a little way out.
@@ -121,6 +122,13 @@ float saddle_pull(int mask, bool own_road, bool other_road, vec2 uv) {
     return (own_road ? SADDLE_PULL : -SADDLE_PULL) * bump;
 }
 
+// Whether ground_at pulls up a rank on the diagonal a-b (c-d the other one):
+// both are roads and both rank above c and d, so some rank's corners are
+// exactly a and b.
+bool road_joins(int a, int b, int c, int d) {
+    return has_bit(road_ranks, a) && has_bit(road_ranks, b) && min(a, b) > max(c, d);
+}
+
 uint hash(ivec2 p) {
     uint h = uint(p.x) * 374761393u + uint(p.y) * 668265263u;
     h = (h ^ (h >> 13u)) * 1274126177u;
@@ -193,46 +201,66 @@ vec4 ground_at(ivec2 p, bool with_tips, out vec3 water) {
 // (dx + 2) for the cell at offset (dx, dy), -2..1, from t's BR corner. Those
 // are the corners of t and the eight tiles around it, every tile the bank and
 // shore scans reach. Read once per pixel, so each probe of the scans costs one
-// noise read, not a full ground_at. Bit 16 + i is set when cell i is a road
-// (for saddle_pull).
-int land_cells(ivec2 t) {
+// noise read, not a full ground_at.
+// y: which of those nine tiles has a road diagonal that saddle_pull joins in
+// ground_at (road_joins): bit k for TL-BR, bit 9 + k for TR-BL, where
+// k = (ty + 1) * 3 + tx + 1 for the tile at offset (tx, ty) from t.
+ivec2 land_cells(ivec2 t) {
     ivec2 tile = t + pad;
     int bits = 0;
+    int r[16];
     for (int dy = -2; dy <= 1; dy++) {
         for (int dx = -2; dx <= 1; dx++) {
-            int r = rank_at(tile + ivec2(dx, dy));
             int i = (dy + 2) * 4 + dx + 2;
-            if (!has_bit(water_ranks, r)) {
+            r[i] = rank_at(tile + ivec2(dx, dy));
+            if (!has_bit(water_ranks, r[i])) {
                 bits |= 1 << i;
-            }
-            if (has_bit(road_ranks, r)) {
-                bits |= 1 << (16 + i);
             }
         }
     }
-    return bits;
+    int joins = 0;
+    for (int ty = -1; ty <= 1; ty++) {
+        for (int tx = -1; tx <= 1; tx++) {
+            int i = (ty + 1) * 4 + tx + 1;
+            int k = (ty + 1) * 3 + tx + 1;
+            if (road_joins(r[i], r[i + 5], r[i + 1], r[i + 4])) {
+                joins |= 1 << k;
+            }
+            if (road_joins(r[i + 1], r[i + 4], r[i], r[i + 5])) {
+                joins |= 1 << (9 + k);
+            }
+        }
+    }
+    return ivec2(bits, joins);
 }
 
 // Whether land is drawn at world pixel q, which lies in tile t or one of the
 // eight around it; cells is land_cells(t). Land ranks all lie above water, and
-// a higher rank's corners are a subset of a lower one's, so land is drawn
-// exactly where the field of all the land corners is above zero: ground_at's
-// rule, without walking the ranks. A land saddle's other two corners are
-// water, never road, so its pull hangs on its own two corners alone.
-bool land_at(ivec2 q, ivec2 t, int cells) {
+// a higher rank's corners are a subset of a lower one's, so without
+// saddle_pull every land rank's field is at most the field of all the land
+// corners. A joined road diagonal can reach past that (cobbles on a diagonal
+// beside grass and water, code_review LLM-990), so land is drawn where either
+// field is above zero: ground_at's rule, without walking the ranks.
+bool land_at(ivec2 q, ivec2 t, ivec2 cells) {
     ivec2 qt = ivec2(floor(vec2(q) / float(tile_px)));
     // The TL corner of tile qt, in cells' 4x4 grid.
     int i = (qt.y - t.y + 1) * 4 + (qt.x - t.x + 1);
-    int mask = ((cells >> i) & 1) | (((cells >> (i + 1)) & 1) << 1) | (((cells >> (i + 5)) & 1) << 2) | (((cells >> (i + 4)) & 1) << 3);
+    int mask = ((cells.x >> i) & 1) | (((cells.x >> (i + 1)) & 1) << 1) | (((cells.x >> (i + 5)) & 1) << 2) | (((cells.x >> (i + 4)) & 1) << 3);
     if (mask == 0 || mask == 15) {
         return mask == 15;
     }
     vec2 uv = (vec2(q - qt * tile_px) + 0.5) / float(tile_px);
     ivec2 np = ivec2(wrap(q.x, texture_px), wrap(q.y, texture_px));
     float n = (texelFetch(edge_noise, np, 0).r - 0.5) * edge_wobble;
-    int roads = cells >> 16;
-    bool own_road = mask == 5 ? ((roads >> i) & (roads >> (i + 5)) & 1) == 1 : ((roads >> (i + 1)) & (roads >> (i + 4)) & 1) == 1;
-    return corner_blend(mask, uv) + saddle_pull(mask, own_road, false, uv) + n - 0.5 > 0.0;
+    int k = (qt.y - t.y + 1) * 3 + (qt.x - t.x + 1);
+    float field = corner_blend(mask, uv);
+    if (((cells.y >> k) & 1) == 1) {
+        field = max(field, corner_blend(5, uv) + saddle_pull(5, true, false, uv));
+    }
+    if (((cells.y >> (9 + k)) & 1) == 1) {
+        field = max(field, corner_blend(10, uv) + saddle_pull(10, true, false, uv));
+    }
+    return field + n - 0.5 > 0.0;
 }
 
 // The bank face's height under column x: the edge noise read along one row,
@@ -282,8 +310,8 @@ void fragment() {
     bool interior = under == -2 && all(greaterThanEqual(local, reach_lo)) && all(lessThan(local, ivec2(tile_px) - reach_hi));
     // Water with no land in reach skips the scans, as in a wide lake whose
     // shallows blend into the deep (those tiles are never one terrain).
-    int cells = !interior && water_here ? land_cells(t) : 0;
-    if (cells != 0) {
+    ivec2 cells = !interior && water_here ? land_cells(t) : ivec2(0);
+    if (cells.x != 0) {
         // Land above this water on screen: the bank's face, then its shadow.
         int h = bank_height(p.x);
         int up = 0;
