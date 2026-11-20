@@ -3,8 +3,9 @@ extends SceneTree
 ## Headless harness for LLM-967: catalog sheets packed into the client. A
 ## catalog state whose sheet is a res://assets/ path loads from the package
 ## with no request; anything else under res:// is refused; either way the
-## catalog still finishes loading. And the twelve tree sheets the migrations
-## point at (three maples, chestnuts, birches and apple trees) are packed, at the size its rects assume, and a leafy look
+## catalog still finishes loading. And the tree and bush sheets the migrations
+## point at (three maples, chestnuts, birches, apple trees, blueberry,
+## raspberry and sage bushes) are packed, at the size their rects assume, and a leafy look
 ## slices into its animated loop the way the catalog serves it.
 ##
 ## Run headless (CI and local):
@@ -45,6 +46,21 @@ const APPLES := ["res://assets/trees/apple-1.png", "res://assets/trees/apple-2.p
 const APPLE_LOOKS := 8  # four leafy fruit looks, four bare winter looks (LLM-967e)
 const APPLE_W := 48
 const APPLE_H := 64
+# migrations/LLM-967g-berry-bushes_up.sql: every look a leafy row of 36 frames;
+# the berry bushes have eight looks (summer, autumn, winter and winter-snowy,
+# each with berries and picked), the sage four (default, autumn, winter,
+# winter-snowy). Sheet path -> [frame width, frame height, looks].
+const BUSHES := {
+    "res://assets/trees/blueberry-1.png": [16, 32, 8],
+    "res://assets/trees/blueberry-2.png": [16, 32, 8],
+    "res://assets/trees/blueberry-3.png": [16, 32, 8],
+    "res://assets/trees/raspberry-1.png": [32, 32, 8],
+    "res://assets/trees/raspberry-2.png": [32, 32, 8],
+    "res://assets/trees/raspberry-3.png": [32, 32, 8],
+    "res://assets/trees/sage-1.png": [16, 16, 4],
+    "res://assets/trees/sage-2.png": [16, 16, 4],
+    "res://assets/trees/sage-3.png": [16, 16, 4],
+}
 # migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
 # storm damage's sheets, each the size its last rect ends at.
 const FALLEN := {
@@ -200,6 +216,13 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is eight rows of up to 36 frames" % path,
                 texture.get_width() == LOOP_FRAMES * APPLE_W and texture.get_height() == APPLE_LOOKS * APPLE_H)
+    for path in BUSHES:
+        var texture := load(path) as Texture2D
+        var size: Array = BUSHES[path]
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %d rows of 36 frames of %dx%d" % [path, size[2], size[0], size[1]],
+                texture.get_width() == LOOP_FRAMES * size[0] and texture.get_height() == size[2] * size[1])
     for path in FALLEN:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)

@@ -5,14 +5,16 @@
     python tools/tree-art/build.py --check   # every frame on its anchor, inside its frame
 
 Writes client/assets/trees/<species>-1.png, -2, -3 for every species in
-SPECIES (maple, chestnut, birch, apple): three trees each, grown from
-different seeds, so no two neighbours share a fork. Each sheet has one row per
-look, in the species' looks order (LOOKS for the big trees), top to bottom; a
-row is the look's frames, left to right, at the species' frame size (80x112;
-the apple tree 48x64). The leafy looks are a FRAMES-long loop at FPS with one
-light-wind puff in it; the bare looks are one frame. The catalog's trees point
-at them (migrations LLM-967b-maple-variants, LLM-967c-chestnut-birch,
-LLM-967d-apple-tree, LLM-967e-apple-winter). After a change, run
+SPECIES (maple, chestnut, birch, apple, and the blueberry, raspberry and sage
+bushes): three of each, grown from different seeds, so no two neighbours share
+a fork. Each sheet has one row per look, in the species' looks order (LOOKS
+for the big trees), top to bottom; a row is the look's frames, left to right,
+at the species' frame size (80x112; the apple tree 48x64; the blueberry 16x32,
+the raspberry 32x32, the sage 16x16). The leafy looks are a FRAMES-long loop
+at FPS with one light-wind puff in it; the bare looks are one frame. The
+catalog's trees and bushes point at them (migrations LLM-967b-maple-variants,
+LLM-967c-chestnut-birch, LLM-967d-apple-tree, LLM-967e-apple-winter,
+LLM-967g-berry-bushes). After a change, run
 `godot --headless --editor --quit` in client/ so Godot writes the .import
 sidecars, and commit them.
 
@@ -165,6 +167,35 @@ APPLE_GREY = ["20341f", "30482e", "44623e", "5c7e4c", "789a5c", "98b674", "bcd09
 APPLE_TURNING = ["3a3412", "5a5018", "7e7020", "a08c2c", "bea840", "d6c460", "e8da84"]
 APPLE_RED = ["4e100c", "9a1e14", "c8341e", "f08a5c"]
 APPLE_GOLD = ["6a3a10", "b8481c", "d8862c", "f4cc70"]
+# Highbush blueberry: small cool blue-green leaves with a glaucous cast,
+# reddish twigs; crimson and wine in autumn; dusty blue berries.
+BLUEBERRY_STEM = ["2a1612", "4a2620", "6a3a2c", "8a5440", "a87058"]
+BLUEBERRY_GREEN = ["1c3a1c", "2a5a28", "3a7a34", "4e9a40", "6cb450", "94cc68", "bee08a"]
+BLUEBERRY_GLAUCOUS = ["1c3a34", "2a5a4e", "3c7a66", "529a7c", "70b494", "96cca8", "c0e2c4"]
+BLUEBERRY_RED = ["3c0e10", "661818", "92241c", "b83a22", "d45a2c", "e8823e", "f4a858"]
+BLUEBERRY_WINE = ["2a0c18", "4a1428", "6e1e34", "922c3e", "b2404a", "cc6058", "e0866a"]
+BLUEBERRY_FRUIT = ["202c64", "3c5cb0", "6e94e4", "c0d4f8"]
+BLUEBERRY_FRUIT_DARK = ["1a2050", "34489a", "5a7cd0", "a8bef0"]
+# Red raspberry: arching purple-brown canes; mid-green leaves, white-felted
+# beneath; yellow going bronze in autumn; red berries.
+RASPBERRY_CANE = ["2a1418", "46222a", "64343a", "845048", "a46e5e"]
+RASPBERRY_GREEN = ["1a3414", "2a5220", "3c7028", "52902e", "6eac38", "94c650", "bcdc74"]
+RASPBERRY_YELLOW_GREEN = ["2a3c14", "40601e", "5a8028", "76a032", "94bc40", "b4d458", "d4e87c"]
+RASPBERRY_YELLOW = ["3a3010", "5c4c16", "82701e", "a88e2a", "c8ac3c", "dcc85a", "ecdc80"]
+RASPBERRY_BRONZE = ["3a1e10", "5c3018", "80461e", "a26028", "be7c36", "d49a4e", "e6b86c"]
+RASPBERRY_FRUIT = ["5a0a18", "b0142c", "e0364e", "ff8fa0"]
+RASPBERRY_FRUIT_DEEP = ["600c12", "c01e26", "ec4c4c", "ffa49a"]
+# Garden sage: a low woody mound of grey-green felted leaves, a little duller
+# in autumn.
+BLUEBERRY_WINTER = ["241020", "3a1a30", "522640", "6a3450", "82465e", "9a5c6e", "b47a84"]
+BLUEBERRY_WINTER_BROWN = ["2a1612", "442420", "5e3428", "784632", "92583c", "aa6e4c", "c48c66"]
+RASPBERRY_WINTER = ["282414", "3e381c", "565026", "6e6630", "88803e", "a29a56", "bcb674"]
+RASPBERRY_WINTER_BROWN = ["2e1c12", "48301c", "624426", "7c5a32", "967242", "ae8a58", "c6a678"]
+SAGE_STEM = ["2a241c", "443a2e", "5e5242", "7a6c58"]
+SAGE_GREEN = ["2c4428", "42603a", "5a7c50", "74985e", "92b278", "b2cc96", "d2e4bc"]
+SAGE_BLUE = ["223430", "344c46", "4a665e", "627e76", "7e9a90", "a0b8ac", "c4d6cc"]
+SAGE_FLOWER = ["6a44a0", "9470cc", "bca0ec"]
+SAGE_DULL = ["2c3024", "444a38", "5e624c", "7a7c62", "96987c", "b2b298", "cecdb6"]
 # Fallen leaves: the ground's autumn leaf colours (terrain-art LEAVES), and
 # the browner dry leaves of December.
 LEAVES = ["c8702a", "d99a3a", "a8452a", "b8862e"]
@@ -187,8 +218,29 @@ class Species:
         self.looks, self.leafy = LOOKS, LEAFY
         # Fruit hung under the leaf pads, in fruit_looks only (fruit, below).
         self.fruit, self.fruit_looks = None, ()
-        # Fallen leaves at the foot, by look: how many.
+        # Fallen leaves at the foot, by look: how many; how far they spread
+        # either side (frame px, one sigma) and their size (frame px).
         self.foot = {"autumn-leaves": 22, "autumn-bare": 14}
+        self.foot_spread, self.foot_leaf = 12, (2.6, 3.8)
+        # Space colonization's step, reach and kill distance, frame px: a
+        # bush grows in finer steps than a tree.
+        self.grow = (2.4, 13, 3.6)
+        # Roots at the foot (a bush's stems go straight into the ground), and
+        # how many columns either side of the middle --check wants solid on
+        # the row above the anchor.
+        self.roots, self.solid_half = True, 3
+        # Leaf marks point away from the foot (a low herb's leaves radiate
+        # from its stems) instead of every which way.
+        self.mark_radial = False
+        # A lobed crown keeps its targets this far (frame px) inside the
+        # frame's sides and top.
+        self.target_margin = (4, 5)
+        # The faint near-black outline round the shrunk art.
+        self.outline = True
+        # Leafy looks with snow lying on the leaves (an evergreen, or a bush
+        # that keeps its leaves in winter). The big trees' snow is on bare
+        # limbs instead (the winter-snowy look).
+        self.snow_looks = ()
         self.__dict__.update(kw)
 
 
@@ -207,6 +259,22 @@ def chestnut_lobes(sp, seed):
         lobes.append((cx + math.cos(a) * rx * dist, cy + math.sin(a) * ry * dist, rx * size, ry * size * 1.1))
     for side in (-1, 1):
         lobes.append((cx + side * rx * 0.6, cy + ry * 0.32, rx * 0.36, ry * 0.36))
+    return lobes
+
+
+def bush_lobes(sp, seed):
+    """A berry bush is a heap of rounded masses: a broad low core and a few
+    lobes round its top half, each lit on top and shaded under (lobe_shade),
+    which is what makes a small bush read as round rather than flat."""
+    rnd = random.Random(seed * 31 + 11)
+    cx, cy, rx, ry = sp.crown
+    lobes = [(cx, cy + ry * 0.25, rx * 0.7, ry * 0.55)]
+    n = sp.lobe_n
+    for i in range(n):
+        a = math.pi + math.pi * (i + 0.5) / n + rnd.uniform(-0.2, 0.2)
+        dist = rnd.uniform(0.35, 0.55)
+        size = rnd.uniform(0.42, 0.55)
+        lobes.append((cx + math.cos(a) * rx * dist, cy + math.sin(a) * ry * dist, rx * size, ry * size))
     return lobes
 
 
@@ -322,6 +390,133 @@ SPECIES = {
         # picked or not, the same leaves lie under it in autumn
         foot={"autumn-berries": 10, "autumn-bare": 10},
     ),
+    # The bushes: no trunk, a cluster of stems from the ground (a two-node
+    # stub at the foot that every limb grows out of), finer growth steps and
+    # small pads. Their looks are the catalog's: a berry bush's four fruit
+    # states, the sage's summer and autumn.
+    "blueberry": Species(
+        # Highbush blueberry: an upright vase of many stems, taller than wide.
+        frame=(16, 32, 0.85),
+        looks=["berries", "bare", "autumn-berries", "autumn-bare",
+               "winter-berries", "winter-bare", "winter-snowy-berries", "winter-snowy-bare"],
+        leafy=("berries", "bare", "autumn-berries", "autumn-bare",
+               "winter-berries", "winter-bare", "winter-snowy-berries", "winter-snowy-bare"),
+        variants=[("blueberry-1", 4), ("blueberry-2", 19), ("blueberry-3", 36)],
+        crown=(16 * S * 0.5, 32 * S * 0.5, 16 * S * 0.42, 32 * S * 0.36),
+        lobes=bush_lobes, lobe_n=4, lobe_shade=0.32, target_margin=(3.5, 1.5),
+        trunk_top=32 * S * 0.85 - 2 * S, trunk_w=(3 * S, 2.5 * S), lean=0,
+        trunk_nodes=2, branch_nodes=2, target_floor=32 * S * 0.85 - 2 * S,
+        n_targets=260, bias=0.35, wander=0.2, limb_w=3 * S, grow=(1.2, 7, 1.8),
+        bark=BLUEBERRY_STEM, twig=BLUEBERRY_STEM, crown_bark=BLUEBERRY_STEM, extra_bark=[],
+        furrows=None, root_scale=0, roots=False, solid_half=1,
+        haze=dict(tries=1, skip=0.6, turn=(0.4, 0.8), length=(1.0, 2.0), colour=BLUEBERRY_STEM, shade=(0.3, 0.6), droop=0.0),
+        deep_fill=True, light=0.72, pad_spacing=2.2,
+        pad_rx=(2.6, 3.4), pad_ry=(0.6, 0.75), marks=0.45, mark_size=(1.3, 1.7), mark_shape=(1.1, 0.7),
+        rim_size=(0.6, 0.9), rim_reach=2.0,
+        ramps={"berries": (BLUEBERRY_GREEN, BLUEBERRY_GLAUCOUS, lambda p: p * 0.45),
+               "bare": (BLUEBERRY_GREEN, BLUEBERRY_GLAUCOUS, lambda p: p * 0.45),
+               "autumn-berries": (BLUEBERRY_RED, BLUEBERRY_WINE, lambda p: p),
+               "autumn-bare": (BLUEBERRY_RED, BLUEBERRY_WINE, lambda p: p),
+               # winter: the berries go on at half speed (winter_regrow_factors),
+               # so the bush keeps dull, dark leaves to hang them on
+               "winter-berries": (BLUEBERRY_WINTER, BLUEBERRY_WINTER_BROWN, lambda p: p * 0.6),
+               "winter-bare": (BLUEBERRY_WINTER, BLUEBERRY_WINTER_BROWN, lambda p: p * 0.6),
+               "winter-snowy-berries": (BLUEBERRY_WINTER, BLUEBERRY_WINTER_BROWN, lambda p: p * 0.6),
+               "winter-snowy-bare": (BLUEBERRY_WINTER, BLUEBERRY_WINTER_BROWN, lambda p: p * 0.6)},
+        underside={"berries": ["8fae9a", "a2bcaa", "b6cabc"],
+                   "bare": ["8fae9a", "a2bcaa", "b6cabc"],
+                   "autumn-berries": ["d8826a", "e09a80", "e8b096"],
+                   "autumn-bare": ["d8826a", "e09a80", "e8b096"],
+                   "winter-berries": ["a07a80", "b08e92", "c0a2a4"],
+                   "winter-bare": ["a07a80", "b08e92", "c0a2a4"],
+                   "winter-snowy-berries": ["a07a80", "b08e92", "c0a2a4"],
+                   "winter-snowy-bare": ["a07a80", "b08e92", "c0a2a4"]},
+        fallen=["a8452a", "c8702a", "922c3e"],
+        fruit=dict(per_pad=2, share=0.5, spread=1.4, drop=(0.2, 1.4), r=1.15,
+                   ramps=[BLUEBERRY_FRUIT, BLUEBERRY_FRUIT, BLUEBERRY_FRUIT_DARK]),
+        fruit_looks=("berries", "autumn-berries", "winter-berries", "winter-snowy-berries"),
+        picked={"berries": "bare", "autumn-berries": "autumn-bare",
+                "winter-berries": "winter-bare", "winter-snowy-berries": "winter-snowy-bare"},
+        snow_looks=("winter-snowy-berries", "winter-snowy-bare"),
+        foot={"autumn-berries": 3, "autumn-bare": 3}, foot_spread=3, foot_leaf=(0.9, 1.3),
+    ),
+    "raspberry": Species(
+        # Red raspberry: a thicket of arching canes, wider than tall.
+        frame=(32, 32, 0.85),
+        looks=["berries", "bare", "autumn-berries", "autumn-bare",
+               "winter-berries", "winter-bare", "winter-snowy-berries", "winter-snowy-bare"],
+        leafy=("berries", "bare", "autumn-berries", "autumn-bare",
+               "winter-berries", "winter-bare", "winter-snowy-berries", "winter-snowy-bare"),
+        variants=[("raspberry-1", 6), ("raspberry-2", 23), ("raspberry-3", 47)],
+        crown=(32 * S * 0.5, 32 * S * 0.5, 32 * S * 0.42, 32 * S * 0.38),
+        lobes=bush_lobes, lobe_n=5, lobe_shade=0.32, target_margin=(1.5, 1.5),
+        trunk_top=32 * S * 0.85 - 2 * S, trunk_w=(4 * S, 3 * S), lean=0,
+        trunk_nodes=2, branch_nodes=2, target_floor=32 * S * 0.85 - 3 * S,
+        n_targets=420, bias=0.3, wander=0.3, limb_w=3.5 * S, grow=(1.6, 9, 2.2),
+        bark=RASPBERRY_CANE, twig=RASPBERRY_CANE, crown_bark=RASPBERRY_CANE, extra_bark=[],
+        furrows=None, root_scale=0, roots=False, solid_half=1,
+        haze=dict(tries=1, skip=0.6, turn=(0.4, 0.8), length=(1.0, 2.0), colour=RASPBERRY_CANE, shade=(0.3, 0.6), droop=0.3),
+        deep_fill=False, light=0.72, pad_spacing=2.8,
+        pad_rx=(3.2, 4.4), pad_ry=(0.55, 0.7), marks=0.45, mark_size=(1.4, 1.8), mark_shape=(1.2, 0.7),
+        rim_size=(0.8, 1.2), rim_reach=2.2,
+        ramps={"berries": (RASPBERRY_GREEN, RASPBERRY_YELLOW_GREEN, lambda p: p * 0.5),
+               "bare": (RASPBERRY_GREEN, RASPBERRY_YELLOW_GREEN, lambda p: p * 0.5),
+               "autumn-berries": (RASPBERRY_YELLOW, RASPBERRY_BRONZE, lambda p: p * 0.8),
+               "autumn-bare": (RASPBERRY_YELLOW, RASPBERRY_BRONZE, lambda p: p * 0.8),
+               "winter-berries": (RASPBERRY_WINTER, RASPBERRY_WINTER_BROWN, lambda p: p * 0.6),
+               "winter-bare": (RASPBERRY_WINTER, RASPBERRY_WINTER_BROWN, lambda p: p * 0.6),
+               "winter-snowy-berries": (RASPBERRY_WINTER, RASPBERRY_WINTER_BROWN, lambda p: p * 0.6),
+               "winter-snowy-bare": (RASPBERRY_WINTER, RASPBERRY_WINTER_BROWN, lambda p: p * 0.6)},
+        # white-felted undersides: a raspberry patch flashes silver in a breeze
+        underside={"berries": ["c4cec0", "d4dcd0", "e4eae0"],
+                   "bare": ["c4cec0", "d4dcd0", "e4eae0"],
+                   "autumn-berries": ["d8d0a0", "e2dab4", "ece6c8"],
+                   "autumn-bare": ["d8d0a0", "e2dab4", "ece6c8"],
+                   "winter-berries": ["b8b4a0", "c8c4b2", "d8d4c4"],
+                   "winter-bare": ["b8b4a0", "c8c4b2", "d8d4c4"],
+                   "winter-snowy-berries": ["b8b4a0", "c8c4b2", "d8d4c4"],
+                   "winter-snowy-bare": ["b8b4a0", "c8c4b2", "d8d4c4"]},
+        fallen=["d99a3a", "b8862e"],
+        fruit=dict(per_pad=2, share=0.45, spread=1.8, drop=(0.4, 1.8), r=1.25,
+                   ramps=[RASPBERRY_FRUIT, RASPBERRY_FRUIT_DEEP]),
+        fruit_looks=("berries", "autumn-berries", "winter-berries", "winter-snowy-berries"),
+        picked={"berries": "bare", "autumn-berries": "autumn-bare",
+                "winter-berries": "winter-bare", "winter-snowy-berries": "winter-snowy-bare"},
+        snow_looks=("winter-snowy-berries", "winter-snowy-bare"),
+        foot={"autumn-berries": 4, "autumn-bare": 4}, foot_spread=6, foot_leaf=(1.0, 1.5),
+    ),
+    "sage": Species(
+        # Garden sage: a low mound on short woody stems.
+        frame=(16, 16, 0.85),
+        looks=["default", "autumn", "winter", "winter-snowy"],
+        leafy=("default", "autumn", "winter", "winter-snowy"),
+        variants=[("sage-1", 9), ("sage-2", 28), ("sage-3", 51)],
+        crown=(16 * S * 0.5, 16 * S * 0.5, 16 * S * 0.42, 16 * S * 0.36),
+        lobes=None,
+        trunk_top=16 * S * 0.85 - 1 * S, trunk_w=(2.5 * S, 2 * S), lean=0,
+        trunk_nodes=2, branch_nodes=2, target_floor=16 * S * 0.85 - 1 * S,
+        n_targets=160, bias=0.3, wander=0.25, limb_w=2.5 * S, grow=(1.0, 6, 1.5),
+        bark=SAGE_STEM, twig=SAGE_STEM, crown_bark=SAGE_STEM, extra_bark=[],
+        furrows=None, root_scale=0, roots=False, solid_half=1,
+        haze=dict(tries=1, skip=0.6, turn=(0.4, 0.8), length=(0.8, 1.6), colour=SAGE_STEM, shade=(0.3, 0.6), droop=0.0),
+        deep_fill=True, light=0.6, pad_spacing=1.9,
+        pad_rx=(2.2, 3.0), pad_ry=(0.6, 0.75), marks=0.6, mark_size=(1.0, 1.4), mark_shape=(1.8, 0.5),
+        rim_size=(0.5, 0.8), rim_reach=1.8, mark_radial=True,
+        ramps={"default": (SAGE_GREEN, SAGE_BLUE, lambda p: p * 0.25),
+               "autumn": (SAGE_GREEN, SAGE_DULL, lambda p: 0.35 + p * 0.4),
+               # evergreen: the same grey-green leaves all winter, a shade duller
+               "winter": (SAGE_GREEN, SAGE_DULL, lambda p: 0.5 + p * 0.3),
+               "winter-snowy": (SAGE_GREEN, SAGE_DULL, lambda p: 0.5 + p * 0.3)},
+        underside={"default": ["b8c4b4", "c8d2c4", "d8e0d4"],
+                   "autumn": ["bcc0ac", "cacebc", "d8dccc"],
+                   "winter": ["bcc0ac", "cacebc", "d8dccc"],
+                   "winter-snowy": ["bcc0ac", "cacebc", "d8dccc"]},
+        fallen=[],
+        crown_extra=SAGE_FLOWER, outline=False, snow_looks=("winter-snowy",),
+        sprigs=dict(n=9, length=(6.5, 9.0), fan=1.1, at=(0.5,), turn=(0.35, 0.55), leaf=(3.0, 4.0), leaf_w=0.36,
+                    flowers=3, flower_looks=("default",)),
+        foot={},
+    ),
 }
 
 
@@ -386,7 +581,8 @@ def crown_targets(sp, rnd, lobes):
             x, y = cx + math.cos(a) * rx * r, cy + math.sin(a) * ry * r
         else:
             x, y = rnd.uniform(cx - rx * 1.1, cx + rx * 1.1), rnd.uniform(cy - ry * 1.1, cy + ry * 1.1)
-            if not (4 * S <= x <= W - 4 * S and y >= 5 * S):
+            mx, my = sp.target_margin
+            if not (mx * S <= x <= W - mx * S and y >= my * S):
                 continue
             if not any(((x - lx) / lrx) ** 2 + ((y - ly) / lry) ** 2 <= 1 for lx, ly, lrx, lry in lobes):
                 continue
@@ -399,7 +595,7 @@ def colonize(sp, seed):
     """Space colonization. Returns (branches, twig points for leaf pads)."""
     rnd = random.Random(seed)
     targets = crown_targets(sp, rnd, sp.lobes(sp, seed) if sp.lobes else None)
-    step, reach, kill = 2.4 * S, 13 * S, 3.6 * S
+    step, reach, kill = (g * S for g in sp.grow)
     # the trunk: a short chain of nodes from the foot to the trunk top
     nodes, parent = [], []
     grid = Grid(reach)
@@ -679,7 +875,11 @@ def draw_pad(d, sp, rnd, x, y, ramp_a, ramp_b, hue, light, still_x=None, flip=No
         px, py = x + math.cos(a) * rx * rr, y + math.sin(a) * ry * rr - ry * 0.15
         top = -(py - y) / ry                      # +1 at the top of the pad
         v = light + top * 0.22 + rnd.uniform(-0.12, 0.12)
-        marks.append((py, px, v, rnd.uniform(0, math.tau), rnd.uniform(*sp.mark_size) * S, int(a / (math.tau / 3))))
+        ang = rnd.uniform(0, math.tau)
+        if sp.mark_radial:
+            # the same draw, kept as a small turn off the line from the foot
+            ang = math.atan2(py - BASE_Y, px - W * 0.5) + (ang - math.pi) * 0.12
+        marks.append((py, px, v, ang, rnd.uniform(*sp.mark_size) * S, int(a / (math.tau / 3))))
     long_, short = sp.mark_shape
     for py, px, v, ang, s, sector in sorted(marks):
         pts = [(px + math.cos(ang + k * 2.2) * s * (long_ if k == 0 else short),
@@ -695,6 +895,14 @@ def draw_pad(d, sp, rnd, x, y, ramp_a, ramp_b, hue, light, still_x=None, flip=No
                    (px + math.cos(a + 1.8) * s * 0.6, py + math.sin(a + 1.8) * s * 0.6),
                    (px + math.cos(a - 1.8) * s * 0.6, py + math.sin(a - 1.8) * s * 0.6)],
                   fill=tone(light + (0.1 if math.sin(a) < 0 else -0.15)))
+    return rx, ry, y
+
+
+def draw_snow_cap(d, x, y, rx, ry):
+    """Snow lying on top of a leaf pad: a thin flattened mound along its
+    top, shaded blue-grey along its lower edge."""
+    d.ellipse((x - rx * 0.65, y - ry * 1.2 - 0.2 * S, x + rx * 0.65, y - ry * 0.55), fill=rgb(SNOW[0]))
+    d.ellipse((x - rx * 0.6, y - ry * 1.25 - 0.3 * S, x + rx * 0.55, y - ry * 0.75), fill=rgb(SNOW[2]))
 
 
 def _hash(*parts):
@@ -781,8 +989,11 @@ def draw_crown(sp, body, seed, branches, twigs, look, gust=None, bole=None, frui
             threshold = 0.35 + 0.55 * (_hash(seed, k, 5) & 0xFFFF) / 65535.0
             if gust[2] * h >= threshold:
                 dx = S
-        draw_pad(d, sp, rnd, x + dx, y, ramp_a, ramp_b, hue_of(patches(x, y)), light, still_x=x,
-                 flip=None if gust is None else flipper(sp, gust[:2], look, seed), pad=k)
+        prx, pry, py = draw_pad(d, sp, rnd, x + dx, y, ramp_a, ramp_b, hue_of(patches(x, y)), light, still_x=x,
+                                flip=None if gust is None else flipper(sp, gust[:2], look, seed), pad=k)
+        # snow lies on some pads, not all, or the crown reads as stripes
+        if look in sp.snow_looks and (_hash(seed, k, 61) & 0xFF) < 140:
+            draw_snow_cap(d, x + dx, py, prx, pry)
         if fruit and look in sp.fruit_looks:
             draw_fruit(d, sp, seed, k, x + dx, y)
     return Image.alpha_composite(body, lay), lay.split()[3], (ramp_a, ramp_b)
@@ -809,13 +1020,109 @@ def draw_fruit(d, sp, seed, k, x, y):
         d.ellipse((fx - r * 0.7, fy - r * 0.75, fx - r * 0.05, fy - r * 0.1), fill=rgb(cols[3]))
 
 
+def draw_sprigs(sp, seed, look, gust=None):
+    """A low herb (the sage) as upright sprigs fanning out of the ground,
+    each with opposite pairs of long pointed leaves and a small leaf at its
+    tip. Painted back to front: the highest sprigs first, so the lower,
+    outer ones lie over them, as pads do on a tree. Each leaf is lit along
+    its top edge with a small shadow under it. In a puff the upper leaves
+    of a sprig lean one frame pixel and some leaves show their paler
+    undersides; both come from hashes, so the sprig's own draws never
+    change from frame to frame."""
+    rnd = random.Random(seed)
+    lay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lay)
+    sg = sp.sprigs
+    ramp_a, ramp_b, hue_of = sp.ramps[look]
+    patches = value_noise(seed + 9, 3)
+    under = [rgb(h) for h in sp.underside[look]]
+
+    def tone(v, x, y):
+        hue = hue_of(patches(x, y))
+        return mix(ramp(ramp_a, v), ramp(ramp_b, v), hue)
+    stems = []
+    for i in range(sg["n"]):
+        off = (i + 0.5) / sg["n"] * 2 - 1                   # -1 left .. +1 right
+        a = -math.pi / 2 + off * sg["fan"] + rnd.uniform(-0.15, 0.15)
+        L = rnd.uniform(*sg["length"]) * S * (1 - 0.3 * abs(off))
+        x0 = W * 0.5 + off * 1.5 * S + rnd.uniform(-0.5, 0.5) * S
+        stems.append((x0, BASE_Y, a, L, i))
+    stems.sort(key=lambda st: st[1] + math.sin(st[2]) * st[3])   # highest tip first
+    # the shaded heart of the clump at the foot, where the sprigs start
+    d.ellipse((W * 0.5 - 2.4 * S, BASE_Y - 1.4 * S, W * 0.5 + 2.4 * S, BASE_Y + 0.6 * S), fill=tone(sp.light - 0.6, W * 0.5, BASE_Y))
+    for x0, y0, a, L, i in stems:
+        x1, y1 = x0 + math.cos(a) * L, y0 + math.sin(a) * L
+        # Keep the sprig, and its leaves, a pixel inside the frame.
+        lim = sg["leaf"][1] * S + 1.5 * S
+        x1 = max(lim, min(W - lim, x1))
+        y1 = max(sg["leaf"][1] * 0.7 * S + 1.5 * S, y1)     # room for the tip leaf
+        lean = 0.0
+        if gust is not None:
+            threshold = 0.3 + 0.6 * (_hash(seed, i, 5) & 0xFFFF) / 65535.0
+            if gust[2] >= threshold:
+                lean = S
+        d.line([(x0, y0), (x1 + lean, y1)], fill=tone(sp.light - 0.5, x0, y0), width=max(2, int(0.7 * S)))
+        leaves = []
+        for k, t in enumerate(sg["at"]):
+            for side in (-1, 1):
+                leaves.append((t, side, k))
+        leaves.append((1.0, 0, len(sg["at"])))
+        for t, side, k in leaves:
+            px, py = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+            if t > 0.5:
+                px += lean
+            la = a + side * rnd.uniform(*sg["turn"])
+            ll = rnd.uniform(*sg["leaf"]) * S * (0.7 if t == 1.0 else 1.0)
+            lw = sg["leaf_w"] * ll
+            tx, ty = px + math.cos(la) * ll, py + math.sin(la) * ll
+            nx, ny = -math.sin(la) * lw, math.cos(la) * lw
+            mx, my = px + math.cos(la) * ll * 0.45, py + math.sin(la) * ll * 0.45
+            leaf = [(px, py), (mx + nx, my + ny), (tx, ty), (mx - nx, my - ny)]
+            height = max(0.0, min(1.0, (BASE_Y - py) / (sg["length"][1] * S)))
+            v = sp.light - 0.25 + height * 0.5 + rnd.uniform(-0.08, 0.08)
+            d.polygon([(qx + 0.4 * S, qy + 0.7 * S) for qx, qy in leaf], fill=tone(v - 0.45, px, py))
+            col = tone(v, px, py)
+            if gust is not None:
+                h = _hash(seed, i, k, side + 2, 17)
+                if (h & 0xFFFF) / 65535.0 < gust[1] * 0.35 and (gust[0] + (h >> 16) % 4) % 4 == 0:
+                    col = under[(h >> 20) % len(under)]
+            d.polygon(leaf, fill=col)
+            # the lit upper edge
+            up = (mx - nx, my - ny) if ny > 0 else (mx + nx, my + ny)
+            d.line([(px, py), up, (tx, ty)], fill=tone(v + 0.18, px, py), width=max(1, int(0.5 * S)))
+            if look in sp.snow_looks and t == 1.0:
+                draw_snow_cap(d, (px + tx) * 0.5, (py + ty) * 0.5 + 0.6 * S, 1.5 * S, 1.0 * S)
+    # Flower spikes: thin green stems standing out of the clump, spread
+    # across it and leaning a little outward, with lilac whorls spaced up
+    # the top two thirds so each reads as a spike, not a blob.
+    frnd = random.Random(seed + 13)
+    n = sg.get("flowers", 0) if look in sg.get("flower_looks", sp.looks) else 0
+    for f in range(n):
+        off = (f + 0.5) / n * 2 - 1 if n > 1 else 0.0
+        x0 = W * 0.5 + off * 3.6 * S + frnd.uniform(-0.5, 0.5) * S
+        y0 = BASE_Y - frnd.uniform(3.5, 4.5) * S
+        y1 = max(1.5 * S, y0 - frnd.uniform(5.5, 7.0) * S)
+        x1 = x0 + off * 1.2 * S
+        if gust is not None and gust[2] >= 0.3 + 0.6 * (_hash(seed, f, 23) & 0xFFFF) / 65535.0:
+            x1 += S
+        d.line([(x0, y0), (x1, y1)], fill=tone(sp.light - 0.1, x0, y0), width=max(2, int(0.5 * S)))
+        whorls = 4
+        for j in range(whorls):
+            t = j / (whorls - 1) * 0.65
+            fx, fy = x1 + (x0 - x1) * t, y1 + (y0 - y1) * t
+            r = (0.75 + 0.15 * j / (whorls - 1)) * S
+            d.ellipse((fx - r, fy - r * 0.6, fx + r, fy + r * 0.6), fill=rgb(SAGE_FLOWER[0]))
+            d.ellipse((fx - r, fy - r * 0.6 - 0.3 * S, fx + r * 0.4, fy + r * 0.2), fill=rgb(SAGE_FLOWER[1 if j else 2]))
+    return lay, (ramp_a, ramp_b)
+
+
 # ---------------------------------------------------------------- ground bits
 
-def foot_leaves(d, rnd, count, colours):
+def foot_leaves(d, rnd, count, colours, sp):
     for _ in range(count):
-        x = W * 0.5 + rnd.gauss(0, 12 * S)
+        x = W * 0.5 + rnd.gauss(0, sp.foot_spread * S)
         y = BASE_Y + rnd.gauss(0.5, 1.8) * S
-        r = rnd.uniform(2.6, 3.8) * S
+        r = rnd.uniform(*sp.foot_leaf) * S
         x = max(r + S, min(W - r - S, x))      # inside the frame
         a = rnd.uniform(-0.5, 0.5)
         pts = [(x + math.cos(a) * r, y + math.sin(a) * r * 0.55), (x + math.cos(a + 1.7) * r * 0.45, y + math.sin(a + 1.7) * r * 0.3),
@@ -844,6 +1151,10 @@ def paint(sp, look, seed, branches, twigs, gust=None, fruit=True):
     tree. fruit=False paints a fruit look without its fruit."""
     leafy = look in sp.leafy
     body = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    if getattr(sp, "sprigs", None):
+        lay, ramps = draw_sprigs(sp, seed, look, gust)
+        body = Image.alpha_composite(body, lay)
+        return body, cast_shadow(sp, body), lay.split()[3], ramps
     d = ImageDraw.Draw(body)
     trunk = Branch(W * 0.5, BASE_Y, W * 0.5 + sp.lean, getattr(sp, "bole_top", sp.trunk_top), sp.trunk_w[0], sp.trunk_w[1], 0)
     if not leafy:
@@ -855,7 +1166,8 @@ def paint(sp, look, seed, branches, twigs, gust=None, fruit=True):
             draw_limb_marks(d, random.Random(seed + 6), branches)
     draw_branch(d, sp, trunk)
     draw_furrows(d, sp, random.Random(seed + 5), trunk)
-    draw_roots(d, sp, trunk)
+    if sp.roots:
+        draw_roots(d, sp, trunk)
 
     def bole(dd):
         # the same trunk and furrows (same seed), over the crown's limbs
@@ -877,9 +1189,9 @@ def paint(sp, look, seed, branches, twigs, gust=None, fruit=True):
         d = ImageDraw.Draw(body)
     shadow = cast_shadow(sp, body)
     if look in sp.foot:
-        foot_leaves(d, random.Random(seed + 3), sp.foot[look], sp.fallen)
+        foot_leaves(d, random.Random(seed + 3), sp.foot[look], sp.fallen, sp)
     if look == "winter-leaves":
-        foot_leaves(d, random.Random(seed + 4), 16, DRY_LEAVES)
+        foot_leaves(d, random.Random(seed + 4), 16, DRY_LEAVES, sp)
     if look == "winter-snowy":
         k = FW / 80     # the drift scales with the frame (1 on the big trees)
         d.ellipse((W * 0.5 - 15 * S * k, BASE_Y - 3 * S, W * 0.5 + 17 * S * k, BASE_Y + 3.5 * S), fill=rgb("eef3f7"))
@@ -904,7 +1216,7 @@ def shrink(sp, look, body, shadow, crown_mask, ramps):
     # neighbours) keep their colour, or a bare tree turns to black wire.
     outline = {}
     for (x, y) in covered:
-        if sum((x + dx, y + dy) in covered for dx in (-1, 0, 1) for dy in (-1, 0, 1)) < 6:
+        if not sp.outline or sum((x + dx, y + dy) in covered for dx in (-1, 0, 1) for dy in (-1, 0, 1)) < 6:
             continue
         if (x, y + 1) not in covered:
             outline[(x, y)] = 0.72
@@ -923,6 +1235,9 @@ def shrink(sp, look, body, shadow, crown_mask, ramps):
         crown_pal = [rgb(h)[:3] for h in a + b] + [mix(rgb(a[i]), rgb(b[i]), 0.5)[:3] for i in range(min(len(a), len(b)))]
         crown_pal += [rgb(h)[:3] for h in sp.crown_bark]
         crown_pal += [rgb(h)[:3] for h in sp.underside.get(look, [])]
+        crown_pal += [rgb(h)[:3] for h in getattr(sp, "crown_extra", [])]
+        if look in sp.snow_looks:
+            crown_pal += [rgb(h)[:3] for h in SNOW]
     out = Image.new("RGBA", (FW, FH), (0, 0, 0, 0))
     op = out.load()
     for y in range(FH):
@@ -1027,7 +1342,8 @@ def check_frames(out_dir, species):
                 bad = []
                 for col in range(frame_count(sp, look)):
                     x0, y0 = col * FW, r * FH
-                    solid = all(sheet.getpixel((x0 + x, y0 + row))[3] == 255 for x in range(FW // 2 - 3, FW // 2 + 4))
+                    solid = all(sheet.getpixel((x0 + x, y0 + row))[3] == 255
+                                for x in range(FW // 2 - sp.solid_half, FW // 2 + sp.solid_half + 1))
                     edge = any(sheet.getpixel((x0 + x, y0 + y))[3] == 255 for y in range(FH) for x in (0, FW - 1)) or \
                         any(sheet.getpixel((x0 + x, y0))[3] == 255 for x in range(FW))
                     if not solid or edge:
