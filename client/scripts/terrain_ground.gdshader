@@ -164,9 +164,41 @@ vec4 ground_at(ivec2 p, bool with_tips, out vec3 water) {
     return vec4(float(top), float(under), field, float(fringe));
 }
 
-bool is_land(ivec2 p) {
-    vec3 unused;
-    return !has_bit(water_ranks, int(ground_at(p, false, unused).x));
+// Which of the 4x4 map cells around tile t are land: bit (dy + 2) * 4 +
+// (dx + 2) for the cell at offset (dx, dy), -2..1, from t's BR corner. Those
+// are the corners of t and the eight tiles around it, every tile the bank and
+// shore scans reach. Read once per pixel, so each probe of the scans costs one
+// noise read, not a full ground_at.
+int land_cells(ivec2 t) {
+    ivec2 tile = t + pad;
+    int bits = 0;
+    for (int dy = -2; dy <= 1; dy++) {
+        for (int dx = -2; dx <= 1; dx++) {
+            if (!has_bit(water_ranks, rank_at(tile + ivec2(dx, dy)))) {
+                bits |= 1 << ((dy + 2) * 4 + dx + 2);
+            }
+        }
+    }
+    return bits;
+}
+
+// Whether land is drawn at world pixel q, which lies in tile t or one of the
+// eight around it; cells is land_cells(t). Land ranks all lie above water, and
+// a higher rank's corners are a subset of a lower one's, so land is drawn
+// exactly where the field of all the land corners is above zero: ground_at's
+// rule, without walking the ranks.
+bool land_at(ivec2 q, ivec2 t, int cells) {
+    ivec2 qt = ivec2(floor(vec2(q) / float(tile_px)));
+    // The TL corner of tile qt, in cells' 4x4 grid.
+    int i = (qt.y - t.y + 1) * 4 + (qt.x - t.x + 1);
+    int mask = ((cells >> i) & 1) | (((cells >> (i + 1)) & 1) << 1) | (((cells >> (i + 5)) & 1) << 2) | (((cells >> (i + 4)) & 1) << 3);
+    if (mask == 0 || mask == 15) {
+        return mask == 15;
+    }
+    vec2 uv = (vec2(q - qt * tile_px) + 0.5) / float(tile_px);
+    ivec2 np = ivec2(wrap(q.x, texture_px), wrap(q.y, texture_px));
+    float n = (texelFetch(edge_noise, np, 0).r - 0.5) * edge_wobble;
+    return corner_blend(mask, uv) + n - 0.5 > 0.0;
 }
 
 // The bank face's height under column x: the edge noise read along one row,
@@ -208,17 +240,21 @@ void fragment() {
     // Inside a one-terrain tile, away from its edge, every pixel STEP away is
     // the same terrain: no shadow and no shore line to look for. Water looks
     // further, up to SCAN_UP above for a bank and FOAM_AT to the sides.
-    ivec2 local = p - ivec2(floor(vec2(p) / float(tile_px))) * tile_px;
+    ivec2 t = ivec2(floor(vec2(p) / float(tile_px)));
+    ivec2 local = p - t * tile_px;
     bool water_here = has_bit(water_ranks, top);
     ivec2 reach_lo = water_here ? ivec2(FOAM_AT, SCAN_UP) : ivec2(STEP);
     ivec2 reach_hi = water_here ? ivec2(FOAM_AT) : ivec2(STEP);
     bool interior = under == -2 && all(greaterThanEqual(local, reach_lo)) && all(lessThan(local, ivec2(tile_px) - reach_hi));
-    if (!interior && water_here) {
+    // Water with no land in reach skips the scans, as in a wide lake whose
+    // shallows blend into the deep (those tiles are never one terrain).
+    int cells = !interior && water_here ? land_cells(t) : 0;
+    if (cells != 0) {
         // Land above this water on screen: the bank's face, then its shadow.
         int h = bank_height(p.x);
         int up = 0;
         for (int d = 1; d <= SCAN_UP; d++) {
-            if (is_land(p - ivec2(0, d))) {
+            if (land_at(p - ivec2(0, d), t, cells)) {
                 up = d;
                 break;
             }
@@ -232,7 +268,7 @@ void fragment() {
             int below_bank = up > 0 ? up - h : SCAN_UP;
             int side = FOAM_AT + 1;
             for (int d = 1; d <= FOAM_AT; d++) {
-                if (is_land(p + ivec2(-d, 0)) || is_land(p + ivec2(d, 0)) || is_land(p + ivec2(0, d))) {
+                if (land_at(p + ivec2(-d, 0), t, cells) || land_at(p + ivec2(d, 0), t, cells) || land_at(p + ivec2(0, d), t, cells)) {
                     side = d;
                     break;
                 }
@@ -243,13 +279,14 @@ void fragment() {
                 k *= SHORE_SHADE;
             }
             // Foam: broken, in short runs, where the water first laps clear
-            // of the shore.
-            bool foam_line = below_bank == BANK_SHADE + 1 || (side == FOAM_AT && below_bank > BANK_SHADE + 1);
+            // of the shore; never on the shaded pixel beside land, where a
+            // bank's foam line meets a side shore at an inside corner.
+            bool foam_line = side != 1 && (below_bank == BANK_SHADE + 1 || (side == FOAM_AT && below_bank > BANK_SHADE + 1));
             if (foam_line && hash01(p / 3) < FOAM_CHANCE) {
                 col = col * 0.6 + vec3(0.9) * 0.4;
             }
         }
-    } else if (!interior) {
+    } else if (!interior && !water_here) {
         // Higher ground up and to the left casts a shadow, except soft on soft.
         vec3 unused;
         int caster = int(ground_at(p - ivec2(STEP), false, unused).x);
@@ -266,7 +303,6 @@ void fragment() {
     }
 
     if (has_bit(sparkle_ranks, top) && !bank) {
-        ivec2 t = ivec2(floor(vec2(p) / float(tile_px)));
         int start = int(hash(t + ivec2(7, 13)) % uint(sparkle_frames));
         int frame = (int(TIME / sparkle_seconds) + start) % sparkle_frames;
         ivec2 cell = ivec2((frame % sparkle_cols) * tile_px, (frame / sparkle_cols) * tile_px);

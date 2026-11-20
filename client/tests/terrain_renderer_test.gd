@@ -19,6 +19,7 @@ const TESTS := [
     "_test_the_pack_files_fit_its_layout",
     "_test_water_fade_agrees_across_a_tile_edge",
     "_test_a_shore_below_land_shows_its_bank",
+    "_test_no_foam_on_the_margin_beside_land",
 ]
 
 var _terrain: GDScript = null
@@ -331,23 +332,8 @@ func _test_a_shore_below_land_shows_its_bank() -> void:
     viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
     root.add_child(viewport)
     viewport.add_child(renderer)
-    var size: int = _pack.TEXTURE_PX
-    var cols: int = _pack.ATLAS_COLS
-    var atlas := Image.create(cols * size, 2 * size, false, Image.FORMAT_RGB8)
-    atlas.fill(Color(0.5, 0.2, 0.2))
-    for pair in [[_rank(2), Color.GREEN], [_rank(6), Color(0.5, 0.5, 0.5)]]:
-        var r: int = pair[0]
-        atlas.fill_rect(Rect2i((r % cols) * size, (r / cols) * size, size, size), pair[1])
+    _flat_shore_colours(renderer)
     var rows: int = _pack.BANK_ROWS
-    var banks := Image.create(size, rows * _pack.BANK_BANDS.size(), false, Image.FORMAT_RGB8)
-    banks.fill(Color.RED)
-    for band in _pack.BANK_BANDS.size():
-        banks.fill_rect(Rect2i(0, band * rows + rows - 1, size, 1), Color.BLUE)
-    var material: ShaderMaterial = renderer.material
-    material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
-    material.set_shader_parameter("banks", ImageTexture.create_from_image(banks))
-    material.set_shader_parameter("edge_wobble", 0.0)
-    material.set_shader_parameter("sparkle_ranks", 0)
     for i in 4:
         await RenderingServer.frame_post_draw
     var shot: Image = viewport.get_texture().get_image()
@@ -374,6 +360,84 @@ func _test_a_shore_below_land_shows_its_bank() -> void:
     viewport.queue_free()
     await process_frame
     _done()
+
+
+# An inside corner: grass along the top, and grass strips running down from it
+# into deep water. A water column beside a strip has land 1 px to its side
+# all the way down, so every pixel of it below the bank's face is shaded (the
+# face's shadow, then the shore margin), never lit by foam. The foam line 3 px
+# below the face's foot crosses that column (code_review, LLM-967); ten such
+# columns, so the foam hash cannot miss them all.
+func _test_no_foam_on_the_margin_beside_land() -> void:
+    if DisplayServer.get_name() == "headless":
+        _done()
+        return
+    var width := 18
+    var map_data: Array = []
+    for y in 6:
+        var row: Array = []
+        for x in width:
+            row.append(2 if y <= 2 or (x % 3 == 0 and x > 0 and x < 16) else 6)
+        map_data.append(row)
+    var renderer: Node2D = _terrain.new()
+    renderer.map_data = map_data
+    renderer.map_width = width
+    renderer.map_height = 6
+    var viewport := SubViewport.new()
+    viewport.size = Vector2i(width * 32, 192)
+    viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+    root.add_child(viewport)
+    viewport.add_child(renderer)
+    _flat_shore_colours(renderer)
+    for i in 4:
+        await RenderingServer.frame_post_draw
+    var shot: Image = viewport.get_texture().get_image()
+    # A strip on cell column k is land from world x 32k + 16 to 32k + 47.
+    var columns := 0
+    for k in [3, 6, 9, 12, 15]:
+        for x in [32 * k + 15, 32 * k + 48]:
+            _check("x %d: land beside it" % x, shot.get_pixel(x + (1 if x % 32 == 15 else -1), 150), Color.GREEN)
+            # The inside corner is rounded, so the face starts lower here than
+            # on a straight shore: find it, then its wet line.
+            var wet := -1
+            for y in range(100, 160):
+                if shot.get_pixel(x, y) == Color.BLUE:
+                    wet = y
+                    break
+            _check("x %d: a face above it" % x, wet > 0, true)
+            if wet < 0:
+                continue
+            columns += 1
+            var brightest := 0.0
+            for y in range(wet + 1, 180):
+                brightest = maxf(brightest, shot.get_pixel(x, y).r)
+            _check("x %d: every pixel below the face is shaded (brightest %.3f)" % [x, brightest], brightest < 0.45, true)
+    _check("every column checked", columns, 10)
+    viewport.queue_free()
+    await process_frame
+    _done()
+
+
+## Flat colours for a shore test: grass green, deep water grey, the bank face
+## red with a blue wet line; no wobble, no glints.
+func _flat_shore_colours(renderer: Node2D) -> void:
+    var size: int = _pack.TEXTURE_PX
+    var cols: int = _pack.ATLAS_COLS
+    var atlas := Image.create(cols * size, 2 * size, false, Image.FORMAT_RGB8)
+    atlas.fill(Color(0.5, 0.2, 0.2))
+    for pair in [[_rank(2), Color.GREEN], [_rank(6), Color(0.5, 0.5, 0.5)]]:
+        var r: int = pair[0]
+        atlas.fill_rect(Rect2i((r % cols) * size, (r / cols) * size, size, size), pair[1])
+    var rows: int = _pack.BANK_ROWS
+    var banks := Image.create(size, rows * _pack.BANK_BANDS.size(), false, Image.FORMAT_RGB8)
+    banks.fill(Color.RED)
+    for band in _pack.BANK_BANDS.size():
+        banks.fill_rect(Rect2i(0, band * rows + rows - 1, size, 1), Color.BLUE)
+    var material: ShaderMaterial = renderer.material
+    material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
+    material.set_shader_parameter("banks", ImageTexture.create_from_image(banks))
+    material.set_shader_parameter("edge_wobble", 0.0)
+    material.set_shader_parameter("sparkle_ranks", 0)
 
 
 func _all_red(shot: Image, x: int, from_y: int, to_y: int) -> bool:
