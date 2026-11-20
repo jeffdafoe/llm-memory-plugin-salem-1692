@@ -88,6 +88,13 @@ func set_season(season: String, snowy: bool = false) -> void:
     if texture != null:
         _set_ground(texture)
         _material.set_shader_parameter("soft_ranks", rank_bits(soft_edge_terrains(season, snowy)))
+        _material.set_shader_parameter("bank_band", bank_band(season, snowy))
+
+## The band of the bank sheet for season, as ground_sheet_path picks its atlas.
+static func bank_band(season: String, snowy: bool = false) -> int:
+    var key: String = "snowy" if snowy else season
+    var band: int = TerrainPack.BANK_BANDS.find(key)
+    return band if band >= 0 else TerrainPack.BANK_BANDS.find("summer")
 
 func _set_ground(texture: Texture2D) -> void:
     ground_texture = texture
@@ -110,6 +117,9 @@ func _ensure_material() -> void:
     _material.shader = GroundShader
     _material.set_shader_parameter("edge_noise", load(TerrainPack.EDGE_NOISE))
     _material.set_shader_parameter("sparkles", load(TerrainPack.SPARKLE_SHEET))
+    _material.set_shader_parameter("banks", load(TerrainPack.BANK_SHEET))
+    _material.set_shader_parameter("bank_rows", TerrainPack.BANK_ROWS)
+    _material.set_shader_parameter("bank_band", bank_band(""))
     _material.set_shader_parameter("tile_px", TerrainPack.TILE_PX)
     _material.set_shader_parameter("texture_px", TerrainPack.TEXTURE_PX)
     _material.set_shader_parameter("atlas_cols", TerrainPack.ATLAS_COLS)
