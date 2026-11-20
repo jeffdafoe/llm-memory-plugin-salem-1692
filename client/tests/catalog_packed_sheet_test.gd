@@ -5,7 +5,7 @@ extends SceneTree
 ## with no request; anything else under res:// is refused; either way the
 ## catalog still finishes loading. And the tree and bush sheets the migrations
 ## point at (three maples, chestnuts, birches, apple trees, blueberry,
-## raspberry and sage bushes) are packed, at the size their rects assume, and a leafy look
+## raspberry and sage bushes, and the water edge) are packed, at the size their rects assume, and a leafy look
 ## slices into its animated loop the way the catalog serves it.
 ##
 ## Run headless (CI and local):
@@ -60,6 +60,23 @@ const BUSHES := {
     "res://assets/trees/sage-1.png": [16, 16, 4],
     "res://assets/trees/sage-2.png": [16, 16, 4],
     "res://assets/trees/sage-3.png": [16, 16, 4],
+}
+# migrations/LLM-967h-water-edge_up.sql: four looks (summer, autumn, winter,
+# winter-snowy; the sunk barrel one), the reeds 36 frames, the rest one.
+# Sheet path -> [frame width, frame height, looks, frames].
+const WATER_EDGE := {
+    "res://assets/trees/cattails-1.png": [16, 16, 4, 36],
+    "res://assets/trees/cattails-2.png": [16, 16, 4, 36],
+    "res://assets/trees/cattails-3.png": [16, 16, 4, 36],
+    "res://assets/trees/water-plant-1.png": [16, 16, 4, 36],
+    "res://assets/trees/water-plant-2.png": [16, 16, 4, 36],
+    "res://assets/trees/water-plant-3.png": [16, 16, 4, 36],
+    "res://assets/trees/lily-pad.png": [32, 32, 4, 1],
+    "res://assets/trees/light-lily-pad.png": [16, 16, 4, 1],
+    "res://assets/trees/small-lily-pad.png": [16, 16, 4, 1],
+    "res://assets/trees/tiny-lily-pad.png": [16, 16, 4, 1],
+    "res://assets/trees/water-vine.png": [16, 16, 4, 1],
+    "res://assets/trees/sunk-barrel.png": [16, 16, 1, 1],
 }
 # migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
 # storm damage's sheets, each the size its last rect ends at.
@@ -223,6 +240,13 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %d rows of 36 frames of %dx%d" % [path, size[2], size[0], size[1]],
                 texture.get_width() == LOOP_FRAMES * size[0] and texture.get_height() == size[2] * size[1])
+    for path in WATER_EDGE:
+        var texture := load(path) as Texture2D
+        var size: Array = WATER_EDGE[path]
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %d rows of %d frames of %dx%d" % [path, size[2], size[3], size[0], size[1]],
+                texture.get_width() == size[3] * size[0] and texture.get_height() == size[2] * size[1])
     for path in FALLEN:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
