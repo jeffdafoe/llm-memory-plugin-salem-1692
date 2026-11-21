@@ -38,6 +38,9 @@ const SOFT_EDGE_TERRAINS: Dictionary = {
 ## Water: no edge shading of its own; it lies below the land, with a
 ## bank face, a shaded margin and a broken line of foam at the shore.
 const WATER_TERRAINS: Array[int] = [5, 6]
+## Roads: where one steps diagonally from cell to cell, the two cells
+## always join across the corner they share.
+const ROAD_TERRAINS: Array[int] = [1, 4]
 ## The bank faces, one band per season, BANK_ROWS tall, in BANK_BANDS order.
 const BANK_SHEET: String = "res://assets/terrain/water-banks.png"
 const BANK_ROWS: int = 7

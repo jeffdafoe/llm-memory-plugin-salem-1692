@@ -127,6 +127,7 @@ func _ensure_material() -> void:
     _material.set_shader_parameter("grass_ranks", rank_bits(TerrainPack.FRINGE_TERRAINS))
     _material.set_shader_parameter("soft_ranks", rank_bits(soft_edge_terrains("")))
     _material.set_shader_parameter("water_ranks", rank_bits(TerrainPack.WATER_TERRAINS))
+    _material.set_shader_parameter("road_ranks", rank_bits(TerrainPack.ROAD_TERRAINS))
     _material.set_shader_parameter("sparkle_ranks", rank_bits(TerrainPack.SPARKLE_TERRAINS))
     _material.set_shader_parameter("sparkle_cols", TerrainPack.SPARKLE_COLS)
     _material.set_shader_parameter("sparkle_frames", TerrainPack.SPARKLE_COLS * TerrainPack.SPARKLE_ROWS)

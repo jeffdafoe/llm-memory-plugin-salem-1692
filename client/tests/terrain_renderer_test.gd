@@ -20,6 +20,8 @@ const TESTS := [
     "_test_water_fade_agrees_across_a_tile_edge",
     "_test_a_shore_below_land_shows_its_bank",
     "_test_no_foam_on_the_margin_beside_land",
+    "_test_a_diagonal_road_step_joins",
+    "_test_a_joined_road_by_water_keeps_its_shore",
 ]
 
 var _terrain: GDScript = null
@@ -416,6 +418,177 @@ func _test_no_foam_on_the_margin_beside_land() -> void:
     viewport.queue_free()
     await process_frame
     _done()
+
+
+# A road that steps diagonally from cell to cell: the two cells share only a
+# corner, the centre of a saddle tile, where the plain blend is 0.5 and the
+# wobble alone would decide. The road must join there under the worst wobble:
+# all-white noise pushes grass over dirt (dirt is the lower rank), all-black
+# noise pulls cobbles back (cobbles are the top rank). A saddle of two grasses
+# is no road and still goes the wobble's way. Flat colours, drawn in a
+# SubViewport; the headless renderer draws nothing: this runs only in a
+# windowed run.
+func _test_a_diagonal_road_step_joins() -> void:
+    if DisplayServer.get_name() == "headless":
+        _done()
+        return
+    var colours := {1: Color.RED, 2: Color.GREEN, 3: Color.BLUE, 4: Color.WHITE}
+    # [the step's terrain, its other diagonal, the noise grey, which way the
+    # step runs, the colour wanted, the pixels checked along the step's
+    # diagonal]. Under all-white or all-black noise every edge moves its
+    # furthest, and blade tips reach the road near the cells, so the road
+    # checks span the middle half of the diagonal; the grass saddle checks
+    # only the centre.
+    var road := range(8, 24)
+    var centre := range(14, 18)
+    var cases := [
+        [1, 2, 1.0, "down-right", Color.RED, road],
+        [1, 2, 1.0, "down-left", Color.RED, road],
+        [4, 2, 0.0, "down-right", Color.WHITE, road],
+        [4, 2, 0.0, "down-left", Color.WHITE, road],
+        [4, 1, 0.0, "down-right", Color.WHITE, road],
+        [3, 2, 0.0, "down-right", Color.GREEN, centre],
+        [3, 2, 1.0, "down-right", Color.BLUE, centre],
+    ]
+    for c in cases:
+        var step: int = c[0]
+        var other: int = c[1]
+        var down_right: bool = c[3] == "down-right"
+        var map_data: Array = []
+        for y in 6:
+            var row: Array = []
+            row.resize(6)
+            row.fill(2)
+            map_data.append(row)
+        # Tile (3, 3) has corners (2, 2) (3, 2) (3, 3) (2, 3), world 96..127.
+        map_data[2][2] = step if down_right else other
+        map_data[3][3] = step if down_right else other
+        map_data[2][3] = other if down_right else step
+        map_data[3][2] = other if down_right else step
+        var renderer: Node2D = _terrain.new()
+        renderer.map_data = map_data
+        renderer.map_width = 6
+        renderer.map_height = 6
+        var viewport := SubViewport.new()
+        viewport.size = Vector2i(192, 192)
+        viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+        root.add_child(viewport)
+        viewport.add_child(renderer)
+        var size: int = _pack.TEXTURE_PX
+        var cols: int = _pack.ATLAS_COLS
+        var atlas := Image.create(cols * size, 2 * size, false, Image.FORMAT_RGB8)
+        atlas.fill(Color(0.5, 0.2, 0.2))
+        for terrain in colours:
+            var r: int = _rank(terrain)
+            atlas.fill_rect(Rect2i((r % cols) * size, (r / cols) * size, size, size), colours[terrain])
+        var noise := Image.create(size, size, false, Image.FORMAT_L8)
+        noise.fill(Color(c[2], c[2], c[2]))
+        var material: ShaderMaterial = renderer.material
+        material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
+        material.set_shader_parameter("edge_noise", ImageTexture.create_from_image(noise))
+        material.set_shader_parameter("sparkle_ranks", 0)
+        for i in 4:
+            await RenderingServer.frame_post_draw
+        var shot: Image = viewport.get_texture().get_image()
+        # Shadow, rim and blade tips shade or recolour a pixel near an edge;
+        # the hue (largest channel) still names the terrain drawn.
+        var wrong := 0
+        for d in c[5]:
+            var x: int = 96 + d if down_right else 127 - d
+            if _hue(shot.get_pixel(x, 96 + d)) != c[4]:
+                wrong += 1
+        _check("%s step of %d over %d, noise %.0f: drawn along the diagonal (%d px wrong)" % [c[3], step, other, c[2], wrong], wrong, 0)
+        viewport.queue_free()
+        await process_frame
+    _done()
+
+
+# Cobbles on one diagonal of a tile, grass and water on the other: the joined
+# cobbles reach past the field of all the land corners (code_review, LLM-990),
+# and the shore scans must see that land where it is drawn. Every water pixel
+# with land just above it shows the bank's face, and every face pixel hangs
+# from land. All four rotations. Flat colours (grass green, cobbles yellow,
+# deep water grey, the face red with a blue wet line), no wobble, no blade
+# tips; the headless renderer draws nothing: this runs only in a windowed run.
+func _test_a_joined_road_by_water_keeps_its_shore() -> void:
+    if DisplayServer.get_name() == "headless":
+        _done()
+        return
+    # Tile (3, 3)'s corners as map_data [row][col]: TL, TR, BR, BL.
+    var corners := [[2, 2], [2, 3], [3, 3], [3, 2]]
+    for water in 4:
+        var map_data: Array = []
+        for y in 6:
+            var row: Array = []
+            row.resize(6)
+            row.fill(2)
+            map_data.append(row)
+        # The diagonal without the water corner is cobbles; the corner
+        # opposite the water stays grass.
+        for c in 4:
+            var cell: Array = corners[c]
+            if c == water:
+                map_data[cell[0]][cell[1]] = 6
+            elif c != (water + 2) % 4:
+                map_data[cell[0]][cell[1]] = 4
+        var renderer: Node2D = _terrain.new()
+        renderer.map_data = map_data
+        renderer.map_width = 6
+        renderer.map_height = 6
+        var viewport := SubViewport.new()
+        viewport.size = Vector2i(192, 192)
+        viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+        root.add_child(viewport)
+        viewport.add_child(renderer)
+        _flat_shore_colours(renderer)
+        var size: int = _pack.TEXTURE_PX
+        var cols: int = _pack.ATLAS_COLS
+        var atlas: Image = renderer.material.get_shader_parameter("ground").get_image()
+        var cobble: int = _rank(4)
+        atlas.fill_rect(Rect2i((cobble % cols) * size, (cobble / cols) * size, size, size), Color.YELLOW)
+        renderer.material.set_shader_parameter("ground", ImageTexture.create_from_image(atlas))
+        renderer.material.set_shader_parameter("grass_ranks", 0)
+        for i in 4:
+            await RenderingServer.frame_post_draw
+        var shot: Image = viewport.get_texture().get_image()
+        # The face is drawn unshaded, so it is the exact colour. The water
+        # fades toward the atlas's untouched shallow-water fill, so anything
+        # neither land nor face is water.
+        var land := [Color.GREEN, Color.YELLOW]
+        var face := [Color.RED, Color.BLUE]
+        var bare := 0
+        var hanging := 0
+        var faces := 0
+        for y in range(64, 160):
+            for x in range(64, 160):
+                var colour := shot.get_pixel(x, y)
+                var is_face: bool = colour in face
+                var is_land: bool = not is_face and _hue(colour) in land
+                var above := shot.get_pixel(x, y - 1)
+                if not is_face and not is_land and not (above in face) and _hue(above) in land:
+                    bare += 1
+                if is_face:
+                    faces += 1
+                    var up := y - 1
+                    while shot.get_pixel(x, up) in face:
+                        up -= 1
+                    if not _hue(shot.get_pixel(x, up)) in land:
+                        hanging += 1
+        _check("water at corner %d: no water pixel right under land without a face (%d)" % [water, bare], bare, 0)
+        _check("water at corner %d: every face hangs from land (%d)" % [water, hanging], hanging, 0)
+        _check("water at corner %d: there is a shore to check" % water, faces > 0, true)
+        viewport.queue_free()
+        await process_frame
+    _done()
+
+
+## The flat colour a shaded pixel was drawn from: each channel near its
+## largest counts as full, the rest as none.
+func _hue(colour: Color) -> Color:
+    var top: float = maxf(colour.r, maxf(colour.g, colour.b))
+    if top < 0.2:
+        return Color.BLACK
+    return Color(1.0 if colour.r > top * 0.8 else 0.0, 1.0 if colour.g > top * 0.8 else 0.0, 1.0 if colour.b > top * 0.8 else 0.0)
 
 
 ## Flat colours for a shore test: grass green, deep water grey, the bank face
