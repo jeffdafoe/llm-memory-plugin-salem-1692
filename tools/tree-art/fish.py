@@ -469,8 +469,13 @@ def check(out_dir, names):
                 any(px[x, y][3] > 0 for x in range(FW) for y in (0, FH - 1))
             if edge or frame.getbbox() is None:
                 bad.append(col)
-        ok = ok and not bad
-        print("%-12s %2d frames%s" % (name, FRAMES, "" if not bad else "  <- on the frame edge or empty: %s" % bad))
+        # The seam: the swim one whole loop on (t = 1) is the first frame
+        # again, pixel for pixel, so the loop closes. (The last frame is the
+        # pose just before the first, not a copy of it.)
+        seam = paint_frame(piece, FRAMES).tobytes() == paint_frame(piece, 0).tobytes()
+        ok = ok and not bad and seam
+        print("%-12s %2d frames%s%s" % (name, FRAMES, "" if not bad else "  <- on the frame edge or empty: %s" % bad,
+                                        "" if seam else "  <- the loop does not close"))
     return ok
 
 
