@@ -104,6 +104,13 @@ const STUMPS := {
     "res://assets/trees/axe-stump.png": [32, 32, 1],
     "res://assets/trees/camp-stump.png": [16, 16, 1],
 }
+# migrations/LLM-967k-fish_up.sql (tools/tree-art/fish.py): one row, the
+# swim loop along it. Sheet path -> [frame size, frames].
+const FISH := {
+    "res://assets/trees/shiners.png": [48, 48],
+    "res://assets/trees/perch.png": [48, 48],
+    "res://assets/trees/brook-trout.png": [48, 48],
+}
 # migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
 # storm damage's sheets, each the size its last rect ends at.
 const FALLEN := {
@@ -287,6 +294,13 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %d rows of one %dx%d frame" % [path, size[2], size[0], size[1]],
                 texture.get_width() == size[0] and texture.get_height() == size[2] * size[1])
+    for path in FISH:
+        var texture := load(path) as Texture2D
+        var size: Array = FISH[path]
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is one row of %d frames of %dx%d" % [path, size[1], size[0], size[0]],
+                texture.get_width() == size[0] * size[1] and texture.get_height() == size[0])
     for path in FALLEN:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
