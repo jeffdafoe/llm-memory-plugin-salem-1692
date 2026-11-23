@@ -97,6 +97,17 @@ const alarmKindWorldCommandStalled = "world_command_stalled"
 // budget or the rolling window resets.
 const alarmKindVABudgetExceeded = "va_budget_exceeded"
 
+// alarmKindCommandPanic fires when the world loop has recovered a panic in a
+// command or a post-command delta emit within the last
+// sim.CommandPanicAlarmWindow (LLM-997). Before LLM-997
+// such a panic killed the engine; the LLM-995 divide by zero did it 36 times in
+// a day with nothing on the umbilical to say so. Now the command fails and the
+// engine stays up, which makes a recurring panic quieter still: this alarm is
+// what keeps it loud. It earns its place for the same reason as
+// checkpoint_clamped: a caught panic is proof of a live engine bug, and the
+// command that panicked may have left a change half done in memory.
+const alarmKindCommandPanic = "command_panic"
+
 // worldCommandTimeoutStreakThreshold is how many CONSECUTIVE probe timeouts raise
 // the alarm.
 //
@@ -205,8 +216,46 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 		if a, ok := tickerStaleAlarm(entries, worldCommandVerdict(health, probeStale, isStalled), now); ok {
 			out = append(out, a)
 		}
+		if a, ok := commandPanicAlarm(s.world.CommandPanicHealthSnapshot(), now); ok {
+			out = append(out, a)
+		}
 	}
 	return out
+}
+
+// commandPanicAlarm classifies the world's recovered-panic record: it fires
+// while the most recent caught panic is less than sim.CommandPanicAlarmWindow
+// old, and clears itself after that with no ack.
+//
+// Threshold of one, like checkpoint_clamped: there is no benign panic. Since is
+// the first panic of the current run (stable across reads), Consecutive is the
+// run's count, and LastError is the latest panic with the frame it came from.
+func commandPanicAlarm(h sim.CommandPanicHealthSnapshot, now time.Time) (Alarm, bool) {
+	if h.Count <= 0 || now.Sub(h.LastAt) >= sim.CommandPanicAlarmWindow {
+		return Alarm{}, false
+	}
+	lastErr := h.LastPanic
+	if len(h.LastFrames) > 0 {
+		lastErr += " at " + h.LastFrames[0]
+	}
+	detail := "A WORLD COMMAND PANICKED: the engine caught " + strconv.Itoa(h.Count) + " panic(s) in the world loop"
+	if h.Count > 1 {
+		detail += " since " + humanizeSince(now.Sub(h.FirstAt)) + " ago"
+	}
+	detail += ", the latest " + humanizeSince(now.Sub(h.LastAt)) + " ago: " + h.LastPanic
+	if len(h.LastFrames) > 0 {
+		detail += " at " + strings.Join(h.LastFrames, " < ")
+	}
+	detail += ". The engine stayed up and failed that work, but it may have changed part of the world " +
+		"before it stopped (coins moved and goods not), and nothing rolled that back. Check the actors it touched and " +
+		"fix the code path. The full stack is in the engine log. This alarm clears an hour after the last panic."
+	return Alarm{
+		Kind:        alarmKindCommandPanic,
+		Since:       h.FirstAt,
+		Consecutive: h.Count,
+		LastError:   lastErr,
+		Detail:      detail,
+	}, true
 }
 
 // worldVerdict is what the liveness probe currently knows about the world command

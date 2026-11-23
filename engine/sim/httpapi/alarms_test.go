@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
 // alarms_test.go — the alarm evaluator (threshold classification) and the
@@ -1017,5 +1019,106 @@ func TestWorldCommandVerdict(t *testing.T) {
 		if got := worldCommandVerdict(tc.h, tc.probeStale, tc.isStalled); got != tc.want {
 			t.Errorf("%s: verdict = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// --- command_panic (LLM-997) ---
+
+func panicHealth(count int, first, last time.Time) sim.CommandPanicHealthSnapshot {
+	return sim.CommandPanicHealthSnapshot{
+		Count:      count,
+		FirstAt:    first,
+		LastAt:     last,
+		LastPanic:  "runtime error: integer divide by zero",
+		LastFrames: []string{"sim.payOfferShortfall (pay_with_item_commands.go:2746)", "sim.PayWithItem.func1 (pay_with_item_commands.go:310)"},
+	}
+}
+
+func TestCommandPanicAlarm_SilentWhenNoPanic(t *testing.T) {
+	if a, ok := commandPanicAlarm(sim.CommandPanicHealthSnapshot{}, time.Now().UTC()); ok {
+		t.Errorf("alarm fired with no recorded panic: %+v", a)
+	}
+}
+
+func TestCommandPanicAlarm_FiresOnOnePanicAndNamesTheFrame(t *testing.T) {
+	now := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	at := now.Add(-2 * time.Minute)
+	a, ok := commandPanicAlarm(panicHealth(1, at, at), now)
+	if !ok {
+		t.Fatal("no alarm for a panic two minutes ago")
+	}
+	if a.Kind != alarmKindCommandPanic {
+		t.Errorf("kind = %q", a.Kind)
+	}
+	if !a.Since.Equal(at) || a.Consecutive != 1 {
+		t.Errorf("since/consecutive = %v/%d, want %v/1", a.Since, a.Consecutive, at)
+	}
+	if a.LastError != "runtime error: integer divide by zero at sim.payOfferShortfall (pay_with_item_commands.go:2746)" {
+		t.Errorf("last_error = %q", a.LastError)
+	}
+	for _, want := range []string{"A WORLD COMMAND PANICKED", "caught 1 panic(s)", "2 minutes ago", "sim.payOfferShortfall (pay_with_item_commands.go:2746) < sim.PayWithItem.func1", "may have changed part of the world"} {
+		if !strings.Contains(a.Detail, want) {
+			t.Errorf("detail missing %q: %s", want, a.Detail)
+		}
+	}
+	if strings.Contains(a.Detail, " since ") {
+		t.Errorf("a single panic should not say since when the run began: %s", a.Detail)
+	}
+}
+
+func TestCommandPanicAlarm_SinceIsTheRunStartAndIsStable(t *testing.T) {
+	now := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	first := now.Add(-40 * time.Minute)
+	h := panicHealth(5, first, now.Add(-time.Minute))
+	a1, _ := commandPanicAlarm(h, now)
+	a2, _ := commandPanicAlarm(h, now.Add(10*time.Second))
+	if !a1.Since.Equal(first) || !a2.Since.Equal(first) {
+		t.Errorf("since = %v then %v, want the run start %v both times", a1.Since, a2.Since, first)
+	}
+	if a1.Consecutive != 5 || !strings.Contains(a1.Detail, "since 40 minutes ago") {
+		t.Errorf("count/detail: %d / %s", a1.Consecutive, a1.Detail)
+	}
+}
+
+func TestCommandPanicAlarm_ClearsAfterTheWindow(t *testing.T) {
+	now := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	last := now.Add(-sim.CommandPanicAlarmWindow)
+	if a, ok := commandPanicAlarm(panicHealth(3, last.Add(-time.Minute), last), now); ok {
+		t.Errorf("alarm still firing a full window after the last panic: %+v", a)
+	}
+	if _, ok := commandPanicAlarm(panicHealth(3, last.Add(-time.Minute), last.Add(time.Second)), now); !ok {
+		t.Error("alarm should still fire a second inside the window")
+	}
+}
+
+// TestEvaluateAlarms_IncludesCommandPanicFromTheWorld drives a real world loop:
+// a panicking command raises command_panic on the next evaluation.
+func TestEvaluateAlarms_IncludesCommandPanicFromTheWorld(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	s := &Server{world: w}
+	fires := func() bool {
+		for _, a := range s.evaluateAlarms(time.Now().UTC()) {
+			if a.Kind == alarmKindCommandPanic {
+				return true
+			}
+		}
+		return false
+	}
+	if fires() {
+		t.Fatal("command_panic fired before any panic")
+	}
+	if _, err := w.Send(sim.Command{Fn: func(_ *sim.World) (any, error) { panic("boom") }}); err == nil {
+		t.Fatal("panicking command returned no error")
+	}
+	if !fires() {
+		t.Error("evaluateAlarms did not include command_panic after a recovered panic")
 	}
 }
