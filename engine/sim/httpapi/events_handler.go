@@ -4,42 +4,32 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// upgrader promotes the GET /api/village/events request to a WebSocket.
+// acceptOptions configure the upgrade of the GET /api/village/events request
+// to a WebSocket.
 //
 // The authorization gate is the ?token= verify in handleEvents, which runs
 // before the upgrade (browsers and Godot can't set WS handshake headers, so the
 // token rides in a query param rather than the Bearer requireAuth middleware the
-// REST routes use). CheckOrigin is defense in depth on top of that.
+// REST routes use). The origin check is defense in depth on top of that.
 //
-// CheckOrigin enforces same-origin for browser clients while permitting native
-// clients. A browser sets the Origin header to the page's origin; the web-export
-// Godot client connects to its own origin (wss from window.location.origin), so
-// same-host passes. A cross-origin website's Origin would NOT match the request
-// Host and is rejected — without this, any site the user visits could open a WS
-// to a locally running engine. Native Godot builds send no Origin header (Origin
-// is a browser concept), so an empty Origin is allowed.
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			return true // native client — no Origin header
-		}
-		u, err := url.Parse(origin)
-		if err != nil {
-			return false
-		}
-		return strings.EqualFold(u.Host, r.Host)
-	},
-}
+// The zero value is the origin policy we want: coder/websocket's Accept allows
+// a request with no Origin header and one whose Origin host matches the request
+// Host (case-insensitive), and refuses any other Origin with 403. A browser sets
+// Origin to the page's origin; the web-export Godot client connects to its own
+// origin (wss from window.location.origin), so same-host passes. A cross-origin
+// website's Origin does NOT match the request Host and is refused — without this,
+// any site the user visits could open a WS to a locally running engine. Native
+// Godot builds send no Origin header (Origin is a browser concept), so they pass.
+// Do not set InsecureSkipVerify or OriginPatterns here. Compression stays off
+// (the default).
+var acceptOptions = &websocket.AcceptOptions{}
 
 // handleEvents authenticates, upgrades the connection to a WebSocket, and
 // registers it with the hub. The token rides in the ?token= query param
@@ -62,9 +52,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if res.User != nil {
 		login = res.User.Username
 	}
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := websocket.Accept(w, r, acceptOptions)
 	if err != nil {
-		// Upgrade has already written an error response to w.
+		// Accept has already written an error response to w.
 		log.Printf("httpapi: WS upgrade: %v", err)
 		return
 	}
@@ -74,20 +64,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// with both register-ready and done-closed picks randomly).
 	select {
 	case <-s.hub.done:
-		_ = conn.Close()
+		_ = conn.CloseNow()
 		return
 	default:
 	}
 	c := &client{
-		hub:   s.hub,
-		conn:  conn,
-		send:  make(chan []byte, clientSendBuffer),
-		token: token, // already verified above
-		login: login,
+		hub:      s.hub,
+		conn:     conn,
+		send:     make(chan []byte, clientSendBuffer),
+		readDone: make(chan struct{}),
+		token:    token, // already verified above
+		login:    login,
 	}
-	// Queue the hello frame before registering so it is the first thing the
-	// write pump sends (the channel is FIFO and has room). Any broadcast that
-	// arrives after registration is queued behind it.
+	// Queue the hello frame before registering so it is the first data frame
+	// the write pump sends (the channel is FIFO and has room). Any broadcast
+	// that arrives after registration is queued behind it. (A pong or close
+	// reply from the read pump can still go out before it.)
 	if hello, err := json.Marshal(helloFrame()); err == nil {
 		c.send <- hello
 	}
@@ -100,6 +92,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	case s.hub.register <- c:
 		go c.writePump()
 		go c.readPump()
+		go c.pingLoop()
 		// Stamp presence immediately on connect (LLM-342). The heartbeat only
 		// re-stamps on its next tick, so a freshly connected or reconnected PC —
 		// whose LastPCSeenAt is nil (never attached this session) or already stale
@@ -121,8 +114,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case <-s.hub.done:
-		_ = conn.Close()
+		_ = conn.CloseNow()
 	case <-r.Context().Done():
-		_ = conn.Close()
+		_ = conn.CloseNow()
 	}
 }

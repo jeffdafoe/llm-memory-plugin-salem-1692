@@ -21,8 +21,8 @@ import (
 // momentary socket blip.
 //
 // When the player closes the tab the socket's close frame drops it at once; a
-// silent loss (sleep, network) is caught within ~pongWait (~60s) via the missed
-// pong. Either way the heartbeat then stops stamping it and the stamp goes stale.
+// silent loss (sleep, network) is caught within ~pingPeriod + writeWait (~64s)
+// via the missed pong. Either way the heartbeat then stops stamping it and the stamp goes stale.
 // Without cleanup a stale (ghost) PC stays pinned in whatever
 // conversational huddle it was in, and co-located LLM-NPCs keep getting warranted
 // to greet a player who isn't actually there — a real prod cost bug (2026-05-11/12).
@@ -267,11 +267,12 @@ func StampConnectedPCsSeen(connectedLogins map[string]struct{}) Command {
 // PCPresenceHeartbeatInterval (LLM-342). Started only when the WS surface exists
 // (the hub is the ConnectedPCSource). Cleanup after the client goes away: a clean
 // tab close sends a close frame, so the read pump drops the login at once; a
-// silent drop (sleep, network loss) is caught within ~pongWait (~60s) via the
-// missed pong, and the heartbeat keeps stamping until then. Once the login is
-// gone the stamps stop and the existing SweepStalePCPresence reclaims the ghost
-// within staleAfter + one sweep interval — so worst-case cleanup for a silent
-// drop is ~pongWait + staleAfter + PCPresenceSweepInterval (~115s). That is
+// silent drop (sleep, network loss) is caught within ~pingPeriod + writeWait
+// (~64s) via the missed pong, and the heartbeat keeps stamping until then. Once
+// the login is gone the stamps stop and the existing SweepStalePCPresence
+// reclaims the ghost within staleAfter + one sweep interval — so worst-case
+// cleanup for a silent drop is ~64s + staleAfter + PCPresenceSweepInterval
+// (~120s). That is
 // slower than the old poll on a silent drop, but the ticket accepts the WS blind
 // spots; not ejecting a still-present player is the point. The ZBBS-WORK-326 cost
 // guard is preserved, now keyed on the socket instead of the render-loop poll.

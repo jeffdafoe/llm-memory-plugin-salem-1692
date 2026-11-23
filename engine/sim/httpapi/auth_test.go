@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 )
 
 // denyAuth rejects every token — for the unauthenticated-WS-rejection test.
@@ -166,9 +166,9 @@ func TestEventsRejectsUnauthenticated(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/village/events?token=whatever"
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, resp, err := websocket.Dial(context.Background(), wsURL, nil)
 	if err == nil {
-		_ = conn.Close()
+		_ = conn.CloseNow()
 		t.Fatal("expected the WS dial to fail for an unauthenticated client")
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {

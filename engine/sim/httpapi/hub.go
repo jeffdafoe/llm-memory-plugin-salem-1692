@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -66,7 +67,7 @@ const (
 // blocking I/O on the world goroutine). Run, in its own goroutine, owns the
 // client set (so no mutex guards it) and forwards each frame to every client's
 // buffered send channel. Per-client write pumps (client.writePump) are the only
-// goroutines that write to a socket, as gorilla requires.
+// goroutines that write data frames to a socket.
 type Hub struct {
 	translate  EventTranslator
 	broadcast  chan hubFrame
@@ -98,6 +99,12 @@ type Hub struct {
 	// goroutine owns exclusively; only this cross-goroutine view needs the lock.
 	mu              sync.Mutex
 	connectedLogins map[string]int
+
+	// writeWait and pingPeriod are the per-client keepalive timings (see the
+	// constants of the same names in client.go). NewHub sets the defaults;
+	// tests shorten them before any client connects. Read-only after that.
+	writeWait  time.Duration
+	pingPeriod time.Duration
 }
 
 // NewHub builds a hub that translates events via translate. Panics on a nil
@@ -113,6 +120,8 @@ func NewHub(translate EventTranslator) *Hub {
 		unregister:      make(chan *client, regBuffer),
 		done:            make(chan struct{}),
 		connectedLogins: make(map[string]int),
+		writeWait:       writeWait,
+		pingPeriod:      pingPeriod,
 	}
 }
 
