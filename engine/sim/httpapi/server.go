@@ -30,6 +30,9 @@ type Server struct {
 	chat             *chatlog.RingSink
 	checkpointHealth *sim.CheckpointHealth
 	vaBudgetHealth   *sim.VABudgetHealth
+	// engineCrash is the crash the previous engine process left behind, read
+	// once at boot (LLM-999). Nil when there was none or capture is disabled.
+	engineCrash      *sim.EngineCrash
 	controlEnabled   bool
 	errorLog         *errorRing
 	clientLog        *clientErrorRing
@@ -260,6 +263,14 @@ func (s *Server) SetCheckpointHealth(h *sim.CheckpointHealth) {
 // SetCheckpointHealth — call before Handler, never concurrently with serving.
 func (s *Server) SetVABudgetHealth(h *sim.VABudgetHealth) {
 	s.vaBudgetHealth = h
+}
+
+// SetEngineCrash attaches the crash the previous engine process left in the
+// crash file (LLM-999), so the umbilical raises the engine_crashed alarm for
+// sim.EngineCrashAlarmWindow after this boot. Nil means no crash; the alarm
+// never fires. Set once at startup, before the server serves.
+func (s *Server) SetEngineCrash(c *sim.EngineCrash) {
+	s.engineCrash = c
 }
 
 // SetControlEnabled arms the world-MUTATING umbilical control routes
