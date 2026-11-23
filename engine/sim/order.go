@@ -449,10 +449,14 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 		// LLM-357: a partial-payment commission leaves a durable memory beat on
 		// both sides when it expires — the forfeit (buyer never came) or refund
 		// (seller never made it) outcome, the reputation seed. Full-prepay expiry
-		// stays silent as before this ticket.
+		// writes no relationship fact.
 		if o.Deposit > 0 && o.Deposit < o.Amount {
 			recordExpiredDepositFacts(w, o, forfeited, at)
 		}
+		// LLM-993: every non-lodging expiry, deposit or full prepay, tells both
+		// parties on their next turn and leaves a durable order_lapsed row —
+		// the settlement moved coins with neither turn in flight.
+		narrateLapsedOrder(w, o, forfeited, at)
 		w.emit(&OrderExpired{
 			OrderID:     o.ID,
 			BuyerID:     o.BuyerID,

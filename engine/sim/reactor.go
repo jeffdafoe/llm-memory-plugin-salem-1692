@@ -90,6 +90,7 @@ const (
 	WarrantKindLaborSettled       WarrantKind = "labor_settled"        // a finished job's wage transferred at the completion sweep — both parties perceive the payment as squared (LLM-498)
 	WarrantKindCarterBought       WarrantKind = "carter_bought"        // a carter's mechanical buy leg took goods off the holder's shelf for coin — the holder perceives the sale as done (LLM-681)
 	WarrantKindCourtRuled         WarrantKind = "court_ruled"          // the magistrates ruled on a matter the recipient is party to or brought — the matter reads as closed (LLM-695)
+	WarrantKindOrderLapsed        WarrantKind = "order_lapsed"         // a Ready order expired undelivered — each party reads the refund or the forfeited deposit (LLM-993)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.

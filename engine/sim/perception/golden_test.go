@@ -4104,6 +4104,26 @@ var perceptionScenarios = []perceptionScenario{
 		build: holderCarterBoughtBeat,
 	},
 	{
+		name: "seller_order_lapsed_into_debt",
+		summary: "LLM-993 seller side of a lapsed commission: Ezekiel Crane took Elizabeth Ellis's 20-coin deposit on 5 shovels, " +
+			"spent it on iron, and the order ran out of time overnight. The sweep refunded her out of his purse, leaving him 12 coins " +
+			"in debt. Live 2026-11-22 he woke at -31 coins with no line saying why. The golden pins the order_lapsed line (refund, " +
+			"deposit wording, debt clause) and the purse said as a debt in words, not a bare negative number.",
+		build: sellerOrderLapsedIntoDebt,
+	},
+	{
+		name: "buyer_order_lapsed_refund",
+		summary: "LLM-993 buyer side of the same lapse: Elizabeth Ellis reads that Ezekiel Crane never handed over the 5 shovels " +
+			"in time and her 20-coin deposit came back, so a fatter purse is explained and she knows the shovels are not coming.",
+		build: buyerOrderLapsedRefund,
+	},
+	{
+		name: "seller_order_lapsed_forfeit",
+		summary: "LLM-993 buyer-fault twin: Ezekiel forged the 5 shovels but Elizabeth never came for them, so he keeps her " +
+			"20-coin deposit and the shovels are back on his shelf to sell. The golden pins the forfeit wording and an ordinary purse line.",
+		build: sellerOrderLapsedForfeit,
+	},
+	{
 		name: "worker_labor_settled_closeout_both_signals",
 		summary: "LLM-498 x LLM-190 combination: a job that ran up to the employer's closing time settles with BOTH worker-" +
 			"side signals in one tick — the keeper's spoken close-out (an observed social event, the LLM-190 Spoke riding the " +
@@ -9199,7 +9219,9 @@ func TestEmptyPurseCannotPayCueTracksActorCoins(t *testing.T) {
 		// line contradicts the satiation barter cue. Both flags are recomputed from raw
 		// snapshot state (Coins + holdsBarterableGoods, the SAME predicate the buy-cue
 		// gate reads), not the rendered text — so this asserts the cue tracks the actor.
-		empty := actor.Coins == 0
+		// A purse below zero (LLM-993: a lapsed order refunded out of coins
+		// already spent) is as empty as zero for paying.
+		empty := actor.Coins <= 0
 		hasGoods := holdsBarterableGoods(snap, actor)
 		wantCannotPay := empty && !hasGoods
 		wantBarter := empty && hasGoods
@@ -21015,5 +21037,124 @@ func TestHeldWorkerQuoteFixtureIsHeld(t *testing.T) {
 	// (code_review: the take-instruction's barter fallback did).
 	if strings.Contains(prompt, "offer_trade") {
 		t.Errorf("prompt names offer_trade, a tool a held worker does not have; got:\n%s", prompt)
+	}
+}
+
+// orderLapsedBeatSnapshot is the LLM-993 fixture: the morning after a commission
+// lapsed at the sweep while both parties slept. Ezekiel Crane took Elizabeth
+// Ellis's 20-coin deposit on 5 shovels (35 in all) and spent it on iron; the
+// order ran out of time before he could forge them.
+//   - refund (forfeited=false): the deposit went back to Elizabeth out of his
+//     purse, leaving him 12 coins in debt (purse -12). The subject is the
+//     seller (Ezekiel) or the buyer (Elizabeth).
+//   - forfeit (forfeited=true): he had forged the shovels but she never came for
+//     them, so he keeps the deposit (purse 20) and the shovels are on his shelf.
+//     The subject is the seller.
+//
+// Each subject carries its own side's OrderLapsedWarrantReason, pre-rendered
+// through the REAL builders, so the goldens stay in lockstep with production.
+func orderLapsedBeatSnapshot(subjectIsSeller, forfeited bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	const (
+		ezekielID   = sim.ActorID("ezekiel")
+		elizabethID = sim.ActorID("elizabeth")
+		forge       = sim.StructureID("forge")
+		farm        = sim.StructureID("farm")
+	)
+	published := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	sellerCoins := -12
+	sellerInv := map[sim.ItemKind]int{"nail": 4}
+	if forfeited {
+		sellerCoins = 20
+		sellerInv = map[sim.ItemKind]int{"nail": 4, "shovel": 5}
+	}
+	ezekiel := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		DisplayName:       "Ezekiel Crane",
+		Role:              "blacksmith",
+		State:             sim.StateIdle,
+		InsideStructureID: forge,
+		Coins:             sellerCoins,
+		Inventory:         sellerInv,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Elizabeth Ellis": {}},
+	}
+	elizabeth := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Elizabeth Ellis",
+		Role:              "dairykeeper",
+		State:             sim.StateIdle,
+		InsideStructureID: farm,
+		Coins:             126,
+		Needs:             map[sim.NeedKey]int{},
+		Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+	}
+	kinds := foodDrinkCatalog()
+	kinds["shovel"] = &sim.ItemKindDef{Name: "shovel", DisplayLabel: "Shovel", DisplayLabelSingular: "shovel", DisplayLabelPlural: "shovels", Category: sim.ItemCategoryMaterial}
+	kinds["nail"] = &sim.ItemKindDef{Name: "nail", DisplayLabel: "Nail", DisplayLabelSingular: "nail", DisplayLabelPlural: "nails", Category: sim.ItemCategoryMaterial}
+	snap := &sim.Snapshot{
+		PublishedAt:    published,
+		NeedThresholds: sim.NeedThresholds{},
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{ezekielID: ezekiel, elizabethID: elizabeth},
+		Structures: map[sim.StructureID]*sim.Structure{
+			forge: plainStructure(forge, "Blacksmith"),
+			farm:  plainStructure(farm, "Ellis Farm"),
+		},
+		ItemKinds: kinds,
+	}
+	if subjectIsSeller {
+		debt := 0
+		if !forfeited {
+			debt = 12
+		}
+		return snap, ezekielID, []sim.WarrantMeta{{
+			TriggerActorID: elizabethID,
+			Reason: sim.OrderLapsedWarrantReason{
+				OrderID:       7,
+				Counterparty:  elizabethID,
+				NarrationText: sim.OrderLapsedSellerNarration("Elizabeth Ellis", "5 shovels", 20, true, forfeited, debt),
+			},
+			SourceEventID: 1,
+		}}
+	}
+	return snap, elizabethID, []sim.WarrantMeta{{
+		TriggerActorID: ezekielID,
+		Reason: sim.OrderLapsedWarrantReason{
+			OrderID:       7,
+			Counterparty:  ezekielID,
+			NarrationText: sim.OrderLapsedBuyerNarration("Ezekiel Crane", "5 shovels", 20, true, forfeited),
+		},
+		SourceEventID: 1,
+	}}
+}
+
+func sellerOrderLapsedIntoDebt() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return orderLapsedBeatSnapshot(true, false)
+}
+
+func buyerOrderLapsedRefund() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return orderLapsedBeatSnapshot(false, false)
+}
+
+func sellerOrderLapsedForfeit() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return orderLapsedBeatSnapshot(true, true)
+}
+
+// TestGoldensPurseNeverRendersBareNegative is the LLM-993 cross-scenario
+// invariant: a purse below zero (a lapsed order's refund the seller had
+// already spent) renders as a debt in words, never as "Coins in your purse:
+// -12." — a bare negative number tells a weak model nothing about why.
+func TestGoldensPurseNeverRendersBareNegative(t *testing.T) {
+	for _, sc := range perceptionScenarios {
+		sc := sc
+		t.Run(sc.name, func(t *testing.T) {
+			prompt := renderScenario(sc)
+			if strings.Contains(prompt, "Coins in your purse: -") {
+				t.Errorf("scenario %q renders a bare negative purse; a debt must be said in words (LLM-993)", sc.name)
+			}
+			snap, actorID, _ := sc.build()
+			if a := snap.Actors[actorID]; a != nil && a.Coins < 0 && a.VisitorState == nil && !strings.Contains(prompt, "coins in debt") {
+				t.Errorf("scenario %q: subject purse %d but no debt line rendered", sc.name, a.Coins)
+			}
+		})
 	}
 }
