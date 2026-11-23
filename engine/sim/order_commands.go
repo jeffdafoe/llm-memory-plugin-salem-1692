@@ -759,9 +759,18 @@ func orderDeliveredFactText(counterpartyName string, item ItemKind, qty, consume
 // re-shelved the goods) or a refund (seller-fault — the seller never made it, so
 // the deposit went back). The reputation seed both keepers carry forward. Only
 // called for a genuine partial (0 < Deposit < Amount); full-prepay expiry stays
-// as silent as it was before LLM-357. MUST run on the world goroutine.
-func recordExpiredDepositFacts(w *World, o *Order, forfeited bool, at time.Time) {
+// as silent as it was before LLM-357. settled is what the settlement did: on a
+// refund, the coins that actually went back (LLM-995: less than the deposit
+// when the seller had spent it). MUST run on the world goroutine.
+func recordExpiredDepositFacts(w *World, o *Order, settled expirySettlement, at time.Time) {
 	if o == nil {
+		return
+	}
+	forfeited, refunded := settled.Forfeited, settled.Refunded
+	// A blocked refund (the buyer gone, or a credit that would overflow) moved no
+	// coin, so there is no refund to remember — the same rule narrateLapsedOrder
+	// keeps.
+	if !forfeited && settled.RefundBlocked {
 		return
 	}
 	buyerName, sellerName := string(o.BuyerID), string(o.SellerID)
@@ -788,8 +797,17 @@ func recordExpiredDepositFacts(w *World, o *Order, forfeited bool, at time.Time)
 		buyerFact = fmt.Sprintf("I never collected the %s I commissioned from %s, and forfeited my %d-coin deposit.", itemDesc, sellerName, deposit)
 	} else {
 		sellerKind, buyerKind = InteractionRefundedDeposit, InteractionDepositRefunded
-		sellerFact = fmt.Sprintf("I never made the %s %s commissioned, so their %d-coin deposit went back to them.", itemDesc, buyerName, deposit)
-		buyerFact = fmt.Sprintf("%s never made the %s I commissioned, and my %d-coin deposit came back.", sellerName, itemDesc, deposit)
+		switch {
+		case refunded >= deposit:
+			sellerFact = fmt.Sprintf("I never made the %s %s commissioned, so their %d-coin deposit went back to them.", itemDesc, buyerName, deposit)
+			buyerFact = fmt.Sprintf("%s never made the %s I commissioned, and my %d-coin deposit came back.", sellerName, itemDesc, deposit)
+		case refunded > 0:
+			sellerFact = fmt.Sprintf("I never made the %s %s commissioned. I had already spent their %d-coin deposit, so I could give back only %d.", itemDesc, buyerName, deposit, refunded)
+			buyerFact = fmt.Sprintf("%s never made the %s I commissioned, and only %d of my %d-coin deposit came back.", sellerName, itemDesc, refunded, deposit)
+		default:
+			sellerFact = fmt.Sprintf("I never made the %s %s commissioned. I had already spent their %d-coin deposit and had nothing to give back.", itemDesc, buyerName, deposit)
+			buyerFact = fmt.Sprintf("%s never made the %s I commissioned, and none of my %d-coin deposit came back.", sellerName, itemDesc, deposit)
+		}
 	}
 	if _, err := RecordInteraction(o.SellerID, o.BuyerID, sellerKind, sellerFact, at).Fn(w); err != nil {
 		log.Printf("sim.recordExpiredDepositFacts: seller->buyer order %d: %v", o.ID, err)

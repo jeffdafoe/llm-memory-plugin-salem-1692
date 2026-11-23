@@ -55,6 +55,45 @@ func TestPayWithItem_Barter_PureGoodsMints(t *testing.T) {
 	}
 }
 
+// TestPayWithItem_Barter_NegativePurseGoodsOnlyDoesNotPanic — LLM-995. A
+// goods-only offer (amount 0) from a purse below zero used to fail
+// buyerCanAfford and then divide by that 0 in payOfferShortfall, panicking the
+// world goroutine (36 engine restarts, 2026-11-22/23). An offer that asks for no
+// coin has nothing to afford: it mints, and the seller can accept the swap.
+func TestPayWithItem_Barter_NegativePurseGoodsOnlyDoesNotPanic(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: -3, inventory: map[sim.ItemKind]int{"bread": 10}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
+		[]sim.PayItemInput{{Item: "bread", Qty: 5}}, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem (goods only, purse -3): %v", err)
+	}
+	out := res.(sim.PayWithItemResult)
+	if out.State != sim.PayLedgerStatePending {
+		t.Fatalf("state = %q, want pending", out.State)
+	}
+	if _, err := w.Send(sim.AcceptPay("bob", out.LedgerID, at)); err != nil {
+		t.Fatalf("AcceptPay (goods only, purse -3): %v", err)
+	}
+	entry := readPayLedger(t, w)[out.LedgerID]
+	if entry.State != sim.PayLedgerStateAccepted {
+		t.Fatalf("ledger.State = %q (%+v), want accepted", entry.State, entry)
+	}
+	alice := readHoldings(t, w, "alice")
+	bob := readHoldings(t, w, "bob")
+	if alice.inv["bread"] != 5 || bob.inv["bread"] != 5 || bob.inv["stew"] != 4 {
+		t.Errorf("after the swap alice = %+v, bob = %+v; want alice bread 5, bob bread 5 and stew 4", alice.inv, bob.inv)
+	}
+	if alice.Coins != -3 {
+		t.Errorf("alice.Coins = %d, want -3 (a goods-only swap moves no coin)", alice.Coins)
+	}
+}
+
 // TestPayWithItem_Barter_EmptyOfferRejects — amount 0 AND no pay_items is
 // the free-goods hole (ZBBS-HOME-391). It must reject at mint.
 func TestPayWithItem_Barter_EmptyOfferRejects(t *testing.T) {

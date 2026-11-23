@@ -2669,6 +2669,13 @@ func withdrawCrossingOffers(
 // the failed_insufficient_funds terminal. Sharing the action would force
 // one of those behaviors onto the other.
 func buyerCanAfford(buyer *Actor, amount int) bool {
+	// A trade that asks for no coin (a goods-only barter) has nothing to afford,
+	// whatever the purse holds. Without this a purse below zero failed the check
+	// at amount 0, and payOfferShortfall then divided by that 0 and panicked the
+	// world goroutine (LLM-995: 36 engine restarts in two days).
+	if amount <= 0 {
+		return true
+	}
 	return buyer.SpendableCoins() >= amount
 }
 
@@ -2736,7 +2743,7 @@ func payOfferShortfall(w *World, buyer *Actor, amount, qty int, payItems []ItemK
 		// (ZBBS-HOME-459). The old "offer fewer coins" steer pointed at the wrong
 		// lever: the buyer dropped coins, kept the quantity, and re-offered
 		// underpriced (the John Ellis 25-meat-on-248-coins case). amount>=1 here
-		// (amount==0 can't be unaffordable) and qty>=1 (validated upstream).
+		// (buyerCanAfford passes any amount <= 0) and qty>=1 (validated upstream).
 		// Multiply before dividing to keep the floor honest; int64 guards the
 		// product against overflow on a 32-bit int build, clamped back into int
 		// range (code_review). SpendableCoins, not the raw wallet (LLM-644): the

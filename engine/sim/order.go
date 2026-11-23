@@ -489,18 +489,18 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 		// (finalizeOrderTerminal) skips the eager durable write-through for
 		// Expired so this settlement + the terminal status persist together at
 		// the next checkpoint. LLM-357 / ZBBS-HOME-403.
-		forfeited := settleExpiredOrder(w, o)
+		settled := settleExpiredOrder(w, o)
 		// LLM-357: a partial-payment commission leaves a durable memory beat on
 		// both sides when it expires — the forfeit (buyer never came) or refund
 		// (seller never made it) outcome, the reputation seed. Full-prepay expiry
 		// writes no relationship fact.
 		if o.Deposit > 0 && o.Deposit < o.Amount {
-			recordExpiredDepositFacts(w, o, forfeited, at)
+			recordExpiredDepositFacts(w, o, settled, at)
 		}
 		// LLM-993: every non-lodging expiry, deposit or full prepay, tells both
 		// parties on their next turn and leaves a durable order_lapsed row —
 		// the settlement moved coins with neither turn in flight.
-		narrateLapsedOrder(w, o, forfeited, at)
+		narrateLapsedOrder(w, o, settled, at)
 		w.emit(&OrderExpired{
 			OrderID:     o.ID,
 			BuyerID:     o.BuyerID,
@@ -509,7 +509,7 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 			Qty:         o.Qty,
 			ConsumerIDs: append([]ActorID(nil), o.ConsumerIDs...),
 			LedgerID:    o.LedgerID,
-			Forfeited:   forfeited,
+			Forfeited:   settled.Forfeited,
 			At:          at,
 		})
 	}
@@ -596,81 +596,102 @@ func sellerHoldsOrderGoods(w *World, o *Order) bool {
 // holds — a fully-paid buyer who missed the pickup window is not punished; only
 // a small at-risk deposit is forfeitable. No goods ever move here. MUST run on
 // the world goroutine.
-func settleExpiredOrder(w *World, o *Order) (forfeited bool) {
+func settleExpiredOrder(w *World, o *Order) expirySettlement {
 	if o == nil {
-		return false
+		return expirySettlement{RefundBlocked: true}
 	}
 	if orderBalanceDue(o) > 0 && sellerHoldsOrderGoods(w, o) {
 		log.Printf("sim/order: expired order %d forfeited — buyer %q never collected the forged %s; seller %q keeps the %d-coin deposit, goods return to stock",
 			o.ID, o.BuyerID, o.Item, o.SellerID, orderAmountPaidAtAccept(o))
-		return true
+		return expirySettlement{Forfeited: true}
 	}
-	refundOrderPayment(w, o, orderAmountPaidAtAccept(o))
-	return false
+	refunded, blocked := refundOrderPayment(w, o, orderAmountPaidAtAccept(o))
+	return expirySettlement{Refunded: refunded, RefundBlocked: blocked}
 }
 
-// refundOrderPayment returns `amount` coins to the buyer for an order that
-// expired undelivered — the deferred-path counterpart to ZBBS-HOME-398's
+// expirySettlement is what settleExpiredOrder did, for the narration and the
+// deposit facts that follow it. On a refund, Refunded is the coins the buyer
+// actually got back (less than paid when the seller had spent it, LLM-995).
+// RefundBlocked means the refund could not be paid at all for a reason other
+// than the seller's purse (the buyer has left the world, or the credit would
+// overflow), so no coin moved and there is nothing true to tell either party.
+type expirySettlement struct {
+	Forfeited     bool
+	Refunded      int
+	RefundBlocked bool
+}
+
+// refundOrderPayment returns up to `amount` coins to the buyer for an order
+// that expired undelivered — the deferred-path counterpart to ZBBS-HOME-398's
 // immediate handover. It reverses the coin leg the accept committed (buyer +=
-// amount, seller -= amount); goods never moved on a deferred order, so only
+// refund, seller -= refund); goods never moved on a deferred order, so only
 // coins need reversing. `amount` is the coins actually charged at accept
 // (orderAmountPaidAtAccept) — the deposit for a partial-payment commission, the
-// full price otherwise.
+// full price otherwise. Returns the coins the buyer actually got back, and
+// blocked = true when nothing could move for a reason other than the seller's
+// purse (see the edges below).
 //
-// Conserves the closed economy's coin supply: the seller is debited exactly
-// what the buyer is credited, even if that briefly pushes the seller negative
-// (a debt they earn back) — making the buyer whole is the point of the refund.
+// A wallet never goes below zero (LLM-995, Jeff 2026-11-23). A seller who has
+// already spent the payment hands back what his purse holds, down to 0, and
+// the buyer gets exactly that — the short refund is the buyer's loss, and the
+// lapse narration (order_lapsed.go) says so to both. The seller is debited
+// exactly what the buyer is credited, so the coin supply is conserved.
 //
 // Every deferred order is coin-only (a barter leg can't reach here — the intake
-// rejects a goods-paid lodging booking or commission), so the reversal is always
-// fully reversible.
+// rejects a goods-paid lodging booking or commission), so coins are the only
+// leg to reverse.
 //
-// Best-effort per leg so the make-whole guarantee never hinges on the seller:
-//   - Credit the buyer (the leg that matters). Skipped only on the pathological
-//     overflow — a buyer already at ~MaxInt coins isn't being robbed — or when
-//     the buyer has left the world (a visitor who despawned: no one to refund).
-//   - Debit the seller (the conservation leg). Skipped on the symmetric
-//     underflow or an absent seller — a credited-buyer / absent-seller refund
-//     is a touch of inflation, which beats failing to make the buyer whole.
+// The edges, all logged:
+//   - The buyer has left the world (a visitor who despawned): no one to
+//     refund, nothing moves (blocked).
+//   - The seller-limited refund would overflow the buyer's coins: nothing
+//     moves (blocked).
+//   - The seller has left the world: the buyer gets the full amount with no
+//     debit — a touch of inflation, which beats a buyer losing the whole
+//     payment to an actor who is gone.
+//   - The seller's purse is already below zero (state from before LLM-995):
+//     nothing goes back and his purse is left as it is, not made worse.
 //
-// So a real buyer is ALWAYS refunded; only the pathological / actor-gone edges
-// fall back, all logged. No-op when amount <= 0. MUST run on the world goroutine.
-func refundOrderPayment(w *World, o *Order, amount int) {
+// No-op (returns 0, blocked) when amount <= 0. MUST run on the world goroutine.
+func refundOrderPayment(w *World, o *Order, amount int) (refunded int, blocked bool) {
 	if o == nil || amount <= 0 {
-		return
+		return 0, true
 	}
 	buyer := w.Actors[o.BuyerID]
 	seller := w.Actors[o.SellerID]
-	credited := false
-	switch {
-	case buyer == nil:
+	if buyer == nil {
 		log.Printf("sim/order: expired order %d buyer %q is gone — no one to refund", o.ID, o.BuyerID)
-	case buyer.Coins > math.MaxInt-amount:
+		return 0, true
+	}
+	refund := amount
+	if seller != nil {
+		refund = min(amount, max(seller.Coins, 0))
+	}
+	if refund < amount && seller != nil {
+		log.Printf("sim/order: expired order %d — seller %q holds only %d of the %d coins owed back to buyer %q; refunding %d",
+			o.ID, o.SellerID, seller.Coins, amount, o.BuyerID, refund)
+	}
+	if refund == 0 {
+		return 0, false
+	}
+	if buyer.Coins > math.MaxInt-refund {
 		log.Printf("sim/order: refund of expired order %d would overflow buyer %q (have %d, +%d) — buyer not credited",
-			o.ID, o.BuyerID, buyer.Coins, amount)
-	default:
-		buyer.Coins += amount
-		// LLM-644: a deposit drawn from a visitor's trip budget comes back to
-		// it with the refund — the buy it funded never happened.
-		refundVisitorSpend(buyer, amount)
-		credited = true
-		log.Printf("sim/order: refunded %d coins to buyer %q for expired order %d", amount, o.BuyerID, o.ID)
+			o.ID, o.BuyerID, buyer.Coins, refund)
+		return 0, true
 	}
-	// Only debit the seller when the buyer was actually credited — a debit
-	// without a matching credit would destroy coins and penalize the seller for
-	// a refund that didn't happen.
-	if !credited {
-		return
+	buyer.Coins += refund
+	// LLM-644: a deposit drawn from a visitor's trip budget comes back to it
+	// with the refund — the buy it funded never happened. Only the coins that
+	// actually came back restore the budget.
+	refundVisitorSpend(buyer, refund)
+	if seller == nil {
+		log.Printf("sim/order: expired order %d seller %q is gone — buyer credited %d, debit skipped (slight inflation)", o.ID, o.SellerID, refund)
+		return refund, false
 	}
-	switch {
-	case seller == nil:
-		log.Printf("sim/order: expired order %d seller %q is gone — buyer credited, debit skipped (slight inflation)", o.ID, o.SellerID)
-	case seller.Coins < math.MinInt+amount:
-		log.Printf("sim/order: refund of expired order %d would underflow seller %q (have %d, -%d) — seller not debited",
-			o.ID, o.SellerID, seller.Coins, amount)
-	default:
-		seller.Coins -= amount
-	}
+	// refund <= seller.Coins here, so the debit cannot take the purse below 0.
+	seller.Coins -= refund
+	log.Printf("sim/order: refunded %d coins to buyer %q for expired order %d", refund, o.BuyerID, o.ID)
+	return refund, false
 }
 
 // outstandingReadyOrderQty returns the total quantity of `item` that
