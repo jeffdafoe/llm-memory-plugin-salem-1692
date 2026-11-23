@@ -1891,14 +1891,13 @@ func NewWorld(repo Repository) *World {
 // then-prune). Passing nil clears the sink and restores legacy no-prune
 // behavior. Safe to call before Run, or from inside a Command.Fn.
 //
-// Production startup installs it AFTER pg.LoadWorld on purpose (LLM-994;
-// see the call in cmd/engine/main.go). The LoadWorld-time
-// restartExpirePendingOrders pass then takes the no-prune path: an order
-// whose ExpiresAt elapsed during downtime stays in w.Orders as Expired, and
-// the checkpoint saves that state in the same transaction as the buyer's
-// refunded purse. A write-through at load would mark the order Expired in
-// pg before the refund is saved, so a crash before the first checkpoint
-// would lose the refund.
+// The sink only receives non-Expired terminal transitions (Delivered).
+// finalizeOrderTerminal skips the write-through for Expired, so the
+// checkpoint saves the order and the buyer's refunded purse in one
+// transaction (ZBBS-HOME-403). So it does not matter whether the sink is
+// installed before or after pg.LoadWorld: the LoadWorld-time
+// restartExpirePendingOrders pass only expires orders. Production startup
+// installs it after load (cmd/engine/main.go).
 func (w *World) SetTerminalOrderSink(s TerminalOrderSink) {
 	w.terminalOrderSink = s
 }

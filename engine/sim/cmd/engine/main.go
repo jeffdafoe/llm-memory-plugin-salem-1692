@@ -288,14 +288,13 @@ func main() {
 	// reconciles pg, so it's bloat, not data loss). repo.Orders satisfies the narrow
 	// TerminalOrderSink via its WriteTerminal method.
 	//
-	// Installed AFTER load on purpose. pg.LoadWorld does run the
-	// restartExpirePendingOrders pass (inside FinalizeLoad), so an order that
-	// lapsed while the engine was down takes the no-prune path and stays in
-	// w.Orders. That is the safer side: its refund lives in the buyer's purse,
-	// which only the checkpoint saves, and the checkpoint saves the order's
-	// Expired state in the same transaction. A write-through at boot would mark
-	// the order Expired in pg at once, and a crash before the first checkpoint
-	// would then lose the refund while pg says the order is settled.
+	// Installing it after load changes nothing for the boot pass. pg.LoadWorld
+	// runs restartExpirePendingOrders inside FinalizeLoad, but that pass only
+	// expires orders, and finalizeOrderTerminal never writes an Expired order
+	// through the sink (ZBBS-HOME-403): the refund lives in the buyer's purse,
+	// which only the checkpoint saves, so the checkpoint saves the Expired
+	// order in the same transaction. An expired order therefore stays in
+	// w.Orders until the next restart, whether it expired at boot or at runtime.
 	world.SetTerminalOrderSink(repo.Orders)
 
 	// Install the durable order-less settlement sink (LLM-246). consume_now
