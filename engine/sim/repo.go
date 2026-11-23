@@ -39,6 +39,10 @@ type Repository struct {
 	// entries are now intentionally restart-lossy with no durable backing
 	// at all — see engine/sim/pay_ledger.go and
 	// work/tasks/payledger-restart-lossy/decision.)
+	//
+	// pg.LoadWorld installs ActionLog as the World's durable action-log sink
+	// (World.SetActionLogSink) before it loads anything, unless it is the pg
+	// notImpl stub, so the rows written during load reach it (LLM-994).
 	ActionLog ActionLogSink
 
 	// TickTelemetry receives per-tick lifecycle records (Phase 2 PR 3a). The
