@@ -1,6 +1,8 @@
 package perception
 
 import (
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,6 +36,31 @@ func TestRenderActor_NegativePurseReadsAsEmpty(t *testing.T) {
 		}
 		if strings.Contains(out, "debt") {
 			t.Errorf("%s: says debt, but a wallet never goes below zero:\n%s", c.name, out)
+		}
+	}
+}
+
+// TestRenderActor_VisitorPurseSumSaturates (LLM-996): a visitor's coins plus
+// takings past MaxInt render as MaxInt, never as a wrapped negative purse.
+func TestRenderActor_VisitorPurseSumSaturates(t *testing.T) {
+	cases := []struct {
+		name  string
+		av    ActorView
+		total string
+	}{
+		{"just past MaxInt", ActorView{State: sim.StateIdle, Coins: math.MaxInt - 1, VisitorTakings: 5}, strconv.Itoa(math.MaxInt)},
+		{"exactly MaxInt", ActorView{State: sim.StateIdle, Coins: math.MaxInt - 5, VisitorTakings: 5}, strconv.Itoa(math.MaxInt)},
+		{"ordinary", ActorView{State: sim.StateIdle, Coins: 12, VisitorTakings: 30}, "42"},
+	}
+	for _, c := range cases {
+		var b strings.Builder
+		renderActor(&b, c.av)
+		out := b.String()
+		if !strings.Contains(out, "Coins in your purse: "+c.total+", of which ") {
+			t.Errorf("%s: want a purse total of %s:\n%s", c.name, c.total, out)
+		}
+		if strings.Contains(out, "Coins in your purse: -") {
+			t.Errorf("%s: renders a bare negative purse:\n%s", c.name, out)
 		}
 	}
 }
