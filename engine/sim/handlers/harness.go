@@ -1310,6 +1310,16 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 			if errors.As(err, &ntNoop) {
 				return fmt.Sprintf("[ok] %s", ntNoop.Error()), dispatchOutcome{success: true, ended: false}
 			}
+			// LLM-998: the command panicked and World.Run recovered it. That is an
+			// engine bug, almost always driven by state that is still there, so a
+			// retry would panic again and repeat any half-done change the command
+			// made before it stopped. END the tick on the first one. The model sees
+			// only the generic text: panic detail never reaches the prompt.
+			var panicErr *sim.CommandPanicError
+			if errors.As(err, &panicErr) {
+				log.Printf("handlers: dispatch %q: command panicked, ending tick: %v", vc.Name, err)
+				return "[error: command_failed] world command rejected the tool", dispatchOutcome{ended: true, terminalStatus: sim.TickStatusFailedAfterRender}
+			}
 			// Echo the command validator's rejection reason to the model so it can
 			// correct its next call ("no one named X in this conversation", "use a
 			// structure_id you can see in your perception"). These reasons are

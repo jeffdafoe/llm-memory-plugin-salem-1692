@@ -415,3 +415,104 @@ func TestHarnessPool_NonTerminalNoOpContinuesTick(t *testing.T) {
 		t.Errorf("commit runs: got %d, want 1", got)
 	}
 }
+
+// --- LLM-998: a recovered command panic ends the tick --------------------
+
+// A commit whose command panics is recovered by World.Run as a
+// *sim.CommandPanicError. The harness must END the tick on it (failed_after_render)
+// instead of echoing a non-terminal error the model would retry to the iteration
+// budget, re-running the panicking command (and any half-done change) each time.
+func TestHarnessPool_CommandPanicEndsTick(t *testing.T) {
+	var commitRuns atomic.Int32
+	r := NewRegistry()
+	panicFn := func(_ HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(*sim.World) (any, error) {
+			commitRuns.Add(1)
+			panic("boom in a tool")
+		}}, nil
+	}
+	if err := r.RegisterCommit("pay_with_item", json.RawMessage(`{"type":"object"}`), passthroughDecode, panicFn, false); err != nil {
+		t.Fatalf("register pay_with_item: %v", err)
+	}
+
+	client := llm.NewFakeClient(
+		callTurn("c1", "pay_with_item", `{}`),
+		callTurn("c2", "pay_with_item", `{}`),
+		callTurn("c3", "pay_with_item", `{}`),
+		callTurn("c4", "pay_with_item", `{}`),
+		callTurn("c5", "pay_with_item", `{}`),
+		callTurn("c6", "pay_with_item", `{}`),
+		callTurn("c7", "pay_with_item", `{}`),
+		callTurn("c8", "pay_with_item", `{}`),
+	)
+
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+
+	rec := f.waitForTerminalTelemetry(t)
+	if got := rec.Detail["terminal_status"]; got != "failed_after_render" {
+		t.Errorf("terminal_status: got %q, want \"failed_after_render\"", got)
+	}
+	if n := len(client.Requests()); n != 1 {
+		t.Errorf("LLM rounds: got %d, want 1 — a panic ends the tick instead of being retried", n)
+	}
+	if got := commitRuns.Load(); got != 1 {
+		t.Errorf("commit runs: got %d, want 1", got)
+	}
+	if snap := f.world.CommandPanicHealthSnapshot(); snap.Count != 1 || snap.LastActor == "" {
+		t.Errorf("panic record = %+v, want one panic naming the actor", snap)
+	}
+	eventually(t, "alice tick cleared", func() bool { return !actorTickInFlight(t, f.world) })
+}
+
+// A panicking commit followed by another commit IN THE SAME LLM RESPONSE: the
+// panic ends the tick, the second commit is skipped as post-terminal (its
+// command is never built or run), and both are reported failed/rejected.
+func TestHarnessPool_CommandPanicSkipsTheRestOfTheBatch(t *testing.T) {
+	var secondBuilt atomic.Int32
+	r := NewRegistry()
+	panicFn := func(_ HandlerInput) (sim.Command, error) {
+		return sim.Command{Fn: func(*sim.World) (any, error) { panic("boom in a tool") }}, nil
+	}
+	moveFn := func(_ HandlerInput) (sim.Command, error) {
+		secondBuilt.Add(1)
+		return sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}, nil
+	}
+	if err := r.RegisterCommit("pay_with_item", json.RawMessage(`{"type":"object"}`), passthroughDecode, panicFn, false); err != nil {
+		t.Fatalf("register pay_with_item: %v", err)
+	}
+	if err := r.RegisterCommit("move_to", json.RawMessage(`{"type":"object"}`), passthroughDecode, moveFn, false); err != nil {
+		t.Fatalf("register move_to: %v", err)
+	}
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
+		newToolCall("c1", 0, "pay_with_item", `{}`),
+		newToolCall("c2", 1, "move_to", `{}`),
+	}}})
+
+	f := newIntegrationFixture(t, r, client)
+	defer f.stop()
+
+	now := time.Now()
+	seedDueWarrant(t, f.world, now)
+	if _, err := f.world.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+
+	rec := f.waitForTerminalTelemetry(t)
+	if got := rec.Detail["terminal_status"]; got != "failed_after_render" {
+		t.Errorf("terminal_status: got %q, want \"failed_after_render\"", got)
+	}
+	if got := rec.Detail["tools_failed_rejected"]; got != "pay_with_item,move_to" {
+		t.Errorf("tools_failed_rejected: got %q, want \"pay_with_item,move_to\"", got)
+	}
+	if got := secondBuilt.Load(); got != 0 {
+		t.Errorf("the post-terminal move_to was built %d time(s), want 0", got)
+	}
+}

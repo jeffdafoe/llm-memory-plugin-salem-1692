@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,5 +309,168 @@ func TestRunTickToolCommandPostSnapshotKeepsTheWorkWindow(t *testing.T) {
 	if published.SourceActivityKind != post.SourceActivityKind || published.SourceActivityObjectID != post.SourceActivityObjectID {
 		t.Errorf("post-commit window %q/%q differs from published %q/%q",
 			post.SourceActivityKind, post.SourceActivityObjectID, published.SourceActivityKind, published.SourceActivityObjectID)
+	}
+}
+
+// TestRunTickToolCommand_PanicNamesTheActor (LLM-998): a panic inside the tool
+// command names whose turn it was, on the error and in the recorder. A later
+// panic outside any tool call names no one (the mark does not go stale).
+func TestRunTickToolCommand_PanicNamesTheActor(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	tool := sim.Command{Fn: func(*sim.World) (any, error) { panic("tool blew up") }}
+	_, err := w.Send(sim.RunTickToolCommand("alice", "A1", root, tool))
+	var perr *sim.CommandPanicError
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v (%T), want *sim.CommandPanicError", err, err)
+	}
+	if perr.Actor != "Alice (alice)" {
+		t.Errorf("actor = %q, want \"Alice (alice)\"", perr.Actor)
+	}
+	if !strings.Contains(perr.Error(), "during Alice (alice)'s turn: tool blew up") {
+		t.Errorf("error text = %q", perr.Error())
+	}
+	if snap := w.CommandPanicHealthSnapshot(); snap.LastActor != "Alice (alice)" {
+		t.Errorf("recorded actor = %q", snap.LastActor)
+	}
+
+	_, err = w.Send(sim.Command{Fn: func(*sim.World) (any, error) { panic("not a tool call") }})
+	if !errors.As(err, &perr) {
+		t.Fatalf("plain panic err = %v", err)
+	}
+	if perr.Actor != "" {
+		t.Errorf("plain command panic named %q, want no actor", perr.Actor)
+	}
+	if snap := w.CommandPanicHealthSnapshot(); snap.LastActor != "" || snap.Count != 2 {
+		t.Errorf("snapshot = %+v, want count 2 and no actor on the latest", snap)
+	}
+}
+
+// TestRunTickToolCommand_ToolReturningClearsTheMark: a tool call that returns
+// normally leaves no actor mark behind for a later panic in the same command.
+func TestRunTickToolCommand_ToolReturningClearsTheMark(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	inner := sim.RunTickToolCommand("alice", "A1", root, sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }})
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if _, err := inner.Fn(world); err != nil {
+			return nil, err
+		}
+		panic("after the tool call")
+	}})
+	var perr *sim.CommandPanicError
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *sim.CommandPanicError", err)
+	}
+	if perr.Actor != "" {
+		t.Errorf("panic after a finished tool call named %q, want no actor", perr.Actor)
+	}
+}
+
+// subscribeCoinsPanic installs, on the world goroutine, a subscriber that
+// panics on NPCCoinsChanged — a post-command delta emit.
+func subscribeCoinsPanic(t *testing.T, w *sim.World) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if _, ok := evt.(*sim.NPCCoinsChanged); ok {
+				panic("delta panic")
+			}
+		}))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+}
+
+// TestRunTickToolCommand_ToolErrorClearsTheMark: a tool call that returns an
+// ordinary error leaves no actor mark for a later panic in the same command.
+func TestRunTickToolCommand_ToolErrorClearsTheMark(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	inner := sim.RunTickToolCommand("alice", "A1", root, sim.Command{Fn: func(*sim.World) (any, error) {
+		return nil, errors.New("ordinary rejection")
+	}})
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		_, _ = inner.Fn(world)
+		panic("after the failed tool call")
+	}})
+	var perr *sim.CommandPanicError
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *sim.CommandPanicError", err)
+	}
+	if perr.Actor != "" {
+		t.Errorf("panic after a failed tool call named %q, want no actor", perr.Actor)
+	}
+}
+
+// TestRunTickToolCommand_ActorRemovedBeforePanicIsNamedByID: a tool that
+// removes its own actor and then panics is named by the bare id.
+func TestRunTickToolCommand_ActorRemovedBeforePanicIsNamedByID(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	tool := sim.Command{Fn: func(world *sim.World) (any, error) {
+		delete(world.Actors, "alice")
+		panic("gone")
+	}}
+	_, err := w.Send(sim.RunTickToolCommand("alice", "A1", root, tool))
+	var perr *sim.CommandPanicError
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *sim.CommandPanicError", err)
+	}
+	if perr.Actor != "alice" {
+		t.Errorf("actor = %q, want the bare id \"alice\"", perr.Actor)
+	}
+}
+
+// TestRunTickToolCommand_DeltaPanicAfterASuccessfulToolNamesNoOne: the tool
+// succeeds and changes coins; the coins delta subscriber panics. The tool's
+// result stands and the recorded panic names no actor.
+func TestRunTickToolCommand_DeltaPanicAfterASuccessfulToolNamesNoOne(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+	subscribeCoinsPanic(t, w)
+
+	tool := sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Coins += 3
+		return "paid", nil
+	}}
+	v, err := w.Send(sim.RunTickToolCommand("alice", "A1", root, tool))
+	if err != nil {
+		t.Fatalf("tool command err = %v, want its own success", err)
+	}
+	if res, ok := v.(sim.TickToolResult); !ok || res.Result != "paid" {
+		t.Errorf("result = %#v, want the tool's own result", v)
+	}
+	snap := w.CommandPanicHealthSnapshot()
+	if snap.Count != 1 || snap.LastPanic != "delta panic" || snap.LastActor != "" {
+		t.Errorf("snapshot = %+v, want the delta panic recorded with no actor", snap)
+	}
+}
+
+// TestRunTickToolCommand_FnPanicThenDeltaPanic: the tool changes coins and then
+// panics; the coins delta subscriber panics as well. The reply keeps the tool's
+// actor; the recorder's latest (the delta's) names no one.
+func TestRunTickToolCommand_FnPanicThenDeltaPanic(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+	subscribeCoinsPanic(t, w)
+
+	tool := sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Coins += 3
+		panic("tool panic")
+	}}
+	_, err := w.Send(sim.RunTickToolCommand("alice", "A1", root, tool))
+	var perr *sim.CommandPanicError
+	if !errors.As(err, &perr) || perr.Value != "tool panic" || perr.Actor != "Alice (alice)" {
+		t.Fatalf("reply = %#v, want the tool panic naming Alice", err)
+	}
+	snap := w.CommandPanicHealthSnapshot()
+	if snap.Count != 2 || snap.LastPanic != "delta panic" || snap.LastActor != "" {
+		t.Errorf("snapshot = %+v, want 2 panics, latest the delta's with no actor", snap)
 	}
 }

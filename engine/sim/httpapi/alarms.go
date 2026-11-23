@@ -235,6 +235,9 @@ func commandPanicAlarm(h sim.CommandPanicHealthSnapshot, now time.Time) (Alarm, 
 		return Alarm{}, false
 	}
 	lastErr := h.LastPanic
+	if h.LastActor != "" {
+		lastErr = h.LastActor + ": " + lastErr
+	}
 	if len(h.LastFrames) > 0 {
 		lastErr += " at " + h.LastFrames[0]
 	}
@@ -242,7 +245,13 @@ func commandPanicAlarm(h sim.CommandPanicHealthSnapshot, now time.Time) (Alarm, 
 	if h.Count > 1 {
 		detail += " since " + humanizeSince(now.Sub(h.FirstAt)) + " ago"
 	}
-	detail += ", the latest " + humanizeSince(now.Sub(h.LastAt)) + " ago: " + h.LastPanic
+	detail += ", the latest " + humanizeSince(now.Sub(h.LastAt)) + " ago"
+	if h.LastActor != "" {
+		// LLM-998: the panic came from this NPC's tool call; the harness ended
+		// that turn.
+		detail += " during " + h.LastActor + "'s turn"
+	}
+	detail += ": " + h.LastPanic
 	if len(h.LastFrames) > 0 {
 		detail += " at " + strings.Join(h.LastFrames, " < ")
 	}
