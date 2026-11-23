@@ -1072,23 +1072,16 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// come in don't silently vanish from the scene. Without this a
 	// proceeds-flush factor read a fat purse and looped offers the pay gates
 	// refuse.
-	// LLM-993: a visitor whose buying purse went below zero still carries his
-	// takings; say the debt rather than "-12 left to spend".
-	case a.VisitorTakings > 0 && a.Coins < 0:
-		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home, and you are %d coins in debt besides. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings, -a.Coins)
-	case a.VisitorTakings > 0 && a.Coins == 0:
+	// A wallet never goes below zero (LLM-995), so there is no debt to say; a
+	// negative figure that slipped through by some other path reads as empty
+	// rather than as a bare "-12".
+	case a.VisitorTakings > 0 && a.Coins <= 0:
 		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings)
 	case a.VisitorTakings > 0:
 		fmt.Fprintf(b, "Coins in your purse: %d, of which %d is left to spend on this trip — the other %d is takings, bound for home.\n", a.Coins+a.VisitorTakings, a.Coins, a.VisitorTakings)
-	// LLM-993: a refund the seller had already spent (a lapsed order) can leave
-	// the purse below zero. Say it as a debt rather than a bare negative number.
-	case a.Coins < 0 && holdsTradeableGoods:
-		fmt.Fprintf(b, "Coins in your purse: none — you are %d coins in debt, so you cannot pay coin for anything until you earn it back, but you may be able to offer goods you carry in trade.\n", -a.Coins)
-	case a.Coins < 0:
-		fmt.Fprintf(b, "Coins in your purse: none — you are %d coins in debt, so you cannot pay for anything until you earn some back.\n", -a.Coins)
-	case a.Coins == 0 && holdsTradeableGoods:
+	case a.Coins <= 0 && holdsTradeableGoods:
 		b.WriteString("Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.\n")
-	case a.Coins == 0:
+	case a.Coins <= 0:
 		b.WriteString("Coins in your purse: 0 — you have no coins to spend, so you cannot pay for anything until you earn some.\n")
 	default:
 		fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)

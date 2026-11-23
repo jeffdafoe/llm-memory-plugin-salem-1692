@@ -8,11 +8,12 @@ import (
 
 // order_lapsed.go — LLM-993. When a Ready order expires, settleExpiredOrder
 // moves coins with neither party's turn in flight: a refund takes the buyer's
-// payment back out of the seller's purse (below zero if he has already spent
-// it), a forfeit lets the seller keep a deposit. Before this, nothing carried
-// the outcome into perception: the seller's purse was simply lower the next
-// morning (live 2026-11-22: Ezekiel Crane woke at -31 coins, believing the
-// order records were "a record-keeping error on someone's part").
+// payment back out of the seller's purse (only what the purse holds, down to 0,
+// if he has already spent it — LLM-995), a forfeit lets the seller keep a
+// deposit. Before this, nothing carried the outcome into perception: the
+// seller's purse was simply lower the next morning (live 2026-11-22: Ezekiel
+// Crane woke at -31 coins, believing the order records were "a record-keeping
+// error on someone's part").
 //
 // narrateLapsedOrder gives each party one pre-rendered line on their next turn
 // (OrderLapsedWarrantReason, the LaborSettled / CarterBought posture) and a
@@ -34,10 +35,11 @@ func (OrderLapsedWarrantReason) Kind() WarrantKind            { return WarrantKi
 func (r OrderLapsedWarrantReason) DedupDiscriminator() uint64 { return uint64(r.OrderID) }
 
 // OrderLapsedSellerNarration is the seller's line. lot names the goods with
-// their count ("5 shovels"); amount is the coins that moved (the deposit for a
-// partial-payment commission, else the full price). debt is how far below zero
-// the refund left the seller (0 when it did not).
-func OrderLapsedSellerNarration(buyerName, lot string, amount int, deposit, forfeited bool, debt int) string {
+// their count ("5 shovels"); amount is the coins the buyer paid at accept (the
+// deposit for a partial-payment commission, else the full price). refunded is
+// the coins that actually went back: amount on a full refund, less when the
+// seller had spent it (LLM-995), ignored on a forfeit.
+func OrderLapsedSellerNarration(buyerName, lot string, amount, refunded int, deposit, forfeited bool) string {
 	if buyerName == "" {
 		buyerName = "Your customer"
 	}
@@ -49,16 +51,21 @@ func OrderLapsedSellerNarration(buyerName, lot string, amount int, deposit, forf
 	if deposit {
 		paid = fmt.Sprintf("their %d-coin deposit", amount)
 	}
-	line := fmt.Sprintf("%s's order for %s ran out of time before you handed it over, so %s went back to them out of your purse.",
-		buyerName, lot, paid)
-	if debt > 0 {
-		line += fmt.Sprintf(" You had spent it already, so that leaves you %d coins in debt.", debt)
+	switch {
+	case refunded >= amount:
+		return fmt.Sprintf("%s's order for %s ran out of time before you handed it over, so %s went back to them out of your purse.",
+			buyerName, lot, paid)
+	case refunded > 0:
+		return fmt.Sprintf("%s's order for %s ran out of time before you handed it over. You had already spent %s, so you could give back only the %d coins you had left.",
+			buyerName, lot, paid, refunded)
+	default:
+		return fmt.Sprintf("%s's order for %s ran out of time before you handed it over. You had already spent %s and your purse was empty, so nothing went back to them.",
+			buyerName, lot, paid)
 	}
-	return line
 }
 
 // OrderLapsedBuyerNarration is the buyer's twin.
-func OrderLapsedBuyerNarration(sellerName, lot string, amount int, deposit, forfeited bool) string {
+func OrderLapsedBuyerNarration(sellerName, lot string, amount, refunded int, deposit, forfeited bool) string {
 	if sellerName == "" {
 		sellerName = "The seller"
 	}
@@ -70,15 +77,25 @@ func OrderLapsedBuyerNarration(sellerName, lot string, amount int, deposit, forf
 	if deposit {
 		paid = fmt.Sprintf("your %d-coin deposit", amount)
 	}
-	return fmt.Sprintf("%s never handed over the %s you paid for in time, so %s came back to you.",
-		sellerName, lot, paid)
+	switch {
+	case refunded >= amount:
+		return fmt.Sprintf("%s never handed over the %s you paid for in time, so %s came back to you.",
+			sellerName, lot, paid)
+	case refunded > 0:
+		return fmt.Sprintf("%s never handed over the %s you paid for in time, and had already spent %s, so only %d coins came back to you.",
+			sellerName, lot, paid, refunded)
+	default:
+		return fmt.Sprintf("%s never handed over the %s you paid for in time, and had already spent %s, so none of it came back to you.",
+			sellerName, lot, paid)
+	}
 }
 
 // narrateLapsedOrder stamps the lapsed-order beat on both parties and writes
 // each one's durable `order_lapsed` row. Called from flipOrderTerminal after
-// settleExpiredOrder, so the purses already reflect the settlement. MUST run on
-// the world goroutine.
-func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
+// settleExpiredOrder, so the purses already reflect the settlement; settled is
+// what that settlement did. MUST run on the world goroutine.
+func narrateLapsedOrder(w *World, o *Order, settled expirySettlement, at time.Time) {
+	forfeited, refunded := settled.Forfeited, settled.Refunded
 	if o == nil || itemHasCapability(w, o.Item, "lodging") {
 		return
 	}
@@ -88,13 +105,14 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 	}
 	buyer := w.Actors[o.BuyerID]
 	seller := w.Actors[o.SellerID]
-	// Say only what the settlement did. A refund credits the buyer only when the
-	// buyer is still in the world (refundOrderPayment), so with the buyer gone no
-	// coin moved and there is nothing to tell either side. A forfeit needs the
-	// seller (it requires his stock), and stands whether or not the buyer is
-	// still here. A party who is gone is not told; the survivor is, with a
-	// fallback name if the other party's actor is gone.
-	if !forfeited && buyer == nil {
+	// Say only what the settlement did. A blocked refund (the buyer gone from the
+	// world, or a credit that would overflow; refundOrderPayment) moved no coin,
+	// so there is nothing true to tell either side — in particular not that the
+	// seller had spent it. A forfeit needs the seller (it requires his stock),
+	// and stands whether or not the buyer is still here. A party who is gone is
+	// not told; the survivor is, with a fallback name if the other party's actor
+	// is gone.
+	if !forfeited && (settled.RefundBlocked || buyer == nil) {
 		return
 	}
 	nameOf := func(a *Actor) string {
@@ -109,10 +127,6 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 	}
 	lot := inputCountPhrase(w, o.Item, units)
 	deposit := o.Deposit > 0 && o.Deposit < o.Amount
-	debt := 0
-	if !forfeited && seller != nil && seller.Coins < 0 {
-		debt = -seller.Coins
-	}
 	tell := func(party *Actor, counterpartyID ActorID, counterpartyName, narration string) {
 		if party == nil {
 			return
@@ -145,6 +159,7 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 				"item":         string(o.Item),
 				"qty":          units,
 				"amount":       amount,
+				"refunded":     refunded,
 				"deposit":      deposit,
 				"forfeited":    forfeited,
 				"counterparty": counterpartyName,
@@ -154,6 +169,6 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 			Source:      "engine",
 		})
 	}
-	tell(seller, o.BuyerID, nameOf(buyer), OrderLapsedSellerNarration(nameOf(buyer), lot, amount, deposit, forfeited, debt))
-	tell(buyer, o.SellerID, nameOf(seller), OrderLapsedBuyerNarration(nameOf(seller), lot, amount, deposit, forfeited))
+	tell(seller, o.BuyerID, nameOf(buyer), OrderLapsedSellerNarration(nameOf(buyer), lot, amount, refunded, deposit, forfeited))
+	tell(buyer, o.SellerID, nameOf(seller), OrderLapsedBuyerNarration(nameOf(seller), lot, amount, refunded, deposit, forfeited))
 }

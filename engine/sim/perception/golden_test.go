@@ -4104,18 +4104,25 @@ var perceptionScenarios = []perceptionScenario{
 		build: holderCarterBoughtBeat,
 	},
 	{
-		name: "seller_order_lapsed_into_debt",
-		summary: "LLM-993 seller side of a lapsed commission: Ezekiel Crane took Elizabeth Ellis's 20-coin deposit on 5 shovels, " +
-			"spent it on iron, and the order ran out of time overnight. The sweep refunded her out of his purse, leaving him 12 coins " +
-			"in debt. Live 2026-11-22 he woke at -31 coins with no line saying why. The golden pins the order_lapsed line (refund, " +
-			"deposit wording, debt clause) and the purse said as a debt in words, not a bare negative number.",
-		build: sellerOrderLapsedIntoDebt,
+		name: "seller_order_lapsed_short_refund",
+		summary: "LLM-993 x LLM-995 seller side of a lapsed commission: Ezekiel Crane took Elizabeth Ellis's 20-coin deposit on 5 " +
+			"shovels, spent all but 8 of it on iron, and the order ran out of time overnight. A wallet never goes below zero, so the " +
+			"sweep handed back only the 8 in his purse (live 2026-11-22 the old refund took him to -31, and his goods-only offer then " +
+			"crashed the engine). The golden pins the short-refund order_lapsed line (deposit wording, 'only the 8 coins', no debt) and " +
+			"an empty purse said as 0.",
+		build: sellerOrderLapsedShortRefund,
 	},
 	{
 		name: "buyer_order_lapsed_refund",
-		summary: "LLM-993 buyer side of the same lapse: Elizabeth Ellis reads that Ezekiel Crane never handed over the 5 shovels " +
+		summary: "LLM-993 buyer side of a full lapse refund: Elizabeth Ellis reads that Ezekiel Crane never handed over the 5 shovels " +
 			"in time and her 20-coin deposit came back, so a fatter purse is explained and she knows the shovels are not coming.",
 		build: buyerOrderLapsedRefund,
+	},
+	{
+		name: "buyer_order_lapsed_short_refund",
+		summary: "LLM-995 buyer side of the short refund: Ezekiel had spent her deposit, so only 8 of Elizabeth's 20 coins came back. " +
+			"The golden pins the line that names the loss, so she does not expect the rest from him or believe she was made whole.",
+		build: buyerOrderLapsedShortRefund,
 	},
 	{
 		name: "seller_order_lapsed_forfeit",
@@ -21042,18 +21049,19 @@ func TestHeldWorkerQuoteFixtureIsHeld(t *testing.T) {
 
 // orderLapsedBeatSnapshot is the LLM-993 fixture: the morning after a commission
 // lapsed at the sweep while both parties slept. Ezekiel Crane took Elizabeth
-// Ellis's 20-coin deposit on 5 shovels (35 in all) and spent it on iron; the
-// order ran out of time before he could forge them.
-//   - refund (forfeited=false): the deposit went back to Elizabeth out of his
-//     purse, leaving him 12 coins in debt (purse -12). The subject is the
-//     seller (Ezekiel) or the buyer (Elizabeth).
+// Ellis's 20-coin deposit on 5 shovels (35 in all); the order ran out of time
+// before he could forge them.
+//   - refund (forfeited=false): refunded coins of the deposit went back to
+//     Elizabeth out of his purse. A short refund (refunded < 20, LLM-995) means
+//     he had spent the rest and his purse is now empty (0, never below). The
+//     subject is the seller (Ezekiel) or the buyer (Elizabeth).
 //   - forfeit (forfeited=true): he had forged the shovels but she never came for
 //     them, so he keeps the deposit (purse 20) and the shovels are on his shelf.
 //     The subject is the seller.
 //
 // Each subject carries its own side's OrderLapsedWarrantReason, pre-rendered
 // through the REAL builders, so the goldens stay in lockstep with production.
-func orderLapsedBeatSnapshot(subjectIsSeller, forfeited bool) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+func orderLapsedBeatSnapshot(subjectIsSeller, forfeited bool, refunded int) (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	const (
 		ezekielID   = sim.ActorID("ezekiel")
 		elizabethID = sim.ActorID("elizabeth")
@@ -21061,7 +21069,10 @@ func orderLapsedBeatSnapshot(subjectIsSeller, forfeited bool) (*sim.Snapshot, si
 		farm        = sim.StructureID("farm")
 	)
 	published := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
-	sellerCoins := -12
+	sellerCoins := 0
+	if !forfeited && refunded >= 20 {
+		sellerCoins = 5
+	}
 	sellerInv := map[sim.ItemKind]int{"nail": 4}
 	if forfeited {
 		sellerCoins = 20
@@ -21102,16 +21113,12 @@ func orderLapsedBeatSnapshot(subjectIsSeller, forfeited bool) (*sim.Snapshot, si
 		ItemKinds: kinds,
 	}
 	if subjectIsSeller {
-		debt := 0
-		if !forfeited {
-			debt = 12
-		}
 		return snap, ezekielID, []sim.WarrantMeta{{
 			TriggerActorID: elizabethID,
 			Reason: sim.OrderLapsedWarrantReason{
 				OrderID:       7,
 				Counterparty:  elizabethID,
-				NarrationText: sim.OrderLapsedSellerNarration("Elizabeth Ellis", "5 shovels", 20, true, forfeited, debt),
+				NarrationText: sim.OrderLapsedSellerNarration("Elizabeth Ellis", "5 shovels", 20, refunded, true, forfeited),
 			},
 			SourceEventID: 1,
 		}}
@@ -21121,39 +21128,42 @@ func orderLapsedBeatSnapshot(subjectIsSeller, forfeited bool) (*sim.Snapshot, si
 		Reason: sim.OrderLapsedWarrantReason{
 			OrderID:       7,
 			Counterparty:  ezekielID,
-			NarrationText: sim.OrderLapsedBuyerNarration("Ezekiel Crane", "5 shovels", 20, true, forfeited),
+			NarrationText: sim.OrderLapsedBuyerNarration("Ezekiel Crane", "5 shovels", 20, refunded, true, forfeited),
 		},
 		SourceEventID: 1,
 	}}
 }
 
-func sellerOrderLapsedIntoDebt() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return orderLapsedBeatSnapshot(true, false)
+func sellerOrderLapsedShortRefund() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return orderLapsedBeatSnapshot(true, false, 8)
 }
 
 func buyerOrderLapsedRefund() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return orderLapsedBeatSnapshot(false, false)
+	return orderLapsedBeatSnapshot(false, false, 20)
+}
+
+func buyerOrderLapsedShortRefund() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	return orderLapsedBeatSnapshot(false, false, 8)
 }
 
 func sellerOrderLapsedForfeit() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
-	return orderLapsedBeatSnapshot(true, true)
+	return orderLapsedBeatSnapshot(true, true, 0)
 }
 
-// TestGoldensPurseNeverRendersBareNegative is the LLM-993 cross-scenario
-// invariant: a purse below zero (a lapsed order's refund the seller had
-// already spent) renders as a debt in words, never as "Coins in your purse:
-// -12." — a bare negative number tells a weak model nothing about why.
+// TestGoldensPurseNeverRendersBareNegative is the cross-scenario purse
+// invariant: no prompt shows a negative purse ("Coins in your purse: -12.") and
+// none tells an NPC it is in debt. A wallet never goes below zero (LLM-995), so
+// a debt is not a state the purse line may describe.
 func TestGoldensPurseNeverRendersBareNegative(t *testing.T) {
 	for _, sc := range perceptionScenarios {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			prompt := renderScenario(sc)
 			if strings.Contains(prompt, "Coins in your purse: -") || strings.Contains(prompt, "of which -") {
-				t.Errorf("scenario %q renders a bare negative purse; a debt must be said in words (LLM-993)", sc.name)
+				t.Errorf("scenario %q renders a bare negative purse (LLM-995)", sc.name)
 			}
-			snap, actorID, _ := sc.build()
-			if a := snap.Actors[actorID]; a != nil && a.Coins < 0 && !strings.Contains(prompt, "coins in debt") {
-				t.Errorf("scenario %q: subject purse %d but no debt line rendered", sc.name, a.Coins)
+			if strings.Contains(prompt, "coins in debt") {
+				t.Errorf("scenario %q tells the NPC it is in debt; a wallet never goes below zero (LLM-995)", sc.name)
 			}
 		})
 	}
