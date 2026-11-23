@@ -3879,7 +3879,7 @@ func commitPayTransfer(
 		// longer than the 10-minute takeaway TTL the mint gives a non-lodging Order.
 		bookedID := createOrderForPayWithItem(w, entry, at)
 		if o := w.Orders[bookedID]; o != nil {
-			o.ExpiresAt = commissionOrderExpiresAt(w, entry.ItemKind, at)
+			o.ExpiresAt = commissionOrderExpiresAt(w, entry.ItemKind, commissionUnitsToForge(w, seller, entry.ItemKind), at)
 			// LLM-357: record the deposit ONLY for a genuine partial payment
 			// (0 < deposit < total), where depositChargeForEntry charged just the
 			// deposit at accept and orderBalanceDue must collect the rest at
