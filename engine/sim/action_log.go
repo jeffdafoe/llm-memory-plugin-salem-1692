@@ -235,6 +235,15 @@ const (
 	// night's dream records a matter as closed rather than open.
 	ActionTypeRuled ActionType = "ruled"
 
+	// ActionTypeOrderLapsed — a Ready order expired undelivered and its coins
+	// settled (LLM-993, order_lapsed.go narrateLapsedOrder): the buyer refunded
+	// out of the seller's purse, or a partial-payment deposit forfeit to the
+	// seller. One row per party; ActorID is that party; Text is their
+	// pre-rendered line; CounterpartyName is the other party. Durable {order_id,
+	// item, qty, amount, deposit, forfeited, counterparty, text}, so the night's
+	// dream records where the coins went. Lodging bookings write none.
+	ActionTypeOrderLapsed ActionType = "order_lapsed"
+
 	// ActionTypeLeftNote — a player pinned a note to a door nobody answered
 	// (LLM-19, door_note.go LeaveDoorNote). DURABLE-ONLY: ActorID is the author;
 	// payload {note_id, structure_id, recipient, text}.

@@ -1072,10 +1072,20 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// come in don't silently vanish from the scene. Without this a
 	// proceeds-flush factor read a fat purse and looped offers the pay gates
 	// refuse.
+	// LLM-993: a visitor whose buying purse went below zero still carries his
+	// takings; say the debt rather than "-12 left to spend".
+	case a.VisitorTakings > 0 && a.Coins < 0:
+		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home, and you are %d coins in debt besides. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings, -a.Coins)
 	case a.VisitorTakings > 0 && a.Coins == 0:
 		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings)
 	case a.VisitorTakings > 0:
 		fmt.Fprintf(b, "Coins in your purse: %d, of which %d is left to spend on this trip — the other %d is takings, bound for home.\n", a.Coins+a.VisitorTakings, a.Coins, a.VisitorTakings)
+	// LLM-993: a refund the seller had already spent (a lapsed order) can leave
+	// the purse below zero. Say it as a debt rather than a bare negative number.
+	case a.Coins < 0 && holdsTradeableGoods:
+		fmt.Fprintf(b, "Coins in your purse: none — you are %d coins in debt, so you cannot pay coin for anything until you earn it back, but you may be able to offer goods you carry in trade.\n", -a.Coins)
+	case a.Coins < 0:
+		fmt.Fprintf(b, "Coins in your purse: none — you are %d coins in debt, so you cannot pay for anything until you earn some back.\n", -a.Coins)
 	case a.Coins == 0 && holdsTradeableGoods:
 		b.WriteString("Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.\n")
 	case a.Coins == 0:
@@ -4584,6 +4594,11 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// LLM-681: a carter's buy leg settled on the pacing pass — pre-rendered at
 		// the settle, so the holder reads the sale as done rather than asking again.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.Carter), maxTextBytes)
+	case sim.OrderLapsedWarrantReason:
+		// LLM-993: a Ready order expired and its coins settled at the sweep —
+		// pre-rendered per side (refund out of the seller's purse, or a forfeited
+		// deposit), so neither party finds its purse changed with no reason.
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(r.Counterparty), maxTextBytes)
 	case sim.CourtRuledWarrantReason:
 		// LLM-695: the magistrates' ruling, pre-rendered per recipient at the
 		// sitting — the magistrate's words, any pay order as carried out, and
