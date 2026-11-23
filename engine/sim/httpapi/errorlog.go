@@ -103,8 +103,9 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-// Hijack passes through to the underlying ResponseWriter so gorilla's WS upgrade
-// (which needs http.Hijacker) keeps working through the wrapper.
+// Hijack passes through to the underlying ResponseWriter so the WS upgrade
+// (coder/websocket's Accept needs http.Hijacker) keeps working through the
+// wrapper.
 func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if hj, ok := s.ResponseWriter.(http.Hijacker); ok {
 		return hj.Hijack()

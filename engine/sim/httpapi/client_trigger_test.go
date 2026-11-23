@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
@@ -81,11 +81,17 @@ func sentinelTranslator(evt sim.Event) (WireFrame, bool) {
 func dialEventsAs(t *testing.T, ts *httptest.Server, token string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/village/events?token=" + token
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// The context bounds the handshake only, not the connection.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
-		t.Fatalf("dial as %s: %v", token, err)
+		if resp != nil {
+			t.Fatalf("dial %s as %s: %v (status %d)", wsURL, token, err, resp.StatusCode)
+		}
+		t.Fatalf("dial %s as %s: %v", wsURL, token, err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.CloseNow() })
 	return conn
 }
 

@@ -3,12 +3,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -31,8 +33,19 @@ func dropTranslator(_ sim.Event) (WireFrame, bool) {
 // the hub so a test can drive Hub.Handle directly.
 func newHubServer(t *testing.T, translate EventTranslator) (*httptest.Server, *Hub) {
 	t.Helper()
+	return newHubServerWith(t, translate, nil)
+}
+
+// newHubServerWith is newHubServer with a hook that adjusts the hub (its
+// keepalive timings) before Run and the HTTP server start, so the goroutines
+// that read those fields start after the write.
+func newHubServerWith(t *testing.T, translate EventTranslator, adjust func(*Hub)) (*httptest.Server, *Hub) {
+	t.Helper()
 	w := seededWorld(t)
 	hub := NewHub(translate)
+	if adjust != nil {
+		adjust(hub)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go hub.Run(ctx)
@@ -47,23 +60,23 @@ func newHubServer(t *testing.T, translate EventTranslator) (*httptest.Server, *H
 // dialEvents opens a WS connection to the /events endpoint.
 func dialEvents(t *testing.T, ts *httptest.Server) *websocket.Conn {
 	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/village/events?token=test"
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		if resp != nil {
-			t.Fatalf("dial %s: %v (status %d)", wsURL, err, resp.StatusCode)
-		}
-		t.Fatalf("dial %s: %v", wsURL, err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	return dialEventsAs(t, ts, "test")
+}
+
+// readMessage reads one WS message within d. In coder/websocket a read whose
+// context ends closes the connection, so a timeout here is final for conn: use
+// it only where the message must come or the connection must end.
+func readMessage(conn *websocket.Conn, d time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	_, data, err := conn.Read(ctx)
+	return data, err
 }
 
 // readFrame reads one WS text frame and decodes it as a WireFrame.
 func readFrame(t *testing.T, conn *websocket.Conn) WireFrame {
 	t.Helper()
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, data, err := conn.ReadMessage()
+	data, err := readMessage(conn, 2*time.Second)
 	if err != nil {
 		t.Fatalf("read frame: %v", err)
 	}
@@ -78,26 +91,152 @@ func readFrame(t *testing.T, conn *websocket.Conn) WireFrame {
 // of wantType, or fails after a deadline. Registration (handler goroutine →
 // hub.register) and the broadcast (Hub.Handle → hub.broadcast) travel on
 // separate channels, so a single early broadcast can race ahead of the client
-// being registered; retrying closes that window deterministically.
+// being registered; retrying closes that window deterministically. One reader
+// goroutine holds the whole deadline (a timed-out read would close conn) while
+// this loop re-drives Handle every 100ms.
 func broadcastUntilReceived(t *testing.T, conn *websocket.Conn, hub *Hub, wantType string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		hub.Handle(nil, nil)
-		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			continue // timeout — client not registered yet; retry
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	got := make(chan error, 1)
+	go func() {
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				got <- err
+				return
+			}
+			var f WireFrame
+			if err := json.Unmarshal(data, &f); err != nil {
+				got <- fmt.Errorf("unmarshal frame %q: %w", data, err)
+				return
+			}
+			if f.Type == wantType {
+				got <- nil
+				return
+			}
 		}
-		var f WireFrame
-		if err := json.Unmarshal(data, &f); err != nil {
-			t.Fatalf("unmarshal frame %q: %v", data, err)
-		}
-		if f.Type == wantType {
+	}()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	hub.Handle(nil, nil)
+	for {
+		select {
+		case err := <-got:
+			if err != nil {
+				t.Fatalf("did not receive a %q frame: %v", wantType, err)
+			}
 			return
+		case <-tick.C:
+			hub.Handle(nil, nil)
 		}
 	}
-	t.Fatalf("did not receive a %q frame within deadline", wantType)
+}
+
+// The origin policy is coder/websocket's default (acceptOptions is the zero
+// value): no Origin passes (native Godot), an Origin whose host is the request
+// Host passes in any letter case (the web-export client), and any other Origin
+// is refused with 403 before the upgrade.
+func TestEventsOriginPolicy(t *testing.T) {
+	ts, _ := newHubServer(t, fixedTranslator)
+	host := strings.TrimPrefix(ts.URL, "http://")
+	wsURL := "ws://" + host + "/api/village/events?token=test"
+	cases := []struct {
+		name   string
+		origin string
+		want   int
+	}{
+		{"no origin", "", http.StatusSwitchingProtocols},
+		{"same origin", "http://" + host, http.StatusSwitchingProtocols},
+		{"same origin, other case", "HTTP://" + strings.ToUpper(host), http.StatusSwitchingProtocols},
+		{"cross origin", "https://evil.example", http.StatusForbidden},
+		{"same host name, other port", "http://127.0.0.1:1", http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts := &websocket.DialOptions{HTTPHeader: http.Header{}}
+			if c.origin != "" {
+				opts.HTTPHeader.Set("Origin", c.origin)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, resp, err := websocket.Dial(ctx, wsURL, opts)
+			if conn != nil {
+				_ = conn.CloseNow()
+			}
+			if resp == nil {
+				t.Fatalf("no response: %v", err)
+			}
+			if resp.StatusCode != c.want {
+				t.Fatalf("status %d, want %d (err %v)", resp.StatusCode, c.want, err)
+			}
+		})
+	}
+}
+
+// fastKeepalive pings every 30ms and allows 200ms per ping.
+func fastKeepalive(h *Hub) {
+	h.pingPeriod = 30 * time.Millisecond
+	h.writeWait = 200 * time.Millisecond
+}
+
+// A peer that never answers pings is closed by pingLoop and unregistered by
+// the read pump. A coder client that never calls Read never answers a ping.
+func TestUnansweredPingDropsClient(t *testing.T) {
+	ts, hub := newHubServerWith(t, dropTranslator, fastKeepalive)
+	_ = dialEvents(t, ts)
+	waitConnected(t, hub, 1)
+	waitConnected(t, hub, 0)
+}
+
+// A peer that keeps reading answers every ping (coder's reader replies
+// automatically) and stays connected across many ping periods.
+func TestAnsweredPingsKeepClient(t *testing.T) {
+	ts, hub := newHubServerWith(t, dropTranslator, fastKeepalive)
+	conn := dialEvents(t, ts)
+	go func() {
+		for {
+			if _, _, err := conn.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	waitConnected(t, hub, 1)
+	time.Sleep(600 * time.Millisecond) // about 20 ping periods
+	if got := hub.Stats().ClientsConnected; got != 1 {
+		t.Fatalf("clients_connected = %d after answering pings, want 1", got)
+	}
+}
+
+// Hub shutdown while a ping waits for its pong: the hub closes send, the write
+// pump sends its close frame and closes the socket, and the client's read sees
+// the connection end. The peer never reads, so the ping is still waiting when
+// the hub stops.
+func TestHubShutdownDuringPing(t *testing.T) {
+	w := seededWorld(t)
+	hub := NewHub(dropTranslator)
+	hub.pingPeriod = 30 * time.Millisecond
+	hub.writeWait = 2 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+	srv := NewServer(w, okAuth{})
+	srv.SetEventsHub(hub)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	conn := dialEvents(t, ts)
+	waitConnected(t, hub, 1)
+	time.Sleep(100 * time.Millisecond) // a ping is now waiting for its pong
+	cancel()
+	<-hub.done
+	// The write pump's close waits up to 5s for a close reply this peer never
+	// sends, then closes the socket; the read below must end by then.
+	if _, err := readMessage(conn, 8*time.Second); err == nil {
+		// The hello may still be unread; the next read must fail.
+		if _, err := readMessage(conn, 8*time.Second); err == nil {
+			t.Fatal("connection still open after hub shutdown")
+		}
+	}
 }
 
 func TestNewHubNilTranslatorPanics(t *testing.T) {
@@ -149,8 +288,7 @@ func TestHubUntranslatedEventDropped(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		hub.Handle(nil, nil)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	if _, _, err := conn.ReadMessage(); err == nil {
+	if _, err := readMessage(conn, 300*time.Millisecond); err == nil {
 		t.Fatal("received a frame after hello, but untranslated events must be dropped")
 	}
 }
@@ -172,8 +310,7 @@ func TestHubRejectsConnectAfterShutdown(t *testing.T) {
 	conn := dialEvents(t, ts)
 	// The handler sees the closed hub and closes the socket after the upgrade —
 	// no hello frame should arrive; the read returns an error instead.
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, err := conn.ReadMessage(); err == nil {
+	if _, err := readMessage(conn, 2*time.Second); err == nil {
 		t.Fatal("expected the connection to be closed after hub shutdown, but a frame arrived")
 	}
 }
@@ -190,8 +327,8 @@ func TestHubClientDisconnectDoesNotWedge(t *testing.T) {
 		t.Fatalf("c2 expected hello first, got %q", f.Type)
 	}
 
-	// Drop c1 abruptly; the hub must keep serving c2.
-	_ = c1.Close()
+	// Drop c1 abruptly (no close frame); the hub must keep serving c2.
+	_ = c1.CloseNow()
 	broadcastUntilReceived(t, c2, hub, "test_event")
 }
 
@@ -249,7 +386,10 @@ func TestHubStatsConnectedCount(t *testing.T) {
 	// Run records the registration asynchronously; poll until it lands.
 	waitConnected(t, hub, 1)
 	// A clean disconnect unregisters via the read pump → connected returns to 0.
-	_ = conn.Close()
+	// Close sends a close frame and waits for the server's reply.
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Errorf("close handshake: %v", err)
+	}
 	waitConnected(t, hub, 0)
 }
 
@@ -294,7 +434,7 @@ func TestHubConnectedLogins_WSLifecycle(t *testing.T) {
 	conn := dialEvents(t, ts)
 	waitForConnectedLogin(t, hub, "tester", true)
 
-	_ = conn.Close()
+	_ = conn.CloseNow()
 	waitForConnectedLogin(t, hub, "tester", false)
 }
 
