@@ -1788,6 +1788,15 @@ type World struct {
 	// method is nil-safe regardless. See command_panic_health.go.
 	cmdPanicHealth *CommandPanicHealth
 
+	// panicActor is the actor whose NPC tool call is running inside the current
+	// command (LLM-998), so a recovered panic can name whose turn it was.
+	// RunTickToolCommand sets it around tool.Fn and clears it on a normal
+	// return; on a panic containPanic reads and clears it, and runCommandFn
+	// clears it at the start of every command. Deliberately not cleared by a
+	// defer in RunTickToolCommand: that defer would run before containPanic
+	// and erase the name. World-goroutine-only.
+	panicActor ActorID
+
 	// eventSeq is the monotonic per-run event counter. emit increments it
 	// and assigns the value as the new event's EventID. World-goroutine-
 	// only — emit runs exclusively inside Command.Fn, so no atomic is

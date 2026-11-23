@@ -73,7 +73,11 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 		if tool.Fn == nil {
 			return nil, fmt.Errorf("sim: RunTickToolCommand: nil tool command for actor %q", actorID)
 		}
+		// LLM-998: mark whose tool call is running so a panic in it names the
+		// actor (see World.panicActor for why this is not a defer).
+		w.panicActor = actorID
 		res, err := tool.Fn(w)
+		w.panicActor = ""
 		if err != nil {
 			// LLM-209: a NO-OP rejection (the actor asked for something it already
 			// has — walk to the structure it already stands in / is already walking

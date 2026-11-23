@@ -1122,3 +1122,23 @@ func TestEvaluateAlarms_IncludesCommandPanicFromTheWorld(t *testing.T) {
 		t.Error("evaluateAlarms did not include command_panic after a recovered panic")
 	}
 }
+
+func TestCommandPanicAlarm_NamesTheActorWhenATurnPanicked(t *testing.T) {
+	now := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	h := panicHealth(1, now.Add(-time.Minute), now.Add(-time.Minute))
+	h.LastActor = "Ezekiel Crane (ezekiel-crane)"
+	a, ok := commandPanicAlarm(h, now)
+	if !ok {
+		t.Fatal("no alarm")
+	}
+	if !strings.Contains(a.Detail, "during Ezekiel Crane (ezekiel-crane)'s turn: runtime error") {
+		t.Errorf("detail does not name the actor: %s", a.Detail)
+	}
+	if !strings.HasPrefix(a.LastError, "Ezekiel Crane (ezekiel-crane): runtime error") {
+		t.Errorf("last_error = %q", a.LastError)
+	}
+	h.LastActor = ""
+	if a, _ := commandPanicAlarm(h, now); strings.Contains(a.Detail, "'s turn") {
+		t.Errorf("detail names a turn with no actor: %s", a.Detail)
+	}
+}

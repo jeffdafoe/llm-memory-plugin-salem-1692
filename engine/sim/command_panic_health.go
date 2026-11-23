@@ -72,13 +72,21 @@ type CommandPanicError struct {
 	// Frames are the innermost non-runtime frames at the panic, innermost first,
 	// as "pkg.Func (file.go:line)".
 	Frames []string
+	// Actor names whose NPC tool call was running when it panicked, as
+	// "Display Name (actor-id)" (LLM-998). Empty for a panic outside a tool call.
+	Actor string
 }
 
 func (e *CommandPanicError) Error() string {
-	if len(e.Frames) == 0 {
-		return "command panicked: " + e.Value
+	msg := "command panicked"
+	if e.Actor != "" {
+		msg += " during " + e.Actor + "'s turn"
 	}
-	return "command panicked: " + e.Value + " at " + e.Frames[0]
+	msg += ": " + e.Value
+	if len(e.Frames) > 0 {
+		msg += " at " + e.Frames[0]
+	}
+	return msg
 }
 
 // CommandPanicHealth records the panics World.Run has recovered. Safe for
@@ -91,6 +99,7 @@ type CommandPanicHealth struct {
 	lastAt     time.Time
 	lastValue  string
 	lastFrames []string
+	lastActor  string
 }
 
 // CommandPanicHealthSnapshot is an immutable copy of a CommandPanicHealth.
@@ -103,6 +112,7 @@ type CommandPanicHealthSnapshot struct {
 	LastAt     time.Time `json:"last_at"`
 	LastPanic  string    `json:"last_panic,omitempty"`
 	LastFrames []string  `json:"last_frames,omitempty"`
+	LastActor  string    `json:"last_actor,omitempty"`
 }
 
 // Record notes one recovered panic at now. A panic more than
@@ -121,6 +131,7 @@ func (h *CommandPanicHealth) Record(now time.Time, perr *CommandPanicError) {
 	h.lastAt = now
 	h.lastValue = perr.Value
 	h.lastFrames = append([]string(nil), perr.Frames...)
+	h.lastActor = perr.Actor
 }
 
 // Snapshot returns an immutable copy. Nil-safe.
@@ -136,6 +147,7 @@ func (h *CommandPanicHealth) Snapshot() CommandPanicHealthSnapshot {
 		LastAt:     h.lastAt,
 		LastPanic:  h.lastValue,
 		LastFrames: append([]string(nil), h.lastFrames...),
+		LastActor:  h.lastActor,
 	}
 }
 
@@ -143,6 +155,19 @@ func (h *CommandPanicHealth) Snapshot() CommandPanicHealthSnapshot {
 // umbilical alarm evaluator. Safe from any goroutine.
 func (w *World) CommandPanicHealthSnapshot() CommandPanicHealthSnapshot {
 	return w.cmdPanicHealth.Snapshot()
+}
+
+// describePanicActor names the actor whose tool call is running (w.panicActor)
+// as "Display Name (actor-id)", or "" when none is. World goroutine only:
+// containPanic runs there.
+func (w *World) describePanicActor() string {
+	if w.panicActor == "" {
+		return ""
+	}
+	if a, ok := w.Actors[w.panicActor]; ok && a.DisplayName != "" {
+		return a.DisplayName + " (" + string(w.panicActor) + ")"
+	}
+	return string(w.panicActor)
 }
 
 // containPanic is deferred directly (so its recover() stops the panic) by the
@@ -158,8 +183,10 @@ func (w *World) containPanic(phase string, onPanic func(*CommandPanicError)) {
 	perr := &CommandPanicError{
 		Value:  fmt.Sprint(r),
 		Frames: panicFrames(),
+		Actor:  w.describePanicActor(),
 	}
-	log.Printf("sim: RECOVERED PANIC in %s: %s\n%s", phase, perr.Value, debug.Stack())
+	w.panicActor = ""
+	log.Printf("sim: RECOVERED PANIC in %s: %s\n%s", phase, perr.Error(), debug.Stack())
 	w.cmdPanicHealth.Record(time.Now().UTC(), perr)
 	if onPanic != nil {
 		onPanic(perr)
@@ -188,6 +215,8 @@ func (w *World) runCommandFn(cmd Command) (value any, err error) {
 		value = nil
 		err = perr
 	})
+	// No tool call is running yet; RunTickToolCommand marks one when it starts.
+	w.panicActor = ""
 	if cmd.inheritedRoot != 0 {
 		// Cross-boundary command (PR 3's worker tool-call): run the whole
 		// handler under the inherited cascade root so events it emits continue
