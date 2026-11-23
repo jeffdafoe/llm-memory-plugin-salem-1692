@@ -297,24 +297,58 @@ const (
 // while the keeper forges the good, so it needs a window that outlasts the
 // batch. A missing / rate-less recipe (shouldn't reach here — isCommissionOrder
 // gates on makeableRecipe) yields a zero lead time and falls to the floor.
-func commissionOrderExpiresAt(w *World, item ItemKind, at time.Time) time.Time {
-	seconds := CycleDurationSeconds(w.Recipes[item])
+//
+// units is how many of the good the keeper must still forge before this order
+// can be handed over (commissionUnitsToForge): the lead time is one cycle per
+// batch those units need, so a five-shovel commission gets five shovels' worth
+// of forge time, not one (LLM-992). units below 1 counts as 1.
+func commissionOrderExpiresAt(w *World, item ItemKind, units int, at time.Time) time.Time {
+	recipe := w.Recipes[item]
+	seconds := CycleDurationSeconds(recipe)
 	if seconds <= 0 {
 		// No / rate-less recipe (shouldn't reach here — isCommissionOrder gates on
 		// makeableRecipe). Fall to the floor rather than compute from zero.
 		return at.Add(CommissionOrderWindowFloor)
 	}
+	perBatch := recipeBatchQty(recipe)
+	batches := int64(1)
+	if units > perBatch {
+		// Ceiling division without units+perBatch-1, which overflows when a
+		// corrupt reservation saturated units to MaxInt.
+		batches = int64(units / perBatch)
+		if units%perBatch != 0 {
+			batches++
+		}
+	}
 	// Guard the arithmetic: cap the lead before scaling so a malformed recipe
-	// (an absurd rate) can't overflow int64 in time.Duration(seconds)*Second*Slack.
+	// (an absurd rate) or an absurd unit count can't overflow int64 in
+	// time.Duration(seconds*batches)*Second*Slack.
 	maxLeadSeconds := int64(CommissionOrderWindowMax / time.Second / CommissionOrderSlack)
-	if seconds > maxLeadSeconds {
+	if seconds > maxLeadSeconds/batches {
 		return at.Add(CommissionOrderWindowMax)
 	}
-	window := time.Duration(seconds)*time.Second*CommissionOrderSlack + CommissionOrderGrace
+	window := time.Duration(seconds*batches)*time.Second*CommissionOrderSlack + CommissionOrderGrace
 	if window < CommissionOrderWindowFloor {
 		window = CommissionOrderWindowFloor
 	}
 	return at.Add(window)
+}
+
+// commissionUnitsToForge is how many of item the seller must still make before
+// the newest commission for it can be delivered: every unit his Ready orders
+// for that good have reserved (the new commission included, so call it after
+// the order is minted) less what he already holds. Earlier orders take the
+// stock first, so a commission booked behind others waits for their units too.
+// Never below 1: a commission is minted only for a shortfall.
+//
+// MUST run on the world goroutine (reads w.Orders).
+func commissionUnitsToForge(w *World, seller *Actor, item ItemKind) int {
+	reserved := outstandingReadyOrderQty(w, seller.ID, item)
+	units := reserved - seller.Inventory[item]
+	if units < 1 {
+		return 1
+	}
+	return units
 }
 
 // finalizeOrderTerminal flips an Order to a terminal state, stamps the
