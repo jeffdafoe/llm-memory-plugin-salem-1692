@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -1078,7 +1079,13 @@ func renderActor(b *strings.Builder, a ActorView) {
 	case a.VisitorTakings > 0 && a.Coins <= 0:
 		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings)
 	case a.VisitorTakings > 0:
-		fmt.Fprintf(b, "Coins in your purse: %d, of which %d is left to spend on this trip — the other %d is takings, bound for home.\n", a.Coins+a.VisitorTakings, a.Coins, a.VisitorTakings)
+		// LLM-996: saturate rather than wrap. Both terms are positive here, so a
+		// sum past MaxInt would otherwise print a bare negative purse.
+		total := math.MaxInt
+		if a.VisitorTakings <= math.MaxInt-a.Coins {
+			total = a.Coins + a.VisitorTakings
+		}
+		fmt.Fprintf(b, "Coins in your purse: %d, of which %d is left to spend on this trip — the other %d is takings, bound for home.\n", total, a.Coins, a.VisitorTakings)
 	case a.Coins <= 0 && holdsTradeableGoods:
 		b.WriteString("Coins in your purse: 0 — you have no coins to spend, but you may be able to offer goods you carry in trade.\n")
 	case a.Coins <= 0:
