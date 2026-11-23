@@ -1,12 +1,24 @@
 [Unit]
 Description=Salem 1692 Engine
 After=network.target postgresql.service
-# Crash-loop guard: if the engine fails StartLimitBurst times within
+# Crash-loop guard: if the engine starts StartLimitBurst times within
 # StartLimitIntervalSec, systemd stops retrying and leaves it `failed` instead
 # of restarting every RestartSec forever. A deterministic boot failure (e.g.
-# bad data failing LoadWorld) should halt visibly within ~25s, not loop for an
-# hour. Transient failures recover well within the burst.
-StartLimitIntervalSec=120
+# bad data failing LoadWorld) halts within ~25s.
+#
+# The window is 30 minutes, not 2, so a crash that comes well after boot also
+# trips it (LLM-997): the LLM-995 panic came ~90s after each boot, never put
+# more than 2 starts in a 120s window, and looped 36 times in a day unseen.
+# systemd refuses the start after the 5th inside one window, so a loop whose
+# start-to-start period (time to crash plus RestartSec) is under 5 minutes is
+# refused on its 6th start, within ~25 minutes, with margin to spare: exactly
+# 6 minutes would put that 6th start on the window's edge. A command panic no
+# longer gets here (World.Run recovers it and raises the command_panic alarm);
+# this catches what recover cannot, such as a fatal runtime error, a panic in
+# republish, or a ticker panic.
+# deploy.yml runs `systemctl reset-failed` before its restart, so deploys do
+# not count toward the burst.
+StartLimitIntervalSec=1800
 StartLimitBurst=5
 
 [Service]

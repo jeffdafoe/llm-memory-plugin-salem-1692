@@ -1782,6 +1782,12 @@ type World struct {
 	// See world_command_probe.go.
 	worldCmdHealth *WorldCommandHealth
 
+	// cmdPanicHealth records the command panics Run has recovered (LLM-997),
+	// for the command_panic alarm. Written by the world goroutine, read from
+	// HTTP request goroutines. Always non-nil for a NewWorld-built world; every
+	// method is nil-safe regardless. See command_panic_health.go.
+	cmdPanicHealth *CommandPanicHealth
+
 	// eventSeq is the monotonic per-run event counter. emit increments it
 	// and assigns the value as the new event's EventID. World-goroutine-
 	// only — emit runs exclusively inside Command.Fn, so no atomic is
@@ -1864,6 +1870,7 @@ func NewWorld(repo Repository) *World {
 		repo:                 repo,
 		tickerHealth:         newTickerHealth(),
 		worldCmdHealth:       newWorldCommandHealth(),
+		cmdPanicHealth:       &CommandPanicHealth{},
 		deadlockLog:          newDeadlockLog(0),
 	}
 	w.republish()
@@ -2397,19 +2404,12 @@ func (w *World) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			var value any
-			var err error
-			if cmd.inheritedRoot != 0 {
-				// Cross-boundary command (PR 3's worker tool-call): run the
-				// whole handler under the inherited cascade root so events
-				// it emits continue that root and it cannot bleed into the
-				// next command. See newRootedCommand.
-				w.withRoot(cmd.inheritedRoot, func() {
-					value, err = cmd.Fn(w)
-				})
-			} else {
-				value, err = cmd.Fn(w)
-			}
+			// LLM-997: a panic in the Fn fails this command with a
+			// *CommandPanicError instead of killing the engine; the rest of
+			// the loop (republish, deltas, reply) runs as for any failed
+			// command. emitPostCommandDeltas contains its own panics the same
+			// way. See command_panic_health.go.
+			value, err := w.runCommandFn(cmd)
 			w.TickCounter++
 			// Capture the pre-republish published snapshot so emitNeedsDeltas can
 			// diff this command's need changes against it. Loaded before republish
@@ -2423,9 +2423,7 @@ func (w *World) Run(ctx context.Context) {
 			// snapshot's PublishedAt the beat window compares against.
 			w.reconcileQuoteCoverage(time.Now())
 			w.republish()
-			w.emitNeedsDeltas(prevSnap)
-			w.emitDormancyDeltas(prevSnap)
-			w.emitCoinsDeltas(prevSnap)
+			w.emitPostCommandDeltas(prevSnap)
 			if cmd.Reply != nil {
 				cmd.Reply <- CommandResult{Value: value, Err: err}
 			}

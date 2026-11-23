@@ -496,6 +496,16 @@
         daemon_reload: yes
       when: service_file.changed
 
+    # A deploy is a deliberate start, so it must not count toward the unit's
+    # crash-loop guard (StartLimitBurst in StartLimitIntervalSec), and it must
+    # still start an engine the guard has already halted: that deploy is how the
+    # fix for the crash ships. reset-failed flushes the start-rate counter and
+    # clears a `failed` state; it is a no-op on a healthy unit (LLM-997).
+    - name: Reset the engine's start-limit counter
+      command: systemctl reset-failed salem-engine
+      changed_when: false
+      failed_when: false
+
     - name: Enable and restart engine
       systemd:
         name: salem-engine
