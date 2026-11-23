@@ -21148,11 +21148,11 @@ func TestGoldensPurseNeverRendersBareNegative(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			prompt := renderScenario(sc)
-			if strings.Contains(prompt, "Coins in your purse: -") {
+			if strings.Contains(prompt, "Coins in your purse: -") || strings.Contains(prompt, "of which -") {
 				t.Errorf("scenario %q renders a bare negative purse; a debt must be said in words (LLM-993)", sc.name)
 			}
 			snap, actorID, _ := sc.build()
-			if a := snap.Actors[actorID]; a != nil && a.Coins < 0 && a.VisitorState == nil && !strings.Contains(prompt, "coins in debt") {
+			if a := snap.Actors[actorID]; a != nil && a.Coins < 0 && !strings.Contains(prompt, "coins in debt") {
 				t.Errorf("scenario %q: subject purse %d but no debt line rendered", sc.name, a.Coins)
 			}
 		})

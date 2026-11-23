@@ -1072,6 +1072,10 @@ func renderActor(b *strings.Builder, a ActorView) {
 	// come in don't silently vanish from the scene. Without this a
 	// proceeds-flush factor read a fat purse and looped offers the pay gates
 	// refuse.
+	// LLM-993: a visitor whose buying purse went below zero still carries his
+	// takings; say the debt rather than "-12 left to spend".
+	case a.VisitorTakings > 0 && a.Coins < 0:
+		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home, and you are %d coins in debt besides. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings, -a.Coins)
 	case a.VisitorTakings > 0 && a.Coins == 0:
 		fmt.Fprintf(b, "Coins in your purse: %d — but all of it is the trip's takings, bound for home. Your buying purse for this journey is spent; trade goods you carry if you still want something.\n", a.VisitorTakings)
 	case a.VisitorTakings > 0:

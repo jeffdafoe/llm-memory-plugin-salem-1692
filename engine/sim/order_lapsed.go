@@ -88,10 +88,20 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 	}
 	buyer := w.Actors[o.BuyerID]
 	seller := w.Actors[o.SellerID]
-	if buyer == nil || seller == nil {
-		// A party has left the world (a despawned visitor): there is no one to
-		// tell on that side and no counterparty name to tell the other.
+	// Say only what the settlement did. A refund credits the buyer only when the
+	// buyer is still in the world (refundOrderPayment), so with the buyer gone no
+	// coin moved and there is nothing to tell either side. A forfeit needs the
+	// seller (it requires his stock), and stands whether or not the buyer is
+	// still here. A party who is gone is not told; the survivor is, with a
+	// fallback name if the other party's actor is gone.
+	if !forfeited && buyer == nil {
 		return
+	}
+	nameOf := func(a *Actor) string {
+		if a == nil {
+			return ""
+		}
+		return a.DisplayName
 	}
 	units := o.Qty
 	if n := len(o.ConsumerIDs); n > 1 {
@@ -100,18 +110,21 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 	lot := inputCountPhrase(w, o.Item, units)
 	deposit := o.Deposit > 0 && o.Deposit < o.Amount
 	debt := 0
-	if !forfeited && seller.Coins < 0 {
+	if !forfeited && seller != nil && seller.Coins < 0 {
 		debt = -seller.Coins
 	}
-	tell := func(party, counterparty *Actor, narration string) {
+	tell := func(party *Actor, counterpartyID ActorID, counterpartyName, narration string) {
+		if party == nil {
+			return
+		}
 		tryStampWarrant(w, party, WarrantMeta{
-			TriggerActorID: counterparty.ID,
+			TriggerActorID: counterpartyID,
 			Reason: OrderLapsedWarrantReason{
 				OrderID:       o.ID,
-				Counterparty:  counterparty.ID,
+				Counterparty:  counterpartyID,
 				NarrationText: narration,
 			},
-			SourceActorID: counterparty.ID,
+			SourceActorID: counterpartyID,
 			OccurredAt:    at,
 		}, at)
 		if _, err := AppendActionLogEntry(ActionLogEntry{
@@ -119,7 +132,7 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 			OccurredAt:       at,
 			ActionType:       ActionTypeOrderLapsed,
 			Text:             narration,
-			CounterpartyName: counterparty.DisplayName,
+			CounterpartyName: counterpartyName,
 		}).Fn(w); err != nil {
 			log.Printf("sim/order: append order_lapsed for %s (order %d): %v", party.DisplayName, o.ID, err)
 		}
@@ -134,13 +147,13 @@ func narrateLapsedOrder(w *World, o *Order, forfeited bool, at time.Time) {
 				"amount":       amount,
 				"deposit":      deposit,
 				"forfeited":    forfeited,
-				"counterparty": counterparty.DisplayName,
+				"counterparty": counterpartyName,
 				"text":         narration,
 			},
 			SpeakerName: party.DisplayName,
 			Source:      "engine",
 		})
 	}
-	tell(seller, buyer, OrderLapsedSellerNarration(buyer.DisplayName, lot, amount, deposit, forfeited, debt))
-	tell(buyer, seller, OrderLapsedBuyerNarration(seller.DisplayName, lot, amount, deposit, forfeited))
+	tell(seller, o.BuyerID, nameOf(buyer), OrderLapsedSellerNarration(nameOf(buyer), lot, amount, deposit, forfeited, debt))
+	tell(buyer, o.SellerID, nameOf(seller), OrderLapsedBuyerNarration(nameOf(seller), lot, amount, deposit, forfeited))
 }
