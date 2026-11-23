@@ -1142,3 +1142,65 @@ func TestCommandPanicAlarm_NamesTheActorWhenATurnPanicked(t *testing.T) {
 		t.Errorf("detail names a turn with no actor: %s", a.Detail)
 	}
 }
+
+// --- engine_crashed (LLM-999) ---
+
+func testEngineCrash(found time.Time) *sim.EngineCrash {
+	return &sim.EngineCrash{
+		CrashedAt: found.Add(-6 * time.Second),
+		FoundAt:   found,
+		Message:   "fatal error: concurrent map writes",
+		Frames:    []string{"sim.(*World).republish (world.go:2701)", "sim.(*World).Run (world.go:2425)"},
+	}
+}
+
+func TestEngineCrashedAlarm_SilentWithNoCrash(t *testing.T) {
+	if a, ok := engineCrashedAlarm(nil, time.Now()); ok {
+		t.Errorf("alarm fired with no crash: %+v", a)
+	}
+}
+
+func TestEngineCrashedAlarm_FiresAfterTheBootThatFoundIt(t *testing.T) {
+	found := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	c := testEngineCrash(found)
+	now := found.Add(3 * time.Minute)
+	a, ok := engineCrashedAlarm(c, now)
+	if !ok {
+		t.Fatal("no alarm three minutes after the boot that found the crash")
+	}
+	if a.Kind != alarmKindEngineCrashed || !a.Since.Equal(c.CrashedAt) || a.LastError != c.Message {
+		t.Errorf("alarm = %+v", a)
+	}
+	for _, want := range []string{"THE ENGINE CRASHED", "3 minutes ago", "fatal error: concurrent map writes", "sim.(*World).republish (world.go:2701) < sim.(*World).Run", "crash.prev.log"} {
+		if !strings.Contains(a.Detail, want) {
+			t.Errorf("detail missing %q: %s", want, a.Detail)
+		}
+	}
+}
+
+func TestEngineCrashedAlarm_ClearsAfterTheWindow(t *testing.T) {
+	found := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	c := testEngineCrash(found)
+	// The window runs from the crash, not from the boot that found it.
+	if _, ok := engineCrashedAlarm(c, c.CrashedAt.Add(sim.EngineCrashAlarmWindow)); ok {
+		t.Error("alarm still firing a full window after the crash")
+	}
+	if _, ok := engineCrashedAlarm(c, c.CrashedAt.Add(sim.EngineCrashAlarmWindow-time.Second)); !ok {
+		t.Error("alarm should still fire a second inside the window")
+	}
+}
+
+func TestEvaluateAlarms_IncludesEngineCrashed(t *testing.T) {
+	s := &Server{}
+	now := time.Now().UTC()
+	s.SetEngineCrash(testEngineCrash(now.Add(-time.Minute)))
+	found := false
+	for _, a := range s.evaluateAlarms(now) {
+		if a.Kind == alarmKindEngineCrashed {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("evaluateAlarms did not include engine_crashed")
+	}
+}

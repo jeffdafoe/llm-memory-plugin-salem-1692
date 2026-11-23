@@ -29,6 +29,13 @@ EnvironmentFile=/etc/salem-1692/env
 ExecStart={{ project_root }}/engine/salem
 Restart=on-failure
 RestartSec=5
+# LLM-999: /var/lib/salem-engine, owned by the service user and kept across
+# restarts. systemd passes it as $STATE_DIRECTORY; the engine keeps its crash
+# file there (the Go runtime writes a fatal crash to it, and the next boot
+# raises the engine_crashed umbilical alarm). Outside project_root on purpose:
+# the deploy's synchronize step deletes unknown files under engine/.
+StateDirectory=salem-engine
+StateDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target

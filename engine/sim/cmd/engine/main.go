@@ -83,11 +83,16 @@ type runtime struct {
 	// (SetVABudgetHealth) so a budget-capped NPC brain raises a live alarm. Nil in
 	// the headless lifecycle test → the alarm never fires.
 	VABudgetHealth *sim.VABudgetHealth
-	Save           sim.CheckpointFunc
-	TickSink       sim.TickTelemetrySink
-	HTTPAddr       string
-	Auth           httpapi.Authenticator
-	Umbilical      *telemetry.RingSink
+	// EngineCrash is the crash the previous engine process left in the crash
+	// file (LLM-999), read at the top of main; run hands it to the umbilical
+	// server (SetEngineCrash) for the engine_crashed alarm. Nil when there was
+	// none.
+	EngineCrash *sim.EngineCrash
+	Save        sim.CheckpointFunc
+	TickSink    sim.TickTelemetrySink
+	HTTPAddr    string
+	Auth        httpapi.Authenticator
+	Umbilical   *telemetry.RingSink
 	// UmbilicalControl arms the world-mutating umbilical control routes. Only
 	// meaningful when Umbilical is non-nil; run wires it via SetControlEnabled.
 	UmbilicalControl bool
@@ -159,6 +164,29 @@ type runtime struct {
 }
 
 func main() {
+	// LLM-999: read the crash the previous process left behind, then arm a fresh
+	// crash file for this one — first, so a crash anywhere in startup (LoadWorld
+	// included) is captured too. STATE_DIRECTORY is set by systemd from the
+	// unit's StateDirectory=; unset (a dev run) disables capture.
+	stateDir := os.Getenv("STATE_DIRECTORY")
+	engineCrash, crashReadErr := sim.ReadPreviousEngineCrash(stateDir, time.Now().UTC())
+	if engineCrash != nil {
+		log.Printf("engine: the previous process CRASHED at %s: %s", engineCrash.CrashedAt.Format(time.RFC3339), engineCrash.Message)
+	}
+	switch {
+	case stateDir == "":
+		log.Printf("engine: crash capture disabled (STATE_DIRECTORY unset)")
+	case crashReadErr != nil:
+		// The previous crash could not be read or kept aside, and arming would
+		// truncate crash.log, its only copy. Leave it for the next boot and run
+		// this process without crash capture.
+		log.Printf("engine: crash capture DISABLED for this run: previous crash file: %v", crashReadErr)
+	default:
+		if err := sim.ArmEngineCrashOutput(stateDir); err != nil {
+			log.Printf("engine: crash capture disabled: %v", err)
+		}
+	}
+
 	databaseURL := requireEnv("DATABASE_URL")
 	llmMemoryURL := getEnv("LLM_MEMORY_URL", "http://127.0.0.1:3100")
 	port := getEnv("PORT", "8080")
@@ -303,6 +331,7 @@ func main() {
 		World:          world,
 		LLMClient:      llmClient,
 		VABudgetHealth: vaBudgetHealth,
+		EngineCrash:    engineCrash,
 		Save: func(ctx context.Context, cp *sim.CheckpointSnapshot) error {
 			return pg.SaveWorld(ctx, repo, cp)
 		},
@@ -756,6 +785,7 @@ func run(rt runtime, stop stopSignals) error {
 			}
 			server.SetCheckpointHealth(checkpointHealth)
 			server.SetVABudgetHealth(rt.VABudgetHealth) // LLM-513: budget-exhaustion alarm feed
+			server.SetEngineCrash(rt.EngineCrash)       // LLM-999: previous process's crash alarm
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
 				server.SetRouteForcer(cascade.ForceRouteCommand) // backs /umbilical/route (force a crier/washerwoman tour on demand)

@@ -108,6 +108,14 @@ const alarmKindVABudgetExceeded = "va_budget_exceeded"
 // command that panicked may have left a change half done in memory.
 const alarmKindCommandPanic = "command_panic"
 
+// alarmKindEngineCrashed fires for sim.EngineCrashAlarmWindow after the engine
+// process crashed, as read from the crash file at the next boot (LLM-999). It
+// covers what command_panic cannot: a panic outside a command or delta emit (in
+// republish, or in a ticker goroutine) and fatal runtime errors, which still end
+// the process. systemd restarts the engine, so without this the only trace is
+// journald.
+const alarmKindEngineCrashed = "engine_crashed"
+
 // worldCommandTimeoutStreakThreshold is how many CONSECUTIVE probe timeouts raise
 // the alarm.
 //
@@ -195,6 +203,9 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 	if a, ok := vaBudgetAlarm(s.vaBudgetHealth.Snapshot(), now); ok {
 		out = append(out, a)
 	}
+	if a, ok := engineCrashedAlarm(s.engineCrash, now); ok {
+		out = append(out, a)
+	}
 	// Nil-guarded: unlike the health recorders, s.world is a bare pointer whose
 	// methods are not nil-safe, and this runs on EVERY umbilical response — a
 	// worldless test server must not panic the whole surface.
@@ -221,6 +232,31 @@ func (s *Server) evaluateAlarms(now time.Time) []Alarm {
 		}
 	}
 	return out
+}
+
+// engineCrashedAlarm fires while the crash a boot found is less than
+// sim.EngineCrashAlarmWindow old, counted from the crash itself (the crash
+// file's write time), so a restart inside the hour does not shorten it. Since
+// is the crash time; LastError is the crash's headline.
+func engineCrashedAlarm(c *sim.EngineCrash, now time.Time) (Alarm, bool) {
+	if c == nil || now.Sub(c.CrashedAt) >= sim.EngineCrashAlarmWindow {
+		return Alarm{}, false
+	}
+	detail := "THE ENGINE CRASHED: the previous engine process died " + humanizeSince(now.Sub(c.CrashedAt)) +
+		" ago and systemd restarted it: " + c.Message
+	if len(c.Frames) > 0 {
+		detail += " at " + strings.Join(c.Frames, " < ")
+	}
+	detail += ". Everything since the last checkpoint before the crash was lost. This was not a command panic " +
+		"(those are contained); look for a panic in republish or a ticker, or a fatal runtime error. " +
+		"The full crash text is in the engine's state directory (crash.prev.log) and in journald. " +
+		"This alarm clears an hour after the crash."
+	return Alarm{
+		Kind:      alarmKindEngineCrashed,
+		Since:     c.CrashedAt,
+		LastError: c.Message,
+		Detail:    detail,
+	}, true
 }
 
 // commandPanicAlarm classifies the world's recovered-panic record: it fires
