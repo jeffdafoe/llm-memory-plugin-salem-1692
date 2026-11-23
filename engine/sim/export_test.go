@@ -560,6 +560,11 @@ func CommissionOrderExpiresAt(w *World, item ItemKind, units int, at time.Time) 
 	return commissionOrderExpiresAt(w, item, units, at)
 }
 
+// CommissionUnitsToForge exposes the units-still-to-forge count (LLM-992).
+func CommissionUnitsToForge(w *World, seller *Actor, item ItemKind) int {
+	return commissionUnitsToForge(w, seller, item)
+}
+
 // ResolveOrderReadyBy exposes the ready_in_days → ReadyBy resolver
 // (advance booking: lodging-only, counter-carry, today default, cap) so
 // order_readyby_test.go can exercise it without a full PayWithItem flow.

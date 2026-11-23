@@ -331,6 +331,11 @@ func commissionOrderExpiresAt(w *World, item ItemKind, units int, at time.Time) 
 	if window < CommissionOrderWindowFloor {
 		window = CommissionOrderWindowFloor
 	}
+	// The guard above budgets the forge time and slack but not the grace, so a
+	// lead right at the cap would otherwise overshoot it by the grace.
+	if window > CommissionOrderWindowMax {
+		window = CommissionOrderWindowMax
+	}
 	return at.Add(window)
 }
 
@@ -344,6 +349,11 @@ func commissionOrderExpiresAt(w *World, item ItemKind, units int, at time.Time) 
 // MUST run on the world goroutine (reads w.Orders).
 func commissionUnitsToForge(w *World, seller *Actor, item ItemKind) int {
 	reserved := outstandingReadyOrderQty(w, seller.ID, item)
+	if reserved == math.MaxInt {
+		// Saturated (corrupt or absurd reservations): subtracting stock from the
+		// clamped total could undercount, so take the longest window instead.
+		return math.MaxInt
+	}
 	units := reserved - seller.Inventory[item]
 	if units < 1 {
 		return 1

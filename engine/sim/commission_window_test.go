@@ -142,11 +142,38 @@ func TestCommissionOrderExpiresAt_BatchesAndCap(t *testing.T) {
 		{11, window(2)},
 		{20, window(2)},
 		{21, window(3)},
+		// 21 batches × 2h × slack 4 is exactly the 7-day cap; the grace must
+		// not push it past (code_review).
+		{210, at.Add(sim.CommissionOrderWindowMax)},
 		{math.MaxInt, at.Add(sim.CommissionOrderWindowMax)},
 	}
 	for _, c := range cases {
 		if got := sim.CommissionOrderExpiresAt(w, "porridge", c.units, at); !got.Equal(c.want) {
 			t.Errorf("units %d: ExpiresAt = %v, want %v", c.units, got, c.want)
 		}
+	}
+}
+
+// TestCommissionUnitsToForge_SaturatedReservations: when the seller's Ready
+// reservations saturate at MaxInt, a large inventory must not be subtracted
+// from the clamped total (that would read as "1 unit to forge"); the count
+// stays at MaxInt so the window goes to the cap (code_review).
+func TestCommissionUnitsToForge_SaturatedReservations(t *testing.T) {
+	seller := &sim.Actor{ID: "smith", Inventory: map[sim.ItemKind]int{"nail": math.MaxInt}}
+	w := &sim.World{Orders: map[sim.OrderID]*sim.Order{
+		1: {ID: 1, State: sim.OrderStateReady, SellerID: "smith", Item: "nail", Qty: math.MaxInt, ConsumerIDs: []sim.ActorID{"a"}},
+		2: {ID: 2, State: sim.OrderStateReady, SellerID: "smith", Item: "nail", Qty: math.MaxInt, ConsumerIDs: []sim.ActorID{"b"}},
+	}}
+	if got := sim.CommissionUnitsToForge(w, seller, "nail"); got != math.MaxInt {
+		t.Errorf("units = %d, want MaxInt (saturated reservations)", got)
+	}
+
+	// Unsaturated: reserved 7, held 2 → 5 still to forge.
+	w.Orders = map[sim.OrderID]*sim.Order{
+		1: {ID: 1, State: sim.OrderStateReady, SellerID: "smith", Item: "nail", Qty: 7, ConsumerIDs: []sim.ActorID{"a"}},
+	}
+	seller.Inventory["nail"] = 2
+	if got := sim.CommissionUnitsToForge(w, seller, "nail"); got != 5 {
+		t.Errorf("units = %d, want 5", got)
 	}
 }
