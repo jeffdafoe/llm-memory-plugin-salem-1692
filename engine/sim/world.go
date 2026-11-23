@@ -1891,12 +1891,14 @@ func NewWorld(repo Repository) *World {
 // then-prune). Passing nil clears the sink and restores legacy no-prune
 // behavior. Safe to call before Run, or from inside a Command.Fn.
 //
-// Wiring order matters at production startup: SetTerminalOrderSink must
-// be called BEFORE LoadWorld so the LoadWorld-time
-// restartExpirePendingOrders pass also write-through-prunes any orders
-// whose ExpiresAt elapsed during downtime. Calling it after LoadWorld
-// leaves those restart-time terminal entries sitting in w.Orders until
-// the next checkpoint reconciles them.
+// Production startup installs it AFTER pg.LoadWorld on purpose (LLM-994;
+// see the call in cmd/engine/main.go). The LoadWorld-time
+// restartExpirePendingOrders pass then takes the no-prune path: an order
+// whose ExpiresAt elapsed during downtime stays in w.Orders as Expired, and
+// the checkpoint saves that state in the same transaction as the buyer's
+// refunded purse. A write-through at load would mark the order Expired in
+// pg before the refund is saved, so a crash before the first checkpoint
+// would lose the refund.
 func (w *World) SetTerminalOrderSink(s TerminalOrderSink) {
 	w.terminalOrderSink = s
 }
@@ -1932,7 +1934,9 @@ func (w *World) writeOrderlessSettlement(e *PayLedgerEntry, at time.Time) {
 // Passing nil clears it (the default — AppendActionLogDurable becomes a no-op).
 // Safe to call before Run, or from inside a Command.Fn. The production impl is
 // async (see ActionLogSink), so this only stores the reference; the caller owns
-// starting and draining the sink's writer goroutine.
+// starting and draining the sink's writer goroutine. pg.LoadWorld calls it with
+// Repository.ActionLog before loading anything (LLM-994), so the durable rows
+// the FinalizeLoad restart passes write are not dropped.
 func (w *World) SetActionLogSink(s ActionLogSink) {
 	w.actionLogSink = s
 }

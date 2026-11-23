@@ -240,10 +240,23 @@ func main() {
 			umbilical.Stats().Capacity, promptRing.Stats().PerActorCapacity, chatRing.Stats().PerSceneCapacity, chatRing.Stats().MaxScenes, umbilicalControl)
 	}
 
+	// Install the durable agent_action_log sink (ZBBS-WORK-376) on the repo
+	// BEFORE LoadWorld (LLM-994). It feeds the four stateful NPCs' nightly dream
+	// memory via llm-memory-api's daily sim push. pg.LoadWorld hands it to the
+	// World before any load step runs, so the rows FinalizeLoad's restart passes
+	// write reach it — an order that lapsed while the engine was down narrates
+	// its order_lapsed row there. Installed after load, those rows were dropped.
+	// Async: Append enqueues onto the repo's buffered channel on the world
+	// goroutine; the writer goroutine (started in run, drained at shutdown before
+	// pool.Close) does the INSERT off the world goroutine. Rows appended during
+	// load simply wait in that channel until run starts the writer.
+	actionLogSink := pg.NewActionLogRepo(pool)
+	repo.ActionLog = actionLogSink
+
 	// requireAllImpl=true is the production gate: LoadWorld hard-fails if any
-	// LOAD sub-repo is still a notImpl stub. ActionLog + TickTelemetry remain
-	// notImpl, but they're write-only sinks LoadWorld never reads, so the gate
-	// passes. A cold-loaded World is fully finalized (FinalizeLoad ran inside).
+	// LOAD sub-repo is still a notImpl stub. TickTelemetry may still be notImpl
+	// (umbilical off), but it's a write-only sink LoadWorld never reads, so the
+	// gate passes. A cold-loaded World is fully finalized (FinalizeLoad ran inside).
 	world, err := pg.LoadWorld(context.Background(), repo, true)
 	if err != nil {
 		log.Fatalf("engine: load world: %v", err)
@@ -273,8 +286,16 @@ func main() {
 	// pg at transition time NOR pruned from w.Orders, so they accumulate in memory
 	// and in every published snapshot for the life of the process (checkpoint still
 	// reconciles pg, so it's bloat, not data loss). repo.Orders satisfies the narrow
-	// TerminalOrderSink via its WriteTerminal method. pg.LoadWorld doesn't run the
-	// restartExpirePendingOrders pass, so there's no before-load ordering to honor.
+	// TerminalOrderSink via its WriteTerminal method.
+	//
+	// Installed AFTER load on purpose. pg.LoadWorld does run the
+	// restartExpirePendingOrders pass (inside FinalizeLoad), so an order that
+	// lapsed while the engine was down takes the no-prune path and stays in
+	// w.Orders. That is the safer side: its refund lives in the buyer's purse,
+	// which only the checkpoint saves, and the checkpoint saves the order's
+	// Expired state in the same transaction. A write-through at boot would mark
+	// the order Expired in pg at once, and a crash before the first checkpoint
+	// would then lose the refund while pg says the order is settled.
 	world.SetTerminalOrderSink(repo.Orders)
 
 	// Install the durable order-less settlement sink (LLM-246). consume_now
@@ -284,14 +305,6 @@ func main() {
 	// (tavern meals, stew, porridge). repo.Orders satisfies the narrow
 	// OrderlessSettlementSink via its WriteOrderlessSettlement method.
 	world.SetOrderlessSettlementSink(repo.Orders)
-
-	// Install the durable agent_action_log sink (ZBBS-WORK-376). It feeds the
-	// four stateful NPCs' nightly dream memory via llm-memory-api's daily sim
-	// push. Async: Append enqueues on the world goroutine; the writer goroutine
-	// (started in run, drained at shutdown before pool.Close) does the INSERT
-	// off the world goroutine.
-	actionLogSink := pg.NewActionLogRepo(pool)
-	world.SetActionLogSink(actionLogSink)
 
 	// Narration pool expansion (ZBBS-WORK-399): merge previously generated
 	// narration lines into the seed pools, and install the durable sink the

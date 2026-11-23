@@ -119,6 +119,24 @@ import (
 func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*sim.World, error) {
 	w := sim.NewWorld(repo)
 
+	// Hand the durable action-log sink to the World before any load step runs
+	// (LLM-994). FinalizeLoad's restart passes write durable rows — an order
+	// that lapsed while the engine was down narrates an order_lapsed row for
+	// each party — and AppendActionLogDurable drops a row when no sink is
+	// installed. main.go sets repo.ActionLog to the pg sink before calling
+	// LoadWorld; that sink only enqueues, so the rows wait in its buffered
+	// channel until the writer goroutine starts. Like every durable row, they
+	// are lost if the process dies before the writer INSERTs them — the
+	// accepted audit-trail window ActionLogRepo documents — and a checkpoint
+	// that lands first saves the order as Expired, so a later boot does not
+	// write them again. The notImpl stub (tests that never wire a sink) is
+	// left out: its Append only returns errNotImpl. The type assertion
+	// `repo.ActionLog.(notImplActionLog)` reports whether the interface holds
+	// that exact stub type.
+	if _, stub := repo.ActionLog.(notImplActionLog); repo.ActionLog != nil && !stub {
+		w.SetActionLogSink(repo.ActionLog)
+	}
+
 	// Step 1: VillageObjects (no peer deps; first because Structures
 	// bridge check depends on the loaded set).
 	villageObjects, err := repo.VillageObjects.LoadAll(ctx)
@@ -173,9 +191,8 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 	// true iff the sub-repo's load succeeded (err was nil before
 	// notImpl detection); `err` carries any hard failure (real SQL
 	// error, or notImpl-with-requireAllImpl=true). ActionLog has no
-	// LoadAll (Append-only sink), so it's NOT part of this loop;
-	// cutover-time main.go wiring is where ActionLog gains a pg
-	// projection.
+	// LoadAll (Append-only sink), so it's NOT part of this loop; it is
+	// installed on the World at the top of LoadWorld instead.
 	actors, actorsErr := repo.Actors.LoadAll(ctx)
 	actorsLoaded, err := handleNotImpl("Actors", actorsErr, requireAllImpl)
 	if err != nil {
