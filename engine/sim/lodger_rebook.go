@@ -270,6 +270,23 @@ func RebookLodgersDue(now time.Time) Command {
 				// ways because the backstop settled it instead of a negotiation.
 				w.RecordCoinPaid(lodgerID, keeperID, nightly, now, CoinPaymentForGoods)
 
+				// The keeper's own memory of the rent (LLM-1018): the sweep
+				// charged the lodger with no turn of the keeper's in flight and
+				// no warrant, so without this the keeper never learns of it.
+				RecordPassiveSettlement(w, PassiveSettlement{
+					PartyID:          keeperID,
+					CounterpartyID:   lodgerID,
+					CounterpartyName: lodger.DisplayName,
+					Kind:             SettlementRent,
+					Amount:           nightly,
+					Text:             RentSettledNarration(lodger.DisplayName, nightly),
+					Extra: map[string]any{
+						"structure_id":  string(room.StructureID),
+						"lodging_until": newExpires,
+					},
+					At: now,
+				})
+
 				result.Renewals = append(result.Renewals, RebookLodgerRecord{
 					LodgerID:     lodgerID,
 					KeeperID:     keeperID,

@@ -88,7 +88,7 @@ func TestRebook_RenewsWhenAffordable(t *testing.T) {
 	if len(res.Renewals) != 1 {
 		t.Fatalf("renewals = %d, want 1", len(res.Renewals))
 	}
-	if len(w.ActionLog) != 1 || w.ActionLog[0].ActionType != ActionTypePaid {
+	if len(ringOfType(w, ActionTypePaid)) != 1 {
 		t.Errorf("want one ActionTypePaid audit entry, got %+v", w.ActionLog)
 	}
 }
@@ -290,10 +290,11 @@ func TestRebook_WritesDurableAudit(t *testing.T) {
 
 	// Lean ring entry carries the counterparty + amount so the talk panel /
 	// umbilical narrate "<lodger> pays Hannah 4 coins for a night's lodging".
-	if len(w.ActionLog) != 1 {
-		t.Fatalf("want 1 lean ring entry, got %d", len(w.ActionLog))
+	paidRing := ringOfType(w, ActionTypePaid)
+	if len(paidRing) != 1 {
+		t.Fatalf("want 1 lean paid ring entry, got %d", len(paidRing))
 	}
-	e := w.ActionLog[0]
+	e := paidRing[0]
 	if e.ActionType != ActionTypePaid || e.CounterpartyName != "Hannah" || e.Amount != 4 || e.Text != "a night's lodging" {
 		t.Errorf("lean entry = %+v, want paid / Hannah / 4 / 'a night's lodging'", e)
 	}
@@ -302,10 +303,11 @@ func TestRebook_WritesDurableAudit(t *testing.T) {
 	}
 
 	// Durable mirror to agent_action_log — the persistent, restart-surviving audit.
-	if len(sink.rows) != 1 {
-		t.Fatalf("want 1 durable row, got %d", len(sink.rows))
+	paidRows := durableOfType(sink.rows, ActionTypePaid)
+	if len(paidRows) != 1 {
+		t.Fatalf("want 1 durable paid row, got %d", len(paidRows))
 	}
-	r := sink.rows[0]
+	r := paidRows[0]
 	if r.ActorID != "jefferey" || r.ActionType != ActionTypePaid || r.Source != "engine" {
 		t.Errorf("durable row = %+v, want actor jefferey / paid / source engine", r)
 	}
@@ -398,10 +400,12 @@ func TestRebook_CoinRecordAgreesWithASeedOfItsOwnRow(t *testing.T) {
 	runRebook(t, w)
 
 	live := w.CoinRecord
-	if len(sink.rows) != 1 {
-		t.Fatalf("want 1 durable row to seed from, got %d", len(sink.rows))
+	// The keeper's `settled` row is not a seed input (not in the seed's types).
+	seedRows := durableOfType(sink.rows, ActionTypePaid)
+	if len(seedRows) != 1 {
+		t.Fatalf("want 1 durable paid row to seed from, got %d", len(seedRows))
 	}
-	row := sink.rows[0]
+	row := seedRows[0]
 
 	// Rebuild the world's record the way FinalizeLoad does at boot, off nothing but
 	// the durable row. The repo hands back what the pg loader would read from that

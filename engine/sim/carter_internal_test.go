@@ -432,8 +432,8 @@ func TestAdvanceCarter(t *testing.T) {
 	if carter.Coins != 38 || liz.Coins != 26 {
 		t.Errorf("coin: carter %d liz %d, want 38 / 26", carter.Coins, liz.Coins)
 	}
-	if len(w.ActionLog) != 1 || w.ActionLog[0].ActionType != ActionTypePaid || w.ActionLog[0].Amount != 25 ||
-		w.ActionLog[0].CounterpartyName != "Elizabeth Ellis" || w.ActionLog[0].Text != "25x wheat" {
+	if paid := ringOfType(w, ActionTypePaid); len(paid) != 1 || paid[0].Amount != 25 ||
+		paid[0].CounterpartyName != "Elizabeth Ellis" || paid[0].Text != "25x wheat" {
 		t.Errorf("action log = %+v, want one paid row, 25 coin to Elizabeth Ellis for 25x wheat", w.ActionLog)
 	}
 	if carter.VisitorState.SpendBudget != 38 {

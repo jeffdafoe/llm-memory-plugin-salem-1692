@@ -259,6 +259,17 @@ const (
 	// owner's day note and dream record the shovels as worn out, not missing.
 	ActionTypeFarmToolsWorn ActionType = "farm_tools_worn"
 
+	// ActionTypeSettled — the passive party's side of a settlement the engine
+	// made outside that party's turn (LLM-1018, settled.go RecordPassiveSettlement):
+	// the holder a carter bought from, the employer of a completed job, the keeper
+	// a lodger's night was rebooked with. ActorID is the passive party; Text is
+	// their pre-rendered line; CounterpartyName the other party. No HuddleID: the
+	// settlement belongs to no conversation. Durable {settlement, counterparty,
+	// counterparty_actor_id (non-visitor only), amount, text, …join ids}. Never
+	// read by the coin-record seed — the active party's row already counts the
+	// coin.
+	ActionTypeSettled ActionType = "settled"
+
 	// ActionTypeLeftNote — a player pinned a note to a door nobody answered
 	// (LLM-19, door_note.go LeaveDoorNote). DURABLE-ONLY: ActorID is the author;
 	// payload {note_id, structure_id, recipient, text}.

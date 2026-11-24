@@ -204,6 +204,8 @@ WITH actor_seed AS (
      WHERE actor_id = $1
        AND occurred_at < $2
        AND result = 'ok'
+       AND NOT (source = 'engine' AND huddle_id IS NULL
+                AND action_type IN ('order_lapsed', 'farm_tools_worn', 'refunded', 'settled'))
      ORDER BY occurred_at DESC, id DESC
      LIMIT 1
 ),
@@ -217,6 +219,8 @@ actor_raw AS (
        AND occurred_at >= $2
        AND occurred_at < $3
        AND result = 'ok'
+       AND NOT (source = 'engine' AND huddle_id IS NULL
+                AND action_type IN ('order_lapsed', 'farm_tools_worn', 'refunded', 'settled'))
 ),
 actor_rows AS (
     SELECT huddle_id,
@@ -299,9 +303,18 @@ SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
 // event's huddle (cascade/action_log.go) — spoke from spoke.HuddleID; paid /
 // consumed / delivered / took_break from the actor's CurrentHuddleID; walked
 // always "" (arrival precedes any huddle join). DurableActionLogRow.HuddleID ""
-// becomes SQL NULL. So huddle_id IS NULL means and only means "actor was not in
-// a huddle at insert time," and such rows correctly act as interval boundaries
-// rather than presence.
+// becomes SQL NULL, and such a row acts as an interval boundary rather than
+// presence. The exception is the engine-written types whose writers omit the
+// huddle ON PURPOSE (LLM-1018): order_lapsed, farm_tools_worn, refunded and
+// settled record something done TO the actor by a sweep and say nothing about
+// where the actor stood. actor_seed and actor_raw skip those, by explicit type,
+// so they neither start nor end an interval; the final SELECT still returns
+// them as the actor's own rows. Without the skip, a sweep row landing while a
+// keeper sat in a busy huddle cut the speech she overheard until her next own
+// row. The list is explicit because other engine rows (the estate rate, the
+// court) stamp CurrentHuddleID, and a NULL there means the actor really was in
+// no huddle — a boundary that must stay. A new engine type written without a
+// huddle belongs in the list.
 //
 // v2 differences from v1:
 //   - The cross-actor predicate keys on `spoke` only. v1 also matched `act`
