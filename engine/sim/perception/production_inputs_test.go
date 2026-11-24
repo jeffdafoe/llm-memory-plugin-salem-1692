@@ -398,10 +398,14 @@ func TestBuildProductionInputs_LowBoosterSurfacesBonus(t *testing.T) {
 	var b strings.Builder
 	renderProductionInputs(&b, v)
 	out := b.String()
-	for _, want := range []string{"## Keeping up production", "A measure of sage in each batch of milk adds 2 extra", "0 on hand", "running low"} {
+	for _, want := range []string{"## Keeping up production", electiveLeadIn, "A measure of sage in each batch of milk adds 2 extra", "You have 0 on hand", boostWithoutClause} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q\n--- got ---\n%s", want, out)
 		}
+	}
+	// LLM-1006: an elective line never carries the required-input tail.
+	if strings.Contains(out, "running low") {
+		t.Errorf("booster line reads as a required input (\"running low\")\n--- got ---\n%s", out)
 	}
 }
 
