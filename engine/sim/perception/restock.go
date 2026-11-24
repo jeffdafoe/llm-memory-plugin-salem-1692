@@ -1101,27 +1101,62 @@ func conversationalScopeStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) sim.
 // by InsideStructureID, so a seller merely loitering at the buyer's stall must
 // not read as co-present.
 type coPresenceScope struct {
-	huddle sim.HuddleID
-	scope  sim.StructureID
+	huddle     sim.HuddleID
+	scope      sim.StructureID                    // building scope for pay reachability ("" when upstairs)
+	rawScope   sim.StructureID                    // the subject's conversational building, unfiltered
+	structures map[sim.StructureID]*sim.Structure // for the seller's room scope (LLM-1010)
 }
 
 func buyerCoPresenceScope(snap *sim.Snapshot, buyerSnap *sim.ActorSnapshot) coPresenceScope {
+	raw := conversationalScopeStructure(snap, buyerSnap)
+	scope := raw
+	// LLM-1010: a buyer upstairs in a scoped room is out of the building's common
+	// conversation; EnsureColocatedHuddle forms nothing for her there, so the
+	// building branch must not name anyone. Her own huddle still counts.
+	if sim.RoomScopeIn(snap.Structures, buyerSnap.InsideStructureID, buyerSnap.InsideRoomID) != 0 {
+		scope = ""
+	}
 	return coPresenceScope{
-		huddle: buyerSnap.CurrentHuddleID,
-		scope:  conversationalScopeStructure(snap, buyerSnap),
+		huddle:     buyerSnap.CurrentHuddleID,
+		scope:      scope,
+		rawScope:   raw,
+		structures: snap.Structures,
 	}
 }
 
-// sellerCoPresent reports whether a pay_with_item to this seller would resolve
-// for the buyer this very tick: they share the buyer's huddle, or the seller
-// stands (literal InsideStructureID) in the buyer's conversational scope.
+// sellerCoPresent reports whether the pay call's huddle bootstrap can put this
+// seller in a conversation with the buyer this tick: he shares her huddle, or —
+// for an UNHUDDLED buyer, the only case EnsureColocatedHuddle acts on — he stands
+// (literal InsideStructureID) in her conversational building and can be drawn in:
+// awake and not upstairs (sim.DrawableIntoBuildingConversation, the rule
+// colocatedConversationalActors applies). An unhuddled buyer joins the building's
+// active huddle if one exists, which is where a huddled seller there would be;
+// this predicate does not re-check that membership. Without the sleep/room test a
+// sleeping lodger or a keeper in his room was named "here with you" and, since
+// LLM-1007, opened a pay_with_item the substrate then rejected (LLM-1010).
 func (sc coPresenceScope) sellerCoPresent(seller *sim.ActorSnapshot) bool {
 	if seller == nil {
 		return false
 	}
 	sharesHuddle := sc.huddle != "" && seller.CurrentHuddleID == sc.huddle
-	sharesScope := sc.scope != "" && seller.InsideStructureID == sc.scope
+	// The bootstrap leaves an already-huddled buyer as she is, so for her only her
+	// own huddle counts (code_review, LLM-1010).
+	sharesScope := sc.huddle == "" && sc.scope != "" && seller.InsideStructureID == sc.scope &&
+		sim.DrawableIntoBuildingConversation(seller.State, sim.RoomScopeIn(sc.structures, seller.InsideStructureID, seller.InsideRoomID))
 	return sharesHuddle || sharesScope
+}
+
+// presentInBuilding is the plain presence test, with none of sellerCoPresent's
+// pay-reachability rules: the other actor shares the subject's huddle or stands
+// (literal InsideStructureID) in her conversational building. The constable's
+// "## Town rate" cue reads it (it guards a face-to-face talk, not a pay call), so
+// LLM-1010's sleep / upstairs / huddled-buyer rules do not change that cue.
+func (sc coPresenceScope) presentInBuilding(other *sim.ActorSnapshot) bool {
+	if other == nil {
+		return false
+	}
+	return (sc.huddle != "" && other.CurrentHuddleID == sc.huddle) ||
+		(sc.rawScope != "" && other.InsideStructureID == sc.rawScope)
 }
 
 // coPresentSellerForItem returns the display name of a seller holding itemKind

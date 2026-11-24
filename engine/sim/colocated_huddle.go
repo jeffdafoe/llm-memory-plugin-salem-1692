@@ -341,11 +341,13 @@ func colocatedConversationalActors(w *World, self *Actor, structureID StructureI
 		if a.CurrentHuddleID != "" {
 			continue // already conversing — never leave-first them out (code_review)
 		}
-		if !colocatedConversational(a, now, staleAfter) {
+		if !colocatedConversationalKind(a, now, staleAfter) {
 			continue
 		}
-		if audienceRoomScope(w, a) != 0 {
-			continue // upstairs (LLM-801): not in the common room to be drawn in
+		// Asleep, or upstairs (LLM-801): not in the common room to be drawn in.
+		// The shared rule the buy cues also read (LLM-1010).
+		if !DrawableIntoBuildingConversation(a.State, audienceRoomScope(w, a)) {
+			continue
 		}
 		out = append(out, id)
 	}
@@ -451,23 +453,41 @@ func pcBystanders(w *World, speaker *Actor, peerSet map[ActorID]struct{}) []Acto
 // to public is the safe direction (slightly-over-heard speech beats speech
 // that vanishes for the right audience). ZBBS-HOME-437.
 func audienceRoomScope(w *World, a *Actor) RoomID {
-	if a.InsideRoomID == 0 || a.InsideStructureID == "" {
+	return RoomScopeIn(w.Structures, a.InsideStructureID, a.InsideRoomID)
+}
+
+// RoomScopeIn is audienceRoomScope over any structure map, so the published
+// snapshot can apply the same rule (LLM-1010): the room id when roomID is a
+// scoped room (RoomKindScoped) of structureID, else 0 for public scope.
+func RoomScopeIn(structures map[StructureID]*Structure, structureID StructureID, roomID RoomID) RoomID {
+	if roomID == 0 || structureID == "" {
 		return 0
 	}
-	st := w.Structures[a.InsideStructureID]
+	st := structures[structureID]
 	if st == nil {
 		return 0
 	}
 	for _, rm := range st.Rooms {
-		if rm == nil || rm.ID != a.InsideRoomID {
+		if rm == nil || rm.ID != roomID {
 			continue
 		}
 		if RoomKindScoped(rm.Kind) {
-			return a.InsideRoomID
+			return roomID
 		}
 		return 0
 	}
 	return 0
+}
+
+// DrawableIntoBuildingConversation reports whether an actor standing in a
+// building can be drawn into that building's common-room conversation by
+// EnsureColocatedHuddle: awake, and not in a scoped room (LLM-801). The
+// bootstrap and the buy cues' "here with you" test (perception's
+// sellerCoPresent) both use it, so a cue never names a sleeping or upstairs
+// seller the bootstrap would skip (LLM-1010). Kind and PC-presence rules are
+// separate (colocatedConversationalKind).
+func DrawableIntoBuildingConversation(state ActorState, roomScope RoomID) bool {
+	return state != StateSleeping && roomScope == 0
 }
 
 // colocatedHuddleSceneOrigin is the Scene.OriginKind stamped on the
