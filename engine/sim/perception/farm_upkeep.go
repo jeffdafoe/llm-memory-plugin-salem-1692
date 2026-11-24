@@ -27,8 +27,14 @@ type FarmUpkeepView struct {
 
 	ShovelsOwed   int             // obligation derived from coins held above the floor
 	ShovelsHeld   int             // shovels the owner currently carries
-	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
+	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 unless the view carries only WornQty)
 	ShovelVendors []RestockVendor // where to buy the shovels (LLM-274); the move_to destination(s)
+
+	// WornQty is the shovels the last upkeep assessment wore out of her pack
+	// (LLM-1005, sim.Actor.FarmToolsWorn), shown until the next assessment. It
+	// renders even when nothing is owed — then it is the whole section — because
+	// the loss is what she argues with the smith about hours later, owing or not.
+	WornQty int
 
 	// OnOrder is the total shovels already owed to this owner across their open
 	// (Ready) incoming orders — shovels ordered and awaiting hand-over. LLM-518:
@@ -75,6 +81,7 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	}
 	owed := sim.FarmUpkeepObligation(actorSnap.Coins, snap.FarmUpkeepFloor, snap.FarmUpkeepCoinsPerShovel)
 	held := actorSnap.Inventory[sim.ShovelItemKind]
+	worn := farmToolsWornQty(snap, actorSnap)
 	// DYNAMIC target, not a fixed daily debt: `owed` is re-derived from CURRENT coins
 	// every build, so as the owner buys shovels (coins fall, held rises) the shortfall
 	// shrinks and clears at a fixed point (held == owed) — self-limiting, so a farm
@@ -82,7 +89,11 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	// based, no-accumulator design; the coin actually collected is <= the boundary
 	// assessment, by intent.
 	if owed <= held {
-		return nil // nothing owed beyond what they already carry
+		// Nothing owed beyond what they already carry — the loss line alone, if any.
+		if worn > 0 {
+			return &FarmUpkeepView{WornQty: worn}
+		}
+		return nil
 	}
 	// LLM-518: ANY open shovel order (accepted, awaiting hand-over) means a purchase
 	// is already in flight from the smith — the sole shovel producer, the farm→smith
@@ -103,6 +114,7 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			ShovelsHeld:  held,
 			ShovelsShort: owed - held,
 			OnOrder:      onOrder,
+			WornQty:      worn,
 		}
 	}
 	coName, coID := coPresentSellerForItem(snap, actorID, actorSnap, sim.ShovelItemKind)
@@ -120,6 +132,7 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		ShovelsHeld:   held,
 		ShovelsShort:  owed - held,
 		ShovelVendors: shovelVendors,
+		WornQty:       worn,
 		// LLM-277: the co-present buy-here fast-path, mirroring the nail repair-buy.
 		CoPresentSeller: coName,
 		PendingOffer:    coID != "" && hasPendingOfferTo(snap, actorID, coID, sim.ShovelItemKind),
@@ -133,6 +146,33 @@ func buildFarmUpkeep(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		view.SellerStock, view.Block = classifyCoPresentBuy(snap, actorID, actorSnap, coID, sim.ShovelItemKind)
 	}
 	return view
+}
+
+// farmToolsWornQty is the shovels the last upkeep assessment wore out of the
+// owner's pack, while that loss is current: recorded (sim.Actor.FarmToolsWorn)
+// and less than sim.FarmToolsWornWindow old at the snapshot's clock. 0 otherwise.
+// The next assessment replaces or clears the record; the window only guards a
+// record that no later assessment will touch (the feature switched off).
+func farmToolsWornQty(snap *sim.Snapshot, a *sim.ActorSnapshot) int {
+	fw := a.FarmToolsWorn
+	if fw == nil || fw.Qty <= 0 {
+		return 0
+	}
+	if snap.PublishedAt.Sub(fw.At) >= sim.FarmToolsWornWindow {
+		return 0
+	}
+	return fw.Qty
+}
+
+// LossOnly strips the view to its loss line (LLM-1005), for the settled-evening
+// and summons gates in build.go that silence the shovel errand: the errand names
+// a destination and must go, but what wore out is a fact, not an errand, and it
+// is exactly what she may be arguing about at the tavern. nil when no loss.
+func (v *FarmUpkeepView) LossOnly() *FarmUpkeepView {
+	if v == nil || v.WornQty <= 0 {
+		return nil
+	}
+	return &FarmUpkeepView{WornQty: v.WornQty}
 }
 
 // openIncomingOrderQty totals the quantity of `item` the buyer is owed across all of
@@ -185,7 +225,20 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 		return
 	}
 	b.WriteString("## Farm upkeep\n")
-	b.WriteString("The season's work has worn your farm tools. ")
+	// LLM-1005: name what the last assessment took, in place of the generic
+	// opener — "I bought shovels and hold none" otherwise has only one story, that
+	// the smith took her coin and never delivered. The same sentence the action
+	// log and her memory carry (sim.FarmToolsWornNarration).
+	if v.WornQty > 0 {
+		b.WriteString(sim.FarmToolsWornNarration(v.WornQty))
+		if v.ShovelsShort <= 0 {
+			b.WriteString("\n") // nothing owed: the loss is the whole section
+			return
+		}
+		b.WriteString(" ")
+	} else {
+		b.WriteString("The season's work has worn your farm tools. ")
+	}
 	// LLM-518: a shovel purchase is already in flight. State the scene — owed /
 	// carried / on order — and stop. No buy imperative and no vendor/co-present steer:
 	// nagging a second purchase she can't complete is what drove the farm↔blacksmith

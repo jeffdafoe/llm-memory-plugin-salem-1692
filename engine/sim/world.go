@@ -3130,6 +3130,7 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 		RoomAccess:                 cloneRoomAccess(a.RoomAccess),
 		OpenUntil:                  copyTimePtr(a.OpenUntil),
 		ClosedUntil:                copyTimePtr(a.ClosedUntil),
+		FarmToolsWorn:              copyFarmToolsWorn(a.FarmToolsWorn),
 		Standing:                   a.Standing,
 		StandingRankSeen:           a.StandingRankSeen,
 		RestockPolicy:              a.RestockPolicy,
@@ -3159,6 +3160,10 @@ func snapshotActor(a *Actor, atTick uint64, degeneracyEnabled bool) *ActorSnapsh
 func (w *World) publishedActorSnapshot(a *Actor, now time.Time, ledgerLoopHuddles, commerceHuddles map[HuddleID]struct{}) *ActorSnapshot {
 	sa := snapshotActor(a, w.TickCounter, w.Settings.degeneracyEnabled())
 	sa.Room = actorPlanRoom(w, a)
+	// LLM-1005: the upkeep shovels' claim on the pack — the same number
+	// LiveBarterHolder computes live. Cheap for everyone who holds no shovel
+	// (FarmUpkeepReserve returns before the object scan).
+	sa.FarmUpkeepReserve = liveFarmUpkeepReserve(w, a)
 	// LLM-372: project a returner's durable continuity onto the snapshot here
 	// (not in snapshotActor, a *World-less free function) — buildReturnerSnapshot
 	// reads World.RecurringVisitors and needs the wall-clock now for recency.

@@ -1078,6 +1078,12 @@ type Actor struct {
 	// OpenUntil: a restart mid-evening must not bring the nagging back.
 	ClosedUntil *time.Time
 
+	// FarmToolsWorn is the shovels the last farm-upkeep assessment wore out of
+	// this owner's pack (LLM-1005, farm_upkeep.go); nil when it took none. Set or
+	// cleared at every assessment; checkpointed (actor.farm_tools_worn_qty /
+	// _at) with the inventory it explains.
+	FarmToolsWorn *FarmToolsWorn
+
 	// Standing is a player's Standing (LLM-892), raised by story beats and
 	// moved either way by adjustStanding (LLM-895). StandingRankSeen is the id
 	// of the last rank announced to the player ("" reads as the bottom rank);
@@ -1659,6 +1665,10 @@ func CloneActor(a *Actor) *Actor {
 		t := *a.ClosedUntil
 		cp.ClosedUntil = &t
 	}
+	if a.FarmToolsWorn != nil {
+		fw := *a.FarmToolsWorn
+		cp.FarmToolsWorn = &fw
+	}
 	if a.LastTirednessRecoveryAt != nil {
 		t := *a.LastTirednessRecoveryAt
 		cp.LastTirednessRecoveryAt = &t
@@ -2161,6 +2171,17 @@ type ActorSnapshot struct {
 	// buildDutySteer, buildDutyPending and the door lines agree with
 	// shiftDutyTarget. Readers gate on .After(PublishedAt). See Actor.ClosedUntil.
 	ClosedUntil *time.Time
+
+	// FarmToolsWorn mirrors the live Actor's last upkeep loss (LLM-1005) for the
+	// `## Farm upkeep` cue. Value-copied at snapshot time. See Actor.FarmToolsWorn.
+	FarmToolsWorn *FarmToolsWorn
+
+	// FarmUpkeepReserve is how many held shovels the farm-upkeep obligation
+	// claims (LLM-1005, FarmUpkeepReserve), projected in publishedActorSnapshot
+	// because it needs the village objects and the upkeep settings. Read by
+	// SnapshotBarterHolder so the wares cue, the carry line and the barter gates
+	// leave upkeep shovels in the pack, as LiveBarterHolder does live.
+	FarmUpkeepReserve int
 
 	// Standing / StandingRankSeen mirror the live Actor's (LLM-892) for the
 	// story view on /pc/me.

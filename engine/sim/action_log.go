@@ -244,6 +244,13 @@ const (
 	// dream records where the coins went. Lodging bookings write none.
 	ActionTypeOrderLapsed ActionType = "order_lapsed"
 
+	// ActionTypeFarmToolsWorn — the daily farm-upkeep assessment wore out the
+	// shovels a farm owner held (LLM-1005, farm_upkeep.go recordFarmToolsWorn).
+	// ActorID is the owner; Text is her pre-rendered line
+	// (FarmToolsWornNarration). Durable {item, qty, text}, so a stateful
+	// owner's day note and dream record the shovels as worn out, not missing.
+	ActionTypeFarmToolsWorn ActionType = "farm_tools_worn"
+
 	// ActionTypeLeftNote — a player pinned a note to a door nobody answered
 	// (LLM-19, door_note.go LeaveDoorNote). DURABLE-ONLY: ActorID is the author;
 	// payload {note_id, structure_id, recipient, text}.

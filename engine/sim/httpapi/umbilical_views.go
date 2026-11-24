@@ -143,6 +143,10 @@ type UmbilicalAgentDTO struct {
 	// ClosedUntil is a keeper's closed-early mark (LLM-817; nil = not closed).
 	ClosedUntil *time.Time `json:"closed_until,omitempty"`
 
+	// FarmToolsWorn is the shovels the last farm-upkeep assessment wore out of
+	// this owner's pack (LLM-1005; nil = none). Shows what the cue is narrating.
+	FarmToolsWorn *farmToolsWornView `json:"farm_tools_worn,omitempty"`
+
 	// Source activity — an in-flight timed eat/drink/harvest at a village object
 	// (LLM-54; nil = not engaged). Like the rest windows, deliberately not on the
 	// published snapshot — surfaced here for operator inspection only.
@@ -237,6 +241,7 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			BreakUntil:        clonePtrTime(a.BreakUntil),
 			SleepingUntil:     clonePtrTime(a.SleepingUntil),
 			ClosedUntil:       clonePtrTime(a.ClosedUntil),
+			FarmToolsWorn:     farmToolsWornDTO(a.FarmToolsWorn),
 			SourceActivity:    sourceActivityDTO(a.SourceActivity),
 			LastTickedAt:      clonePtrTime(a.LastTickedAt),
 			WarrantedSince:    clonePtrTime(a.WarrantedSince),
@@ -577,6 +582,19 @@ func sourceActivityDTO(sa *sim.SourceActivity) *SourceActivityDTO {
 // clonePtrTime copies a *time.Time so the returned DTO never aliases a live
 // Actor's pointer (the command closure runs on the world goroutine; the DTO
 // crosses back to the HTTP goroutine).
+// farmToolsWornView is the wire shape of sim.FarmToolsWorn (LLM-1005).
+type farmToolsWornView struct {
+	Qty int       `json:"qty"`
+	At  time.Time `json:"at"`
+}
+
+func farmToolsWornDTO(fw *sim.FarmToolsWorn) *farmToolsWornView {
+	if fw == nil {
+		return nil
+	}
+	return &farmToolsWornView{Qty: fw.Qty, At: fw.At}
+}
+
 func clonePtrTime(t *time.Time) *time.Time {
 	if t == nil {
 		return nil

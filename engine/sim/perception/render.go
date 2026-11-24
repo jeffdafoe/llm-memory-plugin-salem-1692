@@ -1019,6 +1019,8 @@ func spokenForAnnotation(it InventoryItem, afterUse bool) string {
 		return fmt.Sprintf(", %d to spare", it.Spare)
 	case it.SpokenFor == sim.SpokenForGarment:
 		return ", your own clothes — not for trade"
+	case it.SpokenFor == sim.SpokenForUpkeep:
+		return ", for the farm's upkeep — not for trade"
 	case afterUse:
 		return " — not for trade"
 	default:
@@ -4735,9 +4737,10 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return fmt.Sprintf("%d. The %s you're working at has worn from use and needs mending — you can repair it (you'll need nails; the smith sells them).\n", n, place), false
 	case sim.FarmUpkeepWarrantReason:
 		// LLM-215: the season wore out the farm's upkeep shovels. The "## Farm upkeep"
-		// cue carries the shovel count + buy-from-the-blacksmith steer; this is the
-		// wake-from-anywhere "why you ticked" nudge, like production-choice / seek-work.
-		return fmt.Sprintf("%d. Your farm tools are worn from the season's work — buy fresh shovels from the blacksmith.\n", n), false
+		// cue carries the loss (LLM-1005), the shovel count and the buy steer; this is
+		// only the "why you ticked" beat, like production-choice / seek-work, so it
+		// does not repeat the cue's imperative.
+		return fmt.Sprintf("%d. Your thoughts turn to the farm's upkeep — the season's work wears through its tools.\n", n), false
 	case sim.HearthLowWarrantReason:
 		// LLM-412: a storm is on and the owner's hearth fire is out or low. At the
 		// hearth the "## Your hearth" cue carries the firewood count + buy steer;

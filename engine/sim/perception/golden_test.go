@@ -3381,6 +3381,29 @@ var perceptionScenarios = []perceptionScenario{
 		build: farmOwnerOwesUpkeep,
 	},
 	{
+		name: "farm_owner_tools_worn_owes_upkeep",
+		summary: "LLM-1005: the same owing farm owner (Elizabeth, 95 coins → owes 3, holds none), but the morning's " +
+			"assessment wore out the 3 shovels she held (FarmToolsWorn). The '## Farm upkeep' cue opens with the loss — " +
+			"'The 3 shovels you held were worn out in the farm's upkeep' — in place of the generic worn-tools opener, so " +
+			"an owner who bought shovels and holds none is not left to conclude the smith never delivered. Foil of " +
+			"farm_owner_owes_upkeep (no loss recorded → the generic opener).",
+		build: farmOwnerToolsWornOwesUpkeep,
+	},
+	{
+		name: "farm_owner_tools_worn_nothing_owed",
+		summary: "LLM-1005: a farm owner below the upkeep floor (25 coins → owes nothing) whose 2 held shovels the " +
+			"assessment wore out. Before LLM-1005 the cue was absent here and the loss fully silent; now '## Farm upkeep' " +
+			"renders the loss line alone — no counts, no buy steer.",
+		build: farmOwnerToolsWornNothingOwed,
+	},
+	{
+		name: "farm_owner_tools_worn_settled_in_tavern",
+		summary: "LLM-1005 x LLM-345: Elizabeth owes 3 shovels and the morning's assessment wore out the 3 she held, but she " +
+			"is settled in the Tavern of an evening. The shovel errand yields to the room as before; the loss line stays, " +
+			"alone, because it is a fact she may be arguing about across the table, not a walk-away errand.",
+		build: farmOwnerToolsWornSettledInTavern,
+	},
+	{
 		name: "farm_owner_owes_upkeep_with_shovel_supplier",
 		summary: "LLM-274: a farm owner (Elizabeth Ellis) owes 3 upkeep shovels and holds none, while a SEPARATE " +
 			"shovel-producing smith (Ezekiel at the Blacksmith) exists. The golden pins the destination-bearing " +
@@ -8769,6 +8792,9 @@ func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
 		"farm_owner_off_post_owes_upkeep_no_supplier": true, // LLM-277: owes shovels, no reachable supplier — generic cue still renders
 		"farm_owner_owes_upkeep_order_in_flight":      true, // LLM-518: owes shovels but they're on order — facts-only cue still renders
 		"farm_owner_walking_with_shovel_seller":       true, // LLM-1007: same owing owner, co-present seller, mid-walk — stop-first cue still renders
+		"farm_owner_tools_worn_owes_upkeep":           true, // LLM-1005: owing owner whose shovels wore out — loss line + steer
+		"farm_owner_tools_worn_nothing_owed":          true, // LLM-1005: owes nothing, but a recorded loss — the loss line alone
+		"farm_owner_tools_worn_settled_in_tavern":     true, // LLM-1005: errand yields to the tavern, the loss line stays
 	}
 	for _, sc := range perceptionScenarios {
 		sc := sc
@@ -8776,6 +8802,30 @@ func TestFarmUpkeepCueOnlyForOwingFarmOwner(t *testing.T) {
 		want := owesUpkeep[sc.name]
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: '## Farm upkeep' cue present=%v, want %v", sc.name, has, want)
+		}
+	}
+}
+
+// TestFarmToolsWornLineForEveryRecordedLoss is the LLM-1005 cross-scenario
+// invariant: a farm owner whose current FarmToolsWorn record says the last
+// assessment wore out N shovels always reads that loss, with its count, and no
+// one without such a record reads a loss line. The property behind the fix: the
+// shovels never vanish from her prompt without a word.
+func TestFarmToolsWornLineForEveryRecordedLoss(t *testing.T) {
+	const anyLoss = "worn out in the farm's upkeep"
+	for _, sc := range perceptionScenarios {
+		snap, actorID, _ := sc.build()
+		got := renderScenario(sc)
+		a := snap.Actors[actorID]
+		recorded := a != nil && a.FarmToolsWorn != nil && a.FarmToolsWorn.Qty > 0 &&
+			snap.PublishedAt.Sub(a.FarmToolsWorn.At) < sim.FarmToolsWornWindow &&
+			sim.OwnedFarm(snap.VillageObjects, actorID) != nil
+		if recorded {
+			if want := sim.FarmToolsWornNarration(a.FarmToolsWorn.Qty); !strings.Contains(got, want) {
+				t.Errorf("scenario %q: recorded loss of %d, render lacks %q", sc.name, a.FarmToolsWorn.Qty, want)
+			}
+		} else if strings.Contains(got, anyLoss) {
+			t.Errorf("scenario %q: no recorded loss, but render carries a loss line", sc.name)
 		}
 	}
 }
@@ -11248,6 +11298,36 @@ func farmUpkeepSnapshot(coins, shovels, floor, coinsPerShovel int) (*sim.Snapsho
 // fresh shovels from the blacksmith") — the LLM-274 no-actionable-supplier arm.
 func farmOwnerOwesUpkeep() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return farmUpkeepSnapshot(95, 0, 30, 20)
+}
+
+// withFarmToolsWorn records that the last assessment (10 hours before the
+// snapshot) wore qty shovels out of the farm owner's pack (LLM-1005).
+func withFarmToolsWorn(snap *sim.Snapshot, actorID sim.ActorID, qty int) {
+	snap.Actors[actorID].FarmToolsWorn = &sim.FarmToolsWorn{Qty: qty, At: snap.PublishedAt.Add(-10 * time.Hour)}
+}
+
+// farmOwnerToolsWornOwesUpkeep: farmOwnerOwesUpkeep, plus the 3 shovels she held
+// at the assessment wore out (LLM-1005).
+func farmOwnerToolsWornOwesUpkeep() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := farmUpkeepSnapshot(95, 0, 30, 20)
+	withFarmToolsWorn(snap, actorID, 3)
+	return snap, actorID, warrants
+}
+
+// farmOwnerToolsWornSettledInTavern: farmOwnerSettledInTavernEvening with a
+// recorded loss of 3 (LLM-1005) — the errand yields, the loss line stays.
+func farmOwnerToolsWornSettledInTavern() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := farmOwnerSettledInTavernEvening()
+	withFarmToolsWorn(snap, actorID, 3)
+	return snap, actorID, warrants
+}
+
+// farmOwnerToolsWornNothingOwed: an owner below the floor (owes nothing) whose 2
+// shovels wore out (LLM-1005) — the loss line is the whole section.
+func farmOwnerToolsWornNothingOwed() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, actorID, warrants := farmUpkeepSnapshot(25, 0, 30, 20)
+	withFarmToolsWorn(snap, actorID, 2)
+	return snap, actorID, warrants
 }
 
 // farmOwnerOwesUpkeepWithShovelSupplier is the LLM-274 farm-upkeep arm: Elizabeth

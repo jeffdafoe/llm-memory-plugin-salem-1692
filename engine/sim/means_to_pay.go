@@ -76,6 +76,9 @@ type BarterHolder struct {
 	// garments don't wear because they aren't worn, and by the same token their
 	// buy lines are wares to trade, not makings to keep.
 	Stockholder bool
+	// UpkeepShovels is how many held shovels a farm owner's upkeep obligation
+	// claims (LLM-1005, FarmUpkeepReserve); 0 for anyone else.
+	UpkeepShovels int
 }
 
 // LiveBarterHolder is the BarterHolder view of a live actor.
@@ -84,9 +87,10 @@ func LiveBarterHolder(w *World, a *Actor) BarterHolder {
 		return BarterHolder{}
 	}
 	return BarterHolder{
-		Policy:      a.RestockPolicy,
-		Inventory:   a.Inventory,
-		Stockholder: ActorHasTradeErrand(a) || ActorIsDistributor(w.VillageObjects, a.WorkStructureID),
+		Policy:        a.RestockPolicy,
+		Inventory:     a.Inventory,
+		Stockholder:   ActorHasTradeErrand(a) || ActorIsDistributor(w.VillageObjects, a.WorkStructureID),
+		UpkeepShovels: liveFarmUpkeepReserve(w, a),
 	}
 }
 
@@ -97,9 +101,10 @@ func SnapshotBarterHolder(snap *Snapshot, a *ActorSnapshot) BarterHolder {
 		return BarterHolder{}
 	}
 	return BarterHolder{
-		Policy:      a.RestockPolicy,
-		Inventory:   a.Inventory,
-		Stockholder: (a.VisitorState != nil && a.VisitorState.Trade != nil) || ActorIsDistributor(snap.VillageObjects, a.WorkStructureID),
+		Policy:        a.RestockPolicy,
+		Inventory:     a.Inventory,
+		Stockholder:   (a.VisitorState != nil && a.VisitorState.Trade != nil) || ActorIsDistributor(snap.VillageObjects, a.WorkStructureID),
+		UpkeepShovels: a.FarmUpkeepReserve,
 	}
 }
 
@@ -111,6 +116,7 @@ const (
 	SpokenForNone    SpokenForReason = iota
 	SpokenForMakings                 // stock the holder keeps to work with — a buy line it consumes rather than sells on
 	SpokenForGarment                 // the one garment unit the holder is wearing
+	SpokenForUpkeep                  // shovels a farm owner holds against the farm's upkeep (LLM-1005)
 )
 
 // SpokenForClaim is one kind's reservation: how many held units are not spare,
@@ -132,7 +138,7 @@ type SpokenForClaim struct {
 // you carry in trade", named her thread, salt, firewood, skillet and the homespun
 // the working-clothes cue had just sent her for, and Josiah accepted every
 // bundle: 103 buy-then-pay-back-in-kind laps between the two of them in a week,
-// and the mending line never held a spool. Two claims:
+// and the mending line never held a spool. Three claims:
 //
 //   - MAKINGS: a `buy` line of the holder's own policy (explicit or derived —
 //     EffectiveBuyEntries, the same demand set the restock cue and warrant read)
@@ -158,6 +164,8 @@ type SpokenForClaim struct {
 //     > 0 — working clothes and warms alike) is the unit on the holder's back
 //     (Actor.GarmentWear is per kind on the in-use unit; a second unit is a fresh
 //     spare and stays tradeable). Stockholders excepted, as above.
+//   - UPKEEP (LLM-1005): a farm owner's held shovels, up to what the upkeep
+//     obligation calls for (BarterHolder.UpkeepShovels).
 //
 // Produce and forage lines make no claim — they are the holder's OWN wares, and
 // exactly what a coin-broke maker should be putting up. Nor does anything the
@@ -175,8 +183,8 @@ func SpokenFor(kinds map[ItemKind]*ItemKindDef, recipes map[ItemKind]*ItemRecipe
 			out = make(map[ItemKind]SpokenForClaim)
 		}
 		c := out[kind]
-		if reason == SpokenForGarment || c.Reason == SpokenForNone {
-			c.Reason = reason // a garment on a rebuy line is "your own clothes", not "makings"
+		if reason == SpokenForGarment || reason == SpokenForUpkeep || c.Reason == SpokenForNone {
+			c.Reason = reason // a garment on a rebuy line is "your own clothes", not "makings"; upkeep shovels likewise
 		}
 		c.Qty += qty
 		out[kind] = c
@@ -206,6 +214,11 @@ func SpokenFor(kinds map[ItemKind]*ItemKindDef, recipes map[ItemKind]*ItemRecipe
 			claim(kind, 1, SpokenForGarment)
 		}
 	}
+	// LLM-1005: a farm owner's shovels up to the upkeep obligation are the farm's,
+	// not wares. Live 2026-11-24: Elizabeth Ellis's wares cue priced the shovels
+	// she had just bought for upkeep as resale stock ("your shop lives on the
+	// difference"), the LLM-646 held-goods walk with no claim to stop it.
+	claim(ShovelItemKind, h.UpkeepShovels, SpokenForUpkeep)
 	for kind, c := range out {
 		if held := h.Inventory[kind]; c.Qty > held {
 			c.Qty = held // a garment that is also a buy line can't reserve more than is held

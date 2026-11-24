@@ -108,6 +108,7 @@ func actorParentColumns() []string {
 		"closed_until",
 		"standing", "standing_rank_seen",
 		"lantern_lit_until", "lantern_candle_left_seconds",
+		"farm_tools_worn_qty", "farm_tools_worn_at",
 	}
 }
 
@@ -167,6 +168,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 		0, "",             // standing / standing_rank_seen (LLM-892)
 		(*time.Time)(nil), 0, // lantern never lit, no stub (LLM-846)
+		(*int)(nil), (*time.Time)(nil), // farm_tools_worn — no upkeep loss (LLM-1005)
 	)
 }
 
@@ -339,6 +341,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				&tsSleep,                 // closed_until — closed early (LLM-817)
 				30, "sojourner",          // standing / standing_rank_seen (LLM-892)
 				&tsSleep, 1200, // lantern_lit_until / lantern_candle_left_seconds (LLM-846)
+				func() *int { v := 3; return &v }(), &tsSleep, // farm_tools_worn — 3 shovels worn (LLM-1005)
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -357,6 +360,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 				0, "",             // standing / standing_rank_seen (LLM-892)
 				(*time.Time)(nil), 0, // lantern never lit, no stub (LLM-846)
+				(*int)(nil), (*time.Time)(nil), // farm_tools_worn — no upkeep loss (LLM-1005)
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -441,6 +445,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if !a.LanternLitUntil.Equal(tsSleep) || a.LanternCandleLeft != 20*time.Minute {
 		t.Errorf("LanternLitUntil / LanternCandleLeft = %v / %v, want %v / 20m", a.LanternLitUntil, a.LanternCandleLeft, tsSleep)
+	}
+	if a.FarmToolsWorn == nil || a.FarmToolsWorn.Qty != 3 || !a.FarmToolsWorn.At.Equal(tsSleep) {
+		t.Errorf("FarmToolsWorn = %+v, want 3 at %v", a.FarmToolsWorn, tsSleep)
 	}
 	if a.SleepingUntil == nil || !a.SleepingUntil.Equal(tsSleep) {
 		t.Errorf("SleepingUntil = %v", a.SleepingUntil)
@@ -657,6 +664,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			&tsSleep,   // closed_until — closed early (LLM-817)
 			0, "",      // standing / standing_rank_seen (LLM-892)
 			tsSleep, 1200, // lantern_lit_until / lantern_candle_left_seconds (LLM-846)
+			3, tsSleep, // farm_tools_worn — 3 shovels worn (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -707,6 +715,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			SleepingUntil:      &tsSleep,
 			LanternLitUntil:    tsSleep,
 			LanternCandleLeft:  20 * time.Minute,
+			FarmToolsWorn:      &sim.FarmToolsWorn{Qty: 3, At: tsSleep},
 			MoveAttemptCounter: 7,
 			State:              "working",
 			SpriteID:           "00000000-0000-0000-0000-5555eeeeeeee",
@@ -752,6 +761,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -899,6 +909,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -972,6 +983,7 @@ func TestActorsRepo_SaveSnapshot_ToolWearUsesLeft(t *testing.T) {
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1300,6 +1312,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 				0, "",             // standing / standing_rank_seen (LLM-892)
 				(*time.Time)(nil), 0, // lantern never lit, no stub (LLM-846)
+				(*int)(nil), (*time.Time)(nil), // farm_tools_worn — no upkeep loss (LLM-1005)
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1506,6 +1519,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1616,6 +1630,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1798,6 +1813,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -2070,6 +2086,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			(*time.Time)(nil), // closed_until — not closed early (LLM-817)
 			0, "",             // standing / standing_rank_seen (LLM-892)
 			nil, 0, // lantern never lit, no stub (LLM-846)
+			nil, nil, // farm_tools_worn — no upkeep loss (LLM-1005)
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
