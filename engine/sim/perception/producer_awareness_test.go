@@ -115,6 +115,7 @@ func TestRender_QuoteWarrantLine_BuyBackSteer(t *testing.T) {
 	base := func() Payload {
 		return Payload{
 			ActorID:           "ezekiel",
+			Surroundings:      SurroundingsView{HuddleMembers: []HuddleMember{{ID: "john"}}}, // LLM-1007: a quote is taken from a huddle peer
 			Warrants:          []sim.WarrantMeta{quote},
 			WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 			Baseline:          BaselinePresent,

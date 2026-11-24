@@ -171,7 +171,62 @@ func renderCoPresentBuySoften(b *strings.Builder, seller, itemLabel string, bloc
 // the seller's live count. Item-neutral "come back once he has more" (LLM-308) — no
 // forge-specific verb, so the arm reads for a restock good as well as a forged one. Inputs
 // are sanitized here, so callers pass raw snapshot strings.
-func renderCoPresentBuyCapped(b *strings.Builder, seller, itemLabel string, kind sim.ItemKind, stock int) {
+func renderCoPresentBuyCapped(b *strings.Builder, seller, itemLabel string, kind sim.ItemKind, stock int, pay PayAvailability) {
+	if pay != PayAvailable {
+		// LLM-1007: no "buy what he has" goad when she cannot buy this turn.
+		renderCoPresentBuyUnavailable(b, sanitizeInline(seller), sanitizeInline(itemLabel), pay)
+		return
+	}
 	fmt.Fprintf(b, "%s can spare only %d just now, so buy what he has and come back for the rest once he has more. ", sanitizeInline(seller), stock)
-	renderCoPresentBuy(b, seller, itemLabel, kind, stock)
+	renderCoPresentBuy(b, seller, itemLabel, kind, stock, pay)
+}
+
+// PayAvailability is whether the subject can call pay_with_item this turn
+// (LLM-1007). Build derives it once (payAvailabilityOf) from CanPayWithItem, the
+// predicate gateTools advertises the tool on, and hands it to every cue that would
+// otherwise name the call: the co-present buy views and the quote take-instruction.
+// The zero value is PayAvailable, so a directly constructed view renders as before.
+type PayAvailability int
+
+const (
+	// PayAvailable: pay_with_item is offered; cues name the exact call.
+	PayAvailable PayAvailability = iota
+	// PayWalking: only the walk withholds it; stop is offered and is the first step.
+	PayWalking
+	// PayWithheld: withheld for a reason stopping would not cure (a merchant visitor
+	// off his commerce places, a baker mid the bake, or no one the call can reach).
+	PayWithheld
+)
+
+// payAvailabilityOf derives the subject's PayAvailability. The commerce strips are
+// checked before the walk, so a walking visitor or baker is not told that stopping
+// would let her buy.
+func payAvailabilityOf(p Payload) PayAvailability {
+	if p.VisitorCommerceStripped || bakingNow(p) {
+		return PayWithheld
+	}
+	if p.Actor.InFlightMove != nil {
+		return PayWalking
+	}
+	if !CanPayWithItem(p) {
+		return PayWithheld
+	}
+	return PayAvailable
+}
+
+// coPresentBuyActionable is the branch decision every co-present buy renderer
+// makes before it names pay_with_item: a seller is named, no offer of hers to him
+// already stands (the bide arm), and the deal is not soft-blocked (the hold-off
+// arm). NamesCoPresentSeller opens the no-huddle pay gate only on this, so a
+// seller named in a bide or hold-off line does not reopen the tool (LLM-1007);
+// TestCoPresentBuyActionableMatchesRender pins each renderer to it.
+func coPresentBuyActionable(seller string, pending bool, block copresentBuyBlock) bool {
+	if seller == "" || pending {
+		return false
+	}
+	switch block {
+	case copresentBuyBlockedNoStock, copresentBuyBlockedCoin, copresentBuyBlockedTerms:
+		return false
+	}
+	return true
 }

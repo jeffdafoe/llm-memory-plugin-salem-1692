@@ -408,6 +408,8 @@ func renderStallCondition(b *strings.Builder, v *StallConditionView) {
 // "## Restocking" reseller cue uses. It does NOT gate the `repair` tool: mending
 // happens only on site, so buildStallRepair remains the sole gate for that tool.
 type StallRepairBuyView struct {
+	Pay PayAvailability // whether the subject can call pay_with_item this turn (LLM-1007, see RestockingView)
+
 	Name            string          // the worn business's display name (structure/object); "" → generic noun
 	NailsNeeded     int             // nails one repair consumes
 	NailsHeld       int             // nails the actor currently carries
@@ -512,10 +514,15 @@ func renderStallRepairBuy(b *strings.Builder, v *StallRepairBuyView) {
 			// LLM-297: he can't cover the whole shortfall — cap the ask at what he holds
 			// so the "qty up to N" never exceeds his stock (the live case: the buyer needed
 			// 5 nails, the smith held only 1).
-			renderCoPresentBuyCapped(b, v.CoPresentSeller, "nails", sim.NailItemKind, v.SellerStock)
+			renderCoPresentBuyCapped(b, v.CoPresentSeller, "nails", sim.NailItemKind, v.SellerStock, v.Pay)
 		default:
-			b.WriteString("Buy the rest, then return to mend it. ")
-			renderCoPresentBuy(b, v.CoPresentSeller, "nails", sim.NailItemKind, v.NailsShort)
+			// LLM-1007: tell her to buy only on a turn she can; otherwise state the need.
+			if v.Pay == PayAvailable {
+				b.WriteString("Buy the rest, then return to mend it. ")
+			} else {
+				b.WriteString("You need the rest before you can mend it. ")
+			}
+			renderCoPresentBuy(b, v.CoPresentSeller, "nails", sim.NailItemKind, v.NailsShort, v.Pay)
 		}
 		return
 	}

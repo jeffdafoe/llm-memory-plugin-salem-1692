@@ -33,6 +33,12 @@ import (
 // RestockingView is the content-gated "## Restocking" section. A nil view (or
 // empty Items) means render omits the section.
 type RestockingView struct {
+	// Pay is whether the subject can call pay_with_item this turn (LLM-1007), set by
+	// Build from CanPayWithItem — the predicate gateTools advertises the tool on. The
+	// co-present buy line names the call only when PayAvailable; mid-walk it names
+	// stop first, and when withheld it says she cannot buy just now.
+	Pay PayAvailability
+
 	Items []RestockItemView
 
 	// BuyerCoins is the reseller's coin balance at build time. Rendered into the
@@ -1581,7 +1587,10 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 				// He can't cover the whole headroom — cap the ask at what he holds so "qty up to
 				// N" never exceeds his stock (the live "buy it now … a qty up to 3" against a
 				// seller holding 1).
-				renderCoPresentBuyCapped(b, it.CoPresentSeller, it.ItemLabel, it.kind, it.SellerStock)
+				renderCoPresentBuyCapped(b, it.CoPresentSeller, it.ItemLabel, it.kind, it.SellerStock, v.Pay)
+			case v.Pay != PayAvailable:
+				// LLM-1007: pay_with_item is not offered this turn; say what she can do instead.
+				renderCoPresentBuyUnavailable(b, sanitizeInline(it.CoPresentSeller), sanitizeInline(it.ItemLabel), v.Pay)
 			default:
 				// Stock covers the headroom and the deal is plausible — the exact pay_with_item
 				// call, walk-to list skipped (he is already here).
@@ -1738,8 +1747,13 @@ func renderBlockedItem(b *strings.Builder, it RestockItemView) {
 // for it as a separate speak — correct then, unreachable since LLM-321 made speak
 // terminal alongside pay_with_item: whichever landed first ended the tick, so the
 // buyer either offered in silence or spoke and never offered.
-func renderCoPresentBuy(b *strings.Builder, seller, itemLabel string, itemKind sim.ItemKind, qty int) {
+func renderCoPresentBuy(b *strings.Builder, seller, itemLabel string, itemKind sim.ItemKind, qty int, pay PayAvailability) {
 	s := sanitizeInline(seller)
+	if pay != PayAvailable {
+		// LLM-1007: pay_with_item is not offered this turn, so never name the call.
+		renderCoPresentBuyUnavailable(b, s, sanitizeInline(itemLabel), pay)
+		return
+	}
 	fmt.Fprintf(b, "%s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, a payment: coins (amount), goods you carry (pay_items), or both, with consume_now false, and your handoff line in say. Do not speak first: speaking ends your turn, and the offer would never be made. They will accept or counter your offer.\n",
 		s, sanitizeInline(itemLabel), s, sanitizeInline(string(itemKind)), qty)
 }

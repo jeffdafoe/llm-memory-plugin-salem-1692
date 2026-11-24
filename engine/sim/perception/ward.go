@@ -39,6 +39,8 @@ type wardWant struct {
 // WardWantView is the felt line and the buy errand. Non-nil only with an
 // actionable buy path (a co-present seller or a walk-to supplier).
 type WardWantView struct {
+	Pay PayAvailability // whether the subject can call pay_with_item this turn (LLM-1007, see RestockingView)
+
 	Clause          string            // "the milk turned sour in the pail"; "" → the plain line
 	Item            sim.ItemKind      // the good to buy (sim.HorseshoeKind)
 	Vendors         []RestockVendor   // where to buy it while away — the move_to destination(s)
@@ -204,7 +206,7 @@ func renderWard(b *strings.Builder, want *WardWantView, place *WardPlaceView) {
 			case copresentBuyBlockedNoStock, copresentBuyBlockedCoin, copresentBuyBlockedTerms:
 				renderCoPresentBuySoften(b, want.CoPresentSeller, label+"s", want.Block)
 			default:
-				renderCoPresentBuy(b, want.CoPresentSeller, label+"s", want.Item, 1)
+				renderCoPresentBuy(b, want.CoPresentSeller, label+"s", want.Item, 1, want.Pay)
 			}
 			b.WriteString("\n")
 			return

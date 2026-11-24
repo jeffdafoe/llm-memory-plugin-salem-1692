@@ -605,6 +605,12 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 		p.DutySteer.SupplyErrand = hasAtPostSupplyErrand(&p)
 		p.DutySteer.SupplyErrandElective = p.DutySteer.SupplyErrand && electiveOnlySupplyErrand(&p, snap, actorSnap)
 	}
+	// LLM-1007: stamp whether pay_with_item is offered this turn on every view that
+	// can name it, so no cue names a call the gate withholds. Derived after the
+	// subtractions above, from the same CanPayWithItem the gate reads.
+	if pay := payAvailabilityOf(p); pay != PayAvailable {
+		markPay(&p, pay)
+	}
 	// LLM-717: Restocking already renders the co-present whetstone buy from the
 	// same seller, with its own quantity — the rounds line names the need without
 	// a second pay_with_item. Read here, after the subtractions above settle
@@ -6715,4 +6721,27 @@ func buildCampSightings(snap *sim.Snapshot, subjectID sim.ActorID, a *sim.ActorS
 		out = append(out, sight)
 	}
 	return out
+}
+
+// markPay stamps the subject's PayAvailability on every view that can render a
+// co-present buy (LLM-1007); the set is the one NamesCoPresentSeller reads.
+func markPay(p *Payload, pay PayAvailability) {
+	if p.Restocking != nil {
+		p.Restocking.Pay = pay
+	}
+	if p.StallRepairBuy != nil {
+		p.StallRepairBuy.Pay = pay
+	}
+	if p.FarmUpkeep != nil {
+		p.FarmUpkeep.Pay = pay
+	}
+	if p.WorkClothes != nil {
+		p.WorkClothes.Pay = pay
+	}
+	if p.WardWant != nil {
+		p.WardWant.Pay = pay
+	}
+	if p.WrightRounds != nil {
+		p.WrightRounds.Pay = pay
+	}
 }
