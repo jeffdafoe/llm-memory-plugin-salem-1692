@@ -229,6 +229,7 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 	}
 	out := combinedPrompt(Render(Payload{
 		ActorID:           "hannah",
+		Surroundings:      SurroundingsView{HuddleMembers: []HuddleMember{{ID: "john"}}}, // LLM-1007: a quote is taken from a huddle peer
 		Warrants:          []sim.WarrantMeta{quote},
 		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 		Baseline:          BaselinePresent,
@@ -257,6 +258,7 @@ func TestRender_QuoteWarrantLine_BarterAlternative(t *testing.T) {
 	}
 	out := combinedPrompt(Render(Payload{
 		ActorID:           "ezekiel",
+		Surroundings:      SurroundingsView{HuddleMembers: []HuddleMember{{ID: "john"}}}, // LLM-1007: a quote is taken from a huddle peer
 		Warrants:          []sim.WarrantMeta{quote},
 		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 		Baseline:          BaselinePresent,
@@ -292,6 +294,7 @@ func TestRender_QuoteWarrantLine_BundleNoBarterAlt(t *testing.T) {
 	}
 	out := combinedPrompt(Render(Payload{
 		ActorID:           "ezekiel",
+		Surroundings:      SurroundingsView{HuddleMembers: []HuddleMember{{ID: "john"}}}, // LLM-1007: a quote is taken from a huddle peer
 		Warrants:          []sim.WarrantMeta{quote},
 		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 		Baseline:          BaselinePresent,
@@ -339,6 +342,7 @@ func TestRender_QuoteWarrantLine_Overheard(t *testing.T) {
 	}
 	out := combinedPrompt(Render(Payload{
 		ActorID:           "ezekiel",
+		Surroundings:      SurroundingsView{HuddleMembers: []HuddleMember{{ID: "john"}}}, // LLM-1007: a quote is taken from a huddle peer
 		Warrants:          []sim.WarrantMeta{quote},
 		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 		Baseline:          BaselinePresent,

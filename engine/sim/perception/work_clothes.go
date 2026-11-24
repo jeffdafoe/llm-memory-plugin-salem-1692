@@ -35,6 +35,8 @@ import (
 // WorkClothesView is the working-clothes cue. Non-nil only when the actor is a
 // garment-wearer whose best working garment is threadbare or absent.
 type WorkClothesView struct {
+	Pay PayAvailability // whether the subject can call pay_with_item this turn (LLM-1007, see RestockingView)
+
 	// Tier is sim.WarmGarmentThreadbare (worn thin) or sim.WarmGarmentNone (nothing
 	// fit to work in). A sound tier returns a nil view — silence is a valid volume.
 	Tier sim.WarmGarmentTier
@@ -384,7 +386,7 @@ func renderWorkClothes(b *strings.Builder, v *WorkClothesView) {
 		case v.Block == copresentBuyBlockedNoStock, v.Block == copresentBuyBlockedCoin, v.Block == copresentBuyBlockedTerms:
 			renderCoPresentBuySoften(b, v.CoPresentSeller, label, v.Block)
 		default:
-			renderCoPresentBuy(b, v.CoPresentSeller, label, v.Item, 1)
+			renderCoPresentBuy(b, v.CoPresentSeller, label, v.Item, 1, v.Pay)
 		}
 		return
 	}
@@ -416,7 +418,7 @@ func renderMendArm(b *strings.Builder, v *WorkClothesView) {
 			// The lead-in carries the why (your OWN clothes come back, for less);
 			// renderCoPresentBuy carries the who-is-here and the proven call shape.
 			b.WriteString("A mend would see your own clothes good as new, cheaper than replacing them. ")
-			renderCoPresentBuy(b, v.CoPresentMender, "mending", v.MendItem, 1)
+			renderCoPresentBuy(b, v.CoPresentMender, "mending", v.MendItem, 1, v.Pay)
 		}
 		return
 	}

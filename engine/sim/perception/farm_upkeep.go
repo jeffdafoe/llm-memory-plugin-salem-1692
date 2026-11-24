@@ -23,6 +23,8 @@ import (
 // FarmUpkeepView is the farm owner's upkeep-buy cue. Non-nil only when the actor
 // owns a farm AND owes more upkeep shovels than they currently carry.
 type FarmUpkeepView struct {
+	Pay PayAvailability // whether the subject can call pay_with_item this turn (LLM-1007, see RestockingView)
+
 	ShovelsOwed   int             // obligation derived from coins held above the floor
 	ShovelsHeld   int             // shovels the owner currently carries
 	ShovelsShort  int             // ShovelsOwed - ShovelsHeld (> 0 whenever the cue shows)
@@ -226,10 +228,15 @@ func renderFarmUpkeep(b *strings.Builder, v *FarmUpkeepView) {
 		case v.SellerStock > 0 && v.SellerStock < v.ShovelsShort:
 			// LLM-299: he can't cover the whole shortfall — cap the ask at what he holds so
 			// the "qty up to N" never exceeds his stock.
-			renderCoPresentBuyCapped(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.SellerStock)
+			renderCoPresentBuyCapped(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.SellerStock, v.Pay)
 		default:
-			fmt.Fprintf(b, "Buy %s to set the farm right for the season. ", shovels)
-			renderCoPresentBuy(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.ShovelsShort)
+			// LLM-1007: tell her to buy only on a turn she can; otherwise state the need.
+			if v.Pay == PayAvailable {
+				fmt.Fprintf(b, "Buy %s to set the farm right for the season. ", shovels)
+			} else {
+				fmt.Fprintf(b, "You need %s to set the farm right for the season. ", shovels)
+			}
+			renderCoPresentBuy(b, v.CoPresentSeller, "shovels", sim.ShovelItemKind, v.ShovelsShort, v.Pay)
 		}
 		return
 	}

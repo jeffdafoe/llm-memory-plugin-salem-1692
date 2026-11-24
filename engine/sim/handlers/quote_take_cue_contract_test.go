@@ -101,7 +101,8 @@ func TestQuoteTakeCue_CallItNamesSettles(t *testing.T) {
 				lines = append(lines, sim.QuoteLine{ItemKind: sim.ItemKind(ln.ItemKind), Qty: ln.Qty})
 			}
 			rendered := perception.Render(perception.Payload{
-				ActorID: "alice",
+				ActorID:      "alice",
+				Surroundings: perception.SurroundingsView{HuddleMembers: []perception.HuddleMember{{ID: "bob"}}}, // LLM-1007: a quote is taken from a huddle peer
 				Warrants: []sim.WarrantMeta{{
 					TriggerActorID: "bob",
 					Reason: sim.SceneQuoteTargetedWarrantReason{

@@ -59,6 +59,8 @@ type EquipmentServiceView struct {
 
 // WrightRoundsView is the wright-side cue: where the trade wants him next.
 type WrightRoundsView struct {
+	Pay PayAvailability // whether the subject can call pay_with_item this turn (LLM-1007, see RestockingView)
+
 	// NoStone: he holds no whetstone — resupply before the rounds.
 	NoStone bool
 	// The due call (zero-valued when NoStone or nothing is due): the owner,
@@ -472,10 +474,15 @@ func renderWrightStoneBuy(b *strings.Builder, v *WrightRoundsView) {
 		case v.RestockingBuysHere:
 			fmt.Fprintf(b, "%s is here with you and sells them — you need one before you make your rounds.\n", sanitizeInline(v.CoPresentSeller))
 		case v.SellerStock > 0 && v.SellerStock < v.StonesShort:
-			renderCoPresentBuyCapped(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.SellerStock)
+			renderCoPresentBuyCapped(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.SellerStock, v.Pay)
 		default:
-			b.WriteString("Buy one before you make your rounds. ")
-			renderCoPresentBuy(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.StonesShort)
+			// LLM-1007: tell him to buy only on a turn he can; otherwise state the need.
+			if v.Pay == PayAvailable {
+				b.WriteString("Buy one before you make your rounds. ")
+			} else {
+				b.WriteString("You need one before you make your rounds. ")
+			}
+			renderCoPresentBuy(b, v.CoPresentSeller, "whetstones", sim.WhetstoneKind, v.StonesShort, v.Pay)
 		}
 	case v.TraderHasStone:
 		b.WriteString("The trader here has whetstones — buy one from him before you make your rounds.\n")

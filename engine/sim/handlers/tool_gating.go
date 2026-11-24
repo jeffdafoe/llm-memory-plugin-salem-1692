@@ -623,9 +623,17 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		if spec.Name == speakToolName && !hasAudience {
 			continue
 		}
-		// pay-verb consumer (LLM-329): advertise pay / pay_with_item only when the
-		// actor has a co-present huddle peer — see payVerbTools for the rationale.
-		if _, gated := payVerbTools[spec.Name]; gated && !hasHuddlePeer {
+		// pay-verb consumer (LLM-329): advertise sell / give only when the actor has a
+		// co-present huddle peer — see payVerbTools for the rationale. pay_with_item
+		// also reaches a seller a buy cue names in the same building, because its
+		// handler bootstraps the co-located huddle on the call (withHuddleBootstrap);
+		// perception.CanPayWithItem is the one predicate for the tool and every cue
+		// that names it (LLM-1007), so the two cannot drift.
+		if spec.Name == payWithItemToolName {
+			if !perception.CanPayWithItem(payload) {
+				continue
+			}
+		} else if _, gated := payVerbTools[spec.Name]; gated && !hasHuddlePeer {
 			continue
 		}
 		// talk-only rounds consumer (LLM-455): strip a merchant visitor's commerce tools
