@@ -80,6 +80,15 @@ type ForgeChoiceItem struct {
 	InputsReady bool           // one batch's inputs are on hand (LLM-257); always true for a listed good — LLM-324 drops input-short ones
 	SoldUnits   int            // raw units for narration order (demand first)
 	Shortage    *ForgeShortage // a standing village shortage of this good (LLM-658); nil when none
+
+	// MissingSpeeds lists the display labels of the recipe's speed inputs
+	// (LLM-511), in recipe order, when NONE of them would apply to this batch.
+	// Non-empty means the scene says the batch runs without them (LLM-1006):
+	// left unsaid, a smith with no bar iron read the shovel line's "you have the
+	// makings" as not covering iron and stopped forging. Empty when any speed
+	// input applies, because then the base-rate WorkPhrase is not the batch's time
+	// and "takes about 4 hours without X" would be false.
+	MissingSpeeds []string
 }
 
 // ForgeShortage is a standing village shortage of a good the producer makes
@@ -165,6 +174,8 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 			InputsReady: inputsReady,
 			SoldUnits:   soldUnits,
 			Shortage:    standingShortage(snap, actorSnap, e.Item),
+
+			MissingSpeeds: missingSpeedInputs(snap, recipe, actorSnap.Inventory),
 		})
 	}
 	if len(items) == 0 {
@@ -417,12 +428,41 @@ func tradeGoodScene(it ForgeChoiceItem) string {
 	// drops input-short goods), so an inputs recipe reassures the makings are ready
 	// and an origin recipe (no inputs) asserts everything needed is already at hand.
 	work := it.WorkPhrase
+	// LLM-1006: a speed booster the actor lacks is named as optional BEFORE the
+	// readiness beat, so the line still ends on it (the LLM-509 invariant) and the
+	// beat now plainly covers a batch made without the booster. WorkPhrase is the
+	// base-rate cycle, which is exactly the no-booster time.
+	if len(it.MissingSpeeds) > 0 {
+		work += " without " + sanitizeInline(strings.Join(it.MissingSpeeds, " or ")) + " to hasten it"
+	}
 	if it.HasInputs {
 		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ", and you have the makings.")
 	} else {
 		s.WriteString(" A batch — " + countPhrase(it.BatchQty) + " more — takes about " + work + ", and you have everything you need.")
 	}
 	return s.String()
+}
+
+// missingSpeedInputs returns the display labels of recipe's valid speed inputs,
+// in recipe order, when none of them would apply to a batch started now; nil
+// when there are none or when any one applies. "Applies" is the exact predicate
+// StartProductionCycle uses (production_cycle_commands.go): qty >= 1, a real
+// speedup (rate_pct > 100), and inventory >= qty. Speed inputs are independent of
+// the required inputs and each other — the recipe/set authoring path
+// (sim.ResolveRecipe) rejects an item listed as both, or twice — so the snapshot
+// inventory is the inventory the sim checks.
+func missingSpeedInputs(snap *sim.Snapshot, recipe *sim.ItemRecipe, inventory map[sim.ItemKind]int) []string {
+	var out []string
+	for _, si := range recipe.SpeedInputs {
+		if si.Qty <= 0 || si.RatePct <= 100 {
+			continue
+		}
+		if inventory[si.Item] >= si.Qty {
+			return nil // this one applies, so the batch is not at base rate
+		}
+		out = append(out, itemDisplayLabel(snap, si.Item))
+	}
+	return out
 }
 
 // countPhrase renders a small batch count as prose ("10"). Kept as its own

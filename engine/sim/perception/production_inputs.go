@@ -341,12 +341,23 @@ func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
 		fmt.Fprintf(b, "- You use %s to make %s — %d on hand, enough for about %d more, and you're running low.\n",
 			sanitizeInline(it.InputLabel), sanitizeInline(it.OutputLabel), it.CurrentQty, it.RunwayUnits)
 	}
+	// Elective lines (boosters and speed boosters) sit under their own lead-in and
+	// never borrow the required-input "running low" tail (LLM-1006). Sharing the
+	// list and the tail with the lines above read as a requirement: the live smith,
+	// shown "A measure of bar iron makes each batch of Shovel quick work — 0 on
+	// hand, and you're running low" beside the horseshoe/whetstone input lines,
+	// reasoned "no iron — can't make shovels" and stopped forging a recipe that
+	// needs only water. Each line now says outright that a batch goes ahead
+	// without the item.
+	if len(v.Boosts) > 0 || len(v.Speeds) > 0 {
+		b.WriteString(electiveLeadIn + "\n")
+	}
 	// Booster lines (LLM-248): elective, so no runway — the motivation is the
 	// forgone bonus. Same no-supplier / no-tool-name discipline (LLM-64 split);
 	// the adjacent "## Restocking" line carries the where/how.
 	for _, bo := range v.Boosts {
-		fmt.Fprintf(b, "- A measure of %s in each batch of %s adds %d extra to the yield — %d on hand, and you're running low.\n",
-			sanitizeInline(bo.BoostLabel), sanitizeInline(bo.OutputLabel), bo.BonusQty, bo.CurrentQty)
+		fmt.Fprintf(b, "- A measure of %s in each batch of %s adds %d extra to the yield. You have %d on hand; %s\n",
+			sanitizeInline(bo.BoostLabel), sanitizeInline(bo.OutputLabel), bo.BonusQty, bo.CurrentQty, boostWithoutClause)
 	}
 	// Speed booster lines (LLM-511): like the boost lines, elective and runway-free
 	// — the motivation is the forgone quickness, not a stall. Same no-supplier /
@@ -357,11 +368,22 @@ func renderProductionInputs(b *strings.Builder, v *ProductionInputsView) {
 	for _, sp := range v.Speeds {
 		// Parallels the boost line above: state what the input DOES (makes the batch
 		// quick), then the on-hand count — never "with X in hand" beside "0 on hand",
-		// which reads as a contradiction (code_review). The exact rate stays out of
-		// the scene (scenes, not stats); the tool result carries the precise "ready
-		// in about N".
-		fmt.Fprintf(b, "- A measure of %s makes each batch of %s quick work — shaped from what you have rather than made from scratch — %d on hand, and you're running low.\n",
-			sanitizeInline(sp.SpeedLabel), sanitizeInline(sp.OutputLabel), sp.CurrentQty)
+		// which reads as a contradiction (code_review).
+		fmt.Fprintf(b, "- A measure of %s makes each batch of %s quick work — shaped from what you have rather than made from scratch. You have %d on hand; %s\n",
+			sanitizeInline(sp.SpeedLabel), sanitizeInline(sp.OutputLabel), sp.CurrentQty, speedWithoutClause)
 	}
 	b.WriteString("\n")
 }
+
+// The elective-line vocabulary (LLM-1006). Constants so the cross-scenario
+// invariant in speed_golden_test.go checks the exact phrases render
+// emits rather than a copy that could drift.
+const (
+	// electiveLeadIn separates the elective lines from the required-input lines
+	// above them, so the two kinds never share one list rhythm.
+	electiveLeadIn = "Worth having, though a batch goes ahead without them:"
+	// boostWithoutClause / speedWithoutClause close each elective line: what the
+	// batch looks like without the item (smaller / slower), never a stall.
+	boostWithoutClause = "without it a batch still goes ahead, only smaller."
+	speedWithoutClause = "without it a batch still goes ahead, only slower."
+)
