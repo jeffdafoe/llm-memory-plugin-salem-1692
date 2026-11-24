@@ -105,9 +105,9 @@ func TestHandleLaborResolvedActionLog_DurablePayloadRecordsTerms(t *testing.T) {
 		})
 	})
 
-	rows := rec.snapshot()
+	rows := durableRowsOfType(rec.snapshot(), sim.ActionTypeLabored)
 	if len(rows) != 1 {
-		t.Fatalf("recorded %d durable rows, want 1", len(rows))
+		t.Fatalf("recorded %d durable labored rows, want 1", len(rows))
 	}
 	row := rows[0]
 	if row.ActorID != "hannah" || row.ActionType != sim.ActionTypeLabored ||

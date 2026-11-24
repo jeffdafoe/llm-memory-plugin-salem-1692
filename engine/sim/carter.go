@@ -723,6 +723,18 @@ func settleCarterBuyLeg(w *World, carter, holder *Actor, leg *CarterLeg, now tim
 		HuddleID:      carter.CurrentHuddleID,
 		OccurredAt:    now,
 	}, now)
+	// The warrant above lasts one turn; this is the sale in the holder's own
+	// memory (LLM-1018).
+	RecordPassiveSettlement(w, PassiveSettlement{
+		PartyID:          holder.ID,
+		CounterpartyID:   carter.ID,
+		CounterpartyName: carter.DisplayName,
+		Kind:             SettlementCarterBuy,
+		Amount:           price,
+		Text:             CarterSettledNarration(carter.DisplayName, inputCountPhrase(w, leg.Good, qty), price),
+		Extra:            map[string]any{"item": string(leg.Good), "qty": qty},
+		At:               now,
+	})
 }
 
 // closeCarterQuotes closes the holder's active offers to the carter for the good

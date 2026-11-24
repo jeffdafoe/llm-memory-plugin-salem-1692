@@ -392,9 +392,9 @@ func TestHandleLaborResolvedActionLog_CompletedAppendsLaboredRow(t *testing.T) {
 		})
 	})
 
-	got := readActionLog(t, w)
+	got := ringEntriesOfType(readActionLog(t, w), sim.ActionTypeLabored)
 	if len(got) != 1 {
-		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+		t.Fatalf("labored ring entries = %d, want 1", len(got))
 	}
 	e := got[0]
 	if e.ActorID != "hannah" {
@@ -465,9 +465,9 @@ func TestHandleLaborResolvedActionLog_CompletedCreditsTheCoinRecord(t *testing.T
 		})
 	})
 
-	rows := rec.snapshot()
+	rows := durableRowsOfType(rec.snapshot(), sim.ActionTypeLabored)
 	if len(rows) != 1 {
-		t.Fatalf("recorded %d durable rows, want 1: %+v", len(rows), rows)
+		t.Fatalf("recorded %d durable labored rows, want 1: %+v", len(rows), rows)
 	}
 	// The seed keys the pair off this id. Without it a historical row falls back to
 	// the employer's display name, which the uniqueness rule can refuse.
@@ -521,8 +521,14 @@ func TestHandleLaborResolvedActionLog_InKindRewardIsNotCoin(t *testing.T) {
 		})
 	})
 
-	if got := readActionLog(t, w); len(got) != 1 {
-		t.Fatalf("len(ActionLog) = %d, want 1 — an in-kind wage is still a durable beat", len(got))
+	if got := ringEntriesOfType(readActionLog(t, w), sim.ActionTypeLabored); len(got) != 1 {
+		t.Fatalf("labored ring entries = %d, want 1 — an in-kind wage is still a durable beat", len(got))
+	}
+	// LLM-1018: the employer's own line names the goods and carries no coin.
+	settled := ringEntriesOfType(readActionLog(t, w), sim.ActionTypeSettled)
+	if len(settled) != 1 || settled[0].ActorID != "bob" || settled[0].Amount != 0 ||
+		settled[0].Text != "You paid Hannah 2 porridge for the work done for you, as agreed." {
+		t.Errorf("employer settled entries = %+v, want one with amount 0 naming 2 porridge", settled)
 	}
 	invokeOnWorld(t, w, func(world *sim.World) {
 		snap := &sim.Snapshot{
@@ -568,8 +574,10 @@ func TestHandleLaborResolvedActionLog_RejectedAppendLosesTheWageNotItsMeaning(t 
 		})
 	})
 
-	if sink.callCount() != 1 {
-		t.Fatalf("durable append called %d times, want 1 — the row must still be offered", sink.callCount())
+	// Two offers: the worker's `labored` row and the employer's `settled` row
+	// (LLM-1018), which carries no coin.
+	if sink.callCount() != 2 {
+		t.Fatalf("durable append called %d times, want 2 — the row must still be offered", sink.callCount())
 	}
 
 	invokeOnWorld(t, w, func(world *sim.World) {

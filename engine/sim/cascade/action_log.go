@@ -1204,11 +1204,9 @@ func handleHiredActionLog(w *sim.World, evt sim.Event) {
 //
 // Worker-side single row: ActorID is the worker (the labor is theirs, and the
 // broke-NPC-earning beat is the salient one — LLM-83's commerce loop), the
-// employer is the counterparty, Amount is the reward. The worker + employer
-// share the offer's HuddleID by construction (co-presence is required to
-// solicit and to accept), so cross-actor narrative pickup reaches the employer
-// via the same-huddle peer filter — one row suffices, the same posture as
-// handlePaidActionLog.
+// employer is the counterparty, Amount is the reward. The day push carries only
+// an actor's own rows plus overheard speech, so the employer gets its own
+// `settled` entry and row (LLM-1018, sim.RecordPassiveSettlement).
 //
 // Non-Completed terminals (declined / expired / failed_unavailable) move no
 // coins and append nothing, mirroring handlePayResolvedActionLog's
@@ -1281,6 +1279,26 @@ func handleLaborResolvedActionLog(w *sim.World, evt sim.Event) {
 		SpeakerName: display,
 		HuddleID:    resolved.HuddleID,
 		Source:      source,
+	})
+	// LLM-1018: the employer's own memory of the wage. The settle warrant lasts
+	// one turn, and the day push reads only the employer's own rows.
+	extra := map[string]any{
+		"labor_id":     uint64(resolved.LaborID),
+		"duration_min": resolved.DurationMin,
+	}
+	if goods := laborRewardItemsPayload(resolved.RewardItems); goods != nil {
+		extra["reward_items"] = goods
+	}
+	workerName := actorDisplayNameOrEmpty(w, resolved.WorkerID)
+	sim.RecordPassiveSettlement(w, sim.PassiveSettlement{
+		PartyID:          resolved.EmployerID,
+		CounterpartyID:   resolved.WorkerID,
+		CounterpartyName: workerName,
+		Kind:             sim.SettlementWage,
+		Amount:           resolved.Reward,
+		Text:             sim.WageSettledNarration(workerName, resolved.Reward, resolved.RewardItems),
+		Extra:            extra,
+		At:               resolved.At,
 	})
 }
 
