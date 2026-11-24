@@ -543,7 +543,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// its off-shift arm), but the ordering keeps that a coincidence rather than a
 	// dependency.
 	if settledAtLeisureVenue(snap, actorSnap) {
-		p.FarmUpkeep = nil
+		p.FarmUpkeep = p.FarmUpkeep.LossOnly() // LLM-1005: the errand goes, the loss line stays
 		p.Restocking = nil
 		p.StallRepairBuy = nil
 		p.Forage = nil
@@ -558,7 +558,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// leave-imperative). Same post-buildDutySteer ordering note as above: the
 	// steer already yielded on its own summonsActive gate.
 	if summonsActive(snap, actorSnap) {
-		p.FarmUpkeep = nil
+		p.FarmUpkeep = p.FarmUpkeep.LossOnly() // LLM-1005: the errand goes, the loss line stays
 		p.Restocking = nil
 		p.StallRepairBuy = nil
 		p.Forage = nil

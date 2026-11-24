@@ -743,6 +743,9 @@ func TestGoldensNoWorkErrandCuesInsideLeisureVenue(t *testing.T) {
 			if settledAtLeisureVenue(snap, snap.Actors[actorID]) {
 				settled++
 				for _, section := range errandSections {
+					if section == "## Farm upkeep" && farmSectionIsLossOnly(out) {
+						continue // LLM-1005: the loss line names no destination; it is a fact, not an errand
+					}
 					if strings.Contains(out, section) {
 						t.Errorf("scenario %q: subject is settled in a leisure venue on the evening but the prompt still carries %q — the errand argues it back out the door (LLM-345)", sc.name, section)
 					}
@@ -765,6 +768,22 @@ func TestGoldensNoWorkErrandCuesInsideLeisureVenue(t *testing.T) {
 	if settled == 0 || rooms == 0 {
 		t.Fatalf("this invariant is vacuous — no scenario is settled in a leisure venue (settled=%d) or carries the room (rooms=%d); add one", settled, rooms)
 	}
+}
+
+// farmSectionIsLossOnly reports whether the prompt's "## Farm upkeep" section is
+// just the LLM-1005 loss line — no counts, no buy steer, no destination.
+func farmSectionIsLossOnly(out string) bool {
+	const header = "## Farm upkeep\n"
+	i := strings.Index(out, header)
+	if i < 0 {
+		return false
+	}
+	line := out[i+len(header):]
+	if j := strings.Index(line, "\n"); j >= 0 {
+		line = line[:j]
+	}
+	return strings.Contains(line, "worn out in the farm's upkeep") &&
+		!strings.Contains(line, "Upkeep calls for") && !strings.Contains(line, "fresh shovel")
 }
 
 func eveningWorkerCoins(inside sim.StructureID, coins int) *sim.ActorSnapshot {

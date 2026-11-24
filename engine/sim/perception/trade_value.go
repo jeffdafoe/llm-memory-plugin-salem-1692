@@ -774,6 +774,10 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 				fmt.Fprintf(b, "- %s: the %d you carry are your own clothes, not wares.\n",
 					sanitizeInline(it.ItemLabel), it.ReserveHeld)
 				continue
+			case it.ReserveReason == sim.SpokenForUpkeep:
+				fmt.Fprintf(b, "- %s: the %d you carry are for the farm's upkeep, not wares.\n",
+					sanitizeInline(it.ItemLabel), it.ReserveHeld)
+				continue
 			case it.ReserveReason == sim.SpokenForMakings:
 				fmt.Fprintf(b, "- %s: the %d you carry you keep to work with — makings, not wares. Selling them leaves you nothing to work with.\n",
 					sanitizeInline(it.ItemLabel), it.ReserveHeld)
@@ -790,6 +794,9 @@ func renderTradeValue(b *strings.Builder, v *TradeValueView) {
 					it.ReserveFloor, makingsList(it.ReserveMakes), it.ReserveHeld-it.ReserveFloor)
 			case it.ReserveReason == sim.SpokenForGarment:
 				keepBack = fmt.Sprintf(" Keep %d back — your own clothes; only the %d beyond that are yours to sell.",
+					it.ReserveFloor, it.ReserveHeld-it.ReserveFloor)
+			case it.ReserveReason == sim.SpokenForUpkeep:
+				keepBack = fmt.Sprintf(" Keep %d back for the farm's upkeep; only the %d beyond that are yours to sell.",
 					it.ReserveFloor, it.ReserveHeld-it.ReserveFloor)
 			case it.ReserveReason == sim.SpokenForMakings:
 				keepBack = fmt.Sprintf(" Keep %d back to work with; only the %d beyond that are yours to sell.",

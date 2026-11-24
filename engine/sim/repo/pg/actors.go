@@ -124,7 +124,9 @@ SELECT
     standing,
     standing_rank_seen,
     lantern_lit_until,
-    lantern_candle_left_seconds
+    lantern_candle_left_seconds,
+    farm_tools_worn_qty,
+    farm_tools_worn_at
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -172,7 +174,8 @@ INSERT INTO actor (
     wearing,
     closed_until,
     standing, standing_rank_seen,
-    lantern_lit_until, lantern_candle_left_seconds
+    lantern_lit_until, lantern_candle_left_seconds,
+    farm_tools_worn_qty, farm_tools_worn_at
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -188,7 +191,8 @@ INSERT INTO actor (
     $29, $30, $31, $32,
     $33, $34, $35,
     $36, $37,
-    $38, $39
+    $38, $39,
+    $40, $41
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -228,7 +232,9 @@ ON CONFLICT (id) DO UPDATE SET
     standing               = EXCLUDED.standing,
     standing_rank_seen     = EXCLUDED.standing_rank_seen,
     lantern_lit_until      = EXCLUDED.lantern_lit_until,
-    lantern_candle_left_seconds = EXCLUDED.lantern_candle_left_seconds`
+    lantern_candle_left_seconds = EXCLUDED.lantern_candle_left_seconds,
+    farm_tools_worn_qty    = EXCLUDED.farm_tools_worn_qty,
+    farm_tools_worn_at     = EXCLUDED.farm_tools_worn_at`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -581,6 +587,8 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			standingRankSeen     string
 			lanternLitUntil      *time.Time
 			lanternCandleLeft    int
+			farmToolsWornQty     *int
+			farmToolsWornAt      *time.Time
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -600,6 +608,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&closedUntil,
 			&standing, &standingRankSeen,
 			&lanternLitUntil, &lanternCandleLeft,
+			&farmToolsWornQty, &farmToolsWornAt,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -681,6 +690,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			StandingRankSeen:     standingRankSeen,
 			LanternLitUntil:      derefTime(lanternLitUntil),
 			LanternCandleLeft:    time.Duration(lanternCandleLeft) * time.Second,
+			FarmToolsWorn:        farmToolsWornFromSQL(farmToolsWornQty, farmToolsWornAt),
 			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
@@ -1118,6 +1128,32 @@ func wearingFromSQL(kinds []string) []sim.ItemKind {
 		out = append(out, sim.ItemKind(k))
 	}
 	return out
+}
+
+// farmToolsWornQtyArg / farmToolsWornAtArg / farmToolsWornFromSQL map
+// Actor.FarmToolsWorn (LLM-1005) to and from the nullable
+// actor.farm_tools_worn_qty / farm_tools_worn_at pair: no record is NULL in
+// both. A row with either column NULL, or a non-positive qty, loads as no
+// record rather than a half-built one.
+func farmToolsWornQtyArg(fw *sim.FarmToolsWorn) any {
+	if fw == nil {
+		return nil
+	}
+	return fw.Qty
+}
+
+func farmToolsWornAtArg(fw *sim.FarmToolsWorn) any {
+	if fw == nil {
+		return nil
+	}
+	return fw.At
+}
+
+func farmToolsWornFromSQL(qty *int, at *time.Time) *sim.FarmToolsWorn {
+	if qty == nil || at == nil || *qty <= 0 {
+		return nil
+	}
+	return &sim.FarmToolsWorn{Qty: *qty, At: *at}
 }
 
 // loadAllRoomAccess reads every room_access row and attaches it to the
@@ -1674,6 +1710,8 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			a.StandingRankSeen,                           // $37 standing_rank_seen (LLM-892; a rank id since LLM-895)
 			nilOnZeroTime(a.LanternLitUntil),             // $38 lantern_lit_until (LLM-846)
 			int(a.LanternCandleLeft/time.Second),         // $39 lantern_candle_left_seconds (LLM-846)
+			farmToolsWornQtyArg(a.FarmToolsWorn),         // $40 farm_tools_worn_qty (LLM-1005)
+			farmToolsWornAtArg(a.FarmToolsWorn),          // $41 farm_tools_worn_at (LLM-1005)
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

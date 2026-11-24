@@ -1,6 +1,10 @@
 package sim
 
-import "time"
+import (
+	"fmt"
+	"log"
+	"time"
+)
 
 // farm_upkeep.go — LLM-215. A recurring "wealth tax" on farm-tagged producers.
 // Terminator producers (empty-inputs recipes) mint goods — and therefore coin —
@@ -154,7 +158,9 @@ func assessFarmUpkeep(w *World, now time.Time) {
 		// rather than a one-time coins→shovels swap. Same inventory-decrement as a
 		// consumed recipe input (produce_tick.go); shovels have no other use, so
 		// clearing the item is the whole upkeep stock.
+		worn := owner.Inventory[ShovelItemKind]
 		delete(owner.Inventory, ShovelItemKind)
+		recordFarmToolsWorn(w, owner, worn, now)
 		if !farmUpkeepWarrantEligible(owner) {
 			continue
 		}
@@ -166,6 +172,109 @@ func assessFarmUpkeep(w *World, now time.Time) {
 			Reason:         FarmUpkeepWarrantReason{FarmID: obj.ID},
 		}, now)
 	}
+}
+
+// FarmToolsWorn is what the last upkeep assessment wore out of a farm owner's
+// pack (LLM-1005). The delete is silent by nature — it lands at the daily
+// boundary while the owner sleeps, and a warrant stamped on a sleeper is
+// cleared long before she wakes — so without this record an owner who bought
+// shovels all day woke holding none and blamed the smith for goods she had in
+// fact received. The `## Farm upkeep` cue renders the loss until the next
+// assessment replaces it. Checkpointed with the inventory it explains
+// (actor.farm_tools_worn_qty / _at), so the two cannot disagree after a
+// restart, which on this engine happens several times a day.
+type FarmToolsWorn struct {
+	Qty int       // shovels removed by that assessment (> 0; a zero assessment clears the record)
+	At  time.Time // the assessment's boundary instant
+}
+
+// copyFarmToolsWorn value-copies the record for a snapshot, so the published
+// snapshot never aliases the live actor's pointer.
+func copyFarmToolsWorn(fw *FarmToolsWorn) *FarmToolsWorn {
+	if fw == nil {
+		return nil
+	}
+	c := *fw
+	return &c
+}
+
+// FarmToolsWornWindow bounds how long the cue shows a loss. Each assessment
+// replaces or clears the record, so this only matters when assessments stop
+// (the feature switched off, the farm untagged): the line must not outlive
+// the day it explains.
+const FarmToolsWornWindow = 24 * time.Hour
+
+// FarmToolsWornNarration is the owner's line for a loss: what went and that it
+// is ordinary wear. Shared by the action-log entry, the durable row and the
+// perception cue so memory and prompt tell one story. No seller is named — the
+// engine does not track who sold which shovel — and no time of day, because
+// the boot catch-up can run the assessment at any hour (RunRotationTicker).
+func FarmToolsWornNarration(qty int) string {
+	if qty == 1 {
+		return "The shovel you held was worn out in the farm's upkeep — that is the way of farm tools."
+	}
+	return fmt.Sprintf("The %d shovels you held were worn out in the farm's upkeep — that is the way of farm tools.", qty)
+}
+
+// recordFarmToolsWorn sets (qty > 0) or clears (qty == 0) the owner's
+// FarmToolsWorn and, for a real loss, writes the `farm_tools_worn` action-log
+// entry (read by the shared-NPC soul pass) and durable row (narrated into a
+// stateful NPC's memory by memory-api). Written once, at the change. MUST run
+// on the world goroutine.
+func recordFarmToolsWorn(w *World, owner *Actor, qty int, at time.Time) {
+	if qty <= 0 {
+		owner.FarmToolsWorn = nil
+		return
+	}
+	owner.FarmToolsWorn = &FarmToolsWorn{Qty: qty, At: at}
+	text := FarmToolsWornNarration(qty)
+	if _, err := AppendActionLogEntry(ActionLogEntry{
+		ActorID:    owner.ID,
+		OccurredAt: at,
+		ActionType: ActionTypeFarmToolsWorn,
+		Text:       text,
+	}).Fn(w); err != nil {
+		log.Printf("sim/farm_upkeep: append farm_tools_worn for %s: %v", owner.DisplayName, err)
+	}
+	w.AppendActionLogDurable(DurableActionLogRow{
+		ActorID:    owner.ID,
+		OccurredAt: at,
+		ActionType: ActionTypeFarmToolsWorn,
+		Payload: map[string]any{
+			"item": string(ShovelItemKind),
+			"qty":  qty,
+			"text": text,
+		},
+		SpeakerName: owner.DisplayName,
+		Source:      "engine",
+	})
+}
+
+// FarmUpkeepReserve is how many of a farm owner's held shovels are spoken for
+// by the upkeep obligation (LLM-1005): up to what the current obligation calls
+// for, so the wares cue, the carry line and the barter gates leave them in the
+// pack. 0 for anyone who owns no farm. Held shovels beyond the obligation stay
+// spare. objects is the live or snapshot object map (see OwnedFarm).
+func FarmUpkeepReserve(objects map[VillageObjectID]*VillageObject, ownerID ActorID, coins, held, floor, coinsPerShovel int) int {
+	if held <= 0 || OwnedFarm(objects, ownerID) == nil {
+		return 0
+	}
+	owed := FarmUpkeepObligation(coins, floor, coinsPerShovel)
+	if owed > held {
+		return held
+	}
+	return owed
+}
+
+// liveFarmUpkeepReserve is FarmUpkeepReserve over a live actor and the live
+// settings — shared by LiveBarterHolder and publishedActorSnapshot so the live
+// gates and the published snapshot compute the claim one way.
+func liveFarmUpkeepReserve(w *World, a *Actor) int {
+	if w == nil || a == nil {
+		return 0
+	}
+	return FarmUpkeepReserve(w.VillageObjects, a.ID, a.Coins, a.Inventory[ShovelItemKind],
+		w.Settings.FarmUpkeepFloor, w.Settings.FarmUpkeepCoinsPerShovel)
 }
 
 // ApplyFarmUpkeep wraps the daily assessment as a Command so the rotation driver

@@ -2792,6 +2792,9 @@ func spokenForClause(reason SpokenForReason) string {
 	if reason == SpokenForGarment {
 		return "the rest is your own clothes"
 	}
+	if reason == SpokenForUpkeep {
+		return "the rest is for your farm's upkeep"
+	}
 	return "the rest you keep to work with"
 }
 
@@ -2800,6 +2803,9 @@ func spokenForClause(reason SpokenForReason) string {
 func theirSpokenForClause(reason SpokenForReason) string {
 	if reason == SpokenForGarment {
 		return "the rest is their own clothes"
+	}
+	if reason == SpokenForUpkeep {
+		return "the rest is for their farm's upkeep"
 	}
 	return "the rest they keep to work with"
 }
