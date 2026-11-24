@@ -2210,6 +2210,19 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 			}
 			return
 		}
+		if v.SupplyErrandElective {
+			// LLM-1008: every item the errand is for only boosts what she makes, so the
+			// line permits the trip without claiming need, and leaves the weighing to
+			// her. It still never says "stay" (the LLM-491 property): the Restocking
+			// walk-to bullet in the same prompt stays valid. Live: "what you need is not
+			// to be had here" took Hannah Boggs out of the Inn mid-breakfast for salt.
+			if closeAt != "" {
+				fmt.Fprintf(b, "It is your working hours and you are at your post (you close at %s). %s\n\n", closeAt, electiveErrandLine)
+			} else {
+				b.WriteString("It is your working hours and you are at your post. " + electiveErrandLine + "\n\n")
+			}
+			return
+		}
 		if v.SupplyErrand {
 			// LLM-491: the buy-side twin of the forage reframe above. Some other
 			// section of this same prompt is naming a place to go buy at — a
@@ -5363,3 +5376,8 @@ func campSightProse(c CampSight) string {
 // campHorseshoeLine is what a villager sees of a warded tent (LLM-845): the
 // fact, no judgement — what it means is the village's own talk.
 const campHorseshoeLine = "A horseshoe is nailed over its door."
+
+// electiveErrandLine is the at-post duty line's second sentence for an errand
+// whose items only boost what the keeper makes (LLM-1008). A constant so the
+// golden invariant checks the exact text render emits.
+const electiveErrandLine = "Something that would help your work is to be had elsewhere — whether it is worth a trip away from your post is yours to judge."

@@ -603,6 +603,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// subtractions exist to remove.
 	if p.DutySteer != nil && p.DutySteer.AtPost {
 		p.DutySteer.SupplyErrand = hasAtPostSupplyErrand(&p)
+		p.DutySteer.SupplyErrandElective = p.DutySteer.SupplyErrand && electiveOnlySupplyErrand(&p, snap, actorSnap)
 	}
 	// LLM-717: Restocking already renders the co-present whetstone buy from the
 	// same seller, with its own quantity — the rounds line names the need without
@@ -797,6 +798,67 @@ func hasAtPostSupplyErrand(p *Payload) bool {
 		p.WorkClothes.HasWalkToSupplier() ||
 		p.Hearth.HasWalkToSupplier() ||
 		p.WrightRounds.HasWalkToSupplier()
+}
+
+// electiveOnlySupplyErrand reports whether the at-post supply errand is only an
+// errand for boosters (LLM-1008): "## Restocking" is the one walk-to cue, and every
+// item it sends the subject out for is elective for what she makes. Any other
+// walk-to cue (a worn stall's nails, the season's shovels, a cold hearth's wood,
+// work clothes, a wright's stone) is a real need, so it keeps the need line.
+func electiveOnlySupplyErrand(p *Payload, snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
+	if p.StallRepair.HasWalkToSupplier() || p.FarmUpkeep.HasWalkToSupplier() ||
+		p.WorkClothes.HasWalkToSupplier() || p.Hearth.HasWalkToSupplier() ||
+		p.WrightRounds.HasWalkToSupplier() {
+		return false
+	}
+	kinds := p.Restocking.walkToKinds()
+	if len(kinds) == 0 {
+		return false
+	}
+	elective := electiveOnlyInputs(snap, actorSnap)
+	for _, k := range kinds {
+		if !elective[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// electiveOnlyInputs returns the items that are a working boost or speed input of
+// some recipe the actor produces and a required input of none of them. "Working"
+// is the sim's own validity rule (a boost with qty >= 1 and bonus >= 1; a speed
+// input with qty >= 1 and rate_pct > 100): a listed booster that changes nothing
+// would make the line call the trip helpful when it is not. A pure reseller (no
+// produce entries) gets an empty set, so every item she restocks stays a need.
+func electiveOnlyInputs(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) map[sim.ItemKind]bool {
+	if snap == nil || actorSnap == nil || actorSnap.RestockPolicy == nil || snap.Recipes == nil {
+		return nil
+	}
+	required := map[sim.ItemKind]bool{}
+	elective := map[sim.ItemKind]bool{}
+	for _, e := range actorSnap.RestockPolicy.ProduceEntries() {
+		recipe := snap.Recipes[e.Item]
+		if recipe == nil {
+			continue
+		}
+		for _, in := range recipe.Inputs {
+			required[in.Item] = true
+		}
+		for _, bi := range recipe.BoostInputs {
+			if bi.Qty > 0 && bi.BonusQty > 0 {
+				elective[bi.Item] = true
+			}
+		}
+		for _, si := range recipe.SpeedInputs {
+			if si.Qty > 0 && si.RatePct > 100 {
+				elective[si.Item] = true
+			}
+		}
+	}
+	for k := range required {
+		delete(elective, k)
+	}
+	return elective
 }
 
 // orderWarrants returns a copy of the batch ordered by SourceEventID

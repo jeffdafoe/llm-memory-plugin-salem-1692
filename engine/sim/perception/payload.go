@@ -2375,6 +2375,16 @@ type DutySteerView struct {
 	// take rather than the thing she goes to buy).
 	SupplyErrand bool
 
+	// SupplyErrandElective narrows SupplyErrand (LLM-1008): set when the only
+	// walk-to cue is "## Restocking" and every item it sends her out for is a
+	// yield or speed booster of something she makes, never a required input of
+	// anything she makes. Render then permits the trip without claiming need:
+	// "what you need is not to be had here" pulled Hannah Boggs out of the Inn
+	// mid-breakfast for salt that only adds yield. Resale is deliberately ignored:
+	// the wares section prices every bought item, boosters included, so a resale
+	// test would mark every booster as needed.
+	SupplyErrandElective bool
+
 	// Lodging marks the off-shift target as the actor's RENTED room at an inn
 	// (a lodger) rather than its own home — render says "head to your rented room
 	// at X". Only meaningful when !ToWork && TargetID != "". ZBBS-WORK-387.

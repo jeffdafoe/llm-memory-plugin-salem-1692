@@ -91,18 +91,27 @@ func (v *RestockingView) AllBlocked() bool {
 // in buyPathsEnabled; per item, a standing offer, a blocked item, or a co-present
 // seller each render something other than the walk-to list.
 func (v *RestockingView) HasWalkToSupplier() bool {
+	return len(v.walkToKinds()) > 0
+}
+
+// walkToKinds returns the item kinds that render a walk-to vendor bullet, in
+// section order — the items HasWalkToSupplier answers for. The elective-errand
+// check (LLM-1008) reads the same list, so "which items send her out" has one
+// definition.
+func (v *RestockingView) walkToKinds() []sim.ItemKind {
 	if !v.buyPathsEnabled() {
-		return false
+		return nil
 	}
+	var out []sim.ItemKind
 	for _, it := range v.Items {
 		if it.PendingOfferToCoPresentSeller || it.blocked() || it.CoPresentSeller != "" {
 			continue
 		}
 		if len(it.Vendors) > 0 {
-			return true
+			out = append(out, it.Kind)
 		}
 	}
-	return false
+	return out
 }
 
 // buyPathsEnabled is the section-wide gate both HasWalkToSupplier and Actionable
