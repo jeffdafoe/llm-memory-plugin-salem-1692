@@ -122,3 +122,39 @@ func TestLoadSettlements_UnbindableActorMatchesNothing(t *testing.T) {
 		mock.Close()
 	}
 }
+
+// LLM-1015: a commission deposit row carries the agreed price beside its amount,
+// and a balance row names its order; both decode onto the settlement row.
+func TestLoadSettlements_ParsesCommissionDepositAndBalance(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(mock.Close)
+	repo := NewActionLogRepo(mock)
+
+	at := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	deposit := []byte(`{"recipient":"Ezekiel Crane","amount":5,"price":15,"for":"5x shovel","ledger_id":412,"consume_now":false}`)
+	balance := []byte(`{"recipient":"Ezekiel Crane","recipient_actor_id":"ez","amount":10,"for":"5x shovel","order_balance":7}`)
+	rows := pgxmock.NewRows(settlementColumns()).
+		AddRow(at, "el", "Elizabeth Ellis", balance, sql.NullString{}).
+		AddRow(at.Add(-time.Hour), "el", "Elizabeth Ellis", deposit, sql.NullString{})
+	mock.ExpectQuery(`action_type = 'paid'`).WithArgs(10).WillReturnRows(rows)
+
+	got, err := repo.LoadSettlements(context.Background(), sim.SettlementFilter{}, 10)
+	if err != nil {
+		t.Fatalf("LoadSettlements: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2", len(got))
+	}
+	if b := got[0]; b.Amount != 10 || b.BalanceOfOrder != 7 || b.LedgerID != 0 || b.Price != 0 {
+		t.Errorf("balance row = %+v, want amount 10, order 7, no ledger, no price", b)
+	}
+	if d := got[1]; d.Amount != 5 || d.Price != 15 || d.LedgerID != 412 || d.BalanceOfOrder != 0 {
+		t.Errorf("deposit row = %+v, want amount 5, price 15, ledger 412", d)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

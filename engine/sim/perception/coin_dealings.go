@@ -242,29 +242,36 @@ type coinDirection struct {
 	goodsTotal int
 	workCount  int
 	workTotal  int
+	// refundCount / refundTotal: coin returned when an order lapsed (LLM-1015).
+	refundCount int
+	refundTotal int
 }
 
 func paidDirection(d sim.CoinDealings) coinDirection {
 	return coinDirection{
-		count:      d.PaidCount,
-		dueCount:   d.PaidDueCount,
-		dueTotal:   d.PaidDueTotal,
-		goodsCount: d.PaidGoodsCount,
-		goodsTotal: d.PaidGoodsTotal,
-		workCount:  d.PaidWorkCount,
-		workTotal:  d.PaidWorkTotal,
+		count:       d.PaidCount,
+		dueCount:    d.PaidDueCount,
+		dueTotal:    d.PaidDueTotal,
+		goodsCount:  d.PaidGoodsCount,
+		goodsTotal:  d.PaidGoodsTotal,
+		workCount:   d.PaidWorkCount,
+		workTotal:   d.PaidWorkTotal,
+		refundCount: d.PaidRefundCount,
+		refundTotal: d.PaidRefundTotal,
 	}
 }
 
 func receivedDirection(d sim.CoinDealings) coinDirection {
 	return coinDirection{
-		count:      d.ReceivedCount,
-		dueCount:   d.ReceivedDueCount,
-		dueTotal:   d.ReceivedDueTotal,
-		goodsCount: d.ReceivedGoodsCount,
-		goodsTotal: d.ReceivedGoodsTotal,
-		workCount:  d.ReceivedWorkCount,
-		workTotal:  d.ReceivedWorkTotal,
+		count:       d.ReceivedCount,
+		dueCount:    d.ReceivedDueCount,
+		dueTotal:    d.ReceivedDueTotal,
+		goodsCount:  d.ReceivedGoodsCount,
+		goodsTotal:  d.ReceivedGoodsTotal,
+		workCount:   d.ReceivedWorkCount,
+		workTotal:   d.ReceivedWorkTotal,
+		refundCount: d.ReceivedRefundCount,
+		refundTotal: d.ReceivedRefundTotal,
 	}
 }
 
@@ -306,6 +313,9 @@ func coinDirectionClause(dir coinDirection) string {
 		portions = append(portions, p)
 	}
 	if p := coinWorkPortion(dir.workCount, dir.workTotal, dir.count); p != "" {
+		portions = append(portions, p)
+	}
+	if p := coinRefundPortion(dir.refundCount, dir.refundTotal, dir.count); p != "" {
 		portions = append(portions, p)
 	}
 	due := coinDuePortion(dir.dueCount, dir.dueTotal, dir.count)
@@ -399,6 +409,25 @@ func coinWorkPortion(workCount, workTotal, count int) string {
 		return "all of it for work done"
 	default:
 		return fmt.Sprintf("%s of it for work done", coinsPhrase(workTotal))
+	}
+}
+
+// coinRefundPortion names how much of a direction an order lapse sent back
+// (LLM-1015). Unlike goods and work it never takes the tight whole-direction form
+// ("20 coins for goods"): "20 coins returned when an order lapsed" with no comma
+// reads as a description of the coins rather than of what happened to them, so it
+// always rides the comma form, as a due does. No closing — the lapse line in the
+// same prompt carries the story.
+func coinRefundPortion(refundCount, refundTotal, count int) string {
+	switch {
+	case refundCount <= 0:
+		return ""
+	case count == 1:
+		return "returned when an order lapsed"
+	case refundCount >= count:
+		return "all of it returned when an order lapsed"
+	default:
+		return fmt.Sprintf("%s of it returned when an order lapsed", coinsPhrase(refundTotal))
 	}
 }
 

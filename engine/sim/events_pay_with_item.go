@@ -205,6 +205,14 @@ type PayWithItemResolved struct {
 	ConsumerIDs    []ActorID
 	Amount         int
 
+	// Charged is the coin that actually moved buyer→seller at an Accepted
+	// settlement (LLM-1015). It equals Amount except on a partial-payment
+	// commission, where only the deposit moves now and the balance settles at
+	// deliver_order (LLM-357). Amount stays the agreed price, which the price
+	// book reads; the coin record and the `paid` rows read Charged. Zero on
+	// every non-Accepted terminal (no coin moved).
+	Charged int
+
 	// Lines is populated only on a bundle quote-take accept (LLM-101): the
 	// full set of {ItemKind, Qty} lines the buyer took. Empty for every
 	// single-item terminal (use ItemKind/QtyPerConsumer there). Carried so the

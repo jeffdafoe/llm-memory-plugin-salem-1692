@@ -411,6 +411,11 @@ type SettlementRow struct {
 	LedgerID   LedgerID
 	ConsumeNow bool
 	HuddleID   string
+	// Price is the agreed price when the row's Amount is only part of it — a
+	// commission deposit (LLM-1015); 0 otherwise. BalanceOfOrder names the order
+	// whose commission balance the row paid at deliver_order; 0 otherwise.
+	Price          int
+	BalanceOfOrder uint64
 }
 
 // SettlementFilter narrows a LoadSettlements read. Every field is optional — a zero

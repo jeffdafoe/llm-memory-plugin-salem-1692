@@ -434,6 +434,9 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 					Amount:    o.Amount,
 					Charge:    balanceDue,
 				}, at)
+				// LLM-1015: the balance reaches the coin record and the buyer's
+				// `paid` rows, as the deposit did at accept.
+				recordOrderBalancePaid(w, o, balanceBuyer, seller, balanceDue, at)
 			}
 
 			// Bidirectional buyer↔seller SalientFacts. Multi-consumer

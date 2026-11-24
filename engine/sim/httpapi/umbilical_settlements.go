@@ -56,6 +56,10 @@ type SettlementEntryDTO struct {
 	HuddleID   string                 `json:"huddle_id,omitempty"`
 	Free       bool                   `json:"free"`
 	HasLegacy  bool                   `json:"has_legacy,omitempty"`
+	// LLM-1015: price is the agreed price on a commission deposit row (amount is
+	// the deposit); balance_of_order names the order a balance row settled.
+	Price          int    `json:"price,omitempty"`
+	BalanceOfOrder uint64 `json:"balance_of_order,omitempty"`
 }
 
 // UmbilicalSettlementsDTO is the GET /umbilical/settlements response, most-recent
@@ -156,19 +160,23 @@ func (s *Server) handleUmbilicalSettlements(w http.ResponseWriter, r *http.Reque
 		// false positive on a 0-coin barter — the very ambiguity this route exists to
 		// remove — so `free` is suppressed for legacy rows. has_legacy tells the
 		// operator the goods leg is unknown, not absent.
-		hasLegacy := row.LedgerID == 0
+		// A commission balance row (LLM-1015) carries no ledger_id by design — its
+		// goods are the order's, handed over in the same command — so it is not legacy.
+		hasLegacy := row.LedgerID == 0 && row.BalanceOfOrder == 0
 		entry := SettlementEntryDTO{
-			OccurredAt: row.OccurredAt,
-			BuyerID:    string(row.BuyerID),
-			BuyerName:  row.BuyerName,
-			SellerName: row.SellerName,
-			Item:       row.Item,
-			Amount:     row.Amount,
-			ConsumeNow: row.ConsumeNow,
-			LedgerID:   uint64(row.LedgerID),
-			HuddleID:   row.HuddleID,
-			Free:       !hasLegacy && row.Amount == 0 && len(row.PayItems) == 0,
-			HasLegacy:  hasLegacy,
+			OccurredAt:     row.OccurredAt,
+			BuyerID:        string(row.BuyerID),
+			BuyerName:      row.BuyerName,
+			SellerName:     row.SellerName,
+			Item:           row.Item,
+			Amount:         row.Amount,
+			ConsumeNow:     row.ConsumeNow,
+			LedgerID:       uint64(row.LedgerID),
+			HuddleID:       row.HuddleID,
+			Free:           !hasLegacy && row.Amount == 0 && len(row.PayItems) == 0,
+			HasLegacy:      hasLegacy,
+			Price:          row.Price,
+			BalanceOfOrder: row.BalanceOfOrder,
 		}
 		for _, pi := range row.PayItems {
 			entry.PayItems = append(entry.PayItems, SettlementPayItemDTO{Item: string(pi.Kind), Qty: pi.Qty})

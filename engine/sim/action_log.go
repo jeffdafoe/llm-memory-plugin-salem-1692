@@ -244,6 +244,14 @@ const (
 	// dream records where the coins went. Lodging bookings write none.
 	ActionTypeOrderLapsed ActionType = "order_lapsed"
 
+	// ActionTypeRefunded — DURABLE-ONLY: a lapsed order's coins went back from
+	// the seller to the buyer (LLM-1015, coin_record_orders.go recordOrderRefund).
+	// ActorID is the seller, who paid the refund; payload {recipient,
+	// recipient_actor_id, amount, order_id, item}, the `paid` row's shape. Read by
+	// the coin-record boot seed as a CoinPaymentRefund. No ring entry: the
+	// order_lapsed beat narrates it.
+	ActionTypeRefunded ActionType = "refunded"
+
 	// ActionTypeFarmToolsWorn — the daily farm-upkeep assessment wore out the
 	// shovels a farm owner held (LLM-1005, farm_upkeep.go recordFarmToolsWorn).
 	// ActorID is the owner; Text is her pre-rendered line

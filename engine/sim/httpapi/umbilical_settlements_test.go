@@ -217,3 +217,29 @@ func TestUmbilicalSettlements_Gated(t *testing.T) {
 		t.Errorf("settlements no token = %d, want 401", rec.Code)
 	}
 }
+
+// LLM-1015: a commission settles in two rows — the deposit (ledger id, amount the
+// deposit, price the agreed price) and the balance at delivery (no ledger id, the
+// order named instead). The balance row is not legacy, and both carry what lets an
+// operator read the whole deal.
+func TestUmbilicalSettlements_CommissionDepositAndBalance(t *testing.T) {
+	t0 := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	store := &fakeSettlementStore{rows: []sim.SettlementRow{
+		{OccurredAt: t0, BuyerID: "el", BuyerName: "Elizabeth Ellis", SellerName: "Ezekiel Crane", Amount: 10, Item: "5x shovel", BalanceOfOrder: 7},
+		{OccurredAt: t0.Add(-time.Hour), BuyerID: "el", BuyerName: "Elizabeth Ellis", SellerName: "Ezekiel Crane", Amount: 5, Item: "5x shovel", LedgerID: 412, Price: 15},
+	}}
+	rec := req(t, settlementsServer(t, store), "/api/village/umbilical/settlements", "operator-tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settlements = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalSettlementsDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if b := out.Settlements[0]; b.HasLegacy || b.BalanceOfOrder != 7 || b.Amount != 10 || b.Free {
+		t.Errorf("balance row = %+v, want not legacy, balance_of_order 7, 10 coins", b)
+	}
+	if d := out.Settlements[1]; d.Price != 15 || d.Amount != 5 || d.LedgerID != 412 {
+		t.Errorf("deposit row = %+v, want amount 5, price 15, ledger 412", d)
+	}
+}
