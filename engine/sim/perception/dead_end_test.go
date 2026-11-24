@@ -166,6 +166,8 @@ func TestShutBusinessCueOnlyWhenUntended(t *testing.T) {
 		// to what that scenario pins (the buy rule's audience gate); the alternative
 		// was deleting her from the world, which made a worse foil.
 		"keeper_off_post_buying_alone": true,
+		// LLM-1010: the brewer is asleep in his own Brewery, so no one is tending it.
+		"reseller_at_supplier_seller_asleep": true,
 	}
 	var sawUntended, sawTended bool
 	for _, sc := range perceptionScenarios {

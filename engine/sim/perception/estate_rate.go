@@ -56,14 +56,14 @@ func buildEstateRateCollector(snap *sim.Snapshot, actorID sim.ActorID, actorSnap
 		return nil
 	}
 	sc := buyerCoPresenceScope(snap, actorSnap)
-	if sc.huddle == "" && sc.scope == "" {
+	if sc.huddle == "" && sc.rawScope == "" {
 		return nil
 	}
 	for id, other := range snap.Actors {
 		if other == nil || id == actorID || other.DisplayName == "" {
 			continue
 		}
-		if !sc.sellerCoPresent(other) {
+		if !sc.presentInBuilding(other) {
 			continue
 		}
 		if sim.RateableBusinessOf(snap.VillageObjects, id) != nil {
