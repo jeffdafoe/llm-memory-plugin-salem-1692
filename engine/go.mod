@@ -8,7 +8,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/fergusstrange/embedded-postgres/v2 v2.0.1
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/pashagolub/pgxmock/v6 v6.0.0-beta2
+	github.com/pashagolub/pgxmock/v6 v6.0.0
 )
 
 require (
