@@ -479,13 +479,25 @@ func TestRehydrateCoinRecordOnLoad_ClassifiesHistoricalLedgerRowsAsGoods(t *test
 // source file. A second writer has to add the literal, which trips this and sends
 // whoever added it to the CoinPaymentForGoods comment before they can go on.
 //
-// Scoped to lodging_grant deliberately. ledger_id cannot be pinned this way — it is
+// Scoped to lodging_grant and order_balance (LLM-1015) deliberately. ledger_id cannot be pinned this way — it is
 // a general-purpose key across handlers, httpapi and the repo tier, and its
 // engine-ownership rests instead on the cascade subscriber owning the whole payload
 // of the row it writes.
 func TestGoodsMarkersAreWrittenOnlyByTheEngine(t *testing.T) {
-	const marker = `"lodging_grant"`
-	want := map[string]bool{filepath.Join(".", "lodger_rebook.go"): true}
+	assertMarkerWrittenOnlyBy(t, `"lodging_grant"`, "lodger_rebook.go")
+	// The settlements reader decodes the key through a json tag; it never writes it.
+	assertMarkerWrittenOnlyBy(t, `"order_balance"`, "coin_record_orders.go", filepath.Join("repo", "pg", "action_log.go"))
+}
+
+// assertMarkerWrittenOnlyBy checks the literal appears only in writer and in the
+// named readers, and that writer still carries it.
+func assertMarkerWrittenOnlyBy(t *testing.T, marker, writer string, readers ...string) {
+	t.Helper()
+	want := map[string]bool{filepath.Join(".", writer): true}
+	allowed := map[string]bool{}
+	for _, r := range readers {
+		allowed[filepath.Join(".", r)] = true
+	}
 
 	found := make(map[string]bool)
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
@@ -508,7 +520,7 @@ func TestGoodsMarkersAreWrittenOnlyByTheEngine(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	for path := range found {
-		if !want[path] {
+		if !want[path] && !allowed[path] {
 			t.Errorf("%s writes the %s marker. Only the engine may — see the CoinPaymentForGoods comment before adding a writer.", path, marker)
 		}
 	}
@@ -693,5 +705,40 @@ func TestRehydrateCoinRecordOnLoad_StaleStampedIDWithAmbiguousNameIsDropped(t *t
 	}
 	if n := countCoinPairs(w.CoinRecord); n != 0 {
 		t.Errorf("recorded %d pair(s), want 0 — an ambiguous name identifies nobody", n)
+	}
+}
+
+// LLM-1015: the boot seed rebuilds an order's balance as goods (the order_balance
+// marker) and a lapse refund as coin going back, seller to buyer — the same
+// record the live paths built before the restart.
+func TestRehydrateCoinRecordOnLoad_OrderBalanceAndRefund(t *testing.T) {
+	at := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	w := newCoinWorld(0)
+	w.Actors = map[ActorID]*Actor{
+		"alice": {ID: "alice", DisplayName: "Alice"},
+		"smith": {ID: "smith", DisplayName: "Smith"},
+	}
+	w.repo.CoinRecords = &stubCoinRecordsRepo{rows: []CoinPaymentRow{
+		// The deposit (a ledger settlement) and the balance at delivery.
+		{ActorID: "alice", At: at, Amount: "5", CounterpartyActorID: "smith", LedgerID: "1"},
+		{ActorID: "alice", At: at.Add(time.Hour), Amount: "10", CounterpartyActorID: "smith", OrderBalance: "1"},
+		// A later order's refund: written from smith's side, paid to alice.
+		{Source: CoinPaymentSourceRefunded, ActorID: "smith", At: at.Add(2 * time.Hour), Amount: "6", CounterpartyActorID: "alice"},
+	}}
+	if err := w.rehydrateCoinRecordOnLoad(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	d := coinDealingsFrom(w.CoinRecord, 0, "alice", "smith", at.Add(3*time.Hour))
+	if d.PaidCount != 2 || d.PaidGoodsTotal != 15 {
+		t.Errorf("alice paid %d in %d (goods %d), want 15 in 2, all goods", d.PaidTotal, d.PaidCount, d.PaidGoodsTotal)
+	}
+	if d.ReceivedTotal != 6 || d.ReceivedRefundTotal != 6 {
+		t.Errorf("alice received %d (refund %d), want the 6 as a refund from smith", d.ReceivedTotal, d.ReceivedRefundTotal)
+	}
+	if k := coinPaymentKindFromRow(CoinPaymentRow{OrderBalance: "7"}); k != CoinPaymentForGoods {
+		t.Errorf("order_balance row kind = %v, want goods", k)
+	}
+	if k := coinPaymentKindFromRow(CoinPaymentRow{Source: CoinPaymentSourceRefunded, LedgerID: "3"}); k != CoinPaymentRefund {
+		t.Errorf("refunded row kind = %v, want refund (the source decides, not a stray marker)", k)
 	}
 }

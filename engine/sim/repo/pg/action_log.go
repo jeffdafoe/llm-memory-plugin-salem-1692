@@ -549,6 +549,8 @@ func fillSettlementPayload(raw []byte, row *sim.SettlementRow, actorID string) {
 		For        string `json:"for"`
 		ConsumeNow bool   `json:"consume_now"`
 		LedgerID   uint64 `json:"ledger_id"`
+		Price      int    `json:"price"`
+		Balance    uint64 `json:"order_balance"`
 		PayItems   []struct {
 			Item string `json:"item"`
 			Qty  int    `json:"qty"`
@@ -563,6 +565,8 @@ func fillSettlementPayload(raw []byte, row *sim.SettlementRow, actorID string) {
 	row.Item = p.For
 	row.ConsumeNow = p.ConsumeNow
 	row.LedgerID = sim.LedgerID(p.LedgerID)
+	row.Price = p.Price
+	row.BalanceOfOrder = p.Balance
 	for _, pi := range p.PayItems {
 		row.PayItems = append(row.PayItems, sim.ItemKindQty{Kind: sim.ItemKind(pi.Item), Qty: pi.Qty})
 	}

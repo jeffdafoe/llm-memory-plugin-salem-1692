@@ -93,6 +93,12 @@ func NewCoinRecordsRepo(pool Pool) *CoinRecordsRepo {
 // own `collected` rows (the rate taken in, and his wage from the chest) are not
 // an action_type this query selects at all.
 //
+// `refunded` (LLM-1015) is the fifth: a lapsed order's coins going back, written from
+// the seller's side in the `paid` shape (actor_id paid recipient). order_balance is
+// the fourth goods marker, on the `paid` row a buyer writes for a commission balance
+// at deliver_order. Both forward-only; order_balance is presence-only like the
+// others.
+//
 // No index is needed or added: the scan is bounded by the occurred_at window and
 // runs exactly once, at boot.
 const loadPaymentsSinceSQL = `
@@ -107,9 +113,10 @@ SELECT action_type,
        COALESCE(payload->>'rate_settled', ''),
        COALESCE(payload->>'ledger_id', ''),
        COALESCE(payload->>'lodging_grant', ''),
-       COALESCE(payload->>'carter_leg', '')
+       COALESCE(payload->>'carter_leg', ''),
+       COALESCE(payload->>'order_balance', '')
   FROM agent_action_log
- WHERE action_type IN ('paid', 'labored')
+ WHERE action_type IN ('paid', 'labored', 'refunded')
    AND result = 'ok'
    AND actor_id IS NOT NULL
    AND NOT (payload ? 'estate_rate')
@@ -144,16 +151,20 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			ledgerID         string
 			lodgingGrant     string
 			carterLeg        string
+			orderBalance     string
 		)
-		if err := rows.Scan(&actionType, &actorID, &at, &amount, &counterpartyID, &counterpartyName, &rateSettled, &ledgerID, &lodgingGrant, &carterLeg); err != nil {
+		if err := rows.Scan(&actionType, &actorID, &at, &amount, &counterpartyID, &counterpartyName, &rateSettled, &ledgerID, &lodgingGrant, &carterLeg, &orderBalance); err != nil {
 			return nil, fmt.Errorf("pg coin records LoadPaymentsSince scan: %w", err)
 		}
-		// The predicate admits exactly these two, so anything else is unreachable;
-		// defaulting to the `paid` shape rather than switching on it keeps an
-		// unexpected type from silently inverting a direction.
+		// The predicate admits exactly these three, so anything else is unreachable;
+		// defaulting to the `paid` shape keeps an unexpected type from silently
+		// inverting a direction (a `refunded` row shares that direction anyway).
 		source := sim.CoinPaymentSourcePaid
-		if actionType == string(sim.ActionTypeLabored) {
+		switch actionType {
+		case string(sim.ActionTypeLabored):
 			source = sim.CoinPaymentSourceLabored
+		case string(sim.ActionTypeRefunded):
+			source = sim.CoinPaymentSourceRefunded
 		}
 		out = append(out, sim.CoinPaymentRow{
 			Source:              source,
@@ -166,6 +177,7 @@ func (r *CoinRecordsRepo) LoadPaymentsSince(ctx context.Context, since time.Time
 			LedgerID:            ledgerID,
 			LodgingGrant:        lodgingGrant,
 			CarterLeg:           carterLeg,
+			OrderBalance:        orderBalance,
 		})
 	}
 	if err := rows.Err(); err != nil {

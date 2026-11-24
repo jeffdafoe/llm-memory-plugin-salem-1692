@@ -459,3 +459,60 @@ func TestCoinRecordsRepo_Integration_RowTypeWinsOverAStrayKey(t *testing.T) {
 			rows[0].CounterpartyActorID, rows[0].CounterpartyName)
 	}
 }
+
+// LLM-1015: a lapse refund (`refunded`, written from the seller's side) and a
+// commission balance (`paid` with the order_balance marker) both reach the seed,
+// with the refund's source and the balance's marker intact.
+func TestCoinRecordsRepo_Integration_ReadsRefundsAndBalances(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	const (
+		buyerID  = "55555555-5555-5555-5555-555555555555"
+		sellerID = "66666666-6666-6666-6666-666666666666"
+	)
+	for _, a := range []struct{ id, name string }{
+		{buyerID, "Elizabeth Ellis"},
+		{sellerID, "Ezekiel Crane"},
+	} {
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO actor (id, display_name, current_x, current_y) VALUES ($1, $2, 0, 0)`,
+			a.id, a.name,
+		); err != nil {
+			t.Fatalf("seed actor %s: %v", a.name, err)
+		}
+	}
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	insert := func(actorID string, at time.Time, actionType, payload string) {
+		t.Helper()
+		if _, err := f.Pool.Exec(ctx,
+			`INSERT INTO agent_action_log (actor_id, occurred_at, source, action_type, payload, result, speaker_name)
+			 VALUES ($1, $2, 'engine', $3, $4::jsonb, 'ok', 'seed')`,
+			actorID, at, actionType, payload,
+		); err != nil {
+			t.Fatalf("insert %s: %v", actionType, err)
+		}
+	}
+	insert(buyerID, base.Add(-2*time.Hour), "paid",
+		`{"recipient": "Ezekiel Crane", "recipient_actor_id": "`+sellerID+`", "amount": 10, "for": "5x shovel", "order_balance": 7}`)
+	insert(sellerID, base.Add(-time.Hour), "refunded",
+		`{"recipient": "Elizabeth Ellis", "recipient_actor_id": "`+buyerID+`", "amount": 6, "order_id": 9, "item": "shovel"}`)
+	// The lapse narration row moves no coin and is not selected.
+	insert(sellerID, base.Add(-time.Hour), "order_lapsed",
+		`{"order_id": 9, "amount": 6, "refunded": 6, "text": "…"}`)
+
+	rows, err := NewCoinRecordsRepo(f.Pool).LoadPaymentsSince(ctx, base.Add(-3*time.Hour))
+	if err != nil {
+		t.Fatalf("LoadPaymentsSince: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d row(s), want the balance and the refund: %+v", len(rows), rows)
+	}
+	if r := rows[0]; r.Source != sim.CoinPaymentSourcePaid || r.OrderBalance != "7" || r.Amount != "10" || r.CounterpartyActorID != sellerID {
+		t.Errorf("balance row = %+v, want a paid row with order_balance 7, amount 10, to the seller", r)
+	}
+	if r := rows[1]; r.Source != sim.CoinPaymentSourceRefunded || string(r.ActorID) != sellerID || r.Amount != "6" || r.CounterpartyActorID != buyerID {
+		t.Errorf("refund row = %+v, want a refunded row from the seller to the buyer for 6", r)
+	}
+}

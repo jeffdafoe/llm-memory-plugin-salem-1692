@@ -377,6 +377,13 @@ func TestOrderLapsed_OverflowBlockedRefundSaysNothing(t *testing.T) {
 	if facts := aliceFactsOnSmith(t, w); len(facts) != 0 {
 		t.Errorf("alice facts on smith = %q, want none for a refund that never happened", facts)
 	}
+	// LLM-1015: nor a refund on the coin record or a refunded row.
+	if rows := sink.byType("smith", sim.ActionTypeRefunded); len(rows) != 0 {
+		t.Errorf("refunded rows for a blocked refund = %+v, want none", rows)
+	}
+	if d := readDealings(t, w, "alice", "smith", commissionExpiry(at)); d.ReceivedRefundCount != 0 {
+		t.Errorf("refunds on the record for a blocked refund = %d, want 0", d.ReceivedRefundCount)
+	}
 }
 
 // TestOrderLapsed_NegativeSellerIsNotMadeWorse (LLM-995): a purse already below

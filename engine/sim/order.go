@@ -490,6 +490,9 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bo
 		// Expired so this settlement + the terminal status persist together at
 		// the next checkpoint. LLM-357 / ZBBS-HOME-403.
 		settled := settleExpiredOrder(w, o)
+		// LLM-1015: the refunded coins go back on the coin record too, so the
+		// pair's record agrees with the lapse line below.
+		recordOrderRefund(w, o, settled.Refunded, at)
 		// LLM-357: a partial-payment commission leaves a durable memory beat on
 		// both sides when it expires — the forfeit (buyer never came) or refund
 		// (seller never made it) outcome, the reputation seed. Full-prepay expiry

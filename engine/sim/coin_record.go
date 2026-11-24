@@ -211,6 +211,16 @@ const (
 	// and RecordCoinPaid drops it: labor for goods is a real settlement, but it is not
 	// a record of coin.
 	CoinPaymentForWork
+
+	// CoinPaymentRefund is coin the engine sent back when an order lapsed
+	// undelivered (LLM-1015, recordOrderRefund): seller to buyer, the reverse of the
+	// payment it undoes. Recorded as coin going back rather than subtracted from that
+	// payment, so the record only ever adds and a partial refund stays true. Like
+	// goods and work it counts as accounted — the coin came back for a stated reason —
+	// so no "nothing came back" tail follows it, and it is not coin a bare-pay refund
+	// may hand back a second time (ReceivedUnaccountedTotal). Seeded from the
+	// seller-side `refunded` durable row, forward-only.
+	CoinPaymentRefund
 )
 
 // CoinPayment is one settled coin transfer between a pair. Amount, time, and what
@@ -417,31 +427,36 @@ func appendCoinPayment(trail []CoinPayment, dropped int, p CoinPayment, window t
 // than buying anything (LLM-607) — the difference between coin owed to the town and
 // coin handed over for goods that never came. GoodsCount / GoodsTotal are the subset
 // that bought something and had a delivery against it (LLM-612). WorkCount /
-// WorkTotal are the subset that paid for labor performed (LLM-613). The three
+// WorkTotal are the subset that paid for labor performed (LLM-613). RefundCount /
+// RefundTotal are the subset an order lapse sent back (LLM-1015). The four
 // subsets are disjoint by construction; what is in none of them is
 // CoinPaymentUnstated.
 type CoinDealings struct {
-	PaidCount      int
-	PaidTotal      int
-	PaidAtLeast    bool
-	PaidAllSingle  bool
-	PaidDueCount   int
-	PaidDueTotal   int
-	PaidGoodsCount int
-	PaidGoodsTotal int
-	PaidWorkCount  int
-	PaidWorkTotal  int
+	PaidCount       int
+	PaidTotal       int
+	PaidAtLeast     bool
+	PaidAllSingle   bool
+	PaidDueCount    int
+	PaidDueTotal    int
+	PaidGoodsCount  int
+	PaidGoodsTotal  int
+	PaidWorkCount   int
+	PaidWorkTotal   int
+	PaidRefundCount int
+	PaidRefundTotal int
 
-	ReceivedCount      int
-	ReceivedTotal      int
-	ReceivedAtLeast    bool
-	ReceivedAllSingle  bool
-	ReceivedDueCount   int
-	ReceivedDueTotal   int
-	ReceivedGoodsCount int
-	ReceivedGoodsTotal int
-	ReceivedWorkCount  int
-	ReceivedWorkTotal  int
+	ReceivedCount       int
+	ReceivedTotal       int
+	ReceivedAtLeast     bool
+	ReceivedAllSingle   bool
+	ReceivedDueCount    int
+	ReceivedDueTotal    int
+	ReceivedGoodsCount  int
+	ReceivedGoodsTotal  int
+	ReceivedWorkCount   int
+	ReceivedWorkTotal   int
+	ReceivedRefundCount int
+	ReceivedRefundTotal int
 }
 
 // Accounted reports how many of a direction's payments the engine can say bought
@@ -450,20 +465,25 @@ type CoinDealings struct {
 // a named idea rather than an addition at the call site: a due is deliberately NOT
 // counted, because coin that discharged a levy genuinely had nothing come back and
 // the due clause says so in its own words.
-func (d CoinDealings) PaidAccounted() int { return d.PaidGoodsCount + d.PaidWorkCount }
+func (d CoinDealings) PaidAccounted() int {
+	return d.PaidGoodsCount + d.PaidWorkCount + d.PaidRefundCount
+}
 
 // ReceivedAccounted is PaidAccounted for the other direction.
-func (d CoinDealings) ReceivedAccounted() int { return d.ReceivedGoodsCount + d.ReceivedWorkCount }
+func (d CoinDealings) ReceivedAccounted() int {
+	return d.ReceivedGoodsCount + d.ReceivedWorkCount + d.ReceivedRefundCount
+}
 
 // ReceivedUnaccountedTotal is the coin the peer handed the subject that the
 // engine cannot say bought anything — the Unstated portion: a tip, a gift, a
 // debt paid across a table, a deposit paid by hand. It is the only coin a
 // refund can hand back: goods delivered, work done and a due settled all had
-// their return, and an order that failed is refunded by the engine itself.
-// The three subsets are disjoint and each lies inside the direction's total,
+// their return, and an order that failed is refunded by the engine itself —
+// which is why that refund (LLM-1015) is excluded here too. The four subsets
+// are disjoint and each lies inside the direction's total,
 // so the difference is never negative.
 func (d CoinDealings) ReceivedUnaccountedTotal() int {
-	return d.ReceivedTotal - d.ReceivedGoodsTotal - d.ReceivedWorkTotal - d.ReceivedDueTotal
+	return d.ReceivedTotal - d.ReceivedGoodsTotal - d.ReceivedWorkTotal - d.ReceivedDueTotal - d.ReceivedRefundTotal
 }
 
 // Any reports whether any coin passed either way inside the window.
@@ -519,10 +539,12 @@ func coinDealingsFrom(record map[ActorID]map[ActorID]*CoinPairRecord, window tim
 	d.PaidDueCount, d.PaidDueTotal = paid.dueCount, paid.dueTotal
 	d.PaidGoodsCount, d.PaidGoodsTotal = paid.goodsCount, paid.goodsTotal
 	d.PaidWorkCount, d.PaidWorkTotal = paid.workCount, paid.workTotal
+	d.PaidRefundCount, d.PaidRefundTotal = paid.refundCount, paid.refundTotal
 	d.ReceivedCount, d.ReceivedTotal, d.ReceivedAllSingle = received.count, received.total, received.allSingle
 	d.ReceivedDueCount, d.ReceivedDueTotal = received.dueCount, received.dueTotal
 	d.ReceivedGoodsCount, d.ReceivedGoodsTotal = received.goodsCount, received.goodsTotal
 	d.ReceivedWorkCount, d.ReceivedWorkTotal = received.workCount, received.workTotal
+	d.ReceivedRefundCount, d.ReceivedRefundTotal = received.refundCount, received.refundTotal
 	d.PaidAtLeast = rec.DroppedPaid > 0
 	d.ReceivedAtLeast = rec.DroppedReceived > 0
 	return d
@@ -548,6 +570,9 @@ type coinTally struct {
 	goodsTotal int
 	workCount  int
 	workTotal  int
+	// refundCount / refundTotal: coin returned when an order lapsed (LLM-1015).
+	refundCount int
+	refundTotal int
 }
 
 // tallyCoinPayments sums the entries at or after cutoff.
@@ -572,6 +597,9 @@ func tallyCoinPayments(trail []CoinPayment, cutoff time.Time) coinTally {
 		case CoinPaymentForWork:
 			t.workCount++
 			t.workTotal += p.Amount
+		case CoinPaymentRefund:
+			t.refundCount++
+			t.refundTotal += p.Amount
 		}
 	}
 	if t.count == 0 {
@@ -675,6 +703,11 @@ const (
 	// CoinPaymentSourceLabored is a `labored` row — the counterparty (the employer)
 	// paid actor_id (the worker).
 	CoinPaymentSourceLabored
+
+	// CoinPaymentSourceRefunded is a `refunded` row (LLM-1015) — actor_id (the
+	// seller) sent the counterparty (the buyer) a lapsed order's coins back. Same
+	// direction as a `paid` row; the source is the classification.
+	CoinPaymentSourceRefunded
 )
 
 // CoinPaymentRow is one durable action-log row as the seed reads it, before the
@@ -738,6 +771,11 @@ type CoinPaymentRow struct {
 	// goods and the coin in one step, so a row carrying it bought goods that are
 	// already delivered. Forward-only like LodgingGrant; never parsed.
 	CarterLeg string
+	// OrderBalance is the raw payload text naming the order whose commission
+	// balance a `paid` row settled at deliver_order (LLM-1015,
+	// recordOrderBalancePaid). Its PRESENCE is the fourth goods classification: the
+	// goods are handed over in the same command. Forward-only; never parsed.
+	OrderBalance string
 }
 
 // coinPaymentKindFromRow classifies a seeded row the way the live subscribers do,
@@ -766,10 +804,13 @@ func coinPaymentKindFromRow(row CoinPaymentRow) CoinPaymentKind {
 	if row.Source == CoinPaymentSourceLabored {
 		return CoinPaymentForWork
 	}
+	if row.Source == CoinPaymentSourceRefunded {
+		return CoinPaymentRefund
+	}
 	if settled, err := strconv.Atoi(strings.TrimSpace(row.RateSettled)); err == nil && settled > 0 {
 		return CoinPaymentForDue
 	}
-	if strings.TrimSpace(row.LedgerID) != "" || strings.TrimSpace(row.LodgingGrant) != "" || strings.TrimSpace(row.CarterLeg) != "" {
+	if strings.TrimSpace(row.LedgerID) != "" || strings.TrimSpace(row.LodgingGrant) != "" || strings.TrimSpace(row.CarterLeg) != "" || strings.TrimSpace(row.OrderBalance) != "" {
 		return CoinPaymentForGoods
 	}
 	return CoinPaymentUnstated

@@ -215,6 +215,7 @@ func TestHandlePayResolvedActionLog_AcceptedAppendsPaidRow(t *testing.T) {
 			ItemKind:       "ale",
 			QtyPerConsumer: 1,
 			Amount:         4,
+			Charged:        4,
 			TerminalState:  sim.PayTerminalStateAccepted,
 			HuddleID:       "h1",
 			At:             at,
@@ -268,7 +269,7 @@ func TestActionLogSeamsClassifyThePaymentKind(t *testing.T) {
 			emit: func(world *sim.World, at time.Time) {
 				handlePayResolvedActionLog(world, &sim.PayWithItemResolved{
 					LedgerID: 77, BuyerID: "hannah", SellerID: "bob",
-					ItemKind: "ale", QtyPerConsumer: 1, Amount: 4,
+					ItemKind: "ale", QtyPerConsumer: 1, Amount: 4, Charged: 4,
 					TerminalState: sim.PayTerminalStateAccepted, HuddleID: "h1", At: at,
 				})
 			},
@@ -326,6 +327,7 @@ func TestHandlePayResolvedActionLog_GroupOrderTotalsQty(t *testing.T) {
 			QtyPerConsumer: 2,
 			ConsumerIDs:    []sim.ActorID{"hannah", "bob", "cara"},
 			Amount:         12,
+			Charged:        12,
 			TerminalState:  sim.PayTerminalStateAccepted,
 			At:             time.Now().UTC(),
 		})

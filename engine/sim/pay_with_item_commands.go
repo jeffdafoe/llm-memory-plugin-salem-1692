@@ -1595,6 +1595,7 @@ func runPayWithItemFastPath(
 		ConsumerIDs:    cloneActorIDs(entryConsumerIDs),
 		Lines:          cloneQuoteLines(entryLines), // LLM-101: bundle lines (audit / action log)
 		Amount:         amount,
+		Charged:        out.charged,                       // LLM-1015: the coin that actually moved
 		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
 		BuyerTookQuote: true, // ZBBS-WORK-420: this IS the instant quote-take path
@@ -2018,6 +2019,7 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		ConsumeNow:     entry.ConsumeNow,
 		ConsumerIDs:    cloneActorIDs(entry.ConsumerIDs),
 		Amount:         entry.Amount,
+		Charged:        out.charged,                       // LLM-1015: the coin that actually moved
 		PayItems:       cloneItemKindQtys(entry.PayItems), // LLM-105: settled barter goods (audit)
 		TerminalState:  PayTerminalStateAccepted,
 		IsGift:         entry.IsGift,
@@ -3216,6 +3218,7 @@ type payTransferOutcome struct {
 	satisfiesNeed   NeedKey // primary need the consumed item satisfies
 	feltAfter       string  // buyer's post-consume felt label(s); "" = sated
 	mealMinutes     int     // buyer's eat-here dwell duration in minutes; 0 = no ongoing meal/drink (ZBBS-WORK-409)
+	charged         int     // coin actually moved buyer→seller: the deposit on a partial-payment commission, else Amount (LLM-1015)
 }
 
 // preflightMendingEntry rejects, before commitPayTransfer mutates anything, a
@@ -3595,6 +3598,7 @@ func commitPayTransfer(
 	charge := depositChargeForEntry(w, seller, entry)
 	buyer.Coins -= charge
 	seller.Coins += charge
+	out.charged = charge
 	// LLM-644: visitor spending draws down the trip budget — coin top-ups on
 	// barter legs included, since charge is whatever coin actually moved.
 	drawVisitorSpend(buyer, charge)

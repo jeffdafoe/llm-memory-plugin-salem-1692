@@ -273,7 +273,7 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 		Text:             forText,
 		HuddleID:         resolved.HuddleID,
 		CounterpartyName: actorDisplayNameOrEmpty(w, resolved.SellerID),
-		Amount:           resolved.Amount,
+		Amount:           resolved.Charged, // LLM-1015: the coin that moved (a commission deposit, not the price)
 		// Snapshot the goods leg into the ring entry rather than aliasing the
 		// event's slice — the entry outlives the event by many ticks, so it must
 		// own its data (mirrors sim.cloneItemKindQtys at the event/entry boundary).
@@ -289,7 +289,7 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	display, source := actorDisplayAndSource(w, resolved.BuyerID)
 	payload := map[string]any{
 		"recipient": actorDisplayName(w, resolved.SellerID),
-		"amount":    resolved.Amount,
+		"amount":    resolved.Charged, // LLM-1015: the coin that moved; the coin-record seed reads it
 		"for":       forText,
 		// LLM-572: see handlePaidActionLog — the coin-record seed keys on this.
 		"recipient_actor_id": string(resolved.SellerID),
@@ -304,7 +304,7 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	// is the one settlement path the engine can call a purchase on its own evidence,
 	// without reading a word the payer wrote. The durable half is payload.ledger_id
 	// below, which the boot seed reads back for the same conclusion.
-	w.RecordCoinPaid(resolved.BuyerID, resolved.SellerID, resolved.Amount, resolved.At, sim.CoinPaymentForGoods)
+	w.RecordCoinPaid(resolved.BuyerID, resolved.SellerID, resolved.Charged, resolved.At, sim.CoinPaymentForGoods)
 	// LLM-105: record the FULL settlement terms so the durable audit trail can tell a
 	// paid sale from a barter from a zero-value give-away. `amount` alone is ambiguous
 	// — a 0-coin barter and a 0-coin free gift both read amount:0; only the goods leg
@@ -325,6 +325,12 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	}
 	payload["ledger_id"] = resolved.LedgerID
 	payload["consume_now"] = resolved.ConsumeNow
+	// LLM-1015: on a partial-payment commission `amount` is the deposit that moved;
+	// the agreed price rides beside it for the audit. The balance gets its own
+	// `paid` row at deliver_order (order_balance marker).
+	if resolved.Charged != resolved.Amount {
+		payload["price"] = resolved.Amount
+	}
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     resolved.BuyerID,
 		OccurredAt:  resolved.At,
