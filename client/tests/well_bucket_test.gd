@@ -254,7 +254,7 @@ func _test_world_shared_bucket() -> void:
     _drink(a, "w1")
     var bucket = well.get_node_or_null("WellBucket")
     _check("first drinker brings the bucket", bucket != null, true)
-    _check("its sheet: the packed pail", bucket.texture != null and bucket.texture == load(WellBucket.SHEET), true)
+    _check("its sheet: the packed pail", bucket.texture != null and bucket.texture == WellBucket.PAIL, true)
     _check("coming up", bucket.state, WellBucket.State.RISING)
     _check("first drinker hauls", doll_a.animation, &"north_pull")
     _check("faces the well", a.get_meta("facing"), "north")

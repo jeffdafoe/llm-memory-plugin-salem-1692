@@ -13,7 +13,6 @@ extends Sprite2D
 ## world spots).
 
 ## The painted pail (wells.py), packed with the client: the sheet is the pail.
-const SHEET := "res://assets/trees/well-pail.png"
 ## preload: Godot sees the dependency, and a missing pail fails when this
 ## script loads instead of leaving an invisible bucket.
 const PAIL: Texture2D = preload("res://assets/trees/well-pail.png")
