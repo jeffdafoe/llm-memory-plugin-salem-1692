@@ -496,12 +496,77 @@ def edges_touched(frame):
             any(px[x, fh - 1][3] for x in range(fw)), any(px[0, y][3] for y in range(fh)))
 
 
+def edge_profile(frame, side):
+    """What lies along one outer row or column of a frame, pixel by pixel:
+    'w' wood (opaque), 's' shadow (translucent), '.' nothing."""
+    px = frame.load()
+    fw, fh = frame.size
+    coords = {"n": [(x, 0) for x in range(fw)], "s": [(x, fh - 1) for x in range(fw)],
+              "e": [(fw - 1, y) for y in range(fh)], "w": [(0, y) for y in range(fh)]}[side]
+    return "".join("." if px[c][3] == 0 else ("w" if px[c][3] == 255 else "s") for c in coords)
+
+
+def runs(profile, kind):
+    """The contiguous runs of one kind ('w' or 's') along a profile, as
+    (first, last) index pairs."""
+    out, start = [], None
+    for i, c in enumerate(profile + "."):
+        if c == kind and start is None:
+            start = i
+        elif c != kind and start is not None:
+            out.append((start, i - 1))
+            start = None
+    return out
+
+
+def runs_meet(a, b, slack=1):
+    """Every run of a has a run of b within slack pixels of it, and back."""
+    def near(r, rs):
+        return any(s[0] <= r[1] + slack and s[1] >= r[0] - slack for s in rs)
+    return all(near(r, b) for r in a) and all(near(r, a) for r in b)
+
+
+def join_problems(cells):
+    """How neighbouring cells fail to join, wood and shadow compared apart.
+
+    - Ordinary joins (every edge of an ordinary cell, a break's outer side):
+      every east edge shows exactly the same wood and shadow pixels as every
+      west edge, and every north edge as every south edge, so any two
+      neighbours meet pixel for pixel.
+    - A break's inner seams (-l to middle, middle to -r): its rails slope
+      across them, so each wood or shadow run on one side must meet a run of
+      the same kind on the other within a pixel."""
+    problems = []
+    by_name = {name: frame for name, frame, _ in cells}
+    seen = {"e": set(), "w": set(), "n": set(), "s": set()}
+    for name, frame, flags in cells:
+        broken = name.startswith("h-broken")
+        for side, flag in zip("nesw", flags):
+            if not flag:
+                continue
+            if broken and not ((side == "w" and name.endswith("-l")) or (side == "e" and name.endswith("-r"))):
+                continue
+            seen[side].add(edge_profile(frame, side))
+    for a, b in (("e", "w"), ("n", "s")):
+        if len(seen[a]) > 1 or len(seen[b]) > 1 or seen[a] != seen[b]:
+            problems.append("cells meet their %s/%s neighbours with different edges: %s %s, %s %s"
+                            % (a, b, a, sorted(seen[a]), b, sorted(seen[b])))
+    for k in range(1, BREAKS + 1):
+        names = ["h-broken-%d-l" % k, "h-broken-%d" % k, "h-broken-%d-r" % k]
+        for left, right in zip(names, names[1:]):
+            pe, pw = edge_profile(by_name[left], "e"), edge_profile(by_name[right], "w")
+            for kind in "ws":
+                if not runs_meet(runs(pe, kind), runs(pw, kind)):
+                    problems.append("break %d: %s's east edge and %s's west edge do not meet (%s): %s / %s"
+                                    % (k, left, right, {"w": "wood", "s": "shadow"}[kind], pe, pw))
+    return problems
+
+
 def check(out_dir):
     """Each sheet is exactly what this script paints now. A fence cell
     reaches exactly the edges its neighbour flags name and stays off the
-    others; a rail meets the left and right edges at the same rows in every
-    cell that reaches them, so neighbours join. The gates stay off their
-    top and bottom edges."""
+    others, and neighbouring cells join (join_problems). The gates stay off
+    their top and bottom edges."""
     ok = True
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
@@ -510,27 +575,15 @@ def check(out_dir):
             print("%s: the saved sheet differs from a fresh paint (rerun fences.py)" % name)
             ok = False
     cells = fence_cells()
-    rows_at = {}
     for name, frame, flags in cells:
         got = tuple(bool(v) for v in edges_touched(frame))
         want = tuple(bool(v) for v in flags)
         bad = got != want
-        px = frame.load()
-        # The joins to ordinary fence: every edge of an ordinary cell, the
-        # outer side of a break's -l and -r cells. (A break's inner joins are
-        # cut from one painting, so they meet by construction.)
-        broken = name.startswith("h-broken")
-        for side, x in (("e", P.FW - 1), ("w", 0)):
-            outer = not broken or (side == "w" and name.endswith("-l")) or (side == "e" and name.endswith("-r"))
-            if want[1 if side == "e" else 3] and outer:
-                rows_at.setdefault(side, set()).add(tuple(y for y in range(P.FH) if px[x, y][3]))
         ok = ok and not bad
         print("%-15s edges n/e/s/w %s%s" % (name, "".join("x" if g else "." for g in got),
                                             "" if not bad else "  <- want %s" % "".join("x" if w else "." for w in want)))
-    # Every cell that reaches its east edge meets the next cell's west edge
-    # on the same rows: one set of rows for each side, and the two equal.
-    if len(rows_at.get("e", ())) != 1 or rows_at.get("e") != rows_at.get("w"):
-        print("rails meet the cell edges on different rows: e %s, w %s" % (rows_at.get("e"), rows_at.get("w")))
+    for problem in join_problems(cells):
+        print(problem)
         ok = False
     for name in ("ranch-fence-gate", "stone-gate"):
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")

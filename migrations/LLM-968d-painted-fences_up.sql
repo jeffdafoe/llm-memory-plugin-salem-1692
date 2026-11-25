@@ -17,9 +17,11 @@
 -- bottom corner doubled as a line's end and v-bottom as the lone post, and in
 -- the painted art those cells draw the rails coming from the north, which on
 -- a line's end or a lone post stand up as a stub reaching for nothing (Jeff
--- chose separate pieces, 2026-11-25). Placed segments keep their states; the
--- engine and the editor resolve the new pieces by tag from then on. Every
--- other tag, the break tags included, stays as it is.
+-- chose separate pieces, 2026-11-25). A placed segment on a bottom corner or
+-- v-bottom with no segment north of it (so in its end or post role) moves to
+-- the new piece; every other placement keeps its state, and the engine and the
+-- editor resolve the new pieces by tag from then on. Every other tag, the break
+-- tags included, stays as it is.
 --
 -- RANCH FENCE GATE: its one state points at its sheet (128x96).
 --
@@ -28,9 +30,9 @@
 -- the open arch), and the one placed gate, by the mansion's moat bridge, asked
 -- for a "default" state that does not exist, so the client fell back to the
 -- first state and drew the open arch. It is meant open (Jeff, 2026-11-25): the
--- asset's default_state becomes open, a placement on a state the asset does
--- not have takes open, and the gate is no longer an obstacle, so the walkway
--- through the arch is passable.
+-- asset's default_state becomes open, a placement on "default" takes open (a
+-- placement on any other state the asset lacks fails the migration), and the
+-- gate is no longer an obstacle, so the walkway through the arch is passable.
 --
 -- Each asset that exists is set, then checked both ways against these values
 -- (every state's rect, the fence's tags, render_scale, the gate's columns and
@@ -99,6 +101,22 @@ BEGIN
             ON v.state = s.state
          WHERE s.asset_id = fence
         ON CONFLICT DO NOTHING;
+        -- A placed segment that was on a shared state in its other role (a
+        -- line's end on a bottom corner, a lone post on v-bottom) moves to its
+        -- own piece, or it would keep the corner's art, rail stub and all,
+        -- until a neighbour changed. Which role it was in is whether a segment
+        -- of the fence stands on the tile north of it: the bottom corners and
+        -- v-bottom have one, the ends and the post do not. (The engine only
+        -- re-resolves a segment when a neighbour changes; tiles are the
+        -- anchor's floor(x / 32), floor(y / 32), as fenceSegmentPos lays them.)
+        UPDATE village_object vo
+           SET current_state = CASE vo.current_state WHEN 'corner-bl' THEN 'end-left'
+                                                     WHEN 'corner-br' THEN 'end-right'
+                                                     ELSE 'post' END
+         WHERE vo.asset_id = fence AND vo.current_state IN ('corner-bl', 'corner-br', 'v-bottom')
+           AND NOT EXISTS (SELECT 1 FROM village_object nb
+                            WHERE nb.asset_id = fence
+                              AND floor(nb.x / 32) = floor(vo.x / 32) AND floor(nb.y / 32) = floor(vo.y / 32) - 1);
 
         SELECT count(*) INTO bad FROM (
             (SELECT c.state, 'res://assets/trees/ranch-fence.png' AS sheet, c.col * 32 AS src_x, 0 AS src_y,
@@ -156,8 +174,10 @@ BEGIN
                frame_count = 1, frame_rate = 0
           FROM (VALUES ('closed', 0), ('open', 128)) v(state, x)
          WHERE s.asset_id = stone AND s.state = v.state;
+        -- Only the known legacy value is rewritten; anything else fails the
+        -- check below (current_state is NOT NULL).
         UPDATE village_object SET current_state = 'open'
-         WHERE asset_id = stone AND current_state NOT IN ('closed', 'open');
+         WHERE asset_id = stone AND current_state = 'default';
         SELECT count(*) INTO bad FROM (
             (SELECT v.state, v.x FROM (VALUES ('closed', 0), ('open', 128)) v(state, x)
              EXCEPT

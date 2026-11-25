@@ -47,6 +47,17 @@ BEGIN
         ('h-broken-' || k || '-l', 'minor-of-h'), ('h-broken-' || k || '-r', 'minor-of-h')) v(state, tag);
 
     IF EXISTS (SELECT 1 FROM asset WHERE id = fence) THEN
+        -- Deleting the three states cascades their tags, so first refuse if
+        -- they carry anything but their own piece tag: it would be lost
+        -- before the checks below could see it.
+        SELECT count(*) INTO bad
+          FROM asset_state s JOIN asset_state_tag t ON t.state_id = s.id
+         WHERE s.asset_id = fence AND s.state IN ('end-left', 'end-right', 'post')
+           AND (s.state::text, t.tag::text) NOT IN (('end-left', 'fence-end-left'), ('end-right', 'fence-end-right'),
+                                                    ('post', 'fence-post'));
+        IF bad > 0 THEN
+            RAISE EXCEPTION 'LLM-968d down: % unexpected tag(s) on end-left / end-right / post', bad;
+        END IF;
         UPDATE village_object vo SET current_state = m.back
           FROM (VALUES ('end-left', 'corner-bl'), ('end-right', 'corner-br'), ('post', 'v-bottom')) m(piece, back)
          WHERE vo.asset_id = fence AND vo.current_state = m.piece;
