@@ -4,7 +4,10 @@
 -- or placement changed. Berry Bush Cluster, retired by the up, comes back as
 -- it was (its state rows get new ids; nothing pointed at the old ones but
 -- their season tags, which come back with them), and the down fails if a
--- cluster already here differs from that.
+-- cluster already here differs from that. The down restores the pack's
+-- catalog, not a record of what the up removed: wherever the Fern is here it
+-- recreates the cluster, even on a database where someone had deleted it by
+-- hand before the up (as LLM-967k-fish's down does for its retired fish).
 
 BEGIN;
 

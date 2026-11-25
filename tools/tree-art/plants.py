@@ -807,10 +807,11 @@ def build_sheet(piece):
 
 def clipped_paintings(piece, look):
     """The frames (0 for the still one, else the puff frame's column) whose
-    large painting reaches its canvas's edge. Pillow clips a drawing at the
+    large painting touches its canvas's edge. Pillow clips a drawing at the
     canvas, and the shrink drops a pixel less than half covered, so a sheet
-    can pass the frame-edge check below while a shape was cut off; anything
-    clipped must touch the canvas edge."""
+    can pass the frame-edge check below while a shape was cut off. This is
+    an edge-contact check: a shape cut by the edge touches it, but a detail
+    drawn wholly outside the canvas leaves no pixel and is not seen."""
     paintings = [(0, None)] + [(B.PUFF_AT + i, (i, stir, lean))
                                for i, (stir, lean) in enumerate(zip(B.PUFF, B.LEAN))] if piece.animated \
         else [(0, None)]
@@ -826,7 +827,7 @@ def clipped_paintings(piece, look):
 def check(out_dir, names):
     """Every frame stays a pixel inside its frame on all four sides (a piece
     on the frame edge is cut off flat), holds some art, its large painting
-    was not clipped at the canvas (clipped_paintings), and the sheet is its
+    does not touch the canvas edge (clipped_paintings), and the sheet is its
     size."""
     ok = True
     for name in names:
