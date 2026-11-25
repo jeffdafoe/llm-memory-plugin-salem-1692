@@ -88,7 +88,7 @@ BEGIN
     UPDATE village_object o
        SET x = p.x, y = p.y, loiter_offset_x = p.lx, loiter_offset_y = p.ly
       FROM llm968h_down_place p
-     WHERE o.id = p.id;
+     WHERE o.id = p.id AND o.asset_id = p.asset_id;
 
     SELECT count(*) INTO bad FROM (
         (SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate FROM llm968h_down_state

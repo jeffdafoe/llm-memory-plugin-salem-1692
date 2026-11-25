@@ -107,6 +107,14 @@ BEGIN
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968h: % stall placement(s) not among the five checked stalls on their checked tiles', bad;
     END IF;
+    -- And one of the five ids now on some other asset (moved off the stalls
+    -- in the editor): the check above, scoped to the stall assets, does not
+    -- see it; refuse rather than snap it back.
+    SELECT count(*) INTO bad FROM village_object o JOIN llm968h_place p ON p.id = o.id
+     WHERE o.asset_id IS DISTINCT FROM p.asset_id;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-968h: % of the five stalls now on another asset', bad;
+    END IF;
 
     CREATE TEMP TABLE llm968h_state ON COMMIT DROP AS
     SELECT v.asset_id, s.state, v.sheet, s.src_x, 0 AS src_y, 128 AS src_w, 224 AS src_h, 1 AS frame_count,
@@ -132,7 +140,7 @@ BEGIN
     UPDATE village_object o
        SET x = p.tx * 32 + 16, y = p.ty * 32 + 16, loiter_offset_x = -2, loiter_offset_y = 0
       FROM llm968h_place p
-     WHERE o.id = p.id;
+     WHERE o.id = p.id AND o.asset_id = p.asset_id;
 
     SELECT count(*) INTO bad FROM (
         (SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate FROM llm968h_state
