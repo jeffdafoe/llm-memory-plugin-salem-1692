@@ -233,10 +233,16 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 		Warrants:          []sim.WarrantMeta{quote},
 		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 		Baseline:          BaselinePresent,
+		ItemNouns:         itemNouns{"water": {Singular: "flask of water", Plural: "flasks of water"}},
 	}, DefaultRenderConfig()))
 
-	if !strings.Contains(out, "John Ellis offers you 1 water for 4 coins.") {
+	// LLM-1038: the prose names the catalog noun while the take instruction keeps
+	// the exact key pay_with_item needs — the two must not collapse to one string.
+	if !strings.Contains(out, "John Ellis offers you 1 flask of water for 4 coins.") {
 		t.Errorf("quote warrant line missing terms\n%s", out)
+	}
+	if !strings.Contains(out, `item "water", qty 1`) {
+		t.Errorf("take instruction must keep the exact item key\n%s", out)
 	}
 	if !strings.Contains(out, "quote_id 9") || !strings.Contains(out, "settles at once") {
 		t.Errorf("quote warrant line missing the fast-path take instruction\n%s", out)

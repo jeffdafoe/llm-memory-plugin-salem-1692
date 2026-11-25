@@ -203,6 +203,27 @@ func TestFormatOfferPaymentCallersNameGoodsByNoun(t *testing.T) {
 	}
 }
 
+// TestRenderWiresNounsToAboveHeaderLaborLines drives the two labor lines that
+// render above any section header through Render, so a production call that
+// passed nil instead of p.ItemNouns would fail here (code_review LLM-1038).
+func TestRenderWiresNounsToAboveHeaderLaborLines(t *testing.T) {
+	bread := []sim.ItemKindQty{{Kind: "bread", Qty: 2}}
+	out := combinedPrompt(Render(Payload{
+		ActorID:              "hannah",
+		Baseline:             BaselinePresent,
+		RenderedAt:           time.Now(),
+		WorkersForMe:         []WorkerForMeView{{Worker: "lewis", RewardItems: bread, Until: time.Now().Add(time.Hour)}},
+		PendingLaborOfferOut: &PendingLaborOfferOutView{Employer: "hannah", Worker: "mary", EmployerInitiated: true, RewardItems: bread, DurationMin: 60},
+		ItemNouns:            itemNouns{"bread": {Singular: "loaf of bread", Plural: "loaves of bread"}},
+	}, DefaultRenderConfig()))
+	if got := strings.Count(out, "2 loaves of bread"); got != 2 {
+		t.Errorf("want both labor lines to name %q, found it %d times:\n%s", "2 loaves of bread", got, out)
+	}
+	if strings.Contains(out, "2 bread") {
+		t.Errorf("a labor line names the kind key:\n%s", out)
+	}
+}
+
 func TestItemNounsCount(t *testing.T) {
 	nouns := buildItemNouns(&sim.Snapshot{ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
 		"flour":      {Name: "flour", DisplayLabelSingular: "sack of flour", DisplayLabelPlural: "sacks of flour"},
