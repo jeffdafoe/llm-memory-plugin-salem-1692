@@ -3,7 +3,8 @@
 -- state was added or removed by the up, so none is removed here, and no tag
 -- or placement changed. Berry Bush Cluster, retired by the up, comes back as
 -- it was (its state rows get new ids; nothing pointed at the old ones but
--- their season tags, which come back with them).
+-- their season tags, which come back with them), and the down fails if a
+-- cluster already here differs from that.
 
 BEGIN;
 
@@ -46,6 +47,47 @@ BEGIN
                        ('winter-snowy', 'season-winter-snowy')) t(state, tag) ON t.state = s.state
          WHERE s.asset_id = cluster
         ON CONFLICT DO NOTHING;
+
+        -- The ON CONFLICT clauses make a rerun a no-op, but they would also
+        -- keep a cluster row someone changed; so check it is exactly as
+        -- recreated: the asset row column by column, and its states with
+        -- their tags and lights, both ways.
+        IF NOT EXISTS (
+            SELECT 1 FROM asset
+             WHERE id = cluster AND name = 'Berry Bush Cluster' AND category = 'bush' AND default_state = 'default'
+               AND anchor_x = 0.5 AND anchor_y = 0.85 AND layer = 'objects' AND created_at = '2026-04-11 18:50:27'
+               AND pack_id IS NOT DISTINCT FROM 'mana-seed' AND interior = false AND fits_slot IS NULL
+               AND source_file IS NULL AND rotation_algo = 'random_per_object' AND transition_spread_seconds = 0
+               AND is_obstacle = false AND is_passage = false AND z_index = 10 AND footprint_left = 0
+               AND footprint_right = 0 AND footprint_top = 0 AND footprint_bottom = 0 AND door_offset_x IS NULL
+               AND door_offset_y IS NULL AND visible_when_inside = false AND stand_offset_x IS NULL
+               AND stand_offset_y IS NULL AND occupied_min_count = 1 AND occupied_night_only = false
+               AND render_scale = 2) THEN
+            RAISE EXCEPTION 'LLM-967l down: Berry Bush Cluster''s asset row differs from the one recreated';
+        END IF;
+        CREATE TEMP TABLE llm967l_cluster_actual ON COMMIT DROP AS
+        SELECT s.state::text AS state, s.sheet::text AS sheet, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count,
+               s.frame_rate, s.created_at,
+               coalesce((SELECT string_agg(t.tag, ',' ORDER BY t.tag) FROM asset_state_tag t WHERE t.state_id = s.id), '') AS tags,
+               (SELECT count(*) FROM asset_state_light l WHERE l.state_id = s.id) AS lights
+          FROM asset_state s WHERE s.asset_id = cluster;
+        CREATE TEMP TABLE llm967l_cluster_expected ON COMMIT DROP AS
+        SELECT v.state, v.sheet, 64 AS src_x, 0 AS src_y, 16 AS src_w, 32 AS src_h, 1 AS frame_count,
+               0::double precision AS frame_rate, v.created_at, v.tags, 0::bigint AS lights
+          FROM (VALUES
+                ('default',      summer32, '2026-04-11 18:50:27'::timestamp, ''),
+                ('autumn',       autumn32, '2026-10-23 18:59:33'::timestamp, 'season-autumn'),
+                ('winter-clean', clean32,  '2026-10-23 18:59:33'::timestamp, 'season-winter-clean'),
+                ('winter-snowy', snowy32,  '2026-10-23 18:59:33'::timestamp, 'season-winter-snowy'))
+               v(state, sheet, created_at, tags);
+        SELECT count(*) INTO bad FROM (
+            (SELECT * FROM llm967l_cluster_expected EXCEPT SELECT * FROM llm967l_cluster_actual)
+            UNION ALL
+            (SELECT * FROM llm967l_cluster_actual EXCEPT SELECT * FROM llm967l_cluster_expected)
+        ) diff;
+        IF bad > 0 THEN
+            RAISE EXCEPTION 'LLM-967l down: % of Berry Bush Cluster''s state rows (with tags and lights) differ from the ones recreated', bad;
+        END IF;
     END IF;
 
     -- The Mana Seed rects, as they were before LLM-967l: every piece one still

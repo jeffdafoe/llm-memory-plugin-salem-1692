@@ -25,36 +25,83 @@
 --
 -- Berry Bush Cluster is retired. LLM-58 moved its 18 placements onto the
 -- Blueberry Bush, and the painted blueberry and raspberry bushes (LLM-967g)
--- replace it. If it has been placed since, this migration fails rather than
--- leave a placement pointing at nothing (village_object has no foreign key to
--- asset).
+-- replace it. It is retired only where the down can bring it back exactly:
+-- it is not placed (village_object has no foreign key to asset, so a placement
+-- would be left pointing at nothing), the Fern is here (the down's sign of the
+-- forest catalog), and it is just what the down recreates (its asset row, its
+-- four states with their season tags, no lights). Otherwise the migration
+-- fails rather than lose it.
 --
 -- For each piece that exists (a fresh database has no catalog; then it does
 -- nothing), its render_scale becomes 1 and its states point at its sheet in
 -- that layout, and then every piece must have exactly those states with
--- exactly those values, or the migration fails.
+-- exactly those values, or the migration fails. A missing state is not
+-- recreated, since it would come back without its season tag; the check fails
+-- on it instead.
 --
 -- ENGINE-OWNED data (the catalog), read at boot; deploy.sh runs stop ->
 -- migrate -> start. Convergent: rerunning ends in the same place, and a rerun
--- repairs a hand edit of these rows.
+-- repairs a hand edit of a state's rect.
 
 BEGIN;
 
 DO $$
 DECLARE
+    cluster CONSTANT uuid := 'd699b17f-c743-48d4-8bb9-debaba884a55';
     bad integer;
     placed integer;
 BEGIN
-    -- Berry Bush Cluster must not be placed: retiring it would leave the
-    -- placement pointing at nothing.
-    SELECT count(*) INTO placed FROM village_object WHERE asset_id = 'd699b17f-c743-48d4-8bb9-debaba884a55';
-    IF placed > 0 THEN
-        RAISE EXCEPTION 'LLM-967l: % placement(s) of Berry Bush Cluster in the village; remove them (engine stopped) first', placed;
+    IF EXISTS (SELECT 1 FROM asset WHERE id = cluster) THEN
+        SELECT count(*) INTO placed FROM village_object WHERE asset_id = cluster;
+        IF placed > 0 THEN
+            RAISE EXCEPTION 'LLM-967l: % placement(s) of Berry Bush Cluster in the village; remove them (engine stopped) first', placed;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM asset WHERE id = 'b4c226f6-e0af-444f-ba0e-5d4efcd5c8d7') THEN
+            RAISE EXCEPTION 'LLM-967l: Berry Bush Cluster is here without the Fern, so the down could not bring it back';
+        END IF;
+        -- The asset row, column by column, as the down recreates it.
+        IF NOT EXISTS (
+            SELECT 1 FROM asset
+             WHERE id = cluster AND name = 'Berry Bush Cluster' AND category = 'bush' AND default_state = 'default'
+               AND anchor_x = 0.5 AND anchor_y = 0.85 AND layer = 'objects' AND created_at = '2026-04-11 18:50:27'
+               AND pack_id IS NOT DISTINCT FROM 'mana-seed' AND interior = false AND fits_slot IS NULL
+               AND source_file IS NULL AND rotation_algo = 'random_per_object' AND transition_spread_seconds = 0
+               AND is_obstacle = false AND is_passage = false AND z_index = 10 AND footprint_left = 0
+               AND footprint_right = 0 AND footprint_top = 0 AND footprint_bottom = 0 AND door_offset_x IS NULL
+               AND door_offset_y IS NULL AND visible_when_inside = false AND stand_offset_x IS NULL
+               AND stand_offset_y IS NULL AND occupied_min_count = 1 AND occupied_night_only = false
+               AND render_scale = 2) THEN
+            RAISE EXCEPTION 'LLM-967l: Berry Bush Cluster''s asset row differs from the one the down recreates';
+        END IF;
+        -- Its states, each with its tags and its count of lights, both ways.
+        CREATE TEMP TABLE llm967l_cluster_actual ON COMMIT DROP AS
+        SELECT s.state::text AS state, s.sheet::text AS sheet, s.src_x, s.src_y, s.src_w, s.src_h, s.frame_count,
+               s.frame_rate, s.created_at,
+               coalesce((SELECT string_agg(t.tag, ',' ORDER BY t.tag) FROM asset_state_tag t WHERE t.state_id = s.id), '') AS tags,
+               (SELECT count(*) FROM asset_state_light l WHERE l.state_id = s.id) AS lights
+          FROM asset_state s WHERE s.asset_id = cluster;
+        CREATE TEMP TABLE llm967l_cluster_expected ON COMMIT DROP AS
+        SELECT v.state, v.sheet, 64 AS src_x, 0 AS src_y, 16 AS src_w, 32 AS src_h, 1 AS frame_count,
+               0::double precision AS frame_rate, v.created_at, v.tags, 0::bigint AS lights
+          FROM (VALUES
+                ('default',      '/tilesets/mana-seed/summer-forest/summer sheets/summer 16x32.png',          '2026-04-11 18:50:27'::timestamp, ''),
+                ('autumn',       '/tilesets/mana-seed/autumn-forest/autumn sheets/autumn 16x32.png',          '2026-10-23 18:59:33'::timestamp, 'season-autumn'),
+                ('winter-clean', '/tilesets/mana-seed/winter-forest/winter sheets/winter (clean) 16x32.png', '2026-10-23 18:59:33'::timestamp, 'season-winter-clean'),
+                ('winter-snowy', '/tilesets/mana-seed/winter-forest/winter sheets/winter (snowy) 16x32.png', '2026-10-23 18:59:33'::timestamp, 'season-winter-snowy'))
+               v(state, sheet, created_at, tags);
+        SELECT count(*) INTO bad FROM (
+            (SELECT * FROM llm967l_cluster_expected EXCEPT SELECT * FROM llm967l_cluster_actual)
+            UNION ALL
+            (SELECT * FROM llm967l_cluster_actual EXCEPT SELECT * FROM llm967l_cluster_expected)
+        ) diff;
+        IF bad > 0 THEN
+            RAISE EXCEPTION 'LLM-967l: % of Berry Bush Cluster''s state rows (with tags and lights) differ from the ones the down recreates', bad;
+        END IF;
+        -- Its states' tags go with them (ON DELETE CASCADE); it has no lights
+        -- (checked above) and no refresh default.
+        DELETE FROM asset_state WHERE asset_id = cluster;
+        DELETE FROM asset WHERE id = cluster;
     END IF;
-    -- Its states' tags and lights go with them (ON DELETE CASCADE); it has
-    -- no refresh default.
-    DELETE FROM asset_state WHERE asset_id = 'd699b17f-c743-48d4-8bb9-debaba884a55';
-    DELETE FROM asset WHERE id = 'd699b17f-c743-48d4-8bb9-debaba884a55';
 
     -- Every piece: its sheet, frame size and play rate.
     CREATE TEMP TABLE llm967l_asset (asset_id uuid PRIMARY KEY, sheet text NOT NULL, frame_w integer NOT NULL,
@@ -93,12 +140,12 @@ BEGIN
       FROM llm967l_asset v
      CROSS JOIN (VALUES ('default', 0), ('autumn', 1), ('winter-clean', 2), ('winter-snowy', 3)) l(state, row_index);
 
-    INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate)
-    SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate
-      FROM llm967l_state
-    ON CONFLICT (asset_id, state) DO UPDATE
-       SET sheet = EXCLUDED.sheet, src_x = EXCLUDED.src_x, src_y = EXCLUDED.src_y, src_w = EXCLUDED.src_w,
-           src_h = EXCLUDED.src_h, frame_count = EXCLUDED.frame_count, frame_rate = EXCLUDED.frame_rate;
+    -- Existing states only: the check below fails on a missing one.
+    UPDATE asset_state s
+       SET sheet = v.sheet, src_x = v.src_x, src_y = v.src_y, src_w = v.src_w, src_h = v.src_h,
+           frame_count = v.frame_count, frame_rate = v.frame_rate
+      FROM llm967l_state v
+     WHERE s.asset_id = v.asset_id AND s.state = v.state;
 
     -- Every piece has exactly its states, with exactly these values.
     SELECT count(*) INTO bad FROM (

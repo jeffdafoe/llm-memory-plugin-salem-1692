@@ -805,9 +805,28 @@ def build_sheet(piece):
     return sheet
 
 
+def clipped_paintings(piece, look):
+    """The frames (0 for the still one, else the puff frame's column) whose
+    large painting reaches its canvas's edge. Pillow clips a drawing at the
+    canvas, and the shrink drops a pixel less than half covered, so a sheet
+    can pass the frame-edge check below while a shape was cut off; anything
+    clipped must touch the canvas edge."""
+    paintings = [(0, None)] + [(B.PUFF_AT + i, (i, stir, lean))
+                               for i, (stir, lean) in enumerate(zip(B.PUFF, B.LEAN))] if piece.animated \
+        else [(0, None)]
+    bad = []
+    for col, gust in paintings:
+        lay, _ = PAINTERS[piece.painter](piece, piece.seed, look, gust)
+        box = lay.getbbox()
+        if box is not None and (box[0] == 0 or box[1] == 0 or box[2] == W or box[3] == H):
+            bad.append(col)
+    return bad
+
+
 def check(out_dir, names):
     """Every frame stays a pixel inside its frame on all four sides (a piece
-    on the frame edge is cut off flat), holds some art, and the sheet is its
+    on the frame edge is cut off flat), holds some art, its large painting
+    was not clipped at the canvas (clipped_paintings), and the sheet is its
     size."""
     ok = True
     for name in names:
@@ -829,8 +848,11 @@ def check(out_dir, names):
                     any(px[x, y][3] == 255 for x in range(FW) for y in (0, FH - 1))
                 if edge or frame.getbbox() is None:
                     bad.append(col)
-            ok = ok and not bad
-            print("%-16s %-13s %2d frame(s)%s" % (name, look, n, "" if not bad else "  <- on the frame edge or empty: %s" % bad))
+            clipped = clipped_paintings(piece, look)
+            ok = ok and not bad and not clipped
+            print("%-16s %-13s %2d frame(s)%s%s" % (name, look, n,
+                  "" if not bad else "  <- on the frame edge or empty: %s" % bad,
+                  "" if not clipped else "  <- painting clipped at the canvas: %s" % clipped))
     return ok
 
 
