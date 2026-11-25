@@ -187,6 +187,16 @@ const STALLS := {
     "res://assets/trees/stall-tiled.png": Vector2i(256, 224),
     "res://assets/trees/stall-fancy.png": Vector2i(256, 224),
 }
+# migrations/LLM-968i-painted-camp_up.sql (tools/tree-art/camp.py): the tent
+# (closed, open, packed; 128x128), the fire (unlit, burning x4, dying x4,
+# ashes; 64x64), the stool, woodpile and sack (32x32), the bedroll, spit and
+# tripod (64x64).
+const CAMP := {
+    "res://assets/trees/tent.png": Vector2i(384, 128),
+    "res://assets/trees/camp-fire.png": Vector2i(640, 64),
+    "res://assets/trees/camp-small.png": Vector2i(96, 32),
+    "res://assets/trees/camp-gear.png": Vector2i(320, 64),
+}
 
 var _failures := 0
 var _checks := 0
@@ -419,6 +429,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %s" % [path, STALLS[path]],
                 Vector2i(texture.get_width(), texture.get_height()) == STALLS[path])
+    for path in CAMP:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, CAMP[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == CAMP[path])
     _done()
 
 
