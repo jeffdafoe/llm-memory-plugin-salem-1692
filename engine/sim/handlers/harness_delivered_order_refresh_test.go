@@ -97,7 +97,7 @@ func runDeliverTick(t *testing.T, moveGoods bool) []llm.Request {
 // must not render the handed-over order as still owed.
 func TestHarness_DeliveredOrderLeavesOrderBook(t *testing.T) {
 	reqs := runDeliverTick(t, true)
-	if !strings.Contains(reqs[0].EphemeralContext, "#7: shovel for bob") {
+	if !strings.Contains(reqs[0].EphemeralContext, "#7: 1 shovel for bob") {
 		t.Fatalf("round 1 must show the order to deliver, got:\n%s", reqs[0].EphemeralContext)
 	}
 	if strings.Contains(reqs[1].EphemeralContext, "#7:") {
@@ -112,7 +112,7 @@ func TestHarness_DeliveredOrderLeavesOrderBook(t *testing.T) {
 // skip the refresh. The delivery forces it.
 func TestHarness_DeliveredOrderRefreshesWithoutSelfStateChange(t *testing.T) {
 	reqs := runDeliverTick(t, false)
-	if !strings.Contains(reqs[0].EphemeralContext, "#7: shovel for bob") {
+	if !strings.Contains(reqs[0].EphemeralContext, "#7: 1 shovel for bob") {
 		t.Fatalf("round 1 must show the order to deliver, got:\n%s", reqs[0].EphemeralContext)
 	}
 	if strings.Contains(reqs[1].EphemeralContext, "#7:") {
@@ -174,7 +174,7 @@ func TestHarness_FailedDeliveryKeepsOrderOnRefresh(t *testing.T) {
 	if !strings.Contains(reqs[2].EphemeralContext, "bread (x1)") {
 		t.Fatalf("round 3 must be the refreshed body (bread x1), got:\n%s", reqs[2].EphemeralContext)
 	}
-	if !strings.Contains(reqs[2].EphemeralContext, "#7: shovel for bob") {
+	if !strings.Contains(reqs[2].EphemeralContext, "#7: 1 shovel for bob") {
 		t.Errorf("round 3 must still show the undelivered order, got:\n%s", reqs[2].EphemeralContext)
 	}
 }
