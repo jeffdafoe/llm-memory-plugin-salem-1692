@@ -104,8 +104,10 @@ def lantern(lay, d, cx, top, lit):
     if lit:
         # Brightest at the candle flame, low in the middle; warmer and dimmer
         # toward the frame.
-        # Drawn on its own layer and pasted inside the pane, so the glow
-        # stays in the glass.
+        # A warm backing fills the pane, then the glow, drawn on its own
+        # layer, is laid over it inside the pane only, so the glow stays in
+        # the glass and leaves no transparent corners.
+        d.rectangle((gx0 * S, g0 * S, gx1 * S, g1 * S), fill=B.ramp(FIRE, 0.4))
         glow = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
         gd = ImageDraw.Draw(glow)
         steps = 10
@@ -116,7 +118,7 @@ def lantern(lay, d, cx, top, lit):
             gd.ellipse(((fx - 4.6 * r - 0.6) * S, (fy - 5.6 * r - 0.6) * S, (fx + 4.6 * r + 0.6) * S,
                         (fy + 4.4 * r + 0.6) * S), fill=B.ramp(FIRE, 0.45 + 0.55 * f))
         box = tuple(int(round(v * S)) for v in (gx0, g0, gx1, g1))
-        lay.paste(glow.crop(box), box[:2])
+        lay.alpha_composite(glow.crop(box), box[:2])
     else:
         d.rectangle((gx0 * S, g0 * S, gx1 * S, g1 * S), fill=B.ramp(GLASS, 0.3))
         # The candle stub, cold.
@@ -320,11 +322,12 @@ def flame(g, cx, bottom, k):
             ly = bottom - 2.0 - 2.5 * a
             g.polygon([((lx - 0.7) * S, (ly + 1.6) * S), ((lx + 0.7) * S, (ly + 1.6) * S),
                        ((lx + side * 0.9) * S, (ly - 1.6 * a) * S)], fill=B.ramp(FIRE, 0.4))
-    # A spark above the tip, rising frame by frame.
-    sy = bottom - height - 1.5 - 1.2 * k
-    sx = cx + sway + (0.8 if k % 2 else -0.6)
-    if sy > 0.6:
-        g.rectangle(((sx - 0.35) * S, (sy - 0.35) * S, (sx + 0.35) * S, (sy + 0.35) * S), fill=B.ramp(FIRE, 0.8))
+    # A spark that leaves the flame's side at mid-height and rises past it,
+    # two px a frame, staying inside the frame (the flame's tip is near the
+    # top, so there is no room above it).
+    sy = bottom - 0.6 * height - 2.0 * k
+    sx = cx + 2.6 + 0.3 * k
+    g.rectangle(((sx - 0.35) * S, (sy - 0.35) * S, (sx + 0.35) * S, (sy + 0.35) * S), fill=B.ramp(FIRE, 0.8))
 
 
 def paint_torch(k):

@@ -27,9 +27,14 @@
 --
 -- ENGINE-OWNED data (the catalog), read at boot; deploy.sh runs stop ->
 -- migrate -> start. Convergent: a rerun ends in the same place and repairs a
--- hand edit of a rect or a flicker.
+-- hand edit of a rect or a lamp post's flicker (the up writes the authored
+-- values over whatever is there; it does not keep them to restore).
 
 BEGIN;
+
+-- Hold off any other catalog writer (the editor) between the presence check
+-- and the checks below.
+LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light IN SHARE ROW EXCLUSIVE MODE;
 
 DO $$
 DECLARE
@@ -106,7 +111,10 @@ BEGIN
     UPDATE asset_state_light l
        SET flicker_amplitude = v.flicker_amplitude, flicker_period_ms = v.flicker_period_ms
       FROM asset_state s, llm968e_light v
-     WHERE l.state_id = s.id AND s.asset_id = v.asset_id AND s.state = v.state;
+     WHERE l.state_id = s.id AND s.asset_id = v.asset_id AND s.state = v.state
+       -- The lamp posts' lights only: the torch's (state default) is never
+       -- written, only checked.
+       AND v.state = 'lit';
 
     SELECT count(*) INTO bad FROM (
         (SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate FROM llm968e_state
