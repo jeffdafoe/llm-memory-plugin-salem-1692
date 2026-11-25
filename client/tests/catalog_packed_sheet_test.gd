@@ -172,6 +172,14 @@ const WELLS := {
     "res://assets/trees/well-roofed.png": Vector2i(192, 160),
     "res://assets/trees/well-pail.png": Vector2i(32, 32),
 }
+# migrations/LLM-968g-painted-crates_up.sql (tools/tree-art/crates.py): the
+# dark and light crates shut and lid loose (80x80 frames), the notice board's
+# five variants (96x128 frames).
+const CRATES := {
+    "res://assets/trees/crate-dark.png": Vector2i(160, 80),
+    "res://assets/trees/crate-light.png": Vector2i(160, 80),
+    "res://assets/trees/notice-board.png": Vector2i(480, 128),
+}
 
 var _failures := 0
 var _checks := 0
@@ -392,6 +400,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %s" % [path, WELLS[path]],
                 Vector2i(texture.get_width(), texture.get_height()) == WELLS[path])
+    for path in CRATES:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, CRATES[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == CRATES[path])
     _done()
 
 
