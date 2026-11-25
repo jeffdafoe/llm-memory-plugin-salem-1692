@@ -264,8 +264,10 @@ def build_sheet(crop):
 
 
 def check(out_dir, names):
-    """Every frame holds art and stays a pixel inside its frame, its large
-    painting does not touch the canvas edge, and the sheet is its size."""
+    """The sheet is its size and exactly what this script paints now; every
+    frame holds art and leaves its outer pixel ring fully transparent; and
+    its large painting does not touch the canvas edge. A shape drawn wholly
+    outside the canvas leaves no pixel and is not seen (as in plants.py)."""
     ok = True
     P.use_frame(*FRAME, density=DENSITY)
     for name in names:
@@ -275,11 +277,17 @@ def check(out_dir, names):
             print("%s: sheet is %dx%d, want %dx%d" % ((name,) + sheet.size + want))
             ok = False
             continue
+        # The saved sheet must be what this script paints now, so a stale or
+        # damaged PNG fails even when its size and edges look right.
+        if sheet.tobytes() != build_sheet(CROPS[name]).tobytes():
+            print("%s: the saved sheet differs from a fresh paint (rerun crops.py)" % name)
+            ok = False
         for stage in range(1, STAGES + 1):
             frame = sheet.crop(((stage - 1) * P.FW, 0, stage * P.FW, P.FH))
             px = frame.load()
-            edge = any(px[x, y][3] == 255 for y in range(P.FH) for x in (0, P.FW - 1)) or \
-                any(px[x, y][3] == 255 for x in range(P.FW) for y in (0, P.FH - 1))
+            # Any pixel at all on the outer row or column, shadow included.
+            edge = any(px[x, y][3] != 0 for y in range(P.FH) for x in (0, P.FW - 1)) or \
+                any(px[x, y][3] != 0 for x in range(P.FW) for y in (0, P.FH - 1))
             lay, _ = PAINTERS[CROPS[name].painter](CROPS[name], stage)
             box = lay.getbbox()
             clipped = box is not None and (box[0] == 0 or box[1] == 0 or box[2] == P.W or box[3] == P.H)
