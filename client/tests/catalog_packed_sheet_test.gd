@@ -155,6 +155,15 @@ const FENCES := {
     "res://assets/trees/ranch-fence-gate.png": Vector2i(128, 96),
     "res://assets/trees/stone-gate.png": Vector2i(256, 128),
 }
+# migrations/LLM-968e-painted-lamps_up.sql (tools/tree-art/lamps.py): the two
+# lamp posts unlit and lit (96x160 frames), the sign post's one frame, the
+# torch unlit then its four lit flame frames (32x96).
+const LAMPS := {
+    "res://assets/trees/lamp-post.png": Vector2i(192, 160),
+    "res://assets/trees/lamp-post-2.png": Vector2i(192, 160),
+    "res://assets/trees/lamp-post-sign.png": Vector2i(96, 160),
+    "res://assets/trees/torch.png": Vector2i(160, 96),
+}
 
 var _failures := 0
 var _checks := 0
@@ -363,6 +372,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %s" % [path, FENCES[path]],
                 Vector2i(texture.get_width(), texture.get_height()) == FENCES[path])
+    for path in LAMPS:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, LAMPS[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == LAMPS[path])
     _done()
 
 
