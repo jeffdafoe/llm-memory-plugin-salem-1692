@@ -3181,7 +3181,15 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
 		}
 		buyer := sanitizeInline(o.BuyerName)
-		fmt.Fprintf(b, "- #%d: %s for %s", uint64(o.ID), itemDesc, buyer)
+		if o.AwaitingMake {
+			// LLM-1026: a commission names who paid, what and when, so the seller
+			// can tell it apart from earlier sales of the same good to the same
+			// buyer. A bare "3 shovel for Elizabeth Ellis" let a smith fold this
+			// order into three shovels he had already handed her.
+			fmt.Fprintf(b, "- #%d: %s", uint64(o.ID), awaitingMakeOrderPhrase(o, buyer, now))
+		} else {
+			fmt.Fprintf(b, "- #%d: %s for %s", uint64(o.ID), itemDesc, buyer)
+		}
 		if len(o.ConsumerNames) > 0 {
 			fmt.Fprintf(b, " (to deliver to: %s)", sanitizeInline(strings.Join(o.ConsumerNames, ", ")))
 		}
@@ -3195,14 +3203,24 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 		//     the absent buyer as a chase target.
 		switch {
 		case o.AwaitingMake:
-			b.WriteString(" — you've yet to make it")
+			toMake := o.owedQty() - o.OnHand
+			them := "them"
+			if toMake <= 1 {
+				them = "it"
+			}
+			if o.OnHand > 0 {
+				// LLM-1026: some are already on hand; the order waits only on the rest.
+				fmt.Fprintf(b, " — you've %d on hand and %d still to make", o.OnHand, toMake)
+			} else {
+				fmt.Fprintf(b, " — you've yet to make %s", them)
+			}
 			// LLM-635: name the input the make is stalled on, so the line states
 			// WHY the good isn't made rather than reading as a standing "forge it"
 			// while the produce tool is withdrawn (LLM-324). The keeper then knows
 			// the noun to fetch (the "## Restocking" / forage cues carry the where)
 			// instead of promising sundown delivery he has no tool for.
 			if len(o.MissingInputs) > 0 {
-				fmt.Fprintf(b, ", and you've no %s for it", missingInputsPhrase(o.MissingInputs))
+				fmt.Fprintf(b, ", and you've no %s for %s", missingInputsPhrase(o.MissingInputs), them)
 			}
 		case len(o.AbsentRecipientNames) > 0:
 			fmt.Fprintf(b, " — waiting for %s to return", sanitizeInline(strings.Join(o.AbsentRecipientNames, ", ")))
@@ -3234,6 +3252,61 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 		b.WriteString("To hand one of these over, call deliver_order with the order's number as order_id (the recipient must be here with you). The handover itself is silent, so say a word to them as you pass it across.\n")
 	}
 	b.WriteString("\n")
+}
+
+// offerGoesToOthers reports whether an offer's goods go to anyone besides its
+// buyer alone (LLM-1026): the buyer pays, the recipients receive.
+func offerGoesToOthers(o sim.PayOfferWarrantReason) bool {
+	switch len(o.ConsumerIDs) {
+	case 0:
+		return false
+	case 1:
+		return o.ConsumerIDs[0] != o.Buyer
+	default:
+		return true
+	}
+}
+
+// owedQty is the goods the order owes across every recipient, falling back to
+// the per-recipient Qty for a hand-built view with no TotalQty.
+func (o OrderView) owedQty() int {
+	if o.TotalQty > 0 {
+		return o.TotalQty
+	}
+	return o.Qty
+}
+
+// awaitingMakeOrderPhrase is the body of an awaiting-make order line (LLM-1026):
+// "the 3 shovels Elizabeth Ellis paid 18 coins for 30m ago". A partial-payment
+// commission says "put a deposit on" and leaves the figures to balanceClause; a
+// zero-coin commission says "you promised". The when-stamp drops when
+// there is no clock (hand-built test payloads).
+func awaitingMakeOrderPhrase(o OrderView, buyer string, now time.Time) string {
+	noun := o.Noun
+	if noun == "" {
+		noun = string(o.Item)
+	}
+	goods := "the " + noun
+	if n := o.owedQty(); n > 1 {
+		goods = fmt.Sprintf("the %d %s", n, noun)
+	}
+	var s string
+	switch {
+	case o.BalanceDue > 0:
+		s = fmt.Sprintf("%s %s put a deposit on", goods, buyer)
+	case o.Amount > 0:
+		coins := "coins"
+		if o.Amount == 1 {
+			coins = "coin"
+		}
+		s = fmt.Sprintf("%s %s paid %d %s for", goods, buyer, o.Amount, coins)
+	default:
+		s = fmt.Sprintf("%s you promised %s", goods, buyer)
+	}
+	if ago := AgoPhrase(o.CreatedAt, now); ago != "" {
+		s += " " + ago
+	}
+	return s
 }
 
 // renderFutureReservations writes the seller's upcoming bookings — orders whose
@@ -3761,10 +3834,41 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		// only then, services excluded). LLM-303: fire at zero held too — "you hold
 		// no nails" for a non-vendor offeree, not just a vendor short of some stock.
 		if sf, short := shortfalls[o.LedgerID]; short {
-			if sf.Held == 0 {
+			switch {
+			case sf.Held == 0:
 				fmt.Fprintf(b, " — you hold no %s", sf.Noun)
-			} else {
+			case sf.Reserved >= sf.Held:
+				fmt.Fprintf(b, " — you hold %d %s, but every one is owed on earlier orders", sf.Held, item)
+			case sf.Reserved > 0:
+				fmt.Fprintf(b, " — you hold %d %s, %d of them owed on earlier orders", sf.Held, item, sf.Reserved)
+			default:
 				fmt.Fprintf(b, " — you hold only %d %s", sf.Held, item)
+			}
+			// LLM-1026: on a good the seller makes, accepting does not bounce — it
+			// takes the coin now and leaves the goods owed. Say so, or the line
+			// reads as a warning to ignore by a seller who believes he holds them.
+			if sf.Owed {
+				b.WriteString(": accept, and ")
+				switch {
+				case o.Amount <= 0:
+					// No coin changes hands: nothing to take.
+				case o.Deposit > 0 && o.Deposit < o.Amount:
+					b.WriteString("you take the deposit now and ")
+				default:
+					b.WriteString("you take payment now and ")
+				}
+				// The buyer pays; goods for others are owed on the order, not to him.
+				owed := fmt.Sprintf("%s %d %s", buyer, sf.OwedQty, sf.OwedNoun)
+				yetToMake := " you have yet to make"
+				if offerGoesToOthers(o) {
+					owed = fmt.Sprintf("%d %s on the order", sf.OwedQty, sf.OwedNoun)
+					yetToMake = ", which you have yet to make"
+				}
+				if sf.Held-sf.Reserved <= 0 {
+					fmt.Fprintf(b, "owe %s%s", owed, yetToMake)
+				} else {
+					fmt.Fprintf(b, "owe %s — all of them, handed over together once you have them", owed)
+				}
 			}
 		}
 		// LLM-89: this buyer already holds a room from you that you have not

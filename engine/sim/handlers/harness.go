@@ -1501,6 +1501,61 @@ func dealWordsNote(dw sim.DealWords) string {
 	return fmt.Sprintf(" Mind: you spoke of %s too, but this deal is for %s alone.", named, dw.Deal)
 }
 
+// acceptSettleLead is the opening of an Accepted pay-response result. A sale
+// handed over from stock is "settled". A commission (LLM-1026) says the coin is
+// taken and the goods are still owed, because "settled" read as a handover: a
+// smith who wrongly believed he held three shovels accepted an offer for three
+// and then took the order book's "yet to make" for an engine fault.
+func acceptSettleLead(cmdResult any) string {
+	c, ok := payResponseCommission(cmdResult)
+	if !ok {
+		return "The sale is settled. "
+	}
+	them := "them"
+	if c.Qty == 1 {
+		them = "it"
+	}
+	// With some of the goods already on hand, "yet to make" would be untrue of
+	// those units; the whole order still waits until all can go over together.
+	state, until := "you have yet to make", "once made"
+	if c.PartlyOnHand {
+		state, until = "you cannot yet hand over in full", "once you have them all"
+	}
+	var b strings.Builder
+	switch {
+	case c.BalanceDue > 0:
+		fmt.Fprintf(&b, "You've taken %s's deposit of %s on %d %s %s, with %s more to collect when you hand %s over. ",
+			c.BuyerName, coinCount(c.Charged), c.Qty, c.Noun, state, coinCount(c.BalanceDue), them)
+	case c.Charged > 0:
+		fmt.Fprintf(&b, "You've taken %s's %s for %d %s %s. ",
+			c.BuyerName, coinCount(c.Charged), c.Qty, c.Noun, state)
+	default:
+		fmt.Fprintf(&b, "You've promised %s %d %s %s. ", c.BuyerName, c.Qty, c.Noun, state)
+	}
+	// The buyer pays; when the goods go to others, they are owed on the order,
+	// not to the payer.
+	if c.ForOthers {
+		subject := "They are"
+		if c.Qty == 1 {
+			subject = "It is"
+		}
+		fmt.Fprintf(&b, "%s not handed over yet — you owe %s as order #%d, to hand over to those it is for %s. ",
+			subject, them, uint64(c.OrderID), until)
+	} else {
+		fmt.Fprintf(&b, "%s has not got %s yet — you owe %s as order #%d, to hand over %s. ",
+			c.BuyerName, them, them, uint64(c.OrderID), until)
+	}
+	return b.String()
+}
+
+// coinCount is "1 coin" / "N coins".
+func coinCount(n int) string {
+	if n == 1 {
+		return "1 coin"
+	}
+	return fmt.Sprintf("%d coins", n)
+}
+
 // payResponseDealNote is dealWordsNote for a pay response's result.
 func payResponseDealNote(cmdResult any) string {
 	if r, ok := cmdResult.(payResponseResult); ok {
@@ -1678,7 +1733,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	if vc.Name == "accept_pay" {
 		if state, announced, refused, ok := payResponseState(cmdResult); ok {
 			if state == sim.PayLedgerStateAccepted {
-				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ") + payResponseDealNote(cmdResult)
+				return strings.TrimRight("[ok] "+acceptSettleLead(cmdResult)+payResponseSayEcho(vc, announced, refused), " ") + payResponseDealNote(cmdResult)
 			}
 			if msg, ok := paySettlementFellThroughContent(state); ok {
 				return msg
@@ -1704,7 +1759,7 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			// the handover steer accept_pay earns — the gap the HOME-473 ticket
 			// glossed (LLM-13). Voice the settle.
 			case sim.PayLedgerStateAccepted:
-				return strings.TrimRight("[ok] The sale is settled. "+payResponseSayEcho(vc, announced, refused), " ") + payResponseDealNote(cmdResult)
+				return strings.TrimRight("[ok] "+acceptSettleLead(cmdResult)+payResponseSayEcho(vc, announced, refused), " ") + payResponseDealNote(cmdResult)
 			default:
 				// That same coercion can fail a gate at settle time (seller has
 				// no stock, buyer is short of coins, either party moved on, offer

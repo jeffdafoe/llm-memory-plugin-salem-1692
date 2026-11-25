@@ -3358,16 +3358,25 @@ func CommissionableKind(recipes map[ItemKind]*ItemRecipe, kinds map[ItemKind]*It
 	return policy.Produces(kind)
 }
 
-// MUST run inside a Command.Fn (reads w.Orders / w.Recipes).
-func isCommissionOrder(w *World, seller *Actor, entry *PayLedgerEntry) bool {
-	if entry == nil || seller == nil || entry.IsGift || entry.ConsumeNow {
+// CommissionableOffer is isCommissionOrder's offer-shape and kind half: every
+// rule except the stock shortfall. Exported so the seller's offer line
+// (perception) and the accept path apply one definition (LLM-1026). A bundle
+// (Lines) never reaches it: bundles settle on the fast path and are never a
+// pending offer, and commitPayTransfer handles them before the commission arm.
+func CommissionableOffer(recipes map[ItemKind]*ItemRecipe, kinds map[ItemKind]*ItemKindDef, policy *RestockPolicy, kind ItemKind, isGift, consumeNow, paidWithGoods bool) bool {
+	if isGift || consumeNow || paidWithGoods {
 		return false
 	}
-	if len(entry.PayItems) > 0 {
+	return CommissionableKind(recipes, kinds, policy, kind)
+}
+
+// MUST run inside a Command.Fn (reads w.Orders / w.Recipes).
+func isCommissionOrder(w *World, seller *Actor, entry *PayLedgerEntry) bool {
+	if entry == nil || seller == nil {
 		return false
 	}
 	kind := entry.ItemKind
-	if !CommissionableKind(w.Recipes, w.ItemKinds, seller.RestockPolicy, kind) {
+	if !CommissionableOffer(w.Recipes, w.ItemKinds, seller.RestockPolicy, kind, entry.IsGift, entry.ConsumeNow, len(entry.PayItems) > 0) {
 		return false
 	}
 	effConsumers := effectivePayConsumerCount(entry.ConsumerIDs)

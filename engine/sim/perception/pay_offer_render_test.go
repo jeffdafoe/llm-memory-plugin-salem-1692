@@ -168,7 +168,7 @@ func TestBuildPayOfferShortfalls(t *testing.T) {
 		payOfferReason(3, "b", "meat", 5, 1, false),        // holds 20 >= 5 → not short
 		payOfferReason(4, "b", "nights_stay", 1, 6, false), // service → skipped
 	}
-	sf := buildPayOfferShortfalls(snap, offers, subject)
+	sf := buildPayOfferShortfalls(snap, offers, "seller", subject)
 	if got, ok := sf[1]; !ok || got.Held != 0 || got.Noun != "nails" {
 		t.Errorf("zero-held real good must be short with plural noun; got %+v ok=%v", got, ok)
 	}

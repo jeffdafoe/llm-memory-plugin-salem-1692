@@ -124,7 +124,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// warn "you hold no/only N <good>" for ANY offeree short of the ask — not just
 	// a vendor already carrying some of the kind. Read from the subject's own
 	// inventory + the catalog (services excluded); render stays catalog-free.
-	p.PayOfferShortfalls = buildPayOfferShortfalls(snap, p.PayOffersForMe, actorSnap)
+	p.PayOfferShortfalls = buildPayOfferShortfalls(snap, p.PayOffersForMe, actorID, actorSnap)
 	p.RoomAlreadySoldOrderByLedger = buildRoomAlreadySold(snap, actorID, p.PayOffersForMe)
 	// LLM-598: price a barter offer's two sides against each other, so a seller
 	// weighing goods-for-goods reads a verdict instead of being left to multiply
@@ -4740,12 +4740,16 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 	sort.Slice(toIDs, func(i, j int) bool { return toIDs[i] < toIDs[j] })
 
 	toView := func(o *sim.Order) OrderView {
+		total := orderTotalQty(o)
 		v := OrderView{
 			ID:          o.ID,
 			Item:        o.Item,
 			Qty:         o.Qty,
 			BuyerName:   resolveName(o.BuyerID),
 			SellerName:  resolveName(o.SellerID),
+			Amount:      o.Amount,
+			TotalQty:    total,
+			Noun:        orderCountNoun(snap, o.Item, total),
 			CreatedAt:   o.CreatedAt,
 			ExpiresAt:   o.ExpiresAt,
 			ReadyBy:     o.ReadyBy,
@@ -4770,6 +4774,13 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 			v := toView(o)
 			v.AbsentRecipientNames = absentRecipientNames(snap, seller, o, resolveName)
 			v.AwaitingMake = orderAwaitingMake(seller, o)
+			if v.AwaitingMake && seller != nil {
+				// Free for THIS order: held less what the other Ready orders owe.
+				free := seller.Inventory[o.Item] - sim.ReadyOrderQtyReservedExcept(snap.Orders, subject, o.Item, o.ID)
+				if free > 0 && free < v.TotalQty {
+					v.OnHand = free
+				}
+			}
 			if v.AwaitingMake {
 				// LLM-635: if the make is stalled on an input, say which — the
 				// "yet to make it" line otherwise steers toward a produce tool
@@ -4880,7 +4891,12 @@ func stockShortNoun(def *sim.ItemKindDef, kind sim.ItemKind) string {
 // when nothing is short, keeping render catalog-free. LLM-303: this is what makes
 // the warning fire for a non-vendor offeree holding zero of the asked item, the
 // gap that let a live NPC confabulate stock it never had.
-func buildPayOfferShortfalls(snap *sim.Snapshot, offers []sim.PayOfferWarrantReason, actorSnap *sim.ActorSnapshot) map[sim.LedgerID]StockShortfall {
+//
+// The shortfall test is accept_pay's own stock gate (LLM-1026): the goods needed
+// (qty × consumers) against what is held less what Ready orders already reserve
+// (sim.ReadyOrderQtyReserved), so a seller whose stock is all owed on earlier
+// orders is short here exactly when accept would treat him as short.
+func buildPayOfferShortfalls(snap *sim.Snapshot, offers []sim.PayOfferWarrantReason, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) map[sim.LedgerID]StockShortfall {
 	if snap == nil || actorSnap == nil || len(offers) == 0 {
 		return nil
 	}
@@ -4890,16 +4906,62 @@ func buildPayOfferShortfalls(snap *sim.Snapshot, offers []sim.PayOfferWarrantRea
 		if def != nil && def.HasCapability("service") {
 			continue // no inventory backing — stock is meaningless
 		}
+		consumers := len(o.ConsumerIDs)
+		if consumers <= 0 {
+			consumers = 1
+		}
+		if o.Qty <= 0 || o.Qty > math.MaxInt/consumers {
+			continue // malformed shape; accept rejects it on its own terms
+		}
+		needed := o.Qty * consumers
 		held := actorSnap.Inventory[o.Item] // 0 when the seller holds none
-		if o.Qty <= held {
+		reserved := sim.ReadyOrderQtyReserved(snap.Orders, actorID, o.Item)
+		if reserved < 0 || reserved > held {
+			reserved = held // only held units can be spoken for; saturation reads as all of them
+		}
+		if needed <= held-reserved {
 			continue // the ask doesn't bite — sufficient stock adds nothing
 		}
 		if out == nil {
 			out = make(map[sim.LedgerID]StockShortfall)
 		}
-		out[o.LedgerID] = StockShortfall{Held: held, Noun: stockShortNoun(def, o.Item)}
+		sf := StockShortfall{Held: held, Reserved: reserved, Noun: stockShortNoun(def, o.Item)}
+		if sim.CommissionableOffer(snap.Recipes, snap.ItemKinds, actorSnap.RestockPolicy, o.Item, false, o.ConsumeNow, len(o.PayItems) > 0) {
+			sf.Owed = true
+			sf.OwedQty = needed
+			sf.OwedNoun = def.CountNoun(needed)
+			if sf.OwedNoun == "" {
+				sf.OwedNoun = string(o.Item)
+			}
+		}
+		out[o.LedgerID] = sf
 	}
 	return out
+}
+
+// orderTotalQty is the goods an order owes across every recipient (Qty ×
+// consumers, one consumer when the list is empty), falling back to Qty on a
+// malformed or overflowing shape. LLM-1026.
+func orderTotalQty(o *sim.Order) int {
+	consumers := len(o.ConsumerIDs)
+	if consumers <= 0 {
+		consumers = 1
+	}
+	if o.Qty <= 0 || o.Qty > math.MaxInt/consumers {
+		return o.Qty
+	}
+	return o.Qty * consumers
+}
+
+// orderCountNoun is the count-aware noun for qty of kind ("shovel" / "shovels"),
+// falling back to the raw kind key for a kind with no catalog phrase. LLM-1026.
+func orderCountNoun(snap *sim.Snapshot, kind sim.ItemKind, qty int) string {
+	if snap != nil {
+		if n := snap.ItemKinds[kind].CountNoun(qty); n != "" {
+			return n
+		}
+	}
+	return string(kind)
 }
 
 // buildRecentlyResolvedOffersFromMe scans snap.PayLedger for the subject's OWN
