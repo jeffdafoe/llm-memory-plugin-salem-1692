@@ -141,6 +141,12 @@ const FALLEN := {
     "res://assets/trees/storm-stumps.png": Vector2i(174, 24),
     "res://assets/trees/fallen-trunk.png": Vector2i(192, 32),
 }
+# migrations/LLM-968c-painted-crops_up.sql (tools/tree-art/crops.py): one row
+# of six 32x64 still frames, growth-1 .. growth-6, at render_scale 1.
+const CROPS := {
+    "res://assets/trees/wheat.png": Vector2i(192, 64),
+    "res://assets/trees/carrot.png": Vector2i(192, 64),
+}
 
 var _failures := 0
 var _checks := 0
@@ -337,6 +343,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %s" % [path, FALLEN[path]],
                 Vector2i(texture.get_width(), texture.get_height()) == FALLEN[path])
+    for path in CROPS:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, CROPS[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == CROPS[path])
     _done()
 
 
