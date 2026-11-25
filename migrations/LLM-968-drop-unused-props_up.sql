@@ -381,19 +381,8 @@ DECLARE
     bad integer;
     what text;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM llm968_asset_now) THEN
-        IF EXISTS (SELECT 1 FROM llm968_asset_now) OR EXISTS (SELECT 1 FROM llm968_state_now)
-           OR EXISTS (SELECT 1 FROM llm968_slot_now)
-           OR EXISTS (SELECT 1 FROM asset WHERE id = torch AND fits_slot IS NOT NULL) THEN
-            RAISE EXCEPTION 'LLM-968: the catalog is partly migrated (some of the dropped rows are here, some are not)';
-        END IF;
-        RETURN;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM asset WHERE id = hanging_sign) THEN
-        RAISE EXCEPTION 'LLM-968: Hanging Sign is not here, so the down could not bring these rows back';
-    END IF;
-
-    -- Nothing may point at an asset that goes.
+    -- Nothing may point at an asset that goes, nor at one already gone (a
+    -- rerun): there are no foreign keys to catch it.
     SELECT count(*) INTO bad FROM village_object WHERE asset_id IN (SELECT id FROM llm968_asset);
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968: % placement(s) of an asset this drops; remove them (engine stopped) first', bad;
@@ -406,6 +395,24 @@ BEGIN
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968: % refresh default(s) on an asset this drops', bad;
     END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM llm968_asset_now) THEN
+        IF EXISTS (SELECT 1 FROM llm968_asset_now) OR EXISTS (SELECT 1 FROM llm968_state_now)
+           OR EXISTS (SELECT 1 FROM llm968_slot_now)
+           OR EXISTS (SELECT 1 FROM asset WHERE id = torch AND fits_slot IS NOT NULL) THEN
+            RAISE EXCEPTION 'LLM-968: the catalog is partly migrated (some of the dropped rows are here, some are not)';
+        END IF;
+        RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM asset WHERE id = hanging_sign) THEN
+        RAISE EXCEPTION 'LLM-968: Hanging Sign is not here, so the down could not bring these rows back';
+    END IF;
+    -- The down puts each slot back on its host, so every host must be here.
+    SELECT count(*) INTO bad FROM llm968_slot e WHERE e.asset_id NOT IN (SELECT id FROM asset);
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-968: % slot host(s) are not here, so the down could not put their slots back', bad;
+    END IF;
+
     -- Nothing may hang from a slot that goes (a child fitting that slot name,
     -- attached to that host), and no torch may hang from anything.
     SELECT count(*) INTO bad
