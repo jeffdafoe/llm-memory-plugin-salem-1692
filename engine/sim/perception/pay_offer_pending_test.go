@@ -150,7 +150,7 @@ func TestRenderPendingOffersFromMe_HappyPath(t *testing.T) {
 	var b strings.Builder
 	renderPendingOffersFromMe(&b, []PendingOfferView{
 		{LedgerID: 236, SellerName: "Elizabeth Ellis", Item: "meat", Qty: 10, Amount: 48},
-	})
+	}, nil)
 	out := b.String()
 	for _, must := range []string{
 		"## Offers you have standing",
@@ -172,7 +172,7 @@ func TestRenderPendingOffersFromMe_Barter(t *testing.T) {
 	renderPendingOffersFromMe(&b, []PendingOfferView{
 		{LedgerID: 9, SellerName: "the dairykeeper", Item: "stew", Qty: 1, Amount: 0,
 			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 5}}},
-	})
+	}, nil)
 	out := b.String()
 	if !strings.Contains(out, "for 1 stew, 5 nail offered") {
 		t.Errorf("barter offer line missing the goods offered\n%s", out)
@@ -185,7 +185,7 @@ func TestRenderPendingOffersFromMe_Barter(t *testing.T) {
 // Content-gated: an empty list produces no section at all.
 func TestRenderPendingOffersFromMe_EmptyGated(t *testing.T) {
 	var b strings.Builder
-	renderPendingOffersFromMe(&b, nil)
+	renderPendingOffersFromMe(&b, nil, nil)
 	if b.Len() != 0 {
 		t.Errorf("empty list produced output: %q", b.String())
 	}
