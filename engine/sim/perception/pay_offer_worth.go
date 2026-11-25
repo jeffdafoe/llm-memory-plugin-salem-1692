@@ -214,18 +214,15 @@ func buildPayOfferWorth(snap *sim.Snapshot, actorID sim.ActorID, offers []sim.Pa
 // already in the wares cue; repeating them here would hand the model the same
 // arithmetic it failed to do. Names the asked good so the clause reads as a
 // sentence about the trade rather than a verdict floating free. askedLabel is
-// the count noun for the asked goods; pluralVerb picks "are" for a count noun
-// above one ("the sacks of flour are worth", LLM-1029).
-func offerWorthPhrase(tier offerWorth, askedLabel string, pluralVerb bool) string {
-	verb := " is worth"
-	if pluralVerb {
-		verb = " are worth"
-	}
+// the count noun for the asked goods ("sacks of flour"). "the worth of the …"
+// needs no verb, so it reads right for a count noun, a mass noun ("sage") and a
+// plural that equals its singular ("sheep") alike (LLM-1029).
+func offerWorthPhrase(tier offerWorth, askedLabel string) string {
 	switch tier {
 	case offerWorthThin:
-		return " — a little less than the " + askedLabel + verb
+		return " — a little short of the worth of the " + askedLabel
 	case offerWorthShort:
-		return " — far less than the " + askedLabel + verb
+		return " — far short of the worth of the " + askedLabel
 	default:
 		return ""
 	}

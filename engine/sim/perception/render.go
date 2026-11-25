@@ -3902,7 +3902,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		// entry for no other case. No numbers: the wares cue above already prints the
 		// per-unit worths, and it was doing the arithmetic ACROSS those two sections
 		// that the miller skipped, judging 7 flour for 7 wheat an even hand.
-		b.WriteString(offerWorthPhrase(worth[o.LedgerID], item, nouns.isPluralVerb(o.Item, o.Qty)))
+		b.WriteString(offerWorthPhrase(worth[o.LedgerID], item))
 		b.WriteString("\n")
 	}
 	// ONE tool, and the words ride on it (LLM-350). This cue used to read "Respond

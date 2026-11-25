@@ -125,7 +125,7 @@ func init() {
 			summary: "LLM-598 (the live 2026-08-04 14:26 failure): Josiah offers Joseph Scott 7 sheaves of wheat for 7 " +
 				"sacks of flour. The wares cue prices flour at the 3 coins the shop has been paying him and wheat at the 1 " +
 				"coin he pays for it, so the swap hands over 21 coins of flour for 7 coins of wheat — and he holds 47 " +
-				"sheaves already. The golden pins the offer line now carrying '— far less than the sacks of flour are worth', the " +
+				"sheaves already. The golden pins the offer line now carrying '— far short of the worth of the sacks of flour', the " +
 				"verdict he was left to derive himself and did not: live he recited both rates correctly and accepted, " +
 				"calling seven-for-seven a fair trade. No numbers in the clause — they are already in the wares cue above " +
 				"it, and it was the arithmetic ACROSS the two sections that he skipped.",
@@ -248,13 +248,13 @@ func TestRenderPayOffers_WorthClause(t *testing.T) {
 
 	var short strings.Builder
 	renderPayOffers(&short, offers, nameOf, nil, nil, map[sim.LedgerID]offerWorth{3710: offerWorthShort}, nil)
-	if want := "— far less than the flour is worth"; !strings.Contains(short.String(), want) {
+	if want := "— far short of the worth of the flour"; !strings.Contains(short.String(), want) {
 		t.Errorf("short offer line missing the verdict %q:\n%s", want, short.String())
 	}
 
 	var thin strings.Builder
 	renderPayOffers(&thin, offers, nameOf, nil, nil, map[sim.LedgerID]offerWorth{3710: offerWorthThin}, nil)
-	if want := "— a little less than the flour is worth"; !strings.Contains(thin.String(), want) {
+	if want := "— a little short of the worth of the flour"; !strings.Contains(thin.String(), want) {
 		t.Errorf("thin offer line missing the verdict %q:\n%s", want, thin.String())
 	}
 
@@ -262,7 +262,7 @@ func TestRenderPayOffers_WorthClause(t *testing.T) {
 	// absent key must render silence rather than an empty-string artifact.
 	var fair strings.Builder
 	renderPayOffers(&fair, offers, nameOf, nil, nil, nil, nil)
-	if strings.Contains(fair.String(), "is worth") {
+	if strings.Contains(fair.String(), "the worth of") {
 		t.Errorf("a fair/unjudged offer must carry no verdict clause:\n%s", fair.String())
 	}
 	if got, want := fair.String(), "1. Josiah Thorne offers 7 wheat for 7 flour to keep (offer id 3710)\n"; !strings.Contains(got, want) {
@@ -289,7 +289,7 @@ func TestOfferWorthAgreesWithTheRenderedWaresFigures(t *testing.T) {
 	if want := "the shop has lately paid you about 5 coins each"; !strings.Contains(got, want) {
 		t.Fatalf("wares cue is not showing the realized rate (%q), so this test proves nothing:\n%s", want, got)
 	}
-	if want := "— a little less than the sacks of flour are worth"; !strings.Contains(got, want) {
+	if want := "— a little short of the worth of the sacks of flour"; !strings.Contains(got, want) {
 		t.Errorf("the verdict does not follow the figure the same prompt prints (%q missing):\n%s", want, got)
 	}
 }

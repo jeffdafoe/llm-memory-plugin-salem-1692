@@ -57,19 +57,3 @@ func (n itemNouns) count(kind sim.ItemKind, qty int) string {
 func (n itemNouns) counted(kind sim.ItemKind, qty int) string {
 	return fmt.Sprintf("%d %s", qty, n.count(kind, qty))
 }
-
-// isPluralVerb reports whether "<noun> is/are" takes "are" for qty of kind. A
-// mass noun whose plural phrase is its singular ("sage") keeps "is" at any
-// count; a count noun ("nails", "sacks of flour") takes "are" above one.
-func (n itemNouns) isPluralVerb(kind sim.ItemKind, qty int) bool {
-	if qty == 1 {
-		return false
-	}
-	// A kind with no phrase renders as its raw key, which reads as a mass noun
-	// ("the flour is worth").
-	c, ok := n[kind]
-	if !ok || c.Plural == "" {
-		return false
-	}
-	return c.Plural != c.Singular
-}
