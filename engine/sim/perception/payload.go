@@ -925,7 +925,19 @@ type Payload struct {
 // the existing "only N <kind>" annotation. LLM-303.
 type StockShortfall struct {
 	Held int
-	Noun string
+	// Reserved is how many of the Held units Ready orders already owe (never more
+	// than Held). A seller holding stock that is all spoken for is short too, and
+	// the line says why (LLM-1026).
+	Reserved int
+	Noun     string
+	// Owed is set when accepting would not bounce but take the coin now and leave
+	// the seller owing the goods: a commission (LLM-338) on a good the seller
+	// makes. The line must then say what accepting commits to (LLM-1026); a bare
+	// "you hold no shovels" let a smith who believed he held them accept as a
+	// handover. OwedQty / OwedNoun are the count and count-aware noun owed.
+	Owed     bool
+	OwedQty  int
+	OwedNoun string
 }
 
 // OrderView is the perception-side projection of one sim.Order.
@@ -950,8 +962,21 @@ type OrderView struct {
 	// bucket; empty => every recipient is here and the order is deliverable now.
 	// ZBBS-WORK-373 (boot-collapse Finding 6 bundle).
 	AbsentRecipientNames []string
-	CreatedAt            time.Time
-	ExpiresAt            time.Time
+	// Amount is the order's agreed coin price; TotalQty is the goods owed across
+	// every recipient (Qty × consumers, the count accept_pay's result names); Noun
+	// is the count-aware noun for TotalQty ("shovel" / "shovels"). The
+	// awaiting-make line names them, so a seller can tell this order from earlier
+	// sales of the same good to the same buyer (LLM-1026).
+	Amount   int
+	TotalQty int
+	Noun     string
+	// OnHand is, for an awaiting-make order, how many of its goods the seller
+	// holds free of every OTHER Ready order (0..TotalQty-1). The line then says
+	// how many are on hand and how many are still to make, matching the accept
+	// result's "cannot yet hand over in full" (LLM-1026).
+	OnHand    int
+	CreatedAt time.Time
+	ExpiresAt time.Time
 	// ReadyBy is the order's booked date (lodging check-in date for an
 	// advance booking; the creation date for a same-day order). Midnight UTC
 	// of a calendar date. Render uses it to split the seller view into

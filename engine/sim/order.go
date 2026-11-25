@@ -714,12 +714,32 @@ func refundOrderPayment(w *World, o *Order, amount int) (refunded int, blocked b
 // MUST be called from inside a Command.Fn (world goroutine) —
 // iterates w.Orders without coordination.
 func outstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
-	if w == nil || len(w.Orders) == 0 {
+	if w == nil {
+		return 0
+	}
+	return ReadyOrderQtyReserved(w.Orders, sellerID, item)
+}
+
+// ReadyOrderQtyReserved is outstandingReadyOrderQty over an orders map, so the
+// perception layer can apply the accept path's own reservation sum to a
+// snapshot's orders (LLM-1026: the offer line must call a stock shortfall
+// exactly where accept_pay's stock gate does). Pure over the map.
+func ReadyOrderQtyReserved(orders map[OrderID]*Order, sellerID ActorID, item ItemKind) int {
+	return ReadyOrderQtyReservedExcept(orders, sellerID, item, 0)
+}
+
+// ReadyOrderQtyReservedExcept is ReadyOrderQtyReserved leaving one order out
+// (0 leaves none out; no Order has ID 0). It answers "what do the OTHER orders
+// owe", so a reader asking how much stock is free for one order excludes that
+// order before summing — subtracting its qty afterwards would be wrong once a
+// large order saturates the total (LLM-1026, code_review).
+func ReadyOrderQtyReservedExcept(orders map[OrderID]*Order, sellerID ActorID, item ItemKind, except OrderID) int {
+	if len(orders) == 0 {
 		return 0
 	}
 	total := 0
-	for _, o := range w.Orders {
-		if o == nil || o.State != OrderStateReady {
+	for id, o := range orders {
+		if o == nil || o.State != OrderStateReady || (except != 0 && id == except) {
 			continue
 		}
 		if o.SellerID != sellerID || o.Item != item {

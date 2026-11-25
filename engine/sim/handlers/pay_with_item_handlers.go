@@ -742,6 +742,49 @@ type payResponseResult struct {
 	SayRefused string
 	// DealWords: goods the say named that the deal does not carry (sim.DealWordsFor).
 	DealWords sim.DealWords
+	// Commission is set when an Accepted settle minted a commission (LLM-1026):
+	// the seller took coin for goods still to make, so the result must not read
+	// like a handover. Nil for every other outcome.
+	Commission *sim.CommissionTaken
+}
+
+// payResponseCommission returns the commission an accept minted, if the result
+// carries one (LLM-1026).
+func payResponseCommission(cmdResult any) (sim.CommissionTaken, bool) {
+	r, ok := cmdResult.(payResponseResult)
+	if !ok || r.Commission == nil {
+		return sim.CommissionTaken{}, false
+	}
+	return *r.Commission, true
+}
+
+// withCommissionNote wraps a pay-response Command that can settle an offer
+// (accept_pay, and counter_pay's coercion to an accept) so an Accepted result
+// says whether the settle minted a commission (LLM-1026). It runs in the same
+// Command as the accept, so the order it reads is the one the accept just made.
+// A bare-state result (no `say`) is lifted into payResponseResult only when there
+// is a commission to report; otherwise the result passes through unchanged.
+func withCommissionNote(actorID sim.ActorID, ledgerID sim.LedgerID, cmd sim.Command) sim.Command {
+	return sim.Command{Fn: func(w *sim.World) (any, error) {
+		res, err := cmd.Fn(w)
+		if err != nil {
+			return res, err
+		}
+		state, _, _, ok := payResponseState(res)
+		if !ok || state != sim.PayLedgerStateAccepted {
+			return res, nil
+		}
+		taken, isCommission := sim.CommissionTakenFor(w, actorID, ledgerID)
+		if !isCommission {
+			return res, nil
+		}
+		out, wrapped := res.(payResponseResult)
+		if !wrapped {
+			out = payResponseResult{State: state}
+		}
+		out.Commission = &taken
+		return out, nil
+	}}
 }
 
 // payResponseState unwraps a pay-response commit result into the ledger state and
@@ -926,12 +969,12 @@ func HandleAcceptPay(in HandlerInput) (sim.Command, error) {
 	}
 	now := time.Now().UTC()
 	ledgerID := sim.LedgerID(args.LedgerID)
-	return respondAndSpeak(
+	return withCommissionNote(in.ActorID, ledgerID, respondAndSpeak(
 		in.ActorID, ledgerID, say, in.HasNewNews, now,
 		fmt.Sprintf("accept_pay settled ledger %d", ledgerID),
 		func(s sim.PayLedgerState) bool { return s == sim.PayLedgerStateAccepted },
 		sim.AcceptPay(in.ActorID, ledgerID, now),
-	), nil
+	)), nil
 }
 
 // ====================================================================
@@ -1154,14 +1197,14 @@ func HandleCounterPay(in HandlerInput) (sim.Command, error) {
 	}
 	now := time.Now().UTC()
 	ledgerID := sim.LedgerID(args.LedgerID)
-	return respondAndSpeak(
+	return withCommissionNote(in.ActorID, ledgerID, respondAndSpeak(
 		in.ActorID, ledgerID, say, in.HasNewNews, now,
 		fmt.Sprintf("counter_pay countered ledger %d", ledgerID),
 		func(s sim.PayLedgerState) bool {
 			return s == sim.PayLedgerStateCountered || s == sim.PayLedgerStateAccepted
 		},
 		sim.CounterPay(in.ActorID, ledgerID, args.Amount, payItems, normalizeShortMessage(say), now),
-	), nil
+	)), nil
 }
 
 // ====================================================================

@@ -185,7 +185,7 @@ func TestRenderOrdersReady_AwaitingMake_NamesMissingInput(t *testing.T) {
 			MissingInputs: []string{"Water"}, ExpiresAt: time.Now().Add(2 * time.Hour)},
 	}, startOfUTCDay(time.Now()), time.Time{})
 	out := b.String()
-	if !strings.Contains(out, "you've yet to make it, and you've no Water for it") {
+	if !strings.Contains(out, "you've yet to make them, and you've no Water for them") {
 		t.Errorf("order line does not name the missing input:\n%s", out)
 	}
 	if strings.Contains(out, "deliver_order") {

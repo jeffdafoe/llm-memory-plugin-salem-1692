@@ -35,7 +35,7 @@ func init() {
 				"trade' is absent and the produce tool withdrawn (LLM-324). The golden pins that BOTH steers toward making " +
 				"nails now name the gap: the mend line reads 'nails are your own work, but you've no Water to forge them " +
 				"with, and none is to be had just now' (no 'forge what you're short'), and the order line reads 'you've " +
-				"yet to make it, and you've no Water for it'. Byte-stable: fixed PublishedAt, on shift, no clock read.",
+				"yet to make them, and you've no Water for them'. Byte-stable: fixed PublishedAt, on shift, no clock read.",
 			build: smithOutOfWaterOwesNailsNoSeller,
 		},
 		perceptionScenario{
@@ -87,6 +87,7 @@ func smithOutOfWaterOwesNailsNoSeller() (*sim.Snapshot, sim.ActorID, []sim.Warra
 			BuyerID:     "josiah",
 			Item:        "nail",
 			Qty:         5,
+			Amount:      10,
 			ConsumerIDs: []sim.ActorID{"josiah"},
 			CreatedAt:   published.Add(-2 * time.Minute),
 			ExpiresAt:   published.Add(118 * time.Minute),
@@ -178,13 +179,13 @@ func TestGoldensProduceSteersNameTheGapWhenInputShort(t *testing.T) {
 					}
 				}
 				for _, line := range strings.Split(promptSection(out, "## Orders to deliver"), "\n") {
-					if !strings.Contains(line, "you've yet to make it") || !strings.Contains(line, " "+string(e.Item)+" ") {
+					if !strings.Contains(line, "to make") || !strings.Contains(line, string(e.Item)) {
 						continue
 					}
 					orderExercised = true
 					for _, m := range missing {
 						if !strings.Contains(line, m) {
-							t.Errorf("scenario %q: order line says 'yet to make it' without naming the missing input %q (LLM-635)\n%s", sc.name, m, line)
+							t.Errorf("scenario %q: order line says 'yet to make' without naming the missing input %q (LLM-635)\n%s", sc.name, m, line)
 						}
 					}
 				}

@@ -7816,7 +7816,9 @@ func TestWaresWorthCueOnlyInCompanyWithOwnTrade(t *testing.T) {
 			sc.name == "keeper_prices_bale_leftover_iron" || // LLM-646: keeper in company holding off-policy priced stock — held goods ARE own trade now
 			sc.name == "keeper_views_peddler" || // LLM-656: the tavernkeeper in company with the peddler, priced own ale + the stew he cannot yet make
 			sc.name == "holder_views_carter" || // carter: the dairykeeper in company with the carter, priced own milk and cheese
-			sc.name == "keeper_views_carter" // carter: the miller in company with the carter, priced own flour
+			sc.name == "keeper_views_carter" || // carter: the miller in company with the carter, priced own flour
+			sc.name == "smith_offered_three_shovels_holds_none" || // LLM-1026: producer in company with the buyer, priced own shovels
+			sc.name == "smith_owes_three_shovels_commission" // LLM-1026: same fixture, after the accept
 		if has := strings.Contains(got, marker); has != want {
 			t.Errorf("scenario %q: wares-worth cue present=%v, want %v", sc.name, has, want)
 		}
@@ -17825,6 +17827,7 @@ func smithCommissionAwaitingForge() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 				BuyerID:     buyerID,
 				Item:        "shovel",
 				Qty:         1,
+				Amount:      6,
 				ConsumerIDs: []sim.ActorID{buyerID},
 				CreatedAt:   published.Add(-30 * time.Minute),
 				ExpiresAt:   published.Add(5 * time.Hour),
