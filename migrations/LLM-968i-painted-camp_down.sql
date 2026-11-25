@@ -12,7 +12,7 @@
 
 BEGIN;
 
-LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light, village_object IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light, village_object, village_terrain IN SHARE ROW EXCLUSIVE MODE;
 
 DO $$
 DECLARE
@@ -73,10 +73,13 @@ BEGIN
     -- old footprint (1,2,3,0) would cover a tile that is not clear: the strip
     -- the old footprint adds to the new one (1,1,2,0) — the column to the
     -- right and the row on top — under another object's footprint, or on
-    -- water. A camp pitched after the up was ground-checked only on the new
-    -- footprint, and any camp may have gained a neighbour there since.
-    -- Tiles are the engine's: floor(world / 32) plus the pad (60, 112) on a
-    -- 200-wide terrain grid; terrain 5 and 6 are water.
+    -- water, or off the map. A camp pitched after the up was ground-checked
+    -- only on the new footprint, and any camp may have gained a neighbour
+    -- there since. Other objects are taken at their footprint AFTER this down
+    -- (another tent widens too, so two tents clear of each other now can
+    -- overlap once both are back on 1,2,3,0). Tiles are the engine's:
+    -- floor(world / 32) plus the pad (60, 112) on the 200 x 180 terrain grid;
+    -- a tile off the grid is not clear; terrain 5 and 6 are water.
     SELECT count(*) INTO bad
       FROM village_object t
       JOIN asset ta ON ta.id = t.asset_id
@@ -87,12 +90,22 @@ BEGIN
      WHERE ta.id IN ('019e5f00-c401-7a10-9e00-000000798001', '18118703-3aa8-4f28-8ffd-3d3c9f0804ed',
                      'a6f9d413-385f-43e6-9d19-b91f49bc343c')
        AND t.attached_to IS NULL
-       AND (EXISTS (SELECT 1 FROM village_object o JOIN asset oa ON oa.id = o.asset_id
-                     WHERE o.id <> t.id AND o.attached_to IS NULL
-                       AND strip.tx BETWEEN floor(o.x / 32)::int - oa.footprint_left AND floor(o.x / 32)::int + oa.footprint_right
-                       AND strip.ty BETWEEN floor(o.y / 32)::int - oa.footprint_top AND floor(o.y / 32)::int + oa.footprint_bottom)
+       AND (NOT (strip.tx + 60 BETWEEN 0 AND 199 AND strip.ty + 112 BETWEEN 0 AND 179)
+            OR EXISTS (SELECT 1 FROM village_object o JOIN asset oa ON oa.id = o.asset_id
+                        -- The footprint each object will have after this down.
+                        CROSS JOIN LATERAL (SELECT CASE WHEN oa.id IN ('019e5f00-c401-7a10-9e00-000000798001',
+                                                                       '18118703-3aa8-4f28-8ffd-3d3c9f0804ed',
+                                                                       'a6f9d413-385f-43e6-9d19-b91f49bc343c')
+                                                        THEN ARRAY[1, 2, 3, 0]
+                                                        ELSE ARRAY[oa.footprint_left, oa.footprint_right,
+                                                                   oa.footprint_top, oa.footprint_bottom] END AS fp) f
+                        WHERE o.id <> t.id AND o.attached_to IS NULL
+                          AND strip.tx BETWEEN floor(o.x / 32)::int - f.fp[1] AND floor(o.x / 32)::int + f.fp[2]
+                          AND strip.ty BETWEEN floor(o.y / 32)::int - f.fp[3] AND floor(o.y / 32)::int + f.fp[4])
             OR EXISTS (SELECT 1 FROM village_terrain vt
-                        WHERE vt.id = 1 AND get_byte(vt.data, (strip.ty + 112) * 200 + (strip.tx + 60)) IN (5, 6)));
+                        WHERE vt.id = 1 AND strip.tx + 60 BETWEEN 0 AND 199 AND strip.ty + 112 BETWEEN 0 AND 179
+                          AND octet_length(vt.data) >= 200 * 180
+                          AND get_byte(vt.data, (strip.ty + 112) * 200 + (strip.tx + 60)) IN (5, 6)));
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968i down: % tile(s) the old tent footprint would take back are not clear; strike or move those tents first', bad;
     END IF;
