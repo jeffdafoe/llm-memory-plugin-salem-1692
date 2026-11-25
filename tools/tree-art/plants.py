@@ -111,7 +111,11 @@ class Piece:
         self.animated = False
         self.outline = 0.4          # how far the down-facing edge is mixed toward the outline
         self.ring = 0.0             # and the other edges (a plant that must stand off the grass)
-        self.density = 1            # 2: a frame twice the size at render_scale 1
+        # 2 (all of them, Jeff 2026-11-25): a frame twice the pack art's size,
+        # shown at render_scale 1 rather than 2, so the same size in the world
+        # with twice the detail, as dense as the ground's 32 px tiles. At 16 px
+        # the fern and the bracket fungus shrank to a mound and a brick stack.
+        self.density = 2
         self.__dict__.update(kw)
 
 
@@ -335,7 +339,8 @@ def paint_fern(piece, seed, look, gust):
         for k in range(steps + 1):
             t = k / steps
             x = cx + math.cos(a) * L * t + (lean if t > 0.5 else 0.0) * (t - 0.5) * 2
-            y = cy + math.sin(a) * L * t + dr * t * t * 1.4
+            # the limp winter fronds would droop off the frame's bottom row
+            y = min(BASE_Y + 0.8 * S, cy + math.sin(a) * L * t + dr * t * t * 1.4)
             spine.append((x, y))
         left, right, normals = [], [], []
         for k in range(steps + 1):
