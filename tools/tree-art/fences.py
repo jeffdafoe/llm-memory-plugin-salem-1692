@@ -555,6 +555,13 @@ def join_problems(cells):
         names = ["h-broken-%d-l" % k, "h-broken-%d" % k, "h-broken-%d-r" % k]
         for left, right in zip(names, names[1:]):
             pe, pw = edge_profile(by_name[left], "e"), edge_profile(by_name[right], "w")
+            # Some rail crosses every inner seam (a break keeps rails to both
+            # outer posts), so each side must show wood: with none on either
+            # side the run comparison below would pass vacuously.
+            if not runs(pe, "w") or not runs(pw, "w"):
+                problems.append("break %d: no rail crosses the seam between %s and %s: %s / %s"
+                                % (k, left, right, pe, pw))
+                continue
             for kind in "ws":
                 if not runs_meet(runs(pe, kind), runs(pw, kind)):
                     problems.append("break %d: %s's east edge and %s's west edge do not meet (%s): %s / %s"
