@@ -12,20 +12,25 @@ density 2, shown at render_scale 1).
 An open market booth, seen corner-on like the buildings: a counter on its
 two front sides, four posts, a gable roof with its ridge along the long
 front-left counter, and no wall behind the keeper. The client draws a
-see-through structure's keeper (visible_when_inside) on the stand tile
-BEFORE the stall (y-sort: the stand tile is the anchor tile, the stall's
-own row), so the keeper shows only through the art's empty pixels: the open
-booth leaves the space between the counters and the roof empty, and the
-keeper shows from the waist up behind the counter. Closed (no keeper: the
+see-through structure's keeper (visible_when_inside) on the stand tile, and
+villagers and objects share one y-sorted layer (z_index 10): the stand tile
+is the row behind the anchor tile, so the keeper is always drawn before the
+stall, wherever the stall sits in its tile, and shows only through the art's
+empty pixels. The open booth leaves the space between the counters and the
+roof empty, and the keeper shows from the waist up behind the counter. (On
+the anchor's own row the keeper would tie the stall's y and the tie goes to
+tree order, which draws villagers last: in front of the counter.) Closed (no keeper: the
 stall shows closed when nobody is in it), shutters close both fronts from
 the counter to the eaves.
 
 The art fits the tiles set by migration LLM-968h: the object snapped to its
-anchor tile's centre, which is the stand tile (anchor 0.5 / 152/224: the
-keeper's feet); the footprint 3 wide and 2 deep (left 1, right 1, top 1);
-the door at the back centre (0, -1), the keeper coming in from behind; the
-customers in front of the long counter (loiter (-1, 1)). The back corner
-post stands left of the keeper's column so it never crosses them.
+anchor tile's centre, the counter row (anchor 0.5 / 184/224, a tile below
+the keeper's feet); the stand tile (0, -1), the keeper's feet at pack
+(32, 76); the footprint 3 wide and 3 deep (left 1, right 1, top 2); the door
+at the back centre (0, -2), the keeper coming in from behind; the customers
+front-left of the long counter (loiter (-2, 0)), clear of the art. The back
+corner post stands left of the keeper's column and the near post right of
+it, so neither crosses them.
 
 Period New England (1692): Wood is weathered grey-brown oak under a roof of
 riven boards, Tiled brown oak under cedar shingles (a Salem roof's
@@ -49,16 +54,18 @@ import fences as F
 OUT_DIR = B.OUT_DIR
 
 FW, FH = 64, 112
-# The keeper's feet: the stand tile's centre, which is the object's position.
-ANCHOR = (0.5, 76.0 / 112.0)
+# The object's position: the anchor tile's centre, a tile (16 pack px) below
+# the keeper's feet at (32, 76), which stand on the stand tile (0, -1).
+ANCHOR = (0.5, 92.0 / 112.0)
+KEEPER_FEET = (32, 76)
 
 # The booth on the ground: near, left, right and far corners (pack px).
 A = (-1.0, -0.86)   # along the front-left face, from near to left
 BV = (1.0, -0.46)   # along the front-right face, from near to right
 N = (39.0, 87.0)
 UW, VD = 27.0, 12.0
-H = 38.0            # eave height
-PEAK = 15.0         # roof rise above the eaves
+H = 40.0            # eave height: the front eave clears the keeper's head
+PEAK = 13.0         # roof rise above the eaves
 OVER = 2.6          # eave overhang
 COUNTER = 11.0
 
@@ -270,12 +277,12 @@ def build_sheet(kind):
 
 SHEETS = {"stall-" + k: (lambda k=k: build_sheet(k)) for k in KINDS}
 
-# The keeper's window, in pack px of the frame: where the keeper's head and
-# shoulders stand when they are on the stand tile (feet at the anchor
-# (32, 76); a villager is about 28 pack px tall). It must be empty in an
-# open frame (the keeper shows there) and covered in a closed one (the
-# shutters are up).
-KEEPER_WINDOW = (28, 50, 36, 60)
+# The keeper's window, in pack px of the frame: the keeper's head and
+# shoulders when they stand on the stand tile (feet at KEEPER_FEET; a
+# villager is about 28 pack px tall, so the head's top is at y 48). It must
+# be empty in an open frame (the keeper shows there) and covered in a closed
+# one (the shutters are up).
+KEEPER_WINDOW = (28, 48, 36, 60)
 
 
 def window_alpha(frame):
