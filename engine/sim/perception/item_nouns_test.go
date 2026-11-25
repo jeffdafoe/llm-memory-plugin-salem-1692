@@ -64,8 +64,10 @@ func TestGoldensOfferAndOrderLinesUseCountNouns(t *testing.T) {
 						continue
 					}
 					// The right noun can start with the key ("3 fish fillets" for
-					// key fish); that is the right text, not the key.
-					if strings.HasPrefix(body[m[0]:], strconv.Itoa(qty)+" "+want) {
+					// key fish); that is the right text, not the key. It must end
+					// at a word boundary, so "1 fish fillets" for "1 fish fillet"
+					// still fails.
+					if right := strconv.Itoa(qty) + " " + want; strings.HasPrefix(body[m[0]:], right) && !startsWithWordChar(body[m[0]+len(right):]) {
 						continue
 					}
 					t.Errorf("%s: %q in %q names the kind key; the catalog says %q", sc.name, body[m[0]:m[1]], header, strconv.Itoa(qty)+" "+want)
@@ -73,6 +75,16 @@ func TestGoldensOfferAndOrderLinesUseCountNouns(t *testing.T) {
 			}
 		}
 	}
+}
+
+// startsWithWordChar reports whether s begins with a letter, digit or
+// underscore, the characters regexp's \b treats as word characters.
+func startsWithWordChar(s string) bool {
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	return c == '_' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 // TestOrderLinesNamePerRecipientNoun pins the per-recipient noun against the
