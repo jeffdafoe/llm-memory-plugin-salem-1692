@@ -14,6 +14,9 @@ extends Sprite2D
 
 ## The painted pail (wells.py), packed with the client: the sheet is the pail.
 const SHEET := "res://assets/trees/well-pail.png"
+## preload: Godot sees the dependency, and a missing pail fails when this
+## script loads instead of leaving an invisible bucket.
+const PAIL: Texture2D = preload("res://assets/trees/well-pail.png")
 const REGION := Rect2(0, 0, 32, 32)
 ## Hanging on the rope in the mouth of the shaft, low enough that a drinker's
 ## head at the rim meets its bottom rather than sitting under it (Jeff).
@@ -70,7 +73,7 @@ static func of(well: Node2D, counter: Callable) -> Node:
     bucket.drinkers = counter
     bucket.centered = false
     # Packed with the client (res://), so it is on hand at once: no download.
-    bucket.texture = load(SHEET) as Texture2D
+    bucket.texture = PAIL
     bucket.region_enabled = true
     bucket.region_rect = REGION
     bucket.scale = art.scale
