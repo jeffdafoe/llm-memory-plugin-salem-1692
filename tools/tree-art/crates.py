@@ -13,9 +13,10 @@ same size in the world, twice the detail).
 
 The crates stand corner-on, in the angled view of the buildings (LLM-699): a
 box whose lid's corners are far, left, near and right, the left face lit and
-the right face in shade. The box's ground point (its near bottom corner) is
-the LLM-699 sheet's (20, 35.2) of a 40x40 frame, so the catalog anchor
-0.5/0.88 still stands it on its spot. The loose lid is slid back off the open
+the right face in shade. The box is where the LLM-699 crate was in its 40x40
+frame: its near bottom corner at (18, 35.2), on the anchor's row (0.88) and
+2 px left of the anchor's column (x 20), as that crate stood, so every
+placed crate keeps its spot. The loose lid is slid back off the open
 box (the minor-works "lid loose", damage_minor), the box's top open: its rim
 and the straw inside.
 
@@ -75,7 +76,8 @@ def lerp(a, b, t):
 # ---------------------------------------------------------------- crates
 
 # In the 40x40 pack frame (LLM-699): the lid's corners when shut, and how
-# tall the box stands.
+# tall the box stands. The near bottom corner, (18, 35.2), is on the
+# anchor's row and 2 px left of its column, as the LLM-699 crate's was.
 FAR, LEFT, NEAR, RIGHT = (21.0, 7.5), (7.5, 14.5), (18.0, 23.5), (31.0, 17.5)
 TALL = 11.7
 LID_SLIDE = (4.0, -4.0)
@@ -181,26 +183,18 @@ def paint_crate(wood, loose, seed):
     sd = ImageDraw.Draw(shade)
     crate_shadow(sd, loose)
     if loose:
-        # The lid slid back up and to the right: drawn first, behind the
-        # open box's near walls.
+        # The open box, then the lid slid back up and to the right lying on
+        # its rim over part of the opening. The near faces are drawn after:
+        # they hang below the rim, so they cover only the lid's far overhang
+        # behind the box, never the part resting on it.
+        open_top(d, wood, seed + 5)
         dx, dy = LID_SLIDE
         mv = lambda p: (p[0] + dx, p[1] + dy)
         lid(d, mv(FAR), mv(LEFT), mv(NEAR), mv(RIGHT), wood, seed + 9, tone=0.64)
-        open_top(d, wood, seed + 5)
     boarded_face(d, LEFT, NEAR, 0.62, wood, seed + 1)
     boarded_face(d, NEAR, RIGHT, 0.34, wood, seed + 2)
     if not loose:
         lid(d, FAR, LEFT, NEAR, RIGHT, wood, seed + 3)
-    else:
-        # The loose lid's near corner rests on the box's far rim: redraw the
-        # lid over the far rim so it lies on top of it.
-        dx, dy = LID_SLIDE
-        mv = lambda p: (p[0] + dx, p[1] + dy)
-        cover = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
-        lid(ImageDraw.Draw(cover), mv(FAR), mv(LEFT), mv(NEAR), mv(RIGHT), wood, seed + 9, tone=0.64)
-        mask = Image.new("L", (P.W, P.H), 0)
-        ImageDraw.Draw(mask).polygon(scaled([FAR, RIGHT, lerp(RIGHT, NEAR, 0.45), lerp(FAR, LEFT, 0.45)]), fill=255)
-        lay.paste(cover, (0, 0), Image.composite(cover.getchannel("A"), Image.new("L", (P.W, P.H), 0), mask))
     return F.shrink_shaded(lay, shade, palette(wood))
 
 
@@ -300,10 +294,42 @@ SHEETS = {
 FRAMES = {"crate-dark": (80, 80), "crate-light": (80, 80), "notice-board": (96, 128)}
 
 
+MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968g-painted-crates_up.sql")
+BOARD_ID = "df06e1c7-3912-4846-b828-6c0435af8c01"
+
+
+def board_count_problems(path=MIGRATION):
+    """Each notice-board frame's notice count (BOARD_NOTICES) against the
+    capacity tag of the state the migration points at that frame: the
+    state's src_x / 96 is its frame, its content-capacity-N tag (none: 0)
+    the notices it holds. A reordered list, or a migration edit, that puts a
+    frame with the wrong count under a state shows here."""
+    import re
+    sql = open(path, encoding="utf-8").read()
+    frame_of = {m.group(1): int(m.group(2)) // 96 for m in re.finditer(
+        r"'%s', '(variant-\d)', 'res://assets/trees/notice-board.png', (\d+), 0, 96, 128" % BOARD_ID, sql)}
+    capacity = {m.group(1): int(m.group(2)) for m in re.finditer(
+        r"'%s'::uuid, '(variant-\d)', 'content-capacity-(\d+)'" % BOARD_ID, sql)}
+    problems = []
+    if len(frame_of) != len(BOARD_NOTICES) or sorted(frame_of.values()) != list(range(len(BOARD_NOTICES))):
+        problems.append("the migration's notice-board states do not cover the %d frames once each: %s"
+                        % (len(BOARD_NOTICES), frame_of))
+    for state, frame in sorted(frame_of.items()):
+        if frame < len(BOARD_NOTICES) and BOARD_NOTICES[frame] != capacity.get(state, 0):
+            problems.append("%s draws frame %d with %d notices but its tag says %d"
+                            % (state, frame, BOARD_NOTICES[frame], capacity.get(state, 0)))
+    return problems
+
+
 def check(out_dir):
     """Each sheet is exactly what this script paints now, a row of frames of
-    its size, and no frame has art on its outer rows or columns."""
+    its size, and no frame has art on its outer rows or columns; and each
+    notice-board frame shows as many notices as the capacity tag of the
+    state the migration points at it (board_count_problems)."""
     ok = True
+    for problem in board_count_problems():
+        print(problem)
+        ok = False
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
         fresh = build()
