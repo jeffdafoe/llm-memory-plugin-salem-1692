@@ -20,6 +20,17 @@ var countedNounSections = []string{
 	"## Overdue — paid but not delivered",
 	"## Offers you have standing",
 	"## Recently settled offers",
+	// LLM-1038: the quote, counter, gift and labor sections, and the warrant
+	// lines (pay-resolved, quote, serve-handover) under "## Since your last turn".
+	"## Offers you've put out",
+	"## Offers made to you",
+	"## An offer you couldn't keep",
+	"## A counter to your offer",
+	"## Gifts offered to you",
+	"## Gifts you have offered",
+	"## Gifts you have given",
+	"## Work offers awaiting your decision",
+	"## Since your last turn",
 }
 
 // sectionBody is the text of the section that starts at header, up to the next
@@ -109,7 +120,7 @@ func TestOrderLinesNamePerRecipientNoun(t *testing.T) {
 	}
 	var b strings.Builder
 	renderOrdersReadyToHandOver(&b, fromMe, time.Now())
-	if want := "- #7: shovel for Jefferey"; !strings.Contains(b.String(), want) {
+	if want := "- #7: 1 shovel for Jefferey"; !strings.Contains(b.String(), want) {
 		t.Errorf("seller line missing %q:\n%s", want, b.String())
 	}
 	_, toMe := buildPendingOrderViews(snap, "jefferey")
@@ -148,6 +159,47 @@ func TestPayOfferPartialStockNamesBothCounts(t *testing.T) {
 	renderPayOffers(&b, offers, nameOf, shortfalls, nil, nil, nouns)
 	if want := "Jefferey offers 6 sheaves of wheat for 3 shovels to keep (offer id 41) — you hold only 1 shovel"; !strings.Contains(b.String(), want) {
 		t.Errorf("offer line missing %q:\n%s", want, b.String())
+	}
+}
+
+// TestFormatOfferPaymentCallersNameGoodsByNoun pins the LLM-1038 callers of the
+// shared payment formatter, including the two labor lines that render above any
+// section header (out of reach of the invariant's section scan): each names its
+// goods by count noun, "2 loaves of bread", never the key "2 bread".
+func TestFormatOfferPaymentCallersNameGoodsByNoun(t *testing.T) {
+	nouns := buildItemNouns(&sim.Snapshot{ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+		"bread":      {Name: "bread", DisplayLabelSingular: "loaf of bread", DisplayLabelPlural: "loaves of bread"},
+		"fried_meat": {Name: "fried_meat", DisplayLabelSingular: "fried meat", DisplayLabelPlural: "fried meat"},
+	}})
+	bread := []sim.ItemKindQty{{Kind: "bread", Qty: 2}}
+	nameOf := func(id sim.ActorID) string { return string(id) }
+	const want = "2 loaves of bread"
+	cases := map[string]func(*strings.Builder){
+		"labor offer": func(b *strings.Builder) {
+			renderLaborOffers(b, []LaborOfferView{{LaborID: 1, Worker: "lewis", RewardItems: bread, DurationMin: 60}}, 10, false, nameOf, nouns)
+		},
+		"worker for me": func(b *strings.Builder) {
+			renderWorkersForMe(b, []WorkerForMeView{{Worker: "lewis", RewardItems: bread, Until: time.Now().Add(time.Hour)}}, nameOf, time.Now(), nouns)
+		},
+		"pending labor offer out": func(b *strings.Builder) {
+			renderPendingLaborOfferOut(b, &PendingLaborOfferOutView{Employer: "hannah", Worker: "lewis", EmployerInitiated: true, RewardItems: bread, DurationMin: 60}, nameOf, nouns)
+		},
+		"gift offered to me": func(b *strings.Builder) {
+			renderGiftsForMe(b, []GiftOfferView{{LedgerID: 5, GiverName: "Hannah", Goods: bread}}, nouns)
+		},
+		"counter": func(b *strings.Builder) {
+			renderCountersAwaitingMyResponse(b, []CounterOfferView{{LedgerID: 6, SellerName: "Hannah", Item: "fried_meat", Qty: 2, CounterPayItems: bread}}, nouns)
+		},
+	}
+	for name, render := range cases {
+		var b strings.Builder
+		render(&b)
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("%s: missing %q:\n%s", name, want, b.String())
+		}
+		if strings.Contains(b.String(), "2 bread") || strings.Contains(b.String(), "fried_meat") {
+			t.Errorf("%s: names a kind key:\n%s", name, b.String())
+		}
 	}
 }
 

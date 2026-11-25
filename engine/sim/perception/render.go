@@ -277,8 +277,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderLaborEnRoute(&ephemeral, p.LaborEnRoute, nameOf)
 	// LLM-202: the employer-side mirror — workers currently on a job for this
 	// actor, so they don't re-hire or pay again for work already covered.
-	renderWorkersForMe(&ephemeral, p.WorkersForMe, nameOf, p.RenderedAt)
-	renderPendingLaborOfferOut(&ephemeral, p.PendingLaborOfferOut, nameOf)
+	renderWorkersForMe(&ephemeral, p.WorkersForMe, nameOf, p.RenderedAt, p.ItemNouns)
+	renderPendingLaborOfferOut(&ephemeral, p.PendingLaborOfferOut, nameOf, p.ItemNouns)
 	// Stable: the identity block renders to its own stream (LLM-501) — the
 	// adapter routes it to the provider-cached system zone, so the memoir
 	// stops re-billing cold inside the volatile per-tick body.
@@ -325,14 +325,14 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	}
 	// LLM-138: a gift offered TO this actor is the same "someone wants my answer"
 	// decision class as a pay offer, so it renders right alongside.
-	renderGiftsForMe(&ephemeral, p.GiftsForMe)
+	renderGiftsForMe(&ephemeral, p.GiftsForMe, p.ItemNouns)
 	// LLM-20: someone at the door of the subject's home, waiting to be let in.
 	renderLetInAffordance(&ephemeral, p.AtYourDoor, p.Surroundings.HuddleMembers)
 	renderDoorNotes(&ephemeral, p.DoorNotes, p.RenderedAt)
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
-	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, nameOf)
+	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, nameOf, p.ItemNouns)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork, p.SolicitableEmployers, nameOf)
 	// LLM-346: the hiring-side twin of the affordance above. Sits immediately after
 	// it so the two mints of the labor market read as one pair — offer your labor,
@@ -345,25 +345,25 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderSeekWorkPlaces(&ephemeral, p.SeekWorkPlaces)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderTradeValue(&ephemeral, p.TradeValue)
-	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe)
+	renderStandingQuotesFromMe(&ephemeral, p.StandingQuotesFromMe, p.ItemNouns)
 	// LLM-409: the resolution twin of the standing-offers cue — a lot the seller
 	// spent the goods out from under, just flipped to shortfall. Sits right after
 	// so "still standing" and "fell through" read as a pair.
-	renderUncoverableOffersFromMe(&ephemeral, p.UncoverableOffersFromMe)
+	renderUncoverableOffersFromMe(&ephemeral, p.UncoverableOffersFromMe, p.ItemNouns)
 	// LLM-551: the buyer-side twin of the standing-quotes cue above — offers
 	// posted in THIS subject's name that are still hers to take. Sits with the
 	// seller pair so the three read as one ledger of open quotes: what I've put
 	// out, what fell through, what has been put to me.
-	renderStandingQuotesToMe(&ephemeral, p.StandingQuotesToMe, buyRedundancy, quoteAbility(p))
+	renderStandingQuotesToMe(&ephemeral, p.StandingQuotesToMe, buyRedundancy, quoteAbility(p), p.ItemNouns)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe, p.ItemNouns)
 	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe, p.ItemNouns)
 	// LLM-138: the giver-side gift counterparts — own gifts still standing, then
 	// own gifts just settled.
-	renderGiftsFromMe(&ephemeral, p.GiftsFromMe)
-	renderSettledGiftsFromMe(&ephemeral, p.SettledGiftsFromMe)
-	renderCountersAwaitingMyResponse(&ephemeral, p.CountersAwaitingMyResponse)
+	renderGiftsFromMe(&ephemeral, p.GiftsFromMe, p.ItemNouns)
+	renderSettledGiftsFromMe(&ephemeral, p.SettledGiftsFromMe, p.ItemNouns)
+	renderCountersAwaitingMyResponse(&ephemeral, p.CountersAwaitingMyResponse, p.ItemNouns)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderProductionInputs(&ephemeral, p.ProductionInputs)
@@ -422,7 +422,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, quoteAbility(p), p.RenderedAt, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, quoteAbility(p), p.RenderedAt, cfg, &out, p.ItemNouns)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -3282,13 +3282,13 @@ func (o OrderView) qtyNoun() string {
 	return sanitizeInline(string(o.Item))
 }
 
-// qtyNounPhrase is the goods on an order-book line: the bare noun for one
-// ("shovel"), the count and noun for more ("3 shovels").
+// qtyNounPhrase is the goods on an order-book line with their count, also for
+// one ("1 sack of flour"): a bare container noun reads wrong (LLM-1038).
 func (o OrderView) qtyNounPhrase() string {
-	if o.Qty > 1 {
-		return fmt.Sprintf("%d %s", o.Qty, o.qtyNoun())
+	if o.Qty < 1 {
+		return o.qtyNoun()
 	}
-	return o.qtyNoun()
+	return fmt.Sprintf("%d %s", o.Qty, o.qtyNoun())
 }
 
 // awaitingMakeOrderPhrase is the body of an awaiting-make order line (LLM-1026):
@@ -3649,16 +3649,10 @@ func nonStandingCueWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 // formatOfferPayment renders a barter offer's payment terms for a
 // perception line: coins, goods, or both ("5 coins", "5 nails", "5 nails
 // and 3 coins", "5 nails, 2 hammers and 3 coins"). Item kinds are
-// sanitized inline (they reach the prompt). Returns "nothing" only for an
+// named by their catalog count noun through nouns (LLM-1029/1038; a nil table
+// names each good by its key). Returns "nothing" only for an
 // all-empty payment, a state the intake gates reject. ZBBS-HOME-393.
-func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
-	return formatOfferPaymentNouns(amount, payItems, nil)
-}
-
-// formatOfferPaymentNouns is formatOfferPayment with the goods named by their
-// catalog count nouns ("7 sheaves of wheat") rather than their kind keys
-// (LLM-1029). A nil table names every good by its key.
-func formatOfferPaymentNouns(amount int, payItems []sim.ItemKindQty, nouns itemNouns) string {
+func formatOfferPayment(amount int, payItems []sim.ItemKindQty, nouns itemNouns) string {
 	parts := make([]string, 0, len(payItems)+1)
 	for _, pi := range payItems {
 		name := nouns.count(pi.Kind, pi.Qty)
@@ -3837,7 +3831,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		// Payment may be coins, goods (barter), or both (ZBBS-HOME-393) —
 		// render whatever the buyer offered so the seller judges the goods
 		// the same way they judge coins.
-		payment := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
+		payment := formatOfferPayment(o.Amount, o.PayItems, nouns)
 		fmt.Fprintf(b, "%d. %s offers %s for %d %s %s (offer id %d)",
 			i+1, buyer, payment, o.Qty, item, disposition, o.LedgerID)
 		// LLM-357: a partial-payment commission — surface that only the deposit
@@ -3931,7 +3925,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 // affordability steer (they cannot see the keeper's purse), no returning-helper
 // recall (that memory is the employer's), and the pay is something they would
 // RECEIVE, not spend.
-func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, employerProduces bool, nameOf func(sim.ActorID) string) {
+func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, employerProduces bool, nameOf func(sim.ActorID) string, nouns itemNouns) {
 	if len(offers) == 0 {
 		return
 	}
@@ -3943,13 +3937,13 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 		// "1 porridge", "1 porridge and 2 coins").
 		if o.SubjectIsWorker() {
 			fmt.Fprintf(b, "%d. %s has asked you to do a job for them — %s for about %s of work (offer id %d)\n",
-				i+1, nameOf(o.Employer), formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
+				i+1, nameOf(o.Employer), formatOfferPayment(o.Reward, o.RewardItems, nouns), humanizeWorkMinutes(o.DurationMin), o.LaborID)
 			anyAffordable = true // no coin gate on the worker's side — the pay comes to them
 			continue
 		}
 		worker := nameOf(o.Worker)
 		fmt.Fprintf(b, "%d. %s offers to do a job for you for %s — about %s of work (offer id %d)\n",
-			i+1, worker, formatOfferPayment(o.Reward, o.RewardItems), humanizeWorkMinutes(o.DurationMin), o.LaborID)
+			i+1, worker, formatOfferPayment(o.Reward, o.RewardItems, nouns), humanizeWorkMinutes(o.DurationMin), o.LaborID)
 		// LLM-228: the returning-helper recall. When this worker completed a paid
 		// job for the employer within the memory window, name the past help so the
 		// re-hire choice is informed experientially — not by an engine hire-value
@@ -3982,10 +3976,10 @@ func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoin
 			switch {
 			case shortOnCoins && len(missing) > 0:
 				fmt.Fprintf(b, "You only have %s and do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), telling them in say that you cannot pay what they ask.\n",
-					coinsPhrase(employerCoins), formatOfferPayment(0, missing), o.LaborID)
+					coinsPhrase(employerCoins), formatOfferPayment(0, missing, nouns), o.LaborID)
 			case len(missing) > 0:
 				fmt.Fprintf(b, "You do not hold the %s they ask to be paid in, so you cannot pay for this — call decline_work (offer id %d), telling them in say that you cannot pay what they ask.\n",
-					formatOfferPayment(0, missing), o.LaborID)
+					formatOfferPayment(0, missing, nouns), o.LaborID)
 			default:
 				fmt.Fprintf(b, "You only have %s, so you cannot pay for this — call decline_work (offer id %d), telling them in say that you have not enough coin to take them on.\n",
 					coinsPhrase(employerCoins), o.LaborID)
@@ -4098,14 +4092,14 @@ func renderLaborEnRoute(b *strings.Builder, enRoute *LaborEnRouteView, nameOf fu
 // Patience mid-way through Silence's contract). A standing situational line in the
 // self-state block; one line per worker (an employer can have several), then one
 // shared steer. Content-gated on a non-empty WorkersForMe.
-func renderWorkersForMe(b *strings.Builder, workers []WorkerForMeView, nameOf func(sim.ActorID) string, renderedAt time.Time) {
+func renderWorkersForMe(b *strings.Builder, workers []WorkerForMeView, nameOf func(sim.ActorID) string, renderedAt time.Time, nouns itemNouns) {
 	if len(workers) == 0 {
 		return
 	}
 	for _, wkr := range workers {
 		worker := nameOf(wkr.Worker)
 		// The owed pay may be coins, goods, or both (LLM-225).
-		payment := formatOfferPayment(wkr.Reward, wkr.RewardItems)
+		payment := formatOfferPayment(wkr.Reward, wkr.RewardItems, nouns)
 		mins := minutesUntil(wkr.Until, renderedAt)
 		if mins <= 0 {
 			fmt.Fprintf(b, "%s is finishing a job for you — almost done; %s owed as they finish.\n",
@@ -4132,12 +4126,12 @@ func renderWorkersForMe(b *strings.Builder, workers []WorkerForMeView, nameOf fu
 // the employer who offered work waits on the worker. Without the second one a
 // keeper who has just asked someone to lend a hand has no anchor at all, and the
 // quiet backstop pushes her to ask again.
-func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutView, nameOf func(sim.ActorID) string) {
+func renderPendingLaborOfferOut(b *strings.Builder, offer *PendingLaborOfferOutView, nameOf func(sim.ActorID) string, nouns itemNouns) {
 	if offer == nil {
 		return
 	}
 	// The pay may be coins, goods, or both (LLM-225).
-	payment := formatOfferPayment(offer.Reward, offer.RewardItems)
+	payment := formatOfferPayment(offer.Reward, offer.RewardItems, nouns)
 	duration := humanizeWorkMinutes(offer.DurationMin)
 	if offer.SubjectIsEmployer() {
 		fmt.Fprintf(b, "You've asked %s to work for you for %s (about %s) — your offer stands and it is their move now. There's nothing more to do on it; wait for their answer — say a brief word if you like, or call done().\n",
@@ -4321,7 +4315,7 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView, no
 		if item == "" {
 			item = "item"
 		}
-		payment := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
+		payment := formatOfferPayment(o.Amount, o.PayItems, nouns)
 		fmt.Fprintf(b, "%d. You have asked %s for %d %s, %s offered — they have yet to give their answer (offer id %d).\n",
 			i+1, seller, o.Qty, item, payment, o.LedgerID)
 	}
@@ -4347,17 +4341,17 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView, no
 // build time; item kinds sanitized inline. Price reuses formatOfferPayment (coins
 // only — a scene-quote names a coin price; any barter leg rides the buyer's
 // pay_with_item) for the shape the other offer sections use.
-func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView) {
+func renderStandingQuotesFromMe(b *strings.Builder, quotes []StandingQuoteView, nouns itemNouns) {
 	if len(quotes) == 0 {
 		return
 	}
 	b.WriteString("## Offers you've put out\n")
 	for i, q := range quotes {
-		items := formatQuoteLines(q.Lines)
+		items := formatQuoteLines(q.Lines, nouns)
 		if items == "" {
 			items = "item"
 		}
-		price := formatOfferPayment(q.Amount, nil)
+		price := formatOfferPayment(q.Amount, nil, nouns)
 		if q.BuyerName != "" {
 			fmt.Fprintf(b, "%d. You have offered %s %s for %s — they have yet to answer.\n",
 				i+1, sanitizeInline(q.BuyerName), items, price)
@@ -4400,13 +4394,14 @@ func renderStandingQuotesToMe(
 	quotes []StandingQuoteToMeView,
 	buyRedundancy func(sim.ItemKind) (produced, atCap bool),
 	ability quoteTakeAbility,
+	nouns itemNouns,
 ) {
 	if len(quotes) == 0 {
 		return
 	}
 	b.WriteString("## Offers made to you\n")
 	for i, q := range quotes {
-		items := formatQuoteLines(q.Lines)
+		items := formatQuoteLines(q.Lines, nouns)
 		if items == "" {
 			items = "item"
 		}
@@ -4440,13 +4435,13 @@ func renderStandingQuotesToMe(
 // plain beat rather than a tiered felt escalation. Item kinds are sanitized
 // inline. Uncapped — bounded by the seller's own recent lots and the short
 // resolution window.
-func renderUncoverableOffersFromMe(b *strings.Builder, offers []UncoverableOfferView) {
+func renderUncoverableOffersFromMe(b *strings.Builder, offers []UncoverableOfferView, nouns itemNouns) {
 	if len(offers) == 0 {
 		return
 	}
 	b.WriteString("## An offer you couldn't keep\n")
 	for i, o := range offers {
-		items := formatQuoteLines(o.Lines)
+		items := formatQuoteLines(o.Lines, nouns)
 		if items == "" {
 			items = "what you offered"
 		}
@@ -4488,7 +4483,7 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 			item = "item"
 		}
 		if o.Accepted {
-			payment := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
+			payment := formatOfferPayment(o.Amount, o.PayItems, nouns)
 			if o.DeliveryPending {
 				// LLM-512: the accept minted an order the seller hasn't delivered
 				// yet — the goods are still in the seller's hands, not the buyer's
@@ -4525,7 +4520,7 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 		// the same bundle. Where the engine knows the seller is short the bought
 		// kind, append it as the informed "why" the deal closed (the buyer's
 		// mirror of the seller-side "you hold only N"); only when it bites.
-		offered := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
+		offered := formatOfferPayment(o.Amount, o.PayItems, nouns)
 		reason := "it's closed, so stop waiting on it"
 		if o.SellerStocks && o.Qty > o.SellerStock {
 			// LLM-303: at zero held, name it "they hold no nails" (plural noun)
@@ -4556,7 +4551,7 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 // formatOfferPayment so the buyer reads the same "5 nails and 3 coins" shape the
 // seller proposed. Item kinds sanitized inline. Uncapped — bounded by the buyer's
 // own recent counters and the short response window.
-func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOfferView) {
+func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOfferView, nouns itemNouns) {
 	if len(counters) == 0 {
 		return
 	}
@@ -4566,11 +4561,11 @@ func renderCountersAwaitingMyResponse(b *strings.Builder, counters []CounterOffe
 		if seller == "" {
 			seller = "someone"
 		}
-		item := sanitizeInline(string(c.Item))
+		item := nouns.count(c.Item, c.Qty)
 		if item == "" {
 			item = "item"
 		}
-		terms := formatOfferPayment(c.CounterAmount, c.CounterPayItems)
+		terms := formatOfferPayment(c.CounterAmount, c.CounterPayItems, nouns)
 		fmt.Fprintf(b, "%d. %s countered your offer for %d %s — they now want %s (offer id %d).\n",
 			i+1, seller, c.Qty, item, terms, c.LedgerID)
 	}
@@ -4604,7 +4599,7 @@ func isSectionSurfacedKind(k sim.WarrantKind) bool {
 	}
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, ability quoteTakeAbility, renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, ability quoteTakeAbility, renderedAt time.Time, cfg RenderConfig, out *RenderedPrompt, nouns itemNouns) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
 	// a nil here must degrade to "no eat-here tag", not panic (code_review).
@@ -4666,7 +4661,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, ability, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, placeKeeperOf, eatHereKind, buyRedundancy, forageShown, ability, cfg.MaxBytesPerWarrant, nouns)
 		// Interval-stamp each signal against the render clock (LLM-316), the
 		// LLM-217 treatment the conversation ring and self-action trail already
 		// get: a carried-forward or shelve-delayed warrant renders honestly as
@@ -4706,7 +4701,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, ability quoteTakeAbility, maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, placeKeeperOf func(string) string, eatHereKind func(sim.ItemKind) bool, buyRedundancy func(sim.ItemKind) (produced, atCap bool), forageShown func(sim.ForageGround, sim.ItemKind) bool, ability quoteTakeAbility, maxTextBytes int, nouns itemNouns) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -4802,11 +4797,11 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		// take and steer them off it. A mixed bundle (≥1 genuinely wanted good)
 		// renders with its normal take.
 		redundancy := buyQuoteRedundancyReason(r.Lines, buyRedundancy)
-		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere, redundancy, ability), false
+		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHere, redundancy, ability, nouns), false
 	case sim.PayResolvedWarrantReason:
-		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
+		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes, nouns), false
 	case sim.ServeHandoverWarrantReason:
-		return renderServeHandoverWarrantLine(n, nameOf(r.Buyer), r), false
+		return renderServeHandoverWarrantLine(n, nameOf(r.Buyer), r, nouns), false
 	case sim.ProductionChoiceWarrantReason:
 		// LLM-116/LLM-319: nothing is in the works at the actor's post — the
 		// "## Your trade" cue carries the scene + the produce tool; this line is
@@ -5120,12 +5115,12 @@ func buyQuoteRedundancyReason(lines []sim.QuoteLine, redundant func(sim.ItemKind
 // steer: "produced" — the buyer makes these wares itself; "atcap" — it already
 // holds all of these it can carry. Either way there is no reason to buy, so the
 // quote_id take is withheld and the line tells the buyer to decline.
-func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool, redundancy string, ability quoteTakeAbility) string {
+func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool, redundancy string, ability quoteTakeAbility, nouns itemNouns) string {
 	unit := "coins"
 	if r.Amount == 1 {
 		unit = "coin"
 	}
-	items := formatQuoteLines(r.Lines)
+	items := formatQuoteLines(r.Lines, nouns)
 	// The eat-here disposition fact (ZBBS-WORK-405): goods of this class
 	// can't be carried away, so say so up front rather than letting the
 	// buyer plan a take-home the clamp will quietly rewrite.
@@ -5231,18 +5226,14 @@ func quoteTakeInstruction(quoteID sim.QuoteID, lines []sim.QuoteLine, amount int
 
 // formatQuoteLines renders a quote's item lines as a readable phrase:
 // "2 blueberries", or for a bundle "2 blueberries and 2 raspberries", or
-// "2 blueberries, 2 raspberries, and 3 bread" (LLM-101). Qty 1 drops the
-// leading count, matching the prior single-item rendering. Items are
-// sanitized inline (catalog keys, but defensive against odd labels).
-func formatQuoteLines(lines []sim.QuoteLine) string {
+// "2 blueberries, 2 raspberries, and 3 bread" (LLM-101). Qty 1 keeps its count
+// ("1 flask of water"): a bare container noun reads wrong. Goods are named by
+// their catalog count noun through nouns (LLM-1038; a nil table names each by
+// its key), sanitized inline.
+func formatQuoteLines(lines []sim.QuoteLine, nouns itemNouns) string {
 	parts := make([]string, 0, len(lines))
 	for _, ln := range lines {
-		item := sanitizeInline(string(ln.ItemKind))
-		if ln.Qty > 1 {
-			parts = append(parts, fmt.Sprintf("%d %s", ln.Qty, item))
-		} else {
-			parts = append(parts, item)
-		}
+		parts = append(parts, countedGoods(ln.ItemKind, ln.Qty, nouns))
 	}
 	switch len(parts) {
 	case 0:
@@ -5258,24 +5249,29 @@ func formatQuoteLines(lines []sim.QuoteLine) string {
 
 // warrantGoodsPhrase names the goods a pay warrant line is about: a bundle's
 // lines when the warrant carries them (LLM-867 — a bundle's ItemKind is empty, so
-// the line read "for ."), else the single item with its count above one.
-func warrantGoodsPhrase(item sim.ItemKind, qty int, lines []sim.QuoteLine) string {
+// the line read "for ."), else the single item with its count.
+func warrantGoodsPhrase(item sim.ItemKind, qty int, lines []sim.QuoteLine, nouns itemNouns) string {
 	if len(lines) > 0 {
-		return formatQuoteLines(lines)
+		return formatQuoteLines(lines, nouns)
 	}
-	name := sanitizeInline(string(item))
-	if qty > 1 {
-		return fmt.Sprintf("%d %s", qty, name)
+	return countedGoods(item, qty, nouns)
+}
+
+// countedGoods is "<qty> <noun>" ("1 flask of water", "3 shovels"), or the bare
+// noun for a malformed qty below one, so no line ever reads "0 shovels".
+func countedGoods(item sim.ItemKind, qty int, nouns itemNouns) string {
+	if qty < 1 {
+		return nouns.count(item, 1)
 	}
-	return name
+	return nouns.counted(item, qty)
 }
 
 // renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved
 // their pay-with-item offer. Only the buyer-meaningful terminal states get a
 // bespoke line; the rest collapse to a neutral "fell through" so the buyer
 // stops waiting without the engine narrating internal ledger states.
-func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrantReason, maxTextBytes int) string {
-	qty := warrantGoodsPhrase(r.ItemKind, r.Qty, r.Lines)
+func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrantReason, maxTextBytes int, nouns itemNouns) string {
+	qty := warrantGoodsPhrase(r.ItemKind, r.Qty, r.Lines, nouns)
 	switch r.TerminalState {
 	case sim.PayTerminalStateAccepted:
 		return fmt.Sprintf("%d. %s accepted your offer of %d for %s.\n", n, seller, r.Amount, qty)
@@ -5283,7 +5279,7 @@ func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrant
 		return fmt.Sprintf("%d. %s declined your offer for %s.\n", n, seller, qty)
 	case sim.PayTerminalStateCountered:
 		// Counter terms may be coins, goods (barter), or both (ZBBS-HOME-393).
-		return fmt.Sprintf("%d. %s countered: %s for %s.\n", n, seller, formatOfferPayment(r.CounterAmount, r.CounterPayItems), qty)
+		return fmt.Sprintf("%d. %s countered: %s for %s.\n", n, seller, formatOfferPayment(r.CounterAmount, r.CounterPayItems, nouns), qty)
 	case sim.PayTerminalStateSupersededByLot:
 		// LLM-863: the seller answered with a lot that carries these goods; the
 		// lot's own cue carries its quote id, so this only says the old offer is
@@ -5308,7 +5304,7 @@ func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrant
 // word" is that steer, kept to a greeting beat — not a re-pitch (a greeting is
 // not a sale). The model voices the line in character; the engine doesn't
 // supply the words. buyer is pre-resolved by the caller.
-func renderServeHandoverWarrantLine(n int, buyer string, r sim.ServeHandoverWarrantReason) string {
+func renderServeHandoverWarrantLine(n int, buyer string, r sim.ServeHandoverWarrantReason, nouns itemNouns) string {
 	if buyer == "" {
 		buyer = "someone"
 	}
@@ -5316,7 +5312,7 @@ func renderServeHandoverWarrantLine(n int, buyer string, r sim.ServeHandoverWarr
 	if r.Amount == 1 {
 		unit = "coin"
 	}
-	qty := warrantGoodsPhrase(r.ItemKind, r.Qty, r.Lines)
+	qty := warrantGoodsPhrase(r.ItemKind, r.Qty, r.Lines, nouns)
 	// ConsumeNow is the buyer's disposition term (ZBBS-WORK-402): when they're
 	// eating on the spot, say so, so the keeper's line fits a sit-down serve
 	// rather than a counter handoff.

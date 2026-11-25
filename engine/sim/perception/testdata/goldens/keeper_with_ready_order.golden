@@ -20,7 +20,7 @@ You're at your workplace.
 It is your working hours and you are at your post — stay and look after your work; you close at 10 at night.
 
 ## Orders to deliver
-- #1: nights_stay for Jeff — expires in 8 minutes
+- #1: 1 nights_stay for Jeff — expires in 8 minutes
 To hand one of these over, call deliver_order with the order's number as order_id (the recipient must be here with you). The handover itself is silent, so say a word to them as you pass it across.
 
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

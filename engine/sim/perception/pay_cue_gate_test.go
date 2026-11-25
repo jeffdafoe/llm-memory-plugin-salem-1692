@@ -158,7 +158,7 @@ func TestPayWithheldNeverNamesTheCall(t *testing.T) {
 		}
 	}
 	var b strings.Builder
-	renderStandingQuotesToMe(&b, []StandingQuoteToMeView{{QuoteID: 7, SellerName: "Hannah Boggs", Lines: lines, Amount: 1}}, nil, quoteTakeAbility{pay: PayWithheld})
+	renderStandingQuotesToMe(&b, []StandingQuoteToMeView{{QuoteID: 7, SellerName: "Hannah Boggs", Lines: lines, Amount: 1}}, nil, quoteTakeAbility{pay: PayWithheld}, nil)
 	if s := b.String(); strings.Contains(s, "call pay_with_item") || !strings.Contains(s, "quote_id 7") {
 		t.Errorf("standing quote with pay withheld:\n%s", s)
 	}
