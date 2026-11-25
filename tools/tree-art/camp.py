@@ -511,12 +511,15 @@ SHEETS = {
     "camp-gear": lambda: row([paint_bedroll(False), paint_bedroll(True), paint_spit(True), paint_spit(False),
                               paint_tripod()]),
 }
-FRAMES = {"tent": (128, 128), "camp-fire": (64, 64), "camp-small": (32, 32), "camp-gear": (64, 64)}
+# Frame size and the exact number of frames each sheet holds (the migration's
+# rects index into these).
+FRAMES = {"tent": (128, 128, 3), "camp-fire": (64, 64, 10), "camp-small": (32, 32, 3), "camp-gear": (64, 64, 5)}
 
 
 def check(out_dir):
-    """Each sheet is exactly what this script paints now, a row of frames of
-    its size, and no frame has art on its outer rows or columns."""
+    """Each sheet is exactly what this script paints now, exactly its row of
+    frames (size and count), and no frame has art on its outer rows or
+    columns."""
     ok = True
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
@@ -525,9 +528,9 @@ def check(out_dir):
             print("%s: the saved sheet differs from a fresh paint (rerun camp.py)" % name)
             ok = False
             continue
-        fw, fh = FRAMES[name]
-        if sheet.height != fh or sheet.width % fw:
-            print("%s: sheet %dx%d is not a row of %dx%d frames" % (name, sheet.width, sheet.height, fw, fh))
+        fw, fh, n = FRAMES[name]
+        if sheet.size != (fw * n, fh):
+            print("%s: sheet %dx%d is not a row of %d frames of %dx%d" % (name, sheet.width, sheet.height, n, fw, fh))
             ok = False
             continue
         for i in range(sheet.width // fw):

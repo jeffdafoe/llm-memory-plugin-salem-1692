@@ -12,7 +12,7 @@
 
 BEGIN;
 
-LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light, village_object IN SHARE ROW EXCLUSIVE MODE;
 
 DO $$
 DECLARE
@@ -69,6 +69,34 @@ BEGIN
          0.15::double precision, 180)) v
      WHERE EXISTS (SELECT 1 FROM llm968i_down_asset x WHERE x.asset_id = v.column1);
 
+    -- Refuse before writing anything if widening a placed tent back to the
+    -- old footprint (1,2,3,0) would cover a tile that is not clear: the strip
+    -- the old footprint adds to the new one (1,1,2,0) — the column to the
+    -- right and the row on top — under another object's footprint, or on
+    -- water. A camp pitched after the up was ground-checked only on the new
+    -- footprint, and any camp may have gained a neighbour there since.
+    -- Tiles are the engine's: floor(world / 32) plus the pad (60, 112) on a
+    -- 200-wide terrain grid; terrain 5 and 6 are water.
+    SELECT count(*) INTO bad
+      FROM village_object t
+      JOIN asset ta ON ta.id = t.asset_id
+     CROSS JOIN LATERAL (
+           SELECT floor(t.x / 32)::int + dx AS tx, floor(t.y / 32)::int + dy AS ty
+             FROM generate_series(-1, 2) dx CROSS JOIN generate_series(-3, 0) dy
+            WHERE NOT (dx BETWEEN -1 AND 1 AND dy BETWEEN -2 AND 0)) strip
+     WHERE ta.id IN ('019e5f00-c401-7a10-9e00-000000798001', '18118703-3aa8-4f28-8ffd-3d3c9f0804ed',
+                     'a6f9d413-385f-43e6-9d19-b91f49bc343c')
+       AND t.attached_to IS NULL
+       AND (EXISTS (SELECT 1 FROM village_object o JOIN asset oa ON oa.id = o.asset_id
+                     WHERE o.id <> t.id AND o.attached_to IS NULL
+                       AND strip.tx BETWEEN floor(o.x / 32)::int - oa.footprint_left AND floor(o.x / 32)::int + oa.footprint_right
+                       AND strip.ty BETWEEN floor(o.y / 32)::int - oa.footprint_top AND floor(o.y / 32)::int + oa.footprint_bottom)
+            OR EXISTS (SELECT 1 FROM village_terrain vt
+                        WHERE vt.id = 1 AND get_byte(vt.data, (strip.ty + 112) * 200 + (strip.tx + 60)) IN (5, 6)));
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-968i down: % tile(s) the old tent footprint would take back are not clear; strike or move those tents first', bad;
+    END IF;
+
     UPDATE asset a SET render_scale = 2 FROM llm968i_down_asset v WHERE a.id = v.asset_id;
     UPDATE asset a
        SET footprint_left = 1, footprint_right = 2, footprint_top = 3, footprint_bottom = 0,
@@ -82,8 +110,11 @@ BEGIN
            frame_count = v.frame_count, frame_rate = v.frame_rate
       FROM llm968i_down_state v
      WHERE s.asset_id = v.asset_id AND s.state = v.state;
+    -- Only the two lights the up wrote; any other light on the Camp Fire
+    -- fails the check below.
     DELETE FROM asset_state_light l USING asset_state s
-     WHERE l.state_id = s.id AND s.asset_id = '019e5f00-c401-7a10-9e00-000000798002';
+     WHERE l.state_id = s.id AND s.asset_id = '019e5f00-c401-7a10-9e00-000000798002'
+       AND s.state IN ('burning', 'dying');
 
     SELECT count(*) INTO bad FROM (
         (SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate FROM llm968i_down_state
