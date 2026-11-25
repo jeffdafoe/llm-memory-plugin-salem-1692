@@ -306,11 +306,23 @@ def board_count_problems(path=MIGRATION):
     frame with the wrong count under a state shows here."""
     import re
     sql = open(path, encoding="utf-8").read()
-    frame_of = {m.group(1): int(m.group(2)) // 96 for m in re.finditer(
-        r"'%s', '(variant-\d)', 'res://assets/trees/notice-board.png', (\d+), 0, 96, 128" % BOARD_ID, sql)}
-    capacity = {m.group(1): int(m.group(2)) for m in re.finditer(
-        r"'%s'::uuid, '(variant-\d)', 'content-capacity-(\d+)'" % BOARD_ID, sql)}
+    fw = FRAMES["notice-board"][0]
     problems = []
+    rows = re.findall(r"'%s', '(variant-\d)', 'res://assets/trees/notice-board.png', (\d+), 0, 96, 128" % BOARD_ID, sql)
+    tags = re.findall(r"'%s'::uuid, '(variant-\d)', 'content-capacity-(\d+)'" % BOARD_ID, sql)
+    # One rect per state and at most one capacity tag per state: a duplicate
+    # would otherwise be silently overwritten below.
+    for kind, keys in (("rect", [r[0] for r in rows]), ("capacity tag", [t[0] for t in tags])):
+        dups = sorted({k for k in keys if keys.count(k) > 1})
+        if dups:
+            problems.append("more than one %s for %s" % (kind, ", ".join(dups)))
+    frame_of = {}
+    for state, src_x in rows:
+        frame, off = divmod(int(src_x), fw)
+        if off:
+            problems.append("%s src_x %s is not on a frame boundary (frames are %d wide)" % (state, src_x, fw))
+        frame_of[state] = frame
+    capacity = {state: int(n) for state, n in tags}
     if len(frame_of) != len(BOARD_NOTICES) or sorted(frame_of.values()) != list(range(len(BOARD_NOTICES))):
         problems.append("the migration's notice-board states do not cover the %d frames once each: %s"
                         % (len(BOARD_NOTICES), frame_of))
