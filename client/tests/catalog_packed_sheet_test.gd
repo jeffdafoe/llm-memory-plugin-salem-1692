@@ -147,6 +147,14 @@ const CROPS := {
     "res://assets/trees/wheat.png": Vector2i(192, 64),
     "res://assets/trees/carrot.png": Vector2i(192, 64),
 }
+# migrations/LLM-968d-painted-fences_up.sql (tools/tree-art/fences.py): the
+# ranch fence's 23 cells of 32x32 in one row, the ranch gate's one 128x96
+# frame, the stone gate's closed and open 128x128 frames.
+const FENCES := {
+    "res://assets/trees/ranch-fence.png": Vector2i(736, 32),
+    "res://assets/trees/ranch-fence-gate.png": Vector2i(128, 96),
+    "res://assets/trees/stone-gate.png": Vector2i(256, 128),
+}
 
 var _failures := 0
 var _checks := 0
@@ -349,6 +357,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %s" % [path, CROPS[path]],
                 Vector2i(texture.get_width(), texture.get_height()) == CROPS[path])
+    for path in FENCES:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, FENCES[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == FENCES[path])
     _done()
 
 
