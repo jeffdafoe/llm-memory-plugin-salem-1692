@@ -8,8 +8,11 @@ pack art.
 
 Writes client/assets/trees/<piece>.png. Each sheet has one row per look, top
 to bottom: summer, autumn, winter, winter-snowy; a row is the look's frames,
-left to right, at the piece's frame size (16x16, the grasses 16x32). The
-grasses and the fern rustle: a build.FRAMES-long loop at build.FPS with the
+left to right, at the piece's frame size: 32x32, and 32x64 for Tall, Medium,
+Thick and Low Grass. That is twice the pack art's frame, drawn at
+render_scale 1 instead of 2 (density 2, see Piece): the same size in the
+world, with twice the detail. The Piece table gives frames in pack-art
+pixels (16x16, 16x32). The grasses and the fern rustle: a build.FRAMES-long loop at build.FPS with the
 trees' light-wind puff at its end. Everything else lies still and has one
 frame. Rerunning writes the same files. After a change, run
 `godot_console --headless --path client --import` so Godot writes the

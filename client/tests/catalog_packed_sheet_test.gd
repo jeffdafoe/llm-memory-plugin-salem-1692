@@ -111,6 +111,29 @@ const FISH := {
     "res://assets/trees/perch.png": [48, 48],
     "res://assets/trees/brook-trout.png": [48, 48],
 }
+# migrations/LLM-967l-ground-cover_up.sql (tools/tree-art/plants.py): four
+# looks (summer, autumn, winter, winter-snowy) at twice the pack art's size,
+# drawn at render_scale 1; the grasses and the fern rustle (36 frames), the
+# rest lie still. Sheet path -> [frame width, frame height, frames].
+const GROUND_COVER := {
+    "res://assets/trees/tall-grass.png": [32, 64, 36],
+    "res://assets/trees/medium-grass.png": [32, 64, 36],
+    "res://assets/trees/thick-grass.png": [32, 64, 36],
+    "res://assets/trees/low-grass.png": [32, 64, 36],
+    "res://assets/trees/light-grass.png": [32, 32, 36],
+    "res://assets/trees/fern.png": [32, 32, 36],
+    "res://assets/trees/clover.png": [32, 32, 1],
+    "res://assets/trees/brown-mushroom.png": [32, 32, 1],
+    "res://assets/trees/grey-mushroom.png": [32, 32, 1],
+    "res://assets/trees/yellow-mushroom.png": [32, 32, 1],
+    "res://assets/trees/white-mushroom.png": [32, 32, 1],
+    "res://assets/trees/layered-mushroom.png": [32, 32, 1],
+    "res://assets/trees/pine-cone.png": [32, 32, 1],
+    "res://assets/trees/leaf.png": [32, 32, 1],
+    "res://assets/trees/twig.png": [32, 32, 1],
+    "res://assets/trees/small-branch.png": [32, 32, 1],
+    "res://assets/trees/seeds.png": [32, 32, 1],
+}
 # migrations/LLM-967f-fallen-trees_up.sql (tools/tree-art/fallen.py): the
 # storm damage's sheets, each the size its last rect ends at.
 const FALLEN := {
@@ -301,6 +324,13 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is one row of %d frames of %dx%d" % [path, size[1], size[0], size[0]],
                 texture.get_width() == size[0] * size[1] and texture.get_height() == size[0])
+    for path in GROUND_COVER:
+        var texture := load(path) as Texture2D
+        var size: Array = GROUND_COVER[path]
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is 4 rows of %d frames of %dx%d" % [path, size[2], size[0], size[1]],
+                texture.get_width() == size[2] * size[0] and texture.get_height() == 4 * size[1])
     for path in FALLEN:
         var texture := load(path) as Texture2D
         _check("%s is packed" % path, texture != null)
