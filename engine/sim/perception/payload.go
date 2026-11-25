@@ -915,6 +915,12 @@ type Payload struct {
 	// absent, because render has no phrase for them. Built in buildPayOfferWorth
 	// from the ledger + the catalog, keeping render catalog-free.
 	PayOfferWorth map[sim.LedgerID]offerWorth
+
+	// ItemNouns carries the catalog's counting nouns, so the offer and order
+	// lines name "3 shovels" rather than the raw key "3 shovel" (LLM-1029).
+	// Built in buildItemNouns; nil on a hand-built payload, where every kind
+	// renders as its key.
+	ItemNouns itemNouns
 }
 
 // StockShortfall is the seller-side shortfall on a pending pay offer: how many of
@@ -970,6 +976,9 @@ type OrderView struct {
 	Amount   int
 	TotalQty int
 	Noun     string
+	// QtyNoun is the count-aware noun for the per-recipient Qty, which the other
+	// order-book lines name ("2 shovels for …", "owes you 1 shovel") (LLM-1029).
+	QtyNoun string
 	// OnHand is, for an awaiting-make order, how many of its goods the seller
 	// holds free of every OTHER Ready order (0..TotalQty-1). The line then says
 	// how many are on hand and how many are still to make, matching the accept

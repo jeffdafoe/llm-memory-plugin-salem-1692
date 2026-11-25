@@ -195,7 +195,7 @@ func TestRenderPayOffers_CommissionPartlyStocked(t *testing.T) {
 	renderPayOffers(&b, []sim.PayOfferWarrantReason{offer},
 		func(sim.ActorID) string { return "Elizabeth Ellis" },
 		map[sim.LedgerID]StockShortfall{9: {Held: 1, Noun: "shovels", Owed: true, OwedQty: 3, OwedNoun: "shovels"}},
-		nil, nil)
+		nil, nil, nil)
 	want := "— you hold only 1 shovel: accept, and you take payment now and owe Elizabeth Ellis 3 shovels — all of them, handed over together once you have them"
 	if !strings.Contains(b.String(), want) {
 		t.Errorf("offer line missing %q:\n%s", want, b.String())
@@ -219,7 +219,7 @@ func TestRenderPayOffers_ReservedStock(t *testing.T) {
 		var b strings.Builder
 		renderPayOffers(&b, []sim.PayOfferWarrantReason{offer},
 			func(sim.ActorID) string { return "Elizabeth Ellis" },
-			map[sim.LedgerID]StockShortfall{9: tc.sf}, nil, nil)
+			map[sim.LedgerID]StockShortfall{9: tc.sf}, nil, nil, nil)
 		if !strings.Contains(b.String(), tc.want) {
 			t.Errorf("offer line missing %q:\n%s", tc.want, b.String())
 		}
@@ -290,7 +290,7 @@ func TestRenderPayOffers_CommissionTermsAndRecipients(t *testing.T) {
 		var b strings.Builder
 		renderPayOffers(&b, []sim.PayOfferWarrantReason{tc.offer},
 			func(sim.ActorID) string { return "Elizabeth Ellis" },
-			map[sim.LedgerID]StockShortfall{9: sf}, nil, nil)
+			map[sim.LedgerID]StockShortfall{9: sf}, nil, nil, nil)
 		if !strings.Contains(b.String(), tc.want) {
 			t.Errorf("%s: offer line missing %q:\n%s", tc.name, tc.want, b.String())
 		}

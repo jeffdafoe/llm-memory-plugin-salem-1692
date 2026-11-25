@@ -141,7 +141,7 @@ func TestRenderRecentlyResolvedOffersFromMe_DeliveryPending(t *testing.T) {
 	var b strings.Builder
 	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
 		{LedgerID: 300, SellerName: "Ezekiel Crane", Item: "shovel", Qty: 1, Amount: 8, Accepted: true, DeliveryPending: true},
-	})
+	}, nil)
 	out := b.String()
 	for _, want := range []string{
 		"Ezekiel Crane accepted your offer", "it's not in your pack yet",
@@ -161,7 +161,7 @@ func TestRenderRecentlyResolvedOffersFromMe_DeliveryPending(t *testing.T) {
 	b.Reset()
 	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
 		{LedgerID: 300, SellerName: "Ezekiel Crane", Item: "shovel", Qty: 1, Amount: 8, Accepted: true, DeliveryPending: false},
-	})
+	}, nil)
 	if out := b.String(); !strings.Contains(out, "it's in your pack now") {
 		t.Errorf("delivered take-home must still read 'in your pack now'; got:\n%s", out)
 	}
@@ -184,7 +184,7 @@ func TestRenderRecentlyResolvedOffersFromMe_AcceptedAndClosed(t *testing.T) {
 	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
 		{LedgerID: 270, SellerName: "Josiah Thorne", Item: "water", Qty: 1, Amount: 10, Accepted: true, ConsumeNow: true},
 		{LedgerID: 271, SellerName: "the storekeeper", Item: "bread", Qty: 2, Amount: 4, Accepted: false},
-	})
+	}, nil)
 	out := b.String()
 	if !strings.Contains(out, "## Recently settled offers") {
 		t.Fatalf("missing section header; got:\n%s", out)
@@ -214,7 +214,7 @@ func TestRenderRecentlyResolvedOffersFromMe_ConsumeRemainderSplit(t *testing.T) 
 	var b strings.Builder
 	renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{
 		{LedgerID: 449, SellerName: "Prudence Ward", Item: "blueberries", Qty: 5, Amount: 10, Accepted: true, ConsumeNow: true, KeptUnits: 4},
-	})
+	}, nil)
 	out := b.String()
 	if !strings.Contains(out, "you ate 1 on the spot and kept the other 4") {
 		t.Errorf("missing reconciling split clause; got:\n%s", out)
@@ -241,7 +241,7 @@ func TestRenderRecentlyResolvedOffersFromMe_ConsumeRemainderFallback(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var b strings.Builder
-			renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{tc.view})
+			renderRecentlyResolvedOffersFromMe(&b, []ResolvedOfferView{tc.view}, nil)
 			out := b.String()
 			if !strings.Contains(out, "you had it right away") {
 				t.Errorf("expected plain consume_now line; got:\n%s", out)
@@ -271,7 +271,7 @@ func TestBuildRecentlyResolvedOffersFromMe_CarriesKeptUnits(t *testing.T) {
 
 func TestRenderRecentlyResolvedOffersFromMe_EmptyGated(t *testing.T) {
 	var b strings.Builder
-	renderRecentlyResolvedOffersFromMe(&b, nil)
+	renderRecentlyResolvedOffersFromMe(&b, nil, nil)
 	if b.Len() != 0 {
 		t.Errorf("empty input must render nothing; got %q", b.String())
 	}
@@ -298,7 +298,7 @@ func TestRenderRecentlyResolvedOffersFromMe_ClosedNamesOfferAndShortfall(t *test
 		{LedgerID: 871, SellerName: "Elizabeth Reade", Item: "nail", Qty: 5, Amount: 0,
 			PayItems: []sim.ItemKindQty{{Kind: "sage", Qty: 1}}, Accepted: false,
 			SellerStock: 0, SellerStocks: true, SellerStockNoun: "nails"},
-	})
+	}, nil)
 	out := b.String()
 	for _, want := range []string{
 		"Your offer of 6 carrots and 1 coin to Ezekiel Crane for 5 nail", "didn't go through",

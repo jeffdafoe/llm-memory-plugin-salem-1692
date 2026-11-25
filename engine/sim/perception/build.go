@@ -130,6 +130,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// weighing goods-for-goods reads a verdict instead of being left to multiply
 	// the wares cue's per-unit figures himself (live, the miller did not).
 	p.PayOfferWorth = buildPayOfferWorth(snap, actorID, p.PayOffersForMe)
+	p.ItemNouns = buildItemNouns(snap)
 	// LLM-138: the recipient-side gift decision view (gifts offered TO me),
 	// the gift counterpart to PayOffersForMe. Drives the "## Gifts offered to
 	// you" cue + the accept_gift / decline_gift tool gate.
@@ -4750,6 +4751,7 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 			Amount:      o.Amount,
 			TotalQty:    total,
 			Noun:        orderCountNoun(snap, o.Item, total),
+			QtyNoun:     orderCountNoun(snap, o.Item, o.Qty),
 			CreatedAt:   o.CreatedAt,
 			ExpiresAt:   o.ExpiresAt,
 			ReadyBy:     o.ReadyBy,

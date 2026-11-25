@@ -20,7 +20,7 @@ You're at your workplace.
 - No coin has passed between you and Josiah Thorne.
 
 ## Offers awaiting your decision
-1. Josiah Thorne offers 7 wheat for 7 flour to keep (offer id 3710) — far less than the flour is worth
+1. Josiah Thorne offers 7 sheaves of wheat for 7 sacks of flour to keep (offer id 3710) — far less than the sacks of flour are worth
 Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.
 A counter changes only the price of the goods offered; it cannot add another good. To sell more than one kind of good together, offer them as one lot with sell instead, listing each good in lines — the lot then takes the place of this offer.
 ## What your wares fetch

@@ -313,7 +313,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// seller's own mild needs outrank a waiting customer for whole minutes
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
-	renderPayOffers(&ephemeral, payOffers, nameOf, p.PayOfferShortfalls, p.RoomAlreadySoldOrderByLedger, p.PayOfferWorth)
+	renderPayOffers(&ephemeral, payOffers, nameOf, p.PayOfferShortfalls, p.RoomAlreadySoldOrderByLedger, p.PayOfferWorth, p.ItemNouns)
 	// A counter can only re-price the goods already offered, so a seller who wants
 	// to sell a second good alongside them has one tool that can say it: sell with
 	// lines, a bundle at one price. The live case: Hannah Boggs countered "the
@@ -357,8 +357,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderStandingQuotesToMe(&ephemeral, p.StandingQuotesToMe, buyRedundancy, quoteAbility(p))
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC, p.RenderedAt)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC, p.RenderedAt)
-	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
-	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe)
+	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe, p.ItemNouns)
+	renderRecentlyResolvedOffersFromMe(&ephemeral, p.RecentlyResolvedOffersFromMe, p.ItemNouns)
 	// LLM-138: the giver-side gift counterparts — own gifts still standing, then
 	// own gifts just settled.
 	renderGiftsFromMe(&ephemeral, p.GiftsFromMe)
@@ -3176,10 +3176,7 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView, now tim
 	b.WriteString("## Orders to deliver\n")
 	anyDeliverable := false
 	for _, o := range orders {
-		itemDesc := string(o.Item)
-		if o.Qty > 1 {
-			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
-		}
+		itemDesc := o.qtyNounPhrase()
 		buyer := sanitizeInline(o.BuyerName)
 		if o.AwaitingMake {
 			// LLM-1026: a commission names who paid, what and when, so the seller
@@ -3276,6 +3273,24 @@ func (o OrderView) owedQty() int {
 	return o.Qty
 }
 
+// qtyNoun is the count noun for the per-recipient Qty ("shovels"), falling back
+// to the raw kind key for a hand-built view with no QtyNoun (LLM-1029).
+func (o OrderView) qtyNoun() string {
+	if o.QtyNoun != "" {
+		return sanitizeInline(o.QtyNoun)
+	}
+	return sanitizeInline(string(o.Item))
+}
+
+// qtyNounPhrase is the goods on an order-book line: the bare noun for one
+// ("shovel"), the count and noun for more ("3 shovels").
+func (o OrderView) qtyNounPhrase() string {
+	if o.Qty > 1 {
+		return fmt.Sprintf("%d %s", o.Qty, o.qtyNoun())
+	}
+	return o.qtyNoun()
+}
+
 // awaitingMakeOrderPhrase is the body of an awaiting-make order line (LLM-1026):
 // "the 3 shovels Elizabeth Ellis paid 18 coins for 30m ago". A partial-payment
 // commission says "put a deposit on" and leaves the figures to balanceClause; a
@@ -3321,10 +3336,7 @@ func renderFutureReservations(b *strings.Builder, orders []OrderView) {
 	}
 	b.WriteString("## Upcoming bookings\n")
 	for _, o := range orders {
-		itemDesc := string(o.Item)
-		if o.Qty > 1 {
-			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
-		}
+		itemDesc := o.qtyNounPhrase()
 		buyer := sanitizeInline(o.BuyerName)
 		fmt.Fprintf(b, "- #%d: %s for %s — booked for %s\n",
 			uint64(o.ID), itemDesc, buyer, o.ReadyBy.Format("Mon Jan 2"))
@@ -3374,7 +3386,7 @@ func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView, now time.Time
 		// the weak model flipped it — memorizing the buyer as the debtor who owes
 		// the seller the goods (LLM-512). "owes you" is unflippable. The count is
 		// always shown so the singular reads naturally ("owes you 1 shovel").
-		fmt.Fprintf(b, "- #%d: %s owes you %d %s", uint64(o.ID), seller, o.Qty, o.Item)
+		fmt.Fprintf(b, "- #%d: %s owes you %d %s", uint64(o.ID), seller, o.Qty, o.qtyNoun())
 		// Partial-payment commission (LLM-357): the balance the buyer still owes
 		// and must bring to collect.
 		b.WriteString(balanceClause(o, true))
@@ -3403,7 +3415,7 @@ func renderOverdueOrders(b *strings.Builder, orders []OrderView) {
 		// Same explicit "<seller> owes you" direction as renderOrdersWaitingOn
 		// (LLM-512) — the buyer is owed the goods, never the debtor.
 		fmt.Fprintf(b, "- #%d: %s owes you %d %s — was due %s, still not delivered\n",
-			uint64(o.ID), seller, o.Qty, o.Item, o.ReadyBy.Format("Mon Jan 2"))
+			uint64(o.ID), seller, o.Qty, o.qtyNoun(), o.ReadyBy.Format("Mon Jan 2"))
 	}
 	b.WriteString("\n")
 }
@@ -3640,9 +3652,16 @@ func nonStandingCueWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 // sanitized inline (they reach the prompt). Returns "nothing" only for an
 // all-empty payment, a state the intake gates reject. ZBBS-HOME-393.
 func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
+	return formatOfferPaymentNouns(amount, payItems, nil)
+}
+
+// formatOfferPaymentNouns is formatOfferPayment with the goods named by their
+// catalog count nouns ("7 sheaves of wheat") rather than their kind keys
+// (LLM-1029). A nil table names every good by its key.
+func formatOfferPaymentNouns(amount int, payItems []sim.ItemKindQty, nouns itemNouns) string {
 	parts := make([]string, 0, len(payItems)+1)
 	for _, pi := range payItems {
-		name := sanitizeInline(string(pi.Kind))
+		name := nouns.count(pi.Kind, pi.Qty)
 		if name == "" {
 			name = "item"
 		}
@@ -3800,7 +3819,7 @@ func CanOfferLot(p Payload) bool {
 	return p.Laboring == nil || p.Laboring.Free
 }
 
-func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, shortfalls map[sim.LedgerID]StockShortfall, roomAlreadySold map[sim.LedgerID]sim.OrderID, worth map[sim.LedgerID]offerWorth) {
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, shortfalls map[sim.LedgerID]StockShortfall, roomAlreadySold map[sim.LedgerID]sim.OrderID, worth map[sim.LedgerID]offerWorth, nouns itemNouns) {
 	if len(offers) == 0 {
 		return
 	}
@@ -3811,14 +3830,14 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 			disposition = "to consume now"
 		}
 		buyer := nameOf(o.Buyer)
-		item := sanitizeInline(string(o.Item))
+		item := nouns.count(o.Item, o.Qty)
 		if item == "" {
 			item = "item"
 		}
 		// Payment may be coins, goods (barter), or both (ZBBS-HOME-393) —
 		// render whatever the buyer offered so the seller judges the goods
 		// the same way they judge coins.
-		payment := formatOfferPayment(o.Amount, o.PayItems)
+		payment := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
 		fmt.Fprintf(b, "%d. %s offers %s for %d %s %s (offer id %d)",
 			i+1, buyer, payment, o.Qty, item, disposition, o.LedgerID)
 		// LLM-357: a partial-payment commission — surface that only the deposit
@@ -3838,11 +3857,11 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 			case sf.Held == 0:
 				fmt.Fprintf(b, " — you hold no %s", sf.Noun)
 			case sf.Reserved >= sf.Held:
-				fmt.Fprintf(b, " — you hold %d %s, but every one is owed on earlier orders", sf.Held, item)
+				fmt.Fprintf(b, " — you hold %s, but every one is owed on earlier orders", nouns.counted(o.Item, sf.Held))
 			case sf.Reserved > 0:
-				fmt.Fprintf(b, " — you hold %d %s, %d of them owed on earlier orders", sf.Held, item, sf.Reserved)
+				fmt.Fprintf(b, " — you hold %s, %d of them owed on earlier orders", nouns.counted(o.Item, sf.Held), sf.Reserved)
 			default:
-				fmt.Fprintf(b, " — you hold only %d %s", sf.Held, item)
+				fmt.Fprintf(b, " — you hold only %s", nouns.counted(o.Item, sf.Held))
 			}
 			// LLM-1026: on a good the seller makes, accepting does not bounce — it
 			// takes the coin now and leaves the goods owed. Say so, or the line
@@ -3883,7 +3902,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		// entry for no other case. No numbers: the wares cue above already prints the
 		// per-unit worths, and it was doing the arithmetic ACROSS those two sections
 		// that the miller skipped, judging 7 flour for 7 wheat an even hand.
-		b.WriteString(offerWorthPhrase(worth[o.LedgerID], item))
+		b.WriteString(offerWorthPhrase(worth[o.LedgerID], item, nouns.isPluralVerb(o.Item, o.Qty)))
 		b.WriteString("\n")
 	}
 	// ONE tool, and the words ride on it (LLM-350). This cue used to read "Respond
@@ -4288,7 +4307,7 @@ func minutesUntil(t, now time.Time) int {
 // gated at build time; item kinds are sanitized inline here (they reach the
 // prompt). Payment terms reuse formatOfferPayment so the buyer reads the same
 // "5 nails and 3 coins" shape the seller sees.
-func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
+func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView, nouns itemNouns) {
 	if len(offers) == 0 {
 		return
 	}
@@ -4298,11 +4317,11 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 		if seller == "" {
 			seller = "someone"
 		}
-		item := sanitizeInline(string(o.Item))
+		item := nouns.count(o.Item, o.Qty)
 		if item == "" {
 			item = "item"
 		}
-		payment := formatOfferPayment(o.Amount, o.PayItems)
+		payment := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
 		fmt.Fprintf(b, "%d. You have asked %s for %d %s, %s offered — they have yet to give their answer (offer id %d).\n",
 			i+1, seller, o.Qty, item, payment, o.LedgerID)
 	}
@@ -4454,7 +4473,7 @@ func renderUncoverableOffersFromMe(b *strings.Builder, offers []UncoverableOffer
 // Copy is plain modern English on purpose — the weak stateful models parse it
 // more reliably than period voice. Item kinds are sanitized inline. Uncapped —
 // bounded by the buyer's own recent offers and the short resolution window.
-func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOfferView) {
+func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOfferView, nouns itemNouns) {
 	if len(offers) == 0 {
 		return
 	}
@@ -4464,12 +4483,12 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 		if seller == "" {
 			seller = "someone"
 		}
-		item := sanitizeInline(string(o.Item))
+		item := nouns.count(o.Item, o.Qty)
 		if item == "" {
 			item = "item"
 		}
 		if o.Accepted {
-			payment := formatOfferPayment(o.Amount, o.PayItems)
+			payment := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
 			if o.DeliveryPending {
 				// LLM-512: the accept minted an order the seller hasn't delivered
 				// yet — the goods are still in the seller's hands, not the buyer's
@@ -4506,16 +4525,16 @@ func renderRecentlyResolvedOffersFromMe(b *strings.Builder, offers []ResolvedOff
 		// the same bundle. Where the engine knows the seller is short the bought
 		// kind, append it as the informed "why" the deal closed (the buyer's
 		// mirror of the seller-side "you hold only N"); only when it bites.
-		offered := formatOfferPayment(o.Amount, o.PayItems)
+		offered := formatOfferPaymentNouns(o.Amount, o.PayItems, nouns)
 		reason := "it's closed, so stop waiting on it"
 		if o.SellerStocks && o.Qty > o.SellerStock {
 			// LLM-303: at zero held, name it "they hold no nails" (plural noun)
-			// rather than the awkward "only 0 nail"; above zero keeps the LLM-296
-			// "they hold only N <kind>" form on the raw kind key.
+			// rather than the awkward "only 0 nail"; above zero names the count
+			// noun for what they hold ("they hold only 2 nails", LLM-1029).
 			if o.SellerStock == 0 {
 				reason = fmt.Sprintf("they hold no %s, so it's closed; stop waiting on it", o.SellerStockNoun)
 			} else {
-				reason = fmt.Sprintf("they hold only %d %s, so it's closed; stop waiting on it", o.SellerStock, item)
+				reason = fmt.Sprintf("they hold only %s, so it's closed; stop waiting on it", nouns.counted(o.Item, o.SellerStock))
 			}
 		}
 		fmt.Fprintf(b, "%d. Your offer of %s to %s for %d %s didn't go through — %s (offer id %d).\n",
