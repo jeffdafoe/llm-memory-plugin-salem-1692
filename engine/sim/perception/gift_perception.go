@@ -176,7 +176,7 @@ func PendingGiftsForMe(p Payload) []GiftOfferView {
 // into accept_gift / decline_gift. Uncapped, like renderPayOffers. Goods reuse
 // formatOfferPayment (amount 0 → goods only); the giver name is acquaintance-
 // gated at build time and sanitized inline here.
-func renderGiftsForMe(b *strings.Builder, gifts []GiftOfferView) {
+func renderGiftsForMe(b *strings.Builder, gifts []GiftOfferView, nouns itemNouns) {
 	if len(gifts) == 0 {
 		return
 	}
@@ -187,7 +187,7 @@ func renderGiftsForMe(b *strings.Builder, gifts []GiftOfferView) {
 			giver = "someone"
 		}
 		fmt.Fprintf(b, "%d. %s offers to give you %s, free (offer id %d).\n",
-			i+1, giver, formatOfferPayment(0, g.Goods), g.LedgerID)
+			i+1, giver, formatOfferPayment(0, g.Goods, nouns), g.LedgerID)
 	}
 	// Action first, then an explicit speak — the same pattern renderPayOffers
 	// uses: the gift response itself passes in silence, so a co-present gift
@@ -200,7 +200,7 @@ func renderGiftsForMe(b *strings.Builder, gifts []GiftOfferView) {
 // section — the subject's own gifts awaiting the recipient's answer. Its job is
 // suppression (don't re-offer the same gift): the gift mirror of
 // renderPendingOffersFromMe.
-func renderGiftsFromMe(b *strings.Builder, gifts []StandingGiftView) {
+func renderGiftsFromMe(b *strings.Builder, gifts []StandingGiftView, nouns itemNouns) {
 	if len(gifts) == 0 {
 		return
 	}
@@ -211,7 +211,7 @@ func renderGiftsFromMe(b *strings.Builder, gifts []StandingGiftView) {
 			recipient = "someone"
 		}
 		fmt.Fprintf(b, "%d. You have offered %s to %s as a gift — they have yet to answer (offer id %d).\n",
-			i+1, formatOfferPayment(0, g.Goods), recipient, g.LedgerID)
+			i+1, formatOfferPayment(0, g.Goods, nouns), recipient, g.LedgerID)
 	}
 	b.WriteString("Bide for their answer; do not offer the same gift again while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
 }
@@ -221,7 +221,7 @@ func renderGiftsFromMe(b *strings.Builder, gifts []StandingGiftView) {
 // in their hands; otherwise it stays in the giver's pack. The gift counterpart
 // to renderRecentlyResolvedOffersFromMe; plain modern English for the weak
 // stateful models.
-func renderSettledGiftsFromMe(b *strings.Builder, gifts []SettledGiftView) {
+func renderSettledGiftsFromMe(b *strings.Builder, gifts []SettledGiftView, nouns itemNouns) {
 	if len(gifts) == 0 {
 		return
 	}
@@ -231,7 +231,7 @@ func renderSettledGiftsFromMe(b *strings.Builder, gifts []SettledGiftView) {
 		if recipient == "" {
 			recipient = "someone"
 		}
-		goods := formatOfferPayment(0, g.Goods)
+		goods := formatOfferPayment(0, g.Goods, nouns)
 		if g.Accepted {
 			fmt.Fprintf(b, "%d. %s accepted your gift of %s — it is in their hands now (offer id %d).\n",
 				i+1, recipient, goods, g.LedgerID)

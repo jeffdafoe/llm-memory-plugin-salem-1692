@@ -1,7 +1,7 @@
 # Your turn
 
 ## Since your last turn
-1. Hannah Boggs set your offer for fried_meat aside and offers you a lot instead: 1 fried meat and 1 flask of water for 8 coins.
+1. Hannah Boggs set your offer for 1 fried meat aside and offers you a lot instead: 1 fried meat and 1 flask of water for 8 coins.
 
 
 ## You
@@ -18,5 +18,5 @@ It is about 3 in the afternoon.
 - No coin has passed between you and Hannah Boggs.
 
 ## Offers made to you
-1. Hannah Boggs has fried_meat and water set out for you at 8 coins — it still stands. To take the whole bundle, call pay_with_item with quote_id 3 and amount 8 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. If you want only part of the bundle, or at another price, don't use that quote_id — make your own offer instead: call pay_with_item with no quote_id, naming the one good you want, its qty, and your coins, one good at a time; they can accept or counter.
+1. Hannah Boggs has 1 fried meat and 1 flask of water set out for you at 8 coins — it still stands. To take the whole bundle, call pay_with_item with quote_id 3 and amount 8 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. If you want only part of the bundle, or at another price, don't use that quote_id — make your own offer instead: call pay_with_item with no quote_id, naming the one good you want, its qty, and your coins, one good at a time; they can accept or counter.
 Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

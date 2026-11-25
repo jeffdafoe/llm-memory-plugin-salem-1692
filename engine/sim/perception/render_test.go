@@ -874,7 +874,7 @@ func TestRenderWarrantLine_Stranded(t *testing.T) {
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "zeke",
 		Reason:         sim.StrandedWarrantReason{},
-	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, nil, quoteTakeAbility{canBarter: true}, 200)
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, nil, quoteTakeAbility{canBarter: true}, 200, nil)
 	want := "1. You find yourself standing out in the open, between places, with nothing under way.\n"
 	if line != want {
 		t.Errorf("stranded line = %q, want %q", line, want)
@@ -890,7 +890,7 @@ func TestRenderWarrantLine_SeekWork(t *testing.T) {
 	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
 		TriggerActorID: "lewis",
 		Reason:         sim.SeekWorkWarrantReason{},
-	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, nil, quoteTakeAbility{canBarter: true}, 200)
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, func(sim.ItemKind) (bool, bool) { return false, false }, nil, quoteTakeAbility{canBarter: true}, 200, nil)
 	want := "1. You have no work of your own to tend, and you take work for pay — seek out someone who could use a hand and offer your labor.\n"
 	if line != want {
 		t.Errorf("seek-work line = %q, want %q", line, want)
@@ -926,9 +926,9 @@ func TestRender_ServeHandoverWarrantLine(t *testing.T) {
 		notWant    []string
 	}{
 		{"eat_here", 1, 8, true,
-			[]string{"Jefferey paid you 8 coins for stew, to eat here now.", "Hand it over with a word."}, nil},
+			[]string{"Jefferey paid you 8 coins for 1 stew, to eat here now.", "Hand it over with a word."}, nil},
 		{"take_home", 1, 8, false,
-			[]string{"Jefferey paid you 8 coins for stew.", "Hand it over with a word."},
+			[]string{"Jefferey paid you 8 coins for 1 stew.", "Hand it over with a word."},
 			[]string{"to eat here now"}},
 		{"plural_qty_singular_coin", 2, 1, true,
 			[]string{"Jefferey paid you 1 coin for 2 stew, to eat here now."},
@@ -982,7 +982,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 
 	t.Run("broke employer: decline steer with spoken reason, no accept footer", func(t *testing.T) {
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, false, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 0, false, nameOf, nil)
 		got := b.String()
 		if !strings.Contains(got, "call decline_work (offer id 1)") || !strings.Contains(got, speakNamed) {
 			t.Errorf("broke employer should be steered to decline WITH a spoken reason; got:\n%s", got)
@@ -997,7 +997,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 
 	t.Run("solvent employer: accept footer, no forced decline", func(t *testing.T) {
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, false, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 5)}, 46, false, nameOf, nil)
 		got := b.String()
 		if !strings.Contains(got, acceptFooter) {
 			t.Errorf("solvent employer should see the accept_work/decline_work footer; got:\n%s", got)
@@ -1010,7 +1010,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 	t.Run("mixed: footer is scoped to affordable offers, unaffordable carries its own decline", func(t *testing.T) {
 		var b strings.Builder
 		// 5 coins on hand covers the 4-coin job but not the 9-coin one.
-		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, false, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{offer(1, 4), offer(2, 9)}, 5, false, nameOf, nil)
 		got := b.String()
 		// The footer must scope accept_work to affordable offers — a generic
 		// "accept_work or decline_work" could be applied to the unaffordable one.
@@ -1034,7 +1034,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 	t.Run("returning helper: recall line, producer claims added output", func(t *testing.T) {
 		helped := LaborOfferView{LaborID: 1, Worker: "lewis", Reward: 5, DurationMin: 60, HelpedBeforeRecently: true}
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{helped}, 46, true, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{helped}, 46, true, nameOf, nil)
 		got := b.String()
 		if !strings.Contains(got, "You remember Lewis Walker lending you a hand recently, and you got more done for it.") {
 			t.Errorf("a producing employer should recall the past help AND the added output; got:\n%s", got)
@@ -1044,7 +1044,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 	t.Run("returning helper: non-producer recall omits the output claim", func(t *testing.T) {
 		helped := LaborOfferView{LaborID: 1, Worker: "lewis", Reward: 5, DurationMin: 60, HelpedBeforeRecently: true}
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{helped}, 46, false, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{helped}, 46, false, nameOf, nil)
 		got := b.String()
 		if !strings.Contains(got, "You remember Lewis Walker lending you a hand recently.") {
 			t.Errorf("a non-producer employer should still recall the past help; got:\n%s", got)
@@ -1057,7 +1057,7 @@ func TestRenderLaborOffers_AffordabilitySteer(t *testing.T) {
 	t.Run("no prior help: no recall line", func(t *testing.T) {
 		plain := LaborOfferView{LaborID: 1, Worker: "lewis", Reward: 5, DurationMin: 60}
 		var b strings.Builder
-		renderLaborOffers(&b, []LaborOfferView{plain}, 46, true, nameOf)
+		renderLaborOffers(&b, []LaborOfferView{plain}, 46, true, nameOf, nil)
 		got := b.String()
 		if strings.Contains(got, "lending you a hand") {
 			t.Errorf("a worker with no remembered help should get no recall line; got:\n%s", got)

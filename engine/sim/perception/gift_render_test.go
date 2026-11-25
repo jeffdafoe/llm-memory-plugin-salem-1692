@@ -18,7 +18,7 @@ func TestRenderGiftsForMe_RecipientCue(t *testing.T) {
 	var b strings.Builder
 	renderGiftsForMe(&b, []GiftOfferView{
 		{LedgerID: 17, GiverName: "Ezekiel Crane", Goods: giftGoods("blueberries", 3)},
-	})
+	}, nil)
 	out := b.String()
 	t.Logf("\n%s", out)
 	for _, want := range []string{
@@ -37,7 +37,7 @@ func TestRenderGiftsFromMe_GiverStanding(t *testing.T) {
 	var b strings.Builder
 	renderGiftsFromMe(&b, []StandingGiftView{
 		{LedgerID: 17, RecipientName: "Lewis Walker", Goods: giftGoods("blueberries", 3)},
-	})
+	}, nil)
 	out := b.String()
 	t.Logf("\n%s", out)
 	for _, want := range []string{
@@ -56,7 +56,7 @@ func TestRenderSettledGiftsFromMe_GiverResolution(t *testing.T) {
 	renderSettledGiftsFromMe(&b, []SettledGiftView{
 		{LedgerID: 17, RecipientName: "Lewis Walker", Goods: giftGoods("blueberries", 3), Accepted: true},
 		{LedgerID: 18, RecipientName: "Prudence Ward", Goods: giftGoods("bread", 1), Accepted: false},
-	})
+	}, nil)
 	out := b.String()
 	t.Logf("\n%s", out)
 	for _, want := range []string{
@@ -73,9 +73,9 @@ func TestRenderSettledGiftsFromMe_GiverResolution(t *testing.T) {
 // TestGiftSections_ContentGated: each section renders nothing for an empty view.
 func TestGiftSections_ContentGated(t *testing.T) {
 	var b strings.Builder
-	renderGiftsForMe(&b, nil)
-	renderGiftsFromMe(&b, nil)
-	renderSettledGiftsFromMe(&b, nil)
+	renderGiftsForMe(&b, nil, nil)
+	renderGiftsFromMe(&b, nil, nil)
+	renderSettledGiftsFromMe(&b, nil, nil)
 	if b.Len() != 0 {
 		t.Errorf("gift sections should content-gate to empty, got:\n%s", b.String())
 	}

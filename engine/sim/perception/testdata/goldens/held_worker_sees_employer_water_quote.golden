@@ -21,7 +21,7 @@ It is about 10:45 in the morning.
 - No coin has passed between you and Ezekiel Crane.
 
 ## Offers made to you
-1. Ezekiel Crane has water set out for you at 1 coin — it still stands. To take this coin quote, call pay_with_item with quote_id 14, item "water", qty 1, and amount 1 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id.
+1. Ezekiel Crane has 1 water set out for you at 1 coin — it still stands. To take this coin quote, call pay_with_item with quote_id 14, item "water", qty 1, and amount 1 — it settles at once. Say your piece in the same breath — pass it in the call's say; don't speak first, because speaking ends your turn and the quote goes unpaid. Don't put goods on a quote_id.
 ## What you can eat or drink
 Ezekiel Crane is here with you, carrying water (a deep drink) — you could offer to buy it from them now with pay_with_item, paying with coins or goods you carry (pay_items). No need to walk anywhere.
 Nearby to buy (thirst):

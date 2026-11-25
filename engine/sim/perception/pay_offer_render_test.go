@@ -233,10 +233,16 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 		Warrants:          []sim.WarrantMeta{quote},
 		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
 		Baseline:          BaselinePresent,
+		ItemNouns:         itemNouns{"water": {Singular: "flask of water", Plural: "flasks of water"}},
 	}, DefaultRenderConfig()))
 
-	if !strings.Contains(out, "John Ellis offers you water for 4 coins.") {
+	// LLM-1038: the prose names the catalog noun while the take instruction keeps
+	// the exact key pay_with_item needs — the two must not collapse to one string.
+	if !strings.Contains(out, "John Ellis offers you 1 flask of water for 4 coins.") {
 		t.Errorf("quote warrant line missing terms\n%s", out)
+	}
+	if !strings.Contains(out, `item "water", qty 1`) {
+		t.Errorf("take instruction must keep the exact item key\n%s", out)
 	}
 	if !strings.Contains(out, "quote_id 9") || !strings.Contains(out, "settles at once") {
 		t.Errorf("quote warrant line missing the fast-path take instruction\n%s", out)
@@ -348,7 +354,7 @@ func TestRender_QuoteWarrantLine_Overheard(t *testing.T) {
 		Baseline:          BaselinePresent,
 	}, DefaultRenderConfig()))
 
-	if !strings.Contains(out, "John Ellis offers bread for 4 coins.") {
+	if !strings.Contains(out, "John Ellis offers 1 bread for 4 coins.") {
 		t.Errorf("overheard quote warrant line missing neutral terms\n%s", out)
 	}
 	if strings.Contains(out, "offers you") {
@@ -380,13 +386,13 @@ func TestRender_QuoteWarrantLine_EatHereFact(t *testing.T) {
 
 	p.EatHereKinds = map[sim.ItemKind]bool{"stew": true}
 	out := combinedPrompt(Render(p, DefaultRenderConfig()))
-	if !strings.Contains(out, "John Ellis offers you stew for 4 coins, to eat here (it can't be carried away).") {
+	if !strings.Contains(out, "John Ellis offers you 1 stew for 4 coins, to eat here (it can't be carried away).") {
 		t.Errorf("quote warrant line missing the eat-here fact\n%s", out)
 	}
 
 	p.EatHereKinds = nil
 	out = combinedPrompt(Render(p, DefaultRenderConfig()))
-	if !strings.Contains(out, "John Ellis offers you stew for 4 coins.") {
+	if !strings.Contains(out, "John Ellis offers you 1 stew for 4 coins.") {
 		t.Errorf("quote warrant line should be tag-free when the kind isn't eat-here-only\n%s", out)
 	}
 }

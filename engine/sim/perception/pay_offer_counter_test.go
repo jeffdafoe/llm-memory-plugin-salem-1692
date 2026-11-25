@@ -164,7 +164,7 @@ func TestRenderCountersAwaitingMyResponse_CoinAndGoods(t *testing.T) {
 	renderCountersAwaitingMyResponse(&b, []CounterOfferView{
 		{LedgerID: 236, SellerName: "the dairykeeper", Item: "meat", Qty: 10, CounterAmount: 60},
 		{LedgerID: 240, SellerName: "Josiah Thorne", Item: "horseshoe", Qty: 4, CounterPayItems: []sim.ItemKindQty{{Kind: "nails", Qty: 5}}},
-	})
+	}, nil)
 	out := b.String()
 	if !strings.Contains(out, "## A counter to your offer") {
 		t.Fatalf("missing section header; got:\n%s", out)
@@ -182,7 +182,7 @@ func TestRenderCountersAwaitingMyResponse_CoinAndGoods(t *testing.T) {
 
 func TestRenderCountersAwaitingMyResponse_EmptyGated(t *testing.T) {
 	var b strings.Builder
-	renderCountersAwaitingMyResponse(&b, nil)
+	renderCountersAwaitingMyResponse(&b, nil, nil)
 	if b.Len() != 0 {
 		t.Errorf("empty input must render nothing; got %q", b.String())
 	}
