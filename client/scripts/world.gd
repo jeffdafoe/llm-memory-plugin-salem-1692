@@ -1450,19 +1450,13 @@ func _settle_well_bucket(well_id: String) -> void:
     if bucket != null:
         bucket.check_drinkers()
 
-## The well's bucket, made the first time a drinker comes to it, with its sheet
-## loaded after if it is not on hand yet. null when the well has no art.
+## The well's bucket, made the first time a drinker comes to it. null when the
+## well has no art.
 func _well_bucket(well_id: String):
     var well: Node2D = placed_objects.get(well_id, null)
     if well == null or not is_instance_valid(well):
         return null
-    var made := well.get_node_or_null("WellBucket") == null
-    var bucket = WellBucket.of(well, _well_drinkers.bind(well_id))
-    if bucket != null and made:
-        get_or_load_npc_sheet(WellBucket.SHEET, func(tex: Texture2D) -> void:
-            if is_instance_valid(bucket) and not bucket.is_queued_for_deletion():
-                bucket.set_sheet(tex))
-    return bucket
+    return WellBucket.of(well, _well_drinkers.bind(well_id))
 
 ## Play the work animation of the container's in-flight source activity (or
 ## its outdoor rest), or drop a finished one back to idle. The activity closes

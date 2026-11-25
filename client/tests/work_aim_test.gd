@@ -505,16 +505,16 @@ func _test_world_well_kneel_steps_in_and_queues() -> void:
     var front: AnimatedSprite2D = people[0].get_node("CharacterSprite")
     var back: AnimatedSprite2D = people[1].get_node("CharacterSprite")
 
-    # A 48x80 well drawn whole at 2x, anchored at (0.5, 0.85): at (0, 0) its
-    # art is (-48,-136)-(48,24) and its lip (-20,-60)-(20,-24), inset
+    # A painted 96x160 well drawn whole at 1x, anchored at (0.5, 0.85): at
+    # (0, 0) its art is (-48,-136)-(48,24) and its lip (-20,-60)-(20,-24), inset
     # (-16,-56)-(16,-28). Off the map (objects_node is off the tree), so no
     # bucket comes up and nobody hauls: both kneel.
-    var img := Image.create(48, 80, false, Image.FORMAT_RGBA8)
+    var img := Image.create(96, 160, false, Image.FORMAT_RGBA8)
     img.fill(Color.WHITE)
     var catalog: Node = root.get_node("Catalog")
     catalog.sheet_cache["test://well"] = ImageTexture.create_from_image(img)
-    catalog.assets["test-well"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 2.0,
-        "states": [{"state": "default", "sheet": "test://well", "src_x": 0, "src_y": 0, "src_w": 48, "src_h": 80}]}
+    catalog.assets["test-well"] = {"anchor_x": 0.5, "anchor_y": 0.85, "render_scale": 1.0,
+        "states": [{"state": "default", "sheet": "test://well", "src_x": 0, "src_y": 0, "src_w": 96, "src_h": 160}]}
     world.objects_node = Node2D.new()
     world._place_object({"id": "w1", "asset_id": "test-well", "x": 0.0, "y": 0.0, "display_name": "Well",
         "refreshes": [{"attribute": "thirst", "gather_item": ""}, {"attribute": "", "gather_item": "water"}]})

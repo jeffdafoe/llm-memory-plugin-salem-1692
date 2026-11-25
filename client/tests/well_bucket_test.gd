@@ -84,21 +84,21 @@ func _blank(w: int, h: int) -> Texture2D:
 
 
 func _sheets() -> Dictionary:
-    var out := {BODY: _blank(1024, 1024), WellBucket.SHEET: _blank(256, 64)}
+    var out := {BODY: _blank(1024, 1024)}
     for prop_name in FarmerRig.PROPS:
         var size: Vector2i = PROP_SHEET_SIZES[prop_name]
         out[FarmerRig.PROPS[prop_name]["sheet"]] = _blank(size.x, size.y)
     return out
 
 
-## A well as _place_object draws it: the 48x80 art at 2x, anchored at 0.5/0.85,
+## A well as _place_object draws it: the painted 96x160 art at 1x, anchored at 0.5/0.85,
 ## with its drink row and its pail.
 func _well() -> Node2D:
     var well := Node2D.new()
     var art := Sprite2D.new()
     art.centered = false
-    art.scale = Vector2(2, 2)
-    art.position = Vector2(-48 * 0.5 * 2, -80 * 0.85 * 2)
+    art.scale = Vector2(1, 1)
+    art.position = Vector2(-96 * 0.5, -160 * 0.85)
     well.add_child(art)
     well.set_meta("refreshes", [{"attribute": "thirst", "gather_item": ""}, {"attribute": "", "gather_item": "water"}])
     # In the tree, so the bucket's tweens step.
@@ -155,14 +155,20 @@ func _test_bucket_places() -> void:
     var bucket = WellBucket.of(well, func() -> int: return 1)
     _check("made", bucket != null, true)
     _check("the same bucket asked again", WellBucket.of(well, func() -> int: return 1), bucket)
-    _check("drawn at the well's scale", bucket.scale, Vector2(2, 2))
+    _check("drawn at the well's scale", bucket.scale, Vector2(1, 1))
     _check("drawn over the well's art", bucket.get_index() > well.get_child(0).get_index(), true)
     _check("down: hidden", bucket.visible, false)
     var art: Sprite2D = well.get_child(0)
-    _check("mouth place in the well's coordinates", bucket._at(WellBucket.MOUTH), art.position + WellBucket.MOUTH * 2.0)
+    _check("mouth place in the well's coordinates", bucket._at(WellBucket.MOUTH), art.position + WellBucket.MOUTH)
     well.position = Vector2(100, 200)
     _check("lip where the well is placed", WellBucket.lip_rect(well),
-        Rect2(Vector2(100, 200) + art.position + WellBucket.LIP.position * 2.0, WellBucket.LIP.size * 2.0))
+        Rect2(Vector2(100, 200) + art.position + WellBucket.LIP.position, WellBucket.LIP.size))
+    # The painted well's places land where the pack well's did (its 48x80 art
+    # at 2x, the mouth at (16, 40) and the lip (14, 38) 20x18 in its pixels),
+    # so a drinker kneels and the pail hangs on the same world spots.
+    _check("mouth on the pack well's world spot", art.position + WellBucket.MOUTH, Vector2(-48, -136) + Vector2(16, 40) * 2.0)
+    _check("lip on the pack well's world spot", Rect2(art.position + WellBucket.LIP.position, WellBucket.LIP.size),
+        Rect2(Vector2(-48, -136) + Vector2(14, 38) * 2.0, Vector2(20, 18) * 2.0))
     var bare := Node2D.new()
     root.add_child(bare)
     _check("no art: no lip", WellBucket.lip_rect(bare), Rect2())
@@ -248,7 +254,7 @@ func _test_world_shared_bucket() -> void:
     _drink(a, "w1")
     var bucket = well.get_node_or_null("WellBucket")
     _check("first drinker brings the bucket", bucket != null, true)
-    _check("its sheet", bucket.texture, _world._npc_sheets[WellBucket.SHEET])
+    _check("its sheet: the packed pail", bucket.texture != null and bucket.texture == load(WellBucket.SHEET), true)
     _check("coming up", bucket.state, WellBucket.State.RISING)
     _check("first drinker hauls", doll_a.animation, &"north_pull")
     _check("faces the well", a.get_meta("facing"), "north")
