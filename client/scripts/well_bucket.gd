@@ -6,20 +6,25 @@ extends Sprite2D
 ## also checks that count itself while it is up, so a drinker the client lost
 ## track of (removed, re-rendered) never leaves it up for good.
 ##
-## Places are in the well sprite's own pixels, measured against the Mana Seed
-## well (the framed and the roofed well share the base).
+## Places are in the well sprite's own pixels, measured against the painted
+## wells (tools/tree-art/wells.py: 96x160 frames shown at render_scale 1; the
+## bucket and the roofed well share the stone well, its shaft where the pack
+## well's was, so these are the pack places doubled and land on the same
+## world spots).
 
-const SHEET := "/tilesets/mana-seed/village-accessories/village accessories 16x16.png"
-## The full bucket on the sheet.
-const REGION := Rect2(144, 32, 16, 16)
+## The painted pail (wells.py), packed with the client: the sheet is the pail.
+## preload: Godot sees the dependency, and a missing pail fails when this
+## script loads instead of leaving an invisible bucket.
+const PAIL: Texture2D = preload("res://assets/trees/well-pail.png")
+const REGION := Rect2(0, 0, 32, 32)
 ## Hanging on the rope in the mouth of the shaft, low enough that a drinker's
 ## head at the rim meets its bottom rather than sitting under it (Jeff).
-const MOUTH := Vector2(16, 40)
+const MOUTH := Vector2(32, 80)
 ## The shaft and the rim stones round it: a drinker kneels with their face on
 ## its edge (world.gd _well_aim), at the front rim just under the bucket.
-const LIP := Rect2(14, 38, 20, 18)
+const LIP := Rect2(28, 76, 40, 36)
 ## How far down the shaft the bucket comes up from, and goes back down to.
-const DEPTH := 6.0
+const DEPTH := 12.0
 ## Seconds the hauler pulls the bucket up to the mouth.
 const HAUL := 0.9
 const LOWER := 0.5
@@ -66,6 +71,8 @@ static func of(well: Node2D, counter: Callable) -> Node:
     bucket._art = art
     bucket.drinkers = counter
     bucket.centered = false
+    # Packed with the client (res://), so it is on hand at once: no download.
+    bucket.texture = PAIL
     bucket.region_enabled = true
     bucket.region_rect = REGION
     bucket.scale = art.scale
@@ -129,10 +136,6 @@ static func _art_of(well: Node2D) -> Node2D:
         if (child is Sprite2D or child is AnimatedSprite2D) and child.name != "WellBucket":
             return child
     return null
-
-
-func set_sheet(texture: Texture2D) -> void:
-    self.texture = texture
 
 
 ## A place on the well's art, in the well's coordinates.
