@@ -7,7 +7,8 @@
 -- one complete sprite, not a post with a sign attached); these two are the
 -- last 'sign' rows.
 --
--- All or nothing, so the down reverses it exactly: either both rows are here
+-- All or nothing, so the down recreates the same two rows (with new ids;
+-- nothing points at a slot row's id): either both rows are here
 -- as the down recreates them (slot 'sign' at offset 22,-78, hosts absent,
 -- Hanging Sign here as the sign of the Mana Seed catalog), or neither is
 -- (already migrated; a fresh database never had them). Anything else fails.
