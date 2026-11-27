@@ -410,8 +410,9 @@ for _key, _spec in ROOMS.items():
 def entry_anims(key, text=None):
     """The room's anim records in interior_rooms.gd (or in text), each as a
     dict of every field it has: a quoted value is a string, a number an int
-    or a float. Unlike common.room_entry's anims, nothing is dropped, so an
-    fps or a sort_y the declaration does not have is seen."""
+    or a float, any other value listed under "unread". Unlike
+    common.room_entry's anims, nothing is dropped, so an fps, a sort_y or
+    any field the declaration does not have is seen."""
     text = text if text is not None else open(C.ROOMS_GD, encoding="utf-8").read()
     m = re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S)
     if not m:
@@ -426,6 +427,12 @@ def entry_anims(key, text=None):
         fields = {}
         for k, v in re.findall(r'"(\w+)":\s*("[^"]*"|-?\d+(?:\.\d+)?)', rec):
             fields[k] = v[1:-1] if v.startswith('"') else (float(v) if "." in v else int(v))
+        # A field whose value is not a quoted string or a number (true, a
+        # Vector2i, ...) is kept as unread, so it fails the comparison
+        # instead of vanishing.
+        unread = sorted(set(re.findall(r'"(\w+)":', rec)) - set(fields))
+        if unread:
+            fields["unread"] = unread
         records.append(fields)
     return records
 
@@ -510,7 +517,8 @@ def check(out_dir):
     end = text.index("\n    },", start)
     entry = text[start:end]
     for label, changed in (("fps 9.0", entry.replace('"fps": 8.0', '"fps": 9.0')),
-                           ("a sort_y", entry.replace('"y": 36}', '"y": 36, "sort_y": 40}'))):
+                           ("a sort_y", entry.replace('"y": 36}', '"y": 36, "sort_y": 40}')),
+                           ("an extra true", entry.replace('"y": 36}', '"y": 36, "unexpected": true}'))):
         if changed == entry or entry_anims("home_red_tiny", text[:start] + changed + text[end:]) == ROOMS["home_red_tiny"]["anims"]:
             print("the anim check would pass an entry whose fire has %s" % label)
             ok = False
