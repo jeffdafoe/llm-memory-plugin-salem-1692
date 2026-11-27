@@ -2013,7 +2013,20 @@ func _apply_textures() -> void:
     _bellows_art.texture = _texture(str(bellows.get("sheet", "")))
     _bellows_art.position = Vector2(int(bellows.get("x", 0)), int(bellows.get("y", 0)))
     _counter.texture = _texture(str(room.get("counter", ""))) if room.has("counter") else null
+    var shrink := Vector2.ONE / _density()
+    for spr in [_background, _bellows_art, _counter]:
+        spr.scale = shrink
     _draw_anims()
+
+
+## How many art pixels a room's sheets have per room pixel (LLM-969): 1 for
+## the pack rooms, 2 for the painted ones (twice the detail at the same
+## size). Everything about the room — its size, pieces, covers, anims, spots
+## and floor plan — stays in room pixels; only the room's own sheets are
+## denser, so each sprite cut from one is drawn at 1/density, its region and
+## its offset (in the sheet's pixels) times density.
+func _density() -> int:
+    return maxi(1, int(room.get("density", 1)))
 
 
 ## A room's furniture (`pieces`, cut from its `pieces_sheet`) and animated
@@ -2034,7 +2047,7 @@ func _draw_anims() -> void:
         for p in room.get("pieces", []):
             var spr := _piece(sheet, int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("sort_y", 0)))
             spr.region_enabled = true
-            spr.region_rect = Rect2(int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("w", 0)), int(p.get("h", 0)))
+            spr.region_rect = _sheet_rect(int(p.get("x", 0)), int(p.get("y", 0)), int(p.get("w", 0)), int(p.get("h", 0)))
             _people.add_child(spr)
     # Sleepers drawn before the sheet landed get their covers now.
     for child in _people.get_children():
@@ -2050,6 +2063,7 @@ func _draw_anims() -> void:
                 var door := Sprite2D.new()
                 door.centered = false
                 door.texture = open_door
+                door.scale = Vector2.ONE / _density()
                 door.position = (tap as Rect2).position + Vector2(2, 2)
                 _anims.add_child(door)
     # The player's own room (LLM-847): a pointer on its door (LLM-855), its tip
@@ -2092,20 +2106,32 @@ func _tuck_in(holder: Node2D) -> void:
     cover.centered = false
     cover.texture = sheet
     cover.region_enabled = true
-    cover.region_rect = Rect2(int(rect["x"]), int(rect["y"]), int(rect["w"]), int(rect["h"]))
+    cover.region_rect = _sheet_rect(int(rect["x"]), int(rect["y"]), int(rect["w"]), int(rect["h"]))
+    cover.scale = Vector2.ONE / _density()
     cover.position = Vector2(int(rect["x"]), int(rect["y"])) - (holder.get_meta("home") as Vector2)
     holder.add_child(cover)
 
 
-## A picture whose top-left is at (x, y), placed at (x, sort_y) for sorting.
+## A picture from one of the room's sheets whose top-left is at (x, y) in
+## room pixels, placed at (x, sort_y) for sorting; drawn at the room's
+## density (the offset is in the sheet's own pixels, so it is scaled up as
+## the sprite is scaled down).
 func _piece(texture: Texture2D, x: int, y: int, sort_y: int) -> Sprite2D:
+    var d := _density()
     var spr := Sprite2D.new()
     spr.centered = false
     spr.texture = texture
     spr.position = Vector2(x, sort_y)
-    spr.offset = Vector2(0, y - sort_y)
+    spr.offset = Vector2(0, (y - sort_y) * d)
+    spr.scale = Vector2.ONE / d
     spr.set_meta("piece", true)
     return spr
+
+
+## A rect given in room pixels, in the room's sheet pixels.
+func _sheet_rect(x: int, y: int, w: int, h: int) -> Rect2:
+    var d := _density()
+    return Rect2(x * d, y * d, w * d, h * d)
 
 
 func _animate(delta: float) -> void:
@@ -2867,8 +2893,13 @@ func _on_wares(result: int, code: int, _headers: PackedStringArray, body: Packed
         set_wares(data["wares"])
 
 
-## A picture by its served path: cached, else fetched from the server's
-## tileset folder (null until it lands; _apply_textures puts it on then).
+## A picture by its path: cached, else fetched from the server's tileset
+## folder (null until it lands; _apply_textures puts it on then). A
+## res:// path is art packed into the client (LLM-969: our own painted
+## rooms): loaded at once, never fetched, and only a PNG under res://assets/
+## (Catalog.packed_sheet_path, the rule the catalog's packed sheets follow).
+## A res:// path that is not one, or a packed sheet that is missing, is
+## refused with a warning and remembered as null so it is not tried again.
 func _texture(path: String) -> Texture2D:
     if path == "":
         return null
@@ -2876,6 +2907,13 @@ func _texture(path: String) -> Texture2D:
         return texture_hook.call(path)
     if _textures.has(path):
         return _textures[path]
+    if path.begins_with("res://"):
+        var packed: String = Catalog.packed_sheet_path(path)
+        var tex: Texture2D = load(packed) as Texture2D if packed != "" and ResourceLoader.exists(packed) else null
+        if tex == null:
+            push_warning("Interior sheet is not packed art: %s" % path)
+        _textures[path] = tex
+        return tex
     _fetch(path)
     return null
 
