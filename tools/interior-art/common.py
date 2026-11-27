@@ -783,9 +783,12 @@ def trestle_table(room, x, y, w, h, rnd=None, things=True):
         jx = x + w - 5
         lx1 = jx - 3.0
         lx0 = max(x + 13.6, lx1 - 7)
-        room.ellipse(lx0, y + 2.2, lx1, y + 6.4, ramp(STRAW, 0.55))
-        room.ellipse(lx0 + 0.6, y + 2.4, lx1 - 2, y + 4.4, ramp(STRAW, 0.85))
-        room.line([(lx0 + 2, y + 3.0), (lx0 + 3, y + 5.4)], ramp(STRAW, 0.3), 0.3)
+        # A table under 26 room px has no room for the loaf between the
+        # trencher and the jug, so it has none.
+        if lx1 - lx0 >= 4:
+            room.ellipse(lx0, y + 2.2, lx1, y + 6.4, ramp(STRAW, 0.55))
+            room.ellipse(lx0 + 0.6, y + 2.4, lx1 - 2, y + 4.4, ramp(STRAW, 0.85))
+            room.line([(lx0 + 2, y + 3.0), (lx0 + 3, y + 5.4)], ramp(STRAW, 0.3), 0.3)
         room.ellipse(jx - 2.2, y + 1.0, jx + 2.2, y + 7.0, ramp(REDWARE, 0.5))
         room.ellipse(jx - 1.6, y + 1.4, jx - 0.2, y + 4.0, ramp(REDWARE, 0.85))
         room.rect(jx - 1.1, y + 0.2, jx + 1.1, y + 1.4, ramp(REDWARE, 0.42))

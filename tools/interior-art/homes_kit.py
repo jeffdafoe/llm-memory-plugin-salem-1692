@@ -162,7 +162,7 @@ def ladder(room, x, y, w, h):
     """A ladder leaning on the back wall up to the loft, seen from the
     front: two rails, a little closer together at the top as it leans away,
     round rungs lit on top; its top meets ladder_rails on the room sheet."""
-    foot = y + h
+    foot = y + h - 0.3  # inside the rect: the client crop ends before y + h
     for rx, lit in ((x + 1.5, True), (x + w - 3.5, False)):
         lean = 1.0 if lit else -1.0
         rail = [(rx, foot), (rx + 2, foot), (rx + 2 + lean, y), (rx + lean, y)]

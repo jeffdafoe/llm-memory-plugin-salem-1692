@@ -37,6 +37,7 @@ the art and the lines that put people on and behind it cannot drift apart.
 import argparse
 import os
 import random
+import re
 import sys
 
 from PIL import Image
@@ -48,7 +49,8 @@ import homes_kit as K
 # entry "density": 2).
 C.set_density(2)
 
-FIRE = "res://assets/interiors/home_fire.png"
+# Every home's hearth fire: the whole anim record its entry must hold.
+FIRE = {"sheet": "res://assets/interiors/home_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36}
 
 # The red houses' room sheets take in the corn; the blue houses' the ochre
 # limewash, the painted boards, the brick and the brass.
@@ -100,8 +102,8 @@ def red_tiny_pieces(seed=970):
 
 def firebox(key):
     """The hearth's mouth: where the room's fire anim plays, 16 x 16."""
-    _sheet, _frames, x, y = ROOMS[key]["anims"][0]
-    return (x, y, 16, 16)
+    fire = ROOMS[key]["anims"][0]
+    return (fire["x"], fire["y"], 16, 16)
 
 
 def shadows(room, key, strength=170):
@@ -226,7 +228,7 @@ def blue_small_room(seed=977):
     K.lantern(room, 42, 13, lit=False)
     K.corn_braid(room, 89, 12, rnd, 4)
     shadows(room, "home_blue_small")
-    return C.shrink(room, BLUE_PALETTE)
+    return C.shrink(room, BLUE_PALETTE + K.CORN)
 
 
 def tent_room(seed=979):
@@ -303,7 +305,7 @@ ROOMS = {
             ((16, 128, 32, 16, 143), lambda room, x, y, w, h, rnd: C.blanket_chest(room, x, y, w, h)),
         ],
         "covers": {"bed_north": (80, 56, 32, 32), "bed_south": (80, 110, 32, 32)},
-        "anims": [(FIRE, 4, 12, 36)],
+        "anims": [FIRE],
     },
     "home_red_medium": {
         "sheets": ("home_red_medium_common", "home_red_medium_pieces"),
@@ -317,7 +319,7 @@ ROOMS = {
             ((80, 96, 32, 16, 111), _chest),
         ],
         "covers": {"bed": (80, 56, 32, 32), "pallet": (0, 74, 32, 36)},
-        "anims": [(FIRE, 4, 12, 36)],
+        "anims": [FIRE],
     },
     "home_red_small": {
         "sheets": ("home_red_small_common", "home_red_small_pieces"),
@@ -333,7 +335,7 @@ ROOMS = {
             ((80, 122, 16, 21, 143), _sack(True)),
         ],
         "covers": {"bed": (64, 74, 32, 32), "pallet": (0, 72, 32, 36)},
-        "anims": [(FIRE, 4, 12, 36)],
+        "anims": [FIRE],
     },
     "home_blue_tiny": {
         "sheets": ("home_blue_tiny_common", "home_blue_tiny_pieces"),
@@ -348,7 +350,7 @@ ROOMS = {
             ((16, 128, 32, 16, 143), _chest),
         ],
         "covers": {"bed_north": (80, 56, 32, 32), "bed_south": (80, 110, 32, 32)},
-        "anims": [(FIRE, 4, 12, 36)],
+        "anims": [FIRE],
     },
     "home_blue_small": {
         "sheets": ("home_blue_small_common", "home_blue_small_pieces"),
@@ -364,7 +366,7 @@ ROOMS = {
             ((16, 144, 32, 16, 159), _chest),
         ],
         "covers": {"bed_north": (80, 72, 32, 32), "bed_south": (80, 126, 32, 32)},
-        "anims": [(FIRE, 4, 12, 36)],
+        "anims": [FIRE],
     },
     "tent": {
         "sheets": ("tent_common", "tent_pieces"),
@@ -405,6 +407,47 @@ for _key, _spec in ROOMS.items():
         SIZES[_sheet] = (_spec["size"][0] * 2, _spec["size"][1] * 2)
 
 
+def entry_anims(key, text=None):
+    """The room's anim records in interior_rooms.gd (or in text), each as a
+    dict of every field it has: a quoted value is a string, a number an int
+    or a float. Unlike common.room_entry's anims, nothing is dropped, so an
+    fps or a sort_y the declaration does not have is seen."""
+    text = text if text is not None else open(C.ROOMS_GD, encoding="utf-8").read()
+    m = re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S)
+    if not m:
+        raise ValueError("no room %s" % key)
+    body = m.group(1)
+    if '"anims"' not in body:
+        return []
+    block = body.split('"anims"', 1)[1]
+    block = block[:block.index("]")]
+    records = []
+    for rec in re.findall(r"\{([^{}]*)\}", block):
+        fields = {}
+        for k, v in re.findall(r'"(\w+)":\s*("[^"]*"|-?\d+(?:\.\d+)?)', rec):
+            fields[k] = v[1:-1] if v.startswith('"') else (float(v) if "." in v else int(v))
+        records.append(fields)
+    return records
+
+
+def canvas_spill(key):
+    """Pieces of the room whose painter lays a solid stroke (alpha 128 or
+    more) outside its rect on the canvas before the shrink. paint_pieces
+    checks the shrunk art, where a stroke on the canvas row just past a rect
+    can average away; this catches it. A faint glow (a blurred light) past
+    the rect is allowed: the shrink drops it."""
+    spec, pad, bad = ROOMS[key], C.PIECE_PAD, []
+    w, h = spec["size"]
+    for (x, y, pw, ph, _s), painter in spec["pieces"]:
+        room = C.Room(w + 2 * pad, h + 2 * pad)
+        painter(room, x + pad, y + pad, pw, ph, random.Random(1))
+        solid = room.lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
+        solid.paste(0, tuple(int(round(v * C.S)) for v in (x + pad, y + pad, x + pad + pw, y + pad + ph)))
+        if solid.getbbox() is not None:
+            bad.append((x, y, pw, ph))
+    return bad
+
+
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
     each room's entry in interior_rooms.gd names these sheets at this
@@ -435,7 +478,7 @@ def check(out_dir):
                 ("size", entry["size"], spec["size"]),
                 ("pieces", entry["pieces"], [r for r, _p in spec["pieces"]]),
                 ("covers", entry["covers"], spec["covers"]),
-                ("anims", entry["anims"], spec["anims"])):
+                ("anims", entry_anims(key), spec["anims"])):
             if got != expect:
                 print("%s: interior_rooms.gd %s are %s, the painted %s" % (key, label, got, expect))
                 ok = False
@@ -443,6 +486,9 @@ def check(out_dir):
             if sheets[name].size != (spec["size"][0] * d, spec["size"][1] * d):
                 print("%s: %s is %s, not the room's size at density %d" % (key, name, sheets[name].size, d))
                 ok = False
+        for rect in canvas_spill(key):
+            print("%s: piece %s paints a solid stroke outside its rect" % (key, rect))
+            ok = False
         alpha = sheets[pieces].split()[3]
         for bed, (x, y, w, h) in spec["covers"].items():
             inside = any(px <= x and py <= y and x + w <= px + pw and y + h <= py + ph
@@ -451,12 +497,23 @@ def check(out_dir):
             if not inside or not filled:
                 print("%s: cover %s %s is not a covered part of a bed piece" % (key, bed, (x, y, w, h)))
                 ok = False
-        for path, frames, _x, _y in spec["anims"]:
-            name = os.path.splitext(os.path.basename(path))[0]
+        for anim in spec["anims"]:
+            name = os.path.splitext(os.path.basename(anim["sheet"]))[0]
             strip = sheets.get(name)
-            if strip is None or strip.width != frames * strip.height:
-                print("%s: anim %s is not painted here as %d square frames" % (key, path, frames))
+            if strip is None or strip.width != anim["frames"] * strip.height:
+                print("%s: anim %s is not painted here as %d square frames" % (key, anim["sheet"], anim["frames"]))
                 ok = False
+    # The anim comparison must see every field: an entry whose fire plays
+    # at another fps, or gains a sort line, is refused.
+    text = open(C.ROOMS_GD, encoding="utf-8").read()
+    start = text.index('\n    "home_red_tiny": {')
+    end = text.index("\n    },", start)
+    entry = text[start:end]
+    for label, changed in (("fps 9.0", entry.replace('"fps": 8.0', '"fps": 9.0')),
+                           ("a sort_y", entry.replace('"y": 36}', '"y": 36, "sort_y": 40}'))):
+        if changed == entry or entry_anims("home_red_tiny", text[:start] + changed + text[end:]) == ROOMS["home_red_tiny"]["anims"]:
+            print("the anim check would pass an entry whose fire has %s" % label)
+            ok = False
     return ok
 
 
