@@ -1,0 +1,30 @@
+## Who you are
+You are Joseph Scott.
+
+# Your turn
+
+## Since your last turn
+(nothing specific — this is a routine check-in)
+
+
+## You
+Coins in your purse: 19.
+You are carrying: sacks of flour (x18), sheaves of wheat (x14, 4 to spare).
+
+## Around you
+You are inside the Mill, your workplace, with Silence Walker.
+
+You're at your workplace.
+
+## Coin between you and those here, this past week
+- No coin has passed between you and Silence Walker.
+
+## Work offers awaiting your decision
+Your stores of flour stand full, with no room for another batch until some is sold — a hand at your post would have nothing to hurry.
+1. Silence Walker offers to do a job for you for 8 coins — about 4 hours of work (offer id 1)
+Respond with accept_work or decline_work, passing the offer id as labor_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.
+## What your wares fetch
+What your wares fetch in coin — use it to set a fair price or weigh a trade:
+- Flour: 3 to 4 coins each.
+
+Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action, then call done() when nothing pressing remains.

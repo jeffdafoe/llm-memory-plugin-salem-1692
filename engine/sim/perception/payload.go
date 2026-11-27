@@ -534,6 +534,13 @@ type Payload struct {
 	// rather than each LaborOfferView.
 	SubjectProducesGoods bool
 
+	// IdleHand is set when the subject makes goods but a hired hand could hurry
+	// none of them right now — no batch running, and every good either full or
+	// short of its makings (idle_hand.go). Renders one scene line in both hire
+	// decisions: the offer_work cue and the employer side of "## Work offers
+	// awaiting your decision". Presentation only; it gates no tool.
+	IdleHand *IdleHandView
+
 	// WorkersForMe lists the subject's IN-PROGRESS jobs as EMPLOYER — Working
 	// LaborOffers where EmployerID == subject — the employer-side mirror of the
 	// worker's Laboring self-state (LLM-202). Without it the employer has only the
