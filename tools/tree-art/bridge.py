@@ -185,7 +185,10 @@ def migration_problems(path=MIGRATION):
          % ((ANCHOR[0], FRAME[0], ANCHOR[1], FRAME[1]) + FOOTPRINT)),
         (checks, "'res://assets/trees/bridge.png'::text, 0, 0, %d, %d, 1," % (fw, fh)),
     ]
-    return ["the migration does not write: %s" % w for scope, w in want if w not in scope]
+    # Each value must end where its assignment or tuple element ends (at a
+    # comma, or the end of the SET body), so src_h = 1280 can't pass for 128.
+    return ["the migration does not write: %s" % w for scope, w in want
+            if w.rstrip(",") + "," not in scope + ","]
 
 
 def check(out_dir):
