@@ -2,8 +2,10 @@
 anims' first frames, then the pieces and people sorted by their feet / sort
 lines, each bed's sleeper under its cover, at a whole-pixel zoom. People
 stand at the floor plan's stations (engine/sim/roomlayout/layouts.json), so
-the preview shows whether they sit on the chairs, lie in the beds and stand
-behind the furniture.
+the preview shows where they stand and how they layer with the furniture:
+an anchor and layering view, not a pose check. Everyone is drawn as the same
+upright body at their feet point (the client draws a sleeper dozing and a
+sitter seated), with a bed's cover drawn again over its sleeper.
 
     python tools/interior-art/preview.py <room key> <sheet dir> <out.png> [zoom]
         [--villager PNG] [--density D]

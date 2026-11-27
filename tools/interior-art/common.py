@@ -174,6 +174,27 @@ def shrink(room, palette, outline=0.0, shadow_dark=0.45, ring=0.0):
     return out
 
 
+def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
+    """The pieces sheet: each piece painted on its own canvas by its painter
+    (called with the Room; it draws in room px into its rect), shrunk, and
+    refused if any of its art falls outside its rect, since the client cuts a
+    piece by its rect and would clip the rest; then pasted into the sheet
+    cropped to its rect, so no piece bleeds into a neighbour.
+    pieces: [((x, y, w, h), painter)]."""
+    sheet = Image.new("RGBA", (w * DENSITY, h * DENSITY), (0, 0, 0, 0))
+    for (x, y, pw, ph), painter in pieces:
+        room = Room(w, h)
+        painter(room)
+        art = shrink(room, palette, outline=outline, ring=ring)
+        box = (x * DENSITY, y * DENSITY, (x + pw) * DENSITY, (y + ph) * DENSITY)
+        outside = art.copy()
+        outside.paste((0, 0, 0, 0), box)
+        if outside.getbbox() is not None:
+            raise ValueError("piece %s paints outside its rect, at %s (art px)" % ((x, y, pw, ph), outside.getbbox()))
+        sheet.alpha_composite(art.crop(box), box[:2])
+    return sheet
+
+
 # ---------------------------------------------------------------- walls and floors
 
 def plaster_wall(room, x0, x1, top, bottom, rnd):
@@ -636,19 +657,21 @@ def rope_bed(room, x, y, w, h, cover, rnd, pattern="check"):
 
     # The headboard: a frame with two panels, a lit top rail, tall turned
     # posts with finials.
-    room.rect(head_l + 1, y + 0.5, head_r - 1, head_bot, ramp(OAK, 0.5))
-    room.rect(head_l + 1, y + 0.5, head_r - 1, y + 1.6, ramp(OAK, 0.92))
+    # Everything stays inside the bed's rect (the client cuts the piece by
+    # it): the finials' tops at the rect's top edge.
+    room.rect(head_l + 1, y + 2.4, head_r - 1, head_bot, ramp(OAK, 0.5))
+    room.rect(head_l + 1, y + 2.4, head_r - 1, y + 3.4, ramp(OAK, 0.92))
     for px0, px1 in ((head_l + 3.6, x + w / 2 - 1), (x + w / 2 + 1, head_r - 3.6)):
-        room.rect(px0, y + 2.6, px1, y + 8.0, ramp(OAK, 0.34))
-        room.rect(px0, y + 2.6, px1, y + 3.2, ramp(OAK, 0.16))
-        room.rect(px0, y + 7.4, px1, y + 8.0, ramp(OAK, 0.66))
+        room.rect(px0, y + 4.4, px1, y + 8.6, ramp(OAK, 0.34))
+        room.rect(px0, y + 4.4, px1, y + 4.9, ramp(OAK, 0.16))
+        room.rect(px0, y + 8.0, px1, y + 8.6, ramp(OAK, 0.66))
     for px in (head_l - 0.2, head_r - 2.6):
-        room.rect(px, y - 0.6, px + 3, head_bot + 1.5, ramp(OAK, 0.56))
-        room.rect(px, y - 0.6, px + 1, head_bot + 1.5, ramp(OAK, 0.82))
-        room.rect(px + 2.2, y - 0.6, px + 3, head_bot + 1.5, ramp(OAK, 0.32))
-        room.ellipse(px - 0.4, y - 2.8, px + 3.4, y + 0.4, ramp(OAK, 0.72))
-        room.ellipse(px + 0.1, y - 2.4, px + 1.5, y - 1.0, ramp(OAK, 0.98))
-        room.rect(px, y + 4, px + 3, y + 4.6, ramp(OAK, 0.3))
+        room.rect(px, y + 1.8, px + 3, head_bot + 1.5, ramp(OAK, 0.56))
+        room.rect(px, y + 1.8, px + 1, head_bot + 1.5, ramp(OAK, 0.82))
+        room.rect(px + 2.2, y + 1.8, px + 3, head_bot + 1.5, ramp(OAK, 0.32))
+        room.ellipse(px - 0.2, y, px + 3.2, y + 3.0, ramp(OAK, 0.72))
+        room.ellipse(px + 0.3, y + 0.4, px + 1.5, y + 1.6, ramp(OAK, 0.98))
+        room.rect(px, y + 5.4, px + 3, y + 6.0, ramp(OAK, 0.3))
 
     # The coverlet's top surface: woven, then trimmed to the receding
     # trapezoid by the frame drawn back over its corners.
@@ -700,7 +723,7 @@ def rope_bed(room, x, y, w, h, cover, rnd, pattern="check"):
         room.rect(px, foot_top - 1.2, px + 3, y + h, ramp(OAK, 0.6))
         room.rect(px, foot_top - 1.2, px + 1, y + h, ramp(OAK, 0.84))
         room.rect(px + 2.2, foot_top - 1.2, px + 3, y + h, ramp(OAK, 0.3))
-        room.ellipse(px - 0.2, foot_top - 2.8, px + 3.2, foot_top - 0.4, ramp(OAK, 0.78))
+        room.ellipse(px, foot_top - 2.8, px + 3, foot_top - 0.4, ramp(OAK, 0.78))
         room.ellipse(px + 0.3, foot_top - 2.4, px + 1.5, foot_top - 1.4, ramp(OAK, 0.98))
 
 
@@ -722,7 +745,7 @@ def trestle_table(room, x, y, w, h, rnd=None, things=True):
     room.rect(x, y + top_h / 2, x + w, y + top_h, ramp(OAK, 0.72))
     for _ in range(10):
         gy, gx = rnd.uniform(y + 0.6, y + top_h - 0.6), rnd.uniform(x, x + w - 6)
-        room.rect(gx, gy, gx + rnd.uniform(4, 12), gy + 0.25, ramp(OAK, rnd.choice((0.6, 0.66, 0.88))))
+        room.rect(gx, gy, min(x + w, gx + rnd.uniform(4, 12)), gy + 0.25, ramp(OAK, rnd.choice((0.6, 0.66, 0.88))))
     room.rect(x, y + top_h / 2 - 0.3, x + w, y + top_h / 2 + 0.3, ramp(OAK, 0.3))
     room.rect(x, y, x + w, y + 0.7, ramp(OAK, 0.98))
     room.rect(x, y, x + 0.7, y + top_h, ramp(OAK, 0.9))
@@ -736,7 +759,7 @@ def trestle_table(room, x, y, w, h, rnd=None, things=True):
         jx = x + w - 8
         room.ellipse(jx - 2.2, y + 1.0, jx + 2.2, y + 7.0, ramp(REDWARE, 0.5))
         room.ellipse(jx - 1.6, y + 1.4, jx - 0.2, y + 4.0, ramp(REDWARE, 0.85))
-        room.rect(jx - 1.1, y - 0.4, jx + 1.1, y + 1.4, ramp(REDWARE, 0.42))
+        room.rect(jx - 1.1, y + 0.2, jx + 1.1, y + 1.4, ramp(REDWARE, 0.42))
         room.ellipse(x + 14, y + 2.2, x + 21, y + 6.4, ramp(STRAW, 0.55))
         room.ellipse(x + 14.6, y + 2.4, x + 19, y + 4.4, ramp(STRAW, 0.85))
         room.line([(x + 16, y + 3.0), (x + 17, y + 5.4)], ramp(STRAW, 0.3), 0.3)
@@ -749,14 +772,15 @@ def ladder_chair(room, x, y, w, h, back_left=True):
     front of the back."""
     seat_y = y + h * 0.55
     bx = x + 1 if back_left else x + w - 3
-    room.rect(bx - 0.4, y, bx + 2.4, y + h - 1, ramp(OAK, 0.32))
-    room.rect(bx - 0.4, y, bx + 0.8, y + h - 1, ramp(OAK, 0.66))
-    room.ellipse(bx - 0.9, y - 1.6, bx + 2.9, y + 1.2, ramp(OAK, 0.8))
-    room.ellipse(bx - 0.4, y - 1.2, bx + 1.0, y + 0.1, ramp(OAK, 0.98))
-    for sy in (y + 3, y + 6.5, y + 10):
-        room.rect(bx - 1.3, sy, bx + 3.3, sy + 1.9, ramp(OAK, 0.74))
-        room.rect(bx - 1.3, sy, bx + 3.3, sy + 0.5, ramp(OAK, 0.95))
-        room.rect(bx - 1.3, sy + 1.4, bx + 3.3, sy + 1.9, ramp(OAK, 0.28))
+    room.rect(bx - 0.4, y + 1.4, bx + 2.4, y + h - 1, ramp(OAK, 0.32))
+    room.rect(bx - 0.4, y + 1.4, bx + 0.8, y + h - 1, ramp(OAK, 0.66))
+    room.ellipse(bx - 0.5, y, bx + 2.5, y + 2.6, ramp(OAK, 0.8))
+    room.ellipse(bx - 0.1, y + 0.3, bx + 1.1, y + 1.3, ramp(OAK, 0.98))
+    for sy in (y + 4, y + 7, y + 10):
+        sl0, sl1 = max(x, bx - 1.3), min(x + w, bx + 3.3)
+        room.rect(sl0, sy, sl1, sy + 1.9, ramp(OAK, 0.74))
+        room.rect(sl0, sy, sl1, sy + 0.5, ramp(OAK, 0.95))
+        room.rect(sl0, sy + 1.4, sl1, sy + 1.9, ramp(OAK, 0.28))
     sx0, sx1 = (bx + 2, x + w - 0.4) if back_left else (x + 0.4, bx)
     room.rect(sx0, seat_y - 3.2, sx1, seat_y + 0.5, ramp(STRAW, 0.6))
     for k in range(int((sx1 - sx0) * 2)):

@@ -4597,6 +4597,17 @@ func _test_painted_room_density() -> void:
     _check("the hearth fire at half scale, at its room spot",
         [fire != null, fire.scale if fire else Vector2.ZERO, fire.position if fire else Vector2.ZERO],
         [true, Vector2(0.5, 0.5), Vector2(12, 36)])
+    # Taps work in room pixels whatever the density: a tap on the bare table
+    # finds nobody, a tap on a person standing in the room finds them.
+    _panel.close()
+    _person("abel", _farmer(), sid)
+    _panel.open(sid)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _check("a tap on the bare table finds nothing", _panel.thing_at(_at_art(Vector2(48, 74))), {})
+    var stood: Node2D = _panel._holder("abel")
+    _check("a tap on someone standing finds them", str(_panel.thing_at(_at_art(stood.position + Vector2(0, -16))).get("id", "")) if stood else "", "abel")
     _panel.close()
     _clear_people()
     # A pack room is still drawn one to one.
