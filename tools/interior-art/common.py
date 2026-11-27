@@ -199,9 +199,11 @@ def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
     its rect, so:
       - no two rects may overlap: the client would cut both sprites from the
         same pixels and one piece's art would ride in the other's sprite;
-      - a piece must paint nothing outside its rect, which would be clipped:
-        not on the canvas (solid_outside, which sees a one-row stroke the
-        shrink would average away) and not in the shrunk art;
+      - nothing of a piece may land outside its rect, where it would be
+        clipped: no canvas pixel at alpha 128 or above (solid_outside, which
+        sees a one-row stroke the shrink would average away; a fainter glow
+        is allowed there), and no spill in the shrunk art (which catches
+        what outlining or resampling adds);
       - a piece must paint something.
     Each piece is painted alone on a canvas PIECE_PAD room px bigger than the
     sheet on every side (so a stroke that runs off the sheet's edge is still
@@ -235,6 +237,54 @@ def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
             raise ValueError("piece %s paints nothing" % ((x, y, pw, ph),))
         sheet.alpha_composite(cut, (x * DENSITY, y * DENSITY))
     return sheet
+
+
+def selftest():
+    """paint_pieces' own guards, run by every room module's --check (no CI
+    runs these tools, and a removed guard would leave every sheet
+    unchanged). Each case draws a valid mark inside a piece's rect; the
+    spill cases add a one-canvas-pixel stroke just past the rect's bottom or
+    right edge (the exclusive end, where Pillow's inclusive ends put a
+    stroke drawn AT y + h or x + w). A solid stroke there must be refused by
+    the canvas check, a faint one accepted, and the mark alone accepted.
+    Returns the failures (empty when all hold)."""
+    fails = []
+    x, y, w, h = 8, 8, 20, 20
+
+    def mark(room, px, py, pw, ph):
+        room.rect(px + 2, py + 2, px + pw - 2, py + ph - 2, ramp(OAK, 0.5))
+
+    def stroke(edge, alpha):
+        def painter(room, px, py, pw, ph):
+            mark(room, px, py, pw, ph)
+            d = ImageDraw.Draw(room.lay)
+            x0, y0, x1, y1 = (int(round(v * S)) for v in (px, py, px + pw, py + ph))
+            col = (80, 60, 40, alpha)
+            if edge == "bottom":
+                d.line([(x0, y1), (x1 - 1, y1)], fill=col)
+            else:
+                d.line([(x1, y0), (x1, y1 - 1)], fill=col)
+        return painter
+
+    def run(painter):
+        try:
+            paint_pieces(64, 64, [((x, y, w, h), painter)], OAK)
+            return None
+        except ValueError as e:
+            return str(e)
+
+    for edge in ("bottom", "right"):
+        err = run(stroke(edge, 255))
+        if err is None or "on the canvas" not in err:
+            fails.append("a solid stroke one canvas px past the %s edge is not refused by the canvas check (%s)"
+                         % (edge, err))
+        err = run(stroke(edge, 60))
+        if err is not None:
+            fails.append("a faint stroke past the %s edge is refused: %s" % (edge, err))
+    err = run(mark)
+    if err is not None:
+        fails.append("a mark inside its rect is refused: %s" % err)
+    return fails
 
 
 # ---------------------------------------------------------------- walls and floors

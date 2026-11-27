@@ -445,6 +445,11 @@ def check(out_dir):
     rect lies inside its bed's piece and holds the coverlet; every anim strip
     painted here is whole square frames."""
     ok = True
+    # The kit's own guards (common.selftest): a removed guard would leave
+    # every sheet unchanged, so the sheets alone cannot show it.
+    for f in C.selftest():
+        print("common selftest: " + f)
+        ok = False
     sheets = {}
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")

@@ -1317,6 +1317,11 @@ def check(out_dir):
     the closed one whole; each anim strip is its declared frames of its
     declared size; the bar's sale point is on the counter."""
     ok = True
+    # The kit's own guards (common.selftest): a removed guard would leave
+    # every sheet unchanged, so the sheets alone cannot show it.
+    for f in C.selftest():
+        print("common selftest: " + f)
+        ok = False
     # The grouping refuses the bar's split moved a pixel either way (an
     # overlap, a gap between the arms) and a collapsed arm.
     bar = ROOMS[COMMON_KEY]["pieces"]
